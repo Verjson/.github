@@ -1,0 +1,489 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>verJSON — AI R&amp;D Accelerator</title>
+  <meta name="description" content="verJSON Inc is an AI R&D accelerator researching how AI can improve building and delivering technology products that leverage AI." />
+  <meta property="og:title" content="verJSON — AI R&D Accelerator" />
+  <meta property="og:description" content="Researching how AI builds and delivers better technology products." />
+  <meta property="og:type" content="website" />
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='80' fill='%238b5cf6'>{ }</text></svg>" />
+  <style>
+    :root {
+      --bg: #07070c;
+      --bg-soft: #0d0d16;
+      --surface: rgba(255, 255, 255, 0.03);
+      --border: rgba(255, 255, 255, 0.08);
+      --text: #e8e8f0;
+      --muted: #9a9ab0;
+      --accent: #8b5cf6;
+      --accent-2: #6366f1;
+      --accent-glow: rgba(139, 92, 246, 0.35);
+      --max: 1100px;
+      --radius: 16px;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    html { scroll-behavior: smooth; }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, Helvetica, Arial, sans-serif;
+      line-height: 1.6;
+      -webkit-font-smoothing: antialiased;
+      overflow-x: hidden;
+    }
+
+    a { color: inherit; text-decoration: none; }
+
+    .wrap { max-width: var(--max); margin: 0 auto; padding: 0 24px; }
+
+    code, .mono {
+      font-family: "SF Mono", "JetBrains Mono", "Fira Code", ui-monospace, Menlo, Consolas, monospace;
+    }
+
+    /* ---------- background glow ---------- */
+    .bg-fx {
+      position: fixed;
+      inset: 0;
+      z-index: -1;
+      background:
+        radial-gradient(60% 50% at 50% -10%, rgba(99, 102, 241, 0.18), transparent 70%),
+        radial-gradient(40% 40% at 85% 10%, rgba(139, 92, 246, 0.12), transparent 70%),
+        radial-gradient(50% 50% at 10% 90%, rgba(99, 102, 241, 0.10), transparent 70%);
+    }
+    .grid-fx {
+      position: fixed;
+      inset: 0;
+      z-index: -1;
+      background-image:
+        linear-gradient(var(--border) 1px, transparent 1px),
+        linear-gradient(90deg, var(--border) 1px, transparent 1px);
+      background-size: 56px 56px;
+      mask-image: radial-gradient(ellipse 80% 60% at 50% 0%, #000 30%, transparent 80%);
+      opacity: 0.5;
+    }
+
+    /* ---------- nav ---------- */
+    header.nav {
+      position: sticky;
+      top: 0;
+      z-index: 50;
+      backdrop-filter: blur(12px);
+      background: rgba(7, 7, 12, 0.6);
+      border-bottom: 1px solid var(--border);
+    }
+    .nav-inner {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      height: 64px;
+    }
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+      font-size: 18px;
+    }
+    .brand .glyph {
+      color: var(--accent);
+      font-size: 20px;
+      font-weight: 800;
+    }
+    .brand b { font-weight: 800; }
+    .nav-links { display: flex; gap: 28px; align-items: center; }
+    .nav-links a { color: var(--muted); font-size: 14px; transition: color .2s; }
+    .nav-links a:hover { color: var(--text); }
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 10px 18px;
+      border-radius: 10px;
+      font-size: 14px;
+      font-weight: 600;
+      transition: transform .15s ease, box-shadow .2s ease, background .2s;
+    }
+    .btn-primary {
+      background: linear-gradient(135deg, var(--accent), var(--accent-2));
+      color: #fff;
+      box-shadow: 0 8px 30px -8px var(--accent-glow);
+    }
+    .btn-primary:hover { transform: translateY(-1px); box-shadow: 0 12px 36px -8px var(--accent-glow); }
+    .btn-ghost { border: 1px solid var(--border); color: var(--text); }
+    .btn-ghost:hover { background: var(--surface); }
+    @media (max-width: 720px) { .nav-links { display: none; } }
+
+    /* ---------- hero ---------- */
+    .hero { padding: 110px 0 90px; text-align: center; }
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 14px;
+      border: 1px solid var(--border);
+      background: var(--surface);
+      border-radius: 999px;
+      font-size: 13px;
+      color: var(--muted);
+      margin-bottom: 28px;
+    }
+    .pill .dot {
+      width: 7px; height: 7px; border-radius: 50%;
+      background: var(--accent);
+      box-shadow: 0 0 10px 2px var(--accent-glow);
+    }
+    .hero h1 {
+      font-size: clamp(38px, 7vw, 72px);
+      line-height: 1.02;
+      letter-spacing: -0.035em;
+      font-weight: 800;
+      margin-bottom: 24px;
+    }
+    .hero h1 .grad {
+      background: linear-gradient(120deg, #c4b5fd, var(--accent) 40%, var(--accent-2));
+      -webkit-background-clip: text;
+      background-clip: text;
+      color: transparent;
+    }
+    .hero p.lead {
+      font-size: clamp(17px, 2.2vw, 21px);
+      color: var(--muted);
+      max-width: 660px;
+      margin: 0 auto 38px;
+    }
+    .hero-cta { display: flex; gap: 14px; justify-content: center; flex-wrap: wrap; }
+
+    /* ---------- section ---------- */
+    section { padding: 80px 0; }
+    .eyebrow {
+      text-transform: uppercase;
+      letter-spacing: 0.18em;
+      font-size: 12px;
+      font-weight: 700;
+      color: var(--accent);
+      margin-bottom: 14px;
+    }
+    .section-head { max-width: 640px; margin-bottom: 48px; }
+    .section-head h2 {
+      font-size: clamp(28px, 4vw, 40px);
+      letter-spacing: -0.03em;
+      line-height: 1.1;
+      margin-bottom: 14px;
+      font-weight: 800;
+    }
+    .section-head p { color: var(--muted); font-size: 17px; }
+
+    /* ---------- cards ---------- */
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 20px;
+    }
+    @media (max-width: 880px) { .grid { grid-template-columns: 1fr; } }
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 28px;
+      transition: transform .2s ease, border-color .2s ease, background .2s ease;
+    }
+    .card:hover {
+      transform: translateY(-4px);
+      border-color: rgba(139, 92, 246, 0.4);
+      background: rgba(139, 92, 246, 0.05);
+    }
+    .card .ico {
+      width: 44px; height: 44px;
+      display: grid; place-items: center;
+      border-radius: 12px;
+      background: linear-gradient(135deg, rgba(139,92,246,0.2), rgba(99,102,241,0.12));
+      border: 1px solid var(--border);
+      margin-bottom: 18px;
+      font-size: 20px;
+    }
+    .card h3 { font-size: 19px; letter-spacing: -0.01em; margin-bottom: 8px; }
+    .card p { color: var(--muted); font-size: 15px; }
+
+    /* ---------- approach / steps ---------- */
+    .steps { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; }
+    @media (max-width: 880px) { .steps { grid-template-columns: 1fr; } }
+    .step { position: relative; padding: 28px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg-soft); }
+    .step .num {
+      font-family: "SF Mono", ui-monospace, monospace;
+      font-size: 13px; font-weight: 700; color: var(--accent);
+      border: 1px solid var(--border); border-radius: 8px;
+      padding: 4px 10px; display: inline-block; margin-bottom: 16px;
+    }
+    .step h3 { font-size: 18px; margin-bottom: 8px; }
+    .step p { color: var(--muted); font-size: 15px; }
+
+    /* ---------- code panel ---------- */
+    .split { display: grid; grid-template-columns: 1.1fr 1fr; gap: 48px; align-items: center; }
+    @media (max-width: 880px) { .split { grid-template-columns: 1fr; gap: 32px; } }
+    .codepanel {
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      background: #0a0a12;
+      overflow: hidden;
+      box-shadow: 0 30px 80px -30px rgba(99,102,241,0.35);
+    }
+    .codepanel .bar {
+      display: flex; align-items: center; gap: 8px;
+      padding: 12px 16px; border-bottom: 1px solid var(--border);
+      background: rgba(255,255,255,0.02);
+    }
+    .codepanel .bar span { width: 11px; height: 11px; border-radius: 50%; background: #2a2a3a; }
+    .codepanel .bar .fn { margin-left: 10px; font-size: 12px; color: var(--muted); }
+    .codepanel pre { margin: 0; padding: 22px; font-size: 13.5px; line-height: 1.7; overflow-x: auto; }
+    .tok-key { color: #c4b5fd; }
+    .tok-str { color: #86efac; }
+    .tok-num { color: #fca5a5; }
+    .tok-punc { color: #64748b; }
+    .feat-list { list-style: none; display: grid; gap: 18px; }
+    .feat-list li { display: flex; gap: 14px; align-items: flex-start; }
+    .feat-list .check {
+      flex: none; width: 24px; height: 24px; border-radius: 7px;
+      display: grid; place-items: center; font-size: 13px; color: #fff;
+      background: linear-gradient(135deg, var(--accent), var(--accent-2));
+    }
+    .feat-list li b { display: block; font-size: 16px; margin-bottom: 2px; }
+    .feat-list li span { color: var(--muted); font-size: 14.5px; }
+
+    /* ---------- stats ---------- */
+    .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 20px; text-align: center; }
+    @media (max-width: 720px) { .stats { grid-template-columns: repeat(2, 1fr); } }
+    .stat .big {
+      font-size: clamp(30px, 5vw, 44px); font-weight: 800; letter-spacing: -0.03em;
+      background: linear-gradient(120deg, #c4b5fd, var(--accent-2));
+      -webkit-background-clip: text; background-clip: text; color: transparent;
+    }
+    .stat .lbl { color: var(--muted); font-size: 14px; margin-top: 4px; }
+
+    /* ---------- cta band ---------- */
+    .cta {
+      border: 1px solid var(--border);
+      border-radius: 24px;
+      padding: 64px 32px;
+      text-align: center;
+      background:
+        radial-gradient(60% 120% at 50% 0%, rgba(139,92,246,0.18), transparent 70%),
+        var(--bg-soft);
+    }
+    .cta h2 { font-size: clamp(28px, 4.5vw, 44px); letter-spacing: -0.03em; margin-bottom: 16px; font-weight: 800; }
+    .cta p { color: var(--muted); font-size: 18px; max-width: 540px; margin: 0 auto 32px; }
+
+    /* ---------- footer ---------- */
+    footer {
+      border-top: 1px solid var(--border);
+      padding: 40px 0;
+      margin-top: 40px;
+    }
+    .foot-inner { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 16px; }
+    .foot-inner .muted { color: var(--muted); font-size: 14px; }
+    .foot-links { display: flex; gap: 22px; }
+    .foot-links a { color: var(--muted); font-size: 14px; transition: color .2s; }
+    .foot-links a:hover { color: var(--text); }
+
+    /* reveal */
+    .reveal { opacity: 0; transform: translateY(16px); transition: opacity .6s ease, transform .6s ease; }
+    .reveal.in { opacity: 1; transform: none; }
+  </style>
+</head>
+<body>
+  <div class="bg-fx"></div>
+  <div class="grid-fx"></div>
+
+  <header class="nav">
+    <div class="wrap nav-inner">
+      <a class="brand" href="#top">
+        <span class="glyph">{ }</span>
+        <span>ver<b>JSON</b></span>
+      </a>
+      <nav class="nav-links">
+        <a href="#mission">Mission</a>
+        <a href="#focus">Focus</a>
+        <a href="#approach">Approach</a>
+        <a href="https://github.com/Verjson">GitHub</a>
+        <a class="btn btn-primary" href="https://github.com/Verjson">Explore →</a>
+      </nav>
+    </div>
+  </header>
+
+  <main id="top">
+    <!-- HERO -->
+    <section class="hero wrap">
+      <span class="pill"><span class="dot"></span> AI R&amp;D Accelerator</span>
+      <h1>Researching how AI<br /><span class="grad">builds better technology</span></h1>
+      <p class="lead">
+        verJSON Inc is an AI R&amp;D accelerator. We study how artificial intelligence can
+        improve the way technology products are built and delivered — and how those
+        products, in turn, put AI to work.
+      </p>
+      <div class="hero-cta">
+        <a class="btn btn-primary" href="https://github.com/Verjson">Explore our work</a>
+        <a class="btn btn-ghost" href="#mission">What we do</a>
+      </div>
+    </section>
+
+    <!-- MISSION -->
+    <section id="mission" class="wrap reveal">
+      <div class="split">
+        <div>
+          <div class="eyebrow">Our Mission</div>
+          <h2 style="font-size:clamp(28px,4vw,40px);letter-spacing:-0.03em;line-height:1.1;margin-bottom:20px;font-weight:800;">
+            Turning AI research into products that ship.
+          </h2>
+          <ul class="feat-list">
+            <li>
+              <span class="check">✓</span>
+              <div><b>Applied AI research</b><span>We explore how AI changes every stage of building software — from idea to delivery.</span></div>
+            </li>
+            <li>
+              <span class="check">✓</span>
+              <div><b>From lab to launch</b><span>Promising research is incubated into real, AI-leveraged products — not just papers.</span></div>
+            </li>
+            <li>
+              <span class="check">✓</span>
+              <div><b>AI that compounds</b><span>The tools we build to ship faster become the foundation for the next product.</span></div>
+            </li>
+          </ul>
+        </div>
+        <div class="codepanel">
+          <div class="bar"><span></span><span></span><span></span><span class="fn">verjson.mission.json</span></div>
+<pre class="mono"><span class="tok-punc">{</span>
+  <span class="tok-key">"company"</span><span class="tok-punc">:</span> <span class="tok-str">"verJSON Inc"</span><span class="tok-punc">,</span>
+  <span class="tok-key">"type"</span><span class="tok-punc">:</span> <span class="tok-str">"AI R&amp;D accelerator"</span><span class="tok-punc">,</span>
+  <span class="tok-key">"researches"</span><span class="tok-punc">:</span> <span class="tok-punc">[</span>
+    <span class="tok-str">"how AI improves building products"</span><span class="tok-punc">,</span>
+    <span class="tok-str">"how AI improves delivering products"</span><span class="tok-punc">,</span>
+    <span class="tok-str">"products that leverage AI"</span>
+  <span class="tok-punc">]</span><span class="tok-punc">,</span>
+  <span class="tok-key">"loop"</span><span class="tok-punc">:</span> <span class="tok-str">"research → build → deliver → learn"</span><span class="tok-punc">,</span>
+  <span class="tok-key">"version"</span><span class="tok-punc">:</span> <span class="tok-num">1</span>
+<span class="tok-punc">}</span></pre>
+        </div>
+      </div>
+    </section>
+
+    <!-- FOCUS -->
+    <section id="focus" class="wrap reveal">
+      <div class="section-head">
+        <div class="eyebrow">Focus Areas</div>
+        <h2>Where we point our research.</h2>
+        <p>Each area is a question we keep asking — and a product surface we keep testing.</p>
+      </div>
+      <div class="grid">
+        <div class="card">
+          <div class="ico">🧠</div>
+          <h3>AI-native development</h3>
+          <p>How agents, models, and tooling reshape the way engineers design, write, and review software.</p>
+        </div>
+        <div class="card">
+          <div class="ico">🚀</div>
+          <h3>Delivery &amp; velocity</h3>
+          <p>Compressing the path from prototype to production with AI in the loop on testing, ops, and release.</p>
+        </div>
+        <div class="card">
+          <div class="ico">🧩</div>
+          <h3>AI-leveraged products</h3>
+          <p>Building products that put AI to work for real users — and learning what actually creates value.</p>
+        </div>
+        <div class="card">
+          <div class="ico">⚙️</div>
+          <h3>Accelerators &amp; tooling</h3>
+          <p>Reusable building blocks that let the next experiment start further down the road.</p>
+        </div>
+        <div class="card">
+          <div class="ico">🔬</div>
+          <h3>Applied research</h3>
+          <p>Rigorous, hands-on experiments measured by what ships — not by what sounds good.</p>
+        </div>
+        <div class="card">
+          <div class="ico">🤝</div>
+          <h3>Human + AI workflows</h3>
+          <p>Designing the collaboration between people and AI so each does what it does best.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- APPROACH -->
+    <section id="approach" class="wrap reveal">
+      <div class="section-head">
+        <div class="eyebrow">Our Approach</div>
+        <h2>A tight loop, run on repeat.</h2>
+        <p>We treat building and delivering products as the experiment itself.</p>
+      </div>
+      <div class="steps">
+        <div class="step">
+          <span class="num">01 / research</span>
+          <h3>Ask a sharp question</h3>
+          <p>We start with a concrete bet about how AI could change how a product gets built or delivered.</p>
+        </div>
+        <div class="step">
+          <span class="num">02 / build</span>
+          <h3>Build to find out</h3>
+          <p>We ship a real product or tool — the fastest, most honest way to test the hypothesis.</p>
+        </div>
+        <div class="step">
+          <span class="num">03 / learn</span>
+          <h3>Measure &amp; compound</h3>
+          <p>What works becomes an accelerator for the next experiment. What doesn't, teaches us where to look next.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- STATS -->
+    <section class="wrap reveal">
+      <div class="card" style="padding:48px 32px;">
+        <div class="stats">
+          <div class="stat"><div class="big">AI-first</div><div class="lbl">Every experiment</div></div>
+          <div class="stat"><div class="big">∞</div><div class="lbl">Research → build loops</div></div>
+          <div class="stat"><div class="big">100%</div><div class="lbl">Ship to learn</div></div>
+          <div class="stat"><div class="big">{ }</div><div class="lbl">Built on structure</div></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- CTA -->
+    <section class="wrap reveal">
+      <div class="cta">
+        <h2>Build the future of building.</h2>
+        <p>Follow our research and the products it becomes. Everything we open up lives on GitHub.</p>
+        <div class="hero-cta">
+          <a class="btn btn-primary" href="https://github.com/Verjson">Visit our GitHub</a>
+          <a class="btn btn-ghost" href="https://verjson.com">verjson.com</a>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <div class="wrap foot-inner">
+      <a class="brand" href="#top"><span class="glyph">{ }</span><span>ver<b>JSON</b></span></a>
+      <div class="foot-links">
+        <a href="#mission">Mission</a>
+        <a href="#focus">Focus</a>
+        <a href="#approach">Approach</a>
+        <a href="https://github.com/Verjson">GitHub</a>
+        <a href="https://verjson.com">Website</a>
+      </div>
+      <div class="muted">© <span id="yr"></span> verJSON Inc. All rights reserved.</div>
+    </div>
+  </footer>
+
+  <script>
+    document.getElementById('yr').textContent = new Date().getFullYear();
+    // reveal on scroll
+    const io = new IntersectionObserver((entries) => {
+      entries.forEach((e) => { if (e.isIntersecting) { e.target.classList.add('in'); io.unobserve(e.target); } });
+    }, { threshold: 0.12 });
+    document.querySelectorAll('.reveal').forEach((el) => io.observe(el));
+  </script>
+</body>
+</html>
