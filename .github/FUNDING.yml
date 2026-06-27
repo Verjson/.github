@@ -1,0 +1,6 @@
+# Default funding configuration for Verjson repositories.
+# Uncomment and fill in the platforms you actually use, then remove this note.
+# Docs: https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/displaying-a-sponsor-button-in-your-repository
+
+# github: [Verjson]
+# custom: ["https://verjson.com"]
