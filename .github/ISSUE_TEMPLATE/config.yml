@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 💬 Questions & Discussion
+    url: https://github.com/orgs/Verjson/discussions
+    about: Ask questions, share ideas, and discuss with the community.
+  - name: 🌐 verjson.com
+    url: https://verjson.com
+    about: Learn more about verJSON and what we're building.
+  - name: 🔒 Report a security issue
+    url: https://github.com/Verjson/.github/security/advisories/new
+    about: Please report security vulnerabilities privately, not as a public issue.
