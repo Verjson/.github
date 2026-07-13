@@ -58,7 +58,7 @@ jobs:
         !contains(github.event.pull_request.labels.*.name, 'hold') &&
         !contains(github.event.pull_request.title, 'DO NOT MERGE')
       )
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, gce]
     timeout-minutes: 10
     permissions:
       contents: read
@@ -161,7 +161,7 @@ jobs:
   ai-review:
     needs: classify
     if: needs.classify.outputs.lane == 'ai'
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, gce]
     timeout-minutes: 45
     permissions:
       contents: read
@@ -238,7 +238,7 @@ jobs:
             be approved.
           claude_args: |
             --model ${{ needs.classify.outputs.model }}
-            --max-turns 12
+            --max-turns 30
             --allowedTools "Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr checks:*),Bash(gh pr review:*),Read,Grep,Glob"
 
   ai-merge:
@@ -248,7 +248,7 @@ jobs:
       !cancelled() && needs.classify.result == 'success' &&
       (needs.classify.outputs.lane == 'fast' ||
        (needs.classify.outputs.lane == 'ai' && needs.ai-review.result == 'success'))
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, gce]
     timeout-minutes: 45
     permissions:
       contents: read
