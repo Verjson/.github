@@ -31,7 +31,7 @@ jobs:
         run: echo "not a Renovate PR — advisory review skipped" && exit 0
       - name: Checkout
         if: ${{ github.actor == 'renovate[bot]' || github.actor == 'mend[bot]' }}
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
         with: { fetch-depth: 2 }
       - name: Advisory dependency review (never blocks)
         if: ${{ (github.actor == 'renovate[bot]' || github.actor == 'mend[bot]') && env.ANTHROPIC_API_KEY != '' }}
