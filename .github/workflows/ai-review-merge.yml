@@ -1,0 +1,133 @@
+name: AI review + auto-merge
+
+# ORG-LEVEL autonomous merge gate (viager-docs ADR-018), required on every
+# repo via the main-protection org ruleset. Every PR is
+# reviewed by Claude; if the review passes and the rest of CI is green, the PR is squash-merged with the org-admin ruleset bypass (same mechanism as the
+# catalog auto-bump). Humans opt a PR out with the `hold` label, a
+# "DO NOT MERGE" title marker, or by keeping it a draft.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: PR number to review and (on pass) merge
+        required: true
+      repository:
+        description: owner/repo the PR lives in (defaults to this repo)
+        required: false
+
+concurrency:
+  group: ai-review-${{ github.event.pull_request.number || inputs.pr_number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr_number }}
+  TARGET_REPO: ${{ inputs.repository || github.repository }}
+
+jobs:
+  ai-review:
+    if: >
+      !github.event.pull_request.draft &&
+      !contains(github.event.pull_request.labels.*.name, 'hold') &&
+      !contains(github.event.pull_request.title, 'DO NOT MERGE')
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+      actions: read
+      id-token: write
+    steps:
+      - name: Checkout PR head
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Claude review (merge gate)
+        uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          # Renovate opens PRs as a bot actor; without this the action
+          # refuses to run and the gate can never pass a dependency PR.
+          allowed_bots: 'renovate,renovate[bot],mend[bot]'
+          prompt: |
+            You are the autonomous merge gate for ${{ inputs.repository || github.repository }}.
+            Review PR #${{ env.PR_NUMBER }} in ${{ inputs.repository || github.repository }}
+            (use `gh pr view`/`gh pr diff` with `--repo` for metadata and the
+            diff; read surrounding files for context).
+
+            Review for, in priority order:
+            1. Correctness bugs and behavioral regressions.
+            2. Security: authn/authz changes, tenant isolation, secret
+               handling, input validation at boundaries, injection.
+            3. Money-handling invariants (integer minor units, double-entry
+               balance, idempotency, provider-confirmed amounts only).
+            4. Missing or weakened tests for changed behavior.
+            Style-only nits are not blocking; mention at most briefly.
+
+            Then submit exactly one PR review:
+            - No blocking findings:
+              `gh pr review ${{ env.PR_NUMBER }} --repo ${{ inputs.repository || github.repository }} --approve --body "<short summary of what was checked>"`
+            - Blocking findings:
+              `gh pr review ${{ env.PR_NUMBER }} --repo ${{ inputs.repository || github.repository }} --request-changes --body "<each finding: file:line, why it's wrong, concrete failure scenario>"`
+              and then exit with a non-zero status (`exit 1`) so the merge
+              job never runs.
+
+            Be skeptical but calibrated: block on real defects, not
+            hypotheticals. A pointer-bump or docs-only PR with sane content
+            should simply be approved.
+          claude_args: |
+            --allowedTools "Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr checks:*),Bash(gh pr review:*),Read,Grep,Glob"
+
+  ai-merge:
+    needs: ai-review
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      - name: Wait for the rest of CI, then squash-merge
+        env:
+          GH_TOKEN: ${{ secrets.ORG_ADMIN_TOKEN }}
+          REPO: ${{ inputs.repository || github.repository }}
+        run: |
+          set -euo pipefail
+          # Re-check the opt-outs at merge time: a `hold` label added after
+          # the review started must still stop the merge.
+          meta=$(gh pr view "$PR_NUMBER" --repo "$REPO" --json labels,title,isDraft)
+          if jq -e '(.labels | map(.name) | index("hold")) or (.title | contains("DO NOT MERGE")) or .isDraft' <<<"$meta" >/dev/null; then
+            echo "PR #$PR_NUMBER is held (label/title/draft); not merging."
+            exit 0
+          fi
+          # Poll every 30s for up to 40 min. This workflow's own jobs
+          # (ai-review already succeeded; ai-merge is this job) are excluded
+          # from the wait set to avoid self-deadlock.
+          for i in $(seq 1 80); do
+            rollup=$(gh pr view "$PR_NUMBER" --repo "$REPO" \
+              --json statusCheckRollup \
+              --jq '[.statusCheckRollup[]? | select(.name != "ai-review" and .name != "ai-merge")]')
+            failed=$(jq '[.[] | select((.conclusion // "") | IN("FAILURE","CANCELLED","TIMED_OUT","ACTION_REQUIRED"))] | length' <<<"$rollup")
+            pending=$(jq '[.[] | select(.status != "COMPLETED")] | length' <<<"$rollup")
+            if [ "$failed" -gt 0 ]; then
+              echo "CI failed for PR #$PR_NUMBER; not merging."
+              jq -r '.[] | select((.conclusion // "") | IN("FAILURE","CANCELLED","TIMED_OUT","ACTION_REQUIRED")) | .name' <<<"$rollup"
+              exit 1
+            fi
+            if [ "$pending" -eq 0 ]; then
+              echo "All checks green; merging PR #$PR_NUMBER."
+              gh pr merge "$PR_NUMBER" --repo "$REPO" --squash --admin --delete-branch
+              exit 0
+            fi
+            echo "waiting on $pending check(s)…"
+            sleep 30
+          done
+          echo "Timed out waiting for CI on PR #$PR_NUMBER."
+          exit 1
