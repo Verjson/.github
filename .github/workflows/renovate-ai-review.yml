@@ -20,7 +20,7 @@ permissions:
 
 jobs:
   review:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, gce]
     timeout-minutes: 10
     # env (not secrets) is allowed in `if`; lets us no-op safely when the key is absent.
     env:
