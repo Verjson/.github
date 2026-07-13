@@ -1,0 +1,46 @@
+name: Renovate AI review (advisory)
+
+# Advisory Claude review of Renovate dependency PRs. It only comments — it never
+# blocks the merge (the merge is gated by CI + Renovate's auto-merge policy in
+# Verjson/renovate-config). Wired org-wide via an organization ruleset that
+# requires this workflow; it no-ops for non-Renovate PRs and when no key is set,
+# so it is always safe (never fails a required check).
+#
+# REQUIRED (org-level): ANTHROPIC_API_KEY organization Actions secret
+#   gh secret set ANTHROPIC_API_KEY --org Verjson --visibility all
+
+on:
+  workflow_call: {}
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # env (not secrets) is allowed in `if`; lets us no-op safely when the key is absent.
+    env:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+    steps:
+      - name: Skip non-Renovate PRs
+        if: ${{ github.actor != 'renovate[bot]' && github.actor != 'mend[bot]' }}
+        run: echo "not a Renovate PR — advisory review skipped" && exit 0
+      - name: Checkout
+        if: ${{ github.actor == 'renovate[bot]' || github.actor == 'mend[bot]' }}
+        uses: actions/checkout@v5
+        with: { fetch-depth: 2 }
+      - name: Advisory dependency review (never blocks)
+        if: ${{ (github.actor == 'renovate[bot]' || github.actor == 'mend[bot]') && env.ANTHROPIC_API_KEY != '' }}
+        continue-on-error: true
+        uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          prompt: |
+            This is a Renovate dependency-update PR. Review the bumped dependency's changelog and the
+            diff: call out breaking changes, deprecations, or security-relevant fixes, then give a
+            one-line merge recommendation. Keep it brief — this comment is advisory and does not block
+            the merge. Post your review as a PR comment.
