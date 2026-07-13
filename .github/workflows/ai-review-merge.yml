@@ -238,7 +238,7 @@ jobs:
             be approved.
           claude_args: |
             --model ${{ needs.classify.outputs.model }}
-            --max-turns 30
+            --max-turns 60
             --allowedTools "Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr checks:*),Bash(gh pr review:*),Read,Grep,Glob"
 
   ai-merge:
