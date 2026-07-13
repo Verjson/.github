@@ -1,14 +1,31 @@
 name: AI review + auto-merge
 
-# ORG-LEVEL autonomous merge gate (viager-docs ADR-018), required on every
-# repo via the main-protection org ruleset. Every PR is
-# reviewed by Claude; if the review passes and the rest of CI is green, the PR is squash-merged with the org-admin ruleset bypass (same mechanism as the
-# catalog auto-bump). Humans opt a PR out with the `hold` label, a
-# "DO NOT MERGE" title marker, or by keeping it a draft.
+# ORG-LEVEL autonomous merge gate (viager-docs ADR-018, as amended), required
+# on every repo via the main-protection org ruleset.
+#
+# Cost-lane design (ADR-018 second amendment):
+#   1. `classify` (free, deterministic bash) routes each PR into a lane:
+#        - fast: submodule pointer bumps (every new gitlink SHA verified to be
+#          on the submodule's default branch), Renovate non-major updates
+#          (bot-authored, manifest/lockfile-only diff, `update/<type>` label),
+#          and deletions-only PRs. No model is invoked.
+#        - ai: everything else gets a Claude review — but only AFTER the rest
+#          of CI is green, so red PRs cost $0.
+#   2. Model tiering: routine code PRs are reviewed by Haiku; PRs touching
+#      sensitive paths (authz/ABAC, payments/ledger, webhooks, secrets,
+#      workflows) get the stronger default model. Turns are capped.
+#   3. Reviews run once per ready PR (opened/reopened/ready_for_review), not
+#      per push. Re-run by adding the `re-review` label (auto-removed) or via
+#      workflow_dispatch.
+#
+# Either lane merges only on green CI, squash + branch delete, using the
+# org-admin ruleset bypass (same mechanism as the catalog auto-bump). Humans
+# opt a PR out with the `hold` label, a "DO NOT MERGE" title marker, or by
+# keeping it a draft — re-checked at merge time.
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened, ready_for_review]
+    types: [opened, reopened, ready_for_review, labeled]
   workflow_dispatch:
     inputs:
       pr_number:
@@ -30,13 +47,122 @@ env:
   TARGET_REPO: ${{ inputs.repository || github.repository }}
 
 jobs:
-  ai-review:
+  classify:
+    # `labeled` only re-triggers for the explicit re-review request; other
+    # label additions (including `hold`) must not start a run.
     if: >
-      !github.event.pull_request.draft &&
-      !contains(github.event.pull_request.labels.*.name, 'hold') &&
-      !contains(github.event.pull_request.title, 'DO NOT MERGE')
+      github.event_name == 'workflow_dispatch' ||
+      (
+        (github.event.action != 'labeled' || github.event.label.name == 're-review') &&
+        !github.event.pull_request.draft &&
+        !contains(github.event.pull_request.labels.*.name, 'hold') &&
+        !contains(github.event.pull_request.title, 'DO NOT MERGE')
+      )
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: write
+    outputs:
+      lane: ${{ steps.classify.outputs.lane }}
+      reason: ${{ steps.classify.outputs.reason }}
+      model: ${{ steps.classify.outputs.model }}
+      head_sha: ${{ steps.classify.outputs.head_sha }}
+    steps:
+      - name: Classify PR into a lane
+        id: classify
+        env:
+          # Org-admin token: classification must read sibling repos
+          # (submodule verification) and, for cross-repo dispatch, the target.
+          GH_TOKEN: ${{ secrets.ORG_ADMIN_TOKEN }}
+        run: |
+          set -euo pipefail
+          REPO="$TARGET_REPO"
+          out() { echo "$1=$2" >> "$GITHUB_OUTPUT"; }
+
+          meta=$(gh pr view "$PR_NUMBER" --repo "$REPO" \
+            --json labels,title,isDraft,author,headRefOid,baseRefName)
+          # Re-check opt-outs here too: workflow_dispatch bypasses the job if.
+          if jq -e '(.labels | map(.name) | index("hold")) or (.title | contains("DO NOT MERGE")) or .isDraft' <<<"$meta" >/dev/null; then
+            echo "PR is held (label/title/draft); no lane."
+            out lane held; out reason "held by human opt-out"; out model none
+            exit 0
+          fi
+          out head_sha "$(jq -r .headRefOid <<<"$meta")"
+
+          # Consume the re-review label so it can be re-applied later.
+          gh pr edit "$PR_NUMBER" --repo "$REPO" --remove-label re-review 2>/dev/null || true
+
+          files=$(gh api "repos/$REPO/pulls/$PR_NUMBER/files" --paginate --jq '.[]' | jq -s .)
+          nfiles=$(jq length <<<"$files")
+          if [ "$nfiles" -eq 0 ]; then
+            out lane ai; out reason "empty diff — needs a look"; out model claude-haiku-4-5
+            exit 0
+          fi
+
+          # Model tier for the AI lane: sensitive paths get the strong model.
+          if jq -e '[.[].filename] | any(test("(^|/)\\.github/|abac|(^|/|[._-])auth|polic|payment|ledger|webhook|secret|middleware|rbac|rls"; "i"))' <<<"$files" >/dev/null; then
+            model=claude-sonnet-5
+          else
+            model=claude-haiku-4-5
+          fi
+          out model "$model"
+
+          # ---- Fast lane A: submodule pointer bump -------------------------
+          # Every changed file is a gitlink hunk, and each new SHA is already
+          # on the submodule's default branch (identical or behind = ancestor).
+          if jq -e 'all(.[]; (.patch // "") | test("^@@[^\\n]*\\n(-Subproject commit [0-9a-f]{40}\\n?|\\+Subproject commit [0-9a-f]{40}\\n?)+$"))' <<<"$files" >/dev/null; then
+            base=$(jq -r .baseRefName <<<"$meta")
+            gm=$(mktemp)
+            gh api "repos/$REPO/contents/.gitmodules?ref=$base" --jq .content | base64 -d > "$gm"
+            ok=true
+            while IFS=$'\t' read -r path sha; do
+              name=$(git config -f "$gm" --list | awk -F= -v p="$path" '$2==p && $1 ~ /\.path$/ {sub(/^submodule\./,"",$1); sub(/\.path$/,"",$1); print $1; exit}')
+              url=$(git config -f "$gm" --get "submodule.$name.url" || true)
+              sub=$(sed -E 's#^(git@github\.com:|https://github\.com/)##; s#\.git$##; s#/*$##' <<<"$url")
+              if [ -z "$sub" ]; then ok=false; echo "no submodule mapping for $path"; break; fi
+              def=$(gh api "repos/$sub" --jq .default_branch)
+              status=$(gh api "repos/$sub/compare/$def...$sha" --jq .status 2>/dev/null || echo unknown)
+              echo "gitlink $path -> $sub@$sha vs $def: $status"
+              case "$status" in identical|behind) ;; *) ok=false; break ;; esac
+            done < <(jq -r '.[] | [.filename, ((.patch // "") | capture("\\+Subproject commit (?<s>[0-9a-f]{40})").s)] | @tsv' <<<"$files")
+            if $ok; then
+              out lane fast
+              out reason "submodule pointer bump: every new gitlink SHA verified on its submodule's default branch"
+              exit 0
+            fi
+          fi
+
+          # ---- Fast lane B: Renovate non-major dependency update ----------
+          author=$(jq -r .author.login <<<"$meta")
+          if [[ "$author" =~ ^(app/)?renovate(\[bot\])?$ ]]; then
+            commit_ok=$(gh api "repos/$REPO/pulls/$PR_NUMBER/commits" --paginate --jq '.[] | (.author.login // "MISSING")' \
+              | jq -Rs 'split("\n") | map(select(length > 0)) | all(test("^renovate(\\[bot\\])?$"))')
+            manifest_only=$(jq '[.[].filename] | all(test("(^|/)(package\\.json|package-lock\\.json|pnpm-lock\\.yaml|yarn\\.lock|Cargo\\.(toml|lock)|go\\.(mod|sum)|pyproject\\.toml|poetry\\.lock|uv\\.lock)$"))' <<<"$files")
+            nonmajor=$(jq '.labels | map(.name) | any(test("^update/(patch|minor|pin|digest|pinDigest|lockFileMaintenance)$"))' <<<"$meta")
+            if [ "$commit_ok" = true ] && [ "$manifest_only" = true ] && [ "$nonmajor" = true ]; then
+              out lane fast
+              out reason "Renovate non-major update: bot-authored commits only, manifest/lockfile-only diff, update-type label $(jq -r '.labels|map(.name)|map(select(startswith("update/")))|join(",")' <<<"$meta")"
+              exit 0
+            fi
+            echo "renovate PR but not fast-lane eligible: commits_ok=$commit_ok manifest_only=$manifest_only nonmajor=$nonmajor"
+          fi
+
+          # ---- Fast lane C: deletions-only ---------------------------------
+          if jq -e 'all(.[]; .status == "removed")' <<<"$files" >/dev/null; then
+            out lane fast
+            out reason "deletions-only PR ($nfiles file(s) removed, no content added); CI must still pass"
+            exit 0
+          fi
+
+          out lane ai
+          out reason "code change — AI review required (model: $model)"
+
+  ai-review:
+    needs: classify
+    if: needs.classify.outputs.lane == 'ai'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
     permissions:
       contents: read
       pull-requests: write
@@ -44,9 +170,35 @@ jobs:
       actions: read
       id-token: write
     steps:
+      # CI-first: never pay for a model review of a PR that fails its own CI.
+      - name: Wait for the rest of CI to be green
+        env:
+          GH_TOKEN: ${{ secrets.ORG_ADMIN_TOKEN }}
+        run: |
+          set -euo pipefail
+          for i in $(seq 1 60); do
+            rollup=$(gh pr view "$PR_NUMBER" --repo "$TARGET_REPO" \
+              --json statusCheckRollup \
+              --jq '[.statusCheckRollup[]? | select(.name != "classify" and .name != "ai-review" and .name != "ai-merge")]')
+            failed=$(jq '[.[] | select((.conclusion // "") | IN("FAILURE","CANCELLED","TIMED_OUT","ACTION_REQUIRED"))] | length' <<<"$rollup")
+            pending=$(jq '[.[] | select(.status != "COMPLETED")] | length' <<<"$rollup")
+            if [ "$failed" -gt 0 ]; then
+              echo "CI is red for PR #$PR_NUMBER — skipping the AI review (no spend on red PRs)."
+              exit 1
+            fi
+            [ "$pending" -eq 0 ] && exit 0
+            echo "waiting on $pending check(s) before reviewing…"
+            sleep 30
+          done
+          echo "Timed out waiting for CI; not reviewing."
+          exit 1
+
       - name: Checkout PR head
-        uses: actions/checkout@v7
+        uses: actions/checkout@v5
         with:
+          repository: ${{ env.TARGET_REPO }}
+          ref: ${{ needs.classify.outputs.head_sha }}
+          token: ${{ secrets.ORG_ADMIN_TOKEN }}
           fetch-depth: 0
 
       - name: Claude review (merge gate)
@@ -54,13 +206,13 @@ jobs:
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          github_token: ${{ secrets.GITHUB_TOKEN }}
+          github_token: ${{ secrets.ORG_ADMIN_TOKEN }}
           # Renovate opens PRs as a bot actor; without this the action
-          # refuses to run and the gate can never pass a dependency PR.
+          # refuses to run (majors and non-standard bot PRs reach this lane).
           allowed_bots: 'renovate,renovate[bot],mend[bot]'
           prompt: |
-            You are the autonomous merge gate for ${{ inputs.repository || github.repository }}.
-            Review PR #${{ env.PR_NUMBER }} in ${{ inputs.repository || github.repository }}
+            You are the autonomous merge gate for ${{ env.TARGET_REPO }}.
+            Review PR #${{ env.PR_NUMBER }} in ${{ env.TARGET_REPO }}
             (use `gh pr view`/`gh pr diff` with `--repo` for metadata and the
             diff; read surrounding files for context).
 
@@ -75,45 +227,57 @@ jobs:
 
             Then submit exactly one PR review:
             - No blocking findings:
-              `gh pr review ${{ env.PR_NUMBER }} --repo ${{ inputs.repository || github.repository }} --approve --body "<short summary of what was checked>"`
+              `gh pr review ${{ env.PR_NUMBER }} --repo ${{ env.TARGET_REPO }} --approve --body "<short summary of what was checked>"`
             - Blocking findings:
-              `gh pr review ${{ env.PR_NUMBER }} --repo ${{ inputs.repository || github.repository }} --request-changes --body "<each finding: file:line, why it's wrong, concrete failure scenario>"`
+              `gh pr review ${{ env.PR_NUMBER }} --repo ${{ env.TARGET_REPO }} --request-changes --body "<each finding: file:line, why it's wrong, concrete failure scenario>"`
               and then exit with a non-zero status (`exit 1`) so the merge
               job never runs.
 
             Be skeptical but calibrated: block on real defects, not
-            hypotheticals. A pointer-bump or docs-only PR with sane content
-            should simply be approved.
+            hypotheticals. A docs-only PR with sane content should simply
+            be approved.
           claude_args: |
+            --model ${{ needs.classify.outputs.model }}
+            --max-turns 12
             --allowedTools "Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr checks:*),Bash(gh pr review:*),Read,Grep,Glob"
 
   ai-merge:
-    needs: ai-review
+    needs: [classify, ai-review]
+    # Fast lane skips ai-review entirely; AI lane requires its success.
+    if: >
+      !cancelled() && needs.classify.result == 'success' &&
+      (needs.classify.outputs.lane == 'fast' ||
+       (needs.classify.outputs.lane == 'ai' && needs.ai-review.result == 'success'))
     runs-on: ubuntu-latest
     timeout-minutes: 45
     permissions:
       contents: read
+    env:
+      LANE: ${{ needs.classify.outputs.lane }}
+      LANE_REASON: ${{ needs.classify.outputs.reason }}
     steps:
       - name: Wait for the rest of CI, then squash-merge
         env:
           GH_TOKEN: ${{ secrets.ORG_ADMIN_TOKEN }}
-          REPO: ${{ inputs.repository || github.repository }}
         run: |
           set -euo pipefail
+          REPO="$TARGET_REPO"
           # Re-check the opt-outs at merge time: a `hold` label added after
-          # the review started must still stop the merge.
-          meta=$(gh pr view "$PR_NUMBER" --repo "$REPO" --json labels,title,isDraft)
+          # classification must still stop the merge.
+          meta=$(gh pr view "$PR_NUMBER" --repo "$REPO" --json labels,title,isDraft,state)
           if jq -e '(.labels | map(.name) | index("hold")) or (.title | contains("DO NOT MERGE")) or .isDraft' <<<"$meta" >/dev/null; then
             echo "PR #$PR_NUMBER is held (label/title/draft); not merging."
             exit 0
           fi
-          # Poll every 30s for up to 40 min. This workflow's own jobs
-          # (ai-review already succeeded; ai-merge is this job) are excluded
-          # from the wait set to avoid self-deadlock.
+          if [ "$(jq -r .state <<<"$meta")" != "OPEN" ]; then
+            echo "PR #$PR_NUMBER is no longer open; nothing to do."
+            exit 0
+          fi
+          # Poll every 30s for up to 40 min, excluding this workflow's own jobs.
           for i in $(seq 1 80); do
             rollup=$(gh pr view "$PR_NUMBER" --repo "$REPO" \
               --json statusCheckRollup \
-              --jq '[.statusCheckRollup[]? | select(.name != "ai-review" and .name != "ai-merge")]')
+              --jq '[.statusCheckRollup[]? | select(.name != "classify" and .name != "ai-review" and .name != "ai-merge")]')
             failed=$(jq '[.[] | select((.conclusion // "") | IN("FAILURE","CANCELLED","TIMED_OUT","ACTION_REQUIRED"))] | length' <<<"$rollup")
             pending=$(jq '[.[] | select(.status != "COMPLETED")] | length' <<<"$rollup")
             if [ "$failed" -gt 0 ]; then
@@ -122,7 +286,11 @@ jobs:
               exit 1
             fi
             if [ "$pending" -eq 0 ]; then
-              echo "All checks green; merging PR #$PR_NUMBER."
+              if [ "$LANE" = "fast" ]; then
+                # Audit trail: the fast lane's written record replaces the AI review.
+                gh pr comment "$PR_NUMBER" --repo "$REPO" --body "✅ **Merge gate: fast lane** (no AI review needed) — ${LANE_REASON}. All CI checks green; squash-merging." || true
+              fi
+              echo "All checks green; merging PR #$PR_NUMBER (lane: $LANE)."
               gh pr merge "$PR_NUMBER" --repo "$REPO" --squash --admin --delete-branch
               exit 0
             fi
