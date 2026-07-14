@@ -23,8 +23,11 @@ reason; AI-lane merges leave a review.
 
 ### Triggers and human controls
 
-- Reviews run **once per ready PR** (`opened` / `reopened` / `ready_for_review`),
-  not on every push. Re-run by adding the `re-review` label (auto-consumed) or
+- Reviews run on every ready-PR revision (`opened` / `reopened` /
+  `ready_for_review` / `synchronize`), so a Renovate rebase re-fires the gate and
+  the required check stays fresh on the new head. Cost stays bounded: fast-lane
+  synchronizes invoke no model, and the AI lane only runs after CI is green.
+  Force a re-run with the `re-review` label (auto-consumed) or
   `gh workflow run ai-review-merge.yml --repo Verjson/.github -f pr_number=<N> -f repository=<owner/repo>`.
 - Opt a PR out entirely with the `hold` label, a `DO NOT MERGE` title marker,
   or draft status — re-checked at merge time, so a late `hold` still stops the
