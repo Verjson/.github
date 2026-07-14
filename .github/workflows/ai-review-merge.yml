@@ -14,9 +14,11 @@ name: AI review + auto-merge
 #   2. Model tiering: routine code PRs are reviewed by Haiku; PRs touching
 #      sensitive paths (authz/ABAC, payments/ledger, webhooks, secrets,
 #      workflows) get the stronger default model. Turns are capped.
-#   3. Reviews run once per ready PR (opened/reopened/ready_for_review), not
-#      per push. Re-run by adding the `re-review` label (auto-removed) or via
-#      workflow_dispatch.
+#   3. Reviews run on every ready-PR revision (incl. synchronize) so a
+#      Renovate rebase re-fires the gate and the required check stays fresh on
+#      the new head; cost stays bounded because fast-lane synchronizes invoke
+#      no model and the AI lane only runs after CI is green. Re-run manually by
+#      adding the `re-review` label (auto-removed) or via workflow_dispatch.
 #
 # Either lane merges only on green CI, squash + branch delete, using the
 # org-admin ruleset bypass (same mechanism as the catalog auto-bump). Humans
@@ -25,7 +27,7 @@ name: AI review + auto-merge
 
 on:
   pull_request:
-    types: [opened, reopened, ready_for_review, labeled]
+    types: [opened, reopened, ready_for_review, synchronize, labeled]
   workflow_dispatch:
     inputs:
       pr_number:
