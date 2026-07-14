@@ -1,5 +1,33 @@
 # AI review cost optimization
 
+## Handoff — 2026-07-14
+
+Current state:
+
+- The cost-optimization work is merged to remote `main` through
+  `Verjson/.github#17` (`b3b0935`), including the self-authored-review fallback,
+  $0.50 Sonnet cap, and root-`NEXT.md` docs lane.
+- `Verjson/verjson-observability#24` was re-run through this gate after the
+  repair, took the docs fast lane, and merged successfully.
+- `actionlint`, Prettier, and Git whitespace checks passed for the gate changes.
+
+Next actions:
+
+1. Exercise the self-authored fallback on a non-docs, non-sensitive test PR and
+   confirm the approved-verdict comment, successful `ai-review`, and admin merge.
+2. Begin the CI telemetry implementation tracked in
+   `verjson-observability/NEXT.md`: conventions, bounded metrics, one-shot OTLP
+   export, and CI dashboard.
+3. After production telemetry exists, use the planned 2–4 week sample to tune
+   Sonnet routing and review budgets.
+
+Do not touch:
+
+- `.tokensave/` is untracked user data.
+- The closed local branches `agent/fix-self-authored-ai-review` and
+  `agent/add-observability-ci-telemetry-next` are historical; start new work
+  from current `origin/main`.
+
 This checklist tracks the July 2026 review of the organization-wide AI merge
 gate. Baseline from 13 paid runs: **$2.327 total / $0.179 average**; Haiku
 averaged $0.113 and Sonnet averaged $0.236.
