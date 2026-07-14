@@ -10,7 +10,7 @@ averaged $0.113 and Sonnet averaged $0.236.
 - [x] Convert the separately required advisory workflow into a zero-cost
       compatibility shim, eliminating duplicate LLM utilization.
 - [x] Reduce the maximum agent loop from 60 turns to 24.
-- [x] Add hard per-run budgets: $0.15 for Haiku and $0.35 for Sonnet.
+- [x] Add hard per-run budgets: $0.15 for Haiku and $0.50 for Sonnet.
 - [x] Prepare PR metadata and diff once rather than paying the model to fetch
       them repeatedly.
 - [x] Use structured model output and deterministic shell review submission,
@@ -19,6 +19,7 @@ averaged $0.113 and Sonnet averaged $0.236.
 - [x] Add a 30-second synchronization debounce and verify the head SHA before
       invoking the model.
 - [x] Add a deterministic documentation/community-health fast lane.
+- [x] Include root `NEXT.md` planning documents in the deterministic docs lane.
 - [x] Enforce the documented manifest/lockfile allowlist for non-major
       Renovate fast-lane changes.
 - [x] Give major dependency updates targeted review instructions in their one

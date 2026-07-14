@@ -109,7 +109,10 @@ jobs:
           # Model tier for the AI lane: sensitive paths get the strong model.
           if jq -e '[.[].filename] | any(test("(^|/)\\.github/|abac|(^|/|[._-])auth|polic|payment|ledger|webhook|secret|middleware|rbac|rls"; "i"))' <<<"$files" >/dev/null; then
             model=claude-sonnet-5
-            budget_usd=0.35
+            # Workflow/security reviews need enough room to read the diff and
+            # return the required structured verdict; $0.35 exhausted at 8
+            # turns in production. The 24-turn cap still bounds exploration.
+            budget_usd=0.50
           else
             model=claude-haiku-4-5
             budget_usd=0.15
@@ -163,7 +166,7 @@ jobs:
 
           # Documentation and community-health changes have no executable
           # behavior. CI remains mandatory, but a model review adds little.
-          if jq -e '[.[].filename] | all(test("(^|/)(docs/.*|README(\\.[^/]*)?|CHANGELOG(\\.[^/]*)?|CONTRIBUTING(\\.[^/]*)?|CODE_OF_CONDUCT(\\.[^/]*)?|SECURITY(\\.[^/]*)?|SUPPORT(\\.[^/]*)?|LICENSE(\\.[^/]*)?|\\.github/(ISSUE_TEMPLATE/.*|PULL_REQUEST_TEMPLATE\\.md|FUNDING\\.yml))$"; "i"))' <<<"$files" >/dev/null; then
+          if jq -e '[.[].filename] | all(test("(^|/)(NEXT\\.md|docs/.*|README(\\.[^/]*)?|CHANGELOG(\\.[^/]*)?|CONTRIBUTING(\\.[^/]*)?|CODE_OF_CONDUCT(\\.[^/]*)?|SECURITY(\\.[^/]*)?|SUPPORT(\\.[^/]*)?|LICENSE(\\.[^/]*)?|\\.github/(ISSUE_TEMPLATE/.*|PULL_REQUEST_TEMPLATE\\.md|FUNDING\\.yml))$"; "i"))' <<<"$files" >/dev/null; then
             out lane fast
             out reason "documentation/community-health-only change ($nfiles file(s)); CI must still pass"
             exit 0
