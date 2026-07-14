@@ -29,11 +29,10 @@ averaged $0.113 and Sonnet averaged $0.236.
 
 ## Follow-up after publishing the merged commit
 
-- [ ] Remove `.github/workflows/renovate-ai-review.yml` from organization
-      ruleset `main-protection` (ID `18098028`). Do this only after the consolidated
-      gate is present on the remote default branch, so existing PRs retain a valid
-      required check.
-- [ ] Delete the compatibility workflow after the ruleset change has propagated.
+- [x] Remove `.github/workflows/renovate-ai-review.yml` from organization
+      ruleset `main-protection` (ID `18098028`) after the consolidated gate
+      reached the remote default branch.
+- [x] Delete the compatibility workflow after the ruleset change propagated.
 - [ ] Collect two to four weeks of cost, turn, model, diff-size, verdict, and
       rerun data. The action already logs cost and turn totals; export them into a
       durable dashboard before changing routing based on anecdotal samples.
