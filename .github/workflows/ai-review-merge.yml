@@ -179,9 +179,12 @@ jobs:
           for i in $(seq 1 60); do
             rollup=$(gh pr view "$PR_NUMBER" --repo "$TARGET_REPO" \
               --json statusCheckRollup \
-              --jq '[.statusCheckRollup[]? | select(.name != "classify" and .name != "ai-review" and .name != "ai-merge")]')
-            failed=$(jq '[.[] | select((.conclusion // "") | IN("FAILURE","CANCELLED","TIMED_OUT","ACTION_REQUIRED"))] | length' <<<"$rollup")
-            pending=$(jq '[.[] | select(.status != "COMPLETED")] | length' <<<"$rollup")
+              --jq '[.statusCheckRollup[]? | select((.name // .context) as $n | $n != "classify" and $n != "ai-review" and $n != "ai-merge")]')
+            # Rollup mixes CheckRuns (name/status/conclusion) with commit
+            # StatusContexts like renovate/stability-days (context/state) —
+            # treating a context's null .status as pending hangs the gate.
+            failed=$(jq '[.[] | select(((.conclusion // "") | IN("FAILURE","CANCELLED","TIMED_OUT","ACTION_REQUIRED")) or ((.state // "") | IN("FAILURE","ERROR")))] | length' <<<"$rollup")
+            pending=$(jq '[.[] | select(if .state then (.state | IN("PENDING","EXPECTED")) else .status != "COMPLETED" end)] | length' <<<"$rollup")
             if [ "$failed" -gt 0 ]; then
               echo "CI is red for PR #$PR_NUMBER — skipping the AI review (no spend on red PRs)."
               exit 1
@@ -277,9 +280,12 @@ jobs:
           for i in $(seq 1 80); do
             rollup=$(gh pr view "$PR_NUMBER" --repo "$REPO" \
               --json statusCheckRollup \
-              --jq '[.statusCheckRollup[]? | select(.name != "classify" and .name != "ai-review" and .name != "ai-merge")]')
-            failed=$(jq '[.[] | select((.conclusion // "") | IN("FAILURE","CANCELLED","TIMED_OUT","ACTION_REQUIRED"))] | length' <<<"$rollup")
-            pending=$(jq '[.[] | select(.status != "COMPLETED")] | length' <<<"$rollup")
+              --jq '[.statusCheckRollup[]? | select((.name // .context) as $n | $n != "classify" and $n != "ai-review" and $n != "ai-merge")]')
+            # Rollup mixes CheckRuns (name/status/conclusion) with commit
+            # StatusContexts like renovate/stability-days (context/state) —
+            # treating a context's null .status as pending hangs the gate.
+            failed=$(jq '[.[] | select(((.conclusion // "") | IN("FAILURE","CANCELLED","TIMED_OUT","ACTION_REQUIRED")) or ((.state // "") | IN("FAILURE","ERROR")))] | length' <<<"$rollup")
+            pending=$(jq '[.[] | select(if .state then (.state | IN("PENDING","EXPECTED")) else .status != "COMPLETED" end)] | length' <<<"$rollup")
             if [ "$failed" -gt 0 ]; then
               echo "CI failed for PR #$PR_NUMBER; not merging."
               jq -r '.[] | select((.conclusion // "") | IN("FAILURE","CANCELLED","TIMED_OUT","ACTION_REQUIRED")) | .name' <<<"$rollup"
