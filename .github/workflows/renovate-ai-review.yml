@@ -20,7 +20,7 @@ permissions:
 
 jobs:
   review:
-    runs-on: [self-hosted, gce]
+    runs-on: [self-hosted, gate]
     timeout-minutes: 10
     # env (not secrets) is allowed in `if`; lets us no-op safely when the key is absent.
     env:
