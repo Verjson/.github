@@ -307,19 +307,23 @@ jobs:
             # reviewing their own PR, but the non-zero result must still block
             # the admin merge and leave an auditable record.
             gh pr review "$PR_NUMBER" --repo "$TARGET_REPO" --request-changes --body "$body" \
-              || gh pr comment "$PR_NUMBER" --repo "$TARGET_REPO" --body "🚫 **Merge gate: blocking verdict**\n\n$body"
+              || gh pr comment "$PR_NUMBER" --repo "$TARGET_REPO" --body "🚫 **Merge gate: blocking verdict**
+
+            $body"
             exit 1
           fi
-          actor=$(gh api user --jq .login)
-          author=$(jq -r .author.login .ai-review/pr.json)
-          if [ "$actor" = "$author" ]; then
+          if ! approval_error=$(gh pr review "$PR_NUMBER" --repo "$TARGET_REPO" --approve --body "$body" 2>&1); then
+            if [[ "$approval_error" != *"Can not approve your own pull request"* ]]; then
+              echo "$approval_error" >&2
+              exit 1
+            fi
             # The required check and ai-merge job remain the enforcement
             # mechanism. A comment is the only GitHub-permitted audit record
-            # when the configured org-admin token is also the PR author.
-            gh pr comment "$PR_NUMBER" --repo "$TARGET_REPO" --body "✅ **Merge gate: approved verdict**\n\n$body"
-            exit 0
+            # when GitHub rejects the configured token's self-approval.
+            gh pr comment "$PR_NUMBER" --repo "$TARGET_REPO" --body "✅ **Merge gate: approved verdict**
+
+            $body"
           fi
-          gh pr review "$PR_NUMBER" --repo "$TARGET_REPO" --approve --body "$body"
 
   ai-merge:
     needs: [classify, ai-review]
