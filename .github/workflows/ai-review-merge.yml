@@ -180,7 +180,7 @@ jobs:
           for i in $(seq 1 60); do
             rollup=$(gh pr view "$PR_NUMBER" --repo "$TARGET_REPO" \
               --json statusCheckRollup \
-              --jq '[.statusCheckRollup[]? | select((.name // .context) as $n | $n != "classify" and $n != "ai-review" and $n != "ai-merge")]')
+              --jq '[.statusCheckRollup[]? | select((.name // .context) as $n | $n != "classify" and $n != "ai-review" and $n != "ai-merge" and $n != "review")]')
             # Rollup mixes CheckRuns (name/status/conclusion) with commit
             # StatusContexts like renovate/stability-days (context/state) —
             # treating a context's null .status as pending hangs the gate.
@@ -281,7 +281,7 @@ jobs:
           for i in $(seq 1 80); do
             rollup=$(gh pr view "$PR_NUMBER" --repo "$REPO" \
               --json statusCheckRollup \
-              --jq '[.statusCheckRollup[]? | select((.name // .context) as $n | $n != "classify" and $n != "ai-review" and $n != "ai-merge")]')
+              --jq '[.statusCheckRollup[]? | select((.name // .context) as $n | $n != "classify" and $n != "ai-review" and $n != "ai-merge" and $n != "review")]')
             # Rollup mixes CheckRuns (name/status/conclusion) with commit
             # StatusContexts like renovate/stability-days (context/state) —
             # treating a context's null .status as pending hangs the gate.
