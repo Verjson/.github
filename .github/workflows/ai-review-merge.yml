@@ -184,16 +184,16 @@ jobs:
             # StatusContexts like renovate/stability-days (context/state) —
             # treating a context's null .status as pending hangs the gate.
             failed=$(jq '[.[] | select(((.conclusion // "") | IN("FAILURE","CANCELLED","TIMED_OUT","ACTION_REQUIRED")) or ((.state // "") | IN("FAILURE","ERROR")))] | length' <<<"$rollup")
-            pending=$(jq '[.[] | select(if .state then (.state | IN("PENDING","EXPECTED")) else .status != "COMPLETED" end)] | length' <<<"$rollup")
+            pending=$(jq -r '[.[] | select(if .state then (.state | IN("PENDING","EXPECTED")) else .status != "COMPLETED" end) | "\(.name // .context)=\(.state // .status)"] | join(", ")' <<<"$rollup")
             if [ "$failed" -gt 0 ]; then
               echo "CI is red for PR #$PR_NUMBER — skipping the AI review (no spend on red PRs)."
               exit 1
             fi
-            [ "$pending" -eq 0 ] && exit 0
-            echo "waiting on $pending check(s) before reviewing…"
+            [ -z "$pending" ] && exit 0
+            echo "waiting before reviewing on: $pending"
             sleep 30
           done
-          echo "Timed out waiting for CI; not reviewing."
+          echo "Timed out waiting for CI; not reviewing. Still pending: $pending"
           exit 1
 
       - name: Checkout PR head
@@ -285,13 +285,13 @@ jobs:
             # StatusContexts like renovate/stability-days (context/state) —
             # treating a context's null .status as pending hangs the gate.
             failed=$(jq '[.[] | select(((.conclusion // "") | IN("FAILURE","CANCELLED","TIMED_OUT","ACTION_REQUIRED")) or ((.state // "") | IN("FAILURE","ERROR")))] | length' <<<"$rollup")
-            pending=$(jq '[.[] | select(if .state then (.state | IN("PENDING","EXPECTED")) else .status != "COMPLETED" end)] | length' <<<"$rollup")
+            pending=$(jq -r '[.[] | select(if .state then (.state | IN("PENDING","EXPECTED")) else .status != "COMPLETED" end) | "\(.name // .context)=\(.state // .status)"] | join(", ")' <<<"$rollup")
             if [ "$failed" -gt 0 ]; then
               echo "CI failed for PR #$PR_NUMBER; not merging."
-              jq -r '.[] | select((.conclusion // "") | IN("FAILURE","CANCELLED","TIMED_OUT","ACTION_REQUIRED")) | .name' <<<"$rollup"
+              jq -r '.[] | select(((.conclusion // "") | IN("FAILURE","CANCELLED","TIMED_OUT","ACTION_REQUIRED")) or ((.state // "") | IN("FAILURE","ERROR"))) | (.name // .context)' <<<"$rollup"
               exit 1
             fi
-            if [ "$pending" -eq 0 ]; then
+            if [ -z "$pending" ]; then
               if [ "$LANE" = "fast" ]; then
                 # Audit trail: the fast lane's written record replaces the AI review.
                 gh pr comment "$PR_NUMBER" --repo "$REPO" --body "✅ **Merge gate: fast lane** (no AI review needed) — ${LANE_REASON}. All CI checks green; squash-merging." || true
@@ -300,8 +300,8 @@ jobs:
               gh pr merge "$PR_NUMBER" --repo "$REPO" --squash --admin --delete-branch
               exit 0
             fi
-            echo "waiting on $pending check(s)…"
+            echo "waiting before merging on: $pending"
             sleep 30
           done
-          echo "Timed out waiting for CI on PR #$PR_NUMBER."
+          echo "Timed out waiting for CI on PR #$PR_NUMBER. Still pending: $pending"
           exit 1
