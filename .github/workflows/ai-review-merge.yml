@@ -58,7 +58,7 @@ jobs:
         !contains(github.event.pull_request.labels.*.name, 'hold') &&
         !contains(github.event.pull_request.title, 'DO NOT MERGE')
       )
-    runs-on: [self-hosted, gce]
+    runs-on: ${{ github.repository == 'Verjson/.github' && fromJSON('["self-hosted","meta"]') || fromJSON('["self-hosted","gce"]') }}
     timeout-minutes: 10
     permissions:
       contents: read
@@ -160,7 +160,7 @@ jobs:
   ai-review:
     needs: classify
     if: needs.classify.outputs.lane == 'ai'
-    runs-on: [self-hosted, gate]
+    runs-on: ${{ github.repository == 'Verjson/.github' && fromJSON('["self-hosted","meta"]') || fromJSON('["self-hosted","gate"]') }}
     timeout-minutes: 45
     permissions:
       contents: read
@@ -250,7 +250,7 @@ jobs:
       !cancelled() && needs.classify.result == 'success' &&
       (needs.classify.outputs.lane == 'fast' ||
        (needs.classify.outputs.lane == 'ai' && needs.ai-review.result == 'success'))
-    runs-on: [self-hosted, gate]
+    runs-on: ${{ github.repository == 'Verjson/.github' && fromJSON('["self-hosted","meta"]') || fromJSON('["self-hosted","gate"]') }}
     timeout-minutes: 45
     permissions:
       contents: read
