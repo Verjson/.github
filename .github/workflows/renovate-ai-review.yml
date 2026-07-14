@@ -29,12 +29,17 @@ jobs:
       - name: Skip non-Renovate PRs
         if: ${{ github.actor != 'renovate[bot]' && github.actor != 'mend[bot]' }}
         run: echo "not a Renovate PR — advisory review skipped" && exit 0
+      # Org policy: non-major updates merge on green CI without any review, so
+      # the advisory only spends tokens (and a runner slot) on major updates.
+      - name: Skip non-major updates
+        if: ${{ (github.actor == 'renovate[bot]' || github.actor == 'mend[bot]') && !contains(github.event.pull_request.labels.*.name, 'update/major') }}
+        run: echo "non-major Renovate update — merges on green CI, no review" && exit 0
       - name: Checkout
-        if: ${{ github.actor == 'renovate[bot]' || github.actor == 'mend[bot]' }}
+        if: ${{ (github.actor == 'renovate[bot]' || github.actor == 'mend[bot]') && contains(github.event.pull_request.labels.*.name, 'update/major') }}
         uses: actions/checkout@v7
         with: { fetch-depth: 2 }
       - name: Advisory dependency review (never blocks)
-        if: ${{ (github.actor == 'renovate[bot]' || github.actor == 'mend[bot]') && env.ANTHROPIC_API_KEY != '' }}
+        if: ${{ (github.actor == 'renovate[bot]' || github.actor == 'mend[bot]') && contains(github.event.pull_request.labels.*.name, 'update/major') && env.ANTHROPIC_API_KEY != '' }}
         continue-on-error: true
         uses: anthropics/claude-code-action@v1
         with:
