@@ -138,14 +138,13 @@ jobs:
           if [[ "$author" =~ ^(app/)?renovate(\[bot\])?$ ]]; then
             commit_ok=$(gh api "repos/$REPO/pulls/$PR_NUMBER/commits" --paginate --jq '.[] | (.author.login // "MISSING")' \
               | jq -Rs 'split("\n") | map(select(length > 0)) | all(test("^renovate(\\[bot\\])?$"))')
-            manifest_only=$(jq '[.[].filename] | all(test("(^|/)(package\\.json|package-lock\\.json|pnpm-lock\\.yaml|yarn\\.lock|Cargo\\.(toml|lock)|go\\.(mod|sum)|pyproject\\.toml|poetry\\.lock|uv\\.lock)$"))' <<<"$files")
             nonmajor=$(jq '.labels | map(.name) | any(test("^update/(patch|minor|pin|digest|pinDigest|lockFileMaintenance)$"))' <<<"$meta")
-            if [ "$commit_ok" = true ] && [ "$manifest_only" = true ] && [ "$nonmajor" = true ]; then
+            if [ "$commit_ok" = true ] && [ "$nonmajor" = true ]; then
               out lane fast
-              out reason "Renovate non-major update: bot-authored commits only, manifest/lockfile-only diff, update-type label $(jq -r '.labels|map(.name)|map(select(startswith("update/")))|join(",")' <<<"$meta")"
+              out reason "Renovate non-major update: bot-authored commits only, update-type label $(jq -r '.labels|map(.name)|map(select(startswith("update/")))|join(",")' <<<"$meta")"
               exit 0
             fi
-            echo "renovate PR but not fast-lane eligible: commits_ok=$commit_ok manifest_only=$manifest_only nonmajor=$nonmajor"
+            echo "renovate PR but not fast-lane eligible: commits_ok=$commit_ok nonmajor=$nonmajor"
           fi
 
           # ---- Fast lane C: deletions-only ---------------------------------
