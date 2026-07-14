@@ -24,6 +24,9 @@ averaged $0.113 and Sonnet averaged $0.236.
 - [x] Give major dependency updates targeted review instructions in their one
       mandatory model review.
 - [x] Embed head SHA and model metadata in each submitted review for auditing.
+- [x] Handle self-authored PRs: when the configured org-admin token cannot
+      approve its own PR, leave an audited approved-verdict comment and let the
+      required gate check plus admin merge job enforce the decision.
 - [x] Validate both workflows with `actionlint`, Prettier, and Git whitespace
       checks.
 
