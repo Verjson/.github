@@ -1,13 +1,9 @@
-name: Renovate AI review (advisory)
+name: Renovate AI review (compatibility)
 
-# Advisory Claude review of Renovate dependency PRs. It only comments — it never
-# blocks the merge (the merge is gated by CI + Renovate's auto-merge policy in
-# Verjson/renovate-config). Wired org-wide via an organization ruleset that
-# requires this workflow; it no-ops for non-Renovate PRs and when no key is set,
-# so it is always safe (never fails a required check).
-#
-# REQUIRED (org-level): ANTHROPIC_API_KEY organization Actions secret
-#   gh secret set ANTHROPIC_API_KEY --org Verjson --visibility all
+# Zero-cost compatibility shim. Major dependency guidance now lives in the
+# mandatory ai-review-merge workflow, avoiding two LLM calls for one PR. Keep
+# this workflow until it is removed from the organization ruleset; then delete
+# the file in a later cleanup.
 
 on:
   workflow_call: {}
@@ -16,36 +12,11 @@ on:
 
 permissions:
   contents: read
-  pull-requests: write
 
 jobs:
   review:
     runs-on: ${{ github.repository == 'Verjson/.github' && fromJSON('["self-hosted","meta"]') || fromJSON('["self-hosted","gate"]') }}
-    timeout-minutes: 10
-    # env (not secrets) is allowed in `if`; lets us no-op safely when the key is absent.
-    env:
-      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+    timeout-minutes: 2
     steps:
-      - name: Skip non-Renovate PRs
-        if: ${{ github.actor != 'renovate[bot]' && github.actor != 'mend[bot]' }}
-        run: echo "not a Renovate PR — advisory review skipped" && exit 0
-      # Org policy: non-major updates merge on green CI without any review, so
-      # the advisory only spends tokens (and a runner slot) on major updates.
-      - name: Skip non-major updates
-        if: ${{ (github.actor == 'renovate[bot]' || github.actor == 'mend[bot]') && !contains(github.event.pull_request.labels.*.name, 'update/major') }}
-        run: echo "non-major Renovate update — merges on green CI, no review" && exit 0
-      - name: Checkout
-        if: ${{ (github.actor == 'renovate[bot]' || github.actor == 'mend[bot]') && contains(github.event.pull_request.labels.*.name, 'update/major') }}
-        uses: actions/checkout@v7
-        with: { fetch-depth: 2 }
-      - name: Advisory dependency review (never blocks)
-        if: ${{ (github.actor == 'renovate[bot]' || github.actor == 'mend[bot]') && contains(github.event.pull_request.labels.*.name, 'update/major') && env.ANTHROPIC_API_KEY != '' }}
-        continue-on-error: true
-        uses: anthropics/claude-code-action@v1
-        with:
-          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
-          prompt: |
-            This is a Renovate dependency-update PR. Review the bumped dependency's changelog and the
-            diff: call out breaking changes, deprecations, or security-relevant fixes, then give a
-            one-line merge recommendation. Keep it brief — this comment is advisory and does not block
-            the merge. Post your review as a PR comment.
+      - name: Confirm consolidated review path
+        run: echo "Dependency review is consolidated into ai-review-merge; no second model call."

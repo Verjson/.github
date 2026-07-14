@@ -69,6 +69,8 @@ jobs:
       lane: ${{ steps.classify.outputs.lane }}
       reason: ${{ steps.classify.outputs.reason }}
       model: ${{ steps.classify.outputs.model }}
+      budget_usd: ${{ steps.classify.outputs.budget_usd }}
+      dependency_major: ${{ steps.classify.outputs.dependency_major }}
       head_sha: ${{ steps.classify.outputs.head_sha }}
     steps:
       - name: Classify PR into a lane
@@ -91,6 +93,7 @@ jobs:
             exit 0
           fi
           out head_sha "$(jq -r .headRefOid <<<"$meta")"
+          out dependency_major false
 
           # Consume the re-review label so it can be re-applied later.
           gh pr edit "$PR_NUMBER" --repo "$REPO" --remove-label re-review 2>/dev/null || true
@@ -99,16 +102,20 @@ jobs:
           nfiles=$(jq length <<<"$files")
           if [ "$nfiles" -eq 0 ]; then
             out lane ai; out reason "empty diff — needs a look"; out model claude-haiku-4-5
+            out budget_usd 0.15
             exit 0
           fi
 
           # Model tier for the AI lane: sensitive paths get the strong model.
           if jq -e '[.[].filename] | any(test("(^|/)\\.github/|abac|(^|/|[._-])auth|polic|payment|ledger|webhook|secret|middleware|rbac|rls"; "i"))' <<<"$files" >/dev/null; then
             model=claude-sonnet-5
+            budget_usd=0.35
           else
             model=claude-haiku-4-5
+            budget_usd=0.15
           fi
           out model "$model"
+          out budget_usd "$budget_usd"
 
           # ---- Fast lane A: submodule pointer bump -------------------------
           # Every changed file is a gitlink hunk, and each new SHA is already
@@ -141,12 +148,25 @@ jobs:
             commit_ok=$(gh api "repos/$REPO/pulls/$PR_NUMBER/commits" --paginate --jq '.[] | (.author.login // "MISSING")' \
               | jq -Rs 'split("\n") | map(select(length > 0)) | all(test("^renovate(\\[bot\\])?$"))')
             nonmajor=$(jq '.labels | map(.name) | any(test("^update/(patch|minor|pin|digest|pinDigest|lockFileMaintenance)$"))' <<<"$meta")
-            if [ "$commit_ok" = true ] && [ "$nonmajor" = true ]; then
+            # Keep the implementation aligned with the documented guarantee:
+            # bot identity and labels alone are not enough for the fast lane.
+            files_ok=$(jq '[.[].filename] | all(test("(^|/)(package(-lock)?\\.json|pnpm-lock\\.yaml|yarn\\.lock|bun\\.lockb?|Cargo\\.(toml|lock)|go\\.(mod|sum)|requirements[^/]*\\.txt|poetry\\.lock|pyproject\\.toml|Gemfile(\\.lock)?|composer\\.(json|lock)|gradle\\.lockfile|pom\\.xml|Chart\\.yaml|Chart\\.lock|values[^/]*\\.ya?ml|Dockerfile|\\.github/dependabot\\.yml)$"))' <<<"$files")
+            if [ "$commit_ok" = true ] && [ "$nonmajor" = true ] && [ "$files_ok" = true ]; then
               out lane fast
               out reason "Renovate non-major update: bot-authored commits only, update-type label $(jq -r '.labels|map(.name)|map(select(startswith("update/")))|join(",")' <<<"$meta")"
               exit 0
             fi
-            echo "renovate PR but not fast-lane eligible: commits_ok=$commit_ok nonmajor=$nonmajor"
+            major=$(jq '.labels | map(.name) | index("update/major") != null' <<<"$meta")
+            [ "$major" = true ] && out dependency_major true
+            echo "renovate PR but not fast-lane eligible: commits_ok=$commit_ok nonmajor=$nonmajor files_ok=$files_ok"
+          fi
+
+          # Documentation and community-health changes have no executable
+          # behavior. CI remains mandatory, but a model review adds little.
+          if jq -e '[.[].filename] | all(test("(^|/)(docs/.*|README(\\.[^/]*)?|CHANGELOG(\\.[^/]*)?|CONTRIBUTING(\\.[^/]*)?|CODE_OF_CONDUCT(\\.[^/]*)?|SECURITY(\\.[^/]*)?|SUPPORT(\\.[^/]*)?|LICENSE(\\.[^/]*)?|\\.github/(ISSUE_TEMPLATE/.*|PULL_REQUEST_TEMPLATE\\.md|FUNDING\\.yml))$"; "i"))' <<<"$files" >/dev/null; then
+            out lane fast
+            out reason "documentation/community-health-only change ($nfiles file(s)); CI must still pass"
+            exit 0
           fi
 
           # ---- Fast lane C: deletions-only ---------------------------------
@@ -203,9 +223,30 @@ jobs:
           repository: ${{ env.TARGET_REPO }}
           ref: ${{ needs.classify.outputs.head_sha }}
           token: ${{ secrets.ORG_ADMIN_TOKEN }}
-          fetch-depth: 0
+          fetch-depth: 2
+
+      - name: Prepare bounded review context
+        env:
+          GH_TOKEN: ${{ secrets.ORG_ADMIN_TOKEN }}
+        run: |
+          set -euo pipefail
+          mkdir -p .ai-review
+          gh pr view "$PR_NUMBER" --repo "$TARGET_REPO" \
+            --json title,body,author,labels,baseRefName,headRefName,additions,deletions,changedFiles \
+            > .ai-review/pr.json
+          gh pr diff "$PR_NUMBER" --repo "$TARGET_REPO" > .ai-review/pr.diff
+
+          # Debounce synchronize bursts. Concurrency cancels an older run, and
+          # this SHA check ensures a superseded revision never reaches Claude.
+          sleep 30
+          current=$(gh pr view "$PR_NUMBER" --repo "$TARGET_REPO" --json headRefOid --jq .headRefOid)
+          [ "$current" = "${{ needs.classify.outputs.head_sha }}" ] || {
+            echo "PR head moved to $current during debounce; a newer run will review it."
+            exit 1
+          }
 
       - name: Claude review (merge gate)
+        id: claude
         uses: anthropics/claude-code-action@v1
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
@@ -213,12 +254,13 @@ jobs:
           github_token: ${{ secrets.ORG_ADMIN_TOKEN }}
           # Renovate opens PRs as a bot actor; without this the action
           # refuses to run (majors and non-standard bot PRs reach this lane).
-          allowed_bots: 'renovate,renovate[bot],mend[bot]'
+          allowed_bots: "renovate,renovate[bot],mend[bot]"
           prompt: |
             You are the autonomous merge gate for ${{ env.TARGET_REPO }}.
-            Review PR #${{ env.PR_NUMBER }} in ${{ env.TARGET_REPO }}
-            (use `gh pr view`/`gh pr diff` with `--repo` for metadata and the
-            diff; read surrounding files for context).
+            Review PR #${{ env.PR_NUMBER }} in ${{ env.TARGET_REPO }}.
+            Metadata is in .ai-review/pr.json and the complete diff is in
+            .ai-review/pr.diff. Read those files and only the surrounding
+            repository files needed to validate changed behavior.
 
             Review for, in priority order:
             1. Correctness bugs and behavioral regressions.
@@ -229,21 +271,39 @@ jobs:
             4. Missing or weakened tests for changed behavior.
             Style-only nits are not blocking; mention at most briefly.
 
-            Then submit exactly one PR review:
-            - No blocking findings:
-              `gh pr review ${{ env.PR_NUMBER }} --repo ${{ env.TARGET_REPO }} --approve --body "<short summary of what was checked>"`
-            - Blocking findings:
-              `gh pr review ${{ env.PR_NUMBER }} --repo ${{ env.TARGET_REPO }} --request-changes --body "<each finding: file:line, why it's wrong, concrete failure scenario>"`
-              and then exit with a non-zero status (`exit 1`) so the merge
-              job never runs.
+            ${{ needs.classify.outputs.dependency_major == 'true' && 'This is a major dependency update. Also inspect the changed dependency version and repository evidence for breaking changes, deprecations, migrations, and security-relevant fixes.' || '' }}
+
+            Return the required JSON verdict. Do not call GitHub or submit a
+            review yourself. Set blocking=true only for real defects. Each
+            blocking finding must include file:line, why it is wrong, and a
+            concrete failure scenario. Keep summary concise.
 
             Be skeptical but calibrated: block on real defects, not
             hypotheticals. A docs-only PR with sane content should simply
             be approved.
           claude_args: |
             --model ${{ needs.classify.outputs.model }}
-            --max-turns 60
-            --allowedTools "Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr checks:*),Bash(gh pr review:*),Read,Grep,Glob"
+            --max-turns 24
+            --max-budget-usd ${{ needs.classify.outputs.budget_usd }}
+            --json-schema '{"type":"object","properties":{"blocking":{"type":"boolean"},"summary":{"type":"string"},"findings":{"type":"array","items":{"type":"string"}}},"required":["blocking","summary","findings"],"additionalProperties":false}'
+            --allowedTools "Read,Grep,Glob"
+
+      - name: Submit deterministic PR review
+        env:
+          GH_TOKEN: ${{ secrets.ORG_ADMIN_TOKEN }}
+          VERDICT: ${{ steps.claude.outputs.structured_output }}
+        run: |
+          set -euo pipefail
+          jq -e '.blocking | type == "boolean"' <<<"$VERDICT" >/dev/null
+          body=$(jq -r '.summary + (if (.findings | length) > 0 then "\n\n" + (.findings | map("- " + .) | join("\n")) else "" end)' <<<"$VERDICT")
+          body="$body
+
+          <!-- ai-review-head:${{ needs.classify.outputs.head_sha }} model:${{ needs.classify.outputs.model }} -->"
+          if [ "$(jq -r .blocking <<<"$VERDICT")" = true ]; then
+            gh pr review "$PR_NUMBER" --repo "$TARGET_REPO" --request-changes --body "$body"
+            exit 1
+          fi
+          gh pr review "$PR_NUMBER" --repo "$TARGET_REPO" --approve --body "$body"
 
   ai-merge:
     needs: [classify, ai-review]
