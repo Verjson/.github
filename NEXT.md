@@ -15,9 +15,11 @@ Next actions:
 
 1. Exercise the self-authored fallback on a non-docs, non-sensitive test PR and
    confirm the approved-verdict comment, successful `ai-review`, and admin merge.
-2. Begin the CI telemetry implementation tracked in
-   `verjson-observability/NEXT.md`: conventions, bounded metrics, one-shot OTLP
-   export, and CI dashboard.
+2. Finish the observability-side dependency tracked in
+   `verjson-observability/NEXT.md`: shared emitter/contract, bounded metrics,
+   one-shot OTLP export, and CI dashboard. This repo now emits bounded JSON
+   payloads plus a best-effort HTTP export hook, but still depends on
+   `verjson-observability` for the collector-facing implementation.
 3. After production telemetry exists, use the planned 2–4 week sample to tune
    Sonnet routing and review budgets.
 
