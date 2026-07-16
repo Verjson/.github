@@ -109,9 +109,10 @@ jobs:
           # Model tier for the AI lane: sensitive paths get the strong model.
           if jq -e '[.[].filename] | any(test("(^|/)\\.github/|abac|(^|/|[._-])auth|polic|payment|ledger|webhook|secret|middleware|rbac|rls"; "i"))' <<<"$files" >/dev/null; then
             model=claude-sonnet-5
-            # Workflow/security reviews need enough room to read the diff and
-            # return the required structured verdict; $0.35 exhausted at 8
-            # turns in production. The 24-turn cap still bounds exploration.
+            # Workflow/security reviews get the strong model and more budget. If
+            # even this exhausts, the review escalates (see the ai-review job)
+            # instead of failing, so the cap is a floor to escalate from, not a
+            # hard wall. The 15-turn cap bounds exploration.
             budget_usd=0.50
           else
             model=claude-haiku-4-5
@@ -316,9 +317,10 @@ jobs:
       # Budget/turn exhaustion returns an empty structured_output (subtype
       # error_max_budget_usd / error_max_turns) — a signal the PR is bigger than
       # the cheap tier, NOT a review failure. Escalate to the strongest model
-      # with a larger budget, resuming the same session so we do not repay for
-      # the exploration already done. Runs only when the first pass produced no
-      # verdict, so the common (cheap) case never reaches here.
+      # with a larger budget. A fresh pass (not --resume): the first session's
+      # state may not survive into a second action invocation, and a resume that
+      # errored would strand the very PR we are trying to unblock. Runs only when
+      # the first pass produced no verdict, so the common case never reaches here.
       - name: Escalate review when the first pass ran out of budget or turns
         id: claude_retry
         if: steps.claude.outputs.structured_output == ''
@@ -334,7 +336,6 @@ jobs:
             --model claude-sonnet-5
             --max-turns 30
             --max-budget-usd 1.00
-            ${{ steps.claude.outputs.session_id && format('--resume {0}', steps.claude.outputs.session_id) || '' }}
             --json-schema '{"type":"object","properties":{"blocking":{"type":"boolean"},"summary":{"type":"string"},"findings":{"type":"array","items":{"type":"string"}}},"required":["blocking","summary","findings"],"additionalProperties":false}'
             --allowedTools "Read,Grep,Glob"
 

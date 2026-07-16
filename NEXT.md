@@ -6,9 +6,9 @@ A healthy PR (`github-runner-docker-compose#3`) was hard-failed when the Haiku
 review hit `--max-budget-usd 0.15` at $0.16 on turn 11 and returned no verdict.
 Fixed structurally (ADR 0002) rather than by raising the cap:
 
-- Review step is now `continue-on-error`; an empty verdict escalates to
-  `claude-sonnet-5` at $1.00, `--resume`-ing the same session (runs only when
-  the first pass produced nothing, so the cheap path is unchanged).
+- Review step is now `continue-on-error`; an empty verdict escalates to a fresh
+  `claude-sonnet-5` pass at $1.00 (runs only when the first pass produced
+  nothing, so the cheap path is unchanged).
 - If both passes fail: label `ai-review-inconclusive`, comment, hold the PR
   (fail-closed preserved — never auto-merges unreviewed).
 - Cut agentic wandering: `--max-turns 24 → 15` + an economy prompt instruction.
