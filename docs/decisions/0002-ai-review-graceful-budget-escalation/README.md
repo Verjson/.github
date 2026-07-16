@@ -28,11 +28,13 @@ a real verdict):
 1. **Graceful handling.** The review step is `continue-on-error: true`; the job
    no longer dies on an empty verdict.
 2. **Escalate, don't inflate.** An empty `structured_output` triggers a second
-   pass on `claude-sonnet-5` at `$1.00`, `--resume`-ing the first session so the
-   exploration already paid for is not repeated. It runs **only** when the first
-   pass produced no verdict, so the common case stays on the cheap tier. If both
+   pass on `claude-sonnet-5` at `$1.00`. It runs **only** when the first pass
+   produced no verdict, so the common case stays on the cheap tier. If both
    passes fail, the gate labels the PR `ai-review-inconclusive`, comments an
    explanation, and exits non-zero (no merge, but actionable — not cryptic).
+   The escalation is a **fresh** pass, not `--resume`: cross-invocation session
+   state is not guaranteed and a resume that errored would strand the exact PR
+   we are unblocking. Re-exploration cost is trivial for a rare event.
 3. **Reduce exhaustion frequency.** `--max-turns 24 → 15` and a prompt economy
    instruction (read the diff, then only the files a finding depends on; return
    the verdict as soon as it is supportable) cut the agentic wandering that
@@ -61,7 +63,6 @@ a real verdict):
 +            --model claude-sonnet-5
 +            --max-turns 30
 +            --max-budget-usd 1.00
-+            ${{ steps.claude.outputs.session_id && format('--resume {0}', steps.claude.outputs.session_id) || '' }}
 
        - name: Submit deterministic PR review
          env:
