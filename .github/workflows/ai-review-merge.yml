@@ -384,6 +384,88 @@ jobs:
             $body"
           fi
 
+      # --- CI telemetry (best-effort). Every step is `continue-on-error` so it
+      # can NEVER fail or block the gate, and it stays dormant until
+      # OTEL_EXPORTER_OTLP_ENDPOINT is set — the composite action no-ops without
+      # an endpoint. Emits one CiTelemetryPayload for the review. See ADR 0004
+      # and docs/ci-telemetry.md.
+      - name: Fetch telemetry helper scripts
+        if: always()
+        continue-on-error: true
+        uses: actions/checkout@v5
+        with:
+          repository: Verjson/.github
+          ref: main
+          path: .gate-tools
+          sparse-checkout: scripts/ci-telemetry
+          sparse-checkout-cone-mode: false
+
+      - name: Build ai-review telemetry payload
+        if: always()
+        continue-on-error: true
+        env:
+          VERDICT_JSON: ${{ steps.claude_retry.outputs.structured_output != '' && steps.claude_retry.outputs.structured_output || steps.claude.outputs.structured_output }}
+          EXECUTION_FILE: ${{ steps.claude_retry.outputs.execution_file != '' && steps.claude_retry.outputs.execution_file || steps.claude.outputs.execution_file }}
+          ACTION_CONCLUSION: ${{ steps.claude_retry.conclusion != 'skipped' && steps.claude_retry.conclusion || steps.claude.conclusion }}
+          LANE: ${{ needs.classify.outputs.lane }}
+          LANE_REASON: ${{ needs.classify.outputs.reason }}
+          MODEL: ${{ needs.classify.outputs.model }}
+          BUDGET_USD: ${{ needs.classify.outputs.budget_usd }}
+          DEPENDENCY_MAJOR: ${{ needs.classify.outputs.dependency_major }}
+        run: |
+          set -uo pipefail    # deliberately no -e: telemetry must never abort
+          mkdir -p .telemetry
+          exec_summary=$(.gate-tools/scripts/ci-telemetry/parse-claude-execution.sh "${EXECUTION_FILE:-}" 2>/dev/null || echo '{}')
+          verdict_blocking=null
+          findings_count=null
+          if [ -n "${VERDICT_JSON:-}" ] && jq -e . >/dev/null 2>&1 <<<"$VERDICT_JSON"; then
+            verdict_blocking=$(jq -c '.blocking // null' <<<"$VERDICT_JSON")
+            findings_count=$(jq -c '(.findings // []) | length' <<<"$VERDICT_JSON")
+          fi
+          jq -n \
+            --arg repository "$TARGET_REPO" \
+            --arg workflow_name "$GITHUB_WORKFLOW" \
+            --arg event_name "$GITHUB_EVENT_NAME" \
+            --arg lane "${LANE:-}" \
+            --arg lane_reason "${LANE_REASON:-}" \
+            --arg model_selected "${MODEL:-}" \
+            --arg action_conclusion "${ACTION_CONCLUSION:-}" \
+            --argjson budget_usd "${BUDGET_USD:-0}" \
+            --argjson dependency_major "${DEPENDENCY_MAJOR:-false}" \
+            --argjson verdict_blocking "$verdict_blocking" \
+            --argjson findings_count "$findings_count" \
+            --argjson exec "$exec_summary" \
+            '{
+              schema_version: 1,
+              verjson_project: "verjson",
+              repository: $repository,
+              workflow_name: $workflow_name,
+              job_name: "ai-review",
+              event_name: $event_name,
+              lane: $lane,
+              review_type: "ai",
+              lane_reason: (if $lane_reason == "" then null else $lane_reason end),
+              model_selected: (if $model_selected == "" then null else $model_selected end),
+              budget_usd: $budget_usd,
+              dependency_major: $dependency_major,
+              verdict_blocking: $verdict_blocking,
+              findings_count: $findings_count,
+              action_conclusion: (if $action_conclusion == "" then null else $action_conclusion end),
+              execution_file_present: ($exec.execution_file_present // false),
+              execution_file_parse_ok: ($exec.execution_file_parse_ok // false),
+              total_cost_usd: ($exec.total_cost_usd // null),
+              total_turns: ($exec.num_turns // null)
+            }' > .telemetry/ai-review.json
+
+      - name: Emit ai-review telemetry
+        if: always()
+        continue-on-error: true
+        uses: Verjson/verjson-observability@v0.7.2
+        with:
+          payload-file: .telemetry/ai-review.json
+          exporter-url: ${{ secrets.OTEL_EXPORTER_OTLP_ENDPOINT }}
+          headers: ${{ secrets.OTEL_EXPORTER_OTLP_HEADERS }}
+
   ai-merge:
     needs: [classify, ai-review]
     # Fast lane skips ai-review entirely; AI lane requires its success.

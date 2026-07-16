@@ -1,5 +1,16 @@
 # AI review cost optimization
 
+## Merge-gate CI telemetry via observability action — 2026-07-15
+
+Rewrote the #20 telemetry (ADR 0004): replaced the custom `curl` →
+`CI_TELEMETRY_ENDPOINT` export with `uses: Verjson/verjson-observability@v0.7.2`
+(kept `parse-claude-execution.sh`, dropped `export-payload.sh`), reshaped to the
+real `CiTelemetryPayload` schema, and made every telemetry step
+`continue-on-error` so it can never break the gate. Enabled the observability
+repo's Actions `access_level: organization` so the action resolves.
+**Dormant** until `OTEL_EXPORTER_OTLP_ENDPOINT` (+ `..._HEADERS`) is provisioned
+— the action no-ops without an endpoint. `actionlint` clean.
+
 ## Reusable Node CI/release workflows — 2026-07-15
 
 Added `node-ci.yml` and `node-release.yml` reusable workflows to this repo,
@@ -78,9 +89,11 @@ Next actions:
 
 1. Exercise the self-authored fallback on a non-docs, non-sensitive test PR and
    confirm the approved-verdict comment, successful `ai-review`, and admin merge.
-2. Begin the CI telemetry implementation tracked in
-   `verjson-observability/NEXT.md`: conventions, bounded metrics, one-shot OTLP
-   export, and CI dashboard.
+2. Finish the observability-side dependency tracked in
+   `verjson-observability/NEXT.md`: shared emitter/contract, bounded metrics,
+   one-shot OTLP export, and CI dashboard. This repo now emits bounded JSON
+   payloads plus a best-effort HTTP export hook, but still depends on
+   `verjson-observability` for the collector-facing implementation.
 3. After production telemetry exists, use the planned 2–4 week sample to tune
    Sonnet routing and review budgets.
 
