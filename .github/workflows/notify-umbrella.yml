@@ -1,0 +1,56 @@
+name: notify-umbrella (reusable)
+
+# Reusable workflow. A git-submodule leaf repo tells its umbrella that `main`
+# advanced, so the umbrella's bump-submodule-pointers.yml re-points it via an
+# auto-merged pointer-bump PR. Centralised here so runner selection and the
+# dispatch contract live in one place instead of being copy-pasted per repo.
+#
+# Runner defaults to the org GCP self-hosted pool and is never GitHub-hosted;
+# callers may override `runner` (e.g. the manish pool) but cannot silently fall
+# back to `ubuntu-latest`.
+#
+# Caller (in each leaf repo's .github/workflows/notify-umbrella.yml):
+#
+#   name: notify-umbrella
+#   on:
+#     push:
+#       branches: [main]
+#   jobs:
+#     notify:
+#       uses: Verjson/.github/.github/workflows/notify-umbrella.yml@main
+#       with:
+#         umbrella: Verjson/catalog
+#       secrets: inherit
+#
+# ORG_ADMIN_TOKEN (org secret) has WRITE on the umbrella so it can POST the
+# repository dispatch; the default GITHUB_TOKEN cannot reach a sibling repo.
+
+on:
+  workflow_call:
+    inputs:
+      umbrella:
+        description: owner/repo of the umbrella to notify (e.g. Verjson/catalog)
+        required: true
+        type: string
+      runner:
+        description: JSON array of runner labels; defaults to the GCP self-hosted pool
+        required: false
+        type: string
+        default: '["self-hosted", "GCP"]'
+    secrets:
+      ORG_ADMIN_TOKEN:
+        description: Org-admin PAT with write on the umbrella, to POST the dispatch
+        required: true
+
+jobs:
+  dispatch:
+    runs-on: ${{ fromJSON(inputs.runner) }}
+    steps:
+      - name: Dispatch submodule-updated to the umbrella
+        env:
+          GH_TOKEN: ${{ secrets.ORG_ADMIN_TOKEN }}
+        run: |
+          gh api "repos/${{ inputs.umbrella }}/dispatches" \
+            -f event_type=submodule-updated \
+            -f "client_payload[repo]=${{ github.event.repository.name }}" \
+            -f "client_payload[sha]=${{ github.sha }}"
