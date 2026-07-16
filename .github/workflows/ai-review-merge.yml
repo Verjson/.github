@@ -109,9 +109,10 @@ jobs:
           # Model tier for the AI lane: sensitive paths get the strong model.
           if jq -e '[.[].filename] | any(test("(^|/)\\.github/|abac|(^|/|[._-])auth|polic|payment|ledger|webhook|secret|middleware|rbac|rls"; "i"))' <<<"$files" >/dev/null; then
             model=claude-sonnet-5
-            # Workflow/security reviews need enough room to read the diff and
-            # return the required structured verdict; $0.35 exhausted at 8
-            # turns in production. The 24-turn cap still bounds exploration.
+            # Workflow/security reviews get the strong model and more budget. If
+            # even this exhausts, the review escalates (see the ai-review job)
+            # instead of failing, so the cap is a floor to escalate from, not a
+            # hard wall. The 15-turn cap bounds exploration.
             budget_usd=0.50
           else
             model=claude-haiku-4-5
@@ -182,109 +183,6 @@ jobs:
           out lane ai
           out reason "code change — AI review required (model: $model)"
 
-      - name: Build classify telemetry payload
-        if: always()
-        env:
-          GH_TOKEN: ${{ secrets.ORG_ADMIN_TOKEN }}
-          CLASSIFY_OUTCOME: ${{ steps.classify.outcome }}
-          LANE: ${{ steps.classify.outputs.lane }}
-          LANE_REASON: ${{ steps.classify.outputs.reason }}
-          MODEL_SELECTED: ${{ steps.classify.outputs.model }}
-          BUDGET_USD: ${{ steps.classify.outputs.budget_usd }}
-          DEPENDENCY_MAJOR: ${{ steps.classify.outputs.dependency_major }}
-          HEAD_SHA: ${{ steps.classify.outputs.head_sha }}
-        run: |
-          set -euo pipefail
-          mkdir -p .telemetry
-          pr=$(gh pr view "$PR_NUMBER" --repo "$TARGET_REPO" \
-            --json additions,deletions,changedFiles,baseRefName,headRefName)
-          jq -n \
-            --arg schema_version "2026-07-14.v1" \
-            --arg event_type "ai_review_gate.classify" \
-            --arg repository "$TARGET_REPO" \
-            --arg workflow_name "$GITHUB_WORKFLOW" \
-            --arg job_name "classify" \
-            --arg run_id "$GITHUB_RUN_ID" \
-            --argjson run_attempt "$GITHUB_RUN_ATTEMPT" \
-            --arg event_name "$GITHUB_EVENT_NAME" \
-            --arg pr_number "$PR_NUMBER" \
-            --arg head_sha "$HEAD_SHA" \
-            --arg lane "$LANE" \
-            --arg lane_reason "$LANE_REASON" \
-            --arg model_selected "$MODEL_SELECTED" \
-            --arg classify_outcome "$CLASSIFY_OUTCOME" \
-            --arg base_ref "$(jq -r '.baseRefName // ""' <<<"$pr")" \
-            --arg head_ref "$(jq -r '.headRefName // ""' <<<"$pr")" \
-            --argjson budget_usd "${BUDGET_USD:-0}" \
-            --argjson dependency_major "${DEPENDENCY_MAJOR:-false}" \
-            --argjson changed_files "$(jq '.changedFiles // 0' <<<"$pr")" \
-            --argjson additions "$(jq '.additions // 0' <<<"$pr")" \
-            --argjson deletions "$(jq '.deletions // 0' <<<"$pr")" \
-            '{
-              schema_version,
-              event_type,
-              repository,
-              workflow_name,
-              job_name,
-              run_id,
-              run_attempt,
-              event_name,
-              pr_number,
-              head_sha,
-              lane,
-              lane_reason,
-              model_selected,
-              budget_usd,
-              dependency_major,
-              changed_files,
-              additions,
-              deletions,
-              base_ref,
-              head_ref,
-              classify_outcome
-            }' > .telemetry/classify.json
-
-      - name: Export classify telemetry
-        if: always()
-        env:
-          CI_TELEMETRY_ENDPOINT: ${{ secrets.CI_TELEMETRY_ENDPOINT }}
-          CI_TELEMETRY_AUTH_HEADER: ${{ secrets.CI_TELEMETRY_AUTH_HEADER }}
-        run: |
-          set -euo pipefail
-          payload=.telemetry/classify.json
-          if ! jq -e . "$payload" >/dev/null 2>&1; then
-            echo "ci-telemetry: classify payload invalid, skipping export" >&2
-            exit 0
-          fi
-          if [ -z "${CI_TELEMETRY_ENDPOINT:-}" ]; then
-            echo "ci-telemetry: CI_TELEMETRY_ENDPOINT not configured, skipping export" >&2
-            exit 0
-          fi
-          curl_args=(
-            --silent
-            --show-error
-            --fail-with-body
-            --max-time "${CI_TELEMETRY_TIMEOUT_SECONDS:-10}"
-            -H "Content-Type: application/json"
-            --data-binary "@${payload}"
-          )
-          if [ -n "${CI_TELEMETRY_AUTH_HEADER:-}" ]; then
-            curl_args+=(-H "${CI_TELEMETRY_AUTH_HEADER}")
-          fi
-          if ! curl "${curl_args[@]}" "$CI_TELEMETRY_ENDPOINT"; then
-            echo "ci-telemetry: classify export failed, leaving workflow green" >&2
-          fi
-
-      - name: Upload classify telemetry artifact
-        if: always()
-        continue-on-error: true
-        uses: actions/upload-artifact@v4
-        with:
-          name: ai-review-telemetry-classify-${{ github.run_id }}-${{ github.run_attempt }}-${{ env.PR_NUMBER }}
-          path: .telemetry/classify.json
-          if-no-files-found: ignore
-          retention-days: 14
-
   ai-review:
     needs: classify
     if: needs.classify.outputs.lane == 'ai'
@@ -297,20 +195,12 @@ jobs:
       actions: read
       id-token: write
     steps:
-      - name: Mark ai-review job start
-        id: review_job_start
-        run: echo "started_at_ms=$(date +%s%3N)" >> "$GITHUB_OUTPUT"
-
       # CI-first: never pay for a model review of a PR that fails its own CI.
       - name: Wait for the rest of CI to be green
-        id: wait_for_ci
         env:
           GH_TOKEN: ${{ secrets.ORG_ADMIN_TOKEN }}
         run: |
           set -euo pipefail
-          out() { echo "$1=$2" >> "$GITHUB_OUTPUT"; }
-          started_at_ms=$(date +%s%3N)
-          pending=""
           for i in $(seq 1 60); do
             rollup=$(gh pr view "$PR_NUMBER" --repo "$TARGET_REPO" \
               --json statusCheckRollup \
@@ -321,24 +211,13 @@ jobs:
             failed=$(jq '[.[] | select(((.conclusion // "") | IN("FAILURE","CANCELLED","TIMED_OUT","ACTION_REQUIRED")) or ((.state // "") | IN("FAILURE","ERROR")))] | length' <<<"$rollup")
             pending=$(jq -r '[.[] | select(if .state then (.state | IN("PENDING","EXPECTED")) else .status != "COMPLETED" end) | "\(.name // .context)=\(.state // .status)"] | join(", ")' <<<"$rollup")
             if [ "$failed" -gt 0 ]; then
-              out ci_wait_ms "$(( $(date +%s%3N) - started_at_ms ))"
-              out ci_wait_result red
-              out failure_stage ci_red_before_review
               echo "CI is red for PR #$PR_NUMBER — skipping the AI review (no spend on red PRs)."
               exit 1
             fi
-            if [ -z "$pending" ]; then
-              out ci_wait_ms "$(( $(date +%s%3N) - started_at_ms ))"
-              out ci_wait_result green
-              out review_started_at_ms "$(date +%s%3N)"
-              exit 0
-            fi
+            [ -z "$pending" ] && exit 0
             echo "waiting before reviewing on: $pending"
             sleep 30
           done
-          out ci_wait_ms "$(( $(date +%s%3N) - started_at_ms ))"
-          out ci_wait_result timeout
-          out failure_stage ci_timeout_before_review
           echo "Timed out waiting for CI; not reviewing. Still pending: $pending"
           exit 1
 
@@ -351,9 +230,10 @@ jobs:
           fetch-depth: 2
 
       - name: Prepare bounded review context
-        id: prepare_review_context
+        id: prep
         env:
           GH_TOKEN: ${{ secrets.ORG_ADMIN_TOKEN }}
+          DEPENDENCY_MAJOR: ${{ needs.classify.outputs.dependency_major }}
         run: |
           set -euo pipefail
           mkdir -p .ai-review
@@ -371,8 +251,53 @@ jobs:
             exit 1
           }
 
+          # Compose the review prompt once. Both the first pass and, if it runs
+          # out of budget/turns, the escalation pass reuse it verbatim so the
+          # two reviews never drift. The economy instruction (read the diff,
+          # then only the files a finding depends on) keeps the agentic loop
+          # from wandering the tree and burning tokens on context resends.
+          major_note=""
+          if [ "$DEPENDENCY_MAJOR" = "true" ]; then
+            major_note="This is a major dependency update. Also inspect the changed dependency version and repository evidence for breaking changes, deprecations, migrations, and security-relevant fixes."
+          fi
+          {
+            echo "review_prompt<<PROMPT_EOF"
+            cat <<EOF
+          You are the autonomous merge gate for ${TARGET_REPO}.
+          Review PR #${PR_NUMBER} in ${TARGET_REPO}.
+          Metadata is in .ai-review/pr.json and the complete diff is in
+          .ai-review/pr.diff. Read those two files first, then open only the
+          specific repository files a potential finding actually depends on —
+          be economical and do not broadly explore the tree.
+
+          Review for, in priority order:
+          1. Correctness bugs and behavioral regressions.
+          2. Security: authn/authz changes, tenant isolation, secret
+             handling, input validation at boundaries, injection.
+          3. Money-handling invariants (integer minor units, double-entry
+             balance, idempotency, provider-confirmed amounts only).
+          4. Missing or weakened tests for changed behavior.
+          Style-only nits are not blocking; mention at most briefly.
+
+          ${major_note}
+
+          Return the required JSON verdict as soon as you can support it. Do
+          not call GitHub or submit a review yourself. Set blocking=true only
+          for real defects. Each blocking finding must include file:line, why
+          it is wrong, and a concrete failure scenario. Keep summary concise.
+
+          Be skeptical but calibrated: block on real defects, not
+          hypotheticals. A docs-only PR with sane content should simply be
+          approved.
+          EOF
+            echo "PROMPT_EOF"
+          } >> "$GITHUB_OUTPUT"
+
       - name: Claude review (merge gate)
         id: claude
+        # Do not fail the job on budget/turn exhaustion — the next step
+        # inspects the (empty) verdict and escalates instead of dying here.
+        continue-on-error: true
         uses: anthropics/claude-code-action@v1
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
@@ -381,54 +306,62 @@ jobs:
           # Renovate opens PRs as a bot actor; without this the action
           # refuses to run (majors and non-standard bot PRs reach this lane).
           allowed_bots: "renovate,renovate[bot],mend[bot]"
-          prompt: |
-            You are the autonomous merge gate for ${{ env.TARGET_REPO }}.
-            Review PR #${{ env.PR_NUMBER }} in ${{ env.TARGET_REPO }}.
-            Metadata is in .ai-review/pr.json and the complete diff is in
-            .ai-review/pr.diff. Read those files and only the surrounding
-            repository files needed to validate changed behavior.
-
-            Review for, in priority order:
-            1. Correctness bugs and behavioral regressions.
-            2. Security: authn/authz changes, tenant isolation, secret
-               handling, input validation at boundaries, injection.
-            3. Money-handling invariants (integer minor units, double-entry
-               balance, idempotency, provider-confirmed amounts only).
-            4. Missing or weakened tests for changed behavior.
-            Style-only nits are not blocking; mention at most briefly.
-
-            ${{ needs.classify.outputs.dependency_major == 'true' && 'This is a major dependency update. Also inspect the changed dependency version and repository evidence for breaking changes, deprecations, migrations, and security-relevant fixes.' || '' }}
-
-            Return the required JSON verdict. Do not call GitHub or submit a
-            review yourself. Set blocking=true only for real defects. Each
-            blocking finding must include file:line, why it is wrong, and a
-            concrete failure scenario. Keep summary concise.
-
-            Be skeptical but calibrated: block on real defects, not
-            hypotheticals. A docs-only PR with sane content should simply
-            be approved.
+          prompt: ${{ steps.prep.outputs.review_prompt }}
           claude_args: |
             --model ${{ needs.classify.outputs.model }}
-            --max-turns 24
+            --max-turns 15
             --max-budget-usd ${{ needs.classify.outputs.budget_usd }}
             --json-schema '{"type":"object","properties":{"blocking":{"type":"boolean"},"summary":{"type":"string"},"findings":{"type":"array","items":{"type":"string"}}},"required":["blocking","summary","findings"],"additionalProperties":false}'
             --allowedTools "Read,Grep,Glob"
 
+      # Budget/turn exhaustion returns an empty structured_output (subtype
+      # error_max_budget_usd / error_max_turns) — a signal the PR is bigger than
+      # the cheap tier, NOT a review failure. Escalate to the strongest model
+      # with a larger budget. A fresh pass (not --resume): the first session's
+      # state may not survive into a second action invocation, and a resume that
+      # errored would strand the very PR we are trying to unblock. Runs only when
+      # the first pass produced no verdict, so the common case never reaches here.
+      - name: Escalate review when the first pass ran out of budget or turns
+        id: claude_retry
+        if: steps.claude.outputs.structured_output == ''
+        continue-on-error: true
+        uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          github_token: ${{ secrets.ORG_ADMIN_TOKEN }}
+          allowed_bots: "renovate,renovate[bot],mend[bot]"
+          prompt: ${{ steps.prep.outputs.review_prompt }}
+          claude_args: |
+            --model claude-sonnet-5
+            --max-turns 30
+            --max-budget-usd 1.00
+            --json-schema '{"type":"object","properties":{"blocking":{"type":"boolean"},"summary":{"type":"string"},"findings":{"type":"array","items":{"type":"string"}}},"required":["blocking","summary","findings"],"additionalProperties":false}'
+            --allowedTools "Read,Grep,Glob"
+
       - name: Submit deterministic PR review
-        id: submit_review
         env:
           GH_TOKEN: ${{ secrets.ORG_ADMIN_TOKEN }}
-          VERDICT: ${{ steps.claude.outputs.structured_output }}
+          # Prefer the escalation verdict; fall back to the first pass.
+          VERDICT: ${{ steps.claude_retry.outputs.structured_output != '' && steps.claude_retry.outputs.structured_output || steps.claude.outputs.structured_output }}
         run: |
           set -euo pipefail
-          out() { echo "$1=$2" >> "$GITHUB_OUTPUT"; }
-          jq -e '.blocking | type == "boolean"' <<<"$VERDICT" >/dev/null
+          # Neither pass produced a verdict (budget/turn exhaustion or a hard
+          # error on both attempts). Fail closed — never merge unreviewed — but
+          # leave an explained, actionable record and flag for a human instead
+          # of dying on the action's cryptic "did not return structured_output".
+          if ! jq -e '.blocking | type == "boolean"' <<<"$VERDICT" >/dev/null 2>&1; then
+            gh pr edit "$PR_NUMBER" --repo "$TARGET_REPO" --add-label ai-review-inconclusive 2>/dev/null || true
+            gh pr comment "$PR_NUMBER" --repo "$TARGET_REPO" --body "⚠️ **Merge gate: review could not complete**
+
+          The automated review exhausted its budget/turns on both the first pass and the escalation pass, so no verdict was produced. This PR was **not** auto-merged. A maintainer should review and merge it manually."
+            exit 1
+          fi
           body=$(jq -r '.summary + (if (.findings | length) > 0 then "\n\n" + (.findings | map("- " + .) | join("\n")) else "" end)' <<<"$VERDICT")
           body="$body
 
           <!-- ai-review-head:${{ needs.classify.outputs.head_sha }} model:${{ needs.classify.outputs.model }} -->"
           if [ "$(jq -r .blocking <<<"$VERDICT")" = true ]; then
-            out approval_mode blocking_verdict
             # A token may be the PR author's identity. GitHub forbids a user
             # reviewing their own PR, but the non-zero result must still block
             # the admin merge and leave an auditable record.
@@ -443,272 +376,95 @@ jobs:
               echo "$approval_error" >&2
               exit 1
             fi
-            out approval_mode self_approval_fallback
             # The required check and ai-merge job remain the enforcement
             # mechanism. A comment is the only GitHub-permitted audit record
             # when GitHub rejects the configured token's self-approval.
             gh pr comment "$PR_NUMBER" --repo "$TARGET_REPO" --body "✅ **Merge gate: approved verdict**
 
             $body"
-          else
-            out approval_mode approved_review
           fi
 
-      - name: Summarize Claude execution metadata
+      # --- CI telemetry (best-effort). Every step is `continue-on-error` so it
+      # can NEVER fail or block the gate, and it stays dormant until
+      # OTEL_EXPORTER_OTLP_ENDPOINT is set — the composite action no-ops without
+      # an endpoint. Emits one CiTelemetryPayload for the review. See ADR 0004
+      # and docs/ci-telemetry.md.
+      - name: Fetch telemetry helper scripts
         if: always()
-        env:
-          EXECUTION_FILE: ${{ steps.claude.outputs.execution_file }}
-        run: |
-          set -euo pipefail
-          mkdir -p .ai-review
-          if [ -z "${EXECUTION_FILE:-}" ] || [ ! -f "$EXECUTION_FILE" ]; then
-            jq -n --arg execution_file "${EXECUTION_FILE:-}" '{
-              execution_file,
-              execution_file_present: false,
-              execution_file_parse_ok: false,
-              result_found: false,
-              duration_ms: null,
-              num_turns: null,
-              total_cost_usd: null,
-              is_error: null,
-              subtype: null
-            }' > .ai-review/claude-execution-summary.json
-            exit 0
-          fi
-          if ! jq -e . "$EXECUTION_FILE" >/dev/null 2>&1; then
-            jq -n --arg execution_file "$EXECUTION_FILE" '{
-              execution_file,
-              execution_file_present: true,
-              execution_file_parse_ok: false,
-              result_found: false,
-              duration_ms: null,
-              num_turns: null,
-              total_cost_usd: null,
-              is_error: null,
-              subtype: null
-            }' > .ai-review/claude-execution-summary.json
-            exit 0
-          fi
-          jq -c --arg execution_file "$EXECUTION_FILE" '
-            def candidate_messages:
-              if type == "array" then
-                [.[] | objects]
-              elif type == "object" then
-                [.]
-              else
-                []
-              end;
-            (candidate_messages | map(select((.type // "") == "result")) | last) as $result
-            | if $result == null then
-                {
-                  execution_file: $execution_file,
-                  execution_file_present: true,
-                  execution_file_parse_ok: true,
-                  result_found: false,
-                  duration_ms: null,
-                  num_turns: null,
-                  total_cost_usd: null,
-                  is_error: null,
-                  subtype: null
-                }
-              else
-                {
-                  execution_file: $execution_file,
-                  execution_file_present: true,
-                  execution_file_parse_ok: true,
-                  result_found: true,
-                  duration_ms: ($result.duration_ms // null),
-                  num_turns: ($result.num_turns // null),
-                  total_cost_usd: ($result.total_cost_usd // null),
-                  is_error: ($result.is_error // null),
-                  subtype: ($result.subtype // null)
-                }
-              end
-          ' "$EXECUTION_FILE" > .ai-review/claude-execution-summary.json
+        continue-on-error: true
+        uses: actions/checkout@v5
+        with:
+          repository: Verjson/.github
+          ref: main
+          path: .gate-tools
+          sparse-checkout: scripts/ci-telemetry
+          sparse-checkout-cone-mode: false
 
       - name: Build ai-review telemetry payload
         if: always()
+        continue-on-error: true
         env:
-          GH_TOKEN: ${{ secrets.ORG_ADMIN_TOKEN }}
-          REVIEW_STARTED_AT_MS: ${{ steps.wait_for_ci.outputs.review_started_at_ms }}
-          CI_WAIT_MS: ${{ steps.wait_for_ci.outputs.ci_wait_ms }}
-          CI_WAIT_RESULT: ${{ steps.wait_for_ci.outputs.ci_wait_result }}
-          WAIT_OUTCOME: ${{ steps.wait_for_ci.outcome }}
-          WAIT_FAILURE_STAGE: ${{ steps.wait_for_ci.outputs.failure_stage }}
-          PREPARE_OUTCOME: ${{ steps.prepare_review_context.outcome }}
-          CLAUDE_OUTCOME: ${{ steps.claude.outcome }}
-          SUBMIT_OUTCOME: ${{ steps.submit_review.outcome }}
-          APPROVAL_MODE: ${{ steps.submit_review.outputs.approval_mode }}
-          VERDICT_JSON: ${{ steps.claude.outputs.structured_output }}
-          EXECUTION_SUMMARY_PATH: .ai-review/claude-execution-summary.json
-          SESSION_ID: ${{ steps.claude.outputs.session_id }}
-          EXECUTION_FILE_PATH: ${{ steps.claude.outputs.execution_file }}
+          VERDICT_JSON: ${{ steps.claude_retry.outputs.structured_output != '' && steps.claude_retry.outputs.structured_output || steps.claude.outputs.structured_output }}
+          EXECUTION_FILE: ${{ steps.claude_retry.outputs.execution_file != '' && steps.claude_retry.outputs.execution_file || steps.claude.outputs.execution_file }}
+          ACTION_CONCLUSION: ${{ steps.claude_retry.conclusion != 'skipped' && steps.claude_retry.conclusion || steps.claude.conclusion }}
           LANE: ${{ needs.classify.outputs.lane }}
           LANE_REASON: ${{ needs.classify.outputs.reason }}
-          MODEL_SELECTED: ${{ needs.classify.outputs.model }}
+          MODEL: ${{ needs.classify.outputs.model }}
           BUDGET_USD: ${{ needs.classify.outputs.budget_usd }}
           DEPENDENCY_MAJOR: ${{ needs.classify.outputs.dependency_major }}
-          HEAD_SHA: ${{ needs.classify.outputs.head_sha }}
         run: |
-          set -euo pipefail
+          set -uo pipefail    # deliberately no -e: telemetry must never abort
           mkdir -p .telemetry
-          now_ms=$(date +%s%3N)
-          review_duration_ms=null
-          if [ -n "${REVIEW_STARTED_AT_MS:-}" ]; then
-            review_duration_ms=$(( now_ms - REVIEW_STARTED_AT_MS ))
-          fi
-
+          exec_summary=$(.gate-tools/scripts/ci-telemetry/parse-claude-execution.sh "${EXECUTION_FILE:-}" 2>/dev/null || echo '{}')
           verdict_blocking=null
           findings_count=null
           if [ -n "${VERDICT_JSON:-}" ] && jq -e . >/dev/null 2>&1 <<<"$VERDICT_JSON"; then
-            verdict_blocking=$(jq -c '.blocking' <<<"$VERDICT_JSON")
+            verdict_blocking=$(jq -c '.blocking // null' <<<"$VERDICT_JSON")
             findings_count=$(jq -c '(.findings // []) | length' <<<"$VERDICT_JSON")
           fi
-
-          failure_stage=""
-          if [ "${WAIT_OUTCOME:-}" != "success" ]; then
-            failure_stage="${WAIT_FAILURE_STAGE:-ci_wait}"
-          elif [ "${PREPARE_OUTCOME:-}" != "success" ]; then
-            failure_stage="prepare_review_context"
-          elif [ "${CLAUDE_OUTCOME:-}" != "success" ]; then
-            failure_stage="claude_action"
-          elif [ -n "${SUBMIT_OUTCOME:-}" ] && [ "${SUBMIT_OUTCOME}" != "success" ]; then
-            failure_stage="submit_review"
-          fi
-
-          pr_json='.ai-review/pr.json'
-          if [ ! -f "$pr_json" ]; then
-            gh pr view "$PR_NUMBER" --repo "$TARGET_REPO" \
-              --json additions,deletions,changedFiles,baseRefName,headRefName \
-              > "$pr_json"
-          fi
-
-          execution_summary="$EXECUTION_SUMMARY_PATH"
-          if [ ! -f "$execution_summary" ]; then
-            jq -n '{
-              execution_file_present: false,
-              execution_file_parse_ok: false,
-              result_found: false,
-              duration_ms: null,
-              num_turns: null,
-              total_cost_usd: null,
-              is_error: null,
-              subtype: null
-            }' > "$execution_summary"
-          fi
-
           jq -n \
-            --arg schema_version "2026-07-14.v1" \
-            --arg event_type "ai_review_gate.review" \
             --arg repository "$TARGET_REPO" \
             --arg workflow_name "$GITHUB_WORKFLOW" \
-            --arg job_name "ai-review" \
-            --arg run_id "$GITHUB_RUN_ID" \
-            --argjson run_attempt "$GITHUB_RUN_ATTEMPT" \
             --arg event_name "$GITHUB_EVENT_NAME" \
-            --arg pr_number "$PR_NUMBER" \
-            --arg head_sha "$HEAD_SHA" \
-            --arg lane "$LANE" \
-            --arg lane_reason "$LANE_REASON" \
-            --arg model_selected "$MODEL_SELECTED" \
-            --arg session_id "$SESSION_ID" \
-            --arg action_conclusion "$CLAUDE_OUTCOME" \
-            --arg approval_mode "$APPROVAL_MODE" \
-            --arg failure_stage "$failure_stage" \
-            --arg execution_file "$EXECUTION_FILE_PATH" \
-            --arg base_ref "$(jq -r '.baseRefName // ""' "$pr_json")" \
-            --arg head_ref "$(jq -r '.headRefName // ""' "$pr_json")" \
+            --arg lane "${LANE:-}" \
+            --arg lane_reason "${LANE_REASON:-}" \
+            --arg model_selected "${MODEL:-}" \
+            --arg action_conclusion "${ACTION_CONCLUSION:-}" \
             --argjson budget_usd "${BUDGET_USD:-0}" \
             --argjson dependency_major "${DEPENDENCY_MAJOR:-false}" \
-            --argjson changed_files "$(jq '.changedFiles // 0' "$pr_json")" \
-            --argjson additions "$(jq '.additions // 0' "$pr_json")" \
-            --argjson deletions "$(jq '.deletions // 0' "$pr_json")" \
-            --argjson ci_wait_ms "${CI_WAIT_MS:-null}" \
-            --argjson review_duration_ms "$review_duration_ms" \
             --argjson verdict_blocking "$verdict_blocking" \
             --argjson findings_count "$findings_count" \
-            --slurpfile execution "$execution_summary" \
+            --argjson exec "$exec_summary" \
             '{
-              schema_version,
-              event_type,
-              repository,
-              workflow_name,
-              job_name,
-              run_id,
-              run_attempt,
-              event_name,
-              pr_number,
-              head_sha,
-              lane,
-              lane_reason,
-              model_selected,
-              budget_usd,
-              dependency_major,
-              changed_files,
-              additions,
-              deletions,
-              base_ref,
-              head_ref,
-              ci_wait_ms,
-              ci_wait_result: $ENV.CI_WAIT_RESULT,
-              review_duration_ms,
-              verdict_blocking,
-              findings_count,
-              action_conclusion,
-              approval_mode,
-              failure_stage: (if failure_stage == "" then null else failure_stage end),
-              session_id: (if session_id == "" then null else session_id end),
-              execution_file: (if execution_file == "" then null else execution_file end),
-              execution_file_present: ($execution[0].execution_file_present // false),
-              execution_file_parse_ok: ($execution[0].execution_file_parse_ok // false),
-              execution_result_found: ($execution[0].result_found // false),
-              claude_duration_ms: ($execution[0].duration_ms // null),
-              claude_num_turns: ($execution[0].num_turns // null),
-              claude_total_cost_usd: ($execution[0].total_cost_usd // null),
-              claude_is_error: ($execution[0].is_error // null),
-              claude_subtype: ($execution[0].subtype // null)
+              schema_version: 1,
+              verjson_project: "verjson",
+              repository: $repository,
+              workflow_name: $workflow_name,
+              job_name: "ai-review",
+              event_name: $event_name,
+              lane: $lane,
+              review_type: "ai",
+              lane_reason: (if $lane_reason == "" then null else $lane_reason end),
+              model_selected: (if $model_selected == "" then null else $model_selected end),
+              budget_usd: $budget_usd,
+              dependency_major: $dependency_major,
+              verdict_blocking: $verdict_blocking,
+              findings_count: $findings_count,
+              action_conclusion: (if $action_conclusion == "" then null else $action_conclusion end),
+              execution_file_present: ($exec.execution_file_present // false),
+              execution_file_parse_ok: ($exec.execution_file_parse_ok // false),
+              total_cost_usd: ($exec.total_cost_usd // null),
+              total_turns: ($exec.num_turns // null)
             }' > .telemetry/ai-review.json
 
-      - name: Export ai-review telemetry
-        if: always()
-        env:
-          CI_TELEMETRY_ENDPOINT: ${{ secrets.CI_TELEMETRY_ENDPOINT }}
-          CI_TELEMETRY_AUTH_HEADER: ${{ secrets.CI_TELEMETRY_AUTH_HEADER }}
-        run: |
-          set -euo pipefail
-          payload=.telemetry/ai-review.json
-          if ! jq -e . "$payload" >/dev/null 2>&1; then
-            echo "ci-telemetry: ai-review payload invalid, skipping export" >&2
-            exit 0
-          fi
-          if [ -z "${CI_TELEMETRY_ENDPOINT:-}" ]; then
-            echo "ci-telemetry: CI_TELEMETRY_ENDPOINT not configured, skipping export" >&2
-            exit 0
-          fi
-          curl_args=(
-            --silent
-            --show-error
-            --fail-with-body
-            --max-time "${CI_TELEMETRY_TIMEOUT_SECONDS:-10}"
-            -H "Content-Type: application/json"
-            --data-binary "@${payload}"
-          )
-          if [ -n "${CI_TELEMETRY_AUTH_HEADER:-}" ]; then
-            curl_args+=(-H "${CI_TELEMETRY_AUTH_HEADER}")
-          fi
-          if ! curl "${curl_args[@]}" "$CI_TELEMETRY_ENDPOINT"; then
-            echo "ci-telemetry: ai-review export failed, leaving workflow green" >&2
-          fi
-
-      - name: Upload ai-review telemetry artifact
+      - name: Emit ai-review telemetry
         if: always()
         continue-on-error: true
-        uses: actions/upload-artifact@v4
+        uses: Verjson/verjson-observability@v0.7.2
         with:
-          name: ai-review-telemetry-ai-review-${{ github.run_id }}-${{ github.run_attempt }}-${{ env.PR_NUMBER }}
-          path: .telemetry/ai-review.json
-          if-no-files-found: ignore
-          retention-days: 14
+          payload-file: .telemetry/ai-review.json
+          exporter-url: ${{ secrets.OTEL_EXPORTER_OTLP_ENDPOINT }}
+          headers: ${{ secrets.OTEL_EXPORTER_OTLP_HEADERS }}
 
   ai-merge:
     needs: [classify, ai-review]
@@ -725,31 +481,20 @@ jobs:
       LANE: ${{ needs.classify.outputs.lane }}
       LANE_REASON: ${{ needs.classify.outputs.reason }}
     steps:
-      - name: Mark ai-merge job start
-        id: merge_job_start
-        run: echo "started_at_ms=$(date +%s%3N)" >> "$GITHUB_OUTPUT"
-
       - name: Wait for the rest of CI, then squash-merge
-        id: merge_gate
         env:
           GH_TOKEN: ${{ secrets.ORG_ADMIN_TOKEN }}
         run: |
           set -euo pipefail
-          out() { echo "$1=$2" >> "$GITHUB_OUTPUT"; }
-          started_at_ms=$(date +%s%3N)
           REPO="$TARGET_REPO"
           # Re-check the opt-outs at merge time: a `hold` label added after
           # classification must still stop the merge.
           meta=$(gh pr view "$PR_NUMBER" --repo "$REPO" --json labels,title,isDraft,state)
           if jq -e '(.labels | map(.name) | index("hold")) or (.title | contains("DO NOT MERGE")) or .isDraft' <<<"$meta" >/dev/null; then
-            out merge_wait_ms "$(( $(date +%s%3N) - started_at_ms ))"
-            out merge_outcome skipped_hold
             echo "PR #$PR_NUMBER is held (label/title/draft); not merging."
             exit 0
           fi
           if [ "$(jq -r .state <<<"$meta")" != "OPEN" ]; then
-            out merge_wait_ms "$(( $(date +%s%3N) - started_at_ms ))"
-            out merge_outcome skipped_not_open
             echo "PR #$PR_NUMBER is no longer open; nothing to do."
             exit 0
           fi
@@ -764,9 +509,6 @@ jobs:
             failed=$(jq '[.[] | select(((.conclusion // "") | IN("FAILURE","CANCELLED","TIMED_OUT","ACTION_REQUIRED")) or ((.state // "") | IN("FAILURE","ERROR")))] | length' <<<"$rollup")
             pending=$(jq -r '[.[] | select(if .state then (.state | IN("PENDING","EXPECTED")) else .status != "COMPLETED" end) | "\(.name // .context)=\(.state // .status)"] | join(", ")' <<<"$rollup")
             if [ "$failed" -gt 0 ]; then
-              out merge_wait_ms "$(( $(date +%s%3N) - started_at_ms ))"
-              out merge_outcome blocked_red_ci
-              out failure_stage ci_red_before_merge
               echo "CI failed for PR #$PR_NUMBER; not merging."
               jq -r '.[] | select(((.conclusion // "") | IN("FAILURE","CANCELLED","TIMED_OUT","ACTION_REQUIRED")) or ((.state // "") | IN("FAILURE","ERROR"))) | (.name // .context)' <<<"$rollup"
               exit 1
@@ -778,125 +520,10 @@ jobs:
               fi
               echo "All checks green; merging PR #$PR_NUMBER (lane: $LANE)."
               gh pr merge "$PR_NUMBER" --repo "$REPO" --squash --admin --delete-branch
-              out merge_wait_ms "$(( $(date +%s%3N) - started_at_ms ))"
-              out merge_outcome merged
               exit 0
             fi
             echo "waiting before merging on: $pending"
             sleep 30
           done
-          out merge_wait_ms "$(( $(date +%s%3N) - started_at_ms ))"
-          out merge_outcome blocked_timeout
-          out failure_stage ci_timeout_before_merge
           echo "Timed out waiting for CI on PR #$PR_NUMBER. Still pending: $pending"
           exit 1
-
-      - name: Build ai-merge telemetry payload
-        if: always()
-        env:
-          GH_TOKEN: ${{ secrets.ORG_ADMIN_TOKEN }}
-          MERGE_WAIT_MS: ${{ steps.merge_gate.outputs.merge_wait_ms }}
-          MERGE_OUTCOME: ${{ steps.merge_gate.outputs.merge_outcome }}
-          MERGE_FAILURE_STAGE: ${{ steps.merge_gate.outputs.failure_stage }}
-          MERGE_GATE_OUTCOME: ${{ steps.merge_gate.outcome }}
-          HEAD_SHA: ${{ needs.classify.outputs.head_sha }}
-          MODEL_SELECTED: ${{ needs.classify.outputs.model }}
-          BUDGET_USD: ${{ needs.classify.outputs.budget_usd }}
-          DEPENDENCY_MAJOR: ${{ needs.classify.outputs.dependency_major }}
-        run: |
-          set -euo pipefail
-          mkdir -p .telemetry
-          pr=$(gh pr view "$PR_NUMBER" --repo "$TARGET_REPO" \
-            --json additions,deletions,changedFiles,baseRefName,headRefName)
-          jq -n \
-            --arg schema_version "2026-07-14.v1" \
-            --arg event_type "ai_review_gate.merge" \
-            --arg repository "$TARGET_REPO" \
-            --arg workflow_name "$GITHUB_WORKFLOW" \
-            --arg job_name "ai-merge" \
-            --arg run_id "$GITHUB_RUN_ID" \
-            --argjson run_attempt "$GITHUB_RUN_ATTEMPT" \
-            --arg event_name "$GITHUB_EVENT_NAME" \
-            --arg pr_number "$PR_NUMBER" \
-            --arg head_sha "$HEAD_SHA" \
-            --arg lane "$LANE" \
-            --arg lane_reason "$LANE_REASON" \
-            --arg model_selected "$MODEL_SELECTED" \
-            --arg merge_outcome "$MERGE_OUTCOME" \
-            --arg merge_gate_outcome "$MERGE_GATE_OUTCOME" \
-            --arg failure_stage "$MERGE_FAILURE_STAGE" \
-            --arg base_ref "$(jq -r '.baseRefName // ""' <<<"$pr")" \
-            --arg head_ref "$(jq -r '.headRefName // ""' <<<"$pr")" \
-            --argjson budget_usd "${BUDGET_USD:-0}" \
-            --argjson dependency_major "${DEPENDENCY_MAJOR:-false}" \
-            --argjson changed_files "$(jq '.changedFiles // 0' <<<"$pr")" \
-            --argjson additions "$(jq '.additions // 0' <<<"$pr")" \
-            --argjson deletions "$(jq '.deletions // 0' <<<"$pr")" \
-            --argjson merge_wait_ms "${MERGE_WAIT_MS:-null}" \
-            '{
-              schema_version,
-              event_type,
-              repository,
-              workflow_name,
-              job_name,
-              run_id,
-              run_attempt,
-              event_name,
-              pr_number,
-              head_sha,
-              lane,
-              lane_reason,
-              model_selected,
-              budget_usd,
-              dependency_major,
-              changed_files,
-              additions,
-              deletions,
-              base_ref,
-              head_ref,
-              merge_wait_ms,
-              merge_outcome,
-              merge_gate_outcome,
-              failure_stage: (if failure_stage == "" then null else failure_stage end)
-            }' > .telemetry/ai-merge.json
-
-      - name: Export ai-merge telemetry
-        if: always()
-        env:
-          CI_TELEMETRY_ENDPOINT: ${{ secrets.CI_TELEMETRY_ENDPOINT }}
-          CI_TELEMETRY_AUTH_HEADER: ${{ secrets.CI_TELEMETRY_AUTH_HEADER }}
-        run: |
-          set -euo pipefail
-          payload=.telemetry/ai-merge.json
-          if ! jq -e . "$payload" >/dev/null 2>&1; then
-            echo "ci-telemetry: ai-merge payload invalid, skipping export" >&2
-            exit 0
-          fi
-          if [ -z "${CI_TELEMETRY_ENDPOINT:-}" ]; then
-            echo "ci-telemetry: CI_TELEMETRY_ENDPOINT not configured, skipping export" >&2
-            exit 0
-          fi
-          curl_args=(
-            --silent
-            --show-error
-            --fail-with-body
-            --max-time "${CI_TELEMETRY_TIMEOUT_SECONDS:-10}"
-            -H "Content-Type: application/json"
-            --data-binary "@${payload}"
-          )
-          if [ -n "${CI_TELEMETRY_AUTH_HEADER:-}" ]; then
-            curl_args+=(-H "${CI_TELEMETRY_AUTH_HEADER}")
-          fi
-          if ! curl "${curl_args[@]}" "$CI_TELEMETRY_ENDPOINT"; then
-            echo "ci-telemetry: ai-merge export failed, leaving workflow green" >&2
-          fi
-
-      - name: Upload ai-merge telemetry artifact
-        if: always()
-        continue-on-error: true
-        uses: actions/upload-artifact@v4
-        with:
-          name: ai-review-telemetry-ai-merge-${{ github.run_id }}-${{ github.run_attempt }}-${{ env.PR_NUMBER }}
-          path: .telemetry/ai-merge.json
-          if-no-files-found: ignore
-          retention-days: 14

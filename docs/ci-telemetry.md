@@ -1,70 +1,43 @@
 # CI telemetry for the AI review/merge gate
 
-This repo emits bounded workflow telemetry for the org-wide AI review/merge
-gate in `.github/workflows/ai-review-merge.yml`.
+The org-wide AI review/merge gate (`.github/workflows/ai-review-merge.yml`)
+emits bounded, best-effort telemetry about each review through the shared
+`verjson-observability` OTLP pipeline.
 
-Current design:
+## Design
 
-- telemetry is produced inside the workflow, where the gate owns the runtime
-  facts
-- Claude `structured_output` is the stable verdict surface
-- Claude `execution_file` is treated as implementation-backed and parsed
-  defensively for numeric/status fields only
-- export is best-effort and must never flip a passing gate red
+- The `ai-review` job builds one `CiTelemetryPayload` (the schema defined in
+  `verjson-observability`) from runtime facts it already owns.
+- It is emitted with the `Verjson/verjson-observability` composite action
+  (`@v0.7.2`), which runs `emit-ci-telemetry.cjs` and exports OTLP metrics to
+  the shared collector. There is no bespoke HTTP/curl path.
+- Every telemetry step is `continue-on-error: true` and `if: always()`, so a
+  telemetry fault can **never** fail or block the gate.
+- It is **dormant until an endpoint exists**: the composite action no-ops when
+  `OTEL_EXPORTER_OTLP_ENDPOINT` is unset. Provision that secret (plus
+  `OTEL_EXPORTER_OTLP_HEADERS` for auth) to turn it on.
 
-What is emitted
+## What is emitted (the `ai-review` payload)
 
-- `classify` payload
-  - lane
-  - lane reason
-  - selected model
-  - configured budget
-  - dependency-major flag
-  - bounded PR size metadata
+Schema-conformant `CiTelemetryPayload` fields: `repository`, `workflow_name`,
+`job_name`, `event_name`, `lane`, `review_type`, `lane_reason`,
+`model_selected`, `budget_usd`, `dependency_major`, `verdict_blocking`,
+`findings_count`, `action_conclusion`, `execution_file_present`,
+`execution_file_parse_ok`, `total_cost_usd`, `total_turns`.
 
-- `ai-review` payload
-  - CI wait duration
-  - review duration
-  - verdict blocking flag
-  - findings count
-  - self-approval fallback usage
-  - Claude action outcome
-  - safe execution-file summary fields:
-    - `duration_ms`
-    - `num_turns`
-    - `total_cost_usd`
-    - `is_error`
-    - `subtype`
+Numeric/status fields sourced from Claude's `execution_file` are extracted
+defensively by `scripts/ci-telemetry/parse-claude-execution.sh` (present/parse
+flags, `num_turns`, `total_cost_usd`, `subtype`) — never the transcript itself.
 
-- `ai-merge` payload
-  - lane
-  - merge wait duration
-  - merge outcome
-  - failure stage if merge is blocked
+## What is explicitly excluded
 
-What is explicitly excluded
+Prompt text, diff text, PR review/findings text, raw Claude transcript, exact
+error text, PR title/body, and the full file list. Only bounded numeric and
+enumerated fields leave the runner.
 
-- prompt text
-- diff text
-- PR review body
-- findings text
-- raw Claude transcript
-- exact error text
-- PR title/body
-- full file list
+## Extending
 
-Export behavior
-
-- Each job writes a JSON payload under `.telemetry/`.
-- Each payload is uploaded as a short-retention artifact.
-- If `CI_TELEMETRY_ENDPOINT` is configured, the payload is POSTed as JSON.
-- `CI_TELEMETRY_AUTH_HEADER` can supply one extra header, for example
-  `Authorization: Bearer ...`.
-- Export failures are logged and ignored.
-
-Remaining dependency on `verjson-observability`
-
-- Replace the temporary HTTP export hook with the shared emitter/contract once
-  that repo ships the CI telemetry surface.
-- Keep the payload schema aligned with the observability-side allowlist and
-  metric-label rules.
+`classify` and `ai-merge` telemetry can be added the same way (build a
+`CiTelemetryPayload`, emit via the composite action, keep every step
+`continue-on-error`). Only `ai-review` is wired today to keep the surface
+minimal.
