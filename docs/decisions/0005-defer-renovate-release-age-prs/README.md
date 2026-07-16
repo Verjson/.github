@@ -1,4 +1,4 @@
-# 0002 — Defer AI review of Renovate PRs whose release-age gate is still pending
+# 0005 — Defer AI review of Renovate PRs whose release-age gate is still pending
 
 - **Date:** 2026-07-15
 - **Status:** Accepted

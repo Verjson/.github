@@ -136,9 +136,10 @@ jobs:
           # Model tier for the AI lane: sensitive paths get the strong model.
           if jq -e '[.[].filename] | any(test("(^|/)\\.github/|abac|(^|/|[._-])auth|polic|payment|ledger|webhook|secret|middleware|rbac|rls"; "i"))' <<<"$files" >/dev/null; then
             model=claude-sonnet-5
-            # Workflow/security reviews need enough room to read the diff and
-            # return the required structured verdict; $0.35 exhausted at 8
-            # turns in production. The 24-turn cap still bounds exploration.
+            # Workflow/security reviews get the strong model and more budget. If
+            # even this exhausts, the review escalates (see the ai-review job)
+            # instead of failing, so the cap is a floor to escalate from, not a
+            # hard wall. The 15-turn cap bounds exploration.
             budget_usd=0.50
           else
             model=claude-haiku-4-5
@@ -256,8 +257,10 @@ jobs:
           fetch-depth: 2
 
       - name: Prepare bounded review context
+        id: prep
         env:
           GH_TOKEN: ${{ secrets.ORG_ADMIN_TOKEN }}
+          DEPENDENCY_MAJOR: ${{ needs.classify.outputs.dependency_major }}
         run: |
           set -euo pipefail
           mkdir -p .ai-review
@@ -275,8 +278,53 @@ jobs:
             exit 1
           }
 
+          # Compose the review prompt once. Both the first pass and, if it runs
+          # out of budget/turns, the escalation pass reuse it verbatim so the
+          # two reviews never drift. The economy instruction (read the diff,
+          # then only the files a finding depends on) keeps the agentic loop
+          # from wandering the tree and burning tokens on context resends.
+          major_note=""
+          if [ "$DEPENDENCY_MAJOR" = "true" ]; then
+            major_note="This is a major dependency update. Also inspect the changed dependency version and repository evidence for breaking changes, deprecations, migrations, and security-relevant fixes."
+          fi
+          {
+            echo "review_prompt<<PROMPT_EOF"
+            cat <<EOF
+          You are the autonomous merge gate for ${TARGET_REPO}.
+          Review PR #${PR_NUMBER} in ${TARGET_REPO}.
+          Metadata is in .ai-review/pr.json and the complete diff is in
+          .ai-review/pr.diff. Read those two files first, then open only the
+          specific repository files a potential finding actually depends on —
+          be economical and do not broadly explore the tree.
+
+          Review for, in priority order:
+          1. Correctness bugs and behavioral regressions.
+          2. Security: authn/authz changes, tenant isolation, secret
+             handling, input validation at boundaries, injection.
+          3. Money-handling invariants (integer minor units, double-entry
+             balance, idempotency, provider-confirmed amounts only).
+          4. Missing or weakened tests for changed behavior.
+          Style-only nits are not blocking; mention at most briefly.
+
+          ${major_note}
+
+          Return the required JSON verdict as soon as you can support it. Do
+          not call GitHub or submit a review yourself. Set blocking=true only
+          for real defects. Each blocking finding must include file:line, why
+          it is wrong, and a concrete failure scenario. Keep summary concise.
+
+          Be skeptical but calibrated: block on real defects, not
+          hypotheticals. A docs-only PR with sane content should simply be
+          approved.
+          EOF
+            echo "PROMPT_EOF"
+          } >> "$GITHUB_OUTPUT"
+
       - name: Claude review (merge gate)
         id: claude
+        # Do not fail the job on budget/turn exhaustion — the next step
+        # inspects the (empty) verdict and escalates instead of dying here.
+        continue-on-error: true
         uses: anthropics/claude-code-action@v1
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
@@ -285,46 +333,57 @@ jobs:
           # Renovate opens PRs as a bot actor; without this the action
           # refuses to run (majors and non-standard bot PRs reach this lane).
           allowed_bots: "renovate,renovate[bot],mend[bot]"
-          prompt: |
-            You are the autonomous merge gate for ${{ env.TARGET_REPO }}.
-            Review PR #${{ env.PR_NUMBER }} in ${{ env.TARGET_REPO }}.
-            Metadata is in .ai-review/pr.json and the complete diff is in
-            .ai-review/pr.diff. Read those files and only the surrounding
-            repository files needed to validate changed behavior.
-
-            Review for, in priority order:
-            1. Correctness bugs and behavioral regressions.
-            2. Security: authn/authz changes, tenant isolation, secret
-               handling, input validation at boundaries, injection.
-            3. Money-handling invariants (integer minor units, double-entry
-               balance, idempotency, provider-confirmed amounts only).
-            4. Missing or weakened tests for changed behavior.
-            Style-only nits are not blocking; mention at most briefly.
-
-            ${{ needs.classify.outputs.dependency_major == 'true' && 'This is a major dependency update. Also inspect the changed dependency version and repository evidence for breaking changes, deprecations, migrations, and security-relevant fixes.' || '' }}
-
-            Return the required JSON verdict. Do not call GitHub or submit a
-            review yourself. Set blocking=true only for real defects. Each
-            blocking finding must include file:line, why it is wrong, and a
-            concrete failure scenario. Keep summary concise.
-
-            Be skeptical but calibrated: block on real defects, not
-            hypotheticals. A docs-only PR with sane content should simply
-            be approved.
+          prompt: ${{ steps.prep.outputs.review_prompt }}
           claude_args: |
             --model ${{ needs.classify.outputs.model }}
-            --max-turns 24
+            --max-turns 15
             --max-budget-usd ${{ needs.classify.outputs.budget_usd }}
+            --json-schema '{"type":"object","properties":{"blocking":{"type":"boolean"},"summary":{"type":"string"},"findings":{"type":"array","items":{"type":"string"}}},"required":["blocking","summary","findings"],"additionalProperties":false}'
+            --allowedTools "Read,Grep,Glob"
+
+      # Budget/turn exhaustion returns an empty structured_output (subtype
+      # error_max_budget_usd / error_max_turns) — a signal the PR is bigger than
+      # the cheap tier, NOT a review failure. Escalate to the strongest model
+      # with a larger budget. A fresh pass (not --resume): the first session's
+      # state may not survive into a second action invocation, and a resume that
+      # errored would strand the very PR we are trying to unblock. Runs only when
+      # the first pass produced no verdict, so the common case never reaches here.
+      - name: Escalate review when the first pass ran out of budget or turns
+        id: claude_retry
+        if: steps.claude.outputs.structured_output == ''
+        continue-on-error: true
+        uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          github_token: ${{ secrets.ORG_ADMIN_TOKEN }}
+          allowed_bots: "renovate,renovate[bot],mend[bot]"
+          prompt: ${{ steps.prep.outputs.review_prompt }}
+          claude_args: |
+            --model claude-sonnet-5
+            --max-turns 30
+            --max-budget-usd 1.00
             --json-schema '{"type":"object","properties":{"blocking":{"type":"boolean"},"summary":{"type":"string"},"findings":{"type":"array","items":{"type":"string"}}},"required":["blocking","summary","findings"],"additionalProperties":false}'
             --allowedTools "Read,Grep,Glob"
 
       - name: Submit deterministic PR review
         env:
           GH_TOKEN: ${{ secrets.ORG_ADMIN_TOKEN }}
-          VERDICT: ${{ steps.claude.outputs.structured_output }}
+          # Prefer the escalation verdict; fall back to the first pass.
+          VERDICT: ${{ steps.claude_retry.outputs.structured_output != '' && steps.claude_retry.outputs.structured_output || steps.claude.outputs.structured_output }}
         run: |
           set -euo pipefail
-          jq -e '.blocking | type == "boolean"' <<<"$VERDICT" >/dev/null
+          # Neither pass produced a verdict (budget/turn exhaustion or a hard
+          # error on both attempts). Fail closed — never merge unreviewed — but
+          # leave an explained, actionable record and flag for a human instead
+          # of dying on the action's cryptic "did not return structured_output".
+          if ! jq -e '.blocking | type == "boolean"' <<<"$VERDICT" >/dev/null 2>&1; then
+            gh pr edit "$PR_NUMBER" --repo "$TARGET_REPO" --add-label ai-review-inconclusive 2>/dev/null || true
+            gh pr comment "$PR_NUMBER" --repo "$TARGET_REPO" --body "⚠️ **Merge gate: review could not complete**
+
+          The automated review exhausted its budget/turns on both the first pass and the escalation pass, so no verdict was produced. This PR was **not** auto-merged. A maintainer should review and merge it manually."
+            exit 1
+          fi
           body=$(jq -r '.summary + (if (.findings | length) > 0 then "\n\n" + (.findings | map("- " + .) | join("\n")) else "" end)' <<<"$VERDICT")
           body="$body
 
@@ -351,6 +410,87 @@ jobs:
 
             $body"
           fi
+
+      # --- CI telemetry (best-effort). Every step is `continue-on-error` so it
+      # can NEVER fail or block the gate, and it stays dormant until
+      # OTEL_EXPORTER_OTLP_ENDPOINT is set — the composite action no-ops without
+      # an endpoint. Emits one CiTelemetryPayload for the review. See ADR 0004
+      # and docs/ci-telemetry.md.
+      - name: Fetch telemetry helper scripts
+        if: always()
+        continue-on-error: true
+        uses: actions/checkout@v5
+        with:
+          repository: Verjson/.github
+          ref: main
+          path: .gate-tools
+          sparse-checkout: scripts/ci-telemetry
+          sparse-checkout-cone-mode: false
+
+      - name: Build ai-review telemetry payload
+        if: always()
+        continue-on-error: true
+        env:
+          VERDICT_JSON: ${{ steps.claude_retry.outputs.structured_output != '' && steps.claude_retry.outputs.structured_output || steps.claude.outputs.structured_output }}
+          EXECUTION_FILE: ${{ steps.claude_retry.outputs.execution_file != '' && steps.claude_retry.outputs.execution_file || steps.claude.outputs.execution_file }}
+          ACTION_CONCLUSION: ${{ steps.claude_retry.conclusion != 'skipped' && steps.claude_retry.conclusion || steps.claude.conclusion }}
+          LANE: ${{ needs.classify.outputs.lane }}
+          LANE_REASON: ${{ needs.classify.outputs.reason }}
+          MODEL: ${{ needs.classify.outputs.model }}
+          BUDGET_USD: ${{ needs.classify.outputs.budget_usd }}
+          DEPENDENCY_MAJOR: ${{ needs.classify.outputs.dependency_major }}
+        run: |
+          set -uo pipefail    # deliberately no -e: telemetry must never abort
+          mkdir -p .telemetry
+          exec_summary=$(.gate-tools/scripts/ci-telemetry/parse-claude-execution.sh "${EXECUTION_FILE:-}" 2>/dev/null || echo '{}')
+          verdict_blocking=null
+          findings_count=null
+          if [ -n "${VERDICT_JSON:-}" ] && jq -e . >/dev/null 2>&1 <<<"$VERDICT_JSON"; then
+            verdict_blocking=$(jq -c '.blocking // null' <<<"$VERDICT_JSON")
+            findings_count=$(jq -c '(.findings // []) | length' <<<"$VERDICT_JSON")
+          fi
+          jq -n \
+            --arg repository "$TARGET_REPO" \
+            --arg workflow_name "$GITHUB_WORKFLOW" \
+            --arg event_name "$GITHUB_EVENT_NAME" \
+            --arg lane "${LANE:-}" \
+            --arg lane_reason "${LANE_REASON:-}" \
+            --arg model_selected "${MODEL:-}" \
+            --arg action_conclusion "${ACTION_CONCLUSION:-}" \
+            --argjson budget_usd "${BUDGET_USD:-0}" \
+            --argjson dependency_major "${DEPENDENCY_MAJOR:-false}" \
+            --argjson verdict_blocking "$verdict_blocking" \
+            --argjson findings_count "$findings_count" \
+            --argjson exec "$exec_summary" \
+            '{
+              schema_version: 1,
+              verjson_project: "verjson",
+              repository: $repository,
+              workflow_name: $workflow_name,
+              job_name: "ai-review",
+              event_name: $event_name,
+              lane: $lane,
+              review_type: "ai",
+              lane_reason: (if $lane_reason == "" then null else $lane_reason end),
+              model_selected: (if $model_selected == "" then null else $model_selected end),
+              budget_usd: $budget_usd,
+              dependency_major: $dependency_major,
+              verdict_blocking: $verdict_blocking,
+              findings_count: $findings_count,
+              action_conclusion: (if $action_conclusion == "" then null else $action_conclusion end),
+              execution_file_present: ($exec.execution_file_present // false),
+              execution_file_parse_ok: ($exec.execution_file_parse_ok // false),
+              total_cost_usd: ($exec.total_cost_usd // null),
+              total_turns: ($exec.num_turns // null)
+            }' > .telemetry/ai-review.json
+
+      # NOTE: OTLP emit temporarily removed. `uses: Verjson/verjson-observability`
+      # resolves on the gce runners but NOT on gha-meta-1 (used for this repo's
+      # own PRs + workflow_dispatch), and `uses:` resolution at job-setup is not
+      # guarded by continue-on-error, so it failed the whole ai-review job on
+      # meta. The payload is still built above (dormant). Re-add the emit step
+      # once the meta runner can resolve the private action AND the OTLP
+      # endpoint is provisioned (see docs/ci-telemetry.md, ADR 0004).
 
   ai-merge:
     needs: [classify, ai-review]
