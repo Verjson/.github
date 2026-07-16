@@ -1,5 +1,16 @@
 # AI review cost optimization
 
+## Reusable Node CI/release workflows — 2026-07-15
+
+Added `node-ci.yml` and `node-release.yml` reusable workflows to this repo,
+runner pinned once to `[self-hosted, GCP]` (overridable via `runner` input;
+`node-version`/`scope` inputs cover per-repo variance). Callers become 4-line
+`uses: Verjson/.github/.github/workflows/node-{ci,release}.yml@main` + `secrets:
+inherit`. `actionlint` clean. Next: convert the Node libs (`verjson-pg`,
+`-payments`, `-upload`, `-observability`, `-oidc-claims-middleware`,
+`-eslint-config`, `-graphql-conventions`) to callers — this is how those repos
+get off `ubuntu-latest`, one PR each.
+
 ## Merge gate — escalate on budget exhaustion — 2026-07-15
 
 A healthy PR (`github-runner-docker-compose#3`) was hard-failed when the Haiku
