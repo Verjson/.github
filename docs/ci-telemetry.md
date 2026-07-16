@@ -35,6 +35,75 @@ Prompt text, diff text, PR review/findings text, raw Claude transcript, exact
 error text, PR title/body, and the full file list. Only bounded numeric and
 enumerated fields leave the runner.
 
+## Provisioning the OTLP exporter (how to turn telemetry on)
+
+Telemetry is dormant until two secrets exist. **But setting them is step 2 —
+step 1 is making the collector reachable from the runners.** Read the
+reachability section first.
+
+### 1. Reachability prerequisite (do this first)
+
+The shared collector is deployed **in-cluster** by `verjson-infra`'s
+`ObservabilityStack` (namespace `observability`, service `otel-collector`), and
+is **ClusterIP-only**:
+
+- OTLP HTTP: `http://otel-collector.observability.svc.cluster.local:4318`
+- OTLP gRPC: `http://otel-collector.observability.svc.cluster.local:4317`
+
+That `*.svc.cluster.local` name resolves **only inside the Kubernetes cluster**.
+The AI-gate jobs run on the **self-hosted GCP runners**, which are
+docker-compose containers on GCE VMs (`Verjson/github-runner-docker-compose`) —
+**outside** the cluster. They cannot resolve cluster DNS or route to a ClusterIP,
+so the in-cluster URL will not work from CI as-is.
+
+Pick one path to bridge that gap (infra work in `verjson-infra`, not a secret):
+
+1. **Expose the collector on an internal LoadBalancer** (recommended). Add an
+   internal-LB `Service` (GCP annotation
+   `networking.gke.io/load-balancer-type: "Internal"`) for `otel-collector`'s
+   `4318` port, and ensure the runners' VMs are on the same VPC/subnet. Then the
+   endpoint is `http://<internal-lb-ip-or-dns>:4318`.
+2. **Move the runners in-cluster** (actions-runner-controller pods). Then the
+   ClusterIP DNS endpoint above works directly with no exposure change.
+3. Any equivalent VPC-routable path (peering + `ExternalName`, etc.).
+
+Until one exists, leave the secrets unset — the gate stays green and telemetry
+no-ops.
+
+### 2. Set the secrets
+
+Only the gate emits, so scoping the secrets to `Verjson/.github` is sufficient
+and least-privilege (use `--org Verjson` if you want them org-wide later):
+
+```bash
+# Base OTLP/HTTP URL of the reachable collector (no path — the SDK appends
+# /v1/metrics). Use the HTTP receiver (4318), not gRPC.
+gh secret set OTEL_EXPORTER_OTLP_ENDPOINT --repo Verjson/.github \
+  --body 'http://<collector-host>:4318'
+
+# Optional auth: newline-separated `Name: value` headers.
+printf 'Authorization: Bearer %s\n' "$TOKEN" | \
+  gh secret set OTEL_EXPORTER_OTLP_HEADERS --repo Verjson/.github
+```
+
+- Use **HTTP (4318)**, not gRPC — the composite action's CLI speaks OTLP/HTTP.
+- Prefer **TLS** (`https://…`) if the path crosses anything untrusted; rotate the
+  bearer token by re-setting `OTEL_EXPORTER_OTLP_HEADERS`.
+- Omit `OTEL_EXPORTER_OTLP_HEADERS` if the internal LB is on a trusted network
+  and the collector is unauthenticated.
+
+### 3. Verify
+
+Trigger a gate run (open a trivial PR, or `workflow_dispatch` the gate), then
+confirm arrival at the collector:
+
+```bash
+kubectl -n observability logs deploy/otel-collector | grep -i verjson.cicd
+```
+
+or look for `verjson.cicd.*` metrics in Grafana. The `Emit ai-review telemetry`
+step logs a warning (never fails) if export is rejected.
+
 ## Extending
 
 `classify` and `ai-merge` telemetry can be added the same way (build a
