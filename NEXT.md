@@ -22,6 +22,11 @@ GCP self-hosted pool (or `manish`), with GitHub-hosted reserved as last resort.
 Done:
 
 - Added a `GCP` label to the 8 GCE self-hosted runners (org Actions API).
+- **Runner-group reorg (ADR 0003):** created `GCP` group (id 4, visibility all),
+  moved the 8 GCE runners + `meta` into it, renamed `Default` → `GitHub`
+  (id 1, now 0 runners = last resort), added a `manish` label to the `hostinger`
+  runner. `GitHub` stays `default: true`, so new self-hosted runners auto-land
+  there and must be moved to `GCP` after registration.
 - New reusable workflow `notify-umbrella.yml` in this repo. Runner defaults to
   `[self-hosted, GCP]`; callers invoke
   `Verjson/.github/.github/workflows/notify-umbrella.yml@main`. Replaces the
@@ -33,15 +38,12 @@ Next actions (all pending owner go-ahead — org-wide CI blast radius):
 
 1. Convert the 8 leaf repos' `notify-umbrella.yml` to thin callers of the
    reusable workflow (one PR per repo, merge on green).
-2. Runner-group reorg: create a `GCP` group (visibility: all), move the 8 GCE
-   runners + `meta` into it, rename `Default` → `GitHub` (last resort), keep
-   `manish`. Add a `manish` label to the `hostinger` runner.
-3. Migrate the remaining ~27 repos running real CI on `ubuntu-latest` onto
+2. Migrate the remaining ~27 repos running real CI on `ubuntu-latest` onto
    `[self-hosted, GCP]` — heaviest are `scv-iac` (16 wf), `scv` (12),
    `scrm-api` (5). Fix `verjson-infra-template/ci.yml.tmpl` (seeds new repos).
-4. Decide fate of env-labelled deploy workflows (`dev`/`test`/`stage`/`prod`)
+3. Decide fate of env-labelled deploy workflows (`dev`/`test`/`stage`/`prod`)
    in `scrm-*`/`scv-k8s` — they target no runner in the org pool today.
-5. Optional guardrail: org ruleset requiring a check that fails any PR
+4. Optional guardrail: org ruleset requiring a check that fails any PR
    reintroducing a GitHub-hosted `runs-on`.
 
 ## Handoff — 2026-07-14
