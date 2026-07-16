@@ -38,11 +38,17 @@ Next actions (all pending owner go-ahead — org-wide CI blast radius):
 
 1. Convert the 8 leaf repos' `notify-umbrella.yml` to thin callers of the
    reusable workflow (one PR per repo, merge on green).
-2. Migrate the remaining ~27 repos running real CI on `ubuntu-latest` onto
-   `[self-hosted, GCP]` — heaviest are `scv-iac` (16 wf), `scv` (12),
-   `scrm-api` (5). Fix `verjson-infra-template/ci.yml.tmpl` (seeds new repos).
-3. Decide fate of env-labelled deploy workflows (`dev`/`test`/`stage`/`prod`)
-   in `scrm-*`/`scv-k8s` — they target no runner in the org pool today.
+2. Migrate the repos still running real CI on `ubuntu-latest` onto
+   `[self-hosted, GCP]`: `toquorum`, `catalog[-api/ui/infra/helm/docs]`,
+   `viager[-app/docs/infra]`, `verjson-observability`,
+   `verjson-oidc-claims-middleware`, `verjson-eslint-config`, `verjson-infra`,
+   `verjson-pg`, `verjson-graphql-conventions`, `verjson-payments`,
+   `verjson-upload`, `demo-repository`, `micro-one`. Fix
+   `verjson-infra-template/ci.yml.tmpl` (seeds new repos).
+
+**Out of scope — parked:** the `scrm-*` and `scv-*` repo families are parked
+for the foreseeable future (owner directive, 2026-07-15). Do NOT migrate them,
+and ignore their env-labelled deploy workflows (`dev`/`test`/`stage`/`prod`).
 4. Optional guardrail: org ruleset requiring a check that fails any PR
    reintroducing a GitHub-hosted `runs-on`.
 
