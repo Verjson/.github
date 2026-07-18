@@ -5,6 +5,7 @@
 - **PR:** Verjson/.github#34
 - **Category:** AI governance / verification calibration (observe-and-report) —
   sensitive-class (it measures how much the org trusts AI-authored work)
+- **Amended by:** ADR 0007 (adds human-set adaptive gating on top of observe-and-report)
 
 ## Context
 
