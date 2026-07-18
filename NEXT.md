@@ -1,3 +1,22 @@
+# PR template: Verification + blast-radius block — 2026-07-18
+
+Added "Verification" (evidence / not-verified) and "Blast radius & what to check
+first" sections to `.github/PULL_REQUEST_TEMPLATE.md`, including a sensitive-class
+checkbox that requires pinpointing the `file:line` a human must eyeball.
+Operationalizes ADR 0007's pinpointing clause so verification cost scales with
+blast radius on every PR.
+
+# ADR 0007: adaptive verification by blast radius — 2026-07-18
+
+Recorded the decision to scale human review to blast radius rather than
+uniformly: reversible/low-risk categories auto-merge unattended; sensitive/
+irreversible classes (auth, migrations, secrets, IAM, rulesets, destructive) are
+**always** human-gated and the AI must pinpoint the exact file(s):line(s) to
+eyeball; error-rise escalation is a human-configured circuit breaker; a **5%
+canary** of auto-merge categories stays human-reviewed so the error signal
+survives; fail toward more review on low signal. Extends/partially supersedes
+ADR 0006. Tracking #33. `docs/decisions/0007-adaptive-verification-blast-radius/`.
+
 # ADR 0006: AI-work rework telemetry (observe-and-report) — 2026-07-18
 
 Recorded the decision to build rework telemetry that calibrates human
