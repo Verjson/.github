@@ -1,3 +1,13 @@
+# ADR 0006: AI-work rework telemetry (observe-and-report) — 2026-07-18
+
+Recorded the decision to build rework telemetry that calibrates human
+verification of AI work as **observe-and-report only** — it measures rework by
+change-category/AI-authorship and surfaces it, but never mutates merge or
+verification gates; a human holds the dial. Guards conflict-of-interest and
+Goodhart by construction. Tracking: #33; schema upstream in
+verjson-observability#49. Governance ADR at
+`docs/decisions/0006-ai-rework-telemetry-observe-and-report/`.
+
 # AI review cost optimization
 
 ## Merge-gate CI telemetry via observability action — 2026-07-15
