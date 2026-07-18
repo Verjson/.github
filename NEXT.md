@@ -7,6 +7,14 @@ verification gates; a human holds the dial. Guards conflict-of-interest and
 Goodhart by construction. Tracking: #33; schema upstream in
 verjson-observability#49. Governance ADR at
 `docs/decisions/0006-ai-rework-telemetry-observe-and-report/`.
+# Decision log: issues vs ADRs process — 2026-07-18
+
+Added a "When to write an ADR (vs a GitHub issue)" section to
+`docs/decisions/README.md` so the team has a written convention for which
+mechanism to use: issues track transient *work*, ADRs record durable
+*decisions*; issue is the front door, promote to an ADR only for
+architecturally-significant / hard-to-reverse (and all sensitive-class)
+decisions; wire both ways; supersede rather than edit to reverse.
 
 # AI review cost optimization
 
