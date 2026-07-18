@@ -1,0 +1,55 @@
+name: Set up verJSON Node
+description: >-
+  Composite Node setup for verJSON CI on the self-hosted runner pool: installs
+  Node (so no job relies on ambient Node), authenticates the @verjson GitHub
+  Packages registry, and idempotently rewrites ssh->https git URLs so private
+  @verjson git dependencies resolve over HTTPS with a token — without persisting
+  the secret to the shared runner gitconfig. Retires the hand-rolled per-repo
+  credential dance (Verjson/verjson-cli-cloud#59).
+
+inputs:
+  node-version:
+    description: Node.js version passed to actions/setup-node.
+    required: false
+    default: '24'
+  scope:
+    description: >-
+      npm scope for the GitHub Packages registry. Set to an empty string to skip
+      registry auth entirely (public-only installs).
+    required: false
+    default: '@verjson'
+  registry-url:
+    description: Registry URL for the scope.
+    required: false
+    default: 'https://npm.pkg.github.com'
+  node-auth-token:
+    description: >-
+      Token with read:packages, used by npm to read @verjson private packages.
+      Re-exported as NODE_AUTH_TOKEN for the job's later npm steps. Required
+      unless scope is empty.
+    required: false
+    default: ''
+  git-token:
+    description: >-
+      Token with repo scope for cloning private @verjson git dependencies over
+      HTTPS (e.g. OIDC_REPO_TOKEN). Empty string leaves git credential wiring
+      untouched.
+    required: false
+    default: ''
+
+runs:
+  using: composite
+  steps:
+    - name: Install Node and authenticate the @verjson registry
+      uses: actions/setup-node@v7
+      with:
+        node-version: ${{ inputs.node-version }}
+        registry-url: ${{ inputs.registry-url }}
+        scope: ${{ inputs.scope }}
+
+    - name: Configure git + npm credentials (persistent-runner safe)
+      shell: bash
+      env:
+        NODE_AUTH_TOKEN: ${{ inputs.node-auth-token }}
+        VERJSON_GIT_TOKEN: ${{ inputs.git-token }}
+      run: bash "${GITHUB_ACTION_PATH}/configure-git.sh"

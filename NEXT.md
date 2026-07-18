@@ -1,3 +1,20 @@
+# Composite `setup-verjson-node` action — 2026-07-18
+
+Added `.github/actions/setup-verjson-node/` — a composite action that does the
+verJSON Node-on-self-hosted setup once: `actions/setup-node` (no ambient-Node
+reliance), `@verjson` registry auth, and an **idempotent** ssh→https `insteadOf`
+rewrite (`--unset-all`/`--add`) that survives the persistent runner's shared
+`~/.gitconfig`. Retires the copy-pasted per-repo credential dance and both
+portability gaps in `verjson-cli-cloud#59`. Tokens (`NODE_AUTH_TOKEN` + optional
+git token for private git deps) are wired without persisting the secret to the
+on-disk gitconfig — the credential helper reads it from the job env at clone
+time. The `#59` idempotency + secret-hygiene logic is split into
+`configure-git.sh` and covered by `configure-git.test.sh` (plain bash, no test
+dep), run in CI by the new `actions-ci.yml` workflow (GCP pool). Consumed by
+bespoke-CI repos (viager-app, cli-cloud) in follow-up PRs; the `node-ci`/
+`-release` reusable workflows already cover the plain-library case. Issue #31
+item 1. `@main` ref for now (retagged with item 5's pin).
+
 # PR template: Verification + blast-radius block — 2026-07-18
 
 Added "Verification" (evidence / not-verified) and "Blast radius & what to check
