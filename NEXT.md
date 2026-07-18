@@ -1,3 +1,11 @@
+# PR template: Verification + blast-radius block — 2026-07-18
+
+Added "Verification" (evidence / not-verified) and "Blast radius & what to check
+first" sections to `.github/PULL_REQUEST_TEMPLATE.md`, including a sensitive-class
+checkbox that requires pinpointing the `file:line` a human must eyeball.
+Operationalizes ADR 0007's pinpointing clause so verification cost scales with
+blast radius on every PR.
+
 # ADR 0007: adaptive verification by blast radius — 2026-07-18
 
 Recorded the decision to scale human review to blast radius rather than
