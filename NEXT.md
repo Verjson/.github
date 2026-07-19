@@ -1,3 +1,20 @@
+# Gate: route freshness/classify to the dedicated `gate` pool — 2026-07-19
+
+Fix #52. The merge gate flaked with `gh: command not found` on non-`.github`
+repos (first seen on verjson-helm-template#9): `freshness` (L71) and `classify`
+(L181) ran on `[self-hosted, GCP]`, but `GCP` is a **superset** — the `manish`
+overflow runner `hostinger` also carries `GCP` (not `gce`) and runs a non-GCE
+image with no ambient `gh`, so gate jobs landing there die. `ai-review` (L330) and
+`ai-merge` (L662) already ran on the dedicated `[self-hosted, gate]` pool; this
+makes freshness+classify match, so all four gate jobs use `gate` (GCE subset with
+`gh`, excludes hostinger) for non-`.github` and `meta` for `.github`. Regression
+trigger was #39 normalizing `classify` `gce`→`GCP` on the false premise that
+they're aliases — corrected that claim in `docs/runner-routing.md` (added the
+`GCP ⊋ gce` gotcha, the `hostinger` dual-label footnote, and the all-four-on-`gate`
+routing rule). Deeper root cause (hostinger mislabeled `GCP`) flagged in #52 for
+the runner-topology owner — not fixed here (re-labeling shared runners is
+sensitive-class with capacity blast radius).
+
 # ADR 0010: platform templates consume reusable workflows — 2026-07-19
 
 Recorded the decision (`docs/decisions/0010-…`) that each platform-template

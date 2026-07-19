@@ -10,8 +10,12 @@ for the *why* of the groups, this for the *how* of day-to-day routing.
 - **Default to `[self-hosted, GCP]`** for ordinary CI (build/test/lint/release).
 - **Docker/kind/buildx jobs must pin `[self-hosted, docker]`** — the general GCP
   pool has **no Docker socket**.
-- **`gce` is a legacy alias of `GCP`** on the same physical runners. `GCP` is
-  canonical; reconcile `gce` → `GCP` when you touch a workflow.
+- **`GCP` is a *superset*, not a clean alias of `gce`.** The 8 GCE VMs carry both
+  `gce` and `GCP`, but the `manish` overflow runner (`hostinger`) also carries
+  `GCP` (without `gce`) and runs a **different image with no ambient `gh`/Node**.
+  So a job that needs the GCE image's ambient tooling (e.g. the gate's `gh` calls)
+  must **not** use `[self-hosted, GCP]` — it can land on `hostinger` and fail with
+  `command not found`. Use `gce` (GCE VMs only) or a dedicated subset like `gate`.
 - Self-hosted runners have **no ambient Node** and a **persistent shared
   `~/.gitconfig`** — use `actions/setup-node` and idempotent git config, or just
   the [`setup-verjson-node`](../.github/actions/setup-verjson-node/README.md)
@@ -21,18 +25,24 @@ for the *why* of the groups, this for the *how* of day-to-day routing.
 
 | Label      | Runners                                            | Group    | Use for                                                                                                   |
 | ---------- | -------------------------------------------------- | -------- | --------------------------------------------------------------------------------------------------------- |
-| `GCP`      | `gha-runner-3..6`, `gha-gate-1..4` (8 GCE VMs)     | `GCP`    | **Canonical general-pool label.** All ordinary CI: build / test / lint, releases, `notify-umbrella`, gate `classify`. |
-| `gce`      | the same 8 GCE VMs (dual-labeled `GCP` + `gce`)    | `GCP`    | **Legacy alias of `GCP`** — identical runners. Deprecated for new work; existing uses being reconciled.   |
-| `gate`     | `gha-gate-1..4` (a subset of the GCP pool)         | `GCP`    | The org AI review/merge gate's heavy jobs (Claude CLI + gate secrets). Dedicated subset so gate load doesn't crowd general CI. |
+| `GCP`      | `gha-runner-3..6`, `gha-gate-1..4` **and `hostinger`** | `GCP` | **General-pool label — but a *superset* (see below).** Ordinary CI that self-provisions its tools (build / test / lint via `setup-node`, releases, `notify-umbrella`). **Not** for jobs needing ambient GCE tooling like `gh` — `hostinger` carries this label too. |
+| `gce`      | the 8 GCE VMs only (`gha-runner-3..6`, `gha-gate-1..4`) | `GCP` | The GCE VMs **excluding** `hostinger`. Use when a job needs the GCE image's ambient tooling (`gh`, etc.) but isn't gate work. Not a clean alias of `GCP`. |
+| `gate`     | `gha-gate-1..4` (a subset of the GCE VMs)          | `GCP`    | **All** org gate jobs — `freshness`, `classify`, `ai-review`, `ai-merge` (non-`.github`). Dedicated GCE subset: has ambient `gh`, excludes the `hostinger` overflow, and keeps gate load off general CI. |
 | `meta`     | `gha-meta-1`                                       | `GCP`    | The `Verjson/.github` repo's **own** gate jobs — keeps the gate from deadlocking while reviewing itself. See the caveat below. |
 | `docker`   | `gha-docker-1`                                     | `GCP` †  | Docker / kind / buildx / testcontainers — anything needing the Docker daemon. **Required**, not optional (see below). |
-| `manish`   | `hostinger` runner                                 | `manish` | Secondary / overflow pool. Target explicitly by label.                                                    |
+| `manish`   | `hostinger` runner (**also mislabeled `GCP`**)     | `manish` | Secondary / overflow pool on a non-GCE image (no ambient `gh`/Node). Target explicitly by label. ‡        |
 | _(none)_   | GitHub-hosted                                      | `GitHub` | **Last resort only.** Reserved fallback; not used for real CI.                                             |
 
 † `gha-docker-1` post-dates [ADR 0003](decisions/0003-runner-groups-gcp-github-manish/README.md)
 (which enumerates only the original 9 runners), so its runner-group membership
 isn't recorded there; the `GCP` group is the assumed home. Confirm against the
 live org runner-group settings if it matters for access.
+
+‡ `hostinger` carries **both** `manish` and `GCP`, so `[self-hosted, GCP]` jobs
+can be scheduled onto it — but it runs a non-GCE image without ambient `gh`/Node,
+which broke the gate's `classify` step (`gh: command not found`, #52). Dropping
+`GCP` from `hostinger` (or provisioning `gh` on it) is the deeper fix, owned by the
+runner-topology owner. Until then, gh/tool-dependent jobs avoid `GCP`.
 
 ## Routing rules
 
@@ -47,9 +57,12 @@ live org runner-group settings if it matters for access.
   Docker socket**, so these jobs fail there. `gha-docker-1` is currently the only
   `docker`-labeled runner, so such jobs serialize on it (capacity/redundancy is
   tracked in issue #31 item 6).
-- **The org AI gate** (`ai-review-merge.yml`): the `ai-review` and `ai-merge`
-  jobs run on `gate`; the cheap `classify` job runs on `GCP`. When the target
-  repo **is** `Verjson/.github` itself, all three run on `meta` instead.
+- **The org AI gate** (`ai-review-merge.yml`): **all** gate jobs — `freshness`,
+  `classify`, `ai-review`, `ai-merge` — run on `gate`. They call `gh`, so they need
+  the dedicated GCE subset (which has ambient `gh` and excludes the `hostinger`
+  overflow); routing `freshness`/`classify` to `GCP` let them land on `hostinger`
+  and fail (#52). When the target repo **is** `Verjson/.github` itself, they run on
+  `meta` instead (the self-gate lane).
 - **Secondary / overflow** → `[self-hosted, manish]`.
 
 ## Constraints every self-hosted job must respect
