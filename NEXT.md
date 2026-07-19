@@ -1,3 +1,19 @@
+# ADR 0010: platform templates consume reusable workflows — 2026-07-19
+
+Recorded the decision (`docs/decisions/0010-…`) that each platform-template
+service repo consumes the matching org reusable workflow via
+`uses: Verjson/.github/.github/workflows/<lane>-ci.yml@main` instead of
+hand-rolling CI: helm-template→helm-ci (#40), infra-template→pulumi-ci (#46),
+ui-template→ui-ci (#48); schema/api/worker adopt `setup-verjson-node` (#36) until
+a generic node-ci reusable exists. `.tmpl` placeholders (`{{name}}`,
+`{{nodeVersion}}`, `@{{scope}}`) carry through as reusable `with:` inputs; each
+repo's bespoke `validate.yml` is preserved and each conversion is its own PR.
+Sensitive-class (centralises the CI auth surface + runner default), so recorded
+durably per the verjson-cli PM's ownership ruling — the templates and reusables are
+DevEx/.github's domain. Migration tracked in #49; sequencing holds infra/ui until
+verjson-cli's `fix/ci-github-packages-auth` lands. Reusable `@main` pin risk noted
+(→ #31 item 5). Includes the helm-template before→after diff.
+
 # Reusable ui-ci workflow for Next.js UI repos — 2026-07-19
 
 #31 item 3 (UI lane — completes item 3 alongside helm-ci #40 and pulumi-ci #46).
