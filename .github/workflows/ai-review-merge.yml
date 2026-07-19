@@ -53,9 +53,13 @@ env:
   TARGET_REPO: ${{ inputs.repository || github.repository }}
 
 jobs:
-  classify:
-    # `labeled` only re-triggers for the explicit re-review request; other
-    # label additions (including `hold`) must not start a run.
+  freshness:
+    # Keep the branch current with its base BEFORE we review/merge, so a green
+    # gate always means green against the *current* base — a behind-but-clean
+    # branch never merges stale. Behind → update the branch (the resulting
+    # synchronize starts a fresh run that steps this one aside). Conflicting →
+    # hold and comment (can't auto-resolve). Renovate owns its own rebases, so
+    # its branches are left untouched. Same opt-out guard as classify.
     if: >
       github.event_name == 'workflow_dispatch' ||
       (
@@ -63,6 +67,116 @@ jobs:
         !github.event.pull_request.draft &&
         !contains(github.event.pull_request.labels.*.name, 'hold') &&
         !contains(github.event.pull_request.title, 'DO NOT MERGE')
+      )
+    runs-on: ${{ github.repository == 'Verjson/.github' && fromJSON('["self-hosted","meta"]') || fromJSON('["self-hosted","GCP"]') }}
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: write
+    outputs:
+      # 'true' → this run continues to classify/review/merge. 'false' → the branch
+      # was just updated; a fresh run will handle it, so downstream jobs skip.
+      proceed: ${{ steps.freshness.outputs.proceed }}
+    steps:
+      - name: Update branch if behind; hold on conflict
+        id: freshness
+        env:
+          # Org-admin token: pushes the base merge onto the (possibly sibling)
+          # PR branch and comments — GITHUB_TOKEN can't reach other repos.
+          GH_TOKEN: ${{ secrets.ORG_ADMIN_TOKEN }}
+        run: |
+          set -euo pipefail
+          REPO="$TARGET_REPO"
+          out() { echo "$1=$2" >> "$GITHUB_OUTPUT"; }
+          # Retry the reads so a transient API blip doesn't red-gate the PR.
+          pr_json() {
+            for _ in 1 2 3; do
+              gh pr view "$PR_NUMBER" --repo "$REPO" --json "$1" 2>/dev/null && return 0
+              sleep 3
+            done
+            return 1
+          }
+
+          if ! meta=$(pr_json author,headRefName,baseRefName,headRefOid,mergeable); then
+            echo "::warning::could not read PR metadata; proceeding without a freshness action."
+            out proceed true; exit 0
+          fi
+          author="$(jq -r '.author.login // ""' <<<"$meta")"
+          head_ref="$(jq -r '.headRefName // ""' <<<"$meta")"
+          head_sha="$(jq -r '.headRefOid // ""' <<<"$meta")"
+          base_ref="$(jq -r '.baseRefName // "the base branch"' <<<"$meta")"
+
+          # Renovate rebases its own PRs on its stability schedule — leave them to
+          # it. Match classify's anchored author pattern (plus the branch prefix).
+          if printf '%s' "$author" | grep -qiE '^(app/)?renovate(\[bot\])?$' \
+             || [ "${head_ref#renovate/}" != "$head_ref" ]; then
+            echo "Renovate PR — leaving freshness to Renovate."; out proceed true; exit 0
+          fi
+
+          # mergeable is computed async; wait out UNKNOWN.
+          mrg="$(jq -r '.mergeable // "UNKNOWN"' <<<"$meta")"
+          for _ in 1 2 3 4 5 6; do
+            [ "$mrg" != "UNKNOWN" ] && break
+            sleep 5
+            mrg="$(jq -r '.mergeable // "UNKNOWN"' <<<"$(pr_json mergeable || echo '{}')")"
+          done
+          echo "mergeable=$mrg"
+
+          # Hard conflict with base: cannot auto-resolve. Hold (fail-closed) and
+          # leave a single marker-guarded comment so a human knows to rebase.
+          if [ "$mrg" = "CONFLICTING" ]; then
+            marker="<!-- gate:branch-conflict -->"
+            note="$marker This PR conflicts with \`$base_ref\`. The merge gate can't auto-update a conflicting branch — please rebase/merge \`$base_ref\` and resolve the conflicts; the gate re-fires on push."
+            # Dedup only on a *successful* read: a transient read failure must not
+            # look like "marker absent" and post a duplicate. If we truly can't
+            # read the comments (after pr_json's retries), post anyway — a rare
+            # duplicate beats never telling the human why the PR is held.
+            if existing="$(pr_json comments)"; then
+              jq -r '.comments[].body' <<<"$existing" 2>/dev/null | grep -qF "$marker" \
+                || gh pr comment "$PR_NUMBER" --repo "$REPO" --body "$note" || true
+            else
+              gh pr comment "$PR_NUMBER" --repo "$REPO" --body "$note" || true
+            fi
+            echo "::error::Branch conflicts with $base_ref — holding until resolved."
+            exit 1
+          fi
+
+          # Behind the base? Ask the compare API for the real commit delta — it is
+          # independent of branch protection, whereas mergeStateStatus only
+          # reports BEHIND when a strict "up to date" rule is set (this org's
+          # ruleset is NOT strict, so a behind-but-clean branch reads CLEAN).
+          # Compare against the head SHA, not the ref, so a slash in the branch
+          # name can't confuse the ...-path. Behind → update the branch; the push
+          # fires `synchronize`, and that fresh run reviews/merges against the
+          # current base, so this run steps aside.
+          behind="$(gh api "repos/$REPO/compare/$base_ref...$head_sha" --jq '.behind_by' 2>/dev/null || echo 0)"
+          [[ "$behind" =~ ^[0-9]+$ ]] || behind=0
+          if [ "$behind" -gt 0 ]; then
+            if gh api --method PUT "repos/$REPO/pulls/$PR_NUMBER/update-branch" >/dev/null 2>&1; then
+              echo "Branch was $behind commit(s) behind $base_ref; updated it — a fresh run will merge against the current base."
+              out proceed false; exit 0
+            fi
+            echo "update-branch did not apply (race / fork / already current); proceeding."
+          fi
+
+          out proceed true
+
+  classify:
+    needs: freshness
+    # `labeled` only re-triggers for the explicit re-review request; other label
+    # additions (including `hold`) must not start a run. `freshness` also gates
+    # us: after it auto-updates a behind branch it sets proceed=false, so we only
+    # classify a branch that is current with its base.
+    if: >
+      needs.freshness.outputs.proceed == 'true' &&
+      (
+        github.event_name == 'workflow_dispatch' ||
+        (
+          (github.event.action != 'labeled' || github.event.label.name == 're-review') &&
+          !github.event.pull_request.draft &&
+          !contains(github.event.pull_request.labels.*.name, 'hold') &&
+          !contains(github.event.pull_request.title, 'DO NOT MERGE')
+        )
       )
     runs-on: ${{ github.repository == 'Verjson/.github' && fromJSON('["self-hosted","meta"]') || fromJSON('["self-hosted","GCP"]') }}
     timeout-minutes: 10

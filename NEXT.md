@@ -1,3 +1,24 @@
+# Merge gate auto-updates stale branches — 2026-07-18
+
+Added a `freshness` job at the head of `ai-review-merge.yml`, upstream of
+`classify`: a PR whose branch is behind its base (detected via the **compare
+API** `.behind_by`, which is protection-independent — `mergeStateStatus` only
+says BEHIND under a strict up-to-date rule, which this org's ruleset is not, so
+#40 sat behind and had to be updated by hand) gets `update-branch`d, and the
+resulting synchronize starts a fresh run against the current base so green means
+green against current base; a conflicting PR is held fail-closed with a single
+marker-guarded comment before any model spend; Renovate PRs are left to
+Renovate's own rebase cadence. Decision recorded as ADR 0008 (not sensitive-class
+— update-branch is git-revertible, no auth/ruleset/secret surface). Freshness
+logic (Renovate anchored-match skip / conflict hold + dedup / compare-behind
+update / clean proceed / fail-open on read error) is covered by a committed test
+(`scripts/ci-gate/freshness.test.sh`, 9 cases) that extracts the exact `run:`
+block from the workflow — single source of truth, no drift — and runs it against
+a stubbed `gh`, wired into `actions-ci.yml` so it gates gate changes in CI.
+Independent pre-push review folded in (compare-based detection was its key
+should-fix); the gate's own review then required this committed test — added it +
+hardened the conflict-comment dedup against transient read failures. Issue #41.
+
 # Reusable `helm-ci` workflow — 2026-07-18
 
 Added `.github/workflows/helm-ci.yml` — a reusable Helm chart CI lifted from
