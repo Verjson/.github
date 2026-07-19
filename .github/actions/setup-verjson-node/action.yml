@@ -44,7 +44,11 @@ runs:
       uses: actions/setup-node@v7
       with:
         node-version: ${{ inputs.node-version }}
-        registry-url: ${{ inputs.registry-url }}
+        # Only configure the registry when a scope is set. Passing registry-url
+        # with an empty scope makes setup-node write `registry=<url>` as npm's
+        # *default* registry (every package resolves against GitHub Packages, so
+        # public installs 404) instead of skipping auth — so gate it on scope.
+        registry-url: ${{ inputs.scope != '' && inputs.registry-url || '' }}
         scope: ${{ inputs.scope }}
 
     - name: Configure git + npm credentials (persistent-runner safe)
