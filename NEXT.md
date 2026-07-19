@@ -10,7 +10,10 @@ rules per job class, and the three self-hosted constraints that bit us in
 `meta` can't resolve private composite actions). Normalized this repo's own
 gate `classify` job `gce`→`GCP` (same physical runners, pure consistency).
 Remaining `gce` `runs-on` users (verjson-cli/authz/AiB) reconcile in their own
-repos. Issue #31 item 4.
+repos. Issue #31 item 4. Follow-up (independent-review fixups): corrected the
+meta private-action citation to point at the `ai-review-merge.yml` NOTE (not
+`ci-telemetry.md`, which covers the separate endpoint-dormancy reason) and
+footnoted that `gha-docker-1`'s group membership post-dates ADR 0003.
 
 # Composite `setup-verjson-node` action — 2026-07-18
 

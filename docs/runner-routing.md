@@ -25,9 +25,14 @@ for the *why* of the groups, this for the *how* of day-to-day routing.
 | `gce`      | the same 8 GCE VMs (dual-labeled `GCP` + `gce`)    | `GCP`    | **Legacy alias of `GCP`** — identical runners. Deprecated for new work; existing uses being reconciled.   |
 | `gate`     | `gha-gate-1..4` (a subset of the GCP pool)         | `GCP`    | The org AI review/merge gate's heavy jobs (Claude CLI + gate secrets). Dedicated subset so gate load doesn't crowd general CI. |
 | `meta`     | `gha-meta-1`                                       | `GCP`    | The `Verjson/.github` repo's **own** gate jobs — keeps the gate from deadlocking while reviewing itself. See the caveat below. |
-| `docker`   | `gha-docker-1`                                     | `GCP`    | Docker / kind / buildx / testcontainers — anything needing the Docker daemon. **Required**, not optional (see below). |
+| `docker`   | `gha-docker-1`                                     | `GCP` †  | Docker / kind / buildx / testcontainers — anything needing the Docker daemon. **Required**, not optional (see below). |
 | `manish`   | `hostinger` runner                                 | `manish` | Secondary / overflow pool. Target explicitly by label.                                                    |
 | _(none)_   | GitHub-hosted                                      | `GitHub` | **Last resort only.** Reserved fallback; not used for real CI.                                             |
+
+† `gha-docker-1` post-dates [ADR 0003](decisions/0003-runner-groups-gcp-github-manish/README.md)
+(which enumerates only the original 9 runners), so its runner-group membership
+isn't recorded there; the `GCP` group is the assumed home. Confirm against the
+live org runner-group settings if it matters for access.
 
 ## Routing rules
 
@@ -65,8 +70,11 @@ These bit us during the hosted→self-hosted migration
    `uses:` resolution isn't guarded by `continue-on-error` — so a private-action
    step breaks the whole job on `meta`. Keep private-action steps off `meta`
    jobs, or gate them by `github.repository != 'Verjson/.github'`. (This is why
-   the gate's OTLP-emit step is currently dormant — see
-   [`docs/ci-telemetry.md`](ci-telemetry.md).)
+   the gate's OTLP-emit step was **removed from the `meta` lane** — see the
+   `NOTE: OTLP emit temporarily removed` comment in
+   [`ai-review-merge.yml`](../.github/workflows/ai-review-merge.yml). The
+   exporter is *separately* dormant until an OTLP endpoint is provisioned, per
+   [`docs/ci-telemetry.md`](ci-telemetry.md) — two distinct reasons, not one.)
 
 ## Drift & migration
 
