@@ -1,3 +1,74 @@
+# Runner routing doc + `gce`→`GCP` normalization — 2026-07-18
+
+Added `docs/runner-routing.md` — the operational reference for `runs-on`
+selection that ADR 0003 lacked: the label taxonomy (`GCP` canonical general
+pool, `gce` its legacy alias on the same dual-labeled runners, `gate` the gate
+subset, `meta` the `.github` self-gate lane, `docker` = `gha-docker-1` the only
+Docker-socket runner, `manish` overflow, GitHub-hosted last-resort), routing
+rules per job class, and the three self-hosted constraints that bit us in
+`verjson-cli-cloud#59` (no ambient Node, shared persistent `~/.gitconfig`, and
+`meta` can't resolve private composite actions). Normalized this repo's own
+gate `classify` job `gce`→`GCP` (same physical runners, pure consistency).
+Remaining `gce` `runs-on` users (verjson-cli/authz/AiB) reconcile in their own
+repos. Issue #31 item 4. Follow-up (independent-review fixups): corrected the
+meta private-action citation to point at the `ai-review-merge.yml` NOTE (not
+`ci-telemetry.md`, which covers the separate endpoint-dormancy reason) and
+footnoted that `gha-docker-1`'s group membership post-dates ADR 0003.
+
+# Composite `setup-verjson-node` action — 2026-07-18
+
+Added `.github/actions/setup-verjson-node/` — a composite action that does the
+verJSON Node-on-self-hosted setup once: `actions/setup-node` (no ambient-Node
+reliance), `@verjson` registry auth, and an **idempotent** ssh→https `insteadOf`
+rewrite (`--unset-all`/`--add`) that survives the persistent runner's shared
+`~/.gitconfig`. Retires the copy-pasted per-repo credential dance and both
+portability gaps in `verjson-cli-cloud#59`. Tokens (`NODE_AUTH_TOKEN` + optional
+git token for private git deps) are wired without persisting the secret to the
+on-disk gitconfig — the credential helper reads it from the job env at clone
+time. The `#59` idempotency + secret-hygiene logic is split into
+`configure-git.sh` and covered by `configure-git.test.sh` (plain bash, no test
+dep), run in CI by the new `actions-ci.yml` workflow (GCP pool). Consumed by
+bespoke-CI repos (viager-app, cli-cloud) in follow-up PRs; the `node-ci`/
+`-release` reusable workflows already cover the plain-library case. Issue #31
+item 1. `@main` ref for now (retagged with item 5's pin).
+
+# PR template: Verification + blast-radius block — 2026-07-18
+
+Added "Verification" (evidence / not-verified) and "Blast radius & what to check
+first" sections to `.github/PULL_REQUEST_TEMPLATE.md`, including a sensitive-class
+checkbox that requires pinpointing the `file:line` a human must eyeball.
+Operationalizes ADR 0007's pinpointing clause so verification cost scales with
+blast radius on every PR.
+
+# ADR 0007: adaptive verification by blast radius — 2026-07-18
+
+Recorded the decision to scale human review to blast radius rather than
+uniformly: reversible/low-risk categories auto-merge unattended; sensitive/
+irreversible classes (auth, migrations, secrets, IAM, rulesets, destructive) are
+**always** human-gated and the AI must pinpoint the exact file(s):line(s) to
+eyeball; error-rise escalation is a human-configured circuit breaker; a **5%
+canary** of auto-merge categories stays human-reviewed so the error signal
+survives; fail toward more review on low signal. Extends/partially supersedes
+ADR 0006. Tracking #33. `docs/decisions/0007-adaptive-verification-blast-radius/`.
+
+# ADR 0006: AI-work rework telemetry (observe-and-report) — 2026-07-18
+
+Recorded the decision to build rework telemetry that calibrates human
+verification of AI work as **observe-and-report only** — it measures rework by
+change-category/AI-authorship and surfaces it, but never mutates merge or
+verification gates; a human holds the dial. Guards conflict-of-interest and
+Goodhart by construction. Tracking: #33; schema upstream in
+verjson-observability#49. Governance ADR at
+`docs/decisions/0006-ai-rework-telemetry-observe-and-report/`.
+# Decision log: issues vs ADRs process — 2026-07-18
+
+Added a "When to write an ADR (vs a GitHub issue)" section to
+`docs/decisions/README.md` so the team has a written convention for which
+mechanism to use: issues track transient *work*, ADRs record durable
+*decisions*; issue is the front door, promote to an ADR only for
+architecturally-significant / hard-to-reverse (and all sensitive-class)
+decisions; wire both ways; supersede rather than edit to reverse.
+
 # AI review cost optimization
 
 ## Merge-gate CI telemetry via observability action — 2026-07-15

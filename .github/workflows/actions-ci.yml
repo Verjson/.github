@@ -1,0 +1,28 @@
+name: actions-ci
+
+# Runs the shell tests for the composite actions in this repo. Keeps the
+# persistent-runner credential logic (verjson-cli-cloud#59) regression-covered
+# and makes the "Evidence" for those actions reproducible in CI rather than
+# narrated. Pinned to the GCP self-hosted pool like the rest of the org.
+
+on:
+  pull_request:
+    paths:
+      - '.github/actions/**'
+      - '.github/workflows/actions-ci.yml'
+  push:
+    branches: [main]
+    paths:
+      - '.github/actions/**'
+      - '.github/workflows/actions-ci.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  shell-tests:
+    runs-on: [self-hosted, GCP]
+    steps:
+      - uses: actions/checkout@v7
+      - name: setup-verjson-node — configure-git idempotency + secret hygiene
+        run: bash .github/actions/setup-verjson-node/configure-git.test.sh

@@ -11,6 +11,10 @@ name: AI review + auto-merge
 #          and deletions-only PRs. No model is invoked.
 #        - ai: everything else gets a Claude review — but only AFTER the rest
 #          of CI is green, so red PRs cost $0.
+#        - defer: a Renovate PR whose `renovate/stability-days` age gate is
+#          still pending (e.g. a replacement PR that `internalChecksFilter`
+#          can't hold back). No model, no gate runner — Renovate's rebase once
+#          the release ages re-enters classify for a real review.
 #   2. Model tiering: routine code PRs are reviewed by Haiku; PRs touching
 #      sensitive paths (authz/ABAC, payments/ledger, webhooks, secrets,
 #      workflows) get the stronger default model. Turns are capped.
@@ -60,7 +64,7 @@ jobs:
         !contains(github.event.pull_request.labels.*.name, 'hold') &&
         !contains(github.event.pull_request.title, 'DO NOT MERGE')
       )
-    runs-on: ${{ github.repository == 'Verjson/.github' && fromJSON('["self-hosted","meta"]') || fromJSON('["self-hosted","gce"]') }}
+    runs-on: ${{ github.repository == 'Verjson/.github' && fromJSON('["self-hosted","meta"]') || fromJSON('["self-hosted","GCP"]') }}
     timeout-minutes: 10
     permissions:
       contents: read
@@ -92,11 +96,34 @@ jobs:
             out lane held; out reason "held by human opt-out"; out model none
             exit 0
           fi
-          out head_sha "$(jq -r .headRefOid <<<"$meta")"
+          head_sha="$(jq -r .headRefOid <<<"$meta")"
+          out head_sha "$head_sha"
           out dependency_major false
 
           # Consume the re-review label so it can be re-applied later.
           gh pr edit "$PR_NUMBER" --repo "$REPO" --remove-label re-review 2>/dev/null || true
+
+          # ---- Defer: Renovate release-age gate still pending -------------
+          # `internalChecksFilter: strict` holds back version *candidates* that
+          # miss `minimumReleaseAge`, so no branch is raised — but a Renovate
+          # *replacement* PR bypasses that candidate filter and is raised
+          # immediately, carrying a pending `renovate/stability-days` status
+          # until the age elapses. Reviewing or merging is impossible until
+          # then, so a model review (and the 45-min CI-wait on a gate runner)
+          # is pure waste that re-burns on every rebase. Defer: emit a lane no
+          # downstream job runs for. Renovate's rebase once the release ages
+          # fires `synchronize` and re-enters classify for a real review;
+          # `workflow_dispatch` forces a review past the gate.
+          if [ "${GITHUB_EVENT_NAME:-}" != "workflow_dispatch" ]; then
+            age_pending=$(gh api "repos/$REPO/commits/$head_sha/status" \
+              --jq '[.statuses[]? | select(.context == "renovate/stability-days" and .state == "pending")] | length' 2>/dev/null || echo 0)
+            if [ "${age_pending:-0}" -gt 0 ]; then
+              out lane defer
+              out reason "Renovate release-age gate pending (renovate/stability-days) — deferring review until minimumReleaseAge elapses and Renovate rebases"
+              out model none
+              exit 0
+            fi
+          fi
 
           files=$(gh api "repos/$REPO/pulls/$PR_NUMBER/files" --paginate --jq '.[]' | jq -s .)
           nfiles=$(jq length <<<"$files")
@@ -457,14 +484,13 @@ jobs:
               total_turns: ($exec.num_turns // null)
             }' > .telemetry/ai-review.json
 
-      - name: Emit ai-review telemetry
-        if: always()
-        continue-on-error: true
-        uses: Verjson/verjson-observability@v0.7.2
-        with:
-          payload-file: .telemetry/ai-review.json
-          exporter-url: ${{ secrets.OTEL_EXPORTER_OTLP_ENDPOINT }}
-          headers: ${{ secrets.OTEL_EXPORTER_OTLP_HEADERS }}
+      # NOTE: OTLP emit temporarily removed. `uses: Verjson/verjson-observability`
+      # resolves on the gce runners but NOT on gha-meta-1 (used for this repo's
+      # own PRs + workflow_dispatch), and `uses:` resolution at job-setup is not
+      # guarded by continue-on-error, so it failed the whole ai-review job on
+      # meta. The payload is still built above (dormant). Re-add the emit step
+      # once the meta runner can resolve the private action AND the OTLP
+      # endpoint is provisioned (see docs/ci-telemetry.md, ADR 0004).
 
   ai-merge:
     needs: [classify, ai-review]
