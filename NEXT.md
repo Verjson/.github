@@ -1,3 +1,21 @@
+# ADR 0011: relabel hostinger (drop `GCP`) — capability-accurate runner labels — 2026-07-19
+
+Root-cause fix for #52, complementing the gate routing fix (#53). The `hostinger`
+runner (a non-GCE Hostinger VPS, the `manish` overflow box, no ambient `gh`) was
+mislabeled `[self-hosted, GCP, manish]`, so `[self-hosted, GCP]` jobs could schedule
+onto it and die with `gh: command not found`. Removed `GCP` via the org runners API
+(`DELETE orgs/Verjson/actions/runners/22/labels/GCP`) → now `[self-hosted, Linux,
+X64, manish]`. This restores `GCP` ≡ `gce` (GCE VMs only, ambient toolchain) and
+keeps hostinger a first-class option via its explicit `manish` label (already used
+by `toquorum/deploy.yml`). Principle recorded: **labels describe capability, not
+just provider** — a runner joins `GCP`/`gce` only if it carries the GCE toolchain.
+Promotion path to rejoin general overflow = provision `gh`+git on the box (on-box,
+runner-topology owner). Live API mutation (not git-revertible) → recorded as ADR
+0011 with the before→after label diff + revert command; `docs/runner-routing.md`
+updated (superset gotcha replaced with the restored `GCP`≡`gce` invariant + the
+capability principle). #53's freshness/classify→`gate` routing stays as isolation +
+belt-and-braces.
+
 # Gate: route freshness/classify to the dedicated `gate` pool — 2026-07-19
 
 Fix #52. The merge gate flaked with `gh: command not found` on non-`.github`
