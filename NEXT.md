@@ -1,3 +1,19 @@
+# Reusable `helm-ci` workflow — 2026-07-18
+
+Added `.github/workflows/helm-ci.yml` — a reusable Helm chart CI lifted from
+catalog-helm's `ci.yml`: `helm lint` (default + caller-supplied values files),
+`helm template` render (release-name defaults to the repo name), and kubeconform
+validation, runner pinned once to the GCP pool. Parameterized via
+`chart-path`/`release-name`/`helm-version`/`lint-values`/`template-values`/
+`kubeconform-args`/`runner`. kind smoke tests are deliberately excluded — they're
+bespoke per chart (dependency stubs/preflight) and stay in each repo's own
+`[self-hosted, docker]` job (per the caller-migration lesson + runner-routing
+doc). Bash loops (values-list splitting, basename strip, release default) unit-
+verified with a stubbed `helm`. catalog-helm adopts it in a follow-up caller PR.
+Issue #31 item 3 (helm). docker stack: viager-app proves docker CI is bespoke —
+the setup duplication is already retired by `setup-verjson-node`; terraform/UI
+reusables pending source-repo study.
+
 # Runner routing doc + `gce`→`GCP` normalization — 2026-07-18
 
 Added `docs/runner-routing.md` — the operational reference for `runs-on`
