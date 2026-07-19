@@ -1,3 +1,19 @@
+# Gate review: pinpoint the hunks to eyeball first — 2026-07-18
+
+Operationalized ADR 0007's pinpointing clause in the merge gate's review output.
+The review verdict schema gains a `review_first` array (`{location, why}`); the
+prompt instructs the reviewer to list the highest-blast-radius file:line hunks a
+human should eyeball first — **mandatory** (non-empty) when the diff touches a
+sensitive area (authn/authz, RBAC/ABAC, secrets, IAM/OIDC, migrations, money,
+CI/rulesets), even when the verdict is approve. The gate comment now renders a
+`👀 Review these first` block so a human's eye lands on the exact lines. Refactored
+the submit step to be env-driven (`HEAD_SHA`/`MODEL` instead of inline `${{ }}`)
+so it's extract-testable; added `scripts/ci-gate/review-comment.test.sh` (5 cases:
+approve+pinpoint, empty pinpoint omitted, blocking renders pinpoint+findings,
+own-PR comment fallback, no-verdict fail-closed) wired into `actions-ci.yml`.
+Operationalizes ADR 0007 (no new ADR). Q2 of the review-output enhancement;
+Q1a (open follow-up issues for substantive non-blocking findings) is next.
+
 # Merge gate auto-updates stale branches — 2026-07-18
 
 Added a `freshness` job at the head of `ai-review-merge.yml`, upstream of

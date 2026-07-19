@@ -424,8 +424,18 @@ jobs:
 
           Return the required JSON verdict as soon as you can support it. Do
           not call GitHub or submit a review yourself. Set blocking=true only
-          for real defects. Each blocking finding must include file:line, why
-          it is wrong, and a concrete failure scenario. Keep summary concise.
+          for real defects. Each blocking finding (in "findings") must include
+          file:line, why it is wrong, and a concrete failure scenario. Keep
+          summary concise.
+
+          Also return "review_first": the specific file:line hunks a human
+          should eyeball first, highest blast-radius first, each with a one-line
+          reason it is load-bearing. This is MANDATORY (must be non-empty) when
+          the diff touches a sensitive area — authn/authz, RBAC/ABAC, secrets,
+          IAM/OIDC, database migrations, money-handling, or CI / rulesets /
+          branch protection — so the human's eye lands on the exact lines that
+          matter even when the verdict is to approve. For a low-risk diff (docs,
+          formatting, a trivial change) it may be empty.
 
           Be skeptical but calibrated: block on real defects, not
           hypotheticals. A docs-only PR with sane content should simply be
@@ -452,7 +462,7 @@ jobs:
             --model ${{ needs.classify.outputs.model }}
             --max-turns 15
             --max-budget-usd ${{ needs.classify.outputs.budget_usd }}
-            --json-schema '{"type":"object","properties":{"blocking":{"type":"boolean"},"summary":{"type":"string"},"findings":{"type":"array","items":{"type":"string"}}},"required":["blocking","summary","findings"],"additionalProperties":false}'
+            --json-schema '{"type":"object","properties":{"blocking":{"type":"boolean"},"summary":{"type":"string"},"review_first":{"type":"array","items":{"type":"object","properties":{"location":{"type":"string"},"why":{"type":"string"}},"required":["location","why"],"additionalProperties":false}},"findings":{"type":"array","items":{"type":"string"}}},"required":["blocking","summary","review_first","findings"],"additionalProperties":false}'
             --allowedTools "Read,Grep,Glob"
 
       # Budget/turn exhaustion returns an empty structured_output (subtype
@@ -477,7 +487,7 @@ jobs:
             --model claude-sonnet-5
             --max-turns 30
             --max-budget-usd 1.00
-            --json-schema '{"type":"object","properties":{"blocking":{"type":"boolean"},"summary":{"type":"string"},"findings":{"type":"array","items":{"type":"string"}}},"required":["blocking","summary","findings"],"additionalProperties":false}'
+            --json-schema '{"type":"object","properties":{"blocking":{"type":"boolean"},"summary":{"type":"string"},"review_first":{"type":"array","items":{"type":"object","properties":{"location":{"type":"string"},"why":{"type":"string"}},"required":["location","why"],"additionalProperties":false}},"findings":{"type":"array","items":{"type":"string"}}},"required":["blocking","summary","review_first","findings"],"additionalProperties":false}'
             --allowedTools "Read,Grep,Glob"
 
       - name: Submit deterministic PR review
@@ -485,6 +495,10 @@ jobs:
           GH_TOKEN: ${{ secrets.ORG_ADMIN_TOKEN }}
           # Prefer the escalation verdict; fall back to the first pass.
           VERDICT: ${{ steps.claude_retry.outputs.structured_output != '' && steps.claude_retry.outputs.structured_output || steps.claude.outputs.structured_output }}
+          # Passed via env (not inline ${{ }}) so the block is plain bash and can
+          # be extracted and unit-tested (scripts/ci-gate/review-comment.test.sh).
+          HEAD_SHA: ${{ needs.classify.outputs.head_sha }}
+          MODEL: ${{ needs.classify.outputs.model }}
         run: |
           set -euo pipefail
           # Neither pass produced a verdict (budget/turn exhaustion or a hard
@@ -498,10 +512,19 @@ jobs:
           The automated review exhausted its budget/turns on both the first pass and the escalation pass, so no verdict was produced. This PR was **not** auto-merged. A maintainer should review and merge it manually."
             exit 1
           fi
-          body=$(jq -r '.summary + (if (.findings | length) > 0 then "\n\n" + (.findings | map("- " + .) | join("\n")) else "" end)' <<<"$VERDICT")
+          body=$(jq -r '
+            .summary
+            + (if ((.review_first // []) | length) > 0
+               then "\n\n**👀 Review these first**\n"
+                    + (.review_first | map("- `" + .location + "` — " + .why) | join("\n"))
+               else "" end)
+            + (if ((.findings // []) | length) > 0
+               then "\n\n**Findings**\n" + (.findings | map("- " + .) | join("\n"))
+               else "" end)
+          ' <<<"$VERDICT")
           body="$body
 
-          <!-- ai-review-head:${{ needs.classify.outputs.head_sha }} model:${{ needs.classify.outputs.model }} -->"
+          <!-- ai-review-head:${HEAD_SHA} model:${MODEL} -->"
           if [ "$(jq -r .blocking <<<"$VERDICT")" = true ]; then
             # A token may be the PR author's identity. GitHub forbids a user
             # reviewing their own PR, but the non-zero result must still block
