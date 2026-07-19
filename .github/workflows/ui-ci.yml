@@ -1,0 +1,172 @@
+name: ui-ci (reusable)
+
+# Reusable CI for verJSON Next.js UI repos: install deps (optionally a schema
+# submodule first), then run the checks a UI PR needs — optional lint/typecheck,
+# then test and `next build`. Lifted from the canonical verjson-ui-template shape
+# (schema submodule -> npm ci -> test -> build with an AUTH_SECRET placeholder);
+# Node + the @verjson registry come from the setup-verjson-node composite
+# (Verjson/.github#36, dogfooded), and the runner is pinned here once (defaults to
+# the GCP self-hosted pool) so moving the fleet later is a one-file change.
+#
+# Scope: this covers the common UI shape (schema dep + test + build). Repos that
+# need a live database, Prisma, or a bespoke env matrix (e.g. toquorum) keep their
+# own workflow — the reusable-caller rule is to preserve bespoke steps, not force
+# everything through here.
+#
+# Caller (each UI repo's .github/workflows/ci.yml):
+#
+#   name: CI
+#   on:
+#     pull_request:
+#     push: { branches: [main] }
+#   jobs:
+#     ui:
+#       uses: Verjson/.github/.github/workflows/ui-ci.yml@main
+#       with:
+#         node-version: '24'
+#         schema-dir: myapp-schema        # omit if the repo has no schema submodule
+#         lint-command: npm run lint       # omit to skip
+#       secrets:
+#         node-auth-token: ${{ secrets.NODE_AUTH_TOKEN }}
+#         submodules-token: ${{ secrets.SUBMODULES_TOKEN }}
+
+on:
+  workflow_call:
+    inputs:
+      node-version:
+        description: Node.js version for setup-verjson-node.
+        required: false
+        type: string
+        default: '24'
+      scope:
+        description: >-
+          npm scope for the @verjson GitHub Packages registry. Empty string skips
+          registry auth (public-only installs).
+        required: false
+        type: string
+        default: '@verjson'
+      schema-dir:
+        description: >-
+          Path to a schema submodule to `npm ci` before the root install (a UI
+          repo consuming a generated @verjson schema client). Empty string skips it.
+        required: false
+        type: string
+        default: ''
+      install-command:
+        description: Root dependency install command.
+        required: false
+        type: string
+        default: 'npm ci'
+      lint-command:
+        description: Lint command. Empty string skips the lint step.
+        required: false
+        type: string
+        default: ''
+      typecheck-command:
+        description: Typecheck command (e.g. `npx tsc --noEmit`). Empty string skips it.
+        required: false
+        type: string
+        default: ''
+      test-command:
+        description: Test command. Empty string skips the test step.
+        required: false
+        type: string
+        default: 'npm test'
+      build-command:
+        description: Build command (`next build`).
+        required: false
+        type: string
+        default: 'npm run build'
+      auth-secret:
+        description: >-
+          Placeholder AUTH_SECRET for `next build` (NextAuth requires it at build
+          time; this is a dummy, never used to sign anything at runtime).
+        required: false
+        type: string
+        default: 'ci-build-secret'
+      runner:
+        description: JSON array of runner labels; defaults to the GCP self-hosted pool.
+        required: false
+        type: string
+        default: '["self-hosted", "GCP"]'
+    secrets:
+      node-auth-token:
+        description: read:packages token for @verjson private npm packages.
+        required: false
+      git-token:
+        description: repo-scoped token for private @verjson git dependencies over HTTPS.
+        required: false
+      submodules-token:
+        description: >-
+          Token to check out private sibling submodules (e.g. the schema repo).
+          Falls back to GITHUB_TOKEN when empty — which only reads the current
+          repo, so a private sibling submodule requires this token to be set.
+        required: false
+
+jobs:
+  build-test:
+    runs-on: ${{ fromJSON(inputs.runner) }}
+    permissions:
+      contents: read
+      packages: read
+    env:
+      # Placeholders so `next build` / NextAuth don't fail on missing vars. Dummy
+      # values, never used to connect or sign anything at runtime.
+      AUTH_SECRET: ${{ inputs.auth-secret }}
+      NEXT_TELEMETRY_DISABLED: '1'
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+          token: ${{ secrets.submodules-token || github.token }}
+
+      - name: Set up Node + @verjson registry
+        uses: Verjson/.github/.github/actions/setup-verjson-node@main
+        with:
+          node-version: ${{ inputs.node-version }}
+          scope: ${{ inputs.scope }}
+          node-auth-token: ${{ secrets.node-auth-token }}
+          git-token: ${{ secrets.git-token }}
+
+      - name: Install schema submodule deps
+        if: inputs.schema-dir != ''
+        working-directory: ${{ inputs.schema-dir }}
+        run: npm ci
+
+      - name: Install deps
+        env:
+          INSTALL_COMMAND: ${{ inputs.install-command }}
+        run: |
+          set -euo pipefail
+          eval "$INSTALL_COMMAND"
+
+      - name: Lint
+        if: inputs.lint-command != ''
+        env:
+          LINT_COMMAND: ${{ inputs.lint-command }}
+        run: |
+          set -euo pipefail
+          eval "$LINT_COMMAND"
+
+      - name: Typecheck
+        if: inputs.typecheck-command != ''
+        env:
+          TYPECHECK_COMMAND: ${{ inputs.typecheck-command }}
+        run: |
+          set -euo pipefail
+          eval "$TYPECHECK_COMMAND"
+
+      - name: Test
+        if: inputs.test-command != ''
+        env:
+          TEST_COMMAND: ${{ inputs.test-command }}
+        run: |
+          set -euo pipefail
+          eval "$TEST_COMMAND"
+
+      - name: Build
+        env:
+          BUILD_COMMAND: ${{ inputs.build-command }}
+        run: |
+          set -euo pipefail
+          eval "$BUILD_COMMAND"
