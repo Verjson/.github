@@ -32,3 +32,5 @@ jobs:
         run: bash .github/actions/setup-verjson-node/configure-git.test.sh
       - name: merge gate — freshness fail-open/fail-closed behavior
         run: bash scripts/ci-gate/freshness.test.sh
+      - name: merge gate — review-comment render (ADR-0007 pinpointing)
+        run: bash scripts/ci-gate/review-comment.test.sh
