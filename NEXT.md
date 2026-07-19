@@ -11,9 +11,13 @@ marker-guarded comment before any model spend; Renovate PRs are left to
 Renovate's own rebase cadence. Decision recorded as ADR 0008 (not sensitive-class
 — update-branch is git-revertible, no auth/ruleset/secret surface). Freshness
 logic (Renovate anchored-match skip / conflict hold + dedup / compare-behind
-update / clean proceed / fail-open on read error) unit-verified (8 cases) with a
-stubbed `gh`; independent pre-push review folded in (compare-based detection was
-its key should-fix). Issue #41.
+update / clean proceed / fail-open on read error) is covered by a committed test
+(`scripts/ci-gate/freshness.test.sh`, 9 cases) that extracts the exact `run:`
+block from the workflow — single source of truth, no drift — and runs it against
+a stubbed `gh`, wired into `actions-ci.yml` so it gates gate changes in CI.
+Independent pre-push review folded in (compare-based detection was its key
+should-fix); the gate's own review then required this committed test — added it +
+hardened the conflict-comment dedup against transient read failures. Issue #41.
 
 # Reusable `helm-ci` workflow — 2026-07-18
 

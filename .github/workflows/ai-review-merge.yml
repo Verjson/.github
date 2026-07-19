@@ -126,10 +126,16 @@ jobs:
           # leave a single marker-guarded comment so a human knows to rebase.
           if [ "$mrg" = "CONFLICTING" ]; then
             marker="<!-- gate:branch-conflict -->"
-            if ! gh pr view "$PR_NUMBER" --repo "$REPO" --json comments \
-                 --jq '.comments[].body' 2>/dev/null | grep -qF "$marker"; then
-              gh pr comment "$PR_NUMBER" --repo "$REPO" --body \
-                "$marker This PR conflicts with \`$base_ref\`. The merge gate can't auto-update a conflicting branch — please rebase/merge \`$base_ref\` and resolve the conflicts; the gate re-fires on push." || true
+            note="$marker This PR conflicts with \`$base_ref\`. The merge gate can't auto-update a conflicting branch — please rebase/merge \`$base_ref\` and resolve the conflicts; the gate re-fires on push."
+            # Dedup only on a *successful* read: a transient read failure must not
+            # look like "marker absent" and post a duplicate. If we truly can't
+            # read the comments (after pr_json's retries), post anyway — a rare
+            # duplicate beats never telling the human why the PR is held.
+            if existing="$(pr_json comments)"; then
+              jq -r '.comments[].body' <<<"$existing" 2>/dev/null | grep -qF "$marker" \
+                || gh pr comment "$PR_NUMBER" --repo "$REPO" --body "$note" || true
+            else
+              gh pr comment "$PR_NUMBER" --repo "$REPO" --body "$note" || true
             fi
             echo "::error::Branch conflicts with $base_ref — holding until resolved."
             exit 1
