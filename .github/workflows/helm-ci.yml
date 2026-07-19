@@ -1,0 +1,140 @@
+name: helm-ci (reusable)
+
+# Reusable CI for verJSON Helm chart repos: `helm lint` (against the default and
+# any extra values files), render the templates, and validate the rendered
+# manifests with kubeconform. Lifted from catalog-helm's ci.yml so chart repos
+# stop reinventing it; the runner is pinned here once (defaults to the GCP
+# self-hosted pool), so moving the fleet later is a one-file change.
+#
+# kind-based smoke tests are intentionally NOT included: they are bespoke per
+# chart (dependency stubs, preflight wiring) and belong in the caller's own job
+# pinned to `[self-hosted, docker]` — the only runner with a Docker socket (see
+# docs/runner-routing.md).
+#
+# Caller (each chart repo's .github/workflows/ci.yml):
+#
+#   name: CI
+#   on:
+#     pull_request:
+#     push: { branches: [main] }
+#   jobs:
+#     helm:
+#       uses: Verjson/.github/.github/workflows/helm-ci.yml@main
+#       with:
+#         release-name: catalog                          # defaults to repo name
+#         lint-values: 'values-local.yaml gke-linkerd.yaml'
+#         template-values: 'gke-linkerd.yaml'
+
+on:
+  workflow_call:
+    inputs:
+      chart-path:
+        description: Path to the chart directory.
+        required: false
+        type: string
+        default: '.'
+      release-name:
+        description: Release name for `helm template`. Defaults to the repo name.
+        required: false
+        type: string
+        default: ''
+      helm-version:
+        description: Helm version for azure/setup-helm.
+        required: false
+        type: string
+        default: 'v4.2.3'
+      lint-values:
+        description: >-
+          Space-separated extra values files to `helm lint -f` (a bare
+          `helm lint` always runs too). Empty lints only the chart defaults.
+          Paths are resolved relative to `chart-path` (helm's cwd), so a chart
+          in a subdir with values files at repo root needs `../`-prefixed paths.
+        required: false
+        type: string
+        default: ''
+      template-values:
+        description: >-
+          Space-separated values files to additionally render with
+          `helm template` (each kept as rendered/<basename>.yaml — same-basename
+          files collide, so keep basenames distinct). The default render (no -f)
+          is always produced and validated with kubeconform. Paths are relative
+          to `chart-path`, as for `lint-values`.
+        required: false
+        type: string
+        default: ''
+      kubeconform-version:
+        description: Pinned kubeconform release tag (avoid `latest` — this runs org-wide).
+        required: false
+        type: string
+        default: 'v0.6.7'
+      kubeconform-args:
+        description: Extra kubeconform args (-strict and -summary are always on).
+        required: false
+        type: string
+        default: '-ignore-missing-schemas'
+      runner:
+        description: JSON array of runner labels; defaults to the GCP self-hosted pool.
+        required: false
+        type: string
+        default: '["self-hosted", "GCP"]'
+
+jobs:
+  lint-template:
+    runs-on: ${{ fromJSON(inputs.runner) }}
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+      - uses: azure/setup-helm@v5
+        with:
+          version: ${{ inputs.helm-version }}
+
+      - name: helm lint (default + extra values files)
+        working-directory: ${{ inputs.chart-path }}
+        env:
+          LINT_VALUES: ${{ inputs.lint-values }}
+        run: |
+          helm lint .
+          # Word-splitting on LINT_VALUES is intentional: it's a space-separated
+          # list of file names supplied by the caller.
+          for f in $LINT_VALUES; do
+            echo "::group::helm lint -f $f"
+            helm lint . -f "$f"
+            echo "::endgroup::"
+          done
+
+      - name: helm template renders valid manifests
+        working-directory: ${{ inputs.chart-path }}
+        env:
+          RELEASE_NAME: ${{ inputs.release-name }}
+          TEMPLATE_VALUES: ${{ inputs.template-values }}
+        run: |
+          release="${RELEASE_NAME:-${GITHUB_REPOSITORY##*/}}"
+          # Render into the workspace (not /tmp) so later steps can read it.
+          mkdir -p rendered
+          helm template "$release" . > rendered/default.yaml
+          test -s rendered/default.yaml
+          for f in $TEMPLATE_VALUES; do
+            name="$(basename "$f")"
+            name="${name%.*}"
+            helm template "$release" . -f "$f" > "rendered/${name}.yaml"
+            test -s "rendered/${name}.yaml"
+          done
+
+      - name: validate rendered manifests (kubeconform)
+        working-directory: ${{ inputs.chart-path }}
+        env:
+          KUBECONFORM_ARGS: ${{ inputs.kubeconform-args }}
+          KUBECONFORM_VERSION: ${{ inputs.kubeconform-version }}
+        run: |
+          # Install the kubeconform binary directly rather than a docker://
+          # container action: the GCP self-hosted pool has no docker-group
+          # access, so a container action cannot reach the socket. Pinned (not
+          # `latest`) because a bad release would hit every chart repo at once.
+          curl -fsSL "https://github.com/yannh/kubeconform/releases/download/${KUBECONFORM_VERSION}/kubeconform-linux-amd64.tar.gz" \
+            | tar -xz kubeconform
+          # Only the default render is schema-validated (matching the source it
+          # was lifted from); the template-values variants get an emptiness check
+          # above. Add them here if a chart needs its variants schema-checked.
+          # shellcheck disable=SC2086  # KUBECONFORM_ARGS is an intentional arg list
+          ./kubeconform -strict -summary $KUBECONFORM_ARGS rendered/default.yaml
