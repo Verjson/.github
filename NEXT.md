@@ -1,3 +1,17 @@
+# Runner routing doc + `gce`→`GCP` normalization — 2026-07-18
+
+Added `docs/runner-routing.md` — the operational reference for `runs-on`
+selection that ADR 0003 lacked: the label taxonomy (`GCP` canonical general
+pool, `gce` its legacy alias on the same dual-labeled runners, `gate` the gate
+subset, `meta` the `.github` self-gate lane, `docker` = `gha-docker-1` the only
+Docker-socket runner, `manish` overflow, GitHub-hosted last-resort), routing
+rules per job class, and the three self-hosted constraints that bit us in
+`verjson-cli-cloud#59` (no ambient Node, shared persistent `~/.gitconfig`, and
+`meta` can't resolve private composite actions). Normalized this repo's own
+gate `classify` job `gce`→`GCP` (same physical runners, pure consistency).
+Remaining `gce` `runs-on` users (verjson-cli/authz/AiB) reconcile in their own
+repos. Issue #31 item 4.
+
 # Composite `setup-verjson-node` action — 2026-07-18
 
 Added `.github/actions/setup-verjson-node/` — a composite action that does the
