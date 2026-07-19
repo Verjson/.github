@@ -4,6 +4,7 @@ Reverse-chronological index of org-level decisions.
 
 | # | Date | Decision |
 |---|------|----------|
+| [0009](0009-gate-files-followup-issues/README.md) | 2026-07-18 | Merge gate files tracking issues for substantive non-blocking findings (nitpicks excluded) |
 | [0008](0008-gate-auto-update-stale-branches/README.md) | 2026-07-18 | Merge gate auto-updates stale (BEHIND) branches before review/merge; holds on conflict |
 | [0007](0007-adaptive-verification-blast-radius/README.md) | 2026-07-18 | Adaptive verification: scale review to blast radius, escalate on error rise |
 | [0006](0006-ai-rework-telemetry-observe-and-report/README.md) | 2026-07-18 | AI-work rework telemetry: observe-and-report, human holds the dial |

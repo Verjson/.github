@@ -1,3 +1,21 @@
+# Gate files follow-up issues for non-blocking findings — 2026-07-18
+
+Q1a of the review-output enhancement (ADR 0009). The verdict schema gains a
+`followups` array (`{location, note}`); the prompt directs the reviewer to put
+**substantive** non-blocking findings there and keep pure style nitpicks out
+(summary only). On a PR that is **approved and actually merges**, the `ai-merge`
+job files one `ai-review-followup`-labelled tracking issue per follow-up in the
+PR's repo, linking back — so substantive findings on merged PRs don't evaporate
+in a comment. Filed once (checks state==MERGED, per-finding content-hash marker dedup so a
+partial-failure re-run re-files only the missing findings); nothing for
+still-open / fast-lane / finding-free PRs; the AI
+only opens, never triages/closes (humans own the backlog). Verdict is plumbed
+`ai-review` → `ai-merge` via a job output; the comment renders a `Follow-ups`
+block. Committed extract-tests: `review-comment.test.sh` (+followups render +
+verdict emission) and new `followup-issues.test.sh` (merged-only gating, dedup,
+one-per-finding, empty/absent no-op), both wired into `actions-ci.yml`. Nitpicks
+→ standards → linter is the longer arc (#43). ADR 0009.
+
 # Gate review: pinpoint the hunks to eyeball first — 2026-07-18
 
 Operationalized ADR 0007's pinpointing clause in the merge gate's review output.

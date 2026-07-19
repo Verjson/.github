@@ -55,9 +55,11 @@ run_submit() {
   # run_submit <verdict-json>
   export PATH="$tmp/bin:$PATH" TARGET_REPO="Verjson/foo" PR_NUMBER=7 HEAD_SHA=deadbeef MODEL=haiku
   export ACTIONLOG="$tmp/act.log" BODYFILE="$tmp/body.txt" COMMENTFILE="$tmp/comment.txt"
+  export GITHUB_OUTPUT="$tmp/gh_output.txt" # the runner provides this; the step writes the verdict here
   : >"$ACTIONLOG"
   : >"$BODYFILE"
   : >"$COMMENTFILE"
+  : >"$GITHUB_OUTPUT"
   export VERDICT="$1"
   bash "$script" >/dev/null 2>&1
   echo "rc=$?"
@@ -65,12 +67,20 @@ run_submit() {
 body_has() { grep -qF "$1" "$tmp/body.txt"; }
 comment_has() { grep -qF "$1" "$tmp/comment.txt"; }
 act_has() { grep -q "$1" "$tmp/act.log"; }
+output_has() { grep -qF "$1" "$tmp/gh_output.txt"; }
 
 # 1. Approve + review_first -> the pinpoint block renders in the review body.
 run_submit '{"blocking":false,"summary":"looks good","review_first":[{"location":"auth.ts:42","why":"gates the admin path"}],"findings":[]}' >/dev/null
 { body_has '👀 Review these first' && body_has 'auth.ts:42' && body_has 'gates the admin path'; } &&
   pass "approve: review_first renders as a pinpoint block" ||
   fail "approve: review_first not rendered"
+
+# 1b. Approve + followups -> renders a Follow-ups block AND emits the verdict to
+#     $GITHUB_OUTPUT (so ai-merge can file the issues on merge).
+run_submit '{"blocking":false,"summary":"ok","review_first":[],"followups":[{"location":"util.ts:9","note":"missing null guard"}],"findings":[]}' >/dev/null
+{ body_has 'Follow-ups' && body_has 'util.ts:9' && body_has 'missing null guard' && output_has 'verdict<<' && output_has 'missing null guard'; } &&
+  pass "approve: followups render and the verdict is emitted for ai-merge" ||
+  fail "approve: followups render / verdict-output missing"
 
 # 2. Approve + empty review_first -> summary only, no pinpoint header.
 run_submit '{"blocking":false,"summary":"trivial docs tweak","review_first":[],"findings":[]}' >/dev/null
