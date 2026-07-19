@@ -1,3 +1,18 @@
+# Reusable ui-ci workflow for Next.js UI repos — 2026-07-19
+
+#31 item 3 (UI lane — completes item 3 alongside helm-ci #40 and pulumi-ci #46).
+Added `.github/workflows/ui-ci.yml` (`workflow_call`), lifted from the canonical
+verjson-ui-template shape (schema submodule → `npm ci` → test → `next build` with
+an AUTH_SECRET placeholder). One `build-test` job: optional schema-submodule
+install (`schema-dir`), root install, optional `lint`/`typecheck`, `test`, and
+`build`; each optional step gated on its command input being non-empty. Node +
+@verjson registry from the setup-verjson-node composite (#36, dogfooded);
+`submodules-token` (fallback GITHUB_TOKEN) for private sibling submodules; `runner`
+defaults to the GCP self-hosted pool. Caller commands passed via `env:` + `eval`
+(injection-safe), `set -euo pipefail`. AUTH_SECRET / NEXT_TELEMETRY_DISABLED set as
+build placeholders. DB/Prisma-heavy repos (e.g. toquorum) keep their bespoke
+workflow — reusable-caller rule is to preserve bespoke steps.
+
 # Reusable pulumi-ci workflow for Pulumi TS infra repos — 2026-07-19
 
 #31 item 3 (IaC lane). Added `.github/workflows/pulumi-ci.yml` (`workflow_call`),
