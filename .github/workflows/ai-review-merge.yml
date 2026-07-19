@@ -329,6 +329,10 @@ jobs:
     if: needs.classify.outputs.lane == 'ai'
     runs-on: ${{ github.repository == 'Verjson/.github' && fromJSON('["self-hosted","meta"]') || fromJSON('["self-hosted","gate"]') }}
     timeout-minutes: 45
+    outputs:
+      # The review verdict JSON, so ai-merge can file follow-up issues for the
+      # non-blocking findings after a successful merge.
+      verdict: ${{ steps.submit.outputs.verdict }}
     permissions:
       contents: read
       pull-requests: write
@@ -437,6 +441,13 @@ jobs:
           matter even when the verdict is to approve. For a low-risk diff (docs,
           formatting, a trivial change) it may be empty.
 
+          Also return "followups": substantive but non-blocking findings — real
+          bugs or improvements that do not justify blocking this merge, each as
+          {location, note}. These are filed as tracking issues when the PR
+          merges, so nothing worth doing is lost. Do NOT put pure style /
+          formatting / naming nitpicks here; mention those (at most briefly) in
+          the summary only. Empty when there is nothing substantive to follow up.
+
           Be skeptical but calibrated: block on real defects, not
           hypotheticals. A docs-only PR with sane content should simply be
           approved.
@@ -462,7 +473,7 @@ jobs:
             --model ${{ needs.classify.outputs.model }}
             --max-turns 15
             --max-budget-usd ${{ needs.classify.outputs.budget_usd }}
-            --json-schema '{"type":"object","properties":{"blocking":{"type":"boolean"},"summary":{"type":"string"},"review_first":{"type":"array","items":{"type":"object","properties":{"location":{"type":"string"},"why":{"type":"string"}},"required":["location","why"],"additionalProperties":false}},"findings":{"type":"array","items":{"type":"string"}}},"required":["blocking","summary","review_first","findings"],"additionalProperties":false}'
+            --json-schema '{"type":"object","properties":{"blocking":{"type":"boolean"},"summary":{"type":"string"},"review_first":{"type":"array","items":{"type":"object","properties":{"location":{"type":"string"},"why":{"type":"string"}},"required":["location","why"],"additionalProperties":false}},"findings":{"type":"array","items":{"type":"string"}},"followups":{"type":"array","items":{"type":"object","properties":{"location":{"type":"string"},"note":{"type":"string"}},"required":["location","note"],"additionalProperties":false}}},"required":["blocking","summary","review_first","findings","followups"],"additionalProperties":false}'
             --allowedTools "Read,Grep,Glob"
 
       # Budget/turn exhaustion returns an empty structured_output (subtype
@@ -487,10 +498,11 @@ jobs:
             --model claude-sonnet-5
             --max-turns 30
             --max-budget-usd 1.00
-            --json-schema '{"type":"object","properties":{"blocking":{"type":"boolean"},"summary":{"type":"string"},"review_first":{"type":"array","items":{"type":"object","properties":{"location":{"type":"string"},"why":{"type":"string"}},"required":["location","why"],"additionalProperties":false}},"findings":{"type":"array","items":{"type":"string"}}},"required":["blocking","summary","review_first","findings"],"additionalProperties":false}'
+            --json-schema '{"type":"object","properties":{"blocking":{"type":"boolean"},"summary":{"type":"string"},"review_first":{"type":"array","items":{"type":"object","properties":{"location":{"type":"string"},"why":{"type":"string"}},"required":["location","why"],"additionalProperties":false}},"findings":{"type":"array","items":{"type":"string"}},"followups":{"type":"array","items":{"type":"object","properties":{"location":{"type":"string"},"note":{"type":"string"}},"required":["location","note"],"additionalProperties":false}}},"required":["blocking","summary","review_first","findings","followups"],"additionalProperties":false}'
             --allowedTools "Read,Grep,Glob"
 
       - name: Submit deterministic PR review
+        id: submit
         env:
           GH_TOKEN: ${{ secrets.ORG_ADMIN_TOKEN }}
           # Prefer the escalation verdict; fall back to the first pass.
@@ -512,6 +524,13 @@ jobs:
           The automated review exhausted its budget/turns on both the first pass and the escalation pass, so no verdict was produced. This PR was **not** auto-merged. A maintainer should review and merge it manually."
             exit 1
           fi
+          # Expose the verdict so ai-merge can file follow-up issues for the
+          # non-blocking findings once (and only if) the PR actually merges.
+          {
+            echo "verdict<<VERDICT_EOF"
+            printf '%s\n' "$VERDICT"
+            echo "VERDICT_EOF"
+          } >>"$GITHUB_OUTPUT"
           body=$(jq -r '
             .summary
             + (if ((.review_first // []) | length) > 0
@@ -520,6 +539,10 @@ jobs:
                else "" end)
             + (if ((.findings // []) | length) > 0
                then "\n\n**Findings**\n" + (.findings | map("- " + .) | join("\n"))
+               else "" end)
+            + (if ((.followups // []) | length) > 0
+               then "\n\n**Follow-ups** (filed as issues on merge)\n"
+                    + (.followups | map("- `" + .location + "` — " + .note) | join("\n"))
                else "" end)
           ' <<<"$VERDICT")
           body="$body
@@ -690,3 +713,61 @@ jobs:
           done
           echo "Timed out waiting for CI on PR #$PR_NUMBER. Still pending: $pending"
           exit 1
+
+      - name: File follow-up issues for non-blocking findings
+        if: ${{ !cancelled() && needs.ai-review.outputs.verdict != '' }}
+        env:
+          GH_TOKEN: ${{ secrets.ORG_ADMIN_TOKEN }}
+          VERDICT: ${{ needs.ai-review.outputs.verdict }}
+        run: |
+          set -uo pipefail
+          REPO="$TARGET_REPO"
+          # Only file for findings on a PR that actually merged — an open PR may
+          # still fix them on the next push. Check state, not step success (the
+          # merge step also exits 0 when a PR is held or already closed).
+          state=$(gh pr view "$PR_NUMBER" --repo "$REPO" --json state --jq .state 2>/dev/null || echo "")
+          if [ -z "$state" ]; then
+            echo "::warning::Could not read PR #$PR_NUMBER state; skipping follow-up filing."
+            exit 0
+          fi
+          if [ "$state" != "MERGED" ]; then
+            echo "PR #$PR_NUMBER is $state, not MERGED; no follow-ups filed."
+            exit 0
+          fi
+
+          mapfile -t items < <(jq -c '(.followups // [])[]' <<<"$VERDICT" 2>/dev/null)
+          if [ "${#items[@]}" -eq 0 ]; then
+            echo "No follow-ups in the verdict."
+            exit 0
+          fi
+
+          # Fetch the follow-up markers already filed for this repo once. Dedup is
+          # per-finding (content-hashed), so a partial-failure re-run re-files only
+          # the missing findings, not the whole batch — nothing is silently lost.
+          # Label-filtered list → no search-index lag.
+          existing=$(gh issue list --repo "$REPO" --label ai-review-followup --state all --limit 200 \
+            --json body --jq '.[].body' 2>/dev/null || true)
+
+          gh label create ai-review-followup --repo "$REPO" --color FBCA04 \
+            --description "Non-blocking finding surfaced by the AI merge gate" 2>/dev/null || true
+
+          for f in "${items[@]}"; do
+            loc=$(jq -r '.location // "?"' <<<"$f")
+            note=$(jq -r '.note // ""' <<<"$f")
+            [ -z "$note" ] && continue
+            key=$(printf '%s|%s' "$loc" "$note" | sha1sum | cut -c1-12)
+            marker="<!-- ai-review-followup:pr$PR_NUMBER:$key -->"
+            if printf '%s' "$existing" | grep -qF "$marker"; then
+              echo "Follow-up already filed for $loc"
+              continue
+            fi
+            short=$(printf '%s' "$note" | tr '\n' ' ' | cut -c1-70)
+            body=$(printf '%s\n\nNon-blocking finding from the merge-gate review of #%s (approved and merged).\n\n**Location:** `%s`\n\n%s' \
+              "$marker" "$PR_NUMBER" "$loc" "$note")
+            if gh issue create --repo "$REPO" --title "AI-review follow-up: $short" \
+                 --body "$body" --label ai-review-followup >/dev/null 2>&1; then
+              echo "Filed follow-up for $loc"
+            else
+              echo "::warning::Could not file follow-up for $loc"
+            fi
+          done
