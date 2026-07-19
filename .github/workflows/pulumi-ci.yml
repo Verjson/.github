@@ -1,0 +1,158 @@
+name: pulumi-ci (reusable)
+
+# Reusable CI for verJSON Pulumi (TypeScript) infra repos. Two gates in one job:
+#
+#   1. Always-run, credential-free validation — `npm ci` + a caller-supplied
+#      validate command (default `npm run build`, i.e. a tsc compile check).
+#      This is the meaningful PR gate on forks / repos without cloud secrets.
+#   2. Live `pulumi preview` — runs ONLY when the GCP Workload-Identity and
+#      Pulumi backend secrets are present; otherwise it is skipped (not failed),
+#      so fork PRs and secret-less repos still get the compile gate.
+#
+# Lifted from viager-infra's preview.yml so infra repos stop reinventing the
+# credential-gating dance; Node + the @verjson registry come from the org
+# setup-verjson-node composite action (Verjson/.github#36), and the runner is
+# pinned here once (defaults to the GCP self-hosted pool) so moving the fleet
+# later is a one-file change.
+#
+# Caller (each infra repo's .github/workflows/ci.yml):
+#
+#   name: CI
+#   on:
+#     pull_request:
+#   jobs:
+#     pulumi:
+#       uses: Verjson/.github/.github/workflows/pulumi-ci.yml@main
+#       with:
+#         stacks: '["dev"]'
+#         validate-command: |
+#           npm run build
+#           npm test
+#       secrets:
+#         node-auth-token: ${{ secrets.NODE_AUTH_TOKEN }}
+#         gcp-wip: ${{ secrets.GCP_WIP }}
+#         gcp-sa: ${{ secrets.GCP_SA }}
+#         pulumi-access-token: ${{ secrets.PULUMI_ACCESS_TOKEN }}
+
+on:
+  workflow_call:
+    inputs:
+      node-version:
+        description: Node.js version for setup-verjson-node.
+        required: false
+        type: string
+        default: '24'
+      scope:
+        description: >-
+          npm scope for the @verjson GitHub Packages registry. Empty string skips
+          registry auth (public-only installs).
+        required: false
+        type: string
+        default: '@verjson'
+      stacks:
+        description: JSON array of Pulumi stack names to preview (matrix).
+        required: false
+        type: string
+        default: '["dev"]'
+      pulumi-command:
+        description: pulumi/actions command for the live cloud step (preview|up|refresh).
+        required: false
+        type: string
+        default: 'preview'
+      install-command:
+        description: Dependency install command (credential-free gate).
+        required: false
+        type: string
+        default: 'npm ci'
+      validate-command:
+        description: >-
+          Credential-free validation run after install (a compile/typecheck and,
+          where present, `npm test` with Pulumi mocks). Multiline is run verbatim
+          as one shell block; a failing line fails the gate.
+        required: false
+        type: string
+        default: 'npm run build'
+      comment-on-pr:
+        description: Whether pulumi/actions posts the preview as a PR comment.
+        required: false
+        type: boolean
+        default: true
+      runner:
+        description: JSON array of runner labels; defaults to the GCP self-hosted pool.
+        required: false
+        type: string
+        default: '["self-hosted", "GCP"]'
+    secrets:
+      node-auth-token:
+        description: read:packages token for @verjson private npm packages.
+        required: false
+      git-token:
+        description: repo-scoped token for private @verjson git dependencies over HTTPS.
+        required: false
+      gcp-wip:
+        description: GCP Workload-Identity provider. Live preview is skipped when empty.
+        required: false
+      gcp-sa:
+        description: GCP service account email for Workload-Identity auth.
+        required: false
+      pulumi-access-token:
+        description: Pulumi backend token. Live preview is skipped when empty.
+        required: false
+
+jobs:
+  preview:
+    runs-on: ${{ fromJSON(inputs.runner) }}
+    strategy:
+      fail-fast: false
+      matrix:
+        stack: ${{ fromJSON(inputs.stacks) }}
+    permissions:
+      contents: read
+      pull-requests: write
+      id-token: write
+    env:
+      # Live preview needs BOTH the GCP Workload-Identity provider and the Pulumi
+      # backend token. When either is absent (fork PR, secret-less repo), run the
+      # credential-free validation only instead of failing CI.
+      HAS_CLOUD_CREDS: ${{ secrets.gcp-wip != '' && secrets.pulumi-access-token != '' }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Node + @verjson registry
+        uses: Verjson/.github/.github/actions/setup-verjson-node@main
+        with:
+          node-version: ${{ inputs.node-version }}
+          scope: ${{ inputs.scope }}
+          node-auth-token: ${{ secrets.node-auth-token }}
+          git-token: ${{ secrets.git-token }}
+
+      - name: Install + validate (credential-free gate)
+        env:
+          INSTALL_COMMAND: ${{ inputs.install-command }}
+          VALIDATE_COMMAND: ${{ inputs.validate-command }}
+        run: |
+          set -euo pipefail
+          eval "$INSTALL_COMMAND"
+          eval "$VALIDATE_COMMAND"
+
+      - name: Authenticate to GCP (Workload Identity)
+        if: env.HAS_CLOUD_CREDS == 'true'
+        uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ secrets.gcp-wip }}
+          service_account: ${{ secrets.gcp-sa }}
+
+      - name: Pulumi ${{ inputs.pulumi-command }}
+        if: env.HAS_CLOUD_CREDS == 'true'
+        uses: pulumi/actions@v7
+        with:
+          command: ${{ inputs.pulumi-command }}
+          stack-name: ${{ matrix.stack }}
+          comment-on-pr: ${{ inputs.comment-on-pr }}
+        env:
+          PULUMI_ACCESS_TOKEN: ${{ secrets.pulumi-access-token }}
+
+      - name: Note skipped live preview
+        if: env.HAS_CLOUD_CREDS != 'true'
+        run: |
+          echo "::notice title=Pulumi preview skipped::GCP_WIP / PULUMI_ACCESS_TOKEN not set; ran the credential-free validation gate only."
