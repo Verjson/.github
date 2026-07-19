@@ -1,3 +1,18 @@
+# Reusable pulumi-ci workflow for Pulumi TS infra repos — 2026-07-19
+
+#31 item 3 (IaC lane). Added `.github/workflows/pulumi-ci.yml` (`workflow_call`),
+lifted from viager-infra's preview.yml so infra repos stop reinventing the
+credential-gating dance. One job, two gates: (1) always-run credential-free
+validation (`npm ci` + caller `validate-command`, default `npm run build`) — the
+meaningful gate on forks / secret-less repos; (2) live `pulumi preview` (command
+configurable) gated on `HAS_CLOUD_CREDS` (GCP_WIP **and** PULUMI_ACCESS_TOKEN
+present) via google-github-actions/auth WIP, else a `::notice` skip (not a
+failure). Node + @verjson registry come from the setup-verjson-node composite
+(#36, dogfooded); `stacks` drives the matrix; `runner` defaults to the GCP
+self-hosted pool (one-file fleet move), overridable to ubuntu. Secrets all
+optional. IaC default is Pulumi TS, not Terraform — no terraform lane. Declarative
+(no bash branching), so no extract-test, matching helm-ci.yml.
+
 # Gate files follow-up issues for non-blocking findings — 2026-07-18
 
 Q1a of the review-output enhancement (ADR 0009). The verdict schema gains a
