@@ -42,6 +42,10 @@ git config --global --add url."https://github.com/".insteadOf "git@github.com:"
 git config --global --unset-all credential."https://github.com".helper 2>/dev/null || true
 if [ -n "${VERJSON_GIT_TOKEN:-}" ]; then
   mask "${VERJSON_GIT_TOKEN}"
+  # Deliberately job-wide: the credential helper is consulted by whichever later
+  # step clones the private dep (e.g. `npm ci`), not just here, so the token must
+  # live in the job env. Keep untrusted third-party steps out of jobs that pass a
+  # git-token — the token (masked) is readable by every subsequent step.
   printf 'VERJSON_GIT_TOKEN=%s\n' "${VERJSON_GIT_TOKEN}" >>"${github_env}"
   git config --global --add credential."https://github.com".helper \
     '!f() { echo "username=x-access-token"; echo "password=${VERJSON_GIT_TOKEN}"; }; f'
