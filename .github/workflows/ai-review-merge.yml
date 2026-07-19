@@ -419,7 +419,7 @@ jobs:
       - name: Fetch telemetry helper scripts
         if: always()
         continue-on-error: true
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
         with:
           repository: Verjson/.github
           ref: main
