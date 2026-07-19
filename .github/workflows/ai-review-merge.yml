@@ -64,7 +64,7 @@ jobs:
         !contains(github.event.pull_request.labels.*.name, 'hold') &&
         !contains(github.event.pull_request.title, 'DO NOT MERGE')
       )
-    runs-on: ${{ github.repository == 'Verjson/.github' && fromJSON('["self-hosted","meta"]') || fromJSON('["self-hosted","gce"]') }}
+    runs-on: ${{ github.repository == 'Verjson/.github' && fromJSON('["self-hosted","meta"]') || fromJSON('["self-hosted","GCP"]') }}
     timeout-minutes: 10
     permissions:
       contents: read
