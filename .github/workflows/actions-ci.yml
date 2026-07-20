@@ -40,6 +40,8 @@ jobs:
         run: bash scripts/ci-gate/freshness.test.sh
       - name: merge gate — review-comment render (ADR-0007 pinpointing)
         run: bash scripts/ci-gate/review-comment.test.sh
+      - name: merge gate — ai-review retry chain (ADR 0015, #64)
+        run: bash scripts/ci-gate/ai-review-retry.test.sh
       - name: merge gate — follow-up issue filing (ADR 0009)
         run: bash scripts/ci-gate/followup-issues.test.sh
       - name: merge gate — DO NOT MERGE hold predicate (ADR 0012, #51)

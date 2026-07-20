@@ -531,12 +531,39 @@ jobs:
             --json-schema '{"type":"object","properties":{"blocking":{"type":"boolean"},"summary":{"type":"string"},"review_first":{"type":"array","items":{"type":"object","properties":{"location":{"type":"string"},"why":{"type":"string"}},"required":["location","why"],"additionalProperties":false}},"findings":{"type":"array","items":{"type":"string"}},"followups":{"type":"array","items":{"type":"object","properties":{"location":{"type":"string"},"note":{"type":"string"}},"required":["location","note"],"additionalProperties":false}}},"required":["blocking","summary","review_first","findings","followups"],"additionalProperties":false}'
             --allowedTools "Read,Grep,Glob"
 
+      # One more bounded attempt when BOTH prior passes produced no verdict.
+      # error_max_structured_output_retries is a *transient* failure of the model
+      # to emit the tool call (distinct from budget/turns), and it has struck the
+      # first pass and the escalation in the same run (#64). Because the flakes are
+      # roughly independent, a third strong-tier attempt clears it far more often
+      # than not — before the deterministic submit fails closed. Still fail-closed
+      # if this also comes back empty. Guarded on BOTH prior outputs being empty so
+      # a clean first (or second) pass never reaches here.
+      - name: Second escalation when both prior passes produced no verdict (#64)
+        id: claude_retry2
+        if: steps.claude.outputs.structured_output == '' && steps.claude_retry.outputs.structured_output == ''
+        continue-on-error: true
+        uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          github_token: ${{ secrets.ORG_ADMIN_TOKEN }}
+          allowed_bots: "renovate,renovate[bot],mend[bot]"
+          prompt: ${{ steps.prep.outputs.review_prompt }}
+          claude_args: |
+            --model claude-sonnet-5
+            --max-turns 30
+            --max-budget-usd 1.00
+            --json-schema '{"type":"object","properties":{"blocking":{"type":"boolean"},"summary":{"type":"string"},"review_first":{"type":"array","items":{"type":"object","properties":{"location":{"type":"string"},"why":{"type":"string"}},"required":["location","why"],"additionalProperties":false}},"findings":{"type":"array","items":{"type":"string"}},"followups":{"type":"array","items":{"type":"object","properties":{"location":{"type":"string"},"note":{"type":"string"}},"required":["location","note"],"additionalProperties":false}}},"required":["blocking","summary","review_first","findings","followups"],"additionalProperties":false}'
+            --allowedTools "Read,Grep,Glob"
+
       - name: Submit deterministic PR review
         id: submit
         env:
           GH_TOKEN: ${{ secrets.ORG_ADMIN_TOKEN }}
-          # Prefer the escalation verdict; fall back to the first pass.
-          VERDICT: ${{ steps.claude_retry.outputs.structured_output != '' && steps.claude_retry.outputs.structured_output || steps.claude.outputs.structured_output }}
+          # Prefer the latest non-empty verdict: second escalation, then first
+          # escalation, then the cheap first pass.
+          VERDICT: ${{ steps.claude_retry2.outputs.structured_output != '' && steps.claude_retry2.outputs.structured_output || (steps.claude_retry.outputs.structured_output != '' && steps.claude_retry.outputs.structured_output || steps.claude.outputs.structured_output) }}
           # Passed via env (not inline ${{ }}) so the block is plain bash and can
           # be extracted and unit-tested (scripts/ci-gate/review-comment.test.sh).
           HEAD_SHA: ${{ needs.classify.outputs.head_sha }}
@@ -551,7 +578,7 @@ jobs:
             gh pr edit "$PR_NUMBER" --repo "$TARGET_REPO" --add-label ai-review-inconclusive 2>/dev/null || true
             gh pr comment "$PR_NUMBER" --repo "$TARGET_REPO" --body "⚠️ **Merge gate: review could not complete**
 
-          The automated review exhausted its budget/turns on both the first pass and the escalation pass, so no verdict was produced. This PR was **not** auto-merged. A maintainer should review and merge it manually."
+          The automated review produced no verdict across all three passes (budget/turn exhaustion, or the model failed to return a structured verdict on every attempt). This PR was **not** auto-merged. A maintainer should review and merge it manually."
             exit 1
           fi
           # Expose the verdict so ai-merge can file follow-up issues for the
@@ -621,9 +648,9 @@ jobs:
         if: always()
         continue-on-error: true
         env:
-          VERDICT_JSON: ${{ steps.claude_retry.outputs.structured_output != '' && steps.claude_retry.outputs.structured_output || steps.claude.outputs.structured_output }}
-          EXECUTION_FILE: ${{ steps.claude_retry.outputs.execution_file != '' && steps.claude_retry.outputs.execution_file || steps.claude.outputs.execution_file }}
-          ACTION_CONCLUSION: ${{ steps.claude_retry.conclusion != 'skipped' && steps.claude_retry.conclusion || steps.claude.conclusion }}
+          VERDICT_JSON: ${{ steps.claude_retry2.outputs.structured_output != '' && steps.claude_retry2.outputs.structured_output || (steps.claude_retry.outputs.structured_output != '' && steps.claude_retry.outputs.structured_output || steps.claude.outputs.structured_output) }}
+          EXECUTION_FILE: ${{ steps.claude_retry2.outputs.execution_file != '' && steps.claude_retry2.outputs.execution_file || (steps.claude_retry.outputs.execution_file != '' && steps.claude_retry.outputs.execution_file || steps.claude.outputs.execution_file) }}
+          ACTION_CONCLUSION: ${{ steps.claude_retry2.conclusion != 'skipped' && steps.claude_retry2.conclusion || (steps.claude_retry.conclusion != 'skipped' && steps.claude_retry.conclusion || steps.claude.conclusion) }}
           LANE: ${{ needs.classify.outputs.lane }}
           LANE_REASON: ${{ needs.classify.outputs.reason }}
           MODEL: ${{ needs.classify.outputs.model }}
