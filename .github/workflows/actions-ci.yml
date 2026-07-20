@@ -52,5 +52,9 @@ jobs:
         run: bash scripts/ci-gate/pulumi-comment.test.sh
       - name: ADR index is generated & current (not hand-edited)
         run: bash scripts/gen-adr-index.sh --check
+      - name: ADR index generator — edge cases (#67)
+        run: bash scripts/ci-gate/gen-adr-index.test.sh
       - name: NEXT changelog fragments render cleanly
         run: bash scripts/render-next.sh >/dev/null
+      - name: NEXT renderer — edge cases (#67)
+        run: bash scripts/ci-gate/render-next.test.sh
