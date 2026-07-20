@@ -1,3 +1,19 @@
+# Reusable-workflow versioning: pin callers to `@v1`, not `@main` (ADR 0014) — 2026-07-20
+
+Closes the `@main` blast-radius risk flagged in ADR 0010 (#31 item 5). Establishes
+SemVer for the `.github` repo as a whole with a **moving major tag `v1`** plus
+immutable `v1.0.0`; consumers pin `uses: …/<lane>.yml@v1` so a push to `main` no
+longer redefines every repo's CI at once, and Renovate opens per-repo `@v1 → @v2`
+PRs on a major. Adds `docs/reusable-workflow-versioning.md` (scheme, how to pin, how
+to cut a release) and `.github/workflows/tag-major.yml` — a **human-triggered**
+(`on: release: published`, `contents: write`, vX.Y.Z shape-gated) job that
+force-updates `vX` to the released commit; nothing mutates tags on a plain push.
+Recommendation is moving-major `@v1` as the org default, exact/digest pin as opt-in
+hardening (rationale table in ADR 0014). Deferred deliberately: the one-time
+`v1.0.0`/`v1` bootstrap tags (manual org action, commands documented) and flipping
+existing `@main` callers (`catalog-helm`, `viager-infra`, `catalog-ui`, platform
+templates) — Renovate/consumer follow-up, not this repo. ADR 0014.
+
 # ADR 0012: merge gate honors a `DO NOT MERGE` label as a terminal hold — 2026-07-20
 
 Fixes #51 (sensitive-class: ruleset/hold behavior). The gate merges with an
