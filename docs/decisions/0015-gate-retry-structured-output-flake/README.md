@@ -2,7 +2,7 @@
 
 - **Date:** 2026-07-20
 - **Issue:** Verjson/.github#64 (ai-review intermittently fails with `error_max_structured_output_retries`)
-- **PR:** Verjson/.github#66
+- **PR:** Verjson/.github#68
 - **Category:** CI / merge-gate behavior (sensitive class)
 - **Relationship:** Extends ADR 0002 (graceful budget/turn escalation) — same
   ai-review escalation ladder, a different failure mode.
@@ -71,4 +71,4 @@ the model/schema interaction. #64 stays open to track that.
 +          VERDICT: ${{ steps.claude_retry2.outputs.structured_output != '' && steps.claude_retry2.outputs.structured_output || (steps.claude_retry.outputs.structured_output != '' && steps.claude_retry.outputs.structured_output || steps.claude.outputs.structured_output) }}
 ```
 
-Full change: Verjson/.github#66.
+Full change: Verjson/.github#68.
