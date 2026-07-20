@@ -1,0 +1,35 @@
+name: actionlint
+
+# Lints the repo's GitHub Actions workflows deterministically, so nit classes the
+# merge-gate AI reviewer used to catch by hand (inconsistent/deprecated action
+# pins — e.g. #60 — and workflow-expression errors) fail pre-review for free.
+# Phase 1 of #43 (issue #80). The GCP self-hosted pool has no Docker socket, so
+# actionlint is installed as a pinned release binary rather than a container action.
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/**'
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/**'
+
+permissions:
+  contents: read
+
+jobs:
+  actionlint:
+    runs-on: [self-hosted, GCP]
+    env:
+      ACTIONLINT_VERSION: 1.7.7
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install actionlint (pinned release binary)
+        run: |
+          url="https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          curl -fsSL "$url" -o actionlint.tar.gz
+          tar -xzf actionlint.tar.gz actionlint
+          ./actionlint --version
+      - name: Run actionlint over all workflows
+        run: ./actionlint -color

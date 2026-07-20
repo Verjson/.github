@@ -1,0 +1,15 @@
+# actionlint config — declares the self-hosted runner labels this repo's
+# workflows route on, so the [runner-label] check doesn't false-positive on
+# our custom pools (actionlint only knows GitHub-hosted labels; see #80).
+# Only labels that appear in a `runs-on` here are listed — mirror of the live
+# org fleet (`gh api /orgs/Verjson/actions/runners`), kept minimal:
+#   - `gce` is omitted: it co-occurs 1:1 with `GCP` on every runner and no
+#     workflow routes on it, so declaring it would be pure duplication.
+#   - `docker`/`manish` are omitted: real pools, but no workflow in THIS repo
+#     targets them (a repo that does declares them in its own config).
+# Keep in sync with docs/runner-routing.md / ADR 0016 if routing changes.
+self-hosted-runner:
+  labels:
+    - GCP   # general GCP pool (gha-runner-*, gha-gate-*, gha-docker-1)
+    - gate  # merge-gate lane for non-.github repos (gha-gate-*)
+    - meta  # dedicated self-gate lane for this repo (gha-meta-*, ADR 0016)
