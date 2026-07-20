@@ -1,0 +1,39 @@
+name: tag-major
+
+# Re-point the moving major tag (vX) at the commit of a freshly published
+# vX.Y.Z release. Human-triggered ONLY: it fires on `release: published`, i.e.
+# after a maintainer cuts a GitHub Release — never on a plain push. See
+# docs/reusable-workflow-versioning.md and ADR 0014.
+on:
+  release:
+    types: [published]
+
+# Least privilege: only the contents scope needed to force-update the major tag.
+permissions:
+  contents: write
+
+jobs:
+  retag-major:
+    runs-on: [self-hosted, GCP]
+    steps:
+      - name: Check out the released tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name }}
+          fetch-depth: 0
+
+      - name: Re-point moving major tag
+        env:
+          FULL_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$FULL_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::notice::Release tag '$FULL_TAG' is not vX.Y.Z; not a reusable-workflow release — skipping major re-point."
+            exit 0
+          fi
+          MAJOR="${FULL_TAG%%.*}"   # v1.2.0 -> v1
+          echo "Re-pointing $MAJOR -> $FULL_TAG"
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -f "$MAJOR" "$FULL_TAG"
+          git push --force origin "refs/tags/$MAJOR"
