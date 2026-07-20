@@ -12,6 +12,10 @@ name: node-ci (reusable)
 #     pull_request:
 #   jobs:
 #     ci:
+#       permissions:              # REQUIRED for @scope/* from GitHub Packages:
+#         contents: read          # a reusable's GITHUB_TOKEN is capped by the
+#         packages: read          # caller, so packages:read must be granted here
+#                                 # or `npm ci` 401s on private @scope deps.
 #       uses: Verjson/.github/.github/workflows/node-ci.yml@main
 #       secrets: inherit          # passes NODE_AUTH_TOKEN (+ submodules-token)
 #       # with:
