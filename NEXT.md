@@ -1,3 +1,24 @@
+# ADR 0012: merge gate honors a `DO NOT MERGE` label as a terminal hold — 2026-07-20
+
+Fixes #51 (sensitive-class: ruleset/hold behavior). The gate merges with an
+org-admin ruleset bypass; its hold opt-outs were a `hold` label, a `DO NOT MERGE`
+*title* marker, and draft — but the workspace convention is "titled **or
+labelled** `DO NOT MERGE`", and a PR carrying the **`DO NOT MERGE` label** matched
+none of them, so a human-held PR could be auto-merged (observed during Renovate
+automerge verification). Folded the label into the same terminal-hold predicate at
+all four checkpoints in `ai-review-merge.yml` — the two GitHub-expression `if:`
+guards (freshness, classify) gain `!contains(labels.*.name, 'DO NOT MERGE')`, and
+the two bash predicates (classify- and the authoritative merge-time re-check) now
+normalize label names (`ascii_upcase | gsub("[ _-]+";" ")`) so `DO NOT MERGE`,
+`do-not-merge`, `Do_Not_Merge` and a case-folded title all hold. Fail-closed: the
+match can only add holds. Regression-tested by extraction
+(`scripts/ci-gate/hold.test.sh`, pinned to the `merge` step via `id: merge`): the
+#51 label case + variants, all prior signals preserved, a green positive control,
+and the non-open no-op. **This was the named blocker on the org-wide PM
+autonomous-merge-authority rollout** — the gate is now the reliable guard, so that
+rollout is unblocked. ADR 0012 carries the before→after diff of the sensitive
+hunks.
+
 # ADR 0011: relabel hostinger (drop `GCP`) — capability-accurate runner labels — 2026-07-19
 
 Root-cause fix for #52, complementing the gate routing fix (#53). The `hostinger`

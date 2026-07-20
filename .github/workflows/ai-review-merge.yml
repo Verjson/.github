@@ -66,6 +66,7 @@ jobs:
         (github.event.action != 'labeled' || github.event.label.name == 're-review') &&
         !github.event.pull_request.draft &&
         !contains(github.event.pull_request.labels.*.name, 'hold') &&
+        !contains(github.event.pull_request.labels.*.name, 'DO NOT MERGE') &&
         !contains(github.event.pull_request.title, 'DO NOT MERGE')
       )
     runs-on: ${{ github.repository == 'Verjson/.github' && fromJSON('["self-hosted","meta"]') || fromJSON('["self-hosted","gate"]') }}
@@ -175,6 +176,7 @@ jobs:
           (github.event.action != 'labeled' || github.event.label.name == 're-review') &&
           !github.event.pull_request.draft &&
           !contains(github.event.pull_request.labels.*.name, 'hold') &&
+          !contains(github.event.pull_request.labels.*.name, 'DO NOT MERGE') &&
           !contains(github.event.pull_request.title, 'DO NOT MERGE')
         )
       )
@@ -205,7 +207,10 @@ jobs:
           meta=$(gh pr view "$PR_NUMBER" --repo "$REPO" \
             --json labels,title,isDraft,author,headRefOid,baseRefName)
           # Re-check opt-outs here too: workflow_dispatch bypasses the job if.
-          if jq -e '(.labels | map(.name) | index("hold")) or (.title | contains("DO NOT MERGE")) or .isDraft' <<<"$meta" >/dev/null; then
+          # A hold is any of: a `hold`/`DO NOT MERGE` label (case- and
+          # separator-insensitive, so `do-not-merge` counts — #51), a
+          # `DO NOT MERGE` title marker, or draft.
+          if jq -e '([.labels[].name | ascii_upcase | gsub("[ _-]+";" ")]) as $l | ($l | index("HOLD")) or ($l | index("DO NOT MERGE")) or (.title | ascii_upcase | contains("DO NOT MERGE")) or .isDraft' <<<"$meta" >/dev/null; then
             echo "PR is held (label/title/draft); no lane."
             out lane held; out reason "held by human opt-out"; out model none
             exit 0
@@ -668,15 +673,18 @@ jobs:
       LANE_REASON: ${{ needs.classify.outputs.reason }}
     steps:
       - name: Wait for the rest of CI, then squash-merge
+        id: merge
         env:
           GH_TOKEN: ${{ secrets.ORG_ADMIN_TOKEN }}
         run: |
           set -euo pipefail
           REPO="$TARGET_REPO"
-          # Re-check the opt-outs at merge time: a `hold` label added after
-          # classification must still stop the merge.
+          # Re-check the opt-outs at merge time — the authoritative hold gate:
+          # a `hold`/`DO NOT MERGE` label added after classification must still
+          # stop the merge. Match is case- and separator-insensitive so a
+          # `DO NOT MERGE` *label* (not just the title marker) holds too — #51.
           meta=$(gh pr view "$PR_NUMBER" --repo "$REPO" --json labels,title,isDraft,state)
-          if jq -e '(.labels | map(.name) | index("hold")) or (.title | contains("DO NOT MERGE")) or .isDraft' <<<"$meta" >/dev/null; then
+          if jq -e '([.labels[].name | ascii_upcase | gsub("[ _-]+";" ")]) as $l | ($l | index("HOLD")) or ($l | index("DO NOT MERGE")) or (.title | ascii_upcase | contains("DO NOT MERGE")) or .isDraft' <<<"$meta" >/dev/null; then
             echo "PR #$PR_NUMBER is held (label/title/draft); not merging."
             exit 0
           fi

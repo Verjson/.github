@@ -4,6 +4,7 @@ Reverse-chronological index of org-level decisions.
 
 | # | Date | Decision |
 |---|------|----------|
+| [0012](0012-gate-honors-do-not-merge-label/README.md) | 2026-07-20 | Merge gate honors a `DO NOT MERGE` label as a terminal hold (unblocks PM merge-authority rollout) |
 | [0011](0011-hostinger-runner-labels-capability-accurate/README.md) | 2026-07-19 | Runner labels describe capability: drop `GCP` from the non-GCE `hostinger` runner (keep it as `manish` overflow) |
 | [0010](0010-platform-templates-consume-reusable-workflows/README.md) | 2026-07-19 | Platform-template service repos consume org reusable workflows (helm/pulumi/ui) instead of hand-rolling CI |
 | [0009](0009-gate-files-followup-issues/README.md) | 2026-07-18 | Merge gate files tracking issues for substantive non-blocking findings (nitpicks excluded) |
