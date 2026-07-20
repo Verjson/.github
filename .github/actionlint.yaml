@@ -1,0 +1,14 @@
+# actionlint config — declares the org's self-hosted runner labels so the
+# [runner-label] check doesn't false-positive on our custom pools. actionlint
+# only knows GitHub-hosted labels out of the box; without this it flags every
+# literal `[self-hosted, GCP]` array (see #80). Labels below mirror the live
+# org runner set (`gh api /orgs/Verjson/actions/runners`): keep in sync when
+# the runner topology changes (docs/runner-routing.md, ADR 0016).
+self-hosted-runner:
+  labels:
+    - GCP    # general GCP pool (gha-runner-*) + shared by gate/docker
+    - gce    # GCE-provisioned marker (gate + general + docker runners)
+    - gate   # merge-gate lane for non-.github repos (gha-gate-*)
+    - meta   # dedicated self-gate lane for this repo (gha-meta-*, ADR 0016)
+    - docker # only runner with a Docker socket (gha-docker-1)
+    - manish # hostinger box
