@@ -1,3 +1,11 @@
+# tag-major: serialize the moving-tag force-push with a concurrency group — 2026-07-20
+
+Follow-up hardening to #58 (from its code-review): `tag-major.yml`'s `retag-major`
+job gains `concurrency: tag-major` so two releases published in quick succession
+can't race on the `vX` force-push (last write wins deterministically). No change
+on the common one-release path. Not sensitive beyond the already-reviewed release
+automation surface.
+
 # fix: pulumi-ci comment-on-pr is a true no-op on non-PR events — 2026-07-20
 
 Fixes #47 (non-blocking AI-review follow-up from #46). The reusable

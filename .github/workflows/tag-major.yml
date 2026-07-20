@@ -14,6 +14,9 @@ permissions:
 
 jobs:
   retag-major:
+    # Serialize force-updates so two releases published in quick succession can't
+    # race on the moving-tag push (last write wins deterministically).
+    concurrency: tag-major
     runs-on: [self-hosted, GCP]
     steps:
       - name: Check out the released tag
