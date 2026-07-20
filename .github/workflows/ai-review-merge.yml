@@ -58,8 +58,11 @@ jobs:
     # gate always means green against the *current* base — a behind-but-clean
     # branch never merges stale. Behind → update the branch (the resulting
     # synchronize starts a fresh run that steps this one aside). Conflicting →
-    # hold and comment (can't auto-resolve). Renovate owns its own rebases, so
-    # its branches are left untouched. Same opt-out guard as classify.
+    # first try the same update-branch merge (clears a conflict that was only
+    # base drift, then steps aside like the behind path); a genuine content
+    # conflict still holds and comments (can't auto-resolve). Renovate owns its
+    # own rebases, so its branches are left untouched. Same opt-out guard as
+    # classify.
     if: >
       github.event_name == 'workflow_dispatch' ||
       (
@@ -123,9 +126,31 @@ jobs:
           done
           echo "mergeable=$mrg"
 
-          # Hard conflict with base: cannot auto-resolve. Hold (fail-closed) and
-          # leave a single marker-guarded comment so a human knows to rebase.
+          # Base conflict. Try the same non-destructive update-branch (merge base
+          # into head) the BEHIND path uses BEFORE giving up: a branch reported
+          # CONFLICTING purely from base drift (non-overlapping changes GitHub
+          # flags pessimistically) clears once the base is merged in. Re-check
+          # mergeability after; if it clears, treat it exactly like the BEHIND
+          # success path — the update pushed a `synchronize`, so a fresh run
+          # reviews/merges against the current base and this run steps aside
+          # (proceed=false). Only a *genuine* content conflict — the update-branch
+          # API fails, or mergeable is still CONFLICTING afterwards — falls
+          # through to hold (fail-closed) + a single marker-guarded comment.
           if [ "$mrg" = "CONFLICTING" ]; then
+            if gh api --method PUT "repos/$REPO/pulls/$PR_NUMBER/update-branch" >/dev/null 2>&1; then
+              # Re-read mergeable, again waiting out the async UNKNOWN window.
+              mrg="$(jq -r '.mergeable // "UNKNOWN"' <<<"$(pr_json mergeable || echo '{}')")"
+              for _ in 1 2 3 4 5 6; do
+                [ "$mrg" != "UNKNOWN" ] && break
+                sleep 5
+                mrg="$(jq -r '.mergeable // "UNKNOWN"' <<<"$(pr_json mergeable || echo '{}')")"
+              done
+              echo "post-update mergeable=$mrg"
+              if [ "$mrg" != "CONFLICTING" ]; then
+                echo "Conflict was base drift; update-branch cleared it — a fresh run will merge against the current base."
+                out proceed false; exit 0
+              fi
+            fi
             marker="<!-- gate:branch-conflict -->"
             note="$marker This PR conflicts with \`$base_ref\`. The merge gate can't auto-update a conflicting branch — please rebase/merge \`$base_ref\` and resolve the conflicts; the gate re-fires on push."
             # Dedup only on a *successful* read: a transient read failure must not

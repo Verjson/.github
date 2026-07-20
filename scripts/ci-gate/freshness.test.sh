@@ -44,6 +44,11 @@ cat >"$tmp/bin/gh" <<'GH'
 if [ "$1" = "pr" ] && [ "$2" = "view" ]; then
   printf '%s ' "$@" | grep -q -- '--json comments' && { cat "$COMMENTS_FILE" 2>/dev/null; exit 0; }
   [ "${PRVIEW_FAIL:-0}" = "1" ] && exit 1
+  # After update-branch runs, return the post-update mergeable so a CONFLICTING
+  # branch whose conflict was mere base drift reads as cleared on the re-check.
+  if [ -n "${POST_UPDATE_MERGEABLE:-}" ] && grep -q UPDATE "$ACTIONLOG" 2>/dev/null; then
+    jq -c --arg m "$POST_UPDATE_MERGEABLE" '.mergeable=$m' "$FIXTURE"; exit 0
+  fi
   cat "$FIXTURE"; exit 0
 fi
 [ "$1" = "pr" ] && [ "$2" = "comment" ] && { echo COMMENT >>"$ACTIONLOG"; exit 0; }
@@ -87,6 +92,25 @@ rc=$(BEHIND_BY=0 run_case '{"author":{"login":"human"},"headRefName":"feat/x","h
 
 rc=$(BEHIND_BY=0 run_case '{"author":{"login":"human"},"headRefName":"feat/x","headRefOid":"s","baseRefName":"main","mergeable":"CONFLICTING"}' '{"comments":[{"body":"<!-- gate:branch-conflict --> old"}]}')
 { [ "$rc" = "rc=1" ] && ! act_has COMMENT; } && pass "conflict comment is deduped" || fail "conflict comment not deduped"
+
+# (a) CONFLICTING from mere base drift → update-branch clears it → step aside
+# like the BEHIND success path (proceed=false), no conflict comment.
+rc=$(POST_UPDATE_MERGEABLE=MERGEABLE BEHIND_BY=0 run_case '{"author":{"login":"human"},"headRefName":"feat/x","headRefOid":"s","baseRefName":"main","mergeable":"CONFLICTING"}')
+{ [ "$rc" = "rc=0" ] && act_has UPDATE && out_has 'proceed=false' && ! act_has COMMENT; } \
+  && pass "conflict cleared by update-branch → proceed=false, no comment" || fail "conflict-then-update path wrong ($rc)"
+
+# (b) CONFLICTING + update-branch API fails → hold (exit 1) + conflict comment.
+rc=$(UPDATE_RC=1 BEHIND_BY=0 run_case '{"author":{"login":"human"},"headRefName":"feat/x","headRefOid":"s","baseRefName":"main","mergeable":"CONFLICTING"}')
+{ [ "$rc" = "rc=1" ] && act_has COMMENT; } && pass "conflict + failed update-branch holds + comments" || fail "failed-update conflict path wrong ($rc)"
+
+# (c) CONFLICTING + update-branch "succeeds" but branch is STILL CONFLICTING
+# (genuine content conflict) → hold (exit 1) + conflict comment.
+rc=$(POST_UPDATE_MERGEABLE=CONFLICTING BEHIND_BY=0 run_case '{"author":{"login":"human"},"headRefName":"feat/x","headRefOid":"s","baseRefName":"main","mergeable":"CONFLICTING"}')
+{ [ "$rc" = "rc=1" ] && act_has UPDATE && act_has COMMENT; } && pass "genuine conflict survives update-branch → holds + comments" || fail "genuine-conflict path wrong ($rc)"
+
+# (d) Renovate CONFLICTING branch → still exempt: no update attempt, no comment.
+POST_UPDATE_MERGEABLE=MERGEABLE BEHIND_BY=0 run_case '{"author":{"login":"renovate[bot]"},"headRefName":"renovate/x","headRefOid":"s","baseRefName":"main","mergeable":"CONFLICTING"}' >/dev/null
+{ out_has 'proceed=true' && ! act_has UPDATE && ! act_has COMMENT; } && pass "renovate conflict left to Renovate (no update, no comment)" || fail "renovate conflict not exempt"
 
 BEHIND_BY=4 run_case "$H" >/dev/null
 { act_has UPDATE && out_has 'proceed=false'; } && pass "behind (clean) updates branch, proceed=false" || fail "behind path wrong"
