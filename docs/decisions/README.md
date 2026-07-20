@@ -5,6 +5,7 @@ Reverse-chronological index of org-level decisions.
 | # | Date | Decision |
 |---|------|----------|
 | [0014](0014-reusable-workflow-versioning/README.md) | 2026-07-20 | Version the org reusable workflows (SemVer + moving `v1` tag); callers pin `@v1`, Renovate bumps majors |
+| [0013](0013-gate-auto-update-on-conflict/README.md) | 2026-07-20 | Merge gate tries update-branch before holding on a CONFLICTING branch (base-drift clears; genuine conflict still holds) |
 | [0012](0012-gate-honors-do-not-merge-label/README.md) | 2026-07-20 | Merge gate honors a `DO NOT MERGE` label as a terminal hold (unblocks PM merge-authority rollout) |
 | [0011](0011-hostinger-runner-labels-capability-accurate/README.md) | 2026-07-19 | Runner labels describe capability: drop `GCP` from the non-GCE `hostinger` runner (keep it as `manish` overflow) |
 | [0010](0010-platform-templates-consume-reusable-workflows/README.md) | 2026-07-19 | Platform-template service repos consume org reusable workflows (helm/pulumi/ui) instead of hand-rolling CI |

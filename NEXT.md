@@ -1,3 +1,24 @@
+# Gate tries update-branch before holding on a conflict — 2026-07-20
+
+Extended the `freshness` step in `ai-review-merge.yml` (ADR 0008): on
+`mergeable == CONFLICTING` the gate no longer holds immediately. It now **first
+attempts the same non-destructive `update-branch` merge** the BEHIND path uses,
+then re-checks mergeability (waiting out the async UNKNOWN window like the initial
+read). If the conflict was mere base drift, the merge clears it and the run steps
+aside (`proceed=false`) so the resulting `synchronize` re-enters the gate against
+the current base — same ergonomics as the BEHIND path. A **genuine** content
+conflict (update-branch API fails, or still CONFLICTING afterwards) falls back to
+the unchanged fail-closed hold + deduped `gate:branch-conflict` comment. Renovate
+stays exempt (its author/branch check runs before the mergeable check, so no
+update is attempted). Merge only — **no rebase/force-push**; still git-revertible.
+Honest limit: a merge resolves drift but not overlapping-edit conflicts, and not
+the squash-divergence patch-id case that only a rebase dedups (#55). Extended
+`scripts/ci-gate/freshness.test.sh` (+4 cases: cleared→proceed=false, failed
+update→hold, genuine conflict→hold, Renovate→exempt; the stub returns a
+post-update mergeable once `update-branch` has logged), all 13 green + full
+ci-gate suite green + YAML validates. Decision recorded as ADR 0013
+(sensitive-class: org merge-gate behavior). Issue #56.
+
 # tag-major: serialize the moving-tag force-push with a concurrency group — 2026-07-20
 
 Follow-up hardening to #58 (from its code-review): `tag-major.yml`'s `retag-major`
