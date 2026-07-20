@@ -12,7 +12,9 @@ on:
       - '.github/workflows/actions-ci.yml'
       - '.github/workflows/ai-review-merge.yml'
       - '.github/workflows/pulumi-ci.yml'
-      - 'scripts/ci-gate/**'
+      - 'scripts/**'
+      - 'docs/decisions/**'
+      - 'NEXT/**'
   push:
     branches: [main]
     paths:
@@ -20,7 +22,9 @@ on:
       - '.github/workflows/actions-ci.yml'
       - '.github/workflows/ai-review-merge.yml'
       - '.github/workflows/pulumi-ci.yml'
-      - 'scripts/ci-gate/**'
+      - 'scripts/**'
+      - 'docs/decisions/**'
+      - 'NEXT/**'
 
 permissions:
   contents: read
@@ -42,3 +46,7 @@ jobs:
         run: bash scripts/ci-gate/hold.test.sh
       - name: pulumi-ci — comment-on-pr no-op on push guard (#47)
         run: bash scripts/ci-gate/pulumi-comment.test.sh
+      - name: ADR index is generated & current (not hand-edited)
+        run: bash scripts/gen-adr-index.sh --check
+      - name: NEXT changelog fragments render cleanly
+        run: bash scripts/render-next.sh >/dev/null
