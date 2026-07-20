@@ -28,7 +28,7 @@ for the *why* of the groups, this for the *how* of day-to-day routing.
 | `GCP`      | `gha-runner-3..6`, `gha-gate-1..4` (8 GCE VMs)     | `GCP`    | **Canonical general-pool label.** Ordinary CI: build / test / lint, releases, `notify-umbrella`. GCE image → ambient `gh`/git/node. |
 | `gce`      | the same 8 GCE VMs (dual-labeled `GCP` + `gce`)    | `GCP`    | **Clean alias of `GCP`** — identical runners (invariant restored in ADR 0011). Deprecated for new work; reconcile `gce` → `GCP` opportunistically. |
 | `gate`     | `gha-gate-1..4` (a subset of the GCE VMs)          | `GCP`    | **All** org gate jobs — `freshness`, `classify`, `ai-review`, `ai-merge` (non-`.github`). Dedicated GCE subset: has ambient `gh` and keeps gate load off general CI. |
-| `meta`     | `gha-meta-1`                                       | `GCP`    | The `Verjson/.github` repo's **own** gate jobs — keeps the gate from deadlocking while reviewing itself. See the caveat below. |
+| `meta`     | `gha-meta-1` (+ `gha-meta-2` pending, [#70](https://github.com/Verjson/.github/issues/70)) | `GCP`    | The `Verjson/.github` repo's **own** gate jobs — a dedicated lane so pipeline-fix PRs never queue behind bulk/other-repo CI (#14). Registered `meta`-only so bulk CI can never occupy it. Must be **redundant** (≥2 `meta`-only runners — [ADR 0016](decisions/0016-self-gate-runner-redundancy/README.md)); one runner is a SPOF. See the caveat below. |
 | `docker`   | `gha-docker-1`                                     | `GCP` †  | Docker / kind / buildx / testcontainers — anything needing the Docker daemon. **Required**, not optional (see below). |
 | `manish`   | `hostinger` runner                                 | `manish` | Secondary / overflow pool on a **non-GCE image** (no ambient `gh`; Node via `setup-node`). Target explicitly by label; jobs must self-provision tools. ‡ |
 | _(none)_   | GitHub-hosted                                      | `GitHub` | **Last resort only.** Reserved fallback; not used for real CI.                                             |
@@ -63,7 +63,13 @@ one-time on-box step owned by the runner-topology owner.
   the dedicated GCE subset (which has ambient `gh` and excludes the `hostinger`
   overflow); routing `freshness`/`classify` to `GCP` let them land on `hostinger`
   and fail (#52). When the target repo **is** `Verjson/.github` itself, they run on
-  `meta` instead (the self-gate lane).
+  `meta` instead (the self-gate lane) — a dedicated lane so pipeline-fix PRs never
+  queue behind bulk/other-repo gate work (#14). That lane must stay **redundant**
+  (≥2 `meta`-only runners); a single runner is a SPOF that leaves `.github` PRs
+  un-gated if it drops. Provisioning the second runner (`gha-meta-2`, GCE,
+  `meta`-only) is tracked by [#70](https://github.com/Verjson/.github/issues/70)
+  ([ADR 0016](decisions/0016-self-gate-runner-redundancy/README.md)); no workflow
+  change is needed — `runs-on: [self-hosted, meta]` picks it up on registration.
 - **Secondary / overflow** → `[self-hosted, manish]`.
 
 ## Constraints every self-hosted job must respect
@@ -79,7 +85,8 @@ These bit us during the hosted→self-hosted migration
    multi-valued key (e.g. `url.*.insteadOf`) collides with a prior job's entry
    (`cannot overwrite multiple values`). Use `--unset-all` then `--add`, or the
    `setup-verjson-node` action which does it idempotently.
-3. **`meta` runner cannot resolve private composite actions.** `gha-meta-1`
+3. **The current `meta` runner cannot resolve private composite actions.**
+   `gha-meta-1` is not a GCE box, so it
    fails to resolve `uses: Verjson/verjson-observability@…` at job setup, and
    `uses:` resolution isn't guarded by `continue-on-error` — so a private-action
    step breaks the whole job on `meta`. Keep private-action steps off `meta`
@@ -89,6 +96,9 @@ These bit us during the hosted→self-hosted migration
    [`ai-review-merge.yml`](../.github/workflows/ai-review-merge.yml). The
    exporter is *separately* dormant until an OTLP endpoint is provisioned, per
    [`docs/ci-telemetry.md`](ci-telemetry.md) — two distinct reasons, not one.)
+   Provisioning `gha-meta-2` as a **GCE** runner ([ADR 0016](decisions/0016-self-gate-runner-redundancy/README.md))
+   removes this limitation for the lane, since GCE runners resolve private
+   composite actions.
 
 ## Drift & migration
 
