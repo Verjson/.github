@@ -2,7 +2,7 @@
 
 - **Date:** 2026-07-20
 - **Issue:** Verjson/.github#51 (held PRs can be auto-merged)
-- **PR:** Verjson/.github#__PR__
+- **PR:** Verjson/.github#55
 - **Category:** CI / merge-gate behavior (sensitive class — ruleset/hold semantics)
 - **Relationship:** Same subsystem as ADR 0008 (auto-update stale branches) and
   ADR 0009 (follow-up issues); hardens the opt-out guard the gate has carried
@@ -76,4 +76,4 @@ merge something previously held.
 +if jq -e '([.labels[].name | ascii_upcase | gsub("[ _-]+";" ")]) as $l | ($l | index("HOLD")) or ($l | index("DO NOT MERGE")) or (.title | ascii_upcase | contains("DO NOT MERGE")) or .isDraft' <<<"$meta" >/dev/null; then
 ```
 
-Full change: Verjson/.github#__PR__.
+Full change: Verjson/.github#55.
