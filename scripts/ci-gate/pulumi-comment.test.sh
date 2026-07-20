@@ -56,11 +56,28 @@ case "$expr" in
     fail "expected 'inputs.comment-on-pr && github.event_name ...' (got: $expr)" ;;
 esac
 
-# 3. Truth table of the no-op contract. Mirrors GitHub-expression semantics for
-#    the extracted operands (input boolean AND event == 'pull_request'); asserted
-#    here because bash cannot evaluate the ${{ }} expression itself.
-eval_guard() { # <input-bool> <event-name> -> true|false
-  if [ "$1" = "true" ] && [ "$2" = "pull_request" ]; then echo true; else echo false; fi
+# 3. Truth table of the no-op contract, evaluated against the ACTUAL extracted
+#    expression (not a local reimplementation) so a regression that weakens the
+#    guard is caught here too. We substitute the two operands into `$expr` and
+#    reduce the resulting GitHub-expression form (`<bool> && '<event>' ==
+#    'pull_request'`) to true/false — only the operators this guard uses (`&&`,
+#    `==` on string literals) are handled; an unexpected shape fails loudly.
+eval_guard() { # <input-bool> <event-name> -> true|false (drives off $expr)
+  local e="${expr//inputs.comment-on-pr/$1}"
+  e="${e//github.event_name/\'$2\'}"        # e.g.  true && 'push' == 'pull_request'
+  local out=true
+  local IFS='&'
+  for term in ${e//&&/&}; do                # split on && (each side ANDed)
+    term="$(printf '%s' "$term" | tr -d ' ')"
+    [ -z "$term" ] && continue
+    case "$term" in
+      *==*) [ "${term%%==*}" = "${term##*==}" ] || out=false ;;   # 'a' == 'b'
+      true) ;;
+      false) out=false ;;
+      *) echo "FAIL - unhandled term '$term' in extracted guard"; exit 1 ;;
+    esac
+  done
+  echo "$out"
 }
 check() { # <expected> <input> <event> <label>
   got="$(eval_guard "$2" "$3")"

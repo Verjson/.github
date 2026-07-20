@@ -14,7 +14,11 @@ expression (not a shell block), it can't be executed in bash like the other
 gate steps; pinned instead by extraction (`scripts/ci-gate/pulumi-comment.test.sh`,
 wired into `actions-ci.yml` with `pulumi-ci.yml` added to its path filter) — the
 test asserts the guard expression is present and AND-combined with the input, and
-covers the no-op truth table. Not sensitive-class; no ADR.
+covers the no-op truth table (evaluated against the *extracted* expression, so a
+weakened guard fails the truth table too — not just a local reimplementation).
+Also wired the pre-existing `scripts/ci-gate/hold.test.sh` (ADR 0012 / #51, the
+DO NOT MERGE hold pin) into `actions-ci.yml` — it existed but was never executed
+in CI, so that regression pin was giving zero coverage. Not sensitive-class; no ADR.
 
 # Reusable-workflow versioning: pin callers to `@v1`, not `@main` (ADR 0014) — 2026-07-20
 
