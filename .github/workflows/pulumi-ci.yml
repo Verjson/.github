@@ -148,7 +148,11 @@ jobs:
         with:
           command: ${{ inputs.pulumi-command }}
           stack-name: ${{ matrix.stack }}
-          comment-on-pr: ${{ inputs.comment-on-pr }}
+          # No-op contract on non-PR events: only ask pulumi/actions to comment
+          # when a PR context actually exists. On `push` (or any non-pull_request
+          # trigger) there is no PR to comment on, so this resolves to false and
+          # the preview runs without attempting to post — never hard-failing.
+          comment-on-pr: ${{ inputs.comment-on-pr && github.event_name == 'pull_request' }}
         env:
           PULUMI_ACCESS_TOKEN: ${{ secrets.pulumi-access-token }}
 

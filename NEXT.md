@@ -1,3 +1,21 @@
+# fix: pulumi-ci comment-on-pr is a true no-op on non-PR events — 2026-07-20
+
+Fixes #47 (non-blocking AI-review follow-up from #46). The reusable
+`pulumi-ci.yml` handed `comment-on-pr: ${{ inputs.comment-on-pr }}` (default
+`true`) straight to `pulumi/actions@v7` on the live-preview step, with no
+PR-context guard. On a `push` (or any non-`pull_request`) trigger there is no PR
+to comment on, so a push-triggered invocation could hard-fail trying to post a
+comment — the "graceful no-op on push" behavior asserted in #46 was never
+actually exercised. Gated the value on the event context:
+`comment-on-pr: ${{ inputs.comment-on-pr && github.event_name == 'pull_request' }}`
+(`.github/workflows/pulumi-ci.yml`), so it resolves to `false` off a PR and the
+preview still runs, just without commenting. Because the value is a pure GitHub
+expression (not a shell block), it can't be executed in bash like the other
+gate steps; pinned instead by extraction (`scripts/ci-gate/pulumi-comment.test.sh`,
+wired into `actions-ci.yml` with `pulumi-ci.yml` added to its path filter) — the
+test asserts the guard expression is present and AND-combined with the input, and
+covers the no-op truth table. Not sensitive-class; no ADR.
+
 # Reusable-workflow versioning: pin callers to `@v1`, not `@main` (ADR 0014) — 2026-07-20
 
 Closes the `@main` blast-radius risk flagged in ADR 0010 (#31 item 5). Establishes
