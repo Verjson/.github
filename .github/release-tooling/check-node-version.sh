@@ -13,8 +13,8 @@ if [[ ! "$version" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
   exit 1
 fi
 
-major="${BASH_REMATCH[1]}"
-minor="${BASH_REMATCH[2]}"
+major=$((10#${BASH_REMATCH[1]}))
+minor=$((10#${BASH_REMATCH[2]}))
 if (( (major == 22 && minor >= 14) || (major == 24 && minor >= 10) || major > 24 )); then
   exit 0
 fi
