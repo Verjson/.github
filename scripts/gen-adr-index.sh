@@ -20,6 +20,24 @@ end='<!-- END ADR INDEX -->'
 tmp_table=""
 trap 'rm -f "$tmp_table"' EXIT
 
+valid_date() {
+  local value="$1" year month day max_day
+  [[ "$value" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || return 1
+  year=$((10#${value:0:4}))
+  month=$((10#${value:5:2}))
+  day=$((10#${value:8:2}))
+  [ "$year" -ge 1 ] && [ "$month" -ge 1 ] && [ "$month" -le 12 ] && [ "$day" -ge 1 ] || return 1
+  case "$month" in
+    2)
+      max_day=28
+      if (( year % 400 == 0 || (year % 4 == 0 && year % 100 != 0) )); then max_day=29; fi
+      ;;
+    4|6|9|11) max_day=30 ;;
+    *) max_day=31 ;;
+  esac
+  [ "$day" -le "$max_day" ]
+}
+
 gen_table() {
   printf '| # | Date | Decision |\n'
   printf '|---|------|----------|\n'
@@ -47,6 +65,10 @@ gen_table() {
       }' "$readme")"
     if [ -z "$title" ] || [ -z "$date" ]; then
       echo "gen-adr-index: $slug/README.md missing an '# NNNN — Title' H1 or '- **Date:**' line" >&2
+      exit 1
+    fi
+    if ! valid_date "$date"; then
+      echo "gen-adr-index: $slug/README.md has invalid date '$date' — expected a valid YYYY-MM-DD calendar date" >&2
       exit 1
     fi
     printf '| [%s](%s/README.md) | %s | %s |\n' "$num" "$slug" "$date" "$title"
