@@ -360,7 +360,7 @@ jobs:
 
           # Documentation and community-health changes have no executable
           # behavior. CI remains mandatory, but a model review adds little.
-          if jq -e '[.[].filename] | all(test("(^|/)(NEXT(\\.md|/.*\\.md)|docs/.*|README(\\.[^/]*)?|CHANGELOG(\\.[^/]*)?|CONTRIBUTING(\\.[^/]*)?|CODE_OF_CONDUCT(\\.[^/]*)?|SECURITY(\\.[^/]*)?|SUPPORT(\\.[^/]*)?|LICENSE(\\.[^/]*)?|\\.github/(ISSUE_TEMPLATE/.*|PULL_REQUEST_TEMPLATE\\.md|FUNDING\\.yml))$"; "i"))' <<<"$files" >/dev/null; then
+          if jq -e '[.[].filename] | all(test("(^NEXT(\\.md|/[^/]+\\.md)$|(^|/)(docs/.*|README(\\.[^/]*)?|CHANGELOG(\\.[^/]*)?|CONTRIBUTING(\\.[^/]*)?|CODE_OF_CONDUCT(\\.[^/]*)?|SECURITY(\\.[^/]*)?|SUPPORT(\\.[^/]*)?|LICENSE(\\.[^/]*)?|\\.github/(ISSUE_TEMPLATE/.*|PULL_REQUEST_TEMPLATE\\.md|FUNDING\\.yml))$)"; "i"))' <<<"$files" >/dev/null; then
             out lane fast
             out reason "documentation/community-health-only change ($nfiles file(s)); CI must still pass"
             exit 0

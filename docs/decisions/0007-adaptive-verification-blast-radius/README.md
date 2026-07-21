@@ -79,3 +79,12 @@ trust.**
 - Implement tiers, circuit breaker, and the 5% canary in Verjson/.github#33.
 - Reflected as a global operating rule in the maintainer's agent config so the AI
   produces the pinpointed Verification block by default.
+
+## 2026-07-21 amendment — keep NEXT fragments flat
+
+The docs fast lane operationalizing this policy now recognizes changelog
+fragments only as flat `NEXT/<file>.md` paths. The earlier `NEXT/.*\.md` matcher
+also admitted nested paths, allowing files outside the documented fragment
+layout to skip AI review. The tightened `NEXT/[^/]+\.md` predicate preserves the
+intended low-cost lane for normal fragments while routing nested paths through
+review. The extracted predicate test pins both cases (Verjson/.github#75).
