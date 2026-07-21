@@ -52,13 +52,18 @@ awk '/id: claude_retry2$/{f=1} f&&/continue-on-error: true/{print "y"; exit}' "$
   && pass "claude_retry2 is continue-on-error (never fails the job itself)" \
   || fail "claude_retry2 must be continue-on-error so an empty pass falls through to the fail-closed submit"
 
-# 5. The deterministic submit must stay UNCONDITIONAL (no `if:`): that is what
-#    guarantees it runs — and fails closed — when every review pass came back
-#    empty. A narrowing guard here would silently let an unreviewed PR slip.
-submit_if="$(awk '/id: submit$/{f=1} f&&/^ *run: \|/{exit} f&&/^ *if:/{print "HASIF"}' "$wf")"
-[ -z "$submit_if" ] \
-  && pass "submit step is unconditional (fail-closed always runs)" \
-  || fail "submit step must not carry an if: guard — it must always run to fail closed"
+# 5. The deterministic submit is lane-scoped only. It must run after every AI
+#    attempt even when all verdicts are empty, while the shared gate job must
+#    skip it for fast-lane PRs.
+submit_if="$(awk '/id: submit$/{f=1} f&&/^ *run: \|/{exit} f&&/^ *if:/{print; exit}' "$wf")"
+case "$submit_if" in
+  *"needs.preflight.outputs.lane == 'ai'"*)
+    printf '%s' "$submit_if" | grep -q 'steps\.claude' \
+      && fail "submit must not be narrowed by a model-attempt result" \
+      || pass "submit is AI-lane scoped and unconditional across model attempts" ;;
+  *)
+    fail "submit guard must scope only to the AI lane (got: $submit_if)" ;;
+esac
 
 if [ "$fails" -eq 0 ]; then
   echo "All tests passed."

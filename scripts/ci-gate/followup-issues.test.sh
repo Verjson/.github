@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Tests the merge gate's "File follow-up issues for non-blocking findings" step
-# (ai-merge job) by extracting its exact `run:` block from ai-review-merge.yml —
+# (shared gate job) by extracting its exact `run:` block from ai-review-merge.yml —
 # single source of truth, no drift — and driving it against a stubbed `gh`.
 # Guards: files only on a MERGED PR, one issue per follow-up, per-PR dedup, and
 # empty/absent follow-ups no-op. Plain bash + awk + jq; no dependency.

@@ -76,10 +76,10 @@ run_submit '{"blocking":false,"summary":"looks good","review_first":[{"location"
   fail "approve: review_first not rendered"
 
 # 1b. Approve + followups -> renders a Follow-ups block AND emits the verdict to
-#     $GITHUB_OUTPUT (so ai-merge can file the issues on merge).
+#     $GITHUB_OUTPUT (so the shared gate can file the issues on merge).
 run_submit '{"blocking":false,"summary":"ok","review_first":[],"followups":[{"location":"util.ts:9","note":"missing null guard"}],"findings":[]}' >/dev/null
 { body_has 'Follow-ups' && body_has 'util.ts:9' && body_has 'missing null guard' && output_has 'verdict<<' && output_has 'missing null guard'; } &&
-  pass "approve: followups render and the verdict is emitted for ai-merge" ||
+  pass "approve: followups render and the verdict is emitted for the gate" ||
   fail "approve: followups render / verdict-output missing"
 
 # 2. Approve + empty review_first -> summary only, no pinpoint header.

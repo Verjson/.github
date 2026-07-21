@@ -60,7 +60,7 @@ chmod +x "$tmp/bin/gh"
 run_case() {
   # run_case <meta-json> [rollup-json]
   export PATH="$tmp/bin:$PATH" TARGET_REPO="Verjson/foo" PR_NUMBER=7
-  export LANE=ai LANE_REASON="n/a"
+  export LANE=ai LANE_REASON="n/a" EXPECTED_HEAD_SHA=expected-head
   export META_FILE="$tmp/meta.json" ROLLUP_FILE="$tmp/rollup.json"
   export ACTIONLOG="$tmp/act.log"
   : >"$ACTIONLOG"
@@ -72,7 +72,7 @@ run_case() {
 out_has() { grep -q "$1" "$tmp/out.txt"; }
 act_has() { grep -q "$1" "$tmp/act.log"; }
 
-open() { printf '{"labels":%s,"title":"%s","isDraft":%s,"state":"OPEN"}' "$1" "${2:-feat: x}" "${3:-false}"; }
+open() { printf '{"labels":%s,"title":"%s","isDraft":%s,"state":"OPEN","headRefOid":"expected-head"}' "$1" "${2:-feat: x}" "${3:-false}"; }
 
 # --- #51 regression: a `DO NOT MERGE` *label* must hold, not merge -----------
 run_case "$(open '[{"name":"DO NOT MERGE"}]')" >/dev/null
@@ -100,7 +100,7 @@ run_case "$(open '[{"name":"update/patch"}]')" '[]' >/dev/null
 act_has MERGE && pass "unheld green PR merges" || fail "unheld green PR did not merge"
 
 # A closed (non-OPEN) PR is a no-op, never merged.
-run_case '{"labels":[],"title":"feat: x","isDraft":false,"state":"MERGED"}' >/dev/null
+run_case '{"labels":[],"title":"feat: x","isDraft":false,"state":"MERGED","headRefOid":"expected-head"}' >/dev/null
 { out_has 'no longer open' && ! act_has MERGE; } && pass "non-open PR is a no-op" || fail "non-open PR mishandled"
 
 # The hold predicate is intentionally identical at both bash checkpoints
@@ -110,8 +110,8 @@ copies=$(grep -c "index(\"HOLD\")) or (\$l | index(\"DO NOT MERGE\"))" "$wf")
 [ "$copies" -eq 2 ] && pass "hold predicate present at both bash checkpoints (no drift)" || fail "expected 2 identical hold predicates, found $copies"
 
 # --- #88 regression: removing a terminal hold re-fires the gate ------------
-# Pin the workflow trigger and the exact event-filter grouping in both job
-# guards. GitHub evaluates these expressions before a runner starts, so there is
+# Pin the workflow trigger and the exact event-filter grouping in the preflight
+# job guard. GitHub evaluates this expression before a runner starts, so there is
 # no run block to execute locally; extracting the shipped `if:` text keeps this
 # check tied to the single source of truth.
 types="$(awk '/^  pull_request:/{seen=1; next} seen && /^    types:/{print; exit}' "$wf")"
@@ -130,7 +130,7 @@ job_if() {
 }
 
 event_filter="(github.event.action != 'labeled' && github.event.action != 'unlabeled') || (github.event.action == 'labeled' && github.event.label.name == 're-review') || (github.event.action == 'unlabeled' && (github.event.label.name == 'hold' || github.event.label.name == 'DO NOT MERGE'))"
-for job in freshness classify; do
+for job in preflight; do
   predicate="$(job_if "$job")"
   printf '%s' "$predicate" | grep -qF "$event_filter" \
     && pass "$job admits re-review and terminal-hold removal only" \
