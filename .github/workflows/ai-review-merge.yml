@@ -91,7 +91,8 @@ jobs:
         !contains(github.event.pull_request.title, 'DO NOT MERGE')
       )
     runs-on: ${{ github.repository == 'Verjson/.github' && fromJSON('["self-hosted","meta"]') || fromJSON('["self-hosted","gate"]') }}
-    timeout-minutes: 10
+    # This job combines the former 10-minute freshness and classification jobs.
+    timeout-minutes: 20
     permissions:
       contents: read
       pull-requests: write
@@ -375,7 +376,10 @@ jobs:
     needs: preflight
     if: needs.preflight.outputs.lane == 'fast' || needs.preflight.outputs.lane == 'ai'
     runs-on: ${{ github.repository == 'Verjson/.github' && fromJSON('["self-hosted","meta"]') || fromJSON('["self-hosted","gate"]') }}
-    timeout-minutes: 45
+    # Fast retains its former 45-minute merge ceiling. AI gets one bounded
+    # aggregate ceiling for the 30-minute CI wait + the former 45-minute review
+    # allowance + checkout/debounce/submit/recheck buffer.
+    timeout-minutes: ${{ needs.preflight.outputs.lane == 'ai' && 80 || 45 }}
     permissions:
       contents: read
       pull-requests: write
@@ -420,7 +424,17 @@ jobs:
             # Rollup mixes CheckRuns (name/status/conclusion) with commit
             # StatusContexts like renovate/stability-days (context/state) —
             # treating a context's null .status as pending hangs the gate.
-            failed=$(jq '[.[] | select(((.conclusion // "") | IN("FAILURE","CANCELLED","TIMED_OUT","ACTION_REQUIRED")) or ((.state // "") | IN("FAILURE","ERROR")))] | length' <<<"$rollup")
+            # Completed CheckRuns are green only when GitHub concluded SUCCESS,
+            # NEUTRAL, or SKIPPED. Every other/unknown conclusion fails closed.
+            # Commit StatusContexts retain their SUCCESS/PENDING/EXPECTED states;
+            # every other state fails closed.
+            failed=$(jq '[.[] | select(
+              if .state then
+                ((.state // "") | IN("SUCCESS","PENDING","EXPECTED") | not)
+              else
+                (.status == "COMPLETED" and ((.conclusion // "") | IN("SUCCESS","NEUTRAL","SKIPPED") | not))
+              end
+            )] | length' <<<"$rollup")
             pending=$(jq -r '[.[] | select(if .state then (.state | IN("PENDING","EXPECTED")) else .status != "COMPLETED" end) | "\(.name // .context)=\(.state // .status)"] | join(", ")' <<<"$rollup")
             if [ "$failed" -gt 0 ]; then
               elapsed=$(( $(date +%s) - started_epoch ))
@@ -816,11 +830,17 @@ jobs:
           rollup=$(gh pr view "$PR_NUMBER" --repo "$REPO" \
             --json statusCheckRollup \
             --jq '[.statusCheckRollup[]? | select((.name // .context) as $n | $n != "preflight" and $n != "gate" and $n != "freshness" and $n != "classify" and $n != "ai-review" and $n != "ai-merge" and $n != "review")]')
-          failed=$(jq '[.[] | select(((.conclusion // "") | IN("FAILURE","CANCELLED","TIMED_OUT","ACTION_REQUIRED")) or ((.state // "") | IN("FAILURE","ERROR")))] | length' <<<"$rollup")
+          failed=$(jq '[.[] | select(
+            if .state then
+              ((.state // "") | IN("SUCCESS","PENDING","EXPECTED") | not)
+            else
+              (.status == "COMPLETED" and ((.conclusion // "") | IN("SUCCESS","NEUTRAL","SKIPPED") | not))
+            end
+          )] | length' <<<"$rollup")
           pending=$(jq -r '[.[] | select(if .state then (.state | IN("PENDING","EXPECTED")) else .status != "COMPLETED" end) | "\(.name // .context)=\(.state // .status)"] | join(", ")' <<<"$rollup")
           if [ "$failed" -gt 0 ]; then
             echo "::error::phase=merge-recheck result=failed elapsed_seconds=$(( $(date +%s) - merge_started_epoch ))"
-            jq -r '.[] | select(((.conclusion // "") | IN("FAILURE","CANCELLED","TIMED_OUT","ACTION_REQUIRED")) or ((.state // "") | IN("FAILURE","ERROR"))) | (.name // .context)' <<<"$rollup"
+            jq -r '.[] | select(if .state then ((.state // "") | IN("SUCCESS","PENDING","EXPECTED") | not) else (.status == "COMPLETED" and ((.conclusion // "") | IN("SUCCESS","NEUTRAL","SKIPPED") | not)) end) | (.name // .context)' <<<"$rollup"
             exit 1
           fi
           if [ -n "$pending" ]; then
@@ -832,7 +852,8 @@ jobs:
             gh pr comment "$PR_NUMBER" --repo "$REPO" --body "✅ **Merge gate: fast lane** (no AI review needed) — ${LANE_REASON}. All CI checks green; squash-merging." || true
           fi
           echo "All checks green and head unchanged; merging PR #$PR_NUMBER (lane: $LANE)."
-          gh pr merge "$PR_NUMBER" --repo "$REPO" --squash --admin --delete-branch
+          gh pr merge "$PR_NUMBER" --repo "$REPO" --squash --admin --delete-branch \
+            --match-head-commit "$EXPECTED_HEAD_SHA"
           echo "::notice::phase=merge result=merged elapsed_seconds=$(( $(date +%s) - merge_started_epoch )) lane=$LANE"
 
       - name: File follow-up issues for non-blocking findings

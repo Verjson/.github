@@ -47,9 +47,22 @@ Immediately before merge, `gate` takes one authoritative snapshot and requires:
 
 That final snapshot does not poll. A moved head or a red/pending check fails
 closed; the workflow's existing event and concurrency behavior lets the current
-revision receive a fresh run. The initial CI wait retains the former lane limits
-(30 minutes for AI, 40 minutes for fast), and model budgets and retry limits are
-unchanged.
+revision receive a fresh run. The merge request also passes that expected SHA to
+GitHub's `--match-head-commit` guard, closing the read/check/merge race if a push
+lands after the snapshot. Completed CheckRuns are accepted only for `SUCCESS`,
+`NEUTRAL`, or `SKIPPED`; the latter two preserve intentional conditional/no-op
+checks. Every other or unknown completed conclusion—including `STALE` and
+`STARTUP_FAILURE`—fails closed. Commit status contexts accept only `SUCCESS`,
+with `PENDING`/`EXPECTED` continuing to wait and every other state failing.
+
+The initial CI wait retains the former lane limits (30 minutes for AI, 40 minutes
+for fast), and model budgets and retry limits are unchanged. The job ceilings are
+bounded aggregates rather than the old per-job ceilings: `preflight` receives 20
+minutes for the former 10-minute freshness plus 10-minute classification phases;
+`gate` receives 45 minutes for fast and 80 minutes for AI (30-minute CI wait, the
+former 45-minute review allowance, and five minutes for checkout/debounce,
+deterministic submission, and merge recheck). These ceilings preserve the work
+budget without using longer waits to mask runner outages.
 
 Phase notices record preflight assignment, the preflight-to-gate queue interval,
 CI-wait duration, model/retry outcome, and merge-recheck duration. These
@@ -75,8 +88,10 @@ changing enforcement.
 - An AI PR needs at most two gate-runner assignments instead of four, and a fast
   PR needs two instead of three.
 - A successful AI review never enters a second 40-minute CI polling loop.
+- GitHub refuses the merge atomically if the PR head no longer matches the
+  classified/reviewed SHA.
 - The gate remains sensitive to head movement, human holds, CI regressions,
-  blocking verdicts, and inconclusive model output.
+  blocking verdicts, inconclusive model output, and non-success check conclusions.
 - Runner-fleet availability remains an external dependency; this workflow change
   reduces amplification but does not make an offline pool available.
 - Tests extract the shipped freshness, review, and merge shell blocks and pin the
