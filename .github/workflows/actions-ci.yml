@@ -12,6 +12,7 @@ on:
       - '.github/workflows/actions-ci.yml'
       - '.github/workflows/ai-review-merge.yml'
       - '.github/workflows/pulumi-ci.yml'
+      - '.github/workflows/tag-major.yml'
       - 'scripts/**'
       - 'docs/decisions/**'
       - 'NEXT/**'
@@ -22,6 +23,7 @@ on:
       - '.github/workflows/actions-ci.yml'
       - '.github/workflows/ai-review-merge.yml'
       - '.github/workflows/pulumi-ci.yml'
+      - '.github/workflows/tag-major.yml'
       - 'scripts/**'
       - 'docs/decisions/**'
       - 'NEXT/**'
@@ -50,6 +52,8 @@ jobs:
         run: bash scripts/ci-gate/hold.test.sh
       - name: pulumi-ci — comment-on-pr no-op on push guard (#47)
         run: bash scripts/ci-gate/pulumi-comment.test.sh
+      - name: tag-major — annotated tag points directly at release commit (#73)
+        run: bash scripts/tag-major.test.sh
       - name: ADR index is generated & current (not hand-edited)
         run: bash scripts/gen-adr-index.sh --check
       - name: ADR index generator — edge cases (#67)

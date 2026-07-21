@@ -38,5 +38,5 @@ jobs:
           echo "Re-pointing $MAJOR -> $FULL_TAG"
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git tag -f -a "$MAJOR" -m "Re-point moving major tag $MAJOR -> $FULL_TAG" "$FULL_TAG"
+          git tag -f -a "$MAJOR" -m "Re-point moving major tag $MAJOR -> $FULL_TAG" "$FULL_TAG^{commit}"
           git push --force origin "refs/tags/$MAJOR"
