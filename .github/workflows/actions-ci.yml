@@ -44,7 +44,7 @@ jobs:
         run: bash scripts/ci-gate/review-comment.test.sh
       - name: merge gate — ai-review retry chain (ADR 0015, #64)
         run: bash scripts/ci-gate/ai-review-retry.test.sh
-      - name: merge gate — classify docs-fast-lane allowlist (#66)
+      - name: merge gate — classify docs-fast-lane allowlist (#66, #75)
         run: bash scripts/ci-gate/classify-fast-lane.test.sh
       - name: merge gate — follow-up issue filing (ADR 0009)
         run: bash scripts/ci-gate/followup-issues.test.sh

@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Pins the classify docs-fast-lane allowlist in ai-review-merge.yml (Verjson/.github#66).
+# Pins the classify docs-fast-lane allowlist in ai-review-merge.yml
+# (Verjson/.github#66, #75).
 # The fast lane skips paid AI review for documentation/community-health-only PRs. When
 # the changelog moved to NEXT/ fragments (#65), the allowlist still matched only the
 # literal NEXT.md, so an "ADR + NEXT/ fragment" PR silently lost the free lane and paid
@@ -51,5 +52,11 @@ eligible 'NEXT/2026-07-20-foo.md' 'src/app.js' \
 eligible 'NEXT/run.sh' \
   && fail "non-.md under NEXT/ must not be fast-laned" \
   || pass "non-.md under NEXT/ is not fast-laned"
+eligible 'NEXT/subdir/2026-07-20-foo.md' \
+  && fail "nested NEXT/ paths must not be fast-laned (#75)" \
+  || pass "nested NEXT/ paths are not fast-laned (#75)"
+eligible 'packages/widget/NEXT/2026-07-20-foo.md' \
+  && fail "non-root NEXT/ paths must not be fast-laned (#75)" \
+  || pass "non-root NEXT/ paths are not fast-laned (#75)"
 
 if [ "$fails" -eq 0 ]; then echo "All tests passed."; exit 0; else echo "$fails test(s) failed."; exit 1; fi
