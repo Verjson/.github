@@ -17,7 +17,7 @@ for version in v22.14.0 v22.99.1 v24.10.0 v25.0.0; do
     || fail "$version should satisfy the semantic-release engine"
 done
 
-for version in v22.13.9 v23.11.0 v24.9.9 latest; do
+for version in v22.09.0 v22.13.9 v23.11.0 v24.9.9 latest; do
   output="$(bash "$guard" "$version" 2>&1)" && status=0 || status=$?
   if [ "$status" -ne 0 ] && grep -qF 'semantic-release 25.0.8 requires ^22.14.0 or >=24.10.0' <<<"$output"; then
     pass "$version fails with the required Node floor"
