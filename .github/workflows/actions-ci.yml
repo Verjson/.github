@@ -13,8 +13,12 @@ on:
       - '.github/workflows/actionlint.yml'
       - '.github/workflows/actions-ci.yml'
       - '.github/workflows/ai-review-merge.yml'
+      - '.github/workflows/node-ci.yml'
+      - '.github/workflows/node-release.yml'
       - '.github/workflows/pulumi-ci.yml'
       - '.github/workflows/tag-major.yml'
+      - '.github/release-tooling/**'
+      - 'renovate.json'
       - 'scripts/**'
       - 'docs/decisions/**'
       - 'NEXT/**'
@@ -26,8 +30,12 @@ on:
       - '.github/workflows/actionlint.yml'
       - '.github/workflows/actions-ci.yml'
       - '.github/workflows/ai-review-merge.yml'
+      - '.github/workflows/node-ci.yml'
+      - '.github/workflows/node-release.yml'
       - '.github/workflows/pulumi-ci.yml'
       - '.github/workflows/tag-major.yml'
+      - '.github/release-tooling/**'
+      - 'renovate.json'
       - 'scripts/**'
       - 'docs/decisions/**'
       - 'NEXT/**'
@@ -44,6 +52,15 @@ jobs:
         run: bash scripts/actionlint-trigger.test.sh
       - name: actionlint — downloaded binary checksum is fail-closed (#83)
         run: bash scripts/actionlint-install.test.sh
+      - name: reusable Node workflows — nested actions and release tooling are pinned (#89)
+        run: bash scripts/node-workflow-pins.test.sh
+      - name: reusable Node workflows — set up Node for release-tooling audit (#89)
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: '24'
+      - name: reusable Node workflows — release lock has no high-risk advisories (#89)
+        working-directory: .github/release-tooling
+        run: npm audit --package-lock-only --omit=dev --audit-level=high
       - name: setup-verjson-node — configure-git idempotency + secret hygiene
         run: bash .github/actions/setup-verjson-node/configure-git.test.sh
       - name: merge gate — freshness fail-open/fail-closed behavior
