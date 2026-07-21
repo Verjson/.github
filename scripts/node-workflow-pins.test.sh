@@ -38,7 +38,8 @@ for wf in "$ci" "$release"; do
 done
 
 { grep -qF 'repository: ${{ job.workflow_repository }}' "$release" \
-  && grep -qF 'ref: ${{ job.workflow_sha }}' "$release"; } \
+  && grep -qF 'ref: ${{ job.workflow_sha }}' "$release" \
+  && grep -qF 'https://docs.github.com/en/actions/reference/workflows-and-actions/contexts#example-usage-of-job-context-workflow-identity' "$release"; } \
   && pass "release tooling is checked out from the called workflow commit" \
   || fail "release tooling is not tied to the called workflow commit"
 { grep -qF 'RELEASE_TOOLING_DIR: ${{ runner.temp }}/verjson-release-tooling' "$release" \

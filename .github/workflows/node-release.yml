@@ -63,6 +63,8 @@ jobs:
       - run: npm test
       # Check out tooling from the exact commit that defined this reusable job,
       # not from the caller or a mutable central branch.
+      # GitHub's documented reusable-workflow pattern:
+      # https://docs.github.com/en/actions/reference/workflows-and-actions/contexts#example-usage-of-job-context-workflow-identity
       - name: Check out locked release tooling
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
