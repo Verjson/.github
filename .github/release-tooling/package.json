@@ -1,0 +1,8 @@
+{
+  "name": "@verjson/reusable-release-tooling",
+  "private": true,
+  "description": "Lockfile-backed tooling for the reusable Node release workflow",
+  "dependencies": {
+    "semantic-release": "25.0.8"
+  }
+}

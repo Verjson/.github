@@ -13,3 +13,12 @@ self-hosted-runner:
     - GCP   # general GCP pool (gha-runner-*, gha-gate-*, gha-docker-1)
     - gate  # merge-gate lane for non-.github repos (gha-gate-*)
     - meta  # dedicated self-gate lane for this repo (gha-meta-*, ADR 0016)
+
+# GitHub Cloud exposes these workflow-identity properties for reusable jobs so
+# they can check out files co-located with the called workflow. actionlint 1.7.7
+# (and current 1.7.12) has not added them to its static job-context schema yet.
+paths:
+  .github/workflows/node-release.yml:
+    ignore:
+      - '^property "workflow_repository" is not defined in object type .+$'
+      - '^property "workflow_sha" is not defined in object type .+$'

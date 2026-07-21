@@ -2,5 +2,16 @@
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "extends": [
     "config:recommended"
+  ],
+  "packageRules": [
+    {
+      "description": "Maintain digest pins in reusable Node workflows",
+      "matchManagers": ["github-actions"],
+      "matchFileNames": [
+        ".github/workflows/node-ci.yml",
+        ".github/workflows/node-release.yml"
+      ],
+      "pinDigests": true
+    }
   ]
 }

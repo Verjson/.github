@@ -20,7 +20,7 @@ on:
   workflow_call:
     inputs:
       node-version:
-        description: Node.js version for actions/setup-node
+        description: Node.js version; semantic-release requires ^22.14.0 or >=24.10.0
         required: false
         type: string
         default: '24'
@@ -48,10 +48,10 @@ jobs:
       issues: write
       pull-requests: write
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
           node-version: ${{ inputs.node-version }}
           registry-url: https://npm.pkg.github.com
@@ -61,7 +61,28 @@ jobs:
           NODE_AUTH_TOKEN: ${{ secrets.NODE_AUTH_TOKEN }}
       - run: npm run build
       - run: npm test
-      - run: npx --yes semantic-release@24
+      # Check out tooling from the exact commit that defined this reusable job,
+      # not from the caller or a mutable central branch.
+      - name: Check out locked release tooling
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .verjson-workflow
+          sparse-checkout: .github/release-tooling
+          persist-credentials: false
+      - name: Install locked release tooling
         env:
+          RELEASE_TOOLING_DIR: ${{ runner.temp }}/verjson-release-tooling
+        run: |
+          mkdir -p "$RELEASE_TOOLING_DIR"
+          cp .verjson-workflow/.github/release-tooling/package.json "$RELEASE_TOOLING_DIR/"
+          cp .verjson-workflow/.github/release-tooling/package-lock.json "$RELEASE_TOOLING_DIR/"
+          rm -rf -- .verjson-workflow
+          npm ci --ignore-scripts --prefix "$RELEASE_TOOLING_DIR"
+      - name: Publish release
+        run: '"$RELEASE_TOOLING_DIR/node_modules/.bin/semantic-release"'
+        env:
+          RELEASE_TOOLING_DIR: ${{ runner.temp }}/verjson-release-tooling
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
