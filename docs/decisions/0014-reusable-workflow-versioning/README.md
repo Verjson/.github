@@ -103,3 +103,34 @@ force-tag. Full file in the PR.
 +          git tag -f "$MAJOR" "$FULL_TAG"
 +          git push --force origin "refs/tags/$MAJOR"   # only the moving vX tag
 ```
+
+## Amendment — lock nested Node release tooling to the reusable commit (2026-07-21)
+
+Issue #99 records a second supply-chain boundary within this decision. Pinning a
+caller to a reusable-workflow commit makes the YAML immutable, but it does not by
+itself pin actions or packages that the YAML resolves while running. The Node CI
+and release workflows therefore pin `actions/checkout` and `actions/setup-node`
+to reviewed full commit SHAs. The release workflow also installs an exact
+semantic-release version from a committed integrity lock rather than resolving a
+mutable package specifier at publish time.
+
+The lock and package manifest are co-located with the reusable workflow. A called
+job checks out only that tooling directory from `job.workflow_repository` at
+`job.workflow_sha`, the exact commit that defined the running reusable job, using
+GitHub's documented
+[workflow-identity checkout pattern](https://docs.github.com/en/actions/reference/workflows-and-actions/contexts#example-usage-of-job-context-workflow-identity).
+The checkout does not persist credentials. Its manifests are copied into a
+runner-temporary directory, and the secondary checkout is removed before install
+or publish so central repository contents cannot leak into the caller's release.
+The publish step invokes the binary from that locked installation while release
+credentials remain scoped to the caller's package operation.
+
+CI verifies the action SHAs, called-workflow identity expressions, checkout
+removal order, exact lock integrities, semantic-release Node engine floor, and a
+production dependency audit. Renovate may propose digest and lock updates, but
+those updates remain ordinary reviewed PRs. Consequently, nested tool changes
+ship through the same versioned reusable-workflow release boundary defined above;
+a mutable action tag, package range, or central branch is not part of the trusted
+publish path. These `job.workflow_*` identity properties are GitHub Cloud-only,
+matching the organization's current runner platform; GitHub Enterprise Server
+would require a separate design.
