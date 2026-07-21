@@ -4,7 +4,8 @@ name: AI review + auto-merge
 # on every repo via the main-protection org ruleset.
 #
 # Cost-lane design (ADR-018 second amendment):
-#   1. `classify` (free, deterministic bash) routes each PR into a lane:
+#   1. `preflight` (free, deterministic bash) updates stale branches and routes
+#      each current PR into a lane on one runner assignment:
 #        - fast: submodule pointer bumps (every new gitlink SHA verified to be
 #          on the submodule's default branch), Renovate non-major updates
 #          (bot-authored, manifest/lockfile-only diff, `update/<type>` label),
@@ -65,7 +66,7 @@ env:
   TARGET_REPO: ${{ inputs.repository || github.repository }}
 
 jobs:
-  freshness:
+  preflight:
     # Keep the branch current with its base BEFORE we review/merge, so a green
     # gate always means green against the *current* base — a behind-but-clean
     # branch never merges stale. Behind → update the branch (the resulting
@@ -90,7 +91,8 @@ jobs:
         !contains(github.event.pull_request.title, 'DO NOT MERGE')
       )
     runs-on: ${{ github.repository == 'Verjson/.github' && fromJSON('["self-hosted","meta"]') || fromJSON('["self-hosted","gate"]') }}
-    timeout-minutes: 10
+    # This job combines the former 10-minute freshness and classification jobs.
+    timeout-minutes: 20
     permissions:
       contents: read
       pull-requests: write
@@ -98,7 +100,28 @@ jobs:
       # 'true' → this run continues to classify/review/merge. 'false' → the branch
       # was just updated; a fresh run will handle it, so downstream jobs skip.
       proceed: ${{ steps.freshness.outputs.proceed }}
+      lane: ${{ steps.classify.outputs.lane }}
+      reason: ${{ steps.classify.outputs.reason }}
+      model: ${{ steps.classify.outputs.model }}
+      budget_usd: ${{ steps.classify.outputs.budget_usd }}
+      dependency_major: ${{ steps.classify.outputs.dependency_major }}
+      head_sha: ${{ steps.classify.outputs.head_sha }}
+      completed_at: ${{ steps.preflight_complete.outputs.completed_at }}
     steps:
+      - name: Record preflight runner timing
+        env:
+          GH_TOKEN: ${{ secrets.ORG_ADMIN_TOKEN }}
+        run: |
+          set -uo pipefail
+          assigned_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          created_at="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" --jq .created_at 2>/dev/null || true)"
+          if [ -n "$created_at" ]; then
+            queue_seconds=$(( $(date -u -d "$assigned_at" +%s) - $(date -u -d "$created_at" +%s) ))
+            echo "::notice::phase=preflight runner_assigned_at=$assigned_at workflow_created_at=$created_at initial_queue_seconds=$queue_seconds"
+          else
+            echo "::notice::phase=preflight runner_assigned_at=$assigned_at initial_queue_seconds=unknown"
+          fi
+
       - name: Update branch if behind; hold on conflict
         id: freshness
         env:
@@ -204,44 +227,9 @@ jobs:
 
           out proceed true
 
-  classify:
-    needs: freshness
-    # `labeled` only re-triggers for the explicit re-review request; `unlabeled`
-    # only re-triggers when a terminal hold is removed. Other label changes must
-    # not start a run. `freshness` also gates us: after it auto-updates a behind
-    # branch it sets proceed=false, so we only classify a current branch.
-    if: >
-      needs.freshness.outputs.proceed == 'true' &&
-      (
-        github.event_name == 'workflow_dispatch' ||
-        (
-          (
-            (github.event.action != 'labeled' && github.event.action != 'unlabeled') ||
-            (github.event.action == 'labeled' && github.event.label.name == 're-review') ||
-            (github.event.action == 'unlabeled' &&
-              (github.event.label.name == 'hold' || github.event.label.name == 'DO NOT MERGE'))
-          ) &&
-          !github.event.pull_request.draft &&
-          !contains(github.event.pull_request.labels.*.name, 'hold') &&
-          !contains(github.event.pull_request.labels.*.name, 'DO NOT MERGE') &&
-          !contains(github.event.pull_request.title, 'DO NOT MERGE')
-        )
-      )
-    runs-on: ${{ github.repository == 'Verjson/.github' && fromJSON('["self-hosted","meta"]') || fromJSON('["self-hosted","gate"]') }}
-    timeout-minutes: 10
-    permissions:
-      contents: read
-      pull-requests: write
-    outputs:
-      lane: ${{ steps.classify.outputs.lane }}
-      reason: ${{ steps.classify.outputs.reason }}
-      model: ${{ steps.classify.outputs.model }}
-      budget_usd: ${{ steps.classify.outputs.budget_usd }}
-      dependency_major: ${{ steps.classify.outputs.dependency_major }}
-      head_sha: ${{ steps.classify.outputs.head_sha }}
-    steps:
       - name: Classify PR into a lane
         id: classify
+        if: steps.freshness.outputs.proceed == 'true'
         env:
           # Org-admin token: classification must read sibling repos
           # (submodule verification) and, for cross-repo dispatch, the target.
@@ -275,7 +263,7 @@ jobs:
           # *replacement* PR bypasses that candidate filter and is raised
           # immediately, carrying a pending `renovate/stability-days` status
           # until the age elapses. Reviewing or merging is impossible until
-          # then, so a model review (and the 45-min CI-wait on a gate runner)
+          # then, so a model review (and the long CI wait on a gate runner)
           # is pure waste that re-burns on every rebase. Defer: emit a lane no
           # downstream job runs for. Renovate's rebase once the release ages
           # fires `synchronize` and re-enters classify for a real review;
@@ -376,61 +364,112 @@ jobs:
           out lane ai
           out reason "code change — AI review required (model: $model)"
 
-  ai-review:
-    needs: classify
-    if: needs.classify.outputs.lane == 'ai'
+      - name: Record preflight completion
+        id: preflight_complete
+        if: always()
+        run: |
+          completed_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          echo "completed_at=$completed_at" >> "$GITHUB_OUTPUT"
+          echo "::notice::phase=preflight completed_at=$completed_at lane=${{ steps.classify.outputs.lane || 'none' }} proceed=${{ steps.freshness.outputs.proceed || 'unknown' }}"
+
+  gate:
+    needs: preflight
+    if: needs.preflight.outputs.lane == 'fast' || needs.preflight.outputs.lane == 'ai'
     runs-on: ${{ github.repository == 'Verjson/.github' && fromJSON('["self-hosted","meta"]') || fromJSON('["self-hosted","gate"]') }}
-    timeout-minutes: 45
-    outputs:
-      # The review verdict JSON, so ai-merge can file follow-up issues for the
-      # non-blocking findings after a successful merge.
-      verdict: ${{ steps.submit.outputs.verdict }}
+    # Fast retains its former 45-minute merge ceiling. AI gets one bounded
+    # aggregate ceiling for the 30-minute CI wait + the former 45-minute review
+    # allowance + checkout/debounce/submit/recheck buffer.
+    timeout-minutes: ${{ needs.preflight.outputs.lane == 'ai' && 80 || 45 }}
     permissions:
       contents: read
       pull-requests: write
       issues: write
       actions: read
       id-token: write
+    env:
+      LANE: ${{ needs.preflight.outputs.lane }}
+      LANE_REASON: ${{ needs.preflight.outputs.reason }}
+      EXPECTED_HEAD_SHA: ${{ needs.preflight.outputs.head_sha }}
     steps:
+      - name: Record gate runner timing
+        env:
+          PREFLIGHT_COMPLETED_AT: ${{ needs.preflight.outputs.completed_at }}
+        run: |
+          set -uo pipefail
+          assigned_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          if [ -n "$PREFLIGHT_COMPLETED_AT" ]; then
+            queue_seconds=$(( $(date -u -d "$assigned_at" +%s) - $(date -u -d "$PREFLIGHT_COMPLETED_AT" +%s) ))
+            echo "::notice::phase=gate runner_assigned_at=$assigned_at preflight_completed_at=$PREFLIGHT_COMPLETED_AT transition_queue_seconds=$queue_seconds lane=$LANE"
+          else
+            echo "::notice::phase=gate runner_assigned_at=$assigned_at transition_queue_seconds=unknown lane=$LANE"
+          fi
+
       # CI-first: never pay for a model review of a PR that fails its own CI.
-      - name: Wait for the rest of CI to be green
+      # The fast lane keeps its existing 40-minute ceiling; the AI lane keeps
+      # its existing 30-minute pre-review ceiling. This is the only long CI wait.
+      - name: Wait once for the rest of CI to be green
+        id: ci_wait
         env:
           GH_TOKEN: ${{ secrets.ORG_ADMIN_TOKEN }}
         run: |
           set -euo pipefail
-          for i in $(seq 1 60); do
+          started_epoch="$(date +%s)"
+          max_attempts=60
+          [ "$LANE" = "fast" ] && max_attempts=80
+          echo "::notice::phase=ci-wait started_at=$(date -u +%Y-%m-%dT%H:%M:%SZ) lane=$LANE max_attempts=$max_attempts poll_seconds=30"
+          for i in $(seq 1 "$max_attempts"); do
             rollup=$(gh pr view "$PR_NUMBER" --repo "$TARGET_REPO" \
               --json statusCheckRollup \
-              --jq '[.statusCheckRollup[]? | select((.name // .context) as $n | $n != "classify" and $n != "ai-review" and $n != "ai-merge" and $n != "review")]')
+              --jq '[.statusCheckRollup[]? | select((.name // .context) as $n | $n != "preflight" and $n != "gate" and $n != "freshness" and $n != "classify" and $n != "ai-review" and $n != "ai-merge" and $n != "review")]')
             # Rollup mixes CheckRuns (name/status/conclusion) with commit
             # StatusContexts like renovate/stability-days (context/state) —
             # treating a context's null .status as pending hangs the gate.
-            failed=$(jq '[.[] | select(((.conclusion // "") | IN("FAILURE","CANCELLED","TIMED_OUT","ACTION_REQUIRED")) or ((.state // "") | IN("FAILURE","ERROR")))] | length' <<<"$rollup")
+            # Completed CheckRuns are green only when GitHub concluded SUCCESS,
+            # NEUTRAL, or SKIPPED. Every other/unknown conclusion fails closed.
+            # Commit StatusContexts retain their SUCCESS/PENDING/EXPECTED states;
+            # every other state fails closed.
+            failed=$(jq '[.[] | select(
+              if .state then
+                ((.state // "") | IN("SUCCESS","PENDING","EXPECTED") | not)
+              else
+                (.status == "COMPLETED" and ((.conclusion // "") | IN("SUCCESS","NEUTRAL","SKIPPED") | not))
+              end
+            )] | length' <<<"$rollup")
             pending=$(jq -r '[.[] | select(if .state then (.state | IN("PENDING","EXPECTED")) else .status != "COMPLETED" end) | "\(.name // .context)=\(.state // .status)"] | join(", ")' <<<"$rollup")
             if [ "$failed" -gt 0 ]; then
-              echo "CI is red for PR #$PR_NUMBER — skipping the AI review (no spend on red PRs)."
+              elapsed=$(( $(date +%s) - started_epoch ))
+              echo "::error::phase=ci-wait result=failed elapsed_seconds=$elapsed lane=$LANE"
+              echo "CI is red for PR #$PR_NUMBER — not reviewing or merging."
               exit 1
             fi
-            [ -z "$pending" ] && exit 0
-            echo "waiting before reviewing on: $pending"
+            if [ -z "$pending" ]; then
+              elapsed=$(( $(date +%s) - started_epoch ))
+              echo "::notice::phase=ci-wait result=green elapsed_seconds=$elapsed attempts=$i lane=$LANE"
+              exit 0
+            fi
+            elapsed=$(( $(date +%s) - started_epoch ))
+            echo "phase=ci-wait elapsed_seconds=$elapsed attempt=$i/$max_attempts pending=$pending"
             sleep 30
           done
-          echo "Timed out waiting for CI; not reviewing. Still pending: $pending"
+          elapsed=$(( $(date +%s) - started_epoch ))
+          echo "::error::phase=ci-wait result=timeout elapsed_seconds=$elapsed lane=$LANE pending=$pending"
           exit 1
 
       - name: Checkout PR head
+        if: needs.preflight.outputs.lane == 'ai'
         uses: actions/checkout@v7
         with:
           repository: ${{ env.TARGET_REPO }}
-          ref: ${{ needs.classify.outputs.head_sha }}
+          ref: ${{ needs.preflight.outputs.head_sha }}
           token: ${{ secrets.ORG_ADMIN_TOKEN }}
           fetch-depth: 2
 
       - name: Prepare bounded review context
         id: prep
+        if: needs.preflight.outputs.lane == 'ai'
         env:
           GH_TOKEN: ${{ secrets.ORG_ADMIN_TOKEN }}
-          DEPENDENCY_MAJOR: ${{ needs.classify.outputs.dependency_major }}
+          DEPENDENCY_MAJOR: ${{ needs.preflight.outputs.dependency_major }}
         run: |
           set -euo pipefail
           mkdir -p .ai-review
@@ -443,7 +482,7 @@ jobs:
           # this SHA check ensures a superseded revision never reaches Claude.
           sleep 30
           current=$(gh pr view "$PR_NUMBER" --repo "$TARGET_REPO" --json headRefOid --jq .headRefOid)
-          [ "$current" = "${{ needs.classify.outputs.head_sha }}" ] || {
+          [ "$current" = "${{ needs.preflight.outputs.head_sha }}" ] || {
             echo "PR head moved to $current during debounce; a newer run will review it."
             exit 1
           }
@@ -507,8 +546,17 @@ jobs:
             echo "PROMPT_EOF"
           } >> "$GITHUB_OUTPUT"
 
+      - name: Record model phase start
+        id: model_timing
+        if: needs.preflight.outputs.lane == 'ai'
+        run: |
+          started_epoch="$(date +%s)"
+          echo "started_epoch=$started_epoch" >> "$GITHUB_OUTPUT"
+          echo "::notice::phase=model started_at=$(date -u +%Y-%m-%dT%H:%M:%SZ) model=${{ needs.preflight.outputs.model }} budget_usd=${{ needs.preflight.outputs.budget_usd }}"
+
       - name: Claude review (merge gate)
         id: claude
+        if: needs.preflight.outputs.lane == 'ai'
         # Do not fail the job on budget/turn exhaustion — the next step
         # inspects the (empty) verdict and escalates instead of dying here.
         continue-on-error: true
@@ -522,9 +570,9 @@ jobs:
           allowed_bots: "renovate,renovate[bot],mend[bot]"
           prompt: ${{ steps.prep.outputs.review_prompt }}
           claude_args: |
-            --model ${{ needs.classify.outputs.model }}
+            --model ${{ needs.preflight.outputs.model }}
             --max-turns 15
-            --max-budget-usd ${{ needs.classify.outputs.budget_usd }}
+            --max-budget-usd ${{ needs.preflight.outputs.budget_usd }}
             --json-schema '{"type":"object","properties":{"blocking":{"type":"boolean"},"summary":{"type":"string"},"review_first":{"type":"array","items":{"type":"object","properties":{"location":{"type":"string"},"why":{"type":"string"}},"required":["location","why"],"additionalProperties":false}},"findings":{"type":"array","items":{"type":"string"}},"followups":{"type":"array","items":{"type":"object","properties":{"location":{"type":"string"},"note":{"type":"string"}},"required":["location","note"],"additionalProperties":false}}},"required":["blocking","summary","review_first","findings","followups"],"additionalProperties":false}'
             --allowedTools "Read,Grep,Glob"
 
@@ -537,7 +585,7 @@ jobs:
       # the first pass produced no verdict, so the common case never reaches here.
       - name: Escalate review when the first pass ran out of budget or turns
         id: claude_retry
-        if: steps.claude.outputs.structured_output == ''
+        if: needs.preflight.outputs.lane == 'ai' && steps.claude.outputs.structured_output == ''
         continue-on-error: true
         uses: anthropics/claude-code-action@v1
         with:
@@ -563,7 +611,7 @@ jobs:
       # a clean first (or second) pass never reaches here.
       - name: Second escalation when both prior passes produced no verdict (#64)
         id: claude_retry2
-        if: steps.claude.outputs.structured_output == '' && steps.claude_retry.outputs.structured_output == ''
+        if: needs.preflight.outputs.lane == 'ai' && steps.claude.outputs.structured_output == '' && steps.claude_retry.outputs.structured_output == ''
         continue-on-error: true
         uses: anthropics/claude-code-action@v1
         with:
@@ -579,8 +627,25 @@ jobs:
             --json-schema '{"type":"object","properties":{"blocking":{"type":"boolean"},"summary":{"type":"string"},"review_first":{"type":"array","items":{"type":"object","properties":{"location":{"type":"string"},"why":{"type":"string"}},"required":["location","why"],"additionalProperties":false}},"findings":{"type":"array","items":{"type":"string"}},"followups":{"type":"array","items":{"type":"object","properties":{"location":{"type":"string"},"note":{"type":"string"}},"required":["location","note"],"additionalProperties":false}}},"required":["blocking","summary","review_first","findings","followups"],"additionalProperties":false}'
             --allowedTools "Read,Grep,Glob"
 
+      - name: Record model retry outcome
+        if: always() && needs.preflight.outputs.lane == 'ai'
+        env:
+          STARTED_EPOCH: ${{ steps.model_timing.outputs.started_epoch }}
+          FIRST_VERDICT: ${{ steps.claude.outputs.structured_output != '' }}
+          RETRY1_VERDICT: ${{ steps.claude_retry.outputs.structured_output != '' }}
+          RETRY2_VERDICT: ${{ steps.claude_retry2.outputs.structured_output != '' }}
+          RETRY1_CONCLUSION: ${{ steps.claude_retry.conclusion }}
+          RETRY2_CONCLUSION: ${{ steps.claude_retry2.conclusion }}
+        run: |
+          elapsed=unknown
+          if [[ "$STARTED_EPOCH" =~ ^[0-9]+$ ]]; then
+            elapsed=$(( $(date +%s) - STARTED_EPOCH ))
+          fi
+          echo "::notice::phase=model elapsed_seconds=$elapsed first_verdict=$FIRST_VERDICT retry1_conclusion=$RETRY1_CONCLUSION retry1_verdict=$RETRY1_VERDICT retry2_conclusion=$RETRY2_CONCLUSION retry2_verdict=$RETRY2_VERDICT"
+
       - name: Submit deterministic PR review
         id: submit
+        if: needs.preflight.outputs.lane == 'ai'
         env:
           GH_TOKEN: ${{ secrets.ORG_ADMIN_TOKEN }}
           # Prefer the latest non-empty verdict: second escalation, then first
@@ -588,8 +653,8 @@ jobs:
           VERDICT: ${{ steps.claude_retry2.outputs.structured_output != '' && steps.claude_retry2.outputs.structured_output || (steps.claude_retry.outputs.structured_output != '' && steps.claude_retry.outputs.structured_output || steps.claude.outputs.structured_output) }}
           # Passed via env (not inline ${{ }}) so the block is plain bash and can
           # be extracted and unit-tested (scripts/ci-gate/review-comment.test.sh).
-          HEAD_SHA: ${{ needs.classify.outputs.head_sha }}
-          MODEL: ${{ needs.classify.outputs.model }}
+          HEAD_SHA: ${{ needs.preflight.outputs.head_sha }}
+          MODEL: ${{ needs.preflight.outputs.model }}
         run: |
           set -euo pipefail
           # Neither pass produced a verdict (budget/turn exhaustion or a hard
@@ -603,7 +668,7 @@ jobs:
           The automated review produced no verdict across all three passes (budget/turn exhaustion, or the model failed to return a structured verdict on every attempt). This PR was **not** auto-merged. A maintainer should review and merge it manually."
             exit 1
           fi
-          # Expose the verdict so ai-merge can file follow-up issues for the
+          # Expose the verdict so this gate job can file follow-up issues for the
           # non-blocking findings once (and only if) the PR actually merges.
           {
             echo "verdict<<VERDICT_EOF"
@@ -642,7 +707,7 @@ jobs:
               echo "$approval_error" >&2
               exit 1
             fi
-            # The required check and ai-merge job remain the enforcement
+            # The required gate check remains the enforcement
             # mechanism. A comment is the only GitHub-permitted audit record
             # when GitHub rejects the configured token's self-approval.
             gh pr comment "$PR_NUMBER" --repo "$TARGET_REPO" --body "✅ **Merge gate: approved verdict**
@@ -656,7 +721,7 @@ jobs:
       # an endpoint. Emits one CiTelemetryPayload for the review. See ADR 0004
       # and docs/ci-telemetry.md.
       - name: Fetch telemetry helper scripts
-        if: always()
+        if: always() && needs.preflight.outputs.lane == 'ai'
         continue-on-error: true
         uses: actions/checkout@v7
         with:
@@ -667,17 +732,17 @@ jobs:
           sparse-checkout-cone-mode: false
 
       - name: Build ai-review telemetry payload
-        if: always()
+        if: always() && needs.preflight.outputs.lane == 'ai'
         continue-on-error: true
         env:
           VERDICT_JSON: ${{ steps.claude_retry2.outputs.structured_output != '' && steps.claude_retry2.outputs.structured_output || (steps.claude_retry.outputs.structured_output != '' && steps.claude_retry.outputs.structured_output || steps.claude.outputs.structured_output) }}
           EXECUTION_FILE: ${{ steps.claude_retry2.outputs.execution_file != '' && steps.claude_retry2.outputs.execution_file || (steps.claude_retry.outputs.execution_file != '' && steps.claude_retry.outputs.execution_file || steps.claude.outputs.execution_file) }}
           ACTION_CONCLUSION: ${{ steps.claude_retry2.conclusion != 'skipped' && steps.claude_retry2.conclusion || (steps.claude_retry.conclusion != 'skipped' && steps.claude_retry.conclusion || steps.claude.conclusion) }}
-          LANE: ${{ needs.classify.outputs.lane }}
-          LANE_REASON: ${{ needs.classify.outputs.reason }}
-          MODEL: ${{ needs.classify.outputs.model }}
-          BUDGET_USD: ${{ needs.classify.outputs.budget_usd }}
-          DEPENDENCY_MAJOR: ${{ needs.classify.outputs.dependency_major }}
+          LANE: ${{ needs.preflight.outputs.lane }}
+          LANE_REASON: ${{ needs.preflight.outputs.reason }}
+          MODEL: ${{ needs.preflight.outputs.model }}
+          BUDGET_USD: ${{ needs.preflight.outputs.budget_usd }}
+          DEPENDENCY_MAJOR: ${{ needs.preflight.outputs.dependency_major }}
         run: |
           set -uo pipefail    # deliberately no -e: telemetry must never abort
           mkdir -p .telemetry
@@ -731,33 +796,20 @@ jobs:
       # once the meta runner can resolve the private action AND the OTLP
       # endpoint is provisioned (see docs/ci-telemetry.md, ADR 0004).
 
-  ai-merge:
-    needs: [classify, ai-review]
-    # Fast lane skips ai-review entirely; AI lane requires its success.
-    if: >
-      !cancelled() && needs.classify.result == 'success' &&
-      (needs.classify.outputs.lane == 'fast' ||
-       (needs.classify.outputs.lane == 'ai' && needs.ai-review.result == 'success'))
-    runs-on: ${{ github.repository == 'Verjson/.github' && fromJSON('["self-hosted","meta"]') || fromJSON('["self-hosted","gate"]') }}
-    timeout-minutes: 45
-    permissions:
-      contents: read
-    env:
-      LANE: ${{ needs.classify.outputs.lane }}
-      LANE_REASON: ${{ needs.classify.outputs.reason }}
-    steps:
-      - name: Wait for the rest of CI, then squash-merge
+      - name: Authoritative merge recheck and squash-merge
         id: merge
         env:
           GH_TOKEN: ${{ secrets.ORG_ADMIN_TOKEN }}
         run: |
           set -euo pipefail
           REPO="$TARGET_REPO"
+          merge_started_epoch="$(date +%s)"
+          echo "::notice::phase=merge-recheck started_at=$(date -u +%Y-%m-%dT%H:%M:%SZ) lane=$LANE expected_head=$EXPECTED_HEAD_SHA"
           # Re-check the opt-outs at merge time — the authoritative hold gate:
           # a `hold`/`DO NOT MERGE` label added after classification must still
           # stop the merge. Match is case- and separator-insensitive so a
           # `DO NOT MERGE` *label* (not just the title marker) holds too — #51.
-          meta=$(gh pr view "$PR_NUMBER" --repo "$REPO" --json labels,title,isDraft,state)
+          meta=$(gh pr view "$PR_NUMBER" --repo "$REPO" --json labels,title,isDraft,state,headRefOid)
           if jq -e '([.labels[].name | ascii_upcase | gsub("[ _-]+";" ")]) as $l | ($l | index("HOLD")) or ($l | index("DO NOT MERGE")) or (.title | ascii_upcase | contains("DO NOT MERGE")) or .isDraft' <<<"$meta" >/dev/null; then
             echo "PR #$PR_NUMBER is held (label/title/draft); not merging."
             exit 0
@@ -766,41 +818,49 @@ jobs:
             echo "PR #$PR_NUMBER is no longer open; nothing to do."
             exit 0
           fi
-          # Poll every 30s for up to 40 min, excluding this workflow's own jobs.
-          for i in $(seq 1 80); do
-            rollup=$(gh pr view "$PR_NUMBER" --repo "$REPO" \
-              --json statusCheckRollup \
-              --jq '[.statusCheckRollup[]? | select((.name // .context) as $n | $n != "classify" and $n != "ai-review" and $n != "ai-merge" and $n != "review")]')
-            # Rollup mixes CheckRuns (name/status/conclusion) with commit
-            # StatusContexts like renovate/stability-days (context/state) —
-            # treating a context's null .status as pending hangs the gate.
-            failed=$(jq '[.[] | select(((.conclusion // "") | IN("FAILURE","CANCELLED","TIMED_OUT","ACTION_REQUIRED")) or ((.state // "") | IN("FAILURE","ERROR")))] | length' <<<"$rollup")
-            pending=$(jq -r '[.[] | select(if .state then (.state | IN("PENDING","EXPECTED")) else .status != "COMPLETED" end) | "\(.name // .context)=\(.state // .status)"] | join(", ")' <<<"$rollup")
-            if [ "$failed" -gt 0 ]; then
-              echo "CI failed for PR #$PR_NUMBER; not merging."
-              jq -r '.[] | select(((.conclusion // "") | IN("FAILURE","CANCELLED","TIMED_OUT","ACTION_REQUIRED")) or ((.state // "") | IN("FAILURE","ERROR"))) | (.name // .context)' <<<"$rollup"
-              exit 1
-            fi
-            if [ -z "$pending" ]; then
-              if [ "$LANE" = "fast" ]; then
-                # Audit trail: the fast lane's written record replaces the AI review.
-                gh pr comment "$PR_NUMBER" --repo "$REPO" --body "✅ **Merge gate: fast lane** (no AI review needed) — ${LANE_REASON}. All CI checks green; squash-merging." || true
-              fi
-              echo "All checks green; merging PR #$PR_NUMBER (lane: $LANE)."
-              gh pr merge "$PR_NUMBER" --repo "$REPO" --squash --admin --delete-branch
-              exit 0
-            fi
-            echo "waiting before merging on: $pending"
-            sleep 30
-          done
-          echo "Timed out waiting for CI on PR #$PR_NUMBER. Still pending: $pending"
-          exit 1
+          current_head="$(jq -r '.headRefOid // ""' <<<"$meta")"
+          if [ -z "$EXPECTED_HEAD_SHA" ] || [ "$current_head" != "$EXPECTED_HEAD_SHA" ]; then
+            echo "::error::phase=merge-recheck result=head-changed expected=$EXPECTED_HEAD_SHA current=$current_head"
+            exit 1
+          fi
+
+          # One immediate, authoritative CI snapshot. There is deliberately no
+          # second polling loop after model spend: pending, red, or inconclusive
+          # state fails closed and a later event/re-run can attempt the new head.
+          rollup=$(gh pr view "$PR_NUMBER" --repo "$REPO" \
+            --json statusCheckRollup \
+            --jq '[.statusCheckRollup[]? | select((.name // .context) as $n | $n != "preflight" and $n != "gate" and $n != "freshness" and $n != "classify" and $n != "ai-review" and $n != "ai-merge" and $n != "review")]')
+          failed=$(jq '[.[] | select(
+            if .state then
+              ((.state // "") | IN("SUCCESS","PENDING","EXPECTED") | not)
+            else
+              (.status == "COMPLETED" and ((.conclusion // "") | IN("SUCCESS","NEUTRAL","SKIPPED") | not))
+            end
+          )] | length' <<<"$rollup")
+          pending=$(jq -r '[.[] | select(if .state then (.state | IN("PENDING","EXPECTED")) else .status != "COMPLETED" end) | "\(.name // .context)=\(.state // .status)"] | join(", ")' <<<"$rollup")
+          if [ "$failed" -gt 0 ]; then
+            echo "::error::phase=merge-recheck result=failed elapsed_seconds=$(( $(date +%s) - merge_started_epoch ))"
+            jq -r '.[] | select(if .state then ((.state // "") | IN("SUCCESS","PENDING","EXPECTED") | not) else (.status == "COMPLETED" and ((.conclusion // "") | IN("SUCCESS","NEUTRAL","SKIPPED") | not)) end) | (.name // .context)' <<<"$rollup"
+            exit 1
+          fi
+          if [ -n "$pending" ]; then
+            echo "::error::phase=merge-recheck result=pending elapsed_seconds=$(( $(date +%s) - merge_started_epoch )) pending=$pending"
+            exit 1
+          fi
+          if [ "$LANE" = "fast" ]; then
+            # Audit trail: the fast lane's written record replaces the AI review.
+            gh pr comment "$PR_NUMBER" --repo "$REPO" --body "✅ **Merge gate: fast lane** (no AI review needed) — ${LANE_REASON}. All CI checks green; squash-merging." || true
+          fi
+          echo "All checks green and head unchanged; merging PR #$PR_NUMBER (lane: $LANE)."
+          gh pr merge "$PR_NUMBER" --repo "$REPO" --squash --admin --delete-branch \
+            --match-head-commit "$EXPECTED_HEAD_SHA"
+          echo "::notice::phase=merge result=merged elapsed_seconds=$(( $(date +%s) - merge_started_epoch )) lane=$LANE"
 
       - name: File follow-up issues for non-blocking findings
-        if: ${{ !cancelled() && needs.ai-review.outputs.verdict != '' }}
+        if: ${{ !cancelled() && steps.merge.outcome == 'success' && steps.submit.outputs.verdict != '' }}
         env:
           GH_TOKEN: ${{ secrets.ORG_ADMIN_TOKEN }}
-          VERDICT: ${{ needs.ai-review.outputs.verdict }}
+          VERDICT: ${{ steps.submit.outputs.verdict }}
         run: |
           set -uo pipefail
           REPO="$TARGET_REPO"

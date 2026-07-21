@@ -11,6 +11,7 @@ Reverse-chronological index of org-level decisions.
 <!-- BEGIN ADR INDEX -->
 | # | Date | Decision |
 |---|------|----------|
+| [0017](0017-two-stage-ai-merge-gate/README.md) | 2026-07-21 | AI merge gate uses two runner assignments and one long CI wait |
 | [0016](0016-self-gate-runner-redundancy/README.md) | 2026-07-20 | Self-gate runner lane must be redundant (second dedicated `meta` runner) |
 | [0015](0015-gate-retry-structured-output-flake/README.md) | 2026-07-20 | Merge gate retries a third time on a transient structured-output flake |
 | [0014](0014-reusable-workflow-versioning/README.md) | 2026-07-20 | Version & pin the org reusable workflows (moving major tag) |
