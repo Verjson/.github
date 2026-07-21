@@ -58,6 +58,8 @@ jobs:
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
           node-version: '24'
+      - name: reusable Node release — semantic-release engine floor is enforced (#98)
+        run: bash scripts/node-release-version.test.sh
       - name: reusable Node workflows — release lock has no high-risk advisories (#89)
         working-directory: .github/release-tooling
         run: npm audit --package-lock-only --omit=dev --audit-level=high

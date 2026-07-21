@@ -77,6 +77,7 @@ jobs:
         env:
           RELEASE_TOOLING_DIR: ${{ runner.temp }}/verjson-release-tooling
         run: |
+          bash .verjson-workflow/.github/release-tooling/check-node-version.sh
           mkdir -p "$RELEASE_TOOLING_DIR"
           cp .verjson-workflow/.github/release-tooling/package.json "$RELEASE_TOOLING_DIR/"
           cp .verjson-workflow/.github/release-tooling/package-lock.json "$RELEASE_TOOLING_DIR/"
