@@ -9,6 +9,8 @@ on:
   pull_request:
     paths:
       - '.github/actions/**'
+      - '.github/actionlint.yaml'
+      - '.github/workflows/actionlint.yml'
       - '.github/workflows/actions-ci.yml'
       - '.github/workflows/ai-review-merge.yml'
       - '.github/workflows/pulumi-ci.yml'
@@ -20,6 +22,8 @@ on:
     branches: [main]
     paths:
       - '.github/actions/**'
+      - '.github/actionlint.yaml'
+      - '.github/workflows/actionlint.yml'
       - '.github/workflows/actions-ci.yml'
       - '.github/workflows/ai-review-merge.yml'
       - '.github/workflows/pulumi-ci.yml'
@@ -36,6 +40,8 @@ jobs:
     runs-on: [self-hosted, GCP]
     steps:
       - uses: actions/checkout@v7
+      - name: actionlint — workflow and config changes trigger lint (#82)
+        run: bash scripts/actionlint-trigger.test.sh
       - name: setup-verjson-node — configure-git idempotency + secret hygiene
         run: bash .github/actions/setup-verjson-node/configure-git.test.sh
       - name: merge gate — freshness fail-open/fail-closed behavior
