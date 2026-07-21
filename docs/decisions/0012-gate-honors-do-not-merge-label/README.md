@@ -1,7 +1,8 @@
 # 0012 — Merge gate honors a `DO NOT MERGE` label as a terminal hold
 
 - **Date:** 2026-07-20
-- **Issue:** Verjson/.github#51 (held PRs can be auto-merged)
+- **Issues:** Verjson/.github#51 (held PRs can be auto-merged),
+  Verjson/.github#88 (removing a hold does not re-fire the gate)
 - **PR:** Verjson/.github#55
 - **Category:** CI / merge-gate behavior (sensitive class — ruleset/hold semantics)
 - **Relationship:** Same subsystem as ADR 0008 (auto-update stale branches) and
@@ -77,3 +78,23 @@ merge something previously held.
 ```
 
 Full change: Verjson/.github#55.
+
+## 2026-07-21 amendment — re-fire after removing a terminal hold
+
+The documented review flow applies `hold`, marks a draft ready, and removes the
+hold after the independent review passes. Removing a label emits an `unlabeled`
+event, but the gate did not subscribe to that event, so the PR remained stranded
+with stale skipped jobs until an unrelated push or manual dispatch (#88).
+
+The gate now subscribes to `unlabeled`, but both pre-run job guards admit that
+event only when the removed label is exactly `hold` or `DO NOT MERGE`. Removing
+an unrelated label remains a no-op. The existing `labeled` path remains limited
+to the explicit `re-review` request. Workflow concurrency likewise cancels an
+active run only for gate-control label changes; the gate's own removal of
+`re-review` cannot cancel the review that consumed it. Live hold-state checks
+still run afterward, so removing one terminal signal cannot advance a PR that
+retains another.
+
+This restores the intended terminal-hold lifecycle without broadening arbitrary
+label changes into paid review runs. The trigger and both job predicates are
+regression-tested in `scripts/ci-gate/hold.test.sh`.

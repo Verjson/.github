@@ -31,7 +31,7 @@ name: AI review + auto-merge
 
 on:
   pull_request:
-    types: [opened, reopened, ready_for_review, synchronize, labeled]
+    types: [opened, reopened, ready_for_review, synchronize, labeled, unlabeled]
   workflow_dispatch:
     inputs:
       pr_number:
@@ -43,7 +43,19 @@ on:
 
 concurrency:
   group: ai-review-${{ github.event.pull_request.number || inputs.pr_number }}
-  cancel-in-progress: true
+  # Label events start a workflow before job-level `if:` guards are evaluated.
+  # Only gate-control changes may cancel an active review; in particular, the
+  # classify step's own removal of `re-review` must not cancel its parent run.
+  cancel-in-progress: >-
+    ${{
+      (github.event.action != 'labeled' && github.event.action != 'unlabeled') ||
+      (github.event.action == 'labeled' &&
+        (github.event.label.name == 're-review' ||
+         github.event.label.name == 'hold' ||
+         github.event.label.name == 'DO NOT MERGE')) ||
+      (github.event.action == 'unlabeled' &&
+        (github.event.label.name == 'hold' || github.event.label.name == 'DO NOT MERGE'))
+    }}
 
 permissions:
   contents: read
@@ -66,7 +78,12 @@ jobs:
     if: >
       github.event_name == 'workflow_dispatch' ||
       (
-        (github.event.action != 'labeled' || github.event.label.name == 're-review') &&
+        (
+          (github.event.action != 'labeled' && github.event.action != 'unlabeled') ||
+          (github.event.action == 'labeled' && github.event.label.name == 're-review') ||
+          (github.event.action == 'unlabeled' &&
+            (github.event.label.name == 'hold' || github.event.label.name == 'DO NOT MERGE'))
+        ) &&
         !github.event.pull_request.draft &&
         !contains(github.event.pull_request.labels.*.name, 'hold') &&
         !contains(github.event.pull_request.labels.*.name, 'DO NOT MERGE') &&
@@ -189,16 +206,21 @@ jobs:
 
   classify:
     needs: freshness
-    # `labeled` only re-triggers for the explicit re-review request; other label
-    # additions (including `hold`) must not start a run. `freshness` also gates
-    # us: after it auto-updates a behind branch it sets proceed=false, so we only
-    # classify a branch that is current with its base.
+    # `labeled` only re-triggers for the explicit re-review request; `unlabeled`
+    # only re-triggers when a terminal hold is removed. Other label changes must
+    # not start a run. `freshness` also gates us: after it auto-updates a behind
+    # branch it sets proceed=false, so we only classify a current branch.
     if: >
       needs.freshness.outputs.proceed == 'true' &&
       (
         github.event_name == 'workflow_dispatch' ||
         (
-          (github.event.action != 'labeled' || github.event.label.name == 're-review') &&
+          (
+            (github.event.action != 'labeled' && github.event.action != 'unlabeled') ||
+            (github.event.action == 'labeled' && github.event.label.name == 're-review') ||
+            (github.event.action == 'unlabeled' &&
+              (github.event.label.name == 'hold' || github.event.label.name == 'DO NOT MERGE'))
+          ) &&
           !github.event.pull_request.draft &&
           !contains(github.event.pull_request.labels.*.name, 'hold') &&
           !contains(github.event.pull_request.labels.*.name, 'DO NOT MERGE') &&
