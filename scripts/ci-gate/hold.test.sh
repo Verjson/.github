@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Tests the merge gate's terminal-hold predicate (Verjson/.github#51, ADR 0012)
+# Tests the merge gate's terminal-hold predicate and event re-fire guards
+# (Verjson/.github#51, #88, ADR 0012)
 # by extracting the exact `run:` block of the `merge` step from
 # ai-review-merge.yml — single source of truth, so the test can't drift from the
 # shipped logic — and exercising it against a stubbed `gh`. #51: a PR carrying a
@@ -107,6 +108,48 @@ run_case '{"labels":[],"title":"feat: x","isDraft":false,"state":"MERGED"}' >/de
 # copy; pin the classify copy to it so the two can't silently drift.
 copies=$(grep -c "index(\"HOLD\")) or (\$l | index(\"DO NOT MERGE\"))" "$wf")
 [ "$copies" -eq 2 ] && pass "hold predicate present at both bash checkpoints (no drift)" || fail "expected 2 identical hold predicates, found $copies"
+
+# --- #88 regression: removing a terminal hold re-fires the gate ------------
+# Pin the workflow trigger and the exact event-filter grouping in both job
+# guards. GitHub evaluates these expressions before a runner starts, so there is
+# no run block to execute locally; extracting the shipped `if:` text keeps this
+# check tied to the single source of truth.
+types="$(awk '/^  pull_request:/{seen=1; next} seen && /^    types:/{print; exit}' "$wf")"
+printf '%s' "$types" | grep -q 'unlabeled' \
+  && pass "pull_request subscribes to unlabeled (#88)" \
+  || fail "pull_request does not subscribe to unlabeled (#88)"
+
+job_if() {
+  local job="$1"
+  awk -v target="  $job:" '
+    $0 == target { in_job = 1; next }
+    in_job && $0 == "    if: >" { capture = 1; next }
+    capture && /^      / { print substr($0, 7); next }
+    capture { exit }
+  ' "$wf" | tr '\n' ' ' | sed -E 's/[[:space:]]+/ /g'
+}
+
+event_filter="(github.event.action != 'labeled' && github.event.action != 'unlabeled') || (github.event.action == 'labeled' && github.event.label.name == 're-review') || (github.event.action == 'unlabeled' && (github.event.label.name == 'hold' || github.event.label.name == 'DO NOT MERGE'))"
+for job in freshness classify; do
+  predicate="$(job_if "$job")"
+  printf '%s' "$predicate" | grep -qF "$event_filter" \
+    && pass "$job admits re-review and terminal-hold removal only" \
+    || fail "$job event filter does not safely re-fire for hold removal"
+done
+
+# Workflow concurrency is evaluated before the job guards. The gate consumes
+# `re-review` itself, emitting `unlabeled`; that cleanup run must not cancel the
+# review that removed it. Terminal-hold additions/removals and re-review requests
+# do cancel stale work, while unrelated label churn does not.
+cancel_if="$(awk '
+  /^  cancel-in-progress: >-/{capture=1; next}
+  capture && /^    / {print substr($0, 5); next}
+  capture {exit}
+' "$wf" | tr '\n' ' ' | sed -E 's/[[:space:]]+/ /g')"
+cancel_filter="(github.event.action != 'labeled' && github.event.action != 'unlabeled') || (github.event.action == 'labeled' && (github.event.label.name == 're-review' || github.event.label.name == 'hold' || github.event.label.name == 'DO NOT MERGE')) || (github.event.action == 'unlabeled' && (github.event.label.name == 'hold' || github.event.label.name == 'DO NOT MERGE'))"
+printf '%s' "$cancel_if" | grep -qF "$cancel_filter" \
+  && pass "concurrency ignores re-review cleanup and unrelated label churn" \
+  || fail "concurrency cancellation filter can strand or cancel gate runs"
 
 if [ "$fails" -eq 0 ]; then
   echo "All tests passed."
