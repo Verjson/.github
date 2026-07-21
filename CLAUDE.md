@@ -23,6 +23,10 @@ the ADR directories, and commit that. `actions-ci` runs `gen-adr-index.sh --chec
 and fails if the committed table is stale. On a rebase, re-run the generator
 instead of hand-merging table rows. Sensitive-class changes (auth/RBAC, rulesets,
 runner topology, IAM/OIDC, secrets, merge-gate behaviour) still require an ADR.
+For a bug fix that restores an invariant already recorded in an ADR, amend that
+controlling ADR with the dated rationale and evidence; reserve a new ADR number
+for a new or superseding decision. “Restoring intended behaviour” is not an
+exemption from decision-record coverage.
 
 ## CI-gate tests
 
