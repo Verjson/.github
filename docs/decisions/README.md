@@ -11,6 +11,7 @@ Reverse-chronological index of org-level decisions.
 <!-- BEGIN ADR INDEX -->
 | # | Date | Decision |
 |---|------|----------|
+| [0019](0019-gate-constrains-dispatch-target-to-org/README.md) | 2026-07-22 | Merge gate constrains its dispatch target to this org |
 | [0018](0018-gate-elides-lockfiles-from-review/README.md) | 2026-07-22 | Merge gate elides generated lockfiles from the AI review payload |
 | [0017](0017-two-stage-ai-merge-gate/README.md) | 2026-07-21 | AI merge gate uses two runner assignments and one long CI wait |
 | [0016](0016-self-gate-runner-redundancy/README.md) | 2026-07-20 | Self-gate runner lane must be redundant (second dedicated `meta` runner) |

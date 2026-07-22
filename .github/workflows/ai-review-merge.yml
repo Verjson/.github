@@ -29,6 +29,15 @@ name: AI review + auto-merge
 # org-admin ruleset bypass (same mechanism as the catalog auto-bump). Humans
 # opt a PR out with the `hold` label, a "DO NOT MERGE" title marker, or by
 # keeping it a draft — re-checked at merge time.
+#
+# Cross-repo dispatch is bounded to THIS org (ADR 0019, #119). The optional
+# `repository` workflow_dispatch input lets an operator re-gate a *sibling*
+# Verjson repo, but the `target_guard` preflight step fails closed unless the
+# target is owned by github.repository_owner — so it can never aim the
+# ORG_ADMIN_TOKEN admin-merge machinery at a foreign org. Downstream SINGLE-REPO
+# consumers that never dispatch cross-repo should adopt the tighter Tequity
+# ADR-0027 form (tequityapp/tequity-ui#16): drop the `repository` input and pin
+# `TARGET_REPO: ${{ github.repository }}` — the recommended default for copies.
 
 on:
   pull_request:
@@ -127,6 +136,26 @@ jobs:
           else
             echo "::notice::phase=preflight runner_assigned_at=$assigned_at initial_queue_seconds=unknown"
           fi
+
+      - name: Constrain merge target to this org (fail closed)
+        id: target_guard
+        run: |
+          set -euo pipefail
+          # Everything below drives `gh pr view/merge` against TARGET_REPO under
+          # ORG_ADMIN_TOKEN. `repository` is a free-form workflow_dispatch input,
+          # so an arbitrary value would aim the admin-merge machinery at another
+          # org — a cross-repo admin-merge escalation (#119; Tequity ADR-0027,
+          # tequityapp/tequity-ui#16). Require an exact `<owner>/<repo>` whose
+          # owner is THIS org (github.repository_owner via env — never hardcode);
+          # anything else (foreign owner, or a malformed target) fails closed.
+          # The default path (`repository` unset → github.repository) is
+          # same-owner and passes.
+          owner="${TARGET_REPO%%/*}"
+          if [[ ! "$TARGET_REPO" =~ ^[^/]+/[^/]+$ ]] || [ "$owner" != "$GITHUB_REPOSITORY_OWNER" ]; then
+            echo "::error::refusing to run the merge gate against '$TARGET_REPO': target must be a repo owned by '$GITHUB_REPOSITORY_OWNER'."
+            exit 1
+          fi
+          echo "merge target '$TARGET_REPO' is within org '$GITHUB_REPOSITORY_OWNER'."
 
       - name: Update branch if behind; hold on conflict
         id: freshness
