@@ -42,7 +42,16 @@ Before the model step, the gate reads the PR's reviews/comments, finds the most
 recent **approval** marker (an `APPROVED` review or the self-gate's
 "approved verdict" comment fallback — a blocking/inconclusive record never
 qualifies), and sets `skip_model=true` **only** when a prior marker exists AND
-its `patchid` is non-empty AND equals the current non-empty patch-id. On a skip,
+its `patchid` is non-empty AND equals the current non-empty patch-id.
+
+The marker is trusted **only when authored by the gate's own identity**
+(`gh api user` under `ORG_ADMIN_TOKEN` — the same account that posts the
+deterministic approval); both the approved-review and approved-comment selects
+filter on that login. Without this, any PR author could post a comment carrying
+a forged marker plus the locally-computable patch-id and skip the paid review on
+attacker-chosen code — a fail-open hole in a required gate. An unresolvable gate
+identity yields no skip. (Fail-open guard added after the initial cut; pinned by
+attacker-authored negative cases in the test.) On a skip,
 the model steps are guarded off and the deterministic submit consumes a
 synthesized approved (`blocking=false`) verdict, so the existing authoritative
 merge-recheck + squash runs exactly as on a normal approve.

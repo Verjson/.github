@@ -523,12 +523,20 @@ jobs:
           #    APPROVED review, or the self-gate's "approved verdict" comment
           #    fallback, qualifies — a blocking/inconclusive record that also
           #    carries the marker must NOT authorize a skip. Newest wins.
+          # The marker is only trustworthy if the gate/bot itself posted it.
+          # ORG_ADMIN_TOKEN's own identity is the account that submits the
+          # deterministic review/approval, so restrict BOTH the approved-review
+          # and approved-comment selects to that login. Without this, any PR
+          # author could post a comment carrying a forged marker plus the
+          # (locally computable) patch-id and skip the paid review entirely
+          # (fail-open). No gate identity -> no skip.
           prior_patch=""
-          if [ -n "$patch_id" ]; then
+          gate_login="$(gh api user --jq '.login' 2>/dev/null || true)"
+          if [ -n "$patch_id" ] && [ -n "$gate_login" ]; then
             prdata="$(gh pr view "$PR_NUMBER" --repo "$TARGET_REPO" --json reviews,comments 2>/dev/null || echo '{}')"
-            winner="$(jq -r '
-              [ (.reviews[]?  | select(.state == "APPROVED")                              | {t: .submittedAt, b: .body}),
-                (.comments[]? | select(.body | contains("Merge gate: approved verdict"))  | {t: .createdAt,  b: .body}) ]
+            winner="$(jq -r --arg gate "$gate_login" '
+              [ (.reviews[]?  | select(.state == "APPROVED" and .author.login == $gate)                               | {t: .submittedAt, b: .body}),
+                (.comments[]? | select(.author.login == $gate and (.body | contains("Merge gate: approved verdict"))) | {t: .createdAt,  b: .body}) ]
               | map(select(.b != null and (.b | test("ai-review-head:"))))
               | sort_by(.t) | reverse | (.[0].b // "")
             ' <<<"$prdata" 2>/dev/null || true)"
