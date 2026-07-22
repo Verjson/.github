@@ -54,6 +54,8 @@ jobs:
         run: bash scripts/actionlint-install.test.sh
       - name: reusable Node workflows — nested actions and release tooling are pinned (#89)
         run: bash scripts/node-workflow-pins.test.sh
+      - name: reusable Node workflows — optional DB service is default-off and exports DATABASE_URL (#108)
+        run: bash scripts/ci-gate/node-ci-db-service.test.sh
       - name: reusable Node workflows — set up Node for release-tooling audit (#89)
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
