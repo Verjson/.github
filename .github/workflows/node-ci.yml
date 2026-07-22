@@ -50,6 +50,30 @@ on:
         required: false
         type: string
         default: '["self-hosted", "GCP"]'
+      db-image:
+        description: >-
+          Optional Postgres-style image (e.g. pgvector/pgvector:pg16) to run as a
+          database service for the test job. Empty string (the default) starts no
+          database — existing callers are unaffected. It is started as a
+          conditional `docker run` step, not a `services:` block, because a
+          `services:` container has no `if:` toggle and rejects an empty image, so
+          it cannot be defaulted off without forcing a DB on every caller.
+        required: false
+        type: string
+        default: ''
+      db-env:
+        description: >-
+          Newline-separated KEY=VALUE pairs (dotenv style) used only when
+          `db-image` is set. Every POSTGRES_* pair is passed into the database
+          container; every pair (including DATABASE_URL) is exported to
+          `$GITHUB_ENV` so `npm test` sees it. Example:
+            POSTGRES_USER=app
+            POSTGRES_PASSWORD=secret
+            POSTGRES_DB=app_test
+            DATABASE_URL=postgres://app:secret@localhost:5432/app_test
+        required: false
+        type: string
+        default: ''
     secrets:
       NODE_AUTH_TOKEN:
         description: Token to read @verjson private packages from GitHub Packages
@@ -77,6 +101,45 @@ jobs:
           node-version: ${{ inputs.node-version }}
           registry-url: https://npm.pkg.github.com
           scope: ${{ inputs.scope }}
+      - name: Start database service
+        # Optional Postgres service for DB-backed test suites (e.g. Jest against
+        # pgvector/pgvector:pg16 with DATABASE_URL). Default-off: this whole step
+        # is skipped unless a caller sets `db-image`, so the existing no-DB path
+        # is untouched. A conditional `docker run` (not `services:`) is used
+        # because a `services:` container has no `if:` and an empty image is a
+        # hard error — so it can't be toggled off by an empty input. `db-env` is
+        # newline-separated KEY=VALUE pairs: every POSTGRES_* pair is passed into
+        # the container, and every pair (including DATABASE_URL) is exported to
+        # $GITHUB_ENV for the test step.
+        id: db-service
+        if: inputs.db-image != ''
+        env:
+          DB_IMAGE: ${{ inputs.db-image }}
+          DB_ENV: ${{ inputs.db-env }}
+        run: |
+          set -euo pipefail
+          docker_env=()
+          while IFS= read -r line; do
+            [ -z "$line" ] && continue
+            printf '%s\n' "$line" >> "$GITHUB_ENV"
+            case "$line" in
+              POSTGRES_*) docker_env+=(-e "$line") ;;
+            esac
+          done <<< "$DB_ENV"
+          docker run -d --name ci-postgres -p 5432:5432 \
+            ${docker_env[@]+"${docker_env[@]}"} "$DB_IMAGE"
+          for attempt in $(seq 1 30); do
+            if docker exec ci-postgres pg_isready >/dev/null 2>&1; then
+              echo "database is ready"
+              break
+            fi
+            if [ "$attempt" -eq 30 ]; then
+              echo "database failed to become ready" >&2
+              docker logs ci-postgres >&2 || true
+              exit 1
+            fi
+            sleep 2
+          done
       - name: Install schema submodule deps
         if: inputs.schema-dir != ''
         working-directory: ${{ inputs.schema-dir }}
