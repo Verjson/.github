@@ -474,9 +474,98 @@ jobs:
           token: ${{ secrets.ORG_ADMIN_TOKEN }}
           fetch-depth: 2
 
+      # Cost/latency optimization (#120): when main is active a green PR keeps
+      # getting a base-merge from preflight, which re-fires `synchronize` and
+      # re-pays a full model review even though the PR's own net diff is
+      # unchanged. Compute the PR's base..head patch-id (stable across
+      # base-merges/rebases) and, if it byte-matches the patch-id embedded in the
+      # most recent APPROVAL marker, reuse that approval and skip the model. This
+      # is PURELY an optimization on an already-approved, unchanged diff: it
+      # never merges by itself — the unchanged authoritative merge-recheck below
+      # still re-verifies head/CI/hold/draft and does the squash. Every unknown
+      # (no merge-base, empty diff, missing/old/blocking-only marker) falls
+      # through to the full review — fail-closed.
+      - name: Decide whether to skip re-review (unchanged diff)
+        id: rereview
+        if: needs.preflight.outputs.lane == 'ai'
+        env:
+          GH_TOKEN: ${{ secrets.ORG_ADMIN_TOKEN }}
+        run: |
+          # No `set -e`: a transient git/gh hiccup must degrade to "do not skip",
+          # never abort this required gate step.
+          set -uo pipefail
+          skip=false
+          patch_id=""
+          approved_head=""
+
+          # 1. Current PR net patch-id. The depth-2 checkout lacks the base, so
+          #    fetch it and use the merge-base; patch-id --stable is invariant to
+          #    later base-merges/rebases. Any failure -> patch_id stays empty
+          #    (UNKNOWN) -> never skip.
+          base_ref="$(gh pr view "$PR_NUMBER" --repo "$TARGET_REPO" --json baseRefName --jq .baseRefName 2>/dev/null || true)"
+          if [ -n "$base_ref" ]; then
+            git fetch --no-tags --depth 50 origin "$base_ref" 2>/dev/null || git fetch --no-tags origin "$base_ref" 2>/dev/null || true
+            mb="$(git merge-base "origin/$base_ref" HEAD 2>/dev/null || true)"
+            if [ -z "$mb" ]; then
+              git fetch --no-tags --unshallow origin "$base_ref" 2>/dev/null || true
+              mb="$(git merge-base "origin/$base_ref" HEAD 2>/dev/null || true)"
+            fi
+            if [ -n "$mb" ]; then
+              diff="$(git diff "$mb" HEAD 2>/dev/null || true)"
+              # An empty net diff (no real change) is UNKNOWN, not a match.
+              if [ -n "$diff" ]; then
+                patch_id="$(printf '%s\n' "$diff" | git patch-id --stable | awk '{print $1}')"
+              fi
+            fi
+          fi
+
+          # 2. Patch-id embedded in the most recent APPROVAL marker. Only an
+          #    APPROVED review, or the self-gate's "approved verdict" comment
+          #    fallback, qualifies — a blocking/inconclusive record that also
+          #    carries the marker must NOT authorize a skip. Newest wins.
+          prior_patch=""
+          if [ -n "$patch_id" ]; then
+            prdata="$(gh pr view "$PR_NUMBER" --repo "$TARGET_REPO" --json reviews,comments 2>/dev/null || echo '{}')"
+            winner="$(jq -r '
+              [ (.reviews[]?  | select(.state == "APPROVED")                              | {t: .submittedAt, b: .body}),
+                (.comments[]? | select(.body | contains("Merge gate: approved verdict"))  | {t: .createdAt,  b: .body}) ]
+              | map(select(.b != null and (.b | test("ai-review-head:"))))
+              | sort_by(.t) | reverse | (.[0].b // "")
+            ' <<<"$prdata" 2>/dev/null || true)"
+            prior_patch="$(printf '%s' "$winner" | grep -oE 'patchid:[^ ]+' | head -n1 | cut -d: -f2)"
+            approved_head="$(printf '%s' "$winner" | grep -oE 'ai-review-head:[^ ]+' | head -n1 | cut -d: -f2)"
+          fi
+
+          # 3. Skip ONLY on a non-empty exact match against a prior approval.
+          if [ -n "$patch_id" ] && [ -n "$prior_patch" ] && [ "$patch_id" = "$prior_patch" ]; then
+            skip=true
+          fi
+
+          {
+            echo "skip_model=$skip"
+            echo "patch_id=$patch_id"
+          } >> "$GITHUB_OUTPUT"
+
+          if [ "$skip" = true ]; then
+            echo "::notice::phase=rereview result=skip patch_id=$patch_id approved_head=$approved_head"
+            # Synthesize the approved verdict the deterministic submit + merge
+            # recheck consume, so the skip path runs exactly like a normal
+            # approve (blocking=false) — the merge only happens through the
+            # unchanged recheck.
+            summary="re-review skipped: PR net diff unchanged since ${approved_head:-a prior approval} (patch-id match)"
+            verdict="$(jq -cn --arg s "$summary" '{blocking:false,summary:$s,review_first:[],findings:[],followups:[]}')"
+            {
+              echo "skip_verdict<<VERDICT_EOF"
+              printf '%s\n' "$verdict"
+              echo "VERDICT_EOF"
+            } >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::phase=rereview result=review patch_id=${patch_id:-unknown}"
+          fi
+
       - name: Prepare bounded review context
         id: prep
-        if: needs.preflight.outputs.lane == 'ai'
+        if: needs.preflight.outputs.lane == 'ai' && steps.rereview.outputs.skip_model != 'true'
         env:
           GH_TOKEN: ${{ secrets.ORG_ADMIN_TOKEN }}
           DEPENDENCY_MAJOR: ${{ needs.preflight.outputs.dependency_major }}
@@ -584,7 +673,7 @@ jobs:
 
       - name: Record model phase start
         id: model_timing
-        if: needs.preflight.outputs.lane == 'ai'
+        if: needs.preflight.outputs.lane == 'ai' && steps.rereview.outputs.skip_model != 'true'
         run: |
           started_epoch="$(date +%s)"
           echo "started_epoch=$started_epoch" >> "$GITHUB_OUTPUT"
@@ -592,7 +681,7 @@ jobs:
 
       - name: Claude review (merge gate)
         id: claude
-        if: needs.preflight.outputs.lane == 'ai'
+        if: needs.preflight.outputs.lane == 'ai' && steps.rereview.outputs.skip_model != 'true'
         # Do not fail the job on budget/turn exhaustion — the next step
         # inspects the (empty) verdict and escalates instead of dying here.
         continue-on-error: true
@@ -621,7 +710,7 @@ jobs:
       # the first pass produced no verdict, so the common case never reaches here.
       - name: Escalate review when the first pass ran out of budget or turns
         id: claude_retry
-        if: needs.preflight.outputs.lane == 'ai' && steps.claude.outputs.structured_output == ''
+        if: needs.preflight.outputs.lane == 'ai' && steps.rereview.outputs.skip_model != 'true' && steps.claude.outputs.structured_output == ''
         continue-on-error: true
         uses: anthropics/claude-code-action@v1
         with:
@@ -647,7 +736,7 @@ jobs:
       # a clean first (or second) pass never reaches here.
       - name: Second escalation when both prior passes produced no verdict (#64)
         id: claude_retry2
-        if: needs.preflight.outputs.lane == 'ai' && steps.claude.outputs.structured_output == '' && steps.claude_retry.outputs.structured_output == ''
+        if: needs.preflight.outputs.lane == 'ai' && steps.rereview.outputs.skip_model != 'true' && steps.claude.outputs.structured_output == '' && steps.claude_retry.outputs.structured_output == ''
         continue-on-error: true
         uses: anthropics/claude-code-action@v1
         with:
@@ -684,13 +773,18 @@ jobs:
         if: needs.preflight.outputs.lane == 'ai'
         env:
           GH_TOKEN: ${{ secrets.ORG_ADMIN_TOKEN }}
-          # Prefer the latest non-empty verdict: second escalation, then first
+          # On a base-merge-only re-fire (#120) the model never ran; reuse the
+          # synthesized approved verdict from the rereview step. Otherwise prefer
+          # the latest non-empty model verdict: second escalation, then first
           # escalation, then the cheap first pass.
-          VERDICT: ${{ steps.claude_retry2.outputs.structured_output != '' && steps.claude_retry2.outputs.structured_output || (steps.claude_retry.outputs.structured_output != '' && steps.claude_retry.outputs.structured_output || steps.claude.outputs.structured_output) }}
+          VERDICT: ${{ steps.rereview.outputs.skip_model == 'true' && steps.rereview.outputs.skip_verdict || (steps.claude_retry2.outputs.structured_output != '' && steps.claude_retry2.outputs.structured_output || (steps.claude_retry.outputs.structured_output != '' && steps.claude_retry.outputs.structured_output || steps.claude.outputs.structured_output)) }}
           # Passed via env (not inline ${{ }}) so the block is plain bash and can
           # be extracted and unit-tested (scripts/ci-gate/review-comment.test.sh).
           HEAD_SHA: ${{ needs.preflight.outputs.head_sha }}
           MODEL: ${{ needs.preflight.outputs.model }}
+          # PR net patch-id (#120), embedded in the approval marker so a future
+          # base-merge re-fire can detect an unchanged diff and skip the model.
+          PATCH_ID: ${{ steps.rereview.outputs.patch_id }}
         run: |
           set -euo pipefail
           # Neither pass produced a verdict (budget/turn exhaustion or a hard
@@ -727,7 +821,7 @@ jobs:
           ' <<<"$VERDICT")
           body="$body
 
-          <!-- ai-review-head:${HEAD_SHA} model:${MODEL} -->"
+          <!-- ai-review-head:${HEAD_SHA} patchid:${PATCH_ID:-} model:${MODEL} -->"
           if [ "$(jq -r .blocking <<<"$VERDICT")" = true ]; then
             # A token may be the PR author's identity. GitHub forbids a user
             # reviewing their own PR, but the non-zero result must still block
