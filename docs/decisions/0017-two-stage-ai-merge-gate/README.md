@@ -96,3 +96,19 @@ changing enforcement.
   reduces amplification but does not make an offline pool available.
 - Tests extract the shipped freshness, review, and merge shell blocks and pin the
   two-job workflow shape so future edits cannot silently restore the queue cost.
+
+## Amendment — 2026-07-22 (issue #106)
+
+The two runner-timing diagnostics ("Record preflight runner timing" and "Record
+gate runner timing") computed a queue delta with `$(( $(date -d "$a" +%s) -
+$(date -d "$b" +%s) ))`. A non-empty but **unparseable** timestamp made
+`date -d` print nothing, so the expression became `$(( N -  ))` — a fatal bash
+arithmetic syntax error even under `set -uo pipefail` (no `-e`) — which aborted
+the required preflight/gate job. That contradicted this ADR's invariant that the
+timing diagnostics never change enforcement. The conversions are now fail-safe:
+each `date -d` is captured with `|| true` and the delta is computed only when
+both epochs match `^[0-9]+$` (empty/unparseable degrades to the existing
+"unknown" notice). No enforcement/merge logic changed and no `continue-on-error`
+was added (that would mask real failures). Evidence: `scripts/ci-gate/preflight-timing.test.sh`
+(extracts the shipped block; failed before the fix on an unparseable `created_at`,
+passes after), wired into `actions-ci.yml`.

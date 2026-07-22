@@ -115,8 +115,14 @@ jobs:
           set -uo pipefail
           assigned_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           created_at="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" --jq .created_at 2>/dev/null || true)"
-          if [ -n "$created_at" ]; then
-            queue_seconds=$(( $(date -u -d "$assigned_at" +%s) - $(date -u -d "$created_at" +%s) ))
+          # Fail-safe epoch conversion: a bad/empty timestamp leaves the epoch
+          # empty (never an empty $(( )) operand), so it degrades to "unknown"
+          # instead of a fatal arithmetic syntax error aborting this required
+          # diagnostic step (#106; ADR 0017 keeps diagnostics enforcement-neutral).
+          assigned_epoch="$(date -u -d "$assigned_at" +%s 2>/dev/null || true)"
+          created_epoch="$(date -u -d "$created_at" +%s 2>/dev/null || true)"
+          if [[ -n "$created_at" && "$assigned_epoch" =~ ^[0-9]+$ && "$created_epoch" =~ ^[0-9]+$ ]]; then
+            queue_seconds=$(( assigned_epoch - created_epoch ))
             echo "::notice::phase=preflight runner_assigned_at=$assigned_at workflow_created_at=$created_at initial_queue_seconds=$queue_seconds"
           else
             echo "::notice::phase=preflight runner_assigned_at=$assigned_at initial_queue_seconds=unknown"
@@ -397,8 +403,13 @@ jobs:
         run: |
           set -uo pipefail
           assigned_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-          if [ -n "$PREFLIGHT_COMPLETED_AT" ]; then
-            queue_seconds=$(( $(date -u -d "$assigned_at" +%s) - $(date -u -d "$PREFLIGHT_COMPLETED_AT" +%s) ))
+          # Fail-safe epoch conversion (see the preflight step): an unparseable
+          # or empty PREFLIGHT_COMPLETED_AT degrades to "unknown" rather than an
+          # arithmetic syntax error aborting this required step (#106; ADR 0017).
+          assigned_epoch="$(date -u -d "$assigned_at" +%s 2>/dev/null || true)"
+          completed_epoch="$(date -u -d "$PREFLIGHT_COMPLETED_AT" +%s 2>/dev/null || true)"
+          if [[ -n "$PREFLIGHT_COMPLETED_AT" && "$assigned_epoch" =~ ^[0-9]+$ && "$completed_epoch" =~ ^[0-9]+$ ]]; then
+            queue_seconds=$(( assigned_epoch - completed_epoch ))
             echo "::notice::phase=gate runner_assigned_at=$assigned_at preflight_completed_at=$PREFLIGHT_COMPLETED_AT transition_queue_seconds=$queue_seconds lane=$LANE"
           else
             echo "::notice::phase=gate runner_assigned_at=$assigned_at transition_queue_seconds=unknown lane=$LANE"
