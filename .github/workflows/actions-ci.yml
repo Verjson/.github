@@ -75,6 +75,8 @@ jobs:
         run: bash scripts/ci-gate/ai-review-retry.test.sh
       - name: merge gate — two-job queue shape and authoritative merge recheck (#104)
         run: bash scripts/ci-gate/gate-queue.test.sh
+      - name: merge gate — runner-timing diagnostics survive bad timestamps (#106, ADR 0017)
+        run: bash scripts/ci-gate/preflight-timing.test.sh
       - name: merge gate — classify docs-fast-lane allowlist (#66, #75)
         run: bash scripts/ci-gate/classify-fast-lane.test.sh
       - name: merge gate — elide lockfiles from review payload (#110)
