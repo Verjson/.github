@@ -487,7 +487,26 @@ jobs:
           gh pr view "$PR_NUMBER" --repo "$TARGET_REPO" \
             --json title,body,author,labels,baseRefName,headRefName,additions,deletions,changedFiles \
             > .ai-review/pr.json
-          gh pr diff "$PR_NUMBER" --repo "$TARGET_REPO" > .ai-review/pr.diff
+          gh pr diff "$PR_NUMBER" --repo "$TARGET_REPO" > .ai-review/pr.full.diff
+
+          # Elide generated lockfiles from the review payload. A lockfile is a
+          # derived artifact — the reviewer scrutinizes the manifest
+          # (package.json, Cargo.toml, …), never the machine-generated lock. An
+          # 8k-line package-lock in the diff once consumed the whole review
+          # budget and produced a no-verdict, fail-closed run on an
+          # otherwise-small PR (Verjson/.github#110). Keep the full diff on disk
+          # for reference; hand the model the filtered diff plus a note of what
+          # was dropped so it still scrutinizes the manifest counterpart.
+          LOCK_RE='(^|/)(package-lock\.json|npm-shrinkwrap\.json|pnpm-lock\.yaml|yarn\.lock|bun\.lockb?|Cargo\.lock|go\.sum|poetry\.lock|composer\.lock|gradle\.lockfile|Gemfile\.lock)$'
+          awk -v re="$LOCK_RE" '
+            /^diff --git / { p = $4; sub(/^b\//, "", p); keep = (p !~ re) }
+            keep
+          ' .ai-review/pr.full.diff > .ai-review/pr.diff
+          elided_lockfiles="$(awk -v re="$LOCK_RE" '
+            /^diff --git / { p = $4; sub(/^b\//, "", p);
+              if (p ~ re) out = out (out == "" ? "" : ", ") p }
+            END { print out }
+          ' .ai-review/pr.full.diff)"
 
           # Debounce synchronize bursts. Concurrency cancels an older run, and
           # this SHA check ensures a superseded revision never reaches Claude.
@@ -507,13 +526,18 @@ jobs:
           if [ "$DEPENDENCY_MAJOR" = "true" ]; then
             major_note="This is a major dependency update. Also inspect the changed dependency version and repository evidence for breaking changes, deprecations, migrations, and security-relevant fixes."
           fi
+          lockfile_note=""
+          if [ -n "$elided_lockfiles" ]; then
+            lockfile_note="Generated lockfile(s) were omitted from the diff to conserve review budget: ${elided_lockfiles}. Their manifest changes (package.json, Cargo.toml, requirements, etc.) ARE in the diff — review those; do not open or request the lockfile itself."
+          fi
           {
             echo "review_prompt<<PROMPT_EOF"
             cat <<EOF
           You are the autonomous merge gate for ${TARGET_REPO}.
           Review PR #${PR_NUMBER} in ${TARGET_REPO}.
-          Metadata is in .ai-review/pr.json and the complete diff is in
-          .ai-review/pr.diff. Read those two files first, then open only the
+          Metadata is in .ai-review/pr.json and the diff (with generated
+          lockfiles elided) is in .ai-review/pr.diff. Read those two files
+          first, then open only the
           specific repository files a potential finding actually depends on —
           be economical and do not broadly explore the tree.
 
@@ -527,6 +551,8 @@ jobs:
           Style-only nits are not blocking; mention at most briefly.
 
           ${major_note}
+
+          ${lockfile_note}
 
           Return the required JSON verdict as soon as you can support it. Do
           not call GitHub or submit a review yourself. Set blocking=true only

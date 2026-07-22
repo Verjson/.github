@@ -77,6 +77,8 @@ jobs:
         run: bash scripts/ci-gate/preflight-timing.test.sh
       - name: merge gate — classify docs-fast-lane allowlist (#66, #75)
         run: bash scripts/ci-gate/classify-fast-lane.test.sh
+      - name: merge gate — elide lockfiles from review payload (#110)
+        run: bash scripts/ci-gate/elide-lockfiles.test.sh
       - name: merge gate — follow-up issue filing (ADR 0009)
         run: bash scripts/ci-gate/followup-issues.test.sh
       - name: merge gate — hold predicate and re-fire guards (ADR 0012, #51, #88)
