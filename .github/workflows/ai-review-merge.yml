@@ -385,7 +385,6 @@ jobs:
       pull-requests: write
       issues: write
       actions: read
-      id-token: write
     env:
       LANE: ${{ needs.preflight.outputs.lane }}
       LANE_REASON: ${{ needs.preflight.outputs.reason }}
