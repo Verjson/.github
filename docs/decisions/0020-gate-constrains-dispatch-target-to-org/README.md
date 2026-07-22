@@ -1,4 +1,4 @@
-# 0019 — Merge gate constrains its dispatch target to this org
+# 0020 — Merge gate constrains its dispatch target to this org
 
 - **Date:** 2026-07-22
 - **Issue:** Verjson/.github#119

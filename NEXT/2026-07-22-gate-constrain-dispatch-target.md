@@ -13,5 +13,5 @@ re-gate a sibling org repo), just bounded to the org. Downstream single-repo
 copies should instead drop the input and pin `TARGET_REPO: ${{ github.repository }}`
 (the Tequity ADR-0027 form), as documented in the workflow header. Pinned by
 `scripts/ci-gate/dispatch-target-guard.test.sh` (wired into `actions-ci`). See
-[ADR 0019](docs/decisions/0019-gate-constrains-dispatch-target-to-org/README.md),
+[ADR 0020](docs/decisions/0020-gate-constrains-dispatch-target-to-org/README.md),
 issue #119.
