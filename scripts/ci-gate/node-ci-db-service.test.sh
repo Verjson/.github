@@ -66,6 +66,9 @@ export DOCKER_LOG="$tmp/docker.log"
 export GITHUB_ENV="$tmp/github_env"
 : >"$DOCKER_LOG"
 : >"$GITHUB_ENV"
+# The workflow supplies CONTAINER_NAME via the step `env:` (a run-scoped name);
+# mirror that here so the extracted script runs under `set -u`.
+export CONTAINER_NAME="ci-postgres-test"
 export DB_IMAGE="pgvector/pgvector:pg16"
 export DB_ENV="POSTGRES_USER=app
 POSTGRES_PASSWORD=secret
@@ -91,6 +94,22 @@ grep -qF -- '-e POSTGRES_USER=app' "$DOCKER_LOG" \
 grep -qF -- "$DB_IMAGE" "$DOCKER_LOG" \
   && pass "the caller-supplied db-image is the container started" \
   || fail "the caller db-image was not started"
+
+grep -qF -- '--name "$CONTAINER_NAME"' "$script" \
+  && pass "the container uses a run-scoped name (no cross-job collision)" \
+  || fail "the container name is not run-scoped (would collide on a shared runner)"
+
+# (c) A teardown step must always remove the run-scoped container so a finished
+# or failed job never leaks it onto the persistent self-hosted runner.
+teardown="$(awk '
+  $0 == "      - name: Stop database service" { seen = 1 }
+  seen && $0 ~ /^        if:/ { print; found = 1 }
+  seen && $0 ~ /docker rm -f/ { print; found = 1 }
+  seen && $0 ~ /^      - name:/ && $0 != "      - name: Stop database service" { exit }
+' "$wf")"
+{ printf '%s' "$teardown" | grep -qF 'always()' && printf '%s' "$teardown" | grep -qF 'docker rm -f'; } \
+  && pass "a Stop database service step always removes the container (if: always())" \
+  || fail "no always() teardown for the DB container (it would leak on the self-hosted runner)"
 
 if [ "$fails" -eq 0 ]; then
   echo "All tests passed."
