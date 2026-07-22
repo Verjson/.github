@@ -73,6 +73,18 @@ run_case() {
 [ "$(run_case '')" = "rc=1" ] \
   && pass "empty target fails closed" || fail "empty target not rejected"
 
+# (e) An empty/unset org identity must not fail OPEN: with no
+# GITHUB_REPOSITORY_OWNER, no target can be authorized (a real owner can never
+# equal ""), so even a normally-valid target is rejected.
+run_case_owner() { # <owner> <target>
+  export GITHUB_REPOSITORY_OWNER="$1" TARGET_REPO="$2"
+  bash "$script" >/dev/null 2>&1
+  echo "rc=$?"
+}
+[ "$(run_case_owner '' 'Verjson/.github')" = "rc=1" ] \
+  && pass "empty GITHUB_REPOSITORY_OWNER fails closed (no fail-open on missing org identity)" \
+  || fail "empty owner env fails OPEN — a target was authorized with no org identity"
+
 if [ "$fails" -eq 0 ]; then
   echo "All tests passed."
   exit 0

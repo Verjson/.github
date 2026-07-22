@@ -30,7 +30,7 @@ name: AI review + auto-merge
 # opt a PR out with the `hold` label, a "DO NOT MERGE" title marker, or by
 # keeping it a draft — re-checked at merge time.
 #
-# Cross-repo dispatch is bounded to THIS org (ADR 0019, #119). The optional
+# Cross-repo dispatch is bounded to THIS org (ADR 0020, #119). The optional
 # `repository` workflow_dispatch input lets an operator re-gate a *sibling*
 # Verjson repo, but the `target_guard` preflight step fails closed unless the
 # target is owned by github.repository_owner — so it can never aim the
