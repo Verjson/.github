@@ -110,13 +110,27 @@ jobs:
       contents: read
       pull-requests: write
       id-token: write
-    env:
-      # Live preview needs BOTH the GCP Workload-Identity provider and the Pulumi
-      # backend token. When either is absent (fork PR, secret-less repo), run the
-      # credential-free validation only instead of failing CI.
-      HAS_CLOUD_CREDS: ${{ secrets.gcp-wip != '' && secrets.pulumi-access-token != '' }}
     steps:
       - uses: actions/checkout@v7
+
+      - name: Detect cloud credentials
+        id: creds
+        # `secrets` is NOT an allowed context in a job-level `env:` — using it there
+        # makes the workflow fail to start (startup_failure) for every caller. Compute
+        # the live-vs-credential-free decision here instead (secrets ARE valid in a
+        # step `env:`) and expose it as an output the later steps gate on. Live preview
+        # needs BOTH the GCP Workload-Identity provider and the Pulumi backend token;
+        # when either is absent (fork PR, secret-less repo) the credential-free
+        # validation gate runs alone instead of failing CI.
+        env:
+          GCP_WIP: ${{ secrets.gcp-wip }}
+          PULUMI_ACCESS_TOKEN: ${{ secrets.pulumi-access-token }}
+        run: |
+          if [ -n "$GCP_WIP" ] && [ -n "$PULUMI_ACCESS_TOKEN" ]; then
+            echo "has_cloud=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_cloud=false" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Set up Node + @verjson registry
         uses: Verjson/.github/.github/actions/setup-verjson-node@main
@@ -136,14 +150,14 @@ jobs:
           eval "$VALIDATE_COMMAND"
 
       - name: Authenticate to GCP (Workload Identity)
-        if: env.HAS_CLOUD_CREDS == 'true'
+        if: steps.creds.outputs.has_cloud == 'true'
         uses: google-github-actions/auth@v3
         with:
           workload_identity_provider: ${{ secrets.gcp-wip }}
           service_account: ${{ secrets.gcp-sa }}
 
       - name: Pulumi ${{ inputs.pulumi-command }}
-        if: env.HAS_CLOUD_CREDS == 'true'
+        if: steps.creds.outputs.has_cloud == 'true'
         uses: pulumi/actions@v7
         with:
           command: ${{ inputs.pulumi-command }}
@@ -157,6 +171,6 @@ jobs:
           PULUMI_ACCESS_TOKEN: ${{ secrets.pulumi-access-token }}
 
       - name: Note skipped live preview
-        if: env.HAS_CLOUD_CREDS != 'true'
+        if: steps.creds.outputs.has_cloud != 'true'
         run: |
           echo "::notice title=Pulumi preview skipped::GCP_WIP / PULUMI_ACCESS_TOKEN not set; ran the credential-free validation gate only."
