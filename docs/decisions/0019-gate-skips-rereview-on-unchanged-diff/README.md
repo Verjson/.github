@@ -102,3 +102,16 @@ Pinned by `scripts/ci-gate/rereview-skip.test.sh` (and the marker token by
   transition degrades safely to a full review.
 - Deferred (own follow-up on #120): the cancelled-superseded-run-leaves-a-red
   required check. It needs concurrency-behavior validation before shipping.
+
+## Amendment (2026-07-22, #124)
+
+The initial cut relied on the skip-decision step having "no `set -e`", but GitHub
+runs `run:` under `bash -eo pipefail` and `set -uo pipefail` does not clear that
+inherited errexit. On a **first-review PR** (no prior marker) the `grep` that
+extracts the prior `patchid:` finds nothing and returns 1, which aborted the
+required `gate` step under `-e` — silently blocking **every** merge in every
+consumer repo. Fixed by explicitly `set +e` in the step so any transient/no-match
+non-zero degrades to "do not skip → review", never aborts. The extraction test
+(`rereview-skip.test.sh`) now drives the block under `bash -eo pipefail` to match
+GitHub's shell, so this fail-closed-abort class is caught (mutation-verified: the
+no-marker case fails without `set +e`).

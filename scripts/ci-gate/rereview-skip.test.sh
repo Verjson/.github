@@ -81,7 +81,12 @@ run_rereview() {
   export PATH="$tmp/bin:$PATH" TARGET_REPO="Verjson/foo" PR_NUMBER=7
   export GITHUB_OUTPUT="$tmp/out.txt"
   : >"$GITHUB_OUTPUT"
-  bash "$script" >/dev/null 2>&1
+  # Replicate GitHub's default `run:` shell (`bash --noprofile --norc -eo
+  # pipefail {0}`): the step starts under -e + pipefail, and the block must
+  # disable errexit itself. Running without -e here once hid a real org-wide
+  # outage where `grep` (no prior marker) returned 1 and aborted the step
+  # (Verjson/.github#124), so the harness now enforces the -e shell.
+  bash -eo pipefail "$script" >/dev/null 2>&1
 }
 skip_is() { grep -qx "skip_model=$1" "$GITHUB_OUTPUT"; }
 out_has() { grep -qF "$1" "$GITHUB_OUTPUT"; }

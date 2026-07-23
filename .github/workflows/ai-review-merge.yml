@@ -520,8 +520,13 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.ORG_ADMIN_TOKEN }}
         run: |
-          # No `set -e`: a transient git/gh hiccup must degrade to "do not skip",
-          # never abort this required gate step.
+          # GitHub runs `run:` under `bash -e`, and `set -uo pipefail` does NOT
+          # clear that. Explicitly disable errexit so a transient or no-match
+          # git/gh/grep non-zero — e.g. `grep` finding no prior marker on a
+          # first-review PR — degrades to "do not skip" instead of aborting this
+          # required gate step and blocking every merge org-wide
+          # (Verjson/.github#124). This step must never fail closed.
+          set +e
           set -uo pipefail
           skip=false
           patch_id=""
