@@ -43,7 +43,7 @@ fi
 # run_case <target-repo> — owner is fixed to this org (Verjson) via env.
 run_case() {
   export GITHUB_REPOSITORY_OWNER="Verjson" TARGET_REPO="$1"
-  bash "$script" >/dev/null 2>&1
+  bash -eo pipefail "$script" >/dev/null 2>&1
   echo "rc=$?"
 }
 
@@ -78,7 +78,7 @@ run_case() {
 # equal ""), so even a normally-valid target is rejected.
 run_case_owner() { # <owner> <target>
   export GITHUB_REPOSITORY_OWNER="$1" TARGET_REPO="$2"
-  bash "$script" >/dev/null 2>&1
+  bash -eo pipefail "$script" >/dev/null 2>&1
   echo "rc=$?"
 }
 [ "$(run_case_owner '' 'Verjson/.github')" = "rc=1" ] \

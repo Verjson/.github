@@ -50,7 +50,7 @@ run_preflight() {
   export PATH="$tmp/bin:$PATH"
   export GITHUB_REPOSITORY="Verjson/foo" GITHUB_RUN_ID=123
   export CREATED_AT="$1"
-  bash "$script" >"$tmp/out.txt" 2>&1
+  bash -eo pipefail "$script" >"$tmp/out.txt" 2>&1
   echo "rc=$?"
 }
 out_has() { grep -q "$1" "$tmp/out.txt"; }

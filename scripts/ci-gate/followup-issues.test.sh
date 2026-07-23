@@ -53,7 +53,7 @@ run_file() {
   export PATH="$tmp/bin:$PATH" TARGET_REPO="Verjson/foo" PR_NUMBER=7
   export ACTIONLOG="$tmp/act.log" STATE="$1" VERDICT="$2" EXISTING="${3:-}"
   : >"$ACTIONLOG"
-  bash "$script" >/dev/null 2>&1
+  bash -eo pipefail "$script" >/dev/null 2>&1
   echo "rc=$?"
 }
 creates() { grep -c '^CREATE ' "$tmp/act.log" 2>/dev/null || true; }

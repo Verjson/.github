@@ -66,7 +66,7 @@ run_case() {
   : >"$ACTIONLOG"
   printf '%s' "$1" >"$META_FILE"
   printf '%s' "${2:-[]}" >"$ROLLUP_FILE"
-  bash "$script" >"$tmp/out.txt" 2>&1
+  bash -eo pipefail "$script" >"$tmp/out.txt" 2>&1
   echo "rc=$?"
 }
 out_has() { grep -q "$1" "$tmp/out.txt"; }
