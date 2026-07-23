@@ -89,6 +89,8 @@ jobs:
         run: bash scripts/ci-gate/hold.test.sh
       - name: merge gate — dispatch target constrained to org (#119, ADR 0020)
         run: bash scripts/ci-gate/dispatch-target-guard.test.sh
+      - name: merge gate — cross-org workflow_call distribution seams (#128, ADR 0022)
+        run: bash scripts/ci-gate/reusable-workflow.test.sh
       - name: pulumi-ci — comment-on-pr no-op on push guard (#47)
         run: bash scripts/ci-gate/pulumi-comment.test.sh
       - name: tag-major — annotated tag points directly at release commit (#73)

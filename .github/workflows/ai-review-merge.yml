@@ -34,10 +34,33 @@ name: AI review + auto-merge
 # `repository` workflow_dispatch input lets an operator re-gate a *sibling*
 # Verjson repo, but the `target_guard` preflight step fails closed unless the
 # target is owned by github.repository_owner — so it can never aim the
-# ORG_ADMIN_TOKEN admin-merge machinery at a foreign org. Downstream SINGLE-REPO
-# consumers that never dispatch cross-repo should adopt the tighter Tequity
-# ADR-0027 form (tequityapp/tequity-ui#16): drop the `repository` input and pin
-# `TARGET_REPO: ${{ github.repository }}` — the recommended default for copies.
+# ORG_ADMIN_TOKEN admin-merge machinery at a foreign org.
+#
+# Cross-ORG distribution (ADR 0022, #128): this file is ALSO a `workflow_call`
+# reusable, so consumers in other orgs (e.g. tequityapp) pin it instead of
+# hand-copying it — upstream fixes then reach every consumer via `@v1` and the
+# shipped `scripts/ci-gate/*.test.sh` guard the shared logic once for everyone.
+# The three triggers share one file: the Verjson org ruleset injects it on
+# `pull_request`; an operator re-gates via `workflow_dispatch`; a cross-org
+# consumer adds a thin caller that `uses:` it under `workflow_call`. When called,
+# `github.repository`/`github.event`/`github.repository_owner` are inherited from
+# the CALLER, so `TARGET_REPO`, the PR number, and the `target_guard` org bound
+# all resolve to the consumer's own repo/org — never Verjson's. Consumers must
+# pass `secrets: inherit` (their OWN ORG_ADMIN_TOKEN / model keys) and, if their
+# fleet differs from the org gate pool, `with.runner_labels`. Example caller:
+#
+#   # consumer repo (any org): .github/workflows/gate.yml
+#   on: { pull_request: { types: [opened, reopened, ready_for_review, synchronize, labeled, unlabeled] }, workflow_dispatch: {} }
+#   jobs:
+#     gate:
+#       uses: Verjson/.github/.github/workflows/ai-review-merge.yml@v1
+#       secrets: inherit
+#       with: { runner_labels: '["self-hosted","gate"]' }
+#
+# Downstream SINGLE-REPO copies that predate this and never dispatch cross-repo
+# should migrate to the reusable; until they do, the tighter Tequity ADR-0027
+# form (tequityapp/tequity-ui#16) — drop the `repository` input, pin
+# `TARGET_REPO: ${{ github.repository }}` — remains the safe copy default.
 
 on:
   pull_request:
@@ -50,6 +73,26 @@ on:
       repository:
         description: owner/repo the PR lives in (defaults to this repo)
         required: false
+  workflow_call:
+    # Cross-org consumers pin this reusable and pass `secrets: inherit` (ADR
+    # 0022). Inputs mirror the workflow_dispatch ones so `env.PR_NUMBER` /
+    # `env.TARGET_REPO` resolve identically; a pull_request-triggered caller
+    # leaves pr_number/repository empty and the inherited `github.event`
+    # supplies them. All inputs are optional so a bare `uses:` + `secrets:
+    # inherit` caller works out of the box.
+    inputs:
+      pr_number:
+        description: PR number to review; defaults to the caller's pull_request event
+        required: false
+        type: string
+      repository:
+        description: owner/repo the PR lives in; defaults to the caller repo
+        required: false
+        type: string
+      runner_labels:
+        description: 'JSON array of runs-on labels for the caller''s fleet, e.g. ["self-hosted","gate"]; defaults to the org gate pool'
+        required: false
+        type: string
 
 concurrency:
   group: ai-review-${{ github.event.pull_request.number || inputs.pr_number }}
@@ -99,7 +142,11 @@ jobs:
         !contains(github.event.pull_request.labels.*.name, 'DO NOT MERGE') &&
         !contains(github.event.pull_request.title, 'DO NOT MERGE')
       )
-    runs-on: ${{ github.repository == 'Verjson/.github' && fromJSON('["self-hosted","meta"]') || fromJSON('["self-hosted","gate"]') }}
+    # A workflow_call consumer sets its own fleet via `with.runner_labels`; the
+    # org direct paths (pull_request/workflow_dispatch) leave it empty and fall
+    # back to the self-gate split — Verjson/.github reviews its OWN PRs on `meta`
+    # to avoid the gate-runner deadlock (ADR 0016), every other org repo on `gate`.
+    runs-on: ${{ inputs.runner_labels && fromJSON(inputs.runner_labels) || github.repository == 'Verjson/.github' && fromJSON('["self-hosted","meta"]') || fromJSON('["self-hosted","gate"]') }}
     # This job combines the former 10-minute freshness and classification jobs.
     timeout-minutes: 20
     permissions:
@@ -410,7 +457,11 @@ jobs:
   gate:
     needs: preflight
     if: needs.preflight.outputs.lane == 'fast' || needs.preflight.outputs.lane == 'ai'
-    runs-on: ${{ github.repository == 'Verjson/.github' && fromJSON('["self-hosted","meta"]') || fromJSON('["self-hosted","gate"]') }}
+    # A workflow_call consumer sets its own fleet via `with.runner_labels`; the
+    # org direct paths (pull_request/workflow_dispatch) leave it empty and fall
+    # back to the self-gate split — Verjson/.github reviews its OWN PRs on `meta`
+    # to avoid the gate-runner deadlock (ADR 0016), every other org repo on `gate`.
+    runs-on: ${{ inputs.runner_labels && fromJSON(inputs.runner_labels) || github.repository == 'Verjson/.github' && fromJSON('["self-hosted","meta"]') || fromJSON('["self-hosted","gate"]') }}
     # Fast retains its former 45-minute merge ceiling. AI gets one bounded
     # aggregate ceiling for the 30-minute CI wait + the former 45-minute review
     # allowance + checkout/debounce/submit/recheck buffer.
