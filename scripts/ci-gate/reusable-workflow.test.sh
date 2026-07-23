@@ -48,13 +48,25 @@ grep -qE '^  workflow_call:' <<<"$on_block" \
 
 # (d) `runner_labels` input is declared under workflow_call so a consumer with a
 # different fleet can parameterize runs-on instead of forking the file.
-awk '
+wc_block="$(awk '
   $0 == "  workflow_call:" { cap = 1; next }
   cap && /^[A-Za-z]/ { exit }   # workflow_call is the last trigger — the next
   cap { print }                 # top-level key (concurrency:) ends the block
-' "$wf" | grep -qE '^      runner_labels:' \
+' "$wf")"
+grep -qE '^      runner_labels:' <<<"$wc_block" \
   && pass "workflow_call declares a runner_labels input" \
   || fail "workflow_call is missing the runner_labels input (fleet not parameterizable)"
+
+# (d2) runner_labels must be REQUIRED under workflow_call: an in-job fast-fail
+# can't catch a missing fleet (the job queues forever on labels the consumer's
+# org has no runner for, #130), so the only fast-fail is rejecting the call.
+awk '
+  $0 == "      runner_labels:" { cap = 1; next }
+  cap && /^      [A-Za-z]/ { exit }   # next input key ends this input block
+  cap { print }
+' <<<"$wc_block" | grep -qE '^        required: true' \
+  && pass "runner_labels is required under workflow_call (missing fleet fails the call, not the runner queue)" \
+  || fail "runner_labels is optional — a consumer that omits it silently queues forever on Verjson's gate pool (#130)"
 
 # (e) Every gate job's runs-on prefers inputs.runner_labels before the org
 # fallback — so a consumer's fleet actually takes effect. Both jobs
