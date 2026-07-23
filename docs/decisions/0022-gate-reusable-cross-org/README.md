@@ -42,12 +42,15 @@ questions from #128 are resolved as:
    through the reusable too was rejected: it would add a second required-check
    caller file to every repo for zero benefit and churn the live ruleset.
 
-2. **Cross-org access — a manual repo setting, flagged for the human.** Cross-org
-   `workflow_call` requires **Verjson/.github → Settings → Actions → General →
-   Access = "Accessible from repositories in the enterprise"** (both orgs share
-   one enterprise). This is a repo-settings change outside this PR and is called
-   out in the report as the one manual prerequisite; without it, consumer callers
-   fail to resolve the reusable.
+2. **Cross-org access — nothing to configure; Verjson/.github is public.** A
+   public repo's reusable workflows are callable by any repository in any org, so
+   no Actions access-policy setting exists or is required. Confirmed against the
+   API: `GET repos/Verjson/.github/actions/permissions/access` returns `422
+   "Access policy only applies to internal and private repositories"`. The access
+   setting — Settings → Actions → General → **Access** → "Accessible from
+   repositories in the enterprise" — only appears for **internal/private** repos.
+   So a future *private or internal* copy of this gate would need that widened,
+   but this (public) one does not: consumers can pin it as-is.
 
 3. **Runner parameterization — a `runner_labels` workflow_call input.** Both jobs'
    `runs-on` become
@@ -85,10 +88,10 @@ break the org path.
   no drift**, and the `ci-gate` suite guards the shared logic once for everyone.
 - The Verjson org path is behaviourally unchanged: same `pull_request` trigger,
   same required check, same `meta`/`gate` self-gate split, same guard.
-- **Manual prerequisite (flagged):** the Verjson/.github Actions access setting
-  (item 2) must be widened to the enterprise before any cross-org caller works.
-  Migrating Tequity's 5 copies to the reusable is follow-up work tracked from
-  `tequityapp/tequity-platform#38`, owned by that org's PM.
+- **No manual prerequisite:** Verjson/.github is public, so cross-org callers can
+  pin the reusable immediately (item 2). Migrating Tequity's 5 copies to the
+  reusable is follow-up work tracked from `tequityapp/tequity-platform#38`, owned
+  by that org's PM.
 - Adding `workflow_call` to a required-check workflow is merge-gate-behaviour +
   cross-org distribution — a sensitive class — hence this ADR and the held PR.
 

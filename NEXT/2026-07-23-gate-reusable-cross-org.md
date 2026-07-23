@@ -9,7 +9,7 @@ unchanged self-gate `meta`/`gate` split (ADR 0016) on the org direct paths. The
 `target_guard` (#119, ADR 0020) is unchanged and auto-bounds each consumer to its
 own org via `GITHUB_REPOSITORY_OWNER` under `workflow_call`. New
 `scripts/ci-gate/reusable-workflow.test.sh` pins these seams; wired into
-`actions-ci.yml`. Manual prerequisite before any cross-org caller works: widen
-Verjson/.github → Settings → Actions → Access to the enterprise. Refs #128,
-ADR 0022; follow-up migration of Tequity's copies tracked from
-`tequityapp/tequity-platform#38`.
+`actions-ci.yml`. No manual prerequisite — Verjson/.github is public, so its
+reusable is callable cross-org as-is (the Actions access-policy setting only
+exists for internal/private repos). Refs #128, ADR 0022; follow-up migration of
+Tequity's copies tracked from `tequityapp/tequity-platform#38`.
