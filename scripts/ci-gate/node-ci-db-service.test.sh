@@ -75,7 +75,7 @@ POSTGRES_PASSWORD=secret
 POSTGRES_DB=app_test
 DATABASE_URL=postgres://app:secret@localhost:5432/app_test"
 
-bash "$script" >"$tmp/out.txt" 2>&1
+bash -eo pipefail "$script" >"$tmp/out.txt" 2>&1
 rc=$?
 [ "$rc" -eq 0 ] || { echo "---- db step output ----"; cat "$tmp/out.txt"; }
 

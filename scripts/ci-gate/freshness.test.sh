@@ -70,7 +70,7 @@ run_case() {
   : >"$ACTIONLOG"
   printf '%s' "${2:-}" >"$COMMENTS_FILE"
   printf '%s' "$1" >"$FIXTURE"
-  bash "$script" >/dev/null 2>&1
+  bash -eo pipefail "$script" >/dev/null 2>&1
   echo "rc=$?"
 }
 out_has() { grep -q "$1" "$tmp/out.txt"; }

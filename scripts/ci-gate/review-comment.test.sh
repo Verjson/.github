@@ -61,7 +61,7 @@ run_submit() {
   : >"$COMMENTFILE"
   : >"$GITHUB_OUTPUT"
   export VERDICT="$1"
-  bash "$script" >/dev/null 2>&1
+  bash -eo pipefail "$script" >/dev/null 2>&1
   echo "rc=$?"
 }
 body_has() { grep -qF "$1" "$tmp/body.txt"; }
