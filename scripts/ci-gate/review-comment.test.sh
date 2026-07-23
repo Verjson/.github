@@ -53,7 +53,7 @@ chmod +x "$tmp/bin/gh"
 
 run_submit() {
   # run_submit <verdict-json>
-  export PATH="$tmp/bin:$PATH" TARGET_REPO="Verjson/foo" PR_NUMBER=7 HEAD_SHA=deadbeef MODEL=haiku
+  export PATH="$tmp/bin:$PATH" TARGET_REPO="Verjson/foo" PR_NUMBER=7 HEAD_SHA=deadbeef MODEL=haiku PATCH_ID=pid00feed
   export ACTIONLOG="$tmp/act.log" BODYFILE="$tmp/body.txt" COMMENTFILE="$tmp/comment.txt"
   export GITHUB_OUTPUT="$tmp/gh_output.txt" # the runner provides this; the step writes the verdict here
   : >"$ACTIONLOG"
@@ -74,6 +74,12 @@ run_submit '{"blocking":false,"summary":"looks good","review_first":[{"location"
 { body_has '👀 Review these first' && body_has 'auth.ts:42' && body_has 'gates the admin path'; } &&
   pass "approve: review_first renders as a pinpoint block" ||
   fail "approve: review_first not rendered"
+
+# 1a. The approval marker carries the head SHA AND the PR net patch-id (#120) so a
+#     base-merge-only re-fire can detect an unchanged diff and skip the model.
+body_has '<!-- ai-review-head:deadbeef patchid:pid00feed model:haiku -->' &&
+  pass "approve: marker embeds ai-review-head + patchid (#120)" ||
+  fail "approve: marker missing head/patchid token (#120)"
 
 # 1b. Approve + followups -> renders a Follow-ups block AND emits the verdict to
 #     $GITHUB_OUTPUT (so the shared gate can file the issues on merge).

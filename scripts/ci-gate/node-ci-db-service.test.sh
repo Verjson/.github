@@ -100,16 +100,26 @@ grep -qF -- '--name "$CONTAINER_NAME"' "$script" \
   || fail "the container name is not run-scoped (would collide on a shared runner)"
 
 # (c) A teardown step must always remove the run-scoped container so a finished
-# or failed job never leaks it onto the persistent self-hosted runner.
-teardown="$(awk '
+# or failed job never leaks it onto the persistent self-hosted runner — AND it
+# must stay gated on inputs.db-image so it only runs for DB-backed callers.
+# Assert the two conditions are on the SAME `if:` line (#115): checking that
+# `always()` merely appears somewhere would pass even if the db-image guard were
+# dropped, making teardown run unconditionally on every caller.
+teardown_if="$(awk '
+  $0 == "      - name: Stop database service" { seen = 1; next }
+  seen && $0 ~ /^        if:/ { print; exit }
+  seen && $0 ~ /^      - name:/ { exit }
+' "$wf")"
+teardown_body="$(awk '
   $0 == "      - name: Stop database service" { seen = 1 }
-  seen && $0 ~ /^        if:/ { print; found = 1 }
-  seen && $0 ~ /docker rm -f/ { print; found = 1 }
+  seen && $0 ~ /docker rm -f/ { print }
   seen && $0 ~ /^      - name:/ && $0 != "      - name: Stop database service" { exit }
 ' "$wf")"
-{ printf '%s' "$teardown" | grep -qF 'always()' && printf '%s' "$teardown" | grep -qF 'docker rm -f'; } \
-  && pass "a Stop database service step always removes the container (if: always())" \
-  || fail "no always() teardown for the DB container (it would leak on the self-hosted runner)"
+{ printf '%s' "$teardown_if" | grep -qF 'always()' \
+    && printf '%s' "$teardown_if" | grep -qF "inputs.db-image" \
+    && printf '%s' "$teardown_body" | grep -qF 'docker rm -f'; } \
+  && pass "teardown if: combines always() with the inputs.db-image guard and removes the container" \
+  || fail "teardown must gate always() on inputs.db-image on the same if: line (else it runs unconditionally)"
 
 if [ "$fails" -eq 0 ]; then
   echo "All tests passed."
