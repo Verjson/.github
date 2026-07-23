@@ -91,6 +91,8 @@ jobs:
         run: bash scripts/ci-gate/dispatch-target-guard.test.sh
       - name: merge gate — cross-org workflow_call distribution seams (#128, ADR 0022)
         run: bash scripts/ci-gate/reusable-workflow.test.sh
+      - name: merge gate — require ORG_ADMIN_TOKEN, fail closed on missing secrets (#131)
+        run: bash scripts/ci-gate/require-secrets.test.sh
       - name: pulumi-ci — comment-on-pr no-op on push guard (#47)
         run: bash scripts/ci-gate/pulumi-comment.test.sh
       - name: tag-major — annotated tag points directly at release commit (#73)

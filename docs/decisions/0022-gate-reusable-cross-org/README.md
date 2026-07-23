@@ -131,3 +131,29 @@ break the org path.
 Consumers pass `secrets: inherit`; the guard (`target_guard`) is unchanged and
 stays bounded to `GITHUB_REPOSITORY_OWNER` = the caller's org. See
 [PR #128](https://github.com/Verjson/.github/issues/128) for the full change.
+
+## Amendment (2026-07-23) — fail fast on missing consumer prerequisites
+
+The merge-gate review of #129 surfaced two ways a cross-org consumer's
+misconfiguration fails *late and opaquely* instead of fast; both are now closed
+(#130, #131). This refines the input contract of decision items 3–4 above; it
+does not reverse the reusable-distribution decision.
+
+- **`runner_labels` is now REQUIRED under `workflow_call` (was optional).** A
+  consumer's org has no runner for Verjson's `self-hosted,gate` pool, so a caller
+  that omitted `runner_labels` fell through the `runs-on` fallback to those labels
+  and the job **queued forever** with no error (#130). An in-job fast-fail cannot
+  catch this — the job never gets a runner to run a step. Making the input
+  required rejects the call immediately with a clear "input required" message. The
+  `runs-on` expression is unchanged; the org direct paths still leave the input
+  empty and use the self-gate `meta`/`gate` fallback.
+- **New `require_secrets` preflight step.** A consumer that forgot
+  `secrets: inherit` left `ORG_ADMIN_TOKEN` empty and died much later in an opaque
+  `gh` auth error (#131). The step fails closed early with an actionable message
+  naming `secrets: inherit`. It runs on all paths (the org secret is always
+  present on the direct path, so it is a no-op there) and never echoes the token.
+
+Both are pinned by `scripts/ci-gate/require-secrets.test.sh` and an extended
+`reusable-workflow.test.sh` (runner_labels-required assertion), wired into
+`actions-ci.yml`. See [#130](https://github.com/Verjson/.github/issues/130) and
+[#131](https://github.com/Verjson/.github/issues/131).

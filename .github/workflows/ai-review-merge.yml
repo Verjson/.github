@@ -75,11 +75,14 @@ on:
         required: false
   workflow_call:
     # Cross-org consumers pin this reusable and pass `secrets: inherit` (ADR
-    # 0022). Inputs mirror the workflow_dispatch ones so `env.PR_NUMBER` /
-    # `env.TARGET_REPO` resolve identically; a pull_request-triggered caller
-    # leaves pr_number/repository empty and the inherited `github.event`
-    # supplies them. All inputs are optional so a bare `uses:` + `secrets:
-    # inherit` caller works out of the box.
+    # 0022). pr_number/repository mirror the workflow_dispatch inputs so
+    # `env.PR_NUMBER` / `env.TARGET_REPO` resolve identically; a pull_request-
+    # triggered caller leaves them empty and the inherited `github.event`
+    # supplies them. `runner_labels` is REQUIRED: a consumer's org has no runner
+    # for Verjson's `self-hosted,gate` pool, so omitting it would silently queue
+    # the job forever on the wrong labels (#130) — requiring it fails the call
+    # immediately with a clear message instead. Missing `secrets: inherit` is
+    # caught by the `require_secrets` preflight step (#131).
     inputs:
       pr_number:
         description: PR number to review; defaults to the caller's pull_request event
@@ -90,8 +93,8 @@ on:
         required: false
         type: string
       runner_labels:
-        description: 'JSON array of runs-on labels for the caller''s fleet, e.g. ["self-hosted","gate"]; defaults to the org gate pool'
-        required: false
+        description: 'JSON array of runs-on labels for the caller''s own fleet, e.g. ["self-hosted","gate"] (required — a consumer org has no runner for Verjson''s gate pool)'
+        required: true
         type: string
 
 concurrency:
@@ -203,6 +206,24 @@ jobs:
             exit 1
           fi
           echo "merge target '$TARGET_REPO' is within org '$GITHUB_REPOSITORY_OWNER'."
+
+      - name: Require merge credentials (fail closed on missing secrets)
+        id: require_secrets
+        env:
+          GH_TOKEN: ${{ secrets.ORG_ADMIN_TOKEN }}
+        run: |
+          set -euo pipefail
+          # Every gate step below drives `gh pr view/merge` under ORG_ADMIN_TOKEN.
+          # On the org direct paths this org secret is always present; a cross-org
+          # workflow_call consumer supplies it (and the model keys) via
+          # `secrets: inherit` (ADR 0022). If it's empty the run would otherwise
+          # die much later in an opaque `gh` auth error (#131) — fail fast here
+          # with an actionable message. Pure env check: never echo the token.
+          if [ -z "${GH_TOKEN:-}" ]; then
+            echo "::error::merge gate has no ORG_ADMIN_TOKEN. A cross-org caller must pass \`secrets: inherit\` and define ORG_ADMIN_TOKEN (plus the model keys) in its own org; an org repo needs the ORG_ADMIN_TOKEN org secret."
+            exit 1
+          fi
+          echo "merge credentials present."
 
       - name: Update branch if behind; hold on conflict
         id: freshness
