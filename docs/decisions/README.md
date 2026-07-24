@@ -11,6 +11,7 @@ Reverse-chronological index of org-level decisions.
 <!-- BEGIN ADR INDEX -->
 | # | Date | Decision |
 |---|------|----------|
+| [0023](0023-skip-ci-while-stability-days-pending/README.md) | 2026-07-24 | Skip org CI while a PR is held by renovate/stability-days |
 | [0022](0022-gate-reusable-cross-org/README.md) | 2026-07-23 | Distribute the merge gate as a pinned cross-org reusable workflow |
 | [0021](0021-node-ci-caller-supplied-db-image/README.md) | 2026-07-22 | node-ci runs a caller-supplied DB image on the shared self-hosted pool |
 | [0020](0020-gate-constrains-dispatch-target-to-org/README.md) | 2026-07-22 | Merge gate constrains its dispatch target to this org |
