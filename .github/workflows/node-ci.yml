@@ -16,6 +16,12 @@ name: node-ci (reusable)
 #         contents: read          # a reusable's GITHUB_TOKEN is capped by the
 #         packages: read          # caller, so packages:read must be granted here
 #                                 # or `npm ci` 401s on private @scope deps.
+#         statuses: read          # lets the eligibility job read the head's
+#                                 # renovate/stability-days status to defer CI on
+#                                 # held Renovate PRs (#133, ADR 0023). The token
+#                                 # is capped by the caller, so this must be
+#                                 # granted here; if omitted the check fails OPEN
+#                                 # and CI runs as before (safe degradation).
 #       uses: Verjson/.github/.github/workflows/node-ci.yml@main
 #       secrets: inherit          # passes NODE_AUTH_TOKEN (+ submodules-token)
 #       # with:
@@ -91,7 +97,36 @@ on:
         required: false
 
 jobs:
+  # Defer CI while a Renovate PR is held by its release-age gate: running the
+  # suite now is pure waste — the PR cannot merge until `renovate/stability-days`
+  # clears, and Renovate then rebases onto a drifted `main`, re-running
+  # everything. This tiny job resolves eligibility once; build-test skips when
+  # it says defer, staying BLOCKED until the rebase re-fires CI (Verjson/.github#133).
+  eligibility:
+    runs-on: ${{ fromJSON(inputs.runner) }}
+    permissions:
+      # Reading a commit's combined status needs `statuses` (not `contents`).
+      # The reusable's token is capped by the caller, so a caller that omits
+      # `statuses: read` from its `permissions:` block leaves this read denied —
+      # the check then fails OPEN and CI runs as before (see header, ADR 0023).
+      statuses: read
+    outputs:
+      should-run: ${{ steps.check.outputs.should-run }}
+    steps:
+      - id: check
+        uses: Verjson/.github/.github/actions/ci-eligibility@v1
+        with:
+          head-sha: ${{ github.event.pull_request.head.sha || github.sha }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
   build-test:
+    needs: eligibility
+    # Fail OPEN at the job level too: only an ACTIVE defer (should-run == 'false')
+    # skips the suite. If the eligibility job itself errors (can't resolve the
+    # action, runner blip), its output is empty and `always()` still runs CI, so
+    # the guard can only ever withhold CI on a genuinely-held PR — never wedge a
+    # normal one behind a new single point of failure.
+    if: always() && needs.eligibility.outputs.should-run != 'false'
     runs-on: ${{ fromJSON(inputs.runner) }}
     permissions:
       contents: read

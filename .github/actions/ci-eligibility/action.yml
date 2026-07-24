@@ -1,0 +1,52 @@
+name: CI eligibility
+description: >-
+  Decide whether org CI should run for this PR head or be deferred. Outputs
+  should-run=false when the head carries a pending `renovate/stability-days`
+  status — the release-age gate the merge gate also defers on — so CI runs once
+  against the final base after Renovate rebases, instead of burning the suite on
+  a PR that cannot merge and re-burning it on the rebase (Verjson/.github#133).
+  Fails OPEN (should-run=true) on any uncertainty, and never defers a
+  workflow_dispatch. Consumers gate their heavy jobs on the output via
+  `needs:` + `if: needs.<job>.outputs.should-run == 'true'`.
+
+inputs:
+  head-sha:
+    description: The PR head commit SHA whose statuses are checked.
+    required: true
+  github-token:
+    description: A token with read access to the repository's commit statuses.
+    required: true
+
+outputs:
+  should-run:
+    description: "'true' to run CI; 'false' to defer (renovate/stability-days pending)."
+    value: ${{ steps.check.outputs.should-run }}
+
+runs:
+  using: composite
+  steps:
+    - id: check
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        HEAD_SHA: ${{ inputs.head-sha }}
+      run: |
+        set -euo pipefail
+        # A workflow_dispatch is an explicit human "run it now" — never defer it,
+        # mirroring the merge gate's dispatch-forces-review escape hatch (#133).
+        if [ "${GITHUB_EVENT_NAME:-}" = "workflow_dispatch" ]; then
+          echo "should-run=true" >> "$GITHUB_OUTPUT"
+          echo "::notice::workflow_dispatch — running CI (eligibility check bypassed)."
+          exit 0
+        fi
+        # Defer only when the release-age gate is ACTIVELY pending. Any
+        # uncertainty (API error, missing status) fails OPEN → run CI, so a real
+        # PR is never silently skipped. Same signal the gate uses to `defer`.
+        pending=$(gh api "repos/${GITHUB_REPOSITORY}/commits/${HEAD_SHA}/status" \
+          --jq '[.statuses[]? | select(.context == "renovate/stability-days" and .state == "pending")] | length' 2>/dev/null || echo 0)
+        if [ "${pending:-0}" -gt 0 ]; then
+          echo "should-run=false" >> "$GITHUB_OUTPUT"
+          echo "::notice::renovate/stability-days is pending on ${HEAD_SHA} — deferring org CI until the age gate clears and Renovate rebases (#133)."
+        else
+          echo "should-run=true" >> "$GITHUB_OUTPUT"
+        fi
