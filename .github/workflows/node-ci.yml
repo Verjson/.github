@@ -114,7 +114,13 @@ jobs:
       should-run: ${{ steps.check.outputs.should-run }}
     steps:
       - id: check
-        uses: Verjson/.github/.github/actions/ci-eligibility@v1
+        # Pinned to @main, not @v1: this action is co-located with node-ci and
+        # only ever consumed BY it, and node-ci is itself consumed @main across
+        # the org (see header). The moving major tag `v1` lags main until a
+        # release is cut, so @v1 would fail to resolve ("action not found") for
+        # every @main node-ci consumer until the next retag. @main always
+        # resolves and moves in lockstep with node-ci@main.
+        uses: Verjson/.github/.github/actions/ci-eligibility@main
         with:
           head-sha: ${{ github.event.pull_request.head.sha || github.sha }}
           github-token: ${{ secrets.GITHUB_TOKEN }}

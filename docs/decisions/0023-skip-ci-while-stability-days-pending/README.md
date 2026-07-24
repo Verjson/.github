@@ -36,13 +36,15 @@ build-test:
 ```
 
 - **`node-ci.yml` (reusable)** wires it in once, so every `node-ci` consumer gets
-  it via `@v1`. The action is referenced as
-  `Verjson/.github/.github/actions/ci-eligibility@v1`. It ships in the same repo
-  as node-ci and the `v1` major tag is advanced atomically on release
-  (`tag-major.yml`, ADR 0014), so it must **merge and retag together** — between
-  merge and retag a consumer pinned to a newer node-ci ref (`@main`, a SHA) would
-  resolve a `v1` lacking the action; the fail-open job gating below makes that
-  transient run CI rather than wedge.
+  it. node-ci is consumed **`@main`** across the org (its header, and the API
+  templates default to `@main`); the moving major tag `v1` is only advanced when a
+  release is manually cut (`tag-major.yml`, ADR 0014) and lags main. So the action
+  is referenced **`@main`**, not `@v1`: it is co-located with node-ci and consumed
+  only by it, so `@main` always resolves and moves in lockstep with `node-ci@main`.
+  Referencing `@v1` instead would fail to resolve ("action not found") for every
+  `@main` consumer until the next retag — a red `eligibility` job on their PRs; a
+  SHA-pinned consumer on a ref predating this change simply has no `eligibility`
+  job and is unaffected.
 - **Token/permission (required for it to actually defer):** reading a commit's
   combined status needs the `statuses` permission, which `contents: read` does
   **not** confer, and a reusable's `GITHUB_TOKEN` is capped by the caller. So a
@@ -109,7 +111,7 @@ override), wired into `actions-ci.yml`.
 +      should-run: ${{ steps.check.outputs.should-run }}
 +    steps:
 +      - id: check
-+        uses: Verjson/.github/.github/actions/ci-eligibility@v1
++        uses: Verjson/.github/.github/actions/ci-eligibility@main  # co-located; v1 lags main
 +        with:
 +          head-sha: ${{ github.event.pull_request.head.sha || github.sha }}
 +          github-token: ${{ secrets.GITHUB_TOKEN }}
