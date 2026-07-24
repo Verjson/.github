@@ -1,0 +1,33 @@
+{
+  "_comment": "HUMAN-OWNED CONFIG (ADR 0006). Per the observe-and-report governance decision, the AI must not set the thresholds or repo list that decide how heavily AI-authored work is verified. This file is the human's dial: the reconciler only READS it. Reviewers: this is the load-bearing artifact — scrutinise the rework_rate_warn floors and the repo list.",
+  "window_days": 7,
+  "min_sample": 10,
+  "rework_rate_warn": {
+    "_comment": "Warn (propose, never enforce) when a bucket's rework_rate exceeds its floor AND sample_size >= min_sample. Sensitive categories get tighter floors.",
+    "default": 0.25,
+    "auth": 0.10,
+    "migration": 0.10,
+    "infra": 0.15,
+    "app": 0.20,
+    "ci": 0.30,
+    "docs": 0.40,
+    "other": 0.30
+  },
+  "canary_pct": 5,
+  "circuit_breaker": {
+    "_comment": "ADR 0007 params — consumed by a future escalation pass, recorded here so the dial lives in one human-owned place. Not yet acted on by the MVP.",
+    "window_days": 28,
+    "min_sample": 20,
+    "hysteresis": 0.05
+  },
+  "repos": [
+    "Verjson/.github",
+    "Verjson/catalog-api",
+    "Verjson/catalog-ui",
+    "Verjson/catalog-worker",
+    "Verjson/viager-app",
+    "Verjson/viager-infra",
+    "Verjson/verjson-authn",
+    "Verjson/verjson-authz"
+  ]
+}
