@@ -114,7 +114,15 @@ jobs:
       should-run: ${{ steps.check.outputs.should-run }}
     steps:
       - id: check
-        uses: Verjson/.github/.github/actions/ci-eligibility@9f36163a7ddf3e43de19240f8644ef2c736e9263 # v1
+        # Pinned to @main, NOT a digest, and NOT @v1. This action is co-located
+        # with node-ci and consumed only by it; node-ci is itself consumed @main
+        # across the org. The moving `v1` tag lags main until a release is cut, so
+        # any v1-based ref (or a digest Renovate resolves FROM v1) points at a
+        # commit predating this action → "action not found" for every @main
+        # consumer (Verjson/.github#135 pinned exactly such a stale digest). @main
+        # is a branch tip, so it always resolves to a commit that has the action.
+        # Renovate is told not to digest-pin this self-reference (see renovate.json).
+        uses: Verjson/.github/.github/actions/ci-eligibility@main
         with:
           head-sha: ${{ github.event.pull_request.head.sha || github.sha }}
           github-token: ${{ secrets.GITHUB_TOKEN }}

@@ -12,6 +12,13 @@
         ".github/workflows/node-release.yml"
       ],
       "pinDigests": true
+    },
+    {
+      "description": "Do NOT digest-pin this repo's own co-located action in node-ci. A first-party self-reference pinned FROM the lagging v1 tag resolves to a commit predating the action and breaks (#135); it has no supply-chain reason to pin and stays on @main, which always resolves to a commit that has the action. Ordered after the pin rule so it overrides pinDigests for this dep.",
+      "matchManagers": ["github-actions"],
+      "matchFileNames": [".github/workflows/node-ci.yml"],
+      "matchDepNames": ["Verjson/.github"],
+      "pinDigests": false
     }
   ]
 }

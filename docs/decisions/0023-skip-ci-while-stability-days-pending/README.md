@@ -36,13 +36,17 @@ build-test:
 ```
 
 - **`node-ci.yml` (reusable)** wires it in once, so every `node-ci` consumer gets
-  it via `@v1`. The action is referenced as
-  `Verjson/.github/.github/actions/ci-eligibility@v1`. It ships in the same repo
-  as node-ci and the `v1` major tag is advanced atomically on release
-  (`tag-major.yml`, ADR 0014), so it must **merge and retag together** — between
-  merge and retag a consumer pinned to a newer node-ci ref (`@main`, a SHA) would
-  resolve a `v1` lacking the action; the fail-open job gating below makes that
-  transient run CI rather than wedge.
+  it. The action is referenced **`@main`**, and Renovate is told **not** to
+  digest-pin it. Rationale: node-ci is consumed `@main` across the org, but the
+  moving `v1` tag lags `main` until a release is manually cut (`tag-major.yml`,
+  ADR 0014). Any `v1`-based reference — or, worse, a digest Renovate resolves
+  *from* `v1` — points at a commit predating this action → "action not found" for
+  every `@main` consumer. This actually happened: **#135** (Renovate,
+  `pinDigests: true` on node-ci.yml) pinned `ci-eligibility` to `9f36163 # v1`, a
+  commit with no action. The fix is twofold: reference `@main` (a branch tip
+  always resolves to a commit that has the co-located action), and add a
+  `renovate.json` rule excluding this first-party self-reference from digest
+  pinning (it has no supply-chain reason to pin, and pinning it is what broke it).
 - **Token/permission (required for it to actually defer):** reading a commit's
   combined status needs the `statuses` permission, which `contents: read` does
   **not** confer, and a reusable's `GITHUB_TOKEN` is capped by the caller. So a
@@ -109,7 +113,7 @@ override), wired into `actions-ci.yml`.
 +      should-run: ${{ steps.check.outputs.should-run }}
 +    steps:
 +      - id: check
-+        uses: Verjson/.github/.github/actions/ci-eligibility@v1
++        uses: Verjson/.github/.github/actions/ci-eligibility@main  # co-located; not digest-pinned (renovate.json) — v1 lags main
 +        with:
 +          head-sha: ${{ github.event.pull_request.head.sha || github.sha }}
 +          github-token: ${{ secrets.GITHUB_TOKEN }}
