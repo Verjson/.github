@@ -88,6 +88,29 @@ jq -e '
   && pass "Renovate maintains both reusable-workflow digest pins" \
   || fail "Renovate digest-pin maintenance is not configured"
 
+# The co-located ci-eligibility action is the ONE nested ref that must stay on
+# @main, not a digest/@v1: the moving v1 tag lags main, so pinning this
+# first-party self-reference from v1 resolves to a commit predating the action
+# and breaks every @main consumer (#135/#138). These two assertions ARE the
+# regression guard for #138 — without them a future Renovate re-pin silently
+# reintroduces the #135 failure and nothing in CI catches it (#139).
+grep -qE '^\s*uses: Verjson/\.github/\.github/actions/ci-eligibility@main\s*$' "$ci" \
+  && pass "node-ci pins ci-eligibility to @main (co-located; not a digest/@v1)" \
+  || fail "node-ci's ci-eligibility ref is not @main — a digest/@v1 self-pin breaks @main consumers (#135)"
+grep -qE 'uses: Verjson/\.github/\.github/actions/ci-eligibility@[0-9a-f]{40}' "$ci" \
+  && fail "node-ci's ci-eligibility ref was digest-pinned — the #135 failure mode is back" \
+  || pass "node-ci's ci-eligibility ref is not digest-pinned"
+# And Renovate must be told NOT to pin it, or it re-pins on its next run.
+jq -e '
+  any(.packageRules[];
+    .pinDigests == false and
+    (.matchManagers | index("github-actions")) != null and
+    (.matchFileNames | index(".github/workflows/node-ci.yml")) != null and
+    (.matchDepNames | index("Verjson/.github")) != null)
+' "$renovate" >/dev/null \
+  && pass "Renovate is configured NOT to digest-pin the co-located ci-eligibility self-reference" \
+  || fail "renovate.json lacks the pinDigests:false exclusion for Verjson/.github in node-ci.yml (#135 will recur)"
+
 audit_setup_line="$(grep -nF "uses: $setup_node" "$actions_ci" | cut -d: -f1)"
 audit_line="$(grep -nF 'run: npm audit --package-lock-only --omit=dev --audit-level=high' "$actions_ci" | cut -d: -f1)"
 { [ -n "$audit_setup_line" ] && [ -n "$audit_line" ] && [ "$audit_setup_line" -lt "$audit_line" ] \
