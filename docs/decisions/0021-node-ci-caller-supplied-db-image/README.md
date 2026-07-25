@@ -29,11 +29,12 @@ this trust model and with these constraints:
   of it.
 - **Default-off, no behavior change.** Callers that don't set `db-image` get no
   container and no new surface (pinned by `node-ci-db-service.test.sh`).
-- **Job-scoped, self-cleaning.** The container is named per job and torn down in an
-  `if: always() && inputs.db-image != ''` step, so a job can't leak or collide a
-  container onto the persistent runner (ADR-adjacent to the fixes in PR #113;
-  test-pinned per #115). Originally scoped to `run_id`/`run_attempt`; widened to the
-  job in the 2026-07-25 amendment below.
+- **Job-scoped, self-cleaning.** The container is named per job and torn down by its
+  container ID in an `if: always() && inputs.db-image != ''` step, so a job can't
+  leak or collide a container onto the persistent runner (ADR-adjacent to the fixes
+  in PR #113; test-pinned per #115). Originally scoped to `run_id`/`run_attempt`;
+  widened to the job, and moved onto the container ID, in the 2026-07-25 amendment
+  below.
 - **`db-env` is not GitHub-masked.** It is documented at the input that values are
   not secrets-masked and must be trusted, non-sensitive test credentials — real
   secrets belong in `secrets`, not `db-env`.
@@ -73,29 +74,58 @@ image, default-off, unmasked `db-env`) is unchanged.
 
 **Amended constraint.**
 
-- **Name is job-scoped, not run-scoped.** `ci-postgres-<run_id>-<run_attempt>-<hash>`
-  where the hash covers `GITHUB_JOB`, `RUNNER_NAME` and `RUNNER_WORKSPACE` as well.
-  Two concurrent jobs on one host are by construction served by two distinct runner
-  processes (a runner executes one job at a time), so the runner identity separates
-  them even when run and job ids match. The name is a pure function of the job's
-  environment, and the start step publishes it as a step output so the
-  `if: always()` teardown removes exactly the container that was started.
+- **The handle is the container ID, and the name is only for humans.** The name is
+  still job-scoped — `ci-postgres-<run_id>-<run_attempt>-<hash>`, the hash covering
+  `GITHUB_JOB`, `RUNNER_NAME` and `RUNNER_WORKSPACE` — because two concurrent jobs
+  on one host are normally served by two distinct runner processes (a runner
+  executes one job at a time). Nothing load-bearing rides on that premise: the start
+  step captures the ID `docker run` prints, publishes **that** as its step output,
+  and drives `docker port`/`exec`/`logs` and the `if: always()` teardown off it. An
+  ID is unique by construction, so if the name premise ever failed, the losing job's
+  `docker run --name` is refused, that job fails loudly, and — having no ID — it
+  cannot tear down the winning job's live container. A name-based handle would have
+  removed it and killed a healthy job.
 - **Host port is OS-assigned and loopback-only** (`-p 127.0.0.1::5432`), read back
-  with `docker port` and substituted into the URL-shaped `db-env` values exported to
-  `$GITHUB_ENV` (also exported as `$DB_PORT`). This *tightens* the posture of the
-  original decision: the caller-supplied image was previously published on
+  with `docker port` and substituted into the postgres-scheme `db-env` values
+  exported to `$GITHUB_ENV` (also exported as `$DB_PORT`, written last so a caller's
+  own `DB_PORT` line cannot win the last-wins merge). This *tightens* the posture of
+  the original decision: the caller-supplied image was previously published on
   `0.0.0.0:5432` and is now reachable only from the runner's own loopback.
+- **A rewrite miss fails the step.** Under the old fixed bind a missed rewrite was
+  harmless — 5432 *was* the job's own database. With an OS-assigned port it would
+  aim the caller's suite at whatever else listens on the host's 5432, which on a
+  persistent self-hosted runner can be a real database that migrations would
+  truncate. So the rewrite is checked: a value starting `postgres://`/`postgresql://`
+  must come out carrying the mapped port, and shapes that name a database port but
+  cannot be rewritten (IPv6-literal host, quoted URL, `jdbc:postgresql:`, libpq
+  `host=… port=…` keyword strings) are rejected by name. `PGPORT` is set to the
+  mapped port. Only a `:5432` bounded by `/`, `?` or end-of-value is a placeholder —
+  `:54321` and friends are left alone, and every non-postgres value (a REDIS_URL on
+  any port) passes through verbatim.
+- **Leaks are labelled and swept.** The container carries `--label verjson-ci=1` and
+  each start removes labelled containers older than 6h. A fixed 5432 bind used to
+  make a leak self-announcing (it broke the next job's start); an ephemeral port
+  makes one invisible, so it needed its own signal — as does a teardown whose
+  `docker rm -f` genuinely fails, which now fails the step instead of being
+  swallowed.
 - **Input surface is unchanged** — `db-image`/`db-env` keep their names, defaults and
   default-off semantics; only the `db-env` documentation changes, because a `:5432`
-  in a caller's URL is now a placeholder that gets rewritten (and a URL with no port
-  gets one inserted).
+  in a caller's postgres URL is now a placeholder that gets rewritten (and such a URL
+  with no port gets one inserted), and the shapes listed above are now rejected
+  rather than exported verbatim.
 
 **Evidence.** `scripts/ci-gate/node-ci-db-service.test.sh` extracts the step from
 `node-ci.yml` and pins, against a stubbed docker: two concurrent jobs get distinct
-container names; no fixed host-port bind; the exported `DATABASE_URL` carries the
-port `docker port` actually reported (including an IPv6-shaped `[::]:PORT` mapping);
-an unreadable mapping fails the step instead of exporting a dead URL; teardown
-removes the exact container the start step created, and is a no-op when none was.
+container names, including when only one of `RUNNER_NAME`/`RUNNER_WORKSPACE` differs;
+no fixed host-port bind; the exported `DATABASE_URL` carries the port `docker port`
+actually reported; a port that merely *starts* with 5432 is left alone; an `@` in the
+password still resolves; an IPv6 host, a quoted URL, `jdbc:postgresql:` and a libpq
+keyword string each fail the step by name; a caller's `DB_PORT` cannot override the
+real one; a name collision fails the losing job and leaves it no handle, so it cannot
+remove the winner's container; an unreadable mapping fails the step (dumping the
+container's logs) instead of exporting a dead URL; labelled orphans are swept; and
+teardown removes the container by ID, fails loudly on a refused removal, tolerates an
+already-gone container, and is a no-op when none was started.
 
 **Not re-opened.** The boundary condition of the original decision still stands: an
 arbitrary caller-supplied image plus unmasked `db-env` on a shared runner is safe
