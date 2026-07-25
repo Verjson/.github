@@ -120,6 +120,8 @@ chmod +x "$tmp/bin/gh"
 run_wait() {
   # run_wait <rollup-json>
   export PATH="$tmp/bin:$PATH" TARGET_REPO="Verjson/foo" PR_NUMBER=7 LANE=ai
+  # Job-level env the step consumes to probe for check-run-less startup failures (#143).
+  export EXPECTED_HEAD_SHA=expected-head
   export ROLLUP_FILE="$tmp/rollup.json" ACTIONLOG="$tmp/actions.log"
   printf '%s' "$1" >"$ROLLUP_FILE"
   : >"$ACTIONLOG"

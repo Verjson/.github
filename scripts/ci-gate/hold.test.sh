@@ -96,7 +96,9 @@ run_case "$(open '[]' 'feat: x' 'true')" >/dev/null
 { out_has 'is held' && ! act_has MERGE; } && pass "draft still holds" || fail "draft regressed"
 
 # --- positive control: an unheld, all-green PR merges ------------------------
-run_case "$(open '[{"name":"update/patch"}]')" '[]' >/dev/null
+# The rollup must carry a real passing check: since #143 an EMPTY rollup means
+# "no CI ever reported" and fails closed, so it can no longer stand in for green.
+run_case "$(open '[{"name":"update/patch"}]')" '[{"name":"unit","status":"COMPLETED","conclusion":"SUCCESS"}]' >/dev/null
 act_has MERGE && pass "unheld green PR merges" || fail "unheld green PR did not merge"
 
 # A closed (non-OPEN) PR is a no-op, never merged.
