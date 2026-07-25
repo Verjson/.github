@@ -1,0 +1,59 @@
+name: rework-reconcile
+
+# Weekly AI-work rework reconciler (issue #33, ADR 0006 — observe-and-report).
+# Retrospectively measures rework on merged PRs per (change_category ×
+# ai_authored) and opens a summary issue that PROPOSES where human verification
+# should be heavier. It never mutates a merge or verification gate — its only
+# write is `gh issue create`. Governance: the thresholds/repo list it reads
+# (.telemetry/rework-thresholds.json) are the human-owned dial; this job only
+# reports against them.
+#
+# MVP shortcut: pure GitHub-API, no OTLP dependency (the collector is dormant /
+# not routable from the runners — see docs/ci-telemetry.md). The
+# verjson-observability#49 emit path is a later, additive slice.
+
+on:
+  schedule:
+    # Mondays 06:17 UTC — off the :00 mark to avoid the top-of-hour stampede.
+    - cron: '17 6 * * 1'
+  workflow_dispatch: {}
+
+# Least privilege: read the repo, write an issue. NOT pull-requests: write and
+# NOT contents: write — the reconciler cannot, by grant, mutate a PR or a gate.
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  reconcile:
+    runs-on: [self-hosted, GCP]
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Reconcile rework telemetry (observe-and-report only)
+        id: reconcile
+        env:
+          # Cross-repo PR reads need a token with org read scope; the default
+          # GITHUB_TOKEN only covers this repo. Set REWORK_RECONCILE_TOKEN (a
+          # read-only fine-grained PAT / app token) to widen coverage; without
+          # it the run still reports on repos this token can read.
+          GH_TOKEN: ${{ secrets.REWORK_RECONCILE_TOKEN || secrets.GITHUB_TOKEN }}
+          REWORK_AGG_OUT: rework-aggregate.json
+        run: |
+          set -euo pipefail
+          body_file="$(mktemp)"
+          scripts/ci-telemetry/rework-reconcile.sh .telemetry/rework-thresholds.json >"$body_file"
+          echo "body_file=$body_file" >>"$GITHUB_OUTPUT"
+
+      - name: Open weekly summary issue (the proposal — never a gate change)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          # Best-effort label; do not fail the run if it already exists / cannot be made.
+          gh label create rework-telemetry --repo "${{ github.repository }}" \
+            --color 5319e7 --description "AI-work rework reconciler weekly report" 2>/dev/null || true
+          gh issue create --repo "${{ github.repository }}" \
+            --title "AI-work rework — weekly reconciler ($(date -u +%Y-%m-%d))" \
+            --label rework-telemetry \
+            --body-file "${{ steps.reconcile.outputs.body_file }}"
