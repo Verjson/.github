@@ -61,10 +61,13 @@ wait_script="$tmp/ci-wait.sh"
 awk '
   $0 == "        id: ci_wait" { seen = 1 }
   seen && $0 == "        run: |" { cap = 1; next }
+  # Stop at the next step. Clearing `cap` alone leaves `seen` set, so the
+  # next `run: |` re-arms capture and appends unrelated code to the script.
+  cap && $0 ~ /^      - name:/ { exit }
   cap {
     if (substr($0, 1, 10) == "          ") { print substr($0, 11); next }
     if ($0 ~ /^[ \t]*$/) { print ""; next }
-    cap = 0
+    exit
   }
 ' "$wf" >"$wait_script"
 grep -q 'IN("SUCCESS","NEUTRAL","SKIPPED")' "$wait_script" \
@@ -75,10 +78,11 @@ merge_script="$tmp/merge.sh"
 awk '
   $0 == "        id: merge" { seen = 1 }
   seen && $0 == "        run: |" { cap = 1; next }
+  cap && $0 ~ /^      - name:/ { exit }
   cap {
     if (substr($0, 1, 10) == "          ") { print substr($0, 11); next }
     if ($0 ~ /^[ \t]*$/) { print ""; next }
-    cap = 0
+    exit
   }
 ' "$wf" >"$merge_script"
 if grep -q 'for i in \$(seq\|sleep 30' "$merge_script"; then
@@ -101,6 +105,10 @@ for marker in 'phase=preflight' 'phase=ci-wait' 'phase=model' 'phase=merge-reche
     || fail "missing timing diagnostic ($marker)"
 done
 
+# `gh api` MUST answer with an explicit, well-formed no-startup-failures
+# payload. Falling through to a bare `exit 0` with empty stdout used to read as
+# "probe ok, nothing broken" — the #143 fail-open — so these queue tests would
+# be passing by way of that bug rather than despite it.
 mkdir -p "$tmp/bin"
 cat >"$tmp/bin/gh" <<'GH'
 #!/usr/bin/env bash
@@ -109,6 +117,10 @@ if [ "$1" = "pr" ] && [ "$2" = "view" ]; then
     *statusCheckRollup*) cat "$ROLLUP_FILE" ;;
     *) cat "$META_FILE" ;;
   esac
+  exit 0
+fi
+if [ "$1" = "api" ]; then
+  printf '{"total_count":1,"workflow_runs":[{"name":"unit","conclusion":"success"}]}\n'
   exit 0
 fi
 [ "$1" = "pr" ] && [ "$2" = "merge" ] && { printf 'MERGE %s\n' "$*" >>"$ACTIONLOG"; exit 0; }
@@ -120,8 +132,11 @@ chmod +x "$tmp/bin/gh"
 run_wait() {
   # run_wait <rollup-json>
   export PATH="$tmp/bin:$PATH" TARGET_REPO="Verjson/foo" PR_NUMBER=7 LANE=ai
-  # Job-level env the step consumes to probe for check-run-less startup failures (#143).
-  export EXPECTED_HEAD_SHA=expected-head
+  # Job-level env the step consumes to probe for check-run-less startup failures
+  # (#143). Must be a real 40-hex SHA: the step validates the shape before
+  # interpolating it into the Actions-runs URL, so a placeholder is rejected as
+  # unknown-head rather than exercising the polling logic under test.
+  export EXPECTED_HEAD_SHA=0123456789abcdef0123456789abcdef01234567
   export ROLLUP_FILE="$tmp/rollup.json" ACTIONLOG="$tmp/actions.log"
   printf '%s' "$1" >"$ROLLUP_FILE"
   : >"$ACTIONLOG"

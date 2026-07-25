@@ -73,6 +73,15 @@ on:
       repository:
         description: owner/repo the PR lives in (defaults to this repo)
         required: false
+      allow_absent_checks:
+        description: >-
+          Proceed even though the PR has NO CI checks at all. Absent checks are
+          normally treated as not-green (#143); set this only for a PR that is
+          genuinely expected to trigger nothing (e.g. docs-only under a `paths:`
+          filter). Engaging it is logged as a warning on the run.
+        required: false
+        type: boolean
+        default: false
   workflow_call:
     # Cross-org consumers pin this reusable and pass `secrets: inherit` (ADR
     # 0022). pr_number/repository mirror the workflow_dispatch inputs so
@@ -96,6 +105,15 @@ on:
         description: 'JSON array of runs-on labels for the caller''s own fleet, e.g. ["self-hosted","gate"] (required — a consumer org has no runner for Verjson''s gate pool)'
         required: true
         type: string
+      allow_absent_checks:
+        description: >-
+          Proceed even though the PR has NO CI checks at all. Defaults to false
+          (strict): absent checks are treated as not-green (#143). A consumer
+          whose CI is path-filtered can set this per call; engaging it is logged
+          as a warning on the run.
+        required: false
+        type: boolean
+        default: false
 
 concurrency:
   group: ai-review-${{ github.event.pull_request.number || inputs.pr_number }}
@@ -353,7 +371,12 @@ jobs:
             out lane held; out reason "held by human opt-out"; out model none
             exit 0
           fi
-          head_sha="$(jq -r .headRefOid <<<"$meta")"
+          # `// ""` matters: without it a missing key yields the STRING "null",
+          # which passes an `-z` emptiness test and is then interpolated into an
+          # Actions-runs URL that matches nothing (making the absence probe look
+          # clean). Downstream validates the 40-hex shape; keep the empty case
+          # empty so that validation sees it.
+          head_sha="$(jq -r '.headRefOid // ""' <<<"$meta")"
           out head_sha "$head_sha"
           out dependency_major false
 
@@ -522,6 +545,7 @@ jobs:
         id: ci_wait
         env:
           GH_TOKEN: ${{ secrets.ORG_ADMIN_TOKEN }}
+          ALLOW_ABSENT_CHECKS: ${{ inputs.allow_absent_checks || false }}
         run: |
           set -euo pipefail
           started_epoch="$(date +%s)"
@@ -533,14 +557,36 @@ jobs:
           # another commit's startup failure. The head can't appear mid-run, so
           # fail immediately rather than poll (the merge step refuses an empty
           # EXPECTED_HEAD_SHA too — nothing could merge anyway).
-          if [ -z "${EXPECTED_HEAD_SHA:-}" ]; then
+          # Validate the SHAPE, not just emptiness: a failed `jq -r .headRefOid`
+          # yields the literal string "null", which is non-empty, and
+          # `...?head_sha=null` returns zero runs — the probe would then report
+          # "no startup failures" about a commit it never looked at. This value
+          # is interpolated into an API URL, so it must be a bare 40-hex SHA.
+          if ! [[ "${EXPECTED_HEAD_SHA:-}" =~ ^[0-9a-f]{40}$ ]]; then
             echo "::error::phase=ci-wait result=unknown-head lane=$LANE"
-            echo "No head SHA was resolved for PR #$PR_NUMBER; CI state cannot be attributed to a commit. Not reviewing or merging."
+            echo "No usable head SHA was resolved for PR #$PR_NUMBER (got '${EXPECTED_HEAD_SHA:-<empty>}', expected a 40-character commit SHA); CI state cannot be attributed to a commit. Not reviewing or merging."
             exit 1
           fi
           checks=0
           probe=unread
+          # A workflow whose `paths:` filter does not match never runs and emits
+          # NO check run (unlike a job-level `if:`, which reports SKIPPED). Such
+          # a PR can never accumulate checks, so polling it for the full window
+          # only burns a self-hosted runner before failing. Once the rollup is
+          # empty AND the runs API confirms zero runs for this head, a short
+          # grace period is enough to call it: give real checks time to register,
+          # then decide.
+          no_checks_grace_attempts=5
+          # Absent checks are NOT green (#143), so this is a hard stop by
+          # default. Name the escape hatch in the same breath: `hold`/draft only
+          # prevent merging, so without this line a legitimately check-free PR
+          # (docs-only under a `paths:` filter) has no path forward at all.
+          no_checks_remediation="PR #$PR_NUMBER reported no CI checks at all for $EXPECTED_HEAD_SHA, and no workflow runs were triggered for that commit. Absent checks are treated as NOT green (#143): either the PR's workflows never triggered (commonly a 'paths:' filter that does not match this PR's files), or they died before producing a check run. Fix the workflow trigger, or add a required check, and push again. If this PR is genuinely expected to have no CI, re-run the gate with the explicit opt-out: gh workflow run ai-review-merge.yml --repo $TARGET_REPO -f pr_number=$PR_NUMBER -f allow_absent_checks=true"
           for i in $(seq 1 "$max_attempts"); do
+            # Reset per iteration: a probe that failed on attempt 1 must not
+            # still be labelling attempt 60's genuine pending timeout as
+            # "probe-unavailable" and sending people to check API reachability.
+            probe=unread
             rollup=$(gh pr view "$PR_NUMBER" --repo "$TARGET_REPO" \
               --json statusCheckRollup \
               --jq '[.statusCheckRollup[]? | select((.name // .context) as $n | $n != "preflight" and $n != "gate" and $n != "freshness" and $n != "classify" and $n != "ai-review" and $n != "ai-merge" and $n != "review")]')
@@ -572,11 +618,38 @@ jobs:
               # `startup_failure` (unresolvable action ref, unparseable YAML)
               # never produces a check run, so it is invisible here (#143). An
               # unreadable probe is inconclusive, never green — retry it.
-              if runs_json=$(gh api "repos/$TARGET_REPO/actions/runs?head_sha=$EXPECTED_HEAD_SHA&per_page=100" 2>/dev/null); then
-                probe=ok
-                broken=$(jq -r '[.workflow_runs[]? | select(((.conclusion // "") | ascii_downcase) == "startup_failure") | .name] | unique | join(", ")' <<<"$runs_json" 2>/dev/null || echo "")
-              else
-                probe=unavailable
+              # A non-zero exit is only ONE way this probe fails. A proxy or edge
+              # cache can answer 2xx with an HTML error page, and a truncated
+              # body parses as nothing. Swallowing jq's error (`|| echo ""`)
+              # turns any of those into an empty startup-failure list — which is
+              # byte-identical to "nothing failed at startup", i.e. the very
+              # fail-open this probe exists to close. So: keep jq's exit status,
+              # assert the payload SHAPE before trusting it, and route every
+              # failure to `unavailable`. Inconclusive is never clean.
+              #
+              # One jq pass does all three jobs (assert shape, count runs, list
+              # startup failures) — the empty-rollup path probes on EVERY poll,
+              # so this stays one subprocess per attempt. The explicit `ok`
+              # marker, not jq's exit status, is the test: jq handed an empty
+              # body reads zero documents, emits nothing and still exits 0.
+              probe=unavailable
+              runs_seen=0
+              broken=""
+              if runs_json=$(gh api "repos/$TARGET_REPO/actions/runs?head_sha=$EXPECTED_HEAD_SHA&per_page=100" 2>/dev/null) &&
+                 probe_out=$(jq -r '
+                   if (has("workflow_runs") and (.workflow_runs | type == "array")) then
+                     "ok\t\(.workflow_runs | length)\t\([.workflow_runs[]
+                       | select(((.conclusion // "") | ascii_downcase) == "startup_failure")
+                       | .name] | unique | join(", "))"
+                   else "unusable" end' <<<"$runs_json" 2>/dev/null); then
+                IFS=$'\t' read -r probe_marker probe_runs probe_broken <<<"$probe_out" || true
+                if [ "${probe_marker:-}" = "ok" ]; then
+                  probe=ok
+                  runs_seen="$probe_runs"
+                  broken="$probe_broken"
+                fi
+              fi
+              if [ "$probe" != "ok" ]; then
                 elapsed=$(( $(date +%s) - started_epoch ))
                 echo "::warning::phase=ci-wait result=probe-unavailable elapsed_seconds=$elapsed attempt=$i/$max_attempts head=$EXPECTED_HEAD_SHA"
                 sleep 30
@@ -586,6 +659,11 @@ jobs:
                 elapsed=$(( $(date +%s) - started_epoch ))
                 echo "::error::phase=ci-wait result=startup-failure elapsed_seconds=$elapsed lane=$LANE head=$EXPECTED_HEAD_SHA workflows=$broken"
                 echo "Workflow(s) [$broken] failed at startup on $EXPECTED_HEAD_SHA and produced no check run — CI never ran. Not reviewing or merging."
+                # A startup_failure run is a permanent fact about this SHA: it is
+                # never retried and never re-concluded, so fixing the workflow
+                # upstream does NOT clear it and re-running the gate on the same
+                # head will hit this again. Say what actually unblocks it.
+                echo "This run is permanent for $EXPECTED_HEAD_SHA — re-running the gate will not clear it. Fix the workflow (usually an unresolvable action ref or unparseable YAML), then push a new commit so CI evaluates a fresh head; alternatively delete the stale startup_failure run for this SHA."
                 exit 1
               fi
               # Absence of a check is NOT a passing check (#143). A workflow that
@@ -595,7 +673,22 @@ jobs:
               # empty for the whole window, fail closed with result=no-checks.
               if [ "$checks" -eq 0 ]; then
                 elapsed=$(( $(date +%s) - started_epoch ))
-                echo "phase=ci-wait elapsed_seconds=$elapsed attempt=$i/$max_attempts checks=0 pending=<none-reported>"
+                # Decide early rather than polling to the ceiling: no checks in
+                # the rollup AND zero workflow runs for this head means nothing
+                # was ever triggered (typically an unmatched `paths:` filter), a
+                # state that cannot change without a push. Keep a short grace
+                # period so a check that is merely slow to register still wins.
+                if [ "$runs_seen" -eq 0 ] && [ "$i" -ge "$no_checks_grace_attempts" ]; then
+                  if [ "${ALLOW_ABSENT_CHECKS:-false}" = "true" ]; then
+                    echo "::warning::phase=ci-wait result=no-checks-allowed elapsed_seconds=$elapsed attempts=$i lane=$LANE head=$EXPECTED_HEAD_SHA"
+                    echo "PR #$PR_NUMBER has no CI checks for $EXPECTED_HEAD_SHA and no workflow runs were triggered. Proceeding ONLY because allow_absent_checks=true was explicitly set for this run (#143)."
+                    exit 0
+                  fi
+                  echo "::error::phase=ci-wait result=no-checks elapsed_seconds=$elapsed attempts=$i lane=$LANE head=$EXPECTED_HEAD_SHA"
+                  echo "$no_checks_remediation"
+                  exit 1
+                fi
+                echo "phase=ci-wait elapsed_seconds=$elapsed attempt=$i/$max_attempts checks=0 runs=$runs_seen pending=<none-reported>"
                 sleep 30
                 continue
               fi
@@ -617,8 +710,13 @@ jobs:
             exit 1
           fi
           if [ "$checks" -eq 0 ]; then
+            if [ "${ALLOW_ABSENT_CHECKS:-false}" = "true" ]; then
+              echo "::warning::phase=ci-wait result=no-checks-allowed elapsed_seconds=$elapsed lane=$LANE head=$EXPECTED_HEAD_SHA"
+              echo "PR #$PR_NUMBER still reports no CI checks for $EXPECTED_HEAD_SHA. Proceeding ONLY because allow_absent_checks=true was explicitly set for this run (#143)."
+              exit 0
+            fi
             echo "::error::phase=ci-wait result=no-checks elapsed_seconds=$elapsed lane=$LANE head=$EXPECTED_HEAD_SHA"
-            echo "PR #$PR_NUMBER reported no CI checks at all for $EXPECTED_HEAD_SHA. Absent checks are treated as NOT green (#143): either the PR's workflows never triggered, or they died before producing a check run. Fix the workflow trigger (or add a required check) and push again."
+            echo "$no_checks_remediation"
             exit 1
           fi
           echo "::error::phase=ci-wait result=timeout elapsed_seconds=$elapsed lane=$LANE pending=$pending"
@@ -1102,6 +1200,7 @@ jobs:
         id: merge
         env:
           GH_TOKEN: ${{ secrets.ORG_ADMIN_TOKEN }}
+          ALLOW_ABSENT_CHECKS: ${{ inputs.allow_absent_checks || false }}
         run: |
           set -euo pipefail
           REPO="$TARGET_REPO"
@@ -1156,21 +1255,59 @@ jobs:
           # check ever reported, and a `startup_failure` run produces no check
           # run at all. An unreadable probe is inconclusive — also fail closed;
           # a later event re-runs the gate.
-          if [ "$(jq 'length' <<<"$rollup")" -eq 0 ]; then
-            echo "::error::phase=merge-recheck result=no-checks elapsed_seconds=$(( $(date +%s) - merge_started_epoch )) head=$EXPECTED_HEAD_SHA"
-            echo "PR #$PR_NUMBER reported no CI checks at all for $EXPECTED_HEAD_SHA; absent checks are not green. Not merging."
-            exit 1
-          fi
-          if runs_json=$(gh api "repos/$REPO/actions/runs?head_sha=$EXPECTED_HEAD_SHA&per_page=100" 2>/dev/null); then
-            broken=$(jq -r '[.workflow_runs[]? | select(((.conclusion // "") | ascii_downcase) == "startup_failure") | .name] | unique | join(", ")' <<<"$runs_json" 2>/dev/null || echo "")
-          else
+          # Same order as ci-wait (probe → startup-failure → no-checks) so the
+          # two steps give the SAME diagnosis for the same repo state: probing
+          # first lets an absent-check PR be reported as the actionable
+          # `startup-failure` rather than the generic `no-checks`.
+          #
+          # The probe mirrors ci-wait's hardening: keep jq's exit status instead
+          # of `|| echo ""`, and require the shape assertion to produce `true`
+          # (jq exits 0 on an empty body). A 2xx carrying an HTML error page or a
+          # truncated payload must read as INCONCLUSIVE — reading it as "no
+          # startup failures" is what let an unbuilt PR merge (#143).
+          #
+          # Unlike ci-wait, this step has already paid for the model review, so a
+          # single transient API blip must not throw that away and demand a
+          # manual workflow_dispatch: retry a bounded few times, then fail closed.
+          broken=""
+          probe=unavailable
+          for probe_attempt in 1 2 3; do
+            if runs_json=$(gh api "repos/$REPO/actions/runs?head_sha=$EXPECTED_HEAD_SHA&per_page=100" 2>/dev/null) &&
+               probe_out=$(jq -r '
+                 if (has("workflow_runs") and (.workflow_runs | type == "array")) then
+                   "ok\t\([.workflow_runs[]
+                     | select(((.conclusion // "") | ascii_downcase) == "startup_failure")
+                     | .name] | unique | join(", "))"
+                 else "unusable" end' <<<"$runs_json" 2>/dev/null) &&
+               IFS=$'\t' read -r probe_marker probe_broken <<<"$probe_out" &&
+               [ "${probe_marker:-}" = "ok" ]; then
+              probe=ok
+              broken="$probe_broken"
+              break
+            fi
+            echo "::warning::phase=merge-recheck result=probe-retry attempt=$probe_attempt/3 head=$EXPECTED_HEAD_SHA"
+            if [ "$probe_attempt" -lt 3 ]; then sleep 5; fi
+          done
+          if [ "$probe" != "ok" ]; then
             echo "::error::phase=merge-recheck result=probe-unavailable elapsed_seconds=$(( $(date +%s) - merge_started_epoch )) head=$EXPECTED_HEAD_SHA"
+            echo "Could not read the workflow runs for $EXPECTED_HEAD_SHA after 3 attempts, so a startup_failure (which produces no check run) could not be ruled out. Not merging; a later gate event will retry."
             exit 1
           fi
           if [ -n "$broken" ]; then
             echo "::error::phase=merge-recheck result=startup-failure elapsed_seconds=$(( $(date +%s) - merge_started_epoch )) head=$EXPECTED_HEAD_SHA workflows=$broken"
             echo "Workflow(s) [$broken] failed at startup on $EXPECTED_HEAD_SHA and produced no check run — CI never ran. Not merging."
+            echo "This run is permanent for $EXPECTED_HEAD_SHA — re-running the gate will not clear it. Fix the workflow, then push a new commit; alternatively delete the stale startup_failure run for this SHA."
             exit 1
+          fi
+          if [ "$(jq 'length' <<<"$rollup")" -eq 0 ]; then
+            if [ "${ALLOW_ABSENT_CHECKS:-false}" = "true" ]; then
+              echo "::warning::phase=merge-recheck result=no-checks-allowed elapsed_seconds=$(( $(date +%s) - merge_started_epoch )) head=$EXPECTED_HEAD_SHA"
+              echo "PR #$PR_NUMBER has no CI checks for $EXPECTED_HEAD_SHA. Merging ONLY because allow_absent_checks=true was explicitly set for this run (#143)."
+            else
+              echo "::error::phase=merge-recheck result=no-checks elapsed_seconds=$(( $(date +%s) - merge_started_epoch )) head=$EXPECTED_HEAD_SHA"
+              echo "PR #$PR_NUMBER reported no CI checks at all for $EXPECTED_HEAD_SHA; absent checks are not green. Not merging."
+              exit 1
+            fi
           fi
           if [ "$LANE" = "fast" ]; then
             # Audit trail: the fast lane's written record replaces the AI review.
