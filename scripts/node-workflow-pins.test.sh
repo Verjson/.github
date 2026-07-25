@@ -112,7 +112,7 @@ jq -e '
   || fail "renovate.json lacks the pinDigests:false exclusion for Verjson/.github in node-ci.yml (#135 will recur)"
 
 audit_setup_line="$(grep -nF "uses: $setup_node" "$actions_ci" | cut -d: -f1)"
-audit_line="$(grep -nF 'run: npm audit --package-lock-only --omit=dev --audit-level=high' "$actions_ci" | cut -d: -f1)"
+audit_line="$(grep -nF 'run: bash scripts/release-tooling-audit.sh' "$actions_ci" | cut -d: -f1)"
 { [ -n "$audit_setup_line" ] && [ -n "$audit_line" ] && [ "$audit_setup_line" -lt "$audit_line" ] \
   && sed -n "${audit_setup_line},$((audit_setup_line + 3))p" "$actions_ci" | grep -qF "node-version: '24'"; } \
   && pass "actions-ci provisions pinned Node 24 before auditing release tooling" \

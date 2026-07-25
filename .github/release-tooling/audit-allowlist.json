@@ -1,0 +1,21 @@
+{
+  "_readme": [
+    "Reviewed, dated exceptions to the release-tooling supply-chain gate",
+    "(scripts/release-tooling-audit.sh, Verjson/.github#146). Every entry excuses",
+    "exactly one advisory and EXPIRES on its review-by date: past that, CI fails",
+    "again until a human re-assesses or upstream ships a fix. An entry that stops",
+    "matching a reported advisory also fails, so a resolved exception cannot linger",
+    "as dead permission. Adding an entry means accepting a known risk — say why, and",
+    "keep the window short.",
+    "Fields: ghsa (GHSA id), package, severity, reason, review-by (YYYY-MM-DD)."
+  ],
+  "allowlist": [
+    {
+      "ghsa": "GHSA-mh99-v99m-4gvg",
+      "package": "brace-expansion",
+      "severity": "high",
+      "reason": "DoS via unbounded expansion in the copy of brace-expansion bundled inside npm's own CLI (semantic-release -> @semantic-release/npm -> npm), reached only when semantic-release publishes on our own runners against our own inputs — not attacker-reachable in CI. No upstream fix is installable as of 2026-07-25: npm bundles the dependency, so `overrides` cannot rewrite it, and no npm release yet carries brace-expansion 5.0.8.",
+      "review-by": "2026-08-25"
+    }
+  ]
+}
