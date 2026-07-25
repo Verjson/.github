@@ -152,10 +152,68 @@ jq '.vulnerabilities |= map_values(.via = ["some-other-package"])' \
   && pass "counted high with no extractable advisory fails closed" \
   || fail "unattributable high did not exit 1: $(cat "$tmp/out")"
 
+# 11b. ...and the same drift is still fatal when the allowlist is non-empty: an
+# excused advisory must not vouch for a package nothing can be attributed to.
+jq '.vulnerabilities += {"evil": {name: "evil", severity: "critical",
+      isDirect: false, via: ["not-listed-anywhere"], effects: [],
+      range: "<=1.0.0", nodes: ["node_modules/evil"], fixAvailable: false}}
+    | .metadata.vulnerabilities.critical = 1
+    | .metadata.vulnerabilities.total += 1' \
+  "$(report high:GHSA-aaaa-bbbb-cccc)" >"$tmp/excused-plus-unattributable.json"
+[ "$(run_case "$tmp/excused-plus-unattributable.json" \
+      "$(allowlist "$(entry GHSA-aaaa-bbbb-cccc 2026-08-25)")")" = 1 ] \
+  && pass "unattributable critical alongside an excused advisory fails closed" \
+  || fail "unattributable critical was excused by an unrelated entry: $(cat "$tmp/out")"
+
+# evil_package <report> <via-json> -> report with an extra unexcused critical.
+evil_package() {
+  jq --argjson via "$2" '.vulnerabilities += {"evil": {name: "evil",
+        severity: "critical", isDirect: false, via: $via, effects: [],
+        range: "<=1.0.0", nodes: ["node_modules/evil"], fixAvailable: false}}
+      | .metadata.vulnerabilities.critical += 1
+      | .metadata.vulnerabilities.total += 1' "$1"
+}
+
+# 11c. A `via` advisory with no severity at all is a report we cannot grade, and
+# a live exception elsewhere must not make it look benign.
+evil_package "$(report high:GHSA-aaaa-bbbb-cccc)" \
+  '[{"source": 2, "name": "evil", "title": "no severity",
+     "url": "https://github.com/advisories/GHSA-dddd-eeee-ffff", "range": "<=1.0.0"}]' \
+  >"$tmp/no-severity.json"
+[ "$(run_case "$tmp/no-severity.json" "$(allowlist "$(entry GHSA-aaaa-bbbb-cccc 2026-08-25)")")" = 1 ] \
+  && pass "advisory without a severity fails closed" \
+  || fail "severity-less advisory did not exit 1: $(cat "$tmp/out")"
+
+# 11d. Severity spelling is normalised, so case is not a way past the threshold.
+evil_package "$(report high:GHSA-aaaa-bbbb-cccc)" \
+  '[{"source": 2, "name": "evil", "severity": "Critical", "title": "shouty",
+     "url": "https://github.com/advisories/GHSA-dddd-eeee-ffff", "range": "<=1.0.0"}]' \
+  >"$tmp/uppercase.json"
+jq '.vulnerabilities.evil.severity = "CRITICAL"' "$tmp/uppercase.json" >"$tmp/uppercase2.json"
+[ "$(run_case "$tmp/uppercase2.json" "$(allowlist "$(entry GHSA-aaaa-bbbb-cccc 2026-08-25)")")" = 1 ] \
+  && pass "uppercase severity still blocks" \
+  || fail "uppercase severity was not treated as critical: $(cat "$tmp/out")"
+
+# 11e. npm's counts are the coverage check's other half, so they must be numbers:
+# a string count made the comparison error out and skip the guard.
+jq '.metadata.vulnerabilities.high = "2"' "$(report high:GHSA-aaaa-bbbb-cccc)" \
+  >"$tmp/string-count.json"
+[ "$(run_case "$tmp/string-count.json" "$(allowlist "$(entry GHSA-aaaa-bbbb-cccc 2026-08-25)")")" = 1 ] \
+  && pass "non-numeric severity counts fail closed" \
+  || fail "non-numeric severity count did not exit 1: $(cat "$tmp/out")"
+
 # 12. The allowlist is the reviewable artefact; without it there is no gate.
 [ "$(run_case "$(report)" "$tmp/does-not-exist.json" 0)" = 1 ] \
   && pass "absent allowlist file fails closed" \
   || fail "absent allowlist did not exit 1: $(cat "$tmp/out")"
+
+# 12b. A truncated write leaves an empty file, which `jq -e` waves through because
+# it produced no output — the schema guard has to reject it by name.
+: >"$tmp/zero-byte.json"
+[ "$(run_case "$(report)" "$tmp/zero-byte.json" 0)" = 1 ] \
+  && grep -q 'allowlist is malformed' "$tmp/out" \
+  && pass "zero-byte allowlist is rejected by the schema guard" \
+  || fail "zero-byte allowlist was not rejected cleanly: $(cat "$tmp/out")"
 
 # 13. An entry without a review-by would be a permanent exception by omission.
 undated="$(allowlist '{"ghsa": "GHSA-aaaa-bbbb-cccc", "reason": "no expiry"}')"
@@ -169,11 +227,31 @@ baddate="$(allowlist '{"ghsa": "GHSA-aaaa-bbbb-cccc", "reason": "x", "review-by"
   && pass "allowlist entry with a non-ISO review-by fails closed" \
   || fail "non-ISO review-by did not exit 1: $(cat "$tmp/out")"
 
+# 14b. A month typo is ISO-shaped but not a date, and would never expire.
+notadate="$(allowlist '{"ghsa": "GHSA-aaaa-bbbb-cccc", "package": "pkg", "severity": "high", "reason": "x", "review-by": "2026-13-45"}')"
+[ "$(run_case "$(report high:GHSA-aaaa-bbbb-cccc)" "$notadate")" = 1 ] \
+  && pass "allowlist entry with an impossible calendar date fails closed" \
+  || fail "impossible review-by did not exit 1: $(cat "$tmp/out")"
+
+# 14c. A far-future review-by is an expiry that never fires, so the window is
+# capped: an accepted risk has to come back for re-assessment.
+forever="$(allowlist "$(entry GHSA-aaaa-bbbb-cccc 9999-12-31)")"
+[ "$(run_case "$(report high:GHSA-aaaa-bbbb-cccc)" "$forever")" = 1 ] \
+  && pass "allowlist entry beyond the review horizon fails closed" \
+  || fail "far-future review-by did not exit 1: $(cat "$tmp/out")"
+
 # 15. An exception with no stated reason is not a reviewed decision.
 noreason="$(allowlist '{"ghsa": "GHSA-aaaa-bbbb-cccc", "reason": "", "review-by": "2026-08-25"}')"
 [ "$(run_case "$(report high:GHSA-aaaa-bbbb-cccc)" "$noreason")" = 1 ] \
   && pass "allowlist entry without a reason fails closed" \
   || fail "reasonless allowlist entry did not exit 1: $(cat "$tmp/out")"
+
+# 15b. `package` and `severity` are documented fields, so they must narrow the
+# exception: an entry naming another package or a lower severity excuses nothing.
+mismatched="$(allowlist '{"ghsa": "GHSA-aaaa-bbbb-cccc", "package": "other-pkg", "severity": "low", "reason": "wrong package and severity", "review-by": "2026-08-25"}')"
+[ "$(run_case "$(report critical:GHSA-aaaa-bbbb-cccc)" "$mismatched")" = 1 ] \
+  && pass "allowlist entry naming another package/severity excuses nothing" \
+  || fail "mismatched allowlist entry excused a critical: $(cat "$tmp/out")"
 
 # 16. Boundary: the exception is still good on its review-by date itself.
 [ "$(run_case "$(report high:GHSA-aaaa-bbbb-cccc)" "$(allowlist "$(entry GHSA-aaaa-bbbb-cccc 2026-07-25)")")" = 0 ] \
@@ -191,6 +269,19 @@ run_case "$(report high:GHSA-9999-8888-7777)" "$(allowlist)" >/dev/null
 grep -q 'GHSA-9999-8888-7777' "$tmp/out" \
   && pass "failure output names the blocking GHSA" \
   || fail "failure output does not name the blocking GHSA: $(cat "$tmp/out")"
+
+# 18b. A runner without npm produces no report at all, which is not "clean".
+nonpm_bin="$tmp/nonpm"
+mkdir -p "$nonpm_bin"
+for tool in jq date dirname; do ln -sf "$(command -v "$tool")" "$nonpm_bin/$tool"; done
+env -i PATH="$nonpm_bin" \
+  RELEASE_TOOLING_DIR="$tmp" \
+  RELEASE_TOOLING_AUDIT_ALLOWLIST="$(allowlist)" \
+  RELEASE_TOOLING_AUDIT_TODAY=2026-07-25 \
+  "$(command -v bash)" "$script" >"$tmp/out" 2>&1
+[ "$?" = 1 ] \
+  && pass "npm missing from PATH fails closed" \
+  || fail "absent npm did not exit 1: $(cat "$tmp/out")"
 
 # 19. Wiring: the gate step must call the wrapper, and the bare `npm audit`
 # invocation must be gone — otherwise the allowlist is decorative and the org is

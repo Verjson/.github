@@ -10,16 +10,21 @@ a `semantic-release` bump (already latest) and `overrides` all fail to move it,
 and npm has shipped no release carrying the fixed `brace-expansion@5.0.8`.
 
 The bare invocation is replaced by `scripts/release-tooling-audit.sh`, which
-parses `npm audit --json` and blocks on any high/critical advisory that is not
-named in `.github/release-tooling/audit-allowlist.json`. Each allowlist entry
-carries a GHSA id, a reason and a `review-by` date; an entry that outlives its
-`review-by`, or that stops matching a reported advisory, **fails the gate** — so an
-accepted risk cannot become permanent and a resolved exception cannot linger as
-dead permission. Every unparseable path (bad/absent JSON, wrong report shape, an
-uninterpretable npm exit, high counts with no extractable advisory, a malformed or
-missing allowlist) exits non-zero: an unreadable audit never reads as clean.
+parses `npm audit --json` and grades **per package**, the same unit
+`--audit-level` used: a package npm reports high/critical passes only if its whole
+`via` chain resolves to advisories excused in
+`.github/release-tooling/audit-allowlist.json`, and a package nothing can be
+attributed to blocks. Each entry names a GHSA id, the package and severity it
+excuses, a reason, and a `review-by` that must be a real calendar date within 90
+days; an entry that outlives its `review-by`, or that stops matching a reported
+advisory, **fails the gate** — so an accepted risk cannot become permanent and a
+resolved exception cannot linger as dead permission. Every unparseable path
+(bad/absent/empty JSON, wrong report shape, an unknown severity, non-numeric
+counts, an uninterpretable npm exit, more high/critical packages than could be
+enumerated, a malformed, empty or missing allowlist) exits non-zero: an unreadable
+audit never reads as clean.
 
 Seeded with exactly one entry, GHSA-mh99-v99m-4gvg, expiring **2026-08-25**.
-20 unit tests in `scripts/release-tooling-audit.test.sh` drive the script against
+29 unit tests in `scripts/release-tooling-audit.test.sh` drive the script against
 stubbed `npm audit --json` output (no network) and are wired into `actions-ci.yml`.
 See [ADR 0025](../docs/decisions/0025-release-tooling-audit-allowlist/README.md).
