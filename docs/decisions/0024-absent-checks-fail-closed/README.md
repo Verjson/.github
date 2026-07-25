@@ -2,7 +2,7 @@
 
 - **Date:** 2026-07-25
 - **Issue:** Verjson/.github#143
-- **PR:** #144
+- **PR:** #145
 - **Category:** merge-gate behaviour (sensitive class)
 
 ## Context
@@ -145,4 +145,4 @@ lane ceilings, and the `phase=ci-wait` / `phase=merge-recheck` log vocabulary.
            if [ "$LANE" = "fast" ]; then
 ```
 
-Full change: https://github.com/Verjson/.github/pull/144
+Full change: https://github.com/Verjson/.github/pull/145
