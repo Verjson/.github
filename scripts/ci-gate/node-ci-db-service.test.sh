@@ -80,7 +80,24 @@ case "${1:-}" in
     ;;
   # `MAPPED_PORT=` (set but empty) models a daemon that reports no host mapping.
   port) printf '%s:%s\n' "${MAPPED_HOST:-127.0.0.1}" "${MAPPED_PORT-0}" ;;
-  ps) printf '%s' "${STALE_CONTAINERS:-}" ;;
+  # `docker ps` REJECTS a filter it does not implement rather than returning an
+  # empty list — `until` in particular is prune-only. Model that refusal, or a
+  # sweep built on an invalid filter looks alive while sweeping nothing.
+  ps)
+    # $PS_FAIL models a daemon that refuses to list at all.
+    [ -z "${PS_FAIL:-}" ] || { printf '%s\n' "$PS_FAIL" >&2; exit 1; }
+    prev=""
+    for arg in "$@"; do
+      if [ "$prev" = "--filter" ]; then
+        case "${arg%%=*}" in
+          label|name|status|id|ancestor|before|since|health|exited|network|volume|publish|expose) ;;
+          *) printf "Error response from daemon: invalid filter '%s'\n" "${arg%%=*}" >&2; exit 1 ;;
+        esac
+      fi
+      prev="$arg"
+    done
+    printf '%s' "${STALE_CONTAINERS:-}"
+    ;;
   # $RM_FAIL models a removal the daemon refuses, message and all.
   rm) [ -z "${RM_FAIL:-}" ] || { printf '%s\n' "$RM_FAIL" >&2; exit 1; } ;;
 esac
@@ -90,10 +107,12 @@ chmod +x "$tmp/bin/docker"
 export PATH="$tmp/bin:$PATH"
 
 export DB_IMAGE="pgvector/pgvector:pg16"
-export DB_ENV="POSTGRES_USER=app
+# Single-quoted: `${DB_PORT}` is the literal placeholder the caller writes, and
+# the step — not this test's shell — is what must expand it.
+export DB_ENV='POSTGRES_USER=app
 POSTGRES_PASSWORD=secret
 POSTGRES_DB=app_test
-DATABASE_URL=postgres://app:secret@localhost:5432/app_test"
+DATABASE_URL=postgres://app:secret@localhost:${DB_PORT}/app_test'
 # Run-level identity is shared by every job of one workflow run — it is exactly
 # what two DB-backed jobs of the same run cannot be told apart by.
 export GITHUB_RUN_ID="7000000001"
@@ -209,7 +228,16 @@ grep -qF -- '--label verjson-ci=1' "$tmp/job-a/docker.log" \
   && pass "the database container is labelled so leaks can be found later" \
   || fail "the container carries no verjson-ci label (a leak would be unidentifiable)"
 
-run_db_step job-sweep "${job_a[@]}" STALE_CONTAINERS=$'aa11bb22\ncc33dd44'
+# The sweep is age-bounded, so it must be exercised against containers that
+# carry a real creation time — `docker ps` prints `{{.CreatedAt}}` as
+# `YYYY-MM-DD HH:MM:SS ±ZZZZ TZ`. Two leaked containers are old enough to reap;
+# the third was created moments ago and stands in for a CONCURRENTLY RUNNING
+# job's container, which the sweep must never remove.
+docker_created_at() { date -d "$1" '+%Y-%m-%d %H:%M:%S %z %Z'; }
+sweep_listing="aa11bb22 $(docker_created_at '8 hours ago')
+cc33dd44 $(docker_created_at '3 days ago')
+beefface $(docker_created_at '2 minutes ago')"
+run_db_step job-sweep "${job_a[@]}" STALE_CONTAINERS="$sweep_listing"
 rc=$?
 { [ "$rc" -eq 0 ] \
     && grep -qE '^ps .*label=verjson-ci=1' "$tmp/job-sweep/docker.log" \
@@ -218,102 +246,157 @@ rc=$?
   && pass "aged containers carrying the CI label are swept before the job's own starts" \
   || fail "step exited $rc without sweeping leaked labelled containers: $(grep -E '^(ps|rm) ' "$tmp/job-sweep/docker.log" | tr '\n' ' ')"
 
-# (e) The published port is OS-assigned, so the caller's DATABASE_URL cannot
-# name it up front: the step must read the mapped port back from docker and
-# rewrite the connection URL it exports, or `npm test` dials a port nothing is
-# listening on.
-grep -qF 'DATABASE_URL=postgres://app:secret@localhost:49187/app_test' "$tmp/job-a/github_env" \
-  && pass "the exported DATABASE_URL carries the host port docker actually mapped" \
-  || fail "exported DATABASE_URL does not use the mapped port 49187: $(grep '^DATABASE_URL=' "$tmp/job-a/github_env" || echo '<absent>')"
+# ...and the age bound is the whole safety argument: a container younger than the
+# 6h GitHub job cap may belong to a job running RIGHT NOW on this host, so
+# removing it would kill a healthy concurrent job (#116).
+! grep -qE '^rm .*beefface' "$tmp/job-sweep/docker.log" \
+  && pass "the sweep leaves a freshly-created container alone (it may be a live job's)" \
+  || fail "the sweep removed a container created 2 minutes ago — it can kill a concurrent job: $(grep -E '^rm ' "$tmp/job-sweep/docker.log" | tr '\n' ' ')"
 
-# Hardening: a URL that omits the port used to work, because the container was
-# bound to the well-known 5432 — with an OS-assigned port it would silently dial
-# the wrong port, so the step must fill the port in. Values that are not URLs, or
-# URLs on some other port (a caller's REDIS_URL), must be passed through
-# untouched.
-run_db_step job-c "${job_a[@]}" "DB_ENV=POSTGRES_USER=app
-DATABASE_URL=postgres://app@localhost/app_test
-REDIS_URL=redis://localhost:6379"
+# ...and a sweep that cannot run must SAY so. A best-effort cleanup that
+# swallows its own failure is indistinguishable from one that works — which is
+# how an invalid `--filter until=6h` sat here as a permanent no-op.
+run_db_step job-sweep-blind "${job_a[@]}" \
+  PS_FAIL="Error response from daemon: invalid filter 'nope'"
 rc=$?
-[ "$rc" -eq 0 ] || { echo "---- db step output ----"; cat "$tmp/job-c/out.txt"; }
-{ grep -qF 'DATABASE_URL=postgres://app@localhost:49187/app_test' "$tmp/job-c/github_env" \
-    && grep -qF 'REDIS_URL=redis://localhost:6379' "$tmp/job-c/github_env" \
-    && grep -qF 'POSTGRES_USER=app' "$tmp/job-c/github_env"; } \
-  && pass "a portless db-env URL gets the mapped port; other values pass through verbatim" \
-  || fail "portless URL was not pointed at the mapped port (or another value was rewritten): $(grep -c . "$tmp/job-c/github_env") lines, $(grep '^DATABASE_URL=' "$tmp/job-c/github_env" || echo '<absent>')"
+{ [ "$rc" -eq 0 ] && grep -qF "invalid filter 'nope'" "$tmp/job-sweep-blind/out.txt"; } \
+  && pass "a sweep that cannot list containers warns instead of silently sweeping nothing" \
+  || fail "step exited $rc and swallowed the listing failure: $(cat "$tmp/job-sweep-blind/out.txt")"
 
-# Hardening: the host-port rewrite must anchor the right-hand edge of `:5432`.
-# `54320`-`54322` are common alternate-Postgres ports and `:5432` is a prefix of
-# all of them, so an unanchored match mangles a caller's unrelated URL
-# (redis://localhost:54321/0 -> redis://localhost:491871/0) instead of leaving it
-# alone.
-run_db_step job-prefix-port "${job_a[@]}" "DB_ENV=DATABASE_URL=postgres://app@localhost:5432/app_test
-REDIS_URL=redis://localhost:54321/0
-CACHE_URL=redis://localhost:5432a/0"
-rc=$?
-[ "$rc" -eq 0 ] || { echo "---- db step output ----"; cat "$tmp/job-prefix-port/out.txt"; }
-{ grep -qF 'REDIS_URL=redis://localhost:54321/0' "$tmp/job-prefix-port/github_env" \
-    && grep -qF 'CACHE_URL=redis://localhost:5432a/0' "$tmp/job-prefix-port/github_env" \
-    && grep -qF 'DATABASE_URL=postgres://app@localhost:49187/app_test' "$tmp/job-prefix-port/github_env"; } \
-  && pass "a port that merely starts with 5432 is left alone (the rewrite anchors on / ? or end)" \
-  || fail "a 5432-prefixed port was mangled: $(grep -E '^(REDIS|CACHE)_URL=' "$tmp/job-prefix-port/github_env" | tr '\n' ' ')"
-
-# Hardening: a rewrite MISS must be loud. Before the port became OS-assigned a
-# missed rewrite was harmless — 5432 really was this job's container — but now an
-# un-rewritten `:5432` points the caller's suite at whatever else listens on the
-# host's 5432, which on a persistent self-hosted runner can be a real database
-# that migrations would then truncate. An IPv6 literal host is a shape the URL
-# rewrite cannot handle, so it must fail the step naming the key, not export a
-# URL aimed at 5432.
-run_db_step job-ipv6-host "${job_a[@]}" "DB_ENV=POSTGRES_USER=app
-DATABASE_URL=postgres://app@[::1]:5432/app_test"
-rc=$?
-{ [ "$rc" -ne 0 ] \
-    && ! grep -q '^DATABASE_URL=.*:5432' "$tmp/job-ipv6-host/github_env" \
-    && grep -qF 'DATABASE_URL' "$tmp/job-ipv6-host/out.txt"; } \
-  && pass "a postgres:// value the rewrite cannot handle fails the step, naming the key" \
-  || fail "step exited $rc and exported $(grep '^DATABASE_URL=' "$tmp/job-ipv6-host/github_env" || echo 'no URL') for an IPv6 host (a miss silently aims the suite at host port 5432)"
-
-# Hardening: a password containing `@` is a legal URL (the userinfo runs to the
-# LAST `@` before the path), and it is exactly the shape a generated test
-# password takes. It must be rewritten like any other, not treated as a host.
-run_db_step job-at-password "${job_a[@]}" "DB_ENV=POSTGRES_USER=app
-DATABASE_URL=postgres://app:p@ss@localhost:5432/app_test"
+# ...and a container whose creation time cannot be read is left alone WITH a
+# warning: an unreadable age must never be treated as "old enough to remove",
+# because the container may be a live job's.
+run_db_step job-sweep-badtime "${job_a[@]}" \
+  STALE_CONTAINERS="deadbeef not-a-timestamp"
 rc=$?
 { [ "$rc" -eq 0 ] \
-    && grep -qF 'DATABASE_URL=postgres://app:p@ss@localhost:49187/app_test' "$tmp/job-at-password/github_env"; } \
-  && pass "an @ in the db-env password still resolves the host port" \
-  || fail "step exited $rc for an @-in-password URL: $(grep '^DATABASE_URL=' "$tmp/job-at-password/github_env" || echo '<absent>')"
+    && ! grep -qE '^rm .*deadbeef' "$tmp/job-sweep-badtime/docker.log" \
+    && grep -qF 'deadbeef' "$tmp/job-sweep-badtime/out.txt"; } \
+  && pass "a container with an unreadable creation time is warned about, not swept" \
+  || fail "step exited $rc for an unparsable creation time: $(cat "$tmp/job-sweep-badtime/out.txt")"
 
-# Hardening: shapes the URL rewrite does not cover must be rejected, not written
-# through verbatim — each of these still names port 5432, which is now someone
-# else's database on a shared host.
+# (e) The published port is OS-assigned, so the caller's DATABASE_URL cannot name
+# it up front. The contract is an explicit placeholder: the caller writes
+# `${DB_PORT}` where the port belongs and the step substitutes the real one. That
+# is a literal token replacement — no scheme sniffing, no URL parsing — so the
+# step can neither mangle a value it misreads nor miss one it fails to recognise.
+grep -qF 'DATABASE_URL=postgres://app:secret@localhost:49187/app_test' "$tmp/job-a/github_env" \
+  && pass "a \${DB_PORT} placeholder becomes the host port docker actually mapped" \
+  || fail "exported DATABASE_URL does not use the mapped port 49187: $(grep '^DATABASE_URL=' "$tmp/job-a/github_env" || echo '<absent>')"
+
+# The brace-less `$DB_PORT` spelling is the same token and just as likely to be
+# typed, so it must substitute identically.
+run_db_step job-bare-token "${job_a[@]}" 'DB_ENV=POSTGRES_USER=app
+DATABASE_URL=postgres://app@localhost:$DB_PORT/app_test'
+rc=$?
+{ [ "$rc" -eq 0 ] \
+    && grep -qF 'DATABASE_URL=postgres://app@localhost:49187/app_test' "$tmp/job-bare-token/github_env"; } \
+  && pass "the brace-less \$DB_PORT placeholder substitutes the same as \${DB_PORT}" \
+  || fail "step exited $rc and exported $(grep '^DATABASE_URL=' "$tmp/job-bare-token/github_env" || echo '<absent>') for a \$DB_PORT placeholder"
+
+# Hardening: the placeholder is substituted wherever it appears, in shapes no URL
+# parser handles — an IPv6-literal host, a `jdbc:` URL, a libpq keyword string, a
+# quoted value, an `@` in the password. Each of these had to be REJECTED while
+# the port was inferred by parsing; a literal token needs none of that
+# understanding, so they all just work.
+run_db_step job-token-shapes "${job_a[@]}" 'DB_ENV=POSTGRES_USER=app
+IPV6_URL=postgres://app@[::1]:${DB_PORT}/app_test
+JDBC_URL=jdbc:postgresql://localhost:${DB_PORT}/app_test
+LIBPQ_DSN=host=localhost port=${DB_PORT} dbname=app
+QUOTED_URL="postgres://app@localhost:${DB_PORT}/app_test"
+AT_PASSWORD_URL=postgres://app:p@ss@localhost:${DB_PORT}/app_test
+PGHOST=127.0.0.1
+PGPORT=${DB_PORT}'
+rc=$?
+[ "$rc" -eq 0 ] || { echo "---- db step output ----"; cat "$tmp/job-token-shapes/out.txt"; }
+token_shape_misses=""
+while IFS= read -r expected; do
+  grep -qxF "$expected" "$tmp/job-token-shapes/github_env" \
+    || token_shape_misses="$token_shape_misses [$expected]"
+done <<EXPECTED
+IPV6_URL=postgres://app@[::1]:49187/app_test
+JDBC_URL=jdbc:postgresql://localhost:49187/app_test
+LIBPQ_DSN=host=localhost port=49187 dbname=app
+QUOTED_URL="postgres://app@localhost:49187/app_test"
+AT_PASSWORD_URL=postgres://app:p@ss@localhost:49187/app_test
+PGHOST=127.0.0.1
+PGPORT=49187
+EXPECTED
+{ [ "$rc" -eq 0 ] && [ -z "$token_shape_misses" ]; } \
+  && pass "the placeholder substitutes in IPv6/jdbc/libpq/quoted/@-password values alike" \
+  || fail "step exited $rc and did not substitute:$token_shape_misses"
+
+# Hardening: a value that hardcodes 5432 must be REJECTED by name, never
+# rewritten behind the caller's back. With an OS-assigned port a literal 5432
+# aims the suite at whatever else listens on the host's 5432 — on a persistent
+# self-hosted runner that can be a real database a migration would truncate —
+# and guessing which 5432 was meant is exactly the parsing this design removed.
 i=0
-for shape in 'DATABASE_URL="postgres://app@localhost:5432/app_test"' \
-             'DATABASE_URL=jdbc:postgresql://localhost:5432/app_test' \
-             'DATABASE_URL=host=localhost port=5432 dbname=app' \
-             'DATABASE_URL=postgres://app@localhost:54322/app_test'; do
+while IFS= read -r shape; do
+  [ -n "$shape" ] || continue
   i=$((i + 1))
   run_db_step "job-shape-$i" "${job_a[@]}" "DB_ENV=POSTGRES_USER=app
 $shape"
   rc=$?
-  { [ "$rc" -ne 0 ] && ! grep -q '5432' "$tmp/job-shape-$i/github_env"; } \
-    && pass "an unrewritable db-env shape is rejected: ${shape%%=*}=${shape#*=}" \
-    || fail "step exited $rc and exported $(grep '^DATABASE_URL=' "$tmp/job-shape-$i/github_env" || echo 'nothing') for: $shape"
-done
+  key="${shape%%=*}"
+  { [ "$rc" -ne 0 ] \
+      && ! grep -q "^$key=" "$tmp/job-shape-$i/github_env" \
+      && grep -qF "$key" "$tmp/job-shape-$i/out.txt" \
+      && grep -qF 'DB_PORT' "$tmp/job-shape-$i/out.txt"; } \
+    && pass "a hardcoded 5432 is rejected by name, pointing at \${DB_PORT}: $shape" \
+    || fail "step exited $rc and exported $(grep "^$key=" "$tmp/job-shape-$i/github_env" || echo 'nothing') for: $shape"
+done <<'SHAPES'
+DATABASE_URL=postgres://app@localhost:5432/app_test
+DATABASE_URL="postgres://app@localhost:5432/app_test"
+DATABASE_URL=jdbc:postgresql://localhost:5432/app_test
+DATABASE_URL=postgres://app@[::1]:5432/app_test
+LIBPQ_DSN=host=localhost port=5432 dbname=app
+PGPORT=5432
+SHAPES
 
-# Hardening: PGHOST/PGPORT is the other standard way to point libpq at a
-# database, and a caller writing PGPORT means "the service this step started" —
-# so it must be pointed at the mapped port, not passed through at 5432.
-run_db_step job-pgport "${job_a[@]}" "DB_ENV=POSTGRES_USER=app
-PGHOST=127.0.0.1
-PGPORT=5432"
+# Hardening: everything that carries neither the placeholder nor a hardcoded 5432
+# is exported BYTE-IDENTICAL. Each line below was mangled or hard-failed by the
+# scheme-matching rewrite this design replaced: a non-postgres URL had the DB
+# port spliced into it (`https://internal.svc/v1` -> `https://internal.svc:49187/v1`),
+# a portless postgres URL with a query string was silently corrupted, and any
+# value containing `port=<digits>` — `--port=3000`, `--inspect-port=9229`, even
+# `--report=1` — failed the whole job. The step now inspects no schemes at all,
+# so none of that is reachable.
+passthrough='API_URL=https://internal.svc/v1
+REDIS_URL=redis://cache/0
+S3_URL=s3://bucket/key
+SSLMODE_DSN=postgres://localhost?sslmode=require
+PORTLESS_DSN=postgres://app@localhost/app_test
+ALT_PORT_DSN=postgres://app@localhost:54322/app_test
+PREFIX_PORT_URL=redis://localhost:54321/0
+NON_PORT_URL=redis://localhost:5432a/0
+PLAYWRIGHT_ARGS=--port=3000
+NODE_OPTIONS=--inspect-port=9229
+VITE_ARGS=--port=5173
+EXTRA_ARGS=--report=1'
+run_db_step job-passthrough "${job_a[@]}" "DB_ENV=$passthrough"
 rc=$?
-{ [ "$rc" -eq 0 ] \
-    && grep -qF 'PGPORT=49187' "$tmp/job-pgport/github_env" \
-    && grep -qF 'PGHOST=127.0.0.1' "$tmp/job-pgport/github_env"; } \
-  && pass "a db-env PGPORT is pointed at the mapped port" \
-  || fail "step exited $rc and exported $(grep '^PGPORT=' "$tmp/job-pgport/github_env" || echo 'no PGPORT')"
+[ "$rc" -eq 0 ] || { echo "---- db step output ----"; cat "$tmp/job-passthrough/out.txt"; }
+passthrough_misses=""
+while IFS= read -r expected; do
+  grep -qxF "$expected" "$tmp/job-passthrough/github_env" \
+    || passthrough_misses="$passthrough_misses [$expected]"
+done <<< "$passthrough"
+{ [ "$rc" -eq 0 ] && [ -z "$passthrough_misses" ]; } \
+  && pass "values with neither the placeholder nor a hardcoded 5432 are exported byte-identical" \
+  || fail "step exited $rc and did not pass through:$passthrough_misses"
+
+# Hardening: pass-through must not become SILENT for the one shape that still
+# resolves to a database port on its own — a postgres URL with no port at all
+# defaults to libpq's 5432, so `postgres://localhost?sslmode=require` reaches
+# whatever else listens on the host. The value is still exported untouched (no
+# rewrite, no failed job), but the step says which key looks like it meant this
+# database and never named it.
+{ grep -qF 'SSLMODE_DSN' "$tmp/job-passthrough/out.txt" \
+    && grep -qF 'PORTLESS_DSN' "$tmp/job-passthrough/out.txt" \
+    && ! grep -qF 'REDIS_URL' "$tmp/job-passthrough/out.txt"; } \
+  && pass "a postgres URL carrying no placeholder is flagged (exported, but not silently)" \
+  || fail "no advisory for a portless postgres URL — it silently points the suite at host 5432: $(cat "$tmp/job-passthrough/out.txt")"
 
 # Hardening: $GITHUB_ENV is last-wins, so a caller's own DB_PORT line — a
 # plausible thing to write, since the step advertises $DB_PORT — must not

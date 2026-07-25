@@ -11,21 +11,37 @@ only for humans reading `docker ps`: the start step publishes the **container ID
 teardown off that, so a job can never remove a concurrent job's live container
 even if two names ever did collide.
 
-Because the host port is no longer known up front, the step reads it back with
-`docker port` and rewrites the host port of postgres-scheme `db-env` values (a
-`:5432` bounded by `/`, `?` or end-of-value is a placeholder; such a URL with no
-port gets one inserted) before exporting them, and exports `$DB_PORT` last so a
-caller's own `DB_PORT` line can't win the last-wins `$GITHUB_ENV` merge. A value
-that names a database port but cannot be rewritten — IPv6-literal host, quoted
-URL, `jdbc:postgresql:`, libpq `host=… port=…` — now **fails the step by name**
-instead of silently aiming the caller's suite at whatever else listens on the
-host's 5432; `PGPORT` is set to the mapped port; everything else (a REDIS_URL on
-any port, including one that starts with 5432) passes through verbatim.
-Containers carry `--label verjson-ci=1` and aged labelled orphans are swept at
-start, since an ephemeral port no longer makes a leak self-announcing.
+Because the host port is no longer known up front, **`db-env` gains a placeholder
+contract — a breaking change**. Write `${DB_PORT}` (or `$DB_PORT`) where the port
+belongs — `DATABASE_URL=postgres://app:pw@127.0.0.1:${DB_PORT}/app` — and the step
+substitutes the port `docker port` reports. It is a literal token replacement: no
+scheme detection, no URL parsing. An earlier attempt inferred the port position by
+matching the value's shape and kept producing new bugs — it spliced the DB port
+into unrelated URLs on any scheme (`https://internal.svc/v1` →
+`https://internal.svc:49187/v1`, `redis://cache/0`, `s3://bucket/key`), corrupted
+`postgres://localhost?sslmode=require`, and hard-failed the job for any value
+containing `port=<digits>` (`--port=3000`, `--inspect-port=9229`, even
+`--report=1`). None of that is reachable now: values without the token are
+exported byte-identical, and the token works in IPv6-literal, `jdbc:`, libpq
+`host=… port=…`, quoted and `@`-in-password values that the parsing design had to
+reject outright. A value that **hardcodes 5432** is rejected by name telling you
+to use `${DB_PORT}`, never rewritten behind your back; a `postgres://` URL with no
+placeholder is passed through untouched but logs a note, since libpq would default
+it to the host's 5432. `$DB_PORT` is exported last so a caller's own `DB_PORT` line
+can't win the last-wins `$GITHUB_ENV` merge.
 
-The input surface, the default-off behaviour and the caller-supplied image are
-unchanged; the `db-env` description now documents exactly which shapes are
-rewritten and which are rejected. Pinned by
-`scripts/ci-gate/node-ci-db-service.test.sh`; ADR 0021 is amended rather than
+Containers carry `--label verjson-ci=1` and labelled orphans older than 6h are
+reaped at start, since an ephemeral port no longer makes a leak self-announcing.
+The age bound is computed in-shell from `docker ps --format '{{.ID}} {{.CreatedAt}}'`
+because docker has no usable one: `until` is prune-only (`docker ps --filter
+until=6h` is a hard `invalid filter` error, which made the first version of this
+sweep a silent no-op) and `docker container prune` reaps only stopped containers.
+6h is GitHub's default job timeout, so nothing older can belong to a running job —
+a concurrent job's live container is never a candidate.
+
+`db-image`, the input names, the default-off behaviour and the caller-supplied
+image are unchanged, and a survey of the `Verjson` and `tequityapp` orgs found no
+consumer repo passing `db-env` or `db-image` at all, so the contract change breaks
+nobody today. Pinned by `scripts/ci-gate/node-ci-db-service.test.sh` (mutation-
+checked: 13 deliberate defects, all caught); ADR 0021 is amended rather than
 superseded (the concurrency limit was parked there as tracked in #116).

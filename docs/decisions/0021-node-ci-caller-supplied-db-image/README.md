@@ -86,46 +86,79 @@ image, default-off, unmasked `db-env`) is unchanged.
   cannot tear down the winning job's live container. A name-based handle would have
   removed it and killed a healthy job.
 - **Host port is OS-assigned and loopback-only** (`-p 127.0.0.1::5432`), read back
-  with `docker port` and substituted into the postgres-scheme `db-env` values
-  exported to `$GITHUB_ENV` (also exported as `$DB_PORT`, written last so a caller's
-  own `DB_PORT` line cannot win the last-wins merge). This *tightens* the posture of
-  the original decision: the caller-supplied image was previously published on
-  `0.0.0.0:5432` and is now reachable only from the runner's own loopback.
-- **A rewrite miss fails the step.** Under the old fixed bind a missed rewrite was
-  harmless — 5432 *was* the job's own database. With an OS-assigned port it would
-  aim the caller's suite at whatever else listens on the host's 5432, which on a
-  persistent self-hosted runner can be a real database that migrations would
-  truncate. So the rewrite is checked: a value starting `postgres://`/`postgresql://`
-  must come out carrying the mapped port, and shapes that name a database port but
-  cannot be rewritten (IPv6-literal host, quoted URL, `jdbc:postgresql:`, libpq
-  `host=… port=…` keyword strings) are rejected by name. `PGPORT` is set to the
-  mapped port. Only a `:5432` bounded by `/`, `?` or end-of-value is a placeholder —
-  `:54321` and friends are left alone, and every non-postgres value (a REDIS_URL on
-  any port) passes through verbatim.
-- **Leaks are labelled and swept.** The container carries `--label verjson-ci=1` and
-  each start removes labelled containers older than 6h. A fixed 5432 bind used to
-  make a leak self-announcing (it broke the next job's start); an ephemeral port
-  makes one invisible, so it needed its own signal — as does a teardown whose
-  `docker rm -f` genuinely fails, which now fails the step instead of being
-  swallowed.
-- **Input surface is unchanged** — `db-image`/`db-env` keep their names, defaults and
-  default-off semantics; only the `db-env` documentation changes, because a `:5432`
-  in a caller's postgres URL is now a placeholder that gets rewritten (and such a URL
-  with no port gets one inserted), and the shapes listed above are now rejected
-  rather than exported verbatim.
+  with `docker port` and exported as `$DB_PORT` (written last, so a caller's own
+  `DB_PORT` line cannot win the last-wins `$GITHUB_ENV` merge). This *tightens* the
+  posture of the original decision: the caller-supplied image was previously
+  published on `0.0.0.0:5432` and is now reachable only from the runner's own
+  loopback.
+- **The caller marks the port; the workflow does not infer it.** `db-env` values
+  carry the literal placeholder `${DB_PORT}` (or `$DB_PORT`) where the port belongs
+  and the step substitutes the real one. Two rounds of review found bugs in the
+  alternative — a `sed` that inferred the port position from the value's shape —
+  and each fix moved the bug rather than removing it: it spliced the database port
+  into unrelated URLs on any scheme (`API_URL=https://internal.svc/v1` →
+  `https://internal.svc:49187/v1`), corrupted `postgres://localhost?sslmode=require`,
+  and hard-failed the job for any value containing `port=<digits>` (`--port=3000`,
+  `--inspect-port=9229`). Literal token substitution has no shape to misread, so
+  that entire class is gone: values without the token are exported byte-identical,
+  and the token works in shapes no URL parser handles (IPv6-literal host,
+  `jdbc:postgresql:`, libpq `host=… port=… ` keyword strings, quoted values, `@` in
+  the password) — all of which the parsing design had to *reject*.
+- **A hardcoded 5432 is rejected, never rewritten.** Under the old fixed bind a
+  literal 5432 was harmless — it *was* the job's own database. With an OS-assigned
+  port it aims the caller's suite at whatever else listens on the host's 5432, which
+  on a persistent self-hosted runner can be a real database that migrations would
+  truncate. So a 5432 in port position (`:5432` at end or before a non-alphanumeric,
+  `port=5432`, a bare `5432` as a `*_PORT` value) fails the step naming the key and
+  pointing at `${DB_PORT}`; `:54321`, `:5432a`, `--port=3000` and `--report=1` are
+  none of those and pass through. The one shape that still resolves to a database
+  port on its own — a `postgres://` URL with no port, which libpq defaults to 5432 —
+  is exported untouched but logs a note, so pass-through is never silent.
+- **Leaks are labelled and swept, with the age bound computed in-shell.** The
+  container carries `--label verjson-ci=1` and each start reaps labelled containers
+  older than 6h. Docker offers no usable bound for this: `until` is a *prune-only*
+  filter and `docker ps --filter until=…` is a hard `invalid filter` error (a first
+  attempt used exactly that, so the sweep was a permanent silent no-op), while
+  `docker container prune` reaps only *stopped* containers and a leaked one is
+  typically still running. So the step lists `{{.ID}} {{.CreatedAt}}` and compares
+  ages itself. 6h is the bound because a job cannot outlive GitHub's default
+  `timeout-minutes: 360` and its container is created after the job starts — so
+  nothing older than 6h can belong to a running job, and a concurrent job's live
+  container is never a candidate. A listing or removal that fails warns rather than
+  being swallowed, as does a teardown whose `docker rm -f` genuinely fails (which
+  fails the step).
+- **`db-env` is a BREAKING contract change; `db-image` is unchanged.** A caller who
+  wrote `:5432` in a `db-env` URL and relied on it being rewritten must now write
+  `${DB_PORT}`; the old spelling fails the step with that instruction rather than
+  silently pointing at the host's 5432. This is deliberate and cheap: a survey of
+  both orgs (`gh search code 'db-env'`, `'db-image'`, owners `Verjson` and
+  `tequityapp`) found **no consumer repo passing either input** — every hit is
+  inside `Verjson/.github` itself — and the DB service shipped only days earlier
+  (#113, 2026-07-22) with its own input description documenting the concurrency
+  limitation as known. Input *names*, defaults and default-off semantics are
+  untouched, so callers that set neither input are unaffected.
 
 **Evidence.** `scripts/ci-gate/node-ci-db-service.test.sh` extracts the step from
 `node-ci.yml` and pins, against a stubbed docker: two concurrent jobs get distinct
 container names, including when only one of `RUNNER_NAME`/`RUNNER_WORKSPACE` differs;
-no fixed host-port bind; the exported `DATABASE_URL` carries the port `docker port`
-actually reported; a port that merely *starts* with 5432 is left alone; an `@` in the
-password still resolves; an IPv6 host, a quoted URL, `jdbc:postgresql:` and a libpq
-keyword string each fail the step by name; a caller's `DB_PORT` cannot override the
-real one; a name collision fails the losing job and leaves it no handle, so it cannot
-remove the winner's container; an unreadable mapping fails the step (dumping the
-container's logs) instead of exporting a dead URL; labelled orphans are swept; and
-teardown removes the container by ID, fails loudly on a refused removal, tolerates an
-already-gone container, and is a no-op when none was started.
+no fixed host-port bind; `${DB_PORT}` and `$DB_PORT` both become the port `docker
+port` actually reported, in IPv6/`jdbc:`/libpq/quoted/`@`-in-password values alike; a
+hardcoded 5432 is rejected by name in six shapes; twelve values carrying neither the
+token nor a 5432 — including `https://internal.svc/v1`, `redis://cache/0`,
+`s3://bucket/key`, `postgres://localhost?sslmode=require`, `--port=3000` and
+`--inspect-port=9229` — are exported byte-identical; a caller's `DB_PORT` cannot
+override the real one; a name collision fails the losing job and leaves it no handle,
+so it cannot remove the winner's container; an unreadable mapping fails the step
+(dumping the container's logs) instead of exporting a dead URL; a container created
+8h/3d ago is swept while one created 2 minutes ago is left alone, a listing failure
+and an unreadable creation time each warn without failing the step; and teardown
+removes the container by ID, fails loudly on a refused removal, tolerates an
+already-gone container, and is a no-op when none was started. The suite is
+mutation-checked: 13 deliberate defects — dropping either placeholder substitution,
+each of the three 5432 rejections, re-introducing the scheme-based `sed`, restoring
+the `until=6h` filter, inverting the sweep cutoff, swallowing either sweep warning,
+dropping the `DB_PORT` guard or the pass-through note, and handling the container by
+name instead of ID — are each caught by at least one assertion.
 
 **Not re-opened.** The boundary condition of the original decision still stands: an
 arbitrary caller-supplied image plus unmasked `db-env` on a shared runner is safe
