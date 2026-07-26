@@ -64,11 +64,17 @@ The wrapper blocks when **any** of these holds:
 1. a package graded **high or critical** resolves to an advisory the allowlist does
    not excuse — matching on GHSA id **and** package **and** severity, so an entry
    excuses one advisory as npm reports it and no other;
-1b. such a package is graded **above** the severity its excusing entries accepted.
-   npm grades the package (the unit `--audit-level` gated on) at least as high as
-   any advisory under it, so an entry accepting a `high` advisory does not carry a
-   package npm calls `critical`: the severity a reviewer wrote down is the severity
-   they assessed;
+1b. such a package is graded **above every** severity its excusing entries accepted
+   — i.e. **no** excused advisory under it reaches the package's own grade. npm
+   grades the package (the unit `--audit-level` gated on) at the **max** over its
+   chain, so an entry accepting a `high` advisory does not carry a package npm calls
+   `critical`: the severity a reviewer wrote down is the severity they assessed. The
+   test is deliberately "**some** excused advisory reaches the grade", not "every one
+   does": because npm grades by max, a chain that also reaches a lower-graded advisory
+   is the ordinary multi-CVE/multi-hop shape, and since an entry's severity is copied
+   from npm's report rather than chosen, the stricter reading would make such a
+   package unexcusable by **any** allowlist — reinstating the unbypassable wedge this
+   ADR exists to remove;
 2. such a package is **unattributable** — its `via` chain is empty, dangles at a
    package the report does not carry, or yields an id that is not a GHSA. An
    unexplained critical is a block, never a pass;
@@ -180,6 +186,23 @@ GHSA-only — all survived a green suite before this round and are each red now.
     clear more than one graded package, when every one of those packages resolves
     only to advisories that entry excuses. `_readme` no longer says "and nothing
     else".
+- **Rework, round 4 — 2026-07-25 (pre-merge, third review of #147).** The round-3
+  grade check overshot: it blocked a package if **any** advisory in its chain graded
+  below the package (`rank < package rank`), rather than if **none** reached it. But
+  npm grades a package at the **max** over its chain, so reaching a lower-graded
+  advisory alongside the top one is the ordinary multi-CVE/multi-hop shape — and
+  because an entry's `severity` is matched against the advisory as npm reports it, an
+  entry can never be written at a grade that clears such a package. That shape was
+  therefore **unexcusable by construction**: brute-forcing all 25 severity pairs
+  against a `critical` package whose `via` is `[critical advisory, moderate advisory]`
+  cleared it in **0** of 25 — the unbypassable wedge this ADR exists to remove,
+  reintroduced. The real lockfile escaped only by luck of the current advisory set
+  (`brace-expansion` is the sole high, and its `via` is a single high advisory
+  object). Decision 1b now reads "**some** excused advisory reaches the package's
+  grade". Evidence: two new tests — a sibling mixed-grade chain and a multi-hop one,
+  both fully excused — exit 0 on the current script and exit 1 on the round-3 rule;
+  all three round-3 cases still hold (entry `high` vs package `critical` blocks, entry
+  `low` vs package `high` blocks, entry `critical` vs package `high` passes).
 - A `review-by` is now validated as a **date**, not a shape: it is round-tripped
   through `date -u -d` and must come back unchanged, and it must fall within 90 days.
   `2026-13-45` and `9999-12-31` both previously passed every check, and either would

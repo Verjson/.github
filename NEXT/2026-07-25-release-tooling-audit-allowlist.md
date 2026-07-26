@@ -27,7 +27,11 @@ audit never reads as clean.
 An exception is scoped to the advisory a reviewer assessed: it never clears a
 package npm grades **above** the entry's severity, and — because npm propagates one
 advisory outward along `via` — it can clear more than the package it names, which
-the allowlist `_readme` now states rather than denying.
+the allowlist `_readme` now states rather than denying. npm grades a package at the
+**max** over its chain, so the grade test is that **some** excused advisory reaches
+that grade; requiring *every* one to would leave any ordinary multi-CVE chain
+unexcusable by construction (an entry's severity is copied from npm's report, not
+chosen), which is the wedge this replaces.
 
 Seeded with exactly one entry, GHSA-mh99-v99m-4gvg, expiring **2026-08-25**.
 42 unit tests in `scripts/release-tooling-audit.test.sh` drive the script against

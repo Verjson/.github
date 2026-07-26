@@ -451,6 +451,33 @@ undergraded='{
   && pass "an entry accepting a high advisory does not excuse a critical package" \
   || fail "a high exception excused a package npm graded critical: $(cat "$tmp/out")"
 
+# 15e. ...but npm grades a package at the MAX over its chain, so a chain that also
+# reaches a lower-graded advisory is the ordinary multi-CVE shape, not an anomaly.
+# Since an entry's severity is pinned to the grade npm reports for its advisory,
+# demanding that *every* advisory reach the package's grade would make this package
+# unexcusable by construction — the unbypassable wedge #146 exists to remove. One
+# excused advisory at the package's own grade is what has to carry it.
+mixed_grade='{
+  "pkg": {"severity": "critical", "via": ['"$(adv GHSA-aaaa-bbbb-cccc pkg critical)"', '"$(adv GHSA-9999-8888-7777 pkg moderate)"']}
+}'
+[ "$(run_case "$(graph "$mixed_grade")" \
+      "$(allowlist "$(entry GHSA-aaaa-bbbb-cccc 2026-08-25 pkg critical)" \
+                   "$(entry GHSA-9999-8888-7777 2026-08-25 pkg moderate)")")" = 0 ] \
+  && pass "a critical package excused at its own grade is not blocked by a lesser advisory beside it" \
+  || fail "a mixed-grade chain was unexcusable despite covering the package's grade: $(cat "$tmp/out")"
+
+# 15f. ...and the same holds when the lower-graded advisory is a hop away rather
+# than a sibling, which is how the real report reaches its graded packages.
+mixed_chain='{
+  "top": {"severity": "high", "via": ['"$(adv GHSA-aaaa-bbbb-cccc top high)"', "mid"]},
+  "mid": {"severity": "moderate", "via": ['"$(adv GHSA-9999-8888-7777 mid moderate)"']}
+}'
+[ "$(run_case "$(graph "$mixed_chain")" \
+      "$(allowlist "$(entry GHSA-aaaa-bbbb-cccc 2026-08-25 top high)" \
+                   "$(entry GHSA-9999-8888-7777 2026-08-25 mid moderate)")")" = 0 ] \
+  && pass "a high package excused at its own grade is not blocked by a moderate advisory a hop away" \
+  || fail "a multi-hop mixed-grade chain was unexcusable despite covering the package's grade: $(cat "$tmp/out")"
+
 # 16. Boundary: the exception is still good on its review-by date itself.
 [ "$(run_case "$(report high:GHSA-aaaa-bbbb-cccc)" "$(allowlist "$(entry GHSA-aaaa-bbbb-cccc 2026-07-25)")")" = 0 ] \
   && pass "allowlist entry on its review-by date is still valid" \

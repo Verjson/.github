@@ -160,19 +160,25 @@ unmatched="$(jq -r --slurpfile allow "$allowlist_file" '
 [ -n "$unmatched" ] \
   && die "allowlist entr(ies) match no reported advisory — delete the dead exception: $unmatched"
 
+# npm grades a package at the MAX over its chain, so reaching a lower-graded
+# advisory alongside the top one is the ordinary multi-CVE/multi-hop shape. The
+# grade check is therefore "SOME excused advisory reaches the package's grade",
+# not "every one does": an entry's severity is pinned to the grade npm reports
+# for its advisory, so the stricter reading would leave such a package
+# unexcusable by any allowlist at all.
 blocking="$(jq -r --slurpfile allow "$allowlist_file" '
   def rank: {info: 0, low: 1, moderate: 2, high: 3, critical: 4}[.];
   ($allow[0].allowlist
    | map({ghsa, package, severity: (.severity | ascii_downcase)})) as $excused
   | [.blocking[] | . as $p
      | ($p.advisories | map(. as $a | select(($excused | index($a)) == null))) as $unexcused
-     | ($p.advisories | map(select((.severity | rank) < ($p.severity | rank)))) as $undergraded
+     | ($p.advisories | map(select((.severity | rank) >= ($p.severity | rank)))) as $covering
      | if ($p.ok | not) or ($p.advisories | length) == 0 then
          "  \($p.severity)\t\($p.package)\tno advisory could be attributed to this package"
        elif ($unexcused | length) > 0 then
          "  \($p.severity)\t\($p.package)\t\($unexcused | map(.ghsa) | join(", "))"
-       elif ($undergraded | length) > 0 then
-         "  \($p.severity)\t\($p.package)\t\($undergraded | map(.ghsa) | join(", ")) accepted only at \($undergraded | map(.severity) | unique | join("/")), below this package’s \($p.severity) grade"
+       elif ($covering | length) == 0 then
+         "  \($p.severity)\t\($p.package)\tno excused advisory reaches this package’s \($p.severity) grade (highest accepted: \($p.advisories | map(.severity) | unique | join("/")))"
        else empty end]
   | join("\n")
 ' <<<"$analysis")" || die "could not evaluate the audit report against the allowlist — failing closed"
