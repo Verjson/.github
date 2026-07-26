@@ -24,14 +24,18 @@ fail() {
 
 # Extract the merge step's run script verbatim (10-space-indented body under
 # `run: |`, scoped to the step with `id: merge`).
+# Capture stops at the next step's `- name:` (or the first line that leaves the
+# block body). Clearing `cap` alone leaves `seen` set, so the following step's
+# `run: |` re-arms capture and appends unrelated code to the script under test.
 script="$tmp/merge.sh"
 awk '
   $0 == "        id: merge" { seen = 1 }
   seen && $0 == "        run: |" { cap = 1; next }
+  cap && $0 ~ /^      - name:/ { exit }
   cap {
     if (substr($0, 1, 10) == "          ") { print substr($0, 11); next }
     if ($0 ~ /^[ \t]*$/) { print ""; next }
-    cap = 0
+    exit
   }
 ' "$wf" >"$script"
 if ! grep -q 'is held' "$script" || ! grep -q 'pr merge' "$script"; then
@@ -41,6 +45,10 @@ fi
 
 # Fake `gh`: `pr view --json ...statusCheckRollup...` → the rollup fixture;
 # other `pr view` → the meta fixture; `pr merge`/`pr comment` → log the action.
+# `gh api` MUST return an explicit, well-formed no-startup-failures payload:
+# falling through to a bare `exit 0` with empty stdout used to be read by the
+# merge step as "probe ok, nothing broken", which is exactly the fail-open of
+# #143. These hold tests would then be passing by way of that bug.
 mkdir -p "$tmp/bin"
 cat >"$tmp/bin/gh" <<'GH'
 #!/usr/bin/env bash
@@ -49,6 +57,10 @@ if [ "$1" = "pr" ] && [ "$2" = "view" ]; then
     *statusCheckRollup*) cat "$ROLLUP_FILE" ;;
     *) cat "$META_FILE" ;;
   esac
+  exit 0
+fi
+if [ "$1" = "api" ]; then
+  printf '{"total_count":1,"workflow_runs":[{"name":"unit","conclusion":"success"}]}\n'
   exit 0
 fi
 [ "$1" = "pr" ] && [ "$2" = "merge" ] && { echo MERGE >>"$ACTIONLOG"; exit 0; }
@@ -96,7 +108,9 @@ run_case "$(open '[]' 'feat: x' 'true')" >/dev/null
 { out_has 'is held' && ! act_has MERGE; } && pass "draft still holds" || fail "draft regressed"
 
 # --- positive control: an unheld, all-green PR merges ------------------------
-run_case "$(open '[{"name":"update/patch"}]')" '[]' >/dev/null
+# The rollup must carry a real passing check: since #143 an EMPTY rollup means
+# "no CI ever reported" and fails closed, so it can no longer stand in for green.
+run_case "$(open '[{"name":"update/patch"}]')" '[{"name":"unit","status":"COMPLETED","conclusion":"SUCCESS"}]' >/dev/null
 act_has MERGE && pass "unheld green PR merges" || fail "unheld green PR did not merge"
 
 # A closed (non-OPEN) PR is a no-op, never merged.
