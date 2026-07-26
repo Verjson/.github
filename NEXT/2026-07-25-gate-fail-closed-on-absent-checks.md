@@ -20,7 +20,7 @@ the same order, with a bounded 3-attempt probe retry so one transient API blip
 doesn't discard an already-paid-for model review.
 
 Because a `paths:`-filtered workflow that doesn't match emits **no check run** (this
-repo's own CI is path-filtered), absence is now decided after a ~2.5 minute grace
+repo's own CI is path-filtered), absence is now decided after a ~5 minute grace
 period instead of the full 30–40 minute window, and a bounded opt-out
 `allow_absent_checks` (default **false**/strict, exposed on `workflow_dispatch` and
 `workflow_call`) gives a legitimately check-free PR a path forward; engaging it logs
@@ -40,3 +40,13 @@ rc=0 positive controls were asserting unrelated code; and the `gh api` stubs in
 as "probe ok" — they were passing by way of the bug. Rationale in ADR 0024. The
 startup-failure trigger itself was already fixed in e3cf463/b2e57be — untouched
 here. Refs #143, ADR 0024.
+
+Review follow-ups, before this shipped: the startup-failure verdict keyed on the
+joined workflow **name** string, but `name` is nullable and `[null] | join(", ")`
+is `""` — so a run that died parsing its own YAML, the literal #143 case, still
+read as clean. Both steps now branch on a **count**; names are log text only.
+And `runs_seen` counted the gate's **own** run — the gate is a workflow run on
+the head, so the count was never zero and the prompt-`no-checks` shortcut was
+unreachable; every untriggerable PR burned the full window. It now excludes
+`.id == $GITHUB_RUN_ID` (a run id, so it holds for cross-org `workflow_call`
+too), and the grace widened 5 → 10 polls now that it can actually fire.

@@ -49,6 +49,17 @@ fail-closed exit say why.
    A token without it gets 403, the probe reports `probe-unavailable`, and every
    PR in that repo fails closed. Verify per repo with:
    `gh api "repos/<owner>/<repo>/actions/runs?head_sha=<sha>&per_page=1"`.
+
+   **The startup-failure verdict is a count, never the names string**
+   (amended 2026-07-25). `name` is nullable in the runs schema, and the first
+   cut of this probe decided on the joined name list — `[null] | join(", ")` is
+   `""`, which is byte-identical to "nothing failed at startup". The bug was
+   therefore live in exactly the case the ADR was written for: a workflow that
+   dies parsing its own YAML is the likeliest one for GitHub to have no name to
+   report. jq now emits an explicit startup **count** alongside the names, both
+   steps branch on `[ "$startup_count" -gt 0 ]`, and the names are log text only
+   (`.name // "<unnamed>"`). Same class as Decision 3: a layer added to close a
+   fail-open reintroduced one via a nullable field.
 3. **An unverifiable probe is inconclusive, never green — including a 2xx it
    cannot parse.** A non-zero exit is only one failure mode: a proxy or edge cache
    can answer 200 with an HTML error page, a truncated response parses as nothing,
@@ -93,10 +104,23 @@ fail-closed exit say why.
    a `startup_failure` run still fails closed, as do red and pending checks.
 7. **Decide absence promptly instead of burning the window.** When the rollup is
    empty *and* the runs API reports zero runs for the head, nothing was ever
-   triggered — a state that cannot change without a push. After a 5-attempt
-   (~2.5 minute) grace period, so a merely slow-to-register check still wins, the
+   triggered — a state that cannot change without a push. After a 10-attempt
+   (~5 minute) grace period, so a merely slow-to-register check still wins, the
    step takes its terminal decision (fail, or the opt-out path) rather than
    polling a self-hosted runner for the full 30–40 minutes first.
+
+   **"Zero runs" means zero runs other than the gate's own** (amended
+   2026-07-25). The gate is itself a workflow run on the PR head, so
+   `?head_sha=<head>` always returns at least one run and an unfiltered count is
+   never zero — the shortcut above was dead code, and every untriggerable PR
+   burned the full 30–40 minute window before failing. The rollup filter strips
+   the gate's check *names*; nothing stripped its *run*. `runs_seen` now excludes
+   `.id == $GITHUB_RUN_ID`. Matching on run id rather than workflow name is what
+   makes this hold for a cross-org `workflow_call` under ADR 0022, where the run
+   belongs to the caller and carries the caller's workflow name. The grace was
+   widened 5 → 10 at the same time: the shortcut only fires when *nothing* was
+   triggered, so the extra polls cost nothing on any real PR and buy margin for
+   the runs API lagging the check API.
 8. **Say what actually unblocks it.** A `startup_failure` run is permanent for its
    SHA: it is never retried or re-concluded, so fixing the workflow upstream (the
    #143 e3cf463 scenario) does **not** clear it and re-running the gate on the same
@@ -117,7 +141,7 @@ lane ceilings, and the `phase=ci-wait` / `phase=merge-recheck` log vocabulary.
 ## Consequences
 
 - A PR that genuinely has **no CI at all** no longer auto-merges: it fails with
-  `result=no-checks` after the ~2.5 minute grace period. That is the intended
+  `result=no-checks` after the ~5 minute grace period. That is the intended
   trade (fail-closed beats merging unbuilt code). The two ways out are to surface
   *some* check — a skipped job still reports `SKIPPED`, which is accepted — or to
   re-dispatch with `allow_absent_checks=true`, which the error message spells out.
@@ -131,9 +155,11 @@ lane ceilings, and the `phase=ci-wait` / `phase=merge-recheck` log vocabulary.
   read from a session. Confirm the secret's own scope before relying on this.
 - API cost: on the path to green, two extra `gh api` calls per gate run (one per
   snapshot). On the **empty-rollup path the probe runs on every poll iteration**,
-  which is why absence is now decided after ~5 attempts instead of 60–80 — that
+  which is why absence is now decided after ~10 attempts instead of 60–80 — that
   bound is what keeps the worst case at a handful of calls rather than one per
-  poll for the whole window.
+  poll for the whole window. That bound only became real once `runs_seen` stopped
+  counting the gate's own run (Decision 7 amendment); before that the empty-rollup
+  path always ran the probe on all 60–80 polls.
 - Two existing test fixtures modelled "green" as an empty rollup
   (`hold.test.sh` positive control, `gate-queue.test.sh` `run_wait`). Their intent
   is unchanged; they now carry a real passing check and the job-level
@@ -158,6 +184,19 @@ lane ceilings, and the `phase=ci-wait` / `phase=merge-recheck` log vocabulary.
   startup failure) / stale-probe labelling / merge-probe retry. The suite runs in
   ~2 minutes; most of that is the fake-`sleep` poll loops of the cases that must
   reach the lane ceiling.
+- **Fixture realism is load-bearing here** (amended 2026-07-25). The suite
+  originally modelled "no workflow runs" as `{"workflow_runs":[]}` — a payload
+  production cannot produce, because the gate is itself a run on the head. The
+  `runs_seen -eq 0` shortcut therefore passed its test while being dead in the
+  real world. Fixtures now include the gate's own run at `id == $GITHUB_RUN_ID`,
+  which is also what pins the exclusion. Two more assertions exist purely to pin
+  defaults nothing else exercises: a `<unset>` sentinel in the harness removes
+  `ALLOW_ABSENT_CHECKS` from the environment (every other case sets it, so the
+  `:-false` fallback was otherwise unpinned — flipping it to `:-true` left the
+  suite green), and `{"workflow_runs":{}}` — key present, wrong type — is the
+  only body that separates the real shape assertion from a vacuous `if true`.
+  Each fix in this amendment was verified by mutation: reverting it individually
+  turns the suite red.
 
 ## Effective diff (sensitive hunks)
 
@@ -169,7 +208,7 @@ lane ceilings, and the `phase=ci-wait` / `phase=merge-recheck` log vocabulary.
              echo "::error::phase=ci-wait result=unknown-head lane=$LANE"
              exit 1
            fi
-+          no_checks_grace_attempts=5
++          no_checks_grace_attempts=10
            for i in $(seq 1 "$max_attempts"); do
 +            # Reset per iteration: a probe that failed on attempt 1 must not still
 +            # be labelling attempt 60's genuine pending timeout as unavailable.
@@ -183,19 +222,25 @@ lane ceilings, and the `phase=ci-wait` / `phase=merge-recheck` log vocabulary.
 +              # status — is the test: jq handed an empty body reads zero
 +              # documents, emits nothing and still exits 0, so `|| echo ""` (or a
 +              # bare `jq -e`) would wave a 2xx HTML error page through as clean.
++              # The verdict is the COUNT, never the names string: `name` is
++              # nullable and `[null] | join(", ")` is "" — see Decision 2.
++              # `runs_seen` excludes the gate's OWN run (`.id == $GITHUB_RUN_ID`),
++              # or the `runs_seen -eq 0` shortcut below is unreachable.
 +              probe=unavailable
 +              runs_seen=0
++              startup_count=0
 +              broken=""
 +              if runs_json=$(gh api "repos/$TARGET_REPO/actions/runs?head_sha=$EXPECTED_HEAD_SHA&per_page=100" 2>/dev/null) &&
 +                 probe_out=$(jq -r '
-+                   if (has("workflow_runs") and (.workflow_runs | type == "array")) then
-+                     "ok\t\(.workflow_runs | length)\t\([.workflow_runs[]
-+                       | select(((.conclusion // "") | ascii_downcase) == "startup_failure")
-+                       | .name] | unique | join(", "))"
++                   ((env.GITHUB_RUN_ID // "") | tonumber? // -1) as $self
++                   | if (has("workflow_runs") and (.workflow_runs | type == "array")) then
++                     ([.workflow_runs[]
++                       | select(((.conclusion // "") | ascii_downcase) == "startup_failure")]) as $bad
++                     | "ok\t\(.workflow_runs | map(select(.id != $self)) | length)\t\($bad | length)\t\([$bad[] | .name // "<unnamed>"] | unique | join(", "))"
 +                   else "unusable" end' <<<"$runs_json" 2>/dev/null); then
-+                IFS=$'\t' read -r probe_marker probe_runs probe_broken <<<"$probe_out" || true
++                IFS=$'\t' read -r probe_marker probe_runs probe_startup probe_broken <<<"$probe_out" || true
 +                if [ "${probe_marker:-}" = "ok" ]; then
-+                  probe=ok; runs_seen="$probe_runs"; broken="$probe_broken"
++                  probe=ok; runs_seen="$probe_runs"; startup_count="$probe_startup"; broken="$probe_broken"
 +                fi
 +              fi
 +              if [ "$probe" != "ok" ]; then
@@ -203,7 +248,7 @@ lane ceilings, and the `phase=ci-wait` / `phase=merge-recheck` log vocabulary.
 +                sleep 30
 +                continue
 +              fi
-+              if [ -n "$broken" ]; then
++              if [ "$startup_count" -gt 0 ]; then
 +                echo "::error::phase=ci-wait result=startup-failure ... head=$EXPECTED_HEAD_SHA workflows=$broken"
 +                echo "This run is permanent for $EXPECTED_HEAD_SHA — re-running the gate will not clear it. Fix the workflow, then push a new commit; alternatively delete the stale startup_failure run for this SHA."
 +                exit 1
@@ -255,18 +300,20 @@ retry because the model review is already paid for at this point:
              exit 1
            fi
 +          broken=""
++          startup_count=0
 +          probe=unavailable
 +          for probe_attempt in 1 2 3; do
 +            if runs_json=$(gh api "repos/$REPO/actions/runs?head_sha=$EXPECTED_HEAD_SHA&per_page=100" 2>/dev/null) &&
 +               probe_out=$(jq -r '
-+                 if (has("workflow_runs") and (.workflow_runs | type == "array")) then
-+                   "ok\t\([.workflow_runs[]
-+                     | select(((.conclusion // "") | ascii_downcase) == "startup_failure")
-+                     | .name] | unique | join(", "))"
++                 ((env.GITHUB_RUN_ID // "") | tonumber? // -1) as $self
++                 | if (has("workflow_runs") and (.workflow_runs | type == "array")) then
++                   ([.workflow_runs[]
++                     | select(((.conclusion // "") | ascii_downcase) == "startup_failure")]) as $bad
++                   | "ok\t\(.workflow_runs | map(select(.id != $self)) | length)\t\($bad | length)\t\([$bad[] | .name // "<unnamed>"] | unique | join(", "))"
 +                 else "unusable" end' <<<"$runs_json" 2>/dev/null) &&
-+               IFS=$'\t' read -r probe_marker probe_broken <<<"$probe_out" &&
++               IFS=$'\t' read -r probe_marker _ probe_startup probe_broken <<<"$probe_out" &&
 +               [ "${probe_marker:-}" = "ok" ]; then
-+              probe=ok; broken="$probe_broken"; break
++              probe=ok; startup_count="$probe_startup"; broken="$probe_broken"; break
 +            fi
 +            echo "::warning::phase=merge-recheck result=probe-retry attempt=$probe_attempt/3 head=$EXPECTED_HEAD_SHA"
 +            if [ "$probe_attempt" -lt 3 ]; then sleep 5; fi
@@ -275,7 +322,7 @@ retry because the model review is already paid for at this point:
 +            echo "::error::phase=merge-recheck result=probe-unavailable ... head=$EXPECTED_HEAD_SHA"
 +            exit 1
 +          fi
-+          if [ -n "$broken" ]; then
++          if [ "$startup_count" -gt 0 ]; then
 +            echo "::error::phase=merge-recheck result=startup-failure ... workflows=$broken"
 +            exit 1
 +          fi

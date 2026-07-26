@@ -95,8 +95,17 @@ chmod +x "$tmp/bin/sleep"
 # would exercise the reject path instead of the happy path.
 head_sha='0123456789abcdef0123456789abcdef01234567'
 
-no_startup_failures="{\"total_count\":1,\"workflow_runs\":[
-  {\"name\":\"node-ci\",\"conclusion\":\"success\",\"head_sha\":\"$head_sha\"}
+# The gate is itself a workflow run on the PR head, so `?head_sha=<head>` ALWAYS
+# returns at least one run — its own. A fixture with `workflow_runs: []` is a
+# payload production cannot produce, and testing against it would let the
+# "nothing was ever triggered" shortcut pass while being dead in the real world.
+gate_run_id=424242
+export GITHUB_RUN_ID="$gate_run_id"
+gate_own_run="{\"id\":$gate_run_id,\"name\":\"AI review + auto-merge\",\"conclusion\":null,\"head_sha\":\"$head_sha\"}"
+
+no_startup_failures="{\"total_count\":2,\"workflow_runs\":[
+  $gate_own_run,
+  {\"id\":11,\"name\":\"node-ci\",\"conclusion\":\"success\",\"head_sha\":\"$head_sha\"}
 ]}"
 
 run_wait() {
@@ -106,7 +115,10 @@ run_wait() {
   export META_FILE="$tmp/meta.json" ACTIONLOG="$tmp/actions.log"
   export SUITES_RC="${3:-0}"
   export EXPECTED_HEAD_SHA="${4-$head_sha}"
-  export ALLOW_ABSENT_CHECKS="${5:-false}"
+  # `<unset>` removes the variable instead of setting it: every other case sets
+  # it explicitly, so nothing would otherwise pin the `:-false` default and a
+  # flip to `:-true` would leave the suite green. Safe inside `$( )`.
+  if [ "${5:-false}" = "<unset>" ]; then unset ALLOW_ABSENT_CHECKS; else export ALLOW_ABSENT_CHECKS="${5:-false}"; fi
   export ROLLUPCOUNT="$tmp/rollup.count" APICOUNT="$tmp/api.count"
   export SUITES_FAIL_FIRST="${SUITES_FAIL_FIRST:-0}"
   export ROLLUP_FILE2="${ROLLUP_FILE2:-}" ROLLUP_SWITCH_AFTER="${ROLLUP_SWITCH_AFTER:-0}"
@@ -137,6 +149,25 @@ rc="$(run_wait "$green_rollup" "$startup")"
 { [ "$rc" = "rc=1" ] && wait_out_has 'result=startup-failure' && wait_out_has 'node-ci'; } \
   && pass "startup_failure workflow fails closed and is named (#143)" \
   || fail "startup_failure workflow did not fail the gate closed ($rc)"
+
+# `name` is nullable in the Actions runs schema, and a run that died parsing its
+# own YAML — the literal #143 scenario — is the likeliest place for GitHub to
+# have no workflow name to report. Deciding on the joined NAME string is
+# therefore fail-open: `[null] | join(", ")` is "", which reads as "nothing
+# failed startup". The decision must key on a COUNT; the names are log text only.
+unnamed_startup='{"total_count":1,"workflow_runs":[
+  {"name":null,"conclusion":"startup_failure","head_sha":"0123456789abcdef0123456789abcdef01234567"}
+]}'
+blank_startup='{"total_count":1,"workflow_runs":[
+  {"name":"","conclusion":"startup_failure","head_sha":"0123456789abcdef0123456789abcdef01234567"}
+]}'
+for body in "$unnamed_startup" "$blank_startup"; do
+  rc="$(run_wait "$green_rollup" "$body")"
+  { [ "$rc" = "rc=1" ] && ! wait_out_has 'result=green' \
+      && wait_out_has 'result=startup-failure'; } \
+    && pass "a startup_failure run with no usable name still fails closed (#143)" \
+    || fail "an unnamed startup_failure run concluded CI green — fails OPEN ($rc)"
+done
 
 # An empty rollup must not hang silently: the poll window ends in an explicit,
 # actionable diagnosis saying WHY the gate refused.
@@ -199,11 +230,16 @@ rc="$(run_wait "$green_rollup" '')"
 # Valid JSON of the WRONG SHAPE is the subtler variant: `.workflow_runs[]?` on an
 # object without that key yields nothing, so a well-formed decoy (an error
 # object, a paginated envelope we did not expect) reads as "clean".
-rc="$(run_wait "$green_rollup" '{"message":"Not Found","status":"404"}')"
-{ [ "$rc" = "rc=1" ] && ! wait_out_has 'result=green' \
-    && wait_out_has 'result=probe-unavailable'; } \
-  && pass "a well-formed probe body missing workflow_runs is inconclusive" \
-  || fail "wrong-shape probe body concluded CI green — fails OPEN ($rc)"
+# The key PRESENT but not an array is the case that separates a real shape
+# assertion from a vacuous one: `has("workflow_runs")` alone waves it through,
+# and `.workflow_runs[]?` on an object yields nothing — i.e. reads as "clean".
+for bad_body in '{"message":"Not Found","status":"404"}' '{"workflow_runs":{}}' '{"workflow_runs":null}' '{"workflow_runs":"notanarray"}'; do
+  rc="$(run_wait "$green_rollup" "$bad_body")"
+  { [ "$rc" = "rc=1" ] && ! wait_out_has 'result=green' \
+      && wait_out_has 'result=probe-unavailable'; } \
+    && pass "a well-formed probe body of the wrong shape is inconclusive [$bad_body]" \
+    || fail "wrong-shape probe body [$bad_body] concluded CI green — fails OPEN ($rc)"
+done
 
 # A missing head SHA would query the runs API without a head filter, matching
 # every recent run in the repo — a startup failure on an unrelated commit must
@@ -232,24 +268,47 @@ done
 # A workflow whose `paths:` filter does not match never runs and emits no check
 # run, so the rollup can never fill. Polling that for the full 30-40 minute
 # window burns a self-hosted runner to reach a conclusion available in seconds.
-no_runs='{"total_count":0,"workflow_runs":[]}'
+# "No workflow runs" means no runs OTHER than the gate's own — see gate_own_run.
+no_runs="{\"total_count\":1,\"workflow_runs\":[$gate_own_run]}"
 rc="$(run_wait '[]' "$no_runs")"
-{ [ "$rc" = "rc=1" ] && wait_out_has 'result=no-checks' && wait_out_has 'attempts=5'; } \
+{ [ "$rc" = "rc=1" ] && wait_out_has 'result=no-checks' && wait_out_has 'attempts=10'; } \
   && pass "no checks AND no workflow runs fails closed after a short grace, not the full window" \
   || fail "an untriggerable PR burned the whole poll window ($rc)"
 
 # Fail-closed is the DEFAULT, not the only option: a genuinely check-free PR
 # (docs-only under a paths filter) needs a path forward, and the default error
-# must name it.
+# must name it. Reads the output of the run immediately above.
 wait_out_has 'allow_absent_checks=true' \
   && pass "the no-checks failure names its explicit opt-out" \
   || fail "no-checks failed with no path forward for a legitimately check-free PR"
+
+# The other side of that shortcut: the grace must be wide enough that a check
+# which is merely SLOW to register still wins. Registration is not instant, and
+# the runs API can lag the check API, so a too-tight grace turns a slow-starting
+# green PR into a hard `no-checks` failure.
+ROLLUP_FILE2="$tmp/rollup2.json" ROLLUP_SWITCH_AFTER=6
+export ROLLUP_FILE2 ROLLUP_SWITCH_AFTER
+printf '%s' "$green_rollup" >"$tmp/rollup2.json"
+rc="$(run_wait '[]' "$no_runs")"
+unset ROLLUP_FILE2 ROLLUP_SWITCH_AFTER
+{ [ "$rc" = "rc=0" ] && wait_out_has 'result=green' && ! wait_out_has 'result=no-checks'; } \
+  && pass "a check that only registers on a later poll still beats the no-checks shortcut" \
+  || fail "the grace window cut off a slow-to-register check ($rc)"
 
 rc="$(run_wait '[]' "$no_runs" 0 "$head_sha" true)"
 { [ "$rc" = "rc=0" ] && wait_out_has 'result=no-checks-allowed' \
     && wait_out_has '::warning::'; } \
   && pass "allow_absent_checks=true proceeds, and says so as a warning" \
   || fail "explicit allow_absent_checks opt-out did not let a check-free PR through ($rc)"
+
+# The opt-out is opt-IN: with the variable absent entirely (a caller that never
+# passes the input), the fallback must be strict. Every other case sets the
+# variable, so without this the `:-false` default is unpinned.
+rc="$(run_wait '[]' "$no_runs" 0 "$head_sha" '<unset>')"
+{ [ "$rc" = "rc=1" ] && wait_out_has 'result=no-checks' \
+    && ! wait_out_has 'result=no-checks-allowed'; } \
+  && pass "an unset ALLOW_ABSENT_CHECKS falls back to strict, not to the opt-out" \
+  || fail "the absent-checks opt-out defaults ON when the variable is unset ($rc)"
 
 # The opt-out is bounded: it excuses ABSENT checks, never BROKEN ones.
 rc="$(run_wait '[]' "$startup" 0 "$head_sha" true)"
@@ -287,7 +346,7 @@ run_merge() {
   export ROLLUP_FILE="$tmp/rollup.json" SUITES_FILE="$tmp/suites.json"
   export META_FILE="$tmp/meta.json" ACTIONLOG="$tmp/actions.log"
   export SUITES_RC="${3:-0}"
-  export ALLOW_ABSENT_CHECKS="${4:-false}"
+  if [ "${4:-false}" = "<unset>" ]; then unset ALLOW_ABSENT_CHECKS; else export ALLOW_ABSENT_CHECKS="${4:-false}"; fi
   export ROLLUPCOUNT="$tmp/rollup.count" APICOUNT="$tmp/api.count"
   export SUITES_FAIL_FIRST="${SUITES_FAIL_FIRST:-0}" ROLLUP_FILE2="" ROLLUP_SWITCH_AFTER=0
   rm -f "$ROLLUPCOUNT" "$APICOUNT"
@@ -311,6 +370,17 @@ rc="$(run_merge "$green_rollup" "$startup")"
   && pass "merge recheck refuses to merge past a startup_failure run (#143)" \
   || fail "merge recheck merged despite a startup_failure run ($rc)"
 
+# The merge step is where a name-keyed verdict actually costs something: an
+# unnamed startup_failure would be squash-merged. Both copies must key on the
+# count — divergence between the wait rule and the merge rule is the original
+# bug class (#143).
+for body in "$unnamed_startup" "$blank_startup"; do
+  rc="$(run_merge "$green_rollup" "$body")"
+  { [ "$rc" = "rc=1" ] && ! merged && merge_out_has 'result=startup-failure'; } \
+    && pass "merge recheck refuses a startup_failure run with no usable name (#143)" \
+    || fail "merge recheck MERGED past an unnamed startup_failure run ($rc)"
+done
+
 rc="$(run_merge "$green_rollup" "$no_startup_failures" 22)"
 { [ "$rc" = "rc=1" ] && ! merged && merge_out_has 'result=probe-unavailable'; } \
   && pass "merge recheck refuses to merge on an unverifiable probe" \
@@ -318,7 +388,7 @@ rc="$(run_merge "$green_rollup" "$no_startup_failures" 22)"
 
 # Same 2xx-with-a-bad-body class as ci-wait, but here the consequence is an
 # irreversible squash-merge rather than a wasted poll window.
-for bad_body in '<html>502 bad gateway</html>' '' '{"message":"Not Found","status":"404"}'; do
+for bad_body in '<html>502 bad gateway</html>' '' '{"message":"Not Found","status":"404"}' '{"workflow_runs":{}}'; do
   rc="$(run_merge "$green_rollup" "$bad_body")"
   { [ "$rc" = "rc=1" ] && ! merged && merge_out_has 'result=probe-unavailable'; } \
     && pass "merge recheck treats an unusable probe body as inconclusive [${bad_body:-<empty>}]" \
@@ -337,6 +407,11 @@ rc="$(run_merge '[]' "$startup" 0 true)"
 { [ "$rc" = "rc=1" ] && ! merged && merge_out_has 'result=startup-failure'; } \
   && pass "merge recheck's opt-out still refuses a startup_failure run" \
   || fail "the opt-out let the merge step merge past a startup_failure ($rc)"
+
+rc="$(run_merge '[]' "$no_runs" 0 '<unset>')"
+{ [ "$rc" = "rc=1" ] && ! merged && merge_out_has 'result=no-checks'; } \
+  && pass "merge recheck with ALLOW_ABSENT_CHECKS unset falls back to strict" \
+  || fail "the merge step's opt-out defaults ON when the variable is unset ($rc)"
 
 # A transient probe blip at merge time must not discard an already-paid-for AI
 # review and demand a manual re-dispatch: retry a bounded few times first.

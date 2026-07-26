@@ -575,8 +575,12 @@ jobs:
           # only burns a self-hosted runner before failing. Once the rollup is
           # empty AND the runs API confirms zero runs for this head, a short
           # grace period is enough to call it: give real checks time to register,
-          # then decide.
-          no_checks_grace_attempts=5
+          # then decide. 10 polls (~5 min) — registration is not instant and the
+          # runs API can lag the check API, so the window has to be wide enough
+          # that a merely SLOW check is never mistaken for an absent one. The
+          # `runs_seen == 0` conjunct is what keeps it cheap: a check run implies
+          # a workflow run, so this only fires when nothing was triggered at all.
+          no_checks_grace_attempts=10
           # Absent checks are NOT green (#143), so this is a hard stop by
           # default. Name the escape hatch in the same breath: `hold`/draft only
           # prevent merging, so without this line a legitimately check-free PR
@@ -632,20 +636,36 @@ jobs:
               # so this stays one subprocess per attempt. The explicit `ok`
               # marker, not jq's exit status, is the test: jq handed an empty
               # body reads zero documents, emits nothing and still exits 0.
+              #
+              # The verdict is a COUNT, never the names string. `name` is
+              # nullable in the runs schema and `[null] | join(", ")` is "" —
+              # so a run that died parsing its own YAML (the #143 scenario, and
+              # the likeliest case for GitHub to report no name) would read as
+              # "nothing failed startup". Names are log text only.
+              #
+              # `runs_seen` excludes the gate's OWN run: the gate is itself a
+              # workflow run on this head, so an unfiltered count is never zero
+              # and the "nothing was ever triggered" shortcut below would be
+              # unreachable. The rollup filter strips the gate's check NAMES but
+              # nothing strips its run. Matching on run id (not name) also holds
+              # for a cross-org `workflow_call`, where the run is the caller's.
               probe=unavailable
               runs_seen=0
+              startup_count=0
               broken=""
               if runs_json=$(gh api "repos/$TARGET_REPO/actions/runs?head_sha=$EXPECTED_HEAD_SHA&per_page=100" 2>/dev/null) &&
                  probe_out=$(jq -r '
-                   if (has("workflow_runs") and (.workflow_runs | type == "array")) then
-                     "ok\t\(.workflow_runs | length)\t\([.workflow_runs[]
-                       | select(((.conclusion // "") | ascii_downcase) == "startup_failure")
-                       | .name] | unique | join(", "))"
+                   ((env.GITHUB_RUN_ID // "") | tonumber? // -1) as $self
+                   | if (has("workflow_runs") and (.workflow_runs | type == "array")) then
+                     ([.workflow_runs[]
+                       | select(((.conclusion // "") | ascii_downcase) == "startup_failure")]) as $bad
+                     | "ok\t\(.workflow_runs | map(select(.id != $self)) | length)\t\($bad | length)\t\([$bad[] | .name // "<unnamed>"] | unique | join(", "))"
                    else "unusable" end' <<<"$runs_json" 2>/dev/null); then
-                IFS=$'\t' read -r probe_marker probe_runs probe_broken <<<"$probe_out" || true
+                IFS=$'\t' read -r probe_marker probe_runs probe_startup probe_broken <<<"$probe_out" || true
                 if [ "${probe_marker:-}" = "ok" ]; then
                   probe=ok
                   runs_seen="$probe_runs"
+                  startup_count="$probe_startup"
                   broken="$probe_broken"
                 fi
               fi
@@ -655,7 +675,7 @@ jobs:
                 sleep 30
                 continue
               fi
-              if [ -n "$broken" ]; then
+              if [ "$startup_count" -gt 0 ]; then
                 elapsed=$(( $(date +%s) - started_epoch ))
                 echo "::error::phase=ci-wait result=startup-failure elapsed_seconds=$elapsed lane=$LANE head=$EXPECTED_HEAD_SHA workflows=$broken"
                 echo "Workflow(s) [$broken] failed at startup on $EXPECTED_HEAD_SHA and produced no check run — CI never ran. Not reviewing or merging."
@@ -1269,19 +1289,30 @@ jobs:
           # Unlike ci-wait, this step has already paid for the model review, so a
           # single transient API blip must not throw that away and demand a
           # manual workflow_dispatch: retry a bounded few times, then fail closed.
+          # Same jq pass, same field order and same COUNT-based verdict as
+          # ci-wait: `name` is nullable, and `[null] | join(", ")` is "", so a
+          # name-keyed test would merge a PR whose workflow died parsing its own
+          # YAML. Names are log text only. Any divergence between the wait rule
+          # and the merge rule is the original bug class (#143). The run count is
+          # read into `_` rather than dropped from the jq output on purpose: the
+          # two programs must stay diffable field-for-field. Only ci-wait needs
+          # the count (for its "nothing was triggered" shortcut).
           broken=""
+          startup_count=0
           probe=unavailable
           for probe_attempt in 1 2 3; do
             if runs_json=$(gh api "repos/$REPO/actions/runs?head_sha=$EXPECTED_HEAD_SHA&per_page=100" 2>/dev/null) &&
                probe_out=$(jq -r '
-                 if (has("workflow_runs") and (.workflow_runs | type == "array")) then
-                   "ok\t\([.workflow_runs[]
-                     | select(((.conclusion // "") | ascii_downcase) == "startup_failure")
-                     | .name] | unique | join(", "))"
+                 ((env.GITHUB_RUN_ID // "") | tonumber? // -1) as $self
+                 | if (has("workflow_runs") and (.workflow_runs | type == "array")) then
+                   ([.workflow_runs[]
+                     | select(((.conclusion // "") | ascii_downcase) == "startup_failure")]) as $bad
+                   | "ok\t\(.workflow_runs | map(select(.id != $self)) | length)\t\($bad | length)\t\([$bad[] | .name // "<unnamed>"] | unique | join(", "))"
                  else "unusable" end' <<<"$runs_json" 2>/dev/null) &&
-               IFS=$'\t' read -r probe_marker probe_broken <<<"$probe_out" &&
+               IFS=$'\t' read -r probe_marker _ probe_startup probe_broken <<<"$probe_out" &&
                [ "${probe_marker:-}" = "ok" ]; then
               probe=ok
+              startup_count="$probe_startup"
               broken="$probe_broken"
               break
             fi
@@ -1293,7 +1324,7 @@ jobs:
             echo "Could not read the workflow runs for $EXPECTED_HEAD_SHA after 3 attempts, so a startup_failure (which produces no check run) could not be ruled out. Not merging; a later gate event will retry."
             exit 1
           fi
-          if [ -n "$broken" ]; then
+          if [ "$startup_count" -gt 0 ]; then
             echo "::error::phase=merge-recheck result=startup-failure elapsed_seconds=$(( $(date +%s) - merge_started_epoch )) head=$EXPECTED_HEAD_SHA workflows=$broken"
             echo "Workflow(s) [$broken] failed at startup on $EXPECTED_HEAD_SHA and produced no check run — CI never ran. Not merging."
             echo "This run is permanent for $EXPECTED_HEAD_SHA — re-running the gate will not clear it. Fix the workflow, then push a new commit; alternatively delete the stale startup_failure run for this SHA."
