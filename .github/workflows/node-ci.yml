@@ -81,8 +81,10 @@ on:
           The container publishes on an OS-assigned loopback port so DB-backed
           jobs can run concurrently on one self-hosted host (#116), and that port
           is only known once the container is up. So write the literal placeholder
-          `${DB_PORT}` (or `$DB_PORT`) wherever the port belongs and this step
-          substitutes the real one. It is a plain token replacement — no scheme
+          `${DB_PORT}` wherever the port belongs and this step substitutes the
+          real one. Braces are REQUIRED: a brace-less `$DB_PORT` fails the step,
+          because it has no end boundary and `$DB_PORTX` would silently expand to
+          the port plus a stray `X`. It is a plain token replacement — no scheme
           detection, no URL parsing — so it works in ANY value shape: an
           IPv6-literal host, a `jdbc:postgresql://` URL, a libpq keyword string
           (`host=127.0.0.1 port=${DB_PORT} dbname=app`), `PGPORT=${DB_PORT}`, a
@@ -92,8 +94,11 @@ on:
           OS-assigned port, 5432 is now some other job's (or the host's own)
           database, which your migrations would then truncate. Use `${DB_PORT}`
           instead. Only a 5432 in port position is rejected — `:5432` at the end
-          or before a non-alphanumeric, `port=5432`, or a bare `5432` as a *_PORT
-          value — so `:54321`, `--port=3000` and `--inspect-port=9229` are fine.
+          or before a non-alphanumeric, a keyword `port=5432` (at the value's
+          start or after a non-alphanumeric, so `port` spelled inside a longer
+          word does not count), or a bare `5432` as a *_PORT value — so
+          `:54321`, `--port=3000`, `--inspect-port=9229` and `--report=5432` are
+          all fine.
 
           Every other value is exported BYTE-IDENTICAL: REDIS_URL, S3 URLs, CLI
           argument strings, an external `postgres://` DSN on its own port. A
@@ -214,7 +219,13 @@ jobs:
           docker_env=()
           db_env_lines=()
           while IFS= read -r line; do
-            [ -z "$line" ] && continue
+            # `db-env` is dotenv-shaped, so blank lines and `#` comments are a
+            # natural thing to write in the caller's block scalar. Skip them at
+            # any indentation; every surviving line must be KEY=VALUE, which is
+            # enforced where the lines are exported below.
+            case "${line#"${line%%[![:space:]]*}"}" in
+              ''|'#'*) continue ;;
+            esac
             db_env_lines+=("$line")
             case "$line" in
               POSTGRES_*) docker_env+=(-e "$line") ;;
@@ -303,7 +314,7 @@ jobs:
           esac
           echo "port=$DB_PORT" >> "$GITHUB_OUTPUT"
           # The caller marks where the port belongs with the literal placeholder
-          # `${DB_PORT}` (or `$DB_PORT`); this substitutes the port docker
+          # `${DB_PORT}` — braces required; this substitutes the port docker
           # actually assigned. That token replacement IS the contract — there is
           # no scheme detection, no host parsing and no guessing which colon is a
           # port, so the step can neither splice a port into a value it misreads
@@ -311,9 +322,16 @@ jobs:
           # `https://internal.svc:49187/v1`) nor reject one whose shape it fails
           # to recognise (`--port=3000` used to fail the whole job).
           for line in ${db_env_lines[@]+"${db_env_lines[@]}"}; do
+            # Rejected HERE, not deferred to the runner: a line with no `=`
+            # written straight to $GITHUB_ENV fails the job with an "Invalid
+            # format" error that never mentions db-env, leaving the caller to
+            # guess which of their inputs produced it.
             case "$line" in
               *=*) ;;
-              *) printf '%s\n' "$line" >> "$GITHUB_ENV"; continue ;;
+              *)
+                echo "db-env: '$line' is not a KEY=VALUE pair. Every db-env line" \
+                     "must be KEY=VALUE; blank lines and #-comments are ignored." >&2
+                exit 1 ;;
             esac
             key="${line%%=*}"
             value="${line#*=}"
@@ -335,13 +353,24 @@ jobs:
             #
             # Matched only in port position: `:5432` at end or before a
             # non-alphanumeric (so `:54321` and `:5432a` are untouched), a libpq
-            # `port=5432` not followed by another digit (so `--port=54321` and
-            # `--report=1` are untouched), and a bare 5432 as the value of a
-            # *_PORT key.
+            # `port=5432` as a whole keyword and not followed by another digit,
+            # and a bare 5432 as the value of a *_PORT key.
+            #
+            # The `port=` keyword needs a boundary on BOTH sides. The trailing
+            # one keeps `--port=54321` and `--report=1` untouched; the leading
+            # one (value start, or a non-alphanumeric before it) keeps values
+            # where "port" is merely spelled inside a longer word — `--report=`,
+            # `--export=` — from being read as a port. A dash IS a boundary, so
+            # `--port=5432` and `--inspect-port=5432` are still rejected:
+            # treating `-` as part of the word would also have to accept
+            # `?port=5432`, a real libpq port in a postgres URI query string,
+            # and silently aiming the suite at another database is the failure
+            # this rejection exists to prevent.
             hardcoded=""
             case "$value" in
               *:5432|*:5432[!0-9A-Za-z]*) hardcoded="a literal :5432 port" ;;
-              *port=5432|*port=5432[!0-9]*) hardcoded="a literal port=5432" ;;
+              *[!0-9A-Za-z]port=5432|port=5432|*[!0-9A-Za-z]port=5432[!0-9]*|port=5432[!0-9]*)
+                hardcoded="a literal port=5432" ;;
             esac
             case "$key" in
               PGPORT|PORT|*_PORT)
@@ -356,9 +385,25 @@ jobs:
                    "is substituted with the real port." >&2
               exit 1
             fi
+            # `${DB_PORT}` is the only placeholder spelling. A brace-less
+            # `$DB_PORT` is REJECTED, not substituted: it has no closing
+            # boundary, so `$DB_PORTX` would quietly become `49187X` while
+            # `${DB_PORT}X` is exact. One spelling that cannot be got subtly
+            # wrong is worth more than a second convenience spelling that can.
+            # Checked before substitution — `${DB_PORT}` does not contain the
+            # literal `$DB_PORT` (the brace sits between), so only the
+            # brace-less form reaches here.
+            case "$value" in
+              *'$DB_PORT'*)
+                echo "db-env $key: '$value' uses the brace-less \$DB_PORT, which is" \
+                     "not a placeholder — it has no end boundary, so \$DB_PORTX would" \
+                     "expand to the port with a stray suffix. Write \${DB_PORT}" \
+                     "instead (e.g." \
+                     "DATABASE_URL=postgres://app:pw@127.0.0.1:\${DB_PORT}/app)." >&2
+                exit 1 ;;
+            esac
             raw_value="$value"
             value="${value//\$\{DB_PORT\}/$DB_PORT}"
-            value="${value//\$DB_PORT/$DB_PORT}"
             # Pass-through must not be SILENT for the one shape that resolves to
             # a database port by itself: a postgres URL with no port defaults to
             # libpq's 5432, so it reaches whatever else listens on the host. The

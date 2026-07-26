@@ -92,8 +92,12 @@ image, default-off, unmasked `db-env`) is unchanged.
   published on `0.0.0.0:5432` and is now reachable only from the runner's own
   loopback.
 - **The caller marks the port; the workflow does not infer it.** `db-env` values
-  carry the literal placeholder `${DB_PORT}` (or `$DB_PORT`) where the port belongs
-  and the step substitutes the real one. Two rounds of review found bugs in the
+  carry the literal placeholder `${DB_PORT}` where the port belongs and the step
+  substitutes the real one. **Braces are required**: the brace-less `$DB_PORT` is
+  rejected, not substituted, because it has no closing boundary — `$DB_PORTX`
+  expanded to `49187X` while `${DB_PORT}X` is exact. A second spelling that can be
+  got subtly wrong buys nothing over one that cannot, and the rejection names
+  `${DB_PORT}` rather than shipping an unexpanded token. Two rounds of review found bugs in the
   alternative — a `sed` that inferred the port position from the value's shape —
   and each fix moved the bug rather than removing it: it spliced the database port
   into unrelated URLs on any scheme (`API_URL=https://internal.svc/v1` →
@@ -109,9 +113,17 @@ image, default-off, unmasked `db-env`) is unchanged.
   port it aims the caller's suite at whatever else listens on the host's 5432, which
   on a persistent self-hosted runner can be a real database that migrations would
   truncate. So a 5432 in port position (`:5432` at end or before a non-alphanumeric,
-  `port=5432`, a bare `5432` as a `*_PORT` value) fails the step naming the key and
-  pointing at `${DB_PORT}`; `:54321`, `:5432a`, `--port=3000` and `--report=1` are
-  none of those and pass through. The one shape that still resolves to a database
+  a keyword `port=5432`, a bare `5432` as a `*_PORT` value) fails the step naming the
+  key and pointing at `${DB_PORT}`; `:54321`, `:5432a`, `--port=3000` and `--report=1`
+  are none of those and pass through. The `port=` keyword is bounded on **both**
+  sides: the trailing boundary spares `--port=54321`, and the leading one (value
+  start, or a non-alphanumeric before it) spares values where `port` is merely
+  spelled inside a longer word — `--report=5432`, `--export=5432`, which were
+  rejected until this was fixed. A dash counts as a boundary, so `--port=5432` and
+  `--inspect-port=5432` are still rejected: treating `-` as part of the word would
+  also have to accept `?port=5432`, a real libpq port in a postgres URI query
+  string, and a silent wrong-5432 is the outcome this rejection exists to prevent —
+  a spurious rejection is loud and has an obvious fix. The one shape that still resolves to a database
   port on its own — a `postgres://` URL with no port, which libpq defaults to 5432 —
   is exported untouched but logs a note, so pass-through is never silent.
 - **Leaks are labelled and swept, with the age bound computed in-shell.** The
@@ -124,13 +136,23 @@ image, default-off, unmasked `db-env`) is unchanged.
   ages itself. 6h is the bound because a job cannot outlive GitHub's default
   `timeout-minutes: 360` and its container is created after the job starts — so
   nothing older than 6h can belong to a running job, and a concurrent job's live
-  container is never a candidate. A listing or removal that fails warns rather than
-  being swallowed, as does a teardown whose `docker rm -f` genuinely fails (which
-  fails the step).
+  container is never a candidate. That premise is *enforced*, not just asserted in a
+  comment: a caller `uses:`-ing a reusable workflow cannot raise its timeout, so the
+  only way to break the bound is to declare a longer one here, and a test fails if
+  `node-ci.yml` ever declares a `timeout-minutes` above 360. A listing or removal
+  that fails warns rather than being swallowed, as does a teardown whose
+  `docker rm -f` genuinely fails (which fails the step).
+- **`db-env` lines must be KEY=VALUE, and say so here.** Blank lines and dotenv-style
+  `#` comments are skipped at any indentation; anything else without an `=` fails the
+  step quoting the offending line. Such a line used to be written to `$GITHUB_ENV`
+  raw, where the runner failed the job with an "Invalid format" error that never
+  mentioned `db-env` — leaving the caller to guess which input produced it.
 - **`db-env` is a BREAKING contract change; `db-image` is unchanged.** A caller who
   wrote `:5432` in a `db-env` URL and relied on it being rewritten must now write
   `${DB_PORT}`; the old spelling fails the step with that instruction rather than
-  silently pointing at the host's 5432. This is deliberate and cheap: a survey of
+  silently pointing at the host's 5432. Likewise a brace-less `$DB_PORT`, and a line
+  that is not `KEY=VALUE`, now fail the step instead of being substituted or passed
+  through raw. This is deliberate and cheap: a survey of
   both orgs (`gh search code 'db-env'`, `'db-image'`, owners `Verjson` and
   `tequityapp`) found **no consumer repo passing either input** — every hit is
   inside `Verjson/.github` itself — and the DB service shipped only days earlier
@@ -141,22 +163,32 @@ image, default-off, unmasked `db-env`) is unchanged.
 **Evidence.** `scripts/ci-gate/node-ci-db-service.test.sh` extracts the step from
 `node-ci.yml` and pins, against a stubbed docker: two concurrent jobs get distinct
 container names, including when only one of `RUNNER_NAME`/`RUNNER_WORKSPACE` differs;
-no fixed host-port bind; `${DB_PORT}` and `$DB_PORT` both become the port `docker
-port` actually reported, in IPv6/`jdbc:`/libpq/quoted/`@`-in-password values alike; a
-hardcoded 5432 is rejected by name in six shapes; twelve values carrying neither the
+no fixed host-port bind; `${DB_PORT}` becomes the port `docker port` actually
+reported, in IPv6/`jdbc:`/libpq/quoted/`@`-in-password values alike, while the
+brace-less `$DB_PORT` (and the `$DB_PORTX` it would corrupt) is rejected by name; a
+hardcoded 5432 is rejected by name in six shapes while `--report=5432` and
+`--export=5432` pass through; twelve values carrying neither the
 token nor a 5432 — including `https://internal.svc/v1`, `redis://cache/0`,
 `s3://bucket/key`, `postgres://localhost?sslmode=require`, `--port=3000` and
-`--inspect-port=9229` — are exported byte-identical; a caller's `DB_PORT` cannot
+`--inspect-port=9229` — are exported byte-identical; a `db-env` comment or blank line
+is skipped while a line with no `=` fails the step quoting it; a caller's `DB_PORT`
+cannot
 override the real one; a name collision fails the losing job and leaves it no handle,
 so it cannot remove the winner's container; an unreadable mapping fails the step
 (dumping the container's logs) instead of exporting a dead URL; a container created
-8h/3d ago is swept while one created 2 minutes ago is left alone, a listing failure
-and an unreadable creation time each warn without failing the step; and teardown
+8h/3d ago is swept while one created 2 minutes ago is left alone, a listing failure,
+an unreadable creation time and a refused removal each warn without failing the step;
+no job declares a `timeout-minutes` above the 6h the sweep's bound rests on; and
+teardown
 removes the container by ID, fails loudly on a refused removal, tolerates an
 already-gone container, and is a no-op when none was started. The suite is
-mutation-checked: 13 deliberate defects — dropping either placeholder substitution,
-each of the three 5432 rejections, re-introducing the scheme-based `sed`, restoring
-the `until=6h` filter, inverting the sweep cutoff, swallowing either sweep warning,
+mutation-checked: 18 deliberate defects — dropping the placeholder substitution or
+re-substituting the brace-less spelling,
+each of the three 5432 rejections, dropping the `port=` word boundary,
+re-introducing the scheme-based `sed`, restoring
+the `until=6h` filter, inverting the sweep cutoff, swallowing any of the three sweep
+warnings, writing a non-`KEY=VALUE` line raw, dropping the comment/blank skip,
+raising `timeout-minutes` past 360,
 dropping the `DB_PORT` guard or the pass-through note, and handling the container by
 name instead of ID — are each caught by at least one assertion.
 

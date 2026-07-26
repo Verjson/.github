@@ -275,6 +275,20 @@ rc=$?
   && pass "a container with an unreadable creation time is warned about, not swept" \
   || fail "step exited $rc for an unparsable creation time: $(cat "$tmp/job-sweep-badtime/out.txt")"
 
+# ...and so is a removal the daemon REFUSES. The removal is deliberately
+# best-effort — a leak must not fail an otherwise healthy job — but silence is
+# the failure mode that made the old sweep dead code: the container is still
+# squatting on the host and, with an OS-assigned port, nothing downstream will
+# notice it. So the step must warn AND still succeed.
+run_db_step job-sweep-rmfail "${job_a[@]}" \
+  STALE_CONTAINERS="$sweep_listing" \
+  RM_FAIL="Error response from daemon: cannot remove container: device or resource busy"
+rc=$?
+{ [ "$rc" -eq 0 ] \
+    && grep -qE 'warning:.*remove.*aa11bb22' "$tmp/job-sweep-rmfail/out.txt"; } \
+  && pass "a sweep removal the daemon refuses warns instead of failing or going silent" \
+  || fail "step exited $rc and swallowed the removal failure: $(cat "$tmp/job-sweep-rmfail/out.txt")"
+
 # (e) The published port is OS-assigned, so the caller's DATABASE_URL cannot name
 # it up front. The contract is an explicit placeholder: the caller writes
 # `${DB_PORT}` where the port belongs and the step substitutes the real one. That
@@ -284,15 +298,29 @@ grep -qF 'DATABASE_URL=postgres://app:secret@localhost:49187/app_test' "$tmp/job
   && pass "a \${DB_PORT} placeholder becomes the host port docker actually mapped" \
   || fail "exported DATABASE_URL does not use the mapped port 49187: $(grep '^DATABASE_URL=' "$tmp/job-a/github_env" || echo '<absent>')"
 
-# The brace-less `$DB_PORT` spelling is the same token and just as likely to be
-# typed, so it must substitute identically.
-run_db_step job-bare-token "${job_a[@]}" 'DB_ENV=POSTGRES_USER=app
-DATABASE_URL=postgres://app@localhost:$DB_PORT/app_test'
-rc=$?
-{ [ "$rc" -eq 0 ] \
-    && grep -qF 'DATABASE_URL=postgres://app@localhost:49187/app_test' "$tmp/job-bare-token/github_env"; } \
-  && pass "the brace-less \$DB_PORT placeholder substitutes the same as \${DB_PORT}" \
-  || fail "step exited $rc and exported $(grep '^DATABASE_URL=' "$tmp/job-bare-token/github_env" || echo '<absent>') for a \$DB_PORT placeholder"
+# `${DB_PORT}` is the ONLY placeholder spelling, and the brace-less `$DB_PORT` is
+# REJECTED rather than substituted. It has no closing boundary, so `$DB_PORTX`
+# silently becomes `49187X` while `${DB_PORT}X` is exact — a second spelling that
+# can be got subtly wrong buys nothing. Rejection must be loud and name the fix:
+# leaving the token unexpanded would ship a URL pointing at a literal `$DB_PORT`.
+i=0
+while IFS= read -r bare; do
+  [ -n "$bare" ] || continue
+  i=$((i + 1))
+  run_db_step "job-bare-token-$i" "${job_a[@]}" "DB_ENV=POSTGRES_USER=app
+$bare"
+  rc=$?
+  key="${bare%%=*}"
+  { [ "$rc" -ne 0 ] \
+      && ! grep -q "^$key=" "$tmp/job-bare-token-$i/github_env" \
+      && grep -qF "$key" "$tmp/job-bare-token-$i/out.txt" \
+      && grep -qF '${DB_PORT}' "$tmp/job-bare-token-$i/out.txt"; } \
+    && pass "a brace-less \$DB_PORT is rejected by name, pointing at \${DB_PORT}: $bare" \
+    || fail "step exited $rc and exported $(grep "^$key=" "$tmp/job-bare-token-$i/github_env" || echo 'nothing') for: $bare"
+done <<'BARE'
+DATABASE_URL=postgres://app@localhost:$DB_PORT/app_test
+SUFFIXED_URL=postgres://app@localhost:$DB_PORTX/app_test
+BARE
 
 # Hardening: the placeholder is substituted wherever it appears, in shapes no URL
 # parser handles — an IPv6-literal host, a `jdbc:` URL, a libpq keyword string, a
@@ -354,6 +382,21 @@ LIBPQ_DSN=host=localhost port=5432 dbname=app
 PGPORT=5432
 SHAPES
 
+# ...but the rejection is scoped to a `port=5432` in KEYWORD position, and the
+# left-hand side needs a boundary just as much as the right one does. Without it
+# `*port=5432` matches any suffix, so `--report=5432` and `--export=5432` — which
+# only contain "port" by accident, spelled inside another word — were rejected,
+# contradicting the documented "a libpq `port=5432`" rule.
+run_db_step job-word-boundary "${job_a[@]}" 'DB_ENV=POSTGRES_USER=app
+EXTRA_ARGS=--report=5432
+EXPORT_ARGS=--export=5432'
+rc=$?
+{ [ "$rc" -eq 0 ] \
+    && grep -qxF 'EXTRA_ARGS=--report=5432' "$tmp/job-word-boundary/github_env" \
+    && grep -qxF 'EXPORT_ARGS=--export=5432' "$tmp/job-word-boundary/github_env"; } \
+  && pass "a 5432 after \"port\" spelled inside another word (--report=/--export=) is not a port" \
+  || fail "step exited $rc and rejected an accidental 'port' substring: $(cat "$tmp/job-word-boundary/out.txt")"
+
 # Hardening: everything that carries neither the placeholder nor a hardcoded 5432
 # is exported BYTE-IDENTICAL. Each line below was mangled or hard-failed by the
 # scheme-matching rewrite this design replaced: a non-postgres URL had the DB
@@ -409,6 +452,33 @@ rc=$?
     && [ "$(grep '^DB_PORT=' "$tmp/job-caller-dbport/github_env" | tail -n1)" = "DB_PORT=49187" ]; } \
   && pass "a caller-supplied DB_PORT cannot override the mapped port" \
   || fail "step exited $rc and left DB_PORT as: $(grep '^DB_PORT=' "$tmp/job-caller-dbport/github_env" | tr '\n' ' ')"
+
+# Hardening: `db-env` is dotenv-shaped, so a `#` comment is a natural thing to
+# write in the block scalar — and a line with no `=` reached $GITHUB_ENV RAW,
+# where the runner failed the job with an opaque "Invalid format" that never
+# names db-env. Comments and blank lines are skipped, at any indentation.
+run_db_step job-comment "${job_a[@]}" 'DB_ENV=# postgres settings
+POSTGRES_USER=app
+
+  # indented note
+DATABASE_URL=postgres://app@localhost:${DB_PORT}/app_test'
+rc=$?
+{ [ "$rc" -eq 0 ] \
+    && grep -qxF 'DATABASE_URL=postgres://app@localhost:49187/app_test' "$tmp/job-comment/github_env" \
+    && ! grep -q '#' "$tmp/job-comment/github_env"; } \
+  && pass "db-env comments and blank lines are skipped, never written to \$GITHUB_ENV" \
+  || fail "step exited $rc and wrote to \$GITHUB_ENV: $(tr '\n' ' ' <"$tmp/job-comment/github_env")"
+
+# ...and any OTHER line that is not KEY=VALUE fails the step naming the offending
+# line, rather than being deferred to the runner's context-free parse error.
+run_db_step job-noneq "${job_a[@]}" 'DB_ENV=POSTGRES_USER=app
+DATABASE_URL postgres://app@localhost:${DB_PORT}/app_test'
+rc=$?
+{ [ "$rc" -ne 0 ] \
+    && grep -qF 'DATABASE_URL postgres' "$tmp/job-noneq/out.txt" \
+    && ! grep -q 'DATABASE_URL' "$tmp/job-noneq/github_env"; } \
+  && pass "a db-env line that is not KEY=VALUE fails the step, quoting the line" \
+  || fail "step exited $rc and left \$GITHUB_ENV as: $(tr '\n' ' ' <"$tmp/job-noneq/github_env")"
 
 # Hardening: readiness is probed with pg_isready INSIDE the container, which says
 # nothing about the loopback publish — the thing this change actually introduced.
@@ -530,6 +600,25 @@ env DOCKER_LOG="$tmp/teardown/docker.log" CONTAINER_ID="" \
 [ ! -s "$tmp/teardown/docker.log" ] \
   && pass "teardown is a no-op when no container was started" \
   || fail "teardown called docker with no container id: $(cat "$tmp/teardown/docker.log")"
+
+# (h) The sweep's 6h bound is only safe while no job in THIS workflow can outlive
+# it: a labelled container older than 6h cannot belong to a job still running.
+# That rests on GitHub's default `timeout-minutes: 360` (a caller `uses:`-ing a
+# reusable workflow cannot raise it, so the only way to break the invariant is to
+# declare a longer timeout here). It is argued in a comment but nothing enforced
+# it — a later `timeout-minutes: 720` on build-test would silently let the sweep
+# remove a live job's database. Pin the invariant itself.
+over_cap="$(awk '
+  /^[[:space:]]*timeout-minutes:[[:space:]]*[0-9]+[[:space:]]*$/ {
+    v = $0
+    sub(/^[[:space:]]*timeout-minutes:[[:space:]]*/, "", v)
+    sub(/[[:space:]]*$/, "", v)
+    if (v + 0 > 360) print "line " FNR ": timeout-minutes: " v
+  }
+' "$wf")"
+[ -z "$over_cap" ] \
+  && pass "no job declares a timeout-minutes above the 6h bound the sweep relies on" \
+  || fail "a timeout-minutes above 360 lets a job outlive the sweep's age bound, so the sweep can remove a LIVE container: $over_cap"
 
 if [ "$fails" -eq 0 ]; then
   echo "All tests passed."
