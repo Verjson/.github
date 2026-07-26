@@ -76,12 +76,45 @@ on:
             POSTGRES_USER=app
             POSTGRES_PASSWORD=secret
             POSTGRES_DB=app_test
-            DATABASE_URL=postgres://app:secret@localhost:5432/app_test
+            DATABASE_URL=postgres://app:secret@127.0.0.1:${DB_PORT}/app_test
 
-          Values are NOT GitHub-masked (these are inputs, not secrets) and each
-          line is written verbatim to $GITHUB_ENV, so pass only trusted data and
-          avoid real secrets here. The container binds host port 5432, so only
-          one DB-backed job can run per self-hosted host at a time.
+          The container publishes on an OS-assigned loopback port so DB-backed
+          jobs can run concurrently on one self-hosted host (#116), and that port
+          is only known once the container is up. So write the literal placeholder
+          `${DB_PORT}` wherever the port belongs and this step substitutes the
+          real one. Braces are REQUIRED: a brace-less `$DB_PORT` fails the step,
+          because it has no end boundary and `$DB_PORTX` would silently expand to
+          the port plus a stray `X`. It is a plain token replacement — no scheme
+          detection, no URL parsing — so it works in ANY value shape: an
+          IPv6-literal host, a `jdbc:postgresql://` URL, a libpq keyword string
+          (`host=127.0.0.1 port=${DB_PORT} dbname=app`), `PGPORT=${DB_PORT}`, a
+          quoted value, a password containing `@`.
+
+          A value that HARDCODES 5432 fails the step, naming the key: with an
+          OS-assigned port, 5432 is now some other job's (or the host's own)
+          database, which your migrations would then truncate. Use `${DB_PORT}`
+          instead. Only a 5432 in port position is rejected — `:5432` at the end
+          or before a non-alphanumeric, a keyword `port=5432` (at the value's
+          start or after a non-alphanumeric, so `port` spelled inside a longer
+          word does not count), or a bare `5432` as a *_PORT value — so
+          `:54321`, `--port=3000`, `--inspect-port=9229` and `--report=5432` are
+          all fine.
+
+          Every other value is exported BYTE-IDENTICAL: REDIS_URL, S3 URLs, CLI
+          argument strings, an external `postgres://` DSN on its own port. A
+          postgres URL with no placeholder logs a note (it resolves to libpq's
+          default 5432, i.e. not this container) but is still passed through
+          untouched. `DB_PORT` itself is exported with the real port, so a
+          `DB_PORT` line here is ignored. POSTGRES_* pairs reach the container
+          verbatim — it starts before the port is known, so a placeholder there
+          is not substituted.
+
+          Prefer `127.0.0.1` over `localhost` in these values: the publish is
+          IPv4-only, so a host that resolves `localhost` to `::1` first would
+          fail to connect.
+
+          Values are NOT GitHub-masked (these are inputs, not secrets), so pass
+          only trusted data and avoid real secrets here.
         required: false
         type: string
         default: ''
@@ -157,47 +190,286 @@ jobs:
         # because a `services:` container has no `if:` and an empty image is a
         # hard error — so it can't be toggled off by an empty input. `db-env` is
         # newline-separated KEY=VALUE pairs: every POSTGRES_* pair is passed into
-        # the container, and every pair (including DATABASE_URL) is exported to
-        # $GITHUB_ENV for the test step.
+        # the container, and every pair is exported to $GITHUB_ENV for the test
+        # step with the literal placeholder `${DB_PORT}` replaced by the host
+        # port the container actually got.
         id: db-service
         if: inputs.db-image != ''
         env:
           DB_IMAGE: ${{ inputs.db-image }}
           DB_ENV: ${{ inputs.db-env }}
-          # Run-scoped name so a finished/failed job never collides with (or
-          # leaks onto) the next job on a persistent self-hosted runner.
-          CONTAINER_NAME: ci-postgres-${{ github.run_id }}-${{ github.run_attempt }}
         run: |
           set -euo pipefail
+          # Name the container per JOB, not per run: run_id/run_attempt are shared
+          # by every job of a run, so a name built from them alone collides as soon
+          # as two DB-backed jobs are in flight on one persistent self-hosted host
+          # (#116). Two concurrent jobs are normally served by two distinct runner
+          # processes — a runner executes one job at a time — so RUNNER_NAME /
+          # RUNNER_WORKSPACE separate them even when the run and job ids match
+          # (including two legs of a caller's matrix, which reach this reusable as
+          # separate jobs). Nothing load-bearing rides on that premise: the name is
+          # for humans reading `docker ps`, while every operation below uses the
+          # container ID. If the premise ever fails, `docker run --name` refuses the
+          # second job — which fails loudly and, having no ID, cannot tear down the
+          # first job's live container. (`sha256sum` is GNU coreutils: fine for the
+          # Linux self-hosted pool this workflow targets.)
+          container_scope="${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${GITHUB_JOB:-}-${RUNNER_NAME:-}-${RUNNER_WORKSPACE:-}"
+          CONTAINER_NAME="ci-postgres-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-$(
+            printf '%s' "$container_scope" | sha256sum | cut -c1-12)"
           docker_env=()
+          db_env_lines=()
           while IFS= read -r line; do
-            [ -z "$line" ] && continue
-            printf '%s\n' "$line" >> "$GITHUB_ENV"
+            # `db-env` is dotenv-shaped, so blank lines and `#` comments are a
+            # natural thing to write in the caller's block scalar. Skip them at
+            # any indentation; every surviving line must be KEY=VALUE, which is
+            # enforced where the lines are exported below.
+            case "${line#"${line%%[![:space:]]*}"}" in
+              ''|'#'*) continue ;;
+            esac
+            db_env_lines+=("$line")
             case "$line" in
               POSTGRES_*) docker_env+=(-e "$line") ;;
             esac
           done <<< "$DB_ENV"
-          docker run -d --name "$CONTAINER_NAME" -p 5432:5432 \
-            ${docker_env[@]+"${docker_env[@]}"} "$DB_IMAGE"
+          # Sweep leaked containers from earlier jobs. While the bind was a fixed
+          # 5432 a leak announced itself by breaking the next job's start; an
+          # OS-assigned port makes a leak invisible, so it would pile up on a
+          # persistent self-hosted host. The `verjson-ci` label scopes the sweep to
+          # containers this workflow started; the age bound is computed HERE
+          # because docker offers no usable one: `until` is a prune-only filter
+          # (`docker ps --filter until=…` is a hard "invalid filter" error, not an
+          # empty list), and `docker container prune` reaps only STOPPED
+          # containers while a leaked one is typically still running.
+          #
+          # Only containers older than 6h are reaped. A job cannot outlive
+          # GitHub's default `timeout-minutes: 360`, and its container is created
+          # after the job starts, so a labelled container older than 6h cannot
+          # belong to a job that is still running — while anything younger may be
+          # a concurrent job's live database, which this must never remove (#116).
+          # Best-effort, but never silent: a listing or a removal that fails warns
+          # instead of quietly sweeping nothing.
+          sweep_cutoff=$(( $(date +%s) - 6 * 60 * 60 ))
+          if ! stale_listing="$(docker ps -a --filter label=verjson-ci=1 \
+              --format '{{.ID}} {{.CreatedAt}}' 2>&1)"; then
+            echo "warning: could not list CI database containers to sweep:" \
+                 "$stale_listing" >&2
+            stale_listing=""
+          fi
+          # `{{.CreatedAt}}` is `YYYY-MM-DD HH:MM:SS ±ZZZZ TZ`; the first three
+          # fields are what `date -d` needs (the trailing zone NAME is ambiguous).
+          while read -r stale_id stale_date stale_time stale_zone _; do
+            [ -n "$stale_id" ] || continue
+            stale_epoch="$(date -d "$stale_date $stale_time $stale_zone" +%s 2>/dev/null || true)"
+            case "$stale_epoch" in
+              ''|*[!0-9]*)
+                echo "warning: not sweeping $stale_id: cannot read its creation" \
+                     "time from '$stale_date $stale_time $stale_zone'" >&2
+                continue ;;
+            esac
+            [ "$stale_epoch" -lt "$sweep_cutoff" ] || continue
+            echo "removing leaked CI database container $stale_id" \
+                 "(created $stale_date $stale_time)"
+            docker rm -f "$stale_id" >/dev/null 2>&1 \
+              || echo "warning: could not remove leaked container $stale_id" >&2
+          done <<< "$stale_listing"
+          # Loopback-only, OS-assigned host port: a fixed 5432:5432 bind is taken
+          # by the first DB-backed job on the host, so the second one could not
+          # start (#116). Binding 127.0.0.1 also keeps the caller's DB image off
+          # the pool network (ADR 0021).
+          #
+          # The ID docker assigns is the handle for everything that follows: it is
+          # unique by construction, so no operation here (and no teardown) can ever
+          # reach another job's container. Published as the step output before the
+          # first thing that can fail, so `if: always()` teardown removes exactly
+          # this container; a `docker run` that fails without printing an ID leaves
+          # nothing to remove, and the label sweep above catches any such orphan.
+          run_rc=0
+          CONTAINER_ID="$(docker run -d --name "$CONTAINER_NAME" \
+            --label verjson-ci=1 -p 127.0.0.1::5432 \
+            ${docker_env[@]+"${docker_env[@]}"} "$DB_IMAGE")" || run_rc=$?
+          [ -z "$CONTAINER_ID" ] || echo "container-id=$CONTAINER_ID" >> "$GITHUB_OUTPUT"
+          if [ "$run_rc" -ne 0 ]; then
+            echo "failed to start the database container (name $CONTAINER_NAME)" >&2
+            exit "$run_rc"
+          fi
+          # The host port is only known once the daemon has assigned it, so read
+          # it back — it is what the caller's `${DB_PORT}` placeholder becomes
+          # below, and without it their DATABASE_URL points at a port nothing is
+          # listening on. Captured whole, then split in-shell: `docker port` prints one line per
+          # mapping, and piping it into `head` would leave docker writing to a
+          # closed pipe — a SIGPIPE that `pipefail` turns into a failed step. The
+          # port is taken from after the LAST colon, so a HOST:PORT of any shape
+          # parses.
+          port_map="$(docker port "$CONTAINER_ID" 5432/tcp)"
+          DB_PORT="${port_map%%$'\n'*}"
+          DB_PORT="${DB_PORT##*:}"
+          case "$DB_PORT" in
+            ''|*[!0-9]*)
+              # An image that exits immediately dies here, before the health loop
+              # below can dump anything — so dump the container's logs on this
+              # branch too, or the operator sees only "could not read the port".
+              echo "could not read the mapped host port from '$port_map'" >&2
+              docker logs "$CONTAINER_ID" >&2 || true
+              exit 1 ;;
+          esac
+          echo "port=$DB_PORT" >> "$GITHUB_OUTPUT"
+          # The caller marks where the port belongs with the literal placeholder
+          # `${DB_PORT}` — braces required; this substitutes the port docker
+          # actually assigned. That token replacement IS the contract — there is
+          # no scheme detection, no host parsing and no guessing which colon is a
+          # port, so the step can neither splice a port into a value it misreads
+          # (an earlier URL rewrite turned `API_URL=https://internal.svc/v1` into
+          # `https://internal.svc:49187/v1`) nor reject one whose shape it fails
+          # to recognise (`--port=3000` used to fail the whole job).
+          for line in ${db_env_lines[@]+"${db_env_lines[@]}"}; do
+            # Rejected HERE, not deferred to the runner: a line with no `=`
+            # written straight to $GITHUB_ENV fails the job with an "Invalid
+            # format" error that never mentions db-env, leaving the caller to
+            # guess which of their inputs produced it.
+            case "$line" in
+              *=*) ;;
+              *)
+                echo "db-env: '$line' is not a KEY=VALUE pair. Every db-env line" \
+                     "must be KEY=VALUE; blank lines and #-comments are ignored." >&2
+                exit 1 ;;
+            esac
+            key="${line%%=*}"
+            value="${line#*=}"
+            # $GITHUB_ENV is last-wins and the db-env lines are appended after the
+            # step's own exports, so a caller's DB_PORT line would silently replace
+            # the real mapped port for every later step. Drop it, loudly.
+            if [ "$key" = "DB_PORT" ]; then
+              echo "db-env DB_PORT: ignored — DB_PORT is set by this step to the" \
+                   "host port docker assigned" >&2
+              continue
+            fi
+            # A hardcoded 5432 is REJECTED, never quietly rewritten. The port is
+            # OS-assigned now, so a literal 5432 aims the caller's suite at
+            # whatever else listens on the host's 5432 — on a persistent
+            # self-hosted runner that can be a real database a migration would
+            # truncate — and deciding which 5432 "meant the database" is exactly
+            # the guessing this placeholder contract exists to remove. Checked on
+            # what the CALLER wrote, before substitution.
+            #
+            # Matched only in port position: `:5432` at end or before a
+            # non-alphanumeric (so `:54321` and `:5432a` are untouched), a libpq
+            # `port=5432` as a whole keyword and not followed by another digit,
+            # and a bare 5432 as the value of a *_PORT key.
+            #
+            # The `port=` keyword needs a boundary on BOTH sides. The trailing
+            # one keeps `--port=54321` and `--report=1` untouched; the leading
+            # one (value start, or a non-alphanumeric before it) keeps values
+            # where "port" is merely spelled inside a longer word — `--report=`,
+            # `--export=` — from being read as a port. A dash IS a boundary, so
+            # `--port=5432` and `--inspect-port=5432` are still rejected:
+            # treating `-` as part of the word would also have to accept
+            # `?port=5432`, a real libpq port in a postgres URI query string,
+            # and silently aiming the suite at another database is the failure
+            # this rejection exists to prevent.
+            hardcoded=""
+            case "$value" in
+              *:5432|*:5432[!0-9A-Za-z]*) hardcoded="a literal :5432 port" ;;
+              *[!0-9A-Za-z]port=5432|port=5432|*[!0-9A-Za-z]port=5432[!0-9]*|port=5432[!0-9]*)
+                hardcoded="a literal port=5432" ;;
+            esac
+            case "$key" in
+              PGPORT|PORT|*_PORT)
+                if [ "$value" = "5432" ]; then hardcoded="the literal port 5432"; fi ;;
+            esac
+            if [ -n "$hardcoded" ]; then
+              echo "db-env $key: '$value' hardcodes $hardcoded. This step publishes" \
+                   "the database on an OS-assigned host port so two DB-backed jobs" \
+                   "can share a runner, so 5432 is someone else's database. Write" \
+                   "\${DB_PORT} where the port belongs (e.g." \
+                   "DATABASE_URL=postgres://app:pw@127.0.0.1:\${DB_PORT}/app) and it" \
+                   "is substituted with the real port." >&2
+              exit 1
+            fi
+            # `${DB_PORT}` is the only placeholder spelling. A brace-less
+            # `$DB_PORT` is REJECTED, not substituted: it has no closing
+            # boundary, so `$DB_PORTX` would quietly become `49187X` while
+            # `${DB_PORT}X` is exact. One spelling that cannot be got subtly
+            # wrong is worth more than a second convenience spelling that can.
+            # Checked before substitution — `${DB_PORT}` does not contain the
+            # literal `$DB_PORT` (the brace sits between), so only the
+            # brace-less form reaches here.
+            case "$value" in
+              *'$DB_PORT'*)
+                echo "db-env $key: '$value' uses the brace-less \$DB_PORT, which is" \
+                     "not a placeholder — it has no end boundary, so \$DB_PORTX would" \
+                     "expand to the port with a stray suffix. Write \${DB_PORT}" \
+                     "instead (e.g." \
+                     "DATABASE_URL=postgres://app:pw@127.0.0.1:\${DB_PORT}/app)." >&2
+                exit 1 ;;
+            esac
+            raw_value="$value"
+            value="${value//\$\{DB_PORT\}/$DB_PORT}"
+            # Pass-through must not be SILENT for the one shape that resolves to
+            # a database port by itself: a postgres URL with no port defaults to
+            # libpq's 5432, so it reaches whatever else listens on the host. The
+            # value is still exported byte-identical — no rewrite, no failed job,
+            # the caller may well mean an external database — but the step says
+            # which key looks like it meant THIS one and never named it. This is
+            # the only place a scheme is looked at, and it only prints advice.
+            if [ "$value" = "$raw_value" ]; then
+              case "$value" in
+                *postgres://*|*postgresql://*)
+                  echo "note: db-env $key carries no \${DB_PORT} placeholder, so it is" \
+                       "exported unchanged and does NOT point at the database this step" \
+                       "started (127.0.0.1:$DB_PORT)." >&2 ;;
+              esac
+            fi
+            printf '%s=%s\n' "$key" "$value" >> "$GITHUB_ENV"
+          done
+          # Written last so it wins the last-wins $GITHUB_ENV merge outright.
+          echo "DB_PORT=$DB_PORT" >> "$GITHUB_ENV"
           for attempt in $(seq 1 30); do
-            if docker exec "$CONTAINER_NAME" pg_isready >/dev/null 2>&1; then
+            if docker exec "$CONTAINER_ID" pg_isready >/dev/null 2>&1; then
               echo "database is ready"
               break
             fi
             if [ "$attempt" -eq 30 ]; then
               echo "database failed to become ready" >&2
-              docker logs "$CONTAINER_NAME" >&2 || true
+              docker logs "$CONTAINER_ID" >&2 || true
               exit 1
             fi
             sleep 2
           done
+          # pg_isready runs INSIDE the container, so it proves nothing about the
+          # loopback publish the caller's suite actually dials. Probe that from the
+          # host too. A warning, not a failure: the job's own test step is the
+          # authority on whether it can connect, and this line is what turns its
+          # "connection refused" into an answer.
+          if ! (exec 3<>"/dev/tcp/127.0.0.1/$DB_PORT") 2>/dev/null; then
+            echo "warning: the database's published port 127.0.0.1:$DB_PORT is not" \
+                 "accepting connections from the host" >&2
+          fi
       - name: Stop database service
-        # Always tear the run-scoped container down so a completed or failed job
-        # can't leave it behind on the persistent self-hosted runner.
+        # Always tear the job's container down so a completed or failed job can't
+        # leave it behind on the persistent self-hosted runner. The handle is the
+        # container ID published by the start step — not a name, and not a
+        # re-derived literal: an ID can only ever name the container this job
+        # created, so a job can never remove a concurrent job's live container
+        # (#116). An empty output means no container was started, so there is
+        # nothing to remove.
         if: always() && inputs.db-image != ''
         env:
-          CONTAINER_NAME: ci-postgres-${{ github.run_id }}-${{ github.run_attempt }}
-        run: docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
+          CONTAINER_ID: ${{ steps.db-service.outputs.container-id }}
+        run: |
+          [ -n "$CONTAINER_ID" ] || exit 0
+          # A removal failure is not swallowed: with an OS-assigned port a leaked
+          # container no longer announces itself by breaking the next job's bind,
+          # so the only signal is this one. An already-gone container is fine.
+          if ! rm_out="$(docker rm -f "$CONTAINER_ID" 2>&1)"; then
+            case "$rm_out" in
+              *"No such container"*)
+                echo "database container $CONTAINER_ID was already gone" ;;
+              *)
+                echo "failed to remove database container $CONTAINER_ID:" \
+                     "$rm_out — it may be leaking on this runner" >&2
+                exit 1 ;;
+            esac
+          fi
       - name: Install schema submodule deps
         if: inputs.schema-dir != ''
         working-directory: ${{ inputs.schema-dir }}
