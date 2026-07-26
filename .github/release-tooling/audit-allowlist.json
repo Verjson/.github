@@ -1,0 +1,33 @@
+{
+  "_readme": [
+    "Reviewed, dated exceptions to the release-tooling supply-chain gate",
+    "(scripts/release-tooling-audit.sh, Verjson/.github#146). Every entry excuses",
+    "exactly one advisory and EXPIRES on its review-by date: past that, CI fails",
+    "again until a human re-assesses or upstream ships a fix. An entry that stops",
+    "matching a reported advisory also fails, so a resolved exception cannot linger",
+    "as dead permission. Adding an entry means accepting a known risk — say why, and",
+    "keep the window short.",
+    "Fields, all required and all enforced: ghsa (GHSA id), package and severity —",
+    "which must match the advisory exactly as npm reports it, so an entry excuses",
+    "that one advisory and no other — reason, and review-by (YYYY-MM-DD, a real",
+    "calendar date no more than 90 days out).",
+    "severity is COPIED from the advisory as npm reports it (case-insensitively),",
+    "never chosen as a risk level. Rounding one up 'to be safe' does not make a",
+    "stricter exception — it matches no reported advisory, and the gate rejects it",
+    "as dead permission.",
+    "Scope, precisely: an entry excuses an ADVISORY, not a package. npm propagates",
+    "one advisory outward along `via`, so a single entry clears every high/critical",
+    "package whose chain resolves ONLY to advisories it excuses — often more than",
+    "the package it names. It never clears a package npm grades ABOVE the entry's",
+    "severity, and never one whose chain also reaches an advisory nobody excused."
+  ],
+  "allowlist": [
+    {
+      "ghsa": "GHSA-mh99-v99m-4gvg",
+      "package": "brace-expansion",
+      "severity": "high",
+      "reason": "DoS via unbounded expansion in the copy of brace-expansion bundled inside npm's own CLI (semantic-release -> @semantic-release/npm -> npm), reached only when semantic-release publishes on our own runners against our own inputs — not attacker-reachable in CI. No upstream fix is installable as of 2026-07-25: npm bundles the dependency, so `overrides` cannot rewrite it, and no npm release yet carries brace-expansion 5.0.8.",
+      "review-by": "2026-08-25"
+    }
+  ]
+}
