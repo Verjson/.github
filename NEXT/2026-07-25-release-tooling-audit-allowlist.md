@@ -24,7 +24,15 @@ counts, an uninterpretable npm exit, more high/critical packages than could be
 enumerated, a malformed, empty or missing allowlist) exits non-zero: an unreadable
 audit never reads as clean.
 
+An exception is scoped to the advisory a reviewer assessed: it never clears a
+package npm grades **above** the entry's severity, and — because npm propagates one
+advisory outward along `via` — it can clear more than the package it names, which
+the allowlist `_readme` now states rather than denying.
+
 Seeded with exactly one entry, GHSA-mh99-v99m-4gvg, expiring **2026-08-25**.
-29 unit tests in `scripts/release-tooling-audit.test.sh` drive the script against
+42 unit tests in `scripts/release-tooling-audit.test.sh` drive the script against
 stubbed `npm audit --json` output (no network) and are wired into `actions-ci.yml`.
+Coverage is checked by **mutation**: multi-hop, cyclic, empty-`via` and dangling-edge
+fixtures, a coverage-guard-only report, a stubbed lenient `date`, and non-integer
+severity counts each turn the suite red when the guard they cover is removed.
 See [ADR 0025](../docs/decisions/0025-release-tooling-audit-allowlist/README.md).

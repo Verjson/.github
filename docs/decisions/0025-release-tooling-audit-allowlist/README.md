@@ -63,7 +63,12 @@ The wrapper blocks when **any** of these holds:
 
 1. a package graded **high or critical** resolves to an advisory the allowlist does
    not excuse — matching on GHSA id **and** package **and** severity, so an entry
-   excuses one advisory in one package and nothing else;
+   excuses one advisory as npm reports it and no other;
+1b. such a package is graded **above** the severity its excusing entries accepted.
+   npm grades the package (the unit `--audit-level` gated on) at least as high as
+   any advisory under it, so an entry accepting a `high` advisory does not carry a
+   package npm calls `critical`: the severity a reviewer wrote down is the severity
+   they assessed;
 2. such a package is **unattributable** — its `via` chain is empty, dangles at a
    package the report does not carry, or yields an id that is not a GHSA. An
    unexplained critical is a block, never a pass;
@@ -73,9 +78,9 @@ The wrapper blocks when **any** of these holds:
    exception is deleted rather than lingering as dead permission;
 5. the report cannot be fully interpreted: absent/malformed JSON, valid JSON of the
    wrong shape, an npm exit it cannot interpret, a jq evaluation error, a severity
-   outside `{info,low,moderate,high,critical}` (case-insensitive), non-numeric
-   severity counts, or npm counting more high/critical packages than could be
-   enumerated. **An unreadable audit must never read as "clean."** npm's own exit
+   outside `{info,low,moderate,high,critical}` (case-insensitive), a severity count
+   that is not a whole number ≥ 0, or npm counting more high/critical packages than
+   could be enumerated. **An unreadable audit must never read as "clean."** npm's own exit
    code decides nothing (it is non-zero whenever it reports anything at all); the
    JSON does.
 6. the allowlist itself is missing, empty, or malformed — every entry must carry a
@@ -83,6 +88,13 @@ The wrapper blocks when **any** of these holds:
    `review-by` that is a **real calendar date** no more than 90 days out. An
    undated, unreasoned, ISO-shaped-but-impossible (`2026-13-45`) or far-future
    (`9999-12-31`) exception is a permanent exception by omission, and is rejected.
+
+What an entry does **not** do is excuse a package: it excuses an advisory. Because
+npm propagates one advisory outward along `via`, a single entry can clear several
+graded packages — every package whose chain resolves *only* to advisories that are
+excused, and whose own grade the entry's severity covers (1b). That is deliberate
+(the advisory is the thing assessed, and the chain to it is npm's bookkeeping), but
+it is wider than "one package", so the allowlist `_readme` says so in those terms.
 
 Moderate and below stay non-blocking, preserving the `--audit-level=high`
 threshold the wrapper replaces.
@@ -95,7 +107,7 @@ The allowlist is seeded with **exactly one** entry:
   CI. No upstream fix installable as of 2026-07-25.
 
 `scripts/release-tooling-audit.test.sh` drives the real script against **stubbed**
-`npm audit --json` output (never the network) across 29 cases — clean report,
+`npm audit --json` output (never the network) across 42 cases — clean report,
 unlisted high, unlisted critical, allowlisted high, moderate below threshold, stale
 entry, unmatched entry, malformed JSON, wrong-shape JSON, empty output with a
 non-zero npm exit, npm absent from `PATH`, absent / zero-byte allowlist, undated /
@@ -108,6 +120,13 @@ does not run; that gap once left `hold.test.sh` dormant). The cases that pair a
 live allowlist entry with a broken report are deliberate: with an empty allowlist
 the shape guards mask each other, which is exactly how the original fail-open
 survived review.
+
+Coverage is measured by **mutation**, not by case count: each guard is inverted or
+removed in a scratch copy of the script and the suite must go red. The six
+mutations named in the 2026-07-25 review — dropping the dangling-edge poison, the
+cycle guard, the empty-`via` poison, inverting the coverage comparison, degrading
+the `review-by` round-trip to a non-empty check, and degrading the entry match to
+GHSA-only — all survived a green suite before this round and are each red now.
 
 ## Consequences
 
@@ -137,10 +156,40 @@ survived review.
   defaulting them to `"unknown"`. Evidence: the test named
   *"unattributable critical alongside an excused advisory fails closed"* passes on
   the current script and fails on the pre-fix one.
+- **Rework, round 3 — 2026-07-25 (pre-merge, second review of #147).** The
+  per-package resolution above was correct but almost entirely **unpinned**: every
+  `via` in the suite was one advisory object or one dangling string, so the
+  recursion was never entered twice and six separate mutations of the script kept
+  the suite green. Two of those were live defects, not just gaps:
+  - The coverage guard compared counts with `[ "$counted" -gt "$found" ]`. `set -e`
+    is off, so a count `[` refuses as an integer — `2.5`, or a whole number jq
+    renders as `1e+100` — made the test *error* rather than compare, which skips
+    the `&& die` beside it and the gate exited **0**. The comparison now happens in
+    jq and the result is string-compared against a literal `true`; every remaining
+    `[` in the script tests a string or a file, neither of which can error. This is
+    the third time this batch that an erroring `[` has silently skipped its `die`.
+  - An entry's `severity` bounded the **advisory**, never the package grade, so an
+    entry accepting a `high` advisory cleared a package npm graded `critical` — the
+    grade `--audit-level=high` actually gated on. Decision 1b above closes it: the
+    entry's severity must cover the package's grade as well. The alternative — keep
+    the advisory-only scoping and correct the docs — was rejected because it makes
+    the accepted risk larger than the one written down, and the wrapper's whole
+    claim is that it is stricter everywhere except the line a human signed.
+
+    The related widening is **kept**, and the docs corrected instead: one entry can
+    clear more than one graded package, when every one of those packages resolves
+    only to advisories that entry excuses. `_readme` no longer says "and nothing
+    else".
 - A `review-by` is now validated as a **date**, not a shape: it is round-tripped
   through `date -u -d` and must come back unchanged, and it must fall within 90 days.
   `2026-13-45` and `9999-12-31` both previously passed every check, and either would
-  have been a permanent bypass hiding in plain sight as a typo.
+  have been a permanent bypass hiding in plain sight as a typo. The two halves catch
+  different implementations: GNU coreutils 9 *rejects* an impossible day outright
+  (`2026-09-31` → exit 1), while busybox and older coreutils *accept and roll it
+  over* (→ October 1), and only comparing the normalised value against the original
+  catches that. Since the runner image is not part of this gate's contract, the test
+  suite stubs a lenient `date` on `PATH` to exercise the round-trip — otherwise it
+  reads as dead code on the box it happens to run on.
 - `package` and `severity` were documented allowlist fields but were never read, so
   an entry naming any package at any severity excused its GHSA everywhere. They are
   now required and matched against the advisory as npm reports it, which narrows an

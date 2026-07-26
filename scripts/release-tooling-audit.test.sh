@@ -33,6 +33,26 @@ exit "${STUB_NPM_EXIT:-0}"
 STUB
 chmod +x "$stub_bin/npm"
 
+# A `date` that rolls an out-of-range day over into the next month instead of
+# rejecting it — busybox and pre-9 coreutils behave this way, and the runner image
+# is not part of this gate's contract. GNU coreutils 9 rejects `2026-09-31`
+# outright, so on this box alone the script's round-trip check would look like dead
+# code; under a lenient `date` it is the only thing standing between a typo'd
+# review-by and an exception that never expires. Prepended via $path_prefix.
+lenient_bin="$tmp/lenient-date"
+mkdir -p "$lenient_bin"
+ln -sf "$(command -v date)" "$lenient_bin/date.real"
+cat >"$lenient_bin/date" <<'STUB'
+#!/usr/bin/env bash
+real="$(dirname "$0")/date.real"
+if [ "${1:-}" = -u ] && [ "${2:-}" = -d ] && [[ "${3:-}" =~ ^([0-9]{4})-([0-9]{2})-([0-9]{2})$ ]] \
+   && ! "$real" -u -d "$3" +%F >/dev/null 2>&1; then
+  exec "$real" -u -d "${BASH_REMATCH[1]}-${BASH_REMATCH[2]}-01 + $((10#${BASH_REMATCH[3]} - 1)) days" "$4"
+fi
+exec "$real" "$@"
+STUB
+chmod +x "$lenient_bin/date"
+
 # report <severity:ghsa>... -> path to a synthetic `npm audit --json` report.
 # Severity counts in .metadata are derived so the fixture stays self-consistent
 # with what npm would actually emit.
@@ -64,6 +84,34 @@ report() {
   printf '%s' "$out"
 }
 
+# graph <vulnerabilities-json> [metadata-overrides-json] -> path to a report whose
+# `via` chains are given verbatim, so a fixture can express what `report` cannot:
+# multi-hop propagation, a cycle, an empty `via`, a dangling edge, or a
+# .metadata count that disagrees with the packages actually enumerated.
+graph() {
+  local out over; out="$(mktemp "$tmp/graph.XXXXXX.json")"
+  over="${2:-}"; [ -n "$over" ] || over='{}'
+  jq --argjson v "$1" --argjson over "$over" '
+    {
+      auditReportVersion: 2,
+      vulnerabilities: ($v | to_entries | map({key: .key, value: (
+        {name: .key, isDirect: false, effects: [], range: "<=1.0.0",
+         nodes: ["node_modules/" + .key], fixAvailable: false} + .value)})
+        | from_entries),
+      metadata: {vulnerabilities: (
+        ({info: 0, low: 0, moderate: 0, high: 0, critical: 0} as $zero
+         | reduce ($v | to_entries[]) as $e ($zero; .[$e.value.severity] += 1)
+         | . + {total: ($v | length)}) + $over)}
+    }' <<<'null' >"$out"
+  printf '%s' "$out"
+}
+
+# adv <ghsa> <package> <severity> -> one `via` advisory object (an advisory root).
+adv() {
+  printf '{"source": 1, "name": "%s", "severity": "%s", "title": "%s title", "url": "https://github.com/advisories/%s", "range": "<=1.0.0"}' \
+    "$2" "$3" "$1" "$1"
+}
+
 # allowlist <entry-json>... -> path to an allowlist data file.
 allowlist() {
   local out; out="$(mktemp "$tmp/allowlist.XXXXXX.json")"
@@ -71,13 +119,18 @@ allowlist() {
   printf '%s' "$out"
 }
 
-entry() { # entry <ghsa> <review-by>
-  printf '{"ghsa": "%s", "package": "pkg", "severity": "high", "reason": "test fixture", "review-by": "%s"}' "$1" "$2"
+entry() { # entry <ghsa> <review-by> [package] [severity]
+  printf '{"ghsa": "%s", "package": "%s", "severity": "%s", "reason": "test fixture", "review-by": "%s"}' \
+    "$1" "${3:-pkg}" "${4:-high}" "$2"
 }
 
-# run_case <report> <allowlist> [npm-exit] [today] -> prints exit status
+# run_case <report> <allowlist> [npm-exit] [today] -> prints exit status.
+# Bounded on purpose: the `via` graph is walked recursively and npm reports do
+# contain cycles, so a gate that never terminates would wedge CI exactly like one
+# that fails open. A timeout surfaces as a non-zero status, never as a hung suite.
+path_prefix=''
 run_case() {
-  env PATH="$stub_bin:$PATH" \
+  timeout 20 env PATH="${path_prefix:+$path_prefix:}$stub_bin:$PATH" \
     STUB_NPM_JSON="$1" \
     STUB_NPM_EXIT="${3:-1}" \
     RELEASE_TOOLING_DIR="$tmp" \
@@ -202,6 +255,106 @@ jq '.metadata.vulnerabilities.high = "2"' "$(report high:GHSA-aaaa-bbbb-cccc)" \
   && pass "non-numeric severity counts fail closed" \
   || fail "non-numeric severity count did not exit 1: $(cat "$tmp/out")"
 
+# 11f. npm propagates an advisory outward through `via` strings, so a graded
+# package is usually several hops from the advisory root that explains it (the
+# real report reaches brace-expansion via semantic-release -> @semantic-release/npm
+# -> npm). Resolution has to walk the whole chain, not just the first hop.
+chain='{
+  "top": {"severity": "high", "via": ["mid"]},
+  "mid": {"severity": "moderate", "via": ["pkg"]},
+  "pkg": {"severity": "high", "via": ['"$(adv GHSA-aaaa-bbbb-cccc pkg high)"']}
+}'
+[ "$(run_case "$(graph "$chain")" "$(allowlist "$(entry GHSA-aaaa-bbbb-cccc 2026-08-25)")")" = 0 ] \
+  && pass "a high package two hops from its advisory root resolves and is excused" \
+  || fail "multi-hop via chain did not resolve to the excused advisory: $(cat "$tmp/out")"
+
+# 11g. ...and an unexcused advisory at the far end of that same chain still blocks,
+# so walking the chain cannot become a way of losing the advisory.
+[ "$(run_case "$(graph "$chain")" "$(allowlist)")" = 1 ] \
+  && grep -q 'GHSA-aaaa-bbbb-cccc' "$tmp/out" \
+  && pass "an unexcused advisory two hops out still blocks and is named" \
+  || fail "multi-hop unexcused advisory did not exit 1 naming the GHSA: $(cat "$tmp/out")"
+
+# 11h. npm reports contain genuine `via` cycles (semantic-release <->
+# @semantic-release/npm in our own lockfile). Resolution must terminate on one:
+# a gate that spins forever wedges CI exactly like one that fails open.
+cyclic='{
+  "top": {"severity": "high", "via": ['"$(adv GHSA-aaaa-bbbb-cccc pkg high)"', "mid"]},
+  "mid": {"severity": "moderate", "via": ["top"]}
+}'
+[ "$(run_case "$(graph "$cyclic")" "$(allowlist "$(entry GHSA-aaaa-bbbb-cccc 2026-08-25)")")" = 0 ] \
+  && pass "a cyclic via chain terminates and resolves to the excused advisory" \
+  || fail "cyclic via chain did not terminate with exit 0: $(cat "$tmp/out")"
+
+# 11i. A package reached mid-chain that carries no `via` at all explains nothing,
+# so the chain is incomplete — an excused advisory earlier in it must not vouch
+# for the rest.
+empty_via='{
+  "top": {"severity": "high", "via": ['"$(adv GHSA-aaaa-bbbb-cccc pkg high)"', "mid"]},
+  "mid": {"severity": "moderate", "via": []}
+}'
+[ "$(run_case "$(graph "$empty_via")" "$(allowlist "$(entry GHSA-aaaa-bbbb-cccc 2026-08-25)")")" = 1 ] \
+  && grep -q 'no advisory could be attributed' "$tmp/out" \
+  && pass "an empty via mid-chain is unattributable, not excused" \
+  || fail "empty via mid-chain did not fail closed: $(cat "$tmp/out")"
+
+# 11j. The regression this wrapper was rewritten to close: one graded package whose
+# `via` carries the excused advisory AND an edge to a package npm never reported.
+# The dangling edge is exactly the unexplained part, so the excused advisory must
+# not carry the package on its own.
+dangling='{
+  "pkg": {"severity": "high", "via": ['"$(adv GHSA-aaaa-bbbb-cccc pkg high)"', "ghost"]}
+}'
+[ "$(run_case "$(graph "$dangling")" "$(allowlist "$(entry GHSA-aaaa-bbbb-cccc 2026-08-25)")")" = 1 ] \
+  && grep -q 'no advisory could be attributed' "$tmp/out" \
+  && pass "an excused advisory plus a dangling edge is still unattributable" \
+  || fail "dangling via edge was excused by the advisory beside it: $(cat "$tmp/out")"
+
+# 11k. The coverage guard on its own: every package the report enumerates is
+# excused, and only npm's own count says there is another one. Nothing else in the
+# script can fail this report, so the guard is the single thing under test.
+inflated='{
+  "pkg": {"severity": "high", "via": ['"$(adv GHSA-aaaa-bbbb-cccc pkg high)"']}
+}'
+[ "$(run_case "$(graph "$inflated" '{"high": 2}')" \
+      "$(allowlist "$(entry GHSA-aaaa-bbbb-cccc 2026-08-25)")")" = 1 ] \
+  && grep -q 'could be enumerated' "$tmp/out" \
+  && pass "npm counting more blocking packages than were enumerated fails closed" \
+  || fail "inflated high count did not trip the coverage guard: $(cat "$tmp/out")"
+
+# 11l. A count that is a number but not a whole one is the same hole as a string
+# count one type over: `[ 2.5 -gt 1 ]` is an error, not a comparison, and with
+# `set -e` off an erroring `[` skips the `&& die` beside it and the gate sails on.
+[ "$(run_case "$(graph "$inflated" '{"high": 2.5}')" \
+      "$(allowlist "$(entry GHSA-aaaa-bbbb-cccc 2026-08-25)")")" = 1 ] \
+  && pass "a fractional severity count fails closed" \
+  || fail "fractional severity count did not exit 1: $(cat "$tmp/out")"
+
+# 11m. ...and a whole number is not enough either: jq renders a large one in
+# exponent notation (`1e+100`), which `[` also refuses as an integer. The guard
+# must not depend on a count being formatted the way `test(1)` likes.
+[ "$(run_case "$(graph "$inflated" '{"high": 1e100}')" \
+      "$(allowlist "$(entry GHSA-aaaa-bbbb-cccc 2026-08-25)")")" = 1 ] \
+  && pass "a severity count jq renders in exponent notation fails closed" \
+  || fail "exponent-notation severity count did not exit 1: $(cat "$tmp/out")"
+
+# 11n. A fractional count *below* the number of packages enumerated satisfies the
+# coverage comparison, so nothing downstream would notice it. npm counts whole
+# packages; a report that says 0.5 of one is a report we cannot read.
+[ "$(run_case "$(graph "$inflated" '{"high": 0.5}')" \
+      "$(allowlist "$(entry GHSA-aaaa-bbbb-cccc 2026-08-25)")")" = 1 ] \
+  && grep -q 'could not parse' "$tmp/out" \
+  && pass "a fractional count the coverage guard would accept still fails closed" \
+  || fail "fractional count below the enumerated total did not exit 1: $(cat "$tmp/out")"
+
+# 11o. ...and a negative count would pass the coverage comparison against *any*
+# number of enumerated packages, disabling the guard outright.
+[ "$(run_case "$(graph "$inflated" '{"high": -1}')" \
+      "$(allowlist "$(entry GHSA-aaaa-bbbb-cccc 2026-08-25)")")" = 1 ] \
+  && grep -q 'could not parse' "$tmp/out" \
+  && pass "a negative severity count fails closed" \
+  || fail "negative severity count did not exit 1: $(cat "$tmp/out")"
+
 # 12. The allowlist is the reviewable artefact; without it there is no gate.
 [ "$(run_case "$(report)" "$tmp/does-not-exist.json" 0)" = 1 ] \
   && pass "absent allowlist file fails closed" \
@@ -233,6 +386,21 @@ notadate="$(allowlist '{"ghsa": "GHSA-aaaa-bbbb-cccc", "package": "pkg", "severi
   && pass "allowlist entry with an impossible calendar date fails closed" \
   || fail "impossible review-by did not exit 1: $(cat "$tmp/out")"
 
+# 14d. `2026-13-45` is refused by GNU `date`, so it never reaches the round-trip.
+# Where `date` is lenient (busybox, older coreutils) an impossible day is accepted
+# and silently rolled over — `2026-09-31` becomes October 1 — and only comparing
+# the normalised value against the original catches it. The date is deliberately
+# inside the live window (not expired, not past the horizon) so no later guard can
+# stand in for the round-trip, and the message is asserted for the same reason.
+rollover="$(allowlist "$(entry GHSA-aaaa-bbbb-cccc 2026-09-31)")"
+path_prefix="$lenient_bin"
+rollover_status="$(run_case "$(report high:GHSA-aaaa-bbbb-cccc)" "$rollover")"
+path_prefix=''
+[ "$rollover_status" = 1 ] \
+  && grep -q 'review-by is not a real calendar date: 2026-09-31' "$tmp/out" \
+  && pass "a review-by a lenient date(1) rolls over is still not a real date" \
+  || fail "rolled-over review-by was not rejected as a non-date: $(cat "$tmp/out")"
+
 # 14c. A far-future review-by is an expiry that never fires, so the window is
 # capped: an accepted risk has to come back for re-assessment.
 forever="$(allowlist "$(entry GHSA-aaaa-bbbb-cccc 9999-12-31)")"
@@ -246,12 +414,42 @@ noreason="$(allowlist '{"ghsa": "GHSA-aaaa-bbbb-cccc", "reason": "", "review-by"
   && pass "allowlist entry without a reason fails closed" \
   || fail "reasonless allowlist entry did not exit 1: $(cat "$tmp/out")"
 
-# 15b. `package` and `severity` are documented fields, so they must narrow the
-# exception: an entry naming another package or a lower severity excuses nothing.
+# 15b. An entry that matches nothing in the report is dead permission and is
+# rejected before any package is graded — so this case never reaches the excusing
+# comparison, and the message is what distinguishes the two.
 mismatched="$(allowlist '{"ghsa": "GHSA-aaaa-bbbb-cccc", "package": "other-pkg", "severity": "low", "reason": "wrong package and severity", "review-by": "2026-08-25"}')"
 [ "$(run_case "$(report critical:GHSA-aaaa-bbbb-cccc)" "$mismatched")" = 1 ] \
-  && pass "allowlist entry naming another package/severity excuses nothing" \
-  || fail "mismatched allowlist entry excused a critical: $(cat "$tmp/out")"
+  && grep -q 'match no reported advisory' "$tmp/out" \
+  && pass "allowlist entry naming another package/severity is dead permission" \
+  || fail "mismatched allowlist entry was not rejected as dead permission: $(cat "$tmp/out")"
+
+# 15c. ...and where the entry *does* match something, it still excuses only that
+# one advisory-in-package-at-severity: the same GHSA id reported against another
+# package, at another grade, is a separate risk nobody assessed. Both advisories
+# are reported here, so the dead-permission guard above is satisfied and the
+# narrowing itself is what has to block.
+same_ghsa='{
+  "other-pkg": {"severity": "low", "via": ['"$(adv GHSA-aaaa-bbbb-cccc other-pkg low)"']},
+  "pkg": {"severity": "high", "via": ['"$(adv GHSA-aaaa-bbbb-cccc pkg high)"']}
+}'
+[ "$(run_case "$(graph "$same_ghsa")" \
+      "$(allowlist "$(entry GHSA-aaaa-bbbb-cccc 2026-08-25 other-pkg low)")")" = 1 ] \
+  && grep -q 'unexcused high/critical' "$tmp/out" \
+  && pass "an entry excuses its GHSA in its own package only, not the same id elsewhere" \
+  || fail "an entry excused the same GHSA in a package it does not name: $(cat "$tmp/out")"
+
+# 15d. The severity a reviewer accepts is the one they assessed. npm grades the
+# PACKAGE — the unit `--audit-level=high` gated on — and that grade can sit above
+# the advisory's own, so an entry accepting a `high` advisory must not carry a
+# package npm calls `critical`: that is a risk nobody signed off on.
+undergraded='{
+  "pkg": {"severity": "critical", "via": ['"$(adv GHSA-aaaa-bbbb-cccc pkg high)"']}
+}'
+[ "$(run_case "$(graph "$undergraded")" \
+      "$(allowlist "$(entry GHSA-aaaa-bbbb-cccc 2026-08-25 pkg high)")")" = 1 ] \
+  && grep -q 'critical' "$tmp/out" \
+  && pass "an entry accepting a high advisory does not excuse a critical package" \
+  || fail "a high exception excused a package npm graded critical: $(cat "$tmp/out")"
 
 # 16. Boundary: the exception is still good on its review-by date itself.
 [ "$(run_case "$(report high:GHSA-aaaa-bbbb-cccc)" "$(allowlist "$(entry GHSA-aaaa-bbbb-cccc 2026-07-25)")")" = 0 ] \

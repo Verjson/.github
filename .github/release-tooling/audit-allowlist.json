@@ -8,9 +8,14 @@
     "as dead permission. Adding an entry means accepting a known risk — say why, and",
     "keep the window short.",
     "Fields, all required and all enforced: ghsa (GHSA id), package and severity —",
-    "which must match the advisory as npm reports it, so an entry excuses that one",
-    "advisory in that one package and nothing else — reason, and review-by",
-    "(YYYY-MM-DD, a real calendar date no more than 90 days out)."
+    "which must match the advisory exactly as npm reports it, so an entry excuses",
+    "that one advisory and no other — reason, and review-by (YYYY-MM-DD, a real",
+    "calendar date no more than 90 days out).",
+    "Scope, precisely: an entry excuses an ADVISORY, not a package. npm propagates",
+    "one advisory outward along `via`, so a single entry clears every high/critical",
+    "package whose chain resolves ONLY to advisories it excuses — often more than",
+    "the package it names. It never clears a package npm grades ABOVE the entry's",
+    "severity, and never one whose chain also reaches an advisory nobody excused."
   ],
   "allowlist": [
     {

@@ -9,10 +9,12 @@
 #
 # The verdict is per PACKAGE, exactly like the `--audit-level=high` it replaces:
 # every package npm grades high/critical must resolve, through its `via` chain,
-# entirely to advisories the allowlist excuses by id, package and severity. A
-# package nothing can be attributed to blocks. And — so an accepted risk can't
-# quietly become permanent — an exception that outlives its `review-by`, is dated
-# beyond the review horizon, or stops matching anything blocks too. Every path
+# entirely to advisories the allowlist excuses by id, package and severity — and at
+# a severity that covers npm's grade for the package, so a `high` exception cannot
+# carry a `critical` package. A package nothing can be attributed to blocks. And —
+# so an accepted risk can't quietly become permanent — an exception that outlives
+# its `review-by`, is dated beyond the review horizon, or stops matching anything
+# blocks too. Every path
 # that cannot fully interpret the report exits non-zero: an unreadable audit must
 # never read as "clean".
 #
@@ -82,7 +84,7 @@ shape_ok="$(jq -r '
     (.via | all(type == "string" or (type == "object" and (.severity | level)))))) and
   (.metadata.vulnerabilities | type == "object") and
   (.metadata.vulnerabilities | [.info, .low, .moderate, .high, .critical]
-   | all(type == "number"))
+   | all(type == "number" and . == floor and . >= 0))
 ' <<<"$report" 2>/dev/null)"
 [ "$shape_ok" = true ] \
   || die "could not parse an npm audit report, or it carries an unknown severity (npm exit $npm_status) — failing closed"
@@ -127,8 +129,16 @@ counted_blocking="$(jq -r '.metadata.vulnerabilities | .high + .critical' <<<"$r
   || die "could not read npm's severity counts — failing closed"
 found_blocking="$(jq -r '.blocking | length' <<<"$analysis")" \
   || die "could not count the blocking packages — failing closed"
-[ "$counted_blocking" -gt "$found_blocking" ] \
-  && die "npm reports $counted_blocking high/critical package(s) but only $found_blocking could be enumerated — failing closed"
+# The comparison is done in jq, not by `[ -gt ]`: `set -e` is off, so a `[` whose
+# operands it refuses (a fractional count, or a whole one jq renders as `1e+100`)
+# exits non-zero *without* running the `&& die` beside it — the guard would fail
+# open on exactly the malformed report it exists to catch. Every remaining `[` in
+# this script compares strings, which cannot error.
+coverage_ok="$(jq -rn --argjson counted "$counted_blocking" --argjson found "$found_blocking" \
+  '$counted <= $found')" \
+  || die "could not compare npm's counts against the packages enumerated — failing closed"
+[ "$coverage_ok" = true ] \
+  || die "npm reports $counted_blocking high/critical package(s) but only $found_blocking could be enumerated — failing closed"
 
 expired="$(jq -r --arg today "$today" '
   [.allowlist[] | select(.["review-by"] < $today) | .ghsa] | join(" ")
@@ -151,16 +161,19 @@ unmatched="$(jq -r --slurpfile allow "$allowlist_file" '
   && die "allowlist entr(ies) match no reported advisory — delete the dead exception: $unmatched"
 
 blocking="$(jq -r --slurpfile allow "$allowlist_file" '
+  def rank: {info: 0, low: 1, moderate: 2, high: 3, critical: 4}[.];
   ($allow[0].allowlist
    | map({ghsa, package, severity: (.severity | ascii_downcase)})) as $excused
   | [.blocking[] | . as $p
+     | ($p.advisories | map(. as $a | select(($excused | index($a)) == null))) as $unexcused
+     | ($p.advisories | map(select((.severity | rank) < ($p.severity | rank)))) as $undergraded
      | if ($p.ok | not) or ($p.advisories | length) == 0 then
          "  \($p.severity)\t\($p.package)\tno advisory could be attributed to this package"
-       else ($p.advisories | map(. as $a | select(($excused | index($a)) == null))) as $unexcused
-         | if ($unexcused | length) > 0 then
-             "  \($p.severity)\t\($p.package)\t\($unexcused | map(.ghsa) | join(", "))"
-           else empty end
-       end]
+       elif ($unexcused | length) > 0 then
+         "  \($p.severity)\t\($p.package)\t\($unexcused | map(.ghsa) | join(", "))"
+       elif ($undergraded | length) > 0 then
+         "  \($p.severity)\t\($p.package)\t\($undergraded | map(.ghsa) | join(", ")) accepted only at \($undergraded | map(.severity) | unique | join("/")), below this package’s \($p.severity) grade"
+       else empty end]
   | join("\n")
 ' <<<"$analysis")" || die "could not evaluate the audit report against the allowlist — failing closed"
 if [ -n "$blocking" ]; then
