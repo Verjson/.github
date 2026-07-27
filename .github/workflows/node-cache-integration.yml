@@ -1,0 +1,67 @@
+name: node-cache-integration
+
+# Exercise the real setup-node cache backend across two jobs. The second job
+# empties a dedicated, workflow-serialized npm cache directory; setup-node must
+# restore the entry keyed by the non-root lockfile before npm can list the
+# package.
+
+on:
+  pull_request:
+    paths:
+      - '.github/actions/setup-verjson-node/**'
+      - '.github/release-tooling/package-lock.json'
+      - '.github/workflows/node-cache-integration.yml'
+      - '.github/workflows/node-ci.yml'
+      - '.github/workflows/node-release.yml'
+  push:
+    branches: [main]
+    paths:
+      - '.github/actions/setup-verjson-node/**'
+      - '.github/release-tooling/package-lock.json'
+      - '.github/workflows/node-cache-integration.yml'
+      - '.github/workflows/node-ci.yml'
+      - '.github/workflows/node-release.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: node-cache-integration
+  cancel-in-progress: false
+
+jobs:
+  npm-cache-seed:
+    runs-on: [self-hosted, GCP]
+    env:
+      NPM_CONFIG_CACHE: /tmp/verjson-node-cache-probe
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: .github/release-tooling/package-lock.json
+      - name: Seed npm's download cache
+        run: npm cache add semantic-release@25.0.8
+
+  npm-cache-restore:
+    needs: npm-cache-seed
+    runs-on: [self-hosted, GCP]
+    env:
+      NPM_CONFIG_CACHE: /tmp/verjson-node-cache-probe
+    steps:
+      - uses: actions/checkout@v7
+      - name: Start with an empty dedicated npm cache
+        run: |
+          [ "$NPM_CONFIG_CACHE" = /tmp/verjson-node-cache-probe ] || {
+            echo "unexpected cache probe path" >&2
+            exit 1
+          }
+          rm -rf -- /tmp/verjson-node-cache-probe
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: .github/release-tooling/package-lock.json
+      - name: Verify setup-node restored the seeded npm cache
+        run: npm cache ls semantic-release@25.0.8 | grep -qF semantic-release

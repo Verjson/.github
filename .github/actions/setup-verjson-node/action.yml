@@ -12,6 +12,16 @@ inputs:
     description: Node.js version passed to actions/setup-node.
     required: false
     default: '24'
+  cache:
+    description: >-
+      Cache npm downloads when cache-dependency-path matches a lockfile. Set to
+      'false' to disable caching.
+    required: false
+    default: 'true'
+  cache-dependency-path:
+    description: Lockfile path or glob used to key the npm download cache.
+    required: false
+    default: package-lock.json
   scope:
     description: >-
       npm scope for the GitHub Packages registry. Set to an empty string to skip
@@ -44,6 +54,11 @@ runs:
       uses: actions/setup-node@v7
       with:
         node-version: ${{ inputs.node-version }}
+        # setup-node caches npm's download cache, never node_modules or build
+        # output. An absent lockfile disables caching instead of failing jobs
+        # in repositories that do not use npm lockfiles.
+        cache: ${{ inputs.cache == 'true' && hashFiles(inputs.cache-dependency-path) != '' && 'npm' || '' }}
+        cache-dependency-path: ${{ inputs.cache-dependency-path }}
         # Only configure the registry when a scope is set. Passing registry-url
         # with an empty scope makes setup-node write `registry=<url>` as npm's
         # *default* registry (every package resolves against GitHub Packages, so
