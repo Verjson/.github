@@ -47,7 +47,7 @@ jobs:
   shell-tests:
     runs-on: [self-hosted, GCP]
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: actionlint — workflow and config changes trigger lint (#82)
         run: bash scripts/actionlint-trigger.test.sh
       - name: actionlint — downloaded binary checksum is fail-closed (#83)

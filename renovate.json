@@ -9,6 +9,7 @@
       "matchManagers": ["github-actions"],
       "matchFileNames": [
         ".github/actions/setup-verjson-node/action.yml",
+        ".github/workflows/actions-ci.yml",
         ".github/workflows/node-cache-integration.yml",
         ".github/workflows/node-ci.yml",
         ".github/workflows/node-release.yml"

@@ -20,7 +20,7 @@ fail() { printf 'FAIL - %s\n' "$1"; fails=$((fails + 1)); }
 
 checkout='actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7'
 setup_node='actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7'
-for wf in "$ci" "$release" "$cache_probe"; do
+for wf in "$ci" "$release" "$cache_probe" "$actions_ci"; do
   name="$(basename "$wf")"
   expected_checkouts=1
   expected_setups=1
@@ -99,6 +99,7 @@ jq -e '
     .pinDigests == true and
     (.matchManagers | index("github-actions")) != null and
     (.matchFileNames | index(".github/actions/setup-verjson-node/action.yml")) != null and
+    (.matchFileNames | index(".github/workflows/actions-ci.yml")) != null and
     (.matchFileNames | index(".github/workflows/node-cache-integration.yml")) != null and
     (.matchFileNames | index(".github/workflows/node-ci.yml")) != null and
     (.matchFileNames | index(".github/workflows/node-release.yml")) != null)
