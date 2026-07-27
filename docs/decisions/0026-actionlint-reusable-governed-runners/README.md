@@ -49,7 +49,7 @@ wiring. The workflow runs the real pinned binary against isolated inline valid,
 malformed-YAML, and invalid-expression fixtures before the repository lint, so
 both local and reusable executions prove the failure contract.
 `.github/workflows/actionlint-reusable-contract.yml` is a real caller pinned to
-the immutable implementation commit `0f89f4b6c6c4ac5685406fddeb282099dd765ae7`;
+the review-hardened implementation commit `bfecdd0111582d0ddada558e6b4d0cadd9b488bd`;
 its path-filtered PR run proves the GitHub-hosted reusable-call seam end to end.
 
 ## Review hardening (2026-07-27)

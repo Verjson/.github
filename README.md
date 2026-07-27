@@ -20,7 +20,7 @@ permissions:
 
 jobs:
   actionlint:
-    uses: Verjson/.github/.github/workflows/actionlint.yml@0f89f4b6c6c4ac5685406fddeb282099dd765ae7
+    uses: Verjson/.github/.github/workflows/actionlint.yml@bfecdd0111582d0ddada558e6b4d0cadd9b488bd
     with:
       # Omit this for the org GCP self-hosted pool. Set true only when the
       # caller intentionally wants the fixed GitHub-hosted runner.
