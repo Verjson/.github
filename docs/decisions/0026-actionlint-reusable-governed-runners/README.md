@@ -48,6 +48,9 @@ runner mapping, full-SHA nested Action, deterministic version/checksum, and test
 wiring. `scripts/actionlint-behavior.test.sh` runs the real pinned binary against
 isolated valid, malformed-YAML, and invalid-expression fixtures before the
 repository lint, so both local and reusable executions prove the failure contract.
+`.github/workflows/actionlint-reusable-contract.yml` is a real caller pinned to
+the immutable implementation commit `0f89f4b6c6c4ac5685406fddeb282099dd765ae7`;
+its path-filtered PR run proves the GitHub-hosted reusable-call seam end to end.
 
 ## Consequences
 

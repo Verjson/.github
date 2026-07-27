@@ -7,11 +7,14 @@ set -uo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
 root="$(cd "$here/.." && pwd)"
 wf="$root/.github/workflows/actionlint.yml"
+contract="$root/.github/workflows/actionlint-reusable-contract.yml"
+readme="$root/README.md"
 fails=0
 pass() { printf 'ok   - %s\n' "$1"; }
 fail() { printf 'FAIL - %s\n' "$1"; fails=$((fails + 1)); }
 
 [ -f "$wf" ] || { echo "FAIL - workflow not found: $wf"; exit 1; }
+[ -f "$contract" ] || { echo "FAIL - reusable-call contract not found: $contract"; exit 1; }
 
 workflow_call="$(
   awk '
@@ -52,6 +55,23 @@ lint_line="$(grep -nF 'run: ./actionlint -color' "$wf" | cut -d: -f1)"
 [ -n "$behavior_line" ] && [ -n "$lint_line" ] && [ "$behavior_line" -lt "$lint_line" ] \
   && pass "real invalid-workflow behavior runs before repository linting" \
   || fail "behavior test is missing or runs after repository linting"
+
+contract_ref="$(
+  sed -nE 's|^[[:space:]]+uses: Verjson/\.github/\.github/workflows/actionlint\.yml@([0-9a-f]{40})$|\1|p' "$contract"
+)"
+[ -n "$contract_ref" ] \
+  && pass "real reusable caller pins the provider by full commit SHA" \
+  || fail "reusable caller is missing its immutable provider pin"
+
+grep -qF "      - '.github/workflows/actionlint-reusable-contract.yml'" "$contract" \
+  && grep -qF 'github-hosted-runner: true' "$contract" \
+  && grep -qF '  contents: read' "$contract" \
+  && pass "real caller owns its narrow trigger, runner, and token permission" \
+  || fail "real caller contract drifted"
+
+[ -n "$contract_ref" ] && grep -qF "actionlint.yml@$contract_ref" "$readme" \
+  && pass "consumer documentation uses the proven immutable contract ref" \
+  || fail "consumer documentation does not use the contract fixture SHA"
 
 if [ "$fails" -eq 0 ]; then
   echo "All tests passed."
