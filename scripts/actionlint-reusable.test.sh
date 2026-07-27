@@ -9,6 +9,8 @@ root="$(cd "$here/.." && pwd)"
 wf="$root/.github/workflows/actionlint.yml"
 contract="$root/.github/workflows/actionlint-reusable-contract.yml"
 readme="$root/README.md"
+tmp="$(mktemp -d)"
+trap 'rm -rf "$tmp"' EXIT
 fails=0
 pass() { printf 'ok   - %s\n' "$1"; }
 fail() { printf 'FAIL - %s\n' "$1"; fails=$((fails + 1)); }
@@ -50,11 +52,86 @@ grep -qF 'ACTIONLINT_VERSION: 1.7.7' "$wf" \
   && pass "actionlint version and archive checksum remain pinned" \
   || fail "actionlint version or checksum drifted"
 
-behavior_line="$(grep -nF 'run: bash scripts/actionlint-behavior.test.sh ./actionlint' "$wf" | cut -d: -f1)"
-lint_line="$(grep -nF 'run: ./actionlint -color' "$wf" | cut -d: -f1)"
-[ -n "$behavior_line" ] && [ -n "$lint_line" ] && [ "$behavior_line" -lt "$lint_line" ] \
-  && pass "real invalid-workflow behavior runs before repository linting" \
-  || fail "behavior test is missing or runs after repository linting"
+behavior_script="$tmp/behavior.sh"
+awk '
+  $0 == "      - name: Prove invalid workflows fail actionlint" { seen = 1 }
+  seen && $0 == "        run: |" { capture = 1; next }
+  capture {
+    if (substr($0, 1, 10) == "          ") { print substr($0, 11); next }
+    if ($0 ~ /^[[:space:]]*$/) { print ""; next }
+    exit
+  }
+' "$wf" >"$behavior_script"
+
+grep -qF 'invalid-syntax.yml' "$behavior_script" \
+  && grep -qF 'invalid-expression.yml' "$behavior_script" \
+  && ! grep -qE '(^|[;&|])[[:space:]]*(bash|sh|source|\.)[[:space:]]+' "$behavior_script" \
+  && pass "invalid-workflow fixtures are provider-owned inline code" \
+  || fail "behavior fixtures are missing or execute caller-controlled scripts"
+
+cat >"$tmp/actionlint" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$(basename "$1")" >>"$ACTIONLOG"
+case "$(basename "$1")" in
+  valid.yml) exit 0 ;;
+  invalid-syntax.yml) exit "${PASS_INVALID_SYNTAX:-1}" ;;
+  invalid-expression.yml) exit "${PASS_INVALID_EXPRESSION:-1}" ;;
+  *) exit 99 ;;
+esac
+SH
+chmod +x "$tmp/actionlint"
+
+run_behavior() {
+  export ACTIONLOG="$tmp/action.log"
+  : >"$ACTIONLOG"
+  (cd "$tmp" && bash "$behavior_script") >"$tmp/behavior.out" 2>&1
+}
+
+unset PASS_INVALID_SYNTAX PASS_INVALID_EXPRESSION
+run_behavior
+rc=$?
+[ "$rc" -eq 0 ] || sed 's/^/diag - /' "$tmp/behavior.out"
+[ "$rc" -eq 0 ] \
+  && grep -qxF 'valid.yml' "$ACTIONLOG" \
+  && grep -qxF 'invalid-syntax.yml' "$ACTIONLOG" \
+  && grep -qxF 'invalid-expression.yml' "$ACTIONLOG" \
+  && pass "inline behavior step exercises all three fixtures" \
+  || fail "inline behavior step did not enforce the fixture contract"
+
+PASS_INVALID_SYNTAX=0
+export PASS_INVALID_SYNTAX
+run_behavior
+rc=$?
+[ "$rc" -ne 0 ] \
+  && pass "accepted malformed syntax fails the behavior step" \
+  || fail "behavior step passed when malformed syntax was accepted"
+unset PASS_INVALID_SYNTAX
+
+PASS_INVALID_EXPRESSION=0
+export PASS_INVALID_EXPRESSION
+run_behavior
+rc=$?
+[ "$rc" -ne 0 ] \
+  && pass "accepted invalid expression fails the behavior step" \
+  || fail "behavior step passed when an invalid expression was accepted"
+unset PASS_INVALID_EXPRESSION
+
+if [ -n "${ACTIONLINT_BIN:-}" ]; then
+  cp "$ACTIONLINT_BIN" "$tmp/actionlint"
+  chmod +x "$tmp/actionlint"
+  run_behavior
+  rc=$?
+  [ "$rc" -eq 0 ] || sed 's/^/diag - /' "$tmp/behavior.out"
+  [ "$rc" -eq 0 ] \
+    && pass "real actionlint rejects both inline invalid fixtures" \
+    || fail "real actionlint did not enforce the inline fixture contract"
+fi
+
+grep -qF 'REQUIRE_SHELLCHECK: ${{ inputs.github-hosted-runner }}' "$wf" \
+  && grep -qF 'command -v shellcheck' "$wf" \
+  && grep -qF './actionlint -shellcheck=shellcheck -color' "$wf" \
+  && pass "GitHub-hosted calls require ShellCheck integration" \
+  || fail "hosted actionlint can silently skip ShellCheck"
 
 contract_ref="$(
   sed -nE 's|^[[:space:]]+uses: Verjson/\.github/\.github/workflows/actionlint\.yml@([0-9a-f]{40})$|\1|p' "$contract"

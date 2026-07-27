@@ -45,12 +45,29 @@ caller trigger. The documented stable caller and called job IDs produce the
 
 `scripts/actionlint-reusable.test.sh` structurally pins the entry paths, bounded
 runner mapping, full-SHA nested Action, deterministic version/checksum, and test
-wiring. `scripts/actionlint-behavior.test.sh` runs the real pinned binary against
-isolated valid, malformed-YAML, and invalid-expression fixtures before the
-repository lint, so both local and reusable executions prove the failure contract.
+wiring. The workflow runs the real pinned binary against isolated inline valid,
+malformed-YAML, and invalid-expression fixtures before the repository lint, so
+both local and reusable executions prove the failure contract.
 `.github/workflows/actionlint-reusable-contract.yml` is a real caller pinned to
 the immutable implementation commit `0f89f4b6c6c4ac5685406fddeb282099dd765ae7`;
 its path-filtered PR run proves the GitHub-hosted reusable-call seam end to end.
+
+## Review hardening (2026-07-27)
+
+Independent review found that the first draft invoked
+`scripts/actionlint-behavior.test.sh` after checking out the caller. A reusable
+call that kept the default self-hosted route could therefore execute a script
+chosen by the caller on its persistent runner. The behavior fixtures now live
+inline in the provider-owned workflow definition; no caller file is executed.
+The structural test extracts that exact block, mutation-tests both failure
+branches, and rejects script/source references.
+
+The first live hosted contract run also showed that actionlint silently enables
+ShellCheck when the host provides it, surfacing four intentional SC2016 literals
+that the GCP development path did not see. The hosted route now requires
+ShellCheck explicitly, and the intentional jq variables, Markdown backticks, and
+literal DB placeholder carry line-scoped suppressions. The local self-hosted path
+retains actionlint's prior optional-ShellCheck behavior.
 
 ## Consequences
 

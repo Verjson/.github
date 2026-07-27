@@ -49,6 +49,60 @@ jobs:
           tar -xzf "$archive" actionlint
           ./actionlint --version
       - name: Prove invalid workflows fail actionlint
-        run: bash scripts/actionlint-behavior.test.sh ./actionlint
+        run: |
+          set -euo pipefail
+          tmp="$(mktemp -d)"
+          trap 'rm -rf "$tmp"' EXIT
+
+          cat >"$tmp/valid.yml" <<'YAML'
+          name: valid
+          on: push
+          jobs:
+            test:
+              runs-on: ubuntu-24.04
+              steps:
+                - run: echo valid
+          YAML
+
+          cat >"$tmp/invalid-syntax.yml" <<'YAML'
+          name: invalid syntax
+          on: push
+          jobs:
+            test:
+              runs-on: [ubuntu-24.04
+          YAML
+
+          expression_marker='$'
+          cat >"$tmp/invalid-expression.yml" <<YAML
+          name: invalid expression
+          on: push
+          jobs:
+            test:
+              runs-on: ubuntu-24.04
+              steps:
+                - if: ${expression_marker}{{ github.property_that_does_not_exist }}
+                  run: echo unreachable
+          YAML
+
+          ./actionlint "$tmp/valid.yml"
+          if ./actionlint "$tmp/invalid-syntax.yml"; then
+            echo "::error::actionlint accepted malformed workflow syntax"
+            exit 1
+          fi
+          if ./actionlint "$tmp/invalid-expression.yml"; then
+            echo "::error::actionlint accepted an invalid workflow expression"
+            exit 1
+          fi
       - name: Run actionlint over all workflows
-        run: ./actionlint -color
+        env:
+          REQUIRE_SHELLCHECK: ${{ inputs.github-hosted-runner }}
+        run: |
+          if [ "$REQUIRE_SHELLCHECK" = true ]; then
+            command -v shellcheck >/dev/null || {
+              echo "::error::The governed GitHub-hosted runner must provide shellcheck"
+              exit 1
+            }
+            ./actionlint -shellcheck=shellcheck -color
+          else
+            ./actionlint -color
+          fi

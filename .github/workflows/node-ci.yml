@@ -393,6 +393,8 @@ jobs:
             # Checked before substitution — `${DB_PORT}` does not contain the
             # literal `$DB_PORT` (the brace sits between), so only the
             # brace-less form reaches here.
+            # `$DB_PORT` is intentionally literal in this pattern.
+            # shellcheck disable=SC2016
             case "$value" in
               *'$DB_PORT'*)
                 echo "db-env $key: '$value' uses the brace-less \$DB_PORT, which is" \
