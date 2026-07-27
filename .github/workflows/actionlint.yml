@@ -1,10 +1,13 @@
 name: actionlint
 
-# Lints the repo's GitHub Actions workflows deterministically, so nit classes the
-# merge-gate AI reviewer used to catch by hand (inconsistent/deprecated action
-# pins — e.g. #60 — and workflow-expression errors) fail pre-review for free.
-# Phase 1 of #43 (issue #80). The GCP self-hosted pool has no Docker socket, so
-# actionlint is installed as a pinned release binary rather than a container action.
+# Lints the caller's GitHub Actions workflows deterministically, so nit classes
+# the merge-gate AI reviewer used to catch by hand (inconsistent/deprecated
+# action pins — e.g. #60 — and workflow-expression errors) fail pre-review for
+# free. Local pull_request/push behavior from #80 is preserved; workflow_call
+# exposes the same implementation to consumers (#153).
+#
+# The GCP self-hosted pool has no Docker socket, so actionlint is installed as a
+# pinned, checksum-verified release binary rather than a container action.
 
 on:
   pull_request:
@@ -16,19 +19,26 @@ on:
     paths:
       - '.github/workflows/**'
       - '.github/actionlint.yaml'
+  workflow_call:
+    inputs:
+      github-hosted-runner:
+        description: Use the fixed ubuntu-24.04 runner instead of the GCP self-hosted pool.
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
 
 jobs:
   actionlint:
-    runs-on: [self-hosted, GCP]
+    runs-on: ${{ inputs.github-hosted-runner && 'ubuntu-24.04' || fromJSON('["self-hosted","GCP"]') }}
     env:
       ACTIONLINT_VERSION: 1.7.7
       # From actionlint_1.7.7_checksums.txt on the upstream GitHub Release.
       ACTIONLINT_SHA256: '023070a287cd8cccd71515fedc843f1985bf96c436b7effaecce67290e7e0757'
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Install actionlint (pinned release binary)
         run: |
           set -euo pipefail
@@ -38,5 +48,7 @@ jobs:
           printf '%s  %s\n' "$ACTIONLINT_SHA256" "$archive" | sha256sum --check --strict
           tar -xzf "$archive" actionlint
           ./actionlint --version
+      - name: Prove invalid workflows fail actionlint
+        run: bash scripts/actionlint-behavior.test.sh ./actionlint
       - name: Run actionlint over all workflows
         run: ./actionlint -color
