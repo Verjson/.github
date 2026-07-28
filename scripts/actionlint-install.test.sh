@@ -19,7 +19,7 @@ awk '
   capture {
     if (substr($0, 1, 10) == "          ") { print substr($0, 11); next }
     if ($0 ~ /^[ \t]*$/) { print ""; next }
-    capture = 0
+    exit
   }
 ' "$wf" >"$script"
 if ! grep -q 'sha256sum --check --strict' "$script" || ! grep -q 'tar -xzf' "$script"; then

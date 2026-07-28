@@ -1,6 +1,44 @@
 # .github
 Public organization profile, visible to anyone
 
+## Reusable actionlint
+
+Consumer repositories can lint their workflow files with the same pinned,
+checksum-verified actionlint used here:
+
+```yaml
+name: actionlint
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/**'
+      - '.github/actionlint.yaml'
+
+permissions:
+  contents: read
+
+jobs:
+  actionlint:
+    uses: Verjson/.github/.github/workflows/actionlint.yml@bfecdd0111582d0ddada558e6b4d0cadd9b488bd
+    with:
+      # Omit this for the org GCP self-hosted pool. Set true only when the
+      # caller intentionally wants the fixed GitHub-hosted runner.
+      github-hosted-runner: true
+```
+
+The caller owns all triggers and path filters; `workflow_call` never runs on its
+own. Keep the caller unfiltered when actionlint is a required check. If the
+caller uses `paths:` as above, do not require the check for changes outside
+those paths: GitHub creates no check run for an unmatched workflow, so a required
+check would remain pending.
+
+The called job ID is `actionlint`. With the caller job ID above, the resulting
+check is `actionlint / actionlint`; select the check emitted by a completed run
+when configuring a ruleset. Renaming either job changes the required-check
+context. The caller must grant `contents: read`, because a reusable workflow
+cannot elevate the caller's `GITHUB_TOKEN`.
+
 ## Org-wide merge gate: `ai-review-merge.yml`
 
 Every Verjson repo's PRs pass through

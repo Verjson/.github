@@ -11,6 +11,7 @@ on:
       - '.github/actions/**'
       - '.github/actionlint.yaml'
       - '.github/workflows/actionlint.yml'
+      - '.github/workflows/actionlint-reusable-contract.yml'
       - '.github/workflows/actions-ci.yml'
       - '.github/workflows/ai-review-merge.yml'
       - '.github/workflows/node-ci.yml'
@@ -28,6 +29,7 @@ on:
       - '.github/actions/**'
       - '.github/actionlint.yaml'
       - '.github/workflows/actionlint.yml'
+      - '.github/workflows/actionlint-reusable-contract.yml'
       - '.github/workflows/actions-ci.yml'
       - '.github/workflows/ai-review-merge.yml'
       - '.github/workflows/node-ci.yml'
@@ -52,6 +54,8 @@ jobs:
         run: bash scripts/actionlint-trigger.test.sh
       - name: actionlint — downloaded binary checksum is fail-closed (#83)
         run: bash scripts/actionlint-install.test.sh
+      - name: actionlint — reusable contract is bounded and immutable (#153)
+        run: bash scripts/actionlint-reusable.test.sh
       - name: reusable Node workflows — nested actions and release tooling are pinned (#89)
         run: bash scripts/node-workflow-pins.test.sh
       - name: reusable Node workflows — optional DB service is default-off and exports DATABASE_URL (#108)
