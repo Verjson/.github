@@ -12,16 +12,16 @@ name: node-ci (reusable)
 #     pull_request:
 #   jobs:
 #     ci:
-#       permissions:              # REQUIRED for @scope/* from GitHub Packages:
+#       permissions:              # REQUIRED by the called workflow's jobs:
 #         contents: read          # a reusable's GITHUB_TOKEN is capped by the
 #         packages: read          # caller, so packages:read must be granted here
 #                                 # or `npm ci` 401s on private @scope deps.
-#         statuses: read          # lets the eligibility job read the head's
+#         statuses: read          # REQUIRED: lets eligibility read the head's
 #                                 # renovate/stability-days status to defer CI on
 #                                 # held Renovate PRs (#133, ADR 0023). The token
-#                                 # is capped by the caller, so this must be
-#                                 # granted here; if omitted the check fails OPEN
-#                                 # and CI runs as before (safe degradation).
+#                                 # is capped by the caller, so omitting this grant
+#                                 # makes the workflow fail at STARTUP before the
+#                                 # action's fail-open path can run (#148).
 #       uses: Verjson/.github/.github/workflows/node-ci.yml@main
 #       secrets: inherit          # passes NODE_AUTH_TOKEN (+ submodules-token)
 #       # with:
@@ -160,9 +160,9 @@ jobs:
     timeout-minutes: ${{ inputs.timeout-minutes }}
     permissions:
       # Reading a commit's combined status needs `statuses` (not `contents`).
-      # The reusable's token is capped by the caller, so a caller that omits
-      # `statuses: read` from its `permissions:` block leaves this read denied —
-      # the check then fails OPEN and CI runs as before (see header, ADR 0023).
+      # The reusable's token is capped by the caller. If the caller does not
+      # grant `statuses: read`, GitHub rejects the reusable call at workflow
+      # startup, before the action's fail-open logic can execute (#148, ADR 0023).
       statuses: read
     outputs:
       should-run: ${{ steps.check.outputs.should-run }}
