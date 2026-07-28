@@ -208,7 +208,7 @@ jobs:
           cache: ${{ inputs.cache && hashFiles(inputs.cache-dependency-path) != '' && 'npm' || '' }}
           cache-dependency-path: ${{ inputs.cache-dependency-path }}
           package-manager-cache: false
-          registry-url: https://npm.pkg.github.com
+          registry-url: ${{ inputs.scope != '' && 'https://npm.pkg.github.com' || '' }}
           scope: ${{ inputs.scope }}
       - name: Start database service
         # Optional Postgres service for DB-backed test suites (e.g. Jest against

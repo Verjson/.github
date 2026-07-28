@@ -54,6 +54,13 @@ for workflow in "$ci" "$release"; do
     && pass "$name defaults its cache key to the root npm lockfile" \
     || fail "$name does not expose cache-dependency-path with the expected default"
 
+  scope_input="$(workflow_input "$workflow" scope)"
+  { grep -qF 'empty to skip registry auth' <<<"$scope_input" \
+    && grep -qF 'type: string' <<<"$scope_input" \
+    && grep -qF "default: '@verjson'" <<<"$scope_input"; } \
+    && pass "$name documents public-only mode and preserves the private @verjson default" \
+    || fail "$name does not expose the expected public/private scope contract"
+
   grep -qF "cache: \${{ inputs.cache && hashFiles(inputs.cache-dependency-path) != '' && 'npm' || '' }}" "$workflow" \
     && pass "$name enables setup-node's npm cache only for a matching lockfile" \
     || fail "$name does not condition npm caching on cache-dependency-path"
@@ -63,10 +70,10 @@ for workflow in "$ci" "$release"; do
   grep -qF 'package-manager-cache: false' "$workflow" \
     && pass "$name disables setup-node automatic package-manager caching" \
     || fail "$name can bypass the explicit cache/lockfile controls via setup-node auto-caching"
-  grep -qF 'registry-url:' "$workflow" \
+  grep -qF "registry-url: \${{ inputs.scope != '' && 'https://npm.pkg.github.com' || '' }}" "$workflow" \
     && grep -qF 'scope: ${{ inputs.scope }}' "$workflow" \
-    && pass "$name preserves scoped GitHub Packages registry setup" \
-    || fail "$name regressed scoped GitHub Packages registry setup"
+    && pass "$name leaves setup-node registry unset for public-only installs" \
+    || fail "$name does not gate GitHub Packages registry setup on a non-empty scope"
 done
 
 [ "$(grep -cF 'timeout-minutes: ${{ inputs.timeout-minutes }}' "$ci")" -eq 2 ] \
@@ -89,6 +96,8 @@ done
 
 composite_cache="$(composite_input cache)"
 composite_dependency="$(composite_input cache-dependency-path)"
+composite_scope="$(composite_input scope)"
+composite_registry="$(composite_input registry-url)"
 { grep -qF "default: 'true'" <<<"$composite_cache" \
   && grep -qF 'default: package-lock.json' <<<"$composite_dependency" \
   && grep -qF "cache: \${{ inputs.cache == 'true' && hashFiles(inputs.cache-dependency-path) != '' && 'npm' || '' }}" "$composite" \
@@ -96,10 +105,12 @@ composite_dependency="$(composite_input cache-dependency-path)"
   && grep -qF 'package-manager-cache: false' "$composite"; } \
   && pass "setup-verjson-node implements the same default-on lockfile cache contract" \
   || fail "setup-verjson-node cache inputs or setup-node wiring are incomplete"
-{ grep -qF "registry-url: \${{ inputs.scope != '' && inputs.registry-url || '' }}" "$composite" \
+{ grep -qF "default: '@verjson'" <<<"$composite_scope" \
+  && grep -qF "default: 'https://npm.pkg.github.com'" <<<"$composite_registry" \
+  && grep -qF "registry-url: \${{ inputs.scope != '' && inputs.registry-url || '' }}" "$composite" \
   && grep -qF 'NODE_AUTH_TOKEN: ${{ inputs.node-auth-token }}' "$composite"; } \
-  && pass "setup-verjson-node preserves registry gating and token export" \
-  || fail "setup-verjson-node regressed registry or NODE_AUTH_TOKEN wiring"
+  && pass "setup-verjson-node gates public installs while preserving private registry auth" \
+  || fail "setup-verjson-node regressed empty-scope gating or private registry auth"
 
 for test_command in \
   'bash scripts/node-workflow-controls.test.sh' \
