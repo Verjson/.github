@@ -31,7 +31,7 @@ concurrency:
 
 jobs:
   npm-cache-seed:
-    runs-on: [self-hosted, GCP]
+    runs-on: ubuntu-24.04
     env:
       NPM_CONFIG_CACHE: /tmp/verjson-node-cache-probe
     steps:
@@ -46,7 +46,7 @@ jobs:
 
   npm-cache-restore:
     needs: npm-cache-seed
-    runs-on: [self-hosted, GCP]
+    runs-on: ubuntu-24.04
     env:
       NPM_CONFIG_CACHE: /tmp/verjson-node-cache-probe
     steps:

@@ -167,7 +167,7 @@ jobs:
     # org direct paths (pull_request/workflow_dispatch) leave it empty and fall
     # back to the self-gate split — Verjson/.github reviews its OWN PRs on `meta`
     # to avoid the gate-runner deadlock (ADR 0016), every other org repo on `gate`.
-    runs-on: ${{ inputs.runner_labels && fromJSON(inputs.runner_labels) || github.repository == 'Verjson/.github' && fromJSON('["self-hosted","meta"]') || fromJSON('["self-hosted","gate"]') }}
+    runs-on: ${{ inputs.runner_labels && fromJSON(inputs.runner_labels) || github.event.repository.private == false && 'ubuntu-24.04' || fromJSON('["self-hosted","gate"]') }}
     # This job combines the former 10-minute freshness and classification jobs.
     timeout-minutes: 20
     permissions:
@@ -505,7 +505,7 @@ jobs:
     # org direct paths (pull_request/workflow_dispatch) leave it empty and fall
     # back to the self-gate split — Verjson/.github reviews its OWN PRs on `meta`
     # to avoid the gate-runner deadlock (ADR 0016), every other org repo on `gate`.
-    runs-on: ${{ inputs.runner_labels && fromJSON(inputs.runner_labels) || github.repository == 'Verjson/.github' && fromJSON('["self-hosted","meta"]') || fromJSON('["self-hosted","gate"]') }}
+    runs-on: ${{ inputs.runner_labels && fromJSON(inputs.runner_labels) || github.event.repository.private == false && 'ubuntu-24.04' || fromJSON('["self-hosted","gate"]') }}
     # Fast retains its former 45-minute merge ceiling. AI gets one bounded
     # aggregate ceiling for the 30-minute CI wait + the former 45-minute review
     # allowance + checkout/debounce/submit/recheck buffer.

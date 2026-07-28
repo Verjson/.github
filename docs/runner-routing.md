@@ -7,7 +7,10 @@ for the *why* of the groups, this for the *how* of day-to-day routing.
 
 ## TL;DR
 
-- **Default to `[self-hosted, GCP]`** for ordinary CI (build/test/lint/release).
+- **Default to `[self-hosted, GCP]`** for ordinary CI in selected trusted private
+  repositories (build/test/lint/release).
+- **Public repositories and fork/untrusted validation use `ubuntu-24.04`** until
+  the fresh-container isolated lane is deployed and admitted.
 - **Docker/kind/buildx jobs must pin `[self-hosted, docker]`** — the general GCP
   pool has **no Docker socket**.
 - **Labels describe *capability*, not just provider.** `GCP` ≡ `gce` = the 8 GCE
@@ -28,7 +31,7 @@ for the *why* of the groups, this for the *how* of day-to-day routing.
 | `GCP`      | `gha-runner-3..6`, `gha-gate-1..4` (8 GCE VMs)     | `GCP`    | **Canonical general-pool label.** Ordinary CI: build / test / lint, releases, `notify-umbrella`. GCE image → ambient `gh`/git/node. |
 | `gce`      | the same 8 GCE VMs (dual-labeled `GCP` + `gce`)    | `GCP`    | **Clean alias of `GCP`** — identical runners (invariant restored in ADR 0011). Deprecated for new work; reconcile `gce` → `GCP` opportunistically. |
 | `gate`     | `gha-gate-1..4` (a subset of the GCE VMs)          | `GCP`    | **All** org gate jobs — `freshness`, `classify`, `ai-review`, `ai-merge` (non-`.github`). Dedicated GCE subset: has ambient `gh` and keeps gate load off general CI. |
-| `meta`     | `gha-meta-1` (+ `gha-meta-2` pending, [#70](https://github.com/Verjson/.github/issues/70)) | `GCP`    | The `Verjson/.github` repo's **own** gate jobs — a dedicated lane so pipeline-fix PRs never queue behind bulk/other-repo CI (#14). Registered `meta`-only so bulk CI can never occupy it. Must be **redundant** (≥2 `meta`-only runners — [ADR 0016](decisions/0016-self-gate-runner-redundancy/README.md)); one runner is a SPOF. See the caveat below. |
+| `meta`     | `gha-meta-1`, `gha-meta-2` | `GCP` | Legacy `.github` self-gate lane. ADR 0028 moves public repository execution to fixed hosted capacity; these runners must not be used to restore public access. |
 | `docker`   | `gha-docker-1`                                     | `GCP` †  | Docker / kind / buildx / testcontainers — anything needing the Docker daemon. **Required**, not optional (see below). |
 | `manish`   | `hostinger` runner                                 | `manish` | Secondary / overflow pool on a **non-GCE image** (no ambient `gh`; Node via `setup-node`). Target explicitly by label; jobs must self-provision tools. ‡ |
 | _(none)_   | GitHub-hosted                                      | `GitHub` | **Last resort only.** Reserved fallback; not used for real CI.                                             |
@@ -60,18 +63,13 @@ one-time on-box step owned by the runner-topology owner.
   Docker socket**, so these jobs fail there. `gha-docker-1` is currently the only
   `docker`-labeled runner, so such jobs serialize on it (capacity/redundancy is
   tracked in issue #31 item 6).
-- **The org AI gate** (`ai-review-merge.yml`): **all** gate jobs — `freshness`,
+- **The org AI gate** (`ai-review-merge.yml`): private-repository gate jobs — `freshness`,
   `classify`, `ai-review`, `ai-merge` — run on `gate`. They call `gh`, so they need
   the dedicated GCE subset (which has ambient `gh` and excludes the `hostinger`
   overflow); routing `freshness`/`classify` to `GCP` let them land on `hostinger`
-  and fail (#52). When the target repo **is** `Verjson/.github` itself, they run on
-  `meta` instead (the self-gate lane) — a dedicated lane so pipeline-fix PRs never
-  queue behind bulk/other-repo gate work (#14). That lane must stay **redundant**
-  (≥2 `meta`-only runners); a single runner is a SPOF that leaves `.github` PRs
-  un-gated if it drops. Provisioning the second runner (`gha-meta-2`, GCE,
-  `meta`-only) is tracked by [#70](https://github.com/Verjson/.github/issues/70)
-  ([ADR 0016](decisions/0016-self-gate-runner-redundancy/README.md)); no workflow
-  change is needed — `runs-on: [self-hosted, meta]` picks it up on registration.
+  and fail (#52). Public target repositories, including `Verjson/.github`, use
+  fixed `ubuntu-24.04` instead. This retires the public repository's dependency
+  on the persistent `meta` lane; ADR 0028 supersedes ADR 0016 for this route.
 - **Secondary / overflow** → `[self-hosted, manish]`.
 
 ## Constraints every self-hosted job must respect

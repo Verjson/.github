@@ -41,6 +41,11 @@ runner for another 17–27 minutes and contributed to a 56-minute queue.
    reviewed exception that restricts exact trusted workflows.
 5. Third-party actions and reusable workflow dependencies remain immutable.
    PR jobs receive explicit least privilege and no release credentials.
+6. The public `.github` repository's validation, scheduled maintenance, tag
+   maintenance, cache probe, and merge-gate executions use fixed
+   `ubuntu-24.04`. Reusable workflows still route trusted private callers to
+   their governed pool. Public target repositories also run the central merge
+   gate on hosted capacity.
 
 ## Consequences
 
@@ -51,6 +56,9 @@ runner for another 17–27 minutes and contributed to a 56-minute queue.
 - Public and fork validation may consume GitHub-hosted minutes until the
   ephemeral contract is independently proven; isolation takes precedence over
   the former “hosted last resort” preference.
+- The former dedicated `meta` runners are no longer required for `.github`
+  execution after this change and may be removed or repurposed only through a
+  separately recorded topology change.
 - Restricting the live group requires an inventory of current GCP consumers and
   a before/after authorization receipt. Repositories omitted from that inventory
   will queue rather than silently fall back to a broader runner.
