@@ -30,8 +30,8 @@ for the *why* of the groups, this for the *how* of day-to-day routing.
 | ---------- | -------------------------------------------------- | -------- | --------------------------------------------------------------------------------------------------------- |
 | `GCP`      | `gha-runner-3..6`, `gha-gate-1..4` (8 GCE VMs)     | `GCP`    | **Canonical general-pool label.** Ordinary CI: build / test / lint, releases, `notify-umbrella`. GCE image → ambient `gh`/git/node. |
 | `gce`      | the same 8 GCE VMs (dual-labeled `GCP` + `gce`)    | `GCP`    | **Clean alias of `GCP`** — identical runners (invariant restored in ADR 0011). Deprecated for new work; reconcile `gce` → `GCP` opportunistically. |
-| `gate`     | `gha-gate-1..4` (a subset of the GCE VMs)          | `GCP`    | **All** org gate jobs — `freshness`, `classify`, `ai-review`, `ai-merge` (non-`.github`). Dedicated GCE subset: has ambient `gh` and keeps gate load off general CI. |
-| `meta`     | `gha-meta-1`, `gha-meta-2` | `GCP` | Legacy `.github` self-gate lane. ADR 0028 moves public repository execution to fixed hosted capacity; these runners must not be used to restore public access. |
+| `gate`     | `gha-gate-1..4`, `gha-meta-1`, `gha-meta-2` | `GCP` | Private-repository `freshness`, `classify`, `ai-review`, and `ai-merge`. ADR 0029 repurposes the former meta pair after public targets moved hosted, raising capacity from four to six. |
+| `meta`     | `gha-meta-1`, `gha-meta-2` | `GCP` | Identity/rollback label retained on the former `.github` self-gate lane. Both also carry `gate` under ADR 0029; public repositories remain denied by the group boundary. |
 | `docker`   | `gha-docker-1`                                     | `GCP` †  | Docker / kind / buildx / testcontainers — anything needing the Docker daemon. **Required**, not optional (see below). |
 | `manish`   | `hostinger` runner                                 | `manish` | Secondary / overflow pool on a **non-GCE image** (no ambient `gh`; Node via `setup-node`). Target explicitly by label; jobs must self-provision tools. ‡ |
 | _(none)_   | GitHub-hosted                                      | `GitHub` | **Last resort only.** Reserved fallback; not used for real CI.                                             |
@@ -70,6 +70,8 @@ one-time on-box step owned by the runner-topology owner.
   and fail (#52). Public target repositories, including `Verjson/.github`, use
   fixed `ubuntu-24.04` instead. This retires the public repository's dependency
   on the persistent `meta` lane; ADR 0028 supersedes ADR 0016 for this route.
+  ADR 0029 adds `gate` to the two retired meta runners so private gate capacity
+  rises from four to six without making them general `GCP` bulk-CI runners.
 - **Secondary / overflow** → `[self-hosted, manish]`.
 
 ## Constraints every self-hosted job must respect
