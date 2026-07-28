@@ -52,7 +52,9 @@ one-time on-box step owned by the runner-topology owner.
   [`node-release`](../.github/workflows/node-release.yml) /
   [`notify-umbrella`](../.github/workflows/notify-umbrella.yml) reusable
   workflows already default here; callers only override `runner` to reach a
-  different pool (e.g. `manish`), never to fall back to `ubuntu-latest`.
+  different pool (e.g. `manish`), never to fall back to `ubuntu-latest`. See
+  [Reusable Node workflow controls](node-workflows.md) for timeout, cache, and
+  caller-concurrency inputs.
 - **Docker / kind / buildx / anything touching the Docker daemon** →
   `[self-hosted, docker]` (`gha-docker-1`). The general `GCP` pool has **no
   Docker socket**, so these jobs fail there. `gha-docker-1` is currently the only
