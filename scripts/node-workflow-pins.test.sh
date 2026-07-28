@@ -15,7 +15,6 @@ actions_ci="$root/.github/workflows/actions-ci.yml"
 package="$root/.github/release-tooling/package.json"
 lock="$root/.github/release-tooling/package-lock.json"
 renovate="$root/renovate.json"
-eligibility_pin='9a7cc9cac4e0f32a5b64d8af8b8467350ee685d2'
 fails=0
 pass() { printf 'ok   - %s\n' "$1"; }
 fail() { printf 'FAIL - %s\n' "$1"; fails=$((fails + 1)); }
@@ -109,17 +108,17 @@ jq -e '
   && pass "Renovate maintains every Node workflow/setup digest pin" \
   || fail "Renovate digest-pin maintenance does not cover every Node surface"
 
-# The self-reference must be the reviewed commit that introduced the action.
-# #135 pinned from a stale release that predated the action; this assertion keeps
-# that failure from returning while closing the mutable @main seam from #162.
-grep -qE "^[[:space:]]*uses: Verjson/\\.github/\\.github/actions/ci-eligibility@${eligibility_pin}[[:space:]]*$" "$ci" \
-  && pass "node-ci pins ci-eligibility to the reviewed action-introducing commit" \
-  || fail "node-ci does not pin ci-eligibility to reviewed commit $eligibility_pin"
+# node-ci inlines eligibility rather than calling a separately-versioned copy of
+# this repository. This removes the manually-maintained self-pin from #162 and
+# prevents repo-wide releases from creating a self-update/release loop (#164).
+grep -qE '^[[:space:]]*uses: Verjson/\.github/\.github/actions/ci-eligibility@' "$ci" \
+  && fail "node-ci still has a remote ci-eligibility self-dependency" \
+  || pass "node-ci has no remote ci-eligibility self-dependency"
 
 # Walk the dependency graph that node-ci actually executes. Every remote ref
-# must be a full SHA. A self-reference is resolved with git-show at that SHA and
-# recursively scanned, so a mutable nested dependency inside the pinned action
-# cannot hide behind an immutable top-level node-ci reference.
+# must be a full SHA. Any self-reference is resolved with git-show at that SHA
+# and recursively scanned, so mutable code cannot hide behind an immutable
+# top-level node-ci reference.
 declare -A graph_seen=()
 graph_error=''
 ref_is_immutable() { [[ "$1" =~ ^[0-9a-f]{40}$ ]]; }
@@ -220,13 +219,14 @@ else
   fail "direct mutable fixture failed for the wrong reason: $graph_error"
 fi
 
+self_fixture_ref="$(git -C "$root" rev-parse HEAD)"
 cat >"$graph_fixtures/directory-action.yml" <<YAML
 steps:
-  - uses: Verjson/.github/.github/actions/ci-eligibility@$eligibility_pin
+  - uses: Verjson/.github/.github/actions/setup-verjson-node@$self_fixture_ref
 YAML
 graph_seen=()
 graph_error=''
-resolved_action="$eligibility_pin:.github/actions/ci-eligibility/action.yml"
+resolved_action="$self_fixture_ref:.github/actions/setup-verjson-node/action.yml"
 if walk_uses_graph "$graph_fixtures/directory-action.yml" "directory-action.yml" \
   && [ -n "${graph_seen[$resolved_action]:-}" ]; then
   pass "graph walker resolves directory-form composite action to action.yml"

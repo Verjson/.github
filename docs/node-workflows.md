@@ -7,7 +7,7 @@ longer suite can set the numeric `timeout-minutes` input:
 ```yaml
 jobs:
   ci:
-    uses: Verjson/.github/.github/workflows/node-ci.yml@v2.1.0
+    uses: Verjson/.github/.github/workflows/node-ci.yml@v2.1.1
     with:
       timeout-minutes: 45
 ```
@@ -20,7 +20,7 @@ lockfile that should key the cache:
 ```yaml
 jobs:
   ci:
-    uses: Verjson/.github/.github/workflows/node-ci.yml@v2.1.0
+    uses: Verjson/.github/.github/workflows/node-ci.yml@v2.1.1
     with:
       cache-dependency-path: packages/service/package-lock.json
 ```
