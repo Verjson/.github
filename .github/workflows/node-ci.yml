@@ -49,10 +49,15 @@ on:
         type: number
         default: 30
       cache:
-        description: Cache npm downloads when cache-dependency-path matches a lockfile
+        description: Upload a job-scoped npm cache when cache-dependency-path matches a lockfile
         required: false
         type: boolean
-        default: true
+        default: false
+      cache-max-mb:
+        description: Maximum job-scoped npm cache size to upload when cache is enabled
+        required: false
+        type: number
+        default: 1024
       cache-dependency-path:
         description: Lockfile path or glob used to key the npm download cache
         required: false
@@ -215,6 +220,9 @@ jobs:
         with:
           submodules: recursive
           token: ${{ secrets.submodules-token || github.token }}
+      - name: Prepare job-scoped npm cache
+        if: inputs.cache
+        run: echo "npm_config_cache=$RUNNER_TEMP/verjson-npm-cache" >> "$GITHUB_ENV"
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
           node-version: ${{ inputs.node-version }}
@@ -529,3 +537,23 @@ jobs:
       - run: npm run build
       - run: npm test
       - run: npm run lint --if-present
+      - name: Bound npm cache upload
+        if: always() && inputs.cache
+        env:
+          CACHE_MAX_MB: ${{ inputs.cache-max-mb }}
+        run: |
+          set -euo pipefail
+          cache_dir="$RUNNER_TEMP/verjson-npm-cache"
+          mkdir -p "$cache_dir"
+          size_kb="$(du -sk "$cache_dir" | cut -f1)"
+          size_mb="$(( (size_kb + 1023) / 1024 ))"
+          {
+            echo "### npm cache"
+            echo "- scoped path: \`$cache_dir\`"
+            echo "- size: ${size_mb} MB"
+            echo "- upload limit: ${CACHE_MAX_MB} MB"
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$size_kb" -gt "$(( CACHE_MAX_MB * 1024 ))" ]; then
+            echo "::warning::npm cache is ${size_mb} MB; clearing it instead of uploading more than ${CACHE_MAX_MB} MB"
+            find "$cache_dir" -mindepth 1 -delete
+          fi

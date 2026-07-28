@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Guards the bounded-runtime and npm-download-cache contracts from #152.
+# Guards the bounded-runtime and runner-aware npm-download-cache contracts from
+# #152 and #166.
 set -uo pipefail
 
 here="$(cd "$(dirname "$0")" && pwd)"
@@ -44,9 +45,15 @@ for workflow in "$ci" "$release"; do
 
   cache_input="$(workflow_input "$workflow" cache)"
   { grep -qF 'type: boolean' <<<"$cache_input" \
-    && grep -qF 'default: true' <<<"$cache_input"; } \
-    && pass "$name defaults npm caching on" \
-    || fail "$name does not expose a default-on boolean cache input"
+    && grep -qF 'default: false' <<<"$cache_input"; } \
+    && pass "$name defaults Actions npm caching off for persistent runners" \
+    || fail "$name does not expose a default-off boolean cache input"
+
+  cache_max_input="$(workflow_input "$workflow" cache-max-mb)"
+  { grep -qF 'type: number' <<<"$cache_max_input" \
+    && grep -qF 'default: 1024' <<<"$cache_max_input"; } \
+    && pass "$name bounds explicitly enabled cache uploads at 1024 MB by default" \
+    || fail "$name does not expose the expected cache-max-mb guard"
 
   dependency_input="$(workflow_input "$workflow" cache-dependency-path)"
   { grep -qF 'type: string' <<<"$dependency_input" \
@@ -70,6 +77,12 @@ for workflow in "$ci" "$release"; do
   grep -qF 'package-manager-cache: false' "$workflow" \
     && pass "$name disables setup-node automatic package-manager caching" \
     || fail "$name can bypass the explicit cache/lockfile controls via setup-node auto-caching"
+  { grep -qF 'echo "npm_config_cache=$RUNNER_TEMP/verjson-npm-cache" >> "$GITHUB_ENV"' "$workflow" \
+    && grep -qF 'cache_dir="$RUNNER_TEMP/verjson-npm-cache"' "$workflow" \
+    && grep -qF 'find "$cache_dir" -mindepth 1 -delete' "$workflow" \
+    && grep -qF 'CACHE_MAX_MB: ${{ inputs.cache-max-mb }}' "$workflow"; } \
+    && pass "$name scopes and bounds explicitly enabled cache uploads" \
+    || fail "$name can archive an accumulated or unbounded persistent-runner npm cache"
   grep -qF "registry-url: \${{ inputs.scope != '' && 'https://npm.pkg.github.com' || '' }}" "$workflow" \
     && grep -qF 'scope: ${{ inputs.scope }}' "$workflow" \
     && pass "$name leaves setup-node registry unset for public-only installs" \
@@ -98,12 +111,13 @@ composite_cache="$(composite_input cache)"
 composite_dependency="$(composite_input cache-dependency-path)"
 composite_scope="$(composite_input scope)"
 composite_registry="$(composite_input registry-url)"
-{ grep -qF "default: 'true'" <<<"$composite_cache" \
+{ grep -qF "default: 'false'" <<<"$composite_cache" \
   && grep -qF 'default: package-lock.json' <<<"$composite_dependency" \
   && grep -qF "cache: \${{ inputs.cache == 'true' && hashFiles(inputs.cache-dependency-path) != '' && 'npm' || '' }}" "$composite" \
   && grep -qF 'cache-dependency-path: ${{ inputs.cache-dependency-path }}' "$composite" \
-  && grep -qF 'package-manager-cache: false' "$composite"; } \
-  && pass "setup-verjson-node implements the same default-on lockfile cache contract" \
+  && grep -qF 'package-manager-cache: false' "$composite" \
+  && grep -qF 'echo "npm_config_cache=$RUNNER_TEMP/verjson-npm-cache" >> "$GITHUB_ENV"' "$composite"; } \
+  && pass "setup-verjson-node implements the same default-off, job-scoped cache contract" \
   || fail "setup-verjson-node cache inputs or setup-node wiring are incomplete"
 { grep -qF "default: '@verjson'" <<<"$composite_scope" \
   && grep -qF "default: 'https://npm.pkg.github.com'" <<<"$composite_registry" \
@@ -139,6 +153,43 @@ done
   && grep -qF '`cancel-in-progress: false`' "$docs"; } \
   && pass "usage docs cover timeout, cache, auth, and caller concurrency decisions" \
   || fail "usage docs omit a required timeout/cache/concurrency contract"
+
+# Execute the workflow-owned guard, not a copied test implementation. This
+# proves an oversized job-scoped cache is emptied while an in-bound cache is
+# preserved, and confines deletion beneath RUNNER_TEMP.
+guard_script="$(mktemp)"
+guard_root="$(mktemp -d)"
+trap 'rm -f "$guard_script"; rm -rf "$guard_root"' EXIT
+awk '
+  /- name: Bound npm cache upload/ { found = 1; next }
+  found && /^        run: \|$/ { capture = 1; next }
+  capture && /^          / { sub(/^          /, ""); print; next }
+  capture { exit }
+' "$ci" > "$guard_script"
+summary="$guard_root/summary.md"
+cache_dir="$guard_root/verjson-npm-cache"
+mkdir -p "$cache_dir"
+dd if=/dev/zero of="$cache_dir/oversized" bs=1048576 count=2 status=none
+if RUNNER_TEMP="$guard_root" CACHE_MAX_MB=1 GITHUB_STEP_SUMMARY="$summary" \
+    bash "$guard_script" >/dev/null \
+    && [ -d "$cache_dir" ] \
+    && [ -z "$(find "$cache_dir" -mindepth 1 -print -quit)" ] \
+    && grep -qF -- '- size:' "$summary" \
+    && grep -qF -- '- upload limit: 1 MB' "$summary"; then
+  pass "cache guard reports and clears an oversized job-scoped cache"
+else
+  fail "cache guard did not safely clear an oversized job-scoped cache"
+fi
+
+: > "$summary"
+printf 'keep' > "$cache_dir/in-bound"
+if RUNNER_TEMP="$guard_root" CACHE_MAX_MB=1 GITHUB_STEP_SUMMARY="$summary" \
+    bash "$guard_script" >/dev/null \
+    && [ -f "$cache_dir/in-bound" ]; then
+  pass "cache guard preserves an in-bound job-scoped cache"
+else
+  fail "cache guard removed an in-bound job-scoped cache"
+fi
 
 if [ "$fails" -eq 0 ]; then
   echo "All tests passed."

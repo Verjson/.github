@@ -6,8 +6,9 @@ name: actionlint
 # free. Local pull_request/push behavior from #80 is preserved; workflow_call
 # exposes the same implementation to consumers (#153).
 #
-# The GCP self-hosted pool has no Docker socket, so actionlint is installed as a
-# pinned, checksum-verified release binary rather than a container action.
+# Public `.github` validation uses a fixed hosted image. Reusable calls from
+# trusted private repositories retain the governed GCP default unless the caller
+# selects hosted explicitly.
 
 on:
   pull_request:
@@ -32,7 +33,7 @@ permissions:
 
 jobs:
   actionlint:
-    runs-on: ${{ inputs.github-hosted-runner && 'ubuntu-24.04' || fromJSON('["self-hosted","GCP"]') }}
+    runs-on: ${{ (github.repository == 'Verjson/.github' || inputs.github-hosted-runner) && 'ubuntu-24.04' || fromJSON('["self-hosted","GCP"]') }}
     env:
       ACTIONLINT_VERSION: 1.7.7
       # From actionlint_1.7.7_checksums.txt on the upstream GitHub Release.
