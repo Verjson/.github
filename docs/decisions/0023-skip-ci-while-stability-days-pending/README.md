@@ -50,10 +50,11 @@ build-test:
 - **Token/permission (required for it to actually defer):** reading a commit's
   combined status needs the `statuses` permission, which `contents: read` does
   **not** confer, and a reusable's `GITHUB_TOKEN` is capped by the caller. So a
-  consumer must add `statuses: read` to its caller `permissions:` block. Where it
-  is absent the read is denied, the check **fails open**, and CI runs as before —
-  a safe, opt-in rollout, not a hard break. The eligibility job requests
-  `statuses: read` (not `contents: read`).
+  consumer must add `statuses: read` to its caller `permissions:` block. The
+  eligibility job explicitly requests `statuses: read` (not `contents: read`),
+  so a caller that does not grant it makes the reusable call invalid at workflow
+  startup. The action's fail-open behavior applies only after the workflow starts,
+  such as when the status API returns an error.
 - **Hand-rolled CI** (`toquorum/ci.yml`, `catalog-*`, `viager-app`) adopts the
   same action in its own `eligibility` job. Those repos are `default-pm`'s — the
   org ships the action; each repo adopts it via its own PR. **toquorum#161 is the
@@ -84,7 +85,33 @@ Behaviour, as approved on #133:
 
 A `scripts/ci-gate/ci-eligibility.test.sh` extraction test pins the four
 behaviours (defer on pending, run when clean, fail-open on API error, dispatch
-override), wired into `actions-ci.yml`.
+override), plus the required caller-permission contract, wired into
+`actions-ci.yml`.
+
+## 2026-07-28 correction — caller permission omission fails at startup
+
+Issue [#148](https://github.com/Verjson/.github/issues/148) showed that the
+original "safe, opt-in rollout" wording was wrong at the reusable-workflow
+boundary. [GitHub documents](https://docs.github.com/en/actions/reference/workflows-and-actions/reusing-workflow-configurations#supported-keywords-for-jobs-that-call-a-reusable-workflow)
+that a called workflow can only maintain or reduce the caller's `GITHUB_TOKEN`
+permissions; it cannot add a permission that the caller withheld. Because
+`eligibility` explicitly requests `statuses: read`, omitting that grant does not
+reach the action's runtime fail-open path: GitHub rejects the reusable call at
+startup.
+
+The failure was reproduced on `Verjson/verjson-authn#79`: restoring
+`node-ci.yml@main` without the caller grant produced
+[`CI` startup failure 30203052478](https://github.com/Verjson/verjson-authn/actions/runs/30203052478).
+The next commit added `statuses: read` to the reusable-call job, after which
+[`CI` run 30203321441](https://github.com/Verjson/verjson-authn/actions/runs/30203321441)
+started and passed. The reported boundary is therefore still current and
+observable, not merely inferred from documentation.
+
+Keep the eligibility job's explicit `permissions:` block. Removing it would let
+that job inherit every permission the caller supplies, broadening the token
+available to the moving `@main` composite action. Requiring the caller's narrow
+`statuses: read` grant preserves least privilege; the caller example and
+regression test now state the startup requirement accurately.
 
 ## Consequences
 

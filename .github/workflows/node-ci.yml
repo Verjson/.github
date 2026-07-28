@@ -12,23 +12,28 @@ name: node-ci (reusable)
 #     pull_request:
 #   jobs:
 #     ci:
-#       permissions:              # REQUIRED for @scope/* from GitHub Packages:
+#       permissions:              # REQUIRED by the called workflow's jobs:
 #         contents: read          # a reusable's GITHUB_TOKEN is capped by the
 #         packages: read          # caller, so packages:read must be granted here
 #                                 # or `npm ci` 401s on private @scope deps.
-#         statuses: read          # lets the eligibility job read the head's
+#         statuses: read          # REQUIRED: lets eligibility read the head's
 #                                 # renovate/stability-days status to defer CI on
 #                                 # held Renovate PRs (#133, ADR 0023). The token
-#                                 # is capped by the caller, so this must be
-#                                 # granted here; if omitted the check fails OPEN
-#                                 # and CI runs as before (safe degradation).
+#                                 # is capped by the caller, so omitting this grant
+#                                 # makes the workflow fail at STARTUP before the
+#                                 # action's fail-open path can run (#148).
 #       uses: Verjson/.github/.github/workflows/node-ci.yml@main
 #       secrets: inherit          # passes NODE_AUTH_TOKEN (+ submodules-token)
 #       # with:
 #       #   node-version: '22.23.1'   # override when a repo pins a version
+#       #   timeout-minutes: 45        # override the 30-minute job bound
+#       #   cache-dependency-path: package-lock.json
 #       #   scope: ''                 # set empty to skip the private registry
 #       #   schema-dir: myapp-schema  # npm ci a `file:` schema submodule first
 #       #                             # (needs submodules-token for a private one)
+#
+# Cache/timeout details and caller concurrency guidance:
+# docs/node-workflows.md
 
 on:
   workflow_call:
@@ -38,6 +43,21 @@ on:
         required: false
         type: string
         default: '24'
+      timeout-minutes:
+        description: Maximum runtime for each CI job after a runner starts it
+        required: false
+        type: number
+        default: 30
+      cache:
+        description: Cache npm downloads when cache-dependency-path matches a lockfile
+        required: false
+        type: boolean
+        default: true
+      cache-dependency-path:
+        description: Lockfile path or glob used to key the npm download cache
+        required: false
+        type: string
+        default: package-lock.json
       scope:
         description: npm scope for the GitHub Packages registry (empty to skip registry auth)
         required: false
@@ -137,11 +157,12 @@ jobs:
   # it says defer, staying BLOCKED until the rebase re-fires CI (Verjson/.github#133).
   eligibility:
     runs-on: ${{ fromJSON(inputs.runner) }}
+    timeout-minutes: ${{ inputs.timeout-minutes }}
     permissions:
       # Reading a commit's combined status needs `statuses` (not `contents`).
-      # The reusable's token is capped by the caller, so a caller that omits
-      # `statuses: read` from its `permissions:` block leaves this read denied —
-      # the check then fails OPEN and CI runs as before (see header, ADR 0023).
+      # The reusable's token is capped by the caller. If the caller does not
+      # grant `statuses: read`, GitHub rejects the reusable call at workflow
+      # startup, before the action's fail-open logic can execute (#148, ADR 0023).
       statuses: read
     outputs:
       should-run: ${{ steps.check.outputs.should-run }}
@@ -169,6 +190,7 @@ jobs:
     # normal one behind a new single point of failure.
     if: always() && needs.eligibility.outputs.should-run != 'false'
     runs-on: ${{ fromJSON(inputs.runner) }}
+    timeout-minutes: ${{ inputs.timeout-minutes }}
     permissions:
       contents: read
       packages: read
@@ -180,7 +202,13 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
           node-version: ${{ inputs.node-version }}
-          registry-url: https://npm.pkg.github.com
+          # setup-node caches npm's download cache, never node_modules or build
+          # output. An absent lockfile disables caching instead of failing jobs
+          # in repositories that do not use npm lockfiles.
+          cache: ${{ inputs.cache && hashFiles(inputs.cache-dependency-path) != '' && 'npm' || '' }}
+          cache-dependency-path: ${{ inputs.cache-dependency-path }}
+          package-manager-cache: false
+          registry-url: ${{ inputs.scope != '' && 'https://npm.pkg.github.com' || '' }}
           scope: ${{ inputs.scope }}
       - name: Start database service
         # Optional Postgres service for DB-backed test suites (e.g. Jest against
@@ -242,10 +270,11 @@ jobs:
           # containers while a leaked one is typically still running.
           #
           # Only containers older than 6h are reaped. A job cannot outlive
-          # GitHub's default `timeout-minutes: 360`, and its container is created
-          # after the job starts, so a labelled container older than 6h cannot
-          # belong to a job that is still running — while anything younger may be
-          # a concurrent job's live database, which this must never remove (#116).
+          # GitHub caps `timeout-minutes` at 360 even when a caller supplies a
+          # larger value, and this container is created after the job starts, so
+          # a labelled container older than 6h cannot belong to a job that is
+          # still running — while anything younger may be a concurrent job's live
+          # database, which this must never remove (#116).
           # Best-effort, but never silent: a listing or a removal that fails warns
           # instead of quietly sweeping nothing.
           sweep_cutoff=$(( $(date +%s) - 6 * 60 * 60 ))

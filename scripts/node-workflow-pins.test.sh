@@ -1,13 +1,15 @@
 #!/usr/bin/env bash
-# Guards the immutable nested dependencies in the reusable Node workflows
-# (Verjson/.github#89): audited action SHAs, release tooling co-located at the
-# called workflow's own SHA, an exact lockfile, and Renovate maintenance.
+# Guards the immutable nested dependencies in every Node workflow/setup surface
+# (Verjson/.github#89, #152): audited action SHAs, release tooling co-located at
+# the called workflow's own SHA, an exact lockfile, and Renovate maintenance.
 set -uo pipefail
 
 here="$(cd "$(dirname "$0")" && pwd)"
 root="$(cd "$here/.." && pwd)"
 ci="$root/.github/workflows/node-ci.yml"
 release="$root/.github/workflows/node-release.yml"
+cache_probe="$root/.github/workflows/node-cache-integration.yml"
+composite="$root/.github/actions/setup-verjson-node/action.yml"
 actions_ci="$root/.github/workflows/actions-ci.yml"
 package="$root/.github/release-tooling/package.json"
 lock="$root/.github/release-tooling/package-lock.json"
@@ -18,10 +20,16 @@ fail() { printf 'FAIL - %s\n' "$1"; fails=$((fails + 1)); }
 
 checkout='actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7'
 setup_node='actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7'
-for wf in "$ci" "$release"; do
+for wf in "$ci" "$release" "$cache_probe" "$actions_ci"; do
   name="$(basename "$wf")"
   expected_checkouts=1
-  [ "$wf" = "$release" ] && expected_checkouts=2
+  expected_setups=1
+  if [ "$wf" = "$release" ]; then
+    expected_checkouts=2
+  elif [ "$wf" = "$cache_probe" ]; then
+    expected_checkouts=2
+    expected_setups=2
+  fi
   pinned_checkouts="$(grep -cF "uses: $checkout" "$wf")"
   all_checkouts="$(grep -cE 'uses: actions/checkout@' "$wf")"
   { [ "$pinned_checkouts" -eq "$expected_checkouts" ] && [ "$all_checkouts" -eq "$expected_checkouts" ]; } \
@@ -29,13 +37,21 @@ for wf in "$ci" "$release"; do
     || fail "$name checkout is not pinned to the audited v7 commit"
   pinned_setups="$(grep -cF "uses: $setup_node" "$wf")"
   all_setups="$(grep -cE 'uses: actions/setup-node@' "$wf")"
-  { [ "$pinned_setups" -eq 1 ] && [ "$all_setups" -eq 1 ]; } \
+  { [ "$pinned_setups" -eq "$expected_setups" ] && [ "$all_setups" -eq "$expected_setups" ]; } \
     && pass "$name pins every setup-node use to the audited v7 commit" \
     || fail "$name setup-node is not pinned to the audited v7 commit"
   grep -Eq 'uses: actions/(checkout|setup-node)@v[0-9]+' "$wf" \
     && fail "$name still contains a mutable nested action tag" \
     || pass "$name contains no mutable checkout/setup-node tag"
 done
+
+{ [ "$(grep -cF "uses: $setup_node" "$composite")" -eq 1 ] \
+  && [ "$(grep -cE 'uses: actions/setup-node@' "$composite")" -eq 1 ]; } \
+  && pass "setup-verjson-node pins setup-node to the audited v7 commit" \
+  || fail "setup-verjson-node does not pin setup-node to the audited v7 commit"
+grep -Eq 'uses: actions/setup-node@v[0-9]+' "$composite" \
+  && fail "setup-verjson-node still contains a mutable setup-node tag" \
+  || pass "setup-verjson-node contains no mutable setup-node tag"
 
 { grep -qF 'repository: ${{ job.workflow_repository }}' "$release" \
   && grep -qF 'ref: ${{ job.workflow_sha }}' "$release" \
@@ -82,11 +98,14 @@ jq -e '
   any(.packageRules[];
     .pinDigests == true and
     (.matchManagers | index("github-actions")) != null and
+    (.matchFileNames | index(".github/actions/setup-verjson-node/action.yml")) != null and
+    (.matchFileNames | index(".github/workflows/actions-ci.yml")) != null and
+    (.matchFileNames | index(".github/workflows/node-cache-integration.yml")) != null and
     (.matchFileNames | index(".github/workflows/node-ci.yml")) != null and
     (.matchFileNames | index(".github/workflows/node-release.yml")) != null)
 ' "$renovate" >/dev/null \
-  && pass "Renovate maintains both reusable-workflow digest pins" \
-  || fail "Renovate digest-pin maintenance is not configured"
+  && pass "Renovate maintains every Node workflow/setup digest pin" \
+  || fail "Renovate digest-pin maintenance does not cover every Node surface"
 
 # The co-located ci-eligibility action is the ONE nested ref that must stay on
 # @main, not a digest/@v1: the moving v1 tag lags main, so pinning this

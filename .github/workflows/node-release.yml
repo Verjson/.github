@@ -15,6 +15,12 @@ name: node-release (reusable)
 #     release:
 #       uses: Verjson/.github/.github/workflows/node-release.yml@main
 #       secrets: inherit          # passes NODE_AUTH_TOKEN
+#       # with:
+#       #   timeout-minutes: 45
+#       #   cache-dependency-path: package-lock.json
+#
+# Cache/timeout details and caller concurrency guidance:
+# docs/node-workflows.md
 
 on:
   workflow_call:
@@ -24,8 +30,23 @@ on:
         required: false
         type: string
         default: '24'
+      timeout-minutes:
+        description: Maximum release-job runtime after a runner starts it
+        required: false
+        type: number
+        default: 30
+      cache:
+        description: Cache npm downloads when cache-dependency-path matches a lockfile
+        required: false
+        type: boolean
+        default: true
+      cache-dependency-path:
+        description: Lockfile path or glob used to key the npm download cache
+        required: false
+        type: string
+        default: package-lock.json
       scope:
-        description: npm scope for the GitHub Packages registry
+        description: npm scope for the GitHub Packages registry (empty to skip registry auth)
         required: false
         type: string
         default: '@verjson'
@@ -42,6 +63,7 @@ on:
 jobs:
   release:
     runs-on: ${{ fromJSON(inputs.runner) }}
+    timeout-minutes: ${{ inputs.timeout-minutes }}
     permissions:
       contents: write
       packages: write
@@ -54,7 +76,13 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
           node-version: ${{ inputs.node-version }}
-          registry-url: https://npm.pkg.github.com
+          # setup-node caches npm's download cache, never node_modules or build
+          # output. An absent lockfile disables caching instead of failing jobs
+          # in repositories that do not use npm lockfiles.
+          cache: ${{ inputs.cache && hashFiles(inputs.cache-dependency-path) != '' && 'npm' || '' }}
+          cache-dependency-path: ${{ inputs.cache-dependency-path }}
+          package-manager-cache: false
+          registry-url: ${{ inputs.scope != '' && 'https://npm.pkg.github.com' || '' }}
           scope: ${{ inputs.scope }}
       - run: npm ci
         env:
