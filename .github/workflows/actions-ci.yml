@@ -102,7 +102,7 @@ jobs:
         run: bash scripts/ci-gate/require-secrets.test.sh
       - name: merge gate — absent checks fail closed, not open (#143, ADR 0024)
         run: bash scripts/ci-gate/ci-wait-fail-closed.test.sh
-      - name: pulumi-ci — comment-on-pr no-op on push guard (#47)
+      - name: pulumi-ci — credential boundary and trusted preview admission (#47, #151)
         run: bash scripts/ci-gate/pulumi-comment.test.sh
       - name: tag-major — annotated tag points directly at release commit (#73)
         run: bash scripts/tag-major.test.sh

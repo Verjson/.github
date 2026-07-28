@@ -1,15 +1,7 @@
 #!/usr/bin/env bash
-# Pins the "graceful no-op on push" guard on pulumi-ci.yml's live-preview step.
-# The `comment-on-pr` value handed to pulumi/actions is a pure GitHub expression
-# (not a shell `run:` block), so it cannot be executed in bash the way the other
-# ci-gate tests exercise their steps. Instead we extract the exact expression
-# from the workflow (single source of truth — no drift) and assert it carries
-# the PR-context guard, then evaluate its truth table so a regression that drops
-# the guard fails here. Plain bash + awk; no dependency.
-#
-# Contract: on a `push` (or any non-pull_request) trigger there is no PR to
-# comment on, so the value MUST resolve to false and the preview must run
-# without attempting to post a comment (never hard-fail).
+# Pins pulumi-ci's credential boundary and trusted-event admission. The tests
+# extract the exact workflow jobs/run block so assertions cannot drift into a
+# second implementation.
 set -uo pipefail
 
 here="$(cd "$(dirname "$0")" && pwd)"
@@ -22,7 +14,143 @@ fail() {
   fails=$((fails + 1))
 }
 
-# Extract the ${{ ... }} body of the `comment-on-pr:` input under the Pulumi step.
+job_block() {
+  awk -v job="$1" '
+    $0 == "  " job ":" { inside = 1 }
+    inside && /^  [A-Za-z0-9_-]+:/ && $0 != "  " job ":" { exit }
+    inside { print }
+  ' "$wf"
+}
+
+validate_job="$(job_block validate)"
+admission_job="$(job_block preview-admission)"
+preview_job="$(job_block preview)"
+
+# Validation is its own credential-free job. No caller-supplied command or
+# checkout may inherit write, OIDC, package, cloud, or Git credentials.
+printf '%s\n' "$validate_job" | grep -qF 'runs-on: ${{ inputs.validation-runner }}' \
+  && pass "validation uses the isolated validation runner" \
+  || fail "validation does not use inputs.validation-runner"
+printf '%s\n' "$validate_job" | grep -qF 'contents: read' \
+  && ! printf '%s\n' "$validate_job" | grep -Eq 'pull-requests:|id-token:|packages:|contents: write|secrets\.' \
+  && pass "validation has only contents: read and no secret references" \
+  || fail "validation has permissions or secrets beyond contents: read"
+printf '%s\n' "$validate_job" | grep -qF 'persist-credentials: false' \
+  && pass "validation checkout does not persist GITHUB_TOKEN" \
+  || fail "validation checkout persists credentials"
+printf '%s\n' "$validate_job" | grep -qF 'INSTALL_COMMAND: ${{ inputs.install-command }}' \
+  && printf '%s\n' "$validate_job" | grep -qF 'VALIDATE_COMMAND: ${{ inputs.validate-command }}' \
+  && ! printf '%s\n' "$preview_job" | grep -Eq 'inputs\.(install|validate)-command' \
+  && pass "caller install/validation commands exist only in validation" \
+  || fail "caller install/validation commands crossed into the preview job"
+printf '%s\n' "$validate_job" | grep -qF 'GIT_CONFIG_GLOBAL: /dev/null' \
+  && printf '%s\n' "$validate_job" | grep -qF 'NPM_CONFIG_USERCONFIG: ${{ runner.temp }}/pulumi-validation.npmrc' \
+  && printf '%s\n' "$validate_job" | grep -qF 'unset ACTIONS_ID_TOKEN_REQUEST_TOKEN ACTIONS_ID_TOKEN_REQUEST_URL' \
+  && printf '%s\n' "$validate_job" | grep -qF 'unset PULUMI_ACCESS_TOKEN VERJSON_GIT_TOKEN' \
+  && pass "validation scrubs inherited Git, npm, OIDC, and cloud credential paths" \
+  || fail "validation credential scrubbing is incomplete"
+
+# Extract and execute the admission step's exact shell body.
+admission_run="$(awk '
+  /^      - name: Decide trusted preview admission$/ { seen = 1 }
+  seen && /^        run: \|$/ { capture = 1; next }
+  capture && /^      - / { exit }
+  capture && /^  [A-Za-z0-9_-]+:/ { exit }
+  capture {
+    sub(/^          /, "")
+    print
+  }
+' "$wf")"
+
+if [ -z "$admission_run" ]; then
+  echo "FAIL - could not extract trusted preview admission run block from $wf"
+  exit 1
+fi
+
+run_admission() { # <event> <repository> <head-repository> <wip> <sa> <pulumi-token>
+  local output
+  output="$(mktemp)"
+  EVENT_NAME="$1" REPOSITORY="$2" HEAD_REPOSITORY="$3" \
+    GCP_WIP="$4" GCP_SA="$5" PULUMI_ACCESS_TOKEN="$6" GITHUB_OUTPUT="$output" \
+    bash -c "$admission_run" >/dev/null
+  awk -F= '$1 == "admitted" { value = $2 } END { print value }' "$output"
+  rm -f "$output"
+}
+
+check_admission() { # <expected> <event> <repository> <head> <wip> <sa> <token> <label>
+  local got
+  got="$(run_admission "$2" "$3" "$4" "$5" "$6" "$7")"
+  if [ "$got" = "$1" ]; then
+    pass "$8"
+  else
+    fail "$8 (want $1 got ${got:-empty})"
+  fi
+}
+
+check_admission false pull_request Verjson/infra contributor/infra wip sa token \
+  "fork PR with cloud secrets is rejected"
+check_admission true pull_request Verjson/infra Verjson/infra wip sa token \
+  "same-repository PR with every cloud secret is admitted"
+check_admission true push Verjson/infra '' wip sa token \
+  "push with every cloud secret is admitted"
+check_admission false push Verjson/infra '' '' sa token \
+  "push missing a cloud secret fails closed"
+check_admission false pull_request Verjson/infra Verjson/infra wip '' token \
+  "same-repository PR missing a cloud secret fails closed"
+check_admission false pull_request_target Verjson/infra contributor/infra wip sa token \
+  "secret-bearing pull_request_target event fails closed"
+check_admission false workflow_dispatch Verjson/infra '' wip sa token \
+  "unlisted secret-bearing event fails closed"
+
+printf '%s\n' "$admission_job" | grep -qF 'needs: validate' \
+  && printf '%s\n' "$admission_job" | grep -qF 'contents: read' \
+  && ! printf '%s\n' "$admission_job" | grep -Eq 'uses: actions/checkout|inputs\.(install|validate)-command|pull-requests:|id-token:' \
+  && pass "admission follows validation in a fixed credential-light job" \
+  || fail "admission runs before validation or exposes credentials to caller-controlled code"
+
+# The privileged job must depend on successful validation plus affirmative
+# admission and must not expose package/Git credentials after its fixed install.
+printf '%s\n' "$preview_job" | grep -qF 'needs: [validate, preview-admission]' \
+  && printf '%s\n' "$preview_job" | grep -qF "if: needs.preview-admission.outputs.admitted == 'true'" \
+  && pass "live preview requires successful validation and trusted admission" \
+  || fail "live preview is not gated by validation and trusted admission"
+for permission in 'contents: read' 'pull-requests: write' 'id-token: write'; do
+  printf '%s\n' "$preview_job" | grep -qF "$permission" \
+    || fail "preview job is missing permission: $permission"
+done
+printf '%s\n' "$preview_job" | grep -qF 'persist-credentials: false' \
+  && pass "preview checkout does not persist GITHUB_TOKEN" \
+  || fail "preview checkout persists credentials"
+printf '%s\n' "$preview_job" | grep -qF 'run: npm ci' \
+  && printf '%s\n' "$preview_job" | grep -qF 'NODE_AUTH_TOKEN: ${{ secrets.node-auth-token }}' \
+  && printf '%s\n' "$preview_job" | grep -qF 'VERJSON_GIT_TOKEN: ${{ secrets.git-token }}' \
+  && printf '%s\n' "$preview_job" | grep -qF 'GIT_CONFIG_GLOBAL: /dev/null' \
+  && printf '%s\n' "$preview_job" | grep -qF "GIT_CONFIG_COUNT: '3'" \
+  && pass "preview dependency install is fixed and step-scopes package/Git secrets" \
+  || fail "preview dependency install is caller-controlled or lacks scoped secrets"
+
+install_line="$(printf '%s\n' "$preview_job" | grep -nF 'run: npm ci' | cut -d: -f1)"
+auth_line="$(printf '%s\n' "$preview_job" | grep -nF 'uses: google-github-actions/auth@' | cut -d: -f1)"
+{ [ -n "$install_line" ] && [ -n "$auth_line" ] && [ "$install_line" -lt "$auth_line" ]; } \
+  && pass "package/Git install completes before cloud credentials exist" \
+  || fail "cloud authentication can precede dependency install"
+
+# Every third-party action in the changed workflow is pinned to the reviewed
+# immutable commit; both checkouts explicitly disable credential persistence.
+checkout='actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7'
+setup_node='actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7'
+auth='google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3'
+pulumi='pulumi/actions@8e5e406f4007fca908480587cb9893c07090f58d # v7'
+[ "$(grep -cF "uses: $checkout" "$wf")" -eq 2 ] \
+  && [ "$(grep -cF 'persist-credentials: false' "$wf")" -eq 2 ] \
+  && [ "$(grep -cF "uses: $setup_node" "$wf")" -eq 2 ] \
+  && grep -qF "uses: $auth" "$wf" \
+  && grep -qF "uses: $pulumi" "$wf" \
+  && ! grep -Eq 'uses: (actions/(checkout|setup-node)|google-github-actions/auth|pulumi/actions)@v[0-9]+' "$wf" \
+  && pass "all third-party actions and checkouts use immutable credential-safe pins" \
+  || fail "a third-party action is mutable or a checkout persists credentials"
+
+# Keep the pre-existing no-op-on-push comment behavior.
 expr="$(awk '
   /^      - name: Pulumi / { seen = 1 }
   seen && $0 ~ /^          comment-on-pr:/ {
@@ -39,7 +167,6 @@ if [ -z "$expr" ]; then
   exit 1
 fi
 
-# 1. The guard references the PR-context check, not just the raw input.
 case "$expr" in
   *"github.event_name == 'pull_request'"*)
     pass "comment-on-pr is gated on a pull_request event context" ;;
@@ -47,8 +174,6 @@ case "$expr" in
     fail "comment-on-pr lacks the github.event_name == 'pull_request' guard (got: $expr)" ;;
 esac
 
-# 2. The input opt-out is preserved and AND-combined with the PR-context guard
-#    (so a push forces it false regardless of the caller's comment-on-pr input).
 case "$expr" in
   *"inputs.comment-on-pr"*"&&"*"github.event_name"*)
     pass "caller's comment-on-pr input is AND-gated with the PR-context guard" ;;
@@ -56,12 +181,6 @@ case "$expr" in
     fail "expected 'inputs.comment-on-pr && github.event_name ...' (got: $expr)" ;;
 esac
 
-# 3. Truth table of the no-op contract, evaluated against the ACTUAL extracted
-#    expression (not a local reimplementation) so a regression that weakens the
-#    guard is caught here too. We substitute the two operands into `$expr` and
-#    reduce the resulting GitHub-expression form (`<bool> && '<event>' ==
-#    'pull_request'`) to true/false — only the operators this guard uses (`&&`,
-#    `==` on string literals) are handled; an unexpected shape fails loudly.
 eval_guard() { # <input-bool> <event-name> -> true|false (drives off $expr)
   local e="${expr//inputs.comment-on-pr/$1}"
   e="${e//github.event_name/\'$2\'}"        # e.g.  true && 'push' == 'pull_request'
