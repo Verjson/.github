@@ -11,6 +11,7 @@ Reverse-chronological index of org-level decisions.
 <!-- BEGIN ADR INDEX -->
 | # | Date | Decision |
 |---|------|----------|
+| [0029](0029-repurpose-meta-runners-private-gate/README.md) | 2026-07-28 | Repurpose retired meta runners as private merge-gate capacity |
 | [0028](0028-runner-security-tiers-cache-boundary/README.md) | 2026-07-28 | CI security tiers and runner-aware npm cache boundaries |
 | [0027](0027-pulumi-preview-credential-boundary/README.md) | 2026-07-27 | Pulumi validation and live preview use separate credential boundaries |
 | [0026](0026-actionlint-reusable-governed-runners/README.md) | 2026-07-27 | Reusable actionlint offers only governed runner choices |
