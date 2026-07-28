@@ -46,7 +46,7 @@ on:
         type: string
         default: package-lock.json
       scope:
-        description: npm scope for the GitHub Packages registry
+        description: npm scope for the GitHub Packages registry (empty to skip registry auth)
         required: false
         type: string
         default: '@verjson'
@@ -82,7 +82,7 @@ jobs:
           cache: ${{ inputs.cache && hashFiles(inputs.cache-dependency-path) != '' && 'npm' || '' }}
           cache-dependency-path: ${{ inputs.cache-dependency-path }}
           package-manager-cache: false
-          registry-url: https://npm.pkg.github.com
+          registry-url: ${{ inputs.scope != '' && 'https://npm.pkg.github.com' || '' }}
           scope: ${{ inputs.scope }}
       - run: npm ci
         env:
