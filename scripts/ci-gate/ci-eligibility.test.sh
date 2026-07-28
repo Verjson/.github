@@ -90,6 +90,7 @@ run_case() {
 # The action only defers if node-ci consumes it correctly. Pin the two seams a
 # refactor could silently break: fail-open job gating and the statuses read grant.
 nodeci="$repo_root/.github/workflows/node-ci.yml"
+adr="$repo_root/docs/decisions/0023-skip-ci-while-stability-days-pending/README.md"
 
 # (e) build-test must fail OPEN at the job level: gate on `always() && … != 'false'`
 # so an errored eligibility job runs CI instead of skipping it. A plain
@@ -99,7 +100,8 @@ grep -qF "if: always() && needs.eligibility.outputs.should-run != 'false'" "$nod
   || fail "build-test is not fail-open — an errored eligibility job would skip CI"
 
 # (f) The eligibility job must request `statuses: read` (contents:read cannot read
-# a commit's combined status), or the gh api call 403s and never defers.
+# a commit's combined status). Because a called workflow cannot elevate the
+# caller token, callers must grant the same permission or the call fails at startup.
 awk '
   $0 == "  eligibility:" { cap = 1; next }
   cap && /^  [a-z]/ { exit }   # next top-level job ends the block
@@ -107,6 +109,32 @@ awk '
 ' "$nodeci" | grep -qE '^      statuses: read' \
   && pass "eligibility job requests statuses: read" \
   || fail "eligibility job lacks statuses: read — status lookup would 403 and never defer"
+
+# (g) The caller contract must describe `statuses: read` as required and preserve
+# the startup-failure boundary. The action itself still fails open on runtime API
+# errors, but an ungranted permission prevents GitHub from starting the workflow.
+grep -qF '#         statuses: read          # REQUIRED:' "$nodeci" \
+  && grep -qF '#                                 # makes the workflow fail at STARTUP before the' "$nodeci" \
+  && grep -qF 'caller that does not grant it makes the reusable call invalid at workflow' "$adr" \
+  && grep -qF 'startup. The action' "$adr" \
+  && pass "caller contract marks statuses: read required before startup" \
+  || fail "caller contract no longer documents statuses: read as startup-required"
+
+# (h) Prevent the original false contract from returning in node-ci or its
+# controlling ADR: omission must never be described as a fail-open path.
+false_contract_re='(omit(ted|s|ting)|absent|withheld)[^.;]{0,160}(check[[:space:]]+)?fails?[[:space:]]+open'
+if cat "$nodeci" "$adr" | tr '\n' ' ' | grep -qiE "$false_contract_re"; then
+  fail "node-ci documentation again claims an omitted caller permission fails open"
+else
+  pass "node-ci documentation does not claim omitted caller permissions fail open"
+fi
+
+old_contract='Where it is absent the read is denied, the check fails open.'
+if printf '%s\n' "$old_contract" | grep -qiE "$false_contract_re"; then
+  pass "regression guard rejects the exact removed ADR fail-open sentence"
+else
+  fail "regression guard misses the exact removed ADR fail-open sentence"
+fi
 
 if [ "$fails" -eq 0 ]; then
   echo "All tests passed."
