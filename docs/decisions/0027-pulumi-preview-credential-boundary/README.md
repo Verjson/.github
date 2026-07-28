@@ -22,8 +22,8 @@ caller reproducing an event/secret guard correctly.
 
 ## Decision
 
-1. **Validation is a separate, credential-free job.** It defaults to
-   `ubuntu-latest`, has only `contents: read`, uses checkout with
+1. **Validation is a separate, credential-free job.** It runs on the fixed
+   GitHub-hosted `ubuntu-24.04` image, has only `contents: read`, uses checkout with
    `persist-credentials: false`, and receives no declared workflow secret.
    Caller-supplied `install-command` and `validate-command` inputs exist only in
    this job. The command step also ignores system/global Git configuration,
@@ -33,8 +33,9 @@ caller reproducing an event/secret guard correctly.
 2. **Live preview has explicit, fail-closed admission.** A fixed-script,
    GitHub-hosted job emits `admitted=true` only for `push`, or for
    `pull_request` whose head repository exactly matches `github.repository`, and
-   only when the GCP Workload Identity provider, GCP service account, and Pulumi
-   backend token are all present. Fork PRs, unknown events, and any missing
+   only when boolean presence flags confirm that the GCP Workload Identity
+   provider, GCP service account, and Pulumi backend token are all present. The
+   admission job never receives the raw secret values. Fork PRs, unknown events, and any missing
    cloud credential produce `false`. Admission runs only after validation
    succeeds, and preview depends on both jobs.
 3. **Only the admitted preview job gets privileged permissions.** It holds
@@ -63,9 +64,9 @@ caller reproducing an event/secret guard correctly.
   Git dependencies. Such repositories must expose a public validation path; the
   trusted preview job can still install private dependencies for the live
   preview after admission.
-- `validation-runner` remains overrideable for callers with a dedicated
-  ephemeral pool, but credential scrubbing is enforced even when a caller
-  selects a persistent runner.
+- Validation runner selection is not caller-controlled. Allowing a persistent or
+  self-hosted runner would make ambient metadata credentials, agent sockets, and
+  service-level configuration impossible for the workflow to revoke reliably.
 - The extracted shell test executes the admission truth table for fork PR,
   same-repository PR, push, missing-secret, `pull_request_target`, and other
   unlisted secret-bearing events; it also pins job permissions, command

@@ -28,9 +28,11 @@ preview_job="$(job_block preview)"
 
 # Validation is its own credential-free job. No caller-supplied command or
 # checkout may inherit write, OIDC, package, cloud, or Git credentials.
-printf '%s\n' "$validate_job" | grep -qF 'runs-on: ${{ inputs.validation-runner }}' \
-  && pass "validation uses the isolated validation runner" \
-  || fail "validation does not use inputs.validation-runner"
+printf '%s\n' "$validate_job" | grep -qF 'runs-on: ubuntu-24.04' \
+  && ! grep -qF 'validation-runner:' "$wf" \
+  && ! printf '%s\n' "$validate_job" | grep -qF 'inputs.validation-runner' \
+  && pass "validation uses a fixed ephemeral GitHub-hosted runner" \
+  || fail "validation permits a caller-controlled or non-ephemeral runner"
 printf '%s\n' "$validate_job" | grep -qF 'contents: read' \
   && ! printf '%s\n' "$validate_job" | grep -Eq 'pull-requests:|id-token:|packages:|contents: write|secrets\.' \
   && pass "validation has only contents: read and no secret references" \
@@ -67,11 +69,11 @@ if [ -z "$admission_run" ]; then
   exit 1
 fi
 
-run_admission() { # <event> <repository> <head-repository> <wip> <sa> <pulumi-token>
+run_admission() { # <event> <repository> <head-repository> <has-wip> <has-sa> <has-pulumi-token>
   local output
   output="$(mktemp)"
   EVENT_NAME="$1" REPOSITORY="$2" HEAD_REPOSITORY="$3" \
-    GCP_WIP="$4" GCP_SA="$5" PULUMI_ACCESS_TOKEN="$6" GITHUB_OUTPUT="$output" \
+    HAS_GCP_WIP="$4" HAS_GCP_SA="$5" HAS_PULUMI_TOKEN="$6" GITHUB_OUTPUT="$output" \
     bash -c "$admission_run" >/dev/null
   awk -F= '$1 == "admitted" { value = $2 } END { print value }' "$output"
   rm -f "$output"
@@ -87,26 +89,30 @@ check_admission() { # <expected> <event> <repository> <head> <wip> <sa> <token> 
   fi
 }
 
-check_admission false pull_request Verjson/infra contributor/infra wip sa token \
+check_admission false pull_request Verjson/infra contributor/infra true true true \
   "fork PR with cloud secrets is rejected"
-check_admission true pull_request Verjson/infra Verjson/infra wip sa token \
+check_admission true pull_request Verjson/infra Verjson/infra true true true \
   "same-repository PR with every cloud secret is admitted"
-check_admission true push Verjson/infra '' wip sa token \
+check_admission true push Verjson/infra '' true true true \
   "push with every cloud secret is admitted"
-check_admission false push Verjson/infra '' '' sa token \
+check_admission false push Verjson/infra '' false true true \
   "push missing a cloud secret fails closed"
-check_admission false pull_request Verjson/infra Verjson/infra wip '' token \
+check_admission false pull_request Verjson/infra Verjson/infra true false true \
   "same-repository PR missing a cloud secret fails closed"
-check_admission false pull_request_target Verjson/infra contributor/infra wip sa token \
+check_admission false pull_request_target Verjson/infra contributor/infra true true true \
   "secret-bearing pull_request_target event fails closed"
-check_admission false workflow_dispatch Verjson/infra '' wip sa token \
+check_admission false workflow_dispatch Verjson/infra '' true true true \
   "unlisted secret-bearing event fails closed"
 
 printf '%s\n' "$admission_job" | grep -qF 'needs: validate' \
   && printf '%s\n' "$admission_job" | grep -qF 'contents: read' \
+  && printf '%s\n' "$admission_job" | grep -qF "HAS_GCP_WIP: \${{ secrets.gcp-wip != '' }}" \
+  && printf '%s\n' "$admission_job" | grep -qF "HAS_GCP_SA: \${{ secrets.gcp-sa != '' }}" \
+  && printf '%s\n' "$admission_job" | grep -qF "HAS_PULUMI_TOKEN: \${{ secrets.pulumi-access-token != '' }}" \
+  && ! printf '%s\n' "$admission_job" | grep -Eq 'GCP_WIP: \$\{\{ secrets\.gcp-wip \}\}|GCP_SA: \$\{\{ secrets\.gcp-sa \}\}|PULUMI_ACCESS_TOKEN: \$\{\{ secrets\.pulumi-access-token \}\}' \
   && ! printf '%s\n' "$admission_job" | grep -Eq 'uses: actions/checkout|inputs\.(install|validate)-command|pull-requests:|id-token:' \
-  && pass "admission follows validation in a fixed credential-light job" \
-  || fail "admission runs before validation or exposes credentials to caller-controlled code"
+  && pass "admission receives boolean secret-presence flags in a fixed credential-light job" \
+  || fail "admission runs before validation or receives raw credentials"
 
 # The privileged job must depend on successful validation plus affirmative
 # admission and must not expose package/Git credentials after its fixed install.

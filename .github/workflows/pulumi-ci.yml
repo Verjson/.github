@@ -85,13 +85,6 @@ on:
         required: false
         type: string
         default: '["self-hosted", "GCP"]'
-      validation-runner:
-        description: >-
-          Runner for credential-free caller-supplied install and validation
-          commands. Defaults to an ephemeral GitHub-hosted runner.
-        required: false
-        type: string
-        default: 'ubuntu-latest'
     secrets:
       node-auth-token:
         description: >-
@@ -116,7 +109,7 @@ on:
 
 jobs:
   validate:
-    runs-on: ${{ inputs.validation-runner }}
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
     steps:
@@ -133,8 +126,7 @@ jobs:
         env:
           INSTALL_COMMAND: ${{ inputs.install-command }}
           VALIDATE_COMMAND: ${{ inputs.validate-command }}
-          # Ignore any machine-level Git/npm credential state if a caller
-          # explicitly selects a persistent validation runner.
+          # Defense in depth against unexpected Git/npm credential state.
           GIT_CONFIG_GLOBAL: /dev/null
           GIT_CONFIG_NOSYSTEM: '1'
           GIT_TERMINAL_PROMPT: '0'
@@ -163,9 +155,9 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
           REPOSITORY: ${{ github.repository }}
           HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
-          GCP_WIP: ${{ secrets.gcp-wip }}
-          GCP_SA: ${{ secrets.gcp-sa }}
-          PULUMI_ACCESS_TOKEN: ${{ secrets.pulumi-access-token }}
+          HAS_GCP_WIP: ${{ secrets.gcp-wip != '' }}
+          HAS_GCP_SA: ${{ secrets.gcp-sa != '' }}
+          HAS_PULUMI_TOKEN: ${{ secrets.pulumi-access-token != '' }}
         run: |
           set -euo pipefail
           trusted_event=false
@@ -180,13 +172,11 @@ jobs:
               ;;
           esac
 
-          has_cloud_credentials=false
-          if [ -n "$GCP_WIP" ] && [ -n "$GCP_SA" ] && [ -n "$PULUMI_ACCESS_TOKEN" ]; then
-            has_cloud_credentials=true
-          fi
-
           admitted=false
-          if [ "$trusted_event" = true ] && [ "$has_cloud_credentials" = true ]; then
+          if [ "$trusted_event" = true ] \
+            && [ "$HAS_GCP_WIP" = true ] \
+            && [ "$HAS_GCP_SA" = true ] \
+            && [ "$HAS_PULUMI_TOKEN" = true ]; then
             admitted=true
           fi
           echo "admitted=$admitted" >> "$GITHUB_OUTPUT"
