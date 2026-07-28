@@ -1,13 +1,14 @@
 name: pulumi-ci (reusable)
 
-# Reusable CI for verJSON Pulumi (TypeScript) infra repos. Two gates in one job:
+# Reusable CI for verJSON Pulumi (TypeScript) infra repos. Validation and live
+# preview deliberately run in separate trust domains:
 #
-#   1. Always-run, credential-free validation — `npm ci` + a caller-supplied
-#      validate command (default `npm run build`, i.e. a tsc compile check).
-#      This is the meaningful PR gate on forks / repos without cloud secrets.
-#   2. Live `pulumi preview` — runs ONLY when the GCP Workload-Identity and
-#      Pulumi backend secrets are present; otherwise it is skipped (not failed),
-#      so fork PRs and secret-less repos still get the compile gate.
+#   1. Credential-free validation runs on an ephemeral GitHub-hosted runner with
+#      only `contents: read`. Caller-supplied install/validate commands never see
+#      package, Git, cloud, OIDC, or repository-write credentials.
+#   2. Live `pulumi preview` runs on the caller-selected runner only for a push
+#      or same-repository PR AND only when every cloud credential is present.
+#      Fork PRs, unknown events, and missing-secret runs fail closed to validation.
 #
 # Lifted from viager-infra's preview.yml so infra repos stop reinventing the
 # credential-gating dance; Node + the @verjson registry come from the org
@@ -78,16 +79,23 @@ on:
         type: boolean
         default: true
       runner:
-        description: JSON array of runner labels; defaults to the GCP self-hosted pool.
+        description: >-
+          JSON array of runner labels for the trusted live-preview job; defaults
+          to the GCP self-hosted pool.
         required: false
         type: string
         default: '["self-hosted", "GCP"]'
     secrets:
       node-auth-token:
-        description: read:packages token for @verjson private npm packages.
+        description: >-
+          read:packages token used only by the admitted preview job's fixed
+          dependency install. It is never exposed to validation commands.
         required: false
       git-token:
-        description: repo-scoped token for private @verjson git dependencies over HTTPS.
+        description: >-
+          Repo-scoped token used only by the admitted preview job's fixed
+          dependency install for private Git dependencies over HTTPS. It is
+          never exposed to validation commands.
         required: false
       gcp-wip:
         description: GCP Workload-Identity provider. Live preview is skipped when empty.
@@ -100,7 +108,86 @@ on:
         required: false
 
 jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Set up credential-free Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: ${{ inputs.node-version }}
+
+      - name: Install + validate (credential-free gate)
+        env:
+          INSTALL_COMMAND: ${{ inputs.install-command }}
+          VALIDATE_COMMAND: ${{ inputs.validate-command }}
+          # Defense in depth against unexpected Git/npm credential state.
+          GIT_CONFIG_GLOBAL: /dev/null
+          GIT_CONFIG_NOSYSTEM: '1'
+          GIT_TERMINAL_PROMPT: '0'
+          NPM_CONFIG_USERCONFIG: ${{ runner.temp }}/pulumi-validation.npmrc
+        run: |
+          set -euo pipefail
+          : > "$NPM_CONFIG_USERCONFIG"
+          unset ACTIONS_ID_TOKEN_REQUEST_TOKEN ACTIONS_ID_TOKEN_REQUEST_URL
+          unset CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE GOOGLE_APPLICATION_CREDENTIALS
+          unset GH_TOKEN GITHUB_TOKEN NODE_AUTH_TOKEN NPM_TOKEN
+          unset PULUMI_ACCESS_TOKEN VERJSON_GIT_TOKEN
+          eval "$INSTALL_COMMAND"
+          eval "$VALIDATE_COMMAND"
+
+  preview-admission:
+    needs: validate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      admitted: ${{ steps.admission.outputs.admitted }}
+    steps:
+      - name: Decide trusted preview admission
+        id: admission
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REPOSITORY: ${{ github.repository }}
+          HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
+          HAS_GCP_WIP: ${{ secrets.gcp-wip != '' }}
+          HAS_GCP_SA: ${{ secrets.gcp-sa != '' }}
+          HAS_PULUMI_TOKEN: ${{ secrets.pulumi-access-token != '' }}
+        run: |
+          set -euo pipefail
+          trusted_event=false
+          case "$EVENT_NAME" in
+            push)
+              trusted_event=true
+              ;;
+            pull_request)
+              if [ -n "$HEAD_REPOSITORY" ] && [ "$HEAD_REPOSITORY" = "$REPOSITORY" ]; then
+                trusted_event=true
+              fi
+              ;;
+          esac
+
+          admitted=false
+          if [ "$trusted_event" = true ] \
+            && [ "$HAS_GCP_WIP" = true ] \
+            && [ "$HAS_GCP_SA" = true ] \
+            && [ "$HAS_PULUMI_TOKEN" = true ]; then
+            admitted=true
+          fi
+          echo "admitted=$admitted" >> "$GITHUB_OUTPUT"
+
+          if [ "$admitted" != true ]; then
+            echo "::notice title=Pulumi preview skipped::Event is not trusted for live preview or required cloud credentials are unavailable; ran the credential-free validation gate only."
+          fi
+
   preview:
+    needs: [validate, preview-admission]
+    if: needs.preview-admission.outputs.admitted == 'true'
     runs-on: ${{ fromJSON(inputs.runner) }}
     strategy:
       fail-fast: false
@@ -111,54 +198,43 @@ jobs:
       pull-requests: write
       id-token: write
     steps:
-      - uses: actions/checkout@v7
-
-      - name: Detect cloud credentials
-        id: creds
-        # `secrets` is NOT an allowed context in a job-level `env:` — using it there
-        # makes the workflow fail to start (startup_failure) for every caller. Compute
-        # the live-vs-credential-free decision here instead (secrets ARE valid in a
-        # step `env:`) and expose it as an output the later steps gate on. Live preview
-        # needs BOTH the GCP Workload-Identity provider and the Pulumi backend token;
-        # when either is absent (fork PR, secret-less repo) the credential-free
-        # validation gate runs alone instead of failing CI.
-        env:
-          GCP_WIP: ${{ secrets.gcp-wip }}
-          PULUMI_ACCESS_TOKEN: ${{ secrets.pulumi-access-token }}
-        run: |
-          if [ -n "$GCP_WIP" ] && [ -n "$PULUMI_ACCESS_TOKEN" ]; then
-            echo "has_cloud=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "has_cloud=false" >> "$GITHUB_OUTPUT"
-          fi
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
 
       - name: Set up Node + @verjson registry
-        uses: Verjson/.github/.github/actions/setup-verjson-node@main
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
           node-version: ${{ inputs.node-version }}
+          registry-url: ${{ inputs.scope != '' && 'https://npm.pkg.github.com' || '' }}
           scope: ${{ inputs.scope }}
-          node-auth-token: ${{ secrets.node-auth-token }}
-          git-token: ${{ secrets.git-token }}
 
-      - name: Install + validate (credential-free gate)
+      - name: Install trusted preview dependencies
+        # This command is workflow-owned, not a caller input. Package/Git
+        # credentials are step-scoped and gone before cloud auth and Pulumi.
         env:
-          INSTALL_COMMAND: ${{ inputs.install-command }}
-          VALIDATE_COMMAND: ${{ inputs.validate-command }}
-        run: |
-          set -euo pipefail
-          eval "$INSTALL_COMMAND"
-          eval "$VALIDATE_COMMAND"
+          NODE_AUTH_TOKEN: ${{ secrets.node-auth-token }}
+          VERJSON_GIT_TOKEN: ${{ secrets.git-token }}
+          GIT_CONFIG_GLOBAL: /dev/null
+          GIT_CONFIG_NOSYSTEM: '1'
+          GIT_TERMINAL_PROMPT: '0'
+          GIT_CONFIG_COUNT: '3'
+          GIT_CONFIG_KEY_0: url.https://github.com/.insteadOf
+          GIT_CONFIG_VALUE_0: ssh://git@github.com/
+          GIT_CONFIG_KEY_1: url.https://github.com/.insteadOf
+          GIT_CONFIG_VALUE_1: 'git@github.com:'
+          GIT_CONFIG_KEY_2: credential.https://github.com.helper
+          GIT_CONFIG_VALUE_2: '!f() { echo "username=x-access-token"; echo "password=${VERJSON_GIT_TOKEN}"; }; f'
+        run: npm ci
 
       - name: Authenticate to GCP (Workload Identity)
-        if: steps.creds.outputs.has_cloud == 'true'
-        uses: google-github-actions/auth@v3
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
         with:
           workload_identity_provider: ${{ secrets.gcp-wip }}
           service_account: ${{ secrets.gcp-sa }}
 
       - name: Pulumi ${{ inputs.pulumi-command }}
-        if: steps.creds.outputs.has_cloud == 'true'
-        uses: pulumi/actions@v7
+        uses: pulumi/actions@8e5e406f4007fca908480587cb9893c07090f58d # v7
         with:
           command: ${{ inputs.pulumi-command }}
           stack-name: ${{ matrix.stack }}
@@ -169,8 +245,3 @@ jobs:
           comment-on-pr: ${{ inputs.comment-on-pr && github.event_name == 'pull_request' }}
         env:
           PULUMI_ACCESS_TOKEN: ${{ secrets.pulumi-access-token }}
-
-      - name: Note skipped live preview
-        if: steps.creds.outputs.has_cloud != 'true'
-        run: |
-          echo "::notice title=Pulumi preview skipped::GCP_WIP / PULUMI_ACCESS_TOKEN not set; ran the credential-free validation gate only."

@@ -11,6 +11,7 @@ Reverse-chronological index of org-level decisions.
 <!-- BEGIN ADR INDEX -->
 | # | Date | Decision |
 |---|------|----------|
+| [0027](0027-pulumi-preview-credential-boundary/README.md) | 2026-07-27 | Pulumi validation and live preview use separate credential boundaries |
 | [0026](0026-actionlint-reusable-governed-runners/README.md) | 2026-07-27 | Reusable actionlint offers only governed runner choices |
 | [0025](0025-release-tooling-audit-allowlist/README.md) | 2026-07-25 | Release-tooling audit accepts dated, per-advisory exceptions |
 | [0024](0024-absent-checks-fail-closed/README.md) | 2026-07-25 | Absent CI checks fail the merge gate closed |
