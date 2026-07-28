@@ -591,6 +591,8 @@ jobs:
             # still be labelling attempt 60's genuine pending timeout as
             # "probe-unavailable" and sending people to check API reachability.
             probe=unread
+            # `$n` is a jq variable inside the single-quoted filter.
+            # shellcheck disable=SC2016
             rollup=$(gh pr view "$PR_NUMBER" --repo "$TARGET_REPO" \
               --json statusCheckRollup \
               --jq '[.statusCheckRollup[]? | select((.name // .context) as $n | $n != "preflight" and $n != "gate" and $n != "freshness" and $n != "classify" and $n != "ai-review" and $n != "ai-merge" and $n != "review")]')
@@ -1248,6 +1250,8 @@ jobs:
           # One immediate, authoritative CI snapshot. There is deliberately no
           # second polling loop after model spend: pending, red, or inconclusive
           # state fails closed and a later event/re-run can attempt the new head.
+          # `$n` is a jq variable inside the single-quoted filter.
+          # shellcheck disable=SC2016
           rollup=$(gh pr view "$PR_NUMBER" --repo "$REPO" \
             --json statusCheckRollup \
             --jq '[.statusCheckRollup[]? | select((.name // .context) as $n | $n != "preflight" and $n != "gate" and $n != "freshness" and $n != "classify" and $n != "ai-review" and $n != "ai-merge" and $n != "review")]')
@@ -1397,6 +1401,8 @@ jobs:
               continue
             fi
             short=$(printf '%s' "$note" | tr '\n' ' ' | cut -c1-70)
+            # The backticks in the single-quoted format are literal Markdown.
+            # shellcheck disable=SC2016
             body=$(printf '%s\n\nNon-blocking finding from the merge-gate review of #%s (approved and merged).\n\n**Location:** `%s`\n\n%s' \
               "$marker" "$PR_NUMBER" "$loc" "$note")
             if gh issue create --repo "$REPO" --title "AI-review follow-up: $short" \
