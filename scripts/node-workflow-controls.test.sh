@@ -60,6 +60,9 @@ for workflow in "$ci" "$release"; do
   grep -qF 'cache-dependency-path: ${{ inputs.cache-dependency-path }}' "$workflow" \
     && pass "$name keys setup-node caching by the caller-selected lockfile" \
     || fail "$name does not pass cache-dependency-path to setup-node"
+  grep -qF 'package-manager-cache: false' "$workflow" \
+    && pass "$name disables setup-node automatic package-manager caching" \
+    || fail "$name can bypass the explicit cache/lockfile controls via setup-node auto-caching"
   grep -qF 'registry-url:' "$workflow" \
     && grep -qF 'scope: ${{ inputs.scope }}' "$workflow" \
     && pass "$name preserves scoped GitHub Packages registry setup" \
@@ -89,7 +92,8 @@ composite_dependency="$(composite_input cache-dependency-path)"
 { grep -qF "default: 'true'" <<<"$composite_cache" \
   && grep -qF 'default: package-lock.json' <<<"$composite_dependency" \
   && grep -qF "cache: \${{ inputs.cache == 'true' && hashFiles(inputs.cache-dependency-path) != '' && 'npm' || '' }}" "$composite" \
-  && grep -qF 'cache-dependency-path: ${{ inputs.cache-dependency-path }}' "$composite"; } \
+  && grep -qF 'cache-dependency-path: ${{ inputs.cache-dependency-path }}' "$composite" \
+  && grep -qF 'package-manager-cache: false' "$composite"; } \
   && pass "setup-verjson-node implements the same default-on lockfile cache contract" \
   || fail "setup-verjson-node cache inputs or setup-node wiring are incomplete"
 { grep -qF "registry-url: \${{ inputs.scope != '' && inputs.registry-url || '' }}" "$composite" \

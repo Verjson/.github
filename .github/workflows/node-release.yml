@@ -81,6 +81,7 @@ jobs:
           # in repositories that do not use npm lockfiles.
           cache: ${{ inputs.cache && hashFiles(inputs.cache-dependency-path) != '' && 'npm' || '' }}
           cache-dependency-path: ${{ inputs.cache-dependency-path }}
+          package-manager-cache: false
           registry-url: https://npm.pkg.github.com
           scope: ${{ inputs.scope }}
       - run: npm ci

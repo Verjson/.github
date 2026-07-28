@@ -59,6 +59,7 @@ runs:
         # in repositories that do not use npm lockfiles.
         cache: ${{ inputs.cache == 'true' && hashFiles(inputs.cache-dependency-path) != '' && 'npm' || '' }}
         cache-dependency-path: ${{ inputs.cache-dependency-path }}
+        package-manager-cache: false
         # Only configure the registry when a scope is set. Passing registry-url
         # with an empty scope makes setup-node write `registry=<url>` as npm's
         # *default* registry (every package resolves against GitHub Packages, so
