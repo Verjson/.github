@@ -9,8 +9,8 @@ the *why*, this for the *how*.
 
 ## TL;DR
 
-- **Exact/reproducible:** pin the current release, `@v2.1.0`, never `@main`.
-  `uses: Verjson/.github/.github/workflows/helm-ci.yml@v2.1.0`
+- **Exact/reproducible:** pin the current release, `@v2.1.1`, never `@main`.
+  `uses: Verjson/.github/.github/workflows/helm-ci.yml@v2.1.1`
 - **Compatible auto-updates:** opt into `@v2`, the moving major tag. It points at
   the newest backward-compatible `v2.x.y` release, so fixes and additive inputs
   arrive without a caller edit. It is deliberately mutable.
@@ -61,7 +61,7 @@ take those updates through reviewed Renovate PRs. Every caller opts into a major
 # .github/workflows/ci.yml in a consumer repo
 jobs:
   helm:
-    uses: Verjson/.github/.github/workflows/helm-ci.yml@v2.1.0 # exact SemVer release
+    uses: Verjson/.github/.github/workflows/helm-ci.yml@v2.1.1 # exact SemVer release
     with:
       release-name: my-chart
 ```
@@ -98,9 +98,9 @@ does not rewrite their workflow files.
 
    ```bash
    # from an up-to-date main
-   gh release create v2.1.0 --repo Verjson/.github \
+   gh release create v2.1.1 --repo Verjson/.github \
      --target main --generate-notes \
-     --title "v2.1.0"
+     --title "v2.1.1"
    ```
 
 4. The [`tag-major`](../.github/workflows/tag-major.yml) workflow fires on

@@ -129,6 +129,24 @@ the live `uses:` graph, and reject branch, moving-major, and other non-SHA refs.
 The action logic, `statuses: read` boundary, fail-open runtime behavior, and
 `renovate/stability-days` semantics are unchanged.
 
+## 2026-07-28 correction — eliminate the remote self-dependency
+
+Issue [#164](https://github.com/Verjson/.github/issues/164) supersedes the manual
+co-located action pin introduced for #162. Although immutable, that pin could
+drift whenever the composite action changed. Teaching Renovate to maintain it
+would create a loop: publishing this repository updates the self-pin, and
+publishing that update moves the self-pin again.
+
+`node-ci` therefore inlines the composite action's exact shell block in its
+`eligibility` step. An extraction test requires byte-for-byte parity between the
+inline block and `.github/actions/ci-eligibility/action.yml`, then exercises the
+inline block against the existing behavior cases. The composite action remains
+available to hand-rolled CI consumers; the reusable workflow no longer resolves
+it through any remote ref. This preserves `id: check`, `GH_TOKEN`/`HEAD_SHA`,
+`should-run`, `statuses: read`, fail-open job gating, dispatch override, and
+`renovate/stability-days` behavior while removing both pin drift and the
+transitive self-dependency.
+
 ## Consequences
 
 - Deferred Renovate PRs stop burning the CI suite; it runs once, against the base
@@ -138,8 +156,9 @@ The action logic, `statuses: read` boundary, fail-open runtime behavior, and
   skipped-check scoring). Self-heals on rebase; not a merge regression.
 - The guard is fail-open and dispatch-overridable, so it can only ever *withhold*
   CI on a genuinely-held PR — never block a normal PR from being tested.
-- The mechanism is one shared composite action + a single ci-gate test, so the
-  logic is guarded once for every consumer instead of drifting across copies.
+- Reusable and hand-rolled CI have separate YAML copies of the shell block, but
+  the extraction test requires exact parity and exercises the reusable's copy,
+  so behavior cannot drift between consumer paths.
 - Cross-repo adoption for hand-rolled CI is `default-pm`'s work, tracked from #133
   and toquorum#161.
 
@@ -172,6 +191,6 @@ The action fails OPEN (`|| echo 0` → run) and forces a run on `workflow_dispat
 See [#133](https://github.com/Verjson/.github/issues/133) and the casualty
 [toquorum#161](https://github.com/Verjson/toquorum/pull/161).
 
-The `@main` line above records the original sensitive hunk. The 2026-07-28
-correction replaces only that `uses:` ref with the reviewed full SHA documented
-above.
+The `@main` line above records the original sensitive hunk. The first 2026-07-28
+correction replaced that ref with a reviewed full SHA; the #164 correction then
+removed the remote `uses:` call and inlined the parity-guarded shell block.

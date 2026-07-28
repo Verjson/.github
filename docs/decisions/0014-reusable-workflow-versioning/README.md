@@ -149,3 +149,13 @@ co-located dependencies at the referenced commit, and rejects branches, moving
 major tags, or other non-SHA refs anywhere in that graph. This preserves the
 choice made by an exact-pinned consumer: no nested `@main` or `@v2` reference can
 silently substitute different executable code.
+
+Issue #164 removes the co-located `ci-eligibility` action from that remote
+dependency graph entirely. `node-ci` inlines the action's shell block and CI
+requires byte-for-byte parity between the two copies, preserving one reviewed
+behavior for reusable-workflow and direct-action consumers without maintaining a
+second repository ref. A Renovate-maintained self-pin was rejected: every
+repo-wide release would move that pin, require another release to publish the
+move, and create a release loop. The reusable's remaining remote dependencies
+continue to require reviewed full SHAs. The correction is published as the next
+exact patch release, `v2.1.1`, after its merge.

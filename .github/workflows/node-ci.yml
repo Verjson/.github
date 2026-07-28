@@ -22,7 +22,7 @@ name: node-ci (reusable)
 #                                 # is capped by the caller, so omitting this grant
 #                                 # makes the workflow fail at STARTUP before the
 #                                 # action's fail-open path can run (#148).
-#       uses: Verjson/.github/.github/workflows/node-ci.yml@v2.1.0
+#       uses: Verjson/.github/.github/workflows/node-ci.yml@v2.1.1
 #       secrets: inherit          # passes NODE_AUTH_TOKEN (+ submodules-token)
 #       # with:
 #       #   node-version: '22.23.1'   # override when a repo pins a version
@@ -173,15 +173,34 @@ jobs:
       should-run: ${{ steps.check.outputs.should-run }}
     steps:
       - id: check
-        # Pin the co-located action to the reviewed commit that introduced it.
-        # Resolving through @main or the moving @v2 tag would make even an
-        # exact-pinned node-ci caller execute mutable code. The selected commit
-        # contains the action; unlike the stale pre-action v1 pin from #135, it
-        # cannot fail with "action not found" (#162, ADR 0023).
-        uses: Verjson/.github/.github/actions/ci-eligibility@9a7cc9cac4e0f32a5b64d8af8b8467350ee685d2
-        with:
-          head-sha: ${{ github.event.pull_request.head.sha || github.sha }}
-          github-token: ${{ secrets.GITHUB_TOKEN }}
+        # Inline the co-located composite action's run block so an exact-pinned
+        # reusable never calls back into this repository through a second ref.
+        # The extraction test requires byte-for-byte script parity with the
+        # action used by hand-rolled CI consumers (#164, ADR 0023).
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          # A workflow_dispatch is an explicit human "run it now" — never defer it,
+          # mirroring the merge gate's dispatch-forces-review escape hatch (#133).
+          if [ "${GITHUB_EVENT_NAME:-}" = "workflow_dispatch" ]; then
+            echo "should-run=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::workflow_dispatch — running CI (eligibility check bypassed)."
+            exit 0
+          fi
+          # Defer only when the release-age gate is ACTIVELY pending. Any
+          # uncertainty (API error, missing status) fails OPEN → run CI, so a real
+          # PR is never silently skipped. Same signal the gate uses to `defer`.
+          pending=$(gh api "repos/${GITHUB_REPOSITORY}/commits/${HEAD_SHA}/status" \
+            --jq '[.statuses[]? | select(.context == "renovate/stability-days" and .state == "pending")] | length' 2>/dev/null || echo 0)
+          if [ "${pending:-0}" -gt 0 ]; then
+            echo "should-run=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::renovate/stability-days is pending on ${HEAD_SHA} — deferring org CI until the age gate clears and Renovate rebases (#133)."
+          else
+            echo "should-run=true" >> "$GITHUB_OUTPUT"
+          fi
 
   build-test:
     needs: eligibility
