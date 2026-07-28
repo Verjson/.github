@@ -22,7 +22,7 @@ name: node-ci (reusable)
 #                                 # is capped by the caller, so omitting this grant
 #                                 # makes the workflow fail at STARTUP before the
 #                                 # action's fail-open path can run (#148).
-#       uses: Verjson/.github/.github/workflows/node-ci.yml@main
+#       uses: Verjson/.github/.github/workflows/node-ci.yml@v2.1.0
 #       secrets: inherit          # passes NODE_AUTH_TOKEN (+ submodules-token)
 #       # with:
 #       #   node-version: '22.23.1'   # override when a repo pins a version
@@ -168,15 +168,12 @@ jobs:
       should-run: ${{ steps.check.outputs.should-run }}
     steps:
       - id: check
-        # Pinned to @main, NOT a digest, and NOT @v1. This action is co-located
-        # with node-ci and consumed only by it; node-ci is itself consumed @main
-        # across the org. The moving `v1` tag lags main until a release is cut, so
-        # any v1-based ref (or a digest Renovate resolves FROM v1) points at a
-        # commit predating this action → "action not found" for every @main
-        # consumer (Verjson/.github#135 pinned exactly such a stale digest). @main
-        # is a branch tip, so it always resolves to a commit that has the action.
-        # Renovate is told not to digest-pin this self-reference (see renovate.json).
-        uses: Verjson/.github/.github/actions/ci-eligibility@main
+        # Pin the co-located action to the reviewed commit that introduced it.
+        # Resolving through @main or the moving @v2 tag would make even an
+        # exact-pinned node-ci caller execute mutable code. The selected commit
+        # contains the action; unlike the stale pre-action v1 pin from #135, it
+        # cannot fail with "action not found" (#162, ADR 0023).
+        uses: Verjson/.github/.github/actions/ci-eligibility@9a7cc9cac4e0f32a5b64d8af8b8467350ee685d2
         with:
           head-sha: ${{ github.event.pull_request.head.sha || github.sha }}
           github-token: ${{ secrets.GITHUB_TOKEN }}

@@ -1,6 +1,21 @@
 # .github
 Public organization profile, visible to anyone
 
+## Versioned actions and reusable workflows
+
+The repository ships all `.github/actions/*` actions and
+`.github/workflows/*` reusable workflows on one SemVer line. Pin the immutable
+release when reproducibility matters:
+
+```yaml
+uses: Verjson/.github/.github/workflows/node-ci.yml@v2.1.0
+```
+
+`@v2` is the moving major alias: it receives every compatible v2 release without
+a caller edit, but is intentionally mutable. See the
+[versioning and release guide](docs/reusable-workflow-versioning.md) for the
+trade-off and release process.
+
 ## Reusable actionlint
 
 Consumer repositories can lint their workflow files with the same pinned,

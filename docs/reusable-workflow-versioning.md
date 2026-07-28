@@ -9,13 +9,13 @@ the *why*, this for the *how*.
 
 ## TL;DR
 
-- **Callers pin `@v1`, never `@main`.**
-  `uses: Verjson/.github/.github/workflows/helm-ci.yml@v1`
-- `v1` is a **moving major tag**: it always points at the newest backward-compatible
-  release of the `v1.x.y` line. Bug fixes and additive inputs reach callers by
-  re-pointing `v1` — no caller edit needed.
-- A **breaking change** to any reusable means a new major (`v2` + `v2.0.0`). Callers
-  stay on `@v1` until they opt in; Renovate opens the `@v1 → @v2` bump PR per repo.
+- **Exact/reproducible:** pin the current release, `@v2.1.0`, never `@main`.
+  `uses: Verjson/.github/.github/workflows/helm-ci.yml@v2.1.0`
+- **Compatible auto-updates:** opt into `@v2`, the moving major tag. It points at
+  the newest backward-compatible `v2.x.y` release, so fixes and additive inputs
+  arrive without a caller edit. It is deliberately mutable.
+- A **breaking change** to any reusable means a new major (`v3` + `v3.0.0`).
+  Callers stay on v2 until they opt in; Renovate can open the v2 → v3 bump.
 - Releases are **human-triggered**: cut a GitHub Release for `vX.Y.Z`, and the
   [`tag-major`](../.github/workflows/tag-major.yml) workflow re-points the `vX`
   moving tag to that release commit. Nothing auto-mutates tags on a plain push.
@@ -28,6 +28,12 @@ here reaches **every caller at once** — the exact risk called out in
 Consequences ("a breaking change to a reusable can reach every template at once").
 Pinning to a tag turns that org-wide blast radius into a per-repo, Renovate-driven,
 reviewable bump.
+
+An exact `vX.Y.Z` tag is the SemVer audit point consumers can use directly.
+The moving `vX` alias trades immutability for compatible updates. A full commit
+SHA is the strictest pin and is required for dependencies nested inside these
+shared workflows, so an exact-pinned caller cannot execute mutable transitive
+code.
 
 ## Versioning scheme
 
@@ -44,9 +50,10 @@ Tags maintained:
 
 - **`vX.Y.Z`** — immutable, one per release. The audit point.
 - **`vX`** — moving major, re-pointed to the newest `vX.*` on each release. **This is
-  what callers pin.**
+  an explicit auto-update option, not an immutable pin.**
 
-A minor/patch never requires a caller edit; a major does (opt-in via Renovate).
+Callers on `@vX` need no edit for a minor/patch; exact-release and digest callers
+take those updates through reviewed Renovate PRs. Every caller opts into a major.
 
 ## How callers pin
 
@@ -54,27 +61,34 @@ A minor/patch never requires a caller edit; a major does (opt-in via Renovate).
 # .github/workflows/ci.yml in a consumer repo
 jobs:
   helm:
-    uses: Verjson/.github/.github/workflows/helm-ci.yml@v1   # ← moving major, not @main
+    uses: Verjson/.github/.github/workflows/helm-ci.yml@v2.1.0 # exact SemVer release
     with:
       release-name: my-chart
+```
+
+Use `@v2` instead when compatible releases should arrive automatically:
+
+```yaml
+jobs:
+  helm:
+    uses: Verjson/.github/.github/workflows/helm-ci.yml@v2 # moving major
 ```
 
 ### Renovate's role
 
 The org already runs Renovate (`config:recommended`, which enables the
-`github-actions` manager). With callers on `@v1` it will:
+`github-actions` manager). With callers on an exact release or digest it can
+propose reviewed compatible updates. With callers on `@v2` it will:
 
-- **Track the major** — when `v2` is published, open one bump PR per repo
-  (`@v1 → @v2`), so each team reviews the breaking change on its own schedule
+- **Track the major** — when `v3` is published, open one bump PR per repo
+  (`@v2 → @v3`), so each team reviews the breaking change on its own schedule
   instead of being broken in place.
-- Optionally **pin-to-digest** (`…/helm-ci.yml@<sha> # v1`) for repos that want the
-  stricter exact-pin posture — Renovate then bumps the SHA and keeps the `# v1`
-  comment. See "moving-major vs exact-pin" in ADR 0014; moving-major `@v1` is the
-  org default, digest-pin is the opt-in hardening.
+- Optionally **pin-to-digest** (`…/helm-ci.yml@<sha> # v2`) for repos that want the
+  stricter exact-pin posture — Renovate then bumps the SHA and keeps the `# v2`
+  comment. See "moving-major vs exact-pin" in ADR 0014.
 
-No caller edits are in scope for *this* repo — retagging existing `@main` callers
-(`catalog-helm`, `viager-infra`, `catalog-ui`, and the platform templates from
-ADR 0010) is follow-up that Renovate/consumers own once `v1` exists.
+Caller edits are owned by each consumer repository; publishing a release here
+does not rewrite their workflow files.
 
 ## Cutting a release
 
@@ -84,20 +98,20 @@ ADR 0010) is follow-up that Renovate/consumers own once `v1` exists.
 
    ```bash
    # from an up-to-date main
-   gh release create v1.2.0 --repo Verjson/.github \
+   gh release create v2.1.0 --repo Verjson/.github \
      --target main --generate-notes \
-     --title "v1.2.0"
+     --title "v2.1.0"
    ```
 
 4. The [`tag-major`](../.github/workflows/tag-major.yml) workflow fires on
    `release: published`, validates the tag is `vX.Y.Z`, and force-updates the `vX`
-   moving tag to the release commit. Callers on `@v1` pick it up on their next run.
+   moving tag to the release commit. Callers on `@v2` pick it up on their next run.
 
-### One-time bootstrap (manual, human-run — deferred)
+### One-time bootstrap (historical)
 
-The very first `v1.0.0` + `v1` tags are **not** created by CI (creating tags from
-automation is deliberately avoided for the bootstrap; see ADR 0014 §Consequences).
-An org maintainer runs, once, against a chosen `main` commit:
+The `v1.0.0` + `v1` tags were the one-time manual bootstrap described by ADR
+0014. They already exist; do not run these commands again. They remain here as
+the recovery/audit record for how a new version line was initialized:
 
 ```bash
 # pick the commit that becomes v1.0.0 (usually current main)

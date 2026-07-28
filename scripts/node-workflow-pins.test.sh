@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Guards the immutable nested dependencies in every Node workflow/setup surface
-# (Verjson/.github#89, #152): audited action SHAs, release tooling co-located at
-# the called workflow's own SHA, an exact lockfile, and Renovate maintenance.
+# (Verjson/.github#89, #152, #162): audited action SHAs, the complete live
+# node-ci dependency graph, release tooling co-located at the called workflow's
+# own SHA, an exact lockfile, and Renovate maintenance.
 set -uo pipefail
 
 here="$(cd "$(dirname "$0")" && pwd)"
@@ -14,6 +15,7 @@ actions_ci="$root/.github/workflows/actions-ci.yml"
 package="$root/.github/release-tooling/package.json"
 lock="$root/.github/release-tooling/package-lock.json"
 renovate="$root/renovate.json"
+eligibility_pin='9a7cc9cac4e0f32a5b64d8af8b8467350ee685d2'
 fails=0
 pass() { printf 'ok   - %s\n' "$1"; }
 fail() { printf 'FAIL - %s\n' "$1"; fails=$((fails + 1)); }
@@ -107,28 +109,136 @@ jq -e '
   && pass "Renovate maintains every Node workflow/setup digest pin" \
   || fail "Renovate digest-pin maintenance does not cover every Node surface"
 
-# The co-located ci-eligibility action is the ONE nested ref that must stay on
-# @main, not a digest/@v1: the moving v1 tag lags main, so pinning this
-# first-party self-reference from v1 resolves to a commit predating the action
-# and breaks every @main consumer (#135/#138). These two assertions ARE the
-# regression guard for #138 — without them a future Renovate re-pin silently
-# reintroduces the #135 failure and nothing in CI catches it (#139).
-grep -qE '^\s*uses: Verjson/\.github/\.github/actions/ci-eligibility@main\s*$' "$ci" \
-  && pass "node-ci pins ci-eligibility to @main (co-located; not a digest/@v1)" \
-  || fail "node-ci's ci-eligibility ref is not @main — a digest/@v1 self-pin breaks @main consumers (#135)"
-grep -qE 'uses: Verjson/\.github/\.github/actions/ci-eligibility@[0-9a-f]{40}' "$ci" \
-  && fail "node-ci's ci-eligibility ref was digest-pinned — the #135 failure mode is back" \
-  || pass "node-ci's ci-eligibility ref is not digest-pinned"
-# And Renovate must be told NOT to pin it, or it re-pins on its next run.
+# The self-reference must be the reviewed commit that introduced the action.
+# #135 pinned from a stale release that predated the action; this assertion keeps
+# that failure from returning while closing the mutable @main seam from #162.
+grep -qE "^[[:space:]]*uses: Verjson/\\.github/\\.github/actions/ci-eligibility@${eligibility_pin}[[:space:]]*$" "$ci" \
+  && pass "node-ci pins ci-eligibility to the reviewed action-introducing commit" \
+  || fail "node-ci does not pin ci-eligibility to reviewed commit $eligibility_pin"
+
+# Walk the dependency graph that node-ci actually executes. Every remote ref
+# must be a full SHA. A self-reference is resolved with git-show at that SHA and
+# recursively scanned, so a mutable nested dependency inside the pinned action
+# cannot hide behind an immutable top-level node-ci reference.
+declare -A graph_seen=()
+graph_error=''
+ref_is_immutable() { [[ "$1" =~ ^[0-9a-f]{40}$ ]]; }
+resolve_self_source() {
+  local ref="$1" path="$2" destination="$3" candidate object_type
+  resolved_self_path=''
+
+  # Reusable workflows reference a file directly; composite actions reference
+  # their directory, which GitHub resolves to action.yml or action.yaml.
+  for candidate in "$path" "$path/action.yml" "$path/action.yaml"; do
+    object_type="$(git -C "$root" cat-file -t "$ref:$candidate" 2>/dev/null || true)"
+    [ "$object_type" = blob ] || continue
+    if git -C "$root" show "$ref:$candidate" >"$destination" 2>/dev/null; then
+      resolved_self_path="$candidate"
+      return 0
+    fi
+  done
+  return 1
+}
+
+walk_uses_graph() {
+  local source="$1" identity="$2" use dependency ref nested path nested_identity
+  [ -n "${graph_seen[$identity]:-}" ] && return 0
+  graph_seen["$identity"]=1
+
+  while IFS= read -r use; do
+    dependency="${use%@*}"
+    ref="${use##*@}"
+    if [ "$dependency" = "$use" ] || ! ref_is_immutable "$ref"; then
+      graph_error="$identity has mutable or missing ref: $use"
+      return 1
+    fi
+
+    case "$dependency" in
+      Verjson/.github/*)
+        path="${dependency#Verjson/.github/}"
+        nested="$(mktemp)"
+        if ! resolve_self_source "$ref" "$path" "$nested"; then
+          rm -f "$nested"
+          graph_error="$identity cannot resolve self-reference $use"
+          return 1
+        fi
+        nested_identity="$ref:$resolved_self_path"
+        if ! walk_uses_graph "$nested" "$nested_identity"; then
+          rm -f "$nested"
+          return 1
+        fi
+        rm -f "$nested"
+        ;;
+    esac
+  done < <(awk '
+    /^[[:space:]]*(-[[:space:]]+)?uses:[[:space:]]*/ {
+      line = $0
+      sub(/^[[:space:]]*(-[[:space:]]+)?uses:[[:space:]]*/, "", line)
+      sub(/[[:space:]#].*$/, "", line)
+      print line
+    }
+  ' "$source")
+}
+
+if walk_uses_graph "$ci" "node-ci.yml"; then
+  pass "node-ci's complete live dependency graph uses immutable full SHAs"
+else
+  fail "node-ci dependency graph is not transitively immutable: $graph_error"
+fi
+
+# Exercise the graph walker itself, not just its ref predicate. These fixtures
+# pin both accepted YAML forms and prove directory-form composite actions resolve
+# to their implementation file before recursion.
+graph_fixtures="$(mktemp -d)"
+trap 'rm -rf "$graph_fixtures"' EXIT
+cat >"$graph_fixtures/list-mutable.yml" <<'YAML'
+steps:
+  - uses: actions/checkout@main
+YAML
+graph_seen=()
+graph_error=''
+if walk_uses_graph "$graph_fixtures/list-mutable.yml" "list-mutable.yml"; then
+  fail "graph walker accepts a mutable list-form - uses dependency"
+elif [[ "$graph_error" == *"actions/checkout@main"* ]]; then
+  pass "graph walker rejects mutable list-form - uses dependency"
+else
+  fail "list-form mutable fixture failed for the wrong reason: $graph_error"
+fi
+
+cat >"$graph_fixtures/direct-mutable.yml" <<'YAML'
+jobs:
+  reusable:
+    uses: Verjson/.github/.github/workflows/node-ci.yml@v2
+YAML
+graph_seen=()
+graph_error=''
+if walk_uses_graph "$graph_fixtures/direct-mutable.yml" "direct-mutable.yml"; then
+  fail "graph walker accepts a mutable direct uses dependency"
+elif [[ "$graph_error" == *"node-ci.yml@v2"* ]]; then
+  pass "graph walker rejects mutable direct uses dependency"
+else
+  fail "direct mutable fixture failed for the wrong reason: $graph_error"
+fi
+
+cat >"$graph_fixtures/directory-action.yml" <<YAML
+steps:
+  - uses: Verjson/.github/.github/actions/ci-eligibility@$eligibility_pin
+YAML
+graph_seen=()
+graph_error=''
+resolved_action="$eligibility_pin:.github/actions/ci-eligibility/action.yml"
+if walk_uses_graph "$graph_fixtures/directory-action.yml" "directory-action.yml" \
+  && [ -n "${graph_seen[$resolved_action]:-}" ]; then
+  pass "graph walker resolves directory-form composite action to action.yml"
+else
+  fail "graph walker did not scan the directory action implementation: $graph_error"
+fi
+
 jq -e '
-  any(.packageRules[];
-    .pinDigests == false and
-    (.matchManagers | index("github-actions")) != null and
-    (.matchFileNames | index(".github/workflows/node-ci.yml")) != null and
-    (.matchDepNames | index("Verjson/.github")) != null)
+  all(.packageRules[]; .pinDigests != false)
 ' "$renovate" >/dev/null \
-  && pass "Renovate is configured NOT to digest-pin the co-located ci-eligibility self-reference" \
-  || fail "renovate.json lacks the pinDigests:false exclusion for Verjson/.github in node-ci.yml (#135 will recur)"
+  && pass "Renovate has no exception that permits mutable Node dependencies" \
+  || fail "renovate.json still contains a pinDigests:false exception"
 
 audit_setup_line="$(grep -nF "uses: $setup_node" "$actions_ci" | cut -d: -f1)"
 audit_line="$(grep -nF 'run: bash scripts/release-tooling-audit.sh' "$actions_ci" | cut -d: -f1)"

@@ -113,6 +113,22 @@ available to the moving `@main` composite action. Requiring the caller's narrow
 `statuses: read` grant preserves least privilege; the caller example and
 regression test now state the startup requirement accurately.
 
+## 2026-07-28 correction — immutable transitive action reference
+
+Issue [#162](https://github.com/Verjson/.github/issues/162) supersedes the
+original `@main` self-reference rationale. `@main` avoided the stale pre-action
+release failure from #135, but made a SHA- or exact-SemVer-pinned `node-ci`
+consumer execute mutable transitive code.
+
+`node-ci` now pins `ci-eligibility` to
+`9a7cc9cac4e0f32a5b64d8af8b8467350ee685d2`, the reviewed commit that introduced
+the action. This keeps the action available while making the dependency
+immutable. The obsolete Renovate `pinDigests: false` exception is removed.
+Policy tests resolve co-located dependencies at their pinned commits, traverse
+the live `uses:` graph, and reject branch, moving-major, and other non-SHA refs.
+The action logic, `statuses: read` boundary, fail-open runtime behavior, and
+`renovate/stability-days` semantics are unchanged.
+
 ## Consequences
 
 - Deferred Renovate PRs stop burning the CI suite; it runs once, against the base
@@ -155,3 +171,7 @@ regression test now state the startup requirement accurately.
 The action fails OPEN (`|| echo 0` → run) and forces a run on `workflow_dispatch`.
 See [#133](https://github.com/Verjson/.github/issues/133) and the casualty
 [toquorum#161](https://github.com/Verjson/toquorum/pull/161).
+
+The `@main` line above records the original sensitive hunk. The 2026-07-28
+correction replaces only that `uses:` ref with the reviewed full SHA documented
+above.
