@@ -76,11 +76,11 @@ runs_on_parameterized="$(grep -cE "runs-on: \\\$\{\{ inputs\.runner_labels && fr
   && pass "both gate jobs' runs-on prefer inputs.runner_labels then fall back to the org pool" \
   || fail "runs-on is not runner_labels-parameterized on both jobs (got ${runs_on_parameterized:-0}/2)"
 
-# (f) The org fallback still self-gates Verjson/.github on `meta` (ADR 0016) —
-# the reusable change must not collapse the deadlock-avoidance split.
-grep -qE "github\.repository == 'Verjson/\.github' && fromJSON\('\[\"self-hosted\",\"meta\"\]'\)" "$wf" \
-  && pass "self-gate meta/gate split preserved in the fallback (ADR 0016)" \
-  || fail "self-gate meta split lost — Verjson/.github could deadlock on the gate pool"
+# (f) Public targets use fixed hosted capacity so fork/public code cannot reach
+# the persistent organization runner group.
+grep -qE "github\.event\.repository\.private == false && 'ubuntu-24\.04'" "$wf" \
+  && pass "public target repositories use the isolated hosted lane" \
+  || fail "public target repositories can reach the persistent gate pool"
 
 # (g) The dispatch-target guard stays org-RELATIVE (github.repository_owner via
 # env), never hardcoded to 'Verjson'. Under workflow_call GITHUB_REPOSITORY_OWNER

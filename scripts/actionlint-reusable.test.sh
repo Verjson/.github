@@ -36,7 +36,7 @@ grep -qE '^      github-hosted-runner:$' <<<"$workflow_call" \
   && pass "runner choice is a default-off boolean" \
   || fail "runner choice is not the governed boolean contract"
 
-expected_runs_on='    runs-on: ${{ inputs.github-hosted-runner && '\''ubuntu-24.04'\'' || fromJSON('\''["self-hosted","GCP"]'\'') }}'
+expected_runs_on='    runs-on: ${{ (github.repository == '\''Verjson/.github'\'' || inputs.github-hosted-runner) && '\''ubuntu-24.04'\'' || fromJSON('\''["self-hosted","GCP"]'\'') }}'
 grep -qxF "$expected_runs_on" "$wf" \
   && pass "runner input maps only to fixed GitHub-hosted or GCP runners" \
   || fail "runs-on does not preserve the bounded runner mapping"
