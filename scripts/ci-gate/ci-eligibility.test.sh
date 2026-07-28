@@ -115,15 +115,25 @@ awk '
 # errors, but an ungranted permission prevents GitHub from starting the workflow.
 grep -qF '#         statuses: read          # REQUIRED:' "$nodeci" \
   && grep -qF '#                                 # makes the workflow fail at STARTUP before the' "$nodeci" \
+  && grep -qF 'caller that does not grant it makes the reusable call invalid at workflow' "$adr" \
+  && grep -qF 'startup. The action' "$adr" \
   && pass "caller contract marks statuses: read required before startup" \
   || fail "caller contract no longer documents statuses: read as startup-required"
 
 # (h) Prevent the original false contract from returning in node-ci or its
 # controlling ADR: omission must never be described as a fail-open path.
-if cat "$nodeci" "$adr" | tr '\n' ' ' | grep -qiE 'omit(ted|s|ting)[^.;]{0,120}fails?[[:space:]]+open'; then
+false_contract_re='(omit(ted|s|ting)|absent|withheld)[^.;]{0,160}(check[[:space:]]+)?fails?[[:space:]]+open'
+if cat "$nodeci" "$adr" | tr '\n' ' ' | grep -qiE "$false_contract_re"; then
   fail "node-ci documentation again claims an omitted caller permission fails open"
 else
   pass "node-ci documentation does not claim omitted caller permissions fail open"
+fi
+
+old_contract='Where it is absent the read is denied, the check fails open.'
+if printf '%s\n' "$old_contract" | grep -qiE "$false_contract_re"; then
+  pass "regression guard rejects the exact removed ADR fail-open sentence"
+else
+  fail "regression guard misses the exact removed ADR fail-open sentence"
 fi
 
 if [ "$fails" -eq 0 ]; then
