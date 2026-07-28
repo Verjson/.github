@@ -5,8 +5,8 @@ repo has to hand-roll it. It:
 
 1. installs Node via `actions/setup-node` (self-hosted runners have **no ambient
    Node** — relying on it is `verjson-cli-cloud#59` Gap 2);
-2. caches npm downloads when the configured lockfile exists (never
-   `node_modules` or workspace output);
+2. optionally caches npm downloads in a job-scoped directory when the configured
+   lockfile exists (default off; never `node_modules` or workspace output);
 3. authenticates the `@verjson` GitHub Packages registry;
 4. idempotently rewrites `ssh://`/`git@`→`https://` git URLs so private
    `@verjson` git dependencies resolve over HTTPS, using `--unset-all`/`--add`
@@ -39,7 +39,7 @@ jobs:
       - uses: Verjson/.github/.github/actions/setup-verjson-node@main
         with:
           node-version: '24' # optional; defaults to 24
-          # cache: 'false' # optional; defaults on when package-lock.json exists
+          # cache: 'true' # optional; default off on persistent runners
           # cache-dependency-path: packages/app/package-lock.json
           # scope: '@verjson'          # optional; set '' to skip registry auth
           node-auth-token: ${{ secrets.NODE_AUTH_TOKEN }} # read:packages
@@ -56,7 +56,7 @@ Reference it by `@main` for now; when the reusable-workflow tag pin lands
 | Input                   | Default                      | Notes                                                               |
 | ----------------------- | ---------------------------- | ------------------------------------------------------------------- |
 | `node-version`          | `24`                         | Passed to `actions/setup-node`.                                     |
-| `cache`                 | `true`                       | Caches npm downloads when the dependency path matches a lockfile.   |
+| `cache`                 | `false`                      | Opt-in job-scoped npm download cache when the dependency path matches. |
 | `cache-dependency-path` | `package-lock.json`          | Lockfile path or glob used to key the npm download cache.           |
 | `scope`                 | `@verjson`                   | npm scope for the registry; empty string skips registry auth.       |
 | `registry-url`          | `https://npm.pkg.github.com` | Registry for the scope.                                             |

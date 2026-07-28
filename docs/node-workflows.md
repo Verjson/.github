@@ -12,16 +12,26 @@ jobs:
       timeout-minutes: 45
 ```
 
-Both workflows cache npm's download cache by default when `package-lock.json`
-exists. They never cache `node_modules`, a workspace, or build output. Set
-`cache: false` to disable caching, or point `cache-dependency-path` at the
-lockfile that should key the cache:
+Both workflows default GitHub Actions cache transfer **off** on the persistent
+self-hosted pool. The runner's local npm download cache remains available, while
+the accumulated cross-repository cache is never restored from or uploaded to
+Actions. This avoids the failure observed in `Verjson/toquorum` run
+`30363686973`, where a 4.1 GB cache kept each runner occupied for another 17–27
+minutes after useful work completed. Omitting the input is equivalent to
+`cache: false`.
+
+Enable `cache: true` only for an isolated/cold runner that benefits from remote
+restore. Enabled caches use a job-scoped directory under `runner.temp`, never
+the persistent global npm cache, and default to a 1024 MB upload limit. Caches
+over `cache-max-mb` are reported and cleared before setup-node's post step:
 
 ```yaml
 jobs:
   ci:
     uses: Verjson/.github/.github/workflows/node-ci.yml@v2.1.0
     with:
+      cache: true
+      cache-max-mb: 512
       cache-dependency-path: packages/service/package-lock.json
 ```
 
@@ -31,8 +41,23 @@ continues normally. Registry authentication is independent of caching:
 callers that install private `@verjson` packages must still grant
 `packages: read` and pass `NODE_AUTH_TOKEN`.
 
-The same `cache` and `cache-dependency-path` contract is available on the
-`setup-verjson-node` composite action.
+The `setup-verjson-node` composite also defaults caching off and scopes an
+explicitly enabled cache to the current job. Because a setup composite finishes
+before caller-owned install/build steps, bespoke callers—not the composite—own
+any end-of-job size guard.
+
+## Runner security tiers
+
+| Tier | Workload | Route | Cache and credential posture |
+|---|---|---|---|
+| Isolated | Public repositories, fork PRs, or sensitive untrusted validation | Fixed GitHub-hosted image until the one-job ephemeral lane in `Verjson/verjson-github-runner#33` is proven | Fresh filesystem; no inherited secrets, cloud metadata, internal network, or host Docker socket |
+| Trusted | Same-repository PRs and releases in selected private repositories | `["self-hosted","GCP"]` in a selected-repository runner group | Actions cache off; explicit least-privilege job permissions; no release secrets in PR jobs |
+| Fast | Low-risk trusted validation that can share setup | Trusted route with one consolidated job | Install/generate once; local npm cache only; stale-run cancellation |
+
+Runner labels describe capability, but runner-group access is the authorization
+boundary. Public repositories must not receive the persistent GCP group merely
+because a workflow names its labels. Third-party actions and reusable workflows
+remain full-SHA or immutable-release pinned.
 
 ## Concurrency belongs to the caller
 
