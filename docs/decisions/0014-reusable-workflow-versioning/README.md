@@ -134,3 +134,18 @@ a mutable action tag, package range, or central branch is not part of the truste
 publish path. These `job.workflow_*` identity properties are GitHub Cloud-only,
 matching the organization's current runner platform; GitHub Enterprise Server
 would require a separate design.
+
+## Amendment — exact SemVer pins and immutable transitive actions (2026-07-28)
+
+Issue #162 makes the two consumer postures explicit. `@v2.1.0` is the immutable
+SemVer audit point and is the documented reproducible example; `@v2` remains the
+moving-major option for consumers that deliberately prefer compatible updates
+without per-release PRs. Both are release-gated and avoid `@main`.
+
+The release boundary must also be transitive. Every remote action executed by a
+reusable workflow is pinned to a reviewed full commit SHA, including co-located
+actions in this repository. CI walks `node-ci`'s live `uses:` graph, resolves
+co-located dependencies at the referenced commit, and rejects branches, moving
+major tags, or other non-SHA refs anywhere in that graph. This preserves the
+choice made by an exact-pinned consumer: no nested `@main` or `@v2` reference can
+silently substitute different executable code.
