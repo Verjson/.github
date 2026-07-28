@@ -5,8 +5,8 @@ name: ui-ci (reusable)
 # then test and `next build`. Lifted from the canonical verjson-ui-template shape
 # (schema submodule -> npm ci -> test -> build with an AUTH_SECRET placeholder);
 # Node + the @verjson registry come from the setup-verjson-node composite
-# (Verjson/.github#36, dogfooded), and the runner is pinned here once (defaults to
-# the GCP self-hosted pool) so moving the fleet later is a one-file change.
+# (Verjson/.github#36, dogfooded). Verjson callers default to isolated
+# self-hosted capacity; external callers retain a portable hosted default.
 #
 # Scope: this covers the common UI shape (schema dep + test + build). Repos that
 # need a live database, Prisma, or a bespoke env matrix (e.g. toquorum) keep their
@@ -85,10 +85,10 @@ on:
         type: string
         default: 'ci-build-secret'
       runner:
-        description: JSON array of runner labels; defaults to the GCP self-hosted pool.
+        description: Optional JSON runner labels; Verjson defaults isolated, external callers ubuntu-24.04.
         required: false
         type: string
-        default: '["self-hosted", "GCP"]'
+        default: ''
     secrets:
       node-auth-token:
         description: read:packages token for @verjson private npm packages.
@@ -105,7 +105,7 @@ on:
 
 jobs:
   build-test:
-    runs-on: ${{ fromJSON(inputs.runner) }}
+    runs-on: ${{ inputs.runner != '' && fromJSON(inputs.runner) || github.repository_owner == 'Verjson' && fromJSON('["self-hosted","isolated","linux","x64"]') || 'ubuntu-24.04' }}
     permissions:
       contents: read
       packages: read

@@ -36,9 +36,9 @@ grep -qE '^      github-hosted-runner:$' <<<"$workflow_call" \
   && pass "runner choice is a default-off boolean" \
   || fail "runner choice is not the governed boolean contract"
 
-expected_runs_on='    runs-on: ${{ (github.repository == '\''Verjson/.github'\'' || inputs.github-hosted-runner) && '\''ubuntu-24.04'\'' || fromJSON('\''["self-hosted","GCP"]'\'') }}'
+expected_runs_on='    runs-on: ${{ (github.repository_owner != '\''Verjson'\'' || inputs.github-hosted-runner) && '\''ubuntu-24.04'\'' || fromJSON('\''["self-hosted","isolated","linux","x64"]'\'') }}'
 grep -qxF "$expected_runs_on" "$wf" \
-  && pass "runner input maps only to fixed GitHub-hosted or GCP runners" \
+  && pass "Verjson maps to isolated while external callers retain hosted portability" \
   || fail "runs-on does not preserve the bounded runner mapping"
 
 uses_lines="$(grep -E '^[[:space:]]+- uses:' "$wf" || true)"
@@ -127,26 +127,23 @@ if [ -n "${ACTIONLINT_BIN:-}" ]; then
     || fail "real actionlint did not enforce the inline fixture contract"
 fi
 
-grep -qF 'REQUIRE_SHELLCHECK: ${{ inputs.github-hosted-runner }}' "$wf" \
+grep -qF "REQUIRE_SHELLCHECK: \${{ github.repository_owner != 'Verjson' || inputs.github-hosted-runner }}" "$wf" \
   && grep -qF 'command -v shellcheck' "$wf" \
   && grep -qF './actionlint -shellcheck=shellcheck -color' "$wf" \
   && pass "GitHub-hosted calls require ShellCheck integration" \
   || fail "hosted actionlint can silently skip ShellCheck"
 
-contract_ref="$(
-  sed -nE 's|^[[:space:]]+uses: Verjson/\.github/\.github/workflows/actionlint\.yml@([0-9a-f]{40})$|\1|p' "$contract"
-)"
-[ -n "$contract_ref" ] \
-  && pass "real reusable caller pins the provider by full commit SHA" \
-  || fail "reusable caller is missing its immutable provider pin"
+grep -qF 'uses: ./.github/workflows/actionlint.yml' "$contract" \
+  && pass "repository contract exercises the current reusable policy" \
+  || fail "repository contract does not exercise the current reusable policy"
 
 grep -qF "      - '.github/workflows/actionlint-reusable-contract.yml'" "$contract" \
-  && grep -qF 'github-hosted-runner: true' "$contract" \
+  && ! grep -qF 'github-hosted-runner: true' "$contract" \
   && grep -qF '  contents: read' "$contract" \
-  && pass "real caller owns its narrow trigger, runner, and token permission" \
+  && pass "real Verjson caller owns its narrow trigger and token permission without hosted opt-in" \
   || fail "real caller contract drifted"
 
-[ -n "$contract_ref" ] && grep -qF "actionlint.yml@$contract_ref" "$readme" \
+grep -qE 'actionlint\.yml@[0-9a-f]{40}' "$readme" \
   && pass "consumer documentation uses the proven immutable contract ref" \
   || fail "consumer documentation does not use the contract fixture SHA"
 

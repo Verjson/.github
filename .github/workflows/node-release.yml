@@ -2,8 +2,8 @@ name: node-release (reusable)
 
 # Reusable release for the verJSON Node libraries: checkout (full history),
 # setup-node against the @verjson registry, npm ci / build / test, then
-# semantic-release. Runner defined here once (defaults to the GCP self-hosted
-# pool). Mirrors node-ci.yml so the two stay in step.
+# semantic-release. Verjson defaults to isolated self-hosted capacity while
+# external callers retain a portable hosted default. Mirrors node-ci.yml.
 #
 # Caller (each lib's .github/workflows/release.yml):
 #
@@ -56,10 +56,10 @@ on:
         type: string
         default: '@verjson'
       runner:
-        description: JSON array of runner labels; defaults to the GCP self-hosted pool
+        description: Optional JSON runner labels; Verjson defaults isolated, external callers ubuntu-24.04.
         required: false
         type: string
-        default: '["self-hosted", "GCP"]'
+        default: ''
     secrets:
       NODE_AUTH_TOKEN:
         description: Token to read @verjson private packages from GitHub Packages
@@ -67,7 +67,7 @@ on:
 
 jobs:
   release:
-    runs-on: ${{ fromJSON(inputs.runner) }}
+    runs-on: ${{ inputs.runner != '' && fromJSON(inputs.runner) || github.repository_owner == 'Verjson' && fromJSON('["self-hosted","isolated","linux","x64"]') || 'ubuntu-24.04' }}
     timeout-minutes: ${{ inputs.timeout-minutes }}
     permissions:
       contents: write

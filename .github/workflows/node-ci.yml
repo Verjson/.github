@@ -2,8 +2,8 @@ name: node-ci (reusable)
 
 # Reusable CI for the verJSON Node libraries: checkout, setup-node against the
 # @verjson GitHub Packages registry, then npm ci / build / test / lint. The
-# runner is defined here once (defaults to the GCP self-hosted pool), so moving
-# the fleet later is a one-file change instead of a per-repo edit.
+# runner policy is defined here once: Verjson uses isolated self-hosted capacity
+# while external callers retain a portable GitHub-hosted default.
 #
 # Caller (each lib's .github/workflows/ci.yml):
 #
@@ -77,10 +77,10 @@ on:
         type: string
         default: ''
       runner:
-        description: JSON array of runner labels; defaults to the GCP self-hosted pool
+        description: Optional JSON runner labels; Verjson defaults isolated, external callers ubuntu-24.04.
         required: false
         type: string
-        default: '["self-hosted", "GCP"]'
+        default: ''
       db-image:
         description: >-
           Optional Postgres-style image (e.g. pgvector/pgvector:pg16) to run as a
@@ -161,7 +161,7 @@ jobs:
   # everything. This tiny job resolves eligibility once; build-test skips when
   # it says defer, staying BLOCKED until the rebase re-fires CI (Verjson/.github#133).
   eligibility:
-    runs-on: ${{ fromJSON(inputs.runner) }}
+    runs-on: ${{ inputs.runner != '' && fromJSON(inputs.runner) || github.repository_owner == 'Verjson' && fromJSON('["self-hosted","isolated","linux","x64"]') || 'ubuntu-24.04' }}
     timeout-minutes: ${{ inputs.timeout-minutes }}
     permissions:
       # Reading a commit's combined status needs `statuses` (not `contents`).
@@ -210,7 +210,7 @@ jobs:
     # the guard can only ever withhold CI on a genuinely-held PR — never wedge a
     # normal one behind a new single point of failure.
     if: always() && needs.eligibility.outputs.should-run != 'false'
-    runs-on: ${{ fromJSON(inputs.runner) }}
+    runs-on: ${{ inputs.runner != '' && fromJSON(inputs.runner) || github.repository_owner == 'Verjson' && fromJSON('["self-hosted","isolated","linux","x64"]') || 'ubuntu-24.04' }}
     timeout-minutes: ${{ inputs.timeout-minutes }}
     permissions:
       contents: read

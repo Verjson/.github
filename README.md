@@ -36,11 +36,11 @@ permissions:
 jobs:
   actionlint:
     uses: Verjson/.github/.github/workflows/actionlint.yml@bfecdd0111582d0ddada558e6b4d0cadd9b488bd
-    with:
-      # Omit this for the org GCP self-hosted pool. Set true only when the
-      # caller intentionally wants the fixed GitHub-hosted runner.
-      github-hosted-runner: true
 ```
+
+Callers outside `Verjson` use `ubuntu-24.04` by default. Verjson callers use
+`[self-hosted, isolated, linux, x64]`; `github-hosted-runner: true` is an
+explicit compatibility escape hatch, not the organization default.
 
 The caller owns all triggers and path filters; `workflow_call` never runs on its
 own. Keep the caller unfiltered when actionlint is a required check. If the

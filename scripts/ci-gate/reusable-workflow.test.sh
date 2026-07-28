@@ -76,11 +76,12 @@ runs_on_parameterized="$(grep -cE "runs-on: \\\$\{\{ inputs\.runner_labels && fr
   && pass "both gate jobs' runs-on prefer inputs.runner_labels then fall back to the org pool" \
   || fail "runs-on is not runner_labels-parameterized on both jobs (got ${runs_on_parameterized:-0}/2)"
 
-# (f) Public targets use fixed hosted capacity so fork/public code cannot reach
-# the persistent organization runner group.
-grep -qE "github\.event\.repository\.private == false && 'ubuntu-24\.04'" "$wf" \
-  && pass "public target repositories use the isolated hosted lane" \
-  || fail "public target repositories can reach the persistent gate pool"
+# (f) Verjson public targets use the ephemeral isolated pool. Non-Verjson
+# consumers retain the hosted fallback and can always pass runner_labels.
+grep -qE "github\.repository_owner != 'Verjson' && 'ubuntu-24\.04'" "$wf" \
+  && grep -qE "github\.event\.repository\.private == false && fromJSON\\('\\[\"self-hosted\",\"isolated\",\"linux\",\"x64\"\\]'\\)" "$wf" \
+  && pass "public runner fallback is organization-aware and portable" \
+  || fail "public targets lost isolated Verjson routing or external portability"
 
 # (g) The dispatch-target guard stays org-RELATIVE (github.repository_owner via
 # env), never hardcoded to 'Verjson'. Under workflow_call GITHUB_REPOSITORY_OWNER

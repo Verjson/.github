@@ -3,8 +3,8 @@ name: helm-ci (reusable)
 # Reusable CI for verJSON Helm chart repos: `helm lint` (against the default and
 # any extra values files), render the templates, and validate the rendered
 # manifests with kubeconform. Lifted from catalog-helm's ci.yml so chart repos
-# stop reinventing it; the runner is pinned here once (defaults to the GCP
-# self-hosted pool), so moving the fleet later is a one-file change.
+# stop reinventing it. Verjson callers default to isolated self-hosted capacity;
+# external callers retain a portable GitHub-hosted default.
 #
 # kind-based smoke tests are intentionally NOT included: they are bespoke per
 # chart (dependency stubs, preflight wiring) and belong in the caller's own job
@@ -73,14 +73,14 @@ on:
         type: string
         default: '-ignore-missing-schemas'
       runner:
-        description: JSON array of runner labels; defaults to the GCP self-hosted pool.
+        description: Optional JSON runner labels; Verjson defaults isolated, external callers ubuntu-24.04.
         required: false
         type: string
-        default: '["self-hosted", "GCP"]'
+        default: ''
 
 jobs:
   lint-template:
-    runs-on: ${{ fromJSON(inputs.runner) }}
+    runs-on: ${{ inputs.runner != '' && fromJSON(inputs.runner) || github.repository_owner == 'Verjson' && fromJSON('["self-hosted","isolated","linux","x64"]') || 'ubuntu-24.04' }}
     permissions:
       contents: read
     steps:

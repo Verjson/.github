@@ -6,9 +6,8 @@ name: actionlint
 # free. Local pull_request/push behavior from #80 is preserved; workflow_call
 # exposes the same implementation to consumers (#153).
 #
-# Public `.github` validation uses a fixed hosted image. Reusable calls from
-# trusted private repositories retain the governed GCP default unless the caller
-# selects hosted explicitly.
+# Verjson validation uses the isolated self-hosted lane. Reusable calls outside
+# Verjson retain a portable GitHub-hosted default.
 
 on:
   pull_request:
@@ -23,7 +22,7 @@ on:
   workflow_call:
     inputs:
       github-hosted-runner:
-        description: Use the fixed ubuntu-24.04 runner instead of the GCP self-hosted pool.
+        description: Force ubuntu-24.04; external callers already use it by default.
         required: false
         type: boolean
         default: false
@@ -33,7 +32,7 @@ permissions:
 
 jobs:
   actionlint:
-    runs-on: ${{ (github.repository == 'Verjson/.github' || inputs.github-hosted-runner) && 'ubuntu-24.04' || fromJSON('["self-hosted","GCP"]') }}
+    runs-on: ${{ (github.repository_owner != 'Verjson' || inputs.github-hosted-runner) && 'ubuntu-24.04' || fromJSON('["self-hosted","isolated","linux","x64"]') }}
     env:
       ACTIONLINT_VERSION: 1.7.7
       # From actionlint_1.7.7_checksums.txt on the upstream GitHub Release.
@@ -96,7 +95,7 @@ jobs:
           fi
       - name: Run actionlint over all workflows
         env:
-          REQUIRE_SHELLCHECK: ${{ inputs.github-hosted-runner }}
+          REQUIRE_SHELLCHECK: ${{ github.repository_owner != 'Verjson' || inputs.github-hosted-runner }}
         run: |
           if [ "$REQUIRE_SHELLCHECK" = true ]; then
             command -v shellcheck >/dev/null || {

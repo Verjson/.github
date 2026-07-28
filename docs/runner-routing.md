@@ -7,10 +7,11 @@ for the *why* of the groups, this for the *how* of day-to-day routing.
 
 ## TL;DR
 
-- **Default to `[self-hosted, GCP]`** for ordinary CI in selected trusted private
-  repositories (build/test/lint/release).
-- **Public repositories and fork/untrusted validation use `ubuntu-24.04`** until
-  the fresh-container isolated lane is deployed and admitted.
+- **Verjson-owned reusable-workflow callers default to
+  `[self-hosted, isolated, linux, x64]`**. Trusted callers may explicitly select
+  `[self-hosted, GCP]`, `gate`, or another admitted persistent pool.
+- **Callers outside Verjson default to `ubuntu-24.04`** so this public workflow
+  package remains usable without access to Verjson runner groups.
 - **Docker/kind/buildx jobs must pin `[self-hosted, docker]`** — the general GCP
   pool has **no Docker socket**.
 - **Labels describe *capability*, not just provider.** `GCP` ≡ `gce` = the 8 GCE
@@ -34,7 +35,8 @@ for the *why* of the groups, this for the *how* of day-to-day routing.
 | `meta`     | `gha-meta-1`, `gha-meta-2` | `GCP` | Identity/rollback label retained on the former `.github` self-gate lane. Both also carry `gate` under ADR 0029; public repositories remain denied by the group boundary. |
 | `docker`   | `gha-docker-1`                                     | `GCP` †  | Docker / kind / buildx / testcontainers — anything needing the Docker daemon. **Required**, not optional (see below). |
 | `manish`   | `hostinger` runner                                 | `manish` | Secondary / overflow pool on a **non-GCE image** (no ambient `gh`; Node via `setup-node`). Target explicitly by label; jobs must self-provision tools. ‡ |
-| _(none)_   | GitHub-hosted                                      | `GitHub` | **Last resort only.** Reserved fallback; not used for real CI.                                             |
+| `isolated` + `linux` + `x64` | Ephemeral one-job runners | isolated group | Verjson public, fork, and untrusted validation after the #173 deployment proof. |
+| _(none)_   | GitHub-hosted                                      | `GitHub` | Portable default for reusable-workflow callers outside Verjson; not the Verjson default. |
 
 † `gha-docker-1` post-dates [ADR 0003](decisions/0003-runner-groups-gcp-github-manish/README.md)
 (which enumerates only the original 9 runners), so its runner-group membership
@@ -50,12 +52,14 @@ one-time on-box step owned by the runner-topology owner.
 
 ## Routing rules
 
-- **Ordinary Node/library CI, releases, submodule notifications** →
-  `[self-hosted, GCP]`. The [`node-ci`](../.github/workflows/node-ci.yml) /
+- **Ordinary Node/library CI, releases, submodule notifications** use the
+  reusable workflow's organization-aware default. The
+  [`node-ci`](../.github/workflows/node-ci.yml) /
   [`node-release`](../.github/workflows/node-release.yml) /
   [`notify-umbrella`](../.github/workflows/notify-umbrella.yml) reusable
-  workflows already default here; callers only override `runner` to reach a
-  different pool (e.g. `manish`), never to fall back to `ubuntu-latest`. See
+  workflows route Verjson to the isolated pool and outside organizations to
+  `ubuntu-24.04`; trusted Verjson callers override `runner` to reach a
+  persistent pool such as `GCP` or `manish`. See
   [Reusable Node workflow controls](node-workflows.md) for timeout, cache, and
   caller-concurrency inputs.
 - **Docker / kind / buildx / anything touching the Docker daemon** →
@@ -68,8 +72,9 @@ one-time on-box step owned by the runner-topology owner.
   the dedicated GCE subset (which has ambient `gh` and excludes the `hostinger`
   overflow); routing `freshness`/`classify` to `GCP` let them land on `hostinger`
   and fail (#52). Public target repositories, including `Verjson/.github`, use
-  fixed `ubuntu-24.04` instead. This retires the public repository's dependency
-  on the persistent `meta` lane; ADR 0028 supersedes ADR 0016 for this route.
+  the isolated ephemeral lane instead. Outside organizations retain hosted
+  portability. This retires the public repository's dependency on the
+  persistent `meta` lane; ADR 0030 supersedes ADR 0028 for this route.
   ADR 0029 adds `gate` to the two retired meta runners so private gate capacity
   rises from four to six without making them general `GCP` bulk-CI runners.
 - **Secondary / overflow** → `[self-hosted, manish]`.
@@ -109,8 +114,9 @@ These bit us during the hosted→self-hosted migration
   users at time of writing (per issue #31 item 4): `verjson-cli`, `verjson-authz`,
   `AiB`. This repo's own gate `classify` job was normalized in the PR that added
   this doc.
-- **~27 repos still run real CI on `ubuntu-latest`** and are migrating to
-  `[self-hosted, GCP]` (ADR 0003 follow-up).
+- Verjson consumer workflows must not use `ubuntu-latest` or a literal
+  `ubuntu-24.04`; use the reusable defaults or an explicit admitted self-hosted
+  selector. Issue #173 tracks the isolated-pool deployment and migration proof.
 - **New runners auto-land in the wrong group.** The `GitHub` group (id 1) is
   still `default: true` (a custom group can't be made default), so a newly
   registered self-hosted runner lands in `GitHub`, not `GCP`, and must be moved

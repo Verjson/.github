@@ -26,7 +26,7 @@ permissions:
 
 jobs:
   reconcile:
-    runs-on: ubuntu-24.04
+    runs-on: [self-hosted, isolated, linux, x64]
     steps:
       - uses: actions/checkout@v7
 
