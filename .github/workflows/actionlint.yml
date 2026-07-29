@@ -32,7 +32,7 @@ permissions:
 
 jobs:
   actionlint:
-    runs-on: ${{ (github.repository_owner != 'Verjson' || inputs.github-hosted-runner) && 'ubuntu-24.04' || fromJSON('["self-hosted","isolated","linux","x64"]') }}
+    runs-on: ${{ (github.repository_owner != 'Verjson' || inputs.github-hosted-runner) && 'ubuntu-24.04' || github.event.repository.private == true && fromJSON(vars.VERJSON_RUNNER_DEFAULT || '["self-hosted","GCP"]') || fromJSON(vars.VERJSON_RUNNER_ISOLATED || '["self-hosted","isolated","linux","x64"]') }}
     env:
       ACTIONLINT_VERSION: 1.7.7
       # From actionlint_1.7.7_checksums.txt on the upstream GitHub Release.

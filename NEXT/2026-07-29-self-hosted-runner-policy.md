@@ -34,9 +34,15 @@ every reusable workflow with no PR here and no version bump for pinned callers.
 contexts there as `github, inputs, matrix, needs, strategy, vars`); `env` is not,
 which is the constraint that blocked single-sourcing before.
 
-`runner-routing-policy.test.sh` asserts the routing table for all nine jobs and
-adds three file-level guards: no owner-wide route may reappear, no Verjson
-caller may reach hosted, and every workflow must keep its `vars` escape hatch.
+`runner-routing-policy.test.sh` asserts the routing table for the enumerated
+jobs and then sweeps **every** `runs-on:` line in the seven reusable workflows,
+requiring a byte-identical decision suffix derived from node-ci's `eligibility`
+job. Enumeration alone was not enough: review appended a job with an inverted
+policy — public repos onto the persistent pool, the exact invariant this is
+built on — and the suite stayed green. `actionlint.yml` is migrated too; it
+still carried owner-wide isolated routing that would have queued forever for the
+79 private repos outside group 6.
+
 `pulumi-ci`'s `validate`/`preview-admission` keep no `runner` input by design
 (ADR 0027/0029 credential boundary) and the suite asserts that absence.
 

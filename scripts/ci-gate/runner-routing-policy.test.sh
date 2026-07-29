@@ -88,12 +88,21 @@ cat >"$evaluator" <<'JS'
 //
 // `private` arrives as 'true' | 'false' | '' — the empty case models an event
 // payload that carries no repository visibility, which tier 4 must catch.
+//
+// Actions compares mixed types by coercing to number (null -> 0, false -> 0,
+// true -> 1), so `null == false` is TRUE there while JS `null == false` is
+// false. Modelling unresolved visibility as 0 rather than undefined/null makes
+// JS's own loose `==` agree with Actions on BOTH polarities: 0 == true is
+// false, 0 == false is true. That matters because ai-review-merge.yml already
+// makes this same decision with `== false`; a future flip here must be
+// validated against real semantics, not against a model that only happens to
+// agree with the polarity in use today.
 const [, , raw, repository, runnerInput, priv, varDefault, varIsolated] = process.argv;
 const body = raw.trim().replace(/^\$\{\{/, '').replace(/\}\}$/, '');
 const github = {
   repository,
   repository_owner: repository.split('/')[0],
-  event: { repository: { private: priv === '' ? undefined : priv === 'true' } },
+  event: { repository: { private: priv === '' ? 0 : priv === 'true' } },
 };
 const inputs = { runner: runnerInput };
 // An unset Actions variable is the empty string, not undefined.
@@ -225,31 +234,54 @@ for job in validate preview-admission; do
   esac
 done
 
-# One policy, nine jobs, six files. Enumerating (file, job) pairs above is not
-# enough on its own: a NEW job added to any of these files would escape every
-# assertion. This sweep binds the files themselves — no owner-wide isolated
-# route, and no route that can put a Verjson caller on hosted, may reappear.
-owner_wide="$(
-  grep -HnE "^    runs-on:.*github\\.repository_owner == 'Verjson'" \
-    "$workflows"/node-ci.yml "$workflows"/node-release.yml \
-    "$workflows"/notify-umbrella.yml "$workflows"/helm-ci.yml \
-    "$workflows"/ui-ci.yml "$workflows"/pulumi-ci.yml || true
-)"
-[ -z "$owner_wide" ] \
-  && pass "no reusable workflow routes the isolated pool owner-wide" \
-  || fail "owner-wide isolated route found: $owner_wide"
+# --------------------------------------------------------------------------
+# Exhaustive, not enumerated. Every check above names specific (file, job)
+# pairs, so a NEW job added to any of these files escapes all of them. Review
+# demonstrated that: appending a job with an INVERTED policy — public repos to
+# the persistent pool — left the suite fully green. That is the exact invariant
+# ADR 0033 is built on, so the sweep has to bind every `runs-on:` line that
+# exists, not a list someone has to remember to update.
+#
+# The canonical decision suffix is read from node-ci's `eligibility` job, so
+# this file still holds no copy of the policy. Prefixes legitimately differ
+# (with/without the `runner` override, actionlint's hosted opt-in); everything
+# from the visibility test onward must be byte-identical everywhere.
+# --------------------------------------------------------------------------
+canonical="$(extract_runs_on "$workflows/node-ci.yml" eligibility)"
+suffix_marker='github.event.repository.private'
+canonical_suffix="${canonical#*"$suffix_marker"}"
 
-# The routing values must stay configurable. A literal pool inlined without its
-# `vars` escape hatch is how a provider migration turns back into a code change.
-for name in node-ci.yml node-release.yml notify-umbrella.yml helm-ci.yml ui-ci.yml pulumi-ci.yml; do
-  wf="$workflows/$name"
-  if grep -qF 'vars.VERJSON_RUNNER_DEFAULT' "$wf" \
-      && grep -qF 'vars.VERJSON_RUNNER_ISOLATED' "$wf"; then
-    pass "$name resolves both pools through configuration"
-  else
-    fail "$name inlines a runner pool with no vars override"
-  fi
+if [ -z "$canonical" ] || [ "$canonical_suffix" = "$canonical" ]; then
+  fail "could not derive the canonical routing suffix from node-ci eligibility"
+else
+  pass "canonical routing suffix derived from node-ci eligibility"
+fi
+
+policy_files="node-ci.yml node-release.yml notify-umbrella.yml helm-ci.yml ui-ci.yml pulumi-ci.yml actionlint.yml"
+deviant=""
+job_count=0
+for name in $policy_files; do
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    job_count=$((job_count + 1))
+    value="${line#*runs-on:}"
+    value="${value# }"
+    actual_suffix="${value#*"$suffix_marker"}"
+    if [ "$actual_suffix" != "$canonical_suffix" ]; then
+      deviant="$deviant$name: $line"$'\n'
+    fi
+  done <<EOF
+$(grep -nE "^    runs-on:" "$workflows/$name")
+EOF
 done
+
+[ "$job_count" -ge 10 ] \
+  && pass "sweep covered $job_count routed jobs across the reusable workflows" \
+  || fail "sweep found only $job_count routed jobs — extraction is broken"
+
+[ -z "$deviant" ] \
+  && pass "every routed job carries the byte-identical policy decision suffix" \
+  || fail "job(s) deviate from the routing policy:"$'\n'"$deviant"
 
 if [ "$fails" -eq 0 ]; then
   echo "All tests passed."

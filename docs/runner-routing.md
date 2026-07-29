@@ -7,15 +7,14 @@ for the *why* of the groups, this for the *how* of day-to-day routing.
 
 ## TL;DR
 
-- **Verjson-owned reusable-workflow callers default to
-  `[self-hosted, isolated, linux, x64]`**. Trusted callers may explicitly select
-  `[self-hosted, GCP]`, `gate`, or another admitted persistent pool.
-- **The reusable workflows route on repository VISIBILITY, not on an allowlist**
+- **Verjson-owned callers route on repository VISIBILITY, not on an allowlist**
   ([ADR 0033](decisions/0033-self-hosted-runner-policy-by-visibility/README.md)).
-  A Verjson **private** repo gets the general self-hosted pool; a **public** one —
-  or any event that carries no visibility — gets the ephemeral `isolated` pool.
-  Unresolved visibility falling to `isolated` is deliberate: fork code must never
-  land on the persistent pool.
+  A **private** repo gets the general self-hosted pool (`[self-hosted, GCP]`
+  today); a **public** one — or any event carrying no visibility — gets the
+  ephemeral `[self-hosted, isolated, linux, x64]` pool. Unresolved visibility
+  falling to `isolated` is deliberate: fork code must never land on the
+  persistent pool. Trusted callers may still select `gate` or another admitted
+  pool through the `runner` input.
 - **Both pools are org variables**: `VERJSON_RUNNER_DEFAULT` and
   `VERJSON_RUNNER_ISOLATED`. Moving providers (GCP → DigitalOcean) is a variable
   flip, not a PR to this repo. Unset resolves to the literal defaults.
