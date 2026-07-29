@@ -97,6 +97,7 @@ cat >"$evaluator" <<'JS'
 // makes this same decision with `== false`; a future flip here must be
 // validated against real semantics, not against a model that only happens to
 // agree with the polarity in use today.
+const vm = require('node:vm');
 const [, , raw, repository, runnerInput, priv, varDefault, varIsolated] = process.argv;
 const body = raw.trim().replace(/^\$\{\{/, '').replace(/\}\}$/, '');
 const github = {
@@ -109,19 +110,34 @@ const inputs = { runner: runnerInput };
 const vars = { VERJSON_RUNNER_DEFAULT: varDefault, VERJSON_RUNNER_ISOLATED: varIsolated };
 const fromJSON = (value) => JSON.parse(value);
 // GitHub Actions string equality and contains() are case-insensitive; JS === is not.
-// This evaluator is therefore stricter than production.
+// This evaluator is therefore stricter than production. `contains` is kept even
+// though the routing expressions no longer use it (the ADR 0031 allowlist is
+// retired) because ai-review-merge.yml still does, and this evaluator is the
+// obvious thing to reach for the next time a runs-on expression needs checking.
 const contains = (haystack, needle) =>
   Array.isArray(haystack)
     ? haystack.some((item) => item === needle)
     : String(haystack).includes(needle);
-const resolved = new Function(
-  'github',
-  'inputs',
-  'vars',
-  'fromJSON',
-  'contains',
-  `return (${body});`,
-)(github, inputs, vars, fromJSON, contains);
+
+// Evaluate in a fresh vm context rather than `new Function` (#187). The input is
+// awk-extracted from workflow files in this repository, so it is not untrusted
+// today — anyone who can edit those can already edit this .test.sh, which bash
+// executes outright. The change is about the pattern, not this call site: a
+// context built from a null-prototype object exposes no `process`, `require`,
+// `fetch`, or module loader, so the same helper stays safe if it is ever pointed
+// at a workflow from a fork or another org.
+//
+// This is hardening, not a security boundary — Node documents `vm` as not a
+// sandbox against hostile code. What it does buy: ambient authority is gone by
+// construction, and the timeout bounds a pathological expression instead of
+// hanging CI.
+const context = vm.createContext(
+  Object.assign(Object.create(null), { github, inputs, vars, fromJSON, contains }),
+);
+const resolved = vm.runInContext(`(${body})`, context, {
+  timeout: 5000,
+  filename: 'runs-on-expression',
+});
 process.stdout.write(
   typeof resolved === 'string' ? resolved : JSON.stringify(resolved),
 );
@@ -132,6 +148,25 @@ if ! command -v node >/dev/null 2>&1; then
   fail "node is required to evaluate the extracted runs-on expression"
   exit 1
 fi
+
+# The evaluator must carry no ambient authority (#187). These probes are what
+# stops a future revert to `new Function` — under that form `process` and
+# `require` resolve and the expression evaluates instead of throwing.
+assert_no_ambient() {
+  local expression="$1" symbol="$2"
+  local out
+  out="$(node "$evaluator" "$expression" Verjson/example '' true '' '' 2>&1)" && {
+    fail "evaluator resolved '$symbol' instead of rejecting it: $out"
+    return
+  }
+  case "$out" in
+    *"$symbol is not defined"*) pass "evaluator context exposes no $symbol" ;;
+    *) fail "evaluator rejected '$symbol' for the wrong reason: $out" ;;
+  esac
+}
+
+assert_no_ambient '${{ process.env.HOME }}' process
+assert_no_ambient '${{ require("node:fs") }}' require
 
 # assert_route <workflow> <job> <repo> <runner-input> <private> <var-default> <var-isolated> <expected> <label>
 assert_route() {
