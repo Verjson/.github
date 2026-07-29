@@ -116,6 +116,8 @@ jobs:
         run: bash scripts/ci-gate/pulumi-comment.test.sh
       - name: runner routing — isolated-pool allowlist, external portability (#173, #174, #182)
         run: bash scripts/ci-gate/runner-routing-policy.test.sh
+      - name: runner admission — routing reconciled against runner groups (#189)
+        run: bash scripts/ci-gate/runner-admission-reconcile.test.sh
       - name: tag-major — annotated tag points directly at release commit (#73)
         run: bash scripts/tag-major.test.sh
       - name: ADR index is generated & current (not hand-edited)
