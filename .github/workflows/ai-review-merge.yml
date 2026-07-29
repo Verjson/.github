@@ -1207,7 +1207,7 @@ jobs:
             detail="The automated review produced no verdict across all three passes (budget/turn exhaustion, or the model failed to return a structured verdict on every attempt)."
             if [ "${BUDGET_EXHAUSTED:-}" = "true" ]; then
               heading="⚠️ **Merge gate: budget-exceeded — human review required**"
-              detail="Every review pass ended in \`error_max_budget_usd\`. The diff (~${CHANGED_LINES:-unknown} changed lines) is larger than the first-pass review budget (\$${BUDGET_USD:-unknown}) and the \$1.00 escalations could not finish it either. This is a **budget-exceeded** outcome, not a review failure — split the PR into smaller, independently reviewable changes, or review it by hand."
+              detail="At least one review pass ended in \`error_max_budget_usd\`, and no pass produced a verdict. The diff (~${CHANGED_LINES:-unknown} changed lines) is larger than the first-pass review budget (\$${BUDGET_USD:-unknown}) and the \$1.00 escalations could not finish it either. This is a **budget-exceeded** outcome, not a review failure — split the PR into smaller, independently reviewable changes, or review it by hand."
             fi
             gh pr comment "$PR_NUMBER" --repo "$TARGET_REPO" --body "$heading
 

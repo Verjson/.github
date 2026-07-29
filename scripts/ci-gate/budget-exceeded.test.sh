@@ -168,7 +168,7 @@ act_has() { grep -q "$1" "$tmp/act.log"; }
 #    posted comment names budget exhaustion and asks for a human — not an
 #    opaque `error_max_budget_usd`.
 rc=$(run_submit '' true)
-{ [ "$rc" = "rc=1" ] && ! act_has MERGE && act_has COMMENT && comment_has 'budget'; } &&
+{ [ "$rc" = "rc=1" ] && ! act_has approve && act_has COMMENT && comment_has 'budget'; } &&
   pass "budget-exceeded: blocks the merge and posts a comment" ||
   fail "budget-exceeded must block and comment ($rc, log=$(tr '\n' ',' <"$tmp/act.log"))"
 
@@ -198,7 +198,7 @@ pass "blank/whitespace/null/false/{}/[]/wrong-typed verdicts all fail closed, no
 #    the PR is still blocked.
 for flag in '' 'false' 'yes' 'null' '1'; do
   rc=$(run_submit 'not-json' "$flag")
-  { [ "$rc" = "rc=1" ] && ! act_has MERGE && act_has COMMENT; } ||
+  { [ "$rc" = "rc=1" ] && ! act_has approve && act_has COMMENT; } ||
     fail "no-verdict with BUDGET_EXHAUSTED='$flag' must still block and comment ($rc)"
 done
 pass "no-verdict stays fail-closed for every BUDGET_EXHAUSTED value ('' false yes null 1)"
@@ -206,7 +206,7 @@ pass "no-verdict stays fail-closed for every BUDGET_EXHAUSTED value ('' false ye
 # 8. A malformed size/cap must not abort the fail-closed comment (unset
 #    CHANGED_LINES/BUDGET_USD is what a skipped upstream step produces).
 rc=$(run_submit '' true '' '')
-{ [ "$rc" = "rc=1" ] && act_has COMMENT && ! act_has MERGE; } &&
+{ [ "$rc" = "rc=1" ] && act_has COMMENT && ! act_has approve; } &&
   pass "budget-exceeded survives empty CHANGED_LINES/BUDGET_USD and still blocks" ||
   fail "empty CHANGED_LINES/BUDGET_USD broke the fail-closed comment ($rc)"
 

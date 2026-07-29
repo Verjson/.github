@@ -79,3 +79,15 @@ degrades to the generic no-verdict message and still blocks.
   floor and stays below the escalation cap.
 - Splitting an oversized PR remains the cheaper answer than raising the cap
   again; the comment says so.
+
+### The fix is not live for consumers until the moving tag advances
+
+Closing the empty-verdict fail-open on `main` does not protect cross-org
+consumers. Per ADR 0022 they pin `uses: …/ai-review-merge.yml@v1`, and both `v1`
+and `v2` still carry the vulnerable guard (`v2` is 9 commits behind `main` at the
+time of writing). Until the moving tag is advanced, every consumer repo can still
+auto-merge an unreviewed PR when all review passes exhaust without a verdict.
+
+Advancing the tag is therefore part of landing this decision, not follow-up
+housekeeping, and it is the step that actually remediates the vulnerability.
+
