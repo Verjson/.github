@@ -73,7 +73,25 @@ run_case() {
 [ "$(run_case '')" = "rc=1" ] \
   && pass "empty target fails closed" || fail "empty target not rejected"
 
-# (e) An empty/unset org identity must not fail OPEN: with no
+# (e) Charset: the guard matches GitHub's owner/repo alphabet, not merely
+# "two slash-free segments". `$TARGET_REPO` is interpolated into ::error::/
+# ::notice:: annotations below, so a backtick, a space or a newline in an
+# otherwise same-owner target is an annotation-injection vector that the old
+# `^[^/]+/[^/]+$` shape accepted. Legal punctuation must still pass.
+[ "$(run_case 'Verjson/repo.name-with_parts')" = "rc=0" ] \
+  && pass "dot/dash/underscore repo name passes (legal GitHub charset)" \
+  || fail "legal dot/dash/underscore repo name rejected"
+[ "$(run_case 'Verjson/repo`whoami`')" = "rc=1" ] \
+  && pass "backtick in target fails closed (annotation injection)" \
+  || fail "backtick target NOT rejected (annotation injection surface open)"
+[ "$(run_case 'Verjson/repo name')" = "rc=1" ] \
+  && pass "whitespace in target fails closed (annotation injection)" \
+  || fail "whitespace target NOT rejected (annotation injection surface open)"
+[ "$(run_case "$(printf 'Verjson/repo\nfoo')")" = "rc=1" ] \
+  && pass "newline in target fails closed (annotation injection)" \
+  || fail "newline target NOT rejected (annotation injection surface open)"
+
+# (f) An empty/unset org identity must not fail OPEN: with no
 # GITHUB_REPOSITORY_OWNER, no target can be authorized (a real owner can never
 # equal ""), so even a normally-valid target is rejected.
 run_case_owner() { # <owner> <target>
