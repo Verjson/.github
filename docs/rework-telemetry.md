@@ -89,7 +89,17 @@ infra/app/ci/docs) so a sensitive change is never masked by a lower-risk match.
 Minting a fine-grained PAT or GitHub App installation token has no API — it is a
 human action in the GitHub UI. Everything else below is copy-paste. Issue **#157**
 tracks the outstanding provisioning; until it is done the scheduled run falls back
-to this repo's `GITHUB_TOKEN` and every other configured repo reports as degraded.
+to this repo's `GITHUB_TOKEN` and the other configured repos report as degraded —
+as `commit data unavailable` when commit reads are denied, or as
+`skipped … unreadable repo(s)` when the bulk pull-request read fails.
+
+### 0. Org precondition
+
+Fine-grained PATs must be **enabled for the Verjson organisation**, and this token
+must be **approved by an org owner** before it can read org-owned repositories
+(Organisation settings → Personal access tokens). Without both, step 1 produces a
+token that authenticates but reads nothing, and the reconciler stays degraded with
+no obvious cause.
 
 ### 1. Permissions — exactly three, all read
 
@@ -111,8 +121,13 @@ precisely the boundary **ADR 0006** (observe-and-report) forbids. The workflow's
 `permissions:` block (`contents: read` + `issues: write`) is not a backstop for this
 secret — a PAT carries its own grants, so least privilege must be set at mint time.
 
-Prefer a **GitHub App installation token** where practical: it is
-organisation-owned and expires, so it does not die with an individual's account.
+Use a **fine-grained PAT**. A GitHub App installation token is organisation-owned
+rather than tied to an individual's account, but it is not a drop-in here:
+installation tokens expire after about an hour, and
+[`.github/workflows/rework-reconcile.yml`](../.github/workflows/rework-reconcile.yml)
+consumes the secret verbatim with no minting step. Moving to the App route means
+storing the App ID and private key and adding `actions/create-github-app-token` to
+the workflow — out of scope for #157, worth revisiting at the first PAT rotation.
 
 ### 2. Repository access — the eight repos in the config
 
@@ -144,8 +159,11 @@ gh secret set REWORK_RECONCILE_TOKEN --repo Verjson/.github
 
 ```sh
 gh workflow run rework-reconcile.yml --repo Verjson/.github
+sleep 5  # dispatch registration lags; without this the query below can return
+         # the previous *scheduled* run and you verify a stale green
 gh run watch "$(gh run list --workflow rework-reconcile.yml --repo Verjson/.github \
-  --limit 1 --json databaseId --jq '.[0].databaseId')" --repo Verjson/.github
+  --event workflow_dispatch --limit 1 --json databaseId --jq '.[0].databaseId')" \
+  --repo Verjson/.github
 ```
 
 Then open the issue the run created and confirm the report body has **no**
