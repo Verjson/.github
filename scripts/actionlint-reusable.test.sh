@@ -36,9 +36,12 @@ grep -qE '^      github-hosted-runner:$' <<<"$workflow_call" \
   && pass "runner choice is a default-off boolean" \
   || fail "runner choice is not the governed boolean contract"
 
-expected_runs_on='    runs-on: ${{ (github.repository_owner != '\''Verjson'\'' || inputs.github-hosted-runner) && '\''ubuntu-24.04'\'' || fromJSON('\''["self-hosted","isolated","linux","x64"]'\'') }}'
+# The hosted term stays bounded to callers outside Verjson OR the explicit
+# opt-in input; everything after it follows the ADR 0033 visibility policy that
+# runner-routing-policy.test.sh pins across all the reusable workflows.
+expected_runs_on='    runs-on: ${{ (github.repository_owner != '\''Verjson'\'' || inputs.github-hosted-runner) && '\''ubuntu-24.04'\'' || github.event.repository.private == true && fromJSON(vars.VERJSON_RUNNER_DEFAULT || '\''["self-hosted","GCP"]'\'') || fromJSON(vars.VERJSON_RUNNER_ISOLATED || '\''["self-hosted","isolated","linux","x64"]'\'') }}'
 grep -qxF "$expected_runs_on" "$wf" \
-  && pass "Verjson maps to isolated while external callers retain hosted portability" \
+  && pass "hosted stays opt-in while Verjson callers follow the visibility policy" \
   || fail "runs-on does not preserve the bounded runner mapping"
 
 uses_lines="$(grep -E '^[[:space:]]+- uses:' "$wf" || true)"
