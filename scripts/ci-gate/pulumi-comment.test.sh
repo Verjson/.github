@@ -28,11 +28,14 @@ preview_job="$(job_block preview)"
 
 # Validation is its own credential-free job. No caller-supplied command or
 # checkout may inherit write, OIDC, package, cloud, or Git credentials.
-printf '%s\n' "$validate_job" | grep -qF "github.repository_owner == 'Verjson'" \
-  && printf '%s\n' "$validate_job" | grep -qF '["self-hosted","isolated","linux","x64"]' \
+# Routing follows ADR 0033 (visibility tiers on configurable self-hosted pools),
+# but the property THIS test owns is narrower and unchanged: validation's pool is
+# fixed by policy, never chosen by the caller. `inputs.runner` must stay absent.
+printf '%s\n' "$validate_job" | grep -qF "github.repository_owner != 'Verjson'" \
+  && printf '%s\n' "$validate_job" | grep -qF 'vars.VERJSON_RUNNER_ISOLATED' \
   && printf '%s\n' "$validate_job" | grep -qF "'ubuntu-24.04'" \
   && ! printf '%s\n' "$validate_job" | grep -qF 'inputs.runner' \
-  && pass "validation isolates Verjson callers while retaining the external hosted default" \
+  && pass "validation keeps a policy-fixed pool the caller cannot redirect" \
   || fail "validation lost its fixed organization-aware runner boundary"
 printf '%s\n' "$validate_job" | grep -qF 'contents: read' \
   && ! printf '%s\n' "$validate_job" | grep -Eq 'pull-requests:|id-token:|packages:|contents: write|secrets\.' \

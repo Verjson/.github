@@ -1,6 +1,9 @@
 # 0031 — Route node-ci on isolated-pool admission, not organization ownership
 
 - **Date:** 2026-07-29
+- **Status:** Superseded by [ADR 0033](../0033-self-hosted-runner-policy-by-visibility/README.md)
+  — the allowlist mechanism is retired, and its `ubuntu-24.04` fallback was
+  never a working lane (GitHub-hosted minutes are unfunded, #189).
 - **Amended:** 2026-07-29 — extended to `node-release.yml` (#192); see
   [Amendment](#amendment-2026-07-29--node-releaseyml-carries-the-same-rule-192)
 - **Issues:** Verjson/.github#182, Verjson/.github#173, Verjson/.github#175,

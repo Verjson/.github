@@ -43,7 +43,15 @@ on:
 
 jobs:
   dispatch:
-    runs-on: ${{ inputs.runner != '' && fromJSON(inputs.runner) || github.repository_owner == 'Verjson' && fromJSON('["self-hosted","isolated","linux","x64"]') || 'ubuntu-24.04' }}
+    # Runner routing is policy, not preference — see ADR 0033. In tier order:
+    # an explicit `runner` input wins; a caller outside Verjson gets hosted
+    # (portable, their billing); a Verjson PRIVATE repo gets the general
+    # self-hosted pool; anything else — public, or an event that carries no
+    # visibility — gets the ephemeral untrusted-PR pool. That last tier is
+    # fail-SAFE, not a fallback: unresolved visibility must never put fork code
+    # on the persistent pool. Both pools are org variables so a provider move
+    # (GCP -> DigitalOcean) is a variable flip, not a PR here.
+    runs-on: ${{ inputs.runner != '' && fromJSON(inputs.runner) || github.repository_owner != 'Verjson' && 'ubuntu-24.04' || github.event.repository.private == true && fromJSON(vars.VERJSON_RUNNER_DEFAULT || '["self-hosted","GCP"]') || fromJSON(vars.VERJSON_RUNNER_ISOLATED || '["self-hosted","isolated","linux","x64"]') }}
     steps:
       - name: Dispatch submodule-updated to the umbrella
         env:
