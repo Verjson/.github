@@ -67,7 +67,14 @@ on:
 
 jobs:
   release:
-    runs-on: ${{ inputs.runner != '' && fromJSON(inputs.runner) || github.repository_owner == 'Verjson' && fromJSON('["self-hosted","isolated","linux","x64"]') || 'ubuntu-24.04' }}
+    # Route on the ONBOARDED repository, not the owner — same admission rule as
+    # node-ci.yml (ADR 0031, #182/#184). A release hang is worse than a CI hang:
+    # there is no PR to show a red check, so a non-admitted repo's release just
+    # queues forever and the version silently never publishes (#192, live on
+    # Verjson/verjson-authn run 30450460243). Keep this expression byte-identical
+    # to node-ci.yml's — runner-routing-policy.test.sh enforces that across both
+    # files.
+    runs-on: ${{ inputs.runner != '' && fromJSON(inputs.runner) || contains(fromJSON('["Verjson/.github","Verjson/verjson-cli","Verjson/verjson-cli-cloud","Verjson/verjson-cli-project-init"]'), github.repository) && fromJSON('["self-hosted","isolated","linux","x64"]') || 'ubuntu-24.04' }}
     timeout-minutes: ${{ inputs.timeout-minutes }}
     permissions:
       contents: write
