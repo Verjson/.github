@@ -1,0 +1,9 @@
+# Gate lane unzip shim for the isolated pool — 2026-07-29
+
+The first live AI-gate run on the #173 isolated pool fail-closed with no
+verdict: `claude-code-action`'s Bun install needs `unzip`, absent from runner
+image `base-d1c4376`, so all three model invocations exited 127 (#179, run
+30420746289). `ai-review-merge.yml` now installs `unzip` before the model
+steps inside the ephemeral child container — a labelled temporary shim until
+Verjson/verjson-github-runner#72 ships an image that carries it and the pool
+template rolls forward.

@@ -963,6 +963,19 @@ jobs:
             echo "PROMPT_EOF"
           } >> "$GITHUB_OUTPUT"
 
+      # TEMPORARY shim (#179): the isolated runner image base-d1c4376 ships no
+      # `unzip`, and claude-code-action's Bun install extracts a zip with it —
+      # without this every model invocation dies with exit 127 and the gate
+      # fail-closes with no verdict. The ephemeral child container grants the
+      # runner user passwordless sudo, and the container is destroyed after the
+      # job. Remove when Verjson/verjson-github-runner#72 publishes an image
+      # that carries unzip and the pool template rolls forward.
+      - name: Ensure unzip for claude-code-action (isolated image gap, #179)
+        if: needs.preflight.outputs.lane == 'ai' && steps.rereview.outputs.skip_model != 'true'
+        run: |
+          command -v unzip >/dev/null 2>&1 && exit 0
+          sudo apt-get update -qq && sudo apt-get install -y -qq unzip
+
       - name: Record model phase start
         id: model_timing
         if: needs.preflight.outputs.lane == 'ai' && steps.rereview.outputs.skip_model != 'true'
