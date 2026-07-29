@@ -5,9 +5,8 @@ name: notify-umbrella (reusable)
 # auto-merged pointer-bump PR. Centralised here so runner selection and the
 # dispatch contract live in one place instead of being copy-pasted per repo.
 #
-# Runner defaults to the org GCP self-hosted pool and is never GitHub-hosted;
-# callers may override `runner` (e.g. the manish pool) but cannot silently fall
-# back to `ubuntu-latest`.
+# Verjson callers default to the isolated self-hosted pool. External callers
+# retain a portable hosted default; trusted callers can select another pool.
 #
 # Caller (in each leaf repo's .github/workflows/notify-umbrella.yml):
 #
@@ -33,10 +32,10 @@ on:
         required: true
         type: string
       runner:
-        description: JSON array of runner labels; defaults to the GCP self-hosted pool
+        description: Optional JSON runner labels; Verjson defaults isolated, external callers ubuntu-24.04.
         required: false
         type: string
-        default: '["self-hosted", "GCP"]'
+        default: ''
     secrets:
       ORG_ADMIN_TOKEN:
         description: Org-admin PAT with write on the umbrella, to POST the dispatch
@@ -44,7 +43,7 @@ on:
 
 jobs:
   dispatch:
-    runs-on: ${{ fromJSON(inputs.runner) }}
+    runs-on: ${{ inputs.runner != '' && fromJSON(inputs.runner) || github.repository_owner == 'Verjson' && fromJSON('["self-hosted","isolated","linux","x64"]') || 'ubuntu-24.04' }}
     steps:
       - name: Dispatch submodule-updated to the umbrella
         env:

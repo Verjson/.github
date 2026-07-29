@@ -3,7 +3,7 @@ name: pulumi-ci (reusable)
 # Reusable CI for verJSON Pulumi (TypeScript) infra repos. Validation and live
 # preview deliberately run in separate trust domains:
 #
-#   1. Credential-free validation runs on an ephemeral GitHub-hosted runner with
+#   1. Credential-free validation runs on the caller's untrusted-workload lane with
 #      only `contents: read`. Caller-supplied install/validate commands never see
 #      package, Git, cloud, OIDC, or repository-write credentials.
 #   2. Live `pulumi preview` runs on the caller-selected runner only for a push
@@ -13,8 +13,8 @@ name: pulumi-ci (reusable)
 # Lifted from viager-infra's preview.yml so infra repos stop reinventing the
 # credential-gating dance; Node + the @verjson registry come from the org
 # setup-verjson-node composite action (Verjson/.github#36), and the runner is
-# pinned here once (defaults to the GCP self-hosted pool) so moving the fleet
-# later is a one-file change.
+# resolved by organization: Verjson defaults isolated, while outside callers
+# retain GitHub-hosted portability.
 #
 # Caller (each infra repo's .github/workflows/ci.yml):
 #
@@ -80,11 +80,12 @@ on:
         default: true
       runner:
         description: >-
-          JSON array of runner labels for the trusted live-preview job; defaults
-          to the GCP self-hosted pool.
+          Optional JSON runner labels for the trusted preview job. Verjson
+          validation always uses the isolated lane and outside validation uses
+          ubuntu-24.04; this override cannot move untrusted validation.
         required: false
         type: string
-        default: '["self-hosted", "GCP"]'
+        default: ''
     secrets:
       node-auth-token:
         description: >-
@@ -109,7 +110,7 @@ on:
 
 jobs:
   validate:
-    runs-on: ubuntu-24.04
+    runs-on: ${{ github.repository_owner == 'Verjson' && fromJSON('["self-hosted","isolated","linux","x64"]') || 'ubuntu-24.04' }}
     permissions:
       contents: read
     steps:
@@ -143,7 +144,7 @@ jobs:
 
   preview-admission:
     needs: validate
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.repository_owner == 'Verjson' && fromJSON('["self-hosted","isolated","linux","x64"]') || 'ubuntu-24.04' }}
     permissions:
       contents: read
     outputs:
@@ -188,7 +189,7 @@ jobs:
   preview:
     needs: [validate, preview-admission]
     if: needs.preview-admission.outputs.admitted == 'true'
-    runs-on: ${{ fromJSON(inputs.runner) }}
+    runs-on: ${{ inputs.runner != '' && fromJSON(inputs.runner) || github.repository_owner == 'Verjson' && fromJSON('["self-hosted","isolated","linux","x64"]') || 'ubuntu-24.04' }}
     strategy:
       fail-fast: false
       matrix:

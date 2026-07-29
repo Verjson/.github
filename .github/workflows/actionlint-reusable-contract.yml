@@ -1,8 +1,8 @@
 name: actionlint reusable-call contract
 
 # A real, intentionally narrow caller for the reusable contract introduced by
-# #153. The implementation ref is the immutable commit that first exposed
-# workflow_call; changing this fixture is the explicit act that re-runs it.
+# #153. This repository calls its current revision so its Verjson runner policy
+# is exercised; external consumers should pin an immutable release.
 on:
   pull_request:
     paths:
@@ -13,6 +13,4 @@ permissions:
 
 jobs:
   actionlint:
-    uses: Verjson/.github/.github/workflows/actionlint.yml@bfecdd0111582d0ddada558e6b4d0cadd9b488bd
-    with:
-      github-hosted-runner: true
+    uses: ./.github/workflows/actionlint.yml
