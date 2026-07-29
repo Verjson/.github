@@ -1,0 +1,107 @@
+name: runner-admission-reconcile
+
+# Reconciles ADR 0033 runner routing against live org runner-group admission
+# (#189). Routing picks a lane from repository visibility; only org settings
+# decide whether a repository can be ASSIGNED that lane, and nothing kept the two
+# honest — which is how #182 and #192 happened, and why a newly created
+# repository still queues forever with no check run.
+#
+# GitHub has no way to fail a job at startup because no runner matches; a job
+# simply queues. So this detects the condition on a schedule instead, before it
+# surfaces as someone's wedged PR.
+#
+# Observe-and-report: it opens or updates an issue and never mutates runner
+# groups. Pool admission is the org admin's security boundary (ADR 0031, 0033) —
+# a scheduled job is the wrong thing to hold that pen.
+
+on:
+  schedule:
+    # Daily, off the top of the hour to avoid the stampede.
+    - cron: '43 7 * * *'
+  workflow_dispatch: {}
+
+# Least privilege: read the repo, write an issue. No contents: write, no
+# pull-requests: write — this cannot alter code or merge anything.
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: runner-admission-reconcile
+  cancel-in-progress: false
+
+jobs:
+  reconcile:
+    runs-on: [self-hosted, isolated, linux, x64]
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Reconcile runner admission against routing policy
+        id: reconcile
+        env:
+          # Reading org runner groups needs org scope. The default GITHUB_TOKEN
+          # is repo-scoped and 403s, which the script reports as UNDETERMINED
+          # rather than as a clean org.
+          GH_TOKEN: ${{ secrets.ORG_ADMIN_TOKEN }}
+          ORG: ${{ github.repository_owner }}
+        run: |
+          set -uo pipefail
+          if [ -z "${GH_TOKEN:-}" ]; then
+            echo "::error title=Missing ORG_ADMIN_TOKEN::Cannot read org runner groups without an org-scoped token. Failing rather than reporting an unverified org as clean."
+            exit 1
+          fi
+          set +e
+          report="$(bash scripts/ci-gate/runner-admission-reconcile.sh 2>&1)"
+          code=$?
+          set -e
+          printf '%s\n' "$report" >> "$GITHUB_STEP_SUMMARY"
+          {
+            echo 'report<<REPORT_EOF'
+            printf '%s\n' "$report"
+            echo 'REPORT_EOF'
+          } >> "$GITHUB_OUTPUT"
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+          # 2 is "I could not look", which must be loud and must NOT be treated
+          # as either clean or as drift worth filing an issue about.
+          if [ "$code" -eq 2 ]; then
+            echo "::error title=Runner admission undetermined::Could not read the org; not reporting this as clean."
+            exit 1
+          fi
+          exit 0
+
+      - name: Open or update the drift issue
+        if: steps.reconcile.outputs.code == '1'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPORT: ${{ steps.reconcile.outputs.report }}
+          MARKER: '<!-- runner-admission-drift -->'
+        run: |
+          set -euo pipefail
+          body="$(printf '%s\n\n%s\n' "$REPORT" "$MARKER")"
+          existing="$(gh issue list --repo "$GITHUB_REPOSITORY" --state open \
+            --search "in:body $MARKER" --json number --jq '.[0].number // empty')"
+          if [ -n "$existing" ]; then
+            # Update in place rather than filing daily duplicates.
+            gh issue edit "$existing" --repo "$GITHUB_REPOSITORY" --body "$body"
+            echo "::warning title=Runner admission drift::Updated existing issue #$existing"
+          else
+            gh issue create --repo "$GITHUB_REPOSITORY" \
+              --title 'Runner admission drift: repositories cannot be assigned the lane routing picks' \
+              --body "$body"
+            echo "::warning title=Runner admission drift::Filed a new issue"
+          fi
+
+      - name: Close the drift issue once the org is clean again
+        if: steps.reconcile.outputs.code == '0'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MARKER: '<!-- runner-admission-drift -->'
+        run: |
+          set -euo pipefail
+          existing="$(gh issue list --repo "$GITHUB_REPOSITORY" --state open \
+            --search "in:body $MARKER" --json number --jq '.[0].number // empty')"
+          if [ -n "$existing" ]; then
+            gh issue close "$existing" --repo "$GITHUB_REPOSITORY" \
+              --comment 'Runner admission is reconciled again — every active repository is admitted to the group its visibility routes it to.'
+          fi
