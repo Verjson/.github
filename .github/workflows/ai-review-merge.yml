@@ -226,7 +226,9 @@ jobs:
           # The default path (`repository` unset → github.repository) is
           # same-owner and passes.
           owner="${TARGET_REPO%%/*}"
-          if [[ ! "$TARGET_REPO" =~ ^[^/]+/[^/]+$ ]] || [ "$owner" != "$GITHUB_REPOSITORY_OWNER" ]; then
+          # GitHub's owner/repo charset only — also keeps whitespace, backticks,
+          # and newlines out of the log interpolations below (annotation injection).
+          if [[ ! "$TARGET_REPO" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] || [ "$owner" != "$GITHUB_REPOSITORY_OWNER" ]; then
             echo "::error::refusing to run the merge gate against '$TARGET_REPO': target must be a repo owned by '$GITHUB_REPOSITORY_OWNER'."
             exit 1
           fi
@@ -246,7 +248,10 @@ jobs:
           # unreadable repo emits an empty value and the gate falls back to
           # the self-hosted `gate` pool — fail closed to the operator-only
           # path, never onto a hosted runner with the wrong assumptions.
-          target_private="$(gh api "repos/$TARGET_REPO" --jq .private 2>/dev/null || true)"
+          if ! target_private="$(gh api "repos/$TARGET_REPO" --jq .private 2>"$RUNNER_TEMP/tv.err")"; then
+            target_private=""
+            echo "::warning::target visibility lookup failed for $TARGET_REPO (routing fail-closed to the gate pool): $(head -c 200 "$RUNNER_TEMP/tv.err" | tr -d '\n')"
+          fi
           echo "target_private=$target_private" >> "$GITHUB_OUTPUT"
           echo "::notice::phase=preflight target_repo=$TARGET_REPO target_private=${target_private:-unknown}"
 
