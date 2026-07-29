@@ -110,6 +110,8 @@ jobs:
         run: bash scripts/ci-gate/require-secrets.test.sh
       - name: merge gate — absent checks fail closed, not open (#143, ADR 0024)
         run: bash scripts/ci-gate/ci-wait-fail-closed.test.sh
+      - name: merge gate — diff-size budget tier and budget-exceeded outcome (#181, ADR 0032)
+        run: bash scripts/ci-gate/budget-exceeded.test.sh
       - name: pulumi-ci — credential boundary and trusted preview admission (#47, #151)
         run: bash scripts/ci-gate/pulumi-comment.test.sh
       - name: runner routing — Verjson isolation and external portability (#173, #174)
