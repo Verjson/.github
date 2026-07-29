@@ -39,7 +39,9 @@ jobs:
       - uses: Verjson/.github/.github/actions/setup-verjson-node@main
         with:
           node-version: '24' # optional; defaults to 24
-          # cache: 'true' # optional; default off on persistent runners
+          # cache: 'true' # optional; default off on persistent runners.
+          #   ⚠ Unlike node-ci.yml/node-release.yml there is NO `cache-max-mb`
+          #   end-of-job size guard here — see "Cache size guard" below.
           # cache-dependency-path: packages/app/package-lock.json
           # scope: '@verjson'          # optional; set '' to skip registry auth
           node-auth-token: ${{ secrets.NODE_AUTH_TOKEN }} # read:packages
@@ -50,6 +52,18 @@ jobs:
 
 Reference it by `@main` for now; when the reusable-workflow tag pin lands
 (issue #31 item 5) this action gets pinned alongside.
+
+## Cache size guard (bespoke callers own it)
+
+The reusable `node-ci.yml` / `node-release.yml` workflows bound their npm cache
+with `cache-max-mb` (default 1024 MB) and clear oversized caches before
+setup-node's post step. This composite has **no such bound**: it finishes before
+your install/build steps run, so it cannot know the final cache size. A bespoke
+caller that enables `cache: 'true'` owns its own end-of-job size guard —
+otherwise an unbounded cache upload can occupy a runner for many extra minutes
+(the 4.1 GB case in `Verjson/toquorum` run `30363686973`). See
+[Reusable Node workflow controls](../../../docs/node-workflows.md) for the
+guard pattern.
 
 ## Inputs
 
