@@ -6,6 +6,7 @@
 - **Category:** AI governance / verification calibration (observe-and-report) —
   sensitive-class (it measures how much the org trusts AI-authored work)
 - **Amended by:** ADR 0007 (adds human-set adaptive gating on top of observe-and-report)
+- **Amended:** 2026-07-29 — credential scope for cross-repository reads (see below)
 
 ## Context
 
@@ -63,3 +64,20 @@ event time**; rework is **retrospective** and needs a scheduled reconciler.
 - Implement the reconciler + enrichment per Verjson/.github#33.
 - Add `ReworkTelemetryPayload` per Verjson/verjson-observability#49.
 - Activate the OTLP exporter (ADR 0004 follow-up) to light up the Grafana panel.
+
+## Amendment — 2026-07-29: credential scope for cross-repository reads
+
+- **Issue:** Verjson/.github#157 · **PR:** Verjson/.github#183
+
+The reconciler reads seven sibling repositories, which `GITHUB_TOKEN` cannot reach, so a
+separate `REWORK_RECONCILE_TOKEN` secret is required. This amendment fixes its scope; it
+does not reopen the observe-and-report decision above.
+
+That credential is limited to **Metadata, Pull requests, and Contents — all read-only**,
+across exactly the repositories in `.repos[]` of `.telemetry/rework-thresholds.json`.
+Write access to pull requests, contents, or checks/statuses would put the reconciler in a
+position to influence the merge and verification gate it exists to observe, which is the
+boundary this ADR forbids. The workflow's own `permissions:` block is not a backstop: a
+PAT carries its own grants, so least privilege has to be set at mint time.
+
+Provisioning and rotation runbook: `docs/rework-telemetry.md`.

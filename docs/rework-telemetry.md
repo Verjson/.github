@@ -77,10 +77,108 @@ infra/app/ci/docs) so a sensitive change is never masked by a lower-risk match.
   `workflow_dispatch`.
 - **Cross-repo reads** need a token with org read scope. The default
   `GITHUB_TOKEN` only covers this repo; set a read-only `REWORK_RECONCILE_TOKEN`
-  (fine-grained PAT / app token) secret to widen coverage. Repos the token cannot
-  read are **surfaced** as a data-quality warning, never silently zeroed.
+  (fine-grained PAT / app token) secret to widen coverage — see
+  [Provisioning `REWORK_RECONCILE_TOKEN`](#provisioning-rework_reconcile_token-org-admin-runbook).
+  Repos the token cannot read are **surfaced** as a data-quality warning, never
+  silently zeroed.
 - **Locally:** `scripts/ci-telemetry/rework-reconcile.sh .telemetry/rework-thresholds.json`
   (set `REWORK_AGG_OUT=path.json` to also dump the raw aggregate).
+
+## Provisioning `REWORK_RECONCILE_TOKEN` (org admin runbook)
+
+Minting a fine-grained PAT or GitHub App installation token has no API — it is a
+human action in the GitHub UI. Everything else below is copy-paste. Issue **#157**
+tracks the outstanding provisioning; until it is done the scheduled run falls back
+to this repo's `GITHUB_TOKEN` and the other configured repos report as degraded —
+as `commit data unavailable` when commit reads are denied, or as
+`skipped … unreadable repo(s)` when the bulk pull-request read fails.
+
+### 0. Org precondition
+
+Fine-grained PATs must be **enabled for the Verjson organisation**, and this token
+must be **approved by an org owner** before it can read org-owned repositories
+(Organisation settings → Personal access tokens). Without both, step 1 produces a
+token that authenticates but reads nothing, and the reconciler stays degraded with
+no obvious cause.
+
+### 1. Permissions — exactly three, all read
+
+Derived from what `scripts/ci-telemetry/rework-reconcile.sh` actually calls, not
+from a guess:
+
+| Repository permission | Level | Why — the call that needs it |
+|---|---|---|
+| Metadata | Read-only | Mandatory on every fine-grained token; resolves each `--repo` |
+| Pull requests | Read-only | `gh pr list --json number,title,body,mergedAt,createdAt,files,labels,reviews` |
+| Contents | Read-only | `gh api repos/<repo>/commits?since=…` — the squash-commit AI-authorship signal |
+
+**Grant nothing else.** In particular **no write scope of any kind**, and no
+`Issues`: the weekly issue is opened by a *separate* step that uses
+`secrets.GITHUB_TOKEN`, so this credential never needs write anywhere. A token with
+write access to pull requests, contents, or checks/statuses would put the
+reconciler in a position to influence a merge or verification gate, which is
+precisely the boundary **ADR 0006** (observe-and-report) forbids. The workflow's own
+`permissions:` block (`contents: read` + `issues: write`) is not a backstop for this
+secret — a PAT carries its own grants, so least privilege must be set at mint time.
+
+Use a **fine-grained PAT**. A GitHub App installation token is organisation-owned
+rather than tied to an individual's account, but it is not a drop-in here:
+installation tokens expire after about an hour, and
+[`.github/workflows/rework-reconcile.yml`](../.github/workflows/rework-reconcile.yml)
+consumes the secret verbatim with no minting step. Moving to the App route means
+storing the App ID and private key and adding `actions/create-github-app-token` to
+the workflow — out of scope for #157, worth revisiting at the first PAT rotation.
+
+### 2. Repository access — the eight repos in the config
+
+Scope the token to *only* these (`.repos[]` of
+[`.telemetry/rework-thresholds.json`](../.telemetry/rework-thresholds.json) — that
+file is the source of truth; re-read it if it has since changed). Do **not** grant
+"all repositories":
+
+```
+Verjson/.github
+Verjson/catalog-api
+Verjson/catalog-ui
+Verjson/catalog-worker
+Verjson/viager-app
+Verjson/viager-infra
+Verjson/verjson-authn
+Verjson/verjson-authz
+```
+
+### 3. Install the secret
+
+```sh
+gh secret set REWORK_RECONCILE_TOKEN --repo Verjson/.github
+# paste the token at the prompt — never pass it as an argument (shell history)
+# and never commit it or paste it into an issue/PR
+```
+
+### 4. Verify
+
+```sh
+gh workflow run rework-reconcile.yml --repo Verjson/.github
+sleep 5  # dispatch registration lags; without this the query below can return
+         # the previous *scheduled* run and you verify a stale green
+gh run watch "$(gh run list --workflow rework-reconcile.yml --repo Verjson/.github \
+  --event workflow_dispatch --limit 1 --json databaseId --jq '.[0].databaseId')" \
+  --repo Verjson/.github
+```
+
+Then open the issue the run created and confirm the report body has **no**
+`commit data unavailable` line (emitted at `scripts/ci-telemetry/rework-reconcile.sh:111`)
+and no `skipped … unreadable repo(s)` line. A clean report starts straight at the
+`## AI-work rework — weekly reconciler` heading with no `⚠️ Data quality` banner.
+
+If a repo is still listed, the token is missing that repo (step 2) or missing
+Contents/Pull requests read (step 1) — not a script bug. A degraded read is
+surfaced, never silently zeroed, so a partial report is safe to act on as *partial*.
+
+### 5. Renewal
+
+A fine-grained PAT expires. Put the expiry in the org calendar and re-run steps 3–4
+to rotate; the first degraded weekly report after an expiry is the backstop signal.
 
 ## Known MVP limitations (honest boundary)
 
