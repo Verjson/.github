@@ -27,7 +27,7 @@ unsafe_portable="$(
   grep -HnE "^    runs-on:.*ubuntu-(24\\.04|latest)" "$workflows"/*.yml \
     | grep -v "github.repository_owner != 'Verjson'" \
     | grep -v "github.repository_owner == 'Verjson'.*|| 'ubuntu-24.04'" \
-    | grep -vE "contains\(fromJSON\('\[\"Verjson/.*\]'\), github\.repository\).*\|\| 'ubuntu-24\.04'" \
+    | grep -vE "contains\(fromJSON\('\[(\"Verjson/[^\"]+\",?)+\]'\), github\.repository\).*\|\| 'ubuntu-24\.04'" \
     || true
 )"
 [ -z "$unsafe_portable" ] \
@@ -98,6 +98,9 @@ const body = raw.trim().replace(/^\$\{\{/, '').replace(/\}\}$/, '');
 const github = { repository, repository_owner: repository.split('/')[0] };
 const inputs = { runner: runnerInput };
 const fromJSON = (value) => JSON.parse(value);
+// GitHub Actions string equality and contains() are case-insensitive; JS === is not.
+// This evaluator is therefore stricter than production — a mixed-case allowlist entry
+// would fail here without being a real routing bug.
 const contains = (haystack, needle) =>
   Array.isArray(haystack)
     ? haystack.some((item) => item === needle)
@@ -117,6 +120,7 @@ JS
 # A missing evaluator must fail the suite, never silently skip these cases.
 if ! command -v node >/dev/null 2>&1; then
   fail "node is required to evaluate the extracted runs-on expression"
+  exit 1
 fi
 
 assert_route() {

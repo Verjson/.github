@@ -15,5 +15,6 @@ unchanged — pool admission stays the org admin's call (#182, ADR 0031).
 `runs-on:` expression from both jobs and evaluates it, asserting the whole routing
 table plus byte-identical parity between `eligibility` and `build-test`, so the
 two copies cannot drift. `node-release.yml`, `notify-umbrella.yml`, `helm-ci.yml`,
-`ui-ci.yml`, and `pulumi-ci.yml` still carry the owner-wide form and have the same
-latent hang — tracked separately, not fixed in this hotfix.
+`ui-ci.yml`, and `pulumi-ci.yml` still carry the owner-wide form and the same hang
+— tracked in #185, not fixed in this hotfix. That gap is live, not latent:
+`verjson-authn` calls `node-release.yml@main`, so its release job still queues.

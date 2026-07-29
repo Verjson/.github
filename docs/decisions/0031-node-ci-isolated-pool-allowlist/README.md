@@ -86,9 +86,18 @@ would hand it an empty `runs-on`. Lockstep is enforced by test instead
 
 Only `node-ci.yml` is changed. `node-release.yml`, `notify-umbrella.yml`,
 `helm-ci.yml`, `ui-ci.yml`, and `pulumi-ci.yml` carry the same owner-wide
-expression and have the same latent hang for non-admitted callers; they are
-tracked separately rather than fixed blind in a hotfix for the live node-ci
-breakage.
+expression and the same hang for non-admitted callers. That is tracked in #185,
+not fixed blind in a hotfix for the live node-ci breakage.
+
+The residual hang is not purely latent: `Verjson/verjson-authn` calls
+`node-release.yml@main`, so its release job still queues after this lands. #182 is
+closed for CI, not for release.
+
+`pulumi-ci.yml:113` and `:147` are the sharpest case and deliberately excluded
+here: they carry no `inputs.runner` term at all, only the owner check, so the
+"trusted callers keep the override" mitigation below does not hold for them. Any
+fix there has to respect the credential and tier boundaries in ADR 0027 and
+ADR 0029 instead of copying this expression.
 
 ## Consequences
 
