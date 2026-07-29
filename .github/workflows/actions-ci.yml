@@ -102,6 +102,8 @@ jobs:
         run: bash scripts/ci-gate/hold.test.sh
       - name: merge gate — dispatch target constrained to org (#119, ADR 0020)
         run: bash scripts/ci-gate/dispatch-target-guard.test.sh
+      - name: merge gate — target visibility resolves fail-closed runner routing (#170)
+        run: bash scripts/ci-gate/target-visibility.test.sh
       - name: merge gate — cross-org workflow_call distribution seams (#128, ADR 0022)
         run: bash scripts/ci-gate/reusable-workflow.test.sh
       - name: merge gate — require ORG_ADMIN_TOKEN, fail closed on missing secrets (#131)

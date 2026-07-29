@@ -164,9 +164,13 @@ jobs:
         !contains(github.event.pull_request.title, 'DO NOT MERGE')
       )
     # A workflow_call consumer sets its own fleet via `with.runner_labels`; the
-    # org direct paths (pull_request/workflow_dispatch) leave it empty and fall
-    # back to the self-gate split — Verjson/.github reviews its OWN PRs on `meta`
-    # to avoid the gate-runner deadlock (ADR 0016), every other org repo on `gate`.
+    # org direct paths (pull_request/workflow_dispatch) leave it empty and route
+    # org-aware (#175, ADR 0030): non-Verjson callers to GitHub-hosted
+    # ubuntu-24.04, Verjson public event repos to the isolated pool, private
+    # ones to the self-hosted `gate` pool (#167 retired the ADR-0016 meta-lane
+    # self-gate split). Dispatch-path caveat: at job start only the DISPATCHING
+    # repo's visibility is visible to `runs-on`; this job resolves the guarded
+    # TARGET_REPO's real visibility so the gate job routes on the target (#170).
     runs-on: ${{ inputs.runner_labels && fromJSON(inputs.runner_labels) || github.repository_owner != 'Verjson' && 'ubuntu-24.04' || github.event.repository.private == false && fromJSON('["self-hosted","isolated","linux","x64"]') || fromJSON('["self-hosted","gate"]') }}
     # This job combines the former 10-minute freshness and classification jobs.
     timeout-minutes: 20
@@ -184,6 +188,9 @@ jobs:
       dependency_major: ${{ steps.classify.outputs.dependency_major }}
       head_sha: ${{ steps.classify.outputs.head_sha }}
       completed_at: ${{ steps.preflight_complete.outputs.completed_at }}
+      # 'false' → public target → hosted runner; 'true' or '' (unresolved,
+      # fail closed) → self-hosted `gate`. See the gate job's `runs-on` (#170).
+      target_private: ${{ steps.target_visibility.outputs.target_private }}
     steps:
       - name: Record preflight runner timing
         env:
@@ -219,11 +226,34 @@ jobs:
           # The default path (`repository` unset → github.repository) is
           # same-owner and passes.
           owner="${TARGET_REPO%%/*}"
-          if [[ ! "$TARGET_REPO" =~ ^[^/]+/[^/]+$ ]] || [ "$owner" != "$GITHUB_REPOSITORY_OWNER" ]; then
+          # GitHub's owner/repo charset only — also keeps whitespace, backticks,
+          # and newlines out of the log interpolations below (annotation injection).
+          if [[ ! "$TARGET_REPO" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] || [ "$owner" != "$GITHUB_REPOSITORY_OWNER" ]; then
             echo "::error::refusing to run the merge gate against '$TARGET_REPO': target must be a repo owned by '$GITHUB_REPOSITORY_OWNER'."
             exit 1
           fi
           echo "merge target '$TARGET_REPO' is within org '$GITHUB_REPOSITORY_OWNER'."
+
+      - name: Resolve target repo visibility (routes the gate runner, #170)
+        id: target_visibility
+        env:
+          GH_TOKEN: ${{ secrets.ORG_ADMIN_TOKEN || github.token }}
+        run: |
+          set -euo pipefail
+          # `runs-on` expressions only see event/inputs context, and on the
+          # workflow_dispatch re-gate path `github.event.repository` is the
+          # DISPATCHING repo, not the target. Resolve the org-guarded
+          # TARGET_REPO's actual visibility here so the gate job routes
+          # hosted-vs-self-hosted on the target, not the dispatcher. An
+          # unreadable repo emits an empty value and the gate falls back to
+          # the self-hosted `gate` pool — fail closed to the operator-only
+          # path, never onto a hosted runner with the wrong assumptions.
+          if ! target_private="$(gh api "repos/$TARGET_REPO" --jq .private 2>"$RUNNER_TEMP/tv.err")"; then
+            target_private=""
+            echo "::warning::target visibility lookup failed for $TARGET_REPO (routing fail-closed to the gate pool): $(head -c 200 "$RUNNER_TEMP/tv.err" | tr -d '\n')"
+          fi
+          echo "target_private=$target_private" >> "$GITHUB_OUTPUT"
+          echo "::notice::phase=preflight target_repo=$TARGET_REPO target_private=${target_private:-unknown}"
 
       - name: Require merge credentials (fail closed on missing secrets)
         id: require_secrets
@@ -502,10 +532,14 @@ jobs:
     needs: preflight
     if: needs.preflight.outputs.lane == 'fast' || needs.preflight.outputs.lane == 'ai'
     # A workflow_call consumer sets its own fleet via `with.runner_labels`; the
-    # org direct paths (pull_request/workflow_dispatch) leave it empty and fall
-    # back to the self-gate split — Verjson/.github reviews its OWN PRs on `meta`
-    # to avoid the gate-runner deadlock (ADR 0016), every other org repo on `gate`.
-    runs-on: ${{ inputs.runner_labels && fromJSON(inputs.runner_labels) || github.repository_owner != 'Verjson' && 'ubuntu-24.04' || github.event.repository.private == false && fromJSON('["self-hosted","isolated","linux","x64"]') || fromJSON('["self-hosted","gate"]') }}
+    # org direct paths leave it empty and route org-aware (#175, ADR 0030) on
+    # the TARGET repo's visibility resolved by preflight (#170) — on the
+    # workflow_dispatch re-gate path the event repo is the DISPATCHER, not the
+    # target. Non-Verjson callers run on GitHub-hosted ubuntu-24.04; Verjson
+    # public targets on the isolated pool; private targets — or an unresolved
+    # visibility, which fails closed to the operator-only path — on the
+    # self-hosted `gate` pool (#167 retired the ADR-0016 meta-lane split).
+    runs-on: ${{ inputs.runner_labels && fromJSON(inputs.runner_labels) || github.repository_owner != 'Verjson' && 'ubuntu-24.04' || needs.preflight.outputs.target_private == 'false' && fromJSON('["self-hosted","isolated","linux","x64"]') || fromJSON('["self-hosted","gate"]') }}
     # Fast retains its former 45-minute merge ceiling. AI gets one bounded
     # aggregate ceiling for the 30-minute CI wait + the former 45-minute review
     # allowance + checkout/debounce/submit/recheck buffer.
