@@ -1,6 +1,7 @@
 # 0033 — Route runners by repository visibility, on configurable self-hosted pools
 
 - **Date:** 2026-07-29
+- **Amended:** 2026-07-29 — reconciliation gap closed by detection (#189)
 - **Issues:** Verjson/.github#189, Verjson/.github#185, Verjson/.github#192, Verjson/.github#182
 - **Supersedes:** ADR 0031 (the isolated-pool repository allowlist)
 - **Refines:** ADR 0030 (routing tiers), ADR 0028 (security tiers), ADR 0026, ADR 0027, ADR 0029
@@ -141,14 +142,25 @@ so tier 3/4 answers itself and cannot go stale.
   `github-hosted-runner` input (ADR 0026) survives as an explicit opt-in; while
   billing is off that knob can only fail, which is a trap tracked in #189, but
   it is opt-in rather than a silent route.
-- **Reconciliation gap, deferred:** group 4 is `visibility: selected` and members
-  can create repositories, so a **newly created repository is in neither group**
-  and hangs with no check run — the #182 failure mode, in the one case this ADR
-  does not close. Nothing reconciles workflow policy against group membership.
-  This is the same criticism this ADR levels at the allowlist it replaces, and
-  it is why #189's ask — routing that fails loudly when a repo resolves to a lane
-  it cannot use — stays open. Onboarding a new repository means admitting it to
-  group 4 (or 6, if public).
+- **Reconciliation gap — closed by detection, not by routing.** Group 4 is
+  `visibility: selected` and members can create repositories, so a **newly
+  created repository is in neither group** and hangs with no check run: the #182
+  failure mode, in the one case routing cannot fix. GitHub offers no way to fail
+  a job at startup because no runner matches — a job simply queues — so #189's
+  "fail loudly" ask is not expressible in `runs-on`.
+
+  `runner-admission-reconcile.yml` answers it a different way: a daily job diffs
+  every active repository's visibility-derived lane against live runner-group
+  membership and files (or updates, or closes) one issue. The condition is caught
+  before it becomes someone's wedged PR rather than at the moment it wedges. It
+  is observe-and-report: pool admission stays the org admin's boundary, so the
+  reconciler never mutates a runner group.
+
+  Its exit codes carry the contract — `0` clean, `1` drift, `2` **undetermined**.
+  The third exists because the failure that matters most is reporting a clean org
+  you never managed to read; the workflow treats `2` as a hard error and files
+  nothing. Onboarding a new repository still means admitting it to group 4 (or 6,
+  if public); the reconciler makes forgetting visible within a day.
 - **Capacity:** tier 3 points all 82 private repositories at the `GCP` label,
   whose online members are `gha-gate-1/2/4` and `gha-runner-6` — three of which
   also carry `gate` and serve the merge gate. Heavy CI can starve the gate. Not
