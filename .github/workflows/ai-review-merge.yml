@@ -185,6 +185,7 @@ jobs:
       reason: ${{ steps.classify.outputs.reason }}
       model: ${{ steps.classify.outputs.model }}
       budget_usd: ${{ steps.classify.outputs.budget_usd }}
+      changed_lines: ${{ steps.classify.outputs.changed_lines }}
       dependency_major: ${{ steps.classify.outputs.dependency_major }}
       head_sha: ${{ steps.classify.outputs.head_sha }}
       completed_at: ${{ steps.preflight_complete.outputs.completed_at }}
@@ -440,8 +441,18 @@ jobs:
           if [ "$nfiles" -eq 0 ]; then
             out lane ai; out reason "empty diff — needs a look"; out model claude-haiku-4-5
             out budget_usd 0.15
+            out changed_lines 0
             exit 0
           fi
+
+          # additions+deletions across the PR, used for the budget tier below.
+          # `// 0` per file (a binary/too-large entry can omit `.changes`) and
+          # `add // 0` for the whole sum keep this an integer, never null —
+          # a null here would make the `-ge` test below a syntax error and
+          # abort classification.
+          changed_lines=$(jq '[.[].changes // 0] | add // 0' <<<"$files")
+          [[ "$changed_lines" =~ ^[0-9]+$ ]] || changed_lines=0
+          out changed_lines "$changed_lines"
 
           # Model tier for the AI lane: sensitive paths get the strong model.
           if jq -e '[.[].filename] | any(test("(^|/)\\.github/|abac|(^|/|[._-])auth|polic|payment|ledger|webhook|secret|middleware|rbac|rls"; "i"))' <<<"$files" >/dev/null; then
@@ -451,9 +462,21 @@ jobs:
             # instead of failing, so the cap is a floor to escalate from, not a
             # hard wall. The 15-turn cap bounds exploration.
             budget_usd=0.50
+            large_budget_usd=0.90
           else
             model=claude-haiku-4-5
             budget_usd=0.15
+            large_budget_usd=0.60
+          fi
+          # Diff-size-keyed budget (#181, ADR 0032). The floors above are tuned
+          # for a typical PR; a large diff exhausts them deterministically —
+          # verjson-cli-cloud#163 (1,586 changed lines) burned $0.21 against the
+          # $0.15 floor, died as `error_max_budget_usd`, and forced a ~$0.70
+          # sonnet escalation on every such PR. Raise the first-pass cap for big
+          # diffs so the cheap tier can actually finish. Both tiers stay strictly
+          # under the escalation's $1.00, so escalation remains a real step up.
+          if [ "$changed_lines" -ge 800 ]; then
+            budget_usd="$large_budget_usd"
           fi
           out model "$model"
           out budget_usd "$budget_usd"
@@ -1092,6 +1115,7 @@ jobs:
             --allowedTools "Read,Grep,Glob"
 
       - name: Record model retry outcome
+        id: retry_outcome
         if: always() && needs.preflight.outputs.lane == 'ai'
         env:
           STARTED_EPOCH: ${{ steps.model_timing.outputs.started_epoch }}
@@ -1100,12 +1124,41 @@ jobs:
           RETRY2_VERDICT: ${{ steps.claude_retry2.outputs.structured_output != '' }}
           RETRY1_CONCLUSION: ${{ steps.claude_retry.conclusion }}
           RETRY2_CONCLUSION: ${{ steps.claude_retry2.conclusion }}
+          # Per-pass SDK transcripts, so the gate can name budget exhaustion
+          # itself instead of leaving the action's raw `error_max_budget_usd`
+          # annotation as the only signal (#181, ADR 0032).
+          EXEC_FILE_1: ${{ steps.claude.outputs.execution_file }}
+          EXEC_FILE_2: ${{ steps.claude_retry.outputs.execution_file }}
+          EXEC_FILE_3: ${{ steps.claude_retry2.outputs.execution_file }}
         run: |
           elapsed=unknown
           if [[ "$STARTED_EPOCH" =~ ^[0-9]+$ ]]; then
             elapsed=$(( $(date +%s) - STARTED_EPOCH ))
           fi
-          echo "::notice::phase=model elapsed_seconds=$elapsed first_verdict=$FIRST_VERDICT retry1_conclusion=$RETRY1_CONCLUSION retry1_verdict=$RETRY1_VERDICT retry2_conclusion=$RETRY2_CONCLUSION retry2_verdict=$RETRY2_VERDICT"
+          # Did any pass stop because it ran out of money? The transcript is an
+          # array of SDK messages whose final `result` carries the subtype. A
+          # missing, unset or unparseable file degrades to "no" — this step is
+          # `always()` bookkeeping and must never fail the gate, and a false
+          # positive would tell a maintainer to split a PR that is not oversized.
+          budget_exhausted=false
+          for f in "${EXEC_FILE_1:-}" "${EXEC_FILE_2:-}" "${EXEC_FILE_3:-}"; do
+            [ -n "$f" ] && [ -f "$f" ] || continue
+            subtype=$(jq -r '(if type == "array" then (map(select(.type == "result")) | last) else . end).subtype // ""' "$f" 2>/dev/null || echo "")
+            [ "$subtype" = "error_max_budget_usd" ] && budget_exhausted=true
+          done
+          echo "budget_exhausted=$budget_exhausted" >> "$GITHUB_OUTPUT"
+          # Say in words what the red `error_max_budget_usd` annotation means in
+          # this run. The action emits it at failure level even when a later
+          # pass succeeds, which is exactly what made verjson-cli-cloud#163 read
+          # as an unexplained gate failure.
+          if [ "$budget_exhausted" = true ]; then
+            if [ "$FIRST_VERDICT" = true ] || [ "$RETRY1_VERDICT" = true ] || [ "$RETRY2_VERDICT" = true ]; then
+              echo "::notice::phase=model budget_exhausted=true outcome=recovered — a review pass hit its cost cap (the red error_max_budget_usd annotation above is expected); a later pass produced the verdict and this run is NOT blocked by it."
+            else
+              echo "::error::phase=model budget_exhausted=true outcome=blocked — every review pass hit its cost cap. This PR is larger than the review budget; the gate blocks it and requests human review."
+            fi
+          fi
+          echo "::notice::phase=model elapsed_seconds=$elapsed first_verdict=$FIRST_VERDICT retry1_conclusion=$RETRY1_CONCLUSION retry1_verdict=$RETRY1_VERDICT retry2_conclusion=$RETRY2_CONCLUSION retry2_verdict=$RETRY2_VERDICT budget_exhausted=$budget_exhausted"
 
       - name: Submit deterministic PR review
         id: submit
@@ -1124,17 +1177,41 @@ jobs:
           # PR net patch-id (#120), embedded in the approval marker so a future
           # base-merge re-fire can detect an unchanged diff and skip the model.
           PATCH_ID: ${{ steps.rereview.outputs.patch_id }}
+          # #181: only chooses the no-verdict wording (budget-exceeded vs
+          # generic). Never gates whether the merge is blocked — an unset or
+          # garbage value degrades to the generic message, still fail-closed.
+          BUDGET_EXHAUSTED: ${{ steps.retry_outcome.outputs.budget_exhausted }}
+          CHANGED_LINES: ${{ needs.preflight.outputs.changed_lines }}
+          BUDGET_USD: ${{ needs.preflight.outputs.budget_usd }}
         run: |
           set -euo pipefail
           # Neither pass produced a verdict (budget/turn exhaustion or a hard
           # error on both attempts). Fail closed — never merge unreviewed — but
           # leave an explained, actionable record and flag for a human instead
           # of dying on the action's cryptic "did not return structured_output".
-          if ! jq -e '.blocking | type == "boolean"' <<<"$VERDICT" >/dev/null 2>&1; then
+          #
+          # The blank check is load-bearing and must come FIRST (#181, ADR 0032):
+          # when all three passes return no structured output, VERDICT is the
+          # EMPTY STRING, and `jq -e` on empty input produces no output and exits
+          # 0 — so `! jq -e ...` was false, this guard never fired, and the step
+          # fell through to `--approve` and exited 0, green-lighting the merge of
+          # a PR that was never reviewed. Only a malformed-but-non-empty verdict
+          # (jq exit 4) ever reached the fail-closed branch.
+          if [ -z "${VERDICT//[[:space:]]/}" ] || ! jq -e '.blocking | type == "boolean"' <<<"$VERDICT" >/dev/null 2>&1; then
             gh pr edit "$PR_NUMBER" --repo "$TARGET_REPO" --add-label ai-review-inconclusive 2>/dev/null || true
-            gh pr comment "$PR_NUMBER" --repo "$TARGET_REPO" --body "⚠️ **Merge gate: review could not complete**
+            # A budget-exhausted review is a legible outcome, not an opaque
+            # `error_max_budget_usd`: name the cause, the diff size and the cap
+            # so the maintainer knows the PR is oversized rather than broken.
+            # The flag only chooses the wording — every branch here blocks.
+            heading="⚠️ **Merge gate: review could not complete**"
+            detail="The automated review produced no verdict across all three passes (budget/turn exhaustion, or the model failed to return a structured verdict on every attempt)."
+            if [ "${BUDGET_EXHAUSTED:-}" = "true" ]; then
+              heading="⚠️ **Merge gate: budget-exceeded — human review required**"
+              detail="At least one review pass ended in \`error_max_budget_usd\`, and no pass produced a verdict. The diff (~${CHANGED_LINES:-unknown} changed lines) is larger than the first-pass review budget (\$${BUDGET_USD:-unknown}) and the \$1.00 escalations could not finish it either. This is a **budget-exceeded** outcome, not a review failure — split the PR into smaller, independently reviewable changes, or review it by hand."
+            fi
+            gh pr comment "$PR_NUMBER" --repo "$TARGET_REPO" --body "$heading
 
-          The automated review produced no verdict across all three passes (budget/turn exhaustion, or the model failed to return a structured verdict on every attempt). This PR was **not** auto-merged. A maintainer should review and merge it manually."
+          $detail This PR was **not** auto-merged. A maintainer should review and merge it manually."
             exit 1
           fi
           # Expose the verdict so this gate job can file follow-up issues for the

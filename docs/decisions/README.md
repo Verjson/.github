@@ -11,6 +11,7 @@ Reverse-chronological index of org-level decisions.
 <!-- BEGIN ADR INDEX -->
 | # | Date | Decision |
 |---|------|----------|
+| [0032](0032-gate-budget-exceeded-outcome/README.md) | 2026-07-29 | Size the merge-gate review budget to the diff, and make budget exhaustion an explicit blocking outcome |
 | [0031](0031-node-ci-isolated-pool-allowlist/README.md) | 2026-07-29 | Route node-ci on isolated-pool admission, not organization ownership |
 | [0030](0030-portable-reusable-runner-policy/README.md) | 2026-07-28 | Separate Verjson runner policy from reusable-workflow portability |
 | [0029](0029-repurpose-meta-runners-private-gate/README.md) | 2026-07-28 | Repurpose retired meta runners as private merge-gate capacity |
