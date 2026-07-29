@@ -7,17 +7,20 @@ for the *why* of the groups, this for the *how* of day-to-day routing.
 
 ## TL;DR
 
-- **Verjson-owned reusable-workflow callers default to
-  `[self-hosted, isolated, linux, x64]`**. Trusted callers may explicitly select
-  `[self-hosted, GCP]`, `gate`, or another admitted persistent pool.
-- **`node-ci` and `node-release` narrow that default to repositories admitted to
-  the `isolated` runner group** (`.github`, `verjson-cli`, `verjson-cli-cloud`,
-  `verjson-cli-project-init`). The group is `visibility: selected`, so a Verjson
-  repository outside its allowlist can never be *assigned* an isolated job — it
-  would queue until the merge gate timed out, or, on the release path, until
-  someone noticed a version that never published. Non-admitted callers fall back
-  to `ubuntu-24.04` ([ADR 0031](decisions/0031-node-ci-isolated-pool-allowlist/README.md),
-  #182, #192).
+- **Verjson-owned callers route on repository VISIBILITY, not on an allowlist**
+  ([ADR 0033](decisions/0033-self-hosted-runner-policy-by-visibility/README.md)).
+  A **private** repo gets the general self-hosted pool (`[self-hosted, GCP]`
+  today); a **public** one — or any event carrying no visibility — gets the
+  ephemeral `[self-hosted, isolated, linux, x64]` pool. Unresolved visibility
+  falling to `isolated` is deliberate: fork code must never land on the
+  persistent pool. Trusted callers may still select `gate` or another admitted
+  pool through the `runner` input.
+- **Both pools are org variables**: `VERJSON_RUNNER_DEFAULT` and
+  `VERJSON_RUNNER_ISOLATED`. Moving providers (GCP → DigitalOcean) is a variable
+  flip, not a PR to this repo. Unset resolves to the literal defaults.
+- **No Verjson job may route to `ubuntu-24.04`.** GitHub-hosted minutes are
+  unfunded for this org (#189), so hosted is a guaranteed failure, not a
+  fallback. It is the outside-caller tier only.
 - **Callers outside Verjson default to `ubuntu-24.04`** so this public workflow
   package remains usable without access to Verjson runner groups.
 - **Docker/kind/buildx jobs must pin `[self-hosted, docker]`** — the general GCP
@@ -60,23 +63,21 @@ one-time on-box step owned by the runner-topology owner.
 
 ## Routing rules
 
-- **Ordinary Node/library CI, releases, submodule notifications** use the
-  reusable workflow's organization-aware default. The
-  [`node-ci`](../.github/workflows/node-ci.yml) /
-  [`node-release`](../.github/workflows/node-release.yml) /
-  [`notify-umbrella`](../.github/workflows/notify-umbrella.yml) reusable
-  workflows route Verjson to the isolated pool and outside organizations to
-  `ubuntu-24.04`; trusted Verjson callers override `runner` to reach a
-  persistent pool such as `GCP` or `manish`. In `node-ci` and `node-release` the
-  isolated route is keyed on the `isolated` group's repository allowlist rather
-  than the owner, so a not-yet-onboarded Verjson repository gets a hosted job
-  that reports instead of one that queues forever
-  ([ADR 0031](decisions/0031-node-ci-isolated-pool-allowlist/README.md));
-  when a repository is added to runner group 6, add it to **all three**
-  expressions across the two files — `runner-routing-policy.test.sh` fails if
-  they drift, and rejects any new owner-wide route in a migrated workflow.
-  `notify-umbrella` still routes owner-wide (#185).
-  See
+- **Ordinary Node/library CI, releases, submodule notifications, Helm/UI/Pulumi
+  validation** all share one routing policy, applied identically in
+  [`node-ci`](../.github/workflows/node-ci.yml),
+  [`node-release`](../.github/workflows/node-release.yml),
+  [`notify-umbrella`](../.github/workflows/notify-umbrella.yml),
+  [`helm-ci`](../.github/workflows/helm-ci.yml),
+  [`ui-ci`](../.github/workflows/ui-ci.yml) and
+  [`pulumi-ci`](../.github/workflows/pulumi-ci.yml). Tier order: explicit
+  `runner` input → caller outside Verjson gets `ubuntu-24.04` → Verjson private
+  repo gets `vars.VERJSON_RUNNER_DEFAULT` → everything else gets
+  `vars.VERJSON_RUNNER_ISOLATED`. `runner-routing-policy.test.sh` evaluates the
+  real extracted expression for all nine jobs, so the table is asserted as
+  behaviour rather than as a pattern. `pulumi-ci`'s `validate` and
+  `preview-admission` deliberately expose no `runner` input — they sit on the
+  ADR 0027/0029 credential boundary. See
   [Reusable Node workflow controls](node-workflows.md) for timeout, cache, and
   caller-concurrency inputs.
 - **Docker / kind / buildx / anything touching the Docker daemon** →

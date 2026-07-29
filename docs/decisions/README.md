@@ -11,6 +11,7 @@ Reverse-chronological index of org-level decisions.
 <!-- BEGIN ADR INDEX -->
 | # | Date | Decision |
 |---|------|----------|
+| [0033](0033-self-hosted-runner-policy-by-visibility/README.md) | 2026-07-29 | Route runners by repository visibility, on configurable self-hosted pools |
 | [0032](0032-gate-budget-exceeded-outcome/README.md) | 2026-07-29 | Size the merge-gate review budget to the diff, and make budget exhaustion an explicit blocking outcome |
 | [0031](0031-node-ci-isolated-pool-allowlist/README.md) | 2026-07-29 | Route node-ci on isolated-pool admission, not organization ownership |
 | [0030](0030-portable-reusable-runner-policy/README.md) | 2026-07-28 | Separate Verjson runner policy from reusable-workflow portability |

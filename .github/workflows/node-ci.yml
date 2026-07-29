@@ -161,14 +161,15 @@ jobs:
   # everything. This tiny job resolves eligibility once; build-test skips when
   # it says defer, staying BLOCKED until the rebase re-fires CI (Verjson/.github#133).
   eligibility:
-    # Route on the ONBOARDED repository, not the owner. Org runner group
-    # `isolated` is `visibility: selected`, so a Verjson repo outside its
-    # allowlist can never be assigned an `isolated` job — it queues silently
-    # until the merge gate times out (#182). Non-onboarded callers therefore
-    # fall back to hosted, exactly as callers outside Verjson do; `runner`
-    # stays the per-caller override. Keep this expression byte-identical to
-    # `build-test` below — runner-routing-policy.test.sh enforces that.
-    runs-on: ${{ inputs.runner != '' && fromJSON(inputs.runner) || contains(fromJSON('["Verjson/.github","Verjson/verjson-cli","Verjson/verjson-cli-cloud","Verjson/verjson-cli-project-init"]'), github.repository) && fromJSON('["self-hosted","isolated","linux","x64"]') || 'ubuntu-24.04' }}
+    # Runner routing is policy, not preference — see ADR 0033. In tier order:
+    # an explicit `runner` input wins; a caller outside Verjson gets hosted
+    # (portable, their billing); a Verjson PRIVATE repo gets the general
+    # self-hosted pool; anything else — public, or an event that carries no
+    # visibility — gets the ephemeral untrusted-PR pool. That last tier is
+    # fail-SAFE, not a fallback: unresolved visibility must never put fork code
+    # on the persistent pool. Both pools are org variables so a provider move
+    # (GCP -> DigitalOcean) is a variable flip, not a PR here.
+    runs-on: ${{ inputs.runner != '' && fromJSON(inputs.runner) || github.repository_owner != 'Verjson' && 'ubuntu-24.04' || github.event.repository.private == true && fromJSON(vars.VERJSON_RUNNER_DEFAULT || '["self-hosted","GCP"]') || fromJSON(vars.VERJSON_RUNNER_ISOLATED || '["self-hosted","isolated","linux","x64"]') }}
     timeout-minutes: ${{ inputs.timeout-minutes }}
     permissions:
       # Reading a commit's combined status needs `statuses` (not `contents`).
@@ -217,10 +218,15 @@ jobs:
     # the guard can only ever withhold CI on a genuinely-held PR — never wedge a
     # normal one behind a new single point of failure.
     if: always() && needs.eligibility.outputs.should-run != 'false'
-    # Byte-identical to `eligibility` above (see the isolated-allowlist note
-    # there). GitHub Actions has no anchors and `runs-on` cannot read `env`, so
-    # the two copies are kept in lockstep by test, not by reference (#182).
-    runs-on: ${{ inputs.runner != '' && fromJSON(inputs.runner) || contains(fromJSON('["Verjson/.github","Verjson/verjson-cli","Verjson/verjson-cli-cloud","Verjson/verjson-cli-project-init"]'), github.repository) && fromJSON('["self-hosted","isolated","linux","x64"]') || 'ubuntu-24.04' }}
+    # Runner routing is policy, not preference — see ADR 0033. In tier order:
+    # an explicit `runner` input wins; a caller outside Verjson gets hosted
+    # (portable, their billing); a Verjson PRIVATE repo gets the general
+    # self-hosted pool; anything else — public, or an event that carries no
+    # visibility — gets the ephemeral untrusted-PR pool. That last tier is
+    # fail-SAFE, not a fallback: unresolved visibility must never put fork code
+    # on the persistent pool. Both pools are org variables so a provider move
+    # (GCP -> DigitalOcean) is a variable flip, not a PR here.
+    runs-on: ${{ inputs.runner != '' && fromJSON(inputs.runner) || github.repository_owner != 'Verjson' && 'ubuntu-24.04' || github.event.repository.private == true && fromJSON(vars.VERJSON_RUNNER_DEFAULT || '["self-hosted","GCP"]') || fromJSON(vars.VERJSON_RUNNER_ISOLATED || '["self-hosted","isolated","linux","x64"]') }}
     timeout-minutes: ${{ inputs.timeout-minutes }}
     permissions:
       contents: read
