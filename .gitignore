@@ -1,1 +1,8 @@
 .tokensave/
+
+# Claude Code tooling residue — scratch worktrees and per-machine settings, never
+# part of the repo. Scoped rather than ignoring all of .claude/ so shared agent
+# or skill config can still be committed later.
+.claude/worktrees/
+.claude/settings.local.json
+.claude/.headroom_wrap_marker.json
