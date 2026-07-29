@@ -1,7 +1,10 @@
 # 0031 — Route node-ci on isolated-pool admission, not organization ownership
 
 - **Date:** 2026-07-29
-- **Issues:** Verjson/.github#182, Verjson/.github#173, Verjson/.github#175
+- **Amended:** 2026-07-29 — extended to `node-release.yml` (#192); see
+  [Amendment](#amendment-2026-07-29--node-releaseyml-carries-the-same-rule-192)
+- **Issues:** Verjson/.github#182, Verjson/.github#173, Verjson/.github#175,
+  Verjson/.github#192
 - **Category:** reusable workflows / runner security boundary
 - **Refines:** ADR 0030 (routing tiers unchanged; the Verjson tier is narrowed
   to the repositories actually admitted to the pool)
@@ -84,14 +87,14 @@ would hand it an empty `runs-on`. Lockstep is enforced by test instead
 
 ## Scope
 
-Only `node-ci.yml` is changed. `node-release.yml`, `notify-umbrella.yml`,
-`helm-ci.yml`, `ui-ci.yml`, and `pulumi-ci.yml` carry the same owner-wide
-expression and the same hang for non-admitted callers. That is tracked in #185,
-not fixed blind in a hotfix for the live node-ci breakage.
+As first decided, only `node-ci.yml` was changed; `node-release.yml` is covered
+by the amendment below. `notify-umbrella.yml`, `helm-ci.yml`, `ui-ci.yml`, and
+`pulumi-ci.yml` still carry the owner-wide expression and the same hang for
+non-admitted callers. That remains tracked in #185.
 
-The residual hang is not purely latent: `Verjson/verjson-authn` calls
-`node-release.yml@main`, so its release job still queues after this lands. #182 is
-closed for CI, not for release.
+The residual hang was not purely latent: `Verjson/verjson-authn` calls
+`node-release.yml@main`, so its release job still queued after this landed. That
+prediction came true within hours — see the amendment.
 
 `pulumi-ci.yml:113` and `:147` are the sharpest case and deliberately excluded
 here: they carry no `inputs.runner` term at all, only the owner check, so the
@@ -113,3 +116,44 @@ ADR 0029 instead of copying this expression.
   behaviour: allowlisted → isolated, non-allowlisted Verjson → hosted, outside
   org → hosted, explicit input → wins. It also rejects any non-Verjson
   repository appearing in the allowlist.
+
+## Amendment (2026-07-29) — `node-release.yml` carries the same rule (#192)
+
+The scope note above predicted the residual release hang; it materialised the
+same day. `Verjson/verjson-authn` run
+[30450460243](https://github.com/Verjson/verjson-authn/actions/runs/30450460243)
+sat `queued` from 12:10:01Z with `runner: ""` — the release for merged PR #86, so
+that fix reached `main` while the published version stayed at 0.21.0.
+
+**A release hang is strictly worse than a CI hang.** A queued CI job at least
+holds a visible pending check on a PR. A queued release has no PR, no check, and
+no timeout that reports: the only symptom is a version that silently never
+publishes. Anything that hangs where nobody is watching must fail soft, not
+queue.
+
+`node-release.yml`'s `release` job therefore takes the byte-identical expression
+from `node-ci.yml`. No new routing tier, no change to the allowlist, and no
+change to org runner-group membership — this applies the decision above to the
+path it should always have covered.
+
+Because the allowlist now lives in three job definitions across two files,
+`runner-routing-policy.test.sh` asserts the full routing table for all three and
+requires **cross-file** byte equality. The node-ci-only parity check is what let
+the two drift for a day. Parity alone would still only bind the jobs it
+enumerates, so the suite also rejects an owner-wide isolated route appearing
+anywhere in a migrated workflow — otherwise a newly added job could reintroduce
+exactly this bug without failing a single assertion. The "why the expression is
+duplicated" reasoning is unchanged and now spans files: Actions has no anchors,
+and a resolver job cannot precede a job whose `runs-on` it would supply.
+
+Still out of scope and still tracked in #185: `notify-umbrella.yml`,
+`helm-ci.yml`, `ui-ci.yml`, `pulumi-ci.yml`.
+
+**Known limitation, not fixed here:** hosted runners are billing-blocked
+org-wide (#189), so a non-admitted repo now fails its release fast rather than
+hanging forever. That is a real improvement in observability — a failed run is a
+signal, a queued one is not — but it does not publish anything. Unblocking
+verjson-authn's release needs either restored Actions billing or admission to
+runner group 6, both org-admin calls. #189 also carries the durable fix: routing
+should fail loudly at startup when a repo resolves to a lane it cannot be
+assigned.

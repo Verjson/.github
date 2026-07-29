@@ -69,13 +69,17 @@ grep -qF "github.repository_owner != 'Verjson'" "$workflows/actionlint.yml" \
 # therefore key on the onboarded repository, not on the owner.
 #
 # These cases evaluate the REAL `runs-on:` expression awk-extracted from
-# node-ci.yml (single source of truth — no copy of the expression lives here).
+# node-ci.yml and node-release.yml (single source of truth — no copy of the
+# expression lives here). node-release carries the same rule because a release
+# hang is silent: no PR, no red check, just a version that never publishes
+# (#192).
 # --------------------------------------------------------------------------
 node_ci="$workflows/node-ci.yml"
+node_release="$workflows/node-release.yml"
 
 # Extract the `runs-on:` value of one job block, verbatim.
 extract_runs_on() {
-  awk -v job="  $1:" '
+  awk -v job="  $2:" '
     $0 == job { in_job = 1; next }
     in_job && /^  [^[:space:]#]/ { in_job = 0 }
     in_job && /^    runs-on:/ {
@@ -83,7 +87,7 @@ extract_runs_on() {
       print
       exit
     }
-  ' "$node_ci"
+  ' "$1"
 }
 
 evaluator="$(mktemp)"
@@ -124,11 +128,11 @@ if ! command -v node >/dev/null 2>&1; then
 fi
 
 assert_route() {
-  local job="$1" repository="$2" runner_input="$3" expected="$4" label="$5"
+  local workflow="$1" job="$2" repository="$3" runner_input="$4" expected="$5" label="$6"
   local expression resolved
-  expression="$(extract_runs_on "$job")"
+  expression="$(extract_runs_on "$workflow" "$job")"
   if [ -z "$expression" ]; then
-    fail "could not extract runs-on for job '$job' from node-ci.yml"
+    fail "could not extract runs-on for job '$job' from $(basename "$workflow")"
     return
   fi
   resolved="$(node "$evaluator" "$expression" "$repository" "$runner_input" 2>&1)" || {
@@ -140,45 +144,74 @@ assert_route() {
     || fail "$label (expected '$expected', got '$resolved')"
 }
 
-for job in eligibility build-test; do
-  assert_route "$job" Verjson/verjson-authn '' 'ubuntu-24.04' \
-    "node-ci $job — Verjson repo outside the isolated allowlist falls back to hosted (#182)"
+# Every job carrying the policy answers the same routing table. Release is in
+# this list, not just CI: #175 changed both paths but #184 fixed only node-ci,
+# and the drift went unnoticed for a day because a queued release reports
+# nothing at all (#192).
+while read -r wf_name job; do
+  wf="$workflows/$wf_name"
+  name="${wf_name%.yml} $job"
 
-  assert_route "$job" Verjson/verjson-cli '' '["self-hosted","isolated","linux","x64"]' \
-    "node-ci $job — allowlisted Verjson repo still routes to the isolated pool"
+  assert_route "$wf" "$job" Verjson/verjson-authn '' 'ubuntu-24.04' \
+    "$name — Verjson repo outside the isolated allowlist falls back to hosted (#182)"
 
-  assert_route "$job" Acme/widgets '' 'ubuntu-24.04' \
-    "node-ci $job — caller outside Verjson stays portable on hosted"
+  assert_route "$wf" "$job" Verjson/verjson-cli '' '["self-hosted","isolated","linux","x64"]' \
+    "$name — allowlisted Verjson repo still routes to the isolated pool"
+
+  assert_route "$wf" "$job" Acme/widgets '' 'ubuntu-24.04' \
+    "$name — caller outside Verjson stays portable on hosted"
 
   # The `runner` input remains the per-caller override on both sides of the
   # allowlist: an onboarded repo can still select a persistent pool, and a
   # non-onboarded one is not forced onto hosted.
-  assert_route "$job" Verjson/verjson-cli '["self-hosted","GCP"]' '["self-hosted","GCP"]' \
-    "node-ci $job — explicit runner input overrides the isolated default"
+  assert_route "$wf" "$job" Verjson/verjson-cli '["self-hosted","GCP"]' '["self-hosted","GCP"]' \
+    "$name — explicit runner input overrides the isolated default"
 
-  assert_route "$job" Verjson/verjson-authn '["self-hosted","manish"]' '["self-hosted","manish"]' \
-    "node-ci $job — explicit runner input overrides the hosted fallback"
-done
+  assert_route "$wf" "$job" Verjson/verjson-authn '["self-hosted","manish"]' '["self-hosted","manish"]' \
+    "$name — explicit runner input overrides the hosted fallback"
+done <<'TARGETS'
+node-ci.yml eligibility
+node-ci.yml build-test
+node-release.yml release
+TARGETS
 
-# One routing policy, two jobs: they must never drift apart. GitHub Actions has
-# no YAML anchors and `runs-on` cannot read the `env` context, so byte equality
-# enforced here is what keeps the allowlist single-sourced.
-eligibility_expr="$(extract_runs_on eligibility)"
-build_test_expr="$(extract_runs_on build-test)"
-[ -n "$eligibility_expr" ] && [ "$eligibility_expr" = "$build_test_expr" ] \
-  && pass "node-ci eligibility and build-test share one byte-identical runs-on expression" \
-  || fail "node-ci runs-on expressions drifted: '$eligibility_expr' vs '$build_test_expr'"
+# One routing policy, three jobs across two files: they must never drift apart.
+# GitHub Actions has no YAML anchors and `runs-on` cannot read the `env`
+# context, so byte equality enforced here is what keeps the allowlist
+# single-sourced. Cross-file parity is the check that #185/#192 needed and
+# node-ci-only parity could not give.
+eligibility_expr="$(extract_runs_on "$node_ci" eligibility)"
+build_test_expr="$(extract_runs_on "$node_ci" build-test)"
+release_expr="$(extract_runs_on "$node_release" release)"
+[ -n "$eligibility_expr" ] \
+  && [ "$eligibility_expr" = "$build_test_expr" ] \
+  && [ "$eligibility_expr" = "$release_expr" ] \
+  && pass "node-ci and node-release share one byte-identical runs-on expression" \
+  || fail "runs-on expressions drifted: eligibility '$eligibility_expr' vs build-test '$build_test_expr' vs release '$release_expr'"
+
+# The assertions above enumerate (file, job) pairs, so a NEW job added to a
+# migrated workflow would escape every one of them — and the global
+# `unsafe_portable` filter deliberately tolerates the owner-wide form for the
+# workflows still awaiting #185. This closes that seam: once a workflow is
+# migrated, no job in it may carry an owner-wide isolated route again.
+migrated_owner_wide="$(
+  grep -HnE "^    runs-on:.*github\\.repository_owner == 'Verjson'" \
+    "$node_ci" "$node_release" || true
+)"
+[ -z "$migrated_owner_wide" ] \
+  && pass "migrated workflows carry no owner-wide isolated route" \
+  || fail "owner-wide isolated route remains after migration: $migrated_owner_wide"
 
 # Admission is a Verjson-owned boundary: no foreign repository may be granted
-# the self-hosted pool through this expression.
+# the self-hosted pool through these expressions.
 foreign_grant="$(
-  printf '%s\n' "$eligibility_expr" \
+  printf '%s\n%s\n' "$eligibility_expr" "$release_expr" \
     | grep -oE '"[^"]+/[^"]+"' \
     | grep -v '^"Verjson/' \
     || true
 )"
 [ -z "$foreign_grant" ] \
-  && pass "node-ci isolated allowlist admits only Verjson-owned repositories" \
+  && pass "isolated allowlist admits only Verjson-owned repositories" \
   || fail "non-Verjson repository in the isolated allowlist: $foreign_grant"
 
 if [ "$fails" -eq 0 ]; then

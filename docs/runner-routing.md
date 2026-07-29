@@ -10,12 +10,14 @@ for the *why* of the groups, this for the *how* of day-to-day routing.
 - **Verjson-owned reusable-workflow callers default to
   `[self-hosted, isolated, linux, x64]`**. Trusted callers may explicitly select
   `[self-hosted, GCP]`, `gate`, or another admitted persistent pool.
-- **`node-ci` narrows that default to repositories admitted to the `isolated`
-  runner group** (`.github`, `verjson-cli`, `verjson-cli-cloud`,
+- **`node-ci` and `node-release` narrow that default to repositories admitted to
+  the `isolated` runner group** (`.github`, `verjson-cli`, `verjson-cli-cloud`,
   `verjson-cli-project-init`). The group is `visibility: selected`, so a Verjson
   repository outside its allowlist can never be *assigned* an isolated job — it
-  would queue until the merge gate timed out. Non-admitted callers fall back to
-  `ubuntu-24.04` ([ADR 0031](decisions/0031-node-ci-isolated-pool-allowlist/README.md), #182).
+  would queue until the merge gate timed out, or, on the release path, until
+  someone noticed a version that never published. Non-admitted callers fall back
+  to `ubuntu-24.04` ([ADR 0031](decisions/0031-node-ci-isolated-pool-allowlist/README.md),
+  #182, #192).
 - **Callers outside Verjson default to `ubuntu-24.04`** so this public workflow
   package remains usable without access to Verjson runner groups.
 - **Docker/kind/buildx jobs must pin `[self-hosted, docker]`** — the general GCP
@@ -65,11 +67,15 @@ one-time on-box step owned by the runner-topology owner.
   [`notify-umbrella`](../.github/workflows/notify-umbrella.yml) reusable
   workflows route Verjson to the isolated pool and outside organizations to
   `ubuntu-24.04`; trusted Verjson callers override `runner` to reach a
-  persistent pool such as `GCP` or `manish`. In `node-ci` the isolated route is
-  keyed on the `isolated` group's repository allowlist rather than the owner, so
-  a not-yet-onboarded Verjson repository gets hosted CI that reports instead of a
-  job that queues forever ([ADR 0031](decisions/0031-node-ci-isolated-pool-allowlist/README.md));
-  when a repository is added to runner group 6, add it to that expression too.
+  persistent pool such as `GCP` or `manish`. In `node-ci` and `node-release` the
+  isolated route is keyed on the `isolated` group's repository allowlist rather
+  than the owner, so a not-yet-onboarded Verjson repository gets a hosted job
+  that reports instead of one that queues forever
+  ([ADR 0031](decisions/0031-node-ci-isolated-pool-allowlist/README.md));
+  when a repository is added to runner group 6, add it to **all three**
+  expressions across the two files — `runner-routing-policy.test.sh` fails if
+  they drift, and rejects any new owner-wide route in a migrated workflow.
+  `notify-umbrella` still routes owner-wide (#185).
   See
   [Reusable Node workflow controls](node-workflows.md) for timeout, cache, and
   caller-concurrency inputs.
