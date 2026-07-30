@@ -83,7 +83,8 @@ reason; AI-lane merges leave a review.
   Force a re-run with the `re-review` label (auto-consumed) or
   `gh workflow run ai-review-merge.yml --repo <owner/repo> -f pr_number=<N>`.
   Dispatch in the repository that owns the PR; sibling targets are intentionally
-  unsupported by the repository-scoped validation token.
+  unsupported by the repository-scoped validation token. A successful manual gate
+  automatically dispatches the trusted merge continuation for the reviewed head.
 - Opt a PR out entirely with the `hold` label, a `DO NOT MERGE` title marker,
   or draft status — re-checked at merge time, so a late `hold` still stops the
   merge.

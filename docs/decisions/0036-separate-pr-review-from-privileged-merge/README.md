@@ -71,6 +71,19 @@ This supersedes ADR 0020's same-organization sibling-dispatch allowance. Once
 repository-scoped and could not read or update a sibling repository. Restoring a broad
 secret would collapse the trust boundary, so the convenience feature is retired.
 
+A successful repository-local gate dispatch starts the privileged workflow with the
+PR number, exact reviewed head, and source run ID. The privileged workflow accepts the
+recovery path only when that source is a successful dispatch of the trusted central
+workflow and the PR carries the matching run/head attestation. It then repeats every
+normal head, check, hold, workflow-file, and provenance guard.
+
+The gate uploads a one-day, run-bound attestation containing repository, PR, exact
+head, source run, and bounded follow-up JSON. The privileged workflow fetches it by the
+verified run's unique artifact name, reads only `attestation.json`, validates the
+complete shape and identity, and never sources or executes it. It files issues only
+after the matched-head merge command succeeds. A privileged failure cannot file
+follow-ups.
+
 ## Consequences
 
 - Dependabot and Renovate no longer fail merely because the administrative token is

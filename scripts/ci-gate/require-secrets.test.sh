@@ -25,8 +25,10 @@ else
   pass "privileged job consumes trusted API metadata only"
 fi
 grep -q '^  pull_request_target:' <<<"$privileged" \
-  && pass "privileged job runs only from the trusted base-branch event" \
-  || fail "privileged job is not isolated behind pull_request_target"
+  && grep -q '^  workflow_dispatch:' <<<"$privileged" \
+  && grep -q 'source_run_id:' <<<"$privileged" \
+  && pass "privileged job accepts base-branch PR events and attested local dispatch" \
+  || fail "privileged triggers lost trusted PR or attested dispatch path"
 grep -q 'trusted_workflow_id=' <<<"$privileged" \
   && grep -q 'newest_trusted_gate_run' <<<"$privileged" \
   && grep -q 'sort_by(\[(.created_at // ""), .id\])' <<<"$privileged" \
@@ -54,9 +56,17 @@ cat >"$tmp/bin/sleep" <<'EOF'
 #!/usr/bin/env bash
 exit 0
 EOF
+cat >"$tmp/bin/unzip" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$ATTESTATION_FIXTURE"
+EOF
 cat >"$tmp/bin/gh" <<'EOF'
 #!/usr/bin/env bash
 if [ "$1 $2" = "pr view" ]; then
+  if [[ "$*" == *"reviews,comments"* ]]; then
+    printf '%s\n' "${REVIEW_FIXTURE:-{\"reviews\":[],\"comments\":[]}}"
+    exit 0
+  fi
   count="$(cat "$VIEW_COUNT" 2>/dev/null || echo 0)"
   count=$((count + 1))
   printf '%s\n' "$count" >"$VIEW_COUNT"
@@ -87,6 +97,19 @@ if [ "$1" = "api" ] && [[ "$*" == *"/pulls/7/files"* ]]; then
   fi
   exit 0
 fi
+if [ "$1" = "api" ] && [[ "$2" == *"/artifacts?per_page=100" ]]; then
+  run_id="$(sed -E 's#^.*/runs/([0-9]+)/artifacts.*#\1#' <<<"$2")"
+  printf '{"artifacts":[{"id":555,"name":"merge-attestation-%s","expired":false}]}\n' "$run_id"
+  exit 0
+fi
+if [ "$1" = "api" ] && [[ "$2" == *"/actions/artifacts/555/zip" ]]; then
+  printf 'zip-fixture'
+  exit 0
+fi
+if [ "$1" = "api" ] && [[ "$2" =~ /actions/runs/[0-9]+$ ]]; then
+  printf '%s\n' "$DISPATCH_RUN_FIXTURE"
+  exit 0
+fi
 if [ "$1" = "api" ] && [[ "$2" == *"/actions/runs"* ]]; then
   printf '%s\n' "$RUN_FIXTURE"
   exit 0
@@ -95,14 +118,23 @@ if [ "$1 $2" = "pr merge" ]; then
   printf '%s\n' "$*" >>"$MERGE_LOG"
   exit 0
 fi
+if [ "$1 $2" = "issue list" ]; then
+  printf '0\n'
+  exit 0
+fi
+if [ "$1 $2" = "issue create" ]; then
+  printf 'ISSUE %s\n' "$*" >>"$MERGE_LOG"
+  exit 0
+fi
 exit 2
 EOF
-chmod +x "$tmp/bin/gh" "$tmp/bin/sleep"
+chmod +x "$tmp/bin/gh" "$tmp/bin/sleep" "$tmp/bin/unzip"
 
 sha=0123456789abcdef0123456789abcdef01234567
 green='{"headRefOid":"'"$sha"'","isDraft":false,"labels":[],"state":"OPEN","files":[],"statusCheckRollup":[{"name":"gate","status":"COMPLETED","conclusion":"SUCCESS","detailsUrl":"https://github.com/Verjson/example/actions/runs/99/job/1"},{"name":"build","status":"COMPLETED","conclusion":"SUCCESS"}]}'
 trusted_run='{"id":99,"workflow_id":42,"head_sha":"'"$sha"'","event":"pull_request","conclusion":"success","created_at":"2026-07-30T10:00:00Z","run_started_at":"2026-07-30T10:05:00Z","repository":{"full_name":"Verjson/example"}}'
 trusted_runs='{"workflow_runs":['"$trusted_run"']}'
+default_attestation='{"version":1,"repository":"Verjson/example","pr_number":7,"head_sha":"'"$sha"'","run_id":99,"followups":[]}'
 run_case() {
   local fixture="$1" token="${2-present}" expected="${3-$sha}"
   : >"$tmp/merge.log"
@@ -114,6 +146,12 @@ run_case() {
     FILES_FIXTURE_FINAL="${FILES_FIXTURE_FINAL:-}" \
     FILES_API_FAIL="${FILES_API_FAIL:-false}" \
     RUN_FIXTURE="${RUN_FIXTURE:-$trusted_runs}" \
+    REVIEW_FIXTURE="${REVIEW_FIXTURE:-}" \
+    DISPATCH_RUN_FIXTURE="${DISPATCH_RUN_FIXTURE:-$trusted_run}" \
+    ATTESTATION_FIXTURE="${ATTESTATION_FIXTURE:-$default_attestation}" \
+    GITHUB_EVENT_NAME="${TEST_EVENT_NAME:-pull_request_target}" \
+    SOURCE_RUN_ID="${SOURCE_RUN_ID:-}" \
+    RUNNER_TEMP="$tmp" \
     GH_TOKEN="$token" TARGET_REPO=Verjson/example TARGET_OWNER=Verjson \
     GITHUB_REPOSITORY=Verjson/example PR_NUMBER=7 EXPECTED_HEAD_SHA="$expected" \
     bash "$script" >"$tmp/case-output.txt" 2>&1
@@ -159,6 +197,34 @@ FILES_FIXTURE_FINAL='.github/workflows/late.yml'$'\n' run_case "$green" \
 FILES_API_FAIL=true run_case "$green" \
   && fail "unreadable paginated file list was accepted" \
   || pass "unreadable paginated file list fails closed"
+
+followup_attestation='{"version":1,"repository":"Verjson/example","pr_number":7,"head_sha":"'"$sha"'","run_id":99,"followups":[{"location":"src/payments.ts:42","note":"Add a regression test."}]}'
+if ATTESTATION_FIXTURE="$followup_attestation" run_case "$green" \
+   && grep -q '^pr merge ' "$tmp/merge.log" \
+   && grep -q '^ISSUE ' "$tmp/merge.log"; then
+  pass "validated follow-ups file only after matched-head merge succeeds"
+else
+  sed 's/^/       /' "$tmp/case-output.txt"
+  sed 's/^/       log: /' "$tmp/merge.log"
+  fail "post-merge follow-up handoff did not file after successful merge"
+fi
+dispatch_run="${trusted_run/\"id\":99/\"id\":123}"
+dispatch_run="${dispatch_run/\"event\":\"pull_request\"/\"event\":\"workflow_dispatch\"}"
+dispatch_attestation="${default_attestation/\"run_id\":99/\"run_id\":123}"
+if TEST_EVENT_NAME=workflow_dispatch SOURCE_RUN_ID=123 \
+   DISPATCH_RUN_FIXTURE="$dispatch_run" ATTESTATION_FIXTURE="$dispatch_attestation" \
+   run_case "$green" && grep -q '^pr merge ' "$tmp/merge.log"; then
+  pass "successful local workflow_dispatch resumes through trusted merger"
+else
+  fail "trusted workflow_dispatch recovery path did not merge"
+fi
+if ATTESTATION_FIXTURE="$followup_attestation" run_case "$red" || true; then
+  if grep -q '^ISSUE ' "$tmp/merge.log"; then
+    fail "privileged failure filed a follow-up issue"
+  else
+    pass "privileged failure cannot file follow-up issues"
+  fi
+fi
 
 if [ "$fails" -eq 0 ]; then
   echo "All tests passed."

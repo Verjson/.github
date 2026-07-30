@@ -3,12 +3,23 @@ name: AI privileged merge
 on:
   pull_request_target:
     types: [opened, reopened, ready_for_review, synchronize, labeled, unlabeled]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        required: true
+        type: string
+      expected_head_sha:
+        required: true
+        type: string
+      source_run_id:
+        required: true
+        type: string
 
 permissions:
   contents: read
 
 concurrency:
-  group: ai-privileged-merge-${{ github.event.pull_request.number }}
+  group: ai-privileged-merge-${{ github.event.pull_request.number || inputs.pr_number }}
   cancel-in-progress: true
 
 jobs:
@@ -16,8 +27,9 @@ jobs:
     runs-on: ${{ github.repository_owner == 'Verjson' && fromJSON(vars.VERJSON_RUNNER_ISOLATED || vars.VERJSON_RUNNER_DEFAULT || '["self-hosted","gate"]') || 'ubuntu-24.04' }}
     timeout-minutes: 45
     env:
-      EXPECTED_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-      PR_NUMBER: ${{ github.event.pull_request.number }}
+      EXPECTED_HEAD_SHA: ${{ github.event.pull_request.head.sha || inputs.expected_head_sha }}
+      PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr_number }}
+      SOURCE_RUN_ID: ${{ inputs.source_run_id }}
       TARGET_REPO: ${{ github.repository }}
       TARGET_OWNER: ${{ github.repository_owner }}
       GH_TOKEN: ${{ secrets.ORG_ADMIN_TOKEN }}
@@ -63,6 +75,40 @@ jobs:
               '
           }
 
+          dispatched_gate_run() {
+            local run
+            [[ "$SOURCE_RUN_ID" =~ ^[1-9][0-9]*$ ]] || return 1
+            run="$(gh api "repos/$TARGET_REPO/actions/runs/$SOURCE_RUN_ID")" || return 1
+            jq -ce --argjson id "$trusted_workflow_id" --arg repo "$TARGET_REPO" '
+              select(.workflow_id == $id and .event == "workflow_dispatch" and
+                .repository.full_name == $repo)
+            ' <<<"$run"
+          }
+
+          attestation_for_run() {
+            local run_id="$1" artifacts artifact_id archive payload
+            artifacts="$(gh api "repos/$TARGET_REPO/actions/runs/$run_id/artifacts?per_page=100")" || return 1
+            artifact_id="$(jq -r --arg name "merge-attestation-$run_id" '
+              [.artifacts[] | select(.name == $name and .expired == false)] |
+              if length == 1 then .[0].id else 0 end
+            ' <<<"$artifacts")"
+            [[ "$artifact_id" =~ ^[1-9][0-9]*$ ]] || return 1
+            archive="$RUNNER_TEMP/merge-attestation-$run_id.zip"
+            gh api "repos/$TARGET_REPO/actions/artifacts/$artifact_id/zip" >"$archive" || return 1
+            payload="$(unzip -p "$archive" attestation.json 2>/dev/null)" || return 1
+            jq -ce --arg repo "$TARGET_REPO" --argjson pr "$PR_NUMBER" \
+              --arg head "$EXPECTED_HEAD_SHA" --argjson run "$run_id" '
+                select(
+                  .version == 1 and .repository == $repo and .pr_number == $pr and
+                  .head_sha == $head and .run_id == $run and
+                  (.followups | type == "array" and length <= 50) and
+                  all(.followups[]; type == "object" and
+                    (.location | type == "string" and length <= 500) and
+                    (.note | type == "string" and length > 0 and length <= 5000))
+                )
+              ' <<<"$payload"
+          }
+
           workflow_files_changed() {
             local files
             files="$(gh api --paginate "repos/$TARGET_REPO/pulls/$PR_NUMBER/files?per_page=100" \
@@ -95,7 +141,11 @@ jobs:
               exit 1
             fi
 
-            gate_run="$(newest_trusted_gate_run || true)"
+            if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
+              gate_run="$(dispatched_gate_run || true)"
+            else
+              gate_run="$(newest_trusted_gate_run || true)"
+            fi
             provenance=pending
             if [ -n "$gate_run" ]; then
               gate_run_id="$(jq -r '.id // 0' <<<"$gate_run")"
@@ -104,13 +154,18 @@ jobs:
                 echo "::error::newest trusted gate run failed"
                 exit 1
               fi
-              if [ "$gate_conclusion" = "success" ] &&
+              if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ] &&
+                 [ "$gate_conclusion" = "success" ] &&
+                 attestation="$(attestation_for_run "$gate_run_id")"; then
+                provenance=trusted
+              elif [ "$gate_conclusion" = "success" ] &&
                  jq -e --arg needle "/actions/runs/$gate_run_id/" '
                    any(.statusCheckRollup[]?;
                      (.name // .context) == "gate" and
                      (.conclusion // .state) == "SUCCESS" and
                      ((.detailsUrl // "") | contains($needle)))
-                 ' <<<"$meta" >/dev/null; then
+                 ' <<<"$meta" >/dev/null &&
+                 attestation="$(attestation_for_run "$gate_run_id")"; then
                 provenance=trusted
               fi
             fi
@@ -152,11 +207,22 @@ jobs:
             echo "::error::workflow files changed before merge; human merge required"
             exit 1
           fi
-          final_gate_run="$(newest_trusted_gate_run || true)"
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
+            final_gate_run="$(dispatched_gate_run || true)"
+          else
+            final_gate_run="$(newest_trusted_gate_run || true)"
+          fi
           [ -n "$final_gate_run" ] ||
             { echo "::error::trusted gate disappeared before merge"; exit 1; }
           final_gate_id="$(jq -r '.id // 0' <<<"$final_gate_run")"
-          [ "$(jq -r '.conclusion // ""' <<<"$final_gate_run")" = "success" ] &&
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
+            attested_run_id="$SOURCE_RUN_ID"
+            [ "$(jq -r '.conclusion // ""' <<<"$final_gate_run")" = "success" ] &&
+              attestation="$(attestation_for_run "$attested_run_id")" ||
+              { echo "::error::trusted dispatched gate changed before merge"; exit 1; }
+          else
+            attested_run_id="$final_gate_id"
+            [ "$(jq -r '.conclusion // ""' <<<"$final_gate_run")" = "success" ] &&
             jq -e --arg needle "/actions/runs/$final_gate_id/" '
               any(.statusCheckRollup[]?;
                 (.name // .context) == "gate" and
@@ -164,6 +230,9 @@ jobs:
                 ((.detailsUrl // "") | contains($needle)))
             ' <<<"$final" >/dev/null ||
             { echo "::error::newest trusted gate changed before merge"; exit 1; }
+            attestation="$(attestation_for_run "$attested_run_id")" ||
+              { echo "::error::trusted attestation changed before merge"; exit 1; }
+          fi
           final_failed="$(jq '[.statusCheckRollup[]? |
             select((.name // .context) as $n | $n != "preflight" and $n != "gate" and $n != "privileged_merge") |
             select(if .state then
@@ -179,3 +248,21 @@ jobs:
 
           gh pr merge "$PR_NUMBER" --repo "$TARGET_REPO" --squash --admin \
             --delete-branch --match-head-commit "$EXPECTED_HEAD_SHA"
+
+          # The exact run-bound artifact was shape-validated twice above and is
+          # data only: it is never sourced, executed, or extracted to a worktree.
+          followups="$(jq -c .followups <<<"$attestation")"
+          jq -c '.[]' <<<"$followups" | while IFS= read -r item; do
+            location="$(jq -r .location <<<"$item")"
+            note="$(jq -r .note <<<"$item")"
+            marker="<!-- ai-review-followup:pr${PR_NUMBER}:$(printf '%s' "$location"$'\n'"$note" | sha256sum | cut -c1-12) -->"
+            existing="$(gh issue list --repo "$TARGET_REPO" --state all --search "$marker in:body" --json number --jq 'length' 2>/dev/null || echo 0)"
+            [ "$existing" -gt 0 ] && continue
+            gh issue create --repo "$TARGET_REPO" \
+              --title "AI-review follow-up: ${location:0:70}" \
+              --body "$marker
+
+          Non-blocking finding from merged PR #$PR_NUMBER at \`$location\`:
+
+          $note" >/dev/null || echo "::warning::could not file follow-up for $location"
+          done

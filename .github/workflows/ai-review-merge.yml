@@ -515,7 +515,7 @@ jobs:
       contents: read
       pull-requests: write
       issues: write
-      actions: read
+      actions: write
     env:
       LANE: ${{ needs.preflight.outputs.lane }}
       LANE_REASON: ${{ needs.preflight.outputs.reason }}
@@ -1181,7 +1181,7 @@ jobs:
           ' <<<"$VERDICT")
           body="$body
 
-          <!-- ai-review-head:${HEAD_SHA} patchid:${PATCH_ID:-} model:${MODEL} -->"
+          <!-- ai-review-head:${HEAD_SHA} patchid:${PATCH_ID:-} model:${MODEL} run:${GITHUB_RUN_ID} -->"
           if [ "$(jq -r .blocking <<<"$VERDICT")" = true ]; then
             # A token may be the PR author's identity. GitHub forbids a user
             # reviewing their own PR, but the non-zero result must still block
@@ -1204,6 +1204,46 @@ jobs:
 
             $body"
           fi
+
+      - name: Build trusted merge attestation
+        env:
+          VERDICT: ${{ steps.submit.outputs.verdict }}
+        run: |
+          set -euo pipefail
+          dir="$RUNNER_TEMP/merge-attestation"
+          rm -rf "$dir"
+          mkdir -m 700 "$dir"
+          followups='[]'
+          if [ -n "${VERDICT:-}" ]; then
+            followups="$(jq -c '.followups // []' <<<"$VERDICT")"
+          fi
+          jq -n \
+            --arg repository "$TARGET_REPO" \
+            --argjson pr_number "$PR_NUMBER" \
+            --arg head_sha "$EXPECTED_HEAD_SHA" \
+            --argjson run_id "$GITHUB_RUN_ID" \
+            --argjson followups "$followups" \
+            '{version:1, repository:$repository, pr_number:$pr_number,
+              head_sha:$head_sha, run_id:$run_id, followups:$followups}' \
+            >"$dir/attestation.json"
+
+      - name: Upload trusted merge attestation
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: merge-attestation-${{ github.run_id }}
+          path: ${{ runner.temp }}/merge-attestation/attestation.json
+          retention-days: 1
+          if-no-files-found: error
+
+      - name: Dispatch trusted merge continuation
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh workflow run ai-privileged-merge.yml --repo "$TARGET_REPO" \
+            -f pr_number="$PR_NUMBER" \
+            -f expected_head_sha="$EXPECTED_HEAD_SHA" \
+            -f source_run_id="$GITHUB_RUN_ID"
 
       # --- CI telemetry (best-effort). Every step is `continue-on-error` so it
       # can NEVER fail or block the gate, and it stays dormant until
@@ -1421,63 +1461,3 @@ jobs:
           gh pr merge "$PR_NUMBER" --repo "$REPO" --squash --admin --delete-branch \
             --match-head-commit "$EXPECTED_HEAD_SHA"
           echo "::notice::phase=merge result=merged elapsed_seconds=$(( $(date +%s) - merge_started_epoch )) lane=$LANE"
-
-      - name: File follow-up issues for non-blocking findings
-        if: ${{ !cancelled() && steps.merge.outcome == 'success' && steps.submit.outputs.verdict != '' }}
-        env:
-          GH_TOKEN: ${{ github.token }}
-          VERDICT: ${{ steps.submit.outputs.verdict }}
-        run: |
-          set -uo pipefail
-          REPO="$TARGET_REPO"
-          # Only file for findings on a PR that actually merged — an open PR may
-          # still fix them on the next push. Check state, not step success (the
-          # merge step also exits 0 when a PR is held or already closed).
-          state=$(gh pr view "$PR_NUMBER" --repo "$REPO" --json state --jq .state 2>/dev/null || echo "")
-          if [ -z "$state" ]; then
-            echo "::warning::Could not read PR #$PR_NUMBER state; skipping follow-up filing."
-            exit 0
-          fi
-          if [ "$state" != "MERGED" ]; then
-            echo "PR #$PR_NUMBER is $state, not MERGED; no follow-ups filed."
-            exit 0
-          fi
-
-          mapfile -t items < <(jq -c '(.followups // [])[]' <<<"$VERDICT" 2>/dev/null)
-          if [ "${#items[@]}" -eq 0 ]; then
-            echo "No follow-ups in the verdict."
-            exit 0
-          fi
-
-          # Fetch the follow-up markers already filed for this repo once. Dedup is
-          # per-finding (content-hashed), so a partial-failure re-run re-files only
-          # the missing findings, not the whole batch — nothing is silently lost.
-          # Label-filtered list → no search-index lag.
-          existing=$(gh issue list --repo "$REPO" --label ai-review-followup --state all --limit 200 \
-            --json body --jq '.[].body' 2>/dev/null || true)
-
-          gh label create ai-review-followup --repo "$REPO" --color FBCA04 \
-            --description "Non-blocking finding surfaced by the AI merge gate" 2>/dev/null || true
-
-          for f in "${items[@]}"; do
-            loc=$(jq -r '.location // "?"' <<<"$f")
-            note=$(jq -r '.note // ""' <<<"$f")
-            [ -z "$note" ] && continue
-            key=$(printf '%s|%s' "$loc" "$note" | sha1sum | cut -c1-12)
-            marker="<!-- ai-review-followup:pr$PR_NUMBER:$key -->"
-            if printf '%s' "$existing" | grep -qF "$marker"; then
-              echo "Follow-up already filed for $loc"
-              continue
-            fi
-            short=$(printf '%s' "$note" | tr '\n' ' ' | cut -c1-70)
-            # The backticks in the single-quoted format are literal Markdown.
-            # shellcheck disable=SC2016
-            body=$(printf '%s\n\nNon-blocking finding from the merge-gate review of #%s (approved and merged).\n\n**Location:** `%s`\n\n%s' \
-              "$marker" "$PR_NUMBER" "$loc" "$note")
-            if gh issue create --repo "$REPO" --title "AI-review follow-up: $short" \
-                 --body "$body" --label ai-review-followup >/dev/null 2>&1; then
-              echo "Filed follow-up for $loc"
-            else
-              echo "::warning::Could not file follow-up for $loc"
-            fi
-          done

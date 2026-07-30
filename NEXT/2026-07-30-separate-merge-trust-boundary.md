@@ -11,3 +11,7 @@ Manual and reusable dispatch are repository-local: operators run the workflow in
 repository owning the PR. The privileged guard reads every page of changed files and
 repeats that check immediately before merge, so padded or late workflow changes require
 a human merge.
+
+Successful local manual re-gates now hand off to the trusted merger using a source-run
+and exact-head attestation. Validated non-blocking review follow-ups are filed only
+after that exact head merges; failed privileged runs cannot create them.
