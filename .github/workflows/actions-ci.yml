@@ -13,6 +13,7 @@ on:
       - '.github/workflows/actionlint.yml'
       - '.github/workflows/actionlint-reusable-contract.yml'
       - '.github/workflows/actions-ci.yml'
+      - '.github/workflows/ai-privileged-merge.yml'
       - '.github/workflows/ai-review-merge.yml'
       - '.github/workflows/node-ci.yml'
       - '.github/workflows/node-release.yml'
@@ -31,6 +32,7 @@ on:
       - '.github/workflows/actionlint.yml'
       - '.github/workflows/actionlint-reusable-contract.yml'
       - '.github/workflows/actions-ci.yml'
+      - '.github/workflows/ai-privileged-merge.yml'
       - '.github/workflows/ai-review-merge.yml'
       - '.github/workflows/node-ci.yml'
       - '.github/workflows/node-release.yml'
@@ -106,7 +108,7 @@ jobs:
         run: bash scripts/ci-gate/target-visibility.test.sh
       - name: merge gate — cross-org workflow_call distribution seams (#128, ADR 0022)
         run: bash scripts/ci-gate/reusable-workflow.test.sh
-      - name: merge gate — require ORG_ADMIN_TOKEN, fail closed on missing secrets (#131)
+      - name: merge gate — isolate untrusted review from privileged merge (#230)
         run: bash scripts/ci-gate/require-secrets.test.sh
       - name: merge gate — absent checks fail closed, not open (#143, ADR 0024)
         run: bash scripts/ci-gate/ci-wait-fail-closed.test.sh

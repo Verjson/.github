@@ -1,0 +1,165 @@
+name: AI privileged merge
+
+on:
+  pull_request_target:
+    types: [opened, reopened, ready_for_review, synchronize, labeled, unlabeled]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ai-privileged-merge-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  privileged_merge:
+    runs-on: ${{ github.repository_owner == 'Verjson' && fromJSON(vars.VERJSON_RUNNER_ISOLATED || vars.VERJSON_RUNNER_DEFAULT || '["self-hosted","gate"]') || 'ubuntu-24.04' }}
+    timeout-minutes: 45
+    env:
+      EXPECTED_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+      TARGET_REPO: ${{ github.repository }}
+      TARGET_OWNER: ${{ github.repository_owner }}
+      GH_TOKEN: ${{ secrets.ORG_ADMIN_TOKEN }}
+    steps:
+      - name: Privileged merge from trusted metadata only
+        run: |
+          set -euo pipefail
+          if [ -z "${GH_TOKEN:-}" ]; then
+            echo "::error::trusted merge has no ORG_ADMIN_TOKEN"
+            exit 1
+          fi
+          if [[ ! "$TARGET_REPO" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] ||
+             [ "${TARGET_REPO%%/*}" != "$TARGET_OWNER" ] ||
+             [ "$TARGET_REPO" != "$GITHUB_REPOSITORY" ]; then
+            echo "::error::target repository identity mismatch"
+            exit 1
+          fi
+          if ! [[ "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]] ||
+             ! [[ "$EXPECTED_HEAD_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::invalid PR identity or expected head SHA"
+            exit 1
+          fi
+
+          trusted_workflow_id="$(gh api repos/Verjson/.github/actions/workflows/ai-review-merge.yml --jq .id)"
+          trusted_workflow_sha="$(gh api repos/Verjson/.github/commits/main --jq .sha)"
+          [[ "$trusted_workflow_id" =~ ^[1-9][0-9]*$ ]] ||
+            { echo "::error::trusted workflow identity is unavailable"; exit 1; }
+          [[ "$trusted_workflow_sha" =~ ^[0-9a-f]{40}$ ]] ||
+            { echo "::error::trusted workflow revision is unavailable"; exit 1; }
+
+          for attempt in $(seq 1 80); do
+            meta="$(gh pr view "$PR_NUMBER" --repo "$TARGET_REPO" \
+              --json headRefOid,isDraft,labels,state,statusCheckRollup,files)"
+            current_head="$(jq -r '.headRefOid // ""' <<<"$meta")"
+            [ "$current_head" = "$EXPECTED_HEAD_SHA" ] ||
+              { echo "::error::stale head"; exit 1; }
+            [ "$(jq -r '.state // ""' <<<"$meta")" = "OPEN" ] ||
+              { echo "::error::PR is no longer open"; exit 1; }
+            jq -e '.isDraft | not' <<<"$meta" >/dev/null ||
+              { echo "::error::PR is draft"; exit 1; }
+            jq -e '([.labels[].name | ascii_upcase | gsub("[ _-]+";" ")] |
+              (index("HOLD") or index("DO NOT MERGE")) | not)' <<<"$meta" >/dev/null ||
+              { echo "::error::PR is held"; exit 1; }
+
+            if jq -e '[.files[].path] | any(startswith(".github/workflows/"))' <<<"$meta" >/dev/null; then
+              echo "::error::workflow files changed; human merge required"
+              exit 1
+            fi
+
+            gate_state="$(jq -r '[.statusCheckRollup[]? |
+              select((.name // .context) == "gate")] | last |
+              (.conclusion // .state // "ABSENT")' <<<"$meta")"
+            gate_url="$(jq -r '[.statusCheckRollup[]? |
+              select((.name // .context) == "gate")] | last |
+              (.detailsUrl // "")' <<<"$meta")"
+            if [[ "$gate_state" != "SUCCESS" && "$gate_state" != "PENDING" &&
+                  "$gate_state" != "EXPECTED" && "$gate_state" != "ABSENT" ]]; then
+              echo "::error::newest gate check failed"
+              exit 1
+            fi
+            if [[ "$gate_url" =~ /actions/runs/([0-9]+)/ ]]; then
+              gate_run_id="${BASH_REMATCH[1]}"
+              gate_run="$(gh api "repos/$TARGET_REPO/actions/runs/$gate_run_id")"
+              if jq -e --argjson id "$trusted_workflow_id" --arg sha "$trusted_workflow_sha" '
+                   (.workflow_id == $id) or
+                   any(.referenced_workflows[]?;
+                     (.path | startswith("Verjson/.github/.github/workflows/ai-review-merge.yml@")) and
+                     .sha == $sha)
+                 ' <<<"$gate_run" >/dev/null &&
+                 [ "$(jq -r '.head_sha // ""' <<<"$gate_run")" = "$EXPECTED_HEAD_SHA" ] &&
+                 [ "$(jq -r '.event // ""' <<<"$gate_run")" = "pull_request" ] &&
+                 [ "$(jq -r '.conclusion // ""' <<<"$gate_run")" = "success" ] &&
+                 [ "$(jq -r '.repository.full_name // ""' <<<"$gate_run")" = "$TARGET_REPO" ]; then
+                provenance=trusted
+              else
+                echo "::error::gate check provenance mismatch"
+                exit 1
+              fi
+            else
+              provenance=pending
+            fi
+
+            failed="$(jq '[.statusCheckRollup[]? |
+              select((.name // .context) as $n | $n != "preflight" and $n != "gate" and $n != "privileged_merge") |
+              select(if .state then
+                ((.state // "") | IN("SUCCESS","PENDING","EXPECTED") | not)
+              else
+                (.status == "COMPLETED" and ((.conclusion // "") | IN("SUCCESS","NEUTRAL","SKIPPED") | not))
+              end)] | length' <<<"$meta")"
+            pending="$(jq '[.statusCheckRollup[]? |
+              select((.name // .context) as $n | $n != "preflight" and $n != "gate" and $n != "privileged_merge") |
+              select(if .state then (.state | IN("PENDING","EXPECTED")) else .status != "COMPLETED" end)] | length' <<<"$meta")"
+            [ "$failed" -eq 0 ] || { echo "::error::required check failed"; exit 1; }
+            if [ "${provenance:-pending}" = trusted ] && [ "$pending" -eq 0 ]; then break; fi
+            [ "$attempt" -lt 80 ] || { echo "::error::trusted gate/checks did not become green"; exit 1; }
+            sleep 30
+          done
+
+          final="$(gh pr view "$PR_NUMBER" --repo "$TARGET_REPO" \
+            --json headRefOid,isDraft,labels,state,statusCheckRollup)"
+          [ "$(jq -r '.headRefOid // ""' <<<"$final")" = "$EXPECTED_HEAD_SHA" ] ||
+            { echo "::error::head changed before merge"; exit 1; }
+          [ "$(jq -r '.state // ""' <<<"$final")" = "OPEN" ] ||
+            { echo "::error::PR closed before merge"; exit 1; }
+          jq -e '.isDraft | not' <<<"$final" >/dev/null ||
+            { echo "::error::PR became draft"; exit 1; }
+          jq -e '([.labels[].name | ascii_upcase | gsub("[ _-]+";" ")] |
+            (index("HOLD") or index("DO NOT MERGE")) | not)' <<<"$final" >/dev/null ||
+            { echo "::error::PR became held"; exit 1; }
+          final_gate_state="$(jq -r '[.statusCheckRollup[]? |
+            select((.name // .context) == "gate")] | last |
+            (.conclusion // .state // "ABSENT")' <<<"$final")"
+          [ "$final_gate_state" = "SUCCESS" ] ||
+            { echo "::error::newest gate is not green before merge"; exit 1; }
+          final_gate_url="$(jq -r '[.statusCheckRollup[]? |
+            select((.name // .context) == "gate")] | last |
+            (.detailsUrl // "")' <<<"$final")"
+          [[ "$final_gate_url" =~ /actions/runs/([0-9]+)/ ]] ||
+            { echo "::error::trusted gate disappeared before merge"; exit 1; }
+          final_gate_run="$(gh api "repos/$TARGET_REPO/actions/runs/${BASH_REMATCH[1]}")"
+          jq -e --argjson id "$trusted_workflow_id" --arg sha "$trusted_workflow_sha" \
+            --arg head "$EXPECTED_HEAD_SHA" --arg repo "$TARGET_REPO" '
+              ((.workflow_id == $id) or
+               any(.referenced_workflows[]?;
+                 (.path | startswith("Verjson/.github/.github/workflows/ai-review-merge.yml@")) and
+                 .sha == $sha)) and
+              .head_sha == $head and .event == "pull_request" and
+              .conclusion == "success" and .repository.full_name == $repo
+            ' <<<"$final_gate_run" >/dev/null ||
+            { echo "::error::trusted gate changed before merge"; exit 1; }
+          final_failed="$(jq '[.statusCheckRollup[]? |
+            select((.name // .context) as $n | $n != "preflight" and $n != "gate" and $n != "privileged_merge") |
+            select(if .state then
+              ((.state // "") | IN("SUCCESS","PENDING","EXPECTED") | not)
+            else
+              (.status == "COMPLETED" and ((.conclusion // "") | IN("SUCCESS","NEUTRAL","SKIPPED") | not))
+            end)] | length' <<<"$final")"
+          final_pending="$(jq '[.statusCheckRollup[]? |
+            select((.name // .context) as $n | $n != "preflight" and $n != "gate" and $n != "privileged_merge") |
+            select(if .state then (.state | IN("PENDING","EXPECTED")) else .status != "COMPLETED" end)] | length' <<<"$final")"
+          [ "$final_failed" -eq 0 ] && [ "$final_pending" -eq 0 ] ||
+            { echo "::error::checks changed before merge"; exit 1; }
+
+          gh pr merge "$PR_NUMBER" --repo "$TARGET_REPO" --squash --admin \
+            --delete-branch --match-head-commit "$EXPECTED_HEAD_SHA"
