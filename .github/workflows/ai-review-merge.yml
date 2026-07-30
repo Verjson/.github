@@ -600,18 +600,19 @@ jobs:
             # Rollup mixes CheckRuns (name/status/conclusion) with commit
             # StatusContexts like renovate/stability-days (context/state) —
             # treating a context's null .status as pending hangs the gate.
-            # Completed CheckRuns are green only when GitHub concluded SUCCESS,
-            # NEUTRAL, or SKIPPED. Every other/unknown conclusion fails closed.
+            # GitHub can expose COMPLETED before it populates conclusion. That
+            # transient snapshot is pending/inconclusive, not a terminal failure.
+            # Once populated, only SUCCESS, NEUTRAL, or SKIPPED are green.
             # Commit StatusContexts retain their SUCCESS/PENDING/EXPECTED states;
             # every other state fails closed.
             failed=$(jq '[.[] | select(
               if .state then
                 ((.state // "") | IN("SUCCESS","PENDING","EXPECTED") | not)
               else
-                (.status == "COMPLETED" and ((.conclusion // "") | IN("SUCCESS","NEUTRAL","SKIPPED") | not))
+                (.status == "COMPLETED" and (.conclusion // "") != "" and ((.conclusion // "") | IN("SUCCESS","NEUTRAL","SKIPPED") | not))
               end
             )] | length' <<<"$rollup")
-            pending=$(jq -r '[.[] | select(if .state then (.state | IN("PENDING","EXPECTED")) else .status != "COMPLETED" end) | "\(.name // .context)=\(.state // .status)"] | join(", ")' <<<"$rollup")
+            pending=$(jq -r '[.[] | select(if .state then (.state | IN("PENDING","EXPECTED")) else (.status != "COMPLETED" or (.conclusion // "") == "") end) | "\(.name // .context)=\(.state // .status)"] | join(", ")' <<<"$rollup")
             checks=$(jq 'length' <<<"$rollup")
             if [ "$failed" -gt 0 ]; then
               elapsed=$(( $(date +%s) - started_epoch ))
@@ -1359,13 +1360,13 @@ jobs:
             if .state then
               ((.state // "") | IN("SUCCESS","PENDING","EXPECTED") | not)
             else
-              (.status == "COMPLETED" and ((.conclusion // "") | IN("SUCCESS","NEUTRAL","SKIPPED") | not))
+              (.status == "COMPLETED" and (.conclusion // "") != "" and ((.conclusion // "") | IN("SUCCESS","NEUTRAL","SKIPPED") | not))
             end
           )] | length' <<<"$rollup")
-          pending=$(jq -r '[.[] | select(if .state then (.state | IN("PENDING","EXPECTED")) else .status != "COMPLETED" end) | "\(.name // .context)=\(.state // .status)"] | join(", ")' <<<"$rollup")
+          pending=$(jq -r '[.[] | select(if .state then (.state | IN("PENDING","EXPECTED")) else (.status != "COMPLETED" or (.conclusion // "") == "") end) | "\(.name // .context)=\(.state // .status)"] | join(", ")' <<<"$rollup")
           if [ "$failed" -gt 0 ]; then
             echo "::error::phase=merge-recheck result=failed elapsed_seconds=$(( $(date +%s) - merge_started_epoch ))"
-            jq -r '.[] | select(if .state then ((.state // "") | IN("SUCCESS","PENDING","EXPECTED") | not) else (.status == "COMPLETED" and ((.conclusion // "") | IN("SUCCESS","NEUTRAL","SKIPPED") | not)) end) | (.name // .context)' <<<"$rollup"
+            jq -r '.[] | select(if .state then ((.state // "") | IN("SUCCESS","PENDING","EXPECTED") | not) else (.status == "COMPLETED" and (.conclusion // "") != "" and ((.conclusion // "") | IN("SUCCESS","NEUTRAL","SKIPPED") | not)) end) | (.name // .context)' <<<"$rollup"
             exit 1
           fi
           if [ -n "$pending" ]; then

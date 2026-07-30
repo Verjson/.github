@@ -51,3 +51,7 @@ non-trivial or fanned-out work autonomously:
   (remote is the source of truth; local `main` goes stale).
 - PRs that touch shared append surfaces are conflict-prone when run in parallel;
   the `NEXT/` fragments + generated ADR index above remove the common cases.
+
+## Active Issues / Areas for Improvement
+
+- [#242](https://github.com/Verjson/.github/issues/242) — Fall back to an audit comment when Actions review approval is disabled.
