@@ -63,11 +63,12 @@ grep -qF 'ACTIONLINT_VERSION: 1.7.7' "$wf" \
 
 grep -qF 'repository: ${{ job.workflow_repository }}' "$wf" \
   && grep -qF 'ref: ${{ job.workflow_sha }}' "$wf" \
+  && grep -qF "if: inputs.config-file == ''" "$wf" \
   && grep -qF 'sparse-checkout: .github/actionlint.yaml' "$wf" \
   && grep -qF 'persist-credentials: false' "$wf" \
   && grep -qF "ACTIONLINT_CONFIG_FILE: \${{ inputs.config-file || '.verjson-actionlint-policy/.github/actionlint.yaml' }}" "$wf" \
-  && pass "central policy is checked out from the immutable reusable-workflow revision" \
-  || fail "central policy checkout is not immutable and bounded"
+  && pass "default central policy is checked out immutably while caller overrides skip it" \
+  || fail "central policy checkout is not conditional, immutable, and bounded"
 
 behavior_script="$tmp/behavior.sh"
 awk '
