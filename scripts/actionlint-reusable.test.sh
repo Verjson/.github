@@ -36,6 +36,12 @@ grep -qE '^      github-hosted-runner:$' <<<"$workflow_call" \
   && pass "runner choice is a default-off boolean" \
   || fail "runner choice is not the governed boolean contract"
 
+grep -qE '^      config-file:$' <<<"$workflow_call" \
+  && grep -qE '^        type: string$' <<<"$workflow_call" \
+  && grep -qE "^        default: ''$" <<<"$workflow_call" \
+  && pass "caller config override is optional and default-empty" \
+  || fail "caller config override contract is missing"
+
 # The hosted term stays bounded to callers outside Verjson OR the explicit
 # opt-in input; everything after it follows the ADR 0033 visibility policy that
 # runner-routing-policy.test.sh pins across all the reusable workflows.
@@ -55,6 +61,14 @@ grep -qF 'ACTIONLINT_VERSION: 1.7.7' "$wf" \
   && pass "actionlint version and archive checksum remain pinned" \
   || fail "actionlint version or checksum drifted"
 
+grep -qF 'repository: ${{ job.workflow_repository }}' "$wf" \
+  && grep -qF 'ref: ${{ job.workflow_sha }}' "$wf" \
+  && grep -qF 'sparse-checkout: .github/actionlint.yaml' "$wf" \
+  && grep -qF 'persist-credentials: false' "$wf" \
+  && grep -qF "ACTIONLINT_CONFIG_FILE: \${{ inputs.config-file || '.verjson-actionlint-policy/.github/actionlint.yaml' }}" "$wf" \
+  && pass "central policy is checked out from the immutable reusable-workflow revision" \
+  || fail "central policy checkout is not immutable and bounded"
+
 behavior_script="$tmp/behavior.sh"
 awk '
   $0 == "      - name: Prove invalid workflows fail actionlint" { seen = 1 }
@@ -68,17 +82,21 @@ awk '
 
 grep -qF 'invalid-syntax.yml' "$behavior_script" \
   && grep -qF 'invalid-expression.yml' "$behavior_script" \
+  && grep -qF 'invalid-runner.yml' "$behavior_script" \
+  && grep -qF 'runs-on: [self-hosted, GCP]' "$behavior_script" \
   && ! grep -qE '(^|[;&|])[[:space:]]*(bash|sh|source|\.)[[:space:]]+' "$behavior_script" \
-  && pass "invalid-workflow fixtures are provider-owned inline code" \
-  || fail "behavior fixtures are missing or execute caller-controlled scripts"
+  && pass "fixtures cover governed GCP plus provider-owned invalid workflows" \
+  || fail "behavior fixtures omit GCP or execute caller-controlled scripts"
 
 cat >"$tmp/actionlint" <<'SH'
 #!/usr/bin/env bash
-printf '%s\n' "$(basename "$1")" >>"$ACTIONLOG"
-case "$(basename "$1")" in
+workflow="${!#}"
+printf '%s\n' "$(basename "$workflow")" >>"$ACTIONLOG"
+case "$(basename "$workflow")" in
   valid.yml) exit 0 ;;
   invalid-syntax.yml) exit "${PASS_INVALID_SYNTAX:-1}" ;;
   invalid-expression.yml) exit "${PASS_INVALID_EXPRESSION:-1}" ;;
+  invalid-runner.yml) exit "${PASS_INVALID_RUNNER:-1}" ;;
   *) exit 99 ;;
 esac
 SH
@@ -86,6 +104,7 @@ chmod +x "$tmp/actionlint"
 
 run_behavior() {
   export ACTIONLOG="$tmp/action.log"
+  export ACTIONLINT_CONFIG_FILE="$root/.github/actionlint.yaml"
   : >"$ACTIONLOG"
   (cd "$tmp" && bash "$behavior_script") >"$tmp/behavior.out" 2>&1
 }
@@ -98,7 +117,8 @@ rc=$?
   && grep -qxF 'valid.yml' "$ACTIONLOG" \
   && grep -qxF 'invalid-syntax.yml' "$ACTIONLOG" \
   && grep -qxF 'invalid-expression.yml' "$ACTIONLOG" \
-  && pass "inline behavior step exercises all three fixtures" \
+  && grep -qxF 'invalid-runner.yml' "$ACTIONLOG" \
+  && pass "inline behavior step exercises all four fixtures" \
   || fail "inline behavior step did not enforce the fixture contract"
 
 PASS_INVALID_SYNTAX=0
@@ -119,6 +139,15 @@ rc=$?
   || fail "behavior step passed when an invalid expression was accepted"
 unset PASS_INVALID_EXPRESSION
 
+PASS_INVALID_RUNNER=0
+export PASS_INVALID_RUNNER
+run_behavior
+rc=$?
+[ "$rc" -ne 0 ] \
+  && pass "accepted unknown runner label fails the behavior step" \
+  || fail "behavior step passed when an unknown runner label was accepted"
+unset PASS_INVALID_RUNNER
+
 if [ -n "${ACTIONLINT_BIN:-}" ]; then
   cp "$ACTIONLINT_BIN" "$tmp/actionlint"
   chmod +x "$tmp/actionlint"
@@ -132,7 +161,8 @@ fi
 
 grep -qF "REQUIRE_SHELLCHECK: \${{ github.repository_owner != 'Verjson' || inputs.github-hosted-runner }}" "$wf" \
   && grep -qF 'command -v shellcheck' "$wf" \
-  && grep -qF './actionlint -shellcheck=shellcheck -color' "$wf" \
+  && grep -qF './actionlint -config-file "$ACTIONLINT_CONFIG_FILE" -shellcheck=shellcheck -color' "$wf" \
+  && grep -qF './actionlint -config-file "$ACTIONLINT_CONFIG_FILE" -color' "$wf" \
   && pass "GitHub-hosted calls require ShellCheck integration" \
   || fail "hosted actionlint can silently skip ShellCheck"
 
