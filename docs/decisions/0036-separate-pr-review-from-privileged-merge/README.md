@@ -129,3 +129,10 @@ The temporary permission does not grant `ORG_ADMIN_TOKEN` or move it into
 pull-request-controlled execution. The permanent fix is to treat GitHub's policy-denial
 response like the existing self-approval denial: publish a non-approval audit comment
 while keeping unexpected publication errors fail-closed.
+
+**Implemented for #242:** the credential-free gate now recognizes GitHub's
+Actions-approval-disabled response alongside the existing self-approval denial.
+Both produce the same head- and patch-id-bound approved-verdict audit comment.
+Any other review-publication failure remains terminal. Repository and
+organization Actions approval permissions therefore stay disabled without
+blocking a reviewed PR or moving privileged credentials into the review job.

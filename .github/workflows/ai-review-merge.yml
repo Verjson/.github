@@ -617,6 +617,7 @@ jobs:
             if [ "$failed" -gt 0 ]; then
               elapsed=$(( $(date +%s) - started_epoch ))
               echo "::error::phase=ci-wait result=failed elapsed_seconds=$elapsed lane=$LANE"
+              echo "CI failed checks: $(jq -c '[.[] | select(if .state then ((.state // "") | IN("SUCCESS","PENDING","EXPECTED") | not) else (.status == "COMPLETED" and (.conclusion // "") != "" and ((.conclusion // "") | IN("SUCCESS","NEUTRAL","SKIPPED") | not)) end) | {name: (.name // .context // "<unnamed>"), state: (.state // null), status: (.status // null), conclusion: (.conclusion // null)}]' <<<"$rollup")"
               echo "CI is red for PR #$PR_NUMBER — not reviewing or merging."
               exit 1
             fi
@@ -1195,13 +1196,16 @@ jobs:
             exit 1
           fi
           if ! approval_error=$(gh pr review "$PR_NUMBER" --repo "$TARGET_REPO" --approve --body "$body" 2>&1); then
-            if [[ "$approval_error" != *"Can not approve your own pull request"* ]]; then
-              echo "$approval_error" >&2
-              exit 1
-            fi
+            case "$approval_error" in
+              "Can not approve your own pull request" \
+                | "GraphQL: Can not approve your own pull request (addPullRequestReview)" \
+                | "GraphQL: GitHub Actions is not permitted to approve pull requests. (addPullRequestReview)") ;;
+              *) echo "$approval_error" >&2; exit 1 ;;
+            esac
             # The required gate check remains the enforcement
             # mechanism. A comment is the only GitHub-permitted audit record
-            # when GitHub rejects the configured token's self-approval.
+            # when GitHub rejects self-approval or repository policy disables
+            # Actions-authored approvals.
             gh pr comment "$PR_NUMBER" --repo "$TARGET_REPO" --body "✅ **Merge gate: approved verdict**
 
             $body"
