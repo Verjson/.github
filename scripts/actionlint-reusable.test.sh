@@ -61,8 +61,8 @@ grep -qF 'ACTIONLINT_VERSION: 1.7.7' "$wf" \
   && pass "actionlint version and archive checksum remain pinned" \
   || fail "actionlint version or checksum drifted"
 
-grep -qF 'repository: Verjson/.github' "$wf" \
-  && grep -qF 'ref: ${{ github.workflow_sha }}' "$wf" \
+grep -qF 'repository: ${{ job.workflow_repository }}' "$wf" \
+  && grep -qF 'ref: ${{ job.workflow_sha }}' "$wf" \
   && grep -qF 'sparse-checkout: .github/actionlint.yaml' "$wf" \
   && grep -qF 'persist-credentials: false' "$wf" \
   && grep -qF "ACTIONLINT_CONFIG_FILE: \${{ inputs.config-file || '.verjson-actionlint-policy/.github/actionlint.yaml' }}" "$wf" \
@@ -83,9 +83,10 @@ awk '
 grep -qF 'invalid-syntax.yml' "$behavior_script" \
   && grep -qF 'invalid-expression.yml' "$behavior_script" \
   && grep -qF 'invalid-runner.yml' "$behavior_script" \
+  && grep -qF 'runs-on: [self-hosted, GCP]' "$behavior_script" \
   && ! grep -qE '(^|[;&|])[[:space:]]*(bash|sh|source|\.)[[:space:]]+' "$behavior_script" \
-  && pass "invalid-workflow fixtures are provider-owned inline code" \
-  || fail "behavior fixtures are missing or execute caller-controlled scripts"
+  && pass "fixtures cover governed GCP plus provider-owned invalid workflows" \
+  || fail "behavior fixtures omit GCP or execute caller-controlled scripts"
 
 cat >"$tmp/actionlint" <<'SH'
 #!/usr/bin/env bash
