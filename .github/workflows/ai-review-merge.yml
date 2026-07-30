@@ -516,6 +516,7 @@ jobs:
       pull-requests: write
       issues: write
       actions: read
+      checks: read
     env:
       LANE: ${{ needs.preflight.outputs.lane }}
       LANE_REASON: ${{ needs.preflight.outputs.reason }}
