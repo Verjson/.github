@@ -88,7 +88,7 @@ jobs:
     # fail-SAFE, not a fallback: unresolved visibility must never put fork code
     # on the persistent pool. Both pools are org variables so a provider move
     # (GCP -> DigitalOcean) is a variable flip, not a PR here.
-    runs-on: ${{ inputs.runner != '' && fromJSON(inputs.runner) || github.repository_owner != 'Verjson' && 'ubuntu-24.04' || github.event.repository.private == true && fromJSON(vars.VERJSON_RUNNER_DEFAULT || '["self-hosted","GCP"]') || fromJSON(vars.VERJSON_RUNNER_ISOLATED || '["self-hosted","isolated","linux","x64"]') }}
+    runs-on: ${{ inputs.runner != '' && fromJSON(inputs.runner) || github.repository_owner != 'Verjson' && 'ubuntu-24.04' || fromJSON('["self-hosted","general"]') }}
     permissions:
       contents: read
     steps:
