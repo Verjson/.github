@@ -193,9 +193,20 @@ rc="$(run_wait '[
   || fail "green rollup regressed ($rc)"
 
 rc="$(run_wait '[{"name":"unit","status":"COMPLETED","conclusion":"FAILURE"}]')"
-{ [ "$rc" = "rc=1" ] && wait_out_has 'result=failed'; } \
-  && pass "a red rollup still fails the gate" \
-  || fail "red rollup regressed ($rc)"
+{ [ "$rc" = "rc=1" ] && wait_out_has 'result=failed' \
+    && wait_out_has 'CI failed checks:' \
+    && wait_out_has '"name":"unit"' \
+    && wait_out_has '"conclusion":"FAILURE"'; } \
+  && pass "a red rollup fails with an attributable compact snapshot (#240)" \
+  || fail "red rollup was not attributable ($rc)"
+
+rc="$(run_wait '[{"name":"unit\n::error::injected","status":"COMPLETED","conclusion":"FAILURE"}]')"
+{ [ "$rc" = "rc=1" ] \
+    && grep -qF '\n::error::injected' "$tmp/wait-out.txt" \
+    && ! grep -q '^::error::injected' "$tmp/wait-out.txt" \
+    && [ "$(grep -c 'CI failed checks:' "$tmp/wait-out.txt")" -eq 1 ]; } \
+  && pass "failed check names stay JSON-escaped on one log line (#240)" \
+  || fail "failed check attribution allowed workflow-command line injection ($rc)"
 
 # GitHub may expose a completed CheckRun before its conclusion field catches up.
 # It is neither green nor terminal-red until the conclusion is populated.

@@ -37,6 +37,13 @@ merge it as inconclusive. Explicit non-green conclusions remain terminal
 failures. This preserves the ADR's fail-closed invariant without rejecting a
 healthy run during field propagation.
 
+**Amended again 2026-07-30 after the failure reproduced:** the CI-wait failure
+path emits a compact JSON snapshot of only the checks it classified as failed,
+including name/context, state, status, and conclusion. Check names are encoded
+by `jq -c` rather than interpolated into workflow-command syntax. Classification
+remains fail-closed; the added evidence makes a live mismatch attributable
+before another semantic change is attempted.
+
 1. **An empty post-filter rollup is never green.** In `ci_wait` it keeps polling
    (a check can still appear) and, if it is still empty when the lane's poll
    window ends, the step fails with `::error::phase=ci-wait result=no-checks`

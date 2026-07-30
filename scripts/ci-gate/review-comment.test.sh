@@ -21,11 +21,11 @@ fail() {
 script="$tmp/submit.sh"
 awk '
   $0 == "      - name: Submit deterministic PR review" { seen = 1 }
-  seen && $0 == "        run: |" { cap = 1; next }
+  seen && $0 == "        run: |" { cap = 1; seen = 0; next }
   cap {
     if (substr($0, 1, 10) == "          ") { print substr($0, 11); next }
     if ($0 ~ /^[ \t]*$/) { print ""; next }
-    cap = 0
+    exit
   }
 ' "$wf" >"$script"
 if ! grep -q 'Review these first' "$script"; then
@@ -42,7 +42,12 @@ for ((i=0;i<${#args[@]};i++)); do [ "${args[$i]}" = "--body" ] && body="${args[$
 case "$1 $2" in
   "pr review")
     echo "REVIEW ${args[*]}" >>"$ACTIONLOG"; printf '%s' "$body" >"$BODYFILE"
-    [ "${REVIEW_FAIL:-0}" = "1" ] && { echo "Can not approve your own pull request" >&2; exit 1; }
+    case "${REVIEW_FAIL_MODE:-}" in
+      self) echo "Can not approve your own pull request" >&2; exit 1 ;;
+      policy) echo "GraphQL: GitHub Actions is not permitted to approve pull requests. (addPullRequestReview)" >&2; exit 1 ;;
+      mixed) printf '%s\n' "GraphQL: GitHub Actions is not permitted to approve pull requests. (addPullRequestReview)" "unexpected review transport failure" >&2; exit 1 ;;
+      unknown) echo "unexpected review transport failure" >&2; exit 1 ;;
+    esac
     ;;
   "pr comment") echo "COMMENT" >>"$ACTIONLOG"; printf '%s' "$body" >"$COMMENTFILE" ;;
   "pr edit") echo "EDIT ${args[*]}" >>"$ACTIONLOG" ;;
@@ -53,7 +58,7 @@ chmod +x "$tmp/bin/gh"
 
 run_submit() {
   # run_submit <verdict-json>
-  export PATH="$tmp/bin:$PATH" TARGET_REPO="Verjson/foo" PR_NUMBER=7 HEAD_SHA=deadbeef MODEL=haiku PATCH_ID=pid00feed
+  export PATH="$tmp/bin:$PATH" TARGET_REPO="Verjson/foo" PR_NUMBER=7 HEAD_SHA=deadbeef MODEL=haiku PATCH_ID=pid00feed GITHUB_RUN_ID=12345
   export ACTIONLOG="$tmp/act.log" BODYFILE="$tmp/body.txt" COMMENTFILE="$tmp/comment.txt"
   export GITHUB_OUTPUT="$tmp/gh_output.txt" # the runner provides this; the step writes the verdict here
   : >"$ACTIONLOG"
@@ -101,10 +106,27 @@ rc=$(run_submit '{"blocking":true,"summary":"has a bug","review_first":[{"locati
   fail "blocking path wrong ($rc)"
 
 # 4. Blocking on own PR (request-changes rejected) -> falls back to a comment.
-rc=$(REVIEW_FAIL=1 run_submit '{"blocking":true,"summary":"bug","review_first":[],"findings":["a:1 — boom"]}')
+rc=$(REVIEW_FAIL_MODE=self run_submit '{"blocking":true,"summary":"bug","review_first":[],"findings":["a:1 — boom"]}')
 { [ "$rc" = "rc=1" ] && comment_has 'Merge gate: blocking verdict' && comment_has 'a:1 — boom'; } &&
   pass "blocking on own PR falls back to a findings comment, still exits 1" ||
   fail "blocking own-PR fallback wrong ($rc)"
+
+# 4a. A non-blocking verdict cannot always be published as an approval. Both
+#      GitHub's self-review guard and an approval-disabled repository retain the
+#      gate verdict as an audit comment; unexpected errors remain fail-closed.
+for mode in self policy; do
+  rc=$(REVIEW_FAIL_MODE="$mode" run_submit '{"blocking":false,"summary":"safe","review_first":[],"findings":[]}')
+  { [ "$rc" = "rc=0" ] && comment_has 'Merge gate: approved verdict' && comment_has 'safe'; } &&
+    pass "approve denied ($mode): falls back to an audit comment (#242)" ||
+    fail "approve denied ($mode) fallback wrong ($rc)"
+done
+
+for mode in unknown mixed; do
+  rc=$(REVIEW_FAIL_MODE="$mode" run_submit '{"blocking":false,"summary":"safe","review_first":[],"findings":[]}')
+  { [ "$rc" = "rc=1" ] && ! act_has COMMENT; } &&
+    pass "unexpected approval publication failure ($mode) remains fail-closed" ||
+    fail "unexpected approval failure ($mode) was swallowed ($rc)"
+done
 
 # 5. No usable verdict -> inconclusive label + comment + exit 1 (fail closed).
 rc=$(run_submit 'not-json')
