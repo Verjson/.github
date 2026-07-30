@@ -47,9 +47,14 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
 jobs:
   shell-tests:
     runs-on: [self-hosted, general]
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -62,6 +67,8 @@ jobs:
         run: bash scripts/actionlint-install.test.sh
       - name: actionlint — reusable contract is bounded and immutable (#153)
         run: bash scripts/actionlint-reusable.test.sh
+      - name: actions-ci — obsolete PR runs cancel within a bounded job (#231)
+        run: bash scripts/actions-ci-policy.test.sh
       - name: reusable Node workflows — nested actions and release tooling are pinned (#89)
         run: bash scripts/node-workflow-pins.test.sh
       - name: reusable Node workflows — cache and timeout controls (#152)

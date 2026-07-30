@@ -15,3 +15,6 @@ a human merge.
 Successful local manual re-gates now hand off to the trusted merger using a source-run
 and exact-head attestation. Validated non-blocking review follow-ups are filed only
 after that exact head merges; failed privileged runs cannot create them.
+
+`actions-ci` now cancels obsolete runs for the same PR/ref while preserving every main
+run, and bounds the shell-test job at 15 minutes. The governed runner lane is unchanged.
