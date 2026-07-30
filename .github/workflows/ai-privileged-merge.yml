@@ -130,8 +130,10 @@ jobs:
             (index("HOLD") or index("DO NOT MERGE")) | not)' <<<"$final" >/dev/null ||
             { echo "::error::PR became held"; exit 1; }
           final_gate_run="$(newest_trusted_gate_run || true)"
-          final_gate_id="$(jq -r '.id // 0' <<<"${final_gate_run:-{}}")"
-          [ "$(jq -r '.conclusion // ""' <<<"${final_gate_run:-{}}")" = "success" ] &&
+          [ -n "$final_gate_run" ] ||
+            { echo "::error::trusted gate disappeared before merge"; exit 1; }
+          final_gate_id="$(jq -r '.id // 0' <<<"$final_gate_run")"
+          [ "$(jq -r '.conclusion // ""' <<<"$final_gate_run")" = "success" ] &&
             jq -e --arg needle "/actions/runs/$final_gate_id/" '
               any(.statusCheckRollup[]?;
                 (.name // .context) == "gate" and

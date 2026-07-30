@@ -28,8 +28,10 @@ grep -q '^  pull_request_target:' <<<"$privileged" \
   && pass "privileged job runs only from the trusted base-branch event" \
   || fail "privileged job is not isolated behind pull_request_target"
 grep -q 'trusted_workflow_id=' <<<"$privileged" \
-  && grep -q "gate check provenance mismatch" <<<"$privileged" \
-  && pass "merge authority verifies the immutable workflow-run identity" \
+  && grep -q 'newest_trusted_gate_run' <<<"$privileged" \
+  && grep -q 'sort_by(\[(.created_at // ""), .id\])' <<<"$privileged" \
+  && grep -q 'contains($needle)' <<<"$privileged" \
+  && pass "merge authority verifies newest immutable workflow-run provenance" \
   || fail "merge can trust a spoofable check name without run provenance"
 [ "$(grep -c 'secrets\.ORG_ADMIN_TOKEN' "$merge_wf")" -eq 1 ] \
   && ! grep -q 'secrets\.ORG_ADMIN_TOKEN' "$wf" \
@@ -73,7 +75,7 @@ if [ "$1" = "api" ] && [[ "$2" == *"/commits/main" ]]; then
   printf 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n'
   exit 0
 fi
-if [ "$1" = "api" ] && [[ "$2" == *"/actions/runs/"* ]]; then
+if [ "$1" = "api" ] && [[ "$2" == *"/actions/runs"* ]]; then
   printf '%s\n' "$RUN_FIXTURE"
   exit 0
 fi
@@ -98,13 +100,14 @@ run_case() {
     RUN_FIXTURE="${RUN_FIXTURE:-$trusted_runs}" \
     GH_TOKEN="$token" TARGET_REPO=Verjson/example TARGET_OWNER=Verjson \
     GITHUB_REPOSITORY=Verjson/example PR_NUMBER=7 EXPECTED_HEAD_SHA="$expected" \
-    bash "$script" >/dev/null 2>&1
+    bash "$script" >"$tmp/case-output.txt" 2>&1
 }
 
 for actor in dependabot renovate fork ordinary; do
   if run_case "$green" && grep -q -- "--match-head-commit $sha" "$tmp/merge.log"; then
     pass "$actor PR merges only with the immutable reviewed head"
   else
+    sed 's/^/       /' "$tmp/case-output.txt"
     fail "$actor PR did not follow the trusted merge path"
   fi
 done
