@@ -134,3 +134,15 @@ The daily reconciler validates:
 Restore runner group 4 to `visibility: selected`, restore the captured organization
 variables, and revert the implementing PR. Do not remove compatibility labels as part
 of rollback.
+
+## 2026-07-30 amendment — harden migration seams
+
+The merge-gate preflight always uses the untrusted lane for Verjson direct execution.
+It cannot know a cross-repository dispatch target's visibility until its API lookup
+runs, so event-repository visibility could otherwise disagree with the downstream
+gate once the variables diverge (#225).
+
+Reconciliation accepts both the compatibility lane labels (`general`, `isolated`,
+`untrusted-pr`) and their namespaced replacements (`lane-general`,
+`lane-untrusted`). This keeps the reconciler valid through the label migration
+specified above (#226).

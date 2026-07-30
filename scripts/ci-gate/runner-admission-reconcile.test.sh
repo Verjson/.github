@@ -102,6 +102,18 @@ FAIL_PATH='/actions/variables/VERJSON_RUNNER_DEFAULT'
   && pass "org API failure is undetermined, never clean" \
   || fail "API failure did not return exit 2"
 
+FAIL_PATH=''
+DEFAULT_VAR='{"value":"[\"self-hosted\",\"lane-general\"]","visibility":"all"}'
+UNTRUSTED_VAR='{"value":"[\"self-hosted\",\"lane-untrusted\"]","visibility":"all"}'
+G6_GROUP='{"id":6,"name":"isolated","visibility":"all","allows_public_repositories":true}'
+G4_RUNNERS='[{"name":"general-1","status":"online","labels":["self-hosted","lane-general"]}]'
+G6_RUNNERS='[{"name":"untrusted-1","status":"online","labels":["self-hosted","lane-untrusted"]}]'
+out="$(run_case)"
+[ "$(code_of)" = "0" ] \
+  && grep -qF 'No drift' <<<"$out" \
+  && pass "namespaced ADR 0035 lane labels map without reconciler changes" \
+  || fail "namespaced lane labels did not reconcile: $out"
+
 grep -qF 'select(.archived == false)' "$script" \
   && pass "archived repositories remain excluded" \
   || fail "archived repository filter missing"

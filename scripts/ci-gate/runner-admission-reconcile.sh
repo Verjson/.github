@@ -68,9 +68,10 @@ untrusted_runners="$(fetch "/orgs/$ORG/actions/runner-groups/$UNTRUSTED_GROUP_ID
 
 group_for_selector() {
   local labels="$1"
-  if jq -e 'index("general") != null' <<<"$labels" >/dev/null; then
+  if jq -e 'index("lane-general") != null or index("general") != null' <<<"$labels" >/dev/null; then
     printf 'general\n'
-  elif jq -e 'index("isolated") != null or index("untrusted-pr") != null' <<<"$labels" >/dev/null; then
+  elif jq -e 'index("lane-untrusted") != null or index("isolated") != null
+    or index("untrusted-pr") != null' <<<"$labels" >/dev/null; then
     printf 'untrusted\n'
   else
     die_undetermined "selector has no governed lane label: $labels"

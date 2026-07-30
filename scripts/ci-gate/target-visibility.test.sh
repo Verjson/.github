@@ -88,10 +88,10 @@ rc="$(run_step '' 1)"
 # (d) Visibility selects independent variables even though both currently point
 # at the permissive general lane. Unknown visibility must take untrusted.
 { grep -q "target_private: \${{ steps.target_visibility.outputs.target_private }}" "$wf" \
-    && grep -qF "github.event.repository.private == true" "$wf" \
+    && ! grep -qF "github.event.repository.private == true" "$wf" \
     && grep -qF "needs.preflight.outputs.target_private == 'true'" "$wf" \
     && [ "$(grep -cF 'VERJSON_RUNNER_UNTRUSTED' "$wf")" -ge 2 ]; } \
-  && pass "preflight and gate route unknown visibility through the untrusted variable" \
+  && pass "preflight is untrusted until gate resolves target visibility" \
   || fail "gate routing drifted from the default/untrusted variable policy"
 
 if [ "$fails" -eq 0 ]; then
