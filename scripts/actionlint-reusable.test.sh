@@ -61,8 +61,8 @@ grep -qF 'ACTIONLINT_VERSION: 1.7.7' "$wf" \
   && pass "actionlint version and archive checksum remain pinned" \
   || fail "actionlint version or checksum drifted"
 
-grep -qF 'repository: ${{ job.workflow_repository }}' "$wf" \
-  && grep -qF 'ref: ${{ job.workflow_sha }}' "$wf" \
+grep -qF 'repository: Verjson/.github' "$wf" \
+  && grep -qF 'ref: ${{ github.workflow_sha }}' "$wf" \
   && grep -qF 'sparse-checkout: .github/actionlint.yaml' "$wf" \
   && grep -qF 'persist-credentials: false' "$wf" \
   && grep -qF "ACTIONLINT_CONFIG_FILE: \${{ inputs.config-file || '.verjson-actionlint-policy/.github/actionlint.yaml' }}" "$wf" \
