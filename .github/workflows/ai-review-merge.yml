@@ -596,7 +596,7 @@ jobs:
             # shellcheck disable=SC2016
             rollup=$(gh pr view "$PR_NUMBER" --repo "$TARGET_REPO" \
               --json statusCheckRollup \
-              --jq '[.statusCheckRollup[]? | select((.name // .context) as $n | $n != "preflight" and $n != "gate" and $n != "freshness" and $n != "classify" and $n != "ai-review" and $n != "ai-merge" and $n != "review")]')
+              --jq '[.statusCheckRollup[]? | select((.name // .context) as $n | $n != "preflight" and $n != "gate" and $n != "freshness" and $n != "classify" and $n != "ai-review" and $n != "ai-merge" and $n != "review" and $n != "dispatch-merge" and $n != "privileged_merge")]')
             # Rollup mixes CheckRuns (name/status/conclusion) with commit
             # StatusContexts like renovate/stability-days (context/state) —
             # treating a context's null .status as pending hangs the gate.
@@ -1354,7 +1354,7 @@ jobs:
           # shellcheck disable=SC2016
           rollup=$(gh pr view "$PR_NUMBER" --repo "$REPO" \
             --json statusCheckRollup \
-            --jq '[.statusCheckRollup[]? | select((.name // .context) as $n | $n != "preflight" and $n != "gate" and $n != "freshness" and $n != "classify" and $n != "ai-review" and $n != "ai-merge" and $n != "review")]')
+            --jq '[.statusCheckRollup[]? | select((.name // .context) as $n | $n != "preflight" and $n != "gate" and $n != "freshness" and $n != "classify" and $n != "ai-review" and $n != "ai-merge" and $n != "review" and $n != "dispatch-merge" and $n != "privileged_merge")]')
           failed=$(jq '[.[] | select(
             if .state then
               ((.state // "") | IN("SUCCESS","PENDING","EXPECTED") | not)

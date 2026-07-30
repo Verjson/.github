@@ -137,8 +137,8 @@ jobs:
               exit 1
             fi
             if [ "$file_guard_rc" -eq 0 ]; then
-              echo "::error::workflow files changed; human merge required"
-              exit 1
+              echo "::notice::workflow files changed; privileged auto-merge skipped; human review and merge required"
+              exit 0
             fi
 
             if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
@@ -204,8 +204,8 @@ jobs:
             exit 1
           fi
           if [ "$file_guard_rc" -eq 0 ]; then
-            echo "::error::workflow files changed before merge; human merge required"
-            exit 1
+            echo "::notice::workflow files changed before merge; privileged auto-merge skipped; human review and merge required"
+            exit 0
           fi
           if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
             final_gate_run="$(dispatched_gate_run || true)"

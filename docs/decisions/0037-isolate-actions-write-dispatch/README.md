@@ -31,7 +31,15 @@ The dispatcher:
 
 The gate still creates the bounded exact-run attestation. The privileged workflow
 continues to validate it and all current PR/check/head/hold state before merging, so
-both pull-request and manual recovery behavior remain unchanged.
+both pull-request and manual recovery behavior remain fail-closed. The gate excludes
+the `dispatch-merge` and `privileged_merge` continuation checks from its repository-CI
+snapshots: neither trusted continuation may circularly authorize or block the review
+that must complete before dispatch.
+
+Workflow-file changes remain ineligible for privileged auto-merge. Both the initial
+file guard and final recheck terminate successfully with a human-review-and-merge
+notice, without merging or filing follow-ups. This reports the intentional policy hold
+as a terminal no-op instead of a CI failure while preserving the human merge boundary.
 
 ## Consequences
 
@@ -39,6 +47,7 @@ both pull-request and manual recovery behavior remain unchanged.
   through its `GITHUB_TOKEN`.
 - One short metadata-only job and runner assignment are added after a green gate.
 - Dispatch failure leaves the PR unmerged and is safely retryable.
+- Workflow-file PRs can finish validation green but always require a human merge.
 
 ## Rollback
 

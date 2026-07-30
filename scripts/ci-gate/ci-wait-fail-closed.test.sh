@@ -46,6 +46,11 @@ wait_script="$tmp/ci-wait.sh"
 extract ci_wait "$wait_script"
 grep -q 'statusCheckRollup' "$wait_script" || { echo "FAIL - could not extract ci_wait run block from $wf"; exit 1; }
 
+trusted_exclusions=$(grep -c '\$n != "dispatch-merge" and \$n != "privileged_merge"' "$wf")
+[ "$trusted_exclusions" -eq 2 ] \
+  && pass "CI wait and authoritative recheck exclude trusted continuation checks" \
+  || fail "trusted continuation checks can circularly authorize or block the review gate"
+
 # Fake `gh`: the rollup fixture is the POST-`--jq` filtered array (house
 # convention); `gh api` serves the raw Actions-runs payload for the head SHA so
 # the shipped jq filter itself is exercised. SUITES_RC forces an API failure.

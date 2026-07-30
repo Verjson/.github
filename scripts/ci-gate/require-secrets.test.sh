@@ -182,8 +182,11 @@ held="${green/\"labels\":[]/\"labels\":[{\"name\":\"hold\"}]}"
 run_case "$held" && fail "held PR was accepted" || pass "held PR is rejected"
 padding="$(for i in $(seq 1 100); do printf 'docs/pad-%03d.md\n' "$i"; done)"
 FILES_FIXTURE="${padding}"$'\n''.github/workflows/caller.yml'$'\n' run_case "$green" \
-  && fail "PR-controlled workflow change was accepted" \
-  || pass "paginated workflow changes beyond 100 files require a human merge"
+  && ! grep -q '^pr merge ' "$tmp/merge.log" \
+  && ! grep -q '^ISSUE ' "$tmp/merge.log" \
+  && grep -q 'privileged auto-merge skipped; human review and merge required' "$tmp/case-output.txt" \
+  && pass "paginated workflow changes beyond 100 files stop successfully for human review" \
+  || fail "workflow change did not produce a successful no-merge human hold"
 spoofed_run="${trusted_runs/\"workflow_id\":42/\"workflow_id\":777}"
 RUN_FIXTURE="$spoofed_run" run_case "$green" \
   && fail "spoofed gate workflow identity was accepted" \
@@ -197,8 +200,11 @@ PR_FIXTURE_FINAL="$red" run_case "$green" \
   && fail "a final-read check regression was accepted" \
   || pass "checks are revalidated immediately before merge"
 FILES_FIXTURE_FINAL='.github/workflows/late.yml'$'\n' run_case "$green" \
-  && fail "workflow change appearing before final merge was accepted" \
-  || pass "workflow files are rechecked immediately before merge"
+  && ! grep -q '^pr merge ' "$tmp/merge.log" \
+  && ! grep -q '^ISSUE ' "$tmp/merge.log" \
+  && grep -q 'privileged auto-merge skipped; human review and merge required' "$tmp/case-output.txt" \
+  && pass "workflow files appearing at final recheck stop successfully for human review" \
+  || fail "final workflow recheck did not produce a successful no-merge human hold"
 FILES_API_FAIL=true run_case "$green" \
   && fail "unreadable paginated file list was accepted" \
   || pass "unreadable paginated file list fails closed"
