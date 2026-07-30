@@ -45,6 +45,7 @@ case "$1 $2" in
     case "${REVIEW_FAIL_MODE:-}" in
       self) echo "Can not approve your own pull request" >&2; exit 1 ;;
       policy) echo "GraphQL: GitHub Actions is not permitted to approve pull requests. (addPullRequestReview)" >&2; exit 1 ;;
+      policy_cli) echo "failed to create review: GraphQL: GitHub Actions is not permitted to approve pull requests. (addPullRequestReview)" >&2; exit 1 ;;
       mixed) printf '%s\n' "GraphQL: GitHub Actions is not permitted to approve pull requests. (addPullRequestReview)" "unexpected review transport failure" >&2; exit 1 ;;
       unknown) echo "unexpected review transport failure" >&2; exit 1 ;;
     esac
@@ -114,7 +115,7 @@ rc=$(REVIEW_FAIL_MODE=self run_submit '{"blocking":true,"summary":"bug","review_
 # 4a. A non-blocking verdict cannot always be published as an approval. Both
 #      GitHub's self-review guard and an approval-disabled repository retain the
 #      gate verdict as an audit comment; unexpected errors remain fail-closed.
-for mode in self policy; do
+for mode in self policy policy_cli; do
   rc=$(REVIEW_FAIL_MODE="$mode" run_submit '{"blocking":false,"summary":"safe","review_first":[],"findings":[]}')
   { [ "$rc" = "rc=0" ] && comment_has 'Merge gate: approved verdict' && comment_has 'safe'; } &&
     pass "approve denied ($mode): falls back to an audit comment (#242)" ||

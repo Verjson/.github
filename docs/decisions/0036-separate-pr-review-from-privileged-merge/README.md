@@ -136,3 +136,7 @@ Both produce the same head- and patch-id-bound approved-verdict audit comment.
 Any other review-publication failure remains terminal. Repository and
 organization Actions approval permissions therefore stay disabled without
 blocking a reviewed PR or moving privileged credentials into the review job.
+
+The allowlist matches complete observed stderr forms, including the `gh` CLI's
+`failed to create review:` prefix. Substring matches are forbidden because a
+known denial followed by an unrelated transport error must remain terminal.
