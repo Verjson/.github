@@ -24,13 +24,13 @@ jobs="$(awk '
   /^jobs:$/ { in_jobs=1; next }
   in_jobs && /^  [A-Za-z0-9_-]+:$/ { sub(/^  /, ""); sub(/:$/, ""); print }
 ' "$wf")"
-[ "$jobs" = $'preflight\ngate' ] \
-  && pass "review workflow declares exactly preflight + gate" \
+[ "$jobs" = $'preflight\ngate\ndispatch-merge' ] \
+  && pass "review workflow declares preflight + gate + dispatch-merge" \
   || fail "unexpected gate jobs: $(tr '\n' ' ' <<<"$jobs")"
 
-[ "$(( $(grep -c '^    runs-on:' "$wf") + $(grep -c '^    runs-on:' "$privileged_wf") ))" -eq 3 ] \
-  && pass "split gate declares exactly three runner assignments" \
-  || fail "expected exactly three split-workflow runs-on assignments"
+[ "$(( $(grep -c '^    runs-on:' "$wf") + $(grep -c '^    runs-on:' "$privileged_wf") ))" -eq 4 ] \
+  && pass "split gate declares exactly four runner assignments" \
+  || fail "expected exactly four split-workflow runs-on assignments"
 
 trusted_job="$(awk '
   /^  privileged_merge:$/ { cap = 1 }

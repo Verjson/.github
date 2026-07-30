@@ -117,6 +117,8 @@ jobs:
         run: bash scripts/ci-gate/reusable-workflow.test.sh
       - name: merge gate — isolate untrusted review from privileged merge (#230)
         run: bash scripts/ci-gate/require-secrets.test.sh
+      - name: merge gate — isolate actions:write in metadata-only dispatcher (#235)
+        run: bash scripts/ci-gate/dispatch-permission.test.sh
       - name: merge gate — absent checks fail closed, not open (#143, ADR 0024)
         run: bash scripts/ci-gate/ci-wait-fail-closed.test.sh
       - name: merge gate — diff-size budget tier and budget-exceeded outcome (#181, ADR 0032)

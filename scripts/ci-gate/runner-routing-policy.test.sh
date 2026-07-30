@@ -235,6 +235,17 @@ for privileged_workflow in ai-privileged-merge.yml; do
     "$privileged_workflow — external privileged caller retains hosted portability"
 done
 
+dispatch_workflow="$workflows/ai-review-merge.yml"
+grep -qF 'VERJSON_RUNNER_ISOLATED || vars.VERJSON_RUNNER_DEFAULT' "$dispatch_workflow" \
+  && pass "dispatch-merge prefers isolated then default" \
+  || fail "dispatch-merge lost isolated/default preference"
+assert_route "$dispatch_workflow" dispatch-merge Verjson/.github '' false \
+  '["self-hosted","isolated-canary"]' '["self-hosted","untrusted-canary"]' \
+  '["self-hosted","isolated-canary"]' \
+  "dispatch-merge — Verjson cannot reach hosted"
+assert_route "$dispatch_workflow" dispatch-merge Acme/widgets '' true '' '' \
+  'ubuntu-24.04' "dispatch-merge — external callers retain hosted portability"
+
 # Every job that carries the policy, across every reusable workflow. A job
 # missing from this list is caught by the no-owner-wide-route sweep below.
 policy_jobs() {
