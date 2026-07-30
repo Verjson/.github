@@ -86,25 +86,13 @@ grep -qE "github\.repository_owner != 'Verjson' && 'ubuntu-24\.04'" "$wf" \
   && pass "Verjson gate jobs use variable lanes while cross-org routing stays portable" \
   || fail "variable gate routing or cross-org portability drifted"
 
-# (g) The dispatch-target guard stays org-RELATIVE (github.repository_owner via
-# env), never hardcoded to 'Verjson'. Under workflow_call GITHUB_REPOSITORY_OWNER
-# is the CALLER's owner, so the guard automatically bounds each consumer to its
-# OWN org (ADR 0020 §re-verify under workflow_call, ADR 0022). A hardcoded owner
-# would either break cross-org callers or authorize a foreign target.
-guard="$(awk '
-  $0 == "        id: target_guard" { seen = 1 }
-  seen && !cap && $0 == "        run: |" { cap = 1; next }
-  cap {
-    if (substr($0, 1, 10) == "          ") { print substr($0, 11); next }
-    if ($0 ~ /^[ \t]*$/) { print ""; next }
-    exit
-  }
-' "$wf")"
-if grep -q 'GITHUB_REPOSITORY_OWNER' <<<"$guard" \
-  && ! grep -qE "(=|!=)[[:space:]]*[\"']?Verjson[\"']?" <<<"$guard"; then
-  pass "target guard is org-relative (GITHUB_REPOSITORY_OWNER), safe under workflow_call"
+# (g) Reusable callers are repository-local. Cross-org portability is retained,
+# but neither workflow_call nor dispatch may smuggle in a sibling target.
+if ! grep -qE '^      repository:' <<<"$wc_block" \
+   && grep -qF 'TARGET_REPO: ${{ github.repository }}' "$wf"; then
+  pass "workflow_call is portable but repository-local"
 else
-  fail "target guard hardcodes an org or lost GITHUB_REPOSITORY_OWNER — cross-org callers break or a foreign target is authorized"
+  fail "workflow_call accepts a cross-repository target or TARGET_REPO drifted"
 fi
 
 if [ "$fails" -eq 0 ]; then

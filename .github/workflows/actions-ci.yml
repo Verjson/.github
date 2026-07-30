@@ -13,6 +13,7 @@ on:
       - '.github/workflows/actionlint.yml'
       - '.github/workflows/actionlint-reusable-contract.yml'
       - '.github/workflows/actions-ci.yml'
+      - '.github/workflows/ai-privileged-merge.yml'
       - '.github/workflows/ai-review-merge.yml'
       - '.github/workflows/node-ci.yml'
       - '.github/workflows/node-release.yml'
@@ -31,6 +32,7 @@ on:
       - '.github/workflows/actionlint.yml'
       - '.github/workflows/actionlint-reusable-contract.yml'
       - '.github/workflows/actions-ci.yml'
+      - '.github/workflows/ai-privileged-merge.yml'
       - '.github/workflows/ai-review-merge.yml'
       - '.github/workflows/node-ci.yml'
       - '.github/workflows/node-release.yml'
@@ -45,9 +47,14 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
 jobs:
   shell-tests:
     runs-on: [self-hosted, general]
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -60,6 +67,8 @@ jobs:
         run: bash scripts/actionlint-install.test.sh
       - name: actionlint — reusable contract is bounded and immutable (#153)
         run: bash scripts/actionlint-reusable.test.sh
+      - name: actions-ci — obsolete PR runs cancel within a bounded job (#231)
+        run: bash scripts/actions-ci-policy.test.sh
       - name: reusable Node workflows — nested actions and release tooling are pinned (#89)
         run: bash scripts/node-workflow-pins.test.sh
       - name: reusable Node workflows — cache and timeout controls (#152)
@@ -86,7 +95,7 @@ jobs:
         run: bash scripts/ci-gate/review-comment.test.sh
       - name: merge gate — ai-review retry chain (ADR 0015, #64)
         run: bash scripts/ci-gate/ai-review-retry.test.sh
-      - name: merge gate — two-job queue shape and authoritative merge recheck (#104)
+      - name: merge gate — split three-job shape and authoritative merge recheck (#104, #230)
         run: bash scripts/ci-gate/gate-queue.test.sh
       - name: merge gate — runner-timing diagnostics survive bad timestamps (#106, ADR 0017)
         run: bash scripts/ci-gate/preflight-timing.test.sh
@@ -100,13 +109,13 @@ jobs:
         run: bash scripts/ci-gate/followup-issues.test.sh
       - name: merge gate — hold predicate and re-fire guards (ADR 0012, #51, #88)
         run: bash scripts/ci-gate/hold.test.sh
-      - name: merge gate — dispatch target constrained to org (#119, ADR 0020)
+      - name: merge gate — dispatch target fixed to the current repository (#230, ADR 0036)
         run: bash scripts/ci-gate/dispatch-target-guard.test.sh
       - name: merge gate — target visibility resolves fail-closed runner routing (#170)
         run: bash scripts/ci-gate/target-visibility.test.sh
       - name: merge gate — cross-org workflow_call distribution seams (#128, ADR 0022)
         run: bash scripts/ci-gate/reusable-workflow.test.sh
-      - name: merge gate — require ORG_ADMIN_TOKEN, fail closed on missing secrets (#131)
+      - name: merge gate — isolate untrusted review from privileged merge (#230)
         run: bash scripts/ci-gate/require-secrets.test.sh
       - name: merge gate — absent checks fail closed, not open (#143, ADR 0024)
         run: bash scripts/ci-gate/ci-wait-fail-closed.test.sh

@@ -25,16 +25,16 @@ name: AI review + auto-merge
 #      no model and the AI lane only runs after CI is green. Re-run manually by
 #      adding the `re-review` label (auto-removed) or via workflow_dispatch.
 #
-# Either lane merges only on green CI, squash + branch delete, using the
-# org-admin ruleset bypass (same mechanism as the catalog auto-bump). Humans
-# opt a PR out with the `hold` label, a "DO NOT MERGE" title marker, or by
-# keeping it a draft — re-checked at merge time.
+# Either lane produces a required validation result without administrative
+# credentials. A separate pull_request_target job, loaded from the trusted base
+# branch and consuming API metadata only, rechecks green CI and policy before a
+# matched-head squash merge with the org-admin ruleset bypass. Humans opt a PR
+# out with the `hold` label, a "DO NOT MERGE" title marker, or a draft.
 #
 # Cross-repo dispatch is bounded to THIS org (ADR 0020, #119). The optional
-# `repository` workflow_dispatch input lets an operator re-gate a *sibling*
-# Verjson repo, but the `target_guard` preflight step fails closed unless the
-# target is owned by github.repository_owner — so it can never aim the
-# ORG_ADMIN_TOKEN admin-merge machinery at a foreign org.
+# Operators re-gate by dispatching this workflow in the repository that owns
+# the PR. Cross-repository dispatch was retired by ADR 0036 because the
+# unprivileged github.token is intentionally repository-scoped.
 #
 # Cross-ORG distribution (ADR 0022, #128): this file is ALSO a `workflow_call`
 # reusable, so consumers in other orgs (e.g. tequityapp) pin it instead of
@@ -44,23 +44,23 @@ name: AI review + auto-merge
 # `pull_request`; an operator re-gates via `workflow_dispatch`; a cross-org
 # consumer adds a thin caller that `uses:` it under `workflow_call`. When called,
 # `github.repository`/`github.event`/`github.repository_owner` are inherited from
-# the CALLER, so `TARGET_REPO`, the PR number, and the `target_guard` org bound
-# all resolve to the consumer's own repo/org — never Verjson's. Consumers must
-# pass `secrets: inherit` (their OWN ORG_ADMIN_TOKEN / model keys) and, if their
-# fleet differs from the org gate pool, `with.runner_labels`. Example caller:
+# the CALLER, so `TARGET_REPO` and the PR number resolve to the consumer's own
+# repository. Consumers must
+# pass only the model credentials needed for review and, if their fleet differs
+# from the org gate pool, `with.runner_labels`. They must install their own
+# trusted merge workflow for auto-merge; this reusable never receives their
+# administrative credential from a PR event. Example caller:
 #
 #   # consumer repo (any org): .github/workflows/gate.yml
 #   on: { pull_request: { types: [opened, reopened, ready_for_review, synchronize, labeled, unlabeled] }, workflow_dispatch: {} }
 #   jobs:
 #     gate:
 #       uses: Verjson/.github/.github/workflows/ai-review-merge.yml@v1
-#       secrets: inherit
+#       secrets: inherit # model credentials only; never ORG_ADMIN_TOKEN
 #       with: { runner_labels: '["self-hosted","gate"]' }
 #
-# Downstream SINGLE-REPO copies that predate this and never dispatch cross-repo
-# should migrate to the reusable; until they do, the tighter Tequity ADR-0027
-# form (tequityapp/tequity-ui#16) — drop the `repository` input, pin
-# `TARGET_REPO: ${{ github.repository }}` — remains the safe copy default.
+# Downstream copies must also omit any repository input and pin the target to
+# the repository where the workflow executes.
 
 on:
   pull_request:
@@ -70,9 +70,6 @@ on:
       pr_number:
         description: PR number to review and (on pass) merge
         required: true
-      repository:
-        description: owner/repo the PR lives in (defaults to this repo)
-        required: false
       allow_absent_checks:
         description: >-
           Proceed even though the PR has NO CI checks at all. Absent checks are
@@ -84,10 +81,8 @@ on:
         default: false
   workflow_call:
     # Cross-org consumers pin this reusable and pass `secrets: inherit` (ADR
-    # 0022). pr_number/repository mirror the workflow_dispatch inputs so
-    # `env.PR_NUMBER` / `env.TARGET_REPO` resolve identically; a pull_request-
-    # triggered caller leaves them empty and the inherited `github.event`
-    # supplies them. `runner_labels` is REQUIRED: a consumer's org has no runner
+    # 0022). A pull_request-triggered caller leaves pr_number empty and the
+    # inherited event supplies it. `runner_labels` is REQUIRED: a consumer's org has no runner
     # for Verjson's `self-hosted,gate` pool, so omitting it would silently queue
     # the job forever on the wrong labels (#130) — requiring it fails the call
     # immediately with a clear message instead. Missing `secrets: inherit` is
@@ -95,10 +90,6 @@ on:
     inputs:
       pr_number:
         description: PR number to review; defaults to the caller's pull_request event
-        required: false
-        type: string
-      repository:
-        description: owner/repo the PR lives in; defaults to the caller repo
         required: false
         type: string
       runner_labels:
@@ -136,7 +127,7 @@ permissions:
 
 env:
   PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr_number }}
-  TARGET_REPO: ${{ inputs.repository || github.repository }}
+  TARGET_REPO: ${{ github.repository }}
 
 jobs:
   preflight:
@@ -150,7 +141,8 @@ jobs:
     # own rebases, so its branches are left untouched. Same opt-out guard as
     # classify.
     if: >
-      github.event_name == 'workflow_dispatch' ||
+      github.event_name != 'pull_request_target' &&
+      (github.event_name == 'workflow_dispatch' ||
       (
         (
           (github.event.action != 'labeled' && github.event.action != 'unlabeled') ||
@@ -162,12 +154,11 @@ jobs:
         !contains(github.event.pull_request.labels.*.name, 'hold') &&
         !contains(github.event.pull_request.labels.*.name, 'DO NOT MERGE') &&
         !contains(github.event.pull_request.title, 'DO NOT MERGE')
-      )
+      ))
     # A workflow_call consumer sets its own fleet via `with.runner_labels`; the
     # org direct paths (pull_request/workflow_dispatch) leave it empty and route
     # org-aware (#175, ADR 0030): non-Verjson callers to GitHub-hosted
-    # ubuntu-24.04. Verjson preflight cannot resolve a cross-repository dispatch
-    # target until after scheduling, so it always takes the untrusted lane.
+    # ubuntu-24.04. Verjson preflight always takes the untrusted lane.
     # Downstream gate uses the resolved target visibility (#225, ADR 0035).
     runs-on: ${{ inputs.runner_labels && fromJSON(inputs.runner_labels) || github.repository_owner != 'Verjson' && 'ubuntu-24.04' || fromJSON(vars.VERJSON_RUNNER_UNTRUSTED || vars.VERJSON_RUNNER_DEFAULT || '["self-hosted","general"]') }}
     # This job combines the former 10-minute freshness and classification jobs.
@@ -193,7 +184,7 @@ jobs:
     steps:
       - name: Record preflight runner timing
         env:
-          GH_TOKEN: ${{ secrets.ORG_ADMIN_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -uo pipefail
           assigned_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -211,32 +202,10 @@ jobs:
             echo "::notice::phase=preflight runner_assigned_at=$assigned_at initial_queue_seconds=unknown"
           fi
 
-      - name: Constrain merge target to this org (fail closed)
-        id: target_guard
-        run: |
-          set -euo pipefail
-          # Everything below drives `gh pr view/merge` against TARGET_REPO under
-          # ORG_ADMIN_TOKEN. `repository` is a free-form workflow_dispatch input,
-          # so an arbitrary value would aim the admin-merge machinery at another
-          # org — a cross-repo admin-merge escalation (#119; Tequity ADR-0027,
-          # tequityapp/tequity-ui#16). Require an exact `<owner>/<repo>` whose
-          # owner is THIS org (github.repository_owner via env — never hardcode);
-          # anything else (foreign owner, or a malformed target) fails closed.
-          # The default path (`repository` unset → github.repository) is
-          # same-owner and passes.
-          owner="${TARGET_REPO%%/*}"
-          # GitHub's owner/repo charset only — also keeps whitespace, backticks,
-          # and newlines out of the log interpolations below (annotation injection).
-          if [[ ! "$TARGET_REPO" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] || [ "$owner" != "$GITHUB_REPOSITORY_OWNER" ]; then
-            echo "::error::refusing to run the merge gate against '$TARGET_REPO': target must be a repo owned by '$GITHUB_REPOSITORY_OWNER'."
-            exit 1
-          fi
-          echo "merge target '$TARGET_REPO' is within org '$GITHUB_REPOSITORY_OWNER'."
-
       - name: Resolve target repo visibility (routes the gate runner, #170)
         id: target_visibility
         env:
-          GH_TOKEN: ${{ secrets.ORG_ADMIN_TOKEN || github.token }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           # `runs-on` expressions only see event/inputs context, and on the
@@ -254,30 +223,11 @@ jobs:
           echo "target_private=$target_private" >> "$GITHUB_OUTPUT"
           echo "::notice::phase=preflight target_repo=$TARGET_REPO target_private=${target_private:-unknown}"
 
-      - name: Require merge credentials (fail closed on missing secrets)
-        id: require_secrets
-        env:
-          GH_TOKEN: ${{ secrets.ORG_ADMIN_TOKEN }}
-        run: |
-          set -euo pipefail
-          # Every gate step below drives `gh pr view/merge` under ORG_ADMIN_TOKEN.
-          # On the org direct paths this org secret is always present; a cross-org
-          # workflow_call consumer supplies it (and the model keys) via
-          # `secrets: inherit` (ADR 0022). If it's empty the run would otherwise
-          # die much later in an opaque `gh` auth error (#131) — fail fast here
-          # with an actionable message. Pure env check: never echo the token.
-          if [ -z "${GH_TOKEN:-}" ]; then
-            echo "::error::merge gate has no ORG_ADMIN_TOKEN. A cross-org caller must pass \`secrets: inherit\` and define ORG_ADMIN_TOKEN (plus the model keys) in its own org; an org repo needs the ORG_ADMIN_TOKEN org secret."
-            exit 1
-          fi
-          echo "merge credentials present."
-
       - name: Update branch if behind; hold on conflict
         id: freshness
         env:
-          # Org-admin token: pushes the base merge onto the (possibly sibling)
-          # PR branch and comments — GITHUB_TOKEN can't reach other repos.
-          GH_TOKEN: ${{ secrets.ORG_ADMIN_TOKEN }}
+          # Event token: updates/comments only in the repository owning this run.
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           REPO="$TARGET_REPO"
@@ -381,9 +331,8 @@ jobs:
         id: classify
         if: steps.freshness.outputs.proceed == 'true'
         env:
-          # Org-admin token: classification must read sibling repos
-          # (submodule verification) and, for cross-repo dispatch, the target.
-          GH_TOKEN: ${{ secrets.ORG_ADMIN_TOKEN }}
+          # Event token: classification reads this PR and public submodule refs.
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           REPO="$TARGET_REPO"
@@ -566,7 +515,7 @@ jobs:
       contents: read
       pull-requests: write
       issues: write
-      actions: read
+      actions: write
     env:
       LANE: ${{ needs.preflight.outputs.lane }}
       LANE_REASON: ${{ needs.preflight.outputs.reason }}
@@ -596,7 +545,7 @@ jobs:
       - name: Wait once for the rest of CI to be green
         id: ci_wait
         env:
-          GH_TOKEN: ${{ secrets.ORG_ADMIN_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
           ALLOW_ABSENT_CHECKS: ${{ inputs.allow_absent_checks || false }}
         run: |
           set -euo pipefail
@@ -802,7 +751,7 @@ jobs:
         with:
           repository: ${{ env.TARGET_REPO }}
           ref: ${{ needs.preflight.outputs.head_sha }}
-          token: ${{ secrets.ORG_ADMIN_TOKEN }}
+          token: ${{ github.token }}
           fetch-depth: 2
 
       # Cost/latency optimization (#120): when main is active a green PR keeps
@@ -820,7 +769,7 @@ jobs:
         id: rereview
         if: needs.preflight.outputs.lane == 'ai'
         env:
-          GH_TOKEN: ${{ secrets.ORG_ADMIN_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           # GitHub runs `run:` under `bash -e`, and `set -uo pipefail` does NOT
           # clear that. Explicitly disable errexit so a transient or no-match
@@ -911,7 +860,7 @@ jobs:
         id: prep
         if: needs.preflight.outputs.lane == 'ai' && steps.rereview.outputs.skip_model != 'true'
         env:
-          GH_TOKEN: ${{ secrets.ORG_ADMIN_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
           DEPENDENCY_MAJOR: ${{ needs.preflight.outputs.dependency_major }}
         run: |
           set -euo pipefail
@@ -1046,7 +995,7 @@ jobs:
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          github_token: ${{ secrets.ORG_ADMIN_TOKEN }}
+          github_token: ${{ github.token }}
           # Renovate opens PRs as a bot actor; without this the action
           # refuses to run (majors and non-standard bot PRs reach this lane).
           allowed_bots: "renovate,renovate[bot],mend[bot]"
@@ -1073,7 +1022,7 @@ jobs:
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          github_token: ${{ secrets.ORG_ADMIN_TOKEN }}
+          github_token: ${{ github.token }}
           allowed_bots: "renovate,renovate[bot],mend[bot]"
           prompt: ${{ steps.prep.outputs.review_prompt }}
           claude_args: |
@@ -1099,7 +1048,7 @@ jobs:
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          github_token: ${{ secrets.ORG_ADMIN_TOKEN }}
+          github_token: ${{ github.token }}
           allowed_bots: "renovate,renovate[bot],mend[bot]"
           prompt: ${{ steps.prep.outputs.review_prompt }}
           claude_args: |
@@ -1159,7 +1108,7 @@ jobs:
         id: submit
         if: needs.preflight.outputs.lane == 'ai'
         env:
-          GH_TOKEN: ${{ secrets.ORG_ADMIN_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
           # On a base-merge-only re-fire (#120) the model never ran; reuse the
           # synthesized approved verdict from the rereview step. Otherwise prefer
           # the latest non-empty model verdict: second escalation, then first
@@ -1232,7 +1181,8 @@ jobs:
           ' <<<"$VERDICT")
           body="$body
 
-          <!-- ai-review-head:${HEAD_SHA} patchid:${PATCH_ID:-} model:${MODEL} -->"
+          <!-- ai-review-head:${HEAD_SHA} patchid:${PATCH_ID:-} model:${MODEL} -->
+          <!-- ai-review-run:${GITHUB_RUN_ID} -->"
           if [ "$(jq -r .blocking <<<"$VERDICT")" = true ]; then
             # A token may be the PR author's identity. GitHub forbids a user
             # reviewing their own PR, but the non-zero result must still block
@@ -1255,6 +1205,46 @@ jobs:
 
             $body"
           fi
+
+      - name: Build trusted merge attestation
+        env:
+          VERDICT: ${{ steps.submit.outputs.verdict }}
+        run: |
+          set -euo pipefail
+          dir="$RUNNER_TEMP/merge-attestation"
+          rm -rf "$dir"
+          mkdir -m 700 "$dir"
+          followups='[]'
+          if [ -n "${VERDICT:-}" ]; then
+            followups="$(jq -c '.followups // []' <<<"$VERDICT")"
+          fi
+          jq -n \
+            --arg repository "$TARGET_REPO" \
+            --argjson pr_number "$PR_NUMBER" \
+            --arg head_sha "$EXPECTED_HEAD_SHA" \
+            --argjson run_id "$GITHUB_RUN_ID" \
+            --argjson followups "$followups" \
+            '{version:1, repository:$repository, pr_number:$pr_number,
+              head_sha:$head_sha, run_id:$run_id, followups:$followups}' \
+            >"$dir/attestation.json"
+
+      - name: Upload trusted merge attestation
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: merge-attestation-${{ github.run_id }}
+          path: ${{ runner.temp }}/merge-attestation/attestation.json
+          retention-days: 1
+          if-no-files-found: error
+
+      - name: Dispatch trusted merge continuation
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh workflow run ai-privileged-merge.yml --repo "$TARGET_REPO" \
+            -f pr_number="$PR_NUMBER" \
+            -f expected_head_sha="$EXPECTED_HEAD_SHA" \
+            -f source_run_id="$GITHUB_RUN_ID"
 
       # --- CI telemetry (best-effort). Every step is `continue-on-error` so it
       # can NEVER fail or block the gate, and it stays dormant until
@@ -1339,8 +1329,9 @@ jobs:
 
       - name: Authoritative merge recheck and squash-merge
         id: merge
+        if: ${{ false }}
         env:
-          GH_TOKEN: ${{ secrets.ORG_ADMIN_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
           ALLOW_ABSENT_CHECKS: ${{ inputs.allow_absent_checks || false }}
         run: |
           set -euo pipefail
@@ -1471,63 +1462,3 @@ jobs:
           gh pr merge "$PR_NUMBER" --repo "$REPO" --squash --admin --delete-branch \
             --match-head-commit "$EXPECTED_HEAD_SHA"
           echo "::notice::phase=merge result=merged elapsed_seconds=$(( $(date +%s) - merge_started_epoch )) lane=$LANE"
-
-      - name: File follow-up issues for non-blocking findings
-        if: ${{ !cancelled() && steps.merge.outcome == 'success' && steps.submit.outputs.verdict != '' }}
-        env:
-          GH_TOKEN: ${{ secrets.ORG_ADMIN_TOKEN }}
-          VERDICT: ${{ steps.submit.outputs.verdict }}
-        run: |
-          set -uo pipefail
-          REPO="$TARGET_REPO"
-          # Only file for findings on a PR that actually merged — an open PR may
-          # still fix them on the next push. Check state, not step success (the
-          # merge step also exits 0 when a PR is held or already closed).
-          state=$(gh pr view "$PR_NUMBER" --repo "$REPO" --json state --jq .state 2>/dev/null || echo "")
-          if [ -z "$state" ]; then
-            echo "::warning::Could not read PR #$PR_NUMBER state; skipping follow-up filing."
-            exit 0
-          fi
-          if [ "$state" != "MERGED" ]; then
-            echo "PR #$PR_NUMBER is $state, not MERGED; no follow-ups filed."
-            exit 0
-          fi
-
-          mapfile -t items < <(jq -c '(.followups // [])[]' <<<"$VERDICT" 2>/dev/null)
-          if [ "${#items[@]}" -eq 0 ]; then
-            echo "No follow-ups in the verdict."
-            exit 0
-          fi
-
-          # Fetch the follow-up markers already filed for this repo once. Dedup is
-          # per-finding (content-hashed), so a partial-failure re-run re-files only
-          # the missing findings, not the whole batch — nothing is silently lost.
-          # Label-filtered list → no search-index lag.
-          existing=$(gh issue list --repo "$REPO" --label ai-review-followup --state all --limit 200 \
-            --json body --jq '.[].body' 2>/dev/null || true)
-
-          gh label create ai-review-followup --repo "$REPO" --color FBCA04 \
-            --description "Non-blocking finding surfaced by the AI merge gate" 2>/dev/null || true
-
-          for f in "${items[@]}"; do
-            loc=$(jq -r '.location // "?"' <<<"$f")
-            note=$(jq -r '.note // ""' <<<"$f")
-            [ -z "$note" ] && continue
-            key=$(printf '%s|%s' "$loc" "$note" | sha1sum | cut -c1-12)
-            marker="<!-- ai-review-followup:pr$PR_NUMBER:$key -->"
-            if printf '%s' "$existing" | grep -qF "$marker"; then
-              echo "Follow-up already filed for $loc"
-              continue
-            fi
-            short=$(printf '%s' "$note" | tr '\n' ' ' | cut -c1-70)
-            # The backticks in the single-quoted format are literal Markdown.
-            # shellcheck disable=SC2016
-            body=$(printf '%s\n\nNon-blocking finding from the merge-gate review of #%s (approved and merged).\n\n**Location:** `%s`\n\n%s' \
-              "$marker" "$PR_NUMBER" "$loc" "$note")
-            if gh issue create --repo "$REPO" --title "AI-review follow-up: $short" \
-                 --body "$body" --label ai-review-followup >/dev/null 2>&1; then
-              echo "Filed follow-up for $loc"
-            else
-              echo "::warning::Could not file follow-up for $loc"
-            fi
-          done

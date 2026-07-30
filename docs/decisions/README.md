@@ -11,6 +11,7 @@ Reverse-chronological index of org-level decisions.
 <!-- BEGIN ADR INDEX -->
 | # | Date | Decision |
 |---|------|----------|
+| [0036](0036-separate-pr-review-from-privileged-merge/README.md) | 2026-07-30 | Separate PR review from privileged merge authority |
 | [0035](0035-variable-driven-runner-lanes/README.md) | 2026-07-30 | Variable-driven runner lanes with a temporary permissive lane |
 | [0034](0034-temporary-general-merge-gate/README.md) | 2026-07-29 | Temporarily route Verjson merge gates through general runners |
 | [0033](0033-self-hosted-runner-policy-by-visibility/README.md) | 2026-07-29 | Route runners by repository visibility, on configurable self-hosted pools |

@@ -1,34 +1,48 @@
 #!/usr/bin/env bash
-# Pins the two-runner-job merge-gate shape and exercises the immediate,
-# authoritative merge recheck introduced for Verjson/.github#104. The shipped
-# merge run block remains the single source of truth.
+# Pins the three-job split trust-boundary shape and exercises the immediate,
+# authoritative merge recheck introduced for Verjson/.github#104 and separated
+# from PR-controlled execution by #230. The shipped run blocks remain the
+# single source of truth.
 set -uo pipefail
 
 here="$(cd "$(dirname "$0")" && pwd)"
 repo_root="$(cd "$here/../.." && pwd)"
 wf="$repo_root/.github/workflows/ai-review-merge.yml"
+privileged_wf="$repo_root/.github/workflows/ai-privileged-merge.yml"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 fails=0
 pass() { printf 'ok   - %s\n' "$1"; }
 fail() { printf 'FAIL - %s\n' "$1"; fails=$((fails + 1)); }
 
-[ -f "$wf" ] || { echo "FAIL - workflow not found: $wf"; exit 1; }
+[ -f "$wf" ] && [ -f "$privileged_wf" ] \
+  || { echo "FAIL - split workflow files not found"; exit 1; }
 
-# The AI path may request only two runners: one preflight and one gate. Step
-# consolidation is intentional; restoring any former job silently regresses
-# queue exposure even if the shell behavior remains correct.
+# The logical gate has exactly three jobs across two workflows: unprivileged
+# preflight + review and one privileged metadata-only merger.
 jobs="$(awk '
   /^jobs:$/ { in_jobs=1; next }
   in_jobs && /^  [A-Za-z0-9_-]+:$/ { sub(/^  /, ""); sub(/:$/, ""); print }
 ' "$wf")"
 [ "$jobs" = $'preflight\ngate' ] \
-  && pass "workflow has exactly preflight + gate runner jobs" \
-  || fail "expected only preflight and gate jobs, got: $(tr '\n' ' ' <<<"$jobs")"
+  && pass "review workflow declares exactly preflight + gate" \
+  || fail "unexpected gate jobs: $(tr '\n' ' ' <<<"$jobs")"
 
-[ "$(grep -c '^    runs-on:' "$wf")" -eq 2 ] \
-  && pass "AI path has at most two runner assignments" \
-  || fail "expected exactly two runs-on assignments"
+[ "$(( $(grep -c '^    runs-on:' "$wf") + $(grep -c '^    runs-on:' "$privileged_wf") ))" -eq 3 ] \
+  && pass "split gate declares exactly three runner assignments" \
+  || fail "expected exactly three split-workflow runs-on assignments"
+
+trusted_job="$(awk '
+  /^  privileged_merge:$/ { cap = 1 }
+  cap { print }
+' "$privileged_wf")"
+grep -q '^  pull_request_target:' "$privileged_wf" \
+  && grep -q 'secrets\.ORG_ADMIN_TOKEN' <<<"$trusted_job" \
+  && ! grep -qE 'uses:|actions/checkout|actions/cache|upload-artifact|download-artifact|GITHUB_(ENV|OUTPUT)' <<<"$trusted_job" \
+  && grep -q 'trusted_workflow_id=' <<<"$trusted_job" \
+  && grep -q -- '--match-head-commit "$EXPECTED_HEAD_SHA"' <<<"$trusted_job" \
+  && pass "live privileged merger is trusted-metadata-only and provenance/head bound" \
+  || fail "live privileged merger can consume PR code or lost provenance/head binding"
 
 preflight_timeout="$(awk '/^  preflight:/{f=1} f&&/timeout-minutes:/{print; exit}' "$wf")"
 gate_timeout="$(awk '/^  gate:/{f=1} f&&/timeout-minutes:/{print; exit}' "$wf")"
