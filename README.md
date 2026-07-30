@@ -38,8 +38,8 @@ jobs:
     uses: Verjson/.github/.github/workflows/actionlint.yml@bfecdd0111582d0ddada558e6b4d0cadd9b488bd
 ```
 
-Callers outside `Verjson` use `ubuntu-24.04` by default. Verjson callers use
-`[self-hosted, isolated, linux, x64]`; `github-hosted-runner: true` is an
+Callers outside `Verjson` use `ubuntu-24.04` by default. Verjson callers
+temporarily use `[self-hosted, general]`; `github-hosted-runner: true` is an
 explicit compatibility escape hatch, not the organization default.
 
 The caller owns all triggers and path filters; `workflow_call` never runs on its

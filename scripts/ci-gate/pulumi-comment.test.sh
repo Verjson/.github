@@ -32,7 +32,7 @@ preview_job="$(job_block preview)"
 # but the property THIS test owns is narrower and unchanged: validation's pool is
 # fixed by policy, never chosen by the caller. `inputs.runner` must stay absent.
 printf '%s\n' "$validate_job" | grep -qF "github.repository_owner != 'Verjson'" \
-  && printf '%s\n' "$validate_job" | grep -qF 'vars.VERJSON_RUNNER_ISOLATED' \
+  && printf '%s\n' "$validate_job" | grep -qF '["self-hosted","general"]' \
   && printf '%s\n' "$validate_job" | grep -qF "'ubuntu-24.04'" \
   && ! printf '%s\n' "$validate_job" | grep -qF 'inputs.runner' \
   && pass "validation keeps a policy-fixed pool the caller cannot redirect" \
