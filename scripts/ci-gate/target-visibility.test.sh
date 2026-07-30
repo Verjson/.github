@@ -85,14 +85,14 @@ rc="$(run_step '' 1)"
   && pass "failed lookup exits 0 and publishes an empty target_private (#170)" \
   || fail "failed lookup aborted the step or published a non-empty value ($rc)"
 
-# (d) The temporary speed-first policy keeps the visibility output for
-# diagnostics but must not route Verjson gate jobs by visibility.
-gate_routing="$(grep -n "needs.preflight.outputs.target_private == 'false'" "$wf" || true)"
-{ [ -z "$gate_routing" ] \
-    && grep -q "target_private: \${{ steps.target_visibility.outputs.target_private }}" "$wf" \
-    && [ "$(grep -cF "fromJSON('[\"self-hosted\",\"general\"]')" "$wf")" -ge 2 ]; } \
-  && pass "gate routing is visibility-independent during the temporary general-pool exception" \
-  || fail "gate routing drifted from the temporary general-pool exception"
+# (d) Visibility selects independent variables even though both currently point
+# at the permissive general lane. Unknown visibility must take untrusted.
+{ grep -q "target_private: \${{ steps.target_visibility.outputs.target_private }}" "$wf" \
+    && grep -qF "github.event.repository.private == true" "$wf" \
+    && grep -qF "needs.preflight.outputs.target_private == 'true'" "$wf" \
+    && [ "$(grep -cF 'VERJSON_RUNNER_UNTRUSTED' "$wf")" -ge 2 ]; } \
+  && pass "preflight and gate route unknown visibility through the untrusted variable" \
+  || fail "gate routing drifted from the default/untrusted variable policy"
 
 if [ "$fails" -eq 0 ]; then
   echo "All tests passed."

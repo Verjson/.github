@@ -76,14 +76,15 @@ runs_on_parameterized="$(grep -cE "runs-on: \\\$\{\{ inputs\.runner_labels && fr
   && pass "both gate jobs' runs-on prefer inputs.runner_labels then fall back to the org pool" \
   || fail "runs-on is not runner_labels-parameterized on both jobs (got ${runs_on_parameterized:-0}/2)"
 
-# (f) Verjson direct gate jobs temporarily use the provider-neutral general
-# pool. Non-Verjson consumers retain the hosted fallback and can always pass
-# runner_labels for their own organization-isolated fleet.
+# (f) Verjson gate jobs expose independent default/untrusted variables while
+# both keep the compatible general fallback during the permissive exception.
+# Non-Verjson consumers retain the hosted fallback and explicit fleet input.
 grep -qE "github\.repository_owner != 'Verjson' && 'ubuntu-24\.04'" "$wf" \
-  && [ "$(grep -cF "fromJSON('[\"self-hosted\",\"general\"]')" "$wf")" -ge 2 ] \
-  && ! grep -qF "fromJSON('[\"self-hosted\",\"isolated\",\"linux\",\"x64\"]')" "$wf" \
-  && pass "Verjson gate jobs use general while cross-org routing stays portable" \
-  || fail "temporary general gate routing or cross-org portability drifted"
+  && [ "$(grep -cF 'VERJSON_RUNNER_DEFAULT' "$wf")" -ge 2 ] \
+  && [ "$(grep -cF 'VERJSON_RUNNER_UNTRUSTED' "$wf")" -ge 2 ] \
+  && [ "$(grep -cF '["self-hosted","general"]' "$wf")" -ge 2 ] \
+  && pass "Verjson gate jobs use variable lanes while cross-org routing stays portable" \
+  || fail "variable gate routing or cross-org portability drifted"
 
 # (g) The dispatch-target guard stays org-RELATIVE (github.repository_owner via
 # env), never hardcoded to 'Verjson'. Under workflow_call GITHUB_REPOSITORY_OWNER

@@ -68,7 +68,8 @@ done
 # Three tiers, resolved in order:
 #   1. an explicit `runner` input                      — per-caller override
 #   2. caller outside Verjson                          — 'ubuntu-24.04'
-#   3. every Verjson caller                            — persistent general lane
+#   3. private Verjson repository                     — default org variable
+#   4. public or unresolved Verjson repository        — untrusted org variable
 #
 # Every case below evaluates the REAL `runs-on:` expression awk-extracted from
 # the workflow (single source of truth — no copy of any expression lives here).
@@ -109,7 +110,7 @@ cat >"$evaluator" <<'JS'
 // validated against real semantics, not against a model that only happens to
 // agree with the polarity in use today.
 const vm = require('node:vm');
-const [, , raw, repository, runnerInput, priv, varDefault, varIsolated] = process.argv;
+const [, , raw, repository, runnerInput, priv, varDefault, varUntrusted] = process.argv;
 const body = raw.trim().replace(/^\$\{\{/, '').replace(/\}\}$/, '');
 const github = {
   repository,
@@ -118,7 +119,7 @@ const github = {
 };
 const inputs = { runner: runnerInput };
 // An unset Actions variable is the empty string, not undefined.
-const vars = { VERJSON_RUNNER_DEFAULT: varDefault, VERJSON_RUNNER_ISOLATED: varIsolated };
+const vars = { VERJSON_RUNNER_DEFAULT: varDefault, VERJSON_RUNNER_UNTRUSTED: varUntrusted };
 const fromJSON = (value) => JSON.parse(value);
 // GitHub Actions string equality and contains() are case-insensitive; JS === is not.
 // This evaluator is therefore stricter than production. `contains` is kept even
@@ -180,10 +181,10 @@ assert_no_ambient() {
 assert_no_ambient '${{ process.env.HOME }}' process
 assert_no_ambient '${{ require("node:fs") }}' require
 
-# assert_route <workflow> <job> <repo> <runner-input> <private> <var-default> <var-isolated> <expected> <label>
+# assert_route <workflow> <job> <repo> <runner-input> <private> <var-default> <var-untrusted> <expected> <label>
 assert_route() {
   local workflow="$1" job="$2" repository="$3" runner_input="$4" priv="$5"
-  local var_default="$6" var_isolated="$7" expected="$8" label="$9"
+  local var_default="$6" var_untrusted="$7" expected="$8" label="$9"
   local expression resolved
   expression="$(extract_runs_on "$workflow" "$job")"
   if [ -z "$expression" ]; then
@@ -191,7 +192,7 @@ assert_route() {
     return
   fi
   resolved="$(node "$evaluator" "$expression" "$repository" "$runner_input" \
-    "$priv" "$var_default" "$var_isolated" 2>&1)" || {
+    "$priv" "$var_default" "$var_untrusted" 2>&1)" || {
     fail "$label — evaluating '$expression' failed: $resolved"
     return
   }
@@ -220,28 +221,29 @@ while read -r wf_name job; do
   wf="$workflows/$wf_name"
   name="${wf_name%.yml} $job"
 
-  # Tier 3 — all Verjson repositories use the online managed general lane while
-  # the visibility-based security hardening is paused (#212, ADR 0034).
-  assert_route "$wf" "$job" Verjson/verjson-authn '' true '' '' \
-    "$GENERAL" "$name — private Verjson repo routes to the general self-hosted pool"
+  # Both live variables temporarily select general, but each visibility class
+  # must consult its own variable so #204 can harden public work with one flip.
+  assert_route "$wf" "$job" Verjson/verjson-authn '' true \
+    '["self-hosted","private-canary"]' '["self-hosted","public-canary"]' \
+    '["self-hosted","private-canary"]' "$name — private Verjson repo uses VERJSON_RUNNER_DEFAULT"
 
-  # Public and unresolved-visibility Verjson jobs deliberately share that lane.
-  assert_route "$wf" "$job" Verjson/.github '' false '' '' \
-    "$GENERAL" "$name — public Verjson repo routes to the general self-hosted pool"
+  assert_route "$wf" "$job" Verjson/.github '' false \
+    '["self-hosted","private-canary"]' '["self-hosted","public-canary"]' \
+    '["self-hosted","public-canary"]' "$name — public Verjson repo uses VERJSON_RUNNER_UNTRUSTED"
 
-  assert_route "$wf" "$job" Verjson/verjson-authn '' '' '' '' \
-    "$GENERAL" "$name — unresolved visibility routes to the general self-hosted pool"
+  assert_route "$wf" "$job" Verjson/verjson-authn '' '' \
+    '["self-hosted","private-canary"]' '["self-hosted","public-canary"]' \
+    '["self-hosted","public-canary"]' "$name — unresolved visibility fails safe to VERJSON_RUNNER_UNTRUSTED"
 
   # Tier 2 — the published package stays usable outside the org.
   assert_route "$wf" "$job" Acme/widgets '' true '' '' \
     'ubuntu-24.04' "$name — caller outside Verjson stays portable on hosted"
 
-  # Retired pool variables cannot redirect Verjson jobs away from general.
-  assert_route "$wf" "$job" Verjson/verjson-authn '' true '["self-hosted","do"]' '' \
-    "$GENERAL" "$name — VERJSON_RUNNER_DEFAULT cannot redirect the general pool"
+  assert_route "$wf" "$job" Verjson/verjson-authn '' true '' '' \
+    "$GENERAL" "$name — missing variables fall back to the compatible general lane"
 
-  assert_route "$wf" "$job" Verjson/.github '' false '' '["self-hosted","do-isolated"]' \
-    "$GENERAL" "$name — VERJSON_RUNNER_ISOLATED cannot redirect the general pool"
+  assert_route "$wf" "$job" Verjson/.github '' false '["self-hosted","default-only"]' '' \
+    '["self-hosted","default-only"]' "$name — untrusted falls back to default during migration"
 
   # A configured pool must never leak to an external caller's job.
   assert_route "$wf" "$job" Acme/widgets '' true '["self-hosted","do"]' '["self-hosted","do-isolated"]' \
@@ -287,9 +289,8 @@ done
 # ADR 0033 is built on, so the sweep has to bind every `runs-on:` line that
 # exists, not a list someone has to remember to update.
 #
-# Prefixes legitimately differ (with/without the `runner` override,
-# actionlint's hosted opt-in), but every Verjson terminal route must select the
-# same provider-neutral lane.
+# Prefixes legitimately differ, but every routed job must expose both lane
+# variables and preserve the compatible general fallback.
 # --------------------------------------------------------------------------
 policy_files="node-ci.yml node-release.yml notify-umbrella.yml helm-ci.yml ui-ci.yml pulumi-ci.yml actionlint.yml"
 deviant=""
@@ -300,7 +301,9 @@ for name in $policy_files; do
     job_count=$((job_count + 1))
     value="${line#*runs-on:}"
     value="${value# }"
-    if ! grep -qF "fromJSON('[\"self-hosted\",\"general\"]')" <<<"$value"; then
+    if ! grep -qF 'VERJSON_RUNNER_DEFAULT' <<<"$value" \
+        || ! grep -qF 'VERJSON_RUNNER_UNTRUSTED' <<<"$value" \
+        || ! grep -qF '["self-hosted","general"]' <<<"$value"; then
       deviant="$deviant$name: $line"$'\n'
     fi
   done <<EOF
@@ -313,7 +316,7 @@ done
   || fail "sweep found only $job_count routed jobs — extraction is broken"
 
 [ -z "$deviant" ] \
-  && pass "every routed job terminates on the provider-neutral general lane" \
+  && pass "every routed job exposes default/untrusted variables with a compatible fallback" \
   || fail "job(s) deviate from the routing policy:"$'\n'"$deviant"
 
 if [ "$fails" -eq 0 ]; then
