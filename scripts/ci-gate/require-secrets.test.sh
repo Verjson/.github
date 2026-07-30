@@ -87,14 +87,15 @@ chmod +x "$tmp/bin/gh" "$tmp/bin/sleep"
 
 sha=0123456789abcdef0123456789abcdef01234567
 green='{"headRefOid":"'"$sha"'","isDraft":false,"labels":[],"state":"OPEN","files":[],"statusCheckRollup":[{"name":"gate","status":"COMPLETED","conclusion":"SUCCESS","detailsUrl":"https://github.com/Verjson/example/actions/runs/99/job/1"},{"name":"build","status":"COMPLETED","conclusion":"SUCCESS"}]}'
-trusted_run='{"workflow_id":42,"head_sha":"'"$sha"'","event":"pull_request","conclusion":"success","repository":{"full_name":"Verjson/example"}}'
+trusted_run='{"id":99,"workflow_id":42,"head_sha":"'"$sha"'","event":"pull_request","conclusion":"success","created_at":"2026-07-30T10:00:00Z","run_started_at":"2026-07-30T10:05:00Z","repository":{"full_name":"Verjson/example"}}'
+trusted_runs='{"workflow_runs":['"$trusted_run"']}'
 run_case() {
   local fixture="$1" token="${2-present}" expected="${3-$sha}"
   : >"$tmp/merge.log"
   : >"$tmp/view-count"
   PATH="$tmp/bin:$PATH" PR_FIXTURE="$fixture" MERGE_LOG="$tmp/merge.log" \
     VIEW_COUNT="$tmp/view-count" PR_FIXTURE_FINAL="${PR_FIXTURE_FINAL:-}" \
-    RUN_FIXTURE="${RUN_FIXTURE:-$trusted_run}" \
+    RUN_FIXTURE="${RUN_FIXTURE:-$trusted_runs}" \
     GH_TOKEN="$token" TARGET_REPO=Verjson/example TARGET_OWNER=Verjson \
     GITHUB_REPOSITORY=Verjson/example PR_NUMBER=7 EXPECTED_HEAD_SHA="$expected" \
     bash "$script" >/dev/null 2>&1
@@ -121,14 +122,15 @@ workflow_change="${green/\"files\":[]/\"files\":[{\"path\":\".github\\/workflows
 run_case "$workflow_change" \
   && fail "PR-controlled workflow change was accepted" \
   || pass "workflow changes require a human merge"
-spoofed_run="${trusted_run/\"workflow_id\":42/\"workflow_id\":777}"
+spoofed_run="${trusted_runs/\"workflow_id\":42/\"workflow_id\":777}"
 RUN_FIXTURE="$spoofed_run" run_case "$green" \
   && fail "spoofed gate workflow identity was accepted" \
   || pass "spoofed gate workflow identity is rejected"
-newer_pending="${green/\"name\":\"build\"/\"name\":\"gate\",\"status\":\"IN_PROGRESS\",\"conclusion\":null,\"detailsUrl\":\"https:\\/\\/github.com\\/Verjson\\/example\\/actions\\/runs\\/100\\/job\\/1\"},{\"name\":\"build\"}"
-run_case "$newer_pending" \
+newer_pending_run='{"id":100,"workflow_id":42,"head_sha":"'"$sha"'","event":"pull_request","conclusion":null,"created_at":"2026-07-30T10:01:00Z","run_started_at":"2026-07-30T10:01:01Z","repository":{"full_name":"Verjson/example"}}'
+reordered_runs='{"workflow_runs":['"$newer_pending_run"','"$trusted_run"']}'
+RUN_FIXTURE="$reordered_runs" run_case "$green" \
   && fail "an older success bypassed a newer pending re-review" \
-  || pass "newest gate run controls re-review admission"
+  || pass "explicit run timestamps make newest gate control re-review admission"
 PR_FIXTURE_FINAL="$red" run_case "$green" \
   && fail "a final-read check regression was accepted" \
   || pass "checks are revalidated immediately before merge"

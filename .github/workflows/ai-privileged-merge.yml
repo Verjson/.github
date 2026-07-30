@@ -48,6 +48,21 @@ jobs:
           [[ "$trusted_workflow_sha" =~ ^[0-9a-f]{40}$ ]] ||
             { echo "::error::trusted workflow revision is unavailable"; exit 1; }
 
+          newest_trusted_gate_run() {
+            gh api "repos/$TARGET_REPO/actions/runs?head_sha=$EXPECTED_HEAD_SHA&event=pull_request&per_page=100" |
+              jq -ce --argjson id "$trusted_workflow_id" --arg sha "$trusted_workflow_sha" '
+                [.workflow_runs[] |
+                  select(
+                    (.workflow_id == $id) or
+                    any(.referenced_workflows[]?;
+                      (.path | startswith("Verjson/.github/.github/workflows/ai-review-merge.yml@")) and
+                      .sha == $sha)
+                  )] |
+                sort_by([(.created_at // ""), .id]) |
+                last // empty
+              '
+          }
+
           for attempt in $(seq 1 80); do
             meta="$(gh pr view "$PR_NUMBER" --repo "$TARGET_REPO" \
               --json headRefOid,isDraft,labels,state,statusCheckRollup,files)"
@@ -67,37 +82,24 @@ jobs:
               exit 1
             fi
 
-            gate_state="$(jq -r '[.statusCheckRollup[]? |
-              select((.name // .context) == "gate")] | last |
-              (.conclusion // .state // "ABSENT")' <<<"$meta")"
-            gate_url="$(jq -r '[.statusCheckRollup[]? |
-              select((.name // .context) == "gate")] | last |
-              (.detailsUrl // "")' <<<"$meta")"
-            if [[ "$gate_state" != "SUCCESS" && "$gate_state" != "PENDING" &&
-                  "$gate_state" != "EXPECTED" && "$gate_state" != "ABSENT" ]]; then
-              echo "::error::newest gate check failed"
-              exit 1
-            fi
-            if [[ "$gate_url" =~ /actions/runs/([0-9]+)/ ]]; then
-              gate_run_id="${BASH_REMATCH[1]}"
-              gate_run="$(gh api "repos/$TARGET_REPO/actions/runs/$gate_run_id")"
-              if jq -e --argjson id "$trusted_workflow_id" --arg sha "$trusted_workflow_sha" '
-                   (.workflow_id == $id) or
-                   any(.referenced_workflows[]?;
-                     (.path | startswith("Verjson/.github/.github/workflows/ai-review-merge.yml@")) and
-                     .sha == $sha)
-                 ' <<<"$gate_run" >/dev/null &&
-                 [ "$(jq -r '.head_sha // ""' <<<"$gate_run")" = "$EXPECTED_HEAD_SHA" ] &&
-                 [ "$(jq -r '.event // ""' <<<"$gate_run")" = "pull_request" ] &&
-                 [ "$(jq -r '.conclusion // ""' <<<"$gate_run")" = "success" ] &&
-                 [ "$(jq -r '.repository.full_name // ""' <<<"$gate_run")" = "$TARGET_REPO" ]; then
-                provenance=trusted
-              else
-                echo "::error::gate check provenance mismatch"
+            gate_run="$(newest_trusted_gate_run || true)"
+            provenance=pending
+            if [ -n "$gate_run" ]; then
+              gate_run_id="$(jq -r '.id // 0' <<<"$gate_run")"
+              gate_conclusion="$(jq -r '.conclusion // "pending"' <<<"$gate_run")"
+              if [ "$gate_conclusion" != "pending" ] && [ "$gate_conclusion" != "success" ]; then
+                echo "::error::newest trusted gate run failed"
                 exit 1
               fi
-            else
-              provenance=pending
+              if [ "$gate_conclusion" = "success" ] &&
+                 jq -e --arg needle "/actions/runs/$gate_run_id/" '
+                   any(.statusCheckRollup[]?;
+                     (.name // .context) == "gate" and
+                     (.conclusion // .state) == "SUCCESS" and
+                     ((.detailsUrl // "") | contains($needle)))
+                 ' <<<"$meta" >/dev/null; then
+                provenance=trusted
+              fi
             fi
 
             failed="$(jq '[.statusCheckRollup[]? |
@@ -127,27 +129,16 @@ jobs:
           jq -e '([.labels[].name | ascii_upcase | gsub("[ _-]+";" ")] |
             (index("HOLD") or index("DO NOT MERGE")) | not)' <<<"$final" >/dev/null ||
             { echo "::error::PR became held"; exit 1; }
-          final_gate_state="$(jq -r '[.statusCheckRollup[]? |
-            select((.name // .context) == "gate")] | last |
-            (.conclusion // .state // "ABSENT")' <<<"$final")"
-          [ "$final_gate_state" = "SUCCESS" ] ||
-            { echo "::error::newest gate is not green before merge"; exit 1; }
-          final_gate_url="$(jq -r '[.statusCheckRollup[]? |
-            select((.name // .context) == "gate")] | last |
-            (.detailsUrl // "")' <<<"$final")"
-          [[ "$final_gate_url" =~ /actions/runs/([0-9]+)/ ]] ||
-            { echo "::error::trusted gate disappeared before merge"; exit 1; }
-          final_gate_run="$(gh api "repos/$TARGET_REPO/actions/runs/${BASH_REMATCH[1]}")"
-          jq -e --argjson id "$trusted_workflow_id" --arg sha "$trusted_workflow_sha" \
-            --arg head "$EXPECTED_HEAD_SHA" --arg repo "$TARGET_REPO" '
-              ((.workflow_id == $id) or
-               any(.referenced_workflows[]?;
-                 (.path | startswith("Verjson/.github/.github/workflows/ai-review-merge.yml@")) and
-                 .sha == $sha)) and
-              .head_sha == $head and .event == "pull_request" and
-              .conclusion == "success" and .repository.full_name == $repo
-            ' <<<"$final_gate_run" >/dev/null ||
-            { echo "::error::trusted gate changed before merge"; exit 1; }
+          final_gate_run="$(newest_trusted_gate_run || true)"
+          final_gate_id="$(jq -r '.id // 0' <<<"${final_gate_run:-{}}")"
+          [ "$(jq -r '.conclusion // ""' <<<"${final_gate_run:-{}}")" = "success" ] &&
+            jq -e --arg needle "/actions/runs/$final_gate_id/" '
+              any(.statusCheckRollup[]?;
+                (.name // .context) == "gate" and
+                (.conclusion // .state) == "SUCCESS" and
+                ((.detailsUrl // "") | contains($needle)))
+            ' <<<"$final" >/dev/null ||
+            { echo "::error::newest trusted gate changed before merge"; exit 1; }
           final_failed="$(jq '[.statusCheckRollup[]? |
             select((.name // .context) as $n | $n != "preflight" and $n != "gate" and $n != "privileged_merge") |
             select(if .state then
