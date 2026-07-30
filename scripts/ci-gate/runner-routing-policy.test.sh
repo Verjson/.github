@@ -214,7 +214,7 @@ assert_route() {
 # Evaluate both owner branches instead of rejecting the hosted label text:
 # Verjson must always resolve to an isolated/default self-hosted pool, while an
 # external consumer keeps the required portable hosted route.
-for privileged_workflow in ai-review-merge.yml ai-privileged-merge.yml; do
+for privileged_workflow in ai-privileged-merge.yml; do
   privileged_path="$workflows/$privileged_workflow"
   grep -qF 'VERJSON_RUNNER_ISOLATED || vars.VERJSON_RUNNER_DEFAULT' "$privileged_path" \
     && pass "$privileged_workflow privileged job prefers isolated then default" \

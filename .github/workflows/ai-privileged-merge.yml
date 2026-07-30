@@ -63,9 +63,16 @@ jobs:
               '
           }
 
+          workflow_files_changed() {
+            local files
+            files="$(gh api --paginate "repos/$TARGET_REPO/pulls/$PR_NUMBER/files?per_page=100" \
+              --jq '.[].filename')" || return 2
+            grep -qE '^\.github/workflows/' <<<"$files"
+          }
+
           for attempt in $(seq 1 80); do
             meta="$(gh pr view "$PR_NUMBER" --repo "$TARGET_REPO" \
-              --json headRefOid,isDraft,labels,state,statusCheckRollup,files)"
+              --json headRefOid,isDraft,labels,state,statusCheckRollup)"
             current_head="$(jq -r '.headRefOid // ""' <<<"$meta")"
             [ "$current_head" = "$EXPECTED_HEAD_SHA" ] ||
               { echo "::error::stale head"; exit 1; }
@@ -77,7 +84,13 @@ jobs:
               (index("HOLD") or index("DO NOT MERGE")) | not)' <<<"$meta" >/dev/null ||
               { echo "::error::PR is held"; exit 1; }
 
-            if jq -e '[.files[].path] | any(startswith(".github/workflows/"))' <<<"$meta" >/dev/null; then
+            file_guard_rc=0
+            workflow_files_changed || file_guard_rc=$?
+            if [ "$file_guard_rc" -eq 2 ]; then
+              echo "::error::could not inspect the complete PR file list"
+              exit 1
+            fi
+            if [ "$file_guard_rc" -eq 0 ]; then
               echo "::error::workflow files changed; human merge required"
               exit 1
             fi
@@ -129,6 +142,16 @@ jobs:
           jq -e '([.labels[].name | ascii_upcase | gsub("[ _-]+";" ")] |
             (index("HOLD") or index("DO NOT MERGE")) | not)' <<<"$final" >/dev/null ||
             { echo "::error::PR became held"; exit 1; }
+          file_guard_rc=0
+          workflow_files_changed || file_guard_rc=$?
+          if [ "$file_guard_rc" -eq 2 ]; then
+            echo "::error::could not re-inspect the complete PR file list"
+            exit 1
+          fi
+          if [ "$file_guard_rc" -eq 0 ]; then
+            echo "::error::workflow files changed before merge; human merge required"
+            exit 1
+          fi
           final_gate_run="$(newest_trusted_gate_run || true)"
           [ -n "$final_gate_run" ] ||
             { echo "::error::trusted gate disappeared before merge"; exit 1; }

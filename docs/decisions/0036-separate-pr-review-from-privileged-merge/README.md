@@ -2,7 +2,7 @@
 
 - **Date:** 2026-07-30
 - **Issue:** [Verjson/.github#230](https://github.com/Verjson/.github/issues/230)
-- **Supersedes:** the single-context merge design in ADR 0022
+- **Supersedes:** ADR 0020's sibling-dispatch behavior and the single-context merge design in ADR 0022
 - **Refines:** ADR 0012, ADR 0020, ADR 0024, and ADR 0035
 
 ## Context
@@ -42,6 +42,11 @@ credentials, malformed identity, and stale heads. Immediately before the irrever
 operation it re-reads head, state, draft, hold, and complete check state. The merge API
 receives `--match-head-commit`.
 
+Workflow-file detection reads the complete paginated pull-files API, rather than the
+100-file-limited PR GraphQL field, and repeats immediately before merge. A workflow
+change hidden behind more than 100 padding files or introduced between admission and
+merge therefore fails closed.
+
 No validation result is carried through an artifact, cache, environment file, or job
 output. Verified workflow-run provenance plus GitHub's current check state for the
 immutable commit is the handoff.
@@ -54,6 +59,17 @@ automatic merge requires the consumer to install an equivalent base-branch-contr
 trusted merge workflow with its own credential. Until then, green validation terminates
 without auto-merge. Passing `secrets: inherit` must never be used to make an untrusted
 caller a privileged merge context.
+
+## Repository-local dispatch
+
+`workflow_dispatch` and `workflow_call` no longer accept a `repository` input.
+`TARGET_REPO` is always `github.repository`. Operators re-gate a PR by dispatching the
+workflow in the repository that owns that PR.
+
+This supersedes ADR 0020's same-organization sibling-dispatch allowance. Once
+`ORG_ADMIN_TOKEN` was removed from PR validation, `github.token` correctly became
+repository-scoped and could not read or update a sibling repository. Restoring a broad
+secret would collapse the trust boundary, so the convenience feature is retired.
 
 ## Consequences
 

@@ -81,7 +81,9 @@ reason; AI-lane merges leave a review.
   the required check stays fresh on the new head. Cost stays bounded: fast-lane
   synchronizes invoke no model, and the AI lane only runs after CI is green.
   Force a re-run with the `re-review` label (auto-consumed) or
-  `gh workflow run ai-review-merge.yml --repo Verjson/.github -f pr_number=<N> -f repository=<owner/repo>`.
+  `gh workflow run ai-review-merge.yml --repo <owner/repo> -f pr_number=<N>`.
+  Dispatch in the repository that owns the PR; sibling targets are intentionally
+  unsupported by the repository-scoped validation token.
 - Opt a PR out entirely with the `hold` label, a `DO NOT MERGE` title marker,
   or draft status — re-checked at merge time, so a late `hold` still stops the
   merge.

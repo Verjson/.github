@@ -88,7 +88,7 @@ jobs:
         run: bash scripts/ci-gate/review-comment.test.sh
       - name: merge gate — ai-review retry chain (ADR 0015, #64)
         run: bash scripts/ci-gate/ai-review-retry.test.sh
-      - name: merge gate — two-job queue shape and authoritative merge recheck (#104)
+      - name: merge gate — split three-job shape and authoritative merge recheck (#104, #230)
         run: bash scripts/ci-gate/gate-queue.test.sh
       - name: merge gate — runner-timing diagnostics survive bad timestamps (#106, ADR 0017)
         run: bash scripts/ci-gate/preflight-timing.test.sh
@@ -102,7 +102,7 @@ jobs:
         run: bash scripts/ci-gate/followup-issues.test.sh
       - name: merge gate — hold predicate and re-fire guards (ADR 0012, #51, #88)
         run: bash scripts/ci-gate/hold.test.sh
-      - name: merge gate — dispatch target constrained to org (#119, ADR 0020)
+      - name: merge gate — dispatch target fixed to the current repository (#230, ADR 0036)
         run: bash scripts/ci-gate/dispatch-target-guard.test.sh
       - name: merge gate — target visibility resolves fail-closed runner routing (#170)
         run: bash scripts/ci-gate/target-visibility.test.sh

@@ -18,32 +18,19 @@ fail() { printf 'FAIL - %s\n' "$1"; fails=$((fails + 1)); }
 [ -f "$wf" ] && [ -f "$privileged_wf" ] \
   || { echo "FAIL - split workflow files not found"; exit 1; }
 
-# The logical gate has exactly three jobs: unprivileged preflight + review and
-# one privileged metadata-only merger. The disabled compatibility declaration
-# in the reusable file preserves extract-based tests while the separately
-# triggered trusted workflow owns the live merge.
+# The logical gate has exactly three jobs across two workflows: unprivileged
+# preflight + review and one privileged metadata-only merger.
 jobs="$(awk '
   /^jobs:$/ { in_jobs=1; next }
   in_jobs && /^  [A-Za-z0-9_-]+:$/ { sub(/^  /, ""); sub(/:$/, ""); print }
 ' "$wf")"
-[ "$jobs" = $'preflight\ngate\nprivileged_merge' ] \
-  && pass "workflow declares exactly preflight + gate + privileged_merge" \
+[ "$jobs" = $'preflight\ngate' ] \
+  && pass "review workflow declares exactly preflight + gate" \
   || fail "unexpected gate jobs: $(tr '\n' ' ' <<<"$jobs")"
 
-[ "$(grep -c '^    runs-on:' "$wf")" -eq 3 ] \
-  && pass "workflow declares exactly three runner assignments" \
-  || fail "expected exactly three runs-on assignments"
-
-compat_privileged="$(awk '
-  /^  privileged_merge:$/ { cap = 1 }
-  cap && /^  [A-Za-z0-9_-]+:$/ && $0 != "  privileged_merge:" { exit }
-  cap { print }
-' "$wf")"
-grep -q '^    needs: gate$' <<<"$compat_privileged" \
-  && grep -qF 'if: ${{ false }}' <<<"$compat_privileged" \
-  && ! grep -q 'secrets\.ORG_ADMIN_TOKEN' <<<"$compat_privileged" \
-  && pass "compatibility merge declaration depends on gate and is inert/unprivileged" \
-  || fail "compatibility privileged_merge dependency/condition drifted"
+[ "$(( $(grep -c '^    runs-on:' "$wf") + $(grep -c '^    runs-on:' "$privileged_wf") ))" -eq 3 ] \
+  && pass "split gate declares exactly three runner assignments" \
+  || fail "expected exactly three split-workflow runs-on assignments"
 
 trusted_job="$(awk '
   /^  privileged_merge:$/ { cap = 1 }

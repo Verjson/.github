@@ -32,10 +32,9 @@ name: AI review + auto-merge
 # out with the `hold` label, a "DO NOT MERGE" title marker, or a draft.
 #
 # Cross-repo dispatch is bounded to THIS org (ADR 0020, #119). The optional
-# `repository` workflow_dispatch input lets an operator re-gate a *sibling*
-# Verjson repo, but the `target_guard` preflight step fails closed unless the
-# target is owned by github.repository_owner — so it can never aim the
-# ORG_ADMIN_TOKEN admin-merge machinery at a foreign org.
+# Operators re-gate by dispatching this workflow in the repository that owns
+# the PR. Cross-repository dispatch was retired by ADR 0036 because the
+# unprivileged github.token is intentionally repository-scoped.
 #
 # Cross-ORG distribution (ADR 0022, #128): this file is ALSO a `workflow_call`
 # reusable, so consumers in other orgs (e.g. tequityapp) pin it instead of
@@ -45,8 +44,8 @@ name: AI review + auto-merge
 # `pull_request`; an operator re-gates via `workflow_dispatch`; a cross-org
 # consumer adds a thin caller that `uses:` it under `workflow_call`. When called,
 # `github.repository`/`github.event`/`github.repository_owner` are inherited from
-# the CALLER, so `TARGET_REPO`, the PR number, and the `target_guard` org bound
-# all resolve to the consumer's own repo/org — never Verjson's. Consumers must
+# the CALLER, so `TARGET_REPO` and the PR number resolve to the consumer's own
+# repository. Consumers must
 # pass only the model credentials needed for review and, if their fleet differs
 # from the org gate pool, `with.runner_labels`. They must install their own
 # trusted merge workflow for auto-merge; this reusable never receives their
@@ -60,10 +59,8 @@ name: AI review + auto-merge
 #       secrets: inherit # model credentials only; never ORG_ADMIN_TOKEN
 #       with: { runner_labels: '["self-hosted","gate"]' }
 #
-# Downstream SINGLE-REPO copies that predate this and never dispatch cross-repo
-# should migrate to the reusable; until they do, the tighter Tequity ADR-0027
-# form (tequityapp/tequity-ui#16) — drop the `repository` input, pin
-# `TARGET_REPO: ${{ github.repository }}` — remains the safe copy default.
+# Downstream copies must also omit any repository input and pin the target to
+# the repository where the workflow executes.
 
 on:
   pull_request:
@@ -73,9 +70,6 @@ on:
       pr_number:
         description: PR number to review and (on pass) merge
         required: true
-      repository:
-        description: owner/repo the PR lives in (defaults to this repo)
-        required: false
       allow_absent_checks:
         description: >-
           Proceed even though the PR has NO CI checks at all. Absent checks are
@@ -87,10 +81,8 @@ on:
         default: false
   workflow_call:
     # Cross-org consumers pin this reusable and pass `secrets: inherit` (ADR
-    # 0022). pr_number/repository mirror the workflow_dispatch inputs so
-    # `env.PR_NUMBER` / `env.TARGET_REPO` resolve identically; a pull_request-
-    # triggered caller leaves them empty and the inherited `github.event`
-    # supplies them. `runner_labels` is REQUIRED: a consumer's org has no runner
+    # 0022). A pull_request-triggered caller leaves pr_number empty and the
+    # inherited event supplies it. `runner_labels` is REQUIRED: a consumer's org has no runner
     # for Verjson's `self-hosted,gate` pool, so omitting it would silently queue
     # the job forever on the wrong labels (#130) — requiring it fails the call
     # immediately with a clear message instead. Missing `secrets: inherit` is
@@ -98,10 +90,6 @@ on:
     inputs:
       pr_number:
         description: PR number to review; defaults to the caller's pull_request event
-        required: false
-        type: string
-      repository:
-        description: owner/repo the PR lives in; defaults to the caller repo
         required: false
         type: string
       runner_labels:
@@ -139,7 +127,7 @@ permissions:
 
 env:
   PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr_number }}
-  TARGET_REPO: ${{ inputs.repository || github.repository }}
+  TARGET_REPO: ${{ github.repository }}
 
 jobs:
   preflight:
@@ -170,8 +158,7 @@ jobs:
     # A workflow_call consumer sets its own fleet via `with.runner_labels`; the
     # org direct paths (pull_request/workflow_dispatch) leave it empty and route
     # org-aware (#175, ADR 0030): non-Verjson callers to GitHub-hosted
-    # ubuntu-24.04. Verjson preflight cannot resolve a cross-repository dispatch
-    # target until after scheduling, so it always takes the untrusted lane.
+    # ubuntu-24.04. Verjson preflight always takes the untrusted lane.
     # Downstream gate uses the resolved target visibility (#225, ADR 0035).
     runs-on: ${{ inputs.runner_labels && fromJSON(inputs.runner_labels) || github.repository_owner != 'Verjson' && 'ubuntu-24.04' || fromJSON(vars.VERJSON_RUNNER_UNTRUSTED || vars.VERJSON_RUNNER_DEFAULT || '["self-hosted","general"]') }}
     # This job combines the former 10-minute freshness and classification jobs.
@@ -215,28 +202,6 @@ jobs:
             echo "::notice::phase=preflight runner_assigned_at=$assigned_at initial_queue_seconds=unknown"
           fi
 
-      - name: Constrain merge target to this org (fail closed)
-        id: target_guard
-        run: |
-          set -euo pipefail
-          # Everything below drives `gh pr view/merge` against TARGET_REPO under
-          # ORG_ADMIN_TOKEN. `repository` is a free-form workflow_dispatch input,
-          # so an arbitrary value would aim the admin-merge machinery at another
-          # org — a cross-repo admin-merge escalation (#119; Tequity ADR-0027,
-          # tequityapp/tequity-ui#16). Require an exact `<owner>/<repo>` whose
-          # owner is THIS org (github.repository_owner via env — never hardcode);
-          # anything else (foreign owner, or a malformed target) fails closed.
-          # The default path (`repository` unset → github.repository) is
-          # same-owner and passes.
-          owner="${TARGET_REPO%%/*}"
-          # GitHub's owner/repo charset only — also keeps whitespace, backticks,
-          # and newlines out of the log interpolations below (annotation injection).
-          if [[ ! "$TARGET_REPO" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] || [ "$owner" != "$GITHUB_REPOSITORY_OWNER" ]; then
-            echo "::error::refusing to run the merge gate against '$TARGET_REPO': target must be a repo owned by '$GITHUB_REPOSITORY_OWNER'."
-            exit 1
-          fi
-          echo "merge target '$TARGET_REPO' is within org '$GITHUB_REPOSITORY_OWNER'."
-
       - name: Resolve target repo visibility (routes the gate runner, #170)
         id: target_visibility
         env:
@@ -261,8 +226,7 @@ jobs:
       - name: Update branch if behind; hold on conflict
         id: freshness
         env:
-          # Org-admin token: pushes the base merge onto the (possibly sibling)
-          # PR branch and comments — GITHUB_TOKEN can't reach other repos.
+          # Event token: updates/comments only in the repository owning this run.
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
@@ -367,8 +331,7 @@ jobs:
         id: classify
         if: steps.freshness.outputs.proceed == 'true'
         env:
-          # Org-admin token: classification must read sibling repos
-          # (submodule verification) and, for cross-repo dispatch, the target.
+          # Event token: classification reads this PR and public submodule refs.
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
@@ -1518,104 +1481,3 @@ jobs:
               echo "::warning::Could not file follow-up for $loc"
             fi
           done
-
-  privileged_merge:
-    needs: gate
-    if: ${{ false }}
-    runs-on: ${{ github.repository_owner == 'Verjson' && fromJSON(vars.VERJSON_RUNNER_ISOLATED || vars.VERJSON_RUNNER_DEFAULT || '["self-hosted","gate"]') || 'ubuntu-24.04' }}
-    timeout-minutes: 45
-    permissions:
-      contents: read
-    env:
-      EXPECTED_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-      PR_NUMBER: ${{ github.event.pull_request.number }}
-      TARGET_REPO: ${{ github.repository }}
-      TARGET_OWNER: ${{ github.repository_owner }}
-      GH_TOKEN: ${{ github.token }}
-    steps:
-      - name: Privileged merge from trusted metadata only
-        run: |
-          set -euo pipefail
-          if [ -z "${GH_TOKEN:-}" ]; then
-            echo "::error::trusted merge has no ORG_ADMIN_TOKEN"
-            exit 1
-          fi
-          if [[ ! "$TARGET_REPO" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] ||
-             [ "${TARGET_REPO%%/*}" != "$TARGET_OWNER" ] ||
-             [ "$TARGET_REPO" != "$GITHUB_REPOSITORY" ]; then
-            echo "::error::target repository identity mismatch"
-            exit 1
-          fi
-          if ! [[ "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]] ||
-             ! [[ "$EXPECTED_HEAD_SHA" =~ ^[0-9a-f]{40}$ ]]; then
-            echo "::error::invalid PR identity or expected head SHA"
-            exit 1
-          fi
-
-          for attempt in $(seq 1 80); do
-            meta="$(gh pr view "$PR_NUMBER" --repo "$TARGET_REPO" \
-              --json headRefOid,isDraft,labels,state,statusCheckRollup)"
-            current_head="$(jq -r '.headRefOid // ""' <<<"$meta")"
-            if [ "$current_head" != "$EXPECTED_HEAD_SHA" ]; then
-              echo "::error::stale head: expected=$EXPECTED_HEAD_SHA current=$current_head"
-              exit 1
-            fi
-            if [ "$(jq -r '.state // ""' <<<"$meta")" != "OPEN" ]; then
-              echo "::error::PR is no longer open"
-              exit 1
-            fi
-            if jq -e '.isDraft or ([.labels[].name | ascii_upcase | gsub("[ _-]+";" ")] | index("HOLD") or index("DO NOT MERGE"))' <<<"$meta" >/dev/null; then
-              echo "::error::PR is draft or held"
-              exit 1
-            fi
-
-            failed="$(jq '[.statusCheckRollup[]? |
-              select((.name // .context) as $n | $n != "preflight" and $n != "gate" and $n != "privileged_merge") |
-              select(if .state then
-                ((.state // "") | IN("SUCCESS","PENDING","EXPECTED") | not)
-              else
-                (.status == "COMPLETED" and ((.conclusion // "") | IN("SUCCESS","NEUTRAL","SKIPPED") | not))
-              end)] | length' <<<"$meta")"
-            pending="$(jq '[.statusCheckRollup[]? |
-              select((.name // .context) as $n | $n != "preflight" and $n != "gate" and $n != "privileged_merge") |
-              select(if .state then (.state | IN("PENDING","EXPECTED")) else .status != "COMPLETED" end)] | length' <<<"$meta")"
-            if [ "$failed" -gt 0 ]; then
-              echo "::error::one or more required checks failed"
-              exit 1
-            fi
-            if [ "$pending" -eq 0 ]; then
-              break
-            fi
-            if [ "$attempt" -eq 80 ]; then
-              echo "::error::required gate/checks did not become green"
-              exit 1
-            fi
-            sleep 30
-          done
-
-          final="$(gh pr view "$PR_NUMBER" --repo "$TARGET_REPO" \
-            --json headRefOid,isDraft,labels,state,statusCheckRollup)"
-          [ "$(jq -r '.headRefOid // ""' <<<"$final")" = "$EXPECTED_HEAD_SHA" ] ||
-            { echo "::error::head changed before merge"; exit 1; }
-          [ "$(jq -r '.state // ""' <<<"$final")" = "OPEN" ] ||
-            { echo "::error::PR closed before merge"; exit 1; }
-          jq -e '.isDraft | not' <<<"$final" >/dev/null ||
-            { echo "::error::PR became draft before merge"; exit 1; }
-          jq -e '([.labels[].name | ascii_upcase | gsub("[ _-]+";" ")] |
-            (index("HOLD") or index("DO NOT MERGE")) | not)' <<<"$final" >/dev/null ||
-            { echo "::error::PR became held before merge"; exit 1; }
-          final_failed="$(jq '[.statusCheckRollup[]? |
-            select((.name // .context) as $n | $n != "preflight" and $n != "gate" and $n != "privileged_merge") |
-            select(if .state then
-              ((.state // "") | IN("SUCCESS","PENDING","EXPECTED") | not)
-            else
-              (.status == "COMPLETED" and ((.conclusion // "") | IN("SUCCESS","NEUTRAL","SKIPPED") | not))
-            end)] | length' <<<"$final")"
-          final_pending="$(jq '[.statusCheckRollup[]? |
-            select((.name // .context) as $n | $n != "preflight" and $n != "gate" and $n != "privileged_merge") |
-            select(if .state then (.state | IN("PENDING","EXPECTED")) else .status != "COMPLETED" end)] | length' <<<"$final")"
-          [ "$final_failed" -eq 0 ] && [ "$final_pending" -eq 0 ] ||
-            { echo "::error::checks changed before merge"; exit 1; }
-
-          gh pr merge "$PR_NUMBER" --repo "$TARGET_REPO" --squash --admin \
-            --delete-branch --match-head-commit "$EXPECTED_HEAD_SHA"

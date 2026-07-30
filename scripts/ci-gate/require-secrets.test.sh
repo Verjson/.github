@@ -75,6 +75,18 @@ if [ "$1" = "api" ] && [[ "$2" == *"/commits/main" ]]; then
   printf 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n'
   exit 0
 fi
+if [ "$1" = "api" ] && [[ "$*" == *"/pulls/7/files"* ]]; then
+  [ "${FILES_API_FAIL:-false}" != true ] || exit 1
+  count="$(cat "$FILES_COUNT" 2>/dev/null || echo 0)"
+  count=$((count + 1))
+  printf '%s\n' "$count" >"$FILES_COUNT"
+  if [ "$count" -gt 1 ] && [ -n "${FILES_FIXTURE_FINAL:-}" ]; then
+    printf '%s' "$FILES_FIXTURE_FINAL"
+  else
+    printf '%s' "${FILES_FIXTURE:-}"
+  fi
+  exit 0
+fi
 if [ "$1" = "api" ] && [[ "$2" == *"/actions/runs"* ]]; then
   printf '%s\n' "$RUN_FIXTURE"
   exit 0
@@ -95,8 +107,12 @@ run_case() {
   local fixture="$1" token="${2-present}" expected="${3-$sha}"
   : >"$tmp/merge.log"
   : >"$tmp/view-count"
+  : >"$tmp/files-count"
   PATH="$tmp/bin:$PATH" PR_FIXTURE="$fixture" MERGE_LOG="$tmp/merge.log" \
     VIEW_COUNT="$tmp/view-count" PR_FIXTURE_FINAL="${PR_FIXTURE_FINAL:-}" \
+    FILES_COUNT="$tmp/files-count" FILES_FIXTURE="${FILES_FIXTURE:-}" \
+    FILES_FIXTURE_FINAL="${FILES_FIXTURE_FINAL:-}" \
+    FILES_API_FAIL="${FILES_API_FAIL:-false}" \
     RUN_FIXTURE="${RUN_FIXTURE:-$trusted_runs}" \
     GH_TOKEN="$token" TARGET_REPO=Verjson/example TARGET_OWNER=Verjson \
     GITHUB_REPOSITORY=Verjson/example PR_NUMBER=7 EXPECTED_HEAD_SHA="$expected" \
@@ -121,10 +137,10 @@ draft="${green/\"isDraft\":false/\"isDraft\":true}"
 run_case "$draft" && fail "draft PR was accepted" || pass "draft PR is rejected"
 held="${green/\"labels\":[]/\"labels\":[{\"name\":\"hold\"}]}"
 run_case "$held" && fail "held PR was accepted" || pass "held PR is rejected"
-workflow_change="${green/\"files\":[]/\"files\":[{\"path\":\".github\\/workflows\\/caller.yml\"}]}"
-run_case "$workflow_change" \
+padding="$(for i in $(seq 1 100); do printf 'docs/pad-%03d.md\n' "$i"; done)"
+FILES_FIXTURE="${padding}"$'\n''.github/workflows/caller.yml'$'\n' run_case "$green" \
   && fail "PR-controlled workflow change was accepted" \
-  || pass "workflow changes require a human merge"
+  || pass "paginated workflow changes beyond 100 files require a human merge"
 spoofed_run="${trusted_runs/\"workflow_id\":42/\"workflow_id\":777}"
 RUN_FIXTURE="$spoofed_run" run_case "$green" \
   && fail "spoofed gate workflow identity was accepted" \
@@ -137,6 +153,12 @@ RUN_FIXTURE="$reordered_runs" run_case "$green" \
 PR_FIXTURE_FINAL="$red" run_case "$green" \
   && fail "a final-read check regression was accepted" \
   || pass "checks are revalidated immediately before merge"
+FILES_FIXTURE_FINAL='.github/workflows/late.yml'$'\n' run_case "$green" \
+  && fail "workflow change appearing before final merge was accepted" \
+  || pass "workflow files are rechecked immediately before merge"
+FILES_API_FAIL=true run_case "$green" \
+  && fail "unreadable paginated file list was accepted" \
+  || pass "unreadable paginated file list fails closed"
 
 if [ "$fails" -eq 0 ]; then
   echo "All tests passed."
