@@ -65,9 +65,9 @@ Missing variables retain the compatibility fallback `["self-hosted","general"]`.
 `VERJSON_RUNNER_UNTRUSTED` may temporarily fall back to `VERJSON_RUNNER_DEFAULT` during
 rollout. Malformed configured JSON fails workflow evaluation loudly.
 
-The merge-gate preflight uses event-repository visibility. The gate job uses the target
-visibility resolved by preflight; failed visibility lookup therefore selects the
-untrusted lane.
+The merge-gate preflight always uses the untrusted lane because target visibility is
+not available before it is scheduled. The gate job uses the target visibility resolved
+by preflight; failed visibility lookup therefore remains on the untrusted lane.
 
 ### Temporary permissive posture
 
