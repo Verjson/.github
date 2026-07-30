@@ -34,11 +34,11 @@ preview_job="$(job_block preview)"
 
 # Validation is its own credential-free job. No caller-supplied command or
 # checkout may inherit write, OIDC, package, cloud, or Git credentials.
-# Routing follows ADR 0033 (visibility tiers on configurable self-hosted pools),
+# Routing follows ADR 0034's temporary general-pool exception,
 # but the property THIS test owns is narrower and unchanged: validation's pool is
 # fixed by policy, never chosen by the caller. `inputs.runner` must stay absent.
 contains_literal "$validate_job" "github.repository_owner != 'Verjson'" \
-  && contains_literal "$validate_job" 'vars.VERJSON_RUNNER_ISOLATED' \
+  && contains_literal "$validate_job" '["self-hosted","general"]' \
   && contains_literal "$validate_job" "'ubuntu-24.04'" \
   && ! contains_literal "$validate_job" 'inputs.runner' \
   && pass "validation keeps a policy-fixed pool the caller cannot redirect" \

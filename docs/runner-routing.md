@@ -7,17 +7,12 @@ for the *why* of the groups, this for the *how* of day-to-day routing.
 
 ## TL;DR
 
-- **Verjson-owned callers route on repository VISIBILITY, not on an allowlist**
-  ([ADR 0033](decisions/0033-self-hosted-runner-policy-by-visibility/README.md)).
-  A **private** repo gets the general self-hosted pool (`[self-hosted, GCP]`
-  today); a **public** one — or any event carrying no visibility — gets the
-  ephemeral `[self-hosted, isolated, linux, x64]` pool. Unresolved visibility
-  falling to `isolated` is deliberate: fork code must never land on the
-  persistent pool. Trusted callers may still select `gate` or another admitted
-  pool through the `runner` input.
-- **Both pools are org variables**: `VERJSON_RUNNER_DEFAULT` and
-  `VERJSON_RUNNER_ISOLATED`. Moving providers (GCP → DigitalOcean) is a variable
-  flip, not a PR to this repo. Unset resolves to the literal defaults.
+- **All Verjson-owned callers temporarily use `[self-hosted, general]`**
+  ([ADR 0034](decisions/0034-temporary-general-merge-gate/README.md)). This
+  throughput-first exception supersedes ADR 0033's visibility split until
+  isolated capacity and CI security hardening are deliberately restored.
+  Callers may still select another admitted pool through an explicit `runner`
+  input.
 - **No Verjson job may route to `ubuntu-24.04`.** GitHub-hosted minutes are
   unfunded for this org (#189), so hosted is a guaranteed failure, not a
   fallback. It is the outside-caller tier only.
@@ -40,7 +35,8 @@ for the *why* of the groups, this for the *how* of day-to-day routing.
 
 | Label      | Runners                                            | Group    | Use for                                                                                                   |
 | ---------- | -------------------------------------------------- | -------- | --------------------------------------------------------------------------------------------------------- |
-| `GCP`      | `gha-runner-3..6`, `gha-gate-1..4` (8 GCE VMs)     | `GCP`    | **Canonical general-pool label.** Ordinary CI: build / test / lint, releases, `notify-umbrella`. GCE image → ambient `gh`/git/node. |
+| `general`  | `gha-general-1..6`                                 | managed general | **Canonical temporary lane.** All Verjson workflows use it while CI security hardening is paused under ADR 0034. |
+| `GCP`      | legacy GCE-compatible runners                     | `GCP`    | Legacy provider-specific selector retained for compatibility; do not use for new workflow routing. |
 | `gce`      | the same 8 GCE VMs (dual-labeled `GCP` + `gce`)    | `GCP`    | **Clean alias of `GCP`** — identical runners (invariant restored in ADR 0011). Deprecated for new work; reconcile `gce` → `GCP` opportunistically. |
 | `gate`     | `gha-gate-1..4`, `gha-meta-1`, `gha-meta-2` | `GCP` | Private-repository `freshness`, `classify`, `ai-review`, and `ai-merge`. ADR 0029 repurposes the former meta pair after public targets moved hosted, raising capacity from four to six. |
 | `meta`     | `gha-meta-1`, `gha-meta-2` | `GCP` | Identity/rollback label retained on the former `.github` self-gate lane. Both also carry `gate` under ADR 0029; public repositories remain denied by the group boundary. |
@@ -71,11 +67,10 @@ one-time on-box step owned by the runner-topology owner.
   [`helm-ci`](../.github/workflows/helm-ci.yml),
   [`ui-ci`](../.github/workflows/ui-ci.yml) and
   [`pulumi-ci`](../.github/workflows/pulumi-ci.yml). Tier order: explicit
-  `runner` input → caller outside Verjson gets `ubuntu-24.04` → Verjson private
-  repo gets `vars.VERJSON_RUNNER_DEFAULT` → everything else gets
-  `vars.VERJSON_RUNNER_ISOLATED`. `runner-routing-policy.test.sh` evaluates the
-  real extracted expression for all nine jobs, so the table is asserted as
-  behaviour rather than as a pattern. `pulumi-ci`'s `validate` and
+  `runner` input → caller outside Verjson gets `ubuntu-24.04` → every Verjson
+  caller gets `[self-hosted, general]`. `runner-routing-policy.test.sh`
+  evaluates the real extracted expression for all nine jobs, so the table is
+  asserted as behaviour rather than as a pattern. `pulumi-ci`'s `validate` and
   `preview-admission` deliberately expose no `runner` input — they sit on the
   ADR 0027/0029 credential boundary. See
   [Reusable Node workflow controls](node-workflows.md) for timeout, cache, and
@@ -85,14 +80,10 @@ one-time on-box step owned by the runner-topology owner.
   Docker socket**, so these jobs fail there. `gha-docker-1` is currently the only
   `docker`-labeled runner, so such jobs serialize on it (capacity/redundancy is
   tracked in issue #31 item 6).
-- **The org AI gate** (`ai-review-merge.yml`): private-repository gate jobs — `freshness`,
-  `classify`, `ai-review`, `ai-merge` — run on `gate`. They call `gh`, so they need
-  the dedicated GCE subset (which has ambient `gh` and excludes the `hostinger`
-  overflow); routing `freshness`/`classify` to `GCP` let them land on `hostinger`
-  and fail (#52). Public target repositories, including `Verjson/.github`, use
-  the isolated ephemeral lane instead. Outside organizations retain hosted
-  portability. This retires the public repository's dependency on the
-  persistent `meta` lane; ADR 0030 supersedes ADR 0028 for this route.
+- **The org AI gate** (`ai-review-merge.yml`): every Verjson target temporarily
+  uses `[self-hosted, general]`; outside organizations retain hosted
+  portability. ADR 0034 records the temporary trust-boundary reduction and the
+  restoration work in #204.
   ADR 0029 adds `gate` to the two retired meta runners so private gate capacity
   rises from four to six without making them general `GCP` bulk-CI runners.
 - **Secondary / overflow** → `[self-hosted, manish]`.
@@ -127,11 +118,9 @@ These bit us during the hosted→self-hosted migration
 
 ## Drift & migration
 
-- **Canonical general label is `GCP`.** `gce` is a legacy alias on the same
-  runners; normalize `gce` → `GCP` opportunistically. Known remaining `gce`
-  users at time of writing (per issue #31 item 4): `verjson-cli`, `verjson-authz`,
-  `AiB`. This repo's own gate `classify` job was normalized in the PR that added
-  this doc.
+- **Canonical current label is `general`.** `GCP` and `gce` are legacy
+  provider-specific selectors; remove them from workflow routing as consumers
+  adopt the managed lane.
 - Verjson consumer workflows must not use `ubuntu-latest` or a literal
   `ubuntu-24.04`; use the reusable defaults or an explicit admitted self-hosted
   selector. Issue #173 tracks the isolated-pool deployment and migration proof.

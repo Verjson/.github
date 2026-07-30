@@ -40,7 +40,7 @@ unsafe_portable="$(
   || fail "hosted fallback reachable by a Verjson caller: $unsafe_portable"
 
 grep -qF "github.repository_owner != 'Verjson'" "$workflows/actionlint.yml" \
-  && grep -qF '["self-hosted","isolated","linux","x64"]' "$workflows/actionlint.yml" \
+  && grep -qF '["self-hosted","general"]' "$workflows/actionlint.yml" \
   && pass "actionlint preserves its bounded external hosted compatibility path" \
   || fail "actionlint runner contract drifted"
 
@@ -48,26 +48,33 @@ grep -qF 'runs-on: [self-hosted, general]' "$workflows/actions-ci.yml" \
   && pass "repository shell validation uses the temporary general pool" \
   || fail "actions-ci drifted from the temporary ADR 0034 runner exception"
 
+for local_workflow in \
+  node-cache-integration.yml \
+  rework-reconcile.yml \
+  runner-admission-reconcile.yml \
+  tag-major.yml; do
+  if grep -E '^    runs-on:' "$workflows/$local_workflow" \
+      | grep -qvF 'runs-on: [self-hosted, general]'; then
+    fail "$local_workflow contains a repository-local job outside the general lane"
+  else
+    pass "$local_workflow keeps every repository-local job on the general lane"
+  fi
+done
+
 
 # --------------------------------------------------------------------------
 # Runner routing policy (ADR 0033, supersedes the ADR 0031 allowlist).
 #
-# Four tiers, resolved in order:
+# Three tiers, resolved in order:
 #   1. an explicit `runner` input                      — per-caller override
 #   2. caller outside Verjson                          — 'ubuntu-24.04'
-#   3. Verjson PRIVATE repository                      — vars.VERJSON_RUNNER_DEFAULT
-#   4. anything else (public, or unresolved visibility) — vars.VERJSON_RUNNER_ISOLATED
-#
-# Tier 4 is the fail-SAFE terminal, not a fallback: if a job's visibility cannot
-# be resolved it must land on the ephemeral untrusted-PR lane, never on the
-# persistent pool. Getting that backwards would run fork code beside credentials.
+#   3. every Verjson caller                            — persistent general lane
 #
 # Every case below evaluates the REAL `runs-on:` expression awk-extracted from
 # the workflow (single source of truth — no copy of any expression lives here).
 # --------------------------------------------------------------------------
 
-ISOLATED='["self-hosted","isolated","linux","x64"]'
-GENERAL='["self-hosted","GCP"]'
+GENERAL='["self-hosted","general"]'
 
 # Extract the `runs-on:` value of one job block, verbatim.
 extract_runs_on() {
@@ -212,30 +219,28 @@ while read -r wf_name job; do
   wf="$workflows/$wf_name"
   name="${wf_name%.yml} $job"
 
-  # Tier 3 — the case that was silently broken: a private Verjson repo used to
-  # resolve to hosted (unfunded) or to a pool it is not admitted to (#182/#192).
+  # Tier 3 — all Verjson repositories use the online managed general lane while
+  # the visibility-based security hardening is paused (#212, ADR 0034).
   assert_route "$wf" "$job" Verjson/verjson-authn '' true '' '' \
     "$GENERAL" "$name — private Verjson repo routes to the general self-hosted pool"
 
-  # Tier 4 — public repos stay on the ephemeral untrusted-PR lane.
+  # Public and unresolved-visibility Verjson jobs deliberately share that lane.
   assert_route "$wf" "$job" Verjson/.github '' false '' '' \
-    "$ISOLATED" "$name — public Verjson repo routes to the isolated pool"
+    "$GENERAL" "$name — public Verjson repo routes to the general self-hosted pool"
 
-  # Tier 4 fail-safe — unresolved visibility must NOT reach the persistent pool.
   assert_route "$wf" "$job" Verjson/verjson-authn '' '' '' '' \
-    "$ISOLATED" "$name — unresolved visibility falls safe to isolated, not the persistent pool"
+    "$GENERAL" "$name — unresolved visibility routes to the general self-hosted pool"
 
   # Tier 2 — the published package stays usable outside the org.
   assert_route "$wf" "$job" Acme/widgets '' true '' '' \
     'ubuntu-24.04' "$name — caller outside Verjson stays portable on hosted"
 
-  # Configuration: the pools are org variables, so a provider migration
-  # (GCP -> DigitalOcean) is a variable flip, not a PR to this repository.
+  # Retired pool variables cannot redirect Verjson jobs away from general.
   assert_route "$wf" "$job" Verjson/verjson-authn '' true '["self-hosted","do"]' '' \
-    '["self-hosted","do"]' "$name — VERJSON_RUNNER_DEFAULT redirects the general pool"
+    "$GENERAL" "$name — VERJSON_RUNNER_DEFAULT cannot redirect the general pool"
 
   assert_route "$wf" "$job" Verjson/.github '' false '' '["self-hosted","do-isolated"]' \
-    '["self-hosted","do-isolated"]' "$name — VERJSON_RUNNER_ISOLATED redirects the isolated pool"
+    "$GENERAL" "$name — VERJSON_RUNNER_ISOLATED cannot redirect the general pool"
 
   # A configured pool must never leak to an external caller's job.
   assert_route "$wf" "$job" Acme/widgets '' true '["self-hosted","do"]' '["self-hosted","do-isolated"]' \
@@ -281,21 +286,10 @@ done
 # ADR 0033 is built on, so the sweep has to bind every `runs-on:` line that
 # exists, not a list someone has to remember to update.
 #
-# The canonical decision suffix is read from node-ci's `eligibility` job, so
-# this file still holds no copy of the policy. Prefixes legitimately differ
-# (with/without the `runner` override, actionlint's hosted opt-in); everything
-# from the visibility test onward must be byte-identical everywhere.
+# Prefixes legitimately differ (with/without the `runner` override,
+# actionlint's hosted opt-in), but every Verjson terminal route must select the
+# same provider-neutral lane.
 # --------------------------------------------------------------------------
-canonical="$(extract_runs_on "$workflows/node-ci.yml" eligibility)"
-suffix_marker='github.event.repository.private'
-canonical_suffix="${canonical#*"$suffix_marker"}"
-
-if [ -z "$canonical" ] || [ "$canonical_suffix" = "$canonical" ]; then
-  fail "could not derive the canonical routing suffix from node-ci eligibility"
-else
-  pass "canonical routing suffix derived from node-ci eligibility"
-fi
-
 policy_files="node-ci.yml node-release.yml notify-umbrella.yml helm-ci.yml ui-ci.yml pulumi-ci.yml actionlint.yml"
 deviant=""
 job_count=0
@@ -305,8 +299,7 @@ for name in $policy_files; do
     job_count=$((job_count + 1))
     value="${line#*runs-on:}"
     value="${value# }"
-    actual_suffix="${value#*"$suffix_marker"}"
-    if [ "$actual_suffix" != "$canonical_suffix" ]; then
+    if ! grep -qF "fromJSON('[\"self-hosted\",\"general\"]')" <<<"$value"; then
       deviant="$deviant$name: $line"$'\n'
     fi
   done <<EOF
@@ -319,7 +312,7 @@ done
   || fail "sweep found only $job_count routed jobs — extraction is broken"
 
 [ -z "$deviant" ] \
-  && pass "every routed job carries the byte-identical policy decision suffix" \
+  && pass "every routed job terminates on the provider-neutral general lane" \
   || fail "job(s) deviate from the routing policy:"$'\n'"$deviant"
 
 if [ "$fails" -eq 0 ]; then

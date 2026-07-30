@@ -17,7 +17,7 @@ jobs:
     # Serialize force-updates so two releases published in quick succession can't
     # race on the moving-tag push (last write wins deterministically).
     concurrency: tag-major
-    runs-on: [self-hosted, isolated, linux, x64]
+    runs-on: [self-hosted, general]
     steps:
       - name: Check out the released tag
         uses: actions/checkout@v7
