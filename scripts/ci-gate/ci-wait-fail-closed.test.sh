@@ -197,6 +197,18 @@ rc="$(run_wait '[{"name":"unit","status":"COMPLETED","conclusion":"FAILURE"}]')"
   && pass "a red rollup still fails the gate" \
   || fail "red rollup regressed ($rc)"
 
+# GitHub may expose a completed CheckRun before its conclusion field catches up.
+# It is neither green nor terminal-red until the conclusion is populated.
+ROLLUP_FILE2="$tmp/rollup2.json" ROLLUP_SWITCH_AFTER=1
+export ROLLUP_FILE2 ROLLUP_SWITCH_AFTER
+printf '%s' "$green_rollup" >"$ROLLUP_FILE2"
+rc="$(run_wait '[{"name":"unit","status":"COMPLETED","conclusion":null}]')"
+unset ROLLUP_FILE2 ROLLUP_SWITCH_AFTER
+{ [ "$rc" = "rc=0" ] && wait_out_has 'result=green' \
+    && ! wait_out_has 'result=failed'; } \
+  && pass "a completed CheckRun waits for its conclusion before deciding (#240)" \
+  || fail "a missing CheckRun conclusion was treated as terminal ($rc)"
+
 # renovate/stability-days is a commit StatusContext (context/state, no status);
 # it keeps polling to the lane ceiling and must not be mistaken for absent CI.
 rc="$(run_wait '[{"context":"renovate/stability-days","state":"PENDING"}]')"
@@ -374,6 +386,11 @@ rc="$(run_merge "$green_rollup" "$startup")"
 { [ "$rc" = "rc=1" ] && ! merged && merge_out_has 'result=startup-failure' && merge_out_has 'node-ci'; } \
   && pass "merge recheck refuses to merge past a startup_failure run (#143)" \
   || fail "merge recheck merged despite a startup_failure run ($rc)"
+
+rc="$(run_merge '[{"name":"unit","status":"COMPLETED","conclusion":null}]')"
+{ [ "$rc" = "rc=1" ] && ! merged && merge_out_has 'result=pending'; } \
+  && pass "merge recheck refuses a completed CheckRun without a conclusion (#240)" \
+  || fail "merge recheck misclassified a missing CheckRun conclusion ($rc)"
 
 # The merge step is where a name-keyed verdict actually costs something: an
 # unnamed startup_failure would be squash-merged. Both copies must key on the
