@@ -1181,7 +1181,8 @@ jobs:
           ' <<<"$VERDICT")
           body="$body
 
-          <!-- ai-review-head:${HEAD_SHA} patchid:${PATCH_ID:-} model:${MODEL} run:${GITHUB_RUN_ID} -->"
+          <!-- ai-review-head:${HEAD_SHA} patchid:${PATCH_ID:-} model:${MODEL} -->
+          <!-- ai-review-run:${GITHUB_RUN_ID} -->"
           if [ "$(jq -r .blocking <<<"$VERDICT")" = true ]; then
             # A token may be the PR author's identity. GitHub forbids a user
             # reviewing their own PR, but the non-zero result must still block
