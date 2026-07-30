@@ -551,6 +551,7 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NODE_AUTH_TOKEN }}
       - run: npm run build
+      - run: npm run typecheck --if-present
       - run: npm test
       - run: npm run lint --if-present
       - name: Bound npm cache upload
