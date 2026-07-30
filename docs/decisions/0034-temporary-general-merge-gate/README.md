@@ -22,6 +22,9 @@ Route Verjson-owned AI merge-gate preflight and review jobs through
 `["self-hosted","general"]` for both public and private repositories.
 Route this repository's shell/actionlint validation through the same pool so
 the policy change can validate without isolated GCP capacity.
+Set `VERJSON_RUNNER_ISOLATED` to `["self-hosted","general"]` and permit public
+Verjson repositories in the selected general runner group for the duration of
+the exception.
 
 Do not apply `isolated` labels to persistent hosts; those labels assert
 properties the DigitalOcean general fleet does not provide.
@@ -44,4 +47,6 @@ ADR 0033.
 
 Issue #204 must restore disposable public-PR capacity, a separate privileged
 gate lane, and isolated execution for this repository's shell/actionlint
-validation, then supersede this temporary decision with a new ADR.
+validation. It must also restore `VERJSON_RUNNER_ISOLATED` and remove public
+repository access from the persistent general runner group before superseding
+this temporary decision with a new ADR.
