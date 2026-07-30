@@ -107,12 +107,25 @@ be suspended, disable auto-merge and retain the unprivileged required check.
 
 ## Bounded recovery when Actions review approval is disabled
 
-**Amended 2026-07-30 for #241 and #242:** repository Actions review approval remains
-disabled by default. If that policy prevents the credential-free gate from publishing
-an otherwise non-blocking verdict, a repository administrator may recover one exact immutable head
-by applying `hold`, enabling Actions review approval only for this repository,
-rerunning the failed gate, disabling the permission again before merge, and verifying
-the disabled state. The temporary permission does not grant `ORG_ADMIN_TOKEN` or move
-it into pull-request-controlled execution. The permanent fix is to treat GitHub's
-policy-denial response like the existing self-approval denial: publish a non-approval
-audit comment while keeping unexpected publication errors fail-closed.
+**Amended 2026-07-30 for #241 and #242:** Actions review approval remains disabled
+by default at both organization and repository scope. GitHub will not accept a
+repository override while the organization capability is disabled. If that policy
+prevents the credential-free gate from publishing an otherwise non-blocking verdict,
+an organization owner may recover one exact immutable head only after applying `hold`,
+capturing the complete paginated repository ID set, and explicitly pinning every
+existing organization repository to disabled. The owner may then enable the
+organization capability, enable only this repository, and exhaustively verify every
+snapshotted repository except this one remains disabled; any pagination or API failure
+aborts recovery. Only after that verification may the owner rerun the failed gate for
+the held PR's exact immutable head.
+
+Before merge, disable this repository and the organization capability and verify both
+disabled states. Compare the complete post-window repository ID set with the snapshot.
+Any new repository aborts recovery and merge, triggers immediate policy disablement,
+and requires incident review because detection occurs after it may have inherited the
+temporary organization policy.
+
+The temporary permission does not grant `ORG_ADMIN_TOKEN` or move it into
+pull-request-controlled execution. The permanent fix is to treat GitHub's policy-denial
+response like the existing self-approval denial: publish a non-approval audit comment
+while keeping unexpected publication errors fail-closed.
