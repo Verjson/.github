@@ -2,7 +2,8 @@
 
 - **Date:** 2026-07-29
 - **Issue:** [Verjson/.github#204](https://github.com/Verjson/.github/issues/204)
-- **Temporarily supersedes:** ADR 0033 for AI merge-gate routing only
+- **Temporarily supersedes:** ADR 0033 for AI merge-gate and `.github`
+  repository validation routing
 
 ## Context
 
@@ -19,6 +20,8 @@ explicit restoration record in issue #204.
 
 Route Verjson-owned AI merge-gate preflight and review jobs through
 `["self-hosted","general"]` for both public and private repositories.
+Route this repository's shell/actionlint validation through the same pool so
+the policy change can validate without isolated GCP capacity.
 
 Do not apply `isolated` labels to persistent hosts; those labels assert
 properties the DigitalOcean general fleet does not provide.
@@ -39,5 +42,6 @@ Public PR gate processing temporarily shares persistent hosts with other
 Verjson work and therefore lacks the disposable-host boundary established by
 ADR 0033.
 
-Issue #204 must restore disposable public-PR capacity and a separate privileged
-gate lane, then supersede this temporary decision with a new ADR.
+Issue #204 must restore disposable public-PR capacity, a separate privileged
+gate lane, and isolated execution for this repository's shell/actionlint
+validation, then supersede this temporary decision with a new ADR.
