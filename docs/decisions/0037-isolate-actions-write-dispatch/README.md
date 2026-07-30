@@ -54,3 +54,13 @@ as a terminal no-op instead of a CI failure while preserving the human merge bou
 Revert the implementing PR. Do not return `actions: write` to a job that checks out or
 reviews PR-controlled content; if dispatch must be disabled, retain the unprivileged
 gate and require manual merge.
+
+## Private-consumer check visibility
+
+**Amended 2026-07-30 for #240:** the unprivileged, `ORG_ADMIN_TOKEN`-free gate also receives
+`checks: read`. GitHub's `statusCheckRollup` GraphQL field rejects the
+consumer-scoped token without that explicit permission on private repositories,
+so the gate cannot determine whether CI is green. The permission is read-only
+and stays in that review job; `checks: write` remains absent and
+`actions: write` remains isolated to the metadata-only dispatcher. No
+`ORG_ADMIN_TOKEN` is introduced into PR-controlled execution.

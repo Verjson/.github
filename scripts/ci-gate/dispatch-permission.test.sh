@@ -13,9 +13,15 @@ gate="$(awk '/^  gate:/{cap=1} cap&&/^  dispatch-merge:/{exit} cap{print}' "$wf"
 dispatch="$(awk '/^  dispatch-merge:/{cap=1} cap{print}' "$wf")"
 
 grep -q '^      actions: read$' <<<"$gate" \
+  && grep -q '^      checks: read$' <<<"$gate" \
   && ! grep -q '^      actions: write$' <<<"$gate" \
-  && pass "PR checkout/review gate has actions:read only" \
-  || fail "PR checkout/review gate retained actions:write"
+  && ! grep -q '^      checks: write$' <<<"$gate" \
+  && pass "PR checkout/review gate has actions/checks read only" \
+  || fail "PR checkout/review gate permission placement drifted"
+[ "$(grep -c '^      checks: read$' "$wf")" -eq 1 ] \
+  && ! grep -qE '^      checks: (read|write)$' <<<"$dispatch" \
+  && pass "checks:read is isolated to the PR review gate" \
+  || fail "checks permission escaped the PR review gate"
 [ "$(grep -c '^      actions: write$' "$wf")" -eq 1 ] \
   && grep -q '^      contents: read$' <<<"$dispatch" \
   && pass "only dispatch job has minimum contents/read + actions/write" \

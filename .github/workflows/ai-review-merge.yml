@@ -516,6 +516,7 @@ jobs:
       pull-requests: write
       issues: write
       actions: read
+      checks: read
     env:
       LANE: ${{ needs.preflight.outputs.lane }}
       LANE_REASON: ${{ needs.preflight.outputs.reason }}
@@ -1199,7 +1200,8 @@ jobs:
             case "$approval_error" in
               "Can not approve your own pull request" \
                 | "GraphQL: Can not approve your own pull request (addPullRequestReview)" \
-                | "GraphQL: GitHub Actions is not permitted to approve pull requests. (addPullRequestReview)") ;;
+                | "GraphQL: GitHub Actions is not permitted to approve pull requests. (addPullRequestReview)" \
+                | "failed to create review: GraphQL: GitHub Actions is not permitted to approve pull requests. (addPullRequestReview)") ;;
               *) echo "$approval_error" >&2; exit 1 ;;
             esac
             # The required gate check remains the enforcement
