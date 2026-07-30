@@ -32,6 +32,7 @@ literal_hosted="$(
 unsafe_portable="$(
   grep -HnE "^    runs-on:.*ubuntu-(24\\.04|latest)" "$workflows"/*.yml \
     | grep -v "github.repository_owner != 'Verjson' && 'ubuntu-24.04'" \
+    | grep -v "github.repository_owner == 'Verjson'.*|| 'ubuntu-24.04'" \
     | grep -v "inputs.github-hosted-runner" \
     || true
 )"
@@ -119,7 +120,14 @@ const github = {
 };
 const inputs = { runner: runnerInput };
 // An unset Actions variable is the empty string, not undefined.
-const vars = { VERJSON_RUNNER_DEFAULT: varDefault, VERJSON_RUNNER_UNTRUSTED: varUntrusted };
+const vars = {
+  VERJSON_RUNNER_DEFAULT: varDefault,
+  VERJSON_RUNNER_UNTRUSTED: varUntrusted,
+  // Privileged routing prefers an isolated lane and then the default lane.
+  // Existing evaluator call sites provide one private-lane fixture, so use it
+  // for both names; structural assertions below pin the preference order.
+  VERJSON_RUNNER_ISOLATED: varDefault,
+};
 const fromJSON = (value) => JSON.parse(value);
 // GitHub Actions string equality and contains() are case-insensitive; JS === is not.
 // This evaluator is therefore stricter than production. `contains` is kept even
@@ -200,6 +208,32 @@ assert_route() {
     && pass "$label" \
     || fail "$label (expected '$expected', got '$resolved')"
 }
+
+# The split merger has two declarations during the compatibility window: an
+# inert reusable-file declaration and the live pull_request_target workflow.
+# Evaluate both owner branches instead of rejecting the hosted label text:
+# Verjson must always resolve to an isolated/default self-hosted pool, while an
+# external consumer keeps the required portable hosted route.
+for privileged_workflow in ai-review-merge.yml ai-privileged-merge.yml; do
+  privileged_path="$workflows/$privileged_workflow"
+  grep -qF 'VERJSON_RUNNER_ISOLATED || vars.VERJSON_RUNNER_DEFAULT' "$privileged_path" \
+    && pass "$privileged_workflow privileged job prefers isolated then default" \
+    || fail "$privileged_workflow privileged job lost isolated/default preference"
+
+  assert_route "$privileged_path" privileged_merge Verjson/.github '' false \
+    '["self-hosted","isolated-canary"]' '["self-hosted","untrusted-canary"]' \
+    '["self-hosted","isolated-canary"]' \
+    "$privileged_workflow — Verjson privileged merge cannot reach hosted"
+
+  assert_route "$privileged_path" privileged_merge Verjson/.github '' false '' '' \
+    '["self-hosted","gate"]' \
+    "$privileged_workflow — missing Verjson variables fall back to the gate pool"
+
+  assert_route "$privileged_path" privileged_merge Acme/widgets '' true \
+    '["self-hosted","isolated-canary"]' '["self-hosted","untrusted-canary"]' \
+    'ubuntu-24.04' \
+    "$privileged_workflow — external privileged caller retains hosted portability"
+done
 
 # Every job that carries the policy, across every reusable workflow. A job
 # missing from this list is caught by the no-owner-wide-route sweep below.
