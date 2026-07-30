@@ -166,12 +166,11 @@ jobs:
     # A workflow_call consumer sets its own fleet via `with.runner_labels`; the
     # org direct paths (pull_request/workflow_dispatch) leave it empty and route
     # org-aware (#175, ADR 0030): non-Verjson callers to GitHub-hosted
-    # ubuntu-24.04, Verjson public event repos to the isolated pool, private
-    # ones to the self-hosted `gate` pool (#167 retired the ADR-0016 meta-lane
-    # self-gate split). Dispatch-path caveat: at job start only the DISPATCHING
-    # repo's visibility is visible to `runs-on`; this job resolves the guarded
-    # TARGET_REPO's real visibility so the gate job routes on the target (#170).
-    runs-on: ${{ inputs.runner_labels && fromJSON(inputs.runner_labels) || github.repository_owner != 'Verjson' && 'ubuntu-24.04' || github.event.repository.private == false && fromJSON('["self-hosted","isolated","linux","x64"]') || fromJSON('["self-hosted","gate"]') }}
+    # ubuntu-24.04, and Verjson event repos to the self-hosted `general` pool
+    # during the temporary speed-first exception (#204). Target visibility is
+    # still resolved below for diagnostics and restoration compatibility, but
+    # it does not choose the runner pool while ADR 0034 is active.
+    runs-on: ${{ inputs.runner_labels && fromJSON(inputs.runner_labels) || github.repository_owner != 'Verjson' && 'ubuntu-24.04' || fromJSON('["self-hosted","general"]') }}
     # This job combines the former 10-minute freshness and classification jobs.
     timeout-minutes: 20
     permissions:
@@ -555,14 +554,11 @@ jobs:
     needs: preflight
     if: needs.preflight.outputs.lane == 'fast' || needs.preflight.outputs.lane == 'ai'
     # A workflow_call consumer sets its own fleet via `with.runner_labels`; the
-    # org direct paths leave it empty and route org-aware (#175, ADR 0030) on
-    # the TARGET repo's visibility resolved by preflight (#170) — on the
-    # workflow_dispatch re-gate path the event repo is the DISPATCHER, not the
-    # target. Non-Verjson callers run on GitHub-hosted ubuntu-24.04; Verjson
-    # public targets on the isolated pool; private targets — or an unresolved
-    # visibility, which fails closed to the operator-only path — on the
-    # self-hosted `gate` pool (#167 retired the ADR-0016 meta-lane split).
-    runs-on: ${{ inputs.runner_labels && fromJSON(inputs.runner_labels) || github.repository_owner != 'Verjson' && 'ubuntu-24.04' || needs.preflight.outputs.target_private == 'false' && fromJSON('["self-hosted","isolated","linux","x64"]') || fromJSON('["self-hosted","gate"]') }}
+    # org direct paths leave it empty. Non-Verjson callers run on GitHub-hosted
+    # ubuntu-24.04; Verjson targets temporarily run on the self-hosted
+    # `general` pool (#204). Target visibility remains diagnostic only while
+    # ADR 0034 is active.
+    runs-on: ${{ inputs.runner_labels && fromJSON(inputs.runner_labels) || github.repository_owner != 'Verjson' && 'ubuntu-24.04' || fromJSON('["self-hosted","general"]') }}
     # Fast retains its former 45-minute merge ceiling. AI gets one bounded
     # aggregate ceiling for the 30-minute CI wait + the former 45-minute review
     # allowance + checkout/debounce/submit/recheck buffer.
