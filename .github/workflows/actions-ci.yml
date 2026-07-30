@@ -114,6 +114,8 @@ jobs:
         run: bash scripts/ci-gate/budget-exceeded.test.sh
       - name: pulumi-ci — credential boundary and trusted preview admission (#47, #151)
         run: bash scripts/ci-gate/pulumi-comment.test.sh
+      - name: pulumi-ci — comment assertions are stable under pipefail (#199)
+        run: bash scripts/ci-gate/pulumi-comment-pipefail.test.sh
       - name: runner routing — isolated-pool allowlist, external portability (#173, #174, #182)
         run: bash scripts/ci-gate/runner-routing-policy.test.sh
       - name: runner admission — routing reconciled against runner groups (#189)

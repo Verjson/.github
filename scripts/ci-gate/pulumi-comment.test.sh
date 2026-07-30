@@ -6,12 +6,18 @@ set -uo pipefail
 
 here="$(cd "$(dirname "$0")" && pwd)"
 repo_root="$(cd "$here/../.." && pwd)"
-wf="$repo_root/.github/workflows/pulumi-ci.yml"
+wf="${PULUMI_CI_WORKFLOW:-$repo_root/.github/workflows/pulumi-ci.yml}"
 fails=0
 pass() { printf 'ok   - %s\n' "$1"; }
 fail() {
   printf 'FAIL - %s\n' "$1"
   fails=$((fails + 1))
+}
+contains_literal() {
+  grep -qF -- "$2" <<<"$1"
+}
+contains_pattern() {
+  grep -qE -- "$2" <<<"$1"
 }
 
 job_block() {
@@ -31,28 +37,28 @@ preview_job="$(job_block preview)"
 # Routing follows ADR 0033 (visibility tiers on configurable self-hosted pools),
 # but the property THIS test owns is narrower and unchanged: validation's pool is
 # fixed by policy, never chosen by the caller. `inputs.runner` must stay absent.
-printf '%s\n' "$validate_job" | grep -qF "github.repository_owner != 'Verjson'" \
-  && printf '%s\n' "$validate_job" | grep -qF 'vars.VERJSON_RUNNER_ISOLATED' \
-  && printf '%s\n' "$validate_job" | grep -qF "'ubuntu-24.04'" \
-  && ! printf '%s\n' "$validate_job" | grep -qF 'inputs.runner' \
+contains_literal "$validate_job" "github.repository_owner != 'Verjson'" \
+  && contains_literal "$validate_job" 'vars.VERJSON_RUNNER_ISOLATED' \
+  && contains_literal "$validate_job" "'ubuntu-24.04'" \
+  && ! contains_literal "$validate_job" 'inputs.runner' \
   && pass "validation keeps a policy-fixed pool the caller cannot redirect" \
   || fail "validation lost its fixed organization-aware runner boundary"
-printf '%s\n' "$validate_job" | grep -qF 'contents: read' \
-  && ! printf '%s\n' "$validate_job" | grep -Eq 'pull-requests:|id-token:|packages:|contents: write|secrets\.' \
+contains_literal "$validate_job" 'contents: read' \
+  && ! contains_pattern "$validate_job" 'pull-requests:|id-token:|packages:|contents: write|secrets\.' \
   && pass "validation has only contents: read and no secret references" \
   || fail "validation has permissions or secrets beyond contents: read"
-printf '%s\n' "$validate_job" | grep -qF 'persist-credentials: false' \
+contains_literal "$validate_job" 'persist-credentials: false' \
   && pass "validation checkout does not persist GITHUB_TOKEN" \
   || fail "validation checkout persists credentials"
-printf '%s\n' "$validate_job" | grep -qF 'INSTALL_COMMAND: ${{ inputs.install-command }}' \
-  && printf '%s\n' "$validate_job" | grep -qF 'VALIDATE_COMMAND: ${{ inputs.validate-command }}' \
-  && ! printf '%s\n' "$preview_job" | grep -Eq 'inputs\.(install|validate)-command' \
+contains_literal "$validate_job" 'INSTALL_COMMAND: ${{ inputs.install-command }}' \
+  && contains_literal "$validate_job" 'VALIDATE_COMMAND: ${{ inputs.validate-command }}' \
+  && ! contains_pattern "$preview_job" 'inputs\.(install|validate)-command' \
   && pass "caller install/validation commands exist only in validation" \
   || fail "caller install/validation commands crossed into the preview job"
-printf '%s\n' "$validate_job" | grep -qF 'GIT_CONFIG_GLOBAL: /dev/null' \
-  && printf '%s\n' "$validate_job" | grep -qF 'NPM_CONFIG_USERCONFIG: ${{ runner.temp }}/pulumi-validation.npmrc' \
-  && printf '%s\n' "$validate_job" | grep -qF 'unset ACTIONS_ID_TOKEN_REQUEST_TOKEN ACTIONS_ID_TOKEN_REQUEST_URL' \
-  && printf '%s\n' "$validate_job" | grep -qF 'unset PULUMI_ACCESS_TOKEN VERJSON_GIT_TOKEN' \
+contains_literal "$validate_job" 'GIT_CONFIG_GLOBAL: /dev/null' \
+  && contains_literal "$validate_job" 'NPM_CONFIG_USERCONFIG: ${{ runner.temp }}/pulumi-validation.npmrc' \
+  && contains_literal "$validate_job" 'unset ACTIONS_ID_TOKEN_REQUEST_TOKEN ACTIONS_ID_TOKEN_REQUEST_URL' \
+  && contains_literal "$validate_job" 'unset PULUMI_ACCESS_TOKEN VERJSON_GIT_TOKEN' \
   && pass "validation scrubs inherited Git, npm, OIDC, and cloud credential paths" \
   || fail "validation credential scrubbing is incomplete"
 
@@ -108,34 +114,34 @@ check_admission false pull_request_target Verjson/infra contributor/infra true t
 check_admission false workflow_dispatch Verjson/infra '' true true true \
   "unlisted secret-bearing event fails closed"
 
-printf '%s\n' "$admission_job" | grep -qF 'needs: validate' \
-  && printf '%s\n' "$admission_job" | grep -qF 'contents: read' \
-  && printf '%s\n' "$admission_job" | grep -qF "HAS_GCP_WIP: \${{ secrets.gcp-wip != '' }}" \
-  && printf '%s\n' "$admission_job" | grep -qF "HAS_GCP_SA: \${{ secrets.gcp-sa != '' }}" \
-  && printf '%s\n' "$admission_job" | grep -qF "HAS_PULUMI_TOKEN: \${{ secrets.pulumi-access-token != '' }}" \
-  && ! printf '%s\n' "$admission_job" | grep -Eq 'GCP_WIP: \$\{\{ secrets\.gcp-wip \}\}|GCP_SA: \$\{\{ secrets\.gcp-sa \}\}|PULUMI_ACCESS_TOKEN: \$\{\{ secrets\.pulumi-access-token \}\}' \
-  && ! printf '%s\n' "$admission_job" | grep -Eq 'uses: actions/checkout|inputs\.(install|validate)-command|pull-requests:|id-token:' \
+contains_literal "$admission_job" 'needs: validate' \
+  && contains_literal "$admission_job" 'contents: read' \
+  && contains_literal "$admission_job" "HAS_GCP_WIP: \${{ secrets.gcp-wip != '' }}" \
+  && contains_literal "$admission_job" "HAS_GCP_SA: \${{ secrets.gcp-sa != '' }}" \
+  && contains_literal "$admission_job" "HAS_PULUMI_TOKEN: \${{ secrets.pulumi-access-token != '' }}" \
+  && ! contains_pattern "$admission_job" 'GCP_WIP: \$\{\{ secrets\.gcp-wip \}\}|GCP_SA: \$\{\{ secrets\.gcp-sa \}\}|PULUMI_ACCESS_TOKEN: \$\{\{ secrets\.pulumi-access-token \}\}' \
+  && ! contains_pattern "$admission_job" 'uses: actions/checkout|inputs\.(install|validate)-command|pull-requests:|id-token:' \
   && pass "admission receives boolean secret-presence flags in a fixed credential-light job" \
   || fail "admission runs before validation or receives raw credentials"
 
 # The privileged job must depend on successful validation plus affirmative
 # admission and must not expose package/Git credentials after its fixed install.
-printf '%s\n' "$preview_job" | grep -qF 'needs: [validate, preview-admission]' \
-  && printf '%s\n' "$preview_job" | grep -qF "if: needs.preview-admission.outputs.admitted == 'true'" \
+contains_literal "$preview_job" 'needs: [validate, preview-admission]' \
+  && contains_literal "$preview_job" "if: needs.preview-admission.outputs.admitted == 'true'" \
   && pass "live preview requires successful validation and trusted admission" \
   || fail "live preview is not gated by validation and trusted admission"
 for permission in 'contents: read' 'pull-requests: write' 'id-token: write'; do
-  printf '%s\n' "$preview_job" | grep -qF "$permission" \
+  contains_literal "$preview_job" "$permission" \
     || fail "preview job is missing permission: $permission"
 done
-printf '%s\n' "$preview_job" | grep -qF 'persist-credentials: false' \
+contains_literal "$preview_job" 'persist-credentials: false' \
   && pass "preview checkout does not persist GITHUB_TOKEN" \
   || fail "preview checkout persists credentials"
-printf '%s\n' "$preview_job" | grep -qF 'run: npm ci' \
-  && printf '%s\n' "$preview_job" | grep -qF 'NODE_AUTH_TOKEN: ${{ secrets.node-auth-token }}' \
-  && printf '%s\n' "$preview_job" | grep -qF 'VERJSON_GIT_TOKEN: ${{ secrets.git-token }}' \
-  && printf '%s\n' "$preview_job" | grep -qF 'GIT_CONFIG_GLOBAL: /dev/null' \
-  && printf '%s\n' "$preview_job" | grep -qF "GIT_CONFIG_COUNT: '3'" \
+contains_literal "$preview_job" 'run: npm ci' \
+  && contains_literal "$preview_job" 'NODE_AUTH_TOKEN: ${{ secrets.node-auth-token }}' \
+  && contains_literal "$preview_job" 'VERJSON_GIT_TOKEN: ${{ secrets.git-token }}' \
+  && contains_literal "$preview_job" 'GIT_CONFIG_GLOBAL: /dev/null' \
+  && contains_literal "$preview_job" "GIT_CONFIG_COUNT: '3'" \
   && pass "preview dependency install is fixed and step-scopes package/Git secrets" \
   || fail "preview dependency install is caller-controlled or lacks scoped secrets"
 
