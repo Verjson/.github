@@ -3,7 +3,7 @@ name: actions-ci
 # Runs the shell tests for the composite actions in this repo. Keeps the
 # persistent-runner credential logic (verjson-cli-cloud#59) regression-covered
 # and makes the "Evidence" for those actions reproducible in CI rather than
-# narrated. Pinned to the isolated self-hosted pool.
+# narrated. Pinned to the general self-hosted pool.
 
 on:
   pull_request:

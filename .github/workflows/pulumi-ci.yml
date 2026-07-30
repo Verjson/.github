@@ -13,7 +13,7 @@ name: pulumi-ci (reusable)
 # Lifted from viager-infra's preview.yml so infra repos stop reinventing the
 # credential-gating dance; Node + the @verjson registry come from the org
 # setup-verjson-node composite action (Verjson/.github#36), and the runner is
-# resolved by organization: Verjson defaults isolated, while outside callers
+# resolved by organization: Verjson defaults general, while outside callers
 # retain GitHub-hosted portability.
 #
 # Caller (each infra repo's .github/workflows/ci.yml):
@@ -81,7 +81,7 @@ on:
       runner:
         description: >-
           Optional JSON runner labels for the trusted preview job. Verjson
-          validation always uses the isolated lane and outside validation uses
+          validation always uses the general lane and outside validation uses
           ubuntu-24.04; this override cannot move untrusted validation.
         required: false
         type: string

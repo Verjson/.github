@@ -5,7 +5,7 @@ name: notify-umbrella (reusable)
 # auto-merged pointer-bump PR. Centralised here so runner selection and the
 # dispatch contract live in one place instead of being copy-pasted per repo.
 #
-# Verjson callers default to the isolated self-hosted pool. External callers
+# Verjson callers default to the general self-hosted pool. External callers
 # retain a portable hosted default; trusted callers can select another pool.
 #
 # Caller (in each leaf repo's .github/workflows/notify-umbrella.yml):
@@ -32,7 +32,7 @@ on:
         required: true
         type: string
       runner:
-        description: Optional JSON runner labels; Verjson defaults isolated, external callers ubuntu-24.04.
+        description: Optional JSON runner labels; Verjson defaults general, external callers ubuntu-24.04.
         required: false
         type: string
         default: ''
