@@ -515,7 +515,7 @@ jobs:
       contents: read
       pull-requests: write
       issues: write
-      actions: write
+      actions: read
     env:
       LANE: ${{ needs.preflight.outputs.lane }}
       LANE_REASON: ${{ needs.preflight.outputs.reason }}
@@ -596,7 +596,7 @@ jobs:
             # shellcheck disable=SC2016
             rollup=$(gh pr view "$PR_NUMBER" --repo "$TARGET_REPO" \
               --json statusCheckRollup \
-              --jq '[.statusCheckRollup[]? | select((.name // .context) as $n | $n != "preflight" and $n != "gate" and $n != "freshness" and $n != "classify" and $n != "ai-review" and $n != "ai-merge" and $n != "review")]')
+              --jq '[.statusCheckRollup[]? | select((.name // .context) as $n | $n != "preflight" and $n != "gate" and $n != "freshness" and $n != "classify" and $n != "ai-review" and $n != "ai-merge" and $n != "review" and $n != "dispatch-merge" and $n != "privileged_merge")]')
             # Rollup mixes CheckRuns (name/status/conclusion) with commit
             # StatusContexts like renovate/stability-days (context/state) —
             # treating a context's null .status as pending hangs the gate.
@@ -1236,16 +1236,6 @@ jobs:
           retention-days: 1
           if-no-files-found: error
 
-      - name: Dispatch trusted merge continuation
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          gh workflow run ai-privileged-merge.yml --repo "$TARGET_REPO" \
-            -f pr_number="$PR_NUMBER" \
-            -f expected_head_sha="$EXPECTED_HEAD_SHA" \
-            -f source_run_id="$GITHUB_RUN_ID"
-
       # --- CI telemetry (best-effort). Every step is `continue-on-error` so it
       # can NEVER fail or block the gate, and it stays dormant until
       # OTEL_EXPORTER_OTLP_ENDPOINT is set — the composite action no-ops without
@@ -1364,7 +1354,7 @@ jobs:
           # shellcheck disable=SC2016
           rollup=$(gh pr view "$PR_NUMBER" --repo "$REPO" \
             --json statusCheckRollup \
-            --jq '[.statusCheckRollup[]? | select((.name // .context) as $n | $n != "preflight" and $n != "gate" and $n != "freshness" and $n != "classify" and $n != "ai-review" and $n != "ai-merge" and $n != "review")]')
+            --jq '[.statusCheckRollup[]? | select((.name // .context) as $n | $n != "preflight" and $n != "gate" and $n != "freshness" and $n != "classify" and $n != "ai-review" and $n != "ai-merge" and $n != "review" and $n != "dispatch-merge" and $n != "privileged_merge")]')
           failed=$(jq '[.[] | select(
             if .state then
               ((.state // "") | IN("SUCCESS","PENDING","EXPECTED") | not)
@@ -1462,3 +1452,40 @@ jobs:
           gh pr merge "$PR_NUMBER" --repo "$REPO" --squash --admin --delete-branch \
             --match-head-commit "$EXPECTED_HEAD_SHA"
           echo "::notice::phase=merge result=merged elapsed_seconds=$(( $(date +%s) - merge_started_epoch )) lane=$LANE"
+
+  dispatch-merge:
+    needs: [preflight, gate]
+    if: needs.gate.result == 'success'
+    runs-on: ${{ github.repository_owner == 'Verjson' && fromJSON(vars.VERJSON_RUNNER_ISOLATED || vars.VERJSON_RUNNER_DEFAULT || '["self-hosted","gate"]') || 'ubuntu-24.04' }}
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: write
+    env:
+      EXPECTED_HEAD_SHA: ${{ needs.preflight.outputs.head_sha }}
+      PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr_number }}
+      TARGET_REPO: ${{ github.repository }}
+      SOURCE_RUN_ID: ${{ github.run_id }}
+    steps:
+      - name: Dispatch fixed trusted merge continuation
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          [[ "$TARGET_REPO" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] ||
+            { echo "::error::invalid repository identity"; exit 1; }
+          [ "$TARGET_REPO" = "$GITHUB_REPOSITORY" ] ||
+            { echo "::error::repository identity mismatch"; exit 1; }
+          [[ "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]] ||
+            { echo "::error::invalid PR number"; exit 1; }
+          [[ "$EXPECTED_HEAD_SHA" =~ ^[0-9a-f]{40}$ ]] ||
+            { echo "::error::invalid expected head"; exit 1; }
+          [[ "$SOURCE_RUN_ID" =~ ^[1-9][0-9]*$ ]] ||
+            { echo "::error::invalid source run"; exit 1; }
+          trusted_path="$(gh api "repos/$TARGET_REPO/actions/workflows/ai-privileged-merge.yml" --jq .path)"
+          [ "$trusted_path" = ".github/workflows/ai-privileged-merge.yml" ] ||
+            { echo "::error::trusted workflow identity mismatch"; exit 1; }
+          gh workflow run ai-privileged-merge.yml --repo "$TARGET_REPO" \
+            -f pr_number="$PR_NUMBER" \
+            -f expected_head_sha="$EXPECTED_HEAD_SHA" \
+            -f source_run_id="$SOURCE_RUN_ID"
