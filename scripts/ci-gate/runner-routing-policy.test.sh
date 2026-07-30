@@ -44,6 +44,10 @@ grep -qF "github.repository_owner != 'Verjson'" "$workflows/actionlint.yml" \
   && pass "actionlint preserves its bounded external hosted compatibility path" \
   || fail "actionlint runner contract drifted"
 
+grep -qF 'runs-on: [self-hosted, general]' "$workflows/actions-ci.yml" \
+  && pass "repository shell validation uses the temporary general pool" \
+  || fail "actions-ci drifted from the temporary ADR 0034 runner exception"
+
 
 # --------------------------------------------------------------------------
 # Runner routing policy (ADR 0033, supersedes the ADR 0031 allowlist).

@@ -1,19 +1,13 @@
 #!/usr/bin/env bash
 # Pins the "Resolve target repo visibility" step in ai-review-merge.yml
-# (Verjson/.github#170). `runs-on` expressions only see event/inputs context, so
-# on the workflow_dispatch re-gate path the gate job would otherwise route on the
-# DISPATCHING repo's visibility, not the target's. This step resolves the
-# org-guarded TARGET_REPO with `gh` and publishes `target_private` for the gate
-# job's `runs-on` ternary.
+# (Verjson/.github#170). The step resolves the org-guarded TARGET_REPO with `gh`
+# and publishes `target_private` for diagnostics and restoration compatibility.
+# ADR 0034 temporarily makes Verjson routing visibility-independent.
 #
-# The load-bearing case is the failure one: an unreadable/erroring target must
-# leave the output EMPTY, because the gate routes the isolated pool only on the
-# exact string 'false' and falls back to the operator-only `gate` pool for
-# anything else. If a lookup failure ever aborted the step, or leaked a
-# truthy-looking value, routing would fail OPEN onto the wrong pool. Extracts the
-# real `run:` block from the workflow (single source of truth) and drives it with
-# a stubbed `gh`. Plain bash + awk; no test-framework or YAML-library dependency
-# (runs on the bare self-hosted pool).
+# An unreadable/erroring target must still leave the output empty without
+# aborting the required preflight job. The same contract can be reused safely
+# when #204 restores visibility-based routing. This test extracts the real
+# `run:` block from the workflow and drives it with a stubbed `gh`.
 set -uo pipefail
 
 here="$(cd "$(dirname "$0")" && pwd)"
@@ -72,32 +66,33 @@ run_step() {
 output_has() { grep -qxF "$1" "$tmp/github-output.txt"; }
 log_has() { grep -q "$1" "$tmp/out.txt"; }
 
-# (a) A public target resolves to 'false' — the only value that routes the gate
-# job onto the isolated pool.
+# (a) A public target remains observable as 'false'.
 rc="$(run_step 'false' 0)"
 { [ "$rc" = "rc=0" ] && output_has 'target_private=false'; } \
   && pass "public target publishes target_private=false" \
   || fail "public target did not publish target_private=false ($rc)"
 
-# (b) A private target resolves to 'true' → gate pool.
+# (b) A private target remains observable as 'true'.
 rc="$(run_step 'true' 0)"
 { [ "$rc" = "rc=0" ] && output_has 'target_private=true'; } \
   && pass "private target publishes target_private=true" \
   || fail "private target did not publish target_private=true ($rc)"
 
 # (c) A failed lookup must NOT abort the required preflight job and must publish
-# an EMPTY value with a ::warning — routing then fails closed to the gate pool.
+# an EMPTY value with a ::warning.
 rc="$(run_step '' 1)"
 { [ "$rc" = "rc=0" ] && output_has 'target_private=' && log_has '::warning::'; } \
-  && pass "failed lookup exits 0 and publishes an empty target_private (fail closed, #170)" \
+  && pass "failed lookup exits 0 and publishes an empty target_private (#170)" \
   || fail "failed lookup aborted the step or published a non-empty value ($rc)"
 
-# (d) The gate job must consume that contract: route the isolated pool only on
-# the exact 'false', so '' (and 'true') fall back to the `gate` pool.
+# (d) The temporary speed-first policy keeps the visibility output for
+# diagnostics but must not route Verjson gate jobs by visibility.
 gate_routing="$(grep -n "needs.preflight.outputs.target_private == 'false'" "$wf" || true)"
-{ [ -n "$gate_routing" ] && grep -q "target_private: \${{ steps.target_visibility.outputs.target_private }}" "$wf"; } \
-  && pass "gate runs-on routes on the exact 'false', so an empty value stays on the gate pool" \
-  || fail "gate runner routing no longer keys off target_visibility's 'false' contract"
+{ [ -z "$gate_routing" ] \
+    && grep -q "target_private: \${{ steps.target_visibility.outputs.target_private }}" "$wf" \
+    && [ "$(grep -cF "fromJSON('[\"self-hosted\",\"general\"]')" "$wf")" -ge 2 ]; } \
+  && pass "gate routing is visibility-independent during the temporary general-pool exception" \
+  || fail "gate routing drifted from the temporary general-pool exception"
 
 if [ "$fails" -eq 0 ]; then
   echo "All tests passed."

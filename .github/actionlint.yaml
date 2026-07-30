@@ -10,7 +10,8 @@
 # Keep in sync with docs/runner-routing.md / ADR 0030 if routing changes.
 self-hosted-runner:
   labels:
-    - GCP   # general GCP pool (gha-runner-*, gha-gate-*, gha-docker-1)
+    - GCP   # legacy provider-specific selector during migration
+    - general # provider-neutral persistent pool (DigitalOcean)
     - gate  # merge-gate lane for non-.github repos (gha-gate-*)
     - meta  # dedicated self-gate lane for this repo (gha-meta-*, ADR 0016)
     - isolated # ephemeral one-job lane for public and untrusted Verjson work
