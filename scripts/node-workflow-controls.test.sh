@@ -102,6 +102,9 @@ done
   && [ "$(grep -cF 'NODE_AUTH_TOKEN: ${{ secrets.NODE_AUTH_TOKEN }}' "$ci")" -ge 2 ]; } \
   && pass "node-ci preserves schema checkout/install and private-package auth" \
   || fail "node-ci regressed schema-submodule or NODE_AUTH_TOKEN wiring"
+grep -qF 'run: npm run typecheck --if-present' "$ci" \
+  && pass "node-ci runs a declared consumer typecheck without requiring the script" \
+  || fail "node-ci does not conditionally enforce the consumer typecheck"
 { grep -qF 'NODE_AUTH_TOKEN: ${{ secrets.NODE_AUTH_TOKEN }}' "$release" \
   && grep -qF 'NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}' "$release"; } \
   && pass "node-release preserves private install and publish authentication" \
