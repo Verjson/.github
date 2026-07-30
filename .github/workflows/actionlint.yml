@@ -26,6 +26,11 @@ on:
         required: false
         type: boolean
         default: false
+      config-file:
+        description: Caller-relative actionlint config; defaults to the centrally versioned policy.
+        required: false
+        type: string
+        default: ''
 
 permissions:
   contents: read
@@ -37,8 +42,17 @@ jobs:
       ACTIONLINT_VERSION: 1.7.7
       # From actionlint_1.7.7_checksums.txt on the upstream GitHub Release.
       ACTIONLINT_SHA256: '023070a287cd8cccd71515fedc843f1985bf96c436b7effaecce67290e7e0757'
+      ACTIONLINT_CONFIG_FILE: ${{ inputs.config-file || '.verjson-actionlint-policy/.github/actionlint.yaml' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Check out centrally versioned actionlint policy
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .verjson-actionlint-policy
+          sparse-checkout: .github/actionlint.yaml
+          persist-credentials: false
       - name: Install actionlint (pinned release binary)
         run: |
           set -euo pipefail
@@ -84,13 +98,27 @@ jobs:
                   run: echo unreachable
           YAML
 
-          ./actionlint "$tmp/valid.yml"
-          if ./actionlint "$tmp/invalid-syntax.yml"; then
+          cat >"$tmp/invalid-runner.yml" <<'YAML'
+          name: invalid runner
+          on: push
+          jobs:
+            test:
+              runs-on: [self-hosted, retired-runner-label]
+              steps:
+                - run: echo unreachable
+          YAML
+
+          ./actionlint -config-file "$ACTIONLINT_CONFIG_FILE" "$tmp/valid.yml"
+          if ./actionlint -config-file "$ACTIONLINT_CONFIG_FILE" "$tmp/invalid-syntax.yml"; then
             echo "::error::actionlint accepted malformed workflow syntax"
             exit 1
           fi
-          if ./actionlint "$tmp/invalid-expression.yml"; then
+          if ./actionlint -config-file "$ACTIONLINT_CONFIG_FILE" "$tmp/invalid-expression.yml"; then
             echo "::error::actionlint accepted an invalid workflow expression"
+            exit 1
+          fi
+          if ./actionlint -config-file "$ACTIONLINT_CONFIG_FILE" "$tmp/invalid-runner.yml"; then
+            echo "::error::actionlint accepted a runner label absent from the central policy"
             exit 1
           fi
       - name: Run actionlint over all workflows
@@ -102,7 +130,7 @@ jobs:
               echo "::error::The governed GitHub-hosted runner must provide shellcheck"
               exit 1
             }
-            ./actionlint -shellcheck=shellcheck -color
+            ./actionlint -config-file "$ACTIONLINT_CONFIG_FILE" -shellcheck=shellcheck -color
           else
-            ./actionlint -color
+            ./actionlint -config-file "$ACTIONLINT_CONFIG_FILE" -color
           fi
