@@ -52,3 +52,19 @@ validation. It must also restore `VERJSON_RUNNER_ISOLATED` and remove public
 visibility from that organization variable, then remove public repository
 access from the persistent general runner group before superseding this
 temporary decision with a new ADR.
+
+## 2026-07-30 amendment — route all Verjson workflows through general
+
+Issue [#212](https://github.com/Verjson/.github/issues/212) expands the temporary
+exception after literal isolated selectors and visibility-based reusable
+defaults left required checks queued with no eligible runner. Until CI security
+hardening is revisited, every Verjson-owned workflow defaults to the online
+provider-neutral `[self-hosted, general]` lane. External reusable-workflow
+callers retain their GitHub-hosted portability path, and explicit caller runner
+overrides remain available.
+
+This deliberately pauses ADR 0033's public/private visibility split across the
+whole reusable workflow package, not only merge gates. Persistent general hosts
+therefore run public Verjson PR validation during the exception. Issue #204
+remains the restoration record for disposable public-PR capacity and the
+stronger trust boundary.

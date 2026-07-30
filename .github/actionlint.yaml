@@ -21,6 +21,10 @@ self-hosted-runner:
 # (and current 1.7.12) has not added them to its static job-context schema yet.
 # https://docs.github.com/en/actions/reference/workflows-and-actions/contexts#example-usage-of-job-context-workflow-identity
 paths:
+  .github/workflows/actionlint.yml:
+    ignore:
+      - '^property "workflow_repository" is not defined in object type \{container: \{id: string; network: string\}; services: \{string => \{id: string; network: string; ports: \{string => string\}\}\}; status: string\}$'
+      - '^property "workflow_sha" is not defined in object type \{container: \{id: string; network: string\}; services: \{string => \{id: string; network: string; ports: \{string => string\}\}\}; status: string\}$'
   .github/workflows/node-release.yml:
     ignore:
       - '^property "workflow_repository" is not defined in object type \{container: \{id: string; network: string\}; services: \{string => \{id: string; network: string; ports: \{string => string\}\}\}; status: string\}$'
