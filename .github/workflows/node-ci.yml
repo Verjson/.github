@@ -2,7 +2,7 @@ name: node-ci (reusable)
 
 # Reusable CI for the verJSON Node libraries: checkout, setup-node against the
 # @verjson GitHub Packages registry, then npm ci / build / test / lint. The
-# runner policy is defined here once: Verjson uses isolated self-hosted capacity
+# runner policy is defined here once: Verjson uses general self-hosted capacity
 # while external callers retain a portable GitHub-hosted default.
 #
 # Caller (each lib's .github/workflows/ci.yml):
@@ -77,7 +77,7 @@ on:
         type: string
         default: ''
       runner:
-        description: Optional JSON runner labels; Verjson defaults isolated, external callers ubuntu-24.04.
+        description: Optional JSON runner labels; Verjson defaults general, external callers ubuntu-24.04.
         required: false
         type: string
         default: ''

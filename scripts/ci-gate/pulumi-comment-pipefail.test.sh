@@ -9,9 +9,11 @@ fixture="$tmp/pulumi-ci.yml"
 
 awk '
   /^  preview-admission:$/ {
+    print
     for (i = 0; i < 20000; i++) {
       print "    # padding proves early matches remain true under pipefail"
     }
+    next
   }
   { print }
 ' "$repo_root/.github/workflows/pulumi-ci.yml" >"$fixture"

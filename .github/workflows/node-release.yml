@@ -2,7 +2,7 @@ name: node-release (reusable)
 
 # Reusable release for the verJSON Node libraries: checkout (full history),
 # setup-node against the @verjson registry, npm ci / build / test, then
-# semantic-release. Verjson defaults to isolated self-hosted capacity while
+# semantic-release. Verjson defaults to general self-hosted capacity while
 # external callers retain a portable hosted default. Mirrors node-ci.yml.
 #
 # Caller (each lib's .github/workflows/release.yml):
@@ -56,7 +56,7 @@ on:
         type: string
         default: '@verjson'
       runner:
-        description: Optional JSON runner labels; Verjson defaults isolated, external callers ubuntu-24.04.
+        description: Optional JSON runner labels; Verjson defaults general, external callers ubuntu-24.04.
         required: false
         type: string
         default: ''

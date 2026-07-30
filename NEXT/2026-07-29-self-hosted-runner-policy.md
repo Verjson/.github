@@ -5,8 +5,8 @@ org (#189), so every route that "degraded" to hosted was a guaranteed failure â€
 including the one added hours earlier by #192 to stop releases queueing. The
 queue stopped; the release still could not run.
 
-All six reusable workflows now share one policy (ADR 0033, superseding the
-ADR 0031 allowlist), applied to all nine jobs that carry it:
+All seven reusable workflows now share one policy (ADR 0033, superseding the
+ADR 0031 allowlist), applied to all ten jobs that carry it:
 
 1. explicit `runner` input wins;
 2. a caller **outside Verjson** gets `ubuntu-24.04` â€” portability, their billing;

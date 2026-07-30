@@ -6,7 +6,7 @@ name: actionlint
 # free. Local pull_request/push behavior from #80 is preserved; workflow_call
 # exposes the same implementation to consumers (#153).
 #
-# Verjson validation uses the isolated self-hosted lane. Reusable calls outside
+# Verjson validation uses the general self-hosted lane. Reusable calls outside
 # Verjson retain a portable GitHub-hosted default.
 
 on:

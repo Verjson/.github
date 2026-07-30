@@ -3,7 +3,7 @@ name: helm-ci (reusable)
 # Reusable CI for verJSON Helm chart repos: `helm lint` (against the default and
 # any extra values files), render the templates, and validate the rendered
 # manifests with kubeconform. Lifted from catalog-helm's ci.yml so chart repos
-# stop reinventing it. Verjson callers default to isolated self-hosted capacity;
+# stop reinventing it. Verjson callers default to general self-hosted capacity;
 # external callers retain a portable GitHub-hosted default.
 #
 # kind-based smoke tests are intentionally NOT included: they are bespoke per
@@ -73,7 +73,7 @@ on:
         type: string
         default: '-ignore-missing-schemas'
       runner:
-        description: Optional JSON runner labels; Verjson defaults isolated, external callers ubuntu-24.04.
+        description: Optional JSON runner labels; Verjson defaults general, external callers ubuntu-24.04.
         required: false
         type: string
         default: ''

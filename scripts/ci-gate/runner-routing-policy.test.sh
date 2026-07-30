@@ -161,8 +161,9 @@ if ! command -v node >/dev/null 2>&1; then
 fi
 
 # The evaluator must carry no ambient authority (#187). These probes are what
-# stops a future revert to `new Function` — under that form `process` and
-# `require` resolve and the expression evaluates instead of throwing.
+# stops a future revert to `new Function` for ambient globals such as `process`;
+# the `require` probe separately documents that neither evaluator exposes the
+# CommonJS wrapper's module-local loader.
 assert_no_ambient() {
   local expression="$1" symbol="$2"
   local out
