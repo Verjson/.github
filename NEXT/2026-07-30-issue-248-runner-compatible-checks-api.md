@@ -1,3 +1,9 @@
+---
+date: 2026-07-30
+issue: 248
+title: Make CI status pagination runner-compatible
+---
+
 # Make CI status pagination runner-compatible — 2026-07-30
 
 The merge gate now streams paginated REST responses through `jq` instead of
