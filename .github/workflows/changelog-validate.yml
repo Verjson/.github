@@ -12,13 +12,18 @@ on:
         required: false
         type: string
         default: ''
+      runner:
+        description: Optional JSON runner labels; Verjson defaults by visibility, external callers use ubuntu-24.04.
+        required: false
+        type: string
+        default: ''
 
 permissions:
   contents: read
 
 jobs:
   validate:
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runner != '' && fromJSON(inputs.runner) || github.repository_owner != 'Verjson' && 'ubuntu-24.04' || github.event.repository.private == true && fromJSON(vars.VERJSON_RUNNER_DEFAULT || '["self-hosted","general"]') || fromJSON(vars.VERJSON_RUNNER_UNTRUSTED || vars.VERJSON_RUNNER_DEFAULT || '["self-hosted","general"]') }}
     timeout-minutes: 5
     steps:
       - name: Check out consumer

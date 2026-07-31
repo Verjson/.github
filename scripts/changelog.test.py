@@ -171,6 +171,14 @@ class ChangelogContractTests(unittest.TestCase):
         self.assertIn("cancel-in-progress: false", workflow)
         self.assertIn("contract_ref:", workflow)
         self.assertIn("ref: ${{ inputs.contract_ref }}", workflow)
+        self.assertNotIn("runs-on: ubuntu-latest", workflow)
+        self.assertIn("inputs.runner != ''", workflow)
+
+        validation_workflow = (
+            MODULE_PATH.parent.parent / ".github/workflows/changelog-validate.yml"
+        ).read_text(encoding="utf-8")
+        self.assertNotIn("runs-on: ubuntu-latest", validation_workflow)
+        self.assertIn("inputs.runner != ''", validation_workflow)
 
 
 if __name__ == "__main__":
