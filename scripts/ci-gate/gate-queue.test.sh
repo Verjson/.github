@@ -133,10 +133,10 @@ fi
 if [ "$1" = "api" ]; then
   case "$*" in
     */check-runs\?per_page=100*)
-      jq -c '[{total_count: ([.[] | select(has("status"))] | length), check_runs: [.[] | select(has("status"))]}]' "$ROLLUP_FILE"
+      jq -c '{total_count: ([.[] | select(has("status"))] | length), check_runs: [.[] | select(has("status"))]}' "$ROLLUP_FILE"
       exit 0 ;;
     */status\?per_page=100*)
-      jq -c '[{statuses: [.[] | select(has("state"))]}]' "$ROLLUP_FILE"
+      jq -c '{statuses: [.[] | select(has("state"))]}' "$ROLLUP_FILE"
       exit 0 ;;
   esac
   printf '{"total_count":1,"workflow_runs":[{"name":"unit","conclusion":"success"}]}\n'
