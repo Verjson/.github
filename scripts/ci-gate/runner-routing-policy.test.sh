@@ -235,6 +235,17 @@ for privileged_workflow in ai-privileged-merge.yml; do
     "$privileged_workflow — external privileged caller retains hosted portability"
 done
 
+dispatch_workflow="$workflows/ai-review-merge.yml"
+grep -qF 'VERJSON_RUNNER_ISOLATED || vars.VERJSON_RUNNER_DEFAULT' "$dispatch_workflow" \
+  && pass "dispatch-merge prefers isolated then default" \
+  || fail "dispatch-merge lost isolated/default preference"
+assert_route "$dispatch_workflow" dispatch-merge Verjson/.github '' false \
+  '["self-hosted","isolated-canary"]' '["self-hosted","untrusted-canary"]' \
+  '["self-hosted","isolated-canary"]' \
+  "dispatch-merge — Verjson cannot reach hosted"
+assert_route "$dispatch_workflow" dispatch-merge Acme/widgets '' true '' '' \
+  'ubuntu-24.04' "dispatch-merge — external callers retain hosted portability"
+
 # Every job that carries the policy, across every reusable workflow. A job
 # missing from this list is caught by the no-owner-wide-route sweep below.
 policy_jobs() {
@@ -248,6 +259,8 @@ ui-ci.yml build-test
 pulumi-ci.yml validate
 pulumi-ci.yml preview-admission
 pulumi-ci.yml preview
+changelog-validate.yml validate
+changelog-release.yml release
 TARGETS
 }
 
@@ -301,6 +314,8 @@ notify-umbrella.yml dispatch
 helm-ci.yml lint-template
 ui-ci.yml build-test
 pulumi-ci.yml preview
+changelog-validate.yml validate
+changelog-release.yml release
 TARGETS
 
 for job in validate preview-admission; do
@@ -326,7 +341,7 @@ done
 # Prefixes legitimately differ, but every routed job must expose both lane
 # variables and preserve the compatible general fallback.
 # --------------------------------------------------------------------------
-policy_files="node-ci.yml node-release.yml notify-umbrella.yml helm-ci.yml ui-ci.yml pulumi-ci.yml actionlint.yml"
+policy_files="node-ci.yml node-release.yml notify-umbrella.yml helm-ci.yml ui-ci.yml pulumi-ci.yml actionlint.yml changelog-validate.yml changelog-release.yml"
 deviant=""
 job_count=0
 for name in $policy_files; do

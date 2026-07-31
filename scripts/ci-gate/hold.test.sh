@@ -43,8 +43,8 @@ if ! grep -q 'is held' "$script" || ! grep -q 'pr merge' "$script"; then
   exit 1
 fi
 
-# Fake `gh`: `pr view --json ...statusCheckRollup...` → the rollup fixture;
-# other `pr view` → the meta fixture; `pr merge`/`pr comment` → log the action.
+# Fake `gh`: repository-scoped checks/status APIs → the rollup fixture;
+# `pr view` → the meta fixture; `pr merge`/`pr comment` → log the action.
 # `gh api` MUST return an explicit, well-formed no-startup-failures payload:
 # falling through to a bare `exit 0` with empty stdout used to be read by the
 # merge step as "probe ok, nothing broken", which is exactly the fail-open of
@@ -53,13 +53,18 @@ mkdir -p "$tmp/bin"
 cat >"$tmp/bin/gh" <<'GH'
 #!/usr/bin/env bash
 if [ "$1" = "pr" ] && [ "$2" = "view" ]; then
-  case "$*" in
-    *statusCheckRollup*) cat "$ROLLUP_FILE" ;;
-    *) cat "$META_FILE" ;;
-  esac
+  cat "$META_FILE"
   exit 0
 fi
 if [ "$1" = "api" ]; then
+  case "$*" in
+    */check-runs\?per_page=100*)
+      jq -c '{total_count: ([.[] | select(has("status"))] | length), check_runs: [.[] | select(has("status"))]}' "$ROLLUP_FILE"
+      exit 0 ;;
+    */status\?per_page=100*)
+      jq -c '{statuses: [.[] | select(has("state"))]}' "$ROLLUP_FILE"
+      exit 0 ;;
+  esac
   printf '{"total_count":1,"workflow_runs":[{"name":"unit","conclusion":"success"}]}\n'
   exit 0
 fi

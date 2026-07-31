@@ -515,7 +515,9 @@ jobs:
       contents: read
       pull-requests: write
       issues: write
-      actions: write
+      actions: read
+      checks: read
+      statuses: read
     env:
       LANE: ${{ needs.preflight.outputs.lane }}
       LANE_REASON: ${{ needs.preflight.outputs.reason }}
@@ -569,6 +571,7 @@ jobs:
             exit 1
           fi
           checks=0
+          checks_probe=unread
           probe=unread
           # A workflow whose `paths:` filter does not match never runs and emits
           # NO check run (unlike a job-level `if:`, which reports SKIPPED). Such
@@ -592,30 +595,86 @@ jobs:
             # still be labelling attempt 60's genuine pending timeout as
             # "probe-unavailable" and sending people to check API reachability.
             probe=unread
-            # `$n` is a jq variable inside the single-quoted filter.
-            # shellcheck disable=SC2016
-            rollup=$(gh pr view "$PR_NUMBER" --repo "$TARGET_REPO" \
-              --json statusCheckRollup \
-              --jq '[.statusCheckRollup[]? | select((.name // .context) as $n | $n != "preflight" and $n != "gate" and $n != "freshness" and $n != "classify" and $n != "ai-review" and $n != "ai-merge" and $n != "review")]')
+            checks_probe=unread
+            # Read only repository-scoped REST resources. `gh pr view` expands
+            # statusCheckRollup through nested GraphQL commit fields that a
+            # correctly scoped GitHub App token cannot always read (#248).
+            # `gh api --paginate` streams one JSON document per page. Slurp
+            # those documents with jq because runner images can lag the GitHub
+            # CLI release that introduced its native slurp flag (#248). Commit
+            # statuses are newest-first, so retain only the first observation
+            # for each context.
+            checks_rc=0
+            statuses_rc=0
+            rollup_rc=0
+            check_pages=$(gh api --paginate \
+                "repos/$TARGET_REPO/commits/$EXPECTED_HEAD_SHA/check-runs?per_page=100" 2>/dev/null |
+              jq -s -c '.') || checks_rc=$?
+            status_pages=$(gh api --paginate \
+                "repos/$TARGET_REPO/commits/$EXPECTED_HEAD_SHA/status?per_page=100" 2>/dev/null |
+              jq -s -c '.') || statuses_rc=$?
+            if [ "$checks_rc" -eq 0 ] && [ "$statuses_rc" -eq 0 ]; then
+              rollup=$(jq -c '
+                 if ((.checks | type) != "array" or
+                     (.statuses | type) != "array" or
+                     (.checks | length) == 0 or
+                     (.statuses | length) == 0 or
+                     ([.checks[] |
+                       select((.check_runs | type) != "array")] | length) != 0 or
+                     ([.statuses[] |
+                       select((.statuses | type) != "array")] | length) != 0)
+                 then error("unusable CI status API response")
+                 else
+                 ([.checks[] | .check_runs[] |
+                   {name,
+                    status: ((.status // "") | ascii_upcase),
+                    conclusion: (if .conclusion == null then null
+                                 else (.conclusion | ascii_upcase) end)}] +
+                  ([.statuses[] | .statuses[] |
+                    {context, state: ((.state // "") | ascii_upcase)}] |
+                   reduce .[] as $status
+                     ([]; if any(.[]; .context == $status.context)
+                          then . else . + [$status] end))) |
+                 [.[] | select((.name // .context) as $n |
+                   $n != "preflight" and $n != "gate" and
+                   $n != "freshness" and $n != "classify" and
+                   $n != "ai-review" and $n != "ai-merge" and
+                   $n != "review" and $n != "dispatch-merge" and
+                   $n != "privileged_merge")]
+                 end
+               ' <<<"{\"checks\":$check_pages,\"statuses\":$status_pages}" 2>/dev/null) || rollup_rc=$?
+            else
+              rollup_rc=1
+            fi
+            if [ "$checks_rc" -ne 0 ] || [ "$statuses_rc" -ne 0 ] || [ "$rollup_rc" -ne 0 ]; then
+              checks_probe=unavailable
+              elapsed=$(( $(date +%s) - started_epoch ))
+              echo "::warning::phase=ci-wait result=checks-unavailable elapsed_seconds=$elapsed attempt=$i/$max_attempts head=$EXPECTED_HEAD_SHA checks_endpoint_rc=$checks_rc statuses_endpoint_rc=$statuses_rc aggregate_shape_rc=$rollup_rc gh_version=$(gh --version 2>/dev/null | head -n 1 | tr ' ' '_' || echo unavailable)"
+              sleep 30
+              continue
+            fi
+            checks_probe=ok
             # Rollup mixes CheckRuns (name/status/conclusion) with commit
             # StatusContexts like renovate/stability-days (context/state) —
             # treating a context's null .status as pending hangs the gate.
-            # Completed CheckRuns are green only when GitHub concluded SUCCESS,
-            # NEUTRAL, or SKIPPED. Every other/unknown conclusion fails closed.
+            # GitHub can expose COMPLETED before it populates conclusion. That
+            # transient snapshot is pending/inconclusive, not a terminal failure.
+            # Once populated, only SUCCESS, NEUTRAL, or SKIPPED are green.
             # Commit StatusContexts retain their SUCCESS/PENDING/EXPECTED states;
             # every other state fails closed.
             failed=$(jq '[.[] | select(
               if .state then
                 ((.state // "") | IN("SUCCESS","PENDING","EXPECTED") | not)
               else
-                (.status == "COMPLETED" and ((.conclusion // "") | IN("SUCCESS","NEUTRAL","SKIPPED") | not))
+                (.status == "COMPLETED" and (.conclusion // "") != "" and ((.conclusion // "") | IN("SUCCESS","NEUTRAL","SKIPPED") | not))
               end
             )] | length' <<<"$rollup")
-            pending=$(jq -r '[.[] | select(if .state then (.state | IN("PENDING","EXPECTED")) else .status != "COMPLETED" end) | "\(.name // .context)=\(.state // .status)"] | join(", ")' <<<"$rollup")
+            pending=$(jq -r '[.[] | select(if .state then (.state | IN("PENDING","EXPECTED")) else (.status != "COMPLETED" or (.conclusion // "") == "") end) | "\(.name // .context)=\(.state // .status)"] | join(", ")' <<<"$rollup")
             checks=$(jq 'length' <<<"$rollup")
             if [ "$failed" -gt 0 ]; then
               elapsed=$(( $(date +%s) - started_epoch ))
               echo "::error::phase=ci-wait result=failed elapsed_seconds=$elapsed lane=$LANE"
+              echo "CI failed checks: $(jq -c '[.[] | select(if .state then ((.state // "") | IN("SUCCESS","PENDING","EXPECTED") | not) else (.status == "COMPLETED" and (.conclusion // "") != "" and ((.conclusion // "") | IN("SUCCESS","NEUTRAL","SKIPPED") | not)) end) | {name: (.name // .context // "<unnamed>"), state: (.state // null), status: (.status // null), conclusion: (.conclusion // null)}]' <<<"$rollup")"
               echo "CI is red for PR #$PR_NUMBER — not reviewing or merging."
               exit 1
             fi
@@ -727,6 +786,11 @@ jobs:
           # Name the reason the window ran out, so "fail closed" is never a
           # silent hang: an unverifiable probe, no checks at all, or real pending
           # work are three different problems with three different fixes.
+          if [ "$checks_probe" != "ok" ]; then
+            echo "::error::phase=ci-wait result=checks-unavailable elapsed_seconds=$elapsed lane=$LANE head=$EXPECTED_HEAD_SHA"
+            echo "Could not read and validate repository check runs and commit statuses for $EXPECTED_HEAD_SHA. Failing closed; re-run the gate once both APIs return usable pages."
+            exit 1
+          fi
           if [ "$probe" = "unavailable" ]; then
             echo "::error::phase=ci-wait result=probe-unavailable elapsed_seconds=$elapsed lane=$LANE head=$EXPECTED_HEAD_SHA"
             echo "Could not read the workflow runs for $EXPECTED_HEAD_SHA, so a startup_failure (which produces no check run) could not be ruled out. Failing closed; re-run the gate once the API is reachable."
@@ -1194,13 +1258,17 @@ jobs:
             exit 1
           fi
           if ! approval_error=$(gh pr review "$PR_NUMBER" --repo "$TARGET_REPO" --approve --body "$body" 2>&1); then
-            if [[ "$approval_error" != *"Can not approve your own pull request"* ]]; then
-              echo "$approval_error" >&2
-              exit 1
-            fi
+            case "$approval_error" in
+              "Can not approve your own pull request" \
+                | "GraphQL: Can not approve your own pull request (addPullRequestReview)" \
+                | "GraphQL: GitHub Actions is not permitted to approve pull requests. (addPullRequestReview)" \
+                | "failed to create review: GraphQL: GitHub Actions is not permitted to approve pull requests. (addPullRequestReview)") ;;
+              *) echo "$approval_error" >&2; exit 1 ;;
+            esac
             # The required gate check remains the enforcement
             # mechanism. A comment is the only GitHub-permitted audit record
-            # when GitHub rejects the configured token's self-approval.
+            # when GitHub rejects self-approval or repository policy disables
+            # Actions-authored approvals.
             gh pr comment "$PR_NUMBER" --repo "$TARGET_REPO" --body "✅ **Merge gate: approved verdict**
 
             $body"
@@ -1235,16 +1303,6 @@ jobs:
           path: ${{ runner.temp }}/merge-attestation/attestation.json
           retention-days: 1
           if-no-files-found: error
-
-      - name: Dispatch trusted merge continuation
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          gh workflow run ai-privileged-merge.yml --repo "$TARGET_REPO" \
-            -f pr_number="$PR_NUMBER" \
-            -f expected_head_sha="$EXPECTED_HEAD_SHA" \
-            -f source_run_id="$GITHUB_RUN_ID"
 
       # --- CI telemetry (best-effort). Every step is `continue-on-error` so it
       # can NEVER fail or block the gate, and it stays dormant until
@@ -1360,22 +1418,63 @@ jobs:
           # One immediate, authoritative CI snapshot. There is deliberately no
           # second polling loop after model spend: pending, red, or inconclusive
           # state fails closed and a later event/re-run can attempt the new head.
-          # `$n` is a jq variable inside the single-quoted filter.
-          # shellcheck disable=SC2016
-          rollup=$(gh pr view "$PR_NUMBER" --repo "$REPO" \
-            --json statusCheckRollup \
-            --jq '[.statusCheckRollup[]? | select((.name // .context) as $n | $n != "preflight" and $n != "gate" and $n != "freshness" and $n != "classify" and $n != "ai-review" and $n != "ai-merge" and $n != "review")]')
+          checks_rc=0
+          statuses_rc=0
+          rollup_rc=0
+          check_pages=$(gh api --paginate \
+              "repos/$REPO/commits/$EXPECTED_HEAD_SHA/check-runs?per_page=100" 2>/dev/null |
+            jq -s -c '.') || checks_rc=$?
+          status_pages=$(gh api --paginate \
+              "repos/$REPO/commits/$EXPECTED_HEAD_SHA/status?per_page=100" 2>/dev/null |
+            jq -s -c '.') || statuses_rc=$?
+          if [ "$checks_rc" -eq 0 ] && [ "$statuses_rc" -eq 0 ]; then
+            rollup=$(jq -c '
+               if ((.checks | type) != "array" or
+                   (.statuses | type) != "array" or
+                   (.checks | length) == 0 or
+                   (.statuses | length) == 0 or
+                   ([.checks[] |
+                     select((.check_runs | type) != "array")] | length) != 0 or
+                   ([.statuses[] |
+                     select((.statuses | type) != "array")] | length) != 0)
+               then error("unusable CI status API response")
+               else
+               ([.checks[] | .check_runs[] |
+                 {name,
+                  status: ((.status // "") | ascii_upcase),
+                  conclusion: (if .conclusion == null then null
+                               else (.conclusion | ascii_upcase) end)}] +
+                ([.statuses[] | .statuses[] |
+                  {context, state: ((.state // "") | ascii_upcase)}] |
+                 reduce .[] as $status
+                   ([]; if any(.[]; .context == $status.context)
+                        then . else . + [$status] end))) |
+               [.[] | select((.name // .context) as $n |
+                 $n != "preflight" and $n != "gate" and
+                 $n != "freshness" and $n != "classify" and
+                 $n != "ai-review" and $n != "ai-merge" and
+                 $n != "review" and $n != "dispatch-merge" and
+                 $n != "privileged_merge")]
+               end
+             ' <<<"{\"checks\":$check_pages,\"statuses\":$status_pages}" 2>/dev/null) || rollup_rc=$?
+          else
+            rollup_rc=1
+          fi
+          if [ "$checks_rc" -ne 0 ] || [ "$statuses_rc" -ne 0 ] || [ "$rollup_rc" -ne 0 ]; then
+            echo "::error::phase=merge-recheck result=checks-unavailable elapsed_seconds=$(( $(date +%s) - merge_started_epoch )) head=$EXPECTED_HEAD_SHA checks_endpoint_rc=$checks_rc statuses_endpoint_rc=$statuses_rc aggregate_shape_rc=$rollup_rc gh_version=$(gh --version 2>/dev/null | head -n 1 | tr ' ' '_' || echo unavailable)"
+            exit 1
+          fi
           failed=$(jq '[.[] | select(
             if .state then
               ((.state // "") | IN("SUCCESS","PENDING","EXPECTED") | not)
             else
-              (.status == "COMPLETED" and ((.conclusion // "") | IN("SUCCESS","NEUTRAL","SKIPPED") | not))
+              (.status == "COMPLETED" and (.conclusion // "") != "" and ((.conclusion // "") | IN("SUCCESS","NEUTRAL","SKIPPED") | not))
             end
           )] | length' <<<"$rollup")
-          pending=$(jq -r '[.[] | select(if .state then (.state | IN("PENDING","EXPECTED")) else .status != "COMPLETED" end) | "\(.name // .context)=\(.state // .status)"] | join(", ")' <<<"$rollup")
+          pending=$(jq -r '[.[] | select(if .state then (.state | IN("PENDING","EXPECTED")) else (.status != "COMPLETED" or (.conclusion // "") == "") end) | "\(.name // .context)=\(.state // .status)"] | join(", ")' <<<"$rollup")
           if [ "$failed" -gt 0 ]; then
             echo "::error::phase=merge-recheck result=failed elapsed_seconds=$(( $(date +%s) - merge_started_epoch ))"
-            jq -r '.[] | select(if .state then ((.state // "") | IN("SUCCESS","PENDING","EXPECTED") | not) else (.status == "COMPLETED" and ((.conclusion // "") | IN("SUCCESS","NEUTRAL","SKIPPED") | not)) end) | (.name // .context)' <<<"$rollup"
+            jq -r '.[] | select(if .state then ((.state // "") | IN("SUCCESS","PENDING","EXPECTED") | not) else (.status == "COMPLETED" and (.conclusion // "") != "" and ((.conclusion // "") | IN("SUCCESS","NEUTRAL","SKIPPED") | not)) end) | (.name // .context)' <<<"$rollup"
             exit 1
           fi
           if [ -n "$pending" ]; then
@@ -1462,3 +1561,47 @@ jobs:
           gh pr merge "$PR_NUMBER" --repo "$REPO" --squash --admin --delete-branch \
             --match-head-commit "$EXPECTED_HEAD_SHA"
           echo "::notice::phase=merge result=merged elapsed_seconds=$(( $(date +%s) - merge_started_epoch )) lane=$LANE"
+
+  dispatch-merge:
+    needs: [preflight, gate]
+    if: needs.gate.result == 'success'
+    runs-on: ${{ github.repository_owner == 'Verjson' && fromJSON(vars.VERJSON_RUNNER_ISOLATED || vars.VERJSON_RUNNER_DEFAULT || '["self-hosted","gate"]') || 'ubuntu-24.04' }}
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: write
+    env:
+      EXPECTED_HEAD_SHA: ${{ needs.preflight.outputs.head_sha }}
+      PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr_number }}
+      TARGET_REPO: ${{ github.repository }}
+      SOURCE_RUN_ID: ${{ github.run_id }}
+    steps:
+      - name: Dispatch fixed trusted merge continuation
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          [[ "$TARGET_REPO" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] ||
+            { echo "::error::invalid repository identity"; exit 1; }
+          [ "$TARGET_REPO" = "$GITHUB_REPOSITORY" ] ||
+            { echo "::error::repository identity mismatch"; exit 1; }
+          [[ "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]] ||
+            { echo "::error::invalid PR number"; exit 1; }
+          [[ "$EXPECTED_HEAD_SHA" =~ ^[0-9a-f]{40}$ ]] ||
+            { echo "::error::invalid expected head"; exit 1; }
+          [[ "$SOURCE_RUN_ID" =~ ^[1-9][0-9]*$ ]] ||
+            { echo "::error::invalid source run"; exit 1; }
+          trusted_path="$(
+            gh api --paginate "repos/$TARGET_REPO/actions/workflows" \
+              --jq '.workflows[] | select(.path == ".github/workflows/ai-privileged-merge.yml") | .path'
+          )"
+          if [ -z "$trusted_path" ]; then
+            echo "::notice::No trusted privileged merge continuation is installed; validation is green, but this PR requires human merge."
+            exit 0
+          fi
+          [ "$trusted_path" = ".github/workflows/ai-privileged-merge.yml" ] ||
+            { echo "::error::trusted workflow identity mismatch"; exit 1; }
+          gh workflow run ai-privileged-merge.yml --repo "$TARGET_REPO" \
+            -f pr_number="$PR_NUMBER" \
+            -f expected_head_sha="$EXPECTED_HEAD_SHA" \
+            -f source_run_id="$SOURCE_RUN_ID"

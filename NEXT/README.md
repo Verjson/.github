@@ -11,20 +11,28 @@ In the **same commit** as a change that affects behaviour, pins, docs, or config
 add a new file:
 
 ```
-NEXT/YYYY-MM-DD-<short-slug>.md
+NEXT/YYYY-MM-DD-issue-<issue-number>-<short-slug>.md
 ```
 
-The file is one entry, starting with an H1 title that ends in the date, e.g.:
+The file is one entry with metadata, e.g.:
 
 ```markdown
-# Short imperative title — 2026-07-20
+---
+date: 2026-07-20
+issue: 123
+title: Short imperative title
+---
 
 One or two paragraphs: what changed, why, and the issue/PR/ADR refs.
 ```
 
-- `YYYY-MM-DD` is the date the entry lands. Fragments render **newest first**, so
-  a later date sorts above an earlier one; same-day entries sort by slug in
-  reverse-alphabetical order (rarely matters — pick distinct slugs if it does).
+- `YYYY-MM-DD` and the issue identity must match the metadata. Legitimately
+  issue-less work may use a UTC timestamp or short UUID as documented in
+  `docs/changelog/README.md`; never allocate a global sequence.
+- Rendering uses metadata date and stable identity, not a globally reserved
+  filename position.
+- Two fragments for the same issue signal potentially overlapping ownership.
+  Consolidate them instead of assigning unrelated numbers.
 - Never edit another entry's file, and never reintroduce a shared, hand-edited
   changelog — that recreates the conflict this structure removes.
 - `0000-archive.md` holds the pre-split history and always sorts last.
@@ -32,7 +40,7 @@ One or two paragraphs: what changed, why, and the issue/PR/ADR refs.
 ## Reading the log
 
 ```
-scripts/render-next.sh          # concatenates all fragments, newest first
+scripts/render-next.sh          # renders fragments by metadata, newest first
 ```
 
 Nothing renders a committed combined file: keeping the rendered log out of git is

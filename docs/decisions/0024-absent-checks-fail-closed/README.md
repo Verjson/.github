@@ -29,6 +29,21 @@ all present as "no checks" and were all treated as green.
 Treat absence as *not green*, at both places the gate reads CI, and make every
 fail-closed exit say why.
 
+**Amended 2026-07-30 for #240:** absence includes a temporarily absent CheckRun
+conclusion. GitHub can expose `status: COMPLETED` before the corresponding
+`conclusion` is visible. The polling check treats that snapshot as pending and
+waits for a populated conclusion; the single-snapshot merge recheck refuses to
+merge it as inconclusive. Explicit non-green conclusions remain terminal
+failures. This preserves the ADR's fail-closed invariant without rejecting a
+healthy run during field propagation.
+
+**Amended again 2026-07-30 after the failure reproduced:** the CI-wait failure
+path emits a compact JSON snapshot of only the checks it classified as failed,
+including name/context, state, status, and conclusion. Check names are encoded
+by `jq -c` rather than interpolated into workflow-command syntax. Classification
+remains fail-closed; the added evidence makes a live mismatch attributable
+before another semantic change is attempted.
+
 1. **An empty post-filter rollup is never green.** In `ci_wait` it keeps polling
    (a check can still appear) and, if it is still empty when the lane's poll
    window ends, the step fails with `::error::phase=ci-wait result=no-checks`
