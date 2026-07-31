@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Verjson/.github/blob/main/docs/changelog/fragment.schema.json",
+  "title": "Verjson changelog fragment metadata",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["date", "title"],
+  "properties": {
+    "date": {
+      "type": "string",
+      "format": "date"
+    },
+    "issue": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "id": {
+      "type": "string",
+      "pattern": "^(?:[0-9]{8}T[0-9]{6}Z|[0-9a-fA-F]{6,12})$"
+    },
+    "title": {
+      "type": "string",
+      "minLength": 1
+    }
+  },
+  "oneOf": [
+    {
+      "required": ["issue"],
+      "not": {"required": ["id"]}
+    },
+    {
+      "required": ["id"],
+      "not": {"required": ["issue"]}
+    }
+  ]
+}

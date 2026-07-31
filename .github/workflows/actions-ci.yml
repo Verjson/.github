@@ -12,6 +12,8 @@ on:
       - '.github/actionlint.yaml'
       - '.github/workflows/actionlint.yml'
       - '.github/workflows/actionlint-reusable-contract.yml'
+      - '.github/workflows/changelog-release.yml'
+      - '.github/workflows/changelog-validate.yml'
       - '.github/workflows/actions-ci.yml'
       - '.github/workflows/ai-privileged-merge.yml'
       - '.github/workflows/ai-review-merge.yml'
@@ -23,6 +25,7 @@ on:
       - 'renovate.json'
       - 'scripts/**'
       - 'docs/decisions/**'
+      - 'docs/changelog/**'
       - 'NEXT/**'
   push:
     branches: [main]
@@ -31,6 +34,8 @@ on:
       - '.github/actionlint.yaml'
       - '.github/workflows/actionlint.yml'
       - '.github/workflows/actionlint-reusable-contract.yml'
+      - '.github/workflows/changelog-release.yml'
+      - '.github/workflows/changelog-validate.yml'
       - '.github/workflows/actions-ci.yml'
       - '.github/workflows/ai-privileged-merge.yml'
       - '.github/workflows/ai-review-merge.yml'
@@ -42,6 +47,7 @@ on:
       - 'renovate.json'
       - 'scripts/**'
       - 'docs/decisions/**'
+      - 'docs/changelog/**'
       - 'NEXT/**'
 
 permissions:
@@ -141,3 +147,5 @@ jobs:
         run: bash scripts/render-next.sh >/dev/null
       - name: NEXT renderer — edge cases (#67)
         run: bash scripts/ci-gate/render-next.test.sh
+      - name: Changelog contract — validation, release, and PR policy (#249)
+        run: python3 scripts/changelog.test.py
