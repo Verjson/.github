@@ -6,3 +6,10 @@
 .claude/worktrees/
 .claude/settings.local.json
 .claude/.headroom_wrap_marker.json
+
+# PM orchestrator run state — a plan and run brief written per session and deleted
+# at terminal completion. Scratch, like the worktrees above, never repo content.
+.pm-*
+
+# Byte-code left behind by running scripts/changelog.test.py.
+__pycache__/
