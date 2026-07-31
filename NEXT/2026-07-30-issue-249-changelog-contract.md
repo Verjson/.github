@@ -13,3 +13,6 @@ routing contract, with caller overrides and an external hosted fallback.
 Temporary in-place compatibility gives historical prose stable file identities;
 only explicit metadata or configured migration directories infer issue ownership.
 Workflow entrypoints consistently use the available `python3` runtime.
+Release publication targets the explicit caller default branch from any checkout
+state, and pull-request policy distinguishes in-place fragment renames from
+actual fragment consumption.

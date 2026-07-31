@@ -165,6 +165,17 @@ class ChangelogContractTests(unittest.TestCase):
         with self.assertRaisesRegex(changelog.ChangelogError, "cannot consume"):
             changelog.check_pr(self.root, base, "HEAD")
 
+    def test_feature_pr_can_rename_fragment_within_next(self) -> None:
+        self.init_git()
+        original = fragment(self.root, "2026-07-30-issue-249-contract.md")
+        self.commit_all("base")
+        base = run(self.root, "git", "rev-parse", "HEAD")
+        destination = self.root / "NEXT/2026-07-30-issue-249-canonical-contract.md"
+        original.rename(destination)
+        self.commit_all("rename")
+
+        changelog.check_pr(self.root, base, "HEAD")
+
     def test_released_snapshots_use_natural_version_order(self) -> None:
         snapshots = self.root / "CHANGELOG"
         snapshots.mkdir()
@@ -191,6 +202,12 @@ class ChangelogContractTests(unittest.TestCase):
         self.assertIn("ref: ${{ inputs.contract_ref }}", workflow)
         self.assertNotIn("runs-on: ubuntu-latest", workflow)
         self.assertIn("inputs.runner != ''", workflow)
+        self.assertIn("ref: ${{ github.event.repository.default_branch }}", workflow)
+        self.assertIn(
+            '"$release_commit:refs/heads/$DEFAULT_BRANCH"',
+            workflow,
+        )
+        self.assertNotIn("git symbolic-ref", workflow)
 
         validation_workflow = (
             MODULE_PATH.parent.parent / ".github/workflows/changelog-validate.yml"

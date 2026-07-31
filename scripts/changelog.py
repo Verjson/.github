@@ -286,7 +286,7 @@ def release(repo_root: Path, version: str, selected_names: list[str]) -> None:
 
 
 def changed_paths(repo_root: Path, base: str, head: str) -> set[str]:
-    output = git(repo_root, "diff", "--name-only", f"{base}...{head}")
+    output = git(repo_root, "diff", "--find-renames", "--name-only", f"{base}...{head}")
     return {line for line in output.splitlines() if line}
 
 
@@ -300,12 +300,23 @@ def check_pr(repo_root: Path, base: str, head: str) -> None:
             + ", ".join(sorted(forbidden))
         )
     consumed = set()
-    for line in git(repo_root, "diff", "--name-status", f"{base}...{head}").splitlines():
+    for line in git(
+        repo_root,
+        "diff",
+        "--find-renames",
+        "--name-status",
+        f"{base}...{head}",
+    ).splitlines():
         fields = line.split("\t")
         status = fields[0]
         if status == "D" and len(fields) == 2 and fields[1].startswith("NEXT/"):
             consumed.add(fields[1])
-        if status.startswith("R") and len(fields) == 3 and fields[1].startswith("NEXT/"):
+        if (
+            status.startswith("R")
+            and len(fields) == 3
+            and fields[1].startswith("NEXT/")
+            and not fields[2].startswith("NEXT/")
+        ):
             consumed.add(fields[1])
     if consumed:
         raise ChangelogError(

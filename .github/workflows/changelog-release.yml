@@ -41,6 +41,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
+          ref: ${{ github.event.repository.default_branch }}
           token: ${{ secrets.push_token }}
       - name: Check out canonical contract
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -52,6 +53,7 @@ jobs:
         env:
           VERSION: ${{ inputs.version }}
           FRAGMENTS: ${{ inputs.fragments }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
           git config user.name verjson-release
           git config user.email release@verjson.dev
@@ -63,5 +65,5 @@ jobs:
           release_commit="$(git rev-parse HEAD)"
           test "$(git rev-list -n 1 "$VERSION")" = "$release_commit"
           git push --atomic origin \
-            "$release_commit:$(git symbolic-ref --short HEAD)" \
+            "$release_commit:refs/heads/$DEFAULT_BRANCH" \
             "refs/tags/$VERSION"
