@@ -517,6 +517,7 @@ jobs:
       issues: write
       actions: read
       checks: read
+      statuses: read
     env:
       LANE: ${{ needs.preflight.outputs.lane }}
       LANE_REASON: ${{ needs.preflight.outputs.reason }}
@@ -570,6 +571,7 @@ jobs:
             exit 1
           fi
           checks=0
+          checks_probe=unread
           probe=unread
           # A workflow whose `paths:` filter does not match never runs and emits
           # NO check run (unlike a job-level `if:`, which reports SKIPPED). Such
@@ -593,11 +595,50 @@ jobs:
             # still be labelling attempt 60's genuine pending timeout as
             # "probe-unavailable" and sending people to check API reachability.
             probe=unread
-            # `$n` is a jq variable inside the single-quoted filter.
-            # shellcheck disable=SC2016
-            rollup=$(gh pr view "$PR_NUMBER" --repo "$TARGET_REPO" \
-              --json statusCheckRollup \
-              --jq '[.statusCheckRollup[]? | select((.name // .context) as $n | $n != "preflight" and $n != "gate" and $n != "freshness" and $n != "classify" and $n != "ai-review" and $n != "ai-merge" and $n != "review" and $n != "dispatch-merge" and $n != "privileged_merge")]')
+            checks_probe=unread
+            # Read only repository-scoped REST resources. `gh pr view` expands
+            # statusCheckRollup through nested GraphQL commit fields that a
+            # correctly scoped GitHub App token cannot always read (#248).
+            # `--slurp` preserves every page; commit statuses are newest-first,
+            # so retain only the first observation for each context.
+            if ! check_pages=$(gh api --paginate --slurp \
+                "repos/$TARGET_REPO/commits/$EXPECTED_HEAD_SHA/check-runs?per_page=100" 2>/dev/null) ||
+               ! status_pages=$(gh api --paginate --slurp \
+                "repos/$TARGET_REPO/commits/$EXPECTED_HEAD_SHA/status?per_page=100" 2>/dev/null) ||
+               ! rollup=$(jq -c '
+                 if ((.checks | type) != "array" or
+                     (.statuses | type) != "array" or
+                     ([.checks[] |
+                       select((.check_runs | type) != "array")] | length) != 0 or
+                     ([.statuses[] |
+                       select((.statuses | type) != "array")] | length) != 0)
+                 then error("unusable CI status API response")
+                 else
+                 ([.checks[] | .check_runs[] |
+                   {name,
+                    status: ((.status // "") | ascii_upcase),
+                    conclusion: (if .conclusion == null then null
+                                 else (.conclusion | ascii_upcase) end)}] +
+                  ([.statuses[] | .statuses[] |
+                    {context, state: ((.state // "") | ascii_upcase)}] |
+                   reduce .[] as $status
+                     ([]; if any(.[]; .context == $status.context)
+                          then . else . + [$status] end))) |
+                 [.[] | select((.name // .context) as $n |
+                   $n != "preflight" and $n != "gate" and
+                   $n != "freshness" and $n != "classify" and
+                   $n != "ai-review" and $n != "ai-merge" and
+                   $n != "review" and $n != "dispatch-merge" and
+                   $n != "privileged_merge")]
+                 end
+               ' <<<"{\"checks\":$check_pages,\"statuses\":$status_pages}" 2>/dev/null); then
+              checks_probe=unavailable
+              elapsed=$(( $(date +%s) - started_epoch ))
+              echo "::warning::phase=ci-wait result=checks-unavailable elapsed_seconds=$elapsed attempt=$i/$max_attempts head=$EXPECTED_HEAD_SHA"
+              sleep 30
+              continue
+            fi
+            checks_probe=ok
             # Rollup mixes CheckRuns (name/status/conclusion) with commit
             # StatusContexts like renovate/stability-days (context/state) —
             # treating a context's null .status as pending hangs the gate.
@@ -730,6 +771,11 @@ jobs:
           # Name the reason the window ran out, so "fail closed" is never a
           # silent hang: an unverifiable probe, no checks at all, or real pending
           # work are three different problems with three different fixes.
+          if [ "$checks_probe" != "ok" ]; then
+            echo "::error::phase=ci-wait result=checks-unavailable elapsed_seconds=$elapsed lane=$LANE head=$EXPECTED_HEAD_SHA"
+            echo "Could not read and validate repository check runs and commit statuses for $EXPECTED_HEAD_SHA. Failing closed; re-run the gate once both APIs return usable pages."
+            exit 1
+          fi
           if [ "$probe" = "unavailable" ]; then
             echo "::error::phase=ci-wait result=probe-unavailable elapsed_seconds=$elapsed lane=$LANE head=$EXPECTED_HEAD_SHA"
             echo "Could not read the workflow runs for $EXPECTED_HEAD_SHA, so a startup_failure (which produces no check run) could not be ruled out. Failing closed; re-run the gate once the API is reachable."
@@ -1357,11 +1403,40 @@ jobs:
           # One immediate, authoritative CI snapshot. There is deliberately no
           # second polling loop after model spend: pending, red, or inconclusive
           # state fails closed and a later event/re-run can attempt the new head.
-          # `$n` is a jq variable inside the single-quoted filter.
-          # shellcheck disable=SC2016
-          rollup=$(gh pr view "$PR_NUMBER" --repo "$REPO" \
-            --json statusCheckRollup \
-            --jq '[.statusCheckRollup[]? | select((.name // .context) as $n | $n != "preflight" and $n != "gate" and $n != "freshness" and $n != "classify" and $n != "ai-review" and $n != "ai-merge" and $n != "review" and $n != "dispatch-merge" and $n != "privileged_merge")]')
+          if ! check_pages=$(gh api --paginate --slurp \
+              "repos/$REPO/commits/$EXPECTED_HEAD_SHA/check-runs?per_page=100" 2>/dev/null) ||
+             ! status_pages=$(gh api --paginate --slurp \
+              "repos/$REPO/commits/$EXPECTED_HEAD_SHA/status?per_page=100" 2>/dev/null) ||
+             ! rollup=$(jq -c '
+               if ((.checks | type) != "array" or
+                   (.statuses | type) != "array" or
+                   ([.checks[] |
+                     select((.check_runs | type) != "array")] | length) != 0 or
+                   ([.statuses[] |
+                     select((.statuses | type) != "array")] | length) != 0)
+               then error("unusable CI status API response")
+               else
+               ([.checks[] | .check_runs[] |
+                 {name,
+                  status: ((.status // "") | ascii_upcase),
+                  conclusion: (if .conclusion == null then null
+                               else (.conclusion | ascii_upcase) end)}] +
+                ([.statuses[] | .statuses[] |
+                  {context, state: ((.state // "") | ascii_upcase)}] |
+                 reduce .[] as $status
+                   ([]; if any(.[]; .context == $status.context)
+                        then . else . + [$status] end))) |
+               [.[] | select((.name // .context) as $n |
+                 $n != "preflight" and $n != "gate" and
+                 $n != "freshness" and $n != "classify" and
+                 $n != "ai-review" and $n != "ai-merge" and
+                 $n != "review" and $n != "dispatch-merge" and
+                 $n != "privileged_merge")]
+               end
+             ' <<<"{\"checks\":$check_pages,\"statuses\":$status_pages}" 2>/dev/null); then
+            echo "::error::phase=merge-recheck result=checks-unavailable elapsed_seconds=$(( $(date +%s) - merge_started_epoch )) head=$EXPECTED_HEAD_SHA"
+            exit 1
+          fi
           failed=$(jq '[.[] | select(
             if .state then
               ((.state // "") | IN("SUCCESS","PENDING","EXPECTED") | not)

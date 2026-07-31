@@ -14,14 +14,18 @@ dispatch="$(awk '/^  dispatch-merge:/{cap=1} cap{print}' "$wf")"
 
 grep -q '^      actions: read$' <<<"$gate" \
   && grep -q '^      checks: read$' <<<"$gate" \
+  && grep -q '^      statuses: read$' <<<"$gate" \
   && ! grep -q '^      actions: write$' <<<"$gate" \
   && ! grep -q '^      checks: write$' <<<"$gate" \
-  && pass "PR checkout/review gate has actions/checks read only" \
+  && ! grep -q '^      statuses: write$' <<<"$gate" \
+  && pass "PR checkout/review gate has actions/checks/statuses read only" \
   || fail "PR checkout/review gate permission placement drifted"
 [ "$(grep -c '^      checks: read$' "$wf")" -eq 1 ] \
+  && [ "$(grep -c '^      statuses: read$' "$wf")" -eq 1 ] \
   && ! grep -qE '^      checks: (read|write)$' <<<"$dispatch" \
-  && pass "checks:read is isolated to the PR review gate" \
-  || fail "checks permission escaped the PR review gate"
+  && ! grep -qE '^      statuses: (read|write)$' <<<"$dispatch" \
+  && pass "checks/statuses read permissions are isolated to the PR review gate" \
+  || fail "checks/statuses permission escaped the PR review gate"
 [ "$(grep -c '^      actions: write$' "$wf")" -eq 1 ] \
   && grep -q '^      contents: read$' <<<"$dispatch" \
   && pass "only dispatch job has minimum contents/read + actions/write" \

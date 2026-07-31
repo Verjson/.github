@@ -44,10 +44,11 @@ extract() {
 
 wait_script="$tmp/ci-wait.sh"
 extract ci_wait "$wait_script"
-grep -q 'statusCheckRollup' "$wait_script" || { echo "FAIL - could not extract ci_wait run block from $wf"; exit 1; }
+grep -q '/check-runs?per_page=100' "$wait_script" || { echo "FAIL - could not extract ci_wait run block from $wf"; exit 1; }
 
-trusted_exclusions=$(grep -c '\$n != "dispatch-merge" and \$n != "privileged_merge"' "$wf")
-[ "$trusted_exclusions" -eq 2 ] \
+dispatch_exclusions=$(grep -c '\$n != "dispatch-merge"' "$wf")
+privileged_exclusions=$(grep -c '\$n != "privileged_merge"' "$wf")
+[ "$dispatch_exclusions" -eq 2 ] && [ "$privileged_exclusions" -eq 2 ] \
   && pass "CI wait and authoritative recheck exclude trusted continuation checks" \
   || fail "trusted continuation checks can circularly authorize or block the review gate"
 
@@ -63,20 +64,36 @@ cat >"$tmp/bin/gh" <<'GH'
 # default path stays fork-free.
 bump() { n=0; [ -f "$1" ] && read -r n <"$1"; n=$((n + 1)); printf '%s\n' "$n" >"$1"; printf '%s' "$n"; }
 if [ "$1" = "pr" ] && [ "$2" = "view" ]; then
-  case "$*" in
-    *statusCheckRollup*)
-      # ROLLUP_FILE2 lets a scenario change the rollup mid-poll (e.g. a check
-      # that only registers after the first few attempts).
-      if [ -n "${ROLLUP_FILE2:-}" ] && [ "$(bump "$ROLLUPCOUNT")" -gt "${ROLLUP_SWITCH_AFTER:-0}" ]; then
-        cat "$ROLLUP_FILE2"
-      else
-        cat "$ROLLUP_FILE"
-      fi ;;
-    *) cat "$META_FILE" ;;
-  esac
+  [ "${GRAPHQL_ROLLUP_RC:-0}" = "0" ] || {
+    echo "GraphQL: Resource not accessible by integration (repository.pullRequest.statusCheckRollup)" >&2
+    exit "$GRAPHQL_ROLLUP_RC"
+  }
+  cat "$META_FILE"
   exit 0
 fi
 if [ "$1" = "api" ]; then
+  case "$*" in
+    */check-runs\?per_page=100*)
+      [ "${CHECKS_RC:-0}" = "0" ] || exit "$CHECKS_RC"
+      if [ -n "${CHECKS_PAGES_FILE:-}" ]; then
+        cat "$CHECKS_PAGES_FILE"
+        exit 0
+      fi
+      fixture="$ROLLUP_FILE"
+      if [ -n "${ROLLUP_FILE2:-}" ] && [ "$(bump "$ROLLUPCOUNT")" -gt "${ROLLUP_SWITCH_AFTER:-0}" ]; then
+        fixture="$ROLLUP_FILE2"
+      fi
+      jq -c '[{total_count: ([.[] | select(has("status"))] | length), check_runs: [.[] | select(has("status"))]}]' "$fixture"
+      exit 0 ;;
+    */status\?per_page=100*)
+      [ "${STATUSES_RC:-0}" = "0" ] || exit "$STATUSES_RC"
+      if [ -n "${STATUSES_PAGES_FILE:-}" ]; then
+        cat "$STATUSES_PAGES_FILE"
+        exit 0
+      fi
+      jq -c '[{statuses: [.[] | select(has("state"))]}]' "$ROLLUP_FILE"
+      exit 0 ;;
+  esac
   [ "${SUITES_RC:-0}" != "0" ] && { echo "gh: api error" >&2; exit "$SUITES_RC"; }
   # SUITES_FAIL_FIRST makes only the first N probes fail, so a test can show a
   # transient outage being recovered from rather than a permanent one.
@@ -119,6 +136,10 @@ run_wait() {
   export ROLLUP_FILE="$tmp/rollup.json" SUITES_FILE="$tmp/suites.json"
   export META_FILE="$tmp/meta.json" ACTIONLOG="$tmp/actions.log"
   export SUITES_RC="${3:-0}"
+  export CHECKS_RC="${CHECKS_RC:-0}" STATUSES_RC="${STATUSES_RC:-0}"
+  export GRAPHQL_ROLLUP_RC="${GRAPHQL_ROLLUP_RC:-0}"
+  export CHECKS_PAGES_FILE="${CHECKS_PAGES_FILE:-}"
+  export STATUSES_PAGES_FILE="${STATUSES_PAGES_FILE:-}"
   export EXPECTED_HEAD_SHA="${4-$head_sha}"
   # `<unset>` removes the variable instead of setting it: every other case sets
   # it explicitly, so nothing would otherwise pin the `:-false` default and a
@@ -183,6 +204,20 @@ rc="$(run_wait '[]')"
   || fail "empty rollup failed without saying why ($rc)"
 
 # --- preserved behaviour: real CI still decides the outcome ------------------
+GRAPHQL_ROLLUP_RC=1 rc="$(GRAPHQL_ROLLUP_RC=1 run_wait "$green_rollup")"
+unset GRAPHQL_ROLLUP_RC
+{ [ "$rc" = "rc=0" ] && wait_out_has 'result=green'; } \
+  && pass "repository REST checks remain readable when GraphQL rollup access is denied (#248)" \
+  || fail "integration GraphQL denial still blocks a green REST snapshot ($rc)"
+
+rc="$(run_wait '[
+  {"name":"unit","status":"completed","conclusion":"success"},
+  {"context":"deployment","state":"success"}
+]')"
+{ [ "$rc" = "rc=0" ] && wait_out_has 'result=green'; } \
+  && pass "lowercase REST check-run and commit-status values normalize to green (#248)" \
+  || fail "REST casing made a green snapshot fail closed incorrectly ($rc)"
+
 rc="$(run_wait '[
   {"name":"success","status":"COMPLETED","conclusion":"SUCCESS"},
   {"name":"neutral","status":"COMPLETED","conclusion":"NEUTRAL"},
@@ -199,6 +234,70 @@ rc="$(run_wait '[{"name":"unit","status":"COMPLETED","conclusion":"FAILURE"}]')"
     && wait_out_has '"conclusion":"FAILURE"'; } \
   && pass "a red rollup fails with an attributable compact snapshot (#240)" \
   || fail "red rollup was not attributable ($rc)"
+
+CHECKS_RC=1 rc="$(CHECKS_RC=1 run_wait "$green_rollup")"
+unset CHECKS_RC
+{ [ "$rc" = "rc=1" ] && ! wait_out_has 'result=green' \
+    && wait_out_has '^::error::phase=ci-wait result=checks-unavailable' \
+    && wait_out_has 'attempt=60/60' \
+    && ! wait_out_has 'result=no-checks-allowed'; } \
+  && pass "an unreadable repository checks endpoint fails closed (#248)" \
+  || fail "unreadable repository checks were accepted ($rc)"
+
+STATUSES_RC=1 rc="$(STATUSES_RC=1 run_wait "$green_rollup")"
+unset STATUSES_RC
+{ [ "$rc" = "rc=1" ] && ! wait_out_has 'result=green' \
+    && wait_out_has '^::error::phase=ci-wait result=checks-unavailable' \
+    && wait_out_has 'attempt=60/60' \
+    && ! wait_out_has 'result=no-checks-allowed'; } \
+  && pass "an unreadable repository statuses endpoint fails closed (#248)" \
+  || fail "unreadable repository statuses were accepted ($rc)"
+
+printf '%s' '[{"message":"integration proxy error"}]' >"$tmp/bad-pages.json"
+export CHECKS_PAGES_FILE="$tmp/bad-pages.json"
+rc="$(run_wait '[]' "$no_startup_failures" 0 "$head_sha" true)"
+unset CHECKS_PAGES_FILE
+{ [ "$rc" = "rc=1" ] && ! wait_out_has 'result=green' \
+    && wait_out_has '^::error::phase=ci-wait result=checks-unavailable' \
+    && wait_out_has 'attempt=60/60' \
+    && ! wait_out_has 'result=no-checks-allowed'; } \
+  && pass "wrong-shape check-run pages remain unreadable despite the absent-check opt-out (#248)" \
+  || fail "wrong-shape check-run pages became an allowed empty snapshot ($rc)"
+
+export STATUSES_PAGES_FILE="$tmp/bad-pages.json"
+rc="$(run_wait '[]' "$no_startup_failures" 0 "$head_sha" true)"
+unset STATUSES_PAGES_FILE
+{ [ "$rc" = "rc=1" ] && ! wait_out_has 'result=green' \
+    && wait_out_has '^::error::phase=ci-wait result=checks-unavailable' \
+    && wait_out_has 'attempt=60/60' \
+    && ! wait_out_has 'result=no-checks-allowed'; } \
+  && pass "wrong-shape status pages remain unreadable despite the absent-check opt-out (#248)" \
+  || fail "wrong-shape status pages became an allowed empty snapshot ($rc)"
+
+printf '%s' '[{"total_count":2,"check_runs":[
+  {"name":"unit","status":"COMPLETED","conclusion":"SUCCESS"}
+]},{"total_count":2,"check_runs":[
+  {"name":"lint","status":"COMPLETED","conclusion":"SUCCESS"}
+]}]' >"$tmp/check-pages.json"
+export CHECKS_PAGES_FILE="$tmp/check-pages.json"
+rc="$(run_wait '[]')"
+unset CHECKS_PAGES_FILE
+{ [ "$rc" = "rc=0" ] && wait_out_has 'result=green' \
+    && wait_out_has 'checks=2'; } \
+  && pass "all paginated check-run pages participate in classification (#248)" \
+  || fail "paginated check runs were dropped or misclassified ($rc)"
+
+printf '%s' '[{"statuses":[
+  {"context":"deploy","state":"SUCCESS"}
+]},{"statuses":[
+  {"context":"deploy","state":"FAILURE"}
+]}]' >"$tmp/status-pages.json"
+export STATUSES_PAGES_FILE="$tmp/status-pages.json"
+rc="$(run_wait '[]')"
+unset STATUSES_PAGES_FILE
+{ [ "$rc" = "rc=0" ] && wait_out_has 'result=green'; } \
+  && pass "newest commit status wins across REST pages (#248)" \
+  || fail "an older duplicate commit status overrode the newest state ($rc)"
 
 rc="$(run_wait '[{"name":"unit\n::error::injected","status":"COMPLETED","conclusion":"FAILURE"}]')"
 { [ "$rc" = "rc=1" ] \
@@ -418,6 +517,20 @@ rc="$(run_merge "$green_rollup" "$no_startup_failures" 22)"
 { [ "$rc" = "rc=1" ] && ! merged && merge_out_has 'result=probe-unavailable'; } \
   && pass "merge recheck refuses to merge on an unverifiable probe" \
   || fail "merge recheck merged without verifying the absence probe ($rc)"
+
+export CHECKS_PAGES_FILE="$tmp/bad-pages.json"
+rc="$(run_merge '[]' "$no_runs" 0 true)"
+unset CHECKS_PAGES_FILE
+{ [ "$rc" = "rc=1" ] && ! merged && merge_out_has 'result=checks-unavailable'; } \
+  && pass "merge recheck rejects wrong-shape check-run pages before the absent-check opt-out (#248)" \
+  || fail "merge recheck treated malformed check-run pages as allowed absence ($rc)"
+
+export STATUSES_PAGES_FILE="$tmp/bad-pages.json"
+rc="$(run_merge '[]' "$no_runs" 0 true)"
+unset STATUSES_PAGES_FILE
+{ [ "$rc" = "rc=1" ] && ! merged && merge_out_has 'result=checks-unavailable'; } \
+  && pass "merge recheck rejects wrong-shape status pages before the absent-check opt-out (#248)" \
+  || fail "merge recheck treated malformed status pages as allowed absence ($rc)"
 
 # Same 2xx-with-a-bad-body class as ci-wait, but here the consequence is an
 # irreversible squash-merge rather than a wasted poll window.
