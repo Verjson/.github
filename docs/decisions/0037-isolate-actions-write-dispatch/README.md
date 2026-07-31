@@ -65,6 +65,13 @@ and stays in that review job; `checks: write` remains absent and
 `actions: write` remains isolated to the metadata-only dispatcher. No
 `ORG_ADMIN_TOKEN` is introduced into PR-controlled execution.
 
+**Amended 2026-07-30 for #248:** the gate reads check runs and commit statuses
+through repository-scoped REST endpoints at the immutable PR head. It no longer
+requests GraphQL's nested `statusCheckRollup`, which can be denied to an
+otherwise correctly scoped GitHub App token. The gate retains `checks: read` and
+adds only `statuses: read`; both are read-only, and the existing check-name
+exclusions and fail-closed classifications remain unchanged.
+
 ## Consumers without a privileged continuation
 
 **Amended 2026-07-30 for #247:** the dispatcher enumerates the repository's workflows

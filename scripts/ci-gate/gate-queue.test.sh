@@ -101,7 +101,7 @@ awk '
 ' "$wf" >"$merge_script"
 if grep -q 'for i in \$(seq\|sleep 30' "$merge_script"; then
   fail "merge recheck must not poll or sleep"
-elif grep -q 'headRefOid' "$merge_script" && grep -q 'statusCheckRollup' "$merge_script"; then
+elif grep -q 'headRefOid' "$merge_script" && grep -q '/check-runs?per_page=100' "$merge_script"; then
   pass "merge recheck is immediate and verifies head + CI"
 else
   fail "could not extract authoritative merge recheck"
@@ -127,13 +127,18 @@ mkdir -p "$tmp/bin"
 cat >"$tmp/bin/gh" <<'GH'
 #!/usr/bin/env bash
 if [ "$1" = "pr" ] && [ "$2" = "view" ]; then
-  case "$*" in
-    *statusCheckRollup*) cat "$ROLLUP_FILE" ;;
-    *) cat "$META_FILE" ;;
-  esac
+  cat "$META_FILE"
   exit 0
 fi
 if [ "$1" = "api" ]; then
+  case "$*" in
+    */check-runs\?per_page=100*)
+      jq -c '[{total_count: ([.[] | select(has("status"))] | length), check_runs: [.[] | select(has("status"))]}]' "$ROLLUP_FILE"
+      exit 0 ;;
+    */status\?per_page=100*)
+      jq -c '[{statuses: [.[] | select(has("state"))]}]' "$ROLLUP_FILE"
+      exit 0 ;;
+  esac
   printf '{"total_count":1,"workflow_runs":[{"name":"unit","conclusion":"success"}]}\n'
   exit 0
 fi
