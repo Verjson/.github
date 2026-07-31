@@ -83,3 +83,16 @@ review check red.
 Workflow enumeration or transport failures remain terminal. A non-empty result other
 than the one fixed trusted path also fails closed. The fallback grants no merge
 authority and does not introduce a credential into pull-request-controlled execution.
+
+## Dispatcher runtime contract
+
+**Amended 2026-07-30 for #257:** the metadata-only dispatcher keeps the
+isolated/default self-hosted routing required by ADR 0033 and bootstraps GitHub
+CLI only when the selected runner does not provide it. The fallback downloads a
+pinned release for the runner architecture, verifies an immutable SHA-256
+digest, and installs it under `RUNNER_TEMP`; preinstalled `gh` remains the fast
+path.
+
+The exact repository, PR, head, source-run, and trusted-workflow validation;
+read-only contents permission; isolated `actions: write`; and separation from
+the administrative token remain unchanged.

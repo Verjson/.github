@@ -1549,6 +1549,44 @@ jobs:
       TARGET_REPO: ${{ github.repository }}
       SOURCE_RUN_ID: ${{ github.run_id }}
     steps:
+      - name: Ensure pinned GitHub CLI
+        env:
+          GH_CLI_VERSION: "2.78.0"
+          GH_CLI_AMD64_SHA256: ac309f70c5d6b122c82e6138ce82cb65ca5d8595cc09d11751fbc4e3907e1a05
+          GH_CLI_ARM64_SHA256: 9e3ca75b227a5503f6ef92c4b8b6dbf94e34bfdd8069ac0f16b8739856ebba7b
+        run: |
+          set -euo pipefail
+          if command -v gh >/dev/null 2>&1; then
+            exit 0
+          fi
+          case "$(uname -m)" in
+            x86_64|amd64)
+              arch=amd64
+              expected_sha="$GH_CLI_AMD64_SHA256"
+              ;;
+            aarch64|arm64)
+              arch=arm64
+              expected_sha="$GH_CLI_ARM64_SHA256"
+              ;;
+            *)
+              echo "::error::unsupported runner architecture for GitHub CLI: $(uname -m)"
+              exit 1
+              ;;
+          esac
+          archive="gh_${GH_CLI_VERSION}_linux_${arch}.tar.gz"
+          download_dir="$(mktemp -d)"
+          trap 'rm -rf "$download_dir"' EXIT
+          curl --fail --silent --show-error --location \
+            --output "$download_dir/$archive" \
+            "https://github.com/cli/cli/releases/download/v${GH_CLI_VERSION}/$archive"
+          printf '%s  %s\n' "$expected_sha" "$download_dir/$archive" |
+            sha256sum --check -
+          tar -xzf "$download_dir/$archive" -C "$download_dir"
+          install -m 0755 \
+            "$download_dir/gh_${GH_CLI_VERSION}_linux_${arch}/bin/gh" \
+            "$RUNNER_TEMP/gh"
+          printf '%s\n' "$RUNNER_TEMP" >>"$GITHUB_PATH"
+
       - name: Dispatch fixed trusted merge continuation
         env:
           GH_TOKEN: ${{ github.token }}
