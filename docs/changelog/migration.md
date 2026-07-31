@@ -17,7 +17,7 @@
 8. Remove `legacy_dir` after all managed consumers and queued pull requests are
    migrated. File a durable owning-PM handoff for any unmanaged blocker.
 
-Use `python scripts/changelog.py validate --repo-root .` locally. Render
-unreleased changes with `python scripts/changelog.py render-next --repo-root .`
+Use `python3 scripts/changelog.py validate --repo-root .` locally. Render
+unreleased changes with `python3 scripts/changelog.py render-next --repo-root .`
 and released history with
-`python scripts/changelog.py render-released --repo-root .`.
+`python3 scripts/changelog.py render-released --repo-root .`.

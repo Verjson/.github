@@ -148,4 +148,4 @@ jobs:
       - name: NEXT renderer — edge cases (#67)
         run: bash scripts/ci-gate/render-next.test.sh
       - name: Changelog contract — validation, release, and PR policy (#249)
-        run: python scripts/changelog.test.py
+        run: python3 scripts/changelog.test.py
