@@ -74,11 +74,29 @@ class ChangelogContractTests(unittest.TestCase):
         legacy = self.root / "CHANGELOG-unreleased"
         legacy.mkdir()
         (legacy / "old.md").write_text(
-            "# Old entry\n\nTracked by #249.\n", encoding="utf-8"
+            "---\ndate: 2026-07-29\nissue: 249\ntitle: Old entry\n---\n\nBody.\n",
+            encoding="utf-8",
         )
 
         with self.assertRaisesRegex(changelog.ChangelogError, "duplicate identity issue:249"):
             changelog.fragments(self.root, "CHANGELOG-unreleased")
+
+    def test_historical_next_prose_does_not_infer_duplicate_issue_identity(self) -> None:
+        next_dir = self.root / "NEXT"
+        next_dir.mkdir()
+        (next_dir / "2026-07-01-first.md").write_text(
+            "# First\n\nFollow-up context from #64.\n", encoding="utf-8"
+        )
+        (next_dir / "2026-07-02-second.md").write_text(
+            "# Second\n\nAlso references #64.\n", encoding="utf-8"
+        )
+
+        entries = changelog.fragments(self.root, allow_legacy_next=True)
+
+        self.assertEqual(
+            {"legacy-file:2026-07-01-first.md", "legacy-file:2026-07-02-second.md"},
+            {entry.identity for entry in entries},
+        )
 
     def test_render_order_uses_metadata_not_slug_allocation(self) -> None:
         fragment(

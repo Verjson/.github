@@ -99,7 +99,11 @@ def load_canonical(path: Path) -> Fragment:
     return Fragment(path, metadata, body, identity, True)
 
 
-def load_legacy(path: Path, require_identity: bool = True) -> Fragment:
+def load_legacy(
+    path: Path,
+    require_identity: bool = True,
+    infer_issue_from_prose: bool = True,
+) -> Fragment:
     text = path.read_text(encoding="utf-8")
     metadata: dict[str, str]
     body: str
@@ -107,7 +111,11 @@ def load_legacy(path: Path, require_identity: bool = True) -> Fragment:
         metadata, body = parse_frontmatter(path)
         identity = validate_metadata(path, metadata)
     except ChangelogError:
-        issues = {match.group("issue") for match in LEGACY_ISSUE.finditer(text)}
+        issues = (
+            {match.group("issue") for match in LEGACY_ISSUE.finditer(text)}
+            if infer_issue_from_prose
+            else set()
+        )
         if len(issues) != 1 and require_identity:
             raise ChangelogError(
                 f"{path}: legacy fragment needs metadata or exactly one issue reference"
@@ -144,7 +152,13 @@ def fragments(
             if CANONICAL_NAME.fullmatch(path.name):
                 result.append(load_canonical(path))
             elif allow_legacy_next:
-                result.append(load_legacy(path, require_identity=False))
+                result.append(
+                    load_legacy(
+                        path,
+                        require_identity=False,
+                        infer_issue_from_prose=False,
+                    )
+                )
             else:
                 raise ChangelogError(
                     f"{path}: filename does not follow the canonical contract"
