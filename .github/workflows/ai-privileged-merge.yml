@@ -59,30 +59,115 @@ jobs:
             { echo "::error::trusted workflow identity is unavailable"; exit 1; }
           [[ "$trusted_workflow_sha" =~ ^[0-9a-f]{40}$ ]] ||
             { echo "::error::trusted workflow revision is unavailable"; exit 1; }
+          trusted_repository_id="$(gh api repos/Verjson/.github --jq .id)"
+          trusted_workflow_path=.github/workflows/ai-review-merge.yml
+          trusted_required_url="https://api.github.com/repos/$TARGET_REPO/actions/required_workflows/"
+          [[ "$trusted_repository_id" =~ ^[1-9][0-9]*$ ]] ||
+            { echo "::error::trusted workflow repository is unavailable"; exit 1; }
+          # Bounded wait: ~40 minutes at 30s. Overridable only so the extracted-script
+          # contract tests can reach the terminal state; no workflow env sets it.
+          # Every guard still runs on every iteration, so the worst a tampered
+          # value could do within 1..200 is shorten the wait — fail-closed, never
+          # a trust bypass — and `timeout-minutes: 45` caps the other end.
+          merge_wait_attempts="${MERGE_WAIT_ATTEMPTS:-80}"
+          [[ "$merge_wait_attempts" =~ ^[1-9][0-9]*$ ]] && [ "$merge_wait_attempts" -le 200 ] ||
+            { echo "::error::invalid merge wait bound"; exit 1; }
+
+          # A gate run is trusted in exactly three installation shapes: this
+          # repository running its own workflow, a caller of the pinned reusable
+          # workflow, and an organization-ruleset *required workflow*. The third
+          # shape carries a repository-scoped workflow_id and no
+          # referenced_workflows, so it is identified by its required-workflow
+          # URL plus the trusted source path, and only while
+          # `required_workflow_source_trusted` holds for the PR base branch.
+          trusted_run_def='
+            def trusted_run:
+              (.workflow_id == $id) or
+              any(.referenced_workflows[]?;
+                (.path | startswith("Verjson/.github/.github/workflows/ai-review-merge.yml@")) and
+                .sha == $sha) or
+              ($required and (.path == $wfpath) and
+                ((.workflow_url // "") | ltrimstr($wfurl) | test("^[0-9]+$")));
+          '
+
+          # The organization ruleset is the trust anchor for the required-workflow
+          # shape: a repository admin cannot mint an Organization-sourced rule.
+          # Every rule mandating a workflow at the trusted path must name the
+          # trusted repository at refs/heads/main, so a same-path impostor added
+          # by any other ruleset withdraws trust instead of inheriting it.
+          required_workflow_source_trusted() {
+            local base_ref="$1" rules
+            [[ "$base_ref" =~ ^[A-Za-z0-9._/-]+$ ]] || return 1
+            [[ "$base_ref" != *..* ]] || return 1
+            # The "no impostor at this path" invariant is only sound over the
+            # complete rule set, and this endpoint paginates. `--paginate` streams
+            # one array per page and `jq -s` collects them; `--slurp` is not
+            # available on the governed runner (ADR 0037). A page that is not an
+            # array, or a body that yields nothing, is unusable, not empty.
+            # `base_ref` goes into the path unencoded. A branch containing `/` is
+            # fine for this endpoint, and any 4xx leaves the shape untrusted rather
+            # than trusted, so a PR based off a branch the org ruleset does not
+            # target simply falls back to the other two matchers.
+            rules="$(gh api --paginate "repos/$TARGET_REPO/rules/branches/$base_ref?per_page=100" |
+              jq -s '[.[] | if type == "array" then .[]
+                            else error("unusable rules page") end]')" || return 1
+            [ -n "$rules" ] || return 1
+            jq -e --argjson repo_id "$trusted_repository_id" \
+              --arg wfpath "$trusted_workflow_path" --arg owner "$TARGET_OWNER" '
+                if type != "array" then false else
+                  [.[] | select(.type == "workflows") | . as $rule |
+                    .parameters.workflows[]? | select(.path == $wfpath) |
+                    {source_type: $rule.ruleset_source_type, source: $rule.ruleset_source,
+                     repository_id: .repository_id, ref: .ref}] as $entries |
+                  ($entries | length) > 0 and
+                  all($entries[];
+                    .source_type == "Organization" and .source == $owner and
+                    .repository_id == $repo_id and .ref == "refs/heads/main")
+                end
+              ' <<<"$rules" >/dev/null
+          }
+
+          resolve_base_ref() {
+            local attempt ref
+            for attempt in 1 2 3; do
+              ref="$(gh api "repos/$TARGET_REPO/pulls/$PR_NUMBER" --jq .base.ref || true)"
+              if [ -n "$ref" ] && [ "$ref" != "null" ]; then printf '%s' "$ref"; return 0; fi
+              if [ "$attempt" -lt 3 ]; then sleep 5; fi
+            done
+            return 1
+          }
 
           newest_trusted_gate_run() {
             gh api "repos/$TARGET_REPO/actions/runs?head_sha=$EXPECTED_HEAD_SHA&event=pull_request&per_page=100" |
-              jq -ce --argjson id "$trusted_workflow_id" --arg sha "$trusted_workflow_sha" '
-                [.workflow_runs[] |
-                  select(
-                    (.workflow_id == $id) or
-                    any(.referenced_workflows[]?;
-                      (.path | startswith("Verjson/.github/.github/workflows/ai-review-merge.yml@")) and
-                      .sha == $sha)
-                  )] |
-                sort_by([(.created_at // ""), .id]) |
-                last // empty
-              '
+              jq -ce --argjson id "$trusted_workflow_id" --arg sha "$trusted_workflow_sha" \
+                --arg wfpath "$trusted_workflow_path" \
+                --arg wfurl "$trusted_required_url" \
+                --argjson required "$required_workflow_trusted" \
+                "$trusted_run_def"'
+                  [.workflow_runs[] | select(trusted_run)] |
+                  sort_by([(.created_at // ""), .id]) |
+                  last // empty
+                '
           }
 
+          # The dispatcher hands over its own gate run, which is triggered by
+          # `pull_request` (or `workflow_dispatch` on a manual re-gate) — never by
+          # the dispatch itself. The run must also be bound to the expected head.
           dispatched_gate_run() {
             local run
             [[ "$SOURCE_RUN_ID" =~ ^[1-9][0-9]*$ ]] || return 1
             run="$(gh api "repos/$TARGET_REPO/actions/runs/$SOURCE_RUN_ID")" || return 1
-            jq -ce --argjson id "$trusted_workflow_id" --arg repo "$TARGET_REPO" '
-              select(.workflow_id == $id and .event == "workflow_dispatch" and
-                .repository.full_name == $repo)
-            ' <<<"$run"
+            jq -ce --argjson id "$trusted_workflow_id" --arg sha "$trusted_workflow_sha" \
+              --arg wfpath "$trusted_workflow_path" \
+              --arg wfurl "$trusted_required_url" \
+              --argjson required "$required_workflow_trusted" \
+              --arg repo "$TARGET_REPO" --arg head "$EXPECTED_HEAD_SHA" \
+              "$trusted_run_def"'
+                select(trusted_run and
+                  (.event | IN("pull_request", "workflow_dispatch")) and
+                  .repository.full_name == $repo and
+                  .head_sha == $head)
+              ' <<<"$run"
           }
 
           attestation_for_run() {
@@ -116,13 +201,25 @@ jobs:
             grep -qE '^\.github/workflows/' <<<"$files"
           }
 
-          for attempt in $(seq 1 80); do
+          base_ref="$(resolve_base_ref)" ||
+            { echo "::error::could not resolve the PR base branch"; exit 1; }
+          required_workflow_trusted=false
+          if required_workflow_source_trusted "$base_ref"; then
+            required_workflow_trusted=true
+          fi
+
+          for attempt in $(seq 1 "$merge_wait_attempts"); do
             meta="$(gh pr view "$PR_NUMBER" --repo "$TARGET_REPO" \
               --json headRefOid,isDraft,labels,state,statusCheckRollup)"
             current_head="$(jq -r '.headRefOid // ""' <<<"$meta")"
             [ "$current_head" = "$EXPECTED_HEAD_SHA" ] ||
               { echo "::error::stale head"; exit 1; }
-            [ "$(jq -r '.state // ""' <<<"$meta")" = "OPEN" ] ||
+            pr_state="$(jq -r '.state // ""' <<<"$meta")"
+            if [ "$pr_state" = "MERGED" ]; then
+              echo "::notice::PR #$PR_NUMBER is already merged at $EXPECTED_HEAD_SHA; nothing to do"
+              exit 0
+            fi
+            [ "$pr_state" = "OPEN" ] ||
               { echo "::error::PR is no longer open"; exit 1; }
             jq -e '.isDraft | not' <<<"$meta" >/dev/null ||
               { echo "::error::PR is draft"; exit 1; }
@@ -182,7 +279,7 @@ jobs:
               select(if .state then (.state | IN("PENDING","EXPECTED")) else .status != "COMPLETED" end)] | length' <<<"$meta")"
             [ "$failed" -eq 0 ] || { echo "::error::required check failed"; exit 1; }
             if [ "${provenance:-pending}" = trusted ] && [ "$pending" -eq 0 ]; then break; fi
-            [ "$attempt" -lt 80 ] || { echo "::error::trusted gate/checks did not become green"; exit 1; }
+            [ "$attempt" -lt "$merge_wait_attempts" ] || { echo "::error::trusted gate/checks did not become green"; exit 1; }
             sleep 30
           done
 
@@ -190,7 +287,12 @@ jobs:
             --json headRefOid,isDraft,labels,state,statusCheckRollup)"
           [ "$(jq -r '.headRefOid // ""' <<<"$final")" = "$EXPECTED_HEAD_SHA" ] ||
             { echo "::error::head changed before merge"; exit 1; }
-          [ "$(jq -r '.state // ""' <<<"$final")" = "OPEN" ] ||
+          final_state="$(jq -r '.state // ""' <<<"$final")"
+          if [ "$final_state" = "MERGED" ]; then
+            echo "::notice::PR #$PR_NUMBER was already merged at $EXPECTED_HEAD_SHA; nothing to do"
+            exit 0
+          fi
+          [ "$final_state" = "OPEN" ] ||
             { echo "::error::PR closed before merge"; exit 1; }
           jq -e '.isDraft | not' <<<"$final" >/dev/null ||
             { echo "::error::PR became draft"; exit 1; }
@@ -206,6 +308,14 @@ jobs:
           if [ "$file_guard_rc" -eq 0 ]; then
             echo "::notice::workflow files changed before merge; privileged auto-merge skipped; human review and merge required"
             exit 0
+          fi
+          final_base_ref="$(resolve_base_ref)" ||
+            { echo "::error::could not re-resolve the PR base branch"; exit 1; }
+          [ "$final_base_ref" = "$base_ref" ] ||
+            { echo "::error::PR base branch changed before merge"; exit 1; }
+          if [ "$required_workflow_trusted" = true ]; then
+            required_workflow_source_trusted "$final_base_ref" ||
+              { echo "::error::required-workflow trust anchor withdrawn before merge"; exit 1; }
           fi
           if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
             final_gate_run="$(dispatched_gate_run || true)"

@@ -97,6 +97,20 @@ if [ "$1" = "api" ] && [[ "$*" == *"/pulls/7/files"* ]]; then
   fi
   exit 0
 fi
+if [ "$1" = "api" ] && [ "$2" = "repos/Verjson/.github" ]; then
+  printf '1269388380\n'
+  exit 0
+fi
+if [ "$1" = "api" ] && [[ "$2" =~ /pulls/7$ ]]; then
+  printf 'main\n'
+  exit 0
+fi
+if [ "$1" = "api" ] && [[ "$2" == *"/rules/branches/"* ]]; then
+  # This suite exercises the workflow_id provenance shape; no required-workflow
+  # rule applies, so required-workflow trust must stay off.
+  printf '[]\n'
+  exit 0
+fi
 if [ "$1" = "api" ] && [[ "$2" == *"/artifacts?per_page=100" ]]; then
   if [ "${ARTIFACTS_EMPTY:-false}" = true ]; then
     printf '{"artifacts":[]}\n'
