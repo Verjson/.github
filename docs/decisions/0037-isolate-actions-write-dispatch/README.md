@@ -64,3 +64,15 @@ so the gate cannot determine whether CI is green. The permission is read-only
 and stays in that review job; `checks: write` remains absent and
 `actions: write` remains isolated to the metadata-only dispatcher. No
 `ORG_ADMIN_TOKEN` is introduced into PR-controlled execution.
+
+## Consumers without a privileged continuation
+
+**Amended 2026-07-30 for #247:** the dispatcher enumerates the repository's workflows
+with its event-scoped token before resolving the fixed trusted path. If that path is
+absent, the job succeeds with a notice that validation is green but a human must merge.
+This implements ADR 0036's no-auto-merge consumer fallback without making the required
+review check red.
+
+Workflow enumeration or transport failures remain terminal. A non-empty result other
+than the one fixed trusted path also fails closed. The fallback grants no merge
+authority and does not introduce a credential into pull-request-controlled execution.

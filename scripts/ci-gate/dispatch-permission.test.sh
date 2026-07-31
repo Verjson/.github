@@ -49,7 +49,17 @@ awk '
 mkdir "$tmp/bin"
 cat >"$tmp/bin/gh" <<'EOF'
 #!/usr/bin/env bash
-if [ "$1" = api ]; then printf '%s\n' "${WORKFLOW_PATH:-.github/workflows/ai-privileged-merge.yml}"; exit 0; fi
+if [ "$1" = api ]; then
+  [ "$2" = --paginate ] &&
+    [ "$3" = repos/Verjson/example/actions/workflows ] &&
+    [ "$4" = --jq ] &&
+    [ "$5" = '.workflows[] | select(.path == ".github/workflows/ai-privileged-merge.yml") | .path' ] ||
+    exit 2
+  [ "${API_FAILURE:-false}" = false ] || exit 1
+  printf '%s' "${WORKFLOW_PATH-.github/workflows/ai-privileged-merge.yml}"
+  [ -z "${WORKFLOW_PATH-.github/workflows/ai-privileged-merge.yml}" ] || printf '\n'
+  exit 0
+fi
 if [ "$1 $2" = "workflow run" ]; then printf '%s\n' "$*" >>"$DISPATCH_LOG"; exit 0; fi
 exit 2
 EOF
@@ -57,15 +67,24 @@ chmod +x "$tmp/bin/gh"
 
 run_case() {
   : >"$tmp/dispatch.log"
+  : >"$tmp/dispatch.out"
   PATH="$tmp/bin:$PATH" DISPATCH_LOG="$tmp/dispatch.log" GH_TOKEN=token \
     GITHUB_REPOSITORY=Verjson/example TARGET_REPO="${1-Verjson/example}" \
     PR_NUMBER="${2-7}" EXPECTED_HEAD_SHA="${3-0123456789abcdef0123456789abcdef01234567}" \
     SOURCE_RUN_ID="${4-99}" WORKFLOW_PATH="${5-.github/workflows/ai-privileged-merge.yml}" \
-    bash "$script" >/dev/null 2>&1
+    API_FAILURE="${6-false}" bash "$script" >"$tmp/dispatch.out" 2>&1
 }
 run_case && grep -q 'workflow run ai-privileged-merge.yml' "$tmp/dispatch.log" \
   && pass "validated identities dispatch only the fixed workflow" \
   || fail "valid trusted dispatch failed"
+run_case 'Verjson/example' 7 0123456789abcdef0123456789abcdef01234567 99 '' \
+  && [ ! -s "$tmp/dispatch.log" ] \
+  && grep -q 'requires human merge' "$tmp/dispatch.out" \
+  && pass "absent privileged continuation is a green manual-merge no-op" \
+  || fail "absent privileged continuation did not preserve green validation"
+run_case 'Verjson/example' 7 0123456789abcdef0123456789abcdef01234567 99 '' true \
+  && fail "workflow-list API failure did not fail closed" \
+  || pass "workflow-list API failure remains terminal"
 for bad in repo pr head run workflow; do
   case "$bad" in
     repo) args=('Other/example') ;;
