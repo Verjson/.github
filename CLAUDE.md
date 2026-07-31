@@ -55,4 +55,5 @@ non-trivial or fanned-out work autonomously:
 
 ## Active Issues / Areas for Improvement
 
-- [#247](https://github.com/Verjson/.github/issues/247) — Preserve green validation when a consumer has no privileged merge continuation.
+- [#251](https://github.com/Verjson/.github/issues/251) — `budget-exceeded.test.sh` fails on clean `main` (recovered verdict must still approve).
+- [#261](https://github.com/Verjson/.github/issues/261) — Bind privileged-merge provenance to a signed workflow identity instead of ambient ruleset config (ADR 0039 residual).
