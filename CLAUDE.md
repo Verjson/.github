@@ -9,7 +9,8 @@ conflict, the more local one wins.
 
 This repo does **not** keep a prepend-only `NEXT.md`. In the same commit as a
 change that affects behaviour, pins, docs, or config, add a **new** file
-`NEXT/YYYY-MM-DD-<slug>.md` (see `NEXT/README.md` for the one-entry format).
+`NEXT/YYYY-MM-DD-issue-<issue-number>-<slug>.md` (see `NEXT/README.md` for
+metadata and the issue-less exception).
 Because no two PRs touch the same file, the log can't produce merge conflicts —
 which is the whole point. Read the log with `scripts/render-next.sh`. `NEXT.md` is
 a static pointer; don't add entries to it.
