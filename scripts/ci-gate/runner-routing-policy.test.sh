@@ -259,6 +259,8 @@ ui-ci.yml build-test
 pulumi-ci.yml validate
 pulumi-ci.yml preview-admission
 pulumi-ci.yml preview
+changelog-validate.yml validate
+changelog-release.yml release
 TARGETS
 }
 
@@ -312,6 +314,8 @@ notify-umbrella.yml dispatch
 helm-ci.yml lint-template
 ui-ci.yml build-test
 pulumi-ci.yml preview
+changelog-validate.yml validate
+changelog-release.yml release
 TARGETS
 
 for job in validate preview-admission; do
@@ -337,7 +341,7 @@ done
 # Prefixes legitimately differ, but every routed job must expose both lane
 # variables and preserve the compatible general fallback.
 # --------------------------------------------------------------------------
-policy_files="node-ci.yml node-release.yml notify-umbrella.yml helm-ci.yml ui-ci.yml pulumi-ci.yml actionlint.yml"
+policy_files="node-ci.yml node-release.yml notify-umbrella.yml helm-ci.yml ui-ci.yml pulumi-ci.yml actionlint.yml changelog-validate.yml changelog-release.yml"
 deviant=""
 job_count=0
 for name in $policy_files; do

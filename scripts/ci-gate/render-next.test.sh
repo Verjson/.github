@@ -9,11 +9,13 @@ set -uo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
 repo_root="$(cd "$here/../.." && pwd)"
 script="$repo_root/scripts/render-next.sh"
+contract="$repo_root/scripts/changelog.py"
 fails=0
 pass() { printf 'ok   - %s\n' "$1"; }
 fail() { printf 'FAIL - %s\n' "$1"; fails=$((fails + 1)); }
 
-[ -f "$script" ] || { echo "FAIL - script not found: $script"; exit 1; }
+[ -f "$script" ] && [ -f "$contract" ] \
+  || { echo "FAIL - changelog scripts not found"; exit 1; }
 
 tmproot="$(mktemp -d)"
 trap 'rm -rf "$tmproot"' EXIT
@@ -23,20 +25,23 @@ new_fixture() {
   local d; d="$(mktemp -d "$tmproot/fix.XXXXXX")"
   mkdir -p "$d/scripts" "$d/NEXT"
   cp "$script" "$d/scripts/render-next.sh"
+  cp "$contract" "$d/scripts/changelog.py"
   printf '%s' "$d"
 }
 
-# 1. Happy path: newest-first, README excluded, 0000-archive sorts last.
+# 1. Happy path: metadata date controls order; README and archive are excluded.
 d="$(new_fixture)"
-printf '# older\n'   > "$d/NEXT/2026-07-19-older.md"
-printf '# newer\n'   > "$d/NEXT/2026-07-20-newer.md"
+printf '%s\n' '---' 'date: 2026-07-19' 'issue: 19' 'title: older' '---' '' 'old' \
+  > "$d/NEXT/2026-07-19-issue-19-older.md"
+printf '%s\n' '---' 'date: 2026-07-20' 'issue: 20' 'title: newer' '---' '' 'new' \
+  > "$d/NEXT/2026-07-20-issue-20-newer.md"
 printf '# archive\n' > "$d/NEXT/0000-archive.md"
 printf 'ignore me\n' > "$d/NEXT/README.md"
 out="$(bash "$d/scripts/render-next.sh")"
 [ "$(printf '%s\n' "$out" | grep -c '^ignore me$')" -eq 0 ] \
   && pass "README.md is excluded from the log" || fail "README.md must be excluded"
-order="$(printf '%s\n' "$out" | grep -E '^# ' | paste -sd, -)"
-[ "$order" = "# newer,# older,# archive" ] \
+order="$(printf '%s\n' "$out" | grep -E '^## ' | paste -sd, -)"
+[ "$order" = "## newer,## older,## 0000-archive" ] \
   && pass "fragments render newest-first, archive last" || fail "wrong order: $order"
 
 # 2. Missing NEXT/ directory -> non-zero exit.

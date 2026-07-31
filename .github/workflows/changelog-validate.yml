@@ -1,0 +1,51 @@
+name: changelog contract
+
+on:
+  workflow_call:
+    inputs:
+      contract_ref:
+        description: Immutable Verjson/.github commit containing this workflow
+        required: true
+        type: string
+      legacy_dir:
+        description: Temporary former unreleased-fragment directory
+        required: false
+        type: string
+        default: ''
+      runner:
+        description: Optional JSON runner labels; Verjson defaults by visibility, external callers use ubuntu-24.04.
+        required: false
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ${{ inputs.runner != '' && fromJSON(inputs.runner) || github.repository_owner != 'Verjson' && 'ubuntu-24.04' || github.event.repository.private == true && fromJSON(vars.VERJSON_RUNNER_DEFAULT || '["self-hosted","general"]') || fromJSON(vars.VERJSON_RUNNER_UNTRUSTED || vars.VERJSON_RUNNER_DEFAULT || '["self-hosted","general"]') }}
+    timeout-minutes: 5
+    steps:
+      - name: Check out consumer
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+      - name: Check out canonical contract
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: Verjson/.github
+          ref: ${{ inputs.contract_ref }}
+          path: .changelog-contract
+      - name: Validate fragments and pull-request policy
+        env:
+          LEGACY_DIR: ${{ inputs.legacy_dir }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          args=(--repo-root "$GITHUB_WORKSPACE")
+          if [ -n "$LEGACY_DIR" ]; then args+=(--legacy-dir "$LEGACY_DIR"); fi
+          python3 .changelog-contract/scripts/changelog.py validate "${args[@]}"
+          if [ -n "$BASE_SHA" ] && [ -n "$HEAD_SHA" ]; then
+            python3 .changelog-contract/scripts/changelog.py check-pr \
+              --repo-root "$GITHUB_WORKSPACE" --base "$BASE_SHA" --head "$HEAD_SHA"
+          fi

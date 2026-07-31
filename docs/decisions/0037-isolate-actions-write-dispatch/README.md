@@ -72,6 +72,14 @@ otherwise correctly scoped GitHub App token. The gate retains `checks: read` and
 adds only `statuses: read`; both are read-only, and the existing check-name
 exclusions and fail-closed classifications remain unchanged.
 
+The REST pagination contract is implemented with the broadly available
+`gh api --paginate` stream and `jq -s`, rather than requiring the newer
+`gh api --slurp` flag. Endpoint transport/JSON failures and unusable page shapes
+remain fail-closed; diagnostics expose only bounded return codes and the CLI
+version, never response bodies or credentials. Gate job 91043852657 demonstrated
+that the self-hosted runner rejected the newer CLI flag before either endpoint
+could be classified.
+
 ## Consumers without a privileged continuation
 
 **Amended 2026-07-30 for #247:** the dispatcher enumerates the repository's workflows

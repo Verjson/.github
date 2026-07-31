@@ -1,0 +1,69 @@
+name: changelog release
+
+on:
+  workflow_call:
+    inputs:
+      contract_ref:
+        description: Immutable Verjson/.github commit containing this workflow
+        required: true
+        type: string
+      version:
+        required: true
+        type: string
+      fragments:
+        description: Newline-separated NEXT fragment filenames; empty selects all
+        required: false
+        type: string
+        default: ''
+      runner:
+        description: Optional JSON runner labels; Verjson defaults by visibility, external callers use ubuntu-24.04.
+        required: false
+        type: string
+        default: ''
+    secrets:
+      push_token:
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: changelog-release-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: ${{ inputs.runner != '' && fromJSON(inputs.runner) || github.repository_owner != 'Verjson' && 'ubuntu-24.04' || github.event.repository.private == true && fromJSON(vars.VERJSON_RUNNER_DEFAULT || '["self-hosted","general"]') || fromJSON(vars.VERJSON_RUNNER_UNTRUSTED || vars.VERJSON_RUNNER_DEFAULT || '["self-hosted","general"]') }}
+    timeout-minutes: 10
+    steps:
+      - name: Check out release repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.repository.default_branch }}
+          token: ${{ secrets.push_token }}
+      - name: Check out canonical contract
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: Verjson/.github
+          ref: ${{ inputs.contract_ref }}
+          path: .changelog-contract
+      - name: Create immutable snapshot and exact release tag
+        env:
+          VERSION: ${{ inputs.version }}
+          FRAGMENTS: ${{ inputs.fragments }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          git config user.name verjson-release
+          git config user.email release@verjson.dev
+          args=(release --repo-root "$GITHUB_WORKSPACE" --version "$VERSION")
+          while IFS= read -r fragment; do
+            [ -z "$fragment" ] || args+=(--fragment "$fragment")
+          done <<<"$FRAGMENTS"
+          python3 .changelog-contract/scripts/changelog.py "${args[@]}"
+          release_commit="$(git rev-parse HEAD)"
+          test "$(git rev-list -n 1 "$VERSION")" = "$release_commit"
+          git push --atomic origin \
+            "$release_commit:refs/heads/$DEFAULT_BRANCH" \
+            "refs/tags/$VERSION"
