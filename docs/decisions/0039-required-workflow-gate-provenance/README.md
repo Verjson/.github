@@ -14,13 +14,24 @@ workflow (`referenced_workflows[].path` pinned to the trusted repository at the
 current `main` SHA).
 
 Verjson does not install the gate either way. The organization ruleset
-`main-protection` carries a `workflows` rule mandating
-`Verjson/.github/.github/workflows/ai-review-merge.yml@refs/heads/main`. A run of that
-shape lives in the consumer repository with a repository-scoped `workflow_id`, an empty
-`referenced_workflows`, and a `workflow_url` under `/actions/required_workflows/`.
+`main-protection` (id `18098028`) carries a `workflows` rule mandating
+`.github/workflows/ai-review-merge.yml` at `refs/heads/main` from `repository_id`
+`1269388380` — `Verjson/.github`. A run of that shape lives in the consumer repository
+and looks like this; the values are transcribed from `Verjson/verjson-cloud-storage`
+run `30601252875`, recorded here because the ADR outlives the issue thread that
+observed it:
+
+```
+workflow_id:           318934643      # repository-scoped, not the org workflow id 312358392
+referenced_workflows:  []
+path:                  .github/workflows/ai-review-merge.yml
+workflow_url:          https://api.github.com/repos/<consumer>/actions/required_workflows/318934643
+event:                 pull_request
+```
+
 Neither matcher fires, so `provenance` never reached `trusted`, and every privileged
 run exhausted its bounded wait with `trusted gate/checks did not become green` —
-`pull_request_target` and dispatched runs alike.
+`pull_request_target` run `30594009367` and dispatched run `30601445365` alike.
 
 The dispatcher compounded this. It hands the privileged workflow its own gate run in
 `source_run_id`, but the receiving check required that run's `event` to be

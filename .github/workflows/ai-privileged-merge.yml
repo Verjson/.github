@@ -66,6 +66,9 @@ jobs:
             { echo "::error::trusted workflow repository is unavailable"; exit 1; }
           # Bounded wait: ~40 minutes at 30s. Overridable only so the extracted-script
           # contract tests can reach the terminal state; no workflow env sets it.
+          # Every guard still runs on every iteration, so the worst a tampered
+          # value could do within 1..200 is shorten the wait — fail-closed, never
+          # a trust bypass — and `timeout-minutes: 45` caps the other end.
           merge_wait_attempts="${MERGE_WAIT_ATTEMPTS:-80}"
           [[ "$merge_wait_attempts" =~ ^[1-9][0-9]*$ ]] && [ "$merge_wait_attempts" -le 200 ] ||
             { echo "::error::invalid merge wait bound"; exit 1; }
@@ -101,6 +104,10 @@ jobs:
             # one array per page and `jq -s` collects them; `--slurp` is not
             # available on the governed runner (ADR 0037). A page that is not an
             # array, or a body that yields nothing, is unusable, not empty.
+            # `base_ref` goes into the path unencoded. A branch containing `/` is
+            # fine for this endpoint, and any 4xx leaves the shape untrusted rather
+            # than trusted, so a PR based off a branch the org ruleset does not
+            # target simply falls back to the other two matchers.
             rules="$(gh api --paginate "repos/$TARGET_REPO/rules/branches/$base_ref?per_page=100" |
               jq -s '[.[] | if type == "array" then .[]
                             else error("unusable rules page") end]')" || return 1
@@ -125,7 +132,7 @@ jobs:
             for attempt in 1 2 3; do
               ref="$(gh api "repos/$TARGET_REPO/pulls/$PR_NUMBER" --jq .base.ref || true)"
               if [ -n "$ref" ] && [ "$ref" != "null" ]; then printf '%s' "$ref"; return 0; fi
-              sleep 5
+              if [ "$attempt" -lt 3 ]; then sleep 5; fi
             done
             return 1
           }

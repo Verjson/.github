@@ -115,10 +115,13 @@ if [ "${1:-}" = "api" ]; then
       if [ "$(bump "$tmp_rules_count")" -gt 1 ] && [ -s "$RULES_FINAL_FILE" ]; then
         cat "$RULES_FINAL_FILE"; exit 0
       fi
-      cat "$RULES_FILE"; exit 0 ;;
+      # RULES_RC models `gh --paginate` emitting whole pages and then failing:
+      # the pages that arrived must not be mistaken for the complete rule set.
+      cat "$RULES_FILE"; exit "${RULES_RC:-0}" ;;
     */pulls/*/files*)
       emit '[{"filename":"src/index.ts"}]' ;;
     */pulls/18*)
+      [ "${PULLS_RC:-0}" -eq 0 ] || exit "$PULLS_RC"
       if [ "$(bump "$tmp_base_count")" -gt 1 ] && [ -n "${BASE_REF_FINAL:-}" ]; then
         emit "{\"base\":{\"ref\":\"$BASE_REF_FINAL\"}}"
       fi
@@ -174,6 +177,8 @@ reset_fixtures() {
   META="$meta_open"
   META_FINAL=""
   BASE_REF=main
+  RULES_RC=0
+  PULLS_RC=0
   BASE_REF_FINAL=""
 }
 
@@ -187,6 +192,7 @@ run_case() { # run_case <event-name>
   # enough attempts to prove the loop reaches its terminal state.
   export MERGE_WAIT_ATTEMPTS=2
   export TRUSTED_WF_ID TRUSTED_REPO_ID TRUSTED_SHA BASE_REF BASE_REF_FINAL
+  export RULES_RC PULLS_RC
   export RULES_FILE="$tmp/rules.json" RULES_FINAL_FILE="$tmp/rules-final.json"
   export RUNS_FILE="$tmp/runs.json"
   export META_FILE="$tmp/meta.json" META_FINAL_FILE="$tmp/meta-final.json"
@@ -216,6 +222,7 @@ unstubbed() { grep -q '^UNSTUBBED' "$tmp/act.log"; }
 
 assert_merged() { # <label>
   if jq_broke; then fail "jq filter did not compile — $1"
+  elif unstubbed; then fail "reached an unstubbed gh call — $1"
   elif merged && [ "$rc" -eq 0 ]; then pass "$1"
   else fail "$1 (rc=$rc)"; fi
 }
@@ -287,6 +294,17 @@ RULES='{"message":"Not Found"}'
 run_case workflow_dispatch
 assert_rejected "an unusable rules page is not an empty rule set" "$NOT_GREEN"
 
+# The dangerous shape is a *partial* read: a valid first page can otherwise
+# stand in for the whole rule set while a later page hides an impostor.
+RULES="[$(org_entry Organization Verjson "$TRUSTED_REPO_ID" refs/heads/main)]
+{\"message\":\"Server Error\"}"
+run_case workflow_dispatch
+assert_rejected "an unusable page after a valid one withdraws trust" "$NOT_GREEN"
+
+RULES_RC=1
+run_case workflow_dispatch
+assert_rejected "pages already received do not survive a failed rules read" "$NOT_GREEN"
+
 # --- the run must itself be the required-workflow shape --------------------
 RUNS="$(jq -c ".[0].workflow_url = \"https://api.github.com/repos/$CONSUMER/actions/workflows/318934643\" | ." <<<"$required_workflow_run")"
 run_case workflow_dispatch
@@ -345,6 +363,16 @@ assert_rejected "a closed-unmerged PR is not a no-op" "no longer open"
 META_FINAL="$(jq -c '.state = "MERGED"' <<<"$meta_open")"
 run_case workflow_dispatch
 assert_noop "a PR merged between the wait loop and the final recheck settles clean" "already merged"
+
+# The final block's no-op is only safe because head equality precedes it there
+# too: a merge at some *other* head is not this run's outcome.
+META_FINAL="$(jq -c ".state = \"MERGED\" | .headRefOid = \"$OTHER_SHA\"" <<<"$meta_open")"
+run_case workflow_dispatch
+assert_rejected "a merge at another head after the loop is not a no-op" "head changed before merge"
+
+PULLS_RC=1
+run_case workflow_dispatch
+assert_rejected "an unreadable PR resource fails closed on the base branch" "could not resolve the PR base branch"
 
 META="$(jq -c ".headRefOid = \"$OTHER_SHA\"" <<<"$meta_open")"
 run_case workflow_dispatch
