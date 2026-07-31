@@ -599,15 +599,26 @@ jobs:
             # Read only repository-scoped REST resources. `gh pr view` expands
             # statusCheckRollup through nested GraphQL commit fields that a
             # correctly scoped GitHub App token cannot always read (#248).
-            # `--slurp` preserves every page; commit statuses are newest-first,
-            # so retain only the first observation for each context.
-            if ! check_pages=$(gh api --paginate --slurp \
-                "repos/$TARGET_REPO/commits/$EXPECTED_HEAD_SHA/check-runs?per_page=100" 2>/dev/null) ||
-               ! status_pages=$(gh api --paginate --slurp \
-                "repos/$TARGET_REPO/commits/$EXPECTED_HEAD_SHA/status?per_page=100" 2>/dev/null) ||
-               ! rollup=$(jq -c '
+            # `gh api --paginate` streams one JSON document per page. Slurp
+            # those documents with jq because runner images can lag the GitHub
+            # CLI release that introduced its native slurp flag (#248). Commit
+            # statuses are newest-first, so retain only the first observation
+            # for each context.
+            checks_rc=0
+            statuses_rc=0
+            rollup_rc=0
+            check_pages=$(gh api --paginate \
+                "repos/$TARGET_REPO/commits/$EXPECTED_HEAD_SHA/check-runs?per_page=100" 2>/dev/null |
+              jq -s -c '.') || checks_rc=$?
+            status_pages=$(gh api --paginate \
+                "repos/$TARGET_REPO/commits/$EXPECTED_HEAD_SHA/status?per_page=100" 2>/dev/null |
+              jq -s -c '.') || statuses_rc=$?
+            if [ "$checks_rc" -eq 0 ] && [ "$statuses_rc" -eq 0 ]; then
+              rollup=$(jq -c '
                  if ((.checks | type) != "array" or
                      (.statuses | type) != "array" or
+                     (.checks | length) == 0 or
+                     (.statuses | length) == 0 or
                      ([.checks[] |
                        select((.check_runs | type) != "array")] | length) != 0 or
                      ([.statuses[] |
@@ -631,10 +642,14 @@ jobs:
                    $n != "review" and $n != "dispatch-merge" and
                    $n != "privileged_merge")]
                  end
-               ' <<<"{\"checks\":$check_pages,\"statuses\":$status_pages}" 2>/dev/null); then
+               ' <<<"{\"checks\":$check_pages,\"statuses\":$status_pages}" 2>/dev/null) || rollup_rc=$?
+            else
+              rollup_rc=1
+            fi
+            if [ "$checks_rc" -ne 0 ] || [ "$statuses_rc" -ne 0 ] || [ "$rollup_rc" -ne 0 ]; then
               checks_probe=unavailable
               elapsed=$(( $(date +%s) - started_epoch ))
-              echo "::warning::phase=ci-wait result=checks-unavailable elapsed_seconds=$elapsed attempt=$i/$max_attempts head=$EXPECTED_HEAD_SHA"
+              echo "::warning::phase=ci-wait result=checks-unavailable elapsed_seconds=$elapsed attempt=$i/$max_attempts head=$EXPECTED_HEAD_SHA checks_endpoint_rc=$checks_rc statuses_endpoint_rc=$statuses_rc aggregate_shape_rc=$rollup_rc gh_version=$(gh --version 2>/dev/null | head -n 1 | tr ' ' '_' || echo unavailable)"
               sleep 30
               continue
             fi
@@ -1403,13 +1418,21 @@ jobs:
           # One immediate, authoritative CI snapshot. There is deliberately no
           # second polling loop after model spend: pending, red, or inconclusive
           # state fails closed and a later event/re-run can attempt the new head.
-          if ! check_pages=$(gh api --paginate --slurp \
-              "repos/$REPO/commits/$EXPECTED_HEAD_SHA/check-runs?per_page=100" 2>/dev/null) ||
-             ! status_pages=$(gh api --paginate --slurp \
-              "repos/$REPO/commits/$EXPECTED_HEAD_SHA/status?per_page=100" 2>/dev/null) ||
-             ! rollup=$(jq -c '
+          checks_rc=0
+          statuses_rc=0
+          rollup_rc=0
+          check_pages=$(gh api --paginate \
+              "repos/$REPO/commits/$EXPECTED_HEAD_SHA/check-runs?per_page=100" 2>/dev/null |
+            jq -s -c '.') || checks_rc=$?
+          status_pages=$(gh api --paginate \
+              "repos/$REPO/commits/$EXPECTED_HEAD_SHA/status?per_page=100" 2>/dev/null |
+            jq -s -c '.') || statuses_rc=$?
+          if [ "$checks_rc" -eq 0 ] && [ "$statuses_rc" -eq 0 ]; then
+            rollup=$(jq -c '
                if ((.checks | type) != "array" or
                    (.statuses | type) != "array" or
+                   (.checks | length) == 0 or
+                   (.statuses | length) == 0 or
                    ([.checks[] |
                      select((.check_runs | type) != "array")] | length) != 0 or
                    ([.statuses[] |
@@ -1433,8 +1456,12 @@ jobs:
                  $n != "review" and $n != "dispatch-merge" and
                  $n != "privileged_merge")]
                end
-             ' <<<"{\"checks\":$check_pages,\"statuses\":$status_pages}" 2>/dev/null); then
-            echo "::error::phase=merge-recheck result=checks-unavailable elapsed_seconds=$(( $(date +%s) - merge_started_epoch )) head=$EXPECTED_HEAD_SHA"
+             ' <<<"{\"checks\":$check_pages,\"statuses\":$status_pages}" 2>/dev/null) || rollup_rc=$?
+          else
+            rollup_rc=1
+          fi
+          if [ "$checks_rc" -ne 0 ] || [ "$statuses_rc" -ne 0 ] || [ "$rollup_rc" -ne 0 ]; then
+            echo "::error::phase=merge-recheck result=checks-unavailable elapsed_seconds=$(( $(date +%s) - merge_started_epoch )) head=$EXPECTED_HEAD_SHA checks_endpoint_rc=$checks_rc statuses_endpoint_rc=$statuses_rc aggregate_shape_rc=$rollup_rc gh_version=$(gh --version 2>/dev/null | head -n 1 | tr ' ' '_' || echo unavailable)"
             exit 1
           fi
           failed=$(jq '[.[] | select(

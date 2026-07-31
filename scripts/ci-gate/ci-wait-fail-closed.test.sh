@@ -76,22 +76,22 @@ if [ "$1" = "api" ]; then
     */check-runs\?per_page=100*)
       [ "${CHECKS_RC:-0}" = "0" ] || exit "$CHECKS_RC"
       if [ -n "${CHECKS_PAGES_FILE:-}" ]; then
-        cat "$CHECKS_PAGES_FILE"
+        jq -c '.[]' "$CHECKS_PAGES_FILE"
         exit 0
       fi
       fixture="$ROLLUP_FILE"
       if [ -n "${ROLLUP_FILE2:-}" ] && [ "$(bump "$ROLLUPCOUNT")" -gt "${ROLLUP_SWITCH_AFTER:-0}" ]; then
         fixture="$ROLLUP_FILE2"
       fi
-      jq -c '[{total_count: ([.[] | select(has("status"))] | length), check_runs: [.[] | select(has("status"))]}]' "$fixture"
+      jq -c '{total_count: ([.[] | select(has("status"))] | length), check_runs: [.[] | select(has("status"))]}' "$fixture"
       exit 0 ;;
     */status\?per_page=100*)
       [ "${STATUSES_RC:-0}" = "0" ] || exit "$STATUSES_RC"
       if [ -n "${STATUSES_PAGES_FILE:-}" ]; then
-        cat "$STATUSES_PAGES_FILE"
+        jq -c '.[]' "$STATUSES_PAGES_FILE"
         exit 0
       fi
-      jq -c '[{statuses: [.[] | select(has("state"))]}]' "$ROLLUP_FILE"
+      jq -c '{statuses: [.[] | select(has("state"))]}' "$ROLLUP_FILE"
       exit 0 ;;
   esac
   [ "${SUITES_RC:-0}" != "0" ] && { echo "gh: api error" >&2; exit "$SUITES_RC"; }
@@ -116,6 +116,12 @@ chmod +x "$tmp/bin/sleep"
 # before interpolating it into an API URL, so a placeholder like "expected-head"
 # would exercise the reject path instead of the happy path.
 head_sha='0123456789abcdef0123456789abcdef01234567'
+
+if grep -q -- '--slurp' "$wait_script"; then
+  fail "CI status aggregation still requires gh api --slurp"
+else
+  pass "CI status aggregation uses runner-compatible streaming pagination (#248)"
+fi
 
 # The gate is itself a workflow run on the PR head, so `?head_sha=<head>` ALWAYS
 # returns at least one run — its own. A fixture with `workflow_runs: []` is a
@@ -239,6 +245,7 @@ CHECKS_RC=1 rc="$(CHECKS_RC=1 run_wait "$green_rollup")"
 unset CHECKS_RC
 { [ "$rc" = "rc=1" ] && ! wait_out_has 'result=green' \
     && wait_out_has '^::error::phase=ci-wait result=checks-unavailable' \
+    && wait_out_has 'checks_endpoint_rc=1 statuses_endpoint_rc=0 aggregate_shape_rc=1' \
     && wait_out_has 'attempt=60/60' \
     && ! wait_out_has 'result=no-checks-allowed'; } \
   && pass "an unreadable repository checks endpoint fails closed (#248)" \
@@ -273,6 +280,16 @@ unset STATUSES_PAGES_FILE
     && ! wait_out_has 'result=no-checks-allowed'; } \
   && pass "wrong-shape status pages remain unreadable despite the absent-check opt-out (#248)" \
   || fail "wrong-shape status pages became an allowed empty snapshot ($rc)"
+
+: >"$tmp/empty-pages.json"
+export CHECKS_PAGES_FILE="$tmp/empty-pages.json"
+rc="$(run_wait '[]' "$no_startup_failures" 0 "$head_sha" true)"
+unset CHECKS_PAGES_FILE
+{ [ "$rc" = "rc=1" ] && ! wait_out_has 'result=green' \
+    && wait_out_has '^::error::phase=ci-wait result=checks-unavailable' \
+    && wait_out_has 'checks_endpoint_rc=0 statuses_endpoint_rc=0 aggregate_shape_rc='; } \
+  && pass "an empty successful check-run response fails closed with shape diagnostics (#248)" \
+  || fail "an empty check-run response became an allowed empty snapshot ($rc)"
 
 printf '%s' '[{"total_count":2,"check_runs":[
   {"name":"unit","status":"COMPLETED","conclusion":"SUCCESS"}
