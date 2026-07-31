@@ -1489,7 +1489,14 @@ jobs:
             { echo "::error::invalid expected head"; exit 1; }
           [[ "$SOURCE_RUN_ID" =~ ^[1-9][0-9]*$ ]] ||
             { echo "::error::invalid source run"; exit 1; }
-          trusted_path="$(gh api "repos/$TARGET_REPO/actions/workflows/ai-privileged-merge.yml" --jq .path)"
+          trusted_path="$(
+            gh api --paginate "repos/$TARGET_REPO/actions/workflows" \
+              --jq '.workflows[] | select(.path == ".github/workflows/ai-privileged-merge.yml") | .path'
+          )"
+          if [ -z "$trusted_path" ]; then
+            echo "::notice::No trusted privileged merge continuation is installed; validation is green, but this PR requires human merge."
+            exit 0
+          fi
           [ "$trusted_path" = ".github/workflows/ai-privileged-merge.yml" ] ||
             { echo "::error::trusted workflow identity mismatch"; exit 1; }
           gh workflow run ai-privileged-merge.yml --repo "$TARGET_REPO" \

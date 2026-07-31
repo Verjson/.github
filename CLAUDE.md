@@ -54,5 +54,4 @@ non-trivial or fanned-out work autonomously:
 
 ## Active Issues / Areas for Improvement
 
-- [#240](https://github.com/Verjson/.github/issues/240) — Attribute the live red-rollup object before changing CI classification again.
-- [#242](https://github.com/Verjson/.github/issues/242) — Recognize the complete approval-disabled error emitted by the GitHub CLI.
+- [#247](https://github.com/Verjson/.github/issues/247) — Preserve green validation when a consumer has no privileged merge continuation.
