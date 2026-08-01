@@ -20,6 +20,18 @@ A selected group that no longer exists still exits 2, now naming the group and t
 that do exist, instead of printing a bare request URL. The listing is read as streamed
 NDJSON and slurped so pagination cannot truncate it (cf. #260).
 
+An independent review pass surfaced three further fail-open paths in the same code, all
+now closed. The `case` statements switching on a lane had no `*)` arm, so a future lane
+would leave `$group` unbound; under `set -u` without `-e` that aborts with exit 1, which
+the workflow reads as **drift** and files an issue about — undetermined decaying into a
+verdict. The group member and runner fetches still used the per-page `[...]` collector,
+which reports a repository on page 1 of a `selected` group as unadmitted (#268, fixed
+here rather than deferred, since this change rewrote those lines and established the
+correct idiom 40 lines above them). And the workflow wrapper special-cased only exit 2
+before falling through to an unconditional `exit 0`, so any off-contract exit — 127
+`command not found`, or a `set -u` abort — finished **green with nothing filed**. That
+last one is the same blind spot as the original defect, one layer out.
+
 Evidence: run
 [30683258273](https://github.com/Verjson/.github/actions/runs/30683258273) was dispatched
 deliberately to capture the failure, because no *scheduled* run had failed yet — the

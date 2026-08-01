@@ -141,29 +141,47 @@ for lane in "$default_lane" "$untrusted_lane"; do
       [ -n "$general_group" ] || { general_group="$(resolve_group general)" || exit 2; } ;;
     untrusted)
       [ -n "$untrusted_group" ] || { untrusted_group="$(resolve_group untrusted)" || exit 2; } ;;
+    # Total only because group_for_selector is — an invariant 80 lines away.
+    # Without this arm a new lane leaves $group unbound, and `set -u` without
+    # `-e` aborts with exit 1, which the workflow reads as DRIFT and files an
+    # issue about. Undetermined must never be able to decay into a verdict.
+    *) die_undetermined "unhandled lane '$lane' while resolving runner groups" ;;
   esac
 done
+
+# `--paginate` concatenates one response PER PAGE, so a `[...]` collector yields
+# one array per page and the `jq -e` in admitted()/has_capacity() would reflect
+# only the LAST page — a repository listed on page 1 would read as unadmitted
+# and be reported as drift against a healthy org (same class as #260). Stream
+# the elements and slurp them into a single array instead.
+slurp_strings() { jq -Rsc 'split("\n") | map(select(length > 0))'; }
+slurp_objects() { jq -sc '.'; }
+
+group_id_of() {
+  jq -er '.id | tostring' <<<"$1" \
+    || die_undetermined "runner group object has no id: $1"
+}
 
 general_id=""
 general_members='[]'
 general_runners='[]'
 if [ -n "$general_group" ]; then
-  general_id="$(jq -r '.id' <<<"$general_group")"
+  general_id="$(group_id_of "$general_group")" || exit 2
   general_members="$(fetch "/orgs/$ORG/actions/runner-groups/$general_id/repositories?per_page=100" \
-    '[.repositories[].full_name]')" || exit 2
+    '.repositories[].full_name' | slurp_strings)" || exit 2
   general_runners="$(fetch "/orgs/$ORG/actions/runner-groups/$general_id/runners?per_page=100" \
-    '[.runners[] | {name,status,labels:[.labels[].name]}]')" || exit 2
+    '.runners[] | {name,status,labels:[.labels[].name]}' | slurp_objects)" || exit 2
 fi
 
 untrusted_id=""
 untrusted_members='[]'
 untrusted_runners='[]'
 if [ -n "$untrusted_group" ]; then
-  untrusted_id="$(jq -r '.id' <<<"$untrusted_group")"
+  untrusted_id="$(group_id_of "$untrusted_group")" || exit 2
   untrusted_members="$(fetch "/orgs/$ORG/actions/runner-groups/$untrusted_id/repositories?per_page=100" \
-    '[.repositories[].full_name]')" || exit 2
+    '.repositories[].full_name' | slurp_strings)" || exit 2
   untrusted_runners="$(fetch "/orgs/$ORG/actions/runner-groups/$untrusted_id/runners?per_page=100" \
-    '[.runners[] | {name,status,labels:[.labels[].name]}]')" || exit 2
+    '.runners[] | {name,status,labels:[.labels[].name]}' | slurp_objects)" || exit 2
 fi
 
 drift=""
@@ -182,6 +200,9 @@ while IFS=$'\t' read -r repo private; do
              group_label="$GENERAL_GROUP_NAME (id $general_id)" ;;
     untrusted) group="$untrusted_group"; members="$untrusted_members"
              group_label="$UNTRUSTED_GROUP_NAME (id $untrusted_id)" ;;
+    # Without this, an unhandled lane silently reuses the PREVIOUS iteration's
+    # group/members and misattributes drift to the wrong group.
+    *) die_undetermined "unhandled lane '$lane' for repository $repo" ;;
   esac
   admitted "$repo" "$private" "$group" "$members" \
     || drift="$drift- \`$repo\` cannot access runner group $group_label for the selected $lane lane"$'\n'
@@ -194,10 +215,12 @@ EOF
 case "$default_lane" in
   general) default_runners="$general_runners" ;;
   untrusted) default_runners="$untrusted_runners" ;;
+  *) die_undetermined "unhandled default lane '$default_lane'" ;;
 esac
 case "$untrusted_lane" in
   general) untrusted_runners_for_selector="$general_runners" ;;
   untrusted) untrusted_runners_for_selector="$untrusted_runners" ;;
+  *) die_undetermined "unhandled untrusted lane '$untrusted_lane'" ;;
 esac
 
 has_capacity "$default_selector" "$default_runners" \

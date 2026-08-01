@@ -174,3 +174,21 @@ Group ids remain the stable identity for *admission* — admitted repositories t
 the id across a rename — so a subsequent rename onto the admission axis does not change
 who is admitted. Name resolution is how this job finds the group, not a claim that names
 are the identity.
+
+Review of the fix found three further ways the same "never report clean" invariant could
+be evaded, all closed in the same change:
+
+- Lane `case` statements had no `*)` arm. A future lane would leave the group variable
+  unbound; `set -u` without `-e` aborts with **exit 1**, which the wrapper reads as drift
+  and files an issue about. Undetermined must not be able to decay into a verdict.
+- Group member/runner fetches used a per-page `[...]` collector under `--paginate`, so
+  `jq -e` saw only the last page and a repository on page 1 of a `selected` group read as
+  unadmitted — spurious drift against a healthy organization (#268).
+- The workflow wrapper handled only exit 2 and then `exit 0` unconditionally, so an
+  off-contract exit (127, or a `set -u` abort) finished **green with nothing filed** —
+  the original blind spot one layer out. It now maps anything outside 0/1/2 to
+  undetermined.
+
+The wrapper's exit-code contract is now executed in test, not asserted structurally, by
+extracting the workflow's `run:` block and driving it with a stub — the repository's
+standard method for gate shell.
