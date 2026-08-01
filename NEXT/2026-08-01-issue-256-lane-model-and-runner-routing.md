@@ -25,11 +25,24 @@ Actions usage stopped at exactly $20.00, a spending limit rather than an archite
 impossibility); group 4 is `visibility: all` with zero selected members rather than
 `selected` with 82; and no runner in the organization carries a `docker` label.
 
-The group-4 finding is more than a documentation gap: the live configuration is a
-reversion to ADR 0003's superseded state, so **ADR 0028's admission boundary — public
-repositories may not hold persistent-runner access without a reviewed exception — is not
-currently in force**. Recorded here and tracked in #270; correcting the organization
-configuration is out of scope for a documentation change.
+The group-4 finding was more than a documentation gap: the live configuration was a
+reversion to ADR 0003's superseded state, leaving ADR 0028's admission boundary — public
+repositories may not hold persistent-runner access — not in force, with no record of the
+change.
+
+[ADR 0041](../docs/decisions/0041-shared-admission-hosted-and-self-hosted/README.md)
+resolves it in favour of the live state, deliberately: GitHub-hosted and DigitalOcean
+self-hosted both serve public and private repositories for the foreseeable future, and
+ADR 0028 decision 4 is superseded. It also records what best practice *would* be — ephemeral
+hosts for untrusted code, narrow admission, a merge gate that does not share hosts with PR
+content — as an explicit North Star, with the accepted risks stated rather than softened,
+so the deviation stays a decision instead of decaying into an accident. #204 stays open as
+the hook for that target, not as a defect.
+
+The standing constraint that makes it reversible: **capacity and provider changes are
+variable changes.** New runners, more hosted compute, or a new provider is a
+`VERJSON_LANE_*` edit — never a `runs-on:` edit, and never a hardcoded pool, label, or
+runner-group name.
 
 Two things are deliberately **not** claimed. The rationale for the 2026-07-31 group
 retirement is absent from the record and this ADR does not invent one — a fabricated

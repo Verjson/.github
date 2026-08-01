@@ -19,6 +19,12 @@ Where verJSON CI jobs run, and how to choose a `runs-on` value. The model is dec
 
 - **Never hardcode a runner label or `ubuntu-latest`** in a Verjson workflow. That is the
   defect behind #175, #182, #192 and #203, and it has regrown four times.
+- **Capacity and provider changes are variable changes.** New runners, more GitHub-hosted
+  compute, a new provider — all of it is a `VERJSON_LANE_*` edit. Never a `runs-on:` edit,
+  never a hardcoded pool, label, or runner-group name
+  ([ADR 0041](decisions/0041-shared-admission-hosted-and-self-hosted/README.md)).
+- **Both hosted and DO self-hosted serve both public and private repositories**, by
+  decision. That is the steady state, not a gap.
 - **The trailing `'["ubuntu-24.04"]'` is a portability contract, not a safety net.** It
   exists so an organization outside Verjson — which has none of these variables — can call
   a Verjson reusable workflow and land somewhere sane. It does **not** mean "if something
@@ -94,14 +100,12 @@ id=3 manish  vis=all  public=false  default=false
 id=4 GCP     vis=all  public=true   default=false
 ```
 
-- 🔴 **Group 4 is organization-wide with zero selected members, and that means ADR 0028's
-  admission boundary is not currently in force.** ADR 0028 decision 4 requires this group to
-  move to "selected trusted repositories" and says a public repository "cannot regain
-  persistent-runner access without a new reviewed exception." The live configuration is a
-  reversion to ADR 0003's superseded state. Who changed it and why is undetermined —
-  `/orgs/Verjson/audit-log` returns 404 for this token. Tracked in
-  [#270](https://github.com/Verjson/.github/issues/270); do not read this as merely
-  undocumented.
+- **Group 4 is organization-wide and admits public repositories — deliberately.**
+  [ADR 0041](decisions/0041-shared-admission-hosted-and-self-hosted/README.md) decides that
+  hosted and DO self-hosted both serve public and private repositories for the foreseeable
+  future, superseding ADR 0028 decision 4. The accepted risks and the best-practice North
+  Star we are deviating from are recorded there — read it before assuming this is a
+  misconfiguration. (It was found as an undocumented drift; ADR 0040 records that history.)
 - **Group 1 is `default: true`, and per ADR 0003 a custom group cannot be made default.** A
   newly registered runner therefore lands in a public-accessible group with no label
   discipline unless `--runnergroup` is passed at registration time. Verify placement after
