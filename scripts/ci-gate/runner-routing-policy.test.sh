@@ -368,6 +368,53 @@ done
   && pass "every routed job exposes default/untrusted variables with a compatible fallback" \
   || fail "job(s) deviate from the routing policy:"$'\n'"$deviant"
 
+# --------------------------------------------------------------------------
+# Guidance is routing too. helm-ci.yml told callers to pin their kind smoke
+# tests to `[self-hosted, docker]` long after the Docker lane stopped existing;
+# a caller who followed it got a job that queued forever with no check run
+# (#271, #182's silent mode). Nothing caught it because the pin lived in a
+# COMMENT, and every check above reads `runs-on:` lines only.
+#
+# So bind every self-hosted label mentioned anywhere in these files — comment or
+# code — to the declared set in .github/actionlint.yaml. That file is the
+# organization-wide actionlint policy, i.e. the list of labels a Verjson
+# workflow is allowed to name at all, which makes it the right authority: a
+# label absent from it is one nothing may route on, so recommending it in prose
+# is the same defect as routing on it.
+# --------------------------------------------------------------------------
+declared="$(sed -n '/^self-hosted-runner:/,/^[^ #]/p' "$root/.github/actionlint.yaml" \
+  | sed -n 's/^    - \([A-Za-z0-9._-]*\).*/\1/p')"
+[ -n "$declared" ] \
+  && pass "read $(printf '%s\n' "$declared" | wc -l | tr -d ' ') declared runner label(s) from actionlint.yaml" \
+  || fail "could not read declared labels from .github/actionlint.yaml — extraction is broken"
+
+# actionlint.yml's self-test feeds actionlint a workflow pinned to this label to
+# prove the central policy actually rejects an unknown one. It is a NEGATIVE
+# CONTROL, so it must stay undeclared — declaring it would leave the self-test
+# passing while proving nothing.
+control_label="retired-runner-label"
+grep -qxF "$control_label" <<<"$declared" \
+  && fail "$control_label is declared in actionlint.yaml — actionlint.yml's negative control no longer proves anything" \
+  || pass "the actionlint self-test's negative control label stays undeclared"
+
+undeclared=""
+for f in "$workflows"/*.yml; do
+  # Both spellings that appear: the JSON form inside expressions
+  # (["self-hosted","general"]) and the prose form in comments
+  # ([self-hosted, docker]).
+  mentioned="$(grep -oE '\[[^][]*self-hosted[^][]*\]' "$f" \
+    | tr -d '"' | tr ',[]' '\n\n\n' | sed 's/^ *//; s/ *$//' \
+    | grep -vxE "self-hosted|$control_label|" | sort -u)"
+  for label in $mentioned; do
+    grep -qxF "$label" <<<"$declared" \
+      || undeclared="$undeclared$(basename "$f"): $label"$'\n'
+  done
+done
+
+[ -z "$undeclared" ] \
+  && pass "every self-hosted label named in a workflow — comments included — is declared" \
+  || fail "workflow(s) name a runner label absent from .github/actionlint.yaml:"$'\n'"$undeclared"
+
 if [ "$fails" -eq 0 ]; then
   echo "All tests passed."
   exit 0
