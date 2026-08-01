@@ -55,19 +55,37 @@ jobs:
           report="$(bash scripts/ci-gate/runner-admission-reconcile.sh 2>&1)"
           code=$?
           set -e
-          printf '%s\n' "$report" >> "$GITHUB_STEP_SUMMARY"
+          # Outputs first, summary second. `set -e` is back on, so a failing
+          # summary write would otherwise abort before `code` is published and
+          # BOTH downstream steps would skip on their `if:` conditions — the job
+          # goes red, but the drift it found is silently dropped.
           {
             echo 'report<<REPORT_EOF'
             printf '%s\n' "$report"
             echo 'REPORT_EOF'
           } >> "$GITHUB_OUTPUT"
           echo "code=$code" >> "$GITHUB_OUTPUT"
-          # 2 is "I could not look", which must be loud and must NOT be treated
-          # as either clean or as drift worth filing an issue about.
-          if [ "$code" -eq 2 ]; then
-            echo "::error title=Runner admission undetermined::Could not read the org; not reporting this as clean."
-            exit 1
-          fi
+          printf '%s\n' "$report" >> "$GITHUB_STEP_SUMMARY"
+          # The script's contract is exactly 0 (clean), 1 (drift), 2 (could not
+          # look). Anything else is a crash, and a crash previously fell through
+          # to the unconditional `exit 0` below: job green, drift step skipped,
+          # nothing filed — the monitor silently reporting an unexamined org as
+          # fine. That is the same blind spot #266 fixed inside the script, so
+          # the wrapper closes it too rather than trusting the script never to
+          # exit 127 or abort under `set -u`.
+          case "$code" in
+            0|1)
+              ;;
+            2)
+              # "I could not look": loud, and NOT drift worth filing an issue about.
+              echo "::error title=Runner admission undetermined::Could not read the org; not reporting this as clean."
+              exit 1
+              ;;
+            *)
+              echo "::error title=Runner admission crashed::Reconciler exited $code, outside its documented 0/1/2 contract. Treating as undetermined rather than clean."
+              exit 1
+              ;;
+          esac
           exit 0
 
       - name: Open or update the drift issue

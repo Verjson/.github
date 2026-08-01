@@ -5,8 +5,12 @@
 set -uo pipefail
 
 ORG="${ORG:-Verjson}"
-GENERAL_GROUP_ID="${GENERAL_GROUP_ID:-4}"
-UNTRUSTED_GROUP_ID="${UNTRUSTED_GROUP_ID:-6}"
+# Groups are resolved by NAME against the live listing, never by a pinned id.
+# Ids are not stable over an org's lifetime: group 6 (`isolated`) was deleted on
+# 2026-07-31 and this job went undetermined on every run afterwards (#266). The
+# names stay overridable so a rename is a config change, not a code change.
+GENERAL_GROUP_NAME="${GENERAL_GROUP_NAME:-GCP}"
+UNTRUSTED_GROUP_NAME="${UNTRUSTED_GROUP_NAME:-isolated}"
 
 die_undetermined() {
   printf 'UNDETERMINED: %s\n' "$1" >&2
@@ -53,19 +57,6 @@ selector() {
 default_selector="$(selector VERJSON_RUNNER_DEFAULT "$default_var")" || exit 2
 untrusted_selector="$(selector VERJSON_RUNNER_UNTRUSTED "$untrusted_var")" || exit 2
 
-general_group="$(fetch "/orgs/$ORG/actions/runner-groups/$GENERAL_GROUP_ID" \
-  '{id,name,visibility,allows_public_repositories}')" || exit 2
-untrusted_group="$(fetch "/orgs/$ORG/actions/runner-groups/$UNTRUSTED_GROUP_ID" \
-  '{id,name,visibility,allows_public_repositories}')" || exit 2
-general_members="$(fetch "/orgs/$ORG/actions/runner-groups/$GENERAL_GROUP_ID/repositories?per_page=100" \
-  '[.repositories[].full_name]')" || exit 2
-untrusted_members="$(fetch "/orgs/$ORG/actions/runner-groups/$UNTRUSTED_GROUP_ID/repositories?per_page=100" \
-  '[.repositories[].full_name]')" || exit 2
-general_runners="$(fetch "/orgs/$ORG/actions/runner-groups/$GENERAL_GROUP_ID/runners?per_page=100" \
-  '[.runners[] | {name,status,labels:[.labels[].name]}]')" || exit 2
-untrusted_runners="$(fetch "/orgs/$ORG/actions/runner-groups/$UNTRUSTED_GROUP_ID/runners?per_page=100" \
-  '[.runners[] | {name,status,labels:[.labels[].name]}]')" || exit 2
-
 group_for_selector() {
   local labels="$1"
   if jq -e 'index("lane-general") != null or index("general") != null' <<<"$labels" >/dev/null; then
@@ -108,6 +99,95 @@ has_capacity() {
 
 default_lane="$(group_for_selector "$default_selector")" || exit 2
 untrusted_lane="$(group_for_selector "$untrusted_selector")" || exit 2
+
+# One listing, slurped: `--paginate` emits one object per page, so streaming
+# `.runner_groups[]` and slurping is the pagination-safe shape (cf. #260).
+groups_ndjson="$(fetch "/orgs/$ORG/actions/runner-groups?per_page=100" \
+  '.runner_groups[]')" || exit 2
+groups="$(jq -sc '.' <<<"$groups_ndjson")" \
+  || die_undetermined "runner group listing for $ORG was not JSON"
+jq -e 'length > 0' <<<"$groups" >/dev/null \
+  || die_undetermined "no runner groups returned for org $ORG"
+
+lane_group_name() {
+  case "$1" in
+    general) printf '%s\n' "$GENERAL_GROUP_NAME" ;;
+    untrusted) printf '%s\n' "$UNTRUSTED_GROUP_NAME" ;;
+    *) die_undetermined "no runner group is configured for lane '$1'" ;;
+  esac
+}
+
+# Fail closed, and say WHICH group — the id-in-a-URL message this replaces did
+# not identify the group, which is what made the outage hard to read.
+resolve_group() {
+  local lane="$1" name group
+  name="$(lane_group_name "$lane")" || exit 2
+  group="$(jq -c --arg name "$name" \
+    'map(select(.name == $name)) | .[0] // empty' <<<"$groups")" \
+    || die_undetermined "could not search runner groups for '$name'"
+  [ -n "$group" ] || die_undetermined \
+    "runner group '$name' (selected by the $lane lane) does not exist in $ORG; present groups: $(jq -r 'map(.name) | join(", ")' <<<"$groups")"
+  printf '%s\n' "$group"
+}
+
+# Resolve only the groups a lane actually selects. A group nothing routes to is
+# not this job's business and must not be able to take the run down — that is
+# precisely how a deleted, unreferenced `isolated` group blinded the monitor.
+general_group=""
+untrusted_group=""
+for lane in "$default_lane" "$untrusted_lane"; do
+  case "$lane" in
+    general)
+      [ -n "$general_group" ] || { general_group="$(resolve_group general)" || exit 2; } ;;
+    untrusted)
+      [ -n "$untrusted_group" ] || { untrusted_group="$(resolve_group untrusted)" || exit 2; } ;;
+    # Total only because group_for_selector is — an invariant 80 lines away.
+    # Without this arm a new lane silently resolves NO group, and the omission
+    # surfaces later as an unhandled lane in the repository loop. Failing here
+    # names the real cause instead of at the point of use.
+    *) die_undetermined "unhandled lane '$lane' while resolving runner groups" ;;
+  esac
+done
+
+# `--paginate` concatenates one response PER PAGE, so a `[...]` collector yields
+# one array per page and the `jq -e` in admitted()/has_capacity() would reflect
+# only the LAST page — a repository listed on page 1 would read as unadmitted
+# and be reported as drift against a healthy org (same class as #260). Stream
+# the elements and slurp them into a single array instead.
+slurp_strings() { jq -Rsc 'split("\n") | map(select(length > 0))'; }
+slurp_objects() { jq -sc '.'; }
+
+group_id_of() {
+  # `.id // empty` rather than `.id | tostring`: tostring turns a MISSING id into
+  # the literal string "null" and exits 0, which builds `/runner-groups/null/...`
+  # and only fails closed by accident when the API 404s. `// empty` produces no
+  # output, so jq -e exits 4 and the guard below actually fires.
+  jq -er '.id // empty' <<<"$1" \
+    || die_undetermined "runner group object has no id: $1"
+}
+
+general_id=""
+general_members='[]'
+general_runners='[]'
+if [ -n "$general_group" ]; then
+  general_id="$(group_id_of "$general_group")" || exit 2
+  general_members="$(fetch "/orgs/$ORG/actions/runner-groups/$general_id/repositories?per_page=100" \
+    '.repositories[].full_name' | slurp_strings)" || exit 2
+  general_runners="$(fetch "/orgs/$ORG/actions/runner-groups/$general_id/runners?per_page=100" \
+    '.runners[] | {name,status,labels:[.labels[].name]}' | slurp_objects)" || exit 2
+fi
+
+untrusted_id=""
+untrusted_members='[]'
+untrusted_runners='[]'
+if [ -n "$untrusted_group" ]; then
+  untrusted_id="$(group_id_of "$untrusted_group")" || exit 2
+  untrusted_members="$(fetch "/orgs/$ORG/actions/runner-groups/$untrusted_id/repositories?per_page=100" \
+    '.repositories[].full_name' | slurp_strings)" || exit 2
+  untrusted_runners="$(fetch "/orgs/$ORG/actions/runner-groups/$untrusted_id/runners?per_page=100" \
+    '.runners[] | {name,status,labels:[.labels[].name]}' | slurp_objects)" || exit 2
+fi
+
 drift=""
 count=0
 
@@ -120,11 +200,16 @@ while IFS=$'\t' read -r repo private; do
     lane="$untrusted_lane"
   fi
   case "$lane" in
-    general) group="$general_group"; members="$general_members"; group_id="$GENERAL_GROUP_ID" ;;
-    untrusted) group="$untrusted_group"; members="$untrusted_members"; group_id="$UNTRUSTED_GROUP_ID" ;;
+    general) group="$general_group"; members="$general_members"
+             group_label="$GENERAL_GROUP_NAME (id $general_id)" ;;
+    untrusted) group="$untrusted_group"; members="$untrusted_members"
+             group_label="$UNTRUSTED_GROUP_NAME (id $untrusted_id)" ;;
+    # Without this, an unhandled lane silently reuses the PREVIOUS iteration's
+    # group/members and misattributes drift to the wrong group.
+    *) die_undetermined "unhandled lane '$lane' for repository $repo" ;;
   esac
   admitted "$repo" "$private" "$group" "$members" \
-    || drift="$drift- \`$repo\` cannot access runner group $group_id for the selected $lane lane"$'\n'
+    || drift="$drift- \`$repo\` cannot access runner group $group_label for the selected $lane lane"$'\n'
 done <<EOF
 $repos_raw
 EOF
@@ -134,10 +219,12 @@ EOF
 case "$default_lane" in
   general) default_runners="$general_runners" ;;
   untrusted) default_runners="$untrusted_runners" ;;
+  *) die_undetermined "unhandled default lane '$default_lane'" ;;
 esac
 case "$untrusted_lane" in
   general) untrusted_runners_for_selector="$general_runners" ;;
   untrusted) untrusted_runners_for_selector="$untrusted_runners" ;;
+  *) die_undetermined "unhandled untrusted lane '$untrusted_lane'" ;;
 esac
 
 has_capacity "$default_selector" "$default_runners" \
