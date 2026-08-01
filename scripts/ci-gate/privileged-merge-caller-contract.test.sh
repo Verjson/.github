@@ -1,19 +1,23 @@
 #!/usr/bin/env bash
-# The privileged-merge reusable split rests on a two-sided contract, and BOTH
-# sides fail silently when broken:
+# The privileged-merge reusable split rests on a THREE-sided contract, and every
+# side fails silently when broken:
 #
-#   caller job key `privileged_merge`  +  exclusion literal in ai-review-merge.yml
+#   1. the caller's job key                      (`privileged_merge`)
+#   2. the gate not waiting on the continuation  (ai-review-merge.yml)
+#   3. the canonical workflow not waiting on ITSELF (ai-privileged-merge.yml)
 #
-# A reusable call publishes its check as "<caller job> / <callee job>". The gate
-# filters required checks by exact name equality, so it must exclude
-# "privileged_merge / privileged_merge" — and that literal only ever matches if
-# the caller's job key is contractually `privileged_merge`. A consumer who
-# writes `merge:` produces "merge / privileged_merge", which the gate then
-# counts as one of its own required checks and waits on forever, while that
-# check waits for the gate. Nothing reports the cause.
+# A reusable call publishes its check as "<caller job> / <callee job>". Both
+# workflows filter required checks by name, so both must exclude that shape.
+# Side 3 was missed on the first pass: under a thin caller the canonical
+# workflow's own check is `privileged_merge / privileged_merge`, so it counted
+# itself as pending and every consumer PR burned ~40 minutes holding
+# ORG_ADMIN_TOKEN before reporting an error pointing nowhere near the cause.
 #
-# Pinning only one side is useless, so this pins both, plus the generator that
-# keeps a hand-written caller from drifting back in.
+# The exclusion is a scoped suffix match rather than a literal, so it also
+# survives a misnamed caller (`merge / privileged_merge`) and nesting
+# (`outer / inner / privileged_merge`). It is NOT the rejected strip-before-"/"
+# normalization: the only thing it can over-exclude is a check whose callee job
+# is literally `privileged_merge`, i.e. the target itself.
 set -uo pipefail
 
 here="$(cd "$(dirname "$0")" && pwd)"
@@ -31,20 +35,32 @@ for f in "$gate" "$canonical" "$gen"; do
   [ -f "$f" ] || { echo "FAIL - missing $f"; exit 1; }
 done
 
-# --- side 1: the gate excludes both published shapes -------------------------
-# Two filter sites (the wait loop and the pre-merge re-check). Both must carry
-# both literals; pinning the count stops one copy from drifting, the same way
-# hold.test.sh pins its two hold predicates.
-bare=$(grep -c '\$n != "privileged_merge" and' "$gate")
-reusable=$(grep -c '\$n != "privileged_merge / privileged_merge")\]' "$gate")
+# Several assertions parse YAML. Without this guard a missing module makes them
+# all fail with confident, wrong diagnoses about merge authority, never naming
+# the real cause.
+python3 -c 'import yaml' 2>/dev/null \
+  || { echo "FAIL - PyYAML is required by this test but is not importable"; exit 1; }
 
-[ "$bare" -eq 2 ] \
-  && pass "gate excludes the required-workflow shape at both filter sites" \
-  || fail "expected 2 bare privileged_merge exclusions, found $bare"
+# --- the exclusion is THREE-sided, not two -----------------------------------
+# The gate must not wait on the continuation, and the canonical workflow must
+# not wait on ITSELF. Missing the second made every thin caller self-deadlock
+# for ~40 minutes holding ORG_ADMIN_TOKEN.
+#
+# The site count is DERIVED, not hardcoded. Hardcoding 2 meant a third,
+# unguarded filter block could be added while the counts still read 2 — a live
+# path back to the deadlock this test exists to prevent. ADR 0039 already grew
+# this from one site to two, so growth is the expected case.
+check_exclusions() { # check_exclusions <file> <label>
+  local file="$1" label="$2" sites excl
+  sites=$(grep -c 'select((.name // .context) as $n |' "$file")
+  excl=$(grep -c 'endswith("/ privileged_merge") | not)' "$file")
+  { [ "$sites" -gt 0 ] && [ "$excl" -eq "$sites" ]; } \
+    && pass "$label excludes the reusable shape at all $sites rollup filter site(s)" \
+    || fail "$label has $sites rollup filter site(s) but $excl reusable-shape exclusion(s) — every site must exclude it"
+}
 
-[ "$reusable" -eq 2 ] \
-  && pass "gate excludes the reusable-call shape at both filter sites" \
-  || fail "expected 2 'privileged_merge / privileged_merge' exclusions, found $reusable"
+check_exclusions "$gate" "gate"
+check_exclusions "$canonical" "canonical workflow"
 
 # --- side 2: the canonical workflow's job key --------------------------------
 python3 - "$canonical" <<'PY' && pass "canonical job key is privileged_merge" \
@@ -78,27 +94,64 @@ d = yaml.safe_load(open(sys.argv[1]))
 sys.exit(0 if list(d["jobs"]) == ["privileged_merge"] else 1)
 PY
 
-python3 - "$tmp/caller.yml" <<'PY' && pass "generated caller pins @main, not a SHA" \
-  || fail "generated caller is not pinned to @main"
-import sys, yaml, re
-d = yaml.safe_load(open(sys.argv[1]))
-u = d["jobs"]["privileged_merge"]["uses"]
-if not u.endswith("@main"): sys.exit(1)
-sys.exit(1 if re.search(r"@[0-9a-f]{40}$", u) else 0)
-PY
 
-grep -qE '^\s*secrets:\s*inherit\s*$' "$tmp/caller.yml" \
-  && pass "generated caller passes secrets: inherit" \
-  || fail "generated caller omits secrets: inherit"
+# The trust anchor itself. Asserting only that the ref ends in @main pins the
+# FORM of the pin and leaves the TARGET unasserted — a generator repointed at
+# Attacker/evil/...@main passed the previous version of this test while handing
+# over a secret with merge authority.
+python3 - "$tmp/caller.yml" <<'TARGET_PY' && pass "generated caller targets the canonical workflow at @main" \
+  || fail "generated caller does not target Verjson/.github ai-privileged-merge.yml@main"
+import sys, yaml
+d = yaml.safe_load(open(sys.argv[1]))
+want = "Verjson/.github/.github/workflows/ai-privileged-merge.yml@main"
+sys.exit(0 if d["jobs"]["privileged_merge"].get("uses") == want else 1)
+TARGET_PY
+
+# What the caller PASSES, not merely that it calls something. Each of the
+# following slipped through mutation testing of the previous version.
+python3 - "$tmp/caller.yml" <<'WITH_PY' && pass "generated caller forwards all four inputs, head SHA bound to the event" \
+  || fail "generated caller's with: block is incomplete or lost its event binding"
+import sys, yaml
+d = yaml.safe_load(open(sys.argv[1]))
+w = d["jobs"]["privileged_merge"].get("with", {})
+if set(w) != {"pr_number", "expected_head_sha", "source_run_id", "runner_labels"}:
+    sys.exit(1)
+sys.exit(0 if "github.event.pull_request.head.sha ||" in str(w["expected_head_sha"]) else 1)
+WITH_PY
+
+python3 - "$tmp/caller.yml" <<'SECRETS_PY' && pass "generated caller grants only ORG_ADMIN_TOKEN, not its whole store" \
+  || fail "generated caller uses secrets: inherit or omits the explicit grant"
+import sys, yaml
+d = yaml.safe_load(open(sys.argv[1]))
+got = d["jobs"]["privileged_merge"].get("secrets")
+sys.exit(0 if got == {"ORG_ADMIN_TOKEN": "${{ secrets.ORG_ADMIN_TOKEN }}"} else 1)
+SECRETS_PY
+
+python3 - "$tmp/caller.yml" <<'PERMS_PY' && pass "generated caller keeps least-privilege permissions and both triggers" \
+  || fail "generated caller's permissions, triggers, or cancel-in-progress drifted"
+import sys, yaml
+d = yaml.safe_load(open(sys.argv[1]))
+on = d.get(True, d.get("on"))
+if d.get("permissions") != {"contents": "read"}:
+    sys.exit(1)
+if "pull_request_target" not in on or "workflow_dispatch" not in on:
+    sys.exit(1)
+sys.exit(0 if d.get("concurrency", {}).get("cancel-in-progress") is True else 1)
+PERMS_PY
 
 # --- the caller stays THIN ---------------------------------------------------
 # A fat copy is how the trust logic diverged in the first place. Assert the
 # caller carries no trust machinery of its own.
-if grep -qE 'ORG_ADMIN_TOKEN|commits/main|trusted_workflow|gh api|gh pr merge|run:' "$tmp/caller.yml"; then
-  fail "generated caller contains inline trust logic — it must only delegate"
-else
-  pass "generated caller is thin: delegates, implements nothing"
-fi
+python3 - "$tmp/caller.yml" <<'THIN_PY' && pass "generated caller is thin: delegates, implements nothing" \
+  || fail "generated caller has keys beyond uses/with/secrets — it must only delegate"
+import sys, yaml
+d = yaml.safe_load(open(sys.argv[1]))
+job = d["jobs"]["privileged_merge"]
+# Structural, not textual: grepping for "gh api" also matched comments, so a
+# future explanatory comment would fail the test while a `steps:` block calling
+# a composite action would pass it.
+sys.exit(0 if set(job) <= {"uses", "with", "secrets"} else 1)
+THIN_PY
 
 # --- concurrency: caller and callee must not share a group -------------------
 # A called workflow's concurrency is evaluated in the caller's context, so an

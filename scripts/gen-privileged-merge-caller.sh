@@ -1,36 +1,47 @@
 #!/usr/bin/env bash
 # Generate a consumer's thin `ai-privileged-merge.yml` caller.
 #
-# The caller is generated rather than hand-written because two of its details
-# are contractual and fail SILENTLY when wrong:
+# Generated, not hand-written, because several details fail SILENTLY when wrong:
+# the job key, the `uses:` target, and the values passed in `with:`. The
+# reasoning lives in docs/decisions/0042-privileged-merge-reusable-split.
 #
-#   1. The job key MUST be `privileged_merge`. A reusable call publishes its
-#      check as "<caller job> / <callee job>", and ai-review-merge.yml excludes
-#      exactly "privileged_merge / privileged_merge". A consumer who writes
-#      `merge:` produces "merge / privileged_merge", which the gate then counts
-#      as one of its own required checks and waits on forever — while that check
-#      is itself waiting for the gate.
-#   2. The ref MUST be @main, not a SHA. See the comment in the emitted file.
-#
-# Usage: gen-privileged-merge-caller.sh '<runner-labels-json>' [ref]
-#   gen-privileged-merge-caller.sh '["ubuntu-24.04"]' > .github/workflows/ai-privileged-merge.yml
+# Usage: gen-privileged-merge-caller.sh '<runner-labels-json>'
+#   scripts/gen-privileged-merge-caller.sh '["ubuntu-24.04"]' > .github/workflows/ai-privileged-merge.yml
 set -euo pipefail
 
-runner_labels="${1:?usage: gen-privileged-merge-caller.sh '<runner-labels-json>' [ref]}"
-ref="${2:-main}"
+# The target is FIXED, not a parameter. It IS the trust anchor: the canonical
+# workflow validates provenance against Verjson/.github@main at runtime, so a
+# caller pointing anywhere else — or at a frozen SHA — silently opts out of the
+# guarantees this file exists to deliver while still carrying merge authority.
+#
+# An earlier revision accepted a `ref` argument. It injected arbitrary YAML into
+# the job body (a ref of $'main\n    if: false' disabled merge authority
+# outright) and slipped past the pin guard, which inspects only the `uses:`
+# line. Removed rather than validated: its sole legitimate value was a SHA, and
+# ADR 0042 forbids exactly that.
+readonly TARGET="Verjson/.github/.github/workflows/ai-privileged-merge.yml@main"
+
+runner_labels="${1:?usage: gen-privileged-merge-caller.sh '<runner-labels-json>'}"
 
 command -v jq >/dev/null 2>&1 || { echo "jq is required" >&2; exit 2; }
-jq -e 'type == "array" and length > 0 and all(.[]; type == "string" and length > 0)' \
-  <<<"$runner_labels" >/dev/null 2>&1 \
-  || { echo "runner_labels must be a non-empty JSON array of strings, got: $runner_labels" >&2; exit 2; }
 
-cat <<YAML
+# Charset-restricted, not merely well-formed JSON. A label containing a quote is
+# valid JSON, passes a naive type check, then emits YAML GitHub cannot parse —
+# at exit 0, with no warning. A value like ${{ secrets.X }} is likewise valid
+# JSON and would expand a secret into a workflow input.
+jq -e 'type == "array" and length > 0
+       and all(.[]; type == "string" and test("^[A-Za-z0-9._-]+$"))' \
+  <<<"$runner_labels" >/dev/null 2>&1 \
+  || { printf 'runner_labels must be a non-empty JSON array of [A-Za-z0-9._-] strings, got: %s\n' "$runner_labels" >&2; exit 2; }
+
+emit() {
+  cat <<YAML
 # GENERATED FILE — do not edit by hand.
 # Regenerate with:
 #   scripts/gen-privileged-merge-caller.sh '$runner_labels' > .github/workflows/ai-privileged-merge.yml
 #
 # Thin caller for the canonical privileged merge (Verjson/.github). All trust
-# logic lives in the canonical workflow; nothing here may re-implement it.
+# logic lives there; nothing here may re-implement it.
 name: AI privileged merge
 
 on:
@@ -51,29 +62,38 @@ on:
 permissions:
   contents: read
 
-# Deliberately NOT the canonical workflow's group name. A called workflow's
-# concurrency is evaluated in the caller's context, so an identical group would
-# put the reusable's job behind the caller job that invoked it. Keyed by event
-# as well as PR so the dispatched continuation cannot cancel the
-# pull_request_target check and leave a red mark on a merged PR (ADR 0039).
+# Deliberately NOT the canonical workflow's group name, and keyed by event so
+# the dispatched continuation cannot cancel the pull_request_target check and
+# leave a red mark on a merged PR (ADR 0039).
 concurrency:
   group: ai-privileged-merge-call-\${{ github.event.pull_request.number || inputs.pr_number }}-\${{ github.event_name }}
   cancel-in-progress: true
 
 jobs:
-  # The job key \`privileged_merge\` is CONTRACTUAL — see the generator header.
-  # Renaming it deadlocks the gate silently.
+  # The job key is CONTRACTUAL: the published check name is
+  # "<caller job> / <callee job>" and both workflows exclude that shape.
+  # Renaming it makes the gate wait on its own continuation.
   privileged_merge:
-    # Pinned to @main, not a SHA, and this is a deliberate exception to the
-    # organization's pin policy. The canonical workflow already anchors trust to
-    # Verjson/.github@main at runtime, so a SHA-pinned caller would let a
-    # repository admin freeze an older gate while the trust anchor moved on —
-    # the exact divergence this split exists to remove.
-    uses: Verjson/.github/.github/workflows/ai-privileged-merge.yml@$ref
-    secrets: inherit
+    uses: ${TARGET}
+    # Explicit rather than \`inherit\`: the caller grants exactly one secret
+    # instead of its entire store to a workflow that floats on @main.
+    secrets:
+      ORG_ADMIN_TOKEN: \${{ secrets.ORG_ADMIN_TOKEN }}
     with:
       pr_number: \${{ github.event.pull_request.number || inputs.pr_number }}
+      # The event value MUST win here: on pull_request_target it is the
+      # anti-TOCTOU binding to the head the gate actually attested.
       expected_head_sha: \${{ github.event.pull_request.head.sha || inputs.expected_head_sha }}
       source_run_id: \${{ inputs.source_run_id }}
-      runner_labels: '$runner_labels'
+      runner_labels: '${runner_labels}'
 YAML
+}
+
+# Never hand an operator a file that does not parse. The premise of generating
+# this at all is that they should not be able to receive a silent footgun.
+out="$(emit)"
+if command -v python3 >/dev/null 2>&1 && python3 -c 'import yaml' 2>/dev/null; then
+  printf '%s\n' "$out" | python3 -c 'import sys, yaml; yaml.safe_load(sys.stdin)' 2>/dev/null \
+    || { echo "internal error: generated caller is not valid YAML; refusing to emit" >&2; exit 3; }
+fi
+printf '%s\n' "$out"

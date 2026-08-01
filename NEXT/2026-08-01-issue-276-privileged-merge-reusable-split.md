@@ -13,22 +13,31 @@ The canonical workflow is now a hybrid mirroring `ai-review-merge.yml`: it keeps
 `workflow_call`, with `runner_labels` **required** so a consumer org cannot silently queue
 the job forever on labels nothing matches (#130).
 
-The contract that makes this work is two-sided and fails silently. A reusable call
+The contract that makes this work is three-sided and fails silently. A reusable call
 publishes its check as `<caller job> / <callee job>` — measured on `verjson-cloud-storage`
 PR#27, which shows `preflight | ci / eligibility | gate | ci / build-test | dispatch-merge`,
 both shapes at once. The gate filters required checks by exact name equality, so the
-caller's job key **must** be `privileged_merge` **and** `ai-review-merge.yml` must exclude
-the literal `privileged_merge / privileged_merge`. Neither half works alone: a consumer who
-writes `merge:` produces `merge / privileged_merge`, which the gate counts as one of its
-own required checks and waits on forever while that check waits for the gate.
+caller's job key must be `privileged_merge`, the gate must exclude that shape, **and so
+must the canonical workflow itself** — under a thin caller its own check is
+`privileged_merge / privileged_merge`, so filtering only the bare name made it count
+itself as pending and burn ~40 minutes holding `ORG_ADMIN_TOKEN`. Adversarial review found
+that third side; every consumer would have hit it.
+
+The exclusion is a scoped suffix match, not a literal, so it also survives a misnamed
+caller and one level of nesting.
 
 So the caller is **generated** (`scripts/gen-privileged-merge-caller.sh`) rather than
 hand-written, and `scripts/ci-gate/privileged-merge-caller-contract.test.sh` pins both
-sides. Normalizing check names was rejected as actively dangerous: stripping before `/`
-matches the callee segment, silently dropping any consumer check ending in `/ review` or
-`/ gate` out of the required set — fail-open, in someone else's repository. The principled
-fix, runtime self-derivation of the gate's own job names, is deliberately deferred to #276
-because it touches the wait loop ADR 0039 just stabilised.
+sides. Strip-before-`/` normalization was rejected as fail-open — it matches the callee segment
+and would drop `security / review` from the required set. The scoped suffix used instead
+cannot do that. Runtime self-derivation remains deferred to #276.
+
+Review also hardened the generator, which had accepted a `ref` argument that injected
+arbitrary YAML into a merge-authority workflow (and slipped past the pin guard, which
+inspects only the `uses:` line) and accepted labels containing quotes that produced
+unparseable output at exit 0. The parameter is gone, labels are charset-restricted, the
+generator validates its own output before emitting, and the caller now grants exactly
+`ORG_ADMIN_TOKEN` rather than `secrets: inherit`. Follow-ups filed: #278, #279.
 
 Concurrency is now keyed by event as well as PR. Both the `pull_request_target` check and
 the dispatched continuation previously shared one group with `cancel-in-progress`, so the

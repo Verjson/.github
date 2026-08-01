@@ -1,8 +1,13 @@
 # 0042 — Privileged merge becomes a reusable workflow with a two-sided name contract
 
 - **Date:** 2026-08-01
-- **Issues:** [Verjson/.github#276](https://github.com/Verjson/.github/issues/276),
-  [Verjson/verjson-cloud-storage#28](https://github.com/Verjson/verjson-cloud-storage/issues/28)
+- **Issues:** [Verjson/verjson-cloud-storage#28](https://github.com/Verjson/verjson-cloud-storage/issues/28)
+  (consumer migration). Deferred work: [#276](https://github.com/Verjson/.github/issues/276)
+  (runtime self-derivation + the latent cross-org gate deadlock),
+  [#278](https://github.com/Verjson/.github/issues/278) (`@main` unenforced downstream),
+  [#279](https://github.com/Verjson/.github/issues/279) (forgeable attestation).
+  #276 is a **deferral target, not this change's implementing issue** — it must survive
+  this merge.
 - **Extends:** ADR 0036 (privileged merge separated from review), ADR 0039 (required-workflow
   gate provenance), ADR 0022 (reusable gate for cross-org consumers)
 - **Category:** merge authority / org admin token — **sensitive class**
@@ -44,11 +49,15 @@ workflow); `ci / *` are prefixed (a reusable call).
 
 The gate filters required checks by **exact name equality**. Therefore:
 
-1. The caller's job key **must** be `privileged_merge`, and
-2. `ai-review-merge.yml` **must** exclude the literal `privileged_merge / privileged_merge`
-   at both filter sites.
+1. The caller's job key **must** be `privileged_merge`,
+2. `ai-review-merge.yml` **must** exclude that shape at every filter site, and
+3. **`ai-privileged-merge.yml` must exclude it too** — under a thin caller its *own*
+   check is `privileged_merge / privileged_merge`, so filtering only the bare name made
+   it count itself as pending, burning ~40 minutes holding `ORG_ADMIN_TOKEN` before
+   reporting an error pointing nowhere near the cause. Side 3 was missed on the first
+   pass and found by adversarial review; every consumer would have hit it.
 
-**Neither is sufficient alone.** The literal only ever matches if the job key is
+**No one of them is sufficient alone.** The literal only ever matches if the job key is
 contractual; a consumer who writes `merge:` produces `merge / privileged_merge`, which the
 gate counts as one of its own required checks and waits on forever — while that check
 waits for the gate. The failure surfaces as `trusted gate/checks did not become green`,
@@ -58,13 +67,23 @@ pointing nowhere near the cause.
 is **generated** (`scripts/gen-privileged-merge-caller.sh`) rather than hand-written, so a
 renamed job key cannot creep in through a copy-paste.
 
-### Why not normalize check names
+### Why not normalize check names — and what is used instead
 
-Normalization was considered and rejected as actively dangerous. Stripping the prefix
-before `/` matches on the **callee** segment, so it silently excludes any consumer check
-ending in `/ review`, `/ classify`, or `/ gate` — `security / review` from an unrelated
-workflow would drop out of the required set. That is the fail-open direction, arriving
-silently, in someone else's repository.
+Stripping the prefix before `/` was rejected as actively dangerous: it matches on the
+**callee** segment, so it silently excludes any consumer check ending in `/ review`,
+`/ classify`, or `/ gate` — `security / review` from an unrelated workflow would drop out
+of the required set. Fail-open, silently, in someone else's repository.
+
+The exclusion actually used is a **scoped suffix match**, `endswith("/ privileged_merge")`,
+which is not that transform. The only thing it can over-exclude is a check whose *callee*
+job is literally `privileged_merge` — the target itself. Verified against a realistic
+rollup: it excludes `privileged_merge`, `privileged_merge / privileged_merge`,
+`merge / privileged_merge` and `outer / inner / privileged_merge`, while retaining
+`security / review` and `ci / build-test`.
+
+That makes the contract robust rather than brittle: a consumer who misnames the caller job
+gets a working gate anyway, and nesting one level deeper still resolves. The job-key pin
+remains as defence in depth, not as the sole mechanism.
 
 The principled fix is runtime self-derivation — asking GitHub for this run's own job names
 — which cannot over-exclude by construction. It is deliberately **not** in this change:
@@ -90,9 +109,16 @@ The canonical group is now keyed by **event as well as PR**. Previously both the
 `ai-privileged-merge-<pr>` with `cancel-in-progress: true`, so the newer dispatch cancelled
 the older check and left a red `privileged_merge` on a PR that had merged successfully —
 the interaction ADR 0039 records. Two cancelled runs are observable in the history
-(`30704237281`, `30645044359`). Separating by event lets both reach a terminal state; each
-re-validates PR state before merging and treats an already-merged PR as a no-op, so
-concurrent execution is safe.
+(`30704237281`, `30645044359`). Separating by event lets both reach a terminal state.
+
+**That makes both runs live at once, and the earlier claim that this is inherently safe
+was wrong.** State re-validation happens before the merge but is *not atomic* with it: a
+base-ref resolve, a paginated rules call, a gate lookup and an attestation download sit in
+between. The loser of that race gets a legitimate `--match-head-commit` failure, which
+under `set -euo pipefail` would surface as a red `privileged_merge` on a PR that merged
+correctly — trading a deterministic cancelled check for a probabilistic failed one, which
+is harder to diagnose, not easier. So the merge call tolerates exactly one cause: the PR is
+already `MERGED` at the attested head. Anything else stays red.
 
 A thin caller uses a **distinct** group name (`ai-privileged-merge-call-…`). A called
 workflow's concurrency is evaluated in the caller's context, so an identical group would
@@ -110,6 +136,11 @@ construction, so correctness does not depend on the claim being right.
   key. They must be changed together; the test enforces that.
 
 ## Rollback
+
+**Time-limited.** Because callers pin `@main`, rollback is unconditional only while no
+consumer has migrated. Once one has, reverting removes the `workflow_call` trigger its
+caller depends on and breaks it instantly with no fallback ref. After the first migration,
+roll back by migrating consumers off first.
 
 Revert the implementing PR. The canonical workflow returns to `pull_request_target` +
 `workflow_dispatch` only; consumers keep their existing copies, which continue to work as
