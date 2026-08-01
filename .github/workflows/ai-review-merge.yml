@@ -640,7 +640,8 @@ jobs:
                    $n != "freshness" and $n != "classify" and
                    $n != "ai-review" and $n != "ai-merge" and
                    $n != "review" and $n != "dispatch-merge" and
-                   $n != "privileged_merge")]
+                   $n != "privileged_merge" and
+                   $n != "privileged_merge / privileged_merge")]
                  end
                ' <<<"{\"checks\":$check_pages,\"statuses\":$status_pages}" 2>/dev/null) || rollup_rc=$?
             else
@@ -1454,7 +1455,8 @@ jobs:
                  $n != "freshness" and $n != "classify" and
                  $n != "ai-review" and $n != "ai-merge" and
                  $n != "review" and $n != "dispatch-merge" and
-                 $n != "privileged_merge")]
+                 $n != "privileged_merge" and
+                 $n != "privileged_merge / privileged_merge")]
                end
              ' <<<"{\"checks\":$check_pages,\"statuses\":$status_pages}" 2>/dev/null) || rollup_rc=$?
           else

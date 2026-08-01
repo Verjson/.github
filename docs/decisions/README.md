@@ -11,6 +11,7 @@ Reverse-chronological index of org-level decisions.
 <!-- BEGIN ADR INDEX -->
 | # | Date | Decision |
 |---|------|----------|
+| [0042](0042-privileged-merge-reusable-split/README.md) | 2026-08-01 | Privileged merge becomes a reusable workflow with a two-sided name contract |
 | [0040](0040-runner-lanes-and-admission-axes/README.md) | 2026-08-01 | Lanes name the work; groups enforce admission |
 | [0039](0039-required-workflow-gate-provenance/README.md) | 2026-07-31 | Organization required-workflow runs are trusted gate provenance |
 | [0038](0038-canonical-changelog-contract/README.md) | 2026-07-30 | Canonical changelog fragments and immutable release snapshots |

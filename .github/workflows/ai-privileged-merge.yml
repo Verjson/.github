@@ -14,17 +14,58 @@ on:
       source_run_id:
         required: true
         type: string
+  workflow_call:
+    # Hybrid, mirroring ai-review-merge.yml: this file is both the canonical
+    # reusable AND .github's own workflow. Consumers call it as a thin caller
+    # and pass `secrets: inherit` (ADR 0022); missing secrets are caught by the
+    # preflight token check rather than failing obscurely at the first gh call.
+    #
+    # A pull_request_target-triggered caller leaves the identity inputs empty
+    # and the inherited event supplies them; the dispatched continuation passes
+    # all three explicitly.
+    inputs:
+      pr_number:
+        description: PR number to merge; defaults to the caller's pull_request event
+        required: false
+        type: string
+      expected_head_sha:
+        description: Head SHA the gate attested; defaults to the caller's event
+        required: false
+        type: string
+      source_run_id:
+        description: Gate run id this continuation was dispatched from
+        required: false
+        type: string
+      runner_labels:
+        description: 'JSON array of runs-on labels for the caller''s own fleet, e.g. ["self-hosted","gate"] (required — a consumer org has no runner for Verjson''s isolated pool)'
+        required: true
+        type: string
 
 permissions:
   contents: read
 
+# Keyed by event as well as PR. Both the pull_request_target check and the
+# dispatched continuation act on the same PR, and with a shared group plus
+# cancel-in-progress the newer dispatch CANCELLED the older check — leaving a
+# red `privileged_merge` on a PR that had merged successfully (ADR 0039).
+# Separating them lets both reach a terminal state; each re-validates PR state
+# before merging and treats an already-merged PR as a no-op, so they are safe
+# to run concurrently.
+#
+# A thin caller must NOT reuse this group name: a called workflow's concurrency
+# is evaluated in the caller's context, so an identical group would make the
+# reusable's job queue behind the caller job that invoked it — a deadlock.
 concurrency:
-  group: ai-privileged-merge-${{ github.event.pull_request.number || inputs.pr_number }}
+  group: ai-privileged-merge-${{ github.event.pull_request.number || inputs.pr_number }}-${{ github.event_name }}
   cancel-in-progress: true
 
 jobs:
   privileged_merge:
-    runs-on: ${{ github.repository_owner == 'Verjson' && fromJSON(vars.VERJSON_RUNNER_ISOLATED || vars.VERJSON_RUNNER_DEFAULT || '["self-hosted","gate"]') || 'ubuntu-24.04' }}
+    # `runner_labels` first, mirroring ai-review-merge.yml: a consumer org has no
+    # runner for Verjson's isolated pool, so inheriting it would queue the job
+    # forever on labels nothing matches (#130). Required on workflow_call so the
+    # call fails immediately with a clear message instead.
+    runs-on: ${{ inputs.runner_labels && fromJSON(inputs.runner_labels) || github.repository_owner == 'Verjson' && fromJSON(vars.VERJSON_RUNNER_ISOLATED || vars.VERJSON_RUNNER_DEFAULT || '["self-hosted","gate"]') || 'ubuntu-24.04' }}
     timeout-minutes: 45
     env:
       EXPECTED_HEAD_SHA: ${{ github.event.pull_request.head.sha || inputs.expected_head_sha }}
