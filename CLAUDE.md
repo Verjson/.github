@@ -58,3 +58,4 @@ non-trivial or fanned-out work autonomously:
 - [#251](https://github.com/Verjson/.github/issues/251) — `budget-exceeded.test.sh` fails on clean `main` (recovered verdict must still approve).
 - [#261](https://github.com/Verjson/.github/issues/261) — Bind privileged-merge provenance to a signed workflow identity instead of ambient ruleset config (ADR 0039 residual).
 - [#263](https://github.com/Verjson/.github/issues/263) — Draft PRs always get a red `privileged_merge` check instead of a skip.
+- [#265](https://github.com/Verjson/.github/issues/265) — Org Actions secrets sit at `visibility: all`; scope them to least privilege.

@@ -11,6 +11,7 @@ Reverse-chronological index of org-level decisions.
 <!-- BEGIN ADR INDEX -->
 | # | Date | Decision |
 |---|------|----------|
+| [0040](0040-runner-lanes-and-admission-axes/README.md) | 2026-08-01 | Lanes name the work; groups enforce admission |
 | [0039](0039-required-workflow-gate-provenance/README.md) | 2026-07-31 | Organization required-workflow runs are trusted gate provenance |
 | [0038](0038-canonical-changelog-contract/README.md) | 2026-07-30 | Canonical changelog fragments and immutable release snapshots |
 | [0037](0037-isolate-actions-write-dispatch/README.md) | 2026-07-30 | Isolate Actions write permission in a metadata-only dispatcher |
