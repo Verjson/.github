@@ -221,7 +221,7 @@ billing assumption.
 
 **The terminal literal is a portability contract, not a fallback.** `vars` resolves in the
 *caller's* context, so an outside organization calling a Verjson reusable workflow has no
-`VERJSON_LANE_*` set and lands on hosted automatically — the only sane default for someone
+`VERJSON_LANE_*` set and lands on hosted automatically — the only sane landing place for someone
 with no self-hosted fleet.
 
 This distinction is the lesson of ADR 0033's failure. It treated a terminal literal as a

@@ -3,6 +3,11 @@
 - **Date:** 2026-07-15
 - **PR:** Verjson/.github#25 (this ADR; the change itself is org Actions settings via API)
 - **Category:** org Actions runner groups / CI infrastructure (sensitive-class)
+- **Superseded in part by:** [ADR 0041](../0041-shared-admission-hosted-and-self-hosted/README.md).
+  The GCP group's organization-wide, public-allowed access that this ADR created is again the
+  live and intended state, now by explicit decision rather than by default. This ADR's
+  "GitHub (last resort)" framing is retired: ADR 0040 shows hosted runners are funded and
+  available, and ADR 0041 makes hosted a first-class peer of self-hosted.
 
 ## Context
 

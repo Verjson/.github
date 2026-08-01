@@ -13,7 +13,8 @@ GCP group must move from all-repository/public access to **selected trusted
 repositories**, and that a public repository "cannot regain persistent-runner access
 without a new reviewed exception."
 
-The live organization does not implement that, and has not for some time:
+The live organization does not implement that (how long it has been so is undetermined —
+`/orgs/Verjson/audit-log` returns 404 for this token, as ADR 0040 records):
 
 ```console
 $ gh api /orgs/Verjson/actions/runner-groups/4 \
@@ -25,10 +26,23 @@ ADR 0040 recorded this as a discrepancy and #270 asked for a resolution: restore
 boundary, or consciously accept the wider admission and say so. **This ADR is the second
 option, chosen deliberately by the owner.**
 
-Two things changed since ADR 0028 that make the original decision less compelling than it
-was. The fleet moved from GCP to DigitalOcean, and hosted runners turned out to be
-available rather than unfunded — ADR 0040 corrects that premise with billing evidence.
-ADR 0028's "hosted as last resort" framing assumed hosted was not a real option.
+**The reason for superseding decision 4 is throughput and operational simplicity, stated
+below — not hosted availability.** An earlier draft of this ADR argued that ADR 0028
+assumed hosted was not a real option, and that is simply wrong. ADR 0028 says the
+opposite: "isolation takes precedence over the former 'hosted last resort' preference,"
+and its decisions 1 and 6 route untrusted and public work *to* `ubuntu-24.04`. "Last
+resort" is **ADR 0003's** framing (it is in that ADR's title), and "hosted is unfunded, a
+guaranteed failure" is **ADR 0033's**, which ADR 0040 corrects with billing evidence.
+
+That correction is real, but it is an argument against ADR 0003 and ADR 0033. Decision 4
+was about *admission*, not about hosted availability, so it needs its own argument. The
+mistake is recorded rather than quietly deleted because superseding a security decision
+with a misattributed rationale is the kind of error that survives review by sounding
+plausible.
+
+One thing has genuinely changed since ADR 0028: the fleet moved from GCP to DigitalOcean
+(owner-reported; the runner labels still read `gce`/`GCP`, which ADR 0040 records as wrong
+rather than legacy).
 
 ## Decision
 
@@ -44,9 +58,11 @@ hardcoding a pool, a label, or a runner group name anywhere in a repository. Thi
 operative rule of ADR 0040 restated as a standing constraint on how this decision may be
 revised: the lane variables are the only place topology is allowed to live.
 
-Because of that, this decision is cheap to reverse. Narrowing admission later is a runner
-group setting plus a variable change; it needs no workflow edits and no consumer
-migration.
+Because of that, reversal needs **no workflow edits and no consumer migration** — a runner
+group setting plus a variable change. It is not free, though: group 4 has zero selected
+members today, so flipping it to `visibility: selected` de-admits every repository at once,
+and an omitted repository queues forever with no check run. An admission inventory comes
+first; see Rollback.
 
 ### Two different things are called "default" — keep them apart
 
@@ -75,8 +91,13 @@ no `VERJSON_LANE_*` set at all (ADR 0040). Our default is whatever
 
 The remaining trap is the *registration* default: a runner registered without
 `--runnergroup` lands in group 1, which is public-accessible and has no label discipline.
-That is a provisioning-time concern, unrelated to routing, and the scheduled reconciler's
-runner-placement check exists to catch it.
+That is a provisioning-time concern, unrelated to routing.
+
+**Nothing checks for this automatically.** `scripts/ci-gate/runner-admission-reconcile.sh`
+verifies repository admission and that each lane resolves to at least one online runner; it
+has no runner-placement logic and does not look at group 1 or at `.default`. Placement must
+be verified by hand after registering a runner. Adding that check is tracked in #275 — it is
+named here as a gap rather than described as a control that exists.
 
 ## The North Star — what best practice would be, and why we are not doing it
 
@@ -110,6 +131,35 @@ softened:
   merge pull requests — runs on the same hosts as that untrusted code.
 - A compromise of one job can persist to affect later jobs on the same runner, which is
   precisely the risk ADR 0028 decision 4 was written to remove.
+- **The org-side admission layer is a no-op for group 4, so what actually gates fork code
+  is per-repository fork-PR approval policy.** This is the consequence that most needs
+  stating, because ADR 0040 calls group visibility "enforced org-side, unbypassable" — true
+  as a mechanism, but a group at `visibility: all` with `allows_public_repositories: true`
+  enforces nothing. ADR 0033 was safe against caller-supplied labels *because*
+  `allows_public_repositories` was `false`; that protection is gone.
+
+  It matters because `ai-review-merge.yml:163` and `:509` place caller-controlled
+  `inputs.runner_labels` **first** in the `runs-on` precedence chain, and on a
+  `pull_request` event that file is read from the PR head. Measured 2026-08-01 — the
+  remaining control, and it is not uniform:
+
+  | public repository | fork-PR approval |
+  |---|---|
+  | `.github` | `all_external_contributors` |
+  | `verjson-github-runner` | `first_time_contributors` |
+  | `verjson-browser-agent` | `first_time_contributors` |
+  | `agents` | `first_time_contributors` |
+
+  So on three of four public repositories, a contributor approved once can run fork-head
+  workflow content on the six hosts that carry `gate`, without further approval. The
+  escalation path is: persistence on a `gate` host → the merge-gate token → organization-wide
+  merge authority. There is also a shared-capacity effect ADR 0033 already noted — heavy CI
+  can starve the gate — which now includes CI triggered from outside the organization.
+
+  **This makes per-repository fork-PR approval a load-bearing security control, and it is
+  recorded here as such.** ADR 0033 kept its load-bearing organization settings in a table
+  precisely so a change to one would be visible; this ADR does the same. (ADR 0033's "public
+  repositories are exactly two" is stale — there are now four.)
 
 [#204](https://github.com/Verjson/.github/issues/204) remains **open as the North Star
 hook**, not as a defect report. It should not be closed as "won't do"; it is the tracking
@@ -117,9 +167,23 @@ issue for items 1–4 above if and when the trade changes.
 
 ## Consequences
 
-- ADR 0028 decision 4 is superseded. ADR 0028's other decisions — cache boundaries,
+- ADR 0028 decision 4 is superseded here. Its decisions **2, 3, and 5** — cache boundaries,
   immutable third-party action pins, least-privilege PR tokens — are untouched and still
-  stand. ADR 0030 already superseded ADR 0028 on hosted routing.
+  stand.
+
+  Two others are **already not in force**, and are named explicitly rather than folded into
+  a blanket "the rest still stands," because a reader checking ADR 0028 would otherwise take
+  them as current:
+  - **Decision 1** (the three-tier classification) put public repositories and fork PRs on
+    an *isolated* tier and trusted work on "selected private repositories on the persistent
+    GCP pool." Both halves are dead: the isolated group returns 404, and group 4 is not
+    selected. ADR 0040 replaces the tiering with lanes.
+  - **Decision 6** (`.github`'s validation and merge-gate executions use fixed
+    `ubuntu-24.04`; public target repositories run the central merge gate on hosted
+    capacity) is not in force: `ai-privileged-merge.yml` and `ai-review-merge.yml` route
+    every `Verjson` caller, including the public `.github`, to self-hosted. ADR 0030's
+    supersession is scoped to hosted routing **for Verjson public validation** and does not
+    cleanly cover decision 6's public-gate clause.
 - Runner group **names** may now describe admission honestly. Naming group 4
   `public-allowed` no longer bakes in a state the record says should not exist; it
   describes a decision.
