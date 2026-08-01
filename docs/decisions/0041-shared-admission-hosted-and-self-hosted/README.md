@@ -3,7 +3,10 @@
 - **Date:** 2026-08-01
 - **Issue:** [Verjson/.github#270](https://github.com/Verjson/.github/issues/270)
 - **Supersedes in part:** ADR 0028 decision 4 (GCP group must move to selected trusted
-  repositories; public repositories may not hold persistent-runner access)
+  repositories; public repositories may not hold persistent-runner access). It additionally
+  **records decisions 1 and 6 as already lapsed** — see Consequences. That is a finding
+  about the live state, not a decision taken here; decision 6's public-gate clause is
+  tracked separately in [#281](https://github.com/Verjson/.github/issues/281).
 - **Extends:** [ADR 0040](../0040-runner-lanes-and-admission-axes/README.md) (lanes and axes)
 
 ## Context
@@ -52,14 +55,31 @@ repositories, for the foreseeable future.** Runner group 4 stays `visibility: al
 remediation.
 
 **Capacity and provider changes are variable changes.** Spinning up additional runners,
-moving load onto GitHub-hosted, or introducing a new provider is expressed by changing a
-`VERJSON_LANE_*` variable — never by editing `runs-on:` in a workflow, and never by
-hardcoding a pool, a label, or a runner group name anywhere in a repository. This is the
-operative rule of ADR 0040 restated as a standing constraint on how this decision may be
-revised: the lane variables are the only place topology is allowed to live.
+moving load onto GitHub-hosted, or introducing a new provider is expressed by changing an
+organization variable — never by editing `runs-on:` in a workflow, and never by hardcoding
+a pool, a label, or a runner group name anywhere in a repository. This is the operative
+rule of ADR 0040 restated as a standing constraint on how this decision may be revised: the
+lane variables are the only place topology is allowed to live.
 
-Because of that, reversal needs **no workflow edits and no consumer migration** — a runner
-group setting plus a variable change. It is not free, though: group 4 has zero selected
+**Which variable, today:** every routing site still reads `VERJSON_RUNNER_*`
+(`ai-review-merge.yml:163,509`, `ai-privileged-merge.yml:80`,
+`scripts/ci-gate/runner-admission-reconcile.sh:38-41`). The `VERJSON_LANE_*` variables
+exist but **nothing consumes them yet** — #273's Leg 1 is deliberately inert until the
+Leg 2 cutover. So an operator acting on this ADR today changes `VERJSON_RUNNER_*`; the
+lane names below describe the state after that cutover. Naming the lane variables as if
+they were live would be the worst kind of error here: the change would appear to succeed
+and route nothing.
+
+Reversal therefore needs **no consumer migration** — a runner group setting plus a variable
+change. It does not yet mean *no workflow edits*: hardcoded `runs-on:` pools remain in
+`actions-ci.yml`, `runner-admission-reconcile.yml`, `node-cache-integration.yml`,
+`rework-reconcile.yml` and `tag-major.yml`, and the inline long tail is tracked as unswept
+in #203. **Those must be swept before any provider move**, or a provider flip silently
+strands them — including the reconciler that is supposed to detect the drift, and
+`actions-ci` itself. The constraint above is how new routing must be written; it is not yet
+a description of the whole repository.
+
+It is not free either: group 4 has zero selected
 members today, so flipping it to `visibility: selected` de-admits every repository at once,
 and an omitted repository queues forever with no check run. An admission inventory comes
 first; see Rollback.
@@ -127,7 +147,7 @@ softened:
 
 - Untrusted pull-request code from public repositories executes on persistent hosts with a
   reused filesystem, alongside private-repository work.
-- All six live runners carry the `gate` label, so the merge gate — holding a token that can
+- All six runners in group 4 carry the `gate` label, so the merge gate — holding a token that can
   merge pull requests — runs on the same hosts as that untrusted code.
 - A compromise of one job can persist to affect later jobs on the same runner, which is
   precisely the risk ADR 0028 decision 4 was written to remove.
@@ -184,12 +204,29 @@ softened:
   **security-relevant action**, not a routine courtesy. There is also the shared-capacity
   effect ADR 0033 noted — heavy CI can starve the gate.
 
-  **Per-repository fork-PR approval and the count of public repositories are load-bearing
-  security controls, recorded here as such**, in a table, for the same reason ADR 0033
-  tabulated its organization settings: so that changing one is visible. Making a repository
-  public, or relaxing its approval policy, re-opens the surface above and should be treated
-  as a change to this ADR. (ADR 0033's "public repositories are exactly two" is, after this
-  change, true again — but by a different route than it meant.)
+  **The controls below are load-bearing, and are tabulated for the same reason ADR 0033
+  tabulated its organization settings: so that changing one is visible.** Once group 4
+  admits everything, these are what actually stand between a fork pull request and the
+  `gate` hosts. Changing any of them re-opens the surface above and is a change to this ADR,
+  not a routine settings edit.
+
+  | Control | Value when decided | Verify |
+  |---|---|---|
+  | Public repositories | 2 (`.github`, `verjson-github-runner`) | `gh api /orgs/Verjson/repos --paginate --jq '"public=\([.[]\|select(.archived==false and .private==false)]\|length)"'` |
+  | Fork-PR approval, per repository | `all_external_contributors` on both | `gh api repos/Verjson/<repo>/actions/permissions/fork-pr-contributor-approval --jq .approval_policy` |
+  | Fork-PR approval, org default | `all_external_contributors` | `gh api /orgs/Verjson/actions/permissions/fork-pr-contributor-approval` |
+  | Private-repository forking | `false` | `gh api /orgs/Verjson --jq .members_can_fork_private_repositories` |
+
+  The last row is inherited from ADR 0033, which names it as the *only* reason fork pull
+  requests against **private** repositories are safe on the persistent pool. It belongs here
+  because per-repository approval does not cover it: `all_external_contributors` gates
+  non-collaborators, and an organization member forking a private repository is not one.
+  Enabling private-repo forking as a routine convenience would put unapproved fork content
+  on the `gate` hosts with nothing in this record marking it as an ADR-level change.
+
+  (ADR 0033's claim was that "the public repositories are exactly the group-6-only
+  repositories" — a statement about *which* repositories, not a count, and one that no
+  longer parses now that group 6 is deleted. The count is recorded above in its place.)
 
 [#204](https://github.com/Verjson/.github/issues/204) remains **open as the North Star
 hook**, not as a defect report. It should not be closed as "won't do"; it is the tracking
@@ -217,7 +254,8 @@ issue for items 1–4 above if and when the trade changes.
 - Runner group **names** may now describe admission honestly. Naming group 4
   `public-allowed` no longer bakes in a state the record says should not exist; it
   describes a decision.
-- `VERJSON_LANE_UNTRUSTED` resolves to the self-hosted pool. Hosted is free and unmetered
+- The untrusted lane resolves to the self-hosted pool — `VERJSON_RUNNER_UNTRUSTED` today,
+  `VERJSON_LANE_UNTRUSTED` after the #273 Leg 2 cutover. Hosted is free and unmetered
   for public repositories, but a *private* repository on hosted rides a spending limit —
   ADR 0040 measures paid Actions usage stopping at exactly $20.00 — and past it, jobs fail
   fast with an empty runner name. A lane variable is organization-wide and cannot differ by
@@ -235,7 +273,13 @@ issue for items 1–4 above if and when the trade changes.
 ## Rollback
 
 Set group 4 to `visibility: selected`, admit the trusted repositories explicitly, and set
-`allows_public_repositories: false`. Then point `VERJSON_LANE_UNTRUSTED` at hosted or at a
-new isolated pool. Inventory current consumers **before** narrowing: a repository that
-loses admission does not fail, it queues forever with no check run (#182's silent mode).
-The scheduled reconciler's under-admission check exists to catch exactly that.
+`allows_public_repositories: false`. Then point the untrusted lane at hosted or at a new
+isolated pool — `VERJSON_RUNNER_UNTRUSTED` until #273's Leg 2 lands, `VERJSON_LANE_UNTRUSTED`
+after. Sweep the hardcoded `runs-on:` pools listed under Decision (#203) first, or the jobs
+holding them ignore the flip entirely.
+
+Inventory current consumers **before** narrowing: a repository that loses admission does not
+fail, it queues forever with no check run (#182's silent mode). The scheduled reconciler's
+under-admission check detects that — but it runs daily and is observe-only, so it is a
+**detector up to 24 hours late, not a safety net** for a flip that de-admits every
+repository at once. Run it via `workflow_dispatch` immediately before and after the change.

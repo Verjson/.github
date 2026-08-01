@@ -1,11 +1,35 @@
 ---
 date: 2026-08-01
 issue: 270
-title: Narrow the public repository surface and require approval for every external fork PR
+title: Accept shared runner admission by decision, and narrow the public repository surface
 ---
 
-Organization-configuration change, made in response to a finding recorded in
-[ADR 0041](../docs/decisions/0041-shared-admission-hosted-and-self-hosted/README.md).
+## The admission discrepancy is resolved, in favour of the live state
+
+The entry for #256 recorded that runner group 4 admits public repositories while ADR 0028
+decision 4 forbids it, and left that open as a finding: ADR 0028's admission boundary was
+**not in force**, with no record of when it lapsed.
+
+[ADR 0041](../docs/decisions/0041-shared-admission-hosted-and-self-hosted/README.md) closes
+it deliberately, and the other way round from what that entry implied. GitHub-hosted and
+DigitalOcean self-hosted both serve public and private repositories for the foreseeable
+future, and **ADR 0028 decision 4 is superseded**. The wider admission is now a decision,
+not a drift.
+
+The ADR also records what best practice *would* be — ephemeral hosts for untrusted code,
+narrow admission, a merge gate that does not share hosts with pull-request content — as an
+explicit North Star, with the accepted risks stated rather than softened, so the deviation
+stays a decision instead of decaying into an accident. #204 stays open as the hook for that
+target, not as a defect. ADR 0028 decisions 1 and 6 are recorded there as *already* lapsed;
+decision 6 is tracked in #281.
+
+The standing constraint that keeps it reversible: **capacity and provider changes are
+variable changes.** New runners, more hosted compute, or a new provider is an organization
+variable edit — never a `runs-on:` edit, and never a hardcoded pool, label, or runner-group
+name. That constraint governs new routing; the inline `runs-on` long tail (#203) must still
+be swept before any provider move.
+
+## The organization changes that followed
 
 Accepting a shared runner pool for public and private repositories makes per-repository
 fork-PR approval a load-bearing control, because the org-side admission layer no longer
