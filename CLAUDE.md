@@ -62,3 +62,4 @@ non-trivial or fanned-out work autonomously:
 - [#279](https://github.com/Verjson/.github/issues/279) — Attestation provenance is forgeable by any run that merely references the gate.
 - [#265](https://github.com/Verjson/.github/issues/265) — Org Actions secrets sit at `visibility: all`; scope them to least privilege.
 - [#281](https://github.com/Verjson/.github/issues/281) — ADR 0028 decision 6 (public merge gate on hosted) has lapsed with no superseding decision.
+- [#289](https://github.com/Verjson/.github/issues/289) — `changelog.py validate` is never run over this repo's own `NEXT/`; one fragment already fails it.
