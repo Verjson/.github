@@ -142,9 +142,9 @@ for lane in "$default_lane" "$untrusted_lane"; do
     untrusted)
       [ -n "$untrusted_group" ] || { untrusted_group="$(resolve_group untrusted)" || exit 2; } ;;
     # Total only because group_for_selector is — an invariant 80 lines away.
-    # Without this arm a new lane leaves $group unbound, and `set -u` without
-    # `-e` aborts with exit 1, which the workflow reads as DRIFT and files an
-    # issue about. Undetermined must never be able to decay into a verdict.
+    # Without this arm a new lane silently resolves NO group, and the omission
+    # surfaces later as an unhandled lane in the repository loop. Failing here
+    # names the real cause instead of at the point of use.
     *) die_undetermined "unhandled lane '$lane' while resolving runner groups" ;;
   esac
 done
@@ -158,7 +158,11 @@ slurp_strings() { jq -Rsc 'split("\n") | map(select(length > 0))'; }
 slurp_objects() { jq -sc '.'; }
 
 group_id_of() {
-  jq -er '.id | tostring' <<<"$1" \
+  # `.id // empty` rather than `.id | tostring`: tostring turns a MISSING id into
+  # the literal string "null" and exits 0, which builds `/runner-groups/null/...`
+  # and only fails closed by accident when the API 404s. `// empty` produces no
+  # output, so jq -e exits 4 and the guard below actually fires.
+  jq -er '.id // empty' <<<"$1" \
     || die_undetermined "runner group object has no id: $1"
 }
 

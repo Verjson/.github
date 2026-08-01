@@ -9,6 +9,13 @@ fails=0
 pass() { printf 'ok   - %s\n' "$1"; }
 fail() { printf 'FAIL - %s\n' "$1"; fails=$((fails + 1)); }
 
+# The stub ignores `--jq` and returns already-shaped fixtures, so it cannot
+# verify that the script's jq filters frame their output the way the callers
+# assume (raw one-string-per-line for `.repositories[].full_name`, one JSON
+# object per line for `.runners[] | {...}`). That framing is load-bearing for
+# slurp_strings/slurp_objects. It is inherent to stubbing rather than a new
+# risk — the pre-existing repos fetch relies on the same guarantee — but a
+# change to those filters will not be caught here.
 mkdir -p "$tmp/bin"
 cat >"$tmp/bin/gh" <<'GH'
 #!/usr/bin/env bash
@@ -231,7 +238,12 @@ extract_reconcile_step >"$wrapper"
 
 # Drive the extracted block with a stub standing in for the reconciler, so the
 # only thing under test is how the wrapper maps an exit code to a verdict.
-run_wrapper() { # run_wrapper <exit-code> -> prints "<wrapper-exit> <code-output>"
+# Emits "<wrapper-exit> <code-output-VALUE>". Asserting the value, not merely
+# that a `code=` line exists: a count-based assertion stays green when the
+# wrapper hardcodes `code=0`, which would suppress every drift issue AND fire
+# the close step on every run, silently closing live drift. A test that cannot
+# distinguish that is the same fail-open it is supposed to be guarding.
+run_wrapper() { # run_wrapper <exit-code>
   local stub_code="$1" work="$tmp/wrap.$1" rc
   rm -rf "$work"; mkdir -p "$work/scripts/ci-gate"
   printf '#!/usr/bin/env bash\necho "stub report"\nexit %s\n' "$stub_code" \
@@ -242,27 +254,38 @@ run_wrapper() { # run_wrapper <exit-code> -> prints "<wrapper-exit> <code-output
       GITHUB_STEP_SUMMARY="$work/summary" GITHUB_OUTPUT="$work/output" \
       bash "$wrapper" >/dev/null 2>&1 )
   rc=$?
-  printf '%s %s' "$rc" "$(grep -c '^code=' "$work/output")"
+  printf '%s %s' "$rc" "$(sed -n 's/^code=//p' "$work/output" | tr -d '\n')"
 }
 
-[ "$(run_wrapper 0)" = "0 1" ] \
+[ "$(run_wrapper 0)" = "0 0" ] \
   && pass "wrapper passes a clean reconciliation through as success" \
-  || fail "clean run did not exit 0: $(run_wrapper 0)"
+  || fail "clean run did not exit 0 with code=0: $(run_wrapper 0)"
 
 [ "$(run_wrapper 1)" = "0 1" ] \
   && pass "wrapper keeps drift green so the issue step can file it" \
-  || fail "drift run did not exit 0: $(run_wrapper 1)"
+  || fail "drift run did not exit 0 with code=1: $(run_wrapper 1)"
 
-[ "$(run_wrapper 2)" = "1 1" ] \
+[ "$(run_wrapper 2)" = "1 2" ] \
   && pass "wrapper fails the job when the org could not be read" \
   || fail "undetermined run did not fail the job: $(run_wrapper 2)"
 
 # The gap: 127 is `command not found`, and a `set -u` abort surfaces as 1-or-worse.
 # Before this, anything outside 0/1/2 fell through to the unconditional `exit 0`
 # — job green, drift step skipped, nothing filed, org never actually examined.
-[ "$(run_wrapper 127)" = "1 1" ] \
+[ "$(run_wrapper 127)" = "1 127" ] \
   && pass "wrapper treats an off-contract exit code as undetermined, not clean" \
   || fail "crash exit code was reported as clean: $(run_wrapper 127)"
+
+# The wrapper's exit code and its `code` output only mean anything together with
+# the conditions on the downstream steps. Without these, flipping the drift step
+# to `== '2'` leaves the whole suite green while drift is never filed again.
+grep -qF "steps.reconcile.outputs.code == '1'" "$workflow" \
+  && pass "the drift-issue step is still gated on the drift code" \
+  || fail "drift-issue step condition drifted from code == '1'"
+
+grep -qF "steps.reconcile.outputs.code == '0'" "$workflow" \
+  && pass "the issue-closing step is still gated on the clean code" \
+  || fail "issue-closing step condition drifted from code == '0'"
 
 if [ "$fails" -eq 0 ]; then
   echo "All tests passed."

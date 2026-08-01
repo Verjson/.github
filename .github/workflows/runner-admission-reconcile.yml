@@ -55,13 +55,17 @@ jobs:
           report="$(bash scripts/ci-gate/runner-admission-reconcile.sh 2>&1)"
           code=$?
           set -e
-          printf '%s\n' "$report" >> "$GITHUB_STEP_SUMMARY"
+          # Outputs first, summary second. `set -e` is back on, so a failing
+          # summary write would otherwise abort before `code` is published and
+          # BOTH downstream steps would skip on their `if:` conditions — the job
+          # goes red, but the drift it found is silently dropped.
           {
             echo 'report<<REPORT_EOF'
             printf '%s\n' "$report"
             echo 'REPORT_EOF'
           } >> "$GITHUB_OUTPUT"
           echo "code=$code" >> "$GITHUB_OUTPUT"
+          printf '%s\n' "$report" >> "$GITHUB_STEP_SUMMARY"
           # The script's contract is exactly 0 (clean), 1 (drift), 2 (could not
           # look). Anything else is a crash, and a crash previously fell through
           # to the unconditional `exit 0` below: job green, drift step skipped,
