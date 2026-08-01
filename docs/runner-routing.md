@@ -42,7 +42,7 @@ Where verJSON CI jobs run, and how to choose a `runs-on` value. The model is dec
 | `VERJSON_LANE_TRUSTED` | ordinary organization CI; secrets available | self-hosted general pool |
 | `VERJSON_LANE_UNTRUSTED` | fork/PR content; must not see secrets | self-hosted general pool |
 | `VERJSON_LANE_PRIVILEGED` | the merge gate and its elevated token | self-hosted general pool |
-| `VERJSON_LANE_FALLBACK` | organization-wide default when a lane is unset | configurable |
+| `VERJSON_LANE_FALLBACK` | **our** default when a lane is unset — switchable, not tied to GitHub-hosted | configurable |
 
 Pick by what the job **is**, not by where it currently runs: gate preflight/review that
 touches PR content → `UNTRUSTED`; privileged merge → `PRIVILEGED`; everything else →
@@ -106,10 +106,18 @@ id=4 GCP     vis=all  public=true   default=false
   future, superseding ADR 0028 decision 4. The accepted risks and the best-practice North
   Star we are deviating from are recorded there — read it before assuming this is a
   misconfiguration. (It was found as an undocumented drift; ADR 0040 records that history.)
-- **Group 1 is `default: true`, and per ADR 0003 a custom group cannot be made default.** A
-  newly registered runner therefore lands in a public-accessible group with no label
-  discipline unless `--runnergroup` is passed at registration time. Verify placement after
-  registering any runner.
+- **Group 1 (`GitHub`) is `default: true`, and per ADR 0003 a custom group cannot be made
+  default. Never rename it** — it names GitHub's own default group and nothing else.
+  A newly registered runner lands there, public-accessible and with no label discipline,
+  unless `--runnergroup` is passed at registration time. Verify placement after registering
+  any runner.
+
+  ⚠️ **This is the *registration* default, not our routing default.** Two different things
+  are called "default" and conflating them is a live hazard — see
+  [ADR 0041](decisions/0041-shared-admission-hosted-and-self-hosted/README.md).
+  **Verjson's default is `VERJSON_LANE_FALLBACK`, a variable**, and it is not tied to
+  GitHub-hosted: it can point at the DO self-hosted pool, at hosted, or at a future
+  provider, and switching it is a one-line org-variable edit.
 - Groups `6` and `7` were deleted and now 404. A reconciler that pinned group 6 by id broke
   on this (#266); resolve groups **by name**, and only for lanes that select them.
 
@@ -215,14 +223,19 @@ Order matters. Each step is safe only after the previous one lands.
    removing them mid-rollout breaks in-flight runs.
 2. **Migrate workflows to the lane expression**, choosing the lane by what each job is.
 3. **Rename groups onto the admission axis** (names describing admission, not hardware or a
-   person). Read the provisioning call sites first: a rename that sends the next runner
-   into the default public-accessible group is worse than a wrong name.
-4. **Sweep the inline `runs-on` long tail** (#203).
-5. **Only then delete `gce`, `GCP`, and `gate`** from the live runners.
+   person). Group 1 (`GitHub`) is never renamed — it names GitHub's own default group.
+4. **Refresh the labels — additively first.** Every label on the live runners is being
+   corrected, not just the obviously wrong ones. Add the accurate labels (`do`, and the
+   capability labels the fleet actually has) while the stale ones remain in place, so
+   nothing that still selects an old label breaks mid-migration.
+5. **Sweep the inline `runs-on` long tail** (#203), so nothing selects a stale label.
+6. **Only then delete the stale labels** — `gce`, `GCP`, `gate`.
 
-⚠️ **Deleting the stale labels before step 4 makes those jobs queue forever with no check
-run** — #182's silent-failure mode, which is the entire reason this programme exists. A job
-with no matching runner does not fail; it waits.
+⚠️ **Deleting a stale label before the sweep in step 5 makes those jobs queue forever with
+no check run** — #182's silent-failure mode, which is the entire reason this programme
+exists. A job with no matching runner does not fail; it waits. This is why the label
+refresh is additive first and subtractive last: at every intermediate point, both the old
+and new selectors resolve.
 
 ## Related
 

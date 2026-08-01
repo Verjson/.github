@@ -48,6 +48,36 @@ Because of that, this decision is cheap to reverse. Narrowing admission later is
 group setting plus a variable change; it needs no workflow edits and no consumer
 migration.
 
+### Two different things are called "default" — keep them apart
+
+Conflating these is a live hazard, so they are named separately here.
+
+| | **GitHub's default runner group** | **Verjson's default lane** |
+|---|---|---|
+| What | Runner group 1, `default: true` | `VERJSON_LANE_FALLBACK` |
+| Governs | Where a runner **registers** if `--runnergroup` is omitted | Where a **job runs** when no more specific lane is set |
+| Owned by | GitHub; a custom group cannot be made default | Us |
+| Changeable | No | **Yes — it is a variable** |
+
+Group 1 is named `GitHub`, that name is correct, and it is **never renamed** — it names
+GitHub's own default group and nothing else. It is *not* Verjson's default.
+
+**Verjson's default must be switchable, and it is not GitHub-hosted by definition.** The
+default lane is a variable, so it can point at the DigitalOcean self-hosted pool, at
+hosted, or at a future provider, and switching it is a one-line organization-variable
+edit. Nothing about the word "default" ties our routing default to GitHub's
+infrastructure.
+
+The terminal `'["ubuntu-24.04"]'` in the canonical expression is **not** the default
+either — it is the portability contract for callers outside this organization, who have
+no `VERJSON_LANE_*` set at all (ADR 0040). Our default is whatever
+`VERJSON_LANE_FALLBACK` says.
+
+The remaining trap is the *registration* default: a runner registered without
+`--runnergroup` lands in group 1, which is public-accessible and has no label discipline.
+That is a provisioning-time concern, unrelated to routing, and the scheduled reconciler's
+runner-placement check exists to catch it.
+
 ## The North Star — what best practice would be, and why we are not doing it
 
 This is recorded deliberately and in full, because an accepted deviation that is not
@@ -93,14 +123,18 @@ issue for items 1–4 above if and when the trade changes.
 - Runner group **names** may now describe admission honestly. Naming group 4
   `public-allowed` no longer bakes in a state the record says should not exist; it
   describes a decision.
-- `VERJSON_LANE_UNTRUSTED` continues to resolve to the self-hosted pool for now. Hosted is
-  free and unmetered for public repositories, but a *private* repository on hosted rides a
-  spending limit — ADR 0040 measures paid Actions usage stopping at exactly $20.00 — and
-  past it, jobs fail fast with an empty runner name. A lane variable is organization-wide
-  and cannot differ by repository visibility, which is deliberate: removing that coupling
-  is the point of ADR 0040. So the value is chosen for the case that can fail. **Raising or
-  removing the spending limit makes hosted viable for the untrusted lane, and at that point
-  the change is a single variable edit.**
+- `VERJSON_LANE_UNTRUSTED` resolves to the self-hosted pool. Hosted is free and unmetered
+  for public repositories, but a *private* repository on hosted rides a spending limit —
+  ADR 0040 measures paid Actions usage stopping at exactly $20.00 — and past it, jobs fail
+  fast with an empty runner name. A lane variable is organization-wide and cannot differ by
+  repository visibility, which is deliberate: removing that coupling is the point of
+  ADR 0040. So the value is chosen for the case that can fail.
+
+  This is **not** a pending question blocking anything. Whether the spending limit is
+  raised is a budget decision on its own timeline, and this design deliberately does not
+  depend on it: if the limit changes, pointing the lane at hosted is a one-variable edit,
+  and if it never changes, the current value is already correct. That independence is the
+  point of putting topology in variables.
 - No workflow changes. This ADR records an organization-configuration decision and a
   standing constraint; it alters no `runs-on:` anywhere.
 
