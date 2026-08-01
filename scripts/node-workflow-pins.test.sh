@@ -14,6 +14,7 @@ composite="$root/.github/actions/setup-verjson-node/action.yml"
 actions_ci="$root/.github/workflows/actions-ci.yml"
 package="$root/.github/release-tooling/package.json"
 lock="$root/.github/release-tooling/package-lock.json"
+emit_runner="$root/.github/release-tooling/emit-release-outputs.mjs"
 renovate="$root/renovate.json"
 fails=0
 pass() { printf 'ok   - %s\n' "$1"; }
@@ -65,11 +66,18 @@ grep -Eq 'uses: actions/setup-node@v[0-9]+' "$composite" \
   && grep -qF 'npm ci --ignore-scripts --prefix "$RELEASE_TOOLING_DIR"' "$release"; } \
   && pass "release tooling installs from its lockfile" \
   || fail "release tooling does not use lockfile-backed npm ci"
-grep -qF '"$RELEASE_TOOLING_DIR/node_modules/.bin/semantic-release"' "$release" \
-  && pass "release runs the locked semantic-release binary" \
-  || fail "release does not run the locked semantic-release binary"
+# The publish step invokes semantic-release through the locked runner instead of
+# the CLI binary, so the job can report whether a release actually happened
+# (#244). The supply-chain invariant is unchanged: the runner is copied out of
+# the same workflow-SHA checkout and imports semantic-release from the tree that
+# `npm ci --ignore-scripts` built from the exact lockfile.
+{ grep -qF 'cp .verjson-workflow/.github/release-tooling/emit-release-outputs.mjs "$RELEASE_TOOLING_DIR/"' "$release" \
+  && grep -qF 'node "$RELEASE_TOOLING_DIR/emit-release-outputs.mjs"' "$release" \
+  && grep -qF "import semanticRelease from 'semantic-release';" "$emit_runner"; } \
+  && pass "release runs semantic-release from the locked tooling tree" \
+  || fail "release does not run semantic-release from the locked tooling tree"
 remove_line="$(grep -n 'rm -rf -- .verjson-workflow' "$release" | cut -d: -f1)"
-release_line="$(grep -n 'node_modules/.bin/semantic-release' "$release" | cut -d: -f1)"
+release_line="$(grep -n 'node "$RELEASE_TOOLING_DIR/emit-release-outputs.mjs"' "$release" | cut -d: -f1)"
 { [ -n "$remove_line" ] && [ -n "$release_line" ] && [ "$remove_line" -lt "$release_line" ]; } \
   && pass "central checkout is removed before publishing the caller package" \
   || fail "central checkout can leak into the caller release"
