@@ -392,6 +392,11 @@ done
 # The surface includes `.github/actions/**` docs, not just workflows: the same
 # defect shipped a second time in setup-verjson-node's README, where a consumer
 # copies the usage block verbatim.
+#
+# Also unguarded, and known: prose ATTRIBUTIONS in actionlint.yaml's own comments
+# ("gate — carried today by the gha-general-* runners"). Those name runners
+# rather than labels, so no selector-shaped check can see them going stale. If
+# that class recurs, it needs a live-fleet check, not a wider regex here.
 # --------------------------------------------------------------------------
 declared="$(sed -n '/^self-hosted-runner:/,/^[^ #]/p' "$root/.github/actionlint.yaml" \
   | sed -n 's/^    - \([A-Za-z0-9._-]*\).*/\1/p')"
