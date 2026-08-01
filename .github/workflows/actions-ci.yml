@@ -129,6 +129,8 @@ jobs:
         run: bash scripts/ci-gate/required-workflow-provenance.test.sh
       - name: Privileged merge caller contract (job key + exclusion literal)
         run: bash scripts/ci-gate/privileged-merge-caller-contract.test.sh
+      - name: Privileged merge runs only from Verjson/.github@main (#278, ADR 0043)
+        run: bash scripts/ci-gate/privileged-merge-pin.test.sh
       - name: merge gate — absent checks fail closed, not open (#143, ADR 0024)
         run: bash scripts/ci-gate/ci-wait-fail-closed.test.sh
       - name: merge gate — diff-size budget tier and budget-exceeded outcome (#181, ADR 0032)

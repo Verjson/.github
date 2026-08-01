@@ -188,6 +188,12 @@ run_case() { # run_case <event-name>
   export TARGET_REPO="$CONSUMER" TARGET_OWNER=Verjson GITHUB_REPOSITORY="$CONSUMER"
   export PR_NUMBER=18 EXPECTED_HEAD_SHA="$HEAD_SHA" SOURCE_RUN_ID="$GATE_RUN_ID"
   export GITHUB_EVENT_NAME="$1"
+  # This workflow now verifies which revision of ITSELF is executing (#278).
+  # The default fixture is the trusted tip, so these cases take the equality
+  # path and make no compare call; the pin cases live in their own test file.
+  export EXECUTING_WORKFLOW_SHA="${EXECUTING_WORKFLOW_SHA:-$TRUSTED_SHA}"
+  export EXECUTING_WORKFLOW_REPOSITORY="${EXECUTING_WORKFLOW_REPOSITORY:-Verjson/.github}"
+  export SELF_WORKFLOW_SHA="$TRUSTED_SHA"
   # The shipped default (asserted at the end) is 80; the harness needs only
   # enough attempts to prove the loop reaches its terminal state.
   export MERGE_WAIT_ATTEMPTS=2

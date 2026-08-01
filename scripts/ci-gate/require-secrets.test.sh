@@ -173,6 +173,9 @@ run_case() {
     RUNNER_TEMP="$tmp" \
     GH_TOKEN="$token" TARGET_REPO=Verjson/example TARGET_OWNER=Verjson \
     GITHUB_REPOSITORY=Verjson/example PR_NUMBER=7 EXPECTED_HEAD_SHA="$expected" \
+    EXECUTING_WORKFLOW_SHA=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb \
+    EXECUTING_WORKFLOW_REPOSITORY=Verjson/.github \
+    SELF_WORKFLOW_SHA=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb \
     bash "$script" >"$tmp/case-output.txt" 2>&1
 }
 

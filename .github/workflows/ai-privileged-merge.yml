@@ -87,6 +87,20 @@ jobs:
       TARGET_REPO: ${{ github.repository }}
       TARGET_OWNER: ${{ github.repository_owner }}
       GH_TOKEN: ${{ secrets.ORG_ADMIN_TOKEN }}
+      # The SHA of the workflow file defining THIS job — i.e. of this file as it
+      # is actually executing, whatever ref the caller pinned. ADR 0042 requires
+      # callers to pin `@main` and nothing downstream enforced it (#278): the
+      # caller file lives in the consumer's repository, and the existing anchor
+      # pins the GATE's revision, not this workflow's own.
+      EXECUTING_WORKFLOW_SHA: ${{ job.workflow_sha }}
+      EXECUTING_WORKFLOW_REPOSITORY: ${{ job.workflow_repository }}
+      # The job-context workflow identity is populated for a job defined by a
+      # REUSABLE workflow. On `.github`'s own pull_request_target run this job is
+      # not reusable-defined, so it falls back to the run's own workflow SHA —
+      # which for pull_request_target is the base commit, i.e. this file as it
+      # actually executed. Both spellings are checked; neither is trusted to be
+      # present on its own.
+      SELF_WORKFLOW_SHA: ${{ github.workflow_sha }}
     steps:
       - name: Privileged merge from trusted metadata only
         run: |
@@ -125,6 +139,55 @@ jobs:
             { echo "::error::trusted workflow identity is unavailable"; exit 1; }
           [[ "$trusted_workflow_sha" =~ ^[0-9a-f]{40}$ ]] ||
             { echo "::error::trusted workflow revision is unavailable"; exit 1; }
+          # --- enforce the @main pin on THIS workflow (#278) -------------------
+          # ADR 0042 requires callers to pin `@main` and argued a SHA-pinned
+          # caller would let a consumer admin freeze an older gate. Nothing
+          # enforced that: the caller file lives in the consumer's repository,
+          # and the generator plus pin test both run here, binding nothing
+          # downstream. The anchor above pins the GATE's revision, not this
+          # file's, so this workflow could itself be running from a fork or a
+          # stale ref while every check above passed.
+          # Nested defaults so an entirely absent context is EMPTY rather than a
+          # `set -u` abort: empty then trips the shape guard below and reports
+          # the real cause, instead of dying with "unbound variable" three steps
+          # from anything a reader can act on.
+          executing_workflow_sha="${EXECUTING_WORKFLOW_SHA:-${SELF_WORKFLOW_SHA:-}}"
+          executing_workflow_repository="${EXECUTING_WORKFLOW_REPOSITORY:-${GITHUB_REPOSITORY:-}}"
+          [[ "$executing_workflow_sha" =~ ^[0-9a-f]{40}$ ]] ||
+            { echo "::error::cannot determine which revision of ai-privileged-merge.yml is executing"; exit 1; }
+          [ "$executing_workflow_repository" = "Verjson/.github" ] ||
+            { echo "::error::ai-privileged-merge.yml is executing from '$executing_workflow_repository', not Verjson/.github"; exit 1; }
+
+          # Equality is the normal case and is checked first, so the usual path
+          # costs no extra API call. It cannot be REQUIRED, though: `main` may
+          # legitimately advance between the caller's dispatch and this step, and
+          # a strict check would turn every such race into a red merge check.
+          if [ "$executing_workflow_sha" != "$trusted_workflow_sha" ]; then
+            # `compare/<executing>...<main>`: `identical` or `ahead` means main
+            # can reach the executing commit, i.e. it is genuinely on main.
+            # `behind` or `diverged` means it is not — a fork, a side branch, or
+            # a rewritten history — and that is the case this check exists for.
+            comparison="$(gh api "repos/Verjson/.github/compare/$executing_workflow_sha...$trusted_workflow_sha" \
+              --jq '{status,behind_by}' 2>/dev/null)" ||
+              { echo "::error::cannot compare the executing revision against Verjson/.github@main"; exit 1; }
+            status="$(jq -r '.status // empty' <<<"$comparison")"
+            behind_by="$(jq -r '.behind_by // empty' <<<"$comparison")"
+            case "$status:$behind_by" in
+              identical:0|ahead:0) ;;
+              *)
+                echo "::error::ai-privileged-merge.yml is executing revision $executing_workflow_sha, which is not on Verjson/.github@main (compare status: ${status:-unavailable}). ADR 0042 requires callers to pin @main."
+                exit 1
+                ;;
+            esac
+            # Reachable-but-behind is ACCEPTED, and that is a deliberate residual,
+            # not an oversight: a caller pinned to an older commit that is still
+            # on main passes here. Distinguishing it from the advance-mid-flight
+            # race needs dispatch-time state this job does not have. Warn loudly
+            # rather than claim an exposure is closed when it is not — the exact
+            # error #278 was filed about.
+            echo "::warning::ai-privileged-merge.yml is executing $executing_workflow_sha, behind Verjson/.github@main ($trusted_workflow_sha). Expected if main advanced mid-run; otherwise the caller is SHA-pinned, which ADR 0042 forbids."
+          fi
+
           trusted_repository_id="$(gh api repos/Verjson/.github --jq .id)"
           trusted_workflow_path=.github/workflows/ai-review-merge.yml
           trusted_required_url="https://api.github.com/repos/$TARGET_REPO/actions/required_workflows/"
