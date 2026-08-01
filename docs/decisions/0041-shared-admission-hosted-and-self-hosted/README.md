@@ -155,8 +155,21 @@ softened:
       --jq '"public=\([.[]|select(.archived==false and .private==false)]|length)"'
   public=2
 
-  .github                  all_external_contributors
-  verjson-github-runner    all_external_contributors
+  $ for r in .github verjson-github-runner; do printf '%s ' "$r"; \
+      gh api "repos/Verjson/$r/actions/permissions/fork-pr-contributor-approval" \
+        --jq .approval_policy; done
+  .github all_external_contributors
+  verjson-github-runner all_external_contributors
+  ```
+
+  Per-repository settings alone left a hole: the **organization default** was still
+  `first_time_contributors`, so the next public repository would have inherited the weaker
+  policy silently — a control described here as load-bearing, defaulting open for anything
+  created after this ADR. The organization default was therefore raised to match:
+
+  ```console
+  $ gh api /orgs/Verjson/actions/permissions/fork-pr-contributor-approval
+  {"approval_policy":"all_external_contributors"}
   ```
 
   `.github` stays public deliberately — it is consumed by other organizations Verjson works

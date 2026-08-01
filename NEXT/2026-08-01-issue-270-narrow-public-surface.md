@@ -23,6 +23,10 @@ Two changes narrow that surface:
 - Fork-PR approval is `all_external_contributors` on every repository where the setting
   applies, so a maintainer must approve *every* fork-PR workflow run from a
   non-collaborator rather than only the first.
+- The **organization default** for the same setting was raised to
+  `all_external_contributors` as well. Setting it per repository alone left the next public
+  repository inheriting `first_time_contributors` silently, which defaults a load-bearing
+  control open for anything created from here on.
 
 `Verjson/.github` stays public deliberately — other organizations consume it.
 
