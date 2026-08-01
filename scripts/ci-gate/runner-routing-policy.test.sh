@@ -375,12 +375,23 @@ done
 # (#271, #182's silent mode). Nothing caught it because the pin lived in a
 # COMMENT, and every check above reads `runs-on:` lines only.
 #
-# So bind every self-hosted label mentioned anywhere in these files — comment or
-# code — to the declared set in .github/actionlint.yaml. That file is the
-# organization-wide actionlint policy, i.e. the list of labels a Verjson
-# workflow is allowed to name at all, which makes it the right authority: a
-# label absent from it is one nothing may route on, so recommending it in prose
-# is the same defect as routing on it.
+# So bind every self-hosted label named in a bracketed selector list — in code
+# or in a comment — to the declared set in .github/actionlint.yaml. That file is
+# the organization-wide actionlint policy, i.e. the list of labels a Verjson
+# workflow may name at all, which makes it the right authority: a label absent
+# from it is one nothing may route on, so recommending it in prose is the same
+# defect as routing on it.
+#
+# SCOPE, stated precisely because a guard trusted past its reach is worse than
+# none. This matches the bracketed forms — `["self-hosted","general"]` and
+# `[self-hosted, docker]` — on a single line. It does NOT match the YAML
+# block-sequence spelling, nor a bare mention like "the self-hosted docker
+# lane" in prose. Those remain unguarded; widening to bare words would need a
+# deny-list of retired labels rather than this allow-list shape.
+#
+# The surface includes `.github/actions/**` docs, not just workflows: the same
+# defect shipped a second time in setup-verjson-node's README, where a consumer
+# copies the usage block verbatim.
 # --------------------------------------------------------------------------
 declared="$(sed -n '/^self-hosted-runner:/,/^[^ #]/p' "$root/.github/actionlint.yaml" \
   | sed -n 's/^    - \([A-Za-z0-9._-]*\).*/\1/p')"
@@ -397,22 +408,39 @@ grep -qxF "$control_label" <<<"$declared" \
   && fail "$control_label is declared in actionlint.yaml — actionlint.yml's negative control no longer proves anything" \
   || pass "the actionlint self-test's negative control label stays undeclared"
 
+# Both halves, or this asserts something about a control that no longer exists:
+# deleting the invalid-runner fixture would leave the check above green while
+# nothing proves the policy rejects an unknown label at all.
+grep -qF "$control_label" "$workflows/actionlint.yml" \
+  && pass "actionlint.yml still exercises the undeclared-runner negative control" \
+  || fail "actionlint.yml's undeclared-runner negative control is missing — nothing proves the policy rejects unknown labels"
+
 undeclared=""
-for f in "$workflows"/*.yml; do
-  # Both spellings that appear: the JSON form inside expressions
-  # (["self-hosted","general"]) and the prose form in comments
-  # ([self-hosted, docker]).
+for f in "$workflows"/*.yml "$root"/.github/actions/*/README.md "$root"/.github/actions/*/action.yml; do
+  [ -f "$f" ] || continue
+  # The exemption is scoped to the file that owns the fixture. Repo-wide, it
+  # would silently excuse a genuine `runs-on: [self-hosted, retired-runner-label]`
+  # anywhere else — the exact "exemption hides a real label" hole.
+  exempt="self-hosted"
+  [ "$(basename "$f")" = "actionlint.yml" ] && exempt="self-hosted|$control_label"
+  # `tr -d "\"'"` strips BOTH quote styles: `['self-hosted', 'general']` is legal
+  # YAML, and stripping only double quotes made it fail as the bogus label
+  # `'general'`. Blank lines are dropped with a second grep rather than an empty
+  # ERE alternation, which is undefined in POSIX and errors outright on non-GNU
+  # grep — leaving the scan silently empty and passing forever.
   mentioned="$(grep -oE '\[[^][]*self-hosted[^][]*\]' "$f" \
-    | tr -d '"' | tr ',[]' '\n\n\n' | sed 's/^ *//; s/ *$//' \
-    | grep -vxE "self-hosted|$control_label|" | sort -u)"
-  for label in $mentioned; do
+    | tr -d "\"'" | tr ',[]' '\n\n\n' | sed 's/^ *//; s/ *$//' \
+    | grep -vxE "$exempt" | grep -v '^$' | sort -u)"
+  # Quoted: an unquoted expansion word-splits a prose label containing a space.
+  while IFS= read -r label; do
+    [ -n "$label" ] || continue
     grep -qxF "$label" <<<"$declared" \
       || undeclared="$undeclared$(basename "$f"): $label"$'\n'
-  done
+  done <<<"$mentioned"
 done
 
 [ -z "$undeclared" ] \
-  && pass "every self-hosted label named in a workflow — comments included — is declared" \
+  && pass "every self-hosted label in a bracketed selector — workflows and action docs — is declared" \
   || fail "workflow(s) name a runner label absent from .github/actionlint.yaml:"$'\n'"$undeclared"
 
 if [ "$fails" -eq 0 ]; then
