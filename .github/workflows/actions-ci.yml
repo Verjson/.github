@@ -127,6 +127,8 @@ jobs:
         run: bash scripts/ci-gate/dispatch-permission.test.sh
       - name: merge gate — org required-workflow gate provenance (#259, ADR 0039)
         run: bash scripts/ci-gate/required-workflow-provenance.test.sh
+      - name: Privileged merge caller contract (job key + exclusion literal)
+        run: bash scripts/ci-gate/privileged-merge-caller-contract.test.sh
       - name: merge gate — absent checks fail closed, not open (#143, ADR 0024)
         run: bash scripts/ci-gate/ci-wait-fail-closed.test.sh
       - name: merge gate — diff-size budget tier and budget-exceeded outcome (#181, ADR 0032)
