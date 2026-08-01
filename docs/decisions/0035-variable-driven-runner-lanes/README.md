@@ -146,3 +146,31 @@ Reconciliation accepts both the compatibility lane labels (`general`, `isolated`
 `untrusted-pr`) and their namespaced replacements (`lane-general`,
 `lane-untrusted`). This keeps the reconciler valid through the label migration
 specified above (#226).
+
+## 2026-08-01 amendment — resolve runner groups by name, and only when selected
+
+This restores the invariant already stated under *Reconciliation* — uncertainty exits
+distinctly and never reports clean — which the implementation stopped being able to
+honour. It is not a new decision and does not supersede anything (#266).
+
+Groups 6 (`isolated`) and 7 (`docker-builders`) were deleted on 2026-07-31, leaving the
+organization with groups 1 (`GitHub`), 3 (`manish`), and 4 (`GCP`). The reconciler pinned
+`UNTRUSTED_GROUP_ID=6`, so every run 404ed and exited 2. It stayed correctly fail-closed
+— it never reported a dirty organization as clean — but it reported *nothing*, which is
+the same blind spot by a different route: a monitor that goes quiet exactly when the
+thing it monitors stops existing.
+
+Two properties now hold, and the second is the one that was actually broken:
+
+- **Groups resolve by name** against the live listing (`GENERAL_GROUP_NAME`,
+  `UNTRUSTED_GROUP_NAME`, both overridable), never by a pinned id. A group that a lane
+  genuinely selects but that no longer exists still exits 2, now naming the group and
+  listing the groups that do exist.
+- **Only groups a lane actually selects are resolved.** Both lanes currently select
+  `general`, so nothing routed to `isolated` at all: the job died fetching a group no
+  decision depended on. A group nothing selects can no longer take the run down.
+
+Group ids remain the stable identity for *admission* — admitted repositories travel with
+the id across a rename — so a subsequent rename onto the admission axis does not change
+who is admitted. Name resolution is how this job finds the group, not a claim that names
+are the identity.
