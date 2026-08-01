@@ -19,6 +19,13 @@ name: node-release (reusable)
 #       #   timeout-minutes: 45
 #       #   cache-dependency-path: package-lock.json
 #
+# To gate follow-up work on a real publication (job success alone does not mean
+# one happened — semantic-release exits 0 when no release is necessary):
+#
+#     announce:
+#       needs: release
+#       if: needs.release.outputs.new-release-published == 'true'
+#
 # Cache/timeout details and caller concurrency guidance:
 # docs/node-workflows.md
 
@@ -60,6 +67,18 @@ on:
         required: false
         type: string
         default: ''
+    outputs:
+      new-release-published:
+        description: >-
+          'true' when semantic-release published a release for this run, 'false'
+          when no release was necessary. Empty when the release job failed or was
+          skipped, so callers must compare against 'true' — never against 'false'.
+        value: ${{ jobs.release.outputs.new-release-published }}
+      new-release-version:
+        description: >-
+          Published version without a tag prefix (e.g. 1.4.0); empty when nothing
+          was published.
+        value: ${{ jobs.release.outputs.new-release-version }}
     secrets:
       NODE_AUTH_TOKEN:
         description: Token to read @verjson private packages from GitHub Packages
@@ -82,6 +101,9 @@ jobs:
       packages: write
       issues: write
       pull-requests: write
+    outputs:
+      new-release-published: ${{ steps.publish.outputs.new-release-published }}
+      new-release-version: ${{ steps.publish.outputs.new-release-version }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -125,10 +147,16 @@ jobs:
           mkdir -p "$RELEASE_TOOLING_DIR"
           cp .verjson-workflow/.github/release-tooling/package.json "$RELEASE_TOOLING_DIR/"
           cp .verjson-workflow/.github/release-tooling/package-lock.json "$RELEASE_TOOLING_DIR/"
+          cp .verjson-workflow/.github/release-tooling/emit-release-outputs.mjs "$RELEASE_TOOLING_DIR/"
           rm -rf -- .verjson-workflow
           npm ci --ignore-scripts --prefix "$RELEASE_TOOLING_DIR"
+      # Runs from the caller's checkout, so semantic-release still reads the
+      # caller's config and history; only the invocation moves into the locked
+      # tooling directory, where the runner resolves the pinned dependency and
+      # reports the publication result as a job output (#244).
       - name: Publish release
-        run: '"$RELEASE_TOOLING_DIR/node_modules/.bin/semantic-release"'
+        id: publish
+        run: node "$RELEASE_TOOLING_DIR/emit-release-outputs.mjs"
         env:
           RELEASE_TOOLING_DIR: ${{ runner.temp }}/verjson-release-tooling
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

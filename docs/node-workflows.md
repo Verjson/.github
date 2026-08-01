@@ -75,3 +75,34 @@ can leave a partially completed release. Release callers should normally use a
 stable branch/ref group with `cancel-in-progress: false`, or omit concurrency
 when overlapping release triggers are already impossible. Choose at the caller,
 where the event and publication semantics are known.
+
+## Gating follow-up work on an actual publication
+
+A green `node-release` job does **not** mean a version was published:
+semantic-release exits 0 when no release is necessary, so every push to `main`
+that carries only chores succeeds without publishing anything. Callers that need
+to run something *because a release happened* read the workflow outputs instead:
+
+```yaml
+jobs:
+  release:
+    uses: Verjson/.github/.github/workflows/node-release.yml@main
+    secrets: inherit
+  announce:
+    needs: release
+    if: needs.release.outputs.new-release-published == 'true'
+    runs-on: ubuntu-24.04
+    steps:
+      - run: echo "published ${{ needs.release.outputs.new-release-version }}"
+```
+
+Two properties to respect:
+
+- **Compare against `'true'`, never against `'false'`.** Workflow outputs are
+  strings, and a job that failed or was skipped propagates an *empty* value.
+  `== 'true'` therefore treats "did not publish", "failed", and "never ran" alike
+  and declines to fire; `!= 'false'` fires on all three.
+- **`new-release-published` means semantic-release completed a release**, which
+  includes an npm publish only when the caller's own config runs
+  `@semantic-release/npm`. It is a faithful report of the release lifecycle, not
+  independent proof that a registry accepted the package.
