@@ -208,9 +208,14 @@ UNTRUSTED_VAR='{"value":"[\"self-hosted\",\"lane-untrusted\"]","visibility":"all
 # yields one array per page and downstream `jq -e` sees only the last. The
 # behavioural multi-page case above locks in the new shape; this catches a
 # regression back to the old one, which no fixture can express.
+# Two bad shapes, not one. `'[.runners[]...'` is the per-page array collector.
+# `'.runners'` streams the whole array per page instead of its elements, which
+# slurps to a list-of-lists: `map(.name)` then yields [null] and a CLEAN org
+# reports drift every day. Only element streaming (`'.runners[]`) is correct.
 ! grep -qE "'\[\.(repositories|runners)\[\]" "$script" \
+  && ! grep -qE "'\.(repositories|runners)'" "$script" \
   && pass "group member/runner fetches use the pagination-safe streaming collector" \
-  || fail "a per-page array collector reappeared in the group fetches"
+  || fail "a per-page or whole-array collector reappeared in the group fetches"
 
 grep -qF 'select(.archived == false)' "$script" \
   && pass "archived repositories remain excluded" \
@@ -324,6 +329,22 @@ out="$(run_case)"
   && pass "an offline runner in the default group is still drift" \
   || fail "offline stray runner was not reported: $out"
 
+# The report is filed as an issue and an operator acts on it. Both halves of the
+# remedy have to survive: --runnergroup fixes the NEXT registration and does
+# nothing for the runner just named, so a message carrying only that leaves the
+# drift in place and the issue re-filing daily.
+grep -qF -- '--runnergroup' <<<"$out" \
+  && grep -qiF 'move them' <<<"$out" \
+  && pass "the drift report names both the remediation and the prevention" \
+  || fail "drift report lost part of its remedy: $out"
+
+# Traits are read from the group, not asserted about it: this fixture is
+# `visibility: all` / public allowed, and a narrowed default group must not be
+# described with the same sentence.
+grep -qF 'visibility `all`' <<<"$out" \
+  && pass "the drift report describes the group it actually read" \
+  || fail "drift report does not derive the group's traits: $out"
+
 # Multi-line fixtures are the multi-page case: a `[...]` collector would keep
 # only the last page and silently under-report (the #260 class).
 export G1_RUNNERS=$'{"name":"gha-stray-3","status":"online","labels":["self-hosted"]}\n{"name":"gha-stray-4","status":"online","labels":["self-hosted"]}'
@@ -333,12 +354,30 @@ out="$(run_case)"
   && pass "every stray runner is named, across pages" \
   || fail "paginated stray runners were under-reported: $out"
 
+# A runner object with no `.name` must not render as an empty string — the drift
+# line would read "...: . Move them..." and name nothing to act on.
+export G1_RUNNERS='{"id":77,"status":"online","labels":["self-hosted"]}'
+out="$(run_case)"
+[ "$(code_of)" = "1" ] \
+  && grep -qF 'unnamed runner id 77' <<<"$out" \
+  && pass "a runner with no name is reported by its id, not as blank" \
+  || fail "nameless stray runner produced an unactionable report: $out"
+
 export G1_RUNNERS=''
 out="$(run_case)"
 [ "$(code_of)" = "0" ] \
   && grep -qF 'No drift' <<<"$out" \
   && pass "an empty default group is clean" \
   || fail "empty default group was reported as drift: $out"
+
+# The default group's own name is read with `// empty` + die, not `jq -r`, which
+# renders a missing name as the literal "null" and exits 0 — the same trap
+# group_id_of documents.
+export G1_GROUP='{"id":1,"visibility":"all","allows_public_repositories":true,"default":true}'
+[ "$(code_of)" = "2" ] \
+  && pass "a default group with no name is undetermined" \
+  || fail "nameless default group did not fail closed: $(code_of)"
+export G1_GROUP='{"id":1,"name":"GitHub","visibility":"all","allows_public_repositories":true,"default":true}'
 
 # Fail CLOSED, both directions. A 403 on the placement fetch must not read as
 # "no runners there" — that is the shape that turns a security check into a
@@ -361,6 +400,17 @@ out="$(run_case)"
   && grep -qF 'Renamed Default' <<<"$out" \
   && pass "the default group is resolved by its flag, not by the id 1" \
   || fail "default group resolution is pinned to an id: $out"
+export G1_RUNNERS=''
+
+# Multiplicity is the same surprise as absence, and taking `.[0]` of it is a
+# live fail-open: a stray in the SECOND default-flagged group is never fetched,
+# so the job exits 0 saying no runner sits in the default group. An
+# enterprise-shared Default alongside the org's own is the plausible route.
+export G1_GROUP=$'{"id":1,"name":"GitHub","visibility":"all","allows_public_repositories":true,"default":true}\n{"id":9,"name":"Enterprise Default","visibility":"all","allows_public_repositories":true,"default":true}'
+export G1_RUNNERS='{"name":"gha-stray-6","status":"online","labels":["self-hosted"]}'
+[ "$(code_of)" = "2" ] \
+  && pass "more than one default group is undetermined, not silently first-wins" \
+  || fail "multiple default groups did not fail closed: $(code_of)"
 export G1_RUNNERS=''
 
 # GitHub always marks exactly one group default and a custom group cannot become

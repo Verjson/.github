@@ -241,10 +241,18 @@ has_capacity "$untrusted_selector" "$untrusted_runners_for_selector" \
 # Resolved by `.default`, never by the id 1. The id is stable in practice, but
 # pinning an id is exactly what took this job down for a week (#266), and the
 # flag is what the invariant is actually about.
-default_group="$(jq -c 'map(select(.default == true)) | .[0] // empty' <<<"$groups")" \
+default_groups="$(jq -c 'map(select(.default == true))' <<<"$groups")" \
   || die_undetermined "could not search runner groups for the default group"
-[ -n "$default_group" ] || die_undetermined \
-  "no runner group in $ORG is marked default; GitHub always marks exactly one and a custom group cannot become it (ADR 0003), so this listing is not what it should be: $(jq -r 'map(.name) | join(", ")' <<<"$groups")"
+default_group_count="$(jq -r 'length' <<<"$default_groups")"
+# Exactly one, asserted in BOTH directions. Taking `.[0]` of a multi-default
+# listing would skip every other default group — a stray runner in the second
+# one exits 0 with "no runner sits in the default group", which is the fail-open
+# this check exists to close. Absence and multiplicity are the same kind of
+# surprise and get the same answer.
+[ "$default_group_count" = "1" ] || die_undetermined \
+  "expected exactly one runner group in $ORG marked default, found $default_group_count; GitHub marks one and a custom group cannot become it (ADR 0003), so this listing is not what it should be: $(jq -r 'map(.name) | join(", ")' <<<"$groups")"
+default_group="$(jq -c '.[0]' <<<"$default_groups")" \
+  || die_undetermined "could not read the default runner group"
 
 default_group_id="$(group_id_of "$default_group")" || exit 2
 default_group_name="$(jq -er '.name // empty' <<<"$default_group")" \
@@ -266,11 +274,20 @@ stray_runners="$(slurp_objects <<<"$stray_ndjson")" \
 #
 # And no status filter, deliberately: an offline runner is still registered in
 # the wrong group and rejoins the pool on its own.
-strays="$(jq -c 'map(.name)' <<<"$stray_runners")" \
+# A runner object without `.name` would render as an empty string and produce an
+# unactionable report ("...: . Register with..."), so name the id instead. Same
+# reasoning as `group_id_of`'s `// empty`: never emit a placeholder that reads
+# like real data.
+strays="$(jq -c 'map(.name // "<unnamed runner id \(.id // "?")>")' <<<"$stray_runners")" \
   || die_undetermined "could not read runner names from the default group listing"
 
 if jq -e 'length > 0' <<<"$strays" >/dev/null; then
-  drift="$drift- runner(s) sit in the default group \`$default_group_name\` (id $default_group_id), which admits public repositories and enforces no labels: $(jq -r 'join(", ")' <<<"$strays"). Register with \`--runnergroup\`; provisioning lives in verjson-cli-cloud"$'\n'
+  # Derived from the group actually read, not asserted. This text is filed as a
+  # GitHub issue and an operator acts on it, so a hardcoded "admits public
+  # repositories" would be a false claim about live org config the moment the
+  # group is narrowed.
+  default_group_traits="visibility \`$(jq -r '.visibility // "unknown"' <<<"$default_group")\`, public repositories $(jq -r 'if .allows_public_repositories == true then "allowed" elif .allows_public_repositories == false then "denied" else "unknown" end' <<<"$default_group")"
+  drift="$drift- runner(s) sit in the default group \`$default_group_name\` (id $default_group_id; $default_group_traits), which no lane selects and no label discipline governs: $(jq -r 'join(", ")' <<<"$strays"). Move them into \`$GENERAL_GROUP_NAME\` now, and register future runners with \`--runnergroup\` — provisioning lives in verjson-cli-cloud"$'\n'
 fi
 
 printf '## Runner admission reconciliation (%s)\n\n' "$ORG"
