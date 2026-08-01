@@ -144,14 +144,24 @@ $ gh api /orgs/Verjson/actions/runners \
 ```
 
 `gha-docker-1` is absent from the fleet and **no runner in the organization carries a
-`docker` label**. Both of those are measured. The further claim that every live
-self-hosted runner has Docker Compose is **the owner's, and is not independently verified
-here** — runner-local software is not visible through the API, and confirming it means
-running a job on the pool. It is recorded as an owner assertion, not as a finding.
+`docker` label**. Both are measured.
 
-Either way the lane is unroutable today, so it is retired. The no-socket claim is marked
-retired rather than deleted, because it was load-bearing for earlier decisions and a
-silent deletion would strand them.
+**The lane is retired because the capability became universal, not because it went
+away.** The owner confirms (2026-08-01) that the six runners in group 4 are all
+DigitalOcean machines and all accept Docker; `hostinger` in group 3 is the exception. So
+the old claim — that the general pool has *no* Docker socket, and that Docker work must
+therefore be pinned to a dedicated runner — is not merely unroutable, it is backwards.
+Runner-local software is not visible through the API, so this is recorded as the owner's
+statement rather than as a measurement; it is directly checkable by running a job on the
+pool.
+
+The practical consequence: Docker/kind/buildx work needs no pin at all and belongs on the
+ordinary trusted lane. A `docker` label would only be justified again if some future
+runner *lacked* the capability — a label earns its place by discriminating, and one that
+matches every runner in a group carries no information.
+
+The no-socket claim is marked retired rather than deleted, because it was load-bearing for
+earlier decisions and a silent deletion would strand them.
 
 One live workflow still points at the retired lane: `.github/workflows/helm-ci.yml`
 instructs callers to pin kind smoke tests to `[self-hosted, docker]`. A caller following
@@ -275,11 +285,20 @@ which already holds the token in a context that never executes pull-request code
   code. The owner has deferred isolation to protect CI speed and wants automerge
   maximized. This is recorded as a decision on the record, with #204 as the hook, not as an
   open objection.
-- Group ids remain the identity for admission; admitted repositories travel with the id
-  across a rename. Renaming groups onto the admission axis is therefore safe with respect
-  to who is admitted — but group **names** are referenced at runner registration
-  (`--runnergroup <name>`), so a rename can break provisioning in repositories outside this
-  one.
+- **A runner group name is never hardcoded.** Group **ids** are the identity for
+  admission — admitted repositories travel with the id across a rename — and names are
+  runtime configuration. Nothing in any repository may depend on a literal group name.
+  This is the "no hardcoded `runs-on`" rule one level down: a name baked into code is a
+  fact about organization settings frozen into a file that then drifts. It is also what
+  makes renaming onto the admission axis a cheap, reversible operation rather than a
+  coordinated migration.
+
+  Verified 2026-08-01: no literal group name appears in Verjson provisioning code.
+  `verjson-cli-cloud` takes `runnerGroup` as a validated runtime option (`RUNNER_GROUP_RE`,
+  `src/cli.ts`); `verjson-cli-projects` admits repositories by **group id**
+  (`runnerGroupArgs(owner, groupId, repoId)`, `src/github.js`); the only occurrence of the
+  string `GCP` is a test fixture. The name is still supplied at registration time, so the
+  *invocation* is what a rename must be checked against — not the provisioning source.
 
 ## Open question — owner's call, deliberately not decided here
 

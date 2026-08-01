@@ -109,9 +109,15 @@ id=4 GCP     vis=all  public=true   default=false
 - Groups `6` and `7` were deleted and now 404. A reconciler that pinned group 6 by id broke
   on this (#266); resolve groups **by name**, and only for lanes that select them.
 
-Group **ids** are the identity for admission — admitted repositories travel with the id
-across a rename. Group **names** are referenced at runner registration
-(`--runnergroup <name>`), so renaming a group can break provisioning in other repositories.
+**Never hardcode a group name.** Group **ids** are the identity for admission — admitted
+repositories travel with the id across a rename — and names are runtime configuration.
+This is the "no hardcoded `runs-on`" rule one level down: a name baked into code is an
+org-settings fact frozen into a file that drifts.
+
+Verified 2026-08-01: no literal group name appears in Verjson provisioning code.
+`verjson-cli-cloud` takes `runnerGroup` as a validated runtime option; `verjson-cli-projects`
+admits by **group id**. The name is still passed at registration, so check the *invocation*
+before renaming, not the source.
 
 ## Cost and hosted availability
 
@@ -144,14 +150,24 @@ Earlier revisions of this page required Docker/kind/buildx work to pin
 `[self-hosted, docker]` on `gha-docker-1`, and stated that the general pool has **no Docker
 socket**.
 
-**Both are retired.** `gha-docker-1` is not in the fleet and no runner carries a `docker`
-label (`gh api /orgs/Verjson/actions/runners` above), so the lane is unroutable. The owner
-states that all live self-hosted runners have Docker Compose; that is **not independently
-verified** — runner-local software is not visible through the API.
+**Both are retired, and the second is backwards.** `gha-docker-1` is not in the fleet and
+no runner carries a `docker` label, so the pin is unroutable. More importantly, the owner
+confirms (2026-08-01) that **all six group-4 runners are DigitalOcean machines and all
+accept Docker**; `hostinger` in group 3 is the exception. Runner-local software is not
+API-visible, so that is the owner's statement rather than a measurement — check it by
+running a job.
+
+**So Docker/kind/buildx work needs no pin at all** and belongs on the ordinary trusted
+lane. A label earns its place by discriminating; one matching every runner in the group
+carries no information. A `docker` label would only be justified again if some future
+runner *lacked* the capability.
+
+⚠️ `.github/workflows/helm-ci.yml` still tells callers to pin `[self-hosted, docker]`.
+Following it queues forever with no check run — tracked in
+[#271](https://github.com/Verjson/.github/issues/271).
 
 Recorded as retired rather than deleted because the no-socket claim was load-bearing for
-earlier decisions. If a `docker` capability is reintroduced, it returns as a **label** on
-the capability axis, not as a group.
+earlier decisions.
 
 ## Where each check belongs
 
