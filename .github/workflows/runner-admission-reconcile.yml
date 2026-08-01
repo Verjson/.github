@@ -105,7 +105,7 @@ jobs:
             echo "::warning title=Runner admission drift::Updated existing issue #$existing"
           else
             gh issue create --repo "$GITHUB_REPOSITORY" \
-              --title 'Runner admission drift: repositories cannot be assigned the lane routing picks' \
+              --title 'Runner admission drift: admission, lane capacity, or runner placement' \
               --body "$body"
             echo "::warning title=Runner admission drift::Filed a new issue"
           fi
@@ -121,5 +121,5 @@ jobs:
             --search "in:body $MARKER" --json number --jq '.[0].number // empty')"
           if [ -n "$existing" ]; then
             gh issue close "$existing" --repo "$GITHUB_REPOSITORY" \
-              --comment 'Runner admission is reconciled again — every active repository is admitted to the group its visibility routes it to.'
+              --comment 'Runner admission is reconciled again — every active repository is admitted to the group its visibility routes it to, both lanes have online capacity, and no runner sits in the default group.'
           fi
