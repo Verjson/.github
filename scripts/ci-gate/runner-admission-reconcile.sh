@@ -232,6 +232,47 @@ has_capacity "$default_selector" "$default_runners" \
 has_capacity "$untrusted_selector" "$untrusted_runners_for_selector" \
   || drift="$drift- VERJSON_RUNNER_UNTRUSTED has no matching online runner"$'\n'
 
+# Placement (#275). The two checks above ask whether repositories are admitted
+# and whether lanes have capacity. A runner registered WITHOUT `--runnergroup`
+# is neither: it lands in GitHub's default group — `visibility: all`,
+# `allows_public_repositories: true`, no label discipline — as capacity that no
+# lane selects and no policy governs. Nothing detected that before.
+#
+# Resolved by `.default`, never by the id 1. The id is stable in practice, but
+# pinning an id is exactly what took this job down for a week (#266), and the
+# flag is what the invariant is actually about.
+default_group="$(jq -c 'map(select(.default == true)) | .[0] // empty' <<<"$groups")" \
+  || die_undetermined "could not search runner groups for the default group"
+[ -n "$default_group" ] || die_undetermined \
+  "no runner group in $ORG is marked default; GitHub always marks exactly one and a custom group cannot become it (ADR 0003), so this listing is not what it should be: $(jq -r 'map(.name) | join(", ")' <<<"$groups")"
+
+default_group_id="$(group_id_of "$default_group")" || exit 2
+default_group_name="$(jq -er '.name // empty' <<<"$default_group")" \
+  || die_undetermined "default runner group has no name: $default_group"
+
+# Fetched unconditionally, and a failure here exits 2. Treating an unreadable
+# group as empty would turn this check into a rubber stamp — the fail-open shape
+# #266 left in this file.
+stray_ndjson="$(fetch "/orgs/$ORG/actions/runner-groups/$default_group_id/runners?per_page=100" \
+  '.runners[] | {name,status}')" || exit 2
+stray_runners="$(slurp_objects <<<"$stray_ndjson")" \
+  || die_undetermined "default runner group listing for $ORG was not JSON"
+
+# Names are selected HERE rather than in the API-side `--jq`, because the test
+# stub returns fixtures verbatim and cannot exercise a server-side filter: a
+# mutation adding `select(.status == "online")` to that expression passed the
+# whole suite. Anything this check's correctness depends on has to be evaluated
+# on data the tests actually control.
+#
+# And no status filter, deliberately: an offline runner is still registered in
+# the wrong group and rejoins the pool on its own.
+strays="$(jq -c 'map(.name)' <<<"$stray_runners")" \
+  || die_undetermined "could not read runner names from the default group listing"
+
+if jq -e 'length > 0' <<<"$strays" >/dev/null; then
+  drift="$drift- runner(s) sit in the default group \`$default_group_name\` (id $default_group_id), which admits public repositories and enforces no labels: $(jq -r 'join(", ")' <<<"$strays"). Register with \`--runnergroup\`; provisioning lives in verjson-cli-cloud"$'\n'
+fi
+
 printf '## Runner admission reconciliation (%s)\n\n' "$ORG"
 printf 'Checked **%d** active repositories using variable-selected default and untrusted lanes.\n\n' "$count"
 
@@ -240,4 +281,5 @@ if [ -n "$drift" ]; then
   exit 1
 fi
 
-printf 'No drift: variables are valid, every repository is admitted, and both lanes have online capacity.\n'
+printf 'No drift: variables are valid, every repository is admitted, both lanes have online capacity, and no runner sits in the default group `%s`.\n' \
+  "$default_group_name"
