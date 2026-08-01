@@ -4,6 +4,15 @@
 - **Issue:** Verjson/.github#166
 - **Category:** runner topology / reusable-workflow security posture
 - **Supersedes in part:** ADR 0003's `GCP visibility: all` and public-repository access decision
+- **Superseded in part by:** [ADR 0030](../0030-portable-reusable-runner-policy/README.md)
+  (hosted routing for Verjson public validation) and
+  [ADR 0041](../0041-shared-admission-hosted-and-self-hosted/README.md) (decision 4).
+  **Three decisions below are no longer in force — do not read them as current org state:**
+  decision 1's three-tier classification (the isolated group is deleted and returns 404, and
+  group 4 is not `selected`); decision 4's admission boundary (group 4 is `visibility: all`
+  with `allows_public_repositories: true` — public repositories *do* hold persistent-runner
+  access, by decision); and decision 6's hosted merge gate (every `Verjson` caller,
+  including the public `.github`, routes to self-hosted). Decisions 2, 3, and 5 stand.
 
 ## Context
 

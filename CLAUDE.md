@@ -59,4 +59,4 @@ non-trivial or fanned-out work autonomously:
 - [#261](https://github.com/Verjson/.github/issues/261) — Bind privileged-merge provenance to a signed workflow identity instead of ambient ruleset config (ADR 0039 residual).
 - [#263](https://github.com/Verjson/.github/issues/263) — Draft PRs always get a red `privileged_merge` check instead of a skip.
 - [#265](https://github.com/Verjson/.github/issues/265) — Org Actions secrets sit at `visibility: all`; scope them to least privilege.
-- [#270](https://github.com/Verjson/.github/issues/270) — Runner group 4 admits public repos, contrary to ADR 0028 decision 4 (live security boundary, not documentation).
+- [#281](https://github.com/Verjson/.github/issues/281) — ADR 0028 decision 6 (public merge gate on hosted) has lapsed with no superseding decision.

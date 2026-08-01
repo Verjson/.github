@@ -115,7 +115,14 @@ live organization does not implement it: public repositories currently *do* have
 the persistent pool, and no reviewed exception records that.
 
 A reader told only "no ADR records this change" could reasonably conclude the model is
-intact and just under-documented. It is not intact.
+intact and just under-documented. It was not intact.
+
+**Resolved by [ADR 0041](../0041-shared-admission-hosted-and-self-hosted/README.md):** the
+wider admission is now a deliberate decision rather than a drift. Hosted and self-hosted
+both serve public and private repositories for the foreseeable future, ADR 0028 decision 4
+is superseded, and the best-practice target it described is recorded there as an explicit
+North Star with the accepted risks stated. The paragraphs below stand as the record of how
+the discrepancy was found.
 
 **Who made the change, when, and why remain undetermined.** `/orgs/Verjson/audit-log`
 returns 404 for this token — whether because the plan does not expose it or because the
@@ -123,10 +130,9 @@ token lacks the scope is itself unresolved — so no attribution is available. I
 *reported* to have happened after 2026-07-29; that bound comes from the brief that opened
 this work, not from any measurement available here.
 
-This ADR records the discrepancy; it does not resolve it. Bringing the live group back
-into line with ADR 0028, or writing a new decision that consciously accepts the wider
-admission, is an organization-configuration change and therefore out of scope for a
-documentation PR. Tracked in #270.
+The discrepancy was resolved in favour of the live state: see ADR 0041. What remains
+recorded here is that it was found by measurement rather than by anyone noticing the
+decision had lapsed, which is the argument for the reconciler tiers below.
 
 ### Correction 3 — the Docker lane does not exist
 
@@ -215,7 +221,7 @@ billing assumption.
 
 **The terminal literal is a portability contract, not a fallback.** `vars` resolves in the
 *caller's* context, so an outside organization calling a Verjson reusable workflow has no
-`VERJSON_LANE_*` set and lands on hosted automatically — the only sane default for someone
+`VERJSON_LANE_*` set and lands on hosted automatically — the only sane landing place for someone
 with no self-hosted fleet.
 
 This distinction is the lesson of ADR 0033's failure. It treated a terminal literal as a

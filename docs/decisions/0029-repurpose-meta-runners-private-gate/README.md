@@ -52,3 +52,24 @@ labels on issue #171.
 
 Rollback removes `gate` from those two exact runner ids. Runner-group membership,
 repository allowlists, and all other labels remain unchanged.
+
+## 2026-08-01 amendment — the premises of this ADR no longer hold
+
+Recorded because this page still asserts, as current fact, an admission boundary that is
+not in force. A reader arriving here would conclude the opposite of the live state.
+
+- **"Both runners remain in GCP runner group 4, whose access is selected and public
+  repositories are denied under ADR 0028"** — group 4 is `visibility: all` with
+  `allows_public_repositories: true` and zero selected members. Public repositories are
+  *admitted*, deliberately, per
+  [ADR 0041](../0041-shared-admission-hosted-and-self-hosted/README.md), which supersedes
+  ADR 0028 decision 4.
+- **"ADR 0028 later moved `.github` and every public-target gate to fixed GitHub-hosted
+  capacity so public code cannot reach persistent runners"** — not in force. Every
+  `Verjson` caller, including the public `.github`, routes to self-hosted.
+- **`gha-meta-1` and `gha-meta-2` no longer exist.** The live fleet is six `gha-general-*`
+  runners plus `hostinger` ([ADR 0040](../0040-runner-lanes-and-admission-axes/README.md)).
+  The capacity change this ADR describes is therefore historical.
+
+The decision itself is left as written — a decided ADR is not edited to reverse it. This
+amendment marks which of its factual premises have since gone stale.
