@@ -174,9 +174,11 @@ lane. A label earns its place by discriminating; one matching every runner in th
 carries no information. A `docker` label would only be justified again if some future
 runner *lacked* the capability.
 
-⚠️ `.github/workflows/helm-ci.yml` still tells callers to pin `[self-hosted, docker]`.
-Following it queues forever with no check run — tracked in
-[#271](https://github.com/Verjson/.github/issues/271).
+`helm-ci.yml` and `setup-verjson-node`'s README used to tell callers to pin the `docker`
+label, which queued forever with no check run. Both were corrected in
+[#271](https://github.com/Verjson/.github/issues/271), and
+`runner-routing-policy.test.sh` now fails any workflow that names a label the central
+actionlint policy does not declare.
 
 Recorded as retired rather than deleted because the no-socket claim was load-bearing for
 earlier decisions.

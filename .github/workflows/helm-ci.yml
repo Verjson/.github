@@ -7,9 +7,15 @@ name: helm-ci (reusable)
 # external callers retain a portable GitHub-hosted default.
 #
 # kind-based smoke tests are intentionally NOT included: they are bespoke per
-# chart (dependency stubs, preflight wiring) and belong in the caller's own job
-# pinned to `[self-hosted, docker]` — the only runner with a Docker socket (see
-# docs/runner-routing.md).
+# chart (dependency stubs, preflight wiring) and belong in the caller's own job.
+# Route that job the way every other job is routed — through the org variables,
+# never a hardcoded pool. There is no `docker` lane: this comment used to pin
+# that label, and no runner in the fleet has carried it since the Docker lane
+# was retired, so a caller that followed the advice got a job that queued
+# forever with no check run (#182's silent-failure mode, #271).
+# ADR 0040 records the owner's statement that every live self-hosted runner has
+# Docker Compose — an assertion, not an API-visible fact, so confirm before
+# relying on it for a new chart. See docs/runner-routing.md.
 #
 # Caller (each chart repo's .github/workflows/ci.yml):
 #

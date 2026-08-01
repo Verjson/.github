@@ -1,20 +1,31 @@
-# actionlint config — declares the self-hosted runner labels this repo's
-# workflows route on, so the [runner-label] check doesn't false-positive on
-# our custom pools (actionlint only knows GitHub-hosted labels; see #80).
-# Only labels that appear in a `runs-on` here are listed — mirror of the live
-# org fleet (`gh api /orgs/Verjson/actions/runners`), kept minimal:
-#   - `gce` is omitted: it co-occurs 1:1 with `GCP` on every runner and no
+# actionlint config — declares the self-hosted runner labels that may appear in
+# a `runs-on`, so the [runner-label] check doesn't false-positive on our custom
+# pools (actionlint only knows GitHub-hosted labels; see #80).
+#
+# This is the ORGANIZATION-WIDE default policy, not this repo's own: every
+# consumer of the reusable `actionlint.yml` sparse-checks this exact file
+# (`.verjson-actionlint-policy/.github/actionlint.yaml`) unless it passes
+# `config-file`. So the list is the union of labels any Verjson workflow may
+# route on — NOT a mirror of what `.github`'s own workflows use, and not a
+# mirror of the live fleet. Deleting a label here fails every consumer still
+# routing on it; the inline `runs-on` long tail is swept in #203, and the labels
+# come off the live runners only after that (docs/runner-routing.md, "Migration
+# sequence").
+#
+#   - `gce` is omitted: it co-occurs 1:1 with `GCP` on every runner, and no
 #     workflow routes on it, so declaring it would be pure duplication.
-#   - `docker`/`manish` are omitted: real pools, but no workflow in THIS repo
-#     targets them (a repo that does declares them in its own config).
+#   - `docker`/`manish` are omitted: no Verjson workflow targets them. `docker`
+#     is also no longer a real lane at all (ADR 0040); `manish` is a real pool
+#     that a repo using it declares in its own config.
+#
 # Keep in sync with docs/runner-routing.md / ADR 0030 if routing changes.
 self-hosted-runner:
   labels:
-    - GCP   # legacy provider-specific selector during migration
+    - GCP   # legacy provider-specific selector, retired by the #203 sweep
     - general # provider-neutral persistent pool (DigitalOcean)
-    - gate  # merge-gate lane for non-.github repos (gha-gate-*)
-    - meta  # dedicated self-gate lane for this repo (gha-meta-*, ADR 0016)
-    - isolated # ephemeral one-job lane for public and untrusted Verjson work
+    - gate  # merge-gate lane; carried today by the gha-general-* runners
+    - meta  # self-gate lane (ADR 0016) — no runner carries this label today
+    - isolated # ephemeral one-job lane — the group behind it was deleted (#266)
 
 # GitHub Cloud exposes these workflow-identity properties for reusable jobs so
 # they can check out files co-located with the called workflow. actionlint 1.7.7

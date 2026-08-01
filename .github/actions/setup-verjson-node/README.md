@@ -30,7 +30,9 @@ repo has to hand-roll it. It:
 ```yaml
 jobs:
   build:
-    runs-on: [self-hosted, GCP] # or [self-hosted, docker] for Docker/kind jobs
+    # Route through the org variables rather than a hardcoded pool. There is no
+    # `docker` lane — Docker/kind work needs no pin (ADR 0040, #271).
+    runs-on: ${{ fromJSON(vars.VERJSON_RUNNER_DEFAULT || '["self-hosted","general"]') }}
     permissions:
       contents: read
       packages: read

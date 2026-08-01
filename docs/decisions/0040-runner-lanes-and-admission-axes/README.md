@@ -175,6 +175,31 @@ that guidance queues forever with no check run. It is a workflow surface and the
 of scope for this documentation change; tracked in #271, along with `.github/actionlint.yaml`,
 which still documents the deregistered `gha-gate-*`/`gha-meta-*` runners.
 
+> **2026-08-01 amendment — #271 is resolved.** The `docker` guidance is gone from
+> `helm-ci.yml`, and `.github/actionlint.yaml`'s runner attributions are corrected. Two
+> things the paragraph above did not know:
+>
+> 1. **The same advice had shipped twice.** `.github/actions/setup-verjson-node/README.md`
+>    carried it too, in a usage block written to be copied verbatim. "One live workflow" was
+>    an undercount because only workflow files were searched.
+> 2. **No label was removed, deliberately.** `.github/actionlint.yaml` is not this
+>    repository's own config: every consumer of the reusable `actionlint.yml` sparse-checks
+>    that exact file as the organization-wide policy. Pruning `GCP`, `meta` and `isolated` —
+>    which no `.github` workflow routes on — would have failed actionlint in every consumer
+>    still naming them, and #203's inline `runs-on` tail is not swept. The labels come off
+>    only in the order the Migration sequence gives.
+>
+> A regression guard now binds every self-hosted label named in a bracketed selector — in
+> workflows *and* `.github/actions/**` docs, comments included — to that policy set
+> (`scripts/ci-gate/runner-routing-policy.test.sh`, wired into `actions-ci.yml`). Its reach
+> is stated in the test: it does **not** match the YAML block-sequence spelling or a bare
+> prose mention, so this class is narrowed rather than closed.
+>
+> Evidence, measured 2026-08-01: `gh api /orgs/Verjson/actions/runners` returns six
+> `gha-general-*` runners carrying `self-hosted,Linux,X64,gce,gate,GCP,general` plus
+> `hostinger` carrying `manish` — no `docker`, no `meta`, no `isolated`, and no
+> `gha-gate-*`/`gha-meta-*`.
+
 ### The 2026-07-31 retirement — recorded here, with its rationale still missing
 
 What is **measured**: runner groups `6` and `7` both return 404, and the live fleet is six
