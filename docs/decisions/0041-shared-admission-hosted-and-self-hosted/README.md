@@ -140,26 +140,43 @@ softened:
 
   It matters because `ai-review-merge.yml:163` and `:509` place caller-controlled
   `inputs.runner_labels` **first** in the `runs-on` precedence chain, and on a
-  `pull_request` event that file is read from the PR head. Measured 2026-08-01 — the
-  remaining control, and it is not uniform:
+  `pull_request` event that file is read from the PR head.
 
-  | public repository | fork-PR approval |
-  |---|---|
-  | `.github` | `all_external_contributors` |
-  | `verjson-github-runner` | `first_time_contributors` |
-  | `verjson-browser-agent` | `first_time_contributors` |
-  | `agents` | `first_time_contributors` |
+  **The attack surface was reduced on 2026-08-01 in response to this finding.** When first
+  measured there were four public repositories, three of them at `first_time_contributors`
+  — meaning a contributor approved once could run fork-head workflow content on the six
+  hosts carrying `gate`, with no further approval. The owner narrowed it:
+  `verjson-browser-agent` and `agents` were made **private** (neither had forks, stars,
+  pages, packages, or meaningful CI usage, so nothing detached), and fork-PR approval was set
+  to `all_external_contributors` everywhere it applies. Verified after the change:
 
-  So on three of four public repositories, a contributor approved once can run fork-head
-  workflow content on the six hosts that carry `gate`, without further approval. The
-  escalation path is: persistence on a `gate` host → the merge-gate token → organization-wide
-  merge authority. There is also a shared-capacity effect ADR 0033 already noted — heavy CI
-  can starve the gate — which now includes CI triggered from outside the organization.
+  ```console
+  $ gh api /orgs/Verjson/repos --paginate \
+      --jq '"public=\([.[]|select(.archived==false and .private==false)]|length)"'
+  public=2
 
-  **This makes per-repository fork-PR approval a load-bearing security control, and it is
-  recorded here as such.** ADR 0033 kept its load-bearing organization settings in a table
-  precisely so a change to one would be visible; this ADR does the same. (ADR 0033's "public
-  repositories are exactly two" is stale — there are now four.)
+  .github                  all_external_contributors
+  verjson-github-runner    all_external_contributors
+  ```
+
+  `.github` stays public deliberately — it is consumed by other organizations Verjson works
+  with (ADR 0022).
+
+  **Residual risk, which is what remains accepted.** `all_external_contributors` requires a
+  maintainer to approve *every* fork-PR workflow run from a non-collaborator, so exposure is
+  now gated on a human approval rather than on a one-time trust decision. But an approved
+  run still executes fork-head content on the `gate` hosts, and the escalation path is
+  unchanged: persistence on a `gate` host → the merge-gate token → organization-wide merge
+  authority. Approving a fork PR on a public repository is therefore a
+  **security-relevant action**, not a routine courtesy. There is also the shared-capacity
+  effect ADR 0033 noted — heavy CI can starve the gate.
+
+  **Per-repository fork-PR approval and the count of public repositories are load-bearing
+  security controls, recorded here as such**, in a table, for the same reason ADR 0033
+  tabulated its organization settings: so that changing one is visible. Making a repository
+  public, or relaxing its approval policy, re-opens the surface above and should be treated
+  as a change to this ADR. (ADR 0033's "public repositories are exactly two" is, after this
+  change, true again — but by a different route than it meant.)
 
 [#204](https://github.com/Verjson/.github/issues/204) remains **open as the North Star
 hook**, not as a defect report. It should not be closed as "won't do"; it is the tracking
