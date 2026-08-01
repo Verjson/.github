@@ -1,4 +1,8 @@
-# actionlint deterministically lints the workflows — 2026-07-20
+---
+date: 2026-07-20
+issue: 80
+title: actionlint deterministically lints the workflows
+---
 
 Phase 1 of #43 (issue #80). Adds `.github/workflows/actionlint.yml`, which runs
 `actionlint` over `.github/workflows/**` on every workflow-touching PR — catching
