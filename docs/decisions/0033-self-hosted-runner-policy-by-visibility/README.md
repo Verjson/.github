@@ -4,6 +4,13 @@
 - **Amended:** 2026-07-29 — reconciliation gap closed by detection (#189)
 - **Issues:** Verjson/.github#189, Verjson/.github#185, Verjson/.github#192, Verjson/.github#182
 - **Supersedes:** ADR 0031 (the isolated-pool repository allowlist)
+- **Superseded in part by:** [ADR 0040](../0040-runner-lanes-and-admission-axes/README.md) —
+  the visibility-tier routing model is replaced by lanes. **Two factual premises below are
+  disproven and should not be relied on:** that GitHub-hosted minutes are unfunded and
+  `ubuntu-24.04` a guaranteed failure (public repositories run hosted at $0; private
+  stopped at a $20.00 spending limit), and that runner group 4 is `visibility: selected`
+  with 82 repositories (it is `visibility: all` with zero selected members). ADR 0040
+  quotes the queries.
 - **Refines:** ADR 0030 (routing tiers), ADR 0028 (security tiers), ADR 0026, ADR 0027, ADR 0029
 
 ## Context

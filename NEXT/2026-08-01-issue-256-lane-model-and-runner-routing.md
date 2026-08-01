@@ -20,10 +20,16 @@ a portability contract for outside callers, explicitly not a safety net — ADR 
 failure was treating a terminal literal as a fallback when it was a guaranteed failure.
 
 Three claims are corrected against live queries, each quoted so it can be re-run: hosted
-runners are **not** unfunded (public repositories run hosted at $0; private stopped at
-exactly `$20.000000000000004`, a spending limit, not an architectural impossibility); group
-4 is `visibility: all` with zero selected members rather than `selected` with 82; and no
-runner in the organization carries a `docker` label.
+runners are **not** unfunded (public repositories run hosted at $0; organization-wide paid
+Actions usage stopped at exactly $20.00, a spending limit rather than an architectural
+impossibility); group 4 is `visibility: all` with zero selected members rather than
+`selected` with 82; and no runner in the organization carries a `docker` label.
+
+The group-4 finding is more than a documentation gap: the live configuration is a
+reversion to ADR 0003's superseded state, so **ADR 0028's admission boundary — public
+repositories may not hold persistent-runner access without a reviewed exception — is not
+currently in force**. Recorded here and tracked in #270; correcting the organization
+configuration is out of scope for a documentation change.
 
 Two things are deliberately **not** claimed. The rationale for the 2026-07-31 group
 retirement is absent from the record and this ADR does not invent one — a fabricated

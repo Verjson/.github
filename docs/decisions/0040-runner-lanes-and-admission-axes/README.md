@@ -4,7 +4,7 @@
 - **Issues:** [Verjson/.github#256](https://github.com/Verjson/.github/issues/256),
   [Verjson/.github#203](https://github.com/Verjson/.github/issues/203),
   [Verjson/.github#204](https://github.com/Verjson/.github/issues/204)
-- **Supersedes:** ADR 0033's visibility-tier routing model, and corrects its funding premise
+- **Supersedes in part:** ADR 0033's visibility-tier routing model, and corrects its funding premise
 - **Extends:** ADR 0035 (variable-driven lanes), ADR 0036 (privileged merge separated from review)
 
 ## Context
@@ -69,7 +69,14 @@ discounted minutes through 07-31. Public repositories run hosted freely and at v
 Reading aggregate `netAmount` alone hides all of this, because "free" and "refused" both
 render as `$0`. Group by `netAmount > 0` when re-running this.
 
-The month=8 query returns only storage accruals so far and is not yet informative.
+The current month was checked too, and is not yet informative — one 20-minute job, free:
+
+```console
+$ gh api '/organizations/Verjson/settings/billing/usage?year=2026&month=8' \
+    | jq -r '[.usageItems[] | select(.sku == "Actions Linux")]
+             | .[] | "\(.date)\t\(.repositoryName)\tqty=\(.quantity)\tnet=\(.netAmount)"'
+2026-08-01T04:24:46Z	verjson-infra	qty=20	net=0
+```
 
 This premise is load-bearing in several decision records. It is corrected here, once,
 with the query quoted so the next reader can re-run it rather than inherit it.
@@ -90,15 +97,36 @@ $ gh api '/orgs/Verjson/actions/runner-groups/4/repositories?per_page=100' --pag
 0
 ```
 
-The group is now organization-wide, admits public repositories, and has zero selected
-members. **No ADR records this change.** Who made it, when, and why are all
-undetermined: `/orgs/Verjson/audit-log` returns 404 for this token — whether because the
-plan does not expose it or because the token lacks the scope is itself unresolved, and
-either way no attribution is available. The "after 2026-07-29" bound comes from the
-reporting that opened this work, not from a measurement.
+The group is organization-wide, admits public repositories, and has zero selected members.
 
-Stating the gap plainly is the honest record. Inventing a rationale would be worse than
-the gap, and this document holds itself to that in the retirement section below.
+**This is not merely an undocumented change — it is a reversion to a configuration that
+was deliberately superseded, and it means a security boundary is currently not in
+force.** The measured state is exactly what ADR 0003 created. ADR 0028 superseded that in
+part and decided the opposite:
+
+> Runner-group access, not labels, is the authorization boundary. The GCP group must move
+> from all-repository/public access to selected trusted repositories. A public repository
+> cannot regain persistent-runner access without a new reviewed exception…
+> — ADR 0028, decision 4
+
+ADR 0030 supersedes ADR 0028 only on hosted routing for Verjson public validation; it does
+not touch this boundary. So ADR 0028 decision 4 stands as the governing decision, and the
+live organization does not implement it: public repositories currently *do* have access to
+the persistent pool, and no reviewed exception records that.
+
+A reader told only "no ADR records this change" could reasonably conclude the model is
+intact and just under-documented. It is not intact.
+
+**Who made the change, when, and why remain undetermined.** `/orgs/Verjson/audit-log`
+returns 404 for this token — whether because the plan does not expose it or because the
+token lacks the scope is itself unresolved — so no attribution is available. It is
+*reported* to have happened after 2026-07-29; that bound comes from the brief that opened
+this work, not from any measurement available here.
+
+This ADR records the discrepancy; it does not resolve it. Bringing the live group back
+into line with ADR 0028, or writing a new decision that consciously accepts the wider
+admission, is an organization-configuration change and therefore out of scope for a
+documentation PR. Tracked in #270.
 
 ### Correction 3 — the Docker lane does not exist
 
@@ -124,6 +152,12 @@ running a job on the pool. It is recorded as an owner assertion, not as a findin
 Either way the lane is unroutable today, so it is retired. The no-socket claim is marked
 retired rather than deleted, because it was load-bearing for earlier decisions and a
 silent deletion would strand them.
+
+One live workflow still points at the retired lane: `.github/workflows/helm-ci.yml`
+instructs callers to pin kind smoke tests to `[self-hosted, docker]`. A caller following
+that guidance queues forever with no check run. It is a workflow surface and therefore out
+of scope for this documentation change; tracked in #271, along with `.github/actionlint.yaml`,
+which still documents the deregistered `gha-gate-*`/`gha-meta-*` runners.
 
 ### The 2026-07-31 retirement — recorded here, with its rationale still missing
 

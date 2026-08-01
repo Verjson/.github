@@ -66,8 +66,13 @@ its own attacker gets to choose.
 ```console
 $ gh api /orgs/Verjson/actions/runners \
     --jq '.runners[] | "\(.name)\t\(.status)\t\([.labels[].name] | join(","))"'
-gha-general-1..6   online   self-hosted,Linux,X64,gce,gate,GCP,general
-hostinger          online   self-hosted,Linux,X64,manish
+gha-general-1	online	self-hosted,Linux,X64,gce,gate,GCP,general
+gha-general-2	online	self-hosted,Linux,X64,gce,gate,GCP,general
+gha-general-3	online	self-hosted,Linux,X64,gce,gate,GCP,general
+gha-general-4	online	self-hosted,Linux,X64,gce,gate,GCP,general
+gha-general-5	online	self-hosted,Linux,X64,gce,gate,GCP,general
+gha-general-6	online	self-hosted,Linux,X64,gce,gate,GCP,general
+hostinger	online	self-hosted,Linux,X64,manish
 ```
 
 ⚠️ **`gce` and `GCP` on those six runners are wrong, not merely legacy.** They are
@@ -89,13 +94,18 @@ id=3 manish  vis=all  public=false  default=false
 id=4 GCP     vis=all  public=true   default=false
 ```
 
-- **Group 4 is organization-wide with zero selected members.** It was widened out of band
-  and **no ADR records who or why**; `/orgs/Verjson/audit-log` returns 404 for this token,
-  so it cannot be attributed after the fact.
-- **Group 1 is `default: true` and GitHub will not let a custom group be default.** A newly
-  registered runner therefore lands in a public-accessible group with no label discipline
-  unless `--runnergroup` is passed at registration time. Verify placement after registering
-  any runner.
+- 🔴 **Group 4 is organization-wide with zero selected members, and that means ADR 0028's
+  admission boundary is not currently in force.** ADR 0028 decision 4 requires this group to
+  move to "selected trusted repositories" and says a public repository "cannot regain
+  persistent-runner access without a new reviewed exception." The live configuration is a
+  reversion to ADR 0003's superseded state. Who changed it and why is undetermined —
+  `/orgs/Verjson/audit-log` returns 404 for this token. Tracked in
+  [#270](https://github.com/Verjson/.github/issues/270); do not read this as merely
+  undocumented.
+- **Group 1 is `default: true`, and per ADR 0003 a custom group cannot be made default.** A
+  newly registered runner therefore lands in a public-accessible group with no label
+  discipline unless `--runnergroup` is passed at registration time. Verify placement after
+  registering any runner.
 - Groups `6` and `7` were deleted and now 404. A reconciler that pinned group 6 by id broke
   on this (#266); resolve groups **by name**, and only for lanes that select them.
 
@@ -106,7 +116,8 @@ across a rename. Group **names** are referenced at runner registration
 ## Cost and hosted availability
 
 The long-standing claim that hosted runners are "unfunded" for this organization and that
-`ubuntu-24.04` is "a guaranteed failure" is **false**. Corrected in ADR 0040:
+`ubuntu-24.04` is "a guaranteed failure" is **false for public repositories and misleading
+for private ones**. Corrected in ADR 0040:
 
 ```console
 $ gh api '/organizations/Verjson/settings/billing/usage?year=2026&month=7' | jq '
