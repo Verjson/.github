@@ -247,6 +247,38 @@ audit_line="$(grep -nF 'run: bash scripts/release-tooling-audit.sh' "$actions_ci
   && pass "actions-ci provisions pinned Node 24 before auditing release tooling" \
   || fail "actions-ci does not provision pinned Node 24 before auditing release tooling"
 
+# --- the ONE deliberate @main exception (ADR 0042) ---------------------------
+# Everything above exists to force immutable full SHAs. The privileged-merge
+# thin caller is the single sanctioned exception, and it is asserted here rather
+# than left as a comment so that a future "pin everything" sweep trips this test
+# instead of silently breaking merge authority.
+#
+# Why it is an exception: the canonical privileged-merge workflow already anchors
+# trust to Verjson/.github@main AT RUNTIME. A SHA-pinned caller would let a
+# repository admin freeze an older gate while the trust anchor moved on — the
+# exact divergence the reusable split removes. Pinning here would be less safe,
+# not more.
+caller_gen="$root/scripts/gen-privileged-merge-caller.sh"
+if [ -f "$caller_gen" ]; then
+  generated="$(bash "$caller_gen" '["ubuntu-24.04"]' 2>/dev/null)"
+  caller_ref="$(printf '%s\n' "$generated" \
+    | sed -n 's/^[[:space:]]*uses:[[:space:]]*\(Verjson\/\.github\/\.github\/workflows\/ai-privileged-merge\.yml@.*\)$/\1/p')"
+
+  [ "$caller_ref" = "Verjson/.github/.github/workflows/ai-privileged-merge.yml@main" ] \
+    && pass "privileged-merge caller pins @main (sanctioned ADR 0042 exception)" \
+    || fail "privileged-merge caller ref changed: '$caller_ref' — if this was pinned to a SHA, read ADR 0042 before 'fixing' it"
+
+  printf '%s\n' "$caller_ref" | grep -qE '@[0-9a-f]{40}$' \
+    && fail "privileged-merge caller was SHA-pinned; that lets an admin freeze an older gate (ADR 0042)" \
+    || pass "privileged-merge caller is deliberately not SHA-pinned"
+
+  [ -f "$root/docs/decisions/0042-privileged-merge-reusable-split/README.md" ] \
+    && pass "the @main exception is backed by a decision record" \
+    || fail "ADR 0042 is missing — an unexplained @main is indistinguishable from an unpinned mistake"
+else
+  fail "scripts/gen-privileged-merge-caller.sh is missing; the caller would be hand-written"
+fi
+
 if [ "$fails" -eq 0 ]; then
   echo "All tests passed."
   exit 0
