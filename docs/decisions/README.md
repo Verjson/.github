@@ -11,6 +11,7 @@ Reverse-chronological index of org-level decisions.
 <!-- BEGIN ADR INDEX -->
 | # | Date | Decision |
 |---|------|----------|
+| [0043](0043-privileged-merge-verifies-its-own-revision/README.md) | 2026-08-01 | Privileged merge verifies which revision of itself is executing |
 | [0042](0042-privileged-merge-reusable-split/README.md) | 2026-08-01 | Privileged merge becomes a reusable workflow with a two-sided name contract |
 | [0041](0041-shared-admission-hosted-and-self-hosted/README.md) | 2026-08-01 | Both hosted and self-hosted serve both public and private repositories |
 | [0040](0040-runner-lanes-and-admission-axes/README.md) | 2026-08-01 | Lanes name the work; groups enforce admission |
