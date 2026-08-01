@@ -26,14 +26,26 @@ other guard could pass while this workflow was itself executing from a fork.
 ## Decision
 
 The privileged merge resolves the revision of **itself** that is executing and requires it
-to be on `Verjson/.github@main`, before it does anything with the admin token.
+to be on `Verjson/.github@main`, before any write and before the merge. (Two read-only
+`gh api` calls establishing the trust anchor precede it; nothing that changes state does.)
 
 The revision comes from `job.workflow_sha` / `job.workflow_repository` — the workflow
 identity of the job's *defining* workflow, which is what a reusable call carries — falling
-back to `github.workflow_sha` for `.github`'s own `pull_request_target` run, where the job
-is not reusable-defined. Neither spelling is trusted to be present: an absent or
-non-40-hex value is a hard failure naming that cause, not a `set -u` abort somewhere
-downstream.
+back to `github.workflow_sha` and `GITHUB_REPOSITORY` for `.github`'s own
+`pull_request_target` run, where the job is not reusable-defined.
+
+**Those two must be declared on the step, not on the job.** The `job` context is
+unavailable in a job-level `env:` (allowed there: `github`, `inputs`, `matrix`, `needs`,
+`secrets`, `strategy`, `vars`). Placed at job level they resolve **empty**, the fallbacks
+then describe the *caller* rather than this file, and the result is the worst available
+outcome: every consumer fails the identity check while `.github`'s own run stays green,
+because there `GITHUB_REPOSITORY` happens to match. This shipped that way and was caught by
+actionlint in review, not by the unit tests — which inject the variables directly and so
+cannot see the wiring at all. Recorded here because it is invisible from the shell script
+and silent in exactly the direction that looks like success.
+
+Neither spelling is trusted to be present: an absent or non-40-hex value is a hard failure
+naming that cause, not a `set -u` abort somewhere downstream.
 
 Acceptance is **reachability from `main`**, not equality:
 
@@ -63,8 +75,17 @@ it is accepted. Distinguishing a deliberate stale pin from the benign advance-mi
 race needs dispatch-time state this job does not have, so the two are indistinguishable
 here and the run emits a `::warning::` naming both readings rather than choosing one.
 
-What is now closed is the larger half: a workflow executing from a **fork**, a side branch,
-a rewritten history, or any revision never on `main` cannot reach the admin token.
+What is now closed is narrower than "a fork cannot reach the token", and the distinction
+matters. `ORG_ADMIN_TOKEN` is supplied **by the caller** through `workflow_call.secrets`, so
+a consumer admin who points `uses:` at a fork of this file *with the check deleted* reaches
+the token exactly as before. A workflow can only bind its own behaviour.
+
+What this closes is **replay of a genuine revision**: an unmodified copy of this workflow —
+which is what a caller pinning `Verjson/.github` gets — refuses to act when it is running
+from a side branch, a rewritten history, or any revision never on `main`. The
+fork-with-the-check-removed path is a *secret distribution* problem, not a workflow-content
+one, and its residual is [#265](https://github.com/Verjson/.github/issues/265): the org
+Actions secrets sit at `visibility: all`.
 
 The residual is bounded by how far `main` can be behind itself, and is visible in the run
 log every time it occurs. Narrowing it further — for example by binding the caller's

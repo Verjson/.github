@@ -87,22 +87,32 @@ jobs:
       TARGET_REPO: ${{ github.repository }}
       TARGET_OWNER: ${{ github.repository_owner }}
       GH_TOKEN: ${{ secrets.ORG_ADMIN_TOKEN }}
-      # The SHA of the workflow file defining THIS job — i.e. of this file as it
-      # is actually executing, whatever ref the caller pinned. ADR 0042 requires
-      # callers to pin `@main` and nothing downstream enforced it (#278): the
-      # caller file lives in the consumer's repository, and the existing anchor
-      # pins the GATE's revision, not this workflow's own.
-      EXECUTING_WORKFLOW_SHA: ${{ job.workflow_sha }}
-      EXECUTING_WORKFLOW_REPOSITORY: ${{ job.workflow_repository }}
-      # The job-context workflow identity is populated for a job defined by a
-      # REUSABLE workflow. On `.github`'s own pull_request_target run this job is
-      # not reusable-defined, so it falls back to the run's own workflow SHA —
-      # which for pull_request_target is the base commit, i.e. this file as it
-      # actually executed. Both spellings are checked; neither is trusted to be
-      # present on its own.
+      # The job-context workflow identity is NOT set here: `job` is unavailable
+      # in a job-level `env:` (allowed there: github, inputs, matrix, needs,
+      # secrets, strategy, vars). It lives on the step below instead. Getting
+      # this wrong is silent in the worst way — the values resolve empty, the
+      # fallbacks then describe the CALLER rather than this file, and every
+      # consumer fails the identity check while `.github`'s own run stays green.
+      #
+      # This fallback is safe at job level and is only meaningful for `.github`'s
+      # own pull_request_target run, where this job is not reusable-defined: for
+      # that event `github.workflow_sha` is the base commit, i.e. this file as it
+      # actually executed.
       SELF_WORKFLOW_SHA: ${{ github.workflow_sha }}
     steps:
       - name: Privileged merge from trusted metadata only
+        env:
+          # The SHA and repository of the workflow file DEFINING this job — i.e.
+          # of this file as it is actually executing, whatever ref the caller
+          # pinned. ADR 0042 requires callers to pin `@main` and nothing
+          # downstream enforced it (#278): the caller file lives in the
+          # consumer's repository, and the existing anchor pins the GATE's
+          # revision, not this workflow's own.
+          #
+          # Step-level because the `job` context is only available here — same
+          # placement as actionlint.yml and node-release.yml.
+          EXECUTING_WORKFLOW_SHA: ${{ job.workflow_sha }}
+          EXECUTING_WORKFLOW_REPOSITORY: ${{ job.workflow_repository }}
         run: |
           set -euo pipefail
           if [ -z "${GH_TOKEN:-}" ]; then
@@ -167,9 +177,24 @@ jobs:
             # can reach the executing commit, i.e. it is genuinely on main.
             # `behind` or `diverged` means it is not — a fork, a side branch, or
             # a rewritten history — and that is the case this check exists for.
-            comparison="$(gh api "repos/Verjson/.github/compare/$executing_workflow_sha...$trusted_workflow_sha" \
-              --jq '{status,behind_by}' 2>/dev/null)" ||
-              { echo "::error::cannot compare the executing revision against Verjson/.github@main"; exit 1; }
+            # Retried, and stderr kept. This is one API call standing between a
+            # correct pull request and a red merge check, so a transient 5xx or
+            # a secondary rate limit must not read as tampering — the same
+            # reasoning (and attempt count) as resolve_base_ref below. Swallowing
+            # stderr would then hide the only evidence of which it was.
+            comparison=""
+            compare_err=""
+            for attempt in 1 2 3; do
+              if comparison="$(gh api "repos/Verjson/.github/compare/$executing_workflow_sha...$trusted_workflow_sha" \
+                --jq '{status,behind_by}' 2>"$RUNNER_TEMP/compare-err.txt")"; then
+                break
+              fi
+              comparison=""
+              compare_err="$(head -3 "$RUNNER_TEMP/compare-err.txt" | tr '\n' ' ')"
+              [ "$attempt" -eq 3 ] || sleep 5
+            done
+            [ -n "$comparison" ] ||
+              { echo "::error::cannot compare the executing revision against Verjson/.github@main after 3 attempts: $compare_err"; exit 1; }
             status="$(jq -r '.status // empty' <<<"$comparison")"
             behind_by="$(jq -r '.behind_by // empty' <<<"$comparison")"
             case "$status:$behind_by" in

@@ -37,6 +37,33 @@ awk '
 grep -q 'ADR 0042 requires callers to pin @main' "$script" \
   || { echo "FAIL - could not extract the pin check from $wf"; exit 1; }
 
+# --- the WIRING, not just the values ----------------------------------------
+# Everything below injects EXECUTING_WORKFLOW_* directly, so none of it can see
+# where those variables come from. The first version of this change declared
+# them in the JOB-level `env:`, where the `job` context is unavailable: they
+# resolved empty, the fallbacks then described the CALLER instead of this file,
+# and every consumer would have failed the identity check while `.github`'s own
+# run stayed green. All twelve behavioural assertions passed.
+#
+# So assert the placement structurally, and note that no behavioural test in
+# this file can substitute for it.
+python3 - "$wf" <<'WIRING_PY' && pass "workflow identity is declared on the STEP, where the job context exists" \
+  || fail "EXECUTING_WORKFLOW_* is missing or declared at job level, where \`job\` resolves empty"
+import sys, yaml
+d = yaml.safe_load(open(sys.argv[1]))
+job = d["jobs"]["privileged_merge"]
+# Job-level env must NOT carry them: `job` is not an available context there.
+if any(k.startswith("EXECUTING_WORKFLOW_") for k in (job.get("env") or {})):
+    sys.exit(1)
+step = job["steps"][0]
+env = step.get("env") or {}
+want = {
+    "EXECUTING_WORKFLOW_SHA": "${{ job.workflow_sha }}",
+    "EXECUTING_WORKFLOW_REPOSITORY": "${{ job.workflow_repository }}",
+}
+sys.exit(0 if all(env.get(k) == v for k, v in want.items()) else 1)
+WIRING_PY
+
 MAIN_SHA=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 OLD_MAIN_SHA=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
 FORK_SHA=cccccccccccccccccccccccccccccccccccccccc
@@ -78,7 +105,8 @@ chmod +x "$tmp/bin/gh" "$tmp/bin/sleep"
 run_case() {
   PATH="$tmp/bin:$PATH" \
   GH_TOKEN=stub-token RUNNER_TEMP="$tmp" \
-  TARGET_REPO=Verjson/example TARGET_OWNER=Verjson GITHUB_REPOSITORY=Verjson/example \
+  TARGET_REPO="${GITHUB_REPOSITORY_OVERRIDE:-Verjson/example}" TARGET_OWNER=Verjson \
+  GITHUB_REPOSITORY="${GITHUB_REPOSITORY_OVERRIDE:-Verjson/example}" \
   PR_NUMBER=7 EXPECTED_HEAD_SHA=f7d77ea9044bc2352423d4e6eca5c63c1847201d \
   GITHUB_EVENT_NAME=pull_request_target \
   MAIN_SHA="$MAIN_SHA" \
@@ -164,12 +192,23 @@ grep -qF 'cannot determine which revision' <<<"$out" \
   && pass "an undeterminable revision fails closed with a usable message" \
   || fail "absent workflow identity did not fail closed cleanly: $out"
 
-# The `.github` pull_request_target shape: the job context is empty because the
-# job is not reusable-defined, so the run's own workflow SHA is used.
-out="$(SELF_WORKFLOW_SHA="$MAIN_SHA" EXECUTING_WORKFLOW_REPOSITORY=Verjson/.github run_case)"
+# The `.github` pull_request_target shape, modelled as it actually occurs: the
+# job is not reusable-defined, so BOTH job-context values are empty and the
+# repository falls back to GITHUB_REPOSITORY. Setting EXECUTING_WORKFLOW_REPOSITORY
+# explicitly here would test a shape production never produces — and would leave
+# the repository fallback, the branch that really runs, uncovered.
+out="$(GITHUB_REPOSITORY_OVERRIDE=Verjson/.github SELF_WORKFLOW_SHA="$MAIN_SHA" run_case)"
 grep -qF 'REACHED_PAST_PIN_CHECK' <<<"$out" \
-  && pass "a direct (non-reusable) run falls back to the run's own workflow SHA" \
+  && pass "a direct (non-reusable) run falls back to the run's own SHA and repository" \
   || fail "the direct-run fallback was rejected: $out"
+
+# ...and the same shape in a CONSUMER repository must be rejected, not accepted
+# by the same fallback. This is the case the job-level `env:` bug produced.
+out="$(GITHUB_REPOSITORY_OVERRIDE=Verjson/example SELF_WORKFLOW_SHA="$MAIN_SHA" run_case)"
+grep -qF "is executing from 'Verjson/example'" <<<"$out" \
+  && ! grep -qF 'REACHED_PAST_PIN_CHECK' <<<"$out" \
+  && pass "an empty job context in a consumer repository is rejected, not fallen back into" \
+  || fail "empty workflow identity was accepted in a consumer repository: $out"
 
 # A malformed SHA must be rejected on shape, not passed to the API.
 out="$(EXECUTING_WORKFLOW_SHA='main; rm -rf /' EXECUTING_WORKFLOW_REPOSITORY=Verjson/.github run_case)"

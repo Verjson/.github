@@ -25,6 +25,10 @@ paths:
     ignore:
       - '^property "workflow_repository" is not defined in object type \{container: \{id: string; network: string\}; services: \{string => \{id: string; network: string; ports: \{string => string\}\}\}; status: string\}$'
       - '^property "workflow_sha" is not defined in object type \{container: \{id: string; network: string\}; services: \{string => \{id: string; network: string; ports: \{string => string\}\}\}; status: string\}$'
+  .github/workflows/ai-privileged-merge.yml:
+    ignore:
+      - '^property "workflow_repository" is not defined in object type \{container: \{id: string; network: string\}; services: \{string => \{id: string; network: string; ports: \{string => string\}\}\}; status: string\}$'
+      - '^property "workflow_sha" is not defined in object type \{container: \{id: string; network: string\}; services: \{string => \{id: string; network: string; ports: \{string => string\}\}\}; status: string\}$'
   .github/workflows/node-release.yml:
     ignore:
       - '^property "workflow_repository" is not defined in object type \{container: \{id: string; network: string\}; services: \{string => \{id: string; network: string; ports: \{string => string\}\}\}; status: string\}$'
