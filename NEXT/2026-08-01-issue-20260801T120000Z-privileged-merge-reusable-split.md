@@ -1,6 +1,6 @@
 ---
 date: 2026-08-01
-issue: 276
+id: 20260801T120000Z
 title: Split privileged merge into a reusable workflow with a tested two-sided name contract
 ---
 
