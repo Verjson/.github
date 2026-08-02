@@ -55,15 +55,19 @@ the required `contract_ref` input.
 
 ## Consumer adoption
 
-A consumer needs two files, and they must pin the **same** commit. Generate
-both rather than writing them; the reasoning is in the generator's header.
+A consumer needs three files, and they must pin the **same** commit. Generate
+all of them rather than writing them; the reasoning is in the generator's header.
 
 ```bash
 ref=$(gh api repos/Verjson/.github/commits/main --jq .sha)
 scripts/gen-changelog-caller.sh workflow "$ref" > .github/workflows/changelog.yml
 scripts/gen-changelog-caller.sh renderer "$ref" > scripts/render-next.sh
-chmod +x scripts/render-next.sh
+scripts/gen-changelog-caller.sh contract-test "$ref" > scripts/changelog-contract.test.sh
+chmod +x scripts/render-next.sh scripts/changelog-contract.test.sh
 ```
+
+Re-run all three together whenever the pin moves, and commit the result — a
+partial regeneration is the divergence the generator exists to prevent.
 
 `scripts/render-next.sh` does not implement rendering. It fetches this
 repository's `scripts/changelog.py` at the pinned commit, caches it by content
@@ -76,9 +80,22 @@ Consumers must not reimplement ordering, filtering, or filename validation. Four
 independent bash renderers existed before this contract; one shipped a
 locale-collated `sort -r` defect (`verjson-authn#93`).
 
-Add a repository-local test asserting the renderer's `CONTRACT_REF` equals the
-workflow's `uses:` ref and its `contract_ref` input. Divergence there is silent:
-both files keep working while local output stops predicting CI.
+`scripts/changelog-contract.test.sh` is the pin-agreement test — the renderer's
+`CONTRACT_REF`, the workflow's `uses:` ref and its `contract_ref` input must be
+one commit. Divergence there is silent: every file keeps working while local
+output stops predicting CI.
+
+**Do not hand-write or hand-edit that test.** It is the only adopter file that
+encodes assumptions about repository *state*, and every hand-copied version so
+far asserted a pre-release tree — named fragment titles, hashed released
+entries, "no `CHANGELOG.md` yet", "released history is empty". A release
+consumes `NEXT/`, writes `CHANGELOG/<version>.md` and generates `CHANGELOG.md`,
+so each of those is false the moment the contract works as intended. Consumers
+wire the suite into `npm test`, which release workflows run before publishing,
+so the first dispatched release pushed its tag and then died in the publish job:
+orphaned tag, nothing published, `main` red thereafter (#309). The generated
+form derives every content assertion from the tree and is exercised against a
+fixture that performs a real release.
 
 ## Temporary migration compatibility
 

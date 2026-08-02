@@ -64,6 +64,41 @@ workflow-level default must stay a bare `contents: read`.
 Consumers pinned to a pre-fix revision must re-pin both the `uses:` ref and
 `contract_ref` before re-dispatching a release.
 
+## Amendment (2026-08-02) — the contract test is generated too (#309)
+
+Adoption was defined above as two generated files plus "a repository-local test
+asserting pin agreement". That last clause was the one hand-written surface left,
+and it is the only adopter file that encodes assumptions about repository
+*state*. Six repositories independently wrote a test that asserted a
+**pre-release** tree: named fragment titles greped out of the rendered log,
+released entries pinned by SHA-256, `[ ! -e CHANGELOG.md ]`, and
+`[ -z "$(render-released)" ]`.
+
+Every one of those is false the moment this contract works as intended. `release`
+consumes `NEXT/`, writes `CHANGELOG/<version>.md`, and generates `CHANGELOG.md`.
+Worse, adopters wire the suite into `npm test`, which release workflows run in
+the publish job — so the first dispatched release pushes its tag, then aborts
+before publishing, leaving an orphaned tag, nothing published, and `main` red
+thereafter. The migration could not have caught this from a pull request,
+because no consumer had yet exercised a release.
+
+`scripts/gen-changelog-caller.sh contract-test <sha>` therefore emits the test as
+a third generated file. It derives every content assertion from the tree instead
+of naming anything, guards the render block (`render-next` exits non-zero on an
+emptied `NEXT/`), asserts `CHANGELOG.md` equals `render-released` output rather
+than asserting its absence, and tolerates an adopter with no `release.yml`.
+`scripts/ci-gate/changelog-caller-contract.test.sh` builds a fixture adopter and
+requires the emitted suite to exit 0 **both before and after a real release** —
+the assertion that distinguishes this shape from the one it replaces.
+
+Two invariants that were previously only convention are now enforced by the
+generated suite, and adopters may need a cleanup commit alongside regeneration:
+a stray `.releaserc.json` (which reintroduces release-on-merge outside this
+contract) and a root `NEXT.md` still carrying `##` entries (a second, invisible
+running log) both fail it.
+
+Consumers on a hand-written contract test must regenerate rather than patch it.
+
 ## Rollback
 
 Revert the reusable workflow and tooling adoption in consumers, then revert the
