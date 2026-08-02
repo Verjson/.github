@@ -38,3 +38,13 @@ issue as `verjson-cloud-storage#28` and lists #276 as *deferred* work. That
 identity is not expressible as a plain issue number, so the fragment was given
 the issue-less UTC identity the contract reserves for exactly that case,
 releasing #276 to the change that closes it. Its text is unchanged.
+
+An adversarial review of the first draft found that run provenance alone is too
+wide. In the `workflow_call` shape the gate's jobs belong to the caller's run, so
+`runs/<id>/jobs` also returns the consumer's own jobs — confirmed against
+`Verjson/verjson-cloud-storage` run 30601253117, which returns exactly
+`ci / eligibility` and `ci / build-test`. Subtracting those dropped the
+consumer's real CI from the required set and merged on red, which is strictly
+worse than the deadlock being fixed. The exclusion is now the intersection of run
+provenance and the gate's own job vocabulary, and the suite carries red-sibling
+and pending-sibling regressions that reproduce the merge before the fix.

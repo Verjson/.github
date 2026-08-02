@@ -309,6 +309,41 @@ rc="$(run_merge "$reusable_rollup" "$prefixed_jobs")"
   && pass "merge recheck does not block on its own prefixed jobs (#276)" \
   || fail "merge recheck refused to merge because of the gate's own checks ($rc)"
 
+# --- the caller's OWN jobs come back from the same endpoint (#276) ---
+# In the workflow_call shape the gate's jobs are jobs of the CALLER's run, so
+# runs/<id>/jobs returns the consumer's CI too — verified against
+# Verjson/verjson-cloud-storage run 30601253117, which returns exactly
+# "ci / eligibility" and "ci / build-test". Provenance alone would subtract those
+# and merge on red, which is strictly worse than the deadlock this fixes.
+sibling_jobs="$(jobs_payload 'ci / eligibility' 'ci / build-test' 'gate / preflight' 'gate / gate')"
+red_sibling_rollup='[
+  {"name":"gate / preflight","status":"COMPLETED","conclusion":"SUCCESS"},
+  {"name":"gate / gate","status":"IN_PROGRESS","conclusion":null},
+  {"name":"ci / eligibility","status":"COMPLETED","conclusion":"SUCCESS"},
+  {"name":"ci / build-test","status":"COMPLETED","conclusion":"FAILURE"},
+  {"name":"unit","status":"COMPLETED","conclusion":"SUCCESS"}
+]'
+rc="$(run_wait "$red_sibling_rollup" "$sibling_jobs")"
+{ [ "$rc" = "rc=1" ] && wait_out_has 'result=failed'; } \
+  && pass "a red sibling job of the caller still fails the gate (#276)" \
+  || fail "FAIL-OPEN: the caller's own red CI was excluded from the required set ($rc)"
+
+rc="$(run_merge "$red_sibling_rollup" "$sibling_jobs")"
+{ [ "$rc" != "rc=0" ] && ! merged; } \
+  && pass "merge recheck refuses to merge on a red sibling job (#276)" \
+  || fail "FAIL-OPEN: merge recheck merged with the caller's CI red ($rc)"
+
+pending_sibling_rollup='[
+  {"name":"gate / preflight","status":"COMPLETED","conclusion":"SUCCESS"},
+  {"name":"gate / gate","status":"IN_PROGRESS","conclusion":null},
+  {"name":"ci / build-test","status":"IN_PROGRESS","conclusion":null},
+  {"name":"unit","status":"COMPLETED","conclusion":"SUCCESS"}
+]'
+rc="$(run_wait "$pending_sibling_rollup" "$sibling_jobs")"
+[ "$rc" != "rc=0" ] \
+  && pass "a pending sibling job of the caller is still waited on (#276)" \
+  || fail "FAIL-OPEN: the caller's unfinished CI was treated as green ($rc)"
+
 printf '\n'
 [ "$fails" -eq 0 ] && { echo "all self-job exclusion assertions passed"; exit 0; }
 echo "$fails assertion(s) failed"

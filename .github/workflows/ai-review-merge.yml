@@ -603,7 +603,8 @@ jobs:
           # Deliberately NOT name normalization (strip everything before "/"):
           # that keys on the CALLEE segment, so an unrelated consumer check like
           # `security / review` would silently drop out of the required set — a
-          # fail-open in someone else's repository. Provenance cannot over-match.
+          # fail-open in someone else's repository. Provenance narrows that but is
+          # not sufficient on its own — see the intersection below.
           #
           # The static list below stays as the floor and the exclusion set is
           # their UNION: jobs are created as they START, so this run cannot yet
@@ -670,7 +671,19 @@ jobs:
                      ([]; if any(.[]; .context == $status.context)
                           then . else . + [$status] end))) |
                  [.[] | select((.name // .context) as $n |
-                   ($n | IN($self_jobs[]) | not) and
+                   # Provenance alone is too wide. In the workflow_call shape the gate
+                   # jobs belong to the CALLER run, so this endpoint also returns the
+                   # consumer own jobs — ci / build-test among them. Subtracting those
+                   # would drop real CI from the required set and merge on red.
+                   # Exclude a name only where provenance AND the gate own job
+                   # vocabulary agree, so a foreign "security / review" still counts
+                   # and a sibling "ci / build-test" is never silently dropped (#276).
+                   (($n | IN($self_jobs[])) and
+                    ($n | endswith("/ preflight") or endswith("/ gate") or
+                          endswith("/ freshness") or endswith("/ classify") or
+                          endswith("/ ai-review") or endswith("/ ai-merge") or
+                          endswith("/ review") or endswith("/ dispatch-merge") or
+                          endswith("/ privileged_merge")) | not) and
                    $n != "preflight" and $n != "gate" and
                    $n != "freshness" and $n != "classify" and
                    $n != "ai-review" and $n != "ai-merge" and
@@ -1507,7 +1520,19 @@ jobs:
                    ([]; if any(.[]; .context == $status.context)
                         then . else . + [$status] end))) |
                [.[] | select((.name // .context) as $n |
-                 ($n | IN($self_jobs[]) | not) and
+                 # Provenance alone is too wide. In the workflow_call shape the gate
+                 # jobs belong to the CALLER run, so this endpoint also returns the
+                 # consumer own jobs — ci / build-test among them. Subtracting those
+                 # would drop real CI from the required set and merge on red.
+                 # Exclude a name only where provenance AND the gate own job
+                 # vocabulary agree, so a foreign "security / review" still counts
+                 # and a sibling "ci / build-test" is never silently dropped (#276).
+                 (($n | IN($self_jobs[])) and
+                  ($n | endswith("/ preflight") or endswith("/ gate") or
+                        endswith("/ freshness") or endswith("/ classify") or
+                        endswith("/ ai-review") or endswith("/ ai-merge") or
+                        endswith("/ review") or endswith("/ dispatch-merge") or
+                        endswith("/ privileged_merge")) | not) and
                  $n != "preflight" and $n != "gate" and
                  $n != "freshness" and $n != "classify" and
                  $n != "ai-review" and $n != "ai-merge" and
