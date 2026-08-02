@@ -33,9 +33,8 @@ ref="$2"
   exit 2
 }
 
-case "$mode" in
-  workflow)
-    cat <<EOF
+emit_workflow() {
+  cat <<EOF
 name: changelog
 
 on:
@@ -50,9 +49,10 @@ jobs:
     with:
       contract_ref: ${ref}
 EOF
-    ;;
-  renderer)
-    cat <<EOF
+}
+
+emit_renderer() {
+  cat <<EOF
 #!/usr/bin/env bash
 # Prints the running log from the NEXT/ changelog fragments, newest first.
 #
@@ -78,18 +78,37 @@ contract="\$cache_dir/changelog.py"
 if [ ! -f "\$contract" ]; then
   mkdir -p "\$cache_dir"
   url="https://raw.githubusercontent.com/Verjson/.github/\$CONTRACT_REF/scripts/changelog.py"
-  if ! curl -fsSL "\$url" -o "\$contract.tmp"; then
-    rm -f "\$contract.tmp"
+  # mktemp, not a fixed name: two concurrent renders share this cache directory.
+  tmp="\$(mktemp "\$cache_dir/.changelog.XXXXXX")"
+  if ! curl -fsSL "\$url" -o "\$tmp"; then
+    rm -f "\$tmp"
     echo "render-next: cannot fetch the changelog contract at \$CONTRACT_REF" >&2
     exit 1
   fi
-  mv "\$contract.tmp" "\$contract"
+  mv "\$tmp" "\$contract"
 fi
 
 exec python3 "\$contract" render-next --repo-root "\$root"
 EOF
+}
+
+# Never hand an operator a file that does not parse. The premise of generating
+# these at all is that they should not be able to receive a silent footgun.
+case "$mode" in
+  workflow)
+    out="$(emit_workflow)"
+    if command -v python3 >/dev/null 2>&1 && python3 -c 'import yaml' 2>/dev/null; then
+      printf '%s\n' "$out" | python3 -c 'import sys, yaml; yaml.safe_load(sys.stdin)' 2>/dev/null \
+        || { echo "internal error: generated workflow is not valid YAML; refusing to emit" >&2; exit 3; }
+    fi
+    ;;
+  renderer)
+    out="$(emit_renderer)"
+    printf '%s\n' "$out" | bash -n 2>/dev/null \
+      || { echo "internal error: generated renderer is not valid bash; refusing to emit" >&2; exit 3; }
     ;;
   *)
     usage
     ;;
 esac
+printf '%s\n' "$out"

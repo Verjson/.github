@@ -60,5 +60,34 @@ done
 bash "$gen" bogus "$sha" >/dev/null 2>&1 \
   && fail "generator accepted an unknown mode" || pass "generator rejects an unknown mode"
 
+# 7. The emitted renderer fails closed when the contract cannot be fetched, and
+# leaves no partial file behind for the next run to exec as if it were the
+# contract. Exercised with a stubbed curl so no network is required.
+tmproot="$(mktemp -d)"
+trap 'rm -rf "$tmproot"' EXIT
+mkdir -p "$tmproot/repo/scripts" "$tmproot/repo/NEXT" "$tmproot/bin" "$tmproot/cache"
+printf '%s\n' '#!/usr/bin/env bash' 'exit 1' > "$tmproot/bin/curl"
+chmod +x "$tmproot/bin/curl"
+printf '%s\n' "$renderer" > "$tmproot/repo/scripts/render-next.sh"
+
+set +e
+PATH="$tmproot/bin:$PATH" XDG_CACHE_HOME="$tmproot/cache" \
+  bash "$tmproot/repo/scripts/render-next.sh" >/dev/null 2>"$tmproot/err"
+rc=$?
+set -e
+
+[ "$rc" -ne 0 ] \
+  && pass "generated renderer exits non-zero when the contract cannot be fetched" \
+  || fail "generated renderer exited 0 despite a failed fetch"
+grep -q 'cannot fetch the changelog contract' "$tmproot/err" \
+  && pass "generated renderer reports why the fetch failed" \
+  || fail "generated renderer gave no fetch-failure diagnostic"
+[ -z "$(find "$tmproot/cache" -name '.changelog.*' 2>/dev/null)" ] \
+  && pass "generated renderer leaves no partial download behind" \
+  || fail "generated renderer left a partial download in the cache"
+[ ! -f "$tmproot/cache/verjson-changelog/$sha/changelog.py" ] \
+  && pass "generated renderer does not create the contract on failure" \
+  || fail "generated renderer created a contract file from a failed fetch"
+
 [ "$fails" -eq 0 ] || exit 1
 echo "All tests passed."

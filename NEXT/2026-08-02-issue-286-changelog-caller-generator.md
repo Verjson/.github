@@ -1,6 +1,6 @@
 ---
 date: 2026-08-02
-id: 20260802T003307Z
+issue: 286
 title: Generate the consumer changelog caller instead of hand-writing it
 ---
 
@@ -23,3 +23,11 @@ that adopters test their two pins for agreement — divergence is silent, since
 both files keep working while local output stops predicting CI.
 
 Tracks [#286](https://github.com/Verjson/.github/issues/286).
+
+The generator self-validates before emitting — YAML through `yaml.safe_load`,
+the renderer through `bash -n` — matching the sibling, so a broken emission
+fails at the developer's terminal rather than in a consumer's CI. The generated
+renderer downloads through `mktemp` rather than a fixed `.tmp` name, since
+concurrent renders share one cache directory, and its fetch-failure branch is
+covered with a stubbed `curl`: non-zero exit, a diagnostic, and no partial file
+left where the next run would exec it as the contract.
