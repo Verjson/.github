@@ -104,3 +104,52 @@ pull request. Do not instead widen the predicate to accept a required-workflow r
 `path` alone: without the organization-ruleset anchor, a repository-level ruleset could
 nominate an arbitrary source workflow at the same path, and the run object carries no
 source-repository identity of its own to fall back on.
+
+## Amendment — 2026-08-02: the gate identifies its own checks by provenance
+
+Refs [Verjson/.github#276](https://github.com/Verjson/.github/issues/276).
+
+Trusting the reusable-call shape for *provenance* was not enough to make it
+usable. A reusable `workflow_call` publishes the callee's checks as
+`<caller job> / <callee job>`, and both CI snapshots in `ai-review-merge.yml`
+filtered the required set by exact equality against a static list of bare job
+names. A consumer installing the gate with `uses:` therefore had the gate's own
+`ci / preflight`, `ci / gate` and `ci / dispatch-merge` counted as required
+checks: the gate waited on itself until the poll window expired and reported
+`trusted gate/checks did not become green`, a message pointing nowhere near the
+cause. Verjson never saw it because the organization ruleset installs the gate as
+a required workflow, which publishes un-prefixed names, and no repository in the
+organization used the `uses:` shape.
+
+Both snapshots now read `repos/<repo>/actions/runs/<run id>/jobs` and take the
+names GitHub actually published for this run — prefixed or not, whichever shape
+is installed. This keeps the identification of "the gate's own checks" anchored
+on run provenance, the same principle this ADR applies to merge provenance.
+
+Two properties are load-bearing and are pinned by
+`scripts/ci-gate/self-job-exclusion.test.sh`:
+
+- **Not name normalization.** Stripping everything before `/` keys on the callee
+  segment, so an unrelated consumer check named `security / review` or
+  `release / gate` would silently drop out of the required set — a fail-open in
+  someone else's repository.
+  Provenance alone does not avoid that, as an adversarial review of the first
+  draft showed: in the `workflow_call` shape the gate's jobs are jobs of the
+  CALLER's run, so `runs/<id>/jobs` also returns the consumer's own jobs.
+  Verified against `Verjson/verjson-cloud-storage` run 30601253117, which
+  returns exactly `ci / eligibility` and `ci / build-test`. Subtracting those
+  dropped the consumer's real CI from the required set and merged on red —
+  strictly worse than the deadlock. The exclusion is therefore the
+  INTERSECTION of run provenance and the gate's own job vocabulary: a name is
+  excluded only when this run produced it AND its callee segment is one of the
+  gate's job names. `security / review` survives because provenance rejects it;
+  `ci / build-test` survives because the vocabulary does.
+- **A union, not a replacement.** Jobs are created as they start, so a run cannot
+  enumerate its own not-yet-created `dispatch-merge`/`ai-merge` jobs. The static
+  list remains the floor, alongside the trusted-continuation literal.
+
+An unreadable or unparseable jobs API is inconclusive: the exclusion set stays at
+the static floor and the step warns. Failing to derive names never widens what is
+excluded, so the worst case is the pre-existing behaviour, never a fail-open.
+  That property holds for the *derivation* failing. It did not hold for the
+  derivation succeeding, which is the case the intersection above fixes.

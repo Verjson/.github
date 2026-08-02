@@ -593,6 +593,41 @@ jobs:
           # prevent merging, so without this line a legitimately check-free PR
           # (docs-only under a `paths:` filter) has no path forward at all.
           no_checks_remediation="PR #$PR_NUMBER reported no CI checks at all for $EXPECTED_HEAD_SHA, and no workflow runs were triggered for that commit. Absent checks are treated as NOT green (#143): either the PR's workflows never triggered (commonly a 'paths:' filter that does not match this PR's files), or they died before producing a check run. Fix the workflow trigger, or add a required check, and push again. If this PR is genuinely expected to have no CI, re-run the gate with the explicit opt-out: gh workflow run ai-review-merge.yml --repo $TARGET_REPO -f pr_number=$PR_NUMBER -f allow_absent_checks=true"
+          # The gate must not wait on its OWN checks. Which names those are
+          # depends on how the gate was installed: an org required workflow
+          # publishes bare `preflight`/`gate`, while a consumer calling this
+          # file with `uses:` (a supported ADR 0039 shape) gets the reusable
+          # prefix — `<caller job> / preflight`. Matching bare names only, the
+          # gate enumerated its own prefixed jobs as required checks and waited
+          # for itself until the window ran out (#276). Ask the Actions API what
+          # THIS run's jobs are actually called: it reports them exactly as
+          # published, prefixed or not, for whichever shape is installed.
+          #
+          # Deliberately NOT name normalization (strip everything before "/"):
+          # that keys on the CALLEE segment, so an unrelated consumer check like
+          # `security / review` would silently drop out of the required set — a
+          # fail-open in someone else's repository. Provenance narrows that but is
+          # not sufficient on its own — see the intersection below.
+          #
+          # The static list below stays as the floor and the exclusion set is
+          # their UNION: jobs are created as they START, so this run cannot yet
+          # enumerate its own downstream `dispatch-merge`/`ai-merge` jobs.
+          # An unreadable jobs API is inconclusive, never an excuse to exclude
+          # more: it leaves the set at the static floor and says so.
+          # `| strings` is load-bearing: `name` is nullable in the jobs schema
+          # and `jq -r` renders a null as the literal "null", which would
+          # exclude a consumer check that happens to be named `null`.
+          self_jobs='[]'
+          if [ -n "${GITHUB_REPOSITORY:-}" ] && [ -n "${GITHUB_RUN_ID:-}" ] &&
+             self_job_names=$(gh api --paginate \
+                "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/jobs?per_page=100" \
+                --jq '.jobs[].name | strings' 2>/dev/null) &&
+             self_jobs=$(jq -R -s -c 'split("\n") | map(select(. != ""))' <<<"$self_job_names"); then
+            echo "::notice::phase=ci-wait self_jobs=$(jq -r 'join(", ")' <<<"$self_jobs")"
+          else
+            self_jobs='[]'
+            echo "::warning::phase=ci-wait result=self-jobs-unavailable run_id=${GITHUB_RUN_ID:-<unset>} — falling back to the static gate job names; a reusable-call install may see its own '<caller> / <job>' checks treated as required (#276)."
+          fi
           for i in $(seq 1 "$max_attempts"); do
             # Reset per iteration: a probe that failed on attempt 1 must not
             # still be labelling attempt 60's genuine pending timeout as
@@ -639,6 +674,19 @@ jobs:
                      ([]; if any(.[]; .context == $status.context)
                           then . else . + [$status] end))) |
                  [.[] | select((.name // .context) as $n |
+                   # Provenance alone is too wide. In the workflow_call shape the gate
+                   # jobs belong to the CALLER run, so this endpoint also returns the
+                   # consumer own jobs — ci / build-test among them. Subtracting those
+                   # would drop real CI from the required set and merge on red.
+                   # Exclude a name only where provenance AND the gate own job
+                   # vocabulary agree, so a foreign "security / review" still counts
+                   # and a sibling "ci / build-test" is never silently dropped (#276).
+                   (($n | IN($self_jobs[])) and
+                    ($n | endswith("/ preflight") or endswith("/ gate") or
+                          endswith("/ freshness") or endswith("/ classify") or
+                          endswith("/ ai-review") or endswith("/ ai-merge") or
+                          endswith("/ review") or endswith("/ dispatch-merge") or
+                          endswith("/ privileged_merge")) | not) and
                    $n != "preflight" and $n != "gate" and
                    $n != "freshness" and $n != "classify" and
                    $n != "ai-review" and $n != "ai-merge" and
@@ -646,7 +694,7 @@ jobs:
                    $n != "privileged_merge" and
                    ($n | endswith("/ privileged_merge") | not))]
                  end
-               ' <<<"{\"checks\":$check_pages,\"statuses\":$status_pages}" 2>/dev/null) || rollup_rc=$?
+               ' --argjson self_jobs "$self_jobs" <<<"{\"checks\":$check_pages,\"statuses\":$status_pages}" 2>/dev/null) || rollup_rc=$?
             else
               rollup_rc=1
             fi
@@ -1419,6 +1467,27 @@ jobs:
             exit 1
           fi
 
+          # Re-derive this run's own job names (see the ci-wait step for why
+          # runtime provenance, and not name normalization, is the only safe
+          # source). Re-deriving rather than reusing the ci-wait snapshot also
+          # picks up jobs that were created since — they are created as they
+          # start — while the static list below stays as the floor for the ones
+          # still ahead of this step (#276).
+          # `| strings` is load-bearing: `name` is nullable in the jobs schema
+          # and `jq -r` renders a null as the literal "null", which would
+          # exclude a consumer check that happens to be named `null`.
+          self_jobs='[]'
+          if [ -n "${GITHUB_REPOSITORY:-}" ] && [ -n "${GITHUB_RUN_ID:-}" ] &&
+             self_job_names=$(gh api --paginate \
+                "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/jobs?per_page=100" \
+                --jq '.jobs[].name | strings' 2>/dev/null) &&
+             self_jobs=$(jq -R -s -c 'split("\n") | map(select(. != ""))' <<<"$self_job_names"); then
+            echo "::notice::phase=merge-recheck self_jobs=$(jq -r 'join(", ")' <<<"$self_jobs")"
+          else
+            self_jobs='[]'
+            echo "::warning::phase=merge-recheck result=self-jobs-unavailable run_id=${GITHUB_RUN_ID:-<unset>} — falling back to the static gate job names; a reusable-call install may see its own '<caller> / <job>' checks treated as required (#276)."
+          fi
+
           # One immediate, authoritative CI snapshot. There is deliberately no
           # second polling loop after model spend: pending, red, or inconclusive
           # state fails closed and a later event/re-run can attempt the new head.
@@ -1454,6 +1523,19 @@ jobs:
                    ([]; if any(.[]; .context == $status.context)
                         then . else . + [$status] end))) |
                [.[] | select((.name // .context) as $n |
+                 # Provenance alone is too wide. In the workflow_call shape the gate
+                 # jobs belong to the CALLER run, so this endpoint also returns the
+                 # consumer own jobs — ci / build-test among them. Subtracting those
+                 # would drop real CI from the required set and merge on red.
+                 # Exclude a name only where provenance AND the gate own job
+                 # vocabulary agree, so a foreign "security / review" still counts
+                 # and a sibling "ci / build-test" is never silently dropped (#276).
+                 (($n | IN($self_jobs[])) and
+                  ($n | endswith("/ preflight") or endswith("/ gate") or
+                        endswith("/ freshness") or endswith("/ classify") or
+                        endswith("/ ai-review") or endswith("/ ai-merge") or
+                        endswith("/ review") or endswith("/ dispatch-merge") or
+                        endswith("/ privileged_merge")) | not) and
                  $n != "preflight" and $n != "gate" and
                  $n != "freshness" and $n != "classify" and
                  $n != "ai-review" and $n != "ai-merge" and
@@ -1461,7 +1543,7 @@ jobs:
                  $n != "privileged_merge" and
                  ($n | endswith("/ privileged_merge") | not))]
                end
-             ' <<<"{\"checks\":$check_pages,\"statuses\":$status_pages}" 2>/dev/null) || rollup_rc=$?
+             ' --argjson self_jobs "$self_jobs" <<<"{\"checks\":$check_pages,\"statuses\":$status_pages}" 2>/dev/null) || rollup_rc=$?
           else
             rollup_rc=1
           fi
