@@ -4,9 +4,15 @@ This contract is the canonical changelog policy for Verjson repositories.
 
 ## Unreleased changes
 
-Ordinary pull requests add one independently authored Markdown fragment:
+Ordinary pull requests add one independently authored Markdown fragment,
+`NEXT/YYYY-MM-DD-issue-<identity>-<slug>.md`. The `-issue-` segment is a fixed
+literal for every fragment; only the identity after it varies with the metadata
+key:
 
-`NEXT/YYYY-MM-DD-issue-<issue-number>-<slug>.md`
+```
+NEXT/2026-07-30-issue-249-adopt-immutable-snapshots.md    # issue: 249
+NEXT/2026-07-30-issue-20260730T184500Z-tidy-fixtures.md   # id: 20260730T184500Z
+```
 
 The fragment starts with YAML-style metadata understood by
 `scripts/changelog.py`:
@@ -22,10 +28,12 @@ Describe the user-visible change and link its issue, ADR, and pull request when
 applicable.
 ```
 
-The date and issue identity in the filename must match the metadata. Work that
+The date and identity in the filename must match the metadata. Work that
 legitimately has no issue uses `id` instead of `issue`; its identity must be a
 UTC timestamp (`20260730T184500Z`) or a 6–12 character hexadecimal UUID prefix.
-There is no sequential fragment allocator. A second fragment with the same
+Only the metadata key changes — the filename keeps `-issue-`, so the inferred
+`-id-` spelling is rejected as a non-canonical name. There is no sequential
+fragment allocator. A second fragment with the same
 issue or `id`, including one in a configured legacy directory, is rejected as
 overlapping ownership and must be consolidated.
 
