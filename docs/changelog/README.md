@@ -28,6 +28,30 @@ Describe the user-visible change and link its issue, ADR, and pull request when
 applicable.
 ```
 
+An entry may also carry `refs`, a comma-separated list of issue numbers it links
+but does not own:
+
+```markdown
+---
+date: 2026-07-30
+id: 20260730T090000Z
+refs: 13
+title: Add authenticated public gateway transport
+---
+```
+
+Identity must stay unique — that is what makes fragments conflict-free — so only
+one entry per issue may carry `issue:`. Several entries can still be work on that
+issue, and because only issue-form identities render a `#n` back-link, the rest
+used to lose their release linkage silently. `refs` separates linkage from
+ownership so every one of them links the issue. It renders after the identity:
+
+```
+_Date: 2026-07-30; id:20260730t090000z; refs #13_
+```
+
+`refs` is optional and additive: a fragment without it renders exactly as before.
+
 The date and identity in the filename must match the metadata. Work that
 legitimately has no issue uses `id` instead of `issue`; its identity must be a
 UTC timestamp (`20260730T184500Z`) or a 6–12 character hexadecimal UUID prefix.
@@ -128,6 +152,28 @@ select **what** runs: an override whose bytes differ from the pinned digest is
 refused, naming the pin it failed against. So the guarantee the renderer is sold
 on — that it runs the same code CI validates with — holds regardless of the
 environment, which is what makes the override safe to offer at all (#304).
+
+## Repairing a released snapshot
+
+`CHANGELOG/<version>.md` is immutable, and `check-pr` rejects **modifying** an
+existing snapshot as well as adding one — so a malformed snapshot cannot be fixed
+through an ordinary pull request. That is deliberate for released history, but it
+also means a migration mistake (an inverted heading, or a snapshot for a release
+that was never cut) would otherwise be permanent.
+
+`check-pr` is a **pull-request** guard, not a filesystem lock. Repair is therefore
+possible, and is defined as a deliberate maintainer act rather than a normal
+change:
+
+1. confirm the snapshot does **not** describe a real published release — check for
+   a matching git tag and GitHub Release first. If one exists, the snapshot is
+   correct history and must not be touched, however unusual its shape;
+2. make the correction in a commit direct to the default branch, by a maintainer;
+3. record it in an ADR, naming the snapshot and why it was not a real release.
+
+Never repair a snapshot to make it *prettier*. Pre-contract releases legitimately
+look different from generated ones, and rewriting them fabricates history that did
+not happen — see the migration guide's step 2.
 
 ## Temporary migration compatibility
 

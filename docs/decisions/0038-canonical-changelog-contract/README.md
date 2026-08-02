@@ -124,6 +124,41 @@ The resolution logic is emitted from one function into both scripts. Two copies
 of the code deciding which implementation runs is the same drift #304 reported,
 one level down.
 
+## Amendment (2026-08-02) — linkage is separate from identity, and snapshots are repairable (#316, #317)
+
+Two gaps surfaced while auditing adopters.
+
+**Identity could not express "N entries, one issue" (#316).** Duplicate `issue:`
+identities are rejected — correctly, since unique identity is what makes fragments
+conflict-free — and only issue-form identities render a `#n` back-link. So a pull
+request landing several distinct behaviours under one tracking issue could keep
+the link on exactly one of them; the rest were silently demoted to `id:` and lost
+their release linkage, with no validation error. `Verjson/verjson-browser-agent#15`
+hit this with eight fragments on one issue, seven of which lost the link.
+
+Fragments may now carry an optional `refs:` list of issue numbers they link but do
+not own. Ownership stays unique; linkage does not have to be. `refs` is additive
+and backward compatible — a fragment without it renders byte-identically to before,
+so no consumer is forced to re-pin.
+
+**Immutability had no repair path (#317).** `check_pr` rejects *modifying* an
+existing snapshot, not merely adding one, so a malformed `CHANGELOG/<version>.md`
+was permanent by construction. That is right for real released history and wrong
+for a migration mistake — `verjson-agents` carries a snapshot for a release that
+was never cut, with fragment filenames used as headings.
+
+`check_pr` is a pull-request guard, not a filesystem lock, so a path already
+existed; it was simply undocumented, which made correctness depend on knowing the
+guard's scope. `docs/changelog/README.md` now defines snapshot repair as a
+maintainer act direct to the default branch, gated on first proving the snapshot
+does not describe a published release, and requiring an ADR record.
+
+The complementary decision is that pre-contract snapshots which *do* describe real
+releases are **accepted as-is**. `browser-agent`, `identity-contracts` and
+`oidc-claims-middleware` all have matching tags and GitHub Releases; their shape is
+a faithful record of how semantic-release cut them, and migration step 2's "never
+infer or rewrite historical attribution" governs.
+
 ## Rollback
 
 Revert the reusable workflow and tooling adoption in consumers, then revert the
