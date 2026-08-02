@@ -152,6 +152,8 @@ jobs:
         run: python3 scripts/changelog.test.py
       - name: Changelog contract — consumer caller generator (#286)
         run: bash scripts/ci-gate/changelog-caller-contract.test.sh
+      - name: Changelog contract — generated contract test survives a release (#309, #304)
+        run: bash scripts/ci-gate/changelog-contract-test.test.sh
       - name: Changelog contract — this repository's own fragments (#289)
         run: python3 scripts/changelog.py validate --repo-root .
       - name: Changelog release — the pushing job holds write authority (#295)

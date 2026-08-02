@@ -55,14 +55,15 @@ the required `contract_ref` input.
 
 ## Consumer adoption
 
-A consumer needs two files, and they must pin the **same** commit. Generate
-both rather than writing them; the reasoning is in the generator's header.
+A consumer needs three files, and they must pin the **same** commit. Generate
+them rather than writing them; the reasoning is in the generator's header.
 
 ```bash
 ref=$(gh api repos/Verjson/.github/commits/main --jq .sha)
 scripts/gen-changelog-caller.sh workflow "$ref" > .github/workflows/changelog.yml
 scripts/gen-changelog-caller.sh renderer "$ref" > scripts/render-next.sh
-chmod +x scripts/render-next.sh
+scripts/gen-changelog-caller.sh contract-test "$ref" > scripts/changelog-contract.test.sh
+chmod +x scripts/render-next.sh scripts/changelog-contract.test.sh
 ```
 
 `scripts/render-next.sh` does not implement rendering. It fetches this
@@ -76,9 +77,36 @@ Consumers must not reimplement ordering, filtering, or filename validation. Four
 independent bash renderers existed before this contract; one shipped a
 locale-collated `sort -r` defect (`verjson-authn#93`).
 
-Add a repository-local test asserting the renderer's `CONTRACT_REF` equals the
-workflow's `uses:` ref and its `contract_ref` input. Divergence there is silent:
-both files keep working while local output stops predicting CI.
+## The contract test
+
+`scripts/changelog-contract.test.sh` is generated, not adapted from another
+repository's copy. It asserts that the tree validates, that the renderer, the
+validation workflow and any release caller pin one commit, that every fragment
+on disk renders with its metadata linkage, and that `CHANGELOG.md` equals the
+contract's rendered release history.
+
+Wire it into whatever the repository already runs — `npm test`, a CI step, a
+Makefile target. Then leave it alone: regenerate it when the pin moves rather
+than editing it.
+
+Two properties are the reason it is generated rather than copied.
+
+It is **release-safe**. A release consumes every `NEXT/` fragment, makes
+`render-next` exit 1, and generates and commits `CHANGELOG.md`. A test that
+names a fragment, renders unconditionally, or asserts that no aggregate
+changelog exists is green until the first release and red permanently after —
+in one adopter that test sat in `npm test`, so the first dispatched release
+aborted after the snapshot commit and tag had already been pushed
+([#309](https://github.com/Verjson/.github/issues/309)). Nothing here names a
+fragment or a title, and every state assertion holds on both sides of a release.
+
+It **cannot drift from the renderer**. Both scripts resolve the pinned contract
+through the same emitted block, so they execute the same file by construction.
+There is no `CHANGELOG_CONTRACT_PATH` override: an environment variable that
+redirects execution to an arbitrary path reintroduces the vendored-copy drift
+this contract exists to close, and the copied test that set one had been passing
+only because the path it computed happened to equal the renderer's
+([#304](https://github.com/Verjson/.github/issues/304)).
 
 ## Temporary migration compatibility
 

@@ -64,6 +64,51 @@ workflow-level default must stay a bare `contents: read`.
 Consumers pinned to a pre-fix revision must re-pin both the `uses:` ref and
 `contract_ref` before re-dispatching a release.
 
+## Amendment (2026-08-02) — the contract test is part of the contract (#309, #304)
+
+"The canonical contract, schema, tools, and reusable workflows live in this
+repository" left the adoption *test* on the consumer side of the line. In
+practice no consumer wrote one: each copied it from whichever repository had
+migrated most recently, so defects propagated sideways across the fleet instead
+of being fixed once.
+
+Two shipped that way. The circulating shape asserted the pre-release state —
+fragment titles by name, `render-next` succeeding unconditionally, `CHANGELOG.md`
+absent, `render-released` empty — every one of which this decision's own release
+step destroys by design. It was therefore green until the first release and red
+permanently after. In `verjson-cli-cloud` it sat in `npm test`, which the release
+workflow runs before `npm publish`, so the first dispatched release aborted after
+the snapshot job had already pushed the release commit and tag
+([#309](https://github.com/Verjson/.github/issues/309), fixed downstream in
+Verjson/verjson-cli-cloud#194). Separately, the copied test set
+`CHANGELOG_CONTRACT_PATH` that the generated renderer had stopped reading; it
+stayed green only because the default it computed for itself happened to be
+byte-identical to the renderer's, so any consumer pointing it at a vendored copy,
+CI cache or offline mirror got a green test that had exercised a different
+implementation than it asked for
+([#304](https://github.com/Verjson/.github/issues/304)).
+
+`scripts/gen-changelog-caller.sh` therefore gains a third mode, `contract-test`,
+and the generated test is release-safe by construction: assertions about
+repository content are derived from the tree and name no fragment, the unreleased
+log block is skipped when a release has emptied `NEXT/`, `CHANGELOG.md` is
+asserted **equal** to the contract's rendered release history rather than absent,
+and the test cuts a real release against a throwaway fixture so the post-release
+invariants are proved rather than assumed.
+
+`CHANGELOG_CONTRACT_PATH` is **not** restored. A variable that redirects
+execution to an arbitrary file is the vendored-copy drift this decision exists to
+close; the generated test instead resolves the contract through the same emitted
+block as the renderer, so both execute the same file by construction. The
+interface parity #304 asks for is asserted by execution in
+`scripts/ci-gate/changelog-contract-test.test.sh`: the two scripts are observed
+resolving one cache directory, and the environment and argv the test hands the
+renderer are replayed against the renderer's own acceptance.
+
+Consumers now generate three files from one pin, not two. A consumer holding a
+hand-copied `changelog-contract.test.sh` should replace it wholesale rather than
+patch it.
+
 ## Rollback
 
 Revert the reusable workflow and tooling adoption in consumers, then revert the
