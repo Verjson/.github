@@ -32,3 +32,16 @@ Cost, measured against `github.com/Verjson/.github` over three runs each:
 full history 1,392,544 B / 1,995 objects / 1.13–1.37 s, versus depth-1 with
 tags 711,505 B / 521 objects / 1.06–1.13 s — 48.9% less transferred and 73.9%
 fewer objects, and the gap widens with every commit added.
+
+An adversarial review found the offline case vacuous: it asserted a pin that already
+failed with origin present, so removing the remote could not be what made it fail —
+deleting the removal line left the suite green. It now uses two fresh objects the
+origin can still serve: one must resolve while origin is reachable, an equivalent one
+must fail once it is not, checked by error text. The depth guard also compared the raw
+YAML capture to `0`, so a quoted `fetch-depth: "0"` passed it while restoring full
+history; the value is unquoted before comparison. Both mutants now fail.
+
+The review also established that the accepted-SHA set widened — fetch-by-SHA resolves
+`refs/pull` heads and fork commits that a full clone would not contain, so the guard
+still proves immutability but no longer proves repo-reachability. Recorded as ADR 0045
+rather than left implicit.

@@ -351,11 +351,29 @@ fi
 # An offline or credential-less runner cannot fetch anything. That is a fault,
 # not a verdict, and a fault must not read as a pass — the security property the
 # bound is allowed to cost is none.
+#
+# Asserting this with $rewritten_pin would prove nothing: that pin already fails
+# WITH origin present, three cases above, so deleting the remote cannot be what
+# made it fail. Use objects the origin can still serve, and pin both halves —
+# one resolves while origin is reachable, an equivalent one fails once it is not.
+git -C "$origin_repo" commit -q --allow-empty -m 'reachable only by fetching origin'
+online_pin="$(git -C "$origin_repo" rev-parse HEAD)"
+git -C "$origin_repo" commit -q --allow-empty -m 'never fetched before origin disappears'
+offline_pin="$(git -C "$origin_repo" rev-parse HEAD)"
+
+for probe in "$online_pin" "$offline_pin"; do
+  git -C "$shallow_clone" cat-file -e "$probe^{commit}" 2>/dev/null     && fail "an offline probe object is already local; the fetch path is untested"
+done
+
+walk_pin_in_shallow_clone "$online_pin" fetchable-with-origin   && pass "a pin absent locally resolves while origin is reachable"   || fail "the fetch path cannot obtain a live object at all: $graph_error"
+
 git -C "$shallow_clone" remote remove origin
-if walk_pin_in_shallow_clone "$rewritten_pin" unfetchable; then
-  fail "an unresolvable pin passed when the checkout could not fetch at all"
-else
+if walk_pin_in_shallow_clone "$offline_pin" unfetchable; then
+  fail "a pin the runner could not fetch passed validation"
+elif [[ "$graph_error" == *"cannot resolve self-reference"*"$offline_pin"* ]]; then
   pass "a checkout that cannot fetch fails closed instead of skipping the check"
+else
+  fail "unfetchable pin failed for the wrong reason: $graph_error"
 fi
 git -C "$shallow_clone" remote add origin "file://$origin_repo"
 
@@ -387,6 +405,8 @@ checkout_depth="$(awk '
     exit
   }
 ' "$actions_ci")"
+checkout_depth="${checkout_depth%\"}"; checkout_depth="${checkout_depth#\"}"
+checkout_depth="${checkout_depth%\'}"; checkout_depth="${checkout_depth#\'}"
 { [ -n "$checkout_depth" ] && [ "$checkout_depth" != 0 ]; } \
   && pass "actions-ci checks out bounded history (fetch-depth: $checkout_depth)" \
   || fail "actions-ci checks out unbounded history (fetch-depth: ${checkout_depth:-unset})"
