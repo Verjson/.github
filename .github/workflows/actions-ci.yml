@@ -161,3 +161,5 @@ jobs:
         run: bash scripts/ci-gate/changelog-caller-contract.test.sh
       - name: Changelog contract — this repository's own fragments (#289)
         run: python3 scripts/changelog.py validate --repo-root .
+      - name: Changelog release — the pushing job holds write authority (#295)
+        run: bash scripts/changelog-release-permissions.test.sh
