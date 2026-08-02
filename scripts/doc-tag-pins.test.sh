@@ -13,6 +13,11 @@ fail() { printf 'FAIL - %s\n' "$1"; fails=$((fails + 1)); }
 
 [ -f "$script" ] || { echo "FAIL - script not found: $script"; exit 1; }
 
+# pin <workflow> <ref> -> a caller line pinning that ref. Assembled at runtime on
+# purpose: a literal `<name>.yml@vX` here would be a tracked pin like any other, and
+# the self-check below scans every tracked file — fixtures must not become findings.
+pin() { printf 'uses: Verjson/.github/.github/workflows/%s.yml@%s\n' "$1" "$2"; }
+
 # fixture <name> <tag>... -> path to a committed git repo carrying $DOC (below).
 fixture() {
   local name="$1"; shift
@@ -29,7 +34,7 @@ fixture() {
   printf '%s\n' "$dir"
 }
 
-DOC='uses: Verjson/.github/.github/workflows/node-ci.yml@v2.1.0'
+DOC="$(pin node-ci v2.1.0)"
 existing="$(fixture existing v2.1.0)"
 DOC_TAG_PINS_ROOT="$existing" bash "$script" >"$tmp/existing.out" 2>&1
 rc=$?
@@ -38,7 +43,7 @@ rc=$?
   || { fail "existing-tag pin rejected (rc=$rc)"; sed 's/^/diag - /' "$tmp/existing.out"; }
 
 # The #287 regression: docs advertised `@v2.1.1` while tags stopped at `v2.1.0`.
-DOC='uses: Verjson/.github/.github/workflows/node-ci.yml@v2.1.1'
+DOC="$(pin node-ci v2.1.1)"
 stale="$(fixture stale v2.1.0)"
 DOC_TAG_PINS_ROOT="$stale" bash "$script" >"$tmp/stale.out" 2>&1
 rc=$?
@@ -49,7 +54,7 @@ rc=$?
 # Fail closed on a broken lookup. A checkout without tags (the CI default) makes
 # every pin look nonexistent; that must read as "the lookup broke", never as a
 # docs verdict — and never, on any path, as a pass.
-DOC='uses: Verjson/.github/.github/workflows/node-ci.yml@v2.1.0'
+DOC="$(pin node-ci v2.1.0)"
 tagless="$(fixture tagless)"
 DOC_TAG_PINS_ROOT="$tagless" bash "$script" >"$tmp/tagless.out" 2>&1
 rc=$?
@@ -58,7 +63,7 @@ rc=$?
   || { fail "tagless checkout did not fail closed as a lookup fault (rc=$rc)"; sed 's/^/diag - /' "$tmp/tagless.out"; }
 
 # The documented moving major alias is a real tag, so it must stay accepted.
-DOC='uses: Verjson/.github/.github/workflows/helm-ci.yml@v2'
+DOC="$(pin helm-ci v2)"
 moving="$(fixture moving v2 v2.1.0)"
 DOC_TAG_PINS_ROOT="$moving" bash "$script" >"$tmp/moving.out" 2>&1
 rc=$?
@@ -67,7 +72,7 @@ rc=$?
   || { fail "moving major alias rejected (rc=$rc)"; sed 's/^/diag - /' "$tmp/moving.out"; }
 
 # `v2.1` is a prefix of `v2.1.0`, not a tag: a substring match would pass it.
-DOC='uses: Verjson/.github/.github/workflows/helm-ci.yml@v2.1'
+DOC="$(pin helm-ci v2.1)"
 prefix="$(fixture prefix v2.1.0)"
 DOC_TAG_PINS_ROOT="$prefix" bash "$script" >"$tmp/prefix.out" 2>&1
 rc=$?
@@ -85,8 +90,7 @@ rc=$?
   || { fail "non-repository root passed (rc=$rc)"; sed 's/^/diag - /' "$tmp/notrepo.out"; }
 
 # `@main` and full-SHA refs name no tag, so they are out of scope — not failures.
-DOC='uses: Verjson/.github/.github/workflows/helm-ci.yml@main
-uses: Verjson/.github/.github/workflows/actionlint.yml@bfecdd0111582d0ddada558e6b4d0cadd9b488bd'
+DOC="$(pin helm-ci main)$(pin actionlint bfecdd0111582d0ddada558e6b4d0cadd9b488bd)"
 unpinned="$(fixture unpinned v2.1.0)"
 DOC_TAG_PINS_ROOT="$unpinned" bash "$script" >"$tmp/unpinned.out" 2>&1
 rc=$?
