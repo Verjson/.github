@@ -159,3 +159,27 @@ repo-wide release would move that pin, require another release to publish the
 move, and create a release loop. The reusable's remaining remote dependencies
 continue to require reviewed full SHAs. The correction is published as the next
 exact patch release, `v2.1.1`, after its merge.
+
+## Amendment — documented pins are checked against real tags (2026-08-02)
+
+The 2026-07-28 amendment above anticipated publishing `v2.1.1` after #164 merged.
+That release was never cut, but the documentation had already been advanced to it:
+issue #287 found six examples pinning `@v2.1.1` across `README.md`,
+`docs/reusable-workflow-versioning.md`, `docs/node-workflows.md` and the `node-ci`
+caller header while `refs/tags/v2.1.1` returned 404. The exact-pin posture this ADR
+recommends was therefore the one posture a consumer could not follow — copying the
+documented example yielded an unresolved workflow reference.
+
+Every example is corrected to `v2.1.0`, the latest existing immutable release.
+Nothing here reverses the 2026-07-28 amendment: `v2.1.1` remains a legitimate next
+patch release, and cutting it stays a human-triggered act. What changes is the
+ordering — documentation may name only a release that already exists, never one
+that is planned.
+
+`scripts/doc-tag-pins.sh` enforces that ordering. It requires every tag-shaped
+`…/workflows/<name>.yml@<ref>` pin in a tracked file to match a tag of this
+repository exactly, resolves tag truth from local git rather than the API so the
+check needs no network, and fails closed when the lookup itself is broken (an
+unreadable checkout, or one carrying no tags) rather than reporting a lookup fault
+as a documentation verdict. `actions-ci` runs it. Documentation can no longer run
+ahead of release state.

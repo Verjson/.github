@@ -7,7 +7,7 @@ longer suite can set the numeric `timeout-minutes` input:
 ```yaml
 jobs:
   ci:
-    uses: Verjson/.github/.github/workflows/node-ci.yml@v2.1.1
+    uses: Verjson/.github/.github/workflows/node-ci.yml@v2.1.0
     with:
       timeout-minutes: 45
 ```
@@ -28,7 +28,7 @@ over `cache-max-mb` are reported and cleared before setup-node's post step:
 ```yaml
 jobs:
   ci:
-    uses: Verjson/.github/.github/workflows/node-ci.yml@v2.1.1
+    uses: Verjson/.github/.github/workflows/node-ci.yml@v2.1.0
     with:
       cache: true
       cache-max-mb: 512
