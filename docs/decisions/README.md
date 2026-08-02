@@ -11,7 +11,9 @@ Reverse-chronological index of org-level decisions.
 <!-- BEGIN ADR INDEX -->
 | # | Date | Decision |
 |---|------|----------|
-| [0045](0045-baseline-repository-hygiene/README.md) | 2026-08-02 | Baseline repository hygiene: a root README that answers three questions |
+| [0046](0046-baseline-repository-hygiene/README.md) | 2026-08-02 | Baseline repository hygiene: a root README that answers three questions |
+| [0045](0045-pin-validation-fetches-by-sha/README.md) | 2026-08-02 | Pin validation fetches by SHA, so it proves immutability but not reachability |
+| [0044](0044-gate-provenance-bound-to-entry-workflow/README.md) | 2026-08-02 | Gate provenance is bound to the run's entry workflow |
 | [0043](0043-privileged-merge-verifies-its-own-revision/README.md) | 2026-08-01 | Privileged merge verifies which revision of itself is executing |
 | [0042](0042-privileged-merge-reusable-split/README.md) | 2026-08-01 | Privileged merge becomes a reusable workflow with a two-sided name contract |
 | [0041](0041-shared-admission-hosted-and-self-hosted/README.md) | 2026-08-01 | Both hosted and self-hosted serve both public and private repositories |

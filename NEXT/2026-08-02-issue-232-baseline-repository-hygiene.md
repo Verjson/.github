@@ -9,7 +9,7 @@ repository: `scripts/repo-hygiene.sh` plus the reusable workflow
 `.github/workflows/repo-hygiene.yml`. It requires the repository's root
 `README.md` to answer purpose, ownership/contact, and local validation, with the
 exact rule and its known limits recorded in
-[ADR 0045](docs/decisions/0045-baseline-repository-hygiene/README.md).
+[ADR 0046](docs/decisions/0046-baseline-repository-hygiene/README.md).
 
 The check reads the git **tree** the merge would produce, not the diff, so a pull
 request that deletes the README is a finding — a diff-based rule sees no added

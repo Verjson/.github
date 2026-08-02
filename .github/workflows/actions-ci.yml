@@ -18,7 +18,16 @@ on:
       - 'scripts/**'
       - 'docs/**'
       - 'NEXT/**'
-      - 'README.md'
+      # doc-fragment-names.sh scans every tracked *.md, and doc-tag-pins.sh every
+      # tracked file. A surface a scanner reads but the trigger omits does not fail
+      # its own PR — it fails the next unrelated one, pointing at the wrong change
+      # and the wrong author. trigger-scope.test.sh asserts these globs still cover
+      # what the scanners read, so the two cannot drift apart again (#305).
+      - '**/*.md'
+      # Redundant today — everything under CHANGELOG/ is markdown, so '**/*.md'
+      # already covers it. Kept for a future non-markdown file there, which
+      # doc-tag-pins would read and nothing else here would match.
+      - 'CHANGELOG/**'
   push:
     branches: [main]
     paths:
@@ -32,7 +41,16 @@ on:
       - 'scripts/**'
       - 'docs/**'
       - 'NEXT/**'
-      - 'README.md'
+      # doc-fragment-names.sh scans every tracked *.md, and doc-tag-pins.sh every
+      # tracked file. A surface a scanner reads but the trigger omits does not fail
+      # its own PR — it fails the next unrelated one, pointing at the wrong change
+      # and the wrong author. trigger-scope.test.sh asserts these globs still cover
+      # what the scanners read, so the two cannot drift apart again (#305).
+      - '**/*.md'
+      # Redundant today — everything under CHANGELOG/ is markdown, so '**/*.md'
+      # already covers it. Kept for a future non-markdown file there, which
+      # doc-tag-pins would read and nothing else here would match.
+      - 'CHANGELOG/**'
 
 permissions:
   contents: read
@@ -48,9 +66,14 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          # node-workflow-pins.test.sh resolves co-located action dependencies at
-          # their pinned commits, so the reviewed history must be available.
-          fetch-depth: 0
+          # Bounded history (#234). node-workflow-pins.test.sh resolves co-located
+          # action dependencies at their pinned commits, but it now fetches each
+          # pinned SHA on demand and fails closed if it cannot — so the whole
+          # graph is no longer the price of validating a pin.
+          fetch-depth: 1
+          # doc-tag-pins.sh reads `git tag`, which a bounded fetch omits by
+          # default; without this every documented pin reads as a lookup fault.
+          fetch-tags: true
       - name: actionlint — workflow and config changes trigger lint (#82)
         run: bash scripts/actionlint-trigger.test.sh
       - name: actionlint — downloaded binary checksum is fail-closed (#83)
@@ -113,12 +136,16 @@ jobs:
         run: bash scripts/ci-gate/dispatch-permission.test.sh
       - name: merge gate — org required-workflow gate provenance (#259, ADR 0039)
         run: bash scripts/ci-gate/required-workflow-provenance.test.sh
+      - name: merge gate — gate provenance is bound to the run's entry workflow (#279, ADR 0044)
+        run: bash scripts/ci-gate/entry-workflow-provenance.test.sh
       - name: Privileged merge caller contract (job key + exclusion literal)
         run: bash scripts/ci-gate/privileged-merge-caller-contract.test.sh
       - name: Privileged merge runs only from Verjson/.github@main (#278, ADR 0043)
         run: bash scripts/ci-gate/privileged-merge-pin.test.sh
       - name: merge gate — absent checks fail closed, not open (#143, ADR 0024)
         run: bash scripts/ci-gate/ci-wait-fail-closed.test.sh
+      - name: merge gate — the gate never waits on its own jobs (#276, ADR 0039)
+        run: bash scripts/ci-gate/self-job-exclusion.test.sh
       - name: merge gate — diff-size budget tier and budget-exceeded outcome (#181, ADR 0032)
         run: bash scripts/ci-gate/budget-exceeded.test.sh
       - name: pulumi-ci — credential boundary and trusted preview admission (#47, #151)
@@ -143,11 +170,19 @@ jobs:
         run: python3 scripts/changelog.test.py
       - name: Changelog contract — consumer caller generator (#286)
         run: bash scripts/ci-gate/changelog-caller-contract.test.sh
+      - name: Changelog contract resolution — pinned digest, verified override (#304)
+        run: bash scripts/ci-gate/changelog-contract-resolution.test.sh
+      - name: The documented contract pin exists and contains the generator (#308)
+        run: bash scripts/contract-pin.test.sh
       - name: Changelog contract — this repository's own fragments (#289)
         run: python3 scripts/changelog.py validate --repo-root .
       - name: Changelog release — the pushing job holds write authority (#295)
         run: bash scripts/changelog-release-permissions.test.sh
       - name: Documented tag pins resolve to real tags (#287)
         run: bash scripts/doc-tag-pins.test.sh
-      - name: Repository hygiene — README policy, exemption register, audit default (#232, ADR 0045)
+      - name: Documented fragment filenames are names the engine accepts (#305)
+        run: bash scripts/doc-fragment-names.test.sh
+      - name: CI path triggers cover what the repository-wide scanners read (#305)
+        run: bash scripts/trigger-scope.test.sh
+      - name: Repository hygiene — README policy, exemption register, audit default (#232, ADR 0046)
         run: bash scripts/repo-hygiene.test.sh

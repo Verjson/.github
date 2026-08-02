@@ -64,6 +64,101 @@ workflow-level default must stay a bare `contents: read`.
 Consumers pinned to a pre-fix revision must re-pin both the `uses:` ref and
 `contract_ref` before re-dispatching a release.
 
+## Amendment (2026-08-02) — the contract test is generated too (#309)
+
+Adoption was defined above as two generated files plus "a repository-local test
+asserting pin agreement". That last clause was the one hand-written surface left,
+and it is the only adopter file that encodes assumptions about repository
+*state*. Six repositories independently wrote a test that asserted a
+**pre-release** tree: named fragment titles greped out of the rendered log,
+released entries pinned by SHA-256, `[ ! -e CHANGELOG.md ]`, and
+`[ -z "$(render-released)" ]`.
+
+Every one of those is false the moment this contract works as intended. `release`
+consumes `NEXT/`, writes `CHANGELOG/<version>.md`, and generates `CHANGELOG.md`.
+Worse, adopters wire the suite into `npm test`, which release workflows run in
+the publish job — so the first dispatched release pushes its tag, then aborts
+before publishing, leaving an orphaned tag, nothing published, and `main` red
+thereafter. The migration could not have caught this from a pull request,
+because no consumer had yet exercised a release.
+
+`scripts/gen-changelog-caller.sh contract-test <sha>` therefore emits the test as
+a third generated file. It derives every content assertion from the tree instead
+of naming anything, guards the render block (`render-next` exits non-zero on an
+emptied `NEXT/`), asserts `CHANGELOG.md` equals `render-released` output rather
+than asserting its absence, and tolerates an adopter with no `release.yml`.
+`scripts/ci-gate/changelog-caller-contract.test.sh` builds a fixture adopter and
+requires the emitted suite to exit 0 **both before and after a real release** —
+the assertion that distinguishes this shape from the one it replaces.
+
+Two invariants that were previously only convention are now enforced by the
+generated suite, and adopters may need a cleanup commit alongside regeneration:
+a stray `.releaserc.json` (which reintroduces release-on-merge outside this
+contract) and a root `NEXT.md` still carrying `##` entries (a second, invisible
+running log) both fail it.
+
+Consumers on a hand-written contract test must regenerate rather than patch it.
+
+## Amendment (2026-08-02) — the pinned engine is verified, and the override returns (#304)
+
+The generated scripts resolved the engine by path and executed whatever they
+found. The cache key is a commit SHA, which reads as content-addressed but is
+not: any writer of that path — another tool, a restored CI cache, an interrupted
+download — was executed as the contract from then on. Demonstrated against the
+generator as it stood: a poisoned cache entry ran, exit 0, with no signal.
+
+Both generated scripts now pin the SHA-256 of `scripts/changelog.py` at the
+contract commit, and verify a cache hit, a fresh fetch, and an override against
+it. A fetch that does not match is refused and never published into the cache,
+so a bad download cannot be inherited by the next run.
+
+That check is what allows `CHANGELOG_CONTRACT_PATH` back. #304 removed it because
+an environment variable redirecting execution made "runs the same code CI
+validates with" conditional on the environment — correct given no verification
+existed. With the digest pinned, the override selects only *where* the engine is
+read from, never *what* runs, so an air-gapped or cache-restoring consumer is
+served without weakening the guarantee. This is the interface being open to
+extension and closed to modification, rather than closed to both.
+
+The resolution logic is emitted from one function into both scripts. Two copies
+of the code deciding which implementation runs is the same drift #304 reported,
+one level down.
+
+## Amendment (2026-08-02) — linkage is separate from identity, and snapshots are repairable (#316, #317)
+
+Two gaps surfaced while auditing adopters.
+
+**Identity could not express "N entries, one issue" (#316).** Duplicate `issue:`
+identities are rejected — correctly, since unique identity is what makes fragments
+conflict-free — and only issue-form identities render a `#n` back-link. So a pull
+request landing several distinct behaviours under one tracking issue could keep
+the link on exactly one of them; the rest were silently demoted to `id:` and lost
+their release linkage, with no validation error. `Verjson/verjson-browser-agent#15`
+hit this with eight fragments on one issue, seven of which lost the link.
+
+Fragments may now carry an optional `refs:` list of issue numbers they link but do
+not own. Ownership stays unique; linkage does not have to be. `refs` is additive
+and backward compatible — a fragment without it renders byte-identically to before,
+so no consumer is forced to re-pin.
+
+**Immutability had no repair path (#317).** `check_pr` rejects *modifying* an
+existing snapshot, not merely adding one, so a malformed `CHANGELOG/<version>.md`
+was permanent by construction. That is right for real released history and wrong
+for a migration mistake — `verjson-agents` carries a snapshot for a release that
+was never cut, with fragment filenames used as headings.
+
+`check_pr` is a pull-request guard, not a filesystem lock, so a path already
+existed; it was simply undocumented, which made correctness depend on knowing the
+guard's scope. `docs/changelog/README.md` now defines snapshot repair as a
+maintainer act direct to the default branch, gated on first proving the snapshot
+does not describe a published release, and requiring an ADR record.
+
+The complementary decision is that pre-contract snapshots which *do* describe real
+releases are **accepted as-is**. `browser-agent`, `identity-contracts` and
+`oidc-claims-middleware` all have matching tags and GitHub Releases; their shape is
+a faithful record of how semantic-release cut them, and migration step 2's "never
+infer or rewrite historical attribution" governs.
+
 ## Rollback
 
 Revert the reusable workflow and tooling adoption in consumers, then revert the

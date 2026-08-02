@@ -122,7 +122,7 @@ reason; AI-lane merges leave a review.
 
 [`repo-hygiene.yml`](.github/workflows/repo-hygiene.yml) checks that a repository
 carries a root `README.md` answering purpose, ownership and local validation
-([ADR 0045](docs/decisions/0045-baseline-repository-hygiene/README.md)). It is
+([ADR 0046](docs/decisions/0046-baseline-repository-hygiene/README.md)). It is
 **baseline** CI: a green hygiene check means a reader can orient themselves in the
 repository, and says nothing whatever about whether the repository's code works.
 

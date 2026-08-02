@@ -1,4 +1,4 @@
-# Repository-hygiene exemption register (Verjson/.github#232, ADR 0045).
+# Repository-hygiene exemption register (Verjson/.github#232, ADR 0046).
 #
 # The ONLY place an exemption can be granted. It lives in the central repository,
 # so adding a row is a reviewed pull request here — never a claim the audited

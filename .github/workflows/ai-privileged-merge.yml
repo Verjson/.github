@@ -234,14 +234,48 @@ jobs:
           # referenced_workflows, so it is identified by its required-workflow
           # URL plus the trusted source path, and only while
           # `required_workflow_source_trusted` holds for the PR base branch.
+          #
+          # Every shape is additionally bound to the run's ENTRY workflow (#279,
+          # ADR 0044). `referenced_workflows[]` describes the workflow FILE, not
+          # what executed: a job that merely names the gate at @main in its
+          # `uses` key, under `if: false`, still lists the reference — the
+          # resolution happens when the file is parsed, and skipping the job does
+          # not retract it. Trusting that alone let ONE crafted workflow anywhere
+          # in a consumer repository mint every signal this step asks for — name
+          # the gate it never runs, publish a job literally called `gate` that
+          # succeeds, and upload a hand-written `merge-attestation-<run_id>`
+          # artifact — and take an --admin merge with it.
+          # `.path` is the file GitHub actually started, so requiring it to be
+          # the gate path is the property `referenced_workflows` cannot express.
+          # It is a conjunct on ALL THREE matchers on purpose: a matcher that
+          # opted out would restore the hole for its own shape.
+          # The matchers are EXCLUSIVE, not additive. Where the organization
+          # ruleset mandates the gate ($required), the only honest run is the one
+          # the ruleset injected, and its `workflow_url` sits under
+          # `/actions/required_workflows/`. Offering the id and reference matchers
+          # alongside it would leave the entry binding forgeable for exactly the
+          # repositories that matter most: a write-access actor who ADDS a
+          # repo-local `.github/workflows/ai-review-merge.yml` that merely names
+          # the gate — never running it — satisfies the entry path AND the
+          # reference matcher, and takes the merge. Every Verjson repository is
+          # in that shape, and no repository currently installs the gate by
+          # reusable call, so restricting $required to its own matcher costs
+          # nothing and closes the residual there (#279, ADR 0044).
           trusted_run_def='
+            def gate_is_entry_workflow: (.path? // "") == $wfpath;
+            def injected_by_ruleset:
+              ((.workflow_url // "") | startswith($wfurl)) and
+              ((.workflow_url // "") | ltrimstr($wfurl) | test("^[0-9]+$"));
             def trusted_run:
-              (.workflow_id == $id) or
-              any(.referenced_workflows[]?;
-                (.path | startswith("Verjson/.github/.github/workflows/ai-review-merge.yml@")) and
-                .sha == $sha) or
-              ($required and (.path == $wfpath) and
-                ((.workflow_url // "") | ltrimstr($wfurl) | test("^[0-9]+$")));
+              gate_is_entry_workflow and (
+                if $required then
+                  injected_by_ruleset
+                else
+                  (.workflow_id == $id) or
+                  any(.referenced_workflows[]?;
+                    ((.path? // "") | startswith("Verjson/.github/.github/workflows/ai-review-merge.yml@")) and
+                    .sha == $sha)
+                end);
           '
 
           # The organization ruleset is the trust anchor for the required-workflow
@@ -348,6 +382,16 @@ jobs:
               ' <<<"$payload"
           }
 
+          # LOAD-BEARING SECURITY GUARD — not belt-and-braces (#279, ADR 0044).
+          # This is what keeps a FORK pull request out of the provenance surface
+          # entirely: a fork PR that adds or edits any `.github/workflows/` file
+          # cannot reach the trusted-run matchers at all, it lands here first.
+          # The residual exposure #279 documents is therefore bounded to actors
+          # who ALREADY have write access to the base branch. Relaxing this to
+          # "only the merge workflows" or "only on trusted authors" — an easy
+          # call to make once the entry-workflow binding above looks sufficient —
+          # re-opens the surface to anyone who can open a pull request. Any
+          # change here needs its own decision record.
           workflow_files_changed() {
             local files
             files="$(gh api --paginate "repos/$TARGET_REPO/pulls/$PR_NUMBER/files?per_page=100" \

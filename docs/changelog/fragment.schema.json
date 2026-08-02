@@ -4,7 +4,10 @@
   "title": "Verjson changelog fragment metadata",
   "type": "object",
   "additionalProperties": false,
-  "required": ["date", "title"],
+  "required": [
+    "date",
+    "title"
+  ],
   "properties": {
     "date": {
       "type": "string",
@@ -21,16 +24,33 @@
     "title": {
       "type": "string",
       "minLength": 1
+    },
+    "refs": {
+      "type": "string",
+      "pattern": "^#?[1-9][0-9]*(\\s*,\\s*#?[1-9][0-9]*)*$",
+      "description": "Comma-separated issue numbers this entry links but does not own. Identity must stay unique, so only one entry per issue carries `issue:`; `refs` lets the other entries for that issue keep their release back-link."
     }
   },
   "oneOf": [
     {
-      "required": ["issue"],
-      "not": {"required": ["id"]}
+      "required": [
+        "issue"
+      ],
+      "not": {
+        "required": [
+          "id"
+        ]
+      }
     },
     {
-      "required": ["id"],
-      "not": {"required": ["issue"]}
+      "required": [
+        "id"
+      ],
+      "not": {
+        "required": [
+          "issue"
+        ]
+      }
     }
   ]
 }

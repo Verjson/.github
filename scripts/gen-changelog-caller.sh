@@ -9,14 +9,23 @@
 # Usage:
 #   scripts/gen-changelog-caller.sh workflow <sha> > .github/workflows/changelog.yml
 #   scripts/gen-changelog-caller.sh renderer <sha> > scripts/render-next.sh
+#   scripts/gen-changelog-caller.sh contract-test <sha> > scripts/changelog-contract.test.sh
 #
 # Consumers pin an immutable commit (docs/changelog/README.md) rather than a
 # branch: the contract defines their release history's shape, so it must not
 # move under them between a local render and the CI run that gates the PR.
+#
+# The contract test is generated for a second reason on top of pin agreement: it
+# is the only adopter file that encodes assumptions about repository *state*, and
+# every hand-copied version so far asserted a pre-release tree — named fragment
+# titles, hashed released entries, "no CHANGELOG.md yet" — which the first real
+# release deletes. Consumers wire it into `npm test`, which release workflows run
+# before publishing, so that shape aborts the release it is supposed to protect.
+# See #309.
 set -euo pipefail
 
 usage() {
-  echo "usage: $(basename "$0") {workflow|renderer} <40-hex-commit>" >&2
+  echo "usage: $(basename "$0") {workflow|renderer|contract-test} <40-hex-commit>" >&2
   exit 2
 }
 
@@ -31,6 +40,117 @@ ref="$2"
 [[ "$ref" =~ ^[0-9a-f]{40}$ ]] || {
   echo "$(basename "$0"): ref must be a 40-character lowercase commit SHA" >&2
   exit 2
+}
+
+# The digest of the engine at the pinned commit. Resolved here, once, so every
+# generated script can verify what it is about to execute instead of trusting a
+# path. Local object first (the usual case: generating from a checkout that has
+# the ref), then the same URL the generated scripts use. No digest, no output —
+# emitting an unverifiable contract would be worse than emitting nothing.
+# Piped, never captured. `$(...)` strips trailing newlines, so hashing a captured
+# copy digests content the file does not have — every honest override would then
+# be rejected as divergent. Caught by the byte-identical-copy case in
+# changelog-contract-resolution.test.sh, which is why that case exists.
+resolve_contract_digest() {
+  local out
+  if out="$(git -C "$(dirname "$0")/.." show "$ref:scripts/changelog.py" 2>/dev/null | digest_of)" \
+    && [ -n "$out" ]; then
+    printf '%s' "$out"
+    return 0
+  fi
+  if out="$(curl -fsSL "https://raw.githubusercontent.com/Verjson/.github/$ref/scripts/changelog.py" 2>/dev/null | digest_of)" \
+    && [ -n "$out" ]; then
+    printf '%s' "$out"
+    return 0
+  fi
+  return 1
+}
+
+# sha256sum on Linux, shasum on macOS. A host with neither cannot verify, and an
+# unverified contract is not a contract.
+digest_of() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum | cut -d' ' -f1
+  elif command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 | cut -d' ' -f1
+  else
+    return 1
+  fi
+}
+
+contract_sha256="$(resolve_contract_digest)" || {
+  echo "$(basename "$0"): cannot resolve the contract digest at $ref" >&2
+  exit 1
+}
+[[ "$contract_sha256" =~ ^[0-9a-f]{64}$ ]] || {
+  echo "$(basename "$0"): resolved digest is not a sha256: $contract_sha256" >&2
+  exit 1
+}
+
+# The one place that decides which implementation runs. Emitted verbatim into
+# both the renderer and the contract test: two copies of this logic is the drift
+# #304 was filed about, one level down.
+#
+# Callers define contract_fail() and have $CONTRACT_REF and $CONTRACT_SHA256 in
+# scope; this sets $contract.
+emit_contract_resolution() {
+  cat <<'EOF'
+
+contract_digest_of() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum <"$1" | cut -d' ' -f1
+  elif command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 <"$1" | cut -d' ' -f1
+  else
+    return 1
+  fi
+}
+
+# Identity, not existence. The cache path is keyed by commit, which reads as
+# content-addressed but is not: nothing stops another tool, a restored CI cache,
+# or an interrupted write from leaving different bytes there, and they would then
+# be executed as the contract on every run.
+contract_is_pinned() {
+  [ -f "$1" ] || return 1
+  local got
+  got="$(contract_digest_of "$1")" || return 1
+  [ "$got" = "$CONTRACT_SHA256" ]
+}
+
+# CHANGELOG_CONTRACT_PATH selects WHERE the engine comes from — a vendored copy,
+# an offline mirror, a warmed CI cache — and cannot select WHAT runs, because the
+# override is held to the digest pinned at $CONTRACT_REF. So it stays useful to
+# an air-gapped or cache-restoring consumer while the guarantee the renderer is
+# sold on ("the same code CI validates with") holds unconditionally (#304).
+if [ -n "${CHANGELOG_CONTRACT_PATH:-}" ]; then
+  contract="$CHANGELOG_CONTRACT_PATH"
+  [ -e "$contract" ] \
+    || contract_fail "CHANGELOG_CONTRACT_PATH is $contract, which does not exist"
+  contract_is_pinned "$contract" \
+    || contract_fail "CHANGELOG_CONTRACT_PATH ($contract) is not the contract pinned at $CONTRACT_REF"
+else
+  cache_dir="${XDG_CACHE_HOME:-$HOME/.cache}/verjson-changelog/$CONTRACT_REF"
+  contract="$cache_dir/changelog.py"
+  if ! contract_is_pinned "$contract"; then
+    mkdir -p "$cache_dir"
+    # mktemp, not a fixed name: concurrent runs share this cache directory.
+    tmp="$(mktemp "$cache_dir/.changelog.XXXXXX")"
+    if ! curl -fsSL \
+      "https://raw.githubusercontent.com/Verjson/.github/$CONTRACT_REF/scripts/changelog.py" \
+      -o "$tmp"; then
+      rm -f "$tmp"
+      contract_fail "cannot fetch the changelog contract at $CONTRACT_REF"
+    fi
+    # Verify before publishing into the cache, so a bad fetch is never persisted
+    # for the next run to trust.
+    if ! contract_is_pinned "$tmp"; then
+      rm -f "$tmp"
+      contract_fail "fetched contract does not match the digest pinned at $CONTRACT_REF"
+    fi
+    mv "$tmp" "$contract"
+  fi
+fi
+EOF
 }
 
 emit_workflow() {
@@ -64,6 +184,7 @@ emit_renderer() {
 set -euo pipefail
 
 CONTRACT_REF="${ref}"
+CONTRACT_SHA256="${contract_sha256}"
 
 if [ "\$#" -gt 0 ]; then
   echo "render-next: unexpected argument '\$1'" >&2
@@ -71,24 +192,304 @@ if [ "\$#" -gt 0 ]; then
 fi
 
 root="\$(cd "\$(dirname "\$0")/.." && pwd)"
-cache_dir="\${XDG_CACHE_HOME:-\$HOME/.cache}/verjson-changelog/\$CONTRACT_REF"
-contract="\$cache_dir/changelog.py"
 
-# Addressed by commit, so a cached copy cannot go stale: a new pin is a new path.
-if [ ! -f "\$contract" ]; then
-  mkdir -p "\$cache_dir"
-  url="https://raw.githubusercontent.com/Verjson/.github/\$CONTRACT_REF/scripts/changelog.py"
-  # mktemp, not a fixed name: two concurrent renders share this cache directory.
-  tmp="\$(mktemp "\$cache_dir/.changelog.XXXXXX")"
-  if ! curl -fsSL "\$url" -o "\$tmp"; then
-    rm -f "\$tmp"
-    echo "render-next: cannot fetch the changelog contract at \$CONTRACT_REF" >&2
-    exit 1
-  fi
-  mv "\$tmp" "\$contract"
-fi
+contract_fail() { echo "render-next: \$1" >&2; exit 1; }
+EOF
+  emit_contract_resolution
+  cat <<EOF
 
 exec python3 "\$contract" render-next --repo-root "\$root"
+EOF
+}
+
+emit_contract_test() {
+  # The interpolated preamble is kept deliberately small: everything below it is
+  # a quoted heredoc, so the body cannot accidentally expand a generator-side
+  # variable into an adopter's test.
+  cat <<EOF
+#!/usr/bin/env bash
+# Asserts that this repository still satisfies the canonical Verjson changelog
+# contract (Verjson/.github ADR 0038) rather than a local re-implementation of it.
+#
+# Generated by Verjson/.github scripts/gen-changelog-caller.sh — do not edit by
+# hand. Regenerate it whenever the pinned contract commit moves, together with
+# .github/workflows/changelog.yml and scripts/render-next.sh.
+#
+# Every assertion here holds both BEFORE and AFTER a release. \`release\` consumes
+# NEXT/, writes CHANGELOG/<version>.md and generates the root CHANGELOG.md, so an
+# assertion phrased as "nothing has been released yet" is a time bomb: consumers
+# wire this suite into \`npm test\`, which release workflows run before publishing,
+# so it would abort the release it exists to protect. Assertions about repository
+# content are therefore derived from the tree, never named inline.
+set -euo pipefail
+
+CONTRACT_REF="${ref}"
+CONTRACT_SHA256="${contract_sha256}"
+EOF
+  cat <<'EOF'
+
+root="$(cd "$(dirname "$0")/.." && pwd)"
+renderer="$root/scripts/render-next.sh"
+validation_workflow="$root/.github/workflows/changelog.yml"
+release_workflow="$root/.github/workflows/release.yml"
+
+fail() { echo "FAIL - $1" >&2; exit 1; }
+
+contract_fail() { fail "$1"; }
+EOF
+  emit_contract_resolution
+  cat <<'EOF' 
+
+work="$(mktemp -d)"
+fixture_root="$(mktemp -d)"
+trap 'rm -rf "$work" "$fixture_root"' EXIT
+
+python3 "$contract" validate --repo-root "$root"
+echo "ok - canonical validation accepts this repository"
+
+# One pin, shared by every generated artifact: local rendering must predict the
+# CI run that gates the PR, and the release must write the shape both assumed.
+grep -q "changelog-validate.yml@$CONTRACT_REF" "$validation_workflow" \
+  || fail "$validation_workflow does not call the validation workflow at the pin"
+grep -q "contract_ref: $CONTRACT_REF" "$validation_workflow" \
+  || fail "$validation_workflow does not pass the pinned contract_ref"
+grep -q "CONTRACT_REF=\"$CONTRACT_REF\"" "$renderer" \
+  || fail "$renderer does not pin the same contract commit"
+if [ -f "$release_workflow" ]; then
+  grep -q "changelog-release.yml@$CONTRACT_REF" "$release_workflow" \
+    || fail "$release_workflow does not call the release workflow at the pin"
+fi
+echo "ok - render, validation and release automation share one immutable pin"
+
+# The regression this file exists to prevent was a hand-written local renderer
+# that kept working while silently diverging from the contract.
+grep -q 'gen-changelog-caller.sh' "$renderer" \
+  || fail "$renderer is not the generated renderer; regenerate it"
+echo "ok - the renderer delegates to the contract instead of reimplementing it"
+
+# A non-executable script fails CI with exit 126 long after the diff looks fine.
+for file in "$renderer" "$0"; do
+  [ -x "$file" ] || fail "$file is not executable"
+done
+echo "ok - contract scripts are executable"
+
+# Guarded, because render-next exits non-zero on an empty NEXT/ — which is
+# exactly the state a release leaves behind. The final fixture proves this guard
+# is still load-bearing rather than dead code.
+if rendered_next="$("$renderer" 2>/dev/null)"; then
+  ROOT="$root" RENDERED="$rendered_next" python3 - <<'PY'
+import os
+import re
+import sys
+from pathlib import Path
+
+root = Path(os.environ["ROOT"])
+rendered = os.environ["RENDERED"]
+# 0000-archive.md is special-cased by name and is not rendered in strict mode.
+skip = {"README.md", "0000-archive.md"}
+fragments = sorted(p for p in (root / "NEXT").glob("*.md") if p.name not in skip)
+if not fragments:
+    sys.exit("NEXT/ holds no renderable fragments but the renderer produced output")
+
+for path in fragments:
+    front = path.read_text(encoding="utf-8").split("---", 2)[1]
+    meta = {}
+    for line in front.splitlines():
+        key, sep, value = line.partition(":")
+        if sep:
+            meta[key.strip()] = value.strip()
+    if f"## {meta['title']}" not in rendered:
+        sys.exit(f"{path.name}: title missing from the rendered log")
+    # Identity is not decoration: only issue-form entries render a `#n`
+    # back-link, so a fragment demoted to `id` silently loses release linkage
+    # and no validation error is raised.
+    if "issue" in meta:
+        pattern = rf"^_Date: {re.escape(meta['date'])}; issue #{re.escape(meta['issue'])}_$"
+        if not re.search(pattern, rendered, re.MULTILINE):
+            sys.exit(f"{path.name}: issue back-link missing from the rendered log")
+
+# Metadata, not filename allocation, orders the log.
+dates = re.findall(r"^_Date: (\d{4}-\d{2}-\d{2});", rendered, re.MULTILINE)
+if dates != sorted(dates, reverse=True):
+    sys.exit("rendered log is not newest-first by metadata date")
+PY
+  echo "ok - every unreleased fragment renders with its metadata linkage, newest first"
+else
+  echo "ok - no unreleased fragments to render (a release consumed them)"
+fi
+
+# CHANGELOG.md is generated by `release`, never authored. Asserting it absent
+# fails the moment the contract works as intended, so assert instead that it is
+# exactly what the released snapshots render to.
+if [ -e "$root/CHANGELOG.md" ]; then
+  python3 "$contract" render-released --repo-root "$root" >"$work/released"
+  diff -q "$work/released" "$root/CHANGELOG.md" >/dev/null \
+    || fail "CHANGELOG.md was hand-edited; it must equal the rendered released snapshots"
+  echo "ok - CHANGELOG.md is generated from released snapshots, not authored"
+else
+  echo "ok - no aggregate changelog yet; nothing has been released"
+fi
+
+# A root NEXT.md may survive as a pointer, but never as a second running log:
+# entries written there are invisible to validation, rendering and release.
+if [ -e "$root/NEXT.md" ] && grep -q '^## ' "$root/NEXT.md"; then
+  fail "NEXT.md still holds log entries; NEXT/ is the only unreleased store"
+fi
+echo "ok - NEXT/ is the only unreleased store"
+
+# Releases are the only writer of released history. A stray .releaserc.json
+# silently reintroduces release-on-merge, which never consumes a fragment.
+[ ! -e "$root/.releaserc.json" ] \
+  || fail ".releaserc.json reintroduces semantic-release outside the contract"
+if [ -f "$release_workflow" ]; then
+  grep -q 'workflow_dispatch' "$release_workflow" \
+    || fail "$release_workflow is not dispatched explicitly"
+fi
+echo "ok - releases are dispatched explicitly, not derived from pushes to main"
+
+new_fixture() {
+  rm -rf "$fixture_root/case"
+  mkdir -p "$fixture_root/case/NEXT"
+}
+
+write_fragment() {
+  # write_fragment <relative-path> <date> <identity-line> <title>
+  cat >"$fixture_root/case/$1" <<FRAGMENT
+---
+date: $2
+$3
+title: $4
+---
+
+Body.
+FRAGMENT
+}
+
+init_fixture_repo() {
+  git -C "$fixture_root/case" init -q
+  git -C "$fixture_root/case" config user.name Test
+  git -C "$fixture_root/case" config user.email test@example.com
+}
+
+# The rules this repository relies on, exercised against the pinned contract so
+# that re-pinning to a revision that dropped one fails here rather than in a
+# release six weeks later.
+new_fixture
+for slug in first second; do
+  write_fragment "NEXT/2026-08-01-issue-43-$slug.md" 2026-08-01 "issue: 43" Duplicate
+done
+if python3 "$contract" validate --repo-root "$fixture_root/case" 2>"$fixture_root/error"; then
+  fail "duplicate issue identity was accepted"
+fi
+grep -q 'duplicate identity issue:43' "$fixture_root/error"
+echo "ok - duplicate issue identities are rejected"
+
+new_fixture
+write_fragment NEXT/2026-08-01-issue-43-wrong-date.md 2026-07-31 "issue: 43" "Wrong date"
+if python3 "$contract" validate --repo-root "$fixture_root/case" 2>"$fixture_root/error"; then
+  fail "mismatched filename metadata was accepted"
+fi
+grep -q 'does not match' "$fixture_root/error"
+echo "ok - filename and metadata must agree"
+
+new_fixture
+printf '# Legacy entry\n\nBody.\n' >"$fixture_root/case/NEXT/2026-08-01-legacy.md"
+if python3 "$contract" validate --repo-root "$fixture_root/case" 2>"$fixture_root/error"; then
+  fail "a pre-contract fragment name was accepted"
+fi
+grep -q 'does not follow the canonical contract' "$fixture_root/error"
+echo "ok - pre-contract fragment names are rejected"
+
+new_fixture
+write_fragment NEXT/2026-07-31-issue-99-zzz.md 2026-07-31 "issue: 99" Older
+write_fragment NEXT/2026-08-01-issue-1-aaa.md 2026-08-01 "issue: 1" Newer
+ordered="$(python3 "$contract" render-next --repo-root "$fixture_root/case")"
+[ "$(grep -n '^## Newer$' <<<"$ordered" | cut -d: -f1)" \
+  -lt "$(grep -n '^## Older$' <<<"$ordered" | cut -d: -f1)" ] \
+  || fail "rendering order followed slug allocation instead of metadata"
+echo "ok - rendering order follows metadata instead of slug allocation"
+
+# Issue-less work keeps the literal -issue- filename segment; only the identity
+# varies. A -id- filename is rejected even though the metadata key is `id`.
+new_fixture
+write_fragment NEXT/2026-08-01-issue-20260801T184500Z-timestamped.md \
+  2026-08-01 "id: 20260801T184500Z" "Issue-less work"
+python3 "$contract" validate --repo-root "$fixture_root/case"
+echo "ok - issue-less work may use a UTC timestamp identity"
+
+# ADR 0017's check-pr rule, both halves: an ordinary pull request may neither
+# write released history nor consume a fragment.
+new_fixture
+init_fixture_repo
+write_fragment NEXT/2026-08-01-issue-43-base.md 2026-08-01 "issue: 43" Base
+git -C "$fixture_root/case" add .
+git -C "$fixture_root/case" commit -qm base
+base="$(git -C "$fixture_root/case" rev-parse HEAD)"
+mkdir -p "$fixture_root/case/CHANGELOG"
+printf 'snapshot\n' >"$fixture_root/case/CHANGELOG/v9.9.9.md"
+git -C "$fixture_root/case" add .
+git -C "$fixture_root/case" commit -qm "write released history"
+if python3 "$contract" check-pr --repo-root "$fixture_root/case" \
+  --base "$base" --head HEAD 2>"$fixture_root/error"; then
+  fail "a pull request writing released history was accepted"
+fi
+grep -q 'released snapshots' "$fixture_root/error"
+echo "ok - pull requests cannot write released history"
+
+new_fixture
+init_fixture_repo
+write_fragment NEXT/2026-08-01-issue-43-base.md 2026-08-01 "issue: 43" Base
+git -C "$fixture_root/case" add .
+git -C "$fixture_root/case" commit -qm base
+base="$(git -C "$fixture_root/case" rev-parse HEAD)"
+git -C "$fixture_root/case" rm -q "NEXT/2026-08-01-issue-43-base.md"
+git -C "$fixture_root/case" commit -qm "consume a fragment"
+if python3 "$contract" check-pr --repo-root "$fixture_root/case" \
+  --base "$base" --head HEAD 2>"$fixture_root/error"; then
+  fail "a pull request deleting a NEXT/ fragment was accepted"
+fi
+grep -q 'NEXT' "$fixture_root/error"
+echo "ok - pull requests cannot consume NEXT/ fragments"
+
+new_fixture
+init_fixture_repo
+mkdir -p "$fixture_root/case/CHANGELOG"
+write_fragment NEXT/2026-08-01-issue-43-release.md 2026-08-01 "issue: 43" Release
+printf 'immutable\n' >"$fixture_root/case/CHANGELOG/v1.0.0.md"
+git -C "$fixture_root/case" add .
+git -C "$fixture_root/case" commit -qm initial
+if python3 "$contract" release --repo-root "$fixture_root/case" --version v1.0.0 \
+  2>"$fixture_root/error"; then
+  fail "a released snapshot overwrite was accepted"
+fi
+grep -q 'already exists' "$fixture_root/error"
+[ "$(cat "$fixture_root/case/CHANGELOG/v1.0.0.md")" = 'immutable' ] \
+  || fail "a rejected release still mutated the snapshot"
+echo "ok - released snapshots cannot be overwritten"
+
+# The regression this file exists to prevent: prove that the repository-level
+# assertions above survive a real release, instead of asserting a pre-release
+# state that the first tag destroys. Every branch taken above is taken again
+# here against a released tree.
+new_fixture
+init_fixture_repo
+write_fragment NEXT/2026-08-01-issue-43-released.md 2026-08-01 "issue: 43" Released
+git -C "$fixture_root/case" add .
+git -C "$fixture_root/case" commit -qm initial
+python3 "$contract" release --repo-root "$fixture_root/case" --version v1.0.0 >/dev/null
+[ -f "$fixture_root/case/CHANGELOG/v1.0.0.md" ] || fail "release wrote no snapshot"
+[ -e "$fixture_root/case/CHANGELOG.md" ] || fail "release generated no aggregate changelog"
+[ -z "$(ls -1 "$fixture_root/case/NEXT" 2>/dev/null)" ] \
+  || fail "release left fragments behind in NEXT/"
+python3 "$contract" render-released --repo-root "$fixture_root/case" >"$work/after"
+diff -q "$work/after" "$fixture_root/case/CHANGELOG.md" >/dev/null \
+  || fail "the generated CHANGELOG.md does not equal the rendered released snapshots"
+# If this ever succeeds, the guard around the render block above is dead code and
+# a future edit could reintroduce the unguarded form without any test failing.
+if python3 "$contract" render-next --repo-root "$fixture_root/case" >/dev/null 2>&1; then
+  fail "render-next succeeded on an emptied NEXT/; the guard above is now dead code"
+fi
+echo "ok - a real release produces exactly the state asserted above"
 EOF
 }
 
@@ -106,6 +507,11 @@ case "$mode" in
     out="$(emit_renderer)"
     printf '%s\n' "$out" | bash -n 2>/dev/null \
       || { echo "internal error: generated renderer is not valid bash; refusing to emit" >&2; exit 3; }
+    ;;
+  contract-test)
+    out="$(emit_contract_test)"
+    printf '%s\n' "$out" | bash -n 2>/dev/null \
+      || { echo "internal error: generated contract test is not valid bash; refusing to emit" >&2; exit 3; }
     ;;
   *)
     usage

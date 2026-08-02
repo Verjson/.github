@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Baseline repository hygiene: every Verjson repository's default branch must
 # carry a root README.md that answers what the repository is for, who owns it,
-# and how to validate it locally (Verjson/.github#232, ADR 0045).
+# and how to validate it locally (Verjson/.github#232, ADR 0046).
 set -uo pipefail
 
 mode="${REPO_HYGIENE_MODE:-audit}"
@@ -22,7 +22,7 @@ EXEMPT_CLASSES='archived mirror generated bootstrap'
 
 # Deliberately low: one real sentence. The check enforces that each question was
 # ANSWERED, not that the answer is good — judging quality is review's job, and a
-# high floor would only teach people to pad. See ADR 0045.
+# high floor would only teach people to pad. See ADR 0046.
 MIN_SECTION_CHARS=40
 
 while [ "$#" -gt 0 ]; do
@@ -109,12 +109,12 @@ elif [ -z "$(printf '%s' "$readme" | tr -d '[:space:]')" ]; then
   # Reported apart from "no sections" on purpose: an empty file and a file that
   # answers none of the questions need different remediation, and the audit
   # backlog is only useful if it says which one this is.
-  finding "$root/$readme_path is not a non-empty README (ADR 0045)"
+  finding "$root/$readme_path is not a non-empty README (ADR 0046)"
   findings=1
 else
   # Topic detection is heading-based and alias-driven: the policy asks that the
   # three questions be ANSWERED, not that a house wording be copied. Aliases are
-  # the documented list in ADR 0045 — widen them there, never here alone.
+  # the documented list in ADR 0046 — widen them there, never here alone.
   for topic in purpose ownership validation; do
     case "$topic" in
       purpose) alias_re='purpose|overview|what (is|it is|this is|it does|this does)|about|introduction' ;;
@@ -139,10 +139,10 @@ else
     )"
 
     if [ -z "$body" ]; then
-      finding "README.md has no $topic section with a real answer under it (ADR 0045)"
+      finding "README.md has no $topic section with a real answer under it (ADR 0046)"
       findings=$((findings + 1))
     elif [ "${#body}" -lt "$MIN_SECTION_CHARS" ]; then
-      finding "README.md's $topic section is under $MIN_SECTION_CHARS characters of substance (ADR 0045)"
+      finding "README.md's $topic section is under $MIN_SECTION_CHARS characters of substance (ADR 0046)"
       findings=$((findings + 1))
     fi
   done
@@ -156,8 +156,8 @@ fi
 if [ "$mode" = enforce ]; then
   # Exit 1 is a policy verdict; exit 2 (die) is a fault. Keeping them apart lets
   # a rollout dashboard tell "this repo needs a README" from "the check broke".
-  finding "$findings hygiene finding(s) — see ADR 0045 for the required sections"
+  finding "$findings hygiene finding(s) — see ADR 0046 for the required sections"
   exit 1
 fi
-printf 'repo-hygiene: audit mode — %d finding(s) reported, not enforced (ADR 0045).\n' "$findings"
+printf 'repo-hygiene: audit mode — %d finding(s) reported, not enforced (ADR 0046).\n' "$findings"
 exit 0

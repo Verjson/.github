@@ -55,12 +55,16 @@ non-trivial or fanned-out work autonomously:
 
 ## Active Issues / Areas for Improvement
 
-- [#251](https://github.com/Verjson/.github/issues/251) — `budget-exceeded.test.sh` fails on clean `main` (recovered verdict must still approve).
-- [#261](https://github.com/Verjson/.github/issues/261) — Bind privileged-merge provenance to a signed workflow identity instead of ambient ruleset config (ADR 0039 residual).
+- [#261](https://github.com/Verjson/.github/issues/261) — Bind privileged-merge provenance to a signed workflow identity; the durable closure for #279's residual.
 - [#263](https://github.com/Verjson/.github/issues/263) — Draft-time gate skip is terminal: the PR can never satisfy the merge gate without a new head SHA or a close/reopen.
-- [#276](https://github.com/Verjson/.github/issues/276) — Gate deadlocks on its own jobs for a cross-org consumer using the reusable shape; runtime self-derivation is the fix.
-- [#279](https://github.com/Verjson/.github/issues/279) — Attestation provenance is forgeable by any run that merely references the gate.
 - [#265](https://github.com/Verjson/.github/issues/265) — Org Actions secrets sit at `visibility: all`; scope them to least privilege.
+- [#279](https://github.com/Verjson/.github/issues/279) — Attestation provenance: closed for the required-workflow shape (ADR 0044); open for the reusable-caller shape, which no repo uses yet.
 - [#281](https://github.com/Verjson/.github/issues/281) — ADR 0028 decision 6 (public merge gate on hosted) has lapsed with no superseding decision.
 - [#292](https://github.com/Verjson/.github/issues/292) — Re-review skip never fires: `gh api user` cannot resolve an identity under `github.token`, so every head change re-pays for an unchanged diff.
-- [#293](https://github.com/Verjson/.github/issues/293) — `budget_exhausted` reads one execution file three times, so a budget failure reports as a generic no-verdict.
+- [#300](https://github.com/Verjson/.github/issues/300) — `v2.1.1` was promised by ADR 0014 and never cut, so the documented exact pin lacks the #164 eligibility fix.
+- [#303](https://github.com/Verjson/.github/issues/303) — `ai-review-merge.yml` has no `workflow_files_changed` guard on its own direct merge path; ADR 0044 depends on that guard.
+- [#312](https://github.com/Verjson/.github/issues/312) — `ref_is_immutable` accepts abbreviated SHAs; no test covers it.
+- [#317](https://github.com/Verjson/.github/issues/317) — Snapshot repair is documented and pre-contract snapshots accepted; open only for the `verjson-agents` repair (tracked in `Verjson/verjson-agents#151`).
+
+Prune an entry when its issue closes. This list loads into every session, so a
+closed entry costs context in each one and misreports the state of the work.

@@ -63,7 +63,7 @@ def parse_frontmatter(path: Path) -> tuple[dict[str, str], str]:
 
 
 def validate_metadata(path: Path, metadata: dict[str, str]) -> str:
-    unknown = set(metadata) - {"date", "issue", "id", "title"}
+    unknown = set(metadata) - {"date", "issue", "id", "title", "refs"}
     if unknown:
         raise ChangelogError(f"{path}: unknown metadata: {', '.join(sorted(unknown))}")
     if not metadata.get("title"):
@@ -78,10 +78,43 @@ def validate_metadata(path: Path, metadata: dict[str, str]) -> str:
     if "issue" in metadata:
         if not metadata["issue"].isdigit() or int(metadata["issue"]) < 1:
             raise ChangelogError(f"{path}: issue must be a positive integer")
+        reference_issues(path, metadata)
         return f"issue:{int(metadata['issue'])}"
     if not re.fullmatch(r"(?:[0-9]{8}T[0-9]{6}Z|[0-9a-fA-F]{6,12})", metadata["id"]):
         raise ChangelogError(f"{path}: id must be a UTC timestamp or short hexadecimal UUID")
+    reference_issues(path, metadata)
     return f"id:{metadata['id'].lower()}"
+
+
+def reference_issues(path: Path, metadata: dict[str, str]) -> list[int]:
+    """Issue numbers this entry links but does not own.
+
+    Identity must stay unique — it is what makes fragments conflict-free — so
+    only one entry per issue may carry `issue:`. Several entries can still be
+    work on that issue, and before `refs` the rest silently lost their release
+    back-link because only issue-form identities render `#n`. `refs` separates
+    linkage from ownership so all of them link it (#316).
+    """
+    raw = metadata.get("refs", "").strip()
+    if not raw:
+        return []
+    own = int(metadata["issue"]) if "issue" in metadata else None
+    seen: list[int] = []
+    for token in raw.split(","):
+        token = token.strip().lstrip("#").strip()
+        if not token.isdigit() or int(token) < 1:
+            raise ChangelogError(
+                f"{path}: refs must be a comma-separated list of positive issue numbers"
+            )
+        number = int(token)
+        if number == own:
+            raise ChangelogError(
+                f"{path}: refs must not repeat this entry's own issue #{number}"
+            )
+        if number in seen:
+            raise ChangelogError(f"{path}: refs lists #{number} more than once")
+        seen.append(number)
+    return seen
 
 
 def load_canonical(path: Path) -> Fragment:
@@ -179,13 +212,22 @@ def fragments(
     return result
 
 
+def _rendered_refs(entry: Fragment) -> str:
+    numbers = reference_issues(entry.path, entry.metadata)
+    if not numbers:
+        return ""
+    return "; refs " + ", ".join(f"#{number}" for number in numbers)
+
+
 def render(entries: list[Fragment]) -> str:
     sections = []
     for entry in sorted(entries, key=lambda item: item.sort_key, reverse=True):
         sections.append(
             f"## {entry.metadata['title']}\n\n"
             f"{entry.body.strip()}\n\n"
-            f"_Date: {entry.metadata['date']}; {entry.identity.replace(':', ' #', 1) if entry.identity.startswith('issue:') else entry.identity}_"
+            f"_Date: {entry.metadata['date']}; "
+            f"{entry.identity.replace(':', ' #', 1) if entry.identity.startswith('issue:') else entry.identity}"
+            f"{_rendered_refs(entry)}_"
         )
     return "\n\n".join(sections) + ("\n" if sections else "")
 

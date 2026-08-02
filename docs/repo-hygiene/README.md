@@ -3,7 +3,7 @@
 Baseline hygiene for every Verjson repository: the default branch carries a root
 `README.md` that answers what the repository is for, who owns it, and how to
 validate it locally. The decision, the exact rule and its known limits are in
-[ADR 0045](../decisions/0045-baseline-repository-hygiene/README.md).
+[ADR 0046](../decisions/0046-baseline-repository-hygiene/README.md).
 
 Hygiene is **baseline CI**. A green check means a reader can orient themselves in
 the repository; it is never evidence that the repository's own behaviour works,

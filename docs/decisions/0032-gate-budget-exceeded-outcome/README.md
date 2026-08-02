@@ -91,3 +91,49 @@ auto-merge an unreviewed PR when all review passes exhaust without a verdict.
 Advancing the tag is therefore part of landing this decision, not follow-up
 housekeeping, and it is the step that actually remediates the vulnerability.
 
+## Amendment (2026-08-02, #293) — "per-pass transcripts" was never true
+
+The decision above says the gate "reads the **per-pass** SDK transcripts
+(`execution_file`)". It did not. `EXEC_FILE_1/2/3` were wired to
+`steps.claude{,_retry,_retry2}.outputs.execution_file`, and
+`anthropics/claude-code-action` writes every pass to one fixed path under
+`$RUNNER_TEMP`. All three expressions resolved to the same file, each pass
+overwrote the last, and the probe's three-iteration loop read the final pass
+three times. Any earlier `error_max_budget_usd` was gone before it was read.
+
+Evidence — PR #288, run 30724025229: pass 1 ended `error_max_budget_usd` (11
+turns, $0.5045 against the $0.50 cap), passes 2 and 3 ended
+`error_max_structured_output_retries`, and the step still logged
+`budget_exhausted=false`. The maintainer got "review could not complete" instead
+of the budget-exceeded message that names the cap, the diff size and the advice
+to split. Because the first pass carries the *smallest* cap, budget failure in
+pass 1 is the common ordering, so the recovered/blocked branch was effectively
+dormant.
+
+Restored, not changed: each pass now copies its transcript to
+`$RUNNER_TEMP/claude-execution-pass-N.json` immediately after that pass runs, and
+`EXEC_FILE_N` points at the copy. The snapshot steps are `always()` +
+`continue-on-error` and end in an unconditional `exit 0` — a failed copy
+degrades the *message* and can never fail the gate, which keeps telemetry on the
+reporting side of the line this ADR draws. Each snapshot clears its destination
+before copying, so a skipped pass on the persistent self-hosted pool cannot
+inherit a stale transcript and invent an exhaustion that did not happen.
+
+**The merge decision is untouched.** `BUDGET_EXHAUSTED` still only selects the
+wording of the no-verdict comment; every branch of that guard labels the PR
+inconclusive, comments and exits non-zero. `budget-exceeded.test.sh` pins that
+end to end for the #288 shape, and the change is mutation-verified (killed,
+including aliasing the three `EXEC_FILE` vars back to one path, silencing the
+copy, inverting the recovered/blocked branch, and re-opening the blank-verdict
+guard).
+
+Also corrected here: the clean-`main` failure of `budget-exceeded.test.sh`
+tracked as #251 ("recovered verdict must still approve") was a **fixture** gap,
+not a regression of this decision. The submit step runs under `set -u` and embeds
+`ai-review-run:${GITHUB_RUN_ID}` in the approval body; the harness never exported
+`GITHUB_RUN_ID`, so the approve path died on an unbound variable before reaching
+`gh`. The sibling extraction test for the same block
+(`review-comment.test.sh`) always supplied it and always passed. The production
+behaviour was correct — and correct in the fail-closed direction, since an absent
+run id aborts rather than approves, which is now pinned as its own case.
+

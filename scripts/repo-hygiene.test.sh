@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Unit tests for scripts/repo-hygiene.sh (Verjson/.github#232, ADR 0045).
+# Unit tests for scripts/repo-hygiene.sh (Verjson/.github#232, ADR 0046).
 #
 # Every fixture is a real git repository, and every assertion runs the script
 # against a committed tree — the same surface CI checks. Nothing here inspects a

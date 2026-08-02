@@ -2,7 +2,7 @@ name: repository hygiene
 
 # Baseline repository hygiene for every Verjson repository: the default branch
 # must carry a root README.md that answers what the repository is for, who owns
-# it, and how to validate it locally (Verjson/.github#232, ADR 0045).
+# it, and how to validate it locally (Verjson/.github#232, ADR 0046).
 #
 # This is BASELINE CI. A green hygiene check says a reader can orient themselves
 # in the repository; it says nothing about whether the repository's own
@@ -31,7 +31,7 @@ on:
       mode:
         description: >-
           'audit' reports findings and stays green; 'enforce' fails the job.
-          Audit is the rollout default — see ADR 0045.
+          Audit is the rollout default — see ADR 0046.
         required: false
         type: string
         default: 'audit'

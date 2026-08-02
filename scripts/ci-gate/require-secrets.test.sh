@@ -150,7 +150,12 @@ chmod +x "$tmp/bin/gh" "$tmp/bin/sleep" "$tmp/bin/unzip"
 
 sha=0123456789abcdef0123456789abcdef01234567
 green='{"headRefOid":"'"$sha"'","isDraft":false,"labels":[],"state":"OPEN","files":[],"statusCheckRollup":[{"name":"gate","status":"COMPLETED","conclusion":"SUCCESS","detailsUrl":"https://github.com/Verjson/example/actions/runs/99/job/1"},{"name":"build","status":"COMPLETED","conclusion":"SUCCESS"}]}'
-trusted_run='{"id":99,"workflow_id":42,"head_sha":"'"$sha"'","event":"pull_request","conclusion":"success","created_at":"2026-07-30T10:00:00Z","run_started_at":"2026-07-30T10:05:00Z","repository":{"full_name":"Verjson/example"}}'
+# `path` is the run's ENTRY workflow, and the privileged merge requires it to be
+# the gate (#279, ADR 0044). It is a non-nullable field of every real workflow
+# run — ADR 0039 transcribes it from live run 30601252875 — so carrying it here
+# is fixture fidelity, not an accommodation: these cases assert the trusted merge
+# path, and a payload the API never emits cannot stand for one.
+trusted_run='{"id":99,"workflow_id":42,"path":".github/workflows/ai-review-merge.yml","head_sha":"'"$sha"'","event":"pull_request","conclusion":"success","created_at":"2026-07-30T10:00:00Z","run_started_at":"2026-07-30T10:05:00Z","repository":{"full_name":"Verjson/example"}}'
 trusted_runs='{"workflow_runs":['"$trusted_run"']}'
 default_attestation='{"version":1,"repository":"Verjson/example","pr_number":7,"head_sha":"'"$sha"'","run_id":99,"followups":[]}'
 run_case() {
@@ -208,7 +213,7 @@ spoofed_run="${trusted_runs/\"workflow_id\":42/\"workflow_id\":777}"
 RUN_FIXTURE="$spoofed_run" run_case "$green" \
   && fail "spoofed gate workflow identity was accepted" \
   || pass "spoofed gate workflow identity is rejected"
-newer_pending_run='{"id":100,"workflow_id":42,"head_sha":"'"$sha"'","event":"pull_request","conclusion":null,"created_at":"2026-07-30T10:01:00Z","run_started_at":"2026-07-30T10:01:01Z","repository":{"full_name":"Verjson/example"}}'
+newer_pending_run='{"id":100,"workflow_id":42,"path":".github/workflows/ai-review-merge.yml","head_sha":"'"$sha"'","event":"pull_request","conclusion":null,"created_at":"2026-07-30T10:01:00Z","run_started_at":"2026-07-30T10:01:01Z","repository":{"full_name":"Verjson/example"}}'
 reordered_runs='{"workflow_runs":['"$newer_pending_run"','"$trusted_run"']}'
 RUN_FIXTURE="$reordered_runs" run_case "$green" \
   && fail "an older success bypassed a newer pending re-review" \
