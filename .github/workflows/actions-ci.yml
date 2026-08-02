@@ -157,10 +157,5 @@ jobs:
         run: bash scripts/ci-gate/render-next.test.sh
       - name: Changelog contract — validation, release, and PR policy (#249)
         run: python3 scripts/changelog.test.py
-      # This repository owns the contract but did not apply it to itself (#289).
-      # --allow-legacy-next is load-bearing: 88 pre-#249 fragments still carry
-      # legacy filenames, so strict validation would fail main today. The switch
-      # comes off when they are migrated, which is what makes it temporary
-      # rather than permanent tolerance.
       - name: Changelog contract — this repository's own fragments (#289)
-        run: python3 scripts/changelog.py validate --repo-root . --allow-legacy-next
+        run: python3 scripts/changelog.py validate --repo-root .

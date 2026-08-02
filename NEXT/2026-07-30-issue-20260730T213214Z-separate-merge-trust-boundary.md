@@ -1,0 +1,24 @@
+---
+date: 2026-07-30
+id: 20260730T213214Z
+title: Separate PR review from privileged merge authority
+---
+
+The organization gate now keeps `ORG_ADMIN_TOKEN` exclusively in a trusted
+base-branch execution path that never consumes PR code, artifacts, caches, environment
+files, or outputs. Dependabot, Renovate, forks, and ordinary PRs share the credential-free
+validation path; the trusted merger revalidates repository identity, immutable head SHA,
+required checks, draft/hold state, and current PR state before a matched-head merge
+([#230](https://github.com/Verjson/.github/issues/230), ADR 0036).
+
+Manual and reusable dispatch are repository-local: operators run the workflow in the
+repository owning the PR. The privileged guard reads every page of changed files and
+repeats that check immediately before merge, so padded or late workflow changes require
+a human merge.
+
+Successful local manual re-gates now hand off to the trusted merger using a source-run
+and exact-head attestation. Validated non-blocking review follow-ups are filed only
+after that exact head merges; failed privileged runs cannot create them.
+
+`actions-ci` now cancels obsolete runs for the same PR/ref while preserving every main
+run, and bounds the shell-test job at 15 minutes. The governed runner lane is unchanged.

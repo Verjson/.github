@@ -35,7 +35,10 @@ One or two paragraphs: what changed, why, and the issue/PR/ADR refs.
   Consolidate them instead of assigning unrelated numbers.
 - Never edit another entry's file, and never reintroduce a shared, hand-edited
   changelog — that recreates the conflict this structure removes.
-- `0000-archive.md` holds the pre-split history and always sorts last.
+- `0000-archive.md` holds the pre-split history. It is not an unreleased
+  fragment, so the contract skips it by name and it is **not** rendered. Read it
+  directly. It sorted last only while `--allow-legacy-next` loaded it as a
+  legacy entry, which ended with the #289 migration.
 
 ## Reading the log
 
