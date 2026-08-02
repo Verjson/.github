@@ -51,7 +51,10 @@ name: AI review + auto-merge
 # trusted merge workflow for auto-merge; this reusable never receives their
 # administrative credential from a PR event. Example caller:
 #
-#   # consumer repo (any org): .github/workflows/gate.yml
+#   # consumer repo (any org): .github/workflows/ai-review-merge.yml
+#   # The filename is load-bearing, not cosmetic: the privileged merge trusts a
+#   # run by its ENTRY workflow path, so a caller installed under any other name
+#   # reviews correctly and is then refused its merge (#279, ADR 0044).
 #   on: { pull_request: { types: [opened, reopened, ready_for_review, synchronize, labeled, unlabeled] }, workflow_dispatch: {} }
 #   jobs:
 #     gate:

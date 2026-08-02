@@ -113,6 +113,8 @@ jobs:
         run: bash scripts/ci-gate/dispatch-permission.test.sh
       - name: merge gate — org required-workflow gate provenance (#259, ADR 0039)
         run: bash scripts/ci-gate/required-workflow-provenance.test.sh
+      - name: merge gate — gate provenance is bound to the run's entry workflow (#279, ADR 0044)
+        run: bash scripts/ci-gate/entry-workflow-provenance.test.sh
       - name: Privileged merge caller contract (job key + exclusion literal)
         run: bash scripts/ci-gate/privileged-merge-caller-contract.test.sh
       - name: Privileged merge runs only from Verjson/.github@main (#278, ADR 0043)
