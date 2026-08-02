@@ -34,9 +34,20 @@ else
   pass "the guide names ${#pins[@]} pin(s) to generate against"
 fi
 
+# actions-ci checks out with fetch-depth: 1 (#234, ADR 0045), so the pinned
+# commit is normally absent from the local object store. Materialise it the way
+# node-workflow-pins.test.sh does rather than assuming full history — assuming it
+# is what made the first version of this check pass locally and fail in CI.
+fetch_pinned_commit() {
+  local ref="$1"
+  git -C "$root" cat-file -e "$ref^{commit}" 2>/dev/null && return 0
+  git -C "$root" fetch --quiet --no-tags --depth 1 origin "$ref" >/dev/null 2>&1 || return 1
+  git -C "$root" cat-file -e "$ref^{commit}" 2>/dev/null
+}
+
 for pin in "${pins[@]}"; do
-  if ! git -C "$root" cat-file -e "$pin^{commit}" 2>/dev/null; then
-    fail "documented pin $pin is not a commit in this repository"
+  if ! fetch_pinned_commit "$pin"; then
+    fail "documented pin $pin is not a commit this repository can obtain"
     continue
   fi
   pass "documented pin ${pin:0:8} resolves to a commit"

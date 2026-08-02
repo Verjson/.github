@@ -25,3 +25,10 @@ consumer, so `check_pr` never runs against the pull request that consumes fragme
 escape hatch for want of this, which every later copier inherited
 (verjson-identity-contracts#26); `verjson-browser-agent` and `verjson-cli-projects`
 sequenced it this way and needed none.
+
+The check materialises the pin on demand rather than assuming it is present. `actions-ci`
+checks out with `fetch-depth: 1` since #234 (ADR 0045), so the pinned commit is normally
+absent from the local object store — the first version of this check passed on a developer
+machine with full history and failed in CI for that reason alone. It now uses the same
+`fetch_pinned_commit` shape `node-workflow-pins.test.sh` established, and was verified
+against a genuinely shallow clone.
