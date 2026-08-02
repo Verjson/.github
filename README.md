@@ -1,6 +1,33 @@
 # .github
 Public organization profile, visible to anyone
 
+## Purpose
+
+The organization's shared CI surface: the merge gate, the reusable
+`workflow_call` workflows every Verjson repository builds on, the composite
+actions they use, and the decision records that govern all of it. Changing
+something here changes CI for the whole organization at once.
+
+## Ownership
+
+Owned by the verJSON platform team. Reach us by opening an issue in this
+repository; anything touching the merge gate, runner topology, or a ruleset also
+needs a decision record under [`docs/decisions/`](docs/decisions/).
+
+## Local validation
+
+Everything here is checked by shell tests wired into
+[`actions-ci`](.github/workflows/actions-ci.yml). Run them the way CI does:
+
+```bash
+bash scripts/repo-hygiene.test.sh        # or any single scripts/**/*.test.sh
+bash scripts/gen-adr-index.sh --check    # the ADR index is generated, not edited
+python3 scripts/changelog.py validate --repo-root .
+```
+
+Add a `NEXT/` fragment in the same commit as any change to behaviour, pins,
+docs, or config — see [`NEXT/README.md`](NEXT/README.md).
+
 ## Versioned actions and reusable workflows
 
 The repository ships all `.github/actions/*` actions and
@@ -90,3 +117,17 @@ reason; AI-lane merges leave a review.
   merge.
 - Fail-closed: a missing secret, model error, red CI, or a request-changes
   review all leave the PR open; nothing merges silently.
+
+### Hygiene is baseline CI, not evidence that anything works
+
+[`repo-hygiene.yml`](.github/workflows/repo-hygiene.yml) checks that a repository
+carries a root `README.md` answering purpose, ownership and local validation
+([ADR 0045](docs/decisions/0045-baseline-repository-hygiene/README.md)). It is
+**baseline** CI: a green hygiene check means a reader can orient themselves in the
+repository, and says nothing whatever about whether the repository's code works.
+
+The gate merges on green CI, so this distinction is load-bearing. Hygiene never
+substitutes for a repository's own build, test, or config validation, and a
+repository whose only check is hygiene has no CI — green there must not be read as
+domain behaviour having been verified. It ships in audit mode by default; see
+[`docs/repo-hygiene/`](docs/repo-hygiene/README.md) for adoption and exemptions.

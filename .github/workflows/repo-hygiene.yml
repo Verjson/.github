@@ -1,0 +1,79 @@
+name: repository hygiene
+
+# Baseline repository hygiene for every Verjson repository: the default branch
+# must carry a root README.md that answers what the repository is for, who owns
+# it, and how to validate it locally (Verjson/.github#232, ADR 0045).
+#
+# This is BASELINE CI. A green hygiene check says a reader can orient themselves
+# in the repository; it says nothing about whether the repository's own
+# behaviour works. It never substitutes for repository-specific build, test, or
+# config validation.
+#
+# Ships in AUDIT mode by default: findings are reported and the job stays green,
+# so adopting the check cannot turn a consumer's CI red on day one. Enforcement
+# is a deliberate per-caller flip (`mode: enforce`) once its backlog is clear.
+#
+# Caller (each repository's .github/workflows/ci.yml, alongside its domain CI):
+#
+#   jobs:
+#     hygiene:
+#       uses: Verjson/.github/.github/workflows/repo-hygiene.yml@v2
+#       with:
+#         hygiene_ref: <immutable Verjson/.github commit>
+
+on:
+  workflow_call:
+    inputs:
+      hygiene_ref:
+        description: Immutable Verjson/.github commit supplying the check and the exemption register.
+        required: true
+        type: string
+      mode:
+        description: >-
+          'audit' reports findings and stays green; 'enforce' fails the job.
+          Audit is the rollout default — see ADR 0045.
+        required: false
+        type: string
+        default: 'audit'
+      runner:
+        description: Optional JSON runner labels; Verjson defaults by visibility, external callers use ubuntu-24.04.
+        required: false
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+jobs:
+  hygiene:
+    runs-on: ${{ inputs.runner != '' && fromJSON(inputs.runner) || github.repository_owner != 'Verjson' && 'ubuntu-24.04' || github.event.repository.private == true && fromJSON(vars.VERJSON_RUNNER_DEFAULT || '["self-hosted","general"]') || fromJSON(vars.VERJSON_RUNNER_UNTRUSTED || vars.VERJSON_RUNNER_DEFAULT || '["self-hosted","general"]') }}
+    timeout-minutes: 5
+    steps:
+      # The tree under audit. On a pull_request this is the merge result, which
+      # is the point: a PR that DELETES the README leaves no added line to
+      # inspect, but the resulting tree has no README.
+      - name: Check out the repository under audit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      # The check and the exemption register come from the central repository at
+      # a pinned ref, never from the tree being audited. An exemption the audited
+      # repository could assert about itself would be a bypass, not an exemption.
+      - name: Check out the central hygiene policy
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: Verjson/.github
+          ref: ${{ inputs.hygiene_ref }}
+          path: .repo-hygiene
+
+      - name: Check baseline repository hygiene
+        env:
+          HYGIENE_MODE: ${{ inputs.mode }}
+          # Through the environment, not interpolated into the script body: the
+          # house rule for every expansion that reaches a `run:` block.
+          HYGIENE_REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          bash .repo-hygiene/scripts/repo-hygiene.sh \
+            --mode "$HYGIENE_MODE" \
+            --repo-root "$GITHUB_WORKSPACE" \
+            --repository "$HYGIENE_REPOSITORY"
