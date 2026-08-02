@@ -33,7 +33,16 @@ absent run id must still fail closed rather than approve.
 
 `budget-exceeded.test.sh` now resolves `EXEC_FILE_N` and the snapshot destinations from the
 workflow itself and replays the passes in job order against the single fixed path, so it
-exercises the wiring rather than only the loop. Mutation-verified 10/10, including aliasing
+exercises the wiring rather than only the loop. Mutation-verified, including aliasing
 the three `EXEC_FILE` vars back to one path, silencing the copy, pointing every snapshot at
 a shared destination, dropping `continue-on-error`, inverting the recovered/blocked branch,
 and re-opening the blank-verdict guard.
+
+An independent adversarial review found two mutants the first suite did not kill, both
+the same shape as the one caught during development — an assertion pinning a value the
+harness supplied rather than one read from the workflow. Hoisting a snapshot step next
+to the following pass, and appending a conjunct to a snapshot `if:`, each left the suite
+green while restoring the outage. Step order is now asserted from the workflow's own line
+positions and the `if:` is matched whole-line, so both mutants fail. The clear is also
+guarded on `SRC != DEST`, so an upstream rename cannot turn it into the deletion of the
+only transcript.

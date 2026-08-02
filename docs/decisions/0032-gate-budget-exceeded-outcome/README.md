@@ -122,7 +122,7 @@ inherit a stale transcript and invent an exhaustion that did not happen.
 **The merge decision is untouched.** `BUDGET_EXHAUSTED` still only selects the
 wording of the no-verdict comment; every branch of that guard labels the PR
 inconclusive, comments and exits non-zero. `budget-exceeded.test.sh` pins that
-end to end for the #288 shape, and the change is mutation-verified (10/10 killed,
+end to end for the #288 shape, and the change is mutation-verified (killed,
 including aliasing the three `EXEC_FILE` vars back to one path, silencing the
 copy, inverting the recovered/blocked branch, and re-opening the blank-verdict
 guard).

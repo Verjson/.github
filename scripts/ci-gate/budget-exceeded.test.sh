@@ -432,6 +432,30 @@ rc=$(run_outcome "$wire1" "$wire2" "$wire3" false false false)
   pass "EXEC_FILE_1/2/3 resolve to three distinct per-pass paths" ||
   fail "EXEC_FILE_1/2/3 must not alias: [$wire1] [$wire2] [$wire3]"
 
+# 16b. Each snapshot must sit between its own pass and the next one. The replay
+#      drives passes in order itself, so without this a snapshot hoisted next to
+#      the following pass copies a transcript that pass already overwrote — the
+#      #293 outage restored, with every other assertion still green.
+line_of() { grep -n "$1" "$wf" | head -n 1 | cut -d: -f1; }
+pass_line1="$(line_of '^        id: claude$')"
+pass_line2="$(line_of '^        id: claude_retry$')"
+pass_line3="$(line_of '^        id: claude_retry2$')"
+snap_line1="$(line_of '^      - name: Snapshot pass 1 execution transcript')"
+snap_line2="$(line_of '^      - name: Snapshot pass 2 execution transcript')"
+snap_line3="$(line_of '^      - name: Snapshot pass 3 execution transcript')"
+order_ok=true
+for v in "$pass_line1" "$pass_line2" "$pass_line3" "$snap_line1" "$snap_line2" "$snap_line3"; do
+  [ -n "$v" ] || order_ok=false
+done
+if [ "$order_ok" = true ]; then
+  { [ "$pass_line1" -lt "$snap_line1" ] && [ "$snap_line1" -lt "$pass_line2" ] &&
+    [ "$pass_line2" -lt "$snap_line2" ] && [ "$snap_line2" -lt "$pass_line3" ] &&
+    [ "$pass_line3" -lt "$snap_line3" ]; } || order_ok=false
+fi
+[ "$order_ok" = true ] &&
+  pass "each snapshot runs after its own pass and before the next one" ||
+  fail "a snapshot step is out of order — it would capture a transcript a later pass overwrote"
+
 # 16a. …and each snapshot must write to the path its own pass is read from.
 #      Distinct-but-misconnected is the same outage with extra steps.
 { [ "$dest1" = "$wire1" ] && [ "$dest2" = "$wire2" ] && [ "$dest3" = "$wire3" ]; } &&
@@ -456,7 +480,7 @@ for n in 1 2 3; do
     seen { print }
   ' "$wf" >"$tmp/snapmeta$n.txt"
   grep -q 'continue-on-error: true' "$tmp/snapmeta$n.txt" || snap_guard_ok=false
-  grep -q "if: always() && needs.preflight.outputs.lane == 'ai'" "$tmp/snapmeta$n.txt" || snap_guard_ok=false
+  grep -qx "        if: always() && needs.preflight.outputs.lane == 'ai'" "$tmp/snapmeta$n.txt" || snap_guard_ok=false
 done
 [ "$snap_guard_ok" = true ] &&
   pass "every snapshot step is always() and continue-on-error" ||

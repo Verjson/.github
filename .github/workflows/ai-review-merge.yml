@@ -1141,8 +1141,10 @@ jobs:
         run: |
           set -uo pipefail
           # Clear first: a stale file (skipped pass, re-run on a persistent
-          # self-hosted runner) must never be attributed to this pass.
-          rm -f "$DEST" || true
+          # self-hosted runner) must never be attributed to this pass. Guarded on
+          # SRC != DEST so an upstream rename that makes the action write straight
+          # to this path cannot make the clear destroy the only transcript.
+          [ "${SRC:-}" = "$DEST" ] || rm -f "$DEST" || true
           if [ -n "${SRC:-}" ] && [ -f "$SRC" ]; then
             cp -- "$SRC" "$DEST" || echo "::warning::phase=model result=snapshot-failed dest=$DEST — budget telemetry for this pass will be missing"
           fi
@@ -1183,8 +1185,10 @@ jobs:
         run: |
           set -uo pipefail
           # Clear first: a stale file (skipped pass, re-run on a persistent
-          # self-hosted runner) must never be attributed to this pass.
-          rm -f "$DEST" || true
+          # self-hosted runner) must never be attributed to this pass. Guarded on
+          # SRC != DEST so an upstream rename that makes the action write straight
+          # to this path cannot make the clear destroy the only transcript.
+          [ "${SRC:-}" = "$DEST" ] || rm -f "$DEST" || true
           if [ -n "${SRC:-}" ] && [ -f "$SRC" ]; then
             cp -- "$SRC" "$DEST" || echo "::warning::phase=model result=snapshot-failed dest=$DEST — budget telemetry for this pass will be missing"
           fi
@@ -1226,8 +1230,10 @@ jobs:
         run: |
           set -uo pipefail
           # Clear first: a stale file (skipped pass, re-run on a persistent
-          # self-hosted runner) must never be attributed to this pass.
-          rm -f "$DEST" || true
+          # self-hosted runner) must never be attributed to this pass. Guarded on
+          # SRC != DEST so an upstream rename that makes the action write straight
+          # to this path cannot make the clear destroy the only transcript.
+          [ "${SRC:-}" = "$DEST" ] || rm -f "$DEST" || true
           if [ -n "${SRC:-}" ] && [ -f "$SRC" ]; then
             cp -- "$SRC" "$DEST" || echo "::warning::phase=model result=snapshot-failed dest=$DEST — budget telemetry for this pass will be missing"
           fi
