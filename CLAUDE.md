@@ -63,6 +63,8 @@ non-trivial or fanned-out work autonomously:
 - [#292](https://github.com/Verjson/.github/issues/292) — Re-review skip never fires: `gh api user` cannot resolve an identity under `github.token`, so every head change re-pays for an unchanged diff.
 - [#300](https://github.com/Verjson/.github/issues/300) — `v2.1.1` was promised by ADR 0014 and never cut, so the documented exact pin lacks the #164 eligibility fix.
 - [#303](https://github.com/Verjson/.github/issues/303) — `ai-review-merge.yml` has no `workflow_files_changed` guard on its own direct merge path; ADR 0044 depends on that guard.
+- [#316](https://github.com/Verjson/.github/issues/316) — The contract cannot express N entries closing one issue, so all but one silently lose their release back-link.
+- [#317](https://github.com/Verjson/.github/issues/317) — Hand-authored released snapshots in four repos don't match the shape `release` generates; immutability makes it permanent at first release.
 
 Prune an entry when its issue closes. This list loads into every session, so a
 closed entry costs context in each one and misreports the state of the work.
