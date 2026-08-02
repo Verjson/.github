@@ -33,6 +33,17 @@ concurrency:
 
 jobs:
   release:
+    # The final step pushes the release commit and its exact tag atomically, and
+    # callers pass `push_token: ${{ secrets.GITHUB_TOKEN }}`. A called workflow's
+    # permissions are the cap, not the caller's: with only the `contents: read`
+    # default above, that token reaches the push read-only and GitHub answers
+    # "Write access to repository not granted" (403) before any tag or release
+    # exists. ADR 0038 already requires release callers to hold contents-write
+    # credentials; this is where that requirement has to be expressed. The
+    # caller's own grant still caps this — a caller that withholds
+    # `contents: write` gets a read-only token regardless (#295).
+    permissions:
+      contents: write
     if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
     runs-on: ${{ inputs.runner != '' && fromJSON(inputs.runner) || github.repository_owner != 'Verjson' && 'ubuntu-24.04' || github.event.repository.private == true && fromJSON(vars.VERJSON_RUNNER_DEFAULT || '["self-hosted","general"]') || fromJSON(vars.VERJSON_RUNNER_UNTRUSTED || vars.VERJSON_RUNNER_DEFAULT || '["self-hosted","general"]') }}
     timeout-minutes: 10
