@@ -150,12 +150,21 @@ exit 0
 GH
 chmod +x "$tmp/bin/gh"
 
+# The run id Actions always injects. The approval body embeds it as the
+# `ai-review-run:` marker, and the step runs under `set -u`, so omitting it here
+# killed the approve path before any `gh` call and made the recovered-verdict
+# case look like a production regression (#251). It is fixture, not workaround:
+# case 9a asserts the marker actually reaches the body, and case 9b asserts that
+# an absent run id still fails CLOSED.
+GATE_RUN_ID=4242424242
+
 # run_submit <verdict> <budget_exhausted> -> prints rc=N
 run_submit() {
   export PATH="$tmp/bin:$PATH" TARGET_REPO="Verjson/foo" PR_NUMBER=7
   export HEAD_SHA=deadbeef MODEL=claude-haiku-4-5 PATCH_ID=pid00feed
   export ACTIONLOG="$tmp/act.log" BODYFILE="$tmp/body.txt" COMMENTFILE="$tmp/comment.txt"
   export GITHUB_OUTPUT="$tmp/gh_output.txt"
+  if [ -n "$GATE_RUN_ID" ]; then export GITHUB_RUN_ID="$GATE_RUN_ID"; else unset GITHUB_RUN_ID; fi
   : >"$ACTIONLOG"; : >"$BODYFILE"; : >"$COMMENTFILE"; : >"$GITHUB_OUTPUT"
   export VERDICT="$1" BUDGET_EXHAUSTED="$2" CHANGED_LINES="${3-1586}" BUDGET_USD="${4-0.60}"
   bash -eo pipefail "$submit" >/dev/null 2>&1
@@ -216,6 +225,23 @@ rc=$(run_submit '{"blocking":false,"summary":"fine","review_first":[],"findings"
 { [ "$rc" = "rc=0" ] && act_has REVIEW; } &&
   pass "a recovered verdict still approves despite the exhaustion flag" ||
   fail "recovered verdict must still approve ($rc, log=$(tr '\n' ',' <"$tmp/act.log"))"
+
+# 9a. That approval must carry the run marker, which is what makes the run id a
+#     required part of the environment rather than an incidental one.
+grep -qF "ai-review-run:$GATE_RUN_ID" "$tmp/body.txt" &&
+  pass "the approval body carries the ai-review-run marker for this run" ||
+  fail "approval body lost the ai-review-run:$GATE_RUN_ID marker: $(tail -c 200 "$tmp/body.txt")"
+
+# 9b. Fail-closed direction of the same dependency: if the run id is somehow
+#     absent, the step must die rather than approve. `set -u` gives that for
+#     free — pinning it stops a later `${GITHUB_RUN_ID:-}` "tidy-up" from
+#     silently turning a broken environment into an approval.
+GATE_RUN_ID=''
+rc=$(run_submit '{"blocking":false,"summary":"fine","review_first":[],"findings":[],"followups":[]}' false)
+{ [ "$rc" != "rc=0" ] && ! act_has approve; } &&
+  pass "an absent run id fails closed instead of approving" ||
+  fail "missing GITHUB_RUN_ID must not approve ($rc, log=$(tr '\n' ',' <"$tmp/act.log"))"
+GATE_RUN_ID=4242424242
 
 # ---------------------------------------------------------------------------
 # Part 3 — detection + legibility. `error_max_budget_usd` is emitted by the
@@ -307,5 +333,175 @@ rc=$(run_outcome "" "" "" true false false)
 { [ "$rc" = "rc=0" ] && [ "$(oout budget_exhausted)" != "true" ] && ! olog 'recovered'; } &&
   pass "a clean first pass reports no budget exhaustion" ||
   fail "clean run misreported ($rc exhausted=$(oout budget_exhausted))"
+
+# ---------------------------------------------------------------------------
+# Part 4 — the WIRING, not just the loop (#293). Part 3 hands the probe three
+# distinct fixture paths, so it can only ever prove the loop works. On PR #288
+# the loop was fine and the gate still reported `budget_exhausted=false` for a
+# run whose first pass died `error_max_budget_usd`, because every `EXEC_FILE_N`
+# expression resolved to the ONE fixed path claude-code-action writes, and each
+# pass overwrote the last. These cases therefore resolve `EXEC_FILE_N` from the
+# workflow's own env block and replay the passes in order against that single
+# fixed path — the shape of the real job, which is the only place the bug lives.
+# ---------------------------------------------------------------------------
+
+export RUNNER_TEMP="$tmp/runner-temp"
+mkdir -p "$RUNNER_TEMP"
+# The one path claude-code-action writes for every pass. It is `$RUNNER_TEMP`
+# scoped and stable across steps in a job, which is why the overwrite is
+# deterministic rather than flaky.
+fixed_exec="$RUNNER_TEMP/claude-execution-output.json"
+
+# The literal `EXEC_FILE_<N>:` expression from the retry-outcome step's env
+# block, with the runner context resolved the way Actions would: `runner.temp`
+# becomes the temp dir, and ANY `steps.<id>.outputs.execution_file` becomes the
+# single fixed path the action really emits.
+exec_file_wiring() {
+  awk -v key="EXEC_FILE_$1:" '
+    $0 == "      - name: Record model retry outcome" { seen = 1 }
+    seen && $1 == key { $1 = ""; sub(/^ +/, ""); print; exit }
+  ' "$wf" |
+    sed -e "s|\${{ runner.temp }}|$RUNNER_TEMP|g" \
+      -e "s|\${{ *steps\.[A-Za-z_0-9]*\.outputs\.execution_file *}}|$fixed_exec|g"
+}
+
+wire1="$(exec_file_wiring 1)"; wire2="$(exec_file_wiring 2)"; wire3="$(exec_file_wiring 3)"
+{ [ -n "$wire1" ] && [ -n "$wire2" ] && [ -n "$wire3" ]; } ||
+  { echo "FAIL - could not read EXEC_FILE_1/2/3 from the retry-outcome env block"; exit 1; }
+
+# The per-pass snapshot step's run block, extracted by step name. Absent (or
+# renamed) leaves an empty script, which replays as "nothing was snapshotted" —
+# i.e. exactly the #293 behaviour, so the case below fails rather than errors.
+extract_run_block() { # extract_run_block <step-name> <outfile>
+  awk -v want="      - name: $1" '
+    $0 == want { seen = 1 }
+    seen && $0 == "        run: |" { cap = 1; next }
+    cap && $0 ~ /^      - name:/ { exit }
+    cap {
+      if (substr($0, 1, 10) == "          ") { print substr($0, 11); next }
+      if ($0 ~ /^[ \t]*$/) { print ""; next }
+      exit
+    }
+  ' "$wf" >"$2"
+}
+for n in 1 2 3; do
+  extract_run_block "Snapshot pass $n execution transcript (#293)" "$tmp/snapshot$n.sh"
+done
+
+# Where pass N's snapshot step is configured to write, read from the workflow
+# rather than assumed here — otherwise the replay could "prove" a wiring the
+# gate does not actually have.
+snapshot_dest() { # snapshot_dest <n>
+  awk -v want="      - name: Snapshot pass $1 execution transcript (#293)" '
+    $0 == want { seen = 1; next }
+    seen && $0 ~ /^      - name:/ { exit }
+    seen && $1 == "DEST:" { $1 = ""; sub(/^ +/, ""); print; exit }
+  ' "$wf" | sed -e "s|\${{ runner.temp }}|$RUNNER_TEMP|g"
+}
+dest1="$(snapshot_dest 1)"; dest2="$(snapshot_dest 2)"; dest3="$(snapshot_dest 3)"
+
+# One model pass, the way the job runs it: the action writes its transcript to
+# the fixed path (or, for a skipped pass, writes nothing and reports an empty
+# `execution_file`), and the snapshot step for that pass runs straight after,
+# into the destination the workflow gives it.
+replay_pass() { # replay_pass <n> <subtype|"">
+  local n="$1" subtype="$2" src="" dest
+  eval "dest=\$dest$n"
+  if [ -n "$subtype" ]; then exec_file "$fixed_exec" "$subtype"; src="$fixed_exec"; fi
+  { [ -s "$tmp/snapshot$n.sh" ] && [ -n "$dest" ]; } || return 0
+  SRC="$src" DEST="$dest" bash "$tmp/snapshot$n.sh" >>"$tmp/snapshot.log" 2>&1
+}
+
+# 15. The #288/#293 ordering: pass 1 exhausts the budget, both escalations then
+#     fail as structured-output flakes and overwrite the transcript. The run is
+#     still a budget-exceeded outcome and must be reported as one — that message
+#     is the only one that names the cap, the diff size and the split advice.
+rm -f "$fixed_exec" "$RUNNER_TEMP"/claude-execution-pass-*.json
+: >"$tmp/snapshot.log"
+replay_pass 1 error_max_budget_usd
+replay_pass 2 error_max_structured_output_retries
+replay_pass 3 error_max_structured_output_retries
+rc=$(run_outcome "$wire1" "$wire2" "$wire3" false false false)
+{ [ "$rc" = "rc=0" ] && [ "$(oout budget_exhausted)" = "true" ]; } &&
+  pass "a first-pass budget failure survives two overwriting flake passes (#293)" ||
+  fail "first-pass budget failure lost to later passes ($rc exhausted=$(oout budget_exhausted)) — EXEC_FILE_1/2/3 resolved to [$wire1] [$wire2] [$wire3]"
+
+# 16. The invariant behind case 15, pinned directly: three passes need three
+#     destinations. Any two sharing a path is the #293 bug returning.
+{ [ "$wire1" != "$wire2" ] && [ "$wire2" != "$wire3" ] && [ "$wire1" != "$wire3" ]; } &&
+  pass "EXEC_FILE_1/2/3 resolve to three distinct per-pass paths" ||
+  fail "EXEC_FILE_1/2/3 must not alias: [$wire1] [$wire2] [$wire3]"
+
+# 16a. …and each snapshot must write to the path its own pass is read from.
+#      Distinct-but-misconnected is the same outage with extra steps.
+{ [ "$dest1" = "$wire1" ] && [ "$dest2" = "$wire2" ] && [ "$dest3" = "$wire3" ]; } &&
+  pass "each snapshot destination is the EXEC_FILE the probe reads for that pass" ||
+  fail "snapshot destinations do not match the probe inputs: [$dest1|$wire1] [$dest2|$wire2] [$dest3|$wire3]"
+
+# 17. All three snapshot steps must exist and run the same block, so the cases
+#     here (which replay one block per pass) really do cover all three.
+{ [ -s "$tmp/snapshot1.sh" ] && cmp -s "$tmp/snapshot1.sh" "$tmp/snapshot2.sh" &&
+  cmp -s "$tmp/snapshot1.sh" "$tmp/snapshot3.sh"; } &&
+  pass "each model pass has a snapshot step and all three run identical logic" ||
+  fail "snapshot steps missing or divergent (sizes: $(wc -c <"$tmp/snapshot1.sh") $(wc -c <"$tmp/snapshot2.sh") $(wc -c <"$tmp/snapshot3.sh"))"
+
+# 18. The snapshot is `always()` bookkeeping and must be `continue-on-error`, or
+#     a failed copy becomes a failed gate — telemetry deciding merges is exactly
+#     the inversion this change exists to avoid.
+snap_guard_ok=true
+for n in 1 2 3; do
+  awk -v want="      - name: Snapshot pass $n execution transcript (#293)" '
+    $0 == want { seen = 1; next }
+    seen && $0 ~ /^      - name:/ { exit }
+    seen { print }
+  ' "$wf" >"$tmp/snapmeta$n.txt"
+  grep -q 'continue-on-error: true' "$tmp/snapmeta$n.txt" || snap_guard_ok=false
+  grep -q "if: always() && needs.preflight.outputs.lane == 'ai'" "$tmp/snapmeta$n.txt" || snap_guard_ok=false
+done
+[ "$snap_guard_ok" = true ] &&
+  pass "every snapshot step is always() and continue-on-error" ||
+  fail "a snapshot step is missing always() or continue-on-error and could fail the gate"
+
+# 19. A skipped pass must not inherit a stale transcript. On the persistent
+#     self-hosted pool a leftover file at the destination would be read as this
+#     pass's outcome and could invent a budget failure that never happened.
+rm -f "$fixed_exec" "$RUNNER_TEMP"/claude-execution-pass-*.json
+exec_file "$RUNNER_TEMP/claude-execution-pass-2.json" error_max_budget_usd  # stale
+replay_pass 1 error_max_structured_output_retries
+replay_pass 2 ""   # escalation skipped: no transcript, empty execution_file
+replay_pass 3 ""
+rc=$(run_outcome "$wire1" "$wire2" "$wire3" false false false)
+{ [ "$rc" = "rc=0" ] && [ "$(oout budget_exhausted)" != "true" ] &&
+  [ ! -e "$RUNNER_TEMP/claude-execution-pass-2.json" ]; } &&
+  pass "a skipped pass drops its stale transcript instead of inheriting it" ||
+  fail "stale transcript survived a skipped pass ($rc exhausted=$(oout budget_exhausted))"
+
+# 20. A copy that cannot happen must degrade the message, never the gate: an
+#     unreadable source and an unwritable destination both exit 0.
+rm -f "$fixed_exec"
+mkdir -p "$tmp/nowrite"; chmod 500 "$tmp/nowrite"
+exec_file "$fixed_exec" error_max_budget_usd
+SRC="$fixed_exec" DEST="$tmp/nowrite/pass.json" bash "$tmp/snapshot1.sh" >/dev/null 2>&1
+copy_rc=$?
+SRC="$tmp/no-such-transcript.json" DEST="$RUNNER_TEMP/claude-execution-pass-1.json" \
+  bash "$tmp/snapshot1.sh" >/dev/null 2>&1
+missing_rc=$?
+chmod 700 "$tmp/nowrite"
+{ [ "$copy_rc" = 0 ] && [ "$missing_rc" = 0 ]; } &&
+  pass "an unwritable destination and a missing source never fail the snapshot step" ||
+  fail "snapshot step must always exit 0 (unwritable=$copy_rc missing=$missing_rc)"
+
+# 21. Fail-closed direction, end to end through the real wiring: a run that
+#     produced no verdict is still blocked, whatever the telemetry concluded.
+#     Telemetry chooses the wording for the human; it never chooses the merge.
+rm -f "$fixed_exec" "$RUNNER_TEMP"/claude-execution-pass-*.json
+replay_pass 1 error_max_budget_usd
+replay_pass 2 error_max_structured_output_retries
+replay_pass 3 error_max_structured_output_retries
+run_outcome "$wire1" "$wire2" "$wire3" false false false >/dev/null
+rc=$(run_submit '' "$(oout budget_exhausted)")
+{ [ "$rc" = "rc=1" ] && ! act_has approve && comment_has 'budget-exceeded'; } &&
+  pass "the #293 run blocks the merge and now names budget-exceeded, not a generic failure" ||
+  fail "#293 run must block and name budget-exceeded ($rc, comment=$(head -c 200 "$tmp/comment.txt"))"
 
 if [ "$fails" -eq 0 ]; then echo "All tests passed."; exit 0; else echo "$fails test(s) failed."; exit 1; fi
