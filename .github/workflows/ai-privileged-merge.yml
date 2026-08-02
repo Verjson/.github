@@ -249,16 +249,33 @@ jobs:
           # the gate path is the property `referenced_workflows` cannot express.
           # It is a conjunct on ALL THREE matchers on purpose: a matcher that
           # opted out would restore the hole for its own shape.
+          # The matchers are EXCLUSIVE, not additive. Where the organization
+          # ruleset mandates the gate ($required), the only honest run is the one
+          # the ruleset injected, and its `workflow_url` sits under
+          # `/actions/required_workflows/`. Offering the id and reference matchers
+          # alongside it would leave the entry binding forgeable for exactly the
+          # repositories that matter most: a write-access actor who ADDS a
+          # repo-local `.github/workflows/ai-review-merge.yml` that merely names
+          # the gate — never running it — satisfies the entry path AND the
+          # reference matcher, and takes the merge. Every Verjson repository is
+          # in that shape, and no repository currently installs the gate by
+          # reusable call, so restricting $required to its own matcher costs
+          # nothing and closes the residual there (#279, ADR 0044).
           trusted_run_def='
             def gate_is_entry_workflow: (.path? // "") == $wfpath;
+            def injected_by_ruleset:
+              ((.workflow_url // "") | startswith($wfurl)) and
+              ((.workflow_url // "") | ltrimstr($wfurl) | test("^[0-9]+$"));
             def trusted_run:
               gate_is_entry_workflow and (
-                (.workflow_id == $id) or
-                any(.referenced_workflows[]?;
-                  ((.path? // "") | startswith("Verjson/.github/.github/workflows/ai-review-merge.yml@")) and
-                  .sha == $sha) or
-                ($required and
-                  ((.workflow_url // "") | ltrimstr($wfurl) | test("^[0-9]+$"))));
+                if $required then
+                  injected_by_ruleset
+                else
+                  (.workflow_id == $id) or
+                  any(.referenced_workflows[]?;
+                    ((.path? // "") | startswith("Verjson/.github/.github/workflows/ai-review-merge.yml@")) and
+                    .sha == $sha)
+                end);
           '
 
           # The organization ruleset is the trust anchor for the required-workflow

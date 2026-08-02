@@ -29,3 +29,14 @@ its own direct merge path — filed separately.
 New `scripts/ci-gate/entry-workflow-provenance.test.sh` (wired into `actions-ci`)
 pins the binding on both merge paths and the fail-closed handling of
 absent/null/empty API fields. Refs ADR 0044, and ADR 0036 / 0039 / 0042.
+
+An adversarial review of the first draft found the entry conjunct alone still
+merged a forged run in the required-workflow shape — the shape every Verjson
+repository uses. A write-access actor who *adds* a repo-local
+`.github/workflows/ai-review-merge.yml` naming the gate satisfies both the entry
+path and the reference matcher. The matchers are therefore exclusive rather than
+additive: where the organization ruleset mandates the gate, only the run it
+injected (`workflow_url` under `/actions/required_workflows/`) is trusted. The
+documented cross-org caller example moves to the canonical filename for the same
+reason — under the entry binding, a caller at any other path reviews correctly
+and is then refused its merge.

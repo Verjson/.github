@@ -81,13 +81,28 @@ API can support — see the residual below.
 
 ### Residual exposure (not closed here)
 
-An actor with **write access to a consumer's base branch**, in a repository
-installed via the *reusable-caller* shape, can still place a crafted file at
-exactly `.github/workflows/ai-review-merge.yml`. That run's observable fields —
-entry path, gate reference at `main`'s SHA, check names, artifact contents — are
-identical to an honest thin caller's, so **no field of the runs API can separate
-them**. This is the limit of the entry-workflow approach, stated rather than
-papered over.
+An actor with **write access to a consumer's base branch** can place a crafted
+file at exactly `.github/workflows/ai-review-merge.yml`. Its entry path, gate
+reference at `main`'s SHA, check names and artifact contents are all identical to
+an honest caller's.
+
+Where the organization ruleset mandates the gate, one field does separate them:
+an honest run was injected by the ruleset and carries a `workflow_url` under
+`/actions/required_workflows/`, while a repo-local file carries
+`/actions/workflows/`. The matchers are therefore **exclusive** rather than
+additive — when `$required` holds, only the injected run is trusted, and the
+id and reference matchers are unreachable. That closes the residual for every
+repository in the required-workflow shape, which today is every Verjson
+repository.
+
+An earlier draft of this record claimed no runs-API field could separate the two.
+That was wrong, and the code built on it merged a forged run in exactly the shape
+this organization uses; the claim is corrected here rather than left to justify
+closing #279. The residual that genuinely remains is confined to the
+*reusable-caller* shape (`$required` false), where the id and reference matchers
+are the only evidence available and a crafted file at the canonical path is
+observationally identical to an honest thin caller. No repository is in that
+shape today.
 
 What it does close, completely, is the forgery as filed: any run whose entry
 workflow is some *other* file (`ci.yml`, `release.yml`, a purpose-built

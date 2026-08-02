@@ -301,12 +301,37 @@ RUNS='[{}]'
 run_case workflow_dispatch
 assert_rejected "an empty dispatched source run is not trusted" "$NOT_GREEN"
 
-# The extracted block is the shipped one, but pin the conjunct's shape too: a
-# refactor that keeps the def and stops applying it would pass every case above
-# only if the fixtures happened to cover it. This asserts it directly.
+# Where the organization ruleset mandates the gate, the matchers are exclusive:
+# only the run the ruleset injected is honest. Every case above runs with no
+# `workflows` rule, so none of them reach this branch — and without these two the
+# entry binding stays forgeable for every Verjson repository, which is the only
+# shape any of them are in (#279, ADR 0044).
+org_rule="$(printf '[{"type":"workflows","ruleset_source_type":"Organization","ruleset_source":"Verjson","parameters":{"workflows":[{"path":".github/workflows/ai-review-merge.yml","ref":"refs/heads/main","repository_id":%s}]}}]' "$TRUSTED_REPO_ID")"
+
+# The forgery the entry conjunct alone does not stop: a write-access actor ADDS a
+# repo-local `.github/workflows/ai-review-merge.yml` that merely names the gate
+# and never runs it. It satisfies the entry path and the reference matcher; only
+# its `workflow_url` betrays it as repo-local rather than ruleset-injected.
+RULES="$org_rule"
+RUNS="$caller_run"
+run_case pull_request_target
+assert_rejected "a repo-local workflow at the gate path cannot borrow ruleset trust" "$NOT_GREEN"
+
+RULES="$org_rule"
+RUNS="$(printf '%s' "$caller_run" | sed "s|\"workflow_url\":\"$CALLER_URL\"|\"workflow_url\":\"https://api.github.com/repos/$CONSUMER/actions/required_workflows/77\"|")"
+run_case pull_request_target
+assert_merged "the run the organization ruleset injected is still trusted"
+
+# The extracted block is the shipped one, but pin the predicate's shape too: a
+# refactor that keeps the defs and stops applying them would pass every case
+# above only if the fixtures happened to cover it. Assert both directly.
 grep -q 'gate_is_entry_workflow and (' "$wf" \
   && pass "the shipped predicate applies the entry-workflow conjunct to every matcher" \
   || fail "the entry-workflow conjunct is no longer applied across the trusted-run matchers"
+
+grep -q 'if $required then' "$wf" && grep -q 'injected_by_ruleset' "$wf" \
+  && pass "ruleset-mandated repositories are matched only by the injected run" \
+  || fail "the required-workflow matcher is additive again, re-opening the repo-local forgery"
 
 [ "$fails" -eq 0 ] && { echo "All tests passed."; exit 0; }
 echo "$fails test(s) failed."
