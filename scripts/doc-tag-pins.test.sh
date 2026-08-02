@@ -105,6 +105,20 @@ rc=$?
   && pass "every tag pin documented in this repository resolves (#287)" \
   || { fail "this repository documents a nonexistent tag (rc=$rc)"; sed 's/^/diag - /' "$tmp/self.out"; }
 
+# The lookup above is only as good as the checkout that feeds it. Bounding
+# actions-ci's history to depth 1 (#234) also drops tags unless they are asked
+# for explicitly, which would turn every documented pin into a lookup fault.
+actions_ci="$repo_root/.github/workflows/actions-ci.yml"
+checkout_with="$(awk '
+  /uses: actions\/checkout@/ { in_checkout = 1; next }
+  in_checkout && /^[[:space:]]*-[[:space:]]/ { exit }
+  in_checkout { print }
+' "$actions_ci")"
+{ printf '%s\n' "$checkout_with" | grep -qE '^[[:space:]]*fetch-tags:[[:space:]]*true[[:space:]]*$' \
+  || printf '%s\n' "$checkout_with" | grep -qE '^[[:space:]]*fetch-depth:[[:space:]]*0[[:space:]]*$'; } \
+  && pass "actions-ci checks out the tags this lookup reads (#234)" \
+  || fail "actions-ci checks out without tags, so every documented pin would fail closed"
+
 if [ "$fails" -eq 0 ]; then
   echo "All tests passed."
   exit 0
