@@ -130,9 +130,24 @@ grep -qE '^[[:space:]]*uses: Verjson/\.github/\.github/actions/ci-eligibility@' 
 declare -A graph_seen=()
 graph_error=''
 ref_is_immutable() { [[ "$1" =~ ^[0-9a-f]{40}$ ]]; }
+
+# CI checks out bounded history (#234), so a pin older than the tip is simply not
+# in the object store. Fetch that one commit on demand — depth 1, no tags, no
+# history walk. A non-zero return is a hard failure for the caller, never a skip:
+# an object we cannot obtain is exactly what a rewritten or fabricated pin looks
+# like, and the two must not be distinguishable by outcome.
+fetch_pinned_commit() {
+  local ref="$1"
+  git -C "$root" cat-file -e "$ref^{commit}" 2>/dev/null && return 0
+  git -C "$root" fetch --quiet --no-tags --depth 1 origin "$ref" >/dev/null 2>&1 || return 1
+  git -C "$root" cat-file -e "$ref^{commit}" 2>/dev/null
+}
+
 resolve_self_source() {
   local ref="$1" path="$2" destination="$3" candidate object_type
   resolved_self_path=''
+
+  fetch_pinned_commit "$ref" || return 1
 
   # Reusable workflows reference a file directly; composite actions reference
   # their directory, which GitHub resolves to action.yml or action.yaml.
@@ -242,6 +257,108 @@ else
   fail "graph walker did not scan the directory action implementation: $graph_error"
 fi
 
+# --- pins resolve from a bounded checkout (#234) ------------------------------
+# actions-ci checks out at depth 1, so a pin older than the tip is not in the
+# object store. Exercise the walker against a real shallow clone of a real
+# origin, because the interesting cases are all git-server behaviour: an old but
+# reachable commit can still be fetched by SHA, a rewritten one cannot, and the
+# difference must be the difference between a pass and a FAILURE.
+pins_fixture="$(mktemp -d)"
+trap 'rm -rf "$graph_fixtures" "$pins_fixture"' EXIT
+origin_repo="$pins_fixture/origin"
+git init -q "$origin_repo"
+git -C "$origin_repo" config user.name test
+git -C "$origin_repo" config user.email test@example.com
+# github.com serves fetch-by-SHA rather than only advertised tips; without this
+# the fixture would fail every pin for a reason production does not have.
+git -C "$origin_repo" config uploadpack.allowReachableSHA1InWant true
+mkdir -p "$origin_repo/.github/actions/setup-verjson-node"
+printf 'runs:\n  using: composite\n' \
+  >"$origin_repo/.github/actions/setup-verjson-node/action.yml"
+git -C "$origin_repo" add -A
+git -C "$origin_repo" commit -qm 'old but valid pin target'
+old_pin="$(git -C "$origin_repo" rev-parse HEAD)"
+git -C "$origin_repo" commit -q --allow-empty -m 'target of a pin that was later rewritten'
+rewritten_pin="$(git -C "$origin_repo" rev-parse HEAD)"
+# Rewrite it away for real. Dropping the ref is not enough: a server will still
+# serve an object it physically holds, so an unreferenced-but-present commit is
+# resolvable and legitimately validates. The case that must fail closed is the
+# pin whose object the origin can no longer produce at all.
+git -C "$origin_repo" reset -q --hard HEAD~1
+rm -f "$origin_repo/.git/ORIG_HEAD"
+git -C "$origin_repo" reflog expire --expire=now --all
+git -C "$origin_repo" gc -q --prune=now
+for _ in 1 2 3; do git -C "$origin_repo" commit -q --allow-empty -m advance; done
+shallow_clone="$pins_fixture/shallow"
+git clone -q --depth 1 --no-tags "file://$origin_repo" "$shallow_clone"
+
+# Point the walker at the shallow clone for one call, exactly as CI would run it.
+walk_pin_in_shallow_clone() {
+  local ref="$1" label="$2" saved_root="$root" fixture rc
+  fixture="$pins_fixture/pin-$label.yml"
+  printf 'steps:\n  - uses: Verjson/.github/.github/actions/setup-verjson-node@%s\n' \
+    "$ref" >"$fixture"
+  graph_seen=()
+  graph_error=''
+  root="$shallow_clone"
+  walk_uses_graph "$fixture" "pin-$label.yml"
+  rc=$?
+  root="$saved_root"
+  return "$rc"
+}
+
+# Preconditions, asserted rather than assumed. If the clone were not really
+# shallow, or the old pin happened to be in it already, every assertion below
+# would pass for the wrong reason and this whole section would prove nothing.
+[ -f "$shallow_clone/.git/shallow" ] \
+  && pass "the fixture checkout is genuinely shallow" \
+  || fail "the fixture checkout is not shallow, so it cannot test bounded history"
+git -C "$shallow_clone" cat-file -e "$old_pin^{commit}" 2>/dev/null \
+  && fail "the old pin is already in the shallow checkout; the fetch path is untested" \
+  || pass "the old pin is absent from the shallow checkout before resolution"
+
+walk_pin_in_shallow_clone "$old_pin" old-but-valid \
+  && pass "an old but valid pin resolves from a depth-1 checkout" \
+  || fail "an old but valid pin is unresolvable at depth 1: $graph_error"
+
+# Resolving a pin must not quietly buy back the history the bound removed.
+[ -f "$shallow_clone/.git/shallow" ] \
+  && pass "resolving a pin keeps the checkout bounded" \
+  || fail "resolving a pin deepened the checkout to full history"
+
+# A SHA that names nothing must fail. This is the shape of a fabricated or
+# typo'd pin, and "the object is not there" is the only evidence there can be.
+missing_pin=0123456789abcdef0123456789abcdef01234567
+if walk_pin_in_shallow_clone "$missing_pin" missing-object; then
+  fail "a pin naming a nonexistent object passed validation"
+elif [[ "$graph_error" == *"cannot resolve self-reference"*"$missing_pin"* ]]; then
+  pass "a pin naming a nonexistent object fails closed"
+else
+  fail "missing-object pin failed for the wrong reason: $graph_error"
+fi
+
+# A pin whose commit was rewritten out of the origin: well-formed, once real, now
+# unobtainable. Full history made this look identical to a valid pin only because
+# the objects happened to be local; from a bounded checkout it must fail closed.
+if walk_pin_in_shallow_clone "$rewritten_pin" rewritten; then
+  fail "a pin at a rewritten, unobtainable commit passed validation"
+elif [[ "$graph_error" == *"cannot resolve self-reference"*"$rewritten_pin"* ]]; then
+  pass "a pin at a rewritten, unobtainable commit fails closed"
+else
+  fail "rewritten pin failed for the wrong reason: $graph_error"
+fi
+
+# An offline or credential-less runner cannot fetch anything. That is a fault,
+# not a verdict, and a fault must not read as a pass — the security property the
+# bound is allowed to cost is none.
+git -C "$shallow_clone" remote remove origin
+if walk_pin_in_shallow_clone "$rewritten_pin" unfetchable; then
+  fail "an unresolvable pin passed when the checkout could not fetch at all"
+else
+  pass "a checkout that cannot fetch fails closed instead of skipping the check"
+fi
+git -C "$shallow_clone" remote add origin "file://$origin_repo"
+
 jq -e '
   all(.packageRules[]; .pinDigests != false)
 ' "$renovate" >/dev/null \
@@ -254,6 +371,25 @@ audit_line="$(grep -nF 'run: bash scripts/release-tooling-audit.sh' "$actions_ci
   && sed -n "${audit_setup_line},$((audit_setup_line + 3))p" "$actions_ci" | grep -qF "node-version: '24'"; } \
   && pass "actions-ci provisions pinned Node 24 before auditing release tooling" \
   || fail "actions-ci does not provision pinned Node 24 before auditing release tooling"
+
+# --- bounded checkout history (#234) -----------------------------------------
+# Full history was only ever a proxy for "the pinned objects are present". The
+# walker resolves co-located refs at exact SHAs, and a shallow checkout can fetch
+# those SHAs on demand, so the whole graph is not the price of validating a pin.
+# Assert the bound here so a future edit cannot quietly restore fetch-depth: 0.
+checkout_depth="$(awk '
+  /uses: actions\/checkout@/ { in_checkout = 1; next }
+  in_checkout && /^[[:space:]]*-[[:space:]]/ { exit }
+  in_checkout && /fetch-depth:/ {
+    sub(/^.*fetch-depth:[[:space:]]*/, "")
+    sub(/[[:space:]#].*$/, "")
+    print
+    exit
+  }
+' "$actions_ci")"
+{ [ -n "$checkout_depth" ] && [ "$checkout_depth" != 0 ]; } \
+  && pass "actions-ci checks out bounded history (fetch-depth: $checkout_depth)" \
+  || fail "actions-ci checks out unbounded history (fetch-depth: ${checkout_depth:-unset})"
 
 # --- the ONE deliberate @main exception (ADR 0042) ---------------------------
 # Everything above exists to force immutable full SHAs. The privileged-merge

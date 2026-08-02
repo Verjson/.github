@@ -48,9 +48,14 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          # node-workflow-pins.test.sh resolves co-located action dependencies at
-          # their pinned commits, so the reviewed history must be available.
-          fetch-depth: 0
+          # Bounded history (#234). node-workflow-pins.test.sh resolves co-located
+          # action dependencies at their pinned commits, but it now fetches each
+          # pinned SHA on demand and fails closed if it cannot — so the whole
+          # graph is no longer the price of validating a pin.
+          fetch-depth: 1
+          # doc-tag-pins.sh reads `git tag`, which a bounded fetch omits by
+          # default; without this every documented pin reads as a lookup fault.
+          fetch-tags: true
       - name: actionlint — workflow and config changes trigger lint (#82)
         run: bash scripts/actionlint-trigger.test.sh
       - name: actionlint — downloaded binary checksum is fail-closed (#83)
