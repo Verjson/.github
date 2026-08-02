@@ -6,6 +6,13 @@
    per established version. Never infer or rewrite historical attribution.
 3. Move every unreleased entry to a canonical `NEXT/` fragment with metadata.
    Consolidate duplicate issue identities rather than assigning new numbers.
+   The `-issue-` segment is literal even when the entry has no issue, so only
+   the identity changes with the metadata key:
+
+   ```
+   NEXT/2026-07-30-issue-249-adopt-immutable-snapshots.md    # issue: 249
+   NEXT/2026-07-30-issue-20260730T184500Z-tidy-fixtures.md   # id: 20260730T184500Z
+   ```
 4. Add the reusable validation workflow. Enable one temporary `legacy_dir`
    only while a durable migration issue names the remaining consumer.
 5. Stop feature pull requests from editing `CHANGELOG.md`; generate it from
