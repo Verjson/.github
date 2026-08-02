@@ -99,6 +99,31 @@ running log) both fail it.
 
 Consumers on a hand-written contract test must regenerate rather than patch it.
 
+## Amendment (2026-08-02) — the pinned engine is verified, and the override returns (#304)
+
+The generated scripts resolved the engine by path and executed whatever they
+found. The cache key is a commit SHA, which reads as content-addressed but is
+not: any writer of that path — another tool, a restored CI cache, an interrupted
+download — was executed as the contract from then on. Demonstrated against the
+generator as it stood: a poisoned cache entry ran, exit 0, with no signal.
+
+Both generated scripts now pin the SHA-256 of `scripts/changelog.py` at the
+contract commit, and verify a cache hit, a fresh fetch, and an override against
+it. A fetch that does not match is refused and never published into the cache,
+so a bad download cannot be inherited by the next run.
+
+That check is what allows `CHANGELOG_CONTRACT_PATH` back. #304 removed it because
+an environment variable redirecting execution made "runs the same code CI
+validates with" conditional on the environment — correct given no verification
+existed. With the digest pinned, the override selects only *where* the engine is
+read from, never *what* runs, so an air-gapped or cache-restoring consumer is
+served without weakening the guarantee. This is the interface being open to
+extension and closed to modification, rather than closed to both.
+
+The resolution logic is emitted from one function into both scripts. Two copies
+of the code deciding which implementation runs is the same drift #304 reported,
+one level down.
+
 ## Rollback
 
 Revert the reusable workflow and tooling adoption in consumers, then revert the
