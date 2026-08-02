@@ -30,15 +30,23 @@ def fragment(
     name: str,
     *,
     date: str = "2026-07-30",
-    issue: str = "249",
+    issue: str | None = "249",
     title: str = "Contract",
+    identity_id: str | None = None,
+    refs: str | None = None,
 ) -> Path:
     path = root / "NEXT" / name
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        f"---\ndate: {date}\nissue: {issue}\ntitle: {title}\n---\n\nBody.\n",
-        encoding="utf-8",
-    )
+    lines = [f"date: {date}"]
+    if identity_id is not None:
+        lines.append(f"id: {identity_id}")
+    elif issue is not None:
+        lines.append(f"issue: {issue}")
+    if refs is not None:
+        lines.append(f"refs: {refs}")
+    lines.append(f"title: {title}")
+    body = "\n".join(lines)
+    path.write_text(f"---\n{body}\n---\n\nBody.\n", encoding="utf-8")
     return path
 
 
@@ -58,6 +66,80 @@ class ChangelogContractTests(unittest.TestCase):
     def commit_all(self, message: str) -> None:
         run(self.root, "git", "add", ".")
         run(self.root, "git", "commit", "-qm", message)
+
+    # --- refs: linkage separated from identity (#316) --------------------------
+    # Identity must stay unique, so only one entry per issue can carry `issue:`.
+    # Before `refs`, every other entry for that issue silently lost its release
+    # back-link, because only issue-form identities render `#n`.
+
+    def test_refs_render_back_links_for_entries_that_do_not_own_the_issue(self) -> None:
+        fragment(
+            self.root,
+            "2026-07-30-issue-20260730T090000Z-transport.md",
+            identity_id="20260730T090000Z",
+            refs="13",
+            title="Gateway transport",
+        )
+        rendered = changelog.render(list(changelog.fragments(self.root)))
+        self.assertIn("_Date: 2026-07-30; id:20260730t090000z; refs #13_", rendered)
+
+    def test_refs_accepts_several_issues_and_normalizes_hashes(self) -> None:
+        fragment(
+            self.root,
+            "2026-07-30-issue-249-many.md",
+            issue="249",
+            refs="#13, 14",
+            title="Several",
+        )
+        rendered = changelog.render(list(changelog.fragments(self.root)))
+        self.assertIn("_Date: 2026-07-30; issue #249; refs #13, #14_", rendered)
+
+    def test_fragment_without_refs_renders_exactly_as_before(self) -> None:
+        fragment(self.root, "2026-07-30-issue-249-plain.md", issue="249")
+        rendered = changelog.render(list(changelog.fragments(self.root)))
+        self.assertIn("_Date: 2026-07-30; issue #249_", rendered)
+        self.assertNotIn("refs", rendered)
+
+    def test_refs_may_not_repeat_the_entry_own_issue(self) -> None:
+        path = fragment(
+            self.root, "2026-07-30-issue-249-self.md", issue="249", refs="249"
+        )
+        with self.assertRaises(changelog.ChangelogError) as caught:
+            changelog.load_canonical(path)
+        self.assertIn("own issue #249", str(caught.exception))
+
+    def test_refs_rejects_duplicates_and_non_numbers(self) -> None:
+        for value, expected in (("13, 13", "more than once"), ("abc", "positive issue numbers")):
+            path = fragment(
+                self.root, "2026-07-30-issue-249-bad.md", issue="249", refs=value
+            )
+            with self.assertRaises(changelog.ChangelogError) as caught:
+                changelog.load_canonical(path)
+            self.assertIn(expected, str(caught.exception))
+
+    def test_refs_does_not_create_an_identity_so_two_entries_may_share_one_issue(self) -> None:
+        # The whole point: eight fragments can be work on one issue without
+        # colliding, which duplicate `issue:` identities would.
+        fragment(
+            self.root, "2026-07-30-issue-13-owner.md", issue="13", title="Owner"
+        )
+        fragment(
+            self.root,
+            "2026-07-30-issue-20260730T090000Z-sibling.md",
+            identity_id="20260730T090000Z",
+            refs="13",
+            title="Sibling",
+        )
+        rendered = changelog.render(list(changelog.fragments(self.root)))
+        self.assertIn("_Date: 2026-07-30; issue #13_", rendered)
+        self.assertIn("_Date: 2026-07-30; id:20260730t090000z; refs #13_", rendered)
+
+    def test_refs_is_validated_at_validate_time_not_only_at_release(self) -> None:
+        fragment(
+            self.root, "2026-07-30-issue-249-late.md", issue="249", refs="nope"
+        )
+        with self.assertRaises(changelog.ChangelogError):
+            list(changelog.fragments(self.root))
 
     def test_filename_and_metadata_must_match(self) -> None:
         fragment(
