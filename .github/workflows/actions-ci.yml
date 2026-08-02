@@ -10,45 +10,29 @@ on:
     paths:
       - '.github/actions/**'
       - '.github/actionlint.yaml'
-      - '.github/workflows/actionlint.yml'
-      - '.github/workflows/actionlint-reusable-contract.yml'
-      - '.github/workflows/changelog-release.yml'
-      - '.github/workflows/changelog-validate.yml'
-      - '.github/workflows/actions-ci.yml'
-      - '.github/workflows/ai-privileged-merge.yml'
-      - '.github/workflows/ai-review-merge.yml'
-      - '.github/workflows/node-ci.yml'
-      - '.github/workflows/node-release.yml'
-      - '.github/workflows/pulumi-ci.yml'
-      - '.github/workflows/tag-major.yml'
+      # doc-tag-pins.test.sh checks every tracked file, so the trigger spans every
+      # surface that carries a pin example — not an enumeration of workflows (#287).
+      - '.github/workflows/**'
       - '.github/release-tooling/**'
       - 'renovate.json'
       - 'scripts/**'
-      - 'docs/decisions/**'
-      - 'docs/changelog/**'
+      - 'docs/**'
       - 'NEXT/**'
+      - 'README.md'
   push:
     branches: [main]
     paths:
       - '.github/actions/**'
       - '.github/actionlint.yaml'
-      - '.github/workflows/actionlint.yml'
-      - '.github/workflows/actionlint-reusable-contract.yml'
-      - '.github/workflows/changelog-release.yml'
-      - '.github/workflows/changelog-validate.yml'
-      - '.github/workflows/actions-ci.yml'
-      - '.github/workflows/ai-privileged-merge.yml'
-      - '.github/workflows/ai-review-merge.yml'
-      - '.github/workflows/node-ci.yml'
-      - '.github/workflows/node-release.yml'
-      - '.github/workflows/pulumi-ci.yml'
-      - '.github/workflows/tag-major.yml'
+      # doc-tag-pins.test.sh checks every tracked file, so the trigger spans every
+      # surface that carries a pin example — not an enumeration of workflows (#287).
+      - '.github/workflows/**'
       - '.github/release-tooling/**'
       - 'renovate.json'
       - 'scripts/**'
-      - 'docs/decisions/**'
-      - 'docs/changelog/**'
+      - 'docs/**'
       - 'NEXT/**'
+      - 'README.md'
 
 permissions:
   contents: read
@@ -161,3 +145,5 @@ jobs:
         run: python3 scripts/changelog.py validate --repo-root .
       - name: Changelog release — the pushing job holds write authority (#295)
         run: bash scripts/changelog-release-permissions.test.sh
+      - name: Documented tag pins resolve to real tags (#287)
+        run: bash scripts/doc-tag-pins.test.sh
