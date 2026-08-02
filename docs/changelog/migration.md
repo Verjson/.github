@@ -29,6 +29,32 @@
    `changelog-contract.test.sh` — with `scripts/gen-changelog-caller.sh`, and
    never hand-write or hand-edit them. Adopters that copied a contract test by
    hand all asserted a pre-release tree that the first release destroys (#309).
+
+   **The pin you generate against must contain the generator itself.** Consumers
+   were told to pin `1486d44…`, which predates `gen-changelog-caller.sh` — so
+   fetching the generator at `contract_ref` 404s, and `verjson-authn` had to carry
+   a second `generator_ref` to keep its contract test hermetic (#308). Use:
+
+   ```bash
+   PIN=3d5f28962693ea4feda1fcb6273ae844892a15f4
+   scripts/gen-changelog-caller.sh workflow      "$PIN" > .github/workflows/changelog.yml
+   scripts/gen-changelog-caller.sh renderer      "$PIN" > scripts/render-next.sh
+   scripts/gen-changelog-caller.sh contract-test "$PIN" > scripts/changelog-contract.test.sh
+   ```
+
+   `contract-pin.test.sh` asserts this pin still resolves and still contains the
+   generator, so the recommendation cannot drift from the repository again.
+   A repository already migrated at an older pin needs only to regenerate; the
+   embedded `contract_ref` moves with it.
+
+   Generate the files **before** `.github/workflows/changelog.yml` exists in the
+   consumer, and land the snapshot/normalization pull request first. `check_pr`
+   then never runs against the pull request that consumes fragments, so no
+   one-time bypass is needed. `verjson-identity-contracts` added a permanent
+   `if: github.event.pull_request.number != 16` escape hatch for want of this
+   ordering, which every later copier inherited (identity-contracts#26);
+   `verjson-browser-agent` #21/#22 and `verjson-cli-projects` #45/#46 sequenced it
+   this way and needed none.
 8. Rebase queued pull requests once, remove aggregate edits, normalize their
    fragments, and verify no selected fragment was already consumed. A branch cut
    before the migration needs `origin/main` merged in first, which surfaces the
