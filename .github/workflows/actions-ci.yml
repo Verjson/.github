@@ -18,7 +18,16 @@ on:
       - 'scripts/**'
       - 'docs/**'
       - 'NEXT/**'
-      - 'README.md'
+      # doc-fragment-names.sh scans every tracked *.md, and doc-tag-pins.sh every
+      # tracked file. A surface a scanner reads but the trigger omits does not fail
+      # its own PR — it fails the next unrelated one, pointing at the wrong change
+      # and the wrong author. trigger-scope.test.sh asserts these globs still cover
+      # what the scanners read, so the two cannot drift apart again (#305).
+      - '**/*.md'
+      # Redundant today — everything under CHANGELOG/ is markdown, so '**/*.md'
+      # already covers it. Kept for a future non-markdown file there, which
+      # doc-tag-pins would read and nothing else here would match.
+      - 'CHANGELOG/**'
   push:
     branches: [main]
     paths:
@@ -32,7 +41,16 @@ on:
       - 'scripts/**'
       - 'docs/**'
       - 'NEXT/**'
-      - 'README.md'
+      # doc-fragment-names.sh scans every tracked *.md, and doc-tag-pins.sh every
+      # tracked file. A surface a scanner reads but the trigger omits does not fail
+      # its own PR — it fails the next unrelated one, pointing at the wrong change
+      # and the wrong author. trigger-scope.test.sh asserts these globs still cover
+      # what the scanners read, so the two cannot drift apart again (#305).
+      - '**/*.md'
+      # Redundant today — everything under CHANGELOG/ is markdown, so '**/*.md'
+      # already covers it. Kept for a future non-markdown file there, which
+      # doc-tag-pins would read and nothing else here would match.
+      - 'CHANGELOG/**'
 
 permissions:
   contents: read
@@ -160,3 +178,5 @@ jobs:
         run: bash scripts/doc-tag-pins.test.sh
       - name: Documented fragment filenames are names the engine accepts (#305)
         run: bash scripts/doc-fragment-names.test.sh
+      - name: CI path triggers cover what the repository-wide scanners read (#305)
+        run: bash scripts/trigger-scope.test.sh
