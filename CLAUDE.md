@@ -64,8 +64,7 @@ non-trivial or fanned-out work autonomously:
 - [#300](https://github.com/Verjson/.github/issues/300) — `v2.1.1` was promised by ADR 0014 and never cut, so the documented exact pin lacks the #164 eligibility fix.
 - [#303](https://github.com/Verjson/.github/issues/303) — `ai-review-merge.yml` has no `workflow_files_changed` guard on its own direct merge path; ADR 0044 depends on that guard.
 - [#312](https://github.com/Verjson/.github/issues/312) — `ref_is_immutable` accepts abbreviated SHAs; no test covers it.
-- [#316](https://github.com/Verjson/.github/issues/316) — The changelog contract cannot express N entries closing one issue, silently dropping release back-links.
-- [#317](https://github.com/Verjson/.github/issues/317) — Hand-authored released snapshots do not match the shape `release` generates.
+- [#317](https://github.com/Verjson/.github/issues/317) — Snapshot repair is documented and pre-contract snapshots accepted; open only for the `verjson-agents` repair (tracked in `Verjson/verjson-agents#151`).
 
 Prune an entry when its issue closes. This list loads into every session, so a
 closed entry costs context in each one and misreports the state of the work.
