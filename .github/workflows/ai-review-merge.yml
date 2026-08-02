@@ -1123,6 +1123,33 @@ jobs:
             --json-schema '{"type":"object","properties":{"blocking":{"type":"boolean"},"summary":{"type":"string"},"review_first":{"type":"array","items":{"type":"object","properties":{"location":{"type":"string"},"why":{"type":"string"}},"required":["location","why"],"additionalProperties":false}},"findings":{"type":"array","items":{"type":"string"}},"followups":{"type":"array","items":{"type":"object","properties":{"location":{"type":"string"},"note":{"type":"string"}},"required":["location","note"],"additionalProperties":false}}},"required":["blocking","summary","review_first","findings","followups"],"additionalProperties":false}'
             --allowedTools "Read,Grep,Glob"
 
+      # claude-code-action writes every pass's transcript to the SAME fixed path
+      # under $RUNNER_TEMP, so each escalation overwrites the one before it. The
+      # budget probe below used to read that one path three times and see only
+      # the last pass, which erased the first-pass `error_max_budget_usd` on #288
+      # and reported a budget-exceeded run as a generic no-verdict (#293).
+      # Snapshot each pass the moment it finishes so the probe has three files.
+      # Bookkeeping only: `continue-on-error` plus an unconditional `exit 0`, so
+      # a failed copy degrades the message and never the merge decision.
+      - name: Snapshot pass 1 execution transcript (#293)
+        id: exec_snapshot_1
+        if: always() && needs.preflight.outputs.lane == 'ai'
+        continue-on-error: true
+        env:
+          SRC: ${{ steps.claude.outputs.execution_file }}
+          DEST: ${{ runner.temp }}/claude-execution-pass-1.json
+        run: |
+          set -uo pipefail
+          # Clear first: a stale file (skipped pass, re-run on a persistent
+          # self-hosted runner) must never be attributed to this pass. Guarded on
+          # SRC != DEST so an upstream rename that makes the action write straight
+          # to this path cannot make the clear destroy the only transcript.
+          [ "${SRC:-}" = "$DEST" ] || rm -f "$DEST" || true
+          if [ -n "${SRC:-}" ] && [ -f "$SRC" ]; then
+            cp -- "$SRC" "$DEST" || echo "::warning::phase=model result=snapshot-failed dest=$DEST — budget telemetry for this pass will be missing"
+          fi
+          exit 0
+
       # Budget/turn exhaustion returns an empty structured_output (subtype
       # error_max_budget_usd / error_max_turns) — a signal the PR is bigger than
       # the cheap tier, NOT a review failure. Escalate to the strongest model
@@ -1147,6 +1174,25 @@ jobs:
             --max-budget-usd 1.00
             --json-schema '{"type":"object","properties":{"blocking":{"type":"boolean"},"summary":{"type":"string"},"review_first":{"type":"array","items":{"type":"object","properties":{"location":{"type":"string"},"why":{"type":"string"}},"required":["location","why"],"additionalProperties":false}},"findings":{"type":"array","items":{"type":"string"}},"followups":{"type":"array","items":{"type":"object","properties":{"location":{"type":"string"},"note":{"type":"string"}},"required":["location","note"],"additionalProperties":false}}},"required":["blocking","summary","review_first","findings","followups"],"additionalProperties":false}'
             --allowedTools "Read,Grep,Glob"
+
+      - name: Snapshot pass 2 execution transcript (#293)
+        id: exec_snapshot_2
+        if: always() && needs.preflight.outputs.lane == 'ai'
+        continue-on-error: true
+        env:
+          SRC: ${{ steps.claude_retry.outputs.execution_file }}
+          DEST: ${{ runner.temp }}/claude-execution-pass-2.json
+        run: |
+          set -uo pipefail
+          # Clear first: a stale file (skipped pass, re-run on a persistent
+          # self-hosted runner) must never be attributed to this pass. Guarded on
+          # SRC != DEST so an upstream rename that makes the action write straight
+          # to this path cannot make the clear destroy the only transcript.
+          [ "${SRC:-}" = "$DEST" ] || rm -f "$DEST" || true
+          if [ -n "${SRC:-}" ] && [ -f "$SRC" ]; then
+            cp -- "$SRC" "$DEST" || echo "::warning::phase=model result=snapshot-failed dest=$DEST — budget telemetry for this pass will be missing"
+          fi
+          exit 0
 
       # One more bounded attempt when BOTH prior passes produced no verdict.
       # error_max_structured_output_retries is a *transient* failure of the model
@@ -1174,6 +1220,25 @@ jobs:
             --json-schema '{"type":"object","properties":{"blocking":{"type":"boolean"},"summary":{"type":"string"},"review_first":{"type":"array","items":{"type":"object","properties":{"location":{"type":"string"},"why":{"type":"string"}},"required":["location","why"],"additionalProperties":false}},"findings":{"type":"array","items":{"type":"string"}},"followups":{"type":"array","items":{"type":"object","properties":{"location":{"type":"string"},"note":{"type":"string"}},"required":["location","note"],"additionalProperties":false}}},"required":["blocking","summary","review_first","findings","followups"],"additionalProperties":false}'
             --allowedTools "Read,Grep,Glob"
 
+      - name: Snapshot pass 3 execution transcript (#293)
+        id: exec_snapshot_3
+        if: always() && needs.preflight.outputs.lane == 'ai'
+        continue-on-error: true
+        env:
+          SRC: ${{ steps.claude_retry2.outputs.execution_file }}
+          DEST: ${{ runner.temp }}/claude-execution-pass-3.json
+        run: |
+          set -uo pipefail
+          # Clear first: a stale file (skipped pass, re-run on a persistent
+          # self-hosted runner) must never be attributed to this pass. Guarded on
+          # SRC != DEST so an upstream rename that makes the action write straight
+          # to this path cannot make the clear destroy the only transcript.
+          [ "${SRC:-}" = "$DEST" ] || rm -f "$DEST" || true
+          if [ -n "${SRC:-}" ] && [ -f "$SRC" ]; then
+            cp -- "$SRC" "$DEST" || echo "::warning::phase=model result=snapshot-failed dest=$DEST — budget telemetry for this pass will be missing"
+          fi
+          exit 0
+
       - name: Record model retry outcome
         id: retry_outcome
         if: always() && needs.preflight.outputs.lane == 'ai'
@@ -1187,9 +1252,13 @@ jobs:
           # Per-pass SDK transcripts, so the gate can name budget exhaustion
           # itself instead of leaving the action's raw `error_max_budget_usd`
           # annotation as the only signal (#181, ADR 0032).
-          EXEC_FILE_1: ${{ steps.claude.outputs.execution_file }}
-          EXEC_FILE_2: ${{ steps.claude_retry.outputs.execution_file }}
-          EXEC_FILE_3: ${{ steps.claude_retry2.outputs.execution_file }}
+          # The per-pass SNAPSHOTS, not `steps.claude*.outputs.execution_file` —
+          # all three of those resolve to one fixed path that each pass
+          # overwrites, so the probe saw only the last pass and lost a
+          # first-pass budget failure (#293).
+          EXEC_FILE_1: ${{ runner.temp }}/claude-execution-pass-1.json
+          EXEC_FILE_2: ${{ runner.temp }}/claude-execution-pass-2.json
+          EXEC_FILE_3: ${{ runner.temp }}/claude-execution-pass-3.json
         run: |
           elapsed=unknown
           if [[ "$STARTED_EPOCH" =~ ^[0-9]+$ ]]; then
