@@ -62,4 +62,6 @@ non-trivial or fanned-out work autonomously:
 - [#279](https://github.com/Verjson/.github/issues/279) — Attestation provenance is forgeable by any run that merely references the gate.
 - [#265](https://github.com/Verjson/.github/issues/265) — Org Actions secrets sit at `visibility: all`; scope them to least privilege.
 - [#281](https://github.com/Verjson/.github/issues/281) — ADR 0028 decision 6 (public merge gate on hosted) has lapsed with no superseding decision.
+- [#292](https://github.com/Verjson/.github/issues/292) — Re-review skip never fires: `gh api user` cannot resolve an identity under `github.token`, so every head change re-pays for an unchanged diff.
+- [#293](https://github.com/Verjson/.github/issues/293) — `budget_exhausted` reads one execution file three times, so a budget failure reports as a generic no-verdict.
 - [#289](https://github.com/Verjson/.github/issues/289) — `changelog.py validate` is never run over this repo's own `NEXT/`; one fragment already fails it.
