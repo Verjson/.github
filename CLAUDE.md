@@ -55,16 +55,17 @@ non-trivial or fanned-out work autonomously:
 
 ## Active Issues / Areas for Improvement
 
-- [#261](https://github.com/Verjson/.github/issues/261) — Bind privileged-merge provenance to a signed workflow identity instead of ambient ruleset config; the durable closure for #279's residual.
+- [#261](https://github.com/Verjson/.github/issues/261) — Bind privileged-merge provenance to a signed workflow identity; the durable closure for #279's residual.
 - [#263](https://github.com/Verjson/.github/issues/263) — Draft-time gate skip is terminal: the PR can never satisfy the merge gate without a new head SHA or a close/reopen.
 - [#265](https://github.com/Verjson/.github/issues/265) — Org Actions secrets sit at `visibility: all`; scope them to least privilege.
-- [#279](https://github.com/Verjson/.github/issues/279) — Attestation provenance: closed for the required-workflow shape (ADR 0044); still open for the reusable-caller shape, which no repo uses yet.
+- [#279](https://github.com/Verjson/.github/issues/279) — Attestation provenance: closed for the required-workflow shape (ADR 0044); open for the reusable-caller shape, which no repo uses yet.
 - [#281](https://github.com/Verjson/.github/issues/281) — ADR 0028 decision 6 (public merge gate on hosted) has lapsed with no superseding decision.
 - [#292](https://github.com/Verjson/.github/issues/292) — Re-review skip never fires: `gh api user` cannot resolve an identity under `github.token`, so every head change re-pays for an unchanged diff.
 - [#300](https://github.com/Verjson/.github/issues/300) — `v2.1.1` was promised by ADR 0014 and never cut, so the documented exact pin lacks the #164 eligibility fix.
 - [#303](https://github.com/Verjson/.github/issues/303) — `ai-review-merge.yml` has no `workflow_files_changed` guard on its own direct merge path; ADR 0044 depends on that guard.
-- [#316](https://github.com/Verjson/.github/issues/316) — The contract cannot express N entries closing one issue, so all but one silently lose their release back-link.
-- [#317](https://github.com/Verjson/.github/issues/317) — Hand-authored released snapshots in four repos don't match the shape `release` generates; immutability makes it permanent at first release.
+- [#312](https://github.com/Verjson/.github/issues/312) — `ref_is_immutable` accepts abbreviated SHAs; no test covers it.
+- [#316](https://github.com/Verjson/.github/issues/316) — The changelog contract cannot express N entries closing one issue, silently dropping release back-links.
+- [#317](https://github.com/Verjson/.github/issues/317) — Hand-authored released snapshots do not match the shape `release` generates.
 
 Prune an entry when its issue closes. This list loads into every session, so a
 closed entry costs context in each one and misreports the state of the work.
