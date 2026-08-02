@@ -1,0 +1,9 @@
+---
+date: 2026-07-21
+id: 20260721T104331Z
+title: Enforce the Node release runtime floor
+---
+
+Fail reusable Node releases with a clear diagnostic before installing the locked
+semantic-release toolchain when a caller selects an unsupported runtime. CI now
+tests the exact `^22.14.0 or >=24.10.0` boundary tracked in #98.

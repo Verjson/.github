@@ -41,8 +41,14 @@ out="$(bash "$d/scripts/render-next.sh")"
 [ "$(printf '%s\n' "$out" | grep -c '^ignore me$')" -eq 0 ] \
   && pass "README.md is excluded from the log" || fail "README.md must be excluded"
 order="$(printf '%s\n' "$out" | grep -E '^## ' | paste -sd, -)"
-[ "$order" = "## newer,## older,## 0000-archive" ] \
-  && pass "fragments render newest-first, archive last" || fail "wrong order: $order"
+[ "$order" = "## newer,## older" ] \
+  && pass "fragments render newest-first by metadata date" || fail "wrong order: $order"
+# The archive is pre-contract history, not an unreleased fragment, so strict
+# rendering omits it entirely rather than sorting it last. It rendered last
+# only while --allow-legacy-next loaded it as a legacy entry; that switch came
+# off with the #289 migration. The file is unchanged and still in git.
+[ "$(printf '%s\n' "$out" | grep -c '^# archive$')" -eq 0 ] \
+  && pass "0000-archive.md is excluded from the log" || fail "archive must be excluded"
 
 # 2. Missing NEXT/ directory -> non-zero exit.
 d="$(new_fixture)"; rm -rf "$d/NEXT"
