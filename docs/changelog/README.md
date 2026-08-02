@@ -105,6 +105,30 @@ orphaned tag, nothing published, `main` red thereafter (#309). The generated
 form derives every content assertion from the tree and is exercised against a
 fixture that performs a real release.
 
+## Where the engine is read from
+
+Both generated scripts pin two things: the contract commit, and the SHA-256 of
+`scripts/changelog.py` at that commit. Every path to the engine is checked against
+that digest before it is executed — a cache hit, a fresh download, and an explicit
+override alike.
+
+The cache path is keyed by commit, which reads as content-addressed but is not.
+Nothing prevents another tool, a restored CI cache, or an interrupted write from
+leaving different bytes at that path, and before the digest was pinned those bytes
+were executed as the contract on every subsequent run.
+
+`CHANGELOG_CONTRACT_PATH` selects **where** the engine is read from:
+
+```bash
+CHANGELOG_CONTRACT_PATH=/opt/vendor/changelog.py scripts/render-next.sh
+```
+
+It is for a vendored copy, an offline mirror, or a warmed CI cache. It cannot
+select **what** runs: an override whose bytes differ from the pinned digest is
+refused, naming the pin it failed against. So the guarantee the renderer is sold
+on — that it runs the same code CI validates with — holds regardless of the
+environment, which is what makes the override safe to offer at all (#304).
+
 ## Temporary migration compatibility
 
 During issue [#249](https://github.com/Verjson/.github/issues/249), validation

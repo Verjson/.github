@@ -10,7 +10,14 @@ set -uo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
 repo_root="$(cd "$here/../.." && pwd)"
 gen="$repo_root/scripts/gen-changelog-caller.sh"
-sha="0123456789abcdef0123456789abcdef01234567"
+# A ref that actually resolves. The generator pins the SHA-256 of the engine at
+# the contract commit (#304), so it must be able to read that commit's content —
+# a fictional SHA now fails generation by design. The assertions below are about
+# interpolation fidelity ("the ref passed is the ref emitted"), which a real SHA
+# exercises identically. `unresolvable_sha` keeps the old value for the case that
+# asserts the new fail-closed behaviour.
+sha="$(git -C "$repo_root" rev-parse HEAD)"
+unresolvable_sha="0123456789abcdef0123456789abcdef01234567"
 fails=0
 
 pass() { printf 'ok   - %s\n' "$1"; }
@@ -136,7 +143,11 @@ grep -q "CONTRACT_REF=\"$sha\"" "$emitted" \
 
 # Each grep below is one of the four shapes that made a hand-copied test a
 # release time bomb. None may reappear via the generator.
-grep -qE '[0-9a-f]{64}' "$emitted" \
+# The engine digest is exempt, and only it: CONTRACT_SHA256 pins the
+# implementation being executed, which no release changes. The shape this guards
+# against is an assertion pinned to repository CONTENT — a released entry's hash —
+# which every release invalidates (#304, #309).
+grep -v '^CONTRACT_SHA256="[0-9a-f]\{64\}"$' "$emitted" | grep -qE '[0-9a-f]{64}' \
   && fail "emitted test hardcodes a content hash of a released entry" \
   || pass "no hashed released entries (a release adds sections)"
 grep -qF '[ ! -e "$root/CHANGELOG.md" ]' "$emitted" \
@@ -285,6 +296,18 @@ printf '\nhand-written addition\n' >>"$edited/CHANGELOG.md"
 run_adopter "$edited" \
   && fail "emitted suite accepted a hand-edited CHANGELOG.md" \
   || pass "emitted suite rejects a hand-edited CHANGELOG.md"
+
+# Generation is fail-closed on an unresolvable ref: emitting a caller whose engine
+# cannot be verified would hand adopters a contract that only looks pinned.
+gen_err="$(mktemp)"
+if "$gen" renderer "$unresolvable_sha" >/dev/null 2>"$gen_err"; then
+  fail "generator emitted a caller for a ref whose engine it could not read"
+elif grep -q "cannot resolve" "$gen_err"; then
+  pass "generating for an unresolvable ref fails closed with a stated cause"
+else
+  fail "generation failed for an unstated reason: $(cat "$gen_err")"
+fi
+rm -f "$gen_err"
 
 [ "$fails" -eq 0 ] || exit 1
 echo "All tests passed."

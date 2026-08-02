@@ -42,6 +42,117 @@ ref="$2"
   exit 2
 }
 
+# The digest of the engine at the pinned commit. Resolved here, once, so every
+# generated script can verify what it is about to execute instead of trusting a
+# path. Local object first (the usual case: generating from a checkout that has
+# the ref), then the same URL the generated scripts use. No digest, no output —
+# emitting an unverifiable contract would be worse than emitting nothing.
+# Piped, never captured. `$(...)` strips trailing newlines, so hashing a captured
+# copy digests content the file does not have — every honest override would then
+# be rejected as divergent. Caught by the byte-identical-copy case in
+# changelog-contract-resolution.test.sh, which is why that case exists.
+resolve_contract_digest() {
+  local out
+  if out="$(git -C "$(dirname "$0")/.." show "$ref:scripts/changelog.py" 2>/dev/null | digest_of)" \
+    && [ -n "$out" ]; then
+    printf '%s' "$out"
+    return 0
+  fi
+  if out="$(curl -fsSL "https://raw.githubusercontent.com/Verjson/.github/$ref/scripts/changelog.py" 2>/dev/null | digest_of)" \
+    && [ -n "$out" ]; then
+    printf '%s' "$out"
+    return 0
+  fi
+  return 1
+}
+
+# sha256sum on Linux, shasum on macOS. A host with neither cannot verify, and an
+# unverified contract is not a contract.
+digest_of() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum | cut -d' ' -f1
+  elif command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 | cut -d' ' -f1
+  else
+    return 1
+  fi
+}
+
+contract_sha256="$(resolve_contract_digest)" || {
+  echo "$(basename "$0"): cannot resolve the contract digest at $ref" >&2
+  exit 1
+}
+[[ "$contract_sha256" =~ ^[0-9a-f]{64}$ ]] || {
+  echo "$(basename "$0"): resolved digest is not a sha256: $contract_sha256" >&2
+  exit 1
+}
+
+# The one place that decides which implementation runs. Emitted verbatim into
+# both the renderer and the contract test: two copies of this logic is the drift
+# #304 was filed about, one level down.
+#
+# Callers define contract_fail() and have $CONTRACT_REF and $CONTRACT_SHA256 in
+# scope; this sets $contract.
+emit_contract_resolution() {
+  cat <<'EOF'
+
+contract_digest_of() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum <"$1" | cut -d' ' -f1
+  elif command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 <"$1" | cut -d' ' -f1
+  else
+    return 1
+  fi
+}
+
+# Identity, not existence. The cache path is keyed by commit, which reads as
+# content-addressed but is not: nothing stops another tool, a restored CI cache,
+# or an interrupted write from leaving different bytes there, and they would then
+# be executed as the contract on every run.
+contract_is_pinned() {
+  [ -f "$1" ] || return 1
+  local got
+  got="$(contract_digest_of "$1")" || return 1
+  [ "$got" = "$CONTRACT_SHA256" ]
+}
+
+# CHANGELOG_CONTRACT_PATH selects WHERE the engine comes from — a vendored copy,
+# an offline mirror, a warmed CI cache — and cannot select WHAT runs, because the
+# override is held to the digest pinned at $CONTRACT_REF. So it stays useful to
+# an air-gapped or cache-restoring consumer while the guarantee the renderer is
+# sold on ("the same code CI validates with") holds unconditionally (#304).
+if [ -n "${CHANGELOG_CONTRACT_PATH:-}" ]; then
+  contract="$CHANGELOG_CONTRACT_PATH"
+  [ -e "$contract" ] \
+    || contract_fail "CHANGELOG_CONTRACT_PATH is $contract, which does not exist"
+  contract_is_pinned "$contract" \
+    || contract_fail "CHANGELOG_CONTRACT_PATH ($contract) is not the contract pinned at $CONTRACT_REF"
+else
+  cache_dir="${XDG_CACHE_HOME:-$HOME/.cache}/verjson-changelog/$CONTRACT_REF"
+  contract="$cache_dir/changelog.py"
+  if ! contract_is_pinned "$contract"; then
+    mkdir -p "$cache_dir"
+    # mktemp, not a fixed name: concurrent runs share this cache directory.
+    tmp="$(mktemp "$cache_dir/.changelog.XXXXXX")"
+    if ! curl -fsSL \
+      "https://raw.githubusercontent.com/Verjson/.github/$CONTRACT_REF/scripts/changelog.py" \
+      -o "$tmp"; then
+      rm -f "$tmp"
+      contract_fail "cannot fetch the changelog contract at $CONTRACT_REF"
+    fi
+    # Verify before publishing into the cache, so a bad fetch is never persisted
+    # for the next run to trust.
+    if ! contract_is_pinned "$tmp"; then
+      rm -f "$tmp"
+      contract_fail "fetched contract does not match the digest pinned at $CONTRACT_REF"
+    fi
+    mv "$tmp" "$contract"
+  fi
+fi
+EOF
+}
+
 emit_workflow() {
   cat <<EOF
 name: changelog
@@ -73,6 +184,7 @@ emit_renderer() {
 set -euo pipefail
 
 CONTRACT_REF="${ref}"
+CONTRACT_SHA256="${contract_sha256}"
 
 if [ "\$#" -gt 0 ]; then
   echo "render-next: unexpected argument '\$1'" >&2
@@ -80,22 +192,11 @@ if [ "\$#" -gt 0 ]; then
 fi
 
 root="\$(cd "\$(dirname "\$0")/.." && pwd)"
-cache_dir="\${XDG_CACHE_HOME:-\$HOME/.cache}/verjson-changelog/\$CONTRACT_REF"
-contract="\$cache_dir/changelog.py"
 
-# Addressed by commit, so a cached copy cannot go stale: a new pin is a new path.
-if [ ! -f "\$contract" ]; then
-  mkdir -p "\$cache_dir"
-  url="https://raw.githubusercontent.com/Verjson/.github/\$CONTRACT_REF/scripts/changelog.py"
-  # mktemp, not a fixed name: two concurrent renders share this cache directory.
-  tmp="\$(mktemp "\$cache_dir/.changelog.XXXXXX")"
-  if ! curl -fsSL "\$url" -o "\$tmp"; then
-    rm -f "\$tmp"
-    echo "render-next: cannot fetch the changelog contract at \$CONTRACT_REF" >&2
-    exit 1
-  fi
-  mv "\$tmp" "\$contract"
-fi
+contract_fail() { echo "render-next: \$1" >&2; exit 1; }
+EOF
+  emit_contract_resolution
+  cat <<EOF
 
 exec python3 "\$contract" render-next --repo-root "\$root"
 EOF
@@ -123,31 +224,21 @@ emit_contract_test() {
 set -euo pipefail
 
 CONTRACT_REF="${ref}"
+CONTRACT_SHA256="${contract_sha256}"
 EOF
   cat <<'EOF'
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
-cache_dir="${XDG_CACHE_HOME:-$HOME/.cache}/verjson-changelog/$CONTRACT_REF"
-contract="$cache_dir/changelog.py"
 renderer="$root/scripts/render-next.sh"
 validation_workflow="$root/.github/workflows/changelog.yml"
 release_workflow="$root/.github/workflows/release.yml"
 
 fail() { echo "FAIL - $1" >&2; exit 1; }
 
-# Addressed by commit, so a cached copy cannot go stale: a new pin is a new path.
-if [ ! -f "$contract" ]; then
-  mkdir -p "$cache_dir"
-  # mktemp, not a fixed name: two concurrent runs share this cache directory.
-  tmp="$(mktemp "$cache_dir/.changelog.XXXXXX")"
-  if ! curl -fsSL \
-    "https://raw.githubusercontent.com/Verjson/.github/$CONTRACT_REF/scripts/changelog.py" \
-    -o "$tmp"; then
-    rm -f "$tmp"
-    fail "cannot fetch the changelog contract at $CONTRACT_REF"
-  fi
-  mv "$tmp" "$contract"
-fi
+contract_fail() { fail "$1"; }
+EOF
+  emit_contract_resolution
+  cat <<'EOF' 
 
 work="$(mktemp -d)"
 fixture_root="$(mktemp -d)"
