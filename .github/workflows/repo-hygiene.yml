@@ -49,6 +49,16 @@ jobs:
     runs-on: ${{ inputs.runner != '' && fromJSON(inputs.runner) || github.repository_owner != 'Verjson' && 'ubuntu-24.04' || github.event.repository.private == true && fromJSON(vars.VERJSON_RUNNER_DEFAULT || '["self-hosted","general"]') || fromJSON(vars.VERJSON_RUNNER_UNTRUSTED || vars.VERJSON_RUNNER_DEFAULT || '["self-hosted","general"]') }}
     timeout-minutes: 5
     steps:
+      - name: Validate the immutable policy ref
+        env:
+          HYGIENE_REF: ${{ inputs.hygiene_ref }}
+        run: |
+          set -euo pipefail
+          if ! [[ "$HYGIENE_REF" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::hygiene_ref must be a full lowercase commit SHA; branches and tags are mutable"
+            exit 2
+          fi
+
       # The tree under audit. On a pull_request this is the merge result, which
       # is the point: a PR that DELETES the README leaves no added line to
       # inspect, but the resulting tree has no README.
@@ -77,9 +87,9 @@ jobs:
       # could pin that PR ref. That would make an exemption a claim the audited
       # repository makes about itself, which is exactly what ADR 0046 says an
       # exemption is not, and it would let the audited repo choose the script
-      # that audits it. Requiring a 40-hex SHA is NOT sufficient: a PR-branch
-      # commit is a SHA too. Reachability from the default branch is the real
-      # property — it is what "reviewed and merged" means.
+      # that audits it. Requiring a 40-hex SHA is necessary but NOT sufficient:
+      # a PR-branch commit is a SHA too. Reachability from the default branch is
+      # the second property — it is what "reviewed and merged" means.
       #
       # Same idiom the merge gate uses for submodule gitlinks: `identical` or
       # `behind` means the commit is an ancestor of main. Anything else — or an

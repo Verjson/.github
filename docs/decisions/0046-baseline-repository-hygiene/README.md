@@ -127,13 +127,15 @@ that ref would be self-exempting through the central register, which is precisel
 what this section says an exemption is not; the same ref also supplies the script
 that does the auditing.
 
-Requiring `hygiene_ref` to be a 40-character SHA does **not** close this: a commit
-on an unmerged PR branch is a SHA too. The property that actually matters is
-**reachability from the default branch**, which is what "reviewed and merged"
-means. The workflow therefore resolves the checked-out policy commit and requires
-`compare/main...<sha>` to report `identical` or `behind` — the same idiom the
-merge gate uses to verify submodule gitlinks. An unreadable comparison is a fault,
-never a pass.
+The caller must supply a full lowercase 40-character SHA; branches and tags are
+mutable and could silently select different policy code on a later run. That
+shape check runs before any checkout. It is necessary but not sufficient: a
+commit on an unmerged PR branch is a SHA too. The workflow therefore also
+resolves the checked-out policy commit and requires `compare/main...<sha>` to
+report `identical` or `behind`, which proves reachability from the default branch
+and therefore "reviewed and merged". An unreadable comparison is a fault, never a
+pass. Both boundaries are enforced by extraction-based behavioral tests added
+with [#351](https://github.com/Verjson/.github/issues/351).
 
 ### 3a. Sections are read with markdown block context
 
