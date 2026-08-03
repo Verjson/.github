@@ -132,8 +132,10 @@ if [ "${1:-}" = "api" ]; then
     */actions/artifacts/*/zip*)
       printf 'zip-bytes\n'; exit 0 ;;
     */actions/runs\?head_sha=*)
+      [ "${HEAD_RUNS_RC:-0}" -eq 0 ] || exit "$HEAD_RUNS_RC"
       emit "{\"workflow_runs\":$(cat "$RUNS_FILE")}" ;;
     */actions/runs/*)
+      [ "${SOURCE_RUN_RC:-0}" -eq 0 ] || exit "$SOURCE_RUN_RC"
       emit "$(jq -c '.[0]' "$RUNS_FILE")" ;;
   esac
 fi
@@ -187,6 +189,8 @@ reset_fixtures() {
   BASE_REF=main
   RULES_RC=0
   PULLS_RC=0
+  HEAD_RUNS_RC=0
+  SOURCE_RUN_RC=0
   BASE_REF_FINAL=""
 }
 
@@ -206,7 +210,7 @@ run_case() { # run_case <event-name>
   # enough attempts to prove the loop reaches its terminal state.
   export MERGE_WAIT_ATTEMPTS=2
   export TRUSTED_WF_ID TRUSTED_REPO_ID TRUSTED_SHA BASE_REF BASE_REF_FINAL
-  export RULES_RC PULLS_RC
+  export RULES_RC PULLS_RC HEAD_RUNS_RC SOURCE_RUN_RC
   export RULES_FILE="$tmp/rules.json" RULES_FINAL_FILE="$tmp/rules-final.json"
   export RUNS_FILE="$tmp/runs.json"
   export META_FILE="$tmp/meta.json" META_FINAL_FILE="$tmp/meta-final.json"
@@ -265,6 +269,14 @@ assert_merged "dispatched continuation trusts an org required-workflow gate run 
 
 run_case pull_request_target
 assert_merged "pull_request_target path trusts an org required-workflow gate run and merges"
+
+SOURCE_RUN_RC=127
+run_case workflow_dispatch
+assert_rejected "a dispatched gate lookup that loses gh fails immediately" "result=toolchain-missing"
+
+HEAD_RUNS_RC=127
+run_case pull_request_target
+assert_rejected "a pull-request gate lookup that loses gh fails immediately" "result=toolchain-missing"
 
 # ADR 0023's defer lane must release both long-running jobs. The gate preflight
 # needs status-read permission to classify the head, and privileged_merge must

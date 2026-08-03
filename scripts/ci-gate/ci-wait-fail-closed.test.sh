@@ -111,6 +111,18 @@ fi
 exit 0
 GH
 chmod +x "$tmp/bin/gh"
+real_jq="$(command -v jq)"
+export REAL_JQ="$real_jq"
+cat >"$tmp/bin/jq" <<'JQ'
+#!/usr/bin/env bash
+if [ "${JQ_FAIL_AGGREGATE:-false}" = true ]; then
+  for arg in "$@"; do
+    [ "$arg" = self_jobs ] && exit 127
+  done
+fi
+exec "$REAL_JQ" "$@"
+JQ
+chmod +x "$tmp/bin/jq"
 printf '#!/usr/bin/env bash\nexit 0\n' >"$tmp/bin/sleep"
 chmod +x "$tmp/bin/sleep"
 
@@ -141,6 +153,7 @@ no_startup_failures="{\"total_count\":2,\"workflow_runs\":[
 run_wait() {
   # run_wait <rollup-json> [runs-api-json] [suites-rc]
   export PATH="$tmp/bin:$PATH" TARGET_REPO="Verjson/foo" PR_NUMBER=7 LANE=ai
+  export REAL_JQ="$real_jq"
   export GITHUB_EVENT_NAME="${TEST_EVENT_NAME:-pull_request}"
   export ROLLUP_FILE="$tmp/rollup.json" SUITES_FILE="$tmp/suites.json"
   export META_FILE="$tmp/meta.json" ACTIONLOG="$tmp/actions.log"
@@ -177,6 +190,15 @@ rc="$(run_wait '[]')"
 
 # --- #143: a startup_failure run emits no check run — probe for it directly ---
 green_rollup='[{"name":"unit","status":"COMPLETED","conclusion":"SUCCESS"}]'
+
+JQ_FAIL_AGGREGATE=true
+export JQ_FAIL_AGGREGATE
+rc="$(run_wait "$green_rollup")"
+unset JQ_FAIL_AGGREGATE
+{ [ "$rc" = "rc=1" ] && wait_out_has 'result=toolchain-missing' && wait_out_has 'aggregate_shape_rc=127'; } \
+  && pass "aggregation-time jq loss is terminal instead of consuming the poll budget" \
+  || fail "aggregation-time jq loss still retries as an API outage ($rc)"
+
 startup='{"total_count":2,"workflow_runs":[
   {"name":"unit","conclusion":"success","head_sha":"0123456789abcdef0123456789abcdef01234567"},
   {"name":"node-ci","conclusion":"startup_failure","head_sha":"0123456789abcdef0123456789abcdef01234567"}
