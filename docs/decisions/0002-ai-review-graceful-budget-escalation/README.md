@@ -40,6 +40,19 @@ a real verdict):
    the verdict as soon as it is supportable) cut the agentic wandering that
    drove the per-turn token cost.
 
+### Evidence boundary correction (2026-08-03)
+
+The review workspace is checked out at the pull-request head. It is not evidence
+of what the base branch contains. On
+[#377](https://github.com/Verjson/.github/issues/377), the model compared the PR
+post-images to `HEAD`, found the expected byte-for-byte match, and blocked the PR
+as already merged even though remote `main` still pointed at the PR's base
+commit. The prompt now names this boundary explicitly and forbids lifecycle
+verdicts that infer the PR submission is stale, duplicate, closed, or already
+merged. Deterministic API code already owns open/closed/merged state, head
+freshness, and the matched-head merge. This does not suppress review of
+duplicate-processing or idempotency defects in the proposed behavior.
+
 ## Effective before → current (sensitive hunks)
 
 ```diff
