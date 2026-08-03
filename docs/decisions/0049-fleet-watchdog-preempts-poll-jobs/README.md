@@ -2,15 +2,20 @@
 
 - **Date:** 2026-08-03
 - **Issue:** [Verjson/.github#336](https://github.com/Verjson/.github/issues/336)
-- **Extends:** ADR 0048 (covers the private repositories its visibility split cannot reach)
+- **Amends:** ADR 0048 (covers the private repositories its visibility split cannot reach)
 - **Status:** accepted, and deliberately temporary — see *Retirement*
 
 ## Context
 
 ADR 0048 removed the poll deadlock for public targets by routing merge-gate
 jobs to elastic hosted capacity, where sleepers cannot starve anyone. Measuring
-the organization after it landed showed how little that covers: **88 of the 90
-repositories here are private**. The fix reaches two.
+the organization after it landed showed how little that covers: of 91
+repositories, **89 are private and 2 are public**. The fix reaches two.
+
+(#336's fragment, `scripts/fleet-watchdog.sh` and the watchdog workflow all say
+"88 of 90", which is `owned_private_repos` rather than `total_private_repos`.
+The ratio is the point and it is unchanged, but the three should be corrected to
+one enumeration.)
 
 Everything else still contends for six self-hosted runners on which `gate` and
 `privileged_merge` sleep for 10–40 minutes while polling for checks they cannot
@@ -36,8 +41,15 @@ when all four conditions hold:
    and little work is discarded.
 3. **The pool has no idle runner.** Preemption with capacity to spare buys
    nothing and costs a run.
-4. **Something is actually queued behind it.** Without a waiter there is no jam
-   to clear.
+4. **Something is queued.** Without a waiter there is no jam to clear.
+
+   Two honest limits on that fourth condition, both weaker than the intent: the
+   queue count is an **organization-wide sum across every repository and every
+   fleet**, so a run queued for *hosted* capacity — which no self-hosted
+   preemption can help — still authorizes a sweep. And once a sweep is
+   authorized the watchdog cancels **every** candidate rather than enough to
+   break the tie. "Queued behind it" is the intent; "something, somewhere, is
+   queued" is the implementation.
 
 **An unreadable runner list is a fault, not a licence to cancel.** If the
 watchdog cannot determine fleet state it refuses to act. The alternative —
@@ -62,22 +74,37 @@ clear. This repository is public, so under ADR 0048 those minutes are free.
   to it by mistake makes the watchdog destructive. Changes to that list are
   security-relevant review, not configuration.
 - `VERJSON_WATCHDOG_DRY_RUN` is intended to gate the cancel path, defaulting to
-  a dry run. **As shipped it does not.** Both the script (`:-false`) and the
-  workflow expression default to armed, and on a scheduled run the expression
-  short-circuits before it ever reads the variable, so the kill switch is inert.
-  #336's changelog fragment asserts the opposite. Tracked in
+  a dry run. **On the scheduled path — the only automatic one — it does not.**
+  The script defaults to `:-false`, and the workflow expression short-circuits
+  on `inputs.dry_run == false` before it ever reads the variable. The
+  `workflow_dispatch` path does default to dry, so the guard works exactly where
+  a human is already watching and fails where nobody is. No
+  `VERJSON_WATCHDOG_*` variable exists at organization or repository scope, so
+  there is no kill switch on any path. #336's fragment and the watchdog
+  workflow's own header comment both assert the opposite, and that comment names
+  an input (`watchdog_dry_run`) that does not exist. Tracked in
   [#342](https://github.com/Verjson/.github/issues/342); this ADR records the
   decision, not the defect, and the defect must be fixed rather than adopted.
 - **The 35-minute threshold cannot reach a polling AI-lane gate**, whose CI wait
-  is bounded at 30 minutes. Past 35 minutes such a gate is running the model
-  review, so the watchdog's only reachable AI-lane target is a job doing real
-  work. Age is a proxy for the wrong property: a gate is preemptable when it is
-  *waiting*, not when it is *old*. Tracked in
+  is bounded at 30 minutes (`max_attempts=60` × 30 s). Past 35 minutes such a
+  gate is running the model review, so *in that lane* the only reachable target
+  is a job doing real work. This does **not** generalize: a fast-lane gate
+  (`max_attempts=80`) and a `privileged_merge` loop both poll for 40 minutes, so
+  each is a correct target in a 35–40 minute window. A public target's gate runs
+  hosted under ADR 0048 and is still a candidate, where cancelling frees no
+  self-hosted capacity at all. Age is a proxy for the wrong property — a job is
+  preemptable when it is *waiting*, not when it is *old*. Tracked in
   [#343](https://github.com/Verjson/.github/issues/343).
 - The `*/15` schedule does not deliver every 15 minutes. Observed runs on
-  2026-08-03 were 05:59 and 10:01 — ordinary scheduled-workflow
-  deprioritization. A jam that forms and clears inside 30 minutes is invisible
-  to it.
+  2026-08-03 were 05:59, 10:01 and 13:20 — a few a day rather than ninety-six,
+  ordinary scheduled-workflow deprioritization. A jam that forms and clears
+  inside 30 minutes is usually invisible to it.
+- **The watchdog is armed and cancelling for as long as #342 is open.** No
+  cancellation has been observed yet — every run so far exited at condition 3
+  with idle capacity — so its destructive path has no production evidence
+  behind it. If #342 cannot be fixed promptly, disabling the schedule is the
+  cheaper mitigation than leaving an unexercised cross-repository canceller
+  running unattended.
 - ADR 0033's blanket "a Verjson job never reaches hosted" is already retired by
   ADRs 0047 and 0048. `runner-routing-policy.test.sh` was narrowed to assert the
   property that still holds — no job reaches hosted *by accident*, and every
@@ -102,10 +129,12 @@ watchdog *does* cancel when every condition is met.
 ## Status of the mechanism as recorded
 
 This ADR is written after the fact, and the honest record is that the mechanism
-does not yet do what the decision says. Three defects were found while writing
-it, all in the wiring rather than the reasoning: it is armed instead of dry-run
-(#342), its age threshold cannot reach the job class it targets (#343), and its
-schedule fires roughly twice a day rather than every 15 minutes (#343).
+does not yet do what the decision says. The defects found while writing it are
+all in the wiring rather than the reasoning: it is armed instead of dry-run on
+its only automatic path (#342), its age threshold cannot reach a polling
+AI-lane gate (#343), its schedule fires a few times a day rather than every 15
+minutes (#343), and its queue condition is organization-wide rather than
+"behind this job".
 
 That is worth recording rather than quietly fixing, because the shape recurs
 here: the argument in the fragment is sound, the implementation inverts a
