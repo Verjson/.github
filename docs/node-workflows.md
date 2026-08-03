@@ -51,11 +51,11 @@ any end-of-job size guard.
 | Tier | Workload | Route | Cache and credential posture |
 |---|---|---|---|
 | Isolated | Public repositories, fork PRs, or sensitive untrusted validation | Fixed GitHub-hosted image until the one-job ephemeral lane in `Verjson/verjson-github-runner#33` is proven | Fresh filesystem; no inherited secrets, cloud metadata, internal network, or host Docker socket |
-| Trusted | Same-repository PRs and releases in selected private repositories | `["self-hosted","GCP"]` in a selected-repository runner group | Actions cache off; explicit least-privilege job permissions; no release secrets in PR jobs |
+| Trusted | Same-repository PRs and releases in selected private repositories | `["self-hosted","general"]` in a selected-repository runner group | Actions cache off; explicit least-privilege job permissions; no release secrets in PR jobs |
 | Fast | Low-risk trusted validation that can share setup | Trusted route with one consolidated job | Install/generate once; local npm cache only; stale-run cancellation |
 
 Runner labels describe capability, but runner-group access is the authorization
-boundary. Public repositories must not receive the persistent GCP group merely
+boundary. Public repositories must not receive the persistent general group merely
 because a workflow names its labels. Third-party actions and reusable workflows
 remain full-SHA or immutable-release pinned.
 

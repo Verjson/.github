@@ -76,7 +76,7 @@ export UNTRUSTED_VAR='{"value":"[\"self-hosted\",\"general\"]","visibility":"all
 # has to be an undetermined result rather than a clean one.
 export G1_GROUP='{"id":1,"name":"GitHub","visibility":"all","allows_public_repositories":true,"default":true}'
 export G1_RUNNERS=''
-export G4_GROUP='{"id":4,"name":"GCP","visibility":"all","allows_public_repositories":true,"default":false}'
+export G4_GROUP='{"id":4,"name":"general","visibility":"all","allows_public_repositories":true,"default":false}'
 export G6_GROUP='{"id":6,"name":"isolated","visibility":"selected","allows_public_repositories":true}'
 # Member/runner fixtures are what `gh api --paginate --jq` emits: one element
 # per line, concatenated across pages. Multiple lines therefore ARE the
@@ -98,14 +98,14 @@ out="$(run_case)"
   && pass "organization-wide permissive group admits new private and public repositories" \
   || fail "clean permissive policy did not reconcile: $out"
 
-G4_GROUP='{"id":4,"name":"GCP","visibility":"all","allows_public_repositories":false}'
+G4_GROUP='{"id":4,"name":"general","visibility":"all","allows_public_repositories":false}'
 out="$(run_case)"
 [ "$(code_of)" = "1" ] \
   && grep -qF 'Verjson/public-app' <<<"$out" \
   && pass "public repository denied by group is reported as drift" \
   || fail "public admission drift not reported: $out"
 
-G4_GROUP='{"id":4,"name":"GCP","visibility":"selected","allows_public_repositories":true}'
+G4_GROUP='{"id":4,"name":"general","visibility":"selected","allows_public_repositories":true}'
 # Two lines == two pages: the repo under test sits on the FIRST page, which is
 # precisely what a per-page collector would drop.
 G4_MEMBERS=$'Verjson/public-app\nVerjson/some-other-repo'
@@ -115,7 +115,7 @@ out="$(run_case)"
   && pass "new private repository missing from selected group is reported" \
   || fail "selected-group new repository gap not reported: $out"
 
-G4_GROUP='{"id":4,"name":"GCP","visibility":"all","allows_public_repositories":true}'
+G4_GROUP='{"id":4,"name":"general","visibility":"all","allows_public_repositories":true}'
 G4_MEMBERS=''
 G4_RUNNERS='{"name":"general-1","status":"offline","labels":["self-hosted","general"]}'
 out="$(run_case)"
@@ -188,7 +188,7 @@ DELETED_GROUPS='4'
 DEFAULT_VAR='{"value":"[\"self-hosted\",\"lane-general\"]","visibility":"all"}'
 out="$(run_case)"
 [ "$(code_of)" = "2" ] \
-  && grep -qF 'GCP' <<<"$out" \
+  && grep -qF 'general' <<<"$out" \
   && pass "the general lane's group going missing fails closed, naming the group" \
   || fail "missing general group was not reported by name: $out"
 

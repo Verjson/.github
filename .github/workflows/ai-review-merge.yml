@@ -1513,7 +1513,7 @@ jobs:
             }' > .telemetry/ai-review.json
 
       # NOTE: OTLP emit temporarily removed. `uses: Verjson/verjson-observability`
-      # resolves on the gce runners but NOT on gha-meta-1 (used for this repo's
+      # resolves on the general runners but NOT on gha-meta-1 (used for this repo's
       # own PRs + workflow_dispatch), and `uses:` resolution at job-setup is not
       # guarded by continue-on-error, so it failed the whole ai-review job on
       # meta. The payload is still built above (dormant). Re-add the emit step

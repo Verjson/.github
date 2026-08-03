@@ -9,7 +9,7 @@ ORG="${ORG:-Verjson}"
 # Ids are not stable over an org's lifetime: group 6 (`isolated`) was deleted on
 # 2026-07-31 and this job went undetermined on every run afterwards (#266). The
 # names stay overridable so a rename is a config change, not a code change.
-GENERAL_GROUP_NAME="${GENERAL_GROUP_NAME:-GCP}"
+GENERAL_GROUP_NAME="${GENERAL_GROUP_NAME:-general}"
 UNTRUSTED_GROUP_NAME="${UNTRUSTED_GROUP_NAME:-isolated}"
 
 die_undetermined() {

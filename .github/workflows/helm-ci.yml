@@ -142,7 +142,7 @@ jobs:
           KUBECONFORM_VERSION: ${{ inputs.kubeconform-version }}
         run: |
           # Install the kubeconform binary directly rather than a docker://
-          # container action: the GCP self-hosted pool has no docker-group
+          # container action: the general self-hosted pool has no docker-group
           # access, so a container action cannot reach the socket. Pinned (not
           # `latest`) because a bad release would hit every chart repo at once.
           curl -fsSL "https://github.com/yannh/kubeconform/releases/download/${KUBECONFORM_VERSION}/kubeconform-linux-amd64.tar.gz" \
