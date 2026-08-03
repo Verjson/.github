@@ -61,10 +61,13 @@ non-trivial or fanned-out work autonomously:
 - [#279](https://github.com/Verjson/.github/issues/279) — Attestation provenance: closed for the required-workflow shape (ADR 0044); open for the reusable-caller shape, which no repo uses yet.
 - [#281](https://github.com/Verjson/.github/issues/281) — ADR 0028 decision 6 (public merge gate on hosted) has lapsed with no superseding decision.
 - [#292](https://github.com/Verjson/.github/issues/292) — Re-review skip never fires: `gh api user` cannot resolve an identity under `github.token`, so every head change re-pays for an unchanged diff.
-- [#300](https://github.com/Verjson/.github/issues/300) — `v2.1.1` was promised by ADR 0014 and never cut, so the documented exact pin lacks the #164 eligibility fix.
 - [#303](https://github.com/Verjson/.github/issues/303) — `ai-review-merge.yml` has no `workflow_files_changed` guard on its own direct merge path; ADR 0044 depends on that guard.
 - [#312](https://github.com/Verjson/.github/issues/312) — `ref_is_immutable` accepts abbreviated SHAs; no test covers it.
 - [#317](https://github.com/Verjson/.github/issues/317) — Snapshot repair is documented and pre-contract snapshots accepted; open only for the `verjson-agents` repair (tracked in `Verjson/verjson-agents#151`).
+- [#340](https://github.com/Verjson/.github/issues/340) — `repo-hygiene.test.sh` commits to the repository it is run from; do not run it in a live checkout until fixed.
+- [#341](https://github.com/Verjson/.github/issues/341) — Retire the fleet watchdog: the gate should re-enter on `workflow_run: completed` instead of holding a runner while polling.
+- [#342](https://github.com/Verjson/.github/issues/342) — The watchdog's dry-run guard is unreachable, so it is live and armed with no evidence behind its cancel path.
+- [#343](https://github.com/Verjson/.github/issues/343) — The watchdog's 35-minute threshold cannot preempt a polling AI-lane gate; it can only reach gates doing model review.
 
 Prune an entry when its issue closes. This list loads into every session, so a
 closed entry costs context in each one and misreports the state of the work.
