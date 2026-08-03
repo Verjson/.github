@@ -61,7 +61,19 @@ concurrency:
 
 jobs:
   shell-tests:
-    runs-on: [self-hosted, general]
+    # Fast lane (ADR 0047). This suite is ~4 minutes of pure CPU with no network
+    # wait, but on the shared `general` pool it queued behind `gate` and
+    # `privileged_merge` jobs that hold a runner for 10-40 minutes while merely
+    # POLLING. Short workers were evicted by long sleepers, and the repository
+    # that ships fleet-wide fixes was the one waiting on the fleet.
+    #
+    # `.github` is public, so GitHub-hosted minutes here are free (billing
+    # measured 2026-08-01; ADR 0033's "hosted is unfunded" premise is false for
+    # public repos). Routed through a VARIABLE, not a hardcoded label, so the
+    # lane is repointed at a self-hosted pool by setting VERJSON_RUNNER_FASTLANE
+    # without touching this file — and an unset variable falls back to the
+    # ADR 0034 general pool rather than failing.
+    runs-on: ${{ fromJSON(vars.VERJSON_RUNNER_FASTLANE || vars.VERJSON_RUNNER_DEFAULT || '["self-hosted","general"]') }}
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7

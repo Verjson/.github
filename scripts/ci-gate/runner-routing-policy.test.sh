@@ -45,9 +45,15 @@ grep -qF "github.repository_owner != 'Verjson'" "$workflows/actionlint.yml" \
   && pass "actionlint preserves its bounded external hosted compatibility path" \
   || fail "actionlint runner contract drifted"
 
-grep -qF 'runs-on: [self-hosted, general]' "$workflows/actions-ci.yml" \
-  && pass "repository shell validation uses the temporary general pool" \
-  || fail "actions-ci drifted from the temporary ADR 0034 runner exception"
+# ADR 0047 moves this suite off the shared pool. The contract is that it routes
+# through a VARIABLE with a fallback chain, never a hardcoded label: the lane has
+# to be repointable at a self-hosted pool from org settings alone, and an unset
+# variable must degrade to the ADR 0034 general pool rather than to nothing.
+grep -qF 'vars.VERJSON_RUNNER_FASTLANE || vars.VERJSON_RUNNER_DEFAULT' "$workflows/actions-ci.yml" \
+  && grep -qF "'[\"self-hosted\",\"general\"]'" "$workflows/actions-ci.yml" \
+  && ! grep -qF 'runs-on: [self-hosted, general]' "$workflows/actions-ci.yml" \
+  && pass "repository shell validation routes through the fast-lane variable with a general fallback" \
+  || fail "actions-ci fast-lane routing drifted (ADR 0047)"
 
 for local_workflow in \
   node-cache-integration.yml \
