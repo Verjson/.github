@@ -204,3 +204,5 @@ jobs:
         run: bash scripts/fleet-watchdog.test.sh
       - name: Repository hygiene — README policy, exemption register, audit default (#232, ADR 0046)
         run: bash scripts/repo-hygiene.test.sh
+      - name: Repository hygiene — immutable merged policy ref (#351, ADR 0046)
+        run: bash scripts/ci-gate/repo-hygiene-ref.test.sh
