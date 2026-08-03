@@ -35,7 +35,7 @@ The repository ships all `.github/actions/*` actions and
 release when reproducibility matters:
 
 ```yaml
-uses: Verjson/.github/.github/workflows/node-ci.yml@v2.1.0
+uses: Verjson/.github/.github/workflows/node-ci.yml@v2.2.0
 ```
 
 `@v2` is the moving major alias: it receives every compatible v2 release without
