@@ -9,6 +9,7 @@ fails=0
 pass() { printf 'ok   - %s\n' "$1"; }
 fail() { printf 'FAIL - %s\n' "$1"; fails=$((fails + 1)); }
 
+preflight="$(awk '/^  preflight:/{cap=1} cap&&/^  gate:/{exit} cap{print}' "$wf")"
 gate="$(awk '/^  gate:/{cap=1} cap&&/^  dispatch-merge:/{exit} cap{print}' "$wf")"
 dispatch="$(awk '/^  dispatch-merge:/{cap=1} cap{print}' "$wf")"
 
@@ -21,11 +22,14 @@ grep -q '^      actions: read$' <<<"$gate" \
   && pass "PR checkout/review gate has actions/checks/statuses read only" \
   || fail "PR checkout/review gate permission placement drifted"
 [ "$(grep -c '^      checks: read$' "$wf")" -eq 1 ] \
-  && [ "$(grep -c '^      statuses: read$' "$wf")" -eq 1 ] \
+  && [ "$(grep -c '^      statuses: read$' "$wf")" -eq 2 ] \
+  && grep -q '^      statuses: read$' <<<"$preflight" \
+  && ! grep -qE '^      checks: (read|write)$' <<<"$preflight" \
+  && ! grep -q '^      statuses: write$' <<<"$preflight" \
   && ! grep -qE '^      checks: (read|write)$' <<<"$dispatch" \
   && ! grep -qE '^      statuses: (read|write)$' <<<"$dispatch" \
-  && pass "checks/statuses read permissions are isolated to the PR review gate" \
-  || fail "checks/statuses permission escaped the PR review gate"
+  && pass "status reads are limited to classification/review; check reads stay in review" \
+  || fail "checks/statuses permission escaped the classification/review boundary"
 [ "$(grep -c '^      actions: write$' "$wf")" -eq 1 ] \
   && grep -q '^      contents: read$' <<<"$dispatch" \
   && pass "only dispatch job has minimum contents/read + actions/write" \

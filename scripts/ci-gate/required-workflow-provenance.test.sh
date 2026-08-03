@@ -23,6 +23,7 @@ set -uo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
 repo_root="$(cd "$here/../.." && pwd)"
 wf="$repo_root/.github/workflows/ai-privileged-merge.yml"
+gate_wf="$repo_root/.github/workflows/ai-review-merge.yml"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 fails=0
@@ -164,6 +165,13 @@ meta_open="$(cat <<JSON
    {"name":"privileged_merge","status":"COMPLETED","conclusion":"CANCELLED"}]}
 JSON
 )"
+active_gate_run="$(jq -c '.[0].status = "in_progress" | .[0].conclusion = null' \
+  <<<"$required_workflow_run")"
+meta_active_stability_pending="$(jq -c '
+  (.statusCheckRollup[] | select(.name == "gate")) |=
+    (.status = "IN_PROGRESS" | .conclusion = null) |
+  .statusCheckRollup += [{"context":"renovate/stability-days","state":"PENDING"}]
+' <<<"$meta_open")"
 
 attestation="$(cat <<JSON
 {"version":1,"repository":"$CONSUMER","pr_number":18,"head_sha":"$HEAD_SHA","run_id":$GATE_RUN_ID,"followups":[]}
@@ -257,6 +265,37 @@ assert_merged "dispatched continuation trusts an org required-workflow gate run 
 
 run_case pull_request_target
 assert_merged "pull_request_target path trusts an org required-workflow gate run and merges"
+
+# ADR 0023's defer lane must release both long-running jobs. The gate preflight
+# needs status-read permission to classify the head, and privileged_merge must
+# terminate instead of polling the same scheduler status for 80 attempts.
+RUNS="$active_gate_run"
+META="$meta_active_stability_pending"
+run_case pull_request_target
+if [ "$(cat "$tmp/view.count")" = "1" ]; then
+  assert_noop "pending stability-days is a terminal privileged-merge defer" "privileged merge deferred"
+else
+  fail "pending stability-days polled PR state more than once"
+fi
+
+# The continuation is workflow_dispatch even when the source gate was automatic;
+# it must still release the runner rather than treating its event as human intent.
+RUNS="$active_gate_run"
+META="$meta_active_stability_pending"
+run_case workflow_dispatch
+if [ "$(cat "$tmp/view.count")" = "1" ]; then
+  assert_noop "automatic workflow_dispatch continuation also defers stability-days" "privileged merge deferred"
+else
+  fail "automatic continuation polled PR state more than once while stability-days was pending"
+fi
+
+for red_stability in \
+  '{"context":"renovate/stability-days","state":"ERROR"}' \
+  '{"name":"renovate/stability-days","status":"COMPLETED","conclusion":"FAILURE"}'; do
+  META="$(jq -c --argjson check "$red_stability" '.statusCheckRollup += [$check]' <<<"$meta_open")"
+  run_case workflow_dispatch
+  assert_rejected "failed stability-named check is never treated as a defer" "required check failed"
+done
 
 # --- every clause of the organization-ruleset trust anchor -----------------
 RULES="[$(org_entry Organization Verjson 999 refs/heads/main)]"
@@ -387,6 +426,15 @@ assert_rejected "stale head still fails closed" "stale head"
 grep -q 'merge_wait_attempts="${MERGE_WAIT_ATTEMPTS:-80}"' "$wf" \
   && pass "shipped wait bound defaults to 80 attempts" \
   || fail "the production merge wait bound drifted from its 80-attempt default"
+
+preflight_permissions="$(awk '
+  $0 == "  preflight:" { cap = 1; next }
+  cap && /^  [a-zA-Z0-9_-]+:/ { exit }
+  cap { print }
+' "$gate_wf")"
+grep -qE '^      statuses: read$' <<<"$preflight_permissions" \
+  && pass "gate preflight can read renovate/stability-days" \
+  || fail "gate preflight lacks statuses: read, so stability defer fails open"
 
 [ "$fails" -eq 0 ] && { echo "All tests passed."; exit 0; }
 echo "$fails test(s) failed."

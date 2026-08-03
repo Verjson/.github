@@ -75,6 +75,7 @@ if [ "$1" = "api" ]; then
   case "$*" in
     */check-runs\?per_page=100*)
       [ "${CHECKS_RC:-0}" = "0" ] || exit "$CHECKS_RC"
+      bump "$CHECKS_CALL_COUNT" >/dev/null
       if [ -n "${CHECKS_PAGES_FILE:-}" ]; then
         jq -c '.[]' "$CHECKS_PAGES_FILE"
         exit 0
@@ -87,6 +88,7 @@ if [ "$1" = "api" ]; then
       exit 0 ;;
     */status\?per_page=100*)
       [ "${STATUSES_RC:-0}" = "0" ] || exit "$STATUSES_RC"
+      bump "$STATUSES_CALL_COUNT" >/dev/null
       if [ -n "${STATUSES_PAGES_FILE:-}" ]; then
         jq -c '.[]' "$STATUSES_PAGES_FILE"
         exit 0
@@ -139,6 +141,7 @@ no_startup_failures="{\"total_count\":2,\"workflow_runs\":[
 run_wait() {
   # run_wait <rollup-json> [runs-api-json] [suites-rc]
   export PATH="$tmp/bin:$PATH" TARGET_REPO="Verjson/foo" PR_NUMBER=7 LANE=ai
+  export GITHUB_EVENT_NAME="${TEST_EVENT_NAME:-pull_request}"
   export ROLLUP_FILE="$tmp/rollup.json" SUITES_FILE="$tmp/suites.json"
   export META_FILE="$tmp/meta.json" ACTIONLOG="$tmp/actions.log"
   export SUITES_RC="${3:-0}"
@@ -152,9 +155,10 @@ run_wait() {
   # flip to `:-true` would leave the suite green. Safe inside `$( )`.
   if [ "${5:-false}" = "<unset>" ]; then unset ALLOW_ABSENT_CHECKS; else export ALLOW_ABSENT_CHECKS="${5:-false}"; fi
   export ROLLUPCOUNT="$tmp/rollup.count" APICOUNT="$tmp/api.count"
+  export CHECKS_CALL_COUNT="$tmp/checks-call.count" STATUSES_CALL_COUNT="$tmp/statuses-call.count"
   export SUITES_FAIL_FIRST="${SUITES_FAIL_FIRST:-0}"
   export ROLLUP_FILE2="${ROLLUP_FILE2:-}" ROLLUP_SWITCH_AFTER="${ROLLUP_SWITCH_AFTER:-0}"
-  rm -f "$ROLLUPCOUNT" "$APICOUNT"
+  rm -f "$ROLLUPCOUNT" "$APICOUNT" "$CHECKS_CALL_COUNT" "$STATUSES_CALL_COUNT"
   printf '%s' "$1" >"$ROLLUP_FILE"
   # `${2-...}`, not `${2:-...}`: an explicitly EMPTY body is a distinct case
   # under test (a 2xx with no payload), not "caller omitted the argument".
@@ -336,12 +340,24 @@ unset ROLLUP_FILE2 ROLLUP_SWITCH_AFTER
   && pass "a completed CheckRun waits for its conclusion before deciding (#240)" \
   || fail "a missing CheckRun conclusion was treated as terminal ($rc)"
 
-# renovate/stability-days is a commit StatusContext (context/state, no status);
-# it keeps polling to the lane ceiling and must not be mistaken for absent CI.
+# renovate/stability-days is a scheduler hold, not work this runner can advance.
+# If it appears after preflight classification, fail immediately rather than
+# occupying a runner for the full lane ceiling.
 rc="$(run_wait '[{"context":"renovate/stability-days","state":"PENDING"}]')"
-{ [ "$rc" = "rc=1" ] && wait_out_has 'result=timeout' && ! wait_out_has 'result=no-checks'; } \
-  && pass "pending StatusContext still times out as pending, not as no-checks" \
-  || fail "renovate/stability-days StatusContext handling regressed ($rc)"
+{ [ "$rc" = "rc=1" ] && wait_out_has 'result=stability-days-pending' && ! wait_out_has 'result=timeout' \
+    && [ "$(cat "$tmp/checks-call.count")" = "1" ] \
+    && [ "$(cat "$tmp/statuses-call.count")" = "1" ]; } \
+  && pass "late stability-days status stops the gate without polling" \
+  || fail "renovate/stability-days still consumed the polling window ($rc)"
+
+for red_stability in \
+  '[{"context":"renovate/stability-days","state":"ERROR"}]' \
+  '[{"name":"renovate/stability-days","status":"COMPLETED","conclusion":"FAILURE"}]'; do
+  rc="$(TEST_EVENT_NAME=workflow_dispatch run_wait "$red_stability")"
+  { [ "$rc" = "rc=1" ] && wait_out_has 'result=failed'; } \
+    && pass "failed stability-named check remains terminal under workflow_dispatch" \
+    || fail "workflow_dispatch ignored a failed stability-named check ($rc)"
+done
 
 # --- failure modes of the probe itself ---------------------------------------
 # An unreadable probe cannot prove absence of a startup failure, so it must never
@@ -486,6 +502,7 @@ grep -q 'pr merge' "$merge_script" || { echo "FAIL - could not extract merge run
 run_merge() {
   # run_merge <rollup-json> [runs-api-json] [suites-rc]
   export PATH="$tmp/bin:$PATH" TARGET_REPO="Verjson/foo" PR_NUMBER=7
+  export GITHUB_EVENT_NAME="${TEST_EVENT_NAME:-pull_request}"
   export LANE=ai LANE_REASON="code change" EXPECTED_HEAD_SHA="$head_sha"
   export ROLLUP_FILE="$tmp/rollup.json" SUITES_FILE="$tmp/suites.json"
   export META_FILE="$tmp/meta.json" ACTIONLOG="$tmp/actions.log"
