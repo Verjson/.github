@@ -406,6 +406,27 @@ jobs:
             required_workflow_trusted=true
           fi
 
+          # Evaluated ONCE, not on every 30-second tick. The file list is a
+          # property of the head SHA, and both the loop (before this ran) and the
+          # final pre-merge block re-assert `head == EXPECTED_HEAD_SHA` and abort
+          # otherwise, so the list cannot acquire a workflow file without the run
+          # aborting first. As the base fast-forwards the three-dot diff can only
+          # SHRINK — a file already on the base is not re-applied by this merge —
+          # so an early evaluation is the conservative one. The authoritative
+          # check remains the one immediately before `gh pr merge`; this one only
+          # fails fast, and it stops burning a paginated files call per tick
+          # against the API rate limit for up to 80 ticks.
+          file_guard_rc=0
+          workflow_files_changed || file_guard_rc=$?
+          if [ "$file_guard_rc" -eq 2 ]; then
+            echo "::error::could not inspect the complete PR file list"
+            exit 1
+          fi
+          if [ "$file_guard_rc" -eq 0 ]; then
+            echo "::notice::workflow files changed; privileged auto-merge skipped; human review and merge required"
+            exit 0
+          fi
+
           for attempt in $(seq 1 "$merge_wait_attempts"); do
             meta="$(gh pr view "$PR_NUMBER" --repo "$TARGET_REPO" \
               --json headRefOid,isDraft,labels,state,statusCheckRollup)"
@@ -424,17 +445,6 @@ jobs:
             jq -e '([.labels[].name | ascii_upcase | gsub("[ _-]+";" ")] |
               (index("HOLD") or index("DO NOT MERGE")) | not)' <<<"$meta" >/dev/null ||
               { echo "::error::PR is held"; exit 1; }
-
-            file_guard_rc=0
-            workflow_files_changed || file_guard_rc=$?
-            if [ "$file_guard_rc" -eq 2 ]; then
-              echo "::error::could not inspect the complete PR file list"
-              exit 1
-            fi
-            if [ "$file_guard_rc" -eq 0 ]; then
-              echo "::notice::workflow files changed; privileged auto-merge skipped; human review and merge required"
-              exit 0
-            fi
 
             if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
               gate_run="$(dispatched_gate_run || true)"
@@ -465,20 +475,26 @@ jobs:
               fi
             fi
 
-            failed="$(jq '[.statusCheckRollup[]? |
+            # One jq per tick, not two: the same filtered set feeds both counts,
+            # and a subprocess per poll is pure overhead on an 80-tick loop. The
+            # explicit shape assertion keeps this fail-closed — `read` from a
+            # here-string would otherwise mask a jq failure that the previous
+            # `failed=$(jq ...)` form let `set -e` catch.
+            counts="$(jq -r '[.statusCheckRollup[]? |
               select((.name // .context) as $n | $n != "preflight" and $n != "gate" and
                 $n != "privileged_merge" and
-                ($n | endswith("/ privileged_merge") | not)) |
-              select(if .state then
-                ((.state // "") | IN("SUCCESS","PENDING","EXPECTED") | not)
-              else
-                (.status == "COMPLETED" and ((.conclusion // "") | IN("SUCCESS","NEUTRAL","SKIPPED") | not))
-              end)] | length' <<<"$meta")"
-            pending="$(jq '[.statusCheckRollup[]? |
-              select((.name // .context) as $n | $n != "preflight" and $n != "gate" and
-                $n != "privileged_merge" and
-                ($n | endswith("/ privileged_merge") | not)) |
-              select(if .state then (.state | IN("PENDING","EXPECTED")) else .status != "COMPLETED" end)] | length' <<<"$meta")"
+                ($n | endswith("/ privileged_merge") | not))] as $checks
+              | [ ($checks | map(select(if .state then
+                    ((.state // "") | IN("SUCCESS","PENDING","EXPECTED") | not)
+                  else
+                    (.status == "COMPLETED" and ((.conclusion // "") | IN("SUCCESS","NEUTRAL","SKIPPED") | not))
+                  end)) | length),
+                  ($checks | map(select(if .state then (.state | IN("PENDING","EXPECTED")) else .status != "COMPLETED" end)) | length) ]
+              | @tsv' <<<"$meta")" ||
+              { echo "::error::could not evaluate the check rollup"; exit 1; }
+            IFS=$'\t' read -r failed pending <<<"$counts"
+            [[ "$failed" =~ ^[0-9]+$ && "$pending" =~ ^[0-9]+$ ]] ||
+              { echo "::error::unusable check rollup counts"; exit 1; }
             [ "$failed" -eq 0 ] || { echo "::error::required check failed"; exit 1; }
             if [ "${provenance:-pending}" = trusted ] && [ "$pending" -eq 0 ]; then break; fi
             [ "$attempt" -lt "$merge_wait_attempts" ] || { echo "::error::trusted gate/checks did not become green"; exit 1; }
@@ -591,17 +607,42 @@ jobs:
           # The exact run-bound artifact was shape-validated twice above and is
           # data only: it is never sourced, executed, or extracted to a worktree.
           followups="$(jq -c .followups <<<"$attestation")"
-          jq -c '.[]' <<<"$followups" | while IFS= read -r item; do
-            location="$(jq -r .location <<<"$item")"
-            note="$(jq -r .note <<<"$item")"
-            marker="<!-- ai-review-followup:pr${PR_NUMBER}:$(printf '%s' "$location"$'\n'"$note" | sha256sum | cut -c1-12) -->"
-            existing="$(gh issue list --repo "$TARGET_REPO" --state all --search "$marker in:body" --json number --jq 'length' 2>/dev/null || echo 0)"
-            [ "$existing" -gt 0 ] && continue
-            gh issue create --repo "$TARGET_REPO" \
-              --title "AI-review follow-up: ${location:0:70}" \
-              --body "$marker
+          # Two serial API calls per follow-up added tens of seconds to a step
+          # that already holds a runner. Fan out, but bounded:
+          #
+          #   * `< <(...)` and NOT `jq | while`: behind a pipe the loop body runs
+          #     in the pipeline's subshell, so the background jobs are ITS
+          #     children and the `wait` below has none — the step would finish
+          #     before the issues exist.
+          #   * `wait -n` caps in-flight calls, because a 50-item verdict firing
+          #     100 unthrottled requests is how you trip a secondary rate limit
+          #     and lose the follow-ups this block exists to preserve.
+          #
+          # The merge already happened; losing a follow-up must never fail the
+          # step, so every failure here is a warning.
+          max_parallel=8
+          inflight=0
+          while IFS= read -r item; do
+            (
+              location="$(jq -r .location <<<"$item")"
+              note="$(jq -r .note <<<"$item")"
+              marker="<!-- ai-review-followup:pr${PR_NUMBER}:$(printf '%s' "$location"$'\n'"$note" | sha256sum | cut -c1-12) -->"
+              existing="$(gh issue list --repo "$TARGET_REPO" --state all --search "$marker in:body" --json number --jq 'length' 2>/dev/null || echo 0)"
+              # `exit 0` leaves the SUBSHELL, where `continue` would have left
+              # the loop that no longer surrounds this code.
+              [ "$existing" -gt 0 ] && exit 0
+              gh issue create --repo "$TARGET_REPO" \
+                --title "AI-review follow-up: ${location:0:70}" \
+                --body "$marker
 
           Non-blocking finding from merged PR #$PR_NUMBER at \`$location\`:
 
           $note" >/dev/null || echo "::warning::could not file follow-up for $location"
-          done
+            ) &
+            inflight=$((inflight + 1))
+            if [ "$inflight" -ge "$max_parallel" ]; then
+              wait -n || true
+              inflight=$((inflight - 1))
+            fi
+          done < <(jq -c '.[]' <<<"$followups")
+          wait
