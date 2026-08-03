@@ -1,12 +1,16 @@
 ---
 date: 2026-08-03
+id: 20260803T134500Z
+refs: 300, 340, 341, 342, 343
 title: Active Issues sync after the merge-gate deadlock audit
 ---
 
 `CLAUDE.md`'s Active Issues list loads into every session, so a stale entry
 costs context in each one and misreports the state of the work.
 
-Dropped: **#300**, closed by the documentation advance to `v2.2.0`.
+Dropped: **#300**, whose remaining half — the documentation still naming the
+superseded `v2.1.0` — is closed by #339. This entry lands after that one, so
+the list never claims a closure that has not happened.
 
 Added, all from auditing the merge gate against a live deadlock:
 
