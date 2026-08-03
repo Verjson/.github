@@ -120,6 +120,8 @@ jobs:
         run: bash scripts/ci-gate/freshness.test.sh
       - name: merge gate — review-comment render (ADR-0007 pinpointing)
         run: bash scripts/ci-gate/review-comment.test.sh
+      - name: merge gate — bind review evidence to PR-head context (#377)
+        run: bash scripts/ci-gate/review-context.test.sh
       - name: merge gate — ai-review retry chain (ADR 0015, #64)
         run: bash scripts/ci-gate/ai-review-retry.test.sh
       - name: merge gate — split three-job shape and authoritative merge recheck (#104, #230)

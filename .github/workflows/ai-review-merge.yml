@@ -1106,6 +1106,11 @@ jobs:
           specific repository files a potential finding actually depends on —
           be economical and do not broadly explore the tree.
 
+          The checked-out workspace and git HEAD are the PR head, not the base or default branch.
+          Never use HEAD, the current checkout, or matching blob hashes as evidence that content is already on the base branch.
+          Do not block because you infer this PR submission is stale, duplicate, closed, or already merged; the deterministic API recheck owns PR lifecycle state.
+          Still review duplicate-processing and idempotency defects in the proposed behavior normally.
+
           Review for, in priority order:
           1. Correctness bugs and behavioral regressions.
           2. Security: authn/authz changes, tenant isolation, secret
