@@ -43,9 +43,15 @@ grep -qE '^      config-file:$' <<<"$workflow_call" \
   || fail "caller config override contract is missing"
 
 # The hosted term stays bounded to callers outside Verjson OR the explicit
-# opt-in input; everything after it follows the ADR 0033 visibility policy that
+# opt-in input; everything after it follows the visibility policy that
 # runner-routing-policy.test.sh pins across all the reusable workflows.
-expected_runs_on='    runs-on: ${{ (github.repository_owner != '\''Verjson'\'' || inputs.github-hosted-runner) && '\''ubuntu-24.04'\'' || github.event.repository.private == true && fromJSON(vars.VERJSON_RUNNER_DEFAULT || '\''["self-hosted","general"]'\'') || fromJSON(vars.VERJSON_RUNNER_UNTRUSTED || vars.VERJSON_RUNNER_DEFAULT || '\''["self-hosted","general"]'\'') }}'
+#
+# ADR 0050 inserts a third branch: a PUBLIC Verjson target takes the fast lane.
+# It is keyed on `visibility == 'public'` rather than `private == false`
+# because Actions coerces an absent `private` to 0, making `== false` true for
+# an unreadable repository too — fail-open. The unresolved case must keep
+# falling through to VERJSON_RUNNER_UNTRUSTED, which is the final term.
+expected_runs_on='    runs-on: ${{ (github.repository_owner != '\''Verjson'\'' || inputs.github-hosted-runner) && '\''ubuntu-24.04'\'' || github.event.repository.private == true && fromJSON(vars.VERJSON_RUNNER_DEFAULT || '\''["self-hosted","general"]'\'') || github.event.repository.visibility == '\''public'\'' && fromJSON(vars.VERJSON_RUNNER_FASTLANE || vars.VERJSON_RUNNER_UNTRUSTED || '\''["self-hosted","general"]'\'') || fromJSON(vars.VERJSON_RUNNER_UNTRUSTED || vars.VERJSON_RUNNER_DEFAULT || '\''["self-hosted","general"]'\'') }}'
 grep -qxF "$expected_runs_on" "$wf" \
   && pass "hosted stays opt-in while Verjson callers follow the visibility policy" \
   || fail "runs-on does not preserve the bounded runner mapping"
@@ -160,12 +166,18 @@ if [ -n "${ACTIONLINT_BIN:-}" ]; then
     || fail "real actionlint did not enforce the inline fixture contract"
 fi
 
+# Both branches are pinned, and the second one matters as much as the first:
+# actionlint AUTO-DETECTS shellcheck on PATH. The self-hosted image carries
+# none and the hosted image ships it, so a bare invocation makes the lint
+# result a property of the runner image. ADR 0050's move to the fast lane
+# proved it by turning three latent findings into a red check on an unrelated
+# PR. `-shellcheck=` (empty) keeps it off until #362 decides the policy.
 grep -qF "REQUIRE_SHELLCHECK: \${{ github.repository_owner != 'Verjson' || inputs.github-hosted-runner }}" "$wf" \
   && grep -qF 'command -v shellcheck' "$wf" \
   && grep -qF './actionlint -config-file "$ACTIONLINT_CONFIG_FILE" -shellcheck=shellcheck -color' "$wf" \
-  && grep -qF './actionlint -config-file "$ACTIONLINT_CONFIG_FILE" -color' "$wf" \
-  && pass "GitHub-hosted calls require ShellCheck integration" \
-  || fail "hosted actionlint can silently skip ShellCheck"
+  && grep -qF './actionlint -config-file "$ACTIONLINT_CONFIG_FILE" -shellcheck= -color' "$wf" \
+  && pass "hosted calls require ShellCheck and the other path pins it off explicitly" \
+  || fail "actionlint's ShellCheck behaviour is not pinned on both paths (#362)"
 
 grep -qF 'uses: ./.github/workflows/actionlint.yml' "$contract" \
   && pass "repository contract exercises the current reusable policy" \
