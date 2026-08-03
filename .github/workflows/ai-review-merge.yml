@@ -663,12 +663,15 @@ jobs:
               self_jobs=$(jq -R -s -c 'split("\n") | map(select(. != ""))' \
                 <<<"$self_job_names") || self_jobs_rc=$?
             fi
+            if [ "$self_jobs_rc" -eq 0 ]; then
+              self_jobs_summary=$(jq -r 'join(", ")' <<<"$self_jobs") || self_jobs_rc=$?
+            fi
           fi
           if [ "$self_jobs_rc" -eq 127 ]; then
             echo "::error::phase=ci-wait result=toolchain-missing runner=${RUNNER_NAME:-unknown} — the CLI disappeared while enumerating this gate's jobs; failing immediately rather than entering the poll loop."
             exit 1
           elif [ "$self_jobs_rc" -eq 0 ]; then
-            echo "::notice::phase=ci-wait self_jobs=$self_jobs"
+            echo "::notice::phase=ci-wait self_jobs=$self_jobs_summary"
           else
             self_jobs='[]'
             echo "::warning::phase=ci-wait result=self-jobs-unavailable run_id=${GITHUB_RUN_ID:-<unset>} — falling back to the static gate job names; a reusable-call install may see its own '<caller> / <job>' checks treated as required (#276)."
@@ -1614,12 +1617,15 @@ jobs:
               self_jobs=$(jq -R -s -c 'split("\n") | map(select(. != ""))' \
                 <<<"$self_job_names") || self_jobs_rc=$?
             fi
+            if [ "$self_jobs_rc" -eq 0 ]; then
+              self_jobs_summary=$(jq -r 'join(", ")' <<<"$self_jobs") || self_jobs_rc=$?
+            fi
           fi
           if [ "$self_jobs_rc" -eq 127 ]; then
             echo "::error::phase=merge-recheck result=toolchain-missing runner=${RUNNER_NAME:-unknown} — the CLI disappeared while enumerating this gate's jobs."
             exit 1
           elif [ "$self_jobs_rc" -eq 0 ]; then
-            echo "::notice::phase=merge-recheck self_jobs=$self_jobs"
+            echo "::notice::phase=merge-recheck self_jobs=$self_jobs_summary"
           else
             self_jobs='[]'
             echo "::warning::phase=merge-recheck result=self-jobs-unavailable run_id=${GITHUB_RUN_ID:-<unset>} — falling back to the static gate job names; a reusable-call install may see its own '<caller> / <job>' checks treated as required (#276)."

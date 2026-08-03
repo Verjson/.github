@@ -162,7 +162,6 @@ run_wait() {
   export ROLLUP_FILE="$tmp/rollup.json" SUITES_FILE="$tmp/suites.json"
   export META_FILE="$tmp/meta.json" ACTIONLOG="$tmp/actions.log"
   export SUITES_RC="${3:-0}"
-  export SELF_JOBS_RC="${SELF_JOBS_RC:-0}"
   export CHECKS_RC="${CHECKS_RC:-0}" STATUSES_RC="${STATUSES_RC:-0}"
   export SELF_JOBS_RC="${SELF_JOBS_RC:-0}"
   export GRAPHQL_ROLLUP_RC="${GRAPHQL_ROLLUP_RC:-0}"
