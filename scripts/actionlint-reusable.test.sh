@@ -43,9 +43,15 @@ grep -qE '^      config-file:$' <<<"$workflow_call" \
   || fail "caller config override contract is missing"
 
 # The hosted term stays bounded to callers outside Verjson OR the explicit
-# opt-in input; everything after it follows the ADR 0033 visibility policy that
+# opt-in input; everything after it follows the visibility policy that
 # runner-routing-policy.test.sh pins across all the reusable workflows.
-expected_runs_on='    runs-on: ${{ (github.repository_owner != '\''Verjson'\'' || inputs.github-hosted-runner) && '\''ubuntu-24.04'\'' || github.event.repository.private == true && fromJSON(vars.VERJSON_RUNNER_DEFAULT || '\''["self-hosted","general"]'\'') || fromJSON(vars.VERJSON_RUNNER_UNTRUSTED || vars.VERJSON_RUNNER_DEFAULT || '\''["self-hosted","general"]'\'') }}'
+#
+# ADR 0050 inserts a third branch: a PUBLIC Verjson target takes the fast lane.
+# It is keyed on `visibility == 'public'` rather than `private == false`
+# because Actions coerces an absent `private` to 0, making `== false` true for
+# an unreadable repository too — fail-open. The unresolved case must keep
+# falling through to VERJSON_RUNNER_UNTRUSTED, which is the final term.
+expected_runs_on='    runs-on: ${{ (github.repository_owner != '\''Verjson'\'' || inputs.github-hosted-runner) && '\''ubuntu-24.04'\'' || github.event.repository.private == true && fromJSON(vars.VERJSON_RUNNER_DEFAULT || '\''["self-hosted","general"]'\'') || github.event.repository.visibility == '\''public'\'' && fromJSON(vars.VERJSON_RUNNER_FASTLANE || vars.VERJSON_RUNNER_UNTRUSTED || '\''["self-hosted","general"]'\'') || fromJSON(vars.VERJSON_RUNNER_UNTRUSTED || vars.VERJSON_RUNNER_DEFAULT || '\''["self-hosted","general"]'\'') }}'
 grep -qxF "$expected_runs_on" "$wf" \
   && pass "hosted stays opt-in while Verjson callers follow the visibility policy" \
   || fail "runs-on does not preserve the bounded runner mapping"
