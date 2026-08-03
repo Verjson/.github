@@ -194,3 +194,26 @@ See [#133](https://github.com/Verjson/.github/issues/133) and the casualty
 The `@main` line above records the original sensitive hunk. The first 2026-07-28
 correction replaced that ref with a reviewed full SHA; the #164 correction then
 removed the remote `uses:` call and inlined the parity-guarded shell block.
+
+## 2026-08-03 correction — release both merge-control runners on defer
+
+Issue [#368](https://github.com/Verjson/.github/issues/368) found that the gate
+and privileged merge had drifted from this decision even though CI eligibility
+still deferred correctly. On `Verjson/verjson-upload#28`, CI eligibility skipped
+the heavy job in six seconds, but gate job `91759710317` and privileged merge job
+`91759669057` both remained active for more than 35 minutes while
+`renovate/stability-days` was the only pending context.
+
+The gate preflight queried commit statuses without requesting `statuses: read`.
+That read failed, its deliberate uncertainty fallback returned zero, and the PR
+entered a real gate instead of the `defer` lane. Independently,
+`privileged_merge` started on `pull_request_target` and treated the same status as
+generic pending work for its full 80-poll window.
+
+The restored contract is end to end: preflight requests `statuses: read`, and
+privileged merge terminates successfully when the attested head has an active
+`renovate/stability-days` status. If that status appears after classification,
+the gate fails immediately instead of polling. The privileged continuation is
+itself always a `workflow_dispatch`, including automatic continuations, so that
+event is not treated as operator authority to bypass a scheduler hold. Failed
+statuses and same-named CheckRuns remain terminal failures.
