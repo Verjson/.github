@@ -568,6 +568,20 @@ jobs:
           ALLOW_ABSENT_CHECKS: ${{ inputs.allow_absent_checks || false }}
         run: |
           set -euo pipefail
+          # A runner without `gh` cannot ever satisfy this step, and every API
+          # call below would exit 127 ("command not found"). Left unchecked the
+          # loop reads 127 as "the API is unavailable", polls all 60 attempts,
+          # and holds a runner for 30 minutes to reach a conclusion available
+          # in the first millisecond. That is not a slow gate, it is a runner
+          # taken out of the pool — and because the gate is waiting for CI that
+          # needs that same pool, a single mis-provisioned runner starves the
+          # fleet it belongs to (#363).
+          for tool in gh jq; do
+            command -v "$tool" >/dev/null 2>&1 || {
+              echo "::error::phase=ci-wait result=toolchain-missing tool=$tool runner=${RUNNER_NAME:-unknown} — this runner cannot run the gate. Install $tool on it (or remove it from the pool); re-running the PR will not help until then."
+              exit 1
+            }
+          done
           started_epoch="$(date +%s)"
           max_attempts=60
           [ "$LANE" = "fast" ] && max_attempts=80
@@ -711,6 +725,14 @@ jobs:
                ' --argjson self_jobs "$self_jobs" <<<"{\"checks\":$check_pages,\"statuses\":$status_pages}" 2>/dev/null) || rollup_rc=$?
             else
               rollup_rc=1
+            fi
+            # 127 is "command not found" — an environment fault that no
+            # amount of waiting repairs. Distinguish it from a genuinely
+            # transient API error, which is what the retry budget is for.
+            if [ "$checks_rc" -eq 127 ] || [ "$statuses_rc" -eq 127 ]; then
+              elapsed=$(( $(date +%s) - started_epoch ))
+              echo "::error::phase=ci-wait result=toolchain-missing elapsed_seconds=$elapsed attempt=$i/$max_attempts checks_endpoint_rc=$checks_rc statuses_endpoint_rc=$statuses_rc runner=${RUNNER_NAME:-unknown} — the CLI disappeared mid-run; failing immediately rather than holding this runner for the remaining attempts."
+              exit 1
             fi
             if [ "$checks_rc" -ne 0 ] || [ "$statuses_rc" -ne 0 ] || [ "$rollup_rc" -ne 0 ]; then
               checks_probe=unavailable

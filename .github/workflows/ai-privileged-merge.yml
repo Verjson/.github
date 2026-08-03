@@ -227,6 +227,19 @@ jobs:
           [[ "$merge_wait_attempts" =~ ^[1-9][0-9]*$ ]] && [ "$merge_wait_attempts" -le 200 ] ||
             { echo "::error::invalid merge wait bound"; exit 1; }
 
+          # Same fault as the gate's ci-wait (#363): without `gh` every call in
+          # the loop below exits 127, the loop cannot distinguish that from a
+          # transient API failure, and this job holds a runner for its full
+          # ~40-minute window to reach a verdict that was knowable immediately.
+          # This job polls on the SAME pool the CI it waits for needs, so one
+          # mis-provisioned runner starves the fleet rather than just itself.
+          for tool in gh jq; do
+            command -v "$tool" >/dev/null 2>&1 || {
+              echo "::error::phase=privileged-merge result=toolchain-missing tool=$tool runner=${RUNNER_NAME:-unknown} — this runner cannot run the privileged merge. Install $tool on it or remove it from the pool."
+              exit 1
+            }
+          done
+
           # A gate run is trusted in exactly three installation shapes: this
           # repository running its own workflow, a caller of the pinned reusable
           # workflow, and an organization-ruleset *required workflow*. The third
