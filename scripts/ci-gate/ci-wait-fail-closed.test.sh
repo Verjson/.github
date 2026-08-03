@@ -162,6 +162,7 @@ run_wait() {
   export ROLLUP_FILE="$tmp/rollup.json" SUITES_FILE="$tmp/suites.json"
   export META_FILE="$tmp/meta.json" ACTIONLOG="$tmp/actions.log"
   export SUITES_RC="${3:-0}"
+  export SELF_JOBS_RC="${SELF_JOBS_RC:-0}"
   export CHECKS_RC="${CHECKS_RC:-0}" STATUSES_RC="${STATUSES_RC:-0}"
   export SELF_JOBS_RC="${SELF_JOBS_RC:-0}"
   export GRAPHQL_ROLLUP_RC="${GRAPHQL_ROLLUP_RC:-0}"
@@ -557,6 +558,24 @@ run_merge() {
 }
 merged() { grep -q '^MERGE ' "$tmp/actions.log"; }
 merge_out_has() { grep -q "$1" "$tmp/merge-out.txt"; }
+
+SELF_JOBS_RC=127
+GITHUB_REPOSITORY=Verjson/foo
+RUNNER_NAME=gha-general-7
+export SELF_JOBS_RC GITHUB_REPOSITORY RUNNER_NAME
+rc="$(run_merge "$green_rollup")"
+unset SELF_JOBS_RC GITHUB_REPOSITORY RUNNER_NAME
+{ [ "$rc" = "rc=1" ] && ! merged && merge_out_has 'result=toolchain-missing'; } \
+  && pass "merge recheck self-job enumeration fails fast when gh disappears" \
+  || fail "merge recheck swallowed exit 127 while enumerating its own jobs ($rc)"
+
+JQ_FAIL_AGGREGATE=true
+export JQ_FAIL_AGGREGATE
+rc="$(run_merge "$green_rollup")"
+unset JQ_FAIL_AGGREGATE
+{ [ "$rc" = "rc=1" ] && ! merged && merge_out_has 'result=toolchain-missing' && merge_out_has 'aggregate_shape_rc=127'; } \
+  && pass "merge recheck aggregation-time jq loss is terminal" \
+  || fail "merge recheck misclassified aggregation-time jq loss ($rc)"
 
 rc="$(run_merge '[]')"
 { [ "$rc" = "rc=1" ] && ! merged && merge_out_has 'result=no-checks'; } \

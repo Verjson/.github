@@ -239,6 +239,12 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          for tool in gh jq; do
+            command -v "$tool" >/dev/null 2>&1 || {
+              echo "::error::phase=merge-recheck result=toolchain-missing tool=$tool runner=${RUNNER_NAME:-unknown} — this runner cannot perform the authoritative merge recheck."
+              exit 1
+            }
+          done
           REPO="$TARGET_REPO"
           out() { echo "$1=$2" >> "$GITHUB_OUTPUT"; }
           # Retry the reads so a transient API blip doesn't red-gate the PR.
@@ -1605,12 +1611,22 @@ jobs:
           # and `jq -r` renders a null as the literal "null", which would
           # exclude a consumer check that happens to be named `null`.
           self_jobs='[]'
-          if [ -n "${GITHUB_REPOSITORY:-}" ] && [ -n "${GITHUB_RUN_ID:-}" ] &&
-             self_job_names=$(gh api --paginate \
-                "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/jobs?per_page=100" \
-                --jq '.jobs[].name | strings' 2>/dev/null) &&
-             self_jobs=$(jq -R -s -c 'split("\n") | map(select(. != ""))' <<<"$self_job_names"); then
-            echo "::notice::phase=merge-recheck self_jobs=$(jq -r 'join(", ")' <<<"$self_jobs")"
+          self_jobs_rc=1
+          if [ -n "${GITHUB_REPOSITORY:-}" ] && [ -n "${GITHUB_RUN_ID:-}" ]; then
+            self_jobs_rc=0
+            self_job_names=$(gh api --paginate \
+              "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/jobs?per_page=100" \
+              --jq '.jobs[].name | strings' 2>/dev/null) || self_jobs_rc=$?
+            if [ "$self_jobs_rc" -eq 0 ]; then
+              self_jobs=$(jq -R -s -c 'split("\n") | map(select(. != ""))' \
+                <<<"$self_job_names") || self_jobs_rc=$?
+            fi
+          fi
+          if [ "$self_jobs_rc" -eq 127 ]; then
+            echo "::error::phase=merge-recheck result=toolchain-missing runner=${RUNNER_NAME:-unknown} — the CLI disappeared while enumerating this gate's jobs."
+            exit 1
+          elif [ "$self_jobs_rc" -eq 0 ]; then
+            echo "::notice::phase=merge-recheck self_jobs=$self_jobs"
           else
             self_jobs='[]'
             echo "::warning::phase=merge-recheck result=self-jobs-unavailable run_id=${GITHUB_RUN_ID:-<unset>} — falling back to the static gate job names; a reusable-call install may see its own '<caller> / <job>' checks treated as required (#276)."
@@ -1674,6 +1690,10 @@ jobs:
              ' --argjson self_jobs "$self_jobs" <<<"{\"checks\":$check_pages,\"statuses\":$status_pages}" 2>/dev/null) || rollup_rc=$?
           else
             rollup_rc=1
+          fi
+          if [ "$checks_rc" -eq 127 ] || [ "$statuses_rc" -eq 127 ] || [ "$rollup_rc" -eq 127 ]; then
+            echo "::error::phase=merge-recheck result=toolchain-missing elapsed_seconds=$(( $(date +%s) - merge_started_epoch )) checks_endpoint_rc=$checks_rc statuses_endpoint_rc=$statuses_rc aggregate_shape_rc=$rollup_rc runner=${RUNNER_NAME:-unknown}"
+            exit 1
           fi
           if [ "$checks_rc" -ne 0 ] || [ "$statuses_rc" -ne 0 ] || [ "$rollup_rc" -ne 0 ]; then
             echo "::error::phase=merge-recheck result=checks-unavailable elapsed_seconds=$(( $(date +%s) - merge_started_epoch )) head=$EXPECTED_HEAD_SHA checks_endpoint_rc=$checks_rc statuses_endpoint_rc=$statuses_rc aggregate_shape_rc=$rollup_rc gh_version=$(gh --version 2>/dev/null | head -n 1 | tr ' ' '_' || echo unavailable)"

@@ -48,11 +48,12 @@ before another semantic change is attempted.
 not a transient API outage. Both merge workflows verify `gh` and `jq` before
 their first use and terminate immediately if either command later disappears
 during check aggregation, self-job enumeration, trusted-run discovery, or
-attestation retrieval. Other non-zero API exits retain their existing retry or
-fail-closed semantics. The guards intentionally remain inline in both workflow
-blocks: they must execute before checkout or any repository-provided code, so a
-shared script or composite action would move the prerequisite behind the thing
-it is meant to validate.
+attestation retrieval. The disabled authoritative merge-recheck block carries
+the same classification so re-enabling it cannot restore the old behavior.
+Other non-zero API exits retain their existing retry or fail-closed semantics.
+The guards intentionally remain inline in each workflow block: they must execute
+before checkout or any repository-provided code, so a shared script or composite
+action would move the prerequisite behind the thing it is meant to validate.
 
 1. **An empty post-filter rollup is never green.** In `ci_wait` it keeps polling
    (a check can still appear) and, if it is still empty when the lane's poll
