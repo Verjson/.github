@@ -131,6 +131,7 @@ if [ "${1:-}" = "api" ]; then
       [ "${ATTESTATION_API_RC:-0}" -eq 0 ] || exit "$ATTESTATION_API_RC"
       emit "$(cat "$ARTIFACTS_FILE")" ;;
     */actions/artifacts/*/zip*)
+      [ "${ARTIFACT_ZIP_RC:-0}" -eq 0 ] || exit "$ARTIFACT_ZIP_RC"
       printf 'zip-bytes\n'; exit 0 ;;
     */actions/runs\?head_sha=*)
       [ "${HEAD_RUNS_RC:-0}" -eq 0 ] || exit "$HEAD_RUNS_RC"
@@ -151,6 +152,16 @@ cat >"$tmp/bin/jq" <<'JQ'
 if [ "${JQ_FAIL_GATE_CHECK:-false}" = true ]; then
   for arg in "$@"; do
     [ "$arg" = needle ] && exit 127
+  done
+fi
+if [ "${JQ_FAIL_TRUSTED_RUN:-false}" = true ]; then
+  for arg in "$@"; do
+    [ "$arg" = id ] && exit 127
+  done
+fi
+if [ "${JQ_FAIL_ATTESTATION:-false}" = true ]; then
+  for arg in "$@"; do
+    [ "$arg" = name ] && exit 127
   done
 fi
 exec "$REAL_JQ" "$@"
@@ -205,6 +216,7 @@ reset_fixtures() {
   HEAD_RUNS_RC=0
   SOURCE_RUN_RC=0
   ATTESTATION_API_RC=0
+  ARTIFACT_ZIP_RC=0
   BASE_REF_FINAL=""
 }
 
@@ -225,7 +237,7 @@ run_case() { # run_case <event-name>
   # enough attempts to prove the loop reaches its terminal state.
   export MERGE_WAIT_ATTEMPTS=2
   export TRUSTED_WF_ID TRUSTED_REPO_ID TRUSTED_SHA BASE_REF BASE_REF_FINAL
-  export RULES_RC PULLS_RC HEAD_RUNS_RC SOURCE_RUN_RC ATTESTATION_API_RC
+  export RULES_RC PULLS_RC HEAD_RUNS_RC SOURCE_RUN_RC ATTESTATION_API_RC ARTIFACT_ZIP_RC
   export RULES_FILE="$tmp/rules.json" RULES_FINAL_FILE="$tmp/rules-final.json"
   export RUNS_FILE="$tmp/runs.json"
   export META_FILE="$tmp/meta.json" META_FINAL_FILE="$tmp/meta-final.json"
@@ -302,6 +314,22 @@ export JQ_FAIL_GATE_CHECK
 run_case pull_request_target
 unset JQ_FAIL_GATE_CHECK
 assert_rejected "gate-check validation that loses jq fails immediately" "result=toolchain-missing"
+
+JQ_FAIL_TRUSTED_RUN=true
+export JQ_FAIL_TRUSTED_RUN
+run_case pull_request_target
+unset JQ_FAIL_TRUSTED_RUN
+assert_rejected "trusted-run validation that loses jq fails immediately" "result=toolchain-missing"
+
+JQ_FAIL_ATTESTATION=true
+export JQ_FAIL_ATTESTATION
+run_case workflow_dispatch
+unset JQ_FAIL_ATTESTATION
+assert_rejected "attestation validation that loses jq fails immediately" "result=toolchain-missing"
+
+ARTIFACT_ZIP_RC=127
+run_case workflow_dispatch
+assert_rejected "artifact download that loses gh fails immediately" "result=toolchain-missing"
 
 # ADR 0023's defer lane must release both long-running jobs. The gate preflight
 # needs status-read permission to classify the head, and privileged_merge must
