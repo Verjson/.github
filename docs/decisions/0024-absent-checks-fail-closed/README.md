@@ -44,6 +44,18 @@ by `jq -c` rather than interpolated into workflow-command syntax. Classification
 remains fail-closed; the added evidence makes a live mismatch attributable
 before another semantic change is attempted.
 
+**Amended 2026-08-03 for #363 / PR #364:** exit 127 is an environment fault,
+not a transient API outage. Both merge workflows verify `gh` and `jq` before
+their first use; AI review and privileged merge additionally verify `unzip`
+before entering paths that require it. They terminate immediately if a command later disappears
+during check aggregation, self-job enumeration, trusted-run discovery, or
+attestation retrieval. The disabled authoritative merge-recheck block carries
+the same classification so re-enabling it cannot restore the old behavior.
+Other non-zero API exits retain their existing retry or fail-closed semantics.
+The guards intentionally remain inline in each workflow block: they must execute
+before checkout or any repository-provided code, so a shared script or composite
+action would move the prerequisite behind the thing it is meant to validate.
+
 1. **An empty post-filter rollup is never green.** In `ci_wait` it keeps polling
    (a check can still appear) and, if it is still empty when the lane's poll
    window ends, the step fails with `::error::phase=ci-wait result=no-checks`
@@ -212,6 +224,13 @@ lane ceilings, and the `phase=ci-wait` / `phase=merge-recheck` log vocabulary.
   only body that separates the real shape assertion from a vacuous `if true`.
   Each fix in this amendment was verified by mutation: reverting it individually
   turns the suite red.
+- The #363 amendment is exercised against the extracted production blocks:
+  `toolchain-missing.test.sh` removes `gh`, `jq`, and `unzip` from `PATH` at startup;
+  `ci-wait-fail-closed.test.sh` forces exit 127 during self-job enumeration and
+  aggregate construction; and `required-workflow-provenance.test.sh` forces it
+  through both trusted-run lookup shapes and attestation retrieval. These cases
+  distinguish a terminal runner fault from routine "not found yet" and transient
+  API failures that must keep their prior behavior.
 
 ## Effective diff (sensitive hunks)
 

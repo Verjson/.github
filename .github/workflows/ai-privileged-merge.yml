@@ -115,6 +115,20 @@ jobs:
           EXECUTING_WORKFLOW_REPOSITORY: ${{ job.workflow_repository }}
         run: |
           set -euo pipefail
+          # FIRST, before anything else in this block: the validations below and
+          # the poll loop further down both call `gh` and `jq` unconditionally.
+          # Under `set -euo pipefail` a missing binary kills the script at the
+          # first such call, so a guard placed later never runs and the operator
+          # gets exit 127 with no explanation. Without it the poll loop would
+          # otherwise hold a runner for its full ~40-minute window while every
+          # call failed identically — and this job polls the SAME pool as the CI
+          # it waits for, so one mis-provisioned runner starves the fleet (#363).
+          for tool in gh jq unzip; do
+            command -v "$tool" >/dev/null 2>&1 || {
+              echo "::error::phase=privileged-merge result=toolchain-missing tool=$tool runner=${RUNNER_NAME:-unknown} — this runner cannot run the privileged merge. Install $tool on it or remove it from the pool."
+              exit 1
+            }
+          done
           if [ -z "${GH_TOKEN:-}" ]; then
             echo "::error::trusted merge has no ORG_ADMIN_TOKEN"
             exit 1
@@ -326,8 +340,9 @@ jobs:
           }
 
           newest_trusted_gate_run() {
-            gh api "repos/$TARGET_REPO/actions/runs?head_sha=$EXPECTED_HEAD_SHA&event=pull_request&per_page=100" |
-              jq -ce --argjson id "$trusted_workflow_id" --arg sha "$trusted_workflow_sha" \
+            local runs
+            runs="$(gh api "repos/$TARGET_REPO/actions/runs?head_sha=$EXPECTED_HEAD_SHA&event=pull_request&per_page=100")" || return $?
+            jq -ce --argjson id "$trusted_workflow_id" --arg sha "$trusted_workflow_sha" \
                 --arg wfpath "$trusted_workflow_path" \
                 --arg wfurl "$trusted_required_url" \
                 --argjson required "$required_workflow_trusted" \
@@ -335,7 +350,7 @@ jobs:
                   [.workflow_runs[] | select(trusted_run)] |
                   sort_by([(.created_at // ""), .id]) |
                   last // empty
-                '
+                ' <<<"$runs"
           }
 
           # The dispatcher hands over its own gate run, which is triggered by
@@ -344,7 +359,7 @@ jobs:
           dispatched_gate_run() {
             local run
             [[ "$SOURCE_RUN_ID" =~ ^[1-9][0-9]*$ ]] || return 1
-            run="$(gh api "repos/$TARGET_REPO/actions/runs/$SOURCE_RUN_ID")" || return 1
+            run="$(gh api "repos/$TARGET_REPO/actions/runs/$SOURCE_RUN_ID")" || return $?
             jq -ce --argjson id "$trusted_workflow_id" --arg sha "$trusted_workflow_sha" \
               --arg wfpath "$trusted_workflow_path" \
               --arg wfurl "$trusted_required_url" \
@@ -360,15 +375,15 @@ jobs:
 
           attestation_for_run() {
             local run_id="$1" artifacts artifact_id archive payload
-            artifacts="$(gh api "repos/$TARGET_REPO/actions/runs/$run_id/artifacts?per_page=100")" || return 1
+            artifacts="$(gh api "repos/$TARGET_REPO/actions/runs/$run_id/artifacts?per_page=100")" || return $?
             artifact_id="$(jq -r --arg name "merge-attestation-$run_id" '
               [.artifacts[] | select(.name == $name and .expired == false)] |
               if length == 1 then .[0].id else 0 end
-            ' <<<"$artifacts")"
+            ' <<<"$artifacts")" || return $?
             [[ "$artifact_id" =~ ^[1-9][0-9]*$ ]] || return 1
             archive="$RUNNER_TEMP/merge-attestation-$run_id.zip"
-            gh api "repos/$TARGET_REPO/actions/artifacts/$artifact_id/zip" >"$archive" || return 1
-            payload="$(unzip -p "$archive" attestation.json 2>/dev/null)" || return 1
+            gh api "repos/$TARGET_REPO/actions/artifacts/$artifact_id/zip" >"$archive" || return $?
+            payload="$(unzip -p "$archive" attestation.json 2>/dev/null)" || return $?
             jq -ce --arg repo "$TARGET_REPO" --argjson pr "$PR_NUMBER" \
               --arg head "$EXPECTED_HEAD_SHA" --argjson run "$run_id" '
                 select(
@@ -460,10 +475,15 @@ jobs:
               exit 0
             fi
 
+            gate_run_rc=0
             if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
-              gate_run="$(dispatched_gate_run || true)"
+              gate_run="$(dispatched_gate_run)" || gate_run_rc=$?
             else
-              gate_run="$(newest_trusted_gate_run || true)"
+              gate_run="$(newest_trusted_gate_run)" || gate_run_rc=$?
+            fi
+            if [ "$gate_run_rc" -eq 127 ]; then
+              echo "::error::phase=privileged-merge result=toolchain-missing tool=gh-or-jq runner=${RUNNER_NAME:-unknown} — the CLI disappeared mid-run; failing immediately rather than holding this runner for the remaining attempts."
+              exit 1
             fi
             provenance=pending
             if [ -n "$gate_run" ]; then
@@ -473,19 +493,33 @@ jobs:
                 echo "::error::newest trusted gate run failed"
                 exit 1
               fi
-              if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ] &&
-                 [ "$gate_conclusion" = "success" ] &&
-                 attestation="$(attestation_for_run "$gate_run_id")"; then
-                provenance=trusted
-              elif [ "$gate_conclusion" = "success" ] &&
-                 jq -e --arg needle "/actions/runs/$gate_run_id/" '
-                   any(.statusCheckRollup[]?;
-                     (.name // .context) == "gate" and
-                     (.conclusion // .state) == "SUCCESS" and
-                     ((.detailsUrl // "") | contains($needle)))
-                 ' <<<"$meta" >/dev/null &&
-                 attestation="$(attestation_for_run "$gate_run_id")"; then
-                provenance=trusted
+              gate_check_trusted=false
+              if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ] && [ "$gate_conclusion" = "success" ]; then
+                gate_check_trusted=true
+              elif [ "$gate_conclusion" = "success" ]; then
+                gate_check_rc=0
+                jq -e --arg needle "/actions/runs/$gate_run_id/" '
+                    any(.statusCheckRollup[]?;
+                      (.name // .context) == "gate" and
+                      (.conclusion // .state) == "SUCCESS" and
+                      ((.detailsUrl // "") | contains($needle)))
+                  ' <<<"$meta" >/dev/null || gate_check_rc=$?
+                if [ "$gate_check_rc" -eq 127 ]; then
+                  echo "::error::phase=privileged-merge result=toolchain-missing runner=${RUNNER_NAME:-unknown} — the CLI disappeared while validating the gate check; failing immediately rather than holding this runner."
+                  exit 1
+                elif [ "$gate_check_rc" -eq 0 ]; then
+                  gate_check_trusted=true
+                fi
+              fi
+              if [ "$gate_check_trusted" = true ]; then
+                attestation_rc=0
+                attestation="$(attestation_for_run "$gate_run_id")" || attestation_rc=$?
+                if [ "$attestation_rc" -eq 127 ]; then
+                  echo "::error::phase=privileged-merge result=toolchain-missing runner=${RUNNER_NAME:-unknown} — the CLI disappeared while reading the gate attestation; failing immediately rather than holding this runner."
+                  exit 1
+                elif [ "$attestation_rc" -eq 0 ]; then
+                  provenance=trusted
+                fi
               fi
             fi
 
@@ -549,18 +583,22 @@ jobs:
             required_workflow_source_trusted "$final_base_ref" ||
               { echo "::error::required-workflow trust anchor withdrawn before merge"; exit 1; }
           fi
+          final_gate_run_rc=0
           if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
-            final_gate_run="$(dispatched_gate_run || true)"
+            final_gate_run="$(dispatched_gate_run)" || final_gate_run_rc=$?
           else
-            final_gate_run="$(newest_trusted_gate_run || true)"
+            final_gate_run="$(newest_trusted_gate_run)" || final_gate_run_rc=$?
+          fi
+          if [ "$final_gate_run_rc" -eq 127 ]; then
+            echo "::error::phase=privileged-merge result=toolchain-missing runner=${RUNNER_NAME:-unknown} — the CLI disappeared during the final gate lookup."
+            exit 1
           fi
           [ -n "$final_gate_run" ] ||
             { echo "::error::trusted gate disappeared before merge"; exit 1; }
           final_gate_id="$(jq -r '.id // 0' <<<"$final_gate_run")"
           if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
             attested_run_id="$SOURCE_RUN_ID"
-            [ "$(jq -r '.conclusion // ""' <<<"$final_gate_run")" = "success" ] &&
-              attestation="$(attestation_for_run "$attested_run_id")" ||
+            [ "$(jq -r '.conclusion // ""' <<<"$final_gate_run")" = "success" ] ||
               { echo "::error::trusted dispatched gate changed before merge"; exit 1; }
           else
             attested_run_id="$final_gate_id"
@@ -572,8 +610,19 @@ jobs:
                 ((.detailsUrl // "") | contains($needle)))
             ' <<<"$final" >/dev/null ||
             { echo "::error::newest trusted gate changed before merge"; exit 1; }
-            attestation="$(attestation_for_run "$attested_run_id")" ||
-              { echo "::error::trusted attestation changed before merge"; exit 1; }
+          fi
+          final_attestation_rc=0
+          attestation="$(attestation_for_run "$attested_run_id")" || final_attestation_rc=$?
+          if [ "$final_attestation_rc" -eq 127 ]; then
+            echo "::error::phase=privileged-merge result=toolchain-missing runner=${RUNNER_NAME:-unknown} — the CLI disappeared during the final attestation check."
+            exit 1
+          elif [ "$final_attestation_rc" -ne 0 ]; then
+            if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
+              echo "::error::trusted dispatched gate changed before merge"
+            else
+              echo "::error::trusted attestation changed before merge"
+            fi
+            exit 1
           fi
           final_failed="$(jq '[.statusCheckRollup[]? |
             select((.name // .context) as $n | $n != "preflight" and $n != "gate" and

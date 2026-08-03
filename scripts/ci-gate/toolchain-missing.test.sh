@@ -1,0 +1,168 @@
+#!/usr/bin/env bash
+# A runner without `gh` must fail the gate IMMEDIATELY, not after 30 minutes
+# (Verjson/.github#363).
+#
+# Every API call in ci_wait's poll loop exits 127 ("command not found") on such
+# a runner. The loop read 127 as "the API is unavailable", spent all 60 attempts
+# on it, and held the runner for the full window to reach a verdict that was
+# knowable in the first millisecond.
+#
+# That is not merely slow. `gate` polls on the SAME pool as the CI it waits for,
+# so each mis-provisioned runner removes a slot from the pool for 30 minutes per
+# job — one bad runner starves the whole fleet. Four runners provisioned without
+# `gh` on 2026-08-03 saturated a ten-runner pool and stalled every repository in
+# the organization.
+#
+# House method: awk-extract the exact `run:` block from ai-review-merge.yml
+# (single source of truth) and exercise it with the tool genuinely absent from
+# PATH. Plain bash + awk; runs on the bare pool.
+set -uo pipefail
+
+here="$(cd "$(dirname "$0")" && pwd)"
+repo_root="$(cd "$here/../.." && pwd)"
+wf="$repo_root/.github/workflows/ai-review-merge.yml"
+pm="$repo_root/.github/workflows/ai-privileged-merge.yml"
+tmp="$(mktemp -d)"
+trap 'rm -rf "$tmp"' EXIT
+fails=0
+pass() { printf 'ok   - %s\n' "$1"; }
+fail() { printf 'FAIL - %s\n' "$1"; fails=$((fails + 1)); }
+
+[ -f "$wf" ] || { echo "FAIL - workflow not found: $wf"; exit 1; }
+
+extract() { # extract <step-id> <destination>
+  awk -v want="        id: $1" '
+    $0 == want { seen = 1 }
+    seen && $0 == "        run: |" { cap = 1; next }
+    cap && $0 ~ /^      - name:/ { exit }
+    cap {
+      if (substr($0, 1, 10) == "          ") { print substr($0, 11); next }
+      if ($0 ~ /^[ \t]*$/) { print ""; next }
+      exit
+    }
+  ' "$wf" >"$2"
+}
+
+wait_script="$tmp/ci-wait.sh"
+extract ci_wait "$wait_script"
+grep -q '/check-runs?per_page=100' "$wait_script" \
+  || { echo "FAIL - could not extract ci_wait run block from $wf"; exit 1; }
+
+merge_script="$tmp/merge-recheck.sh"
+extract merge "$merge_script"
+grep -q 'phase=merge-recheck result=toolchain-missing' "$merge_script" \
+  || { echo "FAIL - merge-recheck toolchain guard is absent or attached to the wrong step"; exit 1; }
+
+# A PATH with the real coreutils but deliberately WITHOUT gh. `command -v gh`
+# must genuinely miss, which a stub cannot model — the bug was that a missing
+# binary looked like a failing API, so the absence has to be real.
+mkdir -p "$tmp/bin"
+for t in bash date printf echo sleep awk sed grep cat cut tr head jq unzip timeout env; do
+  src="$(command -v "$t" 2>/dev/null)" && ln -sf "$src" "$tmp/bin/$t" 2>/dev/null
+done
+
+run_with_minimal_path() {
+  timeout 60 env -i PATH="$tmp/bin" HOME="$tmp" \
+    LANE="${TEST_LANE:-ai}" PR_NUMBER=1 TARGET_REPO=Verjson/toquorum \
+    EXPECTED_HEAD_SHA=abc123 GH_TOKEN=x RUNNER_NAME=gha-general-7 \
+    bash "$wait_script" 2>&1
+}
+
+start="$(date +%s)"
+out="$(run_with_minimal_path)"
+rc=$?
+elapsed=$(( $(date +%s) - start ))
+
+[ "$rc" -ne 0 ] \
+  && pass "a runner without gh fails the gate instead of concluding green" \
+  || fail "the gate did NOT fail on a runner missing gh (rc=$rc)"
+
+# The whole point: bounded, and fast. The old behaviour was 60 attempts of
+# 30-second sleeps. Ten seconds is generous for what should be one `command -v`.
+[ "$elapsed" -lt 10 ] \
+  && pass "it fails within ${elapsed}s rather than polling out the window" \
+  || fail "took ${elapsed}s — it is still burning the poll budget on a fixed fault"
+
+grep -q 'result=toolchain-missing' <<<"$out" \
+  && pass "the failure names the toolchain, not a phantom API outage" \
+  || fail "the operator is told the API is unavailable when the runner is broken"
+
+grep -q 'gha-general-7' <<<"$out" \
+  && pass "the failure names WHICH runner must be fixed" \
+  || fail "the message does not identify the runner, so the fleet must be searched by hand"
+
+printf '#!/usr/bin/env bash\nexit 0\n' >"$tmp/bin/gh"
+chmod +x "$tmp/bin/gh"
+rm -f "$tmp/bin/jq"
+out="$(run_with_minimal_path)"
+rc=$?
+[ "$rc" -ne 0 ] && grep -q 'tool=jq' <<<"$out" \
+  && pass "a runner without jq fails immediately and names jq" \
+  || fail "the jq branch of the startup guard is not executable"
+
+ln -sf "$(command -v jq)" "$tmp/bin/jq"
+rm -f "$tmp/bin/unzip"
+out="$(run_with_minimal_path)"
+rc=$?
+[ "$rc" -ne 0 ] && grep -q 'tool=unzip' <<<"$out" \
+  && pass "a runner without unzip fails immediately and names unzip" \
+  || fail "the unzip branch of the startup guard is not executable"
+
+TEST_LANE=fast out="$(run_with_minimal_path)"
+rc=$?
+{ [ "$rc" -ne 0 ] && grep -q 'result=unknown-head' <<<"$out" && ! grep -q 'tool=unzip' <<<"$out"; } \
+  && pass "the fast lane does not require its unused AI-review unzip dependency" \
+  || fail "a fast-lane PR is blocked by missing unzip"
+
+# 127 can also appear mid-run if PATH changes under the job, so the loop keeps
+# its own terminal branch rather than trusting the up-front probe alone.
+if grep -q 'checks_rc" -eq 127' "$wf" &&
+   grep -q 'statuses_rc" -eq 127' "$wf" &&
+   grep -q 'rollup_rc" -eq 127' "$wf"; then
+  pass "API and aggregation exit 127 are terminal inside the poll loop"
+else
+  fail "an exit 127 path inside the poll loop still consumes the retry budget"
+fi
+
+# The privileged merge polls the same pool with the same tools and the same
+# ~40-minute window, so it carries the same guard or it reintroduces the fault.
+grep -q 'result=toolchain-missing' "$pm" \
+  && pass "the privileged merge asserts its toolchain before its own poll loop" \
+  || fail "ai-privileged-merge.yml can still hold a runner for 40 minutes without gh"
+
+# PRESENCE IS NOT ENOUGH — the first version of this guard sat AFTER two
+# unconditional `gh api` calls. Under `set -euo pipefail` the script dies at the
+# first of those, so the guard never ran and the operator got a bare exit 127.
+# A guard that cannot execute is worse than none: the test passes, the fault
+# does not change, and the message that would have explained it never prints.
+guard_line="$(grep -n 'result=toolchain-missing' "$pm" | head -1 | cut -d: -f1)"
+first_use="$(grep -nE '(gh api|jq -e)' "$pm" | head -1 | cut -d: -f1)"
+if [ -n "$guard_line" ] && [ -n "$first_use" ] && [ "$guard_line" -lt "$first_use" ]; then
+  pass "the guard precedes the first gh/jq call (line $guard_line < $first_use)"
+else
+  fail "the toolchain guard sits AFTER the first gh/jq call (guard=$guard_line, first use=$first_use) — set -e kills the script before it runs"
+fi
+
+wait_guard_line="$(grep -n 'result=toolchain-missing' "$wait_script" | head -1 | cut -d: -f1)"
+wait_first_use="$(grep -nE '(gh api|jq -e)' "$wait_script" | head -1 | cut -d: -f1)"
+if [ -n "$wait_guard_line" ] && [ -n "$wait_first_use" ] && [ "$wait_guard_line" -lt "$wait_first_use" ]; then
+  pass "the ci-wait guard precedes its first gh/jq call (line $wait_guard_line < $wait_first_use)"
+else
+  fail "the ci-wait guard sits AFTER its first gh/jq call (guard=$wait_guard_line, first use=$wait_first_use)"
+fi
+
+if grep -q 'runs="$(gh api .*" || return \$?' "$pm" &&
+   grep -q 'run="$(gh api .*" || return \$?' "$pm" &&
+   grep -q 'gate_run_rc" -eq 127' "$pm"; then
+  pass "privileged gate lookups preserve and terminate on exit 127"
+else
+  fail "a privileged gate lookup can still swallow exit 127 and sleep"
+fi
+
+if [ "$fails" -eq 0 ]; then
+  echo "All tests passed."
+  exit 0
+else
+  echo "$fails test(s) failed."
+  exit 1
+fi

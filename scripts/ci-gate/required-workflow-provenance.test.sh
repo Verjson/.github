@@ -65,7 +65,7 @@ mkdir -p "$tmp/bin"
 printf '#!/usr/bin/env bash\nexit 0\n' >"$tmp/bin/sleep"
 # The attestation archive is never really zipped here; `unzip -p` yields the
 # fixture the step then shape-validates for real.
-printf '#!/usr/bin/env bash\ncat "$ATTESTATION_FILE"\n' >"$tmp/bin/unzip"
+printf '#!/usr/bin/env bash\n[ "${UNZIP_RC:-0}" -eq 0 ] || exit "$UNZIP_RC"\ncat "$ATTESTATION_FILE"\n' >"$tmp/bin/unzip"
 
 # Fake `gh`. Every branch returns an explicit, well-formed payload and anything
 # unstubbed exits non-zero and is reported: falling through to a bare `exit 0`
@@ -128,12 +128,16 @@ if [ "${1:-}" = "api" ]; then
       fi
       emit "{\"base\":{\"ref\":\"$BASE_REF\"}}" ;;
     */actions/runs/*/artifacts*)
+      [ "${ATTESTATION_API_RC:-0}" -eq 0 ] || exit "$ATTESTATION_API_RC"
       emit "$(cat "$ARTIFACTS_FILE")" ;;
     */actions/artifacts/*/zip*)
+      [ "${ARTIFACT_ZIP_RC:-0}" -eq 0 ] || exit "$ARTIFACT_ZIP_RC"
       printf 'zip-bytes\n'; exit 0 ;;
     */actions/runs\?head_sha=*)
+      [ "${HEAD_RUNS_RC:-0}" -eq 0 ] || exit "$HEAD_RUNS_RC"
       emit "{\"workflow_runs\":$(cat "$RUNS_FILE")}" ;;
     */actions/runs/*)
+      [ "${SOURCE_RUN_RC:-0}" -eq 0 ] || exit "$SOURCE_RUN_RC"
       emit "$(jq -c '.[0]' "$RUNS_FILE")" ;;
   esac
 fi
@@ -141,6 +145,28 @@ echo "UNSTUBBED gh $args" >>"$ACTIONLOG"
 exit 1
 GH
 chmod +x "$tmp/bin/gh" "$tmp/bin/sleep" "$tmp/bin/unzip"
+real_jq="$(command -v jq)"
+export REAL_JQ="$real_jq"
+cat >"$tmp/bin/jq" <<'JQ'
+#!/usr/bin/env bash
+if [ "${JQ_FAIL_GATE_CHECK:-false}" = true ]; then
+  for arg in "$@"; do
+    [ "$arg" = needle ] && exit 127
+  done
+fi
+if [ "${JQ_FAIL_TRUSTED_RUN:-false}" = true ]; then
+  for arg in "$@"; do
+    [ "$arg" = id ] && exit 127
+  done
+fi
+if [ "${JQ_FAIL_ATTESTATION:-false}" = true ]; then
+  for arg in "$@"; do
+    [ "$arg" = name ] && exit 127
+  done
+fi
+exec "$REAL_JQ" "$@"
+JQ
+chmod +x "$tmp/bin/jq"
 
 org_entry() {
   # org_entry <source_type> <source> <repository_id> <ref>
@@ -187,12 +213,18 @@ reset_fixtures() {
   BASE_REF=main
   RULES_RC=0
   PULLS_RC=0
+  HEAD_RUNS_RC=0
+  SOURCE_RUN_RC=0
+  ATTESTATION_API_RC=0
+  ARTIFACT_ZIP_RC=0
+  UNZIP_RC=0
   BASE_REF_FINAL=""
 }
 
 run_case() { # run_case <event-name>
   export PATH="$tmp/bin:$PATH"
   export GH_TOKEN=stub-token RUNNER_TEMP="$tmp"
+  export REAL_JQ="$real_jq"
   export TARGET_REPO="$CONSUMER" TARGET_OWNER=Verjson GITHUB_REPOSITORY="$CONSUMER"
   export PR_NUMBER=18 EXPECTED_HEAD_SHA="$HEAD_SHA" SOURCE_RUN_ID="$GATE_RUN_ID"
   export GITHUB_EVENT_NAME="$1"
@@ -206,7 +238,7 @@ run_case() { # run_case <event-name>
   # enough attempts to prove the loop reaches its terminal state.
   export MERGE_WAIT_ATTEMPTS=2
   export TRUSTED_WF_ID TRUSTED_REPO_ID TRUSTED_SHA BASE_REF BASE_REF_FINAL
-  export RULES_RC PULLS_RC
+  export RULES_RC PULLS_RC HEAD_RUNS_RC SOURCE_RUN_RC ATTESTATION_API_RC ARTIFACT_ZIP_RC UNZIP_RC
   export RULES_FILE="$tmp/rules.json" RULES_FINAL_FILE="$tmp/rules-final.json"
   export RUNS_FILE="$tmp/runs.json"
   export META_FILE="$tmp/meta.json" META_FINAL_FILE="$tmp/meta-final.json"
@@ -265,6 +297,44 @@ assert_merged "dispatched continuation trusts an org required-workflow gate run 
 
 run_case pull_request_target
 assert_merged "pull_request_target path trusts an org required-workflow gate run and merges"
+
+SOURCE_RUN_RC=127
+run_case workflow_dispatch
+assert_rejected "a dispatched gate lookup that loses gh fails immediately" "result=toolchain-missing"
+
+HEAD_RUNS_RC=127
+run_case pull_request_target
+assert_rejected "a pull-request gate lookup that loses gh fails immediately" "result=toolchain-missing"
+
+ATTESTATION_API_RC=127
+run_case workflow_dispatch
+assert_rejected "an attestation lookup that loses gh fails immediately" "result=toolchain-missing"
+
+JQ_FAIL_GATE_CHECK=true
+export JQ_FAIL_GATE_CHECK
+run_case pull_request_target
+unset JQ_FAIL_GATE_CHECK
+assert_rejected "gate-check validation that loses jq fails immediately" "result=toolchain-missing"
+
+JQ_FAIL_TRUSTED_RUN=true
+export JQ_FAIL_TRUSTED_RUN
+run_case pull_request_target
+unset JQ_FAIL_TRUSTED_RUN
+assert_rejected "trusted-run validation that loses jq fails immediately" "result=toolchain-missing"
+
+JQ_FAIL_ATTESTATION=true
+export JQ_FAIL_ATTESTATION
+run_case workflow_dispatch
+unset JQ_FAIL_ATTESTATION
+assert_rejected "attestation validation that loses jq fails immediately" "result=toolchain-missing"
+
+ARTIFACT_ZIP_RC=127
+run_case workflow_dispatch
+assert_rejected "artifact download that loses gh fails immediately" "result=toolchain-missing"
+
+UNZIP_RC=127
+run_case workflow_dispatch
+assert_rejected "attestation extraction that loses unzip fails immediately" "result=toolchain-missing"
 
 # ADR 0023's defer lane must release both long-running jobs. The gate preflight
 # needs status-read permission to classify the head, and privileged_merge must

@@ -73,6 +73,10 @@ if [ "$1" = "pr" ] && [ "$2" = "view" ]; then
 fi
 if [ "$1" = "api" ]; then
   case "$*" in
+    */actions/runs/*/jobs\?per_page=100*)
+      [ "${SELF_JOBS_RC:-0}" = "0" ] || exit "$SELF_JOBS_RC"
+      printf '{"jobs":[{"name":"preflight"},{"name":"gate"}]}\n'
+      exit 0 ;;
     */check-runs\?per_page=100*)
       [ "${CHECKS_RC:-0}" = "0" ] || exit "$CHECKS_RC"
       bump "$CHECKS_CALL_COUNT" >/dev/null
@@ -111,6 +115,18 @@ fi
 exit 0
 GH
 chmod +x "$tmp/bin/gh"
+real_jq="$(command -v jq)"
+export REAL_JQ="$real_jq"
+cat >"$tmp/bin/jq" <<'JQ'
+#!/usr/bin/env bash
+if [ "${JQ_FAIL_AGGREGATE:-false}" = true ]; then
+  for arg in "$@"; do
+    [ "$arg" = self_jobs ] && exit 127
+  done
+fi
+exec "$REAL_JQ" "$@"
+JQ
+chmod +x "$tmp/bin/jq"
 printf '#!/usr/bin/env bash\nexit 0\n' >"$tmp/bin/sleep"
 chmod +x "$tmp/bin/sleep"
 
@@ -141,11 +157,13 @@ no_startup_failures="{\"total_count\":2,\"workflow_runs\":[
 run_wait() {
   # run_wait <rollup-json> [runs-api-json] [suites-rc]
   export PATH="$tmp/bin:$PATH" TARGET_REPO="Verjson/foo" PR_NUMBER=7 LANE=ai
+  export REAL_JQ="$real_jq"
   export GITHUB_EVENT_NAME="${TEST_EVENT_NAME:-pull_request}"
   export ROLLUP_FILE="$tmp/rollup.json" SUITES_FILE="$tmp/suites.json"
   export META_FILE="$tmp/meta.json" ACTIONLOG="$tmp/actions.log"
   export SUITES_RC="${3:-0}"
   export CHECKS_RC="${CHECKS_RC:-0}" STATUSES_RC="${STATUSES_RC:-0}"
+  export SELF_JOBS_RC="${SELF_JOBS_RC:-0}"
   export GRAPHQL_ROLLUP_RC="${GRAPHQL_ROLLUP_RC:-0}"
   export CHECKS_PAGES_FILE="${CHECKS_PAGES_FILE:-}"
   export STATUSES_PAGES_FILE="${STATUSES_PAGES_FILE:-}"
@@ -177,6 +195,25 @@ rc="$(run_wait '[]')"
 
 # --- #143: a startup_failure run emits no check run — probe for it directly ---
 green_rollup='[{"name":"unit","status":"COMPLETED","conclusion":"SUCCESS"}]'
+
+SELF_JOBS_RC=127
+GITHUB_REPOSITORY=Verjson/foo
+RUNNER_NAME=gha-general-7
+export SELF_JOBS_RC GITHUB_REPOSITORY RUNNER_NAME
+rc="$(run_wait "$green_rollup")"
+unset SELF_JOBS_RC GITHUB_REPOSITORY RUNNER_NAME
+{ [ "$rc" = "rc=1" ] && wait_out_has 'result=toolchain-missing' && wait_out_has 'gha-general-7'; } \
+  && pass "self-job enumeration fails fast when gh disappears" \
+  || fail "self-job enumeration swallowed exit 127 and entered the poll loop ($rc)"
+
+JQ_FAIL_AGGREGATE=true
+export JQ_FAIL_AGGREGATE
+rc="$(run_wait "$green_rollup")"
+unset JQ_FAIL_AGGREGATE
+{ [ "$rc" = "rc=1" ] && wait_out_has 'result=toolchain-missing' && wait_out_has 'aggregate_shape_rc=127'; } \
+  && pass "aggregation-time jq loss is terminal instead of consuming the poll budget" \
+  || fail "aggregation-time jq loss still retries as an API outage ($rc)"
+
 startup='{"total_count":2,"workflow_runs":[
   {"name":"unit","conclusion":"success","head_sha":"0123456789abcdef0123456789abcdef01234567"},
   {"name":"node-ci","conclusion":"startup_failure","head_sha":"0123456789abcdef0123456789abcdef01234567"}
@@ -520,6 +557,24 @@ run_merge() {
 }
 merged() { grep -q '^MERGE ' "$tmp/actions.log"; }
 merge_out_has() { grep -q "$1" "$tmp/merge-out.txt"; }
+
+SELF_JOBS_RC=127
+GITHUB_REPOSITORY=Verjson/foo
+RUNNER_NAME=gha-general-7
+export SELF_JOBS_RC GITHUB_REPOSITORY RUNNER_NAME
+rc="$(run_merge "$green_rollup")"
+unset SELF_JOBS_RC GITHUB_REPOSITORY RUNNER_NAME
+{ [ "$rc" = "rc=1" ] && ! merged && merge_out_has 'result=toolchain-missing'; } \
+  && pass "merge recheck self-job enumeration fails fast when gh disappears" \
+  || fail "merge recheck swallowed exit 127 while enumerating its own jobs ($rc)"
+
+JQ_FAIL_AGGREGATE=true
+export JQ_FAIL_AGGREGATE
+rc="$(run_merge "$green_rollup")"
+unset JQ_FAIL_AGGREGATE
+{ [ "$rc" = "rc=1" ] && ! merged && merge_out_has 'result=toolchain-missing' && merge_out_has 'aggregate_shape_rc=127'; } \
+  && pass "merge recheck aggregation-time jq loss is terminal" \
+  || fail "merge recheck misclassified aggregation-time jq loss ($rc)"
 
 rc="$(run_merge '[]')"
 { [ "$rc" = "rc=1" ] && ! merged && merge_out_has 'result=no-checks'; } \
