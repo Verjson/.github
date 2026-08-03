@@ -446,6 +446,20 @@ jobs:
               (index("HOLD") or index("DO NOT MERGE")) | not)' <<<"$meta" >/dev/null ||
               { echo "::error::PR is held"; exit 1; }
 
+            # ADR 0023 defers Renovate heads while their release-age status is
+            # pending. The unprivileged gate uses the same signal; without this
+            # terminal no-op, privileged_merge occupies a runner for the full
+            # 40-minute poll window waiting on a scheduler it cannot influence.
+            # The continuation itself is always workflow_dispatch, including
+            # automatic dispatches, so that event is not proof of human intent.
+            # A pending release-age hold is never mergeable on this head.
+            if jq -e 'any(.statusCheckRollup[]?;
+                 .context == "renovate/stability-days" and
+                 ((.state // "") | ascii_upcase) == "PENDING")' <<<"$meta" >/dev/null; then
+              echo "::notice::renovate/stability-days is pending on $EXPECTED_HEAD_SHA — privileged merge deferred until Renovate rebases (#368)"
+              exit 0
+            fi
+
             if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
               gate_run="$(dispatched_gate_run || true)"
             else
