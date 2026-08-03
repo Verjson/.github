@@ -48,6 +48,11 @@ extract ci_wait "$wait_script"
 grep -q '/check-runs?per_page=100' "$wait_script" \
   || { echo "FAIL - could not extract ci_wait run block from $wf"; exit 1; }
 
+merge_script="$tmp/merge-recheck.sh"
+extract merge "$merge_script"
+grep -q 'phase=merge-recheck result=toolchain-missing' "$merge_script" \
+  || { echo "FAIL - merge-recheck toolchain guard is absent or attached to the wrong step"; exit 1; }
+
 # A PATH with the real coreutils but deliberately WITHOUT gh. `command -v gh`
 # must genuinely miss, which a stub cannot model — the bug was that a missing
 # binary looked like a failing API, so the absence has to be real.

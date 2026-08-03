@@ -239,12 +239,6 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          for tool in gh jq; do
-            command -v "$tool" >/dev/null 2>&1 || {
-              echo "::error::phase=merge-recheck result=toolchain-missing tool=$tool runner=${RUNNER_NAME:-unknown} — this runner cannot perform the authoritative merge recheck."
-              exit 1
-            }
-          done
           REPO="$TARGET_REPO"
           out() { echo "$1=$2" >> "$GITHUB_OUTPUT"; }
           # Retry the reads so a transient API blip doesn't red-gate the PR.
@@ -1579,6 +1573,12 @@ jobs:
           ALLOW_ABSENT_CHECKS: ${{ inputs.allow_absent_checks || false }}
         run: |
           set -euo pipefail
+          for tool in gh jq; do
+            command -v "$tool" >/dev/null 2>&1 || {
+              echo "::error::phase=merge-recheck result=toolchain-missing tool=$tool runner=${RUNNER_NAME:-unknown} — this runner cannot perform the authoritative merge recheck."
+              exit 1
+            }
+          done
           REPO="$TARGET_REPO"
           merge_started_epoch="$(date +%s)"
           echo "::notice::phase=merge-recheck started_at=$(date -u +%Y-%m-%dT%H:%M:%SZ) lane=$LANE expected_head=$EXPECTED_HEAD_SHA"
