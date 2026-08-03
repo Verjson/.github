@@ -85,14 +85,24 @@ rc="$(run_step '' 1)"
   && pass "failed lookup exits 0 and publishes an empty target_private (#170)" \
   || fail "failed lookup aborted the step or published a non-empty value ($rc)"
 
-# (d) Visibility selects independent variables even though both currently point
-# at the permissive general lane. Unknown visibility must take untrusted.
+# (d) preflight stays untrusted until it has resolved the target's visibility,
+# and the later jobs route on THAT rather than on the event — on the
+# workflow_dispatch re-gate path `github.event.repository` is the dispatching
+# repository, not the target (ADR 0048).
 { grep -q "target_private: \${{ steps.target_visibility.outputs.target_private }}" "$wf" \
-    && ! grep -qF "github.event.repository.private == true" "$wf" \
-    && grep -qF "needs.preflight.outputs.target_private == 'true'" "$wf" \
-    && [ "$(grep -cF 'VERJSON_RUNNER_UNTRUSTED' "$wf")" -ge 2 ]; } \
+    && grep -qF "needs.preflight.outputs.target_private == 'false'" "$wf" \
+    && grep -qF 'VERJSON_RUNNER_UNTRUSTED' "$wf"; } \
   && pass "preflight is untrusted until gate resolves target visibility" \
-  || fail "gate routing drifted from the default/untrusted variable policy"
+  || fail "gate routing drifted from the resolved-visibility policy"
+
+# (e) The money guard. Fast-lane routing must test for an EXPLICIT public target
+# (`== 'false'`), never `!= 'true'`: unresolved visibility is the empty string,
+# and under `!= 'true'` an unreadable repository would silently start spending
+# hosted minutes. The default has to be the fleet that is already paid for.
+! grep -qF "target_private != 'true'" "$wf" \
+  && ! grep -qF "repository.private != true" "$wf" \
+  && pass "fast-lane routing never treats unresolved visibility as public" \
+  || fail "routing uses a != polarity, so unreadable visibility would spend hosted minutes"
 
 if [ "$fails" -eq 0 ]; then
   echo "All tests passed."
