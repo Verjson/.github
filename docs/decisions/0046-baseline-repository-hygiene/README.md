@@ -1,4 +1,4 @@
-# 0045 — Baseline repository hygiene: a root README that answers three questions
+# 0046 — Baseline repository hygiene: a root README that answers three questions
 
 - **Date:** 2026-08-02
 - **Issue:** [Verjson/.github#232](https://github.com/Verjson/.github/issues/232)
@@ -116,6 +116,48 @@ comes from four properties, each enforced by the script rather than by conventio
 - **An unrecognised class is a fault, not a narrower grant.** A row claiming a class
   outside the four fails the check closed rather than being ignored, so a typo can
   never quietly widen or silently void the register.
+
+### 4a. An exemption is only granted by a ref that was reviewed and merged
+
+The register living in the central repository is necessary but not sufficient.
+`actions/checkout` accepts `refs/pull/<n>/head`, and `Verjson/.github` is public,
+so anyone able to open a pull request here can create a ref carrying a register
+row that exempts their own repository — no merge, no review. A consumer pinning
+that ref would be self-exempting through the central register, which is precisely
+what this section says an exemption is not; the same ref also supplies the script
+that does the auditing.
+
+Requiring `hygiene_ref` to be a 40-character SHA does **not** close this: a commit
+on an unmerged PR branch is a SHA too. The property that actually matters is
+**reachability from the default branch**, which is what "reviewed and merged"
+means. The workflow therefore resolves the checked-out policy commit and requires
+`compare/main...<sha>` to report `identical` or `behind` — the same idiom the
+merge gate uses to verify submodule gitlinks. An unreadable comparison is a fault,
+never a pass.
+
+### 3a. Sections are read with markdown block context
+
+The substance rule is heading-driven, and a line-oriented reading of headings is
+not sound: a README whose entire body sits inside an `<!-- -->` comment, or whose
+"headings" are shell comments inside a fenced code block, renders as nothing at
+all and would still have answered all three questions. Both were demonstrated
+bypasses. The parser therefore tracks fence and comment state and ignores
+headings inside either.
+
+For the same reason a heading only ends the section it opened when it is at the
+**same level or shallower**. `### Goals` under `## Purpose` is part of the purpose
+answer; treating any heading as a terminator reported every sub-sectioned README
+as non-compliant, which would have buried the real backlog in false findings.
+
+### 4b. review-by is a date, and today must be knowable
+
+`review-by` is compared lexicographically, so a row is only expiring if the value
+is really a date. `never` and `9999-99-99` both parse as "later than today"
+forever and would silently convert an expiring grant into a permanent one, so the
+column is validated by round-tripping through `date` and anything else is a fault.
+The same applies to the current date: an empty `today` makes every lapse test
+false, so nothing would ever expire — the one invariant this register exists to
+keep. An undeterminable today is a fault, not a quiet pass.
 
 ### 5. Audit is the default; a fault is not a verdict
 

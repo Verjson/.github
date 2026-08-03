@@ -72,7 +72,7 @@ check() {
 missing="$(fixture missing --no-readme </dev/null)"
 check "$missing" >"$tmp/missing.out" 2>&1
 rc=$?
-{ [ "$rc" -ne 0 ] && grep -qi 'readme' "$tmp/missing.out"; } \
+{ [ "$rc" -eq 1 ] && grep -qi 'readme' "$tmp/missing.out"; } \
   && pass "a tree with no root README is a finding" \
   || { fail "missing README accepted or unreported (rc=$rc)"; sed 's/^/diag - /' "$tmp/missing.out"; }
 
@@ -89,7 +89,7 @@ rc=$?
 # Pinned to the emptiness verdict, not just to a non-zero exit: an empty README
 # also has no sections, so a bare `rc != 0` would still pass with the emptiness
 # rule deleted, and the case would be documenting nothing.
-{ [ "$rc" -ne 0 ] && grep -qi 'non-empty' "$tmp/empty.out"; } \
+{ [ "$rc" -eq 1 ] && grep -qi 'non-empty' "$tmp/empty.out"; } \
   && pass "a whitespace-only README is a finding, reported as emptiness" \
   || { fail "empty README accepted or misreported (rc=$rc)"; sed 's/^/diag - /' "$tmp/empty.out"; }
 
@@ -106,7 +106,7 @@ MD
 )"
 check "$placeholder" >"$tmp/placeholder.out" 2>&1
 rc=$?
-[ "$rc" -ne 0 ] \
+[ "$rc" -eq 1 ] \
   && pass "a title-and-placeholder README is a finding" \
   || { fail "placeholder README accepted (rc=$rc)"; sed 's/^/diag - /' "$tmp/placeholder.out"; }
 
@@ -142,7 +142,7 @@ MD
 )"
 check "$stubbed" >"$tmp/stubbed.out" 2>&1
 rc=$?
-[ "$rc" -ne 0 ] \
+[ "$rc" -eq 1 ] \
   && pass "required headings with placeholder bodies are a finding" \
   || { fail "stubbed sections accepted (rc=$rc)"; sed 's/^/diag - /' "$tmp/stubbed.out"; }
 
@@ -156,7 +156,7 @@ git -C "$deleted" rm -q README.md
 git -C "$deleted" commit -qm 'chore: drop the README'
 check "$deleted" >"$tmp/deleted.out" 2>&1
 rc=$?
-[ "$rc" -ne 0 ] \
+[ "$rc" -eq 1 ] \
   && pass "a PR that deletes the README is a finding" \
   || { fail "deletion of the README accepted (rc=$rc)"; sed 's/^/diag - /' "$tmp/deleted.out"; }
 
@@ -180,7 +180,7 @@ mkdir -p "$notrepo"
 compliant_readme >"$notrepo/README.md"
 REPO_HYGIENE_ROOT="$notrepo" bash "$script" --mode audit >"$tmp/notrepo.out" 2>&1
 rc=$?
-{ [ "$rc" -ne 0 ] && grep -qi 'could not read' "$tmp/notrepo.out"; } \
+{ [ "$rc" -eq 2 ] && grep -qi 'could not read' "$tmp/notrepo.out"; } \
   && pass "an unreadable tree fails closed as a fault, even in audit mode" \
   || { fail "unreadable tree reported success (rc=$rc)"; sed 's/^/diag - /' "$tmp/notrepo.out"; }
 
@@ -197,7 +197,7 @@ rc=$?
 
 REPO_HYGIENE_ROOT="$placeholder" bash "$script" --mode nonsense >"$tmp/badmode.out" 2>&1
 rc=$?
-[ "$rc" -ne 0 ] \
+[ "$rc" -eq 2 ] \
   && pass "an unrecognised mode is rejected instead of silently auditing" \
   || { fail "unknown mode fell through to a pass (rc=$rc)"; sed 's/^/diag - /' "$tmp/badmode.out"; }
 
@@ -238,7 +238,7 @@ CASES
 # An unregistered repository is not exempt, however plausible its name.
 exempt_check Verjson/old-thing-2 "$missing" >"$tmp/unregistered.out" 2>&1
 rc=$?
-[ "$rc" -ne 0 ] \
+[ "$rc" -eq 1 ] \
   && pass "a repository absent from the register is not exempt" \
   || { fail "unregistered repository treated as exempt (rc=$rc)"; sed 's/^/diag - /' "$tmp/unregistered.out"; }
 
@@ -253,7 +253,7 @@ git -C "$selfclaim" add -A
 git -C "$selfclaim" commit -qm 'claim an exemption'
 exempt_check Verjson/selfclaim "$selfclaim" >"$tmp/selfclaim.out" 2>&1
 rc=$?
-[ "$rc" -ne 0 ] \
+[ "$rc" -eq 1 ] \
   && pass "a repository cannot exempt itself with an in-tree marker" \
   || { fail "self-asserted exemption honoured — that is a bypass (rc=$rc)"; sed 's/^/diag - /' "$tmp/selfclaim.out"; }
 
@@ -262,7 +262,7 @@ rc=$?
 REPO_HYGIENE_ROOT="$missing" REPO_HYGIENE_EXEMPTIONS="$register" REPO_HYGIENE_TODAY=2026-09-02 \
   bash "$script" --mode enforce --repository Verjson/new-service >"$tmp/lapsed.out" 2>&1
 rc=$?
-{ [ "$rc" -ne 0 ] && grep -qi 'laps' "$tmp/lapsed.out"; } \
+{ [ "$rc" -eq 1 ] && grep -qi 'laps' "$tmp/lapsed.out"; } \
   && pass "an exemption past its review-by date stops exempting" \
   || { fail "lapsed exemption still honoured (rc=$rc)"; sed 's/^/diag - /' "$tmp/lapsed.out"; }
 
@@ -274,7 +274,7 @@ printf 'Verjson/old-thing\tdeprecated\t2027-01-01\tclass nobody agreed to\n' >"$
 REPO_HYGIENE_ROOT="$valid" REPO_HYGIENE_EXEMPTIONS="$malformed" REPO_HYGIENE_TODAY=2026-08-02 \
   bash "$script" --mode audit --repository Verjson/anything >"$tmp/malformed.out" 2>&1
 rc=$?
-{ [ "$rc" -ne 0 ] && grep -qi 'deprecated' "$tmp/malformed.out"; } \
+{ [ "$rc" -eq 2 ] && grep -qi 'deprecated' "$tmp/malformed.out"; } \
   && pass "an unrecognised exemption class is a fault, not a narrower exemption" \
   || { fail "unknown exemption class passed silently (rc=$rc)"; sed 's/^/diag - /' "$tmp/malformed.out"; }
 
@@ -283,7 +283,7 @@ printf 'Verjson/old-thing\tarchived\t\t\n' >"$incomplete"
 REPO_HYGIENE_ROOT="$valid" REPO_HYGIENE_EXEMPTIONS="$incomplete" REPO_HYGIENE_TODAY=2026-08-02 \
   bash "$script" --mode audit --repository Verjson/old-thing >"$tmp/incomplete.out" 2>&1
 rc=$?
-[ "$rc" -ne 0 ] \
+[ "$rc" -eq 2 ] \
   && pass "an exemption without a reason and a review-by date is rejected" \
   || { fail "undocumented exemption accepted (rc=$rc)"; sed 's/^/diag - /' "$tmp/incomplete.out"; }
 
@@ -292,11 +292,149 @@ rc=$?
 REPO_HYGIENE_ROOT="$valid" REPO_HYGIENE_EXEMPTIONS="$tmp/no-such-register.tsv" \
   bash "$script" --mode audit --repository Verjson/old-thing >"$tmp/noregister.out" 2>&1
 rc=$?
-{ [ "$rc" -ne 0 ] && grep -qi 'register' "$tmp/noregister.out"; } \
+{ [ "$rc" -eq 2 ] && grep -qi 'register' "$tmp/noregister.out"; } \
   && pass "a missing exemption register is a fault, not an empty one" \
   || { fail "missing register treated as no exemptions (rc=$rc)"; sed 's/^/diag - /' "$tmp/noregister.out"; }
 
 # --------------------------------------------------------------------------
+# --------------------------------------------------------------------------
+# A register whose final row carries no trailing newline still grants its
+# exemption. `while read` returns non-zero on an unterminated last line, so
+# without the `|| [ -n "$reg_repo" ]` guard that row is silently skipped: the
+# repository is checked instead of exempted, and nothing says the grant was
+# dropped. Fail-closed, but silently — the next person to append a row with an
+# editor that omits the final newline loses the exemption with no diagnostic.
+# --------------------------------------------------------------------------
+register_no_eol="$tmp/exemptions-no-eol.tsv"
+{
+  printf '# repository\tclass\treview-by\treason\n'
+  printf 'Verjson/last-row\tarchived\t2027-01-01\tArchived; this row has no trailing newline.'
+} >"$register_no_eol"
+REPO_HYGIENE_ROOT="$missing" REPO_HYGIENE_EXEMPTIONS="$register_no_eol" REPO_HYGIENE_TODAY=2026-08-02 \
+  bash "$script" --mode enforce --repository Verjson/last-row >"$tmp/no-eol.out" 2>&1
+rc=$?
+{ [ "$rc" -eq 0 ] && grep -qi "exempt" "$tmp/no-eol.out"; } \
+  && pass "a final register row without a trailing newline still exempts" \
+  || { fail "an unterminated final register row was silently dropped (rc=$rc)"; sed 's/^/diag - /' "$tmp/no-eol.out"; }
+
+# --------------------------------------------------------------------------
+# Markdown block context. The parser is line-oriented, so without explicit
+# fence/comment tracking a README whose whole body is commented out — or whose
+# "headings" are shell comments in an example — renders as nothing and still
+# answers all three questions. Both are full policy bypasses, not nits.
+# --------------------------------------------------------------------------
+commented="$(fixture commented <<'MD'
+<!--
+# Purpose
+Serves the widget catalogue to the storefront and keeps its search index warm.
+# Ownership
+Owned by the platform team; contact #verjson-platform or open an issue here.
+# Local validation
+Run `npm ci && npm test` before pushing; `npm run dev` starts it on :3000.
+-->
+MD
+)"
+out="$(check "$commented" 2>&1)"; rc=$?
+[ "$rc" -eq 1 ] && grep -q 'no purpose section' <<<"$out" \
+  && pass "headings inside an HTML comment answer nothing" \
+  || fail "a fully commented-out README passed (rc=$rc): $out"
+
+fenced="$(fixture fenced <<'MD'
+# widget-service
+
+```sh
+# Purpose
+# Ownership
+# Local validation
+```
+MD
+)"
+out="$(check "$fenced" 2>&1)"; rc=$?
+[ "$rc" -eq 1 ] && grep -q 'no purpose section' <<<"$out" \
+  && pass "headings inside a fenced code block answer nothing" \
+  || fail "a README whose only headings are inside a fence passed (rc=$rc): $out"
+
+# A subheading is part of its parent's answer, not the end of it. Resetting on
+# any heading made every sub-sectioned README a false finding, which would have
+# dominated the rollout backlog.
+nested="$(fixture nested <<'MD'
+# widget-service
+
+## Purpose
+
+### Goals
+
+Serves the widget catalogue to the storefront and keeps its search index warm.
+
+## Ownership
+
+Owned by the platform team; contact #verjson-platform or open an issue here.
+
+## Local validation
+
+Run `npm ci && npm test` before pushing; `npm run dev` starts it on :3000.
+MD
+)"
+out="$(check "$nested" 2>&1)"; rc=$?
+[ "$rc" -eq 0 ] \
+  && pass "a subheading continues its parent section rather than ending it" \
+  || fail "a sub-sectioned README was reported non-compliant (rc=$rc): $out"
+
+# A CRLF checkout must read the same as an LF one: the trailing \r otherwise
+# defeats the ([ \t]|:|$) alias anchor and fails every topic at once.
+crlf_dir="$tmp/crlf"
+mkdir -p "$crlf_dir"; git init -q "$crlf_dir"
+git -C "$crlf_dir" config user.name test; git -C "$crlf_dir" config user.email test@example.com
+compliant_readme | sed 's/$/\r/' >"$crlf_dir/README.md"
+git -C "$crlf_dir" add -A; git -C "$crlf_dir" commit -qm crlf
+out="$(check "$crlf_dir" 2>&1)"; rc=$?
+[ "$rc" -eq 0 ] \
+  && pass "a CRLF README reads the same as an LF one" \
+  || fail "a compliant CRLF README was reported non-compliant (rc=$rc): $out"
+
+# --------------------------------------------------------------------------
+# Argument handling. `shift 2` with one argument left fails without shifting,
+# so a trailing flag used to spin forever instead of reporting anything.
+# --------------------------------------------------------------------------
+out="$(timeout 10 bash "$script" --repo-root "$valid" --mode 2>&1)"; rc=$?
+[ "$rc" -eq 2 ] \
+  && pass "a flag with no value is a fault, not an infinite loop" \
+  || fail "a trailing --mode did not fault cleanly (rc=$rc; 124 = hung): $out"
+
+# --------------------------------------------------------------------------
+# review-by is shape-checked, not merely present. The lapse test is a
+# lexicographic compare, so an unparseable date would grant a permanent
+# exemption and silently void the invariant the register exists to keep.
+# --------------------------------------------------------------------------
+for bad_date in never 9999-99-99 2027-1-1; do
+  reg_bad="$tmp/register-bad-date.tsv"
+  printf 'Verjson/bad-date\tarchived\t%s\tunparseable review-by\n' "$bad_date" >"$reg_bad"
+  out="$(REPO_HYGIENE_EXEMPTIONS="$reg_bad" REPO_HYGIENE_TODAY=2026-08-02 \
+    bash "$script" --repo-root "$missing" --mode enforce --repository Verjson/bad-date 2>&1)"; rc=$?
+  [ "$rc" -eq 2 ] \
+    && pass "review-by '$bad_date' is a fault, not a permanent exemption" \
+    || fail "review-by '$bad_date' was accepted (rc=$rc): $out"
+done
+
+# An undeterminable date makes every lapse test false, so nothing would expire.
+out="$(REPO_HYGIENE_TODAY=not-a-date REPO_HYGIENE_EXEMPTIONS="$register" \
+  bash "$script" --repo-root "$missing" --mode enforce --repository Verjson/old-thing 2>&1)"; rc=$?
+[ "$rc" -eq 2 ] \
+  && pass "an undeterminable today is a fault, so nothing silently never lapses" \
+  || fail "an unparseable today did not fault (rc=$rc): $out"
+
+# A lapsed row must not abort the scan: rows after it still need validating.
+reg_after="$tmp/register-lapsed-then-malformed.tsv"
+{
+  printf 'Verjson/lapsed\tarchived\t2020-01-01\tlapsed long ago\n'
+  printf 'Verjson/other\tnot-a-class\t2027-01-01\tmalformed row after the lapsed one\n'
+} >"$reg_after"
+out="$(REPO_HYGIENE_EXEMPTIONS="$reg_after" REPO_HYGIENE_TODAY=2026-08-02 \
+  bash "$script" --repo-root "$missing" --mode enforce --repository Verjson/lapsed 2>&1)"; rc=$?
+[ "$rc" -eq 2 ] \
+  && pass "a malformed row after a lapsed one is still a fault" \
+  || fail "a lapsed row aborted validation of the rows after it (rc=$rc): $out"
+
 # The shipped artefacts, not just the logic.
 # --------------------------------------------------------------------------
 
@@ -346,7 +484,7 @@ git -C "$nested" add -A
 git -C "$nested" commit -qm 'document under docs/'
 check "$nested" >"$tmp/nested.out" 2>&1
 rc=$?
-[ "$rc" -ne 0 ] \
+[ "$rc" -eq 1 ] \
   && pass "a README under docs/ does not satisfy the root requirement" \
   || { fail "nested README accepted as the root README (rc=$rc)"; sed 's/^/diag - /' "$tmp/nested.out"; }
 
@@ -400,7 +538,7 @@ MD
 )"
 check "$unicode" >"$tmp/unicode.out" 2>&1
 rc=$?
-[ "$rc" -ne 0 ] \
+[ "$rc" -eq 1 ] \
   && pass "a heading outside the documented alias list is still a finding" \
   || { fail "an untranslated alias silently satisfied the purpose topic (rc=$rc)"; sed 's/^/diag - /' "$tmp/unicode.out"; }
 
@@ -435,7 +573,7 @@ MD
 )"
 check "$runon" >"$tmp/runon.out" 2>&1
 rc=$?
-[ "$rc" -ne 0 ] \
+[ "$rc" -eq 1 ] \
   && pass "a heading immediately followed by the next heading has no answer" \
   || { fail "empty section accepted (rc=$rc)"; sed 's/^/diag - /' "$tmp/runon.out"; }
 
@@ -466,6 +604,15 @@ else
     && grep -qF 'ref: ${{ inputs.hygiene_ref }}' "$wf" \
     && pass "the workflow checks out the central repository at a caller-pinned ref" \
     || fail "repo-hygiene.yml does not check out the central repository at a pinned ref"
+
+  # An unmerged policy ref (a PR ref on this public repository) would let the
+  # audited repository supply its own exemption row and its own script, so the
+  # workflow must prove the ref is reachable from the default branch. A SHA
+  # shape check is not the property — a PR-branch commit is a SHA too.
+  grep -qF 'compare/main...$resolved' "$wf" \
+    && grep -qE 'identical\|behind' "$wf" \
+    && pass "the workflow refuses a policy ref not reachable from main" \
+    || fail "repo-hygiene.yml does not verify hygiene_ref reachability from main"
 
   # The invocation must name the central checkout path. A bare
   # `scripts/repo-hygiene.sh` would resolve inside the consumer's tree.

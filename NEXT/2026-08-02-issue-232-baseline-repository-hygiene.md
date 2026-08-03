@@ -29,6 +29,26 @@ change. Faults are exempt from that softening: an unreadable tree, an unreadable
 malformed register, or an unknown mode exit non-zero in both modes, because a check
 that passes when it could not run is one that silently stops working.
 
+An adversarial review before merge closed two bypasses and four wrong verdicts.
+`hygiene_ref` was a free string handed to `actions/checkout`, which accepts
+`refs/pull/<n>/head`; because this repository is public, anyone could have opened
+a pull request adding a row exempting their own repository and pinned that ref
+without it ever being merged. A SHA shape check does not close it — a PR-branch
+commit is a SHA — so the workflow now requires the resolved policy commit to be
+reachable from `main`. Separately, the heading reader had no markdown block
+context, so a README whose whole body sat inside an HTML comment, or whose
+headings were shell comments in a fenced block, rendered as nothing and passed.
+
+The same pass fixed four verdicts that were simply wrong: a subheading ended its
+parent section (so every sub-sectioned README was a false finding), a CRLF README
+failed all three topics, a trailing `--mode` spun forever instead of faulting, and
+an unparseable `review-by` — or an undeterminable current date — turned an
+expiring exemption into a permanent one. A final register row without a trailing
+newline was silently dropped, taking its class and review-by validation with it,
+which is the default path for every newly appended grant. Fault-vs-finding exit
+codes are now asserted exactly rather than as "non-zero": making `die` exit 1
+previously broke no test and now breaks eleven.
+
 Also seeded `docs/repo-hygiene/README.template.md` (a README that passes the check,
 asserted by a test), brought this repository's own README into compliance, and
 recorded in the merge-gate section of `README.md` that hygiene is baseline CI and
