@@ -79,9 +79,15 @@ runs_on_parameterized="$(grep -cE "runs-on: \\\$\{\{ inputs\.runner_labels && fr
 # (f) Verjson gate jobs expose independent default/untrusted variables while
 # both keep the compatible general fallback during the permissive exception.
 # Non-Verjson consumers retain the hosted fallback and explicit fleet input.
+# ADR 0048 splits the Verjson lanes by target visibility, so UNTRUSTED is now
+# preflight's fallback only — gate reaches the fast lane for a public target and
+# DEFAULT for a private one. What must hold regardless: the cross-org hosted
+# route survives, every lane is still variable-selected rather than hardcoded,
+# and the self-hosted general pool remains the terminal fallback everywhere.
 grep -qE "github\.repository_owner != 'Verjson' && 'ubuntu-24\.04'" "$wf" \
+  && [ "$(grep -cF 'VERJSON_RUNNER_FASTLANE' "$wf")" -ge 3 ] \
   && [ "$(grep -cF 'VERJSON_RUNNER_DEFAULT' "$wf")" -ge 2 ] \
-  && [ "$(grep -cF 'VERJSON_RUNNER_UNTRUSTED' "$wf")" -ge 2 ] \
+  && [ "$(grep -cF 'VERJSON_RUNNER_UNTRUSTED' "$wf")" -ge 1 ] \
   && [ "$(grep -cF '["self-hosted","general"]' "$wf")" -ge 2 ] \
   && pass "Verjson gate jobs use variable lanes while cross-org routing stays portable" \
   || fail "variable gate routing or cross-org portability drifted"

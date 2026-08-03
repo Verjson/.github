@@ -11,6 +11,7 @@ Reverse-chronological index of org-level decisions.
 <!-- BEGIN ADR INDEX -->
 | # | Date | Decision |
 |---|------|----------|
+| [0048](0048-merge-gate-fast-lane-by-visibility/README.md) | 2026-08-03 | Merge-gate jobs take the fast lane when the target is public |
 | [0047](0047-fast-lane-runner-variable/README.md) | 2026-08-03 | A fast lane for short CI jobs, selected by variable |
 | [0046](0046-baseline-repository-hygiene/README.md) | 2026-08-02 | Baseline repository hygiene: a root README that answers three questions |
 | [0045](0045-pin-validation-fetches-by-sha/README.md) | 2026-08-02 | Pin validation fetches by SHA, so it proves immutability but not reachability |
