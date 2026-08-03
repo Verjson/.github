@@ -27,10 +27,22 @@ deadlocked completely: 6/6 runners busy, ~15 runs queued organization-wide, and
 
 ## Decision
 
-**Names describe the machine.** `gce` and `GCP` are removed from every runner
-registration, from the declared label set, and from the documented routes. The
-runner group is renamed `GCP` → `general`, matching the label the routing
-variables already resolve to.
+**Names describe the machine.** The documented routes and the declared label
+set stop naming `GCP`, and the runner group is renamed `GCP` → `general`,
+matching the label the routing variables already resolve to.
+
+**The labels themselves stay on the runners for now.** They were removed on
+2026-08-03 and restored within the hour, because removing them wedged
+`Verjson/verjson-observability` instantly: its workflows pin
+`[self-hosted, GCP]` directly, and a `runs-on` matching no runner does not fail
+— it queues forever, with no check run and no error, while the fleet sits idle.
+That is the #130/#191 failure shape.
+
+At least nine repositories pin the label directly. The correct order is: sweep
+and migrate every consumer, verify nothing queues against `GCP`/`gce`, remove
+the labels from the runners, and only then drop them from the declared set — a
+consumer still pinning `GCP` must fail actionlint *after* it stops scheduling,
+not before. #365 owns that migration.
 
 **Capacity goes from six to ten.** Four droplets — `gha-general-7` through
 `gha-general-10` — join the pool with the same specification as the existing
@@ -59,12 +71,13 @@ small, but it is real: **the code lands first, then the group is renamed.**
 
 - A label finally means what it says. ADR 0011's fourth principle — "labels
   describe capability, not just provider" — is honoured rather than stated.
-- Any workflow anywhere selecting `[self-hosted, GCP]` stops resolving. A sweep
-  of this repository found exactly one such selector, and it was
-  `actionlint.yml`'s own positive-control fixture, which needs *a* declared
-  label rather than that one. Consumer repositories were not swept; a consumer
-  pinning `GCP` directly would break, which is the point of removing a name that
-  no longer describes anything.
+- Sweeping only this repository was the mistake that caused the outage. It found
+  one selector — `actionlint.yml`'s positive-control fixture — and that was
+  taken as licence to remove the labels. Consumers were the population that
+  mattered, and at least nine of them pin `GCP` directly. "A consumer pinning
+  `GCP` would break" was written in the original PR as an accepted consequence;
+  it was in fact an outage, because the break is silent and unbounded rather
+  than a failed job.
 - Ten runners do not fix the deadlock, they widen it. `gate` and
   `privileged_merge` still hold a runner while polling, so the pool is still
   consumed by sleepers — there are just four more before it saturates. #341 is

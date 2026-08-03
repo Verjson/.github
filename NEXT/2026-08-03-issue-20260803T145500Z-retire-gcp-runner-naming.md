@@ -10,8 +10,14 @@ never followed. Every runner still advertised `gce` and `GCP`, and the runner
 group was still called `GCP`, on droplets in the `verjson-ci` project of the
 `verJSON Common` DigitalOcean team.
 
-Both labels were stripped from all six live runners on 2026-08-03. Nothing
-routed on them — routing resolves through `VERJSON_RUNNER_*` to `general` — and
+Both labels were stripped from the live runners on 2026-08-03 and **restored
+within the hour**. Removing them wedged `Verjson/verjson-observability`
+immediately: it pins `[self-hosted, GCP]` directly, and a `runs-on` that matches
+no runner does not fail — it queues forever with no check run, while the fleet
+sits idle. At least nine repositories pin the label. The labels stay until those
+consumers are migrated (#365); this change carries only the documentation, the
+declared set and the group rename. Nothing routed on them internally — routing
+resolves through `VERJSON_RUNNER_*` to `general` — and
 `.github/actionlint.yaml` had already called `GCP` a "legacy provider-specific
 selector, retired by the #203 sweep" while continuing to declare it.
 
