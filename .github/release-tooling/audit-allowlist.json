@@ -33,8 +33,29 @@
       "ghsa": "GHSA-rgw5-rvv9-x895",
       "package": "brace-expansion",
       "severity": "high",
-      "reason": "Follow-up DoS bypass in the same npm-bundled release CLI dependency. Release tooling runs only after trusted review against organization-controlled inputs, so the vulnerable expansion is not attacker-reachable from PR CI. npm 11.18.0 still bundles brace-expansion 5.0.7; overrides cannot replace bundled dependencies, and @semantic-release/npm does not support npm 12. Re-check for an npm 11 release carrying brace-expansion 5.0.9.",
+      "reason": "Follow-up DoS bypass in the same npm-bundled release CLI dependency. Release tooling runs only after trusted review against organization-controlled inputs, so the vulnerable expansion is not attacker-reachable from PR CI. npm 11.19.0 still bundles brace-expansion 5.0.7; overrides cannot replace bundled dependencies, and @semantic-release/npm does not support npm 12. Re-check for an npm 11 release carrying brace-expansion 5.0.9.",
       "review-by": "2026-08-09"
+    },
+    {
+      "ghsa": "GHSA-mwp4-54f8-5fhr",
+      "package": "ip-address",
+      "severity": "high",
+      "reason": "Leading-zero IPv4 parsing can bypass SSRF checks, but this copy is bundled inside npm 11.19.0 and reached only through npm's SOCKS proxy support. Trusted release jobs use organization-controlled registry endpoints and configure no SOCKS proxy, so untrusted input cannot reach this parser. Bundled dependencies cannot be overridden and npm 12 is unsupported by @semantic-release/npm; re-check npm 11 for ip-address 10.4.0.",
+      "review-by": "2026-08-10"
+    },
+    {
+      "ghsa": "GHSA-4xrf-jv44-h6hh",
+      "package": "ip-address",
+      "severity": "moderate",
+      "reason": "CIDR-suffix parsing can bypass SSRF checks, but this copy is bundled inside npm 11.19.0 and reached only through npm's SOCKS proxy support. Trusted release jobs use organization-controlled registry endpoints and configure no SOCKS proxy, so untrusted input cannot reach this parser. Bundled dependencies cannot be overridden and npm 12 is unsupported by @semantic-release/npm; re-check npm 11 for ip-address 10.4.0.",
+      "review-by": "2026-08-10"
+    },
+    {
+      "ghsa": "GHSA-22jq-vg5j-6vgg",
+      "package": "ip-address",
+      "severity": "moderate",
+      "reason": "Mapped/NAT64 address classification can bypass SSRF checks, but this copy is bundled inside npm 11.19.0 and reached only through npm's SOCKS proxy support. Trusted release jobs use organization-controlled registry endpoints and configure no SOCKS proxy, so untrusted input cannot reach this parser. Bundled dependencies cannot be overridden and npm 12 is unsupported by @semantic-release/npm; re-check npm 11 for ip-address 10.4.0.",
+      "review-by": "2026-08-10"
     }
   ]
 }
