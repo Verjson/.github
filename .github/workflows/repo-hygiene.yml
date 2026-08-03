@@ -1,0 +1,114 @@
+name: repository hygiene
+
+# Baseline repository hygiene for every Verjson repository: the default branch
+# must carry a root README.md that answers what the repository is for, who owns
+# it, and how to validate it locally (Verjson/.github#232, ADR 0046).
+#
+# This is BASELINE CI. A green hygiene check says a reader can orient themselves
+# in the repository; it says nothing about whether the repository's own
+# behaviour works. It never substitutes for repository-specific build, test, or
+# config validation.
+#
+# Ships in AUDIT mode by default: findings are reported and the job stays green,
+# so adopting the check cannot turn a consumer's CI red on day one. Enforcement
+# is a deliberate per-caller flip (`mode: enforce`) once its backlog is clear.
+#
+# Caller (each repository's .github/workflows/ci.yml, alongside its domain CI):
+#
+#   jobs:
+#     hygiene:
+#       uses: Verjson/.github/.github/workflows/repo-hygiene.yml@v2
+#       with:
+#         hygiene_ref: <immutable Verjson/.github commit>
+
+on:
+  workflow_call:
+    inputs:
+      hygiene_ref:
+        description: Immutable Verjson/.github commit supplying the check and the exemption register.
+        required: true
+        type: string
+      mode:
+        description: >-
+          'audit' reports findings and stays green; 'enforce' fails the job.
+          Audit is the rollout default — see ADR 0046.
+        required: false
+        type: string
+        default: 'audit'
+      runner:
+        description: Optional JSON runner labels; Verjson defaults by visibility, external callers use ubuntu-24.04.
+        required: false
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+jobs:
+  hygiene:
+    runs-on: ${{ inputs.runner != '' && fromJSON(inputs.runner) || github.repository_owner != 'Verjson' && 'ubuntu-24.04' || github.event.repository.private == true && fromJSON(vars.VERJSON_RUNNER_DEFAULT || '["self-hosted","general"]') || fromJSON(vars.VERJSON_RUNNER_UNTRUSTED || vars.VERJSON_RUNNER_DEFAULT || '["self-hosted","general"]') }}
+    timeout-minutes: 5
+    steps:
+      # The tree under audit. On a pull_request this is the merge result, which
+      # is the point: a PR that DELETES the README leaves no added line to
+      # inspect, but the resulting tree has no README.
+      - name: Check out the repository under audit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # Nothing here pushes, and this workspace is the tree under audit —
+          # leaving the token in its .git/config would hand a write credential
+          # to the least trusted thing in the job.
+          persist-credentials: false
+
+      # The check and the exemption register come from the central repository at
+      # a pinned ref, never from the tree being audited. An exemption the audited
+      # repository could assert about itself would be a bypass, not an exemption.
+      - name: Check out the central hygiene policy
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: Verjson/.github
+          ref: ${{ inputs.hygiene_ref }}
+          path: .repo-hygiene
+
+      # `hygiene_ref` is a free string handed straight to `actions/checkout`, and
+      # checkout accepts `refs/pull/<n>/head`. Verjson/.github is public, so
+      # without this guard ANYONE could open a PR here adding a register row
+      # exempting their own repository — no merge required — and a consumer
+      # could pin that PR ref. That would make an exemption a claim the audited
+      # repository makes about itself, which is exactly what ADR 0046 says an
+      # exemption is not, and it would let the audited repo choose the script
+      # that audits it. Requiring a 40-hex SHA is NOT sufficient: a PR-branch
+      # commit is a SHA too. Reachability from the default branch is the real
+      # property — it is what "reviewed and merged" means.
+      #
+      # Same idiom the merge gate uses for submodule gitlinks: `identical` or
+      # `behind` means the commit is an ancestor of main. Anything else — or an
+      # unreadable comparison — is a fault, never a pass.
+      - name: Verify the policy ref was reviewed and merged
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HYGIENE_REF: ${{ inputs.hygiene_ref }}
+        run: |
+          set -euo pipefail
+          resolved="$(git -C .repo-hygiene rev-parse HEAD)"
+          status="$(gh api "repos/Verjson/.github/compare/main...$resolved" --jq .status 2>/dev/null || echo unreadable)"
+          case "$status" in
+            identical|behind)
+              echo "::notice::policy ref $HYGIENE_REF ($resolved) is reachable from Verjson/.github@main ($status)" ;;
+            *)
+              echo "::error::hygiene_ref '$HYGIENE_REF' resolves to $resolved, which is NOT reachable from Verjson/.github@main (compare: $status). An unmerged ref could carry a self-granted exemption or a modified check; refusing to audit against it."
+              exit 2 ;;
+          esac
+
+      - name: Check baseline repository hygiene
+        env:
+          HYGIENE_MODE: ${{ inputs.mode }}
+          # Through the environment, not interpolated into the script body: the
+          # house rule for every expansion that reaches a `run:` block.
+          HYGIENE_REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          bash .repo-hygiene/scripts/repo-hygiene.sh \
+            --mode "$HYGIENE_MODE" \
+            --repo-root "$GITHUB_WORKSPACE" \
+            --repository "$HYGIENE_REPOSITORY"

@@ -12,6 +12,7 @@ Reverse-chronological index of org-level decisions.
 | # | Date | Decision |
 |---|------|----------|
 | [0047](0047-fast-lane-runner-variable/README.md) | 2026-08-03 | A fast lane for short CI jobs, selected by variable |
+| [0046](0046-baseline-repository-hygiene/README.md) | 2026-08-02 | Baseline repository hygiene: a root README that answers three questions |
 | [0045](0045-pin-validation-fetches-by-sha/README.md) | 2026-08-02 | Pin validation fetches by SHA, so it proves immutability but not reachability |
 | [0044](0044-gate-provenance-bound-to-entry-workflow/README.md) | 2026-08-02 | Gate provenance is bound to the run's entry workflow |
 | [0043](0043-privileged-merge-verifies-its-own-revision/README.md) | 2026-08-01 | Privileged merge verifies which revision of itself is executing |

@@ -29,6 +29,71 @@ grep -q 'merge-attestation-$run_id' "$merge_wf" \
   && pass "privileged path fetches the exact run artifact and shape-validates data" \
   || fail "follow-up metadata validation drifted"
 
+# --------------------------------------------------------------------------
+# Behaviour, not shape. The follow-up block fans out one subshell per item, and
+# the failure mode it replaced is silent: behind `jq | while`, the loop body
+# runs in the PIPELINE's subshell, so the background jobs are its children and
+# the trailing `wait` has none to wait for. The step then finishes while the
+# issue calls are still in flight, and on a runner that tears down immediately
+# the follow-ups are simply lost — with every command having "succeeded".
+#
+# Extract the real block from the workflow (single source of truth) and run it
+# against a stubbed `gh` that is slow enough that unwaited children cannot have
+# finished by the time the block returns.
+# --------------------------------------------------------------------------
+sandbox="$(mktemp -d)"
+trap 'rm -rf "$sandbox"' EXIT
+
+awk '/^          followups="\$\(jq -c \.followups/{p=1} p{print} p&&/^          wait$/{exit}' \
+  "$merge_wf" | sed 's/^          //' >"$sandbox/followups.sh"
+
+if [ ! -s "$sandbox/followups.sh" ] || ! grep -q '^wait$' "$sandbox/followups.sh"; then
+  fail "could not extract the follow-up block from $merge_wf"
+else
+  mkdir -p "$sandbox/bin"
+  cat >"$sandbox/bin/gh" <<'STUB'
+#!/usr/bin/env bash
+# `issue list` reports no duplicate; `issue create` records one line, slowly
+# enough that a missing `wait` is observable rather than a race.
+case "$1 ${2:-}" in
+  "issue list") echo 0 ;;
+  "issue create") sleep 0.4; echo "created" >>"$FOLLOWUP_LOG" ;;
+  *) exit 1 ;;
+esac
+STUB
+  chmod +x "$sandbox/bin/gh"
+
+  export FOLLOWUP_LOG="$sandbox/created.log"; : >"$FOLLOWUP_LOG"
+  export PATH="$sandbox/bin:$PATH"
+  export PR_NUMBER=99 TARGET_REPO=Verjson/example
+  n=12
+  attestation="$(jq -nc --argjson n "$n" \
+    '{followups: [range(0;$n) | {location: ("src/f\(.).ts:1"), note: ("finding \(.)")}]}')"
+  export attestation
+
+  ( set -uo pipefail; . "$sandbox/followups.sh" ) >/dev/null 2>&1
+  created="$(wc -l <"$FOLLOWUP_LOG" | tr -d ' ')"
+  [ "$created" -eq "$n" ] \
+    && pass "every follow-up issue is created before the step returns" \
+    || fail "follow-up fan-out returned with $created/$n issues created — a missing wait, or a pipeline subshell swallowing the jobs"
+
+  # The dedup path must still suppress an already-filed follow-up.
+  cat >"$sandbox/bin/gh" <<'STUB'
+#!/usr/bin/env bash
+case "$1 ${2:-}" in
+  "issue list") echo 1 ;;
+  "issue create") echo "created" >>"$FOLLOWUP_LOG" ;;
+  *) exit 1 ;;
+esac
+STUB
+  chmod +x "$sandbox/bin/gh"
+  : >"$FOLLOWUP_LOG"
+  ( set -uo pipefail; . "$sandbox/followups.sh" ) >/dev/null 2>&1
+  [ "$(wc -l <"$FOLLOWUP_LOG" | tr -d ' ')" -eq 0 ] \
+    && pass "an already-filed follow-up is not filed twice" \
+    || fail "dedup stopped suppressing existing follow-ups"
+fi
+
 [ "$fails" -eq 0 ] && { echo "All tests passed."; exit 0; }
 echo "$fails test(s) failed."
 exit 1
