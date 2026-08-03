@@ -25,17 +25,39 @@ literal_hosted="$(
 # is a guaranteed failure, because GitHub-hosted minutes are unfunded for this
 # org (#189). Every Verjson route must therefore land on self-hosted capacity
 # the caller is actually admitted to (ADR 0033).
-# The one sanctioned exception is actionlint's `github-hosted-runner` input
-# (ADR 0026): hosted there is an explicit per-caller opt-in, never a default a
-# Verjson caller can fall into. It is a trap while billing is off — tracked in
-# #189 — but it is opt-in, so it is not a silent route.
+# The premise above is FALSE as stated and is corrected by ADR 0047/0048:
+# hosted minutes are free for PUBLIC repositories (billing measured 2026-08-01);
+# private ones are capped by a spending limit, which is a budget knob rather than
+# an impossibility. The invariant that still holds is narrower — a Verjson job
+# must not land on hosted *by accident*. Deliberate, reviewed routes are allowed.
+#
+# Sanctioned exceptions:
+#  * actionlint's `github-hosted-runner` input (ADR 0026) — explicit per-caller
+#    opt-in, never a default a Verjson caller falls into.
+#  * `VERJSON_RUNNER_FASTLANE` (ADR 0047/0048) — the fast lane. Selected by an
+#    org variable, so it is repointable at self-hosted capacity without editing
+#    a workflow, and it always carries a fallback.
+#  * `fleet-watchdog.yml` — polices the self-hosted fleet, so gating it on that
+#    fleet would leave it queued behind the jam it exists to clear. It runs only
+#    in this repository, which is public, so its minutes are free.
 unsafe_portable="$(
   grep -HnE "^    runs-on:.*ubuntu-(24\\.04|latest)" "$workflows"/*.yml \
     | grep -v "github.repository_owner != 'Verjson' && 'ubuntu-24.04'" \
     | grep -v "github.repository_owner == 'Verjson'.*|| 'ubuntu-24.04'" \
     | grep -v "inputs.github-hosted-runner" \
+    | grep -v "vars.VERJSON_RUNNER_FASTLANE" \
     || true
 )"
+
+# The fast lane must keep a fallback: a bare `fromJSON(vars.X)` with no `||`
+# breaks every consumer the moment the variable is unset.
+fastlane_no_fallback="$(
+  grep -HnE "^    runs-on:.*VERJSON_RUNNER_FASTLANE" "$workflows"/*.yml \
+    | grep -v "VERJSON_RUNNER_FASTLANE ||" || true
+)"
+[ -z "$fastlane_no_fallback" ] \
+  && pass "every fast-lane selector keeps a fallback for an unset variable" \
+  || fail "fast-lane selector without a fallback: $fastlane_no_fallback"
 [ -z "$unsafe_portable" ] \
   && pass "hosted fallbacks are reachable only by callers outside Verjson" \
   || fail "hosted fallback reachable by a Verjson caller: $unsafe_portable"
