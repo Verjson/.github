@@ -73,6 +73,12 @@ rc=$?
   && pass "rejects a mutable release tag before checkout" \
   || fail "accepted mutable tag v2 (rc=$rc)"
 
+run_validate 0123456
+rc=$?
+[ "$rc" -eq 2 ] \
+  && pass "rejects an abbreviated commit SHA before checkout" \
+  || fail "accepted an abbreviated commit SHA (rc=$rc)"
+
 merged_sha=0123456789abcdef0123456789abcdef01234567
 run_validate "$merged_sha"
 rc=$?
