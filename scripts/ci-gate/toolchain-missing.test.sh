@@ -98,6 +98,19 @@ grep -q 'result=toolchain-missing' "$pm" \
   && pass "the privileged merge asserts its toolchain before its own poll loop" \
   || fail "ai-privileged-merge.yml can still hold a runner for 40 minutes without gh"
 
+# PRESENCE IS NOT ENOUGH — the first version of this guard sat AFTER two
+# unconditional `gh api` calls. Under `set -euo pipefail` the script dies at the
+# first of those, so the guard never ran and the operator got a bare exit 127.
+# A guard that cannot execute is worse than none: the test passes, the fault
+# does not change, and the message that would have explained it never prints.
+guard_line="$(grep -n 'result=toolchain-missing' "$pm" | head -1 | cut -d: -f1)"
+first_use="$(grep -nE '(gh api|jq -e)' "$pm" | head -1 | cut -d: -f1)"
+if [ -n "$guard_line" ] && [ -n "$first_use" ] && [ "$guard_line" -lt "$first_use" ]; then
+  pass "the guard precedes the first gh/jq call (line $guard_line < $first_use)"
+else
+  fail "the toolchain guard sits AFTER the first gh/jq call (guard=$guard_line, first use=$first_use) — set -e kills the script before it runs"
+fi
+
 if [ "$fails" -eq 0 ]; then
   echo "All tests passed."
   exit 0
