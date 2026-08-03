@@ -9,3 +9,4 @@ request head, never evidence of base-branch content. Lifecycle state such as
 an inferred duplicate submission, stale head, closed PR, or already-merged PR
 remains owned by deterministic API checks, preventing a byte-identical PR
 checkout from becoming a false blocker without suppressing idempotency review.
+ADR 0051 records the evidence boundary.

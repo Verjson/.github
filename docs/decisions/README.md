@@ -11,6 +11,7 @@ Reverse-chronological index of org-level decisions.
 <!-- BEGIN ADR INDEX -->
 | # | Date | Decision |
 |---|------|----------|
+| [0051](0051-ai-review-pr-head-evidence-boundary/README.md) | 2026-08-03 | AI review does not infer base state from the PR checkout |
 | [0050](0050-actionlint-fast-lane-for-public-targets/README.md) | 2026-08-03 | actionlint takes the fast lane on public targets |
 | [0049](0049-fleet-watchdog-preempts-poll-jobs/README.md) | 2026-08-03 | A watchdog preempts merge-gate poll jobs on the self-hosted fleet |
 | [0048](0048-merge-gate-fast-lane-by-visibility/README.md) | 2026-08-03 | Merge-gate jobs take the fast lane when the target is public |
