@@ -15,10 +15,16 @@ not cosmetic. At `v2.1.0` the eligibility job still calls
 `ci-eligibility@9a7cc9c` as an external action; at `v2.2.0` that logic is inlined
 in `node-ci.yml`. A reader copying the documented pin got the older shape.
 
-Six example sites now name `v2.2.0`: `README.md`, both blocks in
-`docs/node-workflows.md`, the TL;DR and the two `helm-ci` blocks in
-`docs/reusable-workflow-versioning.md`, and the header comment in
-`.github/workflows/node-ci.yml`.
+Seven sites now name `v2.2.0`: `README.md`, both blocks in
+`docs/node-workflows.md`, the TL;DR bullet and its `helm-ci` example and the
+`helm-ci` exact-pin block in `docs/reusable-workflow-versioning.md`, and the
+header comment in `.github/workflows/node-ci.yml`. The `@v2` moving-alias
+example is deliberately untouched — it already resolves to `v2.2.0`.
+
+One of those sites was not merely stale but wrong: `docs/node-workflows.md`
+documents the `cache-max-mb` input, which `v2.2.0` added and `v2.1.0` does not
+have. A caller copying that example at the pin it was shown with would have
+failed input validation.
 
 The release-cutting example in `docs/reusable-workflow-versioning.md` no longer
 says `gh release create v2.1.1`. That was the exact ghost tag #287 and #300 were
