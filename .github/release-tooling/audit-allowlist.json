@@ -28,6 +28,13 @@
       "severity": "high",
       "reason": "DoS via unbounded expansion in the copy of brace-expansion bundled inside npm's own CLI (semantic-release -> @semantic-release/npm -> npm), reached only when semantic-release publishes on our own runners against our own inputs — not attacker-reachable in CI. No upstream fix is installable as of 2026-07-25: npm bundles the dependency, so `overrides` cannot rewrite it, and no npm release yet carries brace-expansion 5.0.8.",
       "review-by": "2026-08-25"
+    },
+    {
+      "ghsa": "GHSA-rgw5-rvv9-x895",
+      "package": "brace-expansion",
+      "severity": "high",
+      "reason": "Follow-up DoS bypass in the same npm-bundled release CLI dependency. Release tooling runs only after trusted review against organization-controlled inputs, so the vulnerable expansion is not attacker-reachable from PR CI. npm 11.18.0 still bundles brace-expansion 5.0.7; overrides cannot replace bundled dependencies, and @semantic-release/npm does not support npm 12. Re-check for an npm 11 release carrying brace-expansion 5.0.9.",
+      "review-by": "2026-08-09"
     }
   ]
 }
