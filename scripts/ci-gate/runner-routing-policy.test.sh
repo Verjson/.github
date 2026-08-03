@@ -111,7 +111,7 @@ cat >"$evaluator" <<'JS'
 // validated against real semantics, not against a model that only happens to
 // agree with the polarity in use today.
 const vm = require('node:vm');
-const [, , raw, repository, runnerInput, priv, varDefault, varUntrusted] = process.argv;
+const [, , raw, repository, runnerInput, priv, varDefault, varUntrusted, varFastlane] = process.argv;
 const body = raw.trim().replace(/^\$\{\{/, '').replace(/\}\}$/, '');
 const github = {
   repository,
@@ -119,6 +119,11 @@ const github = {
   event: { repository: { private: priv === '' ? 0 : priv === 'true' } },
 };
 const inputs = { runner: runnerInput };
+// preflight resolves the TARGET repository's visibility and publishes it as a
+// STRING ('true' | 'false' | '' when unreadable). gate and dispatch-merge route
+// on that rather than on `github.event.repository`, because on the dispatch path
+// the event repository is the dispatcher, not the target.
+const needs = { preflight: { outputs: { target_private: priv } } };
 // An unset Actions variable is the empty string, not undefined.
 const vars = {
   VERJSON_RUNNER_DEFAULT: varDefault,
@@ -127,6 +132,7 @@ const vars = {
   // Existing evaluator call sites provide one private-lane fixture, so use it
   // for both names; structural assertions below pin the preference order.
   VERJSON_RUNNER_ISOLATED: varDefault,
+  VERJSON_RUNNER_FASTLANE: varFastlane,
 };
 const fromJSON = (value) => JSON.parse(value);
 // GitHub Actions string equality and contains() are case-insensitive; JS === is not.
@@ -152,7 +158,7 @@ const contains = (haystack, needle) =>
 // construction, and the timeout bounds a pathological expression instead of
 // hanging CI.
 const context = vm.createContext(
-  Object.assign(Object.create(null), { github, inputs, vars, fromJSON, contains }),
+  Object.assign(Object.create(null), { github, inputs, needs, vars, fromJSON, contains }),
 );
 const resolved = vm.runInContext(`(${body})`, context, {
   timeout: 5000,
@@ -189,10 +195,11 @@ assert_no_ambient() {
 assert_no_ambient '${{ process.env.HOME }}' process
 assert_no_ambient '${{ require("node:fs") }}' require
 
-# assert_route <workflow> <job> <repo> <runner-input> <private> <var-default> <var-untrusted> <expected> <label>
+# assert_route <workflow> <job> <repo> <runner-input> <private> <var-default> <var-untrusted> <expected> <label> [var-fastlane]
 assert_route() {
   local workflow="$1" job="$2" repository="$3" runner_input="$4" priv="$5"
   local var_default="$6" var_untrusted="$7" expected="$8" label="$9"
+  local var_fastlane="${10-}"
   local expression resolved
   expression="$(extract_runs_on "$workflow" "$job")"
   if [ -z "$expression" ]; then
@@ -200,7 +207,7 @@ assert_route() {
     return
   fi
   resolved="$(node "$evaluator" "$expression" "$repository" "$runner_input" \
-    "$priv" "$var_default" "$var_untrusted" 2>&1)" || {
+    "$priv" "$var_default" "$var_untrusted" "$var_fastlane" 2>&1)" || {
     fail "$label — evaluating '$expression' failed: $resolved"
     return
   }
@@ -239,10 +246,28 @@ dispatch_workflow="$workflows/ai-review-merge.yml"
 grep -qF 'VERJSON_RUNNER_ISOLATED || vars.VERJSON_RUNNER_DEFAULT' "$dispatch_workflow" \
   && pass "dispatch-merge prefers isolated then default" \
   || fail "dispatch-merge lost isolated/default preference"
+# ADR 0048 replaces ADR 0033's "Verjson never reaches hosted" invariant with a
+# visibility split: a PUBLIC target is deliberately routed to elastic hosted
+# capacity (free for public repos, and the fixed self-hosted pool is what made
+# the 2026-08-03 deadlock possible). Private and UNRESOLVED must still not be —
+# unresolved especially, so visibility that fails to read never spends money.
 assert_route "$dispatch_workflow" dispatch-merge Verjson/.github '' false \
   '["self-hosted","isolated-canary"]' '["self-hosted","untrusted-canary"]' \
+  '["fastlane-canary"]' \
+  "dispatch-merge — a public Verjson target takes the fast lane" \
+  '["fastlane-canary"]'
+
+assert_route "$dispatch_workflow" dispatch-merge Verjson/.github '' true \
+  '["self-hosted","isolated-canary"]' '["self-hosted","untrusted-canary"]' \
   '["self-hosted","isolated-canary"]' \
-  "dispatch-merge — Verjson cannot reach hosted"
+  "dispatch-merge — a private Verjson target stays self-hosted" \
+  '["fastlane-canary"]'
+
+assert_route "$dispatch_workflow" dispatch-merge Verjson/.github '' '' \
+  '["self-hosted","isolated-canary"]' '["self-hosted","untrusted-canary"]' \
+  '["self-hosted","isolated-canary"]' \
+  "dispatch-merge — unresolved visibility never spends hosted minutes" \
+  '["fastlane-canary"]'
 assert_route "$dispatch_workflow" dispatch-merge Acme/widgets '' true '' '' \
   'ubuntu-24.04' "dispatch-merge — external callers retain hosted portability"
 
