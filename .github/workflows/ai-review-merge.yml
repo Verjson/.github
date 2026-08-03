@@ -730,9 +730,9 @@ jobs:
             # 127 is "command not found" — an environment fault that no
             # amount of waiting repairs. Distinguish it from a genuinely
             # transient API error, which is what the retry budget is for.
-            if [ "$checks_rc" -eq 127 ] || [ "$statuses_rc" -eq 127 ]; then
+            if [ "$checks_rc" -eq 127 ] || [ "$statuses_rc" -eq 127 ] || [ "$rollup_rc" -eq 127 ]; then
               elapsed=$(( $(date +%s) - started_epoch ))
-              echo "::error::phase=ci-wait result=toolchain-missing elapsed_seconds=$elapsed attempt=$i/$max_attempts checks_endpoint_rc=$checks_rc statuses_endpoint_rc=$statuses_rc runner=${RUNNER_NAME:-unknown} — the CLI disappeared mid-run; failing immediately rather than holding this runner for the remaining attempts."
+              echo "::error::phase=ci-wait result=toolchain-missing elapsed_seconds=$elapsed attempt=$i/$max_attempts checks_endpoint_rc=$checks_rc statuses_endpoint_rc=$statuses_rc aggregate_shape_rc=$rollup_rc runner=${RUNNER_NAME:-unknown} — the CLI disappeared mid-run; failing immediately rather than holding this runner for the remaining attempts."
               exit 1
             fi
             if [ "$checks_rc" -ne 0 ] || [ "$statuses_rc" -ne 0 ] || [ "$rollup_rc" -ne 0 ]; then

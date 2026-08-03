@@ -88,9 +88,13 @@ grep -q 'gha-general-7' <<<"$out" \
 
 # 127 can also appear mid-run if PATH changes under the job, so the loop keeps
 # its own terminal branch rather than trusting the up-front probe alone.
-grep -q 'checks_rc" -eq 127' "$wf" \
-  && pass "the poll loop treats 127 as terminal, not as a transient API error" \
-  || fail "127 inside the loop still consumes the retry budget"
+if grep -q 'checks_rc" -eq 127' "$wf" &&
+   grep -q 'statuses_rc" -eq 127' "$wf" &&
+   grep -q 'rollup_rc" -eq 127' "$wf"; then
+  pass "API and aggregation exit 127 are terminal inside the poll loop"
+else
+  fail "an exit 127 path inside the poll loop still consumes the retry budget"
+fi
 
 # The privileged merge polls the same pool with the same tools and the same
 # ~40-minute window, so it carries the same guard or it reintroduces the fault.
@@ -109,6 +113,14 @@ if [ -n "$guard_line" ] && [ -n "$first_use" ] && [ "$guard_line" -lt "$first_us
   pass "the guard precedes the first gh/jq call (line $guard_line < $first_use)"
 else
   fail "the toolchain guard sits AFTER the first gh/jq call (guard=$guard_line, first use=$first_use) — set -e kills the script before it runs"
+fi
+
+if grep -q 'runs="$(gh api .*" || return \$?' "$pm" &&
+   grep -q 'run="$(gh api .*" || return \$?' "$pm" &&
+   grep -q 'gate_run_rc" -eq 127' "$pm"; then
+  pass "privileged gate lookups preserve and terminate on exit 127"
+else
+  fail "a privileged gate lookup can still swallow exit 127 and sleep"
 fi
 
 if [ "$fails" -eq 0 ]; then

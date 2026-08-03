@@ -340,8 +340,9 @@ jobs:
           }
 
           newest_trusted_gate_run() {
-            gh api "repos/$TARGET_REPO/actions/runs?head_sha=$EXPECTED_HEAD_SHA&event=pull_request&per_page=100" |
-              jq -ce --argjson id "$trusted_workflow_id" --arg sha "$trusted_workflow_sha" \
+            local runs
+            runs="$(gh api "repos/$TARGET_REPO/actions/runs?head_sha=$EXPECTED_HEAD_SHA&event=pull_request&per_page=100")" || return $?
+            jq -ce --argjson id "$trusted_workflow_id" --arg sha "$trusted_workflow_sha" \
                 --arg wfpath "$trusted_workflow_path" \
                 --arg wfurl "$trusted_required_url" \
                 --argjson required "$required_workflow_trusted" \
@@ -349,7 +350,7 @@ jobs:
                   [.workflow_runs[] | select(trusted_run)] |
                   sort_by([(.created_at // ""), .id]) |
                   last // empty
-                '
+                ' <<<"$runs"
           }
 
           # The dispatcher hands over its own gate run, which is triggered by
@@ -358,7 +359,7 @@ jobs:
           dispatched_gate_run() {
             local run
             [[ "$SOURCE_RUN_ID" =~ ^[1-9][0-9]*$ ]] || return 1
-            run="$(gh api "repos/$TARGET_REPO/actions/runs/$SOURCE_RUN_ID")" || return 1
+            run="$(gh api "repos/$TARGET_REPO/actions/runs/$SOURCE_RUN_ID")" || return $?
             jq -ce --argjson id "$trusted_workflow_id" --arg sha "$trusted_workflow_sha" \
               --arg wfpath "$trusted_workflow_path" \
               --arg wfurl "$trusted_required_url" \
@@ -474,10 +475,15 @@ jobs:
               exit 0
             fi
 
+            gate_run_rc=0
             if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
-              gate_run="$(dispatched_gate_run || true)"
+              gate_run="$(dispatched_gate_run)" || gate_run_rc=$?
             else
-              gate_run="$(newest_trusted_gate_run || true)"
+              gate_run="$(newest_trusted_gate_run)" || gate_run_rc=$?
+            fi
+            if [ "$gate_run_rc" -eq 127 ]; then
+              echo "::error::phase=privileged-merge result=toolchain-missing tool=gh-or-jq runner=${RUNNER_NAME:-unknown} — the CLI disappeared mid-run; failing immediately rather than holding this runner for the remaining attempts."
+              exit 1
             fi
             provenance=pending
             if [ -n "$gate_run" ]; then
