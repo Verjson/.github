@@ -63,7 +63,7 @@ done
 
 run_with_minimal_path() {
   timeout 60 env -i PATH="$tmp/bin" HOME="$tmp" \
-    LANE=ai PR_NUMBER=1 TARGET_REPO=Verjson/toquorum \
+    LANE="${TEST_LANE:-ai}" PR_NUMBER=1 TARGET_REPO=Verjson/toquorum \
     EXPECTED_HEAD_SHA=abc123 GH_TOKEN=x RUNNER_NAME=gha-general-7 \
     bash "$wait_script" 2>&1
 }
@@ -107,6 +107,12 @@ rc=$?
 [ "$rc" -ne 0 ] && grep -q 'tool=unzip' <<<"$out" \
   && pass "a runner without unzip fails immediately and names unzip" \
   || fail "the unzip branch of the startup guard is not executable"
+
+TEST_LANE=fast out="$(run_with_minimal_path)"
+rc=$?
+{ [ "$rc" -ne 0 ] && grep -q 'result=unknown-head' <<<"$out" && ! grep -q 'tool=unzip' <<<"$out"; } \
+  && pass "the fast lane does not require its unused AI-review unzip dependency" \
+  || fail "a fast-lane PR is blocked by missing unzip"
 
 # 127 can also appear mid-run if PATH changes under the job, so the loop keeps
 # its own terminal branch rather than trusting the up-front probe alone.

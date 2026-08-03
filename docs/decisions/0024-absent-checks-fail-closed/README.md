@@ -45,8 +45,9 @@ remains fail-closed; the added evidence makes a live mismatch attributable
 before another semantic change is attempted.
 
 **Amended 2026-08-03 for #363 / PR #364:** exit 127 is an environment fault,
-not a transient API outage. Both merge workflows verify `gh`, `jq`, and `unzip` before
-their first use and terminate immediately if either command later disappears
+not a transient API outage. Both merge workflows verify `gh` and `jq` before
+their first use; AI review and privileged merge additionally verify `unzip`
+before entering paths that require it. They terminate immediately if a command later disappears
 during check aggregation, self-job enumeration, trusted-run discovery, or
 attestation retrieval. The disabled authoritative merge-recheck block carries
 the same classification so re-enabling it cannot restore the old behavior.

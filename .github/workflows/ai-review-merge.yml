@@ -577,12 +577,18 @@ jobs:
           # taken out of the pool — and because the gate is waiting for CI that
           # needs that same pool, a single mis-provisioned runner starves the
           # fleet it belongs to (#363).
-          for tool in gh jq unzip; do
+          for tool in gh jq; do
             command -v "$tool" >/dev/null 2>&1 || {
               echo "::error::phase=ci-wait result=toolchain-missing tool=$tool runner=${RUNNER_NAME:-unknown} — this runner cannot run the gate. Install $tool on it (or remove it from the pool); re-running the PR will not help until then."
               exit 1
             }
           done
+          if [ "$LANE" = ai ]; then
+            command -v unzip >/dev/null 2>&1 || {
+              echo "::error::phase=ci-wait result=toolchain-missing tool=unzip runner=${RUNNER_NAME:-unknown} — this runner cannot run AI review. Install unzip on it or remove it from the pool."
+              exit 1
+            }
+          fi
           started_epoch="$(date +%s)"
           max_attempts=60
           [ "$LANE" = "fast" ] && max_attempts=80
