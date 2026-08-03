@@ -115,6 +115,14 @@ else
   fail "the toolchain guard sits AFTER the first gh/jq call (guard=$guard_line, first use=$first_use) — set -e kills the script before it runs"
 fi
 
+wait_guard_line="$(grep -n 'result=toolchain-missing' "$wait_script" | head -1 | cut -d: -f1)"
+wait_first_use="$(grep -nE '(gh api|jq -e)' "$wait_script" | head -1 | cut -d: -f1)"
+if [ -n "$wait_guard_line" ] && [ -n "$wait_first_use" ] && [ "$wait_guard_line" -lt "$wait_first_use" ]; then
+  pass "the ci-wait guard precedes its first gh/jq call (line $wait_guard_line < $wait_first_use)"
+else
+  fail "the ci-wait guard sits AFTER its first gh/jq call (guard=$wait_guard_line, first use=$wait_first_use)"
+fi
+
 if grep -q 'runs="$(gh api .*" || return \$?' "$pm" &&
    grep -q 'run="$(gh api .*" || return \$?' "$pm" &&
    grep -q 'gate_run_rc" -eq 127' "$pm"; then

@@ -73,6 +73,10 @@ if [ "$1" = "pr" ] && [ "$2" = "view" ]; then
 fi
 if [ "$1" = "api" ]; then
   case "$*" in
+    */actions/runs/*/jobs\?per_page=100*)
+      [ "${SELF_JOBS_RC:-0}" = "0" ] || exit "$SELF_JOBS_RC"
+      printf '{"jobs":[{"name":"preflight"},{"name":"gate"}]}\n'
+      exit 0 ;;
     */check-runs\?per_page=100*)
       [ "${CHECKS_RC:-0}" = "0" ] || exit "$CHECKS_RC"
       bump "$CHECKS_CALL_COUNT" >/dev/null
@@ -159,6 +163,7 @@ run_wait() {
   export META_FILE="$tmp/meta.json" ACTIONLOG="$tmp/actions.log"
   export SUITES_RC="${3:-0}"
   export CHECKS_RC="${CHECKS_RC:-0}" STATUSES_RC="${STATUSES_RC:-0}"
+  export SELF_JOBS_RC="${SELF_JOBS_RC:-0}"
   export GRAPHQL_ROLLUP_RC="${GRAPHQL_ROLLUP_RC:-0}"
   export CHECKS_PAGES_FILE="${CHECKS_PAGES_FILE:-}"
   export STATUSES_PAGES_FILE="${STATUSES_PAGES_FILE:-}"
@@ -190,6 +195,16 @@ rc="$(run_wait '[]')"
 
 # --- #143: a startup_failure run emits no check run — probe for it directly ---
 green_rollup='[{"name":"unit","status":"COMPLETED","conclusion":"SUCCESS"}]'
+
+SELF_JOBS_RC=127
+GITHUB_REPOSITORY=Verjson/foo
+RUNNER_NAME=gha-general-7
+export SELF_JOBS_RC GITHUB_REPOSITORY RUNNER_NAME
+rc="$(run_wait "$green_rollup")"
+unset SELF_JOBS_RC GITHUB_REPOSITORY RUNNER_NAME
+{ [ "$rc" = "rc=1" ] && wait_out_has 'result=toolchain-missing' && wait_out_has 'gha-general-7'; } \
+  && pass "self-job enumeration fails fast when gh disappears" \
+  || fail "self-job enumeration swallowed exit 127 and entered the poll loop ($rc)"
 
 JQ_FAIL_AGGREGATE=true
 export JQ_FAIL_AGGREGATE

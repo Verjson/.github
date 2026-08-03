@@ -25,17 +25,20 @@ of adding 40% capacity they removed it: every gate job that landed on one could
 only fail, slowly, holding a slot throughout. The organization stalled with
 runners sitting idle.
 
-Both workflows now assert `gh` and `jq` before their poll loops and fail
+Both workflows now assert `gh` and `jq` before their first use and fail
 immediately, naming the tool and the runner so the operator fixes a machine
-rather than re-running a PR. The loops additionally treat 127 as terminal, since
-`PATH` can change under a running job. `ai-privileged-merge.yml` had the same
-shape with a ~40-minute window and gets the same guard.
+rather than re-running a PR. Every swallowed mid-run path additionally treats
+127 as terminal, including self-job enumeration, check aggregation, trusted-gate
+discovery, and attestation retrieval. `ai-privileged-merge.yml` had the same
+shape with a ~40-minute window and gets the same protection.
 
 `toolchain-missing.test.sh` runs the extracted `run:` block with `gh` genuinely
 absent from `PATH`. A stub cannot model this: the bug was precisely that a
 missing binary was indistinguishable from a failing API, so the absence has to
 be real. It pins that the failure takes under ten seconds rather than thirty
-minutes, and that the message identifies the runner.
+minutes, and that the message identifies the runner. The existing extracted
+gate and privileged-merge suites force each mid-run lookup to return 127 and
+prove those branches terminate rather than entering the retry loops.
 
 This removes the amplifier, not the cycle. The gate still holds a runner while
 polling in the healthy case, which is #341.

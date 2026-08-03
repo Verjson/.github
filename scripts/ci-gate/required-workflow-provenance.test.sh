@@ -128,6 +128,7 @@ if [ "${1:-}" = "api" ]; then
       fi
       emit "{\"base\":{\"ref\":\"$BASE_REF\"}}" ;;
     */actions/runs/*/artifacts*)
+      [ "${ATTESTATION_API_RC:-0}" -eq 0 ] || exit "$ATTESTATION_API_RC"
       emit "$(cat "$ARTIFACTS_FILE")" ;;
     */actions/artifacts/*/zip*)
       printf 'zip-bytes\n'; exit 0 ;;
@@ -143,6 +144,18 @@ echo "UNSTUBBED gh $args" >>"$ACTIONLOG"
 exit 1
 GH
 chmod +x "$tmp/bin/gh" "$tmp/bin/sleep" "$tmp/bin/unzip"
+real_jq="$(command -v jq)"
+export REAL_JQ="$real_jq"
+cat >"$tmp/bin/jq" <<'JQ'
+#!/usr/bin/env bash
+if [ "${JQ_FAIL_GATE_CHECK:-false}" = true ]; then
+  for arg in "$@"; do
+    [ "$arg" = needle ] && exit 127
+  done
+fi
+exec "$REAL_JQ" "$@"
+JQ
+chmod +x "$tmp/bin/jq"
 
 org_entry() {
   # org_entry <source_type> <source> <repository_id> <ref>
@@ -191,12 +204,14 @@ reset_fixtures() {
   PULLS_RC=0
   HEAD_RUNS_RC=0
   SOURCE_RUN_RC=0
+  ATTESTATION_API_RC=0
   BASE_REF_FINAL=""
 }
 
 run_case() { # run_case <event-name>
   export PATH="$tmp/bin:$PATH"
   export GH_TOKEN=stub-token RUNNER_TEMP="$tmp"
+  export REAL_JQ="$real_jq"
   export TARGET_REPO="$CONSUMER" TARGET_OWNER=Verjson GITHUB_REPOSITORY="$CONSUMER"
   export PR_NUMBER=18 EXPECTED_HEAD_SHA="$HEAD_SHA" SOURCE_RUN_ID="$GATE_RUN_ID"
   export GITHUB_EVENT_NAME="$1"
@@ -210,7 +225,7 @@ run_case() { # run_case <event-name>
   # enough attempts to prove the loop reaches its terminal state.
   export MERGE_WAIT_ATTEMPTS=2
   export TRUSTED_WF_ID TRUSTED_REPO_ID TRUSTED_SHA BASE_REF BASE_REF_FINAL
-  export RULES_RC PULLS_RC HEAD_RUNS_RC SOURCE_RUN_RC
+  export RULES_RC PULLS_RC HEAD_RUNS_RC SOURCE_RUN_RC ATTESTATION_API_RC
   export RULES_FILE="$tmp/rules.json" RULES_FINAL_FILE="$tmp/rules-final.json"
   export RUNS_FILE="$tmp/runs.json"
   export META_FILE="$tmp/meta.json" META_FINAL_FILE="$tmp/meta-final.json"
@@ -277,6 +292,16 @@ assert_rejected "a dispatched gate lookup that loses gh fails immediately" "resu
 HEAD_RUNS_RC=127
 run_case pull_request_target
 assert_rejected "a pull-request gate lookup that loses gh fails immediately" "result=toolchain-missing"
+
+ATTESTATION_API_RC=127
+run_case workflow_dispatch
+assert_rejected "an attestation lookup that loses gh fails immediately" "result=toolchain-missing"
+
+JQ_FAIL_GATE_CHECK=true
+export JQ_FAIL_GATE_CHECK
+run_case pull_request_target
+unset JQ_FAIL_GATE_CHECK
+assert_rejected "gate-check validation that loses jq fails immediately" "result=toolchain-missing"
 
 # ADR 0023's defer lane must release both long-running jobs. The gate preflight
 # needs status-read permission to classify the head, and privileged_merge must
