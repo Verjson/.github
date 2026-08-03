@@ -1,0 +1,18 @@
+# Repository-hygiene exemption register (Verjson/.github#232, ADR 0046).
+#
+# The ONLY place an exemption can be granted. It lives in the central repository,
+# so adding a row is a reviewed pull request here — never a claim the audited
+# repository makes about itself. `scripts/repo-hygiene.sh` reads this file from
+# its own checkout, so nothing in the repository under audit can influence it.
+#
+# Tab-separated, four columns, all required:
+#
+#   repository   owner/name, exactly as `github.repository` reports it
+#   class        one of: archived | mirror | generated | bootstrap
+#   review-by    YYYY-MM-DD; past this date the row stops exempting
+#   reason       one sentence a reviewer can check
+#
+# An unrecognised class, a missing reason, or a missing review-by date is a
+# FAULT: the check fails closed rather than honouring a row nobody agreed to.
+#
+# repository	class	review-by	reason

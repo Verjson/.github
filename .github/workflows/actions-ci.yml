@@ -184,3 +184,5 @@ jobs:
         run: bash scripts/doc-fragment-names.test.sh
       - name: CI path triggers cover what the repository-wide scanners read (#305)
         run: bash scripts/trigger-scope.test.sh
+      - name: Repository hygiene — README policy, exemption register, audit default (#232, ADR 0046)
+        run: bash scripts/repo-hygiene.test.sh
