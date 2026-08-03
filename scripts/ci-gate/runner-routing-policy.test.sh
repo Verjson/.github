@@ -140,13 +140,30 @@ cat >"$evaluator" <<'JS'
 // agree with the polarity in use today.
 const vm = require('node:vm');
 const [, , raw, repository, runnerInput, priv, varDefault, varUntrusted, varFastlane] = process.argv;
-const body = raw.trim().replace(/^\$\{\{/, '').replace(/\}\}$/, '');
+// `inputs.github-hosted-runner` is a legal Actions reference and an illegal JS
+// one — bare, it parses as `inputs.github - hosted - runner`. Rewriting it to a
+// bracket access is what lets actionlint.yml be EVALUATED here rather than only
+// grepped, which is how its visibility polarity went untested until ADR 0050.
+const body = raw.trim().replace(/^\$\{\{/, '').replace(/\}\}$/, '')
+  .replace(/inputs\.github-hosted-runner/g, "inputs['github-hosted-runner']");
 const github = {
   repository,
   repository_owner: repository.split('/')[0],
-  event: { repository: { private: priv === '' ? 0 : priv === 'true' } },
+  event: {
+    repository: {
+      private: priv === '' ? 0 : priv === 'true',
+      // A STRING, and the reason ADR 0050 routes on it. `private` is a boolean
+      // that Actions coerces to 0 when the payload omits it, so `private ==
+      // false` is TRUE for an unreadable repository as well as a public one —
+      // a fail-OPEN that would spend hosted minutes on a repo it could not
+      // read. `visibility` is '' in that case, and '' == 'public' is false.
+      visibility: priv === '' ? '' : priv === 'true' ? 'private' : 'public',
+    },
+  },
 };
-const inputs = { runner: runnerInput };
+// Modelled as false throughout: it is the per-caller opt-in of ADR 0026, so
+// every case here is the default one where a Verjson caller has NOT opted in.
+const inputs = { runner: runnerInput, 'github-hosted-runner': false };
 // preflight resolves the TARGET repository's visibility and publishes it as a
 // STRING ('true' | 'false' | '' when unreadable). gate and dispatch-merge route
 // on that rather than on `github.event.repository`, because on the dispatch path
@@ -298,6 +315,40 @@ assert_route "$dispatch_workflow" dispatch-merge Verjson/.github '' '' \
   '["fastlane-canary"]'
 assert_route "$dispatch_workflow" dispatch-merge Acme/widgets '' true '' '' \
   'ubuntu-24.04' "dispatch-merge — external callers retain hosted portability"
+
+# ADR 0050. actionlint is a short, secretless CPU job, so on a PUBLIC target it
+# takes the fast lane instead of contending for the fixed self-hosted pool with
+# the merge-gate poll loops it can starve. Four polarities, because every
+# interesting failure here is in a fallback rather than the happy path.
+assert_route "$workflows/actionlint.yml" actionlint Verjson/.github '' false \
+  '["self-hosted","d"]' '["self-hosted","u"]' '["ubuntu-24.04"]' \
+  "actionlint — a public Verjson repo takes the fast lane (ADR 0050)" '["ubuntu-24.04"]'
+
+assert_route "$workflows/actionlint.yml" actionlint Verjson/verjson-authn '' true \
+  '["self-hosted","d"]' '["self-hosted","u"]' '["self-hosted","d"]' \
+  "actionlint — a private Verjson repo stays on VERJSON_RUNNER_DEFAULT" '["ubuntu-24.04"]'
+
+# The load-bearing one. The test is `== false`, never `!= true`, so a visibility
+# that fails to resolve falls through to self-hosted instead of silently
+# spending hosted minutes on an unreadable repository (ADR 0048's polarity rule).
+assert_route "$workflows/actionlint.yml" actionlint Verjson/.github '' '' \
+  '["self-hosted","d"]' '["self-hosted","u"]' '["self-hosted","u"]' \
+  "actionlint — unresolved visibility still fails safe to VERJSON_RUNNER_UNTRUSTED" '["ubuntu-24.04"]'
+
+assert_route "$workflows/actionlint.yml" actionlint Verjson/.github '' false \
+  '["self-hosted","d"]' '["self-hosted","u"]' '["self-hosted","u"]' \
+  "actionlint — an unset fast lane degrades to VERJSON_RUNNER_UNTRUSTED" ''
+
+# Mutation check. The obvious way to write the public branch —
+# `private == false` — is FAIL-OPEN: Actions coerces a missing `private` to 0,
+# and 0 == false, so an unreadable repository would reach the fast lane. That
+# form passed the three positive cases above and failed only the unresolved one,
+# which is exactly how it would have shipped. Pin its absence directly, so the
+# regression cannot return through a rewrite that keeps the tests passing.
+grep -qF "github.event.repository.visibility == 'public'" "$workflows/actionlint.yml" \
+  && ! grep -qF 'github.event.repository.private == false' "$workflows/actionlint.yml" \
+  && pass "actionlint routes public on the visibility STRING, not the coercible private boolean" \
+  || fail "actionlint uses the fail-open 'private == false' form (ADR 0050)"
 
 # Every job that carries the policy, across every reusable workflow. A job
 # missing from this list is caught by the no-owner-wide-route sweep below.
