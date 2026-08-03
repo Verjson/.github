@@ -45,7 +45,7 @@ remains fail-closed; the added evidence makes a live mismatch attributable
 before another semantic change is attempted.
 
 **Amended 2026-08-03 for #363 / PR #364:** exit 127 is an environment fault,
-not a transient API outage. Both merge workflows verify `gh` and `jq` before
+not a transient API outage. Both merge workflows verify `gh`, `jq`, and `unzip` before
 their first use and terminate immediately if either command later disappears
 during check aggregation, self-job enumeration, trusted-run discovery, or
 attestation retrieval. The disabled authoritative merge-recheck block carries
@@ -224,7 +224,7 @@ lane ceilings, and the `phase=ci-wait` / `phase=merge-recheck` log vocabulary.
   Each fix in this amendment was verified by mutation: reverting it individually
   turns the suite red.
 - The #363 amendment is exercised against the extracted production blocks:
-  `toolchain-missing.test.sh` removes `gh` from `PATH` at startup;
+  `toolchain-missing.test.sh` removes `gh`, `jq`, and `unzip` from `PATH` at startup;
   `ci-wait-fail-closed.test.sh` forces exit 127 during self-job enumeration and
   aggregate construction; and `required-workflow-provenance.test.sh` forces it
   through both trusted-run lookup shapes and attestation retrieval. These cases

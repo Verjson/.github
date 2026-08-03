@@ -123,7 +123,7 @@ jobs:
           # otherwise hold a runner for its full ~40-minute window while every
           # call failed identically — and this job polls the SAME pool as the CI
           # it waits for, so one mis-provisioned runner starves the fleet (#363).
-          for tool in gh jq; do
+          for tool in gh jq unzip; do
             command -v "$tool" >/dev/null 2>&1 || {
               echo "::error::phase=privileged-merge result=toolchain-missing tool=$tool runner=${RUNNER_NAME:-unknown} — this runner cannot run the privileged merge. Install $tool on it or remove it from the pool."
               exit 1
@@ -383,7 +383,7 @@ jobs:
             [[ "$artifact_id" =~ ^[1-9][0-9]*$ ]] || return 1
             archive="$RUNNER_TEMP/merge-attestation-$run_id.zip"
             gh api "repos/$TARGET_REPO/actions/artifacts/$artifact_id/zip" >"$archive" || return $?
-            payload="$(unzip -p "$archive" attestation.json 2>/dev/null)" || return 1
+            payload="$(unzip -p "$archive" attestation.json 2>/dev/null)" || return $?
             jq -ce --arg repo "$TARGET_REPO" --argjson pr "$PR_NUMBER" \
               --arg head "$EXPECTED_HEAD_SHA" --argjson run "$run_id" '
                 select(

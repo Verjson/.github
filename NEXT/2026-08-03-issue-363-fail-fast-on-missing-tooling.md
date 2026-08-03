@@ -25,7 +25,7 @@ of adding 40% capacity they removed it: every gate job that landed on one could
 only fail, slowly, holding a slot throughout. The organization stalled with
 runners sitting idle.
 
-Both workflows now assert `gh` and `jq` before their first use and fail
+Both workflows now assert `gh`, `jq`, and `unzip` before their first use and fail
 immediately, naming the tool and the runner so the operator fixes a machine
 rather than re-running a PR. Every swallowed mid-run path additionally treats
 127 as terminal, including self-job enumeration, check aggregation, trusted-gate
@@ -39,6 +39,10 @@ be real. It pins that the failure takes under ten seconds rather than thirty
 minutes, and that the message identifies the runner. The existing extracted
 gate and privileged-merge suites force each mid-run lookup to return 127 and
 prove those branches terminate rather than entering the retry loops.
+
+This also closes #367: the post-wait `sudo apt-get install unzip` fallback could
+never work under the unprivileged runner service. The pre-poll guard now names
+the missing package and runner immediately, and the dead sudo step is removed.
 
 This removes the amplifier, not the cycle. The gate still holds a runner while
 polling in the healthy case, which is #341.

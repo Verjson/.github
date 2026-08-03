@@ -65,7 +65,7 @@ mkdir -p "$tmp/bin"
 printf '#!/usr/bin/env bash\nexit 0\n' >"$tmp/bin/sleep"
 # The attestation archive is never really zipped here; `unzip -p` yields the
 # fixture the step then shape-validates for real.
-printf '#!/usr/bin/env bash\ncat "$ATTESTATION_FILE"\n' >"$tmp/bin/unzip"
+printf '#!/usr/bin/env bash\n[ "${UNZIP_RC:-0}" -eq 0 ] || exit "$UNZIP_RC"\ncat "$ATTESTATION_FILE"\n' >"$tmp/bin/unzip"
 
 # Fake `gh`. Every branch returns an explicit, well-formed payload and anything
 # unstubbed exits non-zero and is reported: falling through to a bare `exit 0`
@@ -217,6 +217,7 @@ reset_fixtures() {
   SOURCE_RUN_RC=0
   ATTESTATION_API_RC=0
   ARTIFACT_ZIP_RC=0
+  UNZIP_RC=0
   BASE_REF_FINAL=""
 }
 
@@ -237,7 +238,7 @@ run_case() { # run_case <event-name>
   # enough attempts to prove the loop reaches its terminal state.
   export MERGE_WAIT_ATTEMPTS=2
   export TRUSTED_WF_ID TRUSTED_REPO_ID TRUSTED_SHA BASE_REF BASE_REF_FINAL
-  export RULES_RC PULLS_RC HEAD_RUNS_RC SOURCE_RUN_RC ATTESTATION_API_RC ARTIFACT_ZIP_RC
+  export RULES_RC PULLS_RC HEAD_RUNS_RC SOURCE_RUN_RC ATTESTATION_API_RC ARTIFACT_ZIP_RC UNZIP_RC
   export RULES_FILE="$tmp/rules.json" RULES_FINAL_FILE="$tmp/rules-final.json"
   export RUNS_FILE="$tmp/runs.json"
   export META_FILE="$tmp/meta.json" META_FINAL_FILE="$tmp/meta-final.json"
@@ -330,6 +331,10 @@ assert_rejected "attestation validation that loses jq fails immediately" "result
 ARTIFACT_ZIP_RC=127
 run_case workflow_dispatch
 assert_rejected "artifact download that loses gh fails immediately" "result=toolchain-missing"
+
+UNZIP_RC=127
+run_case workflow_dispatch
+assert_rejected "attestation extraction that loses unzip fails immediately" "result=toolchain-missing"
 
 # ADR 0023's defer lane must release both long-running jobs. The gate preflight
 # needs status-read permission to classify the head, and privileged_merge must

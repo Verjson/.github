@@ -57,11 +57,11 @@ grep -q 'phase=merge-recheck result=toolchain-missing' "$merge_script" \
 # must genuinely miss, which a stub cannot model — the bug was that a missing
 # binary looked like a failing API, so the absence has to be real.
 mkdir -p "$tmp/bin"
-for t in bash date printf echo sleep awk sed grep cat cut tr head jq timeout env; do
+for t in bash date printf echo sleep awk sed grep cat cut tr head jq unzip timeout env; do
   src="$(command -v "$t" 2>/dev/null)" && ln -sf "$src" "$tmp/bin/$t" 2>/dev/null
 done
 
-run_without_gh() {
+run_with_minimal_path() {
   timeout 60 env -i PATH="$tmp/bin" HOME="$tmp" \
     LANE=ai PR_NUMBER=1 TARGET_REPO=Verjson/toquorum \
     EXPECTED_HEAD_SHA=abc123 GH_TOKEN=x RUNNER_NAME=gha-general-7 \
@@ -69,7 +69,7 @@ run_without_gh() {
 }
 
 start="$(date +%s)"
-out="$(run_without_gh)"
+out="$(run_with_minimal_path)"
 rc=$?
 elapsed=$(( $(date +%s) - start ))
 
@@ -90,6 +90,23 @@ grep -q 'result=toolchain-missing' <<<"$out" \
 grep -q 'gha-general-7' <<<"$out" \
   && pass "the failure names WHICH runner must be fixed" \
   || fail "the message does not identify the runner, so the fleet must be searched by hand"
+
+printf '#!/usr/bin/env bash\nexit 0\n' >"$tmp/bin/gh"
+chmod +x "$tmp/bin/gh"
+rm -f "$tmp/bin/jq"
+out="$(run_with_minimal_path)"
+rc=$?
+[ "$rc" -ne 0 ] && grep -q 'tool=jq' <<<"$out" \
+  && pass "a runner without jq fails immediately and names jq" \
+  || fail "the jq branch of the startup guard is not executable"
+
+ln -sf "$(command -v jq)" "$tmp/bin/jq"
+rm -f "$tmp/bin/unzip"
+out="$(run_with_minimal_path)"
+rc=$?
+[ "$rc" -ne 0 ] && grep -q 'tool=unzip' <<<"$out" \
+  && pass "a runner without unzip fails immediately and names unzip" \
+  || fail "the unzip branch of the startup guard is not executable"
 
 # 127 can also appear mid-run if PATH changes under the job, so the loop keeps
 # its own terminal branch rather than trusting the up-front probe alone.
