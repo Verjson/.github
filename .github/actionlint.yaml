@@ -12,9 +12,7 @@
 # come off the live runners only after that (docs/runner-routing.md, "Migration
 # sequence").
 #
-#   - `gce` and `GCP` are gone: both were GCP-provider names carried over onto
-#     DigitalOcean droplets by the #204 migration and stripped from the live
-#     runners on 2026-08-03. Nothing routed on either. No
+#   - `gce` is omitted: it co-occurs 1:1 with `GCP` on every runner, and no
 #     workflow routes on it, so declaring it would be pure duplication.
 #   - `docker`/`manish` are omitted: no Verjson workflow targets them. `docker`
 #     is also no longer a real lane at all (ADR 0040); `manish` is a real pool
@@ -23,6 +21,7 @@
 # Keep in sync with docs/runner-routing.md / ADR 0030 if routing changes.
 self-hosted-runner:
   labels:
+    - GCP   # provider lie, but consumers still pin it — remove LAST, after #365
     - general # provider-neutral persistent pool (DigitalOcean)
     - gate  # merge-gate lane; carried today by the gha-general-* runners
     - meta  # self-gate lane (ADR 0016) — no runner carries this label today
