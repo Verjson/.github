@@ -166,12 +166,18 @@ if [ -n "${ACTIONLINT_BIN:-}" ]; then
     || fail "real actionlint did not enforce the inline fixture contract"
 fi
 
+# Both branches are pinned, and the second one matters as much as the first:
+# actionlint AUTO-DETECTS shellcheck on PATH. The self-hosted image carries
+# none and the hosted image ships it, so a bare invocation makes the lint
+# result a property of the runner image. ADR 0050's move to the fast lane
+# proved it by turning three latent findings into a red check on an unrelated
+# PR. `-shellcheck=` (empty) keeps it off until #362 decides the policy.
 grep -qF "REQUIRE_SHELLCHECK: \${{ github.repository_owner != 'Verjson' || inputs.github-hosted-runner }}" "$wf" \
   && grep -qF 'command -v shellcheck' "$wf" \
   && grep -qF './actionlint -config-file "$ACTIONLINT_CONFIG_FILE" -shellcheck=shellcheck -color' "$wf" \
-  && grep -qF './actionlint -config-file "$ACTIONLINT_CONFIG_FILE" -color' "$wf" \
-  && pass "GitHub-hosted calls require ShellCheck integration" \
-  || fail "hosted actionlint can silently skip ShellCheck"
+  && grep -qF './actionlint -config-file "$ACTIONLINT_CONFIG_FILE" -shellcheck= -color' "$wf" \
+  && pass "hosted calls require ShellCheck and the other path pins it off explicitly" \
+  || fail "actionlint's ShellCheck behaviour is not pinned on both paths (#362)"
 
 grep -qF 'uses: ./.github/workflows/actionlint.yml' "$contract" \
   && pass "repository contract exercises the current reusable policy" \

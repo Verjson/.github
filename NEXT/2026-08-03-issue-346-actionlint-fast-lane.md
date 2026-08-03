@@ -39,3 +39,18 @@ validates the persistent runner's local npm cache, so a disposable hosted VM
 would delete the thing under test. Its problem is coupling rather than routing —
 a cache probe should not be a per-PR check an unrelated merge gate blocks on —
 and #346 stays open for it.
+
+One consequence surfaced only in CI, and it is the reason the fast lane is not
+a free move. actionlint **auto-detects shellcheck on `PATH`**, and the
+`REQUIRE_SHELLCHECK` branch that omits `-shellcheck=` therefore inherits
+whatever the runner image happens to carry. The self-hosted image has none; the
+hosted image ships it. Moving this job to the fast lane silently enabled
+shellcheck and turned three latent `info` findings in `ai-privileged-merge.yml`
+into a red check on a PR that never touched that file.
+
+The invocation is now explicit — `-shellcheck=` on the non-required path — so
+the lint result is a property of the workflow rather than of the image.
+Whether Verjson's own workflows *should* run shellcheck is a real question, and
+a routing change is the wrong place to answer it: #362 owns that, including the
+two `SC2015` findings on the privileged merge path, where "C may run when A is
+true" stops being pedantry.
