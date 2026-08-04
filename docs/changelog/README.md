@@ -85,6 +85,40 @@ Repositories should call the reusable
 to an immutable organization release in consumers and pass that same commit as
 the required `contract_ref` input.
 
+### The release caller's `push_token`
+
+Step 5 pushes the snapshot commit and its tag **directly to the default
+branch**. Every Verjson repository carries an identical `main-protection`
+ruleset whose `pull_request` and `workflows` rules forbid exactly that, and
+whose only bypass actors are `OrganizationAdmin` and Renovate. `GITHUB_TOKEN`
+is neither, so a release caller wiring it is rejected at the last step:
+
+```
+remote: error: GH013: Repository rule violations found for refs/heads/main.
+remote: - Changes must be made through a pull request.
+ ! [remote rejected] v0.4.0 -> v0.4.0 (atomic transaction failed)
+```
+
+Release callers must therefore pass an admin-scoped credential:
+
+```yaml
+    secrets:
+      # NOT GITHUB_TOKEN — see Verjson/.github ADR 0052.
+      push_token: ${{ secrets.ORG_ADMIN_TOKEN }}
+```
+
+The release caller must live at `.github/workflows/release.yml`. That path is
+what `scripts/changelog-contract.test.sh` looks for, so a caller named anything
+else silently loses both the pin check and the `push_token` check — it is
+treated as an adopter that has nothing to release. Adopters with genuinely
+nothing to publish have no such file, which is a supported shape.
+
+The push is `--atomic`, so a rejected release leaves no tag, no snapshot, no
+package and `NEXT/` untouched. It fails safely; it simply cannot succeed. The
+trade-off is stated in ADR 0052: the release job holds a wider credential than
+the repository-scoped default, which is why it must run only on explicit
+dispatch and from the default branch.
+
 ## Consumer adoption
 
 A consumer needs three files, and they must pin the **same** commit. Generate
