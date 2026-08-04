@@ -1,10 +1,11 @@
 ---
 date: 2026-08-04
 issue: 350
-title: Pin privileged watchdog code to a reviewed revision
+title: Remove branch-selectable privileged watchdog dispatch
 ---
 
-Pin the fleet watchdog checkout to a full default-branch commit SHA so a manual
-dispatch ref cannot select code that receives `ORG_ADMIN_TOKEN`. A wired
-contract test locks the checkout, command, input, and token-ordering boundaries;
-ADR 0049 records the immediate mitigation and its residual secret-scope limits.
+Remove `workflow_dispatch` from the privileged fleet watchdog because a selected
+branch controls the workflow definition as well as checkout defaults. Scheduled
+runs now bind checkout to their immutable default-branch `github.sha`; a wired
+contract test locks the trigger, checkout, named-step, command, and token-ordering
+boundaries. ADR 0049 records the fix and the residual #261/#265 secret-scope work.
