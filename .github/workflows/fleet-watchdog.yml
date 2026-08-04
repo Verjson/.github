@@ -51,6 +51,8 @@ jobs:
       - name: Check out the watchdog
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
+          # Keep dispatch refs from selecting code that receives ORG_ADMIN_TOKEN.
+          ref: 0c9752daa208f984a0e8d16454ddf81657c3e3ff
           persist-credentials: false
 
       - name: Sweep the fleet for poll deadlocks

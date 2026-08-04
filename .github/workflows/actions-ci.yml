@@ -202,6 +202,8 @@ jobs:
         run: bash scripts/trigger-scope.test.sh
       - name: Fleet watchdog preempts only stale poll jobs, never CI (#334)
         run: bash scripts/fleet-watchdog.test.sh
+      - name: Fleet watchdog privileged code uses an immutable checkout (#350)
+        run: bash scripts/ci-gate/fleet-watchdog-checkout.test.sh
       - name: Repository hygiene — README policy, exemption register, audit default (#232, ADR 0046)
         run: bash scripts/repo-hygiene.test.sh
       - name: Repository hygiene — immutable merged policy ref (#351, ADR 0046)

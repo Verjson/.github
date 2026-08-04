@@ -64,6 +64,27 @@ It runs on the fast lane (`VERJSON_RUNNER_FASTLANE`), because a watchdog that
 queued for a self-hosted runner would be waiting behind the jam it exists to
 clear. This repository is public, so under ADR 0048 those minutes are free.
 
+**Amended 2026-08-04 for
+[#350](https://github.com/Verjson/.github/issues/350):** the checkout that loads
+`scripts/fleet-watchdog.sh` is pinned to the full commit SHA
+`0c9752daa208f984a0e8d16454ddf81657c3e3ff`, a reviewed revision of the default
+branch. A manual dispatch can target another branch, but its ref can no longer
+select the executable code that receives `ORG_ADMIN_TOKEN`; `dry_run` and
+`min_age_minutes` remain data-only environment values. The contract test
+`scripts/ci-gate/fleet-watchdog-checkout.test.sh` proves the full-SHA boundary,
+the static command path, the input confinement, and checkout-before-token
+ordering. At selection time, `git branch -r --contains 0c9752d` returned both
+`origin/HEAD -> origin/main` and `origin/main`, establishing the pin's
+default-branch provenance.
+
+This is deliberately a narrow immediate mitigation, not a claim that repository
+writers are fully isolated from repository-visible organization secrets. A
+branch-targeted workflow definition can still reference such a secret directly;
+signed workflow identity and least-privilege secret scoping remain tracked in
+[#261](https://github.com/Verjson/.github/issues/261) and
+[#265](https://github.com/Verjson/.github/issues/265). The watchdog remains a
+temporary mechanism and its retirement plan below is unchanged.
+
 ## Consequences
 
 - A saturated fleet recovers without a human cancelling runs by hand.
