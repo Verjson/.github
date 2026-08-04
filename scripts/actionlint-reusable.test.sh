@@ -166,18 +166,57 @@ if [ -n "${ACTIONLINT_BIN:-}" ]; then
     || fail "real actionlint did not enforce the inline fixture contract"
 fi
 
-# Both branches are pinned, and the second one matters as much as the first:
-# actionlint AUTO-DETECTS shellcheck on PATH. The self-hosted image carries
-# none and the hosted image ships it, so a bare invocation makes the lint
-# result a property of the runner image. ADR 0050's move to the fast lane
-# proved it by turning three latent findings into a red check on an unrelated
-# PR. `-shellcheck=` (empty) keeps it off until #362 decides the policy.
-grep -qF "REQUIRE_SHELLCHECK: \${{ github.repository_owner != 'Verjson' || inputs.github-hosted-runner }}" "$wf" \
-  && grep -qF 'command -v shellcheck' "$wf" \
-  && grep -qF './actionlint -config-file "$ACTIONLINT_CONFIG_FILE" -shellcheck=shellcheck -color' "$wf" \
-  && grep -qF './actionlint -config-file "$ACTIONLINT_CONFIG_FILE" -shellcheck= -color' "$wf" \
-  && pass "hosted calls require ShellCheck and the other path pins it off explicitly" \
-  || fail "actionlint's ShellCheck behaviour is not pinned on both paths (#362)"
+# ShellCheck is required on every route. Extract and execute the repository-lint
+# step so this test pins both the explicit actionlint flag and the fail-closed
+# runner prerequisite rather than merely checking that matching text exists.
+lint_script="$tmp/lint.sh"
+awk '
+  $0 == "      - name: Run actionlint over all workflows" { seen = 1 }
+  seen && $0 == "        run: |" { capture = 1; next }
+  capture {
+    if (substr($0, 1, 10) == "          ") { print substr($0, 11); next }
+    if ($0 ~ /^[[:space:]]*$/) { print ""; next }
+    exit
+  }
+' "$wf" >"$lint_script"
+
+lint_dir="$tmp/lint"
+mkdir -p "$lint_dir" "$tmp/with-shellcheck" "$tmp/without-shellcheck"
+cat >"$lint_dir/actionlint" <<'SH'
+#!/bin/bash
+printf '%s\n' "$*" >"$ACTIONARGS"
+SH
+cat >"$tmp/with-shellcheck/shellcheck" <<'SH'
+#!/bin/bash
+exit 0
+SH
+chmod +x "$lint_dir/actionlint" "$tmp/with-shellcheck/shellcheck"
+
+ACTIONARGS="$tmp/actionlint.args"
+export ACTIONARGS
+(
+  cd "$lint_dir" || exit 1
+  ACTIONLINT_CONFIG_FILE="$root/.github/actionlint.yaml" \
+    PATH="$tmp/with-shellcheck" /bin/bash "$lint_script"
+) >"$tmp/lint.out" 2>&1
+rc=$?
+[ "$rc" -eq 0 ] \
+  && grep -qxF -- "-config-file $root/.github/actionlint.yaml -shellcheck=shellcheck -color" "$ACTIONARGS" \
+  && ! grep -qF 'REQUIRE_SHELLCHECK' "$wf" \
+  && ! grep -qF -- '-shellcheck= -color' "$wf" \
+  && pass "every route invokes actionlint with ShellCheck explicitly enabled" \
+  || fail "repository lint does not require the explicit ShellCheck invocation"
+
+(
+  cd "$lint_dir" || exit 1
+  ACTIONLINT_CONFIG_FILE="$root/.github/actionlint.yaml" \
+    PATH="$tmp/without-shellcheck" /bin/bash "$lint_script"
+) >"$tmp/no-shellcheck.out" 2>&1
+rc=$?
+[ "$rc" -ne 0 ] \
+  && grep -qF 'The selected runner must provide shellcheck' "$tmp/no-shellcheck.out" \
+  && pass "repository lint fails closed when the runner lacks ShellCheck" \
+  || fail "repository lint did not reject a runner without ShellCheck"
 
 grep -qF 'uses: ./.github/workflows/actionlint.yml' "$contract" \
   && pass "repository contract exercises the current reusable policy" \

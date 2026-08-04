@@ -275,6 +275,9 @@ jobs:
           # in that shape, and no repository currently installs the gate by
           # reusable call, so restricting $required to its own matcher costs
           # nothing and closes the residual there (#279, ADR 0044).
+          # The dollar-prefixed names belong to jq and must remain literal in
+          # this single-quoted program; they are not shell expansions.
+          # shellcheck disable=SC2016
           trusted_run_def='
             def gate_is_entry_workflow: (.path? // "") == $wfpath;
             def injected_by_ruleset:
@@ -602,14 +605,16 @@ jobs:
               { echo "::error::trusted dispatched gate changed before merge"; exit 1; }
           else
             attested_run_id="$final_gate_id"
-            [ "$(jq -r '.conclusion // ""' <<<"$final_gate_run")" = "success" ] &&
-            jq -e --arg needle "/actions/runs/$final_gate_id/" '
-              any(.statusCheckRollup[]?;
-                (.name // .context) == "gate" and
-                (.conclusion // .state) == "SUCCESS" and
-                ((.detailsUrl // "") | contains($needle)))
-            ' <<<"$final" >/dev/null ||
-            { echo "::error::newest trusted gate changed before merge"; exit 1; }
+            if [ "$(jq -r '.conclusion // ""' <<<"$final_gate_run")" != "success" ] ||
+               ! jq -e --arg needle "/actions/runs/$final_gate_id/" '
+                 any(.statusCheckRollup[]?;
+                   (.name // .context) == "gate" and
+                   (.conclusion // .state) == "SUCCESS" and
+                   ((.detailsUrl // "") | contains($needle)))
+               ' <<<"$final" >/dev/null; then
+              echo "::error::newest trusted gate changed before merge"
+              exit 1
+            fi
           fi
           final_attestation_rc=0
           attestation="$(attestation_for_run "$attested_run_id")" || final_attestation_rc=$?

@@ -69,6 +69,24 @@ ShellCheck explicitly, and the intentional jq variables, Markdown backticks, and
 literal DB placeholder carry line-scoped suppressions. The local self-hosted path
 retains actionlint's prior optional-ShellCheck behavior.
 
+## ShellCheck policy amendment (2026-08-04)
+
+[Issue #362](https://github.com/Verjson/.github/issues/362) supersedes the final
+sentence above: every local and reusable route now requires ShellCheck and passes
+`-shellcheck=shellcheck` explicitly. The self-hosted image prerequisite landed in
+`Verjson/verjson-github-runner#112`, so retaining an optional local path would no
+longer preserve runner portability; it would leave Verjson's own security-sensitive
+workflow shell less thoroughly checked than external consumers.
+
+The workflow checks for `shellcheck` before linting and fails with a direct
+toolchain error when a selected runner violates the image contract. The explicit
+flag remains load-bearing because actionlint otherwise auto-detects ShellCheck on
+`PATH`, making lint policy an accidental property of runner routing. Existing
+findings were adjudicated before enabling the policy: the jq program's literal
+dollar-prefixed variables retain a reasoned line-scoped SC2016 suppression, while
+the ambiguous SC2015 boolean chain in the privileged merge recheck was rewritten
+as an explicit conditional without changing its fail-closed behavior.
+
 ## Consequences
 
 - Consumer repositories share one deterministic implementation instead of

@@ -123,24 +123,10 @@ jobs:
             exit 1
           fi
       - name: Run actionlint over all workflows
-        env:
-          REQUIRE_SHELLCHECK: ${{ github.repository_owner != 'Verjson' || inputs.github-hosted-runner }}
         run: |
-          if [ "$REQUIRE_SHELLCHECK" = true ]; then
-            command -v shellcheck >/dev/null || {
-              echo "::error::The governed GitHub-hosted runner must provide shellcheck"
-              exit 1
-            }
-            ./actionlint -config-file "$ACTIONLINT_CONFIG_FILE" -shellcheck=shellcheck -color
-          else
-            # `-shellcheck=` (empty) is REQUIRED, not cosmetic: actionlint
-            # auto-detects shellcheck on PATH and silently enables it. The
-            # self-hosted image has no shellcheck and the hosted image ships
-            # it, so omitting this makes the lint result depend on which
-            # runner the job happened to land on — ADR 0050 moved this job to
-            # the fast lane and turned three latent findings in
-            # ai-privileged-merge.yml into a red check on an unrelated PR.
-            # Enabling shellcheck for Verjson is a deliberate decision (#352),
-            # not something a routing change should make for us.
-            ./actionlint -config-file "$ACTIONLINT_CONFIG_FILE" -shellcheck= -color
-          fi
+          set -euo pipefail
+          command -v shellcheck >/dev/null || {
+            echo "::error::The selected runner must provide shellcheck"
+            exit 1
+          }
+          ./actionlint -config-file "$ACTIONLINT_CONFIG_FILE" -shellcheck=shellcheck -color
