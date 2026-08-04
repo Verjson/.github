@@ -238,8 +238,11 @@ jobs:
           # value could do within 1..200 is shorten the wait — fail-closed, never
           # a trust bypass — and `timeout-minutes: 45` caps the other end.
           merge_wait_attempts="${MERGE_WAIT_ATTEMPTS:-80}"
-          [[ "$merge_wait_attempts" =~ ^[1-9][0-9]*$ ]] && [ "$merge_wait_attempts" -le 200 ] ||
-            { echo "::error::invalid merge wait bound"; exit 1; }
+          if ! [[ "$merge_wait_attempts" =~ ^[1-9][0-9]*$ ]] ||
+             [ "$merge_wait_attempts" -gt 200 ]; then
+            echo "::error::invalid merge wait bound"
+            exit 1
+          fi
 
           # A gate run is trusted in exactly three installation shapes: this
           # repository running its own workflow, a caller of the pinned reusable
@@ -643,8 +646,10 @@ jobs:
                 $n != "privileged_merge" and
                 ($n | endswith("/ privileged_merge") | not)) |
             select(if .state then (.state | IN("PENDING","EXPECTED")) else .status != "COMPLETED" end)] | length' <<<"$final")"
-          [ "$final_failed" -eq 0 ] && [ "$final_pending" -eq 0 ] ||
-            { echo "::error::checks changed before merge"; exit 1; }
+          if ! { [ "$final_failed" -eq 0 ] && [ "$final_pending" -eq 0 ]; }; then
+            echo "::error::checks changed before merge"
+            exit 1
+          fi
 
           # Splitting the concurrency group by event means the
           # pull_request_target check and the dispatched continuation can both be

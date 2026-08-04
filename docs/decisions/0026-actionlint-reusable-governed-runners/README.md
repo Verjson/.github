@@ -84,8 +84,9 @@ flag remains load-bearing because actionlint otherwise auto-detects ShellCheck o
 `PATH`, making lint policy an accidental property of runner routing. Existing
 findings were adjudicated before enabling the policy: the jq program's literal
 dollar-prefixed variables retain a reasoned line-scoped SC2016 suppression, while
-the ambiguous SC2015 boolean chain in the privileged merge recheck was rewritten
-as an explicit conditional without changing its fail-closed behavior.
+the ambiguous SC2015 boolean chains in gate bounds, final merge rechecks, and
+budget telemetry were rewritten as explicit conditionals without changing their
+fail-closed or best-effort behavior.
 
 ## Consequences
 
