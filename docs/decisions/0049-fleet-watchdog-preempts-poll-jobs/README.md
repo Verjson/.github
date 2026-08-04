@@ -74,10 +74,13 @@ bound to `${{ github.sha }}`, the immutable default-branch revision for that
 scheduled event. This avoids both branch-selected executable code and a stale
 hardcoded revision.
 
-The contract test `scripts/ci-gate/fleet-watchdog-checkout.test.sh` proves that
-schedule is the only trigger, checkout uses the event SHA, the privileged
-command is static, and the job has exactly its two named steps with no unnamed
-or alternate execution surface between checkout and token use.
+The semantic contract test
+`scripts/ci-gate/privileged-scheduled-workflows.test.py` proves that schedule is
+the only trigger, checkout uses the event SHA, the privileged command is static,
+and the job has exactly its two named steps with no unnamed or alternate
+execution surface between checkout and token use. Negative mutations cover bare
+sequence dashes and quoted executable keys so alternate valid YAML spellings do
+not bypass the boundary.
 
 Removing this dispatch path is not a claim that repository writers are fully
 isolated from repository-visible organization secrets in every workflow. Signed
