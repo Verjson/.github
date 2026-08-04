@@ -18,9 +18,10 @@ fail() { printf 'FAIL - %s\n' "$1"; fails=$((fails + 1)); }
 # CANONICAL_NAME accepts everything.
 fixture() {
   local name="$1" engine="${2:-real}"
+  local doc_path="${3:-docs/guide.md}"
   local dir="$tmp/$name"
-  mkdir -p "$dir/docs" "$dir/scripts"
-  printf '%s\n' "$DOC" >"$dir/docs/guide.md"
+  mkdir -p "$dir/$(dirname "$doc_path")" "$dir/scripts"
+  printf '%s\n' "$DOC" >"$dir/$doc_path"
   case "$engine" in
     real) cp "$repo_root/scripts/changelog.py" "$dir/scripts/changelog.py" ;;
     blind) printf 'import re\nCANONICAL_NAME = re.compile(r".*")\n' >"$dir/scripts/changelog.py" ;;
@@ -29,7 +30,7 @@ fixture() {
   git init -q "$dir"
   git -C "$dir" config user.name test
   git -C "$dir" config user.email test@example.com
-  git -C "$dir" add docs/guide.md
+  git -C "$dir" add "$doc_path"
   [ "$engine" = absent ] || git -C "$dir" add scripts/changelog.py
   git -C "$dir" commit -qm fixture
   printf '%s\n' "$dir"
@@ -42,6 +43,16 @@ rc=$?
 [ "$rc" -eq 0 ] \
   && pass "an example the engine accepts is accepted" \
   || { fail "canonical example rejected (rc=$rc)"; sed 's/^/diag - /' "$tmp/good.out"; }
+
+spaced="$(fixture spaced real 'docs/release guide.md')"
+DOC_FRAGMENT_NAMES_ROOT="$spaced" bash "$script" >"$tmp/spaced.out" 2>&1
+rc=$?
+if [ "$rc" -eq 0 ]; then
+  pass "a canonical example in a documentation path containing spaces is accepted"
+else
+  fail "space-containing documentation path corrupted the example (rc=$rc)"
+  sed 's/^/diag - /' "$tmp/spaced.out"
+fi
 
 # The #305 regression: two independent readers inferred that the filename segment
 # tracks the metadata key, so issue-less work was documented as `-id-`. The engine

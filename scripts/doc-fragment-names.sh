@@ -22,14 +22,13 @@ files="$(git -C "$root" ls-files '*.md')" \
 examples="$(
   printf '%s\n' "$files" | while IFS= read -r file; do
     [ -n "$file" ] || continue
-    grep -oE '(NEXT/)?[0-9]{4}-[0-9]{2}-[0-9]{2}-[A-Za-z0-9._-]+\.md' "$root/$file" 2>/dev/null \
-      | sed "s|^|$file |"
+    grep -oE '(NEXT/)?[0-9]{4}-[0-9]{2}-[0-9]{2}-[A-Za-z0-9._-]+\.md' "$root/$file" 2>/dev/null
   done
 )"
 
 # One engine call answers every name, so no batching can leave one unasked.
 mapfile -t names < <(
-  printf '%s\n' "$examples" | while IFS=' ' read -r _file name; do
+  printf '%s\n' "$examples" | while IFS= read -r name; do
     [ -n "$name" ] || continue
     printf '%s\n' "${name#NEXT/}"
   done | sort -u
