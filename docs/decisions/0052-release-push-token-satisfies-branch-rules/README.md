@@ -72,11 +72,19 @@ Three supporting changes keep the decision from decaying back into folklore:
 
 ### Alternatives considered
 
-**Add the GitHub Actions app as a ruleset bypass actor.** Narrower in privilege
-than an admin PAT, but it lets *any* workflow in the repository push to the
-default branch, including one introduced by a pull request. That trades a
-credential held by one dispatch-only job for a hole in branch protection open to
-every job in the repository — a larger blast radius in a worse direction.
+**Add the GitHub Actions app as a ruleset bypass actor. Rejected on review,
+2026-08-04.** Narrower in privilege than an admin PAT, but it lets *any* workflow
+in the repository push to the default branch, including one introduced by a pull
+request. That trades a credential held by one dispatch-only job for a hole in
+branch protection open to every job in the repository — a larger blast radius in
+a worse direction.
+
+This one was put to the owner explicitly, because it is the option that looks
+cheaper on the privilege axis alone and would otherwise keep being re-proposed.
+The decision is to **keep the ruleset closed and keep the admin-scoped PAT**: a
+narrower credential is not worth a permanently weaker branch protection. So this
+is a rejected alternative, not a deferred one — reopening it means writing an ADR
+that supersedes this one, not amending this one.
 
 **Have the release open a pull request and merge it.** This keeps branch
 protection meaningful, and is the right long-term shape. It is not a
@@ -108,6 +116,10 @@ release job did not produce. Deferred rather than rejected.
 ## Rollback
 
 Revert the implementing pull request. Adopters reverting to `GITHUB_TOKEN` will
-find releases rejected by GH013 again; the alternative rollback is to add
-GitHub Actions to the ruleset's bypass actors, which supersedes this ADR rather
-than reverting it.
+find releases rejected by GH013 again, so the revert restores the broken state
+rather than a working one — the real rollback is forward, to the least-privilege
+App named under Consequences.
+
+Opening the ruleset is **not** an available rollback. It was considered and
+declined above; taking it later requires a superseding ADR that argues the case
+on its own merits.
