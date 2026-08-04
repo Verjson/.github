@@ -168,6 +168,24 @@ so tier 3/4 answers itself and cannot go stale.
   you never managed to read; the workflow treats `2` as a hard error and files
   nothing. Onboarding a new repository still means admitting it to group 4 (or 6,
   if public); the reconciler makes forgetting visible within a day.
+
+  **Amended 2026-08-04 for
+  [#387](https://github.com/Verjson/.github/issues/387):** the reconciler no
+  longer exposes `workflow_dispatch`. A selected dispatch branch controls the
+  workflow definition as well as checkout defaults, so it could execute branch
+  code with the organization-scoped token used to read runner groups. Scheduled
+  runs load the workflow from the default branch and bind checkout to
+  `${{ github.sha }}`, the immutable default-branch revision for that event.
+
+  `scripts/ci-gate/privileged-scheduled-workflows.test.py` parses both this
+  workflow and the #350 fleet watchdog semantically. It requires schedule-only
+  triggers, event-SHA checkout, exact named-step and execution surfaces, and the
+  expected token bindings. Negative mutations prove that valid YAML using a bare
+  sequence dash or a quoted executable key cannot bypass the contract. This
+  closes the branch-selected execution path, but signed workflow identity and
+  least-privilege organization-secret scoping remain tracked in
+  [#261](https://github.com/Verjson/.github/issues/261) and
+  [#265](https://github.com/Verjson/.github/issues/265).
 - **Capacity:** tier 3 points all 82 private repositories at the `GCP` label,
   whose online members are `gha-gate-1/2/4` and `gha-runner-6` — three of which
   also carry `gate` and serve the merge gate. Heavy CI can starve the gate. Not

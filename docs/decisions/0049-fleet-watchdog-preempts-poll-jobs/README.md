@@ -64,6 +64,31 @@ It runs on the fast lane (`VERJSON_RUNNER_FASTLANE`), because a watchdog that
 queued for a self-hosted runner would be waiting behind the jam it exists to
 clear. This repository is public, so under ADR 0048 those minutes are free.
 
+**Amended 2026-08-04 for
+[#350](https://github.com/Verjson/.github/issues/350):** the privileged watchdog
+has no `workflow_dispatch` trigger. A dispatch ref selects both a workflow's
+definition and its checkout defaults, so pinning only the checkout could be
+removed by the same branch-controlled workflow and did not close the reported
+path. Scheduled runs load the workflow from the default branch, and checkout is
+bound to `${{ github.sha }}`, the immutable default-branch revision for that
+scheduled event. This avoids both branch-selected executable code and a stale
+hardcoded revision.
+
+The semantic contract test
+`scripts/ci-gate/privileged-scheduled-workflows.test.py` proves that schedule is
+the only trigger, checkout uses the event SHA, the privileged command is static,
+and the job has exactly its two named steps with no unnamed or alternate
+execution surface between checkout and token use. Negative mutations cover bare
+sequence dashes and quoted executable keys so alternate valid YAML spellings do
+not bypass the boundary.
+
+Removing this dispatch path is not a claim that repository writers are fully
+isolated from repository-visible organization secrets in every workflow. Signed
+workflow identity and least-privilege secret scoping remain tracked in
+[#261](https://github.com/Verjson/.github/issues/261) and
+[#265](https://github.com/Verjson/.github/issues/265). The watchdog remains a
+temporary mechanism and its retirement plan below is unchanged.
+
 ## Consequences
 
 - A saturated fleet recovers without a human cancelling runs by hand.
@@ -75,14 +100,10 @@ clear. This repository is public, so under ADR 0048 those minutes are free.
   security-relevant review, not configuration.
 - `VERJSON_WATCHDOG_DRY_RUN` is intended to gate the cancel path, defaulting to
   a dry run. **On the scheduled path — the only automatic one — it does not.**
-  The script defaults to `:-false`, and the workflow expression short-circuits
-  on `inputs.dry_run == false` before it ever reads the variable. The
-  `workflow_dispatch` path does default to dry, so the guard works exactly where
-  a human is already watching and fails where nobody is. No
+  After #350 removes the manual path, the schedule explicitly retains its
+  existing armed default with `vars.VERJSON_WATCHDOG_DRY_RUN || 'false'`; no
   `VERJSON_WATCHDOG_*` variable exists at organization or repository scope, so
-  there is no kill switch on any path. #336's fragment and the watchdog
-  workflow's own header comment both assert the opposite, and that comment names
-  an input (`watchdog_dry_run`) that does not exist. Tracked in
+  there is no kill switch. #336's fragment still asserts the opposite. Tracked in
   [#342](https://github.com/Verjson/.github/issues/342); this ADR records the
   decision, not the defect, and the defect must be fixed rather than adopted.
 - **The 35-minute threshold cannot reach a polling AI-lane gate**, whose CI wait

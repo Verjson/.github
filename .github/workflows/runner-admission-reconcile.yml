@@ -18,7 +18,6 @@ on:
   schedule:
     # Daily, off the top of the hour to avoid the stampede.
     - cron: '43 7 * * *'
-  workflow_dispatch: {}
 
 # Least privilege: read the repo, write an issue. No contents: write, no
 # pull-requests: write — this cannot alter code or merge anything.
@@ -35,7 +34,12 @@ jobs:
     runs-on: [self-hosted, general]
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Check out the runner admission reconciler
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # Schedule resolves this to the immutable default-branch SHA for the run.
+          ref: ${{ github.sha }}
+          persist-credentials: false
 
       - name: Reconcile runner admission against routing policy
         id: reconcile

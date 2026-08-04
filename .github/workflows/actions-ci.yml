@@ -202,6 +202,8 @@ jobs:
         run: bash scripts/trigger-scope.test.sh
       - name: Fleet watchdog preempts only stale poll jobs, never CI (#334)
         run: bash scripts/fleet-watchdog.test.sh
+      - name: Privileged scheduled workflows use immutable default-branch code (#350, #387)
+        run: python3 scripts/ci-gate/privileged-scheduled-workflows.test.py
       - name: Repository hygiene — README policy, exemption register, audit default (#232, ADR 0046)
         run: bash scripts/repo-hygiene.test.sh
       - name: Repository hygiene — immutable merged policy ref (#351, ADR 0046)
