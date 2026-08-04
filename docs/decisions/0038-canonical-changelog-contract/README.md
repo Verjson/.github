@@ -64,6 +64,10 @@ workflow-level default must stay a bare `contents: read`.
 Consumers pinned to a pre-fix revision must re-pin both the `uses:` ref and
 `contract_ref` before re-dispatching a release.
 
+Contents-write turned out to be necessary and not sufficient: the same push is
+also refused by the default branch's ruleset. ADR 0052 (#389) covers that second
+gate and what `push_token` must be.
+
 ## Amendment (2026-08-02) — the contract test is generated too (#309)
 
 Adoption was defined above as two generated files plus "a repository-local test

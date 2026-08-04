@@ -258,6 +258,30 @@ grep -q "CONTRACT_REF=\"$CONTRACT_REF\"" "$renderer" \
 if [ -f "$release_workflow" ]; then
   grep -q "changelog-release.yml@$CONTRACT_REF" "$release_workflow" \
     || fail "$release_workflow does not call the release workflow at the pin"
+  # The release pushes its snapshot commit and tag straight to the default
+  # branch, which the standard Verjson `main-protection` ruleset forbids for
+  # every actor outside its bypass list. GITHUB_TOKEN is not on that list, so a
+  # caller wiring it is rejected by GH013 at the last step of the last job —
+  # past everything a pull request or a remote-less fixture can observe. Pass an
+  # admin-scoped secret instead (Verjson/.github ADR 0052).
+  #
+  # The value is isolated before matching rather than grepped for inline. A
+  # guard on the raw line misses every ordinary spelling of the same wiring —
+  # a quoted scalar, the `github.token` alias, the case-insensitive
+  # `secrets.github_token`, a folded value on the following line — and each
+  # miss reports green while reproducing the failure exactly. It also fires on
+  # a `# NOT GITHUB_TOKEN` comment sitting above a correct wiring, which is a
+  # comment this contract's own documentation recommends writing.
+  push_token_value="$(sed 's/#.*//' "$release_workflow" | awk '
+    /^[[:space:]]*push_token:/ { depth = match($0, /[^[:space:]]/); found = 1; print; next }
+    found && $0 ~ /^[[:space:]]*$/ { next }
+    found && match($0, /[^[:space:]]/) > depth { print; next }
+    found { found = 0 }
+  ')"
+  if printf '%s\n' "$push_token_value" \
+    | grep -qiE '\$\{\{[[:space:]]*(secrets\.GITHUB_TOKEN|github\.token)[[:space:]]*\}\}'; then
+    fail "$release_workflow passes GITHUB_TOKEN as push_token; the branch ruleset rejects that push. Pass an admin-scoped secret."
+  fi
 fi
 echo "ok - render, validation and release automation share one immutable pin"
 

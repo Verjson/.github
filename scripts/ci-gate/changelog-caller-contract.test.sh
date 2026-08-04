@@ -196,6 +196,8 @@ jobs:
     with:
       contract_ref: $sha
       version: \${{ inputs.version }}
+    secrets:
+      push_token: \${{ secrets.ORG_ADMIN_TOKEN }}
 YAML
   fi
   cat >"$dir/NEXT/2026-08-01-issue-7-first.md" <<'FRAGMENT'
@@ -280,6 +282,26 @@ uncanonical_fragment() {
     >"$1/NEXT/2026-08-01-bad-name.md"
 }
 strip_executable() { chmod -x "$1/scripts/render-next.sh"; }
+# The release push lands on the default branch, which `main-protection` forbids
+# for GITHUB_TOKEN. That rejection happens on a real remote, so no fixture can
+# reproduce it — the emitted suite has to reject the wiring statically (#389).
+# Every spelling below is the same credential, so a guard that catches only the
+# first one reports green on a release that cannot run.
+wire_push_token() {
+  # wire_push_token <dir> <value>
+  local escaped
+  escaped="$(printf '%s' "$2" | sed 's/[&/\]/\\&/g')"
+  sed -i "s/\${{ secrets.ORG_ADMIN_TOKEN }}/$escaped/" \
+    "$1/.github/workflows/release.yml"
+}
+wire_unprivileged_push_token() { wire_push_token "$1" '${{ secrets.GITHUB_TOKEN }}'; }
+wire_quoted_push_token() { wire_push_token "$1" '"${{ secrets.GITHUB_TOKEN }}"'; }
+wire_alias_push_token() { wire_push_token "$1" '${{ github.token }}'; }
+wire_lowercase_push_token() { wire_push_token "$1" '${{ secrets.github_token }}'; }
+wire_folded_push_token() {
+  wire_push_token "$1" '>-'
+  printf '        ${{ secrets.GITHUB_TOKEN }}\n' >>"$1/.github/workflows/release.yml"
+}
 
 expect_rejection "a renderer pinned to a different commit" break_pin
 expect_rejection "a hand-written renderer that bypasses the contract" handwrite_renderer
@@ -287,6 +309,28 @@ expect_rejection "a .releaserc.json that reintroduces release-on-merge" add_rele
 expect_rejection "a second authored running log in NEXT.md" add_authored_log
 expect_rejection "a fragment whose filename is not canonical" uncanonical_fragment
 expect_rejection "a non-executable renderer" strip_executable
+expect_rejection "a release caller wiring GITHUB_TOKEN as push_token" wire_unprivileged_push_token
+expect_rejection "a quoted GITHUB_TOKEN push_token" wire_quoted_push_token
+expect_rejection "the github.token alias as push_token" wire_alias_push_token
+expect_rejection "a lower-case secrets.github_token push_token" wire_lowercase_push_token
+expect_rejection "a folded GITHUB_TOKEN push_token on the next line" wire_folded_push_token
+
+# Rejected for the stated reason, not incidentally. expect_rejection only asserts
+# a non-zero exit, so without this the guard could rot while its case stays green.
+grep -q 'push_token' "$tmproot/run.out" \
+  && pass "the push_token rejection names push_token as the cause" \
+  || fail "the last push_token case failed for some other reason: $(tail -2 "$tmproot/run.out")"
+
+# The counterpart. docs/changelog/README.md tells adopters to write exactly this
+# comment next to a correct wiring, so a guard matching the raw line would break
+# the build of everyone who followed the documentation.
+commented="$tmproot/adopter-commented"
+build_adopter "$commented"
+sed -i 's|^      push_token:|      # NOT GITHUB_TOKEN — see Verjson/.github ADR 0052.\n      push_token:|' \
+  "$commented/.github/workflows/release.yml"
+run_adopter "$commented" \
+  && pass "emitted suite accepts a correct wiring carrying a GITHUB_TOKEN warning comment" \
+  || fail "emitted suite rejected a documented comment: $(tail -2 "$tmproot/run.out")"
 
 # Only reachable after a release, so it needs a released fixture.
 edited="$tmproot/adopter-edited"

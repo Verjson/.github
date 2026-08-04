@@ -67,6 +67,7 @@ non-trivial or fanned-out work autonomously:
 - [#343](https://github.com/Verjson/.github/issues/343) — The watchdog's 35-minute threshold cannot preempt a polling AI-lane gate; it can only reach gates doing model review.
 - [#350](https://github.com/Verjson/.github/issues/350) — Branch-targeted workflows can reach repository-visible org secrets; checkout pinning alone is not a security boundary, so closure depends on #261/#265.
 - [#377](https://github.com/Verjson/.github/issues/377) — AI review can mistake the PR checkout for `main` and block a valid change as an already-merged duplicate.
+- [#393](https://github.com/Verjson/.github/issues/393) — `repo-hygiene.test.sh` reuses a fixture name, so its `docs/` edge case passes without exercising the behaviour, and leaks a newline-named directory into the repo root.
 
 Prune an entry when its issue closes. This list loads into every session, so a
 closed entry costs context in each one and misreports the state of the work.
