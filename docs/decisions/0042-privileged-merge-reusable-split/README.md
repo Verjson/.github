@@ -28,9 +28,17 @@ accepts `workflow_call`. Consumers become thin callers that implement nothing.
 
 Inputs on `workflow_call`: `pr_number`, `expected_head_sha`, `source_run_id` (all optional
 — a `pull_request_target`-triggered caller leaves them empty and the inherited event
-supplies them), and `runner_labels`, which is **required**. A consumer org has no runner
+supplies them), and `runner_labels`, which is **optional**. A consumer org has no runner
 for Verjson's isolated pool, so inheriting it would queue the job forever on labels
-nothing matches (#130); requiring it fails the call immediately with a clear message.
+nothing matches (#130).
+
+> **Amended 2026-08-05 (#405).** `runner_labels` was **required** as written here.
+> It is optional as of #405: the `runs-on` chain now ends at
+> `VERJSON_LANE_FALLBACK || '["ubuntu-24.04"]'`, so an omitted input lands on a
+> runner that exists, while requiring it made this generator hardcode
+> `["self-hosted","general"]` into every consumer. See ADR 0022's 2026-08-05
+> amendment for the full reasoning; the input and its `runs-on` precedence are
+> unchanged for a self-hosted consumer outside Verjson.
 
 ### The two-sided name contract
 

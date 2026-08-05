@@ -221,7 +221,7 @@ cat >"$evaluator" <<'JS'
 // validated against real semantics, not against a model that only happens to
 // agree with the polarity in use today.
 const vm = require('node:vm');
-const [, , raw, repository, runnerInput, priv, varDefault, varUntrusted, varFastlane] = process.argv;
+const [, , raw, repository, runnerInput, priv, varDefault, varUntrusted, varFastlane, runnerLabelsInput] = process.argv;
 // `inputs.github-hosted-runner` is a legal Actions reference and an illegal JS
 // one — bare, it parses as `inputs.github - hosted - runner`. Rewriting it to a
 // bracket access is what lets actionlint.yml be EVALUATED here rather than only
@@ -243,9 +243,20 @@ const github = {
     },
   },
 };
-// Modelled as false throughout: it is the per-caller opt-in of ADR 0026, so
-// every case here is the default one where a Verjson caller has NOT opted in.
-const inputs = { runner: runnerInput, 'github-hosted-runner': false };
+// `github-hosted-runner` is modelled as false throughout: it is the per-caller
+// opt-in of ADR 0026, so every case here is the default one where a Verjson
+// caller has NOT opted in.
+//
+// `runner_labels` is the merge workflows' equivalent override and is modelled
+// as '' when omitted, which is what Actions passes for an optional string input
+// with no default. Modelling it as undefined would agree by accident: both are
+// falsy, so the omitted-input cases would pass while nothing proved a SUPPLIED
+// value is honoured — the assertion that fails when it is not modelled at all.
+const inputs = {
+  runner: runnerInput,
+  runner_labels: runnerLabelsInput === undefined ? '' : runnerLabelsInput,
+  'github-hosted-runner': false,
+};
 // preflight resolves the TARGET repository's visibility and publishes it as a
 // STRING ('true' | 'false' | '' when unreadable). gate and dispatch-merge route
 // on that rather than on `github.event.repository`, because on the dispatch path
@@ -333,11 +344,17 @@ assert_no_ambient() {
 assert_no_ambient '${{ process.env.HOME }}' process
 assert_no_ambient '${{ require("node:fs") }}' require
 
-# assert_route <workflow> <job> <repo> <runner-input> <private> <var-default> <var-untrusted> <expected> <label> [var-fastlane]
+# assert_route <workflow> <job> <repo> <runner-input> <private> <var-default> <var-untrusted> <expected> <label> [var-fastlane] [runner-labels-input]
+#
+# `runner-labels-input` is separate from `runner-input` rather than folded into
+# it: they are different inputs on different workflows (`inputs.runner` on the
+# reusable CI workflows, `inputs.runner_labels` on the two merge workflows), and
+# one fixture feeding both would make a case pass for the wrong reason the first
+# time a workflow reads both.
 assert_route() {
   local workflow="$1" job="$2" repository="$3" runner_input="$4" priv="$5"
   local var_default="$6" var_untrusted="$7" expected="$8" label="$9"
-  local var_fastlane="${10-}"
+  local var_fastlane="${10-}" runner_labels="${11-}"
   local expression resolved
   expression="$(extract_runs_on "$workflow" "$job")"
   if [ -z "$expression" ]; then
@@ -345,7 +362,7 @@ assert_route() {
     return
   fi
   resolved="$(node "$evaluator" "$expression" "$repository" "$runner_input" \
-    "$priv" "$var_default" "$var_untrusted" "$var_fastlane" 2>&1)" || {
+    "$priv" "$var_default" "$var_untrusted" "$var_fastlane" "$runner_labels" 2>&1)" || {
     fail "$label — evaluating '$expression' failed: $resolved"
     return
   }
@@ -378,6 +395,27 @@ for privileged_workflow in ai-privileged-merge.yml; do
     '["self-hosted","isolated-canary"]' '["self-hosted","untrusted-canary"]' \
     'ubuntu-24.04' \
     "$privileged_workflow — external privileged caller retains hosted portability"
+
+  # #405. The generator used to bake `["self-hosted","general"]` into every
+  # caller, so a Verjson consumer routed on a LABEL and a relabel needed a pull
+  # request in each of ~90 repositories. The generated caller now omits the
+  # input; assert the route that omission produces, rather than trusting that
+  # nothing passes it.
+  assert_route "$privileged_path" privileged_merge Verjson/verjson-authn '' true \
+    '["self-hosted","privileged-canary"]' '["self-hosted","untrusted-canary"]' \
+    '["self-hosted","privileged-canary"]' \
+    "$privileged_workflow — a consumer omitting runner_labels routes through VERJSON_LANE_PRIVILEGED" \
+    '' ''
+
+  # The escape hatch, exercised rather than assumed: a self-hosted consumer
+  # OUTSIDE Verjson has no lane variables, so the input must still beat the
+  # hosted portability route. Keeping the input is the reason #405 makes it
+  # optional instead of deleting it.
+  assert_route "$privileged_path" privileged_merge Acme/widgets '' true \
+    '' '' \
+    '["self-hosted","acme-fleet"]' \
+    "$privileged_workflow — an off-Verjson fleet still wins via runner_labels" \
+    '' '["self-hosted","acme-fleet"]'
 done
 
 dispatch_workflow="$workflows/ai-review-merge.yml"
@@ -408,6 +446,20 @@ assert_route "$dispatch_workflow" dispatch-merge Verjson/.github '' '' \
   '["fastlane-canary"]'
 assert_route "$dispatch_workflow" dispatch-merge Acme/widgets '' true '' '' \
   'ubuntu-24.04' "dispatch-merge — external callers retain hosted portability"
+
+# The same two #405 polarities for the gate job, the one a cross-org consumer
+# actually calls: a Verjson caller that omits the input must still be lane-routed,
+# and an off-Verjson self-hosted fleet must still be able to name itself.
+assert_route "$dispatch_workflow" gate Verjson/verjson-authn '' true \
+  '["self-hosted","trusted-canary"]' '["self-hosted","untrusted-canary"]' \
+  '["self-hosted","trusted-canary"]' \
+  "gate — a consumer omitting runner_labels routes by lane, not by label" \
+  '' ''
+
+assert_route "$dispatch_workflow" gate Acme/widgets '' true '' '' \
+  '["self-hosted","acme-fleet"]' \
+  "gate — an off-Verjson fleet still wins via runner_labels" \
+  '' '["self-hosted","acme-fleet"]'
 
 # ADR 0050. actionlint is a short, secretless CPU job, so on a PUBLIC target it
 # takes the fast lane instead of contending for the fixed self-hosted pool with
