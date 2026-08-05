@@ -178,7 +178,7 @@ else
             # tolower() rather than gawk IGNORECASE: mawk is the default awk on
             # Ubuntu runners, and IGNORECASE is a silent no-op there — the
             # section would never match and every repo would look non-compliant.
-            BEGIN { fence = 0; comment = 0; collecting = 0; level = 0 }
+            BEGIN { fence = 0; fence_char = ""; fence_len = 0; comment = 0; collecting = 0; level = 0 }
             {
               s = $0
               # A heading inside an HTML comment renders as nothing, so it
@@ -190,16 +190,46 @@ else
                 comment = 0
                 s = substr(s, c + 3)
               }
+              # Same for a fenced block: `# Purpose` in a shell example is a
+              # shell comment, not a section heading.
+              #
+              # This runs BEFORE the "<!--" scan and AFTER the open-comment
+              # branch above, and that order is the behaviour on both sides.
+              # Scanning for comments first let an unterminated `<!--` inside a
+              # fenced HTML example open a comment that ran to end of file, so a
+              # compliant README parsed as empty and reported no purpose
+              # section. Tracking fences first instead would let a ``` line
+              # inside an open comment toggle a fence; the branch above consumes
+              # that line before this one sees it.
+              #
+              # CommonMark closes a fence only with a run of the SAME character
+              # at least as long as the one that opened it. Toggling on any
+              # fence line read the inner ``` of a ```` block as the close, and
+              # everything after it as rendered headings — so a README whose
+              # whole body is one code block reported compliant (#352).
+              # Measured character by character rather than with a {3,} match:
+              # mawk is the default awk on Ubuntu runners, and interval
+              # expressions are not something to depend on there.
+              t = s
+              sub(/^[ \t]*/, "", t)
+              ch = substr(t, 1, 1)
+              n = 0
+              if (ch == "`" || ch == "~") { while (substr(t, n + 1, 1) == ch) n++ }
+              if (n < 3) n = 0
+              if (fence) {
+                # A closing fence carries no info string, so trailing text keeps
+                # the block open.
+                if (n > 0 && ch == fence_char && n >= fence_len \
+                    && substr(t, n + 1) ~ /^[ \t]*$/) fence = 0
+                next
+              }
+              if (n > 0) { fence = 1; fence_char = ch; fence_len = n; next }
               while ((o = index(s, "<!--")) > 0) {
                 rest = substr(s, o + 4)
                 c = index(rest, "-->")
                 if (c > 0) { s = substr(s, 1, o - 1) substr(rest, c + 3) }
                 else { s = substr(s, 1, o - 1); comment = 1; break }
               }
-              # Same for a fenced block: `# Purpose` in a shell example is a
-              # shell comment, not a section heading.
-              if (s ~ /^[ \t]*(```|~~~)/) { fence = 1 - fence; next }
-              if (fence) next
               if (s ~ /^#+[ \t]+/) {
                 match(s, /[^#]/); n = RSTART - 1
                 if (tolower(s) ~ re) { collecting = 1; level = n }
