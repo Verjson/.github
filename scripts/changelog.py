@@ -98,10 +98,30 @@ def parse_frontmatter(path: Path) -> tuple[dict[str, str], str]:
     return metadata, "\n".join(lines[end + 1 :]).strip() + "\n"
 
 
+KNOWN_KEYS = frozenset({"date", "issue", "id", "title", "refs"})
+
+
 def validate_metadata(path: Path, metadata: dict[str, str]) -> str:
-    unknown = set(metadata) - {"date", "issue", "id", "title", "refs"}
+    # Rejecting an unknown key makes every future metadata addition a flag day.
+    # Each repository pins its own contract SHA, so a fragment carrying a new
+    # key fails validation in every repository that has not bumped yet, and
+    # fails again if one ever pins backward with such fragments still in
+    # `NEXT/`. Warning instead lets a forward-compatible fragment stay readable
+    # by an older contract (#424).
+    #
+    # The cost is stated rather than hidden: a typo in an OPTIONAL key (`ref:`
+    # for `refs:`) now degrades silently instead of failing, so the warning
+    # names the key. Required keys are unaffected — a typo in `date:`, `title:`
+    # or `issue:` still trips the checks below, because those test for the
+    # correct key's presence rather than for the absence of a wrong one.
+    unknown = set(metadata) - KNOWN_KEYS
     if unknown:
-        raise ChangelogError(f"{path}: unknown metadata: {', '.join(sorted(unknown))}")
+        print(
+            f"changelog: warning: {path}: ignoring unknown metadata: "
+            f"{', '.join(sorted(unknown))}"
+            " (a newer contract may define it; check the spelling of optional keys)",
+            file=sys.stderr,
+        )
     if not metadata.get("title"):
         raise ChangelogError(f"{path}: title is required")
     try:

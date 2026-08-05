@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 
+import contextlib
 import importlib.util
+import io
 import subprocess
 import sys
 import tempfile
@@ -156,6 +158,59 @@ class ChangelogContractTests(unittest.TestCase):
         fragment(self.root, "2026-07-30-issue-249-qid.md", issue="'249'")
         rendered = changelog.render(list(changelog.fragments(self.root)))
         self.assertIn("_Date: 2026-07-30; issue #249_", rendered)
+
+    # Every repository pins its own contract SHA, so rejecting an unknown key
+    # makes each future metadata addition breaking: the fragment fails in every
+    # repository that has not bumped, and again on any backward pin (#424).
+    def test_unknown_metadata_warns_instead_of_failing(self) -> None:
+        path = self.root / "NEXT" / "2026-07-30-issue-249-fwd.md"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            "---\ndate: 2026-07-30\nissue: 249\ntitle: Forward\n"
+            "summary: a key this contract does not know\n---\n\nBody.\n",
+            encoding="utf-8",
+        )
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            entry = changelog.load_canonical(path)
+        self.assertEqual(entry.metadata["title"], "Forward")
+        self.assertIn("summary", stderr.getvalue())
+
+    def test_an_unknown_key_does_not_become_a_renderable_field(self) -> None:
+        # Tolerating the key must not mean honouring it. An older contract that
+        # silently rendered a field it does not understand would be worse than
+        # one that rejected it.
+        path = self.root / "NEXT" / "2026-07-30-issue-249-ignored.md"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            "---\ndate: 2026-07-30\nissue: 249\ntitle: Forward\n"
+            "summary: SHOULD-NOT-APPEAR\n---\n\nBody.\n",
+            encoding="utf-8",
+        )
+        with contextlib.redirect_stderr(io.StringIO()):
+            rendered = changelog.render(list(changelog.fragments(self.root)))
+        self.assertNotIn("SHOULD-NOT-APPEAR", rendered)
+
+    def test_a_typo_in_a_required_key_still_fails(self) -> None:
+        # The relaxation must not swallow the failures it was never meant to
+        # cover: `titel:` leaves `title:` absent, which is still an error.
+        path = self.root / "NEXT" / "2026-07-30-issue-249-typo.md"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            "---\ndate: 2026-07-30\nissue: 249\ntitel: Typo\n---\n\nBody.\n",
+            encoding="utf-8",
+        )
+        with contextlib.redirect_stderr(io.StringIO()):
+            with self.assertRaises(changelog.ChangelogError) as caught:
+                changelog.load_canonical(path)
+        self.assertIn("title is required", str(caught.exception))
+
+    def test_a_fragment_with_only_known_keys_warns_about_nothing(self) -> None:
+        path = fragment(self.root, "2026-07-30-issue-249-clean.md")
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            changelog.load_canonical(path)
+        self.assertEqual(stderr.getvalue(), "")
 
     def test_refs_may_not_repeat_the_entry_own_issue(self) -> None:
         path = fragment(
