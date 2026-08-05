@@ -381,9 +381,22 @@ Two deliberate exclusions, so neither reads as an oversight:
   SHA still read them; deleting them would strand precisely the repositories that have not
   re-pinned.
 
-The terminal `'["ubuntu-24.04"]'` is this ADR's portability contract and nothing more: it is
-reached only by an organization with no lane variable set at all, for which hosted is the
-only landing that requires no knowledge of its fleet.
+The terminal `'["ubuntu-24.04"]'` means two different things depending on the shape above
+it, and conflating them overstates it:
+
+- In the **bare** form used by repository-local jobs, it is this ADR's portability contract:
+  an organization with no lane variable set lands on hosted, the only place that requires no
+  knowledge of its fleet.
+- In the **reusable** workflows it is not reachable that way at all. A foreign caller
+  short-circuits at `github.repository_owner != 'Verjson' && 'ubuntu-24.04'` before any lane
+  variable is read, which the routing suite pins with its `Acme/widgets` cases. What remains
+  is a *Verjson* repository whose lane variable was deleted or mistyped — an operator-error
+  landing on metered hosted minutes rather than a portability path.
+
+Both are preferable to the hardcoded fleet label they replace, which landed such a job in a
+queue forever. The distinction matters because the second case deserves an alert, not a
+shrug: `runner-admission-reconcile` reports it, which is why that job had to stop reading
+the variables this migration retired.
 
 ## Rollback
 

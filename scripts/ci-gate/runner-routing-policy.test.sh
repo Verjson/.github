@@ -124,8 +124,8 @@ grep -qF 'vars.VERJSON_RUNNER_FASTLANE || vars.VERJSON_LANE_TRUSTED' "$workflows
 # is a rename away from an unplaceable job, and GitHub does not fail an
 # unplaceable job — it queues it with no diagnostic. That is not hypothetical:
 # the fleet moved GCP→DigitalOcean and `Verjson/verjson-identity-lifecycle`'s
-# `generated-docs` job still asks for `[self-hosted, GCP]`, a label no runner
-# carries any more (#401). Repository-local jobs now select the lane the same way
+# `generated-docs` job asked for `[self-hosted, GCP]`, a label no runner carries
+# any more, until `35c1efa1` (#401). Repository-local jobs now select the lane the same way
 # every reusable workflow does — through the variable, with a fallback — so a
 # relabel is an org-variable flip rather than a pull request per workflow, which
 # is what ADR 0041 requires.

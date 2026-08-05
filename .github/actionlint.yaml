@@ -14,9 +14,9 @@
 # one is not rejected — GitHub queues it forever with no check-run diagnostic —
 # and lint stayed green the whole time, so the only signal was a pull request
 # that never finished. `Verjson/verjson-identity-lifecycle`'s `generated-docs`
-# job sat exactly there on `[self-hosted, GCP]` (#401). Undeclaring them turns
+# job sat exactly there on `[self-hosted, GCP]` until `35c1efa1` (#401). Undeclaring them turns
 # that silence into a lint failure naming the file and line, which is how the
-# #203 long tail gets found rather than waited on.
+# #365 long tail gets found rather than waited on.
 #
 #   - `pwsh` is omitted although 8 runners carry it: no workflow routes on it, and
 #     this list is what a workflow may SELECT, not an inventory of the fleet.

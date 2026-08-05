@@ -25,10 +25,13 @@ Where verJSON CI jobs run, and how to choose a `runs-on` value. The model is dec
   ([ADR 0041](decisions/0041-shared-admission-hosted-and-self-hosted/README.md)).
 - **Both hosted and DO self-hosted serve both public and private repositories**, by
   decision. That is the steady state, not a gap.
-- **The trailing `'["ubuntu-24.04"]'` is a portability contract, not a safety net.** It
-  exists so an organization outside Verjson — which has none of these variables — can call
-  a Verjson reusable workflow and land somewhere sane. It does **not** mean "if something
-  is wrong, this will save you."
+- **The trailing `'["ubuntu-24.04"]'` is a portability contract, not a safety net.** In the
+  bare form above it exists so an organization outside Verjson — which has none of these
+  variables — lands somewhere sane. In the *reusable* workflows a foreign caller
+  short-circuits at `github.repository_owner != 'Verjson'` first, so reaching the tail there
+  means a Verjson lane variable was deleted or mistyped. Either way it does **not** mean "if
+  something is wrong, this will save you" — `runner-admission-reconcile` reports the second
+  case as drift.
 - **Admission is enforced by runner *groups*, never by a label.** `runs-on` lives in a file
   a pull request can edit, so a label is chosen by whoever writes the PR.
 - Self-hosted runners have **no ambient Node** and a **persistent shared `~/.gitconfig`** —
@@ -87,7 +90,7 @@ hostinger	online	self-hosted,Linux,X64,manish
 
 Measured 2026-08-05. Three things changed from the snapshot this replaces, all load-bearing:
 
-- **`gce`, `GCP` and `gate` are gone from the fleet.** The #203 sweep took them off the
+- **`gce`, `GCP` and `gate` are gone from the fleet.** The #365 sweep took them off the
   runners. Any workflow still naming one is not "using a legacy label" — it is unplaceable,
   and GitHub queues an unplaceable job forever with no check-run diagnostic. They are
   undeclared in `.github/actionlint.yaml` for that reason, so naming one now fails lint
@@ -261,8 +264,9 @@ Order matters. Each step is safe only after the previous one lands.
 ⚠️ **Steps 5 and 6 ran out of order (2026-08-05).** The labels came off the fleet while
 the inline `runs-on` long tail was still selecting them, which is the failure this ordering
 exists to prevent. `Verjson/verjson-identity-lifecycle`'s `generated-docs` job queued
-indefinitely on `[self-hosted, GCP]` with no check-run diagnostic — #182's silent-failure
-mode, reproduced exactly. Step 5 is therefore still open, and the remediation is now
+indefinitely on `[self-hosted, GCP]` with no check-run diagnostic (fixed in
+`35c1efa1`) — #182's silent-failure
+mode, reproduced exactly. The remediation is therefore still open (#365), and the remediation is now
 detection rather than ordering: dead labels are undeclared in `.github/actionlint.yaml`, so
 a repository still naming one fails lint with a file and line instead of hanging (#401).
 

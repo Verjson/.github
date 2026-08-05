@@ -59,8 +59,10 @@ while a fleet label sat in every selector — including the reusable workflows
 ~90 consumers call, where a relabel would have to land everywhere at once.
 Replacing the literal with a variable is the whole point; leaving
 `'["self-hosted","general"]'` as the fallback would have kept the coupling one
-level down. The terminal `'["ubuntu-24.04"]'` is ADR 0040's portability
-contract, reached only by an org with no lane variable set at all.
+level down. The terminal `'["ubuntu-24.04"]'` is ADR 0040's portability contract in the bare
+form; inside the reusable workflows a foreign caller short-circuits at the owner
+check before any lane is read, so there it is an operator-error landing — a lane
+variable deleted or mistyped — which the reconciler now reports.
 
 `VERJSON_RUNNER_FASTLANE`/`_OVERFLOW` keep their names deliberately: they select
 hosted versus self-hosted, an orthogonal axis, and folding them in would put the
@@ -72,12 +74,13 @@ The same fleet move also took `gce`, `GCP` and `gate` off the runners while
 workflows still selected them — steps 5 and 6 of the migration sequence in
 `docs/runner-routing.md` ran in the wrong order, which that document warns
 produces jobs that queue forever with no check run.
-`Verjson/verjson-identity-lifecycle`'s `generated-docs` job is sitting in exactly
-that state on `[self-hosted, GCP]`. Those labels are now undeclared in the
+`Verjson/verjson-identity-lifecycle`'s `generated-docs` job sat in exactly that
+state on `[self-hosted, GCP]` until commit `35c1efa1` fixed it. Those labels are now undeclared in the
 organization-wide `.github/actionlint.yaml`, so naming one fails lint with a file
-and a line instead of hanging a pull request, and every repository-local
-`runs-on` here selects its lane through `vars.VERJSON_RUNNER_*` with a live-label
-fallback rather than a literal.
+and a line instead of hanging a pull request — for consumers once they re-pin,
+since the policy is checked out at the pinned `job.workflow_sha`, and every repository-local
+`runs-on` here selects its lane through `vars.VERJSON_LANE_*` rather than a
+literal.
 
 The admission change itself is org configuration, not code: runner group
 `DigitalOcean` is now `visibility: all` with public repositories allowed, per the
