@@ -20,3 +20,15 @@ instead of reporting a green no-op.
 second render pass, so it replaces that caller rather than accompanying it. See
 [ADR 0055](docs/decisions/0055-shared-generated-artifact-checks/README.md) and the caller
 interface in [`README.md`](README.md).
+
+`contract_ref` must be a full 40-character lower-case commit SHA, enforced by a first
+step that runs before either checkout. `ref:` otherwise accepts a branch, a tag or
+`refs/pull/<n>/merge` — and this repository is public, so an unpinned call could run an
+outsider's contract engine on the Verjson lane. Abbreviated SHAs are rejected as well
+(#312). Both checkouts set `persist-credentials: false`, and the contract checkout is
+skipped for a call that is already invalid.
+
+The changelog failure report now names the command CI ran —
+`python3 .changelog-contract/scripts/changelog.py …`, the failing subcommand, and the
+`contract_ref` to check out — instead of `scripts/changelog.py`, a path no consumer has
+under ADR 0038.

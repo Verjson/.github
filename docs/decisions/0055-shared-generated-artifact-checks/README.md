@@ -47,6 +47,42 @@ Adding a check is therefore a reviewed change to this repository, which is the
 right cost — it is the same trade ADR 0041 made for runner labels, applied to
 what a caller may execute.
 
+**Enumeration bounds which path runs, not what code runs.** This is the limit of
+the claim above and it must be stated, not left to be discovered: `adr-index:
+true` executes `bash "$GITHUB_WORKSPACE/scripts/gen-adr-index.sh"` from the
+consumer's pull-request checkout, which is caller-supplied code at a fixed path.
+A shared workflow that checks a repository's generated files cannot avoid this —
+running the repository's own generator is the check. What enumeration removes is
+the *unbounded* form, where a caller names an arbitrary command; what remains is
+one known path per enabled check, reviewable by reading this workflow.
+
+The residual exposure is bounded by the runner selection above, not by the input
+surface: `github.event.repository.private == true` routes trusted work to
+`VERJSON_LANE_TRUSTED`, and everything else — every public repository, where a
+fork pull request can propose the generator's contents — to
+`VERJSON_LANE_UNTRUSTED`. The job also holds only `contents: read`, carries a
+10-minute timeout, and both checkouts set `persist-credentials: false` so the
+job token is not left in `.git/config` for repository-supplied code to read.
+
+### The contract pin must be immutable
+
+`contract_ref` becomes the `ref:` of a `Verjson/.github` checkout whose
+`changelog.py` this job then executes, and `ref:` accepts any ref: a branch, a
+tag, or `refs/pull/<n>/merge`. Because this repository is public, that last one
+is reachable by anyone who can open a pull request, so an unconstrained
+`contract_ref` would let an outsider choose the contract engine that runs on the
+Verjson lane. A typo'd branch is the quieter version of the same defect: the
+call succeeds and validates against a non-canonical contract.
+
+A dedicated first step therefore rejects any `contract_ref` that is not exactly
+40 lower-case hex characters, before either checkout runs, reusing the
+`ref_is_immutable` rule from `scripts/node-workflow-pins.test.sh`. An
+abbreviated SHA is rejected too: git resolves a prefix against whatever objects
+exist at fetch time, so a prefix is not a pin (#312). `scripts/ci-gate/generated-artifacts.test.sh`
+executes that step against a branch, a tag, `refs/pull/<n>/merge`, an
+abbreviated SHA and an over-long value, and asserts the guard precedes the
+contract checkout.
+
 Three outcomes, distinctly reported:
 
 - **clean** — the generator agrees with what is committed;
@@ -74,6 +110,13 @@ caller rather than accompanying it. A repository calling both parses every
 fragment twice for one verdict. A repository that needs only changelog
 validation keeps its existing generated caller unchanged and adopts nothing
 here.
+
+The failure report names the command this job ran, at the path this job ran it
+from — `python3 .changelog-contract/scripts/changelog.py …`. Under ADR 0038 the
+engine exists only in `Verjson/.github`, so a remedy naming `scripts/changelog.py`
+would be a path no consumer has. The report also names the failing subcommand
+and the `contract_ref` to check out, so "one command regenerates it" stays true
+off the runner.
 
 Delegating by `uses:` would have been the stronger fold, but GitHub does not
 allow an expression in a workflow-level `uses:`, so the ref could not be the

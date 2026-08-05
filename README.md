@@ -114,7 +114,7 @@ shell, so a caller names a supported artifact and nothing else.
 | --- | --- | --- | --- |
 | `adr-index` | boolean | `false` | `scripts/gen-adr-index.sh --check` must report the committed `docs/decisions/README.md` current |
 | `changelog` | boolean | `false` | The pinned contract's `changelog.py` must validate the unreleased `NEXT/` fragments, and on a pull request also `check-pr` |
-| `contract_ref` | string | `''` | Immutable `Verjson/.github` commit carrying the changelog contract. Required when `changelog: true` |
+| `contract_ref` | string | `''` | Full 40-character `Verjson/.github` commit SHA carrying the changelog contract. Required when `changelog: true`; a branch, tag or abbreviated SHA is rejected |
 | `legacy_dir` | string | `''` | Temporary former unreleased-fragment directory, passed through to the contract engine |
 | `runner` | string | `''` | Optional JSON runner labels; Verjson callers default by visibility, callers outside `Verjson` get `ubuntu-24.04` |
 
@@ -124,7 +124,23 @@ than reporting green. A requested check whose generator is absent is reported as
 re-run a script the repository does not have.
 
 The called job ID is `validate`, so with the caller job ID above the check is
-`generated artifacts / validate`.
+`generated-artifacts / validate` — the **caller's** job ID, not the reusable
+workflow's display name. Select the check emitted by a completed run when
+configuring a ruleset; a context that no run produces stays pending forever.
+
+Input names are deliberately mixed: `adr-index` and `changelog` are hyphenated
+because they name the artifact a caller opts into, while `contract_ref`,
+`legacy_dir` and `runner` keep the underscored spelling they already have in
+[`changelog-validate.yml`](.github/workflows/changelog-validate.yml) and the
+other reusable workflows, so a caller migrating between them does not have to
+rename its values.
+
+`contract_ref` must be a full 40-character lower-case commit SHA. A branch, a
+tag or a `refs/pull/<n>/merge` ref is rejected before either checkout runs: the
+workflow executes that checkout's `changelog.py`, so a mutable ref would run
+contract code nobody reviewed. An abbreviated SHA is rejected for the same
+reason it is not a pin anywhere else in this repository — it resolves against
+whatever objects exist at fetch time.
 
 `changelog: true` **replaces** the [`changelog-validate.yml`](.github/workflows/changelog-validate.yml)
 caller rather than accompanying it: it runs that same pinned contract engine, so

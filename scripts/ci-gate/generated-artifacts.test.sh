@@ -36,6 +36,16 @@ extract validate "$validate"
 [ -s "$validate" ] \
   || { echo "FAIL - could not extract the validate run block from $wf"; exit 1; }
 
+pin="$tmp/pin.sh"
+extract pin "$pin"
+[ -s "$pin" ] \
+  || { echo "FAIL - could not extract the pin run block from $wf"; exit 1; }
+
+# A syntactically valid contract pin: 40 lower-case hex. The fixtures never
+# fetch it — the contract engine is copied into place by hand — so it only has
+# to satisfy the workflow's own immutability rule.
+immutable_sha=0123456789abcdef0123456789abcdef01234567
+
 # A consumer repository carrying a real, current ADR index.
 make_adr_repo() { # make_adr_repo <path>
   local ws="$1"
@@ -59,7 +69,7 @@ run_validate() { # run_validate <workspace> [env assignments...]
   local ws="$1"
   shift
   ( cd "$ws" && env GITHUB_WORKSPACE="$ws" GITHUB_STEP_SUMMARY="$ws/summary.md" \
-      RUN_ADR_INDEX=false RUN_CHANGELOG=false CONTRACT_DIR=.changelog-contract \
+      RUN_ADR_INDEX=false RUN_CHANGELOG=false \
       CONTRACT_REF='' LEGACY_DIR='' BASE_SHA='' HEAD_SHA='' \
       "$@" bash "$validate" 2>&1 )
 }
@@ -146,8 +156,21 @@ grep -q 'no generated-artifact check was enabled' <<<"$out" \
   && pass "the empty-call failure says which input to set" \
   || fail "the empty-call failure is not explained: $out"
 
+# Fixture history. The workflow's pull-request policy check diffs base...head,
+# so a fixture without real commits cannot exercise it at all — BASE_SHA and
+# HEAD_SHA would stay empty and the branch would never be entered.
+fixture_commit() { # fixture_commit <path> <message> -> prints the commit SHA
+  local ws="$1"
+  git -C "$ws" add -A
+  git -C "$ws" -c user.email=ci@example.invalid -c user.name='Fixture CI' \
+    commit --quiet --no-gpg-sign --allow-empty -m "$2"
+  git -C "$ws" rev-parse HEAD
+}
+
 # A consumer repository on the canonical changelog contract, with the contract
-# checked out where the workflow's own checkout step puts it.
+# checked out where the workflow's own checkout step puts it. The contract
+# checkout and the job summary are job scratch on a real runner, never tracked
+# files of the consumer, so the fixture ignores them.
 make_changelog_repo() { # make_changelog_repo <path>
   local ws="$1"
   mkdir -p "$ws/NEXT" "$ws/.changelog-contract/scripts"
@@ -161,6 +184,9 @@ title: Example
 
 Body text.
 FRAGMENT
+  printf '.changelog-contract/\nsummary.md\n' >"$ws/.gitignore"
+  git -C "$ws" init --quiet --initial-branch=main
+  base_sha="$(fixture_commit "$ws" 'base')"
 }
 
 # --------------------------------------------------------------------------
@@ -168,7 +194,7 @@ FRAGMENT
 # --------------------------------------------------------------------------
 ws="$tmp/changelog-clean"
 make_changelog_repo "$ws"
-out="$(run_validate "$ws" RUN_CHANGELOG=true CONTRACT_REF=0123456789abcdef0123456789abcdef01234567)"
+out="$(run_validate "$ws" RUN_CHANGELOG=true CONTRACT_REF="$immutable_sha")"
 rc=$?
 [ "$rc" -eq 0 ] \
   && pass "a repository with valid fragments passes the changelog check" \
@@ -180,7 +206,7 @@ rc=$?
 ws="$tmp/changelog-stale"
 make_changelog_repo "$ws"
 printf 'no front matter here\n' >"$ws/NEXT/2026-08-05-issue-404-broken.md"
-out="$(run_validate "$ws" RUN_CHANGELOG=true CONTRACT_REF=0123456789abcdef0123456789abcdef01234567)"
+out="$(run_validate "$ws" RUN_CHANGELOG=true CONTRACT_REF="$immutable_sha")"
 rc=$?
 [ "$rc" -ne 0 ] \
   && pass "a fragment the contract rejects fails the changelog check" \
@@ -190,6 +216,18 @@ grep -q '::error title=Generated artifact out of date: Changelog::' <<<"$out" \
   && pass "the changelog failure uses the same uniform annotation" \
   || fail "the changelog failure is not reported uniformly: $out"
 
+# The remedy has to be the command CI ran. Under ADR 0038 the engine lives only
+# in Verjson/.github and consumers never commit scripts/changelog.py, so naming
+# that path sends every consumer to "No such file or directory" — the opposite
+# of the one-command promise. The engine path is the pinned contract checkout.
+grep -qE '^ +python3 \.changelog-contract/scripts/changelog\.py validate --repo-root \.$' "$ws/summary.md" \
+  && pass "the changelog remedy names the pinned contract engine, not a path consumers lack" \
+  || fail "the changelog remedy is not runnable by a consumer: $(cat "$ws/summary.md")"
+
+grep -q "$immutable_sha" "$ws/summary.md" \
+  && pass "the changelog remedy says which contract commit to check out" \
+  || fail "the changelog remedy does not name the contract pin: $(cat "$ws/summary.md")"
+
 # --------------------------------------------------------------------------
 # Missing: the contract checkout did not land the engine. Fails as unavailable
 # and names contract_ref, because "your fragments are wrong" would be a lie.
@@ -197,7 +235,7 @@ grep -q '::error title=Generated artifact out of date: Changelog::' <<<"$out" \
 ws="$tmp/changelog-missing"
 make_changelog_repo "$ws"
 rm -rf "$ws/.changelog-contract"
-out="$(run_validate "$ws" RUN_CHANGELOG=true CONTRACT_REF=0123456789abcdef0123456789abcdef01234567)"
+out="$(run_validate "$ws" RUN_CHANGELOG=true CONTRACT_REF="$immutable_sha")"
 rc=$?
 [ "$rc" -ne 0 ] \
   && pass "an absent contract engine fails instead of passing vacuously" \
@@ -221,6 +259,137 @@ rc=$?
   || fail "changelog ran unpinned (rc=$rc): $out"
 
 # --------------------------------------------------------------------------
+# The pin guard (#404 review). `ref:` accepts ANY ref of Verjson/.github, and
+# the workflow then executes python3 from that checkout. A branch or tag can
+# move under the pin; `refs/pull/<n>/merge` is an unreviewed pull request
+# against a PUBLIC repository, so accepting one would let anyone who can open a
+# PR run their own contract engine on the Verjson lane. Only a full commit SHA
+# names code that cannot change after review, and it is rejected BEFORE either
+# checkout so nothing is fetched for a call that is already invalid.
+# --------------------------------------------------------------------------
+run_pin() { # run_pin <workspace> [env assignments...]
+  local ws="$1"
+  shift
+  mkdir -p "$ws"
+  ( cd "$ws" && env GITHUB_STEP_SUMMARY="$ws/summary.md" \
+      RUN_CHANGELOG=true CONTRACT_REF='' \
+      "$@" bash "$pin" 2>&1 )
+}
+
+out="$(run_pin "$tmp/pin-good" CONTRACT_REF="$immutable_sha")"
+rc=$?
+[ "$rc" -eq 0 ] \
+  && pass "a full 40-character commit SHA is accepted as the contract pin" \
+  || fail "an immutable contract pin was rejected (rc=$rc): $out"
+
+# A mutable ref points at whatever is there when the job runs, which is not
+# what any reviewer approved. `refs/pull/<n>/merge` is the sharp one: this
+# repository is public, so that ref is reachable by anyone.
+mutable_case() { # mutable_case <ref> <description>
+  local ref="$1" description="$2" out rc
+  out="$(run_pin "$tmp/pin-bad" CONTRACT_REF="$ref")"
+  rc=$?
+  [ "$rc" -ne 0 ] && grep -q 'contract_ref' <<<"$out" \
+    && pass "$description is rejected and the failure names contract_ref" \
+    || fail "$description was accepted as a contract pin (rc=$rc): $out"
+}
+mutable_case main 'a branch name'
+mutable_case v1 'a tag'
+mutable_case refs/pull/1/merge 'a pull-request merge ref'
+mutable_case feat/404-generated-artifacts-ci 'a feature branch'
+
+# #312: `ref_is_immutable` must require exactly 40 hex characters. An
+# abbreviated SHA is ambiguous by construction — git resolves it against
+# whatever objects exist at fetch time — so "is a prefix of a SHA" is not the
+# test, and neither is "looks hex-ish".
+mutable_case "${immutable_sha:0:12}" 'an abbreviated SHA'
+mutable_case "${immutable_sha}0" 'an over-long hex string'
+mutable_case "${immutable_sha^^}" 'an upper-case SHA'
+mutable_case "$immutable_sha "$'\n''main' 'a SHA with a trailing ref smuggled after a newline'
+
+# The guard is only about the changelog contract: a caller that never asks for
+# the changelog check has no contract to pin, and must not be forced to invent
+# one to run the ADR-index check.
+out="$(run_pin "$tmp/pin-off" RUN_CHANGELOG=false)"
+rc=$?
+[ "$rc" -eq 0 ] \
+  && pass "a call that does not request the changelog check needs no pin" \
+  || fail "the pin guard fires for a call with changelog: false (rc=$rc): $out"
+
+# The guard has to run before the contract checkout, or the unreviewed code it
+# rejects has already been fetched onto the runner by the time it speaks.
+pin_line="$(grep -n '^        id: pin$' "$wf" | cut -d: -f1)"
+contract_line="$(grep -n '^          repository: Verjson/\.github$' "$wf" | cut -d: -f1)"
+[ -n "$pin_line" ] && [ -n "$contract_line" ] && [ "$pin_line" -lt "$contract_line" ] \
+  && pass "the pin guard runs before the contract checkout" \
+  || fail "the pin guard does not precede the contract checkout (pin=$pin_line contract=$contract_line)"
+
+# --------------------------------------------------------------------------
+# The pull-request policy check (#404 review). Every fixture above leaves
+# BASE_SHA and HEAD_SHA empty, so `check-pr` never ran once and the whole branch
+# was dead: `|| changelog_ok=false` could be `|| true` and the suite stayed
+# green. These cases run it against a real two-commit history.
+#
+# `check-pr` polices what a PR may do to the changelog store under ADR 0038 —
+# it forbids editing generated aggregates or released snapshots and forbids
+# consuming NEXT/ fragments. It does NOT require a PR to add a fragment, so a
+# fixture built on "adds no NEXT/ fragment" would assert a rule the canonical
+# engine does not have.
+# --------------------------------------------------------------------------
+ws="$tmp/check-pr-clean"
+make_changelog_repo "$ws"
+cat >"$ws/NEXT/2026-08-05-issue-405-added.md" <<'FRAGMENT'
+---
+date: 2026-08-05
+issue: 405
+title: Added by this pull request
+---
+
+Body text.
+FRAGMENT
+head_sha="$(fixture_commit "$ws" 'add a fragment')"
+out="$(run_validate "$ws" RUN_CHANGELOG=true CONTRACT_REF="$immutable_sha" \
+  BASE_SHA="$base_sha" HEAD_SHA="$head_sha")"
+rc=$?
+[ "$rc" -eq 0 ] \
+  && pass "a pull request that adds a NEXT/ fragment passes the policy check" \
+  || fail "an ordinary changelog pull request was rejected (rc=$rc): $out"
+
+ws="$tmp/check-pr-aggregate"
+make_changelog_repo "$ws"
+printf '# Changelog\n\nhand-edited\n' >"$ws/CHANGELOG.md"
+head_sha="$(fixture_commit "$ws" 'hand-edit the generated aggregate')"
+out="$(run_validate "$ws" RUN_CHANGELOG=true CONTRACT_REF="$immutable_sha" \
+  BASE_SHA="$base_sha" HEAD_SHA="$head_sha")"
+rc=$?
+[ "$rc" -ne 0 ] \
+  && pass "a pull request that hand-edits CHANGELOG.md fails the policy check" \
+  || fail "check-pr never ran or its result was discarded (rc=$rc): $out"
+
+grep -q '::error title=Generated artifact out of date: Changelog::' <<<"$out" \
+  && pass "a policy-check failure is reported in the uniform annotation form" \
+  || fail "a policy-check failure is not reported by the workflow: $out"
+
+# The remedy names the subcommand that failed. Sending someone to `validate`
+# for a policy failure sends them to a command that passes, which reads as a
+# flaky check rather than a verdict about their pull request.
+grep -qF "python3 .changelog-contract/scripts/changelog.py check-pr --repo-root . --base $base_sha --head $head_sha" \
+  "$ws/summary.md" \
+  && pass "a policy-check failure names check-pr, with the SHAs it was given" \
+  || fail "the policy-check remedy is not the command that failed: $(cat "$ws/summary.md")"
+
+ws="$tmp/check-pr-consumed"
+make_changelog_repo "$ws"
+rm -f "$ws/NEXT/2026-08-05-issue-404-example.md"
+head_sha="$(fixture_commit "$ws" 'consume a fragment outside a release')"
+out="$(run_validate "$ws" RUN_CHANGELOG=true CONTRACT_REF="$immutable_sha" \
+  BASE_SHA="$base_sha" HEAD_SHA="$head_sha")"
+rc=$?
+[ "$rc" -ne 0 ] \
+  && pass "a pull request that consumes a NEXT/ fragment fails the policy check" \
+  || fail "a consumed fragment passed the policy check (rc=$rc): $out"
+
+# --------------------------------------------------------------------------
 # Two broken artifacts, one run. Checks accumulate rather than short-circuit, so
 # a consumer fixes both in one round instead of learning about the second only
 # after paying for another CI run.
@@ -236,7 +405,7 @@ cat >"$ws/docs/decisions/0002-added-later/README.md" <<'ADR'
 ADR
 printf 'no front matter here\n' >"$ws/NEXT/2026-08-05-issue-404-broken.md"
 out="$(run_validate "$ws" RUN_ADR_INDEX=true RUN_CHANGELOG=true \
-  CONTRACT_REF=0123456789abcdef0123456789abcdef01234567)"
+  CONTRACT_REF="$immutable_sha")"
 rc=$?
 [ "$rc" -ne 0 ] \
   && grep -q 'out of date: ADR index' <<<"$out" \
@@ -254,11 +423,16 @@ make_changelog_repo "$ws"
 mkdir -p "$ws/legacy-next"
 printf 'no front matter here\n' >"$ws/legacy-next/2026-08-05-issue-404-broken.md"
 out="$(run_validate "$ws" RUN_CHANGELOG=true LEGACY_DIR=legacy-next \
-  CONTRACT_REF=0123456789abcdef0123456789abcdef01234567)"
+  CONTRACT_REF="$immutable_sha")"
 rc=$?
 [ "$rc" -ne 0 ] \
   && pass "legacy_dir reaches the contract engine, so its fragments are validated too" \
   || fail "legacy_dir was dropped — fragments there are never checked: $out"
+
+grep -qE '^ +python3 \.changelog-contract/scripts/changelog\.py validate --repo-root \. --legacy-dir legacy-next$' \
+  "$ws/summary.md" \
+  && pass "the remedy carries legacy_dir, so re-running it reproduces the verdict" \
+  || fail "the remedy drops legacy_dir and would pass locally: $(cat "$ws/summary.md")"
 
 # --------------------------------------------------------------------------
 # The boundary itself (#404). Checks are ENUMERATED opt-ins: a caller names a
@@ -279,6 +453,50 @@ expected_inputs="$(printf '%s\n' adr-index changelog contract_ref legacy_dir run
 [ "$(printf '%s\n' "$declared_inputs" | sort)" = "$expected_inputs" ] \
   && pass "the input surface is exactly the enumerated set" \
   || fail "input surface drifted: got [$(printf '%s' "$declared_inputs" | tr '\n' ' ')] want [$(printf '%s' "$expected_inputs" | tr '\n' ' ')]"
+
+# The extraction method above runs the `run:` block with env supplied by hand,
+# which means the input -> env mapping itself is never executed by any fixture.
+# A missing variable fails closed under `set -u`, but a swapped or misspelled one
+# fails open and silently: wiring RUN_ADR_INDEX to `inputs.changelog` leaves
+# every test here green while `adr-index: true` checks nothing. Pin the mapping
+# literally — it is the one part of the step no fixture can reach.
+env_block() { # env_block <step-id>
+  awk -v want="        id: $1" '
+    $0 == want { seen = 1; next }
+    seen && $0 == "        env:" { cap = 1; next }
+    cap && $0 !~ /^          [A-Z_]+: / { exit }
+    cap { print substr($0, 11) }
+  ' "$wf"
+}
+
+expect_env() { # expect_env <step-id> <expected block on stdin>
+  local step="$1" want got
+  want="$(sort)"
+  got="$(env_block "$step" | sort)"
+  [ "$got" = "$want" ] \
+    && pass "the $step step's env maps every input to its exact expression" \
+    || fail "the $step step's env drifted:
+--- want ---
+$want
+--- got ---
+$got"
+}
+
+expect_env validate <<'ENV'
+RUN_ADR_INDEX: ${{ inputs.adr-index }}
+RUN_CHANGELOG: ${{ inputs.changelog }}
+CONTRACT_REF: ${{ inputs.contract_ref }}
+LEGACY_DIR: ${{ inputs.legacy_dir }}
+BASE_SHA: ${{ github.event.pull_request.base.sha }}
+HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+ENV
+
+# The pin guard reads the same two inputs; mis-wiring CONTRACT_REF there would
+# leave it validating a value the checkout never uses.
+expect_env pin <<'ENV'
+RUN_CHANGELOG: ${{ inputs.changelog }}
+CONTRACT_REF: ${{ inputs.contract_ref }}
+ENV
 
 # Both artifact selectors are booleans, so `adr-index: rm -rf /` is not even a
 # type-valid call — the rejection is GitHub's, before any shell starts.
