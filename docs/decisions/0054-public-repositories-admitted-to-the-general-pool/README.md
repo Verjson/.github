@@ -1,7 +1,11 @@
 # 0054 — Admit public repositories to the self-hosted general pool
 
 - **Date:** 2026-08-05
-- **Issue:** [Verjson/.github#401](https://github.com/Verjson/.github/issues/401)
+- **Issues:** [Verjson/.github#401](https://github.com/Verjson/.github/issues/401),
+  [#395](https://github.com/Verjson/.github/issues/395) (the same admission defect
+  reached through `VERJSON_RUNNER_UNTRUSTED`),
+  [#391](https://github.com/Verjson/.github/issues/391) (the `general` label
+  missing from the fleet on 2026-08-04)
 - **Restores:** [ADR 0041](../0041-shared-admission-hosted-and-self-hosted/README.md) —
   the live organization had regressed away from it, so nothing new is decided about
   admission here
@@ -135,7 +139,11 @@ What does *not* mitigate it today: `VERJSON_RUNNER_UNTRUSTED` and
 `VERJSON_RUNNER_DEFAULT` both resolve to `["self-hosted","general"]`, so the
 "untrusted" lane that public and fork work is routed to is the same pool that
 runs trusted work. The lane separation ADR 0040 describes exists in the variables
-and not in the fleet. Tracked separately; this ADR does not claim it is solved.
+and not in the fleet — there is no second pool to route to, since the `gate`
+label came off the runners as well. That is
+[#204](https://github.com/Verjson/.github/issues/204), open since the DigitalOcean
+migration. This ADR does not claim it is solved, and admitting public
+repositories to the one remaining pool makes it more load-bearing, not less.
 
 ## Rollback
 
