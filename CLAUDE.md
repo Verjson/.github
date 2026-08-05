@@ -62,9 +62,8 @@ non-trivial or fanned-out work autonomously:
 - [#292](https://github.com/Verjson/.github/issues/292) — Re-review skip never fires: `gh api user` cannot resolve an identity under `github.token`, so every head change re-pays for an unchanged diff.
 - [#312](https://github.com/Verjson/.github/issues/312) — `ref_is_immutable` accepts abbreviated SHAs; no test covers it.
 - [#340](https://github.com/Verjson/.github/issues/340) — `repo-hygiene.test.sh` commits to the repository it is run from; do not run it in a live checkout until fixed.
-- [#341](https://github.com/Verjson/.github/issues/341) — Retire the fleet watchdog: the gate should re-enter on `workflow_run: completed` instead of holding a runner while polling.
-- [#342](https://github.com/Verjson/.github/issues/342) — The watchdog's dry-run guard is unreachable, so it is live and armed with no evidence behind its cancel path.
-- [#343](https://github.com/Verjson/.github/issues/343) — The watchdog's 35-minute threshold cannot preempt a polling AI-lane gate; it can only reach gates doing model review.
+- [#341](https://github.com/Verjson/.github/issues/341) — Watchdog kept, not retired (ADR 0055). Re-scope to "no merge-gate job polls on the shared pool": ADR 0053 covers `gate`, `ai-privileged-merge.yml` still routes on `VERJSON_LANE_PRIVILEGED`.
+- The watchdog is **disarmed** pending an operator setting `VERJSON_WATCHDOG_DRY_RUN=false` (ADR 0055); it reports `DRY RUN would cancel` until then.
 - [#350](https://github.com/Verjson/.github/issues/350) — Branch-targeted workflows can reach repository-visible org secrets; checkout pinning alone is not a security boundary, so closure depends on #261/#265.
 - [#377](https://github.com/Verjson/.github/issues/377) — AI review can mistake the PR checkout for `main` and block a valid change as an already-merged duplicate.
 - [#393](https://github.com/Verjson/.github/issues/393) — `repo-hygiene.test.sh` reuses a fixture name, so its `docs/` edge case passes without exercising the behaviour, and leaks a newline-named directory into the repo root.

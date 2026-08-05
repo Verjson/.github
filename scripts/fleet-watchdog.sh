@@ -18,8 +18,11 @@
 #
 #   1. The job is a known poll job (`gate` / `privileged_merge`) — never CI,
 #      never a build, never anything whose work would be lost.
-#   2. It has been running longer than MIN_AGE_MINUTES. Past that point its own
-#      poll window is nearly exhausted, so it was about to fail anyway.
+#   2. It is PROVABLY still polling. Where a workflow names the step that does
+#      the polling, that step's own state answers the question directly, so a
+#      gate that is 20 minutes into its poll is reachable and a gate that has
+#      left `ci_wait` for the model review is not, at any age (#343). Only a
+#      workflow with no separable poll step falls back to MIN_AGE_MINUTES.
 #   3. Self-hosted capacity is actually exhausted (no idle runner).
 #   4. Something is actually queued behind it. With an empty queue a long poll
 #      harms nobody and is left alone.
@@ -28,23 +31,71 @@
 # of the poll, so a cancelled run has not half-merged anything, and the next
 # push/label/dispatch re-fires the gate. The cost of a false positive is one
 # re-run; the cost of a false negative is a frozen fleet.
+#
+# Disposition (ADR 0055, #341): retained rather than retired. ADR 0053's
+# `VERJSON_RUNNER_OVERFLOW` moves `gate`/`dispatch-merge` off the pool, but it
+# does NOT cover `ai-privileged-merge.yml` (which routes on
+# `VERJSON_LANE_PRIVILEGED`), and it is explicitly a budget that will be given
+# back. `privileged_merge` is both the residual exposure and the only thing this
+# watchdog has ever preempted in production.
 set -uo pipefail
 
 ORG="${WATCHDOG_ORG:-Verjson}"
 MIN_AGE_MINUTES="${WATCHDOG_MIN_AGE_MINUTES:-35}"
+# Floor for the provable-poll path. A jam forms fully in ~12 minutes, so the age
+# threshold that guards the inferred path is far too late here; this only exists
+# so a job that has just entered its poll is not preempted before the runner it
+# is holding could plausibly have mattered.
+MIN_POLL_MINUTES="${WATCHDOG_MIN_POLL_MINUTES:-10}"
 RUNNER_LABEL="${WATCHDOG_RUNNER_LABEL:-general}"
-DRY_RUN="${WATCHDOG_DRY_RUN:-false}"
 
 # Poll jobs, by the workflow `name:` that owns them. Matching on workflow name
 # rather than job name keeps CI jobs out of scope even if a repository happens
 # to name a job `gate`.
 POLL_WORKFLOWS="${WATCHDOG_POLL_WORKFLOWS:-AI review + auto-merge|AI privileged merge}"
 
+# `<workflow name>=<step name>` pairs, `|`-separated. A run whose named step is
+# `in_progress` is provably sleeping on a check it cannot influence; once that
+# step completes the job is spending model-review budget and must be left alone.
+# `AI privileged merge` is deliberately absent: its poll loop lives inside the
+# same step as the merge itself, so there is nothing to separate and it keeps
+# the age rule, which is the rule that has actually fired in production.
+POLL_STEPS="${WATCHDOG_POLL_STEPS:-AI review + auto-merge=Wait once for the rest of CI to be green}"
+
 note() { printf '::notice::watchdog %s\n' "$1"; }
 warn() { printf '::warning::watchdog %s\n' "$1"; }
 die()  { printf '::error::watchdog %s\n' "$1" >&2; exit 2; }
 
+# No implicit default. This process cancels other repositories' runs, and #336
+# shipped armed because two layers each carried their own default and the
+# running log described the other one. The arm/disarm decision lives in exactly
+# one place now — the workflow's `WATCHDOG_DRY_RUN` expression — and anything
+# this script cannot read as a decision is a fault, not a licence to cancel.
+DRY_RUN="${WATCHDOG_DRY_RUN-}"
+case "$DRY_RUN" in
+  true | false) ;;
+  '') die "WATCHDOG_DRY_RUN is unset — refusing to guess whether cancelling is authorised. Set it to 'true' (report only) or 'false' (cancel)." ;;
+  *)  die "WATCHDOG_DRY_RUN must be exactly 'true' or 'false', got '$DRY_RUN' — refusing to cancel on an ambiguous switch." ;;
+esac
+
 now_epoch="$(date -u +%s)" || die "could not read the clock"
+
+# The step that does the polling for a given workflow, or empty when the
+# workflow has none and must fall back to the age rule.
+#
+# The feed is `printf '%s\n'`, not `printf '%s'`: `read` returns non-zero on a
+# final line with no terminator, so a single unterminated entry never enters the
+# loop body at all and every workflow silently falls back to the age rule this
+# function exists to replace.
+poll_step_for() {
+  local wf="$1" entry
+  while IFS= read -r entry; do
+    case "$entry" in
+      "$wf="*) printf '%s' "${entry#*=}"; return 0 ;;
+    esac
+  done < <(printf '%s\n' "$POLL_STEPS" | tr '|' '\n')
+  return 0
+}
 
 # --- 1. Is self-hosted capacity actually exhausted? -------------------------
 # An unreadable runner list is inconclusive, and inconclusive must not authorise
@@ -52,15 +103,27 @@ now_epoch="$(date -u +%s)" || die "could not read the clock"
 runners="$(gh api "orgs/$ORG/actions/runners" --paginate 2>/dev/null)" \
   || die "could not read the runner list for $ORG — refusing to cancel on an unknown fleet state"
 
-idle="$(jq --arg pool "$RUNNER_LABEL" '
-  [ .runners[]? | select(.status == "online")
-  | select([.labels[]?.name] | index($pool))
-  | select(.busy | not) ] | length' <<<"$runners" 2>/dev/null)"
-[[ "$idle" =~ ^[0-9]+$ ]] || die "could not count idle runners"
+# `--paginate` emits one JSON document PER PAGE, so a `jq` filter applied to that
+# stream produces one count per page. The moment the fleet outgrows a single page
+# `idle` becomes something like "0\n1", the numeric guard below rejects it, and
+# the watchdog disables itself (#355). Slurp the pages and aggregate `.runners`
+# across all of them before counting anything. A page missing its `.runners`
+# array is an unusable response, not an empty pool: fail closed, because an
+# undercount of idle capacity is exactly what authorises cancelling.
+pool="$(jq -s -c --arg pool "$RUNNER_LABEL" '
+  if length == 0 or any(.[]; (.runners | type) != "array")
+  then error("unusable runner list")
+  else [ .[].runners[]
+       | select(.status == "online")
+       | select([.labels[]?.name] | index($pool)) ]
+       | {total: length, idle: (map(select(.busy | not)) | length)}
+  end' <<<"$runners" 2>/dev/null)" \
+  || die "could not aggregate the runner list for $ORG — refusing to cancel on an unknown fleet state"
 
-total="$(jq --arg pool "$RUNNER_LABEL" '
-  [ .runners[]? | select(.status == "online")
-  | select([.labels[]?.name] | index($pool)) ] | length' <<<"$runners" 2>/dev/null)"
+idle="$(jq -r '.idle' <<<"$pool" 2>/dev/null)"
+total="$(jq -r '.total' <<<"$pool" 2>/dev/null)"
+[[ "$idle" =~ ^[0-9]+$ ]] || die "could not count idle runners"
+[[ "$total" =~ ^[0-9]+$ ]] || die "could not count online runners"
 
 note "pool=$RUNNER_LABEL online=$total idle=$idle"
 if [ "$idle" -gt 0 ]; then
@@ -84,15 +147,39 @@ while IFS= read -r repo; do
   [[ "$q" =~ ^[0-9]+$ ]] || q=0
   queued=$((queued + q))
 
-  # ...and any long-running poll job is a candidate to yield its runner.
+  # ...and any poll job that is provably sleeping is a candidate to yield its
+  # runner.
   while IFS=$'\t' read -r run_id wf_name; do
     [ -n "$run_id" ] || continue
-    started="$(gh api "repos/$ORG/$repo/actions/runs/$run_id/jobs" \
-      --jq '[.jobs[]? | select(.status == "in_progress") | .started_at] | first // empty' 2>/dev/null)"
+    jobs_json="$(gh api "repos/$ORG/$repo/actions/runs/$run_id/jobs" 2>/dev/null)" || continue
+    job="$(jq -c '[.jobs[]? | select(.status == "in_progress")] | first // empty' \
+      <<<"$jobs_json" 2>/dev/null)"
+    [ -n "$job" ] || continue
+    started="$(jq -r '.started_at // empty' <<<"$job" 2>/dev/null)"
     [ -n "$started" ] || continue
     started_epoch="$(date -u -d "$started" +%s 2>/dev/null)" || continue
     age=$(( (now_epoch - started_epoch) / 60 ))
-    [ "$age" -ge "$MIN_AGE_MINUTES" ] || continue
+
+    # Age is a proxy for the wrong thing. A job is preemptable when it is
+    # WAITING, not when it is old — and MIN_AGE_MINUTES is longer than the AI
+    # lane's own 30-minute poll window, so on that lane it could only ever reach
+    # jobs that had already stopped polling and started paying for model review
+    # (#343). Where the workflow names its poll step, read that step's state
+    # instead of guessing from the clock.
+    poll_step="$(poll_step_for "$wf_name")"
+    if [ -n "$poll_step" ]; then
+      poll_state="$(jq -r --arg s "$poll_step" \
+        '([.steps[]? | select(.name == $s)] | first | .status) // "absent"' \
+        <<<"$job" 2>/dev/null)" || poll_state=absent
+      # `completed` means the job is past `ci_wait` and into the review; `absent`
+      # means it has not reached the poll yet, or the shape changed and we cannot
+      # tell. Both are "leave it alone" — the fail-closed direction here is fewer
+      # cancellations.
+      [ "$poll_state" = in_progress ] || continue
+      [ "$age" -ge "$MIN_POLL_MINUTES" ] || continue
+    else
+      [ "$age" -ge "$MIN_AGE_MINUTES" ] || continue
+    fi
     candidates+=("$repo|$run_id|$age|$wf_name")
     # Exact membership, NOT a regex: the workflow is literally named
     # "AI review + auto-merge", and `+` is a quantifier — `test()` on that name
@@ -108,7 +195,7 @@ while IFS= read -r repo; do
                  '.workflow_runs[]? | select(.name | IN($names | split("|")[])) | "\(.id)\t\(.name)"' 2>/dev/null)
 done <<<"$repos"
 
-note "queued_runs=$queued stale_poll_jobs=${#candidates[@]} min_age_minutes=$MIN_AGE_MINUTES"
+note "queued_runs=$queued stale_poll_jobs=${#candidates[@]} min_age_minutes=$MIN_AGE_MINUTES min_poll_minutes=$MIN_POLL_MINUTES dry_run=$DRY_RUN"
 
 # --- 3. Only intervene when something is actually starved -------------------
 if [ "${#candidates[@]}" -eq 0 ]; then
