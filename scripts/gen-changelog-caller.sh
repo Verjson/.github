@@ -300,15 +300,24 @@ echo "ok - contract scripts are executable"
 # Guarded, because render-next exits non-zero on an empty NEXT/ — which is
 # exactly the state a release leaves behind. The final fixture proves this guard
 # is still load-bearing rather than dead code.
-if rendered_next="$("$renderer" 2>/dev/null)"; then
-  ROOT="$root" RENDERED="$rendered_next" python3 - <<'PY'
+#
+# The rendered log travels through a file, never through a variable handed to
+# execve. A single argv or environment string is capped at MAX_ARG_STRLEN — a
+# fixed 128 KiB, unrelated to the far larger ARG_MAX that a check would read —
+# so an adopter whose unreleased NEXT/ crossed that line died here with a bare
+# "Argument list too long" and exit 126, naming neither the changelog nor the
+# fragment count (#398). NEXT/ is per-change and never batched, so it grows past
+# 128 KiB in the ordinary course of a busy release cycle; releasing consumes it,
+# but the release path runs this suite, so the failure gated its own remedy.
+if "$renderer" >"$work/rendered" 2>/dev/null; then
+  ROOT="$root" RENDERED_PATH="$work/rendered" python3 - <<'PY'
 import os
 import re
 import sys
 from pathlib import Path
 
 root = Path(os.environ["ROOT"])
-rendered = os.environ["RENDERED"]
+rendered = Path(os.environ["RENDERED_PATH"]).read_text(encoding="utf-8")
 # 0000-archive.md is special-cased by name and is not rendered in strict mode.
 skip = {"README.md", "0000-archive.md"}
 fragments = sorted(p for p in (root / "NEXT").glob("*.md") if p.name not in skip)

@@ -163,6 +163,38 @@ releases are **accepted as-is**. `browser-agent`, `identity-contracts` and
 a faithful record of how semantic-release cut them, and migration step 2's "never
 infer or rewrite historical attribution" governs.
 
+## Amendment (2026-08-05) — the rendered log travels as a file, not as an argument (#398)
+
+The generated contract test handed the rendered `NEXT/` to `python3` as an
+environment string. `execve` caps a single argv or environment string at
+`MAX_ARG_STRLEN` — a fixed 128 KiB, and not the `ARG_MAX` that a size check
+reads (2 MiB here), which is why the ceiling looked far away. Past it the suite
+died with a bare `Argument list too long` and exit 126, naming neither the
+changelog nor the fragment count.
+
+This is a defect in the contract rather than in any adopter. Nothing bounds an
+unreleased `NEXT/`: fragments are per-change and deliberately never batched, and
+only a release consumes them, so volume is a function of release cadence.
+`Verjson/verjson-ai` crossed it at 131,936 bytes during one delivery run
+(`Verjson/verjson-ai#162`), and a repository with a long gap between releases
+reaches it in the ordinary course of work. The failure also gated its own remedy:
+a release drains `NEXT/`, but the release path runs this suite first, so the only
+fix was circular.
+
+The rendered log is now written to a file under the suite's scratch directory and
+its path passed instead of its content, which removes the ceiling rather than
+raising it. `scripts/changelog.py` was audited for the same shape and has none —
+it passes only short arguments to `git`, and the engine reads and writes
+fragments through the filesystem.
+
+The regression test is a fixture adopter whose `NEXT/` renders to ~160 KB. It
+asserts the rendered size exceeds 128 KiB before asserting the suite survives it,
+so the case cannot pass by quietly shrinking under the limit.
+
+Adopters pick this up by regenerating at a contract commit that includes it;
+there is no repository-local patch, since a locally edited contract test fails
+the pin check by design.
+
 ## Rollback
 
 Revert the reusable workflow and tooling adoption in consumers, then revert the

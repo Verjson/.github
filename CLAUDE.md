@@ -68,6 +68,7 @@ non-trivial or fanned-out work autonomously:
 - [#350](https://github.com/Verjson/.github/issues/350) — Branch-targeted workflows can reach repository-visible org secrets; checkout pinning alone is not a security boundary, so closure depends on #261/#265.
 - [#377](https://github.com/Verjson/.github/issues/377) — AI review can mistake the PR checkout for `main` and block a valid change as an already-merged duplicate.
 - [#393](https://github.com/Verjson/.github/issues/393) — `repo-hygiene.test.sh` reuses a fixture name, so its `docs/` edge case passes without exercising the behaviour, and leaks a newline-named directory into the repo root.
+- [#399](https://github.com/Verjson/.github/issues/399) — the generated contract test's render guard is fail-open: any renderer failure reports "no unreleased fragments" and exits 0.
 
 Prune an entry when its issue closes. This list loads into every session, so a
 closed entry costs context in each one and misreports the state of the work.

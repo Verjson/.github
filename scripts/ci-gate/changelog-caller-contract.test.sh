@@ -252,6 +252,46 @@ run_adopter "$tmproot/adopter-norelease" \
   && pass "emitted suite tolerates an adopter with no release workflow" \
   || fail "emitted suite requires a release workflow: $(tail -2 "$tmproot/run.out")"
 
+# An unreleased NEXT/ has no upper bound: fragments are per-change, never
+# batched, and only a release consumes them. Crossing 128 KiB of rendered output
+# — MAX_ARG_STRLEN, the per-string execve ceiling, not the far larger ARG_MAX —
+# killed the emitted suite with a bare "Argument list too long" and exit 126,
+# naming neither the changelog nor the fragment count. Nothing could be released
+# past it either, because the release path runs this suite (#398).
+oversize="$tmproot/adopter-oversize"
+build_adopter "$oversize"
+filler="$(head -c 20000 </dev/zero | tr '\0' x)"
+for day in 01 02 03 04 05 06 07 08; do
+  issue=$((100 + 10#$day))
+  cat >"$oversize/NEXT/2026-06-$day-issue-$issue-bulk.md" <<FRAGMENT
+---
+date: 2026-06-$day
+issue: $issue
+title: Bulk entry $day
+---
+
+$filler
+FRAGMENT
+done
+git -C "$oversize" add -A
+git -C "$oversize" commit -qm bulk
+
+# Asserted, not assumed: a fixture that quietly renders under the ceiling would
+# leave the case below passing for the wrong reason.
+rendered_bytes="$( (cd "$oversize" && ./scripts/render-next.sh) | wc -c )"
+[ "$rendered_bytes" -gt 131072 ] \
+  && pass "oversize fixture renders past MAX_ARG_STRLEN ($rendered_bytes bytes)" \
+  || fail "oversize fixture renders only $rendered_bytes bytes; the next check is vacuous"
+
+# Exit 0 alone is not enough. The render block is guarded, and its else branch
+# reports "no unreleased fragments" and exits 0 for *any* renderer failure — so a
+# ceiling that migrated into the renderer would leave this case green with the
+# render assertions never executed. Require the positive line.
+{ run_adopter "$oversize" \
+  && grep -q 'every unreleased fragment renders with its metadata linkage' "$tmproot/run.out"; } \
+  && pass "emitted suite survives a NEXT/ larger than MAX_ARG_STRLEN (#398)" \
+  || fail "emitted suite dies on or skips a large unreleased log: $(tail -2 "$tmproot/run.out")"
+
 # A suite that passes everywhere is worthless. Each case below breaks exactly one
 # invariant in a fresh adopter and requires a non-zero exit.
 reject_seq=0
