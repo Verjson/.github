@@ -49,7 +49,13 @@ name: AI review + auto-merge
 # pass only the model credentials needed for review. A caller that runs on its
 # OWN self-hosted fleet and has no `VERJSON_LANE_*` variables may add
 # `with.runner_labels`; a Verjson caller must omit it and let the lane variables
-# select the pool (#405, ADR 0041). They must install their own
+# select the pool (#405, ADR 0041, ADR 0057). MIND THE REF: `runner_labels` is
+# optional from the first release cut AFTER #405. The `@v1` tag pinned in the
+# example below still declares it `required: true`, so a caller that follows this
+# guidance against a `v1` that predates the release fails with
+# `Input runner_labels is required, but no value was supplied`. Either pin a ref
+# that contains #405 or keep passing the input until `v1` advances.
+# They must install their own
 # trusted merge workflow for auto-merge; this reusable never receives their
 # administrative credential from a PR event. Example caller:
 #
@@ -62,8 +68,10 @@ name: AI review + auto-merge
 #     gate:
 #       uses: Verjson/.github/.github/workflows/ai-review-merge.yml@v1
 #       secrets: inherit # model credentials only; never ORG_ADMIN_TOKEN
-#       # `with:` is optional — add runner_labels ONLY for an off-Verjson
-#       # self-hosted fleet: with: { runner_labels: '["self-hosted","general"]' }
+#       # `with:` is optional on a ref that contains #405 — add runner_labels
+#       # ONLY for an off-Verjson self-hosted fleet, or on a `v1` older than the
+#       # first release after #405, where it is still required:
+#       # with: { runner_labels: '["self-hosted","general"]' }
 #
 # Downstream copies must also omit any repository input and pin the target to
 # the repository where the workflow executes.

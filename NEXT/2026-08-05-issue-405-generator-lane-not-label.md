@@ -28,6 +28,12 @@ original justification (#130 — an omitted input queued the job forever on
 `self-hosted,gate`) expired when every chain gained the
 `VERJSON_LANE_FALLBACK || '["ubuntu-24.04"]'` tail.
 
+The consumer-facing comment in `ai-review-merge.yml` is qualified rather than
+left absolute: the example caller pins `@v1`, and `v1` still declares the input
+required until a release cuts after this, so a consumer that followed unqualified
+guidance would get `Input runner_labels is required, but no value was supplied`.
+The generated privileged caller pins `@main` and is unaffected.
+
 `privileged-merge-caller-contract.test.sh` asserts a generated caller contains no
 `self-hosted` literal, omits the input, and still forwards an explicit fleet;
 `runner-routing-policy.test.sh` now models `inputs.runner_labels` and evaluates
