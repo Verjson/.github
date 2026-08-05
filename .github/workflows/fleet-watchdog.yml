@@ -12,7 +12,7 @@ name: fleet watchdog
 # does NOT cover `ai-privileged-merge.yml`, which routes on
 # `VERJSON_LANE_PRIVILEGED`, and ADR 0053 is explicit that overflow is hosted
 # budget to be given back. `privileged_merge` is therefore the residual exposure
-# and the only thing this watchdog has ever preempted in production. ADR 0055
+# and the only thing this watchdog has ever preempted in production. ADR 0056
 # records why it is retained rather than retired (#341).
 #
 # Runs on the FAST LANE: this repository is public, so these minutes are free,

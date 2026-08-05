@@ -32,7 +32,7 @@
 # push/label/dispatch re-fires the gate. The cost of a false positive is one
 # re-run; the cost of a false negative is a frozen fleet.
 #
-# Disposition (ADR 0055, #341): retained rather than retired. ADR 0053's
+# Disposition (ADR 0056, #341): retained rather than retired. ADR 0053's
 # `VERJSON_RUNNER_OVERFLOW` moves `gate`/`dispatch-merge` off the pool, but it
 # does NOT cover `ai-privileged-merge.yml` (which routes on
 # `VERJSON_LANE_PRIVILEGED`), and it is explicitly a budget that will be given

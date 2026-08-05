@@ -6,7 +6,7 @@ title: Keep the fleet watchdog, retarget it at the poll job the overflow lane ca
 
 #341 proposed deleting the fleet watchdog; #342, #343 and #355 are defects inside it. The
 disposition is **keep and fix**, recorded in
-[ADR 0055](docs/decisions/0055-fleet-watchdog-retained-and-retargeted/README.md).
+[ADR 0056](docs/decisions/0056-fleet-watchdog-retained-and-retargeted/README.md).
 
 Evidence: across 27 scheduled runs (2026-08-03..05) the watchdog reached a saturated pool
 with queued work five times. Once it preempted 4 of 4 candidates and cleared a jam with 35
