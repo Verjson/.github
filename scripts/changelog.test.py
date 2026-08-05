@@ -142,15 +142,63 @@ class ChangelogContractTests(unittest.TestCase):
     # A title that merely opens and closes with a quote character is not a
     # quoted scalar. Stripping by position rather than by structure would eat
     # real characters and silently corrupt the heading.
-    def test_title_that_only_begins_and_ends_with_quotes_is_left_alone(self) -> None:
-        fragment(self.root, "2026-07-30-issue-249-pair.md", title='"a" and "b"')
-        rendered = changelog.render(list(changelog.fragments(self.root)))
-        self.assertIn('## "a" and "b"\n', rendered)
+    # The parser leaves this shape alone rather than corrupting it, and
+    # `validate` then refuses it: a snapshot is immutable, so ambiguous quoting
+    # has to fail while the fragment is still editable (#425).
+    def test_title_that_only_begins_and_ends_with_quotes_is_rejected(self) -> None:
+        path = fragment(self.root, "2026-07-30-issue-249-pair.md", title='"a" and "b"')
+        with self.assertRaises(changelog.ChangelogError) as caught:
+            changelog.load_canonical(path)
+        self.assertIn("not a single quoted scalar", str(caught.exception))
 
-    def test_lone_quote_inside_a_single_quoted_title_is_left_alone(self) -> None:
-        fragment(self.root, "2026-07-30-issue-249-lone.md", title="'a' or 'b'")
+    def test_lone_quote_inside_a_single_quoted_title_is_rejected(self) -> None:
+        path = fragment(self.root, "2026-07-30-issue-249-lone.md", title="'a' or 'b'")
+        with self.assertRaises(changelog.ChangelogError) as caught:
+            changelog.load_canonical(path)
+        self.assertIn("not a single quoted scalar", str(caught.exception))
+
+    def test_the_rejection_names_both_ways_out(self) -> None:
+        # The fix is not obvious from the symptom, so the error has to carry it.
+        path = fragment(self.root, "2026-07-30-issue-249-how.md", title="'a' or 'b'")
+        with self.assertRaises(changelog.ChangelogError) as caught:
+            changelog.load_canonical(path)
+        message = str(caught.exception)
+        self.assertIn("remove the outer pair", message)
+        self.assertIn("escape the interior", message)
+
+    # The rejection must not swallow titles that merely contain quotes, nor the
+    # correctly-quoted ones the parser already resolves — those are the spelling
+    # the contract wants, and failing them would re-invert the incentive #420
+    # fixed.
+    def test_a_title_with_interior_quotes_is_accepted(self) -> None:
+        fragment(self.root, "2026-07-30-issue-249-mid.md", title='Say "go" once')
         rendered = changelog.render(list(changelog.fragments(self.root)))
-        self.assertIn("## 'a' or 'b'\n", rendered)
+        self.assertIn('## Say "go" once\n', rendered)
+
+    def test_a_title_that_only_starts_with_a_quote_is_accepted(self) -> None:
+        # Both ends have to match for this to be quoting at all. Checking only
+        # the opening character would reject ordinary prose that happens to
+        # begin with a quoted word.
+        fragment(self.root, "2026-07-30-issue-249-open.md", title='"go" is the fix')
+        rendered = changelog.render(list(changelog.fragments(self.root)))
+        self.assertIn('## "go" is the fix\n', rendered)
+
+    def test_a_title_that_only_ends_with_a_quote_is_accepted(self) -> None:
+        fragment(self.root, "2026-07-30-issue-249-close.md", title='the fix is "go"')
+        rendered = changelog.render(list(changelog.fragments(self.root)))
+        self.assertIn('## the fix is "go"\n', rendered)
+
+    def test_a_correctly_quoted_title_is_still_accepted(self) -> None:
+        fragment(self.root, "2026-07-30-issue-249-ok.md", title="'Fix: the thing'")
+        rendered = changelog.render(list(changelog.fragments(self.root)))
+        self.assertIn("## Fix: the thing\n", rendered)
+
+    def test_a_title_that_resolves_to_quotes_is_accepted(self) -> None:
+        # `'''a'''` is a valid scalar denoting `'a'`. The author said what they
+        # meant, so the result keeping its quotes is not ambiguity.
+        fragment(self.root, "2026-07-30-issue-249-nest.md", title="'''a'''")
+        rendered = changelog.render(list(changelog.fragments(self.root)))
+        self.assertIn("## 'a'\n", rendered)
 
     # Quoting is legal on every scalar, not just the one that exposed the bug.
     # A quoted identity used to reach `int()` with its quotes still attached.
