@@ -11,6 +11,7 @@ Reverse-chronological index of org-level decisions.
 <!-- BEGIN ADR INDEX -->
 | # | Date | Decision |
 |---|------|----------|
+| [0053](0053-overflow-lane-for-polling-gate-jobs/README.md) | 2026-08-05 | One reversible overflow lane for jobs that poll the pool they wait on |
 | [0052](0052-release-push-token-satisfies-branch-rules/README.md) | 2026-08-04 | The changelog release push needs a credential the branch ruleset bypasses |
 | [0051](0051-ai-review-pr-head-evidence-boundary/README.md) | 2026-08-03 | AI review does not infer base state from the PR checkout |
 | [0050](0050-actionlint-fast-lane-for-public-targets/README.md) | 2026-08-03 | actionlint takes the fast lane on public targets |
