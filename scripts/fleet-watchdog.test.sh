@@ -262,7 +262,22 @@ run_watchdog >/dev/null
   && pass "a hosted gate is not a candidate — cancelling it frees no self-hosted runner" \
   || { fail "a hosted job was selected; cancelling it cannot clear a self-hosted jam"; sed 's/^/diag - /' "$tmp/out.txt"; }
 
+# `self-hosted` alone is not the pool. The org also runs `hostinger`
+# (`self-hosted,Linux,X64,manish`), so a job can hold a self-hosted runner and
+# still free nothing when the `general` pool is the one that is jammed —
+# cancelling it destroys someone else's merge for no capacity. Each half of the
+# two-label guard needs its own fixture: the hosted case above fails BOTH
+# checks, so it cannot tell which one is doing the work.
+other_pool_job() { # $1 = started_at — self-hosted, but a DIFFERENT pool
+  printf '{"jobs":[{"status":"in_progress","started_at":"%s","labels":["self-hosted","manish"]}]}\n' "$1"
+}
 printf '{"workflow_runs":[{"id":1,"name":"AI privileged merge"}]}\n' >"$INPROGRESS_FILE"
+other_pool_job "$old_iso" >"$JOBS_FILE"
+run_watchdog >/dev/null
+{ ! cancelled && grep -q 'stale_poll_jobs=0' "$tmp/out.txt"; } \
+  && pass "a self-hosted job in a different pool is not a candidate — it frees no runner here" \
+  || { fail "a job on another self-hosted pool was selected; cancelling it cannot clear this pool's jam"; sed 's/^/diag - /' "$tmp/out.txt"; }
+
 poll_job "$old_iso" >"$JOBS_FILE"
 
 # --- starvation has to be starvation OF THIS POOL ---------------------------
@@ -274,6 +289,15 @@ run_watchdog >/dev/null
 { ! cancelled && grep -q 'queued_runs=0' "$tmp/out.txt"; } \
   && pass "a run queued for hosted capacity is not work starved by this pool" \
   || { fail "a hosted queue was read as starvation of the self-hosted pool"; sed 's/^/diag - /' "$tmp/out.txt"; }
+
+# ...and the same for the other half of the label pair: work queued for another
+# self-hosted pool is not waiting on this one either, so it is not the evidence
+# that authorises a cancel.
+printf '{"jobs":[{"status":"queued","labels":["self-hosted","manish"]}]}\n' >"$QUEUED_JOBS_FILE"
+run_watchdog >/dev/null
+{ ! cancelled && grep -q 'queued_runs=0' "$tmp/out.txt"; } \
+  && pass "a run queued for a different self-hosted pool is not starvation of this one" \
+  || { fail "another pool's queue was read as starvation of this pool"; sed 's/^/diag - /' "$tmp/out.txt"; }
 queued_pool_job >"$QUEUED_JOBS_FILE"
 
 # --- the two selection rules carry different evidence, so they arm apart -----

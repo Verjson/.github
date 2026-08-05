@@ -28,6 +28,12 @@ the pool, but not `ai-privileged-merge.yml`, which routes on `VERJSON_LANE_PRIVI
   for the model review. A candidate's `.labels` must now carry both `self-hosted` and the
   pool label. Same class at the precondition: a queued run counts as starved work only when
   one of its own `queued` jobs asks for this pool, instead of every queued run in the org.
+  Each half of that label pair is pinned by its own fixture. The hosted job that first
+  covered this fails **both** checks at once, so either `index($pool)` could have been
+  deleted with the suite fully green; the org runs a second self-hosted pool (`hostinger` is
+  `self-hosted,Linux,X64,manish`), whose jobs hold a runner this watchdog cannot free and
+  whose queue is not evidence that this pool is starved. Both new fixtures kill their
+  mutation.
 - **#342** — `scripts/fleet-watchdog.sh` carries no default for `WATCHDOG_DRY_RUN`; unset or
   unparseable is a fault, never an implicit licence to cancel. The two selection rules now
   arm separately, because they carry different evidence: `WATCHDOG_DRY_RUN` defaults to
