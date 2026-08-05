@@ -5,6 +5,15 @@ set -uo pipefail
 
 root="$(cd "$(dirname "$0")/../.." && pwd)"
 workflows="$root/.github/workflows"
+# Both suffixes. Every sweep below used to glob `*.yml` alone, so a workflow
+# named `.yaml` — which GitHub runs identically — evaded all of them (#401 review).
+shopt -s nullglob
+workflow_files=("$workflows"/*.yml "$workflows"/*.yaml)
+shopt -u nullglob
+# An empty array would make every `grep … "${workflow_files[@]}"` below read
+# STDIN and hang forever instead of failing — a sweep that scans nothing must
+# not look like a sweep that found nothing.
+[ "${#workflow_files[@]}" -gt 0 ] || { echo "FAIL - no workflow files found under $workflows"; exit 1; }
 fails=0
 pass() { printf 'ok   - %s\n' "$1"; }
 fail() { printf 'FAIL - %s\n' "$1"; fails=$((fails + 1)); }
@@ -14,7 +23,7 @@ fail() { printf 'FAIL - %s\n' "$1"; fails=$((fails + 1)); }
 # expressions in reusable definitions.
 literal_hosted="$(
   grep -HnE '^    runs-on:[[:space:]]+(\[)?ubuntu-(24\.04|latest)([][:space:],]|$)' \
-    "$workflows"/*.yml || true
+    "${workflow_files[@]}" || true
 )"
 [ -z "$literal_hosted" ] \
   && pass "Verjson-local jobs contain no literal GitHub-hosted runs-on selector" \
@@ -47,12 +56,13 @@ literal_hosted="$(
 #    Verjson fleet label, which put a fleet rename inside a file that every
 #    consumer would have had to edit (#401).
 unsafe_portable="$(
-  grep -HnE "^    runs-on:.*ubuntu-(24\\.04|latest)" "$workflows"/*.yml \
+  grep -HnE "^    runs-on:.*ubuntu-(24\\.04|latest)" "${workflow_files[@]}" \
     | grep -v "github.repository_owner != 'Verjson' && 'ubuntu-24.04'" \
     | grep -v "github.repository_owner == 'Verjson'.*|| 'ubuntu-24.04'" \
     | grep -v "inputs.github-hosted-runner" \
     | grep -v "vars.VERJSON_RUNNER_FASTLANE" \
-    | grep -v "vars.VERJSON_LANE_FALLBACK || '\\[\"ubuntu-24.04\"\\]'" \
+    | sed "s/vars\.VERJSON_LANE_FALLBACK || '\\[\"ubuntu-24\.04\"\\]'//" \
+    | grep -E "ubuntu-(24\\.04|latest)" \
     || true
 )"
 
@@ -62,7 +72,7 @@ unsafe_portable="$(
 # lane variables unplaceable — the queue-forever failure, one level up from the
 # literal labels this replaced.
 lane_without_fallback="$(
-  grep -HnE "^    runs-on:.*vars\\.VERJSON_LANE_(TRUSTED|UNTRUSTED|PRIVILEGED)" "$workflows"/*.yml \
+  grep -HnE "^    runs-on:.*vars\\.VERJSON_LANE_(TRUSTED|UNTRUSTED|PRIVILEGED)" "${workflow_files[@]}" \
     | grep -v "vars.VERJSON_LANE_FALLBACK" || true
 )"
 [ -z "$lane_without_fallback" ] \
@@ -72,8 +82,11 @@ lane_without_fallback="$(
 # No `runs-on` may name a fleet label. The lane variables exist so that a relabel,
 # a provider move, or a pool rename is an org-variable edit — never a pull request
 # in this repository, and never one in each of ~90 consumers (ADR 0041).
+# Keyed on the LITERAL ARRAY, not on the word `self-hosted`: `runs-on: [general]`
+# is just as unplaceable after a relabel, and keying on the word let it through
+# (#401 review). Hosted literals are caught separately by `literal_hosted`.
 fleet_label="$(
-  grep -HnE "^    runs-on:.*self-hosted" "$workflows"/*.yml || true
+  grep -HnE "^    runs-on:[[:space:]]*\[" "${workflow_files[@]}" || true
 )"
 [ -z "$fleet_label" ] \
   && pass "no runs-on names a fleet label; lanes are selected by intent" \
@@ -82,7 +95,7 @@ fleet_label="$(
 # The fast lane must keep a fallback: a bare `fromJSON(vars.X)` with no `||`
 # breaks every consumer the moment the variable is unset.
 fastlane_no_fallback="$(
-  grep -HnE "^    runs-on:.*VERJSON_RUNNER_FASTLANE" "$workflows"/*.yml \
+  grep -HnE "^    runs-on:.*VERJSON_RUNNER_FASTLANE" "${workflow_files[@]}" \
     | grep -v "VERJSON_RUNNER_FASTLANE ||" || true
 )"
 [ -z "$fastlane_no_fallback" ] \
@@ -137,12 +150,14 @@ for local_workflow in \
   fi
 done
 
-# Inverted deliberately: asserting "no line says [self-hosted, general]" would
-# stay green if a second job were appended on any other literal. Every `runs-on:`
-# in the monitor has to be the fast-lane selector.
+# Inverted AND pinned to the whole line. "No line says [self-hosted, general]"
+# would stay green if a second job were appended on any other literal; a prefix
+# match on `fromJSON(vars.VERJSON_RUNNER_FASTLANE` would stay green if the
+# selector were tidied into the chained form actions-ci.yml uses, which ends at
+# the general pool — putting the monitor back inside what it watches (#401 review).
 off_fastlane="$(
   grep -E '^    runs-on:' "$workflows/runner-admission-reconcile.yml" \
-    | grep -vF 'runs-on: ${{ fromJSON(vars.VERJSON_RUNNER_FASTLANE' \
+    | grep -vF "runs-on: \${{ fromJSON(vars.VERJSON_RUNNER_FASTLANE || '[\"ubuntu-24.04\"]') }}" \
     || true
 )"
 if [ -n "$off_fastlane" ]; then
@@ -603,7 +618,7 @@ grep -qF "$control_label" "$workflows/actionlint.yml" \
   || fail "actionlint.yml's undeclared-runner negative control is missing — nothing proves the policy rejects unknown labels"
 
 undeclared=""
-for f in "$workflows"/*.yml "$root"/.github/actions/*/README.md "$root"/.github/actions/*/action.yml; do
+for f in "${workflow_files[@]}" "$root"/.github/actions/*/README.md "$root"/.github/actions/*/action.yml; do
   [ -f "$f" ] || continue
   # The exemption is scoped to the file that owns the fixture. Repo-wide, it
   # would silently excuse a genuine `runs-on: [self-hosted, retired-runner-label]`
@@ -629,6 +644,21 @@ done
 [ -z "$undeclared" ] \
   && pass "every self-hosted label in a bracketed selector — workflows and action docs — is declared" \
   || fail "workflow(s) name a runner label absent from .github/actionlint.yaml:"$'\n'"$undeclared"
+
+# The declared set is BOUNDED, not just a superset of what is used. Undeclaring
+# `gce`/`GCP`/`gate`/`meta`/`isolated` is the whole detection mechanism — a
+# consumer naming one gets a lint failure instead of a job that queues forever —
+# and re-adding one passed every other assertion in this suite (#401 review).
+# Adding a label here is therefore a reviewed edit to this list, which is the
+# point: it should cost a pull request, because it silences a detector.
+declared_labels="$(
+  awk '/^self-hosted-runner:/{f=1;next} f&&/^[a-z]/{f=0} f&&/^ *- /{sub(/#.*/,"");gsub(/[ \t-]/,"");if($0!="")print}' \
+    "$root/.github/actionlint.yaml" | sort
+)"
+expected_labels="$(printf '%s\n' general | sort)"
+[ "$declared_labels" = "$expected_labels" ] \
+  && pass "the declared runner-label set is exactly the lanes the fleet serves" \
+  || fail "declared runner labels drifted from the bounded set:"$'\n'"got: $(printf '%s' "$declared_labels" | tr '\n' ' ')"$'\n'"want: $(printf '%s' "$expected_labels" | tr '\n' ' ')"
 
 if [ "$fails" -eq 0 ]; then
   echo "All tests passed."

@@ -204,6 +204,16 @@ jobs:
         run: bash scripts/fleet-watchdog.test.sh
       - name: Privileged scheduled workflows use immutable default-branch code (#350, #387)
         run: python3 scripts/ci-gate/privileged-scheduled-workflows.test.py
+      # Wired late: these four existed but ran nowhere, so the lane migration
+      # broke rework-reconcile-trigger's routing assertion and CI stayed green
+      # over it. A test that is not wired does not run — the same gap that once
+      # left hold.test.sh's pin dormant (#401 review).
+      - name: CI telemetry — rework reconcile trigger, classification, aggregation, report
+        run: |
+          bash scripts/ci-telemetry/rework-reconcile-trigger.test.sh
+          bash scripts/ci-telemetry/rework-classify.test.sh
+          bash scripts/ci-telemetry/rework-aggregate.test.sh
+          bash scripts/ci-telemetry/rework-report.test.sh
       - name: Repository hygiene — README policy, exemption register, audit default (#232, ADR 0046)
         run: bash scripts/repo-hygiene.test.sh
       - name: Repository hygiene — immutable merged policy ref (#351, ADR 0046)

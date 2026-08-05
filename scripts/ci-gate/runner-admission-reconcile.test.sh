@@ -40,8 +40,15 @@ for id in 4 6; do
   fi
 done
 case "$path" in
-  */actions/variables/VERJSON_RUNNER_DEFAULT) printf '%s\n' "$DEFAULT_VAR" ;;
-  */actions/variables/VERJSON_RUNNER_UNTRUSTED) printf '%s\n' "$UNTRUSTED_VAR" ;;
+  # The LANE variables are what every `runs-on:` resolves, so they are what the
+  # reconciler reads. The RUNNER pair is still served because it is still set
+  # org-wide for consumers pinned to a pre-migration SHA, and divergence between
+  # the two is itself reported as drift.
+  */actions/variables/VERJSON_LANE_TRUSTED) printf '%s\n' "$DEFAULT_VAR" ;;
+  */actions/variables/VERJSON_LANE_UNTRUSTED) printf '%s\n' "$UNTRUSTED_VAR" ;;
+  */actions/variables/VERJSON_LANE_FALLBACK) printf '%s\n' "$FALLBACK_VAR" ;;
+  */actions/variables/VERJSON_RUNNER_DEFAULT) printf '%s\n' "$LEGACY_DEFAULT_VAR" ;;
+  */actions/variables/VERJSON_RUNNER_UNTRUSTED) printf '%s\n' "$LEGACY_UNTRUSTED_VAR" ;;
   # Both ids serve the default group's runners, so a test can move the default
   # group off id 1 and prove resolution follows `.default`, not a pinned id.
   */runner-groups/1/runners*|*/runner-groups/9/runners*) printf '%s\n' "$G1_RUNNERS" ;;
@@ -70,6 +77,13 @@ chmod +x "$tmp/bin/gh"
 export PATH="$tmp/bin:$PATH"
 
 export DEFAULT_VAR='{"value":"[\"self-hosted\",\"general\"]","visibility":"all"}'
+# Unset by default: the lane variables above resolve, so the fallback term is
+# never reached. A case that empties one of them exercises the fall-through.
+export FALLBACK_VAR=''
+# The retired pair, still set org-wide during the migration. Kept equal to the
+# lanes here so the divergence case below is the only one that reports it.
+export LEGACY_DEFAULT_VAR='{"value":"[\"self-hosted\",\"general\"]","visibility":"all"}'
+export LEGACY_UNTRUSTED_VAR='{"value":"[\"self-hosted\",\"general\"]","visibility":"all"}'
 export UNTRUSTED_VAR='{"value":"[\"self-hosted\",\"general\"]","visibility":"all"}'
 # GitHub's own default group. A custom group cannot be made default (ADR 0003),
 # so this one is always present in a real org — which is why its ABSENCE below
@@ -154,6 +168,10 @@ FAIL_PATH='/actions/variables/VERJSON_RUNNER_DEFAULT'
   || fail "API failure did not return exit 2"
 
 FAIL_PATH=''
+# Migration complete: the retired pair is gone, so these cases exercise lane
+# resolution alone rather than also tripping the divergence report below.
+LEGACY_DEFAULT_VAR=''
+LEGACY_UNTRUSTED_VAR=''
 DEFAULT_VAR='{"value":"[\"self-hosted\",\"lane-general\"]","visibility":"all"}'
 UNTRUSTED_VAR='{"value":"[\"self-hosted\",\"lane-untrusted\"]","visibility":"all"}'
 G6_GROUP='{"id":6,"name":"isolated","visibility":"all","allows_public_repositories":true}'
@@ -238,6 +256,10 @@ FAIL_PATH='/actions/runner-groups'
   || fail "group listing failure did not return exit 2"
 
 FAIL_PATH=''
+# Migration complete: the retired pair is gone, so these cases exercise lane
+# resolution alone rather than also tripping the divergence report below.
+LEGACY_DEFAULT_VAR=''
+LEGACY_UNTRUSTED_VAR=''
 DEFAULT_VAR='{"value":"[\"self-hosted\",\"lane-general\"]","visibility":"all"}'
 UNTRUSTED_VAR='{"value":"[\"self-hosted\",\"lane-untrusted\"]","visibility":"all"}'
 
@@ -458,6 +480,33 @@ export G1_GROUP=''
   && pass "a listing with no default group is undetermined" \
   || fail "missing default group did not fail closed: $(code_of)"
 export G1_GROUP='{"id":1,"name":"GitHub","visibility":"all","allows_public_repositories":true,"default":true}'
+
+# The migration's own hazard: the retired pair stays set for consumers pinned to
+# a pre-migration SHA, so a lane edit that leaves it behind sends those consumers
+# somewhere this run never examined. Silence there is what made #401 invisible.
+DEFAULT_VAR='{"value":"[\"self-hosted\",\"general\"]","visibility":"all"}'
+UNTRUSTED_VAR='{"value":"[\"self-hosted\",\"general\"]","visibility":"all"}'
+LEGACY_DEFAULT_VAR='{"value":"[\"self-hosted\",\"gone\"]","visibility":"all"}'
+LEGACY_UNTRUSTED_VAR='{"value":"[\"self-hosted\",\"general\"]","visibility":"all"}'
+out="$(run_case)"
+[ "$(code_of)" = "1" ] \
+  && grep -qF 'VERJSON_RUNNER_DEFAULT' <<<"$out" \
+  && pass "a retired variable that has drifted from its lane is reported" \
+  || fail "legacy/lane divergence was not reported: $out"
+LEGACY_DEFAULT_VAR='{"value":"[\"self-hosted\",\"general\"]","visibility":"all"}'
+
+# A lane pointed at hosted capacity has no runner group and no self-hosted
+# runners; asking for either would report permanent drift against a deliberate
+# configuration — the shape a provider outage would force.
+DEFAULT_VAR='{"value":"[\"ubuntu-24.04\"]","visibility":"all"}'
+UNTRUSTED_VAR='{"value":"[\"ubuntu-24.04\"]","visibility":"all"}'
+LEGACY_DEFAULT_VAR=''
+LEGACY_UNTRUSTED_VAR=''
+out="$(run_case)"
+[ "$(code_of)" = "0" ] \
+  && grep -qF 'No drift' <<<"$out" \
+  && pass "a hosted lane reconciles clean instead of demanding a runner group" \
+  || fail "hosted lane did not reconcile: $out"
 
 if [ "$fails" -eq 0 ]; then
   echo "All tests passed."

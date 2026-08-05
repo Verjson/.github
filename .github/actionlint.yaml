@@ -18,6 +18,9 @@
 # that silence into a lint failure naming the file and line, which is how the
 # #203 long tail gets found rather than waited on.
 #
+#   - `pwsh` is omitted although 8 runners carry it: no workflow routes on it, and
+#     this list is what a workflow may SELECT, not an inventory of the fleet.
+#     Declaring it would be the same defect as the dead labels, inverted.
 #   - `docker`/`manish` are omitted as before: no Verjson workflow targets them.
 #     `docker` is not a real lane at all (ADR 0040); `manish` is a real pool that
 #     a repo using it declares in its own config.
@@ -28,7 +31,6 @@
 self-hosted-runner:
   labels:
     - general # provider-neutral persistent pool (DigitalOcean group)
-    - pwsh  # PowerShell-capable subset of that pool (8 of 10 runners today)
 
 # GitHub Cloud exposes these workflow-identity properties for reusable jobs so
 # they can check out files co-located with the called workflow. actionlint 1.7.7
