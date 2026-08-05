@@ -221,6 +221,37 @@ doing while this proceeds; ADR 0056 stands until step 6.
   `ai-privileged-merge.yml` entirely. The bypass list (`OrganizationAdmin`,
   `Integration 2740`) is unchanged by this ADR — no new privilege is granted.
 
+### Open question: which actor satisfies the approval rule
+
+The `pull_request` rule requires `required_approving_review_count: 1`. **Today
+that requirement is not satisfied — it is bypassed.** PR #408 carried zero
+reviews while its gate ran to success, and the merge path is
+`Integration 2740` / `OrganizationAdmin` with `bypass_mode: always`.
+
+`require_code_owner_review: true` is currently vacuous: the repository has no
+`CODEOWNERS` file, so no path has an owner. That is worth knowing before anyone
+adds one, because adding `CODEOWNERS` would silently make code-owner approval a
+real precondition for every auto-merge.
+
+Two candidate paths, and this ADR does not pick one because the choice must be
+verified empirically on a live PR rather than reasoned about:
+
+1. **Auto-merge enabled by the bypass actor.** Preserves today's behaviour
+   exactly — the approval rule is bypassed as it already is — and needs no new
+   privilege. It also means the review rule continues to enforce nothing, which
+   is honest only if stated.
+2. **The gate's review counts as the approval.** The gate already has a
+   "Submit deterministic PR review" step. If that review is attributed to an
+   actor that is not the PR author, it satisfies the rule without any bypass,
+   and the ruleset becomes load-bearing rather than decorative. This is the
+   better end state.
+
+**Verification before step 6:** open a throwaway PR, enable auto-merge as the
+intended actor, and confirm it merges with the required checks green and no
+manual `--admin`. Do not infer this from documentation; the interaction between
+bypass actors, `require_last_push_approval` and auto-merge is exactly the kind of
+thing that behaves differently than it reads.
+
 ## Consequences
 
 - No merge-gate job polls on any pool, which closes #341 structurally rather
