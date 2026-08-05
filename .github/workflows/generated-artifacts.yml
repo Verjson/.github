@@ -195,17 +195,35 @@ jobs:
                 preview="$(python3 "$engine" render-next "${args[@]}" --as-released 2>&1)" \
                   || preview_rc=$?
                 if [ "$preview_rc" -eq 0 ]; then
+                  # A job summary is capped, and a preview cut off mid-entry that
+                  # does not SAY it was cut off is worse than none: it reads as a
+                  # complete release note that is missing entries.
+                  preview_note=''
+                  if [ "${#preview}" -gt 65536 ]; then
+                    # Named the way every other remedy here is: the command this
+                    # job ran, at a path the consumer actually has. Under ADR
+                    # 0038 the engine exists only in the contract checkout.
+                    preview_note="$(printf \
+                      '\n\n_Truncated for the job summary. For the whole thing, run:_\n\n    %s render-next %s --as-released\n' \
+                      "$engine_cmd" "${shown[*]}")"
+                  fi
                   {
                     printf '<details><summary>Release notes this would publish</summary>\n\n'
-                    printf '%s\n' "$preview" | head -c 65536
-                    printf '\n</details>\n'
+                    printf '%s' "$preview" | head -c 65536
+                    printf '%s\n\n</details>\n' "$preview_note"
                   } >>"${GITHUB_STEP_SUMMARY:-/dev/null}"
                   printf 'ok - release-note preview written to the job summary\n'
-                elif [ "$preview" = 'changelog: no unreleased fragments' ]; then
-                  printf 'ok - no unreleased fragments, so there is nothing to preview\n'
                 else
-                  printf '::warning title=Release-note preview unavailable::%s\n' \
-                    "The changelog check itself PASSED and this does not change that verdict. Engine Verjson/.github@$CONTRACT_REF said: $preview"
+                  case "$preview" in
+                    *'no unreleased fragments'*)
+                      printf 'ok - no unreleased fragments, so there is nothing to preview\n' ;;
+                    *)
+                      # An annotation shows one line, so a multi-line failure
+                      # (a traceback, an argparse usage block) would arrive with
+                      # its reason cut off. Collapsed rather than truncated.
+                      printf '::warning title=Release-note preview unavailable::%s\n' \
+                        "The changelog check itself PASSED and this does not change that verdict. Engine Verjson/.github@$CONTRACT_REF said: $(printf '%s' "$preview" | tr '\n' ' ' | cut -c1-400)" ;;
+                  esac
                 fi
               else
                 report 'Changelog' \

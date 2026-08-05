@@ -219,6 +219,30 @@ grep -q 'The lead paragraph, which is what a release note needs.' "$ws/summary.m
   && pass "the preview shows the RELEASED shape — lead kept, argument dropped" \
   || fail "the preview is not the released shape: $(cat "$ws/summary.md")"
 
+# A job summary is capped. A preview cut off mid-entry that does not say so
+# reads as a complete release note that is quietly missing entries.
+ws="$tmp/changelog-huge"
+make_changelog_repo "$ws"
+{
+  printf -- '---\ndate: 2026-08-05\nissue: 405\ntitle: Enormous\n---\n\n'
+  head -c 70000 /dev/zero | tr '\0' 'x'
+  printf '\n'
+} >"$ws/NEXT/2026-08-05-issue-405-enormous.md"
+out="$(run_validate "$ws" RUN_CHANGELOG=true CONTRACT_REF="$immutable_sha")"
+rc=$?
+[ "$rc" -eq 0 ] && grep -q 'Truncated for the job summary' "$ws/summary.md" \
+  && grep -q '</details>' "$ws/summary.md" \
+  && pass "an over-long preview says it was truncated and still closes its block" \
+  || fail "an over-long preview was silently cut (rc=$rc): $(head -c 300 "$ws/summary.md")"
+
+# The remedy has to be runnable where it is read. Under ADR 0038 no consumer
+# commits the engine, so naming `scripts/render-next.sh` sends every one of them
+# to "No such file or directory" — the same defect the failure remedies avoid.
+grep -qF 'python3 .changelog-contract/scripts/changelog.py render-next --repo-root . --as-released' \
+  "$ws/summary.md" \
+  && pass "the truncation note names the pinned contract engine, not a path consumers lack" \
+  || fail "the truncation note is not runnable by a consumer: $(grep -A2 Truncated "$ws/summary.md")"
+
 # --------------------------------------------------------------------------
 # A repository with nothing unreleased. `render-next` exits non-zero here by
 # design, and reporting that as a broken renderer would train consumers to
@@ -261,6 +285,24 @@ grep -q '::warning title=Release-note preview unavailable::' <<<"$out" \
   && grep -q 'unrecognized arguments' <<<"$out" \
   && pass "the unavailable preview is reported with the engine's own reason" \
   || fail "a failed preview was swallowed: $out"
+
+# An annotation shows one line. A multi-line failure — a traceback, an argparse
+# usage block — would otherwise arrive with its reason on lines nobody reads.
+ws="$tmp/changelog-noisy-engine"
+make_changelog_repo "$ws"
+cat >"$ws/.changelog-contract/scripts/changelog.py" <<'NOISY'
+import sys
+if "--as-released" in sys.argv:
+    sys.stderr.write("Traceback (most recent call last):\n  File x\nValueError: the real reason\n")
+    raise SystemExit(1)
+raise SystemExit(0)
+NOISY
+out="$(run_validate "$ws" RUN_CHANGELOG=true CONTRACT_REF="$immutable_sha")"
+rc=$?
+[ "$rc" -eq 0 ] \
+  && grep -q '::warning title=Release-note preview unavailable::.*ValueError: the real reason' <<<"$out" \
+  && pass "a multi-line preview failure is collapsed so the reason reaches the annotation" \
+  || fail "the preview failure reason did not survive onto one line (rc=$rc): $out"
 
 grep -q 'PASSED' <<<"$out" \
   && pass "the warning says the check itself passed, so it is not read as a failure" \
@@ -608,9 +650,10 @@ done
 # decided, and its exit status is bound to `preview_rc`, which nothing
 # verdict-bearing reads. Asserted here statically, and behaviourally by the
 # old-engine fixture above where the render fails and the check still passes.
-[ "$(grep -c 'render-next' "$validate")" -eq 1 ] \
+renders="$(grep -c '"\$engine" render-next' "$validate")"
+[ "$renders" -eq 1 ] \
   && pass "the renderer is invoked once, for the preview — not as a second validation pass" \
-  || fail "render-next appears $(grep -c 'render-next' "$validate") times in the validate script"
+  || fail "the engine is asked to render $renders times in the validate script"
 
 grep -E 'preview_rc' "$validate" | grep -qE 'changelog_ok|failures|report ' \
   && fail "the preview's exit status feeds the changelog verdict" \
