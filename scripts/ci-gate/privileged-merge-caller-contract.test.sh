@@ -70,7 +70,13 @@ d = yaml.safe_load(open(sys.argv[1]))
 sys.exit(0 if list(d["jobs"]) == ["privileged_merge"] else 1)
 PY
 
-python3 - "$canonical" <<'PY' && pass "canonical accepts workflow_call with required runner_labels" \
+# `runner_labels` is declared but OPTIONAL (#405). It was required under the
+# #130 rationale — a consumer org has no runner for Verjson's pool, so a missing
+# fleet had to fail the call instead of queueing forever. The `runs-on` chain now
+# ends at the portable hosted default (ADR 0040), so an omitted input lands
+# somewhere placeable, and requiring it forced every consumer to name a LABEL —
+# which is what put a fleet label in ~90 repositories the org cannot relabel.
+python3 - "$canonical" <<'PY' && pass "canonical accepts workflow_call with optional runner_labels" \
   || fail "canonical workflow_call contract drifted"
 import sys, yaml
 d = yaml.safe_load(open(sys.argv[1]))
@@ -80,12 +86,28 @@ if not wc: sys.exit(1)
 i = wc.get("inputs", {})
 need = {"pr_number", "expected_head_sha", "source_run_id", "runner_labels"}
 if not need <= set(i): sys.exit(1)
-sys.exit(0 if i["runner_labels"].get("required") is True else 1)
+sys.exit(0 if i["runner_labels"].get("required") is False else 1)
+PY
+
+# The input must survive as an input. Dropping it would strand a genuinely
+# self-hosted consumer OUTSIDE Verjson, which has no lane variables to fall
+# through to — the reason #405 makes it optional rather than deleting it.
+python3 - "$canonical" <<'PY' && pass "canonical still accepts runner_labels for an off-Verjson fleet" \
+  || fail "runner_labels was deleted — an external self-hosted consumer has no way to name its fleet"
+import sys, yaml
+d = yaml.safe_load(open(sys.argv[1]))
+on = d.get(True, d.get("on"))
+sys.exit(0 if "runner_labels" in on.get("workflow_call", {}).get("inputs", {}) else 1)
 PY
 
 # --- the generated caller honours both sides ---------------------------------
-bash "$gen" '["ubuntu-24.04"]' >"$tmp/caller.yml" 2>/dev/null \
-  && pass "generator emits a caller" || fail "generator failed"
+# The DEFAULT invocation takes no argument. Everything below reads this file,
+# because it is the shape ~90 Verjson consumers receive; the explicit-label
+# variant is asserted separately.
+bash "$gen" >"$tmp/caller.yml" 2>/dev/null \
+  && pass "generator emits a caller with no arguments" || fail "generator requires a runner_labels argument (#405)"
+bash "$gen" '["ubuntu-24.04"]' >"$tmp/caller-labels.yml" 2>/dev/null \
+  && pass "generator still emits a caller for an explicit fleet" || fail "generator failed with explicit labels"
 
 python3 - "$tmp/caller.yml" <<'PY' && pass "generated caller's job key is privileged_merge" \
   || fail "generated caller job key is not privileged_merge — deadlocks the gate"
@@ -109,15 +131,45 @@ TARGET_PY
 
 # What the caller PASSES, not merely that it calls something. Each of the
 # following slipped through mutation testing of the previous version.
-python3 - "$tmp/caller.yml" <<'WITH_PY' && pass "generated caller forwards all four inputs, head SHA bound to the event" \
+python3 - "$tmp/caller.yml" <<'WITH_PY' && pass "generated caller forwards the three event inputs, head SHA bound to the event" \
   || fail "generated caller's with: block is incomplete or lost its event binding"
 import sys, yaml
 d = yaml.safe_load(open(sys.argv[1]))
 w = d["jobs"]["privileged_merge"].get("with", {})
-if set(w) != {"pr_number", "expected_head_sha", "source_run_id", "runner_labels"}:
+if set(w) != {"pr_number", "expected_head_sha", "source_run_id"}:
     sys.exit(1)
 sys.exit(0 if "github.event.pull_request.head.sha ||" in str(w["expected_head_sha"]) else 1)
 WITH_PY
+
+# --- no fleet label reaches a consumer (#405) --------------------------------
+# The defect this pins: the generator baked `["self-hosted","general"]` into
+# every caller it produced, so a fleet relabel needed a pull request in each
+# consumer — the exact coupling the lane variables removed from this repository
+# (ADR 0041). Textual on the WHOLE file, not structural on `with:`: the literal
+# is just as harmful in the regenerate-command comment an operator copies.
+#
+# actionlint cannot see this class at all. Its undeclared-label check inspects
+# `runs-on` ARRAYS; a label inside a string input is invisible to it.
+grep -qF 'self-hosted' "$tmp/caller.yml" \
+  && fail "generated caller contains a self-hosted fleet label — a relabel would need a PR in every consumer (#405)" \
+  || pass "generated caller names no fleet label"
+
+python3 - "$tmp/caller.yml" <<'NO_LABELS_PY' && pass "generated caller omits runner_labels, so Verjson consumers route by lane" \
+  || fail "generated caller still passes runner_labels — it pins the fleet the lane variables are meant to select"
+import sys, yaml
+d = yaml.safe_load(open(sys.argv[1]))
+sys.exit(0 if "runner_labels" not in d["jobs"]["privileged_merge"].get("with", {}) else 1)
+NO_LABELS_PY
+
+# The escape hatch still works: a self-hosted consumer outside Verjson has no
+# lane variables, so it must still be able to name its own fleet.
+python3 - "$tmp/caller-labels.yml" <<'LABELS_PY' && pass "an explicit fleet is still forwarded verbatim" \
+  || fail "generator dropped the runner_labels passthrough an off-Verjson fleet depends on"
+import sys, yaml
+d = yaml.safe_load(open(sys.argv[1]))
+w = d["jobs"]["privileged_merge"].get("with", {})
+sys.exit(0 if w.get("runner_labels") == '["ubuntu-24.04"]' else 1)
+LABELS_PY
 
 python3 - "$tmp/caller.yml" <<'SECRETS_PY' && pass "generated caller grants only ORG_ADMIN_TOKEN, not its whole store" \
   || fail "generated caller uses secrets: inherit or omits the explicit grant"
@@ -182,6 +234,30 @@ bash "$gen" 'not-json' >/dev/null 2>&1 && fail "generator accepted non-JSON runn
   || pass "generator rejects non-JSON runner_labels"
 bash "$gen" '[]' >/dev/null 2>&1 && fail "generator accepted empty runner_labels" \
   || pass "generator rejects empty runner_labels"
+# Charset, not just JSON shape: a label carrying an expression would expand a
+# secret into a workflow input, and a quote emits YAML GitHub cannot parse.
+bash "$gen" '["${{ secrets.ORG_ADMIN_TOKEN }}"]' >/dev/null 2>&1 \
+  && fail "generator accepted an expression as a runner label" \
+  || pass "generator rejects a runner label outside [A-Za-z0-9._-]"
+
+# An UNSET shell variable is the common way an operator reaches the default:
+# `gen "$LABELS"` passes an empty argument, which must produce the lane-routed
+# caller rather than a diagnostic — or `runner_labels: ''`, which is a supplied
+# empty string and not the same thing as omitting the input.
+bash "$gen" '' >"$tmp/caller-empty.yml" 2>/dev/null \
+  && diff -q "$tmp/caller.yml" "$tmp/caller-empty.yml" >/dev/null \
+  && pass "an empty argument generates the same lane-routed caller as no argument" \
+  || fail "an empty runner_labels argument does not produce the default caller"
+
+# The regenerate command is copied by operators, so it is part of the contract:
+# it must reproduce the file it heads. A default caller whose comment carried a
+# label would put the hardcoded fleet back on the next regeneration.
+grep -qE "^#   scripts/gen-privileged-merge-caller\.sh > " "$tmp/caller.yml" \
+  && pass "the default caller's regenerate command takes no fleet argument" \
+  || fail "the default caller's regenerate command still passes runner_labels"
+grep -qF "gen-privileged-merge-caller.sh '[\"ubuntu-24.04\"]' >" "$tmp/caller-labels.yml" \
+  && pass "an explicit fleet is reproduced by the caller's own regenerate command" \
+  || fail "the explicit caller's regenerate command does not reproduce its fleet"
 
 if [ "$fails" -eq 0 ]; then echo "All tests passed."; exit 0; fi
 echo "$fails test(s) failed."

@@ -157,3 +157,8 @@ Both are pinned by `scripts/ci-gate/require-secrets.test.sh` and an extended
 `reusable-workflow.test.sh` (runner_labels-required assertion), wired into
 `actions-ci.yml`. See [#130](https://github.com/Verjson/.github/issues/130) and
 [#131](https://github.com/Verjson/.github/issues/131).
+
+> The `runner_labels` requirement in the 2026-07-23 amendment above is
+> superseded by
+> [ADR 0057](../0057-runner-labels-optional-lane-routed-callers/README.md) (#405).
+> The `require_secrets` step is untouched.

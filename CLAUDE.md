@@ -61,13 +61,11 @@ non-trivial or fanned-out work autonomously:
 - [#279](https://github.com/Verjson/.github/issues/279) — Attestation provenance: closed for the required-workflow shape (ADR 0044); open for the reusable-caller shape, which no repo uses yet.
 - [#292](https://github.com/Verjson/.github/issues/292) — Re-review skip never fires: `gh api user` cannot resolve an identity under `github.token`, so every head change re-pays for an unchanged diff.
 - [#312](https://github.com/Verjson/.github/issues/312) — `ref_is_immutable` accepts abbreviated SHAs; no test covers it.
-- [#340](https://github.com/Verjson/.github/issues/340) — `repo-hygiene.test.sh` commits to the repository it is run from; do not run it in a live checkout until fixed.
 - [#341](https://github.com/Verjson/.github/issues/341) — Watchdog kept, not retired (ADR 0056). Re-scope to "no merge-gate job polls on the shared pool": ADR 0053 covers `gate`, `ai-privileged-merge.yml` still routes on `VERJSON_LANE_PRIVILEGED`.
 - The watchdog is **disarmed** pending an operator setting `VERJSON_WATCHDOG_DRY_RUN=false` (ADR 0056); it reports `DRY RUN would cancel` until then.
-- [#350](https://github.com/Verjson/.github/issues/350) — Branch-targeted workflows can reach repository-visible org secrets; checkout pinning alone is not a security boundary, so closure depends on #261/#265.
-- [#377](https://github.com/Verjson/.github/issues/377) — AI review can mistake the PR checkout for `main` and block a valid change as an already-merged duplicate.
-- [#393](https://github.com/Verjson/.github/issues/393) — `repo-hygiene.test.sh` reuses a fixture name, so its `docs/` edge case passes without exercising the behaviour, and leaks a newline-named directory into the repo root.
 - [#399](https://github.com/Verjson/.github/issues/399) — the generated contract test's render guard is fail-open: any renderer failure reports "no unreleased fragments" and exits 0.
+- [#411](https://github.com/Verjson/.github/issues/411) — `dispatch-merge` ignores `runner_labels`, so a self-hosted-only caller outside Verjson lands it on hosted.
+- [#412](https://github.com/Verjson/.github/issues/412) — `changelog-validate.yml` accepts a mutable `contract_ref` and executes Python from it; ~90 repos call it.
 
 Prune an entry when its issue closes. This list loads into every session, so a
 closed entry costs context in each one and misreports the state of the work.
