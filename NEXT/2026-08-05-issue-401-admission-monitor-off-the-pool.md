@@ -15,10 +15,11 @@ wedged behind it: #400 sat with `gate` and `dispatch-merge` green and
 `runner-admission-reconcile` exists to catch exactly this, and models it
 correctly — its suite already had a passing *public repository denied by group is
 reported as drift* case. It could not report, because it ran on
-`[self-hosted, general]` itself. The 10:16 run never started; the last completed
-run was the previous morning's. A monitor that depends on the resource it
-monitors goes quiet in the one outage it was built for, so it now runs on the
-fast lane.
+`[self-hosted, general]` itself. Its 10:16 run did not start until 14:22:28,
+seconds after the group was opened, and then failed 11s later on the stale group
+name below — one run showing both defects in sequence. A monitor that depends on
+the resource it monitors goes quiet in the one outage it was built for, so it now
+runs on the fast lane.
 
 It was blind for a second reason. The `GCP` → `DigitalOcean` move renamed the
 group. Lane labels survive a rename because they come from `VERJSON_RUNNER_*` —
@@ -32,13 +33,29 @@ Verjson; present groups: GitHub, manish, DigitalOcean, verjson-runner-maintenanc
 
 That is #266 recurring by name rather than by id. `GENERAL_GROUP_NAME` now comes
 from `vars.VERJSON_RUNNER_GENERAL_GROUP` with a `DigitalOcean` fallback, and the
-fixtures use the shipped default so a stale default fails the suite rather than
-resolving nothing in production.
+fixtures use the shipped default so the two cannot be edited apart. That is not
+drift detection — a rename in the live org still passes the suite, because no
+static file can know the fleet; the reconciler's own runtime `UNDETERMINED` is
+the only detector, which is why moving it off the pool is the load-bearing half.
+`UNTRUSTED_GROUP_NAME` loses its default entirely rather than gaining a fresh
+one: it named `isolated`, a group deleted on 2026-07-31, so it now fails closed
+saying no group is configured instead of reporting a long-dead one as missing.
 
 `runner-admission-reconcile.yml` is deliberately removed from the routing
 contract that holds repository-local jobs on the general lane, with a dedicated
 assertion in its place so the monitor cannot be tidied back inside the thing it
 watches.
+
+The same fleet move also took `gce`, `GCP` and `gate` off the runners while
+workflows still selected them — steps 5 and 6 of the migration sequence in
+`docs/runner-routing.md` ran in the wrong order, which that document warns
+produces jobs that queue forever with no check run.
+`Verjson/verjson-identity-lifecycle`'s `generated-docs` job is sitting in exactly
+that state on `[self-hosted, GCP]`. Those labels are now undeclared in the
+organization-wide `.github/actionlint.yaml`, so naming one fails lint with a file
+and a line instead of hanging a pull request, and every repository-local
+`runs-on` here selects its lane through `vars.VERJSON_RUNNER_*` with a live-label
+fallback rather than a literal.
 
 The admission change itself is org configuration, not code: runner group
 `DigitalOcean` is now `visibility: all` with public repositories allowed, per the

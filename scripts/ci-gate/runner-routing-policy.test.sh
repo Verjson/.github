@@ -77,6 +77,16 @@ grep -qF 'vars.VERJSON_RUNNER_FASTLANE || vars.VERJSON_RUNNER_DEFAULT' "$workflo
   && pass "repository shell validation routes through the fast-lane variable with a general fallback" \
   || fail "actions-ci fast-lane routing drifted (ADR 0047)"
 
+# These used to be pinned to the literal `[self-hosted, general]`. A literal label
+# is a rename away from an unplaceable job, and GitHub does not fail an
+# unplaceable job — it queues it with no diagnostic. That is not hypothetical:
+# the fleet moved GCP→DigitalOcean and `Verjson/verjson-identity-lifecycle`'s
+# `generated-docs` job still asks for `[self-hosted, GCP]`, a label no runner
+# carries any more (#401). Repository-local jobs now select the lane the same way
+# every reusable workflow does — through the variable, with a fallback — so a
+# relabel is an org-variable flip rather than a pull request per workflow, which
+# is what ADR 0041 requires.
+#
 # runner-admission-reconcile.yml is deliberately absent from this list: it is the
 # one repository-local job that must NOT ride the general pool, because it is the
 # monitor for "a repository cannot reach its lane" (#401, ADR 0054). Its own
@@ -85,17 +95,28 @@ for local_workflow in \
   node-cache-integration.yml \
   rework-reconcile.yml \
   tag-major.yml; do
-  if grep -E '^    runs-on:' "$workflows/$local_workflow" \
-      | grep -qvF 'runs-on: [self-hosted, general]'; then
-    fail "$local_workflow contains a repository-local job outside the general lane"
+  off_lane="$(
+    grep -E '^    runs-on:' "$workflows/$local_workflow" \
+      | grep -vF "runs-on: \${{ fromJSON(vars.VERJSON_RUNNER_DEFAULT || '[\"self-hosted\",\"general\"]') }}" \
+      || true
+  )"
+  if [ -n "$off_lane" ]; then
+    fail "$local_workflow has a repository-local job off the variable-driven general lane: $off_lane"
   else
-    pass "$local_workflow keeps every repository-local job on the general lane"
+    pass "$local_workflow selects the general lane through the variable"
   fi
 done
 
-if grep -E '^    runs-on:' "$workflows/runner-admission-reconcile.yml" \
-    | grep -qF 'runs-on: [self-hosted, general]'; then
-  fail "runner-admission-reconcile.yml watches the general pool from inside it (#401)"
+# Inverted deliberately: asserting "no line says [self-hosted, general]" would
+# stay green if a second job were appended on any other literal. Every `runs-on:`
+# in the monitor has to be the fast-lane selector.
+off_fastlane="$(
+  grep -E '^    runs-on:' "$workflows/runner-admission-reconcile.yml" \
+    | grep -vF 'runs-on: ${{ fromJSON(vars.VERJSON_RUNNER_FASTLANE' \
+    || true
+)"
+if [ -n "$off_fastlane" ]; then
+  fail "runner-admission-reconcile.yml has a job off the fast lane, watching the pool from inside it (#401): $off_fastlane"
 else
   pass "the admission monitor is routed off the pool it watches"
 fi
@@ -288,8 +309,8 @@ for privileged_workflow in ai-privileged-merge.yml; do
     "$privileged_workflow — Verjson privileged merge cannot reach hosted"
 
   assert_route "$privileged_path" privileged_merge Verjson/.github '' false '' '' \
-    '["self-hosted","gate"]' \
-    "$privileged_workflow — missing Verjson variables fall back to the gate pool"
+    '["self-hosted","general"]' \
+    "$privileged_workflow — missing Verjson variables fall back to the general pool"
 
   assert_route "$privileged_path" privileged_merge Acme/widgets '' true \
     '["self-hosted","isolated-canary"]' '["self-hosted","untrusted-canary"]' \

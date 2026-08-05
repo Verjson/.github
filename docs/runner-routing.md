@@ -72,23 +72,31 @@ its own attacker gets to choose.
 ```console
 $ gh api /orgs/Verjson/actions/runners \
     --jq '.runners[] | "\(.name)\t\(.status)\t\([.labels[].name] | join(","))"'
-gha-general-1	online	self-hosted,Linux,X64,gce,gate,GCP,general
-gha-general-2	online	self-hosted,Linux,X64,gce,gate,GCP,general
-gha-general-3	online	self-hosted,Linux,X64,gce,gate,GCP,general
-gha-general-4	online	self-hosted,Linux,X64,gce,gate,GCP,general
-gha-general-5	online	self-hosted,Linux,X64,gce,gate,GCP,general
-gha-general-6	online	self-hosted,Linux,X64,gce,gate,GCP,general
+gha-general-1	online	self-hosted,Linux,X64,general,pwsh
+gha-general-10	online	self-hosted,Linux,X64,general
+gha-general-2	online	self-hosted,Linux,X64,general,pwsh
+gha-general-3	online	self-hosted,Linux,X64,general,pwsh
+gha-general-4	online	self-hosted,Linux,X64,general,pwsh
+gha-general-5	online	self-hosted,Linux,X64,general,pwsh
+gha-general-6	online	self-hosted,Linux,X64,general,pwsh
+gha-general-7	online	self-hosted,Linux,X64,general,pwsh
+gha-general-8	online	self-hosted,Linux,X64,general
+gha-general-9	online	self-hosted,Linux,X64,general
 hostinger	online	self-hosted,Linux,X64,manish
 ```
 
-⚠️ **`gce` and `GCP` on those six runners are wrong, not merely legacy.** They are
-DigitalOcean machines. Do not route new work by them, and do not read them as evidence of
-a GCP fleet. They survive only until the #203 sweep completes — see
-[Migration sequence](#migration-sequence).
+Measured 2026-08-05. Three things changed from the snapshot this replaces, all load-bearing:
 
-`gate` on all six means the merge gate runs on the same hosts as untrusted pull-request
-code. That is an **accepted risk**, recorded in ADR 0040: isolation was deferred to protect
-CI speed. It is a decision on the record, not an oversight.
+- **`gce`, `GCP` and `gate` are gone from the fleet.** The #203 sweep took them off the
+  runners. Any workflow still naming one is not "using a legacy label" — it is unplaceable,
+  and GitHub queues an unplaceable job forever with no check-run diagnostic. They are
+  undeclared in `.github/actionlint.yaml` for that reason, so naming one now fails lint
+  instead of hanging a pull request (#401).
+- **`gate` no longer exists as a distinct selector**, so the merge gate rides `general`
+  along with everything else. The accepted risk ADR 0040 records — gate work sharing hosts
+  with untrusted pull-request code — is therefore not merely accepted but unavoidable at
+  present, since there is no second lane to move to.
+- **`pwsh` is real on 8 of 10 runners.** PowerShell suites no longer need a hosted runner.
 
 ## Runner groups (the admission axis)
 
@@ -97,10 +105,18 @@ $ gh api /orgs/Verjson/actions/runner-groups \
     --jq '.runner_groups[] | "id=\(.id) \(.name) vis=\(.visibility) public=\(.allows_public_repositories) default=\(.default)"'
 id=1 GitHub  vis=all  public=true   default=true
 id=3 manish  vis=all  public=false  default=false
-id=4 GCP     vis=all  public=true   default=false
+id=8 DigitalOcean  vis=all  public=true   default=false
+id=9 verjson-runner-maintenance  vis=selected  public=false  default=false
 ```
 
-- **Group 4 is organization-wide and admits public repositories — deliberately.**
+Measured 2026-08-05, after the general pool was restored to `vis=all public=true`. It had
+regressed to `vis=selected public=false` when the fleet moved into the `DigitalOcean`
+group, which locked every public Verjson repository out of its own lane and wedged the
+merge gate — see [ADR 0054](decisions/0054-public-repositories-admitted-to-the-general-pool/README.md).
+Group 4 (`GCP`) no longer exists; the general pool is group 8.
+
+- **The general pool's group is organization-wide and admits public repositories —
+  deliberately.**
   [ADR 0041](decisions/0041-shared-admission-hosted-and-self-hosted/README.md) decides that
   hosted and DO self-hosted both serve public and private repositories for the foreseeable
   future, superseding ADR 0028 decision 4. The accepted risks and the best-practice North
@@ -232,6 +248,14 @@ Order matters. Each step is safe only after the previous one lands.
    nothing that still selects an old label breaks mid-migration.
 5. **Sweep the inline `runs-on` long tail** (#203), so nothing selects a stale label.
 6. **Only then delete the stale labels** — `gce`, `GCP`, `gate`.
+
+⚠️ **Steps 5 and 6 ran out of order (2026-08-05).** The labels came off the fleet while
+the inline `runs-on` long tail was still selecting them, which is the failure this ordering
+exists to prevent. `Verjson/verjson-identity-lifecycle`'s `generated-docs` job queued
+indefinitely on `[self-hosted, GCP]` with no check-run diagnostic — #182's silent-failure
+mode, reproduced exactly. Step 5 is therefore still open, and the remediation is now
+detection rather than ordering: dead labels are undeclared in `.github/actionlint.yaml`, so
+a repository still naming one fails lint with a file and line instead of hanging (#401).
 
 ⚠️ **Deleting a stale label before the sweep in step 5 makes those jobs queue forever with
 no check run** — #182's silent-failure mode, which is the entire reason this programme

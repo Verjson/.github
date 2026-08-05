@@ -88,6 +88,13 @@ export G6_RUNNERS=''
 export REPOS_FIXTURE=$'Verjson/private-lib\ttrue\nVerjson/public-app\tfalse'
 export FAIL_PATH=''
 export DELETED_GROUPS=''
+# Supplied the way the workflow supplies it, because the script no longer ships a
+# default for this one: the name it used to default to (`isolated`) has named a
+# deleted group since 2026-07-31. The general lane keeps a default and the
+# fixtures use it, so a stale default there fails this suite; the untrusted lane
+# has no live group to name, so it fails closed instead. The case immediately
+# after the namespaced-lane one proves that.
+export UNTRUSTED_GROUP_NAME='isolated'
 
 run_case() { bash "$script" 2>&1; }
 code_of() { run_case >/dev/null 2>&1; printf '%s' "$?"; }
@@ -158,6 +165,18 @@ out="$(run_case)"
   && pass "namespaced ADR 0035 lane labels map without reconciler changes" \
   || fail "namespaced lane labels did not reconcile: $out"
 
+# Same fixture, with the untrusted group unconfigured. Reaching a lane whose
+# group nobody has named must be undetermined and say so — the alternative, the
+# shipped `isolated` default this replaces, reported a group deleted on
+# 2026-07-31 as missing and read like fleet drift rather than stale code (#401).
+UNTRUSTED_GROUP_NAME='' out="$(run_case)"
+UNTRUSTED_GROUP_NAME='' code="$(code_of)"
+[ "$code" = "2" ] \
+  && grep -qF "no runner group is configured for lane 'untrusted'" <<<"$out" \
+  && pass "an unconfigured untrusted group is undetermined, and names what to set" \
+  || fail "unconfigured untrusted group did not fail closed: $out"
+UNTRUSTED_GROUP_NAME='isolated'
+
 # #266. Group 6 (`isolated`) was deleted on 2026-07-31 and the reconciler, which
 # pinned the id, went undetermined on every run. Two distinct behaviours have to
 # hold, and the second is the one that was actually broken.
@@ -203,12 +222,12 @@ grep -qF "GENERAL_GROUP_NAME: \${{ vars.VERJSON_RUNNER_GENERAL_GROUP || 'Digital
   && pass "the general group name is repointable from org variables, with a fallback" \
   || fail "runner-admission-reconcile.yml does not source GENERAL_GROUP_NAME from a variable with a fallback"
 
-# The monitor must not ride the pool it monitors: a public repository locked out
-# of `[self-hosted, general]` is precisely the condition this job reports, and
-# the job that reports it queued forever alongside everything else (#401).
-grep -qE "^    runs-on: \\\$\{\{ fromJSON\(vars\.VERJSON_RUNNER_FASTLANE" "$reconcile_workflow" \
-  && pass "the admission monitor runs off the pool it watches" \
-  || fail "runner-admission-reconcile.yml runs on the pool it is supposed to watch"
+# The matching invariant — this job must not ride the pool it monitors — lives in
+# runner-routing-policy.test.sh with every other routing assertion, and is
+# written there as "every runs-on is the fast-lane selector" rather than "no
+# runs-on is the general lane", so appending a second job cannot slip past it.
+# Kept in one place on purpose: the same rule half-asserted in two suites is how
+# a weakened version reads as covered.
 
 # 4. If the listing itself cannot be read, no group can be resolved at all. That
 #    is the definition of undetermined and must never read as clean.

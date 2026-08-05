@@ -2,17 +2,27 @@
 
 - **Date:** 2026-08-05
 - **Issue:** [Verjson/.github#401](https://github.com/Verjson/.github/issues/401)
+- **Restores:** [ADR 0041](../0041-shared-admission-hosted-and-self-hosted/README.md) —
+  the live organization had regressed away from it, so nothing new is decided about
+  admission here
 - **Refines:** ADR 0033 (visibility routing), ADR 0040 (lanes and admission axes),
   ADR 0031 (admission is an org-settings boundary, not workflow YAML)
 
 ## Context
 
 On 2026-08-05 every `[self-hosted, general]` job in this repository queued
-indefinitely while five `general` runners sat idle. The pool had moved into org
-runner group `DigitalOcean` with `visibility: selected` and
+indefinitely while five of the ten `general` runners sat idle. The pool had moved
+into org runner group `DigitalOcean` with `visibility: selected` and
 `allows_public_repositories: false`. `Verjson/.github` is public, so it was not
 an eligible target for any runner in that group — and GitHub queues such a job
 rather than failing it, so there is no check-run diagnostic and no error to read.
+
+Nothing about that admission posture was decided here or anywhere else. ADR 0041
+already decided, deliberately and with the owner's sign-off, that the self-hosted
+pool serves public and private repositories alike; it quotes the group as
+`visibility: all, allows_public_repositories: true`. The move to a new group
+carried restrictive defaults and silently reverted it. This ADR restores a
+recorded decision rather than widening anything.
 
 The merge gate wedged behind it: PR #400 held `gate` and `dispatch-merge` green
 with `privileged_merge` unable to start. Nothing could merge in this repository.
@@ -31,8 +41,12 @@ repositories can reach the pool. Group settings decided they could not.
 its visibility routes it to", and it models the case correctly — the suite has a
 passing case named *public repository denied by group is reported as drift*. It
 ran on `[self-hosted, general]`. When public repositories lost the pool, so did
-the monitor: the 10:16 run never started. A watcher that depends on the resource
-it watches is silent in precisely the outage it exists to report.
+the monitor. Run 30996731678 queued at 10:16 and did not start until 14:22:28 —
+seconds after the group was opened — then failed 11s later on the second defect
+below. One run demonstrates both: four hours unable to report an admission outage
+because it was inside it, followed immediately by `Could not read the org; not
+reporting clean.` A watcher that depends on the resource it watches is silent in
+precisely the outage it exists to report.
 
 It was also blind for a second reason. The `GCP` → `DigitalOcean` move renamed
 the group, and while lane *labels* follow org variables — `node-ci.yml` says so
@@ -71,6 +85,19 @@ excluded from the routing contract that keeps repository-local jobs on the
 general lane, with a dedicated assertion in its place — otherwise the next tidy-up
 puts the monitor back inside the thing it watches.
 
+**Dead labels are undeclared rather than documented.** The same fleet move took
+`gce`, `GCP` and `gate` off the runners while workflows still selected them —
+steps 5 and 6 of the migration sequence in `docs/runner-routing.md` ran out of
+order, which that document warns produces exactly #182's silent failure.
+`Verjson/verjson-identity-lifecycle`'s `generated-docs` job reproduced it on
+`[self-hosted, GCP]`. `.github/actionlint.yaml` is the organization-wide policy
+every consumer sparse-checks, and it declared all three, so lint stayed green
+while the routes were unplaceable. They are now undeclared: naming one fails lint
+with a file and a line. Every remaining literal selector in this repository is
+routed through `vars.VERJSON_RUNNER_*` with a live-label fallback, so the next
+relabel is a variable flip rather than a pull request per workflow — ADR 0041's
+rule, applied to the repository-local jobs that had been exempt from it.
+
 ## Consequences
 
 - Public repositories reach the general pool. Verified rather than reasoned: the
@@ -81,6 +108,16 @@ puts the monitor back inside the thing it watches.
 - `ORG_ADMIN_TOKEN` moves onto a GitHub-hosted runner for this job. That is
   scheduled default-branch code with no fork input, on an ephemeral VM — a
   narrower exposure than a persistent self-hosted host, not a wider one.
+- **A consumer still naming `gce`, `GCP` or `gate` now fails actionlint.** That is
+  the intent — those repositories are already broken, silently — but the blast
+  radius is organization-wide and lands as a red lint job rather than a hung one.
+  The failure names the file and line to fix.
+- The monitor's independence rests on `VERJSON_RUNNER_FASTLANE` not pointing at
+  the general pool. ADR 0047 offers exactly that as its rollback ("set it to
+  `["self-hosted","general"]`"), which would put the monitor back inside what it
+  watches while both routing assertions still passed. That rollback is not
+  available while `runner-admission-reconcile` and `fleet-watchdog` ride the fast
+  lane; repoint them first.
 
 ### Residual risk, stated plainly
 

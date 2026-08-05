@@ -90,10 +90,10 @@ awk '
 grep -qF 'invalid-syntax.yml' "$behavior_script" \
   && grep -qF 'invalid-expression.yml' "$behavior_script" \
   && grep -qF 'invalid-runner.yml' "$behavior_script" \
-  && grep -qF 'runs-on: [self-hosted, GCP]' "$behavior_script" \
+  && grep -qF 'runs-on: [self-hosted, general]' "$behavior_script" \
   && ! grep -qE '(^|[;&|])[[:space:]]*(bash|sh|source|\.)[[:space:]]+' "$behavior_script" \
-  && pass "fixtures cover governed GCP plus provider-owned invalid workflows" \
-  || fail "behavior fixtures omit GCP or execute caller-controlled scripts"
+  && pass "fixtures cover a governed self-hosted label plus provider-owned invalid workflows" \
+  || fail "behavior fixtures omit a governed self-hosted label or execute caller-controlled scripts"
 
 cat >"$tmp/actionlint" <<'SH'
 #!/usr/bin/env bash

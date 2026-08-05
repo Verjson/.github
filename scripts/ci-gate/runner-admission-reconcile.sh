@@ -14,7 +14,14 @@ ORG="${ORG:-Verjson}"
 # VERJSON_RUNNER_*), but this name did not, so the reconciler resolved no group
 # and went undetermined — #266 again, by name rather than by id (#401).
 GENERAL_GROUP_NAME="${GENERAL_GROUP_NAME:-DigitalOcean}"
-UNTRUSTED_GROUP_NAME="${UNTRUSTED_GROUP_NAME:-isolated}"
+# No default. `isolated` was the old one, and that group has not existed since it
+# was deleted on 2026-07-31 — shipping a name that resolves to nothing is the
+# defect this file was already carrying twice over. Unreachable today, because
+# VERJSON_RUNNER_UNTRUSTED resolves to the general lane, but the moment the
+# untrusted lane is repointed the empty value fails closed through
+# lane_group_name saying no group is configured, rather than fails closed saying
+# a group nobody has heard of is missing.
+UNTRUSTED_GROUP_NAME="${UNTRUSTED_GROUP_NAME:-}"
 
 die_undetermined() {
   printf 'UNDETERMINED: %s\n' "$1" >&2
@@ -116,7 +123,11 @@ jq -e 'length > 0' <<<"$groups" >/dev/null \
 lane_group_name() {
   case "$1" in
     general) printf '%s\n' "$GENERAL_GROUP_NAME" ;;
-    untrusted) printf '%s\n' "$UNTRUSTED_GROUP_NAME" ;;
+    untrusted)
+      [ -n "$UNTRUSTED_GROUP_NAME" ] \
+        || die_undetermined "no runner group is configured for lane 'untrusted'; set VERJSON_RUNNER_UNTRUSTED_GROUP"
+      printf '%s\n' "$UNTRUSTED_GROUP_NAME"
+      ;;
     *) die_undetermined "no runner group is configured for lane '$1'" ;;
   esac
 }
