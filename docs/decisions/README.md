@@ -11,6 +11,7 @@ Reverse-chronological index of org-level decisions.
 <!-- BEGIN ADR INDEX -->
 | # | Date | Decision |
 |---|------|----------|
+| [0058](0058-github-waits-for-checks-not-the-gate/README.md) | 2026-08-05 | GitHub waits for required checks; the gate stops being an orchestrator |
 | [0057](0057-runner-labels-optional-lane-routed-callers/README.md) | 2026-08-05 | `runner_labels` is optional again, so generated callers route by lane |
 | [0056](0056-fleet-watchdog-retained-and-retargeted/README.md) | 2026-08-05 | Keep the fleet watchdog, retargeted at the poll job the overflow lane cannot reach |
 | [0055](0055-shared-generated-artifact-checks/README.md) | 2026-08-05 | Generated-artifact validation is a shared workflow with enumerated checks |

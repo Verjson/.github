@@ -1,0 +1,50 @@
+---
+date: 2026-08-05
+issue: 416
+title: Declare a core check contract so GitHub can do the waiting the gate does in bash
+---
+
+Records the decision to stop managing the merge-gate poll deadlock and remove it, in
+[ADR 0058](docs/decisions/0058-github-waits-for-checks-not-the-gate/README.md), plus the
+first read-only step towards it.
+
+The gate holds a self-hosted runner for up to 30 minutes polling the commit check-runs and
+statuses rollup (`ai-review-merge.yml:581-947`). That loop is a hand-rolled
+`required_status_checks` rule. Two facts, both verified rather than assumed, make it
+removable: the org ruleset `main-protection` (`18098028`, scoped `~ALL`) has **no**
+`required_status_checks` rule — GitHub has never been told which checks must pass, so it
+cannot wait for them — and `allow_auto_merge` is already `true`. The gate's own merge step
+is already dead code (`if: ${{ false }}` at `:1587`); the merge is performed by
+`ai-privileged-merge.yml`, which is the job still on the pool.
+
+- **The contract is declared, not derived.** Required checks are a core set per repository
+  stack, satisfied by the reusable workflows the org already owns. Deriving them from
+  observed check names would make the current drift permanent and enshrine a stale
+  repository's job naming as organizational policy. The org already pins every inner job
+  name (`node-ci` publishes `build-test`/`eligibility`, `helm-ci` publishes
+  `lint-template`); the only free variable is the caller's job name, which is what a
+  generated thin caller pins. `changelog / validate` is core for every package repository
+  rather than an opt-in, which puts **#404's missing generated caller on the critical
+  path** — a context cannot be required before something pins the caller that emits it.
+- **`scripts/required-checks-audit.sh`** reports which repositories do not yet emit their
+  stack's core set. Read-only by construction: it writes no ruleset, because the question
+  "would this rule wedge anything?" must be answerable without being able to wedge
+  anything. Non-zero while any repository would be blocked, so it can gate the migration
+  in CI rather than be a report somebody remembers to read.
+- **A required check must be skippable but never absent.** A conditional job reports
+  `skipped`, which satisfies a required check; a `paths:`-filtered workflow emits no check
+  run at all and is permanently pending. The whole design rests on that distinction, so
+  the audit counts a skipped run as present — reporting it as missing would send people to
+  fix the one shape that is already correct.
+- **The merge machinery is never required.** `dispatch-merge` and `privileged_merge`
+  perform the merge; requiring them is a merge that waits for itself.
+
+12 assertions in `scripts/required-checks-audit.test.sh`, each mutation-verified: treating
+a skipped check as absent, letting the unknown-stack fault die in a subshell, dropping the
+universal `gate` requirement, always exiting 0, and ignoring commit statuses are each
+killed by exactly one named assertion. The subshell case was a real bug the tests caught —
+`core_contract_for`'s `exit 2` inside `< <(...)` never reached the caller, so an
+unclassified stack produced an empty contract and reported **conformant**.
+
+Nothing is enforced by this change. ADR 0056 stands and the watchdog stays armed and
+load-bearing until the migration reaches its last step; this is step 2 of seven.

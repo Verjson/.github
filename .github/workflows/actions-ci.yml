@@ -204,6 +204,8 @@ jobs:
         run: bash scripts/trigger-scope.test.sh
       - name: Fleet watchdog preempts only stale poll jobs, never CI (#334)
         run: bash scripts/fleet-watchdog.test.sh
+      - name: Required-check audit never calls an unaudited repository conformant (#416)
+        run: bash scripts/required-checks-audit.test.sh
       - name: Privileged scheduled workflows use immutable default-branch code (#350, #387)
         run: python3 scripts/ci-gate/privileged-scheduled-workflows.test.py
       # Wired late: these four existed but ran nowhere, so the lane migration
