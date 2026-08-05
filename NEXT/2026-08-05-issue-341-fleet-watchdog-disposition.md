@@ -29,7 +29,10 @@ preempted.
   `Wait once for the rest of CI to be green` step is `in_progress` is provably polling and
   preemptable past a 10-minute floor; once that step completes it is spending model-review
   budget and is never a candidate at any age. `AI privileged merge` has no separable poll
-  step and keeps the 35-minute rule.
+  step and keeps the 35-minute rule. The floor is passed as `WATCHDOG_MIN_POLL_MINUTES`, so
+  the privileged-scheduled-workflow env allowlist in
+  `scripts/ci-gate/privileged-scheduled-workflows.test.py` admits it explicitly — the
+  allowlist stays exact, it is not relaxed.
 - **#355** — paginated runner pages are slurped and aggregated before counting, so a fleet
   larger than one page no longer produces a per-page count that fails the numeric guard and
   silently disables the watchdog. A page missing `.runners` is a fault, not an empty pool.

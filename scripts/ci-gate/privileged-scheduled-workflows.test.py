@@ -77,7 +77,13 @@ def validate_watchdog(document: object) -> None:
     require(sweep["name"] == "Sweep the fleet for poll deadlocks", "watchdog sweep step name changed")
     env = require_keys(
         sweep["env"],
-        {"GH_TOKEN", "WATCHDOG_ORG", "WATCHDOG_DRY_RUN", "WATCHDOG_MIN_AGE_MINUTES"},
+        {
+            "GH_TOKEN",
+            "WATCHDOG_ORG",
+            "WATCHDOG_DRY_RUN",
+            "WATCHDOG_MIN_AGE_MINUTES",
+            "WATCHDOG_MIN_POLL_MINUTES",
+        },
         "watchdog sweep env",
     )
     require(env["GH_TOKEN"] == "${{ secrets.ORG_ADMIN_TOKEN }}", "watchdog token binding changed")
