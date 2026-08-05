@@ -9,7 +9,11 @@ ORG="${ORG:-Verjson}"
 # Ids are not stable over an org's lifetime: group 6 (`isolated`) was deleted on
 # 2026-07-31 and this job went undetermined on every run afterwards (#266). The
 # names stay overridable so a rename is a config change, not a code change.
-GENERAL_GROUP_NAME="${GENERAL_GROUP_NAME:-GCP}"
+# `GCP` until 2026-08-05, when the pool moved to DigitalOcean and the group was
+# renamed with it. The lane's LABELS survived that (they come from
+# VERJSON_RUNNER_*), but this name did not, so the reconciler resolved no group
+# and went undetermined — #266 again, by name rather than by id (#401).
+GENERAL_GROUP_NAME="${GENERAL_GROUP_NAME:-DigitalOcean}"
 UNTRUSTED_GROUP_NAME="${UNTRUSTED_GROUP_NAME:-isolated}"
 
 die_undetermined() {

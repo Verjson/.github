@@ -76,7 +76,7 @@ export UNTRUSTED_VAR='{"value":"[\"self-hosted\",\"general\"]","visibility":"all
 # has to be an undetermined result rather than a clean one.
 export G1_GROUP='{"id":1,"name":"GitHub","visibility":"all","allows_public_repositories":true,"default":true}'
 export G1_RUNNERS=''
-export G4_GROUP='{"id":4,"name":"GCP","visibility":"all","allows_public_repositories":true,"default":false}'
+export G4_GROUP='{"id":4,"name":"DigitalOcean","visibility":"all","allows_public_repositories":true,"default":false}'
 export G6_GROUP='{"id":6,"name":"isolated","visibility":"selected","allows_public_repositories":true}'
 # Member/runner fixtures are what `gh api --paginate --jq` emits: one element
 # per line, concatenated across pages. Multiple lines therefore ARE the
@@ -98,14 +98,14 @@ out="$(run_case)"
   && pass "organization-wide permissive group admits new private and public repositories" \
   || fail "clean permissive policy did not reconcile: $out"
 
-G4_GROUP='{"id":4,"name":"GCP","visibility":"all","allows_public_repositories":false}'
+G4_GROUP='{"id":4,"name":"DigitalOcean","visibility":"all","allows_public_repositories":false}'
 out="$(run_case)"
 [ "$(code_of)" = "1" ] \
   && grep -qF 'Verjson/public-app' <<<"$out" \
   && pass "public repository denied by group is reported as drift" \
   || fail "public admission drift not reported: $out"
 
-G4_GROUP='{"id":4,"name":"GCP","visibility":"selected","allows_public_repositories":true}'
+G4_GROUP='{"id":4,"name":"DigitalOcean","visibility":"selected","allows_public_repositories":true}'
 # Two lines == two pages: the repo under test sits on the FIRST page, which is
 # precisely what a per-page collector would drop.
 G4_MEMBERS=$'Verjson/public-app\nVerjson/some-other-repo'
@@ -115,7 +115,7 @@ out="$(run_case)"
   && pass "new private repository missing from selected group is reported" \
   || fail "selected-group new repository gap not reported: $out"
 
-G4_GROUP='{"id":4,"name":"GCP","visibility":"all","allows_public_repositories":true}'
+G4_GROUP='{"id":4,"name":"DigitalOcean","visibility":"all","allows_public_repositories":true}'
 G4_MEMBERS=''
 G4_RUNNERS='{"name":"general-1","status":"offline","labels":["self-hosted","general"]}'
 out="$(run_case)"
@@ -188,9 +188,27 @@ DELETED_GROUPS='4'
 DEFAULT_VAR='{"value":"[\"self-hosted\",\"lane-general\"]","visibility":"all"}'
 out="$(run_case)"
 [ "$(code_of)" = "2" ] \
-  && grep -qF 'GCP' <<<"$out" \
+  && grep -qF 'DigitalOcean' <<<"$out" \
   && pass "the general lane's group going missing fails closed, naming the group" \
   || fail "missing general group was not reported by name: $out"
+
+# The fixtures above use the shipped default group name deliberately, so a stale
+# default is a failing suite rather than a monitor that resolves nothing in
+# production. That is not enough on its own: the name it defaults to is a live
+# org fact, and on 2026-08-05 the pool was renamed GCP→DigitalOcean while the
+# labels moved by variable and this stayed in code (#401). So the workflow must
+# also be able to follow a rename without a pull request.
+reconcile_workflow="$(cd "$(dirname "$0")/../.." && pwd)/.github/workflows/runner-admission-reconcile.yml"
+grep -qF "GENERAL_GROUP_NAME: \${{ vars.VERJSON_RUNNER_GENERAL_GROUP || 'DigitalOcean' }}" "$reconcile_workflow" \
+  && pass "the general group name is repointable from org variables, with a fallback" \
+  || fail "runner-admission-reconcile.yml does not source GENERAL_GROUP_NAME from a variable with a fallback"
+
+# The monitor must not ride the pool it monitors: a public repository locked out
+# of `[self-hosted, general]` is precisely the condition this job reports, and
+# the job that reports it queued forever alongside everything else (#401).
+grep -qE "^    runs-on: \\\$\{\{ fromJSON\(vars\.VERJSON_RUNNER_FASTLANE" "$reconcile_workflow" \
+  && pass "the admission monitor runs off the pool it watches" \
+  || fail "runner-admission-reconcile.yml runs on the pool it is supposed to watch"
 
 # 4. If the listing itself cannot be read, no group can be resolved at all. That
 #    is the definition of undetermined and must never read as clean.

@@ -77,10 +77,13 @@ grep -qF 'vars.VERJSON_RUNNER_FASTLANE || vars.VERJSON_RUNNER_DEFAULT' "$workflo
   && pass "repository shell validation routes through the fast-lane variable with a general fallback" \
   || fail "actions-ci fast-lane routing drifted (ADR 0047)"
 
+# runner-admission-reconcile.yml is deliberately absent from this list: it is the
+# one repository-local job that must NOT ride the general pool, because it is the
+# monitor for "a repository cannot reach its lane" (#401, ADR 0054). Its own
+# routing is pinned separately below so it cannot drift back.
 for local_workflow in \
   node-cache-integration.yml \
   rework-reconcile.yml \
-  runner-admission-reconcile.yml \
   tag-major.yml; do
   if grep -E '^    runs-on:' "$workflows/$local_workflow" \
       | grep -qvF 'runs-on: [self-hosted, general]'; then
@@ -89,6 +92,13 @@ for local_workflow in \
     pass "$local_workflow keeps every repository-local job on the general lane"
   fi
 done
+
+if grep -E '^    runs-on:' "$workflows/runner-admission-reconcile.yml" \
+    | grep -qF 'runs-on: [self-hosted, general]'; then
+  fail "runner-admission-reconcile.yml watches the general pool from inside it (#401)"
+else
+  pass "the admission monitor is routed off the pool it watches"
+fi
 
 
 # --------------------------------------------------------------------------
