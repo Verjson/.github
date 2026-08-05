@@ -218,3 +218,5 @@ jobs:
         run: bash scripts/repo-hygiene.test.sh
       - name: Repository hygiene — immutable merged policy ref (#351, ADR 0046)
         run: bash scripts/ci-gate/repo-hygiene-ref.test.sh
+      - name: Repository hygiene — the suite never touches the checkout it runs from (#340, #393)
+        run: bash scripts/ci-gate/repo-hygiene-sandbox.test.sh
