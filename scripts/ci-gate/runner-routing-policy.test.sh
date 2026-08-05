@@ -221,7 +221,7 @@ cat >"$evaluator" <<'JS'
 // validated against real semantics, not against a model that only happens to
 // agree with the polarity in use today.
 const vm = require('node:vm');
-const [, , raw, repository, runnerInput, priv, varDefault, varUntrusted, varFastlane, runnerLabelsInput] = process.argv;
+const [, , raw, repository, runnerInput, priv, varDefault, varUntrusted, varFastlane, runnerLabelsInput, varOverflow] = process.argv;
 // `inputs.github-hosted-runner` is a legal Actions reference and an illegal JS
 // one — bare, it parses as `inputs.github - hosted - runner`. Rewriting it to a
 // bracket access is what lets actionlint.yml be EVALUATED here rather than only
@@ -282,6 +282,15 @@ const vars = {
   VERJSON_RUNNER_UNTRUSTED: varUntrusted,
   VERJSON_RUNNER_ISOLATED: varDefault,
   VERJSON_RUNNER_FASTLANE: varFastlane,
+  // ADR 0053's overflow lane, and the one variable that MUST come from its own
+  // fixture rather than being left off the model. It is the FIRST term of the
+  // tail in all three ai-review-merge.yml chains, and the organization sets it
+  // org-wide today, so omitting it from `vars` resolves it to `undefined` here
+  // and every case silently asserts a route production cannot currently
+  // produce. Unset is '' (an unset Actions variable is the empty string), so a
+  // case that leaves it out still models "this org has not enabled overflow" —
+  // deliberately, rather than by accident.
+  VERJSON_RUNNER_OVERFLOW: varOverflow === undefined ? '' : varOverflow,
 };
 const fromJSON = (value) => JSON.parse(value);
 // GitHub Actions string equality and contains() are case-insensitive; JS === is not.
@@ -344,7 +353,7 @@ assert_no_ambient() {
 assert_no_ambient '${{ process.env.HOME }}' process
 assert_no_ambient '${{ require("node:fs") }}' require
 
-# assert_route <workflow> <job> <repo> <runner-input> <private> <var-default> <var-untrusted> <expected> <label> [var-fastlane] [runner-labels-input]
+# assert_route <workflow> <job> <repo> <runner-input> <private> <var-default> <var-untrusted> <expected> <label> [var-fastlane] [runner-labels-input] [var-overflow]
 #
 # `runner-labels-input` is separate from `runner-input` rather than folded into
 # it: they are different inputs on different workflows (`inputs.runner` on the
@@ -354,7 +363,7 @@ assert_no_ambient '${{ require("node:fs") }}' require
 assert_route() {
   local workflow="$1" job="$2" repository="$3" runner_input="$4" priv="$5"
   local var_default="$6" var_untrusted="$7" expected="$8" label="$9"
-  local var_fastlane="${10-}" runner_labels="${11-}"
+  local var_fastlane="${10-}" runner_labels="${11-}" var_overflow="${12-}"
   local expression resolved
   expression="$(extract_runs_on "$workflow" "$job")"
   if [ -z "$expression" ]; then
@@ -362,7 +371,8 @@ assert_route() {
     return
   fi
   resolved="$(node "$evaluator" "$expression" "$repository" "$runner_input" \
-    "$priv" "$var_default" "$var_untrusted" "$var_fastlane" "$runner_labels" 2>&1)" || {
+    "$priv" "$var_default" "$var_untrusted" "$var_fastlane" "$runner_labels" \
+    "$var_overflow" 2>&1)" || {
     fail "$label — evaluating '$expression' failed: $resolved"
     return
   }
@@ -450,16 +460,40 @@ assert_route "$dispatch_workflow" dispatch-merge Acme/widgets '' true '' '' \
 # The same two #405 polarities for the gate job, the one a cross-org consumer
 # actually calls: a Verjson caller that omits the input must still be lane-routed,
 # and an off-Verjson self-hosted fleet must still be able to name itself.
+#
+# BOTH overflow polarities, because `VERJSON_RUNNER_OVERFLOW` precedes the lane
+# variables in this chain and the organization has it SET. Asserting only the
+# unset case would claim a route production does not take: with overflow set,
+# "not by label" still holds, but the lane the caller lands on is the overflow
+# lane, not VERJSON_LANE_TRUSTED. That is ADR 0053 working as designed — it is
+# recorded here so the next reader does not take the lane-routing claim to mean
+# the trusted lane specifically.
 assert_route "$dispatch_workflow" gate Verjson/verjson-authn '' true \
   '["self-hosted","trusted-canary"]' '["self-hosted","untrusted-canary"]' \
   '["self-hosted","trusted-canary"]' \
-  "gate — a consumer omitting runner_labels routes by lane, not by label" \
-  '' ''
+  "gate — omitting runner_labels routes by lane, not by label (overflow unset)" \
+  '' '' ''
+
+assert_route "$dispatch_workflow" gate Verjson/verjson-authn '' true \
+  '["self-hosted","trusted-canary"]' '["self-hosted","untrusted-canary"]' \
+  '["ubuntu-24.04"]' \
+  "gate — with the overflow lane set, as in production, the omitted input lands there" \
+  '' '' '["ubuntu-24.04"]'
 
 assert_route "$dispatch_workflow" gate Acme/widgets '' true '' '' \
   '["self-hosted","acme-fleet"]' \
   "gate — an off-Verjson fleet still wins via runner_labels" \
   '' '["self-hosted","acme-fleet"]'
+
+# The un-regenerated consumer, which is most of them until the #365 sweep: a
+# caller still passing the input must keep beating the overflow lane. This is the
+# precedence ADR 0053's exclusion paragraph rests on, so it is asserted rather
+# than assumed to survive #405.
+assert_route "$dispatch_workflow" gate Verjson/verjson-authn '' true \
+  '["self-hosted","trusted-canary"]' '["self-hosted","untrusted-canary"]' \
+  '["self-hosted","general"]' \
+  "gate — a caller generated before #405 still overrides the overflow lane" \
+  '' '["self-hosted","general"]' '["ubuntu-24.04"]'
 
 # ADR 0050. actionlint is a short, secretless CPU job, so on a PUBLIC target it
 # takes the fast lane instead of contending for the fixed self-hosted pool with

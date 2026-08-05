@@ -38,7 +38,11 @@ The generated privileged caller pins `@main` and is unaffected.
 `self-hosted` literal, omits the input, and still forwards an explicit fleet;
 `runner-routing-policy.test.sh` now models `inputs.runner_labels` and evaluates
 the real `runs-on` expression for both polarities — omitted routes through
-`VERJSON_LANE_PRIVILEGED`, supplied wins for an off-Verjson fleet.
+`VERJSON_LANE_PRIVILEGED`, supplied wins for an off-Verjson fleet. It also models
+`VERJSON_RUNNER_OVERFLOW`, which the org sets today and which precedes the lane
+variables in every `ai-review-merge.yml` chain: leaving it off `vars` made the
+omitted-input case assert a route production cannot take, so the gate polarity is
+now asserted with the overflow lane both unset and set.
 `reusable-workflow.test.sh` pins `required: false` with the reason it changed.
 
 Existing generated callers keep working — they pass a still-accepted input — but
