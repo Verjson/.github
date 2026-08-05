@@ -180,6 +180,33 @@ jobs:
               fi
               if [ "$changelog_ok" = true ]; then
                 printf 'ok - unreleased changelog fragments validate and render\n'
+
+                # A released snapshot keeps only each entry's title and lead
+                # paragraph, and can never be edited afterwards (ADR 0059). So
+                # the released form is the one nobody sees until it is already
+                # permanent. Print it here, while the fragments can still change.
+                #
+                # Informational only — the verdict was decided above and this
+                # cannot alter it. A preview that FAILED is still reported, so
+                # "no unreleased fragments" and "the renderer broke" never look
+                # alike (#399). An older pinned engine has no --as-released and
+                # lands in that branch, which is the correct, visible outcome.
+                preview_rc=0
+                preview="$(python3 "$engine" render-next "${args[@]}" --as-released 2>&1)" \
+                  || preview_rc=$?
+                if [ "$preview_rc" -eq 0 ]; then
+                  {
+                    printf '<details><summary>Release notes this would publish</summary>\n\n'
+                    printf '%s\n' "$preview" | head -c 65536
+                    printf '\n</details>\n'
+                  } >>"${GITHUB_STEP_SUMMARY:-/dev/null}"
+                  printf 'ok - release-note preview written to the job summary\n'
+                elif [ "$preview" = 'changelog: no unreleased fragments' ]; then
+                  printf 'ok - no unreleased fragments, so there is nothing to preview\n'
+                else
+                  printf '::warning title=Release-note preview unavailable::%s\n' \
+                    "The changelog check itself PASSED and this does not change that verdict. Engine Verjson/.github@$CONTRACT_REF said: $preview"
+                fi
               else
                 report 'Changelog' \
                   "The unreleased NEXT/ fragments do not satisfy the canonical changelog contract. The engine is Verjson/.github@$CONTRACT_REF — check it out at .changelog-contract and run the command below from the repository root." \

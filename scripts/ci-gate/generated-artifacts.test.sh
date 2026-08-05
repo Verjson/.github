@@ -182,7 +182,11 @@ issue: 404
 title: Example
 ---
 
-Body text.
+The lead paragraph, which is what a release note needs.
+
+## Why
+
+The argument, which belongs in the running log and not in release notes.
 FRAGMENT
   printf '.changelog-contract/\nsummary.md\n' >"$ws/.gitignore"
   git -C "$ws" init --quiet --initial-branch=main
@@ -199,6 +203,68 @@ rc=$?
 [ "$rc" -eq 0 ] \
   && pass "a repository with valid fragments passes the changelog check" \
   || fail "valid fragments were rejected (rc=$rc): $out"
+
+# --------------------------------------------------------------------------
+# The release-note preview (#426). A released snapshot keeps only each entry's
+# title and lead paragraph and can never be edited afterwards (ADR 0059), so the
+# released form is otherwise first seen when it is already permanent. The check
+# prints it while the fragments are still editable.
+# --------------------------------------------------------------------------
+grep -q 'Release notes this would publish' "$ws/summary.md" \
+  && pass "a passing changelog check writes the release-note preview to the job summary" \
+  || fail "no release-note preview in the job summary: $(cat "$ws/summary.md")"
+
+grep -q 'The lead paragraph, which is what a release note needs.' "$ws/summary.md" \
+  && ! grep -q 'The argument, which belongs in the running log' "$ws/summary.md" \
+  && pass "the preview shows the RELEASED shape — lead kept, argument dropped" \
+  || fail "the preview is not the released shape: $(cat "$ws/summary.md")"
+
+# --------------------------------------------------------------------------
+# A repository with nothing unreleased. `render-next` exits non-zero here by
+# design, and reporting that as a broken renderer would train consumers to
+# ignore the warning — the inverse of #399, where a real renderer failure was
+# reported as "no unreleased fragments" and exited 0.
+# --------------------------------------------------------------------------
+ws="$tmp/changelog-empty"
+make_changelog_repo "$ws"
+rm -f "$ws/NEXT"/*.md
+out="$(run_validate "$ws" RUN_CHANGELOG=true CONTRACT_REF="$immutable_sha")"
+rc=$?
+[ "$rc" -eq 0 ] && grep -q 'nothing to preview' <<<"$out" \
+  && ! grep -q '::warning' <<<"$out" \
+  && pass "an empty NEXT/ is reported as nothing to preview, not as a broken renderer" \
+  || fail "an empty NEXT/ was misreported (rc=$rc): $out"
+
+# --------------------------------------------------------------------------
+# The consumer pins `contract_ref` independently of the ref it calls this
+# workflow at, so a repository can legitimately run a NEWER workflow against an
+# OLDER engine that has no --as-released. The preview is informational, so that
+# must warn and still pass — a preview failure that failed the check would make
+# an optional convenience a fleet-wide breaking change.
+# --------------------------------------------------------------------------
+ws="$tmp/changelog-old-engine"
+make_changelog_repo "$ws"
+cat >"$ws/.changelog-contract/scripts/changelog.py" <<'OLD'
+import sys
+if "--as-released" in sys.argv:
+    sys.stderr.write("changelog.py render-next: error: unrecognized arguments: --as-released\n")
+    raise SystemExit(2)
+raise SystemExit(0)
+OLD
+out="$(run_validate "$ws" RUN_CHANGELOG=true CONTRACT_REF="$immutable_sha")"
+rc=$?
+[ "$rc" -eq 0 ] \
+  && pass "an engine too old for --as-released still passes the changelog check" \
+  || fail "a missing preview failed the check (rc=$rc): $out"
+
+grep -q '::warning title=Release-note preview unavailable::' <<<"$out" \
+  && grep -q 'unrecognized arguments' <<<"$out" \
+  && pass "the unavailable preview is reported with the engine's own reason" \
+  || fail "a failed preview was swallowed: $out"
+
+grep -q 'PASSED' <<<"$out" \
+  && pass "the warning says the check itself passed, so it is not read as a failure" \
+  || fail "the preview warning does not distinguish itself from a verdict: $out"
 
 # --------------------------------------------------------------------------
 # Stale: a fragment the canonical engine rejects.
@@ -536,9 +602,19 @@ for subcommand in validate check-pr; do
     || fail "the changelog check and changelog-validate.yml disagree on '$subcommand'"
 done
 
-grep -qE 'render-next' "$validate" \
-  && fail "the changelog check adds a second render pass on top of validate" \
-  || pass "renderability is established by validate alone — the renderer runs once"
+# ADR 0055 kept a render out of this check because `validate` already parses
+# every fragment, so a second VERDICT-BEARING render pays twice for one answer.
+# The #426 preview is not a second verdict: it runs only after the verdict is
+# decided, and its exit status is bound to `preview_rc`, which nothing
+# verdict-bearing reads. Asserted here statically, and behaviourally by the
+# old-engine fixture above where the render fails and the check still passes.
+[ "$(grep -c 'render-next' "$validate")" -eq 1 ] \
+  && pass "the renderer is invoked once, for the preview — not as a second validation pass" \
+  || fail "render-next appears $(grep -c 'render-next' "$validate") times in the validate script"
+
+grep -E 'preview_rc' "$validate" | grep -qE 'changelog_ok|failures|report ' \
+  && fail "the preview's exit status feeds the changelog verdict" \
+  || pass "no verdict is derived from the preview — renderability is still established by validate alone"
 
 # --------------------------------------------------------------------------
 # Plumbing the shared workflow owns so no consumer hand-writes it again.
