@@ -56,7 +56,14 @@ unclassified stack produced an empty contract and reported **conformant**.
   scanning `uses:` alone classified this repository `none`, which would have made the one
   repository holding the merge gate the one whose test suite was not a merge precondition.
 
-11 assertions in `scripts/classify-repo-stacks.test.sh`, all five guards mutation-verified.
+  Running it org-wide found a second gap in its own output: `none` conflated *no CI at
+  all* with *CI we do not recognise*. The contract requires only `gate` for `none`, so a
+  repository whose CI is local and unrecognised would have had its real CI quietly demoted
+  to advisory — under-requiring rather than wedging, and therefore silent. Those are now
+  counted and reported separately; only the wedge risk sets a non-zero exit, because a
+  human has to confirm the other.
+
+12 assertions in `scripts/classify-repo-stacks.test.sh`, all five guards mutation-verified.
 The stub itself carried the bug worth recording: `${*##pattern}` strips element-wise, so the
 fixture path resolved to `api`, every file read returned empty, and every repository
 classified as `none`. The suite failed loudly rather than agreeing with itself, which is the

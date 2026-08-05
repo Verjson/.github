@@ -137,7 +137,11 @@ rc="$(run_crs)"
   && pass "a locally-defined shell-tests job classifies as the actions stack, not none" \
   || { fail "locally-defined contract job was missed ($rc)"; out; }
 
-# --- no CI at all is `none`, not a failure ----------------------------------
+# --- `none` with local jobs is a review item, not a silent pass -------------
+# Under-requiring does not wedge, so this is a warning rather than an error —
+# but a repository whose real CI quietly stops being a merge precondition is
+# the exact defect this migration must not introduce, so it must be counted
+# separately and never reported as plain `conformant`.
 reset_wf
 cat >"$WFDIR/misc.yml" <<'EOF'
 name: misc
@@ -147,15 +151,16 @@ jobs:
     runs-on: ubuntu-24.04
 EOF
 rc="$(run_crs)"
-{ [ "$rc" = "rc=0" ] && said 'stack=none'; } \
-  && pass "a repository calling no stack CI is 'none' — required to emit gate and nothing else" \
-  || { fail "a CI-less repository was not classified none ($rc)"; out; }
+{ said 'result=unrecognised-ci' && said 'local_jobs=1' && ! said 'result=conformant'; } \
+  && pass "a 'none' repository that defines jobs is flagged for review, not counted conformant" \
+  || { fail "unrecognised local CI was silently accepted ($rc)"; out; }
 
+# --- a repository with genuinely no workflows is plain `none` ---------------
 reset_wf
 rc="$(NO_WORKFLOWS=true run_crs)"
-{ [ "$rc" = "rc=0" ] && said 'stack=none'; } \
-  && pass "a repository with no workflows directory is 'none', not an error" \
-  || { fail "a workflow-less repository errored ($rc)"; out; }
+{ [ "$rc" = "rc=0" ] && said 'stack=none' && said 'result=conformant' && ! said 'unrecognised-ci'; } \
+  && pass "a repository with no workflows at all is plainly 'none' — nothing to review" \
+  || { fail "an empty repository was flagged for review ($rc)"; out; }
 
 # --- two stacks in one repository needs a decision, not a guess -------------
 reset_wf; caller ci node-ci.yml a; caller ci helm-ci.yml b

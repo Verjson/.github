@@ -89,6 +89,7 @@ calls_in_file() { # $1 = repo, $2 = path
 
 conformant=0
 nonconformant=0
+needs_review=0
 
 classify_repo() {
   local repo="$1" stack='' ci_job='' changelog_job='' findings=() path kind job wf
@@ -140,6 +141,21 @@ classify_repo() {
   local pkg=no
   [ -n "$changelog_job" ] && pkg=yes
 
+  # `none` means "calls no reusable CI and defines no contract job". That is
+  # correct for a repository with no CI at all, and MISLEADING for one whose CI
+  # is simply local and unrecognised: the contract would require only `gate`
+  # there, so its real CI stops being a merge precondition. That under-requires
+  # rather than wedges, so it is a warning and not an error — but it is a
+  # silent safety regression if nobody looks, which is exactly the shape of
+  # defect this migration must not introduce.
+  local njobs=0
+  [ -n "$local_jobs" ] && njobs=$(grep -c . <<<"$local_jobs")
+  if [ "$stack" = none ] && [ "$njobs" -gt 0 ]; then
+    echo "::warning::phase=classify repo=$repo stack=none package=$pkg local_jobs=$njobs result=unrecognised-ci — defines jobs but calls no reusable CI; requiring only 'gate' here would make its existing CI advisory. Confirm it has nothing that should block a merge."
+    needs_review=$((needs_review + 1))
+    return 0
+  fi
+
   if [ "${#findings[@]}" -eq 0 ]; then
     echo "::notice::phase=classify repo=$repo stack=$stack package=$pkg result=conformant"
     conformant=$((conformant + 1))
@@ -155,5 +171,5 @@ while read -r repo; do
   [ -n "$repo" ] || continue
   classify_repo "$repo"
 done < <(repos)
-echo "::notice::phase=done conformant=$conformant nonconformant=$nonconformant"
+echo "::notice::phase=done conformant=$conformant nonconformant=$nonconformant needs_review=$needs_review"
 [ "$nonconformant" -eq 0 ]
