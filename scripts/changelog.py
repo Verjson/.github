@@ -41,6 +41,42 @@ class Fragment:
         )
 
 
+def unquote_scalar(value: str) -> str:
+    """Resolve a YAML-quoted scalar to the text it denotes.
+
+    Front matter is read line-wise rather than with a YAML library, because this
+    contract runs on the stdlib alone. That subset still has to cover quoting:
+    YAML *requires* a quoted scalar wherever a value contains `: `, which is the
+    shape of every conventional-commit title. Keeping the quotes as literal text
+    renders `## 'Fix: thing'` and penalises the one spelling a YAML parser
+    accepts, so the only correctly-written fragments are the ones that look
+    broken once released (#420).
+
+    A value that merely begins and ends with a quote is not a quoted scalar and
+    is returned untouched — truncating it would corrupt a title rather than
+    tidy it.
+    """
+    if len(value) < 2 or value[0] not in "'\"" or value[-1] != value[0]:
+        return value
+    quote, inner = value[0], value[1:-1]
+    index = 0
+    while index < len(inner):
+        if quote == '"' and inner[index] == "\\":
+            index += 2
+            continue
+        if inner[index] == quote:
+            # A single-quoted scalar escapes its quote by doubling it; anything
+            # else closes the scalar early, so this was never one scalar.
+            if quote == "'" and inner[index : index + 2] == "''":
+                index += 2
+                continue
+            return value
+        index += 1
+    if quote == "'":
+        return inner.replace("''", "'")
+    return inner.replace('\\"', '"').replace("\\\\", "\\")
+
+
 def parse_frontmatter(path: Path) -> tuple[dict[str, str], str]:
     text = path.read_text(encoding="utf-8")
     lines = text.splitlines()
@@ -58,7 +94,7 @@ def parse_frontmatter(path: Path) -> tuple[dict[str, str], str]:
         key = key.strip()
         if key in metadata:
             raise ChangelogError(f"{path}: duplicate metadata key {key!r}")
-        metadata[key] = value.strip()
+        metadata[key] = unquote_scalar(value.strip())
     return metadata, "\n".join(lines[end + 1 :]).strip() + "\n"
 
 

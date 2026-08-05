@@ -100,6 +100,63 @@ class ChangelogContractTests(unittest.TestCase):
         self.assertIn("_Date: 2026-07-30; issue #249_", rendered)
         self.assertNotIn("refs", rendered)
 
+    # YAML requires a quoted scalar wherever a value contains `: `, so every
+    # `Fix: …` title is quoted by anyone who checks their fragment parses. The
+    # line-wise parser kept the quotes, so those fragments — the correct ones —
+    # rendered `## 'Fix: …'` into an immutable released snapshot (#420).
+    def test_single_quoted_title_renders_without_its_quotes(self) -> None:
+        fragment(
+            self.root, "2026-07-30-issue-249-single.md", title="'Fix: the thing'"
+        )
+        rendered = changelog.render(list(changelog.fragments(self.root)))
+        self.assertIn("## Fix: the thing\n", rendered)
+        self.assertNotIn("'Fix", rendered)
+
+    def test_double_quoted_title_renders_without_its_quotes(self) -> None:
+        fragment(
+            self.root, "2026-07-30-issue-249-double.md", title='"Fix: the thing"'
+        )
+        rendered = changelog.render(list(changelog.fragments(self.root)))
+        self.assertIn("## Fix: the thing\n", rendered)
+        self.assertNotIn('"Fix', rendered)
+
+    def test_unquoted_title_containing_a_colon_is_unchanged(self) -> None:
+        fragment(self.root, "2026-07-30-issue-249-bare.md", title="Fix: the thing")
+        rendered = changelog.render(list(changelog.fragments(self.root)))
+        self.assertIn("## Fix: the thing\n", rendered)
+
+    def test_doubled_quote_inside_a_single_quoted_title_becomes_one_quote(self) -> None:
+        fragment(self.root, "2026-07-30-issue-249-esc.md", title="'It''s fixed'")
+        rendered = changelog.render(list(changelog.fragments(self.root)))
+        self.assertIn("## It's fixed\n", rendered)
+
+    def test_escaped_quote_inside_a_double_quoted_title_survives(self) -> None:
+        fragment(
+            self.root, "2026-07-30-issue-249-dq.md", title='"Say \\"go\\" once"'
+        )
+        rendered = changelog.render(list(changelog.fragments(self.root)))
+        self.assertIn('## Say "go" once\n', rendered)
+
+    # A title that merely opens and closes with a quote character is not a
+    # quoted scalar. Stripping by position rather than by structure would eat
+    # real characters and silently corrupt the heading.
+    def test_title_that_only_begins_and_ends_with_quotes_is_left_alone(self) -> None:
+        fragment(self.root, "2026-07-30-issue-249-pair.md", title='"a" and "b"')
+        rendered = changelog.render(list(changelog.fragments(self.root)))
+        self.assertIn('## "a" and "b"\n', rendered)
+
+    def test_lone_quote_inside_a_single_quoted_title_is_left_alone(self) -> None:
+        fragment(self.root, "2026-07-30-issue-249-lone.md", title="'a' or 'b'")
+        rendered = changelog.render(list(changelog.fragments(self.root)))
+        self.assertIn("## 'a' or 'b'\n", rendered)
+
+    # Quoting is legal on every scalar, not just the one that exposed the bug.
+    # A quoted identity used to reach `int()` with its quotes still attached.
+    def test_quoted_issue_number_still_identifies_the_entry(self) -> None:
+        fragment(self.root, "2026-07-30-issue-249-qid.md", issue="'249'")
+        rendered = changelog.render(list(changelog.fragments(self.root)))
+        self.assertIn("_Date: 2026-07-30; issue #249_", rendered)
+
     def test_refs_may_not_repeat_the_entry_own_issue(self) -> None:
         path = fragment(
             self.root, "2026-07-30-issue-249-self.md", issue="249", refs="249"
