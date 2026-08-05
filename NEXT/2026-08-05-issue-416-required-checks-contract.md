@@ -46,5 +46,21 @@ killed by exactly one named assertion. The subshell case was a real bug the test
 `core_contract_for`'s `exit 2` inside `< <(...)` never reached the caller, so an
 unclassified stack produced an empty contract and reported **conformant**.
 
+- **`scripts/classify-repo-stacks.sh`** answers the question sampling cannot. A reusable
+  call's check name is `<caller job> / <inner job>`; the org pins the right-hand side and
+  nothing pins the left. A repository calling `node-ci` from a job named `build` emits
+  `build / build-test`, so requiring `ci / build-test` wedges it — and its check history
+  looks perfectly healthy, because the checks are green and merely named something else.
+  Only reading the workflow files finds that, so this is a static scan needing no merge
+  history. It also detects repositories that DEFINE contract jobs instead of calling them:
+  scanning `uses:` alone classified this repository `none`, which would have made the one
+  repository holding the merge gate the one whose test suite was not a merge precondition.
+
+11 assertions in `scripts/classify-repo-stacks.test.sh`, all five guards mutation-verified.
+The stub itself carried the bug worth recording: `${*##pattern}` strips element-wise, so the
+fixture path resolved to `api`, every file read returned empty, and every repository
+classified as `none`. The suite failed loudly rather than agreeing with itself, which is the
+only reason it was found.
+
 Nothing is enforced by this change. ADR 0056 stands and the watchdog stays armed and
 load-bearing until the migration reaches its last step; this is step 2 of seven.
