@@ -11,9 +11,11 @@ name: fleet watchdog
 # `dispatch-merge` off the pool while it is set, which covers most of that. It
 # does NOT cover `ai-privileged-merge.yml`, which routes on
 # `VERJSON_LANE_PRIVILEGED`, and ADR 0053 is explicit that overflow is hosted
-# budget to be given back. `privileged_merge` is therefore the residual exposure
-# and the only thing this watchdog has ever preempted in production. ADR 0056
-# records why it is retained rather than retired (#341).
+# budget to be given back. `privileged_merge` is therefore the residual exposure,
+# and 3 of the 4 runs this watchdog has ever preempted were `AI privileged
+# merge`; the fourth was a `gate` on 2026-08-03, when `gate` was still on the
+# pool. ADR 0056 records why it is retained rather than retired (#341), and why
+# a candidate must now prove it holds a runner from the saturated pool.
 #
 # Runs on the FAST LANE: this repository is public, so these minutes are free,
 # and a watchdog that queued for a self-hosted runner would be waiting behind the
@@ -60,14 +62,23 @@ jobs:
           WATCHDOG_ORG: ${{ github.repository_owner }}
           # The single place the arm/disarm decision lives; the script carries no
           # default of its own and faults on anything it cannot read as a
-          # decision (#342). Dry run until an operator sets
-          # `VERJSON_RUNNER_OVERFLOW`-style opt-in via
-          # `VERJSON_WATCHDOG_DRY_RUN=false`, because #343 widened the rule that
-          # selects candidates and the widened rule has no production evidence
-          # behind it yet. `schedule` supplies no inputs, so this expression is
+          # decision (#342). `schedule` supplies no inputs, so this expression is
           # the only one on the path that matters — the `inputs.dry_run == false`
           # form that made the switch inert is gone.
-          WATCHDOG_DRY_RUN: ${{ vars.VERJSON_WATCHDOG_DRY_RUN || 'true' }}
+          #
+          # Armed, because this switch now governs only the 35-minute age rule,
+          # which is the rule with production evidence behind it (2026-08-03
+          # 05:59Z, four preemptions, jam cleared). Disarming it would have
+          # removed the only mitigation for a `privileged_merge` jam.
+          WATCHDOG_DRY_RUN: ${{ vars.VERJSON_WATCHDOG_DRY_RUN || 'false' }}
+          # The #343 poll-step rule is new and has no production evidence, so it
+          # reports only until an operator sets
+          # `VERJSON_WATCHDOG_POLL_STEP_DRY_RUN=false` after reading a few
+          # `DRY RUN would cancel` lines. Separate switch, not a second default
+          # for the same decision: the two rules carry different evidence, and a
+          # default that can only SUPPRESS a cancel cannot ship armed by drift
+          # the way #336 did.
+          WATCHDOG_POLL_STEP_DRY_RUN: ${{ vars.VERJSON_WATCHDOG_POLL_STEP_DRY_RUN || 'true' }}
           # Fallback for a poll workflow with no separable poll step, i.e.
           # `AI privileged merge`, whose 45-minute ceiling this still fits under.
           WATCHDOG_MIN_AGE_MINUTES: '35'

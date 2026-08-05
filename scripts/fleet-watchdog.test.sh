@@ -42,6 +42,9 @@ case "$*" in
     printf '%s\n' "${REPOS:-alpha}"; exit 0 ;;
   *"status=queued"*)   emit "$QUEUED_FILE"; exit 0 ;;
   *"status=in_progress"*) emit "$INPROGRESS_FILE"; exit 0 ;;
+  # The queued run and the in-progress run have separate job fixtures, so a case
+  # can make the queue want hosted capacity while the candidate holds the pool.
+  *"/runs/${QUEUED_RUN_ID:-9}/jobs"*) emit "$QUEUED_JOBS_FILE"; exit 0 ;;
   *"/jobs"*)           emit "$JOBS_FILE"; exit 0 ;;
 esac
 exit 0
@@ -77,6 +80,7 @@ run_watchdog() (
   export PATH="$tmp/bin:$PATH"
   export WATCHDOG_ORG=TestOrg WATCHDOG_MIN_AGE_MINUTES=35 WATCHDOG_MIN_POLL_MINUTES=10
   export WATCHDOG_DRY_RUN="${WATCHDOG_DRY_RUN:-false}"
+  export WATCHDOG_POLL_STEP_DRY_RUN="${WATCHDOG_POLL_STEP_DRY_RUN:-false}"
   export ACTIONLOG="$tmp/act.log"; : >"$ACTIONLOG"
   bash "$script" >"$tmp/out.txt" 2>&1
   printf 'rc=%s' "$?"
@@ -91,16 +95,29 @@ new_iso="$(date -u -d '2 minutes ago'  +%Y-%m-%dT%H:%M:%SZ)"
 # The gate names the step that polls; the watchdog reads that step's state
 # instead of inferring "waiting" from age (#343).
 POLL_STEP='Wait once for the rest of CI to be green'
-gate_job() { # $1 = started_at, $2 = poll step status
-  printf '{"jobs":[{"status":"in_progress","started_at":"%s","steps":[{"name":"%s","status":"%s"}]}]}\n' \
-    "$1" "$POLL_STEP" "$2"
+# A job's `.labels` is its requested `runs-on`. Only a job that actually holds a
+# runner from the saturated pool is worth preempting, so every fixture standing
+# for a pool-holding job carries the pool's labels.
+POOL_LABELS='"self-hosted","general"'
+poll_job() { # $1 = started_at — a workflow with no separable poll step
+  printf '{"jobs":[{"status":"in_progress","started_at":"%s","labels":[%s]}]}\n' \
+    "$1" "$POOL_LABELS"
 }
+gate_job() { # $1 = job started_at, $2 = poll step status, $3 = step started_at (default $1)
+  printf '{"jobs":[{"status":"in_progress","started_at":"%s","labels":[%s],"steps":[{"name":"%s","status":"%s","started_at":"%s"}]}]}\n' \
+    "$1" "$POOL_LABELS" "$POLL_STEP" "$2" "${3:-$1}"
+}
+
+queued_pool_job()   { printf '{"jobs":[{"status":"queued","labels":[%s]}]}\n' "$POOL_LABELS"; }
+queued_hosted_job() { printf '{"jobs":[{"status":"queued","labels":["ubuntu-24.04"]}]}\n'; }
 
 export RUNNERS_FILE="$tmp/runners.json" QUEUED_FILE="$tmp/queued.json"
 export INPROGRESS_FILE="$tmp/inprog.json" JOBS_FILE="$tmp/jobs.json"
+export QUEUED_JOBS_FILE="$tmp/queued-jobs.json"
 printf '{"workflow_runs":[{"id":1,"name":"AI privileged merge"}]}\n' >"$INPROGRESS_FILE"
 printf '{"workflow_runs":[{"id":9,"name":"CI"}]}\n' >"$QUEUED_FILE"
-printf '{"jobs":[{"status":"in_progress","started_at":"%s"}]}\n' "$old_iso" >"$JOBS_FILE"
+queued_pool_job >"$QUEUED_JOBS_FILE"
+poll_job "$old_iso" >"$JOBS_FILE"
 busy_pool >"$RUNNERS_FILE"
 
 # --- the one case where it SHOULD act ---------------------------------------
@@ -120,10 +137,10 @@ run_watchdog >/dev/null
 ! cancelled && pass "empty queue — a long poll harms nobody, cancels nothing" || fail "cancelled with nothing queued"
 printf '{"workflow_runs":[{"id":9,"name":"CI"}]}\n' >"$QUEUED_FILE"
 
-printf '{"jobs":[{"status":"in_progress","started_at":"%s"}]}\n' "$new_iso" >"$JOBS_FILE"
+poll_job "$new_iso" >"$JOBS_FILE"
 run_watchdog >/dev/null
 ! cancelled && pass "a young poll job is left alone" || fail "cancelled a job under the age threshold"
-printf '{"jobs":[{"status":"in_progress","started_at":"%s"}]}\n' "$old_iso" >"$JOBS_FILE"
+poll_job "$old_iso" >"$JOBS_FILE"
 
 # A CI run must never be a candidate, however long it has been going.
 printf '{"workflow_runs":[{"id":1,"name":"CI"}]}\n' >"$INPROGRESS_FILE"
@@ -198,19 +215,89 @@ run_watchdog >/dev/null
   && pass "a gate that has only just started polling is under the floor" \
   || fail "cancelled a gate below WATCHDOG_MIN_POLL_MINUTES"
 
+# The floor guards POLL age, not job age. A job that spent 88 minutes on
+# checkout and 2 minutes polling has not been in anyone's way for long enough.
+gate_job "$old_iso" in_progress "$new_iso" >"$JOBS_FILE"
+run_watchdog >/dev/null
+! cancelled \
+  && pass "an old job whose poll step just started is under the floor" \
+  || { fail "the floor read job age instead of poll-step age"; sed 's/^/diag - /' "$tmp/out.txt"; }
+
+# A step whose start time is missing cannot be aged, and unmeasurable is not a
+# licence to cancel.
+printf '{"jobs":[{"status":"in_progress","started_at":"%s","labels":[%s],"steps":[{"name":"%s","status":"in_progress"}]}]}\n' \
+  "$old_iso" "$POOL_LABELS" "$POLL_STEP" >"$JOBS_FILE"
+run_watchdog >/dev/null
+! cancelled \
+  && pass "a poll step with no start time is left alone, not cancelled on job age" \
+  || fail "an unmeasurable poll step authorised a cancel"
+
 # An unrecognised job shape must not be read as "polling".
-printf '{"jobs":[{"status":"in_progress","started_at":"%s","steps":[]}]}\n' "$old_iso" >"$JOBS_FILE"
+printf '{"jobs":[{"status":"in_progress","started_at":"%s","labels":[%s],"steps":[]}]}\n' "$old_iso" "$POOL_LABELS" >"$JOBS_FILE"
 run_watchdog >/dev/null
 ! cancelled \
   && pass "a gate whose poll step cannot be found is left alone, not cancelled on age" \
   || fail "an unreadable step list authorised a cancel"
 
 printf '{"workflow_runs":[{"id":1,"name":"AI privileged merge"}]}\n' >"$INPROGRESS_FILE"
-printf '{"jobs":[{"status":"in_progress","started_at":"%s"}]}\n' "$old_iso" >"$JOBS_FILE"
+poll_job "$old_iso" >"$JOBS_FILE"
 run_watchdog >/dev/null
 cancelled \
   && pass "a workflow with no separable poll step keeps the age rule" \
   || fail "the age fallback stopped selecting AI privileged merge"
+
+# --- a candidate must occupy the pool the jam is on -------------------------
+# `gate` routes on `VERJSON_RUNNER_OVERFLOW` (or `_FASTLANE` for public targets)
+# and both are `["ubuntu-24.04"]` today, so every `gate` in the org is on hosted
+# capacity. Cancelling one frees ZERO self-hosted runners: the jam survives, and
+# the PR pays for a full re-run of a job that was never holding the resource.
+hosted_gate_job() { # $1 = started_at, $2 = poll step status
+  printf '{"jobs":[{"status":"in_progress","started_at":"%s","labels":["ubuntu-24.04"],"steps":[{"name":"%s","status":"%s","started_at":"%s"}]}]}\n' \
+    "$1" "$POLL_STEP" "$2" "$1"
+}
+printf '{"workflow_runs":[{"id":1,"name":"AI review + auto-merge"}]}\n' >"$INPROGRESS_FILE"
+hosted_gate_job "$mid_iso" in_progress >"$JOBS_FILE"
+run_watchdog >/dev/null
+{ ! cancelled && grep -q 'stale_poll_jobs=0' "$tmp/out.txt"; } \
+  && pass "a hosted gate is not a candidate — cancelling it frees no self-hosted runner" \
+  || { fail "a hosted job was selected; cancelling it cannot clear a self-hosted jam"; sed 's/^/diag - /' "$tmp/out.txt"; }
+
+printf '{"workflow_runs":[{"id":1,"name":"AI privileged merge"}]}\n' >"$INPROGRESS_FILE"
+poll_job "$old_iso" >"$JOBS_FILE"
+
+# --- starvation has to be starvation OF THIS POOL ---------------------------
+# `status=queued` counts every queued run in the org, including runs queued for
+# hosted capacity. Those are not waiting on this pool and no cancellation here
+# can release them, so they are not evidence that a poll job is in anyone's way.
+queued_hosted_job >"$QUEUED_JOBS_FILE"
+run_watchdog >/dev/null
+{ ! cancelled && grep -q 'queued_runs=0' "$tmp/out.txt"; } \
+  && pass "a run queued for hosted capacity is not work starved by this pool" \
+  || { fail "a hosted queue was read as starvation of the self-hosted pool"; sed 's/^/diag - /' "$tmp/out.txt"; }
+queued_pool_job >"$QUEUED_JOBS_FILE"
+
+# --- the two selection rules carry different evidence, so they arm apart -----
+# The 35-minute age rule preempted four runs correctly in production. The #343
+# poll-step rule has never fired at all. Arming the proven one must not arm the
+# unproven one, and disarming the unproven one must not disarm the proven one.
+printf '{"workflow_runs":[{"id":1,"name":"AI review + auto-merge"}]}\n' >"$INPROGRESS_FILE"
+gate_job "$mid_iso" in_progress >"$JOBS_FILE"
+WATCHDOG_POLL_STEP_DRY_RUN=true run_watchdog >/dev/null
+{ ! cancelled && grep -q 'DRY RUN would cancel' "$tmp/out.txt"; } \
+  && pass "a poll-step candidate is reported, not cancelled, while its own rule is unarmed" \
+  || { fail "the unproven poll-step rule cancelled under WATCHDOG_POLL_STEP_DRY_RUN=true"; sed 's/^/diag - /' "$tmp/out.txt"; }
+
+printf '{"workflow_runs":[{"id":1,"name":"AI privileged merge"}]}\n' >"$INPROGRESS_FILE"
+poll_job "$old_iso" >"$JOBS_FILE"
+WATCHDOG_POLL_STEP_DRY_RUN=true run_watchdog >/dev/null
+cancelled \
+  && pass "the proven age rule still cancels while the poll-step rule is unarmed" \
+  || { fail "disarming the poll-step rule also disarmed the age rule — the only mitigation for a privileged_merge jam"; sed 's/^/diag - /' "$tmp/out.txt"; }
+
+rc="$(WATCHDOG_POLL_STEP_DRY_RUN=yes run_watchdog)"
+{ [ "$rc" = "rc=2" ] && ! cancelled; } \
+  && pass "an unparseable WATCHDOG_POLL_STEP_DRY_RUN is a fault, never treated as armed" \
+  || fail "WATCHDOG_POLL_STEP_DRY_RUN=yes did not fail closed ($rc)"
 
 # --- #355: the runner list is paginated -------------------------------------
 busy_pool_2pages >"$RUNNERS_FILE"
@@ -244,6 +331,43 @@ if [ -f "$gate_wf" ]; then
     || fail "poll step '$default_step' is not a step in ai-review-merge.yml — the #343 rule would silently fall back to age"
 else
   fail "could not locate ai-review-merge.yml to pin the poll step name"
+fi
+
+# The workflow DISPLAY names are the same kind of contract. `POLL_WORKFLOWS`
+# selects candidates by `name:`, so renaming either workflow makes the filter
+# match nothing: the watchdog finds zero candidates forever, silently, with
+# every test still green. Pin each name to a workflow that actually carries it.
+workflows_dir="$here/../.github/workflows"
+default_workflows="$(grep -o 'WATCHDOG_POLL_WORKFLOWS:-[^}]*' "$script" | head -n 1 | sed 's/^[^-]*-//')"
+if [ -n "$default_workflows" ]; then
+  missing=""
+  while IFS= read -r wf_name; do
+    [ -n "$wf_name" ] || continue
+    grep -rqFx -- "name: $wf_name" "$workflows_dir" || missing="$missing '$wf_name'"
+  done < <(printf '%s\n' "$default_workflows" | tr '|' '\n')
+  [ -z "$missing" ] \
+    && pass "every POLL_WORKFLOWS name is still the display name of a real workflow" \
+    || fail "no workflow is named$missing — POLL_WORKFLOWS would match nothing and the watchdog would find zero candidates forever"
+else
+  fail "could not read the POLL_WORKFLOWS default out of $script"
+fi
+
+# --- the arm/disarm decision is a workflow-level contract (#342) ------------
+# The script deliberately carries no default, so these two expressions are the
+# ONLY place that decides whether cancelling is authorised — and nothing else
+# guards them. #336 shipped armed by exactly this drift. Pin them literally:
+# the age rule (35 minutes, the one with production evidence) stays armed; the
+# poll-step rule widened by #343 reports only until it earns the same evidence.
+watchdog_wf="$workflows_dir/fleet-watchdog.yml"
+if [ -f "$watchdog_wf" ]; then
+  grep -qF "WATCHDOG_DRY_RUN: \${{ vars.VERJSON_WATCHDOG_DRY_RUN || 'false' }}" "$watchdog_wf" \
+    && pass "the proven age path is armed by default in fleet-watchdog.yml" \
+    || fail "the WATCHDOG_DRY_RUN default in fleet-watchdog.yml is not the pinned 'false' — the arm/disarm decision has drifted with nothing else guarding it"
+  grep -qF "WATCHDOG_POLL_STEP_DRY_RUN: \${{ vars.VERJSON_WATCHDOG_POLL_STEP_DRY_RUN || 'true' }}" "$watchdog_wf" \
+    && pass "the widened poll-step path is report-only by default in fleet-watchdog.yml" \
+    || fail "the WATCHDOG_POLL_STEP_DRY_RUN default in fleet-watchdog.yml is not the pinned 'true' — the rule with no production evidence would cancel"
+else
+  fail "could not locate fleet-watchdog.yml to pin the dry-run defaults"
 fi
 
 [ "$fails" -eq 0 ] && { echo "All tests passed."; exit 0; }

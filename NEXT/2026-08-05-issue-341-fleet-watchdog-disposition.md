@@ -10,26 +10,45 @@ disposition is **keep and fix**, recorded in
 
 Evidence: across 27 scheduled runs (2026-08-03..05) the watchdog reached a saturated pool
 with queued work five times. Once it preempted 4 of 4 candidates and cleared a jam with 35
-runs queued behind it — every one an `AI privileged merge`. The other four times, including
+runs queued behind it. 3 of those 4 were an `AI privileged merge`; the fourth was a `gate`
+(`verjson-infra` run `30786453794`, age 37m, in the log of run `30788707438`), reachable
+only because `gate` was still on the pool on 2026-08-03, before ADR 0053's overflow lane
+landed on 2026-08-05. The other four times, including
 one with 101 runs queued, it found nothing to preempt. #341's replacement mechanism does not
 hold as written: the gate polls the commit check-runs **and commit statuses** rollup
 (`ai-review-merge.yml:700-704`), including `renovate/stability-days`, none of which emit a
 `workflow_run` event. Meanwhile ADR 0053's `VERJSON_RUNNER_OVERFLOW` already moves `gate` off
 the pool, but not `ai-privileged-merge.yml`, which routes on `VERJSON_LANE_PRIVILEGED` — so
-`privileged_merge` is the residual exposure and the only thing the watchdog has ever
-preempted.
+`privileged_merge` is the residual exposure and the only poll job still on the pool.
 
+- **Candidates must prove they hold the pool.** Selecting by poll state alone selected jobs
+  that were not on the saturated pool at all: `gate` routes on `VERJSON_RUNNER_OVERFLOW` /
+  `VERJSON_RUNNER_FASTLANE`, both `["ubuntu-24.04"]`, so cancelling one frees zero
+  self-hosted runners, leaves the jam in place and makes the PR re-pay for CI and (per #292)
+  for the model review. A candidate's `.labels` must now carry both `self-hosted` and the
+  pool label. Same class at the precondition: a queued run counts as starved work only when
+  one of its own `queued` jobs asks for this pool, instead of every queued run in the org.
 - **#342** — `scripts/fleet-watchdog.sh` carries no default for `WATCHDOG_DRY_RUN`; unset or
-  unparseable is a fault, never an implicit licence to cancel. The org default in
-  `fleet-watchdog.yml` is now `'true'` (report only). This **disarms** the watchdog until an
-  operator sets `VERJSON_WATCHDOG_DRY_RUN=false`, deliberately, because #343 widens the rule
-  that selects candidates. Correcting #336's fragment, which claimed a dry-run default the
-  code never had.
+  unparseable is a fault, never an implicit licence to cancel. The two selection rules now
+  arm separately, because they carry different evidence: `WATCHDOG_DRY_RUN` defaults to
+  `'false'` (**armed**) and governs only the proven 35-minute age rule, while the new
+  `WATCHDOG_POLL_STEP_DRY_RUN` defaults to `'true'` (report only) and governs the #343
+  poll-step rule until an operator sets `VERJSON_WATCHDOG_POLL_STEP_DRY_RUN=false`. Both
+  expressions are pinned literally by `fleet-watchdog.test.sh`, since nothing else guards
+  them, and the new key is admitted explicitly to the exact env allowlist in
+  `scripts/ci-gate/privileged-scheduled-workflows.test.py`. Correcting #336's fragment,
+  which claimed a dry-run default the code never had.
+- **Silent-failure names are pinned.** The `POLL_WORKFLOWS` display names are matched against
+  `name:` in `ai-review-merge.yml` / `ai-privileged-merge.yml`; renaming either would make
+  the filter match nothing and the watchdog would find zero candidates forever with every
+  test green. `fleet-watchdog.test.sh` now pins those two names alongside the poll step name.
 - **#343** — preemptability is now read as a state, not inferred from age. A `gate` whose
   `Wait once for the rest of CI to be green` step is `in_progress` is provably polling and
   preemptable past a 10-minute floor; once that step completes it is spending model-review
   budget and is never a candidate at any age. `AI privileged merge` has no separable poll
-  step and keeps the 35-minute rule. The floor is passed as `WATCHDOG_MIN_POLL_MINUTES`, so
+  step and keeps the 35-minute rule. The floor measures the POLL step's own `started_at`,
+  not job age, so a job that spent 40 minutes on checkout and 30 seconds polling is not a
+  candidate. The floor is passed as `WATCHDOG_MIN_POLL_MINUTES`, so
   the privileged-scheduled-workflow env allowlist in
   `scripts/ci-gate/privileged-scheduled-workflows.test.py` admits it explicitly — the
   allowlist stays exact, it is not relaxed.

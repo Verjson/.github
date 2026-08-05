@@ -81,6 +81,7 @@ def validate_watchdog(document: object) -> None:
             "GH_TOKEN",
             "WATCHDOG_ORG",
             "WATCHDOG_DRY_RUN",
+            "WATCHDOG_POLL_STEP_DRY_RUN",
             "WATCHDOG_MIN_AGE_MINUTES",
             "WATCHDOG_MIN_POLL_MINUTES",
         },

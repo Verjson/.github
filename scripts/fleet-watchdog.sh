@@ -24,8 +24,11 @@
 #      left `ci_wait` for the model review is not, at any age (#343). Only a
 #      workflow with no separable poll step falls back to MIN_AGE_MINUTES.
 #   3. Self-hosted capacity is actually exhausted (no idle runner).
-#   4. Something is actually queued behind it. With an empty queue a long poll
-#      harms nobody and is left alone.
+#   4. The job PROVABLY holds a runner from that pool — its `runs-on` labels
+#      include `self-hosted` and the pool label. A job on hosted capacity can be
+#      polling for an hour and cancelling it frees nothing.
+#   5. Something is actually queued FOR THAT POOL behind it. With an empty queue,
+#      or a queue that only wants hosted runners, a long poll harms nobody.
 #
 # Cancelling is safe and reversible: the merge is atomic and happens at the END
 # of the poll, so a cancelled run has not half-merged anything, and the next
@@ -36,8 +39,12 @@
 # `VERJSON_RUNNER_OVERFLOW` moves `gate`/`dispatch-merge` off the pool, but it
 # does NOT cover `ai-privileged-merge.yml` (which routes on
 # `VERJSON_LANE_PRIVILEGED`), and it is explicitly a budget that will be given
-# back. `privileged_merge` is both the residual exposure and the only thing this
-# watchdog has ever preempted in production.
+# back. `privileged_merge` is therefore the residual exposure, and 3 of the 4
+# runs this watchdog has ever preempted were `AI privileged merge`. The fourth
+# was a `gate` (verjson-infra run 30786453794, 2026-08-03), reachable only
+# because `gate` was still on the pool before ADR 0053 landed on 2026-08-05.
+# That is why rule 4 exists: a `gate` today is on hosted capacity, so selecting
+# one would burn a PR's CI and model-review budget (#292) and free no runner.
 set -uo pipefail
 
 ORG="${WATCHDOG_ORG:-Verjson}"
@@ -76,6 +83,20 @@ case "$DRY_RUN" in
   true | false) ;;
   '') die "WATCHDOG_DRY_RUN is unset — refusing to guess whether cancelling is authorised. Set it to 'true' (report only) or 'false' (cancel)." ;;
   *)  die "WATCHDOG_DRY_RUN must be exactly 'true' or 'false', got '$DRY_RUN' — refusing to cancel on an ambiguous switch." ;;
+esac
+
+# The two selection rules carry different evidence, so they arm separately. The
+# 35-minute age rule preempted four runs correctly on 2026-08-03 and is the only
+# mitigation for a `privileged_merge` jam; disarming it to buy caution about a
+# DIFFERENT rule would have removed a proven backstop. The #343 poll-step rule
+# has never fired in production, so it reports only until an operator has read
+# its `DRY RUN would cancel` lines. Unlike WATCHDOG_DRY_RUN this one may be
+# unset: its default can only SUPPRESS a cancellation, so it cannot ship armed
+# by the drift that #336 hit. An unparseable value is still a fault.
+POLL_STEP_DRY_RUN="${WATCHDOG_POLL_STEP_DRY_RUN:-true}"
+case "$POLL_STEP_DRY_RUN" in
+  true | false) ;;
+  *) die "WATCHDOG_POLL_STEP_DRY_RUN must be exactly 'true' or 'false', got '$POLL_STEP_DRY_RUN' — refusing to cancel on an ambiguous switch." ;;
 esac
 
 now_epoch="$(date -u +%s)" || die "could not read the clock"
@@ -141,18 +162,46 @@ declare -a candidates=()
 while IFS= read -r repo; do
   [ -n "$repo" ] || continue
 
-  # Anything queued in this repository counts as starved work.
-  q="$(gh api "repos/$ORG/$repo/actions/runs?status=queued&per_page=100" 2>/dev/null \
-        | jq -r '[.workflow_runs[]?] | length' 2>/dev/null)" || q=0
-  [[ "$q" =~ ^[0-9]+$ ]] || q=0
-  queued=$((queued + q))
+  # Starved work has to be starved BY THIS POOL. Counting every queued run in
+  # the organisation counts runs queued for hosted capacity too, and no
+  # cancellation here can release one of those — so a hosted queue is not
+  # evidence that a poll job is standing in anyone's way. A run counts only when
+  # one of its own queued jobs asks for this pool. That costs one extra API call
+  # per queued run (observed peak: 101), which fits the job's 10-minute budget;
+  # an unreadable job list is not counted, because over-counting the queue is
+  # what authorises cancelling.
+  while IFS= read -r q_id; do
+    [ -n "$q_id" ] || continue
+    q_jobs="$(gh api "repos/$ORG/$repo/actions/runs/$q_id/jobs" 2>/dev/null)" || continue
+    jq -e --arg pool "$RUNNER_LABEL" '
+      any(.jobs[]?;
+          .status == "queued"
+          and ([.labels[]?] | index("self-hosted") | type == "number")
+          and ([.labels[]?] | index($pool) | type == "number"))' \
+      <<<"$q_jobs" >/dev/null 2>&1 && queued=$((queued + 1))
+  done < <(gh api "repos/$ORG/$repo/actions/runs?status=queued&per_page=100" 2>/dev/null \
+             | jq -r '.workflow_runs[]?.id' 2>/dev/null)
 
   # ...and any poll job that is provably sleeping is a candidate to yield its
   # runner.
   while IFS=$'\t' read -r run_id wf_name; do
     [ -n "$run_id" ] || continue
     jobs_json="$(gh api "repos/$ORG/$repo/actions/runs/$run_id/jobs" 2>/dev/null)" || continue
-    job="$(jq -c '[.jobs[]? | select(.status == "in_progress")] | first // empty' \
+    # A candidate must PROVABLY hold a runner from the pool this is freeing.
+    # Selecting on poll state alone selects jobs that are not on the pool at
+    # all: `gate` routes on `VERJSON_RUNNER_OVERFLOW`/`_FASTLANE`, both
+    # `["ubuntu-24.04"]` today, so every `gate` in the org is on hosted
+    # capacity. Cancelling one frees no self-hosted runner — the jam survives
+    # and the PR pays for a full re-run (and, per #292, a re-run of the model
+    # review too). `.labels` is the job's requested `runs-on`, so require both
+    # `self-hosted` and the pool label: a self-hosted job in a DIFFERENT pool
+    # also frees nothing here. Missing/odd labels select nothing, which is the
+    # fail-closed direction.
+    job="$(jq -c --arg pool "$RUNNER_LABEL" '
+      [ .jobs[]?
+      | select(.status == "in_progress")
+      | select([.labels[]?] | index("self-hosted"))
+      | select([.labels[]?] | index($pool)) ] | first // empty' \
       <<<"$jobs_json" 2>/dev/null)"
     [ -n "$job" ] || continue
     started="$(jq -r '.started_at // empty' <<<"$job" 2>/dev/null)"
@@ -168,34 +217,43 @@ while IFS= read -r repo; do
     # instead of guessing from the clock.
     poll_step="$(poll_step_for "$wf_name")"
     if [ -n "$poll_step" ]; then
-      poll_state="$(jq -r --arg s "$poll_step" \
-        '([.steps[]? | select(.name == $s)] | first | .status) // "absent"' \
-        <<<"$job" 2>/dev/null)" || poll_state=absent
+      # Read the step's own `status` AND its own `started_at`: the floor is
+      # meant to be "has been polling long enough to matter", and job age
+      # answers a different question — a job that spent 40 minutes on checkout
+      # and 30 seconds polling is not what the floor is protecting against.
+      read -r poll_state poll_started < <(jq -r --arg s "$poll_step" \
+        '([.steps[]? | select(.name == $s)] | first) as $st
+         | "\($st.status // "absent") \($st.started_at // "-")"' \
+        <<<"$job" 2>/dev/null) || { poll_state=absent; poll_started=-; }
       # `completed` means the job is past `ci_wait` and into the review; `absent`
       # means it has not reached the poll yet, or the shape changed and we cannot
       # tell. Both are "leave it alone" — the fail-closed direction here is fewer
       # cancellations.
       [ "$poll_state" = in_progress ] || continue
-      [ "$age" -ge "$MIN_POLL_MINUTES" ] || continue
+      [ "$poll_started" != - ] || continue
+      poll_started_epoch="$(date -u -d "$poll_started" +%s 2>/dev/null)" || continue
+      poll_age=$(( (now_epoch - poll_started_epoch) / 60 ))
+      [ "$poll_age" -ge "$MIN_POLL_MINUTES" ] || continue
+      rule=poll
     else
       [ "$age" -ge "$MIN_AGE_MINUTES" ] || continue
+      rule=age
     fi
-    candidates+=("$repo|$run_id|$age|$wf_name")
-    # Exact membership, NOT a regex: the workflow is literally named
-    # "AI review + auto-merge", and `+` is a quantifier — `test()` on that name
-    # matches nothing, so a regex form silently finds zero candidates and the
-    # watchdog quietly never fires.
-    # `gh api --jq` takes a filter but NOT `--arg`, so fetch raw and let real jq
-    # bind the name list. Exact membership, NOT a regex: the workflow is literally
-    # named "AI review + auto-merge" and `+` is a quantifier, so `test()` on that
-    # name matches nothing — a regex form silently finds zero candidates and the
-    # watchdog quietly never fires.
+    candidates+=("$repo|$run_id|$age|$wf_name|$rule")
   done < <(gh api "repos/$ORG/$repo/actions/runs?status=in_progress&per_page=50" 2>/dev/null \
              | jq -r --arg names "$POLL_WORKFLOWS" \
-                 '.workflow_runs[]? | select(.name | IN($names | split("|")[])) | "\(.id)\t\(.name)"' 2>/dev/null)
+                 '.workflow_runs[]?
+                  # Exact membership, NOT a regex: the workflow is literally named
+                  # "AI review + auto-merge" and `+` is a quantifier, so `test()`
+                  # on that name matches nothing — a regex form silently finds
+                  # zero candidates and the watchdog quietly never fires. (`gh api
+                  # --jq` takes a filter but not `--arg`, which is why the name
+                  # list is bound by real jq here.)
+                  | select(.name | IN($names | split("|")[]))
+                  | "\(.id)\t\(.name)"' 2>/dev/null)
 done <<<"$repos"
 
-note "queued_runs=$queued stale_poll_jobs=${#candidates[@]} min_age_minutes=$MIN_AGE_MINUTES min_poll_minutes=$MIN_POLL_MINUTES dry_run=$DRY_RUN"
+note "queued_runs=$queued stale_poll_jobs=${#candidates[@]} min_age_minutes=$MIN_AGE_MINUTES min_poll_minutes=$MIN_POLL_MINUTES dry_run=$DRY_RUN poll_step_dry_run=$POLL_STEP_DRY_RUN"
 
 # --- 3. Only intervene when something is actually starved -------------------
 if [ "${#candidates[@]}" -eq 0 ]; then
@@ -210,9 +268,11 @@ fi
 # --- 4. Preempt ---------------------------------------------------------------
 cancelled=0
 for entry in "${candidates[@]}"; do
-  IFS='|' read -r repo run_id age wf_name <<<"$entry"
-  if [ "$DRY_RUN" = true ]; then
-    note "DRY RUN would cancel $repo run=$run_id age=${age}m workflow='$wf_name'"
+  IFS='|' read -r repo run_id age wf_name rule <<<"$entry"
+  # Report-only when the global switch is off, or when this candidate was
+  # selected by the poll-step rule while that rule is still unarmed.
+  if [ "$DRY_RUN" = true ] || { [ "$rule" = poll ] && [ "$POLL_STEP_DRY_RUN" = true ]; }; then
+    note "DRY RUN would cancel $repo run=$run_id age=${age}m workflow='$wf_name' rule=$rule"
     cancelled=$((cancelled + 1))
     continue
   fi
