@@ -160,6 +160,44 @@ than by convention.
 waits for them waits for itself. They are excluded from every tier, in both
 install shapes.
 
+### Survey: the contract covers a minority of the organization
+
+Measured with `scripts/classify-repo-stacks.sh` on 2026-08-05, across 91
+non-archived repositories:
+
+| Result | Count | Meaning |
+| --- | --- | --- |
+| conformant | 40 | emits its stack's contexts under canonical caller names |
+| **nonconformant** | **6** | calls a reusable CI workflow from a non-canonical job, so the contract would wedge it |
+| **unrecognised CI** | **45** | defines real workflow jobs but calls no reusable CI at all |
+
+Stacks: 18 `node`, 2 `actions`, 1 each `ui` / `helm` / `pulumi`. **18 of 91 are
+on the changelog contract.**
+
+The 45 are the finding that matters, and they were invisible until `none` was
+split from "no CI at all". They are not empty repositories — `scv-k8s` defines
+53 jobs, `scv-iac` 34, `verjson-observability` 16. Requiring only `gate` there
+would take repositories with substantial CI and make that CI **advisory**: their
+merges would stop waiting for the checks they wait for today, silently, with no
+PR failing to announce it.
+
+So the two-tier model holds but its second tier cannot be empty for these. Each
+of the 45 needs one of:
+
+1. **Adopt a reusable stack workflow** — brings it into the contract, and is the
+   direction the org is already travelling.
+2. **Declare its own required checks** at repository scope — legitimate as a
+   transitional mechanism for a repository the contract does not describe. Note
+   this is *deriving* required checks from what a repository emits, rejected
+   above as organizational policy; it is acceptable here precisely because it is
+   scoped to one repository and explicitly transitional, not a rule for the org.
+3. **Confirm it genuinely has no merge-blocking CI** — true for template and
+   docs repositories, and it must be a decision on the record rather than a
+   default nobody noticed.
+
+Only the owner of each repository can make that call, which is why the audit
+reports and does not decide.
+
 ## Migration order is the load-bearing part
 
 **Per-repository required checks must land before the gate stops waiting.**
