@@ -36,6 +36,8 @@ def fragment(
     title: str = "Contract",
     identity_id: str | None = None,
     refs: str | None = None,
+    summary: str | None = None,
+    body: str = "Body.",
 ) -> Path:
     path = root / "NEXT" / name
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -46,10 +48,27 @@ def fragment(
         lines.append(f"issue: {issue}")
     if refs is not None:
         lines.append(f"refs: {refs}")
+    if summary is not None:
+        lines.append(f"summary: {summary}")
     lines.append(f"title: {title}")
-    body = "\n".join(lines)
-    path.write_text(f"---\n{body}\n---\n\nBody.\n", encoding="utf-8")
+    front = "\n".join(lines)
+    path.write_text(f"---\n{front}\n---\n\n{body}\n", encoding="utf-8")
     return path
+
+
+# A real lead is wrapped prose, not one line — the median across the release
+# that prompted #426 was six lines. A split on the newline rather than the
+# blank line would keep only "The lead paragraph," and pass a one-line fixture.
+DIARY = """The lead paragraph,
+which is what a release note needs.
+
+## Why
+
+A long argument nobody reading release notes asked for.
+
+- a list
+- another item
+"""
 
 
 class ChangelogContractTests(unittest.TestCase):
@@ -215,14 +234,14 @@ class ChangelogContractTests(unittest.TestCase):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(
             "---\ndate: 2026-07-30\nissue: 249\ntitle: Forward\n"
-            "summary: a key this contract does not know\n---\n\nBody.\n",
+            "impact: a key this contract does not know\n---\n\nBody.\n",
             encoding="utf-8",
         )
         stderr = io.StringIO()
         with contextlib.redirect_stderr(stderr):
             entry = changelog.load_canonical(path)
         self.assertEqual(entry.metadata["title"], "Forward")
-        self.assertIn("summary", stderr.getvalue())
+        self.assertIn("impact", stderr.getvalue())
 
     def test_an_unknown_key_does_not_become_a_renderable_field(self) -> None:
         # Tolerating the key must not mean honouring it. An older contract that
@@ -232,7 +251,7 @@ class ChangelogContractTests(unittest.TestCase):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(
             "---\ndate: 2026-07-30\nissue: 249\ntitle: Forward\n"
-            "summary: SHOULD-NOT-APPEAR\n---\n\nBody.\n",
+            "impact: SHOULD-NOT-APPEAR\n---\n\nBody.\n",
             encoding="utf-8",
         )
         with contextlib.redirect_stderr(io.StringIO()):
@@ -358,6 +377,120 @@ class ChangelogContractTests(unittest.TestCase):
         rendered = changelog.render(changelog.fragments(self.root))
 
         self.assertLess(rendered.index("## Newer"), rendered.index("## Older"))
+
+    # --- two audiences, two renderings (#426) ----------------------------------
+    # The org convention asks a fragment to carry its rationale, so one renderer
+    # shipped the engineering diary as release notes: 174 KB for 62 entries in
+    # the first release cut under this contract, and a released snapshot cannot
+    # be edited afterwards.
+
+    def test_a_released_snapshot_keeps_the_lead_and_drops_the_argument(self) -> None:
+        fragment(self.root, "2026-07-30-issue-249-diary.md", body=DIARY)
+
+        released = changelog.render(changelog.fragments(self.root), released=True)
+
+        self.assertIn("The lead paragraph,\nwhich is what a release note needs.", released)
+        self.assertNotIn("## Why", released)
+        self.assertNotIn("- a list", released)
+
+    def test_the_running_log_still_carries_the_whole_body(self) -> None:
+        fragment(self.root, "2026-07-30-issue-249-diary.md", body=DIARY)
+
+        rendered = changelog.render(changelog.fragments(self.root))
+
+        self.assertIn("## Why", rendered)
+        self.assertIn("- a list", rendered)
+
+    def test_a_lead_that_merely_looks_like_a_heading_is_left_whole(self) -> None:
+        # The lead is a plain blank-line split on purpose. Detecting block types
+        # to find "real" prose flagged 7 of 62 entries that open like this one,
+        # none of which is a heading in CommonMark.
+        fragment(
+            self.root,
+            "2026-07-30-issue-249-hash.md",
+            body="#79 threaded its own reply, so the poller never woke.\n\n## Why\n\nLong.\n",
+        )
+
+        released = changelog.render(changelog.fragments(self.root), released=True)
+
+        self.assertIn("#79 threaded its own reply, so the poller never woke.", released)
+        self.assertNotIn("## Why", released)
+
+    def test_summary_overrides_the_lead_for_the_released_form(self) -> None:
+        fragment(
+            self.root,
+            "2026-07-30-issue-249-diary.md",
+            summary="Poller now wakes on threaded replies.",
+            body=DIARY,
+        )
+
+        released = changelog.render(changelog.fragments(self.root), released=True)
+
+        self.assertIn("Poller now wakes on threaded replies.", released)
+        self.assertNotIn("The lead paragraph", released)
+
+    def test_summary_does_not_touch_the_running_log(self) -> None:
+        # `summary` is a release-note override, not a replacement for the diary.
+        fragment(
+            self.root,
+            "2026-07-30-issue-249-diary.md",
+            summary="Poller now wakes on threaded replies.",
+            body=DIARY,
+        )
+
+        rendered = changelog.render(changelog.fragments(self.root))
+
+        self.assertIn("## Why", rendered)
+        self.assertNotIn("Poller now wakes on threaded replies.", rendered)
+
+    def test_a_summary_that_is_an_empty_quoted_scalar_is_rejected(self) -> None:
+        # `summary:` with nothing after it never reaches validation — the line
+        # parser rejects a blank value. `summary: ''` does: it is a well-formed
+        # line whose scalar resolves to nothing, and it would silently blank the
+        # entry's only released text.
+        fragment(self.root, "2026-07-30-issue-249-blank.md", summary="''", body=DIARY)
+
+        with self.assertRaisesRegex(changelog.ChangelogError, "summary must not be empty"):
+            changelog.fragments(self.root)
+
+    def test_an_ambiguously_quoted_summary_is_rejected_by_name(self) -> None:
+        # It reaches the immutable snapshot exactly as the title does, so it is
+        # held to the same standard, and the error says which field is wrong.
+        fragment(
+            self.root,
+            "2026-07-30-issue-249-quoted.md",
+            summary='"go" is now "vet"',
+        )
+
+        with self.assertRaisesRegex(changelog.ChangelogError, "summary opens and closes"):
+            changelog.fragments(self.root)
+
+    def test_release_writes_the_released_form_not_the_diary(self) -> None:
+        self.init_git()
+        fragment(self.root, "2026-07-30-issue-249-diary.md", body=DIARY)
+        self.commit_all("initial")
+
+        changelog.release(self.root, "v1.0.0", [])
+
+        snapshot = (self.root / "CHANGELOG/v1.0.0.md").read_text(encoding="utf-8")
+        self.assertIn("The lead paragraph,\nwhich is what a release note needs.", snapshot)
+        self.assertNotIn("## Why", snapshot)
+        self.assertIn("_Date: 2026-07-30; issue #249_", snapshot)
+
+    def test_render_next_can_show_the_released_shape_before_it_is_immutable(self) -> None:
+        fragment(self.root, "2026-07-30-issue-249-diary.md", body=DIARY)
+
+        preview = run(
+            self.root, sys.executable, str(MODULE_PATH), "render-next",
+            "--repo-root", str(self.root), "--as-released",
+        )
+        diary = run(
+            self.root, sys.executable, str(MODULE_PATH), "render-next",
+            "--repo-root", str(self.root),
+        )
+
+        self.assertNotIn("## Why", preview)
+        self.assertIn("## Why", diary)
 
     def test_release_creates_one_snapshot_consumes_fragment_and_tags_commit(self) -> None:
         self.init_git()
