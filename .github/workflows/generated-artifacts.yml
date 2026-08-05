@@ -1,0 +1,142 @@
+name: generated artifacts
+
+on:
+  workflow_call:
+    inputs:
+      adr-index:
+        description: Check that docs/decisions/README.md matches scripts/gen-adr-index.sh
+        required: false
+        type: boolean
+        default: false
+      changelog:
+        description: Validate the canonical changelog fragments and their renderability
+        required: false
+        type: boolean
+        default: false
+      contract_ref:
+        description: Immutable Verjson/.github commit carrying the changelog contract; required when changelog is true
+        required: false
+        type: string
+        default: ''
+      legacy_dir:
+        description: Temporary former unreleased-fragment directory
+        required: false
+        type: string
+        default: ''
+      runner:
+        description: Optional JSON runner labels; Verjson defaults by visibility, external callers use ubuntu-24.04.
+        required: false
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ${{ inputs.runner != '' && fromJSON(inputs.runner) || github.repository_owner != 'Verjson' && 'ubuntu-24.04' || github.event.repository.private == true && fromJSON(vars.VERJSON_LANE_TRUSTED || vars.VERJSON_LANE_FALLBACK || '["ubuntu-24.04"]') || fromJSON(vars.VERJSON_LANE_UNTRUSTED || vars.VERJSON_LANE_FALLBACK || '["ubuntu-24.04"]') }}
+    timeout-minutes: 10
+    steps:
+      - name: Check out consumer
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+      - name: Check out canonical contract
+        if: inputs.changelog
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: Verjson/.github
+          ref: ${{ inputs.contract_ref }}
+          path: .changelog-contract
+      - name: Validate generated artifacts
+        id: validate
+        env:
+          RUN_ADR_INDEX: ${{ inputs.adr-index }}
+          RUN_CHANGELOG: ${{ inputs.changelog }}
+          CONTRACT_REF: ${{ inputs.contract_ref }}
+          LEGACY_DIR: ${{ inputs.legacy_dir }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -uo pipefail
+
+          failures=0
+          enabled=0
+
+          # One report shape for every artifact, so a consumer reads the same
+          # annotation whichever check failed: what is out of date, why, and the
+          # single command that regenerates it.
+          report() { # report <artifact> <reason> <remedy>
+            printf '::error title=Generated artifact out of date: %s::%s Re-run: %s\n' "$1" "$2" "$3"
+            {
+              printf '### %s is out of date\n\n%s\n\n' "$1" "$2"
+              printf 'Re-run the generator and commit the result:\n\n    %s\n\n' "$3"
+            } >>"${GITHUB_STEP_SUMMARY:-/dev/null}"
+            failures=$((failures + 1))
+          }
+
+          # A check the caller opted into but whose generator is absent is a
+          # caller mistake, not a clean repository. Reported separately from
+          # "stale" so nobody is sent to re-run a script that is not there.
+          unavailable() { # unavailable <artifact> <reason>
+            printf '::error title=Generated artifact check unavailable: %s::%s\n' "$1" "$2"
+            printf '### %s could not be checked\n\n%s\n\n' "$1" "$2" \
+              >>"${GITHUB_STEP_SUMMARY:-/dev/null}"
+            failures=$((failures + 1))
+          }
+
+          if [ "$RUN_ADR_INDEX" = "true" ]; then
+            enabled=$((enabled + 1))
+            if [ ! -f "$GITHUB_WORKSPACE/scripts/gen-adr-index.sh" ]; then
+              unavailable 'ADR index' \
+                'adr-index was requested but scripts/gen-adr-index.sh is not in this repository. Add the generator or set adr-index: false.'
+            elif bash "$GITHUB_WORKSPACE/scripts/gen-adr-index.sh" --check; then
+              printf 'ok - ADR index is current\n'
+            else
+              report 'ADR index' \
+                'docs/decisions/README.md does not match the ADR directories.' \
+                'bash scripts/gen-adr-index.sh'
+            fi
+          fi
+
+          # Renderability IS canonical validation: `changelog.py validate` parses
+          # every unreleased fragment, which is the same work a render does. This
+          # runs the pinned contract's own engine rather than a second renderer,
+          # so a repository on this check does not need the changelog-validate
+          # caller as well — running both would pay for the same parse twice.
+          if [ "$RUN_CHANGELOG" = "true" ]; then
+            enabled=$((enabled + 1))
+            engine="$GITHUB_WORKSPACE/.changelog-contract/scripts/changelog.py"
+            if [ -z "$CONTRACT_REF" ]; then
+              unavailable 'Changelog' \
+                'changelog was requested without contract_ref. Pass the immutable Verjson/.github commit that carries the changelog contract.'
+            elif [ ! -f "$engine" ]; then
+              unavailable 'Changelog' \
+                "changelog was requested but the contract checkout has no scripts/changelog.py. Check that contract_ref ($CONTRACT_REF) is a Verjson/.github commit carrying the contract."
+            else
+              args=(--repo-root "$GITHUB_WORKSPACE")
+              if [ -n "$LEGACY_DIR" ]; then args+=(--legacy-dir "$LEGACY_DIR"); fi
+              changelog_ok=true
+              python3 "$engine" validate "${args[@]}" || changelog_ok=false
+              if [ "$changelog_ok" = true ] && [ -n "$BASE_SHA" ] && [ -n "$HEAD_SHA" ]; then
+                python3 "$engine" check-pr \
+                  --repo-root "$GITHUB_WORKSPACE" --base "$BASE_SHA" --head "$HEAD_SHA" \
+                  || changelog_ok=false
+              fi
+              if [ "$changelog_ok" = true ]; then
+                printf 'ok - unreleased changelog fragments validate and render\n'
+              else
+                report 'Changelog' \
+                  'The unreleased NEXT/ fragments do not satisfy the canonical changelog contract.' \
+                  'python3 scripts/changelog.py validate --repo-root .'
+              fi
+            fi
+          fi
+
+          if [ "$enabled" -eq 0 ]; then
+            printf '::error title=generated-artifacts validated nothing::%s\n' \
+              'no generated-artifact check was enabled — set at least one of adr-index: true or changelog: true.'
+            exit 1
+          fi
+
+          [ "$failures" -eq 0 ]

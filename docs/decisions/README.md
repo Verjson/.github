@@ -11,6 +11,7 @@ Reverse-chronological index of org-level decisions.
 <!-- BEGIN ADR INDEX -->
 | # | Date | Decision |
 |---|------|----------|
+| [0055](0055-shared-generated-artifact-checks/README.md) | 2026-08-05 | Generated-artifact validation is a shared workflow with enumerated checks |
 | [0054](0054-public-repositories-admitted-to-the-general-pool/README.md) | 2026-08-05 | Admit public repositories to the self-hosted general pool |
 | [0053](0053-overflow-lane-for-polling-gate-jobs/README.md) | 2026-08-05 | One reversible overflow lane for jobs that poll the pool they wait on |
 | [0052](0052-release-push-token-satisfies-branch-rules/README.md) | 2026-08-04 | The changelog release push needs a credential the branch ruleset bypasses |

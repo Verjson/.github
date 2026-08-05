@@ -81,6 +81,57 @@ when configuring a ruleset. Renaming either job changes the required-check
 context. The caller must grant `contents: read`, because a reusable workflow
 cannot elevate the caller's `GITHUB_TOKEN`.
 
+## Generated-artifact checks: `generated-artifacts.yml`
+
+Consumer repositories check their derived files — the ADR index, the canonical
+changelog — through one shared workflow instead of a hand-written
+`generated-docs` job. The shared workflow owns checkout, runner selection,
+`contents: read`, the timeout and the failure report; the caller keeps its own
+generators and generated content.
+
+```yaml
+name: generated artifacts
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  generated-artifacts:
+    uses: Verjson/.github/.github/workflows/generated-artifacts.yml@<contract-sha>
+    with:
+      adr-index: true
+      changelog: true
+      contract_ref: <contract-sha>
+```
+
+Checks are **enumerated opt-ins**, never a command: the workflow accepts no
+shell, so a caller names a supported artifact and nothing else.
+
+| Input | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `adr-index` | boolean | `false` | `scripts/gen-adr-index.sh --check` must report the committed `docs/decisions/README.md` current |
+| `changelog` | boolean | `false` | The pinned contract's `changelog.py` must validate the unreleased `NEXT/` fragments, and on a pull request also `check-pr` |
+| `contract_ref` | string | `''` | Immutable `Verjson/.github` commit carrying the changelog contract. Required when `changelog: true` |
+| `legacy_dir` | string | `''` | Temporary former unreleased-fragment directory, passed through to the contract engine |
+| `runner` | string | `''` | Optional JSON runner labels; Verjson callers default by visibility, callers outside `Verjson` get `ubuntu-24.04` |
+
+At least one check must be enabled — a call that validates nothing fails rather
+than reporting green. A requested check whose generator is absent is reported as
+*unavailable* and fails, distinctly from a *stale* artifact, so nobody is sent to
+re-run a script the repository does not have.
+
+The called job ID is `validate`, so with the caller job ID above the check is
+`generated artifacts / validate`.
+
+`changelog: true` **replaces** the [`changelog-validate.yml`](.github/workflows/changelog-validate.yml)
+caller rather than accompanying it: it runs that same pinned contract engine, so
+a repository calling both parses every fragment twice for one verdict. A
+repository that only needs changelog validation can keep its existing generated
+caller unchanged.
+
 ## Org-wide merge gate: `ai-review-merge.yml`
 
 Every Verjson repo's PRs pass through

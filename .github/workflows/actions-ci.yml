@@ -168,6 +168,8 @@ jobs:
         run: bash scripts/ci-gate/pulumi-comment.test.sh
       - name: pulumi-ci — comment assertions are stable under pipefail (#199)
         run: bash scripts/ci-gate/pulumi-comment-pipefail.test.sh
+      - name: generated artifacts — enumerated checks report missing, stale and clean (#404)
+        run: bash scripts/ci-gate/generated-artifacts.test.sh
       - name: runner routing — general lane and external portability (#173, #174, #182)
         run: bash scripts/ci-gate/runner-routing-policy.test.sh
       - name: runner admission — routing reconciled against runner groups (#189)
