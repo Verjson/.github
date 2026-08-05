@@ -120,6 +120,45 @@ said 'package=no' \
   && pass "a repository not on the changelog contract is package=no" \
   || { fail "package=no not reported"; out; }
 
+# --- the ADR 0055 generated-artifacts path (#422) ---------------------------
+# `generated-artifacts.yml` is the hardened changelog caller: its inner job is
+# `validate`, so a caller job named `changelog` emits `changelog / validate`.
+# Matching only `changelog-validate.yml` classified adopters `package=no`, so
+# the audit stopped requiring the contract of the repositories that migrated.
+artifact_caller() { # $1 = job, $2 = fixture name, $3.. = `with:` lines
+  local job="$1" name="$2"; shift 2
+  { printf 'name: %s\non: [pull_request]\njobs:\n  %s:\n' "$name" "$job"
+    printf '    uses: Verjson/.github/.github/workflows/generated-artifacts.yml@abc123\n'
+    printf '    with:\n'
+    for line in "$@"; do printf '      %s\n' "$line"; done
+  } >"$WFDIR/$name.yml"
+}
+
+reset_wf; caller ci node-ci.yml ci
+artifact_caller changelog ga 'changelog: true' 'contract_ref: 0676948'
+rc="$(run_crs)"
+{ [ "$rc" = "rc=0" ] && said 'package=yes'; } \
+  && pass "a generated-artifacts caller asking for changelog is a package" \
+  || { fail "the ADR 0055 changelog path was not recognised ($rc)"; out; }
+
+# The input is what puts a repository on the contract, not the `uses:` line.
+# Keying on the workflow name alone would call this a package and then demand
+# `changelog / validate` from a repository that never runs the renderer.
+reset_wf; caller ci node-ci.yml ci
+artifact_caller docs ga 'adr-index: true'
+rc="$(run_crs)"
+{ [ "$rc" = "rc=0" ] && said 'package=no'; } \
+  && pass "a generated-artifacts caller asking only for adr-index is not a package" \
+  || { fail "adr-index-only caller was treated as a package ($rc)"; out; }
+
+# Same wedge as the changelog-validate case, reached through the new workflow.
+reset_wf; caller ci node-ci.yml ci
+artifact_caller release ga 'changelog: true'
+rc="$(run_crs)"
+{ [ "$rc" != "rc=0" ] && said "changelog caller job is 'release'"; } \
+  && pass "a non-canonical generated-artifacts caller job is reported" \
+  || { fail "a non-canonical generated-artifacts job was accepted ($rc)"; out; }
+
 # --- a repository that DEFINES contract jobs rather than calling them --------
 # The org's own .github repository is where the reusable workflows live, so it
 # calls none of them. Classifying it `none` would make the one repository

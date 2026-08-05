@@ -84,6 +84,15 @@ calls_in_file() { # $1 = repo, $2 = path
       sub(/@.*$/, "", line)
       gsub(/[[:space:]"'"'"']/, "", line)
       if (job != "") print "uses\t" job "\t" line
+    }
+    # `generated-artifacts.yml` runs the changelog contract only when asked to
+    # (ADR 0055 enumerates its checks as boolean inputs), so the `uses:` line
+    # alone does not put a repository on the changelog contract — a caller
+    # passing only `adr-index: true` is not a package. The input is what counts,
+    # and it appears after the `uses:` line, so it is emitted separately and
+    # reconciled once the whole file has been read.
+    /^[[:space:]]+changelog:[[:space:]]*true[[:space:]]*$/ {
+      if (job != "") print "changelog-input\t" job
     }'
 }
 
@@ -93,13 +102,17 @@ needs_review=0
 
 classify_repo() {
   local repo="$1" stack='' ci_job='' changelog_job='' findings=() path kind job wf
-  local local_jobs=''
+  local local_jobs='' artifact_jobs='' changelog_inputs=''
 
   while read -r path; do
     [ -n "$path" ] || continue
     while IFS=$'\t' read -r kind job wf; do
       if [ "$kind" = job ]; then
         local_jobs="$local_jobs$job"$'\n'
+        continue
+      fi
+      if [ "$kind" = changelog-input ]; then
+        changelog_inputs="$changelog_inputs$job"$'\n'
         continue
       fi
       [ -n "$wf" ] || continue
@@ -113,9 +126,27 @@ classify_repo() {
         stack="$s"; ci_job="$job"
       elif [ "$wf" = "changelog-validate.yml" ]; then
         changelog_job="$job"
+      elif [ "$wf" = "generated-artifacts.yml" ]; then
+        artifact_jobs="$artifact_jobs$job"$'\n'
       fi
     done < <(calls_in_file "$repo" "$path")
   done < <(workflow_paths "$repo")
+
+  # A `generated-artifacts.yml` caller is on the changelog contract only if it
+  # actually asked for the changelog check. Resolved here rather than inline
+  # because `with:` follows `uses:`, so the input is not yet known when the call
+  # is seen. Without this the hardened path (ADR 0055, and the migration target
+  # for #412) classifies `package=no`, and the audit quietly stops requiring
+  # `changelog / validate` of the repositories that adopted it (#422).
+  if [ -z "$changelog_job" ] && [ -n "$artifact_jobs" ]; then
+    while read -r candidate; do
+      [ -n "$candidate" ] || continue
+      if grep -Fxq "$candidate" <<<"$changelog_inputs"; then
+        changelog_job="$candidate"
+        break
+      fi
+    done <<<"$artifact_jobs"
+  fi
 
   # A repository can satisfy a stack by DEFINING its jobs locally instead of
   # calling a reusable workflow — which is how the org's own `.github`
