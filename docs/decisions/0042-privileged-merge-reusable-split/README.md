@@ -32,6 +32,9 @@ supplies them), and `runner_labels`, which is **required**. A consumer org has n
 for Verjson's isolated pool, so inheriting it would queue the job forever on labels
 nothing matches (#130); requiring it fails the call immediately with a clear message.
 
+> The `runner_labels` requirement stated here is superseded by
+> [ADR 0057](../0057-runner-labels-optional-lane-routed-callers/README.md) (#405).
+
 ### The two-sided name contract
 
 This is the part that fails silently, so it is stated as a contract and tested on both

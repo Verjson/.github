@@ -37,8 +37,8 @@ on:
         required: false
         type: string
       runner_labels:
-        description: 'JSON array of runs-on labels for the caller''s own fleet, e.g. ["self-hosted","general"] (required — a consumer org has no runner for Verjson''s isolated pool)'
-        required: true
+        description: 'Optional JSON array of runs-on labels, e.g. ["self-hosted","general"], for a self-hosted caller whose org has no VERJSON_LANE_* variables. Omit it (the default) to route by lane and degrade to a hosted runner.'
+        required: false
         type: string
     # Declared explicitly rather than relying on `secrets: inherit`. A caller
     # using inherit hands its ENTIRE secret store to a workflow that floats on
@@ -74,9 +74,11 @@ concurrency:
 jobs:
   privileged_merge:
     # `runner_labels` first, mirroring ai-review-merge.yml: a consumer org has no
-    # runner for Verjson's isolated pool, so inheriting it would queue the job
-    # forever on labels nothing matches (#130). Required on workflow_call so the
-    # call fails immediately with a clear message instead.
+    # runner for Verjson's pool, so inheriting it would queue the job forever on
+    # labels nothing matches (#130). It is OPTIONAL, not required (#405): the
+    # chain ends at `VERJSON_LANE_FALLBACK || '["ubuntu-24.04"]'`, so a caller
+    # that omits it lands on a runner that exists, while requiring it forced
+    # every consumer to hardcode a fleet label the org relabels at will.
     runs-on: ${{ inputs.runner_labels && fromJSON(inputs.runner_labels) || github.repository_owner == 'Verjson' && fromJSON(vars.VERJSON_LANE_PRIVILEGED || vars.VERJSON_LANE_FALLBACK || '["ubuntu-24.04"]') || 'ubuntu-24.04' }}
     timeout-minutes: 45
     env:

@@ -5,8 +5,20 @@
 # the job key, the `uses:` target, and the values passed in `with:`. The
 # reasoning lives in docs/decisions/0042-privileged-merge-reusable-split.
 #
-# Usage: gen-privileged-merge-caller.sh '<runner-labels-json>'
-#   scripts/gen-privileged-merge-caller.sh '["ubuntu-24.04"]' > .github/workflows/ai-privileged-merge.yml
+# Usage: gen-privileged-merge-caller.sh ['<runner-labels-json>']
+#   scripts/gen-privileged-merge-caller.sh > .github/workflows/ai-privileged-merge.yml
+#
+# The argument is OPTIONAL and should be omitted by every Verjson consumer
+# (#405). It used to be mandatory, which meant the generator hardcoded
+# `["self-hosted","general"]` into ~90 repositories: a fleet relabel then needed
+# a pull request in each of them, which is precisely the coupling the
+# `VERJSON_LANE_*` variables exist to remove (ADR 0041). The canonical
+# workflow's `runs-on` already resolves without it, ending at a hosted runner for
+# an org with no lane variables at all (ADR 0040).
+#
+# It is kept, not deleted, for the one caller the lane variables cannot serve: a
+# self-hosted consumer OUTSIDE Verjson, whose org has no lane variables and whose
+# runners answer to labels only it knows.
 set -euo pipefail
 
 # The target is FIXED, not a parameter. It IS the trust anchor: the canonical
@@ -21,24 +33,41 @@ set -euo pipefail
 # ADR 0042 forbids exactly that.
 readonly TARGET="Verjson/.github/.github/workflows/ai-privileged-merge.yml@main"
 
-runner_labels="${1:?usage: gen-privileged-merge-caller.sh '<runner-labels-json>'}"
+# An empty argument is the default case, not an error: `gen … "$LABELS"` with
+# LABELS unset must produce the lane-routed caller rather than a diagnostic about
+# a value the operator never meant to supply.
+runner_labels="${1-}"
 
-command -v jq >/dev/null 2>&1 || { echo "jq is required" >&2; exit 2; }
+if [ -n "$runner_labels" ]; then
+  command -v jq >/dev/null 2>&1 || { echo "jq is required to validate runner_labels" >&2; exit 2; }
 
-# Charset-restricted, not merely well-formed JSON. A label containing a quote is
-# valid JSON, passes a naive type check, then emits YAML GitHub cannot parse —
-# at exit 0, with no warning. A value like ${{ secrets.X }} is likewise valid
-# JSON and would expand a secret into a workflow input.
-jq -e 'type == "array" and length > 0
-       and all(.[]; type == "string" and test("^[A-Za-z0-9._-]+$"))' \
-  <<<"$runner_labels" >/dev/null 2>&1 \
-  || { printf 'runner_labels must be a non-empty JSON array of [A-Za-z0-9._-] strings, got: %s\n' "$runner_labels" >&2; exit 2; }
+  # Charset-restricted, not merely well-formed JSON. A label containing a quote is
+  # valid JSON, passes a naive type check, then emits YAML GitHub cannot parse —
+  # at exit 0, with no warning. A value like ${{ secrets.X }} is likewise valid
+  # JSON and would expand a secret into a workflow input.
+  jq -e 'type == "array" and length > 0
+         and all(.[]; type == "string" and test("^[A-Za-z0-9._-]+$"))' \
+    <<<"$runner_labels" >/dev/null 2>&1 \
+    || { printf 'runner_labels must be a non-empty JSON array of [A-Za-z0-9._-] strings, got: %s\n' "$runner_labels" >&2; exit 2; }
+fi
+
+# Two lines, emitted only for an explicitly requested fleet: the `with:` entry
+# and the regenerate command that reproduces it. The regenerate comment matters
+# as much as the input — an operator copies that line, so leaving a label in it
+# reintroduces the hardcoded fleet on the next regeneration.
+regen_arg=""
+labels_input=""
+if [ -n "$runner_labels" ]; then
+  regen_arg=" '$runner_labels'"
+  labels_input="
+      runner_labels: '${runner_labels}'"
+fi
 
 emit() {
   cat <<YAML
 # GENERATED FILE — do not edit by hand.
 # Regenerate with:
-#   scripts/gen-privileged-merge-caller.sh '$runner_labels' > .github/workflows/ai-privileged-merge.yml
+#   scripts/gen-privileged-merge-caller.sh$regen_arg > .github/workflows/ai-privileged-merge.yml
 #
 # Thin caller for the canonical privileged merge (Verjson/.github). All trust
 # logic lives there; nothing here may re-implement it.
@@ -84,8 +113,7 @@ jobs:
       # The event value MUST win here: on pull_request_target it is the
       # anti-TOCTOU binding to the head the gate actually attested.
       expected_head_sha: \${{ github.event.pull_request.head.sha || inputs.expected_head_sha }}
-      source_run_id: \${{ inputs.source_run_id }}
-      runner_labels: '${runner_labels}'
+      source_run_id: \${{ inputs.source_run_id }}${labels_input}
 YAML
 }
 
