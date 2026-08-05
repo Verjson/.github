@@ -85,23 +85,31 @@ grep -Eq 'npx .*semantic-release|semantic-release@[~^*0-9]' "$release" \
   && fail "release workflow still resolves semantic-release dynamically" \
   || pass "release workflow has no dynamic semantic-release invocation"
 
-jq -e '.dependencies["semantic-release"] == "25.0.8"' "$package" >/dev/null \
+# Asserts the PROPERTY (an exact version), not a literal version. Pinning the
+# literal made every Renovate bump red by construction — #396 carried a correct
+# exact-pin bump, 25.0.8 -> 25.0.9, and failed here for saying so. A test that
+# fails on the routine, correct change trains people to override it.
+jq -e '.dependencies["semantic-release"] | test("^[0-9]+\\.[0-9]+\\.[0-9]+$")' "$package" >/dev/null \
   && pass "semantic-release dependency is exact" \
   || fail "semantic-release dependency is not exact"
 grep -qF 'semantic-release requires ^22.14.0 or >=24.10.0' "$release" \
   && pass "release workflow documents semantic-release's Node floor" \
   || fail "release workflow does not document the locked tool's Node floor"
-jq -e '
+# Same reasoning, plus the invariant the literal was standing in for: the lock
+# and the manifest must name the SAME exact version. That is what makes the pin
+# immutable, and it survives a bump; a hardcoded version only asserted "nobody
+# has upgraded yet".
+jq -e --arg want "$(jq -r '.dependencies["semantic-release"]' "$package")" '
   .lockfileVersion >= 3 and
-  .packages[""].dependencies["semantic-release"] == "25.0.8" and
-  .packages["node_modules/semantic-release"].version == "25.0.8" and
+  .packages[""].dependencies["semantic-release"] == $want and
+  .packages["node_modules/semantic-release"].version == $want and
   (.packages["node_modules/semantic-release"].integrity | startswith("sha512-")) and
   ([.packages | to_entries[] |
     select(.key != "" and (.value.link // false) == false and .value.resolved != null and .value.integrity == null)] |
     length == 0)
 ' "$lock" >/dev/null \
-  && pass "semantic-release 25.0.8 and all resolved integrities are locked" \
-  || fail "semantic-release lockfile entry is missing or mutable"
+  && pass "semantic-release is locked to the manifest version with integrities" \
+  || fail "semantic-release lockfile entry is missing, mutable, or disagrees with package.json"
 
 jq -e '
   any(.packageRules[];
