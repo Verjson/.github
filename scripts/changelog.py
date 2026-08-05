@@ -101,6 +101,24 @@ def parse_frontmatter(path: Path) -> tuple[dict[str, str], str]:
 KNOWN_KEYS = frozenset({"date", "issue", "id", "title", "refs"})
 
 
+def quoting_is_ambiguous(value: str) -> bool:
+    """True when a value opens and closes with a quote but is not one scalar.
+
+    `unquote_scalar` resolves genuine quoted scalars and deliberately leaves
+    this shape alone (`"a" and "b"`, `'a' or 'b'`), because stripping by
+    position would corrupt the text rather than tidy it. That residue reaches
+    the release snapshot verbatim, and a snapshot is immutable — so the author
+    has to hear about it at PR time, while the fragment is still editable
+    (#425).
+    """
+    return (
+        len(value) >= 2
+        and value[0] in "'\""
+        and value[-1] == value[0]
+        and unquote_scalar(value) == value
+    )
+
+
 def validate_metadata(path: Path, metadata: dict[str, str]) -> str:
     # Rejecting an unknown key makes every future metadata addition a flag day.
     # Each repository pins its own contract SHA, so a fragment carrying a new
@@ -124,6 +142,15 @@ def validate_metadata(path: Path, metadata: dict[str, str]) -> str:
         )
     if not metadata.get("title"):
         raise ChangelogError(f"{path}: title is required")
+    title = metadata["title"]
+    if quoting_is_ambiguous(title):
+        quote = title[0]
+        raise ChangelogError(
+            f"{path}: title opens and closes with {quote} but is not a single quoted"
+            f" scalar, so the quotes would ship literally into a release snapshot that"
+            f" can never be edited. Either remove the outer pair, or escape the interior"
+            f" quotes ({quote}{quote} inside single quotes, backslash inside double)."
+        )
     try:
         dt.date.fromisoformat(metadata.get("date", ""))
     except ValueError as exc:
