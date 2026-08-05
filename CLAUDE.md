@@ -61,9 +61,7 @@ non-trivial or fanned-out work autonomously:
 - [#279](https://github.com/Verjson/.github/issues/279) — Attestation provenance: closed for the required-workflow shape (ADR 0044); open for the reusable-caller shape, which no repo uses yet.
 - [#292](https://github.com/Verjson/.github/issues/292) — Re-review skip never fires: `gh api user` cannot resolve an identity under `github.token`, so every head change re-pays for an unchanged diff.
 - [#312](https://github.com/Verjson/.github/issues/312) — `ref_is_immutable` accepts abbreviated SHAs; no test covers it.
-- [#341](https://github.com/Verjson/.github/issues/341) — Retire the fleet watchdog: the gate should re-enter on `workflow_run: completed` instead of holding a runner while polling.
-- [#342](https://github.com/Verjson/.github/issues/342) — The watchdog's dry-run guard is unreachable, so it is live and armed with no evidence behind its cancel path.
-- [#343](https://github.com/Verjson/.github/issues/343) — The watchdog's 35-minute threshold cannot preempt a polling AI-lane gate; it can only reach gates doing model review.
+- [#341](https://github.com/Verjson/.github/issues/341) — Watchdog kept, not retired (ADR 0056). Re-scope to "no merge-gate job polls on the shared pool": ADR 0053 covers `gate`, `ai-privileged-merge.yml` still routes on `VERJSON_LANE_PRIVILEGED`. It ships **armed** for the proven 35-minute age rule (no `VERJSON_WATCHDOG_DRY_RUN` variable exists, so the workflow supplies `'false'`); the widened #343 poll-step rule is **report-only** until an operator sets `VERJSON_WATCHDOG_POLL_STEP_DRY_RUN=false`.
 - [#399](https://github.com/Verjson/.github/issues/399) — the generated contract test's render guard is fail-open: any renderer failure reports "no unreleased fragments" and exits 0.
 - [#411](https://github.com/Verjson/.github/issues/411) — `dispatch-merge` ignores `runner_labels`, so a self-hosted-only caller outside Verjson lands it on hosted.
 - [#412](https://github.com/Verjson/.github/issues/412) — `changelog-validate.yml` accepts a mutable `contract_ref` and executes Python from it; ~90 repos call it.
