@@ -237,9 +237,18 @@ inject `runs-on` into another workflow's jobs, and its outputs cannot cross into
 
 Order matters. Each step is safe only after the previous one lands.
 
-1. **Create the lane variables** (`VERJSON_LANE_*`). Keep `VERJSON_RUNNER_*` in place —
-   removing them mid-rollout breaks in-flight runs.
-2. **Migrate workflows to the lane expression**, choosing the lane by what each job is.
+1. ✅ **Create the lane variables** (`VERJSON_LANE_*`). Keep `VERJSON_RUNNER_*` in place —
+   removing them mid-rollout breaks in-flight runs. All four exist org-wide and every one
+   resolves to the general pool today.
+2. ✅ **Migrate workflows to the lane expression**, choosing the lane by what each job is.
+   Done for every `runs-on:` in this repository on 2026-08-05: no workflow here names a
+   fleet label any more, and `scripts/ci-gate/runner-routing-policy.test.sh` fails if one
+   reappears. **`VERJSON_RUNNER_*` stays set** — consumers pinned to an older reusable-
+   workflow SHA still read those variables, and deleting them would strand exactly the
+   repositories that have not re-pinned. `VERJSON_RUNNER_FASTLANE` and
+   `VERJSON_RUNNER_OVERFLOW` are deliberately *not* folded into the lane names: they select
+   hosted-versus-self-hosted, an orthogonal axis, and their `["ubuntu-24.04"]` value is a
+   GitHub-provided identifier rather than a fleet label that can rot.
 3. **Rename groups onto the admission axis** (names describing admission, not hardware or a
    person). Group 1 (`GitHub`) is never renamed — it names GitHub's own default group.
 4. **Refresh the labels — additively first.** Every label on the live runners is being

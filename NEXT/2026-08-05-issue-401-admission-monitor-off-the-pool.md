@@ -46,6 +46,28 @@ contract that holds repository-local jobs on the general lane, with a dedicated
 assertion in its place so the monitor cannot be tidied back inside the thing it
 watches.
 
+Every `runs-on:` in this repository now names a **lane** rather than a label:
+
+```yaml
+runs-on: ${{ fromJSON(vars.VERJSON_LANE_TRUSTED || vars.VERJSON_LANE_FALLBACK || '["ubuntu-24.04"]') }}
+```
+
+`PRIVILEGED` for the merge gate's elevated token, `UNTRUSTED` for jobs touching
+pull-request content, `TRUSTED` for everything else. Migration step 2 of
+`docs/runner-routing.md` had never been taken, so the model existed on paper
+while a fleet label sat in every selector — including the reusable workflows
+~90 consumers call, where a relabel would have to land everywhere at once.
+Replacing the literal with a variable is the whole point; leaving
+`'["self-hosted","general"]'` as the fallback would have kept the coupling one
+level down. The terminal `'["ubuntu-24.04"]'` is ADR 0040's portability
+contract, reached only by an org with no lane variable set at all.
+
+`VERJSON_RUNNER_FASTLANE`/`_OVERFLOW` keep their names deliberately: they select
+hosted versus self-hosted, an orthogonal axis, and folding them in would put the
+admission monitor and the fleet watchdog back on the pool they police. The
+`VERJSON_RUNNER_*` variables stay set, because consumers pinned to an older SHA
+still read them.
+
 The same fleet move also took `gce`, `GCP` and `gate` off the runners while
 workflows still selected them — steps 5 and 6 of the migration sequence in
 `docs/runner-routing.md` ran in the wrong order, which that document warns

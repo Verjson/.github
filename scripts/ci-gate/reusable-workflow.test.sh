@@ -83,12 +83,13 @@ runs_on_parameterized="$(grep -cE "runs-on: \\\$\{\{ inputs\.runner_labels && fr
 # preflight's fallback only — gate reaches the fast lane for a public target and
 # DEFAULT for a private one. What must hold regardless: the cross-org hosted
 # route survives, every lane is still variable-selected rather than hardcoded,
-# and the self-hosted general pool remains the terminal fallback everywhere.
+# and VERJSON_LANE_FALLBACK remains the terminal lane term everywhere.
 grep -qE "github\.repository_owner != 'Verjson' && 'ubuntu-24\.04'" "$wf" \
   && [ "$(grep -cF 'VERJSON_RUNNER_FASTLANE' "$wf")" -ge 3 ] \
-  && [ "$(grep -cF 'VERJSON_RUNNER_DEFAULT' "$wf")" -ge 2 ] \
-  && [ "$(grep -cF 'VERJSON_RUNNER_UNTRUSTED' "$wf")" -ge 1 ] \
-  && [ "$(grep -cF '["self-hosted","general"]' "$wf")" -ge 2 ] \
+  && [ "$(grep -cF 'VERJSON_LANE_PRIVILEGED' "$wf")" -ge 1 ] \
+  && [ "$(grep -cF 'VERJSON_LANE_TRUSTED' "$wf")" -ge 1 ] \
+  && [ "$(grep -cF 'VERJSON_LANE_UNTRUSTED' "$wf")" -ge 1 ] \
+  && [ "$(grep -cF 'VERJSON_LANE_FALLBACK' "$wf")" -ge 3 ] \
   && pass "Verjson gate jobs use variable lanes while cross-org routing stays portable" \
   || fail "variable gate routing or cross-org portability drifted"
 

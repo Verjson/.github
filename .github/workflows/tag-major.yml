@@ -17,7 +17,7 @@ jobs:
     # Serialize force-updates so two releases published in quick succession can't
     # race on the moving-tag push (last write wins deterministically).
     concurrency: tag-major
-    runs-on: ${{ fromJSON(vars.VERJSON_RUNNER_DEFAULT || '["self-hosted","general"]') }}
+    runs-on: ${{ fromJSON(vars.VERJSON_LANE_TRUSTED || vars.VERJSON_LANE_FALLBACK || '["ubuntu-24.04"]') }}
     steps:
       - name: Check out the released tag
         uses: actions/checkout@v7

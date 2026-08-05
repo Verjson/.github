@@ -26,7 +26,7 @@ permissions:
 
 jobs:
   reconcile:
-    runs-on: ${{ fromJSON(vars.VERJSON_RUNNER_DEFAULT || '["self-hosted","general"]') }}
+    runs-on: ${{ fromJSON(vars.VERJSON_LANE_TRUSTED || vars.VERJSON_LANE_FALLBACK || '["ubuntu-24.04"]') }}
     steps:
       - uses: actions/checkout@v7
 

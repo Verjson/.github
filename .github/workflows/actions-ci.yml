@@ -73,7 +73,7 @@ jobs:
     # lane is repointed at a self-hosted pool by setting VERJSON_RUNNER_FASTLANE
     # without touching this file — and an unset variable falls back to the
     # ADR 0034 general pool rather than failing.
-    runs-on: ${{ fromJSON(vars.VERJSON_RUNNER_FASTLANE || vars.VERJSON_RUNNER_DEFAULT || '["self-hosted","general"]') }}
+    runs-on: ${{ fromJSON(vars.VERJSON_RUNNER_FASTLANE || vars.VERJSON_LANE_TRUSTED || vars.VERJSON_LANE_FALLBACK || '["ubuntu-24.04"]') }}
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7

@@ -31,7 +31,7 @@ concurrency:
 
 jobs:
   npm-cache-seed:
-    runs-on: ${{ fromJSON(vars.VERJSON_RUNNER_DEFAULT || '["self-hosted","general"]') }}
+    runs-on: ${{ fromJSON(vars.VERJSON_LANE_TRUSTED || vars.VERJSON_LANE_FALLBACK || '["ubuntu-24.04"]') }}
     env:
       NPM_CONFIG_CACHE: /tmp/verjson-node-cache-probe
     steps:
@@ -46,7 +46,7 @@ jobs:
 
   npm-cache-restore:
     needs: npm-cache-seed
-    runs-on: ${{ fromJSON(vars.VERJSON_RUNNER_DEFAULT || '["self-hosted","general"]') }}
+    runs-on: ${{ fromJSON(vars.VERJSON_LANE_TRUSTED || vars.VERJSON_LANE_FALLBACK || '["ubuntu-24.04"]') }}
     env:
       NPM_CONFIG_CACHE: /tmp/verjson-node-cache-probe
     steps:
