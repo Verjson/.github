@@ -46,8 +46,16 @@ name: AI review + auto-merge
 # `github.repository`/`github.event`/`github.repository_owner` are inherited from
 # the CALLER, so `TARGET_REPO` and the PR number resolve to the consumer's own
 # repository. Consumers must
-# pass only the model credentials needed for review and, if their fleet differs
-# from the org gate pool, `with.runner_labels`. They must install their own
+# pass only the model credentials needed for review. A caller that runs on its
+# OWN self-hosted fleet and has no `VERJSON_LANE_*` variables may add
+# `with.runner_labels`; a Verjson caller must omit it and let the lane variables
+# select the pool (#405, ADR 0041, ADR 0057). MIND THE REF: `runner_labels` is
+# optional from the first release cut AFTER #405. The `@v1` tag pinned in the
+# example below still declares it `required: true`, so a caller that follows this
+# guidance against a `v1` that predates the release fails with
+# `Input runner_labels is required, but no value was supplied`. Either pin a ref
+# that contains #405 or keep passing the input until `v1` advances.
+# They must install their own
 # trusted merge workflow for auto-merge; this reusable never receives their
 # administrative credential from a PR event. Example caller:
 #
@@ -60,7 +68,10 @@ name: AI review + auto-merge
 #     gate:
 #       uses: Verjson/.github/.github/workflows/ai-review-merge.yml@v1
 #       secrets: inherit # model credentials only; never ORG_ADMIN_TOKEN
-#       with: { runner_labels: '["self-hosted","general"]' }
+#       # `with:` is optional on a ref that contains #405 — add runner_labels
+#       # ONLY for an off-Verjson self-hosted fleet, or on a `v1` older than the
+#       # first release after #405, where it is still required:
+#       # with: { runner_labels: '["self-hosted","general"]' }
 #
 # Downstream copies must also omit any repository input and pin the target to
 # the repository where the workflow executes.
@@ -85,19 +96,21 @@ on:
   workflow_call:
     # Cross-org consumers pin this reusable and pass `secrets: inherit` (ADR
     # 0022). A pull_request-triggered caller leaves pr_number empty and the
-    # inherited event supplies it. `runner_labels` is REQUIRED: a consumer's org has no runner
-    # for Verjson's self-hosted pool, so omitting it would silently queue
-    # the job forever on the wrong labels (#130) — requiring it fails the call
-    # immediately with a clear message instead. Missing `secrets: inherit` is
-    # caught by the `require_secrets` preflight step (#131).
+    # inherited event supplies it. `runner_labels` is OPTIONAL (#405): every
+    # `runs-on` below ends at `VERJSON_LANE_FALLBACK || '["ubuntu-24.04"]'`, so a
+    # caller that omits it lands on a runner that exists rather than queueing
+    # forever on the wrong labels (#130, the reason it used to be required).
+    # Requiring it made every consumer hardcode a fleet label, which is the
+    # coupling ADR 0041 removes. Missing `secrets: inherit` is caught by the
+    # `require_secrets` preflight step (#131).
     inputs:
       pr_number:
         description: PR number to review; defaults to the caller's pull_request event
         required: false
         type: string
       runner_labels:
-        description: 'JSON array of runs-on labels for the caller''s own fleet, e.g. ["self-hosted","general"] (required — a consumer org has no runner for Verjson''s gate pool)'
-        required: true
+        description: 'Optional JSON array of runs-on labels, e.g. ["self-hosted","general"], for a self-hosted caller whose org has no VERJSON_LANE_* variables. Omit it (the default) to route by lane and degrade to a hosted runner.'
+        required: false
         type: string
       allow_absent_checks:
         description: >-

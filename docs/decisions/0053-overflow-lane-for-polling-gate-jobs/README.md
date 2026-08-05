@@ -111,6 +111,10 @@ between a caller input and organization configuration on the one workflow that
 carries merge authority. Moving it means regenerating the callers, which should
 be a deliberate, separately reviewed change rather than a variable flip.
 
+> The premise of this exclusion — that every consumer's generated caller passes
+> `inputs.runner_labels` — is superseded for newly generated callers by
+> [ADR 0057](../0057-runner-labels-optional-lane-routed-callers/README.md) (#405).
+
 ## Reverting
 
 ```sh
