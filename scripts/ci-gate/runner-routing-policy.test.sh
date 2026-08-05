@@ -543,6 +543,7 @@ pulumi-ci.yml validate
 pulumi-ci.yml preview-admission
 pulumi-ci.yml preview
 changelog-validate.yml validate
+generated-artifacts.yml validate
 changelog-release.yml release
 TARGETS
 }
@@ -598,6 +599,7 @@ helm-ci.yml lint-template
 ui-ci.yml build-test
 pulumi-ci.yml preview
 changelog-validate.yml validate
+generated-artifacts.yml validate
 changelog-release.yml release
 TARGETS
 
@@ -624,7 +626,7 @@ done
 # Prefixes legitimately differ, but every routed job must name both lanes by
 # intent and degrade through VERJSON_LANE_FALLBACK to the portable hosted tail.
 # --------------------------------------------------------------------------
-policy_files="node-ci.yml node-release.yml notify-umbrella.yml helm-ci.yml ui-ci.yml pulumi-ci.yml actionlint.yml changelog-validate.yml changelog-release.yml"
+policy_files="node-ci.yml node-release.yml notify-umbrella.yml helm-ci.yml ui-ci.yml pulumi-ci.yml actionlint.yml changelog-validate.yml changelog-release.yml generated-artifacts.yml"
 deviant=""
 job_count=0
 for name in $policy_files; do
