@@ -55,6 +55,12 @@ the pool, but not `ai-privileged-merge.yml`, which routes on `VERJSON_LANE_PRIVI
 - **#355** — paginated runner pages are slurped and aggregated before counting, so a fleet
   larger than one page no longer produces a per-page count that fails the numeric guard and
   silently disables the watchdog. A page missing `.runners` is a fault, not an empty pool.
+- **The working notes described the opposite arm state.** `CLAUDE.md` said the watchdog ships
+  disarmed pending an operator setting `VERJSON_WATCHDOG_DRY_RUN=false`. No such variable
+  exists at org or repository scope, and the workflow's fallbacks arm the age rule and
+  suppress the poll-step rule, so the note pointed at a switch nobody could read and inverted
+  the two defaults. Corrected and folded into the #341 bullet, which is where the re-scope it
+  belongs to already lives.
 
 `*/15` is nominal: observed cadence was roughly 15 runs a day with gaps up to ~2.5 h, so the
 watchdog is a backstop and not a latency bound. No `workflow_dispatch` is added — the job
