@@ -31,7 +31,15 @@ concurrency:
 
 jobs:
   reconcile:
-    runs-on: [self-hosted, general]
+    # The fast lane, and NOT the general pool this job exists to watch (#401).
+    # On 2026-08-05 the pool moved into a runner group that denied public
+    # repositories, and this repository is public: every `[self-hosted, general]`
+    # job here queued indefinitely — including this one, whose 10:16 run never
+    # started. The monitor for "a repository cannot reach its lane" cannot itself
+    # depend on reaching that lane, or it goes silent in exactly the outage it is
+    # supposed to report. Hosted is also the safer host for ORG_ADMIN_TOKEN: this
+    # is scheduled default-branch code with no fork input, on an ephemeral runner.
+    runs-on: ${{ fromJSON(vars.VERJSON_RUNNER_FASTLANE || '["ubuntu-24.04"]') }}
     timeout-minutes: 15
     steps:
       - name: Check out the runner admission reconciler
@@ -49,6 +57,17 @@ jobs:
           # rather than as a clean org.
           GH_TOKEN: ${{ secrets.ORG_ADMIN_TOKEN }}
           ORG: ${{ github.repository_owner }}
+          # Lane LABELS are already a variable flip rather than a pull request
+          # (see the `runs-on` comments in node-ci.yml). The group NAME was the
+          # half left in code, so the GCP→DigitalOcean move renamed the group out
+          # from under the reconciler and it resolved nothing — the #266 failure
+          # by name instead of by id. The fallbacks keep this zero-config until a
+          # rename actually happens.
+          GENERAL_GROUP_NAME: ${{ vars.VERJSON_RUNNER_GENERAL_GROUP || 'DigitalOcean' }}
+          # Deliberately no fallback: the untrusted lane resolves to the general
+          # pool today, so nothing reads this, and the last name it carried
+          # (`isolated`) names a group deleted on 2026-07-31.
+          UNTRUSTED_GROUP_NAME: ${{ vars.VERJSON_RUNNER_UNTRUSTED_GROUP }}
         run: |
           set -uo pipefail
           if [ -z "${GH_TOKEN:-}" ]; then

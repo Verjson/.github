@@ -40,8 +40,15 @@ for id in 4 6; do
   fi
 done
 case "$path" in
-  */actions/variables/VERJSON_RUNNER_DEFAULT) printf '%s\n' "$DEFAULT_VAR" ;;
-  */actions/variables/VERJSON_RUNNER_UNTRUSTED) printf '%s\n' "$UNTRUSTED_VAR" ;;
+  # The LANE variables are what every `runs-on:` resolves, so they are what the
+  # reconciler reads. The RUNNER pair is still served because it is still set
+  # org-wide for consumers pinned to a pre-migration SHA, and divergence between
+  # the two is itself reported as drift.
+  */actions/variables/VERJSON_LANE_TRUSTED) printf '%s\n' "$DEFAULT_VAR" ;;
+  */actions/variables/VERJSON_LANE_UNTRUSTED) printf '%s\n' "$UNTRUSTED_VAR" ;;
+  */actions/variables/VERJSON_LANE_FALLBACK) printf '%s\n' "$FALLBACK_VAR" ;;
+  */actions/variables/VERJSON_RUNNER_DEFAULT) printf '%s\n' "$LEGACY_DEFAULT_VAR" ;;
+  */actions/variables/VERJSON_RUNNER_UNTRUSTED) printf '%s\n' "$LEGACY_UNTRUSTED_VAR" ;;
   # Both ids serve the default group's runners, so a test can move the default
   # group off id 1 and prove resolution follows `.default`, not a pinned id.
   */runner-groups/1/runners*|*/runner-groups/9/runners*) printf '%s\n' "$G1_RUNNERS" ;;
@@ -70,13 +77,20 @@ chmod +x "$tmp/bin/gh"
 export PATH="$tmp/bin:$PATH"
 
 export DEFAULT_VAR='{"value":"[\"self-hosted\",\"general\"]","visibility":"all"}'
+# Unset by default: the lane variables above resolve, so the fallback term is
+# never reached. A case that empties one of them exercises the fall-through.
+export FALLBACK_VAR=''
+# The retired pair, still set org-wide during the migration. Kept equal to the
+# lanes here so the divergence case below is the only one that reports it.
+export LEGACY_DEFAULT_VAR='{"value":"[\"self-hosted\",\"general\"]","visibility":"all"}'
+export LEGACY_UNTRUSTED_VAR='{"value":"[\"self-hosted\",\"general\"]","visibility":"all"}'
 export UNTRUSTED_VAR='{"value":"[\"self-hosted\",\"general\"]","visibility":"all"}'
 # GitHub's own default group. A custom group cannot be made default (ADR 0003),
 # so this one is always present in a real org — which is why its ABSENCE below
 # has to be an undetermined result rather than a clean one.
 export G1_GROUP='{"id":1,"name":"GitHub","visibility":"all","allows_public_repositories":true,"default":true}'
 export G1_RUNNERS=''
-export G4_GROUP='{"id":4,"name":"GCP","visibility":"all","allows_public_repositories":true,"default":false}'
+export G4_GROUP='{"id":4,"name":"DigitalOcean","visibility":"all","allows_public_repositories":true,"default":false}'
 export G6_GROUP='{"id":6,"name":"isolated","visibility":"selected","allows_public_repositories":true}'
 # Member/runner fixtures are what `gh api --paginate --jq` emits: one element
 # per line, concatenated across pages. Multiple lines therefore ARE the
@@ -88,6 +102,13 @@ export G6_RUNNERS=''
 export REPOS_FIXTURE=$'Verjson/private-lib\ttrue\nVerjson/public-app\tfalse'
 export FAIL_PATH=''
 export DELETED_GROUPS=''
+# Supplied the way the workflow supplies it, because the script no longer ships a
+# default for this one: the name it used to default to (`isolated`) has named a
+# deleted group since 2026-07-31. The general lane keeps a default and the
+# fixtures use it, so a stale default there fails this suite; the untrusted lane
+# has no live group to name, so it fails closed instead. The case immediately
+# after the namespaced-lane one proves that.
+export UNTRUSTED_GROUP_NAME='isolated'
 
 run_case() { bash "$script" 2>&1; }
 code_of() { run_case >/dev/null 2>&1; printf '%s' "$?"; }
@@ -98,14 +119,14 @@ out="$(run_case)"
   && pass "organization-wide permissive group admits new private and public repositories" \
   || fail "clean permissive policy did not reconcile: $out"
 
-G4_GROUP='{"id":4,"name":"GCP","visibility":"all","allows_public_repositories":false}'
+G4_GROUP='{"id":4,"name":"DigitalOcean","visibility":"all","allows_public_repositories":false}'
 out="$(run_case)"
 [ "$(code_of)" = "1" ] \
   && grep -qF 'Verjson/public-app' <<<"$out" \
   && pass "public repository denied by group is reported as drift" \
   || fail "public admission drift not reported: $out"
 
-G4_GROUP='{"id":4,"name":"GCP","visibility":"selected","allows_public_repositories":true}'
+G4_GROUP='{"id":4,"name":"DigitalOcean","visibility":"selected","allows_public_repositories":true}'
 # Two lines == two pages: the repo under test sits on the FIRST page, which is
 # precisely what a per-page collector would drop.
 G4_MEMBERS=$'Verjson/public-app\nVerjson/some-other-repo'
@@ -115,7 +136,7 @@ out="$(run_case)"
   && pass "new private repository missing from selected group is reported" \
   || fail "selected-group new repository gap not reported: $out"
 
-G4_GROUP='{"id":4,"name":"GCP","visibility":"all","allows_public_repositories":true}'
+G4_GROUP='{"id":4,"name":"DigitalOcean","visibility":"all","allows_public_repositories":true}'
 G4_MEMBERS=''
 G4_RUNNERS='{"name":"general-1","status":"offline","labels":["self-hosted","general"]}'
 out="$(run_case)"
@@ -147,6 +168,10 @@ FAIL_PATH='/actions/variables/VERJSON_RUNNER_DEFAULT'
   || fail "API failure did not return exit 2"
 
 FAIL_PATH=''
+# Migration complete: the retired pair is gone, so these cases exercise lane
+# resolution alone rather than also tripping the divergence report below.
+LEGACY_DEFAULT_VAR=''
+LEGACY_UNTRUSTED_VAR=''
 DEFAULT_VAR='{"value":"[\"self-hosted\",\"lane-general\"]","visibility":"all"}'
 UNTRUSTED_VAR='{"value":"[\"self-hosted\",\"lane-untrusted\"]","visibility":"all"}'
 G6_GROUP='{"id":6,"name":"isolated","visibility":"all","allows_public_repositories":true}'
@@ -157,6 +182,18 @@ out="$(run_case)"
   && grep -qF 'No drift' <<<"$out" \
   && pass "namespaced ADR 0035 lane labels map without reconciler changes" \
   || fail "namespaced lane labels did not reconcile: $out"
+
+# Same fixture, with the untrusted group unconfigured. Reaching a lane whose
+# group nobody has named must be undetermined and say so — the alternative, the
+# shipped `isolated` default this replaces, reported a group deleted on
+# 2026-07-31 as missing and read like fleet drift rather than stale code (#401).
+UNTRUSTED_GROUP_NAME='' out="$(run_case)"
+UNTRUSTED_GROUP_NAME='' code="$(code_of)"
+[ "$code" = "2" ] \
+  && grep -qF "no runner group is configured for lane 'untrusted'" <<<"$out" \
+  && pass "an unconfigured untrusted group is undetermined, and names what to set" \
+  || fail "unconfigured untrusted group did not fail closed: $out"
+UNTRUSTED_GROUP_NAME='isolated'
 
 # #266. Group 6 (`isolated`) was deleted on 2026-07-31 and the reconciler, which
 # pinned the id, went undetermined on every run. Two distinct behaviours have to
@@ -188,9 +225,27 @@ DELETED_GROUPS='4'
 DEFAULT_VAR='{"value":"[\"self-hosted\",\"lane-general\"]","visibility":"all"}'
 out="$(run_case)"
 [ "$(code_of)" = "2" ] \
-  && grep -qF 'GCP' <<<"$out" \
+  && grep -qF 'DigitalOcean' <<<"$out" \
   && pass "the general lane's group going missing fails closed, naming the group" \
   || fail "missing general group was not reported by name: $out"
+
+# The fixtures above use the shipped default group name deliberately, so a stale
+# default is a failing suite rather than a monitor that resolves nothing in
+# production. That is not enough on its own: the name it defaults to is a live
+# org fact, and on 2026-08-05 the pool was renamed GCP→DigitalOcean while the
+# labels moved by variable and this stayed in code (#401). So the workflow must
+# also be able to follow a rename without a pull request.
+reconcile_workflow="$(cd "$(dirname "$0")/../.." && pwd)/.github/workflows/runner-admission-reconcile.yml"
+grep -qF "GENERAL_GROUP_NAME: \${{ vars.VERJSON_RUNNER_GENERAL_GROUP || 'DigitalOcean' }}" "$reconcile_workflow" \
+  && pass "the general group name is repointable from org variables, with a fallback" \
+  || fail "runner-admission-reconcile.yml does not source GENERAL_GROUP_NAME from a variable with a fallback"
+
+# The matching invariant — this job must not ride the pool it monitors — lives in
+# runner-routing-policy.test.sh with every other routing assertion, and is
+# written there as "every runs-on is the fast-lane selector" rather than "no
+# runs-on is the general lane", so appending a second job cannot slip past it.
+# Kept in one place on purpose: the same rule half-asserted in two suites is how
+# a weakened version reads as covered.
 
 # 4. If the listing itself cannot be read, no group can be resolved at all. That
 #    is the definition of undetermined and must never read as clean.
@@ -201,6 +256,10 @@ FAIL_PATH='/actions/runner-groups'
   || fail "group listing failure did not return exit 2"
 
 FAIL_PATH=''
+# Migration complete: the retired pair is gone, so these cases exercise lane
+# resolution alone rather than also tripping the divergence report below.
+LEGACY_DEFAULT_VAR=''
+LEGACY_UNTRUSTED_VAR=''
 DEFAULT_VAR='{"value":"[\"self-hosted\",\"lane-general\"]","visibility":"all"}'
 UNTRUSTED_VAR='{"value":"[\"self-hosted\",\"lane-untrusted\"]","visibility":"all"}'
 
@@ -421,6 +480,33 @@ export G1_GROUP=''
   && pass "a listing with no default group is undetermined" \
   || fail "missing default group did not fail closed: $(code_of)"
 export G1_GROUP='{"id":1,"name":"GitHub","visibility":"all","allows_public_repositories":true,"default":true}'
+
+# The migration's own hazard: the retired pair stays set for consumers pinned to
+# a pre-migration SHA, so a lane edit that leaves it behind sends those consumers
+# somewhere this run never examined. Silence there is what made #401 invisible.
+DEFAULT_VAR='{"value":"[\"self-hosted\",\"general\"]","visibility":"all"}'
+UNTRUSTED_VAR='{"value":"[\"self-hosted\",\"general\"]","visibility":"all"}'
+LEGACY_DEFAULT_VAR='{"value":"[\"self-hosted\",\"gone\"]","visibility":"all"}'
+LEGACY_UNTRUSTED_VAR='{"value":"[\"self-hosted\",\"general\"]","visibility":"all"}'
+out="$(run_case)"
+[ "$(code_of)" = "1" ] \
+  && grep -qF 'VERJSON_RUNNER_DEFAULT' <<<"$out" \
+  && pass "a retired variable that has drifted from its lane is reported" \
+  || fail "legacy/lane divergence was not reported: $out"
+LEGACY_DEFAULT_VAR='{"value":"[\"self-hosted\",\"general\"]","visibility":"all"}'
+
+# A lane pointed at hosted capacity has no runner group and no self-hosted
+# runners; asking for either would report permanent drift against a deliberate
+# configuration — the shape a provider outage would force.
+DEFAULT_VAR='{"value":"[\"ubuntu-24.04\"]","visibility":"all"}'
+UNTRUSTED_VAR='{"value":"[\"ubuntu-24.04\"]","visibility":"all"}'
+LEGACY_DEFAULT_VAR=''
+LEGACY_UNTRUSTED_VAR=''
+out="$(run_case)"
+[ "$(code_of)" = "0" ] \
+  && grep -qF 'No drift' <<<"$out" \
+  && pass "a hosted lane reconciles clean instead of demanding a runner group" \
+  || fail "hosted lane did not reconcile: $out"
 
 if [ "$fails" -eq 0 ]; then
   echo "All tests passed."

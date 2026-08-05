@@ -37,7 +37,7 @@ permissions:
 
 jobs:
   actionlint:
-    runs-on: ${{ (github.repository_owner != 'Verjson' || inputs.github-hosted-runner) && 'ubuntu-24.04' || github.event.repository.private == true && fromJSON(vars.VERJSON_RUNNER_DEFAULT || '["self-hosted","general"]') || github.event.repository.visibility == 'public' && fromJSON(vars.VERJSON_RUNNER_FASTLANE || vars.VERJSON_RUNNER_UNTRUSTED || '["self-hosted","general"]') || fromJSON(vars.VERJSON_RUNNER_UNTRUSTED || vars.VERJSON_RUNNER_DEFAULT || '["self-hosted","general"]') }}
+    runs-on: ${{ (github.repository_owner != 'Verjson' || inputs.github-hosted-runner) && 'ubuntu-24.04' || github.event.repository.private == true && fromJSON(vars.VERJSON_LANE_TRUSTED || vars.VERJSON_LANE_FALLBACK || '["ubuntu-24.04"]') || github.event.repository.visibility == 'public' && fromJSON(vars.VERJSON_RUNNER_FASTLANE || vars.VERJSON_LANE_UNTRUSTED || vars.VERJSON_LANE_FALLBACK || '["ubuntu-24.04"]') || fromJSON(vars.VERJSON_LANE_UNTRUSTED || vars.VERJSON_LANE_FALLBACK || '["ubuntu-24.04"]') }}
     env:
       ACTIONLINT_VERSION: 1.7.7
       # From actionlint_1.7.7_checksums.txt on the upstream GitHub Release.
@@ -74,7 +74,7 @@ jobs:
           on: push
           jobs:
             test:
-              runs-on: [self-hosted, GCP]
+              runs-on: [self-hosted, general]
               steps:
                 - run: echo valid
           YAML

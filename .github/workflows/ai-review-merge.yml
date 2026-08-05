@@ -60,7 +60,7 @@ name: AI review + auto-merge
 #     gate:
 #       uses: Verjson/.github/.github/workflows/ai-review-merge.yml@v1
 #       secrets: inherit # model credentials only; never ORG_ADMIN_TOKEN
-#       with: { runner_labels: '["self-hosted","gate"]' }
+#       with: { runner_labels: '["self-hosted","general"]' }
 #
 # Downstream copies must also omit any repository input and pin the target to
 # the repository where the workflow executes.
@@ -86,7 +86,7 @@ on:
     # Cross-org consumers pin this reusable and pass `secrets: inherit` (ADR
     # 0022). A pull_request-triggered caller leaves pr_number empty and the
     # inherited event supplies it. `runner_labels` is REQUIRED: a consumer's org has no runner
-    # for Verjson's `self-hosted,gate` pool, so omitting it would silently queue
+    # for Verjson's self-hosted pool, so omitting it would silently queue
     # the job forever on the wrong labels (#130) — requiring it fails the call
     # immediately with a clear message instead. Missing `secrets: inherit` is
     # caught by the `require_secrets` preflight step (#131).
@@ -96,7 +96,7 @@ on:
         required: false
         type: string
       runner_labels:
-        description: 'JSON array of runs-on labels for the caller''s own fleet, e.g. ["self-hosted","gate"] (required — a consumer org has no runner for Verjson''s gate pool)'
+        description: 'JSON array of runs-on labels for the caller''s own fleet, e.g. ["self-hosted","general"] (required — a consumer org has no runner for Verjson''s gate pool)'
         required: true
         type: string
       allow_absent_checks:
@@ -167,8 +167,10 @@ jobs:
     # `target_private` because it is the job that resolves it, so it keys on the
     # event's own repository — correct for the pull_request path, which is every
     # path that queues. `== false` and not `!= true`: an unresolved value must
-    # fall through to self-hosted, never spend hosted minutes by accident.
-    runs-on: ${{ inputs.runner_labels && fromJSON(inputs.runner_labels) || github.repository_owner != 'Verjson' && 'ubuntu-24.04' || github.event.repository.private == false && fromJSON(vars.VERJSON_RUNNER_FASTLANE || '["ubuntu-24.04"]') || fromJSON(vars.VERJSON_RUNNER_OVERFLOW || vars.VERJSON_RUNNER_UNTRUSTED || vars.VERJSON_RUNNER_DEFAULT || '["self-hosted","general"]') }}
+    # fall through to the lane chain rather than take the fast lane. With every
+    # lane variable set — the live state — that is the self-hosted pool; the
+    # hosted tail beneath it is reached only if a lane variable is deleted.
+    runs-on: ${{ inputs.runner_labels && fromJSON(inputs.runner_labels) || github.repository_owner != 'Verjson' && 'ubuntu-24.04' || github.event.repository.private == false && fromJSON(vars.VERJSON_RUNNER_FASTLANE || '["ubuntu-24.04"]') || fromJSON(vars.VERJSON_RUNNER_OVERFLOW || vars.VERJSON_LANE_UNTRUSTED || vars.VERJSON_LANE_FALLBACK || '["ubuntu-24.04"]') }}
     # This job combines the former 10-minute freshness and classification jobs.
     timeout-minutes: 20
     permissions:
@@ -522,9 +524,10 @@ jobs:
     # that deadlock structurally impossible — and a disposable VM is also better
     # isolation for untrusted PR head code than a persistent runner.
     # `== 'false'` is the explicitly-resolved-public case; '' (unreadable) and
-    # 'true' both stay self-hosted, so visibility that fails to resolve never
-    # spends hosted minutes.
-    runs-on: ${{ inputs.runner_labels && fromJSON(inputs.runner_labels) || github.repository_owner != 'Verjson' && 'ubuntu-24.04' || needs.preflight.outputs.target_private == 'false' && fromJSON(vars.VERJSON_RUNNER_FASTLANE || '["ubuntu-24.04"]') || fromJSON(vars.VERJSON_RUNNER_OVERFLOW || vars.VERJSON_RUNNER_DEFAULT || '["self-hosted","general"]') }}
+    # 'true' both fall through to the lane chain, so visibility that fails to
+    # resolve never takes the fast lane. The chain's hosted tail is an
+    # operator-error landing (a deleted lane variable), not a routing choice.
+    runs-on: ${{ inputs.runner_labels && fromJSON(inputs.runner_labels) || github.repository_owner != 'Verjson' && 'ubuntu-24.04' || needs.preflight.outputs.target_private == 'false' && fromJSON(vars.VERJSON_RUNNER_FASTLANE || '["ubuntu-24.04"]') || fromJSON(vars.VERJSON_RUNNER_OVERFLOW || vars.VERJSON_LANE_TRUSTED || vars.VERJSON_LANE_FALLBACK || '["ubuntu-24.04"]') }}
     # Fast retains its former 45-minute merge ceiling. AI gets one bounded
     # aggregate ceiling for the 30-minute CI wait + the former 45-minute review
     # allowance + checkout/debounce/submit/recheck buffer.
@@ -1808,7 +1811,7 @@ jobs:
     # call, yet on the shared pool it queued a third runner slot behind every
     # newer PR's preflight — so work that had already paid for a model review was
     # the last thing to finish.
-    runs-on: ${{ github.repository_owner != 'Verjson' && 'ubuntu-24.04' || needs.preflight.outputs.target_private == 'false' && fromJSON(vars.VERJSON_RUNNER_FASTLANE || '["ubuntu-24.04"]') || fromJSON(vars.VERJSON_RUNNER_OVERFLOW || vars.VERJSON_RUNNER_ISOLATED || vars.VERJSON_RUNNER_DEFAULT || '["self-hosted","gate"]') }}
+    runs-on: ${{ github.repository_owner != 'Verjson' && 'ubuntu-24.04' || needs.preflight.outputs.target_private == 'false' && fromJSON(vars.VERJSON_RUNNER_FASTLANE || '["ubuntu-24.04"]') || fromJSON(vars.VERJSON_RUNNER_OVERFLOW || vars.VERJSON_LANE_PRIVILEGED || vars.VERJSON_LANE_FALLBACK || '["ubuntu-24.04"]') }}
     timeout-minutes: 5
     permissions:
       contents: read
