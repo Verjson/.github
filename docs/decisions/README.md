@@ -11,6 +11,7 @@ Reverse-chronological index of org-level decisions.
 <!-- BEGIN ADR INDEX -->
 | # | Date | Decision |
 |---|------|----------|
+| [0059](0059-released-snapshots-carry-the-release-note/README.md) | 2026-08-05 | Released snapshots carry the release note; the running log keeps the argument |
 | [0058](0058-github-waits-for-checks-not-the-gate/README.md) | 2026-08-05 | GitHub waits for required checks; the gate stops being an orchestrator |
 | [0057](0057-runner-labels-optional-lane-routed-callers/README.md) | 2026-08-05 | `runner_labels` is optional again, so generated callers route by lane |
 | [0056](0056-fleet-watchdog-retained-and-retargeted/README.md) | 2026-08-05 | Keep the fleet watchdog, retargeted at the poll job the overflow lane cannot reach |

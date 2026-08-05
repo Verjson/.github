@@ -98,7 +98,7 @@ def parse_frontmatter(path: Path) -> tuple[dict[str, str], str]:
     return metadata, "\n".join(lines[end + 1 :]).strip() + "\n"
 
 
-KNOWN_KEYS = frozenset({"date", "issue", "id", "title", "refs"})
+KNOWN_KEYS = frozenset({"date", "issue", "id", "title", "refs", "summary"})
 
 
 def quoting_is_ambiguous(value: str) -> bool:
@@ -142,15 +142,22 @@ def validate_metadata(path: Path, metadata: dict[str, str]) -> str:
         )
     if not metadata.get("title"):
         raise ChangelogError(f"{path}: title is required")
-    title = metadata["title"]
-    if quoting_is_ambiguous(title):
-        quote = title[0]
-        raise ChangelogError(
-            f"{path}: title opens and closes with {quote} but is not a single quoted"
-            f" scalar, so the quotes would ship literally into a release snapshot that"
-            f" can never be edited. Either remove the outer pair, or escape the interior"
-            f" quotes ({quote}{quote} inside single quotes, backslash inside double)."
-        )
+    # Both of these are what a released snapshot says about the entry, so both
+    # get the same scrutiny: whatever is wrong with them becomes permanent.
+    for key in ("title", "summary"):
+        value = metadata.get(key)
+        if value is None:
+            continue
+        if not value.strip():
+            raise ChangelogError(f"{path}: {key} must not be empty")
+        if quoting_is_ambiguous(value):
+            quote = value[0]
+            raise ChangelogError(
+                f"{path}: {key} opens and closes with {quote} but is not a single quoted"
+                f" scalar, so the quotes would ship literally into a release snapshot that"
+                f" can never be edited. Either remove the outer pair, or escape the interior"
+                f" quotes ({quote}{quote} inside single quotes, backslash inside double)."
+            )
     try:
         dt.date.fromisoformat(metadata.get("date", ""))
     except ValueError as exc:
@@ -302,12 +309,42 @@ def _rendered_refs(entry: Fragment) -> str:
     return "; refs " + ", ".join(f"#{number}" for number in numbers)
 
 
-def render(entries: list[Fragment]) -> str:
+def lead_paragraph(body: str) -> str:
+    """The first blank-line-delimited paragraph of a fragment body.
+
+    Deliberately a plain split with no block-type detection. A first pass that
+    tried to recognise non-prose openers produced 7 false positives across
+    v0.11.0, every one of them prose beginning `#79 threaded ...` — not a
+    heading in CommonMark, but the easy way to write that bug. Coarse beats
+    clever here, because the result is immutable the moment it is released.
+    """
+    return body.strip().split("\n\n", 1)[0].strip()
+
+
+def release_note(entry: Fragment) -> str:
+    """What a released snapshot says about an entry.
+
+    `summary` is an override, not a requirement: all 62 entries of the release
+    that prompted this had a usable lead paragraph, so no existing fragment
+    needs editing (#426).
+    """
+    return entry.metadata.get("summary") or lead_paragraph(entry.body)
+
+
+def render(entries: list[Fragment], released: bool = False) -> str:
+    """Render entries for the running log, or for a released snapshot.
+
+    One renderer served two audiences with opposite needs, and the running log
+    won by default: the org convention asks a fragment to carry its rationale,
+    so `CHANGELOG/<version>.md` shipped the engineering diary as release notes
+    — 174 KB for 62 entries. The released form keeps the lead paragraph and
+    leaves the argument in `NEXT/`, where git history still has it (#426).
+    """
     sections = []
     for entry in sorted(entries, key=lambda item: item.sort_key, reverse=True):
         sections.append(
             f"## {entry.metadata['title']}\n\n"
-            f"{entry.body.strip()}\n\n"
+            f"{release_note(entry) if released else entry.body.strip()}\n\n"
             f"_Date: {entry.metadata['date']}; "
             f"{entry.identity.replace(':', ' #', 1) if entry.identity.startswith('issue:') else entry.identity}"
             f"{_rendered_refs(entry)}_"
@@ -397,7 +434,7 @@ def release(repo_root: Path, version: str, selected_names: list[str]) -> None:
         if snapshot.exists():
             raise ChangelogError(f"released snapshot already exists: {snapshot}")
         snapshot.parent.mkdir(parents=True, exist_ok=True)
-        snapshot.write_text(render(selected), encoding="utf-8")
+        snapshot.write_text(render(selected, released=True), encoding="utf-8")
         for entry in selected:
             entry.path.unlink()
         aggregate = repo_root / "CHANGELOG.md"
@@ -458,6 +495,10 @@ def parser() -> argparse.ArgumentParser:
         sub.add_argument("--repo-root", type=Path, default=Path.cwd())
         sub.add_argument("--legacy-dir")
         sub.add_argument("--allow-legacy-next", action="store_true")
+        if name == "render-next":
+            # The released form is the one nobody reads until it can no longer
+            # be changed. This makes it viewable while the fragments still can.
+            sub.add_argument("--as-released", action="store_true")
     released = subparsers.add_parser("render-released")
     released.add_argument("--repo-root", type=Path, default=Path.cwd())
     pr = subparsers.add_parser("check-pr")
@@ -481,9 +522,7 @@ def main() -> int:
             entries = fragments(repo_root, args.legacy_dir, args.allow_legacy_next)
             if not entries:
                 raise ChangelogError("no unreleased fragments")
-            sys.stdout.write(
-                render(entries)
-            )
+            sys.stdout.write(render(entries, released=args.as_released))
         elif args.command == "render-released":
             sys.stdout.write(render_released(repo_root))
         elif args.command == "check-pr":

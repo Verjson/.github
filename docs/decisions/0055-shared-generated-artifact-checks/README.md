@@ -105,6 +105,13 @@ canonical engine from the `contract_ref` checkout — the same
 `validate` already parses every unreleased fragment, which is the work a render
 does.
 
+**Amended 2026-08-05 (ADR 0059, #426):** the check now also renders
+`render-next --as-released` into the job summary. That is not the second
+verdict-bearing render this section refuses — the verdict is decided before it
+runs, its exit status is never consulted for one, and a render failure warns
+rather than fails. It exists because a released snapshot is immutable, so
+without it the released form is first seen when it can no longer be changed.
+
 Consequently `changelog: true` **replaces** the generated `changelog-validate`
 caller rather than accompanying it. A repository calling both parses every
 fragment twice for one verdict. A repository that needs only changelog
