@@ -1,6 +1,8 @@
 # 0046 — Baseline repository hygiene: a root README that answers three questions
 
 - **Date:** 2026-08-02
+- **Amended:** 2026-08-05 — markdown block context is a state machine, and the
+  order it is evaluated in is the behaviour (#352, #393; see the amendment below)
 - **Issue:** [Verjson/.github#232](https://github.com/Verjson/.github/issues/232)
 - **Prompted by:** [Verjson/renovate-config#5](https://github.com/Verjson/renovate-config/issues/5)
   — a repository that shipped with neither a README nor repository-specific CI
@@ -146,17 +148,9 @@ all and would still have answered all three questions. Both were demonstrated
 bypasses. The parser therefore tracks fence and comment state and ignores
 headings inside either.
 
-**2026-08-05 ([#352](https://github.com/Verjson/.github/issues/352)):** tracking
-fence state as one boolean did not deliver that invariant. CommonMark closes a
-fence only with a run of the same character at least as long as the opening one,
-so the inner ``` of a ```` block was read as the close and every heading after it
-counted as a rendered section — a README whose entire body is one code block
-reported compliant while answering nothing visible. The parser now records the
-opening fence character and run length and closes only on a matching run with no
-info string after it. The three demonstrated bypasses (shorter inner fence,
-mismatched fence character, info-string line) are pinned by tests that were
-verified red against the previous parser; indented fences, tildes, and
-longer-than-opening closures keep working.
+What "tracks fence and comment state" has to mean in detail — how a fence closes,
+and which of the two contexts is consulted first — is the amendment at the end of
+this record. Both halves were bypasses, not refinements.
 
 For the same reason a heading only ends the section it opened when it is at the
 **same level or shallower**. `### Goals` under `## Purpose` is part of the purpose
@@ -218,3 +212,45 @@ new repository to start non-compliant. Organization template repositories copy i
 Remove the caller from a repository, or set `mode: audit`, to stop enforcement
 without touching the central mechanism. Deleting `.github/workflows/repo-hygiene.yml`
 removes the mechanism entirely; nothing else depends on it.
+
+## Amendment — 2026-08-05: block context is a state machine, and its order is the behaviour (#352, #393)
+
+§3a said the parser tracks fence and comment state. Two things it did not say
+turned out to be the whole invariant, and each was a demonstrated bypass rather
+than a refinement.
+
+**How a fence closes (#352).** Fence state was one boolean, so any fence line
+toggled it. CommonMark closes a fence only with a run of the *same* character at
+least as long as the opening one, so the inner ``` of a ```` block was read as the
+close and every heading after it counted as a rendered section — a README whose
+entire body is one code block reported compliant while answering nothing visible.
+The parser now records the opening fence character and run length and closes only
+on a matching run with no info string after it. The three demonstrated bypasses
+(shorter inner fence, mismatched fence character, info-string line) are pinned by
+tests verified red against the previous parser; indented fences, tildes, and
+longer-than-opening closures keep working.
+
+**Which context is consulted first.** The two contexts are not independent, so
+the evaluation order is itself the behaviour, and it is asymmetric. Per line the
+parser resolves an already-open comment first, then fence state, then scans for
+`<!--`. Scanning for comments before fences let an unterminated `<!--` inside a
+fenced HTML example — the ordinary way to show comment syntax in a README — open
+a comment that ran to end of file, so a fully compliant README parsed as empty
+and was reported as answering nothing. Hoisting fence tracking above the
+open-comment branch instead would let a ``` line inside a commented-out block
+hold a fence open and hide the real sections. Both directions are pinned by
+tests, and the second was verified by mutation: reordering the two makes it fail.
+
+Rendered output over 224 tracked markdown files is byte-identical before and
+after, so the fix is confined to the bypass.
+
+**The harness is part of the invariant (#340, #393).** The unit suite builds
+fixtures as real git repositories, so a fixture path that leaves the sandbox does
+not fail — `git -C` walks up to whatever repository encloses it and `add -A` +
+`commit` land on the checkout the suite was run from. Containment is therefore
+checked on the *resolved* path (`cd … && pwd -P`), not on a string prefix, which
+`$tmp/../<name>` and a symlink under `$tmp` both satisfied while naming a
+repository outside it; and a fixture name must be a plain name, because
+`git init` runs before any call is screened. The sandbox guard asserts the real
+checkout's HEAD and working tree are unmoved as well as the disposable host's,
+because an escape by absolute path leaves the host byte-identical.

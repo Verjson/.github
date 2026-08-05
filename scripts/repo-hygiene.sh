@@ -190,14 +190,17 @@ else
                 comment = 0
                 s = substr(s, c + 3)
               }
-              while ((o = index(s, "<!--")) > 0) {
-                rest = substr(s, o + 4)
-                c = index(rest, "-->")
-                if (c > 0) { s = substr(s, 1, o - 1) substr(rest, c + 3) }
-                else { s = substr(s, 1, o - 1); comment = 1; break }
-              }
               # Same for a fenced block: `# Purpose` in a shell example is a
               # shell comment, not a section heading.
+              #
+              # This runs BEFORE the "<!--" scan and AFTER the open-comment
+              # branch above, and that order is the behaviour on both sides.
+              # Scanning for comments first let an unterminated `<!--` inside a
+              # fenced HTML example open a comment that ran to end of file, so a
+              # compliant README parsed as empty and reported no purpose
+              # section. Tracking fences first instead would let a ``` line
+              # inside an open comment toggle a fence; the branch above consumes
+              # that line before this one sees it.
               #
               # CommonMark closes a fence only with a run of the SAME character
               # at least as long as the one that opened it. Toggling on any
@@ -221,6 +224,12 @@ else
                 next
               }
               if (n > 0) { fence = 1; fence_char = ch; fence_len = n; next }
+              while ((o = index(s, "<!--")) > 0) {
+                rest = substr(s, o + 4)
+                c = index(rest, "-->")
+                if (c > 0) { s = substr(s, 1, o - 1) substr(rest, c + 3) }
+                else { s = substr(s, 1, o - 1); comment = 1; break }
+              }
               if (s ~ /^#+[ \t]+/) {
                 match(s, /[^#]/); n = RSTART - 1
                 if (tolower(s) ~ re) { collecting = 1; level = n }

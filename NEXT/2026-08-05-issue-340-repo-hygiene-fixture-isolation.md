@@ -26,6 +26,24 @@ disposable host repository from the tracked tree, runs the suite inside it, and
 asserts `git status --porcelain` is empty and `HEAD` is unmoved — the regression
 that reproduced the stray commit before the fix.
 
+That containment is a property of the path, not of the string spelling it, so it
+is checked on the resolved path (`cd … && pwd -P`). A `"$tmp"/?*` prefix match
+was satisfied by `$tmp/../<name>` and by a symlink under `$tmp` pointing
+anywhere, and both then satisfied `[ -d "$dir/.git" ]` too; each was demonstrated
+moving a second disposable repository's `HEAD`, and each now aborts the suite.
+`fixture()` also refuses a path-shaped name, because `git init -q "$tmp/$name"`
+runs before any call reaches `fixture_git`. The sandbox guard gained the half a
+disposable host cannot see: it pins the real checkout's `HEAD` and working tree
+as well, since an escape by absolute path leaves the host byte-identical while
+mutating the tree the test runs from. Its own setup is checked rather than
+silently discarded, and every `HEAD` read uses `rev-parse --verify` — plain
+`rev-parse HEAD` prints the literal string `HEAD` on an unborn branch, so the
+before/after comparison passed vacuously on a host whose setup commit never
+happened. The `docs/` case pins the reported verdict and not just the exit code:
+every other way that fixture can break also exits 1, which is the "passes for the
+wrong reason" mode #393 is about. (`cp --parents -t` in the guard is GNU
+coreutils only — the CI runner and the development environment.)
+
 `scripts/repo-hygiene.sh` also counted headings that never leave a code fence
 (#352): it toggled one boolean on any three-backtick or three-tilde line, so the
 inner ``` of a ```` block read as the close and everything after it counted as
@@ -36,3 +54,15 @@ of the same character at least as long with no info string after it — measured
 character by character, because mawk is the default awk on the runners. Indented
 fences, tildes, and longer-than-opening closures all still work, each with a
 test; the three fence bypasses were verified red against the previous parser.
+
+Fence and comment state are not independent, so the order they are evaluated in
+is the behaviour. Comments were scanned first, which meant an unterminated
+`<!--` inside a fenced HTML example — the ordinary way to show comment syntax in
+a README — opened a comment that ran to end of file and blanked the whole parse:
+a fully compliant README was reported as having no purpose section. Per line the
+parser now resolves an already-open comment, then fence state, then scans for
+`<!--`, so a `<!--` inside a fence is inert while a fence line inside an open
+comment is still consumed by the comment branch first. Both directions have a
+test, and the second was verified by mutation — reordering the two makes it fail.
+Rendered output over the 224 tracked markdown files in this repository is
+byte-identical before and after.

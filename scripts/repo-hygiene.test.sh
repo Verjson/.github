@@ -54,10 +54,20 @@ MD
 # git's own stdout is discarded here too. `git commit` with nothing staged
 # reports "nothing to commit" on STDOUT, and that report is what a caller's
 # command substitution captured ahead of the fixture path.
+#
+# Containment is checked on the RESOLVED path, because it is a property of the
+# path and not of the string that spells it. A `"$tmp"/?*` prefix match is
+# satisfied by `$tmp/../<anything>` and by a symlink under $tmp pointing
+# anywhere, and both then satisfy `[ -d "$dir/.git" ]` as well — so the string
+# test admitted exactly the host repository this helper exists to refuse.
 fixture_git() {
   local dir="$1"; shift
-  case "$dir" in
-    "$tmp"/?*) ;;
+  local real tmp_real
+  real="$(cd "$dir" 2>/dev/null && pwd -P)" \
+    || { printf 'FAIL - fixture dir does not exist: %q\n' "$dir"; exit 1; }
+  tmp_real="$(cd "$tmp" && pwd -P)"
+  case "$real" in
+    "$tmp_real"/?*) ;;
     *) printf 'FAIL - fixture git outside the sandbox: %q\n' "$dir"; exit 1 ;;
   esac
   [ -d "$dir/.git" ] || { printf 'FAIL - not a fixture repository: %q\n' "$dir"; exit 1; }
@@ -78,6 +88,12 @@ fixture_git() {
 fixture_dir=''
 fixture() {
   local name="$1"
+  # `git init -q "$dir"` below is raw — it runs before any call is screened by
+  # fixture_git — so the name has to be a name. A path-shaped one would stand a
+  # repository up outside the sandbox and only then start being guarded.
+  case "$name" in
+    ''|*/*|.|..|.*) printf 'FAIL - fixture name must be a plain name: %q\n' "$name"; exit 1 ;;
+  esac
   local dir="$tmp/$name"
   local readme=1
   [ "${2:-}" = --no-readme ] && readme=0
@@ -494,6 +510,65 @@ out="$(check "$fence_info" 2>&1)"; rc=$?
   && pass "a fence line with an info string cannot close a block" \
   || fail "an info-string fence line closed the open block (rc=$rc): $out"
 
+# The two block contexts are not independent, so the order they are tracked in
+# is the behaviour. Inside a fence, `<!--` is a code sample: an example of HTML
+# comment syntax opened a comment that ran to end of file and blanked the whole
+# parse, reporting a compliant README as answering nothing.
+fixture fence-holds-comment <<'MD'
+# widget-service
+
+```html
+<!-- example
+```
+
+## Purpose
+
+Serves the widget catalogue to the storefront and keeps its search index warm.
+
+## Ownership
+
+Owned by the platform team; contact #verjson-platform or open an issue here.
+
+## Local validation
+
+Run `npm ci && npm test` before pushing; `npm run dev` starts it on :3000.
+MD
+fence_holds_comment="$fixture_dir"
+out="$(check "$fence_holds_comment" 2>&1)"; rc=$?
+[ "$rc" -eq 0 ] \
+  && pass "an unterminated <!-- inside a fence is a code sample, not a comment" \
+  || fail "a fenced <!-- swallowed the rest of the README (rc=$rc): $out"
+
+# And the same order in the other direction. A commented-out fence renders as
+# nothing, so it opens nothing: hoisting fence tracking above the open-comment
+# branch would leave this lone ``` holding a block open to end of file and hide
+# all three real sections behind it.
+fixture comment-holds-fence <<'MD'
+# widget-service
+
+<!--
+```sh
+# not a heading
+-->
+
+## Purpose
+
+Serves the widget catalogue to the storefront and keeps its search index warm.
+
+## Ownership
+
+Owned by the platform team; contact #verjson-platform or open an issue here.
+
+## Local validation
+
+Run `npm ci && npm test` before pushing; `npm run dev` starts it on :3000.
+MD
+comment_holds_fence="$fixture_dir"
+out="$(check "$comment_holds_fence" 2>&1)"; rc=$?
+[ "$rc" -eq 0 ] \
+  && pass "a fence line inside an HTML comment opens no block" \
+  || fail "a commented-out fence swallowed the rest of the README (rc=$rc): $out"
+
 # A subheading is part of its parent's answer, not the end of it. Resetting on
 # any heading made every sub-sectioned README a false finding, which would have
 # dominated the rollout backlog.
@@ -620,21 +695,67 @@ rc=$?
   && pass "a reused fixture name is refused instead of re-entering the fixture" \
   || { fail "a reused fixture name was accepted (rc=$rc)"; sed 's/^/diag - /' "$tmp/reuse.out"; }
 
+# `git init -q "$tmp/$name"` is raw, so the name has to be a name. A path-shaped
+# one puts a repository outside the sandbox before any git call is screened.
+( fixture ../escaped-fixture </dev/null ) >"$tmp/badname.out" 2>&1
+rc=$?
+{ [ "$rc" -eq 1 ] && grep -q 'fixture name must be a plain name' "$tmp/badname.out"; } \
+  && pass "a path-shaped fixture name is refused before anything is created" \
+  || { fail "a path-shaped fixture name was accepted (rc=$rc)"; sed 's/^/diag - /' "$tmp/badname.out"; }
+[ ! -e "$tmp/../escaped-fixture" ] \
+  && pass "the refused fixture name left nothing outside the sandbox" \
+  || { fail "a refused fixture name still created a directory outside the sandbox"; rm -rf "$tmp/../escaped-fixture"; }
+
 # Raw git on purpose: this repository is the one fixture_git must refuse to
 # touch, so building it through the helper would be circular.
 git init -q "$outside"
 git -C "$outside" config user.name test
 git -C "$outside" config user.email test@example.com
 git -C "$outside" commit -q --allow-empty -m 'outside the sandbox' >/dev/null 2>&1
-outside_head="$(git -C "$outside" rev-parse HEAD)"
+outside_head="$(git -C "$outside" rev-parse --verify HEAD)"
 ( fixture_git "$outside" commit -q --allow-empty -m 'this must never run' ) >"$tmp/escape.out" 2>&1
 rc=$?
 { [ "$rc" -eq 1 ] && grep -q 'outside the sandbox' "$tmp/escape.out"; } \
   && pass "a fixture git call outside the sandbox is refused" \
   || { fail "fixture git accepted a path outside \$tmp (rc=$rc)"; sed 's/^/diag - /' "$tmp/escape.out"; }
-[ "$(git -C "$outside" rev-parse HEAD)" = "$outside_head" ] \
+[ "$(git -C "$outside" rev-parse --verify HEAD)" = "$outside_head" ] \
   && pass "the refused call left the outside repository unchanged" \
   || fail "fixture git committed to a repository outside the sandbox"
+
+# Containment is a property of the resolved path, not of the string. Both repos
+# come from `mktemp -d`, so they are siblings under $TMPDIR and `$tmp/../<name>`
+# names the outside repository while still matching a "$tmp"/?* prefix test.
+[ "${tmp%/*}" = "${outside%/*}" ] \
+  || fail "the sandbox and the outside repository are not siblings — the traversal case is not exercising the escape"
+traversal="$tmp/../${outside##*/}"
+( fixture_git "$traversal" commit -q --allow-empty -m 'this must never run' ) >"$tmp/traversal.out" 2>&1
+rc=$?
+{ [ "$rc" -eq 1 ] && grep -q 'outside the sandbox' "$tmp/traversal.out"; } \
+  && pass "a fixture path that walks out of the sandbox with .. is refused" \
+  || { fail "fixture git accepted a ..-traversal out of \$tmp (rc=$rc)"; sed 's/^/diag - /' "$tmp/traversal.out"; }
+[ "$(git -C "$outside" rev-parse --verify HEAD)" = "$outside_head" ] \
+  && pass "the refused ..-traversal left the outside repository unchanged" \
+  || fail "fixture git committed through a ..-traversal to a repository outside the sandbox"
+
+# A symlink lives inside the sandbox by every string measure and by `[ -d
+# "$dir/.git" ]`, and still hands git a repository outside it.
+ln -s "$outside" "$tmp/escape-link"
+( fixture_git "$tmp/escape-link" commit -q --allow-empty -m 'this must never run' ) >"$tmp/symlink.out" 2>&1
+rc=$?
+{ [ "$rc" -eq 1 ] && grep -q 'outside the sandbox' "$tmp/symlink.out"; } \
+  && pass "a symlink out of the sandbox is refused" \
+  || { fail "fixture git followed a symlink out of \$tmp (rc=$rc)"; sed 's/^/diag - /' "$tmp/symlink.out"; }
+[ "$(git -C "$outside" rev-parse --verify HEAD)" = "$outside_head" ] \
+  && pass "the refused symlink left the outside repository unchanged" \
+  || fail "fixture git committed through a symlink to a repository outside the sandbox"
+
+# Resolving the path means a path that does not resolve has to be its own
+# refusal, not an empty string that then falls through the containment test.
+( fixture_git "$tmp/never-created" status ) >"$tmp/missing-dir.out" 2>&1
+rc=$?
+{ [ "$rc" -eq 1 ] && grep -q 'fixture dir does not exist' "$tmp/missing-dir.out"; } \
+  && pass "a fixture path that does not resolve is refused, not treated as the sandbox" \
+  || { fail "an unresolvable fixture path was not refused (rc=$rc)"; sed 's/^/diag - /' "$tmp/missing-dir.out"; }
 
 # --------------------------------------------------------------------------
 # Edge cases.
@@ -652,16 +773,15 @@ fixture_git "$docs_only" commit -qm 'document under docs/'
 # The verdict below is only about docs/ if the thing checked IS the fixture. A
 # polluted path landed the README in a junk directory and left the check reading
 # an empty root — passing for the wrong reason (#393).
-case "$docs_only" in
-  "$tmp"/*) pass "the docs/ case runs against a fixture inside the sandbox" ;;
-  *) fail "the docs/ fixture path escaped the sandbox: $(printf '%q' "$docs_only")" ;;
-esac
 { [ -f "$docs_only/docs/README.md" ] && ! [ -f "$docs_only/README.md" ]; } \
   && pass "the docs/ fixture really carries its README under docs/ and not at root" \
   || fail "the docs/ fixture was never built as documented"
 check "$docs_only" >"$tmp/docs-only.out" 2>&1
 rc=$?
-[ "$rc" -eq 1 ] \
+# Pinned to the verdict, not just to rc=1: every other way this fixture can go
+# wrong also exits 1, so a bare exit-code check would keep passing for the wrong
+# reason — which is the #393 failure mode itself.
+{ [ "$rc" -eq 1 ] && grep -q 'no root README' "$tmp/docs-only.out"; } \
   && pass "a README under docs/ does not satisfy the root requirement" \
   || { fail "nested README accepted as the root README (rc=$rc)"; sed 's/^/diag - /' "$tmp/docs-only.out"; }
 
