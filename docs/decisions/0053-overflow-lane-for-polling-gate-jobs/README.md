@@ -83,6 +83,26 @@ This does not change any trust property. The gate's guarantees are runner
 independent, and hosted VMs are better isolation for untrusted PR head code
 than a persistent shared runner — the same argument ADR 0050 already accepted.
 
+### Why `dispatch-merge` is included, and why that is the load-bearing part
+
+A concrete instance recorded on #341: `privileged_merge` polled for 41 minutes
+and failed with `trusted gate/checks did not become green`, when every real
+check on the PR had already passed and the **only** outstanding one was
+`dispatch-merge` — the gate's own downstream job, which could not get a runner
+because the gate was holding one. A gate starving its own successor.
+
+`dispatch-merge` resolves through `VERJSON_RUNNER_ISOLATED`, a different chain
+from the one the other jobs use, so it is covered explicitly here. This is the
+reason the change works without moving `ai-privileged-merge.yml` at all: put the
+job the poller is *waiting on* onto elastic capacity, and the poll completes
+instead of deadlocking. Moving the waiter is neither necessary nor sufficient;
+moving the awaited job is both.
+
+That failure mode also has a cost beyond latency, which #341 records: a red
+`privileged_merge` is visually indistinguishable from a real code failure, so it
+trains reviewers to merge past red — the exact habit a privileged merge gate
+exists to prevent. `verjson-cli-projects#57` merged with it red.
+
 `ai-privileged-merge.yml` is **deliberately excluded**, even though it is 29% of
 lane runtime and the most frequent job. Its runner comes from
 `inputs.runner_labels`, which every consumer's generated caller passes, so an
