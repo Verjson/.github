@@ -20,9 +20,13 @@ anywhere in the file, including the regenerate command an operator copies. The
 input is kept, not deleted: a self-hosted consumer **outside** Verjson has no
 `VERJSON_LANE_*` variables to fall through to, so it must still be able to name
 its own fleet, and `inputs.runner_labels` keeps its first place in the `runs-on`
-precedence chain. The requirement's original justification (#130 — an omitted
-input queued the job forever on `self-hosted,gate`) expired when every chain
-gained the `VERJSON_LANE_FALLBACK || '["ubuntu-24.04"]'` tail.
+precedence chain **on the jobs that read it** — `preflight`, `gate` and
+`privileged_merge`. `dispatch-merge` never has, so a self-hosted-only caller
+outside Verjson gets one job on `ubuntu-24.04`; that predates this change and is
+filed as [#411](https://github.com/Verjson/.github/issues/411). The requirement's
+original justification (#130 — an omitted input queued the job forever on
+`self-hosted,gate`) expired when every chain gained the
+`VERJSON_LANE_FALLBACK || '["ubuntu-24.04"]'` tail.
 
 `privileged-merge-caller-contract.test.sh` asserts a generated caller contains no
 `self-hosted` literal, omits the input, and still forwards an explicit fleet;
@@ -33,6 +37,12 @@ the real `runs-on` expression for both polarities — omitted routes through
 
 Existing generated callers keep working — they pass a still-accepted input — but
 remain label-pinned until the #365 consumer sweep regenerates them, which must
-land after this. ADRs 0022, 0042 and 0053 are amended with the dated rationale.
+land after this. The decision is recorded as
+[ADR 0057](docs/decisions/0057-runner-labels-optional-lane-routed-callers/README.md),
+which supersedes the `runner_labels` requirement in ADRs 0022 and 0042 and
+narrows ADR 0053's exclusion; those three carry a pointer rather than a rewritten
+body. It is a sensitive-class decision: with the input gone from generated
+callers, whoever can write `VERJSON_LANE_PRIVILEGED` places the job that holds
+`ORG_ADMIN_TOKEN`, with no pull request in any consumer repository.
 
 Tracks [#405](https://github.com/Verjson/.github/issues/405).

@@ -111,11 +111,9 @@ between a caller input and organization configuration on the one workflow that
 carries merge authority. Moving it means regenerating the callers, which should
 be a deliberate, separately reviewed change rather than a variable flip.
 
-> **Amended 2026-08-05 (#405).** The generator no longer emits `runner_labels`,
-> so a **newly generated** caller is lane-routed and an organization variable does
-> reach it. The exclusion still holds for callers generated before #405: they keep
-> passing the input until the #365 sweep regenerates them, which is the deliberate,
-> separately reviewed change this paragraph asks for.
+> The premise of this exclusion — that every consumer's generated caller passes
+> `inputs.runner_labels` — is superseded for newly generated callers by
+> [ADR 0057](../0057-runner-labels-optional-lane-routed-callers/README.md) (#405).
 
 ## Reverting
 
