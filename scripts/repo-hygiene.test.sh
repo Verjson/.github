@@ -11,7 +11,12 @@ here="$(cd "$(dirname "$0")" && pwd)"
 repo_root="$(cd "$here/.." && pwd)"
 script="$repo_root/scripts/repo-hygiene.sh"
 tmp="$(mktemp -d)"
-trap 'rm -rf "$tmp"' EXIT
+# A second, disposable repository outside $tmp. The sandbox guard below is
+# tested by aiming a fixture git call at a repository it must refuse, and the
+# assertion is that the repository is unchanged — so it must never be the
+# checkout the suite is running from.
+outside="$(mktemp -d)"
+trap 'rm -rf "$tmp" "$outside"' EXIT
 fails=0
 pass() { printf 'ok   - %s\n' "$1"; }
 fail() { printf 'FAIL - %s\n' "$1"; fails=$((fails + 1)); }
@@ -39,23 +44,58 @@ Run `npm ci && npm test` before pushing; `npm run dev` starts it on :3000.
 MD
 }
 
+# fixture_git <dir> [git args...] — git inside a fixture, pinned to the fixture.
+# Every fixture git call goes through here. A fixture path that is not under
+# $tmp is a bug in this file, but `git -C` does not treat it as one: it walks up
+# to whatever repository encloses the path, so `add -A` + `commit` landed the
+# runner's in-progress work in a stray host commit (#340). Refusing the call
+# turns that into a failed test instead of a mutated checkout.
+#
+# git's own stdout is discarded here too. `git commit` with nothing staged
+# reports "nothing to commit" on STDOUT, and that report is what a caller's
+# command substitution captured ahead of the fixture path.
+fixture_git() {
+  local dir="$1"; shift
+  case "$dir" in
+    "$tmp"/?*) ;;
+    *) printf 'FAIL - fixture git outside the sandbox: %q\n' "$dir"; exit 1 ;;
+  esac
+  [ -d "$dir/.git" ] || { printf 'FAIL - not a fixture repository: %q\n' "$dir"; exit 1; }
+  git -C "$dir" "$@" >/dev/null 2>&1 && return 0
+  printf 'FAIL - fixture git failed in %q: git %s\n' "$dir" "$*"
+  exit 1
+}
+
 # fixture <name> [--no-readme] — a committed git repo whose README.md is exactly
 # what arrives on stdin. Stdin is streamed rather than captured: `$(cat)` strips
 # trailing newlines, which would silently turn a whitespace-only fixture into a
 # no-README fixture and leave the empty-README case testing nothing.
+#
+# The path comes back in $fixture_dir, never on stdout: printing it made every
+# caller a `$(...)` capture of whatever the helper's own commands happened to
+# print, and one no-op `git commit` was enough to prepend its report to the path
+# (#340, #393). A variable cannot be polluted that way.
+fixture_dir=''
 fixture() {
-  local dir="$tmp/$1"
+  local name="$1"
+  local dir="$tmp/$name"
   local readme=1
   [ "${2:-}" = --no-readme ] && readme=0
+  # A reused name re-enters a fixture that is already built and committed, so
+  # the second build stages nothing and the commit becomes the no-op above. It
+  # is never what a caller meant, and it is how the docs/ case ended up
+  # asserting against a junk path instead of a fixture (#393).
+  [ -e "$dir" ] && { printf 'FAIL - fixture name reused: %s\n' "$name"; exit 1; }
   mkdir -p "$dir"
-  git init -q "$dir"
-  git -C "$dir" config user.name test
-  git -C "$dir" config user.email test@example.com
+  git init -q "$dir" >/dev/null 2>&1
+  [ -d "$dir/.git" ] || { printf 'FAIL - could not init fixture: %s\n' "$name"; exit 1; }
+  fixture_git "$dir" config user.name test
+  fixture_git "$dir" config user.email test@example.com
   printf 'placeholder\n' >"$dir/.keep"
   if [ "$readme" -eq 1 ]; then cat >"$dir/README.md"; else cat >/dev/null; fi
-  git -C "$dir" add -A
-  git -C "$dir" commit -qm fixture
-  printf '%s\n' "$dir"
+  fixture_git "$dir" add -A
+  fixture_git "$dir" commit -qm fixture
+  fixture_dir="$dir"
 }
 
 # check <root> [extra args...] — run the script in enforce mode over a fixture.
@@ -69,7 +109,7 @@ check() {
 # --------------------------------------------------------------------------
 # The tree has no root README at all.
 # --------------------------------------------------------------------------
-missing="$(fixture missing --no-readme </dev/null)"
+fixture missing --no-readme </dev/null; missing="$fixture_dir"
 check "$missing" >"$tmp/missing.out" 2>&1
 rc=$?
 { [ "$rc" -eq 1 ] && grep -qi 'readme' "$tmp/missing.out"; } \
@@ -79,11 +119,11 @@ rc=$?
 # --------------------------------------------------------------------------
 # The README exists but says nothing.
 # --------------------------------------------------------------------------
-empty="$(fixture empty <<'MD'
+fixture empty <<'MD'
 
 
 MD
-)"
+empty="$fixture_dir"
 check "$empty" >"$tmp/empty.out" 2>&1
 rc=$?
 # Pinned to the emptiness verdict, not just to a non-zero exit: an empty README
@@ -98,12 +138,12 @@ rc=$?
 # three required questions is the case that prompted #232 — a title and a
 # placeholder are what an unseeded repository already has.
 # --------------------------------------------------------------------------
-placeholder="$(fixture placeholder <<'MD'
+fixture placeholder <<'MD'
 # widget-service
 
 TODO
 MD
-)"
+placeholder="$fixture_dir"
 check "$placeholder" >"$tmp/placeholder.out" 2>&1
 rc=$?
 [ "$rc" -eq 1 ] \
@@ -113,7 +153,9 @@ rc=$?
 # --------------------------------------------------------------------------
 # The rule has to be satisfiable, or it is not a policy but an outage.
 # --------------------------------------------------------------------------
-valid="$(compliant_readme | fixture valid)"
+# Process substitution, not a pipe: a pipeline would run `fixture` in a subshell
+# where the path it publishes cannot reach the caller.
+fixture valid < <(compliant_readme); valid="$fixture_dir"
 check "$valid" >"$tmp/valid.out" 2>&1
 rc=$?
 [ "$rc" -eq 0 ] \
@@ -124,7 +166,7 @@ rc=$?
 # Headings alone are copy-paste. Each required topic needs a real answer under
 # it, or the seeded template passes while saying nothing.
 # --------------------------------------------------------------------------
-stubbed="$(fixture stubbed <<'MD'
+fixture stubbed <<'MD'
 # widget-service
 
 ## Purpose
@@ -139,7 +181,7 @@ TBD
 
 N/A
 MD
-)"
+stubbed="$fixture_dir"
 check "$stubbed" >"$tmp/stubbed.out" 2>&1
 rc=$?
 [ "$rc" -eq 1 ] \
@@ -151,9 +193,9 @@ rc=$?
 # head commit — there is no added line to inspect, and a diff-based check reads
 # the PR as touching nothing relevant. The resulting tree has no README.
 # --------------------------------------------------------------------------
-deleted="$(compliant_readme | fixture deleted)"
-git -C "$deleted" rm -q README.md
-git -C "$deleted" commit -qm 'chore: drop the README'
+fixture deleted < <(compliant_readme); deleted="$fixture_dir"
+fixture_git "$deleted" rm -q README.md
+fixture_git "$deleted" commit -qm 'chore: drop the README'
 check "$deleted" >"$tmp/deleted.out" 2>&1
 rc=$?
 [ "$rc" -eq 1 ] \
@@ -244,13 +286,13 @@ rc=$?
 
 # The self-assertion hole: a repository that ships its own exemption marker is
 # claiming a grant nobody reviewed. Only the central register can exempt.
-selfclaim="$(fixture selfclaim --no-readme </dev/null)"
+fixture selfclaim --no-readme </dev/null; selfclaim="$fixture_dir"
 {
   printf 'exempt: true\nclass: archived\nreason: we say so\n' >"$selfclaim/.repo-hygiene-exempt"
   printf 'Verjson/selfclaim\tarchived\t2027-01-01\twe say so\n' >"$selfclaim/exemptions.tsv"
 } 2>/dev/null
-git -C "$selfclaim" add -A
-git -C "$selfclaim" commit -qm 'claim an exemption'
+fixture_git "$selfclaim" add -A
+fixture_git "$selfclaim" commit -qm 'claim an exemption'
 exempt_check Verjson/selfclaim "$selfclaim" >"$tmp/selfclaim.out" 2>&1
 rc=$?
 [ "$rc" -eq 1 ] \
@@ -323,7 +365,7 @@ rc=$?
 # "headings" are shell comments in an example — renders as nothing and still
 # answers all three questions. Both are full policy bypasses, not nits.
 # --------------------------------------------------------------------------
-commented="$(fixture commented <<'MD'
+fixture commented <<'MD'
 <!--
 # Purpose
 Serves the widget catalogue to the storefront and keeps its search index warm.
@@ -333,13 +375,13 @@ Owned by the platform team; contact #verjson-platform or open an issue here.
 Run `npm ci && npm test` before pushing; `npm run dev` starts it on :3000.
 -->
 MD
-)"
+commented="$fixture_dir"
 out="$(check "$commented" 2>&1)"; rc=$?
 [ "$rc" -eq 1 ] && grep -q 'no purpose section' <<<"$out" \
   && pass "headings inside an HTML comment answer nothing" \
   || fail "a fully commented-out README passed (rc=$rc): $out"
 
-fenced="$(fixture fenced <<'MD'
+fixture fenced <<'MD'
 # widget-service
 
 ```sh
@@ -348,16 +390,114 @@ fenced="$(fixture fenced <<'MD'
 # Local validation
 ```
 MD
-)"
+fenced="$fixture_dir"
 out="$(check "$fenced" 2>&1)"; rc=$?
 [ "$rc" -eq 1 ] && grep -q 'no purpose section' <<<"$out" \
   && pass "headings inside a fenced code block answer nothing" \
   || fail "a README whose only headings are inside a fence passed (rc=$rc): $out"
 
+# CommonMark closes a fence only with a run of the SAME character at least as
+# long as the opening one, so the ``` line below is code, not a close — and
+# everything after it is still inside the outer fence. A parser that toggles on
+# any fence line reads the rest as rendered sections and reports a README that
+# answers nothing as compliant (#352).
+fixture fence-nested <<'MD'
+# widget-service
+
+````
+```
+# Purpose
+Serves the widget catalogue to the storefront and keeps its search index warm.
+# Ownership
+Owned by the platform team; contact #verjson-platform or open an issue here.
+# Local validation
+Run `npm ci && npm test` before pushing; `npm run dev` starts it on :3000.
+````
+MD
+fence_nested="$fixture_dir"
+out="$(check "$fence_nested" 2>&1)"; rc=$?
+[ "$rc" -eq 1 ] && grep -q 'no purpose section' <<<"$out" \
+  && pass "a shorter inner fence does not end the block that encloses it" \
+  || fail "headings inside an unclosed four-backtick fence counted (rc=$rc): $out"
+
+# The other half of the same rule: a tilde run does not close a backtick block.
+fixture fence-mismatched <<'MD'
+# widget-service
+
+```
+~~~
+# Purpose
+Serves the widget catalogue to the storefront and keeps its search index warm.
+# Ownership
+Owned by the platform team; contact #verjson-platform or open an issue here.
+# Local validation
+Run `npm ci && npm test` before pushing; `npm run dev` starts it on :3000.
+```
+MD
+fence_mismatched="$fixture_dir"
+out="$(check "$fence_mismatched" 2>&1)"; rc=$?
+[ "$rc" -eq 1 ] && grep -q 'no purpose section' <<<"$out" \
+  && pass "a fence of the other character does not close the open block" \
+  || fail "a tilde run closed a backtick fence (rc=$rc): $out"
+
+# And the rule has to let go: a run at least as long as the opener closes it, or
+# every README with an example block would read as one unending code block and
+# the check would report findings nobody can clear. Longer, indented, and tilde
+# closures are all real CommonMark closes.
+fixture fence-closed <<'MD'
+# widget-service
+
+  ~~~sh
+  echo 'an indented example'
+  ~~~~
+
+```text
+# not a heading
+````
+
+## Purpose
+
+Serves the widget catalogue to the storefront and keeps its search index warm.
+
+## Ownership
+
+Owned by the platform team; contact #verjson-platform or open an issue here.
+
+## Local validation
+
+Run `npm ci && npm test` before pushing; `npm run dev` starts it on :3000.
+MD
+fence_closed="$fixture_dir"
+out="$(check "$fence_closed" 2>&1)"; rc=$?
+[ "$rc" -eq 0 ] \
+  && pass "a longer or equal run of the opening character closes the fence" \
+  || fail "sections after a legitimately closed fence were not seen (rc=$rc): $out"
+
+# A run that carries an info string opens a block; it never closes one. Without
+# that, the ```sh line below would close the block and re-expose the bypass.
+fixture fence-info-string <<'MD'
+# widget-service
+
+```
+```sh
+# Purpose
+Serves the widget catalogue to the storefront and keeps its search index warm.
+# Ownership
+Owned by the platform team; contact #verjson-platform or open an issue here.
+# Local validation
+Run `npm ci && npm test` before pushing; `npm run dev` starts it on :3000.
+```
+MD
+fence_info="$fixture_dir"
+out="$(check "$fence_info" 2>&1)"; rc=$?
+[ "$rc" -eq 1 ] && grep -q 'no purpose section' <<<"$out" \
+  && pass "a fence line with an info string cannot close a block" \
+  || fail "an info-string fence line closed the open block (rc=$rc): $out"
+
 # A subheading is part of its parent's answer, not the end of it. Resetting on
 # any heading made every sub-sectioned README a false finding, which would have
 # dominated the rollout backlog.
-nested="$(fixture nested <<'MD'
+fixture nested <<'MD'
 # widget-service
 
 ## Purpose
@@ -374,7 +514,7 @@ Owned by the platform team; contact #verjson-platform or open an issue here.
 
 Run `npm ci && npm test` before pushing; `npm run dev` starts it on :3000.
 MD
-)"
+nested="$fixture_dir"
 out="$(check "$nested" 2>&1)"; rc=$?
 [ "$rc" -eq 0 ] \
   && pass "a subheading continues its parent section rather than ending it" \
@@ -382,11 +522,7 @@ out="$(check "$nested" 2>&1)"; rc=$?
 
 # A CRLF checkout must read the same as an LF one: the trailing \r otherwise
 # defeats the ([ \t]|:|$) alias anchor and fails every topic at once.
-crlf_dir="$tmp/crlf"
-mkdir -p "$crlf_dir"; git init -q "$crlf_dir"
-git -C "$crlf_dir" config user.name test; git -C "$crlf_dir" config user.email test@example.com
-compliant_readme | sed 's/$/\r/' >"$crlf_dir/README.md"
-git -C "$crlf_dir" add -A; git -C "$crlf_dir" commit -qm crlf
+fixture crlf < <(compliant_readme | sed 's/$/\r/'); crlf_dir="$fixture_dir"
 out="$(check "$crlf_dir" 2>&1)"; rc=$?
 [ "$rc" -eq 0 ] \
   && pass "a CRLF README reads the same as an LF one" \
@@ -453,7 +589,7 @@ rc=$?
 # every new repo to start non-compliant.
 template="$repo_root/docs/repo-hygiene/README.template.md"
 if [ -f "$template" ]; then
-  seeded="$(fixture seeded <"$template")"
+  fixture seeded <"$template"; seeded="$fixture_dir"
   check "$seeded" >"$tmp/template.out" 2>&1
   rc=$?
   [ "$rc" -eq 0 ] \
@@ -472,27 +608,68 @@ rc=$?
   || { fail "the publishing repository fails its own hygiene check (rc=$rc)"; sed 's/^/diag - /' "$tmp/self.out"; }
 
 # --------------------------------------------------------------------------
+# The harness's own invariants. A fixture bug here is not a failed assertion by
+# default — it is `git add -A && git commit` landing on whatever repository
+# encloses the path, which is how this suite once swept in-progress work into a
+# stray commit on the branch it was run from (#340, #393). Both guards abort the
+# suite, so both are exercised in a subshell.
+# --------------------------------------------------------------------------
+( fixture missing --no-readme </dev/null ) >"$tmp/reuse.out" 2>&1
+rc=$?
+{ [ "$rc" -eq 1 ] && grep -q 'fixture name reused' "$tmp/reuse.out"; } \
+  && pass "a reused fixture name is refused instead of re-entering the fixture" \
+  || { fail "a reused fixture name was accepted (rc=$rc)"; sed 's/^/diag - /' "$tmp/reuse.out"; }
+
+# Raw git on purpose: this repository is the one fixture_git must refuse to
+# touch, so building it through the helper would be circular.
+git init -q "$outside"
+git -C "$outside" config user.name test
+git -C "$outside" config user.email test@example.com
+git -C "$outside" commit -q --allow-empty -m 'outside the sandbox' >/dev/null 2>&1
+outside_head="$(git -C "$outside" rev-parse HEAD)"
+( fixture_git "$outside" commit -q --allow-empty -m 'this must never run' ) >"$tmp/escape.out" 2>&1
+rc=$?
+{ [ "$rc" -eq 1 ] && grep -q 'outside the sandbox' "$tmp/escape.out"; } \
+  && pass "a fixture git call outside the sandbox is refused" \
+  || { fail "fixture git accepted a path outside \$tmp (rc=$rc)"; sed 's/^/diag - /' "$tmp/escape.out"; }
+[ "$(git -C "$outside" rev-parse HEAD)" = "$outside_head" ] \
+  && pass "the refused call left the outside repository unchanged" \
+  || fail "fixture git committed to a repository outside the sandbox"
+
+# --------------------------------------------------------------------------
 # Edge cases.
 # --------------------------------------------------------------------------
 
 # Root means root. A repository with rich docs under docs/ and nothing at the
 # top level is exactly the "where do I start?" case #232 is about.
-nested="$(fixture nested --no-readme </dev/null)"
-mkdir -p "$nested/docs"
-compliant_readme >"$nested/docs/README.md"
-git -C "$nested" add -A
-git -C "$nested" commit -qm 'document under docs/'
-check "$nested" >"$tmp/nested.out" 2>&1
+# Its own fixture name: this case reused `nested` from the sub-heading case
+# above, which is what turned its path into a junk string (#393).
+fixture docs-only --no-readme </dev/null; docs_only="$fixture_dir"
+mkdir -p "$docs_only/docs"
+compliant_readme >"$docs_only/docs/README.md"
+fixture_git "$docs_only" add -A
+fixture_git "$docs_only" commit -qm 'document under docs/'
+# The verdict below is only about docs/ if the thing checked IS the fixture. A
+# polluted path landed the README in a junk directory and left the check reading
+# an empty root — passing for the wrong reason (#393).
+case "$docs_only" in
+  "$tmp"/*) pass "the docs/ case runs against a fixture inside the sandbox" ;;
+  *) fail "the docs/ fixture path escaped the sandbox: $(printf '%q' "$docs_only")" ;;
+esac
+{ [ -f "$docs_only/docs/README.md" ] && ! [ -f "$docs_only/README.md" ]; } \
+  && pass "the docs/ fixture really carries its README under docs/ and not at root" \
+  || fail "the docs/ fixture was never built as documented"
+check "$docs_only" >"$tmp/docs-only.out" 2>&1
 rc=$?
 [ "$rc" -eq 1 ] \
   && pass "a README under docs/ does not satisfy the root requirement" \
-  || { fail "nested README accepted as the root README (rc=$rc)"; sed 's/^/diag - /' "$tmp/nested.out"; }
+  || { fail "nested README accepted as the root README (rc=$rc)"; sed 's/^/diag - /' "$tmp/docs-only.out"; }
 
 # GitHub renders `readme.md` and `Readme.md` as the repository README, so the
 # check must too — otherwise it reports a finding a reader cannot reproduce.
-lowercase="$(compliant_readme | fixture lowercase)"
-git -C "$lowercase" mv README.md readme.md
-git -C "$lowercase" commit -qm 'lowercase the filename'
+fixture lowercase < <(compliant_readme); lowercase="$fixture_dir"
+fixture_git "$lowercase" mv README.md readme.md
+fixture_git "$lowercase" commit -qm 'lowercase the filename'
 check "$lowercase" >"$tmp/lowercase.out" 2>&1
 rc=$?
 [ "$rc" -eq 0 ] \
@@ -502,7 +679,7 @@ rc=$?
 # Headings are prose. Casing, trailing colons and deeper levels are all the same
 # answer, and rejecting them would make the rule about wording rather than about
 # whether the question was answered.
-variants="$(fixture variants <<'MD'
+fixture variants <<'MD'
 # widget-service
 
 ### OVERVIEW:
@@ -514,7 +691,7 @@ Owned by the platform team; contact #verjson-platform or open an issue here.
 ## Getting started
 Run `npm ci && npm test` before pushing; `npm run dev` starts it on :3000.
 MD
-)"
+variants="$fixture_dir"
 check "$variants" >"$tmp/variants.out" 2>&1
 rc=$?
 [ "$rc" -eq 0 ] \
@@ -523,7 +700,7 @@ rc=$?
 
 # Non-ASCII prose is prose. A byte-vs-character mix-up in the substance floor
 # would quietly hold non-English READMEs to a shorter or longer bar than English.
-unicode="$(fixture unicode <<'MD'
+fixture unicode <<'MD'
 # gestión-de-widgets
 
 ## Propósito
@@ -535,14 +712,14 @@ Owned by the platform team; contact #verjson-platform or open an issue here.
 ## Local validation
 Ejecuta `npm ci && npm test` antes de subir; `npm run dev` arranca en :3000.
 MD
-)"
+unicode="$fixture_dir"
 check "$unicode" >"$tmp/unicode.out" 2>&1
 rc=$?
 [ "$rc" -eq 1 ] \
   && pass "a heading outside the documented alias list is still a finding" \
   || { fail "an untranslated alias silently satisfied the purpose topic (rc=$rc)"; sed 's/^/diag - /' "$tmp/unicode.out"; }
 
-unicode_ok="$(fixture unicode-ok <<'MD'
+fixture unicode-ok <<'MD'
 # gestión-de-widgets
 
 ## Purpose
@@ -554,7 +731,7 @@ Equipo de plataforma; escríbenos en #verjson-platform o abre una incidencia.
 ## Local validation
 Ejecuta `npm ci && npm test` antes de subir; `npm run dev` arranca en :3000.
 MD
-)"
+unicode_ok="$fixture_dir"
 check "$unicode_ok" >"$tmp/unicode-ok.out" 2>&1
 rc=$?
 [ "$rc" -eq 0 ] \
@@ -562,7 +739,7 @@ rc=$?
   || { fail "unicode body measured against the wrong floor (rc=$rc)"; sed 's/^/diag - /' "$tmp/unicode-ok.out"; }
 
 # A section whose only content is a heading of its own has no answer under it.
-runon="$(fixture runon <<'MD'
+fixture runon <<'MD'
 # widget-service
 
 ## Purpose
@@ -570,7 +747,7 @@ runon="$(fixture runon <<'MD'
 ## Local validation
 Run `npm ci && npm test` before pushing; `npm run dev` starts it on :3000.
 MD
-)"
+runon="$fixture_dir"
 check "$runon" >"$tmp/runon.out" 2>&1
 rc=$?
 [ "$rc" -eq 1 ] \

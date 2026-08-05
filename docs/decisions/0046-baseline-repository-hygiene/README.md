@@ -146,6 +146,18 @@ all and would still have answered all three questions. Both were demonstrated
 bypasses. The parser therefore tracks fence and comment state and ignores
 headings inside either.
 
+**2026-08-05 ([#352](https://github.com/Verjson/.github/issues/352)):** tracking
+fence state as one boolean did not deliver that invariant. CommonMark closes a
+fence only with a run of the same character at least as long as the opening one,
+so the inner ``` of a ```` block was read as the close and every heading after it
+counted as a rendered section — a README whose entire body is one code block
+reported compliant while answering nothing visible. The parser now records the
+opening fence character and run length and closes only on a matching run with no
+info string after it. The three demonstrated bypasses (shorter inner fence,
+mismatched fence character, info-string line) are pinned by tests that were
+verified red against the previous parser; indented fences, tildes, and
+longer-than-opening closures keep working.
+
 For the same reason a heading only ends the section it opened when it is at the
 **same level or shallower**. `### Goals` under `## Purpose` is part of the purpose
 answer; treating any heading as a terminator reported every sub-sectioned README
