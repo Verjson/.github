@@ -27,8 +27,17 @@ awk '/^          if ! gh pr merge/{p=1}
      p&&/already absent or is not deletable/{seen=1}
      seen&&/^          fi$/{exit}' "$merge_wf" | sed 's/^          //' >"$sandbox/merge.sh"
 
-if [ ! -s "$sandbox/merge.sh" ] || ! grep -q 'git/refs/heads' "$sandbox/merge.sh"; then
-  fail "could not extract the merge/cleanup block from $merge_wf"
+# The extraction terminator is prose, so a reworded notice silently widens the
+# block into whatever follows — the follow-up filing loop — and every positive
+# assertion below would then be passing on unrelated appended code. Bound it:
+# the block is ~35 lines and closes exactly three `fi`s (merge recovery, the
+# inner MERGED test, and the cleanup gate).
+extracted_lines="$(wc -l <"$sandbox/merge.sh" | tr -d ' ')"
+if [ ! -s "$sandbox/merge.sh" ] ||
+   ! grep -q 'git/refs/heads' "$sandbox/merge.sh" ||
+   [ "$extracted_lines" -gt 45 ] ||
+   [ "$(grep -c '^\( *\)fi$' "$sandbox/merge.sh")" -ne 3 ]; then
+  fail "could not extract the merge/cleanup block from $merge_wf (got $extracted_lines lines)"
   echo "$fails test(s) failed."
   exit 1
 fi
@@ -53,7 +62,7 @@ export EXPECTED_HEAD_SHA=1111111111111111111111111111111111111111
 # `final` is the projection the step already fetched; the block reads the head
 # ref back out of it rather than paying for another API call.
 export final
-final="$(jq -nc --arg r feat/deep/branch '{headRefName: $r}')"
+final="$(jq -nc --arg r feat/deep/branch '{headRefName: $r, isCrossRepository: false}')"
 
 # Assignments are exported explicitly rather than prefixed onto the call: the
 # stub is a grandchild process, and prefix assignments on a *function* are not
@@ -111,6 +120,27 @@ grep -q -- '-X DELETE' "$GH_LOG" \
 [ "$status" -eq 0 ] \
   && pass "an absent head ref is skipped without failing the step" \
   || fail "an absent head ref fails the step"
+
+# 8. A fork PR must not be cleaned up here at all. `headRefName` is the branch
+#    name inside the HEAD repository, so resolving it against TARGET_REPO aims
+#    an org-admin delete at a same-named branch the base repo owns — and the
+#    name is chosen by the contributor. `develop` is the shape that matters.
+final="$(jq -nc '{headRefName: "develop", isCrossRepository: true}')"
+run_block 0 0 ''
+status=$?
+grep -q -- '-X DELETE' "$GH_LOG" \
+  && fail "a fork PR issues a delete against the base repository's own branch"
+[ "$status" -eq 0 ] \
+  && pass "a cross-repository PR is skipped without failing the step" \
+  || fail "a cross-repository PR fails the step"
+
+# 9. The gate must be closed by absence, not opened by it: a projection that
+#    lost `isCrossRepository` is treated as cross-repo, not as same-repo.
+final="$(jq -nc '{headRefName: "develop"}')"
+run_block 0 0 ''
+grep -q -- '-X DELETE' "$GH_LOG" \
+  && fail "an unknown repository relationship still deletes" \
+  || pass "an unknown repository relationship is treated as cross-repository"
 
 [ "$fails" -eq 0 ] && { echo "All tests passed."; exit 0; }
 echo "$fails test(s) failed."

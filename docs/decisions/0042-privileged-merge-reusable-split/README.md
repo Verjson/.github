@@ -180,8 +180,20 @@ Deleting the head ref is idempotent cleanup whose post-condition — *ref absent
 already satisfies. It now runs **after** the merge, as `gh api -X DELETE
 repos/$TARGET_REPO/git/refs/heads/$head_ref`, and cannot fail the step. The ref name comes
 from `headRefName` added to the `gh pr view` projection the step already fetched, so this
-costs no extra API call. Because the delete names `TARGET_REPO` explicitly, a fork PR 404s
-here too: the call can never reach a head repository the gate has no authority over.
+costs no extra API call.
+
+**A cross-repository PR is skipped entirely, and that is a gate rather than an assumption.**
+The first draft of this fix reasoned that naming `TARGET_REPO` explicitly made a fork PR 404
+harmlessly. It does the opposite. `headRefName` is `head.ref` — the branch name *inside the
+head repository*, unqualified by owner. `--delete-branch` resolved that name against the head
+repo; a bare `gh api -X DELETE repos/$TARGET_REPO/...` resolves it against the base repo. A
+fork PR from `attacker/x:develop` would therefore have aimed an `ORG_ADMIN_TOKEN` delete at
+the base repository's own `develop` — a branch that has nothing to do with the PR, under a
+name the contributor chooses, with the outcome swallowed by the same `2>&1 ||` that makes the
+404 tolerable. Nothing else in the gate rejects fork PRs outright; `workflow_files_changed`
+only rejects those touching `.github/workflows/`. So `isCrossRepository` joins the projection
+and the delete runs only when it is literally `false`; an absent or unreadable value is
+treated as cross-repository, because the safe direction here is *not deleting*.
 
 Consumers were bitten by the same coupling in the other direction — a *failed* merge that
 still deleted the branch, stranding the PR `CONFLICTING` with no recoverable head. Both are
@@ -192,12 +204,16 @@ The invariant this restores is the one the original decision assumed: **the step
 status answers "did the PR merge?" and nothing else.** Enforced by
 `scripts/ci-gate/merge-branch-cleanup.test.sh`, which extracts the real block from the
 workflow and runs it under `set -euo pipefail` against a stubbed `gh` with independently
-driven merge and delete outcomes. Four mutants — re-coupling `--delete-branch`, dropping the
-delete's failure tolerance, deleting unconditionally, and accepting a merge at an unattested
-head — each turn the suite red.
+driven merge and delete outcomes. Eight mutants die: re-coupling `--delete-branch`, dropping
+the delete's failure tolerance, deleting unconditionally, accepting a merge at an unattested
+head, inverting the cross-repository gate, removing it, defaulting an unknown relationship to
+same-repo, and rewording the notice the harness terminates extraction on — that last one
+because the extraction is now bounded by line count and `fi` arity, not only by "non-empty".
+The fork hole above was found by review, not by that suite, and the suite gained the case
+that would have found it.
 
 **This does not reach the repository that reported it.** `tequityapp/tequity-api` pins `@v1`
-(ADR 0022), which still resolves to `cc55c14` (2026-07-24) — a revision predating the split
+(ADR 0022), an annotated tag whose commit is still `e3cf463` (2026-07-24) — a revision predating the split
 this ADR records, so it merges from `ai-review-merge.yml`'s live step and is unaffected by
 any fix to `ai-privileged-merge.yml`. `main`'s copy of that step has been `if: ${{ false }}`
 since `87b4d54`, so it is left alone rather than fixed in place. Cross-org consumers get this

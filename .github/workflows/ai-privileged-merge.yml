@@ -552,7 +552,7 @@ jobs:
           done
 
           final="$(gh pr view "$PR_NUMBER" --repo "$TARGET_REPO" \
-            --json headRefName,headRefOid,isDraft,labels,state,statusCheckRollup)"
+            --json headRefName,headRefOid,isCrossRepository,isDraft,labels,state,statusCheckRollup)"
           [ "$(jq -r '.headRefOid // ""' <<<"$final")" = "$EXPECTED_HEAD_SHA" ] ||
             { echo "::error::head changed before merge"; exit 1; }
           final_state="$(jq -r '.state // ""' <<<"$final")"
@@ -675,11 +675,22 @@ jobs:
           # auto-delete-branch-on-merge the ref is already gone by the time gh
           # asks for it, and the resulting 404 surfaced a red privileged_merge
           # on a PR that had merged perfectly well (#458). The post-condition is
-          # "ref absent", which a 404 already satisfies. A fork PR has no such
-          # ref in TARGET_REPO, so it 404s here too — this call can never reach
-          # the head repository.
-          head_ref="$(jq -r '.headRefName // ""' <<<"$final")"
-          if [ -n "$head_ref" ]; then
+          # "ref absent", which a 404 already satisfies.
+          #
+          # A CROSS-REPOSITORY PR IS SKIPPED ENTIRELY, and the check is a gate
+          # rather than a comment. `headRefName` is `head.ref` — the branch name
+          # inside the HEAD repository, unqualified by owner. `--delete-branch`
+          # resolved it there; this call resolves it in TARGET_REPO. A fork PR
+          # from `attacker/x:develop` would therefore aim an ORG_ADMIN_TOKEN
+          # delete at TARGET_REPO's own `develop`, and the branch name on a fork
+          # is chosen entirely by the contributor. "The ref will not exist in
+          # TARGET_REPO" is an assumption, false exactly when it collides.
+          head_ref="$(jq -r '.headRefName // ""' <<<"$final")" || head_ref=''
+          cross_repo="$(jq -r 'if .isCrossRepository == false then "no" else "yes" end' <<<"$final")" ||
+            cross_repo='yes'
+          if [ "$cross_repo" != "no" ]; then
+            echo "::notice::PR #$PR_NUMBER is cross-repository; leaving the head ref to its own repository"
+          elif [ -n "$head_ref" ]; then
             gh api -X DELETE "repos/$TARGET_REPO/git/refs/heads/$head_ref" >/dev/null 2>&1 ||
               echo "::notice::head ref $head_ref was already absent or is not deletable"
           fi

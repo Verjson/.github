@@ -15,5 +15,9 @@ merge path the same 404 was misread as a concurrent run's merge and exited
 early, skipping the follow-up issues the gate is supposed to file.
 
 The ref name comes from `headRefName`, added to a projection the step already
-fetched, so cleanup costs no extra API call, and naming the target repository
-explicitly means a fork pull request can never be touched.
+fetched, so cleanup costs no extra API call.
+
+Cleanup is skipped outright for a pull request from a fork. That branch name
+belongs to the fork, not to the repository being merged into, so deleting it by
+name in the base repository would have removed whichever same-named branch the
+base repository happened to own.
