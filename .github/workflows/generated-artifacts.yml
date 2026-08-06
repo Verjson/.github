@@ -1,0 +1,219 @@
+name: generated artifacts
+
+on:
+  workflow_call:
+    inputs:
+      adr-index:
+        description: Check that docs/decisions/README.md matches scripts/gen-adr-index.sh
+        required: false
+        type: boolean
+        default: false
+      changelog:
+        description: Validate the canonical changelog fragments and their renderability
+        required: false
+        type: boolean
+        default: false
+      contract_ref:
+        description: Immutable Verjson/.github commit carrying the changelog contract; required when changelog is true
+        required: false
+        type: string
+        default: ''
+      legacy_dir:
+        description: Temporary former unreleased-fragment directory
+        required: false
+        type: string
+        default: ''
+      runner:
+        description: Optional JSON runner labels; Verjson defaults by visibility, external callers use ubuntu-24.04.
+        required: false
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ${{ inputs.runner != '' && fromJSON(inputs.runner) || github.repository_owner != 'Verjson' && 'ubuntu-24.04' || github.event.repository.private == true && fromJSON(vars.VERJSON_LANE_TRUSTED || vars.VERJSON_LANE_FALLBACK || '["ubuntu-24.04"]') || fromJSON(vars.VERJSON_LANE_UNTRUSTED || vars.VERJSON_LANE_FALLBACK || '["ubuntu-24.04"]') }}
+    timeout-minutes: 10
+    steps:
+      - name: Require an immutable contract pin
+        id: pin
+        env:
+          RUN_CHANGELOG: ${{ inputs.changelog }}
+          CONTRACT_REF: ${{ inputs.contract_ref }}
+        run: |
+          set -uo pipefail
+
+          # contract_ref becomes the `ref:` of a Verjson/.github checkout whose
+          # python3 this job then executes. `ref:` accepts any ref, so a branch
+          # or tag can move under the pin after review, and refs/pull/<n>/merge
+          # is an unreviewed pull request against a PUBLIC repository — that
+          # would let anyone who can open one run their own contract engine on
+          # the Verjson lane. Only a full commit SHA names code that cannot
+          # change after it was reviewed.
+          if [ "$RUN_CHANGELOG" != "true" ]; then
+            printf 'ok - no changelog check requested, so no contract pin is needed\n'
+            exit 0
+          fi
+
+          # Exactly 40 lower-case hex, matching scripts/node-workflow-pins.test.sh.
+          # An abbreviated SHA is ambiguous by construction — git resolves it
+          # against whatever objects exist at fetch time — so a prefix is not a
+          # pin (#312).
+          ref_is_immutable() { [[ "$1" =~ ^[0-9a-f]{40}$ ]]; }
+
+          if ! ref_is_immutable "$CONTRACT_REF"; then
+            reason="changelog: true requires contract_ref to be a full 40-character lower-case Verjson/.github commit SHA; got '$CONTRACT_REF'. A branch, a tag or refs/pull/<n>/merge can change after review, and an abbreviated SHA is ambiguous, so the contract that runs would not be the contract that was reviewed."
+            printf '::error title=Generated artifact check unavailable: Changelog::%s\n' "$reason"
+            printf '### Changelog could not be checked\n\n%s\n\n' "$reason" \
+              >>"${GITHUB_STEP_SUMMARY:-/dev/null}"
+            exit 1
+          fi
+
+          printf 'ok - contract_ref is an immutable commit pin\n'
+      - name: Check out consumer
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Check out canonical contract
+        if: inputs.changelog && inputs.contract_ref != ''
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: Verjson/.github
+          ref: ${{ inputs.contract_ref }}
+          path: .changelog-contract
+          persist-credentials: false
+      - name: Validate generated artifacts
+        id: validate
+        env:
+          RUN_ADR_INDEX: ${{ inputs.adr-index }}
+          RUN_CHANGELOG: ${{ inputs.changelog }}
+          CONTRACT_REF: ${{ inputs.contract_ref }}
+          LEGACY_DIR: ${{ inputs.legacy_dir }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -uo pipefail
+
+          failures=0
+          enabled=0
+
+          # One report shape for every artifact, so a consumer reads the same
+          # annotation whichever check failed: what is out of date, why, and the
+          # single command that regenerates it.
+          report() { # report <artifact> <reason> <remedy>
+            printf '::error title=Generated artifact out of date: %s::%s Re-run: %s\n' "$1" "$2" "$3"
+            {
+              printf '### %s is out of date\n\n%s\n\n' "$1" "$2"
+              printf 'Re-run the generator and commit the result:\n\n    %s\n\n' "$3"
+            } >>"${GITHUB_STEP_SUMMARY:-/dev/null}"
+            failures=$((failures + 1))
+          }
+
+          # A check the caller opted into but whose generator is absent is a
+          # caller mistake, not a clean repository. Reported separately from
+          # "stale" so nobody is sent to re-run a script that is not there.
+          unavailable() { # unavailable <artifact> <reason>
+            printf '::error title=Generated artifact check unavailable: %s::%s\n' "$1" "$2"
+            printf '### %s could not be checked\n\n%s\n\n' "$1" "$2" \
+              >>"${GITHUB_STEP_SUMMARY:-/dev/null}"
+            failures=$((failures + 1))
+          }
+
+          if [ "$RUN_ADR_INDEX" = "true" ]; then
+            enabled=$((enabled + 1))
+            if [ ! -f "$GITHUB_WORKSPACE/scripts/gen-adr-index.sh" ]; then
+              unavailable 'ADR index' \
+                'adr-index was requested but scripts/gen-adr-index.sh is not in this repository. Add the generator or set adr-index: false.'
+            elif bash "$GITHUB_WORKSPACE/scripts/gen-adr-index.sh" --check; then
+              printf 'ok - ADR index is current\n'
+            else
+              report 'ADR index' \
+                'docs/decisions/README.md does not match the ADR directories.' \
+                'bash scripts/gen-adr-index.sh'
+            fi
+          fi
+
+          # Renderability IS canonical validation: `changelog.py validate` parses
+          # every unreleased fragment, which is the same work a render does. This
+          # runs the pinned contract's own engine rather than a second renderer,
+          # so a repository on this check does not need the changelog-validate
+          # caller as well — running both would pay for the same parse twice.
+          if [ "$RUN_CHANGELOG" = "true" ]; then
+            enabled=$((enabled + 1))
+            engine="$GITHUB_WORKSPACE/.changelog-contract/scripts/changelog.py"
+            if [ -z "$CONTRACT_REF" ]; then
+              unavailable 'Changelog' \
+                'changelog was requested without contract_ref. Pass the immutable Verjson/.github commit that carries the changelog contract.'
+            elif [ ! -f "$engine" ]; then
+              unavailable 'Changelog' \
+                "changelog was requested but the contract checkout has no scripts/changelog.py. Check that contract_ref ($CONTRACT_REF) is a Verjson/.github commit carrying the contract."
+            else
+              args=(--repo-root "$GITHUB_WORKSPACE")
+              shown=(--repo-root .)
+              if [ -n "$LEGACY_DIR" ]; then
+                args+=(--legacy-dir "$LEGACY_DIR")
+                shown+=(--legacy-dir "$LEGACY_DIR")
+              fi
+
+              # The remedy is the command this job ran, against the engine path
+              # this job used. Under ADR 0038 the engine lives only in
+              # Verjson/.github and no consumer commits scripts/changelog.py, so
+              # naming that path would send every consumer to "No such file or
+              # directory" — the opposite of the one-command promise. --repo-root
+              # is shown as `.` because $GITHUB_WORKSPACE exists only on a runner.
+              engine_cmd='python3 .changelog-contract/scripts/changelog.py'
+              remedy="$engine_cmd validate ${shown[*]}"
+
+              changelog_ok=true
+              python3 "$engine" validate "${args[@]}" || changelog_ok=false
+              if [ "$changelog_ok" = true ] && [ -n "$BASE_SHA" ] && [ -n "$HEAD_SHA" ]; then
+                # Name the subcommand that actually failed: a pull-request policy
+                # failure sent to `validate` sends the consumer to a command that
+                # passes, which reads as a flaky check rather than a real verdict.
+                remedy="$engine_cmd check-pr --repo-root . --base $BASE_SHA --head $HEAD_SHA"
+                python3 "$engine" check-pr \
+                  --repo-root "$GITHUB_WORKSPACE" --base "$BASE_SHA" --head "$HEAD_SHA" \
+                  || changelog_ok=false
+              fi
+              if [ "$changelog_ok" = true ]; then
+                printf 'ok - unreleased changelog fragments validate and render\n'
+
+                # The released form is written into the job summary while the
+                # fragments can still change (ADR 0059). Shared with
+                # changelog-validate.yml, which every repository that adopts the
+                # contract runs, rather than inlined here where only the
+                # generated-artifacts callers would reach it (#437, #449).
+                #
+                # Informational only — the verdict was decided above and nothing
+                # below can alter it, which is why the script's exit status is
+                # not consulted.
+                # Through `bash`, and tested with -f rather than -x: a lost
+                # execute bit would route every caller to the warning below and
+                # look exactly like the silence #449 fixed.
+                preview_script="$GITHUB_WORKSPACE/.changelog-contract/scripts/changelog-preview.sh"
+                if [ -f "$preview_script" ]; then
+                  bash "$preview_script" "$engine" "$CONTRACT_REF"
+                else
+                  # Reachable only when contract_ref and the ref this workflow
+                  # was called at disagree, or point before the script existed.
+                  printf '::warning title=Release-note preview unavailable::%s\n' \
+                    "The changelog check itself PASSED and this does not change that verdict. Verjson/.github@$CONTRACT_REF has no scripts/changelog-preview.sh, so contract_ref predates the preview or does not match the ref this workflow was called at."
+                fi
+              else
+                report 'Changelog' \
+                  "The unreleased NEXT/ fragments do not satisfy the canonical changelog contract. The engine is Verjson/.github@$CONTRACT_REF — check it out at .changelog-contract and run the command below from the repository root." \
+                  "$remedy"
+              fi
+            fi
+          fi
+
+          if [ "$enabled" -eq 0 ]; then
+            printf '::error title=generated-artifacts validated nothing::%s\n' \
+              'no generated-artifact check was enabled — set at least one of adr-index: true or changelog: true.'
+            exit 1
+          fi
+
+          [ "$failures" -eq 0 ]

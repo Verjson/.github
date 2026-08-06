@@ -57,16 +57,22 @@ grep -qE '^      runner_labels:' <<<"$wc_block" \
   && pass "workflow_call declares a runner_labels input" \
   || fail "workflow_call is missing the runner_labels input (fleet not parameterizable)"
 
-# (d2) runner_labels must be REQUIRED under workflow_call: an in-job fast-fail
-# can't catch a missing fleet (the job queues forever on labels the consumer's
-# org has no runner for, #130), so the only fast-fail is rejecting the call.
+# (d2) runner_labels must be OPTIONAL under workflow_call (#405). It was
+# required because of #130: omitting it left the job queued forever on labels the
+# consumer's org has no runner for, so rejecting the call was the only fast-fail.
+# That premise is gone — every `runs-on` here ends at
+# `VERJSON_LANE_FALLBACK || '["ubuntu-24.04"]'` (ADR 0040), so an omitted input
+# resolves to a runner that exists. Keeping it required had a cost the #130
+# analysis did not price: it forced every caller to spell out a fleet LABEL, and
+# the generator supplied a Verjson one, putting a label the org relabels at will
+# into ~90 repositories it would then have to open a pull request against.
 awk '
   $0 == "      runner_labels:" { cap = 1; next }
   cap && /^      [A-Za-z]/ { exit }   # next input key ends this input block
   cap { print }
-' <<<"$wc_block" | grep -qE '^        required: true' \
-  && pass "runner_labels is required under workflow_call (missing fleet fails the call, not the runner queue)" \
-  || fail "runner_labels is optional — a consumer that omits it silently queues forever on Verjson's gate pool (#130)"
+' <<<"$wc_block" | grep -qE '^        required: false' \
+  && pass "runner_labels is optional under workflow_call (an omitted fleet routes by lane, #405)" \
+  || fail "runner_labels is required — every consumer must then name a fleet label the org cannot relabel (#405)"
 
 # (e) Every gate job's runs-on prefers inputs.runner_labels before the org
 # fallback — so a consumer's fleet actually takes effect. Both jobs
@@ -83,12 +89,13 @@ runs_on_parameterized="$(grep -cE "runs-on: \\\$\{\{ inputs\.runner_labels && fr
 # preflight's fallback only — gate reaches the fast lane for a public target and
 # DEFAULT for a private one. What must hold regardless: the cross-org hosted
 # route survives, every lane is still variable-selected rather than hardcoded,
-# and the self-hosted general pool remains the terminal fallback everywhere.
+# and VERJSON_LANE_FALLBACK remains the terminal lane term everywhere.
 grep -qE "github\.repository_owner != 'Verjson' && 'ubuntu-24\.04'" "$wf" \
   && [ "$(grep -cF 'VERJSON_RUNNER_FASTLANE' "$wf")" -ge 3 ] \
-  && [ "$(grep -cF 'VERJSON_RUNNER_DEFAULT' "$wf")" -ge 2 ] \
-  && [ "$(grep -cF 'VERJSON_RUNNER_UNTRUSTED' "$wf")" -ge 1 ] \
-  && [ "$(grep -cF '["self-hosted","general"]' "$wf")" -ge 2 ] \
+  && [ "$(grep -cF 'VERJSON_LANE_PRIVILEGED' "$wf")" -ge 1 ] \
+  && [ "$(grep -cF 'VERJSON_LANE_TRUSTED' "$wf")" -ge 1 ] \
+  && [ "$(grep -cF 'VERJSON_LANE_UNTRUSTED' "$wf")" -ge 1 ] \
+  && [ "$(grep -cF 'VERJSON_LANE_FALLBACK' "$wf")" -ge 3 ] \
   && pass "Verjson gate jobs use variable lanes while cross-org routing stays portable" \
   || fail "variable gate routing or cross-org portability drifted"
 

@@ -32,6 +32,9 @@ supplies them), and `runner_labels`, which is **required**. A consumer org has n
 for Verjson's isolated pool, so inheriting it would queue the job forever on labels
 nothing matches (#130); requiring it fails the call immediately with a clear message.
 
+> The `runner_labels` requirement stated here is superseded by
+> [ADR 0057](../0057-runner-labels-optional-lane-routed-callers/README.md) (#405).
+
 ### The two-sided name contract
 
 This is the part that fails silently, so it is stated as a contract and tested on both
@@ -146,3 +149,73 @@ Revert the implementing PR. The canonical workflow returns to `pull_request_targ
 `workflow_dispatch` only; consumers keep their existing copies, which continue to work as
 they do today. No consumer has migrated at the time of writing, so rollback affects
 nothing downstream.
+
+## Amendment (2026-08-06, #458) — branch cleanup is not part of the merge verdict
+
+The decision above states the merge call tolerates exactly one non-fatal cause and stays
+red otherwise. A second cause was tolerated by nobody and should have been: the call was
+`gh pr merge … --squash --admin --delete-branch --match-head-commit …`, so on a repository
+with **auto-delete-branch-on-merge** enabled GitHub removed the head ref as part of the
+merge and `--delete-branch` then lost the race against it:
+
+```
+All checks green and head unchanged; merging PR #344 (lane: ai).
+failed to delete remote branch chore/233-production-audit-triage:
+  HTTP 404: Reference does not exist
+##[error]Process completed with exit code 1.
+```
+
+Observed on `tequityapp/tequity-api` PR #344 (merge 2026-08-06 09:15:34Z, delete failure
+09:15:36Z). The PR squash-merged, the commit reached `main`, the linked issue auto-closed —
+and the gate went red. **That report came from `@v1`**, where `ai-review-merge.yml`'s own
+merge step is still live and carries the same coupling with no recovery block at all. On
+`main` the same 404 produced a quieter defect: the failure fell into the concurrent-merge
+recovery path, which — the PR being genuinely `MERGED` at the attested head — misread an
+already-deleted branch as another run's work and `exit 0`ed **above** the follow-up filing
+block, so ADR 0009's follow-up issues were silently never filed. Both readings are wrong for
+the same reason, and neither is cosmetic: a red gate on a merged PR trains reviewers to
+ignore the signal, and a green one that skipped follow-ups loses the findings.
+
+Deleting the head ref is idempotent cleanup whose post-condition — *ref absent* — a 404
+already satisfies. It now runs **after** the merge, as `gh api -X DELETE
+repos/$TARGET_REPO/git/refs/heads/$head_ref`, and cannot fail the step. The ref name comes
+from `headRefName` added to the `gh pr view` projection the step already fetched, so this
+costs no extra API call.
+
+**A cross-repository PR is skipped entirely, and that is a gate rather than an assumption.**
+The first draft of this fix reasoned that naming `TARGET_REPO` explicitly made a fork PR 404
+harmlessly. It does the opposite. `headRefName` is `head.ref` — the branch name *inside the
+head repository*, unqualified by owner. `--delete-branch` resolved that name against the head
+repo; a bare `gh api -X DELETE repos/$TARGET_REPO/...` resolves it against the base repo. A
+fork PR from `attacker/x:develop` would therefore have aimed an `ORG_ADMIN_TOKEN` delete at
+the base repository's own `develop` — a branch that has nothing to do with the PR, under a
+name the contributor chooses, with the outcome swallowed by the same `2>&1 ||` that makes the
+404 tolerable. Nothing else in the gate rejects fork PRs outright; `workflow_files_changed`
+only rejects those touching `.github/workflows/`. So `isCrossRepository` joins the projection
+and the delete runs only when it is literally `false`; an absent or unreadable value is
+treated as cross-repository, because the safe direction here is *not deleting*.
+
+Consumers were bitten by the same coupling in the other direction — a *failed* merge that
+still deleted the branch, stranding the PR `CONFLICTING` with no recoverable head. Both are
+one root cause: branch deletion coupled to merge success in a step whose exit code is read
+as the merge verdict.
+
+The invariant this restores is the one the original decision assumed: **the step's exit
+status answers "did the PR merge?" and nothing else.** Enforced by
+`scripts/ci-gate/merge-branch-cleanup.test.sh`, which extracts the real block from the
+workflow and runs it under `set -euo pipefail` against a stubbed `gh` with independently
+driven merge and delete outcomes. Eight mutants die: re-coupling `--delete-branch`, dropping
+the delete's failure tolerance, deleting unconditionally, accepting a merge at an unattested
+head, inverting the cross-repository gate, removing it, defaulting an unknown relationship to
+same-repo, and rewording the notice the harness terminates extraction on — that last one
+because the extraction is now bounded by line count and `fi` arity, not only by "non-empty".
+The fork hole above was found by review, not by that suite, and the suite gained the case
+that would have found it.
+
+**This does not reach the repository that reported it.** `tequityapp/tequity-api` pins `@v1`
+(ADR 0022), an annotated tag whose commit is still `e3cf463` (2026-07-24) — a revision predating the split
+this ADR records, so it merges from `ai-review-merge.yml`'s live step and is unaffected by
+any fix to `ai-privileged-merge.yml`. `main`'s copy of that step has been `if: ${{ false }}`
+since `87b4d54`, so it is left alone rather than fixed in place. Cross-org consumers get this
+only when `v1` is advanced, which is a separate decision with a much wider blast radius than
+one 404.

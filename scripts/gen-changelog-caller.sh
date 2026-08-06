@@ -186,9 +186,20 @@ set -euo pipefail
 CONTRACT_REF="${ref}"
 CONTRACT_SHA256="${contract_sha256}"
 
+# --as-released is the only flag that passes through. It shows what a release
+# would write into CHANGELOG/<version>.md, which under ADR 0059 can never be
+# edited afterwards — so reading it before merge is the one review step the
+# contract asks of a fragment author, and it has to be reachable from the tool
+# they are given (#443). Everything else is still refused: this is a renderer,
+# not a general front end to a pinned engine.
+as_released=
 if [ "\$#" -gt 0 ]; then
-  echo "render-next: unexpected argument '\$1'" >&2
-  exit 2
+  if [ "\$#" -eq 1 ] && [ "\$1" = --as-released ]; then
+    as_released=--as-released
+  else
+    echo "render-next: unexpected argument '\$1' (only --as-released is accepted)" >&2
+    exit 2
+  fi
 fi
 
 root="\$(cd "\$(dirname "\$0")/.." && pwd)"
@@ -198,6 +209,9 @@ EOF
   emit_contract_resolution
   cat <<EOF
 
+if [ -n "\$as_released" ]; then
+  exec python3 "\$contract" render-next --repo-root "\$root" --as-released
+fi
 exec python3 "\$contract" render-next --repo-root "\$root"
 EOF
 }
@@ -258,6 +272,30 @@ grep -q "CONTRACT_REF=\"$CONTRACT_REF\"" "$renderer" \
 if [ -f "$release_workflow" ]; then
   grep -q "changelog-release.yml@$CONTRACT_REF" "$release_workflow" \
     || fail "$release_workflow does not call the release workflow at the pin"
+  # The release pushes its snapshot commit and tag straight to the default
+  # branch, which the standard Verjson `main-protection` ruleset forbids for
+  # every actor outside its bypass list. GITHUB_TOKEN is not on that list, so a
+  # caller wiring it is rejected by GH013 at the last step of the last job —
+  # past everything a pull request or a remote-less fixture can observe. Pass an
+  # admin-scoped secret instead (Verjson/.github ADR 0052).
+  #
+  # The value is isolated before matching rather than grepped for inline. A
+  # guard on the raw line misses every ordinary spelling of the same wiring —
+  # a quoted scalar, the `github.token` alias, the case-insensitive
+  # `secrets.github_token`, a folded value on the following line — and each
+  # miss reports green while reproducing the failure exactly. It also fires on
+  # a `# NOT GITHUB_TOKEN` comment sitting above a correct wiring, which is a
+  # comment this contract's own documentation recommends writing.
+  push_token_value="$(sed 's/#.*//' "$release_workflow" | awk '
+    /^[[:space:]]*push_token:/ { depth = match($0, /[^[:space:]]/); found = 1; print; next }
+    found && $0 ~ /^[[:space:]]*$/ { next }
+    found && match($0, /[^[:space:]]/) > depth { print; next }
+    found { found = 0 }
+  ')"
+  if printf '%s\n' "$push_token_value" \
+    | grep -qiE '\$\{\{[[:space:]]*(secrets\.GITHUB_TOKEN|github\.token)[[:space:]]*\}\}'; then
+    fail "$release_workflow passes GITHUB_TOKEN as push_token; the branch ruleset rejects that push. Pass an admin-scoped secret."
+  fi
 fi
 echo "ok - render, validation and release automation share one immutable pin"
 
@@ -276,20 +314,60 @@ echo "ok - contract scripts are executable"
 # Guarded, because render-next exits non-zero on an empty NEXT/ — which is
 # exactly the state a release leaves behind. The final fixture proves this guard
 # is still load-bearing rather than dead code.
-if rendered_next="$("$renderer" 2>/dev/null)"; then
-  ROOT="$root" RENDERED="$rendered_next" python3 - <<'PY'
+#
+# The rendered log travels through a file, never through a variable handed to
+# execve. A single argv or environment string is capped at MAX_ARG_STRLEN — a
+# fixed 128 KiB, unrelated to the far larger ARG_MAX that a check would read —
+# so an adopter whose unreleased NEXT/ crossed that line died here with a bare
+# "Argument list too long" and exit 126, naming neither the changelog nor the
+# fragment count (#398). NEXT/ is per-change and never batched, so it grows past
+# 128 KiB in the ordinary course of a busy release cycle; releasing consumes it,
+# but the release path runs this suite, so the failure gated its own remedy.
+if "$renderer" >"$work/rendered" 2>/dev/null; then
+  ROOT="$root" RENDERED_PATH="$work/rendered" python3 - <<'PY'
 import os
 import re
 import sys
 from pathlib import Path
 
 root = Path(os.environ["ROOT"])
-rendered = os.environ["RENDERED"]
+rendered = Path(os.environ["RENDERED_PATH"]).read_text(encoding="utf-8")
 # 0000-archive.md is special-cased by name and is not rendered in strict mode.
 skip = {"README.md", "0000-archive.md"}
 fragments = sorted(p for p in (root / "NEXT").glob("*.md") if p.name not in skip)
 if not fragments:
     sys.exit("NEXT/ holds no renderable fragments but the renderer produced output")
+
+def unquote(value):
+    """The text a YAML-quoted scalar denotes.
+
+    Reimplemented rather than imported, deliberately: this file exists to check
+    the engine's output, so it must not borrow the engine's reading of the
+    input. But it does have to read the same subset. YAML *requires* a quoted
+    scalar wherever a value contains `: `, which is the shape of every
+    conventional-commit title, so a parser that keeps the quotes as literal text
+    rejects the one spelling a YAML parser accepts and reports it as a missing
+    title. A value that merely opens and closes with a quote is not a quoted
+    scalar and is returned untouched.
+    """
+    if len(value) < 2 or value[0] not in "'\"" or value[-1] != value[0]:
+        return value
+    quote, inner = value[0], value[1:-1]
+    index = 0
+    while index < len(inner):
+        if quote == '"' and inner[index] == "\\":
+            index += 2
+            continue
+        if inner[index] == quote:
+            if quote == "'" and inner[index : index + 2] == "''":
+                index += 2
+                continue
+            return value
+        index += 1
+    if quote == "'":
+        return inner.replace("''", "'")
+    return inner.replace('\\"', '"').replace("\\\\", "\\")
+
 
 for path in fragments:
     front = path.read_text(encoding="utf-8").split("---", 2)[1]
@@ -297,7 +375,7 @@ for path in fragments:
     for line in front.splitlines():
         key, sep, value = line.partition(":")
         if sep:
-            meta[key.strip()] = value.strip()
+            meta[key.strip()] = unquote(value.strip())
     if f"## {meta['title']}" not in rendered:
         sys.exit(f"{path.name}: title missing from the rendered log")
     # Identity is not decoration: only issue-form entries render a `#n`

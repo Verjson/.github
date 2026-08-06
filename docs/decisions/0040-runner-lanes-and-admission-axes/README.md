@@ -344,6 +344,60 @@ organization does not control, and it costs the warm-cache speed the owner defer
 isolation to protect. This is a topology decision with a security dimension, so it is the
 owner's, and it is left open rather than settled by a documentation PR.
 
+## Amendment (2026-08-05) — the lane expression is now what every workflow uses (#401)
+
+This ADR decided the model and quoted the canonical expression, but the workflows kept
+selecting `VERJSON_RUNNER_*` with a hardcoded `'["self-hosted","general"]'` tail. Migration
+step 2 had never been taken, so the model existed only on paper while a fleet label sat in
+every `runs-on:` — including in the reusable workflows that ~90 consumers call.
+
+What that cost is now measured rather than predicted. The fleet moved to DigitalOcean,
+`gce`/`GCP`/`gate` came off the runners, and the group was renamed. Repositories still
+naming those labels did not fail: they queued indefinitely with no check run
+(`Verjson/verjson-identity-lifecycle`, `[self-hosted, GCP]`), and the pool's own group
+briefly denied public repositories, wedging every pull request in this repository. A label
+that lives in workflow files is a rename that has to be landed in every repository at once,
+which is the thing lane variables exist to prevent.
+
+Every `runs-on:` in this repository now reads:
+
+```yaml
+runs-on: ${{ fromJSON(vars.VERJSON_LANE_<LANE> || vars.VERJSON_LANE_FALLBACK || '["ubuntu-24.04"]') }}
+```
+
+with the lane chosen by what the job is — `PRIVILEGED` for the merge gate's elevated token,
+`UNTRUSTED` for jobs touching pull-request content, `TRUSTED` otherwise. No fleet label
+appears in any `runs-on`, and `runner-routing-policy.test.sh` fails if one reappears, if a
+lane chain stops before `VERJSON_LANE_FALLBACK`, or if a routed job stops naming both lanes.
+
+Two deliberate exclusions, so neither reads as an oversight:
+
+- **`VERJSON_RUNNER_FASTLANE` and `_OVERFLOW` keep their names.** They select hosted versus
+  self-hosted, which is the orthogonal axis this ADR already separates, and their value is
+  `["ubuntu-24.04"]` — a GitHub-provided identifier, not a fleet label that can rot. Folding
+  them into the lane names would also put the admission monitor and the fleet watchdog back
+  on the pool they exist to police (ADR 0054).
+- **`VERJSON_RUNNER_*` stays set org-wide.** Consumers pinned to an older reusable-workflow
+  SHA still read them; deleting them would strand precisely the repositories that have not
+  re-pinned.
+
+The terminal `'["ubuntu-24.04"]'` means two different things depending on the shape above
+it, and conflating them overstates it:
+
+- In the **bare** form used by repository-local jobs, it is this ADR's portability contract:
+  an organization with no lane variable set lands on hosted, the only place that requires no
+  knowledge of its fleet.
+- In the **reusable** workflows it is not reachable that way at all. A foreign caller
+  short-circuits at `github.repository_owner != 'Verjson' && 'ubuntu-24.04'` before any lane
+  variable is read, which the routing suite pins with its `Acme/widgets` cases. What remains
+  is a *Verjson* repository whose lane variable was deleted or mistyped — an operator-error
+  landing on metered hosted minutes rather than a portability path.
+
+Both are preferable to the hardcoded fleet label they replace, which landed such a job in a
+queue forever. The distinction matters because the second case deserves an alert, not a
+shrug: `runner-admission-reconcile` reports it, which is why that job had to stop reading
+the variables this migration retired.
+
 ## Rollback
 
 This ADR changes no runner topology and no organization configuration; it is a model plus

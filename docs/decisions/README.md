@@ -11,6 +11,14 @@ Reverse-chronological index of org-level decisions.
 <!-- BEGIN ADR INDEX -->
 | # | Date | Decision |
 |---|------|----------|
+| [0059](0059-released-snapshots-carry-the-release-note/README.md) | 2026-08-05 | Released snapshots carry the release note; the running log keeps the argument |
+| [0058](0058-github-waits-for-checks-not-the-gate/README.md) | 2026-08-05 | GitHub waits for required checks; the gate stops being an orchestrator |
+| [0057](0057-runner-labels-optional-lane-routed-callers/README.md) | 2026-08-05 | `runner_labels` is optional again, so generated callers route by lane |
+| [0056](0056-fleet-watchdog-retained-and-retargeted/README.md) | 2026-08-05 | Keep the fleet watchdog, retargeted at the poll job the overflow lane cannot reach |
+| [0055](0055-shared-generated-artifact-checks/README.md) | 2026-08-05 | Generated-artifact validation is a shared workflow with enumerated checks |
+| [0054](0054-public-repositories-admitted-to-the-general-pool/README.md) | 2026-08-05 | Admit public repositories to the self-hosted general pool |
+| [0053](0053-overflow-lane-for-polling-gate-jobs/README.md) | 2026-08-05 | One reversible overflow lane for jobs that poll the pool they wait on |
+| [0052](0052-release-push-token-satisfies-branch-rules/README.md) | 2026-08-04 | The changelog release push needs a credential the branch ruleset bypasses |
 | [0051](0051-ai-review-pr-head-evidence-boundary/README.md) | 2026-08-03 | AI review does not infer base state from the PR checkout |
 | [0050](0050-actionlint-fast-lane-for-public-targets/README.md) | 2026-08-03 | actionlint takes the fast lane on public targets |
 | [0049](0049-fleet-watchdog-preempts-poll-jobs/README.md) | 2026-08-03 | A watchdog preempts merge-gate poll jobs on the self-hosted fleet |

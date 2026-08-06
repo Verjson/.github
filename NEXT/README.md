@@ -34,6 +34,17 @@ title: Short imperative title
 One or two paragraphs: what changed, why, and the issue/PR/ADR refs.
 ```
 
+**Write the release note first.** A released snapshot keeps only the entry's
+`title` and its **lead paragraph** — everything up to the first blank line. The
+rest stays here in the running log, where it belongs and where git history keeps
+it. So the opening paragraph should read as a release note on its own, and the
+argument goes after it. Where that is not possible, an optional `summary:` line
+overrides the lead for the released form only ([ADR 0059](../docs/decisions/0059-released-snapshots-carry-the-release-note/README.md)).
+
+```
+scripts/render-next.sh --as-released   # what a release would publish
+```
+
 - `YYYY-MM-DD` and the identity must match the metadata. Legitimately issue-less
   work sets `id` instead of `issue` and uses a UTC timestamp or short UUID as
   documented in `docs/changelog/README.md`; the filename still spells `-issue-`,

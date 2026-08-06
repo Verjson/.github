@@ -5,6 +5,15 @@ set -uo pipefail
 
 root="$(cd "$(dirname "$0")/../.." && pwd)"
 workflows="$root/.github/workflows"
+# Both suffixes. Every sweep below used to glob `*.yml` alone, so a workflow
+# named `.yaml` — which GitHub runs identically — evaded all of them (#401 review).
+shopt -s nullglob
+workflow_files=("$workflows"/*.yml "$workflows"/*.yaml)
+shopt -u nullglob
+# An empty array would make every `grep … "${workflow_files[@]}"` below read
+# STDIN and hang forever instead of failing — a sweep that scans nothing must
+# not look like a sweep that found nothing.
+[ "${#workflow_files[@]}" -gt 0 ] || { echo "FAIL - no workflow files found under $workflows"; exit 1; }
 fails=0
 pass() { printf 'ok   - %s\n' "$1"; }
 fail() { printf 'FAIL - %s\n' "$1"; fails=$((fails + 1)); }
@@ -14,7 +23,7 @@ fail() { printf 'FAIL - %s\n' "$1"; fails=$((fails + 1)); }
 # expressions in reusable definitions.
 literal_hosted="$(
   grep -HnE '^    runs-on:[[:space:]]+(\[)?ubuntu-(24\.04|latest)([][:space:],]|$)' \
-    "$workflows"/*.yml || true
+    "${workflow_files[@]}" || true
 )"
 [ -z "$literal_hosted" ] \
   && pass "Verjson-local jobs contain no literal GitHub-hosted runs-on selector" \
@@ -40,19 +49,53 @@ literal_hosted="$(
 #  * `fleet-watchdog.yml` — polices the self-hosted fleet, so gating it on that
 #    fleet would leave it queued behind the jam it exists to clear. It runs only
 #    in this repository, which is public, so its minutes are free.
+#  * the tail of a lane chain, `vars.VERJSON_LANE_FALLBACK || '["ubuntu-24.04"]'`
+#    — ADR 0040's portability contract. It is only reached when an organization
+#    has no lane variable set at all, and hosted is the one landing that works
+#    without knowing anything about its fleet. The tail it replaces named a
+#    Verjson fleet label, which put a fleet rename inside a file that every
+#    consumer would have had to edit (#401).
 unsafe_portable="$(
-  grep -HnE "^    runs-on:.*ubuntu-(24\\.04|latest)" "$workflows"/*.yml \
+  grep -HnE "^    runs-on:.*ubuntu-(24\\.04|latest)" "${workflow_files[@]}" \
     | grep -v "github.repository_owner != 'Verjson' && 'ubuntu-24.04'" \
     | grep -v "github.repository_owner == 'Verjson'.*|| 'ubuntu-24.04'" \
     | grep -v "inputs.github-hosted-runner" \
     | grep -v "vars.VERJSON_RUNNER_FASTLANE" \
+    | sed "s/vars\.VERJSON_LANE_FALLBACK || '\\[\"ubuntu-24\.04\"\\]'//" \
+    | grep -E "ubuntu-(24\\.04|latest)" \
     || true
 )"
+
+# Every self-hosted lane selector must end at VERJSON_LANE_FALLBACK. A chain that
+# stops at its own lane variable leaves an org that set only the fallback with an
+# empty `runs-on`, and one that stops before the hosted tail leaves an org with no
+# lane variables unplaceable — the queue-forever failure, one level up from the
+# literal labels this replaced.
+lane_without_fallback="$(
+  grep -HnE "^    runs-on:.*vars\\.VERJSON_LANE_(TRUSTED|UNTRUSTED|PRIVILEGED)" "${workflow_files[@]}" \
+    | grep -v "vars.VERJSON_LANE_FALLBACK" || true
+)"
+[ -z "$lane_without_fallback" ] \
+  && pass "every lane selector falls through to VERJSON_LANE_FALLBACK" \
+  || fail "lane selector that cannot degrade: $lane_without_fallback"
+
+# No `runs-on` may name a fleet label. The lane variables exist so that a relabel,
+# a provider move, or a pool rename is an org-variable edit — never a pull request
+# in this repository, and never one in each of ~90 consumers (ADR 0041).
+# Keyed on the LITERAL ARRAY, not on the word `self-hosted`: `runs-on: [general]`
+# is just as unplaceable after a relabel, and keying on the word let it through
+# (#401 review). Hosted literals are caught separately by `literal_hosted`.
+fleet_label="$(
+  grep -HnE "^    runs-on:[[:space:]]*\[" "${workflow_files[@]}" || true
+)"
+[ -z "$fleet_label" ] \
+  && pass "no runs-on names a fleet label; lanes are selected by intent" \
+  || fail "runs-on names a fleet label instead of a lane: $fleet_label"
 
 # The fast lane must keep a fallback: a bare `fromJSON(vars.X)` with no `||`
 # breaks every consumer the moment the variable is unset.
 fastlane_no_fallback="$(
-  grep -HnE "^    runs-on:.*VERJSON_RUNNER_FASTLANE" "$workflows"/*.yml \
+  grep -HnE "^    runs-on:.*VERJSON_RUNNER_FASTLANE" "${workflow_files[@]}" \
     | grep -v "VERJSON_RUNNER_FASTLANE ||" || true
 )"
 [ -z "$fastlane_no_fallback" ] \
@@ -63,7 +106,7 @@ fastlane_no_fallback="$(
   || fail "hosted fallback reachable by a Verjson caller: $unsafe_portable"
 
 grep -qF "github.repository_owner != 'Verjson'" "$workflows/actionlint.yml" \
-  && grep -qF '["self-hosted","general"]' "$workflows/actionlint.yml" \
+  && grep -qF 'vars.VERJSON_LANE_FALLBACK' "$workflows/actionlint.yml" \
   && pass "actionlint preserves its bounded external hosted compatibility path" \
   || fail "actionlint runner contract drifted"
 
@@ -71,24 +114,57 @@ grep -qF "github.repository_owner != 'Verjson'" "$workflows/actionlint.yml" \
 # through a VARIABLE with a fallback chain, never a hardcoded label: the lane has
 # to be repointable at a self-hosted pool from org settings alone, and an unset
 # variable must degrade to the ADR 0034 general pool rather than to nothing.
-grep -qF 'vars.VERJSON_RUNNER_FASTLANE || vars.VERJSON_RUNNER_DEFAULT' "$workflows/actions-ci.yml" \
-  && grep -qF "'[\"self-hosted\",\"general\"]'" "$workflows/actions-ci.yml" \
+grep -qF 'vars.VERJSON_RUNNER_FASTLANE || vars.VERJSON_LANE_TRUSTED' "$workflows/actions-ci.yml" \
+  && grep -qF 'vars.VERJSON_LANE_FALLBACK' "$workflows/actions-ci.yml" \
   && ! grep -qF 'runs-on: [self-hosted, general]' "$workflows/actions-ci.yml" \
   && pass "repository shell validation routes through the fast-lane variable with a general fallback" \
   || fail "actions-ci fast-lane routing drifted (ADR 0047)"
 
+# These used to be pinned to the literal `[self-hosted, general]`. A literal label
+# is a rename away from an unplaceable job, and GitHub does not fail an
+# unplaceable job — it queues it with no diagnostic. That is not hypothetical:
+# the fleet moved GCP→DigitalOcean and `Verjson/verjson-identity-lifecycle`'s
+# `generated-docs` job asked for `[self-hosted, GCP]`, a label no runner carries
+# any more, until `35c1efa1` (#401). Repository-local jobs now select the lane the same way
+# every reusable workflow does — through the variable, with a fallback — so a
+# relabel is an org-variable flip rather than a pull request per workflow, which
+# is what ADR 0041 requires.
+#
+# runner-admission-reconcile.yml is deliberately absent from this list: it is the
+# one repository-local job that must NOT ride the general pool, because it is the
+# monitor for "a repository cannot reach its lane" (#401, ADR 0054). Its own
+# routing is pinned separately below so it cannot drift back.
 for local_workflow in \
   node-cache-integration.yml \
   rework-reconcile.yml \
-  runner-admission-reconcile.yml \
   tag-major.yml; do
-  if grep -E '^    runs-on:' "$workflows/$local_workflow" \
-      | grep -qvF 'runs-on: [self-hosted, general]'; then
-    fail "$local_workflow contains a repository-local job outside the general lane"
+  off_lane="$(
+    grep -E '^    runs-on:' "$workflows/$local_workflow" \
+      | grep -vF "runs-on: \${{ fromJSON(vars.VERJSON_LANE_TRUSTED || vars.VERJSON_LANE_FALLBACK || '[\"ubuntu-24.04\"]') }}" \
+      || true
+  )"
+  if [ -n "$off_lane" ]; then
+    fail "$local_workflow has a repository-local job that does not select the trusted lane: $off_lane"
   else
-    pass "$local_workflow keeps every repository-local job on the general lane"
+    pass "$local_workflow selects the trusted lane by name"
   fi
 done
+
+# Inverted AND pinned to the whole line. "No line says [self-hosted, general]"
+# would stay green if a second job were appended on any other literal; a prefix
+# match on `fromJSON(vars.VERJSON_RUNNER_FASTLANE` would stay green if the
+# selector were tidied into the chained form actions-ci.yml uses, which ends at
+# the general pool — putting the monitor back inside what it watches (#401 review).
+off_fastlane="$(
+  grep -E '^    runs-on:' "$workflows/runner-admission-reconcile.yml" \
+    | grep -vF "runs-on: \${{ fromJSON(vars.VERJSON_RUNNER_FASTLANE || '[\"ubuntu-24.04\"]') }}" \
+    || true
+)"
+if [ -n "$off_fastlane" ]; then
+  fail "runner-admission-reconcile.yml has a job off the fast lane, watching the pool from inside it (#401): $off_fastlane"
+else
+  pass "the admission monitor is routed off the pool it watches"
+fi
 
 
 # --------------------------------------------------------------------------
@@ -104,7 +180,13 @@ done
 # the workflow (single source of truth — no copy of any expression lives here).
 # --------------------------------------------------------------------------
 
-GENERAL='["self-hosted","general"]'
+# With no lane variable set at all, the defined landing is the portable hosted
+# default — the trailing `'["ubuntu-24.04"]'` in every lane chain. That is the
+# portability contract of ADR 0040, not a safety net: it exists so an org with
+# none of these variables lands somewhere sane. It replaces a hardcoded
+# `["self-hosted","general"]` tail, which named a fleet label from inside a file
+# a rename cannot reach (#401).
+UNSET_LANDING='["ubuntu-24.04"]'
 
 # Extract the `runs-on:` value of one job block, verbatim.
 extract_runs_on() {
@@ -139,7 +221,7 @@ cat >"$evaluator" <<'JS'
 // validated against real semantics, not against a model that only happens to
 // agree with the polarity in use today.
 const vm = require('node:vm');
-const [, , raw, repository, runnerInput, priv, varDefault, varUntrusted, varFastlane] = process.argv;
+const [, , raw, repository, runnerInput, priv, varDefault, varUntrusted, varFastlane, runnerLabelsInput, varOverflow] = process.argv;
 // `inputs.github-hosted-runner` is a legal Actions reference and an illegal JS
 // one — bare, it parses as `inputs.github - hosted - runner`. Rewriting it to a
 // bracket access is what lets actionlint.yml be EVALUATED here rather than only
@@ -161,9 +243,20 @@ const github = {
     },
   },
 };
-// Modelled as false throughout: it is the per-caller opt-in of ADR 0026, so
-// every case here is the default one where a Verjson caller has NOT opted in.
-const inputs = { runner: runnerInput, 'github-hosted-runner': false };
+// `github-hosted-runner` is modelled as false throughout: it is the per-caller
+// opt-in of ADR 0026, so every case here is the default one where a Verjson
+// caller has NOT opted in.
+//
+// `runner_labels` is the merge workflows' equivalent override and is modelled
+// as '' when omitted, which is what Actions passes for an optional string input
+// with no default. Modelling it as undefined would agree by accident: both are
+// falsy, so the omitted-input cases would pass while nothing proved a SUPPLIED
+// value is honoured — the assertion that fails when it is not modelled at all.
+const inputs = {
+  runner: runnerInput,
+  runner_labels: runnerLabelsInput === undefined ? '' : runnerLabelsInput,
+  'github-hosted-runner': false,
+};
 // preflight resolves the TARGET repository's visibility and publishes it as a
 // STRING ('true' | 'false' | '' when unreadable). gate and dispatch-merge route
 // on that rather than on `github.event.repository`, because on the dispatch path
@@ -171,13 +264,33 @@ const inputs = { runner: runnerInput, 'github-hosted-runner': false };
 const needs = { preflight: { outputs: { target_private: priv } } };
 // An unset Actions variable is the empty string, not undefined.
 const vars = {
+  // Lane variables name what the work IS (ADR 0040). The pool variables they
+  // replace are kept in the model, not because any workflow still reads them,
+  // but because an org mid-migration still has both set and a stray reference
+  // would otherwise resolve to undefined here and pass.
+  VERJSON_LANE_TRUSTED: varDefault,
+  VERJSON_LANE_UNTRUSTED: varUntrusted,
+  // Privileged and fallback share the private-lane fixture, following the same
+  // reasoning the isolated lane used: call sites supply one self-hosted value,
+  // and the preference ORDER is pinned by the structural assertions below
+  // rather than by these values. A case that sets varDefault to '' therefore
+  // models "this org has no lane variables at all", whose defined landing is
+  // the portable hosted default.
+  VERJSON_LANE_PRIVILEGED: varDefault,
+  VERJSON_LANE_FALLBACK: varDefault,
   VERJSON_RUNNER_DEFAULT: varDefault,
   VERJSON_RUNNER_UNTRUSTED: varUntrusted,
-  // Privileged routing prefers an isolated lane and then the default lane.
-  // Existing evaluator call sites provide one private-lane fixture, so use it
-  // for both names; structural assertions below pin the preference order.
   VERJSON_RUNNER_ISOLATED: varDefault,
   VERJSON_RUNNER_FASTLANE: varFastlane,
+  // ADR 0053's overflow lane, and the one variable that MUST come from its own
+  // fixture rather than being left off the model. It is the FIRST term of the
+  // tail in all three ai-review-merge.yml chains, and the organization sets it
+  // org-wide today, so omitting it from `vars` resolves it to `undefined` here
+  // and every case silently asserts a route production cannot currently
+  // produce. Unset is '' (an unset Actions variable is the empty string), so a
+  // case that leaves it out still models "this org has not enabled overflow" —
+  // deliberately, rather than by accident.
+  VERJSON_RUNNER_OVERFLOW: varOverflow === undefined ? '' : varOverflow,
 };
 const fromJSON = (value) => JSON.parse(value);
 // GitHub Actions string equality and contains() are case-insensitive; JS === is not.
@@ -240,11 +353,17 @@ assert_no_ambient() {
 assert_no_ambient '${{ process.env.HOME }}' process
 assert_no_ambient '${{ require("node:fs") }}' require
 
-# assert_route <workflow> <job> <repo> <runner-input> <private> <var-default> <var-untrusted> <expected> <label> [var-fastlane]
+# assert_route <workflow> <job> <repo> <runner-input> <private> <var-default> <var-untrusted> <expected> <label> [var-fastlane] [runner-labels-input] [var-overflow]
+#
+# `runner-labels-input` is separate from `runner-input` rather than folded into
+# it: they are different inputs on different workflows (`inputs.runner` on the
+# reusable CI workflows, `inputs.runner_labels` on the two merge workflows), and
+# one fixture feeding both would make a case pass for the wrong reason the first
+# time a workflow reads both.
 assert_route() {
   local workflow="$1" job="$2" repository="$3" runner_input="$4" priv="$5"
   local var_default="$6" var_untrusted="$7" expected="$8" label="$9"
-  local var_fastlane="${10-}"
+  local var_fastlane="${10-}" runner_labels="${11-}" var_overflow="${12-}"
   local expression resolved
   expression="$(extract_runs_on "$workflow" "$job")"
   if [ -z "$expression" ]; then
@@ -252,7 +371,8 @@ assert_route() {
     return
   fi
   resolved="$(node "$evaluator" "$expression" "$repository" "$runner_input" \
-    "$priv" "$var_default" "$var_untrusted" "$var_fastlane" 2>&1)" || {
+    "$priv" "$var_default" "$var_untrusted" "$var_fastlane" "$runner_labels" \
+    "$var_overflow" 2>&1)" || {
     fail "$label — evaluating '$expression' failed: $resolved"
     return
   }
@@ -268,9 +388,9 @@ assert_route() {
 # external consumer keeps the required portable hosted route.
 for privileged_workflow in ai-privileged-merge.yml; do
   privileged_path="$workflows/$privileged_workflow"
-  grep -qF 'VERJSON_RUNNER_ISOLATED || vars.VERJSON_RUNNER_DEFAULT' "$privileged_path" \
-    && pass "$privileged_workflow privileged job prefers isolated then default" \
-    || fail "$privileged_workflow privileged job lost isolated/default preference"
+  grep -qF 'VERJSON_LANE_PRIVILEGED || vars.VERJSON_LANE_FALLBACK' "$privileged_path" \
+    && pass "$privileged_workflow privileged job prefers the privileged lane, then the fallback" \
+    || fail "$privileged_workflow privileged job lost its privileged/fallback preference"
 
   assert_route "$privileged_path" privileged_merge Verjson/.github '' false \
     '["self-hosted","isolated-canary"]' '["self-hosted","untrusted-canary"]' \
@@ -278,19 +398,40 @@ for privileged_workflow in ai-privileged-merge.yml; do
     "$privileged_workflow — Verjson privileged merge cannot reach hosted"
 
   assert_route "$privileged_path" privileged_merge Verjson/.github '' false '' '' \
-    '["self-hosted","gate"]' \
-    "$privileged_workflow — missing Verjson variables fall back to the gate pool"
+    "$UNSET_LANDING" \
+    "$privileged_workflow — no lane variable set lands on the portable hosted default"
 
   assert_route "$privileged_path" privileged_merge Acme/widgets '' true \
     '["self-hosted","isolated-canary"]' '["self-hosted","untrusted-canary"]' \
     'ubuntu-24.04' \
     "$privileged_workflow — external privileged caller retains hosted portability"
+
+  # #405. The generator used to bake `["self-hosted","general"]` into every
+  # caller, so a Verjson consumer routed on a LABEL and a relabel needed a pull
+  # request in each of ~90 repositories. The generated caller now omits the
+  # input; assert the route that omission produces, rather than trusting that
+  # nothing passes it.
+  assert_route "$privileged_path" privileged_merge Verjson/verjson-authn '' true \
+    '["self-hosted","privileged-canary"]' '["self-hosted","untrusted-canary"]' \
+    '["self-hosted","privileged-canary"]' \
+    "$privileged_workflow — a consumer omitting runner_labels routes through VERJSON_LANE_PRIVILEGED" \
+    '' ''
+
+  # The escape hatch, exercised rather than assumed: a self-hosted consumer
+  # OUTSIDE Verjson has no lane variables, so the input must still beat the
+  # hosted portability route. Keeping the input is the reason #405 makes it
+  # optional instead of deleting it.
+  assert_route "$privileged_path" privileged_merge Acme/widgets '' true \
+    '' '' \
+    '["self-hosted","acme-fleet"]' \
+    "$privileged_workflow — an off-Verjson fleet still wins via runner_labels" \
+    '' '["self-hosted","acme-fleet"]'
 done
 
 dispatch_workflow="$workflows/ai-review-merge.yml"
-grep -qF 'VERJSON_RUNNER_ISOLATED || vars.VERJSON_RUNNER_DEFAULT' "$dispatch_workflow" \
-  && pass "dispatch-merge prefers isolated then default" \
-  || fail "dispatch-merge lost isolated/default preference"
+grep -qF 'VERJSON_LANE_PRIVILEGED || vars.VERJSON_LANE_FALLBACK' "$dispatch_workflow" \
+  && pass "dispatch-merge prefers the privileged lane, then the fallback" \
+  || fail "dispatch-merge lost its privileged/fallback preference"
 # ADR 0048 replaces ADR 0033's "Verjson never reaches hosted" invariant with a
 # visibility split: a PUBLIC target is deliberately routed to elastic hosted
 # capacity (free for public repos, and the fixed self-hosted pool is what made
@@ -315,6 +456,44 @@ assert_route "$dispatch_workflow" dispatch-merge Verjson/.github '' '' \
   '["fastlane-canary"]'
 assert_route "$dispatch_workflow" dispatch-merge Acme/widgets '' true '' '' \
   'ubuntu-24.04' "dispatch-merge — external callers retain hosted portability"
+
+# The same two #405 polarities for the gate job, the one a cross-org consumer
+# actually calls: a Verjson caller that omits the input must still be lane-routed,
+# and an off-Verjson self-hosted fleet must still be able to name itself.
+#
+# BOTH overflow polarities, because `VERJSON_RUNNER_OVERFLOW` precedes the lane
+# variables in this chain and the organization has it SET. Asserting only the
+# unset case would claim a route production does not take: with overflow set,
+# "not by label" still holds, but the lane the caller lands on is the overflow
+# lane, not VERJSON_LANE_TRUSTED. That is ADR 0053 working as designed — it is
+# recorded here so the next reader does not take the lane-routing claim to mean
+# the trusted lane specifically.
+assert_route "$dispatch_workflow" gate Verjson/verjson-authn '' true \
+  '["self-hosted","trusted-canary"]' '["self-hosted","untrusted-canary"]' \
+  '["self-hosted","trusted-canary"]' \
+  "gate — omitting runner_labels routes by lane, not by label (overflow unset)" \
+  '' '' ''
+
+assert_route "$dispatch_workflow" gate Verjson/verjson-authn '' true \
+  '["self-hosted","trusted-canary"]' '["self-hosted","untrusted-canary"]' \
+  '["ubuntu-24.04"]' \
+  "gate — with the overflow lane set, as in production, the omitted input lands there" \
+  '' '' '["ubuntu-24.04"]'
+
+assert_route "$dispatch_workflow" gate Acme/widgets '' true '' '' \
+  '["self-hosted","acme-fleet"]' \
+  "gate — an off-Verjson fleet still wins via runner_labels" \
+  '' '["self-hosted","acme-fleet"]'
+
+# The un-regenerated consumer, which is most of them until the #365 sweep: a
+# caller still passing the input must keep beating the overflow lane. This is the
+# precedence ADR 0053's exclusion paragraph rests on, so it is asserted rather
+# than assumed to survive #405.
+assert_route "$dispatch_workflow" gate Verjson/verjson-authn '' true \
+  '["self-hosted","trusted-canary"]' '["self-hosted","untrusted-canary"]' \
+  '["self-hosted","general"]' \
+  "gate — a caller generated before #405 still overrides the overflow lane" \
+  '' '["self-hosted","general"]' '["ubuntu-24.04"]'
 
 # ADR 0050. actionlint is a short, secretless CPU job, so on a PUBLIC target it
 # takes the fast lane instead of contending for the fixed self-hosted pool with
@@ -364,6 +543,7 @@ pulumi-ci.yml validate
 pulumi-ci.yml preview-admission
 pulumi-ci.yml preview
 changelog-validate.yml validate
+generated-artifacts.yml validate
 changelog-release.yml release
 TARGETS
 }
@@ -391,7 +571,7 @@ while read -r wf_name job; do
     'ubuntu-24.04' "$name — caller outside Verjson stays portable on hosted"
 
   assert_route "$wf" "$job" Verjson/verjson-authn '' true '' '' \
-    "$GENERAL" "$name — missing variables fall back to the compatible general lane"
+    "$UNSET_LANDING" "$name — no lane variable set lands on the portable hosted default"
 
   assert_route "$wf" "$job" Verjson/.github '' false '["self-hosted","default-only"]' '' \
     '["self-hosted","default-only"]' "$name — untrusted falls back to default during migration"
@@ -419,6 +599,7 @@ helm-ci.yml lint-template
 ui-ci.yml build-test
 pulumi-ci.yml preview
 changelog-validate.yml validate
+generated-artifacts.yml validate
 changelog-release.yml release
 TARGETS
 
@@ -442,10 +623,10 @@ done
 # ADR 0033 is built on, so the sweep has to bind every `runs-on:` line that
 # exists, not a list someone has to remember to update.
 #
-# Prefixes legitimately differ, but every routed job must expose both lane
-# variables and preserve the compatible general fallback.
+# Prefixes legitimately differ, but every routed job must name both lanes by
+# intent and degrade through VERJSON_LANE_FALLBACK to the portable hosted tail.
 # --------------------------------------------------------------------------
-policy_files="node-ci.yml node-release.yml notify-umbrella.yml helm-ci.yml ui-ci.yml pulumi-ci.yml actionlint.yml changelog-validate.yml changelog-release.yml"
+policy_files="node-ci.yml node-release.yml notify-umbrella.yml helm-ci.yml ui-ci.yml pulumi-ci.yml actionlint.yml changelog-validate.yml changelog-release.yml generated-artifacts.yml"
 deviant=""
 job_count=0
 for name in $policy_files; do
@@ -454,9 +635,9 @@ for name in $policy_files; do
     job_count=$((job_count + 1))
     value="${line#*runs-on:}"
     value="${value# }"
-    if ! grep -qF 'VERJSON_RUNNER_DEFAULT' <<<"$value" \
-        || ! grep -qF 'VERJSON_RUNNER_UNTRUSTED' <<<"$value" \
-        || ! grep -qF '["self-hosted","general"]' <<<"$value"; then
+    if ! grep -qF 'VERJSON_LANE_TRUSTED' <<<"$value" \
+        || ! grep -qF 'VERJSON_LANE_UNTRUSTED' <<<"$value" \
+        || ! grep -qF 'VERJSON_LANE_FALLBACK' <<<"$value"; then
       deviant="$deviant$name: $line"$'\n'
     fi
   done <<EOF
@@ -469,7 +650,7 @@ done
   || fail "sweep found only $job_count routed jobs — extraction is broken"
 
 [ -z "$deviant" ] \
-  && pass "every routed job exposes default/untrusted variables with a compatible fallback" \
+  && pass "every routed job names both lanes and degrades through VERJSON_LANE_FALLBACK" \
   || fail "job(s) deviate from the routing policy:"$'\n'"$deviant"
 
 # --------------------------------------------------------------------------
@@ -525,7 +706,7 @@ grep -qF "$control_label" "$workflows/actionlint.yml" \
   || fail "actionlint.yml's undeclared-runner negative control is missing — nothing proves the policy rejects unknown labels"
 
 undeclared=""
-for f in "$workflows"/*.yml "$root"/.github/actions/*/README.md "$root"/.github/actions/*/action.yml; do
+for f in "${workflow_files[@]}" "$root"/.github/actions/*/README.md "$root"/.github/actions/*/action.yml; do
   [ -f "$f" ] || continue
   # The exemption is scoped to the file that owns the fixture. Repo-wide, it
   # would silently excuse a genuine `runs-on: [self-hosted, retired-runner-label]`
@@ -551,6 +732,21 @@ done
 [ -z "$undeclared" ] \
   && pass "every self-hosted label in a bracketed selector — workflows and action docs — is declared" \
   || fail "workflow(s) name a runner label absent from .github/actionlint.yaml:"$'\n'"$undeclared"
+
+# The declared set is BOUNDED, not just a superset of what is used. Undeclaring
+# `gce`/`GCP`/`gate`/`meta`/`isolated` is the whole detection mechanism — a
+# consumer naming one gets a lint failure instead of a job that queues forever —
+# and re-adding one passed every other assertion in this suite (#401 review).
+# Adding a label here is therefore a reviewed edit to this list, which is the
+# point: it should cost a pull request, because it silences a detector.
+declared_labels="$(
+  awk '/^self-hosted-runner:/{f=1;next} f&&/^[a-z]/{f=0} f&&/^ *- /{sub(/#.*/,"");gsub(/[ \t-]/,"");if($0!="")print}' \
+    "$root/.github/actionlint.yaml" | sort
+)"
+expected_labels="$(printf '%s\n' general | sort)"
+[ "$declared_labels" = "$expected_labels" ] \
+  && pass "the declared runner-label set is exactly the lanes the fleet serves" \
+  || fail "declared runner labels drifted from the bounded set:"$'\n'"got: $(printf '%s' "$declared_labels" | tr '\n' ' ')"$'\n'"want: $(printf '%s' "$expected_labels" | tr '\n' ' ')"
 
 if [ "$fails" -eq 0 ]; then
   echo "All tests passed."

@@ -22,6 +22,11 @@ on:
         default: ''
     secrets:
       push_token:
+        # Must satisfy the target repository's branch rules, not merely hold
+        # contents-write. The final step pushes straight to the default branch,
+        # and the standard `main-protection` ruleset every Verjson repository
+        # carries rejects that push for anything outside its bypass actors —
+        # `GITHUB_TOKEN` is not one of them (ADR 0052, #389).
         required: true
 
 permissions:
@@ -33,21 +38,42 @@ concurrency:
 
 jobs:
   release:
-    # The final step pushes the release commit and its exact tag atomically, and
-    # callers pass `push_token: ${{ secrets.GITHUB_TOKEN }}`. A called workflow's
-    # permissions are the cap, not the caller's: with only the `contents: read`
-    # default above, that token reaches the push read-only and GitHub answers
-    # "Write access to repository not granted" (403) before any tag or release
-    # exists. ADR 0038 already requires release callers to hold contents-write
-    # credentials; this is where that requirement has to be expressed. The
-    # caller's own grant still caps this — a caller that withholds
+    # The final step pushes the release commit and its exact tag atomically. A
+    # called workflow's permissions are the cap, not the caller's: with only the
+    # `contents: read` default above, the push token reaches the push read-only
+    # and GitHub answers "Write access to repository not granted" (403) before
+    # any tag or release exists. ADR 0038 already requires release callers to
+    # hold contents-write credentials; this is where that requirement has to be
+    # expressed. The caller's own grant still caps this — a caller that withholds
     # `contents: write` gets a read-only token regardless (#295).
+    #
+    # Contents-write is necessary and not sufficient. The push targets the
+    # default branch directly, which the standard `main-protection` ruleset
+    # forbids (`pull_request`, `workflows`), so `push_token` must additionally be
+    # a credential the ruleset bypasses — in practice an admin-scoped PAT
+    # (ADR 0052, #389).
     permissions:
       contents: write
-    if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
-    runs-on: ${{ inputs.runner != '' && fromJSON(inputs.runner) || github.repository_owner != 'Verjson' && 'ubuntu-24.04' || github.event.repository.private == true && fromJSON(vars.VERJSON_RUNNER_DEFAULT || '["self-hosted","general"]') || fromJSON(vars.VERJSON_RUNNER_UNTRUSTED || vars.VERJSON_RUNNER_DEFAULT || '["self-hosted","general"]') }}
+    runs-on: ${{ inputs.runner != '' && fromJSON(inputs.runner) || github.repository_owner != 'Verjson' && 'ubuntu-24.04' || github.event.repository.private == true && fromJSON(vars.VERJSON_RUNNER_OVERFLOW || vars.VERJSON_LANE_TRUSTED || vars.VERJSON_LANE_FALLBACK || '["ubuntu-24.04"]') || fromJSON(vars.VERJSON_RUNNER_OVERFLOW || vars.VERJSON_LANE_UNTRUSTED || vars.VERJSON_LANE_FALLBACK || '["ubuntu-24.04"]') }}
     timeout-minutes: 10
     steps:
+      # This was a job-level `if:` on the same comparison, which looked like a
+      # guard and was not one: GitHub reports a skipped job as *successful* to
+      # its caller, so a dispatch from any other ref released nothing and told
+      # the operator it had (#466). A reusable workflow cannot fail its caller by
+      # declining to run — only by running and exiting non-zero — so the check
+      # has to be a step. Two adopters had already hand-rolled a local preflight
+      # job around this; the guard belongs here instead of in eighteen callers.
+      - name: Release only from the default branch
+        env:
+          DISPATCH_REF: ${{ github.ref }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          if [ "$DISPATCH_REF" != "refs/heads/$DEFAULT_BRANCH" ]; then
+            echo "::error::A release must be dispatched from $DEFAULT_BRANCH, but this run was dispatched from '$DISPATCH_REF'. The snapshot below is always taken from $DEFAULT_BRANCH, so releasing from another ref would tag content that ref does not contain."
+            exit 1
+          fi
+          echo "Dispatched from $DEFAULT_BRANCH; proceeding."
       - name: Check out release repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:

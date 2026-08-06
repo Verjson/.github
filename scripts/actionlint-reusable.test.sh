@@ -50,8 +50,8 @@ grep -qE '^      config-file:$' <<<"$workflow_call" \
 # It is keyed on `visibility == 'public'` rather than `private == false`
 # because Actions coerces an absent `private` to 0, making `== false` true for
 # an unreadable repository too — fail-open. The unresolved case must keep
-# falling through to VERJSON_RUNNER_UNTRUSTED, which is the final term.
-expected_runs_on='    runs-on: ${{ (github.repository_owner != '\''Verjson'\'' || inputs.github-hosted-runner) && '\''ubuntu-24.04'\'' || github.event.repository.private == true && fromJSON(vars.VERJSON_RUNNER_DEFAULT || '\''["self-hosted","general"]'\'') || github.event.repository.visibility == '\''public'\'' && fromJSON(vars.VERJSON_RUNNER_FASTLANE || vars.VERJSON_RUNNER_UNTRUSTED || '\''["self-hosted","general"]'\'') || fromJSON(vars.VERJSON_RUNNER_UNTRUSTED || vars.VERJSON_RUNNER_DEFAULT || '\''["self-hosted","general"]'\'') }}'
+# falling through to VERJSON_LANE_UNTRUSTED, which is the final lane term.
+expected_runs_on='    runs-on: ${{ (github.repository_owner != '\''Verjson'\'' || inputs.github-hosted-runner) && '\''ubuntu-24.04'\'' || github.event.repository.private == true && fromJSON(vars.VERJSON_LANE_TRUSTED || vars.VERJSON_LANE_FALLBACK || '\''["ubuntu-24.04"]'\'') || github.event.repository.visibility == '\''public'\'' && fromJSON(vars.VERJSON_RUNNER_FASTLANE || vars.VERJSON_LANE_UNTRUSTED || vars.VERJSON_LANE_FALLBACK || '\''["ubuntu-24.04"]'\'') || fromJSON(vars.VERJSON_LANE_UNTRUSTED || vars.VERJSON_LANE_FALLBACK || '\''["ubuntu-24.04"]'\'') }}'
 grep -qxF "$expected_runs_on" "$wf" \
   && pass "hosted stays opt-in while Verjson callers follow the visibility policy" \
   || fail "runs-on does not preserve the bounded runner mapping"
@@ -90,10 +90,10 @@ awk '
 grep -qF 'invalid-syntax.yml' "$behavior_script" \
   && grep -qF 'invalid-expression.yml' "$behavior_script" \
   && grep -qF 'invalid-runner.yml' "$behavior_script" \
-  && grep -qF 'runs-on: [self-hosted, GCP]' "$behavior_script" \
+  && grep -qF 'runs-on: [self-hosted, general]' "$behavior_script" \
   && ! grep -qE '(^|[;&|])[[:space:]]*(bash|sh|source|\.)[[:space:]]+' "$behavior_script" \
-  && pass "fixtures cover governed GCP plus provider-owned invalid workflows" \
-  || fail "behavior fixtures omit GCP or execute caller-controlled scripts"
+  && pass "fixtures cover a governed self-hosted label plus provider-owned invalid workflows" \
+  || fail "behavior fixtures omit a governed self-hosted label or execute caller-controlled scripts"
 
 cat >"$tmp/actionlint" <<'SH'
 #!/usr/bin/env bash

@@ -77,7 +77,14 @@ def validate_watchdog(document: object) -> None:
     require(sweep["name"] == "Sweep the fleet for poll deadlocks", "watchdog sweep step name changed")
     env = require_keys(
         sweep["env"],
-        {"GH_TOKEN", "WATCHDOG_ORG", "WATCHDOG_DRY_RUN", "WATCHDOG_MIN_AGE_MINUTES"},
+        {
+            "GH_TOKEN",
+            "WATCHDOG_ORG",
+            "WATCHDOG_DRY_RUN",
+            "WATCHDOG_POLL_STEP_DRY_RUN",
+            "WATCHDOG_MIN_AGE_MINUTES",
+            "WATCHDOG_MIN_POLL_MINUTES",
+        },
         "watchdog sweep env",
     )
     require(env["GH_TOKEN"] == "${{ secrets.ORG_ADMIN_TOKEN }}", "watchdog token binding changed")
@@ -94,8 +101,25 @@ def validate_admission(document: object) -> None:
     reconcile = require_keys(steps[1], {"name", "id", "env", "run"}, "admission reconcile")
     require(reconcile["name"] == "Reconcile runner admission against routing policy", "reconcile step name changed")
     require(reconcile["id"] == "reconcile", "reconcile step id changed")
-    env = require_keys(reconcile["env"], {"GH_TOKEN", "ORG"}, "admission reconcile env")
+    env = require_keys(
+        reconcile["env"],
+        {"GH_TOKEN", "ORG", "GENERAL_GROUP_NAME", "UNTRUSTED_GROUP_NAME"},
+        "admission reconcile env",
+    )
     require(env["GH_TOKEN"] == "${{ secrets.ORG_ADMIN_TOKEN }}", "admission token binding changed")
+    # The two group names are pinned to exact expressions, not merely allowed to
+    # exist. Widening the key set alone would let this privileged step carry an
+    # arbitrary literal, which is the shape #350 is about. Sourcing them from org
+    # variables keeps a pool rename a variable flip (#401) while leaving the value
+    # under the same org-admin control as the token itself.
+    require(
+        env["GENERAL_GROUP_NAME"] == "${{ vars.VERJSON_RUNNER_GENERAL_GROUP || 'DigitalOcean' }}",
+        "general runner group must come from the org variable with its fallback",
+    )
+    require(
+        env["UNTRUSTED_GROUP_NAME"] == "${{ vars.VERJSON_RUNNER_UNTRUSTED_GROUP }}",
+        "untrusted runner group must come from the org variable, with no fallback naming a deleted group",
+    )
     require(isinstance(reconcile["run"], str), "admission reconcile command must be a string")
     require(
         'bash scripts/ci-gate/runner-admission-reconcile.sh' in reconcile["run"],

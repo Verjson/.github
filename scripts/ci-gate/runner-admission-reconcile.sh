@@ -9,8 +9,19 @@ ORG="${ORG:-Verjson}"
 # Ids are not stable over an org's lifetime: group 6 (`isolated`) was deleted on
 # 2026-07-31 and this job went undetermined on every run afterwards (#266). The
 # names stay overridable so a rename is a config change, not a code change.
-GENERAL_GROUP_NAME="${GENERAL_GROUP_NAME:-GCP}"
-UNTRUSTED_GROUP_NAME="${UNTRUSTED_GROUP_NAME:-isolated}"
+# `GCP` until 2026-08-05, when the pool moved to DigitalOcean and the group was
+# renamed with it. The lane's LABELS survived that (they come from the lane
+# variables), but this name did not, so the reconciler resolved no group and went
+# undetermined — #266 again, by name rather than by id (#401).
+GENERAL_GROUP_NAME="${GENERAL_GROUP_NAME:-DigitalOcean}"
+# No default. `isolated` was the old one, and that group has not existed since it
+# was deleted on 2026-07-31 — shipping a name that resolves to nothing is the
+# defect this file was already carrying twice over. Unreachable today, because
+# VERJSON_LANE_UNTRUSTED resolves to the general lane, but the moment the
+# untrusted lane is repointed the empty value fails closed through
+# lane_group_name saying no group is configured, rather than fails closed saying
+# a group nobody has heard of is missing.
+UNTRUSTED_GROUP_NAME="${UNTRUSTED_GROUP_NAME:-}"
 
 die_undetermined() {
   printf 'UNDETERMINED: %s\n' "$1" >&2
@@ -35,10 +46,53 @@ repos_raw="$(fetch "/orgs/$ORG/repos?per_page=100" \
 [ -n "${repos_raw//[[:space:]]/}" ] \
   || die_undetermined "no active repositories returned for org $ORG"
 
-default_var="$(fetch "/orgs/$ORG/actions/variables/VERJSON_RUNNER_DEFAULT" \
-  '{value,visibility}')" || exit 2
-untrusted_var="$(fetch "/orgs/$ORG/actions/variables/VERJSON_RUNNER_UNTRUSTED" \
-  '{value,visibility}')" || exit 2
+# An unset lane variable is a NORMAL state — the `runs-on` chain simply falls
+# through to the next term. Only a 404 is "not set". Any other failure — 403, 5xx, a network fault — means
+# the value could not be READ, which is undetermined and must not be mistaken for
+# an unset variable that falls through to the next lane term. Collapsing the two
+# is how a permissions regression would look identical to a clean migration.
+fetch_optional() {
+  local path="$1" out
+  if ! out="$(gh api "$path" --jq '{value,visibility}' 2>&1)"; then
+    case "$out" in
+      *404*|*"Not Found"*) return 0 ;;
+      *) printf 'UNDETERMINED: GET %s failed: %s\n' \
+           "$path" "$(printf '%s' "$out" | head -3 | tr '\n' ' ')" >&2
+         return 2 ;;
+    esac
+  fi
+  printf '%s\n' "$out"
+}
+
+# Read the variables the WORKFLOWS ACTUALLY ROUTE ON, resolved the same way the
+# `runs-on` expression resolves them: the lane, then VERJSON_LANE_FALLBACK.
+#
+# This used to read VERJSON_RUNNER_DEFAULT/_UNTRUSTED. Every `runs-on:` now
+# resolves `VERJSON_LANE_*`, and the retired pair is deliberately left set for
+# consumers pinned to a pre-migration SHA — so monitoring it would have this job
+# validate a variable nothing routes on and report "no drift" while the live lane
+# pointed at a group that admits nobody. That is #401's exact silence with one
+# variable name changed, inside the file that exists to prevent it (#403 review).
+lane_variable() {
+  local lane="$1" resolved
+  resolved="$(fetch_optional "/orgs/$ORG/actions/variables/VERJSON_LANE_${lane}")" || return 2
+  if [ -z "$resolved" ]; then
+    resolved="$(fetch_optional "/orgs/$ORG/actions/variables/VERJSON_LANE_FALLBACK")" || return 2
+  fi
+  [ -n "$resolved" ] || die_undetermined \
+    "neither VERJSON_LANE_${lane} nor VERJSON_LANE_FALLBACK is set in $ORG; every runs-on chain resolves to the portable hosted tail"
+  printf '%s\n' "$resolved"
+}
+
+default_var="$(lane_variable TRUSTED)" || exit 2
+untrusted_var="$(lane_variable UNTRUSTED)" || exit 2
+
+# The retired pair is still live for consumers on an old pin. It is not the
+# routing source any more, so it is not fatal here — but a legacy variable that
+# has drifted away from its lane means those consumers route somewhere this run
+# never checked, which is reported rather than assumed away.
+legacy_default_var="$(fetch_optional "/orgs/$ORG/actions/variables/VERJSON_RUNNER_DEFAULT")" || exit 2
+legacy_untrusted_var="$(fetch_optional "/orgs/$ORG/actions/variables/VERJSON_RUNNER_UNTRUSTED")" || exit 2
 
 selector() {
   local name="$1" variable="$2" value visibility
@@ -48,18 +102,28 @@ selector() {
     || die_undetermined "$name has no visibility"
   [ "$visibility" = "all" ] \
     || die_undetermined "$name is not visible to all repositories"
-  jq -e 'type == "array" and length >= 2 and .[0] == "self-hosted"
+  # `self-hosted` is no longer required. A lane may legitimately point at hosted
+  # capacity — that is what VERJSON_LANE_FALLBACK is for, and what the whole
+  # fleet would be set to during a provider outage. Such a lane has no runner
+  # group and therefore no admission to reconcile; it is skipped below rather
+  # than treated as a malformed variable.
+  jq -e 'type == "array" and length >= 1
     and all(.[]; type == "string" and length > 0)' <<<"$value" >/dev/null \
-    || die_undetermined "$name is not a non-empty JSON label array beginning with self-hosted"
+    || die_undetermined "$name is not a non-empty JSON array of label strings"
   printf '%s\n' "$value"
 }
 
-default_selector="$(selector VERJSON_RUNNER_DEFAULT "$default_var")" || exit 2
-untrusted_selector="$(selector VERJSON_RUNNER_UNTRUSTED "$untrusted_var")" || exit 2
+default_selector="$(selector VERJSON_LANE_TRUSTED "$default_var")" || exit 2
+untrusted_selector="$(selector VERJSON_LANE_UNTRUSTED "$untrusted_var")" || exit 2
 
 group_for_selector() {
   local labels="$1"
-  if jq -e 'index("lane-general") != null or index("general") != null' <<<"$labels" >/dev/null; then
+  if jq -e 'index("self-hosted") == null' <<<"$labels" >/dev/null; then
+    # Hosted capacity: GitHub admits every repository, so there is no group and
+    # nothing to reconcile. Named explicitly so the resolve loop below stays
+    # total and a hosted lane cannot be mistaken for an unhandled one.
+    printf 'hosted\n'
+  elif jq -e 'index("lane-general") != null or index("general") != null' <<<"$labels" >/dev/null; then
     printf 'general\n'
   elif jq -e 'index("lane-untrusted") != null or index("isolated") != null
     or index("untrusted-pr") != null' <<<"$labels" >/dev/null; then
@@ -112,7 +176,11 @@ jq -e 'length > 0' <<<"$groups" >/dev/null \
 lane_group_name() {
   case "$1" in
     general) printf '%s\n' "$GENERAL_GROUP_NAME" ;;
-    untrusted) printf '%s\n' "$UNTRUSTED_GROUP_NAME" ;;
+    untrusted)
+      [ -n "$UNTRUSTED_GROUP_NAME" ] \
+        || die_undetermined "no runner group is configured for lane 'untrusted'; set VERJSON_RUNNER_UNTRUSTED_GROUP"
+      printf '%s\n' "$UNTRUSTED_GROUP_NAME"
+      ;;
     *) die_undetermined "no runner group is configured for lane '$1'" ;;
   esac
 }
@@ -141,6 +209,8 @@ for lane in "$default_lane" "$untrusted_lane"; do
       [ -n "$general_group" ] || { general_group="$(resolve_group general)" || exit 2; } ;;
     untrusted)
       [ -n "$untrusted_group" ] || { untrusted_group="$(resolve_group untrusted)" || exit 2; } ;;
+    # Hosted capacity has no runner group, so there is no admission to resolve.
+    hosted) ;;
     # Total only because group_for_selector is — an invariant 80 lines away.
     # Without this arm a new lane silently resolves NO group, and the omission
     # surfaces later as an unhandled lane in the repository loop. Failing here
@@ -204,6 +274,8 @@ while IFS=$'\t' read -r repo private; do
              group_label="$GENERAL_GROUP_NAME (id $general_id)" ;;
     untrusted) group="$untrusted_group"; members="$untrusted_members"
              group_label="$UNTRUSTED_GROUP_NAME (id $untrusted_id)" ;;
+    # GitHub-hosted: every repository is admitted, so there is nothing to check.
+    hosted) continue ;;
     # Without this, an unhandled lane silently reuses the PREVIOUS iteration's
     # group/members and misattributes drift to the wrong group.
     *) die_undetermined "unhandled lane '$lane' for repository $repo" ;;
@@ -219,18 +291,34 @@ EOF
 case "$default_lane" in
   general) default_runners="$general_runners" ;;
   untrusted) default_runners="$untrusted_runners" ;;
+  hosted) default_runners="" ;;
   *) die_undetermined "unhandled default lane '$default_lane'" ;;
 esac
 case "$untrusted_lane" in
   general) untrusted_runners_for_selector="$general_runners" ;;
   untrusted) untrusted_runners_for_selector="$untrusted_runners" ;;
+  hosted) untrusted_runners_for_selector="" ;;
   *) die_undetermined "unhandled untrusted lane '$untrusted_lane'" ;;
 esac
 
-has_capacity "$default_selector" "$default_runners" \
-  || drift="$drift- VERJSON_RUNNER_DEFAULT has no matching online runner"$'\n'
-has_capacity "$untrusted_selector" "$untrusted_runners_for_selector" \
-  || drift="$drift- VERJSON_RUNNER_UNTRUSTED has no matching online runner"$'\n'
+# A hosted lane has no self-hosted capacity to have, so asking would report
+# permanent drift against a deliberately hosted configuration.
+[ "$default_lane" = hosted ] || has_capacity "$default_selector" "$default_runners" \
+  || drift="$drift- VERJSON_LANE_TRUSTED has no matching online runner"$'\n'
+[ "$untrusted_lane" = hosted ] || has_capacity "$untrusted_selector" "$untrusted_runners_for_selector" \
+  || drift="$drift- VERJSON_LANE_UNTRUSTED has no matching online runner"$'\n'
+
+# The retired pair still routes every consumer pinned to a pre-migration SHA.
+# Silent divergence between it and the live lane is the state this migration
+# creates, so it is reported rather than assumed harmless (#403 review).
+legacy_drift() {
+  local name="$1" variable="$2" lane_value="$3" value
+  [ -n "$variable" ] || return 0
+  value="$(jq -r '.value' <<<"$variable" 2>/dev/null)" || return 0
+  [ "$value" = "$lane_value" ] || drift="$drift- \`$name\` is \`$value\` but the lane it was replaced by is \`$lane_value\`; consumers pinned to a pre-migration SHA route somewhere this run did not check"$'\n'
+}
+legacy_drift VERJSON_RUNNER_DEFAULT "$legacy_default_var" "$default_selector"
+legacy_drift VERJSON_RUNNER_UNTRUSTED "$legacy_untrusted_var" "$untrusted_selector"
 
 # Placement (#275). The two checks above ask whether repositories are admitted
 # and whether lanes have capacity. A runner registered WITHOUT `--runnergroup`

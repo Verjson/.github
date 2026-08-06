@@ -25,10 +25,13 @@ Where verJSON CI jobs run, and how to choose a `runs-on` value. The model is dec
   ([ADR 0041](decisions/0041-shared-admission-hosted-and-self-hosted/README.md)).
 - **Both hosted and DO self-hosted serve both public and private repositories**, by
   decision. That is the steady state, not a gap.
-- **The trailing `'["ubuntu-24.04"]'` is a portability contract, not a safety net.** It
-  exists so an organization outside Verjson — which has none of these variables — can call
-  a Verjson reusable workflow and land somewhere sane. It does **not** mean "if something
-  is wrong, this will save you."
+- **The trailing `'["ubuntu-24.04"]'` is a portability contract, not a safety net.** In the
+  bare form above it exists so an organization outside Verjson — which has none of these
+  variables — lands somewhere sane. In the *reusable* workflows a foreign caller
+  short-circuits at `github.repository_owner != 'Verjson'` first, so reaching the tail there
+  means a Verjson lane variable was deleted or mistyped. Either way it does **not** mean "if
+  something is wrong, this will save you" — `runner-admission-reconcile` reports the second
+  case as drift.
 - **Admission is enforced by runner *groups*, never by a label.** `runs-on` lives in a file
   a pull request can edit, so a label is chosen by whoever writes the PR.
 - Self-hosted runners have **no ambient Node** and a **persistent shared `~/.gitconfig`** —
@@ -72,23 +75,31 @@ its own attacker gets to choose.
 ```console
 $ gh api /orgs/Verjson/actions/runners \
     --jq '.runners[] | "\(.name)\t\(.status)\t\([.labels[].name] | join(","))"'
-gha-general-1	online	self-hosted,Linux,X64,gce,gate,GCP,general
-gha-general-2	online	self-hosted,Linux,X64,gce,gate,GCP,general
-gha-general-3	online	self-hosted,Linux,X64,gce,gate,GCP,general
-gha-general-4	online	self-hosted,Linux,X64,gce,gate,GCP,general
-gha-general-5	online	self-hosted,Linux,X64,gce,gate,GCP,general
-gha-general-6	online	self-hosted,Linux,X64,gce,gate,GCP,general
+gha-general-1	online	self-hosted,Linux,X64,general,pwsh
+gha-general-10	online	self-hosted,Linux,X64,general
+gha-general-2	online	self-hosted,Linux,X64,general,pwsh
+gha-general-3	online	self-hosted,Linux,X64,general,pwsh
+gha-general-4	online	self-hosted,Linux,X64,general,pwsh
+gha-general-5	online	self-hosted,Linux,X64,general,pwsh
+gha-general-6	online	self-hosted,Linux,X64,general,pwsh
+gha-general-7	online	self-hosted,Linux,X64,general,pwsh
+gha-general-8	online	self-hosted,Linux,X64,general
+gha-general-9	online	self-hosted,Linux,X64,general
 hostinger	online	self-hosted,Linux,X64,manish
 ```
 
-⚠️ **`gce` and `GCP` on those six runners are wrong, not merely legacy.** They are
-DigitalOcean machines. Do not route new work by them, and do not read them as evidence of
-a GCP fleet. They survive only until the #203 sweep completes — see
-[Migration sequence](#migration-sequence).
+Measured 2026-08-05. Three things changed from the snapshot this replaces, all load-bearing:
 
-`gate` on all six means the merge gate runs on the same hosts as untrusted pull-request
-code. That is an **accepted risk**, recorded in ADR 0040: isolation was deferred to protect
-CI speed. It is a decision on the record, not an oversight.
+- **`gce`, `GCP` and `gate` are gone from the fleet.** The #365 sweep took them off the
+  runners. Any workflow still naming one is not "using a legacy label" — it is unplaceable,
+  and GitHub queues an unplaceable job forever with no check-run diagnostic. They are
+  undeclared in `.github/actionlint.yaml` for that reason, so naming one now fails lint
+  instead of hanging a pull request (#401).
+- **`gate` no longer exists as a distinct selector**, so the merge gate rides `general`
+  along with everything else. The accepted risk ADR 0040 records — gate work sharing hosts
+  with untrusted pull-request code — is therefore not merely accepted but unavoidable at
+  present, since there is no second lane to move to.
+- **`pwsh` is real on 8 of 10 runners.** PowerShell suites no longer need a hosted runner.
 
 ## Runner groups (the admission axis)
 
@@ -97,10 +108,18 @@ $ gh api /orgs/Verjson/actions/runner-groups \
     --jq '.runner_groups[] | "id=\(.id) \(.name) vis=\(.visibility) public=\(.allows_public_repositories) default=\(.default)"'
 id=1 GitHub  vis=all  public=true   default=true
 id=3 manish  vis=all  public=false  default=false
-id=4 GCP     vis=all  public=true   default=false
+id=8 DigitalOcean  vis=all  public=true   default=false
+id=9 verjson-runner-maintenance  vis=selected  public=false  default=false
 ```
 
-- **Group 4 is organization-wide and admits public repositories — deliberately.**
+Measured 2026-08-05, after the general pool was restored to `vis=all public=true`. It had
+regressed to `vis=selected public=false` when the fleet moved into the `DigitalOcean`
+group, which locked every public Verjson repository out of its own lane and wedged the
+merge gate — see [ADR 0054](decisions/0054-public-repositories-admitted-to-the-general-pool/README.md).
+Group 4 (`GCP`) no longer exists; the general pool is group 8.
+
+- **The general pool's group is organization-wide and admits public repositories —
+  deliberately.**
   [ADR 0041](decisions/0041-shared-admission-hosted-and-self-hosted/README.md) decides that
   hosted and DO self-hosted both serve public and private repositories for the foreseeable
   future, superseding ADR 0028 decision 4. The accepted risks and the best-practice North
@@ -221,9 +240,18 @@ inject `runs-on` into another workflow's jobs, and its outputs cannot cross into
 
 Order matters. Each step is safe only after the previous one lands.
 
-1. **Create the lane variables** (`VERJSON_LANE_*`). Keep `VERJSON_RUNNER_*` in place —
-   removing them mid-rollout breaks in-flight runs.
-2. **Migrate workflows to the lane expression**, choosing the lane by what each job is.
+1. ✅ **Create the lane variables** (`VERJSON_LANE_*`). Keep `VERJSON_RUNNER_*` in place —
+   removing them mid-rollout breaks in-flight runs. All four exist org-wide and every one
+   resolves to the general pool today.
+2. ✅ **Migrate workflows to the lane expression**, choosing the lane by what each job is.
+   Done for every `runs-on:` in this repository on 2026-08-05: no workflow here names a
+   fleet label any more, and `scripts/ci-gate/runner-routing-policy.test.sh` fails if one
+   reappears. **`VERJSON_RUNNER_*` stays set** — consumers pinned to an older reusable-
+   workflow SHA still read those variables, and deleting them would strand exactly the
+   repositories that have not re-pinned. `VERJSON_RUNNER_FASTLANE` and
+   `VERJSON_RUNNER_OVERFLOW` are deliberately *not* folded into the lane names: they select
+   hosted-versus-self-hosted, an orthogonal axis, and their `["ubuntu-24.04"]` value is a
+   GitHub-provided identifier rather than a fleet label that can rot.
 3. **Rename groups onto the admission axis** (names describing admission, not hardware or a
    person). Group 1 (`GitHub`) is never renamed — it names GitHub's own default group.
 4. **Refresh the labels — additively first.** Every label on the live runners is being
@@ -232,6 +260,15 @@ Order matters. Each step is safe only after the previous one lands.
    nothing that still selects an old label breaks mid-migration.
 5. **Sweep the inline `runs-on` long tail** (#203), so nothing selects a stale label.
 6. **Only then delete the stale labels** — `gce`, `GCP`, `gate`.
+
+⚠️ **Steps 5 and 6 ran out of order (2026-08-05).** The labels came off the fleet while
+the inline `runs-on` long tail was still selecting them, which is the failure this ordering
+exists to prevent. `Verjson/verjson-identity-lifecycle`'s `generated-docs` job queued
+indefinitely on `[self-hosted, GCP]` with no check-run diagnostic (fixed in
+`35c1efa1`) — #182's silent-failure
+mode, reproduced exactly. The remediation is therefore still open (#365), and the remediation is now
+detection rather than ordering: dead labels are undeclared in `.github/actionlint.yaml`, so
+a repository still naming one fails lint with a file and line instead of hanging (#401).
 
 ⚠️ **Deleting a stale label before the sweep in step 5 makes those jobs queue forever with
 no check run** — #182's silent-failure mode, which is the entire reason this programme

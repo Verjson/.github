@@ -5,22 +5,33 @@ name: fleet watchdog
 # `gate` and `privileged_merge` hold a runner for tens of minutes while POLLING
 # for checks they cannot influence. On a fixed pool that is a deadlock, not
 # slowness — six gate jobs held all six runners on 2026-08-03 while waiting for
-# CI that could not start because it needed those runners. ADR 0048 removed this
-# for public targets, but 88 of 90 repositories here are private and stay on the
-# fixed pool, so the deadlock is still reachable for almost all of them.
+# CI that could not start because it needed those runners.
+#
+# ADR 0053's `VERJSON_RUNNER_OVERFLOW` now routes `preflight`/`gate`/
+# `dispatch-merge` off the pool while it is set, which covers most of that. It
+# does NOT cover `ai-privileged-merge.yml`, which routes on
+# `VERJSON_LANE_PRIVILEGED`, and ADR 0053 is explicit that overflow is hosted
+# budget to be given back. `privileged_merge` is therefore the residual exposure,
+# and 3 of the 4 runs this watchdog has ever preempted were `AI privileged
+# merge`; the fourth was a `gate` on 2026-08-03, when `gate` was still on the
+# pool. ADR 0056 records why it is retained rather than retired (#341), and why
+# a candidate must now prove it holds a runner from the saturated pool.
 #
 # Runs on the FAST LANE: this repository is public, so these minutes are free,
 # and a watchdog that queued for a self-hosted runner would be waiting behind the
 # exact jam it exists to clear.
 #
-# The scheduled path currently defaults to armed. #342 tracks restoring the
-# intended fail-safe dry-run default; this workflow must not claim that guard
-# exists while it does not.
+# There is deliberately no `workflow_dispatch`: this job reads
+# `secrets.ORG_ADMIN_TOKEN`, and a branch-selectable dispatch would hand that
+# secret to workflow code chosen by the dispatcher (#350, and the reason #385
+# removed the other privileged dispatches).
 
 on:
   schedule:
-    # Every 15 minutes. The poll windows it preempts are 30-40 minutes, so this
-    # catches a jam within roughly half a window.
+    # Every 15 minutes NOMINALLY. GitHub deprioritizes scheduled workflows under
+    # load and the observed cadence over 2026-08-03..05 was roughly 15 runs a day,
+    # not 96, with gaps up to ~2.5 h. Nothing in this repository fixes that, so
+    # treat the watchdog as an eventual backstop, never as a bounded-latency one.
     - cron: '*/15 * * * *'
 
 permissions:
@@ -49,6 +60,29 @@ jobs:
           # `github.token` does not carry outside this repository.
           GH_TOKEN: ${{ secrets.ORG_ADMIN_TOKEN }}
           WATCHDOG_ORG: ${{ github.repository_owner }}
+          # The single place the arm/disarm decision lives; the script carries no
+          # default of its own and faults on anything it cannot read as a
+          # decision (#342). `schedule` supplies no inputs, so this expression is
+          # the only one on the path that matters — the `inputs.dry_run == false`
+          # form that made the switch inert is gone.
+          #
+          # Armed, because this switch now governs only the 35-minute age rule,
+          # which is the rule with production evidence behind it (2026-08-03
+          # 05:59Z, four preemptions, jam cleared). Disarming it would have
+          # removed the only mitigation for a `privileged_merge` jam.
           WATCHDOG_DRY_RUN: ${{ vars.VERJSON_WATCHDOG_DRY_RUN || 'false' }}
+          # The #343 poll-step rule is new and has no production evidence, so it
+          # reports only until an operator sets
+          # `VERJSON_WATCHDOG_POLL_STEP_DRY_RUN=false` after reading a few
+          # `DRY RUN would cancel` lines. Separate switch, not a second default
+          # for the same decision: the two rules carry different evidence, and a
+          # default that can only SUPPRESS a cancel cannot ship armed by drift
+          # the way #336 did.
+          WATCHDOG_POLL_STEP_DRY_RUN: ${{ vars.VERJSON_WATCHDOG_POLL_STEP_DRY_RUN || 'true' }}
+          # Fallback for a poll workflow with no separable poll step, i.e.
+          # `AI privileged merge`, whose 45-minute ceiling this still fits under.
           WATCHDOG_MIN_AGE_MINUTES: '35'
+          # Floor for the provable-poll path (#343). The 2026-08-03 jam was fully
+          # formed at ~12 minutes.
+          WATCHDOG_MIN_POLL_MINUTES: '10'
         run: bash scripts/fleet-watchdog.sh

@@ -196,13 +196,20 @@ jobs:
     with:
       contract_ref: $sha
       version: \${{ inputs.version }}
+    secrets:
+      push_token: \${{ secrets.ORG_ADMIN_TOKEN }}
 YAML
   fi
+  # Quoted, because that is what adopters actually write: YAML requires a quoted
+  # scalar wherever a value contains `: `, which is every conventional-commit
+  # title. An unquoted fixture let the emitted suite ship a front-matter parser
+  # that kept the quotes as literal text and then reported the correctly-written
+  # title as missing, so the fixture carries the real spelling.
   cat >"$dir/NEXT/2026-08-01-issue-7-first.md" <<'FRAGMENT'
 ---
 date: 2026-08-01
 issue: 7
-title: First entry
+title: 'fix(caller): first entry'
 ---
 
 Body.
@@ -250,6 +257,46 @@ run_adopter "$tmproot/adopter-norelease" \
   && pass "emitted suite tolerates an adopter with no release workflow" \
   || fail "emitted suite requires a release workflow: $(tail -2 "$tmproot/run.out")"
 
+# An unreleased NEXT/ has no upper bound: fragments are per-change, never
+# batched, and only a release consumes them. Crossing 128 KiB of rendered output
+# — MAX_ARG_STRLEN, the per-string execve ceiling, not the far larger ARG_MAX —
+# killed the emitted suite with a bare "Argument list too long" and exit 126,
+# naming neither the changelog nor the fragment count. Nothing could be released
+# past it either, because the release path runs this suite (#398).
+oversize="$tmproot/adopter-oversize"
+build_adopter "$oversize"
+filler="$(head -c 20000 </dev/zero | tr '\0' x)"
+for day in 01 02 03 04 05 06 07 08; do
+  issue=$((100 + 10#$day))
+  cat >"$oversize/NEXT/2026-06-$day-issue-$issue-bulk.md" <<FRAGMENT
+---
+date: 2026-06-$day
+issue: $issue
+title: Bulk entry $day
+---
+
+$filler
+FRAGMENT
+done
+git -C "$oversize" add -A
+git -C "$oversize" commit -qm bulk
+
+# Asserted, not assumed: a fixture that quietly renders under the ceiling would
+# leave the case below passing for the wrong reason.
+rendered_bytes="$( (cd "$oversize" && ./scripts/render-next.sh) | wc -c )"
+[ "$rendered_bytes" -gt 131072 ] \
+  && pass "oversize fixture renders past MAX_ARG_STRLEN ($rendered_bytes bytes)" \
+  || fail "oversize fixture renders only $rendered_bytes bytes; the next check is vacuous"
+
+# Exit 0 alone is not enough. The render block is guarded, and its else branch
+# reports "no unreleased fragments" and exits 0 for *any* renderer failure — so a
+# ceiling that migrated into the renderer would leave this case green with the
+# render assertions never executed. Require the positive line.
+{ run_adopter "$oversize" \
+  && grep -q 'every unreleased fragment renders with its metadata linkage' "$tmproot/run.out"; } \
+  && pass "emitted suite survives a NEXT/ larger than MAX_ARG_STRLEN (#398)" \
+  || fail "emitted suite dies on or skips a large unreleased log: $(tail -2 "$tmproot/run.out")"
+
 # A suite that passes everywhere is worthless. Each case below breaks exactly one
 # invariant in a fresh adopter and requires a non-zero exit.
 reject_seq=0
@@ -280,6 +327,26 @@ uncanonical_fragment() {
     >"$1/NEXT/2026-08-01-bad-name.md"
 }
 strip_executable() { chmod -x "$1/scripts/render-next.sh"; }
+# The release push lands on the default branch, which `main-protection` forbids
+# for GITHUB_TOKEN. That rejection happens on a real remote, so no fixture can
+# reproduce it — the emitted suite has to reject the wiring statically (#389).
+# Every spelling below is the same credential, so a guard that catches only the
+# first one reports green on a release that cannot run.
+wire_push_token() {
+  # wire_push_token <dir> <value>
+  local escaped
+  escaped="$(printf '%s' "$2" | sed 's/[&/\]/\\&/g')"
+  sed -i "s/\${{ secrets.ORG_ADMIN_TOKEN }}/$escaped/" \
+    "$1/.github/workflows/release.yml"
+}
+wire_unprivileged_push_token() { wire_push_token "$1" '${{ secrets.GITHUB_TOKEN }}'; }
+wire_quoted_push_token() { wire_push_token "$1" '"${{ secrets.GITHUB_TOKEN }}"'; }
+wire_alias_push_token() { wire_push_token "$1" '${{ github.token }}'; }
+wire_lowercase_push_token() { wire_push_token "$1" '${{ secrets.github_token }}'; }
+wire_folded_push_token() {
+  wire_push_token "$1" '>-'
+  printf '        ${{ secrets.GITHUB_TOKEN }}\n' >>"$1/.github/workflows/release.yml"
+}
 
 expect_rejection "a renderer pinned to a different commit" break_pin
 expect_rejection "a hand-written renderer that bypasses the contract" handwrite_renderer
@@ -287,6 +354,82 @@ expect_rejection "a .releaserc.json that reintroduces release-on-merge" add_rele
 expect_rejection "a second authored running log in NEXT.md" add_authored_log
 expect_rejection "a fragment whose filename is not canonical" uncanonical_fragment
 expect_rejection "a non-executable renderer" strip_executable
+expect_rejection "a release caller wiring GITHUB_TOKEN as push_token" wire_unprivileged_push_token
+expect_rejection "a quoted GITHUB_TOKEN push_token" wire_quoted_push_token
+expect_rejection "the github.token alias as push_token" wire_alias_push_token
+expect_rejection "a lower-case secrets.github_token push_token" wire_lowercase_push_token
+expect_rejection "a folded GITHUB_TOKEN push_token on the next line" wire_folded_push_token
+
+# Rejected for the stated reason, not incidentally. expect_rejection only asserts
+# a non-zero exit, so without this the guard could rot while its case stays green.
+grep -q 'push_token' "$tmproot/run.out" \
+  && pass "the push_token rejection names push_token as the cause" \
+  || fail "the last push_token case failed for some other reason: $(tail -2 "$tmproot/run.out")"
+
+# The counterpart. docs/changelog/README.md tells adopters to write exactly this
+# comment next to a correct wiring, so a guard matching the raw line would break
+# the build of everyone who followed the documentation.
+commented="$tmproot/adopter-commented"
+build_adopter "$commented"
+sed -i 's|^      push_token:|      # NOT GITHUB_TOKEN — see Verjson/.github ADR 0052.\n      push_token:|' \
+  "$commented/.github/workflows/release.yml"
+run_adopter "$commented" \
+  && pass "emitted suite accepts a correct wiring carrying a GITHUB_TOKEN warning comment" \
+  || fail "emitted suite rejected a documented comment: $(tail -2 "$tmproot/run.out")"
+
+# A quoted title is the correct spelling, not a tolerated one, so the emitted
+# suite has to read it the way the engine does. Both quote styles, because the
+# unquoting rule branches on which quote opened the scalar and a parser can be
+# right about one of them.
+quoted="$tmproot/adopter-quoted"
+build_adopter "$quoted"
+cat >"$quoted/NEXT/2026-08-02-issue-8-quoted.md" <<'FRAGMENT'
+---
+date: 2026-08-02
+issue: 8
+title: "feat(caller): a double-quoted title"
+---
+
+The lead paragraph, which is what a release note carries.
+
+## Why
+
+The argument beneath it, which a release note does not.
+FRAGMENT
+git -C "$quoted" add -A >/dev/null 2>&1
+git -C "$quoted" -c user.email=t@t -c user.name=t commit -qm quoted >/dev/null 2>&1
+run_adopter "$quoted" \
+  && pass "emitted suite accepts the quoted titles YAML requires of conventional commits" \
+  || fail "emitted suite rejected a quoted title: $(tail -2 "$tmproot/run.out")"
+
+# The released form is what an author is asked to read before merge, and under
+# ADR 0059 it is the form that can never be corrected afterwards. A renderer that
+# cannot produce it leaves only "skip the review" or "edit a generated artifact",
+# and the contract forbids the second (#443).
+released_out="$tmproot/as-released.out"
+if (cd "$quoted" && ./scripts/render-next.sh --as-released) >"$released_out" 2>&1; then
+  pass "the generated renderer accepts --as-released"
+else
+  fail "the generated renderer rejected --as-released: $(head -1 "$released_out")"
+fi
+
+# Distinguishes pass-through from a flag that is merely tolerated and dropped:
+# the released form omits everything after the lead paragraph.
+if grep -q '^## feat(caller): a double-quoted title$' "$released_out" \
+  && grep -q '^The lead paragraph, which is what a release note carries\.$' "$released_out" \
+  && ! grep -q '^## Why$' "$released_out"; then
+  pass "--as-released renders the release note, not the whole diary"
+else
+  fail "--as-released did not change the output; the flag is being swallowed"
+fi
+
+# Still a renderer, not a front end to a pinned engine: anything else is refused
+# so a caller cannot reach subcommands the contract does not sanction.
+if (cd "$quoted" && ./scripts/render-next.sh release --version v9.9.9) >/dev/null 2>&1; then
+  fail "the generated renderer forwarded an unsanctioned argument"
+else
+  pass "the generated renderer still refuses arguments other than --as-released"
+fi
 
 # Only reachable after a release, so it needs a released fixture.
 edited="$tmproot/adopter-edited"
