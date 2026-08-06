@@ -5,7 +5,8 @@
   (no merge-gate job polls on the shared pool),
   [#263](https://github.com/Verjson/.github/issues/263) (draft-time gate skip is
   terminal), [#414](https://github.com/Verjson/.github/issues/414) (watchdog
-  cadence)
+  cadence), [#472](https://github.com/Verjson/.github/issues/472) (execution of
+  steps 1–5, see the amendment below)
 - **Supersedes the direction of:**
   [ADR 0049](../0049-fleet-watchdog-preempts-poll-jobs/README.md) and
   [ADR 0056](../0056-fleet-watchdog-retained-and-retargeted/README.md) — both
@@ -235,6 +236,69 @@ is not — which is the entire reason the audit exists as a separate artifact.
 the only mitigation for a `privileged_merge` jam, and this migration does not
 reduce that exposure until step 5. Fixing its defects is therefore still worth
 doing while this proceeds; ADR 0056 stands until step 6.
+
+### Amendment (2026-08-06) — steps 1–5 executed, with two corrections
+
+Steps 1 through 5 were carried out. Two things this ADR asserted turned out to be
+wrong, and one measurement changed the shape of what could land.
+
+**Evaluate mode does not work on this organization.** Steps 3 and 4 above are built on
+it, and the plan is unexecutable as written. The rulesets API *accepts*
+`enforcement: evaluate` on a Team plan — confirmed with a probe ruleset scoped to a
+non-existent repository, since deleted — but `GET /orgs/Verjson/rulesets/rule-suites`
+returns `403 Upgrade to GitHub Enterprise to enable this feature`. A staged rule here
+blocks nothing *and* reports nothing, which is strictly worse than either alternative
+because it looks like protection. The dry-run discipline was preserved by measuring the
+blast radius directly instead: sweep every open non-draft PR for the check-runs a rule
+would require, classify what would be blocked, remediate or exempt, then go straight to
+`active`. Recorded in full in ADR 0061, which applied the same method first.
+
+**Scoping needed a second property.** `verjson-stack` alone cannot express the rulesets,
+because a nonconformant repository still belongs to its stack — scoping the node rule on
+`verjson-stack == node` would have included `verjson-ai`, whose caller job name means the
+contexts never report. A second property `verjson-core-checks` (`enforced` / `exempt`)
+carries conformance, and a ruleset condition naming both properties ANDs them. Verified
+empirically rather than assumed: `verjson-email` (node, conformant) receives
+`ci / build-test` and `ci / eligibility`; `verjson-ai` (node, exempt) receives neither.
+
+**Re-measured 2026-08-06** with `scripts/classify-repo-stacks.sh` across the same 91
+non-archived repositories: 43 conformant, 4 nonconformant, 44 unrecognised CI — 19 `node`,
+2 `actions`, 1 each `ui` / `helm` / `pulumi`, 67 `none`.
+
+What landed:
+
+| Ruleset | Scope | Required contexts |
+| --- | --- | --- |
+| `core-checks-node` (20515817) | `verjson-stack=node` ∧ `verjson-core-checks=enforced` — 18 repositories | `ci / build-test`, `ci / eligibility` |
+| `core-checks-actions` (20515822) | `verjson-stack=actions` ∧ `enforced` — 2 repositories | `shell-tests` |
+| `changelog-contract-required` (20513599) | `changelog-contract=adopted` — 23 repositories (ADR 0061) | `changelog / validate` |
+
+Both new rulesets are `active`, `strict: false`, `do_not_enforce_on_create: true`, bypass
+`OrganizationAdmin` only. Blast radius before activation: of 25 open non-draft PRs on the
+18 node repositories, 19 already satisfied both contexts and 6 did not — **none because the
+context was absent.** One was in progress; five were genuinely failing `ci / build-test` and
+had been mergeable anyway, which is the defect being closed.
+
+`helm`, `pulumi` and `ui` get no ruleset: each stack has exactly one repository and all
+three are nonconformant, so there is nothing yet to enforce.
+
+**Step 5's second half — adding `gate` to the `~ALL` rule — is held, and the measurement is
+why.** Of 87 open non-draft PRs across the organization, **53 carry no `gate` check run at
+all**, across roughly twenty repositories (`viager-app`, `catalog-*`, `scv-*`,
+`self-publish.ai`, `sitenav` and others). Requiring the context today would wedge every one
+of them permanently, which is the exact "permanently pending" failure this ADR names in
+*A required check must be skippable, but never absent*. These are PRs whose head has not
+moved since before the `workflows` rule reached them; the remedy is a re-trigger sweep, not
+a ruleset. Requiring `gate` is deferred until that sweep is done and the count is zero.
+
+**Step 6 is therefore blocked for most of the organization, and blocked for a reason this
+ADR already gives.** The 67 `none` repositories have declared no required checks. If the
+gate stops waiting there before they do, their CI becomes advisory silently — the window
+this ADR calls "a worse defect than the deadlock". Step 6 can proceed only where required
+checks exist, which today means the 18 node and 2 actions repositories. Any implementation
+of step 6 must therefore be conditional on the target repository having declared required
+checks, so the poll loop retires per repository as each conforms, rather than org-wide on a
+single date.
 
 ## What this must preserve, and how
 

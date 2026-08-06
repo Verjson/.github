@@ -402,6 +402,97 @@ run_adopter "$quoted" \
   && pass "emitted suite accepts the quoted titles YAML requires of conventional commits" \
   || fail "emitted suite rejected a quoted title: $(tail -2 "$tmproot/run.out")"
 
+commit_fixture() {
+  # commit_fixture <dir> <message>
+  git -C "$1" add -A >/dev/null 2>&1
+  git -C "$1" -c user.email=t@t -c user.name=t commit -qm "$2" >/dev/null 2>&1
+}
+
+# `refs:` is in KNOWN_KEYS and exists so several entries can link an issue while
+# only one owns it (#316). The renderer appends `; refs #n` after the back-link,
+# but the emitted assertion anchored `_$` directly after the issue number, so the
+# one combination the contract validates and renders correctly was rejected by
+# the generated test — which adopters wire into `npm test` and may not edit (#461).
+refs_adopter="$tmproot/adopter-refs"
+build_adopter "$refs_adopter"
+cat >"$refs_adopter/NEXT/2026-08-03-issue-5-refs.md" <<'FRAGMENT'
+---
+date: 2026-08-03
+issue: 5
+refs: 16
+title: 'fix(caller): an entry that links a second issue'
+---
+
+Body.
+FRAGMENT
+commit_fixture "$refs_adopter" refs
+run_adopter "$refs_adopter" \
+  && pass "emitted suite accepts an issue-form fragment carrying refs (#461)" \
+  || fail "emitted suite rejected a refs: fragment: $(tail -2 "$tmproot/run.out")"
+
+# Two refs, because one leaves the repeated group in the pattern unproven.
+multi_refs="$tmproot/adopter-refs-multi"
+build_adopter "$multi_refs"
+cat >"$multi_refs/NEXT/2026-08-04-issue-6-multi-refs.md" <<'FRAGMENT'
+---
+date: 2026-08-04
+issue: 6
+refs: 16, 22
+title: 'fix(caller): an entry that links two other issues'
+---
+
+Body.
+FRAGMENT
+commit_fixture "$multi_refs" multi-refs
+run_adopter "$multi_refs" \
+  && pass "emitted suite accepts a fragment refs-ing several issues (#461)" \
+  || fail "emitted suite rejected a multi-ref fragment: $(tail -2 "$tmproot/run.out")"
+
+# Widening the pattern to accept `refs` is only safe if it can still fail. Nothing
+# an adopter writes can produce a back-link that disagrees with its own fragment —
+# the engine derives both — so the mutation is applied to the rendered OUTPUT: the
+# generated renderer keeps its pin and its delegation, and only what it prints is
+# corrupted. Without this, every case above would pass against `.*`.
+corrupt_render() {
+  # corrupt_render <dir> <sed-script>
+  RENDERER="$1/scripts/render-next.sh" MUTATION="$2" python3 - <<'PY'
+import os
+import shlex
+
+path = os.environ["RENDERER"]
+tail = 'exec python3 "$contract" render-next --repo-root "$root"\n'
+text = open(path, encoding="utf-8").read()
+if not text.endswith(tail):
+    raise SystemExit("generated renderer no longer ends with the render exec")
+piped = tail.rstrip("\n") + " | sed " + shlex.quote(os.environ["MUTATION"]) + "\n"
+open(path, "w", encoding="utf-8").write(text[: -len(tail)] + piped)
+PY
+}
+
+expect_backlink_rejection() {
+  # expect_backlink_rejection <label> <sed-script>
+  local label="$1" dir
+  reject_seq=$((reject_seq + 1))
+  dir="$tmproot/backlink-$reject_seq"
+  build_adopter "$dir"
+  cp "$refs_adopter/NEXT/2026-08-03-issue-5-refs.md" "$dir/NEXT/"
+  commit_fixture "$dir" backlink
+  corrupt_render "$dir" "$2"
+  if run_adopter "$dir"; then
+    fail "emitted suite accepted $label"
+  elif grep -q 'back-link missing from the rendered log' "$tmproot/run.out"; then
+    pass "emitted suite rejects $label"
+  else
+    fail "$label failed for another reason: $(tail -2 "$tmproot/run.out")"
+  fi
+}
+
+expect_backlink_rejection "a rendered back-link naming the wrong issue" 's/issue #5;/issue #55;/'
+expect_backlink_rejection "a rendered back-link carrying the wrong date" 's/^_Date: 2026-08-03;/_Date: 2026-08-13;/'
+expect_backlink_rejection "text appended after the back-link's closing underscore" 's/refs #16_$/refs #16_ and more/'
+expect_backlink_rejection "an unrecognised suffix in place of refs" 's/; refs #16_/; notes #16_/'
+expect_backlink_rejection "a declared refs linkage the render dropped" 's/; refs #16_/_/'
+
 # The released form is what an author is asked to read before merge, and under
 # ADR 0059 it is the form that can never be corrected afterwards. A renderer that
 # cannot produce it leaves only "skip the review" or "edit a generated artifact",
