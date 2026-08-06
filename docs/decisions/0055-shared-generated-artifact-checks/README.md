@@ -112,6 +112,22 @@ runs, its exit status is never consulted for one, and a render failure warns
 rather than fails. It exists because a released snapshot is immutable, so
 without it the released form is first seen when it can no longer be changed.
 
+**Amended 2026-08-06 (#449):** that preview also runs in
+`changelog-validate.yml`, and both callers reach one implementation at
+`scripts/changelog-preview.sh` in the contract checkout. Placing it here only
+assumed a migration adopters cannot perform: `gen-changelog-caller.sh` emits a
+`changelog-validate.yml` caller and the contract test it generates greps for
+exactly that string, so no repository can move to this workflow until #437 lands
+(#437 is open). The preview therefore reached nobody — measured on
+`verjson-authn#154`, whose check run reported `output.title: null` and a
+zero-length summary. The reasoning above is unchanged and its scope was wrong:
+"a released snapshot is immutable, so the released form must be visible while
+the fragments can still change" argues for the workflow adopters run, not for
+the one this ADR introduced. A composite action cannot serve both callers —
+`uses:` cannot be interpolated, so a reusable workflow cannot name an action at
+the ref its caller pinned — which is why the shared unit is a script in the
+checkout both already make.
+
 Consequently `changelog: true` **replaces** the generated `changelog-validate`
 caller rather than accompanying it. A repository calling both parses every
 fragment twice for one verdict. A repository that needs only changelog
