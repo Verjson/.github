@@ -195,6 +195,38 @@ Adopters pick this up by regenerating at a contract commit that includes it;
 there is no repository-local patch, since a locally edited contract test fails
 the pin check by design.
 
+## Amendment (2026-08-06) — a refused release fails; it does not skip (#466)
+
+The release job carried
+`if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)`,
+which reads as a guard and is not one. GitHub reports a **skipped** job as
+successful to its caller, so dispatching a release from any other ref produced a
+fully green run that released nothing: no snapshot, no tag, no publish, and a
+green check to tell the operator otherwise. A caller's `publish` job, wired
+`needs: snapshot`, then ran against a tag that was never created.
+
+A reusable workflow cannot fail its caller by declining to run. It can only fail
+by running and exiting non-zero, so the check moved from a job-level `if:` to the
+job's first step, before the checkout that would otherwise act on the assumption
+the check exists to verify. On the default branch the behaviour is unchanged; off
+it, the operator now gets an error naming the offending ref instead of a green
+tick.
+
+This is the same class as the `node-release.yml` retirement recorded in ADR 0060:
+the fix belongs upstream, in the shared workflow, rather than in each caller. Two
+adopters had already hand-rolled a local `preflight` job around it during the
+migration — a correct instinct, an eighteen-fold duplication, and a divergence
+that would drift. Their local guards can be removed as they regenerate; leaving
+them costs a redundant job, not correctness.
+
+`scripts/changelog-release-branch-guard.test.sh` extracts the step's real `run:`
+block and executes it under `set -euo pipefail`, so the assertions run the shipped
+comparison rather than describing it. Seven mutants die: reinstating the job-level
+`if:`, inverting the comparison, dropping `exit 1`, weakening it to a prefix match
+so `main-backup` releases, hard-coding `main` so a `trunk` repository can never
+release, removing the ref from the error message, and moving the step after the
+checkout.
+
 ## Rollback
 
 Revert the reusable workflow and tooling adoption in consumers, then revert the
