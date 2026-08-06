@@ -56,7 +56,8 @@ non-trivial or fanned-out work autonomously:
 ## Active Issues / Areas for Improvement
 
 - [#261](https://github.com/Verjson/.github/issues/261) — Bind privileged-merge provenance to a signed workflow identity; the durable closure for #279's residual.
-- [#263](https://github.com/Verjson/.github/issues/263) — Draft-time gate skip is terminal: the PR can never satisfy the merge gate without a new head SHA or a close/reopen.
+- [#263](https://github.com/Verjson/.github/issues/263) — Drafts always carry a red `privileged_merge` check; the draft hold should be a terminal no-op, not a failure.
+- [#468](https://github.com/Verjson/.github/issues/468) — `ready_for_review` fires no `ai-review-merge` run despite being in `types:`, so a draft marked ready keeps its three SKIPPED gate checks until a new commit. Reproduced on #386 and #462.
 - [#265](https://github.com/Verjson/.github/issues/265) — Org Actions secrets sit at `visibility: all`; scope them to least privilege.
 - [#279](https://github.com/Verjson/.github/issues/279) — Attestation provenance: closed for the required-workflow shape (ADR 0044); open for the reusable-caller shape, which no repo uses yet.
 - [#292](https://github.com/Verjson/.github/issues/292) — Re-review skip never fires: `gh api user` cannot resolve an identity under `github.token`, so every head change re-pays for an unchanged diff.
