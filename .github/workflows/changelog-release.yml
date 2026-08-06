@@ -78,7 +78,21 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
-          ref: ${{ github.event.repository.default_branch }}
+          # The dispatch commit, not the branch name. Resolving by name re-reads
+          # the branch head here, at snapshot time, which is a different commit
+          # whenever anything merged since the dispatch — and the gap is wide:
+          # a caller's verify job holds it open for its whole timeout, and the
+          # concurrency group above (cancel-in-progress: false) holds it open
+          # behind another release. Whatever landed in that window was tagged,
+          # pushed and published without anything ever checking it, which is the
+          # failure a pre-snapshot verify job exists to prevent (#463, #464).
+          #
+          # The guard above has already proved this commit is the default branch
+          # head as of the dispatch. Pinning it also makes the final --atomic
+          # push non-fast-forward when main has since moved, so a concurrent
+          # merge fails the release with no tag pushed and every fragment still
+          # unconsumed — recoverable by re-dispatch (ADR 0062).
+          ref: ${{ github.sha }}
           token: ${{ secrets.push_token }}
       - name: Check out canonical contract
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
