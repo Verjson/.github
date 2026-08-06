@@ -49,3 +49,30 @@ jobs:
             python3 .changelog-contract/scripts/changelog.py check-pr \
               --repo-root "$GITHUB_WORKSPACE" --base "$BASE_SHA" --head "$HEAD_SHA"
           fi
+      - name: Preview the release notes this would publish
+        env:
+          LEGACY_DIR: ${{ inputs.legacy_dir }}
+          CONTRACT_REF: ${{ inputs.contract_ref }}
+        run: |
+          # A released snapshot is immutable (ADR 0059), so without this the
+          # released form is first seen when it can no longer be changed. Every
+          # repository adopting the contract runs this workflow, and until #437
+          # lands none of them can move to generated-artifacts.yml, so this is
+          # the only place the preview reaches an adopter (#449).
+          #
+          # A separate step because it is informational: it runs only when the
+          # verdict above passed, and its own outcome is not that verdict.
+          # Run through `bash` and test for -f, not -x. A file mode is the one
+          # thing about this script that no test upstream can observe from
+          # inside a fixture, and a lost execute bit would put every adopter on
+          # the warning branch below — silently, permanently, and looking
+          # exactly like the bug #449 fixed.
+          preview="$GITHUB_WORKSPACE/.changelog-contract/scripts/changelog-preview.sh"
+          if [ -f "$preview" ]; then
+            bash "$preview" "$GITHUB_WORKSPACE/.changelog-contract/scripts/changelog.py" "$CONTRACT_REF"
+          else
+            # Reachable only when contract_ref and the ref this workflow was
+            # called at disagree, or point before the script existed.
+            printf '::warning title=Release-note preview unavailable::%s\n' \
+              "The changelog check itself PASSED and this does not change that verdict. Verjson/.github@$CONTRACT_REF has no scripts/changelog-preview.sh, so contract_ref predates the preview or does not match the ref this workflow was called at."
+          fi

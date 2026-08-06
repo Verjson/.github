@@ -175,6 +175,16 @@ make_changelog_repo() { # make_changelog_repo <path>
   local ws="$1"
   mkdir -p "$ws/NEXT" "$ws/.changelog-contract/scripts"
   cp "$repo_root/scripts/changelog.py" "$ws/.changelog-contract/scripts/changelog.py"
+  # The preview lives beside the engine in the contract checkout, because
+  # changelog-validate.yml reaches it the same way (#449). Copied rather than
+  # stubbed: these assertions are about what an adopter actually sees.
+  #
+  # Deliberately NOT chmod +x'd. An earlier revision of this fixture did, and it
+  # hid the script being committed at mode 644 — the workflow gated on -x, so
+  # every adopter would have taken the "unavailable" branch forever while these
+  # tests stayed green. The fixture now inherits whatever mode the repository
+  # actually carries, so the workflow has to work at that mode.
+  cp "$repo_root/scripts/changelog-preview.sh" "$ws/.changelog-contract/scripts/changelog-preview.sh"
   cat >"$ws/NEXT/2026-08-05-issue-404-example.md" <<'FRAGMENT'
 ---
 date: 2026-08-05
@@ -647,13 +657,22 @@ done
 # ADR 0055 kept a render out of this check because `validate` already parses
 # every fragment, so a second VERDICT-BEARING render pays twice for one answer.
 # The #426 preview is not a second verdict: it runs only after the verdict is
-# decided, and its exit status is bound to `preview_rc`, which nothing
-# verdict-bearing reads. Asserted here statically, and behaviourally by the
-# old-engine fixture above where the render fails and the check still passes.
+# decided, and since #449 it does not even live here — the check shells out to
+# the shared preview script, and never reads its exit status. Asserted here
+# statically, and behaviourally by the old-engine fixture above where the render
+# fails and the check still passes.
 renders="$(grep -c '"\$engine" render-next' "$validate")"
-[ "$renders" -eq 1 ] \
-  && pass "the renderer is invoked once, for the preview — not as a second validation pass" \
+[ "$renders" -eq 0 ] \
+  && pass "the validate script renders nothing itself — the verdict rests on validate alone" \
   || fail "the engine is asked to render $renders times in the validate script"
+
+# The preview moved out so that changelog-validate.yml can reach it too. Assert
+# the shared script is what both get: one render, in the released shape.
+shared_preview="$repo_root/scripts/changelog-preview.sh"
+[ "$(grep -c 'python3 "\$engine" render-next' "$shared_preview")" -eq 1 ] \
+  && grep -q 'render-next "\${args\[@\]}" --as-released' "$shared_preview" \
+  && pass "the shared preview script renders the released form exactly once" \
+  || fail "the shared preview script does not render the released form exactly once"
 
 grep -E 'preview_rc' "$validate" | grep -qE 'changelog_ok|failures|report ' \
   && fail "the preview's exit status feeds the changelog verdict" \
