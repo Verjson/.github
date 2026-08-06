@@ -192,6 +192,8 @@ jobs:
         run: python3 scripts/changelog.test.py
       - name: Changelog contract — consumer caller generator (#286)
         run: bash scripts/ci-gate/changelog-caller-contract.test.sh
+      - name: Changelog contract — generated release caller verifies before it tags (#463, #464, #465)
+        run: bash scripts/ci-gate/changelog-release-caller.test.sh
       - name: Changelog contract resolution — pinned digest, verified override (#304)
         run: bash scripts/ci-gate/changelog-contract-resolution.test.sh
       - name: Changelog contract — the released form previews where adopters see it (#449)
