@@ -66,7 +66,10 @@ non-trivial or fanned-out work autonomously:
 - [#411](https://github.com/Verjson/.github/issues/411) — `dispatch-merge` ignores `runner_labels`, so a self-hosted-only caller outside Verjson lands it on hosted.
 - [#412](https://github.com/Verjson/.github/issues/412) — `changelog-validate.yml` accepts a mutable `contract_ref` and executes Python from it; ~90 repos call it.
 - [#437](https://github.com/Verjson/.github/issues/437) — `gen-changelog-caller.sh` emits only a `changelog-validate.yml` caller and its generated test greps for that string, so no adopter can move to `generated-artifacts.yml` without the hand-edit the contract forbids. Until it is fixed, tell adopters to stay put, and not to set `adr-index: true` without `scripts/gen-adr-index.sh`.
+- [#441](https://github.com/Verjson/.github/issues/441) — a review pass that ends in a terminal error subtype still emits schema-shaped filler (`summary: test`, `findings: [c]`), and `:1405` accepts it because `.blocking` is a boolean. Seen on both `error_max_turns` and `error_max_budget_usd`. Re-run rather than dismissing — the real verdict may have findings.
 - [#452](https://github.com/Verjson/.github/issues/452) — the gate never retracts a `CHANGES_REQUESTED`, so `reviewDecision` stays stale after the finding is fixed and the PR is `BLOCKED` with every check green. Landing one needs a review dismissal plus `--admin`.
+- [#454](https://github.com/Verjson/.github/issues/454) — `parse_frontmatter` rejects a key with an empty value, so `summary: >-` and every folded/literal scalar fails. The key meant to hold a release note cannot hold one written the natural way; keep `summary:` on one line.
+- [#455](https://github.com/Verjson/.github/issues/455) — the generated contract test forbids `.releaserc.json` while canonical `node-release.yml` still requires it, so an npm-publishing adopter cannot satisfy both. Leave the generated test unwired there rather than deleting the file or patching the test.
 
 Prune an entry when its issue closes. This list loads into every session, so a
 closed entry costs context in each one and misreports the state of the work.
