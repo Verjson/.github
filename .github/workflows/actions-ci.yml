@@ -162,6 +162,8 @@ jobs:
         run: bash scripts/ci-gate/privileged-merge-pin.test.sh
       - name: merge gate — absent checks fail closed, not open (#143, ADR 0024)
         run: bash scripts/ci-gate/ci-wait-fail-closed.test.sh
+      - name: merge gate — the poll retires only where GitHub requires checks (#341, ADR 0058)
+        run: bash scripts/ci-gate/required-checks-skip-poll.test.sh
       - name: A runner without gh must fail the gate fast, not hold it (#363)
         run: bash scripts/ci-gate/toolchain-missing.test.sh
       - name: merge gate — the gate never waits on its own jobs (#276, ADR 0039)

@@ -300,6 +300,72 @@ of step 6 must therefore be conditional on the target repository having declared
 checks, so the poll loop retires per repository as each conforms, rather than org-wide on a
 single date.
 
+### Amendment (2026-08-06) — step 6 shipped, conditional per repository
+
+Implemented in `ai-review-merge.yml`, `gate` job, step `Wait once for the rest of CI to
+be green`. Before the poll loop the gate asks GitHub what it already requires:
+
+```
+GET /repos/{owner}/{repo}/rules/branches/{base_branch}
+```
+
+If any rule of type `required_status_checks` names at least one context, the gate emits
+`::notice::phase=ci-wait result=required-checks-declared` and exits 0 without reading the
+rollup. If none does, it polls exactly as before. This is the conditional form the
+amendment above requires: no allowlist and no per-repository variable, so a repository
+opts itself in the moment a ruleset is scoped to it, and the 66 repositories that declare
+nothing keep the gate as their only CI verifier.
+
+**Skipping does not make a red PR mergeable.** The ci-wait poll was never the merge
+precondition it looks like: `ai-review-merge.yml`'s own merge step has been `if: ${{ false
+}}`, and the live path is `dispatch-merge` → `ai-privileged-merge.yml`, which
+independently polls the whole rollup to `failed == 0 && pending == 0` before its `--admin`
+squash. What the gate's poll actually buys is *not paying for a model review of a PR that
+fails its own CI*, and that cost is what step 6 trades away where GitHub is already
+blocking the merge.
+
+**The measurement that scopes it.** Re-run across the same 91 non-archived repositories on
+2026-08-06 (`GET /repos/{o}/{r}/rules/branches/{default_branch}` per repository):
+
+| Required contexts on the default branch | Repositories |
+| --- | --- |
+| none | 66 |
+| `changelog / validate`, `ci / build-test`, `ci / eligibility` | 17 |
+| `build-test`, `changelog / validate` | 2 |
+| `changelog / validate` | 2 |
+| `changelog / validate`, `ci / build-test`, `ci / eligibility`, `guard` | 1 |
+| `changelog / validate`, `shell-tests` | 1 |
+| `shell-tests` | 1 |
+| endpoint answers `403 Upgrade to GitHub Pro` | 1 |
+
+**Two residuals this amendment states rather than solves.** First, the skip keys on *any*
+required context, not on a repository's *core set*: the four repositories that require only
+`changelog / validate` (or only `build-test` under a bare, non-`ci /` job name) stop having
+their remaining CI waited on by the gate, even though `ai-privileged-merge.yml` still
+refuses to merge them red. Second, `GET /rules/branches` does not report a rule's
+enforcement, so a rule staged in `evaluate` mode would read as blocking. That is inert here
+— rule-suites is `403` on this plan (see the previous amendment), so nothing in this org is
+staged — but it stops being inert the day the org moves to Enterprise.
+
+**Fail-closed is the load-bearing property, and it is pinned by mutation.** Every branch of
+the probe falls back to polling: an API error, a body that is not an array (the `403`
+repository above returns a JSON *object*, and `.[]` over an object iterates its values
+rather than failing), an unparseable or empty payload, a rule with no named context, an
+unreadable PR, or a base branch that fails validation. The base branch is the PR's own —
+`github.event.pull_request.base.ref`, falling back to `gh pr view` on the
+`workflow_dispatch` / `workflow_call` paths that carry no payload — and it is validated
+before it reaches an API URL: a bare ASCII ref, no `..`, and the allowlist is evaluated in a
+C-locale subshell because under `en_US.UTF-8` a bash `[[ =~ ]]` range of `A-Za-z` matches
+`ü` (verified on bash 5.2), which would otherwise admit a non-ASCII ref.
+`scripts/ci-gate/required-checks-skip-poll.test.sh` extracts the shipped step and executes
+it against a stubbed `gh`; ten separate mutations of the guard were each killed by a named
+assertion, including the two that survived the first draft of the suite.
+
+**Steps 5b and 7 stay open.** Requiring `gate` on `~ALL` is still blocked by the 53
+gate-less open PRs (#474), and the watchdog stays armed: `ai-privileged-merge.yml` still
+polls, still routes on `VERJSON_LANE_PRIVILEGED`, and is untouched by this step. ADR 0056
+therefore still stands.
+
 ## What this must preserve, and how
 
 - **Anti-TOCTOU head binding (ADR 0039).** Strengthened, not weakened. Today the

@@ -583,6 +583,11 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           ALLOW_ABSENT_CHECKS: ${{ inputs.allow_absent_checks || false }}
+          # The PR's own base branch, never the literal "main": several
+          # repositories in the org do not use it. Empty on workflow_dispatch and
+          # workflow_call, which have no pull_request payload — resolved from the
+          # API below in that case.
+          BASE_BRANCH: ${{ github.event.pull_request.base.ref }}
         run: |
           set -euo pipefail
           # A runner without `gh` cannot ever satisfy this step, and every API
@@ -623,6 +628,82 @@ jobs:
             echo "::error::phase=ci-wait result=unknown-head lane=$LANE"
             echo "No usable head SHA was resolved for PR #$PR_NUMBER (got '${EXPECTED_HEAD_SHA:-<empty>}', expected a 40-character commit SHA); CI state cannot be attributed to a commit. Not reviewing or merging."
             exit 1
+          fi
+          # ADR 0058 step 6, conditional per repository (#341). Where the target
+          # repository has declared required status checks on THIS PR's base
+          # branch, GitHub already refuses the merge until those contexts report
+          # green, so a gate that holds a runner for up to 30 minutes to observe
+          # the same thing is only the deadlock ADR 0053 describes. Where no such
+          # rule exists — 66 of 91 non-archived org repositories on 2026-08-06 —
+          # the gate MUST keep polling: skipping there would make that
+          # repository's CI advisory, which ADR 0058 itself calls a worse defect
+          # than the deadlock it removes. No allowlist and no per-repository
+          # variable: a repository opts in the moment a ruleset is scoped to it.
+          #
+          # Every step of this probe fails CLOSED to polling. Only an
+          # affirmative, well-formed answer skips: an API error, the 403 a plan
+          # without rulesets returns (one org repository answers exactly that), a
+          # body that is not an array, a rule carrying no contexts, or a base
+          # branch that cannot be resolved all fall through to the loop below.
+          base_branch="${BASE_BRANCH:-}"
+          if [ -z "$base_branch" ]; then
+            # workflow_dispatch and workflow_call carry no pull_request payload,
+            # and re-dispatch is a routine path here (#468, #475) — resolving the
+            # base only from the event would leave the skip dead on it.
+            base_branch=$(gh pr view "$PR_NUMBER" --repo "$TARGET_REPO" \
+              --json baseRefName --jq '.baseRefName // ""' 2>/dev/null) || base_branch=""
+          fi
+          # This value is interpolated into an API URL, so require a bare git
+          # ref: no whitespace and no shell or URL metacharacters. Three guards,
+          # none of them redundant:
+          #   - "null" — a failed `--jq` renders JSON null as that literal
+          #     string, which is non-empty and matches the allowlist.
+          #   - `..` — every character of `main/../../../orgs/Verjson/rulesets`
+          #     is legal in a ref, so the allowlist passes it straight into the
+          #     API path. Git forbids `..` in a ref name, so nothing real is lost.
+          #   - the C locale — `[[ =~ ]]` ranges follow the runner's collation,
+          #     and under en_US.UTF-8 `A-Za-z` matches `ü` (verified on bash 5.2),
+          #     so the allowlist alone admits a non-ASCII ref. In a C-locale
+          #     subshell the ranges are the bytes they read as. A unicode branch
+          #     therefore never takes the skip; it polls, which is the safe side.
+          base_branch_ok=true
+          if [ "$base_branch" = "null" ]; then base_branch_ok=false; fi
+          case "$base_branch" in *..*) base_branch_ok=false ;; esac
+          if ! ( export LC_ALL=C; [[ "$base_branch" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]*$ ]] ); then
+            base_branch_ok=false
+          fi
+          if [ "$base_branch_ok" != true ]; then
+            echo "::warning::phase=ci-wait result=base-branch-unresolved base='${base_branch:-<empty>}' — cannot ask GitHub which checks it requires, so the gate waits for CI itself (#341)."
+          else
+            required_contexts=""
+            rules_rc=0
+            rules_json=$(gh api "repos/$TARGET_REPO/rules/branches/$base_branch" 2>/dev/null) || rules_rc=$?
+            if [ "$rules_rc" -eq 0 ]; then
+              # `error` on anything that is not an array of rule objects: this
+              # endpoint answers 403 with a JSON OBJECT on a plan without
+              # rulesets, and `.[]` over an object iterates its VALUES rather
+              # than failing — a silent way to read a denial as a rule set.
+              # A rule with an empty context list blocks nothing, so require at
+              # least one named context rather than the rule's mere presence.
+              required_contexts=$(jq -r '
+                if type != "array" then error("branch rules response is not an array")
+                else [ .[] | select((type == "object") and .type == "required_status_checks")
+                       | .parameters.required_status_checks[]? | .context? | strings ]
+                     | unique | join(", ")
+                end' <<<"$rules_json" 2>/dev/null) || rules_rc=$?
+            fi
+            if [ "$rules_rc" -eq 127 ]; then
+              echo "::error::phase=ci-wait result=toolchain-missing runner=${RUNNER_NAME:-unknown} — the CLI disappeared while reading the branch rules; failing immediately rather than holding the runner through the poll loop (#363)."
+              exit 1
+            elif [ "$rules_rc" -ne 0 ]; then
+              echo "::warning::phase=ci-wait result=branch-rules-unavailable base=$base_branch rc=$rules_rc — could not establish that GitHub requires anything, so the gate waits for CI itself (#341)."
+            elif [ -z "$required_contexts" ]; then
+              echo "::notice::phase=ci-wait result=no-required-checks base=$base_branch — this repository declares none, so the gate waits for CI itself (#341)."
+            else
+              echo "::notice::phase=ci-wait result=required-checks-declared base=$base_branch contexts=$required_contexts lane=$LANE"
+              echo "GitHub requires [$required_contexts] on $base_branch and will not merge PR #$PR_NUMBER until they report green, so the gate does not wait for them as well (ADR 0058 step 6, #341)."
+              exit 0
+            fi
           fi
           checks=0
           checks_probe=unread
