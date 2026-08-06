@@ -178,8 +178,13 @@ make_changelog_repo() { # make_changelog_repo <path>
   # The preview lives beside the engine in the contract checkout, because
   # changelog-validate.yml reaches it the same way (#449). Copied rather than
   # stubbed: these assertions are about what an adopter actually sees.
+  #
+  # Deliberately NOT chmod +x'd. An earlier revision of this fixture did, and it
+  # hid the script being committed at mode 644 — the workflow gated on -x, so
+  # every adopter would have taken the "unavailable" branch forever while these
+  # tests stayed green. The fixture now inherits whatever mode the repository
+  # actually carries, so the workflow has to work at that mode.
   cp "$repo_root/scripts/changelog-preview.sh" "$ws/.changelog-contract/scripts/changelog-preview.sh"
-  chmod +x "$ws/.changelog-contract/scripts/changelog-preview.sh"
   cat >"$ws/NEXT/2026-08-05-issue-404-example.md" <<'FRAGMENT'
 ---
 date: 2026-08-05

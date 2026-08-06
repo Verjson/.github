@@ -190,9 +190,12 @@ jobs:
                 # Informational only — the verdict was decided above and nothing
                 # below can alter it, which is why the script's exit status is
                 # not consulted.
+                # Through `bash`, and tested with -f rather than -x: a lost
+                # execute bit would route every caller to the warning below and
+                # look exactly like the silence #449 fixed.
                 preview_script="$GITHUB_WORKSPACE/.changelog-contract/scripts/changelog-preview.sh"
-                if [ -x "$preview_script" ]; then
-                  "$preview_script" "$engine" "$CONTRACT_REF"
+                if [ -f "$preview_script" ]; then
+                  bash "$preview_script" "$engine" "$CONTRACT_REF"
                 else
                   # Reachable only when contract_ref and the ref this workflow
                   # was called at disagree, or point before the script existed.

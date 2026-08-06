@@ -25,4 +25,10 @@ is the point rather than a tidy-up.
 The preview stays informational: it runs in its own step, only after the verdict
 step passed, and a renderer that fails warns without turning the check red.
 
+Both callers run the script through `bash` and test for its presence rather than
+its execute bit, so a checkout that loses file modes still previews instead of
+warning. The first cut of this change committed the script at mode 644 and gated
+on `-x`, which would have put every adopter on the warning branch permanently —
+the same silence being fixed here, wearing a different cause.
+
 Reported by the `verjson-authn` PM while bumping the contract pin.

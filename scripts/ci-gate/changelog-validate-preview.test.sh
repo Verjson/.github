@@ -52,8 +52,9 @@ make_repo() { # make_repo <path>
   local ws="$1"
   mkdir -p "$ws/NEXT" "$ws/.changelog-contract/scripts"
   cp "$repo_root/scripts/changelog.py" "$ws/.changelog-contract/scripts/changelog.py"
+  # Copied at whatever mode the repository carries, never chmod'd here: doing
+  # that is what let the script ship at 644 with these tests green.
   cp "$shared_preview" "$ws/.changelog-contract/scripts/changelog-preview.sh"
-  chmod +x "$ws/.changelog-contract/scripts/changelog-preview.sh"
   cat >"$ws/NEXT/2026-08-06-issue-449-example.md" <<'FRAGMENT'
 ---
 date: 2026-08-06
@@ -139,6 +140,37 @@ rc=$?
   && grep -q 'check itself PASSED' <<<"$out" \
   && pass "a contract checkout without the preview script warns and keeps the check green" \
   || fail "a missing preview script was silent or fatal (rc=$rc): $out"
+
+# --------------------------------------------------------------------------
+# File mode. A fixture cannot observe the mode of the committed file unless it
+# is asked to, and the first cut of this PR shipped the script at 644 with every
+# other assertion green: the callers gated on -x, so a real adopter checkout
+# would have taken the warning branch forever. Two independent guards, because
+# either alone is a single point of silence.
+# --------------------------------------------------------------------------
+[ -x "$shared_preview" ] \
+  && pass "the committed preview script is executable" \
+  || fail "scripts/changelog-preview.sh is not executable ($(stat -c '%a' "$shared_preview"))"
+
+# And the callers must not depend on that bit anyway — a checkout that loses
+# modes (an archive export, a copy through a filesystem without them) still has
+# to produce the preview rather than the warning.
+ws="$tmp/no-exec-bit"
+make_repo "$ws"
+chmod 644 "$ws/.changelog-contract/scripts/changelog-preview.sh"
+out="$(run_step "$ws")"
+rc=$?
+[ "$rc" -eq 0 ] \
+  && grep -q 'Release notes this would publish' "$ws/summary.md" \
+  && ! grep -q 'Release-note preview unavailable' <<<"$out" \
+  && pass "a non-executable preview script still previews, rather than warning" \
+  || fail "the caller depends on the execute bit (rc=$rc): $out"
+
+for caller in "$workflow" "$repo_root/.github/workflows/generated-artifacts.yml"; do
+  ! grep -q '\[ -x "\$preview' "$caller" \
+    && pass "$(basename "$caller") does not gate the preview on an execute bit" \
+    || fail "$(basename "$caller") gates on -x, so a lost mode silently disables the preview"
+done
 
 # --------------------------------------------------------------------------
 # One implementation, two callers. The preview only stayed missing here for as

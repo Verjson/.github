@@ -62,9 +62,14 @@ jobs:
           #
           # A separate step because it is informational: it runs only when the
           # verdict above passed, and its own outcome is not that verdict.
+          # Run through `bash` and test for -f, not -x. A file mode is the one
+          # thing about this script that no test upstream can observe from
+          # inside a fixture, and a lost execute bit would put every adopter on
+          # the warning branch below — silently, permanently, and looking
+          # exactly like the bug #449 fixed.
           preview="$GITHUB_WORKSPACE/.changelog-contract/scripts/changelog-preview.sh"
-          if [ -x "$preview" ]; then
-            "$preview" "$GITHUB_WORKSPACE/.changelog-contract/scripts/changelog.py" "$CONTRACT_REF"
+          if [ -f "$preview" ]; then
+            bash "$preview" "$GITHUB_WORKSPACE/.changelog-contract/scripts/changelog.py" "$CONTRACT_REF"
           else
             # Reachable only when contract_ref and the ref this workflow was
             # called at disagree, or point before the script existed.
