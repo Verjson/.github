@@ -331,6 +331,22 @@ def release_note(entry: Fragment) -> str:
     return entry.metadata.get("summary") or lead_paragraph(entry.body)
 
 
+def rendered_identity(entry: Fragment) -> str:
+    """How an entry names itself on the page.
+
+    `identity` is a comparison key, and it is lower-cased so two spellings of
+    one hexadecimal id cannot become two entries. That normalisation must not
+    reach the reader: a timestamp identity is ISO-8601, where `T` and `Z` are
+    literals, so `id:20260805t000000z` is a mangled timestamp rather than a
+    quieter one — and permanent once released (#434).
+    """
+    if entry.identity.startswith("issue:"):
+        return entry.identity.replace(":", " #", 1)
+    if entry.identity.startswith("id:"):
+        return f"id:{entry.metadata['id']}"
+    return entry.identity
+
+
 def render(entries: list[Fragment], released: bool = False) -> str:
     """Render entries for the running log, or for a released snapshot.
 
@@ -346,7 +362,7 @@ def render(entries: list[Fragment], released: bool = False) -> str:
             f"## {entry.metadata['title']}\n\n"
             f"{release_note(entry) if released else entry.body.strip()}\n\n"
             f"_Date: {entry.metadata['date']}; "
-            f"{entry.identity.replace(':', ' #', 1) if entry.identity.startswith('issue:') else entry.identity}"
+            f"{rendered_identity(entry)}"
             f"{_rendered_refs(entry)}_"
         )
     return "\n\n".join(sections) + ("\n" if sections else "")

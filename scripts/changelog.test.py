@@ -102,7 +102,7 @@ class ChangelogContractTests(unittest.TestCase):
             title="Gateway transport",
         )
         rendered = changelog.render(list(changelog.fragments(self.root)))
-        self.assertIn("_Date: 2026-07-30; id:20260730t090000z; refs #13_", rendered)
+        self.assertIn("_Date: 2026-07-30; id:20260730T090000Z; refs #13_", rendered)
 
     def test_refs_accepts_several_issues_and_normalizes_hashes(self) -> None:
         fragment(
@@ -311,7 +311,7 @@ class ChangelogContractTests(unittest.TestCase):
         )
         rendered = changelog.render(list(changelog.fragments(self.root)))
         self.assertIn("_Date: 2026-07-30; issue #13_", rendered)
-        self.assertIn("_Date: 2026-07-30; id:20260730t090000z; refs #13_", rendered)
+        self.assertIn("_Date: 2026-07-30; id:20260730T090000Z; refs #13_", rendered)
 
     def test_refs_is_validated_at_validate_time_not_only_at_release(self) -> None:
         fragment(
@@ -377,6 +377,56 @@ class ChangelogContractTests(unittest.TestCase):
         rendered = changelog.render(changelog.fragments(self.root))
 
         self.assertLess(rendered.index("## Newer"), rendered.index("## Older"))
+
+    # --- identity is a key, not a spelling (#434) -------------------------------
+    # `identity` is lower-cased so two spellings of one hexadecimal id cannot
+    # become two entries. That is right for comparison and wrong for the page:
+    # a timestamp identity is ISO-8601, where `T` and `Z` are literals.
+
+    def test_a_timestamp_identity_keeps_its_iso_8601_letters(self) -> None:
+        fragment(
+            self.root,
+            "2026-08-05-issue-20260805T000000Z-issueless.md",
+            identity_id="20260805T000000Z",
+            issue=None,
+            date="2026-08-05",
+        )
+
+        rendered = changelog.render(list(changelog.fragments(self.root)))
+
+        self.assertIn("id:20260805T000000Z", rendered)
+        self.assertNotIn("20260805t000000z", rendered)
+
+    def test_a_hexadecimal_identity_renders_as_written(self) -> None:
+        fragment(
+            self.root,
+            "2026-08-05-issue-ABC123-hex.md",
+            identity_id="ABC123",
+            issue=None,
+            date="2026-08-05",
+        )
+
+        rendered = changelog.render(list(changelog.fragments(self.root)))
+
+        self.assertIn("id:ABC123", rendered)
+
+    def test_two_spellings_of_one_id_are_still_one_identity(self) -> None:
+        # The whole reason the key is normalised. Rendering the author's
+        # spelling must not buy a cosmetic fix with a duplicate-entry bug.
+        fragment(self.root, "2026-08-05-issue-ABC123-upper.md",
+                 identity_id="ABC123", issue=None, date="2026-08-05")
+        fragment(self.root, "2026-08-05-issue-abc123-lower.md",
+                 identity_id="abc123", issue=None, date="2026-08-05")
+
+        with self.assertRaisesRegex(changelog.ChangelogError, "duplicate identity"):
+            changelog.fragments(self.root)
+
+    def test_an_issue_identity_still_renders_as_a_hash_reference(self) -> None:
+        fragment(self.root, "2026-08-05-issue-249-plainer.md", issue="249", date="2026-08-05")
+
+        rendered = changelog.render(list(changelog.fragments(self.root)))
+
+        self.assertIn("_Date: 2026-08-05; issue #249_", rendered)
 
     # --- two audiences, two renderings (#426) ----------------------------------
     # The org convention asks a fragment to carry its rationale, so one renderer
