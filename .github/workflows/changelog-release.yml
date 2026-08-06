@@ -54,10 +54,26 @@ jobs:
     # (ADR 0052, #389).
     permissions:
       contents: write
-    if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
     runs-on: ${{ inputs.runner != '' && fromJSON(inputs.runner) || github.repository_owner != 'Verjson' && 'ubuntu-24.04' || github.event.repository.private == true && fromJSON(vars.VERJSON_RUNNER_OVERFLOW || vars.VERJSON_LANE_TRUSTED || vars.VERJSON_LANE_FALLBACK || '["ubuntu-24.04"]') || fromJSON(vars.VERJSON_RUNNER_OVERFLOW || vars.VERJSON_LANE_UNTRUSTED || vars.VERJSON_LANE_FALLBACK || '["ubuntu-24.04"]') }}
     timeout-minutes: 10
     steps:
+      # This was a job-level `if:` on the same comparison, which looked like a
+      # guard and was not one: GitHub reports a skipped job as *successful* to
+      # its caller, so a dispatch from any other ref released nothing and told
+      # the operator it had (#466). A reusable workflow cannot fail its caller by
+      # declining to run — only by running and exiting non-zero — so the check
+      # has to be a step. Two adopters had already hand-rolled a local preflight
+      # job around this; the guard belongs here instead of in eighteen callers.
+      - name: Release only from the default branch
+        env:
+          DISPATCH_REF: ${{ github.ref }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          if [ "$DISPATCH_REF" != "refs/heads/$DEFAULT_BRANCH" ]; then
+            echo "::error::A release must be dispatched from $DEFAULT_BRANCH, but this run was dispatched from '$DISPATCH_REF'. The snapshot below is always taken from $DEFAULT_BRANCH, so releasing from another ref would tag content that ref does not contain."
+            exit 1
+          fi
+          echo "Dispatched from $DEFAULT_BRANCH; proceeding."
       - name: Check out release repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
