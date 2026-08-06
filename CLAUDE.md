@@ -66,6 +66,7 @@ non-trivial or fanned-out work autonomously:
 - [#411](https://github.com/Verjson/.github/issues/411) — `dispatch-merge` ignores `runner_labels`, so a self-hosted-only caller outside Verjson lands it on hosted.
 - [#412](https://github.com/Verjson/.github/issues/412) — `changelog-validate.yml` accepts a mutable `contract_ref` and executes Python from it; ~90 repos call it.
 - [#437](https://github.com/Verjson/.github/issues/437) — `gen-changelog-caller.sh` emits only a `changelog-validate.yml` caller and its generated test greps for that string, so no adopter can move to `generated-artifacts.yml` without the hand-edit the contract forbids. Until it is fixed, tell adopters to stay put, and not to set `adr-index: true` without `scripts/gen-adr-index.sh`.
+- [#452](https://github.com/Verjson/.github/issues/452) — the gate never retracts a `CHANGES_REQUESTED`, so `reviewDecision` stays stale after the finding is fixed and the PR is `BLOCKED` with every check green. Landing one needs a review dismissal plus `--admin`.
 
 Prune an entry when its issue closes. This list loads into every session, so a
 closed entry costs context in each one and misreports the state of the work.
