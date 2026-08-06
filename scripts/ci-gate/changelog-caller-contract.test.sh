@@ -174,7 +174,13 @@ mkdir -p "$XDG_CACHE_HOME/verjson-changelog/$sha"
 cp "$contract_src" "$XDG_CACHE_HOME/verjson-changelog/$sha/changelog.py"
 
 build_adopter() {
-  # build_adopter <dir> [with-release-workflow: yes|no]
+  # build_adopter <dir> [with-release-workflow: yes|no|legacy]
+  #
+  # `yes` installs the GENERATED release caller, which is what an adopter is now
+  # told to commit. `legacy` reproduces the hand-copied verjson-payments shape
+  # every migrated repository carried before #463/#464/#465: it verifies nothing
+  # before the irreversible snapshot, installs with GITHUB_TOKEN, and lets the
+  # two halves of one release route onto two runner pools.
   local dir="$1" with_release="${2:-yes}"
   mkdir -p "$dir/NEXT" "$dir/scripts" "$dir/.github/workflows"
   bash "$gen" renderer "$sha" >"$dir/scripts/render-next.sh"
@@ -182,6 +188,8 @@ build_adopter() {
   cp "$emitted" "$dir/scripts/changelog-contract.test.sh"
   chmod +x "$dir/scripts/render-next.sh" "$dir/scripts/changelog-contract.test.sh"
   if [ "$with_release" = yes ]; then
+    bash "$gen" release-node "$sha" >"$dir/.github/workflows/release.yml"
+  elif [ "$with_release" = legacy ]; then
     cat >"$dir/.github/workflows/release.yml" <<YAML
 name: release
 on:
@@ -191,13 +199,21 @@ on:
         required: true
         type: string
 jobs:
-  release:
+  snapshot:
     uses: Verjson/.github/.github/workflows/changelog-release.yml@$sha
     with:
       contract_ref: $sha
       version: \${{ inputs.version }}
     secrets:
       push_token: \${{ secrets.ORG_ADMIN_TOKEN }}
+  publish:
+    needs: snapshot
+    runs-on: ubuntu-24.04
+    steps:
+      - run: npm ci
+        env:
+          NODE_AUTH_TOKEN: \${{ secrets.GITHUB_TOKEN }}
+      - run: npm test
 YAML
   fi
   # Quoted, because that is what adopters actually write: YAML requires a quoted
@@ -300,13 +316,29 @@ rendered_bytes="$( (cd "$oversize" && ./scripts/render-next.sh) | wc -c )"
 # A suite that passes everywhere is worthless. Each case below breaks exactly one
 # invariant in a fresh adopter and requires a non-zero exit.
 reject_seq=0
+# Mode as well as content: one of the mutations below only clears the executable
+# bit, and a content-only fingerprint reports that as "changed nothing".
+fingerprint() {
+  ( cd "$1" && find . -type f -printf '%m %p\n' -exec sha256sum {} + | sort )
+}
+
 expect_rejection() {
   # expect_rejection <label> <mutator-fn>
   local label="$1" mutator="$2" dir
   reject_seq=$((reject_seq + 1))
   dir="$tmproot/reject-$reject_seq"
   build_adopter "$dir"
+  # A mutation that edits nothing is rejected by nothing, and the case still
+  # reads green — which is how a guard that cannot fail survives a review. The
+  # fixture is fingerprinted before and after so a silently no-op mutator is a
+  # failure of this file, not an endorsement of the emitted suite.
+  fingerprint "$dir" >"$tmproot/before-$reject_seq"
   "$mutator" "$dir"
+  fingerprint "$dir" >"$tmproot/after-$reject_seq"
+  if cmp -s "$tmproot/before-$reject_seq" "$tmproot/after-$reject_seq"; then
+    fail "mutation for '$label' changed nothing; the case is vacuous"
+    return
+  fi
   run_adopter "$dir" \
     && fail "emitted suite accepted $label" \
     || pass "emitted suite rejects $label"
@@ -344,8 +376,95 @@ wire_quoted_push_token() { wire_push_token "$1" '"${{ secrets.GITHUB_TOKEN }}"';
 wire_alias_push_token() { wire_push_token "$1" '${{ github.token }}'; }
 wire_lowercase_push_token() { wire_push_token "$1" '${{ secrets.github_token }}'; }
 wire_folded_push_token() {
+  # Inserted on the line after the key, which is where YAML puts a folded
+  # scalar's value — not appended at EOF, which in the generated caller lands
+  # inside a later job and so would exercise nothing.
   wire_push_token "$1" '>-'
-  printf '        ${{ secrets.GITHUB_TOKEN }}\n' >>"$1/.github/workflows/release.yml"
+  sed -i 's|^      push_token: >-$|      push_token: >-\n        ${{ secrets.GITHUB_TOKEN }}|' \
+    "$1/.github/workflows/release.yml"
+}
+
+# #463/#464/#465. Each mutation below reproduces one defect the hand-copied
+# release caller shipped to every migrated repository, applied to the generated
+# caller so the emitted suite is the thing under test rather than the fixture.
+drop_snapshot_needs() {
+  sed -i '/^    needs: verify$/d' "$1/.github/workflows/release.yml"
+}
+drop_snapshot_runner() {
+  sed -i '/^      runner: /d' "$1/.github/workflows/release.yml"
+}
+install_with_github_token() {
+  sed -i 's|NODE_AUTH_TOKEN: ${{ secrets.NODE_AUTH_TOKEN }}|NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}|g' \
+    "$1/.github/workflows/release.yml"
+}
+add_push_trigger() {
+  sed -i 's|^on:$|on:\n  push:\n    branches: [main]|' "$1/.github/workflows/release.yml"
+}
+unpin_release_ref() {
+  sed -i "s|changelog-release.yml@$sha|changelog-release.yml@main|" \
+    "$1/.github/workflows/release.yml"
+}
+strip_release_provenance() {
+  sed -i '/gen-changelog-caller.sh release-node/d' "$1/.github/workflows/release.yml"
+}
+# The trigger surface, written the ways a line-oriented guard cannot see. Flow
+# style never matches a `^on:$` anchor, and workflow_call/release/workflow_run
+# are absent from any blocklist that was written by listing what came to mind.
+add_flow_style_push_trigger() {
+  # Line-oriented on purpose. A regex over the whole file (`(?s)`) swallows
+  # everything after `on:` and produces a mutant that is rejected for having no
+  # release call at all — a case that looks like it passes and proves nothing.
+  python3 - "$1/.github/workflows/release.yml" <<'PY'
+import sys
+
+path = sys.argv[1]
+lines = open(path).read().splitlines(True)
+out = []
+index = 0
+while index < len(lines):
+    line = lines[index]
+    if line.rstrip() == "on:":
+        out.append(
+            "on: {workflow_dispatch: {inputs: {version: {required: true,"
+            " type: string}}}, push: {branches: [main]}}\n"
+        )
+        index += 1
+        while index < len(lines) and (
+            not lines[index].strip() or lines[index][:1] in " \t"
+        ):
+            index += 1
+        continue
+    out.append(line)
+    index += 1
+open(path, "w").write("".join(out))
+PY
+}
+add_workflow_call_trigger() {
+  sed -i 's|^on:$|on:\n  workflow_call:|' "$1/.github/workflows/release.yml"
+}
+add_release_trigger() {
+  sed -i 's|^on:$|on:\n  release:\n    types: [published]|' "$1/.github/workflows/release.yml"
+}
+# The same credential, inherited rather than written on the install step, which
+# is where a step-scoped guard stops looking.
+install_token_from_job_env() {
+  python3 - "$1/.github/workflows/release.yml" <<'PY'
+import sys
+path = sys.argv[1]
+out = []
+for line in open(path):
+    if "NODE_AUTH_TOKEN: ${{ secrets.NODE_AUTH_TOKEN }}" in line:
+        continue
+    out.append(line)
+    if line.startswith("  verify:"):
+        out.append("    env:\n      NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}\n")
+open(path, "w").write("".join(out))
+PY
+}
+# Keying the checks on one filename let any other name collect none of them.
+rename_release_caller() {
+  mv "$1/.github/workflows/release.yml" "$1/.github/workflows/publish-package.yml"
+  sed -i '/^    needs: verify$/d' "$1/.github/workflows/publish-package.yml"
 }
 
 expect_rejection "a renderer pinned to a different commit" break_pin
@@ -362,9 +481,40 @@ expect_rejection "a folded GITHUB_TOKEN push_token on the next line" wire_folded
 
 # Rejected for the stated reason, not incidentally. expect_rejection only asserts
 # a non-zero exit, so without this the guard could rot while its case stays green.
+# It reads the LAST run, so it has to sit immediately after the push_token cases.
 grep -q 'push_token' "$tmproot/run.out" \
   && pass "the push_token rejection names push_token as the cause" \
   || fail "the last push_token case failed for some other reason: $(tail -2 "$tmproot/run.out")"
+
+expect_rejection "a snapshot job that verifies nothing first (#463, #464)" drop_snapshot_needs
+expect_rejection "a snapshot job with no explicit runner (#465)" drop_snapshot_runner
+expect_rejection "an npm ci installing with GITHUB_TOKEN (#465)" install_with_github_token
+expect_rejection "a release caller reachable by a push to main" add_push_trigger
+expect_rejection "a release caller on a mutable reusable ref" unpin_release_ref
+expect_rejection "a hand-written release caller with no generator provenance" strip_release_provenance
+expect_rejection "a push: trigger hidden in a flow-style on:" add_flow_style_push_trigger
+expect_rejection "a release caller exposed as a reusable workflow_call" add_workflow_call_trigger
+expect_rejection "a release caller fired by a release: event" add_release_trigger
+expect_rejection "an install credential inherited from a job-level env:" install_token_from_job_env
+expect_rejection "a release caller under any other filename (#463, #464)" rename_release_caller
+
+# ...and the renamed caller must be rejected for its real defect, not merely for
+# no longer being called release.yml. A checker that only notices the name would
+# pass the identical file back under its old one.
+grep -q 'publish-package.yml' "$tmproot/run.out" \
+  && pass "the renamed release caller is checked under the name it actually has" \
+  || fail "the renamed caller's rejection never names it: $(tail -2 "$tmproot/run.out")"
+
+# The shape ~21 repositories carry today. If the emitted suite accepted it,
+# regenerating would change nothing an adopter could observe.
+legacy_release="$tmproot/adopter-legacy-release"
+build_adopter "$legacy_release" legacy
+run_adopter "$legacy_release" \
+  && fail "emitted suite accepted the hand-copied verjson-payments release shape" \
+  || pass "emitted suite rejects the hand-copied verjson-payments release shape"
+grep -q 'gen-changelog-caller.sh release-node' "$tmproot/run.out" \
+  && pass "the legacy release shape is rejected with the command that fixes it" \
+  || fail "the legacy release rejection names no remedy: $(tail -2 "$tmproot/run.out")"
 
 # The counterpart. docs/changelog/README.md tells adopters to write exactly this
 # comment next to a correct wiring, so a guard matching the raw line would break

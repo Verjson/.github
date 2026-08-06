@@ -119,20 +119,45 @@ trade-off is stated in ADR 0052: the release job holds a wider credential than
 the repository-scoped default, which is why it must run only on explicit
 dispatch and from the default branch.
 
+### The release caller is generated, not copied
+
+`--atomic` protects the *push*, not the release. Once that push lands, the
+version is spent: re-dispatching it is refused because the tag exists, and
+re-dispatching a higher one is refused with `release selected no fragments`
+because `NEXT/` was already consumed. So anything that can fail must fail before
+the push, and until #463/#464/#465 it did not — the caller was hand-copied from a
+sibling, and its build, lint and test ran in a job that was `needs: snapshot`.
+
+`scripts/gen-changelog-caller.sh release-node` emits the corrected shape:
+
+```yaml
+verify:   # default branch, version format, tag absence, and the full suite
+snapshot: { needs: verify }   # the irreversible push
+publish:  { needs: snapshot } # build and publish only
+```
+
+If your suite is not `npm test`, commit an executable `scripts/release-verify.sh`
+and `verify` runs it instead. Do **not** edit the generated caller — the emitted
+contract test asserts its provenance and rejects a hand-written one.
+
 ## Consumer adoption
 
-A consumer needs three files, and they must pin the **same** commit. Generate
-all of them rather than writing them; the reasoning is in the generator's header.
+A consumer needs three files, and they must pin the **same** commit — plus a
+fourth if it publishes something. Generate all of them rather than writing them;
+the reasoning is in the generator's header.
 
 ```bash
 ref=$(gh api repos/Verjson/.github/commits/main --jq .sha)
 scripts/gen-changelog-caller.sh workflow "$ref" > .github/workflows/changelog.yml
 scripts/gen-changelog-caller.sh renderer "$ref" > scripts/render-next.sh
 scripts/gen-changelog-caller.sh contract-test "$ref" > scripts/changelog-contract.test.sh
+# Only if the repository publishes a Node package. Adopters with nothing to
+# publish keep having no release caller at all.
+scripts/gen-changelog-caller.sh release-node "$ref" > .github/workflows/release.yml
 chmod +x scripts/render-next.sh scripts/changelog-contract.test.sh
 ```
 
-Re-run all three together whenever the pin moves, and commit the result — a
+Re-run all of them together whenever the pin moves, and commit the result — a
 partial regeneration is the divergence the generator exists to prevent.
 
 `scripts/render-next.sh` does not implement rendering. It fetches this
