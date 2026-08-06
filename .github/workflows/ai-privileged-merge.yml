@@ -552,7 +552,7 @@ jobs:
           done
 
           final="$(gh pr view "$PR_NUMBER" --repo "$TARGET_REPO" \
-            --json headRefOid,isDraft,labels,state,statusCheckRollup)"
+            --json headRefName,headRefOid,isDraft,labels,state,statusCheckRollup)"
           [ "$(jq -r '.headRefOid // ""' <<<"$final")" = "$EXPECTED_HEAD_SHA" ] ||
             { echo "::error::head changed before merge"; exit 1; }
           final_state="$(jq -r '.state // ""' <<<"$final")"
@@ -656,7 +656,7 @@ jobs:
           #
           # Exactly one cause is tolerated: already MERGED at the attested head.
           if ! gh pr merge "$PR_NUMBER" --repo "$TARGET_REPO" --squash --admin \
-                 --delete-branch --match-head-commit "$EXPECTED_HEAD_SHA"; then
+                 --match-head-commit "$EXPECTED_HEAD_SHA"; then
             settled="$(gh pr view "$PR_NUMBER" --repo "$TARGET_REPO" \
               --json state,headRefOid 2>/dev/null)" || settled=''
             if [ -n "$settled" ] &&
@@ -667,6 +667,21 @@ jobs:
             fi
             echo "::error::merge failed and the PR is not merged at the attested head"
             exit 1
+          fi
+
+          # Deleting the head ref is cleanup, not part of the merge verdict, so
+          # it happens after the merge and cannot fail the step. `gh pr merge
+          # --delete-branch` coupled the two: on a repository with
+          # auto-delete-branch-on-merge the ref is already gone by the time gh
+          # asks for it, and the resulting 404 surfaced a red privileged_merge
+          # on a PR that had merged perfectly well (#458). The post-condition is
+          # "ref absent", which a 404 already satisfies. A fork PR has no such
+          # ref in TARGET_REPO, so it 404s here too — this call can never reach
+          # the head repository.
+          head_ref="$(jq -r '.headRefName // ""' <<<"$final")"
+          if [ -n "$head_ref" ]; then
+            gh api -X DELETE "repos/$TARGET_REPO/git/refs/heads/$head_ref" >/dev/null 2>&1 ||
+              echo "::notice::head ref $head_ref was already absent or is not deletable"
           fi
 
           # The exact run-bound artifact was shape-validated twice above and is

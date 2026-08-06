@@ -136,6 +136,8 @@ jobs:
         run: bash scripts/ci-gate/rereview-skip.test.sh
       - name: merge gate — follow-up issue filing (ADR 0009)
         run: bash scripts/ci-gate/followup-issues.test.sh
+      - name: merge gate — exit status reflects the merge, not branch cleanup (#458)
+        run: bash scripts/ci-gate/merge-branch-cleanup.test.sh
       - name: merge gate — hold predicate and re-fire guards (ADR 0012, #51, #88)
         run: bash scripts/ci-gate/hold.test.sh
       - name: merge gate — dispatch target fixed to the current repository (#230, ADR 0036)
