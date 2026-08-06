@@ -1,30 +1,24 @@
 name: node-release (reusable)
 
-# Reusable release for the verJSON Node libraries: checkout (full history),
-# setup-node against the @verjson registry, npm ci / build / test, then
-# semantic-release. Verjson defaults to general self-hosted capacity while
-# external callers retain a portable hosted default. Mirrors node-ci.yml.
+# RETIRED — this reusable refuses to run. ADR 0060 (#460).
 #
-# Caller (each lib's .github/workflows/release.yml):
+# It ran semantic-release, which derives the version from commit subjects at
+# merge time. ADR 0038 replaced that model: a release is a workflow_dispatch
+# that names the version to cut, and a pinned scripts/changelog.py release
+# snapshots the accumulated NEXT/ fragments into an immutable
+# CHANGELOG/<version>.md. Merging main publishes nothing.
 #
-#   name: Release
-#   on:
-#     push:
-#       branches: [main]
-#   jobs:
-#     release:
-#       uses: Verjson/.github/.github/workflows/node-release.yml@main
-#       secrets: inherit          # passes NODE_AUTH_TOKEN
-#       # with:
-#       #   timeout-minutes: 45
-#       #   cache-dependency-path: package-lock.json
+# Callers move to changelog-release.yml. Generate the three adoption files from
+# one immutable contract commit rather than hand-writing them:
 #
-# To gate follow-up work on a real publication (job success alone does not mean
-# one happened — semantic-release exits 0 when no release is necessary):
+#   scripts/gen-changelog-caller.sh {workflow|renderer|contract-test} <sha>
 #
-#     announce:
-#       needs: release
-#       if: needs.release.outputs.new-release-published == 'true'
+# docs/changelog/README.md has the caller shape; docs/decisions/0038-canonical-
+# changelog-contract has the reasoning.
+#
+# The body below is left in place so the refusal can name its replacement — a
+# deleted workflow fails with "workflow not found", which points nowhere. It is
+# unreachable; treat it as history, not as configuration.
 #
 # Cache/timeout details and caller concurrency guidance:
 # docs/node-workflows.md
@@ -105,6 +99,18 @@ jobs:
       new-release-published: ${{ steps.publish.outputs.new-release-published }}
       new-release-version: ${{ steps.publish.outputs.new-release-version }}
     steps:
+      # First step, unconditional, and before any checkout: the point is that
+      # nothing this workflow used to do can still happen. No `if:` — a
+      # condition is the one edit that would let the retired path run again
+      # while the step still appears in the file.
+      - name: Refuse a release derived from a merge
+        env:
+          CALLER_EVENT: ${{ github.event_name }}
+          CALLER_REPO: ${{ github.repository }}
+        run: |
+          echo "::error::node-release.yml is retired (Verjson/.github ADR 0060). $CALLER_REPO called it from a '$CALLER_EVENT' event; it ran semantic-release, which derives the version from commit subjects at merge time."
+          echo "::error::Move to changelog-release.yml: a workflow_dispatch that names the version, snapshotting NEXT/ fragments into CHANGELOG/<version>.md. Generate the caller with scripts/gen-changelog-caller.sh; see docs/changelog/README.md and ADR 0038."
+          exit 1
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0

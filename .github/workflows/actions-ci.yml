@@ -106,6 +106,8 @@ jobs:
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
           node-version: '24'
+      - name: reusable Node release — the retired workflow refuses to run (#460)
+        run: bash scripts/node-release-retired.test.sh
       - name: reusable Node release — semantic-release engine floor is enforced (#98)
         run: bash scripts/node-release-version.test.sh
       - name: reusable Node release — publication outputs are wired and fail closed (#244)
