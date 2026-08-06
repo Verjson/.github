@@ -324,13 +324,44 @@ fragments = sorted(p for p in (root / "NEXT").glob("*.md") if p.name not in skip
 if not fragments:
     sys.exit("NEXT/ holds no renderable fragments but the renderer produced output")
 
+def unquote(value):
+    """The text a YAML-quoted scalar denotes.
+
+    Reimplemented rather than imported, deliberately: this file exists to check
+    the engine's output, so it must not borrow the engine's reading of the
+    input. But it does have to read the same subset. YAML *requires* a quoted
+    scalar wherever a value contains `: `, which is the shape of every
+    conventional-commit title, so a parser that keeps the quotes as literal text
+    rejects the one spelling a YAML parser accepts and reports it as a missing
+    title. A value that merely opens and closes with a quote is not a quoted
+    scalar and is returned untouched.
+    """
+    if len(value) < 2 or value[0] not in "'\"" or value[-1] != value[0]:
+        return value
+    quote, inner = value[0], value[1:-1]
+    index = 0
+    while index < len(inner):
+        if quote == '"' and inner[index] == "\\":
+            index += 2
+            continue
+        if inner[index] == quote:
+            if quote == "'" and inner[index : index + 2] == "''":
+                index += 2
+                continue
+            return value
+        index += 1
+    if quote == "'":
+        return inner.replace("''", "'")
+    return inner.replace('\\"', '"').replace("\\\\", "\\")
+
+
 for path in fragments:
     front = path.read_text(encoding="utf-8").split("---", 2)[1]
     meta = {}
     for line in front.splitlines():
         key, sep, value = line.partition(":")
         if sep:
-            meta[key.strip()] = value.strip()
+            meta[key.strip()] = unquote(value.strip())
     if f"## {meta['title']}" not in rendered:
         sys.exit(f"{path.name}: title missing from the rendered log")
     # Identity is not decoration: only issue-form entries render a `#n`
