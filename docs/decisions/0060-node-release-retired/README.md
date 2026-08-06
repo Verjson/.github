@@ -15,25 +15,30 @@ into one immutable `CHANGELOG/<version>.md` snapshot. Merging `main` publishes n
 which derives the version from commit subjects at merge time. Every caller of it releases
 on merge — the exact model ADR 0038 replaced.
 
-The decision was recorded but never enforced, so adoption stalled halfway. The counts below
-are a **measurement taken 2026-08-06 12:30Z**, before the caller migrations this change is
-sequenced behind — they move as those land, and the table is the reason for the sequencing,
-not a current inventory. Measured across the organization from `release.yml` plus a sweep of
-every other workflow file:
+The decision was recorded but never enforced, so adoption stalled halfway. When this change
+was opened, twelve repositories had migrated and eight still released on merge —
+verjson-cloud-storage, verjson-cli, verjson-email, verjson-eslint-config,
+verjson-graphql-conventions, verjson-infra, verjson-upload, verjson-video-forge. Seven called
+`node-release.yml` from `.github/workflows/release.yml` on `push: branches: [main]`;
+`verjson-cli` was the exception, its release a job inside `ci.yml` pinned at
+`node-release.yml@8a2522d` rather than `@main`.
+
+A ninth site mattered more than any single repository:
+`verjson-cli-projects/templates/package/.github/workflows/release.yml.tmpl` **emitted** the
+push-triggered shape, so every package scaffolded from it was born non-conforming. Migrating
+the eight without fixing the template would only have reset the count.
+
+The table below is a **re-measurement taken 2026-08-06 13:40Z**, after the caller migrations
+this change is sequenced behind, swept across every organization repository's `release.yml`:
 
 | shape | count | repositories |
 | --- | --- | --- |
-| migrated — `workflow_dispatch` -> `changelog-release.yml@f12dca7` | 12 | verjson-ai, verjson-authn, verjson-browser-agent, verjson-cli-projects, verjson-customer-lifecycle, verjson-identity-contracts, verjson-identity-lifecycle, verjson-leads, verjson-observability, verjson-oidc-claims-middleware, verjson-payments, verjson-temporal-kit |
-| release-on-merge — `push` -> `node-release.yml` | 8 | verjson-cloud-storage, verjson-cli, verjson-email, verjson-eslint-config, verjson-graphql-conventions, verjson-infra, verjson-upload, verjson-video-forge |
+| migrated — `workflow_dispatch` -> `changelog-release.yml@f12dca7` | 18 | verjson-ai, verjson-authn, verjson-browser-agent, verjson-cli-cloud, verjson-cli-projects, verjson-cloud-storage, verjson-customer-lifecycle, verjson-eslint-config, verjson-graphql-conventions, verjson-identity-contracts, verjson-identity-lifecycle, verjson-infra, verjson-leads, verjson-observability, verjson-oidc-claims-middleware, verjson-payments, verjson-temporal-kit, verjson-video-forge |
+| release-on-merge — still calls `node-release.yml` | 3 | verjson-email, verjson-upload, verjson-cli |
 
-Seven of the eight call it from `.github/workflows/release.yml` on `push: branches: [main]`.
-`verjson-cli` is the exception: its release is a job inside `ci.yml`, pinned at
-`node-release.yml@8a2522d` rather than `@main`.
-
-A ninth site matters more than any single repository:
-`verjson-cli-projects/templates/package/.github/workflows/release.yml.tmpl` **emits** the
-push-triggered shape, so every package scaffolded from it is born non-conforming. Migrating
-the eight without fixing the template only resets the count.
+The template is migrated, so newly scaffolded packages are now born conforming. The three
+remaining callers each have a migration PR open; this change stays held until they land,
+because the count is what makes the refusal safe rather than an outage.
 
 ## Decision
 
