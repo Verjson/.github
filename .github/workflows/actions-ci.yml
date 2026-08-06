@@ -202,6 +202,8 @@ jobs:
         run: python3 scripts/changelog.py validate --repo-root .
       - name: Changelog release — the pushing job holds write authority (#295)
         run: bash scripts/changelog-release-permissions.test.sh
+      - name: Changelog release — a non-default ref fails instead of skipping green (#466)
+        run: bash scripts/changelog-release-branch-guard.test.sh
       - name: Documented tag pins resolve to real tags (#287)
         run: bash scripts/doc-tag-pins.test.sh
       - name: Documented fragment filenames are names the engine accepts (#305)
