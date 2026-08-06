@@ -47,6 +47,21 @@
    A repository already migrated at an older pin needs only to regenerate; the
    embedded `contract_ref` moves with it.
 
+   A repository that **publishes** something needs a fourth file, and must
+   generate it rather than copying a sibling's:
+
+   ```bash
+   scripts/gen-changelog-caller.sh release-node "$PIN" > .github/workflows/release.yml
+   ```
+
+   `release-node` exists only from the commit that closed #463/#464/#465, so
+   `$PIN` above must be at or after it — an older pin has no such mode and the
+   command fails loudly rather than emitting an empty file. Every release caller
+   written before then verifies the tree *after* `changelog-release.yml` has
+   already pushed the tag, which spends the version on the first failure; see
+   `docs/changelog/README.md`. Adopters with nothing to publish have no release
+   caller at all, which stays a supported shape.
+
    Generate the files **before** `.github/workflows/changelog.yml` exists in the
    consumer, and land the snapshot/normalization pull request first. `check_pr`
    then never runs against the pull request that consumes fragments, so no

@@ -627,18 +627,44 @@ class ChangelogContractTests(unittest.TestCase):
         self.assertIn("ref: ${{ inputs.contract_ref }}", workflow)
         self.assertNotIn("runs-on: ubuntu-latest", workflow)
         self.assertIn("inputs.runner != ''", workflow)
-        self.assertIn("ref: ${{ github.event.repository.default_branch }}", workflow)
-        self.assertIn(
-            '"$release_commit:refs/heads/$DEFAULT_BRANCH"',
-            workflow,
-        )
-        self.assertNotIn("git symbolic-ref", workflow)
 
         validation_workflow = (
             MODULE_PATH.parent.parent / ".github/workflows/changelog-validate.yml"
         ).read_text(encoding="utf-8")
         self.assertNotIn("runs-on: ubuntu-latest", validation_workflow)
         self.assertIn("inputs.runner != ''", validation_workflow)
+
+    def test_release_snapshots_the_dispatch_commit_not_the_branch_head(self) -> None:
+        """The snapshot must take the commit the caller verified.
+
+        Checking out ``github.event.repository.default_branch`` re-reads the
+        branch head here, at snapshot time. A caller's ``verify`` job holds that
+        window open for its whole suite run, and the ``cancel-in-progress:
+        false`` concurrency group holds it open again behind a queued release,
+        so anything merged in between used to be tagged, pushed and published
+        with nothing having checked it (#463, #464).
+        """
+        workflow = (
+            MODULE_PATH.parent.parent / ".github/workflows/changelog-release.yml"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("ref: ${{ github.sha }}", workflow)
+        # Not just "the pin is present": the branch-head re-read must be absent,
+        # or a second checkout step reinstating it passes the assertion above.
+        # Scoped to the `ref:` key, because DEFAULT_BRANCH legitimately binds
+        # the same expression for the guard and the push refspec below.
+        self.assertNotIn("ref: ${{ github.event.repository.default_branch }}", workflow)
+        self.assertIn(
+            "DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}",
+            workflow,
+        )
+        # The push still targets the branch by name, which is what makes the pin
+        # fail closed: from the dispatch commit this refspec is non-fast-forward
+        # once the branch has moved, so a raced release tags nothing.
+        self.assertIn('"$release_commit:refs/heads/$DEFAULT_BRANCH"', workflow)
+        # The checkout is detached at the dispatch commit, so nothing may derive
+        # the branch from HEAD.
+        self.assertNotIn("git symbolic-ref", workflow)
 
 
 if __name__ == "__main__":
