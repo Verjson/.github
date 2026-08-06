@@ -52,6 +52,8 @@ stops being hand-copied.** The generated shape closes all three defects by const
   anything is tagged: dispatched-from-the-default-branch, exact `v`-prefixed SemVer
   format, tag and snapshot absence, and the repository's full suite. `snapshot` declares
   it in `needs:`.
+- **`changelog-release.yml` now checks out that same `github.sha`** instead of
+  re-resolving the default branch name at snapshot time.
 - `snapshot` passes an explicit `runner:`, and the same expression routes `verify` and
   `publish`, so one release cannot span two pools.
 - `publish` installs with `secrets.NODE_AUTH_TOKEN` and publishes with
@@ -60,14 +62,38 @@ stops being hand-copied.** The generated shape closes all three defects by const
 - The workflow is `workflow_dispatch` only, and the reusable call is pinned at the same
   immutable contract commit as the other three outputs.
 
-**Verifying the default branch head is a sound proxy for the not-yet-existing tag.** The
-snapshot commit writes `CHANGELOG/<version>.md`, generates `CHANGELOG.md`, and removes
-`NEXT/` fragments — it touches no source, no config and no dependency. That claim is not
-asserted, it is exercised: a disposable clean checkout run of the pinned
-`scripts/changelog.py release` produced a release commit whose diff was exactly
-`CHANGELOG.md`, `CHANGELOG/<version>.md` and the consumed `NEXT/` fragments, with the
-seeded source file untouched. The reasoning is written into the generated file's own
-comments so the next reader does not have to re-derive it.
+**Both halves of a release pin the same commit, or verification proves nothing.** A
+`verify` job that runs before the snapshot only helps if the snapshot takes the tree
+`verify` read. `changelog-release.yml` previously checked out
+`github.event.repository.default_branch` — the branch *name*, re-resolved at snapshot
+time — so anything merged between the two reads was tagged, pushed and published without
+any job having checked it. The window is not theoretical: `verify` holds it open for its
+whole suite run, and `concurrency` with `cancel-in-progress: false` holds it open again
+behind a queued release. Adding `verify` to the caller while leaving the reusable
+workflow re-resolving the name would have shipped the appearance of the property without
+the property, so both now check out `github.sha`, the commit the dispatch names.
+
+**The consequence of pinning is that a raced release fails closed.** `changelog.py
+release` ends in one `git push --atomic` of the release commit and its tag. Taken from
+the dispatch commit, that push is non-fast-forward as soon as the default branch has
+moved, so the release aborts with **no tag, no `CHANGELOG/<version>.md` on the branch,
+and every `NEXT/` fragment still unconsumed** — the version is not spent and a
+re-dispatch from the new head succeeds. Exercised, not asserted: against a remote whose
+`main` advanced mid-release, the old branch-name shape pushed and tagged a tree
+containing content nothing had verified; the pinned shape was rejected and left the
+remote untouched, and the same release then ran cleanly on an unraced remote, tagging the
+release commit on a detached HEAD.
+
+**What `verify` still cannot check is the snapshot commit itself**, which does not exist
+when the suite runs. Verifying the dispatch commit stands in for it because of what the
+snapshot commit contains: it writes `CHANGELOG/<version>.md`, generates `CHANGELOG.md`,
+and removes `NEXT/` fragments — no source, no config, no dependency. That claim is
+exercised too: a disposable clean-checkout run of the pinned `scripts/changelog.py
+release` produced a release commit whose diff was exactly `CHANGELOG.md`,
+`CHANGELOG/<version>.md` and the consumed fragments, with the seeded source file
+untouched. All of this reasoning is written into the generated file's own comments and
+into `changelog-release.yml` at the checkout, so the next reader does not re-derive it —
+or, worse, "simplify" the pin back to a branch name.
 
 **The adopter-facing contract test enforces it.** The emitted
 `scripts/changelog-contract.test.sh` now rejects a release caller that carries no
@@ -107,6 +133,13 @@ an invisible org surface, where no pull request can review it.
   `PIN` must move to a commit at or after it before an adopter can generate a release
   caller from the documented pin. `scripts/contract-pin.test.sh` enumerates the three
   older modes; `release-node` joins that loop when the pin moves.
+- The `github.sha` pin lands in `changelog-release.yml`, which every adopter of the
+  contract calls — including those with no release caller and no `verify` job. For them
+  the change is narrower but the same direction: a release dispatched at commit A now
+  tags commit A rather than whatever `main` happened to be by the time the runner
+  checked out. The visible new failure mode is a release that aborts on a
+  non-fast-forward push because `main` moved mid-run. That is the intended trade: a
+  loud, re-dispatchable failure instead of a silent tag over unverified content.
 - `verify` costs a full extra suite run per release. That is the price of the property
   bought: a red tree now fails in the cheapest possible place instead of spending a
   version number. Demonstrated end to end — a failing `verify` left no tag, no

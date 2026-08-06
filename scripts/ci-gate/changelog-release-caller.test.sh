@@ -372,7 +372,10 @@ else
 fi
 # Rejected for the stated reason, not incidentally: the legacy shape's defining
 # defect is that nothing verifies anything before the snapshot.
-if grep -q 'verify' "$tmp/shape.out"; then
+# Matched on the whole phrase, not the bare word: `verify` is a substring of
+# several unrelated rejection messages, so a loose grep would report this case
+# green no matter which defect actually fired.
+if grep -qF 'no `verify` job' "$tmp/shape.out"; then
   pass "the legacy shape is rejected for having no verify job"
 else
   fail "the legacy rejection never mentions verify: $(cat "$tmp/shape.out")"
@@ -408,7 +411,12 @@ suite_step="$tmp/suite.sh"
 extract_run verify "verification suite" >"$suite_step" || fail "cannot extract the suite step"
 
 run_guard() { # run_guard <script> [env assignments...]
-  ( cd "$tmp/sandbox" && env "${@:2}" bash "$1" ) >"$tmp/guard.out" 2>&1
+  # `bash -e`, because that is what Actions runs a `run:` block under
+  # (`shell: bash` expands to `bash --noprofile --norc -eo pipefail {0}`).
+  # Plain `bash` hides every regression in a non-final command: a suite step
+  # whose build breaks would still exit on its last line and report green here
+  # while failing in CI — or, worse, the reverse.
+  ( cd "$tmp/sandbox" && env "${@:2}" bash -eo pipefail "$1" ) >"$tmp/guard.out" 2>&1
 }
 
 mkdir -p "$tmp/sandbox" "$tmp/bin"
@@ -513,6 +521,28 @@ if run_guard "$suite_step" "PATH=$tmp/bin:$PATH"; then
   fail "a failing release-verify.sh still passed the verify job"
 else
   pass "a failing release-verify.sh fails the verify job"
+fi
+
+# Committing the hook without the executable bit is the ordinary way to get this
+# wrong, and an existence test that only asks `-x` reads it as "no hook here" and
+# silently runs `npm test` instead. The adopter then watches a green release
+# verified by a suite they deliberately replaced.
+printf '%s\n' '#!/usr/bin/env bash' 'echo REPO_HOOK_RAN' >"$tmp/sandbox/scripts/release-verify.sh"
+chmod 644 "$tmp/sandbox/scripts/release-verify.sh"
+if run_guard "$suite_step" "PATH=$tmp/bin:$PATH"; then
+  fail "a non-executable release-verify.sh was ignored and the job passed on the wrong suite"
+else
+  pass "a non-executable release-verify.sh fails the job instead of falling back"
+fi
+if grep -q 'chmod' "$tmp/guard.out"; then
+  pass "the failure tells the adopter to chmod +x the hook"
+else
+  fail "the non-executable failure does not name the fix: $(cat "$tmp/guard.out")"
+fi
+if grep -q '^npm test$' "$tmp/guard.out"; then
+  fail "the default suite ran anyway, which is the fallback this case exists to reject"
+else
+  pass "the default suite does not run behind an unusable hook"
 fi
 rm -rf "$tmp/sandbox/scripts"
 

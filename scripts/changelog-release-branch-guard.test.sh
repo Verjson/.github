@@ -115,6 +115,36 @@ run_guard refs/heads/main-backup main >/dev/null 2>&1
   && pass "a ref that merely starts with the default branch is rejected" \
   || fail "the comparison is a prefix match, so main-backup can release"
 
+# --------------------------------------------------------------------------
+# Being on the default branch is not the same as being on the commit the caller
+# verified. Resolving the checkout by branch *name* re-reads the branch head at
+# snapshot time, which is a different commit whenever anything merged since the
+# dispatch — and a caller's verify job can hold the gap open for its whole
+# timeout, or the `changelog-release-${{ github.repository }}` concurrency group
+# (cancel-in-progress: false) can hold it open behind another release. The
+# window is not theoretical: it releases and publishes a tree nothing checked.
+#
+# github.sha is the caller's dispatch commit, and the guard above has already
+# proved that commit is the default branch head. Pinning it makes the final
+# `git push --atomic` non-fast-forward when main has moved, so a concurrent
+# merge fails the release with no tag pushed instead of tagging unverified
+# content (#463, #464, ADR 0062).
+# --------------------------------------------------------------------------
+checkout_ref="$(awk '
+  /^      - name: Check out release repository$/ { instep = 1; next }
+  instep && /^      - /                          { exit }
+  instep && /^          ref:/                    { print; exit }
+' "$workflow" | sed 's/^ *ref: *//')"
+
+case "$checkout_ref" in
+  '${{ github.sha }}')
+    pass "the snapshot checks out the dispatch commit, not the branch head" ;;
+  '')
+    fail "could not find the release checkout's ref: in $workflow" ;;
+  *)
+    fail "the release checks out '$checkout_ref', which re-resolves at snapshot time; a merge during verify is tagged unverified" ;;
+esac
+
 if [ "$fails" -eq 0 ]; then
   echo "All tests passed."
   exit 0

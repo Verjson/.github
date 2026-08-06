@@ -218,10 +218,23 @@ name: Release
 #
 # So every check that can say "no" runs in \`verify\`, which \`snapshot\` declares in
 # \`needs:\` — dispatched-from-the-default-branch, version format, tag absence, and
-# the repository's full suite. Verifying the default branch head is a sound proxy
-# for the not-yet-existing tag, because the snapshot commit only writes
-# CHANGELOG/<version>.md and removes NEXT/ fragments: it touches no source, no
-# config and no dependency, so the tree \`publish\` builds is byte-for-byte the tree
+# the repository's full suite.
+#
+# \`verify\` checks out \`github.sha\` — the dispatch commit — and
+# changelog-release.yml checks out that same commit instead of re-resolving the
+# branch name at snapshot time. Both halves must pin it: pinning only one leaves
+# the window in which anything merged mid-run is tagged without ever being
+# verified. Because the snapshot is taken from the dispatch commit, its final
+# --atomic push is non-fast-forward if the default branch has moved since, so a
+# concurrent merge fails the release with no tag pushed and every NEXT/ fragment
+# still unconsumed — re-dispatch from the new head.
+#
+# What \`verify\` cannot check is the snapshot commit itself: it does not exist
+# yet. Verifying the dispatch commit stands in for it because of what that commit
+# contains — a clean-checkout run of the pinned scripts/changelog.py release
+# produces a commit whose diff is exactly CHANGELOG.md, CHANGELOG/<version>.md
+# and the consumed NEXT/ fragments, touching no source, no config and no
+# dependency. So the tree \`publish\` builds from the tag is byte-for-byte the tree
 # \`verify\` proved, minus the changelog.
 #
 # HOW TO CONFIGURE THE SUITE WITHOUT EDITING THIS FILE
@@ -286,8 +299,12 @@ jobs:
       - name: Check out the tree that will be released
         uses: ${release_checkout}
         with:
-          # github.sha is the default branch head at dispatch time, which is the
-          # content changelog-release.yml is about to snapshot.
+          # github.sha is the default branch head at dispatch time, and
+          # changelog-release.yml checks out that same commit rather than
+          # re-resolving the branch name at snapshot time — so the tree verified
+          # here is the tree that gets tagged, even if something merges to the
+          # default branch while this job is running. Both halves must agree:
+          # pinning only one of them reintroduces the window (#463, #464).
           ref: \${{ github.sha }}
           fetch-depth: 0
       - name: Refuse a version that has already been released
@@ -319,6 +336,15 @@ jobs:
           NODE_AUTH_TOKEN: \${{ secrets.NODE_AUTH_TOKEN }}
       - name: Run the release verification suite
         run: |
+          # Existence and executability are checked separately on purpose. A
+          # single \`-x\` test reads a hook committed without the executable bit
+          # as "no hook here" and quietly runs the Node default instead — so an
+          # adopter who deliberately replaced their suite watches a green
+          # release verified by the suite they replaced.
+          if [ -e scripts/release-verify.sh ] && [ ! -x scripts/release-verify.sh ]; then
+            echo "::error::scripts/release-verify.sh exists but is not executable, so this release would silently fall back to the default Node suite. Run: chmod +x scripts/release-verify.sh && git update-index --chmod=+x scripts/release-verify.sh"
+            exit 1
+          fi
           if [ -x scripts/release-verify.sh ]; then
             echo "Running this repository's scripts/release-verify.sh"
             exec scripts/release-verify.sh
@@ -464,7 +490,6 @@ EOF
 root="$(cd "$(dirname "$0")/.." && pwd)"
 renderer="$root/scripts/render-next.sh"
 validation_workflow="$root/.github/workflows/changelog.yml"
-release_workflow="$root/.github/workflows/release.yml"
 
 fail() { echo "FAIL - $1" >&2; exit 1; }
 
@@ -488,7 +513,209 @@ grep -q "contract_ref: $CONTRACT_REF" "$validation_workflow" \
   || fail "$validation_workflow does not pass the pinned contract_ref"
 grep -q "CONTRACT_REF=\"$CONTRACT_REF\"" "$renderer" \
   || fail "$renderer does not pin the same contract commit"
-if [ -f "$release_workflow" ]; then
+cat >"$work/release-shape.py" <<'RELEASE_SHAPE_PY'
+"""Structural checks on a release caller, on a bare python3.
+
+Only two properties live here, both of which a line-oriented grep gets wrong in
+ways that report green:
+
+  * the trigger set must be EXACTLY {workflow_dispatch}. A blocklist accepts
+    every trigger nobody listed, and an anchor on a bare `on:` line never sees
+    the flow spelling `on: {workflow_dispatch: {...}, push: {...}}`.
+  * a GITHUB_TOKEN bound to NODE_AUTH_TOKEN is legitimate only inside the step
+    that runs `npm publish`. Checking the install step alone misses the same
+    credential inherited from a job-level or workflow-level `env:`.
+
+Anything this parser cannot read confidently is an error, never a pass.
+"""
+import re
+import sys
+
+path = sys.argv[1]
+problems = []
+
+with open(path, encoding="utf-8") as handle:
+    raw_lines = handle.read().splitlines()
+
+
+def strip_comment(line):
+    """Drop a trailing comment without touching a `#` inside a quoted scalar."""
+    out = []
+    quote = None
+    for index, char in enumerate(line):
+        if quote:
+            out.append(char)
+            if char == quote:
+                quote = None
+            continue
+        if char in "'\"":
+            quote = char
+            out.append(char)
+            continue
+        if char == "#" and (index == 0 or line[index - 1] in " \t"):
+            break
+        out.append(char)
+    return "".join(out).rstrip()
+
+
+lines = [strip_comment(line) for line in raw_lines]
+
+
+def split_top_level(text):
+    """Split a flow collection body on commas that are not nested or quoted."""
+    parts = []
+    current = []
+    depth = 0
+    quote = None
+    for char in text:
+        if quote:
+            current.append(char)
+            if char == quote:
+                quote = None
+            continue
+        if char in "'\"":
+            quote = char
+            current.append(char)
+            continue
+        if char in "[{":
+            depth += 1
+        elif char in "]}":
+            depth -= 1
+        elif char == "," and depth == 0:
+            parts.append("".join(current))
+            current = []
+            continue
+        current.append(char)
+    if "".join(current).strip():
+        parts.append("".join(current))
+    return [part.strip() for part in parts if part.strip()]
+
+
+def keys_of_flow(text):
+    text = text.strip()
+    if text.startswith("{") and text.endswith("}"):
+        return [
+            part.split(":", 1)[0].strip().strip("'\"")
+            for part in split_top_level(text[1:-1])
+        ]
+    if text.startswith("[") and text.endswith("]"):
+        return [part.strip().strip("'\"") for part in split_top_level(text[1:-1])]
+    return [text.strip("'\"")]
+
+
+TRIGGER_KEY = re.compile(r"""^(?:on|'on'|"on"|true|True)\s*:(.*)$""")
+
+
+def trigger_names():
+    for index, line in enumerate(lines):
+        match = TRIGGER_KEY.match(line)
+        if not match:
+            continue
+        inline = match.group(1).strip()
+        if inline:
+            return keys_of_flow(inline)
+        block = []
+        for following in lines[index + 1:]:
+            if not following.strip():
+                continue
+            if not following[:1].isspace():
+                break
+            block.append(following)
+        if not block:
+            return None
+        indent = min(len(line) - len(line.lstrip()) for line in block)
+        names = []
+        for entry in block:
+            if len(entry) - len(entry.lstrip()) != indent:
+                continue
+            text = entry.strip()
+            if text.startswith("- "):
+                text = text[2:].strip()
+            elif text == "-":
+                continue
+            name = text.split(":", 1)[0].strip().strip("'\"")
+            if name:
+                names.append(name)
+        return names or None
+    return None
+
+
+triggers = trigger_names()
+if triggers is None:
+    problems.append(
+        "declares no readable top-level `on:` trigger. A release states the "
+        "version it cuts, so it must be a workflow_dispatch and nothing else "
+        "(ADR 0038, ADR 0060)"
+    )
+elif set(triggers) != {"workflow_dispatch"}:
+    problems.append(
+        "is triggered by %s. A release is dispatched with the version it cuts, "
+        "never derived from repository activity, and never exposed as a "
+        "reusable workflow another caller can fire (ADR 0038, ADR 0060)"
+        % ", ".join(sorted(set(triggers)) or ["nothing"])
+    )
+
+GITHUB_TOKEN = re.compile(
+    r"\$\{\{\s*(secrets\.GITHUB_TOKEN|github\.token)\s*\}\}", re.IGNORECASE
+)
+LIST_ITEM = re.compile(r"^(\s*)-\s")
+
+
+def enclosing_step(index):
+    """The list-item block containing `index`, or None if it is not in one."""
+    cursor = index
+    while cursor >= 0:
+        match = LIST_ITEM.match(lines[cursor])
+        if match:
+            indent = len(match.group(1))
+            end = cursor + 1
+            while end < len(lines):
+                current = lines[end]
+                if current.strip() and len(current) - len(current.lstrip()) <= indent:
+                    break
+                end += 1
+            if cursor <= index < end:
+                return lines[cursor:end]
+            return None
+        cursor -= 1
+    return None
+
+
+for index, line in enumerate(lines):
+    if "NODE_AUTH_TOKEN" not in line or not GITHUB_TOKEN.search(line):
+        continue
+    step = enclosing_step(index)
+    if step is None or not any("npm publish" in entry for entry in step):
+        problems.append(
+            "binds NODE_AUTH_TOKEN to GITHUB_TOKEN at line %d, outside the "
+            "`npm publish` step. A repository-scoped GITHUB_TOKEN cannot read a "
+            "private @verjson package owned by another repository, so the "
+            "install 401s after the tag has already been pushed. Install with "
+            "NODE_AUTH_TOKEN and keep GITHUB_TOKEN for npm publish (#465)"
+            % (index + 1)
+        )
+
+for problem in problems:
+    sys.stderr.write("FAIL - %s %s\n" % (path, problem))
+sys.exit(1 if problems else 0)
+RELEASE_SHAPE_PY
+
+# Every workflow that calls changelog-release.yml is a release caller, whatever
+# it happens to be named. Keying these checks on one filename let a caller named
+# anything else — publish.yml, release-package.yml, a second caller kept beside
+# the first — collect zero checks and report green, which is the failure mode
+# this whole file exists to remove.
+release_workflows=""
+for candidate in "$root"/.github/workflows/*.yml "$root"/.github/workflows/*.yaml; do
+  [ -f "$candidate" ] || continue
+  if grep -q 'changelog-release\.yml@' "$candidate"; then
+    release_workflows="$release_workflows$candidate
+"
+  fi
+done
+
+while IFS= read -r release_workflow; do
+  [ -n "$release_workflow" ] || continue
   grep -q "changelog-release.yml@$CONTRACT_REF" "$release_workflow" \
     || fail "$release_workflow does not call the release workflow at the pin"
   # The release pushes its snapshot commit and tag straight to the default
@@ -559,36 +786,22 @@ if [ -f "$release_workflow" ]; then
   printf '%s\n' "$snapshot_job" | grep -qE '^[[:space:]]+runner:[[:space:]]*[^[:space:]]' \
     || fail "$release_workflow passes no explicit runner:, so the snapshot and the publish half can land on different runner pools (#465)"
 
-  # #465. A repository-scoped GITHUB_TOKEN cannot read a private GitHub Packages
-  # package owned by a DIFFERENT repository, so an install wired to it 401s —
-  # after the tag has already been pushed. Extracted per step, because the same
-  # credential is correct on the publish step two steps below.
-  install_steps="$(awk '
-    /^[[:space:]]*-[[:space:]]/ {
-      if (started && block ~ /npm ci/) printf "%s", block
-      block = ""; started = 1
-    }
-    started { block = block $0 "\n" }
-    END { if (started && block ~ /npm ci/) printf "%s", block }
-  ' "$work/release-stripped.yml")"
-  if printf '%s\n' "$install_steps" \
-    | grep -qiE '\$\{\{[[:space:]]*(secrets\.GITHUB_TOKEN|github\.token)[[:space:]]*\}\}'; then
-    fail "$release_workflow installs with GITHUB_TOKEN, which cannot read a private @verjson package owned by another repository. Install with NODE_AUTH_TOKEN and keep GITHUB_TOKEN for npm publish (#465)"
-  fi
-
-  # A release states the version it cuts. Any trigger that fires on repository
-  # activity would have to infer one, which is the semantic-release shape ADR
-  # 0038 and ADR 0060 retired.
-  trigger_block="$(awk '
-    /^on:[[:space:]]*$/ { found = 1; next }
-    found && /^[^[:space:]]/ { found = 0 }
-    found { print }
-  ' "$work/release-stripped.yml")"
-  if printf '%s\n' "$trigger_block" \
-    | grep -qE '^[[:space:]]*(push|schedule|pull_request|pull_request_target|repository_dispatch):'; then
-    fail "$release_workflow can be triggered without stating a version; a release is dispatched, never derived (ADR 0038, ADR 0060)"
-  fi
-fi
+  # The trigger surface and the install credential are checked structurally,
+  # because both were shipped here as line-oriented greps first and both were
+  # trivially evadable: an `on:` blocklist accepts every trigger nobody thought
+  # to list (`workflow_call`, `release`, `workflow_run`), and a `^on:$` anchor
+  # never sees `on: {workflow_dispatch: ..., push: ...}` written in flow style.
+  # The rules below are allowlists over a parsed trigger set, and the parser
+  # refuses anything it cannot read rather than passing it.
+  #
+  # PyYAML is deliberately not used: the canonical contract runs on a bare
+  # python3 with no third-party dependency, and a "use it if importable"
+  # fallback would put every adopter without it on the untested path.
+  python3 "$work/release-shape.py" "$release_workflow" \
+    || fail "$release_workflow: see above"
+done <<RELEASE_WORKFLOWS
+$release_workflows
+RELEASE_WORKFLOWS
 echo "ok - render, validation and release automation share one immutable pin"
 
 # The regression this file exists to prevent was a hand-written local renderer
