@@ -227,6 +227,37 @@ so `main-backup` releases, hard-coding `main` so a `trunk` repository can never
 release, removing the ref from the error message, and moving the step after the
 checkout.
 
+## Amendment (2026-08-06) — the generated test reads the back-link the engine writes (#461)
+
+The 2026-08-02 amendment made the contract test generated so an adopter could not
+drift from the engine, and the 2026-08-02 `refs` amendment above made linkage
+separate from identity. Together they produced a combination no adopter could
+resolve: the emitted back-link assertion anchored `_$` immediately after the issue
+number, while `_rendered_refs` appends `; refs #a, #b` to exactly the entries that
+`refs` exists for. So an issue-form fragment carrying `refs` passed validation,
+rendered correctly, and was then rejected by the generated test with `issue
+back-link missing from the rendered log` — a test adopters wire into `npm test`,
+which release workflows run before publishing, and which the contract forbids
+hand-editing. `Verjson/verjson-upload` hit it and dropped `refs` from the fragment,
+losing the structured linkage the key was added to provide.
+
+The engine is the source of truth and was not touched. The generated assertion now
+matches the shape the engine emits — the `_Date: <date>; issue #<n>` back-link plus
+an optional `; refs #a, #b` suffix — and requires that suffix once the fragment
+declares `refs`, so a linkage the render drops fails the same assertion a missing
+back-link does. It stays a spelled-out shape rather than `.*`: the anchor is what
+makes a truncated or embellished back-link fail, and this file checks the shape the
+engine emits without re-deriving the input.
+
+`scripts/ci-gate/changelog-caller-contract.test.sh` proves it against fixtures with
+one and with two `refs`, and exercises the assertion by corrupting the renderer's
+**output** while leaving its pin and delegation intact — nothing an adopter writes
+can make a back-link disagree with its own fragment, so a widened pattern would
+otherwise pass every case. Seven mutants die: the original `_$` anchor, a `.*`
+suffix, dropping the end anchor, dropping the date, making the `refs` group
+unconditionally optional, not comparing the issue number, and removing the
+assertion.
+
 ## Rollback
 
 Revert the reusable workflow and tooling adoption in consumers, then revert the
