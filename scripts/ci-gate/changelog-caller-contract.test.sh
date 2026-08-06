@@ -200,11 +200,16 @@ jobs:
       push_token: \${{ secrets.ORG_ADMIN_TOKEN }}
 YAML
   fi
+  # Quoted, because that is what adopters actually write: YAML requires a quoted
+  # scalar wherever a value contains `: `, which is every conventional-commit
+  # title. An unquoted fixture let the emitted suite ship a front-matter parser
+  # that kept the quotes as literal text and then reported the correctly-written
+  # title as missing, so the fixture carries the real spelling.
   cat >"$dir/NEXT/2026-08-01-issue-7-first.md" <<'FRAGMENT'
 ---
 date: 2026-08-01
 issue: 7
-title: First entry
+title: 'fix(caller): first entry'
 ---
 
 Body.
@@ -371,6 +376,27 @@ sed -i 's|^      push_token:|      # NOT GITHUB_TOKEN — see Verjson/.github AD
 run_adopter "$commented" \
   && pass "emitted suite accepts a correct wiring carrying a GITHUB_TOKEN warning comment" \
   || fail "emitted suite rejected a documented comment: $(tail -2 "$tmproot/run.out")"
+
+# A quoted title is the correct spelling, not a tolerated one, so the emitted
+# suite has to read it the way the engine does. Both quote styles, because the
+# unquoting rule branches on which quote opened the scalar and a parser can be
+# right about one of them.
+quoted="$tmproot/adopter-quoted"
+build_adopter "$quoted"
+cat >"$quoted/NEXT/2026-08-02-issue-8-quoted.md" <<'FRAGMENT'
+---
+date: 2026-08-02
+issue: 8
+title: "feat(caller): a double-quoted title"
+---
+
+Body.
+FRAGMENT
+git -C "$quoted" add -A >/dev/null 2>&1
+git -C "$quoted" -c user.email=t@t -c user.name=t commit -qm quoted >/dev/null 2>&1
+run_adopter "$quoted" \
+  && pass "emitted suite accepts the quoted titles YAML requires of conventional commits" \
+  || fail "emitted suite rejected a quoted title: $(tail -2 "$tmproot/run.out")"
 
 # Only reachable after a release, so it needs a released fixture.
 edited="$tmproot/adopter-edited"
