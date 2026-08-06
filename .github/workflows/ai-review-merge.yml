@@ -1347,7 +1347,9 @@ jobs:
           # positive would tell a maintainer to split a PR that is not oversized.
           budget_exhausted=false
           for f in "${EXEC_FILE_1:-}" "${EXEC_FILE_2:-}" "${EXEC_FILE_3:-}"; do
-            [ -n "$f" ] && [ -f "$f" ] || continue
+            if [ -z "$f" ] || [ ! -f "$f" ]; then
+              continue
+            fi
             subtype=$(jq -r '(if type == "array" then (map(select(.type == "result")) | last) else . end).subtype // ""' "$f" 2>/dev/null || echo "")
             [ "$subtype" = "error_max_budget_usd" ] && budget_exhausted=true
           done
