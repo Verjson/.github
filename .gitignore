@@ -1,4 +1,10 @@
+# Symbol-index residue. Both are per-machine caches of this tree, rebuilt on
+# demand, and the provider has already changed once — so the whole directory is
+# ignored rather than the subset each vendor happens to exclude. Serena's own
+# .serena/.gitignore keeps project.yml committable; we go further deliberately,
+# because a committed index goes stale silently and is 2.3 MB of churn.
 .tokensave/
+.serena/
 
 # Claude Code tooling residue — scratch worktrees and per-machine settings, never
 # part of the repo. Scoped rather than ignoring all of .claude/ so shared agent
