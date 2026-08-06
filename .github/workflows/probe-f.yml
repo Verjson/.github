@@ -1,0 +1,17 @@
+name: probe-f-pr-plus-dispatch
+
+# Throwaway probe for #468. Delete with the scratch branch.
+on:
+  pull_request:
+    types: [opened, reopened, ready_for_review, synchronize, labeled, unlabeled]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: PR number
+        required: true
+
+jobs:
+  observe:
+    runs-on: ubuntu-24.04
+    steps:
+      - run: echo "probe-f action=${{ github.event.action }}"

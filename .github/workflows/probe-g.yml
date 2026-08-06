@@ -1,0 +1,20 @@
+name: probe-g-pr-plus-workflow-call
+
+# Throwaway probe for #468. Delete with the scratch branch.
+on:
+  pull_request:
+    types: [opened, reopened, ready_for_review, synchronize, labeled, unlabeled]
+  workflow_call:
+    inputs:
+      pr_number:
+        required: false
+        type: string
+      runner_labels:
+        required: false
+        type: string
+
+jobs:
+  observe:
+    runs-on: ubuntu-24.04
+    steps:
+      - run: echo "probe-g action=${{ github.event.action }}"

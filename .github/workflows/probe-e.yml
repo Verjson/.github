@@ -1,0 +1,55 @@
+name: probe-e-full-gate-on-block
+
+# Throwaway probe for #468. Delete with the scratch branch.
+# Clones ai-review-merge.yml's ENTIRE `on:` surface (all three arms) plus its
+# top-level permissions/env/concurrency, with a trivial job.
+on:
+  pull_request:
+    types: [opened, reopened, ready_for_review, synchronize, labeled, unlabeled]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: PR number to review and (on pass) merge
+        required: true
+      allow_absent_checks:
+        required: false
+        type: boolean
+        default: false
+  workflow_call:
+    inputs:
+      pr_number:
+        required: false
+        type: string
+      runner_labels:
+        required: false
+        type: string
+      allow_absent_checks:
+        required: false
+        type: boolean
+        default: false
+
+concurrency:
+  group: probe-e-${{ github.event.pull_request.number || inputs.pr_number }}
+  cancel-in-progress: >-
+    ${{
+      (github.event.action != 'labeled' && github.event.action != 'unlabeled') ||
+      (github.event.action == 'labeled' &&
+        (github.event.label.name == 're-review' ||
+         github.event.label.name == 'hold' ||
+         github.event.label.name == 'DO NOT MERGE')) ||
+      (github.event.action == 'unlabeled' &&
+        (github.event.label.name == 'hold' || github.event.label.name == 'DO NOT MERGE'))
+    }}
+
+permissions:
+  contents: read
+
+env:
+  PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr_number }}
+  TARGET_REPO: ${{ github.repository }}
+
+jobs:
+  observe:
+    runs-on: ubuntu-24.04
+    steps:
+      - run: echo "probe-e action=${{ github.event.action }}"
