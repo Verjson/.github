@@ -186,9 +186,20 @@ set -euo pipefail
 CONTRACT_REF="${ref}"
 CONTRACT_SHA256="${contract_sha256}"
 
+# --as-released is the only flag that passes through. It shows what a release
+# would write into CHANGELOG/<version>.md, which under ADR 0059 can never be
+# edited afterwards — so reading it before merge is the one review step the
+# contract asks of a fragment author, and it has to be reachable from the tool
+# they are given (#443). Everything else is still refused: this is a renderer,
+# not a general front end to a pinned engine.
+as_released=
 if [ "\$#" -gt 0 ]; then
-  echo "render-next: unexpected argument '\$1'" >&2
-  exit 2
+  if [ "\$#" -eq 1 ] && [ "\$1" = --as-released ]; then
+    as_released=--as-released
+  else
+    echo "render-next: unexpected argument '\$1' (only --as-released is accepted)" >&2
+    exit 2
+  fi
 fi
 
 root="\$(cd "\$(dirname "\$0")/.." && pwd)"
@@ -198,6 +209,9 @@ EOF
   emit_contract_resolution
   cat <<EOF
 
+if [ -n "\$as_released" ]; then
+  exec python3 "\$contract" render-next --repo-root "\$root" --as-released
+fi
 exec python3 "\$contract" render-next --repo-root "\$root"
 EOF
 }

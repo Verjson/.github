@@ -390,13 +390,46 @@ issue: 8
 title: "feat(caller): a double-quoted title"
 ---
 
-Body.
+The lead paragraph, which is what a release note carries.
+
+## Why
+
+The argument beneath it, which a release note does not.
 FRAGMENT
 git -C "$quoted" add -A >/dev/null 2>&1
 git -C "$quoted" -c user.email=t@t -c user.name=t commit -qm quoted >/dev/null 2>&1
 run_adopter "$quoted" \
   && pass "emitted suite accepts the quoted titles YAML requires of conventional commits" \
   || fail "emitted suite rejected a quoted title: $(tail -2 "$tmproot/run.out")"
+
+# The released form is what an author is asked to read before merge, and under
+# ADR 0059 it is the form that can never be corrected afterwards. A renderer that
+# cannot produce it leaves only "skip the review" or "edit a generated artifact",
+# and the contract forbids the second (#443).
+released_out="$tmproot/as-released.out"
+if (cd "$quoted" && ./scripts/render-next.sh --as-released) >"$released_out" 2>&1; then
+  pass "the generated renderer accepts --as-released"
+else
+  fail "the generated renderer rejected --as-released: $(head -1 "$released_out")"
+fi
+
+# Distinguishes pass-through from a flag that is merely tolerated and dropped:
+# the released form omits everything after the lead paragraph.
+if grep -q '^## feat(caller): a double-quoted title$' "$released_out" \
+  && grep -q '^The lead paragraph, which is what a release note carries\.$' "$released_out" \
+  && ! grep -q '^## Why$' "$released_out"; then
+  pass "--as-released renders the release note, not the whole diary"
+else
+  fail "--as-released did not change the output; the flag is being swallowed"
+fi
+
+# Still a renderer, not a front end to a pinned engine: anything else is refused
+# so a caller cannot reach subcommands the contract does not sanction.
+if (cd "$quoted" && ./scripts/render-next.sh release --version v9.9.9) >/dev/null 2>&1; then
+  fail "the generated renderer forwarded an unsanctioned argument"
+else
+  pass "the generated renderer still refuses arguments other than --as-released"
+fi
 
 # Only reachable after a release, so it needs a released fixture.
 edited="$tmproot/adopter-edited"
