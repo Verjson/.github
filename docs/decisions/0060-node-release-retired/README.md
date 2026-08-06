@@ -28,17 +28,22 @@ A ninth site mattered more than any single repository:
 push-triggered shape, so every package scaffolded from it was born non-conforming. Migrating
 the eight without fixing the template would only have reset the count.
 
-The table below is a **re-measurement taken 2026-08-06 13:40Z**, after the caller migrations
-this change is sequenced behind, swept across every organization repository's `release.yml`:
+Those migrations are now complete. Swept across every organization repository at
+**2026-08-06 14:10Z**, twenty-one repositories dispatch their release through
+`changelog-release.yml@f12dca7` — verjson-ai, verjson-authn, verjson-browser-agent,
+verjson-cli, verjson-cli-cloud, verjson-cli-projects, verjson-cloud-storage,
+verjson-customer-lifecycle, verjson-email, verjson-eslint-config,
+verjson-graphql-conventions, verjson-identity-contracts, verjson-identity-lifecycle,
+verjson-infra, verjson-leads, verjson-observability, verjson-oidc-claims-middleware,
+verjson-payments, verjson-temporal-kit, verjson-upload, verjson-video-forge — and **no
+repository calls `node-release.yml` at all**. The sweep read every workflow file in every
+repository, not just `release.yml`, because `verjson-cli` had hidden its release inside
+`ci.yml`; the only surviving mentions are two path-trigger entries and one comment inside
+this repository. The package template emits the dispatched shape, so newly scaffolded
+packages are born conforming rather than adding to the count.
 
-| shape | count | repositories |
-| --- | --- | --- |
-| migrated — `workflow_dispatch` -> `changelog-release.yml@f12dca7` | 18 | verjson-ai, verjson-authn, verjson-browser-agent, verjson-cli-cloud, verjson-cli-projects, verjson-cloud-storage, verjson-customer-lifecycle, verjson-eslint-config, verjson-graphql-conventions, verjson-identity-contracts, verjson-identity-lifecycle, verjson-infra, verjson-leads, verjson-observability, verjson-oidc-claims-middleware, verjson-payments, verjson-temporal-kit, verjson-video-forge |
-| release-on-merge — still calls `node-release.yml` | 3 | verjson-email, verjson-upload, verjson-cli |
-
-The template is migrated, so newly scaffolded packages are now born conforming. The three
-remaining callers each have a migration PR open; this change stays held until they land,
-because the count is what makes the refusal safe rather than an outage.
+That is what makes this change a retirement rather than an outage: the refusal below can
+only be reached by a caller that does not exist.
 
 ## Decision
 
@@ -73,19 +78,23 @@ condition to write.
 
 ### Sequencing
 
-The refusal lands **after** the caller migrations, not before. Landing it first turns every
-merge to `main` red in eight repositories that have nowhere to go yet — an outage presented
-as a policy. Caller migration is delegated per repository (each repository's own PM owns its
-publish job, which is not uniform), and this change is held until those land.
+The refusal lands **after** the caller migrations, not before. Landing it first would have
+turned every merge to `main` red in eight repositories that had nowhere to go yet — an
+outage presented as a policy. Caller migration was delegated per repository, because each
+repository's own PM owns its publish job and those are not uniform; this change was held as
+a draft until all eight landed. It is unheld on the evidence of the sweep above, not on a
+belief that the migrations were finished.
 
 ### Blast radius
 
 - **`@v1` consumers are unaffected.** That tag is frozen at `e3cf463` (2026-07-24); a change
   on `main` does not reach it. Advancing `v1` is a separate decision (ADR 0022).
-- **SHA-pinned callers are unaffected until they move.** `verjson-cli` pins `8a2522d`, so its
-  release-on-merge stops when its PM removes the job, not when this lands.
-- **`@main` callers stop releasing immediately.** That is the intent, and it is why the
-  sequencing above is part of the decision rather than a rollout note.
+- **SHA-pinned callers are unaffected until they move.** `verjson-cli` pinned `8a2522d`,
+  which this change could not have reached; its release-on-merge ended when its PM deleted
+  the job, not when this lands. No SHA-pinned caller remains.
+- **`@main` callers stop releasing immediately.** That was the intent and the reason for the
+  sequencing. As of the sweep there are none, so the refusal ships with nothing to refuse —
+  it is a guard against the next copy-paste, not a migration step.
 
 ### A known limitation, accepted rather than fixed
 
@@ -112,10 +121,13 @@ deletion is the worse trade. Recorded here so the next reader does not rediscove
 ## Verification
 
 `scripts/node-release-retired.test.sh` executes the refusal's real `run:` block, extracted
-from the workflow, under `set -euo pipefail`. It pins four properties and the callability
-that makes the error reachable: the refusal is the job's first step, carries no `if:`, exits
-non-zero, and names `changelog-release.yml`. Five mutants die — dropping `exit 1`, adding an
-`if:`, moving the step after the checkout, rewording the message off its replacement, and
+from the workflow, under `set -euo pipefail`. It pins the properties that make the refusal
+unavoidable and the callability that makes the error reachable: the refusal is the job's
+first step, carries no `if:` and no `continue-on-error:`, no step outlives it via `always()`,
+the workflow declares exactly one job, and the block exits non-zero naming
+`changelog-release.yml`. Eight mutants die — dropping `exit 1`, adding an `if:`, adding
+`continue-on-error:`, adding an `always()` step, appending a second job, moving the step
+after the checkout, rewording the message off its replacement, and
 removing `workflow_call`. The extraction is bounded by line count as well as indentation,
 because an extraction guarded only by "non-empty" passes on whatever follows a reshaped step.
 
