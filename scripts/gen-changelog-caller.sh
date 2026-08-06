@@ -381,8 +381,25 @@ for path in fragments:
     # Identity is not decoration: only issue-form entries render a `#n`
     # back-link, so a fragment demoted to `id` silently loses release linkage
     # and no validation error is raised.
+    #
+    # The trailing group is the `; refs #a, #b` an entry renders when it links
+    # issues it does not own (#316). Anchoring `_$` straight after the back-link
+    # rejected that combination even though validation accepts it and the engine
+    # renders it — and the test is generated, so the adopter had no legal way out
+    # (#461). It stays a spelled-out shape rather than `.*`, because the anchor is
+    # what makes a truncated or embellished back-link fail — and the group is
+    # required, not optional, once the fragment declares `refs`, so a linkage the
+    # render drops is caught by the same assertion that the missing back-link is.
+    # Whether the numbers are the declared ones is the engine's business; this
+    # file checks the shape it emits, never re-derives the input.
     if "issue" in meta:
-        pattern = rf"^_Date: {re.escape(meta['date'])}; issue #{re.escape(meta['issue'])}_$"
+        refs_group = r"(?:; refs #\d+(?:, #\d+)*)"
+        if not meta.get("refs", "").strip():
+            refs_group += "?"
+        pattern = (
+            rf"^_Date: {re.escape(meta['date'])}; issue #{re.escape(meta['issue'])}"
+            rf"{refs_group}_$"
+        )
         if not re.search(pattern, rendered, re.MULTILINE):
             sys.exit(f"{path.name}: issue back-link missing from the rendered log")
 
