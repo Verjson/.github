@@ -1,0 +1,13 @@
+name: probe-c-gate-types
+
+# Throwaway probe for #468. Delete with the scratch branch.
+# Mirrors ai-review-merge.yml's `on: pull_request` types list exactly.
+on:
+  pull_request:
+    types: [opened, reopened, ready_for_review, synchronize, labeled, unlabeled]
+
+jobs:
+  observe:
+    runs-on: ubuntu-24.04
+    steps:
+      - run: echo "probe-c action=${{ github.event.action }}"

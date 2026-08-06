@@ -1,0 +1,12 @@
+name: probe-a-opened-and-ready
+
+# Throwaway probe for #468. Delete with the scratch branch.
+on:
+  pull_request:
+    types: [opened, ready_for_review]
+
+jobs:
+  observe:
+    runs-on: ubuntu-24.04
+    steps:
+      - run: echo "probe-a action=${{ github.event.action }}"

@@ -1,0 +1,28 @@
+name: probe-d-gate-types-and-concurrency
+
+# Throwaway probe for #468. Delete with the scratch branch.
+# Mirrors ai-review-merge.yml's `on: pull_request` types list AND its
+# workflow-level concurrency block, including the draft-skip `if:` shape.
+on:
+  pull_request:
+    types: [opened, reopened, ready_for_review, synchronize, labeled, unlabeled]
+
+concurrency:
+  group: probe-d-${{ github.event.pull_request.number }}
+  cancel-in-progress: >-
+    ${{
+      (github.event.action != 'labeled' && github.event.action != 'unlabeled') ||
+      (github.event.action == 'labeled' &&
+        (github.event.label.name == 're-review' ||
+         github.event.label.name == 'hold' ||
+         github.event.label.name == 'DO NOT MERGE')) ||
+      (github.event.action == 'unlabeled' &&
+        (github.event.label.name == 'hold' || github.event.label.name == 'DO NOT MERGE'))
+    }}
+
+jobs:
+  observe:
+    if: ${{ !github.event.pull_request.draft }}
+    runs-on: ubuntu-24.04
+    steps:
+      - run: echo "probe-d action=${{ github.event.action }}"
