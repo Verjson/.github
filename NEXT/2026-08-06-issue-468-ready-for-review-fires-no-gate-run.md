@@ -5,9 +5,8 @@ title: Marking a draft ready re-enters the merge gate again
 ---
 
 Marking a draft pull request ready — or removing a `hold` — now re-enters the merge
-gate on its own, instead of leaving the pull request wedged on the three `SKIPPED`
-gate checks from its last draft-era push until someone pushed a commit or dispatched
-the gate by hand.
+gate on its own, instead of leaving the pull request wedged until someone pushed a
+commit or dispatched the gate by hand.
 
 The gate declared `ready_for_review`, `labeled` and `unlabeled` in its trigger types,
 but none of the three had ever produced a run. `ai-review-merge.yml` is installed
@@ -27,6 +26,11 @@ with the gate's own hold predicate — and the bridge cannot re-enter itself, be
 dispatch emits neither event and the gate's own `re-review` cleanup is excluded by
 name. It checks nothing out, runs no third-party action, and holds only
 `contents: read`, `actions: write`, `pull-requests: read`.
+
+What it does **not** do is repaint the pull request's checks list: a
+`workflow_dispatch` run's check runs never attach to the pull request, so the three
+gate checks left `SKIPPED` by the last draft-era push stay `SKIPPED` while the review
+re-runs and the merge lands through the privileged lane.
 
 The repo notes also carry a corrected description of #263, which is the unrelated
 red-`privileged_merge`-on-drafts defect rather than a wedged-gate one.

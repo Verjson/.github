@@ -86,15 +86,47 @@ Constraints the bridge holds, pinned by `scripts/ci-gate/gate-rearm.test.sh`:
   text to a shell; the pull request number is validated against `^[1-9][0-9]*$` and
   the repository against `github.repository` before any API call. Its token holds
   `contents: read`, `actions: write`, `pull-requests: read` and nothing else.
-- **Fail closed.** An unreadable, malformed or truncated metadata response aborts
-  under `set -euo pipefail` and dispatches nothing. The hold predicate is materialised
-  into a `true`/`false` string rather than tested with `if jq -e …`, because a jq that
-  *errors* also exits non-zero and an `if` would read that as "not held".
+- **Fail closed.** The hold predicate is materialised into a `true`/`false` string in
+  a plain assignment rather than tested with `if jq -e …`. That is what makes it fail
+  closed: a jq that *errors* also exits non-zero, and an `if` would read that as "not
+  held" and dispatch anyway, whereas an assignment lets `set -e` abort the step. The
+  `case` that follows only routes the two values jq can print; its `*)` arm is
+  belt-and-braces, not the mechanism. So an unreadable, malformed or truncated
+  metadata response dispatches nothing. The gate's own hold checks still use the
+  fail-open `if jq -e …` shape — tracked as
+  [#482](https://github.com/Verjson/.github/issues/482).
+- **A skipped run cannot cancel a live one.** `concurrency:` is declared on the
+  `rearm` job, not on the workflow. A workflow-level group is claimed before the job
+  guard is evaluated, so an `unlabeled` event for a non-terminal label would create a
+  run that seizes the group, cancels an in-flight re-arm mid-dispatch, and is then
+  skipped by its own `if:` — leaving the pull request wedged, which is #468 reached by
+  another route. Cancellation is off for the same reason: the job is one idempotent
+  dispatch, and the gate has its own concurrency group, so queueing a second re-arm is
+  safer than killing the first.
 
 ## Consequences
 
 - Marking a draft ready re-enters the gate without a human pushing a commit, and
   removing a terminal hold does what #88 intended.
+- **The stale `SKIPPED` checks are not repainted.** The bridge dispatches the gate;
+  per [#475](https://github.com/Verjson/.github/issues/475) a `workflow_dispatch`
+  run's check runs never attach to the pull request. So the three gate checks left
+  over from the last draft-era `synchronize` stay `SKIPPED` on the pull request page,
+  and the review runs and the merge lands out of view of the checks list, through the
+  privileged lane's ruleset bypass. The user-visible outcome — the pull request stops
+  being wedged and merges when it should — is what is fixed; the checks list is not.
+- **Consequently the bridge does not satisfy a required `gate` check.** ADR 0058 step
+  5 proposes requiring `gate` on `~ALL`, which [#474](https://github.com/Verjson/.github/issues/474)
+  already blocks. If that ever lands, a bridged dispatch will not produce the required
+  check run either, and a readied draft would be wedged again — this time by branch
+  protection rather than by an absent review. Requiring `gate` and keeping the bridge
+  are not independent decisions.
+- **The `labeled` lane stays dead.** `labeled` was measured dead alongside the other
+  two, and the bridge deliberately does not carry it: bridging it means every label
+  application dispatches a model review from a privileged context unless the guard is
+  narrowed to `re-review` exactly. So the gate's documented re-review lane
+  (`ai-review-merge.yml:26`, `:165`) still never fires. Bridging it or retiring it is
+  tracked as [#481](https://github.com/Verjson/.github/issues/481).
 - The bridge is defence in depth, not the sole guard: the gate re-checks holds at its
   classify and merge checkpoints, so a bridge that wrongly dispatched a held pull
   request would still not merge it.

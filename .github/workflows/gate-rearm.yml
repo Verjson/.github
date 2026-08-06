@@ -33,25 +33,41 @@ on:
 permissions:
   contents: read
 
-concurrency:
-  group: gate-rearm-${{ github.event.pull_request.number }}
-  cancel-in-progress: true
-
 jobs:
   rearm:
     # `unlabeled` fires for every label the gate itself removes — `re-review`
     # above all — so only the removal of a TERMINAL hold re-arms. Draft and any
     # still-present hold stay terminal.
+    #
+    # The hold set is spelled with every separator the live predicate normalizes
+    # (`gsub("[ _-]+";" ")`), because expression `==` is case-insensitive but not
+    # separator-insensitive: without the variants a PR held with `do-not-merge`
+    # would be suppressed correctly and then never re-arm when that label is
+    # removed — #468 again, by another route. The still-present checks below are
+    # a cheap pre-filter only; the authoritative, fully normalized hold check is
+    # re-run against live PR state in the step.
     if: >
       (
         github.event.action == 'ready_for_review' ||
         (github.event.action == 'unlabeled' &&
-          (github.event.label.name == 'hold' || github.event.label.name == 'DO NOT MERGE'))
+          contains(fromJSON('["hold","DO NOT MERGE","DO-NOT-MERGE","DO_NOT_MERGE"]'),
+                   github.event.label.name))
       ) &&
       !github.event.pull_request.draft &&
       !contains(github.event.pull_request.labels.*.name, 'hold') &&
       !contains(github.event.pull_request.labels.*.name, 'DO NOT MERGE') &&
       !contains(github.event.pull_request.title, 'DO NOT MERGE')
+    # Concurrency is claimed by the JOB, not the workflow: a workflow-level group
+    # is claimed before the guard above is evaluated, so an `unlabeled` event for
+    # a non-terminal label would create a run that seizes the group, cancels an
+    # in-flight re-arm that was about to dispatch, and is then skipped by its own
+    # `if:` — losing the re-arm entirely. Cancellation is off for the same
+    # reason: this job is one idempotent dispatch, and the gate has its own
+    # concurrency group, so queueing a second re-arm is strictly safer than
+    # killing the first one mid-dispatch.
+    concurrency:
+      group: gate-rearm-${{ github.event.pull_request.number }}
+      cancel-in-progress: false
     # One API call and one dispatch; the fast lane keeps it off the shared pool
     # (ADR 0047/0048). This repository is public, so its minutes are free.
     runs-on: ${{ fromJSON(vars.VERJSON_RUNNER_FASTLANE || '["ubuntu-24.04"]') }}

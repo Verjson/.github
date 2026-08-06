@@ -185,10 +185,30 @@ rc="$(run_case "$(pr '[]')" 7 'not-a-repo')"
   || fail "a malformed repository identity was accepted (rc=$rc)"
 
 # --- workflow-level pins (evaluated by GitHub, so not executable here) --------
-types="$(awk '/^  pull_request_target:/{seen=1; next} seen && /^    types:/{print; exit}' "$wf")"
-{ printf '%s' "$types" | grep -q 'ready_for_review' && printf '%s' "$types" | grep -q 'unlabeled'; } \
-  && pass "the bridge subscribes to the events the required workflow never sees" \
-  || fail "bridge trigger types drifted: $types"
+# Pin the EXACT list, not the presence of two members: adding `synchronize` here
+# would make every push dispatch a second full model review from a privileged
+# context, and a presence check would not notice.
+types="$(awk '/^  pull_request_target:/{seen=1; next} seen && /^    types:/{print; exit}' "$wf" \
+  | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//')"
+[ "$types" = "types: [ready_for_review, unlabeled]" ] \
+  && pass "the bridge subscribes to exactly the events the required workflow never sees" \
+  || fail "bridge trigger types drifted: '$types'"
+
+# Concurrency must be claimed by the job, never by the workflow: a workflow-level
+# group is claimed before the job guard runs, so a run that the guard then skips
+# would cancel an in-flight re-arm and dispatch nothing (#468 by another route).
+awk 'NR>1 && /^concurrency:/{found=1} END{exit !found}' "$wf" \
+  && fail "the bridge declares workflow-level concurrency; a skipped run would cancel a live re-arm" \
+  || pass "concurrency is not claimed at workflow level"
+job_concurrency="$(awk '
+  $0 == "  rearm:" { in_job = 1 }
+  in_job && $0 == "    concurrency:" { capture = 1; next }
+  capture && /^      [a-z-]+:/ { print substr($0, 7); next }
+  capture { exit }
+' "$wf" | tr '\n' ' ' | sed -E 's/[[:space:]]+$//')"
+[ "$job_concurrency" = "group: gate-rearm-\${{ github.event.pull_request.number }} cancel-in-progress: false" ] \
+  && pass "the rearm job serialises per PR and never cancels a live re-arm" \
+  || fail "bridge job concurrency drifted: '$job_concurrency'"
 
 # The bridge runs in a privileged context. It must never materialise PR head
 # content, which is the only way `pull_request_target` becomes dangerous.
@@ -206,10 +226,28 @@ job_if="$(awk '
 # Re-entrancy: the gate removes its own `re-review` label, which emits
 # `unlabeled`. Only a TERMINAL hold's removal may re-arm, or the gate would
 # re-dispatch itself every time it cleaned up after a review.
-guard="( github.event.action == 'ready_for_review' || (github.event.action == 'unlabeled' && (github.event.label.name == 'hold' || github.event.label.name == 'DO NOT MERGE')) )"
+#
+# The hold set must carry every separator spelling the live predicate normalizes
+# away, or a PR held with `do-not-merge` is suppressed correctly and then never
+# re-arms when that label is removed: expression `==` is case-insensitive, not
+# separator-insensitive.
+guard="( github.event.action == 'ready_for_review' || (github.event.action == 'unlabeled' && contains(fromJSON('[\"hold\",\"DO NOT MERGE\",\"DO-NOT-MERGE\",\"DO_NOT_MERGE\"]'), github.event.label.name)) )"
 printf '%s' "$job_if" | grep -qF "$guard" \
   && pass "only ready_for_review and terminal-hold removal re-arm (no re-entrancy on re-review)" \
   || fail "the bridge guard admits label churn it must ignore: $job_if"
+
+# Pin each separator variant individually: dropping one is the silent regression.
+# Each spelling is also asserted to be a hold by the live predicate above, so the
+# two halves of the bridge agree about which labels wedge a PR.
+for spelling in 'do-not-merge' 'do_not_merge'; do
+  printf '%s' "$job_if" | grep -qiF "\"$spelling\"" \
+    && pass "the guard re-arms when the '$spelling' spelling of the hold is removed" \
+    || fail "the guard ignores removal of '$spelling', which the live predicate counts as a hold"
+  run_case "$(pr "[{\"name\":\"$spelling\"}]")" >/dev/null
+  ! dispatched \
+    && pass "the live predicate counts '$spelling' as a hold" \
+    || fail "'$spelling' did NOT hold the re-arm"
+done
 
 for terminal in \
   "!github.event.pull_request.draft" \
