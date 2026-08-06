@@ -200,6 +200,27 @@ if not checkouts:
 elif "${{ github.sha }}" not in str((checkouts[0].get("with") or {}).get("ref") or ""):
     bad("`verify` does not check out github.sha, so it proves nothing about "
         "the tree the snapshot will tag")
+# The branch guard's shell logic is executed further down, but a guard is only
+# as good as what it is handed: fed `github.ref_name` as DEFAULT_BRANCH it
+# compares the dispatch ref to itself, passes for every branch, and no executed
+# test can see it, because the harness supplies the env directly (#466).
+branch_guard_env = {}
+for step in steps_of(verify):
+    if "refs/heads/$DEFAULT_BRANCH" in (step.get("run") or ""):
+        branch_guard_env = step.get("env") or {}
+        break
+if not branch_guard_env:
+    bad("`verify` carries no default-branch guard, so a release can be "
+        "dispatched from any ref (#466)")
+else:
+    if "github.event.repository.default_branch" not in str(branch_guard_env.get("DEFAULT_BRANCH", "")):
+        bad("the default-branch guard does not read DEFAULT_BRANCH from "
+            "github.event.repository.default_branch, so it cannot tell the "
+            "default branch from the ref it was dispatched on (#466)")
+    if str(branch_guard_env.get("DISPATCH_REF", "")).strip() != "${{ github.ref }}":
+        bad("the default-branch guard does not read DISPATCH_REF from "
+            "github.ref, so it does not check the ref the release runs on (#466)")
+
 suite = "\n".join(step.get("run") or "" for step in steps_of(verify))
 if "npm test" not in suite:
     bad("`verify` never runs the repository's suite")
@@ -281,6 +302,13 @@ drop_publish_token() {
   # publication; the checker must not reward that.
   sed -i 's|          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}|          NODE_AUTH_TOKEN: ${{ secrets.NODE_AUTH_TOKEN }}|' "$1"
 }
+tautological_branch_guard() {
+  # The guard's shell logic survives this untouched — only its inputs change, so
+  # it compares github.ref against itself and can never say "no". Executing the
+  # extracted script proves nothing here, because the harness supplies the env
+  # the workflow would have got wrong (#466).
+  sed -i 's|          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}|          DEFAULT_BRANCH: ${{ github.ref_name }}|' "$1"
+}
 
 expect_shape_rejection "snapshot without needs: verify (#463, #464)" drop_needs_verify
 expect_shape_rejection "publish without needs: snapshot" drop_needs_snapshot
@@ -296,6 +324,7 @@ expect_shape_rejection "a verify job that runs no suite" hollow_out_the_suite
 expect_shape_rejection "a verify job with no release-verify.sh hook" drop_verify_hook
 expect_shape_rejection "a caller carrying no generator provenance" strip_provenance
 expect_shape_rejection "a publish step that no longer authenticates" drop_publish_token
+expect_shape_rejection "a branch guard that compares github.ref to itself" tautological_branch_guard
 
 # The hand-copied shape every adopter carries today must be rejected, otherwise
 # regenerating changes nothing observable.
@@ -433,7 +462,7 @@ fi
 
 printf '%s\n' '#!/usr/bin/env bash' 'exit 0' >"$tmp/bin/git"
 chmod +x "$tmp/bin/git"
-if PATH="$tmp/bin:$PATH" run_guard "$tag_guard" VERSION=v1.2.3 "PATH=$tmp/bin:$PATH"; then
+if run_guard "$tag_guard" VERSION=v1.2.3 "PATH=$tmp/bin:$PATH"; then
   fail "the tag guard admitted a version whose tag already exists"
 else
   pass "the tag guard rejects a version whose tag already exists"
