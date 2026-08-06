@@ -133,6 +133,14 @@ copies=$(grep -c "index(\"HOLD\")) or (\$l | index(\"DO NOT MERGE\"))" "$wf")
 # job guard. GitHub evaluates this expression before a runner starts, so there is
 # no run block to execute locally; extracting the shipped `if:` text keeps this
 # check tied to the single source of truth.
+#
+# These two pins assert that the gate is CONFIGURED to re-fire, which is not the
+# same as it re-firing. Under the organization's required-workflow installation
+# the `labeled`/`unlabeled`/`ready_for_review` types below never reach the gate at
+# all — measured in #468, decided in ADR 0063 — so the events they describe are
+# delivered by `gate-rearm.yml` instead, and `ci-gate/gate-rearm.test.sh` is what
+# holds the end-to-end behaviour. Keep both: the types are still correct for a
+# direct or reusable installation of the gate, where they do fire.
 types="$(awk '/^  pull_request:/{seen=1; next} seen && /^    types:/{print; exit}' "$wf")"
 printf '%s' "$types" | grep -q 'unlabeled' \
   && pass "pull_request subscribes to unlabeled (#88)" \
