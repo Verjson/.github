@@ -77,10 +77,16 @@ for workflow in "$ci" "$release"; do
   grep -qF 'package-manager-cache: false' "$workflow" \
     && pass "$name disables setup-node automatic package-manager caching" \
     || fail "$name can bypass the explicit cache/lockfile controls via setup-node auto-caching"
-  { grep -qF 'echo "npm_config_cache=$RUNNER_TEMP/verjson-npm-cache" >> "$GITHUB_ENV"' "$workflow" \
-    && grep -qF 'cache_dir="$RUNNER_TEMP/verjson-npm-cache"' "$workflow" \
-    && grep -qF 'find "$cache_dir" -mindepth 1 -delete' "$workflow" \
-    && grep -qF 'CACHE_MAX_MB: ${{ inputs.cache-max-mb }}' "$workflow"; } \
+  # node-release is retired (ADR 0060): its cache-upload step carried
+  # `if: always()`, so it kept running after the refusal that is supposed to
+  # end the job. Deleting it is what removes that, which leaves this assertion
+  # meaningful only for node-ci. The inputs above are still asserted on both —
+  # a caller passing `cache:` must not fail on an unknown input.
+  { [ "$workflow" != "$ci" ] \
+    || { grep -qF 'echo "npm_config_cache=$RUNNER_TEMP/verjson-npm-cache" >> "$GITHUB_ENV"' "$workflow" \
+      && grep -qF 'cache_dir="$RUNNER_TEMP/verjson-npm-cache"' "$workflow" \
+      && grep -qF 'find "$cache_dir" -mindepth 1 -delete' "$workflow" \
+      && grep -qF 'CACHE_MAX_MB: ${{ inputs.cache-max-mb }}' "$workflow"; }; } \
     && pass "$name scopes and bounds explicitly enabled cache uploads" \
     || fail "$name can archive an accumulated or unbounded persistent-runner npm cache"
   grep -qF "registry-url: \${{ inputs.scope != '' && 'https://npm.pkg.github.com' || '' }}" "$workflow" \

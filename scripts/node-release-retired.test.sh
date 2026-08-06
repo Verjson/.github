@@ -37,8 +37,16 @@ case "$first_step" in
 esac
 
 # --------------------------------------------------------------------------
-# ...and it must be unconditional. An `if:` is the one edit that leaves the
-# step visible in the file while letting the retired path run again.
+# ...and it must be unavoidable. Three edits each leave the step visible while
+# letting the retired path run again, and review found the suite covering only
+# the first of them:
+#
+#   if:                 the step is skipped outright
+#   continue-on-error:  the step runs, fails, and the job proceeds to publish
+#   always()            a later step runs regardless of the refusal
+#
+# The third is not hypothetical — the retired job carried `if: always()` on its
+# cache-upload step, which really did execute after the refusal.
 # --------------------------------------------------------------------------
 step_block="$(awk -v name="$step_name" '
   index($0, name) && /^      - name:/ { capture = 1; print; next }
@@ -50,9 +58,31 @@ if [ -z "$step_block" ]; then
   fail "no step named '$step_name' in $release"
 elif printf '%s\n' "$step_block" | grep -qE '^        if:'; then
   fail "the refusal carries an if: condition, so it can be skipped"
+elif printf '%s\n' "$step_block" | grep -qE '^        continue-on-error:'; then
+  fail "the refusal is continue-on-error, so the job proceeds past it"
 else
-  pass "the refusal is unconditional"
+  pass "the refusal is unconditional and fatal"
 fi
+
+# Comment lines stripped first — this file explains `always()` in prose, and a
+# guard that cannot tell the explanation from the expression is unusable.
+grep -vE '^[[:space:]]*#' "$release" | grep -qF 'always()' \
+  && fail "a step runs with always(), so it survives the refusal" \
+  || pass "no step outlives the refusal via always()"
+
+# --------------------------------------------------------------------------
+# Everything above is scoped to the `release` job. A second job never passes
+# through the refusal at all, so the job count is part of the contract rather
+# than an incidental property. Review demonstrated the gap: appending a job
+# that runs semantic-release directly left the suite fully green.
+# --------------------------------------------------------------------------
+job_count="$(awk '/^jobs:$/ { injobs = 1; next }
+                  injobs && /^[^ ]/ { exit }
+                  injobs && /^  [A-Za-z0-9_-]+:$/ { n++ }
+                  END { print n + 0 }' "$release")"
+[ "$job_count" -eq 1 ] \
+  && pass "the retired workflow declares only the refused job" \
+  || fail "$release declares $job_count jobs; one of them bypasses the refusal"
 
 # --------------------------------------------------------------------------
 # Execute the real block rather than asserting on its text: a step that says

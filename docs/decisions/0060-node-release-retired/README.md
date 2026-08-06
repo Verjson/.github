@@ -15,8 +15,11 @@ into one immutable `CHANGELOG/<version>.md` snapshot. Merging `main` publishes n
 which derives the version from commit subjects at merge time. Every caller of it releases
 on merge — the exact model ADR 0038 replaced.
 
-The decision was recorded but never enforced, so adoption stalled halfway. Measured across
-the organization on 2026-08-06 (`release.yml` plus a sweep of every other workflow file):
+The decision was recorded but never enforced, so adoption stalled halfway. The counts below
+are a **measurement taken 2026-08-06 12:30Z**, before the caller migrations this change is
+sequenced behind — they move as those land, and the table is the reason for the sequencing,
+not a current inventory. Measured across the organization from `release.yml` plus a sweep of
+every other workflow file:
 
 | shape | count | repositories |
 | --- | --- | --- |
@@ -42,7 +45,20 @@ Two consequences of that shape are deliberate:
 **Refusal, not deletion.** Deleting the file makes a straggling caller fail with GitHub's
 "workflow not found", which names neither the cause nor the replacement. The file stays
 resolvable — `workflow_call` intact — purely so the error can say where to go. The body
-below the refusal is unreachable; it is history, not configuration.
+below the refusal is history, not configuration.
+
+"Unreachable" is a claim about the whole job, not about the first step, and the first draft
+of this change got it wrong in a way worth recording: the cache-upload step carried
+`if: always() && inputs.cache`, so for any caller passing `cache: true` it really did run
+after the refusal — `mkdir`, a step-summary write, and a `find … -delete` under `RUNNER_TEMP`.
+No release resulted, but the ADR asserted something the workflow did not do. That step is
+deleted here, and the absence of `always()` is now a pinned property rather than a claim.
+Two further edits would undo the retirement while leaving the refusal visible in the file —
+`continue-on-error:` on the step, and a second job that never passes through it — and both
+were shown to survive the first version of the test. All three are pinned now.
+
+The retired job also drops to `permissions: {}`. A job whose only act is to print and exit
+needs no token scopes, and an absent `permissions:` key would inherit the caller's.
 
 **Unconditional, not event-filtered.** The first draft gated on `github.event_name == 'push'`,
 which is wrong for the reason ADR 0038 gives: the defect is not the trigger, it is deriving
@@ -65,6 +81,16 @@ publish job, which is not uniform), and this change is held until those land.
   release-on-merge stops when its PM removes the job, not when this lands.
 - **`@main` callers stop releasing immediately.** That is the intent, and it is why the
   sequencing above is part of the decision rather than a rollout note.
+
+### A known limitation, accepted rather than fixed
+
+The retired job keeps its ADR 0033 runner routing, so a Verjson private caller queues on
+`VERJSON_LANE_TRUSTED` just to print an error. If that pool is drained, the caller hangs with
+no message — the "points nowhere" failure this design exists to prevent. Pinning the job to
+`ubuntu-24.04` would fix it and cost three carve-outs in `runner-routing-policy.test.sh`,
+whose value comes precisely from binding *every* `runs-on:` line rather than a list someone
+maintains. Weakening a fail-safe sweep to improve an error message on a job scheduled for
+deletion is the worse trade. Recorded here so the next reader does not rediscover it as a bug.
 
 ## Consequences
 
