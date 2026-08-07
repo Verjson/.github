@@ -12,6 +12,7 @@ Reverse-chronological index of org-level decisions.
 | # | Date | Decision |
 |---|------|----------|
 | [0068](0068-dispatch-honors-caller-runner-labels/README.md) | 2026-08-07 | The merge dispatcher honors the caller’s explicit runner fleet |
+| [0067](0067-portable-ci-command-boundary/README.md) | 2026-08-07 | Portable CI commands stop at the GitHub control plane |
 | [0065](0065-verified-changelog-tool-cache/README.md) | 2026-08-07 | Changelog tooling uses a verified runner cache |
 | [0064](0064-privileged-merge-reaches-the-overflow-lane/README.md) | 2026-08-07 | The privileged merge poller reaches the overflow lane |
 | [0063](0063-required-workflow-events-are-bridged/README.md) | 2026-08-06 | A required workflow only sees three activity types, so the rest are bridged |
