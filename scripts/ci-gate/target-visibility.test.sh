@@ -43,6 +43,16 @@ fi
 mkdir -p "$tmp/bin"
 cat >"$tmp/bin/gh" <<'GH'
 #!/usr/bin/env bash
+if [ "$#" -ne 4 ] ||
+  [ "$1" != "api" ] ||
+  [ "$2" != "repos/$TARGET_REPO" ] ||
+  [ "$3" != "--jq" ] ||
+  [ "$4" != ".private" ]; then
+  printf 'unexpected gh invocation:' >&2
+  printf ' <%s>' "$@" >&2
+  printf '\n' >&2
+  exit 64
+fi
 if [ "${GH_STUB_RC:-0}" -ne 0 ]; then
   echo "HTTP 404: Not Found (https://api.github.com/repos/${TARGET_REPO:-})" >&2
   exit "$GH_STUB_RC"
@@ -52,15 +62,16 @@ GH
 chmod +x "$tmp/bin/gh"
 
 run_step() {
-  # run_step <gh-stdout> <gh-rc>
+  # run_step <gh-stdout> <gh-rc> [script]
   export PATH="$tmp/bin:$PATH"
   export TARGET_REPO="Verjson/.github"
+  export GITHUB_REPOSITORY="Verjson/dispatcher"
   export RUNNER_TEMP="$tmp/runner-temp"
   export GITHUB_OUTPUT="$tmp/github-output.txt"
   mkdir -p "$RUNNER_TEMP"
   : >"$GITHUB_OUTPUT"
   export GH_STUB_OUT="$1" GH_STUB_RC="$2"
-  bash "$script" >"$tmp/out.txt" 2>&1
+  bash "${3:-$script}" >"$tmp/out.txt" 2>&1
   echo "rc=$?"
 }
 output_has() { grep -qxF "$1" "$tmp/github-output.txt"; }
@@ -85,7 +96,18 @@ rc="$(run_step '' 1)"
   && pass "failed lookup exits 0 and publishes an empty target_private (#170)" \
   || fail "failed lookup aborted the step or published a non-empty value ($rc)"
 
-# (d) preflight stays untrusted until it has resolved the target's visibility,
+# (d) Mutation fixture: looking up the dispatcher's repository must be
+# observably different from looking up TARGET_REPO. The strict stub rejects the
+# wrong endpoint even though it would return the same scalar in a permissive
+# fixture.
+dispatcher_lookup="$tmp/dispatcher-lookup.sh"
+sed 's#repos/\$TARGET_REPO#repos/$GITHUB_REPOSITORY#' "$script" >"$dispatcher_lookup"
+rc="$(run_step 'false' 0 "$dispatcher_lookup")"
+{ [ "$rc" = "rc=0" ] && output_has 'target_private=' && log_has 'unexpected gh invocation'; } \
+  && pass "dispatcher-repository lookup mutation is rejected" \
+  || fail "visibility fixture accepted a lookup against the dispatcher repository ($rc)"
+
+# (e) preflight stays untrusted until it has resolved the target's visibility,
 # and the later jobs route on THAT rather than on the event — on the
 # workflow_dispatch re-gate path `github.event.repository` is the dispatching
 # repository, not the target (ADR 0048).
@@ -95,7 +117,7 @@ rc="$(run_step '' 1)"
   && pass "preflight is untrusted until gate resolves target visibility" \
   || fail "gate routing drifted from the resolved-visibility policy"
 
-# (e) The money guard. Fast-lane routing must test for an EXPLICIT public target
+# (f) The money guard. Fast-lane routing must test for an EXPLICIT public target
 # (`== 'false'`), never `!= 'true'`: unresolved visibility is the empty string,
 # and under `!= 'true'` an unreadable repository would silently start spending
 # hosted minutes. The default has to be the fleet that is already paid for.
