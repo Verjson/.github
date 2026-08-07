@@ -64,10 +64,10 @@ provenance to, and replacing it would mean re-deriving trust for ~90 repositorie
 order to fix an ergonomics defect.
 
 Instead, **bridge the missing events**. `.github/workflows/gate-rearm.yml` subscribes
-on `pull_request_target` to the two activity types that leave a pull request wedged —
-`ready_for_review`, and `unlabeled` for a terminal hold — and converts them into the
-one entry point that does work: a `workflow_dispatch` of `ai-review-merge.yml`, which
-runs under the gate's own record.
+on `pull_request_target` to `ready_for_review`, `labeled` for `re-review`, and
+`unlabeled` except for `re-review` cleanup, then converts them into the one entry
+point that does work: a `workflow_dispatch` of `ai-review-merge.yml`, which runs
+under the gate's own record.
 
 Constraints the bridge holds, pinned by `scripts/ci-gate/gate-rearm.test.sh`:
 
@@ -97,12 +97,12 @@ Constraints the bridge holds, pinned by `scripts/ci-gate/gate-rearm.test.sh`:
   [#482](https://github.com/Verjson/.github/issues/482).
 - **A skipped run cannot cancel a live one.** `concurrency:` is declared on the
   `rearm` job, not on the workflow. A workflow-level group is claimed before the job
-  guard is evaluated, so an `unlabeled` event for a non-terminal label would create a
-  run that seizes the group, cancels an in-flight re-arm mid-dispatch, and is then
-  skipped by its own `if:` — leaving the pull request wedged, which is #468 reached by
-  another route. Cancellation is off for the same reason: the job is one idempotent
-  dispatch, and the gate has its own concurrency group, so queueing a second re-arm is
-  safer than killing the first.
+  guard is evaluated, so the denied `unlabeled` event for `re-review` cleanup would
+  create a run that seizes the group, cancels an in-flight re-arm mid-dispatch, and is
+  then skipped by its own `if:` — leaving the pull request wedged, which is #468
+  reached by another route. Cancellation is off for the same reason: the job is one
+  idempotent dispatch, and the gate has its own concurrency group, so queueing a
+  second re-arm is safer than killing the first.
 
 ## Consequences
 
@@ -190,6 +190,22 @@ re-review currently re-pays for an unchanged diff. This amendment makes the lane
 fire; it does not make the skip work. The two are independent, and #292 carries a
 design brief for the second.
 
-The residual gap in the `unlabeled` hold enumeration — it is not equivalent to the
-`gsub("[ _-]+";" ")` normalizer it stands in for — is tracked separately as #497 and
-is untouched here.
+## 2026-08-07 amendment — hold removal uses a denylist guard (#497)
+
+The `unlabeled` arm enumerated four hold spellings, but the authoritative predicate
+normalizes arbitrary runs of spaces, underscores, and hyphens. A valid hold such as
+`DO__NOT__MERGE` therefore stopped the gate but its removal did not re-arm it.
+Actions expressions cannot reproduce jq's `gsub("[ _-]+";" ")`, so no finite
+allowlist can be equivalent to the predicate.
+
+The arm admits every `unlabeled` event except removal of `re-review`. The gate removes
+`re-review` itself after consuming it, so that explicit denylist preserves the
+no-re-entrancy invariant. Before reading live PR state, the trusted shell step applies
+the exact same separator normalizer to the removed label and exits unless it is
+`HOLD` or `DO NOT MERGE`. This avoids a paid gate dispatch—and even the API read—on
+ordinary label churn without returning to a finite spelling allowlist. The live,
+fully normalized predicate remains authoritative and prevents dispatch while any
+other terminal hold is still present.
+
+The regression tests pin both sides with `DO__NOT__MERGE` and prove that removal of an
+unrelated label exits before an intentionally failing metadata API can be reached.
