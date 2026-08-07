@@ -1,7 +1,7 @@
 # 0062 — The release caller is generated, and it verifies before it tags
 
 - **Date:** 2026-08-06
-- **Issues:** [#463](https://github.com/Verjson/.github/issues/463), [#464](https://github.com/Verjson/.github/issues/464), [#465](https://github.com/Verjson/.github/issues/465), [#519](https://github.com/Verjson/.github/issues/519)
+- **Issues:** [#463](https://github.com/Verjson/.github/issues/463), [#464](https://github.com/Verjson/.github/issues/464), [#465](https://github.com/Verjson/.github/issues/465), [#519](https://github.com/Verjson/.github/issues/519), [#520](https://github.com/Verjson/.github/issues/520)
 - **Extends:** ADR 0038 (canonical changelog contract), ADR 0060 (a release is dispatched, never derived), ADR 0052 (`push_token` is not `GITHUB_TOKEN`), ADR 0059 (released snapshots are immutable)
 - **Category:** release authority — **sensitive class**
 
@@ -134,6 +134,16 @@ must edit is the defect being removed here, not a compromise available to it —
 reasoning that forbids hand-editing the emitted contract test. The alternative, a
 repository variable, would move release-gating configuration out of the repository into
 an invisible org surface, where no pull request can review it.
+
+### 2026-08-07 refinement: adopter release parameters are generator inputs
+
+The generated Node caller defaults to `@verjson` and Node 24, but those values
+are not release-authority invariants. Scaffolders may select another lowercase
+npm scope and numeric Node version through validated `--scope` and
+`--node-version` generator options. The same options configure the generated
+contract test, which requires both release jobs to use them. This preserves the
+decision that generated artifacts are never hand-edited while keeping existing
+two-argument invocations compatible in their selected defaults (#520).
 
 ## Consequences
 

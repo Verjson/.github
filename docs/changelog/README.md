@@ -172,6 +172,18 @@ If your suite is not `npm test`, commit an executable `scripts/release-verify.sh
 and `verify` runs it instead. Do **not** edit the generated caller — the emitted
 contract test asserts its provenance and rejects a hand-written one.
 
+The defaults are npm scope `@verjson` and Node 24. A scaffolder targeting
+another lowercase npm scope or numeric Node version passes the same validated
+options to both coupled outputs:
+
+```bash
+scripts/gen-changelog-caller.sh release-node "$PIN" --scope @acme --node-version 22 > .github/workflows/release.yml
+scripts/gen-changelog-caller.sh contract-test "$PIN" --scope @acme --node-version 22 > scripts/changelog-contract.test.sh
+```
+
+The generated contract test then rejects drift in either release job. Do not
+generate only one side or edit the workflow after generation.
+
 ## Consumer adoption
 
 A consumer needs three files, and they must pin the **same** commit — plus a

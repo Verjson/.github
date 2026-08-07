@@ -202,7 +202,8 @@ extract_runs_on() {
 }
 
 evaluator="$(mktemp)"
-trap 'rm -f "$evaluator"' EXIT
+mutated_workflow="$(mktemp)"
+trap 'rm -f "$evaluator" "$mutated_workflow"' EXIT
 cat >"$evaluator" <<'JS'
 // Evaluate the GitHub Actions expression subset used by `runs-on:`. The
 // operators (&&, ||, ==, !=), single-quoted strings and value-returning
@@ -364,21 +365,46 @@ assert_route() {
   local workflow="$1" job="$2" repository="$3" runner_input="$4" priv="$5"
   local var_default="$6" var_untrusted="$7" expected="$8" label="$9"
   local var_fastlane="${10-}" runner_labels="${11-}" var_overflow="${12-}"
-  local expression resolved
-  expression="$(extract_runs_on "$workflow" "$job")"
-  if [ -z "$expression" ]; then
-    fail "could not extract runs-on for job '$job' from $(basename "$workflow")"
-    return
-  fi
-  resolved="$(node "$evaluator" "$expression" "$repository" "$runner_input" \
+  local resolved
+  resolved="$(resolve_route "$workflow" "$job" "$repository" "$runner_input" \
     "$priv" "$var_default" "$var_untrusted" "$var_fastlane" "$runner_labels" \
-    "$var_overflow" 2>&1)" || {
-    fail "$label — evaluating '$expression' failed: $resolved"
+    "$var_overflow")" || {
+    fail "$label — $resolved"
     return
   }
   [ "$resolved" = "$expected" ] \
     && pass "$label" \
     || fail "$label (expected '$expected', got '$resolved')"
+}
+
+resolve_route() {
+  local workflow="$1" job="$2" repository="$3" runner_input="$4" priv="$5"
+  local var_default="$6" var_untrusted="$7" var_fastlane="$8"
+  local runner_labels="$9" var_overflow="${10-}"
+  local expression
+  expression="$(extract_runs_on "$workflow" "$job")"
+  if [ -z "$expression" ]; then
+    echo "could not extract runs-on for job '$job' from $(basename "$workflow")"
+    return 1
+  fi
+  node "$evaluator" "$expression" "$repository" "$runner_input" \
+    "$priv" "$var_default" "$var_untrusted" "$var_fastlane" "$runner_labels" \
+    "$var_overflow" 2>&1
+}
+
+mutate_job_expression() {
+  local source="$1" job="$2" old="$3" new="$4" destination="$5"
+  awk -v job="  $job:" -v old="$old" -v new="$new" '
+    $0 == job { in_job = 1 }
+    in_job && /^    runs-on:/ {
+      at = index($0, old)
+      if (at > 0) {
+        $0 = substr($0, 1, at - 1) new substr($0, at + length(old))
+      }
+      in_job = 0
+    }
+    { print }
+  ' "$source" >"$destination"
 }
 
 # The split merger has two declarations during the compatibility window: an
@@ -523,30 +549,64 @@ dispatch_workflow="$workflows/ai-review-merge.yml"
 grep -qF 'VERJSON_LANE_PRIVILEGED || vars.VERJSON_LANE_FALLBACK' "$dispatch_workflow" \
   && pass "dispatch-merge prefers the privileged lane, then the fallback" \
   || fail "dispatch-merge lost its privileged/fallback preference"
-# ADR 0048 replaces ADR 0033's "Verjson never reaches hosted" invariant with a
-# visibility split: a PUBLIC target is deliberately routed to elastic hosted
-# capacity (free for public repos, and the fixed self-hosted pool is what made
-# the 2026-08-03 deadlock possible). Private and UNRESOLVED must still not be —
-# unresolved especially, so visibility that fails to read never spends money.
+# ADR 0048's complete visibility matrix. These assertions evaluate each exact
+# job expression independently; a repository-wide substring check could stay
+# green when one job inverted its polarity and another retained the right text.
+assert_route "$dispatch_workflow" preflight Verjson/.github '' false \
+  '["trusted-canary"]' '["untrusted-canary"]' '["fastlane-canary"]' \
+  "preflight — public Verjson event takes the fast lane" '["fastlane-canary"]'
+assert_route "$dispatch_workflow" preflight Verjson/.github '' true \
+  '["trusted-canary"]' '["untrusted-canary"]' '["untrusted-canary"]' \
+  "preflight — private Verjson event stays on the untrusted lane" '["fastlane-canary"]'
+# preflight has not resolved TARGET_REPO yet. This empty event-field case pins
+# Actions' loose boolean coercion exactly; gate and dispatch-merge below carry
+# the fail-closed target-visibility contract.
+assert_route "$dispatch_workflow" preflight Verjson/.github '' '' \
+  '["trusted-canary"]' '["untrusted-canary"]' '["fastlane-canary"]' \
+  "preflight — unresolved event visibility follows Actions boolean coercion" '["fastlane-canary"]'
+assert_route "$dispatch_workflow" preflight Acme/widgets '' true '' '' \
+  'ubuntu-24.04' "preflight — external callers retain hosted portability"
+
+assert_route "$dispatch_workflow" gate Verjson/.github '' false \
+  '["trusted-canary"]' '["untrusted-canary"]' '["fastlane-canary"]' \
+  "gate — public target takes the fast lane" '["fastlane-canary"]'
+assert_route "$dispatch_workflow" gate Verjson/.github '' true \
+  '["trusted-canary"]' '["untrusted-canary"]' '["trusted-canary"]' \
+  "gate — private target stays on the trusted lane" '["fastlane-canary"]'
+assert_route "$dispatch_workflow" gate Verjson/.github '' '' \
+  '["trusted-canary"]' '["untrusted-canary"]' '["trusted-canary"]' \
+  "gate — unresolved target visibility fails closed" '["fastlane-canary"]'
+assert_route "$dispatch_workflow" gate Acme/widgets '' true '' '' \
+  'ubuntu-24.04' "gate — external callers retain hosted portability"
+
 assert_route "$dispatch_workflow" dispatch-merge Verjson/.github '' false \
-  '["self-hosted","isolated-canary"]' '["self-hosted","untrusted-canary"]' \
-  '["fastlane-canary"]' \
-  "dispatch-merge — a public Verjson target takes the fast lane" \
-  '["fastlane-canary"]'
-
+  '["privileged-canary"]' '["untrusted-canary"]' '["fastlane-canary"]' \
+  "dispatch-merge — public target takes the fast lane" '["fastlane-canary"]'
 assert_route "$dispatch_workflow" dispatch-merge Verjson/.github '' true \
-  '["self-hosted","isolated-canary"]' '["self-hosted","untrusted-canary"]' \
-  '["self-hosted","isolated-canary"]' \
-  "dispatch-merge — a private Verjson target stays self-hosted" \
-  '["fastlane-canary"]'
-
+  '["privileged-canary"]' '["untrusted-canary"]' '["privileged-canary"]' \
+  "dispatch-merge — private target stays on the privileged lane" '["fastlane-canary"]'
 assert_route "$dispatch_workflow" dispatch-merge Verjson/.github '' '' \
-  '["self-hosted","isolated-canary"]' '["self-hosted","untrusted-canary"]' \
-  '["self-hosted","isolated-canary"]' \
-  "dispatch-merge — unresolved visibility never spends hosted minutes" \
-  '["fastlane-canary"]'
+  '["privileged-canary"]' '["untrusted-canary"]' '["privileged-canary"]' \
+  "dispatch-merge — unresolved target visibility fails closed" '["fastlane-canary"]'
 assert_route "$dispatch_workflow" dispatch-merge Acme/widgets '' true '' '' \
   'ubuntu-24.04' "dispatch-merge — external callers retain hosted portability"
+
+# Mutation fixtures prove that every matrix row is bound to its own job. The
+# inverted public predicate must send a public target to that job's non-fast
+# lane; if a mutation is not applied or the evaluator reads a different job,
+# these assertions fail.
+for mutation in \
+  'preflight|github.event.repository.private == false|github.event.repository.private == true|["untrusted-canary"]' \
+  "gate|needs.preflight.outputs.target_private == 'false'|needs.preflight.outputs.target_private == 'true'|[\"trusted-canary\"]" \
+  "dispatch-merge|needs.preflight.outputs.target_private == 'false'|needs.preflight.outputs.target_private == 'true'|[\"privileged-canary\"]"; do
+  IFS='|' read -r mutation_job old_predicate new_predicate mutation_expected <<<"$mutation"
+  mutate_job_expression "$dispatch_workflow" "$mutation_job" \
+    "$old_predicate" "$new_predicate" "$mutated_workflow"
+  assert_route "$mutated_workflow" "$mutation_job" Verjson/.github '' false \
+    "$mutation_expected" '["untrusted-canary"]' "$mutation_expected" \
+    "$mutation_job — inverted-polarity mutation changes its own semantic route" \
+    '["fastlane-canary"]'
+done
 
 # The same two #405 polarities for the gate job, the one a cross-org consumer
 # actually calls: a Verjson caller that omits the input must still be lane-routed,
