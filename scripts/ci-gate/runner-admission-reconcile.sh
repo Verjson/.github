@@ -86,6 +86,11 @@ lane_variable() {
 
 default_var="$(lane_variable TRUSTED)" || exit 2
 untrusted_var="$(lane_variable UNTRUSTED)" || exit 2
+# This is the #204 cutover seam, not necessarily the selector of every live
+# privileged job. `runner_labels`, FASTLANE, and OVERFLOW can currently win
+# before the lane. Validating the seam independently makes the eventual removal
+# of those temporary overrides observable before it moves merge authority.
+privileged_var="$(lane_variable PRIVILEGED)" || exit 2
 
 # The retired pair is still live for consumers on an old pin. It is not the
 # routing source any more, so it is not fatal here — but a legacy variable that
@@ -115,9 +120,10 @@ selector() {
 
 default_selector="$(selector VERJSON_LANE_TRUSTED "$default_var")" || exit 2
 untrusted_selector="$(selector VERJSON_LANE_UNTRUSTED "$untrusted_var")" || exit 2
+privileged_selector="$(selector VERJSON_LANE_PRIVILEGED "$privileged_var")" || exit 2
 
 group_for_selector() {
-  local labels="$1"
+  local name="$1" labels="$2"
   if jq -e 'index("self-hosted") == null' <<<"$labels" >/dev/null; then
     # Hosted capacity: GitHub admits every repository, so there is no group and
     # nothing to reconcile. Named explicitly so the resolve loop below stays
@@ -129,7 +135,7 @@ group_for_selector() {
     or index("untrusted-pr") != null' <<<"$labels" >/dev/null; then
     printf 'untrusted\n'
   else
-    die_undetermined "selector has no governed lane label: $labels"
+    die_undetermined "$name selector has no governed lane label: $labels"
   fi
 }
 
@@ -161,8 +167,9 @@ has_capacity() {
   ' <<<"$runners" >/dev/null
 }
 
-default_lane="$(group_for_selector "$default_selector")" || exit 2
-untrusted_lane="$(group_for_selector "$untrusted_selector")" || exit 2
+default_lane="$(group_for_selector VERJSON_LANE_TRUSTED "$default_selector")" || exit 2
+untrusted_lane="$(group_for_selector VERJSON_LANE_UNTRUSTED "$untrusted_selector")" || exit 2
+privileged_lane="$(group_for_selector VERJSON_LANE_PRIVILEGED "$privileged_selector")" || exit 2
 
 # One listing, slurped: `--paginate` emits one object per page, so streaming
 # `.runner_groups[]` and slurping is the pagination-safe shape (cf. #260).
@@ -203,7 +210,7 @@ resolve_group() {
 # precisely how a deleted, unreferenced `isolated` group blinded the monitor.
 general_group=""
 untrusted_group=""
-for lane in "$default_lane" "$untrusted_lane"; do
+for lane in "$default_lane" "$untrusted_lane" "$privileged_lane"; do
   case "$lane" in
     general)
       [ -n "$general_group" ] || { general_group="$(resolve_group general)" || exit 2; } ;;
@@ -275,13 +282,24 @@ while IFS=$'\t' read -r repo private; do
     untrusted) group="$untrusted_group"; members="$untrusted_members"
              group_label="$UNTRUSTED_GROUP_NAME (id $untrusted_id)" ;;
     # GitHub-hosted: every repository is admitted, so there is nothing to check.
-    hosted) continue ;;
+    hosted) group="" ;;
     # Without this, an unhandled lane silently reuses the PREVIOUS iteration's
     # group/members and misattributes drift to the wrong group.
     *) die_undetermined "unhandled lane '$lane' for repository $repo" ;;
   esac
-  admitted "$repo" "$private" "$group" "$members" \
+  [ "$lane" = hosted ] || admitted "$repo" "$private" "$group" "$members" \
     || drift="$drift- \`$repo\` cannot access runner group $group_label for the selected $lane lane"$'\n'
+
+  case "$privileged_lane" in
+    general) privileged_group="$general_group"; privileged_members="$general_members"
+             privileged_group_label="$GENERAL_GROUP_NAME (id $general_id)" ;;
+    untrusted) privileged_group="$untrusted_group"; privileged_members="$untrusted_members"
+             privileged_group_label="$UNTRUSTED_GROUP_NAME (id $untrusted_id)" ;;
+    hosted) privileged_group="" ;;
+    *) die_undetermined "unhandled privileged lane '$privileged_lane' for repository $repo" ;;
+  esac
+  [ "$privileged_lane" = hosted ] || admitted "$repo" "$private" "$privileged_group" "$privileged_members" \
+    || drift="$drift- \`$repo\` cannot access runner group $privileged_group_label for the privileged lane"$'\n'
 done <<EOF
 $repos_raw
 EOF
@@ -300,6 +318,12 @@ case "$untrusted_lane" in
   hosted) untrusted_runners_for_selector="" ;;
   *) die_undetermined "unhandled untrusted lane '$untrusted_lane'" ;;
 esac
+case "$privileged_lane" in
+  general) privileged_runners="$general_runners" ;;
+  untrusted) privileged_runners="$untrusted_runners" ;;
+  hosted) privileged_runners="" ;;
+  *) die_undetermined "unhandled privileged lane '$privileged_lane'" ;;
+esac
 
 # A hosted lane has no self-hosted capacity to have, so asking would report
 # permanent drift against a deliberately hosted configuration.
@@ -307,6 +331,8 @@ esac
   || drift="$drift- VERJSON_LANE_TRUSTED has no matching online runner"$'\n'
 [ "$untrusted_lane" = hosted ] || has_capacity "$untrusted_selector" "$untrusted_runners_for_selector" \
   || drift="$drift- VERJSON_LANE_UNTRUSTED has no matching online runner"$'\n'
+[ "$privileged_lane" = hosted ] || has_capacity "$privileged_selector" "$privileged_runners" \
+  || drift="$drift- VERJSON_LANE_PRIVILEGED has no matching online runner"$'\n'
 
 # The retired pair still routes every consumer pinned to a pre-migration SHA.
 # Silent divergence between it and the live lane is the state this migration
@@ -379,12 +405,12 @@ if jq -e 'length > 0' <<<"$strays" >/dev/null; then
 fi
 
 printf '## Runner admission reconciliation (%s)\n\n' "$ORG"
-printf 'Checked **%d** active repositories using variable-selected default and untrusted lanes.\n\n' "$count"
+printf 'Checked **%d** active repositories using variable-selected trusted, untrusted, and privileged lanes.\n\n' "$count"
 
 if [ -n "$drift" ]; then
   printf '### Drift\n\n%s\n' "$drift"
   exit 1
 fi
 
-printf 'No drift: variables are valid, every repository is admitted, both lanes have online capacity, and no runner sits in the default group `%s`.\n' \
+printf 'No drift: variables are valid, every repository is admitted, all three lanes have online capacity, and no runner sits in the default group `%s`.\n' \
   "$default_group_name"

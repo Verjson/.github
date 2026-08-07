@@ -210,6 +210,12 @@ earlier decisions.
 | Reconciler | scheduled | every lane resolves to ≥1 **online** runner; group admission | `ORG_ADMIN_TOKEN` |
 | Required workflow | per PR, org-wide | no workflow hardcodes `runs-on` | none |
 
+The reconciler evaluates `TRUSTED`, `UNTRUSTED`, and the `PRIVILEGED` cutover seam
+independently. The last check is load-bearing for #204: before temporary `runner_labels`,
+fast-lane, or overflow overrides are removed, the underlying merge-gate lane must not
+silently select a group that a repository cannot access or a selector with no online
+capacity.
+
 Availability is **not** checked on the hot path, deliberately: fork pull requests get no
 organization secrets, so a resolver would have no token in exactly the untrusted case; a
 runner online at resolve time may be offline at dispatch; and putting an org-admin token

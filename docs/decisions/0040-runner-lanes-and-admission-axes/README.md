@@ -398,6 +398,20 @@ queue forever. The distinction matters because the second case deserves an alert
 shrug: `runner-admission-reconcile` reports it, which is why that job had to stop reading
 the variables this migration retired.
 
+## Amendment (2026-08-07) — privileged capacity is reconciled before isolation (#204)
+
+The scheduled admission reconciler originally read only `TRUSTED` and `UNTRUSTED`.
+`VERJSON_LANE_PRIVILEGED` was therefore a switch with no independent availability or
+admission check: repointing it could strand the merge continuation on an inaccessible
+group or a selector with no online runner while the monitor still reported clean.
+
+The reconciler now validates the privileged variable, resolves its selected group, checks
+every active repository can access that group, and requires matching online capacity.
+This validates the cutover seam even while explicit caller inputs, the fast lane, or the
+overflow lane take precedence for some live jobs. It is detection only. It does not
+create a runner group, repoint a lane, remove those overrides, change group visibility,
+or claim the disposable-runner requirements of #204 are satisfied.
+
 ## Rollback
 
 This ADR changes no runner topology and no organization configuration; it is a model plus
