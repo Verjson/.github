@@ -46,6 +46,7 @@ case "$path" in
   # the two is itself reported as drift.
   */actions/variables/VERJSON_LANE_TRUSTED) printf '%s\n' "$DEFAULT_VAR" ;;
   */actions/variables/VERJSON_LANE_UNTRUSTED) printf '%s\n' "$UNTRUSTED_VAR" ;;
+  */actions/variables/VERJSON_LANE_PRIVILEGED) printf '%s\n' "$PRIVILEGED_VAR" ;;
   */actions/variables/VERJSON_LANE_FALLBACK) printf '%s\n' "$FALLBACK_VAR" ;;
   */actions/variables/VERJSON_RUNNER_DEFAULT) printf '%s\n' "$LEGACY_DEFAULT_VAR" ;;
   */actions/variables/VERJSON_RUNNER_UNTRUSTED) printf '%s\n' "$LEGACY_UNTRUSTED_VAR" ;;
@@ -85,6 +86,7 @@ export FALLBACK_VAR=''
 export LEGACY_DEFAULT_VAR='{"value":"[\"self-hosted\",\"general\"]","visibility":"all"}'
 export LEGACY_UNTRUSTED_VAR='{"value":"[\"self-hosted\",\"general\"]","visibility":"all"}'
 export UNTRUSTED_VAR='{"value":"[\"self-hosted\",\"general\"]","visibility":"all"}'
+export PRIVILEGED_VAR='{"value":"[\"self-hosted\",\"general\"]","visibility":"all"}'
 # GitHub's own default group. A custom group cannot be made default (ADR 0003),
 # so this one is always present in a real org — which is why its ABSENCE below
 # has to be an undetermined result rather than a clean one.
@@ -146,6 +148,39 @@ out="$(run_case)"
   || fail "capacity drift not reported: $out"
 
 G4_RUNNERS='{"name":"general-1","status":"online","labels":["self-hosted","general"]}'
+DEFAULT_VAR='{"value":"[\"ubuntu-24.04\"]","visibility":"all"}'
+UNTRUSTED_VAR='{"value":"[\"ubuntu-24.04\"]","visibility":"all"}'
+LEGACY_DEFAULT_VAR=''
+LEGACY_UNTRUSTED_VAR=''
+G4_GROUP='{"id":4,"name":"DigitalOcean","visibility":"all","allows_public_repositories":false,"default":false}'
+out="$(run_case)"
+[ "$(code_of)" = "1" ] \
+  && grep -qF 'Verjson/public-app' <<<"$out" \
+  && grep -qF 'privileged lane' <<<"$out" \
+  && pass "privileged group admission is checked independently of hosted CI lanes" \
+  || fail "privileged admission drift was not reported independently: $out"
+
+DEFAULT_VAR='{"value":"[\"self-hosted\",\"general\"]","visibility":"all"}'
+UNTRUSTED_VAR='{"value":"[\"self-hosted\",\"general\"]","visibility":"all"}'
+LEGACY_DEFAULT_VAR='{"value":"[\"self-hosted\",\"general\"]","visibility":"all"}'
+LEGACY_UNTRUSTED_VAR='{"value":"[\"self-hosted\",\"general\"]","visibility":"all"}'
+G4_GROUP='{"id":4,"name":"DigitalOcean","visibility":"all","allows_public_repositories":true,"default":false}'
+PRIVILEGED_VAR='{"value":"[\"self-hosted\",\"privileged-only\"]","visibility":"all"}'
+out="$(run_case)"
+[ "$(code_of)" = "2" ] \
+  && grep -qF 'VERJSON_LANE_PRIVILEGED' <<<"$out" \
+  && pass "an ungoverned privileged selector is undetermined, never silently skipped" \
+  || fail "privileged selector was not reconciled: $out"
+
+PRIVILEGED_VAR='{"value":"[\"self-hosted\",\"general\"]","visibility":"all"}'
+G4_RUNNERS='{"name":"general-1","status":"offline","labels":["self-hosted","general"]}'
+out="$(run_case)"
+[ "$(code_of)" = "1" ] \
+  && grep -qF 'VERJSON_LANE_PRIVILEGED has no matching online runner' <<<"$out" \
+  && pass "privileged selector with no online capacity is reported" \
+  || fail "privileged capacity drift not reported: $out"
+
+G4_RUNNERS='{"name":"general-1","status":"online","labels":["self-hosted","general"]}'
 UNTRUSTED_VAR='{"value":"not-json","visibility":"all"}'
 [ "$(code_of)" = "2" ] \
   && pass "malformed variable is undetermined, never clean" \
@@ -174,6 +209,7 @@ LEGACY_DEFAULT_VAR=''
 LEGACY_UNTRUSTED_VAR=''
 DEFAULT_VAR='{"value":"[\"self-hosted\",\"lane-general\"]","visibility":"all"}'
 UNTRUSTED_VAR='{"value":"[\"self-hosted\",\"lane-untrusted\"]","visibility":"all"}'
+PRIVILEGED_VAR='{"value":"[\"self-hosted\",\"lane-untrusted\"]","visibility":"all"}'
 G6_GROUP='{"id":6,"name":"isolated","visibility":"all","allows_public_repositories":true}'
 G4_RUNNERS='{"name":"general-1","status":"online","labels":["self-hosted","lane-general"]}'
 G6_RUNNERS='{"name":"untrusted-1","status":"online","labels":["self-hosted","lane-untrusted"]}'
@@ -210,9 +246,10 @@ out="$(run_case)"
   || fail "missing selected group was not reported by name: $out"
 
 # 2. A group NO lane selects, gone: irrelevant, so it must not take the run down.
-#    This is the live regression — both lanes resolve to `general`, nothing
+#    This is the live regression — all three lanes resolve to `general`, nothing
 #    routes to `isolated`, and the reconciler still died fetching it.
 UNTRUSTED_VAR='{"value":"[\"self-hosted\",\"lane-general\"]","visibility":"all"}'
+PRIVILEGED_VAR='{"value":"[\"self-hosted\",\"lane-general\"]","visibility":"all"}'
 out="$(run_case)"
 [ "$(code_of)" = "0" ] \
   && grep -qF 'No drift' <<<"$out" \
@@ -500,6 +537,7 @@ LEGACY_DEFAULT_VAR='{"value":"[\"self-hosted\",\"general\"]","visibility":"all"}
 # configuration — the shape a provider outage would force.
 DEFAULT_VAR='{"value":"[\"ubuntu-24.04\"]","visibility":"all"}'
 UNTRUSTED_VAR='{"value":"[\"ubuntu-24.04\"]","visibility":"all"}'
+PRIVILEGED_VAR='{"value":"[\"ubuntu-24.04\"]","visibility":"all"}'
 LEGACY_DEFAULT_VAR=''
 LEGACY_UNTRUSTED_VAR=''
 out="$(run_case)"
