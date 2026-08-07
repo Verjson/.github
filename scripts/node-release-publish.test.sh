@@ -49,6 +49,8 @@ assert 'CHANGELOG/$VERSION.md' in release["run"]
 stamp_index = next(i for i, step in enumerate(steps) if "npm version" in (step.get("run") or ""))
 build_index = next(i for i, step in enumerate(steps) if "npm run build" in (step.get("run") or ""))
 assert stamp_index < build_index, "the dispatched version must be stamped before the publish build"
+assert "--allow-same-version" in steps[stamp_index]["run"], \
+    "publisher stamp must accept a scaffold already at the dispatched first version"
 for guard in (
     'scripts/release-prepare-packages.sh "${VERSION#v}"',
     'for package_dir in "${package_dirs[@]}"',

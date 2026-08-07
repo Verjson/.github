@@ -159,7 +159,7 @@ jobs:
       - name: Stamp the dispatched package version
         env:
           VERSION: ${{ inputs.version }}
-        run: npm version "${VERSION#v}" --no-git-tag-version --ignore-scripts
+        run: npm version "${VERSION#v}" --no-git-tag-version --ignore-scripts --allow-same-version
       - run: npm run build --if-present
       - name: Publish the exact snapshot version
         env:
