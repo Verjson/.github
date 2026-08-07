@@ -566,6 +566,79 @@ class ChangelogContractTests(unittest.TestCase):
         with self.assertRaisesRegex(changelog.ChangelogError, "already exists"):
             changelog.release(self.root, "v1.0.0", [])
 
+    def test_release_accepts_a_next_relative_selected_fragment(self) -> None:
+        """#328: release callers forward the repository-relative path they were given.
+
+        `changelog-release.yml` passes each newline entry through unchanged, and
+        callers supply `NEXT/<file>.md`. Indexing selection by basename alone
+        rejected that with "selected fragment does not exist", which reads as a
+        missing fragment rather than a path-shape mismatch — the diagnosis that
+        cost a real release dry-run (verjson-customer-lifecycle#4, run
+        30770166825).
+        """
+        self.init_git()
+        fragment(self.root, "2026-07-30-issue-249-contract.md")
+        fragment(self.root, "2026-07-31-issue-250-other.md", date="2026-07-31", issue="250", title="Other")
+        self.commit_all("initial")
+
+        changelog.release(self.root, "v1.0.0", ["NEXT/2026-07-30-issue-249-contract.md"])
+
+        snapshot = (self.root / "CHANGELOG" / "v1.0.0.md").read_text(encoding="utf-8")
+        self.assertIn("249", snapshot)
+        # Selection still selects: the unnamed fragment must survive, or this
+        # passes by releasing everything regardless of what was asked for.
+        self.assertNotIn("250", snapshot)
+        self.assertTrue((self.root / "NEXT/2026-07-31-issue-250-other.md").exists())
+
+    def test_release_accepts_a_bare_selected_basename(self) -> None:
+        """The pre-existing spelling keeps working — #328 adds a form, not swaps one."""
+        self.init_git()
+        fragment(self.root, "2026-07-30-issue-249-contract.md")
+        self.commit_all("initial")
+
+        changelog.release(self.root, "v1.0.0", ["2026-07-30-issue-249-contract.md"])
+
+        self.assertIn("249", (self.root / "CHANGELOG" / "v1.0.0.md").read_text(encoding="utf-8"))
+
+    def test_release_refuses_selected_paths_outside_the_unreleased_dir(self) -> None:
+        """Traversal and foreign directories are refused, not reduced to a basename.
+
+        Normalising by taking the basename unconditionally would make
+        `../../elsewhere/<name>.md` select the fragment that happens to share its
+        name — a value pointing outside `NEXT/` is a caller bug, and silently
+        honouring it is how a release consumes a fragment nobody selected.
+        """
+        self.init_git()
+        fragment(self.root, "2026-07-30-issue-249-contract.md")
+        self.commit_all("initial")
+
+        for bad, expected in (
+            ("../2026-07-30-issue-249-contract.md", "traverse"),
+            ("../../NEXT/2026-07-30-issue-249-contract.md", "traverse"),
+            ("elsewhere/2026-07-30-issue-249-contract.md", "bare filename"),
+            ("NEXT/nested/2026-07-30-issue-249-contract.md", "bare filename"),
+            ("/abs/2026-07-30-issue-249-contract.md", "repository-relative"),
+            ("", "empty"),
+        ):
+            with self.subTest(selected=bad):
+                with self.assertRaisesRegex(changelog.ChangelogError, expected):
+                    changelog.release(self.root, "v1.0.0", [bad])
+                self.assertFalse(
+                    (self.root / "CHANGELOG" / "v1.0.0.md").exists(),
+                    "a refused selection must not have written a snapshot",
+                )
+
+    def test_release_still_reports_a_genuinely_missing_fragment(self) -> None:
+        """The original error survives for its original cause, now unambiguously."""
+        self.init_git()
+        fragment(self.root, "2026-07-30-issue-249-contract.md")
+        self.commit_all("initial")
+
+        for missing in ("2026-07-30-issue-999-absent.md", "NEXT/2026-07-30-issue-999-absent.md"):
+            with self.subTest(selected=missing):
+                with self.assertRaisesRegex(changelog.ChangelogError, "does not exist"):
+                    changelog.release(self.root, "v1.0.0", [missing])
+
     def test_feature_pr_cannot_edit_aggregate_or_consume_fragment(self) -> None:
         self.init_git()
         fragment(self.root, "2026-07-30-issue-249-contract.md")
