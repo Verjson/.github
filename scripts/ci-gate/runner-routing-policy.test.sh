@@ -602,6 +602,22 @@ assert_route "$dispatch_workflow" dispatch-merge Verjson/.github '' '' \
 assert_route "$dispatch_workflow" dispatch-merge Acme/widgets '' true '' '' \
   'ubuntu-24.04' "dispatch-merge — external callers retain hosted portability"
 
+# #411. A supplied runner_labels value is explicit consumer fleet authority and
+# must beat every inferred route on dispatch-merge just as it does on preflight
+# and gate. Four visibility/owner polarities keep a future rewrite from applying
+# the input only to the originally reported off-Verjson case.
+for dispatch_override_case in \
+  'Verjson/.github|false|public Verjson target' \
+  'Verjson/verjson-authn|true|private Verjson target' \
+  'Verjson/.github||unresolved Verjson target' \
+  'Acme/widgets|true|external target'; do
+  IFS='|' read -r override_repo override_private override_label <<<"$dispatch_override_case"
+  assert_route "$dispatch_workflow" dispatch-merge "$override_repo" '' "$override_private" \
+    '["privileged-canary"]' '["untrusted-canary"]' '["consumer-fleet"]' \
+    "dispatch-merge — runner_labels overrides the $override_label" \
+    '["fastlane-canary"]' '["consumer-fleet"]' '["overflow-canary"]'
+done
+
 # Mutation fixtures prove that every matrix row is bound to its own job. The
 # inverted public predicate must send a public target to that job's non-fast
 # lane; if a mutation is not applied or the evaluator reads a different job,
