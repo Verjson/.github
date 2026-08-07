@@ -27,6 +27,9 @@ fail() { printf 'FAIL - %s\n' "$1"; fails=$((fails + 1)); }
 
 workflow="$(bash "$gen" workflow "$sha")"
 renderer="$(bash "$gen" renderer "$sha")"
+generated_artifacts="$(bash "$gen" generated-artifacts "$sha")"
+generated_artifacts_with_adr="$(bash "$gen" generated-artifacts-with-adr-index "$sha")"
+adr_index_generator="$(bash "$gen" adr-index-generator "$sha")"
 
 # 1. The workflow pins its `uses:` and its contract_ref to the same commit.
 uses_ref="$(printf '%s\n' "$workflow" | sed -n 's#.*changelog-validate\.yml@\([0-9a-f]\{40\}\).*#\1#p')"
@@ -52,6 +55,32 @@ printf '%s\n' "$workflow" | grep -q 'contents: read' \
 printf '%s\n' "$workflow" | grep -qE '\bwrite\b' \
   && fail "workflow requests a write permission" || pass "workflow requests no write permission"
 
+# 4a. The shared generated-artifacts caller is generated at the same immutable
+# pin. Changelog-only stays the safe default; ADR checking is a separate mode
+# because opting in before acquiring the generator is a counted failure.
+printf '%s\n' "$generated_artifacts" \
+  | grep -q "generated-artifacts.yml@$sha" \
+  && pass "generated-artifacts caller pins the requested workflow commit" \
+  || fail "generated-artifacts caller does not pin $sha"
+printf '%s\n' "$generated_artifacts" | grep -qE '^ +changelog: true$' \
+  && printf '%s\n' "$generated_artifacts" | grep -qE "^ +contract_ref: $sha$" \
+  && pass "generated-artifacts caller enables changelog validation at the pin" \
+  || fail "generated-artifacts caller does not enable pinned changelog validation"
+printf '%s\n' "$generated_artifacts" | grep -qE '^ +adr-index: true$' \
+  && fail "changelog-only generated-artifacts caller enables ADR checking without its generator" \
+  || pass "changelog-only generated-artifacts caller does not opt into ADR checking"
+printf '%s\n' "$generated_artifacts_with_adr" | grep -qE '^ +adr-index: true$' \
+  && printf '%s\n' "$generated_artifacts_with_adr" \
+    | grep -q "generated-artifacts.yml@$sha" \
+  && pass "ADR-index caller explicitly enables ADR checking at the pin" \
+  || fail "ADR-index caller does not enable ADR checking"
+cmp -s <(printf '%s\n' "$adr_index_generator") "$repo_root/scripts/gen-adr-index.sh" \
+  && pass "adr-index-generator emits the canonical pinned generator" \
+  || fail "adr-index-generator does not emit the pinned gen-adr-index.sh"
+printf '%s\n' "$adr_index_generator" | bash -n \
+  && pass "generated ADR index generator parses as bash" \
+  || fail "generated ADR index generator is not valid bash"
+
 # 5. A ref that is not a bare commit is rejected, not quoted and passed through.
 # An earlier sibling generator accepted a ref and let YAML be injected through
 # it; the guard is asserted, not assumed.
@@ -60,6 +89,13 @@ for bad in 'main' "$(printf 'main\n    if: false')" '../../evil' "${sha^^}" "${s
     fail "generator accepted a non-commit ref: '$bad'"
   else
     pass "generator rejects non-commit ref: '${bad//$'\n'/\\n}'"
+  fi
+done
+for mode in generated-artifacts generated-artifacts-with-adr-index adr-index-generator; do
+  if bash "$gen" "$mode" main >/dev/null 2>&1; then
+    fail "$mode accepted a mutable ref"
+  else
+    pass "$mode rejects a mutable ref"
   fi
 done
 
@@ -147,7 +183,7 @@ grep -q "CONTRACT_REF=\"$sha\"" "$emitted" \
 # implementation being executed, which no release changes. The shape this guards
 # against is an assertion pinned to repository CONTENT — a released entry's hash —
 # which every release invalidates (#304, #309).
-grep -v '^CONTRACT_SHA256="[0-9a-f]\{64\}"$' "$emitted" | grep -qE '[0-9a-f]{64}' \
+grep -vE '^(CONTRACT|ADR_INDEX)_SHA256="[0-9a-f]{64}"$' "$emitted" | grep -qE '[0-9a-f]{64}' \
   && fail "emitted test hardcodes a content hash of a released entry" \
   || pass "no hashed released entries (a release adds sections)"
 grep -qF '[ ! -e "$root/CHANGELOG.md" ]' "$emitted" \
@@ -174,17 +210,21 @@ mkdir -p "$XDG_CACHE_HOME/verjson-changelog/$sha"
 cp "$contract_src" "$XDG_CACHE_HOME/verjson-changelog/$sha/changelog.py"
 
 build_adopter() {
-  # build_adopter <dir> [with-release-workflow: yes|no|legacy]
+  # build_adopter <dir> [with-release-workflow: yes|no|legacy] [caller]
   #
   # `yes` installs the GENERATED release caller, which is what an adopter is now
   # told to commit. `legacy` reproduces the hand-copied verjson-payments shape
   # every migrated repository carried before #463/#464/#465: it verifies nothing
   # before the irreversible snapshot, installs with GITHUB_TOKEN, and lets the
   # two halves of one release route onto two runner pools.
-  local dir="$1" with_release="${2:-yes}"
+  local dir="$1" with_release="${2:-yes}" caller="${3:-workflow}"
   mkdir -p "$dir/NEXT" "$dir/scripts" "$dir/.github/workflows"
   bash "$gen" renderer "$sha" >"$dir/scripts/render-next.sh"
-  bash "$gen" workflow "$sha" >"$dir/.github/workflows/changelog.yml"
+  bash "$gen" "$caller" "$sha" >"$dir/.github/workflows/changelog.yml"
+  if [ "$caller" = generated-artifacts-with-adr-index ]; then
+    bash "$gen" adr-index-generator "$sha" >"$dir/scripts/gen-adr-index.sh"
+    chmod +x "$dir/scripts/gen-adr-index.sh"
+  fi
   cp "$emitted" "$dir/scripts/changelog-contract.test.sh"
   chmod +x "$dir/scripts/render-next.sh" "$dir/scripts/changelog-contract.test.sh"
   if [ "$with_release" = yes ]; then
@@ -255,6 +295,36 @@ build_adopter "$adopter"
 run_adopter "$adopter" \
   && pass "emitted suite passes against an unreleased adopter" \
   || fail "emitted suite failed before any release: $(tail -2 "$tmproot/run.out")"
+
+generated_adopter="$tmproot/adopter-generated-artifacts"
+build_adopter "$generated_adopter" no generated-artifacts
+run_adopter "$generated_adopter" \
+  && pass "emitted suite accepts the generated-artifacts caller" \
+  || fail "emitted suite rejects the generated-artifacts caller: $(tail -2 "$tmproot/run.out")"
+
+adr_adopter="$tmproot/adopter-generated-artifacts-adr"
+build_adopter "$adr_adopter" no generated-artifacts-with-adr-index
+run_adopter "$adr_adopter" \
+  && pass "emitted suite accepts ADR checking with the acquired pinned generator" \
+  || fail "emitted suite rejects the acquired ADR generator: $(tail -2 "$tmproot/run.out")"
+rm -f "$adr_adopter/scripts/gen-adr-index.sh"
+if run_adopter "$adr_adopter"; then
+  fail "emitted suite accepts adr-index: true without scripts/gen-adr-index.sh"
+else
+  grep -q 'adr-index: true requires the pinned scripts/gen-adr-index.sh' "$tmproot/run.out" \
+    && pass "emitted suite rejects ADR checking without its pinned generator" \
+    || fail "missing ADR generator fails without an acquisition remedy: $(tail -2 "$tmproot/run.out")"
+fi
+bash "$gen" adr-index-generator "$sha" >"$adr_adopter/scripts/gen-adr-index.sh"
+chmod +x "$adr_adopter/scripts/gen-adr-index.sh"
+printf '\n# local drift\n' >>"$adr_adopter/scripts/gen-adr-index.sh"
+if run_adopter "$adr_adopter"; then
+  fail "emitted suite accepts a divergent ADR index generator"
+else
+  grep -q 'is not the generator pinned at' "$tmproot/run.out" \
+    && pass "emitted suite rejects a divergent ADR index generator" \
+    || fail "divergent ADR generator fails without a regeneration remedy: $(tail -2 "$tmproot/run.out")"
+fi
 
 python3 "$contract_src" release --repo-root "$adopter" --version v1.0.0 >/dev/null 2>&1
 { [ -f "$adopter/CHANGELOG/v1.0.0.md" ] && [ -e "$adopter/CHANGELOG.md" ]; } \

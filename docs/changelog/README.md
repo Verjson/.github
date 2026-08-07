@@ -148,7 +148,10 @@ the reasoning is in the generator's header.
 
 ```bash
 ref=$(gh api repos/Verjson/.github/commits/main --jq .sha)
+# Changelog-only repositories keep the backwards-compatible caller:
 scripts/gen-changelog-caller.sh workflow "$ref" > .github/workflows/changelog.yml
+# Repositories consolidating generated checks use this instead:
+scripts/gen-changelog-caller.sh generated-artifacts "$ref" > .github/workflows/changelog.yml
 scripts/gen-changelog-caller.sh renderer "$ref" > scripts/render-next.sh
 scripts/gen-changelog-caller.sh contract-test "$ref" > scripts/changelog-contract.test.sh
 # Only if the repository publishes a Node package. Adopters with nothing to
@@ -156,6 +159,22 @@ scripts/gen-changelog-caller.sh contract-test "$ref" > scripts/changelog-contrac
 scripts/gen-changelog-caller.sh release-node "$ref" > .github/workflows/release.yml
 chmod +x scripts/render-next.sh scripts/changelog-contract.test.sh
 ```
+
+Choose exactly one workflow command. `generated-artifacts` enables changelog
+validation but leaves ADR-index checking off. A repository with
+`docs/decisions/` may opt into both checks only by acquiring the pinned
+generator and generating the matching caller together:
+
+```bash
+scripts/gen-changelog-caller.sh adr-index-generator "$ref" > scripts/gen-adr-index.sh
+scripts/gen-changelog-caller.sh generated-artifacts-with-adr-index "$ref" > .github/workflows/changelog.yml
+chmod +x scripts/gen-adr-index.sh
+```
+
+`adr-index: true` without that generated script is deliberately a failure, not
+a clean result. Do not copy the script from another repository or hand-edit the
+caller: the generated contract test verifies that the script's digest matches
+the same immutable pin as the caller.
 
 Re-run all of them together whenever the pin moves, and commit the result — a
 partial regeneration is the divergence the generator exists to prevent.
