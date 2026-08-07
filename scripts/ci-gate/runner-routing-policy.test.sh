@@ -414,8 +414,32 @@ for privileged_workflow in ai-privileged-merge.yml; do
   assert_route "$privileged_path" privileged_merge Verjson/verjson-authn '' true \
     '["self-hosted","privileged-canary"]' '["self-hosted","untrusted-canary"]' \
     '["self-hosted","privileged-canary"]' \
-    "$privileged_workflow — a consumer omitting runner_labels routes through VERJSON_LANE_PRIVILEGED" \
+    "$privileged_workflow — a consumer omitting runner_labels routes through VERJSON_LANE_PRIVILEGED (overflow unset)" \
     '' ''
+
+  # #487 / ADR 0064, and the mirror of the two gate polarities further down. This
+  # job polls the pool it waits on, so with the organization's overflow lane SET
+  # — which it is, today — a lane-routed caller must land THERE and not on
+  # VERJSON_LANE_PRIVILEGED. Asserting only the unset polarity above would claim
+  # a route production no longer takes.
+  assert_route "$privileged_path" privileged_merge Verjson/verjson-authn '' true \
+    '["self-hosted","privileged-canary"]' '["self-hosted","untrusted-canary"]' \
+    '["ubuntu-24.04"]' \
+    "$privileged_workflow — with the overflow lane set, an omitted input lands there" \
+    '' '' '["ubuntu-24.04"]'
+
+  # The precedence ADR 0053's exclusion paragraph rested on, and the reason #487
+  # needs no caller regenerated: overflow sits at the head of the LANE tail, not
+  # of the whole chain, so a caller generated before #405 — still most of them
+  # until the #365 sweep — keeps beating it. If this ever fails, the overflow
+  # term has been hoisted above `inputs.runner_labels` and an organization
+  # variable is now overriding a caller input on the workflow that carries merge
+  # authority. That is the inversion 0053 refused, not a fixture to update.
+  assert_route "$privileged_path" privileged_merge Verjson/verjson-authn '' true \
+    '["self-hosted","privileged-canary"]' '["self-hosted","untrusted-canary"]' \
+    '["self-hosted","general"]' \
+    "$privileged_workflow — a caller generated before #405 still overrides the overflow lane" \
+    '' '["self-hosted","general"]' '["ubuntu-24.04"]'
 
   # The escape hatch, exercised rather than assumed: a self-hosted consumer
   # OUTSIDE Verjson has no lane variables, so the input must still beat the
@@ -427,6 +451,63 @@ for privileged_workflow in ai-privileged-merge.yml; do
     "$privileged_workflow — an off-Verjson fleet still wins via runner_labels" \
     '' '["self-hosted","acme-fleet"]'
 done
+
+# #487 / ADR 0064. The requirement travels with the JOB, not with the file, so it
+# is DISCOVERED rather than listed. #487 existed because ADR 0042 split
+# `privileged_merge` into its own file and the overflow term did not follow it; a
+# hardcoded pair list here would have had exactly the same blind spot, since
+# nobody updates a list they do not know exists. Discovery means the next split
+# fails this assertion instead of shipping silently.
+#
+# The predicate is deliberately NARROWER than "has a sleep loop". What ADR 0053
+# is about is a job that holds a pool runner while waiting on OTHER WORK THAT
+# ALSO NEEDS A POOL RUNNER — that circularity is the deadlock. So both halves are
+# required: a `sleep` (it parks) AND a query against GitHub for the state of
+# checks it does not itself run (what it parks ON).
+#
+# `sleep` alone is a false positive, and there is a live one: `node-ci.yml`'s
+# `build-test` sleeps waiting for its own Docker Postgres to accept connections.
+# That wait needs no runner and starves nothing, and routing the fleet's CI onto
+# hosted overflow would be a far larger decision than #487 — reached by accident,
+# through a loose regex, on a job nobody was looking at.
+polling_jobs="$(
+  for wf in "${workflow_files[@]}"; do
+    awk -v file="$wf" '
+      /^jobs:[[:space:]]*$/ { in_jobs = 1; next }
+      !in_jobs { next }
+      /^[^[:space:]#]/ { in_jobs = 0; next }
+      # A job key: exactly two spaces of indent, inside `jobs:`.
+      /^  [^[:space:]#][^:]*:[[:space:]]*$/ {
+        if (job != "") print file "\t" job "\t" (parks && waits_on_checks) "\t" runs_on
+        job = $0
+        sub(/^  /, "", job); sub(/:[[:space:]]*$/, "", job)
+        parks = 0; waits_on_checks = 0; runs_on = ""
+        next
+      }
+      job == "" { next }
+      /^    runs-on:/ && runs_on == "" {
+        runs_on = $0
+        sub(/^    runs-on:[[:space:]]*/, "", runs_on)
+      }
+      /[^[:alnum:]_]sleep[[:space:]]+[0-9]/ { parks = 1 }
+      /statusCheckRollup|check-runs|commits\/[^ ]*\/status/ { waits_on_checks = 1 }
+      END { if (job != "") print file "\t" job "\t" (parks && waits_on_checks) "\t" runs_on }
+    ' "$wf"
+  done | awk -F'\t' '$3 == 1'
+)"
+# A sweep that finds nothing must not look like a sweep that passed.
+[ -n "$polling_jobs" ] \
+  && pass "the poll-loop sweep found jobs to check" \
+  || fail "no polling job was discovered — the sweep is broken, not the fleet clean"
+while IFS=$'\t' read -r poll_file poll_job _ poll_runs_on; do
+  [ -n "$poll_file" ] || continue
+  case "$poll_runs_on" in
+    *'vars.VERJSON_RUNNER_OVERFLOW'*)
+      pass "$(basename "$poll_file") — polling job '$poll_job' can reach the overflow lane" ;;
+    *)
+      fail "$(basename "$poll_file") — polling job '$poll_job' holds a pool runner while polling but cannot reach vars.VERJSON_RUNNER_OVERFLOW (#487): $poll_runs_on" ;;
+  esac
+done <<<"$polling_jobs"
 
 dispatch_workflow="$workflows/ai-review-merge.yml"
 grep -qF 'VERJSON_LANE_PRIVILEGED || vars.VERJSON_LANE_FALLBACK' "$dispatch_workflow" \

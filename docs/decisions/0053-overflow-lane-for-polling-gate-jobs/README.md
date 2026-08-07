@@ -114,6 +114,13 @@ be a deliberate, separately reviewed change rather than a variable flip.
 > The premise of this exclusion — that every consumer's generated caller passes
 > `inputs.runner_labels` — is superseded for newly generated callers by
 > [ADR 0057](../0057-runner-labels-optional-lane-routed-callers/README.md) (#405).
+>
+> The exclusion itself is superseded by
+> [ADR 0064](../0064-privileged-merge-reaches-the-overflow-lane/README.md) (#487),
+> which is the "deliberate, separately reviewed change" this paragraph asked for.
+> It regenerates no caller: overflow heads the lane tail only, so
+> `inputs.runner_labels` keeps its precedence and the inversion refused above does
+> not occur.
 
 ## Reverting
 

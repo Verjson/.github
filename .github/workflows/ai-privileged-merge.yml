@@ -79,7 +79,17 @@ jobs:
     # chain ends at `VERJSON_LANE_FALLBACK || '["ubuntu-24.04"]'`, so a caller
     # that omits it lands on a runner that exists, while requiring it forced
     # every consumer to hardcode a fleet label the org relabels at will.
-    runs-on: ${{ inputs.runner_labels && fromJSON(inputs.runner_labels) || github.repository_owner == 'Verjson' && fromJSON(vars.VERJSON_LANE_PRIVILEGED || vars.VERJSON_LANE_FALLBACK || '["ubuntu-24.04"]') || 'ubuntu-24.04' }}
+    #
+    # `VERJSON_RUNNER_OVERFLOW` heads the LANE tail, not the whole chain (#487,
+    # ADR 0064). This job polls the same pool as the CI it waits for, which is
+    # what ADR 0053 built the overflow lane for, but 0053 excluded this file
+    # because moving it would have inverted the precedence between a caller input
+    # and organization configuration on the one workflow carrying merge
+    # authority. Placing overflow AFTER `inputs.runner_labels` keeps that
+    # precedence exactly as 0053 required: a caller that still passes the input
+    # is unaffected, and only the lane-routed callers ADR 0057 made possible
+    # reach the overflow term. No caller needs regenerating.
+    runs-on: ${{ inputs.runner_labels && fromJSON(inputs.runner_labels) || github.repository_owner == 'Verjson' && fromJSON(vars.VERJSON_RUNNER_OVERFLOW || vars.VERJSON_LANE_PRIVILEGED || vars.VERJSON_LANE_FALLBACK || '["ubuntu-24.04"]') || 'ubuntu-24.04' }}
     timeout-minutes: 45
     env:
       EXPECTED_HEAD_SHA: ${{ github.event.pull_request.head.sha || inputs.expected_head_sha }}
