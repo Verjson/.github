@@ -40,6 +40,13 @@ would delete the thing under test. Its problem is coupling rather than routing â
 a cache probe should not be a per-PR check an unrelated merge gate blocks on â€”
 and #346 stays open for it.
 
+That remaining coupling is now resolved: the persistent-cache probe stays on
+the trusted self-hosted lane but runs only after relevant changes merge, on its
+weekly schedule, or by manual dispatch. The routing contract added by #357 pins
+that exemption alongside actionlint's complete visibility matrix. This exhausts
+the no-cost routing prerequisite before the capacity decision tracked in
+Verjson/verjson-github-runner#118.
+
 One consequence surfaced only in CI, and it is the reason the fast lane is not
 a free move. actionlint **auto-detects shellcheck on `PATH`**, and the
 `REQUIRE_SHELLCHECK` branch that omits `-shellcheck=` therefore inherits
