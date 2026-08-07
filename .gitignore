@@ -19,3 +19,8 @@
 
 # Byte-code left behind by running scripts/changelog.test.py.
 __pycache__/
+
+# Dependency trees installed by scripts/release-tooling-audit.sh when it runs the
+# supply-chain gate. ~30 MB of per-machine install, rebuilt from the lockfile on
+# demand, and untracked it would otherwise show up in every `git status` here.
+node_modules/
