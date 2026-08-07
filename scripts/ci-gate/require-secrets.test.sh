@@ -62,6 +62,9 @@ printf '%s\n' "$ATTESTATION_FIXTURE"
 EOF
 cat >"$tmp/bin/gh" <<'EOF'
 #!/usr/bin/env bash
+if [ "$1 $2" = "attestation verify" ]; then
+  exit "${ATTESTATION_VERIFY_RC:-0}"
+fi
 if [ "$1 $2" = "pr view" ]; then
   if [[ "$*" == *"reviews,comments"* ]]; then
     printf '%s\n' "${REVIEW_FIXTURE:-{\"reviews\":[],\"comments\":[]}}"

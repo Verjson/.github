@@ -88,6 +88,7 @@ if [ "${1:-}" = "pr" ] && [ "${2:-}" = "merge" ]; then echo "MERGE $args" >>"$AC
 if [ "${1:-}" = "pr" ] && [ "${2:-}" = "view" ]; then emit "$(cat "$META_FILE")"; fi
 if [ "${1:-}" = "issue" ] && [ "${2:-}" = "list" ]; then emit '[]'; fi
 if [ "${1:-}" = "issue" ] && [ "${2:-}" = "create" ]; then echo "ISSUE" >>"$ACTIONLOG"; exit 0; fi
+if [ "${1:-}" = "attestation" ] && [ "${2:-}" = "verify" ]; then exit 0; fi
 
 if [ "${1:-}" = "api" ]; then
   case "$args" in

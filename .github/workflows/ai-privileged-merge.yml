@@ -141,6 +141,10 @@ jobs:
               exit 1
             }
           done
+          gh attestation verify --help >/dev/null 2>&1 || {
+            echo "::error::phase=privileged-merge result=toolchain-missing tool=gh-attestation runner=${RUNNER_NAME:-unknown} — this runner's gh build cannot verify signed gate provenance. Upgrade gh or remove the runner from the pool."
+            exit 1
+          }
 
           # Draft and a `hold`/`DO NOT MERGE` label are INTENTIONAL holds, so they
           # end this job as a terminal no-op with a notice rather than a red check
@@ -448,7 +452,7 @@ jobs:
           }
 
           attestation_for_run() {
-            local run_id="$1" artifacts artifact_id archive payload
+            local run_id="$1" artifacts artifact_id archive payload payload_path
             artifacts="$(gh api "repos/$TARGET_REPO/actions/runs/$run_id/artifacts?per_page=100")" || return $?
             artifact_id="$(jq -r --arg name "merge-attestation-$run_id" '
               [.artifacts[] | select(.name == $name and .expired == false)] |
@@ -457,7 +461,13 @@ jobs:
             [[ "$artifact_id" =~ ^[1-9][0-9]*$ ]] || return 1
             archive="$RUNNER_TEMP/merge-attestation-$run_id.zip"
             gh api "repos/$TARGET_REPO/actions/artifacts/$artifact_id/zip" >"$archive" || return $?
-            payload="$(unzip -p "$archive" attestation.json 2>/dev/null)" || return $?
+            payload_path="$RUNNER_TEMP/merge-attestation-$run_id.json"
+            unzip -p "$archive" attestation.json >"$payload_path" 2>/dev/null || return $?
+            gh attestation verify "$payload_path" \
+              --repo "$TARGET_REPO" \
+              --signer-workflow Verjson/.github/.github/workflows/ai-review-merge.yml \
+              >/dev/null || return $?
+            payload="$(cat "$payload_path")" || return $?
             jq -ce --arg repo "$TARGET_REPO" --argjson pr "$PR_NUMBER" \
               --arg head "$EXPECTED_HEAD_SHA" --argjson run "$run_id" '
                 select(
