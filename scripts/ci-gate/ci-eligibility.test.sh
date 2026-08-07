@@ -133,12 +133,30 @@ awk '
   && pass "node-ci preserves eligibility output/env wiring without a remote self-dependency" \
   || fail "node-ci eligibility output/env wiring or no-self-dependency invariant regressed"
 
-# (f) build-test must fail OPEN at the job level: gate on `always() && … != 'false'`
-# so an errored eligibility job runs CI instead of skipping it. A plain
-# `== 'true'` would skip build-test whenever eligibility errors (fail-closed).
-grep -qF "if: always() && needs.eligibility.outputs.should-run != 'false'" "$nodeci" \
-  && pass "build-test gates fail-open (always() && != 'false')" \
-  || fail "build-test is not fail-open — an errored eligibility job would skip CI"
+# (f) build-test itself must always report the required context (#191). Only its
+# execution steps may skip on an active defer; an eligibility error still fails
+# open by running the suite.
+python3 - "$nodeci" <<'PY' \
+  && pass "build-test always reports while every executable step honors eligibility" \
+  || fail "build-test can still disappear or execute held Renovate code"
+import sys
+from pathlib import Path
+
+import yaml
+
+workflow = yaml.safe_load(Path(sys.argv[1]).read_text(encoding="utf-8"))
+job = workflow["jobs"]["build-test"]
+assert job["if"] == "always()"
+steps = job["steps"]
+deferred = [step for step in steps if step.get("name") == "Report deferred CI"]
+assert len(deferred) == 1
+assert deferred[0]["if"] == "needs.eligibility.outputs.should-run == 'false'"
+for step in steps:
+    if step is deferred[0]:
+        continue
+    condition = step.get("if", "")
+    assert "needs.eligibility.outputs.should-run != 'false'" in condition
+PY
 
 # (g) The eligibility job must request `statuses: read` (contents:read cannot read
 # a commit's combined status). Because a called workflow cannot elevate the
