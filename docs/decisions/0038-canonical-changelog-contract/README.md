@@ -258,6 +258,49 @@ suffix, dropping the end anchor, dropping the date, making the `refs` group
 unconditionally optional, not comparing the issue number, and removing the
 assertion.
 
+## Amendment (2026-08-07) — the pin is enforced, not merely documented (#412, #312)
+
+Sensitive class (arbitrary code execution on the Verjson lane). Amending rather
+than superseding: this enforces the pinning this ADR already decided.
+
+`changelog-validate.yml` declared `contract_ref` as "Immutable Verjson/.github
+commit" and then passed it straight to `actions/checkout`'s `ref:`, which accepts
+**any** ref of this repository — a branch, a tag, or `refs/pull/<n>/merge`. The
+job then executes `python3 .changelog-contract/scripts/changelog.py`, so the ref
+decides what code runs. `required: true` guaranteed only that the input was
+present. ~90 repositories call this workflow.
+
+Two consequences, one sharp and one quiet:
+
+- This repository is **public**, so `refs/pull/<n>/merge` is reachable by anyone
+  who can open a pull request against it. A caller passing that ref would run
+  unreviewed Python on the Verjson lane.
+- A typo'd branch name silently validated against a non-canonical contract —
+  precisely the outcome this ADR's pinning exists to make impossible, failing
+  quietly and looking like a pass.
+
+The guard is now the one `generated-artifacts.yml` already carried (#407),
+rejecting anything that is not exactly 40 lower-case hex **before either
+checkout**, so an invalid call fetches nothing. Ordering is load-bearing and is
+asserted directly: a guard placed after the checkout has already fetched the code
+it was meant to vet. Per **#312**, a prefix is not a pin — an abbreviated SHA is
+ambiguous by construction, since git resolves it against whatever objects exist at
+fetch time — so the predicate is anchored at both ends and a 39-character,
+over-long, upper-case, whitespace-padded or SHA-containing-path value is rejected.
+A test pins the predicate to `generated-artifacts.yml`'s character for character,
+so the two cannot disagree about what a pin is.
+
+Both checkouts also now set `persist-credentials: false`, which
+`generated-artifacts.yml` already did and this workflow did not. The contract
+engine is Python from a *separate* checkout running in the same workspace, so a
+token left in the consumer's `.git/config` sat inside that engine's blast radius.
+Nothing in this workflow pushes.
+
+Coverage is `scripts/ci-gate/changelog-validate-pin.test.sh`, wired into
+`actions-ci.yml` in the same commit. It executes the extracted `run:` block rather
+than grepping for `ref_is_immutable`, because a guard can be present and still be
+unreachable or mis-ordered — which the ordering assertion catches by mutation.
+
 ## Rollback
 
 Revert the reusable workflow and tooling adoption in consumers, then revert the
