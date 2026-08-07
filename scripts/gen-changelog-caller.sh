@@ -37,7 +37,7 @@
 set -euo pipefail
 
 usage() {
-  echo "usage: $(basename "$0") {workflow|generated-artifacts|generated-artifacts-with-adr-index|adr-index-generator|renderer|contract-test|release-node} <40-hex-commit> [--scope <npm-scope>] [--node-version <version>]" >&2
+  echo "usage: $(basename "$0") {workflow|generated-artifacts|generated-artifacts-with-adr-index|adr-index-generator|renderer|contract-test|release-node} <40-hex-commit> [--scope <npm-scope>] [--node-version <version>] [--package-dir <relative-dir>]..." >&2
   exit 2
 }
 
@@ -50,6 +50,8 @@ release_scope="@verjson"
 release_node_version="24"
 release_scope_set=false
 release_node_version_set=false
+release_package_dirs=(".")
+release_package_dirs_set=false
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --scope)
@@ -64,13 +66,20 @@ while [ "$#" -gt 0 ]; do
       release_node_version_set=true
       shift 2
       ;;
+    --package-dir)
+      [ "$#" -ge 2 ] || usage
+      release_package_dirs+=("$2")
+      release_package_dirs_set=true
+      shift 2
+      ;;
     *)
       usage
       ;;
   esac
 done
 
-if { [ "$release_scope_set" = true ] || [ "$release_node_version_set" = true ]; } \
+if { [ "$release_scope_set" = true ] || [ "$release_node_version_set" = true ] \
+  || [ "$release_package_dirs_set" = true ]; } \
   && [ "$mode" != release-node ] && [ "$mode" != contract-test ]; then
   echo "$(basename "$0"): release parameters are accepted only by release-node and contract-test" >&2
   exit 2
@@ -84,6 +93,28 @@ fi
   echo "$(basename "$0"): node version must be a numeric major, major.minor, or major.minor.patch" >&2
   exit 2
 }
+seen_package_dirs=()
+for package_dir in "${release_package_dirs[@]}"; do
+  for seen_package_dir in "${seen_package_dirs[@]}"; do
+    [ "$seen_package_dir" != "$package_dir" ] || {
+      echo "$(basename "$0"): duplicate package dir: $package_dir" >&2
+      exit 2
+    }
+  done
+  seen_package_dirs+=("$package_dir")
+  [ "$package_dir" = . ] && continue
+  [[ "$package_dir" =~ ^[A-Za-z0-9._][A-Za-z0-9._-]*(/[A-Za-z0-9._][A-Za-z0-9._-]*)*$ ]] || {
+    echo "$(basename "$0"): package dir must be a normalized repository-relative path" >&2
+    exit 2
+  }
+  IFS=/ read -r -a package_dir_segments <<<"$package_dir"
+  for segment in "${package_dir_segments[@]}"; do
+    [ "$segment" != . ] && [ "$segment" != .. ] || {
+      echo "$(basename "$0"): package dir may not contain . or .. segments" >&2
+      exit 2
+    }
+  done
+done
 
 # Strictly validated, not merely quoted. Both outputs interpolate this value —
 # one into YAML, one into a shell assignment — so anything other than a bare
@@ -283,10 +314,15 @@ release_setup_node='actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 
 
 emit_release_node() {
   local generation_command="release-node ${ref}"
+  local package_dirs_shell="."
   [ "$release_scope" = "@verjson" ] \
     || generation_command="$generation_command --scope $release_scope"
   [ "$release_node_version" = "24" ] \
     || generation_command="$generation_command --node-version $release_node_version"
+  for package_dir in "${release_package_dirs[@]:1}"; do
+    generation_command="$generation_command --package-dir $package_dir"
+    package_dirs_shell="$package_dirs_shell $package_dir"
+  done
   cat <<EOF
 name: Release
 
@@ -423,6 +459,19 @@ jobs:
           # an adopter with a private @verjson devDependency 401s here. Canonical
           # node-ci.yml states the same requirement for the same reason.
           NODE_AUTH_TOKEN: \${{ secrets.NODE_AUTH_TOKEN }}
+      - name: Prepare release package metadata
+        env:
+          VERSION: \${{ inputs.version }}
+        run: |
+          # RELEASE_PREPARE_PACKAGES_BEGIN
+          if [ -e scripts/release-prepare-packages.sh ] && [ ! -x scripts/release-prepare-packages.sh ]; then
+            echo "::error::scripts/release-prepare-packages.sh exists but is not executable."
+            exit 1
+          fi
+          if [ -x scripts/release-prepare-packages.sh ]; then
+            scripts/release-prepare-packages.sh "\${VERSION#v}"
+          fi
+          # RELEASE_PREPARE_PACKAGES_END
       - name: Stamp the dispatched package version
         env:
           VERSION: \${{ inputs.version }}
@@ -490,6 +539,19 @@ jobs:
         env:
           # NOT GITHUB_TOKEN, for the same reason as in verify (#465).
           NODE_AUTH_TOKEN: \${{ secrets.NODE_AUTH_TOKEN }}
+      - name: Prepare release package metadata
+        env:
+          VERSION: \${{ inputs.version }}
+        run: |
+          # RELEASE_PREPARE_PACKAGES_BEGIN
+          if [ -e scripts/release-prepare-packages.sh ] && [ ! -x scripts/release-prepare-packages.sh ]; then
+            echo "::error::scripts/release-prepare-packages.sh exists but is not executable."
+            exit 1
+          fi
+          if [ -x scripts/release-prepare-packages.sh ]; then
+            scripts/release-prepare-packages.sh "\${VERSION#v}"
+          fi
+          # RELEASE_PREPARE_PACKAGES_END
       - name: Stamp the dispatched package version
         env:
           VERSION: \${{ inputs.version }}
@@ -507,10 +569,18 @@ jobs:
           pack_json="\$(mktemp)"
           package_meta="\$(mktemp)"
           registry_json="\$(mktemp)"
-          trap 'rm -f "\$pack_json" "\$package_meta" "\$registry_json"' EXIT
+          package_file=
+          trap 'rm -f "\$pack_json" "\$package_meta" "\$registry_json"; [ -z "\$package_file" ] || rm -f -- "\$package_file"' EXIT
+          version="\${VERSION#v}"
+          package_dirs=(${package_dirs_shell})
 
-          npm pack --json --ignore-scripts >"\$pack_json"
-          node - "\$pack_json" "\${VERSION#v}" >"\$package_meta" <<'NODE'
+          for package_dir in "\${package_dirs[@]}"; do
+            [ -d "\$package_dir" ] \
+              || { echo "::error::Configured release package directory '\$package_dir' does not exist."; exit 1; }
+            npm version "\$version" --prefix "\$package_dir" --no-git-tag-version \
+              --ignore-scripts --allow-same-version
+            npm pack "\$package_dir" --json --ignore-scripts >"\$pack_json"
+            node - "\$pack_json" "\$version" >"\$package_meta" <<'NODE'
           const fs = require("fs");
           const path = require("path");
           const [packPath, expectedVersion] = process.argv.slice(2);
@@ -535,18 +605,18 @@ jobs:
           }
           process.stdout.write([item.name, item.version, item.integrity, item.filename].join("\\t") + "\\n");
           NODE
-          IFS=\$'\\t' read -r package_name package_version package_integrity package_file <"\$package_meta"
+            IFS=\$'\\t' read -r package_name package_version package_integrity package_file <"\$package_meta"
 
-          if npm publish "\$package_file" --ignore-scripts --registry=https://npm.pkg.github.com; then
-            echo "Published \$package_name@\$package_version."
-          else
-            echo "::warning::npm publish failed; proving whether an identical immutable version already exists before continuing."
-            npm whoami --registry=https://npm.pkg.github.com >/dev/null \
-              || { echo "::error::Cannot prove registry authorization after npm publish failed."; exit 1; }
-            npm view "\$package_name@\$package_version" --json \
-              --registry=https://npm.pkg.github.com >"\$registry_json" \
-              || { echo "::error::Cannot read the allegedly existing registry version after npm publish failed."; exit 1; }
-            node - "\$registry_json" "\$package_name" "\$package_version" "\$package_integrity" <<'NODE'
+            if npm publish "\$package_file" --ignore-scripts --registry=https://npm.pkg.github.com; then
+              echo "Published \$package_name@\$package_version."
+            else
+              echo "::warning::npm publish failed; proving whether an identical immutable version already exists before continuing."
+              npm whoami --registry=https://npm.pkg.github.com >/dev/null \
+                || { echo "::error::Cannot prove registry authorization after npm publish failed."; exit 1; }
+              npm view "\$package_name@\$package_version" --json \
+                --registry=https://npm.pkg.github.com >"\$registry_json" \
+                || { echo "::error::Cannot read the allegedly existing registry version after npm publish failed."; exit 1; }
+              node - "\$registry_json" "\$package_name" "\$package_version" "\$package_integrity" <<'NODE'
           const fs = require("fs");
           const [viewPath, expectedName, expectedVersion, expectedIntegrity] = process.argv.slice(2);
           const published = JSON.parse(fs.readFileSync(viewPath, "utf8"));
@@ -559,8 +629,11 @@ jobs:
             throw new Error("registry package identity or integrity does not match the attested release snapshot");
           }
           NODE
-            echo "Registry already contains the identical \$package_name@\$package_version; package publication is complete."
-          fi
+              echo "Registry already contains the identical \$package_name@\$package_version; package publication is complete."
+            fi
+            rm -f -- "\$package_file"
+            package_file=
+          done
           # RESTART_SAFE_NPM_PUBLISH_END
       - name: Publish the snapshot release notes
         env:
@@ -627,7 +700,11 @@ EOF
 
 emit_contract_test() {
   local adr_index_sha256=""
+  local release_package_dirs_joined=""
   adr_index_sha256="$(resolve_adr_index_generator 2>/dev/null | digest_of)" || true
+  for package_dir in "${release_package_dirs[@]}"; do
+    release_package_dirs_joined="${release_package_dirs_joined:+$release_package_dirs_joined|}$package_dir"
+  done
   # The interpolated preamble is kept deliberately small: everything below it is
   # a quoted heredoc, so the body cannot accidentally expand a generator-side
   # variable into an adopter's test.
@@ -653,6 +730,7 @@ CONTRACT_SHA256="${contract_sha256}"
 ADR_INDEX_SHA256="${adr_index_sha256}"
 EXPECTED_RELEASE_SCOPE="${release_scope}"
 EXPECTED_RELEASE_NODE_VERSION="${release_node_version}"
+EXPECTED_RELEASE_PACKAGE_DIRS="${release_package_dirs_joined}"
 EOF
   cat <<'EOF'
 
@@ -879,6 +957,29 @@ for index, line in enumerate(lines):
             % (index + 1)
         )
 
+prepare_lines = [
+    index for index, line in enumerate(lines)
+    if "scripts/release-prepare-packages.sh" in line and not line.lstrip().startswith("#")
+]
+prepare_steps = [
+    line for line in lines
+    if line.strip() == "- name: Prepare release package metadata"
+]
+if len(prepare_steps) != 2:
+    problems.append(
+        "must prepare secondary-package metadata once before verification and "
+        "once before publication (#550)"
+    )
+for index in prepare_lines:
+    step = enclosing_step(index)
+    if step is None:
+        problems.append("places secondary-package preparation outside a workflow step (#550)")
+    elif any("NODE_AUTH_TOKEN" in entry for entry in step):
+        problems.append(
+            "exposes NODE_AUTH_TOKEN to secondary-package preparation; preparation "
+            "must finish before the publication credential enters scope (#550)"
+        )
+
 for problem in problems:
     sys.stderr.write("FAIL - %s %s\n" % (path, problem))
 sys.exit(1 if problems else 0)
@@ -951,7 +1052,6 @@ while IFS= read -r release_workflow; do
       END { print count + 0 }
     ' "$work/release-stripped.yml")" -eq 2 ] \
     || fail "$release_workflow does not use npm scope $EXPECTED_RELEASE_SCOPE in both release jobs; regenerate release-node and contract-test with the same --scope (#520)"
-
   # The job that calls changelog-release.yml, isolated as a block rather than
   # grepped for. `needs:` and `runner:` are ordinary keys that also appear under
   # other jobs, so a guard matching them anywhere in the file passes on exactly
@@ -998,6 +1098,13 @@ while IFS= read -r release_workflow; do
     in_job && /^  [A-Za-z0-9_.-]+:[[:space:]]*$/ && $0 !~ /^  publish:/ { exit }
     in_job { print }
   ' "$release_workflow")"
+  expected_package_dirs="${EXPECTED_RELEASE_PACKAGE_DIRS//|/ }"
+  [ "$(printf '%s\n' "$publish_job" | awk -v expected="package_dirs=($expected_package_dirs)" '
+      { line = $0; sub(/^[[:space:]]+/, "", line); sub(/[[:space:]]+$/, "", line) }
+      line == expected { count++ }
+      END { print count + 0 }
+    ')" -eq 1 ] \
+    || fail "$release_workflow does not publish the generated package-dir set; regenerate release-node and contract-test with identical --package-dir options (#550)"
   stamp_before() {
     local job="$1" consumer_pattern="$2" stamp_line consumer_line
     stamp_line="$(printf '%s\n' "$job" | grep -n -m1 \
@@ -1011,7 +1118,9 @@ while IFS= read -r release_workflow; do
     || fail "$release_workflow does not stamp the dispatched package version before the publish build (#519)"
 
   for restart_guard in \
-    'npm pack --json --ignore-scripts' \
+    'scripts/release-prepare-packages.sh "${VERSION#v}"' \
+    'for package_dir in "${package_dirs[@]}"' \
+    'npm pack "$package_dir" --json --ignore-scripts' \
     'npm whoami --registry=https://npm.pkg.github.com' \
     'npm view "$package_name@$package_version" --json' \
     'published.dist.integrity !== expectedIntegrity' \

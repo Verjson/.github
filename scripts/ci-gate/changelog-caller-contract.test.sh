@@ -28,8 +28,8 @@ fail() { printf 'FAIL - %s\n' "$1"; fails=$((fails + 1)); }
 workflow="$(bash "$gen" workflow "$sha")"
 renderer="$(bash "$gen" renderer "$sha")"
 default_release="$(bash "$gen" release-node "$sha")"
-custom_release="$(bash "$gen" release-node "$sha" --scope @acme --node-version 22.23.1)"
-custom_contract="$(bash "$gen" contract-test "$sha" --scope @acme --node-version 22.23.1)"
+custom_release="$(bash "$gen" release-node "$sha" --scope @acme --node-version 22.23.1 --package-dir compat)"
+custom_contract="$(bash "$gen" contract-test "$sha" --scope @acme --node-version 22.23.1 --package-dir compat)"
 generated_artifacts="$(bash "$gen" generated-artifacts "$sha")"
 generated_artifacts_with_adr="$(bash "$gen" generated-artifacts-with-adr-index "$sha")"
 adr_index_generator="$(bash "$gen" adr-index-generator "$sha")"
@@ -116,6 +116,8 @@ printf '%s\n' "$custom_release" | grep -q "node-version: '22.23.1'" \
   || fail "release-node ignored custom scope or Node version"
 grep -q 'EXPECTED_RELEASE_NODE_VERSION="22.23.1"' <<<"$custom_contract" \
   && grep -q 'EXPECTED_RELEASE_SCOPE="@acme"' <<<"$custom_contract" \
+  && grep -q 'EXPECTED_RELEASE_PACKAGE_DIRS=".|compat"' <<<"$custom_contract" \
+  && grep -q 'package_dirs=(. compat)' <<<"$custom_release" \
   && pass "contract-test carries the same release parameters" \
   || fail "contract-test does not bind the selected release parameters"
 
@@ -127,7 +129,13 @@ for bad_args in \
   "--node-version lts/*" \
   "--node-version 022" \
   "--node-version 22.0.0.1" \
-  "--node-version 24 --node-version 22"; do
+  "--node-version 24 --node-version 22" \
+  "--package-dir ../compat" \
+  "--package-dir /tmp/compat" \
+  "--package-dir -compat" \
+  "--package-dir ~compat" \
+  "--package-dir compat --package-dir compat" \
+  "--package-dir ."; do
   # Intentional word splitting: each fixture is a complete argument sequence.
   # shellcheck disable=SC2086
   if bash "$gen" release-node "$sha" $bad_args >/dev/null 2>&1; then
@@ -634,6 +642,30 @@ drop_restart_integrity_proof() {
   sed -i 's/published.dist.integrity !== expectedIntegrity/false/' \
     "$1/.github/workflows/release.yml"
 }
+drop_multi_package_iteration() {
+  sed -i 's/for package_dir in "${package_dirs\[@\]}"; do/package_dir=./' \
+    "$1/.github/workflows/release.yml"
+}
+expose_publish_token_to_package_preparation() {
+  python3 - "$1/.github/workflows/release.yml" <<'PY'
+import sys
+
+path = sys.argv[1]
+text = open(path, encoding="utf-8").read()
+start = text.index("      - name: Prepare release package metadata")
+end = text.index("      - name:", start + 1)
+step = text[start:end]
+needle = "          VERSION: ${{ inputs.version }}\n"
+if needle not in step:
+    raise SystemExit("prepare step fixture no longer matches generated output")
+step = step.replace(
+    needle,
+    needle + "          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}\n",
+    1,
+)
+open(path, "w", encoding="utf-8").write(text[:start] + step + text[end:])
+PY
+}
 add_push_trigger() {
   sed -i 's|^on:$|on:\n  push:\n    branches: [main]|' "$1/.github/workflows/release.yml"
 }
@@ -731,6 +763,8 @@ expect_rejection "a publish build that runs before the dispatched version stamp 
 expect_rejection "version stamps that can run package lifecycle scripts (#519)" enable_stamp_lifecycle_scripts
 expect_rejection "a publication rerun with no registry authorization proof (#535)" drop_restart_authorization_proof
 expect_rejection "a publication rerun that ignores registry integrity (#535)" drop_restart_integrity_proof
+expect_rejection "a generated package set that is not iterated (#550)" drop_multi_package_iteration
+expect_rejection "a package-preparation hook exposed to the publish token (#550)" expose_publish_token_to_package_preparation
 expect_rejection "a release caller reachable by a push to main" add_push_trigger
 expect_rejection "a release caller on a mutable reusable ref" unpin_release_ref
 expect_rejection "a hand-written release caller with no generator provenance" strip_release_provenance

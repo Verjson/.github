@@ -1,7 +1,7 @@
 # 0062 — The release caller is generated, and it verifies before it tags
 
 - **Date:** 2026-08-06
-- **Issues:** [#463](https://github.com/Verjson/.github/issues/463), [#464](https://github.com/Verjson/.github/issues/464), [#465](https://github.com/Verjson/.github/issues/465), [#519](https://github.com/Verjson/.github/issues/519), [#520](https://github.com/Verjson/.github/issues/520), [#535](https://github.com/Verjson/.github/issues/535)
+- **Issues:** [#463](https://github.com/Verjson/.github/issues/463), [#464](https://github.com/Verjson/.github/issues/464), [#465](https://github.com/Verjson/.github/issues/465), [#519](https://github.com/Verjson/.github/issues/519), [#520](https://github.com/Verjson/.github/issues/520), [#535](https://github.com/Verjson/.github/issues/535), [#550](https://github.com/Verjson/.github/issues/550)
 - **Extends:** ADR 0038 (canonical changelog contract), ADR 0060 (a release is dispatched, never derived), ADR 0052 (`push_token` is not `GITHUB_TOKEN`), ADR 0059 (released snapshots are immutable)
 - **Category:** release authority — **sensitive class**
 
@@ -122,6 +122,17 @@ fails closed. The package and tag are never overwritten. GitHub Release notes
 are then created or reconciled from the immutable changelog snapshot, so a
 transient failure after npm accepted the package no longer makes the release
 permanently incomplete.
+
+**2026-08-07 — one release may carry explicit secondary Node packages (#550).**
+The root package remains implicit and first, preserving every existing
+invocation. Repeated validated `--package-dir` generator inputs add ordered
+repository-relative artifacts; `release-node` and `contract-test` must receive
+the same list. An optional executable `scripts/release-prepare-packages.sh`
+prepares compatibility metadata from the dispatched version before both
+verification and publication, outside publication-credential scope. The
+generated caller then stamps, packs, publishes, or integrity-reconciles every
+package independently, so partial multi-package success is restart-safe without
+overwriting any immutable version.
 
 ### Judgement call: `release-node`, not `release`
 
