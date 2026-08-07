@@ -119,20 +119,27 @@ printf '%s\n' "$custom_release" | grep -q "node-version: '22.23.1'" \
   || fail "release-node ignored custom scope or Node version"
 
 stamp_command="$(
-  printf '%s\n' "$default_release" \
-    | sed -n '/^      - name: Stamp the dispatched package version$/,/^      - name:/{s/^        run: //p;}'
+  printf '%s\n' "$custom_release" | awk '
+    /^      - name: Stamp the dispatched package versions$/ { found = 1; next }
+    found && /^        run: \|$/ { in_run = 1; next }
+    in_run && /^      - name:/ { exit }
+    in_run { sub(/^          /, ""); print }
+  '
 )"
 stamp_root="$(mktemp -d)"
 printf '{"name":"same-version-fixture","version":"0.1.0"}\n' >"$stamp_root/package.json"
+mkdir "$stamp_root/compat"
+printf '{"name":"same-version-compat-fixture","version":"0.1.0"}\n' >"$stamp_root/compat/package.json"
 if (
   cd "$stamp_root" &&
   VERSION=v0.1.0 eval "$stamp_command" >/dev/null &&
   VERSION=v0.2.0 eval "$stamp_command" >/dev/null &&
-  [ "$(node -p "require('./package.json').version")" = "0.2.0" ]
+  [ "$(node -p "require('./package.json').version")" = "0.2.0" ] &&
+  [ "$(node -p "require('./compat/package.json').version")" = "0.2.0" ]
 ); then
-  pass "generated version stamp accepts both first same-version and later changed-version releases (#579)"
+  pass "generated version stamp updates every published package and accepts same-version releases (#557, #579)"
 else
-  fail "generated version stamp rejects a valid same-version or changed-version release"
+  fail "generated version stamp does not update every published package"
 fi
 rm -rf "$stamp_root"
 
@@ -384,6 +391,17 @@ sed -i "s/scope: '@acme'/scope: '@other'/" \
 run_adopter "$custom_adopter" \
   && fail "custom contract accepted a release scope that drifted after generation" \
   || pass "custom contract rejects release parameter drift (#520)"
+
+omitted_stamp_adopter="$tmproot/adopter-omitted-secondary-stamp"
+build_adopter "$omitted_stamp_adopter"
+printf '%s\n' "$custom_release" >"$omitted_stamp_adopter/.github/workflows/release.yml"
+printf '%s\n' "$custom_contract" >"$omitted_stamp_adopter/scripts/changelog-contract.test.sh"
+chmod +x "$omitted_stamp_adopter/scripts/changelog-contract.test.sh"
+sed -i 's/package_dirs=(. compat)/package_dirs=(.)/' \
+  "$omitted_stamp_adopter/.github/workflows/release.yml"
+run_adopter "$omitted_stamp_adopter" \
+  && fail "custom contract accepted a verification stamp that omitted a published package" \
+  || pass "custom contract rejects a verification stamp that omits a published package (#557)"
 
 generated_adopter="$tmproot/adopter-generated-artifacts"
 build_adopter "$generated_adopter" no generated-artifacts
@@ -689,16 +707,12 @@ import sys
 
 path = sys.argv[1]
 text = open(path, encoding="utf-8").read()
-stamp = """      - name: Stamp the dispatched package version
-        env:
-          VERSION: ${{ inputs.version }}
-        run: npm version "${VERSION#v}" --no-git-tag-version --ignore-scripts --allow-same-version
-"""
+start = text.index("      - name: Stamp the dispatched package versions")
+end = text.index("      - name:", start + 1)
 publish = text.index("  publish:")
-before, job = text[:publish], text[publish:]
-if stamp not in before:
-    raise SystemExit("verify stamp fixture no longer matches generated output")
-open(path, "w", encoding="utf-8").write(before.replace(stamp, "", 1) + job)
+if start > publish:
+    raise SystemExit("verify stamp fixture matched the publish job")
+open(path, "w", encoding="utf-8").write(text[:start] + text[end:])
 PY
 }
 drop_verify_prepare() {
@@ -731,7 +745,7 @@ import sys
 
 path = sys.argv[1]
 text = open(path, encoding="utf-8").read()
-start = text.index("      - name: Stamp the dispatched package version")
+start = text.index("      - name: Stamp the dispatched package versions")
 end = text.index("      - name:", start + 1)
 step = text[start:end]
 needle = "          VERSION: ${{ inputs.version }}\n"
