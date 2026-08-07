@@ -190,7 +190,7 @@ rc="$(run_case "$(pr '[]')" 7 'not-a-repo')"
 # context, and a presence check would not notice.
 types="$(awk '/^  pull_request_target:/{seen=1; next} seen && /^    types:/{print; exit}' "$wf" \
   | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//')"
-[ "$types" = "types: [ready_for_review, unlabeled]" ] \
+[ "$types" = "types: [ready_for_review, unlabeled, labeled]" ] \
   && pass "the bridge subscribes to exactly the events the required workflow never sees" \
   || fail "bridge trigger types drifted: '$types'"
 
@@ -231,10 +231,49 @@ job_if="$(awk '
 # away, or a PR held with `do-not-merge` is suppressed correctly and then never
 # re-arms when that label is removed: expression `==` is case-insensitive, not
 # separator-insensitive.
-guard="( github.event.action == 'ready_for_review' || (github.event.action == 'unlabeled' && contains(fromJSON('[\"hold\",\"DO NOT MERGE\",\"DO-NOT-MERGE\",\"DO_NOT_MERGE\"]'), github.event.label.name)) )"
+guard="( github.event.action == 'ready_for_review' || (github.event.action == 'labeled' && github.event.label.name == 're-review') || (github.event.action == 'unlabeled' && contains(fromJSON('[\"hold\",\"DO NOT MERGE\",\"DO-NOT-MERGE\",\"DO_NOT_MERGE\"]'), github.event.label.name)) )"
 printf '%s' "$job_if" | grep -qF "$guard" \
-  && pass "only ready_for_review and terminal-hold removal re-arm (no re-entrancy on re-review)" \
+  && pass "only ready_for_review, re-review labelling and terminal-hold removal re-arm" \
   || fail "the bridge guard admits label churn it must ignore: $job_if"
+
+# --- #481: the re-review lane, bridged for that label ONLY ------------------
+# The gate documents this lane and guards it at ai-review-merge.yml:165, but a
+# required workflow is scheduled by the ruleset, which fires only opened /
+# synchronize / reopened — so applying the label never produced a run. #479 left
+# it out because bridging `labeled` wholesale dispatches a paid model review on
+# every label application from a privileged context, so the narrowing IS the fix
+# and has to be asserted, not assumed.
+grep -qE '^    types: \[ready_for_review, unlabeled, labeled\]$' "$wf" \
+  && pass "#481: the bridge subscribes to labeled alongside ready_for_review and unlabeled" \
+  || fail "#481: the trigger types do not include labeled: $(grep -n '    types:' "$wf")"
+
+# The whole point of the narrowing: any OTHER label must not re-arm. Asserted on
+# the guard text because the job never starts for it, so no run_case can observe
+# the absence — a passing dispatch check would be vacuous here.
+for churn in 'needs-review' 'blocked' 'documentation'; do
+  printf '%s' "$job_if" | grep -qF "== '$churn'" \
+    && fail "#481: the guard admits the '$churn' label, so ordinary labelling dispatches a paid review" \
+    || pass "#481: labelling '$churn' does not re-arm the gate"
+done
+
+# The label name is matched in the GUARD, not only re-checked in the step. If it
+# were only checked later, the job would start (and bill a runner) for every
+# label on every PR in the fleet.
+printf '%s' "$job_if" | grep -qF "github.event.action == 'labeled' && github.event.label.name == 're-review'" \
+  && pass "#481: the re-review name is matched in the job guard, before the job starts" \
+  || fail "#481: the labeled arm does not pin the label name in the guard"
+
+# Re-entrancy, restated for the new arm: the gate CONSUMES `re-review` by removing
+# it, which emits `unlabeled`. That arm admits only terminal-hold spellings, so the
+# gate's own cleanup cannot re-arm the gate. Pin both halves — the removal path
+# excluding `re-review`, and the gate actually being the thing that removes it.
+printf '%s' "$job_if" | grep -qE "unlabeled.*fromJSON\('\[\"hold\"" \
+  && ! printf '%s' "$job_if" | grep -qE "unlabeled.*re-review" \
+  && pass "#481: removal of re-review still does not re-arm (no self-dispatch loop)" \
+  || fail "#481: the unlabeled arm now admits re-review, which would loop the gate"
+grep -qF -- '--remove-label re-review' "$gate_wf" \
+  && pass "#481: the gate is the actor that consumes the re-review label" \
+  || fail "#481: the gate no longer removes re-review, so the loop analysis above is stale"
 
 # Pin each separator variant individually: dropping one is the silent regression.
 # Each spelling is also asserted to be a hold by the live predicate above, so the

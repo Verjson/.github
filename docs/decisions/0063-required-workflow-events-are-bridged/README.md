@@ -156,3 +156,40 @@ Constraints the bridge holds, pinned by `scripts/ci-gate/gate-rearm.test.sh`:
 - **Poll for wedged pull requests** from `fleet-watchdog.yml`. Correct eventually, but
   it turns a synchronous action into a delayed one and adds a scheduled job whose
   cost scales with the fleet rather than with the events.
+
+## 2026-08-07 amendment — the `re-review` lane is bridged too (#481)
+
+ADR 0063 bridged `ready_for_review` and `unlabeled`-of-a-terminal-hold, and
+deliberately left `labeled` out: bridging it wholesale dispatches a paid model
+review on every label application, from a privileged context. #481 recorded that as
+a scope decision to take on its own. Taking it now.
+
+`labeled` is bridged for **`re-review` only**, matched in the job `if:` rather than
+re-checked in the step. That placement is the safety property: a name checked later
+would still start a job — and bill a runner — for every label on every pull request
+in the fleet. The narrowing is what makes the arm admissible at all, so the guard
+pins the exact name and a test asserts that ordinary labels (`needs-review`,
+`blocked`, `documentation`) do not appear in it.
+
+Retiring the lane instead was the other option #481 offered. Bridging won because
+the gate already documents the lane and guards it at `ai-review-merge.yml:165`, and
+because a documented capability that silently does nothing is worse than either
+having it or not: it reads as working.
+
+**No re-entrancy, and this was already load-bearing.** The gate *consumes*
+`re-review` by removing it (`ai-review-merge.yml:403`), which emits `unlabeled` —
+and the `unlabeled` arm admits only the terminal-hold spellings. So the gate's own
+cleanup cannot re-arm the gate. The exclusion predates this change; adding the
+`labeled` arm is a no-op for it. Both halves are now pinned: that the removal path
+excludes `re-review`, and that the gate is still the actor doing the removing —
+because the loop analysis is only sound while that remains true.
+
+Unchanged: `#292` means the re-review *skip* optimisation is still dead in
+production (the gate cannot resolve its own identity under `github.token`), so a
+re-review currently re-pays for an unchanged diff. This amendment makes the lane
+fire; it does not make the skip work. The two are independent, and #292 carries a
+design brief for the second.
+
+The residual gap in the `unlabeled` hold enumeration — it is not equivalent to the
+`gsub("[ _-]+";" ")` normalizer it stands in for — is tracked separately as #497 and
+is untouched here.
