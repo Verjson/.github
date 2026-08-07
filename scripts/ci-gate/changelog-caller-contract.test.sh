@@ -730,6 +730,30 @@ step = step.replace(
 open(path, "w", encoding="utf-8").write(text[:start] + step + text[end:])
 PY
 }
+drop_verification_suite_token() {
+  sed -i '/^      - name: Run the release verification suite$/,+2{/NODE_AUTH_TOKEN:/d;}' \
+    "$1/.github/workflows/release.yml"
+}
+expose_private_token_to_package_preparation() {
+  python3 - "$1/.github/workflows/release.yml" <<'PY'
+import sys
+
+path = sys.argv[1]
+text = open(path, encoding="utf-8").read()
+start = text.index("      - name: Prepare release package metadata")
+end = text.index("      - name:", start + 1)
+step = text[start:end]
+needle = "          VERSION: ${{ inputs.version }}\n"
+if needle not in step:
+    raise SystemExit("prepare step fixture no longer matches generated output")
+step = step.replace(
+    needle,
+    needle + "          NODE_AUTH_TOKEN: ${{ secrets.NODE_AUTH_TOKEN }}\n",
+    1,
+)
+open(path, "w", encoding="utf-8").write(text[:start] + step + text[end:])
+PY
+}
 drop_local_package_path_prefix() {
   sed -i 's|package_path="./$package_dir"|package_path="$package_dir"|' \
     "$1/.github/workflows/release.yml"
@@ -837,6 +861,8 @@ expect_rejection "a publication rerun with no registry authorization proof (#535
 expect_rejection "a publication rerun that ignores registry integrity (#535)" drop_restart_integrity_proof
 expect_rejection "a generated package set that is not iterated (#550)" drop_multi_package_iteration
 expect_rejection "a package-preparation hook exposed to the publish token (#550)" expose_publish_token_to_package_preparation
+expect_rejection "a release verification suite without private-package auth (#569)" drop_verification_suite_token
+expect_rejection "an unrelated release step exposed to private-package auth (#569)" expose_private_token_to_package_preparation
 expect_rejection "a secondary package path that npm can resolve from the registry (#561)" drop_local_package_path_prefix
 expect_rejection "a release caller reachable by a push to main" add_push_trigger
 expect_rejection "a release caller on a mutable reusable ref" unpin_release_ref

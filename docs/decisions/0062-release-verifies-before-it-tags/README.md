@@ -1,7 +1,7 @@
 # 0062 — The release caller is generated, and it verifies before it tags
 
 - **Date:** 2026-08-06
-- **Issues:** [#463](https://github.com/Verjson/.github/issues/463), [#464](https://github.com/Verjson/.github/issues/464), [#465](https://github.com/Verjson/.github/issues/465), [#519](https://github.com/Verjson/.github/issues/519), [#520](https://github.com/Verjson/.github/issues/520), [#535](https://github.com/Verjson/.github/issues/535), [#548](https://github.com/Verjson/.github/issues/548), [#550](https://github.com/Verjson/.github/issues/550), [#561](https://github.com/Verjson/.github/issues/561)
+- **Issues:** [#463](https://github.com/Verjson/.github/issues/463), [#464](https://github.com/Verjson/.github/issues/464), [#465](https://github.com/Verjson/.github/issues/465), [#519](https://github.com/Verjson/.github/issues/519), [#520](https://github.com/Verjson/.github/issues/520), [#535](https://github.com/Verjson/.github/issues/535), [#548](https://github.com/Verjson/.github/issues/548), [#550](https://github.com/Verjson/.github/issues/550), [#561](https://github.com/Verjson/.github/issues/561), [#569](https://github.com/Verjson/.github/issues/569)
 - **Extends:** ADR 0038 (canonical changelog contract), ADR 0060 (a release is dispatched, never derived), ADR 0052 (`push_token` is not `GITHUB_TOKEN`), ADR 0059 (released snapshots are immutable)
 - **Category:** release authority — **sensitive class**
 
@@ -179,6 +179,21 @@ npm scope and numeric Node version through validated `--scope` and
 contract test, which requires both release jobs to use them. This preserves the
 decision that generated artifacts are never hand-edited while keeping existing
 two-argument invocations compatible in their selected defaults (#520).
+
+### 2026-08-07 refinement: the verification suite can read private packages
+
+The supported `scripts/release-verify.sh` hook and default Node suite run in one
+named step after the authenticated install. `actions/setup-node` writes an npmrc
+that expands `NODE_AUTH_TOKEN` at command execution time, so an install-step
+credential does not carry into a hook that performs its own private-package
+registry query. The verification step therefore receives
+`secrets.NODE_AUTH_TOKEN` directly (#569).
+
+The grant remains step-scoped and read-oriented: it is not placed at workflow or
+job scope, is absent from package preparation and other unrelated release
+steps, and the release caller remains dispatch-only. Pull-request workflows
+receive no new secret. Publication continues to use the repository-scoped
+`GITHUB_TOKEN` only in its existing publication step.
 
 ## Consequences
 
