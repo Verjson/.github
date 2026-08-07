@@ -11,4 +11,6 @@ recover without manual intervention.
 The original finding stays visible in the timeline, while human, current-head,
 and unbound reviews remain untouched. Review API failures fail closed. This
 change stacks on the terminal-verdict correction from #441 and refines ADR
-0058.
+0058. The shared budget-exhaustion fixture models GitHub's paginated empty
+review response so the recovered-approval path is deterministic across jq
+versions.
