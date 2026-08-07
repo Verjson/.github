@@ -51,13 +51,13 @@ else
   fail "adr-index did not preserve the generated-index check"
 fi
 
-actions_ci="$root/.github/workflows/actions-ci.yml"
-if grep -qF 'run: make adr-index' "$actions_ci"; then
+actions_ci="$root/scripts/actions-ci-groups.tsv"
+if grep -q $'\tmake adr-index$' "$actions_ci"; then
   pass "actions-ci consumes the portable ADR-index target"
 else
   fail "actions-ci bypasses the portable ADR-index target"
 fi
-if grep -qF 'run: make render >/dev/null' "$actions_ci"; then
+if grep -q $'\tmake render >/dev/null$' "$actions_ci"; then
   pass "actions-ci consumes the portable render target"
 else
   fail "actions-ci bypasses the portable render target"

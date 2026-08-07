@@ -141,8 +141,8 @@ else
   fail "scheduled fleet audit is missing or its privileged execution surface drifted"
 fi
 
-grep -qF 'run: bash scripts/ci-gate/privileged-merge-conformance.test.sh' \
-  "$root/.github/workflows/actions-ci.yml" \
+grep -q $'\tbash scripts/ci-gate/privileged-merge-conformance.test.sh$' \
+  "$root/scripts/actions-ci-groups.tsv" \
   && pass "fleet conformance contract runs in actions CI" \
   || fail "fleet conformance contract is not wired into actions CI"
 

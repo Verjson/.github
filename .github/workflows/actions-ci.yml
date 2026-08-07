@@ -3,53 +3,41 @@ name: actions-ci
 # Runs the shell tests for the composite actions in this repo. Keeps the
 # persistent-runner credential logic (verjson-cli-cloud#59) regression-covered
 # and makes the "Evidence" for those actions reproducible in CI rather than
-# narrated. Pinned to the general self-hosted pool.
+# narrated.
 
 on:
   pull_request:
     paths:
       - '.github/actions/**'
       - '.github/actionlint.yaml'
-      # doc-tag-pins.test.sh checks every tracked file, so the trigger spans every
-      # surface that carries a pin example — not an enumeration of workflows (#287).
+      # doc-tag-pins.test.sh checks every tracked file, so this covers every
+      # workflow surface that can carry a pin example (#287).
       - '.github/workflows/**'
       - 'Makefile'
       - 'renovate.json'
       - 'scripts/**'
       - 'docs/**'
       - 'NEXT/**'
-      # doc-fragment-names.sh scans every tracked *.md, and doc-tag-pins.sh every
-      # tracked file. A surface a scanner reads but the trigger omits does not fail
-      # its own PR — it fails the next unrelated one, pointing at the wrong change
-      # and the wrong author. trigger-scope.test.sh asserts these globs still cover
-      # what the scanners read, so the two cannot drift apart again (#305).
+      # Repository-wide scanners read every tracked Markdown file. Omitting a
+      # scanned surface would defer its failure to an unrelated PR (#305).
       - '**/*.md'
-      # Redundant today — everything under CHANGELOG/ is markdown, so '**/*.md'
-      # already covers it. Kept for a future non-markdown file there, which
-      # doc-tag-pins would read and nothing else here would match.
+      # Redundant while every released entry is Markdown, but deliberately
+      # covers future non-Markdown files read by doc-tag-pins.
       - 'CHANGELOG/**'
   push:
     branches: [main]
     paths:
       - '.github/actions/**'
       - '.github/actionlint.yaml'
-      # doc-tag-pins.test.sh checks every tracked file, so the trigger spans every
-      # surface that carries a pin example — not an enumeration of workflows (#287).
+      # Keep push coverage identical to pull_request coverage; trigger-scope
+      # verifies both sets and every repository-wide scanner input.
       - '.github/workflows/**'
       - 'Makefile'
       - 'renovate.json'
       - 'scripts/**'
       - 'docs/**'
       - 'NEXT/**'
-      # doc-fragment-names.sh scans every tracked *.md, and doc-tag-pins.sh every
-      # tracked file. A surface a scanner reads but the trigger omits does not fail
-      # its own PR — it fails the next unrelated one, pointing at the wrong change
-      # and the wrong author. trigger-scope.test.sh asserts these globs still cover
-      # what the scanners read, so the two cannot drift apart again (#305).
       - '**/*.md'
-      # Redundant today — everything under CHANGELOG/ is markdown, so '**/*.md'
-      # already covers it. Kept for a future non-markdown file there, which
-      # doc-tag-pins would read and nothing else here would match.
       - 'CHANGELOG/**'
 
 permissions:
@@ -60,199 +48,42 @@ concurrency:
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
-  shell-tests:
-    # Fast lane (ADR 0047). This suite is ~4 minutes of pure CPU with no network
-    # wait, but on the shared `general` pool it queued behind `gate` and
-    # `privileged_merge` jobs that hold a runner for 10-40 minutes while merely
-    # POLLING. Short workers were evicted by long sleepers, and the repository
-    # that ships fleet-wide fixes was the one waiting on the fleet.
-    #
-    # `.github` is public, so GitHub-hosted minutes here are free (billing
-    # measured 2026-08-01; ADR 0033's "hosted is unfunded" premise is false for
-    # public repos). Routed through a VARIABLE, not a hardcoded label, so the
-    # lane is repointed at a self-hosted pool by setting VERJSON_RUNNER_FASTLANE
-    # without touching this file — and an unset variable falls back to the
-    # ADR 0034 general pool rather than failing.
+  shell-test-groups:
+    # Five representative main runs on 2026-08-07 spent 210-287 seconds in
+    # this suite after 3-92 seconds queued. Merge-gate contracts consumed
+    # 102-142 seconds, changelog/release 83-115, and platform/fleet 18-25.
+    # Three groups halve the critical path while adding only two checkouts.
     runs-on: ${{ fromJSON(vars.VERJSON_RUNNER_FASTLANE || vars.VERJSON_LANE_TRUSTED || vars.VERJSON_LANE_FALLBACK || '["ubuntu-24.04"]') }}
-    timeout-minutes: 15
+    timeout-minutes: 12
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        group: [platform, merge-gate, changelog-release]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          # Bounded history (#234). node-workflow-pins.test.sh resolves co-located
-          # action dependencies at their pinned commits, but it now fetches each
-          # pinned SHA on demand and fails closed if it cannot — so the whole
-          # graph is no longer the price of validating a pin.
+          # Bounded history is enough because pin tests fetch required commits
+          # explicitly; tags remain necessary for documented-tag validation.
           fetch-depth: 1
-          # doc-tag-pins.sh reads `git tag`, which a bounded fetch omits by
-          # default; without this every documented pin reads as a lookup fault.
           fetch-tags: true
-      - name: actionlint — workflow and config changes trigger lint (#82)
-        run: bash scripts/actionlint-trigger.test.sh
-      - name: actionlint — downloaded binary checksum is fail-closed (#83)
-        run: bash scripts/actionlint-install.test.sh
-      - name: actionlint — reusable contract is bounded and immutable (#153)
-        run: bash scripts/actionlint-reusable.test.sh
-      - name: actions-ci — obsolete PR runs cancel within a bounded job (#231)
-        run: bash scripts/actions-ci-policy.test.sh
-      - name: Portable Make targets preserve local CI entry points (#537)
-        run: bash scripts/make-portability.test.sh
-      - name: reusable Node workflows — nested actions and release tooling are pinned (#89)
-        run: bash scripts/node-workflow-pins.test.sh
-      - name: reusable Node workflows — cache and timeout controls (#152)
-        run: bash scripts/node-workflow-controls.test.sh
-      - name: reusable workflow docs — copyable release refs are immutable (#353)
-        run: bash scripts/immutable-release-docs.test.sh
-      - name: reusable Node workflows — optional DB service is default-off and exports DATABASE_URL (#108)
-        run: bash scripts/ci-gate/node-ci-db-service.test.sh
-      - name: ci-eligibility — defer CI while renovate/stability-days is pending, fail open (#133)
-        run: bash scripts/ci-gate/ci-eligibility.test.sh
-      - name: reusable Node release — publication consumes the contract version (#455)
-        run: bash scripts/node-release-publish.test.sh
-      - name: retired semantic-release tooling stays deleted (#509)
-        run: bash scripts/retired-release-tooling.test.sh
-      - name: setup-verjson-node — configure-git idempotency + secret hygiene
-        run: bash .github/actions/setup-verjson-node/configure-git.test.sh
-      - name: merge gate — freshness fail-open/fail-closed behavior
-        run: bash scripts/ci-gate/freshness.test.sh
-      - name: merge gate — review-comment render (ADR-0007 pinpointing)
-        run: bash scripts/ci-gate/review-comment.test.sh
-      - name: merge gate — bind review evidence to PR-head context (#377)
-        run: bash scripts/ci-gate/review-context.test.sh
-      - name: merge gate — ai-review retry chain (ADR 0015, #64)
-        run: bash scripts/ci-gate/ai-review-retry.test.sh
-      - name: merge gate — split three-job shape and authoritative merge recheck (#104, #230)
-        run: bash scripts/ci-gate/gate-queue.test.sh
-      - name: merge gate — runner-timing diagnostics survive bad timestamps (#106, ADR 0017)
-        run: bash scripts/ci-gate/preflight-timing.test.sh
-      - name: merge gate — classify docs-fast-lane allowlist (#66, #75)
-        run: bash scripts/ci-gate/classify-fast-lane.test.sh
-      - name: merge gate — elide lockfiles from review payload (#110)
-        run: bash scripts/ci-gate/elide-lockfiles.test.sh
-      - name: merge gate — skip re-review on unchanged diff (#120)
-        run: bash scripts/ci-gate/rereview-skip.test.sh
-      - name: merge gate — follow-up issue filing (ADR 0009)
-        run: bash scripts/ci-gate/followup-issues.test.sh
-      - name: merge gate — exit status reflects the merge, not branch cleanup (#458)
-        run: bash scripts/ci-gate/merge-branch-cleanup.test.sh
-      - name: merge gate — hold predicate and re-fire guards (ADR 0012, #51, #88)
-        run: bash scripts/ci-gate/hold.test.sh
-      - name: merge gate — re-arm bridge for events the required workflow never sees (#468, ADR 0063)
-        run: bash scripts/ci-gate/gate-rearm.test.sh
-      - name: merge gate — generated fleet re-arm caller contract (#477, ADR 0063)
-        run: bash scripts/ci-gate/gate-rearm-caller-contract.test.sh
-      - name: merge gate — dispatch target fixed to the current repository (#230, ADR 0036)
-        run: bash scripts/ci-gate/dispatch-target-guard.test.sh
-      - name: merge gate — target visibility resolves fail-closed runner routing (#170)
-        run: bash scripts/ci-gate/target-visibility.test.sh
-      - name: merge gate — cross-org workflow_call distribution seams (#128, ADR 0022)
-        run: bash scripts/ci-gate/reusable-workflow.test.sh
-      - name: merge gate — isolate untrusted review from privileged merge (#230)
-        run: bash scripts/ci-gate/require-secrets.test.sh
-      - name: merge gate — isolate actions:write in metadata-only dispatcher (#235)
-        run: bash scripts/ci-gate/dispatch-permission.test.sh
-      - name: merge gate — privileged continuation fleet conformance (#326)
-        run: bash scripts/ci-gate/privileged-merge-conformance.test.sh
-      - name: merge gate — org required-workflow gate provenance (#259, ADR 0039)
-        run: bash scripts/ci-gate/required-workflow-provenance.test.sh
-      - name: merge gate — gate provenance is bound to the run's entry workflow (#279, ADR 0044)
-        run: bash scripts/ci-gate/entry-workflow-provenance.test.sh
-      - name: Privileged merge caller contract (job key + exclusion literal)
-        run: bash scripts/ci-gate/privileged-merge-caller-contract.test.sh
-      - name: Privileged merge runs only from Verjson/.github@main (#278, ADR 0043)
-        run: bash scripts/ci-gate/privileged-merge-pin.test.sh
-      - name: merge gate — absent checks fail closed, not open (#143, ADR 0024)
-        run: bash scripts/ci-gate/ci-wait-fail-closed.test.sh
-      - name: merge gate — the poll retires only where GitHub requires checks (#341, ADR 0058)
-        run: bash scripts/ci-gate/required-checks-skip-poll.test.sh
-      - name: A runner without gh must fail the gate fast, not hold it (#363)
-        run: bash scripts/ci-gate/toolchain-missing.test.sh
-      - name: merge gate — the gate never waits on its own jobs (#276, ADR 0039)
-        run: bash scripts/ci-gate/self-job-exclusion.test.sh
-      - name: merge gate — diff-size budget tier and budget-exceeded outcome (#181, ADR 0032)
-        run: bash scripts/ci-gate/budget-exceeded.test.sh
-      - name: pulumi-ci — credential boundary and trusted preview admission (#47, #151)
-        run: bash scripts/ci-gate/pulumi-comment.test.sh
-      - name: pulumi-ci — comment assertions are stable under pipefail (#199)
-        run: bash scripts/ci-gate/pulumi-comment-pipefail.test.sh
-      - name: generated artifacts — enumerated checks report missing, stale and clean (#404)
-        run: bash scripts/ci-gate/generated-artifacts.test.sh
-      - name: runner routing — general lane and external portability (#173, #174, #182)
-        run: bash scripts/ci-gate/runner-routing-policy.test.sh
-      - name: runner admission — routing reconciled against runner groups (#189)
-        run: bash scripts/ci-gate/runner-admission-reconcile.test.sh
-      - name: tag-major — annotated tag points directly at release commit (#73)
-        run: bash scripts/tag-major.test.sh
-      - name: ADR index is generated & current (not hand-edited)
-        run: make adr-index
-      - name: ADR index generator — edge cases (#67, #78, #79)
-        run: bash scripts/ci-gate/gen-adr-index.test.sh
-      - name: NEXT changelog fragments render cleanly
-        run: make render >/dev/null
-      - name: NEXT renderer — edge cases (#67)
-        run: bash scripts/ci-gate/render-next.test.sh
-      - name: Changelog contract — validation, release, and PR policy (#249)
-        run: python3 scripts/changelog.test.py
-      - name: Changelog contract — consumer caller generator (#286)
-        run: bash scripts/ci-gate/changelog-caller-contract.test.sh
-      - name: Generated Node release resumes safely after partial publication (#535)
-        run: bash scripts/ci-gate/release-node-restart.test.sh
-      - name: Generated Node release packs configured directories locally (#561)
-        run: bash scripts/ci-gate/release-node-local-pack.test.sh
-      - name: Generated Node release bounds GitHub Release notes (#571)
-        run: bash scripts/ci-gate/release-node-notes.test.sh
-      - name: Changelog contract — generated release caller verifies before it tags (#463, #464, #465)
-        run: bash scripts/ci-gate/changelog-release-caller.test.sh
-      - name: Changelog contract resolution — pinned digest, verified override (#304)
-        run: bash scripts/ci-gate/changelog-contract-resolution.test.sh
-      - name: Changelog contract — the released form previews where adopters see it (#449)
-        run: bash scripts/ci-gate/changelog-validate-preview.test.sh
-      - name: Changelog contract — contract_ref must be an immutable pin (#412, #312)
-        run: bash scripts/ci-gate/changelog-validate-pin.test.sh
-      - name: The documented contract pin exists and contains the generator (#308)
-        run: bash scripts/contract-pin.test.sh
-      - name: Changelog components — generated multi-stream release contract (#390)
-        run: bash scripts/component-changelog-contract.test.sh
-      - name: Changelog migration — documented consumer sequence is executable (#354)
-        run: bash scripts/changelog-migration.test.sh
-      - name: Changelog contract — this repository's own fragments (#289)
-        run: python3 scripts/changelog.py validate --repo-root .
-      - name: Changelog release — the pushing job holds write authority (#295)
-        run: bash scripts/changelog-release-permissions.test.sh
-      - name: Changelog release — a non-default ref fails instead of skipping green (#466)
-        run: bash scripts/changelog-release-branch-guard.test.sh
-      - name: Documented tag pins resolve to real tags (#287)
-        run: bash scripts/doc-tag-pins.test.sh
-      - name: Documented fragment filenames are names the engine accepts (#305)
-        run: bash scripts/doc-fragment-names.test.sh
-      - name: CI path triggers cover what the repository-wide scanners read (#305)
-        run: bash scripts/trigger-scope.test.sh
-      - name: Fleet watchdog preempts only stale poll jobs, never CI (#334)
-        run: bash scripts/fleet-watchdog.test.sh
-      - name: Fleet watchdog records scheduler gaps explicitly (#414)
-        run: bash scripts/fleet-watchdog-cadence.test.sh
-      - name: Queued runner selectors have an admitted online match (#511)
-        run: bash scripts/runner-selector-health.test.sh
-      - name: Required-check audit never calls an unaudited repository conformant (#416)
-        run: bash scripts/required-checks-audit.test.sh
-      - name: Gate coverage audit is dry-run first and ownership bounded (#474)
-        run: python3 scripts/gate_coverage_audit_test.py
-      - name: Stack classifier catches caller names and matrices the contract cannot reach (#416, #431)
-        run: bash scripts/classify-repo-stacks.test.sh
-      - name: Privileged scheduled workflows use immutable default-branch code (#350, #387)
-        run: python3 scripts/ci-gate/privileged-scheduled-workflows.test.py
-      # Wired late: these four existed but ran nowhere, so the lane migration
-      # broke rework-reconcile-trigger's routing assertion and CI stayed green
-      # over it. A test that is not wired does not run — the same gap that once
-      # left hold.test.sh's pin dormant (#401 review).
-      - name: CI telemetry — rework reconcile trigger, classification, aggregation, report
+      - name: Run ${{ matrix.group }} shell contracts without hiding sibling failures
+        run: bash scripts/actions-ci-group.sh "${{ matrix.group }}"
+
+  # Required-check compatibility boundary. `shell-tests` is the context named
+  # by the repository ruleset (ADR 0058), so it remains unmatrixed and reports
+  # the aggregate result after every group reaches a terminal state.
+  shell-tests:
+    needs: shell-test-groups
+    if: ${{ always() }}
+    runs-on: ${{ fromJSON(vars.VERJSON_RUNNER_FASTLANE || vars.VERJSON_LANE_TRUSTED || vars.VERJSON_LANE_FALLBACK || '["ubuntu-24.04"]') }}
+    timeout-minutes: 2
+    steps:
+      - name: Preserve the required shell-tests context
+        env:
+          GROUP_RESULT: ${{ needs.shell-test-groups.result }}
         run: |
-          bash scripts/ci-telemetry/rework-reconcile-trigger.test.sh
-          bash scripts/ci-telemetry/rework-classify.test.sh
-          bash scripts/ci-telemetry/rework-aggregate.test.sh
-          bash scripts/ci-telemetry/rework-report.test.sh
-      - name: Repository hygiene — README policy, exemption register, audit default (#232, ADR 0046)
-        run: bash scripts/repo-hygiene.test.sh
-      - name: Repository hygiene — immutable merged policy ref (#351, ADR 0046)
-        run: bash scripts/ci-gate/repo-hygiene-ref.test.sh
-      - name: Repository hygiene — the suite never touches the checkout it runs from (#340, #393)
-        run: bash scripts/ci-gate/repo-hygiene-sandbox.test.sh
+          if [ "$GROUP_RESULT" != "success" ]; then
+            echo "::error::one or more shell-test groups failed"
+            exit 1
+          fi

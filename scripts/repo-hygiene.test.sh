@@ -932,7 +932,7 @@ else
 fi
 
 # Wired, or it does not run. That gap once left hold.test.sh dormant.
-grep -qF 'bash scripts/repo-hygiene.test.sh' "$repo_root/.github/workflows/actions-ci.yml" \
+grep -q $'\tbash scripts/repo-hygiene.test.sh$' "$repo_root/scripts/actions-ci-groups.tsv" \
   && pass "this suite is wired into actions-ci" \
   || fail "repo-hygiene.test.sh is not wired into actions-ci.yml — it would never run"
 

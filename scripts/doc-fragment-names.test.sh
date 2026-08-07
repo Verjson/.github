@@ -149,7 +149,7 @@ done
 # A test that actions-ci does not call never runs — the gap that once left
 # hold.test.sh dormant here.
 grep -q 'bash scripts/doc-fragment-names.test.sh' \
-  "$repo_root/.github/workflows/actions-ci.yml" \
+  "$repo_root/scripts/actions-ci-groups.tsv" \
   && pass "actions-ci runs this test" \
   || fail "actions-ci does not run scripts/doc-fragment-names.test.sh, so it is dormant"
 

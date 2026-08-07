@@ -35,13 +35,13 @@ else
   pass "live CI and maintenance surfaces contain no retired release-tooling references"
 fi
 
-actions_ci="$root/.github/workflows/actions-ci.yml"
+actions_ci="$root/scripts/actions-ci-groups.tsv"
 for command in \
   'bash scripts/node-workflow-controls.test.sh' \
   'bash scripts/node-workflow-pins.test.sh' \
   'bash scripts/node-release-publish.test.sh' \
   'bash scripts/retired-release-tooling.test.sh'; do
-  grep -qF "run: $command" "$actions_ci" \
+  grep -qF "$(printf '\t%s' "$command")" "$actions_ci" \
     && pass "actions-ci runs $command" \
     || fail "actions-ci does not run $command"
 done
