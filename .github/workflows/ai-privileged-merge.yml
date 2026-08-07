@@ -141,6 +141,56 @@ jobs:
               exit 1
             }
           done
+
+          # Draft and a `hold`/`DO NOT MERGE` label are INTENTIONAL holds, so they
+          # end this job as a terminal no-op with a notice rather than a red check
+          # (#263, following ADR 0037's treatment of the workflow-files hold). The
+          # repository's own guidance says to open non-trivial work as a draft, so
+          # the old `::error::PR is draft` + `exit 1` put a red check on every PR
+          # that followed it — which is exactly how a fleet learns to merge past
+          # red.
+          #
+          # Read the two signals as STRINGS, not with `jq -e … || exit`. That form
+          # was fail-CLOSED only because its failure branch exited non-zero; a
+          # literal reading of #263 ("notice + exit 0") would have turned a jq
+          # error — malformed or truncated PR metadata — into a silent success on
+          # the workflow that carries merge authority. #480 is the same defect at
+          # the gate's own checkpoints. So an unreadable signal is neither a hold
+          # nor a pass: it is an error, and it stays one.
+          #
+          # Deliberately does NOT exit non-zero for the hold itself. A held PR that
+          # reports failure and a held PR that reports success are both "not
+          # merged"; only one of them trains reviewers to ignore the colour.
+          terminal_hold_no_op() { # terminal_hold_no_op <meta-json> <draft-phrase> <hold-phrase>
+            local meta="$1" draft_phrase="$2" hold_phrase="$3" is_draft is_held
+            # Typed, not merely truthy. jq's `if` treats every non-null non-false
+            # value as true, so `"isDraft": "maybe"` — or any string GitHub might
+            # return in a degraded response — would have been absorbed as a HOLD
+            # and reported as a deliberate no-op. Not merging is the safe
+            # direction, but silently relabelling unreadable metadata as "a human
+            # held this" is the same category of lie #480 was about. A non-boolean
+            # is an error.
+            is_draft="$(jq -r 'if (.isDraft | type) != "boolean" then "invalid" elif .isDraft then "true" else "false" end' <<<"$meta")"
+            case "$is_draft" in
+              true)
+                echo "::notice::PR #$PR_NUMBER $draft_phrase; privileged merge is a terminal no-op (#263). Mark it ready to re-enter the gate."
+                exit 0 ;;
+              false) ;;
+              *)
+                echo "::error::could not read the draft state of PR #$PR_NUMBER; refusing to merge (#480)"
+                exit 1 ;;
+            esac
+            is_held="$(jq -r '([.labels[].name | ascii_upcase | gsub("[ _-]+";" ")]) as $l | (($l | index("HOLD")) or ($l | index("DO NOT MERGE"))) | if . then "true" else "false" end' <<<"$meta")"
+            case "$is_held" in
+              true)
+                echo "::notice::PR #$PR_NUMBER $hold_phrase by a hold label; privileged merge is a terminal no-op (ADR 0012, #263). Remove the label to re-enter the gate."
+                exit 0 ;;
+              false) ;;
+              *)
+                echo "::error::could not read the hold state of PR #$PR_NUMBER; refusing to merge (#480)"
+                exit 1 ;;
+            esac
+          }
           if [ -z "${GH_TOKEN:-}" ]; then
             echo "::error::trusted merge has no ORG_ADMIN_TOKEN"
             exit 1
@@ -473,11 +523,7 @@ jobs:
             fi
             [ "$pr_state" = "OPEN" ] ||
               { echo "::error::PR is no longer open"; exit 1; }
-            jq -e '.isDraft | not' <<<"$meta" >/dev/null ||
-              { echo "::error::PR is draft"; exit 1; }
-            jq -e '([.labels[].name | ascii_upcase | gsub("[ _-]+";" ")] |
-              (index("HOLD") or index("DO NOT MERGE")) | not)' <<<"$meta" >/dev/null ||
-              { echo "::error::PR is held"; exit 1; }
+            terminal_hold_no_op "$meta" "is a draft" "is held"
 
             # ADR 0023 defers Renovate heads while their release-age status is
             # pending. The unprivileged gate uses the same signal; without this
@@ -578,11 +624,10 @@ jobs:
           fi
           [ "$final_state" = "OPEN" ] ||
             { echo "::error::PR closed before merge"; exit 1; }
-          jq -e '.isDraft | not' <<<"$final" >/dev/null ||
-            { echo "::error::PR became draft"; exit 1; }
-          jq -e '([.labels[].name | ascii_upcase | gsub("[ _-]+";" ")] |
-            (index("HOLD") or index("DO NOT MERGE")) | not)' <<<"$final" >/dev/null ||
-            { echo "::error::PR became held"; exit 1; }
+          # Same treatment at the authoritative checkpoint. A human who converts
+          # a PR back to draft, or labels it, DURING the poll window has stopped
+          # the merge deliberately — that is the mechanism working, not a fault.
+          terminal_hold_no_op "$final" "became a draft" "became held"
           file_guard_rc=0
           workflow_files_changed || file_guard_rc=$?
           if [ "$file_guard_rc" -eq 2 ]; then

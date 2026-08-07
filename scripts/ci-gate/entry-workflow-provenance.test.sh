@@ -333,6 +333,69 @@ grep -q 'if $required then' "$wf" && grep -q 'injected_by_ruleset' "$wf" \
   && pass "ruleset-mandated repositories are matched only by the injected run" \
   || fail "the required-workflow matcher is additive again, re-opening the repo-local forgery"
 
+# --- #263: draft and hold are terminal no-ops, not red checks ---------------
+# The repository's own guidance says to open non-trivial work as a draft so the
+# gate skips it. This job fired anyway and died with `::error::PR is draft` +
+# exit 1, so every PR that followed the guidance carried a red
+# `privileged_merge` — which is how a fleet learns to merge past red. ADR 0037
+# already established the shape for the workflow-files hold: notice + exit 0.
+#
+# The invariant is TWO-SIDED and both sides are asserted, because either alone is
+# satisfiable by a wrong fix. It must not merge, and it must not fail.
+assert_terminal_no_op() { # <label> <expected notice substring>
+  if merged; then fail "FAIL-OPEN: merged — $1"
+  elif jq_broke; then fail "vacuous case (jq filter did not compile) — $1"
+  elif unstubbed; then fail "vacuous case (aborted on an unstubbed gh call) — $1"
+  elif [ "$rc" -ne 0 ]; then fail "still a red check instead of a no-op (rc=$rc) — $1"
+  elif ! grep -q "$2" "$tmp/out.txt"; then
+    fail "exited 0 without saying why (wanted '$2') — $1"
+  else pass "$1"; fi
+}
+
+META="$(jq -c '.isDraft = true' <<<"$meta_open")"
+run_case pull_request_target
+assert_terminal_no_op "#263: a draft PR is a terminal no-op, not a red check" 'is a draft'
+
+for label in hold 'DO NOT MERGE' do-not-merge Do_Not_Merge; do
+  META="$(jq -c --arg l "$label" '.labels = [{"name": $l}]' <<<"$meta_open")"
+  run_case pull_request_target
+  assert_terminal_no_op "#263: a '$label' label is a terminal no-op, not a red check" 'hold label'
+done
+
+# The fail-closed direction, which is why this could not be a literal reading of
+# #263. `jq -e '.isDraft | not' || exit 1` was fail-CLOSED only because its
+# failure branch exited non-zero; switching that to `exit 0` would have turned a
+# jq error on unreadable PR metadata into a SILENT SUCCESS on the workflow that
+# carries merge authority — #480's defect, freshly introduced. An unreadable
+# signal is neither a hold nor a pass.
+for bad in \
+  'a draft flag that is a string:{"headRefOid":"HEADSHA","isDraft":"maybe","state":"OPEN","labels":[]}' \
+  'labels that are not an array:{"headRefOid":"HEADSHA","isDraft":false,"state":"OPEN","labels":"hold"}' \
+  'a label name that is an object:{"headRefOid":"HEADSHA","isDraft":false,"state":"OPEN","labels":[{"name":{"x":1}}]}' \
+; do
+  label="${bad%%:*}"
+  META="${bad#*:}"
+  META="${META//HEADSHA/$HEAD_SHA}"
+  run_case pull_request_target
+  if merged; then
+    fail "FAIL-OPEN: $label was MERGED — an unreadable hold signal must never merge"
+  elif [ "$rc" -eq 0 ]; then
+    fail "FAIL-OPEN: $label exited 0 as a no-op — an unreadable signal is not a hold (#480)"
+  else
+    pass "#263/#480: $label fails closed rather than passing as a hold ($rc)"
+  fi
+done
+
+# A truthy `.isDraft` string is not a draft. jq's `if` treats every non-null,
+# non-false value as true, so a naive materialisation would report the string
+# "maybe" as a hold and silently stop merging real PRs. The case above pins that
+# it is an ERROR instead — the distinction between "held" and "unreadable".
+grep -q 'could not read the draft state' "$wf" \
+  && pass "#480: an unreadable draft state has its own error, distinct from a hold" \
+  || fail "#480: the draft check cannot distinguish unreadable from held"
+
+reset_fixtures
+
 [ "$fails" -eq 0 ] && { echo "All tests passed."; exit 0; }
 echo "$fails test(s) failed."
 exit 1

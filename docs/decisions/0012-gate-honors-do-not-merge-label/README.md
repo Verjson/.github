@@ -158,3 +158,47 @@ rather than grepping for the fixed shape, so a rewrite that reintroduces the
 fail-open breaks the tests: six malformed-metadata fixtures in
 `scripts/ci-gate/hold.test.sh`, and the classifier fixtures plus both positive
 controls in `scripts/ci-gate/budget-exceeded.test.sh`.
+
+## 2026-08-07 amendment — a hold reports as a no-op, and unreadable is neither
+
+Issue: [Verjson/.github#263](https://github.com/Verjson/.github/issues/263).
+Sensitive class (merge-authority workflow). Amending, not superseding: the hold
+was already terminal here; what changed is how it is *reported*.
+
+`ai-privileged-merge.yml` fired on drafts and terminated with `::error::PR is
+draft` and exit 1, so every pull request that followed this repository's own
+guidance — open non-trivial work as a draft — carried a red `privileged_merge`
+check for as long as it stayed a draft. A `hold`/`DO NOT MERGE` label did the
+same. Both now end the job as a terminal no-op with a notice naming the remedy,
+which is the shape ADR 0037 already established for the workflow-files hold.
+
+A held pull request that reports failure and one that reports success are both
+"not merged". Only the first teaches reviewers that red is normal, which is the
+habit a merge gate exists to prevent (#341 records the same erosion from a
+different cause).
+
+**The literal fix in #263 — "notice + `exit 0`" — would have introduced a
+fail-open, and this is the part worth remembering.** The old form was
+`jq -e '.isDraft | not' <<<"$meta" || { echo …; exit 1; }`. That is fail-*closed*
+only incidentally: a jq error on malformed or truncated metadata takes the same
+branch as a real draft, and that branch exited non-zero. Changing the branch to
+`exit 0` would have converted an unreadable hold signal into a silent success on
+the one workflow holding `ORG_ADMIN_TOKEN` — #480's defect, freshly introduced
+while fixing something else.
+
+So the signals are materialised into strings and an unreadable one is an **error**,
+distinct from both "held" and "not held". Three states, not two.
+
+**`.isDraft` is checked by TYPE, not truthiness.** jq's `if` treats every
+non-null, non-false value as true, so `"isDraft": "maybe"` would have been
+absorbed as a hold and reported as a deliberate human stop. Not merging is the
+safe direction, but relabelling unreadable metadata as "a human held this" is the
+same category of misreport. A non-boolean fails closed and says so. This was
+caught by the test before it shipped, not reasoned about in advance.
+
+Coverage is in `scripts/ci-gate/entry-workflow-provenance.test.sh`, which already
+extracts and executes this step's `run:` block. The invariant is asserted
+two-sided, because either half alone is satisfiable by a wrong fix: a held PR must
+not merge **and** must not fail; an unreadable signal must not merge **and** must
+not pass as a hold. The existing positive control — a legitimate run still merges
+— is what stops the whole set from passing by refusing everything.

@@ -211,10 +211,46 @@ run_case "$stale" && fail "stale head was accepted" || pass "stale head is rejec
 red="${green/\"name\":\"build\",\"status\":\"COMPLETED\",\"conclusion\":\"SUCCESS\"/\"name\":\"build\",\"status\":\"COMPLETED\",\"conclusion\":\"FAILURE\"}"
 run_case "$red" && fail "failed required check was accepted" || pass "failed required check is rejected"
 run_case "$green" "" && fail "missing credentials were accepted" || pass "missing credentials fail closed"
+# Draft and hold are INTENTIONAL holds, so since #263 they end the job as a
+# terminal no-op with a notice rather than a red check — the same shape ADR 0037
+# gave the workflow-files hold, asserted a few lines below.
+#
+# These two cases used to judge on the exit status alone (`run_case … && fail
+# "draft PR was accepted"`), which conflates "exited 0" with "merged". That is the
+# very proxy #263 is about: the invariant is *must not merge*, and exit status was
+# standing in for it. Assert the invariant directly instead — no merge, plus the
+# notice that says why — so this still catches a real fail-open. Flipping it to
+# expect exit 0 without checking the merge log would have made it vacuous.
 draft="${green/\"isDraft\":false/\"isDraft\":true}"
-run_case "$draft" && fail "draft PR was accepted" || pass "draft PR is rejected"
-held="${green/\"labels\":[]/\"labels\":[{\"name\":\"hold\"}]}"
-run_case "$held" && fail "held PR was accepted" || pass "held PR is rejected"
+run_case "$draft" \
+  && ! grep -q '^pr merge ' "$tmp/merge.log" \
+  && grep -q 'is a draft; privileged merge is a terminal no-op' "$tmp/case-output.txt" \
+  && pass "draft PR is a terminal no-op: not merged, not a red check (#263)" \
+  || { sed 's/^/       /' "$tmp/case-output.txt"; fail "draft PR did not stop as a successful no-op"; }
+# Built with jq, not `${green/"labels":[]/…}`. That substitution was silently
+# broken: `[]` is a bash glob bracket expression, so the pattern consumed past the
+# closing bracket and produced malformed JSON with `state` and `statusCheckRollup`
+# nested INSIDE the label object and no top-level `state` at all. The old
+# assertion ("held PR is rejected") therefore passed because the step bailed at
+# `PR is no longer open` — it never reached the hold check, and had the hold been
+# removed entirely this case would still have gone green. Pre-existing and
+# invisible; found only because the expected outcome changed here.
+held="$(jq -c '.labels = [{"name":"hold"}]' <<<"$green")"
+run_case "$held" \
+  && ! grep -q '^pr merge ' "$tmp/merge.log" \
+  && grep -q 'hold label; privileged merge is a terminal no-op' "$tmp/case-output.txt" \
+  && pass "held PR is a terminal no-op: not merged, not a red check (#263)" \
+  || { sed 's/^/       /' "$tmp/case-output.txt"; fail "held PR did not stop as a successful no-op"; }
+# The fail-closed direction at this layer too: an unreadable draft flag is neither
+# a hold nor a pass. Without this, the two cases above could be satisfied by a
+# guard that treats any non-false value as a hold — which my first version of the
+# #263 fix did, absorbing garbage metadata as a deliberate human stop.
+unreadable="${green/\"isDraft\":false/\"isDraft\":\"maybe\"}"
+run_case "$unreadable" \
+  && { sed 's/^/       /' "$tmp/case-output.txt"; fail "an unreadable draft flag passed as a hold (#480)"; } \
+  || { ! grep -q '^pr merge ' "$tmp/merge.log" \
+       && pass "an unreadable draft flag fails closed without merging (#480)" \
+       || fail "FAIL-OPEN: an unreadable draft flag merged"; }
 padding="$(for i in $(seq 1 100); do printf 'docs/pad-%03d.md\n' "$i"; done)"
 FILES_FIXTURE="${padding}"$'\n''.github/workflows/caller.yml'$'\n' run_case "$green" \
   && ! grep -q '^pr merge ' "$tmp/merge.log" \
