@@ -11,7 +11,12 @@ on:
         required: true
         type: string
       fragments:
-        description: Newline-separated NEXT fragment filenames; empty selects all
+        description: Newline-separated NEXT fragment filenames; empty selects the requested component stream
+        required: false
+        type: string
+        default: ''
+      component:
+        description: Optional component stream; empty selects only unscoped fragments
         required: false
         type: string
         default: ''
@@ -104,11 +109,13 @@ jobs:
         env:
           VERSION: ${{ inputs.version }}
           FRAGMENTS: ${{ inputs.fragments }}
+          COMPONENT: ${{ inputs.component }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
           git config user.name verjson-release
           git config user.email release@verjson.dev
           args=(release --repo-root "$GITHUB_WORKSPACE" --version "$VERSION")
+          [ -z "$COMPONENT" ] || args+=(--component "$COMPONENT")
           while IFS= read -r fragment; do
             [ -z "$fragment" ] || args+=(--fragment "$fragment")
           done <<<"$FRAGMENTS"

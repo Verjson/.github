@@ -11,6 +11,7 @@ Reverse-chronological index of org-level decisions.
 <!-- BEGIN ADR INDEX -->
 | # | Date | Decision |
 |---|------|----------|
+| [0066](0066-component-scoped-changelog-streams/README.md) | 2026-08-07 | Changelog components are explicit release streams |
 | [0065](0065-verified-changelog-tool-cache/README.md) | 2026-08-07 | Changelog tooling uses a verified runner cache |
 | [0064](0064-privileged-merge-reaches-the-overflow-lane/README.md) | 2026-08-07 | The privileged merge poller reaches the overflow lane |
 | [0063](0063-required-workflow-events-are-bridged/README.md) | 2026-08-06 | A required workflow only sees three activity types, so the rest are bridged |

@@ -161,7 +161,8 @@ def parse_frontmatter(path: Path) -> tuple[dict[str, str], str]:
     return metadata, "\n".join(lines[end + 1 :]).strip() + "\n"
 
 
-KNOWN_KEYS = frozenset({"date", "issue", "id", "title", "refs", "summary"})
+KNOWN_KEYS = frozenset({"date", "issue", "id", "title", "refs", "summary", "component"})
+COMPONENT_NAME = re.compile(r"^[a-z0-9](?:[a-z0-9._-]{0,62}[a-z0-9])?$")
 
 
 def quoting_is_ambiguous(value: str) -> bool:
@@ -205,6 +206,12 @@ def validate_metadata(path: Path, metadata: dict[str, str]) -> str:
         )
     if not metadata.get("title"):
         raise ChangelogError(f"{path}: title is required")
+    if "component" in metadata and not COMPONENT_NAME.fullmatch(metadata["component"]):
+        raise ChangelogError(
+            f"{path}: component must be a 1-64 character lowercase identifier"
+            " using letters, digits, dot, underscore, or hyphen, and must start"
+            " and end with a letter or digit"
+        )
     # Both of these are what a released snapshot says about the entry, so both
     # get the same scrutiny: whatever is wrong with them becomes permanent.
     for key in ("title", "summary"):
@@ -431,6 +438,33 @@ def render(entries: list[Fragment], released: bool = False) -> str:
     return "\n\n".join(sections) + ("\n" if sections else "")
 
 
+def select_component(entries: list[Fragment], component: str | None) -> list[Fragment]:
+    if component is not None and not COMPONENT_NAME.fullmatch(component):
+        raise ChangelogError("component selector is not a valid component name")
+    return [
+        entry
+        for entry in entries
+        if (entry.metadata.get("component") or None) == component
+    ]
+
+
+def render_next(
+    repo_root: Path,
+    component: str | None = None,
+    legacy_dir: str | None = None,
+    allow_legacy_next: bool = False,
+    released: bool = False,
+) -> str:
+    selected = select_component(
+        fragments(repo_root, legacy_dir, allow_legacy_next),
+        component,
+    )
+    if not selected:
+        stream = f" for component {component}" if component is not None else ""
+        raise ChangelogError(f"no unreleased fragments{stream}")
+    return render(selected, released=released)
+
+
 def snapshot_paths(repo_root: Path) -> list[Path]:
     root = repo_root / "CHANGELOG"
     if not root.is_dir():
@@ -520,7 +554,12 @@ def _selected_key(name: str, by_name: dict[str, "Fragment"]) -> str:
     return key
 
 
-def release(repo_root: Path, version: str, selected_names: list[str]) -> None:
+def release(
+    repo_root: Path,
+    version: str,
+    selected_names: list[str],
+    component: str | None = None,
+) -> None:
     if not SNAPSHOT_NAME.fullmatch(f"{version}.md"):
         raise ChangelogError("version contains unsupported characters")
     if git(repo_root, "status", "--porcelain", "--untracked-files=no"):
@@ -536,9 +575,17 @@ def release(repo_root: Path, version: str, selected_names: list[str]) -> None:
             raise ChangelogError("another release is already running") from exc
         entries = fragments(repo_root)
         by_name = {entry.path.name: entry for entry in entries if entry.canonical}
-        selected = entries if not selected_names else []
+        stream_entries = select_component(entries, component)
+        selected = stream_entries if not selected_names else []
         for name in selected_names:
-            selected.append(by_name[_selected_key(name, by_name)])
+            entry = by_name[_selected_key(name, by_name)]
+            if entry not in stream_entries:
+                actual = entry.metadata.get("component") or "unscoped"
+                expected = component or "unscoped"
+                raise ChangelogError(
+                    f"selected fragment belongs to component {actual}, not {expected}"
+                )
+            selected.append(entry)
         if not selected:
             raise ChangelogError("release selected no fragments")
         snapshot = repo_root / "CHANGELOG" / f"{version}.md"
@@ -610,6 +657,7 @@ def parser() -> argparse.ArgumentParser:
             # The released form is the one nobody reads until it can no longer
             # be changed. This makes it viewable while the fragments still can.
             sub.add_argument("--as-released", action="store_true")
+            sub.add_argument("--component")
     released = subparsers.add_parser("render-released")
     released.add_argument("--repo-root", type=Path, default=Path.cwd())
     pr = subparsers.add_parser("check-pr")
@@ -620,6 +668,7 @@ def parser() -> argparse.ArgumentParser:
     release_parser.add_argument("--repo-root", type=Path, default=Path.cwd())
     release_parser.add_argument("--version", required=True)
     release_parser.add_argument("--fragment", action="append", default=[])
+    release_parser.add_argument("--component")
     return result
 
 
@@ -630,16 +679,21 @@ def main() -> int:
         if args.command == "validate":
             fragments(repo_root, args.legacy_dir, args.allow_legacy_next)
         elif args.command == "render-next":
-            entries = fragments(repo_root, args.legacy_dir, args.allow_legacy_next)
-            if not entries:
-                raise ChangelogError("no unreleased fragments")
-            sys.stdout.write(render(entries, released=args.as_released))
+            sys.stdout.write(
+                render_next(
+                    repo_root,
+                    component=args.component,
+                    legacy_dir=args.legacy_dir,
+                    allow_legacy_next=args.allow_legacy_next,
+                    released=args.as_released,
+                )
+            )
         elif args.command == "render-released":
             sys.stdout.write(render_released(repo_root))
         elif args.command == "check-pr":
             check_pr(repo_root, args.base, args.head)
         elif args.command == "release":
-            release(repo_root, args.version, args.fragment)
+            release(repo_root, args.version, args.fragment, component=args.component)
     except ChangelogError as exc:
         print(f"changelog: {exc}", file=sys.stderr)
         return 1
