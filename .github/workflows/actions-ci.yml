@@ -146,6 +146,8 @@ jobs:
         run: bash scripts/ci-gate/hold.test.sh
       - name: merge gate — re-arm bridge for events the required workflow never sees (#468, ADR 0063)
         run: bash scripts/ci-gate/gate-rearm.test.sh
+      - name: merge gate — generated fleet re-arm caller contract (#477, ADR 0063)
+        run: bash scripts/ci-gate/gate-rearm-caller-contract.test.sh
       - name: merge gate — dispatch target fixed to the current repository (#230, ADR 0036)
         run: bash scripts/ci-gate/dispatch-target-guard.test.sh
       - name: merge gate — target visibility resolves fail-closed runner routing (#170)
