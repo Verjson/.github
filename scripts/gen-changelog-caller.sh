@@ -825,6 +825,12 @@ while IFS= read -r release_workflow; do
     END { if (!done && block ~ /changelog-release\.yml@/) printf "%s", block }
   ' "$work/release-stripped.yml")"
 
+  # The reusable workflow and its engine are one contract. Checking only the
+  # uses: ref lets a caller execute workflow A with contract_ref B (#349).
+  printf '%s\n' "$snapshot_job" \
+    | grep -qE "^[[:space:]]+contract_ref:[[:space:]]*$CONTRACT_REF[[:space:]]*$" \
+    || fail "$release_workflow passes a contract_ref that differs from its changelog-release.yml pin"
+
   # #463/#464. changelog-release.yml consumes NEXT/, writes an immutable
   # CHANGELOG/<version>.md, commits, tags and pushes to the default branch in one
   # atomic push. Nothing after that is recoverable by re-dispatch: the same
