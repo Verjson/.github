@@ -26,16 +26,55 @@ jobs:
     runs-on: ${{ inputs.runner != '' && fromJSON(inputs.runner) || github.repository_owner != 'Verjson' && 'ubuntu-24.04' || github.event.repository.private == true && fromJSON(vars.VERJSON_RUNNER_OVERFLOW || vars.VERJSON_LANE_TRUSTED || vars.VERJSON_LANE_FALLBACK || '["ubuntu-24.04"]') || fromJSON(vars.VERJSON_RUNNER_OVERFLOW || vars.VERJSON_LANE_UNTRUSTED || vars.VERJSON_LANE_FALLBACK || '["ubuntu-24.04"]') }}
     timeout-minutes: 5
     steps:
+      # Reject a mutable contract_ref BEFORE either checkout, so an invalid call
+      # fetches nothing at all (#412). `ref:` accepts any ref of Verjson/.github
+      # and this job then executes `python3` from the result, so the ref decides
+      # what code runs on the Verjson lane. A branch or tag can move after review;
+      # `refs/pull/<n>/merge` is an unreviewed pull request against a PUBLIC
+      # repository, so accepting one would let anyone able to open a PR run their
+      # own contract engine here. ~90 repositories call this workflow.
+      #
+      # Ported verbatim from generated-artifacts.yml, which already carries this
+      # guard (#407) — the two must not disagree about what counts as a pin.
+      - name: Require an immutable contract pin
+        id: pin
+        env:
+          CONTRACT_REF: ${{ inputs.contract_ref }}
+        run: |
+          set -euo pipefail
+          # Exactly 40 lower-case hex, matching scripts/node-workflow-pins.test.sh.
+          # An abbreviated SHA is ambiguous by construction — git resolves it
+          # against whatever objects exist at fetch time — so a prefix is not a
+          # pin (#312). Upper-case is rejected too: `ref:` is passed through
+          # unchanged, and accepting two spellings of one commit means two
+          # spellings to audit for no benefit.
+          ref_is_immutable() { [[ "$1" =~ ^[0-9a-f]{40}$ ]]; }
+
+          if ! ref_is_immutable "$CONTRACT_REF"; then
+            reason="contract_ref must be a full 40-character lower-case Verjson/.github commit SHA; got '$CONTRACT_REF'. A branch, a tag or refs/pull/<n>/merge can change after review, and an abbreviated SHA is ambiguous, so the contract that runs would not be the contract that was reviewed."
+            printf '::error title=Changelog contract check unavailable::%s\n' "$reason"
+            printf '### Changelog contract could not be validated\n\n%s\n\n' "$reason" \
+              >>"${GITHUB_STEP_SUMMARY:-/dev/null}"
+            exit 1
+          fi
+
+          printf 'ok - contract_ref is an immutable commit pin\n'
       - name: Check out consumer
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
+          # The contract engine is `python3` from a SEPARATE checkout running in
+          # this same workspace, so a persisted credential in the consumer's
+          # `.git/config` sits inside the blast radius of whatever that engine
+          # does. Nothing here pushes. Matches generated-artifacts.yml.
+          persist-credentials: false
       - name: Check out canonical contract
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           repository: Verjson/.github
           ref: ${{ inputs.contract_ref }}
           path: .changelog-contract
+          persist-credentials: false
       - name: Validate fragments and pull-request policy
         env:
           LEGACY_DIR: ${{ inputs.legacy_dir }}
