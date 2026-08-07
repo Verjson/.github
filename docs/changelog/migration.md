@@ -36,7 +36,7 @@
    a second `generator_ref` to keep its contract test hermetic (#308). Use:
 
    ```bash
-   PIN=969628b2c046684b9f160df9107507f212068cf9
+   PIN=bb5c34c708065e14c3fd663a4d87763f81d3aa93
    scripts/gen-changelog-caller.sh workflow      "$PIN" > .github/workflows/changelog.yml
    scripts/gen-changelog-caller.sh renderer      "$PIN" > scripts/render-next.sh
    scripts/gen-changelog-caller.sh contract-test "$PIN" > scripts/changelog-contract.test.sh
@@ -47,6 +47,19 @@
    every metadata key advertised in the README capability table, so the
    recommendation cannot drift from either the repository or the documented
    feature set.
+
+   Restricted-egress runners may preload the generated tooling cache without
+   changing consumer files:
+
+   ```bash
+   export VERJSON_CHANGELOG_TOOL_CACHE=/opt/verjson/changelog-tools
+   # expected file: /opt/verjson/changelog-tools/$PIN/changelog.py
+   ```
+
+   The generated renderer and contract test verify the preloaded engine against
+   the exact digest embedded for `$PIN`; a matching path alone is never trusted.
+   On a miss or mismatch they use the immutable raw GitHub URL as a repair
+   fallback, or fail with the expected path and digest when egress is unavailable.
 
    **This pin is an immutable commit, not a published release.** `v2.2.0` is
    older and accepts only `date`, `issue`, `id`, and `title`; it rejects the

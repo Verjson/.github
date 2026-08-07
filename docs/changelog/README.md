@@ -37,8 +37,8 @@ exists as of 2026-08-07, so do not infer current metadata support from
 `v2.2.0`.
 
 The migration guide recommends immutable commit
-`969628b2c046684b9f160df9107507f212068cf9`. Its engine accepts every key below:
-<!-- recommended-contract-pin: 969628b2c046684b9f160df9107507f212068cf9 -->
+`bb5c34c708065e14c3fd663a4d87763f81d3aa93`. Its engine accepts every key below:
+<!-- recommended-contract-pin: bb5c34c708065e14c3fd663a4d87763f81d3aa93 -->
 
 <!-- contract-pin-metadata:start -->
 | Metadata key | Required | Supported by `v2.2.0` | Supported by recommended pin |
@@ -191,7 +191,7 @@ fourth if it publishes something. Generate all of them rather than writing them;
 the reasoning is in the generator's header.
 
 ```bash
-PIN=969628b2c046684b9f160df9107507f212068cf9
+PIN=bb5c34c708065e14c3fd663a4d87763f81d3aa93
 # Changelog-only repositories keep the backwards-compatible caller:
 scripts/gen-changelog-caller.sh workflow "$PIN" > .github/workflows/changelog.yml
 # Repositories consolidating generated checks use this instead:
@@ -274,6 +274,29 @@ select **what** runs: an override whose bytes differ from the pinned digest is
 refused, naming the pin it failed against. So the guarantee the renderer is sold
 on — that it runs the same code CI validates with — holds regardless of the
 environment, which is what makes the override safe to offer at all (#304).
+
+### Runner-preloaded cache
+
+Generated renderers and contract tests also share one stable cache layout:
+
+```text
+VERJSON_CHANGELOG_TOOL_CACHE/<40-hex-contract-commit>/changelog.py
+```
+
+Runner bootstrap may preload that file to make validation and releases work
+without egress. The path is only a discovery mechanism: generated artifacts
+verify its bytes against the SHA-256 embedded for the exact pinned commit before
+execution. Writable, restored, or partially populated caches receive no trust
+from their location.
+
+When the variable is unset, the same layout uses
+`${XDG_CACHE_HOME:-$HOME/.cache}/verjson-changelog` as its root. A missing or
+corrupt entry falls back to the immutable
+`raw.githubusercontent.com/Verjson/.github/<commit>/scripts/changelog.py` URL,
+verifies the temporary download, and atomically publishes it. If egress is
+restricted and no valid preload exists, the error names the expected cache file,
+digest, and cache-root setting. See
+[ADR 0065](../decisions/0065-verified-changelog-tool-cache/README.md).
 
 ## Repairing a released snapshot
 

@@ -181,17 +181,24 @@ if [ -n "${CHANGELOG_CONTRACT_PATH:-}" ]; then
   contract_is_pinned "$contract" \
     || contract_fail "CHANGELOG_CONTRACT_PATH ($contract) is not the contract pinned at $CONTRACT_REF"
 else
-  cache_dir="${XDG_CACHE_HOME:-$HOME/.cache}/verjson-changelog/$CONTRACT_REF"
+  # Stable runner/bootstrap contract: preload
+  #   $VERJSON_CHANGELOG_TOOL_CACHE/<commit>/changelog.py
+  # or leave the variable unset for the per-user cache. The commit selects the
+  # location; CONTRACT_SHA256 still decides whether those bytes may execute.
+  cache_root="${VERJSON_CHANGELOG_TOOL_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}/verjson-changelog}"
+  cache_dir="$cache_root/$CONTRACT_REF"
   contract="$cache_dir/changelog.py"
   if ! contract_is_pinned "$contract"; then
-    mkdir -p "$cache_dir"
+    mkdir -p "$cache_dir" \
+      || contract_fail "cannot create changelog tool cache directory $cache_dir"
     # mktemp, not a fixed name: concurrent runs share this cache directory.
-    tmp="$(mktemp "$cache_dir/.changelog.XXXXXX")"
+    tmp="$(mktemp "$cache_dir/.changelog.XXXXXX")" \
+      || contract_fail "cannot create a temporary changelog contract in $cache_dir"
     if ! curl -fsSL \
       "https://raw.githubusercontent.com/Verjson/.github/$CONTRACT_REF/scripts/changelog.py" \
       -o "$tmp"; then
       rm -f "$tmp"
-      contract_fail "cannot fetch the changelog contract at $CONTRACT_REF"
+      contract_fail "cannot fetch the changelog contract at $CONTRACT_REF and no verified cache entry is available at $contract; preload SHA-256 $CONTRACT_SHA256 and set VERJSON_CHANGELOG_TOOL_CACHE=$cache_root"
     fi
     # Verify before publishing into the cache, so a bad fetch is never persisted
     # for the next run to trust.
@@ -199,7 +206,8 @@ else
       rm -f "$tmp"
       contract_fail "fetched contract does not match the digest pinned at $CONTRACT_REF"
     fi
-    mv "$tmp" "$contract"
+    mv "$tmp" "$contract" \
+      || contract_fail "cannot publish the verified changelog contract to $contract"
   fi
 fi
 EOF
