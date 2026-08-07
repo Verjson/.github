@@ -1,7 +1,7 @@
 # 0062 — The release caller is generated, and it verifies before it tags
 
 - **Date:** 2026-08-06
-- **Issues:** [#463](https://github.com/Verjson/.github/issues/463), [#464](https://github.com/Verjson/.github/issues/464), [#465](https://github.com/Verjson/.github/issues/465), [#520](https://github.com/Verjson/.github/issues/520)
+- **Issues:** [#463](https://github.com/Verjson/.github/issues/463), [#464](https://github.com/Verjson/.github/issues/464), [#465](https://github.com/Verjson/.github/issues/465), [#519](https://github.com/Verjson/.github/issues/519), [#520](https://github.com/Verjson/.github/issues/520)
 - **Extends:** ADR 0038 (canonical changelog contract), ADR 0060 (a release is dispatched, never derived), ADR 0052 (`push_token` is not `GITHUB_TOKEN`), ADR 0059 (released snapshots are immutable)
 - **Category:** release authority — **sensitive class**
 
@@ -101,6 +101,17 @@ generator provenance at the pin, that runs the snapshot with no `needs:`, that p
 explicit `runner:`, that installs with `GITHUB_TOKEN`, or that is reachable by a trigger
 which would have to infer a version. Adopters wire that suite into `npm test`, so the
 defect surfaces on the next pull request rather than on the first dispatch.
+
+**2026-08-07 — the dispatched package version is part of the verified build
+input (#519).** A Node build may read `package.json`, so stamping the dispatched
+version only beside `npm publish` lets verification and the publish build embed
+different versions. The generated caller now applies the same uncommitted
+`npm version --no-git-tag-version --ignore-scripts` stamp before the verification suite and
+before the publish build. The snapshot remains changelog-only; the stamp is
+repeated from the explicit dispatch input after the release tag is checked out.
+The generated adopter contract test rejects either job when its build can run
+before that stamp. Lifecycle scripts are disabled so stamping is a metadata-only
+operation rather than an additional unverified package-code execution surface.
 
 ### Judgement call: `release-node`, not `release`
 

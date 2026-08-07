@@ -415,6 +415,10 @@ jobs:
           # an adopter with a private @verjson devDependency 401s here. Canonical
           # node-ci.yml states the same requirement for the same reason.
           NODE_AUTH_TOKEN: \${{ secrets.NODE_AUTH_TOKEN }}
+      - name: Stamp the dispatched package version
+        env:
+          VERSION: \${{ inputs.version }}
+        run: npm version "\${VERSION#v}" --no-git-tag-version --ignore-scripts
       - name: Run the release verification suite
         run: |
           # Existence and executability are checked separately on purpose. A
@@ -478,6 +482,10 @@ jobs:
         env:
           # NOT GITHUB_TOKEN, for the same reason as in verify (#465).
           NODE_AUTH_TOKEN: \${{ secrets.NODE_AUTH_TOKEN }}
+      - name: Stamp the dispatched package version
+        env:
+          VERSION: \${{ inputs.version }}
+        run: npm version "\${VERSION#v}" --no-git-tag-version --ignore-scripts
       - run: npm run build --if-present
       - name: Publish the exact snapshot version
         env:
@@ -485,10 +493,7 @@ jobs:
           # repository's own package to its own GitHub Packages registry is
           # exactly what a repository-scoped token is for.
           NODE_AUTH_TOKEN: \${{ secrets.GITHUB_TOKEN }}
-          VERSION: \${{ inputs.version }}
-        run: |
-          npm version "\${VERSION#v}" --no-git-tag-version
-          npm publish
+        run: npm publish
       - name: Publish the snapshot release notes
         env:
           GH_TOKEN: \${{ secrets.GITHUB_TOKEN }}
@@ -883,7 +888,7 @@ while IFS= read -r release_workflow; do
     }
     { block = block $0 "\n" }
     END { if (!done && block ~ /changelog-release\.yml@/) printf "%s", block }
-  ' "$work/release-stripped.yml")"
+  ' "$release_workflow")"
 
   # #463/#464. changelog-release.yml consumes NEXT/, writes an immutable
   # CHANGELOG/<version>.md, commits, tags and pushes to the default branch in one
@@ -899,6 +904,33 @@ while IFS= read -r release_workflow; do
   # then queues on hosted runners with no check run and no error.
   printf '%s\n' "$snapshot_job" | grep -qE '^[[:space:]]+runner:[[:space:]]*[^[:space:]]' \
     || fail "$release_workflow passes no explicit runner:, so the snapshot and the publish half can land on different runner pools (#465)"
+
+  # #519. Both builds must see the version selected by workflow_dispatch. The
+  # stamp is deliberately uncommitted: verify applies it to the dispatch tree,
+  # snapshot records only changelog state, and publish reapplies it to the tag.
+  # Checking both job blocks prevents a stamp in one job from satisfying the
+  # ordering requirement in the other.
+  verify_job="$(awk '
+    /^  verify:[[:space:]]*$/ { in_job = 1 }
+    in_job && /^  [A-Za-z0-9_.-]+:[[:space:]]*$/ && $0 !~ /^  verify:/ { exit }
+    in_job { print }
+  ' "$release_workflow")"
+  publish_job="$(awk '
+    /^  publish:[[:space:]]*$/ { in_job = 1 }
+    in_job && /^  [A-Za-z0-9_.-]+:[[:space:]]*$/ && $0 !~ /^  publish:/ { exit }
+    in_job { print }
+  ' "$release_workflow")"
+  stamp_before() {
+    local job="$1" consumer_pattern="$2" stamp_line consumer_line
+    stamp_line="$(printf '%s\n' "$job" | grep -n -m1 \
+      'npm version .*--no-git-tag-version --ignore-scripts' | cut -d: -f1)"
+    consumer_line="$(printf '%s\n' "$job" | grep -n -m1 -E "$consumer_pattern" | cut -d: -f1)"
+    [ -n "$stamp_line" ] && [ -n "$consumer_line" ] && [ "$stamp_line" -lt "$consumer_line" ]
+  }
+  stamp_before "$verify_job" 'scripts/release-verify\.sh|npm run build|npm run typecheck|npm run lint|npm test' \
+    || fail "$release_workflow does not stamp the dispatched package version before the verification build or suite (#519)"
+  stamp_before "$publish_job" 'npm run build|npm publish' \
+    || fail "$release_workflow does not stamp the dispatched package version before the publish build (#519)"
 
   # The trigger surface and the install credential are checked structurally,
   # because both were shipped here as line-oriented greps first and both were
