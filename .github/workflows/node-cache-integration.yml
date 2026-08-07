@@ -6,13 +6,9 @@ name: node-cache-integration
 # package.
 
 on:
-  pull_request:
-    paths:
-      - '.github/actions/setup-verjson-node/**'
-      - '.github/release-tooling/package-lock.json'
-      - '.github/workflows/node-cache-integration.yml'
-      - '.github/workflows/node-ci.yml'
-      - '.github/workflows/node-release.yml'
+  schedule:
+    - cron: '17 6 * * 1'
+  workflow_dispatch:
   push:
     branches: [main]
     paths:
