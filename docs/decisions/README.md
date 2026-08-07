@@ -11,6 +11,7 @@ Reverse-chronological index of org-level decisions.
 <!-- BEGIN ADR INDEX -->
 | # | Date | Decision |
 |---|------|----------|
+| [0075](0075-generated-artifacts-is-the-changelog-check-prefix/README.md) | 2026-08-07 | Generated artifacts is the changelog check prefix |
 | [0073](0073-required-node-ci-context-always-reports/README.md) | 2026-08-07 | The required Node CI context always reports |
 | [0072](0072-watchdog-cadence-is-observed-not-guaranteed/README.md) | 2026-08-07 | Watchdog cadence is observed, not guaranteed |
 | [0071](0071-changelog-impact-governs-version-bumps/README.md) | 2026-08-07 | Changelog impact governs version bumps |
