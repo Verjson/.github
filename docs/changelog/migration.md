@@ -92,6 +92,13 @@
    `release-node` and `contract-test`; the latter enforces that the two release
    jobs still carry those values.
 
+   The root package remains the backward-compatible default. Repositories that
+   publish compatibility packages repeat `--package-dir <relative-dir>` on both
+   commands and may provide executable
+   `scripts/release-prepare-packages.sh <version>` for dependency or manifest
+   preparation. Every configured package is stamped, packed, and reconciled by
+   exact registry integrity independently.
+
    `release-node` exists only from the commit that closed #463/#464/#465 and is
    included in the pin above. An older pin has no such mode and the command fails loudly
    rather than emitting an empty file, so a repository still on an older pin must
