@@ -68,8 +68,13 @@ def validate_checkout(step: dict, name: str) -> None:
 
 def validate_watchdog(document: object) -> None:
     job, steps = validate_common(document, "watchdog")
+    require_keys(document["permissions"], {"actions", "contents"}, "permissions")
+    require(document["permissions"]["actions"] == "read", "watchdog requires actions: read for cadence history")
+    require(document["permissions"]["contents"] == "read", "watchdog contents permission changed")
+    schedule = require_keys(workflow_on(document), {"schedule"}, "on")["schedule"]
+    require(schedule == [{"cron": "*/15 * * * *"}], "watchdog nominal schedule changed")
     require_keys(job, {"runs-on", "timeout-minutes", "steps"}, "jobs.watchdog")
-    require(len(steps) == 2, "watchdog must have exactly two steps")
+    require(len(steps) == 3, "watchdog must have exactly three steps")
     require(steps[0]["name"] == "Check out the watchdog", "watchdog checkout step name changed")
     validate_checkout(steps[0], "watchdog checkout")
 
@@ -89,6 +94,21 @@ def validate_watchdog(document: object) -> None:
     )
     require(env["GH_TOKEN"] == "${{ secrets.ORG_ADMIN_TOKEN }}", "watchdog token binding changed")
     require(sweep["run"] == "bash scripts/fleet-watchdog.sh", "watchdog command must remain static")
+
+    cadence = require_keys(steps[2], {"name", "if", "env", "run"}, "watchdog cadence")
+    require(cadence["name"] == "Record the observed scheduler interval", "watchdog cadence step name changed")
+    require(cadence["if"] == "${{ always() }}", "watchdog cadence must run after a failed sweep")
+    cadence_env = require_keys(
+        cadence["env"],
+        {"GH_TOKEN", "WATCHDOG_MAX_GAP_MINUTES"},
+        "watchdog cadence env",
+    )
+    require(cadence_env["GH_TOKEN"] == "${{ github.token }}", "cadence probe must use the job token")
+    require(cadence_env["WATCHDOG_MAX_GAP_MINUTES"] == "30", "cadence observation threshold changed")
+    require(
+        cadence["run"] == "python3 scripts/fleet-watchdog-cadence.py",
+        "watchdog cadence command must remain static",
+    )
 
 
 def validate_admission(document: object) -> None:
