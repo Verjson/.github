@@ -55,8 +55,10 @@ TRUSTED_SHA=0123456789abcdef0123456789abcdef01234567
 TRUSTED_WF_ID=312358392
 TRUSTED_REPO_ID=1269388380
 GATE_RUN_ID=30601252875
+RETIRED_GATE_RUN_ID=31173437398
 CONSUMER=Verjson/verjson-consumer
 REQ_URL="https://api.github.com/repos/$CONSUMER/actions/required_workflows/318934643"
+RETIRED_REQ_URL="https://api.github.com/repos/$CONSUMER/actions/required_workflows/318131472"
 
 mkdir -p "$tmp/bin"
 
@@ -191,6 +193,13 @@ required_workflow_run="$(cat <<JSON
   "workflow_url":"$REQ_URL","repository":{"full_name":"$CONSUMER"}}]
 JSON
 )"
+retired_skipped_run="$(cat <<JSON
+{"id":$RETIRED_GATE_RUN_ID,"created_at":"2026-08-07T03:18:39Z","event":"pull_request","status":"completed",
+ "conclusion":"skipped","workflow_id":318131472,"referenced_workflows":[],
+ "path":".github/workflows/ai-review-merge.yml","head_sha":"$HEAD_SHA",
+ "workflow_url":"$RETIRED_REQ_URL","repository":{"full_name":"$CONSUMER"}}
+JSON
+)"
 
 meta_open="$(cat <<JSON
 {"headRefOid":"$HEAD_SHA","isDraft":false,"state":"OPEN","labels":[],
@@ -309,6 +318,30 @@ assert_merged "dispatched continuation trusts an org required-workflow gate run 
 
 run_case pull_request_target
 assert_merged "pull_request_target path trusts an org required-workflow gate run and merges"
+
+# #506: a required-workflow migration can leave a newer all-skipped run in
+# Actions history. The absent verdict makes that candidate ineligible, but does
+# not make the older active trusted gate disappear.
+RUNS="$(jq -c --argjson retired "$retired_skipped_run" '. + [$retired]' <<<"$required_workflow_run")"
+run_case pull_request_target
+assert_merged "a retired skipped newest workflow run yields to the active trusted gate"
+
+# The exception is exact: an active trusted gate with any non-skipped terminal
+# conclusion remains the newest authoritative verdict and stops the merge.
+for gate_conclusion in failure cancelled; do
+  RUNS="$(jq -c --argjson failed "$retired_skipped_run" \
+    --arg conclusion "$gate_conclusion" \
+    '. + [($failed | .conclusion = $conclusion | .workflow_url = "'"$REQ_URL"'" | .workflow_id = 318934643)]' \
+    <<<"$required_workflow_run")"
+  run_case pull_request_target
+  assert_rejected "an active $gate_conclusion newest trusted gate remains terminal" "newest trusted gate run failed"
+done
+
+# If every historical candidate is retired, discovery remains inconclusive and
+# the existing bounded fail-closed wait applies; retirement is never approval.
+RUNS="[$retired_skipped_run]"
+run_case pull_request_target
+assert_rejected "retired history without an active gate remains fail-closed" "$NOT_GREEN"
 
 # #394/#518: the complete PR file-list guard is a GitHub availability
 # boundary. Retry bounded server/transport failures, but never amplify a

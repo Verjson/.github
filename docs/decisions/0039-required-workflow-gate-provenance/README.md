@@ -153,3 +153,32 @@ the static floor and the step warns. Failing to derive names never widens what i
 excluded, so the worst case is the pre-existing behaviour, never a fail-open.
   That property holds for the *derivation* failing. It did not hold for the
   derivation succeeding, which is the case the intersection above fixes.
+
+## Amendment — 2026-08-07: retired workflow history is not authoritative
+
+Refs [Verjson/.github#506](https://github.com/Verjson/.github/issues/506).
+
+GitHub preserves workflow runs across required-workflow migrations. A
+`ready_for_review` transition can therefore leave a newer trusted run at the same
+pull request head whose jobs and overall conclusion are all `skipped`. Selecting
+that record as the newest trusted gate treated the absence of a gate verdict as a
+failed verdict and blocked the privileged path before it could use an older
+authoritative run.
+
+The required-workflow REST identity is not a usable retirement oracle: GitHub's
+deprecated `/actions/required_workflows/<id>` endpoint returns 422 for active and
+historical identities, while the normal workflow endpoint returns 404 for active
+required-workflow IDs too. The durable signal is therefore the run conclusion
+itself.
+
+Implicit gate discovery excludes trusted runs whose conclusion is exactly
+`skipped` before selecting the newest verdict. The exception is deliberately
+narrow:
+
+- an active trusted gate with `failure`, `cancelled`, or any other terminal
+  non-success conclusion remains authoritative and fails closed;
+- pending runs remain candidates and keep the bounded wait active;
+- if every candidate is skipped, no gate is approved and the existing bounded
+  `trusted gate/checks did not become green` failure remains;
+- an explicitly dispatched `source_run_id` is still validated directly and never
+  falls back to other history.
