@@ -1437,6 +1437,89 @@ fi
 grep -q 'NEXT' "$fixture_root/error"
 echo "ok - pull requests cannot consume NEXT/ fragments"
 
+# Dependency-only bot updates are still observable changes. The policy is keyed
+# exclusively to the changed-file boundary, not actor identity, so Renovate and
+# human-authored updates receive the same requirement.
+for dependency_path in \
+  package.json apps/api/package-lock.json pnpm-lock.yaml web/yarn.lock \
+  pyproject.toml requirements.txt requirements-dev.txt poetry.lock Pipfile \
+  Pipfile.lock uv.lock services/worker/go.mod services/worker/go.sum \
+  crates/core/Cargo.toml Cargo.lock infra/.terraform.lock.hcl; do
+  new_fixture
+  init_fixture_repo
+  printf 'base\n' >"$fixture_root/case/README.md"
+  git -C "$fixture_root/case" add .
+  git -C "$fixture_root/case" commit -qm base
+  base="$(git -C "$fixture_root/case" rev-parse HEAD)"
+  mkdir -p "$(dirname "$fixture_root/case/$dependency_path")"
+  printf 'dependency update\n' >"$fixture_root/case/$dependency_path"
+  git -C "$fixture_root/case" add .
+  git -C "$fixture_root/case" commit -qm "renovate dependency update"
+  if python3 "$contract" check-pr --repo-root "$fixture_root/case" \
+    --base "$base" --head HEAD 2>"$fixture_root/error"; then
+    fail "dependency change without a fragment was accepted: $dependency_path"
+  fi
+  grep -q 'dependency manifests or lockfiles require a new NEXT fragment' \
+    "$fixture_root/error"
+done
+echo "ok - dependency manifests and lockfiles require a new fragment for every actor (#524)"
+
+new_fixture
+init_fixture_repo
+printf '{"version":"1.0.0"}\n' >"$fixture_root/case/package.json"
+git -C "$fixture_root/case" add .
+git -C "$fixture_root/case" commit -qm base
+base="$(git -C "$fixture_root/case" rev-parse HEAD)"
+printf '{"version":"1.0.1"}\n' >"$fixture_root/case/package.json"
+write_fragment NEXT/2026-08-01-issue-524-dependency.md \
+  2026-08-01 "issue: 524" "Dependency update"
+git -C "$fixture_root/case" add .
+git -C "$fixture_root/case" commit -qm "dependency update with fragment"
+python3 "$contract" check-pr --repo-root "$fixture_root/case" --base "$base" --head HEAD
+echo "ok - a dependency change with a new valid fragment is accepted"
+
+new_fixture
+init_fixture_repo
+printf '{"version":"1.0.0"}\n' >"$fixture_root/case/package.json"
+write_fragment NEXT/2026-08-01-issue-524-existing.md \
+  2026-08-01 "issue: 524" "Existing entry"
+git -C "$fixture_root/case" add .
+git -C "$fixture_root/case" commit -qm base
+base="$(git -C "$fixture_root/case" rev-parse HEAD)"
+printf '{"version":"1.0.1"}\n' >"$fixture_root/case/package.json"
+printf '\nMore.\n' >>"$fixture_root/case/NEXT/2026-08-01-issue-524-existing.md"
+git -C "$fixture_root/case" add .
+git -C "$fixture_root/case" commit -qm "dependency update reusing fragment"
+if python3 "$contract" check-pr --repo-root "$fixture_root/case" \
+  --base "$base" --head HEAD 2>"$fixture_root/error"; then
+  fail "dependency change reused an existing fragment"
+fi
+grep -q 'new NEXT fragment' "$fixture_root/error"
+echo "ok - dependency updates cannot reuse an unrelated existing fragment"
+
+new_fixture
+init_fixture_repo
+printf 'base\n' >"$fixture_root/case/README.md"
+git -C "$fixture_root/case" add .
+git -C "$fixture_root/case" commit -qm base
+base="$(git -C "$fixture_root/case" rev-parse HEAD)"
+for unrelated in package.json.md package-lock.yaml requirements.md \
+  Cargo.lock.backup terraform.lock.hcl docs/go.mod.md; do
+  mkdir -p "$(dirname "$fixture_root/case/$unrelated")"
+  printf 'not a dependency boundary\n' >"$fixture_root/case/$unrelated"
+done
+git -C "$fixture_root/case" add .
+git -C "$fixture_root/case" commit -qm "similarly named files"
+python3 "$contract" check-pr --repo-root "$fixture_root/case" --base "$base" --head HEAD
+echo "ok - similarly named non-dependency files do not trigger the fragment rule"
+
+if python3 "$contract" check-pr --repo-root "$fixture_root/case" \
+  --base malformed-api-sha --head HEAD 2>"$fixture_root/error"; then
+  fail "malformed pull-request revision input was accepted"
+fi
+grep -q 'malformed-api-sha' "$fixture_root/error"
+echo "ok - malformed pull-request revision input fails closed"
+
 new_fixture
 init_fixture_repo
 mkdir -p "$fixture_root/case/CHANGELOG"

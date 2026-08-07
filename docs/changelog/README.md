@@ -238,6 +238,13 @@ the same immutable pin as the caller.
 Re-run all of them together whenever the pin moves, and commit the result — a
 partial regeneration is the divergence the generator exists to prevent.
 
+At a pin containing #524, `check-pr` requires a newly added, valid `NEXT/`
+fragment whenever a supported dependency manifest or lockfile changes. This
+includes bot-authored updates: actor identity is not an exemption. To acquire
+the rule, fetch one immutable Verjson/.github commit and run the `workflow`,
+`renderer`, and `contract-test` commands above with that exact `PIN`; never
+patch an adopter's generated caller or contract test locally.
+
 `scripts/render-next.sh` does not implement rendering. It fetches this
 repository's `scripts/changelog.py` at the pinned commit, caches it by content
 address under `$XDG_CACHE_HOME/verjson-changelog/<commit>`, and executes it. A
