@@ -36,7 +36,7 @@
    a second `generator_ref` to keep its contract test hermetic (#308). Use:
 
    ```bash
-   PIN=bb5c34c708065e14c3fd663a4d87763f81d3aa93
+   PIN=d469f40db3b6c092e216910dc2a5eb0cfec6fa08
    scripts/gen-changelog-caller.sh workflow      "$PIN" > .github/workflows/changelog.yml
    scripts/gen-changelog-caller.sh renderer      "$PIN" > scripts/render-next.sh
    scripts/gen-changelog-caller.sh contract-test "$PIN" > scripts/changelog-contract.test.sh
@@ -63,7 +63,7 @@
 
    **This pin is an immutable commit, not a published release.** `v2.2.0` is
    older and accepts only `date`, `issue`, `id`, and `title`; it rejects the
-   currently documented `refs` and `summary` keys. No later release tag exists
+   currently documented `refs`, `summary`, and `component` keys. No later release tag exists
    as of 2026-08-07. Use the exact `PIN` above when following this guide rather
    than substituting `v2.2.0`, and consult the capability table in
    `docs/changelog/README.md` before selecting any other immutable ref.

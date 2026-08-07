@@ -210,6 +210,8 @@ jobs:
         run: bash scripts/ci-gate/changelog-validate-pin.test.sh
       - name: The documented contract pin exists and contains the generator (#308)
         run: bash scripts/contract-pin.test.sh
+      - name: Changelog components — generated multi-stream release contract (#390)
+        run: bash scripts/component-changelog-contract.test.sh
       - name: Changelog contract — this repository's own fragments (#289)
         run: python3 scripts/changelog.py validate --repo-root .
       - name: Changelog release — the pushing job holds write authority (#295)
