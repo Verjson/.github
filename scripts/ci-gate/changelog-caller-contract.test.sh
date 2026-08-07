@@ -672,6 +672,10 @@ drop_snapshot_needs() {
 drop_snapshot_runner() {
   sed -i '/^      runner: /d' "$1/.github/workflows/release.yml"
 }
+drop_resume_snapshot_checkout() {
+  sed -i "/^      - name: Check out the existing snapshot for resumed verification$/,+6d" \
+    "$1/.github/workflows/release.yml"
+}
 install_with_github_token() {
   sed -i 's|NODE_AUTH_TOKEN: ${{ secrets.NODE_AUTH_TOKEN }}|NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}|g' \
     "$1/.github/workflows/release.yml"
@@ -833,6 +837,7 @@ grep -q 'push_token' "$tmproot/run.out" \
 
 expect_rejection "a snapshot job that verifies nothing first (#463, #464)" drop_snapshot_needs
 expect_rejection "a snapshot job with no explicit runner (#465)" drop_snapshot_runner
+expect_rejection "a resumed release that verifies the later dispatch tree instead of its tagged snapshot (#591)" drop_resume_snapshot_checkout
 expect_rejection "an npm ci installing with GITHUB_TOKEN (#465)" install_with_github_token
 expect_rejection "a verification job without package metadata preparation (#550)" drop_verify_prepare
 expect_rejection "a verification suite with no dispatched version stamp (#519)" drop_verify_stamp

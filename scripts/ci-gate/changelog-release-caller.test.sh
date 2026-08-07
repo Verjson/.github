@@ -113,6 +113,13 @@ if str(snapshot.get("if") or "") != "needs.verify.outputs.snapshot-exists != 'tr
     bad("`snapshot` does not skip a verified existing immutable snapshot")
 if (verify.get("outputs") or {}).get("snapshot-exists") != "${{ steps.release-state.outputs.snapshot-exists }}":
     bad("`verify` does not expose the restart-safe snapshot state")
+resume_checkouts = [
+    step for step in verify.get("steps") or []
+    if step.get("uses", "").startswith("actions/checkout@")
+    and (step.get("with") or {}).get("ref") == "${{ inputs.version }}"
+]
+if len(resume_checkouts) != 1 or str(resume_checkouts[0].get("if") or "") != "steps.release-state.outputs.snapshot-exists == 'true'":
+    bad("`verify` does not switch to the existing tagged snapshot before resumed verification")
 
 uses = snapshot.get("uses", "")
 match = re.fullmatch(
@@ -329,6 +336,9 @@ drop_needs_snapshot() { sed -i 's/^    needs: \[verify, snapshot\]$/    needs: v
 drop_snapshot_restart_condition() { sed -i "/^    if: needs.verify.outputs.snapshot-exists != 'true'$/d" "$1"; }
 drop_publish_restart_condition() { sed -i "/^    if: always() && needs.verify.result == 'success'/d" "$1"; }
 drop_snapshot_state_output() { sed -i '/^      snapshot-exists: .*steps.release-state.outputs.snapshot-exists/d' "$1"; }
+drop_resume_snapshot_checkout() {
+  sed -i "/^      - name: Check out the existing snapshot for resumed verification$/,+6d" "$1"
+}
 install_with_github_token() {
   # Only the install wiring, never the publish wiring: publishing with
   # GITHUB_TOKEN is correct and must stay accepted.
@@ -382,6 +392,7 @@ expect_shape_rejection "publish without needs: snapshot" drop_needs_snapshot
 expect_shape_rejection "snapshot without restart condition (#588)" drop_snapshot_restart_condition
 expect_shape_rejection "publish skipped after a reused snapshot (#588)" drop_publish_restart_condition
 expect_shape_rejection "verify without snapshot state output (#588)" drop_snapshot_state_output
+expect_shape_rejection "resumed verification without the tagged snapshot checkout (#591)" drop_resume_snapshot_checkout
 expect_shape_rejection "npm ci installing with GITHUB_TOKEN (#465)" install_with_github_token
 expect_shape_rejection "snapshot without an explicit runner (#465)" drop_explicit_runner
 expect_shape_rejection "snapshot and publish on different pools (#465)" diverge_runner_pool
