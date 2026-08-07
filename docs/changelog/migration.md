@@ -13,19 +13,21 @@
    NEXT/2026-07-30-issue-249-adopt-immutable-snapshots.md    # issue: 249
    NEXT/2026-07-30-issue-20260730T184500Z-tidy-fixtures.md   # id: 20260730T184500Z
    ```
-4. Add the reusable validation workflow. Enable one temporary `legacy_dir`
-   only while a durable migration issue names the remaining consumer.
-5. Stop feature pull requests from editing `CHANGELOG.md`; generate it from
-   snapshots for display or packaging.
-6. Adopt the reusable release workflow and protect its environment if the
-   repository requires approval. Releases must run on the default branch.
+4. Land the snapshot and fragment normalization **before enabling the reusable
+   validation workflow**. Stop feature pull requests from editing
+   `CHANGELOG.md`; generate it from snapshots for display or packaging. This
+   ordering prevents `check-pr` from rejecting the one pull request that must
+   consume or reshape legacy changelog state.
+
    **Delete `.releaserc.json` in the same commit.** The dispatched release is the
    only writer of released history; semantic-release derives versions and notes
    from commit subjects and cannot consume a fragment, so a surviving config is a
    second, silent publisher. `verjson-browser-agent` and
    `verjson-identity-contracts` both kept theirs through migration because this
    step was implicit. The generated contract test now asserts its absence.
-7. Generate all three consumer files — `changelog.yml`, `render-next.sh`, and
+
+5. From the normalized consumer repository, generate all three consumer files —
+   `changelog.yml`, `render-next.sh`, and
    `changelog-contract.test.sh` — with `scripts/gen-changelog-caller.sh`, and
    never hand-write or hand-edit them. Adopters that copied a contract test by
    hand all asserted a pre-release tree that the first release destroys (#309).
@@ -33,14 +35,7 @@
    **The pin you generate against must contain the generator itself.** Consumers
    were told to pin `1486d44…`, which predates `gen-changelog-caller.sh` — so
    fetching the generator at `contract_ref` 404s, and `verjson-authn` had to carry
-   a second `generator_ref` to keep its contract test hermetic (#308). Use:
-
-   ```bash
-   PIN=bb5c34c708065e14c3fd663a4d87763f81d3aa93
-   scripts/gen-changelog-caller.sh workflow      "$PIN" > .github/workflows/changelog.yml
-   scripts/gen-changelog-caller.sh renderer      "$PIN" > scripts/render-next.sh
-   scripts/gen-changelog-caller.sh contract-test "$PIN" > scripts/changelog-contract.test.sh
-   ```
+   a second `generator_ref` to keep its contract test hermetic (#308).
 
    `contract-pin.test.sh` asserts this pin still resolves and still contains the
    generator. It also executes that pin's engine against fixtures carrying
@@ -64,10 +59,53 @@
    **This pin is an immutable commit, not a published release.** `v2.2.0` is
    older and accepts only `date`, `issue`, `id`, and `title`; it rejects the
    currently documented `refs` and `summary` keys. No later release tag exists
-   as of 2026-08-07. Use the exact `PIN` above when following this guide rather
+   as of 2026-08-07. Use the exact `PIN` in the executable block below rather
    than substituting `v2.2.0`, and consult the capability table in
    `docs/changelog/README.md` before selecting any other immutable ref.
 
+   Run this block from the consumer checkout. It creates a disposable canonical
+   checkout at the immutable pin, then returns to the captured consumer root
+   before writing anything. Set `PUBLISH_NODE=true` only for a repository that
+   publishes a Node package; a non-publisher must not acquire a release caller.
+
+   <!-- executable-migration:start -->
+   ```bash
+   set -euo pipefail
+   PIN=bb5c34c708065e14c3fd663a4d87763f81d3aa93
+   CONTRACT_SOURCE_URL="${CONTRACT_SOURCE_URL:-https://github.com/Verjson/.github.git}"
+   PUBLISH_NODE="${PUBLISH_NODE:-false}"
+   CONSUMER_ROOT="$(git rev-parse --show-toplevel)"
+   CONTRACT_ROOT="$(mktemp -d)"
+   cleanup_contract_checkout() { rm -rf "$CONTRACT_ROOT"; }
+   trap cleanup_contract_checkout EXIT
+
+   git -C "$CONTRACT_ROOT" init -q
+   git -C "$CONTRACT_ROOT" fetch --quiet --depth=1 "$CONTRACT_SOURCE_URL" "$PIN"
+   git -C "$CONTRACT_ROOT" checkout --quiet --detach FETCH_HEAD
+   test "$(git -C "$CONTRACT_ROOT" rev-parse HEAD)" = "$PIN"
+
+   cd "$CONSUMER_ROOT"
+   mkdir -p .github/workflows scripts
+   "$CONTRACT_ROOT/scripts/gen-changelog-caller.sh" workflow "$PIN" \
+     > .github/workflows/changelog.yml
+   "$CONTRACT_ROOT/scripts/gen-changelog-caller.sh" renderer "$PIN" \
+     > scripts/render-next.sh
+   "$CONTRACT_ROOT/scripts/gen-changelog-caller.sh" contract-test "$PIN" \
+     > scripts/changelog-contract.test.sh
+   chmod +x scripts/render-next.sh scripts/changelog-contract.test.sh
+
+   if [ "$PUBLISH_NODE" = true ]; then
+     "$CONTRACT_ROOT/scripts/gen-changelog-caller.sh" release-node "$PIN" \
+       > .github/workflows/release.yml
+   fi
+
+   bash scripts/changelog-contract.test.sh
+   ```
+   <!-- executable-migration:end -->
+
+   The generated contract test exercises validation, rendering, `check-pr`, and
+   the release engine against disposable fixtures. For a publisher it also
+   validates the generated release caller, including the release-path dry run.
    A repository already migrated at an older pin needs only to regenerate; the
    embedded `contract_ref` moves with it.
 
@@ -100,9 +138,10 @@
    exact registry integrity independently.
 
    `release-node` exists only from the commit that closed #463/#464/#465 and is
-   included in the pin above. An older pin has no such mode and the command fails loudly
-   rather than emitting an empty file, so a repository still on an older pin must
-   move to this one before it can generate a release caller at all.
+   included in the pin above. An older pin has no such mode and the command
+   fails loudly rather than emitting an empty file, so a repository still on an
+   older pin must move to this one before it can generate a release caller at
+   all.
    `contract-pin.test.sh` checks `release-node` alongside the other three modes,
    so the guide can no longer document a command the pin cannot run. Every
    release caller written before this commit verifies the tree *after*
@@ -110,14 +149,20 @@
    on the first failure; see `docs/changelog/README.md`. Adopters with nothing to
    publish have no release caller at all, which stays a supported shape.
 
-   Generate the files **before** `.github/workflows/changelog.yml` exists in the
-   consumer, and land the snapshot/normalization pull request first. `check_pr`
-   then never runs against the pull request that consumes fragments, so no
-   one-time bypass is needed. `verjson-identity-contracts` added a permanent
+   Land the snapshot/normalization pull request before running the block.
+   `check_pr` then never runs against the pull request that consumes fragments,
+   so no one-time bypass is needed. `verjson-identity-contracts` added a permanent
    `if: github.event.pull_request.number != 16` escape hatch for want of this
    ordering, which every later copier inherited (identity-contracts#26);
    `verjson-browser-agent` #21/#22 and `verjson-cli-projects` #45/#46 sequenced it
    this way and needed none.
+
+6. Commit the generated validation workflow only after normalization has
+   landed. Enable one temporary `legacy_dir` only while a durable migration
+   issue names the remaining consumer.
+7. If the repository publishes, commit the generated reusable release caller
+   and protect its environment when approval is required. Releases must run on
+   the default branch.
 8. Rebase queued pull requests once, remove aggregate edits, normalize their
    fragments, and verify no selected fragment was already consumed. A branch cut
    before the migration needs `origin/main` merged in first, which surfaces the
