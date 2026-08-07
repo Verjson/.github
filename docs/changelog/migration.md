@@ -36,7 +36,7 @@
    a second `generator_ref` to keep its contract test hermetic (#308). Use:
 
    ```bash
-   PIN=3d5f28962693ea4feda1fcb6273ae844892a15f4
+   PIN=0285998a98903d91f0b01275f409547711ec393f
    scripts/gen-changelog-caller.sh workflow      "$PIN" > .github/workflows/changelog.yml
    scripts/gen-changelog-caller.sh renderer      "$PIN" > scripts/render-next.sh
    scripts/gen-changelog-caller.sh contract-test "$PIN" > scripts/changelog-contract.test.sh
@@ -54,13 +54,16 @@
    scripts/gen-changelog-caller.sh release-node "$PIN" > .github/workflows/release.yml
    ```
 
-   `release-node` exists only from the commit that closed #463/#464/#465, so
-   `$PIN` above must be at or after it — an older pin has no such mode and the
-   command fails loudly rather than emitting an empty file. Every release caller
-   written before then verifies the tree *after* `changelog-release.yml` has
-   already pushed the tag, which spends the version on the first failure; see
-   `docs/changelog/README.md`. Adopters with nothing to publish have no release
-   caller at all, which stays a supported shape.
+   `release-node` exists only from the commit that closed #463/#464/#465, which
+   is the pin above. An older pin has no such mode and the command fails loudly
+   rather than emitting an empty file, so a repository still on an older pin must
+   move to this one before it can generate a release caller at all.
+   `contract-pin.test.sh` checks `release-node` alongside the other three modes,
+   so the guide can no longer document a command the pin cannot run. Every
+   release caller written before this commit verifies the tree *after*
+   `changelog-release.yml` has already pushed the tag, which spends the version
+   on the first failure; see `docs/changelog/README.md`. Adopters with nothing to
+   publish have no release caller at all, which stays a supported shape.
 
    Generate the files **before** `.github/workflows/changelog.yml` exists in the
    consumer, and land the snapshot/normalization pull request first. `check_pr`
