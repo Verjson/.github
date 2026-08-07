@@ -4,6 +4,7 @@ set -euo pipefail
 readonly ORG="${PRIVILEGED_MERGE_ORG:-Verjson}"
 readonly SECRET_NAME="${PRIVILEGED_MERGE_SECRET_NAME:-ORG_ADMIN_TOKEN}"
 readonly CALLER_PATH=".github/workflows/ai-privileged-merge.yml"
+readonly GENERATOR="scripts/gen-privileged-merge-caller.sh"
 
 if [ -z "${GH_TOKEN:-}" ]; then
   echo "::error title=Missing ORG_ADMIN_TOKEN::Fleet conformance cannot verify privileged merge callers or organization-secret access."
@@ -11,6 +12,18 @@ if [ -z "${GH_TOKEN:-}" ]; then
 fi
 command -v gh >/dev/null 2>&1 || {
   echo "::error title=Missing gh::Fleet conformance requires the GitHub CLI."
+  exit 1
+}
+command -v base64 >/dev/null 2>&1 || {
+  echo "::error title=Missing base64::Fleet conformance requires base64 to inspect caller content."
+  exit 1
+}
+[ -f "$GENERATOR" ] || {
+  echo "::error title=Missing caller generator::Fleet conformance cannot load $GENERATOR."
+  exit 1
+}
+canonical_caller="$(bash "$GENERATOR")" || {
+  echo "::error title=Caller generation failed::Fleet conformance cannot establish canonical caller content."
   exit 1
 }
 
@@ -71,17 +84,25 @@ while IFS= read -r repository; do
     continue
   fi
 
+  caller_response=""
   caller_error=""
-  if ! caller_error="$(gh api "repos/$repository/contents/$CALLER_PATH?ref=$default_branch" \
-    --jq .path 2>&1)"; then
+  if ! caller_response="$(gh api "repos/$repository/contents/$CALLER_PATH?ref=$default_branch" \
+    --jq .content 2>&1)"; then
+    caller_error="$caller_response"
     if grep -q 'HTTP 404' <<<"$caller_error"; then
       echo "::error title=Missing privileged merge caller::repository=$repository path=$CALLER_PATH remediation='scripts/gen-privileged-merge-caller.sh > $CALLER_PATH'"
     else
       echo "::error title=Unreadable privileged merge caller::repository=$repository path=$CALLER_PATH"
     fi
     failures=$((failures + 1))
+  elif ! caller_content="$(printf '%s' "$caller_response" | base64 --decode 2>/dev/null)"; then
+    echo "::error title=Unreadable privileged merge caller::repository=$repository path=$CALLER_PATH reason='invalid base64 content'"
+    failures=$((failures + 1))
+  elif [ "$caller_content" != "$canonical_caller" ]; then
+    echo "::error title=Non-canonical privileged merge caller::repository=$repository path=$CALLER_PATH remediation='scripts/gen-privileged-merge-caller.sh > $CALLER_PATH'"
+    failures=$((failures + 1))
   fi
-  unset caller_error
+  unset caller_response caller_content caller_error
 
   has_secret=false
   case "$visibility" in
