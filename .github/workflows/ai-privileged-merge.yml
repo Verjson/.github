@@ -476,10 +476,40 @@ jobs:
           # re-opens the surface to anyone who can open a pull request. Any
           # change here needs its own decision record.
           workflow_files_changed() {
-            local files
-            files="$(gh api --paginate "repos/$TARGET_REPO/pulls/$PR_NUMBER/files?per_page=100" \
-              --jq '.[].filename')" || return 2
-            grep -qE '^\.github/workflows/' <<<"$files"
+            local files="" attempt http_status kind
+            for attempt in 1 2 3; do
+              : >"$RUNNER_TEMP/pr-files-error.txt"
+              if files="$(gh api --paginate "repos/$TARGET_REPO/pulls/$PR_NUMBER/files?per_page=100" \
+                --jq '.[].filename' 2>"$RUNNER_TEMP/pr-files-error.txt")"; then
+                : >"$RUNNER_TEMP/pr-files-error.txt"
+                grep -qE '^\.github/workflows/' <<<"$files"
+                return $?
+              fi
+              files=""
+              http_status="$(sed -nE 's/.*HTTP ([0-9]{3}).*/\1/p' \
+                "$RUNNER_TEMP/pr-files-error.txt" | tail -n 1)"
+              : >"$RUNNER_TEMP/pr-files-error.txt"
+              if [[ "$http_status" =~ ^4[0-9][0-9]$ ]]; then
+                echo "::error::phase=privileged-file-list result=unavailable kind=client_error http_status=$http_status attempt=$attempt"
+                return 2
+              fi
+              if [ -n "$http_status" ] && [[ ! "$http_status" =~ ^5[0-9][0-9]$ ]]; then
+                echo "::error::phase=privileged-file-list result=unavailable kind=github_http_error http_status=$http_status attempt=$attempt"
+                return 2
+              fi
+              if [ -n "$http_status" ]; then
+                kind=github_5xx
+              else
+                kind=transport
+              fi
+              if [ "$attempt" -eq 3 ]; then
+                echo "::error::phase=privileged-file-list result=unavailable kind=$kind http_status=${http_status:-none} attempts=$attempt"
+                return 2
+              fi
+              echo "::warning::phase=privileged-file-list result=retry kind=$kind http_status=${http_status:-none} attempt=$attempt/3 backoff_seconds=$((1 << (attempt - 1)))"
+              sleep "$((1 << (attempt - 1)))"
+            done
+            return 2
           }
 
           base_ref="$(resolve_base_ref)" ||
