@@ -528,4 +528,128 @@ rc=$(run_submit '' "$(oout budget_exhausted)")
   pass "the #293 run blocks the merge and now names budget-exceeded, not a generic failure" ||
   fail "#293 run must block and name budget-exceeded ($rc, comment=$(head -c 200 "$tmp/comment.txt"))"
 
+# 22. #480: the sensitive-path classifier must fail CLOSED, not pick the cheap
+#     tier. `if jq -e <predicate>` exits non-zero when the predicate is false AND
+#     when jq errors, so an unreadable file list used to be read as "not
+#     sensitive" — silently routing an auth/RBAC/secrets PR to the WEAK model at
+#     30% of the budget. That is a fail-open on how hard the security review
+#     tries, on exactly the PRs the classifier exists to escalate, and it chains
+#     into #441: the smaller budget makes `error_max_budget_usd` likelier, and a
+#     budget-exhausted pass emits a non-blocking placeholder verdict.
+#
+#     Asserted by executing the extracted classify block, not by grepping for the
+#     fixed shape — a rewrite that reintroduces the fail-open must break this.
+# These cases need their OWN `gh` stub. The shared `$tmp/bin/gh` is written twice
+# in this file (once near the top for classify, once again further down for the
+# submit-step cases), so whichever definition is last wins for anything appended
+# afterwards — the later stub does not serve `api …/files` at all, and classify
+# then produces no outputs for a reason that has nothing to do with the assertion.
+# A shared mutable stub makes test ORDER load-bearing and silently invalid; a
+# dedicated directory keeps these cases correct wherever they sit in the file.
+mkdir -p "$tmp/bin480"
+cat >"$tmp/bin480/gh" <<'GH'
+#!/usr/bin/env bash
+if [ "$1" = "pr" ] && [ "$2" = "view" ]; then cat "$META_FILE"; exit 0; fi
+if [ "$1" = "api" ]; then
+  case "$*" in
+    */files*) jq -c '.[]' "$FILES_FILE"; exit 0 ;;
+    */status*) printf '0\n'; exit 0 ;;
+  esac
+  printf '{}\n'; exit 0
+fi
+exit 0
+GH
+chmod +x "$tmp/bin480/gh"
+
+classify480() {
+  # Subshell: this deliberately does NOT leak its PATH back to later cases.
+  (
+    export PATH="$tmp/bin480:$PATH" TARGET_REPO="Verjson/foo" PR_NUMBER=7
+    export META_FILE="$tmp/meta480.json" FILES_FILE="$tmp/files480.json"
+    export GITHUB_OUTPUT="$tmp/out480.txt" GITHUB_EVENT_NAME=pull_request
+    printf '%s' '{"labels":[],"title":"a PR","isDraft":false,"author":{"login":"human"},"headRefOid":"deadbeefdeadbeefdeadbeefdeadbeefdeadbeef","baseRefName":"main"}' >"$META_FILE"
+    printf '%s' "$1" >"$FILES_FILE"
+    : >"$GITHUB_OUTPUT"
+    bash "$script" >/dev/null 2>&1
+    echo "rc=$?"
+  )
+}
+out480() { awk -F= -v k="$1" '$1==k{v=substr($0,length(k)+2)} END{print v}' "$tmp/out480.txt"; }
+
+# Control: a genuinely sensitive path must still reach the strong model, so
+# "fails closed" cannot be satisfied by erroring on everything.
+classify480 "$(jq -nc '[{filename:"src/auth/session.ts",changes:10,status:"modified",patch:"@@ -1 +1 @@\n-a\n+b"}]')" >/dev/null
+{ [ "$(out480 model)" = "claude-sonnet-5" ] && [ "$(out480 budget_usd)" = "0.50" ]; } &&
+  pass "#480 control: a real sensitive path still gets the strong model and \$0.50" ||
+  fail "#480 control: sensitive path lost its escalation (model=$(out480 model) budget=$(out480 budget_usd))"
+
+# Control: a non-sensitive path still takes the cheap tier, so the fix cannot
+# have simply escalated everything.
+classify480 "$(jq -nc '[{filename:"src/ui/button.tsx",changes:10,status:"modified",patch:"@@ -1 +1 @@\n-a\n+b"}]')" >/dev/null
+{ [ "$(out480 model)" = "claude-haiku-4-5" ] && [ "$(out480 budget_usd)" = "0.15" ]; } &&
+  pass "#480 control: a non-sensitive path still takes the cheap tier" ||
+  fail "#480 control: non-sensitive path no longer takes the cheap tier (model=$(out480 model) budget=$(out480 budget_usd))"
+
+# Each fixture reaches jq differently: one cannot be parsed, one parses but
+# cannot be indexed by `.[].filename`, one yields no output at all.
+while IFS='|' read -r label fixture; do
+  [ -n "$label" ] || continue
+  rc="$(classify480 "$fixture")"
+  model="$(out480 model)"
+  if [ "$model" = "claude-haiku-4-5" ]; then
+    fail "#480 fail-open: $label silently selected the WEAK model for an unclassifiable diff"
+  elif [ "$rc" = "rc=0" ]; then
+    fail "#480: $label exited 0 — an unclassifiable diff must not pass silently (model=${model:-<unset>})"
+  else
+    pass "#480: $label fails closed rather than picking the cheaper review ($rc)"
+  fi
+done <<'FIXTURES'
+a filename that is an object|[{"filename":{"nested":"x"},"changes":1,"status":"modified"}]
+a files payload that is not an array|{"filename":"src/auth/x.ts"}
+FIXTURES
+
+# An EMPTY file list is deliberately NOT in the set above, and this pins why so a
+# future reader does not "fix" it into failing closed.
+#
+# `:428` short-circuits `nfiles == 0` to `lane=ai` with the cheap model and the
+# reason `empty diff — needs a look`. That is correct on its own terms: with no
+# files there are no sensitive paths to escalate for, and the PR still gets a
+# review rather than a skip. It is also not the #394 unreadable-response case —
+# the fetch is `gh api … | jq -s .` under `set -o pipefail`, so a 5xx fails the
+# step outright instead of arriving here as an empty list.
+#
+# The distinction that matters, and the one asserted: an empty diff must reach the
+# named empty-diff path, NOT fall through to the sensitivity classifier and pick
+# the cheap tier by accident. Identical model and budget, different reason —
+# which is exactly why only the reason can tell the two apart.
+classify480 '[]' >/dev/null
+{ [ "$(out480 lane)" = "ai" ] && [ "$(out480 reason)" = "empty diff — needs a look" ] \
+  && [ "$(out480 changed_lines)" = "0" ]; } \
+  && pass "#480: an empty diff takes the named empty-diff path, not the classifier's cheap tier" \
+  || fail "#480: an empty diff no longer takes the documented empty-diff path (lane=$(out480 lane) reason=$(out480 reason))"
+
+# The evaluation shape itself, pinned so the next rewrite cannot quietly return
+# to the fail-open form at this site.
+if grep -qE 'if +jq +-e .*abac' "$wf"; then
+  fail "#480: the sensitive-path classifier still uses the fail-open \`if jq -e\` form"
+else
+  pass "#480: the sensitive-path classifier no longer uses the fail-open \`if jq -e\` form"
+fi
+
+# The cheap-lane detectors must NOT be swept into the same change: an unreadable
+# file list falling through to a FULL review is fail-closed and correct there.
+# Without this, a well-meaning "replace every if jq -e" would look like progress
+# while making docs-only/deletions-only/submodule-only PRs error instead of
+# downgrading safely.
+while IFS= read -r detector; do
+  [ -n "$detector" ] || continue
+  grep -qF "$detector" "$wf" \
+    && pass "cheap-lane detector kept its fail-closed \`if jq -e\` form (${detector:0:40}…)" \
+    || fail "a cheap-lane detector was swept into the #480 change (${detector:0:40}…) — an unreadable file list must fall through to a FULL review, not error"
+done <<'DETECTORS'
+if jq -e 'all(.[]; .status == "removed")'
+if jq -e 'all(.[]; (.patch // "") | test("^@@
+if jq -e '[.[].filename] | all(test("(^NEXT
+DETECTORS
+
 if [ "$fails" -eq 0 ]; then echo "All tests passed."; exit 0; else echo "$fails test(s) failed."; exit 1; fi
