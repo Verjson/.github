@@ -90,11 +90,24 @@ if [ "$1" = "api" ] && [[ "$*" == *"/pulls/7/files"* ]]; then
   count="$(cat "$FILES_COUNT" 2>/dev/null || echo 0)"
   count=$((count + 1))
   printf '%s\n' "$count" >"$FILES_COUNT"
+  fixture="${FILES_FIXTURE:-}"
   if [ "$count" -gt 1 ] && [ -n "${FILES_FIXTURE_FINAL:-}" ]; then
-    printf '%s' "$FILES_FIXTURE_FINAL"
-  else
-    printf '%s' "${FILES_FIXTURE:-}"
+    fixture="$FILES_FIXTURE_FINAL"
   fi
+  # Pagination is HONOURED, not assumed (#358). This stub used to return the whole
+  # already-filtered fixture whatever flags it was given, so removing --paginate
+  # from the production call left the "beyond 100 files" case green — the guard
+  # would have missed a workflow file after file 100 and allowed an auto-merge
+  # where policy requires a human hold, with a passing test on top.
+  #
+  # Real `gh api` without --paginate returns page 1 ONLY. So: page 1 is the first
+  # 100 entries, and everything after it is reachable only when --paginate is
+  # passed. A fixture of 100 or fewer entries is unaffected, which keeps every
+  # other case in this file working unchanged.
+  if [[ "$*" != *--paginate* ]]; then
+    fixture="$(printf '%s' "$fixture" | head -n 100)"
+  fi
+  printf '%s' "$fixture"
   exit 0
 fi
 if [ "$1" = "api" ] && [ "$2" = "repos/Verjson/.github" ]; then
