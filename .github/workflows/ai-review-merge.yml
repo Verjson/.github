@@ -1191,10 +1191,10 @@ jobs:
           # stderr off the log so a remote response can never leak through the
           # retry diagnostics.
           base_ref="$(jq -r '.baseRefName' .ai-review/pr.json)"
-          [ -n "$base_ref" ] && [ "$base_ref" != null ] || {
+          if [ -z "$base_ref" ] || [ "$base_ref" = null ]; then
             echo "::error::phase=review-input result=unavailable kind=base_ref_missing — PR metadata did not identify a base ref"
             exit 1
-          }
+          fi
           diff_attempt=1
           diff_max_attempts=4
           diff_error=.ai-review/base-fetch.error
