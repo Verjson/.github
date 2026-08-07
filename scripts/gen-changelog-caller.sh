@@ -1089,16 +1089,16 @@ new_fixture() {
 write_fragment() {
   # write_fragment <relative-path> <date> <identity-line> <title> [impact]
   local impact="${5:-}"
-  cat >"$fixture_root/case/$1" <<FRAGMENT
----
-date: $2
-$3
-$([ -z "$impact" ] || printf 'impact: %s\n' "$impact")
-title: $4
----
-
-Body.
-FRAGMENT
+  {
+    echo "---"
+    echo "date: $2"
+    echo "$3"
+    [ -z "$impact" ] || echo "impact: $impact"
+    echo "title: $4"
+    echo "---"
+    echo
+    echo "Body."
+  } >"$fixture_root/case/$1"
 }
 
 init_fixture_repo() {
