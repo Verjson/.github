@@ -55,6 +55,7 @@ non-trivial or fanned-out work autonomously:
 
 ## Active Issues / Areas for Improvement
 
+- [#261](https://github.com/Verjson/.github/issues/261) — Bind required-workflow privileged-merge provenance to signed workflow identity instead of ambient ruleset configuration.
 - [#477](https://github.com/Verjson/.github/issues/477) — the required-workflow rule makes the gate deaf to `ready_for_review`/`labeled`/`unlabeled` in **every** org repo (ADR 0063); `gate-rearm.yml` fixes only this one, the fleet still needs a generated caller.
 - [#474](https://github.com/Verjson/.github/issues/474) — a fresh dry-run on 2026-08-07 finds 26 open org PRs missing the current `gate` context; 25 are eligible for ownership-routed retrigger and one is excluded. Requiring `gate` on `~ALL` remains blocked until the audit reaches zero.
 - [#265](https://github.com/Verjson/.github/issues/265) — Org Actions secrets sit at `visibility: all`; scope them to least privilege.
