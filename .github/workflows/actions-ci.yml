@@ -150,6 +150,8 @@ jobs:
         run: bash scripts/ci-gate/require-secrets.test.sh
       - name: merge gate — isolate actions:write in metadata-only dispatcher (#235)
         run: bash scripts/ci-gate/dispatch-permission.test.sh
+      - name: merge gate — privileged continuation fleet conformance (#326)
+        run: bash scripts/ci-gate/privileged-merge-conformance.test.sh
       - name: merge gate — org required-workflow gate provenance (#259, ADR 0039)
         run: bash scripts/ci-gate/required-workflow-provenance.test.sh
       - name: merge gate — gate provenance is bound to the run's entry workflow (#279, ADR 0044)

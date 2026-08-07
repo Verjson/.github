@@ -2176,7 +2176,7 @@ jobs:
               --jq '.workflows[] | select(.path == ".github/workflows/ai-privileged-merge.yml") | .path'
           )"
           if [ -z "$trusted_path" ]; then
-            echo "::notice::No trusted privileged merge continuation is installed; validation is green, but this PR requires human merge."
+            echo "::error title=Missing trusted privileged merge continuation::Install .github/workflows/ai-privileged-merge.yml with scripts/gen-privileged-merge-caller.sh and grant this repository access to the ORG_ADMIN_TOKEN organization secret."
             {
               echo "dispatch_available=false"
               echo "dispatch_failure=continuation_absent"
@@ -2184,9 +2184,9 @@ jobs:
               echo "blocking_review=false"
               echo "policy_blocked=false"
               echo "blocker=continuation_absent"
-              echo "remediation=human_merge_required"
+              echo "remediation=install_privileged_merge_caller"
             } >>"$GITHUB_OUTPUT"
-            exit 0
+            exit 1
           fi
           [ "$trusted_path" = ".github/workflows/ai-privileged-merge.yml" ] ||
             { echo "::error::trusted workflow identity mismatch"; exit 1; }
