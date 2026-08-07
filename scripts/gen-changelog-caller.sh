@@ -401,6 +401,8 @@ jobs:
     timeout-minutes: 30
     permissions:
       contents: read
+    outputs:
+      snapshot-exists: \${{ steps.release-state.outputs.snapshot-exists }}
     steps:
       # changelog-release.yml carries this guard too, but there it fires inside
       # \`snapshot\` — after \`verify\` has already spent a full suite run on a ref
@@ -437,19 +439,29 @@ jobs:
           # pinning only one of them reintroduces the window (#463, #464).
           ref: \${{ github.sha }}
           fetch-depth: 0
-      - name: Refuse a version that has already been released
+      - name: Resolve restart-safe release state
+        id: release-state
         env:
           VERSION: \${{ inputs.version }}
         run: |
           if git ls-remote --exit-code --tags origin "refs/tags/\$VERSION" >/dev/null 2>&1; then
-            echo "::error::Tag \$VERSION already exists. The snapshot push is --atomic and would be rejected after the suite had run; cut the next version instead."
-            exit 1
-          fi
-          if [ -e "CHANGELOG/\$VERSION.md" ]; then
+            git fetch --force origin "refs/tags/\$VERSION:refs/tags/\$VERSION"
+            if [ ! -f "CHANGELOG/\$VERSION.md" ] ||
+              ! git cat-file -e "\$VERSION:CHANGELOG/\$VERSION.md" ||
+              ! git merge-base --is-ancestor "\$VERSION" HEAD ||
+              ! git diff --quiet "\$VERSION" HEAD -- "CHANGELOG/\$VERSION.md"; then
+              echo "::error::Tag \$VERSION exists but is not the immutable release snapshot reachable from this default-branch head. Refusing to resume a conflicting release."
+              exit 1
+            fi
+            echo "snapshot-exists=true" >> "\$GITHUB_OUTPUT"
+            echo "\$VERSION already has its immutable snapshot; verifying current release inputs before resuming publication."
+          elif [ -e "CHANGELOG/\$VERSION.md" ]; then
             echo "::error::CHANGELOG/\$VERSION.md already exists, and a released snapshot is immutable (ADR 0059). Cut the next version instead."
             exit 1
+          else
+            echo "snapshot-exists=false" >> "\$GITHUB_OUTPUT"
+            echo "\$VERSION is unused."
           fi
-          echo "\$VERSION is unused."
       - uses: ${release_setup_node}
         with:
           node-version: '${release_node_version}'
@@ -504,6 +516,7 @@ jobs:
   snapshot:
     # The irreversible act, and the only job that may not run first.
     needs: verify
+    if: needs.verify.outputs.snapshot-exists != 'true'
     uses: Verjson/.github/.github/workflows/changelog-release.yml@${ref}
     permissions:
       contents: write
@@ -522,7 +535,8 @@ jobs:
 
   publish:
     name: Publish the released snapshot
-    needs: snapshot
+    needs: [verify, snapshot]
+    if: always() && needs.verify.result == 'success' && (needs.snapshot.result == 'success' || needs.snapshot.result == 'skipped')
     uses: Verjson/.github/.github/workflows/node-release.yml@${ref}
     permissions:
       contents: write
@@ -1051,8 +1065,17 @@ while IFS= read -r release_workflow; do
   printf '%s\n' "$publish_job" \
     | grep -qF "uses: Verjson/.github/.github/workflows/node-release.yml@$CONTRACT_REF" \
     || fail "$release_workflow does not delegate publication to node-release.yml at the immutable contract pin (#455)"
-  printf '%s\n' "$publish_job" | grep -qF 'needs: snapshot' \
-    || fail "$release_workflow can publish before the immutable snapshot exists"
+  printf '%s\n' "$publish_job" | grep -qF 'needs: [verify, snapshot]' \
+    || fail "$release_workflow does not gate publication on both verification and snapshot state"
+  printf '%s\n' "$publish_job" \
+    | grep -qF "if: always() && needs.verify.result == 'success' && (needs.snapshot.result == 'success' || needs.snapshot.result == 'skipped')" \
+    || fail "$release_workflow cannot safely resume publication after reusing an immutable snapshot"
+  printf '%s\n' "$snapshot_job" \
+    | grep -qF "if: needs.verify.outputs.snapshot-exists != 'true'" \
+    || fail "$release_workflow recreates an existing immutable snapshot instead of resuming publication"
+  printf '%s\n' "$verify_job" \
+    | grep -qF 'snapshot-exists: ${{ steps.release-state.outputs.snapshot-exists }}' \
+    || fail "$release_workflow does not propagate verified snapshot state"
   for publish_input in \
     'version: ${{ inputs.version }}' \
     "node-version: '$EXPECTED_RELEASE_NODE_VERSION'" \
