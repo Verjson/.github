@@ -6,7 +6,10 @@ title: Keep the fleet watchdog, retarget it at the poll job the overflow lane ca
 
 #341 proposed deleting the fleet watchdog; #342, #343 and #355 are defects inside it. The
 disposition is **keep and fix**, recorded in
-[ADR 0056](docs/decisions/0056-fleet-watchdog-retained-and-retargeted/README.md).
+[ADR 0056](docs/decisions/0056-fleet-watchdog-retained-and-retargeted/README.md). The merge
+gate now also stops polling for CI in any repository that has declared required status
+checks on the PR's base branch, because GitHub is already blocking the merge on those
+contexts — the poll retires per repository as each one conforms, not org-wide on a date.
 
 Evidence: across 27 scheduled runs (2026-08-03..05) the watchdog reached a saturated pool
 with queued work five times. Once it preempted 4 of 4 candidates and cleared a jam with 35
@@ -67,6 +70,26 @@ the pool, but not `ai-privileged-merge.yml`, which routes on `VERJSON_LANE_PRIVI
   suppress the poll-step rule, so the note pointed at a switch nobody could read and inverted
   the two defaults. Corrected and folded into the #341 bullet, which is where the re-scope it
   belongs to already lives.
+
+- **ADR 0058 step 6, conditional per repository.** The `gate` job now asks
+  `GET /repos/{owner}/{repo}/rules/branches/{base}` whether the target repository declares
+  required status checks on this PR's base branch. If it names at least one context, the
+  gate emits `result=required-checks-declared` and exits without polling; GitHub refuses the
+  merge until those contexts are green, so a second observer holding a runner for up to 30
+  minutes adds nothing. If it names none — 66 of 91 non-archived org repositories on
+  2026-08-06 — the gate polls exactly as before, because skipping there would make that
+  repository's CI advisory, which ADR 0058 calls a worse defect than the deadlock it removes.
+  No allowlist and no per-repository variable: a repository opts in the moment a ruleset is
+  scoped to it. Every failure mode falls back to **polling** — an API error, the
+  `403 Upgrade to GitHub Pro` object body one org repository returns today, a non-array or
+  unparseable payload, a rule carrying no named context, or a base branch that cannot be
+  resolved. The base branch comes from the PR, never the literal `main`, and is rejected
+  before it reaches the API URL unless it is a bare ASCII ref: the allowlist is evaluated in
+  a C-locale subshell, because under `en_US.UTF-8` a `[[ =~ ]]` range of `A-Za-z` matches
+  `ü`, and `..` is rejected separately because every character of
+  `main/../../../orgs/Verjson/rulesets` is otherwise legal.
+  `scripts/ci-gate/required-checks-skip-poll.test.sh` extracts the shipped step and pins all
+  of it; ten mutations of the guard were each killed by a named assertion.
 
 `*/15` is nominal: observed cadence was roughly 15 runs a day with gaps up to ~2.5 h, so the
 watchdog is a backstop and not a latency bound. No `workflow_dispatch` is added — the job
