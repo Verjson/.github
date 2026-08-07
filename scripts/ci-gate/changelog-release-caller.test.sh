@@ -228,6 +228,38 @@ if "scripts/release-verify.sh" not in suite:
     bad("`verify` offers no scripts/release-verify.sh hook, so an adopter whose "
         "suite is not `npm test` must edit a generated artifact")
 
+# #569. setup-node's npmrc expands NODE_AUTH_TOKEN at command execution time.
+# The install step already receives the private-package read credential, but the
+# supported verification hook/default suite is a separate step and must receive
+# it independently. Keep the grant step-scoped: never job-wide, and never on an
+# unrelated step.
+private_token = "${{ secrets.NODE_AUTH_TOKEN }}"
+suite_steps = [
+    step for step in steps_of(verify)
+    if step.get("name") == "Run the release verification suite"
+]
+if len(suite_steps) != 1:
+    bad("`verify` must contain exactly one named release verification suite step")
+else:
+    token = str((suite_steps[0].get("env") or {}).get("NODE_AUTH_TOKEN") or "")
+    if token.strip() != private_token:
+        bad("the release verification hook/default suite does not receive "
+            "NODE_AUTH_TOKEN from secrets.NODE_AUTH_TOKEN (#569)")
+for job_name, job in jobs.items():
+    job_token = str((job.get("env") or {}).get("NODE_AUTH_TOKEN") or "")
+    if job_token == private_token:
+        bad("`%s` exposes the private-package token at job scope instead of "
+            "only to commands that need it (#569)" % job_name)
+    for step in steps_of(job):
+        token = str((step.get("env") or {}).get("NODE_AUTH_TOKEN") or "")
+        run = step.get("run") or ""
+        if token == private_token and not (
+            re.search(r"\bnpm ci\b", run)
+            or step.get("name") == "Run the release verification suite"
+        ):
+            bad("an unrelated step in `%s` receives the private-package token "
+                "(#569)" % job_name)
+
 # Provenance, so an adopter's own contract test can tell a regenerated caller
 # from a hand-copied one.
 if not re.search(r"gen-changelog-caller\.sh release-node [0-9a-f]{40}", raw):
@@ -296,6 +328,9 @@ hollow_out_the_suite() {
   sed -i 's|^          npm test$|          echo skipping|' "$1"
 }
 drop_verify_hook() { sed -i '/scripts\/release-verify.sh/d' "$1"; }
+drop_verify_suite_token() {
+  sed -i '/^      - name: Run the release verification suite$/,+2{/NODE_AUTH_TOKEN:/d;}' "$1"
+}
 strip_provenance() { sed -i '/gen-changelog-caller.sh release-node/d' "$1"; }
 drop_publish_token() {
   # Deleting every GITHUB_TOKEN would "fix" the install defect while breaking
@@ -322,6 +357,7 @@ expect_shape_rejection "GITHUB_TOKEN as push_token (ADR 0052)" wire_github_token
 expect_shape_rejection "verifying a ref other than github.sha" verify_a_different_ref
 expect_shape_rejection "a verify job that runs no suite" hollow_out_the_suite
 expect_shape_rejection "a verify job with no release-verify.sh hook" drop_verify_hook
+expect_shape_rejection "a release verification suite without private-package auth (#569)" drop_verify_suite_token
 expect_shape_rejection "a caller carrying no generator provenance" strip_provenance
 expect_shape_rejection "a publish step that no longer authenticates" drop_publish_token
 expect_shape_rejection "a branch guard that compares github.ref to itself" tautological_branch_guard
@@ -545,6 +581,17 @@ else
   pass "the default suite does not run behind an unusable hook"
 fi
 rm -rf "$tmp/sandbox/scripts"
+
+# The generated caller is dispatch-only, and no repository workflow triggered
+# by pull_request may acquire the private release credential. Comments showing
+# caller examples do not count; executable YAML does.
+while IFS= read -r workflow; do
+  if grep -qE '^  pull_request:|^  pull_request_target:' "$workflow" \
+    && grep -qF 'secrets.NODE_AUTH_TOKEN' "$workflow"; then
+    fail "an untrusted pull-request workflow exposes secrets.NODE_AUTH_TOKEN: $workflow"
+  fi
+done < <(find "$root/.github/workflows" -maxdepth 1 -type f -name '*.yml' -print)
+pass "pull-request workflows do not receive the private release credential"
 
 # --- generator hygiene, matching the sibling modes ---------------------------
 

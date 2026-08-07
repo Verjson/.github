@@ -477,6 +477,8 @@ jobs:
           VERSION: \${{ inputs.version }}
         run: npm version "\${VERSION#v}" --no-git-tag-version --ignore-scripts
       - name: Run the release verification suite
+        env:
+          NODE_AUTH_TOKEN: \${{ secrets.NODE_AUTH_TOKEN }}
         run: |
           # Existence and executability are checked separately on purpose. A
           # single \`-x\` test reads a hook committed without the executable bit
@@ -925,6 +927,9 @@ elif set(triggers) != {"workflow_dispatch"}:
 GITHUB_TOKEN = re.compile(
     r"\$\{\{\s*(secrets\.GITHUB_TOKEN|github\.token)\s*\}\}", re.IGNORECASE
 )
+PRIVATE_NODE_TOKEN = re.compile(
+    r"\$\{\{\s*secrets\.NODE_AUTH_TOKEN\s*\}\}", re.IGNORECASE
+)
 LIST_ITEM = re.compile(r"^(\s*)-\s")
 
 
@@ -960,6 +965,44 @@ for index, line in enumerate(lines):
             "install 401s after the tag has already been pushed. Install with "
             "NODE_AUTH_TOKEN and keep GITHUB_TOKEN for npm publish (#465)"
             % (index + 1)
+        )
+
+verification_steps = [
+    index for index, line in enumerate(lines)
+    if line.strip() == "- name: Run the release verification suite"
+]
+if len(verification_steps) != 1:
+    problems.append(
+        "must contain exactly one named release verification suite step (#569)"
+    )
+else:
+    verification_step = enclosing_step(verification_steps[0])
+    if verification_step is None or not any(
+        "NODE_AUTH_TOKEN" in entry and PRIVATE_NODE_TOKEN.search(entry)
+        for entry in verification_step
+    ):
+        problems.append(
+            "does not expose secrets.NODE_AUTH_TOKEN to the release verification "
+            "hook/default suite step (#569)"
+        )
+
+for index, line in enumerate(lines):
+    if "NODE_AUTH_TOKEN" not in line or not PRIVATE_NODE_TOKEN.search(line):
+        continue
+    step = enclosing_step(index)
+    if step is None:
+        problems.append(
+            "exposes secrets.NODE_AUTH_TOKEN outside a step-scoped environment (#569)"
+        )
+        continue
+    is_install = any(re.search(r"\bnpm ci\b", entry) for entry in step)
+    is_verification = any(
+        entry.strip() == "- name: Run the release verification suite"
+        for entry in step
+    )
+    if not (is_install or is_verification):
+        problems.append(
+            "exposes secrets.NODE_AUTH_TOKEN to an unrelated release step (#569)"
         )
 
 prepare_lines = [
