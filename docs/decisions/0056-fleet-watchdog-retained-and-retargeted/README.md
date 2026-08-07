@@ -7,7 +7,9 @@
   [#343](https://github.com/Verjson/.github/issues/343) (35 minutes cannot preempt
   a polling gate),
   [#355](https://github.com/Verjson/.github/issues/355) (it disables itself on a
-  paginated runner list)
+  paginated runner list),
+  [#511](https://github.com/Verjson/.github/issues/511) (queued selectors with no
+  admitted online runner have no failure signal)
 - **Amends:** [ADR 0049](../0049-fleet-watchdog-preempts-poll-jobs/README.md) —
   narrows what the watchdog targets and revises its *Retirement* section; the
   decision to have a watchdog at all is unchanged
@@ -174,6 +176,34 @@ given back, the `gate` deadlock returns.
    [#350](https://github.com/Verjson/.github/issues/350) tracks and #385 removed
    elsewhere.
 
+6. **#511 — report unsatisfiable selectors before considering preemption.**
+   Aggregate fleet health cannot prove that a particular queued job can run.
+   The scheduled job now inventories queued jobs from both queued and
+   in-progress runs, their complete `runs-on` labels, every organization runner,
+   and the runner-group admission boundary for the requesting repository. A job
+   is satisfiable when at least one compatible admitted runner is online,
+   including when every such runner is busy; busy is capacity pressure, not
+   selector drift. With zero admitted online matches, the report distinguishes
+   an otherwise-compatible online runner hidden by selected-group admission from
+   labels/offline capacity. The default group and `visibility: all` groups are
+   evaluated explicitly rather than treated as implicit capacity.
+
+   The detector is report-only: it invokes only GET endpoints and has no mutation
+   path. It reuses `ORG_ADMIN_TOKEN` because organization runners, runner groups,
+   selected-group repository admission, and cross-repository jobs all require
+   organization/cross-repository Actions read access. That token already carries
+   the broader Actions write authority required by the following watchdog
+   cancellation step; #511 adds no scope. Any unreadable endpoint, malformed
+   page, or partial pagination exits undetermined, so incomplete evidence can
+   never produce a clean report.
+
+   Run creation is the only queue timestamp the jobs APIs expose for a queued
+   job (`started_at` is null), so `age_minutes` is the observable run-age bound,
+   not a claim that the individual job queued at that exact instant. Time is
+   sampled when each job is evaluated rather than once before the org scan, and
+   API timestamps up to five minutes ahead are clamped to age zero; larger skew
+   is undetermined.
+
 ## Consequences
 
 The watchdog stays armed for the rule that has evidence and is report-only for
@@ -182,6 +212,13 @@ because that is the only poll job still on the pool — which is exactly the
 residual exposure, and exactly what the 2026-08-03 05:59 firing was. Arming the
 poll-step rule is a separate operational action item
 (`VERJSON_WATCHDOG_POLL_STEP_DRY_RUN=false`), not something this change performs.
+
+Selector health and cancellation are separate jobs in the same schedule-only,
+default-branch-bound workflow, each with its own 10-minute budget and neither
+depending on the other. A slow, unknown, or unsatisfiable selector inventory
+cannot consume or suppress the watchdog's proven deadlock mitigation. Operators
+get the repository, run/job ids, label set, observable age bound, and classified
+cause without the detector changing runner groups, jobs, or runs.
 
 While `VERJSON_RUNNER_OVERFLOW` is set, the poll-step rule is expected to select
 nothing at all: every `gate` is on hosted capacity and fails the pool-occupancy
