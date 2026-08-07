@@ -57,9 +57,11 @@ non-trivial or fanned-out work autonomously:
 
 - [#261](https://github.com/Verjson/.github/issues/261) — Bind privileged-merge provenance to a signed workflow identity; the durable closure for #279's residual.
 - [#263](https://github.com/Verjson/.github/issues/263) — Drafts always carry a red `privileged_merge` check; the draft hold should be a terminal no-op, not a failure.
-- [#468](https://github.com/Verjson/.github/issues/468) — `ready_for_review` fires no `ai-review-merge` run despite being in `types:`, so a draft marked ready keeps its three SKIPPED gate checks until a new commit. Reproduced on #386 and #462.
+- [#477](https://github.com/Verjson/.github/issues/477) — the required-workflow rule makes the gate deaf to `ready_for_review`/`labeled`/`unlabeled` in **every** org repo (ADR 0063); `gate-rearm.yml` fixes only this one, the fleet still needs a generated caller.
 - [#475](https://github.com/Verjson/.github/issues/475) — one 5xx on the merge dispatch reddens the whole gate run and poisons `privileged_merge`; re-dispatch cannot clear it, because a `workflow_dispatch` run's checks never attach to the PR. Push a commit.
 - [#474](https://github.com/Verjson/.github/issues/474) — 53 of 87 open org PRs carry no `gate` check run, so requiring `gate` on `~ALL` would wedge them all. Blocks the rest of ADR 0058 step 5.
+- [#482](https://github.com/Verjson/.github/issues/482) — the gate's hold checks (`ai-review-merge.yml:371`, `:1609`) use `if jq -e …`, so a jq *error* reads as "not held" and a held PR can merge. Fail-open on the ADR 0012 invariant.
+- [#481](https://github.com/Verjson/.github/issues/481) — the `re-review` label lane is dead for the same reason as #468 and `gate-rearm.yml` deliberately does not bridge `labeled`; bridge it or retire the lane.
 - [#265](https://github.com/Verjson/.github/issues/265) — Org Actions secrets sit at `visibility: all`; scope them to least privilege.
 - [#279](https://github.com/Verjson/.github/issues/279) — Attestation provenance: closed for the required-workflow shape (ADR 0044); open for the reusable-caller shape, which no repo uses yet.
 - [#292](https://github.com/Verjson/.github/issues/292) — Re-review skip never fires: `gh api user` cannot resolve an identity under `github.token`, so every head change re-pays for an unchanged diff.

@@ -1,0 +1,122 @@
+name: gate re-arm
+
+# Re-arms the merge gate for the pull_request activity types that never reach it
+# (Verjson/.github#468, ADR 0063).
+#
+# `ai-review-merge.yml` is installed org-wide as a REQUIRED WORKFLOW by the
+# `main-protection` ruleset (org ruleset 18098028, ADR 0039). A required workflow
+# is scheduled by the ruleset, not by its own `on:` block: GitHub creates those
+# runs under a separate, API-invisible workflow record and fires them for
+# `opened`, `synchronize` and `reopened` only. The `ready_for_review`, `labeled`
+# and `unlabeled` types the gate declares at ai-review-merge.yml:81 are therefore
+# dead — measured, not inferred (see the ADR for the run-id table).
+#
+# This workflow is NOT required-enforced, so its own triggers are honoured. It
+# converts the two events that leave a PR wedged into the one entry point that
+# does work — a `workflow_dispatch` of the gate, which runs under the gate's own
+# workflow record.
+#
+# Safety:
+#   * `pull_request_target` is used because a fork PR's `pull_request` token
+#     cannot dispatch a workflow. Nothing is checked out and no PR-controlled
+#     text reaches a shell, so the privileged context never executes head code.
+#   * No re-entrancy: a dispatch produces a `workflow_dispatch` run, which emits
+#     neither `ready_for_review` nor `unlabeled`. The gate's own label churn
+#     (removing `re-review`) is excluded by the job guard below.
+#   * `hold`, `DO NOT MERGE` and draft stay terminal (ADR 0012) — checked in the
+#     guard against the event payload and re-checked against live PR state.
+
+on:
+  pull_request_target:
+    types: [ready_for_review, unlabeled]
+
+permissions:
+  contents: read
+
+jobs:
+  rearm:
+    # `unlabeled` fires for every label the gate itself removes — `re-review`
+    # above all — so only the removal of a TERMINAL hold re-arms. Draft and any
+    # still-present hold stay terminal.
+    #
+    # The hold set is spelled with every separator the live predicate normalizes
+    # (`gsub("[ _-]+";" ")`), because expression `==` is case-insensitive but not
+    # separator-insensitive: without the variants a PR held with `do-not-merge`
+    # would be suppressed correctly and then never re-arm when that label is
+    # removed — #468 again, by another route. The still-present checks below are
+    # a cheap pre-filter only; the authoritative, fully normalized hold check is
+    # re-run against live PR state in the step.
+    if: >
+      (
+        github.event.action == 'ready_for_review' ||
+        (github.event.action == 'unlabeled' &&
+          contains(fromJSON('["hold","DO NOT MERGE","DO-NOT-MERGE","DO_NOT_MERGE"]'),
+                   github.event.label.name))
+      ) &&
+      !github.event.pull_request.draft &&
+      !contains(github.event.pull_request.labels.*.name, 'hold') &&
+      !contains(github.event.pull_request.labels.*.name, 'DO NOT MERGE') &&
+      !contains(github.event.pull_request.title, 'DO NOT MERGE')
+    # Concurrency is claimed by the JOB, not the workflow: a workflow-level group
+    # is claimed before the guard above is evaluated, so an `unlabeled` event for
+    # a non-terminal label would create a run that seizes the group, cancels an
+    # in-flight re-arm that was about to dispatch, and is then skipped by its own
+    # `if:` — losing the re-arm entirely. Cancellation is off for the same
+    # reason: this job is one idempotent dispatch, and the gate has its own
+    # concurrency group, so queueing a second re-arm is strictly safer than
+    # killing the first one mid-dispatch.
+    concurrency:
+      group: gate-rearm-${{ github.event.pull_request.number }}
+      cancel-in-progress: false
+    # One API call and one dispatch; the fast lane keeps it off the shared pool
+    # (ADR 0047/0048). This repository is public, so its minutes are free.
+    runs-on: ${{ fromJSON(vars.VERJSON_RUNNER_FASTLANE || '["ubuntu-24.04"]') }}
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: write
+      pull-requests: read
+    env:
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+      TARGET_REPO: ${{ github.repository }}
+      EVENT_ACTION: ${{ github.event.action }}
+    steps:
+      - name: Re-arm the merge gate
+        id: rearm
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          [[ "$TARGET_REPO" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] ||
+            { echo "::error::invalid repository identity"; exit 1; }
+          [ "$TARGET_REPO" = "$GITHUB_REPOSITORY" ] ||
+            { echo "::error::repository identity mismatch"; exit 1; }
+          [[ "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]] ||
+            { echo "::error::invalid PR number"; exit 1; }
+          # The job `if:` read the event payload, a snapshot taken before this job
+          # was scheduled. Re-read live state so a hold applied in between still
+          # wins. A failed read aborts under `set -e` and dispatches nothing.
+          meta="$(gh pr view "$PR_NUMBER" --repo "$TARGET_REPO" \
+            --json labels,title,isDraft,state)"
+          state="$(jq -r '.state' <<<"$meta")"
+          if [ "$state" != "OPEN" ]; then
+            echo "PR #$PR_NUMBER is $state; nothing to re-arm."
+            exit 0
+          fi
+          # Same hold predicate as the gate's classify and merge checkpoints, so
+          # the three cannot disagree about what "held" means. Materialised into
+          # a string instead of an `if jq -e`: a jq that ERRORS exits non-zero,
+          # which an `if` would read as "not held" and dispatch anyway.
+          held="$(jq -r '(([.labels[].name | ascii_upcase | gsub("[ _-]+";" ")]) as $l | ($l | index("HOLD")) or ($l | index("DO NOT MERGE")) or (.title | ascii_upcase | contains("DO NOT MERGE")) or .isDraft) | if . then "true" else "false" end' <<<"$meta")"
+          case "$held" in
+            true)
+              echo "PR #$PR_NUMBER is held (label/title/draft); not re-arming (ADR 0012)."
+              exit 0 ;;
+            false) ;;
+            *)
+              echo "::error::could not read the hold state of PR #$PR_NUMBER"
+              exit 1 ;;
+          esac
+          gh workflow run ai-review-merge.yml --repo "$TARGET_REPO" \
+            -f pr_number="$PR_NUMBER"
+          echo "Re-armed the merge gate for PR #$PR_NUMBER after $EVENT_ACTION."
