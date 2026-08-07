@@ -618,11 +618,9 @@ jobs:
               echo "Published \$package_name@\$package_version."
             else
               echo "::warning::npm publish failed; proving whether an identical immutable version already exists before continuing."
-              npm whoami --registry=https://npm.pkg.github.com >/dev/null \
-                || { echo "::error::Cannot prove registry authorization after npm publish failed."; exit 1; }
               npm view "\$package_name@\$package_version" --json \
                 --registry=https://npm.pkg.github.com >"\$registry_json" \
-                || { echo "::error::Cannot read the allegedly existing registry version after npm publish failed."; exit 1; }
+                || { echo "::error::Cannot read the allegedly existing registry version with the publication credential after npm publish failed."; exit 1; }
               node - "\$registry_json" "\$package_name" "\$package_version" "\$package_integrity" <<'NODE'
           const fs = require("fs");
           const [viewPath, expectedName, expectedVersion, expectedIntegrity] = process.argv.slice(2);
@@ -1135,13 +1133,16 @@ while IFS= read -r release_workflow; do
     'for package_dir in "${package_dirs[@]}"' \
     'package_path="./$package_dir"' \
     'npm pack "$package_path" --json --ignore-scripts' \
-    'npm whoami --registry=https://npm.pkg.github.com' \
+    'NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}' \
     'npm view "$package_name@$package_version" --json' \
+    '--registry=https://npm.pkg.github.com >"$registry_json"' \
+    'published.name !== expectedName' \
+    'published.version !== expectedVersion' \
     'published.dist.integrity !== expectedIntegrity' \
     'gh release view "$VERSION" --json tagName' \
     'gh release edit "$VERSION" --notes-file' \
     'gh release create "$VERSION" --verify-tag --notes-file'; do
-    printf '%s\n' "$publish_job" | grep -qF "$restart_guard" \
+    printf '%s\n' "$publish_job" | grep -qF -- "$restart_guard" \
       || fail "$release_workflow is not restart-safe after partial publication; missing '$restart_guard' (#535)"
   done
 

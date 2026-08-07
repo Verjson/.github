@@ -78,4 +78,42 @@ d="$(new_fixture)"; adr "$d" "0001-x" "0001 — X" "2026-07-01"; gen "$d"
 adr "$d" "0002-y" "0002 — Y" "2026-07-02"
 gen "$d" --check && fail "--check must detect a stale table" || pass "--check detects a stale table"
 
+# 8. Different slugs cannot reuse one durable ADR number. Both conflicting
+# paths must be actionable, and a failed generation must not rewrite the index.
+d="$(new_fixture)"
+adr "$d" "0042-first-decision" "0042 — First Decision" "2026-07-03"
+adr "$d" "0042-second-decision" "0042 — Second Decision" "2026-07-04"
+index_before="$(cat "$d/docs/decisions/README.md")"
+if duplicate_output="$(bash "$d/scripts/gen-adr-index.sh" 2>&1)"; then
+  fail "duplicate ADR numbers must fail before rendering"
+elif grep -qF "$d/docs/decisions/0042-first-decision" <<<"$duplicate_output" \
+  && grep -qF "$d/docs/decisions/0042-second-decision" <<<"$duplicate_output"; then
+  pass "duplicate ADR failure names both conflicting paths (#555)"
+else
+  fail "duplicate ADR failure did not name both conflicting paths: $duplicate_output"
+fi
+[ "$(cat "$d/docs/decisions/README.md")" = "$index_before" ] \
+  && pass "duplicate ADR failure leaves the generated index untouched" \
+  || fail "duplicate ADR failure rewrote the index"
+if duplicate_check_output="$(bash "$d/scripts/gen-adr-index.sh" --check 2>&1)"; then
+  fail "--check must reject duplicate ADR numbers"
+elif grep -qF "$d/docs/decisions/0042-first-decision" <<<"$duplicate_check_output" \
+  && grep -qF "$d/docs/decisions/0042-second-decision" <<<"$duplicate_check_output"; then
+  pass "--check rejects duplicates and names both conflicting paths"
+else
+  fail "--check duplicate failure did not name both conflicting paths: $duplicate_check_output"
+fi
+
+# Supersession is a relationship between distinct decisions, not duplicate
+# numbering. Preserve that valid shape while rejecting number collisions.
+d="$(new_fixture)"
+adr "$d" "0042-original" "0042 — Original" "2026-07-03"
+adr "$d" "0043-replacement" "0043 — Replacement" "2026-07-04"
+printf '%s\n' '- **Supersedes:** ADR 0042' >>"$d/docs/decisions/0043-replacement/README.md"
+gen "$d" \
+  && grep -qF '[0042](0042-original/README.md)' "$d/docs/decisions/README.md" \
+  && grep -qF '[0043](0043-replacement/README.md)' "$d/docs/decisions/README.md" \
+  && pass "distinct superseding ADRs remain valid" \
+  || fail "duplicate guard rejected valid supersession"
+
 if [ "$fails" -eq 0 ]; then echo "All tests passed."; exit 0; else echo "$fails test(s) failed."; exit 1; fi

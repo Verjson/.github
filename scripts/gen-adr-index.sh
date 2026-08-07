@@ -38,6 +38,22 @@ valid_date() {
   [ "$day" -le "$max_day" ]
 }
 
+validate_unique_numbers() {
+  local d slug num
+  declare -A first_path=()
+
+  while IFS= read -r d; do
+    slug="$(basename "$d")"
+    num="${slug%%-*}"
+    if [ -n "${first_path[$num]:-}" ]; then
+      echo "gen-adr-index: duplicate ADR number $num: ${first_path[$num]} and $d" >&2
+      return 1
+    fi
+    first_path[$num]="$d"
+  done < <(find "$dec_dir" -mindepth 1 -maxdepth 1 -type d \
+    -name '[0-9][0-9][0-9][0-9]-*' | sort)
+}
+
 gen_table() {
   printf '| # | Date | Decision |\n'
   printf '|---|------|----------|\n'
@@ -89,6 +105,7 @@ grep -qF "$begin" "$index" && grep -qF "$end" "$index" || {
   echo "gen-adr-index: both markers '$begin' and '$end' must be present in $index" >&2
   exit 1
 }
+validate_unique_numbers
 
 if [ "${1:-}" = "--check" ]; then
   if ! diff -u "$index" <(render); then

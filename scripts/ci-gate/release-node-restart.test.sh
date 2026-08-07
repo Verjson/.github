@@ -70,11 +70,8 @@ case "$command" in
     if [ -e "$state" ]; then exit 1; fi
     touch "$state"
     ;;
-  whoami)
-    [ "${AUTH_FAIL:-0}" != 1 ] || exit 1
-    printf '%s\n' test-user
-    ;;
   view)
+    [ "${AUTH_FAIL:-0}" != 1 ] || exit 1
     [ "${NETWORK_FAIL:-0}" != 1 ] || exit 1
     case "${VIEW_MODE:-matching}:$1" in
       matching:*compat*) printf '%s\n' '{"name":"@acme/compat","version":"1.2.3","dist":{"integrity":"sha512-compat"}}' ;;
