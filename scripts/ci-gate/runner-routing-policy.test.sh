@@ -476,12 +476,17 @@ polling_jobs="$(
       /^jobs:[[:space:]]*$/ { in_jobs = 1; next }
       !in_jobs { next }
       /^[^[:space:]#]/ { in_jobs = 0; next }
-      # A job key: exactly two spaces of indent, inside `jobs:`.
-      /^  [^[:space:]#][^:]*:[[:space:]]*$/ {
-        if (job != "") print file "\t" job "\t" (parks && waits_on_checks) "\t" runs_on
+      # A job key: exactly two spaces of indent, inside `jobs:`. The optional
+      # trailing comment is not cosmetic — without it, `  gate:  # note` is not
+      # recognised as a key, so the job body that follows is attributed to the
+      # PREVIOUS job. That misattribution is a false NEGATIVE in the direction
+      # that matters: a poller inheriting a neighbour that already has overflow
+      # passes while being unrouted.
+      /^  [^[:space:]#][^:]*:[[:space:]]*(#.*)?$/ {
+        if (job != "") print file "\t" job "\t" (parks && waits_on_checks && !delegates) "\t" runs_on
         job = $0
-        sub(/^  /, "", job); sub(/:[[:space:]]*$/, "", job)
-        parks = 0; waits_on_checks = 0; runs_on = ""
+        sub(/^  /, "", job); sub(/:[[:space:]]*(#.*)?$/, "", job)
+        parks = 0; waits_on_checks = 0; delegates = 0; runs_on = ""
         next
       }
       job == "" { next }
@@ -489,9 +494,14 @@ polling_jobs="$(
         runs_on = $0
         sub(/^    runs-on:[[:space:]]*/, "", runs_on)
       }
+      # A job-level `uses:` calls a reusable workflow and declares no runner of
+      # its own; the requirement belongs to the CALLED workflow, which this sweep
+      # scans on its own if it lives here. Without this, such a job reports an
+      # empty `runs-on` and fails for a reason that is not #487.
+      /^    uses:/ { delegates = 1 }
       /[^[:alnum:]_]sleep[[:space:]]+[0-9]/ { parks = 1 }
       /statusCheckRollup|check-runs|commits\/[^ ]*\/status/ { waits_on_checks = 1 }
-      END { if (job != "") print file "\t" job "\t" (parks && waits_on_checks) "\t" runs_on }
+      END { if (job != "") print file "\t" job "\t" (parks && waits_on_checks && !delegates) "\t" runs_on }
     ' "$wf"
   done | awk -F'\t' '$3 == 1'
 )"
