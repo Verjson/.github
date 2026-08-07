@@ -91,3 +91,32 @@ review check red.
 Workflow enumeration or transport failures remain terminal. A non-empty result other
 than the one fixed trusted path also fails closed. The fallback grants no merge
 authority and does not introduce a credential into pull-request-controlled execution.
+
+## Merge dispatch is a request; merged state is the postcondition
+
+**Amended 2026-08-07 for #384, after #452:** a successful
+`workflow_dispatch` request proves only that GitHub accepted the continuation
+request. It does not prove that the privileged workflow merged the pull
+request. A stale review or repository policy can still leave the PR open while
+`dispatch-merge` reports success.
+
+When the fixed continuation exists, the dispatcher now polls bounded,
+validated PR metadata after requesting it and exits successfully only when the
+expected head is reported as `MERGED` with a non-null merge timestamp. The
+stale gate-review cause is addressed upstream by #452; this postcondition
+remains independently load-bearing for review requirements and any other
+policy refusal.
+
+An unmerged terminal observation emits machine-readable step/job outputs:
+`merge_observed`, `blocking_review`, `policy_blocked`, `blocker`, and
+`remediation`. `CHANGES_REQUESTED` and `REVIEW_REQUIRED` map to review
+remediation; `BLOCKED` without a review veto maps to policy inspection; a clean
+but unmerged PR points to the privileged run. Transport or schema failures are
+retried, then fail closed as `state_unavailable`; a changed head fails
+immediately and requests a fresh gate.
+
+The consumer-without-continuation case remains the explicit green terminal
+no-op above and is typed `continuation_absent`. No permission changes or admin
+bypass are introduced: the metadata-only job retains exactly `contents: read`
+and `actions: write`, and the actual merge authority stays in the separately
+trusted continuation.
