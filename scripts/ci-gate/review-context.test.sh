@@ -86,6 +86,9 @@ case "$1" in
   merge-base)
     [ "${NO_MERGE_BASE:-false}" != true ] && printf '%040d\n' 1 || exit 1
     ;;
+  rev-parse)
+    printf '%s\n' true
+    ;;
   diff)
     for n in $(seq 1 301); do
       printf 'diff --git a/src/file-%03d.ts b/src/file-%03d.ts\n' "$n" "$n"
@@ -137,16 +140,52 @@ run_prep 9 \
 run_prep 0 true \
   && fail "missing merge base was allowed through" \
   || {
-    [ "$(cat "$tmp/fetch-count")" -eq 1 ] \
+    [ "$(cat "$tmp/fetch-count")" -eq 2 ] \
       && grep -q 'kind=merge_base_unavailable' "$tmp/prep.out" \
       && grep -q '^review_input_failure=merge_base_unavailable$' "$tmp/github-output.txt" \
-      && pass "missing merge base fails closed with typed evidence" \
-      || fail "missing merge base lacks typed fail-closed evidence"
+      && pass "missing merge base retries with full history, then fails closed" \
+      || fail "missing merge base skipped the unshallow fallback or typed failure"
   }
 
 ! grep -q 'gh pr diff' "$prep" \
   && pass "review input no longer depends on GitHub's whole-diff endpoint" \
   || fail "the 300-file-limited whole-diff endpoint remains on the review path"
+
+# Exercise the exact shallow-history failure that a fully mocked git cannot
+# represent: a feature branch whose fork point is deeper than fetch-depth 2.
+real_git="$(command -v git)"
+fixture="$tmp/shallow"
+mkdir -p "$fixture"
+"$real_git" init --bare --initial-branch=main "$fixture/remote.git" >/dev/null
+"$real_git" init -b main "$fixture/seed" >/dev/null
+(
+  cd "$fixture/seed" || exit
+  git config user.name test
+  git config user.email test@example.com
+  printf 'base\n' >file
+  git add file
+  git commit -m base >/dev/null
+  git remote add origin "$fixture/remote.git"
+  git push --quiet -u origin main
+  git switch --quiet -c feature
+  for n in 1 2 3; do
+    printf '%s\n' "$n" >>file
+    git commit -am "feature $n" >/dev/null
+  done
+  git push --quiet -u origin feature
+)
+"$real_git" clone --quiet --depth=2 --branch feature "file://$fixture/remote.git" "$fixture/checkout"
+(
+  cd "$fixture/checkout" || exit
+  git fetch --no-tags --depth=100 origin \
+    "+refs/heads/main:refs/remotes/origin/main" >/dev/null 2>&1
+  [ -z "$(git merge-base origin/main HEAD 2>/dev/null || true)" ] \
+    && git fetch --no-tags --unshallow origin \
+      "+refs/heads/main:refs/remotes/origin/main" >/dev/null 2>&1 \
+    && [ -n "$(git merge-base origin/main HEAD 2>/dev/null || true)" ]
+) \
+  && pass "unshallow fallback restores a merge base for a three-commit PR" \
+  || fail "real fetch-depth 2 fixture cannot recover its merge base"
 
 [ "$fails" -eq 0 ] && { echo "All tests passed."; exit 0; }
 echo "$fails test(s) failed."

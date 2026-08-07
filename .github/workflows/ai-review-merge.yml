@@ -1195,33 +1195,41 @@ jobs:
             echo "::error::phase=review-input result=unavailable kind=base_ref_missing — PR metadata did not identify a base ref"
             exit 1
           fi
-          diff_attempt=1
           diff_max_attempts=4
           diff_error=.ai-review/base-fetch.error
-          while :; do
-            : >"$diff_error"
-            if git fetch --no-tags --depth=100 origin \
-              "+refs/heads/$base_ref:refs/remotes/origin/$base_ref" 2>"$diff_error"; then
+          fetch_base_history() {
+            local fetch_mode="$1" diff_attempt=1 diff_rc diff_delay
+            while :; do
               : >"$diff_error"
-              break
-            else
-              diff_rc=$?
-            fi
-            : >"$diff_error"
-            if [ "$diff_attempt" -ge "$diff_max_attempts" ]; then
-              {
-                echo "review_input_available=false"
-                echo "review_input_failure=infrastructure_unavailable"
-              } >>"$GITHUB_OUTPUT"
-              echo "::error::phase=review-input result=unavailable kind=infrastructure_unavailable source=git_fetch attempts=$diff_attempt — base history remained unavailable; not a substantive review verdict"
-              exit "$diff_rc"
-            fi
-            diff_delay=$((1 << (diff_attempt - 1)))
-            echo "::warning::phase=review-input result=retry kind=git_fetch attempt=$diff_attempt/$diff_max_attempts backoff_seconds=$diff_delay"
-            sleep "$diff_delay"
-            diff_attempt=$((diff_attempt + 1))
-          done
+              if git fetch --no-tags "$fetch_mode" origin \
+                "+refs/heads/$base_ref:refs/remotes/origin/$base_ref" 2>"$diff_error"; then
+                : >"$diff_error"
+                return 0
+              else
+                diff_rc=$?
+              fi
+              : >"$diff_error"
+              if [ "$diff_attempt" -ge "$diff_max_attempts" ]; then
+                {
+                  echo "review_input_available=false"
+                  echo "review_input_failure=infrastructure_unavailable"
+                } >>"$GITHUB_OUTPUT"
+                echo "::error::phase=review-input result=unavailable kind=infrastructure_unavailable source=git_fetch mode=$fetch_mode attempts=$diff_attempt — base history remained unavailable; not a substantive review verdict"
+                return "$diff_rc"
+              fi
+              diff_delay=$((1 << (diff_attempt - 1)))
+              echo "::warning::phase=review-input result=retry kind=git_fetch mode=$fetch_mode attempt=$diff_attempt/$diff_max_attempts backoff_seconds=$diff_delay"
+              sleep "$diff_delay"
+              diff_attempt=$((diff_attempt + 1))
+            done
+          }
+          fetch_base_history --depth=100 || exit $?
           merge_base="$(git merge-base "origin/$base_ref" HEAD 2>/dev/null || true)"
+          if [ -z "$merge_base" ] \
+            && [ "$(git rev-parse --is-shallow-repository 2>/dev/null || true)" = true ]; then
+            fetch_base_history --unshallow || exit $?
+            merge_base="$(git merge-base "origin/$base_ref" HEAD 2>/dev/null || true)"
+          fi
           [ -n "$merge_base" ] || {
             {
               echo "review_input_available=false"
