@@ -82,6 +82,32 @@ _Date: 2026-07-30; id:20260730t090000z; refs #13_
 `summary` optionally overrides the lead paragraph used in a released snapshot;
 it does not change the full running-log entry.
 
+### Independent component streams
+
+A repository that releases independently versioned packages may add an optional
+component identifier:
+
+```markdown
+---
+date: 2026-08-07
+issue: 390
+component: python
+title: Add Python worker support
+---
+```
+
+Component names are lowercase 1–64 character identifiers using letters,
+digits, dot, underscore, and hyphen; they must start and end with a letter or
+digit. They are stream names, not paths.
+
+The default renderer and release select only fragments with no `component`, so
+single-package repositories are unchanged and scoped work cannot leak into
+their release. Preview or release one explicit stream with
+`render-next --component python` or `release --component python`. An explicit
+fragment list can narrow that stream but cannot select across component
+boundaries. Validation and pull-request consumption checks still cover every
+stream. See [ADR 0065](../decisions/0065-component-scoped-changelog-streams/README.md).
+
 The date and identity in the filename must match the metadata. Work that
 legitimately has no issue uses `id` instead of `issue`; its identity must be a
 UTC timestamp (`20260730T184500Z`) or a 6–12 character hexadecimal UUID prefix.

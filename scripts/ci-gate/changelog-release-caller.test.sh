@@ -81,6 +81,8 @@ if set(triggers) != {"workflow_dispatch"}:
 inputs = (triggers.get("workflow_dispatch") or {}).get("inputs") or {}
 if not (inputs.get("version") or {}).get("required"):
     bad("workflow_dispatch does not require a `version` input")
+if (inputs.get("component") or {}).get("default") != "":
+    bad("workflow_dispatch does not expose an empty-default `component` input")
 
 jobs = doc.get("jobs") or {}
 for name in ("verify", "snapshot", "publish"):
@@ -118,6 +120,8 @@ else:
     if with_.get("contract_ref") != match.group(1):
         bad("`snapshot` passes contract_ref %r but calls the workflow at %s"
             % (with_.get("contract_ref"), match.group(1)))
+    if with_.get("component") != "${{ inputs.component }}":
+        bad("`snapshot` does not pass the selected component stream")
 
 # #465(2). One release, one pool. The expression is compared, not merely
 # required: two different expressions that happen to resolve identically today
@@ -286,6 +290,9 @@ unpin_reusable_ref() {
 skew_contract_ref() {
   sed -i "s|^      contract_ref: $sha|      contract_ref: deadbeefdeadbeefdeadbeefdeadbeefdeadbeef|" "$1"
 }
+drop_component_selection() {
+  sed -i '/^      component: /d' "$1"
+}
 wire_github_token_push_token() {
   sed -i 's|push_token: ${{ secrets.ORG_ADMIN_TOKEN }}|push_token: ${{ secrets.GITHUB_TOKEN }}|' "$1"
 }
@@ -318,6 +325,7 @@ expect_shape_rejection "snapshot and publish on different pools (#465)" diverge_
 expect_shape_rejection "a push: trigger that derives a release from a merge" add_push_trigger
 expect_shape_rejection "an unpinned reusable ref" unpin_reusable_ref
 expect_shape_rejection "a contract_ref that disagrees with the uses: pin" skew_contract_ref
+expect_shape_rejection "a snapshot that drops the selected component" drop_component_selection
 expect_shape_rejection "GITHUB_TOKEN as push_token (ADR 0052)" wire_github_token_push_token
 expect_shape_rejection "verifying a ref other than github.sha" verify_a_different_ref
 expect_shape_rejection "a verify job that runs no suite" hollow_out_the_suite

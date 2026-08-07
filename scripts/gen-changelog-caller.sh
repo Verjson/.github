@@ -292,7 +292,12 @@ on:
         required: true
         type: string
       fragments:
-        description: Newline-separated NEXT fragment filenames; empty selects all
+        description: Newline-separated NEXT fragment filenames; empty selects the requested component stream
+        required: false
+        type: string
+        default: ''
+      component:
+        description: Optional component stream; empty selects only unscoped fragments
         required: false
         type: string
         default: ''
@@ -400,6 +405,7 @@ jobs:
       contract_ref: ${ref}
       version: \${{ inputs.version }}
       fragments: \${{ inputs.fragments }}
+      component: \${{ inputs.component }}
       # Explicit, so both halves of one release share one pool (#465).
       runner: \${{ ${release_runner_expr} }}
     secrets:
@@ -474,14 +480,28 @@ CONTRACT_SHA256="${contract_sha256}"
 # they are given (#443). Everything else is still refused: this is a renderer,
 # not a general front end to a pinned engine.
 as_released=
-if [ "\$#" -gt 0 ]; then
-  if [ "\$#" -eq 1 ] && [ "\$1" = --as-released ]; then
-    as_released=--as-released
-  else
-    echo "render-next: unexpected argument '\$1' (only --as-released is accepted)" >&2
-    exit 2
-  fi
-fi
+component=
+while [ "\$#" -gt 0 ]; do
+  case "\$1" in
+    --as-released)
+      [ -z "\$as_released" ] || { echo "render-next: --as-released was repeated" >&2; exit 2; }
+      as_released=--as-released
+      shift
+      ;;
+    --component)
+      [ "\$#" -ge 2 ] && [ -n "\$2" ] \
+        || { echo "render-next: --component requires a value" >&2; exit 2; }
+      [ -z "\$component" ] \
+        || { echo "render-next: --component was repeated" >&2; exit 2; }
+      component="\$2"
+      shift 2
+      ;;
+    *)
+      echo "render-next: unexpected argument '\$1'" >&2
+      exit 2
+      ;;
+  esac
+done
 
 root="\$(cd "\$(dirname "\$0")/.." && pwd)"
 
@@ -490,10 +510,10 @@ EOF
   emit_contract_resolution
   cat <<EOF
 
-if [ -n "\$as_released" ]; then
-  exec python3 "\$contract" render-next --repo-root "\$root" --as-released
-fi
-exec python3 "\$contract" render-next --repo-root "\$root"
+args=(render-next --repo-root "\$root")
+[ -z "\$component" ] || args+=(--component "\$component")
+[ -z "\$as_released" ] || args+=(--as-released)
+exec python3 "\$contract" "\${args[@]}"
 EOF
 }
 
@@ -904,8 +924,28 @@ render_rc=0
 # README.md and 0000-archive.md are excluded by name here for the same reason the
 # python block skips them: neither is a renderable fragment, so a NEXT/ holding
 # only those is "emptied" as far as the renderer is concerned.
-renderable_left=$(find "$root/NEXT" -maxdepth 1 -type f -name '*.md' \
-  ! -name 'README.md' ! -name '0000-archive.md' 2>/dev/null | wc -l | tr -d ' ')
+renderable_left="$(python3 - "$root/NEXT" <<'PY'
+import sys
+from pathlib import Path
+
+count = 0
+for path in Path(sys.argv[1]).glob("*.md"):
+    if path.name in {"README.md", "0000-archive.md"}:
+        continue
+    lines = path.read_text(encoding="utf-8").splitlines()
+    if not lines or lines[0] != "---":
+        count += 1
+        continue
+    try:
+        end = lines.index("---", 1)
+    except ValueError:
+        count += 1
+        continue
+    if not any(line.partition(":")[0].strip() == "component" for line in lines[1:end]):
+        count += 1
+print(count)
+PY
+)"
 if [ "$render_rc" -ne 0 ] && [ "${renderable_left:-0}" -gt 0 ]; then
   echo "the renderer exited $render_rc with $renderable_left unreleased fragment(s) still in NEXT/." >&2
   echo "This is not the post-release empty-NEXT/ case; the renderer itself is broken." >&2
@@ -926,6 +966,14 @@ rendered = Path(os.environ["RENDERED_PATH"]).read_text(encoding="utf-8")
 # 0000-archive.md is special-cased by name and is not rendered in strict mode.
 skip = {"README.md", "0000-archive.md"}
 fragments = sorted(p for p in (root / "NEXT").glob("*.md") if p.name not in skip)
+fragments = [
+    path
+    for path in fragments
+    if not any(
+        line.partition(":")[0].strip() == "component"
+        for line in path.read_text(encoding="utf-8").split("---", 2)[1].splitlines()
+    )
+]
 if not fragments:
     sys.exit("NEXT/ holds no renderable fragments but the renderer produced output")
 
