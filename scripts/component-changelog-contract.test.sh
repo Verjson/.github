@@ -11,8 +11,16 @@ contract="$tmp/contract"
 consumer="$tmp/consumer"
 
 [ -n "$pin" ] || { echo "FAIL - no recommended contract pin"; exit 1; }
-git clone -q --no-checkout "$root" "$contract"
-git -C "$contract" checkout -q --detach "$pin"
+git init -q "$contract"
+if git -C "$root" cat-file -e "$pin^{commit}" 2>/dev/null; then
+  contract_source="$root"
+else
+  contract_source="$(git -C "$root" remote get-url origin)" \
+    || { echo "FAIL - documented pin $pin is absent and origin is unavailable"; exit 1; }
+fi
+git -C "$contract" fetch -q --no-tags --depth=1 "$contract_source" "$pin" \
+  || { echo "FAIL - cannot fetch documented contract pin $pin"; exit 1; }
+git -C "$contract" checkout -q --detach FETCH_HEAD
 [ "$(git -C "$contract" rev-parse HEAD)" = "$pin" ] \
   || { echo "FAIL - canonical checkout does not equal $pin"; exit 1; }
 
