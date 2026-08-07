@@ -1,7 +1,7 @@
 # 0062 — The release caller is generated, and it verifies before it tags
 
 - **Date:** 2026-08-06
-- **Issues:** [#463](https://github.com/Verjson/.github/issues/463), [#464](https://github.com/Verjson/.github/issues/464), [#465](https://github.com/Verjson/.github/issues/465), [#519](https://github.com/Verjson/.github/issues/519), [#520](https://github.com/Verjson/.github/issues/520)
+- **Issues:** [#463](https://github.com/Verjson/.github/issues/463), [#464](https://github.com/Verjson/.github/issues/464), [#465](https://github.com/Verjson/.github/issues/465), [#519](https://github.com/Verjson/.github/issues/519), [#520](https://github.com/Verjson/.github/issues/520), [#535](https://github.com/Verjson/.github/issues/535)
 - **Extends:** ADR 0038 (canonical changelog contract), ADR 0060 (a release is dispatched, never derived), ADR 0052 (`push_token` is not `GITHUB_TOKEN`), ADR 0059 (released snapshots are immutable)
 - **Category:** release authority — **sensitive class**
 
@@ -112,6 +112,16 @@ repeated from the explicit dispatch input after the release tag is checked out.
 The generated adopter contract test rejects either job when its build can run
 before that stamp. Lifecycle scripts are disabled so stamping is a metadata-only
 operation rather than an additional unverified package-code execution surface.
+
+**2026-08-07 — publication reruns reconcile immutable registry state (#535).**
+The publish job packs the built snapshot once and records its package identity,
+version, and sha512 integrity. If `npm publish` fails, the job continues only
+after authenticated registry access proves that the exact name, version, and
+integrity already exist; missing, spoofed, inaccessible, or divergent state
+fails closed. The package and tag are never overwritten. GitHub Release notes
+are then created or reconciled from the immutable changelog snapshot, so a
+transient failure after npm accepted the package no longer makes the release
+permanently incomplete.
 
 ### Judgement call: `release-node`, not `release`
 

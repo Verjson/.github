@@ -626,6 +626,14 @@ PY
 enable_stamp_lifecycle_scripts() {
   sed -i 's/ --ignore-scripts//g' "$1/.github/workflows/release.yml"
 }
+drop_restart_authorization_proof() {
+  sed -i 's/npm whoami --registry=https:\/\/npm.pkg.github.com/npm ping --registry=https:\/\/npm.pkg.github.com/' \
+    "$1/.github/workflows/release.yml"
+}
+drop_restart_integrity_proof() {
+  sed -i 's/published.dist.integrity !== expectedIntegrity/false/' \
+    "$1/.github/workflows/release.yml"
+}
 add_push_trigger() {
   sed -i 's|^on:$|on:\n  push:\n    branches: [main]|' "$1/.github/workflows/release.yml"
 }
@@ -721,6 +729,8 @@ expect_rejection "an npm ci installing with GITHUB_TOKEN (#465)" install_with_gi
 expect_rejection "a verification suite with no dispatched version stamp (#519)" drop_verify_stamp
 expect_rejection "a publish build that runs before the dispatched version stamp (#519)" move_publish_stamp_after_build
 expect_rejection "version stamps that can run package lifecycle scripts (#519)" enable_stamp_lifecycle_scripts
+expect_rejection "a publication rerun with no registry authorization proof (#535)" drop_restart_authorization_proof
+expect_rejection "a publication rerun that ignores registry integrity (#535)" drop_restart_integrity_proof
 expect_rejection "a release caller reachable by a push to main" add_push_trigger
 expect_rejection "a release caller on a mutable reusable ref" unpin_release_ref
 expect_rejection "a hand-written release caller with no generator provenance" strip_release_provenance
