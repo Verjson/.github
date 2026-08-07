@@ -164,3 +164,18 @@ The cost is that a consumer needing an unsupported check cannot express it here
 and must keep a local job until the check is added upstream. That is the
 intended shape: the set of things this workflow will run stays reviewable by
 reading one file.
+
+## Amendment (2026-08-07) — callers and the ADR generator are generated together (#437)
+
+`gen-changelog-caller.sh` now emits both the original changelog-only caller and
+callers for `generated-artifacts.yml`. The original `workflow` mode remains
+supported; consolidation is optional and replaces it rather than running both.
+
+The generated-artifacts interface has two explicit modes. `generated-artifacts`
+enables only changelog validation. `generated-artifacts-with-adr-index` enables
+the ADR check as well, and is paired with `adr-index-generator`, which acquires
+the canonical `scripts/gen-adr-index.sh` from the same immutable contract
+commit. The generated contract test accepts either supported caller, and when
+ADR checking is enabled it verifies the local generator's digest against that
+pin. This closes the gap where enabling the shared check required hand-editing
+one generated artifact and copying another file without provenance.
