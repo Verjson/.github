@@ -55,7 +55,6 @@ non-trivial or fanned-out work autonomously:
 
 ## Active Issues / Areas for Improvement
 
-- [#509](https://github.com/Verjson/.github/issues/509) — delete the retired semantic-release tooling, audit exceptions, and cache-probe fixture that remain after publish-only `node-release.yml` replaces the last executable path.
 - [#261](https://github.com/Verjson/.github/issues/261) — Bind privileged-merge provenance to a signed workflow identity; the durable closure for #279's residual.
 - [#477](https://github.com/Verjson/.github/issues/477) — the required-workflow rule makes the gate deaf to `ready_for_review`/`labeled`/`unlabeled` in **every** org repo (ADR 0063); `gate-rearm.yml` fixes only this one, the fleet still needs a generated caller.
 - [#474](https://github.com/Verjson/.github/issues/474) — a fresh dry-run on 2026-08-07 finds 26 open org PRs missing the current `gate` context; 25 are eligible for ownership-routed retrigger and one is excluded. Requiring `gate` on `~ALL` remains blocked until the audit reaches zero.

@@ -1,7 +1,7 @@
 # 0060 — `node-release.yml` is retired: a release is dispatched, never derived from a merge
 
 - **Date:** 2026-08-06
-- **Issues:** [#460](https://github.com/Verjson/.github/issues/460)
+- **Issues:** [#460](https://github.com/Verjson/.github/issues/460), [#509](https://github.com/Verjson/.github/issues/509)
 - **Extends:** ADR 0038 (canonical changelog contract), ADR 0052 (`push_token` is not `GITHUB_TOKEN`)
 - **Category:** release authority — **sensitive class**
 
@@ -108,13 +108,12 @@ deletion is the worse trade. Recorded here so the next reader does not rediscove
 
 ## Consequences
 
-- The retired machinery below the refusal — locked release tooling, the npm cache inputs,
-  the publication outputs of #244 — is now dead code with live tests and a lockfile Renovate
-  keeps bumping. Deleting it is a follow-up, not part of this change: the deletion invalidates
-  `node-release-version.test.sh`, `node-release-outputs.test.sh` and `release-tooling-audit*`
-  together, and mixing that into a release-authority change would bury it.
-- `docs/node-workflows.md` still documents the release half as if it were live. It is
-  corrected alongside the deletion above rather than left half-edited here.
+- The #509 follow-up deletes the locked semantic-release package tree, Node floor guard,
+  audit wrapper and allowlist, output runner, and persistent-cache probe. Live Node
+  pinning and cache controls remain covered at their executable workflow and composite
+  action boundaries; CI no longer installs or audits a package no release executes.
+- `docs/node-workflows.md` describes the publish-only replacement rather than the retired
+  implementation.
 - A repository that wants release-on-merge back cannot get it by copying a workflow from this
   organization. It has to argue with ADR 0038, which is the point.
 

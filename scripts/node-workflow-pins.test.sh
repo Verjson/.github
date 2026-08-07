@@ -1,15 +1,13 @@
 #!/usr/bin/env bash
 # Guards the immutable nested dependencies in every Node workflow/setup surface
 # (Verjson/.github#89, #152, #162): audited action SHAs, the complete live
-# node-ci dependency graph, release tooling co-located at the called workflow's
-# own SHA, an exact lockfile, and Renovate maintenance.
+# node-ci dependency graph and Renovate maintenance.
 set -uo pipefail
 
 here="$(cd "$(dirname "$0")" && pwd)"
 root="$(cd "$here/.." && pwd)"
 ci="$root/.github/workflows/node-ci.yml"
 release="$root/.github/workflows/node-release.yml"
-cache_probe="$root/.github/workflows/node-cache-integration.yml"
 composite="$root/.github/actions/setup-verjson-node/action.yml"
 actions_ci="$root/.github/workflows/actions-ci.yml"
 renovate="$root/renovate.json"
@@ -19,13 +17,12 @@ fail() { printf 'FAIL - %s\n' "$1"; fails=$((fails + 1)); }
 
 checkout='actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7'
 setup_node='actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7'
-for wf in "$ci" "$release" "$cache_probe" "$actions_ci"; do
+for wf in "$ci" "$release" "$actions_ci"; do
   name="$(basename "$wf")"
   expected_checkouts=1
-  expected_setups=1
-  if [ "$wf" = "$cache_probe" ]; then
-    expected_checkouts=2
-    expected_setups=2
+  expected_setups=0
+  if [ "$wf" != "$actions_ci" ]; then
+    expected_setups=1
   fi
   pinned_checkouts="$(grep -cF "uses: $checkout" "$wf")"
   all_checkouts="$(grep -cE 'uses: actions/checkout@' "$wf")"
@@ -65,7 +62,6 @@ jq -e '
     (.matchManagers | index("github-actions")) != null and
     (.matchFileNames | index(".github/actions/setup-verjson-node/action.yml")) != null and
     (.matchFileNames | index(".github/workflows/actions-ci.yml")) != null and
-    (.matchFileNames | index(".github/workflows/node-cache-integration.yml")) != null and
     (.matchFileNames | index(".github/workflows/node-ci.yml")) != null and
     (.matchFileNames | index(".github/workflows/node-release.yml")) != null)
 ' "$renovate" >/dev/null \
@@ -338,13 +334,6 @@ jq -e '
 ' "$renovate" >/dev/null \
   && pass "Renovate has no exception that permits mutable Node dependencies" \
   || fail "renovate.json still contains a pinDigests:false exception"
-
-audit_setup_line="$(grep -nF "uses: $setup_node" "$actions_ci" | cut -d: -f1)"
-audit_line="$(grep -nF 'run: bash scripts/release-tooling-audit.sh' "$actions_ci" | cut -d: -f1)"
-{ [ -n "$audit_setup_line" ] && [ -n "$audit_line" ] && [ "$audit_setup_line" -lt "$audit_line" ] \
-  && sed -n "${audit_setup_line},$((audit_setup_line + 3))p" "$actions_ci" | grep -qF "node-version: '24'"; } \
-  && pass "actions-ci provisions pinned Node 24 before auditing release tooling" \
-  || fail "actions-ci does not provision pinned Node 24 before auditing release tooling"
 
 # --- bounded checkout history (#234) -----------------------------------------
 # Full history was only ever a proxy for "the pinned objects are present". The
