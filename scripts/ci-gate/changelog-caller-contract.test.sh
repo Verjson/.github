@@ -758,6 +758,10 @@ drop_local_package_path_prefix() {
   sed -i 's|package_path="./$package_dir"|package_path="$package_dir"|' \
     "$1/.github/workflows/release.yml"
 }
+publish_unbounded_release_notes() {
+  sed -i 's|--notes-file "$notes"|--notes-file "CHANGELOG/$VERSION.md"|g' \
+    "$1/.github/workflows/release.yml"
+}
 add_push_trigger() {
   sed -i 's|^on:$|on:\n  push:\n    branches: [main]|' "$1/.github/workflows/release.yml"
 }
@@ -864,6 +868,7 @@ expect_rejection "a package-preparation hook exposed to the publish token (#550)
 expect_rejection "a release verification suite without private-package auth (#569)" drop_verification_suite_token
 expect_rejection "an unrelated release step exposed to private-package auth (#569)" expose_private_token_to_package_preparation
 expect_rejection "a secondary package path that npm can resolve from the registry (#561)" drop_local_package_path_prefix
+expect_rejection "unbounded post-publish GitHub Release notes (#571)" publish_unbounded_release_notes
 expect_rejection "a release caller reachable by a push to main" add_push_trigger
 expect_rejection "a release caller on a mutable reusable ref" unpin_release_ref
 expect_rejection "a release caller whose contract_ref drifts from its uses pin" drift_release_contract_ref
