@@ -91,14 +91,15 @@ GH
 chmod +x "$tmp/bin/gh"
 
 run_case() {
-  # run_case <meta-json> [PR_NUMBER] [TARGET_REPO]
+  # run_case <meta-json> [PR_NUMBER] [TARGET_REPO] [EVENT_ACTION] [REMOVED_LABEL]
   export PATH="$tmp/bin:$PATH"
   # `${2-7}`, not `${2:-7}`: an explicitly EMPTY pr number is one of the cases
   # under test, and `:-` would silently substitute the valid default for it.
   export PR_NUMBER="${2-7}"
   export TARGET_REPO="${3-Verjson/.github}"
   export GITHUB_REPOSITORY="Verjson/.github"
-  export EVENT_ACTION="ready_for_review"
+  export EVENT_ACTION="${4-ready_for_review}"
+  export REMOVED_LABEL="${5-}"
   export META_FILE="$tmp/meta.json" ACTIONLOG="$tmp/act.log"
   : >"$ACTIONLOG"
   printf '%s' "$1" >"$META_FILE"
@@ -281,6 +282,18 @@ for spelling in 'do-not-merge' 'do_not_merge' 'DO__NOT__MERGE'; do
     && pass "the live predicate counts '$spelling' as a hold" \
     || fail "'$spelling' did NOT hold the re-arm"
 done
+
+export GH_VIEW_FAILS=1
+rc="$(run_case "$(pr '[]')" 7 Verjson/.github unlabeled documentation)"
+unset GH_VIEW_FAILS
+{ [ "$rc" = "rc=0" ] && ! dispatched && out_has "is not a terminal hold"; } \
+  && pass "unrelated label removal exits before API reads or paid gate dispatch" \
+  || fail "unrelated label removal reached the live-state API or gate dispatch (rc=$rc)"
+
+rc="$(run_case "$(pr '[]')" 7 Verjson/.github unlabeled 'DO__NOT__MERGE')"
+{ [ "$rc" = "rc=0" ] && dispatched; } \
+  && pass "a normalized terminal-hold removal still re-arms the gate" \
+  || fail "a normalized terminal-hold removal was filtered out (rc=$rc)"
 
 for terminal in \
   "!github.event.pull_request.draft" \

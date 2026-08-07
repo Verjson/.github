@@ -198,12 +198,14 @@ normalizes arbitrary runs of spaces, underscores, and hyphens. A valid hold such
 Actions expressions cannot reproduce jq's `gsub("[ _-]+";" ")`, so no finite
 allowlist can be equivalent to the predicate.
 
-The arm now admits every `unlabeled` event except removal of `re-review`. The gate
-removes `re-review` itself after consuming it, so that explicit denylist preserves
-the no-re-entrancy invariant. The step's live, fully normalized predicate remains
-authoritative and prevents dispatch while any terminal hold is still present.
+The arm admits every `unlabeled` event except removal of `re-review`. The gate removes
+`re-review` itself after consuming it, so that explicit denylist preserves the
+no-re-entrancy invariant. Before reading live PR state, the trusted shell step applies
+the exact same separator normalizer to the removed label and exits unless it is
+`HOLD` or `DO NOT MERGE`. This avoids a paid gate dispatch—and even the API read—on
+ordinary label churn without returning to a finite spelling allowlist. The live,
+fully normalized predicate remains authoritative and prevents dispatch while any
+other terminal hold is still present.
 
-This trades a cheap fast-lane job on unrelated label removal—and a dispatch when the
-pull request is otherwise eligible—for correctness across the predicate's complete
-hold language. The regression test pins both sides with `DO__NOT__MERGE`: the generic
-guard admits its removal and the live predicate still counts it as a hold.
+The regression tests pin both sides with `DO__NOT__MERGE` and prove that removal of an
+unrelated label exits before an intentionally failing metadata API can be reached.
