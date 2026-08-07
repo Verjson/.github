@@ -2116,6 +2116,8 @@ jobs:
     needs: [preflight, gate]
     if: needs.gate.result == 'success'
     outputs:
+      dispatch_available: ${{ steps.dispatch.outputs.dispatch_available }}
+      dispatch_failure: ${{ steps.dispatch.outputs.dispatch_failure }}
       merge_observed: ${{ steps.dispatch.outputs.merge_observed }}
       blocking_review: ${{ steps.dispatch.outputs.blocking_review }}
       policy_blocked: ${{ steps.dispatch.outputs.policy_blocked }}
@@ -2172,6 +2174,8 @@ jobs:
           if [ -z "$trusted_path" ]; then
             echo "::notice::No trusted privileged merge continuation is installed; validation is green, but this PR requires human merge."
             {
+              echo "dispatch_available=false"
+              echo "dispatch_failure=continuation_absent"
               echo "merge_observed=false"
               echo "blocking_review=false"
               echo "policy_blocked=false"
@@ -2182,10 +2186,70 @@ jobs:
           fi
           [ "$trusted_path" = ".github/workflows/ai-privileged-merge.yml" ] ||
             { echo "::error::trusted workflow identity mismatch"; exit 1; }
-          gh workflow run ai-privileged-merge.yml --repo "$TARGET_REPO" \
-            -f pr_number="$PR_NUMBER" \
-            -f expected_head_sha="$EXPECTED_HEAD_SHA" \
-            -f source_run_id="$SOURCE_RUN_ID"
+          # A dispatch 5xx is ambiguous: GitHub may have queued the workflow
+          # before returning the error (#475). Retrying an identical request is
+          # safe because every privileged continuation independently revalidates
+          # this source run and expected head before it can merge. Retry only
+          # 5xx/transport availability; 4xx (including rate limits) is structural
+          # and fails immediately. Never print raw CLI output.
+          dispatch_attempt=1
+          dispatch_max_attempts=4
+          while :; do
+            if dispatch_error=$(gh workflow run ai-privileged-merge.yml --repo "$TARGET_REPO" \
+              -f pr_number="$PR_NUMBER" \
+              -f expected_head_sha="$EXPECTED_HEAD_SHA" \
+              -f source_run_id="$SOURCE_RUN_ID" 2>&1); then
+              unset dispatch_error
+              {
+                echo "dispatch_available=true"
+                echo "dispatch_failure=none"
+              } >>"$GITHUB_OUTPUT"
+              break
+            else
+              dispatch_rc=$?
+            fi
+            dispatch_http_status=$(sed -nE 's/.*HTTP ([0-9]{3}).*/\1/p' <<<"$dispatch_error" | tail -n1)
+            unset dispatch_error
+            if [[ "$dispatch_http_status" =~ ^4[0-9][0-9]$ ]]; then
+              {
+                echo "dispatch_available=false"
+                echo "dispatch_failure=client_error"
+              } >>"$GITHUB_OUTPUT"
+              echo "::error::phase=merge-dispatch result=unavailable kind=client_error http_status=$dispatch_http_status attempts=$dispatch_attempt — trusted merge dispatch was rejected; the review verdict itself succeeded"
+              exit "$dispatch_rc"
+            fi
+            if [ -n "$dispatch_http_status" ] && [[ ! "$dispatch_http_status" =~ ^5[0-9][0-9]$ ]]; then
+              {
+                echo "dispatch_available=false"
+                echo "dispatch_failure=github_http_error"
+              } >>"$GITHUB_OUTPUT"
+              echo "::error::phase=merge-dispatch result=unavailable kind=github_http_error http_status=$dispatch_http_status attempts=$dispatch_attempt — trusted merge dispatch failed after review"
+              exit "$dispatch_rc"
+            fi
+            if [ -n "$dispatch_http_status" ]; then
+              dispatch_kind=github_5xx
+              dispatch_signal="http_status=$dispatch_http_status"
+            else
+              dispatch_kind=transport
+              dispatch_signal="http_status=none"
+            fi
+            if [ "$dispatch_attempt" -ge "$dispatch_max_attempts" ]; then
+              {
+                echo "dispatch_available=false"
+                echo "dispatch_failure=infrastructure_unavailable"
+              } >>"$GITHUB_OUTPUT"
+              echo "::error::phase=merge-dispatch result=unavailable kind=infrastructure_unavailable source=$dispatch_kind $dispatch_signal attempts=$dispatch_attempt — GitHub remained unavailable after the review verdict succeeded"
+              # Keep the job red. The privileged continuation currently trusts
+              # only a successful source run and cannot consume this step output
+              # through the run API, so continue-on-error would erase the only
+              # safe distinction it has rather than preserve the review result.
+              exit "$dispatch_rc"
+            fi
+            dispatch_delay=$((1 << (dispatch_attempt - 1)))
+            echo "::warning::phase=merge-dispatch result=retry kind=$dispatch_kind $dispatch_signal attempt=$dispatch_attempt/$dispatch_max_attempts backoff_seconds=$dispatch_delay"
+            sleep "$dispatch_delay"
+            dispatch_attempt=$((dispatch_attempt + 1))
+          done
           # workflow_dispatch acknowledges queueing, not merging. Treat the PR's
           # observed state as the postcondition (#384): a successful request
           # cannot turn this job green while the PR remains open.
