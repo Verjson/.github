@@ -534,6 +534,26 @@ install_with_github_token() {
   sed -i 's|NODE_AUTH_TOKEN: ${{ secrets.NODE_AUTH_TOKEN }}|NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}|g' \
     "$1/.github/workflows/release.yml"
 }
+move_publish_stamp_after_build() {
+  python3 - "$1/.github/workflows/release.yml" <<'PY'
+import sys
+
+path = sys.argv[1]
+text = open(path, encoding="utf-8").read()
+stamp = """      - name: Stamp the dispatched package version
+        env:
+          VERSION: ${{ inputs.version }}
+        run: npm version "${VERSION#v}" --no-git-tag-version --ignore-scripts
+"""
+build = "      - run: npm run build --if-present\n"
+publish = text.index("  publish:")
+before, job = text[:publish], text[publish:]
+if stamp not in job or build not in job:
+    raise SystemExit("publish stamp/build fixture no longer matches generated output")
+job = job.replace(stamp, "", 1).replace(build, build + stamp, 1)
+open(path, "w", encoding="utf-8").write(before + job)
+PY
+}
 add_push_trigger() {
   sed -i 's|^on:$|on:\n  push:\n    branches: [main]|' "$1/.github/workflows/release.yml"
 }
@@ -626,6 +646,7 @@ grep -q 'push_token' "$tmproot/run.out" \
 expect_rejection "a snapshot job that verifies nothing first (#463, #464)" drop_snapshot_needs
 expect_rejection "a snapshot job with no explicit runner (#465)" drop_snapshot_runner
 expect_rejection "an npm ci installing with GITHUB_TOKEN (#465)" install_with_github_token
+expect_rejection "a publish build that runs before the dispatched version stamp (#519)" move_publish_stamp_after_build
 expect_rejection "a release caller reachable by a push to main" add_push_trigger
 expect_rejection "a release caller on a mutable reusable ref" unpin_release_ref
 expect_rejection "a hand-written release caller with no generator provenance" strip_release_provenance
