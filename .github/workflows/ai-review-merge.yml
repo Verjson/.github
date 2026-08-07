@@ -55,14 +55,14 @@ name: AI review + auto-merge
 # guidance against a `v1` that predates the release fails with
 # `Input runner_labels is required, but no value was supplied`. Either pin a ref
 # that contains #405 or keep passing the input until `v1` advances.
-# They must install their own
-# trusted merge workflow for auto-merge; this reusable never receives their
-# administrative credential from a PR event. Example caller:
+# The reusable is review-only until signed producing-workflow provenance exists
+# (#261): a consumer-authored caller can forge every unsigned merge signal, so
+# `ai-privileged-merge.yml` deliberately refuses reusable-caller runs (#279).
+# Consumers must merge an approved verdict manually. Example caller:
 #
 #   # consumer repo (any org): .github/workflows/ai-review-merge.yml
-#   # The filename is load-bearing, not cosmetic: the privileged merge trusts a
-#   # run by its ENTRY workflow path, so a caller installed under any other name
-#   # reviews correctly and is then refused its merge (#279, ADR 0044).
+#   # The caller filename no longer grants merge authority; reusable runs review
+#   # correctly but are always refused by privileged merge (#279, ADR 0044).
 #   on: { pull_request: { types: [opened, reopened, ready_for_review, synchronize, labeled, unlabeled] }, workflow_dispatch: {} }
 #   jobs:
 #     gate:

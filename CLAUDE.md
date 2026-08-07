@@ -55,11 +55,10 @@ non-trivial or fanned-out work autonomously:
 
 ## Active Issues / Areas for Improvement
 
-- [#261](https://github.com/Verjson/.github/issues/261) — Bind privileged-merge provenance to a signed workflow identity; the durable closure for #279's residual.
+- [#261](https://github.com/Verjson/.github/issues/261) — Bind required-workflow privileged-merge provenance to signed workflow identity instead of ambient ruleset configuration.
 - [#477](https://github.com/Verjson/.github/issues/477) — the required-workflow rule makes the gate deaf to `ready_for_review`/`labeled`/`unlabeled` in **every** org repo (ADR 0063); `gate-rearm.yml` fixes only this one, the fleet still needs a generated caller.
 - [#474](https://github.com/Verjson/.github/issues/474) — a fresh dry-run on 2026-08-07 finds 26 open org PRs missing the current `gate` context; 25 are eligible for ownership-routed retrigger and one is excluded. Requiring `gate` on `~ALL` remains blocked until the audit reaches zero.
 - [#265](https://github.com/Verjson/.github/issues/265) — Org Actions secrets sit at `visibility: all`; scope them to least privilege.
-- [#279](https://github.com/Verjson/.github/issues/279) — Attestation provenance: closed for the required-workflow shape (ADR 0044); open for the reusable-caller shape, which no repo uses yet.
 - [#292](https://github.com/Verjson/.github/issues/292) — Re-review skip never fires: `gh api user` cannot resolve an identity under `github.token`, so every head change re-pays for an unchanged diff.
 - [#437](https://github.com/Verjson/.github/issues/437) — `gen-changelog-caller.sh` emits only a `changelog-validate.yml` caller and its generated test greps for that string, so no adopter can move to `generated-artifacts.yml` without the hand-edit the contract forbids. Until it is fixed, tell adopters to stay put, and not to set `adr-index: true` without `scripts/gen-adr-index.sh`.
 - [#454](https://github.com/Verjson/.github/issues/454) — `parse_frontmatter` (`scripts/changelog.py:90-97`) partitions every front-matter line on `:` and rejects any line without one, so a folded/literal scalar fails on its **continuation** line (`not separator`), not on the `summary: >-` line itself. Worse when there is no continuation: `>-` passes as a non-empty value and is stored as the literal string. Either way the key meant to hold a release note cannot hold one written the natural way; keep `summary:` on one line.

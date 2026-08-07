@@ -116,14 +116,30 @@ not part of this decision.
 `ai-review-merge.yml` has **no equivalent guard on its own direct merge path**;
 that is out of scope here and is filed separately.
 
+## Amendment (2026-08-07, #279) — unsigned reusable callers are review-only
+
+The entry-path check narrowed but did not close reusable-caller forgery. A
+consumer can author the canonical caller path, reference the gate under
+`if: false`, emit a successful `gate` check, and upload matching unsigned JSON.
+No runs-API field distinguishes that file from an honest thin caller.
+
+Privileged merge therefore no longer accepts `referenced_workflows` as trust
+evidence. Only `.github`'s exact workflow id or an organization-ruleset-injected
+required workflow may authorize merge. No current repository uses reusable
+caller provenance for privileged merge. Cross-org reusable callers remain
+supported for review, but require human merge until #261 supplies signed
+producing-workflow identity.
+
+This closes #279 without changing organization rulesets or weakening the
+workflow-file guard. #261 remains open for the separate ambient ruleset
+configuration risk in required-workflow provenance.
+
 ## Consequences
 
 - **Consumer-visible:** a cross-org consumer using the ADR 0022 reusable shape
-  must keep its thin caller at `.github/workflows/ai-review-merge.yml`. A caller
-  at any other filename stops being trusted provenance and its pull requests fall
-  through to the bounded wait and a human merge. No Verjson repository is
-  affected — they all install the gate as the org required workflow (ADR 0039),
-  whose entry path is already the gate path.
+  receives review verdicts but never privileged auto-merge from unsigned caller
+  provenance. No Verjson repository is affected — they all install the gate as
+  the org required workflow (ADR 0039).
 - The org required-workflow shape and `.github`'s own self-gate are behaviourally
   unchanged; their existing tests pass untouched.
 - `scripts/ci-gate/entry-workflow-provenance.test.sh` (wired into `actions-ci`)

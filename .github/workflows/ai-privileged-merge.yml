@@ -306,10 +306,10 @@ jobs:
             exit 1
           fi
 
-          # A gate run is trusted in exactly three installation shapes: this
-          # repository running its own workflow, a caller of the pinned reusable
-          # workflow, and an organization-ruleset *required workflow*. The third
-          # shape carries a repository-scoped workflow_id and no
+          # A gate run is trusted in exactly two installation shapes: this
+          # repository running its own workflow, and an organization-ruleset
+          # *required workflow*. The second shape carries a repository-scoped
+          # workflow_id and no
           # referenced_workflows, so it is identified by its required-workflow
           # URL plus the trusted source path, and only while
           # `required_workflow_source_trusted` holds for the PR base branch.
@@ -326,8 +326,10 @@ jobs:
           # artifact — and take an --admin merge with it.
           # `.path` is the file GitHub actually started, so requiring it to be
           # the gate path is the property `referenced_workflows` cannot express.
-          # It is a conjunct on ALL THREE matchers on purpose: a matcher that
-          # opted out would restore the hole for its own shape.
+          # A reusable caller at that exact path is still repository-authored
+          # and can forge the check and JSON artifact, so reusable references
+          # are review-only and never grant merge authority (#279).
+          # The entry check remains a conjunct on both trusted matchers.
           # The matchers are EXCLUSIVE, not additive. Where the organization
           # ruleset mandates the gate ($required), the only honest run is the one
           # the ruleset injected, and its `workflow_url` sits under
@@ -337,9 +339,9 @@ jobs:
           # repo-local `.github/workflows/ai-review-merge.yml` that merely names
           # the gate — never running it — satisfies the entry path AND the
           # reference matcher, and takes the merge. Every Verjson repository is
-          # in that shape, and no repository currently installs the gate by
-          # reusable call, so restricting $required to its own matcher costs
-          # nothing and closes the residual there (#279, ADR 0044).
+          # in that shape. No repository currently installs privileged merge
+          # through reusable gate provenance, so rejecting that shape closes
+          # the remaining #279 hole without disrupting an adopter.
           # The dollar-prefixed names belong to jq and must remain literal in
           # this single-quoted program; they are not shell expansions.
           # shellcheck disable=SC2016
@@ -353,10 +355,7 @@ jobs:
                 if $required then
                   injected_by_ruleset
                 else
-                  (.workflow_id == $id) or
-                  any(.referenced_workflows[]?;
-                    ((.path? // "") | startswith("Verjson/.github/.github/workflows/ai-review-merge.yml@")) and
-                    .sha == $sha)
+                  .workflow_id == $id
                 end);
           '
 
@@ -416,7 +415,7 @@ jobs:
             # other conclusion remains authoritative: an active failed or
             # cancelled gate still fails closed, and all-skipped history yields
             # no gate rather than approval.
-            jq -ce --argjson id "$trusted_workflow_id" --arg sha "$trusted_workflow_sha" \
+            jq -ce --argjson id "$trusted_workflow_id" \
                 --arg wfpath "$trusted_workflow_path" \
                 --arg wfurl "$trusted_required_url" \
                 --argjson required "$required_workflow_trusted" \
@@ -435,7 +434,7 @@ jobs:
             local run
             [[ "$SOURCE_RUN_ID" =~ ^[1-9][0-9]*$ ]] || return 1
             run="$(gh api "repos/$TARGET_REPO/actions/runs/$SOURCE_RUN_ID")" || return $?
-            jq -ce --argjson id "$trusted_workflow_id" --arg sha "$trusted_workflow_sha" \
+            jq -ce --argjson id "$trusted_workflow_id" \
               --arg wfpath "$trusted_workflow_path" \
               --arg wfurl "$trusted_required_url" \
               --argjson required "$required_workflow_trusted" \
