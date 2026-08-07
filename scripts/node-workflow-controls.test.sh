@@ -34,6 +34,21 @@ composite_input() {
   ' "$composite"
 }
 
+event_paths() {
+  local workflow="$1" event="$2"
+  awk -v header="  $event:" '
+    $0 == header { in_event = 1; next }
+    in_event && /^  [[:alnum:]_-]+:/ { exit }
+    in_event && $0 == "    paths:" { in_paths = 1; next }
+    in_paths && /^    [[:alnum:]_-]+:/ { exit }
+    in_paths && /^      - / {
+      line = substr($0, 9)
+      gsub(/^['\''"]|['\''"]$/, "", line)
+      print line
+    }
+  ' "$workflow"
+}
+
 for workflow in "$ci" "$release"; do
   name="$(basename "$workflow")"
 
@@ -153,6 +168,26 @@ done
   && grep -qF 'group: node-cache-integration' "$cache_probe"; } \
   && pass "cold-runner probe restores the non-root lockfile-keyed npm cache" \
   || fail "the cold-runner workflow lacks the cache restore probe"
+
+{ ! grep -q '^  pull_request:' "$cache_probe" \
+  && grep -q '^  workflow_dispatch:' "$cache_probe" \
+  && grep -q '^  schedule:' "$cache_probe" \
+  && grep -qF "    - cron: '17 6 * * 1'" "$cache_probe" \
+  && grep -q '^  push:' "$cache_probe"; } \
+  && pass "persistent-cache probe runs post-merge, on demand, and weekly — never per PR" \
+  || fail "persistent-cache probe is still coupled to per-PR validation or lacks a periodic/manual trigger"
+
+cache_push_paths="$(event_paths "$cache_probe" push)"
+for cache_path in \
+  '.github/actions/setup-verjson-node/**' \
+  '.github/release-tooling/package-lock.json' \
+  '.github/workflows/node-cache-integration.yml' \
+  '.github/workflows/node-ci.yml' \
+  '.github/workflows/node-release.yml'; do
+  grep -qxF "$cache_path" <<<"$cache_push_paths" \
+    && pass "persistent-cache post-merge trigger retains $cache_path" \
+    || fail "persistent-cache post-merge trigger lost $cache_path"
+done
 
 { grep -qF '`timeout-minutes`' "$docs" \
   && grep -qF '`cache-dependency-path`' "$docs" \
