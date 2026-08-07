@@ -11,7 +11,11 @@ import re
 import subprocess
 import sys
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
+
+# The sole unreleased store (ADR 0038). Named once so the selection diagnostics
+# below and the directory they describe cannot drift apart.
+UNRELEASED_DIR = "NEXT"
 
 CANONICAL_NAME = re.compile(
     r"^(?P<date>\d{4}-\d{2}-\d{2})-issue-(?P<identity>\d+|[0-9]{8}T[0-9]{6}Z|[0-9a-fA-F]{6,12})-(?P<slug>[a-z0-9]+(?:-[a-z0-9]+)*)\.md$"
@@ -265,7 +269,7 @@ def fragments(
     allow_legacy_next: bool = False,
 ) -> list[Fragment]:
     result: list[Fragment] = []
-    next_dir = repo_root / "NEXT"
+    next_dir = repo_root / UNRELEASED_DIR
     if next_dir.is_dir():
         for path in sorted(next_dir.glob("*.md")):
             if path.name == "README.md":
@@ -423,6 +427,40 @@ def git(repo_root: Path, *args: str) -> str:
     return completed.stdout.strip()
 
 
+def _selected_key(name: str, by_name: dict[str, "Fragment"]) -> str:
+    """The basename a `--fragment` value denotes, or a diagnosis of why it does not.
+
+    Selection is indexed by basename, but release callers naturally forward the
+    repository-relative path they were given — `NEXT/<file>.md` — and that was
+    rejected as "selected fragment does not exist", which reads as a missing
+    fragment rather than a path-shape mismatch (#328). Both spellings are accepted;
+    anything else is refused with the accepted forms named, because guessing at an
+    unexpected shape is how a release consumes a fragment nobody selected.
+
+    Path traversal and absolute paths are refused outright rather than reduced to a
+    basename: `--fragment ../../etc/passwd` happening to end in a name that exists
+    must not select it, and a value pointing outside the unreleased directory is a
+    caller bug worth surfacing, not normalising away.
+    """
+    raw = name.strip()
+    if not raw:
+        raise ChangelogError("selected fragment is empty")
+    candidate = PurePosixPath(raw)
+    if candidate.is_absolute() or raw.startswith("/"):
+        raise ChangelogError(f"selected fragment must be repository-relative: {name}")
+    if ".." in candidate.parts:
+        raise ChangelogError(f"selected fragment must not traverse directories: {name}")
+    parents = [part for part in candidate.parts[:-1] if part != "."]
+    if parents and parents != [UNRELEASED_DIR]:
+        raise ChangelogError(
+            f"selected fragment must be a bare filename or {UNRELEASED_DIR}/<file>: {name}"
+        )
+    key = candidate.name
+    if key not in by_name:
+        raise ChangelogError(f"selected fragment does not exist: {name}")
+    return key
+
+
 def release(repo_root: Path, version: str, selected_names: list[str]) -> None:
     if not SNAPSHOT_NAME.fullmatch(f"{version}.md"):
         raise ChangelogError("version contains unsupported characters")
@@ -441,9 +479,7 @@ def release(repo_root: Path, version: str, selected_names: list[str]) -> None:
         by_name = {entry.path.name: entry for entry in entries if entry.canonical}
         selected = entries if not selected_names else []
         for name in selected_names:
-            if name not in by_name:
-                raise ChangelogError(f"selected fragment does not exist: {name}")
-            selected.append(by_name[name])
+            selected.append(by_name[_selected_key(name, by_name)])
         if not selected:
             raise ChangelogError("release selected no fragments")
         snapshot = repo_root / "CHANGELOG" / f"{version}.md"
