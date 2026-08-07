@@ -3,19 +3,17 @@ set -euo pipefail
 
 here="$(cd "$(dirname "$0")" && pwd)"
 repo_root="$(cd "$here/../.." && pwd)"
-generator="$repo_root/scripts/gen-changelog-caller.sh"
-sha="$(git -C "$repo_root" rev-parse HEAD)"
+workflow="$repo_root/.github/workflows/node-release.yml"
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 
-bash "$generator" release-node "$sha" --scope @fixture --package-dir compat >"$work/release.yml"
 awk '
   /LOCAL_PACKAGE_PATH_BEGIN/ { active = 1; next }
   /LOCAL_PACKAGE_PATH_END/ { exit }
   active { sub(/^          /, ""); print }
-' "$work/release.yml" >"$work/local-path.sh"
-pack_line="$(sed -n '/^            npm pack "\$package_path"/ { s/^            //; p; }' "$work/release.yml")"
-[ -n "$pack_line" ] || { echo "FAIL - generated local npm pack command not found" >&2; exit 1; }
+' "$workflow" >"$work/local-path.sh"
+pack_line="$(sed -n '/^            npm pack "\$package_path"/ { s/^            //; p; }' "$workflow")"
+[ -n "$pack_line" ] || { echo "FAIL - reusable local npm pack command not found" >&2; exit 1; }
 bash -n "$work/local-path.sh"
 
 mkdir -p "$work/repo/compat"
@@ -53,4 +51,4 @@ NODE
 
 pack_and_assert . @fixture/root 1.2.3
 pack_and_assert compat @fixture/local-compat 9.8.7
-echo "ok - generated npm pack command resolves root and secondary packages locally with the registry unreachable"
+echo "ok - reusable npm pack command resolves root and secondary packages locally with the registry unreachable"

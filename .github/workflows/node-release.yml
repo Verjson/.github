@@ -1,38 +1,23 @@
-name: node-release (reusable)
+name: node publish (reusable)
 
-# RETIRED — this reusable refuses to run. ADR 0060 (#460).
-#
-# It ran semantic-release, which derives the version from commit subjects at
-# merge time. ADR 0038 replaced that model: a release is a workflow_dispatch
-# that names the version to cut, and a pinned scripts/changelog.py release
-# snapshots the accumulated NEXT/ fragments into an immutable
-# CHANGELOG/<version>.md. Merging main publishes nothing.
-#
-# Callers move to changelog-release.yml. Generate the three adoption files from
-# one immutable contract commit rather than hand-writing them:
-#
-#   scripts/gen-changelog-caller.sh {workflow|renderer|contract-test} <sha>
-#
-# docs/changelog/README.md has the caller shape; docs/decisions/0038-canonical-
-# changelog-contract has the reasoning.
-#
-# The body below is left in place so the refusal can name its replacement — a
-# deleted workflow fails with "workflow not found", which points nowhere. It is
-# unreachable; treat it as history, not as configuration.
-#
-# Cache/timeout details and caller concurrency guidance:
-# docs/node-workflows.md
+# Publish-only by construction (ADR 0069, #455). This workflow never chooses a
+# version, creates a tag, or pushes a commit. The changelog contract does those
+# things first; this job consumes the exact tag it is handed.
 
 on:
   workflow_call:
     inputs:
+      version:
+        description: Existing v-prefixed SemVer tag created by the changelog contract
+        required: true
+        type: string
       node-version:
-        description: Node.js version; semantic-release requires ^22.14.0 or >=24.10.0
+        description: Node.js version used to install, build, and publish
         required: false
         type: string
         default: '24'
       timeout-minutes:
-        description: Maximum release-job runtime after a runner starts it
+        description: Maximum publish-job runtime after a runner starts it
         required: false
         type: number
         default: 30
@@ -52,10 +37,15 @@ on:
         type: string
         default: package-lock.json
       scope:
-        description: npm scope for the GitHub Packages registry (empty to skip registry auth)
+        description: Required lowercase npm scope for the GitHub Packages registry
         required: false
         type: string
         default: '@verjson'
+      package-dirs:
+        description: JSON array of normalized repository-relative package directories
+        required: false
+        type: string
+        default: '["."]'
       runner:
         description: Optional JSON runner labels; Verjson defaults general, external callers ubuntu-24.04.
         required: false
@@ -63,108 +53,246 @@ on:
         default: ''
     outputs:
       new-release-published:
-        description: >-
-          'true' when semantic-release published a release for this run, 'false'
-          when no release was necessary. Empty when the release job failed or was
-          skipped, so callers must compare against 'true' — never against 'false'.
+        description: "'true' only after npm and GitHub release publication both succeed"
         value: ${{ jobs.release.outputs.new-release-published }}
       new-release-version:
-        description: >-
-          Published version without a tag prefix (e.g. 1.4.0); empty when nothing
-          was published.
+        description: Published version without the v tag prefix
         value: ${{ jobs.release.outputs.new-release-version }}
     secrets:
       NODE_AUTH_TOKEN:
-        description: Token to read @verjson private packages from GitHub Packages
+        description: Token that can read private dependencies during npm ci
         required: false
+
+permissions:
+  contents: read
 
 jobs:
   release:
-    # Runner routing is policy, not preference — see ADR 0033. In tier order:
-    # an explicit `runner` input wins; a caller outside Verjson gets hosted
-    # (portable, their billing); a Verjson PRIVATE repo gets the general
-    # self-hosted pool; anything else — public, or an event that carries no
-    # visibility — gets the ephemeral untrusted-PR pool. That last tier is
-    # fail-SAFE, not a fallback: unresolved visibility must never put fork code
-    # on the persistent pool. Both pools are org variables so a provider move
-    # (GCP -> DigitalOcean) is a variable flip, not a PR here.
     runs-on: ${{ inputs.runner != '' && fromJSON(inputs.runner) || github.repository_owner != 'Verjson' && 'ubuntu-24.04' || github.event.repository.private == true && fromJSON(vars.VERJSON_LANE_TRUSTED || vars.VERJSON_LANE_FALLBACK || '["ubuntu-24.04"]') || fromJSON(vars.VERJSON_LANE_UNTRUSTED || vars.VERJSON_LANE_FALLBACK || '["ubuntu-24.04"]') }}
     timeout-minutes: ${{ inputs.timeout-minutes }}
-    # Nothing below the refusal runs, so the retired job needs no token scopes.
-    # Left explicit rather than deleted: an absent `permissions:` inherits the
-    # caller's, which is the opposite of what a retired release job should hold.
-    permissions: {}
+    permissions:
+      contents: write
+      packages: write
     outputs:
-      new-release-published: ${{ steps.publish.outputs.new-release-published }}
-      new-release-version: ${{ steps.publish.outputs.new-release-version }}
+      new-release-published: ${{ steps.result.outputs.new-release-published }}
+      new-release-version: ${{ steps.result.outputs.new-release-version }}
     steps:
-      # First step, unconditional, and before any checkout: the point is that
-      # nothing this workflow used to do can still happen. Three edits would
-      # each undo that while leaving the step visible in the file — an `if:`,
-      # a `continue-on-error:`, or an `always()` on a later step — so the
-      # retirement test pins the absence of all three, plus the absence of a
-      # second job that would never pass through here at all.
-      - name: Refuse a release derived from a merge
+      - name: Require the contract's exact release tag
         env:
-          CALLER_EVENT: ${{ github.event_name }}
-          CALLER_REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PACKAGE_DIRS: ${{ inputs.package-dirs }}
+          SCOPE: ${{ inputs.scope }}
+          VERSION: ${{ inputs.version }}
         run: |
-          echo "::error::node-release.yml is retired (Verjson/.github ADR 0060). $CALLER_REPO called it from a '$CALLER_EVENT' event; it ran semantic-release, which derives the version from commit subjects at merge time."
-          echo "::error::Move to changelog-release.yml: a workflow_dispatch that names the version, snapshotting NEXT/ fragments into CHANGELOG/<version>.md. Generate the caller with scripts/gen-changelog-caller.sh; see docs/changelog/README.md and ADR 0038."
-          exit 1
+          if [[ ! "$VERSION" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::'$VERSION' is not an exact v-prefixed SemVer tag."
+            exit 1
+          fi
+          if [[ ! "$SCOPE" =~ ^@[a-z0-9][a-z0-9._~-]*$ || ${#SCOPE} -gt 214 ]]; then
+            echo "::error::scope must be a non-empty lowercase npm scope such as @verjson."
+            exit 1
+          fi
+          node - "$PACKAGE_DIRS" <<'NODE'
+          const packageDirs = JSON.parse(process.argv[2]);
+          if (!Array.isArray(packageDirs) || packageDirs.length === 0) {
+            throw new Error("package-dirs must be a non-empty JSON array");
+          }
+          const seen = new Set();
+          for (const packageDir of packageDirs) {
+            if (
+              typeof packageDir !== "string" ||
+              (packageDir !== "." && !/^[A-Za-z0-9._][A-Za-z0-9._-]*(\/[A-Za-z0-9._][A-Za-z0-9._-]*)*$/.test(packageDir)) ||
+              (packageDir !== "." && packageDir.split("/").some((segment) => segment === "." || segment === "..")) ||
+              seen.has(packageDir)
+            ) {
+              throw new Error(`invalid or duplicate package directory: ${packageDir}`);
+            }
+            seen.add(packageDir);
+          }
+          NODE
+          if ! gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$VERSION" >/dev/null; then
+            echo "::error::Could not verify tag $VERSION. The changelog snapshot must exist and GitHub's API must be reachable before publication."
+            exit 1
+          fi
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
+          ref: ${{ inputs.version }}
           fetch-depth: 0
+          persist-credentials: false
+      - name: Verify the checked-out tag and immutable release note
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          test "$(git describe --tags --exact-match HEAD)" = "$VERSION"
+          test -f "CHANGELOG/$VERSION.md"
       - name: Prepare job-scoped npm cache
         if: inputs.cache
         run: echo "npm_config_cache=$RUNNER_TEMP/verjson-npm-cache" >> "$GITHUB_ENV"
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
           node-version: ${{ inputs.node-version }}
-          # setup-node caches npm's download cache, never node_modules or build
-          # output. An absent lockfile disables caching instead of failing jobs
-          # in repositories that do not use npm lockfiles.
           cache: ${{ inputs.cache && hashFiles(inputs.cache-dependency-path) != '' && 'npm' || '' }}
           cache-dependency-path: ${{ inputs.cache-dependency-path }}
           package-manager-cache: false
-          registry-url: ${{ inputs.scope != '' && 'https://npm.pkg.github.com' || '' }}
+          registry-url: https://npm.pkg.github.com
           scope: ${{ inputs.scope }}
-      - run: npm ci
+      - name: Install dependencies
+        run: npm ci
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NODE_AUTH_TOKEN }}
-      - run: npm run build
-      - run: npm test
-      # Check out tooling from the exact commit that defined this reusable job,
-      # not from the caller or a mutable central branch.
-      # GitHub's documented reusable-workflow pattern:
-      # https://docs.github.com/en/actions/reference/workflows-and-actions/contexts#example-usage-of-job-context-workflow-identity
-      - name: Check out locked release tooling
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          repository: ${{ job.workflow_repository }}
-          ref: ${{ job.workflow_sha }}
-          path: .verjson-workflow
-          sparse-checkout: .github/release-tooling
-          persist-credentials: false
-      - name: Install locked release tooling
+      - name: Prepare release package metadata
         env:
-          RELEASE_TOOLING_DIR: ${{ runner.temp }}/verjson-release-tooling
+          VERSION: ${{ inputs.version }}
         run: |
-          bash .verjson-workflow/.github/release-tooling/check-node-version.sh
-          mkdir -p "$RELEASE_TOOLING_DIR"
-          cp .verjson-workflow/.github/release-tooling/package.json "$RELEASE_TOOLING_DIR/"
-          cp .verjson-workflow/.github/release-tooling/package-lock.json "$RELEASE_TOOLING_DIR/"
-          cp .verjson-workflow/.github/release-tooling/emit-release-outputs.mjs "$RELEASE_TOOLING_DIR/"
-          rm -rf -- .verjson-workflow
-          npm ci --ignore-scripts --prefix "$RELEASE_TOOLING_DIR"
-      # Runs from the caller's checkout, so semantic-release still reads the
-      # caller's config and history; only the invocation moves into the locked
-      # tooling directory, where the runner resolves the pinned dependency and
-      # reports the publication result as a job output (#244).
-      - name: Publish release
-        id: publish
-        run: node "$RELEASE_TOOLING_DIR/emit-release-outputs.mjs"
+          # RELEASE_PREPARE_PACKAGES_BEGIN
+          if [ -e scripts/release-prepare-packages.sh ] && [ ! -x scripts/release-prepare-packages.sh ]; then
+            echo "::error::scripts/release-prepare-packages.sh exists but is not executable."
+            exit 1
+          fi
+          if [ -x scripts/release-prepare-packages.sh ]; then
+            scripts/release-prepare-packages.sh "${VERSION#v}"
+          fi
+          # RELEASE_PREPARE_PACKAGES_END
+      - name: Stamp the dispatched package version
         env:
-          RELEASE_TOOLING_DIR: ${{ runner.temp }}/verjson-release-tooling
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ inputs.version }}
+        run: npm version "${VERSION#v}" --no-git-tag-version --ignore-scripts
+      - run: npm run build --if-present
+      - name: Publish the exact snapshot version
+        env:
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PACKAGE_DIRS_JSON: ${{ inputs.package-dirs }}
+          REQUESTED_TAG: ${{ inputs.version }}
+        run: |
+          # RESTART_SAFE_NPM_PUBLISH_BEGIN
+          pack_json="$(mktemp)"
+          package_meta="$(mktemp)"
+          registry_json="$(mktemp)"
+          package_file=
+          trap 'rm -f "$pack_json" "$package_meta" "$registry_json"; [ -z "$package_file" ] || rm -f -- "$package_file"' EXIT
+          version="${REQUESTED_TAG#v}"
+          mapfile -t package_dirs < <(jq -r '.[]' <<<"$PACKAGE_DIRS_JSON")
+
+          for package_dir in "${package_dirs[@]}"; do
+            # LOCAL_PACKAGE_PATH_BEGIN
+            if [ "$package_dir" = . ]; then
+              package_path=.
+            else
+              package_path="./$package_dir"
+            fi
+            # LOCAL_PACKAGE_PATH_END
+            [ -d "$package_path" ] \
+              || { echo "::error::Configured release package directory '$package_dir' does not exist."; exit 1; }
+            npm version "$version" --prefix "$package_path" --no-git-tag-version \
+              --ignore-scripts --allow-same-version
+            npm pack "$package_path" --json --ignore-scripts >"$pack_json"
+            node - "$pack_json" "$version" >"$package_meta" <<'NODE'
+          const fs = require("fs");
+          const path = require("path");
+          const [packPath, expectedVersion] = process.argv.slice(2);
+          const packed = JSON.parse(fs.readFileSync(packPath, "utf8"));
+          if (!Array.isArray(packed) || packed.length !== 1) {
+            throw new Error("npm pack did not describe exactly one package");
+          }
+          const item = packed[0];
+          for (const key of ["name", "version", "integrity", "filename"]) {
+            if (typeof item[key] !== "string" || item[key] === "") {
+              throw new Error(`npm pack omitted ${key}`);
+            }
+          }
+          if (item.version !== expectedVersion) {
+            throw new Error(`packed version ${item.version} does not match dispatched ${expectedVersion}`);
+          }
+          if (!item.integrity.startsWith("sha512-")) {
+            throw new Error("npm pack returned a non-sha512 integrity");
+          }
+          if (path.basename(item.filename) !== item.filename) {
+            throw new Error("npm pack returned an unsafe filename");
+          }
+          process.stdout.write([item.name, item.version, item.integrity, item.filename].join("\t") + "\n");
+          NODE
+            IFS=$'\t' read -r package_name package_version package_integrity package_file <"$package_meta"
+
+            if npm publish "$package_file" --ignore-scripts --registry=https://npm.pkg.github.com; then
+              echo "Published $package_name@$package_version."
+            else
+              echo "::warning::npm publish failed; proving whether an identical immutable version already exists before continuing."
+              npm view "$package_name@$package_version" --json \
+                --registry=https://npm.pkg.github.com >"$registry_json" \
+                || { echo "::error::Cannot read the allegedly existing registry version with the publication credential after npm publish failed."; exit 1; }
+              node - "$registry_json" "$package_name" "$package_version" "$package_integrity" <<'NODE'
+          const fs = require("fs");
+          const [viewPath, expectedName, expectedVersion, expectedIntegrity] = process.argv.slice(2);
+          const published = JSON.parse(fs.readFileSync(viewPath, "utf8"));
+          if (
+            published.name !== expectedName ||
+            published.version !== expectedVersion ||
+            !published.dist ||
+            published.dist.integrity !== expectedIntegrity
+          ) {
+            throw new Error("registry package identity or integrity does not match the attested release snapshot");
+          }
+          NODE
+              echo "Registry already contains the identical $package_name@$package_version; package publication is complete."
+            fi
+            rm -f -- "$package_file"
+            package_file=
+          done
+          # RESTART_SAFE_NPM_PUBLISH_END
+      - name: Publish the snapshot release notes
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          # RESTART_SAFE_GH_RELEASE_BEGIN
+          snapshot="CHANGELOG/$VERSION.md"
+          notes="$snapshot"
+          notes_limit=125000
+          if [ "$(wc -c <"$snapshot")" -gt "$notes_limit" ]; then
+            temp_root="${RUNNER_TEMP:-/tmp}"
+            notes="$(mktemp "$temp_root/release-notes.XXXXXX")"
+            cleanup_release_notes() { rm -f -- "$notes"; }
+            trap cleanup_release_notes EXIT
+            head -c 120000 "$snapshot" | sed '$d' >"$notes"
+            {
+              printf "\n\n---\n\n"
+              printf "_These notes were truncated at GitHub's 125,000-character limit. "
+              printf "The complete and immutable snapshot for this release is "
+              printf "[\`%s\`](%s/%s/blob/%s/%s)._\n" \
+                "$snapshot" "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$VERSION" "$snapshot"
+            } >>"$notes"
+            [ "$(wc -c <"$notes")" -le "$notes_limit" ] \
+              || { echo "::error::Bounded GitHub Release notes exceed $notes_limit bytes."; exit 1; }
+            echo "::notice::Release notes were truncated by bytes; the full immutable snapshot is $snapshot."
+          fi
+          existing_tag="$(gh release view "$VERSION" --json tagName --jq .tagName 2>/dev/null || true)"
+          if [ -n "$existing_tag" ]; then
+            [ "$existing_tag" = "$VERSION" ] \
+              || { echo "::error::GitHub Release lookup returned unexpected tag '$existing_tag'."; exit 1; }
+            gh release edit "$VERSION" --notes-file "$notes"
+          else
+            gh release create "$VERSION" --verify-tag --notes-file "$notes"
+          fi
+          # RESTART_SAFE_GH_RELEASE_END
+      - name: Report successful publication
+        id: result
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          echo "new-release-published=true" >> "$GITHUB_OUTPUT"
+          echo "new-release-version=${VERSION#v}" >> "$GITHUB_OUTPUT"
+      - name: Bound npm cache upload
+        if: always() && inputs.cache
+        env:
+          CACHE_MAX_MB: ${{ inputs.cache-max-mb }}
+        run: |
+          set -euo pipefail
+          cache_dir="$RUNNER_TEMP/verjson-npm-cache"
+          mkdir -p "$cache_dir"
+          size_kb="$(du -sk "$cache_dir" | cut -f1)"
+          size_mb="$(( (size_kb + 1023) / 1024 ))"
+          echo "npm cache: ${size_mb} MB (upload limit: ${CACHE_MAX_MB} MB)" >> "$GITHUB_STEP_SUMMARY"
+          if [ "$size_kb" -gt "$(( CACHE_MAX_MB * 1024 ))" ]; then
+            echo "::warning::npm cache is ${size_mb} MB; clearing it instead of uploading more than ${CACHE_MAX_MB} MB"
+            find "$cache_dir" -mindepth 1 -delete
+          fi

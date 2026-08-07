@@ -12,9 +12,6 @@ release="$root/.github/workflows/node-release.yml"
 cache_probe="$root/.github/workflows/node-cache-integration.yml"
 composite="$root/.github/actions/setup-verjson-node/action.yml"
 actions_ci="$root/.github/workflows/actions-ci.yml"
-package="$root/.github/release-tooling/package.json"
-lock="$root/.github/release-tooling/package-lock.json"
-emit_runner="$root/.github/release-tooling/emit-release-outputs.mjs"
 renovate="$root/renovate.json"
 fails=0
 pass() { printf 'ok   - %s\n' "$1"; }
@@ -26,9 +23,7 @@ for wf in "$ci" "$release" "$cache_probe" "$actions_ci"; do
   name="$(basename "$wf")"
   expected_checkouts=1
   expected_setups=1
-  if [ "$wf" = "$release" ]; then
-    expected_checkouts=2
-  elif [ "$wf" = "$cache_probe" ]; then
+  if [ "$wf" = "$cache_probe" ]; then
     expected_checkouts=2
     expected_setups=2
   fi
@@ -55,61 +50,14 @@ grep -Eq 'uses: actions/setup-node@v[0-9]+' "$composite" \
   && fail "setup-verjson-node still contains a mutable setup-node tag" \
   || pass "setup-verjson-node contains no mutable setup-node tag"
 
-{ grep -qF 'repository: ${{ job.workflow_repository }}' "$release" \
-  && grep -qF 'ref: ${{ job.workflow_sha }}' "$release" \
-  && grep -qF 'https://docs.github.com/en/actions/reference/workflows-and-actions/contexts#example-usage-of-job-context-workflow-identity' "$release"; } \
-  && pass "release tooling is checked out from the called workflow commit" \
-  || fail "release tooling is not tied to the called workflow commit"
-{ grep -qF 'RELEASE_TOOLING_DIR: ${{ runner.temp }}/verjson-release-tooling' "$release" \
-  && grep -qF 'cp .verjson-workflow/.github/release-tooling/package-lock.json "$RELEASE_TOOLING_DIR/"' "$release" \
-  && grep -qF 'rm -rf -- .verjson-workflow' "$release" \
-  && grep -qF 'npm ci --ignore-scripts --prefix "$RELEASE_TOOLING_DIR"' "$release"; } \
-  && pass "release tooling installs from its lockfile" \
-  || fail "release tooling does not use lockfile-backed npm ci"
-# The publish step invokes semantic-release through the locked runner instead of
-# the CLI binary, so the job can report whether a release actually happened
-# (#244). The supply-chain invariant is unchanged: the runner is copied out of
-# the same workflow-SHA checkout and imports semantic-release from the tree that
-# `npm ci --ignore-scripts` built from the exact lockfile.
-{ grep -qF 'cp .verjson-workflow/.github/release-tooling/emit-release-outputs.mjs "$RELEASE_TOOLING_DIR/"' "$release" \
-  && grep -qF 'node "$RELEASE_TOOLING_DIR/emit-release-outputs.mjs"' "$release" \
-  && grep -qF "import semanticRelease from 'semantic-release';" "$emit_runner"; } \
-  && pass "release runs semantic-release from the locked tooling tree" \
-  || fail "release does not run semantic-release from the locked tooling tree"
-remove_line="$(grep -n 'rm -rf -- .verjson-workflow' "$release" | cut -d: -f1)"
-release_line="$(grep -n 'node "$RELEASE_TOOLING_DIR/emit-release-outputs.mjs"' "$release" | cut -d: -f1)"
-{ [ -n "$remove_line" ] && [ -n "$release_line" ] && [ "$remove_line" -lt "$release_line" ]; } \
-  && pass "central checkout is removed before publishing the caller package" \
-  || fail "central checkout can leak into the caller release"
-grep -Eq 'npx .*semantic-release|semantic-release@[~^*0-9]' "$release" \
-  && fail "release workflow still resolves semantic-release dynamically" \
-  || pass "release workflow has no dynamic semantic-release invocation"
-
-# Asserts the PROPERTY (an exact version), not a literal version. Pinning the
-# literal made every Renovate bump red by construction — #396 carried a correct
-# exact-pin bump, 25.0.8 -> 25.0.9, and failed here for saying so. A test that
-# fails on the routine, correct change trains people to override it.
-jq -e '.dependencies["semantic-release"] | test("^[0-9]+\\.[0-9]+\\.[0-9]+$")' "$package" >/dev/null \
-  && pass "semantic-release dependency is exact" \
-  || fail "semantic-release dependency is not exact"
-grep -qF 'semantic-release requires ^22.14.0 or >=24.10.0' "$release" \
-  && pass "release workflow documents semantic-release's Node floor" \
-  || fail "release workflow does not document the locked tool's Node floor"
-# Same reasoning, plus the invariant the literal was standing in for: the lock
-# and the manifest must name the SAME exact version. That is what makes the pin
-# immutable, and it survives a bump; a hardcoded version only asserted "nobody
-# has upgraded yet".
-jq -e --arg want "$(jq -r '.dependencies["semantic-release"]' "$package")" '
-  .lockfileVersion >= 3 and
-  .packages[""].dependencies["semantic-release"] == $want and
-  .packages["node_modules/semantic-release"].version == $want and
-  (.packages["node_modules/semantic-release"].integrity | startswith("sha512-")) and
-  ([.packages | to_entries[] |
-    select(.key != "" and (.value.link // false) == false and .value.resolved != null and .value.integrity == null)] |
-    length == 0)
-' "$lock" >/dev/null \
-  && pass "semantic-release is locked to the manifest version with integrities" \
-  || fail "semantic-release lockfile entry is missing, mutable, or disagrees with package.json"
+grep -qF 'semantic-release' "$release" \
+  && fail "node-release still derives a version through semantic-release" \
+  || pass "node-release contains no semantic-release decision path"
+{ grep -qF 'ref: ${{ inputs.version }}' "$release" \
+  && grep -qF 'persist-credentials: false' "$release" \
+  && grep -qF 'git describe --tags --exact-match HEAD' "$release"; } \
+  && pass "node-release checks out and verifies only the caller-selected tag" \
+  || fail "node-release is not bound to the caller-selected tag"
 
 jq -e '
   any(.packageRules[];

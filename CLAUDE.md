@@ -55,6 +55,7 @@ non-trivial or fanned-out work autonomously:
 
 ## Active Issues / Areas for Improvement
 
+- [#509](https://github.com/Verjson/.github/issues/509) — delete the retired semantic-release tooling, audit exceptions, and cache-probe fixture that remain after publish-only `node-release.yml` replaces the last executable path.
 - [#261](https://github.com/Verjson/.github/issues/261) — Bind privileged-merge provenance to a signed workflow identity; the durable closure for #279's residual.
 - [#477](https://github.com/Verjson/.github/issues/477) — the required-workflow rule makes the gate deaf to `ready_for_review`/`labeled`/`unlabeled` in **every** org repo (ADR 0063); `gate-rearm.yml` fixes only this one, the fleet still needs a generated caller.
 - [#475](https://github.com/Verjson/.github/issues/475) — one 5xx on the merge dispatch reddens the whole gate run and poisons `privileged_merge`; re-dispatch cannot clear it, because a `workflow_dispatch` run's checks never attach to the PR. Push a commit.
@@ -66,7 +67,6 @@ non-trivial or fanned-out work autonomously:
 - [#411](https://github.com/Verjson/.github/issues/411) — `dispatch-merge` ignores `runner_labels`, so a self-hosted-only caller outside Verjson lands it on hosted.
 - [#437](https://github.com/Verjson/.github/issues/437) — `gen-changelog-caller.sh` emits only a `changelog-validate.yml` caller and its generated test greps for that string, so no adopter can move to `generated-artifacts.yml` without the hand-edit the contract forbids. Until it is fixed, tell adopters to stay put, and not to set `adr-index: true` without `scripts/gen-adr-index.sh`.
 - [#454](https://github.com/Verjson/.github/issues/454) — `parse_frontmatter` (`scripts/changelog.py:90-97`) partitions every front-matter line on `:` and rejects any line without one, so a folded/literal scalar fails on its **continuation** line (`not separator`), not on the `summary: >-` line itself. Worse when there is no continuation: `>-` passes as a non-empty value and is stored as the literal string. Either way the key meant to hold a release note cannot hold one written the natural way; keep `summary:` on one line.
-- [#455](https://github.com/Verjson/.github/issues/455) — the generated contract test forbids `.releaserc.json` while canonical `node-release.yml` still requires it, so an npm-publishing adopter cannot satisfy both. Leave the generated test unwired there rather than deleting the file or patching the test.
 
 Prune an entry when its issue closes. This list loads into every session, so a
 closed entry costs context in each one and misreports the state of the work.

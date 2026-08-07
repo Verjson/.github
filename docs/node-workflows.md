@@ -76,30 +76,44 @@ stable branch/ref group with `cancel-in-progress: false`, or omit concurrency
 when overlapping release triggers are already impossible. Choose at the caller,
 where the event and publication semantics are known.
 
-## Gating follow-up work on an actual publication
+## Publishing a contract-selected release
 
-A green `node-release` job does **not** mean a version was published:
-semantic-release exits 0 when no release is necessary, so every push to `main`
-that carries only chores succeeds without publishing anything. Callers that need
-to run something *because a release happened* read the workflow outputs instead:
+`node-release.yml` is publish-only. It requires an existing v-prefixed SemVer
+tag, checks out that exact tag, verifies its immutable `CHANGELOG/<version>.md`,
+then publishes the package and GitHub release. It cannot create a tag, push a
+commit, inspect commit subjects, or choose a version.
+
+Use the generated dispatched caller; it verifies the source tree, calls
+`changelog-release.yml` to create the snapshot and tag, then calls
+`node-release.yml` with the same explicit version:
 
 ```yaml
 jobs:
-  release:
-    uses: Verjson/.github/.github/workflows/node-release.yml@v2.2.0
-    secrets: inherit
+  publish:
+    needs: snapshot
+    uses: Verjson/.github/.github/workflows/node-release.yml@<immutable-sha>
+    with:
+      version: ${{ inputs.version }}
+      node-version: '24'
+      scope: '@verjson'
+      package-dirs: '["."]'
+    secrets:
+      NODE_AUTH_TOKEN: ${{ secrets.NODE_AUTH_TOKEN }}
   announce:
-    needs: release
-    if: needs.release.outputs.new-release-published == 'true'
+    needs: publish
+    if: needs.publish.outputs.new-release-published == 'true'
     runs-on: ubuntu-24.04
     steps:
-      - run: echo "published ${{ needs.release.outputs.new-release-version }}"
+      - run: echo "published ${{ needs.publish.outputs.new-release-version }}"
 ```
 
-The exact `v2.2.0` release pin makes this example reproducible and requires a
-reviewed caller edit to receive fixes. Callers that deliberately prefer
-compatible automatic updates can use the mutable `@v2` major tag instead; never
-use `@main`.
+The generated caller pins both reusable workflows to one immutable contract SHA
+and passes the same Node version, required GitHub Packages scope, package
+directory set, and runner policy to verification and publication. An empty
+publication scope is rejected at the reusable boundary; this workflow does not
+claim public-npm support while its credentials and restart proof target GitHub
+Packages. Regenerate the caller and its contract test together when any of
+those parameters change; never use `@main`.
 
 Two properties to respect:
 
@@ -107,7 +121,9 @@ Two properties to respect:
   strings, and a job that failed or was skipped propagates an *empty* value.
   `== 'true'` therefore treats "did not publish", "failed", and "never ran" alike
   and declines to fire; `!= 'false'` fires on all three.
-- **`new-release-published` means semantic-release completed a release**, which
-  includes an npm publish only when the caller's own config runs
-  `@semantic-release/npm`. It is a faithful report of the release lifecycle, not
-  independent proof that a registry accepted the package.
+- **`new-release-published` is emitted last.** It is `'true'` only after both
+  `npm publish` and `gh release create --verify-tag` succeed.
+- **Installation and publication use different credentials.** Pass
+  `NODE_AUTH_TOKEN` for private cross-repository dependencies. The reusable
+  workflow uses its repository-scoped `GITHUB_TOKEN` only to publish that
+  repository's package and GitHub release.

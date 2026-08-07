@@ -77,11 +77,19 @@ for workflow in "$ci" "$release"; do
     || fail "$name does not expose cache-dependency-path with the expected default"
 
   scope_input="$(workflow_input "$workflow" scope)"
-  { grep -qF 'empty to skip registry auth' <<<"$scope_input" \
-    && grep -qF 'type: string' <<<"$scope_input" \
-    && grep -qF "default: '@verjson'" <<<"$scope_input"; } \
-    && pass "$name documents public-only mode and preserves the private @verjson default" \
-    || fail "$name does not expose the expected public/private scope contract"
+  if [ "$workflow" = "$release" ]; then
+    { grep -qF 'Required lowercase npm scope' <<<"$scope_input" \
+      && grep -qF 'type: string' <<<"$scope_input" \
+      && grep -qF "default: '@verjson'" <<<"$scope_input"; } \
+      && pass "$name documents its required GitHub Packages scope" \
+      || fail "$name does not expose the required publication scope contract"
+  else
+    { grep -qF 'empty to skip registry auth' <<<"$scope_input" \
+      && grep -qF 'type: string' <<<"$scope_input" \
+      && grep -qF "default: '@verjson'" <<<"$scope_input"; } \
+      && pass "$name documents public-only mode and preserves the private @verjson default" \
+      || fail "$name does not expose the expected public/private scope contract"
+  fi
 
   grep -qF "cache: \${{ inputs.cache && hashFiles(inputs.cache-dependency-path) != '' && 'npm' || '' }}" "$workflow" \
     && pass "$name enables setup-node's npm cache only for a matching lockfile" \
@@ -92,22 +100,23 @@ for workflow in "$ci" "$release"; do
   grep -qF 'package-manager-cache: false' "$workflow" \
     && pass "$name disables setup-node automatic package-manager caching" \
     || fail "$name can bypass the explicit cache/lockfile controls via setup-node auto-caching"
-  # node-release is retired (ADR 0060): its cache-upload step carried
-  # `if: always()`, so it kept running after the refusal that is supposed to
-  # end the job. Deleting it is what removes that, which leaves this assertion
-  # meaningful only for node-ci. The inputs above are still asserted on both —
-  # a caller passing `cache:` must not fail on an unknown input.
-  { [ "$workflow" != "$ci" ] \
-    || { grep -qF 'echo "npm_config_cache=$RUNNER_TEMP/verjson-npm-cache" >> "$GITHUB_ENV"' "$workflow" \
+  { grep -qF 'echo "npm_config_cache=$RUNNER_TEMP/verjson-npm-cache" >> "$GITHUB_ENV"' "$workflow" \
       && grep -qF 'cache_dir="$RUNNER_TEMP/verjson-npm-cache"' "$workflow" \
       && grep -qF 'find "$cache_dir" -mindepth 1 -delete' "$workflow" \
-      && grep -qF 'CACHE_MAX_MB: ${{ inputs.cache-max-mb }}' "$workflow"; }; } \
+      && grep -qF 'CACHE_MAX_MB: ${{ inputs.cache-max-mb }}' "$workflow"; } \
     && pass "$name scopes and bounds explicitly enabled cache uploads" \
     || fail "$name can archive an accumulated or unbounded persistent-runner npm cache"
-  grep -qF "registry-url: \${{ inputs.scope != '' && 'https://npm.pkg.github.com' || '' }}" "$workflow" \
-    && grep -qF 'scope: ${{ inputs.scope }}' "$workflow" \
-    && pass "$name leaves setup-node registry unset for public-only installs" \
-    || fail "$name does not gate GitHub Packages registry setup on a non-empty scope"
+  if [ "$workflow" = "$release" ]; then
+    grep -qF 'registry-url: https://npm.pkg.github.com' "$workflow" \
+      && grep -qF 'scope: ${{ inputs.scope }}' "$workflow" \
+      && pass "$name always configures the validated GitHub Packages registry" \
+      || fail "$name does not bind publication to GitHub Packages"
+  else
+    grep -qF "registry-url: \${{ inputs.scope != '' && 'https://npm.pkg.github.com' || '' }}" "$workflow" \
+      && grep -qF 'scope: ${{ inputs.scope }}' "$workflow" \
+      && pass "$name leaves setup-node registry unset for public-only installs" \
+      || fail "$name does not gate GitHub Packages registry setup on a non-empty scope"
+  fi
 done
 
 [ "$(grep -cF 'timeout-minutes: ${{ inputs.timeout-minutes }}' "$ci")" -eq 2 ] \
@@ -155,7 +164,7 @@ for test_command in \
   'bash scripts/ci-gate/node-ci-db-service.test.sh' \
   'bash scripts/ci-gate/ci-eligibility.test.sh' \
   'bash scripts/node-workflow-pins.test.sh' \
-  'bash scripts/node-release-version.test.sh'; do
+  'bash scripts/node-release-publish.test.sh'; do
   grep -qF "run: $test_command" "$actions_ci" \
     && pass "actions-ci runs $test_command" \
     || fail "actions-ci does not run $test_command"
