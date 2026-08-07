@@ -37,8 +37,8 @@ exists as of 2026-08-07, so do not infer current metadata support from
 `v2.2.0`.
 
 The migration guide recommends immutable commit
-`9f59345268a29d2ab8e17dc0e1836668d13ccc2d`. Its engine accepts every key below:
-<!-- recommended-contract-pin: 9f59345268a29d2ab8e17dc0e1836668d13ccc2d -->
+`f36da4dfcd0c178fb2342a6714def1fba47f59ce`. Its engine accepts every key below:
+<!-- recommended-contract-pin: f36da4dfcd0c178fb2342a6714def1fba47f59ce -->
 
 <!-- contract-pin-metadata:start -->
 | Metadata key | Required | Supported by `v2.2.0` | Supported by recommended pin |
@@ -50,6 +50,7 @@ The migration guide recommends immutable commit
 | `refs` | no | **no** | yes |
 | `summary` | no | **no** | yes |
 | `component` | no | **no** | yes |
+| `impact` | no (defaults to `patch`) | **no** | yes |
 <!-- contract-pin-metadata:end -->
 
 `scripts/contract-pin.test.sh` executes the engine from that exact commit
@@ -226,7 +227,7 @@ fourth if it publishes something. Generate all of them rather than writing them;
 the reasoning is in the generator's header.
 
 ```bash
-PIN=9f59345268a29d2ab8e17dc0e1836668d13ccc2d
+PIN=f36da4dfcd0c178fb2342a6714def1fba47f59ce
 # Changelog-only repositories keep the backwards-compatible caller:
 scripts/gen-changelog-caller.sh workflow "$PIN" > .github/workflows/changelog.yml
 # Repositories consolidating generated checks use this instead:

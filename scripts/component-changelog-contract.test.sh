@@ -40,12 +40,13 @@ grep -qE '^ +component: .*\$\{\{ inputs\.component \}\}' \
   || { echo "FAIL - generated release caller drops component selection"; exit 1; }
 
 write_fragment() {
-  local file="$1" issue="$2" title="$3" component="${4:-}"
+  local file="$1" issue="$2" title="$3" component="${4:-}" impact="${5:-}"
   {
     echo "---"
     echo "date: 2026-08-07"
     echo "issue: $issue"
     [ -z "$component" ] || echo "component: $component"
+    [ -z "$impact" ] || echo "impact: $impact"
     echo "title: $title"
     echo "---"
     echo
@@ -64,7 +65,7 @@ git -C "$consumer" add -A
 git -C "$consumer" commit -qm fixture
 
 export CHANGELOG_CONTRACT_PATH="$contract/scripts/changelog.py"
-(cd "$consumer" && scripts/changelog-contract.test.sh) >/dev/null
+(cd "$consumer" && scripts/changelog-contract.test.sh)
 
 default_render="$(cd "$consumer" && scripts/render-next.sh)"
 python_render="$(cd "$consumer" && scripts/render-next.sh --component python)"
@@ -87,16 +88,42 @@ release_stream v1.0.0 "Default stream"
 [ -f "$consumer/NEXT/2026-08-07-issue-391-python.md" ] \
   && [ -f "$consumer/NEXT/2026-08-07-issue-392-node.md" ] \
   || { echo "FAIL - default release consumed a scoped stream"; exit 1; }
-(cd "$consumer" && scripts/changelog-contract.test.sh) >/dev/null
+(cd "$consumer" && scripts/changelog-contract.test.sh)
 
 release_stream python-v1.0.0 "Python stream" python
 [ -f "$consumer/NEXT/2026-08-07-issue-392-node.md" ] \
   || { echo "FAIL - Python release consumed the Node stream"; exit 1; }
-(cd "$consumer" && scripts/changelog-contract.test.sh) >/dev/null
+(cd "$consumer" && scripts/changelog-contract.test.sh)
 
 release_stream node-v1.0.0 "Node stream" node
+
+write_fragment 2026-08-07-issue-393-default-patch.md \
+  393 "Default patch" "" patch
+write_fragment 2026-08-07-issue-394-python-major.md \
+  394 "Python major" python major
+write_fragment 2026-08-07-issue-395-node-minor.md \
+  395 "Node minor" node minor
+git -C "$consumer" add -A
+git -C "$consumer" commit -qm "mixed stream impacts"
+
+release_stream v1.0.1 "Default patch"
+release_stream python-v2.0.0 "Python major" python
+
+before="$(git -C "$consumer" status --porcelain)"
+if python3 "$contract/scripts/changelog.py" release \
+  --repo-root "$consumer" --version node-v1.0.1 --component node \
+  2>"$tmp/impact-error"; then
+  echo "FAIL - Node release ignored its selected minor impact"
+  exit 1
+fi
+grep -q 'require a minor bump' "$tmp/impact-error" \
+  || { echo "FAIL - Node impact rejection gave no actionable error"; exit 1; }
+[ "$(git -C "$consumer" status --porcelain)" = "$before" ] \
+  || { echo "FAIL - rejected Node impact mutated consumer"; exit 1; }
+release_stream node-v1.1.0 "Node minor" node
+
 [ -z "$(find "$consumer/NEXT" -maxdepth 1 -type f -name '*.md' -print -quit)" ] \
   || { echo "FAIL - exact releases left a selected fragment behind"; exit 1; }
-(cd "$consumer" && scripts/changelog-contract.test.sh) >/dev/null
+(cd "$consumer" && scripts/changelog-contract.test.sh)
 
 echo "ok - generated artifacts isolate three disposable release streams at $pin"
