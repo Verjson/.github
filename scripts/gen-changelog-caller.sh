@@ -459,6 +459,17 @@ jobs:
           # an adopter with a private @verjson devDependency 401s here. Canonical
           # node-ci.yml states the same requirement for the same reason.
           NODE_AUTH_TOKEN: \${{ secrets.NODE_AUTH_TOKEN }}
+      - name: Prepare release package metadata
+        env:
+          VERSION: \${{ inputs.version }}
+        run: |
+          if [ -e scripts/release-prepare-packages.sh ] && [ ! -x scripts/release-prepare-packages.sh ]; then
+            echo "::error::scripts/release-prepare-packages.sh exists but is not executable."
+            exit 1
+          fi
+          if [ -x scripts/release-prepare-packages.sh ]; then
+            scripts/release-prepare-packages.sh "\${VERSION#v}"
+          fi
       - name: Stamp the dispatched package version
         env:
           VERSION: \${{ inputs.version }}
@@ -1011,6 +1022,12 @@ while IFS= read -r release_workflow; do
   }
   stamp_before "$verify_job" 'scripts/release-verify\.sh|npm run build|npm run typecheck|npm run lint|npm test' \
     || fail "$release_workflow does not stamp the dispatched package version before the verification build or suite (#519)"
+  prepare_line="$(printf '%s\n' "$verify_job" | grep -n -m1 \
+    'scripts/release-prepare-packages\.sh "${VERSION#v}"' | cut -d: -f1)"
+  stamp_line="$(printf '%s\n' "$verify_job" | grep -n -m1 \
+    'npm version .*--no-git-tag-version --ignore-scripts' | cut -d: -f1)"
+  [ -n "$prepare_line" ] && [ -n "$stamp_line" ] && [ "$prepare_line" -lt "$stamp_line" ] \
+    || fail "$release_workflow does not prepare package metadata before stamping and verifying the release tree (#550)"
   printf '%s\n' "$publish_job" \
     | grep -qF "uses: Verjson/.github/.github/workflows/node-release.yml@$CONTRACT_REF" \
     || fail "$release_workflow does not delegate publication to node-release.yml at the immutable contract pin (#455)"

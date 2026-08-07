@@ -675,6 +675,20 @@ if stamp not in before:
 open(path, "w", encoding="utf-8").write(before.replace(stamp, "", 1) + job)
 PY
 }
+drop_verify_prepare() {
+  python3 - "$1/.github/workflows/release.yml" <<'PY'
+import sys
+
+path = sys.argv[1]
+text = open(path, encoding="utf-8").read()
+start = text.index("      - name: Prepare release package metadata")
+end = text.index("      - name:", start + 1)
+publish = text.index("  publish:")
+if start > publish:
+    raise SystemExit("verify prepare fixture no longer matches generated output")
+open(path, "w", encoding="utf-8").write(text[:start] + text[end:])
+PY
+}
 enable_stamp_lifecycle_scripts() {
   sed -i 's/ --ignore-scripts//g' "$1/.github/workflows/release.yml"
 }
@@ -798,6 +812,7 @@ grep -q 'push_token' "$tmproot/run.out" \
 expect_rejection "a snapshot job that verifies nothing first (#463, #464)" drop_snapshot_needs
 expect_rejection "a snapshot job with no explicit runner (#465)" drop_snapshot_runner
 expect_rejection "an npm ci installing with GITHUB_TOKEN (#465)" install_with_github_token
+expect_rejection "a verification job without package metadata preparation (#550)" drop_verify_prepare
 expect_rejection "a verification suite with no dispatched version stamp (#519)" drop_verify_stamp
 expect_rejection "version stamps that can run package lifecycle scripts (#519)" enable_stamp_lifecycle_scripts
 expect_rejection "a release verification suite without private-package auth (#569)" drop_verification_suite_token
