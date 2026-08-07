@@ -120,6 +120,15 @@ if [ "${1:-}" = "api" ]; then
       # the pages that arrived must not be mistaken for the complete rule set.
       cat "$RULES_FILE"; exit "${RULES_RC:-0}" ;;
     */pulls/*/files*)
+      file_read="$(bump "$tmp_files_count")"
+      if [ "$file_read" -le "${FILES_FAILURES:-0}" ]; then
+        case "${FILES_ERROR_KIND:-500}" in
+          500) echo "HTTP 500: internal server error" >&2 ;;
+          404) echo "HTTP 404: not found" >&2 ;;
+          transport) echo "connection reset by peer" >&2 ;;
+        esac
+        exit 1
+      fi
       emit '[{"filename":"src/index.ts"}]' ;;
     */pulls/18*)
       [ "${PULLS_RC:-0}" -eq 0 ] || exit "$PULLS_RC"
@@ -213,6 +222,8 @@ reset_fixtures() {
   BASE_REF=main
   RULES_RC=0
   PULLS_RC=0
+  FILES_FAILURES=0
+  FILES_ERROR_KIND=500
   HEAD_RUNS_RC=0
   SOURCE_RUN_RC=0
   ATTESTATION_API_RC=0
@@ -238,15 +249,16 @@ run_case() { # run_case <event-name>
   # enough attempts to prove the loop reaches its terminal state.
   export MERGE_WAIT_ATTEMPTS=2
   export TRUSTED_WF_ID TRUSTED_REPO_ID TRUSTED_SHA BASE_REF BASE_REF_FINAL
-  export RULES_RC PULLS_RC HEAD_RUNS_RC SOURCE_RUN_RC ATTESTATION_API_RC ARTIFACT_ZIP_RC UNZIP_RC
+  export RULES_RC PULLS_RC FILES_FAILURES FILES_ERROR_KIND HEAD_RUNS_RC SOURCE_RUN_RC ATTESTATION_API_RC ARTIFACT_ZIP_RC UNZIP_RC
   export RULES_FILE="$tmp/rules.json" RULES_FINAL_FILE="$tmp/rules-final.json"
   export RUNS_FILE="$tmp/runs.json"
   export META_FILE="$tmp/meta.json" META_FINAL_FILE="$tmp/meta-final.json"
   export ARTIFACTS_FILE="$tmp/artifacts.json" ATTESTATION_FILE="$tmp/attestation.json"
   export ACTIONLOG="$tmp/act.log"
   export tmp_view_count="$tmp/view.count" tmp_base_count="$tmp/base.count"
+  export tmp_files_count="$tmp/files.count"
   export tmp_rules_count="$tmp/rules.count"
-  : >"$ACTIONLOG"; : >"$tmp_view_count"; : >"$tmp_base_count"; : >"$tmp_rules_count"
+  : >"$ACTIONLOG"; : >"$tmp_view_count"; : >"$tmp_base_count"; : >"$tmp_rules_count"; : >"$tmp_files_count"
   printf '%s' "$RULES" >"$RULES_FILE"
   printf '%s' "$RULES_FINAL" >"$RULES_FINAL_FILE"
   printf '%s' "$RUNS" >"$RUNS_FILE"
@@ -297,6 +309,45 @@ assert_merged "dispatched continuation trusts an org required-workflow gate run 
 
 run_case pull_request_target
 assert_merged "pull_request_target path trusts an org required-workflow gate run and merges"
+
+# #394/#518: the complete PR file-list guard is a GitHub availability
+# boundary. Retry bounded server/transport failures, but never amplify a
+# structural client error.
+FILES_FAILURES=1
+FILES_ERROR_KIND=500
+run_case workflow_dispatch
+if [ "$(cat "$tmp_files_count")" = "3" ] && grep -q 'phase=privileged-file-list result=retry' "$tmp/out.txt"; then
+  assert_merged "transient privileged file-list 5xx retries then merges"
+else
+  fail "transient privileged file-list 5xx did not take the bounded retry"
+fi
+
+FILES_FAILURES=1
+FILES_ERROR_KIND=transport
+run_case workflow_dispatch
+if [ "$(cat "$tmp_files_count")" = "3" ] && grep -q 'kind=transport' "$tmp/out.txt"; then
+  assert_merged "transient privileged file-list transport failure retries then merges"
+else
+  fail "transient privileged file-list transport failure did not recover"
+fi
+
+FILES_FAILURES=9
+FILES_ERROR_KIND=500
+run_case workflow_dispatch
+if [ "$(cat "$tmp_files_count")" = "3" ]; then
+  assert_rejected "exhausted privileged file-list 5xx fails closed" "could not inspect the complete PR file list"
+else
+  fail "privileged file-list 5xx retry was not bounded to three attempts"
+fi
+
+FILES_FAILURES=9
+FILES_ERROR_KIND=404
+run_case workflow_dispatch
+if [ "$(cat "$tmp_files_count")" = "1" ] && ! grep -q 'result=retry' "$tmp/out.txt"; then
+  assert_rejected "privileged file-list 4xx fails closed without retry" "could not inspect the complete PR file list"
+else
+  fail "privileged file-list 4xx was retried"
+fi
 
 SOURCE_RUN_RC=127
 run_case workflow_dispatch
