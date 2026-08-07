@@ -97,7 +97,21 @@ if [ "$1" = api ]; then
   [ -z "${WORKFLOW_PATH-.github/workflows/ai-privileged-merge.yml}" ] || printf '\n'
   exit 0
 fi
-if [ "$1 $2" = "workflow run" ]; then printf '%s\n' "$*" >>"$DISPATCH_LOG"; exit 0; fi
+if [ "$1 $2" = "workflow run" ]; then
+  printf '%s\n' "$*" >>"$DISPATCH_LOG"
+  count=$(cat "$DISPATCH_COUNT")
+  count=$((count + 1))
+  printf '%s\n' "$count" >"$DISPATCH_COUNT"
+  if [ "$count" -le "${DISPATCH_FAILURES:-0}" ]; then
+    case "${DISPATCH_ERROR_KIND:-500}" in
+      500) echo "could not create workflow dispatch event: HTTP 500: response-marker-must-stay-masked" >&2 ;;
+      403) echo "could not create workflow dispatch event: HTTP 403: rate limit exceeded" >&2 ;;
+      transport) echo "error connecting to api.github.com: TLS handshake timeout" >&2 ;;
+    esac
+    exit 1
+  fi
+  exit 0
+fi
 if [ "$1 $2" = "pr view" ]; then
   count=$(cat "$PR_VIEW_COUNT")
   count=$((count + 1))
@@ -114,6 +128,7 @@ EOF
 chmod +x "$tmp/bin/gh"
 cat >"$tmp/bin/sleep" <<'EOF'
 #!/usr/bin/env bash
+printf '%s\n' "$1" >>"$SLEEP_LOG"
 exit 0
 EOF
 chmod +x "$tmp/bin/sleep"
@@ -126,16 +141,20 @@ run_case() {
   : >"$tmp/dispatch.log"
   : >"$tmp/dispatch.out"
   : >"$tmp/github-output.txt"
+  : >"$tmp/sleep.log"
+  printf '0\n' >"$tmp/dispatch-count"
   printf '0\n' >"$tmp/pr-view-count"
   PATH="$tmp/bin:$PATH" DISPATCH_LOG="$tmp/dispatch.log" GH_TOKEN=token \
     GITHUB_OUTPUT="$tmp/github-output.txt" PR_VIEW_COUNT="$tmp/pr-view-count" \
+    DISPATCH_COUNT="$tmp/dispatch-count" SLEEP_LOG="$tmp/sleep.log" \
     GITHUB_REPOSITORY=Verjson/example TARGET_REPO="${1-Verjson/example}" \
     PR_NUMBER="${2-7}" EXPECTED_HEAD_SHA="${3-0123456789abcdef0123456789abcdef01234567}" \
     SOURCE_RUN_ID="${4-99}" WORKFLOW_PATH="${5-.github/workflows/ai-privileged-merge.yml}" \
     API_FAILURE="${6-false}" \
     MERGE_PROBE_ATTEMPTS="$probe_attempts" MERGE_PROBE_INTERVAL_SECONDS="$probe_interval" \
     PR_STATE_JSON="$pr_state_json" \
-    PR_VIEW_FAILURES="${8-0}" bash "$script" >"$tmp/dispatch.out" 2>&1
+    PR_VIEW_FAILURES="${8-0}" DISPATCH_FAILURES="${9-0}" \
+    DISPATCH_ERROR_KIND="${10-500}" bash "$script" >"$tmp/dispatch.out" 2>&1
 }
 run_case && grep -q 'workflow run ai-privileged-merge.yml' "$tmp/dispatch.log" \
   && pass "validated identities dispatch only the fixed workflow" \
@@ -267,6 +286,53 @@ run_case Verjson/example 7 0123456789abcdef0123456789abcdef01234567 99 .github/w
       && pass "exhausted postcondition reads fail closed with typed evidence" \
       || fail "unreadable postcondition lacks typed failure evidence"
   }
+
+# #475: workflow_dispatch acknowledgement retries only availability failures.
+# An ambiguous 5xx can mean the first request actually queued, so duplicate
+# identical dispatches are allowed; the trusted continuation revalidates the
+# expected head and source run before it can merge.
+merged='{"state":"MERGED","mergedAt":"2026-08-07T12:00:00Z","reviewDecision":"APPROVED","mergeStateStatus":"UNKNOWN","headRefOid":"0123456789abcdef0123456789abcdef01234567"}'
+run_case Verjson/example 7 0123456789abcdef0123456789abcdef01234567 99 .github/workflows/ai-privileged-merge.yml false "$merged" 0 1 500 \
+  && [ "$(cat "$tmp/dispatch-count")" -eq 2 ] \
+  && [ "$(sort -u "$tmp/dispatch.log" | wc -l | tr -d ' ')" -eq 1 ] \
+  && grep -q 'phase=merge-dispatch result=retry' "$tmp/dispatch.out" \
+  && pass "transient 5xx retries the identical trusted dispatch and recovers" \
+  || fail "transient dispatch 5xx did not recover idempotently"
+
+run_case Verjson/example 7 0123456789abcdef0123456789abcdef01234567 99 .github/workflows/ai-privileged-merge.yml false "$merged" 0 1 transport \
+  && [ "$(cat "$tmp/dispatch-count")" -eq 2 ] \
+  && grep -q 'kind=transport' "$tmp/dispatch.out" \
+  && pass "transport failure retries and recovers" \
+  || fail "transient dispatch transport failure did not recover"
+
+run_case Verjson/example 7 0123456789abcdef0123456789abcdef01234567 99 .github/workflows/ai-privileged-merge.yml false "$merged" 0 9 500 \
+  && fail "persistent dispatch 5xx reported green" \
+  || {
+    [ "$(cat "$tmp/dispatch-count")" -eq 4 ] \
+      && [ "$(tr '\n' ',' <"$tmp/sleep.log")" = "1,2,4," ] \
+      && grep -q 'kind=infrastructure_unavailable' "$tmp/dispatch.out" \
+      && grep -q '^dispatch_failure=infrastructure_unavailable$' "$tmp/github-output.txt" \
+      && ! grep -q 'response-marker-must-stay-masked' "$tmp/dispatch.out" \
+      && pass "exhausted dispatch 5xx fails with bounded typed infrastructure evidence" \
+      || fail "exhausted dispatch 5xx lacks backoff, masking, or typed evidence"
+  }
+
+run_case Verjson/example 7 0123456789abcdef0123456789abcdef01234567 99 .github/workflows/ai-privileged-merge.yml false "$merged" 0 9 403 \
+  && fail "dispatch 4xx reported green" \
+  || {
+    [ "$(cat "$tmp/dispatch-count")" -eq 1 ] \
+      && [ ! -s "$tmp/sleep.log" ] \
+      && grep -q 'kind=client_error http_status=403' "$tmp/dispatch.out" \
+      && pass "dispatch 4xx fails immediately without rate-limit amplification" \
+      || fail "dispatch 4xx was retried or misclassified"
+  }
+
+privileged="$root/.github/workflows/ai-privileged-merge.yml"
+grep -q 'SOURCE_RUN_ID:.*inputs.source_run_id' "$privileged" \
+  && grep -q 'EXPECTED_HEAD_SHA:.*inputs.expected_head_sha' "$privileged" \
+  && grep -q 'newest trusted gate run failed' "$privileged" \
+  && pass "duplicate dispatch safety remains bound to trusted run + expected head revalidation" \
+  || fail "privileged continuation no longer pins duplicate dispatch safety"
 
 [ "$fails" -eq 0 ] && { echo "All tests passed."; exit 0; }
 echo "$fails test(s) failed."

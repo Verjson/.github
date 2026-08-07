@@ -120,3 +120,32 @@ no-op above and is typed `continuation_absent`. No permission changes or admin
 bypass are introduced: the metadata-only job retains exactly `contents: read`
 and `actions: write`, and the actual merge authority stays in the separately
 trusted continuation.
+
+## Dispatch availability retries without weakening source-run trust
+
+**Amended 2026-08-07 for #475, after #394:** GitHub can accept a trusted
+workflow dispatch and still return a 5xx, or fail before acceptance on a
+transport error. A single bare call made the full gate run red after its review
+had succeeded; the privileged continuation then rejected that failed source
+run, compounding one infrastructure event into two red checks.
+
+The dispatcher now retries the same fixed request four total times with
+exponential 1/2/4-second backoff on explicit 5xx and transport failures. An
+ambiguous duplicate is safe because every continuation revalidates the numeric
+source run, immutable expected head, current PR state, and trusted workflow
+identity before merging. Any 4xx, including rate limiting, fails immediately
+without amplifying API load.
+
+Exhaustion remains red and is typed
+`dispatch_failure=infrastructure_unavailable`, with diagnostics stating that
+the review verdict itself succeeded. Raw CLI errors are held in memory and
+discarded rather than printed. The dispatch step and job also expose
+`dispatch_available` and `dispatch_failure`.
+
+The gate-run conclusion is deliberately not softened. The privileged workflow
+currently trusts only a successful source-run conclusion and cannot read step
+outputs through the run API. Marking an exhausted dispatch green would
+therefore remove the only safe signal available to the trusted-run contract;
+changing that contract requires a separately authenticated review-success
+attestation, not `continue-on-error`. Permissions and admin authority are
+unchanged.
