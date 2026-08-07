@@ -86,7 +86,7 @@ to run something *because a release happened* read the workflow outputs instead:
 ```yaml
 jobs:
   release:
-    uses: Verjson/.github/.github/workflows/node-release.yml@main
+    uses: Verjson/.github/.github/workflows/node-release.yml@v2.2.0
     secrets: inherit
   announce:
     needs: release
@@ -95,6 +95,11 @@ jobs:
     steps:
       - run: echo "published ${{ needs.release.outputs.new-release-version }}"
 ```
+
+The exact `v2.2.0` release pin makes this example reproducible and requires a
+reviewed caller edit to receive fixes. Callers that deliberately prefer
+compatible automatic updates can use the mutable `@v2` major tag instead; never
+use `@main`.
 
 Two properties to respect:
 
