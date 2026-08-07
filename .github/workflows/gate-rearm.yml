@@ -12,7 +12,7 @@ name: gate re-arm
 # dead — measured, not inferred (see the ADR for the run-id table).
 #
 # This workflow is NOT required-enforced, so its own triggers are honoured. It
-# converts the two events that leave a PR wedged into the one entry point that
+# converts the events that leave a PR wedged into the one entry point that
 # does work — a `workflow_dispatch` of the gate, which runs under the gate's own
 # workflow record.
 #
@@ -23,8 +23,8 @@ name: gate re-arm
 #   * No re-entrancy: a dispatch produces a `workflow_dispatch` run, which emits
 #     neither `ready_for_review` nor `unlabeled`. The gate's own label churn
 #     (removing `re-review`) is excluded by the job guard below.
-#   * `hold`, `DO NOT MERGE` and draft stay terminal (ADR 0012) — checked in the
-#     guard against the event payload and re-checked against live PR state.
+#   * `hold`, `DO NOT MERGE` and draft stay terminal (ADR 0012) — cheaply checked
+#     in the guard and authoritatively re-checked against live PR state.
 
 on:
   pull_request_target:
@@ -36,16 +36,13 @@ permissions:
 jobs:
   rearm:
     # `unlabeled` fires for every label the gate itself removes — `re-review`
-    # above all — so only the removal of a TERMINAL hold re-arms. Draft and any
-    # still-present hold stay terminal.
-    #
-    # The hold set is spelled with every separator the live predicate normalizes
-    # (`gsub("[ _-]+";" ")`), because expression `==` is case-insensitive but not
-    # separator-insensitive: without the variants a PR held with `do-not-merge`
-    # would be suppressed correctly and then never re-arm when that label is
-    # removed — #468 again, by another route. The still-present checks below are
-    # a cheap pre-filter only; the authoritative, fully normalized hold check is
-    # re-run against live PR state in the step.
+    # above all — so that self-generated event is denied by name. Every other
+    # label removal is admitted because an Actions expression cannot reproduce
+    # the authoritative `gsub("[ _-]+";" ")` hold normalizer: enumerating known
+    # spellings misses valid variants such as `DO__NOT__MERGE`. Draft and any
+    # still-present hold stay terminal. The checks below are a cheap pre-filter;
+    # the authoritative, fully normalized hold check is re-run against live PR
+    # state in the step.
     # `labeled` is bridged for `re-review` ONLY (#481). The gate documents that
     # lane and guards it at `ai-review-merge.yml:165`, but a required workflow is
     # scheduled by the ruleset rather than by its own `on:` block, and the ruleset
@@ -57,17 +54,15 @@ jobs:
     #
     # No re-entrancy: the gate CONSUMES `re-review` by removing it
     # (`ai-review-merge.yml:403`), which emits `unlabeled` — and the `unlabeled`
-    # arm below admits only the terminal-hold spellings, so the gate's own cleanup
-    # cannot re-arm the gate. That exclusion was already load-bearing for #479 and
-    # is what makes adding this arm a no-op for it.
+    # arm below explicitly denies that label, so the gate's own cleanup cannot
+    # re-arm the gate.
     if: >
       (
         github.event.action == 'ready_for_review' ||
         (github.event.action == 'labeled' &&
           github.event.label.name == 're-review') ||
         (github.event.action == 'unlabeled' &&
-          contains(fromJSON('["hold","DO NOT MERGE","DO-NOT-MERGE","DO_NOT_MERGE"]'),
-                   github.event.label.name))
+          github.event.label.name != 're-review')
       ) &&
       !github.event.pull_request.draft &&
       !contains(github.event.pull_request.labels.*.name, 'hold') &&

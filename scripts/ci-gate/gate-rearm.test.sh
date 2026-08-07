@@ -224,17 +224,13 @@ job_if="$(awk '
 ' "$wf" | tr '\n' ' ' | sed -E 's/[[:space:]]+/ /g')"
 
 # Re-entrancy: the gate removes its own `re-review` label, which emits
-# `unlabeled`. Only a TERMINAL hold's removal may re-arm, or the gate would
-# re-dispatch itself every time it cleaned up after a review.
-#
-# The hold set must carry every separator spelling the live predicate normalizes
-# away, or a PR held with `do-not-merge` is suppressed correctly and then never
-# re-arms when that label is removed: expression `==` is case-insensitive, not
-# separator-insensitive.
-guard="( github.event.action == 'ready_for_review' || (github.event.action == 'labeled' && github.event.label.name == 're-review') || (github.event.action == 'unlabeled' && contains(fromJSON('[\"hold\",\"DO NOT MERGE\",\"DO-NOT-MERGE\",\"DO_NOT_MERGE\"]'), github.event.label.name)) )"
+# `unlabeled`. Admit every other removal because an Actions expression cannot
+# reproduce the live predicate's separator normalizer; denying `re-review` by
+# name prevents the gate from dispatching itself when it cleans up after review.
+guard="( github.event.action == 'ready_for_review' || (github.event.action == 'labeled' && github.event.label.name == 're-review') || (github.event.action == 'unlabeled' && github.event.label.name != 're-review') )"
 printf '%s' "$job_if" | grep -qF "$guard" \
-  && pass "only ready_for_review, re-review labelling and terminal-hold removal re-arm" \
-  || fail "the bridge guard admits label churn it must ignore: $job_if"
+  && pass "readying, re-review labelling and every non-re-review removal re-arm" \
+  || fail "the bridge guard does not use the re-review denylist: $job_if"
 
 # --- #481: the re-review lane, bridged for that label ONLY ------------------
 # The gate documents this lane and guards it at ai-review-merge.yml:165, but a
@@ -264,24 +260,22 @@ printf '%s' "$job_if" | grep -qF "github.event.action == 'labeled' && github.eve
   || fail "#481: the labeled arm does not pin the label name in the guard"
 
 # Re-entrancy, restated for the new arm: the gate CONSUMES `re-review` by removing
-# it, which emits `unlabeled`. That arm admits only terminal-hold spellings, so the
-# gate's own cleanup cannot re-arm the gate. Pin both halves — the removal path
-# excluding `re-review`, and the gate actually being the thing that removes it.
-printf '%s' "$job_if" | grep -qE "unlabeled.*fromJSON\('\[\"hold\"" \
-  && ! printf '%s' "$job_if" | grep -qE "unlabeled.*re-review" \
+# it, which emits `unlabeled`. Pin both halves — the removal path denying
+# `re-review`, and the gate actually being the thing that removes it.
+printf '%s' "$job_if" | grep -qF "github.event.action == 'unlabeled' && github.event.label.name != 're-review'" \
   && pass "#481: removal of re-review still does not re-arm (no self-dispatch loop)" \
   || fail "#481: the unlabeled arm now admits re-review, which would loop the gate"
 grep -qF -- '--remove-label re-review' "$gate_wf" \
   && pass "#481: the gate is the actor that consumes the re-review label" \
   || fail "#481: the gate no longer removes re-review, so the loop analysis above is stale"
 
-# Pin each separator variant individually: dropping one is the silent regression.
-# Each spelling is also asserted to be a hold by the live predicate above, so the
-# two halves of the bridge agree about which labels wedge a PR.
-for spelling in 'do-not-merge' 'do_not_merge'; do
-  printf '%s' "$job_if" | grep -qiF "\"$spelling\"" \
-    && pass "the guard re-arms when the '$spelling' spelling of the hold is removed" \
-    || fail "the guard ignores removal of '$spelling', which the live predicate counts as a hold"
+# Every separator variant is admitted by the generic unlabeled arm. Each spelling
+# is also asserted to be a hold by the live predicate above, so a spelling the
+# normalizer accepts can never become stranded by a finite guard enumeration.
+for spelling in 'do-not-merge' 'do_not_merge' 'DO__NOT__MERGE'; do
+  printf '%s' "$job_if" | grep -qF "github.event.action == 'unlabeled' && github.event.label.name != 're-review'" \
+    && pass "the denylist guard admits removal of '$spelling'" \
+    || fail "the denylist guard ignores removal of '$spelling'"
   run_case "$(pr "[{\"name\":\"$spelling\"}]")" >/dev/null
   ! dispatched \
     && pass "the live predicate counts '$spelling' as a hold" \
