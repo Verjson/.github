@@ -33,7 +33,12 @@ assert any('git describe --tags --exact-match HEAD' in (step.get("run") or "") f
 assert any('test -f "CHANGELOG/$VERSION.md"' in (step.get("run") or "") for step in steps)
 guard = next(step for step in steps if "gh api" in (step.get("run") or ""))
 assert "scope must be a non-empty lowercase npm scope" in guard["run"]
-assert "package-dirs must be a non-empty JSON array" in guard["run"]
+package_dirs = next(step for step in steps if "package-dirs must be a non-empty JSON array" in (step.get("run") or ""))
+setup_node_index = next(i for i, step in enumerate(steps) if step.get("uses", "").startswith("actions/setup-node@"))
+package_dirs_index = steps.index(package_dirs)
+assert setup_node_index < package_dirs_index, "Node-dependent validation must run after setup-node"
+assert all("node -" not in (step.get("run") or "") for step in steps[:setup_node_index]), \
+    "no JavaScript may run before setup-node on bootstrap-clean runners"
 publish = next(step for step in steps if "npm publish" in (step.get("run") or ""))
 assert publish["env"]["NODE_AUTH_TOKEN"] == "${{ secrets.GITHUB_TOKEN }}"
 install = next(step for step in steps if (step.get("run") or "").strip() == "npm ci")

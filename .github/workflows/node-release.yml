@@ -80,7 +80,6 @@ jobs:
       - name: Require the contract's exact release tag
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PACKAGE_DIRS: ${{ inputs.package-dirs }}
           SCOPE: ${{ inputs.scope }}
           VERSION: ${{ inputs.version }}
         run: |
@@ -92,24 +91,6 @@ jobs:
             echo "::error::scope must be a non-empty lowercase npm scope such as @verjson."
             exit 1
           fi
-          node - "$PACKAGE_DIRS" <<'NODE'
-          const packageDirs = JSON.parse(process.argv[2]);
-          if (!Array.isArray(packageDirs) || packageDirs.length === 0) {
-            throw new Error("package-dirs must be a non-empty JSON array");
-          }
-          const seen = new Set();
-          for (const packageDir of packageDirs) {
-            if (
-              typeof packageDir !== "string" ||
-              (packageDir !== "." && !/^[A-Za-z0-9._][A-Za-z0-9._-]*(\/[A-Za-z0-9._][A-Za-z0-9._-]*)*$/.test(packageDir)) ||
-              (packageDir !== "." && packageDir.split("/").some((segment) => segment === "." || segment === "..")) ||
-              seen.has(packageDir)
-            ) {
-              throw new Error(`invalid or duplicate package directory: ${packageDir}`);
-            }
-            seen.add(packageDir);
-          }
-          NODE
           if ! gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$VERSION" >/dev/null; then
             echo "::error::Could not verify tag $VERSION. The changelog snapshot must exist and GitHub's API must be reachable before publication."
             exit 1
@@ -136,6 +117,28 @@ jobs:
           package-manager-cache: false
           registry-url: https://npm.pkg.github.com
           scope: ${{ inputs.scope }}
+      - name: Validate release package directories
+        env:
+          PACKAGE_DIRS: ${{ inputs.package-dirs }}
+        run: |
+          node - "$PACKAGE_DIRS" <<'NODE'
+          const packageDirs = JSON.parse(process.argv[2]);
+          if (!Array.isArray(packageDirs) || packageDirs.length === 0) {
+            throw new Error("package-dirs must be a non-empty JSON array");
+          }
+          const seen = new Set();
+          for (const packageDir of packageDirs) {
+            if (
+              typeof packageDir !== "string" ||
+              (packageDir !== "." && !/^[A-Za-z0-9._][A-Za-z0-9._-]*(\/[A-Za-z0-9._][A-Za-z0-9._-]*)*$/.test(packageDir)) ||
+              (packageDir !== "." && packageDir.split("/").some((segment) => segment === "." || segment === "..")) ||
+              seen.has(packageDir)
+            ) {
+              throw new Error(`invalid or duplicate package directory: ${packageDir}`);
+            }
+            seen.add(packageDir);
+          }
+          NODE
       - name: Install dependencies
         run: npm ci
         env:
