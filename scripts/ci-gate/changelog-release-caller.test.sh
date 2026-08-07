@@ -105,8 +105,14 @@ def needs_of(job):
 if "verify" not in needs_of(snapshot):
     bad("`snapshot` does not declare `needs: verify`, so the irreversible "
         "snapshot can run before anything has verified the tree (#463, #464)")
-if "snapshot" not in needs_of(publish):
-    bad("`publish` does not declare `needs: snapshot`")
+if set(needs_of(publish)) != {"verify", "snapshot"}:
+    bad("`publish` must depend on both verify and snapshot for restart-safe publication")
+if "always()" not in str(publish.get("if") or ""):
+    bad("`publish` does not run after a deliberately skipped existing snapshot")
+if str(snapshot.get("if") or "") != "needs.verify.outputs.snapshot-exists != 'true'":
+    bad("`snapshot` does not skip a verified existing immutable snapshot")
+if (verify.get("outputs") or {}).get("snapshot-exists") != "${{ steps.release-state.outputs.snapshot-exists }}":
+    bad("`verify` does not expose the restart-safe snapshot state")
 
 uses = snapshot.get("uses", "")
 match = re.fullmatch(
@@ -319,7 +325,10 @@ expect_shape_rejection() {
 }
 
 drop_needs_verify() { sed -i '/^    needs: verify$/d' "$1"; }
-drop_needs_snapshot() { sed -i '/^    needs: snapshot$/d' "$1"; }
+drop_needs_snapshot() { sed -i 's/^    needs: \[verify, snapshot\]$/    needs: verify/' "$1"; }
+drop_snapshot_restart_condition() { sed -i "/^    if: needs.verify.outputs.snapshot-exists != 'true'$/d" "$1"; }
+drop_publish_restart_condition() { sed -i "/^    if: always() && needs.verify.result == 'success'/d" "$1"; }
+drop_snapshot_state_output() { sed -i '/^      snapshot-exists: .*steps.release-state.outputs.snapshot-exists/d' "$1"; }
 install_with_github_token() {
   # Only the install wiring, never the publish wiring: publishing with
   # GITHUB_TOKEN is correct and must stay accepted.
@@ -370,6 +379,9 @@ tautological_branch_guard() {
 
 expect_shape_rejection "snapshot without needs: verify (#463, #464)" drop_needs_verify
 expect_shape_rejection "publish without needs: snapshot" drop_needs_snapshot
+expect_shape_rejection "snapshot without restart condition (#588)" drop_snapshot_restart_condition
+expect_shape_rejection "publish skipped after a reused snapshot (#588)" drop_publish_restart_condition
+expect_shape_rejection "verify without snapshot state output (#588)" drop_snapshot_state_output
 expect_shape_rejection "npm ci installing with GITHUB_TOKEN (#465)" install_with_github_token
 expect_shape_rejection "snapshot without an explicit runner (#465)" drop_explicit_runner
 expect_shape_rejection "snapshot and publish on different pools (#465)" diverge_runner_pool
@@ -468,7 +480,7 @@ extract_run verify "default branch" >"$branch_guard" || fail "cannot extract the
 version_guard="$tmp/version-guard.sh"
 extract_run verify "SemVer version" >"$version_guard" || fail "cannot extract the version guard"
 tag_guard="$tmp/tag-guard.sh"
-extract_run verify "already been released" >"$tag_guard" || fail "cannot extract the tag guard"
+extract_run verify "restart-safe release state" >"$tag_guard" || fail "cannot extract the tag guard"
 suite_step="$tmp/suite.sh"
 extract_run verify "verification suite" >"$suite_step" || fail "cannot extract the suite step"
 
@@ -530,25 +542,38 @@ else
   pass "the version guard rejects a multi-line version"
 fi
 
+mkdir -p "$tmp/sandbox/CHANGELOG"
+printf 'immutable\n' >"$tmp/sandbox/CHANGELOG/v1.2.3.md"
 printf '%s\n' '#!/usr/bin/env bash' 'exit 0' >"$tmp/bin/git"
 chmod +x "$tmp/bin/git"
-if run_guard "$tag_guard" VERSION=v1.2.3 "PATH=$tmp/bin:$PATH"; then
-  fail "the tag guard admitted a version whose tag already exists"
+if run_guard "$tag_guard" VERSION=v1.2.3 GITHUB_OUTPUT="$tmp/release-state" "PATH=$tmp/bin:$PATH"; then
+  grep -q '^snapshot-exists=true$' "$tmp/release-state" \
+    && pass "the release-state guard resumes a matching existing snapshot" \
+    || fail "the release-state guard did not expose the existing snapshot"
 else
-  pass "the tag guard rejects a version whose tag already exists"
+  fail "the release-state guard rejected a matching existing snapshot: $(cat "$tmp/guard.out")"
 fi
-printf '%s\n' '#!/usr/bin/env bash' 'exit 2' >"$tmp/bin/git"
-if run_guard "$tag_guard" VERSION=v1.2.3 "PATH=$tmp/bin:$PATH"; then
-  pass "the tag guard admits an unused version"
+printf '%s\n' '#!/usr/bin/env bash' \
+  'if [ "$1" = diff ]; then exit 1; fi' \
+  'exit 0' >"$tmp/bin/git"
+if run_guard "$tag_guard" VERSION=v1.2.3 GITHUB_OUTPUT="$tmp/release-state" "PATH=$tmp/bin:$PATH"; then
+  fail "the release-state guard admitted a conflicting existing tag"
 else
-  fail "the tag guard rejected an unused version: $(cat "$tmp/guard.out")"
+  pass "the release-state guard rejects a conflicting existing tag"
+fi
+rm -rf "$tmp/sandbox/CHANGELOG"
+printf '%s\n' '#!/usr/bin/env bash' 'exit 2' >"$tmp/bin/git"
+if run_guard "$tag_guard" VERSION=v1.2.3 GITHUB_OUTPUT="$tmp/release-state" "PATH=$tmp/bin:$PATH"; then
+  pass "the release-state guard admits an unused version"
+else
+  fail "the release-state guard rejected an unused version: $(cat "$tmp/guard.out")"
 fi
 mkdir -p "$tmp/sandbox/CHANGELOG"
 printf 'immutable\n' >"$tmp/sandbox/CHANGELOG/v1.2.3.md"
-if run_guard "$tag_guard" VERSION=v1.2.3 "PATH=$tmp/bin:$PATH"; then
-  fail "the tag guard admitted a version whose released snapshot already exists"
+if run_guard "$tag_guard" VERSION=v1.2.3 GITHUB_OUTPUT="$tmp/release-state" "PATH=$tmp/bin:$PATH"; then
+  fail "the release-state guard admitted an untagged released snapshot"
 else
-  pass "the tag guard rejects a version whose released snapshot already exists"
+  pass "the release-state guard rejects an untagged released snapshot"
 fi
 rm -rf "$tmp/sandbox/CHANGELOG"
 
