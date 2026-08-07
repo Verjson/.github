@@ -315,6 +315,7 @@ release_setup_node='actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 
 emit_release_node() {
   local generation_command="release-node ${ref}"
   local package_dirs_json='["."]'
+  local package_dirs_shell=''
   [ "$release_scope" = "@verjson" ] \
     || generation_command="$generation_command --scope $release_scope"
   [ "$release_node_version" = "24" ] \
@@ -323,6 +324,8 @@ emit_release_node() {
     generation_command="$generation_command --package-dir $package_dir"
     package_dirs_json="${package_dirs_json%]},\"$package_dir\"]"
   done
+  printf -v package_dirs_shell '%q ' "${release_package_dirs[@]}"
+  package_dirs_shell="${package_dirs_shell% }"
   cat <<EOF
 name: Release
 
@@ -494,10 +497,14 @@ jobs:
           if [ -x scripts/release-prepare-packages.sh ]; then
             scripts/release-prepare-packages.sh "\${VERSION#v}"
           fi
-      - name: Stamp the dispatched package version
+      - name: Stamp the dispatched package versions
         env:
           VERSION: \${{ inputs.version }}
-        run: npm version "\${VERSION#v}" --no-git-tag-version --ignore-scripts --allow-same-version
+        run: |
+          package_dirs=(${package_dirs_shell})
+          for package_dir in "\${package_dirs[@]}"; do
+            npm version --prefix "\$package_dir" "\${VERSION#v}" --no-git-tag-version --ignore-scripts --allow-same-version
+          done
       - name: Run the release verification suite
         env:
           NODE_AUTH_TOKEN: \${{ secrets.NODE_AUTH_TOKEN }}
@@ -625,9 +632,12 @@ emit_contract_test() {
   # a quoted heredoc, so the body cannot accidentally expand a generator-side
   # variable into an adopter's test.
   local release_package_dirs_json='["."]'
+  local release_package_dirs_shell=''
   for package_dir in "${release_package_dirs[@]:1}"; do
     release_package_dirs_json="${release_package_dirs_json%]},\"$package_dir\"]"
   done
+  printf -v release_package_dirs_shell '%q ' "${release_package_dirs[@]}"
+  release_package_dirs_shell="${release_package_dirs_shell% }"
   cat <<EOF
 #!/usr/bin/env bash
 # Asserts that this repository still satisfies the canonical Verjson changelog
@@ -651,6 +661,7 @@ ADR_INDEX_SHA256="${adr_index_sha256}"
 EXPECTED_RELEASE_SCOPE="${release_scope}"
 EXPECTED_RELEASE_NODE_VERSION="${release_node_version}"
 EXPECTED_RELEASE_PACKAGE_DIRS_JSON='${release_package_dirs_json}'
+EXPECTED_RELEASE_PACKAGE_DIRS_SHELL='${release_package_dirs_shell}'
 EOF
   cat <<'EOF'
 
@@ -1063,6 +1074,8 @@ while IFS= read -r release_workflow; do
   }
   stamp_before "$verify_job" 'scripts/release-verify\.sh|npm run build|npm run typecheck|npm run lint|npm test' \
     || fail "$release_workflow does not stamp the dispatched package version before the verification build or suite (#519)"
+  printf '%s\n' "$verify_job" | grep -qF "package_dirs=($EXPECTED_RELEASE_PACKAGE_DIRS_SHELL)" \
+    || fail "$release_workflow does not stamp every package directory selected for publication (#557)"
   prepare_line="$(printf '%s\n' "$verify_job" | grep -n -m1 \
     'scripts/release-prepare-packages\.sh "${VERSION#v}"' | cut -d: -f1)"
   stamp_line="$(printf '%s\n' "$verify_job" | grep -n -m1 \
