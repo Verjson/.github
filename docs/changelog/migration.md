@@ -58,7 +58,7 @@
 
    **This pin is an immutable commit, not a published release.** `v2.2.0` is
    older and accepts only `date`, `issue`, `id`, and `title`; it rejects the
-   currently documented `refs` and `summary` keys. No later release tag exists
+   currently documented `refs`, `summary`, and `component` keys. No later release tag exists
    as of 2026-08-07. Use the exact `PIN` in the executable block below rather
    than substituting `v2.2.0`, and consult the capability table in
    `docs/changelog/README.md` before selecting any other immutable ref.
@@ -71,7 +71,7 @@
    <!-- executable-migration:start -->
    ```bash
    set -euo pipefail
-   PIN=bb5c34c708065e14c3fd663a4d87763f81d3aa93
+   PIN=20ce1c86880bbb2898aafb0df3b7693d643d8f64
    CONTRACT_SOURCE_URL="${CONTRACT_SOURCE_URL:-https://github.com/Verjson/.github.git}"
    PUBLISH_NODE="${PUBLISH_NODE:-false}"
    CONSUMER_ROOT="$(git rev-parse --show-toplevel)"
