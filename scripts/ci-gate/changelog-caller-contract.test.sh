@@ -65,6 +65,9 @@ printf '%s\n' "$generated_artifacts" \
   | grep -q "generated-artifacts.yml@$sha" \
   && pass "generated-artifacts caller pins the requested workflow commit" \
   || fail "generated-artifacts caller does not pin $sha"
+printf '%s\n' "$generated_artifacts" | grep -qE '^  generated-artifacts:$' \
+  && pass "generated-artifacts caller publishes the canonical required-check prefix" \
+  || fail "generated-artifacts caller does not publish generated-artifacts / validate"
 printf '%s\n' "$generated_artifacts" | grep -qE '^ +changelog: true$' \
   && printf '%s\n' "$generated_artifacts" | grep -qE "^ +contract_ref: $sha$" \
   && pass "generated-artifacts caller enables changelog validation at the pin" \
