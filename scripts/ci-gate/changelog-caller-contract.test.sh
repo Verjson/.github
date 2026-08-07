@@ -114,6 +114,25 @@ printf '%s\n' "$custom_release" | grep -q "node-version: '22.23.1'" \
   && printf '%s\n' "$custom_release" | grep -q "scope: '@acme'" \
   && pass "release-node emits validated adopter parameters" \
   || fail "release-node ignored custom scope or Node version"
+
+stamp_command="$(
+  printf '%s\n' "$default_release" \
+    | sed -n '/^      - name: Stamp the dispatched package version$/,/^      - name:/{s/^        run: //p;}'
+)"
+stamp_root="$(mktemp -d)"
+printf '{"name":"same-version-fixture","version":"0.1.0"}\n' >"$stamp_root/package.json"
+if (
+  cd "$stamp_root" &&
+  VERSION=v0.1.0 eval "$stamp_command" >/dev/null &&
+  VERSION=v0.2.0 eval "$stamp_command" >/dev/null &&
+  [ "$(node -p "require('./package.json').version")" = "0.2.0" ]
+); then
+  pass "generated version stamp accepts both first same-version and later changed-version releases (#579)"
+else
+  fail "generated version stamp rejects a valid same-version or changed-version release"
+fi
+rm -rf "$stamp_root"
+
 grep -q 'EXPECTED_RELEASE_NODE_VERSION="22.23.1"' <<<"$custom_contract" \
   && grep -q 'EXPECTED_RELEASE_SCOPE="@acme"' <<<"$custom_contract" \
   && grep -qF "EXPECTED_RELEASE_PACKAGE_DIRS_JSON='[\".\",\"compat\"]'" <<<"$custom_contract" \
@@ -666,7 +685,7 @@ text = open(path, encoding="utf-8").read()
 stamp = """      - name: Stamp the dispatched package version
         env:
           VERSION: ${{ inputs.version }}
-        run: npm version "${VERSION#v}" --no-git-tag-version --ignore-scripts
+        run: npm version "${VERSION#v}" --no-git-tag-version --ignore-scripts --allow-same-version
 """
 publish = text.index("  publish:")
 before, job = text[:publish], text[publish:]
@@ -691,6 +710,9 @@ PY
 }
 enable_stamp_lifecycle_scripts() {
   sed -i 's/ --ignore-scripts//g' "$1/.github/workflows/release.yml"
+}
+reject_same_version_stamp() {
+  sed -i 's/ --allow-same-version//g' "$1/.github/workflows/release.yml"
 }
 drop_verification_suite_token() {
   sed -i '/^      - name: Run the release verification suite$/,+2{/NODE_AUTH_TOKEN:/d;}' \
@@ -815,6 +837,7 @@ expect_rejection "an npm ci installing with GITHUB_TOKEN (#465)" install_with_gi
 expect_rejection "a verification job without package metadata preparation (#550)" drop_verify_prepare
 expect_rejection "a verification suite with no dispatched version stamp (#519)" drop_verify_stamp
 expect_rejection "version stamps that can run package lifecycle scripts (#519)" enable_stamp_lifecycle_scripts
+expect_rejection "a first release whose scaffold version already matches the dispatch (#579)" reject_same_version_stamp
 expect_rejection "a release verification suite without private-package auth (#569)" drop_verification_suite_token
 expect_rejection "an unrelated release step exposed to private-package auth (#569)" expose_private_token_to_unrelated_step
 expect_rejection "a release caller reachable by a push to main" add_push_trigger

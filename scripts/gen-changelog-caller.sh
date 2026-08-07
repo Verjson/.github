@@ -478,7 +478,7 @@ jobs:
       - name: Stamp the dispatched package version
         env:
           VERSION: \${{ inputs.version }}
-        run: npm version "\${VERSION#v}" --no-git-tag-version --ignore-scripts
+        run: npm version "\${VERSION#v}" --no-git-tag-version --ignore-scripts --allow-same-version
       - name: Run the release verification suite
         env:
           NODE_AUTH_TOKEN: \${{ secrets.NODE_AUTH_TOKEN }}
@@ -1036,7 +1036,7 @@ while IFS= read -r release_workflow; do
   stamp_before() {
     local job="$1" consumer_pattern="$2" stamp_line consumer_line
     stamp_line="$(printf '%s\n' "$job" | grep -n -m1 \
-      'npm version .*--no-git-tag-version --ignore-scripts' | cut -d: -f1)"
+      'npm version .*--no-git-tag-version --ignore-scripts --allow-same-version' | cut -d: -f1)"
     consumer_line="$(printf '%s\n' "$job" | grep -n -m1 -E "$consumer_pattern" | cut -d: -f1)"
     [ -n "$stamp_line" ] && [ -n "$consumer_line" ] && [ "$stamp_line" -lt "$consumer_line" ]
   }
@@ -1045,7 +1045,7 @@ while IFS= read -r release_workflow; do
   prepare_line="$(printf '%s\n' "$verify_job" | grep -n -m1 \
     'scripts/release-prepare-packages\.sh "${VERSION#v}"' | cut -d: -f1)"
   stamp_line="$(printf '%s\n' "$verify_job" | grep -n -m1 \
-    'npm version .*--no-git-tag-version --ignore-scripts' | cut -d: -f1)"
+    'npm version .*--no-git-tag-version --ignore-scripts --allow-same-version' | cut -d: -f1)"
   [ -n "$prepare_line" ] && [ -n "$stamp_line" ] && [ "$prepare_line" -lt "$stamp_line" ] \
     || fail "$release_workflow does not prepare package metadata before stamping and verifying the release tree (#550)"
   printf '%s\n' "$publish_job" \
