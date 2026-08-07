@@ -100,13 +100,79 @@ assert_scanner_covered "doc-fragment-names.sh scans tracked *.md" '*.md'
 assert_scanner_covered "doc-tag-pins.sh scans documentation" '*.md'
 assert_scanner_covered "doc-tag-pins.sh scans workflow definitions" '.github/workflows/*' '.github/actions/*'
 
+# doc-tag-pins.sh reads every tracked file, and the narrowing above leaves a real
+# gap (#360): a pin example in a tracked file that is neither markdown nor
+# workflow/action YAML — `.github/FUNDING.yml`, a release config — does not trigger
+# `actions-ci`, so the next unrelated PR receives the failure.
+#
+# Rather than requiring a trigger for literally every path (which would run this
+# suite on every PR — the cost #233/#234 exist for), assert the narrower thing that
+# actually matters: every tracked file that ALREADY CARRIES a pin-shaped `uses:`
+# line must be covered. That is the population `doc-tag-pins.sh` can fail on, so
+# covering it closes the gap without widening the trigger to everything.
+# The pattern is EXTRACTED from doc-tag-pins.sh, not restated here. Restating it
+# is how this assertion goes quietly wrong: my first version anchored on `uses:`
+# at line start, while the scanner matches a tag-shaped pin anywhere in any
+# tracked file — so a pin in a comment (or in prose) was invisible to the check
+# that exists to find exactly that. If the scanner's pattern changes, this fails
+# loudly rather than silently narrowing.
+pin_pattern="$(sed -nE "s/.*grep -oE '([^']+)'.*/\1/p" "$root/scripts/doc-tag-pins.sh" | head -n1)"
+if [ -z "$pin_pattern" ]; then
+  fail "could not extract the pin pattern from doc-tag-pins.sh; the coverage check below would be a guess"
+  pin_carriers=""
+else
+  pass "the pin pattern was read from doc-tag-pins.sh: $pin_pattern"
+  pin_carriers="$(git -C "$root" grep -lE "$pin_pattern" -- . 2>/dev/null || true)"
+fi
+if [ -z "$pin_carriers" ]; then
+  fail "found no tracked file carrying a tag-shaped pin, so the pin-coverage assertion proves nothing"
+else
+  pin_uncovered=0 pin_checked=0
+  while IFS= read -r file; do
+    [ -n "$file" ] || continue
+    pin_checked=$((pin_checked + 1))
+    if ! matches_any "$file"; then
+      printf '     uncovered pin carrier: %s\n' "$file" >&2
+      pin_uncovered=$((pin_uncovered + 1))
+    fi
+  done <<<"$pin_carriers"
+  [ "$pin_uncovered" -eq 0 ] \
+    && pass "doc-tag-pins.sh: all $pin_checked tracked file(s) carrying a pin are covered by a path trigger" \
+    || fail "doc-tag-pins.sh: $pin_uncovered of $pin_checked file(s) carrying a pin would not trigger their own PR (#360)"
+fi
+
 # The two trigger lists must stay identical: a push-only gap means `main` can go
 # red for a file whose PR never ran the check.
-pr_block="$(awk '/^  pull_request:/,/^  push:/' "$workflow" | grep -c "^      - ")"
-push_block="$(awk '/^  push:/,/^permissions:/' "$workflow" | grep -c "^      - ")"
-[ "$pr_block" -eq "$push_block" ] && [ "$pr_block" -gt 0 ] \
-  && pass "the pull_request and push triggers list the same number of paths" \
-  || fail "trigger lists diverge: pull_request has $pr_block, push has $push_block"
+#
+# Compared as SETS, not counts (#360). The previous form counted `^      - ` lines
+# in each block, so swapping one push path for a different path kept the count and
+# passed while the sets diverged — which is the exact divergence the comment above
+# says must not happen. The old label ("the same number of paths") was honest about
+# what it checked; it just was not the invariant.
+read_paths() { # read_paths <start-anchor> <end-anchor>
+  awk -v start="$1" -v end="$2" '
+    $0 ~ start { in_block = 1; next }
+    in_block && $0 ~ end { exit }
+    in_block && /^      - / {
+      line = $0
+      sub(/^      - /, "", line)
+      gsub(/^['"'"'"]|['"'"'"]$/, "", line)
+      print line
+    }
+  ' "$workflow" | sort
+}
+pr_paths="$(read_paths '^  pull_request:' '^  push:')"
+push_paths="$(read_paths '^  push:' '^permissions:')"
+pr_count="$(printf '%s\n' "$pr_paths" | grep -c .)"
+if [ "$pr_count" -eq 0 ]; then
+  fail "read no pull_request paths, so the trigger-parity assertion proves nothing"
+elif [ "$pr_paths" = "$push_paths" ]; then
+  pass "the pull_request and push triggers list the same $pr_count paths, as sets"
+else
+  printf '     only in pull_request:\n%s\n' "$(comm -23 <(printf '%s\n' "$pr_paths") <(printf '%s\n' "$push_paths") | sed 's/^/       /')" >&2
+  printf '     only in push:\n%s\n' "$(comm -13 <(printf '%s\n' "$pr_paths") <(printf '%s\n' "$push_paths") | sed 's/^/       /')" >&2
+  fail "trigger lists diverge as sets, not merely in count (#360)"
+fi
 
 if [ "$fails" -eq 0 ]; then
   echo "All tests passed."
