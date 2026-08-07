@@ -240,3 +240,16 @@ isolated fast lane (with a hosted fallback), receives only `ORG_ADMIN_TOKEN`, an
 repository settings, rulesets, or secret grants. Its failure is evidence for an
 administrator to repair configuration; it is not authorization to mutate organization
 policy automatically.
+
+## Amendment (2026-08-07, #327) — presence is not caller conformance
+
+The fleet audit above originally fetched only the caller's `.path`. Any file at the expected
+location passed, including the obsolete fat copy #327 targets and generated callers that
+still pin `runner_labels`. That let the audit report conformance while a repository bypassed
+the organization-controlled `VERJSON_LANE_PRIVILEGED` routing seam.
+
+The audit now generates the canonical caller from the checked-out event SHA and compares
+each default-branch caller byte-for-byte with that output. Missing, unreadable, undecodable,
+and non-canonical callers remain distinct failures, and remediation always names the
+generator rather than inviting a hand-authored repair. The audit is still read-only and
+does not grant secret access or modify consumer repositories.

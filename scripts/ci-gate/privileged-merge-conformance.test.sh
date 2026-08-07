@@ -4,6 +4,7 @@ set -uo pipefail
 
 root="$(cd "$(dirname "$0")/../.." && pwd)"
 audit="$root/scripts/privileged-merge-conformance.sh"
+generator="$root/scripts/gen-privileged-merge-caller.sh"
 workflow="$root/.github/workflows/privileged-merge-conformance.yml"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
@@ -24,21 +25,21 @@ case "$*" in
   "api --paginate orgs/Verjson/repos?type=all&per_page=100 --jq .[] | select((.archived or .fork or .is_template) | not) | .full_name")
     printf '%s\n' "${ACTIVE_REPOSITORIES:-Verjson/alpha}"
     ;;
-  api*"repos/Verjson/alpha/contents/.github/workflows/ai-privileged-merge.yml?ref=main"*"--jq .path")
+  api*"repos/Verjson/alpha/contents/.github/workflows/ai-privileged-merge.yml?ref=main"*"--jq .content")
     case "${ALPHA_CALLER:-present}" in
       present) ;;
       missing) echo "HTTP 404: Not Found" >&2; exit 1 ;;
       unreadable) echo "HTTP 500: unavailable" >&2; exit 1 ;;
     esac
-    printf '%s\n' .github/workflows/ai-privileged-merge.yml
+    printf '%s\n' "$ALPHA_CONTENT"
     ;;
-  api*"repos/Verjson/beta/contents/.github/workflows/ai-privileged-merge.yml?ref=trunk"*"--jq .path")
+  api*"repos/Verjson/beta/contents/.github/workflows/ai-privileged-merge.yml?ref=trunk"*"--jq .content")
     case "${BETA_CALLER:-present}" in
       present) ;;
       missing) echo "HTTP 404: Not Found" >&2; exit 1 ;;
       unreadable) echo "HTTP 500: unavailable" >&2; exit 1 ;;
     esac
-    printf '%s\n' .github/workflows/ai-privileged-merge.yml
+    printf '%s\n' "$BETA_CONTENT"
     ;;
   "api repos/Verjson/alpha --jq [.default_branch,.visibility] | @tsv")
     printf '%s\n' $'main\tpublic'
@@ -55,12 +56,16 @@ GH
 chmod +x "$tmp/bin/gh"
 
 run_audit() {
+  local canonical
+  canonical="$(bash "$generator" | base64 | tr -d '\n')"
   PATH="$tmp/bin:$PATH" GH_TOKEN="${GH_TOKEN-test-token}" \
     ACTIVE_REPOSITORIES="${ACTIVE_REPOSITORIES-Verjson/alpha}" \
     SECRET_VISIBILITY="${SECRET_VISIBILITY-selected}" \
     SECRET_REPOSITORIES="${SECRET_REPOSITORIES-Verjson/alpha}" \
     ALPHA_CALLER="${ALPHA_CALLER-present}" \
     BETA_CALLER="${BETA_CALLER-present}" \
+    ALPHA_CONTENT="${ALPHA_CONTENT-$canonical}" \
+    BETA_CONTENT="${BETA_CONTENT-$canonical}" \
     bash "$audit" >"$tmp/out" 2>&1
 }
 
@@ -89,6 +94,26 @@ ACTIVE_REPOSITORIES=$'Verjson/alpha\nVerjson/beta' \
       && ! grep -q 'gen-privileged-merge-caller.sh' "$tmp/out" \
       && pass "caller API failure is distinct from confirmed absence" \
       || fail "caller API failure was misreported as missing configuration"
+  }
+
+ACTIVE_REPOSITORIES=$'Verjson/alpha\nVerjson/beta' \
+  SECRET_REPOSITORIES=$'Verjson/alpha\nVerjson/beta' \
+  BETA_CONTENT="$(printf '%s\n' '# obsolete generated caller' | base64 | tr -d '\n')" run_audit \
+  && fail "non-canonical generated caller reported green" \
+  || {
+    grep -q 'Non-canonical privileged merge caller' "$tmp/out" \
+      && grep -q 'repository=Verjson/beta' "$tmp/out" \
+      && pass "caller content drift fails with repository-scoped regeneration evidence" \
+      || fail "caller content drift lacks actionable repository-scoped evidence"
+  }
+
+ALPHA_CONTENT='not-base64!' run_audit \
+  && fail "undecodable caller content reported green" \
+  || {
+    grep -q 'Unreadable privileged merge caller' "$tmp/out" \
+      && grep -q 'invalid base64 content' "$tmp/out" \
+      && pass "undecodable caller content fails closed as unreadable" \
+      || fail "undecodable caller content was misclassified: $(<"$tmp/out")"
   }
 
 ACTIVE_REPOSITORIES=$'Verjson/alpha\nVerjson/beta' \
