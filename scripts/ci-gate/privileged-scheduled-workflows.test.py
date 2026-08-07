@@ -37,7 +37,9 @@ def workflow_on(document: dict) -> object:
     return document[keys[0]]
 
 
-def validate_common(document: object, job_name: str) -> tuple[dict, list[dict]]:
+def validate_common(
+    document: object, job_name: str, expected_jobs: set[str] | None = None
+) -> tuple[dict, list[dict]]:
     require(isinstance(document, dict), "workflow root must be a mapping")
     root_keys = {"on" if key is True else key for key in document}
     require(
@@ -48,7 +50,7 @@ def validate_common(document: object, job_name: str) -> tuple[dict, list[dict]]:
     triggers = require_keys(workflow_on(document), {"schedule"}, "on")
     require(isinstance(triggers["schedule"], list), "schedule must be a sequence")
 
-    jobs = require_keys(document["jobs"], {job_name}, "jobs")
+    jobs = require_keys(document["jobs"], expected_jobs or {job_name}, "jobs")
     job = jobs[job_name]
     steps = job.get("steps") if isinstance(job, dict) else None
     require(isinstance(steps, list), f"jobs.{job_name}.steps must be a sequence")
@@ -67,7 +69,8 @@ def validate_checkout(step: dict, name: str) -> None:
 
 
 def validate_watchdog(document: object) -> None:
-    job, steps = validate_common(document, "watchdog")
+    expected_jobs = {"selector-health", "watchdog"}
+    job, steps = validate_common(document, "watchdog", expected_jobs)
     require_keys(document["permissions"], {"actions", "contents"}, "permissions")
     require(document["permissions"]["actions"] == "read", "watchdog requires actions: read for cadence history")
     require(document["permissions"]["contents"] == "read", "watchdog contents permission changed")
@@ -108,6 +111,44 @@ def validate_watchdog(document: object) -> None:
     require(
         cadence["run"] == "python3 scripts/fleet-watchdog-cadence.py",
         "watchdog cadence command must remain static",
+    )
+
+    selector_job = require_keys(
+        document["jobs"]["selector-health"],
+        {"runs-on", "timeout-minutes", "steps"},
+        "jobs.selector-health",
+    )
+    require(
+        selector_job["timeout-minutes"] == 10,
+        "selector health must have a budget independent from watchdog",
+    )
+    selector_steps = selector_job["steps"]
+    require(
+        isinstance(selector_steps, list) and len(selector_steps) == 2,
+        "selector health must have exactly two steps",
+    )
+    require(
+        selector_steps[0]["name"] == "Check out selector health",
+        "selector-health checkout step name changed",
+    )
+    validate_checkout(selector_steps[0], "selector-health checkout")
+    selector_health = require_keys(
+        selector_steps[1], {"name", "env", "run"}, "selector health report"
+    )
+    require(
+        selector_health["name"] == "Report unsatisfiable runner selectors",
+        "watchdog selector-health step name changed",
+    )
+    selector_env = require_keys(
+        selector_health["env"], {"GH_TOKEN", "ORG"}, "watchdog selector-health env"
+    )
+    require(
+        selector_env["GH_TOKEN"] == "${{ secrets.ORG_ADMIN_TOKEN }}",
+        "selector health token binding changed",
+    )
+    require(
+        selector_health["run"] == "bash scripts/runner-selector-health.sh",
+        "selector health must remain report-only",
     )
 
 

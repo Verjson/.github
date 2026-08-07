@@ -51,6 +51,28 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  selector-health:
+    # Independent from watchdog: a slow or failed org-wide inventory must never
+    # consume the deadlock cancellation job's established 10-minute budget.
+    runs-on: ${{ fromJSON(vars.VERJSON_RUNNER_FASTLANE || '["ubuntu-24.04"]') }}
+    timeout-minutes: 10
+    steps:
+      - name: Check out selector health
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Report unsatisfiable runner selectors
+        env:
+          # Read-only org Actions inventory: queued jobs, runners, runner groups,
+          # and selected-group repository admission. ORG_ADMIN_TOKEN already has
+          # broader Actions write scope for the independent watchdog job; this
+          # detector invokes only GET endpoints and never mutates org state.
+          GH_TOKEN: ${{ secrets.ORG_ADMIN_TOKEN }}
+          ORG: ${{ github.repository_owner }}
+        run: bash scripts/runner-selector-health.sh
+
   watchdog:
     # Never gate this job on the fleet it is policing.
     runs-on: ${{ fromJSON(vars.VERJSON_RUNNER_FASTLANE || '["ubuntu-24.04"]') }}

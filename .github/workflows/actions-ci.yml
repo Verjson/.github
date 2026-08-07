@@ -228,6 +228,8 @@ jobs:
         run: bash scripts/fleet-watchdog.test.sh
       - name: Fleet watchdog records scheduler gaps explicitly (#414)
         run: bash scripts/fleet-watchdog-cadence.test.sh
+      - name: Queued runner selectors have an admitted online match (#511)
+        run: bash scripts/runner-selector-health.test.sh
       - name: Required-check audit never calls an unaudited repository conformant (#416)
         run: bash scripts/required-checks-audit.test.sh
       - name: Gate coverage audit is dry-run first and ownership bounded (#474)
