@@ -282,14 +282,38 @@ oout() { awk -F= -v k="$1" '$1==k{v=substr($0,length(k)+2)} END{print v}' "$tmp/
 olog() { grep -qF "$1" "$tmp/outcome.log"; }
 
 exec_file "$tmp/e_budget.json" error_max_budget_usd
+exec_file "$tmp/e_turns.json" error_max_turns
 exec_file "$tmp/e_flake.json"  error_max_structured_output_retries
+exec_file "$tmp/e_other_error.json" error_during_execution
+printf '%s\n' '[{"type":"result","subtype":"success","is_error":false}]' >"$tmp/e_success.json"
 printf 'not json at all' >"$tmp/e_bad.json"
+
+# 9c. #441: terminal SDK subtypes make the selected pass's structured output
+# unusable. This is subtype-based, not a heuristic over verdict prose, and
+# applies to budget, turns, structured-output exhaustion, and other error_*
+# terminal results. A success subtype remains usable.
+for f in "$tmp/e_budget.json" "$tmp/e_turns.json" "$tmp/e_flake.json" "$tmp/e_other_error.json"; do
+  rc=$(run_outcome "$f" "" "" true false false)
+  { [ "$rc" = "rc=0" ] && [ "$(oout selected_pass_terminal_error)" = "true" ]; } ||
+    fail "terminal subtype in '$f' must invalidate its selected verdict ($rc terminal=$(oout selected_pass_terminal_error))"
+done
+pass "terminal error subtypes invalidate schema-valid output without content heuristics"
+
+rc=$(run_outcome "$tmp/e_budget.json" "" "" true false false)
+{ [ "$rc" = "rc=0" ] && ! olog 'budget_exhausted=true outcome=recovered' && olog 'selected review pass ended in a terminal error' && ! olog 'every review pass hit its cost cap'; } &&
+  pass "terminal-error filler is not misreported as a recovered verdict" ||
+  fail "terminal-error filler was called recovered: $(cat "$tmp/outcome.log")"
+
+rc=$(run_outcome "$tmp/e_success.json" "" "" true false false)
+{ [ "$rc" = "rc=0" ] && [ "$(oout selected_pass_terminal_error)" = "false" ]; } &&
+  pass "success subtype preserves the selected verdict" ||
+  fail "success subtype incorrectly invalidated its verdict ($rc terminal=$(oout selected_pass_terminal_error))"
 
 # 10. The #163 shape: cheap pass exhausted its budget, escalation recovered.
 #     Detected as exhaustion, and the log must say it was RECOVERED so the red
 #     `error_max_budget_usd` annotation is not read as the failure cause.
 rc=$(run_outcome "$tmp/e_budget.json" "" "" false true false)
-{ [ "$rc" = "rc=0" ] && [ "$(oout budget_exhausted)" = "true" ] && olog 'budget_exhausted=true' && olog 'recovered'; } &&
+{ [ "$rc" = "rc=0" ] && [ "$(oout budget_exhausted)" = "true" ] && [ "$(oout selected_pass_terminal_error)" = "false" ] && olog 'budget_exhausted=true' && olog 'recovered'; } &&
   pass "recovered budget exhaustion is detected and explained as recovered" ||
   fail "recovered exhaustion not detected/explained ($rc exhausted=$(oout budget_exhausted)): $(cat "$tmp/outcome.log")"
 

@@ -137,3 +137,25 @@ not a regression of this decision. The submit step runs under `set -u` and embed
 behaviour was correct — and correct in the fail-closed direction, since an absent
 run id aborts rather than approves, which is now pinned as its own case.
 
+## Amendment (2026-08-07, #441) — terminal-error filler is not a verdict
+
+The action can emit schema-valid `structured_output` even when the SDK result
+ends in a terminal `error_*` subtype. On `Verjson/verjson-temporal-kit#95`, an
+`error_max_turns` pass filled the required schema with terse placeholder
+strings; the gate accepted `.blocking: true` and published fabricated findings
+as a real `CHANGES_REQUESTED` review.
+
+The SDK result subtype is now part of verdict validity. The gate records whether
+the pass selected by the existing latest-non-empty precedence ended in any
+terminal `error_*` subtype. If it did, the structured output is treated as
+absent and enters the same fail-closed no-verdict branch: label inconclusive,
+explain that automated review did not complete, and require a human. A pass
+whose result subtype is `success` remains usable regardless of how terse its
+content is; there is deliberately no summary-length or finding-quality
+heuristic.
+
+This preserves recovery semantics. An earlier terminal pass followed by a
+successful later verdict is recovered, while schema-shaped filler from the
+terminal pass itself is not described as recovery. Extraction tests cover
+budget, turn, structured-output, and other terminal error subtypes, the success
+control, the selected-pass precedence, and the no-verdict submit path.
