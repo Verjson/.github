@@ -130,10 +130,8 @@ grep -qF 'vars.VERJSON_RUNNER_FASTLANE || vars.VERJSON_LANE_TRUSTED' "$workflows
 # relabel is an org-variable flip rather than a pull request per workflow, which
 # is what ADR 0041 requires.
 #
-# node-cache-integration.yml is pinned separately below: it validates a cache on
-# persistent runners, so moving it to the public fast lane would delete the
-# property under test (#346). runner-admission-reconcile.yml is also absent: it
-# must observe the general pool from outside that pool (#401, ADR 0054).
+# runner-admission-reconcile.yml is absent because it must observe the general
+# pool from outside that pool (#401, ADR 0054).
 for local_workflow in \
   rework-reconcile.yml \
   tag-major.yml; do
@@ -148,18 +146,6 @@ for local_workflow in \
     pass "$local_workflow selects the trusted lane by name"
   fi
 done
-
-cache_probe="$workflows/node-cache-integration.yml"
-cache_selector="runs-on: \${{ fromJSON(vars.VERJSON_LANE_TRUSTED || vars.VERJSON_LANE_FALLBACK || '[\"ubuntu-24.04\"]') }}"
-cache_job_count="$(grep -c '^  npm-cache-\(seed\|restore\):' "$cache_probe")"
-cache_selector_count="$(grep -cF "$cache_selector" "$cache_probe")"
-if [ "$cache_job_count" -eq 2 ] &&
-  [ "$cache_selector_count" -eq "$cache_job_count" ] &&
-  ! grep -qF 'VERJSON_RUNNER_FASTLANE' "$cache_probe"; then
-  pass "both persistent-cache jobs stay on the trusted self-hosted lane (#346)"
-else
-  fail "persistent-cache runner exemption drifted (jobs=$cache_job_count trusted-selectors=$cache_selector_count)"
-fi
 
 # Inverted AND pinned to the whole line. "No line says [self-hosted, general]"
 # would stay green if a second job were appended on any other literal; a prefix

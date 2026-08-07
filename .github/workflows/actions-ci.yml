@@ -13,7 +13,6 @@ on:
       # doc-tag-pins.test.sh checks every tracked file, so the trigger spans every
       # surface that carries a pin example — not an enumeration of workflows (#287).
       - '.github/workflows/**'
-      - '.github/release-tooling/**'
       - 'Makefile'
       - 'renovate.json'
       - 'scripts/**'
@@ -37,7 +36,6 @@ on:
       # doc-tag-pins.test.sh checks every tracked file, so the trigger spans every
       # surface that carries a pin example — not an enumeration of workflows (#287).
       - '.github/workflows/**'
-      - '.github/release-tooling/**'
       - 'Makefile'
       - 'renovate.json'
       - 'scripts/**'
@@ -108,16 +106,10 @@ jobs:
         run: bash scripts/ci-gate/node-ci-db-service.test.sh
       - name: ci-eligibility — defer CI while renovate/stability-days is pending, fail open (#133)
         run: bash scripts/ci-gate/ci-eligibility.test.sh
-      - name: reusable Node workflows — set up Node for release-tooling audit (#89)
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
-        with:
-          node-version: '24'
       - name: reusable Node release — publication consumes the contract version (#455)
         run: bash scripts/node-release-publish.test.sh
-      - name: release-tooling audit — allowlist expiry and fail-closed parsing (#146)
-        run: bash scripts/release-tooling-audit.test.sh
-      - name: reusable Node workflows — release lock has no high-risk advisories (#89, #146)
-        run: bash scripts/release-tooling-audit.sh
+      - name: retired semantic-release tooling stays deleted (#509)
+        run: bash scripts/retired-release-tooling.test.sh
       - name: setup-verjson-node — configure-git idempotency + secret hygiene
         run: bash .github/actions/setup-verjson-node/configure-git.test.sh
       - name: merge gate — freshness fail-open/fail-closed behavior
