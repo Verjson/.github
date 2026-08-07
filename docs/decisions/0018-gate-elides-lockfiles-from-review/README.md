@@ -97,3 +97,26 @@ snapshots, and follow-up filing all behave as before.
 ```
 
 See [PR #110](https://github.com/Verjson/.github/issues/110) for the full change.
+
+## Amendment (2026-08-07, #394) — unavailable diff input is not a verdict
+
+The bounded review context still depended on one unguarded `gh pr diff` call.
+An ordinary GitHub 503 after product CI had finished failed the gate before the
+model ran, producing the same red check shape as a substantive rejection.
+
+The diff fetch now retries locally, without a generic API wrapper: four total
+attempts with exponential 1/2/4-second backoff. Only explicit GitHub 5xx
+responses and transport failures are retried. Any 4xx — including permission,
+missing-resource, and rate-limit responses — fails immediately, avoiding both a
+slow structural failure and extra API load.
+
+Exhaustion remains fail-closed but is typed
+`review_input_failure=infrastructure_unavailable` and logged as
+`phase=review-input result=unavailable`, explicitly distinguishing unavailable
+input from a model verdict. Client errors are separately typed
+`client_error`. Raw CLI stderr is captured and truncated rather than echoed, so
+server response bodies and credentials cannot leak through retry diagnostics.
+
+This refines only the full-diff input boundary governed by this ADR. It does not
+soften schema validation, review verdicts, stale-review cleanup (#452), or the
+dispatched-merge postcondition (#384).
