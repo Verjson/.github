@@ -1462,14 +1462,25 @@ jobs:
           # `always()` bookkeeping and must never fail the gate, and a false
           # positive would tell a maintainer to split a PR that is not oversized.
           budget_exhausted=false
+          turns_exhausted=false
           for f in "${EXEC_FILE_1:-}" "${EXEC_FILE_2:-}" "${EXEC_FILE_3:-}"; do
             if [ -z "$f" ] || [ ! -f "$f" ]; then
               continue
             fi
             subtype=$(jq -r '(if type == "array" then (map(select(.type == "result")) | last) else . end).subtype // ""' "$f" 2>/dev/null || echo "")
-            [ "$subtype" = "error_max_budget_usd" ] && budget_exhausted=true
+            # Turn exhaustion is a DIFFERENT limit with a different remedy, and it
+            # was invisible here (#442): only the budget subtype was matched, so a
+            # run that died on the 15-turn cap surfaced as an unexplained gate
+            # failure — the same illegible shape #293 fixed for the budget. Raising
+            # the budget does nothing for it; the review ran out of exploration
+            # steps, not money.
+            case "$subtype" in
+              error_max_budget_usd) budget_exhausted=true ;;
+              error_max_turns)      turns_exhausted=true ;;
+            esac
           done
           echo "budget_exhausted=$budget_exhausted" >> "$GITHUB_OUTPUT"
+          echo "turns_exhausted=$turns_exhausted" >> "$GITHUB_OUTPUT"
           # Say in words what the red `error_max_budget_usd` annotation means in
           # this run. The action emits it at failure level even when a later
           # pass succeeds, which is exactly what made verjson-cli-cloud#163 read
@@ -1481,7 +1492,20 @@ jobs:
               echo "::error::phase=model budget_exhausted=true outcome=blocked — every review pass hit its cost cap. This PR is larger than the review budget; the gate blocks it and requests human review."
             fi
           fi
-          echo "::notice::phase=model elapsed_seconds=$elapsed first_verdict=$FIRST_VERDICT retry1_conclusion=$RETRY1_CONCLUSION retry1_verdict=$RETRY1_VERDICT retry2_conclusion=$RETRY2_CONCLUSION retry2_verdict=$RETRY2_VERDICT budget_exhausted=$budget_exhausted"
+          # Same treatment for the turn cap (#442). Stated separately rather than
+          # folded into the budget wording, because the remedies diverge: a budget
+          # failure says "this PR is larger than the review budget", while a turn
+          # failure says the review ran out of exploration steps at the same size.
+          # Telling a maintainer to split a PR that is not oversized is the false
+          # positive the budget probe already takes care to avoid.
+          if [ "$turns_exhausted" = true ]; then
+            if [ "$FIRST_VERDICT" = true ] || [ "$RETRY1_VERDICT" = true ] || [ "$RETRY2_VERDICT" = true ]; then
+              echo "::notice::phase=model turns_exhausted=true outcome=recovered — a review pass hit its turn cap (the red error_max_turns annotation above is expected); a later pass produced the verdict and this run is NOT blocked by it."
+            else
+              echo "::error::phase=model turns_exhausted=true outcome=blocked — every review pass hit its turn cap. The review ran out of exploration steps rather than budget, so raising the budget will not help; the gate blocks this PR and requests human review."
+            fi
+          fi
+          echo "::notice::phase=model elapsed_seconds=$elapsed first_verdict=$FIRST_VERDICT retry1_conclusion=$RETRY1_CONCLUSION retry1_verdict=$RETRY1_VERDICT retry2_conclusion=$RETRY2_CONCLUSION retry2_verdict=$RETRY2_VERDICT budget_exhausted=$budget_exhausted turns_exhausted=$turns_exhausted"
 
       - name: Submit deterministic PR review
         id: submit

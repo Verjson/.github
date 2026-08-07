@@ -293,6 +293,38 @@ rc=$(run_outcome "$tmp/e_budget.json" "" "" false true false)
   pass "recovered budget exhaustion is detected and explained as recovered" ||
   fail "recovered exhaustion not detected/explained ($rc exhausted=$(oout budget_exhausted)): $(cat "$tmp/outcome.log")"
 
+# 10b. #442: turn exhaustion is a DIFFERENT limit and was invisible to this probe,
+#      which matched only the budget subtype. A run that died on the 15-turn cap
+#      surfaced as an unexplained gate failure — the illegible shape #293 fixed for
+#      the budget. Both polarities, and the two limits must not be conflated: the
+#      remedies diverge, and telling a maintainer to split a PR that is not
+#      oversized is the false positive the budget probe already avoids.
+exec_file "$tmp/e_turns.json" error_max_turns
+
+rc=$(run_outcome "$tmp/e_turns.json" "" "" false true false)
+{ [ "$rc" = "rc=0" ] && [ "$(oout turns_exhausted)" = "true" ] && olog 'turns_exhausted=true' && olog 'recovered'; } &&
+  pass "#442: recovered turn exhaustion is detected and explained as recovered" ||
+  fail "#442: recovered turn exhaustion not detected/explained ($rc turns=$(oout turns_exhausted)): $(cat "$tmp/outcome.log")"
+
+rc=$(run_outcome "$tmp/e_turns.json" "$tmp/e_turns.json" "$tmp/e_turns.json" false false false)
+{ [ "$rc" = "rc=0" ] && [ "$(oout turns_exhausted)" = "true" ] && ! olog 'turns_exhausted=true outcome=recovered'; } &&
+  pass "#442: unrecovered turn exhaustion is detected and not called recovered" ||
+  fail "#442: unrecovered turn exhaustion mishandled ($rc turns=$(oout turns_exhausted)): $(cat "$tmp/outcome.log")"
+
+# The two limits stay distinct. A turn failure must not set budget_exhausted —
+# otherwise the run advises splitting a PR whose size was never the problem, and
+# raising the budget (the budget message's implied remedy) does nothing for it.
+rc=$(run_outcome "$tmp/e_turns.json" "" "" false true false)
+{ [ "$(oout budget_exhausted)" = "false" ] && ! olog 'budget_exhausted=true outcome'; } &&
+  pass "#442: turn exhaustion is not reported as budget exhaustion" ||
+  fail "#442: turn exhaustion was conflated with the budget limit: $(cat "$tmp/outcome.log")"
+
+# And the converse, so the new case cannot be satisfied by setting both flags.
+rc=$(run_outcome "$tmp/e_budget.json" "" "" false true false)
+{ [ "$(oout budget_exhausted)" = "true" ] && [ "$(oout turns_exhausted)" = "false" ]; } &&
+  pass "#442: budget exhaustion is not reported as turn exhaustion" ||
+  fail "#442: budget exhaustion set turns_exhausted (budget=$(oout budget_exhausted) turns=$(oout turns_exhausted))"
+
 # 11. Every pass exhausted and none recovered -> exhausted, and NOT reported as
 #     recovered (that flag is what the submit step turns into its comment).
 rc=$(run_outcome "$tmp/e_budget.json" "$tmp/e_budget.json" "$tmp/e_budget.json" false false false)
