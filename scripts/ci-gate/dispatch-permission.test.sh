@@ -34,6 +34,11 @@ grep -q '^      actions: read$' <<<"$gate" \
   && grep -q '^      contents: read$' <<<"$dispatch" \
   && pass "only dispatch job has minimum contents/read + actions/write" \
   || fail "dispatch permissions are duplicated or over-broad"
+grep -qF 'runs-on: ${{ inputs.runner_labels && fromJSON(inputs.runner_labels) ||' <<<"$dispatch" \
+  && grep -qF 'GH_TOKEN: ${{ github.token }}' <<<"$dispatch" \
+  && ! grep -q 'secrets\.' <<<"$dispatch" \
+  && pass "caller-selected dispatch runner receives only the scoped workflow token" \
+  || fail "dispatch routing or token binding exposes authority beyond the caller-selected runner"
 if grep -qE 'uses:|actions/(checkout|cache|upload-artifact|download-artifact)|\beval\b|^[[:space:]]*(source|\.)[[:space:]]|github\.event\.pull_request\.(title|body)' <<<"$dispatch"; then
   fail "dispatch job can consume/execute PR-controlled content"
 else

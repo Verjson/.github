@@ -109,7 +109,7 @@ on:
         required: false
         type: string
       runner_labels:
-        description: 'Optional JSON array of runs-on labels, e.g. ["self-hosted","general"], for a self-hosted caller whose org has no VERJSON_LANE_* variables. Omit it (the default) to route by lane and degrade to a hosted runner.'
+        description: 'Optional JSON array of runs-on labels for all three gate jobs, e.g. ["self-hosted","general"], for a self-hosted caller whose org has no VERJSON_LANE_* variables. Omit it (the default) to route by lane and degrade to a hosted runner.'
         required: false
         type: string
       allow_absent_checks:
@@ -2054,11 +2054,15 @@ jobs:
   dispatch-merge:
     needs: [preflight, gate]
     if: needs.gate.result == 'success'
+    # A workflow_call consumer's explicit fleet selection has the same first
+    # precedence here as on preflight and gate (#411, ADR 0068). The job holds
+    # only the scoped github.token; ORG_ADMIN_TOKEN remains isolated in the
+    # fixed privileged continuation.
     # Fast lane for PUBLIC targets (ADR 0048). This job makes exactly one API
     # call, yet on the shared pool it queued a third runner slot behind every
     # newer PR's preflight — so work that had already paid for a model review was
     # the last thing to finish.
-    runs-on: ${{ github.repository_owner != 'Verjson' && 'ubuntu-24.04' || needs.preflight.outputs.target_private == 'false' && fromJSON(vars.VERJSON_RUNNER_FASTLANE || '["ubuntu-24.04"]') || fromJSON(vars.VERJSON_RUNNER_OVERFLOW || vars.VERJSON_LANE_PRIVILEGED || vars.VERJSON_LANE_FALLBACK || '["ubuntu-24.04"]') }}
+    runs-on: ${{ inputs.runner_labels && fromJSON(inputs.runner_labels) || github.repository_owner != 'Verjson' && 'ubuntu-24.04' || needs.preflight.outputs.target_private == 'false' && fromJSON(vars.VERJSON_RUNNER_FASTLANE || '["ubuntu-24.04"]') || fromJSON(vars.VERJSON_RUNNER_OVERFLOW || vars.VERJSON_LANE_PRIVILEGED || vars.VERJSON_LANE_FALLBACK || '["ubuntu-24.04"]') }}
     timeout-minutes: 5
     permissions:
       contents: read

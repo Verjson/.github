@@ -75,12 +75,12 @@ awk '
   || fail "runner_labels is required — every consumer must then name a fleet label the org cannot relabel (#405)"
 
 # (e) Every gate job's runs-on prefers inputs.runner_labels before the org
-# fallback — so a consumer's fleet actually takes effect. Both jobs
-# (preflight, gate) share the identical expression; require at least two.
+# fallback — so a consumer's fleet actually takes effect. All three jobs
+# (preflight, gate, dispatch-merge) must carry the same first term.
 runs_on_parameterized="$(grep -cE "runs-on: \\\$\{\{ inputs\.runner_labels && fromJSON\(inputs\.runner_labels\) \|\|" "$wf")"
-[ "${runs_on_parameterized:-0}" -ge 2 ] \
-  && pass "both gate jobs' runs-on prefer inputs.runner_labels then fall back to the org pool" \
-  || fail "runs-on is not runner_labels-parameterized on both jobs (got ${runs_on_parameterized:-0}/2)"
+[ "${runs_on_parameterized:-0}" -eq 3 ] \
+  && pass "all three gate jobs prefer inputs.runner_labels then fall back to the org pool" \
+  || fail "runs-on is not runner_labels-parameterized on all three jobs (got ${runs_on_parameterized:-0}/3)"
 
 # (f) Verjson gate jobs expose independent default/untrusted variables while
 # both keep the compatible general fallback during the permissive exception.
