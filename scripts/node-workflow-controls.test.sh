@@ -111,7 +111,7 @@ done
   || fail "node-release does not apply the caller bound to its job"
 
 { grep -qF 'submodules: recursive' "$ci" \
-  && grep -qF 'if: inputs.schema-dir != ' "$ci" \
+  && grep -qF "inputs.schema-dir != ''" "$ci" \
   && grep -qF 'working-directory: ${{ inputs.schema-dir }}' "$ci" \
   && [ "$(grep -cF 'NODE_AUTH_TOKEN: ${{ secrets.NODE_AUTH_TOKEN }}' "$ci")" -ge 2 ]; } \
   && pass "node-ci preserves schema checkout/install and private-package auth" \

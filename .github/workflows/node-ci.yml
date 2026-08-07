@@ -158,8 +158,9 @@ jobs:
   # Defer CI while a Renovate PR is held by its release-age gate: running the
   # suite now is pure waste — the PR cannot merge until `renovate/stability-days`
   # clears, and Renovate then rebases onto a drifted `main`, re-running
-  # everything. This tiny job resolves eligibility once; build-test skips when
-  # it says defer, staying BLOCKED until the rebase re-fires CI (Verjson/.github#133).
+  # everything. This tiny job resolves eligibility once; build-test reports a
+  # successful no-op when it says defer, staying BLOCKED on Renovate's own
+  # stability status until the rebase re-fires CI (Verjson/.github#133, #191).
   eligibility:
     # Runner routing is policy, not preference — see ADR 0033. In tier order:
     # an explicit `runner` input wins; a caller outside Verjson gets hosted
@@ -212,12 +213,11 @@ jobs:
 
   build-test:
     needs: eligibility
-    # Fail OPEN at the job level too: only an ACTIVE defer (should-run == 'false')
-    # skips the suite. If the eligibility job itself errors (can't resolve the
-    # action, runner blip), its output is empty and `always()` still runs CI, so
-    # the guard can only ever withhold CI on a genuinely-held PR — never wedge a
-    # normal one behind a new single point of failure.
-    if: always() && needs.eligibility.outputs.should-run != 'false'
+    # Always report this job because consumers require `ci / build-test`.
+    # Skipping the JOB left that required context unsatisfied on held Renovate
+    # PRs (#191). Only the execution steps skip on an explicit defer; an errored
+    # eligibility job has an empty output and therefore still runs the suite.
+    if: always()
     # Runner routing is policy, not preference — see ADR 0033. In tier order:
     # an explicit `runner` input wins; a caller outside Verjson gets hosted
     # (portable, their billing); a Verjson PRIVATE repo gets the general
@@ -232,14 +232,19 @@ jobs:
       contents: read
       packages: read
     steps:
+      - name: Report deferred CI
+        if: needs.eligibility.outputs.should-run == 'false'
+        run: echo "::notice::CI is deferred until renovate/stability-days clears and Renovate rebases."
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        if: needs.eligibility.outputs.should-run != 'false'
         with:
           submodules: recursive
           token: ${{ secrets.submodules-token || github.token }}
       - name: Prepare job-scoped npm cache
-        if: inputs.cache
+        if: needs.eligibility.outputs.should-run != 'false' && inputs.cache
         run: echo "npm_config_cache=$RUNNER_TEMP/verjson-npm-cache" >> "$GITHUB_ENV"
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        if: needs.eligibility.outputs.should-run != 'false'
         with:
           node-version: ${{ inputs.node-version }}
           # setup-node caches npm's download cache, never node_modules or build
@@ -262,7 +267,7 @@ jobs:
         # step with the literal placeholder `${DB_PORT}` replaced by the host
         # port the container actually got.
         id: db-service
-        if: inputs.db-image != ''
+        if: needs.eligibility.outputs.should-run != 'false' && inputs.db-image != ''
         env:
           DB_IMAGE: ${{ inputs.db-image }}
           DB_ENV: ${{ inputs.db-env }}
@@ -523,7 +528,7 @@ jobs:
         # created, so a job can never remove a concurrent job's live container
         # (#116). An empty output means no container was started, so there is
         # nothing to remove.
-        if: always() && inputs.db-image != ''
+        if: always() && needs.eligibility.outputs.should-run != 'false' && inputs.db-image != ''
         env:
           CONTAINER_ID: ${{ steps.db-service.outputs.container-id }}
         run: |
@@ -542,20 +547,25 @@ jobs:
             esac
           fi
       - name: Install schema submodule deps
-        if: inputs.schema-dir != ''
+        if: needs.eligibility.outputs.should-run != 'false' && inputs.schema-dir != ''
         working-directory: ${{ inputs.schema-dir }}
         run: npm ci
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NODE_AUTH_TOKEN }}
       - run: npm ci
+        if: needs.eligibility.outputs.should-run != 'false'
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NODE_AUTH_TOKEN }}
       - run: npm run build
+        if: needs.eligibility.outputs.should-run != 'false'
       - run: npm run typecheck --if-present
+        if: needs.eligibility.outputs.should-run != 'false'
       - run: npm test
+        if: needs.eligibility.outputs.should-run != 'false'
       - run: npm run lint --if-present
+        if: needs.eligibility.outputs.should-run != 'false'
       - name: Bound npm cache upload
-        if: always() && inputs.cache
+        if: always() && needs.eligibility.outputs.should-run != 'false' && inputs.cache
         env:
           CACHE_MAX_MB: ${{ inputs.cache-max-mb }}
         run: |
