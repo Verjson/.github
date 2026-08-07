@@ -74,6 +74,11 @@
    scripts/gen-changelog-caller.sh release-node "$PIN" > .github/workflows/release.yml
    ```
 
+   The command defaults to `@verjson` and Node 24. For another supported
+   scaffold, pass identical `--scope` and `--node-version` options to both
+   `release-node` and `contract-test`; the latter enforces that the two release
+   jobs still carry those values.
+
    `release-node` exists only from the commit that closed #463/#464/#465 and is
    included in the pin above. An older pin has no such mode and the command fails loudly
    rather than emitting an empty file, so a repository still on an older pin must

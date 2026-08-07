@@ -27,6 +27,9 @@ fail() { printf 'FAIL - %s\n' "$1"; fails=$((fails + 1)); }
 
 workflow="$(bash "$gen" workflow "$sha")"
 renderer="$(bash "$gen" renderer "$sha")"
+default_release="$(bash "$gen" release-node "$sha")"
+custom_release="$(bash "$gen" release-node "$sha" --scope @acme --node-version 22.23.1)"
+custom_contract="$(bash "$gen" contract-test "$sha" --scope @acme --node-version 22.23.1)"
 generated_artifacts="$(bash "$gen" generated-artifacts "$sha")"
 generated_artifacts_with_adr="$(bash "$gen" generated-artifacts-with-adr-index "$sha")"
 adr_index_generator="$(bash "$gen" adr-index-generator "$sha")"
@@ -102,6 +105,40 @@ done
 # 6. An unknown mode fails rather than emitting an empty file.
 bash "$gen" bogus "$sha" >/dev/null 2>&1 \
   && fail "generator accepted an unknown mode" || pass "generator rejects an unknown mode"
+
+printf '%s\n' "$default_release" | grep -q "node-version: '24'" \
+  && printf '%s\n' "$default_release" | grep -q "scope: '@verjson'" \
+  && pass "release-node keeps the Verjson and Node 24 defaults" \
+  || fail "release-node changed its backward-compatible defaults"
+printf '%s\n' "$custom_release" | grep -q "node-version: '22.23.1'" \
+  && printf '%s\n' "$custom_release" | grep -q "scope: '@acme'" \
+  && pass "release-node emits validated adopter parameters" \
+  || fail "release-node ignored custom scope or Node version"
+grep -q 'EXPECTED_RELEASE_NODE_VERSION="22.23.1"' <<<"$custom_contract" \
+  && grep -q 'EXPECTED_RELEASE_SCOPE="@acme"' <<<"$custom_contract" \
+  && pass "contract-test carries the same release parameters" \
+  || fail "contract-test does not bind the selected release parameters"
+
+for bad_args in \
+  "--scope Acme" \
+  "--scope @Acme" \
+  "--scope @acme/other" \
+  "--scope @acme --scope @other" \
+  "--node-version lts/*" \
+  "--node-version 022" \
+  "--node-version 22.0.0.1" \
+  "--node-version 24 --node-version 22"; do
+  # Intentional word splitting: each fixture is a complete argument sequence.
+  # shellcheck disable=SC2086
+  if bash "$gen" release-node "$sha" $bad_args >/dev/null 2>&1; then
+    fail "release-node accepted invalid or duplicate parameters: $bad_args"
+  else
+    pass "release-node rejects invalid or duplicate parameters: $bad_args"
+  fi
+done
+bash "$gen" workflow "$sha" --scope @acme >/dev/null 2>&1 \
+  && fail "workflow mode accepted release-only parameters" \
+  || pass "non-release generator modes reject release-only parameters"
 
 # 7. The emitted renderer fails closed when the contract cannot be fetched, and
 # leaves no partial file behind for the next run to exec as if it were the
@@ -295,6 +332,20 @@ build_adopter "$adopter"
 run_adopter "$adopter" \
   && pass "emitted suite passes against an unreleased adopter" \
   || fail "emitted suite failed before any release: $(tail -2 "$tmproot/run.out")"
+
+custom_adopter="$tmproot/adopter-custom-release"
+build_adopter "$custom_adopter"
+printf '%s\n' "$custom_release" >"$custom_adopter/.github/workflows/release.yml"
+printf '%s\n' "$custom_contract" >"$custom_adopter/scripts/changelog-contract.test.sh"
+chmod +x "$custom_adopter/scripts/changelog-contract.test.sh"
+run_adopter "$custom_adopter" \
+  && pass "custom release caller and contract test accept the same parameters (#520)" \
+  || fail "matching custom release parameters were rejected: $(tail -2 "$tmproot/run.out")"
+sed -i "s/scope: '@acme'/scope: '@other'/" \
+  "$custom_adopter/.github/workflows/release.yml"
+run_adopter "$custom_adopter" \
+  && fail "custom contract accepted a release scope that drifted after generation" \
+  || pass "custom contract rejects release parameter drift (#520)"
 
 generated_adopter="$tmproot/adopter-generated-artifacts"
 build_adopter "$generated_adopter" no generated-artifacts
