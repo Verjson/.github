@@ -209,3 +209,26 @@ other terminal hold is still present.
 
 The regression tests pin both sides with `DO__NOT__MERGE` and prove that removal of an
 unrelated label exits before an intentionally failing metadata API can be reached.
+
+## 2026-08-07 amendment — immutable generated fleet callers (#477)
+
+The canonical bridge now exposes `workflow_call`, and
+`scripts/gen-gate-rearm-caller.sh` emits a thin `pull_request_target` caller for
+consumer repositories. The generator requires a full lowercase 40-character
+contract SHA and rejects branches, tags, abbreviations, extra arguments, and
+newline injection. The emitted caller contains no shell, checkout, PR prose, or
+secret forwarding.
+
+The immutable reusable target is the security boundary. The caller grants
+`contents: read`, `actions: write`, and `pull-requests: read`; the pinned
+canonical workflow owns the terminal hold/`DO NOT MERGE`/draft guards, the
+`re-review` recursion exclusion, live metadata validation, repository/PR input
+validation, and the fixed gate dispatch. A mutable ref would let those
+privileged behaviors change fleet-wide without review in the consumer.
+
+This amendment delivers the generator and its contract, not fleet mutation.
+[#477](https://github.com/Verjson/.github/issues/477) remains open until adoption
+is measured across the repositories targeted by the required-workflow ruleset.
+The only repositories this delivery session may mutate are `Verjson/.github`
+and `Verjson/verjson-github-runner`; consumer rollout remains a durable handoff
+under #477 rather than uncoordinated cross-repository writes.
