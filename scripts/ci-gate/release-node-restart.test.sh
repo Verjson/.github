@@ -3,12 +3,9 @@ set -euo pipefail
 
 here="$(cd "$(dirname "$0")" && pwd)"
 repo_root="$(cd "$here/../.." && pwd)"
-generator="$repo_root/scripts/gen-changelog-caller.sh"
-sha="$(git -C "$repo_root" rev-parse HEAD)"
+release_workflow="$repo_root/.github/workflows/node-release.yml"
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
-
-bash "$generator" release-node "$sha" --scope @acme --package-dir compat >"$work/release.yml"
 
 extract_block() {
   local begin="$1" end="$2" output="$3"
@@ -16,7 +13,7 @@ extract_block() {
     index($0, begin) { active = 1 }
     active { sub(/^          /, ""); print }
     index($0, end) { exit }
-  ' "$work/release.yml" >"$output"
+  ' "$release_workflow" >"$output"
   bash -n "$output"
 }
 
@@ -107,8 +104,8 @@ run_publish() {
   ( cd "$work/repo" && PATH="$work/bin:$PATH" TEST_STATE="$work/state" VERSION=v1.2.3 \
       bash -euo pipefail "$work/prepare.sh" && \
     PATH="$work/bin:$PATH" TEST_STATE="$work/state" \
-      VERSION=v1.2.3 NODE_AUTH_TOKEN=test VIEW_MODE="${VIEW_MODE:-}" \
-      PACK_MODE="${PACK_MODE:-matching}" \
+      REQUESTED_TAG=v1.2.3 NODE_AUTH_TOKEN=test PACKAGE_DIRS_JSON='[".","compat"]' \
+      VIEW_MODE="${VIEW_MODE:-}" PACK_MODE="${PACK_MODE:-matching}" \
       AUTH_FAIL="${AUTH_FAIL:-0}" NETWORK_FAIL="${NETWORK_FAIL:-0}" \
       bash -euo pipefail "$work/publish.sh" )
 }

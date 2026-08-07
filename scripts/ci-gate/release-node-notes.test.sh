@@ -3,17 +3,15 @@ set -euo pipefail
 
 here="$(cd "$(dirname "$0")" && pwd)"
 repo_root="$(cd "$here/../.." && pwd)"
-generator="$repo_root/scripts/gen-changelog-caller.sh"
-sha="$(git -C "$repo_root" rev-parse HEAD)"
+workflow="$repo_root/.github/workflows/node-release.yml"
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 
-bash "$generator" release-node "$sha" >"$work/release.yml"
 awk '
   /RESTART_SAFE_GH_RELEASE_BEGIN/ { active = 1 }
   active { sub(/^          /, ""); print }
   /RESTART_SAFE_GH_RELEASE_END/ { exit }
-' "$work/release.yml" >"$work/release-notes.sh"
+' "$workflow" >"$work/release-notes.sh"
 bash -n "$work/release-notes.sh"
 
 mkdir -p "$work/bin" "$work/repo/CHANGELOG" "$work/state"

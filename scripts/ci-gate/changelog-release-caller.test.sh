@@ -134,7 +134,7 @@ else:
     snapshot_pool = expr.group(1).strip() if expr else None
     if snapshot_pool is None:
         bad("`snapshot` runner %r is not a single expression" % runner)
-    for name, job in (("verify", verify), ("publish", publish)):
+    for name, job in (("verify", verify),):
         runs_on = str(job.get("runs-on") or "").strip()
         inner = re.fullmatch(r"\$\{\{\s*fromJSON\((.*)\)\s*\}\}", runs_on, re.S)
         pool = inner.group(1).strip() if inner else None
@@ -168,18 +168,32 @@ for name, job in jobs.items():
             bad("the `npm ci` step in `%s` installs with GITHUB_TOKEN, which "
                 "cannot read a private @verjson package owned by another "
                 "repository (#465)" % name)
-if installs < 2:
-    bad("expected an install step in both `verify` and `publish`, found %d" % installs)
+if installs != 1:
+    bad("expected one install step in `verify`, found %d" % installs)
 
-# The counterpart: GITHUB_TOKEN is right for publishing this repository's own
-# package, so a fix that simply removed it everywhere would also pass.
-publishes = [
-    step for step in steps_of(publish) if "npm publish" in (step.get("run") or "")
-]
-if not publishes:
-    bad("`publish` never runs `npm publish`")
-elif not GITHUB_TOKEN.search(str((publishes[0].get("env") or {}).get("NODE_AUTH_TOKEN") or "")):
-    bad("the `npm publish` step does not authenticate with GITHUB_TOKEN")
+# Publication is centralized in the publish-only reusable workflow at the same
+# immutable contract pin. It consumes the version chosen by the snapshot job.
+publish_uses = str(publish.get("uses") or "")
+expected_publish = (
+    "Verjson/.github/.github/workflows/node-release.yml@%s" % match.group(1)
+    if match else ""
+)
+if not expected_publish or publish_uses != expected_publish:
+    bad("`publish` does not call node-release.yml at the contract pin")
+publish_with = publish.get("with") or {}
+if str(publish_with.get("version") or "").strip() != "${{ inputs.version }}":
+    bad("`publish` does not pass the contract-selected version")
+if str(publish_with.get("node-version") or "") != "24":
+    bad("`publish` does not pass the generated Node version to node-release.yml")
+if str(publish_with.get("scope") or "") != "@verjson":
+    bad("`publish` does not pass the generated npm scope to node-release.yml")
+publish_secret = str((publish.get("secrets") or {}).get("NODE_AUTH_TOKEN") or "")
+if not publish_secret or GITHUB_TOKEN.search(publish_secret):
+    bad("`publish` does not pass the private-dependency read token")
+publish_runner = str(publish_with.get("runner") or "").strip()
+publish_expr = re.fullmatch(r"\$\{\{(.*)\}\}", publish_runner, re.S)
+if not publish_expr or publish_expr.group(1).strip() != snapshot_pool:
+    bad("`publish` and `snapshot` do not route on the same pool")
 
 # ADR 0052: the snapshot pushes to the default branch, which main-protection
 # forbids for GITHUB_TOKEN.
@@ -309,7 +323,7 @@ install_with_github_token() {
 }
 drop_explicit_runner() { sed -i '/^      runner: /d' "$1"; }
 diverge_runner_pool() {
-  sed -i "s@^      runner: .*@      runner: \${{ vars.VERJSON_RUNNER_OVERFLOW || '[\"ubuntu-24.04\"]' }}@" "$1"
+  sed -i "/^  publish:/,\$ s@^      runner: .*@      runner: \${{ vars.VERJSON_RUNNER_OVERFLOW || '[\"ubuntu-24.04\"]' }}@" "$1"
 }
 add_push_trigger() { sed -i 's|^on:$|on:\n  push:\n    branches: [main]|' "$1"; }
 unpin_reusable_ref() {
@@ -332,10 +346,12 @@ drop_verify_suite_token() {
   sed -i '/^      - name: Run the release verification suite$/,+2{/NODE_AUTH_TOKEN:/d;}' "$1"
 }
 strip_provenance() { sed -i '/gen-changelog-caller.sh release-node/d' "$1"; }
-drop_publish_token() {
-  # Deleting every GITHUB_TOKEN would "fix" the install defect while breaking
-  # publication; the checker must not reward that.
-  sed -i 's|          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}|          NODE_AUTH_TOKEN: ${{ secrets.NODE_AUTH_TOKEN }}|' "$1"
+drop_publish_token() { sed -i '/^      NODE_AUTH_TOKEN: /d' "$1"; }
+drop_publish_node_version() {
+  sed -i '/^  publish:/,$ { /^      node-version: /d; }' "$1"
+}
+drop_publish_scope() {
+  sed -i '/^  publish:/,$ { /^      scope: /d; }' "$1"
 }
 tautological_branch_guard() {
   # The guard's shell logic survives this untouched — only its inputs change, so
@@ -359,7 +375,9 @@ expect_shape_rejection "a verify job that runs no suite" hollow_out_the_suite
 expect_shape_rejection "a verify job with no release-verify.sh hook" drop_verify_hook
 expect_shape_rejection "a release verification suite without private-package auth (#569)" drop_verify_suite_token
 expect_shape_rejection "a caller carrying no generator provenance" strip_provenance
-expect_shape_rejection "a publish step that no longer authenticates" drop_publish_token
+expect_shape_rejection "a publish job without its private dependency token" drop_publish_token
+expect_shape_rejection "a publish job without its generated Node version" drop_publish_node_version
+expect_shape_rejection "a publish job without its generated npm scope" drop_publish_scope
 expect_shape_rejection "a branch guard that compares github.ref to itself" tautological_branch_guard
 
 # The hand-copied shape every adopter carries today must be rejected, otherwise
