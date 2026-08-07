@@ -63,7 +63,6 @@ non-trivial or fanned-out work autonomously:
 - [#292](https://github.com/Verjson/.github/issues/292) — Re-review skip never fires: `gh api user` cannot resolve an identity under `github.token`, so every head change re-pays for an unchanged diff.
 - [#437](https://github.com/Verjson/.github/issues/437) — `gen-changelog-caller.sh` emits only a `changelog-validate.yml` caller and its generated test greps for that string, so no adopter can move to `generated-artifacts.yml` without the hand-edit the contract forbids. Until it is fixed, tell adopters to stay put, and not to set `adr-index: true` without `scripts/gen-adr-index.sh`.
 - [#454](https://github.com/Verjson/.github/issues/454) — `parse_frontmatter` (`scripts/changelog.py:90-97`) partitions every front-matter line on `:` and rejects any line without one, so a folded/literal scalar fails on its **continuation** line (`not separator`), not on the `summary: >-` line itself. Worse when there is no continuation: `>-` passes as a non-empty value and is stored as the literal string. Either way the key meant to hold a release note cannot hold one written the natural way; keep `summary:` on one line.
-- [#585](https://github.com/Verjson/.github/issues/585) — `node-ci.yml` stops its optional database container before install/build/test steps, so DB-backed suites can lose the service before using it.
 
 Prune an entry when its issue closes. This list loads into every session, so a
 closed entry costs context in each one and misreports the state of the work.

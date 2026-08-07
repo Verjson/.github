@@ -601,6 +601,43 @@ env DOCKER_LOG="$tmp/teardown/docker.log" CONTAINER_ID="" \
   && pass "teardown is a no-op when no container was started" \
   || fail "teardown called docker with no container id: $(cat "$tmp/teardown/docker.log")"
 
+# The teardown must be the final step, after every consumer command and the
+# best-effort cache upload. `always()` then makes it run after any earlier
+# success or failure without destroying the database before npm test (#585).
+python3 - "$wf" <<'PY' \
+  && pass "database teardown is the final step after every consumer command" \
+  || fail "database teardown can run before a consumer or cache step"
+import sys
+from pathlib import Path
+
+import yaml
+
+workflow = yaml.safe_load(Path(sys.argv[1]).read_text(encoding="utf-8"))
+steps = workflow["jobs"]["build-test"]["steps"]
+names = [step.get("name") for step in steps]
+stop = names.index("Stop database service")
+start = names.index("Start database service")
+assert stop == len(steps) - 1
+assert start < stop
+commands = {
+    "npm ci",
+    "npm run build",
+    "npm run typecheck --if-present",
+    "npm test",
+    "npm run lint --if-present",
+}
+for index, step in enumerate(steps):
+    if step.get("run") in commands or step.get("name") in {
+        "Install schema submodule deps",
+        "Bound npm cache upload",
+    }:
+        assert start < index < stop
+assert steps[stop]["if"] == (
+    "always() && needs.eligibility.outputs.should-run != 'false' "
+    "&& inputs.db-image != ''"
+)
+PY
+
 # (h) The sweep's 6h bound is only safe while no job in THIS workflow can outlive
 # it: a labelled container older than 6h cannot belong to a job still running.
 # That rests on GitHub's default `timeout-minutes: 360` (a caller `uses:`-ing a
