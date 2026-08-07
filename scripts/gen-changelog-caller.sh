@@ -820,6 +820,17 @@ echo "ok - contract scripts are executable"
 # exactly the state a release leaves behind. The final fixture proves this guard
 # is still load-bearing rather than dead code.
 #
+# The tolerated cause is decided from the TREE, not from the exit status (#399,
+# duplicate #419). Keyed on the status alone, every renderer failure reported
+# `ok - no unreleased fragments to render`: an unreachable contract fetch, a
+# digest mismatch, a malformed fragment, a missing python3, the #398 argv
+# ceiling. Each of those is a broken adopter announcing a clean release, and
+# `2>/dev/null` threw away the only sentence that said which.
+#
+# So: an emptied NEXT/ is the one state that excuses a non-zero exit, and it is
+# observable directly. A failure with fragments still present is a failure, and
+# the captured stderr is printed rather than discarded.
+#
 # The rendered log travels through a file, never through a variable handed to
 # execve. A single argv or environment string is capped at MAX_ARG_STRLEN — a
 # fixed 128 KiB, unrelated to the far larger ARG_MAX that a check would read —
@@ -828,7 +839,22 @@ echo "ok - contract scripts are executable"
 # fragment count (#398). NEXT/ is per-change and never batched, so it grows past
 # 128 KiB in the ordinary course of a busy release cycle; releasing consumes it,
 # but the release path runs this suite, so the failure gated its own remedy.
-if "$renderer" >"$work/rendered" 2>/dev/null; then
+render_rc=0
+"$renderer" >"$work/rendered" 2>"$work/render-err" || render_rc=$?
+# README.md and 0000-archive.md are excluded by name here for the same reason the
+# python block skips them: neither is a renderable fragment, so a NEXT/ holding
+# only those is "emptied" as far as the renderer is concerned.
+renderable_left=$(find "$root/NEXT" -maxdepth 1 -type f -name '*.md' \
+  ! -name 'README.md' ! -name '0000-archive.md' 2>/dev/null | wc -l | tr -d ' ')
+if [ "$render_rc" -ne 0 ] && [ "${renderable_left:-0}" -gt 0 ]; then
+  echo "the renderer exited $render_rc with $renderable_left unreleased fragment(s) still in NEXT/." >&2
+  echo "This is not the post-release empty-NEXT/ case; the renderer itself is broken." >&2
+  echo "--- renderer stderr ---" >&2
+  cat "$work/render-err" >&2 || true
+  echo "--- end renderer stderr ---" >&2
+  fail "render-next failed for a reason other than an emptied NEXT/"
+fi
+if [ "$render_rc" -eq 0 ]; then
   ROOT="$root" RENDERED_PATH="$work/rendered" python3 - <<'PY'
 import os
 import re

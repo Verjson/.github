@@ -266,6 +266,73 @@ run_adopter "$adopter" \
   && pass "emitted suite still passes AFTER a real release (#309)" \
   || fail "emitted suite breaks on the first release: $(tail -2 "$tmproot/run.out")"
 
+# --------------------------------------------------------------------------
+# #399 (duplicate #419): the render guard must tolerate ONLY an emptied NEXT/.
+#
+# The guard exists because `render-next` exits non-zero once a release has
+# consumed NEXT/. Keyed on the exit status alone it reported
+# `ok - no unreleased fragments to render` for EVERY renderer failure — an
+# unreachable contract fetch, a digest mismatch, a malformed fragment, a missing
+# python3, the #398 argv ceiling — and `2>/dev/null` discarded the only sentence
+# that said which. A broken adopter announced a clean release.
+#
+# The two cases below are the same renderer failure distinguished only by whether
+# fragments remain, which is why the tree and not the status has to decide.
+# --------------------------------------------------------------------------
+break_renderer() { # break_renderer <dir>
+  # Fail the way a real adopter fails — the renderer exits non-zero with a
+  # diagnostic on stderr — rather than by deleting it, which would trip the
+  # earlier "is not executable" check and pass for the wrong reason. The
+  # gen-changelog-caller.sh marker is kept so the "delegates to the contract"
+  # check still passes and this fixture isolates the render guard alone.
+  cat >"$1/scripts/render-next.sh" <<BROKEN
+#!/usr/bin/env sh
+# gen-changelog-caller.sh
+# The pin line is required: the emitted suite checks the renderer carries the
+# same CONTRACT_REF before it ever renders, so a stub without it dies early and
+# the render guard is never reached — which is how this fixture first passed for
+# the wrong reason.
+CONTRACT_REF="$sha"
+echo "render-next: could not fetch the pinned contract (simulated)" >&2
+exit 7
+BROKEN
+  chmod +x "$1/scripts/render-next.sh"
+}
+
+# A. Fragments present and the renderer broken: this must FAIL. It is the whole
+#    defect — before the fix the suite reported success here.
+broken="$tmproot/adopter-broken-renderer"
+build_adopter "$broken"
+break_renderer "$broken"
+if run_adopter "$broken"; then
+  fail "#399: a broken renderer with fragments still in NEXT/ reported success"
+else
+  pass "#399: a broken renderer with fragments present fails the suite"
+  # The cause must reach the operator. Swallowing stderr is half the defect: a
+  # failure that names nothing sends the adopter to the wrong file.
+  grep -q 'could not fetch the pinned contract' "$tmproot/run.out" \
+    && pass "#399: the renderer's own stderr is surfaced, not discarded" \
+    || fail "#399: the failure hid the renderer's diagnostic: $(tail -3 "$tmproot/run.out")"
+  grep -qE 'unreleased fragment\(s\) still in NEXT/' "$tmproot/run.out" \
+    && pass "#399: the failure says why this is not the post-release case" \
+    || fail "#399: the failure does not distinguish itself from an emptied NEXT/"
+fi
+
+# B. The tolerated case, still tolerated. Without this, the fix could satisfy A
+#    by failing on every non-zero exit — which would break every adopter the
+#    moment they released, the exact regression the guard was added to avoid.
+released_broken="$tmproot/adopter-released-broken"
+build_adopter "$released_broken"
+python3 "$contract_src" release --repo-root "$released_broken" --version v1.0.0 >/dev/null 2>&1
+[ -z "$(find "$released_broken/NEXT" -maxdepth 1 -type f -name '*.md' \
+    ! -name 'README.md' ! -name '0000-archive.md' 2>/dev/null)" ] \
+  && pass "#399 fixture: the release really emptied NEXT/, so case B is not vacuous" \
+  || fail "#399 fixture: NEXT/ still holds fragments; case B would prove nothing"
+break_renderer "$released_broken"
+run_adopter "$released_broken" \
+  && pass "#399: an emptied NEXT/ still tolerates a non-zero renderer exit" \
+  || fail "#399: the fix broke the post-release case it exists to allow: $(tail -3 "$tmproot/run.out")"
+
 # An adopter with nothing to publish has no release.yml; `agents` and
 # `github-runner` are in exactly that shape and must not be forced to invent one.
 build_adopter "$tmproot/adopter-norelease" no
