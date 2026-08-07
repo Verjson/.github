@@ -161,8 +161,16 @@ def parse_frontmatter(path: Path) -> tuple[dict[str, str], str]:
     return metadata, "\n".join(lines[end + 1 :]).strip() + "\n"
 
 
-KNOWN_KEYS = frozenset({"date", "issue", "id", "title", "refs", "summary", "component"})
+KNOWN_KEYS = frozenset(
+    {"date", "issue", "id", "title", "refs", "summary", "component", "impact"}
+)
 COMPONENT_NAME = re.compile(r"^[a-z0-9](?:[a-z0-9._-]{0,62}[a-z0-9])?$")
+RELEASE_IMPACTS = ("patch", "minor", "major")
+SEMVER_RELEASE = re.compile(
+    r"^(?P<prefix>(?:[a-z0-9][a-z0-9._-]*-)?v)"
+    r"(?P<major>0|[1-9]\d*)\.(?P<minor>0|[1-9]\d*)\.(?P<patch>0|[1-9]\d*)"
+    r"(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$"
+)
 
 
 def quoting_is_ambiguous(value: str) -> bool:
@@ -212,6 +220,8 @@ def validate_metadata(path: Path, metadata: dict[str, str]) -> str:
             " using letters, digits, dot, underscore, or hyphen, and must start"
             " and end with a letter or digit"
         )
+    if metadata.get("impact", "patch") not in RELEASE_IMPACTS:
+        raise ChangelogError(f"{path}: impact must be one of major, minor, or patch")
     # Both of these are what a released snapshot says about the entry, so both
     # get the same scrutiny: whatever is wrong with them becomes permanent.
     for key in ("title", "summary"):
@@ -506,6 +516,53 @@ def render_released(repo_root: Path) -> str:
     return "\n\n".join(sections) + ("\n" if sections else "")
 
 
+def release_impact(entries: list[Fragment]) -> str:
+    if not entries:
+        raise ChangelogError("cannot determine impact for an empty release")
+    order = {name: index for index, name in enumerate(RELEASE_IMPACTS)}
+    return max(
+        (entry.metadata.get("impact", "patch") for entry in entries),
+        key=order.__getitem__,
+    )
+
+
+def validate_release_bump(repo_root: Path, version: str, selected: list[Fragment]) -> None:
+    requested = SEMVER_RELEASE.fullmatch(version)
+    if requested is None:
+        raise ChangelogError(
+            "version must be v-prefixed SemVer, optionally with a stream prefix"
+        )
+    prefix = requested["prefix"]
+    requested_core = tuple(
+        int(requested[name]) for name in ("major", "minor", "patch")
+    )
+    previous_cores = []
+    for path in snapshot_paths(repo_root):
+        previous = SEMVER_RELEASE.fullmatch(path.stem)
+        if previous is not None and previous["prefix"] == prefix:
+            previous_cores.append(
+                tuple(int(previous[name]) for name in ("major", "minor", "patch"))
+            )
+    if not previous_cores:
+        return
+    previous_core = max(previous_cores)
+    impact = release_impact(selected)
+    if impact == "major":
+        expected = (previous_core[0] + 1, 0, 0)
+    elif impact == "minor":
+        expected = (previous_core[0], previous_core[1] + 1, 0)
+    else:
+        expected = (previous_core[0], previous_core[1], previous_core[2] + 1)
+    if requested_core != expected:
+        previous_text = ".".join(map(str, previous_core))
+        expected_text = ".".join(map(str, expected))
+        requested_text = ".".join(map(str, requested_core))
+        raise ChangelogError(
+            f"selected fragments require a {impact} bump from {prefix}{previous_text}"
+            f" to {prefix}{expected_text}; requested {prefix}{requested_text}"
+        )
+
+
 def git(repo_root: Path, *args: str) -> str:
     completed = subprocess.run(
         ["git", *args],
@@ -573,6 +630,9 @@ def release(
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError as exc:
             raise ChangelogError("another release is already running") from exc
+        snapshot = repo_root / "CHANGELOG" / f"{version}.md"
+        if snapshot.exists():
+            raise ChangelogError(f"released snapshot already exists: {snapshot}")
         entries = fragments(repo_root)
         by_name = {entry.path.name: entry for entry in entries if entry.canonical}
         stream_entries = select_component(entries, component)
@@ -588,9 +648,7 @@ def release(
             selected.append(entry)
         if not selected:
             raise ChangelogError("release selected no fragments")
-        snapshot = repo_root / "CHANGELOG" / f"{version}.md"
-        if snapshot.exists():
-            raise ChangelogError(f"released snapshot already exists: {snapshot}")
+        validate_release_bump(repo_root, version, selected)
         snapshot.parent.mkdir(parents=True, exist_ok=True)
         snapshot.write_text(render(selected, released=True), encoding="utf-8")
         for entry in selected:

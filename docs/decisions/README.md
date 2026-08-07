@@ -11,6 +11,7 @@ Reverse-chronological index of org-level decisions.
 <!-- BEGIN ADR INDEX -->
 | # | Date | Decision |
 |---|------|----------|
+| [0071](0071-changelog-impact-governs-version-bumps/README.md) | 2026-08-07 | Changelog impact governs version bumps |
 | [0070](0070-component-scoped-changelog-streams/README.md) | 2026-08-07 | Changelog components are explicit release streams |
 | [0069](0069-node-publication-consumes-contract-version/README.md) | 2026-08-07 | Node publication consumes the changelog contract's version |
 | [0068](0068-dispatch-honors-caller-runner-labels/README.md) | 2026-08-07 | The merge dispatcher honors the caller’s explicit runner fleet |
