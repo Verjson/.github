@@ -78,7 +78,11 @@ Instead the organization **declares a core set of check names per repository
 stack**, and repositories conform to it.
 
 The contract surface already exists. A reusable call's check name is
-`<caller job> / <inner job>`, and the org already pins every right-hand side:
+`<caller job> / <inner job>` **only when the caller job is unmatrixed**. A
+`strategy.matrix` changes every emitted context to
+`<caller job> (<matrix values>) / <inner job>`, so the canonical unmatrixed
+context is absent, not merely renamed. The org already pins every right-hand
+side:
 
 | Reusable workflow | Inner jobs (org-pinned) |
 | --- | --- |
@@ -88,11 +92,14 @@ The contract surface already exists. A reusable call's check name is
 | `ui-ci.yml` | `build-test` |
 | `changelog-validate.yml` | `validate` |
 
-The only free variable is the **caller's job name**, and that is exactly what a
-generated thin caller pins — the pattern already established by
+The free variables are the **caller's job name** and whether it has a matrix.
+A generated thin caller pins both — the pattern already established by
 `scripts/gen-changelog-caller.sh` and `scripts/gen-privileged-merge-caller.sh`.
 Canonical caller job names are therefore part of the contract: `ci` for the
-stack CI workflow, `changelog` for changelog validation.
+stack CI workflow, `changelog` for changelog validation, and both must be
+unmatrixed. Multi-version coverage uses one unmatrixed canonical caller plus
+separately named additional jobs, or one unmatrixed job per version with only
+the selected canonical job placed under required checks.
 
 The core set becomes small, declarable and stack-scoped:
 
@@ -365,6 +372,33 @@ assertion, including the two that survived the first draft of the suite.
 gate-less open PRs (#474), and the watchdog stays armed: `ai-privileged-merge.yml` still
 polls, still routes on `VERJSON_LANE_PRIVILEGED`, and is untouched by this step. ADR 0056
 therefore still stands.
+
+### Amendment (2026-08-07) — matrixed reusable callers are nonconformant (#431)
+
+The static classifier originally checked the reusable workflow filename and
+caller job key, but not `strategy.matrix`. That admitted a caller named `ci`
+even though GitHub emitted only `ci (20.20.2) / build-test`,
+`ci (24) / build-test`, and their eligibility counterparts. Requiring the
+canonical unmatrixed names would have wedged the repository while the
+classifier called it conformant.
+
+`scripts/classify-repo-stacks.sh` now treats a matrix on any recognized reusable
+CI or changelog caller as nonconformant and names the suffixed context shape in
+its remediation. The fixtures cover block and flow-style matrices and both
+orders of `strategy` and `uses`.
+
+The Groups B/C re-sweep projected all non-archived repositories'
+default-branch workflow blobs in one read-only GraphQL query. One live instance
+remained: `Verjson/verjson-customer-lifecycle`, whose `ci` job matrices Node
+20.20.2 and 24 around `node-ci.yml@v2.2.0`; remediation is handed off in
+[verjson-customer-lifecycle#16](https://github.com/Verjson/verjson-customer-lifecycle/issues/16).
+No consumer repository was changed here.
+
+Ruleset activation has a second head-level gate: after the default-branch
+workflow is remediated, every open PR must be rebased or updated onto that
+commit before canonical contexts are required. Older PR heads still contain
+the matrixed workflow, so GitHub cannot produce checks that did not exist when
+those heads were created.
 
 ## What this must preserve, and how
 
