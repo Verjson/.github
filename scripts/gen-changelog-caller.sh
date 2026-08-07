@@ -501,12 +501,82 @@ jobs:
           # repository's own package to its own GitHub Packages registry is
           # exactly what a repository-scoped token is for.
           NODE_AUTH_TOKEN: \${{ secrets.GITHUB_TOKEN }}
-        run: npm publish
+          VERSION: \${{ inputs.version }}
+        run: |
+          # RESTART_SAFE_NPM_PUBLISH_BEGIN
+          pack_json="\$(mktemp)"
+          package_meta="\$(mktemp)"
+          registry_json="\$(mktemp)"
+          trap 'rm -f "\$pack_json" "\$package_meta" "\$registry_json"' EXIT
+
+          npm pack --json --ignore-scripts >"\$pack_json"
+          node - "\$pack_json" "\${VERSION#v}" >"\$package_meta" <<'NODE'
+          const fs = require("fs");
+          const path = require("path");
+          const [packPath, expectedVersion] = process.argv.slice(2);
+          const packed = JSON.parse(fs.readFileSync(packPath, "utf8"));
+          if (!Array.isArray(packed) || packed.length !== 1) {
+            throw new Error("npm pack did not describe exactly one package");
+          }
+          const item = packed[0];
+          for (const key of ["name", "version", "integrity", "filename"]) {
+            if (typeof item[key] !== "string" || item[key] === "") {
+              throw new Error(\`npm pack omitted \${key}\`);
+            }
+          }
+          if (item.version !== expectedVersion) {
+            throw new Error(\`packed version \${item.version} does not match dispatched \${expectedVersion}\`);
+          }
+          if (!item.integrity.startsWith("sha512-")) {
+            throw new Error("npm pack returned a non-sha512 integrity");
+          }
+          if (path.basename(item.filename) !== item.filename) {
+            throw new Error("npm pack returned an unsafe filename");
+          }
+          process.stdout.write([item.name, item.version, item.integrity, item.filename].join("\\t") + "\\n");
+          NODE
+          IFS=\$'\\t' read -r package_name package_version package_integrity package_file <"\$package_meta"
+
+          if npm publish "\$package_file" --ignore-scripts --registry=https://npm.pkg.github.com; then
+            echo "Published \$package_name@\$package_version."
+          else
+            echo "::warning::npm publish failed; proving whether an identical immutable version already exists before continuing."
+            npm whoami --registry=https://npm.pkg.github.com >/dev/null \
+              || { echo "::error::Cannot prove registry authorization after npm publish failed."; exit 1; }
+            npm view "\$package_name@\$package_version" --json \
+              --registry=https://npm.pkg.github.com >"\$registry_json" \
+              || { echo "::error::Cannot read the allegedly existing registry version after npm publish failed."; exit 1; }
+            node - "\$registry_json" "\$package_name" "\$package_version" "\$package_integrity" <<'NODE'
+          const fs = require("fs");
+          const [viewPath, expectedName, expectedVersion, expectedIntegrity] = process.argv.slice(2);
+          const published = JSON.parse(fs.readFileSync(viewPath, "utf8"));
+          if (
+            published.name !== expectedName ||
+            published.version !== expectedVersion ||
+            !published.dist ||
+            published.dist.integrity !== expectedIntegrity
+          ) {
+            throw new Error("registry package identity or integrity does not match the attested release snapshot");
+          }
+          NODE
+            echo "Registry already contains the identical \$package_name@\$package_version; package publication is complete."
+          fi
+          # RESTART_SAFE_NPM_PUBLISH_END
       - name: Publish the snapshot release notes
         env:
           GH_TOKEN: \${{ secrets.GITHUB_TOKEN }}
           VERSION: \${{ inputs.version }}
-        run: gh release create "\$VERSION" --verify-tag --notes-file "CHANGELOG/\$VERSION.md"
+        run: |
+          # RESTART_SAFE_GH_RELEASE_BEGIN
+          existing_tag="\$(gh release view "\$VERSION" --json tagName --jq .tagName 2>/dev/null || true)"
+          if [ -n "\$existing_tag" ]; then
+            [ "\$existing_tag" = "\$VERSION" ] \
+              || { echo "::error::GitHub Release lookup returned unexpected tag '\$existing_tag'."; exit 1; }
+            gh release edit "\$VERSION" --notes-file "CHANGELOG/\$VERSION.md"
+          else
+            gh release create "\$VERSION" --verify-tag --notes-file "CHANGELOG/\$VERSION.md"
+          fi
+          # RESTART_SAFE_GH_RELEASE_END
 EOF
 }
 
@@ -939,6 +1009,18 @@ while IFS= read -r release_workflow; do
     || fail "$release_workflow does not stamp the dispatched package version before the verification build or suite (#519)"
   stamp_before "$publish_job" 'npm run build|npm publish' \
     || fail "$release_workflow does not stamp the dispatched package version before the publish build (#519)"
+
+  for restart_guard in \
+    'npm pack --json --ignore-scripts' \
+    'npm whoami --registry=https://npm.pkg.github.com' \
+    'npm view "$package_name@$package_version" --json' \
+    'published.dist.integrity !== expectedIntegrity' \
+    'gh release view "$VERSION" --json tagName' \
+    'gh release edit "$VERSION" --notes-file' \
+    'gh release create "$VERSION" --verify-tag --notes-file'; do
+    printf '%s\n' "$publish_job" | grep -qF "$restart_guard" \
+      || fail "$release_workflow is not restart-safe after partial publication; missing '$restart_guard' (#535)"
+  done
 
   # The trigger surface and the install credential are checked structurally,
   # because both were shipped here as line-oriented greps first and both were
