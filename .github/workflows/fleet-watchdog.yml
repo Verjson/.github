@@ -38,9 +38,12 @@ on:
     # load and the observed cadence over 2026-08-03..05 was roughly 15 runs a day,
     # not 96, with gaps up to ~2.5 h. Nothing in this repository fixes that, so
     # treat the watchdog as an eventual backstop, never as a bounded-latency one.
+    # The final step records each observed interval and warns above 30 minutes
+    # (#414); it measures scheduler reliability without claiming to improve it.
     - cron: '*/15 * * * *'
 
 permissions:
+  actions: read
   contents: read
 
 concurrency:
@@ -92,3 +95,10 @@ jobs:
           # formed at ~12 minutes.
           WATCHDOG_MIN_POLL_MINUTES: '10'
         run: bash scripts/fleet-watchdog.sh
+
+      - name: Record the observed scheduler interval
+        if: ${{ always() }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          WATCHDOG_MAX_GAP_MINUTES: '30'
+        run: python3 scripts/fleet-watchdog-cadence.py
