@@ -160,10 +160,17 @@ run_case && grep -q 'workflow run ai-privileged-merge.yml' "$tmp/dispatch.log" \
   && pass "validated identities dispatch only the fixed workflow" \
   || fail "valid trusted dispatch failed"
 run_case 'Verjson/example' 7 0123456789abcdef0123456789abcdef01234567 99 '' \
-  && [ ! -s "$tmp/dispatch.log" ] \
-  && grep -q 'requires human merge' "$tmp/dispatch.out" \
-  && pass "absent privileged continuation is a green manual-merge no-op" \
-  || fail "absent privileged continuation did not preserve green validation"
+  && fail "absent privileged continuation reported green" \
+  || {
+    [ ! -s "$tmp/dispatch.log" ] \
+      && grep -q 'scripts/gen-privileged-merge-caller.sh' "$tmp/dispatch.out" \
+      && grep -q 'ORG_ADMIN_TOKEN' "$tmp/dispatch.out" \
+      && grep -q '^dispatch_failure=continuation_absent$' "$tmp/github-output.txt" \
+      && grep -q '^blocker=continuation_absent$' "$tmp/github-output.txt" \
+      && grep -q '^remediation=install_privileged_merge_caller$' "$tmp/github-output.txt" \
+      && pass "absent privileged continuation fails with actionable typed remediation" \
+      || fail "absent privileged continuation lacks actionable failure evidence"
+  }
 run_case 'Verjson/example' 7 0123456789abcdef0123456789abcdef01234567 99 '' true \
   && fail "workflow-list API failure did not fail closed" \
   || pass "workflow-list API failure remains terminal"

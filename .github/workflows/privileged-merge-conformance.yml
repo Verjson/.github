@@ -1,0 +1,23 @@
+name: Privileged merge fleet conformance
+
+on:
+  schedule:
+    - cron: "17 9 * * *"
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ${{ fromJSON(vars.VERJSON_RUNNER_FASTLANE || '["ubuntu-24.04"]') }}
+    timeout-minutes: 10
+    steps:
+      - name: Check out the fleet conformance audit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Verify privileged merge delivery across the active fleet
+        env:
+          GH_TOKEN: ${{ secrets.ORG_ADMIN_TOKEN }}
+        run: bash scripts/privileged-merge-conformance.sh

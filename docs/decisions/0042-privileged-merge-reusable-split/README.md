@@ -219,3 +219,24 @@ any fix to `ai-privileged-merge.yml`. `main`'s copy of that step has been `if: $
 since `87b4d54`, so it is left alone rather than fixed in place. Cross-org consumers get this
 only when `v1` is advanced, which is a separate decision with a much wider blast radius than
 one 404.
+
+## Amendment (2026-08-07, #326) — an absent privileged caller is a delivery failure
+
+The unprivileged gate previously returned success when the target repository lacked
+`.github/workflows/ai-privileged-merge.yml`. That made `dispatch-merge` green while the
+solo-author review rule still prevented the attested PR from merging. A clean review had
+therefore proved validation, but not the delivery outcome its check name represented.
+
+An absent caller now fails `dispatch-merge` with typed `continuation_absent` evidence and
+names both remediation requirements: generate the fixed caller with
+`scripts/gen-privileged-merge-caller.sh`, and grant the repository access to the
+`ORG_ADMIN_TOKEN` organization secret. No fallback receives merge authority.
+
+A daily, read-only fleet audit catches the same drift before a pull request reaches the
+gate. It enumerates active, non-fork, non-template Verjson repositories, verifies the
+generated caller exists on each default branch, and compares each repository with the
+organization secret's configured visibility. The audit runs from the event SHA on the
+isolated fast lane (with a hosted fallback), receives only `ORG_ADMIN_TOKEN`, and changes no
+repository settings, rulesets, or secret grants. Its failure is evidence for an
+administrator to repair configuration; it is not authorization to mutate organization
+policy automatically.
