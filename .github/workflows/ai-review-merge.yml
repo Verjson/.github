@@ -1184,68 +1184,72 @@ jobs:
           gh pr view "$PR_NUMBER" --repo "$TARGET_REPO" \
             --json title,body,author,labels,baseRefName,headRefName,additions,deletions,changedFiles \
             > .ai-review/pr.json
-          # The diff endpoint intermittently returns 5xx after all product CI is
-          # already green (#394). Retry only server/transport availability:
-          # 4xx (including rate limits and permissions) is structural and fails
-          # immediately. Keep stderr off the log so a response body can never
-          # leak through the retry diagnostics.
-          diff_attempt=1
+          # Build the diff from the immutable checked-out PR head instead of
+          # GitHub's whole-diff endpoint, which rejects PRs over 300 files
+          # (#323). Fetch only base history, retry bounded transport failures,
+          # and fail closed when the merge base cannot be established. Keep
+          # stderr off the log so a remote response can never leak through the
+          # retry diagnostics.
+          base_ref="$(jq -r '.baseRefName' .ai-review/pr.json)"
+          if [ -z "$base_ref" ] || [ "$base_ref" = null ]; then
+            echo "::error::phase=review-input result=unavailable kind=base_ref_missing — PR metadata did not identify a base ref"
+            exit 1
+          fi
           diff_max_attempts=4
-          diff_part=.ai-review/pr.full.diff.part
-          diff_error=.ai-review/pr.full.diff.error
-          while :; do
-            : >"$diff_error"
-            if gh pr diff "$PR_NUMBER" --repo "$TARGET_REPO" >"$diff_part" 2>"$diff_error"; then
-              mv "$diff_part" .ai-review/pr.full.diff
+          diff_error=.ai-review/base-fetch.error
+          fetch_base_history() {
+            local fetch_mode="$1" diff_attempt=1 diff_rc diff_delay
+            while :; do
               : >"$diff_error"
-              {
-                echo "review_input_available=true"
-                echo "review_input_failure=none"
-              } >>"$GITHUB_OUTPUT"
-              break
-            else
-              diff_rc=$?
-            fi
-            diff_http_status=$(sed -nE 's/.*HTTP ([0-9]{3}).*/\1/p' "$diff_error" | tail -n1)
-            if [[ "$diff_http_status" =~ ^4[0-9][0-9]$ ]]; then
+              if git fetch --no-tags "$fetch_mode" origin \
+                "+refs/heads/$base_ref:refs/remotes/origin/$base_ref" 2>"$diff_error"; then
+                : >"$diff_error"
+                return 0
+              else
+                diff_rc=$?
+              fi
               : >"$diff_error"
-              {
-                echo "review_input_available=false"
-                echo "review_input_failure=client_error"
-              } >>"$GITHUB_OUTPUT"
-              echo "::error::phase=review-input result=unavailable kind=client_error http_status=$diff_http_status attempts=$diff_attempt — PR diff request was rejected; not a substantive review verdict"
-              exit "$diff_rc"
-            fi
-            if [ -n "$diff_http_status" ] && [[ ! "$diff_http_status" =~ ^5[0-9][0-9]$ ]]; then
-              : >"$diff_error"
-              {
-                echo "review_input_available=false"
-                echo "review_input_failure=github_http_error"
-              } >>"$GITHUB_OUTPUT"
-              echo "::error::phase=review-input result=unavailable kind=github_http_error http_status=$diff_http_status attempts=$diff_attempt — PR diff request failed before review"
-              exit "$diff_rc"
-            fi
-            if [ -n "$diff_http_status" ]; then
-              diff_kind=github_5xx
-              diff_signal="http_status=$diff_http_status"
-            else
-              diff_kind=transport
-              diff_signal="http_status=none"
-            fi
-            : >"$diff_error"
-            if [ "$diff_attempt" -ge "$diff_max_attempts" ]; then
-              {
-                echo "review_input_available=false"
-                echo "review_input_failure=infrastructure_unavailable"
-              } >>"$GITHUB_OUTPUT"
-              echo "::error::phase=review-input result=unavailable kind=infrastructure_unavailable source=$diff_kind $diff_signal attempts=$diff_attempt — GitHub diff input remained unavailable; not a substantive review verdict"
-              exit "$diff_rc"
-            fi
-            diff_delay=$((1 << (diff_attempt - 1)))
-            echo "::warning::phase=review-input result=retry kind=$diff_kind $diff_signal attempt=$diff_attempt/$diff_max_attempts backoff_seconds=$diff_delay"
-            sleep "$diff_delay"
-            diff_attempt=$((diff_attempt + 1))
-          done
+              if [ "$diff_attempt" -ge "$diff_max_attempts" ]; then
+                {
+                  echo "review_input_available=false"
+                  echo "review_input_failure=infrastructure_unavailable"
+                } >>"$GITHUB_OUTPUT"
+                echo "::error::phase=review-input result=unavailable kind=infrastructure_unavailable source=git_fetch mode=$fetch_mode attempts=$diff_attempt — base history remained unavailable; not a substantive review verdict"
+                return "$diff_rc"
+              fi
+              diff_delay=$((1 << (diff_attempt - 1)))
+              echo "::warning::phase=review-input result=retry kind=git_fetch mode=$fetch_mode attempt=$diff_attempt/$diff_max_attempts backoff_seconds=$diff_delay"
+              sleep "$diff_delay"
+              diff_attempt=$((diff_attempt + 1))
+            done
+          }
+          fetch_base_history --depth=100 || exit $?
+          merge_base="$(git merge-base "origin/$base_ref" HEAD 2>/dev/null || true)"
+          if [ -z "$merge_base" ] \
+            && [ "$(git rev-parse --is-shallow-repository 2>/dev/null || true)" = true ]; then
+            fetch_base_history --unshallow || exit $?
+            merge_base="$(git merge-base "origin/$base_ref" HEAD 2>/dev/null || true)"
+          fi
+          [ -n "$merge_base" ] || {
+            {
+              echo "review_input_available=false"
+              echo "review_input_failure=merge_base_unavailable"
+            } >>"$GITHUB_OUTPUT"
+            echo "::error::phase=review-input result=unavailable kind=merge_base_unavailable — fetched base history has no merge base with the checked-out PR head"
+            exit 1
+          }
+          if ! git diff --find-renames "$merge_base" HEAD >.ai-review/pr.full.diff; then
+            {
+              echo "review_input_available=false"
+              echo "review_input_failure=local_diff_failed"
+            } >>"$GITHUB_OUTPUT"
+            echo "::error::phase=review-input result=unavailable kind=local_diff_failed — could not render the checked-out PR head against its merge base"
+            exit 1
+          fi
+          {
+            echo "review_input_available=true"
+            echo "review_input_failure=none"
+          } >>"$GITHUB_OUTPUT"
 
           # Elide generated lockfiles from the review payload. A lockfile is a
           # derived artifact — the reviewer scrutinizes the manifest

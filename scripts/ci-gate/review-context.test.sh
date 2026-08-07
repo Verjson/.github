@@ -39,8 +39,9 @@ grep -qF 'Still review duplicate-processing and idempotency defects in the propo
   && pass "the lifecycle boundary preserves duplicate-behavior review" \
   || fail "the prompt can suppress duplicate-processing defects"
 
-# #394: exercise the shipped context-preparation block, including the GitHub
-# diff transport boundary, against a stateful gh stub.
+# #323/#394: exercise the shipped context-preparation block, including the
+# bounded base-history fetch and a diff larger than GitHub's 300-file endpoint
+# limit, against stateful gh/git stubs.
 prep="$tmp/prep.sh"
 awk '
   $0 == "      - name: Prepare bounded review context" { seen = 1 }
@@ -61,22 +62,6 @@ grep -q 'pr.full.diff' "$prep" || {
 mkdir -p "$tmp/bin" "$tmp/run"
 cat >"$tmp/bin/gh" <<'GH'
 #!/usr/bin/env bash
-if [ "$1 $2" = "pr diff" ]; then
-  count=$(cat "$DIFF_COUNT")
-  count=$((count + 1))
-  printf '%s\n' "$count" >"$DIFF_COUNT"
-  if [ "$count" -le "${DIFF_FAILURES:-0}" ]; then
-    case "${DIFF_ERROR_KIND:-500}" in
-      500) echo "could not find pull request diff: HTTP 503: Service Unavailable response-marker-must-stay-masked" >&2 ;;
-      404) echo "could not find pull request diff: HTTP 404: Not Found" >&2 ;;
-      403) echo "could not find pull request diff: HTTP 403: rate limit exceeded" >&2 ;;
-      transport) echo "error connecting to api.github.com: connection reset by peer" >&2 ;;
-    esac
-    exit 1
-  fi
-  printf '%s\n' 'diff --git a/src/a.ts b/src/a.ts' '@@ -1 +1 @@' '-old' '+new'
-  exit 0
-fi
 if [ "$1 $2" = "pr view" ]; then
   case "$*" in
     *headRefOid*) printf '%s\n' 0123456789abcdef0123456789abcdef01234567 ;;
@@ -86,79 +71,121 @@ if [ "$1 $2" = "pr view" ]; then
 fi
 exit 2
 GH
+cat >"$tmp/bin/git" <<'GIT'
+#!/usr/bin/env bash
+case "$1" in
+  fetch)
+    count=$(cat "$FETCH_COUNT")
+    count=$((count + 1))
+    printf '%s\n' "$count" >"$FETCH_COUNT"
+    if [ "$count" -le "${FETCH_FAILURES:-0}" ]; then
+      echo "remote response-marker-must-stay-masked" >&2
+      exit 1
+    fi
+    ;;
+  merge-base)
+    [ "${NO_MERGE_BASE:-false}" != true ] && printf '%040d\n' 1 || exit 1
+    ;;
+  rev-parse)
+    printf '%s\n' true
+    ;;
+  diff)
+    for n in $(seq 1 301); do
+      printf 'diff --git a/src/file-%03d.ts b/src/file-%03d.ts\n' "$n" "$n"
+      printf '@@ -0,0 +1 @@\n+export const value%03d = true\n' "$n"
+    done
+    ;;
+  *) exit 2 ;;
+esac
+GIT
 cat >"$tmp/bin/sleep" <<'SH'
 #!/usr/bin/env bash
 printf '%s\n' "$1" >>"$SLEEP_LOG"
 SH
-chmod +x "$tmp/bin/gh" "$tmp/bin/sleep"
+chmod +x "$tmp/bin/gh" "$tmp/bin/git" "$tmp/bin/sleep"
 
 run_prep() {
-  printf '0\n' >"$tmp/diff-count"
+  printf '0\n' >"$tmp/fetch-count"
   : >"$tmp/sleep.log"
   : >"$tmp/github-output.txt"
   (
     cd "$tmp/run" || exit
     PATH="$tmp/bin:$PATH" GH_TOKEN=token TARGET_REPO=Verjson/example PR_NUMBER=7 \
-      DEPENDENCY_MAJOR=false DIFF_COUNT="$tmp/diff-count" SLEEP_LOG="$tmp/sleep.log" \
-      GITHUB_OUTPUT="$tmp/github-output.txt" DIFF_FAILURES="${1-0}" DIFF_ERROR_KIND="${2-500}" \
+      DEPENDENCY_MAJOR=false FETCH_COUNT="$tmp/fetch-count" SLEEP_LOG="$tmp/sleep.log" \
+      GITHUB_OUTPUT="$tmp/github-output.txt" FETCH_FAILURES="${1-0}" NO_MERGE_BASE="${2-false}" \
       bash "$prep"
   ) >"$tmp/prep.out" 2>&1
 }
 
-run_prep 1 500 \
-  && [ "$(cat "$tmp/diff-count")" -eq 2 ] \
+run_prep 1 \
+  && [ "$(cat "$tmp/fetch-count")" -eq 2 ] \
   && grep -q '^1$' "$tmp/sleep.log" \
   && grep -q 'result=retry' "$tmp/prep.out" \
-  && pass "one GitHub 5xx retries with bounded backoff and then succeeds" \
-  || fail "transient 5xx did not recover through the bounded retry"
+  && [ "$(grep -c '^diff --git ' "$tmp/run/.ai-review/pr.full.diff")" -eq 301 ] \
+  && pass "base fetch retries once and renders all 301 changed files locally" \
+  || fail "large local diff did not recover through the bounded base fetch"
 
-run_prep 1 transport \
-  && [ "$(cat "$tmp/diff-count")" -eq 2 ] \
-  && grep -q 'kind=transport' "$tmp/prep.out" \
-  && pass "transport failure retries and then succeeds" \
-  || fail "transient transport error did not recover"
-
-run_prep 9 500 \
-  && fail "persistent GitHub 5xx was allowed through" \
+run_prep 9 \
+  && fail "persistent base fetch failure was allowed through" \
   || {
-    [ "$(cat "$tmp/diff-count")" -eq 4 ] \
+    [ "$(cat "$tmp/fetch-count")" -eq 4 ] \
       && grep -q 'kind=infrastructure_unavailable' "$tmp/prep.out" \
       && grep -q '^review_input_failure=infrastructure_unavailable$' "$tmp/github-output.txt" \
       && [ "$(tr '\n' ',' <"$tmp/sleep.log")" = "1,2,4," ] \
       && ! grep -q 'response-marker-must-stay-masked' "$tmp/prep.out" \
-      && pass "exhausted 5xx retry fails closed with typed infrastructure state" \
-      || fail "exhausted 5xx lacks exponential backoff, masking, or typed failure evidence"
+      && pass "exhausted base fetch fails closed with typed infrastructure state" \
+      || fail "exhausted base fetch lacks exponential backoff, masking, or typed failure evidence"
   }
 
-run_prep 9 transport \
-  && fail "persistent transport failure was allowed through" \
+run_prep 0 true \
+  && fail "missing merge base was allowed through" \
   || {
-    [ "$(cat "$tmp/diff-count")" -eq 4 ] \
-      && grep -q 'source=transport http_status=none' "$tmp/prep.out" \
-      && grep -q '^review_input_failure=infrastructure_unavailable$' "$tmp/github-output.txt" \
-      && pass "exhausted transport retry shares the typed unavailable outcome" \
-      || fail "exhausted transport retry lacks typed infrastructure evidence"
+    [ "$(cat "$tmp/fetch-count")" -eq 2 ] \
+      && grep -q 'kind=merge_base_unavailable' "$tmp/prep.out" \
+      && grep -q '^review_input_failure=merge_base_unavailable$' "$tmp/github-output.txt" \
+      && pass "missing merge base retries with full history, then fails closed" \
+      || fail "missing merge base skipped the unshallow fallback or typed failure"
   }
 
-run_prep 9 404 \
-  && fail "GitHub 4xx was allowed through" \
-  || {
-    [ "$(cat "$tmp/diff-count")" -eq 1 ] \
-      && ! grep -q 'result=retry' "$tmp/prep.out" \
-      && grep -q 'kind=client_error http_status=404' "$tmp/prep.out" \
-      && pass "GitHub 4xx fails closed immediately without retry" \
-      || fail "4xx was retried or lacked typed client-error evidence"
-  }
+! grep -q 'gh pr diff' "$prep" \
+  && pass "review input no longer depends on GitHub's whole-diff endpoint" \
+  || fail "the 300-file-limited whole-diff endpoint remains on the review path"
 
-run_prep 9 403 \
-  && fail "rate-limit response was allowed through" \
-  || {
-    [ "$(cat "$tmp/diff-count")" -eq 1 ] \
-      && [ ! -s "$tmp/sleep.log" ] \
-      && grep -q 'kind=client_error http_status=403' "$tmp/prep.out" \
-      && pass "rate-limit 4xx fails immediately without amplifying API load" \
-      || fail "rate-limit response was retried or misclassified"
-  }
+# Exercise the exact shallow-history failure that a fully mocked git cannot
+# represent: a feature branch whose fork point is deeper than fetch-depth 2.
+real_git="$(command -v git)"
+fixture="$tmp/shallow"
+mkdir -p "$fixture"
+"$real_git" init --bare --initial-branch=main "$fixture/remote.git" >/dev/null
+"$real_git" init -b main "$fixture/seed" >/dev/null
+(
+  cd "$fixture/seed" || exit
+  git config user.name test
+  git config user.email test@example.com
+  printf 'base\n' >file
+  git add file
+  git commit -m base >/dev/null
+  git remote add origin "$fixture/remote.git"
+  git push --quiet -u origin main
+  git switch --quiet -c feature
+  for n in 1 2 3; do
+    printf '%s\n' "$n" >>file
+    git commit -am "feature $n" >/dev/null
+  done
+  git push --quiet -u origin feature
+)
+"$real_git" clone --quiet --depth=2 --branch feature "file://$fixture/remote.git" "$fixture/checkout"
+(
+  cd "$fixture/checkout" || exit
+  git fetch --no-tags --depth=100 origin \
+    "+refs/heads/main:refs/remotes/origin/main" >/dev/null 2>&1
+  [ -z "$(git merge-base origin/main HEAD 2>/dev/null || true)" ] \
+    && git fetch --no-tags --unshallow origin \
+      "+refs/heads/main:refs/remotes/origin/main" >/dev/null 2>&1 \
+    && [ -n "$(git merge-base origin/main HEAD 2>/dev/null || true)" ]
+) \
+  && pass "unshallow fallback restores a merge base for a three-commit PR" \
+  || fail "real fetch-depth 2 fixture cannot recover its merge base"
 
 [ "$fails" -eq 0 ] && { echo "All tests passed."; exit 0; }
 echo "$fails test(s) failed."

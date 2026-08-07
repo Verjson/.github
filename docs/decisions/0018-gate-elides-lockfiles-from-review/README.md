@@ -120,3 +120,17 @@ server response bodies and credentials cannot leak through retry diagnostics.
 This refines only the full-diff input boundary governed by this ADR. It does not
 soften schema validation, review verdicts, stale-review cleanup (#452), or the
 dispatched-merge postcondition (#384).
+
+## Amendment (2026-08-07, #323) — render large diffs from checked-out history
+
+GitHub's whole-diff endpoint rejects pull requests over 300 files with HTTP 406,
+so retrying it cannot review history-free publication PRs. The gate now fetches
+the base ref with the same bounded 1/2/4-second retry schedule, establishes its
+merge base with the immutable checked-out PR head, and renders the complete
+three-dot diff locally. The existing head-SHA check still runs after the
+debounce, and lockfile elision still consumes the resulting full diff.
+
+Fetch exhaustion, a missing merge base, or a local diff failure remains a typed
+fail-closed review-input outcome. Raw fetch errors stay masked. This removes an
+API size ceiling without weakening freshness or turning unavailable evidence
+into an approval.
