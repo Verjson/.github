@@ -1463,11 +1463,22 @@ jobs:
           # positive would tell a maintainer to split a PR that is not oversized.
           budget_exhausted=false
           turns_exhausted=false
+          terminal_errors=(false false false)
+          pass_index=0
           for f in "${EXEC_FILE_1:-}" "${EXEC_FILE_2:-}" "${EXEC_FILE_3:-}"; do
             if [ -z "$f" ] || [ ! -f "$f" ]; then
+              pass_index=$((pass_index + 1))
               continue
             fi
             subtype=$(jq -r '(if type == "array" then (map(select(.type == "result")) | last) else . end).subtype // ""' "$f" 2>/dev/null || echo "")
+            # A structured_output is not a verdict when the same SDK result says
+            # the pass terminated in error. The action can still emit the
+            # shortest schema-valid filler while exhausting turns or budget
+            # (#441); retain the factual subtype instead of guessing at content
+            # quality.
+            case "$subtype" in
+              error_*) terminal_errors[pass_index]=true ;;
+            esac
             # Turn exhaustion is a DIFFERENT limit with a different remedy, and it
             # was invisible here (#442): only the budget subtype was matched, so a
             # run that died on the 15-turn cap surfaced as an unexplained gate
@@ -1478,16 +1489,35 @@ jobs:
               error_max_budget_usd) budget_exhausted=true ;;
               error_max_turns)      turns_exhausted=true ;;
             esac
+            pass_index=$((pass_index + 1))
           done
-          echo "budget_exhausted=$budget_exhausted" >> "$GITHUB_OUTPUT"
-          echo "turns_exhausted=$turns_exhausted" >> "$GITHUB_OUTPUT"
+          selected_pass_terminal_error=false
+          if [ "$RETRY2_VERDICT" = true ]; then
+            selected_pass_terminal_error=${terminal_errors[2]}
+          elif [ "$RETRY1_VERDICT" = true ]; then
+            selected_pass_terminal_error=${terminal_errors[1]}
+          elif [ "$FIRST_VERDICT" = true ]; then
+            selected_pass_terminal_error=${terminal_errors[0]}
+          fi
+          usable_verdict=false
+          if { [ "$FIRST_VERDICT" = true ] || [ "$RETRY1_VERDICT" = true ] || [ "$RETRY2_VERDICT" = true ]; } &&
+             [ "$selected_pass_terminal_error" != true ]; then
+            usable_verdict=true
+          fi
+          {
+            echo "budget_exhausted=$budget_exhausted"
+            echo "turns_exhausted=$turns_exhausted"
+            echo "selected_pass_terminal_error=$selected_pass_terminal_error"
+          } >> "$GITHUB_OUTPUT"
           # Say in words what the red `error_max_budget_usd` annotation means in
           # this run. The action emits it at failure level even when a later
           # pass succeeds, which is exactly what made verjson-cli-cloud#163 read
           # as an unexplained gate failure.
           if [ "$budget_exhausted" = true ]; then
-            if [ "$FIRST_VERDICT" = true ] || [ "$RETRY1_VERDICT" = true ] || [ "$RETRY2_VERDICT" = true ]; then
+            if [ "$usable_verdict" = true ]; then
               echo "::notice::phase=model budget_exhausted=true outcome=recovered — a review pass hit its cost cap (the red error_max_budget_usd annotation above is expected); a later pass produced the verdict and this run is NOT blocked by it."
+            elif [ "$selected_pass_terminal_error" = true ]; then
+              echo "::error::phase=model budget_exhausted=true outcome=blocked — the selected review pass ended in a terminal error, so its structured output is not a usable verdict. The gate blocks this PR and requests human review."
             else
               echo "::error::phase=model budget_exhausted=true outcome=blocked — every review pass hit its cost cap. This PR is larger than the review budget; the gate blocks it and requests human review."
             fi
@@ -1499,8 +1529,10 @@ jobs:
           # Telling a maintainer to split a PR that is not oversized is the false
           # positive the budget probe already takes care to avoid.
           if [ "$turns_exhausted" = true ]; then
-            if [ "$FIRST_VERDICT" = true ] || [ "$RETRY1_VERDICT" = true ] || [ "$RETRY2_VERDICT" = true ]; then
+            if [ "$usable_verdict" = true ]; then
               echo "::notice::phase=model turns_exhausted=true outcome=recovered — a review pass hit its turn cap (the red error_max_turns annotation above is expected); a later pass produced the verdict and this run is NOT blocked by it."
+            elif [ "$selected_pass_terminal_error" = true ]; then
+              echo "::error::phase=model turns_exhausted=true outcome=blocked — the selected review pass ended in a terminal error, so its structured output is not a usable verdict. The gate blocks this PR and requests human review."
             else
               echo "::error::phase=model turns_exhausted=true outcome=blocked — every review pass hit its turn cap. The review ran out of exploration steps rather than budget, so raising the budget will not help; the gate blocks this PR and requests human review."
             fi
@@ -1528,6 +1560,9 @@ jobs:
           # generic). Never gates whether the merge is blocked — an unset or
           # garbage value degrades to the generic message, still fail-closed.
           BUDGET_EXHAUSTED: ${{ steps.retry_outcome.outputs.budget_exhausted }}
+          # A pass that ended in an SDK terminal error did not produce a usable
+          # verdict even if the action surfaced schema-valid filler (#441).
+          SELECTED_PASS_TERMINAL_ERROR: ${{ steps.retry_outcome.outputs.selected_pass_terminal_error }}
           CHANGED_LINES: ${{ needs.preflight.outputs.changed_lines }}
           BUDGET_USD: ${{ needs.preflight.outputs.budget_usd }}
         run: |
@@ -1544,17 +1579,17 @@ jobs:
           # fell through to `--approve` and exited 0, green-lighting the merge of
           # a PR that was never reviewed. Only a malformed-but-non-empty verdict
           # (jq exit 4) ever reached the fail-closed branch.
-          if [ -z "${VERDICT//[[:space:]]/}" ] || ! jq -e '.blocking | type == "boolean"' <<<"$VERDICT" >/dev/null 2>&1; then
+          if [ "${SELECTED_PASS_TERMINAL_ERROR:-}" = "true" ] || [ -z "${VERDICT//[[:space:]]/}" ] || ! jq -e '.blocking | type == "boolean"' <<<"$VERDICT" >/dev/null 2>&1; then
             gh pr edit "$PR_NUMBER" --repo "$TARGET_REPO" --add-label ai-review-inconclusive 2>/dev/null || true
             # A budget-exhausted review is a legible outcome, not an opaque
             # `error_max_budget_usd`: name the cause, the diff size and the cap
             # so the maintainer knows the PR is oversized rather than broken.
             # The flag only chooses the wording — every branch here blocks.
             heading="⚠️ **Merge gate: review could not complete**"
-            detail="The automated review produced no verdict across all three passes (budget/turn exhaustion, or the model failed to return a structured verdict on every attempt)."
-            if [ "${BUDGET_EXHAUSTED:-}" = "true" ]; then
+            detail="The automated review produced no usable verdict across all three passes (budget/turn exhaustion, another terminal model error, or the model failed to return a structured verdict on every attempt)."
+            if [ "${BUDGET_EXHAUSTED:-}" = "true" ] && [ "${SELECTED_PASS_TERMINAL_ERROR:-}" != "true" ]; then
               heading="⚠️ **Merge gate: budget-exceeded — human review required**"
-              detail="At least one review pass ended in \`error_max_budget_usd\`, and no pass produced a verdict. The diff (~${CHANGED_LINES:-unknown} changed lines) is larger than the first-pass review budget (\$${BUDGET_USD:-unknown}) and the \$1.00 escalations could not finish it either. This is a **budget-exceeded** outcome, not a review failure — split the PR into smaller, independently reviewable changes, or review it by hand."
+              detail="At least one review pass ended in \`error_max_budget_usd\`, and no pass produced a usable verdict. The diff (~${CHANGED_LINES:-unknown} changed lines) is larger than the first-pass review budget (\$${BUDGET_USD:-unknown}) and the \$1.00 escalations could not finish it either. This is a **budget-exceeded** outcome, not a review failure — split the PR into smaller, independently reviewable changes, or review it by hand."
             fi
             gh pr comment "$PR_NUMBER" --repo "$TARGET_REPO" --body "$heading
 

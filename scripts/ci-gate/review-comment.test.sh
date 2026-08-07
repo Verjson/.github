@@ -32,6 +32,10 @@ if ! grep -q 'Review these first' "$script"; then
   echo "FAIL - could not extract the submit run block (or the pinpoint render is gone) from $wf"
   exit 1
 fi
+grep -qF 'SELECTED_PASS_TERMINAL_ERROR: ${{ steps.retry_outcome.outputs.selected_pass_terminal_error }}' "$wf" || {
+  echo "FAIL - submit step is not wired to the selected pass terminal-error fact"
+  exit 1
+}
 
 # Fake gh: captures the --body of whichever call is made, logs the action.
 mkdir -p "$tmp/bin"
@@ -58,7 +62,7 @@ GH
 chmod +x "$tmp/bin/gh"
 
 run_submit() {
-  # run_submit <verdict-json>
+  # run_submit <verdict-json> [selected-pass-terminal-error] [budget-exhausted]
   export PATH="$tmp/bin:$PATH" TARGET_REPO="Verjson/foo" PR_NUMBER=7 HEAD_SHA=deadbeef MODEL=haiku PATCH_ID=pid00feed GITHUB_RUN_ID=12345
   export ACTIONLOG="$tmp/act.log" BODYFILE="$tmp/body.txt" COMMENTFILE="$tmp/comment.txt"
   export GITHUB_OUTPUT="$tmp/gh_output.txt" # the runner provides this; the step writes the verdict here
@@ -66,7 +70,7 @@ run_submit() {
   : >"$BODYFILE"
   : >"$COMMENTFILE"
   : >"$GITHUB_OUTPUT"
-  export VERDICT="$1"
+  export VERDICT="$1" SELECTED_PASS_TERMINAL_ERROR="${2:-false}" BUDGET_EXHAUSTED="${3:-false}"
   bash -eo pipefail "$script" >/dev/null 2>&1
   echo "rc=$?"
 }
@@ -134,6 +138,31 @@ rc=$(run_submit 'not-json')
 { [ "$rc" = "rc=1" ] && act_has EDIT && comment_has 'review could not complete'; } &&
   pass "no verdict: labels inconclusive, comments, exits 1 (fail closed)" ||
   fail "no-verdict path wrong ($rc)"
+
+# 6. A schema-valid verdict is still absent when its producing SDK pass ended
+#    in a terminal error subtype. The model may emit required-field filler while
+#    exhausting its turns or budget; publishing that as CHANGES_REQUESTED would
+#    fabricate findings rather than report an inconclusive review (#441).
+degenerate='{"blocking":true,"summary":"test","review_first":[{"location":"a","why":"b"}],"findings":["c"],"followups":[]}'
+rc=$(run_submit "$degenerate" true)
+{ [ "$rc" = "rc=1" ] && act_has EDIT && comment_has 'review could not complete' && ! act_has REVIEW && ! output_has '"findings":["c"]'; } &&
+  pass "terminal-error pass: schema-valid filler is routed to no-verdict fail-closed" ||
+  fail "terminal-error filler escaped the no-verdict branch ($rc)"
+
+# A budget subtype with filler did not run all escalations, so it must use the
+# factual generic terminal-error explanation rather than claim every pass
+# exhausted its budget.
+rc=$(run_submit "$degenerate" true true)
+{ [ "$rc" = "rc=1" ] && comment_has 'terminal model error' && ! comment_has 'budget-exceeded'; } &&
+  pass "terminal-error filler does not fabricate an all-passes budget outcome" ||
+  fail "terminal-error filler received misleading budget wording ($rc)"
+
+# The subtype fact, not content quality, decides usability: the identical terse
+# verdict from a successful pass remains a real blocking verdict.
+rc=$(run_submit "$degenerate" false)
+{ [ "$rc" = "rc=1" ] && act_has REVIEW && body_has 'c' && ! act_has EDIT; } &&
+  pass "successful pass: terse schema-valid blocking verdict remains usable" ||
+  fail "successful terse verdict was rejected by a content heuristic ($rc)"
 
 if [ "$fails" -eq 0 ]; then
   echo "All tests passed."
