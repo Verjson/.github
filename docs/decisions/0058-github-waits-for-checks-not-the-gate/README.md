@@ -536,3 +536,27 @@ thing that behaves differently than it reads.
 - **Raise the hosted spending limit** so every repository uses hosted capacity.
   Buys time at recurring cost; a job still sleeps on a runner, and hosted minutes
   already hit the limit once (2026-07-17).
+
+## 2026-08-07 amendment — declared audit and human-gated policy plan (#416)
+
+The stack contract is now machine-readable in
+`.github/required-check-contract.json`, including exact universal and per-stack
+contexts, canonical caller job names, desired property schemas, and the
+evaluate-mode ruleset scopes. It is explicitly plan-only:
+`mutation_authorized` is false and the recorded blocker is the organization’s
+inability to read evaluate-mode rule-suite results on GitHub Team.
+
+`scripts/required-checks-audit.sh` remains read-only but now verifies both
+observed checks and default-branch caller source. A repository is nonconformant
+when its stack or generated changelog caller uses the wrong job name, or when
+that caller’s workflow has `paths`/`paths-ignore` at workflow scope. Archived
+repositories are excluded; unclassified, unaudited, missing-context, partial
+pagination, rate-limit, malformed YAML, and unreadable property/workflow/check
+states all prevent a green audit.
+
+#404 is complete: the canonical changelog generator now emits job
+`changelog`, which publishes `changelog / validate`. The remaining acceptance
+conditions are external organization state. Applying property values or
+creating/promoting rulesets remains a human-gated sensitive action, and #416
+stays open until the audit reports zero nonconformant, zero unclassified, and
+zero unaudited repositories and the post-apply measurement is reviewed.
