@@ -410,15 +410,22 @@ jobs:
           newest_trusted_gate_run() {
             local runs
             runs="$(gh api "repos/$TARGET_REPO/actions/runs?head_sha=$EXPECTED_HEAD_SHA&event=pull_request&per_page=100")" || return $?
+            # A retired required workflow can leave a newer all-skipped run in
+            # Actions history (#506). `skipped` means the gate produced no
+            # verdict, so it is ineligible for newest-verdict selection. Every
+            # other conclusion remains authoritative: an active failed or
+            # cancelled gate still fails closed, and all-skipped history yields
+            # no gate rather than approval.
             jq -ce --argjson id "$trusted_workflow_id" --arg sha "$trusted_workflow_sha" \
                 --arg wfpath "$trusted_workflow_path" \
                 --arg wfurl "$trusted_required_url" \
                 --argjson required "$required_workflow_trusted" \
                 "$trusted_run_def"'
-                  [.workflow_runs[] | select(trusted_run)] |
-                  sort_by([(.created_at // ""), .id]) |
-                  last // empty
-                ' <<<"$runs"
+                [.workflow_runs[] |
+                  select(trusted_run and ((.conclusion // "") != "skipped"))] |
+                sort_by([(.created_at // ""), .id]) |
+                last // empty
+              ' <<<"$runs"
           }
 
           # The dispatcher hands over its own gate run, which is triggered by
