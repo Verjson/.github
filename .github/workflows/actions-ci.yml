@@ -204,6 +204,8 @@ jobs:
         run: bash scripts/ci-gate/release-node-restart.test.sh
       - name: Generated Node release packs configured directories locally (#561)
         run: bash scripts/ci-gate/release-node-local-pack.test.sh
+      - name: Generated Node release bounds GitHub Release notes (#571)
+        run: bash scripts/ci-gate/release-node-notes.test.sh
       - name: Changelog contract — generated release caller verifies before it tags (#463, #464, #465)
         run: bash scripts/ci-gate/changelog-release-caller.test.sh
       - name: Changelog contract resolution — pinned digest, verified override (#304)

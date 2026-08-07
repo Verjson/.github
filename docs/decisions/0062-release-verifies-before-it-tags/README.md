@@ -1,7 +1,7 @@
 # 0062 — The release caller is generated, and it verifies before it tags
 
 - **Date:** 2026-08-06
-- **Issues:** [#463](https://github.com/Verjson/.github/issues/463), [#464](https://github.com/Verjson/.github/issues/464), [#465](https://github.com/Verjson/.github/issues/465), [#519](https://github.com/Verjson/.github/issues/519), [#520](https://github.com/Verjson/.github/issues/520), [#535](https://github.com/Verjson/.github/issues/535), [#548](https://github.com/Verjson/.github/issues/548), [#550](https://github.com/Verjson/.github/issues/550), [#561](https://github.com/Verjson/.github/issues/561), [#569](https://github.com/Verjson/.github/issues/569)
+- **Issues:** [#463](https://github.com/Verjson/.github/issues/463), [#464](https://github.com/Verjson/.github/issues/464), [#465](https://github.com/Verjson/.github/issues/465), [#519](https://github.com/Verjson/.github/issues/519), [#520](https://github.com/Verjson/.github/issues/520), [#535](https://github.com/Verjson/.github/issues/535), [#548](https://github.com/Verjson/.github/issues/548), [#550](https://github.com/Verjson/.github/issues/550), [#561](https://github.com/Verjson/.github/issues/561), [#569](https://github.com/Verjson/.github/issues/569), [#571](https://github.com/Verjson/.github/issues/571)
 - **Extends:** ADR 0038 (canonical changelog contract), ADR 0060 (a release is dispatched, never derived), ADR 0052 (`push_token` is not `GITHUB_TOKEN`), ADR 0059 (released snapshots are immutable)
 - **Category:** release authority — **sensitive class**
 
@@ -147,6 +147,15 @@ GitHub Packages read, and the returned name, version, and integrity must all
 match. An additional `npm whoami` probe is neither required nor sufficient;
 authorization and network failures remain exercised at the state read that the
 reconciliation decision actually consumes (#548).
+
+**2026-08-07 — post-publish release notes are bounded (#571).**
+The generated caller passes the exact immutable snapshot while it is at most
+125,000 bytes. Above that boundary it keeps a conservative 120,000-byte prefix,
+drops the partial final line, and appends a link to the complete snapshot at the
+exact tag and repository. Byte counting intentionally overestimates GitHub's
+character count for multibyte UTF-8. Create and restart/edit consume the same
+prepared file, so a deterministic body-size rejection cannot strand an already
+published package on every rerun.
 
 ### Judgement call: `release-node`, not `release`
 

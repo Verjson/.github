@@ -648,13 +648,32 @@ jobs:
           VERSION: \${{ inputs.version }}
         run: |
           # RESTART_SAFE_GH_RELEASE_BEGIN
+          snapshot="CHANGELOG/\$VERSION.md"
+          notes="\$snapshot"
+          notes_limit=125000
+          if [ "\$(wc -c <"\$snapshot")" -gt "\$notes_limit" ]; then
+            temp_root="\${RUNNER_TEMP:-/tmp}"
+            notes="\$(mktemp "\$temp_root/release-notes.XXXXXX")"
+            trap 'rm -f -- "\$notes"' EXIT
+            head -c 120000 "\$snapshot" | sed '\$d' >"\$notes"
+            {
+              printf '\\n\\n---\\n\\n'
+              printf '_These notes were truncated at GitHub'"'"'s 125,000-character limit. '
+              printf 'The complete and immutable snapshot for this release is '
+              printf '[\`%s\`](%s/%s/blob/%s/%s)._\\n' \
+                "\$snapshot" "\$GITHUB_SERVER_URL" "\$GITHUB_REPOSITORY" "\$VERSION" "\$snapshot"
+            } >>"\$notes"
+            [ "\$(wc -c <"\$notes")" -le "\$notes_limit" ] \
+              || { echo "::error::Bounded GitHub Release notes exceed \$notes_limit bytes."; exit 1; }
+            echo "::notice::Release notes were truncated by bytes; the full immutable snapshot is \$snapshot."
+          fi
           existing_tag="\$(gh release view "\$VERSION" --json tagName --jq .tagName 2>/dev/null || true)"
           if [ -n "\$existing_tag" ]; then
             [ "\$existing_tag" = "\$VERSION" ] \
               || { echo "::error::GitHub Release lookup returned unexpected tag '\$existing_tag'."; exit 1; }
-            gh release edit "\$VERSION" --notes-file "CHANGELOG/\$VERSION.md"
+            gh release edit "\$VERSION" --notes-file "\$notes"
           else
-            gh release create "\$VERSION" --verify-tag --notes-file "CHANGELOG/\$VERSION.md"
+            gh release create "\$VERSION" --verify-tag --notes-file "\$notes"
           fi
           # RESTART_SAFE_GH_RELEASE_END
 EOF
@@ -1182,9 +1201,12 @@ while IFS= read -r release_workflow; do
     'published.name !== expectedName' \
     'published.version !== expectedVersion' \
     'published.dist.integrity !== expectedIntegrity' \
+    'notes_limit=125000' \
+    'head -c 120000 "$snapshot"' \
+    'GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$VERSION" "$snapshot"' \
     'gh release view "$VERSION" --json tagName' \
-    'gh release edit "$VERSION" --notes-file' \
-    'gh release create "$VERSION" --verify-tag --notes-file'; do
+    'gh release edit "$VERSION" --notes-file "$notes"' \
+    'gh release create "$VERSION" --verify-tag --notes-file "$notes"'; do
     printf '%s\n' "$publish_job" | grep -qF -- "$restart_guard" \
       || fail "$release_workflow is not restart-safe after partial publication; missing '$restart_guard' (#535)"
   done

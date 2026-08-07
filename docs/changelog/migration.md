@@ -99,6 +99,13 @@
    preparation. Every configured package is stamped, packed, and reconciled by
    exact registry integrity independently.
 
+   The generated caller also bounds the post-publication GitHub Release body.
+   Snapshots at or below 125,000 bytes are published exactly; larger snapshots
+   are truncated conservatively on a line boundary and link to the complete
+   immutable `CHANGELOG/<version>.md` at the exact release tag. Do not replace
+   the generated `notes-file` preparation with the raw snapshot path: a body
+   rejection happens after npm publication and will repeat on every restart.
+
    `release-node` exists only from the commit that closed #463/#464/#465 and is
    included in the pin above. An older pin has no such mode and the command fails loudly
    rather than emitting an empty file, so a repository still on an older pin must
