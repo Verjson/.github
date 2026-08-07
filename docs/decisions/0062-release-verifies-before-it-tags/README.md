@@ -1,7 +1,7 @@
 # 0062 — The release caller is generated, and it verifies before it tags
 
 - **Date:** 2026-08-06
-- **Issues:** [#463](https://github.com/Verjson/.github/issues/463), [#464](https://github.com/Verjson/.github/issues/464), [#465](https://github.com/Verjson/.github/issues/465), [#519](https://github.com/Verjson/.github/issues/519), [#520](https://github.com/Verjson/.github/issues/520), [#535](https://github.com/Verjson/.github/issues/535), [#550](https://github.com/Verjson/.github/issues/550)
+- **Issues:** [#463](https://github.com/Verjson/.github/issues/463), [#464](https://github.com/Verjson/.github/issues/464), [#465](https://github.com/Verjson/.github/issues/465), [#519](https://github.com/Verjson/.github/issues/519), [#520](https://github.com/Verjson/.github/issues/520), [#535](https://github.com/Verjson/.github/issues/535), [#550](https://github.com/Verjson/.github/issues/550), [#561](https://github.com/Verjson/.github/issues/561)
 - **Extends:** ADR 0038 (canonical changelog contract), ADR 0060 (a release is dispatched, never derived), ADR 0052 (`push_token` is not `GITHUB_TOKEN`), ADR 0059 (released snapshots are immutable)
 - **Category:** release authority — **sensitive class**
 
@@ -133,6 +133,13 @@ verification and publication, outside publication-credential scope. The
 generated caller then stamps, packs, publishes, or integrity-reconciles every
 package independently, so partial multi-package success is restart-safe without
 overwriting any immutable version.
+
+Configured secondary directories are converted to explicit `./<dir>` paths
+before npm sees them; the root remains `.`. A bare token such as `compat` is an
+npm registry package spec, not reliably a local directory, and can produce a
+valid integrity for an unrelated public package. Path validation plus explicit
+local semantics are therefore part of the artifact-identity boundary, with a
+real-npm test running against an unreachable registry (#561).
 
 ### Judgement call: `release-node`, not `release`
 

@@ -575,11 +575,18 @@ jobs:
           package_dirs=(${package_dirs_shell})
 
           for package_dir in "\${package_dirs[@]}"; do
-            [ -d "\$package_dir" ] \
+            # LOCAL_PACKAGE_PATH_BEGIN
+            if [ "\$package_dir" = . ]; then
+              package_path=.
+            else
+              package_path="./\$package_dir"
+            fi
+            # LOCAL_PACKAGE_PATH_END
+            [ -d "\$package_path" ] \
               || { echo "::error::Configured release package directory '\$package_dir' does not exist."; exit 1; }
-            npm version "\$version" --prefix "\$package_dir" --no-git-tag-version \
+            npm version "\$version" --prefix "\$package_path" --no-git-tag-version \
               --ignore-scripts --allow-same-version
-            npm pack "\$package_dir" --json --ignore-scripts >"\$pack_json"
+            npm pack "\$package_path" --json --ignore-scripts >"\$pack_json"
             node - "\$pack_json" "\$version" >"\$package_meta" <<'NODE'
           const fs = require("fs");
           const path = require("path");
@@ -1126,7 +1133,8 @@ while IFS= read -r release_workflow; do
   for restart_guard in \
     'scripts/release-prepare-packages.sh "${VERSION#v}"' \
     'for package_dir in "${package_dirs[@]}"' \
-    'npm pack "$package_dir" --json --ignore-scripts' \
+    'package_path="./$package_dir"' \
+    'npm pack "$package_path" --json --ignore-scripts' \
     'npm whoami --registry=https://npm.pkg.github.com' \
     'npm view "$package_name@$package_version" --json' \
     'published.dist.integrity !== expectedIntegrity' \

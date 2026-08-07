@@ -52,7 +52,7 @@ case "$command" in
         touch acme-pkg-9.9.9.tgz
         printf '%s\n' '[{"name":"@acme/pkg","version":"9.9.9","integrity":"sha512-expected","filename":"acme-pkg-9.9.9.tgz"}]'
         ;;
-      *:compat)
+      *:./compat)
         touch acme-compat-1.2.3.tgz
         printf '%s\n' '[{"name":"@acme/compat","version":"1.2.3","integrity":"sha512-compat","filename":"acme-compat-1.2.3.tgz"}]'
         ;;
@@ -127,8 +127,12 @@ if run_notes env GH_CREATE_FAIL=1; then
 fi
 run_publish
 run_notes env GH_CREATE_FAIL=0
-[ -e "$work/state/registry-root" ] && [ -e "$work/state/registry-compat" ] \
-  && [ -e "$work/state/prepared" ] && [ -e "$work/state/github-release" ]
+for expected_state in registry-root registry-compat prepared github-release; do
+  [ -e "$work/state/$expected_state" ] || {
+    echo "FAIL - partial-success rerun did not create $expected_state" >&2
+    exit 1
+  }
+done
 echo "ok - npm success plus GitHub Release failure completes safely on rerun"
 run_publish
 run_notes env GH_CREATE_FAIL=0
