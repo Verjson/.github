@@ -41,9 +41,16 @@ if [ ! -s "$sequence" ]; then
   exit 1
 fi
 
+if [ -n "${CONTRACT_MIGRATION_SOURCE_URL:-}" ]; then
+  contract_source_url="$CONTRACT_MIGRATION_SOURCE_URL"
+elif ! contract_source_url="$(git -C "$root" remote get-url origin 2>/dev/null)"; then
+  echo "FAIL - set CONTRACT_MIGRATION_SOURCE_URL or configure origin so the pinned contract can be fetched"
+  exit 1
+fi
+
 if ! (
   cd "$consumer"
-  CONTRACT_SOURCE_URL="$root" PUBLISH_NODE=true bash "$sequence"
+  CONTRACT_SOURCE_URL="$contract_source_url" PUBLISH_NODE=true bash "$sequence"
 ) >"$tmp/sequence.out" 2>&1; then
   echo "FAIL - documented migration sequence failed"
   sed 's/^/diag - /' "$tmp/sequence.out"
