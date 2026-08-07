@@ -78,7 +78,11 @@ Instead the organization **declares a core set of check names per repository
 stack**, and repositories conform to it.
 
 The contract surface already exists. A reusable call's check name is
-`<caller job> / <inner job>`, and the org already pins every right-hand side:
+`<caller job> / <inner job>` **only when the caller job is unmatrixed**. A
+`strategy.matrix` changes every emitted context to
+`<caller job> (<matrix values>) / <inner job>`, so the canonical unmatrixed
+context is absent, not merely renamed. The org already pins every right-hand
+side:
 
 | Reusable workflow | Inner jobs (org-pinned) |
 | --- | --- |
@@ -88,11 +92,14 @@ The contract surface already exists. A reusable call's check name is
 | `ui-ci.yml` | `build-test` |
 | `changelog-validate.yml` | `validate` |
 
-The only free variable is the **caller's job name**, and that is exactly what a
-generated thin caller pins — the pattern already established by
+The free variables are the **caller's job name** and whether it has a matrix.
+A generated thin caller pins both — the pattern already established by
 `scripts/gen-changelog-caller.sh` and `scripts/gen-privileged-merge-caller.sh`.
 Canonical caller job names are therefore part of the contract: `ci` for the
-stack CI workflow, `changelog` for changelog validation.
+stack CI workflow, `changelog` for changelog validation, and both must be
+unmatrixed. Multi-version coverage uses one unmatrixed canonical caller plus
+separately named additional jobs, or one unmatrixed job per version with only
+the selected canonical job placed under required checks.
 
 The core set becomes small, declarable and stack-scoped:
 
@@ -283,13 +290,36 @@ had been mergeable anyway, which is the defect being closed.
 three are nonconformant, so there is nothing yet to enforce.
 
 **Step 5's second half — adding `gate` to the `~ALL` rule — is held, and the measurement is
-why.** Of 87 open non-draft PRs across the organization, **53 carry no `gate` check run at
-all**, across roughly twenty repositories (`viager-app`, `catalog-*`, `scv-*`,
-`self-publish.ai`, `sitenav` and others). Requiring the context today would wedge every one
-of them permanently, which is the exact "permanently pending" failure this ADR names in
-*A required check must be skippable, but never absent*. These are PRs whose head has not
-moved since before the `workflows` rule reached them; the remedy is a re-trigger sweep, not
-a ruleset. Requiring `gate` is deferred until that sweep is done and the count is zero.
+why.** The corrected complete-context audit on 2026-08-06 found **14 of 97** open non-draft
+PRs without the current `gate` context, not the earlier 53-of-87 estimate. Two were runs in
+flight; the remaining 12 span six repositories. Six carry the gate's legacy
+`classify`/`ai-review`/`ai-merge` names and six have no gate history. Requiring the current
+context would wedge all 12 permanently, which is the exact "permanently pending" failure
+this ADR names in *A required check must be skippable, but never absent*. Requiring `gate`
+is deferred until an ownership-routed re-trigger sweep is done and a fresh audit reports
+zero.
+
+### Amendment (2026-08-07, #474) — make the sweep reproducible and ownership bounded
+
+`scripts/gate_coverage_audit.py` pages the organization-wide open-PR search and verifies
+that every head check-rollup is complete before deciding that `gate` is absent. It reports
+one JSON line per exact `owner/repo#PR`, including draft, hold, fork, canonical workflow
+availability, legacy-context/head-stale reason, and the supported retrigger.
+
+The default is read-only. A repository-local active workflow uses the canonical
+`re-review` label. An organization-required workflow uses reversible close/reopen because
+the required-workflow record does not receive `labeled` events (#477). Both produce
+PR-associated events without pushing to another author's branch or using
+`workflow_dispatch` (whose checks do not attach to the PR rollup). Mutation
+requires both `--apply` and an exact repeated `--authorize-repo owner/repo`; eligible PRs
+outside that set are emitted as `refused_unmanaged`. Rate limits, truncated check
+connections, malformed pages, and unavailable repository metadata fail the whole audit
+closed rather than undercounting the gap.
+
+The JSON output is the compact durable handoff surface: group refused records by repository
+and route one repository-level handoff to its owning PM. Do not create one tracker per PR.
+The tool contains no workflow-dispatch, push, or merge operation. Close/reopen is available
+only for an exact authorized repository whose required-workflow shape needs that event.
 
 **Step 6 is therefore blocked for most of the organization, and blocked for a reason this
 ADR already gives.** The 67 `none` repositories have declared no required checks. If the
@@ -366,6 +396,33 @@ gate-less open PRs (#474), and the watchdog stays armed: `ai-privileged-merge.ym
 polls, still routes on `VERJSON_LANE_PRIVILEGED`, and is untouched by this step. ADR 0056
 therefore still stands.
 
+### Amendment (2026-08-07) — matrixed reusable callers are nonconformant (#431)
+
+The static classifier originally checked the reusable workflow filename and
+caller job key, but not `strategy.matrix`. That admitted a caller named `ci`
+even though GitHub emitted only `ci (20.20.2) / build-test`,
+`ci (24) / build-test`, and their eligibility counterparts. Requiring the
+canonical unmatrixed names would have wedged the repository while the
+classifier called it conformant.
+
+`scripts/classify-repo-stacks.sh` now treats a matrix on any recognized reusable
+CI or changelog caller as nonconformant and names the suffixed context shape in
+its remediation. The fixtures cover block and flow-style matrices and both
+orders of `strategy` and `uses`.
+
+The Groups B/C re-sweep projected all non-archived repositories'
+default-branch workflow blobs in one read-only GraphQL query. One live instance
+remained: `Verjson/verjson-customer-lifecycle`, whose `ci` job matrices Node
+20.20.2 and 24 around `node-ci.yml@v2.2.0`; remediation is handed off in
+[verjson-customer-lifecycle#16](https://github.com/Verjson/verjson-customer-lifecycle/issues/16).
+No consumer repository was changed here.
+
+Ruleset activation has a second head-level gate: after the default-branch
+workflow is remediated, every open PR must be rebased or updated onto that
+commit before canonical contexts are required. Older PR heads still contain
+the matrixed workflow, so GitHub cannot produce checks that did not exist when
+those heads were created.
+
 ## What this must preserve, and how
 
 - **Anti-TOCTOU head binding (ADR 0039).** Strengthened, not weakened. Today the
@@ -388,6 +445,28 @@ therefore still stands.
   enabled it, so a bypass actor enabling auto-merge replaces
   `ai-privileged-merge.yml` entirely. The bypass list (`OrganizationAdmin`,
   `Integration 2740`) is unchanged by this ADR — no new privilege is granted.
+
+## Amendment (2026-08-07, #452) — retract stale gate reviews after recovery
+
+A bot-authored `CHANGES_REQUESTED` review can remain GitHub's effective review
+decision after a later head receives a non-blocking gate verdict. The required
+`gate` check then passes while `reviewDecision` remains `CHANGES_REQUESTED`, so
+the platform-level merge precondition this ADR relies on becomes a one-way
+door: a correct gate finding can never recover without manual dismissal.
+
+Before reporting a non-blocking verdict green, the gate now lists prior reviews
+and dismisses only `github-actions[bot]` reviews whose state is
+`CHANGES_REQUESTED` and whose concrete `commit_id` differs from the reviewed
+head. Dismissal retains the original finding in the PR timeline. Human reviews,
+current-head bot reviews, reviews without a provable head binding, and all
+reviews while the current verdict remains blocking are untouched.
+
+The review list and each dismissal are merge-decision inputs and therefore fail
+closed: API errors, malformed payloads, or a failed dismissal leave the gate
+red with an explicit annotation. The existing job-level
+`pull-requests: write` permission is sufficient; no broader permission is
+added. Extraction tests pin reviewer identity, head binding, operation order,
+timeline-preserving dismissal, and both read and write failure paths.
 
 ### Open question: which actor satisfies the approval rule
 

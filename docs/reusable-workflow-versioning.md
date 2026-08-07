@@ -98,10 +98,18 @@ does not rewrite their workflow files.
 
    ```bash
    # from an up-to-date main
+   git switch main
+   git pull --ff-only origin main
+   verified_sha="$(git rev-parse --verify HEAD^{commit})"
+   # Run the release verification against "$verified_sha" before publishing.
    gh release create vX.Y.Z --repo Verjson/.github \
-     --target main --generate-notes \
+     --target "$verified_sha" --generate-notes \
      --title "vX.Y.Z"
    ```
+
+   Keep `verified_sha` unchanged between verification and publication. If
+   `main` advances meanwhile, the release still targets the exact commit that
+   was verified rather than the newer branch tip.
 
 4. The [`tag-major`](../.github/workflows/tag-major.yml) workflow fires on
    `release: published`, validates the tag is `vX.Y.Z`, and force-updates the `vX`

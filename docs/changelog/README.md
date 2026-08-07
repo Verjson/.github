@@ -184,6 +184,21 @@ scripts/gen-changelog-caller.sh contract-test "$PIN" --scope @acme --node-versio
 The generated contract test then rejects drift in either release job. Do not
 generate only one side or edit the workflow after generation.
 
+The root package is always the first artifact. Repeat `--package-dir` for
+explicit repository-relative secondary packages, passing the same ordered list
+to both outputs:
+
+```bash
+scripts/gen-changelog-caller.sh release-node "$PIN" --package-dir compat > .github/workflows/release.yml
+scripts/gen-changelog-caller.sh contract-test "$PIN" --package-dir compat > scripts/changelog-contract.test.sh
+```
+
+Before stamping and packing the configured directories, the caller runs an
+executable `scripts/release-prepare-packages.sh <version>` when present. Use
+that adopter-owned hook to update compatibility dependencies or generate
+secondary manifests; the caller itself applies the dispatched version to every
+package and gives each artifact the same restart-safe integrity proof.
+
 ## Consumer adoption
 
 A consumer needs three files, and they must pin the **same** commit — plus a

@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Classify every repository by the reusable CI workflow it calls, and report
-# whether its CALLER JOB NAME matches the core check contract (ADR 0058, step 1).
+# whether its CALLER JOB SHAPE can emit the core check contract (ADR 0058,
+# step 1): canonical name and no strategy matrix.
 #
 # Read-only. It writes no property and no ruleset.
 #
@@ -10,8 +11,9 @@
 # by looking at merged PR heads. That is the right question once a repository
 # has history, but it cannot answer the question that decides whether the
 # contract is even satisfiable: a reusable call's check name is
-# `<caller job> / <inner job>`, and the caller job name is chosen by the
-# consumer. The org pins the right-hand side; nothing today pins the left.
+# `<caller job> / <inner job>` only for an unmatrixed call. A matrix changes it
+# to `<caller job> (<matrix values>) / <inner job>`. The caller controls both
+# the left-hand name and whether GitHub inserts that matrix suffix.
 #
 # A repository calling `node-ci.yml` from a job named `build` emits
 # `build / build-test`, not `ci / build-test`. Requiring the contract there
@@ -73,9 +75,20 @@ calls_in_file() { # $1 = repo, $2 = path
   gh api "repos/$ORG/$1/contents/$2" --jq '.content' 2>/dev/null | base64 -d 2>/dev/null | awk '
     /^  [A-Za-z0-9_-]+:[[:space:]]*$/ {
       job = $1; sub(/:$/, "", job)
+      strategy_job = ""
       # Every job name is emitted once as a local definition, so a repository
       # that DEFINES a contract job rather than calling one is still visible.
       print "job\t" job
+      next
+    }
+    /^    strategy:/ {
+      strategy_job = job
+      if ($0 ~ /[{,][[:space:]]*matrix[[:space:]]*:/ && job != "")
+        print "matrix\t" job
+      next
+    }
+    /^      matrix[[:space:]]*:/ {
+      if (job != "" && strategy_job == job) print "matrix\t" job
       next
     }
     /^[[:space:]]*uses:[[:space:]]*Verjson\/\.github\/\.github\/workflows\// {
@@ -102,7 +115,7 @@ needs_review=0
 
 classify_repo() {
   local repo="$1" stack='' ci_job='' changelog_job='' findings=() path kind job wf
-  local local_jobs='' artifact_jobs='' changelog_inputs=''
+  local local_jobs='' artifact_jobs='' changelog_inputs='' matrix_jobs=''
 
   while read -r path; do
     [ -n "$path" ] || continue
@@ -113,6 +126,10 @@ classify_repo() {
       fi
       if [ "$kind" = changelog-input ]; then
         changelog_inputs="$changelog_inputs$job"$'\n'
+        continue
+      fi
+      if [ "$kind" = matrix ]; then
+        matrix_jobs="$matrix_jobs$job"$'\n'
         continue
       fi
       [ -n "$wf" ] || continue
@@ -165,8 +182,14 @@ classify_repo() {
   if [ -n "$ci_job" ] && [ "$ci_job" != "$CANONICAL_CI_JOB" ]; then
     findings+=("CI caller job is '$ci_job', so it emits '$ci_job / …' not '$CANONICAL_CI_JOB / …'")
   fi
+  if [ -n "$ci_job" ] && grep -Fxq "$ci_job" <<<"$matrix_jobs"; then
+    findings+=("matrixed CI caller job '$ci_job' emits '$ci_job (<matrix>) / …', so canonical unmatrixed contexts never report")
+  fi
   if [ -n "$changelog_job" ] && [ "$changelog_job" != "$CANONICAL_CHANGELOG_JOB" ]; then
     findings+=("changelog caller job is '$changelog_job', so it emits '$changelog_job / validate'")
+  fi
+  if [ -n "$changelog_job" ] && grep -Fxq "$changelog_job" <<<"$matrix_jobs"; then
+    findings+=("matrixed changelog caller job '$changelog_job' emits '$changelog_job (<matrix>) / validate', so '$CANONICAL_CHANGELOG_JOB / validate' never reports")
   fi
 
   local pkg=no
@@ -192,7 +215,7 @@ classify_repo() {
     conformant=$((conformant + 1))
   else
     local why; why="$(printf '%s; ' "${findings[@]}")"
-    echo "::error::phase=classify repo=$repo stack=$stack package=$pkg result=nonconformant ${why}— requiring the contract here would leave it permanently pending. Adopt the generated thin caller, or rename the job."
+    echo "::error::phase=classify repo=$repo stack=$stack package=$pkg result=nonconformant ${why}— requiring the contract here would leave it permanently pending. Adopt the generated thin caller, rename the job, or replace a matrixed reusable call with one unmatrixed caller job per supported variant."
     nonconformant=$((nonconformant + 1))
   fi
 }

@@ -72,6 +72,25 @@ is #341, or the watchdog's inability to preempt these cases, which is #343 —
 `actionlint` and `npm-cache-seed` are not poll workflows, so preempting a gate
 here frees a hosted slot and leaves the real blockage untouched.
 
+## 2026-08-07 completion: decouple the persistent-cache probe
+
+The persistent-cache probe remains on `VERJSON_LANE_TRUSTED`. Its two jobs
+exercise state that exists only on persistent runners, so routing them to a
+disposable public fast-lane runner would make the test meaningless.
+
+The coupling is removed at the trigger boundary instead. The probe no longer
+runs for pull requests. It runs after relevant changes merge to `main`, on a
+weekly schedule, and by explicit dispatch. This preserves pre-merge enforcement
+where it actually exists: the current organization ruleset requires only
+`shell-tests`, not either `npm-cache-*` job. A docs-only or workflow-comment PR
+therefore cannot allocate persistent-runner capacity for this probe or make the
+merge gate wait for it.
+
+The semantic routing matrix added by #357 now covers actionlint's public,
+private, unresolved, and external cases. The same policy suite separately pins
+both cache-probe jobs to the trusted lane so a future fast-lane sweep cannot
+erase the persistent-runner exemption by accident.
+
 ## Consequences
 
 - A public repository's linter stops competing with merge-gate poll loops for a

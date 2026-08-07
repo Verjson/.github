@@ -776,9 +776,25 @@ jobs:
           #
           # The merge already happened; losing a follow-up must never fail the
           # step, so every failure here is a warning.
+          declare -A seen_followup_hashes=()
+          unique_followups=()
+          while IFS= read -r item; do
+            if ! location="$(jq -r .location <<<"$item")" ||
+              ! note="$(jq -r .note <<<"$item")" ||
+              ! marker_hash="$(printf '%s' "$location"$'\n'"$note" | sha256sum | cut -c1-12)"; then
+              echo "::warning::could not canonicalize an AI-review follow-up"
+              continue
+            fi
+            if [[ -n "${seen_followup_hashes[$marker_hash]+present}" ]]; then
+              continue
+            fi
+            seen_followup_hashes["$marker_hash"]=1
+            unique_followups+=("$item")
+          done < <(jq -c '.[]' <<<"$followups")
+
           max_parallel=8
           inflight=0
-          while IFS= read -r item; do
+          for item in "${unique_followups[@]}"; do
             (
               location="$(jq -r .location <<<"$item")"
               note="$(jq -r .note <<<"$item")"
@@ -800,5 +816,5 @@ jobs:
               wait -n || true
               inflight=$((inflight - 1))
             fi
-          done < <(jq -c '.[]' <<<"$followups")
+          done
           wait

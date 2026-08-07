@@ -28,8 +28,8 @@ fail() { printf 'FAIL - %s\n' "$1"; fails=$((fails + 1)); }
 workflow="$(bash "$gen" workflow "$sha")"
 renderer="$(bash "$gen" renderer "$sha")"
 default_release="$(bash "$gen" release-node "$sha")"
-custom_release="$(bash "$gen" release-node "$sha" --scope @acme --node-version 22.23.1)"
-custom_contract="$(bash "$gen" contract-test "$sha" --scope @acme --node-version 22.23.1)"
+custom_release="$(bash "$gen" release-node "$sha" --scope @acme --node-version 22.23.1 --package-dir compat)"
+custom_contract="$(bash "$gen" contract-test "$sha" --scope @acme --node-version 22.23.1 --package-dir compat)"
 generated_artifacts="$(bash "$gen" generated-artifacts "$sha")"
 generated_artifacts_with_adr="$(bash "$gen" generated-artifacts-with-adr-index "$sha")"
 adr_index_generator="$(bash "$gen" adr-index-generator "$sha")"
@@ -116,6 +116,8 @@ printf '%s\n' "$custom_release" | grep -q "node-version: '22.23.1'" \
   || fail "release-node ignored custom scope or Node version"
 grep -q 'EXPECTED_RELEASE_NODE_VERSION="22.23.1"' <<<"$custom_contract" \
   && grep -q 'EXPECTED_RELEASE_SCOPE="@acme"' <<<"$custom_contract" \
+  && grep -q 'EXPECTED_RELEASE_PACKAGE_DIRS=".|compat"' <<<"$custom_contract" \
+  && grep -q 'package_dirs=(. compat)' <<<"$custom_release" \
   && pass "contract-test carries the same release parameters" \
   || fail "contract-test does not bind the selected release parameters"
 
@@ -127,7 +129,13 @@ for bad_args in \
   "--node-version lts/*" \
   "--node-version 022" \
   "--node-version 22.0.0.1" \
-  "--node-version 24 --node-version 22"; do
+  "--node-version 24 --node-version 22" \
+  "--package-dir ../compat" \
+  "--package-dir /tmp/compat" \
+  "--package-dir -compat" \
+  "--package-dir ~compat" \
+  "--package-dir compat --package-dir compat" \
+  "--package-dir ."; do
   # Intentional word splitting: each fixture is a complete argument sequence.
   # shellcheck disable=SC2086
   if bash "$gen" release-node "$sha" $bad_args >/dev/null 2>&1; then
@@ -329,6 +337,14 @@ run_adopter() {
 
 adopter="$tmproot/adopter"
 build_adopter "$adopter"
+[ -f "$adopter/.github/workflows/release.yml" ] \
+  && [ ! -e "$adopter/.github/workflows/changelog-release.yml" ] \
+  && pass "generated adopter installs the canonical release caller path" \
+  || fail "generated adopter does not use only .github/workflows/release.yml"
+grep -q "changelog-release.yml@$sha" "$adopter/.github/workflows/release.yml" \
+  && grep -qE "^ +contract_ref: $sha$" "$adopter/.github/workflows/release.yml" \
+  && pass "canonical release caller pins uses and contract_ref to the same commit" \
+  || fail "canonical release caller does not bind uses and contract_ref to $sha"
 run_adopter "$adopter" \
   && pass "emitted suite passes against an unreleased adopter" \
   || fail "emitted suite failed before any release: $(tail -2 "$tmproot/run.out")"
@@ -453,6 +469,62 @@ break_renderer "$released_broken"
 run_adopter "$released_broken" \
   && pass "#399: an emptied NEXT/ still tolerates a non-zero renderer exit" \
   || fail "#399: the fix broke the post-release case it exists to allow: $(tail -3 "$tmproot/run.out")"
+
+inject_render_failure() { # inject_render_failure <dir> <renderer|download|digest|python>
+  local renderer="$1/scripts/render-next.sh"
+  case "$2" in
+    renderer)
+      break_renderer "$1"
+      ;;
+    download)
+      python3 - "$renderer" <<'PY'
+import sys
+
+path = sys.argv[1]
+text = open(path, encoding="utf-8").read()
+needle = 'root="$(cd "$(dirname "$0")/.." && pwd)"\n'
+replacement = needle + '''
+XDG_CACHE_HOME="$root/.download-failure-cache"
+curl() { echo "simulated contract download failure" >&2; return 22; }
+'''
+if text.count(needle) != 1:
+    raise SystemExit("cannot locate generated renderer root")
+open(path, "w", encoding="utf-8").write(text.replace(needle, replacement))
+PY
+      ;;
+    digest)
+      sed -i \
+        -e 's/^CONTRACT_SHA256="[0-9a-f]\{64\}"$/CONTRACT_SHA256="0000000000000000000000000000000000000000000000000000000000000000"/' \
+        -e "/^root=/a XDG_CACHE_HOME=\"\$root/.digest-failure-cache\"" \
+        "$renderer"
+      ;;
+    python)
+      sed -i 's/^exec python3 /exec verjson-missing-python3 /' "$renderer"
+      ;;
+    *)
+      return 2
+      ;;
+  esac
+}
+
+for failure in renderer download digest python; do
+  failing="$tmproot/adopter-$failure-failure"
+  build_adopter "$failing"
+  inject_render_failure "$failing" "$failure"
+  if run_adopter "$failing"; then
+    fail "a $failure failure with renderable NEXT/ fragments reported success"
+  else
+    pass "a $failure failure with renderable NEXT/ fragments fails closed"
+  fi
+
+  emptied="$tmproot/adopter-$failure-empty"
+  build_adopter "$emptied"
+  python3 "$contract_src" release --repo-root "$emptied" --version v1.0.0 >/dev/null 2>&1
+  inject_render_failure "$emptied" "$failure"
+  run_adopter "$emptied" \
+    && pass "a genuinely emptied NEXT/ remains distinct from a $failure failure" \
+    || fail "an emptied NEXT/ is mistaken for a $failure failure: $(tail -3 "$tmproot/run.out")"
+done
 
 # An adopter with nothing to publish has no release.yml; `agents` and
 # `github-runner` are in exactly that shape and must not be forced to invent one.
@@ -634,11 +706,39 @@ drop_restart_integrity_proof() {
   sed -i 's/published.dist.integrity !== expectedIntegrity/false/' \
     "$1/.github/workflows/release.yml"
 }
+drop_multi_package_iteration() {
+  sed -i 's/for package_dir in "${package_dirs\[@\]}"; do/package_dir=./' \
+    "$1/.github/workflows/release.yml"
+}
+expose_publish_token_to_package_preparation() {
+  python3 - "$1/.github/workflows/release.yml" <<'PY'
+import sys
+
+path = sys.argv[1]
+text = open(path, encoding="utf-8").read()
+start = text.index("      - name: Prepare release package metadata")
+end = text.index("      - name:", start + 1)
+step = text[start:end]
+needle = "          VERSION: ${{ inputs.version }}\n"
+if needle not in step:
+    raise SystemExit("prepare step fixture no longer matches generated output")
+step = step.replace(
+    needle,
+    needle + "          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}\n",
+    1,
+)
+open(path, "w", encoding="utf-8").write(text[:start] + step + text[end:])
+PY
+}
 add_push_trigger() {
   sed -i 's|^on:$|on:\n  push:\n    branches: [main]|' "$1/.github/workflows/release.yml"
 }
 unpin_release_ref() {
   sed -i "s|changelog-release.yml@$sha|changelog-release.yml@main|" \
+    "$1/.github/workflows/release.yml"
+}
+drift_release_contract_ref() {
+  sed -i "s|contract_ref: $sha|contract_ref: 0000000000000000000000000000000000000000|" \
     "$1/.github/workflows/release.yml"
 }
 strip_release_provenance() {
@@ -731,8 +831,11 @@ expect_rejection "a publish build that runs before the dispatched version stamp 
 expect_rejection "version stamps that can run package lifecycle scripts (#519)" enable_stamp_lifecycle_scripts
 expect_rejection "a publication rerun with no registry authorization proof (#535)" drop_restart_authorization_proof
 expect_rejection "a publication rerun that ignores registry integrity (#535)" drop_restart_integrity_proof
+expect_rejection "a generated package set that is not iterated (#550)" drop_multi_package_iteration
+expect_rejection "a package-preparation hook exposed to the publish token (#550)" expose_publish_token_to_package_preparation
 expect_rejection "a release caller reachable by a push to main" add_push_trigger
 expect_rejection "a release caller on a mutable reusable ref" unpin_release_ref
+expect_rejection "a release caller whose contract_ref drifts from its uses pin" drift_release_contract_ref
 expect_rejection "a hand-written release caller with no generator provenance" strip_release_provenance
 expect_rejection "a push: trigger hidden in a flow-style on:" add_flow_style_push_trigger
 expect_rejection "a release caller exposed as a reusable workflow_call" add_workflow_call_trigger
@@ -821,6 +924,12 @@ commit_fixture "$refs_adopter" refs
 run_adopter "$refs_adopter" \
   && pass "emitted suite accepts an issue-form fragment carrying refs (#461)" \
   || fail "emitted suite rejected a refs: fragment: $(tail -2 "$tmproot/run.out")"
+refs_released="$tmproot/adopter-refs-released"
+cp -a "$refs_adopter" "$refs_released"
+python3 "$contract_src" release --repo-root "$refs_released" --version v1.0.0 >/dev/null 2>&1
+run_adopter "$refs_released" \
+  && pass "emitted suite still accepts refs metadata after the exact release path" \
+  || fail "emitted suite rejects refs metadata after release: $(tail -2 "$tmproot/run.out")"
 
 # Two refs, because one leaves the repeated group in the pattern unproven.
 multi_refs="$tmproot/adopter-refs-multi"

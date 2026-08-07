@@ -98,6 +98,8 @@ jobs:
         run: bash scripts/node-workflow-pins.test.sh
       - name: reusable Node workflows — cache and timeout controls (#152)
         run: bash scripts/node-workflow-controls.test.sh
+      - name: reusable workflow docs — copyable release refs are immutable (#353)
+        run: bash scripts/immutable-release-docs.test.sh
       - name: reusable Node workflows — optional DB service is default-off and exports DATABASE_URL (#108)
         run: bash scripts/ci-gate/node-ci-db-service.test.sh
       - name: ci-eligibility — defer CI while renovate/stability-days is pending, fail open (#133)
@@ -144,6 +146,8 @@ jobs:
         run: bash scripts/ci-gate/hold.test.sh
       - name: merge gate — re-arm bridge for events the required workflow never sees (#468, ADR 0063)
         run: bash scripts/ci-gate/gate-rearm.test.sh
+      - name: merge gate — generated fleet re-arm caller contract (#477, ADR 0063)
+        run: bash scripts/ci-gate/gate-rearm-caller-contract.test.sh
       - name: merge gate — dispatch target fixed to the current repository (#230, ADR 0036)
         run: bash scripts/ci-gate/dispatch-target-guard.test.sh
       - name: merge gate — target visibility resolves fail-closed runner routing (#170)
@@ -224,7 +228,9 @@ jobs:
         run: bash scripts/fleet-watchdog.test.sh
       - name: Required-check audit never calls an unaudited repository conformant (#416)
         run: bash scripts/required-checks-audit.test.sh
-      - name: Stack classifier catches a caller job the contract cannot reach (#416)
+      - name: Gate coverage audit is dry-run first and ownership bounded (#474)
+        run: python3 scripts/gate_coverage_audit_test.py
+      - name: Stack classifier catches caller names and matrices the contract cannot reach (#416, #431)
         run: bash scripts/classify-repo-stacks.test.sh
       - name: Privileged scheduled workflows use immutable default-branch code (#350, #387)
         run: python3 scripts/ci-gate/privileged-scheduled-workflows.test.py

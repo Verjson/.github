@@ -100,12 +100,63 @@ rc="$(run_crs)"
   && pass "a non-canonical CI caller job is reported — its checks look healthy but are named wrong" \
   || { fail "a non-canonical caller job was accepted ($rc)"; out; }
 
+# A canonical caller name is still nonconformant when the reusable call is
+# matrixed: GitHub emits `ci (<value>) / build-test`, never
+# `ci / build-test`. This is the #431 shape that the uses-only scan missed.
+reset_wf
+cat >"$WFDIR/ci.yml" <<'EOF'
+name: ci
+on: [pull_request]
+jobs:
+  ci:
+    strategy:
+      matrix:
+        node-version: ['20.20.2', '24']
+    uses: Verjson/.github/.github/workflows/node-ci.yml@abc123
+    with:
+      node-version: ${{ matrix.node-version }}
+EOF
+rc="$(run_crs)"
+{ [ "$rc" != "rc=0" ] && said 'result=nonconformant' && said "matrixed CI caller job 'ci'" && said 'ci (<matrix>) / …'; } \
+  && pass "a matrixed reusable CI caller is rejected because canonical unmatrixed checks never emit" \
+  || { fail "a matrixed reusable CI caller was accepted ($rc)"; out; }
+
 # --- same class, changelog slot ---------------------------------------------
 reset_wf; caller ci node-ci.yml ci; caller release changelog-validate.yml cl
 rc="$(run_crs)"
 { [ "$rc" != "rc=0" ] && said "changelog caller job is 'release'"; } \
   && pass "a non-canonical changelog caller job is reported" \
   || { fail "a non-canonical changelog job was accepted ($rc)"; out; }
+
+reset_wf; caller ci node-ci.yml ci
+cat >"$WFDIR/cl.yml" <<'EOF'
+name: changelog
+on: [pull_request]
+jobs:
+  changelog:
+    uses: Verjson/.github/.github/workflows/changelog-validate.yml@abc123
+    strategy:
+      matrix:
+        contract: [canonical, compatibility]
+EOF
+rc="$(run_crs)"
+{ [ "$rc" != "rc=0" ] && said "matrixed changelog caller job 'changelog'" && said 'changelog (<matrix>) / validate'; } \
+  && pass "matrix detection is independent of whether strategy appears before or after uses" \
+  || { fail "a post-uses changelog matrix was accepted ($rc)"; out; }
+
+reset_wf
+cat >"$WFDIR/ci.yml" <<'EOF'
+name: ci
+on: [pull_request]
+jobs:
+  ci:
+    strategy: {matrix: {node-version: ['20', '24']}}
+    uses: Verjson/.github/.github/workflows/node-ci.yml@abc123
+EOF
+rc="$(run_crs)"
+{ [ "$rc" != "rc=0" ] && said "matrixed CI caller job 'ci'"; } \
+  && pass "a flow-style strategy matrix cannot bypass classification" \
+  || { fail "a flow-style matrixed caller was accepted ($rc)"; out; }
 
 # --- package detection -------------------------------------------------------
 reset_wf; caller ci node-ci.yml ci; caller changelog changelog-validate.yml cl

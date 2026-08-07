@@ -156,6 +156,25 @@ required on all repos via the `main-protection` org ruleset (governance record:
 viager-docs ADR-018 and its amendments). It reviews each PR and, on pass +
 green CI, squash-merges it with the org-admin ruleset bypass.
 
+### Generated gate re-arm caller
+
+The required-workflow ruleset does not deliver `ready_for_review`, `labeled`, or
+`unlabeled` to the gate. Consumer repositories bridge those events with a thin
+generated caller pinned to the exact reviewed contract commit:
+
+```bash
+scripts/gen-gate-rearm-caller.sh <40-character-contract-sha> \
+  > .github/workflows/gate-rearm.yml
+```
+
+Never replace the SHA with a branch or tag. The caller runs on
+`pull_request_target` with `actions: write`; its immutable reusable target is
+what binds the terminal hold/draft guards, `re-review` recursion exclusion,
+no-head-checkout rule, and fail-closed live metadata checks to reviewed code.
+The caller grants only `contents: read`, `actions: write`, and
+`pull-requests: read`, delegates without a shell or secrets, and must be
+regenerated rather than hand-edited.
+
 ### Cost lanes (deterministic first, AI only where it earns its keep)
 
 | Lane | Who qualifies | Verified by |
