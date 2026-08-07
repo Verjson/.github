@@ -2068,15 +2068,25 @@ jobs:
     # for the merge postcondition. On the shared pool it otherwise queues behind
     # every newer PR's preflight, so reviewed work can be last to finish.
     runs-on: ${{ inputs.runner_labels && fromJSON(inputs.runner_labels) || github.repository_owner != 'Verjson' && 'ubuntu-24.04' || needs.preflight.outputs.target_private == 'false' && fromJSON(vars.VERJSON_RUNNER_FASTLANE || '["ubuntu-24.04"]') || fromJSON(vars.VERJSON_RUNNER_OVERFLOW || vars.VERJSON_LANE_PRIVILEGED || vars.VERJSON_LANE_FALLBACK || '["ubuntu-24.04"]') }}
-    timeout-minutes: 5
+    # The observation window covers the privileged workflow's 45-minute ceiling,
+    # ten minutes of shared-runner queue contention, and five minutes of API
+    # disruption. The 66-minute job ceiling leaves setup and publication
+    # headroom beyond that derived 60-minute probe window.
+    timeout-minutes: 66
     permissions:
       contents: read
       actions: write
+      pull-requests: read
     env:
       EXPECTED_HEAD_SHA: ${{ needs.preflight.outputs.head_sha }}
       PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr_number }}
       TARGET_REPO: ${{ github.repository }}
       SOURCE_RUN_ID: ${{ github.run_id }}
+      PRIVILEGED_MERGE_TIMEOUT_MINUTES: 45
+      MERGE_QUEUE_MARGIN_MINUTES: 10
+      MERGE_API_MARGIN_MINUTES: 5
+      MERGE_PROBE_ATTEMPTS: 361
+      MERGE_PROBE_INTERVAL_SECONDS: 10
     steps:
       - name: Dispatch fixed trusted merge continuation
         id: dispatch
@@ -2119,7 +2129,7 @@ jobs:
           # observed state as the postcondition (#384): a successful request
           # cannot turn this job green while the PR remains open.
           merge_state_json=""
-          for probe_attempt in $(seq 1 20); do
+          for probe_attempt in $(seq 1 "$MERGE_PROBE_ATTEMPTS"); do
             if candidate=$(gh pr view "$PR_NUMBER" --repo "$TARGET_REPO" \
               --json state,mergedAt,reviewDecision,mergeStateStatus,headRefOid 2>/dev/null) &&
                jq -e '
@@ -2144,6 +2154,18 @@ jobs:
                 echo "::error::phase=merge-postcondition result=head-changed blocker=head_changed expected_head=$EXPECTED_HEAD_SHA actual_head=$state_head remediation=rerun_gate_for_current_head"
                 exit 1
               fi
+              if [ "$(jq -r .state <<<"$candidate")" = "CLOSED" ] &&
+                 [ "$(jq -r '.mergedAt // ""' <<<"$candidate")" = "" ]; then
+                {
+                  echo "merge_observed=false"
+                  echo "blocking_review=false"
+                  echo "policy_blocked=false"
+                  echo "blocker=closed_not_merged"
+                  echo "remediation=inspect_closed_pr"
+                } >>"$GITHUB_OUTPUT"
+                echo "::error::phase=merge-postcondition result=not-merged blocker=closed_not_merged state=CLOSED remediation=inspect_closed_pr expected_head=$EXPECTED_HEAD_SHA attempt=$probe_attempt"
+                exit 1
+              fi
               if [ "$(jq -r .state <<<"$candidate")" = "MERGED" ] &&
                  [ "$(jq -r '.mergedAt // ""' <<<"$candidate")" != "" ]; then
                 {
@@ -2157,9 +2179,10 @@ jobs:
                 exit 0
               fi
             else
-              echo "::warning::phase=merge-postcondition result=probe-retry attempt=$probe_attempt/20 expected_head=$EXPECTED_HEAD_SHA"
+              echo "::warning::phase=merge-postcondition result=probe-retry attempt=$probe_attempt/$MERGE_PROBE_ATTEMPTS expected_head=$EXPECTED_HEAD_SHA"
             fi
-            [ "$probe_attempt" -eq 20 ] || sleep 10
+            [ "$probe_attempt" -eq "$MERGE_PROBE_ATTEMPTS" ] ||
+              sleep "$MERGE_PROBE_INTERVAL_SECONDS"
           done
 
           if [ -z "$merge_state_json" ]; then
@@ -2204,3 +2227,51 @@ jobs:
           } >>"$GITHUB_OUTPUT"
           echo "::error::phase=merge-postcondition result=not-merged blocker=$blocker state=$state review_decision=$review_decision merge_state_status=$merge_state_status blocking_review=$blocking_review policy_blocked=$policy_blocked remediation=$remediation expected_head=$EXPECTED_HEAD_SHA"
           exit 1
+
+      - name: Publish typed merge remediation
+        if: always()
+        env:
+          MERGE_OBSERVED: ${{ steps.dispatch.outputs.merge_observed }}
+          BLOCKING_REVIEW: ${{ steps.dispatch.outputs.blocking_review }}
+          POLICY_BLOCKED: ${{ steps.dispatch.outputs.policy_blocked }}
+          BLOCKER: ${{ steps.dispatch.outputs.blocker }}
+          REMEDIATION: ${{ steps.dispatch.outputs.remediation }}
+        run: |
+          set -euo pipefail
+
+          merge_observed=${MERGE_OBSERVED:-false}
+          blocking_review=${BLOCKING_REVIEW:-unknown}
+          policy_blocked=${POLICY_BLOCKED:-unknown}
+          blocker=${BLOCKER:-dispatch_failed}
+          remediation=${REMEDIATION:-inspect_dispatch_failure}
+
+          # Output contract: merge_observed is true|false; diagnostic booleans
+          # are true|false|unknown until terminal evidence resolves them.
+          [[ "$merge_observed" =~ ^(true|false)$ ]] ||
+            { echo "::error::Invalid merge_observed output"; exit 1; }
+          [[ "$blocking_review" =~ ^(true|false|unknown)$ ]] ||
+            { echo "::error::Invalid blocking_review output"; exit 1; }
+          [[ "$policy_blocked" =~ ^(true|false|unknown)$ ]] ||
+            { echo "::error::Invalid policy_blocked output"; exit 1; }
+          [[ "$blocker" =~ ^[a-z0-9_]{1,64}$ ]] ||
+            { echo "::error::Invalid blocker output"; exit 1; }
+          [[ "$remediation" =~ ^[a-z0-9_]{1,64}$ ]] ||
+            { echo "::error::Invalid remediation output"; exit 1; }
+
+          {
+            echo "### Privileged merge outcome"
+            echo
+            echo "| Field | Typed value |"
+            echo "| --- | --- |"
+            echo "| Merge observed | \`$merge_observed\` |"
+            echo "| Blocking review | \`$blocking_review\` |"
+            echo "| Policy blocked | \`$policy_blocked\` |"
+            echo "| Blocker | \`$blocker\` |"
+            echo "| Remediation | \`$remediation\` |"
+          } >>"$GITHUB_STEP_SUMMARY"
+
+          if [ "$merge_observed" = "true" ]; then
+            echo "::notice::Privileged merge observed; blocker=$blocker remediation=$remediation"
+          else
+            echo "::warning::Privileged merge not observed; blocker=$blocker remediation=$remediation"
+          fi

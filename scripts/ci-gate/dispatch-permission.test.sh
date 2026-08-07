@@ -32,13 +32,37 @@ grep -q '^      actions: read$' <<<"$gate" \
   || fail "checks/statuses permission escaped the classification/review boundary"
 [ "$(grep -c '^      actions: write$' "$wf")" -eq 1 ] \
   && grep -q '^      contents: read$' <<<"$dispatch" \
-  && pass "only dispatch job has minimum contents/read + actions/write" \
+  && grep -q '^      pull-requests: read$' <<<"$dispatch" \
+  && pass "dispatch has minimum contents/read + actions/write + PR/read" \
   || fail "dispatch permissions are duplicated or over-broad"
 grep -qF 'runs-on: ${{ inputs.runner_labels && fromJSON(inputs.runner_labels) ||' <<<"$dispatch" \
   && grep -qF 'GH_TOKEN: ${{ github.token }}' <<<"$dispatch" \
   && ! grep -q 'secrets\.' <<<"$dispatch" \
   && pass "caller-selected dispatch runner receives only the scoped workflow token" \
   || fail "dispatch routing or token binding exposes authority beyond the caller-selected runner"
+timeout_minutes="$(sed -n 's/^    timeout-minutes: //p' <<<"$dispatch" | head -n 1)"
+probe_attempts="$(sed -n 's/^      MERGE_PROBE_ATTEMPTS: //p' <<<"$dispatch")"
+probe_interval="$(sed -n 's/^      MERGE_PROBE_INTERVAL_SECONDS: //p' <<<"$dispatch")"
+privileged_timeout="$(sed -n 's/^      PRIVILEGED_MERGE_TIMEOUT_MINUTES: //p' <<<"$dispatch")"
+queue_margin="$(sed -n 's/^      MERGE_QUEUE_MARGIN_MINUTES: //p' <<<"$dispatch")"
+api_margin="$(sed -n 's/^      MERGE_API_MARGIN_MINUTES: //p' <<<"$dispatch")"
+if [[ "$timeout_minutes" =~ ^[1-9][0-9]*$ ]] \
+  && [[ "$probe_attempts" =~ ^[1-9][0-9]*$ ]] \
+  && [[ "$probe_interval" =~ ^[1-9][0-9]*$ ]] \
+  && [[ "$privileged_timeout" =~ ^[1-9][0-9]*$ ]] \
+  && [[ "$queue_margin" =~ ^[1-9][0-9]*$ ]] \
+  && [[ "$api_margin" =~ ^[1-9][0-9]*$ ]] \
+  && [ "$(((probe_attempts - 1) * probe_interval))" -ge "$(((privileged_timeout + queue_margin + api_margin) * 60))" ] \
+  && [ "$((probe_attempts * probe_interval + 60))" -le "$((timeout_minutes * 60))" ]; then
+  pass "probe covers privileged timeout plus queue/API margins with job headroom"
+else
+  fail "merge probe budget can expire before the privileged timeout/margins or consume the job"
+fi
+grep -q 'name: Publish typed merge remediation' <<<"$dispatch" \
+  && grep -q 'GITHUB_STEP_SUMMARY' <<<"$dispatch" \
+  && grep -q 'true|false|unknown' <<<"$dispatch" \
+  && pass "dispatch outputs have a tri-state-validated summary consumer" \
+  || fail "dispatch outputs remain inert or their tri-state contract is unenforced"
 if grep -qE 'uses:|actions/(checkout|cache|upload-artifact|download-artifact)|\beval\b|^[[:space:]]*(source|\.)[[:space:]]|github\.event\.pull_request\.(title|body)' <<<"$dispatch"; then
   fail "dispatch job can consume/execute PR-controlled content"
 else
@@ -79,7 +103,7 @@ if [ "$1 $2" = "pr view" ]; then
   count=$((count + 1))
   printf '%s\n' "$count" >"$PR_VIEW_COUNT"
   if [ "$count" -le "${PR_VIEW_FAILURES:-0}" ]; then
-    echo "simulated transient PR read failure" >&2
+    echo "HTTP 403: Resource not accessible by integration" >&2
     exit 1
   fi
   printf '%s\n' "$PR_STATE_JSON"
@@ -109,6 +133,7 @@ run_case() {
     PR_NUMBER="${2-7}" EXPECTED_HEAD_SHA="${3-0123456789abcdef0123456789abcdef01234567}" \
     SOURCE_RUN_ID="${4-99}" WORKFLOW_PATH="${5-.github/workflows/ai-privileged-merge.yml}" \
     API_FAILURE="${6-false}" \
+    MERGE_PROBE_ATTEMPTS="$probe_attempts" MERGE_PROBE_INTERVAL_SECONDS="$probe_interval" \
     PR_STATE_JSON="$pr_state_json" \
     PR_VIEW_FAILURES="${8-0}" bash "$script" >"$tmp/dispatch.out" 2>&1
 }
@@ -174,11 +199,37 @@ policy_block='{"state":"OPEN","mergedAt":null,"reviewDecision":"APPROVED","merge
 run_case Verjson/example 7 0123456789abcdef0123456789abcdef01234567 99 .github/workflows/ai-privileged-merge.yml false "$policy_block" \
   && fail "policy-blocked merge reported green" \
   || {
-    grep -q 'blocker=policy' "$tmp/dispatch.out" \
+    [ "$(cat "$tmp/pr-view-count")" -eq "$probe_attempts" ] \
+      && grep -q 'blocker=policy' "$tmp/dispatch.out" \
       && grep -q '^blocking_review=false$' "$tmp/github-output.txt" \
       && grep -q '^policy_blocked=true$' "$tmp/github-output.txt" \
-      && pass "policy block is typed separately from review remediation" \
-      || fail "policy block was not typed deterministically"
+      && pass "policy is classified only after the complete observation budget" \
+      || fail "interim BLOCKED state was classified before terminal evidence"
+  }
+
+# UNKNOWN is also an interim queue state. It may time out as not observed, but
+# must never be mislabeled as a branch-policy failure.
+unknown_state='{"state":"OPEN","mergedAt":null,"reviewDecision":"APPROVED","mergeStateStatus":"UNKNOWN","headRefOid":"0123456789abcdef0123456789abcdef01234567"}'
+run_case Verjson/example 7 0123456789abcdef0123456789abcdef01234567 99 .github/workflows/ai-privileged-merge.yml false "$unknown_state" \
+  && fail "unknown unmerged state reported green" \
+  || {
+    [ "$(cat "$tmp/pr-view-count")" -eq "$probe_attempts" ] \
+      && grep -q 'blocker=merge_not_observed' "$tmp/dispatch.out" \
+      && grep -q '^policy_blocked=false$' "$tmp/github-output.txt" \
+      && pass "UNKNOWN remains non-policy through the complete observation budget" \
+      || fail "UNKNOWN was classified as policy or exited before the observation budget"
+  }
+# A terminal CLOSED state cannot become merged and must stop after one read
+# with a distinct remediation instead of burning the full probe budget.
+closed_unmerged='{"state":"CLOSED","mergedAt":null,"reviewDecision":"APPROVED","mergeStateStatus":"UNKNOWN","headRefOid":"0123456789abcdef0123456789abcdef01234567"}'
+run_case Verjson/example 7 0123456789abcdef0123456789abcdef01234567 99 .github/workflows/ai-privileged-merge.yml false "$closed_unmerged" \
+  && fail "closed-unmerged pull request reported green" \
+  || {
+    [ "$(cat "$tmp/pr-view-count")" -eq 1 ] \
+      && grep -q 'blocker=closed_not_merged' "$tmp/dispatch.out" \
+      && grep -q '^remediation=inspect_closed_pr$' "$tmp/github-output.txt" \
+      && pass "closed-unmerged state exits early with typed remediation" \
+      || fail "closed-unmerged state retried or lacked typed remediation"
   }
 
 # A real merge is the sole acted-success state.
@@ -207,10 +258,12 @@ run_case Verjson/example 7 0123456789abcdef0123456789abcdef01234567 99 .github/w
   && pass "transient postcondition reads recover within the bounded retry" \
   || fail "transient postcondition reads did not recover"
 
-run_case Verjson/example 7 0123456789abcdef0123456789abcdef01234567 99 .github/workflows/ai-privileged-merge.yml false "$open_clean" 99 \
+run_case Verjson/example 7 0123456789abcdef0123456789abcdef01234567 99 .github/workflows/ai-privileged-merge.yml false "$open_clean" "$probe_attempts" \
   && fail "unreadable merge postcondition reported green" \
   || {
     grep -q 'blocker=state_unavailable' "$tmp/dispatch.out" \
+      && [ -s "$tmp/github-output.txt" ] \
+      && grep -q '^merge_observed=false$' "$tmp/github-output.txt" \
       && pass "exhausted postcondition reads fail closed with typed evidence" \
       || fail "unreadable postcondition lacks typed failure evidence"
   }
