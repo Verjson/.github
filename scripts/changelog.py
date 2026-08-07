@@ -563,6 +563,34 @@ def changed_paths(repo_root: Path, base: str, head: str) -> set[str]:
     return {line for line in output.splitlines() if line}
 
 
+DEPENDENCY_FILENAMES = {
+    ".terraform.lock.hcl",
+    "Cargo.lock",
+    "Cargo.toml",
+    "Pipfile",
+    "Pipfile.lock",
+    "go.mod",
+    "go.sum",
+    "npm-shrinkwrap.json",
+    "package-lock.json",
+    "package.json",
+    "pnpm-lock.yaml",
+    "poetry.lock",
+    "pyproject.toml",
+    "setup.cfg",
+    "setup.py",
+    "uv.lock",
+    "yarn.lock",
+}
+
+
+def is_dependency_file(path: str) -> bool:
+    filename = Path(path).name
+    return filename in DEPENDENCY_FILENAMES or bool(
+        re.fullmatch(r"requirements(?:-[A-Za-z0-9_.-]+)?\.txt", filename)
+    )
+
+
 def check_pr(repo_root: Path, base: str, head: str) -> None:
     changed = changed_paths(repo_root, base, head)
     forbidden = {"CHANGELOG.md"} & changed
@@ -573,6 +601,7 @@ def check_pr(repo_root: Path, base: str, head: str) -> None:
             + ", ".join(sorted(forbidden))
         )
     consumed = set()
+    added_fragments = set()
     for line in git(
         repo_root,
         "diff",
@@ -584,6 +613,8 @@ def check_pr(repo_root: Path, base: str, head: str) -> None:
         status = fields[0]
         if status == "D" and len(fields) == 2 and fields[1].startswith("NEXT/"):
             consumed.add(fields[1])
+        if status == "A" and len(fields) == 2 and fields[1].startswith("NEXT/"):
+            added_fragments.add(fields[1])
         if (
             status.startswith("R")
             and len(fields) == 3
@@ -591,11 +622,37 @@ def check_pr(repo_root: Path, base: str, head: str) -> None:
             and not fields[2].startswith("NEXT/")
         ):
             consumed.add(fields[1])
+        if (
+            status.startswith("R")
+            and len(fields) == 3
+            and not fields[1].startswith("NEXT/")
+            and fields[2].startswith("NEXT/")
+        ):
+            added_fragments.add(fields[2])
     if consumed:
         raise ChangelogError(
             "ordinary pull requests cannot consume NEXT fragments: "
             + ", ".join(sorted(consumed))
         )
+    dependencies = sorted(path for path in changed if is_dependency_file(path))
+    if dependencies and not added_fragments:
+        raise ChangelogError(
+            "dependency manifests or lockfiles require a new NEXT fragment: "
+            + ", ".join(dependencies)
+        )
+    if dependencies:
+        valid_fragments = {
+            str(entry.path.relative_to(repo_root))
+            for entry in fragments(repo_root)
+            if entry.canonical
+        }
+        invalid_added = added_fragments - valid_fragments
+        if invalid_added:
+            raise ChangelogError(
+                "dependency manifests or lockfiles require a new valid NEXT fragment; "
+                "invalid additions: "
+                + ", ".join(sorted(invalid_added))
+            )
 
 
 def parser() -> argparse.ArgumentParser:

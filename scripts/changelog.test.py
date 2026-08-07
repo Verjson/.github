@@ -826,6 +826,101 @@ class ChangelogContractTests(unittest.TestCase):
 
         changelog.check_pr(self.root, base, "HEAD")
 
+    def test_dependency_changes_require_a_new_fragment_across_supported_stacks(self) -> None:
+        dependency_paths = (
+            "package.json",
+            "apps/api/package-lock.json",
+            "pnpm-lock.yaml",
+            "web/yarn.lock",
+            "pyproject.toml",
+            "requirements.txt",
+            "requirements-dev.txt",
+            "poetry.lock",
+            "Pipfile",
+            "Pipfile.lock",
+            "uv.lock",
+            "services/worker/go.mod",
+            "services/worker/go.sum",
+            "crates/core/Cargo.toml",
+            "Cargo.lock",
+            "infra/.terraform.lock.hcl",
+        )
+        for dependency_path in dependency_paths:
+            with self.subTest(path=dependency_path):
+                original_root = self.root
+                with tempfile.TemporaryDirectory() as temporary:
+                    try:
+                        self.root = Path(temporary)
+                        self.root.joinpath("README.md").write_text("base\n", encoding="utf-8")
+                        self.init_git()
+                        self.commit_all("base")
+                        base = run(self.root, "git", "rev-parse", "HEAD")
+                        path = self.root / dependency_path
+                        path.parent.mkdir(parents=True, exist_ok=True)
+                        path.write_text("dependency update\n", encoding="utf-8")
+                        self.commit_all("renovate dependency update")
+
+                        with self.assertRaisesRegex(
+                            changelog.ChangelogError,
+                            "dependency manifests or lockfiles require a new NEXT fragment",
+                        ):
+                            changelog.check_pr(self.root, base, "HEAD")
+                    finally:
+                        self.root = original_root
+
+    def test_dependency_change_with_a_new_valid_fragment_is_accepted(self) -> None:
+        self.root.joinpath("package.json").write_text('{"version":"1.0.0"}\n', encoding="utf-8")
+        self.init_git()
+        self.commit_all("base")
+        base = run(self.root, "git", "rev-parse", "HEAD")
+        self.root.joinpath("package.json").write_text('{"version":"1.0.1"}\n', encoding="utf-8")
+        fragment(self.root, "2026-07-30-issue-249-contract.md")
+        self.commit_all("dependency update with fragment")
+
+        changelog.check_pr(self.root, base, "HEAD")
+
+    def test_dependency_change_cannot_reuse_an_existing_fragment(self) -> None:
+        self.root.joinpath("package.json").write_text('{"version":"1.0.0"}\n', encoding="utf-8")
+        existing = fragment(self.root, "2026-07-30-issue-249-contract.md")
+        self.init_git()
+        self.commit_all("base")
+        base = run(self.root, "git", "rev-parse", "HEAD")
+        self.root.joinpath("package.json").write_text('{"version":"1.0.1"}\n', encoding="utf-8")
+        existing.write_text(existing.read_text(encoding="utf-8") + "\nMore.\n", encoding="utf-8")
+        self.commit_all("dependency update reusing old fragment")
+
+        with self.assertRaisesRegex(changelog.ChangelogError, "new NEXT fragment"):
+            changelog.check_pr(self.root, base, "HEAD")
+
+    def test_similar_non_dependency_names_do_not_require_a_fragment(self) -> None:
+        false_positives = (
+            "package.json.md",
+            "package-lock.yaml",
+            "requirements.md",
+            "Cargo.lock.backup",
+            "terraform.lock.hcl",
+            "docs/go.mod.md",
+        )
+        self.root.joinpath("README.md").write_text("base\n", encoding="utf-8")
+        self.init_git()
+        self.commit_all("base")
+        base = run(self.root, "git", "rev-parse", "HEAD")
+        for relative in false_positives:
+            path = self.root / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("not a dependency boundary\n", encoding="utf-8")
+        self.commit_all("documentation and similarly named files")
+
+        changelog.check_pr(self.root, base, "HEAD")
+
+    def test_check_pr_fails_closed_on_malformed_revision_input(self) -> None:
+        self.init_git()
+        self.root.joinpath("README.md").write_text("base\n", encoding="utf-8")
+        self.commit_all("base")
+
+        with self.assertRaises(changelog.ChangelogError):
+            changelog.check_pr(self.root, "not-an-api-sha", "HEAD")
+
     def test_released_snapshots_use_natural_version_order(self) -> None:
         snapshots = self.root / "CHANGELOG"
         snapshots.mkdir()
