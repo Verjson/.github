@@ -71,3 +71,12 @@ only reason it was found.
 
 Nothing is enforced by this change. ADR 0056 stands and the watchdog stays armed and
 load-bearing until the migration reaches its last step; this is step 2 of seven.
+
+The follow-up hardens that read-only boundary: the contract and exact
+evaluate-mode plan are now declared in `.github/required-check-contract.json`
+with mutation disabled, while the audit statically rejects workflow-level path
+filters and noncanonical stack/changelog caller job names. Archived
+repositories are excluded and every unreadable, unclassified, unaudited,
+pagination/rate-limit, or missing-context state prevents a green result. #404 is
+complete; #416 remains open for the human-gated property/ruleset apply and
+measurement.

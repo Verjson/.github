@@ -28,6 +28,24 @@ python3 scripts/changelog.py validate --repo-root .
 Add a `NEXT/` fragment in the same commit as any change to behaviour, pins,
 docs, or config — see [`NEXT/README.md`](NEXT/README.md).
 
+### Required-check contract audit
+
+The declared stack contract and non-mutating policy plan live in
+[`.github/required-check-contract.json`](.github/required-check-contract.json).
+Audit repository classifications, caller source, and observed contexts with:
+
+```bash
+RCA_ORG=Verjson scripts/required-checks-audit.sh
+```
+
+The audit is read-only and fails closed on unclassified repositories, missing
+contexts, noncanonical thin-caller job names, workflow-level path filters,
+unreadable workflow/check/property data, and partial repository pagination.
+The JSON plan deliberately sets `mutation_authorized: false` and records the
+human gate: this organization cannot read evaluate-mode rule-suite results on
+its current GitHub plan. Do not apply custom-property or ruleset changes from an
+automated session.
+
 ## Versioned actions and reusable workflows
 
 The repository ships all `.github/actions/*` actions and

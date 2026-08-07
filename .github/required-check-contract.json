@@ -1,0 +1,222 @@
+{
+  "schema_version": 1,
+  "mode": "plan-only",
+  "mutation_authorized": false,
+  "universal_contexts": [
+    "gate"
+  ],
+  "stacks": {
+    "node": {
+      "contexts": [
+        "ci / build-test",
+        "ci / eligibility",
+        "changelog / validate"
+      ],
+      "reusable_workflow": "node-ci.yml",
+      "package": true
+    },
+    "ui": {
+      "contexts": [
+        "ci / build-test",
+        "changelog / validate"
+      ],
+      "reusable_workflow": "ui-ci.yml",
+      "package": true
+    },
+    "helm": {
+      "contexts": [
+        "ci / lint-template",
+        "changelog / validate"
+      ],
+      "reusable_workflow": "helm-ci.yml",
+      "package": true
+    },
+    "pulumi": {
+      "contexts": [
+        "ci / validate",
+        "ci / preview"
+      ],
+      "reusable_workflow": "pulumi-ci.yml",
+      "package": false
+    },
+    "actions": {
+      "contexts": [
+        "shell-tests"
+      ],
+      "reusable_workflow": null,
+      "package": false
+    },
+    "none": {
+      "contexts": [],
+      "reusable_workflow": null,
+      "package": false
+    }
+  },
+  "caller_job_names": {
+    "stack": "ci",
+    "changelog": "changelog"
+  },
+  "property_schemas": {
+    "verjson-stack": [
+      "node",
+      "ui",
+      "helm",
+      "pulumi",
+      "actions",
+      "none"
+    ],
+    "verjson-core-checks": [
+      "enforced",
+      "exempt"
+    ],
+    "changelog-contract": [
+      "adopted",
+      "none"
+    ]
+  },
+  "ruleset_plan": {
+    "requested_enforcement": "evaluate",
+    "human_gate_required": true,
+    "blocker": "Verjson is on GitHub Team; rule-suite evaluation results return HTTP 403, so evaluate mode cannot be measured. Do not create or activate rulesets until a human approves an alternative measurement and apply procedure.",
+    "target": "branch",
+    "ref_name": {
+      "include": [
+        "~DEFAULT_BRANCH"
+      ],
+      "exclude": []
+    },
+    "strict_required_status_checks_policy": false,
+    "do_not_enforce_on_create": true,
+    "bypass_actors": [
+      {
+        "actor_type": "OrganizationAdmin",
+        "bypass_mode": "always"
+      }
+    ],
+    "rulesets": [
+      {
+        "name": "core-checks-universal",
+        "repository_properties": [],
+        "contexts": [
+          "gate"
+        ]
+      },
+      {
+        "name": "core-checks-node",
+        "repository_properties": [
+          {
+            "name": "verjson-stack",
+            "values": [
+              "node"
+            ]
+          },
+          {
+            "name": "verjson-core-checks",
+            "values": [
+              "enforced"
+            ]
+          }
+        ],
+        "contexts": [
+          "ci / build-test",
+          "ci / eligibility"
+        ]
+      },
+      {
+        "name": "core-checks-ui",
+        "repository_properties": [
+          {
+            "name": "verjson-stack",
+            "values": [
+              "ui"
+            ]
+          },
+          {
+            "name": "verjson-core-checks",
+            "values": [
+              "enforced"
+            ]
+          }
+        ],
+        "contexts": [
+          "ci / build-test"
+        ]
+      },
+      {
+        "name": "core-checks-helm",
+        "repository_properties": [
+          {
+            "name": "verjson-stack",
+            "values": [
+              "helm"
+            ]
+          },
+          {
+            "name": "verjson-core-checks",
+            "values": [
+              "enforced"
+            ]
+          }
+        ],
+        "contexts": [
+          "ci / lint-template"
+        ]
+      },
+      {
+        "name": "core-checks-pulumi",
+        "repository_properties": [
+          {
+            "name": "verjson-stack",
+            "values": [
+              "pulumi"
+            ]
+          },
+          {
+            "name": "verjson-core-checks",
+            "values": [
+              "enforced"
+            ]
+          }
+        ],
+        "contexts": [
+          "ci / validate",
+          "ci / preview"
+        ]
+      },
+      {
+        "name": "core-checks-actions",
+        "repository_properties": [
+          {
+            "name": "verjson-stack",
+            "values": [
+              "actions"
+            ]
+          },
+          {
+            "name": "verjson-core-checks",
+            "values": [
+              "enforced"
+            ]
+          }
+        ],
+        "contexts": [
+          "shell-tests"
+        ]
+      },
+      {
+        "name": "changelog-contract-required",
+        "repository_properties": [
+          {
+            "name": "changelog-contract",
+            "values": [
+              "adopted"
+            ]
+          }
+        ],
+        "contexts": [
+          "changelog / validate"
+        ]
+      }
+    ]
+  }
+}
