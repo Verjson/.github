@@ -20,13 +20,22 @@ Everything here is checked by shell tests wired into
 [`actions-ci`](.github/workflows/actions-ci.yml). Run them the way CI does:
 
 ```bash
+make lint        # requires actionlint and shellcheck on PATH
+make test        # documented behavioral smoke test
+make render      # canonical NEXT renderer
+make adr-index   # checks the generated ADR index without editing it
+
+# Focused tests remain directly runnable:
 bash scripts/repo-hygiene.test.sh        # or any single scripts/**/*.test.sh
-bash scripts/gen-adr-index.sh --check    # the ADR index is generated, not edited
 python3 scripts/changelog.py validate --repo-root .
 ```
 
 Add a `NEXT/` fragment in the same commit as any change to behaviour, pins,
 docs, or config — see [`NEXT/README.md`](NEXT/README.md).
+
+These targets are engine-portable command entry points, not an alternate runner
+pool. They do not make GitHub's merge control plane portable or provide capacity
+when no runner accepts a job. See [ADR 0067](docs/decisions/0067-portable-ci-command-boundary/README.md).
 
 ### Required-check contract audit
 
