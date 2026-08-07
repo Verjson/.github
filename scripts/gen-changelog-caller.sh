@@ -462,6 +462,13 @@ jobs:
             echo "snapshot-exists=false" >> "\$GITHUB_OUTPUT"
             echo "\$VERSION is unused."
           fi
+      - name: Check out the existing snapshot for resumed verification
+        if: steps.release-state.outputs.snapshot-exists == 'true'
+        uses: ${release_checkout}
+        with:
+          ref: \${{ inputs.version }}
+          fetch-depth: 0
+          persist-credentials: false
       - uses: ${release_setup_node}
         with:
           node-version: '${release_node_version}'
@@ -1076,6 +1083,12 @@ while IFS= read -r release_workflow; do
   printf '%s\n' "$verify_job" \
     | grep -qF 'snapshot-exists: ${{ steps.release-state.outputs.snapshot-exists }}' \
     || fail "$release_workflow does not propagate verified snapshot state"
+  printf '%s\n' "$verify_job" \
+    | grep -qF "if: steps.release-state.outputs.snapshot-exists == 'true'" \
+    || fail "$release_workflow does not condition resumed verification on an existing snapshot"
+  printf '%s\n' "$verify_job" \
+    | grep -qF 'ref: ${{ inputs.version }}' \
+    || fail "$release_workflow verifies the later dispatch tree instead of the existing tagged snapshot"
   for publish_input in \
     'version: ${{ inputs.version }}' \
     "node-version: '$EXPECTED_RELEASE_NODE_VERSION'" \
