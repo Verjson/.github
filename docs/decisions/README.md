@@ -11,6 +11,7 @@ Reverse-chronological index of org-level decisions.
 <!-- BEGIN ADR INDEX -->
 | # | Date | Decision |
 |---|------|----------|
+| [0077](0077-private-repository-gate-restoration/README.md) | 2026-08-07 | Restore private-repository gates without speculative signing |
 | [0076](0076-bounded-actions-ci-shell-test-groups/README.md) | 2026-08-07 | Bound `actions-ci` shell tests into three parallel groups |
 | [0075](0075-generated-artifacts-is-the-changelog-check-prefix/README.md) | 2026-08-07 | Generated artifacts is the changelog check prefix |
 | [0074](0074-signed-gate-attestation-provenance/README.md) | 2026-08-07 | Privileged merge trusts signed gate provenance |

@@ -33,26 +33,26 @@ fail() {
   fails=$((fails + 1))
 }
 
-python3 - "$gate_wf" <<'PY' || {
+python3 - "$gate_wf" "$wf" <<'PY' || {
 import sys
 import yaml
 
-workflow = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))
-gate = workflow["jobs"]["gate"]
+gate = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))["jobs"]["gate"]
 permissions = gate.get("permissions") or {}
-if permissions.get("id-token") != "write" or permissions.get("attestations") != "write":
-    raise SystemExit("gate lacks signed-provenance permissions")
-steps = gate.get("steps") or []
-matches = [
-    step for step in steps
-    if step.get("uses") == "actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a"
-]
-if len(matches) != 1:
-    raise SystemExit("gate must sign the merge attestation exactly once")
-if (matches[0].get("with") or {}).get("subject-path") != "${{ runner.temp }}/merge-attestation/attestation.json":
-    raise SystemExit("signed subject is not the uploaded merge attestation")
+if "attestations" in permissions or "id-token" in permissions:
+    raise SystemExit("private gate must not require unavailable attestation permissions")
+if any("attest-build-provenance" in str(step.get("uses", "")) for step in gate.get("steps") or []):
+    raise SystemExit("private gate must not invoke the unavailable attestation action")
+
+privileged = yaml.safe_load(open(sys.argv[2], encoding="utf-8"))["jobs"]["privileged_merge"]
+run = next(
+    step["run"] for step in privileged.get("steps") or []
+    if step.get("name") == "Privileged merge from trusted metadata only"
+)
+if "gh attestation verify" in run:
+    raise SystemExit("private privileged merge must not require unavailable attestations")
 PY
-  echo "FAIL - gate does not produce signed merge-attestation provenance"
+  echo "FAIL - private consumer gate still depends on unavailable attestations"
   exit 1
 }
 
@@ -125,13 +125,6 @@ if [ "${1:-}" = "pr" ] && [ "${2:-}" = "view" ]; then
 fi
 if [ "${1:-}" = "issue" ] && [ "${2:-}" = "list" ]; then emit '[]'; fi
 if [ "${1:-}" = "issue" ] && [ "${2:-}" = "create" ]; then echo "ISSUE" >>"$ACTIONLOG"; exit 0; fi
-if [ "${1:-}" = "attestation" ] && [ "${2:-}" = "verify" ] && [ "${3:-}" = "--help" ]; then
-  exit "${ATTESTATION_HELP_RC:-0}"
-fi
-if [ "${1:-}" = "attestation" ] && [ "${2:-}" = "verify" ]; then
-  echo "ATTESTATION_VERIFY $args" >>"$ACTIONLOG"
-  exit "${ATTESTATION_VERIFY_RC:-0}"
-fi
 
 if [ "${1:-}" = "api" ]; then
   case "$args" in
@@ -268,8 +261,6 @@ reset_fixtures() {
   ATTESTATION_API_RC=0
   ARTIFACT_ZIP_RC=0
   UNZIP_RC=0
-  ATTESTATION_HELP_RC=0
-  ATTESTATION_VERIFY_RC=0
   BASE_REF_FINAL=""
 }
 
@@ -290,7 +281,7 @@ run_case() { # run_case <event-name>
   # enough attempts to prove the loop reaches its terminal state.
   export MERGE_WAIT_ATTEMPTS=2
   export TRUSTED_WF_ID TRUSTED_REPO_ID TRUSTED_SHA BASE_REF BASE_REF_FINAL
-  export RULES_RC PULLS_RC FILES_FAILURES FILES_ERROR_KIND HEAD_RUNS_RC SOURCE_RUN_RC ATTESTATION_API_RC ARTIFACT_ZIP_RC UNZIP_RC ATTESTATION_HELP_RC ATTESTATION_VERIFY_RC
+  export RULES_RC PULLS_RC FILES_FAILURES FILES_ERROR_KIND HEAD_RUNS_RC SOURCE_RUN_RC ATTESTATION_API_RC ARTIFACT_ZIP_RC UNZIP_RC
   export RULES_FILE="$tmp/rules.json" RULES_FINAL_FILE="$tmp/rules-final.json"
   export RUNS_FILE="$tmp/runs.json"
   export META_FILE="$tmp/meta.json" META_FINAL_FILE="$tmp/meta-final.json"
@@ -313,10 +304,6 @@ run_case() { # run_case <event-name>
   reset_fixtures
 }
 merged() { grep -q '^MERGE' "$tmp/act.log"; }
-verified_signature() {
-  grep -q "ATTESTATION_VERIFY attestation verify .* --repo $CONSUMER --signer-workflow Verjson/.github/.github/workflows/ai-review-merge.yml" \
-    "$tmp/act.log"
-}
 # A jq compile/runtime error ends in the same terminal message as a real
 # rejection, so every case must rule it out or the negatives go vacuous.
 # `error("unusable rules page")` is a deliberate fail-closed abort, not a defect.
@@ -350,11 +337,7 @@ reset_fixtures
 
 # --- the two shapes that were dead before this fix -------------------------
 run_case workflow_dispatch
-if verified_signature; then
-  assert_merged "dispatched continuation verifies signed gate provenance and merges"
-else
-  fail "dispatched continuation merged without verifying the canonical signer workflow"
-fi
+assert_merged "dispatched continuation trusts an org required-workflow gate run and merges"
 
 run_case pull_request_target
 assert_merged "pull_request_target path trusts an org required-workflow gate run and merges"
@@ -433,18 +416,6 @@ assert_rejected "a pull-request gate lookup that loses gh fails immediately" "re
 ATTESTATION_API_RC=127
 run_case workflow_dispatch
 assert_rejected "an attestation lookup that loses gh fails immediately" "result=toolchain-missing"
-
-ATTESTATION_VERIFY_RC=1
-run_case workflow_dispatch
-assert_rejected "an unsigned or wrongly-signed merge attestation is never trusted" "$NOT_GREEN"
-
-ATTESTATION_VERIFY_RC=127
-run_case workflow_dispatch
-assert_rejected "signature verification that loses gh fails immediately" "result=toolchain-missing"
-
-ATTESTATION_HELP_RC=1
-run_case workflow_dispatch
-assert_rejected "a gh build without attestation verification fails before polling" "tool=gh-attestation"
 
 JQ_FAIL_GATE_CHECK=true
 export JQ_FAIL_GATE_CHECK

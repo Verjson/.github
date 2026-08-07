@@ -87,9 +87,6 @@ emit() {
   if [ -n "$filter" ]; then jq -r "$filter" <<<"$payload"; else printf '%s\n' "$payload"; fi
   exit 0
 }
-if [ "${1:-}" = "attestation" ] && [ "${2:-}" = "verify" ] && [ "${3:-}" = "--help" ]; then
-  exit 0
-fi
 case "$args" in
   *"/compare/"*)
     [ "${COMPARE_RC:-0}" -eq 0 ] || exit "${COMPARE_RC}"

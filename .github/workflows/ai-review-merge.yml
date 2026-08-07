@@ -55,10 +55,9 @@ name: AI review + auto-merge
 # guidance against a `v1` that predates the release fails with
 # `Input runner_labels is required, but no value was supplied`. Either pin a ref
 # that contains #405 or keep passing the input until `v1` advances.
-# The reusable remains review-only even after required/direct gate artifacts gain
-# signed producing-workflow provenance (#261): restoring merge authority to a
-# consumer-authored caller needs its own end-to-end contract, so
-# `ai-privileged-merge.yml` still deliberately refuses that shape (#279).
+# The reusable is review-only until signed producing-workflow provenance exists
+# (#261): a consumer-authored caller can forge every unsigned merge signal, so
+# `ai-privileged-merge.yml` deliberately refuses reusable-caller runs (#279).
 # Consumers must merge an approved verdict manually. Example caller:
 #
 #   # consumer repo (any org): .github/workflows/ai-review-merge.yml
@@ -586,9 +585,7 @@ jobs:
       pull-requests: write
       issues: write
       actions: read
-      attestations: write
       checks: read
-      id-token: write
       statuses: read
     env:
       LANE: ${{ needs.preflight.outputs.lane }}
@@ -1792,11 +1789,6 @@ jobs:
           path: ${{ runner.temp }}/merge-attestation/attestation.json
           retention-days: 1
           if-no-files-found: error
-
-      - name: Sign trusted merge attestation provenance
-        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
-        with:
-          subject-path: ${{ runner.temp }}/merge-attestation/attestation.json
 
       # --- CI telemetry (best-effort). Every step is `continue-on-error` so it
       # can NEVER fail or block the gate, and it stays dormant until
