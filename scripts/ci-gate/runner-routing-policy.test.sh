@@ -515,7 +515,7 @@ while IFS=$'\t' read -r poll_file poll_job _ poll_runs_on; do
     *'vars.VERJSON_RUNNER_OVERFLOW'*)
       pass "$(basename "$poll_file") — polling job '$poll_job' can reach the overflow lane" ;;
     *)
-      fail "$(basename "$poll_file") — polling job '$poll_job' holds a pool runner while polling but cannot reach vars.VERJSON_RUNNER_OVERFLOW (#487): $poll_runs_on" ;;
+      fail "$(basename "$poll_file") — polling job '$poll_job' holds a pool runner while polling but cannot reach vars.VERJSON_RUNNER_OVERFLOW (#487, ADR 0064 — add it at the head of the LANE tail, after inputs.runner_labels, never before): $poll_runs_on" ;;
   esac
 done <<<"$polling_jobs"
 
