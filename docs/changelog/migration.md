@@ -39,7 +39,7 @@
    a second `generator_ref` to keep its contract test hermetic (#308). Use:
 
    ```bash
-   PIN=d469f40db3b6c092e216910dc2a5eb0cfec6fa08
+   PIN=caf82079493a235c73c65928097b95df88ce6f20
    scripts/gen-changelog-caller.sh workflow      "$PIN" > .github/workflows/changelog.yml
    scripts/gen-changelog-caller.sh renderer      "$PIN" > scripts/render-next.sh
    scripts/gen-changelog-caller.sh contract-test "$PIN" > scripts/changelog-contract.test.sh
