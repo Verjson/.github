@@ -36,16 +36,36 @@
    a second `generator_ref` to keep its contract test hermetic (#308). Use:
 
    ```bash
-   PIN=0285998a98903d91f0b01275f409547711ec393f
+   PIN=969628b2c046684b9f160df9107507f212068cf9
    scripts/gen-changelog-caller.sh workflow      "$PIN" > .github/workflows/changelog.yml
    scripts/gen-changelog-caller.sh renderer      "$PIN" > scripts/render-next.sh
    scripts/gen-changelog-caller.sh contract-test "$PIN" > scripts/changelog-contract.test.sh
    ```
 
    `contract-pin.test.sh` asserts this pin still resolves and still contains the
-   generator, so the recommendation cannot drift from the repository again.
+   generator. It also executes that pin's engine against fixtures carrying
+   every metadata key advertised in the README capability table, so the
+   recommendation cannot drift from either the repository or the documented
+   feature set.
+
+   **This pin is an immutable commit, not a published release.** `v2.2.0` is
+   older and accepts only `date`, `issue`, `id`, and `title`; it rejects the
+   currently documented `refs` and `summary` keys. No later release tag exists
+   as of 2026-08-07. Use the exact `PIN` above when following this guide rather
+   than substituting `v2.2.0`, and consult the capability table in
+   `docs/changelog/README.md` before selecting any other immutable ref.
+
    A repository already migrated at an older pin needs only to regenerate; the
    embedded `contract_ref` moves with it.
+
+   Repositories consolidating generated checks use the same pin for the
+   additional modes:
+
+   ```bash
+   scripts/gen-changelog-caller.sh generated-artifacts "$PIN" > .github/workflows/changelog.yml
+   scripts/gen-changelog-caller.sh adr-index-generator "$PIN" > scripts/gen-adr-index.sh
+   scripts/gen-changelog-caller.sh generated-artifacts-with-adr-index "$PIN" > .github/workflows/changelog.yml
+   ```
 
    A repository that **publishes** something needs a fourth file, and must
    generate it rather than copying a sibling's:
@@ -54,8 +74,8 @@
    scripts/gen-changelog-caller.sh release-node "$PIN" > .github/workflows/release.yml
    ```
 
-   `release-node` exists only from the commit that closed #463/#464/#465, which
-   is the pin above. An older pin has no such mode and the command fails loudly
+   `release-node` exists only from the commit that closed #463/#464/#465 and is
+   included in the pin above. An older pin has no such mode and the command fails loudly
    rather than emitting an empty file, so a repository still on an older pin must
    move to this one before it can generate a release caller at all.
    `contract-pin.test.sh` checks `release-node` alongside the other three modes,

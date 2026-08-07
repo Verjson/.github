@@ -28,6 +28,34 @@ Describe the user-visible change and link its issue, ADR, and pull request when
 applicable.
 ```
 
+### Metadata support is a property of the immutable pin
+
+The README describes the current contract, but consumers execute the engine at
+their chosen immutable `contract_ref`. Published tag `v2.2.0` accepts only the
+four base keys; it predates both `refs` and `summary`. No newer release tag
+exists as of 2026-08-07, so do not infer current metadata support from
+`v2.2.0`.
+
+The migration guide recommends immutable commit
+`969628b2c046684b9f160df9107507f212068cf9`. Its engine accepts every key below:
+<!-- recommended-contract-pin: 969628b2c046684b9f160df9107507f212068cf9 -->
+
+<!-- contract-pin-metadata:start -->
+| Metadata key | Required | Supported by `v2.2.0` | Supported by recommended pin |
+| --- | --- | --- | --- |
+| `date` | yes | yes | yes |
+| `issue` | exactly one of `issue` / `id` | yes | yes |
+| `id` | exactly one of `issue` / `id` | yes | yes |
+| `title` | yes | yes | yes |
+| `refs` | no | **no** | yes |
+| `summary` | no | **no** | yes |
+<!-- contract-pin-metadata:end -->
+
+`scripts/contract-pin.test.sh` executes the engine from that exact commit
+against issue-form and id-form fragments carrying every advertised key. Adding
+a key to this table without moving the recommended pin to an engine that
+accepts it makes CI fail.
+
 An entry may also carry `refs`, a comma-separated list of issue numbers it links
 but does not own:
 
@@ -51,6 +79,8 @@ _Date: 2026-07-30; id:20260730t090000z; refs #13_
 ```
 
 `refs` is optional and additive: a fragment without it renders exactly as before.
+`summary` optionally overrides the lead paragraph used in a released snapshot;
+it does not change the full running-log entry.
 
 The date and identity in the filename must match the metadata. Work that
 legitimately has no issue uses `id` instead of `issue`; its identity must be a
@@ -82,8 +112,10 @@ remove fragments. Release automation is the only fragment consumer.
 Repositories should call the reusable
 `.github/workflows/changelog-validate.yml` workflow and use
 `.github/workflows/changelog-release.yml` for releases. Pin reusable workflows
-to an immutable organization release in consumers and pass that same commit as
-the required `contract_ref` input.
+to an immutable commit whose documented capabilities they need and pass that
+same commit as the required `contract_ref` input. A release tag is convenient,
+but it is not newer merely because `main` documents a feature; check the
+capability table above.
 
 ### The release caller's `push_token`
 
@@ -147,16 +179,16 @@ fourth if it publishes something. Generate all of them rather than writing them;
 the reasoning is in the generator's header.
 
 ```bash
-ref=$(gh api repos/Verjson/.github/commits/main --jq .sha)
+PIN=969628b2c046684b9f160df9107507f212068cf9
 # Changelog-only repositories keep the backwards-compatible caller:
-scripts/gen-changelog-caller.sh workflow "$ref" > .github/workflows/changelog.yml
+scripts/gen-changelog-caller.sh workflow "$PIN" > .github/workflows/changelog.yml
 # Repositories consolidating generated checks use this instead:
-scripts/gen-changelog-caller.sh generated-artifacts "$ref" > .github/workflows/changelog.yml
-scripts/gen-changelog-caller.sh renderer "$ref" > scripts/render-next.sh
-scripts/gen-changelog-caller.sh contract-test "$ref" > scripts/changelog-contract.test.sh
+scripts/gen-changelog-caller.sh generated-artifacts "$PIN" > .github/workflows/changelog.yml
+scripts/gen-changelog-caller.sh renderer "$PIN" > scripts/render-next.sh
+scripts/gen-changelog-caller.sh contract-test "$PIN" > scripts/changelog-contract.test.sh
 # Only if the repository publishes a Node package. Adopters with nothing to
 # publish keep having no release caller at all.
-scripts/gen-changelog-caller.sh release-node "$ref" > .github/workflows/release.yml
+scripts/gen-changelog-caller.sh release-node "$PIN" > .github/workflows/release.yml
 chmod +x scripts/render-next.sh scripts/changelog-contract.test.sh
 ```
 
@@ -166,8 +198,8 @@ validation but leaves ADR-index checking off. A repository with
 generator and generating the matching caller together:
 
 ```bash
-scripts/gen-changelog-caller.sh adr-index-generator "$ref" > scripts/gen-adr-index.sh
-scripts/gen-changelog-caller.sh generated-artifacts-with-adr-index "$ref" > .github/workflows/changelog.yml
+scripts/gen-changelog-caller.sh adr-index-generator "$PIN" > scripts/gen-adr-index.sh
+scripts/gen-changelog-caller.sh generated-artifacts-with-adr-index "$PIN" > .github/workflows/changelog.yml
 chmod +x scripts/gen-adr-index.sh
 ```
 

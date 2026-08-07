@@ -17,21 +17,53 @@ set -uo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
 root="${CONTRACT_PIN_ROOT:-$(cd "$here/.." && pwd)}"
 guide="$root/docs/changelog/migration.md"
+readme="$root/docs/changelog/README.md"
 fails=0
 
 pass() { printf 'ok   - %s\n' "$1"; }
 fail() { printf 'FAIL - %s\n' "$1"; fails=$((fails + 1)); }
 
-[ -f "$guide" ] || { echo "FAIL - migration guide not found: $guide"; exit 1; }
+{ [ -f "$guide" ] && [ -f "$readme" ]; } ||
+  { echo "FAIL - changelog README or migration guide not found"; exit 1; }
+
+# The README's capability table is the public metadata contract for the
+# recommended pin. Read it rather than maintaining a second key list here.
+mapfile -t advertised_keys < <(awk '
+  /^<!-- contract-pin-metadata:start -->$/ { capture = 1; next }
+  /^<!-- contract-pin-metadata:end -->$/   { capture = 0 }
+  capture && /^\| `[a-z]+` / {
+    key = $2
+    gsub(/`/, "", key)
+    print key
+  }
+' "$readme")
+
+if [ "${#advertised_keys[@]}" -eq 0 ]; then
+  fail "the README advertises no machine-checkable metadata capabilities"
+else
+  pass "the README advertises ${#advertised_keys[@]} metadata capabilities"
+fi
 
 # Every 40-hex literal the guide presents as a pin to generate against. Read from
 # the guide rather than restated here — a copy is the same drift one level up.
 mapfile -t pins < <(grep -oE '^   PIN=[0-9a-f]{40}$' "$guide" | cut -d= -f2 | sort -u)
+mapfile -t readme_pins < <(
+  sed -nE 's/^<!-- recommended-contract-pin: ([0-9a-f]{40}) -->$/\1/p' "$readme" |
+    sort -u
+)
 
 if [ "${#pins[@]}" -eq 0 ]; then
   fail "the guide names no pin to generate against — either the check or the guide is wrong"
 else
   pass "the guide names ${#pins[@]} pin(s) to generate against"
+fi
+
+if [ "${#readme_pins[@]}" -ne 1 ]; then
+  fail "the README must name exactly one machine-checkable recommended pin"
+elif [ "${#pins[@]}" -ne 1 ] || [ "${readme_pins[0]}" != "${pins[0]}" ]; then
+  fail "the README capability pin and migration guide PIN disagree"
+else
+  pass "the README capability table and migration guide share one immutable pin"
 fi
 
 # actions-ci checks out with fetch-depth: 1 (#234, ADR 0045), so the pinned
@@ -68,7 +100,9 @@ for pin in "${pins[@]}"; do
   # mode makes a documented command fail. That was the state until the pin moved
   # to the commit that closed #463/#464/#465 — the guide said `release-node` and
   # the pin could not run it, and nothing caught the contradiction (#463).
-  for mode in workflow renderer contract-test release-node; do
+  for mode in \
+    workflow generated-artifacts renderer contract-test release-node \
+    adr-index-generator generated-artifacts-with-adr-index; do
     if git -C "$root" show "$pin:scripts/gen-changelog-caller.sh" 2>/dev/null \
       | grep -qE "^  $mode\)"; then
       pass "the generator at ${pin:0:8} supports '$mode'"
@@ -76,6 +110,50 @@ for pin in "${pins[@]}"; do
       fail "the generator at ${pin:0:8} has no '$mode' mode, so the documented command fails"
     fi
   done
+
+  # Execute the engine AT the recommended pin against fragments that exercise
+  # every advertised key. Source inspection alone is insufficient: a parser can
+  # name a key and still reject its valid value at the validation boundary.
+  fixture="$(mktemp -d)"
+  mkdir -p "$fixture/NEXT"
+  git -C "$root" show "$pin:scripts/changelog.py" >"$fixture/changelog.py"
+  cat >"$fixture/NEXT/2026-08-07-issue-388-issue-form.md" <<'EOF'
+---
+date: 2026-08-07
+issue: 388
+title: Exercise issue metadata
+summary: Exercise the issue-form capability.
+---
+
+Issue-form fixture.
+EOF
+  cat >"$fixture/NEXT/2026-08-07-issue-20260807T120000Z-id-form.md" <<'EOF'
+---
+date: 2026-08-07
+id: 20260807T120000Z
+refs: 388
+title: Exercise reference metadata
+summary: Exercise the id-form capability.
+---
+
+ID-form fixture.
+EOF
+
+  if python3 "$fixture/changelog.py" validate --repo-root "$fixture" \
+      >"$fixture/out" 2>"$fixture/err" && [ ! -s "$fixture/err" ]; then
+    pass "the engine at ${pin:0:8} accepts fixtures carrying every advertised metadata key"
+  else
+    fail "the engine at ${pin:0:8} rejects or ignores advertised metadata: $(tr '\n' ' ' <"$fixture/err")"
+  fi
+
+  for key in "${advertised_keys[@]}"; do
+    if grep -qE "^${key}:" "$fixture"/NEXT/*.md; then
+      pass "advertised metadata '$key' is exercised against the pin"
+    else
+      fail "advertised metadata '$key' has no pin-capability fixture"
+    fi
+  done
+  find "$fixture" -depth -delete
 done
 
 if [ "$fails" -eq 0 ]; then
