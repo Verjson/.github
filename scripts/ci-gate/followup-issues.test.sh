@@ -92,6 +92,87 @@ STUB
   [ "$(wc -l <"$FOLLOWUP_LOG" | tr -d ' ')" -eq 0 ] \
     && pass "an already-filed follow-up is not filed twice" \
     || fail "dedup stopped suppressing existing follow-ups"
+
+  # Identical findings must be collapsed before workers start. The lookup stub
+  # deliberately reports no existing issue, reproducing the same-run race:
+  # without a pre-fan-out pass every duplicate worker reaches `issue create`.
+  cat >"$sandbox/bin/gh" <<'STUB'
+#!/usr/bin/env bash
+case "$1 ${2:-}" in
+  "issue list") echo 0 ;;
+  "issue create")
+    shift 2
+    while [ "$#" -gt 0 ]; do
+      if [ "$1" = "--body" ]; then
+        printf '%s\n' "$2" | sed -n '1p' >>"$FOLLOWUP_LOG"
+        exit 0
+      fi
+      shift
+    done
+    exit 1
+    ;;
+  *) exit 1 ;;
+esac
+STUB
+  chmod +x "$sandbox/bin/gh"
+  : >"$FOLLOWUP_LOG"
+  injection_sentinel="$sandbox/injected"
+  hostile_note="quote: \" and command: \$(touch $injection_sentinel) and \`false\`"
+  attestation="$(jq -nc --arg hostile "$hostile_note" '{
+    followups: [
+      {location:"src/first.ts:1", note:"same finding"},
+      {note:"same finding", location:"src/first.ts:1"},
+      {location:"src/first.ts:1", note:"distinct finding"},
+      {location:"src/odd name.ts:2", note:$hostile},
+      {location:"src/odd name.ts:2", note:$hostile}
+    ]
+  }')"
+  export attestation
+
+  ( set -uo pipefail; . "$sandbox/followups.sh" ) >/dev/null 2>&1
+  created="$(wc -l <"$FOLLOWUP_LOG" | tr -d ' ')"
+  if [ "$created" -eq 3 ]; then
+    pass "same-run duplicates collapse while distinct findings remain"
+  else
+    fail "same-run dedup created $created issues for 3 canonical findings"
+  fi
+  [ ! -e "$injection_sentinel" ] \
+    && pass "follow-up text remains data under shell metacharacters" \
+    || fail "follow-up text was evaluated as shell code"
+
+  expected_markers="$sandbox/expected-markers"
+  {
+    printf '%s\n' '<!-- ai-review-followup:pr99:'"$(printf '%s' 'src/first.ts:1'$'\n''same finding' | sha256sum | cut -c1-12)"' -->'
+    printf '%s\n' '<!-- ai-review-followup:pr99:'"$(printf '%s' 'src/first.ts:1'$'\n''distinct finding' | sha256sum | cut -c1-12)"' -->'
+    printf '%s\n' '<!-- ai-review-followup:pr99:'"$(printf '%s' 'src/odd name.ts:2'$'\n'"$hostile_note" | sha256sum | cut -c1-12)"' -->'
+  } | sort >"$expected_markers"
+  if sort "$FOLLOWUP_LOG" | cmp -s - "$expected_markers"; then
+    pass "canonical marker hashes are stable and retain distinct findings"
+  else
+    fail "canonical marker hashes or distinct-finding retention drifted"
+  fi
+
+  awk '/^          followups="\$\(jq -c \.followups/{p=1} p&&/^          max_parallel=8$/{exit} p{print}' \
+    "$merge_wf" | sed 's/^          //' >"$sandbox/dedupe.sh"
+  (
+    set -uo pipefail
+    unique_followups=()
+    # shellcheck disable=SC1091
+    . "$sandbox/dedupe.sh"
+    for item in "${unique_followups[@]}"; do
+      jq -r '[.location, .note] | @tsv' <<<"$item"
+    done
+  ) >"$sandbox/actual-order"
+  {
+    printf '%s\t%s\n' 'src/first.ts:1' 'same finding'
+    printf '%s\t%s\n' 'src/first.ts:1' 'distinct finding'
+    printf '%s\t%s\n' 'src/odd name.ts:2' "$hostile_note"
+  } >"$sandbox/expected-order"
+  if cmp -s "$sandbox/actual-order" "$sandbox/expected-order"; then
+    pass "pre-fan-out dedup preserves first-seen ordering"
+  else
+    fail "pre-fan-out dedup reordered canonical findings"
+  fi
 fi
 
 [ "$fails" -eq 0 ] && { echo "All tests passed."; exit 0; }
