@@ -53,7 +53,8 @@ embedded="$(grep -oE 'CONTRACT_SHA256="[0-9a-f]{64}"' "$tmp/render-next.sh" | he
 # the contract identically or they can execute different implementations, which
 # is #304 one level down.
 "$generator" contract-test "$ref" >"$tmp/contract-test.sh" 2>/dev/null
-for marker in 'contract_is_pinned()' 'CHANGELOG_CONTRACT_PATH' 'CONTRACT_SHA256='; do
+for marker in 'contract_is_pinned()' 'CHANGELOG_CONTRACT_PATH' \
+  'VERJSON_CHANGELOG_TOOL_CACHE' 'CONTRACT_SHA256='; do
   if grep -qF "$marker" "$tmp/render-next.sh" && grep -qF "$marker" "$tmp/contract-test.sh"; then
     pass "both generated scripts carry $marker"
   else
@@ -62,8 +63,12 @@ for marker in 'contract_is_pinned()' 'CHANGELOG_CONTRACT_PATH' 'CONTRACT_SHA256=
 done
 
 # --- fixture adopter -------------------------------------------------------
-mkdir -p "$tmp/adopter/scripts" "$tmp/adopter/NEXT" "$tmp/bin"
+mkdir -p "$tmp/adopter/.github/workflows" "$tmp/adopter/scripts" \
+  "$tmp/adopter/NEXT" "$tmp/bin"
 cp "$tmp/render-next.sh" "$tmp/adopter/scripts/render-next.sh"
+cp "$tmp/contract-test.sh" "$tmp/adopter/scripts/changelog-contract.test.sh"
+"$generator" workflow "$ref" >"$tmp/adopter/.github/workflows/changelog.yml"
+chmod +x "$tmp/adopter/scripts/changelog-contract.test.sh"
 printf -- '---\ndate: 2026-08-02\nissue: 1\ntitle: fixture entry\n---\n\nbody\n' \
   >"$tmp/adopter/NEXT/2026-08-02-issue-1-fixture.md"
 cp "$tmp/pinned.py" "$tmp/identical.py"
@@ -74,10 +79,10 @@ printf 'import sys\nprint("POISONED", file=sys.stderr)\nsys.exit(0)\n' >"$tmp/po
 printf '#!/usr/bin/env bash\nexit 6\n' >"$tmp/bin/curl"; chmod +x "$tmp/bin/curl"
 
 cache_root="$tmp/cache"
-cache_dir="$cache_root/verjson-changelog/$ref"
+cache_dir="$cache_root/$ref"
 
 render() { # render [env assignments...] -> "rc=<n>"; output in $tmp/out.txt
-  ( cd "$tmp/adopter" && env "$@" XDG_CACHE_HOME="$cache_root" \
+  ( cd "$tmp/adopter" && env "$@" VERJSON_CHANGELOG_TOOL_CACHE="$cache_root" \
       ./scripts/render-next.sh >"$tmp/out.txt" 2>&1; echo "rc=$?" )
 }
 poison_cache() { mkdir -p "$cache_dir"; cp "$tmp/poison.py" "$cache_dir/changelog.py"; }
@@ -98,14 +103,32 @@ rc="$(render CHANGELOG_CONTRACT_PATH="$tmp/absent.py")"
   && pass "an override naming a missing file is refused" \
   || fail "a missing override target was accepted or refused for the wrong reason ($rc)"
 
+rm -rf "$cache_root"
+mkdir -p "$cache_dir"
+cp "$tmp/pinned.py" "$cache_dir/changelog.py"
+rc="$(render PATH="$tmp/bin:$PATH")"
+{ [ "$rc" = "rc=0" ] && ! ran_poison; } \
+  && pass "a verified runner-preloaded cache works with egress blocked" \
+  || fail "an offline verified cache hit was rejected ($rc)"
+
+if ( cd "$tmp/adopter" \
+  && env VERJSON_CHANGELOG_TOOL_CACHE="$cache_root" PATH="$tmp/bin:$PATH" \
+    ./scripts/changelog-contract.test.sh >/dev/null ); then
+  pass "the generated contract and disposable release suite use the offline cache"
+else
+  fail "the generated contract/release suite could not use the offline cache"
+fi
+
 # The hole that existed independently of the override: a cache entry at the right
 # path with the wrong bytes. Without a network to repair from, this must FAIL —
 # falling back to the resident copy is the fail-open.
 rm -rf "$cache_root"; poison_cache
 rc="$(render PATH="$tmp/bin:$PATH")"
-{ [ "$rc" != "rc=0" ] && ! ran_poison; } \
+{ [ "$rc" != "rc=0" ] && ! ran_poison \
+  && grep -q "VERJSON_CHANGELOG_TOOL_CACHE=$cache_root" "$tmp/out.txt" \
+  && grep -q "$cache_dir/changelog.py" "$tmp/out.txt"; } \
   && pass "a poisoned cache entry is never executed, even with no way to refetch" \
-  || fail "a poisoned cache entry was executed or tolerated ($rc)"
+  || fail "a poisoned offline cache did not fail with an actionable repair path ($rc)"
 
 # Given a source to repair from, the same poisoned entry is replaced rather than
 # merely refused. The source is a stub serving the pinned bytes, not the live
@@ -115,6 +138,12 @@ rc="$(render PATH="$tmp/bin:$PATH")"
 printf '#!/usr/bin/env bash\nfor a in "$@"; do [ "$prev" = "-o" ] && out="$a"; prev="$a"; done\ncat %q >"$out"\n' \
   "$tmp/pinned.py" >"$tmp/bin/curl"
 chmod +x "$tmp/bin/curl"
+rm -rf "$cache_root"
+rc="$(render PATH="$tmp/bin:$PATH")"
+{ [ "$rc" = "rc=0" ] && [ "$(digest "$cache_dir/changelog.py")" = "$embedded" ]; } \
+  && pass "a cache miss falls back to the pinned upstream contract" \
+  || fail "a cache miss did not populate the verified cache ($rc)"
+
 rm -rf "$cache_root"; poison_cache
 rc="$(render PATH="$tmp/bin:$PATH")"
 { [ "$rc" = "rc=0" ] && ! ran_poison && [ -f "$cache_dir/changelog.py" ] \

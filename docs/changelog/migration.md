@@ -48,6 +48,19 @@
    recommendation cannot drift from either the repository or the documented
    feature set.
 
+   Restricted-egress runners may preload the generated tooling cache without
+   changing consumer files:
+
+   ```bash
+   export VERJSON_CHANGELOG_TOOL_CACHE=/opt/verjson/changelog-tools
+   # expected file: /opt/verjson/changelog-tools/$PIN/changelog.py
+   ```
+
+   The generated renderer and contract test verify the preloaded engine against
+   the exact digest embedded for `$PIN`; a matching path alone is never trusted.
+   On a miss or mismatch they use the immutable raw GitHub URL as a repair
+   fallback, or fail with the expected path and digest when egress is unavailable.
+
    **This pin is an immutable commit, not a published release.** `v2.2.0` is
    older and accepts only `date`, `issue`, `id`, and `title`; it rejects the
    currently documented `refs` and `summary` keys. No later release tag exists
