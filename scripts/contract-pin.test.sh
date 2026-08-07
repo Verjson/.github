@@ -132,6 +132,7 @@ EOF
 date: 2026-08-07
 id: 20260807T120000Z
 refs: 388
+component: python
 title: Exercise reference metadata
 summary: Exercise the id-form capability.
 ---

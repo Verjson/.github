@@ -945,7 +945,7 @@ import os
 import shlex
 
 path = os.environ["RENDERER"]
-tail = 'exec python3 "$contract" render-next --repo-root "$root"\n'
+tail = 'exec python3 "$contract" "${args[@]}"\n'
 text = open(path, encoding="utf-8").read()
 if not text.endswith(tail):
     raise SystemExit("generated renderer no longer ends with the render exec")
@@ -999,12 +999,33 @@ else
   fail "--as-released did not change the output; the flag is being swallowed"
 fi
 
+cat >"$quoted/NEXT/2026-08-07-issue-390-python-stream.md" <<'FRAGMENT'
+---
+date: 2026-08-07
+issue: 390
+component: python
+title: Python stream
+---
+
+Python-only release note.
+FRAGMENT
+commit_fixture "$quoted" component
+component_out="$tmproot/component.out"
+if (cd "$quoted" && ./scripts/render-next.sh --component python) \
+    >"$component_out" 2>&1 \
+    && grep -q '^## Python stream$' "$component_out" \
+    && ! grep -q '^## feat(caller): a double-quoted title$' "$component_out"; then
+  pass "the generated renderer selects exactly one explicit component stream"
+else
+  fail "the generated renderer does not isolate an explicit component stream"
+fi
+
 # Still a renderer, not a front end to a pinned engine: anything else is refused
 # so a caller cannot reach subcommands the contract does not sanction.
 if (cd "$quoted" && ./scripts/render-next.sh release --version v9.9.9) >/dev/null 2>&1; then
   fail "the generated renderer forwarded an unsanctioned argument"
 else
-  pass "the generated renderer still refuses arguments other than --as-released"
+  pass "the generated renderer still refuses arguments outside its render flags"
 fi
 
 # Only reachable after a release, so it needs a released fixture.

@@ -37,6 +37,7 @@ def fragment(
     identity_id: str | None = None,
     refs: str | None = None,
     summary: str | None = None,
+    component: str | None = None,
     body: str = "Body.",
 ) -> Path:
     path = root / "NEXT" / name
@@ -50,6 +51,8 @@ def fragment(
         lines.append(f"refs: {refs}")
     if summary is not None:
         lines.append(f"summary: {summary}")
+    if component is not None:
+        lines.append(f"component: {component}")
     lines.append(f"title: {title}")
     front = "\n".join(lines)
     path.write_text(f"---\n{front}\n---\n\n{body}\n", encoding="utf-8")
@@ -679,6 +682,168 @@ class ChangelogContractTests(unittest.TestCase):
         self.assertNotIn("## Why", snapshot)
         self.assertIn("_Date: 2026-07-30; issue #249_", snapshot)
 
+    def test_default_render_selects_only_unscoped_fragments(self) -> None:
+        fragment(self.root, "2026-07-30-issue-249-default.md", title="Default")
+        fragment(
+            self.root,
+            "2026-07-30-issue-250-python.md",
+            issue="250",
+            title="Python",
+            component="python",
+        )
+
+        rendered = changelog.render_next(self.root)
+
+        self.assertIn("## Default", rendered)
+        self.assertNotIn("## Python", rendered)
+
+    def test_component_render_selects_only_that_component(self) -> None:
+        fragment(self.root, "2026-07-30-issue-249-default.md", title="Default")
+        fragment(
+            self.root,
+            "2026-07-30-issue-250-python.md",
+            issue="250",
+            title="Python",
+            component="python",
+        )
+        fragment(
+            self.root,
+            "2026-07-30-issue-251-node.md",
+            issue="251",
+            title="Node",
+            component="node",
+        )
+
+        rendered = changelog.render_next(self.root, component="python")
+
+        self.assertIn("## Python", rendered)
+        self.assertNotIn("## Default", rendered)
+        self.assertNotIn("## Node", rendered)
+
+    def test_component_names_are_bounded_lowercase_identifiers(self) -> None:
+        for index, bad in enumerate(("", ".", "..", "../python", "Python", "python/pkg", "a" * 65)):
+            with self.subTest(component=bad):
+                fragment(
+                    self.root,
+                    f"2026-07-30-issue-{300 + index}-bad-component.md",
+                    issue=str(300 + index),
+                    component=bad,
+                )
+                with self.assertRaisesRegex(changelog.ChangelogError, "component"):
+                    changelog.fragments(self.root)
+                for path in (self.root / "NEXT").glob("*.md"):
+                    path.unlink()
+
+        fragment(
+            self.root,
+            "2026-07-30-issue-399-valid-component.md",
+            issue="399",
+            component="python.worker_v2",
+        )
+        self.assertEqual(
+            "python.worker_v2",
+            changelog.fragments(self.root)[0].metadata["component"],
+        )
+
+    def test_default_render_fails_empty_when_only_scoped_fragments_exist(self) -> None:
+        scoped = fragment(
+            self.root,
+            "2026-07-30-issue-250-python.md",
+            issue="250",
+            component="python",
+        )
+
+        with self.assertRaisesRegex(changelog.ChangelogError, "no unreleased fragments"):
+            changelog.render_next(self.root)
+
+        self.assertTrue(scoped.exists())
+
+    def test_default_release_consumes_only_unscoped_fragments(self) -> None:
+        self.init_git()
+        plain = fragment(self.root, "2026-07-30-issue-249-default.md", title="Default")
+        scoped = fragment(
+            self.root,
+            "2026-07-30-issue-250-python.md",
+            issue="250",
+            title="Python",
+            component="python",
+        )
+        self.commit_all("fragments")
+
+        changelog.release(self.root, "v1.0.0", [])
+
+        self.assertFalse(plain.exists())
+        self.assertTrue(scoped.exists())
+        self.assertIn("## Default", (self.root / "CHANGELOG/v1.0.0.md").read_text())
+        self.assertNotIn("## Python", (self.root / "CHANGELOG/v1.0.0.md").read_text())
+
+    def test_component_release_consumes_only_matching_fragments(self) -> None:
+        self.init_git()
+        plain = fragment(self.root, "2026-07-30-issue-249-default.md", title="Default")
+        python = fragment(
+            self.root,
+            "2026-07-30-issue-250-python.md",
+            issue="250",
+            title="Python",
+            component="python",
+        )
+        node = fragment(
+            self.root,
+            "2026-07-30-issue-251-node.md",
+            issue="251",
+            title="Node",
+            component="node",
+        )
+        self.commit_all("fragments")
+
+        changelog.release(self.root, "python-v1.0.0", [], component="python")
+
+        self.assertTrue(plain.exists())
+        self.assertFalse(python.exists())
+        self.assertTrue(node.exists())
+        snapshot = (self.root / "CHANGELOG/python-v1.0.0.md").read_text()
+        self.assertIn("## Python", snapshot)
+        self.assertNotIn("## Default", snapshot)
+        self.assertNotIn("## Node", snapshot)
+
+    def test_explicit_selection_cannot_cross_component_boundaries(self) -> None:
+        self.init_git()
+        fragment(self.root, "2026-07-30-issue-249-default.md", title="Default")
+        fragment(
+            self.root,
+            "2026-07-30-issue-250-python.md",
+            issue="250",
+            title="Python",
+            component="python",
+        )
+        self.commit_all("fragments")
+
+        with self.assertRaisesRegex(changelog.ChangelogError, "component"):
+            changelog.release(
+                self.root,
+                "python-v1.0.0",
+                [
+                    "2026-07-30-issue-249-default.md",
+                    "2026-07-30-issue-250-python.md",
+                ],
+                component="python",
+            )
+
+    def test_empty_component_stream_fails_without_consuming_other_streams(self) -> None:
+        self.init_git()
+        scoped = fragment(
+            self.root,
+            "2026-07-30-issue-250-python.md",
+            issue="250",
+            component="python",
+        )
+        self.commit_all("fragments")
+
+        with self.assertRaisesRegex(changelog.ChangelogError, "selected no fragments"):
+            changelog.release(self.root, "node-v1.0.0", [], component="node")
+
+        self.assertTrue(scoped.exists())
+
     def test_render_next_can_show_the_released_shape_before_it_is_immutable(self) -> None:
         fragment(self.root, "2026-07-30-issue-249-diary.md", body=DIARY)
 
@@ -815,6 +980,22 @@ class ChangelogContractTests(unittest.TestCase):
         with self.assertRaisesRegex(changelog.ChangelogError, "cannot consume"):
             changelog.check_pr(self.root, base, "HEAD")
 
+    def test_feature_pr_cannot_consume_a_component_scoped_fragment(self) -> None:
+        self.init_git()
+        scoped = fragment(
+            self.root,
+            "2026-07-30-issue-390-python.md",
+            issue="390",
+            component="python",
+        )
+        self.commit_all("base")
+        base = run(self.root, "git", "rev-parse", "HEAD")
+        scoped.unlink()
+        self.commit_all("consume scoped fragment")
+
+        with self.assertRaisesRegex(changelog.ChangelogError, "cannot consume"):
+            changelog.check_pr(self.root, base, "HEAD")
+
     def test_feature_pr_can_rename_fragment_within_next(self) -> None:
         self.init_git()
         original = fragment(self.root, "2026-07-30-issue-249-contract.md")
@@ -945,6 +1126,8 @@ class ChangelogContractTests(unittest.TestCase):
         self.assertIn("cancel-in-progress: false", workflow)
         self.assertIn("contract_ref:", workflow)
         self.assertIn("ref: ${{ inputs.contract_ref }}", workflow)
+        self.assertIn("COMPONENT: ${{ inputs.component }}", workflow)
+        self.assertIn('args+=(--component "$COMPONENT")', workflow)
         self.assertNotIn("runs-on: ubuntu-latest", workflow)
         self.assertIn("inputs.runner != ''", workflow)
 
