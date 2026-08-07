@@ -62,7 +62,13 @@ for pin in "${pins[@]}"; do
 
   # A pin that cannot generate is a pin that cannot be adopted. Cheap to prove,
   # and it catches a generator whose interface moved after the pin was written.
-  for mode in workflow renderer contract-test; do
+  #
+  # `release-node` belongs in this list even though only publishing adopters run
+  # it: the guide documents it under the same `$PIN`, so a pin that predates the
+  # mode makes a documented command fail. That was the state until the pin moved
+  # to the commit that closed #463/#464/#465 — the guide said `release-node` and
+  # the pin could not run it, and nothing caught the contradiction (#463).
+  for mode in workflow renderer contract-test release-node; do
     if git -C "$root" show "$pin:scripts/gen-changelog-caller.sh" 2>/dev/null \
       | grep -qE "^  $mode\)"; then
       pass "the generator at ${pin:0:8} supports '$mode'"
