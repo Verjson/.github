@@ -8,7 +8,7 @@ root="$(cd "$here/.." && pwd)"
 ci="$root/.github/workflows/node-ci.yml"
 release="$root/.github/workflows/node-release.yml"
 composite="$root/.github/actions/setup-verjson-node/action.yml"
-actions_ci="$root/.github/workflows/actions-ci.yml"
+actions_ci="$root/scripts/actions-ci-groups.tsv"
 docs="$root/docs/node-workflows.md"
 fails=0
 
@@ -150,7 +150,7 @@ for test_command in \
   'bash scripts/node-workflow-pins.test.sh' \
   'bash scripts/node-release-publish.test.sh' \
   'bash scripts/retired-release-tooling.test.sh'; do
-  grep -qF "run: $test_command" "$actions_ci" \
+  grep -qF "$(printf '\t%s' "$test_command")" "$actions_ci" \
     && pass "actions-ci runs $test_command" \
     || fail "actions-ci does not run $test_command"
 done

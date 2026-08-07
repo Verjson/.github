@@ -101,8 +101,8 @@ root_status_after="$(git -C "$repo_root" status --porcelain 2>/dev/null)"
        sed 's/^/diag - /' "$tmp/suite.out"; }
 
 # Wired, or it does not run. That gap once left hold.test.sh dormant.
-grep -qF 'bash scripts/ci-gate/repo-hygiene-sandbox.test.sh' \
-  "$repo_root/.github/workflows/actions-ci.yml" \
+grep -q $'\tbash scripts/ci-gate/repo-hygiene-sandbox.test.sh$' \
+  "$repo_root/scripts/actions-ci-groups.tsv" \
   && pass "this suite is wired into actions-ci" \
   || fail "repo-hygiene-sandbox.test.sh is not wired into actions-ci.yml — it would never run"
 

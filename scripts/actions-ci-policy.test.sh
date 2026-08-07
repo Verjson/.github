@@ -9,7 +9,8 @@ fail() { printf 'FAIL - %s\n' "$1"; fails=$((fails + 1)); }
 
 group_expr="$(awk '/^concurrency:/{cap=1; next} cap && /^  group:/{sub(/^  group:[[:space:]]*/, ""); print; exit}' "$wf")"
 cancel_expr="$(awk '/^concurrency:/{cap=1; next} cap && /^  cancel-in-progress:/{sub(/^  cancel-in-progress:[[:space:]]*/, ""); print; exit}' "$wf")"
-timeout="$(awk '/^  shell-tests:/{cap=1; next} cap && /^    timeout-minutes:/{print $2; exit}' "$wf")"
+group_timeout="$(awk '/^  shell-test-groups:/{cap=1; next} cap && /^    timeout-minutes:/{print $2; exit}' "$wf")"
+required_timeout="$(awk '/^  shell-tests:/{cap=1; next} cap && /^    timeout-minutes:/{print $2; exit}' "$wf")"
 
 [ "$group_expr" = '${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}' ] \
   && pass "concurrency is keyed by workflow plus PR number/ref" \
@@ -17,9 +18,9 @@ timeout="$(awk '/^  shell-tests:/{cap=1; next} cap && /^    timeout-minutes:/{pr
 [ "$cancel_expr" = '${{ github.ref != '"'"'refs/heads/main'"'"' }}' ] \
   && pass "only main is exempt from cancellation" \
   || fail "unexpected cancel-in-progress predicate: $cancel_expr"
-[ "$timeout" = 15 ] \
-  && pass "shell-tests has an exact 15-minute ceiling" \
-  || fail "shell-tests timeout is not exactly 15 minutes"
+[ "$group_timeout" = 12 ] && [ "$required_timeout" = 2 ] \
+  && pass "group workers and required-context aggregation have exact ceilings" \
+  || fail "actions-ci group/aggregate timeouts drifted: ${group_timeout:-unset}/${required_timeout:-unset}"
 
 group_for() {
   local workflow="$1" pr="$2" ref="$3"

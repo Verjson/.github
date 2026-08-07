@@ -5,7 +5,7 @@ here="$(cd "$(dirname "$0")" && pwd)"
 repo_root="$(cd "$here/../.." && pwd)"
 generator="$repo_root/scripts/gen-gate-rearm-caller.sh"
 canonical="$repo_root/.github/workflows/gate-rearm.yml"
-actions_ci="$repo_root/.github/workflows/actions-ci.yml"
+actions_ci="$repo_root/scripts/actions-ci-groups.tsv"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 fails=0
@@ -86,7 +86,7 @@ grep -qE '^  workflow_call:' "$canonical" \
 bash "$here/gate-rearm.test.sh" >"$tmp/canonical.out" 2>&1 \
   && pass "canonical bridge retains hold, recursion, no-checkout and fail-closed guards" \
   || fail "canonical bridge contract failed: $(tail -n 1 "$tmp/canonical.out")"
-grep -qF 'run: bash scripts/ci-gate/gate-rearm-caller-contract.test.sh' "$actions_ci" \
+grep -q $'\tbash scripts/ci-gate/gate-rearm-caller-contract.test.sh$' "$actions_ci" \
   && pass "actions-ci executes the generated caller contract" \
   || fail "generated caller contract is not wired into actions-ci"
 

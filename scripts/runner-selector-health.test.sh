@@ -183,8 +183,8 @@ rc=$?
   && pass "partial or malformed pagination never reports the org clean" \
   || { fail "partial pagination reported a clean org"; sed 's/^/diag - /' "$tmp/out.txt"; }
 
-actions_ci="$here/../.github/workflows/actions-ci.yml"
-grep -qF 'run: bash scripts/runner-selector-health.test.sh' "$actions_ci" \
+actions_ci="$here/actions-ci-groups.tsv"
+grep -q $'\tbash scripts/runner-selector-health.test.sh$' "$actions_ci" \
   && pass "the selector-health suite is wired into actions-ci" \
   || fail "actions-ci does not run the selector-health suite"
 
