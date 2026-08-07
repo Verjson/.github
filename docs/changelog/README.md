@@ -37,8 +37,8 @@ exists as of 2026-08-07, so do not infer current metadata support from
 `v2.2.0`.
 
 The migration guide recommends immutable commit
-`20ce1c86880bbb2898aafb0df3b7693d643d8f64`. Its engine accepts every key below:
-<!-- recommended-contract-pin: 20ce1c86880bbb2898aafb0df3b7693d643d8f64 -->
+`3495f24c2cd81be7cc94b90c1c4650ca272102b1`. Its engine accepts every key below:
+<!-- recommended-contract-pin: 3495f24c2cd81be7cc94b90c1c4650ca272102b1 -->
 
 <!-- contract-pin-metadata:start -->
 | Metadata key | Required | Supported by `v2.2.0` | Supported by recommended pin |
@@ -50,6 +50,7 @@ The migration guide recommends immutable commit
 | `refs` | no | **no** | yes |
 | `summary` | no | **no** | yes |
 | `component` | no | **no** | yes |
+| `impact` | no | **no** | yes |
 <!-- contract-pin-metadata:end -->
 
 `scripts/contract-pin.test.sh` executes the engine from that exact commit
@@ -109,6 +110,25 @@ fragment list can narrow that stream but cannot select across component
 boundaries. Validation and pull-request consumption checks still cover every
 stream. See [ADR 0070](../decisions/0070-component-scoped-changelog-streams/README.md).
 
+### Release impact
+
+Every fragment may declare `impact: major`, `impact: minor`, or `impact: patch`.
+An omitted impact explicitly defaults to `patch`, so existing fragments remain
+valid. Impact is metadata only and never appears in rendered notes.
+
+At release time the central engine computes the highest impact among the
+selected fragments and requires the exact next SemVer version on that axis.
+Ordinary SemVer rules apply before 1.0: `v0.4.2` advances to `v1.0.0` for major,
+`v0.5.0` for minor, or `v0.4.3` for patch. Higher, lower, and skipped bumps fail
+before any snapshot or fragment is mutated. The first release in a prefix
+history establishes its baseline.
+
+Version prefixes define independent histories (`v1.2.3`, `python-v1.2.3`, and
+so on). Explicit-fragment releases calculate impact only from their selected
+fragments. Consumers pass versions and selectors to `scripts/changelog.py`;
+they must not carry their own impact parser. See
+[ADR 0071](../decisions/0071-changelog-impact-governs-version-bumps/README.md).
+
 The date and identity in the filename must match the metadata. Work that
 legitimately has no issue uses `id` instead of `issue`; its identity must be a
 UTC timestamp (`20260730T184500Z`) or a 6–12 character hexadecimal UUID prefix.
@@ -128,10 +148,11 @@ allocation never determines precedence.
 1. acquires the repository release lock;
 2. validates and selects canonical `NEXT/` fragments;
 3. refuses an existing snapshot;
-4. writes exactly one snapshot and removes the selected fragments in the same
+4. validates the requested version against the selected fragments' maximum impact;
+5. writes exactly one snapshot and removes the selected fragments in the same
    commit;
-5. tags that exact commit; and
-6. regenerates `CHANGELOG.md` only as a display artifact.
+6. tags that exact commit; and
+7. regenerates `CHANGELOG.md` only as a display artifact.
 
 Feature pull requests must not edit `CHANGELOG.md`, released snapshots, or
 remove fragments. Release automation is the only fragment consumer.
@@ -233,7 +254,7 @@ fourth if it publishes something. Generate all of them rather than writing them;
 the reasoning is in the generator's header.
 
 ```bash
-PIN=20ce1c86880bbb2898aafb0df3b7693d643d8f64
+PIN=3495f24c2cd81be7cc94b90c1c4650ca272102b1
 # Changelog-only repositories keep the backwards-compatible caller:
 scripts/gen-changelog-caller.sh workflow "$PIN" > .github/workflows/changelog.yml
 # Repositories consolidating generated checks use this instead:
