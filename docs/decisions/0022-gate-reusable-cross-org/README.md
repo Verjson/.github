@@ -95,6 +95,15 @@ break the org path.
 - Adding `workflow_call` to a required-check workflow is merge-gate-behaviour +
   cross-org distribution — a sensitive class — hence this ADR and the held PR.
 
+## Amendment (2026-08-07, #279) — reusable distribution is review-only
+
+Reusable callers remain the supported cross-org distribution mechanism for the
+review gate, but their repository-authored workflow and unsigned artifact cannot
+authorize privileged merge. `ai-privileged-merge.yml` accepts only the exact
+`.github` workflow id or organization-ruleset-injected required-workflow shape.
+Cross-org callers require human merge until signed producing-workflow provenance
+tracked by #261 exists.
+
 ## Sensitive-hunk diff
 
 ```diff

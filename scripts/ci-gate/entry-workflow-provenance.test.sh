@@ -204,11 +204,13 @@ assert_rejected() { # <label> <expected error substring>
 NOT_GREEN='trusted gate/checks did not become green'
 reset_fixtures
 
-# --- positive control: the legitimate shape must still merge ---------------
-# Without this the negatives below could pass vacuously, e.g. because the
-# harness never produces a trustworthy run at all.
+# --- #279: reusable-caller provenance is repository-authorable -------------
+# Even at the canonical path, a consumer-authored caller can reference the gate
+# under `if: false`, mint the named check and upload matching JSON. Until the
+# payload is signed by the producing workflow (#261), this shape is review-only
+# and must never authorize privileged merge.
 run_case pull_request_target
-assert_merged "a gate-entry run is trusted on the pull_request_target path"
+assert_rejected "an unsigned reusable caller cannot authorize pull_request_target merge" "$NOT_GREEN"
 
 # --- #279: referenced is not executed --------------------------------------
 # Identical run in every respect the privileged merge can observe — the gate
@@ -229,7 +231,7 @@ run_case workflow_dispatch
 assert_rejected "a hand-written attestation from a non-gate entry workflow is not trusted" "$NOT_GREEN"
 
 run_case workflow_dispatch
-assert_merged "a gate-entry run is trusted on the dispatched continuation path"
+assert_rejected "an unsigned reusable caller cannot authorize dispatched merge" "$NOT_GREEN"
 
 # --- the entry binding applies to the workflow_id matcher too ---------------
 # Shape 1 is `.github` running its own gate. The id is globally unique so it
@@ -332,6 +334,11 @@ grep -q 'gate_is_entry_workflow and (' "$wf" \
 grep -q 'if $required then' "$wf" && grep -q 'injected_by_ruleset' "$wf" \
   && pass "ruleset-mandated repositories are matched only by the injected run" \
   || fail "the required-workflow matcher is additive again, re-opening the repo-local forgery"
+
+! sed -n '/trusted_run_def=/,/^[[:space:]]*'\''$/p' "$wf" \
+    | grep -q 'referenced_workflows' \
+  && pass "repository-authored reusable references never grant merge authority" \
+  || fail "the privileged trust predicate still accepts forgeable reusable references"
 
 # --- #263: draft and hold are terminal no-ops, not red checks ---------------
 # The repository's own guidance says to open non-trivial work as a draft so the
