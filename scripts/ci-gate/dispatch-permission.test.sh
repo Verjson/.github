@@ -74,18 +74,43 @@ if [ "$1" = api ]; then
   exit 0
 fi
 if [ "$1 $2" = "workflow run" ]; then printf '%s\n' "$*" >>"$DISPATCH_LOG"; exit 0; fi
+if [ "$1 $2" = "pr view" ]; then
+  count=$(cat "$PR_VIEW_COUNT")
+  count=$((count + 1))
+  printf '%s\n' "$count" >"$PR_VIEW_COUNT"
+  if [ "$count" -le "${PR_VIEW_FAILURES:-0}" ]; then
+    echo "simulated transient PR read failure" >&2
+    exit 1
+  fi
+  printf '%s\n' "$PR_STATE_JSON"
+  exit 0
+fi
 exit 2
 EOF
 chmod +x "$tmp/bin/gh"
+cat >"$tmp/bin/sleep" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+chmod +x "$tmp/bin/sleep"
 
 run_case() {
+  local pr_state_json="${7-}"
+  if [ -z "$pr_state_json" ]; then
+    pr_state_json='{"state":"MERGED","mergedAt":"2026-08-07T12:00:00Z","reviewDecision":"APPROVED","mergeStateStatus":"UNKNOWN","headRefOid":"0123456789abcdef0123456789abcdef01234567"}'
+  fi
   : >"$tmp/dispatch.log"
   : >"$tmp/dispatch.out"
+  : >"$tmp/github-output.txt"
+  printf '0\n' >"$tmp/pr-view-count"
   PATH="$tmp/bin:$PATH" DISPATCH_LOG="$tmp/dispatch.log" GH_TOKEN=token \
+    GITHUB_OUTPUT="$tmp/github-output.txt" PR_VIEW_COUNT="$tmp/pr-view-count" \
     GITHUB_REPOSITORY=Verjson/example TARGET_REPO="${1-Verjson/example}" \
     PR_NUMBER="${2-7}" EXPECTED_HEAD_SHA="${3-0123456789abcdef0123456789abcdef01234567}" \
     SOURCE_RUN_ID="${4-99}" WORKFLOW_PATH="${5-.github/workflows/ai-privileged-merge.yml}" \
-    API_FAILURE="${6-false}" bash "$script" >"$tmp/dispatch.out" 2>&1
+    API_FAILURE="${6-false}" \
+    PR_STATE_JSON="$pr_state_json" \
+    PR_VIEW_FAILURES="${8-0}" bash "$script" >"$tmp/dispatch.out" 2>&1
 }
 run_case && grep -q 'workflow run ai-privileged-merge.yml' "$tmp/dispatch.log" \
   && pass "validated identities dispatch only the fixed workflow" \
@@ -110,6 +135,85 @@ for bad in repo pr head run workflow; do
     && fail "forged $bad input dispatched" \
     || pass "forged $bad input fails closed"
 done
+
+# #384: dispatch acceptance is the merge postcondition, not the HTTP success of
+# workflow_dispatch. A clean but still-open PR must fail with a typed outcome.
+open_clean='{"state":"OPEN","mergedAt":null,"reviewDecision":"APPROVED","mergeStateStatus":"CLEAN","headRefOid":"0123456789abcdef0123456789abcdef01234567"}'
+run_case Verjson/example 7 0123456789abcdef0123456789abcdef01234567 99 .github/workflows/ai-privileged-merge.yml false "$open_clean" \
+  && fail "successful dispatch without a merge reported green" \
+  || {
+    grep -q 'blocker=merge_not_observed' "$tmp/dispatch.out" \
+      && grep -q '^merge_observed=false$' "$tmp/github-output.txt" \
+      && pass "dispatch success without an observed merge fails with typed state" \
+      || fail "unmerged dispatch failure lacks typed postcondition evidence"
+  }
+
+# The two deterministic remediation classes stay distinct.
+stale_review='{"state":"OPEN","mergedAt":null,"reviewDecision":"CHANGES_REQUESTED","mergeStateStatus":"BLOCKED","headRefOid":"0123456789abcdef0123456789abcdef01234567"}'
+run_case Verjson/example 7 0123456789abcdef0123456789abcdef01234567 99 .github/workflows/ai-privileged-merge.yml false "$stale_review" \
+  && fail "stale blocking review reported green" \
+  || {
+    grep -q 'blocker=review' "$tmp/dispatch.out" \
+      && grep -q '^blocking_review=true$' "$tmp/github-output.txt" \
+      && grep -q '^policy_blocked=false$' "$tmp/github-output.txt" \
+      && pass "stale review block is typed for review remediation" \
+      || fail "stale review block was not typed deterministically"
+  }
+
+required_review='{"state":"OPEN","mergedAt":null,"reviewDecision":"REVIEW_REQUIRED","mergeStateStatus":"BLOCKED","headRefOid":"0123456789abcdef0123456789abcdef01234567"}'
+run_case Verjson/example 7 0123456789abcdef0123456789abcdef01234567 99 .github/workflows/ai-privileged-merge.yml false "$required_review" \
+  && fail "required-review block reported green" \
+  || {
+    grep -q 'blocker=review' "$tmp/dispatch.out" \
+      && grep -q '^blocking_review=true$' "$tmp/github-output.txt" \
+      && pass "required-review state is typed as review remediation" \
+      || fail "required-review state was not typed deterministically"
+  }
+
+policy_block='{"state":"OPEN","mergedAt":null,"reviewDecision":"APPROVED","mergeStateStatus":"BLOCKED","headRefOid":"0123456789abcdef0123456789abcdef01234567"}'
+run_case Verjson/example 7 0123456789abcdef0123456789abcdef01234567 99 .github/workflows/ai-privileged-merge.yml false "$policy_block" \
+  && fail "policy-blocked merge reported green" \
+  || {
+    grep -q 'blocker=policy' "$tmp/dispatch.out" \
+      && grep -q '^blocking_review=false$' "$tmp/github-output.txt" \
+      && grep -q '^policy_blocked=true$' "$tmp/github-output.txt" \
+      && pass "policy block is typed separately from review remediation" \
+      || fail "policy block was not typed deterministically"
+  }
+
+# A real merge is the sole acted-success state.
+run_case \
+  && grep -q '^merge_observed=true$' "$tmp/github-output.txt" \
+  && grep -q 'result=merged' "$tmp/dispatch.out" \
+  && pass "observed merged state satisfies the postcondition" \
+  || fail "actual merged state did not satisfy the postcondition"
+
+# A merge (or open state) for a different head cannot satisfy this run.
+changed_head='{"state":"MERGED","mergedAt":"2026-08-07T12:00:00Z","reviewDecision":"APPROVED","mergeStateStatus":"UNKNOWN","headRefOid":"1123456789abcdef0123456789abcdef01234567"}'
+run_case Verjson/example 7 0123456789abcdef0123456789abcdef01234567 99 .github/workflows/ai-privileged-merge.yml false "$changed_head" \
+  && fail "a different head satisfied the merge postcondition" \
+  || {
+    grep -q 'blocker=head_changed' "$tmp/dispatch.out" \
+      && grep -q '^remediation=rerun_gate_for_current_head$' "$tmp/github-output.txt" \
+      && pass "different-head state fails with deterministic rerun remediation" \
+      || fail "different-head state lacks typed remediation"
+  }
+
+# Transient reads are retried, but exhausting the bounded probe remains red and
+# explicitly says the state could not be determined.
+run_case Verjson/example 7 0123456789abcdef0123456789abcdef01234567 99 .github/workflows/ai-privileged-merge.yml false \
+  '{"state":"MERGED","mergedAt":"2026-08-07T12:00:00Z","reviewDecision":"APPROVED","mergeStateStatus":"UNKNOWN","headRefOid":"0123456789abcdef0123456789abcdef01234567"}' 2 \
+  && [ "$(cat "$tmp/pr-view-count")" -eq 3 ] \
+  && pass "transient postcondition reads recover within the bounded retry" \
+  || fail "transient postcondition reads did not recover"
+
+run_case Verjson/example 7 0123456789abcdef0123456789abcdef01234567 99 .github/workflows/ai-privileged-merge.yml false "$open_clean" 99 \
+  && fail "unreadable merge postcondition reported green" \
+  || {
+    grep -q 'blocker=state_unavailable' "$tmp/dispatch.out" \
+      && pass "exhausted postcondition reads fail closed with typed evidence" \
+      || fail "unreadable postcondition lacks typed failure evidence"
+  }
 
 [ "$fails" -eq 0 ] && { echo "All tests passed."; exit 0; }
 echo "$fails test(s) failed."

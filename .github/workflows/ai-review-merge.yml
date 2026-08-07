@@ -2054,14 +2054,19 @@ jobs:
   dispatch-merge:
     needs: [preflight, gate]
     if: needs.gate.result == 'success'
+    outputs:
+      merge_observed: ${{ steps.dispatch.outputs.merge_observed }}
+      blocking_review: ${{ steps.dispatch.outputs.blocking_review }}
+      policy_blocked: ${{ steps.dispatch.outputs.policy_blocked }}
+      blocker: ${{ steps.dispatch.outputs.blocker }}
+      remediation: ${{ steps.dispatch.outputs.remediation }}
     # A workflow_call consumer's explicit fleet selection has the same first
     # precedence here as on preflight and gate (#411, ADR 0068). The job holds
     # only the scoped github.token; ORG_ADMIN_TOKEN remains isolated in the
     # fixed privileged continuation.
-    # Fast lane for PUBLIC targets (ADR 0048). This job makes exactly one API
-    # call, yet on the shared pool it queued a third runner slot behind every
-    # newer PR's preflight — so work that had already paid for a model review was
-    # the last thing to finish.
+    # This metadata-only job dispatches once and performs bounded PR-state reads
+    # for the merge postcondition. On the shared pool it otherwise queues behind
+    # every newer PR's preflight, so reviewed work can be last to finish.
     runs-on: ${{ inputs.runner_labels && fromJSON(inputs.runner_labels) || github.repository_owner != 'Verjson' && 'ubuntu-24.04' || needs.preflight.outputs.target_private == 'false' && fromJSON(vars.VERJSON_RUNNER_FASTLANE || '["ubuntu-24.04"]') || fromJSON(vars.VERJSON_RUNNER_OVERFLOW || vars.VERJSON_LANE_PRIVILEGED || vars.VERJSON_LANE_FALLBACK || '["ubuntu-24.04"]') }}
     timeout-minutes: 5
     permissions:
@@ -2074,6 +2079,7 @@ jobs:
       SOURCE_RUN_ID: ${{ github.run_id }}
     steps:
       - name: Dispatch fixed trusted merge continuation
+        id: dispatch
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -2094,6 +2100,13 @@ jobs:
           )"
           if [ -z "$trusted_path" ]; then
             echo "::notice::No trusted privileged merge continuation is installed; validation is green, but this PR requires human merge."
+            {
+              echo "merge_observed=false"
+              echo "blocking_review=false"
+              echo "policy_blocked=false"
+              echo "blocker=continuation_absent"
+              echo "remediation=human_merge_required"
+            } >>"$GITHUB_OUTPUT"
             exit 0
           fi
           [ "$trusted_path" = ".github/workflows/ai-privileged-merge.yml" ] ||
@@ -2102,3 +2115,92 @@ jobs:
             -f pr_number="$PR_NUMBER" \
             -f expected_head_sha="$EXPECTED_HEAD_SHA" \
             -f source_run_id="$SOURCE_RUN_ID"
+          # workflow_dispatch acknowledges queueing, not merging. Treat the PR's
+          # observed state as the postcondition (#384): a successful request
+          # cannot turn this job green while the PR remains open.
+          merge_state_json=""
+          for probe_attempt in $(seq 1 20); do
+            if candidate=$(gh pr view "$PR_NUMBER" --repo "$TARGET_REPO" \
+              --json state,mergedAt,reviewDecision,mergeStateStatus,headRefOid 2>/dev/null) &&
+               jq -e '
+                 type == "object"
+                 and (.state | type) == "string"
+                 and ((.mergedAt | type) == "null" or (.mergedAt | type) == "string")
+                 and ((.reviewDecision | type) == "null" or (.reviewDecision | type) == "string")
+                 and (.mergeStateStatus | type) == "string"
+                 and (.headRefOid | type) == "string"
+                 and (.headRefOid | test("^[0-9a-f]{40}$"))
+               ' <<<"$candidate" >/dev/null 2>&1; then
+              merge_state_json=$candidate
+              state_head=$(jq -r .headRefOid <<<"$candidate")
+              if [ "$state_head" != "$EXPECTED_HEAD_SHA" ]; then
+                {
+                  echo "merge_observed=false"
+                  echo "blocking_review=false"
+                  echo "policy_blocked=false"
+                  echo "blocker=head_changed"
+                  echo "remediation=rerun_gate_for_current_head"
+                } >>"$GITHUB_OUTPUT"
+                echo "::error::phase=merge-postcondition result=head-changed blocker=head_changed expected_head=$EXPECTED_HEAD_SHA actual_head=$state_head remediation=rerun_gate_for_current_head"
+                exit 1
+              fi
+              if [ "$(jq -r .state <<<"$candidate")" = "MERGED" ] &&
+                 [ "$(jq -r '.mergedAt // ""' <<<"$candidate")" != "" ]; then
+                {
+                  echo "merge_observed=true"
+                  echo "blocking_review=false"
+                  echo "policy_blocked=false"
+                  echo "blocker=none"
+                  echo "remediation=none"
+                } >>"$GITHUB_OUTPUT"
+                echo "::notice::phase=merge-postcondition result=merged expected_head=$EXPECTED_HEAD_SHA attempt=$probe_attempt"
+                exit 0
+              fi
+            else
+              echo "::warning::phase=merge-postcondition result=probe-retry attempt=$probe_attempt/20 expected_head=$EXPECTED_HEAD_SHA"
+            fi
+            [ "$probe_attempt" -eq 20 ] || sleep 10
+          done
+
+          if [ -z "$merge_state_json" ]; then
+            {
+              echo "merge_observed=false"
+              echo "blocking_review=unknown"
+              echo "policy_blocked=unknown"
+              echo "blocker=state_unavailable"
+              echo "remediation=retry_state_probe"
+            } >>"$GITHUB_OUTPUT"
+            echo "::error::phase=merge-postcondition result=not-observed blocker=state_unavailable blocking_review=unknown policy_blocked=unknown remediation=retry_state_probe expected_head=$EXPECTED_HEAD_SHA"
+            exit 1
+          fi
+
+          state=$(jq -r .state <<<"$merge_state_json")
+          review_decision=$(jq -r '.reviewDecision // "NONE"' <<<"$merge_state_json")
+          merge_state_status=$(jq -r .mergeStateStatus <<<"$merge_state_json")
+          blocking_review=false
+          policy_blocked=false
+          blocker=merge_not_observed
+          remediation=inspect_privileged_merge_run
+          case "$review_decision" in
+            CHANGES_REQUESTED|REVIEW_REQUIRED)
+              blocking_review=true
+              blocker=review
+              remediation=resolve_blocking_review
+              ;;
+            *)
+              if [ "$merge_state_status" = "BLOCKED" ]; then
+                policy_blocked=true
+                blocker=policy
+                remediation=inspect_branch_policy
+              fi
+              ;;
+          esac
+          {
+            echo "merge_observed=false"
+            echo "blocking_review=$blocking_review"
+            echo "policy_blocked=$policy_blocked"
+            echo "blocker=$blocker"
+            echo "remediation=$remediation"
+          } >>"$GITHUB_OUTPUT"
+          echo "::error::phase=merge-postcondition result=not-merged blocker=$blocker state=$state review_decision=$review_decision merge_state_status=$merge_state_status blocking_review=$blocking_review policy_blocked=$policy_blocked remediation=$remediation expected_head=$EXPECTED_HEAD_SHA"
+          exit 1
