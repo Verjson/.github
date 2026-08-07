@@ -1631,6 +1631,53 @@ jobs:
             $body"
             exit 1
           fi
+          # GitHub computes reviewDecision from the latest review per reviewer,
+          # not per commit. A gate-bot CHANGES_REQUESTED on an older head
+          # therefore remains a merge veto after this new-head verdict turns
+          # non-blocking (#452). Dismiss only that stale bot-authored state:
+          # dismissal preserves the finding in the timeline, while filtering by
+          # reviewer and commit keeps human and current-head decisions intact.
+          if ! reviews_pages=$(gh api --paginate --slurp \
+            "repos/${TARGET_REPO}/pulls/${PR_NUMBER}/reviews?per_page=100"); then
+            echo "::error::phase=review result=list-failed — could not list prior pull request reviews; refusing to report a green verdict while stale review state is unknown" >&2
+            exit 1
+          fi
+          if ! jq -e --arg head "$HEAD_SHA" '
+            type == "array"
+            and all(.[]; type == "array")
+            and all(.[][]; type == "object")
+            and all(
+              [.[][] | select(
+                .state == "CHANGES_REQUESTED"
+                and .user.login == "github-actions[bot]"
+                and (.commit_id | type) == "string"
+                and .commit_id != ""
+                and .commit_id != $head
+              )][];
+              (.id | type) == "number"
+            )
+          ' <<<"$reviews_pages" >/dev/null 2>&1; then
+            echo "::error::phase=review result=list-invalid — could not validate prior pull request reviews; refusing to dismiss an unverified review target" >&2
+            exit 1
+          fi
+          stale_review_ids=$(jq -r --arg head "$HEAD_SHA" '
+            .[][] | select(
+              .state == "CHANGES_REQUESTED"
+              and .user.login == "github-actions[bot]"
+              and (.commit_id | type) == "string"
+              and .commit_id != ""
+              and .commit_id != $head
+            ) | .id
+          ' <<<"$reviews_pages")
+          while IFS= read -r review_id; do
+            [ -n "$review_id" ] || continue
+            if ! gh api --method PUT \
+              "repos/${TARGET_REPO}/pulls/${PR_NUMBER}/reviews/${review_id}/dismissals" \
+              -f "message=Superseded by the non-blocking automated review on ${HEAD_SHA}"; then
+              echo "::error::phase=review result=dismiss-failed review_id=$review_id — could not dismiss stale gate review $review_id; refusing to report a green verdict" >&2
+              exit 1
+            fi
+          done <<<"$stale_review_ids"
           if ! approval_error=$(gh pr review "$PR_NUMBER" --repo "$TARGET_REPO" --approve --body "$body" 2>&1); then
             case "$approval_error" in
               "Can not approve your own pull request" \

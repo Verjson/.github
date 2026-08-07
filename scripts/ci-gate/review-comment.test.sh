@@ -56,6 +56,21 @@ case "$1 $2" in
     ;;
   "pr comment") echo "COMMENT" >>"$ACTIONLOG"; printf '%s' "$body" >"$COMMENTFILE" ;;
   "pr edit") echo "EDIT ${args[*]}" >>"$ACTIONLOG" ;;
+  "api --paginate")
+    if [ "${REVIEWS_LIST_FAIL:-}" = "true" ]; then
+      echo "simulated reviews API failure" >&2
+      exit 1
+    fi
+    cat "$REVIEWS_FILE"
+    ;;
+  "api --method")
+    review_id=$(printf '%s' "${args[3]}" | sed -n 's#.*/reviews/\([0-9][0-9]*\)/dismissals.*#\1#p')
+    echo "DISMISS $review_id" >>"$ACTIONLOG"
+    if [ "$review_id" = "${DISMISS_FAIL_ID:-}" ]; then
+      echo "simulated dismissal failure for $review_id" >&2
+      exit 1
+    fi
+    ;;
 esac
 exit 0
 GH
@@ -65,19 +80,22 @@ run_submit() {
   # run_submit <verdict-json> [selected-pass-terminal-error] [budget-exhausted]
   export PATH="$tmp/bin:$PATH" TARGET_REPO="Verjson/foo" PR_NUMBER=7 HEAD_SHA=deadbeef MODEL=haiku PATCH_ID=pid00feed GITHUB_RUN_ID=12345
   export ACTIONLOG="$tmp/act.log" BODYFILE="$tmp/body.txt" COMMENTFILE="$tmp/comment.txt"
-  export GITHUB_OUTPUT="$tmp/gh_output.txt" # the runner provides this; the step writes the verdict here
+  export GITHUB_OUTPUT="$tmp/gh_output.txt" REVIEWS_FILE="$tmp/reviews.json" SUBMIT_LOG="$tmp/submit.log"
   : >"$ACTIONLOG"
   : >"$BODYFILE"
   : >"$COMMENTFILE"
   : >"$GITHUB_OUTPUT"
+  : >"$SUBMIT_LOG"
+  printf '%s' "${REVIEWS_JSON:-[[]]}" >"$REVIEWS_FILE"
   export VERDICT="$1" SELECTED_PASS_TERMINAL_ERROR="${2:-false}" BUDGET_EXHAUSTED="${3:-false}"
-  bash -eo pipefail "$script" >/dev/null 2>&1
+  bash -eo pipefail "$script" >"$SUBMIT_LOG" 2>&1
   echo "rc=$?"
 }
 body_has() { grep -qF "$1" "$tmp/body.txt"; }
 comment_has() { grep -qF "$1" "$tmp/comment.txt"; }
 act_has() { grep -q "$1" "$tmp/act.log"; }
 output_has() { grep -qF "$1" "$tmp/gh_output.txt"; }
+log_has() { grep -qF "$1" "$tmp/submit.log"; }
 
 # 1. Approve + review_first -> the pinpoint block renders in the review body.
 run_submit '{"blocking":false,"summary":"looks good","review_first":[{"location":"auth.ts:42","why":"gates the admin path"}],"findings":[]}' >/dev/null
@@ -163,6 +181,48 @@ rc=$(run_submit "$degenerate" false)
 { [ "$rc" = "rc=1" ] && act_has REVIEW && body_has 'c' && ! act_has EDIT; } &&
   pass "successful pass: terse schema-valid blocking verdict remains usable" ||
   fail "successful terse verdict was rejected by a content heuristic ($rc)"
+
+# 7. #452: once a new-head verdict is non-blocking, dismiss only the gate bot's
+#    stale CHANGES_REQUESTED review. Dismissal preserves the original finding in
+#    the timeline while removing its stale reviewDecision veto.
+reviews='[[{"id":101,"state":"CHANGES_REQUESTED","commit_id":"old-head","user":{"login":"github-actions[bot]"}}]]'
+rc=$(REVIEWS_JSON="$reviews" run_submit '{"blocking":false,"summary":"fixed","review_first":[],"findings":[],"followups":[]}')
+dismiss_line=$(grep -n '^DISMISS 101$' "$tmp/act.log" | cut -d: -f1)
+review_line=$(grep -n '^REVIEW ' "$tmp/act.log" | cut -d: -f1)
+{ [ "$rc" = "rc=0" ] && [ -n "$dismiss_line" ] && [ -n "$review_line" ] && [ "$dismiss_line" -lt "$review_line" ]; } &&
+  pass "nonblocking new-head verdict dismisses the stale gate-bot review before green" ||
+  fail "stale gate-bot review was not dismissed ($rc, log=$(tr '\n' ',' <"$tmp/act.log"))"
+
+# Human reviews and a bot review bound to the current head are live decisions,
+# not stale gate residue. A second stale bot review remains the only target.
+reviews='[[{"id":201,"state":"CHANGES_REQUESTED","commit_id":"old-head","user":{"login":"human-reviewer"}},{"id":202,"state":"CHANGES_REQUESTED","commit_id":"deadbeef","user":{"login":"github-actions[bot]"}},{"id":203,"state":"CHANGES_REQUESTED","commit_id":"older-head","user":{"login":"github-actions[bot]"}},{"id":204,"state":"CHANGES_REQUESTED","commit_id":null,"user":{"login":"github-actions[bot]"}}]]'
+rc=$(REVIEWS_JSON="$reviews" run_submit '{"blocking":false,"summary":"fixed","review_first":[],"findings":[],"followups":[]}')
+{ [ "$rc" = "rc=0" ] && act_has '^DISMISS 203$' && ! act_has '^DISMISS 201$' && ! act_has '^DISMISS 202$' && ! act_has '^DISMISS 204$'; } &&
+  pass "dismissal excludes human, current-head, and unbound blocking reviews" ||
+  fail "dismissal crossed reviewer/head trust boundaries ($rc, log=$(tr '\n' ',' <"$tmp/act.log"))"
+
+# A current blocking verdict must never retract the prior blocking record.
+rc=$(REVIEWS_JSON="$reviews" run_submit '{"blocking":true,"summary":"still broken","review_first":[],"findings":["x"],"followups":[]}')
+{ [ "$rc" = "rc=1" ] && ! act_has DISMISS; } &&
+  pass "current blocking verdict does not dismiss any prior review" ||
+  fail "blocking verdict retracted a review ($rc, log=$(tr '\n' ',' <"$tmp/act.log"))"
+
+# Both the review-list read and each dismissal write are merge-decision inputs:
+# an API failure must stay red, emit explicit evidence, and never approve.
+rc=$(REVIEWS_LIST_FAIL=true run_submit '{"blocking":false,"summary":"fixed","review_first":[],"findings":[],"followups":[]}')
+{ [ "$rc" = "rc=1" ] && ! act_has REVIEW && log_has 'could not list prior pull request reviews'; } &&
+  pass "review-list API failure is explicit and fail-closed" ||
+  fail "review-list API failure did not fail closed with evidence ($rc)"
+
+rc=$(REVIEWS_JSON='{"not":"pages"}' run_submit '{"blocking":false,"summary":"fixed","review_first":[],"findings":[],"followups":[]}')
+{ [ "$rc" = "rc=1" ] && ! act_has REVIEW && log_has 'could not validate prior pull request reviews'; } &&
+  pass "malformed review-list payload is explicit and fail-closed" ||
+  fail "malformed review payload did not fail closed with evidence ($rc)"
+
+rc=$(REVIEWS_JSON='[[{"id":301,"state":"CHANGES_REQUESTED","commit_id":"old-head","user":{"login":"github-actions[bot]"}}]]' DISMISS_FAIL_ID=301 run_submit '{"blocking":false,"summary":"fixed","review_first":[],"findings":[],"followups":[]}')
+{ [ "$rc" = "rc=1" ] && act_has '^DISMISS 301$' && ! act_has REVIEW && log_has 'could not dismiss stale gate review 301'; } &&
+  pass "dismissal API failure is explicit and fail-closed" ||
+  fail "dismissal API failure did not fail closed with evidence ($rc)"
 
 if [ "$fails" -eq 0 ]; then
   echo "All tests passed."
