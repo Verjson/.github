@@ -290,13 +290,36 @@ had been mergeable anyway, which is the defect being closed.
 three are nonconformant, so there is nothing yet to enforce.
 
 **Step 5's second half — adding `gate` to the `~ALL` rule — is held, and the measurement is
-why.** Of 87 open non-draft PRs across the organization, **53 carry no `gate` check run at
-all**, across roughly twenty repositories (`viager-app`, `catalog-*`, `scv-*`,
-`self-publish.ai`, `sitenav` and others). Requiring the context today would wedge every one
-of them permanently, which is the exact "permanently pending" failure this ADR names in
-*A required check must be skippable, but never absent*. These are PRs whose head has not
-moved since before the `workflows` rule reached them; the remedy is a re-trigger sweep, not
-a ruleset. Requiring `gate` is deferred until that sweep is done and the count is zero.
+why.** The corrected complete-context audit on 2026-08-06 found **14 of 97** open non-draft
+PRs without the current `gate` context, not the earlier 53-of-87 estimate. Two were runs in
+flight; the remaining 12 span six repositories. Six carry the gate's legacy
+`classify`/`ai-review`/`ai-merge` names and six have no gate history. Requiring the current
+context would wedge all 12 permanently, which is the exact "permanently pending" failure
+this ADR names in *A required check must be skippable, but never absent*. Requiring `gate`
+is deferred until an ownership-routed re-trigger sweep is done and a fresh audit reports
+zero.
+
+### Amendment (2026-08-07, #474) — make the sweep reproducible and ownership bounded
+
+`scripts/gate_coverage_audit.py` pages the organization-wide open-PR search and verifies
+that every head check-rollup is complete before deciding that `gate` is absent. It reports
+one JSON line per exact `owner/repo#PR`, including draft, hold, fork, canonical workflow
+availability, legacy-context/head-stale reason, and the supported retrigger.
+
+The default is read-only. A repository-local active workflow uses the canonical
+`re-review` label. An organization-required workflow uses reversible close/reopen because
+the required-workflow record does not receive `labeled` events (#477). Both produce
+PR-associated events without pushing to another author's branch or using
+`workflow_dispatch` (whose checks do not attach to the PR rollup). Mutation
+requires both `--apply` and an exact repeated `--authorize-repo owner/repo`; eligible PRs
+outside that set are emitted as `refused_unmanaged`. Rate limits, truncated check
+connections, malformed pages, and unavailable repository metadata fail the whole audit
+closed rather than undercounting the gap.
+
+The JSON output is the compact durable handoff surface: group refused records by repository
+and route one repository-level handoff to its owning PM. Do not create one tracker per PR.
+The tool contains no workflow-dispatch, push, or merge operation. Close/reopen is available
+only for an exact authorized repository whose required-workflow shape needs that event.
 
 **Step 6 is therefore blocked for most of the organization, and blocked for a reason this
 ADR already gives.** The 67 `none` repositories have declared no required checks. If the

@@ -226,6 +226,8 @@ jobs:
         run: bash scripts/fleet-watchdog.test.sh
       - name: Required-check audit never calls an unaudited repository conformant (#416)
         run: bash scripts/required-checks-audit.test.sh
+      - name: Gate coverage audit is dry-run first and ownership bounded (#474)
+        run: python3 scripts/gate_coverage_audit_test.py
       - name: Stack classifier catches caller names and matrices the contract cannot reach (#416, #431)
         run: bash scripts/classify-repo-stacks.test.sh
       - name: Privileged scheduled workflows use immutable default-branch code (#350, #387)
