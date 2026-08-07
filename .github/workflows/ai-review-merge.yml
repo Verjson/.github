@@ -368,11 +368,28 @@ jobs:
           # A hold is any of: a `hold`/`DO NOT MERGE` label (case- and
           # separator-insensitive, so `do-not-merge` counts — #51), a
           # `DO NOT MERGE` title marker, or draft.
-          if jq -e '([.labels[].name | ascii_upcase | gsub("[ _-]+";" ")]) as $l | ($l | index("HOLD")) or ($l | index("DO NOT MERGE")) or (.title | ascii_upcase | contains("DO NOT MERGE")) or .isDraft' <<<"$meta" >/dev/null; then
-            echo "PR is held (label/title/draft); no lane."
-            out lane held; out reason "held by human opt-out"; out model none
-            exit 0
-          fi
+          #
+          # Materialised into a `true`/`false` STRING rather than tested with
+          # `if jq -e …` (#480). `jq -e` exits non-zero both when the predicate is
+          # false AND when jq itself errors — malformed JSON, a truncated API
+          # response, a field the filter cannot index — and `if` cannot tell those
+          # apart, so "we could not evaluate the hold" was read as "not held" and
+          # the gate proceeded toward merge. ADR 0012 makes hold terminal because
+          # it is the mechanism a human uses to STOP an autonomous merge, so that
+          # is the one direction this check must never fail in. A jq error now
+          # aborts under `set -e`; anything other than the two expected strings
+          # fails closed explicitly.
+          held="$(jq -r '([.labels[].name | ascii_upcase | gsub("[ _-]+";" ")]) as $l | ($l | index("HOLD")) or ($l | index("DO NOT MERGE")) or (.title | ascii_upcase | contains("DO NOT MERGE")) or .isDraft | if . then "true" else "false" end' <<<"$meta")"
+          case "$held" in
+            true)
+              echo "PR is held (label/title/draft); no lane."
+              out lane held; out reason "held by human opt-out"; out model none
+              exit 0 ;;
+            false) ;;
+            *)
+              echo "::error::could not evaluate the terminal hold for PR #$PR_NUMBER; failing closed (ADR 0012, #480)"
+              exit 1 ;;
+          esac
           # `// ""` matters: without it a missing key yields the STRING "null",
           # which passes an `-z` emptiness test and is then interpolated into an
           # Actions-runs URL that matches nothing (making the absence probe look
@@ -426,7 +443,25 @@ jobs:
           out changed_lines "$changed_lines"
 
           # Model tier for the AI lane: sensitive paths get the strong model.
-          if jq -e '[.[].filename] | any(test("(^|/)\\.github/|abac|(^|/|[._-])auth|polic|payment|ledger|webhook|secret|middleware|rbac|rls"; "i"))' <<<"$files" >/dev/null; then
+          #
+          # Fail-closed string form, not `if jq -e …` (#480). A jq error here read
+          # as "not sensitive", which silently downgraded an auth/RBAC/RLS/secrets
+          # PR to the weak model at 30% of the budget — failing open on how hard
+          # the security review tries, on exactly the PRs this classifier exists
+          # to escalate. It also chained into #441: the smaller budget makes
+          # `error_max_budget_usd` likelier, and a budget-exhausted pass emits a
+          # non-blocking placeholder verdict the gate accepts. Unlike the
+          # cheap-lane detectors below — which are fail-closed precisely BECAUSE
+          # an unreadable file list should fall through to a full review — an
+          # unreadable file list here must not silently pick the cheaper review.
+          sensitive="$(jq -r '[.[].filename] | any(test("(^|/)\\.github/|abac|(^|/|[._-])auth|polic|payment|ledger|webhook|secret|middleware|rbac|rls"; "i")) | if . then "true" else "false" end' <<<"$files")"
+          case "$sensitive" in
+            true|false) ;;
+            *)
+              echo "::error::could not classify sensitive paths for PR #$PR_NUMBER; failing closed rather than picking the cheaper review (#480)"
+              exit 1 ;;
+          esac
+          if [ "$sensitive" = true ]; then
             model=claude-sonnet-5
             # Workflow/security reviews get the strong model and more budget. If
             # even this exhausts, the review escalates (see the ai-review job)
@@ -1687,10 +1722,20 @@ jobs:
           # stop the merge. Match is case- and separator-insensitive so a
           # `DO NOT MERGE` *label* (not just the title marker) holds too — #51.
           meta=$(gh pr view "$PR_NUMBER" --repo "$REPO" --json labels,title,isDraft,state,headRefOid)
-          if jq -e '([.labels[].name | ascii_upcase | gsub("[ _-]+";" ")]) as $l | ($l | index("HOLD")) or ($l | index("DO NOT MERGE")) or (.title | ascii_upcase | contains("DO NOT MERGE")) or .isDraft' <<<"$meta" >/dev/null; then
-            echo "PR #$PR_NUMBER is held (label/title/draft); not merging."
-            exit 0
-          fi
+          # Fail-closed string form, not `if jq -e …` (#480). This is the LAST
+          # checkpoint before an autonomous merge, so a jq error being read as
+          # "not held" here merged past a human's hold outright — the exact
+          # inversion of ADR 0012. See the classify copy for the full reasoning.
+          held="$(jq -r '([.labels[].name | ascii_upcase | gsub("[ _-]+";" ")]) as $l | ($l | index("HOLD")) or ($l | index("DO NOT MERGE")) or (.title | ascii_upcase | contains("DO NOT MERGE")) or .isDraft | if . then "true" else "false" end' <<<"$meta")"
+          case "$held" in
+            true)
+              echo "PR #$PR_NUMBER is held (label/title/draft); not merging."
+              exit 0 ;;
+            false) ;;
+            *)
+              echo "::error::could not evaluate the terminal hold for PR #$PR_NUMBER; refusing to merge (ADR 0012, #480)"
+              exit 1 ;;
+          esac
           if [ "$(jq -r .state <<<"$meta")" != "OPEN" ]; then
             echo "PR #$PR_NUMBER is no longer open; nothing to do."
             exit 0

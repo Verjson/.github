@@ -128,6 +128,57 @@ run_case '{"labels":[],"title":"feat: x","isDraft":false,"state":"MERGED","headR
 copies=$(grep -c "index(\"HOLD\")) or (\$l | index(\"DO NOT MERGE\"))" "$wf")
 [ "$copies" -eq 2 ] && pass "hold predicate present at both bash checkpoints (no drift)" || fail "expected 2 identical hold predicates, found $copies"
 
+# --- #480: the hold must fail CLOSED when it cannot be evaluated -------------
+# `if jq -e <predicate>` exits non-zero both when the predicate is FALSE and when
+# jq ERRORS, and `if` cannot distinguish them — so every input below used to be
+# read as "not held" and merged. Executed against the extracted merge block with
+# a stubbed `gh`, not asserted by grepping for the fixed shape: a later rewrite
+# that reintroduces the fail-open must break these, and a grep for
+# `case "$held"` would keep passing on any shape that merely looks right.
+#
+# Each fixture is a DIFFERENT way the read can go wrong in production, because
+# they reach jq differently: a truncated response dies in the parser, a
+# wrong-shaped one parses but cannot be indexed, and an empty body yields no
+# output at all.
+for bad in \
+  'truncated JSON:{"labels":[{"name":"hold"}],"title":"feat: x","isDra' \
+  'labels not an array:{"labels":"hold","title":"feat: x","isDraft":false,"state":"OPEN","headRefOid":"expected-head"}' \
+  'label name is an object:{"labels":[{"name":{"x":1}}],"title":"feat: x","isDraft":false,"state":"OPEN","headRefOid":"expected-head"}' \
+  'title is a number:{"labels":[],"title":42,"isDraft":false,"state":"OPEN","headRefOid":"expected-head"}' \
+  'empty body:' \
+  'null body:null' \
+; do
+  label="${bad%%:*}"
+  fixture="${bad#*:}"
+  rc="$(run_case "$fixture" '[{"name":"unit","status":"COMPLETED","conclusion":"SUCCESS"}]')"
+  if act_has MERGE; then
+    fail "#480 fail-open: $label was MERGED — an unevaluable hold must never merge"
+  elif [ "$rc" = "rc=0" ]; then
+    fail "#480: $label did not merge but exited 0 — a silent pass hides the unreadable hold"
+  else
+    pass "#480: $label fails closed without merging ($rc)"
+  fi
+done
+
+# Positive control for the same block: the fixed form must not have made every
+# input fail. Without this, deleting the merge call entirely would pass the six
+# cases above. The unheld-green case at line ~119 covers the merge path; this
+# pins that a *held* PR still exits 0 as a deliberate no-op rather than erroring,
+# so "fails closed" cannot be satisfied by failing on everything.
+rc="$(run_case "$(open '[{"name":"hold"}]')")"
+{ [ "$rc" = "rc=0" ] && ! act_has MERGE; } \
+  && pass "#480: a genuine hold is still a clean no-op, not an error" \
+  || fail "#480: a genuine hold no longer exits 0 cleanly ($rc)"
+
+# Neither copy of the hold may keep the `if jq -e` form. The predicate text is
+# shared with gate-rearm.yml and pinned elsewhere; what this pins is the
+# EVALUATION shape at both checkpoints, which is what #480 was about.
+if grep -qE 'if +jq +-e .*index\("HOLD"\)' "$wf"; then
+  fail "#480: a hold checkpoint still uses the fail-open \`if jq -e\` form"
+else
+  pass "#480: neither hold checkpoint uses the fail-open \`if jq -e\` form"
+fi
+
 # --- #88 regression: removing a terminal hold re-fires the gate ------------
 # Pin the workflow trigger and the exact event-filter grouping in the preflight
 # job guard. GitHub evaluates this expression before a runner starts, so there is

@@ -98,3 +98,63 @@ retains another.
 This restores the intended terminal-hold lifecycle without broadening arbitrary
 label changes into paid review runs. The trigger and both job predicates are
 regression-tested in `scripts/ci-gate/hold.test.sh`.
+
+## 2026-08-07 amendment — the hold check must fail closed, not merely exist
+
+Issue: [Verjson/.github#480](https://github.com/Verjson/.github/issues/480)
+(duplicate #482 closed into it). Sensitive class; amending rather than
+superseding, because this restores the invariant this ADR already decided instead
+of deciding anything new.
+
+Both checkpoints evaluated the hold as `if jq -e '<predicate>' <<<"$meta"`. `jq -e`
+exits non-zero when the predicate is **false** *and* when jq itself **errors** —
+malformed JSON, a truncated API response, a field the filter cannot index — and
+`if` cannot distinguish the two. So "the hold could not be evaluated" was read as
+"not held", and the gate proceeded toward merge. The decision above was correct
+and the predicate was correct; the *evaluation* inverted it in exactly the
+circumstance where a human most needs it to hold.
+
+This was not theoretical. Executing the shipped merge block against a stubbed
+`gh`, **three of six malformed metadata fixtures reached `gh pr merge`** — an
+autonomous merge past a live `hold`. The remaining three exited 0 without
+merging, which reports success for a decision never made.
+
+Both checkpoints now materialise the predicate into a `true`/`false` string and
+branch on it, so a jq error aborts under `set -e` and any third value fails closed
+explicitly. This is the form `gate-rearm.yml` already used from the start (ADR
+0063), so the three copies now agree on shape as well as on text.
+
+**A third site is fixed under the same issue, and it is not a hold.** The
+sensitive-path model selector (`ai-review-merge.yml`, `sensitive=`) chose
+`claude-sonnet-5` at a $0.50 budget for paths matching
+`auth|rbac|rls|abac|secret|payment|ledger|webhook|middleware|polic|.github/`, and
+`claude-haiku-4-5` at $0.15 otherwise. A jq error there read as "not sensitive",
+silently downgrading an auth or RBAC change to the weak model at 30% of the
+budget — failing open on how hard the security review tries, on precisely the
+changes the classifier exists to escalate. It also chained into #441: the smaller
+budget makes `error_max_budget_usd` likelier, and a budget-exhausted pass emits a
+non-blocking placeholder verdict the gate accepts. Chained, an unreadable file
+list yields a green "reviewed" auth PR that was never reviewed, with no step
+reporting a problem.
+
+**Deliberately NOT changed: the cheap-lane detectors.** `submodule-only`,
+`docs-only` and `deletions-only` keep `if jq -e`, because there a jq error reads
+as "not eligible for the cheap lane" and the PR falls through to a full AI
+review — fail-closed already. Sweeping every `if jq -e` in the file would have
+turned three safe downgrades into hard errors while looking like progress. The
+direction of each site's failure is what decides whether it is a defect, and
+`budget-exceeded.test.sh` now pins that these three keep the old form.
+
+The empty-diff short-circuit is also unchanged: `nfiles == 0` routes to
+`lane=ai` with the cheap model and the reason `empty diff — needs a look`, which
+is correct on its own terms (no files, so no sensitive paths) and is not the
+unreadable-response case, since the fetch runs under `set -o pipefail` and a 5xx
+fails the step outright. A test pins that an empty diff reaches that *named* path
+rather than arriving at the classifier and picking the cheap tier by accident —
+same model and budget, different reason, so only the reason distinguishes them.
+
+Regression coverage executes the extracted `run:` blocks against a stubbed `gh`
+rather than grepping for the fixed shape, so a rewrite that reintroduces the
+fail-open breaks the tests: six malformed-metadata fixtures in
+`scripts/ci-gate/hold.test.sh`, and the classifier fixtures plus both positive
+controls in `scripts/ci-gate/budget-exceeded.test.sh`.
