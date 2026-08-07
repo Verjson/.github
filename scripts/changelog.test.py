@@ -38,6 +38,7 @@ def fragment(
     refs: str | None = None,
     summary: str | None = None,
     component: str | None = None,
+    impact: str | None = None,
     body: str = "Body.",
 ) -> Path:
     path = root / "NEXT" / name
@@ -53,6 +54,8 @@ def fragment(
         lines.append(f"summary: {summary}")
     if component is not None:
         lines.append(f"component: {component}")
+    if impact is not None:
+        lines.append(f"impact: {impact}")
     lines.append(f"title: {title}")
     front = "\n".join(lines)
     path.write_text(f"---\n{front}\n---\n\n{body}\n", encoding="utf-8")
@@ -237,14 +240,14 @@ class ChangelogContractTests(unittest.TestCase):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(
             "---\ndate: 2026-07-30\nissue: 249\ntitle: Forward\n"
-            "impact: a key this contract does not know\n---\n\nBody.\n",
+            "future-field: a key this contract does not know\n---\n\nBody.\n",
             encoding="utf-8",
         )
         stderr = io.StringIO()
         with contextlib.redirect_stderr(stderr):
             entry = changelog.load_canonical(path)
         self.assertEqual(entry.metadata["title"], "Forward")
-        self.assertIn("impact", stderr.getvalue())
+        self.assertIn("future-field", stderr.getvalue())
 
     def test_an_unknown_key_does_not_become_a_renderable_field(self) -> None:
         # Tolerating the key must not mean honouring it. An older contract that
@@ -254,7 +257,7 @@ class ChangelogContractTests(unittest.TestCase):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(
             "---\ndate: 2026-07-30\nissue: 249\ntitle: Forward\n"
-            "impact: SHOULD-NOT-APPEAR\n---\n\nBody.\n",
+            "future-field: SHOULD-NOT-APPEAR\n---\n\nBody.\n",
             encoding="utf-8",
         )
         with contextlib.redirect_stderr(io.StringIO()):
@@ -697,6 +700,41 @@ class ChangelogContractTests(unittest.TestCase):
         self.assertIn("## Default", rendered)
         self.assertNotIn("## Python", rendered)
 
+    def test_impact_defaults_to_patch_and_does_not_change_rendered_notes(self) -> None:
+        fragment(self.root, "2026-07-30-issue-249-default.md", title="Default")
+
+        entries = changelog.fragments(self.root)
+
+        self.assertEqual("patch", changelog.release_impact(entries))
+        self.assertNotIn("impact", changelog.render(entries))
+
+    def test_invalid_release_impact_is_rejected_during_fragment_validation(self) -> None:
+        fragment(
+            self.root,
+            "2026-07-30-issue-249-invalid-impact.md",
+            impact="breaking",
+        )
+
+        with self.assertRaisesRegex(changelog.ChangelogError, "impact"):
+            changelog.fragments(self.root)
+
+    def test_mixed_release_impacts_choose_the_highest_selected_impact(self) -> None:
+        fragment(self.root, "2026-07-30-issue-249-patch.md", impact="patch")
+        fragment(
+            self.root,
+            "2026-07-30-issue-250-major.md",
+            issue="250",
+            impact="major",
+        )
+        fragment(
+            self.root,
+            "2026-07-30-issue-251-minor.md",
+            issue="251",
+            impact="minor",
+        )
+
+        self.assertEqual("major", changelog.release_impact(changelog.fragments(self.root)))
+
     def test_component_render_selects_only_that_component(self) -> None:
         fragment(self.root, "2026-07-30-issue-249-default.md", title="Default")
         fragment(
@@ -843,6 +881,103 @@ class ChangelogContractTests(unittest.TestCase):
             changelog.release(self.root, "node-v1.0.0", [], component="node")
 
         self.assertTrue(scoped.exists())
+
+    def test_release_refuses_a_version_smaller_than_selected_impact(self) -> None:
+        self.init_git()
+        snapshots = self.root / "CHANGELOG"
+        snapshots.mkdir()
+        (snapshots / "v0.0.0.md").write_text("previous\n", encoding="utf-8")
+        selected = fragment(
+            self.root,
+            "2026-07-30-issue-249-breaking.md",
+            impact="major",
+        )
+        self.commit_all("breaking fragment")
+
+        with self.assertRaisesRegex(changelog.ChangelogError, "require a major bump"):
+            changelog.release(self.root, "v0.0.1", [])
+
+        self.assertTrue(selected.exists())
+        self.assertFalse((self.root / "CHANGELOG/v0.0.1.md").exists())
+
+    def test_zero_major_versions_follow_normal_semver_axes(self) -> None:
+        self.init_git()
+        snapshots = self.root / "CHANGELOG"
+        snapshots.mkdir()
+        (snapshots / "v0.4.2.md").write_text("previous\n", encoding="utf-8")
+        fragment(
+            self.root,
+            "2026-07-30-issue-249-breaking.md",
+            impact="major",
+        )
+        self.commit_all("breaking fragment")
+
+        changelog.release(self.root, "v1.0.0", [])
+
+        self.assertTrue((snapshots / "v1.0.0.md").exists())
+
+    def test_minor_impact_on_zero_major_increments_the_minor_axis(self) -> None:
+        self.init_git()
+        snapshots = self.root / "CHANGELOG"
+        snapshots.mkdir()
+        (snapshots / "v0.4.2.md").write_text("previous\n", encoding="utf-8")
+        fragment(
+            self.root,
+            "2026-07-30-issue-249-feature.md",
+            impact="minor",
+        )
+        self.commit_all("feature fragment")
+
+        changelog.release(self.root, "v0.5.0", [])
+
+        self.assertTrue((snapshots / "v0.5.0.md").exists())
+
+    def test_subset_impact_ignores_unselected_higher_impact_fragments(self) -> None:
+        self.init_git()
+        patch = fragment(
+            self.root,
+            "2026-07-30-issue-249-fix.md",
+            impact="patch",
+        )
+        major = fragment(
+            self.root,
+            "2026-07-30-issue-250-breaking.md",
+            issue="250",
+            impact="major",
+        )
+        self.commit_all("mixed impacts")
+
+        changelog.release(self.root, "v0.0.1", [patch.name])
+
+        self.assertFalse(patch.exists())
+        self.assertTrue(major.exists())
+
+    def test_component_impact_ignores_other_components(self) -> None:
+        self.init_git()
+        python = fragment(
+            self.root,
+            "2026-07-30-issue-249-python-fix.md",
+            component="python",
+            impact="patch",
+        )
+        node = fragment(
+            self.root,
+            "2026-07-30-issue-250-node-breaking.md",
+            issue="250",
+            component="node",
+            impact="major",
+        )
+        self.commit_all("component impacts")
+
+        changelog.release(
+            self.root,
+            "python-v0.0.1",
+            [],
+            component="python",
+        )
+
+        self.assertFalse(python.exists())
+        self.assertTrue(node.exists())
 
     def test_render_next_can_show_the_released_shape_before_it_is_immutable(self) -> None:
         fragment(self.root, "2026-07-30-issue-249-diary.md", body=DIARY)

@@ -123,6 +123,7 @@ date: 2026-08-07
 issue: 388
 title: Exercise issue metadata
 summary: Exercise the issue-form capability.
+impact: patch
 ---
 
 Issue-form fixture.

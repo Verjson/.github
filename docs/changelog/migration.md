@@ -6,6 +6,9 @@
    per established version. Never infer or rewrite historical attribution.
 3. Move every unreleased entry to a canonical `NEXT/` fragment with metadata.
    Consolidate duplicate issue identities rather than assigning new numbers.
+   Declare `impact: major`, `minor`, or `patch` for new work. Existing fragments
+   may omit it and explicitly default to patch; add impact during migration only
+   when the intended next release axis is known.
    The `-issue-` segment is literal even when the entry has no issue, so only
    the identity changes with the metadata key:
 
@@ -63,7 +66,7 @@
 
    **This pin is an immutable commit, not a published release.** `v2.2.0` is
    older and accepts only `date`, `issue`, `id`, and `title`; it rejects the
-   currently documented `refs`, `summary`, and `component` keys. No later release tag exists
+   currently documented `refs`, `summary`, `component`, and `impact` keys. No later release tag exists
    as of 2026-08-07. Use the exact `PIN` above when following this guide rather
    than substituting `v2.2.0`, and consult the capability table in
    `docs/changelog/README.md` before selecting any other immutable ref.

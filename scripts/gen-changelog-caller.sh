@@ -1269,16 +1269,18 @@ new_fixture() {
 }
 
 write_fragment() {
-  # write_fragment <relative-path> <date> <identity-line> <title>
-  cat >"$fixture_root/case/$1" <<FRAGMENT
----
-date: $2
-$3
-title: $4
----
-
-Body.
-FRAGMENT
+  # write_fragment <relative-path> <date> <identity-line> <title> [impact]
+  local impact="${5:-}"
+  {
+    echo "---"
+    echo "date: $2"
+    echo "$3"
+    [ -z "$impact" ] || echo "impact: $impact"
+    echo "title: $4"
+    echo "---"
+    echo
+    echo "Body."
+  } >"$fixture_root/case/$1"
 }
 
 init_fixture_repo() {
@@ -1382,6 +1384,30 @@ grep -q 'already exists' "$fixture_root/error"
 [ "$(cat "$fixture_root/case/CHANGELOG/v1.0.0.md")" = 'immutable' ] \
   || fail "a rejected release still mutated the snapshot"
 echo "ok - released snapshots cannot be overwritten"
+
+new_fixture
+init_fixture_repo
+mkdir -p "$fixture_root/case/CHANGELOG"
+printf 'baseline\n' >"$fixture_root/case/CHANGELOG/v1.0.0.md"
+write_fragment NEXT/2026-08-01-issue-43-impact.md \
+  2026-08-01 "issue: 43" "Minor release" minor
+git -C "$fixture_root/case" add .
+git -C "$fixture_root/case" commit -qm initial
+before="$(git -C "$fixture_root/case" status --porcelain)"
+if python3 "$contract" release --repo-root "$fixture_root/case" --version v1.0.1 \
+  2>"$fixture_root/error"; then
+  fail "a release smaller than the selected impact was accepted"
+fi
+grep -q 'require a minor bump' "$fixture_root/error"
+[ "$(git -C "$fixture_root/case" status --porcelain)" = "$before" ] \
+  || fail "a rejected impact mismatch mutated the release tree"
+rendered="$(python3 "$contract" render-next --repo-root "$fixture_root/case")"
+[[ "$rendered" != *"impact:"* && "$rendered" != *"minor"* ]] \
+  || fail "release impact leaked into rendered changelog text"
+python3 "$contract" release --repo-root "$fixture_root/case" --version v1.1.0 >/dev/null
+[ -f "$fixture_root/case/CHANGELOG/v1.1.0.md" ] \
+  || fail "the required impact bump wrote no snapshot"
+echo "ok - release impact is enforced centrally without entering rendered notes"
 
 # The regression this file exists to prevent: prove that the repository-level
 # assertions above survive a real release, instead of asserting a pre-release
