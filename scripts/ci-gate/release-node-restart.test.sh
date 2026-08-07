@@ -34,7 +34,17 @@ shift
 case "$command" in
   pack)
     touch acme-pkg-1.2.3.tgz
-    printf '%s\n' '[{"name":"@acme/pkg","version":"1.2.3","integrity":"sha512-expected","filename":"acme-pkg-1.2.3.tgz"}]'
+    case "${PACK_MODE:-matching}" in
+      matching)
+        printf '%s\n' '[{"name":"@acme/pkg","version":"1.2.3","integrity":"sha512-expected","filename":"acme-pkg-1.2.3.tgz"}]'
+        ;;
+      multi)
+        printf '%s\n' '[{"name":"@acme/pkg","version":"1.2.3","integrity":"sha512-expected","filename":"acme-pkg-1.2.3.tgz"},{"name":"@acme/other","version":"1.2.3","integrity":"sha512-other","filename":"acme-other-1.2.3.tgz"}]'
+        ;;
+      wrong-version)
+        printf '%s\n' '[{"name":"@acme/pkg","version":"9.9.9","integrity":"sha512-expected","filename":"acme-pkg-9.9.9.tgz"}]'
+        ;;
+    esac
     ;;
   publish)
     if [ -e "$TEST_STATE/registry" ]; then exit 1; fi
@@ -78,6 +88,7 @@ chmod +x "$work/bin/npm" "$work/bin/gh"
 run_publish() {
   ( cd "$work/repo" && PATH="$work/bin:$PATH" TEST_STATE="$work/state" \
       VERSION=v1.2.3 NODE_AUTH_TOKEN=test VIEW_MODE="${VIEW_MODE:-}" \
+      PACK_MODE="${PACK_MODE:-matching}" \
       AUTH_FAIL="${AUTH_FAIL:-0}" NETWORK_FAIL="${NETWORK_FAIL:-0}" \
       bash -euo pipefail "$work/publish.sh" )
 }
@@ -98,6 +109,19 @@ echo "ok - npm success plus GitHub Release failure completes safely on rerun"
 run_publish
 run_notes env GH_CREATE_FAIL=0
 echo "ok - a fully completed release rerun reconciles without rewriting package or tag"
+
+for mode in multi wrong-version; do
+  rm -rf "$work/state"; mkdir -p "$work/state"
+  if PACK_MODE="$mode" run_publish >/dev/null 2>&1; then
+    echo "FAIL - publication accepted $mode npm pack metadata" >&2
+    exit 1
+  fi
+  [ ! -e "$work/state/registry" ] || {
+    echo "FAIL - $mode npm pack metadata reached publication" >&2
+    exit 1
+  }
+  echo "ok - publication rejects $mode npm pack metadata before registry mutation"
+done
 
 for mode in mismatch spoof; do
   rm -rf "$work/state"; mkdir -p "$work/state"; touch "$work/state/registry"
