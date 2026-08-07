@@ -479,6 +479,158 @@ class ChangelogContractTests(unittest.TestCase):
         self.assertIn("Poller now wakes on threaded replies.", released)
         self.assertNotIn("The lead paragraph", released)
 
+    def test_folded_summary_joins_indented_continuation_lines(self) -> None:
+        path = fragment(self.root, "2026-07-30-issue-249-folded.md", body=DIARY)
+        path.write_text(
+            path.read_text(encoding="utf-8").replace(
+                "title: Contract",
+                "summary: >-\n"
+                "  Poller now wakes on threaded\n"
+                "  replies.\n"
+                "title: Contract",
+            ),
+            encoding="utf-8",
+        )
+
+        released = changelog.render(changelog.fragments(self.root), released=True)
+
+        self.assertIn("Poller now wakes on threaded replies.", released)
+        self.assertNotIn("The lead paragraph", released)
+
+    def test_folded_summary_preserves_paragraph_breaks(self) -> None:
+        path = fragment(self.root, "2026-07-30-issue-249-paragraphs.md", body=DIARY)
+        path.write_text(
+            path.read_text(encoding="utf-8").replace(
+                "title: Contract",
+                "summary: >-\n"
+                "  Poller now wakes.\n"
+                "\n"
+                "  Threaded replies are handled.\n"
+                "title: Contract",
+            ),
+            encoding="utf-8",
+        )
+
+        entry = changelog.fragments(self.root)[0]
+
+        self.assertEqual(
+            "Poller now wakes.\nThreaded replies are handled.",
+            entry.metadata["summary"],
+        )
+
+    def test_literal_summary_preserves_indented_continuation_lines(self) -> None:
+        path = fragment(self.root, "2026-07-30-issue-249-literal.md", body=DIARY)
+        path.write_text(
+            path.read_text(encoding="utf-8").replace(
+                "title: Contract",
+                "summary: |-\n"
+                "  Poller now wakes.\n"
+                "  Threaded replies are handled.\n"
+                "title: Contract",
+            ),
+            encoding="utf-8",
+        )
+
+        released = changelog.render(changelog.fragments(self.root), released=True)
+
+        self.assertIn("Poller now wakes.\nThreaded replies are handled.", released)
+
+    def test_keep_chomping_preserves_trailing_summary_lines(self) -> None:
+        path = fragment(self.root, "2026-07-30-issue-249-keep.md", body=DIARY)
+        path.write_text(
+            path.read_text(encoding="utf-8").replace(
+                "title: Contract",
+                "summary: >+\n"
+                "  Poller now wakes.\n"
+                "\n"
+                "\n"
+                "title: Contract",
+            ),
+            encoding="utf-8",
+        )
+
+        entry = changelog.fragments(self.root)[0]
+
+        self.assertEqual("Poller now wakes.\n\n\n", entry.metadata["summary"])
+
+    def test_summary_block_ends_at_the_next_metadata_key(self) -> None:
+        path = fragment(self.root, "2026-07-30-issue-249-next-key.md", body=DIARY)
+        path.write_text(
+            path.read_text(encoding="utf-8").replace(
+                "title: Contract",
+                "summary: >\n"
+                "  Poller now wakes on threaded replies.\n"
+                "title: Contract",
+            ),
+            encoding="utf-8",
+        )
+
+        entry = changelog.fragments(self.root)[0]
+
+        self.assertEqual("Poller now wakes on threaded replies.\n", entry.metadata["summary"])
+        self.assertEqual("Contract", entry.metadata["title"])
+
+    def test_summary_block_without_an_indented_continuation_is_rejected(self) -> None:
+        path = fragment(self.root, "2026-07-30-issue-249-empty-block.md", body=DIARY)
+        path.write_text(
+            path.read_text(encoding="utf-8").replace(
+                "title: Contract",
+                "summary: >-\ntitle: Contract",
+            ),
+            encoding="utf-8",
+        )
+
+        with self.assertRaisesRegex(
+            changelog.ChangelogError,
+            "summary block scalar requires an indented continuation",
+        ):
+            changelog.fragments(self.root)
+
+    def test_unindented_summary_continuation_is_rejected(self) -> None:
+        path = fragment(self.root, "2026-07-30-issue-249-unindented.md", body=DIARY)
+        path.write_text(
+            path.read_text(encoding="utf-8").replace(
+                "title: Contract",
+                "summary: >-\nPoller now wakes.\ntitle: Contract",
+            ),
+            encoding="utf-8",
+        )
+
+        with self.assertRaisesRegex(
+            changelog.ChangelogError,
+            "summary block scalar requires an indented continuation",
+        ):
+            changelog.fragments(self.root)
+
+    def test_malformed_summary_block_indicator_is_rejected(self) -> None:
+        fragment(
+            self.root,
+            "2026-07-30-issue-249-bad-indicator.md",
+            summary=">-unexpected",
+            body=DIARY,
+        )
+
+        with self.assertRaisesRegex(
+            changelog.ChangelogError,
+            "invalid summary block scalar indicator",
+        ):
+            changelog.fragments(self.root)
+
+    def test_single_line_summary_behavior_is_unchanged(self) -> None:
+        path = fragment(
+            self.root,
+            "2026-07-30-issue-249-single-line.md",
+            summary="Poller: now wakes on threaded replies.",
+            body=DIARY,
+        )
+
+        entry = changelog.fragments(self.root)[0]
+
+        self.assertEqual(
+            "Poller: now wakes on threaded replies.",
+            entry.metadata["summary"],
+        )
+
     def test_summary_does_not_touch_the_running_log(self) -> None:
         # `summary` is a release-note override, not a replacement for the diary.
         fragment(

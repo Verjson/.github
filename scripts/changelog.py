@@ -91,14 +91,73 @@ def parse_frontmatter(path: Path) -> tuple[dict[str, str], str]:
     except ValueError as exc:
         raise ChangelogError(f"{path}: unterminated metadata front matter") from exc
     metadata: dict[str, str] = {}
-    for line in lines[1:end]:
+    metadata_lines = lines[1:end]
+    index = 0
+    while index < len(metadata_lines):
+        line = metadata_lines[index]
         key, separator, value = line.partition(":")
         if not separator or not key.strip() or not value.strip():
             raise ChangelogError(f"{path}: invalid metadata line: {line!r}")
         key = key.strip()
         if key in metadata:
             raise ChangelogError(f"{path}: duplicate metadata key {key!r}")
-        metadata[key] = unquote_scalar(value.strip())
+        value = value.strip()
+        if key == "summary" and value[0] in ">|" and not re.fullmatch(r"[>|][+-]?", value):
+            raise ChangelogError(f"{path}: invalid summary block scalar indicator {value!r}")
+        if key == "summary" and re.fullmatch(r"[>|][+-]?", value):
+            block_lines: list[str] = []
+            index += 1
+            while index < len(metadata_lines):
+                continuation = metadata_lines[index]
+                if continuation and not continuation.startswith(" "):
+                    break
+                block_lines.append(continuation)
+                index += 1
+            content_lines = [item for item in block_lines if item]
+            if not content_lines:
+                raise ChangelogError(
+                    f"{path}: summary block scalar requires an indented continuation"
+                )
+            indent = min(len(item) - len(item.lstrip(" ")) for item in content_lines)
+            if indent < 1:
+                raise ChangelogError(
+                    f"{path}: summary block scalar requires an indented continuation"
+                )
+            dedented = [item[indent:] if item else "" for item in block_lines]
+            if value[0] == ">":
+                block = dedented[0]
+                for previous, current in zip(dedented, dedented[1:]):
+                    if previous and not previous.startswith(" ") and not current:
+                        separator = ""
+                    elif not previous and current.startswith(" "):
+                        separator = "\n\n"
+                    elif (
+                        previous
+                        and current
+                        and not previous.startswith(" ")
+                        and not current.startswith(" ")
+                    ):
+                        separator = " "
+                    else:
+                        separator = "\n"
+                    block += separator + current
+            else:
+                block = "\n".join(dedented)
+            if value.endswith("-"):
+                block = block.rstrip("\n")
+            elif value.endswith("+"):
+                trailing_empty_lines = 0
+                for item in reversed(dedented):
+                    if item:
+                        break
+                    trailing_empty_lines += 1
+                block = block.rstrip("\n") + "\n" * (trailing_empty_lines + 1)
+            else:
+                block = block.rstrip("\n") + "\n"
+            metadata[key] = block
+            continue
+        metadata[key] = unquote_scalar(value)
+        index += 1
     return metadata, "\n".join(lines[end + 1 :]).strip() + "\n"
 
 
