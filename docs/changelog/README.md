@@ -37,8 +37,8 @@ exists as of 2026-08-07, so do not infer current metadata support from
 `v2.2.0`.
 
 The migration guide recommends immutable commit
-`969628b2c046684b9f160df9107507f212068cf9`. Its engine accepts every key below:
-<!-- recommended-contract-pin: 969628b2c046684b9f160df9107507f212068cf9 -->
+`bb5c34c708065e14c3fd663a4d87763f81d3aa93`. Its engine accepts every key below:
+<!-- recommended-contract-pin: bb5c34c708065e14c3fd663a4d87763f81d3aa93 -->
 
 <!-- contract-pin-metadata:start -->
 | Metadata key | Required | Supported by `v2.2.0` | Supported by recommended pin |
@@ -191,7 +191,7 @@ fourth if it publishes something. Generate all of them rather than writing them;
 the reasoning is in the generator's header.
 
 ```bash
-PIN=969628b2c046684b9f160df9107507f212068cf9
+PIN=bb5c34c708065e14c3fd663a4d87763f81d3aa93
 # Changelog-only repositories keep the backwards-compatible caller:
 scripts/gen-changelog-caller.sh workflow "$PIN" > .github/workflows/changelog.yml
 # Repositories consolidating generated checks use this instead:
