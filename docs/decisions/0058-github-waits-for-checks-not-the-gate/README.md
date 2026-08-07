@@ -423,6 +423,28 @@ those heads were created.
   `ai-privileged-merge.yml` entirely. The bypass list (`OrganizationAdmin`,
   `Integration 2740`) is unchanged by this ADR — no new privilege is granted.
 
+## Amendment (2026-08-07, #452) — retract stale gate reviews after recovery
+
+A bot-authored `CHANGES_REQUESTED` review can remain GitHub's effective review
+decision after a later head receives a non-blocking gate verdict. The required
+`gate` check then passes while `reviewDecision` remains `CHANGES_REQUESTED`, so
+the platform-level merge precondition this ADR relies on becomes a one-way
+door: a correct gate finding can never recover without manual dismissal.
+
+Before reporting a non-blocking verdict green, the gate now lists prior reviews
+and dismisses only `github-actions[bot]` reviews whose state is
+`CHANGES_REQUESTED` and whose concrete `commit_id` differs from the reviewed
+head. Dismissal retains the original finding in the PR timeline. Human reviews,
+current-head bot reviews, reviews without a provable head binding, and all
+reviews while the current verdict remains blocking are untouched.
+
+The review list and each dismissal are merge-decision inputs and therefore fail
+closed: API errors, malformed payloads, or a failed dismissal leave the gate
+red with an explicit annotation. The existing job-level
+`pull-requests: write` permission is sufficient; no broader permission is
+added. Extraction tests pin reviewer identity, head binding, operation order,
+timeline-preserving dismissal, and both read and write failure paths.
+
 ### Open question: which actor satisfies the approval rule
 
 The `pull_request` rule requires `required_approving_review_count: 1`. **Today
