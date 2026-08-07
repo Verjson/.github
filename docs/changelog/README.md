@@ -83,6 +83,25 @@ _Date: 2026-07-30; id:20260730t090000z; refs #13_
 `summary` optionally overrides the lead paragraph used in a released snapshot;
 it does not change the full running-log entry.
 
+### Release impact
+
+Every fragment may declare `impact: major`, `impact: minor`, or `impact: patch`.
+An omitted impact explicitly defaults to `patch`, so existing fragments remain
+valid. Impact is metadata only and never appears in rendered notes.
+
+At release time the central engine computes the highest impact among the
+selected fragments and requires the exact next SemVer version on that axis.
+Ordinary SemVer rules apply before 1.0: `v0.4.2` advances to `v1.0.0` for major,
+`v0.5.0` for minor, or `v0.4.3` for patch. Higher, lower, and skipped bumps fail
+before any snapshot or fragment is mutated. The first release in a prefix stream
+establishes its baseline.
+
+Version prefixes define independent streams (`v1.2.3`, `python-v1.2.3`, and so
+on). Component and explicit-fragment releases calculate impact only from their
+selected fragments. Consumers pass versions and selectors to
+`scripts/changelog.py`; they must not carry their own impact parser. See
+[ADR 0066](../decisions/0066-changelog-impact-governs-version-bumps/README.md).
+
 ### Independent component streams
 
 A repository that releases independently versioned packages may add an optional
@@ -127,11 +146,12 @@ allocation never determines precedence.
 
 1. acquires the repository release lock;
 2. validates and selects canonical `NEXT/` fragments;
-3. refuses an existing snapshot;
-4. writes exactly one snapshot and removes the selected fragments in the same
+3. validates the requested version against the selected fragments' maximum impact;
+4. refuses an existing snapshot;
+5. writes exactly one snapshot and removes the selected fragments in the same
    commit;
-5. tags that exact commit; and
-6. regenerates `CHANGELOG.md` only as a display artifact.
+6. tags that exact commit; and
+7. regenerates `CHANGELOG.md` only as a display artifact.
 
 Feature pull requests must not edit `CHANGELOG.md`, released snapshots, or
 remove fragments. Release automation is the only fragment consumer.

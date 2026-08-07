@@ -6,6 +6,9 @@
    per established version. Never infer or rewrite historical attribution.
 3. Move every unreleased entry to a canonical `NEXT/` fragment with metadata.
    Consolidate duplicate issue identities rather than assigning new numbers.
+   Declare `impact: major`, `minor`, or `patch` for new work. Existing fragments
+   may omit it and explicitly default to patch; add impact during migration only
+   when the intended next release axis is known.
    The `-issue-` segment is literal even when the entry has no issue, so only
    the identity changes with the metadata key:
 
