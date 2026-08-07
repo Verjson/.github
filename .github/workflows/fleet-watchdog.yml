@@ -7,15 +7,21 @@ name: fleet watchdog
 # slowness — six gate jobs held all six runners on 2026-08-03 while waiting for
 # CI that could not start because it needed those runners.
 #
-# ADR 0053's `VERJSON_RUNNER_OVERFLOW` now routes `preflight`/`gate`/
-# `dispatch-merge` off the pool while it is set, which covers most of that. It
-# does NOT cover `ai-privileged-merge.yml`, which routes on
-# `VERJSON_LANE_PRIVILEGED`, and ADR 0053 is explicit that overflow is hosted
-# budget to be given back. `privileged_merge` is therefore the residual exposure,
-# and 3 of the 4 runs this watchdog has ever preempted were `AI privileged
-# merge`; the fourth was a `gate` on 2026-08-03, when `gate` was still on the
-# pool. ADR 0056 records why it is retained rather than retired (#341), and why
-# a candidate must now prove it holds a runner from the saturated pool.
+# ADR 0053's `VERJSON_RUNNER_OVERFLOW` routes `preflight`/`gate`/`dispatch-merge`
+# off the pool while it is set, and ADR 0064 (#487) extends it to
+# `ai-privileged-merge.yml` — which ADR 0056 had already called "probably the
+# right permanent fix", deferred to #341's re-scope.
+#
+# That NARROWS the residual exposure without removing it, which is why this
+# watchdog is still here. Overflow heads the LANE tail only, so it is reached
+# solely by callers that omit `inputs.runner_labels` (ADR 0057 / #405). Every
+# caller generated before that — most of them until the #365 sweep — still routes
+# `privileged_merge` onto the pool by label, so a `privileged_merge` jam remains
+# reachable and this watchdog remains its only mitigation. 3 of the 4 runs it has
+# ever preempted were `AI privileged merge`; the fourth was a `gate` on
+# 2026-08-03, when `gate` was still on the pool. ADR 0056 records why it is
+# retained rather than retired (#341), and why a candidate must now prove it
+# holds a runner from the saturated pool.
 #
 # Runs on the FAST LANE: this repository is public, so these minutes are free,
 # and a watchdog that queued for a self-hosted runner would be waiting behind the

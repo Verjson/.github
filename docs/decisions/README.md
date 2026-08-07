@@ -11,6 +11,7 @@ Reverse-chronological index of org-level decisions.
 <!-- BEGIN ADR INDEX -->
 | # | Date | Decision |
 |---|------|----------|
+| [0064](0064-privileged-merge-reaches-the-overflow-lane/README.md) | 2026-08-07 | The privileged merge poller reaches the overflow lane |
 | [0063](0063-required-workflow-events-are-bridged/README.md) | 2026-08-06 | A required workflow only sees three activity types, so the rest are bridged |
 | [0062](0062-release-verifies-before-it-tags/README.md) | 2026-08-06 | The release caller is generated, and it verifies before it tags |
 | [0061](0061-changelog-check-is-required-for-adopters/README.md) | 2026-08-06 | The changelog check is a required status check, scoped by a repository property |
