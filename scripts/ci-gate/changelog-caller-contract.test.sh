@@ -699,7 +699,7 @@ enable_stamp_lifecycle_scripts() {
   sed -i 's/ --ignore-scripts//g' "$1/.github/workflows/release.yml"
 }
 drop_restart_authorization_proof() {
-  sed -i 's/npm whoami --registry=https:\/\/npm.pkg.github.com/npm ping --registry=https:\/\/npm.pkg.github.com/' \
+  sed -i '/NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}/d' \
     "$1/.github/workflows/release.yml"
 }
 drop_restart_integrity_proof() {
