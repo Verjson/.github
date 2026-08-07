@@ -520,32 +520,6 @@ jobs:
             echo "warning: the database's published port 127.0.0.1:$DB_PORT is not" \
                  "accepting connections from the host" >&2
           fi
-      - name: Stop database service
-        # Always tear the job's container down so a completed or failed job can't
-        # leave it behind on the persistent self-hosted runner. The handle is the
-        # container ID published by the start step — not a name, and not a
-        # re-derived literal: an ID can only ever name the container this job
-        # created, so a job can never remove a concurrent job's live container
-        # (#116). An empty output means no container was started, so there is
-        # nothing to remove.
-        if: always() && needs.eligibility.outputs.should-run != 'false' && inputs.db-image != ''
-        env:
-          CONTAINER_ID: ${{ steps.db-service.outputs.container-id }}
-        run: |
-          [ -n "$CONTAINER_ID" ] || exit 0
-          # A removal failure is not swallowed: with an OS-assigned port a leaked
-          # container no longer announces itself by breaking the next job's bind,
-          # so the only signal is this one. An already-gone container is fine.
-          if ! rm_out="$(docker rm -f "$CONTAINER_ID" 2>&1)"; then
-            case "$rm_out" in
-              *"No such container"*)
-                echo "database container $CONTAINER_ID was already gone" ;;
-              *)
-                echo "failed to remove database container $CONTAINER_ID:" \
-                     "$rm_out — it may be leaking on this runner" >&2
-                exit 1 ;;
-            esac
-          fi
       - name: Install schema submodule deps
         if: needs.eligibility.outputs.should-run != 'false' && inputs.schema-dir != ''
         working-directory: ${{ inputs.schema-dir }}
@@ -583,4 +557,30 @@ jobs:
           if [ "$size_kb" -gt "$(( CACHE_MAX_MB * 1024 ))" ]; then
             echo "::warning::npm cache is ${size_mb} MB; clearing it instead of uploading more than ${CACHE_MAX_MB} MB"
             find "$cache_dir" -mindepth 1 -delete
+          fi
+      - name: Stop database service
+        # Always tear the job's container down after every consumer and cache
+        # step, so the suite can use it and any earlier failure still cleans up
+        # (#585). The handle is the container ID published by the start step —
+        # not a name, and not a re-derived literal: an ID can only ever name the
+        # container this job created, so a job can never remove a concurrent
+        # job's live container (#116). An empty output means no container was
+        # started, so there is nothing to remove.
+        if: always() && needs.eligibility.outputs.should-run != 'false' && inputs.db-image != ''
+        env:
+          CONTAINER_ID: ${{ steps.db-service.outputs.container-id }}
+        run: |
+          [ -n "$CONTAINER_ID" ] || exit 0
+          # A removal failure is not swallowed: with an OS-assigned port a leaked
+          # container no longer announces itself by breaking the next job's bind,
+          # so the only signal is this one. An already-gone container is fine.
+          if ! rm_out="$(docker rm -f "$CONTAINER_ID" 2>&1)"; then
+            case "$rm_out" in
+              *"No such container"*)
+                echo "database container $CONTAINER_ID was already gone" ;;
+              *)
+                echo "failed to remove database container $CONTAINER_ID:" \
+                     "$rm_out — it may be leaking on this runner" >&2
+                exit 1 ;;
+            esac
           fi

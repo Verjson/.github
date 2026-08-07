@@ -192,6 +192,24 @@ raising `timeout-minutes` past 360,
 dropping the `DB_PORT` guard or the pass-through note, and handling the container by
 name instead of ID — are each caught by at least one assertion.
 
+## Amendment — 2026-08-07: teardown follows the consumer suite (#585)
+
+The teardown step had drifted immediately after database startup, before schema
+installation, dependency installation, build, typecheck, tests, lint, and cache
+upload. A DB-backed job could therefore prove the container healthy, remove it,
+and only then run the consumer that needed `DATABASE_URL`.
+
+`Stop database service` is now the final job step. Its existing `always()`
+condition still runs after every relevant earlier failure, while the #191
+eligibility predicate keeps the deferred no-op path from touching Docker. The
+container-ID boundary and loud removal failures remain unchanged.
+
+`node-ci-db-service.test.sh` parses the committed workflow and requires startup
+before every consumer/cache step and teardown after all of them. It also pins
+teardown as the final step with the combined `always()`, eligibility, and
+`db-image` guard, so later step insertion cannot silently recreate the lifecycle
+inversion.
+
 **Not re-opened.** The boundary condition of the original decision still stands: an
 arbitrary caller-supplied image plus unmasked `db-env` on a shared runner is safe
 only while callers are first-party and trusted.
