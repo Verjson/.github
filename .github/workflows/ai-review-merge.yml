@@ -2323,9 +2323,11 @@ jobs:
           # observed state as the postcondition (#384): a successful request
           # cannot turn this job green while the PR remains open.
           merge_state_json=""
+          required_contexts_mode=unresolved
+          required_contexts='[]'
           for probe_attempt in $(seq 1 "$MERGE_PROBE_ATTEMPTS"); do
             if candidate=$(gh pr view "$PR_NUMBER" --repo "$TARGET_REPO" \
-              --json state,mergedAt,reviewDecision,mergeStateStatus,headRefOid,statusCheckRollup 2>/dev/null) &&
+              --json state,mergedAt,reviewDecision,mergeStateStatus,headRefOid,baseRefName,statusCheckRollup 2>/dev/null) &&
                jq -e '
                  type == "object"
                  and (.state | type) == "string"
@@ -2334,6 +2336,7 @@ jobs:
                  and (.mergeStateStatus | type) == "string"
                  and (.headRefOid | type) == "string"
                  and (.headRefOid | test("^[0-9a-f]{40}$"))
+                 and (.baseRefName | type) == "string"
                  and (.statusCheckRollup | type) == "array"
                ' <<<"$candidate" >/dev/null 2>&1; then
               merge_state_json=$candidate
@@ -2373,13 +2376,58 @@ jobs:
                 echo "::notice::phase=merge-postcondition result=merged expected_head=$EXPECTED_HEAD_SHA attempt=$probe_attempt"
                 exit 0
               fi
-              failed_prerequisites=$(jq -c '[
+              if [ "$required_contexts_mode" = unresolved ]; then
+                base_branch=$(jq -r .baseRefName <<<"$candidate")
+                base_branch_ok=true
+                if [ -z "$base_branch" ] || [ "$base_branch" = "null" ]; then base_branch_ok=false; fi
+                case "$base_branch" in *..*) base_branch_ok=false ;; esac
+                if ! ( export LC_ALL=C; [[ "$base_branch" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]*$ ]] ); then
+                  base_branch_ok=false
+                fi
+                rules_rc=0
+                if [ "$base_branch_ok" = true ]; then
+                  rules_json=$(gh api "repos/$TARGET_REPO/rules/branches/$base_branch" 2>/dev/null) || rules_rc=$?
+                else
+                  rules_rc=1
+                fi
+                if [ "$rules_rc" -eq 0 ]; then
+                  required_contexts=$(jq -c '
+                    if type != "array" then error("branch rules response is not an array")
+                    else [ .[] | select((type == "object") and .type == "required_status_checks")
+                           | .parameters.required_status_checks[]? | .context? | strings ]
+                         | unique
+                    end' <<<"$rules_json" 2>/dev/null) || rules_rc=$?
+                fi
+                if [ "$rules_rc" -ne 0 ]; then
+                  {
+                    echo "merge_observed=false"
+                    echo "blocking_review=false"
+                    echo "policy_blocked=unknown"
+                    echo "blocker=required_contexts_unavailable"
+                    echo "remediation=retry_required_context_resolution"
+                  } >>"$GITHUB_OUTPUT"
+                  echo "::error::phase=merge-postcondition result=not-merged blocker=required_contexts_unavailable remediation=retry_required_context_resolution expected_head=$EXPECTED_HEAD_SHA base=${base_branch:-<unresolved>}"
+                  exit 1
+                elif [ "$(jq 'length' <<<"$required_contexts")" -eq 0 ]; then
+                  required_contexts_mode=fallback
+                else
+                  required_contexts_mode=declared
+                fi
+              fi
+              failed_prerequisites=$(jq -c --arg mode "$required_contexts_mode" --argjson required "$required_contexts" '[
                 .statusCheckRollup[]
                 | select((.name // .context) as $n
                     | $n != "preflight" and $n != "gate"
+                    and $n != "freshness" and $n != "classify"
+                    and $n != "review" and $n != "ai-review" and $n != "ai-merge"
                     and $n != "dispatch-merge"
                     and $n != "privileged_merge"
-                    and ($n | endswith("/ privileged_merge") | not))
+                    and ((($n | endswith("/ preflight")) or ($n | endswith("/ gate"))
+                      or ($n | endswith("/ freshness")) or ($n | endswith("/ classify"))
+                      or ($n | endswith("/ review")) or ($n | endswith("/ ai-review"))
+                      or ($n | endswith("/ ai-merge")) or ($n | endswith("/ dispatch-merge"))
+                      or ($n | endswith("/ privileged_merge"))) | not)
+                    and ($mode == "fallback" or ($required | index($n)) != null))
                 | select(if .state then
                     ((.state // "") | IN("SUCCESS", "PENDING", "EXPECTED") | not)
                   else

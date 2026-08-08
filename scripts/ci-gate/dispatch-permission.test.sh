@@ -43,6 +43,7 @@ grep -qF 'runs-on: ${{ inputs.runner_labels && fromJSON(inputs.runner_labels) ||
 timeout_minutes="$(sed -n 's/^    timeout-minutes: //p' <<<"$dispatch" | head -n 1)"
 probe_attempts="$(sed -n 's/^      MERGE_PROBE_ATTEMPTS: //p' <<<"$dispatch")"
 probe_interval="$(sed -n 's/^      MERGE_PROBE_INTERVAL_SECONDS: //p' <<<"$dispatch")"
+test_probe_attempts=3
 privileged_timeout="$(sed -n 's/^      PRIVILEGED_MERGE_TIMEOUT_MINUTES: //p' <<<"$dispatch")"
 queue_margin="$(sed -n 's/^      MERGE_QUEUE_MARGIN_MINUTES: //p' <<<"$dispatch")"
 api_margin="$(sed -n 's/^      MERGE_API_MARGIN_MINUTES: //p' <<<"$dispatch")"
@@ -87,11 +88,17 @@ mkdir "$tmp/bin"
 cat >"$tmp/bin/gh" <<'EOF'
 #!/usr/bin/env bash
 if [ "$1" = api ]; then
-  [ "$2" = --paginate ] &&
+  if [ "$2" = --paginate ]; then
     [ "$3" = repos/Verjson/example/actions/workflows ] &&
-    [ "$4" = --jq ] &&
-    [ "$5" = '.workflows[] | select(.path == ".github/workflows/ai-privileged-merge.yml") | .path' ] ||
+      [ "$4" = --jq ] &&
+      [ "$5" = '.workflows[] | select(.path == ".github/workflows/ai-privileged-merge.yml") | .path' ] ||
+      exit 2
+  elif [ "$2" = repos/Verjson/example/rules/branches/main ]; then
+    [ "${RULES_FAILURE:-false}" = false ] || exit 1
+    printf '%s\n' "${RULES_JSON:-[]}"; exit 0
+  else
     exit 2
+  fi
   [ "${API_FAILURE:-false}" = false ] || exit 1
   printf '%s' "${WORKFLOW_PATH-.github/workflows/ai-privileged-merge.yml}"
   [ -z "${WORKFLOW_PATH-.github/workflows/ai-privileged-merge.yml}" ] || printf '\n'
@@ -120,7 +127,7 @@ if [ "$1 $2" = "pr view" ]; then
     echo "HTTP 403: Resource not accessible by integration" >&2
     exit 1
   fi
-  jq -c '. + {statusCheckRollup: (.statusCheckRollup // [])}' <<<"$PR_STATE_JSON"
+  jq -c '. + {baseRefName: (.baseRefName // "main"), statusCheckRollup: (.statusCheckRollup // [])}' <<<"$PR_STATE_JSON"
   exit 0
 fi
 exit 2
@@ -151,8 +158,9 @@ run_case() {
     PR_NUMBER="${2-7}" EXPECTED_HEAD_SHA="${3-0123456789abcdef0123456789abcdef01234567}" \
     SOURCE_RUN_ID="${4-99}" WORKFLOW_PATH="${5-.github/workflows/ai-privileged-merge.yml}" \
     API_FAILURE="${6-false}" \
-    MERGE_PROBE_ATTEMPTS="$probe_attempts" MERGE_PROBE_INTERVAL_SECONDS="$probe_interval" \
+    MERGE_PROBE_ATTEMPTS="$test_probe_attempts" MERGE_PROBE_INTERVAL_SECONDS="$probe_interval" \
     PR_STATE_JSON="$pr_state_json" \
+    RULES_JSON="${RULES_JSON-[]}" RULES_FAILURE="${RULES_FAILURE-false}" \
     PR_VIEW_FAILURES="${8-0}" DISPATCH_FAILURES="${9-0}" \
     DISPATCH_ERROR_KIND="${10-500}" bash "$script" >"$tmp/dispatch.out" 2>&1
 }
@@ -225,7 +233,7 @@ policy_block='{"state":"OPEN","mergedAt":null,"reviewDecision":"APPROVED","merge
 run_case Verjson/example 7 0123456789abcdef0123456789abcdef01234567 99 .github/workflows/ai-privileged-merge.yml false "$policy_block" \
   && fail "policy-blocked merge reported green" \
   || {
-    [ "$(cat "$tmp/pr-view-count")" -eq "$probe_attempts" ] \
+    [ "$(cat "$tmp/pr-view-count")" -eq "$test_probe_attempts" ] \
       && grep -q 'blocker=policy' "$tmp/dispatch.out" \
       && grep -q '^blocking_review=false$' "$tmp/github-output.txt" \
       && grep -q '^policy_blocked=true$' "$tmp/github-output.txt" \
@@ -233,9 +241,11 @@ run_case Verjson/example 7 0123456789abcdef0123456789abcdef01234567 99 .github/w
       || fail "interim BLOCKED state was classified before terminal evidence"
   }
 
-# #612: a completed failing prerequisite cannot recover within this source run.
-# Preserve its check evidence and release the routed runner immediately.
+# #612: a completed failing required prerequisite cannot recover within this
+# source run. Advisory failures do not override GitHub's declared policy.
+required_rules='[{"type":"required_status_checks","parameters":{"required_status_checks":[{"context":"attribution"}]}}]'
 failed_prerequisite='{"state":"OPEN","mergedAt":null,"reviewDecision":"APPROVED","mergeStateStatus":"BLOCKED","headRefOid":"0123456789abcdef0123456789abcdef01234567","statusCheckRollup":[{"name":"attribution","status":"COMPLETED","conclusion":"FAILURE","detailsUrl":"https://github.com/Verjson/example/actions/runs/123"}]}'
+RULES_JSON="$required_rules" \
 run_case Verjson/example 7 0123456789abcdef0123456789abcdef01234567 99 .github/workflows/ai-privileged-merge.yml false "$failed_prerequisite" \
   && fail "terminal prerequisite failure kept waiting or reported green" \
   || {
@@ -247,6 +257,39 @@ run_case Verjson/example 7 0123456789abcdef0123456789abcdef01234567 99 .github/w
       && grep -q '^remediation=inspect_failed_prerequisites$' "$tmp/github-output.txt" \
       && pass "terminal prerequisite failure exits immediately with preserved evidence" \
       || fail "terminal prerequisite failure retried or lost its evidence"
+  }
+
+required_green_advisory_red='{"state":"OPEN","mergedAt":null,"reviewDecision":"APPROVED","mergeStateStatus":"BLOCKED","headRefOid":"0123456789abcdef0123456789abcdef01234567","statusCheckRollup":[{"name":"attribution","status":"COMPLETED","conclusion":"SUCCESS"},{"name":"advisory","status":"COMPLETED","conclusion":"FAILURE"}]}'
+RULES_JSON="$required_rules" \
+run_case Verjson/example 7 0123456789abcdef0123456789abcdef01234567 99 .github/workflows/ai-privileged-merge.yml false "$required_green_advisory_red" \
+  && fail "failed advisory check reported a merged postcondition" \
+  || {
+    [ "$(cat "$tmp/pr-view-count")" -eq "$test_probe_attempts" ] \
+      && ! grep -q 'blocker=prerequisite_failed' "$tmp/dispatch.out" \
+      && grep -q 'blocker=policy' "$tmp/dispatch.out" \
+      && pass "failed advisory check does not trigger required-prerequisite fail-fast" \
+      || fail "failed advisory check incorrectly blocked declared required contexts"
+  }
+
+RULES_FAILURE=true \
+run_case Verjson/example 7 0123456789abcdef0123456789abcdef01234567 99 .github/workflows/ai-privileged-merge.yml false "$failed_prerequisite" \
+  && fail "required-context resolution failure reported green" \
+  || {
+    [ "$(cat "$tmp/pr-view-count")" -eq 1 ] \
+      && grep -q 'blocker=required_contexts_unavailable' "$tmp/dispatch.out" \
+      && grep -q '^remediation=retry_required_context_resolution$' "$tmp/github-output.txt" \
+      && pass "required-context resolution failure fails closed" \
+      || fail "required-context resolution failure lacked typed fail-closed evidence"
+  }
+
+self_failures='{"state":"OPEN","mergedAt":null,"reviewDecision":"APPROVED","mergeStateStatus":"BLOCKED","headRefOid":"0123456789abcdef0123456789abcdef01234567","statusCheckRollup":[{"name":"preflight","status":"COMPLETED","conclusion":"FAILURE"},{"name":"caller / freshness","status":"COMPLETED","conclusion":"FAILURE"},{"name":"classify","status":"COMPLETED","conclusion":"FAILURE"},{"name":"caller / review","status":"COMPLETED","conclusion":"FAILURE"},{"name":"ai-review","status":"COMPLETED","conclusion":"FAILURE"},{"name":"caller / ai-merge","status":"COMPLETED","conclusion":"FAILURE"},{"name":"dispatch-merge","status":"COMPLETED","conclusion":"FAILURE"},{"name":"caller / privileged_merge","status":"COMPLETED","conclusion":"FAILURE"}]}'
+run_case Verjson/example 7 0123456789abcdef0123456789abcdef01234567 99 .github/workflows/ai-privileged-merge.yml false "$self_failures" \
+  && fail "legacy self-job failures reported a merged postcondition" \
+  || {
+    [ "$(cat "$tmp/pr-view-count")" -eq "$test_probe_attempts" ] \
+      && ! grep -q 'blocker=prerequisite_failed' "$tmp/dispatch.out" \
+      && pass "legacy self-job vocabulary is excluded from fallback prerequisites" \
+      || fail "legacy self-job exclusion set drifted in the dispatch postcondition"
   }
 
 for legacy_state in FAILURE ERROR; do
@@ -280,7 +323,7 @@ unknown_state='{"state":"OPEN","mergedAt":null,"reviewDecision":"APPROVED","merg
 run_case Verjson/example 7 0123456789abcdef0123456789abcdef01234567 99 .github/workflows/ai-privileged-merge.yml false "$unknown_state" \
   && fail "unknown unmerged state reported green" \
   || {
-    [ "$(cat "$tmp/pr-view-count")" -eq "$probe_attempts" ] \
+    [ "$(cat "$tmp/pr-view-count")" -eq "$test_probe_attempts" ] \
       && grep -q 'blocker=merge_not_observed' "$tmp/dispatch.out" \
       && grep -q '^policy_blocked=false$' "$tmp/github-output.txt" \
       && pass "UNKNOWN remains non-policy through the complete observation budget" \
@@ -325,7 +368,7 @@ run_case Verjson/example 7 0123456789abcdef0123456789abcdef01234567 99 .github/w
   && pass "transient postcondition reads recover within the bounded retry" \
   || fail "transient postcondition reads did not recover"
 
-run_case Verjson/example 7 0123456789abcdef0123456789abcdef01234567 99 .github/workflows/ai-privileged-merge.yml false "$open_clean" "$probe_attempts" \
+run_case Verjson/example 7 0123456789abcdef0123456789abcdef01234567 99 .github/workflows/ai-privileged-merge.yml false "$open_clean" "$test_probe_attempts" \
   && fail "unreadable merge postcondition reported green" \
   || {
     grep -q 'blocker=state_unavailable' "$tmp/dispatch.out" \
