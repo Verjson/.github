@@ -1000,9 +1000,10 @@ jobs:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           github_token: ${{ github.token }}
-          # Renovate opens PRs as a bot actor; without this the action
-          # refuses to run (majors and non-standard bot PRs reach this lane).
-          allowed_bots: "renovate,renovate[bot],mend[bot]"
+          # The action normalizes bot logins by removing a trailing `[bot]`.
+          # Admit only the trusted Actions dispatcher plus existing dependency
+          # bots; receipt validation above remains the dispatch trust boundary.
+          allowed_bots: "renovate,renovate[bot],mend[bot],github-actions"
           prompt: ${{ steps.prep.outputs.review_prompt }}
           claude_args: |
             --model ${{ needs.preflight.outputs.model }}
@@ -1071,7 +1072,7 @@ jobs:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           github_token: ${{ github.token }}
-          allowed_bots: "renovate,renovate[bot],mend[bot]"
+          allowed_bots: "renovate,renovate[bot],mend[bot],github-actions"
           prompt: ${{ steps.prep.outputs.review_prompt }}
           claude_args: |
             --model claude-sonnet-5
@@ -1133,7 +1134,7 @@ jobs:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           github_token: ${{ github.token }}
-          allowed_bots: "renovate,renovate[bot],mend[bot]"
+          allowed_bots: "renovate,renovate[bot],mend[bot],github-actions"
           prompt: ${{ steps.prep.outputs.review_prompt }}
           claude_args: |
             --model claude-sonnet-5
