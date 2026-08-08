@@ -4,61 +4,51 @@ set -uo pipefail
 root="$(cd "$(dirname "$0")/.." && pwd)"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
-log="$tmp/invocations"
 fails=0
 
 pass() { printf 'ok   - %s\n' "$1"; }
 fail() { printf 'FAIL - %s\n' "$1"; fails=$((fails + 1)); }
 
-cat >"$tmp/probe" <<'SH'
-#!/usr/bin/env sh
-printf '%s\n' "$*" >>"$PORTABILITY_TEST_LOG"
-SH
-chmod +x "$tmp/probe"
-
-run_target() {
-  : >"$log"
-  PORTABILITY_TEST_LOG="$log" make -s -C "$root" "$1" \
-    ACTIONLINT="$tmp/probe actionlint" \
-    BASH="$tmp/probe bash"
+recipe_for() {
+  awk -v target="$1:" '
+    $0 == target { found = 1; next }
+    found && /^\t/ { sub(/^\t/, ""); print; next }
+    found { exit }
+  ' "$root/Makefile"
 }
 
-run_target lint
-if grep -qxF 'actionlint -config-file .github/actionlint.yaml -shellcheck=shellcheck -color' "$log"; then
+if [ "$(recipe_for lint)" = '$(ACTIONLINT) -config-file .github/actionlint.yaml -shellcheck=shellcheck -color' ]; then
   pass "lint delegates to the repository actionlint policy"
 else
   fail "lint did not preserve the actionlint command"
 fi
 
-run_target test
-if grep -qxF 'bash scripts/repo-hygiene.test.sh' "$log"; then
+if [ "$(recipe_for test)" = '$(BASH) scripts/repo-hygiene.test.sh' ]; then
   pass "test delegates to the documented behavioral smoke test"
 else
   fail "test did not preserve the documented test command"
 fi
 
-run_target render
-if grep -qxF 'bash scripts/render-next.sh' "$log"; then
+if [ "$(recipe_for render)" = '$(BASH) scripts/render-next.sh' ]; then
   pass "render delegates to the canonical NEXT renderer"
 else
   fail "render did not preserve the canonical renderer command"
 fi
 
-run_target adr-index
-if grep -qxF 'bash scripts/gen-adr-index.sh --check' "$log"; then
+if [ "$(recipe_for adr-index)" = '$(BASH) scripts/gen-adr-index.sh --check' ]; then
   pass "adr-index checks the generated index without rewriting it"
 else
   fail "adr-index did not preserve the generated-index check"
 fi
 
 actions_ci="$root/scripts/actions-ci-groups.tsv"
-if grep -q $'\tmake adr-index$' "$actions_ci"; then
-  pass "actions-ci consumes the portable ADR-index target"
+if grep -q $'\tbash scripts/gen-adr-index.sh --check$' "$actions_ci"; then
+  pass "actions-ci consumes the portable ADR-index command without requiring make"
 else
   fail "actions-ci bypasses the portable ADR-index target"
 fi
-if grep -q $'\tmake render >/dev/null$' "$actions_ci"; then
-  pass "actions-ci consumes the portable render target"
+if grep -q $'\tbash scripts/render-next.sh >/dev/null$' "$actions_ci"; then
+  pass "actions-ci consumes the portable render command without requiring make"
 else
   fail "actions-ci bypasses the portable render target"
 fi
@@ -70,6 +60,12 @@ for control_plane in ai-review-merge.yml ai-privileged-merge.yml; do
     pass "$control_plane remains outside the portability layer"
   fi
 done
+
+if awk -F '\t' '$2 ~ /^make([[:space:]]|$)/ { found = 1 } END { exit !found }' "$actions_ci"; then
+  fail "actions-ci still requires an undeclared make binary"
+else
+  pass "actions-ci manifest runs without make on minimal routed runners"
+fi
 
 if [ "$fails" -eq 0 ]; then
   echo "All tests passed."
