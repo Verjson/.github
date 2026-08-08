@@ -240,6 +240,9 @@ jobs:
         with:
           submodules: recursive
           token: ${{ secrets.submodules-token || github.token }}
+      - name: Prepare job-scoped changelog tool cache
+        if: needs.eligibility.outputs.should-run != 'false'
+        run: echo "VERJSON_CHANGELOG_TOOL_CACHE=$RUNNER_TEMP/verjson-changelog-tools" >> "$GITHUB_ENV"
       - name: Prepare job-scoped npm cache
         if: needs.eligibility.outputs.should-run != 'false' && inputs.cache
         run: echo "npm_config_cache=$RUNNER_TEMP/verjson-npm-cache" >> "$GITHUB_ENV"
