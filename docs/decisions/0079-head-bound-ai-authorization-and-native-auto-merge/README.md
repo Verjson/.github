@@ -1,5 +1,10 @@
 # 0079 — Head-bound AI authorization and native auto-merge
 
+> **Partially superseded by [ADR 0081](../0081-event-driven-terminal-ai-promotion/README.md):**
+> native auto-merge and GitHub-owned CI waiting could not satisfy the organization
+> code-owner and last-push approval rules. The head-bound paid-review and App
+> authorization decisions remain in force.
+
 - **Date:** 2026-08-08
 - **Status:** Accepted
 - **Issues:** [#632](https://github.com/Verjson/.github/issues/632), [#650](https://github.com/Verjson/.github/issues/650)
