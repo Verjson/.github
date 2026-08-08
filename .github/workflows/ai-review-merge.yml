@@ -1546,6 +1546,7 @@ jobs:
       ARM_RUN_ATTEMPT: ${{ inputs.arm_run_attempt }}
       EXPECTED_APP_ID: ${{ vars.AI_REVIEW_APP_ID }}
       EXPECTED_APP_SLUG: ${{ vars.AI_REVIEW_APP_SLUG }}
+      EXPECTED_HEAD_SHA: ${{ needs.preflight.outputs.head_sha }}
       EXPECTED_AUTHORIZED_HEAD_SHA: ${{ inputs.expected_head_sha }}
       EXPECTED_REVIEWED_HEAD_SHA: ${{ needs.preflight.outputs.head_sha }}
       GATE_STATUS: ${{ needs.gate.result }}

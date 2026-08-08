@@ -23,8 +23,10 @@ case "$*" in
   "api graphql "*) cat "$GRAPHQL_FILE" ;;
   *"commits/"*"/check-runs "*) cat "$LATEST_FILE" ;;
   *"actions/runs/7001 --jq"*) printf '2\n' ;;
+  *"actions/runs/7001") printf '{"event":"pull_request_target","path":".github/workflows/gate-rearm.yml","head_repository":{"full_name":"Verjson/example"},"run_attempt":2}\n' ;;
   *"actions/runs/7001/artifacts?per_page=100 --jq"*) printf '%s\n' "${RECEIPT_COUNT:-1}" ;;
   "workflow run "*) printf 'DISPATCH %s\n' "$*" >>"$CALLS" ;;
+  "pr comment "*) printf 'COMMENT %s\n' "$*" >>"$CALLS" ;;
   *) echo "unexpected gh call: $*" >&2; exit 2 ;;
 esac
 GH
@@ -72,6 +74,29 @@ expect_fail "expired receipt requires explicit admin recovery"
 ! grep -q 'workflow run ai-review-merge.yml' "$CALLS" \
   && pass "expired receipt never automatically dispatches another paid review" \
   || fail "expired receipt dispatched paid review"
+
+write_repromotion
+jq '.status="completed" | .conclusion="failure"' "$LATEST_FILE" >"$tmp/x" && mv "$tmp/x" "$LATEST_FILE"
+if run_arm >"$tmp/out" 2>&1 && grep -q 're-review' "$CALLS" && ! grep -q 'workflow run ai-review-merge.yml' "$CALLS"; then
+  pass "failed authorization requires an explicit paid re-review decision"
+else fail "failed authorization hold-clear guidance is missing"; fi
+
+write_repromotion
+jq '.status="in_progress" | .conclusion=null' "$LATEST_FILE" >"$tmp/x" && mv "$tmp/x" "$LATEST_FILE"
+if run_arm >"$tmp/out" 2>&1 && grep -q 'still in progress' "$CALLS" && ! grep -q 'workflow run ai-review-merge.yml' "$CALLS"; then
+  pass "receipt-proven pending authorization tells maintainers to wait without redispatch"
+else fail "pending authorization was not handled spend-safely"; fi
+
+write_repromotion
+jq '.status="in_progress" | .conclusion=null' "$LATEST_FILE" >"$tmp/x" && mv "$tmp/x" "$LATEST_FILE"
+export RECEIPT_COUNT=0
+expect_fail "unproven pending authorization requires admin recovery"
+grep -q 'administrator must recover' "$CALLS" \
+  && pass "unproven pending authorization emits recovery guidance" \
+  || fail "unproven pending authorization guidance missing"
+! grep -q 'workflow run ai-review-merge.yml' "$CALLS" \
+  && pass "pending recovery never automatically dispatches another paid review" \
+  || fail "pending recovery dispatched a paid review"
 
 [ "$fails" -eq 0 ] && { echo "All tests passed."; exit 0; }
 echo "$fails test(s) failed."; exit 1

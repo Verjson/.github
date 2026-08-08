@@ -60,6 +60,11 @@ available. If that evidence has expired or become ambiguous, the arm fails red
 with an explicit administrator-recovery message and never automatically
 dispatches another paid review. Recovery must restore independently verified
 authorization evidence or require an explicit maintainer `re-review` decision.
+Clearing a hold or draft never silently buys another review. A failed or
+inconclusive same-head authorization produces an actionable PR notice requiring
+an intentional `re-review` label. A receipt-proven in-progress authorization
+produces wait guidance and is not redispatched; missing or ambiguous pending
+evidence produces administrator-recovery guidance and fails red.
 
 ## Ruleset migration and rollback
 

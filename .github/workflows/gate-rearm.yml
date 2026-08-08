@@ -25,6 +25,7 @@ jobs:
     permissions:
       actions: write
       contents: read
+      issues: write
       pull-requests: write
     env:
       APP_ID: ${{ vars.AI_REVIEW_APP_ID }}
@@ -79,15 +80,15 @@ jobs:
               disable_result="$(GH_TOKEN="$ACTIONS_TOKEN" gh api graphql \
                 -f query='mutation($id:ID!){disablePullRequestAutoMerge(input:{pullRequestId:$id}){pullRequest{id}}}' \
                 -f id="$pr_id")"
-              jq -e --arg id "$pr_id" '
+              jq -e --arg id "$pr_id" "
                 (.errors? == null) and
-                .data.disablePullRequestAutoMerge.pullRequest.id == $id
-              ' <<<"$disable_result" >/dev/null || {
+                .data.disablePullRequestAutoMerge.pullRequest.id == \$id
+              " <<<"$disable_result" >/dev/null || {
                 echo "::error::GitHub did not confirm auto-merge was disabled for the expected PR"; exit 1;
               }
               disabled_meta="$(GH_TOKEN="$ACTIONS_TOKEN" gh pr view "$PR_NUMBER" --repo "$TARGET_REPO" \
                 --json id,autoMergeRequest)"
-              jq -e --arg id "$pr_id" '.id == $id and .autoMergeRequest == null' \
+              jq -e --arg id "$pr_id" ".id == \$id and .autoMergeRequest == null" \
                 <<<"$disabled_meta" >/dev/null || {
                 echo "::error::authoritative PR state still reports auto-merge enabled"; exit 1;
               }
@@ -105,7 +106,7 @@ jobs:
             case "${EVENT_OLD_TITLE^^}" in *'DO NOT MERGE'*) hold_removed=true ;; *) exit 0 ;; esac
           fi
           if [ "$EVENT_ACTION" = unlabeled ]; then
-            removed_normalized="$(jq -nr --arg raw_label "$EVENT_LABEL" '$raw_label | ascii_upcase | gsub("[ _-]+";" ")')"
+            removed_normalized="$(jq -nr --arg raw_label "$EVENT_LABEL" "\$raw_label | ascii_upcase | gsub(\"[ _-]+\";\" \")")"
             case "$removed_normalized" in HOLD|'DO NOT MERGE') hold_removed=true ;; *) exit 0 ;; esac
           fi
 
@@ -113,6 +114,7 @@ jobs:
             -H 'Accept: application/vnd.github+json' --jq \
             "[.check_runs[] | select(.name == \"AI review authorization\" and .app.id == $APP_ID and .app.slug == \"$APP_SLUG\")] | sort_by(.id) | last // {}")"
           latest_id="$(jq -r '.id // ""' <<<"$latest")"
+          latest_status="$(jq -r '.status // ""' <<<"$latest")"
           latest_conclusion="$(jq -r '.conclusion // ""' <<<"$latest")"
           if [ "$hold_removed" = true ] && [[ "$latest_id" =~ ^[1-9][0-9]*$ ]] && [ "$latest_conclusion" = success ]; then
             details_url="$(jq -r '.details_url // ""' <<<"$latest")"
@@ -131,6 +133,41 @@ jobs:
             GH_TOKEN="$ACTIONS_TOKEN" gh workflow run ai-privileged-merge.yml --repo "$TARGET_REPO" --ref "$DEFAULT_BRANCH" \
               -f pr_number="$PR_NUMBER" -f expected_head_sha="$head_sha" -f authorization_check_id="$latest_id" \
               -f arm_run_id="$arm_run_id" -f arm_run_attempt="$arm_run_attempt"
+            exit 0
+          fi
+          if [ "$hold_removed" = true ]; then
+            if [[ "$latest_id" =~ ^[1-9][0-9]*$ ]] && [ "$latest_status" = in_progress ]; then
+              pending_guidance='The existing AI review authorization for this exact head is still in progress. Wait for that review; do not add re-review, because it could incur a second model charge. If the linked arm run is stalled, an administrator must recover it without dispatching another model review.'
+              details_url="$(jq -r '.details_url // ""' <<<"$latest")"
+              if [[ "$details_url" =~ ^${GITHUB_SERVER_URL}/${TARGET_REPO}/actions/runs/([1-9][0-9]*)$ ]]; then
+                arm_run_id="${BASH_REMATCH[1]}"
+                arm_run="$(GH_TOKEN="$ACTIONS_TOKEN" gh api "repos/$TARGET_REPO/actions/runs/$arm_run_id")"
+                arm_run_attempt="$(jq -r '.run_attempt // ""' <<<"$arm_run")"
+                receipt_name="ai-review-arm-$arm_run_id-$arm_run_attempt"
+                receipt_count="$(GH_TOKEN="$ACTIONS_TOKEN" gh api "repos/$TARGET_REPO/actions/runs/$arm_run_id/artifacts?per_page=100" \
+                  --jq "[.artifacts[] | select(.name == \"$receipt_name\" and .expired == false)] | length")"
+                if jq -e --arg repo "$TARGET_REPO" '
+                    .event == "pull_request_target" and
+                    .path == ".github/workflows/gate-rearm.yml" and
+                    .head_repository.full_name == $repo and
+                    (.run_attempt | type == "number")
+                  ' <<<"$arm_run" >/dev/null && [ "$receipt_count" = 1 ]; then
+                  notice_body="$(printf '<!-- ai-review-hold-clear:%s -->\n%s' "$head_sha" "$pending_guidance")"
+                  GH_TOKEN="$ACTIONS_TOKEN" gh pr comment "$PR_NUMBER" --repo "$TARGET_REPO" \
+                    --body "$notice_body"
+                  exit 0
+                fi
+              fi
+              notice_body="$(printf '<!-- ai-review-hold-clear:%s -->\n%s' "$head_sha" \
+                'The pending authorization cannot be tied to a live exact arm receipt. An administrator must recover the authorization without dispatching another model review.')"
+              GH_TOKEN="$ACTIONS_TOKEN" gh pr comment "$PR_NUMBER" --repo "$TARGET_REPO" \
+                --body "$notice_body"
+              exit 1
+            fi
+            notice_body="$(printf '<!-- ai-review-hold-clear:%s -->\n%s' "$head_sha" \
+              'This exact head has no successful AI review authorization. Add the re-review label only when you intentionally approve another paid review; hold removal never reruns the model automatically.')"
+            GH_TOKEN="$ACTIONS_TOKEN" gh pr comment "$PR_NUMBER" --repo "$TARGET_REPO" \
+              --body "$notice_body"
             exit 0
           fi
           if [ "$explicit_rereview" = false ] && [[ "$latest_id" =~ ^[1-9][0-9]*$ ]]; then

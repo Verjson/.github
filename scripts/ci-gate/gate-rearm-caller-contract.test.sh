@@ -48,6 +48,7 @@ assert job == {
     "permissions": {
         "contents": "read",
         "actions": "write",
+        "issues": "write",
         "pull-requests": "write",
     },
     "uses": expected_uses,
