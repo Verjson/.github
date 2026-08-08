@@ -168,8 +168,16 @@ def main() -> int:
         except AssertionError:
             continue
         raise AssertionError(f"mutation escaped App-token pin contract: {invalid_pins}")
-    require("checks: write" not in rearm_text + review_text + promote_text,
-            "shared workflow tokens must never receive Checks write permission")
+    for workflow in (rearm, review, promote):
+        require(all(job.get("permissions", {}).get("checks") != "write"
+                    for job in workflow["jobs"].values()),
+                "shared workflow tokens must never receive Checks write permission")
+    completion_steps = review["jobs"]["complete-authorization"]["steps"]
+    app_token = next(step for step in completion_steps
+                     if step.get("name") == "Mint dedicated authorization App token")
+    require(app_token["with"].get("permission-checks") == "write" and
+            app_token["with"].get("permission-pull-requests") == "write",
+            "dedicated completion App token must request only its required write permissions")
     require('check-runs/$AUTHORIZATION_CHECK_ID' in review_text,
             "review must complete the exact check-run supplied by the trusted arm")
     require('head_sha:$sha' in rearm_text and '--arg sha "$head_sha"' in rearm_text,
