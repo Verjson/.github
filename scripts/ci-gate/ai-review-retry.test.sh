@@ -29,19 +29,21 @@ done
 #    a skipped claude_retry's empty output would trigger it spuriously).
 guard="$(awk '/id: claude_retry2$/{f=1} f&&/^ *if:/{print; exit}' "$wf")"
 case "$guard" in
-  *"steps.claude.outputs.structured_output == ''"*"steps.claude_retry.outputs.structured_output == ''"*)
-    pass "claude_retry2 guarded on BOTH prior passes being empty" ;;
+  *"steps.verdict_1.outputs.usable != 'true'"*"steps.verdict_2.outputs.usable != 'true'"*)
+    pass "claude_retry2 guarded on BOTH prior passes being semantically unusable" ;;
   *)
-    fail "claude_retry2 if-guard must require claude AND claude_retry empty (got: $guard)" ;;
+    fail "claude_retry2 if-guard must require both prior verdicts unusable (got: $guard)" ;;
 esac
 
-# 3. The submitted VERDICT prefers the newest non-empty pass: retry2 → retry → claude.
+# 3. The submitted VERDICT prefers the newest semantically usable pass.
 verdict="$(awk '/id: submit$/{f=1} f&&/VERDICT:/{print; exit}' "$wf")"
 p2=$(printf '%s' "$verdict" | grep -bo "claude_retry2.outputs.structured_output" | head -1 | cut -d: -f1)
 p1=$(printf '%s' "$verdict" | grep -bo "claude_retry.outputs.structured_output"  | head -1 | cut -d: -f1)
 p0=$(printf '%s' "$verdict" | grep -bo "claude.outputs.structured_output"        | head -1 | cut -d: -f1)
 if [ -n "$p2" ] && [ -n "$p1" ] && [ -n "$p0" ] && [ "$p2" -lt "$p1" ] && [ "$p1" -lt "$p0" ]; then
-  pass "submit VERDICT falls back retry2 -> retry -> claude"
+  printf '%s' "$verdict" | grep -q "steps.verdict_3.outputs.usable == 'true'" \
+    && pass "submit VERDICT falls back retry2 -> retry -> claude by semantic usability" \
+    || fail "submit VERDICT does not gate selection on semantic usability"
 else
   fail "submit VERDICT fallback order wrong (retry2=$p2 retry=$p1 claude=$p0)"
 fi

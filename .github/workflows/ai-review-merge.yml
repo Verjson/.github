@@ -199,6 +199,7 @@ jobs:
       model: ${{ steps.classify.outputs.model }}
       budget_usd: ${{ steps.classify.outputs.budget_usd }}
       changed_lines: ${{ steps.classify.outputs.changed_lines }}
+      sensitive: ${{ steps.classify.outputs.sensitive }}
       dependency_major: ${{ steps.classify.outputs.dependency_major }}
       head_sha: ${{ steps.classify.outputs.head_sha }}
       completed_at: ${{ steps.preflight_complete.outputs.completed_at }}
@@ -430,6 +431,7 @@ jobs:
             out lane ai; out reason "empty diff — needs a look"; out model claude-haiku-4-5
             out budget_usd 0.15
             out changed_lines 0
+            out sensitive false
             exit 0
           fi
 
@@ -461,6 +463,7 @@ jobs:
               echo "::error::could not classify sensitive paths for PR #$PR_NUMBER; failing closed rather than picking the cheaper review (#480)"
               exit 1 ;;
           esac
+          out sensitive "$sensitive"
           if [ "$sensitive" = true ]; then
             model=claude-sonnet-5
             # Workflow/security reviews get the strong model and more budget. If
@@ -1323,9 +1326,9 @@ jobs:
 
           Return the required JSON verdict as soon as you can support it. Do
           not call GitHub or submit a review yourself. Set blocking=true only
-          for real defects. Each blocking finding (in "findings") must include
-          file:line, why it is wrong, and a concrete failure scenario. Keep
-          summary concise.
+          for real defects. Each blocking finding (in "findings") is an object
+          with an actionable file:line "location", a "reason" it is wrong, and
+          a concrete "failure_scenario". Keep summary concise.
 
           Also return "review_first": the specific file:line hunks a human
           should eyeball first, highest blast-radius first, each with a one-line
@@ -1377,8 +1380,23 @@ jobs:
             --model ${{ needs.preflight.outputs.model }}
             --max-turns 15
             --max-budget-usd ${{ needs.preflight.outputs.budget_usd }}
-            --json-schema '{"type":"object","properties":{"blocking":{"type":"boolean"},"summary":{"type":"string"},"review_first":{"type":"array","items":{"type":"object","properties":{"location":{"type":"string"},"why":{"type":"string"}},"required":["location","why"],"additionalProperties":false}},"findings":{"type":"array","items":{"type":"string"}},"followups":{"type":"array","items":{"type":"object","properties":{"location":{"type":"string"},"note":{"type":"string"}},"required":["location","note"],"additionalProperties":false}}},"required":["blocking","summary","review_first","findings","followups"],"additionalProperties":false}'
+            --json-schema '{"type":"object","properties":{"blocking":{"type":"boolean"},"summary":{"type":"string"},"review_first":{"type":"array","items":{"type":"object","properties":{"location":{"type":"string"},"why":{"type":"string"}},"required":["location","why"],"additionalProperties":false}},"findings":{"type":"array","items":{"type":"object","properties":{"location":{"type":"string"},"reason":{"type":"string"},"failure_scenario":{"type":"string"}},"required":["location","reason","failure_scenario"],"additionalProperties":false}},"followups":{"type":"array","items":{"type":"object","properties":{"location":{"type":"string"},"note":{"type":"string"}},"required":["location","note"],"additionalProperties":false}}},"required":["blocking","summary","review_first","findings","followups"],"additionalProperties":false}'
             --allowedTools "Read,Grep,Glob"
+
+      - name: Validate pass 1 verdict semantics
+        id: verdict_1
+        if: always() && needs.preflight.outputs.lane == 'ai' && steps.rereview.outputs.skip_model != 'true'
+        env:
+          VERDICT: ${{ steps.claude.outputs.structured_output }}
+          SENSITIVE: ${{ needs.preflight.outputs.sensitive }}
+        run: |
+          usable=false
+          if jq -e --argjson sensitive "${SENSITIVE:-false}" 'def text: type == "string" and test("\\S"); def location: text and test("^.+:[1-9][0-9]*$"); type == "object" and (.blocking | type == "boolean") and (.summary | text) and (.review_first | type == "array") and (all(.review_first[]; (.location | location) and (.why | text))) and (($sensitive | not) or (.review_first | length > 0)) and (.findings | type == "array") and (all(.findings[]; (.location | location) and (.reason | text) and (.failure_scenario | text))) and (.blocking == (.findings | length > 0)) and (.followups | type == "array")' <<<"${VERDICT:-}" >/dev/null; then
+            usable=true
+          elif [ -n "${VERDICT//[[:space:]]/}" ]; then
+            echo "::warning::phase=model pass=1 result=semantic-invalid — retrying instead of publishing an unusable verdict"
+          fi
+          echo "usable=$usable" >> "$GITHUB_OUTPUT"
 
       # claude-code-action writes every pass's transcript to the SAME fixed path
       # under $RUNNER_TEMP, so each escalation overwrites the one before it. The
@@ -1416,7 +1434,7 @@ jobs:
       # the first pass produced no verdict, so the common case never reaches here.
       - name: Escalate review when the first pass ran out of budget or turns
         id: claude_retry
-        if: needs.preflight.outputs.lane == 'ai' && steps.rereview.outputs.skip_model != 'true' && steps.claude.outputs.structured_output == ''
+        if: needs.preflight.outputs.lane == 'ai' && steps.rereview.outputs.skip_model != 'true' && steps.verdict_1.outputs.usable != 'true'
         continue-on-error: true
         uses: anthropics/claude-code-action@v1
         with:
@@ -1429,8 +1447,23 @@ jobs:
             --model claude-sonnet-5
             --max-turns 30
             --max-budget-usd 1.00
-            --json-schema '{"type":"object","properties":{"blocking":{"type":"boolean"},"summary":{"type":"string"},"review_first":{"type":"array","items":{"type":"object","properties":{"location":{"type":"string"},"why":{"type":"string"}},"required":["location","why"],"additionalProperties":false}},"findings":{"type":"array","items":{"type":"string"}},"followups":{"type":"array","items":{"type":"object","properties":{"location":{"type":"string"},"note":{"type":"string"}},"required":["location","note"],"additionalProperties":false}}},"required":["blocking","summary","review_first","findings","followups"],"additionalProperties":false}'
+            --json-schema '{"type":"object","properties":{"blocking":{"type":"boolean"},"summary":{"type":"string"},"review_first":{"type":"array","items":{"type":"object","properties":{"location":{"type":"string"},"why":{"type":"string"}},"required":["location","why"],"additionalProperties":false}},"findings":{"type":"array","items":{"type":"object","properties":{"location":{"type":"string"},"reason":{"type":"string"},"failure_scenario":{"type":"string"}},"required":["location","reason","failure_scenario"],"additionalProperties":false}},"followups":{"type":"array","items":{"type":"object","properties":{"location":{"type":"string"},"note":{"type":"string"}},"required":["location","note"],"additionalProperties":false}}},"required":["blocking","summary","review_first","findings","followups"],"additionalProperties":false}'
             --allowedTools "Read,Grep,Glob"
+
+      - name: Validate pass 2 verdict semantics
+        id: verdict_2
+        if: always() && needs.preflight.outputs.lane == 'ai' && steps.rereview.outputs.skip_model != 'true' && steps.verdict_1.outputs.usable != 'true'
+        env:
+          VERDICT: ${{ steps.claude_retry.outputs.structured_output }}
+          SENSITIVE: ${{ needs.preflight.outputs.sensitive }}
+        run: |
+          usable=false
+          if jq -e --argjson sensitive "${SENSITIVE:-false}" 'def text: type == "string" and test("\\S"); def location: text and test("^.+:[1-9][0-9]*$"); type == "object" and (.blocking | type == "boolean") and (.summary | text) and (.review_first | type == "array") and (all(.review_first[]; (.location | location) and (.why | text))) and (($sensitive | not) or (.review_first | length > 0)) and (.findings | type == "array") and (all(.findings[]; (.location | location) and (.reason | text) and (.failure_scenario | text))) and (.blocking == (.findings | length > 0)) and (.followups | type == "array")' <<<"${VERDICT:-}" >/dev/null; then
+            usable=true
+          elif [ -n "${VERDICT//[[:space:]]/}" ]; then
+            echo "::warning::phase=model pass=2 result=semantic-invalid — retrying instead of publishing an unusable verdict"
+          fi
+          echo "usable=$usable" >> "$GITHUB_OUTPUT"
 
       - name: Snapshot pass 2 execution transcript (#293)
         id: exec_snapshot_2
@@ -1461,7 +1494,7 @@ jobs:
       # a clean first (or second) pass never reaches here.
       - name: Second escalation when both prior passes produced no verdict (#64)
         id: claude_retry2
-        if: needs.preflight.outputs.lane == 'ai' && steps.rereview.outputs.skip_model != 'true' && steps.claude.outputs.structured_output == '' && steps.claude_retry.outputs.structured_output == ''
+        if: needs.preflight.outputs.lane == 'ai' && steps.rereview.outputs.skip_model != 'true' && steps.verdict_1.outputs.usable != 'true' && steps.verdict_2.outputs.usable != 'true'
         continue-on-error: true
         uses: anthropics/claude-code-action@v1
         with:
@@ -1474,8 +1507,23 @@ jobs:
             --model claude-sonnet-5
             --max-turns 30
             --max-budget-usd 1.00
-            --json-schema '{"type":"object","properties":{"blocking":{"type":"boolean"},"summary":{"type":"string"},"review_first":{"type":"array","items":{"type":"object","properties":{"location":{"type":"string"},"why":{"type":"string"}},"required":["location","why"],"additionalProperties":false}},"findings":{"type":"array","items":{"type":"string"}},"followups":{"type":"array","items":{"type":"object","properties":{"location":{"type":"string"},"note":{"type":"string"}},"required":["location","note"],"additionalProperties":false}}},"required":["blocking","summary","review_first","findings","followups"],"additionalProperties":false}'
+            --json-schema '{"type":"object","properties":{"blocking":{"type":"boolean"},"summary":{"type":"string"},"review_first":{"type":"array","items":{"type":"object","properties":{"location":{"type":"string"},"why":{"type":"string"}},"required":["location","why"],"additionalProperties":false}},"findings":{"type":"array","items":{"type":"object","properties":{"location":{"type":"string"},"reason":{"type":"string"},"failure_scenario":{"type":"string"}},"required":["location","reason","failure_scenario"],"additionalProperties":false}},"followups":{"type":"array","items":{"type":"object","properties":{"location":{"type":"string"},"note":{"type":"string"}},"required":["location","note"],"additionalProperties":false}}},"required":["blocking","summary","review_first","findings","followups"],"additionalProperties":false}'
             --allowedTools "Read,Grep,Glob"
+
+      - name: Validate pass 3 verdict semantics
+        id: verdict_3
+        if: always() && needs.preflight.outputs.lane == 'ai' && steps.rereview.outputs.skip_model != 'true' && steps.verdict_1.outputs.usable != 'true' && steps.verdict_2.outputs.usable != 'true'
+        env:
+          VERDICT: ${{ steps.claude_retry2.outputs.structured_output }}
+          SENSITIVE: ${{ needs.preflight.outputs.sensitive }}
+        run: |
+          usable=false
+          if jq -e --argjson sensitive "${SENSITIVE:-false}" 'def text: type == "string" and test("\\S"); def location: text and test("^.+:[1-9][0-9]*$"); type == "object" and (.blocking | type == "boolean") and (.summary | text) and (.review_first | type == "array") and (all(.review_first[]; (.location | location) and (.why | text))) and (($sensitive | not) or (.review_first | length > 0)) and (.findings | type == "array") and (all(.findings[]; (.location | location) and (.reason | text) and (.failure_scenario | text))) and (.blocking == (.findings | length > 0)) and (.followups | type == "array")' <<<"${VERDICT:-}" >/dev/null; then
+            usable=true
+          elif [ -n "${VERDICT//[[:space:]]/}" ]; then
+            echo "::warning::phase=model pass=3 result=semantic-invalid — exhausting the bounded retry chain"
+          fi
+          echo "usable=$usable" >> "$GITHUB_OUTPUT"
 
       - name: Snapshot pass 3 execution transcript (#293)
         id: exec_snapshot_3
@@ -1501,9 +1549,9 @@ jobs:
         if: always() && needs.preflight.outputs.lane == 'ai'
         env:
           STARTED_EPOCH: ${{ steps.model_timing.outputs.started_epoch }}
-          FIRST_VERDICT: ${{ steps.claude.outputs.structured_output != '' }}
-          RETRY1_VERDICT: ${{ steps.claude_retry.outputs.structured_output != '' }}
-          RETRY2_VERDICT: ${{ steps.claude_retry2.outputs.structured_output != '' }}
+          FIRST_VERDICT: ${{ steps.verdict_1.outputs.usable == 'true' }}
+          RETRY1_VERDICT: ${{ steps.verdict_2.outputs.usable == 'true' }}
+          RETRY2_VERDICT: ${{ steps.verdict_3.outputs.usable == 'true' }}
           RETRY1_CONCLUSION: ${{ steps.claude_retry.conclusion }}
           RETRY2_CONCLUSION: ${{ steps.claude_retry2.conclusion }}
           # Per-pass SDK transcripts, so the gate can name budget exhaustion
@@ -1613,7 +1661,7 @@ jobs:
           # synthesized approved verdict from the rereview step. Otherwise prefer
           # the latest non-empty model verdict: second escalation, then first
           # escalation, then the cheap first pass.
-          VERDICT: ${{ steps.rereview.outputs.skip_model == 'true' && steps.rereview.outputs.skip_verdict || (steps.claude_retry2.outputs.structured_output != '' && steps.claude_retry2.outputs.structured_output || (steps.claude_retry.outputs.structured_output != '' && steps.claude_retry.outputs.structured_output || steps.claude.outputs.structured_output)) }}
+          VERDICT: ${{ steps.rereview.outputs.skip_model == 'true' && steps.rereview.outputs.skip_verdict || (steps.verdict_3.outputs.usable == 'true' && steps.claude_retry2.outputs.structured_output || (steps.verdict_2.outputs.usable == 'true' && steps.claude_retry.outputs.structured_output || (steps.verdict_1.outputs.usable == 'true' && steps.claude.outputs.structured_output || ''))) }}
           # Passed via env (not inline ${{ }}) so the block is plain bash and can
           # be extracted and unit-tested (scripts/ci-gate/review-comment.test.sh).
           HEAD_SHA: ${{ needs.preflight.outputs.head_sha }}
@@ -1675,7 +1723,7 @@ jobs:
                     + (.review_first | map("- `" + .location + "` — " + .why) | join("\n"))
                else "" end)
             + (if ((.findings // []) | length) > 0
-               then "\n\n**Findings**\n" + (.findings | map("- " + .) | join("\n"))
+               then "\n\n**Findings**\n" + (.findings | map("- `" + .location + "` — " + .reason + " Failure scenario: " + .failure_scenario) | join("\n"))
                else "" end)
             + (if ((.followups // []) | length) > 0
                then "\n\n**Follow-ups** (filed as issues on merge)\n"
@@ -1815,7 +1863,9 @@ jobs:
         if: always() && needs.preflight.outputs.lane == 'ai'
         continue-on-error: true
         env:
-          VERDICT_JSON: ${{ steps.claude_retry2.outputs.structured_output != '' && steps.claude_retry2.outputs.structured_output || (steps.claude_retry.outputs.structured_output != '' && steps.claude_retry.outputs.structured_output || steps.claude.outputs.structured_output) }}
+          # Only the semantically validated verdict published by submit is a
+          # verdict. A later invalid retry must not become telemetry truth.
+          VERDICT_JSON: ${{ steps.submit.outputs.verdict }}
           EXECUTION_FILE: ${{ steps.claude_retry2.outputs.execution_file != '' && steps.claude_retry2.outputs.execution_file || (steps.claude_retry.outputs.execution_file != '' && steps.claude_retry.outputs.execution_file || steps.claude.outputs.execution_file) }}
           ACTION_CONCLUSION: ${{ steps.claude_retry2.conclusion != 'skipped' && steps.claude_retry2.conclusion || (steps.claude_retry.conclusion != 'skipped' && steps.claude_retry.conclusion || steps.claude.conclusion) }}
           LANE: ${{ needs.preflight.outputs.lane }}
