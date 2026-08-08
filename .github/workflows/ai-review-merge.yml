@@ -2260,7 +2260,7 @@ jobs:
           merge_state_json=""
           for probe_attempt in $(seq 1 "$MERGE_PROBE_ATTEMPTS"); do
             if candidate=$(gh pr view "$PR_NUMBER" --repo "$TARGET_REPO" \
-              --json state,mergedAt,reviewDecision,mergeStateStatus,headRefOid 2>/dev/null) &&
+              --json state,mergedAt,reviewDecision,mergeStateStatus,headRefOid,statusCheckRollup 2>/dev/null) &&
                jq -e '
                  type == "object"
                  and (.state | type) == "string"
@@ -2269,6 +2269,7 @@ jobs:
                  and (.mergeStateStatus | type) == "string"
                  and (.headRefOid | type) == "string"
                  and (.headRefOid | test("^[0-9a-f]{40}$"))
+                 and (.statusCheckRollup | type) == "array"
                ' <<<"$candidate" >/dev/null 2>&1; then
               merge_state_json=$candidate
               state_head=$(jq -r .headRefOid <<<"$candidate")
@@ -2306,6 +2307,33 @@ jobs:
                 } >>"$GITHUB_OUTPUT"
                 echo "::notice::phase=merge-postcondition result=merged expected_head=$EXPECTED_HEAD_SHA attempt=$probe_attempt"
                 exit 0
+              fi
+              failed_prerequisites=$(jq -c '[
+                .statusCheckRollup[]
+                | select(
+                    (.status // "") == "COMPLETED"
+                    and ((.conclusion // "") | IN(
+                      "FAILURE", "TIMED_OUT", "CANCELLED",
+                      "ACTION_REQUIRED", "STARTUP_FAILURE"
+                    ))
+                  )
+                | {
+                    name: (.name // .context // "unnamed"),
+                    conclusion,
+                    detailsUrl: (.detailsUrl // .targetUrl // null)
+                  }
+              ]' <<<"$candidate")
+              if [ "$(jq 'length' <<<"$failed_prerequisites")" -gt 0 ]; then
+                {
+                  echo "merge_observed=false"
+                  echo "blocking_review=false"
+                  echo "policy_blocked=false"
+                  echo "blocker=prerequisite_failed"
+                  echo "remediation=inspect_failed_prerequisites"
+                } >>"$GITHUB_OUTPUT"
+                echo "::error::phase=merge-postcondition result=not-merged blocker=prerequisite_failed remediation=inspect_failed_prerequisites expected_head=$EXPECTED_HEAD_SHA attempt=$probe_attempt"
+                echo "Terminal failed prerequisite checks: $failed_prerequisites"
+                exit 1
               fi
             else
               echo "::warning::phase=merge-postcondition result=probe-retry attempt=$probe_attempt/$MERGE_PROBE_ATTEMPTS expected_head=$EXPECTED_HEAD_SHA"

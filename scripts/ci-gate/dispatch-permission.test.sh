@@ -120,7 +120,7 @@ if [ "$1 $2" = "pr view" ]; then
     echo "HTTP 403: Resource not accessible by integration" >&2
     exit 1
   fi
-  printf '%s\n' "$PR_STATE_JSON"
+  jq -c '. + {statusCheckRollup: (.statusCheckRollup // [])}' <<<"$PR_STATE_JSON"
   exit 0
 fi
 exit 2
@@ -231,6 +231,22 @@ run_case Verjson/example 7 0123456789abcdef0123456789abcdef01234567 99 .github/w
       && grep -q '^policy_blocked=true$' "$tmp/github-output.txt" \
       && pass "policy is classified only after the complete observation budget" \
       || fail "interim BLOCKED state was classified before terminal evidence"
+  }
+
+# #612: a completed failing prerequisite cannot recover within this source run.
+# Preserve its check evidence and release the routed runner immediately.
+failed_prerequisite='{"state":"OPEN","mergedAt":null,"reviewDecision":"APPROVED","mergeStateStatus":"BLOCKED","headRefOid":"0123456789abcdef0123456789abcdef01234567","statusCheckRollup":[{"name":"attribution","status":"COMPLETED","conclusion":"FAILURE","detailsUrl":"https://github.com/Verjson/example/actions/runs/123"}]}'
+run_case Verjson/example 7 0123456789abcdef0123456789abcdef01234567 99 .github/workflows/ai-privileged-merge.yml false "$failed_prerequisite" \
+  && fail "terminal prerequisite failure kept waiting or reported green" \
+  || {
+    [ "$(cat "$tmp/pr-view-count")" -eq 1 ] \
+      && [ ! -s "$tmp/sleep.log" ] \
+      && grep -q 'blocker=prerequisite_failed' "$tmp/dispatch.out" \
+      && grep -q '"name":"attribution"' "$tmp/dispatch.out" \
+      && grep -q '"conclusion":"FAILURE"' "$tmp/dispatch.out" \
+      && grep -q '^remediation=inspect_failed_prerequisites$' "$tmp/github-output.txt" \
+      && pass "terminal prerequisite failure exits immediately with preserved evidence" \
+      || fail "terminal prerequisite failure retried or lost its evidence"
   }
 
 # UNKNOWN is also an interim queue state. It may time out as not observed, but
