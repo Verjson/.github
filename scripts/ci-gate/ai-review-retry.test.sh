@@ -1,13 +1,5 @@
 #!/usr/bin/env bash
-# Pins the ai-review retry chain in ai-review-merge.yml (Verjson/.github#64, ADR
-# 0015). The gate makes up to THREE bounded attempts to obtain a structured
-# verdict — cheap first pass, escalation, and a second escalation added for #64
-# because error_max_structured_output_retries is a transient flake that struck
-# both prior passes in the same run. This asserts the wiring from the workflow
-# itself (single source of truth) so a regression that drops the extra attempt or
-# breaks the verdict fallback order is caught. The retry logic is GitHub-expression
-# wiring (not a shell block), so — like pulumi-comment.test.sh — we assert against
-# the extracted YAML rather than executing it. Pure bash + awk.
+# Pins the one-automatic-paid-pass invariant (Verjson/.github#637, ADR 0080).
 set -uo pipefail
 
 here="$(cd "$(dirname "$0")" && pwd)"
@@ -17,60 +9,62 @@ fails=0
 pass() { printf 'ok   - %s\n' "$1"; }
 fail() { printf 'FAIL - %s\n' "$1"; fails=$((fails + 1)); }
 
+check_contract() {
+  local candidate=$1
+  local action_count verdict budget_args
+  action_count=$(grep -c 'uses: anthropics/claude-code-action@' "$candidate" || true)
+  [ "$action_count" -eq 1 ] || return 1
+  grep -qF 'id: claude' "$candidate" || return 1
+  ! grep -Eq 'id: (claude_retry|claude_retry2|verdict_2|verdict_3)' "$candidate" || return 1
+  verdict=$(awk '/id: submit$/{f=1} f&&/VERDICT:/{print; exit}' "$candidate")
+  printf '%s' "$verdict" | grep -q 'steps.verdict_1.outputs.verdict' || return 1
+  ! printf '%s' "$verdict" | grep -Eq 'verdict_[23]|claude_retry' || return 1
+  budget_args=$(grep -E -- '--max-budget-usd ' "$candidate" || true)
+  [ "$(printf '%s\n' "$budget_args" | sed '/^$/d' | wc -l)" -eq 1 ] || return 1
+  printf '%s' "$budget_args" | grep -qF '${{ needs.preflight.outputs.budget_usd }}' || return 1
+}
+
 [ -f "$wf" ] || { echo "FAIL - workflow not found: $wf"; exit 1; }
 
-# 1. All three review passes are present, in order.
-for id in "id: claude" "id: claude_retry" "id: claude_retry2"; do
-  grep -qF "        $id" "$wf" && pass "review pass step present ($id)" || fail "missing review pass step ($id)"
-done
+check_contract "$wf" \
+  && pass 'one automatic paid action uses only the selected first-pass budget' \
+  || fail 'workflow can automatically invoke more than one paid pass or exceed the selected budget'
 
-# 2. The second escalation only fires when BOTH prior passes produced no verdict
-#    (else a clean first/second pass would waste a third model call — or worse,
-#    a skipped claude_retry's empty output would trigger it spuriously).
-guard="$(awk '/id: claude_retry2$/{f=1} f&&/^ *if:/{print; exit}' "$wf")"
+guard=$(awk '/id: claude$/{f=1} f&&/^ *if:/{print; exit}' "$wf")
 case "$guard" in
-  *"steps.verdict_1.outputs.usable != 'true'"*"steps.verdict_2.outputs.usable != 'true'"*)
-    pass "claude_retry2 guarded on BOTH prior passes being semantically unusable" ;;
-  *)
-    fail "claude_retry2 if-guard must require both prior verdicts unusable (got: $guard)" ;;
+  *"needs.preflight.outputs.lane == 'ai'"*"steps.rereview.outputs.skip_model != 'true'"*)
+    pass 'paid pass remains lane-scoped and honors deterministic model-skip evidence' ;;
+  *) fail "paid pass guard is unsafe: $guard" ;;
 esac
 
-# 3. The submitted VERDICT prefers the newest semantically usable pass.
-verdict="$(awk '/id: submit$/{f=1} f&&/VERDICT:/{print; exit}' "$wf")"
-p2=$(printf '%s' "$verdict" | grep -bo "verdict_3.outputs.verdict" | head -1 | cut -d: -f1)
-p1=$(printf '%s' "$verdict" | grep -bo "verdict_2.outputs.verdict" | head -1 | cut -d: -f1)
-p0=$(printf '%s' "$verdict" | grep -bo "verdict_1.outputs.verdict" | head -1 | cut -d: -f1)
-if [ -n "$p2" ] && [ -n "$p1" ] && [ -n "$p0" ] && [ "$p2" -lt "$p1" ] && [ "$p1" -lt "$p0" ]; then
-  printf '%s' "$verdict" | grep -q "steps.verdict_3.outputs.usable == 'true'" \
-    && pass "submit VERDICT falls back retry2 -> retry -> claude by semantic usability" \
-    || fail "submit VERDICT does not gate selection on semantic usability"
+grep -q 'event.label.name == '\''re-review'\''' "$wf" \
+  && grep -q -- '--remove-label re-review' "$wf" \
+  && pass 'a same-head paid retry requires and consumes explicit re-review authorization' \
+  || fail 'explicit re-review authorization is not wired as a consumed trigger'
+
+grep -q 'no automatic retry' "$wf" \
+  && grep -q 'apply.*re-review' "$wf" \
+  && pass 'terminal and unusable outcomes explain the fail-closed maintainer remedy' \
+  || fail 'single-pass failure evidence does not direct maintainers to explicit re-review'
+
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT
+cp "$wf" "$tmp/workflow.yml"
+printf '\n      - id: claude_retry\n        uses: anthropics/claude-code-action@v1\n        with:\n          claude_args: --max-budget-usd 1.00\n' >>"$tmp/workflow.yml"
+if check_contract "$tmp/workflow.yml"; then
+  fail 'mutation survived: an automatic escalation action was not rejected'
 else
-  fail "submit VERDICT fallback order wrong (retry2=$p2 retry=$p1 claude=$p0)"
+  pass 'mutation rejected: an injected automatic escalation cannot satisfy the contract'
 fi
 
-# 4. The extra attempt must not weaken fail-closed: it stays continue-on-error, so
-#    an empty third pass falls through to the submit instead of failing the job.
-awk '/id: claude_retry2$/{f=1} f&&/continue-on-error: true/{print "y"; exit}' "$wf" | grep -q y \
-  && pass "claude_retry2 is continue-on-error (never fails the job itself)" \
-  || fail "claude_retry2 must be continue-on-error so an empty pass falls through to the fail-closed submit"
-
-# 5. The deterministic submit is lane-scoped only. It must run after every AI
-#    attempt even when all verdicts are empty, while the shared gate job must
-#    skip it for fast-lane PRs.
-submit_if="$(awk '/id: submit$/{f=1} f&&/^ *run: \|/{exit} f&&/^ *if:/{print; exit}' "$wf")"
-case "$submit_if" in
-  *"needs.preflight.outputs.lane == 'ai'"*)
-    printf '%s' "$submit_if" | grep -q 'steps\.claude' \
-      && fail "submit must not be narrowed by a model-attempt result" \
-      || pass "submit is AI-lane scoped and unconditional across model attempts" ;;
-  *)
-    fail "submit guard must scope only to the AI lane (got: $submit_if)" ;;
-esac
-
-if [ "$fails" -eq 0 ]; then
-  echo "All tests passed."
-  exit 0
+cp "$wf" "$tmp/workflow.yml"
+sed 's/steps\.verdict_1\.outputs\.verdict/steps.verdict_2.outputs.verdict/' "$wf" >"$tmp/workflow.yml"
+if check_contract "$tmp/workflow.yml"; then
+  fail 'mutation survived: submit can select a nonexistent later paid verdict'
 else
-  echo "$fails test(s) failed."
-  exit 1
+  pass 'mutation rejected: submit cannot select escalation verdicts'
 fi
+
+if [ "$fails" -eq 0 ]; then echo 'All tests passed.'; exit 0; fi
+echo "$fails test(s) failed."
+exit 1
