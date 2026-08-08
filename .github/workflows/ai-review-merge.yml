@@ -1338,6 +1338,10 @@ jobs:
           branch protection — so the human's eye lands on the exact lines that
           matter even when the verdict is to approve. For a low-risk diff (docs,
           formatting, a trivial change) it may be empty.
+          Every review_first.location MUST contain exactly one file and one
+          positive line number in the form path/to/file.ext:42. Never return a
+          line range, comma-separated lines, or multiple files in one location;
+          use separate review_first entries when more than one line matters.
 
           Also return "followups": substantive but non-blocking findings — real
           bugs or improvements that do not justify blocking this merge, each as
@@ -1380,7 +1384,7 @@ jobs:
             --model ${{ needs.preflight.outputs.model }}
             --max-turns 15
             --max-budget-usd ${{ needs.preflight.outputs.budget_usd }}
-            --json-schema '{"type":"object","properties":{"blocking":{"type":"boolean"},"summary":{"type":"string"},"review_first":{"type":"array","items":{"type":"object","properties":{"location":{"type":"string"},"why":{"type":"string"}},"required":["location","why"],"additionalProperties":false}},"findings":{"type":"array","items":{"type":"object","properties":{"location":{"type":"string"},"reason":{"type":"string"},"failure_scenario":{"type":"string"}},"required":["location","reason","failure_scenario"],"additionalProperties":false}},"followups":{"type":"array","items":{"type":"object","properties":{"location":{"type":"string"},"note":{"type":"string"}},"required":["location","note"],"additionalProperties":false}}},"required":["blocking","summary","review_first","findings","followups"],"additionalProperties":false}'
+            --json-schema '{"type":"object","properties":{"blocking":{"type":"boolean"},"summary":{"type":"string"},"review_first":{"type":"array","items":{"type":"object","properties":{"location":{"type":"string","description":"Exactly one file and positive line number (path/to/file.ext:42); no ranges or comma-separated locations.","pattern":"^.+:[1-9][0-9]*$"},"why":{"type":"string"}},"required":["location","why"],"additionalProperties":false}},"findings":{"type":"array","items":{"type":"object","properties":{"location":{"type":"string"},"reason":{"type":"string"},"failure_scenario":{"type":"string"}},"required":["location","reason","failure_scenario"],"additionalProperties":false}},"followups":{"type":"array","items":{"type":"object","properties":{"location":{"type":"string"},"note":{"type":"string"}},"required":["location","note"],"additionalProperties":false}}},"required":["blocking","summary","review_first","findings","followups"],"additionalProperties":false}'
             --allowedTools "Read,Grep,Glob"
 
       - name: Validate pass 1 verdict semantics
@@ -1391,10 +1395,12 @@ jobs:
           SENSITIVE: ${{ needs.preflight.outputs.sensitive }}
         run: |
           usable=false
-          if jq -e --argjson sensitive "${SENSITIVE:-false}" 'def text: type == "string" and test("\\S"); def location: text and test("^.+:[1-9][0-9]*$"); type == "object" and (.blocking | type == "boolean") and (.summary | text) and (.review_first | type == "array") and (all(.review_first[]; (.location | location) and (.why | text))) and (($sensitive | not) or (.review_first | length > 0)) and (.findings | type == "array") and (all(.findings[]; (.location | location) and (.reason | text) and (.failure_scenario | text))) and (.blocking == (.findings | length > 0)) and (.followups | type == "array")' <<<"${VERDICT:-}" >/dev/null; then
+          normalized="$(jq -c '.review_first |= map(if (.location | type == "string") then (.location | split(",")[0]) as $first | if ($first | test("^.+:[1-9][0-9]*(-[1-9][0-9]*)?$")) then .location = ($first | sub("-[1-9][0-9]*$"; "")) else . end else . end)' <<<"${VERDICT:-}" 2>/dev/null)" || normalized=""
+          if jq -e --argjson sensitive "${SENSITIVE:-false}" 'def text: type == "string" and test("\\S"); def location: text and test("^.+:[1-9][0-9]*$"); type == "object" and (.blocking | type == "boolean") and (.summary | text) and (.review_first | type == "array") and (all(.review_first[]; (.location | location) and (.why | text))) and (($sensitive | not) or (.review_first | length > 0)) and (.findings | type == "array") and (all(.findings[]; (.location | location) and (.reason | text) and (.failure_scenario | text))) and (.blocking == (.findings | length > 0)) and (.followups | type == "array")' <<<"${normalized:-}" >/dev/null; then
             usable=true
+            echo "verdict=$normalized" >> "$GITHUB_OUTPUT"
           elif [ -n "${VERDICT//[[:space:]]/}" ]; then
-            echo "::warning::phase=model pass=1 result=semantic-invalid — retrying instead of publishing an unusable verdict"
+            echo "::warning::phase=model pass=1 result=semantic-invalid field=review_first.location expected=path/to/file.ext:42 — retrying instead of publishing an unusable verdict"
           fi
           echo "usable=$usable" >> "$GITHUB_OUTPUT"
 
@@ -1447,7 +1453,7 @@ jobs:
             --model claude-sonnet-5
             --max-turns 30
             --max-budget-usd 1.00
-            --json-schema '{"type":"object","properties":{"blocking":{"type":"boolean"},"summary":{"type":"string"},"review_first":{"type":"array","items":{"type":"object","properties":{"location":{"type":"string"},"why":{"type":"string"}},"required":["location","why"],"additionalProperties":false}},"findings":{"type":"array","items":{"type":"object","properties":{"location":{"type":"string"},"reason":{"type":"string"},"failure_scenario":{"type":"string"}},"required":["location","reason","failure_scenario"],"additionalProperties":false}},"followups":{"type":"array","items":{"type":"object","properties":{"location":{"type":"string"},"note":{"type":"string"}},"required":["location","note"],"additionalProperties":false}}},"required":["blocking","summary","review_first","findings","followups"],"additionalProperties":false}'
+            --json-schema '{"type":"object","properties":{"blocking":{"type":"boolean"},"summary":{"type":"string"},"review_first":{"type":"array","items":{"type":"object","properties":{"location":{"type":"string","description":"Exactly one file and positive line number (path/to/file.ext:42); no ranges or comma-separated locations.","pattern":"^.+:[1-9][0-9]*$"},"why":{"type":"string"}},"required":["location","why"],"additionalProperties":false}},"findings":{"type":"array","items":{"type":"object","properties":{"location":{"type":"string"},"reason":{"type":"string"},"failure_scenario":{"type":"string"}},"required":["location","reason","failure_scenario"],"additionalProperties":false}},"followups":{"type":"array","items":{"type":"object","properties":{"location":{"type":"string"},"note":{"type":"string"}},"required":["location","note"],"additionalProperties":false}}},"required":["blocking","summary","review_first","findings","followups"],"additionalProperties":false}'
             --allowedTools "Read,Grep,Glob"
 
       - name: Validate pass 2 verdict semantics
@@ -1458,10 +1464,12 @@ jobs:
           SENSITIVE: ${{ needs.preflight.outputs.sensitive }}
         run: |
           usable=false
-          if jq -e --argjson sensitive "${SENSITIVE:-false}" 'def text: type == "string" and test("\\S"); def location: text and test("^.+:[1-9][0-9]*$"); type == "object" and (.blocking | type == "boolean") and (.summary | text) and (.review_first | type == "array") and (all(.review_first[]; (.location | location) and (.why | text))) and (($sensitive | not) or (.review_first | length > 0)) and (.findings | type == "array") and (all(.findings[]; (.location | location) and (.reason | text) and (.failure_scenario | text))) and (.blocking == (.findings | length > 0)) and (.followups | type == "array")' <<<"${VERDICT:-}" >/dev/null; then
+          normalized="$(jq -c '.review_first |= map(if (.location | type == "string") then (.location | split(",")[0]) as $first | if ($first | test("^.+:[1-9][0-9]*(-[1-9][0-9]*)?$")) then .location = ($first | sub("-[1-9][0-9]*$"; "")) else . end else . end)' <<<"${VERDICT:-}" 2>/dev/null)" || normalized=""
+          if jq -e --argjson sensitive "${SENSITIVE:-false}" 'def text: type == "string" and test("\\S"); def location: text and test("^.+:[1-9][0-9]*$"); type == "object" and (.blocking | type == "boolean") and (.summary | text) and (.review_first | type == "array") and (all(.review_first[]; (.location | location) and (.why | text))) and (($sensitive | not) or (.review_first | length > 0)) and (.findings | type == "array") and (all(.findings[]; (.location | location) and (.reason | text) and (.failure_scenario | text))) and (.blocking == (.findings | length > 0)) and (.followups | type == "array")' <<<"${normalized:-}" >/dev/null; then
             usable=true
+            echo "verdict=$normalized" >> "$GITHUB_OUTPUT"
           elif [ -n "${VERDICT//[[:space:]]/}" ]; then
-            echo "::warning::phase=model pass=2 result=semantic-invalid — retrying instead of publishing an unusable verdict"
+            echo "::warning::phase=model pass=2 result=semantic-invalid field=review_first.location expected=path/to/file.ext:42 — retrying instead of publishing an unusable verdict"
           fi
           echo "usable=$usable" >> "$GITHUB_OUTPUT"
 
@@ -1507,7 +1515,7 @@ jobs:
             --model claude-sonnet-5
             --max-turns 30
             --max-budget-usd 1.00
-            --json-schema '{"type":"object","properties":{"blocking":{"type":"boolean"},"summary":{"type":"string"},"review_first":{"type":"array","items":{"type":"object","properties":{"location":{"type":"string"},"why":{"type":"string"}},"required":["location","why"],"additionalProperties":false}},"findings":{"type":"array","items":{"type":"object","properties":{"location":{"type":"string"},"reason":{"type":"string"},"failure_scenario":{"type":"string"}},"required":["location","reason","failure_scenario"],"additionalProperties":false}},"followups":{"type":"array","items":{"type":"object","properties":{"location":{"type":"string"},"note":{"type":"string"}},"required":["location","note"],"additionalProperties":false}}},"required":["blocking","summary","review_first","findings","followups"],"additionalProperties":false}'
+            --json-schema '{"type":"object","properties":{"blocking":{"type":"boolean"},"summary":{"type":"string"},"review_first":{"type":"array","items":{"type":"object","properties":{"location":{"type":"string","description":"Exactly one file and positive line number (path/to/file.ext:42); no ranges or comma-separated locations.","pattern":"^.+:[1-9][0-9]*$"},"why":{"type":"string"}},"required":["location","why"],"additionalProperties":false}},"findings":{"type":"array","items":{"type":"object","properties":{"location":{"type":"string"},"reason":{"type":"string"},"failure_scenario":{"type":"string"}},"required":["location","reason","failure_scenario"],"additionalProperties":false}},"followups":{"type":"array","items":{"type":"object","properties":{"location":{"type":"string"},"note":{"type":"string"}},"required":["location","note"],"additionalProperties":false}}},"required":["blocking","summary","review_first","findings","followups"],"additionalProperties":false}'
             --allowedTools "Read,Grep,Glob"
 
       - name: Validate pass 3 verdict semantics
@@ -1518,10 +1526,12 @@ jobs:
           SENSITIVE: ${{ needs.preflight.outputs.sensitive }}
         run: |
           usable=false
-          if jq -e --argjson sensitive "${SENSITIVE:-false}" 'def text: type == "string" and test("\\S"); def location: text and test("^.+:[1-9][0-9]*$"); type == "object" and (.blocking | type == "boolean") and (.summary | text) and (.review_first | type == "array") and (all(.review_first[]; (.location | location) and (.why | text))) and (($sensitive | not) or (.review_first | length > 0)) and (.findings | type == "array") and (all(.findings[]; (.location | location) and (.reason | text) and (.failure_scenario | text))) and (.blocking == (.findings | length > 0)) and (.followups | type == "array")' <<<"${VERDICT:-}" >/dev/null; then
+          normalized="$(jq -c '.review_first |= map(if (.location | type == "string") then (.location | split(",")[0]) as $first | if ($first | test("^.+:[1-9][0-9]*(-[1-9][0-9]*)?$")) then .location = ($first | sub("-[1-9][0-9]*$"; "")) else . end else . end)' <<<"${VERDICT:-}" 2>/dev/null)" || normalized=""
+          if jq -e --argjson sensitive "${SENSITIVE:-false}" 'def text: type == "string" and test("\\S"); def location: text and test("^.+:[1-9][0-9]*$"); type == "object" and (.blocking | type == "boolean") and (.summary | text) and (.review_first | type == "array") and (all(.review_first[]; (.location | location) and (.why | text))) and (($sensitive | not) or (.review_first | length > 0)) and (.findings | type == "array") and (all(.findings[]; (.location | location) and (.reason | text) and (.failure_scenario | text))) and (.blocking == (.findings | length > 0)) and (.followups | type == "array")' <<<"${normalized:-}" >/dev/null; then
             usable=true
+            echo "verdict=$normalized" >> "$GITHUB_OUTPUT"
           elif [ -n "${VERDICT//[[:space:]]/}" ]; then
-            echo "::warning::phase=model pass=3 result=semantic-invalid — exhausting the bounded retry chain"
+            echo "::warning::phase=model pass=3 result=semantic-invalid field=review_first.location expected=path/to/file.ext:42 — exhausting the bounded retry chain"
           fi
           echo "usable=$usable" >> "$GITHUB_OUTPUT"
 
@@ -1661,7 +1671,7 @@ jobs:
           # synthesized approved verdict from the rereview step. Otherwise prefer
           # the latest non-empty model verdict: second escalation, then first
           # escalation, then the cheap first pass.
-          VERDICT: ${{ steps.rereview.outputs.skip_model == 'true' && steps.rereview.outputs.skip_verdict || (steps.verdict_3.outputs.usable == 'true' && steps.claude_retry2.outputs.structured_output || (steps.verdict_2.outputs.usable == 'true' && steps.claude_retry.outputs.structured_output || (steps.verdict_1.outputs.usable == 'true' && steps.claude.outputs.structured_output || ''))) }}
+          VERDICT: ${{ steps.rereview.outputs.skip_model == 'true' && steps.rereview.outputs.skip_verdict || (steps.verdict_3.outputs.usable == 'true' && steps.verdict_3.outputs.verdict || (steps.verdict_2.outputs.usable == 'true' && steps.verdict_2.outputs.verdict || (steps.verdict_1.outputs.usable == 'true' && steps.verdict_1.outputs.verdict || ''))) }}
           # Passed via env (not inline ${{ }}) so the block is plain bash and can
           # be extracted and unit-tested (scripts/ci-gate/review-comment.test.sh).
           HEAD_SHA: ${{ needs.preflight.outputs.head_sha }}
