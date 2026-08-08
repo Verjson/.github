@@ -12,6 +12,7 @@ ROOT = Path(__file__).resolve().parents[2]
 REVIEW = ROOT / ".github/workflows/ai-review-merge.yml"
 REARM = ROOT / ".github/workflows/gate-rearm.yml"
 PROMOTE = ROOT / ".github/workflows/ai-privileged-merge.yml"
+RETRY = ROOT / ".github/workflows/ai-promotion-retry.yml"
 APP_TOKEN_ACTION = "actions/create-github-app-token"
 IMMUTABLE_ACTION = re.compile(rf"^{re.escape(APP_TOKEN_ACTION)}@[0-9a-f]{{40}}$")
 MODEL_ACTION = "anthropics/claude-code-action@v1"
@@ -74,12 +75,14 @@ def main() -> int:
     review_text = REVIEW.read_text(encoding="utf-8")
     rearm_text = REARM.read_text(encoding="utf-8")
     promote_text = PROMOTE.read_text(encoding="utf-8")
+    retry_text = RETRY.read_text(encoding="utf-8")
     rearm_generator = (ROOT / "scripts/gen-gate-rearm-caller.sh").read_text(encoding="utf-8")
     promote_generator = (ROOT / "scripts/gen-privileged-merge-caller.sh").read_text(encoding="utf-8")
     verifier_text = (ROOT / "scripts/ci-gate/verify-arm-receipt.sh").read_text(encoding="utf-8")
     review = load(REVIEW)
     rearm = load(REARM)
     promote = load(PROMOTE)
+    retry = load(RETRY)
 
     dispatch_inputs = review[True]["workflow_dispatch"]["inputs"]
     receipt_inputs = {"pr_number", "expected_head_sha", "authorization_check_id",
@@ -184,16 +187,15 @@ def main() -> int:
             "authorization check must be bound to the exact current PR head")
     require("AI review authorization" in rearm_text and "AI review authorization" in promote_text,
             "arm and promotion must agree on the unambiguous required-check name")
-    require("enablePullRequestAutoMerge" in promote_text,
-            "trusted continuation must delegate waiting to GitHub native auto-merge")
-    require("disablePullRequestAutoMerge" in rearm_text,
-            "a hold or draft applied after promotion must revoke native auto-merge")
+    require("gh pr merge" in promote_text and "--admin --squash" in promote_text and
+            '--match-head-commit "$EXPECTED_HEAD_SHA"' in promote_text,
+            "trusted continuation must terminally merge only the exact authorized head")
     require("retention-days: 90" in rearm_text,
             "arm receipts must survive the supported long-lived hold window")
-    require(re.search(r"mergeMethod:\s*SQUASH", promote_text) is not None,
-            "native auto-merge must preserve squash policy")
+    require("statusCheckRollup" in promote_text and "AI_REVIEW_REQUIRED_CHECKS" in promote_text,
+            "terminal promotion must enforce an explicit required-CI contract")
     require("(.conclusion | ascii_upcase) == \"SUCCESS\"" in promote_text,
-            "only successful authorization may enable auto-merge")
+            "only successful authorization may permit terminal promotion")
     require(all(marker in verifier_text for marker in
                 (".workflow_id == $workflow_id", '.event == "pull_request_target"',
                  '.path == ".github/workflows/gate-rearm.yml"', ".external_id == $external_id",
@@ -225,8 +227,18 @@ def main() -> int:
             "generated promotion callers must accept only trusted explicit dispatches")
 
     forbidden = re.compile(r"\bsleep\b|check-runs\?per_page|MERGE_PROBE|ci-wait", re.I)
-    for path, text in ((REVIEW, review_text), (PROMOTE, promote_text)):
+    for path, text in ((REVIEW, review_text), (PROMOTE, promote_text), (RETRY, retry_text)):
         require(not forbidden.search(text), f"{path.name} still contains runner-held waiting")
+
+    require(set(retry[True]) == {"workflow_run"} and
+            retry[True]["workflow_run"]["types"] == ["completed"],
+            "CI retry must be reachable only from completed deterministic workflows")
+    require("ai-review-merge.yml" not in retry_text and MODEL_ACTION not in retry_text and
+            "ai-privileged-merge.yml" in retry_text,
+            "CI completion path must be structurally unable to invoke paid review")
+    require("AI review authorization" in retry_text and "EXPECTED_APP_ID" in retry_text and
+            "EXPECTED_APP_SLUG" in retry_text and "HEAD_SHA" in retry_text,
+            "CI completion retry must rediscover exact-head dedicated-App evidence")
 
     for path, data in ((REARM, rearm), (PROMOTE, promote)):
         for job in data["jobs"].values():
@@ -238,7 +250,7 @@ def main() -> int:
 
     require("Required check configuration" in promote_text,
             "workflow must carry operator instructions for required-check identity migration")
-    print("PASS: event-driven head authorization and native auto-merge contract")
+    print("PASS: event-driven head authorization and terminal promotion contract")
     return 0
 
 

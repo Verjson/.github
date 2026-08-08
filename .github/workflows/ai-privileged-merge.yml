@@ -1,4 +1,4 @@
-name: AI native auto-merge promotion
+name: AI terminal merge promotion
 
 # Required check configuration (ADR 0079): require the context
 # `AI review authorization` from the dedicated authorization App, not the
@@ -60,7 +60,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: ai-native-automerge-${{ inputs.pr_number }}-${{ inputs.expected_head_sha }}
+  group: ai-terminal-promotion-${{ inputs.pr_number }}-${{ inputs.expected_head_sha }}
   cancel-in-progress: false
 
 jobs:
@@ -77,6 +77,7 @@ jobs:
       PR_NUMBER: ${{ inputs.pr_number }}
       TARGET_REPO: ${{ github.repository }}
       GH_TOKEN: ${{ secrets.ORG_ADMIN_TOKEN }}
+      AI_REVIEW_REQUIRED_CHECKS: ${{ vars.AI_REVIEW_REQUIRED_CHECKS || github.repository == 'Verjson/.github' && '["shell-tests"]' || '' }}
     steps:
       - name: Resolve executing trusted workflow revision
         id: trusted-revision
@@ -94,7 +95,7 @@ jobs:
           sparse-checkout-cone-mode: false
           persist-credentials: false
 
-      - name: Enable native auto-merge from trusted metadata
+      - name: Attempt terminal merge from trusted metadata
         env:
           CALLER_REF: ${{ github.ref }}
           EXECUTING_WORKFLOW_REPOSITORY: ${{ job.workflow_repository }}
@@ -127,11 +128,11 @@ jobs:
           fi
 
           meta="$(gh pr view "$PR_NUMBER" --repo "$TARGET_REPO" \
-            --json id,state,isDraft,title,labels,headRefOid,headRepositoryOwner,autoMergeRequest,reviewDecision)"
+            --json state,isDraft,title,labels,headRefOid,headRepositoryOwner,statusCheckRollup)"
           actual_head="$(jq -r '.headRefOid // ""' <<<"$meta")"
           [ "$(jq -r .state <<<"$meta")" = OPEN ] || exit 0
           [ "$actual_head" = "$EXPECTED_HEAD_SHA" ] || {
-            echo "::error::PR head changed; stale authorization cannot enable auto-merge"; exit 1;
+            echo "::error::PR head changed; stale authorization cannot promote a merge"; exit 1;
           }
           [ "$(jq -r '.headRepositoryOwner.login // ""' <<<"$meta")" = "$GITHUB_REPOSITORY_OWNER" ] || {
             echo "::error::fork PRs are not eligible for autonomous merge"; exit 1;
@@ -168,26 +169,27 @@ jobs:
             ' <<<"$reviews" >/dev/null || {
             echo "::error::the exact-head dedicated App approval is absent"; exit 1;
           }
-          [ "$(jq -r '.reviewDecision // ""' <<<"$meta")" = APPROVED ] || {
-            echo "::error::the dedicated App approval is absent or not effective for this head"; exit 1;
+          required_checks="${AI_REVIEW_REQUIRED_CHECKS:-}"
+          jq -e 'type == "array" and length > 0 and all(.[]; type == "string" and length > 0)' \
+            <<<"$required_checks" >/dev/null || {
+            echo "::error::AI_REVIEW_REQUIRED_CHECKS must declare a non-empty JSON array"; exit 1;
           }
+          rollup="$(jq -c '.statusCheckRollup // []' <<<"$meta")"
+          while IFS= read -r required; do
+            states="$(jq -r --arg required "$required" '[.[] | select((.__typename == "CheckRun" and .name == $required) or (.__typename == "StatusContext" and .context == $required)) | if .__typename == "CheckRun" then (.conclusion // .status // "PENDING") else (.state // "PENDING") end | ascii_upcase] | unique | join(",")' <<<"$rollup")"
+            case ",$states," in
+              *,FAILURE,*|*,ERROR,*|*,CANCELLED,*|*,TIMED_OUT,*|*,ACTION_REQUIRED,*|*,STALE,*)
+                echo "::error::required check $required is terminally unsuccessful: $states"; exit 1 ;;
+              *,SUCCESS,*) ;;
+              *) echo "Required check $required is pending; a later workflow completion will retry promotion."; exit 0 ;;
+            esac
+          done < <(jq -r '.[]' <<<"$required_checks")
 
-          # Idempotent duplicate deliveries do not replace an existing request.
-          if [ "$(jq -r '.autoMergeRequest != null' <<<"$meta")" = true ]; then
-            echo "Native auto-merge is already enabled for this head."
-            exit 0
-          fi
-          pr_id="$(jq -r '.id // ""' <<<"$meta")"
-          [ -n "$pr_id" ] || exit 1
-          # $id is a GraphQL variable, not shell expansion.
-          # shellcheck disable=SC2016
-          result="$(gh api graphql -f query='mutation($id:ID!){
-            enablePullRequestAutoMerge(input:{pullRequestId:$id,mergeMethod:SQUASH}){
-              pullRequest{headRefOid autoMergeRequest{enabledAt}}
-            }}' -f id="$pr_id")"
-          enabled_head="$(jq -r '.data.enablePullRequestAutoMerge.pullRequest.headRefOid // ""' <<<"$result")"
-          enabled_at="$(jq -r '.data.enablePullRequestAutoMerge.pullRequest.autoMergeRequest.enabledAt // ""' <<<"$result")"
-          [ "$enabled_head" = "$EXPECTED_HEAD_SHA" ] && [ -n "$enabled_at" ] || {
-            echo "::error::GitHub did not confirm native auto-merge for the authorized head"; exit 1;
+          gh pr merge "$PR_NUMBER" --repo "$TARGET_REPO" --admin --squash \
+            --match-head-commit "$EXPECTED_HEAD_SHA"
+          merged="$(gh pr view "$PR_NUMBER" --repo "$TARGET_REPO" --json state,headRefOid)"
+          jq -e --arg head "$EXPECTED_HEAD_SHA" '.state == "MERGED" and .headRefOid == $head' \
+            <<<"$merged" >/dev/null || {
+            echo "::error::GitHub did not confirm terminal merge of the authorized head"; exit 1;
           }
-          echo "Native auto-merge enabled for $EXPECTED_HEAD_SHA; GitHub now waits for ordinary required CI."
+          echo "Merged authorized head $EXPECTED_HEAD_SHA after every declared required check succeeded."
