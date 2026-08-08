@@ -182,15 +182,47 @@ rm -f "$changelog_cache_script" "$changelog_github_env"
 rm -rf "$changelog_runner_temp"
 
 publish_runner_temp="$(mktemp -d)"
-publish_cache="$publish_runner_temp/verjson-changelog-tools"
-if grep -qF 'VERJSON_CHANGELOG_TOOL_CACHE: ${{ runner.temp }}/verjson-changelog-tools' "$release" \
-  && mkdir -p "$publish_cache" \
-  && printf published >"$publish_cache/release-build" \
-  && [ "$(cat "$publish_cache/release-build")" = published ]; then
-  pass "node-release publish builds can populate a cold cache beneath runner.temp"
+ambient_publish_cache="/proc/verjson-persistent-changelog-cache"
+export VERJSON_CHANGELOG_TOOL_CACHE="$ambient_publish_cache"
+publish_contract_sha="0123456789abcdef0123456789abcdef01234567"
+publish_cache_template="$(python3 - "$release" <<'PY'
+import sys, yaml
+doc = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))
+print(doc["jobs"]["release"].get("env", {}).get("VERJSON_CHANGELOG_TOOL_CACHE", ""))
+PY
+)"
+publish_cache="$(printf '%s\n' "$publish_cache_template" \
+  | sed "s|\${{ runner.temp }}|$publish_runner_temp|")"
+populate_publish_cache() {
+  mkdir -p "$VERJSON_CHANGELOG_TOOL_CACHE/$publish_contract_sha" \
+    && printf published >"$VERJSON_CHANGELOG_TOOL_CACHE/$publish_contract_sha/changelog.py"
+}
+if VERJSON_CHANGELOG_TOOL_CACHE="$publish_cache" populate_publish_cache \
+  && [ "$(cat "$publish_cache/$publish_contract_sha/changelog.py")" = published ] \
+  && [ "$VERJSON_CHANGELOG_TOOL_CACHE" = "$ambient_publish_cache" ] \
+  && [ ! -e "$ambient_publish_cache" ]; then
+  pass "node-release publish builds override a hostile persistent cache and populate a cold SHA beneath runner.temp"
 else
   fail "node-release publish builds still depend on a persistent runner cache"
 fi
+
+release_without_cache="$(mktemp)"
+cp "$release" "$release_without_cache"
+sed -i '/^    env:$/,+1d' "$release_without_cache"
+missing_publish_template="$(python3 - "$release_without_cache" <<'PY'
+import sys, yaml
+doc = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))
+print(doc["jobs"]["release"].get("env", {}).get("VERJSON_CHANGELOG_TOOL_CACHE", ""))
+PY
+)"
+[ -n "$missing_publish_template" ] || missing_publish_template="$ambient_publish_cache"
+if VERJSON_CHANGELOG_TOOL_CACHE="$missing_publish_template" populate_publish_cache 2>/dev/null; then
+  fail "the publish build survived removal of the runner.temp cache override"
+else
+  pass "removing the publish override reproduces the hostile persistent-cache failure (#630)"
+fi
+unset VERJSON_CHANGELOG_TOOL_CACHE
+rm -f "$release_without_cache"
 rm -rf "$publish_runner_temp"
 
 { grep -qF '`timeout-minutes`' "$docs" \

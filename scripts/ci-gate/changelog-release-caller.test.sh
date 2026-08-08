@@ -606,15 +606,26 @@ grep -q '^npm test$' "$tmp/guard.out" \
 
 mkdir -p "$tmp/sandbox/scripts"
 printf '%s\n' '#!/usr/bin/env bash' \
+  'set -e' \
   'test "$VERJSON_CHANGELOG_TOOL_CACHE" = "$EXPECTED_CHANGELOG_CACHE"' \
-  'mkdir -p "$VERJSON_CHANGELOG_TOOL_CACHE"' \
-  'printf verified >"$VERJSON_CHANGELOG_TOOL_CACHE/release-hook"' \
+  'mkdir -p "$VERJSON_CHANGELOG_TOOL_CACHE/$CONTRACT_SHA"' \
+  'printf verified >"$VERJSON_CHANGELOG_TOOL_CACHE/$CONTRACT_SHA/changelog.py"' \
   'echo REPO_HOOK_RAN' >"$tmp/sandbox/scripts/release-verify.sh"
 chmod +x "$tmp/sandbox/scripts/release-verify.sh"
 release_runner_temp="$tmp/release-runner-temp"
-release_cache="$release_runner_temp/verjson-changelog-tools"
+ambient_release_cache="/proc/verjson-persistent-changelog-cache"
+export VERJSON_CHANGELOG_TOOL_CACHE="$ambient_release_cache"
+verify_cache_template="$(python3 - "$release" <<'PY'
+import sys, yaml
+doc = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))
+print(doc["jobs"]["verify"].get("env", {}).get("VERJSON_CHANGELOG_TOOL_CACHE", ""))
+PY
+)"
+release_cache="$(printf '%s\n' "$verify_cache_template" \
+  | sed "s|\${{ runner.temp }}|$release_runner_temp|")"
 if run_guard "$suite_step" "PATH=$tmp/bin:$PATH" \
-  "VERJSON_CHANGELOG_TOOL_CACHE=$release_cache" "EXPECTED_CHANGELOG_CACHE=$release_cache"; then
+  "VERJSON_CHANGELOG_TOOL_CACHE=$release_cache" "EXPECTED_CHANGELOG_CACHE=$release_cache" \
+  "CONTRACT_SHA=$sha"; then
   pass "the suite step runs an adopter's release-verify.sh"
 else
   fail "the suite step failed with a hook present: $(cat "$tmp/guard.out")"
@@ -622,9 +633,32 @@ fi
 { grep -q '^REPO_HOOK_RAN$' "$tmp/guard.out" && ! grep -q '^npm test$' "$tmp/guard.out"; } \
   && pass "the hook replaces the default suite instead of running alongside it" \
   || fail "the hook did not replace the default suite: $(cat "$tmp/guard.out")"
-[ "$(cat "$release_cache/release-hook" 2>/dev/null)" = verified ] \
-  && pass "the verify hook can populate a cold changelog cache beneath runner.temp (#630)" \
+[ "$(cat "$release_cache/$sha/changelog.py" 2>/dev/null)" = verified ] \
+  && [ "$VERJSON_CHANGELOG_TOOL_CACHE" = "$ambient_release_cache" ] \
+  && [ ! -e "$ambient_release_cache" ] \
+  && pass "the verify hook overrides a hostile persistent cache and populates a cold SHA beneath runner.temp (#630)" \
   || fail "the verify hook cannot populate its job-scoped changelog cache"
+
+# Removing the generated job override must reproduce the adopter failure: the
+# repository hook inherits the hostile host cache and cannot create its cold SHA.
+verify_without_cache="$tmp/release-without-verify-cache.yml"
+cp "$release" "$verify_without_cache"
+sed -i '/^    env:$/,+1d' "$verify_without_cache"
+missing_cache_template="$(python3 - "$verify_without_cache" <<'PY'
+import sys, yaml
+doc = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))
+print(doc["jobs"]["verify"].get("env", {}).get("VERJSON_CHANGELOG_TOOL_CACHE", ""))
+PY
+)"
+[ -n "$missing_cache_template" ] || missing_cache_template="$ambient_release_cache"
+if run_guard "$suite_step" "PATH=$tmp/bin:$PATH" \
+  "VERJSON_CHANGELOG_TOOL_CACHE=$missing_cache_template" \
+  "EXPECTED_CHANGELOG_CACHE=$missing_cache_template" "CONTRACT_SHA=$sha"; then
+  fail "the verify hook survived removal of the runner.temp cache override"
+else
+  pass "removing the verify override reproduces the hostile persistent-cache failure (#630)"
+fi
+unset VERJSON_CHANGELOG_TOOL_CACHE
 
 # A failing hook must fail the job, or the verify gate is decorative.
 printf '%s\n' '#!/usr/bin/env bash' 'exit 3' >"$tmp/sandbox/scripts/release-verify.sh"
