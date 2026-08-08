@@ -32,8 +32,8 @@ group_step = next(
     if step.get("name") == "Run ${{ matrix.group }} shell contracts without hiding sibling failures"
 )
 assert group_step["run"] == (
-    'group_root="$RUNNER_TEMP/actions-ci-${{ matrix.group }}"\n'
-    'mkdir -p "$group_root"\n'
+    'group_root="$(mktemp -d "$RUNNER_TEMP/actions-ci-${{ matrix.group }}.XXXXXX")"\n'
+    'trap \'rm -rf "$group_root"\' EXIT\n'
     'cp -a "$GITHUB_WORKSPACE/." "$group_root/"\n'
     'cd "$group_root"\n'
     'bash scripts/actions-ci-group.sh "${{ matrix.group }}"\n'
@@ -61,10 +61,12 @@ else
   fail "bounded fan-out or required-context aggregation is missing"
 fi
 
-mkdir -p "$tmp/source/scripts" "$tmp/runner"
+mkdir -p "$tmp/source/scripts" "$tmp/runner/actions-ci-platform.stale"
 printf 'original\n' > "$tmp/source/shared-fixture"
+printf 'stale\n' > "$tmp/runner/actions-ci-platform.stale/stale-fixture"
 cat > "$tmp/source/scripts/actions-ci-group.sh" <<'SH'
 #!/usr/bin/env bash
+[ ! -e stale-fixture ]
 printf 'mutated\n' > shared-fixture
 pwd > "$ISOLATION_PROBE"
 SH
@@ -83,13 +85,17 @@ with open(sys.argv[2], "w", encoding="utf-8") as stream:
     stream.write(step["run"].replace("${{ matrix.group }}", "platform"))
 PY
 if GITHUB_WORKSPACE="$tmp/source" RUNNER_TEMP="$tmp/runner" \
-  ISOLATION_PROBE="$tmp/probe" bash "$tmp/run-group.sh" \
+  ISOLATION_PROBE="$tmp/probe-one" bash "$tmp/run-group.sh" \
+  && GITHUB_WORKSPACE="$tmp/source" RUNNER_TEMP="$tmp/runner" \
+    ISOLATION_PROBE="$tmp/probe-two" bash "$tmp/run-group.sh" \
   && [ "$(cat "$tmp/source/shared-fixture")" = original ] \
-  && [ "$(cat "$tmp/runner/actions-ci-platform/shared-fixture")" = mutated ] \
-  && [ "$(cat "$tmp/probe")" = "$tmp/runner/actions-ci-platform" ]; then
-  pass "matrix groups execute from independent job-temporary worktrees"
+  && [ "$(cat "$tmp/probe-one")" != "$(cat "$tmp/probe-two")" ] \
+  && [ ! -e "$(cat "$tmp/probe-one")" ] \
+  && [ ! -e "$(cat "$tmp/probe-two")" ] \
+  && [ "$(cat "$tmp/runner/actions-ci-platform.stale/stale-fixture")" = stale ]; then
+  pass "matrix groups execute from unique, cleaned job-temporary worktrees"
 else
-  fail "matrix groups can mutate the shared Actions checkout"
+  fail "matrix groups can collide, retain stale files, or mutate the shared checkout"
 fi
 
 if awk -F '\t' '

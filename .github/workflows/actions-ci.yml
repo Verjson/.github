@@ -71,8 +71,8 @@ jobs:
         run: echo "VERJSON_CHANGELOG_TOOL_CACHE=" >> "$GITHUB_ENV"
       - name: Run ${{ matrix.group }} shell contracts without hiding sibling failures
         run: |
-          group_root="$RUNNER_TEMP/actions-ci-${{ matrix.group }}"
-          mkdir -p "$group_root"
+          group_root="$(mktemp -d "$RUNNER_TEMP/actions-ci-${{ matrix.group }}.XXXXXX")"
+          trap 'rm -rf "$group_root"' EXIT
           cp -a "$GITHUB_WORKSPACE/." "$group_root/"
           cd "$group_root"
           bash scripts/actions-ci-group.sh "${{ matrix.group }}"
