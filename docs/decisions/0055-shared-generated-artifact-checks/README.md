@@ -179,3 +179,13 @@ commit. The generated contract test accepts either supported caller, and when
 ADR checking is enabled it verifies the local generator's digest against that
 pin. This closes the gap where enabling the shared check required hand-editing
 one generated artifact and copying another file without provenance.
+
+## Amendment (2026-08-08) — split callers remain one generated contract (#610)
+
+Some adopters retain the dedicated `changelog.yml` caller for the required
+`changelog / validate` context while installing `generated-artifacts.yml` for
+ADR-index validation. The generated contract test treats the presence of that
+second caller as an explicit split topology: both callers must pin and pass the
+same immutable contract commit, the generated-artifacts caller must enable
+`adr-index`, and the local ADR generator must match the digest at that commit.
+The second caller remains optional, preserving the single-caller topologies.
