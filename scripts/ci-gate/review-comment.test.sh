@@ -179,13 +179,13 @@ rc=$(run_submit "$degenerate" true)
   pass "terminal-error pass: schema-valid filler is routed to no-verdict fail-closed" ||
   fail "terminal-error filler escaped the no-verdict branch ($rc)"
 
-# A budget subtype with filler did not run all escalations, so it must use the
-# factual generic terminal-error explanation rather than claim every pass
-# exhausted its budget.
+# A budget subtype with filler is still factual budget exhaustion. With one
+# paid pass there is no escalation-count claim to avoid; name the cost cap while
+# rejecting the filler as a verdict.
 rc=$(run_submit "$degenerate" true true)
-{ [ "$rc" = "rc=1" ] && comment_has 'terminal model error' && ! comment_has 'budget-exceeded'; } &&
-  pass "terminal-error filler does not fabricate an all-passes budget outcome" ||
-  fail "terminal-error filler received misleading budget wording ($rc)"
+{ [ "$rc" = "rc=1" ] && comment_has 'budget-exceeded' && comment_has 'single automatic paid review'; } &&
+  pass "budget-terminal filler reports the one-pass cost cap without becoming a verdict" ||
+  fail "budget-terminal filler lost its factual one-pass budget outcome ($rc)"
 
 # The subtype fact, not content quality, decides usability: the identical terse
 # verdict from a successful pass remains a real blocking verdict.

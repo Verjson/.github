@@ -47,12 +47,12 @@ def validate_authorization_app_token_pins(uses_values: list[str]) -> None:
 def validate_model_admission(steps: list[dict]) -> None:
     model_indexes = [index for index, step in enumerate(steps)
                      if step.get("uses") == MODEL_ACTION]
-    require(len(model_indexes) == 3, "review must retain exactly three bounded model passes")
+    require(len(model_indexes) == 1, "review must retain exactly one automatic paid model pass")
 
     validation_indexes = [index for index, step in enumerate(steps)
                           if step.get("name") == "Validate trusted head authorization"]
     require(len(validation_indexes) == 1 and validation_indexes[0] < model_indexes[0],
-            "receipt and pending-check validation must precede every model pass")
+            "receipt and pending-check validation must precede the model pass")
     validation = steps[validation_indexes[0]].get("run", "")
     verifier = "bash .gate-trust/scripts/ci-gate/verify-arm-receipt.sh"
     pending_check = 'check-runs/$AUTHORIZATION_CHECK_ID'
@@ -67,7 +67,7 @@ def validate_model_admission(steps: list[dict]) -> None:
         require("*" not in allowed, "model bot admission must never contain a wildcard")
         allowlists.append({login.strip() for login in allowed.split(",") if login.strip()})
     require(all(allowed == TRUSTED_BOTS for allowed in allowlists),
-            "all model passes must share the exact trusted dispatcher/Renovate/Mend allowlist")
+            "the model pass must retain the exact trusted dispatcher/Renovate/Mend allowlist")
 
 
 def main() -> int:
