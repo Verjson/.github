@@ -1,6 +1,8 @@
 name: fleet watchdog
 
-# Breaks merge-gate poll deadlocks on the shared self-hosted fleet.
+# Retains selector-health monitoring while the former merge-gate poll watchdog
+# remains inert after ADR 0079. The cancellation job is kept temporarily for a
+# reversible ruleset migration and has an empty production allowlist.
 #
 # `gate` and `privileged_merge` hold a runner for tens of minutes while POLLING
 # for checks they cannot influence. On a fixed pool that is a deadlock, not
@@ -85,7 +87,7 @@ jobs:
           ref: ${{ github.sha }}
           persist-credentials: false
 
-      - name: Sweep the fleet for poll deadlocks
+      - name: Confirm the retired poll watchdog has no candidates
         env:
           # Needs cross-repository read plus `actions: write` to cancel, which
           # `github.token` does not carry outside this repository.

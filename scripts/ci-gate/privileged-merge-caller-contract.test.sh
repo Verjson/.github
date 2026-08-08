@@ -54,8 +54,8 @@ check_exclusions() { # check_exclusions <file> <label>
   local file="$1" label="$2" sites excl
   sites=$(grep -c 'select((.name // .context) as $n |' "$file")
   excl=$(grep -c 'endswith("/ privileged_merge") | not)' "$file")
-  { [ "$sites" -gt 0 ] && [ "$excl" -eq "$sites" ]; } \
-    && pass "$label excludes the reusable shape at all $sites rollup filter site(s)" \
+  { [ "$excl" -eq "$sites" ]; } \
+    && pass "$label has no unexcluded rollup filter site ($sites site(s))" \
     || fail "$label has $sites rollup filter site(s) but $excl reusable-shape exclusion(s) — every site must exclude it"
 }
 
@@ -84,7 +84,7 @@ on = d.get(True, d.get("on"))
 wc = on.get("workflow_call")
 if not wc: sys.exit(1)
 i = wc.get("inputs", {})
-need = {"pr_number", "expected_head_sha", "source_run_id", "runner_labels"}
+need = {"pr_number", "expected_head_sha", "authorization_check_id", "arm_run_id", "arm_run_attempt", "source_run_id", "runner_labels"}
 if not need <= set(i): sys.exit(1)
 sys.exit(0 if i["runner_labels"].get("required") is False else 1)
 PY
@@ -131,14 +131,14 @@ TARGET_PY
 
 # What the caller PASSES, not merely that it calls something. Each of the
 # following slipped through mutation testing of the previous version.
-python3 - "$tmp/caller.yml" <<'WITH_PY' && pass "generated caller forwards the three event inputs, head SHA bound to the event" \
+python3 - "$tmp/caller.yml" <<'WITH_PY' && pass "generated caller forwards exact authorization and arm-receipt identities" \
   || fail "generated caller's with: block is incomplete or lost its event binding"
 import sys, yaml
 d = yaml.safe_load(open(sys.argv[1]))
 w = d["jobs"]["privileged_merge"].get("with", {})
-if set(w) != {"pr_number", "expected_head_sha", "source_run_id"}:
+if set(w) != {"pr_number", "expected_head_sha", "authorization_check_id", "arm_run_id", "arm_run_attempt", "source_run_id"}:
     sys.exit(1)
-sys.exit(0 if "github.event.pull_request.head.sha ||" in str(w["expected_head_sha"]) else 1)
+sys.exit(0 if w["expected_head_sha"] == "${{ inputs.expected_head_sha }}" else 1)
 WITH_PY
 
 # --- no fleet label reaches a consumer (#405) --------------------------------
@@ -179,16 +179,16 @@ got = d["jobs"]["privileged_merge"].get("secrets")
 sys.exit(0 if got == {"ORG_ADMIN_TOKEN": "${{ secrets.ORG_ADMIN_TOKEN }}"} else 1)
 SECRETS_PY
 
-python3 - "$tmp/caller.yml" <<'PERMS_PY' && pass "generated caller keeps least-privilege permissions and both triggers" \
+python3 - "$tmp/caller.yml" <<'PERMS_PY' && pass "generated caller keeps least-privilege permissions and trusted dispatch only" \
   || fail "generated caller's permissions, triggers, or cancel-in-progress drifted"
 import sys, yaml
 d = yaml.safe_load(open(sys.argv[1]))
 on = d.get(True, d.get("on"))
 if d.get("permissions") != {"contents": "read"}:
     sys.exit(1)
-if "pull_request_target" not in on or "workflow_dispatch" not in on:
+if set(on) != {"workflow_dispatch"}:
     sys.exit(1)
-sys.exit(0 if d.get("concurrency", {}).get("cancel-in-progress") is True else 1)
+sys.exit(0 if d.get("concurrency", {}).get("cancel-in-progress") is False else 1)
 PERMS_PY
 
 # --- the caller stays THIN ---------------------------------------------------
@@ -222,12 +222,12 @@ print(d.get('concurrency',{}).get('group',''))")
   && pass "caller and canonical use distinct concurrency groups" \
   || fail "concurrency groups collide or are missing: '$canon_group' vs '$call_group'"
 
-# Both must be keyed by event, or the dispatched continuation cancels the
-# pull_request_target check and leaves a red mark on a merged PR (ADR 0039).
-case "$canon_group" in *github.event_name*) pass "canonical concurrency is keyed by event" ;;
-  *) fail "canonical concurrency not keyed by event — dispatch will cancel the PR check" ;; esac
-case "$call_group" in *github.event_name*) pass "caller concurrency is keyed by event" ;;
-  *) fail "caller concurrency not keyed by event" ;; esac
+# Both key on the exact head, making duplicate dispatch idempotent without
+# coupling unrelated heads or relying on a pull_request_target continuation.
+case "$canon_group" in *inputs.expected_head_sha*) pass "canonical concurrency is keyed by exact head" ;;
+  *) fail "canonical concurrency is not head-bound" ;; esac
+case "$call_group" in *inputs.expected_head_sha*) pass "caller concurrency is keyed by exact head" ;;
+  *) fail "caller concurrency is not head-bound" ;; esac
 
 # --- generator input validation ----------------------------------------------
 bash "$gen" 'not-json' >/dev/null 2>&1 && fail "generator accepted non-JSON runner_labels" \

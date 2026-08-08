@@ -77,13 +77,28 @@ name: AI review + auto-merge
 # the repository where the workflow executes.
 
 on:
-  pull_request:
-    types: [opened, reopened, ready_for_review, synchronize, labeled, unlabeled]
   workflow_dispatch:
     inputs:
       pr_number:
-        description: PR number to review and (on pass) merge
+        description: PR number to review
         required: true
+      expected_head_sha:
+        description: Exact PR head authorized by the trusted arm
+        required: true
+      authorization_check_id:
+        description: Exact Checks API record created by the trusted arm
+        required: true
+      arm_run_id:
+        description: Trusted arm workflow run containing the immutable receipt
+        required: true
+      arm_run_attempt:
+        description: Trusted arm run attempt containing the immutable receipt
+        required: true
+      explicit_rereview:
+        description: Whether a maintainer explicitly requested a same-head review
+        required: false
+        type: boolean
+        default: false
       allow_absent_checks:
         description: >-
           Proceed even though the PR has NO CI checks at all. Absent checks are
@@ -108,6 +123,27 @@ on:
         description: PR number to review; defaults to the caller's pull_request event
         required: false
         type: string
+      expected_head_sha:
+        description: Exact PR head authorized by a trusted caller
+        required: false
+        type: string
+      authorization_check_id:
+        description: Exact Checks API record created by a trusted caller
+        required: false
+        type: string
+      arm_run_id:
+        description: Trusted arm workflow run containing the immutable receipt
+        required: false
+        type: string
+      arm_run_attempt:
+        description: Trusted arm run attempt containing the immutable receipt
+        required: false
+        type: string
+      explicit_rereview:
+        description: Whether a maintainer explicitly requested a same-head review
+        required: false
+        type: boolean
+        default: false
       runner_labels:
         description: 'Optional JSON array of runs-on labels for all three gate jobs, e.g. ["self-hosted","general"], for a self-hosted caller whose org has no VERJSON_LANE_* variables. Omit it (the default) to route by lane and degrade to a hosted runner.'
         required: false
@@ -121,6 +157,13 @@ on:
         required: false
         type: boolean
         default: false
+    secrets:
+      AI_REVIEW_APP_PRIVATE_KEY:
+        required: true
+      ANTHROPIC_API_KEY:
+        required: false
+      CLAUDE_CODE_OAUTH_TOKEN:
+        required: false
 
 concurrency:
   group: ai-review-${{ github.event.pull_request.number || inputs.pr_number }}
@@ -144,6 +187,12 @@ permissions:
 env:
   PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr_number }}
   TARGET_REPO: ${{ github.repository }}
+  EXPECTED_AUTHORIZED_HEAD_SHA: ${{ inputs.expected_head_sha }}
+  AUTHORIZATION_CHECK_ID: ${{ inputs.authorization_check_id }}
+  ARM_RUN_ID: ${{ inputs.arm_run_id }}
+  ARM_RUN_ATTEMPT: ${{ inputs.arm_run_attempt }}
+  EXPECTED_APP_ID: ${{ vars.AI_REVIEW_APP_ID }}
+  EXPECTED_APP_SLUG: ${{ vars.AI_REVIEW_APP_SLUG }}
 
 jobs:
   preflight:
@@ -261,7 +310,7 @@ jobs:
           pr_json() {
             for _ in 1 2 3; do
               gh pr view "$PR_NUMBER" --repo "$REPO" --json "$1" 2>/dev/null && return 0
-              sleep 3
+              : # bounded retry without runner-held delay
             done
             return 1
           }
@@ -286,7 +335,7 @@ jobs:
           mrg="$(jq -r '.mergeable // "UNKNOWN"' <<<"$meta")"
           for _ in 1 2 3 4 5 6; do
             [ "$mrg" != "UNKNOWN" ] && break
-            sleep 5
+            : # bounded retry without runner-held delay
             mrg="$(jq -r '.mergeable // "UNKNOWN"' <<<"$(pr_json mergeable || echo '{}')")"
           done
           echo "mergeable=$mrg"
@@ -307,7 +356,7 @@ jobs:
               mrg="$(jq -r '.mergeable // "UNKNOWN"' <<<"$(pr_json mergeable || echo '{}')")"
               for _ in 1 2 3 4 5 6; do
                 [ "$mrg" != "UNKNOWN" ] && break
-                sleep 5
+                : # bounded retry without runner-held delay
                 mrg="$(jq -r '.mergeable // "UNKNOWN"' <<<"$(pr_json mergeable || echo '{}')")"
               done
               echo "post-update mergeable=$mrg"
@@ -595,6 +644,33 @@ jobs:
       LANE_REASON: ${{ needs.preflight.outputs.reason }}
       EXPECTED_HEAD_SHA: ${{ needs.preflight.outputs.head_sha }}
     steps:
+      - name: Resolve executing trusted workflow revision
+        id: trusted-revision
+        env:
+          EXECUTING_WORKFLOW_SHA: ${{ job.workflow_sha }}
+        run: echo "sha=$EXECUTING_WORKFLOW_SHA" >>"$GITHUB_OUTPUT"
+
+      - name: Check out immutable arm verifier
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: Verjson/.github
+          ref: ${{ steps.trusted-revision.outputs.sha }}
+          path: .gate-trust
+          sparse-checkout: scripts/ci-gate/verify-arm-receipt.sh
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
+      - name: Validate trusted head authorization
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          .gate-trust/scripts/ci-gate/verify-arm-receipt.sh
+          authorization="$(gh api "repos/$TARGET_REPO/check-runs/$AUTHORIZATION_CHECK_ID")"
+          [ "$(jq -r '.status + ":" + (.conclusion // "")' <<<"$authorization")" = "in_progress:" ] || {
+            echo "::error::authorization is not pending review"; exit 1;
+          }
+
       - name: Record gate runner timing
         env:
           PREFLIGHT_COMPLETED_AT: ${{ needs.preflight.outputs.completed_at }}
@@ -612,457 +688,6 @@ jobs:
           else
             echo "::notice::phase=gate runner_assigned_at=$assigned_at transition_queue_seconds=unknown lane=$LANE"
           fi
-
-      # CI-first: never pay for a model review of a PR that fails its own CI.
-      # The fast lane keeps its existing 40-minute ceiling; the AI lane keeps
-      # its existing 30-minute pre-review ceiling. This is the only long CI wait.
-      - name: Wait once for the rest of CI to be green
-        id: ci_wait
-        env:
-          GH_TOKEN: ${{ github.token }}
-          ALLOW_ABSENT_CHECKS: ${{ inputs.allow_absent_checks || false }}
-          # The PR's own base branch, never the literal "main": several
-          # repositories in the org do not use it. Empty on workflow_dispatch and
-          # workflow_call, which have no pull_request payload — resolved from the
-          # API below in that case.
-          BASE_BRANCH: ${{ github.event.pull_request.base.ref }}
-        run: |
-          set -euo pipefail
-          # A runner without `gh` cannot ever satisfy this step, and every API
-          # call below would exit 127 ("command not found"). Left unchecked the
-          # loop reads 127 as "the API is unavailable", polls all 60 attempts,
-          # and holds a runner for 30 minutes to reach a conclusion available
-          # in the first millisecond. That is not a slow gate, it is a runner
-          # taken out of the pool — and because the gate is waiting for CI that
-          # needs that same pool, a single mis-provisioned runner starves the
-          # fleet it belongs to (#363).
-          for tool in gh jq; do
-            command -v "$tool" >/dev/null 2>&1 || {
-              echo "::error::phase=ci-wait result=toolchain-missing tool=$tool runner=${RUNNER_NAME:-unknown} — this runner cannot run the gate. Install $tool on it (or remove it from the pool); re-running the PR will not help until then."
-              exit 1
-            }
-          done
-          if [ "$LANE" = ai ]; then
-            command -v unzip >/dev/null 2>&1 || {
-              echo "::error::phase=ci-wait result=toolchain-missing tool=unzip runner=${RUNNER_NAME:-unknown} — this runner cannot run AI review. Install unzip on it or remove it from the pool."
-              exit 1
-            }
-          fi
-          started_epoch="$(date +%s)"
-          max_attempts=60
-          [ "$LANE" = "fast" ] && max_attempts=80
-          echo "::notice::phase=ci-wait started_at=$(date -u +%Y-%m-%dT%H:%M:%SZ) lane=$LANE max_attempts=$max_attempts poll_seconds=30"
-          # Everything below is anchored to the reviewed head: an unfiltered runs
-          # query would match every recent run in the repo and blame this PR for
-          # another commit's startup failure. The head can't appear mid-run, so
-          # fail immediately rather than poll (the merge step refuses an empty
-          # EXPECTED_HEAD_SHA too — nothing could merge anyway).
-          # Validate the SHAPE, not just emptiness: a failed `jq -r .headRefOid`
-          # yields the literal string "null", which is non-empty, and
-          # `...?head_sha=null` returns zero runs — the probe would then report
-          # "no startup failures" about a commit it never looked at. This value
-          # is interpolated into an API URL, so it must be a bare 40-hex SHA.
-          if ! [[ "${EXPECTED_HEAD_SHA:-}" =~ ^[0-9a-f]{40}$ ]]; then
-            echo "::error::phase=ci-wait result=unknown-head lane=$LANE"
-            echo "No usable head SHA was resolved for PR #$PR_NUMBER (got '${EXPECTED_HEAD_SHA:-<empty>}', expected a 40-character commit SHA); CI state cannot be attributed to a commit. Not reviewing or merging."
-            exit 1
-          fi
-          # ADR 0058 step 6, conditional per repository (#341). Where the target
-          # repository has declared required status checks on THIS PR's base
-          # branch, GitHub already refuses the merge until those contexts report
-          # green, so a gate that holds a runner for up to 30 minutes to observe
-          # the same thing is only the deadlock ADR 0053 describes. Where no such
-          # rule exists — 66 of 91 non-archived org repositories on 2026-08-06 —
-          # the gate MUST keep polling: skipping there would make that
-          # repository's CI advisory, which ADR 0058 itself calls a worse defect
-          # than the deadlock it removes. No allowlist and no per-repository
-          # variable: a repository opts in the moment a ruleset is scoped to it.
-          #
-          # Every step of this probe fails CLOSED to polling. Only an
-          # affirmative, well-formed answer skips: an API error, the 403 a plan
-          # without rulesets returns (one org repository answers exactly that), a
-          # body that is not an array, a rule carrying no contexts, or a base
-          # branch that cannot be resolved all fall through to the loop below.
-          base_branch="${BASE_BRANCH:-}"
-          if [ -z "$base_branch" ]; then
-            # workflow_dispatch and workflow_call carry no pull_request payload,
-            # and re-dispatch is a routine path here (#468, #475) — resolving the
-            # base only from the event would leave the skip dead on it.
-            base_branch=$(gh pr view "$PR_NUMBER" --repo "$TARGET_REPO" \
-              --json baseRefName --jq '.baseRefName // ""' 2>/dev/null) || base_branch=""
-          fi
-          # This value is interpolated into an API URL, so require a bare git
-          # ref: no whitespace and no shell or URL metacharacters. Three guards,
-          # none of them redundant:
-          #   - "null" — a failed `--jq` renders JSON null as that literal
-          #     string, which is non-empty and matches the allowlist.
-          #   - `..` — every character of `main/../../../orgs/Verjson/rulesets`
-          #     is legal in a ref, so the allowlist passes it straight into the
-          #     API path. Git forbids `..` in a ref name, so nothing real is lost.
-          #   - the C locale — `[[ =~ ]]` ranges follow the runner's collation,
-          #     and under en_US.UTF-8 `A-Za-z` matches `ü` (verified on bash 5.2),
-          #     so the allowlist alone admits a non-ASCII ref. In a C-locale
-          #     subshell the ranges are the bytes they read as. A unicode branch
-          #     therefore never takes the skip; it polls, which is the safe side.
-          base_branch_ok=true
-          if [ "$base_branch" = "null" ]; then base_branch_ok=false; fi
-          case "$base_branch" in *..*) base_branch_ok=false ;; esac
-          if ! ( export LC_ALL=C; [[ "$base_branch" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]*$ ]] ); then
-            base_branch_ok=false
-          fi
-          if [ "$base_branch_ok" != true ]; then
-            echo "::warning::phase=ci-wait result=base-branch-unresolved base='${base_branch:-<empty>}' — cannot ask GitHub which checks it requires, so the gate waits for CI itself (#341)."
-          else
-            required_contexts=""
-            rules_rc=0
-            rules_json=$(gh api "repos/$TARGET_REPO/rules/branches/$base_branch" 2>/dev/null) || rules_rc=$?
-            if [ "$rules_rc" -eq 0 ]; then
-              # `error` on anything that is not an array of rule objects: this
-              # endpoint answers 403 with a JSON OBJECT on a plan without
-              # rulesets, and `.[]` over an object iterates its VALUES rather
-              # than failing — a silent way to read a denial as a rule set.
-              # A rule with an empty context list blocks nothing, so require at
-              # least one named context rather than the rule's mere presence.
-              required_contexts=$(jq -r '
-                if type != "array" then error("branch rules response is not an array")
-                else [ .[] | select((type == "object") and .type == "required_status_checks")
-                       | .parameters.required_status_checks[]? | .context? | strings ]
-                     | unique | join(", ")
-                end' <<<"$rules_json" 2>/dev/null) || rules_rc=$?
-            fi
-            if [ "$rules_rc" -eq 127 ]; then
-              echo "::error::phase=ci-wait result=toolchain-missing runner=${RUNNER_NAME:-unknown} — the CLI disappeared while reading the branch rules; failing immediately rather than holding the runner through the poll loop (#363)."
-              exit 1
-            elif [ "$rules_rc" -ne 0 ]; then
-              echo "::warning::phase=ci-wait result=branch-rules-unavailable base=$base_branch rc=$rules_rc — could not establish that GitHub requires anything, so the gate waits for CI itself (#341)."
-            elif [ -z "$required_contexts" ]; then
-              echo "::notice::phase=ci-wait result=no-required-checks base=$base_branch — this repository declares none, so the gate waits for CI itself (#341)."
-            else
-              echo "::notice::phase=ci-wait result=required-checks-declared base=$base_branch contexts=$required_contexts lane=$LANE"
-              echo "GitHub requires [$required_contexts] on $base_branch and will not merge PR #$PR_NUMBER until they report green, so the gate does not wait for them as well (ADR 0058 step 6, #341)."
-              exit 0
-            fi
-          fi
-          checks=0
-          checks_probe=unread
-          probe=unread
-          # A workflow whose `paths:` filter does not match never runs and emits
-          # NO check run (unlike a job-level `if:`, which reports SKIPPED). Such
-          # a PR can never accumulate checks, so polling it for the full window
-          # only burns a self-hosted runner before failing. Once the rollup is
-          # empty AND the runs API confirms zero runs for this head, a short
-          # grace period is enough to call it: give real checks time to register,
-          # then decide. 10 polls (~5 min) — registration is not instant and the
-          # runs API can lag the check API, so the window has to be wide enough
-          # that a merely SLOW check is never mistaken for an absent one. The
-          # `runs_seen == 0` conjunct is what keeps it cheap: a check run implies
-          # a workflow run, so this only fires when nothing was triggered at all.
-          no_checks_grace_attempts=10
-          # Absent checks are NOT green (#143), so this is a hard stop by
-          # default. Name the escape hatch in the same breath: `hold`/draft only
-          # prevent merging, so without this line a legitimately check-free PR
-          # (docs-only under a `paths:` filter) has no path forward at all.
-          no_checks_remediation="PR #$PR_NUMBER reported no CI checks at all for $EXPECTED_HEAD_SHA, and no workflow runs were triggered for that commit. Absent checks are treated as NOT green (#143): either the PR's workflows never triggered (commonly a 'paths:' filter that does not match this PR's files), or they died before producing a check run. Fix the workflow trigger, or add a required check, and push again. If this PR is genuinely expected to have no CI, re-run the gate with the explicit opt-out: gh workflow run ai-review-merge.yml --repo $TARGET_REPO -f pr_number=$PR_NUMBER -f allow_absent_checks=true"
-          # The gate must not wait on its OWN checks. Which names those are
-          # depends on how the gate was installed: an org required workflow
-          # publishes bare `preflight`/`gate`, while a consumer calling this
-          # file with `uses:` (a supported ADR 0039 shape) gets the reusable
-          # prefix — `<caller job> / preflight`. Matching bare names only, the
-          # gate enumerated its own prefixed jobs as required checks and waited
-          # for itself until the window ran out (#276). Ask the Actions API what
-          # THIS run's jobs are actually called: it reports them exactly as
-          # published, prefixed or not, for whichever shape is installed.
-          #
-          # Deliberately NOT name normalization (strip everything before "/"):
-          # that keys on the CALLEE segment, so an unrelated consumer check like
-          # `security / review` would silently drop out of the required set — a
-          # fail-open in someone else's repository. Provenance narrows that but is
-          # not sufficient on its own — see the intersection below.
-          #
-          # The static list below stays as the floor and the exclusion set is
-          # their UNION: jobs are created as they START, so this run cannot yet
-          # enumerate its own downstream `dispatch-merge`/`ai-merge` jobs.
-          # An unreadable jobs API is inconclusive, never an excuse to exclude
-          # more: it leaves the set at the static floor and says so.
-          # `| strings` is load-bearing: `name` is nullable in the jobs schema
-          # and `jq -r` renders a null as the literal "null", which would
-          # exclude a consumer check that happens to be named `null`.
-          self_jobs='[]'
-          self_jobs_rc=1
-          if [ -n "${GITHUB_REPOSITORY:-}" ] && [ -n "${GITHUB_RUN_ID:-}" ]; then
-            self_jobs_rc=0
-            self_job_names=$(gh api --paginate \
-              "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/jobs?per_page=100" \
-              --jq '.jobs[].name | strings' 2>/dev/null) || self_jobs_rc=$?
-            if [ "$self_jobs_rc" -eq 0 ]; then
-              self_jobs=$(jq -R -s -c 'split("\n") | map(select(. != ""))' \
-                <<<"$self_job_names") || self_jobs_rc=$?
-            fi
-            if [ "$self_jobs_rc" -eq 0 ]; then
-              self_jobs_summary=$(jq -r 'join(", ")' <<<"$self_jobs") || self_jobs_rc=$?
-            fi
-          fi
-          if [ "$self_jobs_rc" -eq 127 ]; then
-            echo "::error::phase=ci-wait result=toolchain-missing runner=${RUNNER_NAME:-unknown} — the CLI disappeared while enumerating this gate's jobs; failing immediately rather than entering the poll loop."
-            exit 1
-          elif [ "$self_jobs_rc" -eq 0 ]; then
-            echo "::notice::phase=ci-wait self_jobs=$self_jobs_summary"
-          else
-            self_jobs='[]'
-            echo "::warning::phase=ci-wait result=self-jobs-unavailable run_id=${GITHUB_RUN_ID:-<unset>} — falling back to the static gate job names; a reusable-call install may see its own '<caller> / <job>' checks treated as required (#276)."
-          fi
-          for i in $(seq 1 "$max_attempts"); do
-            # Reset per iteration: a probe that failed on attempt 1 must not
-            # still be labelling attempt 60's genuine pending timeout as
-            # "probe-unavailable" and sending people to check API reachability.
-            probe=unread
-            checks_probe=unread
-            # Read only repository-scoped REST resources. `gh pr view` expands
-            # statusCheckRollup through nested GraphQL commit fields that a
-            # correctly scoped GitHub App token cannot always read (#248).
-            # `gh api --paginate` streams one JSON document per page. Slurp
-            # those documents with jq because runner images can lag the GitHub
-            # CLI release that introduced its native slurp flag (#248). Commit
-            # statuses are newest-first, so retain only the first observation
-            # for each context.
-            checks_rc=0
-            statuses_rc=0
-            rollup_rc=0
-            check_pages=$(gh api --paginate \
-                "repos/$TARGET_REPO/commits/$EXPECTED_HEAD_SHA/check-runs?per_page=100" 2>/dev/null |
-              jq -s -c '.') || checks_rc=$?
-            status_pages=$(gh api --paginate \
-                "repos/$TARGET_REPO/commits/$EXPECTED_HEAD_SHA/status?per_page=100" 2>/dev/null |
-              jq -s -c '.') || statuses_rc=$?
-            if [ "$checks_rc" -eq 0 ] && [ "$statuses_rc" -eq 0 ]; then
-              rollup=$(jq -c '
-                 if ((.checks | type) != "array" or
-                     (.statuses | type) != "array" or
-                     (.checks | length) == 0 or
-                     (.statuses | length) == 0 or
-                     ([.checks[] |
-                       select((.check_runs | type) != "array")] | length) != 0 or
-                     ([.statuses[] |
-                       select((.statuses | type) != "array")] | length) != 0)
-                 then error("unusable CI status API response")
-                 else
-                 ([.checks[] | .check_runs[] |
-                   {name,
-                    status: ((.status // "") | ascii_upcase),
-                    conclusion: (if .conclusion == null then null
-                                 else (.conclusion | ascii_upcase) end)}] +
-                  ([.statuses[] | .statuses[] |
-                    {context, state: ((.state // "") | ascii_upcase)}] |
-                   reduce .[] as $status
-                     ([]; if any(.[]; .context == $status.context)
-                          then . else . + [$status] end))) |
-                 [.[] | select((.name // .context) as $n |
-                   # Provenance alone is too wide. In the workflow_call shape the gate
-                   # jobs belong to the CALLER run, so this endpoint also returns the
-                   # consumer own jobs — ci / build-test among them. Subtracting those
-                   # would drop real CI from the required set and merge on red.
-                   # Exclude a name only where provenance AND the gate own job
-                   # vocabulary agree, so a foreign "security / review" still counts
-                   # and a sibling "ci / build-test" is never silently dropped (#276).
-                   (($n | IN($self_jobs[])) and
-                    ($n | endswith("/ preflight") or endswith("/ gate") or
-                          endswith("/ freshness") or endswith("/ classify") or
-                          endswith("/ ai-review") or endswith("/ ai-merge") or
-                          endswith("/ review") or endswith("/ dispatch-merge") or
-                          endswith("/ privileged_merge")) | not) and
-                   $n != "preflight" and $n != "gate" and
-                   $n != "freshness" and $n != "classify" and
-                   $n != "ai-review" and $n != "ai-merge" and
-                   $n != "review" and $n != "dispatch-merge" and
-                   $n != "privileged_merge" and
-                   ($n | endswith("/ privileged_merge") | not))]
-                 end
-               ' --argjson self_jobs "$self_jobs" <<<"{\"checks\":$check_pages,\"statuses\":$status_pages}" 2>/dev/null) || rollup_rc=$?
-            else
-              rollup_rc=1
-            fi
-            # 127 is "command not found" — an environment fault that no
-            # amount of waiting repairs. Distinguish it from a genuinely
-            # transient API error, which is what the retry budget is for.
-            if [ "$checks_rc" -eq 127 ] || [ "$statuses_rc" -eq 127 ] || [ "$rollup_rc" -eq 127 ]; then
-              elapsed=$(( $(date +%s) - started_epoch ))
-              echo "::error::phase=ci-wait result=toolchain-missing elapsed_seconds=$elapsed attempt=$i/$max_attempts checks_endpoint_rc=$checks_rc statuses_endpoint_rc=$statuses_rc aggregate_shape_rc=$rollup_rc runner=${RUNNER_NAME:-unknown} — the CLI disappeared mid-run; failing immediately rather than holding this runner for the remaining attempts."
-              exit 1
-            fi
-            if [ "$checks_rc" -ne 0 ] || [ "$statuses_rc" -ne 0 ] || [ "$rollup_rc" -ne 0 ]; then
-              checks_probe=unavailable
-              elapsed=$(( $(date +%s) - started_epoch ))
-              echo "::warning::phase=ci-wait result=checks-unavailable elapsed_seconds=$elapsed attempt=$i/$max_attempts head=$EXPECTED_HEAD_SHA checks_endpoint_rc=$checks_rc statuses_endpoint_rc=$statuses_rc aggregate_shape_rc=$rollup_rc gh_version=$(gh --version 2>/dev/null | head -n 1 | tr ' ' '_' || echo unavailable)"
-              sleep 30
-              continue
-            fi
-            checks_probe=ok
-            # Preflight normally routes this head to `defer`. If the status
-            # appears after classification, waiting cannot change it and burns
-            # a runner until timeout. Stop immediately; Renovate's rebase will
-            # start a fresh run after the release-age hold clears.
-            if jq -e 'any(.[]?;
-              .context == "renovate/stability-days" and .state == "PENDING")' \
-              <<<"$rollup" >/dev/null; then
-              elapsed=$(( $(date +%s) - started_epoch ))
-              echo "::error::phase=ci-wait result=stability-days-pending elapsed_seconds=$elapsed lane=$LANE head=$EXPECTED_HEAD_SHA"
-              echo "Renovate release-age hold is still pending; stopping instead of polling. Wait for Renovate to rebase after the hold clears."
-              exit 1
-            fi
-            # Rollup mixes CheckRuns (name/status/conclusion) with commit
-            # StatusContexts like renovate/stability-days (context/state) —
-            # treating a context's null .status as pending hangs the gate.
-            # GitHub can expose COMPLETED before it populates conclusion. That
-            # transient snapshot is pending/inconclusive, not a terminal failure.
-            # Once populated, only SUCCESS, NEUTRAL, or SKIPPED are green.
-            # Commit StatusContexts retain their SUCCESS/PENDING/EXPECTED states;
-            # every other state fails closed.
-            failed=$(jq '[.[] | select(
-              if .state then
-                ((.state // "") | IN("SUCCESS","PENDING","EXPECTED") | not)
-              else
-                (.status == "COMPLETED" and (.conclusion // "") != "" and ((.conclusion // "") | IN("SUCCESS","NEUTRAL","SKIPPED") | not))
-              end
-            )] | length' <<<"$rollup")
-            pending=$(jq -r '[.[] | select(if .state then (.state | IN("PENDING","EXPECTED")) else (.status != "COMPLETED" or (.conclusion // "") == "") end) | "\(.name // .context)=\(.state // .status)"] | join(", ")' <<<"$rollup")
-            checks=$(jq 'length' <<<"$rollup")
-            if [ "$failed" -gt 0 ]; then
-              elapsed=$(( $(date +%s) - started_epoch ))
-              echo "::error::phase=ci-wait result=failed elapsed_seconds=$elapsed lane=$LANE"
-              echo "CI failed checks: $(jq -c '[.[] | select(if .state then ((.state // "") | IN("SUCCESS","PENDING","EXPECTED") | not) else (.status == "COMPLETED" and (.conclusion // "") != "" and ((.conclusion // "") | IN("SUCCESS","NEUTRAL","SKIPPED") | not)) end) | {name: (.name // .context // "<unnamed>"), state: (.state // null), status: (.status // null), conclusion: (.conclusion // null)}]' <<<"$rollup")"
-              echo "CI is red for PR #$PR_NUMBER — not reviewing or merging."
-              exit 1
-            fi
-            if [ -z "$pending" ]; then
-              # Nothing left pending — but before calling it green, probe for the
-              # failure mode the rollup cannot express: a workflow that died with
-              # `startup_failure` (unresolvable action ref, unparseable YAML)
-              # never produces a check run, so it is invisible here (#143). An
-              # unreadable probe is inconclusive, never green — retry it.
-              # A non-zero exit is only ONE way this probe fails. A proxy or edge
-              # cache can answer 2xx with an HTML error page, and a truncated
-              # body parses as nothing. Swallowing jq's error (`|| echo ""`)
-              # turns any of those into an empty startup-failure list — which is
-              # byte-identical to "nothing failed at startup", i.e. the very
-              # fail-open this probe exists to close. So: keep jq's exit status,
-              # assert the payload SHAPE before trusting it, and route every
-              # failure to `unavailable`. Inconclusive is never clean.
-              #
-              # One jq pass does all three jobs (assert shape, count runs, list
-              # startup failures) — the empty-rollup path probes on EVERY poll,
-              # so this stays one subprocess per attempt. The explicit `ok`
-              # marker, not jq's exit status, is the test: jq handed an empty
-              # body reads zero documents, emits nothing and still exits 0.
-              #
-              # The verdict is a COUNT, never the names string. `name` is
-              # nullable in the runs schema and `[null] | join(", ")` is "" —
-              # so a run that died parsing its own YAML (the #143 scenario, and
-              # the likeliest case for GitHub to report no name) would read as
-              # "nothing failed startup". Names are log text only.
-              #
-              # `runs_seen` excludes the gate's OWN run: the gate is itself a
-              # workflow run on this head, so an unfiltered count is never zero
-              # and the "nothing was ever triggered" shortcut below would be
-              # unreachable. The rollup filter strips the gate's check NAMES but
-              # nothing strips its run. Matching on run id (not name) also holds
-              # for a cross-org `workflow_call`, where the run is the caller's.
-              probe=unavailable
-              runs_seen=0
-              startup_count=0
-              broken=""
-              if runs_json=$(gh api "repos/$TARGET_REPO/actions/runs?head_sha=$EXPECTED_HEAD_SHA&per_page=100" 2>/dev/null) &&
-                 probe_out=$(jq -r '
-                   ((env.GITHUB_RUN_ID // "") | tonumber? // -1) as $self
-                   | if (has("workflow_runs") and (.workflow_runs | type == "array")) then
-                     ([.workflow_runs[]
-                       | select(((.conclusion // "") | ascii_downcase) == "startup_failure")]) as $bad
-                     | "ok\t\(.workflow_runs | map(select(.id != $self)) | length)\t\($bad | length)\t\([$bad[] | .name // "<unnamed>"] | unique | join(", "))"
-                   else "unusable" end' <<<"$runs_json" 2>/dev/null); then
-                IFS=$'\t' read -r probe_marker probe_runs probe_startup probe_broken <<<"$probe_out" || true
-                if [ "${probe_marker:-}" = "ok" ]; then
-                  probe=ok
-                  runs_seen="$probe_runs"
-                  startup_count="$probe_startup"
-                  broken="$probe_broken"
-                fi
-              fi
-              if [ "$probe" != "ok" ]; then
-                elapsed=$(( $(date +%s) - started_epoch ))
-                echo "::warning::phase=ci-wait result=probe-unavailable elapsed_seconds=$elapsed attempt=$i/$max_attempts head=$EXPECTED_HEAD_SHA"
-                sleep 30
-                continue
-              fi
-              if [ "$startup_count" -gt 0 ]; then
-                elapsed=$(( $(date +%s) - started_epoch ))
-                echo "::error::phase=ci-wait result=startup-failure elapsed_seconds=$elapsed lane=$LANE head=$EXPECTED_HEAD_SHA workflows=$broken"
-                echo "Workflow(s) [$broken] failed at startup on $EXPECTED_HEAD_SHA and produced no check run — CI never ran. Not reviewing or merging."
-                # A startup_failure run is a permanent fact about this SHA: it is
-                # never retried and never re-concluded, so fixing the workflow
-                # upstream does NOT clear it and re-running the gate on the same
-                # head will hit this again. Say what actually unblocks it.
-                echo "This run is permanent for $EXPECTED_HEAD_SHA — re-running the gate will not clear it. Fix the workflow (usually an unresolvable action ref or unparseable YAML), then push a new commit so CI evaluates a fresh head; alternatively delete the stale startup_failure run for this SHA."
-                exit 1
-              fi
-              # Absence of a check is NOT a passing check (#143). A workflow that
-              # dies at startup emits no check run at all, so the filtered rollup
-              # can be EMPTY while nothing was ever built, tested or linted.
-              # An empty rollup is never green: keep polling and, if it stays
-              # empty for the whole window, fail closed with result=no-checks.
-              if [ "$checks" -eq 0 ]; then
-                elapsed=$(( $(date +%s) - started_epoch ))
-                # Decide early rather than polling to the ceiling: no checks in
-                # the rollup AND zero workflow runs for this head means nothing
-                # was ever triggered (typically an unmatched `paths:` filter), a
-                # state that cannot change without a push. Keep a short grace
-                # period so a check that is merely slow to register still wins.
-                if [ "$runs_seen" -eq 0 ] && [ "$i" -ge "$no_checks_grace_attempts" ]; then
-                  if [ "${ALLOW_ABSENT_CHECKS:-false}" = "true" ]; then
-                    echo "::warning::phase=ci-wait result=no-checks-allowed elapsed_seconds=$elapsed attempts=$i lane=$LANE head=$EXPECTED_HEAD_SHA"
-                    echo "PR #$PR_NUMBER has no CI checks for $EXPECTED_HEAD_SHA and no workflow runs were triggered. Proceeding ONLY because allow_absent_checks=true was explicitly set for this run (#143)."
-                    exit 0
-                  fi
-                  echo "::error::phase=ci-wait result=no-checks elapsed_seconds=$elapsed attempts=$i lane=$LANE head=$EXPECTED_HEAD_SHA"
-                  echo "$no_checks_remediation"
-                  exit 1
-                fi
-                echo "phase=ci-wait elapsed_seconds=$elapsed attempt=$i/$max_attempts checks=0 runs=$runs_seen pending=<none-reported>"
-                sleep 30
-                continue
-              fi
-              elapsed=$(( $(date +%s) - started_epoch ))
-              echo "::notice::phase=ci-wait result=green elapsed_seconds=$elapsed attempts=$i checks=$checks lane=$LANE"
-              exit 0
-            fi
-            elapsed=$(( $(date +%s) - started_epoch ))
-            echo "phase=ci-wait elapsed_seconds=$elapsed attempt=$i/$max_attempts pending=$pending"
-            sleep 30
-          done
-          elapsed=$(( $(date +%s) - started_epoch ))
-          # Name the reason the window ran out, so "fail closed" is never a
-          # silent hang: an unverifiable probe, no checks at all, or real pending
-          # work are three different problems with three different fixes.
-          if [ "$checks_probe" != "ok" ]; then
-            echo "::error::phase=ci-wait result=checks-unavailable elapsed_seconds=$elapsed lane=$LANE head=$EXPECTED_HEAD_SHA"
-            echo "Could not read and validate repository check runs and commit statuses for $EXPECTED_HEAD_SHA. Failing closed; re-run the gate once both APIs return usable pages."
-            exit 1
-          fi
-          if [ "$probe" = "unavailable" ]; then
-            echo "::error::phase=ci-wait result=probe-unavailable elapsed_seconds=$elapsed lane=$LANE head=$EXPECTED_HEAD_SHA"
-            echo "Could not read the workflow runs for $EXPECTED_HEAD_SHA, so a startup_failure (which produces no check run) could not be ruled out. Failing closed; re-run the gate once the API is reachable."
-            exit 1
-          fi
-          if [ "$checks" -eq 0 ]; then
-            if [ "${ALLOW_ABSENT_CHECKS:-false}" = "true" ]; then
-              echo "::warning::phase=ci-wait result=no-checks-allowed elapsed_seconds=$elapsed lane=$LANE head=$EXPECTED_HEAD_SHA"
-              echo "PR #$PR_NUMBER still reports no CI checks for $EXPECTED_HEAD_SHA. Proceeding ONLY because allow_absent_checks=true was explicitly set for this run (#143)."
-              exit 0
-            fi
-            echo "::error::phase=ci-wait result=no-checks elapsed_seconds=$elapsed lane=$LANE head=$EXPECTED_HEAD_SHA"
-            echo "$no_checks_remediation"
-            exit 1
-          fi
-          echo "::error::phase=ci-wait result=timeout elapsed_seconds=$elapsed lane=$LANE pending=$pending"
-          exit 1
 
       - name: Checkout PR head
         if: needs.preflight.outputs.lane == 'ai'
@@ -1222,7 +847,7 @@ jobs:
               fi
               diff_delay=$((1 << (diff_attempt - 1)))
               echo "::warning::phase=review-input result=retry kind=git_fetch mode=$fetch_mode attempt=$diff_attempt/$diff_max_attempts backoff_seconds=$diff_delay"
-              sleep "$diff_delay"
+              : # retry immediately; never hold a runner merely for backoff
               diff_attempt=$((diff_attempt + 1))
             done
           }
@@ -1273,9 +898,8 @@ jobs:
             END { print out }
           ' .ai-review/pr.full.diff)"
 
-          # Debounce synchronize bursts. Concurrency cancels an older run, and
-          # this SHA check ensures a superseded revision never reaches Claude.
-          sleep 30
+          # Re-read immediately before model spend. Duplicate webhook delivery
+          # is deduplicated by the trusted arm; no runner debounce is needed.
           current=$(gh pr view "$PR_NUMBER" --repo "$TARGET_REPO" --json headRefOid --jq .headRefOid)
           [ "$current" = "${{ needs.preflight.outputs.head_sha }}" ] || {
             echo "PR head moved to $current during debounce; a newer run will review it."
@@ -1823,36 +1447,6 @@ jobs:
             $body"
           fi
 
-      - name: Build trusted merge attestation
-        env:
-          VERDICT: ${{ steps.submit.outputs.verdict }}
-        run: |
-          set -euo pipefail
-          dir="$RUNNER_TEMP/merge-attestation"
-          rm -rf "$dir"
-          mkdir -m 700 "$dir"
-          followups='[]'
-          if [ -n "${VERDICT:-}" ]; then
-            followups="$(jq -c '.followups // []' <<<"$VERDICT")"
-          fi
-          jq -n \
-            --arg repository "$TARGET_REPO" \
-            --argjson pr_number "$PR_NUMBER" \
-            --arg head_sha "$EXPECTED_HEAD_SHA" \
-            --argjson run_id "$GITHUB_RUN_ID" \
-            --argjson followups "$followups" \
-            '{version:1, repository:$repository, pr_number:$pr_number,
-              head_sha:$head_sha, run_id:$run_id, followups:$followups}' \
-            >"$dir/attestation.json"
-
-      - name: Upload trusted merge attestation
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: merge-attestation-${{ github.run_id }}
-          path: ${{ runner.temp }}/merge-attestation/attestation.json
-          retention-days: 1
-          if-no-files-found: error
-
       # --- CI telemetry (best-effort). Every step is `continue-on-error` so it
       # can NEVER fail or block the gate, and it stays dormant until
       # OTEL_EXPORTER_OTLP_ENDPOINT is set — the composite action no-ops without
@@ -1936,536 +1530,106 @@ jobs:
       # once the meta runner can resolve the private action AND the OTLP
       # endpoint is provisioned (see docs/ci-telemetry.md, ADR 0004).
 
-      - name: Authoritative merge recheck and squash-merge
-        id: merge
-        if: ${{ false }}
-        env:
-          GH_TOKEN: ${{ github.token }}
-          ALLOW_ABSENT_CHECKS: ${{ inputs.allow_absent_checks || false }}
-        run: |
-          set -euo pipefail
-          for tool in gh jq; do
-            command -v "$tool" >/dev/null 2>&1 || {
-              echo "::error::phase=merge-recheck result=toolchain-missing tool=$tool runner=${RUNNER_NAME:-unknown} — this runner cannot perform the authoritative merge recheck."
-              exit 1
-            }
-          done
-          REPO="$TARGET_REPO"
-          merge_started_epoch="$(date +%s)"
-          echo "::notice::phase=merge-recheck started_at=$(date -u +%Y-%m-%dT%H:%M:%SZ) lane=$LANE expected_head=$EXPECTED_HEAD_SHA"
-          # Re-check the opt-outs at merge time — the authoritative hold gate:
-          # a `hold`/`DO NOT MERGE` label added after classification must still
-          # stop the merge. Match is case- and separator-insensitive so a
-          # `DO NOT MERGE` *label* (not just the title marker) holds too — #51.
-          meta=$(gh pr view "$PR_NUMBER" --repo "$REPO" --json labels,title,isDraft,state,headRefOid)
-          # Fail-closed string form, not `if jq -e …` (#480). This is the LAST
-          # checkpoint before an autonomous merge, so a jq error being read as
-          # "not held" here merged past a human's hold outright — the exact
-          # inversion of ADR 0012. See the classify copy for the full reasoning.
-          held="$(jq -r '([.labels[].name | ascii_upcase | gsub("[ _-]+";" ")]) as $l | ($l | index("HOLD")) or ($l | index("DO NOT MERGE")) or (.title | ascii_upcase | contains("DO NOT MERGE")) or .isDraft | if . then "true" else "false" end' <<<"$meta")"
-          case "$held" in
-            true)
-              echo "PR #$PR_NUMBER is held (label/title/draft); not merging."
-              exit 0 ;;
-            false) ;;
-            *)
-              echo "::error::could not evaluate the terminal hold for PR #$PR_NUMBER; refusing to merge (ADR 0012, #480)"
-              exit 1 ;;
-          esac
-          if [ "$(jq -r .state <<<"$meta")" != "OPEN" ]; then
-            echo "PR #$PR_NUMBER is no longer open; nothing to do."
-            exit 0
-          fi
-          current_head="$(jq -r '.headRefOid // ""' <<<"$meta")"
-          if [ -z "$EXPECTED_HEAD_SHA" ] || [ "$current_head" != "$EXPECTED_HEAD_SHA" ]; then
-            echo "::error::phase=merge-recheck result=head-changed expected=$EXPECTED_HEAD_SHA current=$current_head"
-            exit 1
-          fi
 
-          # Re-derive this run's own job names (see the ci-wait step for why
-          # runtime provenance, and not name normalization, is the only safe
-          # source). Re-deriving rather than reusing the ci-wait snapshot also
-          # picks up jobs that were created since — they are created as they
-          # start — while the static list below stays as the floor for the ones
-          # still ahead of this step (#276).
-          # `| strings` is load-bearing: `name` is nullable in the jobs schema
-          # and `jq -r` renders a null as the literal "null", which would
-          # exclude a consumer check that happens to be named `null`.
-          self_jobs='[]'
-          self_jobs_rc=1
-          if [ -n "${GITHUB_REPOSITORY:-}" ] && [ -n "${GITHUB_RUN_ID:-}" ]; then
-            self_jobs_rc=0
-            self_job_names=$(gh api --paginate \
-              "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/jobs?per_page=100" \
-              --jq '.jobs[].name | strings' 2>/dev/null) || self_jobs_rc=$?
-            if [ "$self_jobs_rc" -eq 0 ]; then
-              self_jobs=$(jq -R -s -c 'split("\n") | map(select(. != ""))' \
-                <<<"$self_job_names") || self_jobs_rc=$?
-            fi
-            if [ "$self_jobs_rc" -eq 0 ]; then
-              self_jobs_summary=$(jq -r 'join(", ")' <<<"$self_jobs") || self_jobs_rc=$?
-            fi
-          fi
-          if [ "$self_jobs_rc" -eq 127 ]; then
-            echo "::error::phase=merge-recheck result=toolchain-missing runner=${RUNNER_NAME:-unknown} — the CLI disappeared while enumerating this gate's jobs."
-            exit 1
-          elif [ "$self_jobs_rc" -eq 0 ]; then
-            echo "::notice::phase=merge-recheck self_jobs=$self_jobs_summary"
-          else
-            self_jobs='[]'
-            echo "::warning::phase=merge-recheck result=self-jobs-unavailable run_id=${GITHUB_RUN_ID:-<unset>} — falling back to the static gate job names; a reusable-call install may see its own '<caller> / <job>' checks treated as required (#276)."
-          fi
-
-          # One immediate, authoritative CI snapshot. There is deliberately no
-          # second polling loop after model spend: pending, red, or inconclusive
-          # state fails closed and a later event/re-run can attempt the new head.
-          checks_rc=0
-          statuses_rc=0
-          rollup_rc=0
-          check_pages=$(gh api --paginate \
-              "repos/$REPO/commits/$EXPECTED_HEAD_SHA/check-runs?per_page=100" 2>/dev/null |
-            jq -s -c '.') || checks_rc=$?
-          status_pages=$(gh api --paginate \
-              "repos/$REPO/commits/$EXPECTED_HEAD_SHA/status?per_page=100" 2>/dev/null |
-            jq -s -c '.') || statuses_rc=$?
-          if [ "$checks_rc" -eq 0 ] && [ "$statuses_rc" -eq 0 ]; then
-            rollup=$(jq -c '
-               if ((.checks | type) != "array" or
-                   (.statuses | type) != "array" or
-                   (.checks | length) == 0 or
-                   (.statuses | length) == 0 or
-                   ([.checks[] |
-                     select((.check_runs | type) != "array")] | length) != 0 or
-                   ([.statuses[] |
-                     select((.statuses | type) != "array")] | length) != 0)
-               then error("unusable CI status API response")
-               else
-               ([.checks[] | .check_runs[] |
-                 {name,
-                  status: ((.status // "") | ascii_upcase),
-                  conclusion: (if .conclusion == null then null
-                               else (.conclusion | ascii_upcase) end)}] +
-                ([.statuses[] | .statuses[] |
-                  {context, state: ((.state // "") | ascii_upcase)}] |
-                 reduce .[] as $status
-                   ([]; if any(.[]; .context == $status.context)
-                        then . else . + [$status] end))) |
-               [.[] | select((.name // .context) as $n |
-                 # Provenance alone is too wide. In the workflow_call shape the gate
-                 # jobs belong to the CALLER run, so this endpoint also returns the
-                 # consumer own jobs — ci / build-test among them. Subtracting those
-                 # would drop real CI from the required set and merge on red.
-                 # Exclude a name only where provenance AND the gate own job
-                 # vocabulary agree, so a foreign "security / review" still counts
-                 # and a sibling "ci / build-test" is never silently dropped (#276).
-                 (($n | IN($self_jobs[])) and
-                  ($n | endswith("/ preflight") or endswith("/ gate") or
-                        endswith("/ freshness") or endswith("/ classify") or
-                        endswith("/ ai-review") or endswith("/ ai-merge") or
-                        endswith("/ review") or endswith("/ dispatch-merge") or
-                        endswith("/ privileged_merge")) | not) and
-                 $n != "preflight" and $n != "gate" and
-                 $n != "freshness" and $n != "classify" and
-                 $n != "ai-review" and $n != "ai-merge" and
-                 $n != "review" and $n != "dispatch-merge" and
-                 $n != "privileged_merge" and
-                 ($n | endswith("/ privileged_merge") | not))]
-               end
-             ' --argjson self_jobs "$self_jobs" <<<"{\"checks\":$check_pages,\"statuses\":$status_pages}" 2>/dev/null) || rollup_rc=$?
-          else
-            rollup_rc=1
-          fi
-          if [ "$checks_rc" -eq 127 ] || [ "$statuses_rc" -eq 127 ] || [ "$rollup_rc" -eq 127 ]; then
-            echo "::error::phase=merge-recheck result=toolchain-missing elapsed_seconds=$(( $(date +%s) - merge_started_epoch )) checks_endpoint_rc=$checks_rc statuses_endpoint_rc=$statuses_rc aggregate_shape_rc=$rollup_rc runner=${RUNNER_NAME:-unknown}"
-            exit 1
-          fi
-          if [ "$checks_rc" -ne 0 ] || [ "$statuses_rc" -ne 0 ] || [ "$rollup_rc" -ne 0 ]; then
-            echo "::error::phase=merge-recheck result=checks-unavailable elapsed_seconds=$(( $(date +%s) - merge_started_epoch )) head=$EXPECTED_HEAD_SHA checks_endpoint_rc=$checks_rc statuses_endpoint_rc=$statuses_rc aggregate_shape_rc=$rollup_rc gh_version=$(gh --version 2>/dev/null | head -n 1 | tr ' ' '_' || echo unavailable)"
-            exit 1
-          fi
-          failed=$(jq '[.[] | select(
-            if .state then
-              ((.state // "") | IN("SUCCESS","PENDING","EXPECTED") | not)
-            else
-              (.status == "COMPLETED" and (.conclusion // "") != "" and ((.conclusion // "") | IN("SUCCESS","NEUTRAL","SKIPPED") | not))
-            end
-          )] | length' <<<"$rollup")
-          pending=$(jq -r '[.[] | select(if .state then (.state | IN("PENDING","EXPECTED")) else (.status != "COMPLETED" or (.conclusion // "") == "") end) | "\(.name // .context)=\(.state // .status)"] | join(", ")' <<<"$rollup")
-          if [ "$failed" -gt 0 ]; then
-            echo "::error::phase=merge-recheck result=failed elapsed_seconds=$(( $(date +%s) - merge_started_epoch ))"
-            jq -r '.[] | select(if .state then ((.state // "") | IN("SUCCESS","PENDING","EXPECTED") | not) else (.status == "COMPLETED" and (.conclusion // "") != "" and ((.conclusion // "") | IN("SUCCESS","NEUTRAL","SKIPPED") | not)) end) | (.name // .context)' <<<"$rollup"
-            exit 1
-          fi
-          if [ -n "$pending" ]; then
-            echo "::error::phase=merge-recheck result=pending elapsed_seconds=$(( $(date +%s) - merge_started_epoch )) pending=$pending"
-            exit 1
-          fi
-          # Fail closed on ABSENT CI, not just red or pending CI (#143). This
-          # snapshot is authoritative and irreversible (it squash-merges), so it
-          # repeats both absence checks the ci-wait step makes rather than
-          # trusting that earlier snapshot: an empty post-filter rollup means no
-          # check ever reported, and a `startup_failure` run produces no check
-          # run at all. An unreadable probe is inconclusive — also fail closed;
-          # a later event re-runs the gate.
-          # Same order as ci-wait (probe → startup-failure → no-checks) so the
-          # two steps give the SAME diagnosis for the same repo state: probing
-          # first lets an absent-check PR be reported as the actionable
-          # `startup-failure` rather than the generic `no-checks`.
-          #
-          # The probe mirrors ci-wait's hardening: keep jq's exit status instead
-          # of `|| echo ""`, and require the shape assertion to produce `true`
-          # (jq exits 0 on an empty body). A 2xx carrying an HTML error page or a
-          # truncated payload must read as INCONCLUSIVE — reading it as "no
-          # startup failures" is what let an unbuilt PR merge (#143).
-          #
-          # Unlike ci-wait, this step has already paid for the model review, so a
-          # single transient API blip must not throw that away and demand a
-          # manual workflow_dispatch: retry a bounded few times, then fail closed.
-          # Same jq pass, same field order and same COUNT-based verdict as
-          # ci-wait: `name` is nullable, and `[null] | join(", ")` is "", so a
-          # name-keyed test would merge a PR whose workflow died parsing its own
-          # YAML. Names are log text only. Any divergence between the wait rule
-          # and the merge rule is the original bug class (#143). The run count is
-          # read into `_` rather than dropped from the jq output on purpose: the
-          # two programs must stay diffable field-for-field. Only ci-wait needs
-          # the count (for its "nothing was triggered" shortcut).
-          broken=""
-          startup_count=0
-          probe=unavailable
-          for probe_attempt in 1 2 3; do
-            if runs_json=$(gh api "repos/$REPO/actions/runs?head_sha=$EXPECTED_HEAD_SHA&per_page=100" 2>/dev/null) &&
-               probe_out=$(jq -r '
-                 ((env.GITHUB_RUN_ID // "") | tonumber? // -1) as $self
-                 | if (has("workflow_runs") and (.workflow_runs | type == "array")) then
-                   ([.workflow_runs[]
-                     | select(((.conclusion // "") | ascii_downcase) == "startup_failure")]) as $bad
-                   | "ok\t\(.workflow_runs | map(select(.id != $self)) | length)\t\($bad | length)\t\([$bad[] | .name // "<unnamed>"] | unique | join(", "))"
-                 else "unusable" end' <<<"$runs_json" 2>/dev/null) &&
-               IFS=$'\t' read -r probe_marker _ probe_startup probe_broken <<<"$probe_out" &&
-               [ "${probe_marker:-}" = "ok" ]; then
-              probe=ok
-              startup_count="$probe_startup"
-              broken="$probe_broken"
-              break
-            fi
-            echo "::warning::phase=merge-recheck result=probe-retry attempt=$probe_attempt/3 head=$EXPECTED_HEAD_SHA"
-            if [ "$probe_attempt" -lt 3 ]; then sleep 5; fi
-          done
-          if [ "$probe" != "ok" ]; then
-            echo "::error::phase=merge-recheck result=probe-unavailable elapsed_seconds=$(( $(date +%s) - merge_started_epoch )) head=$EXPECTED_HEAD_SHA"
-            echo "Could not read the workflow runs for $EXPECTED_HEAD_SHA after 3 attempts, so a startup_failure (which produces no check run) could not be ruled out. Not merging; a later gate event will retry."
-            exit 1
-          fi
-          if [ "$startup_count" -gt 0 ]; then
-            echo "::error::phase=merge-recheck result=startup-failure elapsed_seconds=$(( $(date +%s) - merge_started_epoch )) head=$EXPECTED_HEAD_SHA workflows=$broken"
-            echo "Workflow(s) [$broken] failed at startup on $EXPECTED_HEAD_SHA and produced no check run — CI never ran. Not merging."
-            echo "This run is permanent for $EXPECTED_HEAD_SHA — re-running the gate will not clear it. Fix the workflow, then push a new commit; alternatively delete the stale startup_failure run for this SHA."
-            exit 1
-          fi
-          if [ "$(jq 'length' <<<"$rollup")" -eq 0 ]; then
-            if [ "${ALLOW_ABSENT_CHECKS:-false}" = "true" ]; then
-              echo "::warning::phase=merge-recheck result=no-checks-allowed elapsed_seconds=$(( $(date +%s) - merge_started_epoch )) head=$EXPECTED_HEAD_SHA"
-              echo "PR #$PR_NUMBER has no CI checks for $EXPECTED_HEAD_SHA. Merging ONLY because allow_absent_checks=true was explicitly set for this run (#143)."
-            else
-              echo "::error::phase=merge-recheck result=no-checks elapsed_seconds=$(( $(date +%s) - merge_started_epoch )) head=$EXPECTED_HEAD_SHA"
-              echo "PR #$PR_NUMBER reported no CI checks at all for $EXPECTED_HEAD_SHA; absent checks are not green. Not merging."
-              exit 1
-            fi
-          fi
-          if [ "$LANE" = "fast" ]; then
-            # Audit trail: the fast lane's written record replaces the AI review.
-            gh pr comment "$PR_NUMBER" --repo "$REPO" --body "✅ **Merge gate: fast lane** (no AI review needed) — ${LANE_REASON}. All CI checks green; squash-merging." || true
-          fi
-          echo "All checks green and head unchanged; merging PR #$PR_NUMBER (lane: $LANE)."
-          gh pr merge "$PR_NUMBER" --repo "$REPO" --squash --admin --delete-branch \
-            --match-head-commit "$EXPECTED_HEAD_SHA"
-          echo "::notice::phase=merge result=merged elapsed_seconds=$(( $(date +%s) - merge_started_epoch )) lane=$LANE"
-
-  dispatch-merge:
+  complete-authorization:
     needs: [preflight, gate]
-    if: needs.gate.result == 'success'
-    outputs:
-      dispatch_available: ${{ steps.dispatch.outputs.dispatch_available }}
-      dispatch_failure: ${{ steps.dispatch.outputs.dispatch_failure }}
-      merge_observed: ${{ steps.dispatch.outputs.merge_observed }}
-      blocking_review: ${{ steps.dispatch.outputs.blocking_review }}
-      policy_blocked: ${{ steps.dispatch.outputs.policy_blocked }}
-      blocker: ${{ steps.dispatch.outputs.blocker }}
-      remediation: ${{ steps.dispatch.outputs.remediation }}
-    # A workflow_call consumer's explicit fleet selection has the same first
-    # precedence here as on preflight and gate (#411, ADR 0068). The job holds
-    # only the scoped github.token; ORG_ADMIN_TOKEN remains isolated in the
-    # fixed privileged continuation.
-    # This metadata-only job dispatches once and performs bounded PR-state reads
-    # for the merge postcondition. On the shared pool it otherwise queues behind
-    # every newer PR's preflight, so reviewed work can be last to finish.
-    runs-on: ${{ inputs.runner_labels && fromJSON(inputs.runner_labels) || github.repository_owner != 'Verjson' && 'ubuntu-24.04' || needs.preflight.outputs.target_private == 'false' && fromJSON(vars.VERJSON_RUNNER_FASTLANE || '["ubuntu-24.04"]') || fromJSON(vars.VERJSON_RUNNER_OVERFLOW || vars.VERJSON_LANE_PRIVILEGED || vars.VERJSON_LANE_FALLBACK || '["ubuntu-24.04"]') }}
-    # The observation window covers the privileged workflow's 45-minute ceiling,
-    # ten minutes of shared-runner queue contention, and five minutes of API
-    # disruption. The 66-minute job ceiling leaves setup and publication
-    # headroom beyond that derived 60-minute probe window.
-    timeout-minutes: 66
+    if: always() && inputs.authorization_check_id != ''
+    runs-on: ${{ fromJSON(vars.VERJSON_RUNNER_FASTLANE || '["ubuntu-24.04"]') }}
+    timeout-minutes: 5
     permissions:
+      actions: read
       contents: read
-      actions: write
       pull-requests: read
     env:
+      AUTHORIZATION_CHECK_ID: ${{ inputs.authorization_check_id }}
+      ARM_RUN_ID: ${{ inputs.arm_run_id }}
+      ARM_RUN_ATTEMPT: ${{ inputs.arm_run_attempt }}
+      EXPECTED_APP_ID: ${{ vars.AI_REVIEW_APP_ID }}
+      EXPECTED_APP_SLUG: ${{ vars.AI_REVIEW_APP_SLUG }}
       EXPECTED_HEAD_SHA: ${{ needs.preflight.outputs.head_sha }}
-      PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr_number }}
+      EXPECTED_AUTHORIZED_HEAD_SHA: ${{ inputs.expected_head_sha }}
+      EXPECTED_REVIEWED_HEAD_SHA: ${{ needs.preflight.outputs.head_sha }}
+      GATE_STATUS: ${{ needs.gate.result }}
+      PR_NUMBER: ${{ inputs.pr_number }}
       TARGET_REPO: ${{ github.repository }}
-      SOURCE_RUN_ID: ${{ github.run_id }}
-      PRIVILEGED_MERGE_TIMEOUT_MINUTES: 45
-      MERGE_QUEUE_MARGIN_MINUTES: 10
-      MERGE_API_MARGIN_MINUTES: 5
-      MERGE_PROBE_ATTEMPTS: 361
-      MERGE_PROBE_INTERVAL_SECONDS: 10
     steps:
-      - name: Dispatch fixed trusted merge continuation
-        id: dispatch
+      - name: Resolve executing trusted workflow revision
+        id: trusted-revision
+        env:
+          EXECUTING_WORKFLOW_SHA: ${{ job.workflow_sha }}
+        run: echo "sha=$EXECUTING_WORKFLOW_SHA" >>"$GITHUB_OUTPUT"
+
+      - name: Check out immutable arm verifier
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: Verjson/.github
+          ref: ${{ steps.trusted-revision.outputs.sha }}
+          path: .gate-trust
+          sparse-checkout: scripts/ci-gate/verify-arm-receipt.sh
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
+      - name: Mint dedicated authorization App token
+        id: app-token
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2
+        with:
+          app-id: ${{ vars.AI_REVIEW_APP_ID }}
+          private-key: ${{ secrets.AI_REVIEW_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+
+      - name: Complete exact head authorization
+        env:
+          ACTIONS_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          set -euo pipefail
+          [[ "$AUTHORIZATION_CHECK_ID" =~ ^[1-9][0-9]*$ ]] || exit 1
+          GH_TOKEN="$ACTIONS_TOKEN" .gate-trust/scripts/ci-gate/verify-arm-receipt.sh
+          conclusion=failure
+          title='AI review blocked'
+          summary='The review failed, was inconclusive, or returned blocking findings.'
+          current_head="$(GH_TOKEN="$ACTIONS_TOKEN" gh pr view "$PR_NUMBER" --repo "$TARGET_REPO" --json headRefOid --jq '.headRefOid // ""')"
+          if [ "$GATE_STATUS" = success ] &&
+             [ "$current_head" = "$EXPECTED_AUTHORIZED_HEAD_SHA" ] &&
+             [ "$EXPECTED_REVIEWED_HEAD_SHA" = "$EXPECTED_AUTHORIZED_HEAD_SHA" ]; then
+            conclusion=success
+            title='AI review authorized'
+            summary='This exact PR head passed deterministic review. GitHub may merge it only after ordinary required CI passes.'
+          fi
+          gh api --method PATCH "repos/$TARGET_REPO/check-runs/$AUTHORIZATION_CHECK_ID" \
+            -f status=completed -f conclusion="$conclusion" \
+            -f "output[title]=$title" -f "output[summary]=$summary"
+          [ "$conclusion" = success ] || exit 1
+
+  dispatch-merge:
+    needs: [preflight, gate, complete-authorization]
+    if: needs.complete-authorization.result == 'success'
+    runs-on: ${{ inputs.runner_labels && fromJSON(inputs.runner_labels) || github.repository_owner != 'Verjson' && 'ubuntu-24.04' || needs.preflight.outputs.target_private == 'false' && fromJSON(vars.VERJSON_RUNNER_FASTLANE || '["ubuntu-24.04"]') || fromJSON(vars.VERJSON_LANE_PRIVILEGED || vars.VERJSON_LANE_FALLBACK || '["ubuntu-24.04"]') }}
+    timeout-minutes: 5
+    permissions:
+      actions: write
+      contents: read
+    env:
+      AUTHORIZATION_CHECK_ID: ${{ inputs.authorization_check_id }}
+      EXPECTED_HEAD_SHA: ${{ inputs.expected_head_sha }}
+      PR_NUMBER: ${{ inputs.pr_number }}
+      TARGET_REPO: ${{ github.repository }}
+    steps:
+      - name: Dispatch trusted native auto-merge promotion
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          [[ "$TARGET_REPO" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] ||
-            { echo "::error::invalid repository identity"; exit 1; }
-          [ "$TARGET_REPO" = "$GITHUB_REPOSITORY" ] ||
-            { echo "::error::repository identity mismatch"; exit 1; }
-          [[ "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]] ||
-            { echo "::error::invalid PR number"; exit 1; }
-          [[ "$EXPECTED_HEAD_SHA" =~ ^[0-9a-f]{40}$ ]] ||
-            { echo "::error::invalid expected head"; exit 1; }
-          [[ "$SOURCE_RUN_ID" =~ ^[1-9][0-9]*$ ]] ||
-            { echo "::error::invalid source run"; exit 1; }
-          trusted_path="$(
-            gh api --paginate "repos/$TARGET_REPO/actions/workflows" \
-              --jq '.workflows[] | select(.path == ".github/workflows/ai-privileged-merge.yml") | .path'
-          )"
-          if [ -z "$trusted_path" ]; then
-            echo "::error title=Missing trusted privileged merge continuation::Install .github/workflows/ai-privileged-merge.yml with scripts/gen-privileged-merge-caller.sh and grant this repository access to the ORG_ADMIN_TOKEN organization secret."
-            {
-              echo "dispatch_available=false"
-              echo "dispatch_failure=continuation_absent"
-              echo "merge_observed=false"
-              echo "blocking_review=false"
-              echo "policy_blocked=false"
-              echo "blocker=continuation_absent"
-              echo "remediation=install_privileged_merge_caller"
-            } >>"$GITHUB_OUTPUT"
-            exit 1
-          fi
-          [ "$trusted_path" = ".github/workflows/ai-privileged-merge.yml" ] ||
-            { echo "::error::trusted workflow identity mismatch"; exit 1; }
-          # A dispatch 5xx is ambiguous: GitHub may have queued the workflow
-          # before returning the error (#475). Retrying an identical request is
-          # safe because every privileged continuation independently revalidates
-          # this source run and expected head before it can merge. Retry only
-          # 5xx/transport availability; 4xx (including rate limits) is structural
-          # and fails immediately. Never print raw CLI output.
-          dispatch_attempt=1
-          dispatch_max_attempts=4
-          while :; do
-            if dispatch_error=$(gh workflow run ai-privileged-merge.yml --repo "$TARGET_REPO" \
-              -f pr_number="$PR_NUMBER" \
-              -f expected_head_sha="$EXPECTED_HEAD_SHA" \
-              -f source_run_id="$SOURCE_RUN_ID" 2>&1); then
-              unset dispatch_error
-              {
-                echo "dispatch_available=true"
-                echo "dispatch_failure=none"
-              } >>"$GITHUB_OUTPUT"
-              break
-            else
-              dispatch_rc=$?
-            fi
-            dispatch_http_status=$(sed -nE 's/.*HTTP ([0-9]{3}).*/\1/p' <<<"$dispatch_error" | tail -n1)
-            unset dispatch_error
-            if [[ "$dispatch_http_status" =~ ^4[0-9][0-9]$ ]]; then
-              {
-                echo "dispatch_available=false"
-                echo "dispatch_failure=client_error"
-              } >>"$GITHUB_OUTPUT"
-              echo "::error::phase=merge-dispatch result=unavailable kind=client_error http_status=$dispatch_http_status attempts=$dispatch_attempt — trusted merge dispatch was rejected; the review verdict itself succeeded"
-              exit "$dispatch_rc"
-            fi
-            if [ -n "$dispatch_http_status" ] && [[ ! "$dispatch_http_status" =~ ^5[0-9][0-9]$ ]]; then
-              {
-                echo "dispatch_available=false"
-                echo "dispatch_failure=github_http_error"
-              } >>"$GITHUB_OUTPUT"
-              echo "::error::phase=merge-dispatch result=unavailable kind=github_http_error http_status=$dispatch_http_status attempts=$dispatch_attempt — trusted merge dispatch failed after review"
-              exit "$dispatch_rc"
-            fi
-            if [ -n "$dispatch_http_status" ]; then
-              dispatch_kind=github_5xx
-              dispatch_signal="http_status=$dispatch_http_status"
-            else
-              dispatch_kind=transport
-              dispatch_signal="http_status=none"
-            fi
-            if [ "$dispatch_attempt" -ge "$dispatch_max_attempts" ]; then
-              {
-                echo "dispatch_available=false"
-                echo "dispatch_failure=infrastructure_unavailable"
-              } >>"$GITHUB_OUTPUT"
-              echo "::error::phase=merge-dispatch result=unavailable kind=infrastructure_unavailable source=$dispatch_kind $dispatch_signal attempts=$dispatch_attempt — GitHub remained unavailable after the review verdict succeeded"
-              # Keep the job red. The privileged continuation currently trusts
-              # only a successful source run and cannot consume this step output
-              # through the run API, so continue-on-error would erase the only
-              # safe distinction it has rather than preserve the review result.
-              exit "$dispatch_rc"
-            fi
-            dispatch_delay=$((1 << (dispatch_attempt - 1)))
-            echo "::warning::phase=merge-dispatch result=retry kind=$dispatch_kind $dispatch_signal attempt=$dispatch_attempt/$dispatch_max_attempts backoff_seconds=$dispatch_delay"
-            sleep "$dispatch_delay"
-            dispatch_attempt=$((dispatch_attempt + 1))
-          done
-          # workflow_dispatch acknowledges queueing, not merging. Treat the PR's
-          # observed state as the postcondition (#384): a successful request
-          # cannot turn this job green while the PR remains open.
-          merge_state_json=""
-          for probe_attempt in $(seq 1 "$MERGE_PROBE_ATTEMPTS"); do
-            if candidate=$(gh pr view "$PR_NUMBER" --repo "$TARGET_REPO" \
-              --json state,mergedAt,reviewDecision,mergeStateStatus,headRefOid 2>/dev/null) &&
-               jq -e '
-                 type == "object"
-                 and (.state | type) == "string"
-                 and ((.mergedAt | type) == "null" or (.mergedAt | type) == "string")
-                 and ((.reviewDecision | type) == "null" or (.reviewDecision | type) == "string")
-                 and (.mergeStateStatus | type) == "string"
-                 and (.headRefOid | type) == "string"
-                 and (.headRefOid | test("^[0-9a-f]{40}$"))
-               ' <<<"$candidate" >/dev/null 2>&1; then
-              merge_state_json=$candidate
-              state_head=$(jq -r .headRefOid <<<"$candidate")
-              if [ "$state_head" != "$EXPECTED_HEAD_SHA" ]; then
-                {
-                  echo "merge_observed=false"
-                  echo "blocking_review=false"
-                  echo "policy_blocked=false"
-                  echo "blocker=head_changed"
-                  echo "remediation=rerun_gate_for_current_head"
-                } >>"$GITHUB_OUTPUT"
-                echo "::error::phase=merge-postcondition result=head-changed blocker=head_changed expected_head=$EXPECTED_HEAD_SHA actual_head=$state_head remediation=rerun_gate_for_current_head"
-                exit 1
-              fi
-              if [ "$(jq -r .state <<<"$candidate")" = "CLOSED" ] &&
-                 [ "$(jq -r '.mergedAt // ""' <<<"$candidate")" = "" ]; then
-                {
-                  echo "merge_observed=false"
-                  echo "blocking_review=false"
-                  echo "policy_blocked=false"
-                  echo "blocker=closed_not_merged"
-                  echo "remediation=inspect_closed_pr"
-                } >>"$GITHUB_OUTPUT"
-                echo "::error::phase=merge-postcondition result=not-merged blocker=closed_not_merged state=CLOSED remediation=inspect_closed_pr expected_head=$EXPECTED_HEAD_SHA attempt=$probe_attempt"
-                exit 1
-              fi
-              if [ "$(jq -r .state <<<"$candidate")" = "MERGED" ] &&
-                 [ "$(jq -r '.mergedAt // ""' <<<"$candidate")" != "" ]; then
-                {
-                  echo "merge_observed=true"
-                  echo "blocking_review=false"
-                  echo "policy_blocked=false"
-                  echo "blocker=none"
-                  echo "remediation=none"
-                } >>"$GITHUB_OUTPUT"
-                echo "::notice::phase=merge-postcondition result=merged expected_head=$EXPECTED_HEAD_SHA attempt=$probe_attempt"
-                exit 0
-              fi
-            else
-              echo "::warning::phase=merge-postcondition result=probe-retry attempt=$probe_attempt/$MERGE_PROBE_ATTEMPTS expected_head=$EXPECTED_HEAD_SHA"
-            fi
-            [ "$probe_attempt" -eq "$MERGE_PROBE_ATTEMPTS" ] ||
-              sleep "$MERGE_PROBE_INTERVAL_SECONDS"
-          done
-
-          if [ -z "$merge_state_json" ]; then
-            {
-              echo "merge_observed=false"
-              echo "blocking_review=unknown"
-              echo "policy_blocked=unknown"
-              echo "blocker=state_unavailable"
-              echo "remediation=retry_state_probe"
-            } >>"$GITHUB_OUTPUT"
-            echo "::error::phase=merge-postcondition result=not-observed blocker=state_unavailable blocking_review=unknown policy_blocked=unknown remediation=retry_state_probe expected_head=$EXPECTED_HEAD_SHA"
-            exit 1
-          fi
-
-          state=$(jq -r .state <<<"$merge_state_json")
-          review_decision=$(jq -r '.reviewDecision // "NONE"' <<<"$merge_state_json")
-          merge_state_status=$(jq -r .mergeStateStatus <<<"$merge_state_json")
-          blocking_review=false
-          policy_blocked=false
-          blocker=merge_not_observed
-          remediation=inspect_privileged_merge_run
-          case "$review_decision" in
-            CHANGES_REQUESTED|REVIEW_REQUIRED)
-              blocking_review=true
-              blocker=review
-              remediation=resolve_blocking_review
-              ;;
-            *)
-              if [ "$merge_state_status" = "BLOCKED" ]; then
-                policy_blocked=true
-                blocker=policy
-                remediation=inspect_branch_policy
-              fi
-              ;;
-          esac
-          {
-            echo "merge_observed=false"
-            echo "blocking_review=$blocking_review"
-            echo "policy_blocked=$policy_blocked"
-            echo "blocker=$blocker"
-            echo "remediation=$remediation"
-          } >>"$GITHUB_OUTPUT"
-          echo "::error::phase=merge-postcondition result=not-merged blocker=$blocker state=$state review_decision=$review_decision merge_state_status=$merge_state_status blocking_review=$blocking_review policy_blocked=$policy_blocked remediation=$remediation expected_head=$EXPECTED_HEAD_SHA"
-          exit 1
-
-      - name: Publish typed merge remediation
-        if: always()
-        env:
-          MERGE_OBSERVED: ${{ steps.dispatch.outputs.merge_observed }}
-          BLOCKING_REVIEW: ${{ steps.dispatch.outputs.blocking_review }}
-          POLICY_BLOCKED: ${{ steps.dispatch.outputs.policy_blocked }}
-          BLOCKER: ${{ steps.dispatch.outputs.blocker }}
-          REMEDIATION: ${{ steps.dispatch.outputs.remediation }}
-        run: |
-          set -euo pipefail
-
-          merge_observed=${MERGE_OBSERVED:-false}
-          blocking_review=${BLOCKING_REVIEW:-unknown}
-          policy_blocked=${POLICY_BLOCKED:-unknown}
-          blocker=${BLOCKER:-dispatch_failed}
-          remediation=${REMEDIATION:-inspect_dispatch_failure}
-
-          # Output contract: merge_observed is true|false; diagnostic booleans
-          # are true|false|unknown until terminal evidence resolves them.
-          [[ "$merge_observed" =~ ^(true|false)$ ]] ||
-            { echo "::error::Invalid merge_observed output"; exit 1; }
-          [[ "$blocking_review" =~ ^(true|false|unknown)$ ]] ||
-            { echo "::error::Invalid blocking_review output"; exit 1; }
-          [[ "$policy_blocked" =~ ^(true|false|unknown)$ ]] ||
-            { echo "::error::Invalid policy_blocked output"; exit 1; }
-          [[ "$blocker" =~ ^[a-z0-9_]{1,64}$ ]] ||
-            { echo "::error::Invalid blocker output"; exit 1; }
-          [[ "$remediation" =~ ^[a-z0-9_]{1,64}$ ]] ||
-            { echo "::error::Invalid remediation output"; exit 1; }
-
-          {
-            echo "### Privileged merge outcome"
-            echo
-            echo "| Field | Typed value |"
-            echo "| --- | --- |"
-            echo "| Merge observed | \`$merge_observed\` |"
-            echo "| Blocking review | \`$blocking_review\` |"
-            echo "| Policy blocked | \`$policy_blocked\` |"
-            echo "| Blocker | \`$blocker\` |"
-            echo "| Remediation | \`$remediation\` |"
-          } >>"$GITHUB_STEP_SUMMARY"
-
-          if [ "$merge_observed" = "true" ]; then
-            echo "::notice::Privileged merge observed; blocker=$blocker remediation=$remediation"
-          else
-            echo "::warning::Privileged merge not observed; blocker=$blocker remediation=$remediation"
-          fi
+          [[ "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]] || exit 1
+          [[ "$AUTHORIZATION_CHECK_ID" =~ ^[1-9][0-9]*$ ]] || exit 1
+          [[ "$EXPECTED_HEAD_SHA" =~ ^[0-9a-f]{40}$ ]] || exit 1
+          default_branch="$(gh api "repos/$TARGET_REPO" --jq '.default_branch // ""')"
+          [[ "$default_branch" =~ ^[A-Za-z0-9._/-]+$ ]] || exit 1
+          gh workflow run ai-privileged-merge.yml --repo "$TARGET_REPO" --ref "$default_branch" \
+            -f pr_number="$PR_NUMBER" \
+            -f expected_head_sha="$EXPECTED_HEAD_SHA" \
+            -f authorization_check_id="$AUTHORIZATION_CHECK_ID" \
+            -f arm_run_id="$ARM_RUN_ID" \
+            -f arm_run_attempt="$ARM_RUN_ATTEMPT" \
+            -f source_run_id="$GITHUB_RUN_ID"

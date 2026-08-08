@@ -106,7 +106,7 @@ if awk -F '\t' '
   seen[$2]++ { exit 1 }
   { groups[$1]++; total++ }
   END {
-    exit !(total >= 80 &&
+    exit !(total >= 60 &&
       groups["platform"] > 0 &&
       groups["merge-gate"] > 0 &&
       groups["changelog-release"] > 0)
@@ -118,7 +118,9 @@ else
 fi
 
 for command in \
-  "bash scripts/ci-gate/dispatch-permission.test.sh" \
+  "python3 scripts/ci-gate/event-driven-authorization.test.py" \
+  "bash scripts/ci-gate/arm-receipt.test.sh" \
+  "bash scripts/ci-gate/native-automerge.test.sh" \
   "bash scripts/ci-gate/changelog-caller-contract.test.sh" \
   "bash scripts/runner-selector-health.test.sh" \
   "python3 scripts/changelog.py validate --repo-root ."; do

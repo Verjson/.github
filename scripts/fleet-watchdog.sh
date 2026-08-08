@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Break merge-gate poll deadlocks on the shared self-hosted fleet.
+# Legacy merge-gate poll watchdog, retained inert during the ADR 0079 rollout.
 #
 # `gate` (ai-review-merge.yml) and `privileged_merge` (ai-privileged-merge.yml)
 # hold a runner for tens of minutes while POLLING for checks they cannot
@@ -59,7 +59,7 @@ RUNNER_LABEL="${WATCHDOG_RUNNER_LABEL:-general}"
 # Poll jobs, by the workflow `name:` that owns them. Matching on workflow name
 # rather than job name keeps CI jobs out of scope even if a repository happens
 # to name a job `gate`.
-POLL_WORKFLOWS="${WATCHDOG_POLL_WORKFLOWS:-AI review + auto-merge|AI privileged merge}"
+POLL_WORKFLOWS="${WATCHDOG_POLL_WORKFLOWS:-__no_poll_workflows__}"
 
 # `<workflow name>=<step name>` pairs, `|`-separated. A run whose named step is
 # `in_progress` is provably sleeping on a check it cannot influence; once that
@@ -67,7 +67,7 @@ POLL_WORKFLOWS="${WATCHDOG_POLL_WORKFLOWS:-AI review + auto-merge|AI privileged 
 # `AI privileged merge` is deliberately absent: its poll loop lives inside the
 # same step as the merge itself, so there is nothing to separate and it keeps
 # the age rule, which is the rule that has actually fired in production.
-POLL_STEPS="${WATCHDOG_POLL_STEPS:-AI review + auto-merge=Wait once for the rest of CI to be green}"
+POLL_STEPS="${WATCHDOG_POLL_STEPS:-}"
 
 note() { printf '::notice::watchdog %s\n' "$1"; }
 warn() { printf '::warning::watchdog %s\n' "$1"; }

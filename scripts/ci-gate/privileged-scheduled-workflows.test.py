@@ -82,7 +82,10 @@ def validate_watchdog(document: object) -> None:
     validate_checkout(steps[0], "watchdog checkout")
 
     sweep = require_keys(steps[1], {"name", "env", "run"}, "watchdog sweep")
-    require(sweep["name"] == "Sweep the fleet for poll deadlocks", "watchdog sweep step name changed")
+    require(
+        sweep["name"] == "Confirm the retired poll watchdog has no candidates",
+        "watchdog sweep step name changed",
+    )
     env = require_keys(
         sweep["env"],
         {
@@ -251,7 +254,12 @@ def main() -> int:
     failures += expect_valid("runner admission is schedule-only and event-SHA-bound", validate_admission, admission_text)
 
     cases = [
-        ("fleet watchdog", validate_watchdog, watchdog_text, "      - name: Sweep the fleet for poll deadlocks"),
+        (
+            "fleet watchdog",
+            validate_watchdog,
+            watchdog_text,
+            "      - name: Confirm the retired poll watchdog has no candidates",
+        ),
         (
             "runner admission",
             validate_admission,
