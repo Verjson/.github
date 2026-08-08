@@ -67,8 +67,17 @@ jobs:
           # explicitly; tags remain necessary for documented-tag validation.
           fetch-depth: 1
           fetch-tags: true
+      - name: Clear the runner changelog cache override
+        run: echo "VERJSON_CHANGELOG_TOOL_CACHE=" >> "$GITHUB_ENV"
       - name: Run ${{ matrix.group }} shell contracts without hiding sibling failures
-        run: bash scripts/actions-ci-group.sh "${{ matrix.group }}"
+        env:
+          RUNNER_LABELS: ''
+        run: |
+          group_root="$(mktemp -d "$RUNNER_TEMP/actions-ci-${{ matrix.group }}.XXXXXX")"
+          trap 'rm -rf "$group_root"' EXIT
+          cp -a "$GITHUB_WORKSPACE/." "$group_root/"
+          cd "$group_root"
+          bash scripts/actions-ci-group.sh "${{ matrix.group }}"
 
   # Required-check compatibility boundary. `shell-tests` is the context named
   # by the repository ruleset (ADR 0058), so it remains unmatrixed and reports

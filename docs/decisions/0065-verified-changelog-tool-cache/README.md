@@ -68,6 +68,18 @@ consumers must not vendor or hand-edit the resolution logic.
 - Runner-image/bootstrap delivery is separate work; this decision defines the
   contract it must populate.
 
+## 2026-08-08 correction
+
+Issue [#609](https://github.com/Verjson/.github/issues/609) showed that runner
+bootstrap had exported the shared `/opt/verjson/changelog-tools` preload path to
+ordinary jobs even when that directory was not writable by the runner user. A
+cache hit passed and a cold cache failed, making adopter CI runner-dependent.
+`node-ci.yml` now exports a job-scoped cache under `runner.temp`. This contract
+repository's own adversarial suite instead clears the inherited runner override
+so each fixture's isolated `HOME` remains its cache boundary. Digest verification
+remains the authority boundary; either path provides availability only, as this
+decision requires.
+
 ## Rejected alternatives
 
 - **Trust a commit-keyed filename.** The name does not authenticate writable
