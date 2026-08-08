@@ -1,0 +1,207 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Verjson/.github/blob/main/docs/decisions/0078-container-release-and-runner-deployment-contract/release-manifest.schema.json",
+  "title": "Verjson immutable container release manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "releaseVersion",
+    "candidateVersion",
+    "source",
+    "release",
+    "images",
+    "previousDeployedRelease",
+    "timestamps"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "releaseVersion": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$"
+    },
+    "candidateVersion": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)-rc\\.[1-9][0-9]*\\.[1-9][0-9]*$"
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repository", "commit", "workflow", "runId", "runAttempt"],
+      "properties": {
+        "repository": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"
+        },
+        "commit": {
+          "$ref": "#/$defs/sha"
+        },
+        "workflow": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["path", "contractCommit"],
+          "properties": {
+            "path": {
+              "type": "string",
+              "pattern": "^\\.github/workflows/[A-Za-z0-9_.-]+\\.ya?ml$"
+            },
+            "contractCommit": {
+              "$ref": "#/$defs/sha"
+            }
+          }
+        },
+        "runId": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "runAttempt": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "release": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["workflow", "runId", "runAttempt"],
+      "properties": {
+        "workflow": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["path", "contractCommit"],
+          "properties": {
+            "path": {
+              "type": "string",
+              "pattern": "^\\.github/workflows/[A-Za-z0-9_.-]+\\.ya?ml$"
+            },
+            "contractCommit": {
+              "$ref": "#/$defs/sha"
+            }
+          }
+        },
+        "runId": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "runAttempt": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "images": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["variant", "repository", "indexDigest", "platforms", "provenance"],
+        "properties": {
+          "variant": {
+            "type": "string",
+            "pattern": "^[a-z0-9]+(?:[._-][a-z0-9]+)*$"
+          },
+          "repository": {
+            "type": "string",
+            "pattern": "^ghcr\\.io/[a-z0-9_.-]+/[a-z0-9_.-]+$"
+          },
+          "indexDigest": {
+            "$ref": "#/$defs/digest"
+          },
+          "platforms": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["os", "architecture", "digest"],
+              "properties": {
+                "os": {
+                  "type": "string",
+                  "pattern": "^[a-z0-9]+$"
+                },
+                "architecture": {
+                  "type": "string",
+                  "pattern": "^[a-z0-9_]+$"
+                },
+                "variant": {
+                  "type": "string",
+                  "pattern": "^[a-z0-9]+$"
+                },
+                "digest": {
+                  "$ref": "#/$defs/digest"
+                }
+              }
+            }
+          },
+          "provenance": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["predicateType", "attestationDigest", "builderIdentity"],
+            "properties": {
+              "predicateType": {
+                "type": "string",
+                "format": "uri"
+              },
+              "attestationDigest": {
+                "$ref": "#/$defs/digest"
+              },
+              "builderIdentity": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        }
+      }
+    },
+    "previousDeployedRelease": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["releaseVersion", "manifestDigest"],
+          "properties": {
+            "releaseVersion": {
+              "type": "string",
+              "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$"
+            },
+            "manifestDigest": {
+              "$ref": "#/$defs/digest"
+            }
+          }
+        }
+      ]
+    },
+    "timestamps": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["candidatePublishedAt", "releasedAt"],
+      "properties": {
+        "candidatePublishedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "releasedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      }
+    }
+  },
+  "$defs": {
+    "sha": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    }
+  }
+}
