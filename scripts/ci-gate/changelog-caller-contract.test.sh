@@ -360,6 +360,17 @@ FRAGMENT
   git -C "$dir" commit -qm initial
 }
 
+build_split_adopter() {
+  local dir="$1"
+  build_adopter "$dir" no workflow
+  bash "$gen" generated-artifacts-with-adr-index "$sha" \
+    >"$dir/.github/workflows/generated-artifacts.yml"
+  bash "$gen" adr-index-generator "$sha" >"$dir/scripts/gen-adr-index.sh"
+  chmod +x "$dir/scripts/gen-adr-index.sh"
+  git -C "$dir" add -A
+  git -C "$dir" commit -qm 'add generated artifacts caller'
+}
+
 run_adopter() {
   ( cd "$1" && ./scripts/changelog-contract.test.sh ) >"$tmproot/run.out" 2>&1
 }
@@ -408,6 +419,53 @@ build_adopter "$generated_adopter" no generated-artifacts
 run_adopter "$generated_adopter" \
   && pass "emitted suite accepts the generated-artifacts caller" \
   || fail "emitted suite rejects the generated-artifacts caller: $(tail -2 "$tmproot/run.out")"
+
+split_adopter="$tmproot/adopter-split-generated-artifacts"
+build_split_adopter "$split_adopter"
+run_adopter "$split_adopter" \
+  && pass "emitted suite accepts the supported split caller topology (#610)" \
+  || fail "emitted suite rejects the split caller topology: $(tail -2 "$tmproot/run.out")"
+
+split_stale_pin="$tmproot/adopter-split-stale-pin"
+cp -a "$split_adopter" "$split_stale_pin"
+sed -i "s/generated-artifacts.yml@$sha/generated-artifacts.yml@0000000000000000000000000000000000000000/" \
+  "$split_stale_pin/.github/workflows/generated-artifacts.yml"
+run_adopter "$split_stale_pin" \
+  && fail "split topology accepts a stale generated-artifacts uses pin" \
+  || pass "split topology rejects a stale generated-artifacts uses pin (#610)"
+
+split_stale_ref="$tmproot/adopter-split-stale-contract-ref"
+cp -a "$split_adopter" "$split_stale_ref"
+sed -i "s/contract_ref: $sha/contract_ref: 0000000000000000000000000000000000000000/" \
+  "$split_stale_ref/.github/workflows/generated-artifacts.yml"
+run_adopter "$split_stale_ref" \
+  && fail "split topology accepts a stale generated-artifacts contract_ref" \
+  || pass "split topology rejects a stale generated-artifacts contract_ref (#610)"
+
+split_shadow_pin="$tmproot/adopter-split-shadow-pin"
+cp -a "$split_adopter" "$split_shadow_pin"
+sed -i "s/generated-artifacts.yml@$sha/generated-artifacts.yml@0000000000000000000000000000000000000000/" \
+  "$split_shadow_pin/.github/workflows/generated-artifacts.yml"
+printf '# uses: Verjson/.github/.github/workflows/generated-artifacts.yml@%s\n# contract_ref: %s\n' \
+  "$sha" "$sha" >>"$split_shadow_pin/.github/workflows/generated-artifacts.yml"
+run_adopter "$split_shadow_pin" \
+  && fail "split topology accepts stale fields shadowed by correct comments" \
+  || pass "split topology rejects stale fields shadowed by correct comments (#610)"
+
+split_missing_adr="$tmproot/adopter-split-missing-adr"
+cp -a "$split_adopter" "$split_missing_adr"
+sed -i '/^ *adr-index: true$/d' \
+  "$split_missing_adr/.github/workflows/generated-artifacts.yml"
+run_adopter "$split_missing_adr" \
+  && fail "split topology accepts generated-artifacts without ADR-index validation" \
+  || pass "split topology requires ADR-index validation (#610)"
+
+split_wrong_generator="$tmproot/adopter-split-wrong-adr-generator"
+cp -a "$split_adopter" "$split_wrong_generator"
+printf '\n# drift\n' >>"$split_wrong_generator/scripts/gen-adr-index.sh"
+run_adopter "$split_wrong_generator" \
+  && fail "split topology accepts the wrong ADR-index generator" \
+  || pass "split topology rejects the wrong ADR-index generator (#610)"
 
 adr_adopter="$tmproot/adopter-generated-artifacts-adr"
 build_adopter "$adr_adopter" no generated-artifacts-with-adr-index
