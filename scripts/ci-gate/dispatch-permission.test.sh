@@ -378,7 +378,9 @@ run_case Verjson/example 7 0123456789abcdef0123456789abcdef01234567 99 .github/w
 privileged="$root/.github/workflows/ai-privileged-merge.yml"
 grep -q 'SOURCE_RUN_ID:.*inputs.source_run_id' "$privileged" \
   && grep -q 'EXPECTED_HEAD_SHA:.*inputs.expected_head_sha' "$privileged" \
-  && grep -q 'newest trusted gate run failed' "$privileged" \
+  && grep -q 'dispatched_gate_run()' "$privileged" \
+  && grep -q '\.repository\.full_name == \$repo' "$privileged" \
+  && grep -q '\.head_sha == \$head' "$privileged" \
   && pass "duplicate dispatch safety remains bound to trusted run + expected head revalidation" \
   || fail "privileged continuation no longer pins duplicate dispatch safety"
 

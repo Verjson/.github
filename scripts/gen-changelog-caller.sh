@@ -668,6 +668,7 @@ EOF
 root="$(cd "$(dirname "$0")/.." && pwd)"
 renderer="$root/scripts/render-next.sh"
 validation_workflow="$root/.github/workflows/changelog.yml"
+generated_artifacts_workflow="$root/.github/workflows/generated-artifacts.yml"
 
 fail() { echo "FAIL - $1" >&2; exit 1; }
 
@@ -695,7 +696,7 @@ else
 fi
 grep -q "contract_ref: $CONTRACT_REF" "$validation_workflow" \
   || fail "$validation_workflow does not pass the pinned contract_ref"
-if grep -qE '^ +adr-index: true$' "$validation_workflow"; then
+validate_adr_generator() {
   adr_generator="$root/scripts/gen-adr-index.sh"
   [ -n "$ADR_INDEX_SHA256" ] \
     || fail "adr-index: true has no canonical generator at $CONTRACT_REF"
@@ -703,6 +704,20 @@ if grep -qE '^ +adr-index: true$' "$validation_workflow"; then
     || fail "adr-index: true requires the pinned scripts/gen-adr-index.sh. Acquire it with: scripts/gen-changelog-caller.sh adr-index-generator $CONTRACT_REF > scripts/gen-adr-index.sh && chmod +x scripts/gen-adr-index.sh"
   [ "$(contract_digest_of "$adr_generator")" = "$ADR_INDEX_SHA256" ] \
     || fail "$adr_generator is not the generator pinned at $CONTRACT_REF. Regenerate it with: scripts/gen-changelog-caller.sh adr-index-generator $CONTRACT_REF > scripts/gen-adr-index.sh"
+}
+if grep -qE '^ +adr-index: true$' "$validation_workflow"; then
+  validate_adr_generator
+fi
+if [ -e "$generated_artifacts_workflow" ]; then
+  [ "$(grep -Ec '^ +uses: Verjson/\.github/\.github/workflows/generated-artifacts\.yml@[0-9a-f]{40}$' "$generated_artifacts_workflow")" = 1 ] \
+    && grep -qE "^ +uses: Verjson/\\.github/\\.github/workflows/generated-artifacts\\.yml@$CONTRACT_REF$" "$generated_artifacts_workflow" \
+    || fail "$generated_artifacts_workflow does not call generated-artifacts.yml at the shared pin"
+  [ "$(grep -Ec '^ +contract_ref: [0-9a-f]{40}$' "$generated_artifacts_workflow")" = 1 ] \
+    && grep -qE "^ +contract_ref: $CONTRACT_REF$" "$generated_artifacts_workflow" \
+    || fail "$generated_artifacts_workflow does not pass the shared pinned contract_ref"
+  [ "$(grep -Ec '^ +adr-index: true$' "$generated_artifacts_workflow")" = 1 ] \
+    || fail "$generated_artifacts_workflow must enable ADR-index validation in the split caller topology"
+  validate_adr_generator
 fi
 grep -q "CONTRACT_REF=\"$CONTRACT_REF\"" "$renderer" \
   || fail "$renderer does not pin the same contract commit"
