@@ -2312,6 +2312,7 @@ jobs:
                 .statusCheckRollup[]
                 | select((.name // .context) as $n
                     | $n != "preflight" and $n != "gate"
+                    and $n != "dispatch-merge"
                     and $n != "privileged_merge"
                     and ($n | endswith("/ privileged_merge") | not))
                 | select(if .state then
