@@ -1,4 +1,4 @@
-name: AI native auto-merge promotion
+name: AI terminal merge promotion
 
 # Required check configuration (ADR 0079): require the context
 # `AI review authorization` from the dedicated authorization App, not the
@@ -60,7 +60,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: ai-native-automerge-${{ inputs.pr_number }}-${{ inputs.expected_head_sha }}
+  group: ai-terminal-promotion-${{ inputs.pr_number }}-${{ inputs.expected_head_sha }}
   cancel-in-progress: false
 
 jobs:
@@ -77,6 +77,7 @@ jobs:
       PR_NUMBER: ${{ inputs.pr_number }}
       TARGET_REPO: ${{ github.repository }}
       GH_TOKEN: ${{ secrets.ORG_ADMIN_TOKEN }}
+      AI_REVIEW_REQUIRED_CHECKS: ${{ vars.AI_REVIEW_REQUIRED_CHECKS || github.repository == 'Verjson/.github' && '[{"name":"shell-tests","app_id":15368,"workflow_id":315894159,"workflow_path":".github/workflows/actions-ci.yml"}]' || '' }}
     steps:
       - name: Resolve executing trusted workflow revision
         id: trusted-revision
@@ -94,7 +95,7 @@ jobs:
           sparse-checkout-cone-mode: false
           persist-credentials: false
 
-      - name: Enable native auto-merge from trusted metadata
+      - name: Attempt terminal merge from trusted metadata
         env:
           CALLER_REF: ${{ github.ref }}
           EXECUTING_WORKFLOW_REPOSITORY: ${{ job.workflow_repository }}
@@ -127,11 +128,11 @@ jobs:
           fi
 
           meta="$(gh pr view "$PR_NUMBER" --repo "$TARGET_REPO" \
-            --json id,state,isDraft,title,labels,headRefOid,headRepositoryOwner,autoMergeRequest,reviewDecision)"
+            --json state,isDraft,title,labels,headRefOid,headRepositoryOwner)"
           actual_head="$(jq -r '.headRefOid // ""' <<<"$meta")"
           [ "$(jq -r .state <<<"$meta")" = OPEN ] || exit 0
           [ "$actual_head" = "$EXPECTED_HEAD_SHA" ] || {
-            echo "::error::PR head changed; stale authorization cannot enable auto-merge"; exit 1;
+            echo "::error::PR head changed; stale authorization cannot promote a merge"; exit 1;
           }
           [ "$(jq -r '.headRepositoryOwner.login // ""' <<<"$meta")" = "$GITHUB_REPOSITORY_OWNER" ] || {
             echo "::error::fork PRs are not eligible for autonomous merge"; exit 1;
@@ -168,26 +169,76 @@ jobs:
             ' <<<"$reviews" >/dev/null || {
             echo "::error::the exact-head dedicated App approval is absent"; exit 1;
           }
-          [ "$(jq -r '.reviewDecision // ""' <<<"$meta")" = APPROVED ] || {
-            echo "::error::the dedicated App approval is absent or not effective for this head"; exit 1;
+          required_checks="${AI_REVIEW_REQUIRED_CHECKS:-}"
+          jq -e 'type == "array" and length > 0 and all(.[];
+            type == "object" and
+            (.name | type == "string" and length > 0) and
+            (.app_id | type == "number" and . > 0) and
+            (.workflow_id | type == "number" and . > 0) and
+            (.workflow_path | type == "string" and test("^\\.github/workflows/[A-Za-z0-9._-]+\\.ya?ml$")) and
+            (.name | test("^(AI review authorization|AI terminal merge promotion|AI terminal promotion retry)$") | not) and
+            (.workflow_path | test("/ai-(review-merge|privileged-merge|promotion-retry)\\.yml$") | not)
+          )' \
+            <<<"$required_checks" >/dev/null || {
+            echo "::error::AI_REVIEW_REQUIRED_CHECKS must declare trusted non-promotion Actions checks"; exit 1;
           }
+          all_checks="$(gh api --paginate "repos/$TARGET_REPO/commits/$EXPECTED_HEAD_SHA/check-runs?per_page=100" | jq -s '[.[].check_runs[]]')"
+          default_branch="$(gh api "repos/$TARGET_REPO" --jq '.default_branch // ""')"
+          [[ "$default_branch" =~ ^[A-Za-z0-9._/-]+$ ]] || exit 1
+          while IFS= read -r required; do
+            name="$(jq -r .name <<<"$required")"
+            latest="$(jq -c --arg name "$name" '[.[] | select(.name == $name)] | sort_by(.id) | last // {}' <<<"$all_checks")"
+            check_id="$(jq -r '.id // ""' <<<"$latest")"
+            if ! [[ "$check_id" =~ ^[1-9][0-9]*$ ]]; then
+              echo "Required check $name is absent; a later workflow completion will retry promotion."
+              exit 0
+            fi
+            expected_app_id="$(jq -r .app_id <<<"$required")"
+            jq -e --argjson app_id "$expected_app_id" '.app.id == $app_id' <<<"$latest" >/dev/null || {
+              echo "::error::latest required check $name is from the wrong App"; exit 1;
+            }
+            status="$(jq -r '.status // "" | ascii_upcase' <<<"$latest")"
+            conclusion="$(jq -r '.conclusion // "" | ascii_upcase' <<<"$latest")"
+            [ "$status" = COMPLETED ] || {
+              echo "Required check $name is pending; a later workflow completion will retry promotion."; exit 0;
+            }
+            [ "$conclusion" = SUCCESS ] || {
+              echo "::error::latest required check $name is terminally unsuccessful: $conclusion"; exit 1;
+            }
+            details_url="$(jq -r '.details_url // ""' <<<"$latest")"
+            details_prefix="${GITHUB_SERVER_URL}/${TARGET_REPO}/actions/runs/"
+            [[ "$details_url" == "$details_prefix"* ]] || {
+              echo "::error::required check $name has untrusted Actions details"; exit 1;
+            }
+            details_suffix="${details_url#"$details_prefix"}"
+            [[ "$details_suffix" =~ ^([1-9][0-9]*)(/job/[1-9][0-9]*)?$ ]] || {
+              echo "::error::required check $name has malformed Actions details"; exit 1;
+            }
+            ci_run_id="${BASH_REMATCH[1]}"
+            ci_run="$(gh api "repos/$TARGET_REPO/actions/runs/$ci_run_id")"
+            expected_workflow_id="$(jq -r .workflow_id <<<"$required")"
+            workflow_path="$(jq -r .workflow_path <<<"$required")"
+            jq -e --arg head "$EXPECTED_HEAD_SHA" --arg repo "$TARGET_REPO" \
+              --arg path "$workflow_path" --argjson workflow_id "$expected_workflow_id" '
+                .workflow_id == $workflow_id and .path == $path and
+                .event == "pull_request" and .head_sha == $head and
+                .head_repository.full_name == $repo and
+                .status == "completed" and .conclusion == "success"
+              ' <<<"$ci_run" >/dev/null || {
+              echo "::error::required check $name is not backed by the trusted exact-head workflow run"; exit 1;
+            }
+            head_workflow_blob="$(gh api "repos/$TARGET_REPO/contents/$workflow_path?ref=$EXPECTED_HEAD_SHA" --jq '.sha // ""')"
+            trusted_workflow_blob="$(gh api "repos/$TARGET_REPO/contents/$workflow_path?ref=$default_branch" --jq '.sha // ""')"
+            [[ "$head_workflow_blob" =~ ^[0-9a-f]{40}$ ]] && [ "$head_workflow_blob" = "$trusted_workflow_blob" ] || {
+              echo "::error::required check $name executed a workflow revision not equal to the trusted default branch"; exit 1;
+            }
+          done < <(jq -c '.[]' <<<"$required_checks")
 
-          # Idempotent duplicate deliveries do not replace an existing request.
-          if [ "$(jq -r '.autoMergeRequest != null' <<<"$meta")" = true ]; then
-            echo "Native auto-merge is already enabled for this head."
-            exit 0
-          fi
-          pr_id="$(jq -r '.id // ""' <<<"$meta")"
-          [ -n "$pr_id" ] || exit 1
-          # $id is a GraphQL variable, not shell expansion.
-          # shellcheck disable=SC2016
-          result="$(gh api graphql -f query='mutation($id:ID!){
-            enablePullRequestAutoMerge(input:{pullRequestId:$id,mergeMethod:SQUASH}){
-              pullRequest{headRefOid autoMergeRequest{enabledAt}}
-            }}' -f id="$pr_id")"
-          enabled_head="$(jq -r '.data.enablePullRequestAutoMerge.pullRequest.headRefOid // ""' <<<"$result")"
-          enabled_at="$(jq -r '.data.enablePullRequestAutoMerge.pullRequest.autoMergeRequest.enabledAt // ""' <<<"$result")"
-          [ "$enabled_head" = "$EXPECTED_HEAD_SHA" ] && [ -n "$enabled_at" ] || {
-            echo "::error::GitHub did not confirm native auto-merge for the authorized head"; exit 1;
+          gh pr merge "$PR_NUMBER" --repo "$TARGET_REPO" --admin --squash \
+            --match-head-commit "$EXPECTED_HEAD_SHA"
+          merged="$(gh pr view "$PR_NUMBER" --repo "$TARGET_REPO" --json state,headRefOid)"
+          jq -e --arg head "$EXPECTED_HEAD_SHA" '.state == "MERGED" and .headRefOid == $head' \
+            <<<"$merged" >/dev/null || {
+            echo "::error::GitHub did not confirm terminal merge of the authorized head"; exit 1;
           }
-          echo "Native auto-merge enabled for $EXPECTED_HEAD_SHA; GitHub now waits for ordinary required CI."
+          echo "Merged authorized head $EXPECTED_HEAD_SHA after every declared required check succeeded."

@@ -11,6 +11,7 @@ Reverse-chronological index of org-level decisions.
 <!-- BEGIN ADR INDEX -->
 | # | Date | Decision |
 |---|------|----------|
+| [0081](0081-event-driven-terminal-ai-promotion/README.md) | 2026-08-08 | Event-driven AI authorization ends in terminal privileged promotion |
 | [0080](0080-one-automatic-paid-ai-review-per-head/README.md) | 2026-08-08 | Allow one automatic paid AI review per head |
 | [0079](0079-head-bound-ai-authorization-and-native-auto-merge/README.md) | 2026-08-08 | Head-bound AI authorization and native auto-merge |
 | [0078](0078-container-release-and-runner-deployment-contract/README.md) | 2026-08-08 | Container releases promote immutable candidates before protected deployment |

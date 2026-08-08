@@ -1,0 +1,76 @@
+name: AI terminal promotion retry
+
+# Cheap, event-driven continuation for this repository's deterministic CI.
+# It can call only the privileged promotion workflow; it cannot dispatch the
+# paid model workflow. A pending promotion exits and the next completion event
+# supplies another bounded attempt.
+on:
+  workflow_run:
+    workflows: [actions-ci]
+    types: [completed]
+
+permissions:
+  actions: read
+  checks: read
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: ai-terminal-promotion-retry-${{ github.event.workflow_run.pull_requests[0].number }}-${{ github.event.workflow_run.head_sha }}
+  cancel-in-progress: false
+
+jobs:
+  resolve:
+    runs-on: ${{ fromJSON(vars.VERJSON_RUNNER_FASTLANE || vars.VERJSON_LANE_TRUSTED || vars.VERJSON_LANE_FALLBACK) }}
+    outputs:
+      ready: ${{ steps.resolve.outputs.ready }}
+      pr_number: ${{ steps.resolve.outputs.pr_number }}
+      expected_head_sha: ${{ steps.resolve.outputs.expected_head_sha }}
+      authorization_check_id: ${{ steps.resolve.outputs.authorization_check_id }}
+      arm_run_id: ${{ steps.resolve.outputs.arm_run_id }}
+      arm_run_attempt: ${{ steps.resolve.outputs.arm_run_attempt }}
+    steps:
+      - name: Resolve exact-head authorization
+        id: resolve
+        env:
+          EXPECTED_APP_ID: ${{ vars.AI_REVIEW_APP_ID }}
+          EXPECTED_APP_SLUG: ${{ vars.AI_REVIEW_APP_SLUG }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          PULL_REQUESTS: ${{ toJSON(github.event.workflow_run.pull_requests) }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          [ "$(jq 'length' <<<"$PULL_REQUESTS")" = 1 ] || {
+            echo 'ready=false' >>"$GITHUB_OUTPUT"; exit 0;
+          }
+          pr_number="$(jq -r '.[0].number // ""' <<<"$PULL_REQUESTS")"
+          [[ "$pr_number" =~ ^[1-9][0-9]*$ ]] || exit 1
+          [[ "$HEAD_SHA" =~ ^[0-9a-f]{40}$ ]] || exit 1
+          [[ "$EXPECTED_APP_ID" =~ ^[1-9][0-9]*$ ]] || exit 1
+          [[ "$EXPECTED_APP_SLUG" =~ ^[a-z0-9][a-z0-9-]*$ ]] || exit 1
+          check="$(gh api "repos/$GITHUB_REPOSITORY/commits/$HEAD_SHA/check-runs" \
+            --jq "[.check_runs[] | select(.name == \"AI review authorization\" and .head_sha == \"$HEAD_SHA\" and .status == \"completed\" and .conclusion == \"success\" and .app.id == $EXPECTED_APP_ID and .app.slug == \"$EXPECTED_APP_SLUG\")] | sort_by(.id) | last // {}")"
+          check_id="$(jq -r '.id // ""' <<<"$check")"
+          details_url="$(jq -r '.details_url // ""' <<<"$check")"
+          if ! [[ "$check_id" =~ ^[1-9][0-9]*$ ]] || ! [[ "$details_url" =~ /actions/runs/([1-9][0-9]*)$ ]]; then
+            echo 'ready=false' >>"$GITHUB_OUTPUT"
+            exit 0
+          fi
+          arm_run_id="${BASH_REMATCH[1]}"
+          arm_run_attempt="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$arm_run_id" --jq '.run_attempt // ""')"
+          [[ "$arm_run_attempt" =~ ^[1-9][0-9]*$ ]] || exit 1
+          printf 'ready=true\npr_number=%s\nexpected_head_sha=%s\nauthorization_check_id=%s\narm_run_id=%s\narm_run_attempt=%s\n' \
+            "$pr_number" "$HEAD_SHA" "$check_id" "$arm_run_id" "$arm_run_attempt" >>"$GITHUB_OUTPUT"
+
+  promote:
+    needs: resolve
+    if: needs.resolve.outputs.ready == 'true'
+    uses: ./.github/workflows/ai-privileged-merge.yml
+    secrets:
+      ORG_ADMIN_TOKEN: ${{ secrets.ORG_ADMIN_TOKEN }}
+    with:
+      pr_number: ${{ needs.resolve.outputs.pr_number }}
+      expected_head_sha: ${{ needs.resolve.outputs.expected_head_sha }}
+      authorization_check_id: ${{ needs.resolve.outputs.authorization_check_id }}
+      arm_run_id: ${{ needs.resolve.outputs.arm_run_id }}
+      arm_run_attempt: ${{ needs.resolve.outputs.arm_run_attempt }}

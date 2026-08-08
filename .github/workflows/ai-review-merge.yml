@@ -1450,7 +1450,7 @@ jobs:
               summary='This exact PR head passed deterministic review and received the dedicated App approval. GitHub may merge it only after ordinary required CI passes.'
             else
               title='AI review approval failed'
-              summary='The exact reviewed head did not receive a persisted approval from the dedicated authorization App. Native auto-merge remains blocked.'
+              summary='The exact reviewed head did not receive a persisted approval from the dedicated authorization App. Terminal promotion remains blocked.'
             fi
           fi
           gh api --method PATCH "repos/$TARGET_REPO/check-runs/$AUTHORIZATION_CHECK_ID" \
@@ -1472,7 +1472,7 @@ jobs:
       PR_NUMBER: ${{ inputs.pr_number }}
       TARGET_REPO: ${{ github.repository }}
     steps:
-      - name: Dispatch trusted native auto-merge promotion
+      - name: Dispatch trusted terminal promotion
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
