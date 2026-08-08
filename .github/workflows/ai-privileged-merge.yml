@@ -77,7 +77,7 @@ jobs:
       PR_NUMBER: ${{ inputs.pr_number }}
       TARGET_REPO: ${{ github.repository }}
       GH_TOKEN: ${{ secrets.ORG_ADMIN_TOKEN }}
-      AI_REVIEW_REQUIRED_CHECKS: ${{ vars.AI_REVIEW_REQUIRED_CHECKS || github.repository == 'Verjson/.github' && '["shell-tests"]' || '' }}
+      AI_REVIEW_REQUIRED_CHECKS: ${{ vars.AI_REVIEW_REQUIRED_CHECKS || github.repository == 'Verjson/.github' && '[{"name":"shell-tests","app_id":15368,"workflow_id":315894159,"workflow_path":".github/workflows/actions-ci.yml"}]' || '' }}
     steps:
       - name: Resolve executing trusted workflow revision
         id: trusted-revision
@@ -128,7 +128,7 @@ jobs:
           fi
 
           meta="$(gh pr view "$PR_NUMBER" --repo "$TARGET_REPO" \
-            --json state,isDraft,title,labels,headRefOid,headRepositoryOwner,statusCheckRollup)"
+            --json state,isDraft,title,labels,headRefOid,headRepositoryOwner)"
           actual_head="$(jq -r '.headRefOid // ""' <<<"$meta")"
           [ "$(jq -r .state <<<"$meta")" = OPEN ] || exit 0
           [ "$actual_head" = "$EXPECTED_HEAD_SHA" ] || {
@@ -170,20 +170,69 @@ jobs:
             echo "::error::the exact-head dedicated App approval is absent"; exit 1;
           }
           required_checks="${AI_REVIEW_REQUIRED_CHECKS:-}"
-          jq -e 'type == "array" and length > 0 and all(.[]; type == "string" and length > 0)' \
+          jq -e 'type == "array" and length > 0 and all(.[];
+            type == "object" and
+            (.name | type == "string" and length > 0) and
+            (.app_id | type == "number" and . > 0) and
+            (.workflow_id | type == "number" and . > 0) and
+            (.workflow_path | type == "string" and test("^\\.github/workflows/[A-Za-z0-9._-]+\\.ya?ml$")) and
+            (.name | test("^(AI review authorization|AI terminal merge promotion|AI terminal promotion retry)$") | not) and
+            (.workflow_path | test("/ai-(review-merge|privileged-merge|promotion-retry)\\.yml$") | not)
+          )' \
             <<<"$required_checks" >/dev/null || {
-            echo "::error::AI_REVIEW_REQUIRED_CHECKS must declare a non-empty JSON array"; exit 1;
+            echo "::error::AI_REVIEW_REQUIRED_CHECKS must declare trusted non-promotion Actions checks"; exit 1;
           }
-          rollup="$(jq -c '.statusCheckRollup // []' <<<"$meta")"
+          all_checks="$(gh api --paginate "repos/$TARGET_REPO/commits/$EXPECTED_HEAD_SHA/check-runs?per_page=100" | jq -s '[.[].check_runs[]]')"
+          default_branch="$(gh api "repos/$TARGET_REPO" --jq '.default_branch // ""')"
+          [[ "$default_branch" =~ ^[A-Za-z0-9._/-]+$ ]] || exit 1
           while IFS= read -r required; do
-            states="$(jq -r --arg required "$required" '[.[] | select((.__typename == "CheckRun" and .name == $required) or (.__typename == "StatusContext" and .context == $required)) | if .__typename == "CheckRun" then (.conclusion // .status // "PENDING") else (.state // "PENDING") end | ascii_upcase] | unique | join(",")' <<<"$rollup")"
-            case ",$states," in
-              *,FAILURE,*|*,ERROR,*|*,CANCELLED,*|*,TIMED_OUT,*|*,ACTION_REQUIRED,*|*,STALE,*)
-                echo "::error::required check $required is terminally unsuccessful: $states"; exit 1 ;;
-              *,SUCCESS,*) ;;
-              *) echo "Required check $required is pending; a later workflow completion will retry promotion."; exit 0 ;;
-            esac
-          done < <(jq -r '.[]' <<<"$required_checks")
+            name="$(jq -r .name <<<"$required")"
+            latest="$(jq -c --arg name "$name" '[.[] | select(.name == $name)] | sort_by(.id) | last // {}' <<<"$all_checks")"
+            check_id="$(jq -r '.id // ""' <<<"$latest")"
+            if ! [[ "$check_id" =~ ^[1-9][0-9]*$ ]]; then
+              echo "Required check $name is absent; a later workflow completion will retry promotion."
+              exit 0
+            fi
+            expected_app_id="$(jq -r .app_id <<<"$required")"
+            jq -e --argjson app_id "$expected_app_id" '.app.id == $app_id' <<<"$latest" >/dev/null || {
+              echo "::error::latest required check $name is from the wrong App"; exit 1;
+            }
+            status="$(jq -r '.status // "" | ascii_upcase' <<<"$latest")"
+            conclusion="$(jq -r '.conclusion // "" | ascii_upcase' <<<"$latest")"
+            [ "$status" = COMPLETED ] || {
+              echo "Required check $name is pending; a later workflow completion will retry promotion."; exit 0;
+            }
+            [ "$conclusion" = SUCCESS ] || {
+              echo "::error::latest required check $name is terminally unsuccessful: $conclusion"; exit 1;
+            }
+            details_url="$(jq -r '.details_url // ""' <<<"$latest")"
+            details_prefix="${GITHUB_SERVER_URL}/${TARGET_REPO}/actions/runs/"
+            [[ "$details_url" == "$details_prefix"* ]] || {
+              echo "::error::required check $name has untrusted Actions details"; exit 1;
+            }
+            details_suffix="${details_url#"$details_prefix"}"
+            [[ "$details_suffix" =~ ^([1-9][0-9]*)(/job/[1-9][0-9]*)?$ ]] || {
+              echo "::error::required check $name has malformed Actions details"; exit 1;
+            }
+            ci_run_id="${BASH_REMATCH[1]}"
+            ci_run="$(gh api "repos/$TARGET_REPO/actions/runs/$ci_run_id")"
+            expected_workflow_id="$(jq -r .workflow_id <<<"$required")"
+            workflow_path="$(jq -r .workflow_path <<<"$required")"
+            jq -e --arg head "$EXPECTED_HEAD_SHA" --arg repo "$TARGET_REPO" \
+              --arg path "$workflow_path" --argjson workflow_id "$expected_workflow_id" '
+                .workflow_id == $workflow_id and .path == $path and
+                .event == "pull_request" and .head_sha == $head and
+                .head_repository.full_name == $repo and
+                .status == "completed" and .conclusion == "success"
+              ' <<<"$ci_run" >/dev/null || {
+              echo "::error::required check $name is not backed by the trusted exact-head workflow run"; exit 1;
+            }
+            head_workflow_blob="$(gh api "repos/$TARGET_REPO/contents/$workflow_path?ref=$EXPECTED_HEAD_SHA" --jq '.sha // ""')"
+            trusted_workflow_blob="$(gh api "repos/$TARGET_REPO/contents/$workflow_path?ref=$default_branch" --jq '.sha // ""')"
+            [[ "$head_workflow_blob" =~ ^[0-9a-f]{40}$ ]] && [ "$head_workflow_blob" = "$trusted_workflow_blob" ] || {
+              echo "::error::required check $name executed a workflow revision not equal to the trusted default branch"; exit 1;
+            }
+          done < <(jq -c '.[]' <<<"$required_checks")
 
           gh pr merge "$PR_NUMBER" --repo "$TARGET_REPO" --admin --squash \
             --match-head-commit "$EXPECTED_HEAD_SHA"

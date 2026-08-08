@@ -192,8 +192,11 @@ def main() -> int:
             "trusted continuation must terminally merge only the exact authorized head")
     require("retention-days: 90" in rearm_text,
             "arm receipts must survive the supported long-lived hold window")
-    require("statusCheckRollup" in promote_text and "AI_REVIEW_REQUIRED_CHECKS" in promote_text,
-            "terminal promotion must enforce an explicit required-CI contract")
+    require("AI_REVIEW_REQUIRED_CHECKS" in promote_text and
+            "check-runs?per_page=100" in promote_text and "sort_by(.id) | last" in promote_text and
+            ".workflow_id == $workflow_id" in promote_text and
+            "head_workflow_blob" in promote_text and "trusted_workflow_blob" in promote_text,
+            "terminal promotion must enforce latest-run App/workflow/revision-bound required CI")
     require("(.conclusion | ascii_upcase) == \"SUCCESS\"" in promote_text,
             "only successful authorization may permit terminal promotion")
     require(all(marker in verifier_text for marker in
@@ -226,9 +229,11 @@ def main() -> int:
             "pull_request_target:" not in promote_generator,
             "generated promotion callers must accept only trusted explicit dispatches")
 
-    forbidden = re.compile(r"\bsleep\b|check-runs\?per_page|MERGE_PROBE|ci-wait", re.I)
+    forbidden = re.compile(r"\bsleep\b|MERGE_PROBE|ci-wait", re.I)
     for path, text in ((REVIEW, review_text), (PROMOTE, promote_text), (RETRY, retry_text)):
         require(not forbidden.search(text), f"{path.name} still contains runner-held waiting")
+    require(promote_text.count("check-runs?per_page=100") == 1,
+            "promotion must read required checks once rather than poll")
 
     require(set(retry[True]) == {"workflow_run"} and
             retry[True]["workflow_run"]["types"] == ["completed"],

@@ -30,7 +30,13 @@ Replace only its native-auto-merge conclusion with bounded terminal promotion:
    workflow; it contains no model action or model-workflow dispatch.
 3. Every promotion repeats receipt verification and checks the open PR, exact head,
    same-owner policy, holds and draft state, dedicated-App check, exact-head App
-   review, and the repository's explicit required-check list.
+   review, and the repository's explicit required-check trust declarations. For each
+   declared context, only the newest check-run ID is authoritative. It must be a
+   completed success from the declared GitHub App and a run whose Actions workflow
+   ID, path, repository, event, head, and details URL match. The workflow file blob
+   at the PR head must equal the trusted default-branch blob. Legacy commit statuses,
+   name-only checks, promotion workflows, and older duplicate contexts cannot satisfy
+   readiness.
 4. A pending or absent required check exits successfully and immediately. A later CI
    completion supplies the next attempt. A terminal unsuccessful check fails closed.
 5. When every named requirement succeeds, the existing admin credential performs one
@@ -38,8 +44,9 @@ Replace only its native-auto-merge conclusion with bounded terminal promotion:
    head. PR/head concurrency and post-merge no-ops make duplicate deliveries safe.
 
 No ruleset is weakened or mutated, and the promotion identity receives no new bypass.
-The repository-local required CI declaration is `shell-tests`; adopters must declare
-their own exact list and explicitly name their deterministic completion workflows.
+The repository-local required CI declaration binds `shell-tests` to GitHub Actions and
+the immutable `actions-ci` workflow identity. Adopters must declare their own App,
+workflow ID/path, check name, and explicitly named deterministic completion workflows.
 
 ## Consequences
 

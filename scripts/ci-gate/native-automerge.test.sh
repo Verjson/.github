@@ -29,6 +29,10 @@ printf '%s\n' "$*" >>"$CALLS"
 case "$*" in
   "pr view "*) cat "$META_FILE" ;;
   *"repos/$TARGET_REPO --jq"*) printf '%s\n' main ;;
+  *"commits/$EXPECTED_HEAD_SHA/check-runs?per_page=100"*) cat "$CI_CHECKS_FILE" ;;
+  *"actions/runs/7002"*) cat "$CI_RUN_FILE" ;;
+  *"contents/.github/workflows/actions-ci.yml?ref=$EXPECTED_HEAD_SHA"*) printf '%s\n' "$WORKFLOW_BLOB_HEAD" ;;
+  *"contents/.github/workflows/actions-ci.yml?ref=main"*) printf '%s\n' "$WORKFLOW_BLOB_TRUSTED" ;;
   *"repos/Verjson/.github/commits/main"*) printf '%s\n' "$EXECUTING_WORKFLOW_SHA" ;;
   *"check-runs/$AUTHORIZATION_CHECK_ID"*) cat "$CHECK_FILE" ;;
   *"pulls/$PR_NUMBER/reviews?per_page=100"*) cat "$REVIEWS_FILE" ;;
@@ -41,23 +45,27 @@ esac
 GH
 chmod +x "$tmp/bin/gh"
 
-export PATH="$tmp/bin:$PATH" CALLS="$tmp/calls" META_FILE="$tmp/meta.json" CHECK_FILE="$tmp/check.json" REVIEWS_FILE="$tmp/reviews.json"
+export PATH="$tmp/bin:$PATH" CALLS="$tmp/calls" META_FILE="$tmp/meta.json" CHECK_FILE="$tmp/check.json" REVIEWS_FILE="$tmp/reviews.json" CI_CHECKS_FILE="$tmp/ci-checks.json" CI_RUN_FILE="$tmp/ci-run.json"
 export TARGET_REPO=Verjson/example PR_NUMBER=7 AUTHORIZATION_CHECK_ID=9001
 export EXPECTED_HEAD_SHA=0123456789abcdef0123456789abcdef01234567
 export ARM_RUN_ID=7001 ARM_RUN_ATTEMPT=2 EXPECTED_APP_ID=4242 EXPECTED_APP_SLUG=verjson-ai-review
 export GH_TOKEN=admin-token GITHUB_REPOSITORY_OWNER=Verjson GITHUB_REF=refs/heads/main CALLER_REF=refs/heads/main
 export EXECUTING_WORKFLOW_REPOSITORY=Verjson/.github EXECUTING_WORKFLOW_SHA=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
-export AI_REVIEW_REQUIRED_CHECKS='["shell-tests"]'
+export GITHUB_SERVER_URL=https://github.com WORKFLOW_BLOB_HEAD=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa WORKFLOW_BLOB_TRUSTED=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+export AI_REVIEW_REQUIRED_CHECKS='[{"name":"shell-tests","app_id":15368,"workflow_id":315894159,"workflow_path":".github/workflows/actions-ci.yml"}]'
 
 write_base() {
   : >"$CALLS"
   unset VERIFY_RC
   unset MERGE_CONFIRMED
-  jq -nc --arg head "$EXPECTED_HEAD_SHA" '{state:"OPEN",isDraft:false,title:"change",labels:[],headRefOid:$head,headRepositoryOwner:{login:"Verjson"},statusCheckRollup:[{__typename:"CheckRun",name:"shell-tests",status:"COMPLETED",conclusion:"SUCCESS"}]}' >"$META_FILE"
+  export WORKFLOW_BLOB_HEAD=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa WORKFLOW_BLOB_TRUSTED=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+  jq -nc --arg head "$EXPECTED_HEAD_SHA" '{state:"OPEN",isDraft:false,title:"change",labels:[],headRefOid:$head,headRepositoryOwner:{login:"Verjson"}}' >"$META_FILE"
   jq -nc --arg head "$EXPECTED_HEAD_SHA" --argjson app "$EXPECTED_APP_ID" --arg slug "$EXPECTED_APP_SLUG" \
     '{id:9001,name:"AI review authorization",head_sha:$head,status:"completed",conclusion:"success",app:{id:$app,slug:$slug}}' >"$CHECK_FILE"
   jq -nc --arg head "$EXPECTED_HEAD_SHA" --arg login "${EXPECTED_APP_SLUG}[bot]" --arg check "$AUTHORIZATION_CHECK_ID" \
     '[{id:81,state:"APPROVED",commit_id:$head,user:{login:$login},body:("<!-- ai-review-authorization:"+$check+" -->")}]' >"$REVIEWS_FILE"
+  jq -nc --arg head "$EXPECTED_HEAD_SHA" '{check_runs:[{id:101,name:"shell-tests",head_sha:$head,status:"completed",conclusion:"success",details_url:"https://github.com/Verjson/example/actions/runs/7002/job/8002",app:{id:15368,slug:"github-actions"}}]}' >"$CI_CHECKS_FILE"
+  jq -nc --arg head "$EXPECTED_HEAD_SHA" '{id:7002,workflow_id:315894159,path:".github/workflows/actions-ci.yml",event:"pull_request",head_sha:$head,head_repository:{full_name:"Verjson/example"},status:"completed",conclusion:"success"}' >"$CI_RUN_FILE"
 }
 run_promote() { (cd "$tmp/run" && bash "$tmp/promote.sh"); }
 expect_pass() { label="$1"; shift; if "$@" >"$tmp/out" 2>&1; then pass "$label"; else fail "$label: $(tail -1 "$tmp/out")"; fi; }
@@ -79,11 +87,17 @@ write_base; jq '.[0].commit_id="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"' "$REV
 write_base; jq '.headRepositoryOwner.login="outsider"' "$META_FILE" >"$tmp/x" && mv "$tmp/x" "$META_FILE"; expect_fail "fork PR fails closed" run_promote
 write_base; jq '.isDraft=true' "$META_FILE" >"$tmp/x" && mv "$tmp/x" "$META_FILE"; expect_pass "draft PR is a terminal no-op" run_promote; ! grep -q 'pr merge' "$CALLS" || fail "draft merged"
 write_base; jq '.labels=[{"name":"hold"}]' "$META_FILE" >"$tmp/x" && mv "$tmp/x" "$META_FILE"; expect_pass "held PR is a terminal no-op" run_promote; ! grep -q 'pr merge' "$CALLS" || fail "hold merged"
-write_base; jq '.statusCheckRollup[0].conclusion=null | .statusCheckRollup[0].status="IN_PROGRESS"' "$META_FILE" >"$tmp/x" && mv "$tmp/x" "$META_FILE"; expect_pass "pending required CI exits immediately" run_promote; ! grep -q 'pr merge' "$CALLS" || fail "pending CI merged"
-write_base; jq '.statusCheckRollup[0].conclusion="FAILURE"' "$META_FILE" >"$tmp/x" && mv "$tmp/x" "$META_FILE"; expect_fail "terminal required CI failure blocks" run_promote; ! grep -q 'pr merge' "$CALLS" || fail "failed CI merged"
-write_base; jq '.statusCheckRollup=[]' "$META_FILE" >"$tmp/x" && mv "$tmp/x" "$META_FILE"; expect_pass "absent required CI remains pending without mutation" run_promote; ! grep -q 'pr merge' "$CALLS" || fail "absent CI merged"
+write_base; jq '.check_runs[0].conclusion=null | .check_runs[0].status="in_progress"' "$CI_CHECKS_FILE" >"$tmp/x" && mv "$tmp/x" "$CI_CHECKS_FILE"; expect_pass "pending required CI exits immediately" run_promote; ! grep -q 'pr merge' "$CALLS" || fail "pending CI merged"
+write_base; jq '.check_runs[0].conclusion="failure"' "$CI_CHECKS_FILE" >"$tmp/x" && mv "$tmp/x" "$CI_CHECKS_FILE"; expect_fail "terminal required CI failure blocks" run_promote; ! grep -q 'pr merge' "$CALLS" || fail "failed CI merged"
+write_base; jq '.check_runs=[]' "$CI_CHECKS_FILE" >"$tmp/x" && mv "$tmp/x" "$CI_CHECKS_FILE"; expect_pass "absent required CI remains pending without mutation" run_promote; ! grep -q 'pr merge' "$CALLS" || fail "absent CI merged"
+write_base; jq '.check_runs += [{id:102,name:"shell-tests",status:"in_progress",conclusion:null,details_url:"https://github.com/Verjson/example/actions/runs/7002/job/8003",app:{id:15368,slug:"github-actions"}}]' "$CI_CHECKS_FILE" >"$tmp/x" && mv "$tmp/x" "$CI_CHECKS_FILE"; expect_pass "newer pending check overrides older success" run_promote; ! grep -q 'pr merge' "$CALLS" || fail "older success bypassed newer pending"
+write_base; jq '.check_runs = [{id:100,name:"shell-tests",status:"completed",conclusion:"failure",details_url:"https://github.com/Verjson/example/actions/runs/7002/job/8001",app:{id:15368,slug:"github-actions"}}, .check_runs[0]]' "$CI_CHECKS_FILE" >"$tmp/x" && mv "$tmp/x" "$CI_CHECKS_FILE"; expect_pass "newer success overrides older failure" run_promote
+write_base; jq '.check_runs += [(.check_runs[0] | .id=102 | .app.id=999)]' "$CI_CHECKS_FILE" >"$tmp/x" && mv "$tmp/x" "$CI_CHECKS_FILE"; expect_fail "newest duplicate context from wrong App cannot forge required CI" run_promote
+write_base; jq '.workflow_id=999' "$CI_RUN_FILE" >"$tmp/x" && mv "$tmp/x" "$CI_RUN_FILE"; expect_fail "wrong workflow identity cannot satisfy required CI" run_promote
+write_base; jq '.check_runs[0].details_url="https://attacker.invalid/actions/runs/7002/job/8002"' "$CI_CHECKS_FILE" >"$tmp/x" && mv "$tmp/x" "$CI_CHECKS_FILE"; expect_fail "wrong details URL cannot satisfy required CI" run_promote
+write_base; export WORKFLOW_BLOB_HEAD=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb; expect_fail "PR-modified workflow revision cannot satisfy required CI" run_promote
 write_base
-if (export AI_REVIEW_REQUIRED_CHECKS='["wrong-check"]'; run_promote) >"$tmp/out" 2>&1 && ! grep -q 'pr merge' "$CALLS"; then
+if (export AI_REVIEW_REQUIRED_CHECKS='[{"name":"wrong-check","app_id":15368,"workflow_id":315894159,"workflow_path":".github/workflows/actions-ci.yml"}]'; run_promote) >"$tmp/out" 2>&1 && ! grep -q 'pr merge' "$CALLS"; then
   pass "undeclared rollup success cannot satisfy required CI"
 else
   fail "wrong check satisfied required CI"
