@@ -99,6 +99,9 @@ on:
         required: false
         type: boolean
         default: false
+      review_policy:
+        description: Receipt-bound canonical provider/model/budget/pricing JSON
+        required: true
       allow_absent_checks:
         description: >-
           Proceed even though the PR has NO CI checks at all. Absent checks are
@@ -144,6 +147,10 @@ on:
         required: false
         type: boolean
         default: false
+      review_policy:
+        required: false
+        type: string
+        default: '{"provider":"anthropic","model":"auto","budget_usd":"auto","pricing_version":"anthropic-native-v1","actor":"reusable-caller","actor_permission":"maintain"}'
       runner_labels:
         description: 'Optional JSON array of runs-on labels for all three gate jobs, e.g. ["self-hosted","general"], for a self-hosted caller whose org has no VERJSON_LANE_* variables. Omit it (the default) to route by lane and degrade to a hosted runner.'
         required: false
@@ -163,6 +170,8 @@ on:
       ANTHROPIC_API_KEY:
         required: false
       CLAUDE_CODE_OAUTH_TOKEN:
+        required: false
+      OPENAI_API_KEY:
         required: false
 
 concurrency:
@@ -193,6 +202,7 @@ env:
   ARM_RUN_ATTEMPT: ${{ inputs.arm_run_attempt }}
   EXPECTED_APP_ID: ${{ vars.AI_REVIEW_APP_ID }}
   EXPECTED_APP_SLUG: ${{ vars.AI_REVIEW_APP_SLUG }}
+  REVIEW_POLICY: ${{ inputs.review_policy || '{"provider":"anthropic","model":"auto","budget_usd":"auto","pricing_version":"anthropic-native-v1","actor":"reusable-caller","actor_permission":"maintain"}' }}
 
 jobs:
   preflight:
@@ -247,6 +257,8 @@ jobs:
       reason: ${{ steps.classify.outputs.reason }}
       model: ${{ steps.classify.outputs.model }}
       budget_usd: ${{ steps.classify.outputs.budget_usd }}
+      provider: ${{ steps.classify.outputs.provider }}
+      pricing_version: ${{ steps.classify.outputs.pricing_version }}
       changed_lines: ${{ steps.classify.outputs.changed_lines }}
       sensitive: ${{ steps.classify.outputs.sensitive }}
       dependency_major: ${{ steps.classify.outputs.dependency_major }}
@@ -407,10 +419,38 @@ jobs:
         env:
           # Event token: classification reads this PR and public submodule refs.
           GH_TOKEN: ${{ github.token }}
+          EXPLICIT_REREVIEW: ${{ inputs.explicit_rereview }}
         run: |
           set -euo pipefail
           REPO="$TARGET_REPO"
           out() { echo "$1=$2" >> "$GITHUB_OUTPUT"; }
+          select_policy() {
+            local default_model="$1" default_budget="$2" selected_model selected_budget selected_provider selected_pricing policy
+            policy="${REVIEW_POLICY:-}"
+            [ -n "$policy" ] || policy='{"provider":"anthropic","model":"auto","budget_usd":"auto","pricing_version":"anthropic-native-v1","actor":"reusable-caller","actor_permission":"maintain"}'
+            jq -e 'type == "object" and keys == ["actor","actor_permission","budget_usd","model","pricing_version","provider"] and all(.[]; type == "string")' <<<"$policy" >/dev/null || {
+              echo "::error::receipt-bound review policy is malformed"; return 1;
+            }
+            selected_provider="$(jq -r .provider <<<"$policy")"; selected_model="$(jq -r .model <<<"$policy")"
+            selected_budget="$(jq -r .budget_usd <<<"$policy")"; selected_pricing="$(jq -r .pricing_version <<<"$policy")"
+            case "$selected_provider:$selected_pricing" in
+              anthropic:anthropic-native-v1)
+                [ "$selected_model" = auto ] && selected_model="$default_model"
+                [ "$selected_budget" = auto ] && selected_budget="$default_budget"
+                case "$selected_model" in claude-haiku-4-5|claude-sonnet-5|claude-opus-5) ;; *) echo "::error::unsupported Anthropic model"; return 1 ;; esac
+                ;;
+              openai:openai-luna-long-context-2026-08-08)
+                [ "${EXPLICIT_REREVIEW:-false}" = true ] || { echo "::error::OpenAI policy is reachable only through explicit re-review"; return 1; }
+                [ "$selected_model" = gpt-5.6-luna ] || { echo "::error::unsupported OpenAI model/pricing"; return 1; }
+                [ "$selected_budget" != auto ] || { echo "::error::OpenAI budget is required"; return 1; }
+                ;;
+              *) echo "::error::unknown provider or pricing version"; return 1 ;;
+            esac
+            if ! [[ "$selected_budget" =~ ^(0|[1-9][0-9]*)(\.[0-9]{1,2})?$ ]] || ! awk -v b="$selected_budget" 'BEGIN { exit !(b > 0) }'; then
+              echo "::error::budget must be positive with at most two decimal places"; return 1
+            fi
+            out provider "$selected_provider"; out model "$selected_model"; out budget_usd "$selected_budget"; out pricing_version "$selected_pricing"
+          }
 
           meta=$(gh pr view "$PR_NUMBER" --repo "$REPO" \
             --json labels,title,isDraft,author,headRefOid,baseRefName)
@@ -477,8 +517,7 @@ jobs:
           files=$(gh api "repos/$REPO/pulls/$PR_NUMBER/files" --paginate --jq '.[]' | jq -s .)
           nfiles=$(jq length <<<"$files")
           if [ "$nfiles" -eq 0 ]; then
-            out lane ai; out reason "empty diff — needs a look"; out model claude-haiku-4-5
-            out budget_usd 0.15
+            out lane ai; out reason "empty diff — needs a look"; select_policy claude-haiku-4-5 0.15
             out changed_lines 0
             out sensitive false
             exit 0
@@ -534,8 +573,7 @@ jobs:
           if [ "$changed_lines" -ge 800 ]; then
             budget_usd="$large_budget_usd"
           fi
-          out model "$model"
-          out budget_usd "$budget_usd"
+          select_policy "$model" "$budget_usd"
 
           # ---- Fast lane A: submodule pointer bump -------------------------
           # Every changed file is a gitlink hunk, and each new SHA is already
@@ -654,7 +692,9 @@ jobs:
           repository: Verjson/.github
           ref: ${{ steps.trusted-revision.outputs.sha }}
           path: .gate-trust
-          sparse-checkout: scripts/ci-gate/verify-arm-receipt.sh
+          sparse-checkout: |
+            scripts/ci-gate/verify-arm-receipt.sh
+            scripts/ci-gate/openai-review.py
           sparse-checkout-cone-mode: false
           persist-credentials: false
 
@@ -668,6 +708,7 @@ jobs:
           [ "$(jq -r '.status + ":" + (.conclusion // "")' <<<"$authorization")" = "in_progress:" ] || {
             echo "::error::authorization is not pending review"; exit 1;
           }
+          install -m 0555 .gate-trust/scripts/ci-gate/openai-review.py "$RUNNER_TEMP/openai-review.py"
 
       - name: Record gate runner timing
         env:
@@ -914,18 +955,18 @@ jobs:
           fi
           lockfile_note=""
           if [ -n "$elided_lockfiles" ]; then
-            lockfile_note="Generated lockfile(s) were omitted from the diff to conserve review budget: ${elided_lockfiles}. Their manifest changes (package.json, Cargo.toml, requirements, etc.) ARE in the diff — review those; do not open or request the lockfile itself."
+            lockfile_note="Generated lockfiles were omitted from the diff to conserve review budget. Their manifest changes are in the diff; review those and do not request omitted lockfiles."
           fi
           {
             echo "review_prompt<<PROMPT_EOF"
             cat <<EOF
           You are the autonomous merge gate for ${TARGET_REPO}.
           Review PR #${PR_NUMBER} in ${TARGET_REPO}.
-          Metadata is in .ai-review/pr.json and the diff (with generated
-          lockfiles elided) is in .ai-review/pr.diff. Read those two files
-          first, then open only the
-          specific repository files a potential finding actually depends on —
-          be economical and do not broadly explore the tree.
+          PR metadata and the generated-lockfile-elided diff are the required
+          review inputs. They are available as .ai-review/pr.json and
+          .ai-review/pr.diff on tool-capable paths and are embedded directly on
+          tool-free paths. Review those inputs first; on tool-capable paths,
+          open only specific repository files a potential finding depends on.
 
           The checked-out workspace and git HEAD are the PR head, not the base or default branch.
           Never use HEAD, the current checkout, or matching blob hashes as evidence that content is already on the base branch.
@@ -984,11 +1025,11 @@ jobs:
         run: |
           started_epoch="$(date +%s)"
           echo "started_epoch=$started_epoch" >> "$GITHUB_OUTPUT"
-          echo "::notice::phase=model started_at=$(date -u +%Y-%m-%dT%H:%M:%SZ) model=${{ needs.preflight.outputs.model }} budget_usd=${{ needs.preflight.outputs.budget_usd }}"
+          echo "::notice::phase=model started_at=$(date -u +%Y-%m-%dT%H:%M:%SZ) provider=${{ needs.preflight.outputs.provider }} model=${{ needs.preflight.outputs.model }} budget_usd=${{ needs.preflight.outputs.budget_usd }} pricing=${{ needs.preflight.outputs.pricing_version }}"
 
       - name: Claude review (merge gate)
         id: claude
-        if: needs.preflight.outputs.lane == 'ai' && steps.rereview.outputs.skip_model != 'true'
+        if: needs.preflight.outputs.lane == 'ai' && needs.preflight.outputs.provider == 'anthropic' && steps.rereview.outputs.skip_model != 'true'
         # Preserve the transcript and fail closed below when this one paid pass
         # cannot produce a usable verdict. Automatic escalation is forbidden:
         # another paid attempt requires a maintainer-authorized `re-review`.
@@ -1010,11 +1051,28 @@ jobs:
             --json-schema '{"type":"object","properties":{"blocking":{"type":"boolean"},"summary":{"type":"string"},"review_first":{"type":"array","items":{"type":"object","properties":{"location":{"type":"string","description":"Exactly one file and positive line number (path/to/file.ext:42); no ranges or comma-separated locations."},"why":{"type":"string"}},"required":["location","why"],"additionalProperties":false}},"findings":{"type":"array","items":{"type":"object","properties":{"location":{"type":"string"},"reason":{"type":"string"},"failure_scenario":{"type":"string"}},"required":["location","reason","failure_scenario"],"additionalProperties":false}},"followups":{"type":"array","items":{"type":"object","properties":{"location":{"type":"string"},"note":{"type":"string"}},"required":["location","note"],"additionalProperties":false}}},"required":["blocking","summary","review_first","findings","followups"],"additionalProperties":false}'
             --allowedTools "Read,Grep,Glob"
 
+      - name: OpenAI review (explicit re-review only)
+        id: openai
+        if: needs.preflight.outputs.lane == 'ai' && needs.preflight.outputs.provider == 'openai' && steps.rereview.outputs.skip_model != 'true'
+        continue-on-error: true
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          MODEL: ${{ needs.preflight.outputs.model }}
+          BUDGET_USD: ${{ needs.preflight.outputs.budget_usd }}
+          REVIEW_PROMPT: ${{ steps.prep.outputs.review_prompt }}
+          PROMPT_FILE: ${{ runner.temp }}/ai-review-openai-prompt.txt
+          PR_JSON_FILE: ${{ github.workspace }}/.ai-review/pr.json
+          PR_DIFF_FILE: ${{ github.workspace }}/.ai-review/pr.diff
+        run: |
+          umask 077
+          printf '%s' "$REVIEW_PROMPT" >"$PROMPT_FILE"
+          python3 "$RUNNER_TEMP/openai-review.py"
+
       - name: Validate pass 1 verdict semantics
         id: verdict_1
         if: always() && needs.preflight.outputs.lane == 'ai' && steps.rereview.outputs.skip_model != 'true'
         env:
-          VERDICT: ${{ steps.claude.outputs.structured_output }}
+          VERDICT: ${{ needs.preflight.outputs.provider == 'openai' && steps.openai.outputs.structured_output || steps.claude.outputs.structured_output }}
           SENSITIVE: ${{ needs.preflight.outputs.sensitive }}
         run: |
           usable=false
@@ -1034,7 +1092,8 @@ jobs:
           STARTED_EPOCH: ${{ steps.model_timing.outputs.started_epoch }}
           FIRST_VERDICT: ${{ steps.verdict_1.outputs.usable == 'true' }}
           EXEC_FILE: ${{ steps.claude.outputs.execution_file }}
-          MODEL_CONCLUSION: ${{ steps.claude.conclusion }}
+          MODEL_CONCLUSION: ${{ needs.preflight.outputs.provider == 'openai' && steps.openai.conclusion || steps.claude.conclusion }}
+          PROVIDER: ${{ needs.preflight.outputs.provider }}
         run: |
           elapsed=unknown
           if [[ "$STARTED_EPOCH" =~ ^[0-9]+$ ]]; then
@@ -1050,7 +1109,9 @@ jobs:
           terminal_error=false
           execution_evidence_usable=false
           permission_denials=0
-          if [ -n "${EXEC_FILE:-}" ] && [ -f "$EXEC_FILE" ]; then
+          if [ "$PROVIDER" = openai ] && [ "$MODEL_CONCLUSION" = success ]; then
+            execution_evidence_usable=true
+          elif [ -n "${EXEC_FILE:-}" ] && [ -f "$EXEC_FILE" ]; then
             subtype=$(jq -r '(if type == "array" then (map(select(.type == "result")) | last) else . end).subtype // ""' "$EXEC_FILE" 2>/dev/null || echo "")
             permission_denials=$(jq -r '(if type == "array" then (map(select(.type == "result")) | last) else . end).permission_denials_count // 0' "$EXEC_FILE" 2>/dev/null || echo 0)
             [[ "$permission_denials" =~ ^[0-9]+$ ]] || permission_denials=0
@@ -1297,11 +1358,18 @@ jobs:
           # Only the semantically validated verdict published by submit is a verdict.
           VERDICT_JSON: ${{ steps.submit.outputs.verdict }}
           EXECUTION_FILE: ${{ steps.claude.outputs.execution_file }}
-          ACTION_CONCLUSION: ${{ steps.claude.conclusion }}
+          ACTION_CONCLUSION: ${{ needs.preflight.outputs.provider == 'openai' && steps.openai.conclusion || steps.claude.conclusion }}
           LANE: ${{ needs.preflight.outputs.lane }}
           LANE_REASON: ${{ needs.preflight.outputs.reason }}
           MODEL: ${{ needs.preflight.outputs.model }}
           BUDGET_USD: ${{ needs.preflight.outputs.budget_usd }}
+          PROVIDER: ${{ needs.preflight.outputs.provider }}
+          PRICING_VERSION: ${{ needs.preflight.outputs.pricing_version }}
+          INPUT_TOKEN_BOUND: ${{ steps.openai.outputs.input_token_bound }}
+          MAX_OUTPUT_TOKENS: ${{ steps.openai.outputs.max_output_tokens }}
+          REPORTED_INPUT_TOKENS: ${{ steps.openai.outputs.reported_input_tokens }}
+          REPORTED_OUTPUT_TOKENS: ${{ steps.openai.outputs.reported_output_tokens }}
+          REPORTED_COST_USD: ${{ steps.openai.outputs.reported_cost_usd }}
           DEPENDENCY_MAJOR: ${{ needs.preflight.outputs.dependency_major }}
         run: |
           set -uo pipefail    # deliberately no -e: telemetry must never abort
@@ -1320,6 +1388,10 @@ jobs:
             --arg lane "${LANE:-}" \
             --arg lane_reason "${LANE_REASON:-}" \
             --arg model_selected "${MODEL:-}" \
+            --arg provider "${PROVIDER:-}" --arg pricing_version "${PRICING_VERSION:-}" \
+            --arg input_token_bound "${INPUT_TOKEN_BOUND:-}" --arg max_output_tokens "${MAX_OUTPUT_TOKENS:-}" \
+            --arg reported_input_tokens "${REPORTED_INPUT_TOKENS:-}" --arg reported_output_tokens "${REPORTED_OUTPUT_TOKENS:-}" \
+            --arg reported_cost_usd "${REPORTED_COST_USD:-}" \
             --arg action_conclusion "${ACTION_CONCLUSION:-}" \
             --argjson budget_usd "${BUDGET_USD:-0}" \
             --argjson dependency_major "${DEPENDENCY_MAJOR:-false}" \
@@ -1337,6 +1409,13 @@ jobs:
               review_type: "ai",
               lane_reason: (if $lane_reason == "" then null else $lane_reason end),
               model_selected: (if $model_selected == "" then null else $model_selected end),
+              provider: (if $provider == "" then null else $provider end),
+              pricing_version: (if $pricing_version == "" then null else $pricing_version end),
+              input_token_bound: (if $input_token_bound == "" then null else ($input_token_bound | tonumber) end),
+              max_output_tokens: (if $max_output_tokens == "" then null else ($max_output_tokens | tonumber) end),
+              reported_input_tokens: (if $reported_input_tokens == "" then null else ($reported_input_tokens | tonumber) end),
+              reported_output_tokens: (if $reported_output_tokens == "" then null else ($reported_output_tokens | tonumber) end),
+              reported_cost_usd: (if $reported_cost_usd == "" then null else ($reported_cost_usd | tonumber) end),
               budget_usd: $budget_usd,
               dependency_major: $dependency_major,
               verdict_blocking: $verdict_blocking,
