@@ -37,9 +37,9 @@ esac
 
 # 3. The submitted VERDICT prefers the newest semantically usable pass.
 verdict="$(awk '/id: submit$/{f=1} f&&/VERDICT:/{print; exit}' "$wf")"
-p2=$(printf '%s' "$verdict" | grep -bo "claude_retry2.outputs.structured_output" | head -1 | cut -d: -f1)
-p1=$(printf '%s' "$verdict" | grep -bo "claude_retry.outputs.structured_output"  | head -1 | cut -d: -f1)
-p0=$(printf '%s' "$verdict" | grep -bo "claude.outputs.structured_output"        | head -1 | cut -d: -f1)
+p2=$(printf '%s' "$verdict" | grep -bo "verdict_3.outputs.verdict" | head -1 | cut -d: -f1)
+p1=$(printf '%s' "$verdict" | grep -bo "verdict_2.outputs.verdict" | head -1 | cut -d: -f1)
+p0=$(printf '%s' "$verdict" | grep -bo "verdict_1.outputs.verdict" | head -1 | cut -d: -f1)
 if [ -n "$p2" ] && [ -n "$p1" ] && [ -n "$p0" ] && [ "$p2" -lt "$p1" ] && [ "$p1" -lt "$p0" ]; then
   printf '%s' "$verdict" | grep -q "steps.verdict_3.outputs.usable == 'true'" \
     && pass "submit VERDICT falls back retry2 -> retry -> claude by semantic usability" \

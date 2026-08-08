@@ -145,7 +145,7 @@ case "$1 $2" in
   "pr comment") echo "COMMENT" >>"$ACTIONLOG"; printf '%s' "$body" >"$COMMENTFILE" ;;
   "pr edit")    echo "EDIT ${args[*]}" >>"$ACTIONLOG" ;;
   "pr merge")   echo "MERGE" >>"$ACTIONLOG" ;;
-  "api --paginate") printf '[[]]' ;;
+  "api --paginate") printf '[]' ;;
 esac
 exit 0
 GH

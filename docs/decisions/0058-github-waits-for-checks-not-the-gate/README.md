@@ -499,6 +499,23 @@ manual `--admin`. Do not infer this from documentation; the interaction between
 bypass actors, `require_last_push_approval` and auto-merge is exactly the kind of
 thing that behaves differently than it reads.
 
+## Amendment (2026-08-08, #608) — keep review listing portable across runner CLIs
+
+The review-list permission was present and valid on the failing public-adopter
+run, but its runner's GitHub CLI did not implement `gh api --slurp`. The CLI
+rejected the unknown flag before making an API request, which the deliberately
+fail-closed review step correctly reported as an inability to establish stale
+review state.
+
+Keep pagination in `gh api`, but collect its stream of page arrays with
+`jq -s '.'`, whose slurp mode is available in the gate's already-required jq
+baseline. This changes no token scope, reviewer trust boundary, dismissal
+target, or failure posture: an API or normalization failure remains red, and
+the existing structural validation still rejects malformed page payloads. The
+public-adopter extraction case runs against a gh stub that rejects `--slurp`,
+pinning the actual runner compatibility boundary instead of approximating it as
+an authorization failure.
+
 ## Consequences
 
 - No merge-gate job polls on any pool, which closes #341 structurally rather
