@@ -12,11 +12,22 @@ python3 - "$workflow" <<'PY'
 import copy, sys, yaml
 
 def valid(document):
+    steps = document["jobs"]["complete-authorization"]["steps"]
     env = document["jobs"]["complete-authorization"]["env"]
+    token = next(step for step in steps
+                 if step.get("name") == "Mint dedicated authorization App token")
+    complete = next(step for step in steps
+                    if step.get("name") == "Complete exact head authorization")
+    run = complete["run"]
     return (
         env.get("EXPECTED_HEAD_SHA") == "${{ needs.preflight.outputs.head_sha }}"
         and env.get("EXPECTED_REVIEWED_HEAD_SHA") == env.get("EXPECTED_HEAD_SHA")
         and env.get("EXPECTED_AUTHORIZED_HEAD_SHA") == "${{ inputs.expected_head_sha }}"
+        and token["with"].get("permission-checks") == "write"
+        and token["with"].get("permission-pull-requests") == "write"
+        and run.index("verify-arm-receipt.sh") < run.index("-f event=APPROVE")
+        and run.index("-f event=APPROVE") < run.index("-f status=completed")
+        and "reviews/$approval_id" in run
     )
 
 with open(sys.argv[1], encoding="utf-8") as stream:
@@ -28,6 +39,18 @@ assert not valid(missing), "missing EXPECTED_HEAD_SHA mutation escaped"
 mismatch = copy.deepcopy(workflow)
 mismatch["jobs"]["complete-authorization"]["env"]["EXPECTED_HEAD_SHA"] = "${{ inputs.expected_head_sha }}"
 assert not valid(mismatch), "mismatched EXPECTED_HEAD_SHA mutation escaped"
+no_pr_write = copy.deepcopy(workflow)
+token = next(step for step in no_pr_write["jobs"]["complete-authorization"]["steps"]
+             if step.get("name") == "Mint dedicated authorization App token")
+del token["with"]["permission-pull-requests"]
+assert not valid(no_pr_write), "missing App pull-request write permission escaped"
+reordered = copy.deepcopy(workflow)
+complete = next(step for step in reordered["jobs"]["complete-authorization"]["steps"]
+                if step.get("name") == "Complete exact head authorization")
+complete["run"] = complete["run"].replace(
+    'GH_TOKEN="$ACTIONS_TOKEN" bash .gate-trust/scripts/ci-gate/verify-arm-receipt.sh',
+    'true # verifier removed') + '\nGH_TOKEN="$ACTIONS_TOKEN" bash .gate-trust/scripts/ci-gate/verify-arm-receipt.sh'
+assert not valid(reordered), "approval-before-receipt-verification mutation escaped"
 PY
 
 awk '$0=="      - name: Complete exact head authorization"{f=1;next} f&&$0=="        run: |"{r=1;next} r{if($0~/^  [A-Za-z0-9_-]+:/)exit;sub(/^          /,"");print}' \
@@ -46,6 +69,15 @@ cat >"$tmp/bin/gh" <<'SH'
 printf '%s\n' "$*" >>"$CALLS"
 case "$*" in
   "pr view "*) printf '%s\n' "$EXPECTED_AUTHORIZED_HEAD_SHA" ;;
+  "api --method POST "*)
+    [ "${APPROVAL_RC:-0}" -eq 0 ] || exit "$APPROVAL_RC"
+    jq -nc --arg head "$EXPECTED_AUTHORIZED_HEAD_SHA" \
+      --arg login "${EXPECTED_APP_SLUG}[bot]" --arg check "$AUTHORIZATION_CHECK_ID" \
+      '{id:81,state:"APPROVED",commit_id:$head,user:{login:$login},body:("<!-- ai-review-authorization:"+$check+" -->")}' ;;
+  "api repos/"*"/reviews/81")
+    jq -nc --arg head "${PERSISTED_HEAD:-$EXPECTED_AUTHORIZED_HEAD_SHA}" \
+      --arg login "${EXPECTED_APP_SLUG}[bot]" --arg check "$AUTHORIZATION_CHECK_ID" \
+      '{id:81,state:"APPROVED",commit_id:$head,user:{login:$login},body:("<!-- ai-review-authorization:"+$check+" -->")}' ;;
   "api --method PATCH "*) exit 0 ;;
   *) exit 2 ;;
 esac
@@ -67,8 +99,18 @@ else
 fi
 : >"$CALLS"
 if run_complete >"$tmp/out" 2>&1 && grep -q 'conclusion=success' "$CALLS"; then
-  pass "trusted preflight head reaches and authorizes exact receipt completion"
+  pass "trusted preflight head receives persisted App approval before authorization completion"
 else fail "valid completion head handoff failed: $(tail -1 "$tmp/out")"; fi
+
+: >"$CALLS"; APPROVAL_RC=1 run_complete >"$tmp/out" 2>&1
+if [ "$?" -ne 0 ] && grep -q 'conclusion=failure' "$CALLS" && ! grep -q 'conclusion=success' "$CALLS"; then
+  pass "rejected App approval completes authorization as failure"
+else fail "rejected App approval did not fail closed"; fi
+
+: >"$CALLS"; PERSISTED_HEAD=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa run_complete >"$tmp/out" 2>&1
+if [ "$?" -ne 0 ] && grep -q 'conclusion=failure' "$CALLS"; then
+  pass "persisted approval for another head fails closed"
+else fail "stale persisted approval escaped"; fi
 
 : >"$CALLS"; EXPECTED_HEAD_SHA= run_complete >"$tmp/out" 2>&1
 if [ "$?" -ne 0 ] && ! grep -q 'api --method PATCH' "$CALLS"; then

@@ -1578,6 +1578,8 @@ jobs:
           private-key: ${{ secrets.AI_REVIEW_APP_PRIVATE_KEY }}
           owner: ${{ github.repository_owner }}
           repositories: ${{ github.event.repository.name }}
+          permission-checks: write
+          permission-pull-requests: write
 
       - name: Complete exact head authorization
         env:
@@ -1594,9 +1596,37 @@ jobs:
           if [ "$GATE_STATUS" = success ] &&
              [ "$current_head" = "$EXPECTED_AUTHORIZED_HEAD_SHA" ] &&
              [ "$EXPECTED_REVIEWED_HEAD_SHA" = "$EXPECTED_AUTHORIZED_HEAD_SHA" ]; then
-            conclusion=success
-            title='AI review authorized'
-            summary='This exact PR head passed deterministic review. GitHub may merge it only after ordinary required CI passes.'
+            approval_body="AI review authorization approved this exact reviewed head.
+
+          <!-- ai-review-authorization:${AUTHORIZATION_CHECK_ID} -->
+          <!-- ai-review-head:${EXPECTED_AUTHORIZED_HEAD_SHA} -->"
+            if approval="$(gh api --method POST "repos/$TARGET_REPO/pulls/$PR_NUMBER/reviews" \
+              -f event=APPROVE -f commit_id="$EXPECTED_AUTHORIZED_HEAD_SHA" \
+              -f body="$approval_body")" &&
+               approval_id="$(jq -er \
+                 --arg head "$EXPECTED_AUTHORIZED_HEAD_SHA" \
+                 --arg login "${EXPECTED_APP_SLUG}[bot]" \
+                 --arg check "$AUTHORIZATION_CHECK_ID" '
+                   select(.state == "APPROVED" and .commit_id == $head and
+                     .user.login == $login and
+                     (.body | contains("ai-review-authorization:" + $check)))
+                   | .id | select(type == "number")
+                 ' <<<"$approval")" &&
+               persisted="$(gh api "repos/$TARGET_REPO/pulls/$PR_NUMBER/reviews/$approval_id")" &&
+               jq -e --arg head "$EXPECTED_AUTHORIZED_HEAD_SHA" \
+                 --arg login "${EXPECTED_APP_SLUG}[bot]" \
+                 --arg check "$AUTHORIZATION_CHECK_ID" '
+                   .id == ($id | tonumber) and .state == "APPROVED" and
+                   .commit_id == $head and .user.login == $login and
+                   (.body | contains("ai-review-authorization:" + $check))
+                 ' --arg id "$approval_id" <<<"$persisted" >/dev/null; then
+              conclusion=success
+              title='AI review authorized and approved'
+              summary='This exact PR head passed deterministic review and received the dedicated App approval. GitHub may merge it only after ordinary required CI passes.'
+            else
+              title='AI review approval failed'
+              summary='The exact reviewed head did not receive a persisted approval from the dedicated authorization App. Native auto-merge remains blocked.'
+            fi
           fi
           gh api --method PATCH "repos/$TARGET_REPO/check-runs/$AUTHORIZATION_CHECK_ID" \
             -f status=completed -f conclusion="$conclusion" \

@@ -2,7 +2,7 @@
 
 - **Date:** 2026-08-08
 - **Status:** Accepted
-- **Issue:** [#632](https://github.com/Verjson/.github/issues/632)
+- **Issues:** [#632](https://github.com/Verjson/.github/issues/632), [#650](https://github.com/Verjson/.github/issues/650)
 - **Supersedes:** [ADR 0017](../0017-two-stage-ai-merge-gate/README.md) for merge orchestration and [ADR 0063](../0063-required-workflow-events-are-bridged/README.md) for re-arm dispatch
 - **Amends:** [ADR 0036](../0036-separate-pr-review-from-privileged-merge/README.md) by replacing run artifacts with an explicit Checks API authorization
 
@@ -46,7 +46,12 @@ successful exact-head verdict completes it as success and dispatches the
 trusted default-branch promotion workflow.
 
 The promotion workflow repeats the receipt, artifact-digest, arm-run, live PR,
-and exact successful dedicated-App check verification. It then requests
+and exact successful dedicated-App check verification. Before the check can
+become successful, the same dedicated App uses its receipt-bound token to
+submit an approving review for the exact reviewed commit and reads that review
+back by ID. A rejected, missing, differently authored, or stale-head approval
+completes the authorization as failure. Promotion also requires GitHub's live
+`reviewDecision` to be `APPROVED`; `REVIEW_REQUIRED` remains fail-closed. It then requests
 GitHub native auto-merge with `SQUASH`. It does not read ordinary CI and does
 not merge with a ruleset bypass; GitHub owns waiting for all configured
 required checks. Holds, drafts, forks, stale heads, missing permissions, and
@@ -68,8 +73,8 @@ evidence produces administrator-recovery guidance and fails red.
 
 ## Ruleset migration and rollback
 
-Create and install a dedicated GitHub App with Checks read/write on each managed
-repository. Store its numeric ID and slug in `AI_REVIEW_APP_ID` and
+Create and install a dedicated GitHub App with Checks read/write and pull
+requests read/write on each managed repository. Store its numeric ID and slug in `AI_REVIEW_APP_ID` and
 `AI_REVIEW_APP_SLUG` organization variables, and its private key in the
 restricted `AI_REVIEW_APP_PRIVATE_KEY` organization secret. The private key is
 available only to trusted `pull_request_target` arm code and trusted
@@ -83,6 +88,17 @@ The shared `github-actions` slug plus a trusted-looking `details_url` is
 explicitly insufficient: any same-repository workflow can reproduce those
 fields. The dedicated App identity and exact immutable receipt are both
 required. Repository workflow tokens receive no `checks: write` permission.
+
+The pull-request permission is an external deployment prerequisite, not a
+workflow-side permission escalation: an organization owner must add
+`Pull requests: Read and write` to `verjson-ai-review-authorization`, approve
+the permission change, and reinstall or approve the installation if GitHub
+requests it. Keep both AI workflows disabled until that installation can mint a
+token with `checks:write` and `pull_requests:write` and a controlled PR proves
+the exact-head App approval, successful App check, and terminal native merge.
+Rollback first disables both workflows, then removes the App's pull-request
+permission after restoring the prior human/admin merge path; no model review is
+automatically retried during either transition.
 
 Deploy the workflows and generated callers first. **Ruleset migration remains
 unavailable** until the dedicated App provisioning blocker
@@ -110,6 +126,9 @@ transition.
 - No gate or privileged runner waits for ordinary CI.
 - Ordinary CI can finish before or after review without triggering more model
   work; native auto-merge observes it.
+- The dedicated App approval satisfies the organization review rule without
+  giving the promotion token a ruleset bypass or weakening review requirements
+  for unrelated pull requests.
 - Repositories must install the generated trusted arm and promotion callers and
   migrate the required-check identity deliberately.
 - Follow-up issue creation and branch deletion can no longer be coupled to a

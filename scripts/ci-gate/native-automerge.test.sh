@@ -31,13 +31,14 @@ case "$*" in
   *"repos/$TARGET_REPO --jq"*) printf '%s\n' main ;;
   *"repos/Verjson/.github/commits/main"*) printf '%s\n' "$EXECUTING_WORKFLOW_SHA" ;;
   *"check-runs/$AUTHORIZATION_CHECK_ID"*) cat "$CHECK_FILE" ;;
+  *"pulls/$PR_NUMBER/reviews?per_page=100"*) cat "$REVIEWS_FILE" ;;
   "api graphql "*) cat "$GRAPHQL_FILE" ;;
   *) echo "unexpected gh call: $*" >&2; exit 2 ;;
 esac
 GH
 chmod +x "$tmp/bin/gh"
 
-export PATH="$tmp/bin:$PATH" CALLS="$tmp/calls" META_FILE="$tmp/meta.json" CHECK_FILE="$tmp/check.json" GRAPHQL_FILE="$tmp/graphql.json"
+export PATH="$tmp/bin:$PATH" CALLS="$tmp/calls" META_FILE="$tmp/meta.json" CHECK_FILE="$tmp/check.json" GRAPHQL_FILE="$tmp/graphql.json" REVIEWS_FILE="$tmp/reviews.json"
 export TARGET_REPO=Verjson/example PR_NUMBER=7 AUTHORIZATION_CHECK_ID=9001
 export EXPECTED_HEAD_SHA=0123456789abcdef0123456789abcdef01234567
 export ARM_RUN_ID=7001 ARM_RUN_ATTEMPT=2 EXPECTED_APP_ID=4242 EXPECTED_APP_SLUG=verjson-ai-review
@@ -47,9 +48,11 @@ export EXECUTING_WORKFLOW_REPOSITORY=Verjson/.github EXECUTING_WORKFLOW_SHA=aaaa
 write_base() {
   : >"$CALLS"
   unset VERIFY_RC
-  jq -nc --arg head "$EXPECTED_HEAD_SHA" '{id:"PR_id",state:"OPEN",isDraft:false,title:"change",labels:[],headRefOid:$head,headRepositoryOwner:{login:"Verjson"},autoMergeRequest:null}' >"$META_FILE"
+  jq -nc --arg head "$EXPECTED_HEAD_SHA" '{id:"PR_id",state:"OPEN",isDraft:false,title:"change",labels:[],headRefOid:$head,headRepositoryOwner:{login:"Verjson"},autoMergeRequest:null,reviewDecision:"APPROVED"}' >"$META_FILE"
   jq -nc --arg head "$EXPECTED_HEAD_SHA" --argjson app "$EXPECTED_APP_ID" --arg slug "$EXPECTED_APP_SLUG" \
     '{id:9001,name:"AI review authorization",head_sha:$head,status:"completed",conclusion:"success",app:{id:$app,slug:$slug}}' >"$CHECK_FILE"
+  jq -nc --arg head "$EXPECTED_HEAD_SHA" --arg login "${EXPECTED_APP_SLUG}[bot]" --arg check "$AUTHORIZATION_CHECK_ID" \
+    '[{id:81,state:"APPROVED",commit_id:$head,user:{login:$login},body:("<!-- ai-review-authorization:"+$check+" -->")}]' >"$REVIEWS_FILE"
   jq -nc --arg head "$EXPECTED_HEAD_SHA" '{data:{enablePullRequestAutoMerge:{pullRequest:{headRefOid:$head,autoMergeRequest:{enabledAt:"2026-08-08T12:00:00Z"}}}}}' >"$GRAPHQL_FILE"
 }
 run_promote() { (cd "$tmp/run" && bash "$tmp/promote.sh"); }
@@ -67,6 +70,11 @@ grep -q 'enablePullRequestAutoMerge' "$CALLS" && ! grep -qE 'statusCheckRollup|c
 write_base; printf '{"data":null,"errors":[{"message":"denied"}]}\n' >"$GRAPHQL_FILE"; expect_fail "GraphQL errors in an HTTP-200 payload fail closed" run_promote
 write_base; jq '.conclusion="failure"' "$CHECK_FILE" >"$tmp/x" && mv "$tmp/x" "$CHECK_FILE"; expect_fail "failed authorization never enables auto-merge" run_promote
 write_base; jq '.conclusion=null' "$CHECK_FILE" >"$tmp/x" && mv "$tmp/x" "$CHECK_FILE"; expect_fail "inconclusive authorization never enables auto-merge" run_promote
+write_base; printf '[]\n' >"$REVIEWS_FILE"; expect_fail "missing exact App approval never enables auto-merge" run_promote
+write_base; jq '.[0].user.login="attacker[bot]"' "$REVIEWS_FILE" >"$tmp/x" && mv "$tmp/x" "$REVIEWS_FILE"; expect_fail "wrong approval identity never enables auto-merge" run_promote
+write_base; jq '.[0].commit_id="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"' "$REVIEWS_FILE" >"$tmp/x" && mv "$tmp/x" "$REVIEWS_FILE"; expect_fail "stale App approval never enables auto-merge" run_promote
+write_base; jq '.reviewDecision="REVIEW_REQUIRED"' "$META_FILE" >"$tmp/x" && mv "$tmp/x" "$META_FILE"; expect_fail "missing dedicated App approval never enables auto-merge" run_promote
+! grep -q enablePullRequestAutoMerge "$CALLS" || fail "REVIEW_REQUIRED state enabled auto-merge"
 write_base; jq '.headRepositoryOwner.login="outsider"' "$META_FILE" >"$tmp/x" && mv "$tmp/x" "$META_FILE"; expect_fail "fork PR fails closed" run_promote
 write_base; jq '.isDraft=true' "$META_FILE" >"$tmp/x" && mv "$tmp/x" "$META_FILE"; expect_pass "draft PR is a terminal no-op" run_promote; ! grep -q enablePullRequestAutoMerge "$CALLS" || fail "draft enabled auto-merge"
 write_base; jq '.labels=[{"name":"hold"}]' "$META_FILE" >"$tmp/x" && mv "$tmp/x" "$META_FILE"; expect_pass "held PR is a terminal no-op" run_promote; ! grep -q enablePullRequestAutoMerge "$CALLS" || fail "hold enabled auto-merge"
