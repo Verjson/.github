@@ -48,7 +48,7 @@ grep -q '/check-runs?per_page=100' "$wait_script" || { echo "FAIL - could not ex
 
 dispatch_exclusions=$(grep -c '\$n != "dispatch-merge"' "$wf")
 privileged_exclusions=$(grep -c '\$n != "privileged_merge"' "$wf")
-[ "$dispatch_exclusions" -eq 2 ] && [ "$privileged_exclusions" -eq 2 ] \
+[ "$dispatch_exclusions" -ge 2 ] && [ "$dispatch_exclusions" -eq "$privileged_exclusions" ] \
   && pass "CI wait and authoritative recheck exclude trusted continuation checks" \
   || fail "trusted continuation checks can circularly authorize or block the review gate"
 

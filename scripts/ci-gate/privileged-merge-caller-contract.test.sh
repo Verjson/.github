@@ -52,7 +52,7 @@ python3 -c 'import yaml' 2>/dev/null \
 # this from one site to two, so growth is the expected case.
 check_exclusions() { # check_exclusions <file> <label>
   local file="$1" label="$2" sites excl
-  sites=$(grep -c 'select((.name // .context) as $n |' "$file")
+  sites=$(grep -c '(.name // .context) as $n' "$file")
   excl=$(grep -c 'endswith("/ privileged_merge") | not)' "$file")
   { [ "$sites" -gt 0 ] && [ "$excl" -eq "$sites" ]; } \
     && pass "$label excludes the reusable shape at all $sites rollup filter site(s)" \
