@@ -88,3 +88,19 @@ a real verdict):
   (labelled + explained) and never auto-merged.
 - New surface: an `ai-review-inconclusive` label (best-effort; `|| true` if a
   repo lacks it) signals PRs needing a human.
+
+## 2026-08-08 amendment — semantic failures consume the bounded retry chain
+
+Issue #611 demonstrated that JSON Schema type validation is not a merge verdict:
+`blocking:true` could carry no finding, while placeholder review locations such
+as `a` still satisfied the schema. Publishing that result as `CHANGES_REQUESTED`
+blocked a PR without identifying anything an author could fix.
+
+Each pass is now deterministically validated before it can stop the retry chain.
+A blocking verdict requires at least one structured finding with an actionable
+`file:line`, reason, and concrete failure scenario. Sensitive changes also
+require a non-placeholder `review_first` location. A semantic failure is treated
+like an absent structured result: it consumes the next bounded attempt, and all
+three failures end in the existing inconclusive, fail-closed path. This preserves
+bounded cost and merge safety while ensuring that only actionable model output
+can become a code-blocking review.
