@@ -8,41 +8,33 @@ pass() { printf 'ok   - %s\n' "$1"; }
 fail() { printf 'FAIL - %s\n' "$1"; fails=$((fails + 1)); }
 
 mapfile -t validators < <(grep 'if jq -e --argjson sensitive' "$workflow")
-if [ "${#validators[@]}" -ne 3 ]; then
-  echo "FAIL - expected exactly three semantic validator commands"
-  exit 1
-fi
-if [ "${validators[0]}" != "${validators[1]}" ] || [ "${validators[0]}" != "${validators[2]}" ]; then
-  echo "FAIL - per-pass semantic validators have drifted"
+if [ "${#validators[@]}" -ne 1 ]; then
+  echo "FAIL - expected exactly one semantic validator command"
   exit 1
 fi
 filter=$(sed -E "s/.*--argjson sensitive [^ ]+ '(.*)' <<<.*/\\1/" <<<"${validators[0]}")
 accepts() { jq -e --argjson sensitive "${2:-false}" "$filter" <<<"$1" >/dev/null; }
 
 mapfile -t normalizers < <(grep 'normalized="$(jq -c' "$workflow")
-if [ "${#normalizers[@]}" -ne 3 ]; then
-  echo "FAIL - expected exactly three review-first normalizers"
-  exit 1
-fi
-if [ "${normalizers[0]}" != "${normalizers[1]}" ] || [ "${normalizers[0]}" != "${normalizers[2]}" ]; then
-  echo "FAIL - per-pass review-first normalizers have drifted"
+if [ "${#normalizers[@]}" -ne 1 ]; then
+  echo "FAIL - expected exactly one review-first normalizer"
   exit 1
 fi
 normalizer=$(sed -E "s/.*jq -c '(.*)' <<<.*/\\1/" <<<"${normalizers[0]}")
 normalize() { jq -c "$normalizer" <<<"$1"; }
 
 [ "$(grep -cF 'Every review_first.location MUST contain exactly one file and one' "$workflow")" -eq 1 ] \
-  && [ "$(grep -cF 'no ranges or comma-separated locations.' "$workflow")" -eq 3 ] \
-  && pass "prompt and every schema require exactly one file:line review-first location" \
-  || fail "prompt and every schema require exactly one file:line review-first location"
+  && [ "$(grep -cF 'no ranges or comma-separated locations.' "$workflow")" -eq 1 ] \
+  && pass "prompt and schema require exactly one file:line review-first location" \
+  || fail "prompt and schema require exactly one file:line review-first location"
 
-[ "$(grep -cF 'field=review_first.location expected=path/to/file.ext:42' "$workflow")" -eq 3 ] \
-  && pass "every semantic retry identifies the invalid field and expected shape" \
-  || fail "every semantic retry identifies the invalid field and expected shape"
+[ "$(grep -cF 'field=review_first.location expected=path/to/file.ext:42' "$workflow")" -eq 1 ] \
+  && pass "semantic failure identifies the invalid field and expected shape" \
+  || fail "semantic failure identifies the invalid field and expected shape"
 
 mapfile -t schemas < <(grep -- '--json-schema' "$workflow")
-if [ "${#schemas[@]}" -ne 3 ]; then
-  echo "FAIL - expected exactly three action-level verdict schemas"
+if [ "${#schemas[@]}" -ne 1 ]; then
+  echo "FAIL - expected exactly one action-level verdict schema"
   exit 1
 fi
 schema_admits_review_first_location() {

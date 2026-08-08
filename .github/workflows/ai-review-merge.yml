@@ -515,10 +515,9 @@ jobs:
           out sensitive "$sensitive"
           if [ "$sensitive" = true ]; then
             model=claude-sonnet-5
-            # Workflow/security reviews get the strong model and more budget. If
-            # even this exhausts, the review escalates (see the ai-review job)
-            # instead of failing, so the cap is a floor to escalate from, not a
-            # hard wall. The 15-turn cap bounds exploration.
+            # Workflow/security reviews get the strong model and more budget.
+            # This cap is the maximum automatic paid-review spend for the head;
+            # exhaustion fails closed until an explicit `re-review`.
             budget_usd=0.50
             large_budget_usd=0.90
           else
@@ -530,9 +529,8 @@ jobs:
           # for a typical PR; a large diff exhausts them deterministically —
           # verjson-cli-cloud#163 (1,586 changed lines) burned $0.21 against the
           # $0.15 floor, died as `error_max_budget_usd`, and forced a ~$0.70
-          # sonnet escalation on every such PR. Raise the first-pass cap for big
-          # diffs so the cheap tier can actually finish. Both tiers stay strictly
-          # under the escalation's $1.00, so escalation remains a real step up.
+          # sonnet escalation on every such PR. Raise the sole automatic pass's
+          # cap for big diffs so the selected tier can actually finish.
           if [ "$changed_lines" -ge 800 ]; then
             budget_usd="$large_budget_usd"
           fi
@@ -906,9 +904,8 @@ jobs:
             exit 1
           }
 
-          # Compose the review prompt once. Both the first pass and, if it runs
-          # out of budget/turns, the escalation pass reuse it verbatim so the
-          # two reviews never drift. The economy instruction (read the diff,
+          # Compose the review prompt once for the sole automatic paid pass. The
+          # economy instruction (read the diff,
           # then only the files a finding depends on) keeps the agentic loop
           # from wandering the tree and burning tokens on context resends.
           major_note=""
@@ -992,8 +989,9 @@ jobs:
       - name: Claude review (merge gate)
         id: claude
         if: needs.preflight.outputs.lane == 'ai' && steps.rereview.outputs.skip_model != 'true'
-        # Do not fail the job on budget/turn exhaustion — the next step
-        # inspects the (empty) verdict and escalates instead of dying here.
+        # Preserve the transcript and fail closed below when this one paid pass
+        # cannot produce a usable verdict. Automatic escalation is forbidden:
+        # another paid attempt requires a maintainer-authorized `re-review`.
         continue-on-error: true
         uses: anthropics/claude-code-action@v1
         with:
@@ -1025,207 +1023,45 @@ jobs:
             usable=true
             echo "verdict=$normalized" >> "$GITHUB_OUTPUT"
           elif [ -n "${VERDICT//[[:space:]]/}" ]; then
-            echo "::warning::phase=model pass=1 result=semantic-invalid field=review_first.location expected=path/to/file.ext:42 — retrying instead of publishing an unusable verdict"
+            echo "::error::phase=model pass=1 result=semantic-invalid field=review_first.location expected=path/to/file.ext:42 — no automatic retry; apply re-review for a maintainer-authorized paid attempt"
           fi
           echo "usable=$usable" >> "$GITHUB_OUTPUT"
 
-      # claude-code-action writes every pass's transcript to the SAME fixed path
-      # under $RUNNER_TEMP, so each escalation overwrites the one before it. The
-      # budget probe below used to read that one path three times and see only
-      # the last pass, which erased the first-pass `error_max_budget_usd` on #288
-      # and reported a budget-exceeded run as a generic no-verdict (#293).
-      # Snapshot each pass the moment it finishes so the probe has three files.
-      # Bookkeeping only: `continue-on-error` plus an unconditional `exit 0`, so
-      # a failed copy degrades the message and never the merge decision.
-      - name: Snapshot pass 1 execution transcript (#293)
-        id: exec_snapshot_1
-        if: always() && needs.preflight.outputs.lane == 'ai'
-        continue-on-error: true
-        env:
-          SRC: ${{ steps.claude.outputs.execution_file }}
-          DEST: ${{ runner.temp }}/claude-execution-pass-1.json
-        run: |
-          set -uo pipefail
-          # Clear first: a stale file (skipped pass, re-run on a persistent
-          # self-hosted runner) must never be attributed to this pass. Guarded on
-          # SRC != DEST so an upstream rename that makes the action write straight
-          # to this path cannot make the clear destroy the only transcript.
-          [ "${SRC:-}" = "$DEST" ] || rm -f "$DEST" || true
-          if [ -n "${SRC:-}" ] && [ -f "$SRC" ]; then
-            cp -- "$SRC" "$DEST" || echo "::warning::phase=model result=snapshot-failed dest=$DEST — budget telemetry for this pass will be missing"
-          fi
-          exit 0
-
-      # Budget/turn exhaustion returns an empty structured_output (subtype
-      # error_max_budget_usd / error_max_turns) — a signal the PR is bigger than
-      # the cheap tier, NOT a review failure. Escalate to the strongest model
-      # with a larger budget. A fresh pass (not --resume): the first session's
-      # state may not survive into a second action invocation, and a resume that
-      # errored would strand the very PR we are trying to unblock. Runs only when
-      # the first pass produced no verdict, so the common case never reaches here.
-      - name: Escalate review when the first pass ran out of budget or turns
-        id: claude_retry
-        if: needs.preflight.outputs.lane == 'ai' && steps.rereview.outputs.skip_model != 'true' && steps.verdict_1.outputs.usable != 'true'
-        continue-on-error: true
-        uses: anthropics/claude-code-action@v1
-        with:
-          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
-          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          github_token: ${{ github.token }}
-          allowed_bots: "renovate,renovate[bot],mend[bot],github-actions"
-          prompt: ${{ steps.prep.outputs.review_prompt }}
-          claude_args: |
-            --model claude-sonnet-5
-            --max-turns 30
-            --max-budget-usd 1.00
-            --json-schema '{"type":"object","properties":{"blocking":{"type":"boolean"},"summary":{"type":"string"},"review_first":{"type":"array","items":{"type":"object","properties":{"location":{"type":"string","description":"Exactly one file and positive line number (path/to/file.ext:42); no ranges or comma-separated locations."},"why":{"type":"string"}},"required":["location","why"],"additionalProperties":false}},"findings":{"type":"array","items":{"type":"object","properties":{"location":{"type":"string"},"reason":{"type":"string"},"failure_scenario":{"type":"string"}},"required":["location","reason","failure_scenario"],"additionalProperties":false}},"followups":{"type":"array","items":{"type":"object","properties":{"location":{"type":"string"},"note":{"type":"string"}},"required":["location","note"],"additionalProperties":false}}},"required":["blocking","summary","review_first","findings","followups"],"additionalProperties":false}'
-            --allowedTools "Read,Grep,Glob"
-
-      - name: Validate pass 2 verdict semantics
-        id: verdict_2
-        if: always() && needs.preflight.outputs.lane == 'ai' && steps.rereview.outputs.skip_model != 'true' && steps.verdict_1.outputs.usable != 'true'
-        env:
-          VERDICT: ${{ steps.claude_retry.outputs.structured_output }}
-          SENSITIVE: ${{ needs.preflight.outputs.sensitive }}
-        run: |
-          usable=false
-          normalized="$(jq -c '.review_first |= map(if (.location | type == "string") then (.location | split(",")[0]) as $first | if ($first | test("^.+:[1-9][0-9]*(-[1-9][0-9]*)?$")) then .location = ($first | sub("-[1-9][0-9]*$"; "")) else . end else . end)' <<<"${VERDICT:-}" 2>/dev/null)" || normalized=""
-          if jq -e --argjson sensitive "${SENSITIVE:-false}" 'def text: type == "string" and test("\\S"); def location: text and test("^.+:[1-9][0-9]*$"); type == "object" and (.blocking | type == "boolean") and (.summary | text) and (.review_first | type == "array") and (all(.review_first[]; (.location | location) and (.why | text))) and (($sensitive | not) or (.review_first | length > 0)) and (.findings | type == "array") and (all(.findings[]; (.location | location) and (.reason | text) and (.failure_scenario | text))) and (.blocking == (.findings | length > 0)) and (.followups | type == "array")' <<<"${normalized:-}" >/dev/null; then
-            usable=true
-            echo "verdict=$normalized" >> "$GITHUB_OUTPUT"
-          elif [ -n "${VERDICT//[[:space:]]/}" ]; then
-            echo "::warning::phase=model pass=2 result=semantic-invalid field=review_first.location expected=path/to/file.ext:42 — retrying instead of publishing an unusable verdict"
-          fi
-          echo "usable=$usable" >> "$GITHUB_OUTPUT"
-
-      - name: Snapshot pass 2 execution transcript (#293)
-        id: exec_snapshot_2
-        if: always() && needs.preflight.outputs.lane == 'ai'
-        continue-on-error: true
-        env:
-          SRC: ${{ steps.claude_retry.outputs.execution_file }}
-          DEST: ${{ runner.temp }}/claude-execution-pass-2.json
-        run: |
-          set -uo pipefail
-          # Clear first: a stale file (skipped pass, re-run on a persistent
-          # self-hosted runner) must never be attributed to this pass. Guarded on
-          # SRC != DEST so an upstream rename that makes the action write straight
-          # to this path cannot make the clear destroy the only transcript.
-          [ "${SRC:-}" = "$DEST" ] || rm -f "$DEST" || true
-          if [ -n "${SRC:-}" ] && [ -f "$SRC" ]; then
-            cp -- "$SRC" "$DEST" || echo "::warning::phase=model result=snapshot-failed dest=$DEST — budget telemetry for this pass will be missing"
-          fi
-          exit 0
-
-      # One more bounded attempt when BOTH prior passes produced no verdict.
-      # error_max_structured_output_retries is a *transient* failure of the model
-      # to emit the tool call (distinct from budget/turns), and it has struck the
-      # first pass and the escalation in the same run (#64). Because the flakes are
-      # roughly independent, a third strong-tier attempt clears it far more often
-      # than not — before the deterministic submit fails closed. Still fail-closed
-      # if this also comes back empty. Guarded on BOTH prior outputs being empty so
-      # a clean first (or second) pass never reaches here.
-      - name: Second escalation when both prior passes produced no verdict (#64)
-        id: claude_retry2
-        if: needs.preflight.outputs.lane == 'ai' && steps.rereview.outputs.skip_model != 'true' && steps.verdict_1.outputs.usable != 'true' && steps.verdict_2.outputs.usable != 'true'
-        continue-on-error: true
-        uses: anthropics/claude-code-action@v1
-        with:
-          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
-          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          github_token: ${{ github.token }}
-          allowed_bots: "renovate,renovate[bot],mend[bot],github-actions"
-          prompt: ${{ steps.prep.outputs.review_prompt }}
-          claude_args: |
-            --model claude-sonnet-5
-            --max-turns 30
-            --max-budget-usd 1.00
-            --json-schema '{"type":"object","properties":{"blocking":{"type":"boolean"},"summary":{"type":"string"},"review_first":{"type":"array","items":{"type":"object","properties":{"location":{"type":"string","description":"Exactly one file and positive line number (path/to/file.ext:42); no ranges or comma-separated locations."},"why":{"type":"string"}},"required":["location","why"],"additionalProperties":false}},"findings":{"type":"array","items":{"type":"object","properties":{"location":{"type":"string"},"reason":{"type":"string"},"failure_scenario":{"type":"string"}},"required":["location","reason","failure_scenario"],"additionalProperties":false}},"followups":{"type":"array","items":{"type":"object","properties":{"location":{"type":"string"},"note":{"type":"string"}},"required":["location","note"],"additionalProperties":false}}},"required":["blocking","summary","review_first","findings","followups"],"additionalProperties":false}'
-            --allowedTools "Read,Grep,Glob"
-
-      - name: Validate pass 3 verdict semantics
-        id: verdict_3
-        if: always() && needs.preflight.outputs.lane == 'ai' && steps.rereview.outputs.skip_model != 'true' && steps.verdict_1.outputs.usable != 'true' && steps.verdict_2.outputs.usable != 'true'
-        env:
-          VERDICT: ${{ steps.claude_retry2.outputs.structured_output }}
-          SENSITIVE: ${{ needs.preflight.outputs.sensitive }}
-        run: |
-          usable=false
-          normalized="$(jq -c '.review_first |= map(if (.location | type == "string") then (.location | split(",")[0]) as $first | if ($first | test("^.+:[1-9][0-9]*(-[1-9][0-9]*)?$")) then .location = ($first | sub("-[1-9][0-9]*$"; "")) else . end else . end)' <<<"${VERDICT:-}" 2>/dev/null)" || normalized=""
-          if jq -e --argjson sensitive "${SENSITIVE:-false}" 'def text: type == "string" and test("\\S"); def location: text and test("^.+:[1-9][0-9]*$"); type == "object" and (.blocking | type == "boolean") and (.summary | text) and (.review_first | type == "array") and (all(.review_first[]; (.location | location) and (.why | text))) and (($sensitive | not) or (.review_first | length > 0)) and (.findings | type == "array") and (all(.findings[]; (.location | location) and (.reason | text) and (.failure_scenario | text))) and (.blocking == (.findings | length > 0)) and (.followups | type == "array")' <<<"${normalized:-}" >/dev/null; then
-            usable=true
-            echo "verdict=$normalized" >> "$GITHUB_OUTPUT"
-          elif [ -n "${VERDICT//[[:space:]]/}" ]; then
-            echo "::warning::phase=model pass=3 result=semantic-invalid field=review_first.location expected=path/to/file.ext:42 — exhausting the bounded retry chain"
-          fi
-          echo "usable=$usable" >> "$GITHUB_OUTPUT"
-
-      - name: Snapshot pass 3 execution transcript (#293)
-        id: exec_snapshot_3
-        if: always() && needs.preflight.outputs.lane == 'ai'
-        continue-on-error: true
-        env:
-          SRC: ${{ steps.claude_retry2.outputs.execution_file }}
-          DEST: ${{ runner.temp }}/claude-execution-pass-3.json
-        run: |
-          set -uo pipefail
-          # Clear first: a stale file (skipped pass, re-run on a persistent
-          # self-hosted runner) must never be attributed to this pass. Guarded on
-          # SRC != DEST so an upstream rename that makes the action write straight
-          # to this path cannot make the clear destroy the only transcript.
-          [ "${SRC:-}" = "$DEST" ] || rm -f "$DEST" || true
-          if [ -n "${SRC:-}" ] && [ -f "$SRC" ]; then
-            cp -- "$SRC" "$DEST" || echo "::warning::phase=model result=snapshot-failed dest=$DEST — budget telemetry for this pass will be missing"
-          fi
-          exit 0
-
-      - name: Record model retry outcome
+      - name: Record single-pass model outcome
         id: retry_outcome
         if: always() && needs.preflight.outputs.lane == 'ai'
         env:
           STARTED_EPOCH: ${{ steps.model_timing.outputs.started_epoch }}
           FIRST_VERDICT: ${{ steps.verdict_1.outputs.usable == 'true' }}
-          RETRY1_VERDICT: ${{ steps.verdict_2.outputs.usable == 'true' }}
-          RETRY2_VERDICT: ${{ steps.verdict_3.outputs.usable == 'true' }}
-          RETRY1_CONCLUSION: ${{ steps.claude_retry.conclusion }}
-          RETRY2_CONCLUSION: ${{ steps.claude_retry2.conclusion }}
-          # Per-pass SDK transcripts, so the gate can name budget exhaustion
-          # itself instead of leaving the action's raw `error_max_budget_usd`
-          # annotation as the only signal (#181, ADR 0032).
-          # The per-pass SNAPSHOTS, not `steps.claude*.outputs.execution_file` —
-          # all three of those resolve to one fixed path that each pass
-          # overwrites, so the probe saw only the last pass and lost a
-          # first-pass budget failure (#293).
-          EXEC_FILE_1: ${{ runner.temp }}/claude-execution-pass-1.json
-          EXEC_FILE_2: ${{ runner.temp }}/claude-execution-pass-2.json
-          EXEC_FILE_3: ${{ runner.temp }}/claude-execution-pass-3.json
+          EXEC_FILE: ${{ steps.claude.outputs.execution_file }}
+          MODEL_CONCLUSION: ${{ steps.claude.conclusion }}
         run: |
           elapsed=unknown
           if [[ "$STARTED_EPOCH" =~ ^[0-9]+$ ]]; then
             elapsed=$(( $(date +%s) - STARTED_EPOCH ))
           fi
-          # Did any pass stop because it ran out of money? The transcript is an
+          # Did the paid pass stop because it ran out of money? The transcript is an
           # array of SDK messages whose final `result` carries the subtype. A
           # missing, unset or unparseable file degrades to "no" — this step is
           # `always()` bookkeeping and must never fail the gate, and a false
           # positive would tell a maintainer to split a PR that is not oversized.
           budget_exhausted=false
           turns_exhausted=false
-          terminal_errors=(false false false)
-          pass_index=0
-          for f in "${EXEC_FILE_1:-}" "${EXEC_FILE_2:-}" "${EXEC_FILE_3:-}"; do
-            if [ -z "$f" ] || [ ! -f "$f" ]; then
-              pass_index=$((pass_index + 1))
-              continue
-            fi
-            subtype=$(jq -r '(if type == "array" then (map(select(.type == "result")) | last) else . end).subtype // ""' "$f" 2>/dev/null || echo "")
+          terminal_error=false
+          execution_evidence_usable=false
+          permission_denials=0
+          if [ -n "${EXEC_FILE:-}" ] && [ -f "$EXEC_FILE" ]; then
+            subtype=$(jq -r '(if type == "array" then (map(select(.type == "result")) | last) else . end).subtype // ""' "$EXEC_FILE" 2>/dev/null || echo "")
+            permission_denials=$(jq -r '(if type == "array" then (map(select(.type == "result")) | last) else . end).permission_denials_count // 0' "$EXEC_FILE" 2>/dev/null || echo 0)
+            [[ "$permission_denials" =~ ^[0-9]+$ ]] || permission_denials=0
             # A structured_output is not a verdict when the same SDK result says
             # the pass terminated in error. The action can still emit the
             # shortest schema-valid filler while exhausting turns or budget
             # (#441); retain the factual subtype instead of guessing at content
             # quality.
             case "$subtype" in
-              error_*) terminal_errors[pass_index]=true ;;
+              success) execution_evidence_usable=true ;;
+              error_*) terminal_error=true; execution_evidence_usable=true ;;
             esac
             # Turn exhaustion is a DIFFERENT limit with a different remedy, and it
             # was invisible here (#442): only the budget subtype was matched, so a
@@ -1237,38 +1073,25 @@ jobs:
               error_max_budget_usd) budget_exhausted=true ;;
               error_max_turns)      turns_exhausted=true ;;
             esac
-            pass_index=$((pass_index + 1))
-          done
-          selected_pass_terminal_error=false
-          if [ "$RETRY2_VERDICT" = true ]; then
-            selected_pass_terminal_error=${terminal_errors[2]}
-          elif [ "$RETRY1_VERDICT" = true ]; then
-            selected_pass_terminal_error=${terminal_errors[1]}
-          elif [ "$FIRST_VERDICT" = true ]; then
-            selected_pass_terminal_error=${terminal_errors[0]}
+          fi
+          # A schema-valid action output is not merge evidence without a
+          # parseable SDK terminal result. Missing/unreadable telemetry must
+          # never resurrect the #441 filler-verdict approval path.
+          if [ "$FIRST_VERDICT" = true ] && [ "$execution_evidence_usable" != true ]; then
+            terminal_error=true
+            echo "::error::phase=model result=terminal-evidence-missing outcome=blocked — refusing a structured verdict without parseable SDK terminal evidence"
           fi
           usable_verdict=false
-          if { [ "$FIRST_VERDICT" = true ] || [ "$RETRY1_VERDICT" = true ] || [ "$RETRY2_VERDICT" = true ]; } &&
-             [ "$selected_pass_terminal_error" != true ]; then
-            usable_verdict=true
-          fi
+          [ "$FIRST_VERDICT" = true ] && [ "$terminal_error" != true ] && usable_verdict=true
           {
             echo "budget_exhausted=$budget_exhausted"
             echo "turns_exhausted=$turns_exhausted"
-            echo "selected_pass_terminal_error=$selected_pass_terminal_error"
+            echo "selected_pass_terminal_error=$terminal_error"
+            echo "permission_denials=$permission_denials"
           } >> "$GITHUB_OUTPUT"
-          # Say in words what the red `error_max_budget_usd` annotation means in
-          # this run. The action emits it at failure level even when a later
-          # pass succeeds, which is exactly what made verjson-cli-cloud#163 read
-          # as an unexplained gate failure.
+          # Say in words what the red `error_max_budget_usd` annotation means.
           if [ "$budget_exhausted" = true ]; then
-            if [ "$usable_verdict" = true ]; then
-              echo "::notice::phase=model budget_exhausted=true outcome=recovered — a review pass hit its cost cap (the red error_max_budget_usd annotation above is expected); a later pass produced the verdict and this run is NOT blocked by it."
-            elif [ "$selected_pass_terminal_error" = true ]; then
-              echo "::error::phase=model budget_exhausted=true outcome=blocked — the selected review pass ended in a terminal error, so its structured output is not a usable verdict. The gate blocks this PR and requests human review."
-            else
-              echo "::error::phase=model budget_exhausted=true outcome=blocked — every review pass hit its cost cap. This PR is larger than the review budget; the gate blocks it and requests human review."
-            fi
+            echo "::error::phase=model budget_exhausted=true outcome=blocked — the single paid review hit its cost cap; no automatic retry is allowed. The gate blocks this PR. A maintainer may apply re-review to authorize another paid attempt."
           fi
           # Same treatment for the turn cap (#442). Stated separately rather than
           # folded into the budget wording, because the remedies diverge: a budget
@@ -1277,15 +1100,14 @@ jobs:
           # Telling a maintainer to split a PR that is not oversized is the false
           # positive the budget probe already takes care to avoid.
           if [ "$turns_exhausted" = true ]; then
-            if [ "$usable_verdict" = true ]; then
-              echo "::notice::phase=model turns_exhausted=true outcome=recovered — a review pass hit its turn cap (the red error_max_turns annotation above is expected); a later pass produced the verdict and this run is NOT blocked by it."
-            elif [ "$selected_pass_terminal_error" = true ]; then
-              echo "::error::phase=model turns_exhausted=true outcome=blocked — the selected review pass ended in a terminal error, so its structured output is not a usable verdict. The gate blocks this PR and requests human review."
-            else
-              echo "::error::phase=model turns_exhausted=true outcome=blocked — every review pass hit its turn cap. The review ran out of exploration steps rather than budget, so raising the budget will not help; the gate blocks this PR and requests human review."
-            fi
+            echo "::error::phase=model turns_exhausted=true outcome=blocked — the single paid review hit its turn cap; no automatic retry is allowed. The gate blocks this PR. A maintainer may apply re-review to authorize another paid attempt."
           fi
-          echo "::notice::phase=model elapsed_seconds=$elapsed first_verdict=$FIRST_VERDICT retry1_conclusion=$RETRY1_CONCLUSION retry1_verdict=$RETRY1_VERDICT retry2_conclusion=$RETRY2_CONCLUSION retry2_verdict=$RETRY2_VERDICT budget_exhausted=$budget_exhausted turns_exhausted=$turns_exhausted"
+          if [ "$permission_denials" -gt 0 ] && [ "$usable_verdict" != true ]; then
+            echo "::error::phase=model permission_denials=$permission_denials outcome=blocked — denied tool calls prevented useful progress in the single paid review. Align the prompt and allowedTools before authorizing re-review."
+          fi
+          automatic_paid_attempts=1
+          [ "${MODEL_CONCLUSION:-skipped}" = skipped ] && automatic_paid_attempts=0
+          echo "::notice::phase=model elapsed_seconds=$elapsed first_verdict=$FIRST_VERDICT automatic_paid_attempts=$automatic_paid_attempts budget_exhausted=$budget_exhausted turns_exhausted=$turns_exhausted permission_denials=$permission_denials"
 
       - name: Submit deterministic PR review
         id: submit
@@ -1293,10 +1115,9 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           # On a base-merge-only re-fire (#120) the model never ran; reuse the
-          # synthesized approved verdict from the rereview step. Otherwise prefer
-          # the latest non-empty model verdict: second escalation, then first
-          # escalation, then the cheap first pass.
-          VERDICT: ${{ steps.rereview.outputs.skip_model == 'true' && steps.rereview.outputs.skip_verdict || (steps.verdict_3.outputs.usable == 'true' && steps.verdict_3.outputs.verdict || (steps.verdict_2.outputs.usable == 'true' && steps.verdict_2.outputs.verdict || (steps.verdict_1.outputs.usable == 'true' && steps.verdict_1.outputs.verdict || ''))) }}
+          # synthesized approved verdict from the rereview step. Otherwise use
+          # only the single paid pass's semantically validated verdict.
+          VERDICT: ${{ steps.rereview.outputs.skip_model == 'true' && steps.rereview.outputs.skip_verdict || (steps.verdict_1.outputs.usable == 'true' && steps.verdict_1.outputs.verdict || '') }}
           # Passed via env (not inline ${{ }}) so the block is plain bash and can
           # be extracted and unit-tested (scripts/ci-gate/review-comment.test.sh).
           HEAD_SHA: ${{ needs.preflight.outputs.head_sha }}
@@ -1311,17 +1132,18 @@ jobs:
           # A pass that ended in an SDK terminal error did not produce a usable
           # verdict even if the action surfaced schema-valid filler (#441).
           SELECTED_PASS_TERMINAL_ERROR: ${{ steps.retry_outcome.outputs.selected_pass_terminal_error }}
+          PERMISSION_DENIALS: ${{ steps.retry_outcome.outputs.permission_denials }}
           CHANGED_LINES: ${{ needs.preflight.outputs.changed_lines }}
           BUDGET_USD: ${{ needs.preflight.outputs.budget_usd }}
         run: |
           set -euo pipefail
-          # Neither pass produced a verdict (budget/turn exhaustion or a hard
-          # error on both attempts). Fail closed — never merge unreviewed — but
+          # The single paid pass produced no usable verdict. Fail closed — never
+          # merge unreviewed — but
           # leave an explained, actionable record and flag for a human instead
           # of dying on the action's cryptic "did not return structured_output".
           #
           # The blank check is load-bearing and must come FIRST (#181, ADR 0032):
-          # when all three passes return no structured output, VERDICT is the
+          # when the pass returns no structured output, VERDICT is the
           # EMPTY STRING, and `jq -e` on empty input produces no output and exits
           # 0 — so `! jq -e ...` was false, this guard never fired, and the step
           # fell through to `--approve` and exited 0, green-lighting the merge of
@@ -1334,10 +1156,14 @@ jobs:
             # so the maintainer knows the PR is oversized rather than broken.
             # The flag only chooses the wording — every branch here blocks.
             heading="⚠️ **Merge gate: review could not complete**"
-            detail="The automated review produced no usable verdict across all three passes (budget/turn exhaustion, another terminal model error, or the model failed to return a structured verdict on every attempt)."
-            if [ "${BUDGET_EXHAUSTED:-}" = "true" ] && [ "${SELECTED_PASS_TERMINAL_ERROR:-}" != "true" ]; then
+            detail="The single automatic paid review produced no usable verdict (budget/turn exhaustion, another terminal model error, or semantically invalid structured output). No automatic retry was started. Apply the \`re-review\` label only when a maintainer explicitly authorizes another paid attempt."
+            if [ "${BUDGET_EXHAUSTED:-}" = "true" ]; then
               heading="⚠️ **Merge gate: budget-exceeded — human review required**"
-              detail="At least one review pass ended in \`error_max_budget_usd\`, and no pass produced a usable verdict. The diff (~${CHANGED_LINES:-unknown} changed lines) is larger than the first-pass review budget (\$${BUDGET_USD:-unknown}) and the \$1.00 escalations could not finish it either. This is a **budget-exceeded** outcome, not a review failure — split the PR into smaller, independently reviewable changes, or review it by hand."
+              detail="The single automatic paid review ended in \`error_max_budget_usd\` without a usable verdict. The diff (~${CHANGED_LINES:-unknown} changed lines) exceeded its selected budget (\$${BUDGET_USD:-unknown}). No automatic escalation was started. Split the PR, review it by hand, or apply \`re-review\` only when a maintainer explicitly authorizes another paid attempt."
+            fi
+            if [[ "${PERMISSION_DENIALS:-0}" =~ ^[1-9][0-9]*$ ]]; then
+              heading="⚠️ **Merge gate: denied tool calls — maintainer action required**"
+              detail="The single automatic paid review recorded ${PERMISSION_DENIALS} denied tool call(s) and produced no usable verdict. This is tool-boundary non-progress, not evidence that the diff is oversized. Align the prompt and \`allowedTools\` before applying \`re-review\` to authorize another paid attempt."
             fi
             gh pr comment "$PR_NUMBER" --repo "$TARGET_REPO" --body "$heading
 
@@ -1468,11 +1294,10 @@ jobs:
         if: always() && needs.preflight.outputs.lane == 'ai'
         continue-on-error: true
         env:
-          # Only the semantically validated verdict published by submit is a
-          # verdict. A later invalid retry must not become telemetry truth.
+          # Only the semantically validated verdict published by submit is a verdict.
           VERDICT_JSON: ${{ steps.submit.outputs.verdict }}
-          EXECUTION_FILE: ${{ steps.claude_retry2.outputs.execution_file != '' && steps.claude_retry2.outputs.execution_file || (steps.claude_retry.outputs.execution_file != '' && steps.claude_retry.outputs.execution_file || steps.claude.outputs.execution_file) }}
-          ACTION_CONCLUSION: ${{ steps.claude_retry2.conclusion != 'skipped' && steps.claude_retry2.conclusion || (steps.claude_retry.conclusion != 'skipped' && steps.claude_retry.conclusion || steps.claude.conclusion) }}
+          EXECUTION_FILE: ${{ steps.claude.outputs.execution_file }}
+          ACTION_CONCLUSION: ${{ steps.claude.conclusion }}
           LANE: ${{ needs.preflight.outputs.lane }}
           LANE_REASON: ${{ needs.preflight.outputs.reason }}
           MODEL: ${{ needs.preflight.outputs.model }}
