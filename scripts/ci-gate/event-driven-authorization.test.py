@@ -85,6 +85,16 @@ def main() -> int:
                  '.path == ".github/workflows/gate-rearm.yml"', ".external_id == $external_id",
                  "artifact_digest", "actual_zip_sha")),
             "authorization must be receipt-, digest-, run-, and dedicated-App-bound")
+    verifier_invocation = re.compile(
+        r"(?m)^(?P<indent>\s*)(?:GH_TOKEN=\"\$ACTIONS_TOKEN\" )?"
+        r"(?P<shell>bash )?\.gate-trust/scripts/ci-gate/verify-arm-receipt\.sh$"
+    )
+    invocations = [
+        match for text in (review_text, promote_text)
+        for match in verifier_invocation.finditer(text)
+    ]
+    require(len(invocations) == 3 and all(match.group("shell") == "bash " for match in invocations),
+            "every sparse-checked-out arm verifier must be invoked explicitly with bash")
     require("headRefOid" in promote_text and "EXPECTED_HEAD_SHA" in promote_text,
             "promotion must reject a stale head")
     require("headRepositoryOwner" in rearm_text,

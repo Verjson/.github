@@ -22,7 +22,7 @@ cat >"$tmp/run/.gate-trust/scripts/ci-gate/verify-arm-receipt.sh" <<'SH'
 #!/usr/bin/env bash
 exit "${VERIFY_RC:-0}"
 SH
-chmod +x "$tmp/run/.gate-trust/scripts/ci-gate/verify-arm-receipt.sh"
+chmod 0644 "$tmp/run/.gate-trust/scripts/ci-gate/verify-arm-receipt.sh"
 cat >"$tmp/bin/gh" <<'GH'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >>"$CALLS"
@@ -56,7 +56,12 @@ run_promote() { (cd "$tmp/run" && bash "$tmp/promote.sh"); }
 expect_pass() { label="$1"; shift; if "$@" >"$tmp/out" 2>&1; then pass "$label"; else fail "$label: $(tail -1 "$tmp/out")"; fi; }
 expect_fail() { label="$1"; shift; if "$@" >"$tmp/out" 2>&1; then fail "$label"; else pass "$label"; fi; }
 
-write_base; expect_pass "successful authorization enables squash auto-merge while ordinary CI is pending" run_promote
+if (cd "$tmp/run" && .gate-trust/scripts/ci-gate/verify-arm-receipt.sh) >"$tmp/out" 2>&1; then
+  fail "non-executable sparse-checkout fixture unexpectedly supports direct execution"
+else
+  pass "non-executable sparse-checkout fixture rejects direct execution"
+fi
+write_base; expect_pass "explicit bash invocation supports a non-executable sparse-checkout verifier" run_promote
 grep -q 'enablePullRequestAutoMerge' "$CALLS" && ! grep -qE 'statusCheckRollup|commits/.*/(status|check-runs)' "$CALLS" \
   && pass "promotion delegates CI waiting without reading the CI rollup" || fail "promotion still waits on ordinary CI"
 write_base; printf '{"data":null,"errors":[{"message":"denied"}]}\n' >"$GRAPHQL_FILE"; expect_fail "GraphQL errors in an HTTP-200 payload fail closed" run_promote

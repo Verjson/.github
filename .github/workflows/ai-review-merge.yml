@@ -665,7 +665,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          .gate-trust/scripts/ci-gate/verify-arm-receipt.sh
+          bash .gate-trust/scripts/ci-gate/verify-arm-receipt.sh
           authorization="$(gh api "repos/$TARGET_REPO/check-runs/$AUTHORIZATION_CHECK_ID")"
           [ "$(jq -r '.status + ":" + (.conclusion // "")' <<<"$authorization")" = "in_progress:" ] || {
             echo "::error::authorization is not pending review"; exit 1;
@@ -1585,7 +1585,7 @@ jobs:
         run: |
           set -euo pipefail
           [[ "$AUTHORIZATION_CHECK_ID" =~ ^[1-9][0-9]*$ ]] || exit 1
-          GH_TOKEN="$ACTIONS_TOKEN" .gate-trust/scripts/ci-gate/verify-arm-receipt.sh
+          GH_TOKEN="$ACTIONS_TOKEN" bash .gate-trust/scripts/ci-gate/verify-arm-receipt.sh
           conclusion=failure
           title='AI review blocked'
           summary='The review failed, was inconclusive, or returned blocking findings.'
