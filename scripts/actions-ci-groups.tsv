@@ -62,9 +62,9 @@ merge-gate	bash scripts/ci-gate/toolchain-missing.test.sh
 merge-gate	bash scripts/ci-gate/self-job-exclusion.test.sh
 merge-gate	bash scripts/ci-gate/budget-exceeded.test.sh
 changelog-release	bash scripts/tag-major.test.sh
-changelog-release	make adr-index
+changelog-release	bash scripts/gen-adr-index.sh --check
 changelog-release	bash scripts/ci-gate/gen-adr-index.test.sh
-changelog-release	make render >/dev/null
+changelog-release	bash scripts/render-next.sh >/dev/null
 changelog-release	bash scripts/ci-gate/render-next.test.sh
 changelog-release	python3 scripts/changelog.test.py
 changelog-release	bash scripts/ci-gate/changelog-caller-contract.test.sh
