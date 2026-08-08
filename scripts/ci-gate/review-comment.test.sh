@@ -57,6 +57,10 @@ case "$1 $2" in
   "pr comment") echo "COMMENT" >>"$ACTIONLOG"; printf '%s' "$body" >"$COMMENTFILE" ;;
   "pr edit") echo "EDIT ${args[*]}" >>"$ACTIONLOG" ;;
   "api --paginate")
+    if [[ " ${args[*]} " == *" --slurp "* ]]; then
+      echo "unknown flag: --slurp" >&2
+      exit 1
+    fi
     if [ "${REVIEWS_LIST_FAIL:-}" = "true" ]; then
       echo "simulated reviews API failure" >&2
       exit 1
@@ -86,7 +90,7 @@ run_submit() {
   : >"$COMMENTFILE"
   : >"$GITHUB_OUTPUT"
   : >"$SUBMIT_LOG"
-  printf '%s' "${REVIEWS_JSON:-[[]]}" >"$REVIEWS_FILE"
+  printf '%s' "${REVIEWS_JSON:-[]}" >"$REVIEWS_FILE"
   export VERDICT="$1" SELECTED_PASS_TERMINAL_ERROR="${2:-false}" BUDGET_EXHAUSTED="${3:-false}"
   bash -eo pipefail "$script" >"$SUBMIT_LOG" 2>&1
   echo "rc=$?"
@@ -121,6 +125,14 @@ run_submit '{"blocking":false,"summary":"trivial docs tweak","review_first":[],"
 { body_has 'trivial docs tweak' && ! body_has 'Review these first'; } &&
   pass "approve: empty review_first omits the pinpoint block" ||
   fail "approve: empty review_first still rendered a block"
+
+# Public adopters may run the older GitHub CLI from their runner image. The gh
+# stub rejects its unsupported --slurp flag, so this success also proves that an
+# empty public review list is collected through portable gh + jq pagination.
+run_submit '{"blocking":false,"summary":"public adopter","review_first":[],"findings":[]}' >/dev/null
+act_has REVIEW &&
+  pass "public adopter: empty review list works without gh --slurp (#608)" ||
+  fail "public adopter review listing depends on unsupported gh --slurp"
 
 # 3. Blocking -> request-changes body carries both pinpoint + findings; exit 1.
 rc=$(run_submit '{"blocking":true,"summary":"has a bug","review_first":[{"location":"x.ts:1","why":"the mutation"}],"findings":[{"location":"x.ts:1","reason":"off-by-one","failure_scenario":"the final item is skipped"}]}')
@@ -185,7 +197,7 @@ rc=$(run_submit "$degenerate" false)
 # 7. #452: once a new-head verdict is non-blocking, dismiss only the gate bot's
 #    stale CHANGES_REQUESTED review. Dismissal preserves the original finding in
 #    the timeline while removing its stale reviewDecision veto.
-reviews='[[{"id":101,"state":"CHANGES_REQUESTED","commit_id":"old-head","user":{"login":"github-actions[bot]"}}]]'
+reviews='[{"id":101,"state":"CHANGES_REQUESTED","commit_id":"old-head","user":{"login":"github-actions[bot]"}}]'
 rc=$(REVIEWS_JSON="$reviews" run_submit '{"blocking":false,"summary":"fixed","review_first":[],"findings":[],"followups":[]}')
 dismiss_line=$(grep -n '^DISMISS 101$' "$tmp/act.log" | cut -d: -f1)
 review_line=$(grep -n '^REVIEW ' "$tmp/act.log" | cut -d: -f1)
@@ -193,9 +205,18 @@ review_line=$(grep -n '^REVIEW ' "$tmp/act.log" | cut -d: -f1)
   pass "nonblocking new-head verdict dismisses the stale gate-bot review before green" ||
   fail "stale gate-bot review was not dismissed ($rc, log=$(tr '\n' ',' <"$tmp/act.log"))"
 
+# gh emits one top-level JSON array for each paginated response. Exercise an
+# actual two-document stream and put the dismissal target on page two so this
+# test fails if collection silently inspects only the first page.
+reviews=$'[]\n[{"id":111,"state":"CHANGES_REQUESTED","commit_id":"page-two-head","user":{"login":"github-actions[bot]"}}]'
+rc=$(REVIEWS_JSON="$reviews" run_submit '{"blocking":false,"summary":"fixed","review_first":[],"findings":[],"followups":[]}')
+{ [ "$rc" = "rc=0" ] && act_has '^DISMISS 111$' && act_has REVIEW; } &&
+  pass "paginated review listing dismisses a stale gate review from page two (#608)" ||
+  fail "paginated review listing ignored the second page ($rc, log=$(tr '\n' ',' <"$tmp/act.log"))"
+
 # Human reviews and a bot review bound to the current head are live decisions,
 # not stale gate residue. A second stale bot review remains the only target.
-reviews='[[{"id":201,"state":"CHANGES_REQUESTED","commit_id":"old-head","user":{"login":"human-reviewer"}},{"id":202,"state":"CHANGES_REQUESTED","commit_id":"deadbeef","user":{"login":"github-actions[bot]"}},{"id":203,"state":"CHANGES_REQUESTED","commit_id":"older-head","user":{"login":"github-actions[bot]"}},{"id":204,"state":"CHANGES_REQUESTED","commit_id":null,"user":{"login":"github-actions[bot]"}}]]'
+reviews='[{"id":201,"state":"CHANGES_REQUESTED","commit_id":"old-head","user":{"login":"human-reviewer"}},{"id":202,"state":"CHANGES_REQUESTED","commit_id":"deadbeef","user":{"login":"github-actions[bot]"}},{"id":203,"state":"CHANGES_REQUESTED","commit_id":"older-head","user":{"login":"github-actions[bot]"}},{"id":204,"state":"CHANGES_REQUESTED","commit_id":null,"user":{"login":"github-actions[bot]"}}]'
 rc=$(REVIEWS_JSON="$reviews" run_submit '{"blocking":false,"summary":"fixed","review_first":[],"findings":[],"followups":[]}')
 { [ "$rc" = "rc=0" ] && act_has '^DISMISS 203$' && ! act_has '^DISMISS 201$' && ! act_has '^DISMISS 202$' && ! act_has '^DISMISS 204$'; } &&
   pass "dismissal excludes human, current-head, and unbound blocking reviews" ||
@@ -219,7 +240,7 @@ rc=$(REVIEWS_JSON='{"not":"pages"}' run_submit '{"blocking":false,"summary":"fix
   pass "malformed review-list payload is explicit and fail-closed" ||
   fail "malformed review payload did not fail closed with evidence ($rc)"
 
-rc=$(REVIEWS_JSON='[[{"id":301,"state":"CHANGES_REQUESTED","commit_id":"old-head","user":{"login":"github-actions[bot]"}}]]' DISMISS_FAIL_ID=301 run_submit '{"blocking":false,"summary":"fixed","review_first":[],"findings":[],"followups":[]}')
+rc=$(REVIEWS_JSON='[{"id":301,"state":"CHANGES_REQUESTED","commit_id":"old-head","user":{"login":"github-actions[bot]"}}]' DISMISS_FAIL_ID=301 run_submit '{"blocking":false,"summary":"fixed","review_first":[],"findings":[],"followups":[]}')
 { [ "$rc" = "rc=1" ] && act_has '^DISMISS 301$' && ! act_has REVIEW && log_has 'could not dismiss stale gate review 301'; } &&
   pass "dismissal API failure is explicit and fail-closed" ||
   fail "dismissal API failure did not fail closed with evidence ($rc)"
