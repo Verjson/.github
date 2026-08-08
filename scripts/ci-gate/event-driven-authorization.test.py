@@ -12,6 +12,8 @@ ROOT = Path(__file__).resolve().parents[2]
 REVIEW = ROOT / ".github/workflows/ai-review-merge.yml"
 REARM = ROOT / ".github/workflows/gate-rearm.yml"
 PROMOTE = ROOT / ".github/workflows/ai-privileged-merge.yml"
+APP_TOKEN_ACTION = "actions/create-github-app-token"
+IMMUTABLE_ACTION = re.compile(rf"^{re.escape(APP_TOKEN_ACTION)}@[0-9a-f]{{40}}$")
 
 
 def load(path: Path):
@@ -22,6 +24,22 @@ def load(path: Path):
 def require(condition: bool, message: str) -> None:
     if not condition:
         raise AssertionError(message)
+
+
+def authorization_app_token_uses(workflow: dict, job_name: str) -> str:
+    steps = workflow["jobs"][job_name]["steps"]
+    matches = [step.get("uses", "") for step in steps
+               if step.get("name") == "Mint dedicated authorization App token"]
+    require(len(matches) == 1,
+            f"{job_name} must have exactly one dedicated authorization App token step")
+    return matches[0]
+
+
+def validate_authorization_app_token_pins(uses_values: list[str]) -> None:
+    require(all(IMMUTABLE_ACTION.fullmatch(uses) for uses in uses_values),
+            "trusted authorization sites must use the official App-token action at a full lowercase 40-hex SHA")
+    require(len(set(uses_values)) == 1,
+            "trusted authorization sites must use the same immutable App-token action pin")
 
 
 def main() -> int:
@@ -60,8 +78,25 @@ def main() -> int:
     require(set(rearm[True]["pull_request_target"]["types"]) >=
             {"opened", "reopened", "synchronize", "ready_for_review", "labeled", "unlabeled"},
             "trusted rearm must cover every head and control transition")
-    require("actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349" in rearm_text,
-            "trusted arm must mint the dedicated authorization App token from a pinned action")
+    app_token_uses = [
+        authorization_app_token_uses(rearm, "arm"),
+        authorization_app_token_uses(review, "complete-authorization"),
+    ]
+    validate_authorization_app_token_pins(app_token_uses)
+
+    valid_pin = f"{APP_TOKEN_ACTION}@{'a' * 40}"
+    invalid_pin_sets = (
+        [valid_pin.replace(APP_TOKEN_ACTION, "attacker/create-github-app-token"), valid_pin],
+        [f"{APP_TOKEN_ACTION}@v3", f"{APP_TOKEN_ACTION}@v3"],
+        [f"{APP_TOKEN_ACTION}@{'a' * 12}", f"{APP_TOKEN_ACTION}@{'a' * 12}"],
+        [valid_pin, f"{APP_TOKEN_ACTION}@{'b' * 40}"],
+    )
+    for invalid_pins in invalid_pin_sets:
+        try:
+            validate_authorization_app_token_pins(invalid_pins)
+        except AssertionError:
+            continue
+        raise AssertionError(f"mutation escaped App-token pin contract: {invalid_pins}")
     require("checks: write" not in rearm_text + review_text + promote_text,
             "shared workflow tokens must never receive Checks write permission")
     require('check-runs/$AUTHORIZATION_CHECK_ID' in review_text,
@@ -85,6 +120,16 @@ def main() -> int:
                  '.path == ".github/workflows/gate-rearm.yml"', ".external_id == $external_id",
                  "artifact_digest", "actual_zip_sha")),
             "authorization must be receipt-, digest-, run-, and dedicated-App-bound")
+    verifier_invocation = re.compile(
+        r"(?m)^(?P<indent>\s*)(?:GH_TOKEN=\"\$ACTIONS_TOKEN\" )?"
+        r"(?P<shell>bash )?\.gate-trust/scripts/ci-gate/verify-arm-receipt\.sh$"
+    )
+    invocations = [
+        match for text in (review_text, promote_text)
+        for match in verifier_invocation.finditer(text)
+    ]
+    require(len(invocations) == 3 and all(match.group("shell") == "bash " for match in invocations),
+            "every sparse-checked-out arm verifier must be invoked explicitly with bash")
     require("headRefOid" in promote_text and "EXPECTED_HEAD_SHA" in promote_text,
             "promotion must reject a stale head")
     require("headRepositoryOwner" in rearm_text,
