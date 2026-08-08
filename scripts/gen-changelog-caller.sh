@@ -402,6 +402,8 @@ jobs:
     name: Verify the tree the snapshot will tag
     runs-on: \${{ fromJSON(${release_runner_expr}) }}
     timeout-minutes: 30
+    env:
+      VERJSON_CHANGELOG_TOOL_CACHE: \${{ runner.temp }}/verjson-changelog-tools
     permissions:
       contents: read
     outputs:
@@ -1111,6 +1113,9 @@ while IFS= read -r release_workflow; do
   printf '%s\n' "$verify_job" \
     | grep -qF 'snapshot-exists: ${{ steps.release-state.outputs.snapshot-exists }}' \
     || fail "$release_workflow does not propagate verified snapshot state"
+  printf '%s\n' "$verify_job" \
+    | grep -qF 'VERJSON_CHANGELOG_TOOL_CACHE: ${{ runner.temp }}/verjson-changelog-tools' \
+    || fail "$release_workflow does not give repository verification hooks a job-writable changelog cache beneath runner.temp (#630)"
   printf '%s\n' "$verify_job" \
     | grep -qF "if: steps.release-state.outputs.snapshot-exists == 'true'" \
     || fail "$release_workflow does not condition resumed verification on an existing snapshot"

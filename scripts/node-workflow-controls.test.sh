@@ -123,6 +123,9 @@ grep -qF 'run: npm run typecheck --if-present' "$ci" \
 grep -qF 'echo "VERJSON_CHANGELOG_TOOL_CACHE=$RUNNER_TEMP/verjson-changelog-tools" >> "$GITHUB_ENV"' "$ci" \
   && pass "node-ci gives changelog tooling a job-writable cache" \
   || fail "node-ci does not scope the changelog tool cache beneath runner.temp"
+grep -qF 'VERJSON_CHANGELOG_TOOL_CACHE: ${{ runner.temp }}/verjson-changelog-tools' "$release" \
+  && pass "node-release gives publish builds a job-writable changelog tool cache" \
+  || fail "node-release does not scope the changelog tool cache beneath runner.temp"
 grep -qF 'echo "VERJSON_CHANGELOG_TOOL_CACHE=" >> "$GITHUB_ENV"' "$actions_ci_workflow" \
   && pass "actions-ci clears the persistent runner changelog cache override" \
   || fail "actions-ci does not restore per-fixture changelog cache isolation"
@@ -177,6 +180,18 @@ else
 fi
 rm -f "$changelog_cache_script" "$changelog_github_env"
 rm -rf "$changelog_runner_temp"
+
+publish_runner_temp="$(mktemp -d)"
+publish_cache="$publish_runner_temp/verjson-changelog-tools"
+if grep -qF 'VERJSON_CHANGELOG_TOOL_CACHE: ${{ runner.temp }}/verjson-changelog-tools' "$release" \
+  && mkdir -p "$publish_cache" \
+  && printf published >"$publish_cache/release-build" \
+  && [ "$(cat "$publish_cache/release-build")" = published ]; then
+  pass "node-release publish builds can populate a cold cache beneath runner.temp"
+else
+  fail "node-release publish builds still depend on a persistent runner cache"
+fi
+rm -rf "$publish_runner_temp"
 
 { grep -qF '`timeout-minutes`' "$docs" \
   && grep -qF '`cache-dependency-path`' "$docs" \

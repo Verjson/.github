@@ -94,6 +94,9 @@ if problems:
 
 verify, snapshot, publish = jobs["verify"], jobs["snapshot"], jobs["publish"]
 
+if verify.get("env", {}).get("VERJSON_CHANGELOG_TOOL_CACHE") != "${{ runner.temp }}/verjson-changelog-tools":
+    bad("`verify` does not override the persistent runner changelog cache with a job-writable runner.temp path (#630)")
+
 
 def needs_of(job):
     value = job.get("needs") or []
@@ -602,9 +605,16 @@ grep -q '^npm test$' "$tmp/guard.out" \
   || fail "the default suite never ran npm test: $(cat "$tmp/guard.out")"
 
 mkdir -p "$tmp/sandbox/scripts"
-printf '%s\n' '#!/usr/bin/env bash' 'echo REPO_HOOK_RAN' >"$tmp/sandbox/scripts/release-verify.sh"
+printf '%s\n' '#!/usr/bin/env bash' \
+  'test "$VERJSON_CHANGELOG_TOOL_CACHE" = "$EXPECTED_CHANGELOG_CACHE"' \
+  'mkdir -p "$VERJSON_CHANGELOG_TOOL_CACHE"' \
+  'printf verified >"$VERJSON_CHANGELOG_TOOL_CACHE/release-hook"' \
+  'echo REPO_HOOK_RAN' >"$tmp/sandbox/scripts/release-verify.sh"
 chmod +x "$tmp/sandbox/scripts/release-verify.sh"
-if run_guard "$suite_step" "PATH=$tmp/bin:$PATH"; then
+release_runner_temp="$tmp/release-runner-temp"
+release_cache="$release_runner_temp/verjson-changelog-tools"
+if run_guard "$suite_step" "PATH=$tmp/bin:$PATH" \
+  "VERJSON_CHANGELOG_TOOL_CACHE=$release_cache" "EXPECTED_CHANGELOG_CACHE=$release_cache"; then
   pass "the suite step runs an adopter's release-verify.sh"
 else
   fail "the suite step failed with a hook present: $(cat "$tmp/guard.out")"
@@ -612,6 +622,9 @@ fi
 { grep -q '^REPO_HOOK_RAN$' "$tmp/guard.out" && ! grep -q '^npm test$' "$tmp/guard.out"; } \
   && pass "the hook replaces the default suite instead of running alongside it" \
   || fail "the hook did not replace the default suite: $(cat "$tmp/guard.out")"
+[ "$(cat "$release_cache/release-hook" 2>/dev/null)" = verified ] \
+  && pass "the verify hook can populate a cold changelog cache beneath runner.temp (#630)" \
+  || fail "the verify hook cannot populate its job-scoped changelog cache"
 
 # A failing hook must fail the job, or the verify gate is decorative.
 printf '%s\n' '#!/usr/bin/env bash' 'exit 3' >"$tmp/sandbox/scripts/release-verify.sh"
