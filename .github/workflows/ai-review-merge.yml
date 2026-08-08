@@ -2310,16 +2310,22 @@ jobs:
               fi
               failed_prerequisites=$(jq -c '[
                 .statusCheckRollup[]
-                | select(
-                    (.status // "") == "COMPLETED"
-                    and ((.conclusion // "") | IN(
-                      "FAILURE", "TIMED_OUT", "CANCELLED",
-                      "ACTION_REQUIRED", "STARTUP_FAILURE"
-                    ))
-                  )
+                | select((.name // .context) as $n
+                    | $n != "preflight" and $n != "gate"
+                    and $n != "privileged_merge"
+                    and ($n | endswith("/ privileged_merge") | not))
+                | select(if .state then
+                    ((.state // "") | IN("SUCCESS", "PENDING", "EXPECTED") | not)
+                  else
+                    (.status == "COMPLETED"
+                      and ((.conclusion // "")
+                        | IN("SUCCESS", "NEUTRAL", "SKIPPED") | not))
+                  end)
                 | {
                     name: (.name // .context // "unnamed"),
-                    conclusion,
+                    state: (.state // null),
+                    status: (.status // null),
+                    conclusion: (.conclusion // null),
                     detailsUrl: (.detailsUrl // .targetUrl // null)
                   }
               ]' <<<"$candidate")

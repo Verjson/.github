@@ -249,6 +249,31 @@ run_case Verjson/example 7 0123456789abcdef0123456789abcdef01234567 99 .github/w
       || fail "terminal prerequisite failure retried or lost its evidence"
   }
 
+for legacy_state in FAILURE ERROR; do
+  legacy_failure="{\"state\":\"OPEN\",\"mergedAt\":null,\"reviewDecision\":\"APPROVED\",\"mergeStateStatus\":\"BLOCKED\",\"headRefOid\":\"0123456789abcdef0123456789abcdef01234567\",\"statusCheckRollup\":[{\"context\":\"legacy-ci\",\"state\":\"$legacy_state\",\"targetUrl\":\"https://ci.example.test/build/123\"}]}"
+  run_case Verjson/example 7 0123456789abcdef0123456789abcdef01234567 99 .github/workflows/ai-privileged-merge.yml false "$legacy_failure" \
+    && fail "legacy $legacy_state prerequisite kept waiting or reported green" \
+    || {
+      [ "$(cat "$tmp/pr-view-count")" -eq 1 ] \
+        && grep -q '"name":"legacy-ci"' "$tmp/dispatch.out" \
+        && grep -q "\"state\":\"$legacy_state\"" "$tmp/dispatch.out" \
+        && grep -q 'blocker=prerequisite_failed' "$tmp/dispatch.out" \
+        && pass "legacy $legacy_state prerequisite exits immediately with evidence" \
+        || fail "legacy $legacy_state prerequisite retried or lost its evidence"
+    }
+done
+
+stale_prerequisite='{"state":"OPEN","mergedAt":null,"reviewDecision":"APPROVED","mergeStateStatus":"BLOCKED","headRefOid":"0123456789abcdef0123456789abcdef01234567","statusCheckRollup":[{"name":"build","status":"COMPLETED","conclusion":"STALE","detailsUrl":"https://github.com/Verjson/example/actions/runs/124"}]}'
+run_case Verjson/example 7 0123456789abcdef0123456789abcdef01234567 99 .github/workflows/ai-privileged-merge.yml false "$stale_prerequisite" \
+  && fail "STALE prerequisite kept waiting or reported green" \
+  || {
+    [ "$(cat "$tmp/pr-view-count")" -eq 1 ] \
+      && grep -q '"conclusion":"STALE"' "$tmp/dispatch.out" \
+      && grep -q 'blocker=prerequisite_failed' "$tmp/dispatch.out" \
+      && pass "STALE prerequisite exits immediately with evidence" \
+      || fail "STALE prerequisite retried or lost its evidence"
+  }
+
 # UNKNOWN is also an interim queue state. It may time out as not observed, but
 # must never be mislabeled as a branch-policy failure.
 unknown_state='{"state":"OPEN","mergedAt":null,"reviewDecision":"APPROVED","mergeStateStatus":"UNKNOWN","headRefOid":"0123456789abcdef0123456789abcdef01234567"}'
