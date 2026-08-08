@@ -31,6 +31,7 @@ group_step = next(
     step for step in groups["steps"]
     if step.get("name") == "Run ${{ matrix.group }} shell contracts without hiding sibling failures"
 )
+assert group_step["env"] == {"RUNNER_LABELS": ""}
 assert group_step["run"] == (
     'group_root="$(mktemp -d "$RUNNER_TEMP/actions-ci-${{ matrix.group }}.XXXXXX")"\n'
     'trap \'rm -rf "$group_root"\' EXIT\n'

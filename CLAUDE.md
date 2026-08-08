@@ -55,6 +55,7 @@ non-trivial or fanned-out work autonomously:
 
 ## Active Issues / Areas for Improvement
 
+- [#624](https://github.com/Verjson/.github/issues/624) — Actions CI contract fixtures inherit the routed runner's `RUNNER_LABELS` bootstrap value.
 - [#622](https://github.com/Verjson/.github/issues/622) — Isolate Actions CI matrix groups from shared self-hosted-runner worktrees.
 - [#609](https://github.com/Verjson/.github/issues/609) — Node CI exposes an unwritable changelog tool cache to cold-cache adopters.
 - [#261](https://github.com/Verjson/.github/issues/261) — Bind required-workflow privileged-merge provenance to signed workflow identity instead of ambient ruleset configuration.
