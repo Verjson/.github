@@ -3,7 +3,7 @@
 # exact trusted gate-arm run. All identity inputs arrive through the environment.
 set -euo pipefail
 
-for value in TARGET_REPO PR_NUMBER EXPECTED_HEAD_SHA AUTHORIZATION_CHECK_ID ARM_RUN_ID ARM_RUN_ATTEMPT EXPECTED_APP_ID EXPECTED_APP_SLUG; do
+for value in TARGET_REPO PR_NUMBER EXPECTED_HEAD_SHA AUTHORIZATION_CHECK_ID ARM_RUN_ID ARM_RUN_ATTEMPT EXPECTED_APP_ID EXPECTED_APP_SLUG REVIEW_POLICY; do
   [ -n "${!value:-}" ] || { echo "::error::missing arm receipt identity: $value"; exit 1; }
 done
 [[ "$TARGET_REPO" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] || exit 1
@@ -15,6 +15,15 @@ done
 [[ "$EXPECTED_APP_ID" =~ ^[1-9][0-9]*$ ]] || exit 1
 [[ "$EXPECTED_APP_SLUG" =~ ^[a-z0-9][a-z0-9-]*$ ]] || exit 1
 for tool in gh jq unzip sha256sum; do command -v "$tool" >/dev/null || exit 1; done
+jq -e 'type == "object" and keys == ["actor","actor_permission","budget_usd","model","pricing_version","provider"] and all(.[]; type == "string")' <<<"$REVIEW_POLICY" >/dev/null || exit 1
+review_actor="$(jq -r .actor <<<"$REVIEW_POLICY")"
+receipt_permission="$(jq -r .actor_permission <<<"$REVIEW_POLICY")"
+if [ "$receipt_permission" != automation ]; then
+  [[ "$review_actor" =~ ^[A-Za-z0-9][A-Za-z0-9-]*$ ]] || exit 1
+  case "$receipt_permission" in admin|maintain) ;; *) exit 1 ;; esac
+  current_permission="$(gh api "repos/$TARGET_REPO/collaborators/$review_actor/permission" --jq '.permission // ""')" || exit 1
+  case "$current_permission" in admin|maintain) ;; *) echo "::error::re-review actor no longer has maintain/admin permission"; exit 1 ;; esac
+fi
 
 arm_workflow_id="$(gh api "repos/$TARGET_REPO/actions/workflows/gate-rearm.yml" --jq '.id // ""')"
 [[ "$arm_workflow_id" =~ ^[1-9][0-9]*$ ]] || exit 1
@@ -53,11 +62,13 @@ details_url="$GITHUB_SERVER_URL/$TARGET_REPO/actions/runs/$ARM_RUN_ID"
 jq -e \
   --arg repository "$TARGET_REPO" --argjson pr_number "$PR_NUMBER" --arg head "$EXPECTED_HEAD_SHA" \
   --argjson check_id "$AUTHORIZATION_CHECK_ID" --argjson run_id "$ARM_RUN_ID" --argjson attempt "$ARM_RUN_ATTEMPT" \
-  --arg details_url "$details_url" --argjson app_id "$EXPECTED_APP_ID" --arg app_slug "$EXPECTED_APP_SLUG" '
-  (keys | sort) == (["app_id","app_slug","arm_run_attempt","arm_run_id","check_run_id","details_url","external_id","head_sha","nonce","pr_number","repository","schema"] | sort) and
+  --arg details_url "$details_url" --argjson app_id "$EXPECTED_APP_ID" --arg app_slug "$EXPECTED_APP_SLUG" \
+  --argjson review_policy "$REVIEW_POLICY" '
+  (keys | sort) == (["app_id","app_slug","arm_run_attempt","arm_run_id","check_run_id","details_url","external_id","head_sha","nonce","pr_number","repository","review_policy","schema"] | sort) and
   .schema == 1 and .repository == $repository and .pr_number == $pr_number and .head_sha == $head and
   .check_run_id == $check_id and .arm_run_id == $run_id and .arm_run_attempt == $attempt and
   .details_url == $details_url and .app_id == $app_id and .app_slug == $app_slug and
+  .review_policy == $review_policy and
   (.nonce | type == "string" and test("^[0-9a-f]{64}$")) and
   .external_id == ("ai-review:v1:" + $repository + ":" + ($pr_number|tostring) + ":" + $head + ":" +
                    ($run_id|tostring) + ":" + ($attempt|tostring) + ":" + .nonce)

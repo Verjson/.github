@@ -25,6 +25,7 @@ case "$*" in
   *"actions/runs/7001 --jq"*) printf '2\n' ;;
   *"actions/runs/7001") printf '{"event":"pull_request_target","path":".github/workflows/gate-rearm.yml","head_repository":{"full_name":"Verjson/example"},"run_attempt":2}\n' ;;
   *"actions/runs/7001/artifacts?per_page=100 --jq"*) printf '%s\n' "${RECEIPT_COUNT:-1}" ;;
+  *"collaborators/maintainer/permission"*) printf '%s\n' "${ACTOR_PERMISSION:-triage}" ;;
   "workflow run "*) printf 'DISPATCH %s\n' "$*" >>"$CALLS" ;;
   "pr comment "*) printf 'COMMENT %s\n' "$*" >>"$CALLS" ;;
   *) echo "unexpected gh call: $*" >&2; exit 2 ;;
@@ -97,6 +98,13 @@ grep -q 'administrator must recover' "$CALLS" \
 ! grep -q 'workflow run ai-review-merge.yml' "$CALLS" \
   && pass "pending recovery never automatically dispatches another paid review" \
   || fail "pending recovery dispatched a paid review"
+
+: >"$CALLS"
+jq -nc --arg head "$head_sha" '{id:"PR_id",state:"OPEN",isDraft:false,title:"change",labels:[{name:"re-review"}],headRefOid:$head,headRepositoryOwner:{login:"Verjson"},autoMergeRequest:null}' >"$META_FILE"
+export EVENT_ACTION=labeled EVENT_LABEL=re-review REQUEST_ACTOR=maintainer ACTOR_PERMISSION=triage
+export REREVIEW_PROVIDER=openai REREVIEW_MODEL=gpt-5.6-luna REREVIEW_BUDGET_USD=1.00
+expect_fail "triage actor cannot authorize a paid re-review"
+! grep -q 'check-runs' "$CALLS" && pass "unauthorized actor fails before receipt or paid dispatch" || fail "unauthorized actor reached authorization creation"
 
 [ "$fails" -eq 0 ] && { echo "All tests passed."; exit 0; }
 echo "$fails test(s) failed."; exit 1

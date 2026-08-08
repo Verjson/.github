@@ -7,6 +7,7 @@ tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
 fails=0; pass(){ printf 'ok   - %s\n' "$1"; }; fail(){ printf 'FAIL - %s\n' "$1"; fails=$((fails+1)); }
 awk '$0=="      - name: Dispatch trusted review after receipt publication"{f=1;next} f&&$0=="        run: |"{r=1;next} r{if($0~/^      - name:/)exit;sub(/^          /,"");print}' "$workflow" >"$tmp/dispatch.sh"
 sed -i 's/${{ steps.arm.outputs.explicit_rereview || false }}/false/' "$tmp/dispatch.sh"
+sed -i 's/${{ steps.arm.outputs.review_policy }}/{"provider":"anthropic","model":"auto","budget_usd":"auto","pricing_version":"anthropic-native-v1","actor":"trusted-arm","actor_permission":"automation"}/' "$tmp/dispatch.sh"
 [ -s "$tmp/dispatch.sh" ] || { echo "FAIL - dispatch block missing"; exit 1; }
 mkdir "$tmp/bin"
 cat >"$tmp/bin/gh" <<'SH'
