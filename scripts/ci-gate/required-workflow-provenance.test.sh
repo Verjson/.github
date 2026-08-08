@@ -164,6 +164,9 @@ if [ "${1:-}" = "api" ]; then
     */actions/runs/*/artifacts*)
       [ "${ATTESTATION_API_RC:-0}" -eq 0 ] || exit "$ATTESTATION_API_RC"
       emit "$(cat "$ARTIFACTS_FILE")" ;;
+    */actions/runs/*/jobs*)
+      [ "${JOBS_RC:-0}" -eq 0 ] || exit "$JOBS_RC"
+      emit '{"jobs":[{"name":"gate","conclusion":"failure","steps":[{"name":"Run review","conclusion":"failure"}]}]}' ;;
     */actions/artifacts/*/zip*)
       [ "${ARTIFACT_ZIP_RC:-0}" -eq 0 ] || exit "$ARTIFACT_ZIP_RC"
       printf 'zip-bytes\n'; exit 0 ;;
@@ -258,6 +261,7 @@ reset_fixtures() {
   FILES_ERROR_KIND=500
   HEAD_RUNS_RC=0
   SOURCE_RUN_RC=0
+  JOBS_RC=0
   ATTESTATION_API_RC=0
   ARTIFACT_ZIP_RC=0
   UNZIP_RC=0
@@ -281,7 +285,7 @@ run_case() { # run_case <event-name>
   # enough attempts to prove the loop reaches its terminal state.
   export MERGE_WAIT_ATTEMPTS=2
   export TRUSTED_WF_ID TRUSTED_REPO_ID TRUSTED_SHA BASE_REF BASE_REF_FINAL
-  export RULES_RC PULLS_RC FILES_FAILURES FILES_ERROR_KIND HEAD_RUNS_RC SOURCE_RUN_RC ATTESTATION_API_RC ARTIFACT_ZIP_RC UNZIP_RC
+  export RULES_RC PULLS_RC FILES_FAILURES FILES_ERROR_KIND HEAD_RUNS_RC SOURCE_RUN_RC JOBS_RC ATTESTATION_API_RC ARTIFACT_ZIP_RC UNZIP_RC
   export RULES_FILE="$tmp/rules.json" RULES_FINAL_FILE="$tmp/rules-final.json"
   export RUNS_FILE="$tmp/runs.json"
   export META_FILE="$tmp/meta.json" META_FINAL_FILE="$tmp/meta-final.json"
@@ -357,8 +361,21 @@ for gate_conclusion in failure cancelled; do
     '. + [($failed | .conclusion = $conclusion | .workflow_url = "'"$REQ_URL"'" | .workflow_id = 318934643)]' \
     <<<"$required_workflow_run")"
   run_case pull_request_target
-  assert_rejected "an active $gate_conclusion newest trusted gate remains terminal" "newest trusted gate run failed"
+  assert_rejected "an active $gate_conclusion newest trusted gate remains terminal" "gate run failed: conclusion=$gate_conclusion run_id=$RETIRED_GATE_RUN_ID url=https://github.com/$CONSUMER/actions/runs/$RETIRED_GATE_RUN_ID"
+  grep -q 'gate failure: job=gate conclusion=failure failed_steps=Run review' "$tmp/out.txt" \
+    && pass "a terminal gate verdict surfaces its failing job and step" \
+    || fail "a terminal gate verdict hid its underlying failing job and step"
 done
+
+RUNS="$(jq -c --argjson failed "$retired_skipped_run" \
+  '. + [($failed | .conclusion = "failure" | .workflow_url = "'"$REQ_URL"'" | .workflow_id = 318934643)]' \
+  <<<"$required_workflow_run")"
+JOBS_RC=1
+run_case pull_request_target
+assert_rejected "an unavailable jobs endpoint preserves the terminal gate verdict" "gate run failed: conclusion=failure"
+grep -q 'gate failure details were unavailable' "$tmp/out.txt" \
+  && pass "an unavailable jobs endpoint leaves an actionable run URL" \
+  || fail "an unavailable jobs endpoint obscured the original gate verdict"
 
 # If every historical candidate is retired, discovery remains inconclusive and
 # the existing bounded fail-closed wait applies; retirement is never approval.
