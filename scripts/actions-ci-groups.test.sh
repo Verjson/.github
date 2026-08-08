@@ -27,7 +27,18 @@ assert groups["strategy"] == {
     "max-parallel": 3,
     "matrix": {"group": ["platform", "merge-gate", "changelog-release"]},
 }
-assert groups["steps"][1]["run"] == 'bash scripts/actions-ci-group.sh "${{ matrix.group }}"'
+group_step = next(
+    step for step in groups["steps"]
+    if step.get("name") == "Run ${{ matrix.group }} shell contracts without hiding sibling failures"
+)
+assert group_step["env"] == {"RUNNER_LABELS": ""}
+assert group_step["run"] == (
+    'group_root="$(mktemp -d "$RUNNER_TEMP/actions-ci-${{ matrix.group }}.XXXXXX")"\n'
+    'trap \'rm -rf "$group_root"\' EXIT\n'
+    'cp -a "$GITHUB_WORKSPACE/." "$group_root/"\n'
+    'cd "$group_root"\n'
+    'bash scripts/actions-ci-group.sh "${{ matrix.group }}"\n'
+)
 
 required = jobs["shell-tests"]
 assert required["needs"] == "shell-test-groups"
@@ -49,6 +60,43 @@ then
   pass "three bounded groups fan out while unmatrixed shell-tests preserves the required context"
 else
   fail "bounded fan-out or required-context aggregation is missing"
+fi
+
+mkdir -p "$tmp/source/scripts" "$tmp/runner/actions-ci-platform.stale"
+printf 'original\n' > "$tmp/source/shared-fixture"
+printf 'stale\n' > "$tmp/runner/actions-ci-platform.stale/stale-fixture"
+cat > "$tmp/source/scripts/actions-ci-group.sh" <<'SH'
+#!/usr/bin/env bash
+[ ! -e stale-fixture ]
+printf 'mutated\n' > shared-fixture
+pwd > "$ISOLATION_PROBE"
+SH
+chmod +x "$tmp/source/scripts/actions-ci-group.sh"
+python3 - "$workflow" "$tmp/run-group.sh" <<'PY'
+import sys
+import yaml
+
+with open(sys.argv[1], encoding="utf-8") as stream:
+    document = yaml.safe_load(stream)
+step = next(
+    step for step in document["jobs"]["shell-test-groups"]["steps"]
+    if step.get("name") == "Run ${{ matrix.group }} shell contracts without hiding sibling failures"
+)
+with open(sys.argv[2], "w", encoding="utf-8") as stream:
+    stream.write(step["run"].replace("${{ matrix.group }}", "platform"))
+PY
+if GITHUB_WORKSPACE="$tmp/source" RUNNER_TEMP="$tmp/runner" \
+  ISOLATION_PROBE="$tmp/probe-one" bash "$tmp/run-group.sh" \
+  && GITHUB_WORKSPACE="$tmp/source" RUNNER_TEMP="$tmp/runner" \
+    ISOLATION_PROBE="$tmp/probe-two" bash "$tmp/run-group.sh" \
+  && [ "$(cat "$tmp/source/shared-fixture")" = original ] \
+  && [ "$(cat "$tmp/probe-one")" != "$(cat "$tmp/probe-two")" ] \
+  && [ ! -e "$(cat "$tmp/probe-one")" ] \
+  && [ ! -e "$(cat "$tmp/probe-two")" ] \
+  && [ "$(cat "$tmp/runner/actions-ci-platform.stale/stale-fixture")" = stale ]; then
+  pass "matrix groups execute from unique, cleaned job-temporary worktrees"
+else
+  fail "matrix groups can collide, retain stale files, or mutate the shared checkout"
 fi
 
 if awk -F '\t' '

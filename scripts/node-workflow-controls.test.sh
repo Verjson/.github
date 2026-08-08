@@ -9,6 +9,7 @@ ci="$root/.github/workflows/node-ci.yml"
 release="$root/.github/workflows/node-release.yml"
 composite="$root/.github/actions/setup-verjson-node/action.yml"
 actions_ci="$root/scripts/actions-ci-groups.tsv"
+actions_ci_workflow="$root/.github/workflows/actions-ci.yml"
 docs="$root/docs/node-workflows.md"
 fails=0
 
@@ -119,6 +120,12 @@ done
 grep -qF 'run: npm run typecheck --if-present' "$ci" \
   && pass "node-ci runs a declared consumer typecheck without requiring the script" \
   || fail "node-ci does not conditionally enforce the consumer typecheck"
+grep -qF 'echo "VERJSON_CHANGELOG_TOOL_CACHE=$RUNNER_TEMP/verjson-changelog-tools" >> "$GITHUB_ENV"' "$ci" \
+  && pass "node-ci gives changelog tooling a job-writable cache" \
+  || fail "node-ci does not scope the changelog tool cache beneath runner.temp"
+grep -qF 'echo "VERJSON_CHANGELOG_TOOL_CACHE=" >> "$GITHUB_ENV"' "$actions_ci_workflow" \
+  && pass "actions-ci clears the persistent runner changelog cache override" \
+  || fail "actions-ci does not restore per-fixture changelog cache isolation"
 { grep -qF 'NODE_AUTH_TOKEN: ${{ secrets.NODE_AUTH_TOKEN }}' "$release" \
   && grep -qF 'NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}' "$release"; } \
   && pass "node-release preserves private install and publish authentication" \
@@ -154,6 +161,22 @@ for test_command in \
     && pass "actions-ci runs $test_command" \
     || fail "actions-ci does not run $test_command"
 done
+
+changelog_cache_script="$(mktemp)"
+awk '
+  /- name: Prepare job-scoped changelog tool cache/ { found = 1; next }
+  found && /^        run: / { sub(/^        run: /, ""); print; exit }
+' "$ci" > "$changelog_cache_script"
+changelog_runner_temp="$(mktemp -d)"
+changelog_github_env="$(mktemp)"
+if RUNNER_TEMP="$changelog_runner_temp" GITHUB_ENV="$changelog_github_env" bash "$changelog_cache_script" \
+  && grep -Fx "VERJSON_CHANGELOG_TOOL_CACHE=$changelog_runner_temp/verjson-changelog-tools" "$changelog_github_env"; then
+  pass "node-ci exports a cold-cache location writable by the job user"
+else
+  fail "node-ci cannot prepare a writable cold-cache location"
+fi
+rm -f "$changelog_cache_script" "$changelog_github_env"
+rm -rf "$changelog_runner_temp"
 
 { grep -qF '`timeout-minutes`' "$docs" \
   && grep -qF '`cache-dependency-path`' "$docs" \
