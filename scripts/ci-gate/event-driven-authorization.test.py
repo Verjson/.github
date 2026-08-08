@@ -14,6 +14,8 @@ REARM = ROOT / ".github/workflows/gate-rearm.yml"
 PROMOTE = ROOT / ".github/workflows/ai-privileged-merge.yml"
 APP_TOKEN_ACTION = "actions/create-github-app-token"
 IMMUTABLE_ACTION = re.compile(rf"^{re.escape(APP_TOKEN_ACTION)}@[0-9a-f]{{40}}$")
+MODEL_ACTION = "anthropics/claude-code-action@v1"
+TRUSTED_BOTS = {"renovate", "renovate[bot]", "mend[bot]", "github-actions"}
 
 
 def load(path: Path):
@@ -42,6 +44,32 @@ def validate_authorization_app_token_pins(uses_values: list[str]) -> None:
             "trusted authorization sites must use the same immutable App-token action pin")
 
 
+def validate_model_admission(steps: list[dict]) -> None:
+    model_indexes = [index for index, step in enumerate(steps)
+                     if step.get("uses") == MODEL_ACTION]
+    require(len(model_indexes) == 3, "review must retain exactly three bounded model passes")
+
+    validation_indexes = [index for index, step in enumerate(steps)
+                          if step.get("name") == "Validate trusted head authorization"]
+    require(len(validation_indexes) == 1 and validation_indexes[0] < model_indexes[0],
+            "receipt and pending-check validation must precede every model pass")
+    validation = steps[validation_indexes[0]].get("run", "")
+    verifier = "bash .gate-trust/scripts/ci-gate/verify-arm-receipt.sh"
+    pending_check = 'check-runs/$AUTHORIZATION_CHECK_ID'
+    require(verifier in validation and pending_check in validation and
+            validation.index(verifier) < validation.index(pending_check) and
+            "in_progress:" in validation and "exit 1" in validation,
+            "trusted admission must verify the receipt, then require its exact pending App check")
+
+    allowlists = []
+    for index in model_indexes:
+        allowed = steps[index].get("with", {}).get("allowed_bots", "")
+        require("*" not in allowed, "model bot admission must never contain a wildcard")
+        allowlists.append({login.strip() for login in allowed.split(",") if login.strip()})
+    require(all(allowed == TRUSTED_BOTS for allowed in allowlists),
+            "all model passes must share the exact trusted dispatcher/Renovate/Mend allowlist")
+
+
 def main() -> int:
     review_text = REVIEW.read_text(encoding="utf-8")
     rearm_text = REARM.read_text(encoding="utf-8")
@@ -52,6 +80,49 @@ def main() -> int:
     review = load(REVIEW)
     rearm = load(REARM)
     promote = load(PROMOTE)
+
+    dispatch_inputs = review[True]["workflow_dispatch"]["inputs"]
+    receipt_inputs = {"pr_number", "expected_head_sha", "authorization_check_id",
+                      "arm_run_id", "arm_run_attempt"}
+    require(receipt_inputs <= dispatch_inputs.keys() and
+            all(dispatch_inputs[name].get("required") is True for name in receipt_inputs),
+            "workflow_dispatch must require the exact head, App check, and arm-receipt identity")
+    gate_steps = review["jobs"]["gate"]["steps"]
+    validate_model_admission(gate_steps)
+
+    mutated_steps = [dict(step) for step in gate_steps]
+    first_model = next(index for index, step in enumerate(mutated_steps)
+                       if step.get("uses") == MODEL_ACTION)
+    mutated_steps[first_model] = {
+        **mutated_steps[first_model],
+        "with": {**mutated_steps[first_model]["with"], "allowed_bots": "*"},
+    }
+    try:
+        validate_model_admission(mutated_steps)
+    except AssertionError:
+        pass
+    else:
+        raise AssertionError("wildcard bot mutation escaped model admission contract")
+
+    validation_index = next(index for index, step in enumerate(gate_steps)
+                            if step.get("name") == "Validate trusted head authorization")
+    missing_verifier_steps = [dict(step) for step in gate_steps]
+    missing_verifier_steps[validation_index] = {
+        **missing_verifier_steps[validation_index],
+        "run": missing_verifier_steps[validation_index]["run"].replace(
+            "bash .gate-trust/scripts/ci-gate/verify-arm-receipt.sh", "true"),
+    }
+    reordered_steps = [dict(step) for step in gate_steps]
+    validation_step = reordered_steps.pop(validation_index)
+    reordered_steps.insert(first_model + 1, validation_step)
+    for mutation, message in (
+            (missing_verifier_steps, "missing receipt verifier"),
+            (reordered_steps, "post-model receipt validation")):
+        try:
+            validate_model_admission(mutation)
+        except AssertionError:
+            continue
+        raise AssertionError(f"{message} mutation escaped model admission contract")
 
     caller_sha = "1" * 40
     callee_sha = "2" * 40
