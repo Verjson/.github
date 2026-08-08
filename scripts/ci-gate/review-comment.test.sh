@@ -205,6 +205,15 @@ review_line=$(grep -n '^REVIEW ' "$tmp/act.log" | cut -d: -f1)
   pass "nonblocking new-head verdict dismisses the stale gate-bot review before green" ||
   fail "stale gate-bot review was not dismissed ($rc, log=$(tr '\n' ',' <"$tmp/act.log"))"
 
+# gh emits one top-level JSON array for each paginated response. Exercise an
+# actual two-document stream and put the dismissal target on page two so this
+# test fails if collection silently inspects only the first page.
+reviews=$'[]\n[{"id":111,"state":"CHANGES_REQUESTED","commit_id":"page-two-head","user":{"login":"github-actions[bot]"}}]'
+rc=$(REVIEWS_JSON="$reviews" run_submit '{"blocking":false,"summary":"fixed","review_first":[],"findings":[],"followups":[]}')
+{ [ "$rc" = "rc=0" ] && act_has '^DISMISS 111$' && act_has REVIEW; } &&
+  pass "paginated review listing dismisses a stale gate review from page two (#608)" ||
+  fail "paginated review listing ignored the second page ($rc, log=$(tr '\n' ',' <"$tmp/act.log"))"
+
 # Human reviews and a bot review bound to the current head are live decisions,
 # not stale gate residue. A second stale bot review remains the only target.
 reviews='[{"id":201,"state":"CHANGES_REQUESTED","commit_id":"old-head","user":{"login":"human-reviewer"}},{"id":202,"state":"CHANGES_REQUESTED","commit_id":"deadbeef","user":{"login":"github-actions[bot]"}},{"id":203,"state":"CHANGES_REQUESTED","commit_id":"older-head","user":{"login":"github-actions[bot]"}},{"id":204,"state":"CHANGES_REQUESTED","commit_id":null,"user":{"login":"github-actions[bot]"}}]'
