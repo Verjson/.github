@@ -104,3 +104,19 @@ like an absent structured result: it consumes the next bounded attempt, and all
 three failures end in the existing inconclusive, fail-closed path. This preserves
 bounded cost and merge safety while ensuring that only actionable model output
 can become a code-blocking review.
+
+## 2026-08-08 amendment — normalize review-first ranges before retrying
+
+Issue #631 showed that the stricter semantic boundary could discard a useful,
+non-blocking verdict solely because `review_first.location` named a line range
+or comma-separated lines. Repeating the same prompt then paid for another model
+pass without guaranteeing a different representation.
+
+The prompt and JSON Schema now require one `file:line` per `review_first` entry.
+Before semantic validation, each pass deterministically reduces a syntactically
+recognizable range or comma-separated location to its first `file:line`, and the
+normalized verdict is the only verdict eligible for submission. Other invalid
+output still enters the bounded retry path with a diagnostic naming
+`review_first.location` and its expected shape. Normalization is deliberately
+limited to human-review pinpoints: blocking `findings` retain exact validation,
+so malformed blocking evidence cannot become merge authority.
