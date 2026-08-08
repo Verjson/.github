@@ -11,6 +11,8 @@ Reverse-chronological index of org-level decisions.
 <!-- BEGIN ADR INDEX -->
 | # | Date | Decision |
 |---|------|----------|
+| [0079](0079-head-bound-ai-authorization-and-native-auto-merge/README.md) | 2026-08-08 | Head-bound AI authorization and native auto-merge |
+| [0078](0078-container-release-and-runner-deployment-contract/README.md) | 2026-08-08 | Container releases promote immutable candidates before protected deployment |
 | [0077](0077-private-repository-gate-restoration/README.md) | 2026-08-07 | Restore private-repository gates without speculative signing |
 | [0076](0076-bounded-actions-ci-shell-test-groups/README.md) | 2026-08-07 | Bound `actions-ci` shell tests into three parallel groups |
 | [0075](0075-generated-artifacts-is-the-changelog-check-prefix/README.md) | 2026-08-07 | Generated artifacts is the changelog check prefix |

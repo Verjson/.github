@@ -28,13 +28,13 @@ on_block="$(awk '
   cap { print }
 ' "$wf")"
 
-# (a) Org direct path preserved: the required-check `pull_request` trigger, with
-# its event-type list, must stay — or every Verjson repo loses its merge gate.
-# Assert the `types:` line too: keeping `pull_request:` but dropping the types
-# would silently change which events fire the required check.
-{ grep -qE '^  pull_request:' <<<"$on_block" && grep -qE '^    types:' <<<"$on_block"; } \
-  && pass "pull_request trigger + types retained (org ruleset path intact)" \
-  || fail "pull_request trigger or its types list missing — org required check would break"
+# (a) Automatic PR events are admitted only by the trusted arm. Restoring this
+# trigger would bypass head deduplication and repay the model on duplicate events.
+if grep -qE '^  pull_request(_target)?:' <<<"$on_block"; then
+  fail "model workflow has an automatic PR trigger outside the trusted arm"
+else
+  pass "model workflow is dispatch/call-only after trusted head deduplication"
+fi
 
 # (b) Operator re-gate path preserved.
 grep -qE '^  workflow_dispatch:' <<<"$on_block" \
@@ -56,6 +56,11 @@ wc_block="$(awk '
 grep -qE '^      runner_labels:' <<<"$wc_block" \
   && pass "workflow_call declares a runner_labels input" \
   || fail "workflow_call is missing the runner_labels input (fleet not parameterizable)"
+
+for identity in expected_head_sha authorization_check_id arm_run_id arm_run_attempt; do
+  grep -qE "^      ${identity}:" <<<"$wc_block" \
+    || fail "workflow_call is missing receipt identity input $identity"
+done
 
 # (d2) runner_labels must be OPTIONAL under workflow_call (#405). It was
 # required because of #130: omitting it left the job queued forever on labels the

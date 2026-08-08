@@ -1,0 +1,143 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Verjson/.github/blob/main/docs/decisions/0078-container-release-and-runner-deployment-contract/deployment-receipt.schema.json",
+  "title": "Verjson runner deployment receipt",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "attemptId",
+    "action",
+    "outcome",
+    "environment",
+    "selectedRelease",
+    "observedDeployedRelease",
+    "previousReceiptDigest",
+    "rollbackOfAttempt",
+    "authorization",
+    "runners",
+    "observedAt",
+    "startedAt",
+    "completedAt"
+  ],
+  "properties": {
+    "schemaVersion": {"const": 1},
+    "attemptId": {
+      "type": "string",
+      "pattern": "^[1-9][0-9]*\\.[1-9][0-9]*$"
+    },
+    "action": {"enum": ["deploy", "rollback"]},
+    "outcome": {"enum": ["admitted", "in_progress", "succeeded", "failed", "interrupted"]},
+    "environment": {"const": "production"},
+    "selectedRelease": {"$ref": "#/$defs/release"},
+    "observedDeployedRelease": {
+      "description": "Release verified on the fleet immediately before mutation; null only for an admitted first deployment.",
+      "oneOf": [{"type": "null"}, {"$ref": "#/$defs/release"}]
+    },
+    "previousReceiptDigest": {
+      "description": "Digest of the preceding append-only revision; null only for the admitted pre-mutation receipt.",
+      "oneOf": [{"type": "null"}, {"$ref": "#/$defs/digest"}]
+    },
+    "rollbackOfAttempt": {
+      "description": "Exact failed or interrupted attempt whose observed baseline is selected for rollback.",
+      "oneOf": [
+        {"type": "null"},
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["attemptId", "receiptDigest"],
+          "properties": {
+            "attemptId": {
+              "type": "string",
+              "pattern": "^[1-9][0-9]*\\.[1-9][0-9]*$"
+            },
+            "receiptDigest": {"$ref": "#/$defs/digest"}
+          }
+        }
+      ]
+    },
+    "authorization": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["dispatcher", "reviewer", "workflowRunId", "environmentProtectionRuleId"],
+      "properties": {
+        "dispatcher": {"type": "string", "minLength": 1},
+        "reviewer": {"type": "string", "minLength": 1},
+        "workflowRunId": {"type": "integer", "minimum": 1},
+        "environmentProtectionRuleId": {"type": "integer", "minimum": 1}
+      }
+    },
+    "runners": {
+      "type": "array",
+      "minItems": 0,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "beforeDigest", "afterDigest", "probe", "completedAt"],
+        "properties": {
+          "name": {"type": "string", "minLength": 1},
+          "beforeDigest": {"$ref": "#/$defs/digest"},
+          "afterDigest": {"$ref": "#/$defs/digest"},
+          "probe": {"enum": ["passed", "failed"]},
+          "completedAt": {"type": "string", "format": "date-time"}
+        }
+      }
+    },
+    "observedAt": {"type": "string", "format": "date-time"},
+    "startedAt": {"type": "string", "format": "date-time"},
+    "completedAt": {
+      "oneOf": [
+        {"type": "null"},
+        {"type": "string", "format": "date-time"}
+      ]
+    }
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"action": {"const": "deploy"}}},
+      "then": {"properties": {"rollbackOfAttempt": {"type": "null"}}}
+    },
+    {
+      "if": {"properties": {"action": {"const": "rollback"}}},
+      "then": {
+        "properties": {
+          "rollbackOfAttempt": {"type": "object"},
+          "observedDeployedRelease": {"type": "object"}
+        }
+      }
+    },
+    {
+      "if": {"properties": {"outcome": {"const": "admitted"}}},
+      "then": {
+        "properties": {
+          "runners": {"type": "array", "maxItems": 0},
+          "completedAt": {"type": "null"},
+          "previousReceiptDigest": {"type": "null"}
+        }
+      },
+      "else": {
+        "properties": {
+          "previousReceiptDigest": {"type": "string"}
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "release": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["releaseVersion", "manifestDigest"],
+      "properties": {
+        "releaseVersion": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$"
+        },
+        "manifestDigest": {"$ref": "#/$defs/digest"}
+      }
+    }
+  }
+}
