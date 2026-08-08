@@ -1702,8 +1702,13 @@ jobs:
           # non-blocking (#452). Dismiss only that stale bot-authored state:
           # dismissal preserves the finding in the timeline, while filtering by
           # reviewer and commit keeps human and current-head decisions intact.
-          if ! reviews_pages=$(gh api --paginate --slurp \
-            "repos/${TARGET_REPO}/pulls/${PR_NUMBER}/reviews?per_page=100"); then
+          # `--slurp` is not available in the older GitHub CLI shipped on some
+          # adopter runners. `gh api --paginate` emits one JSON array per page;
+          # jq's stable `-s` mode collects that stream without depending on a
+          # recent gh release. pipefail preserves a failed API call.
+          if ! reviews_pages=$(gh api --paginate \
+            "repos/${TARGET_REPO}/pulls/${PR_NUMBER}/reviews?per_page=100" \
+            | jq -s '.'); then
             echo "::error::phase=review result=list-failed — could not list prior pull request reviews; refusing to report a green verdict while stale review state is unknown" >&2
             exit 1
           fi
