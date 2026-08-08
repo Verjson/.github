@@ -94,9 +94,6 @@ if problems:
 
 verify, snapshot, publish = jobs["verify"], jobs["snapshot"], jobs["publish"]
 
-if verify.get("env", {}).get("VERJSON_CHANGELOG_TOOL_CACHE") != "${{ runner.temp }}/verjson-changelog-tools":
-    bad("`verify` does not override the persistent runner changelog cache with a job-writable runner.temp path (#630)")
-
 
 def needs_of(job):
     value = job.get("needs") or []
@@ -169,6 +166,18 @@ GITHUB_TOKEN = re.compile(
 
 def steps_of(job):
     return job.get("steps") or []
+
+
+cache_steps = [
+    step for step in steps_of(verify)
+    if step.get("name") == "Prepare job-scoped changelog tool cache"
+]
+if (
+    len(cache_steps) != 1
+    or steps_of(verify)[0] is not cache_steps[0]
+    or cache_steps[0].get("run") != 'echo "VERJSON_CHANGELOG_TOOL_CACHE=$RUNNER_TEMP/verjson-changelog-tools" >> "$GITHUB_ENV"'
+):
+    bad("`verify` does not export a job-writable runner.temp cache before repository steps (#630)")
 
 
 # #465(1). A repository-scoped GITHUB_TOKEN cannot read a private GitHub
@@ -615,14 +624,18 @@ chmod +x "$tmp/sandbox/scripts/release-verify.sh"
 release_runner_temp="$tmp/release-runner-temp"
 ambient_release_cache="/proc/verjson-persistent-changelog-cache"
 export VERJSON_CHANGELOG_TOOL_CACHE="$ambient_release_cache"
-verify_cache_template="$(python3 - "$release" <<'PY'
+verify_cache_step="$tmp/verify-cache-step.sh"
+python3 - "$release" >"$verify_cache_step" <<'PY'
 import sys, yaml
 doc = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))
-print(doc["jobs"]["verify"].get("env", {}).get("VERJSON_CHANGELOG_TOOL_CACHE", ""))
+for step in doc["jobs"]["verify"]["steps"]:
+    if step.get("name") == "Prepare job-scoped changelog tool cache":
+        print(step["run"])
 PY
-)"
-release_cache="$(printf '%s\n' "$verify_cache_template" \
-  | sed "s|\${{ runner.temp }}|$release_runner_temp|")"
+verify_github_env="$tmp/verify-github-env"
+RUNNER_TEMP="$release_runner_temp" GITHUB_ENV="$verify_github_env" \
+  bash -eo pipefail "$verify_cache_step"
+release_cache="$(sed -n 's/^VERJSON_CHANGELOG_TOOL_CACHE=//p' "$verify_github_env")"
 if run_guard "$suite_step" "PATH=$tmp/bin:$PATH" \
   "VERJSON_CHANGELOG_TOOL_CACHE=$release_cache" "EXPECTED_CHANGELOG_CACHE=$release_cache" \
   "CONTRACT_SHA=$sha"; then
@@ -643,17 +656,19 @@ fi
 # repository hook inherits the hostile host cache and cannot create its cold SHA.
 verify_without_cache="$tmp/release-without-verify-cache.yml"
 cp "$release" "$verify_without_cache"
-sed -i '/^    env:$/,+1d' "$verify_without_cache"
-missing_cache_template="$(python3 - "$verify_without_cache" <<'PY'
+sed -i '/^      - name: Prepare job-scoped changelog tool cache$/,+1d' "$verify_without_cache"
+missing_cache_step="$tmp/missing-verify-cache-step.sh"
+python3 - "$verify_without_cache" >"$missing_cache_step" <<'PY'
 import sys, yaml
 doc = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))
-print(doc["jobs"]["verify"].get("env", {}).get("VERJSON_CHANGELOG_TOOL_CACHE", ""))
+for step in doc["jobs"]["verify"]["steps"]:
+    if step.get("name") == "Prepare job-scoped changelog tool cache":
+        print(step["run"])
 PY
-)"
-[ -n "$missing_cache_template" ] || missing_cache_template="$ambient_release_cache"
+[ ! -s "$missing_cache_step" ] || fail "the verify-cache removal mutation left an override step"
 if run_guard "$suite_step" "PATH=$tmp/bin:$PATH" \
-  "VERJSON_CHANGELOG_TOOL_CACHE=$missing_cache_template" \
-  "EXPECTED_CHANGELOG_CACHE=$missing_cache_template" "CONTRACT_SHA=$sha"; then
+  "VERJSON_CHANGELOG_TOOL_CACHE=$ambient_release_cache" \
+  "EXPECTED_CHANGELOG_CACHE=$ambient_release_cache" "CONTRACT_SHA=$sha"; then
   fail "the verify hook survived removal of the runner.temp cache override"
 else
   pass "removing the verify override reproduces the hostile persistent-cache failure (#630)"

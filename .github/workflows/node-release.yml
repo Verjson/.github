@@ -70,8 +70,6 @@ jobs:
   release:
     runs-on: ${{ inputs.runner != '' && fromJSON(inputs.runner) || github.repository_owner != 'Verjson' && 'ubuntu-24.04' || github.event.repository.private == true && fromJSON(vars.VERJSON_LANE_TRUSTED || vars.VERJSON_LANE_FALLBACK || '["ubuntu-24.04"]') || fromJSON(vars.VERJSON_LANE_UNTRUSTED || vars.VERJSON_LANE_FALLBACK || '["ubuntu-24.04"]') }}
     timeout-minutes: ${{ inputs.timeout-minutes }}
-    env:
-      VERJSON_CHANGELOG_TOOL_CACHE: ${{ runner.temp }}/verjson-changelog-tools
     permissions:
       contents: write
       packages: write
@@ -79,6 +77,8 @@ jobs:
       new-release-published: ${{ steps.result.outputs.new-release-published }}
       new-release-version: ${{ steps.result.outputs.new-release-version }}
     steps:
+      - name: Prepare job-scoped changelog tool cache
+        run: echo "VERJSON_CHANGELOG_TOOL_CACHE=$RUNNER_TEMP/verjson-changelog-tools" >> "$GITHUB_ENV"
       - name: Require the contract's exact release tag
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -123,9 +123,16 @@ grep -qF 'run: npm run typecheck --if-present' "$ci" \
 grep -qF 'echo "VERJSON_CHANGELOG_TOOL_CACHE=$RUNNER_TEMP/verjson-changelog-tools" >> "$GITHUB_ENV"' "$ci" \
   && pass "node-ci gives changelog tooling a job-writable cache" \
   || fail "node-ci does not scope the changelog tool cache beneath runner.temp"
-grep -qF 'VERJSON_CHANGELOG_TOOL_CACHE: ${{ runner.temp }}/verjson-changelog-tools' "$release" \
+grep -qF 'echo "VERJSON_CHANGELOG_TOOL_CACHE=$RUNNER_TEMP/verjson-changelog-tools" >> "$GITHUB_ENV"' "$release" \
   && pass "node-release gives publish builds a job-writable changelog tool cache" \
   || fail "node-release does not scope the changelog tool cache beneath runner.temp"
+python3 - "$release" <<'PY' \
+  && pass "node-release prepares the changelog cache before every publish step" \
+  || fail "node-release prepares the changelog cache too late"
+import sys, yaml
+doc = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))
+assert doc["jobs"]["release"]["steps"][0].get("name") == "Prepare job-scoped changelog tool cache"
+PY
 grep -qF 'echo "VERJSON_CHANGELOG_TOOL_CACHE=" >> "$GITHUB_ENV"' "$actions_ci_workflow" \
   && pass "actions-ci clears the persistent runner changelog cache override" \
   || fail "actions-ci does not restore per-fixture changelog cache isolation"
@@ -185,14 +192,18 @@ publish_runner_temp="$(mktemp -d)"
 ambient_publish_cache="/proc/verjson-persistent-changelog-cache"
 export VERJSON_CHANGELOG_TOOL_CACHE="$ambient_publish_cache"
 publish_contract_sha="0123456789abcdef0123456789abcdef01234567"
-publish_cache_template="$(python3 - "$release" <<'PY'
+publish_cache_step="$(mktemp)"
+python3 - "$release" >"$publish_cache_step" <<'PY'
 import sys, yaml
 doc = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))
-print(doc["jobs"]["release"].get("env", {}).get("VERJSON_CHANGELOG_TOOL_CACHE", ""))
+for step in doc["jobs"]["release"]["steps"]:
+    if step.get("name") == "Prepare job-scoped changelog tool cache":
+        print(step["run"])
 PY
-)"
-publish_cache="$(printf '%s\n' "$publish_cache_template" \
-  | sed "s|\${{ runner.temp }}|$publish_runner_temp|")"
+publish_github_env="$(mktemp)"
+RUNNER_TEMP="$publish_runner_temp" GITHUB_ENV="$publish_github_env" \
+  bash -eo pipefail "$publish_cache_step"
+publish_cache="$(sed -n 's/^VERJSON_CHANGELOG_TOOL_CACHE=//p' "$publish_github_env")"
 populate_publish_cache() {
   mkdir -p "$VERJSON_CHANGELOG_TOOL_CACHE/$publish_contract_sha" \
     && printf published >"$VERJSON_CHANGELOG_TOOL_CACHE/$publish_contract_sha/changelog.py"
@@ -208,21 +219,23 @@ fi
 
 release_without_cache="$(mktemp)"
 cp "$release" "$release_without_cache"
-sed -i '/^    env:$/,+1d' "$release_without_cache"
-missing_publish_template="$(python3 - "$release_without_cache" <<'PY'
+sed -i '/^      - name: Prepare job-scoped changelog tool cache$/,+1d' "$release_without_cache"
+missing_publish_step="$(mktemp)"
+python3 - "$release_without_cache" >"$missing_publish_step" <<'PY'
 import sys, yaml
 doc = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))
-print(doc["jobs"]["release"].get("env", {}).get("VERJSON_CHANGELOG_TOOL_CACHE", ""))
+for step in doc["jobs"]["release"]["steps"]:
+    if step.get("name") == "Prepare job-scoped changelog tool cache":
+        print(step["run"])
 PY
-)"
-[ -n "$missing_publish_template" ] || missing_publish_template="$ambient_publish_cache"
-if VERJSON_CHANGELOG_TOOL_CACHE="$missing_publish_template" populate_publish_cache 2>/dev/null; then
+[ ! -s "$missing_publish_step" ] || fail "the publish-cache removal mutation left an override step"
+if VERJSON_CHANGELOG_TOOL_CACHE="$ambient_publish_cache" populate_publish_cache 2>/dev/null; then
   fail "the publish build survived removal of the runner.temp cache override"
 else
   pass "removing the publish override reproduces the hostile persistent-cache failure (#630)"
 fi
 unset VERJSON_CHANGELOG_TOOL_CACHE
-rm -f "$release_without_cache"
+rm -f "$release_without_cache" "$publish_cache_step" "$publish_github_env" "$missing_publish_step"
 rm -rf "$publish_runner_temp"
 
 { grep -qF '`timeout-minutes`' "$docs" \
