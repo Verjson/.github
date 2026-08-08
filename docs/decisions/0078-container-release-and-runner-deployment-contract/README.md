@@ -77,9 +77,35 @@ waits at the consumer repository's protected environment named `production`. The
 credential-bearing reusable job names that canonical environment directly; neither a
 caller input nor a manifest can override it. Release authority does not imply deployment
 authority. A merge and a stable promotion cannot bypass that human-visible environment
-approval. Before mutation, deployment also verifies that the manifest's
-`previousDeployedRelease` agrees with the last retained successful deployment receipt;
-an unexpected fleet baseline is drift, not an implicit upgrade path.
+approval.
+
+The generated contract and its preflight fail closed unless all of these are true:
+
+- the dispatch ref is exactly the protected default branch and the `production`
+  environment admits protected branches only;
+- the environment has at least one required reviewer, prevents self-review, and disables
+  administrator bypass;
+- the completed environment review names a reviewer different from the workflow
+  dispatcher; and
+- only the reusable workflow's post-approval mutation step receives the consumer
+  environment secret named `VERJSON_RUNNER_DEPLOY_TOKEN`. The generated caller cannot
+  pass a token, `secrets: inherit`, an environment name, or an alternate secret name.
+
+The preflight verifies those settings through the GitHub API before the reusable job can
+reach production credentials. The adopter contract test rejects a caller/workflow shape
+that weakens any invariant, and the deployment receipt records the dispatcher, actual
+reviewer, workflow run, and environment protection rule used. The fail-closed policy is
+executable as `scripts/container_deployment_preflight.py`; #629 wires normalized GitHub
+API evidence into that pinned validator rather than reimplementing the decisions in
+workflow shell.
+
+`previousRelease` in a release manifest is the immutable predecessor in the stable
+release line. It is not fleet state and never changes after promotion. Immediately before
+mutation, deployment independently observes the fleet, verifies that it agrees with the
+last successful deployment receipt, and records that baseline as
+`observedDeployedRelease` in an immutable receipt conforming to
+[`deployment-receipt.schema.json`](./deployment-receipt.schema.json). An unexpected fleet
+baseline is drift, not an implicit upgrade path.
 
 After approval, the deployment controller selects one explicitly configured canary from
 the target environment. It admits only an online, idle runner, updates it through
@@ -90,11 +116,13 @@ and the same representative probe checked after each update. The first interrupt
 timeout, digest mismatch, or probe failure stops the rollout; it never skips a failed
 runner or continues in parallel.
 
-Rollback is an independently approved deployment of the exact `previousDeployedRelease`
-manifest recorded in the current deployment receipt. It rebuilds nothing, revalidates
-that retained manifest and provenance, and follows the same canary and sequential
-protocol. If no verified previous manifest is retained, automation fails closed and an
-operator must resolve the missing evidence; a mutable tag is not a recovery mechanism.
+Rollback is an independently approved deployment of the exact
+`observedDeployedRelease` manifest recorded in the current successful deployment
+receipt. It neither rewrites the target release manifest nor rebuilds an image; it
+revalidates that retained manifest and provenance and follows the same canary and
+sequential protocol. If no verified previous manifest is retained, automation fails
+closed and an operator must resolve the missing evidence; a mutable tag is not a
+recovery mechanism.
 
 ### Ownership and credential boundary
 
@@ -107,9 +135,11 @@ operator must resolve the missing evidence; a mutable tag is not a recovery mech
   verification on the target, and its safety invariants. Workflows orchestrate that CLI;
   they do not reproduce its behavior in shell.
 - Each consumer's protected GitHub environment owns its narrowly scoped production
-  credential and approvers. `Verjson/.github` stores no broad DigitalOcean credential,
-  reusable workflows receive no organization-wide production secret, and candidate or
-  release jobs receive no deployment credential.
+  credential and approvers. Its `VERJSON_RUNNER_DEPLOY_TOKEN` authorizes only the named
+  consumer fleet operations required by `verjson-cli-cloud`, not account-wide resource
+  creation or unrelated environments. `Verjson/.github` stores no broad DigitalOcean
+  credential, reusable workflows receive no organization-wide production secret, and
+  candidate or release jobs receive no deployment credential.
 
 The environment, credential scope, and production approver rule are mandatory human
 review points for every adopter. Changing them is sensitive work and requires a consumer
@@ -134,6 +164,14 @@ records and enforces one immutable contract SHA; a mixed pin or edited generated
 fails the contract test. The generator itself never writes consumer credentials or
 environment approvers.
 
+Schema validation is necessary but cannot express uniqueness by object property. Every
+candidate and release therefore also runs `scripts/container_release_manifest.py`
+against the protected default branch's reviewed consumer configuration. It rejects
+duplicate image variants, duplicate `(os, architecture, variant)` platform identities,
+and any missing, extra, or substituted repository, variant, platform, provenance
+predicate, or builder identity. The generated contract test must invoke this pinned
+validator; a schema-only check is not a valid implementation.
+
 The release manifest has its own integer `schemaVersion`. Incompatible receipt changes
 increment that version and reusable workflows reject unsupported versions. Workflow
 contract pins and manifest schema versions are related evidence but are not conflated.
@@ -154,12 +192,13 @@ does not depend on an expired workflow artifact.
 | --- | --- | --- |
 | Mutable or replaced tag | Deploy only schema-validated `sha256` digests from a verified release manifest; tags are display aliases | Reject tag inputs and digest disagreement |
 | Digest substitution | Bind variant, platform, digest, source run, and provenance identity in signed receipts; resolve registry state again at each transition | Stop before promotion or mutation |
-| Untrusted caller input or arbitrary branch | Read version and matrix from the protected default-branch configuration; validate caller repository, ref, workflow pin, and manifest schema | Reject before credentials or write permission are available |
+| Untrusted caller input or arbitrary branch | Require the exact protected default branch; validate caller repository, workflow pin, schema, and the complete matrix against reviewed configuration with the semantic validator | Reject before credentials or write permission are available |
 | Broad or leaked production credential | Keep a least-privilege credential only in the consumer production environment and grant it solely to the deployment job after approval | Candidate/release jobs cannot authenticate to production |
-| Environment bypass | Deployment is dispatch-only and the credential-bearing job names the protected production environment; reusable policy cannot accept a caller override | No deployment job without the environment gate |
+| Environment bypass or self-approval | Preflight requires protected-branch admission, a required reviewer distinct from dispatcher, self-review prevention, and disabled admin bypass; the generated caller cannot override the environment | No credential-bearing job without independent environment approval |
+| Duplicate matrix identity | Semantic validation rejects duplicate variant and platform tuple keys before comparing the exact reviewed matrix and provenance identities | Reject before promotion or deployment |
 | Partial promotion | Verify the complete declared matrix before publishing stable references and make publication restart-safe against exact existing state | Fail without a partially authoritative release |
 | Rollout interruption | Update one runner at a time, retain per-runner receipts, and stop on the first non-success | Preserve known state and require resume or approved rollback |
-| Rollback drift | Roll back by the retained previous verified manifest, revalidate provenance, and verify the target digest after each update | Fail closed if evidence or exact artifacts are unavailable |
+| Rollback drift | Bind the observed fleet predecessor in the deployment receipt, roll back by that retained manifest, revalidate provenance, and verify each target digest | Fail closed if fleet state, evidence, or exact artifacts disagree |
 | Compromised reusable caller | Generate callers and contract tests together at one immutable contract SHA; reject edits and mixed pins | CI blocks the consumer change |
 | Compromised update implementation | Keep safety invariants in `verjson-cli-cloud` and require its provenance enforcement before deployment adoption | #629 remains blocked until the upstream invariant exists |
 
@@ -170,7 +209,8 @@ a human gate even after the generated contract is established.
 ## Migration plan for `Verjson/verjson-github-runner`
 
 1. Land #628 and generate the candidate caller at an immutable contract SHA. Commit the
-   reviewed next-stable line and declared matrix. Preserve the current digest receipt as
+   reviewed next-stable line and declared matrix. Wire the schema plus semantic validator
+   into the generated contract. Preserve the current digest receipt as
    source evidence while dual-writing the new candidate receipt; disable any appearance
    that a merge publishes stable state. A merge may publish only an immutable candidate.
 2. Compare the new receipt's complete variant/platform digests with the existing build
@@ -180,7 +220,9 @@ a human gate even after the generated contract is established.
    proving that the build does not run and an incomplete matrix publishes nothing.
 4. After the upstream `verjson-cli-cloud` provenance-enforcement dependency is available,
    land #629 and generate the deployment caller. Configure the protected production
-   environment, narrow credential, approvers, canary, observation window, probes, and
+   environment with protected-branch-only admission, self-review prevention, required
+   independent reviewers, and admin bypass disabled. Scope `VERJSON_RUNNER_DEPLOY_TOKEN`
+   to the named fleet, then configure the canary, observation window, probes, and
    deterministic fleet order in the consumer repository.
 5. Perform a protected canary deployment, sequential rollout, induced-stop exercise, and
    approved rollback to the recorded previous manifest. Retain all receipts. Only then

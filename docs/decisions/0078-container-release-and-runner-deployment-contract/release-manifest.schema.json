@@ -11,7 +11,7 @@
     "source",
     "release",
     "images",
-    "previousDeployedRelease",
+    "previousRelease",
     "timestamps"
   ],
   "properties": {
@@ -157,7 +157,8 @@
         }
       }
     },
-    "previousDeployedRelease": {
+    "previousRelease": {
+      "description": "Immutable predecessor in the stable release line. Fleet state belongs to deployment receipts and never rewrites this manifest.",
       "oneOf": [
         {
           "type": "null"
