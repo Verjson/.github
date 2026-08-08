@@ -40,7 +40,7 @@ cat >"$tmp/run/.gate-trust/scripts/ci-gate/verify-arm-receipt.sh" <<'SH'
 [ "$EXPECTED_HEAD_SHA" = "$EXPECTED_AUTHORIZED_HEAD_SHA" ] &&
   [ "$EXPECTED_HEAD_SHA" = "$EXPECTED_REVIEWED_HEAD_SHA" ]
 SH
-chmod +x "$tmp/run/.gate-trust/scripts/ci-gate/verify-arm-receipt.sh"
+chmod 0644 "$tmp/run/.gate-trust/scripts/ci-gate/verify-arm-receipt.sh"
 cat >"$tmp/bin/gh" <<'SH'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >>"$CALLS"
@@ -60,6 +60,11 @@ export EXPECTED_REVIEWED_HEAD_SHA="$EXPECTED_AUTHORIZED_HEAD_SHA" EXPECTED_HEAD_
 export GATE_STATUS=success ACTIONS_TOKEN=actions-token GH_TOKEN=app-token
 
 run_complete(){ (cd "$tmp/run" && bash "$tmp/complete.sh"); }
+if (cd "$tmp/run" && .gate-trust/scripts/ci-gate/verify-arm-receipt.sh) >"$tmp/out" 2>&1; then
+  fail "non-executable completion verifier unexpectedly supports direct execution"
+else
+  pass "non-executable completion verifier rejects direct execution"
+fi
 : >"$CALLS"
 if run_complete >"$tmp/out" 2>&1 && grep -q 'conclusion=success' "$CALLS"; then
   pass "trusted preflight head reaches and authorizes exact receipt completion"
