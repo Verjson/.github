@@ -1391,7 +1391,7 @@ jobs:
           SENSITIVE: ${{ needs.preflight.outputs.sensitive }}
         run: |
           usable=false
-          if jq -e --argjson sensitive "${SENSITIVE:-false}" 'def text: type == "string" and test("\\S"); def location: text and test("^.+:[1-9][0-9]*$"); type == "object" and (.blocking | type == "boolean") and (.summary | text) and (.review_first | type == "array") and (all(.review_first[]; (.location | location) and (.why | text))) and (($sensitive | not) or (.review_first | length > 0)) and (.findings | type == "array") and (all(.findings[]; (.location | location) and (.reason | text) and (.failure_scenario | text))) and ((.blocking | not) or (.findings | length > 0)) and (.followups | type == "array")' <<<"${VERDICT:-}" >/dev/null; then
+          if jq -e --argjson sensitive "${SENSITIVE:-false}" 'def text: type == "string" and test("\\S"); def location: text and test("^.+:[1-9][0-9]*$"); type == "object" and (.blocking | type == "boolean") and (.summary | text) and (.review_first | type == "array") and (all(.review_first[]; (.location | location) and (.why | text))) and (($sensitive | not) or (.review_first | length > 0)) and (.findings | type == "array") and (all(.findings[]; (.location | location) and (.reason | text) and (.failure_scenario | text))) and (.blocking == (.findings | length > 0)) and (.followups | type == "array")' <<<"${VERDICT:-}" >/dev/null; then
             usable=true
           elif [ -n "${VERDICT//[[:space:]]/}" ]; then
             echo "::warning::phase=model pass=1 result=semantic-invalid — retrying instead of publishing an unusable verdict"
@@ -1458,7 +1458,7 @@ jobs:
           SENSITIVE: ${{ needs.preflight.outputs.sensitive }}
         run: |
           usable=false
-          if jq -e --argjson sensitive "${SENSITIVE:-false}" 'def text: type == "string" and test("\\S"); def location: text and test("^.+:[1-9][0-9]*$"); type == "object" and (.blocking | type == "boolean") and (.summary | text) and (.review_first | type == "array") and (all(.review_first[]; (.location | location) and (.why | text))) and (($sensitive | not) or (.review_first | length > 0)) and (.findings | type == "array") and (all(.findings[]; (.location | location) and (.reason | text) and (.failure_scenario | text))) and ((.blocking | not) or (.findings | length > 0)) and (.followups | type == "array")' <<<"${VERDICT:-}" >/dev/null; then
+          if jq -e --argjson sensitive "${SENSITIVE:-false}" 'def text: type == "string" and test("\\S"); def location: text and test("^.+:[1-9][0-9]*$"); type == "object" and (.blocking | type == "boolean") and (.summary | text) and (.review_first | type == "array") and (all(.review_first[]; (.location | location) and (.why | text))) and (($sensitive | not) or (.review_first | length > 0)) and (.findings | type == "array") and (all(.findings[]; (.location | location) and (.reason | text) and (.failure_scenario | text))) and (.blocking == (.findings | length > 0)) and (.followups | type == "array")' <<<"${VERDICT:-}" >/dev/null; then
             usable=true
           elif [ -n "${VERDICT//[[:space:]]/}" ]; then
             echo "::warning::phase=model pass=2 result=semantic-invalid — retrying instead of publishing an unusable verdict"
@@ -1518,7 +1518,7 @@ jobs:
           SENSITIVE: ${{ needs.preflight.outputs.sensitive }}
         run: |
           usable=false
-          if jq -e --argjson sensitive "${SENSITIVE:-false}" 'def text: type == "string" and test("\\S"); def location: text and test("^.+:[1-9][0-9]*$"); type == "object" and (.blocking | type == "boolean") and (.summary | text) and (.review_first | type == "array") and (all(.review_first[]; (.location | location) and (.why | text))) and (($sensitive | not) or (.review_first | length > 0)) and (.findings | type == "array") and (all(.findings[]; (.location | location) and (.reason | text) and (.failure_scenario | text))) and ((.blocking | not) or (.findings | length > 0)) and (.followups | type == "array")' <<<"${VERDICT:-}" >/dev/null; then
+          if jq -e --argjson sensitive "${SENSITIVE:-false}" 'def text: type == "string" and test("\\S"); def location: text and test("^.+:[1-9][0-9]*$"); type == "object" and (.blocking | type == "boolean") and (.summary | text) and (.review_first | type == "array") and (all(.review_first[]; (.location | location) and (.why | text))) and (($sensitive | not) or (.review_first | length > 0)) and (.findings | type == "array") and (all(.findings[]; (.location | location) and (.reason | text) and (.failure_scenario | text))) and (.blocking == (.findings | length > 0)) and (.followups | type == "array")' <<<"${VERDICT:-}" >/dev/null; then
             usable=true
           elif [ -n "${VERDICT//[[:space:]]/}" ]; then
             echo "::warning::phase=model pass=3 result=semantic-invalid — exhausting the bounded retry chain"
