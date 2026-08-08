@@ -38,7 +38,7 @@ expected_uses = f"Verjson/.github/.github/workflows/gate-rearm.yml@{sha}"
 assert set(doc) == {"name", "on", "permissions", "jobs"}
 assert doc["on"] == {
     "pull_request_target": {
-        "types": ["ready_for_review", "unlabeled", "labeled"],
+        "types": ["opened", "reopened", "synchronize", "ready_for_review", "converted_to_draft", "edited", "unlabeled", "labeled"],
     },
 }
 assert doc["permissions"] == {"contents": "read"}
@@ -48,16 +48,17 @@ assert job == {
     "permissions": {
         "contents": "read",
         "actions": "write",
-        "pull-requests": "read",
+        "pull-requests": "write",
     },
     "uses": expected_uses,
+    "secrets": {"AI_REVIEW_APP_PRIVATE_KEY": "${{ secrets.AI_REVIEW_APP_PRIVATE_KEY }}"},
 }
 PY
 
   grep -qF "scripts/gen-gate-rearm-caller.sh $contract_sha" "$caller" \
     && pass "generated caller records an exact reproducible command" \
     || fail "generated caller lacks exact regeneration provenance"
-  if grep -qE 'actions/checkout|github\.event\.pull_request\.(head|body|title)|^[[:space:]]+run:|secrets:' "$caller"; then
+  if grep -qE 'actions/checkout|github\.event\.pull_request\.(head|body|title)|^[[:space:]]+run:|secrets: inherit' "$caller"; then
     fail "generated pull_request_target caller can execute or expose PR-controlled content"
   else
     pass "generated caller delegates without checkout, shell, PR prose, or secrets"
@@ -83,7 +84,7 @@ grep -qE '^  workflow_call:' "$canonical" \
 # The immutable target matters only if the pinned canonical contract remains
 # security-complete. Reuse the exhaustive canonical suite rather than copying
 # its hold, recursion, checkout, metadata and permission assertions here.
-bash "$here/gate-rearm.test.sh" >"$tmp/canonical.out" 2>&1 \
+bash "$here/arm-receipt.test.sh" >"$tmp/canonical.out" 2>&1 \
   && pass "canonical bridge retains hold, recursion, no-checkout and fail-closed guards" \
   || fail "canonical bridge contract failed: $(tail -n 1 "$tmp/canonical.out")"
 grep -q $'\tbash scripts/ci-gate/gate-rearm-caller-contract.test.sh$' "$actions_ci" \

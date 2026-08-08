@@ -440,15 +440,12 @@ for privileged_workflow in ai-privileged-merge.yml; do
     "$privileged_workflow — a consumer omitting runner_labels routes through VERJSON_LANE_PRIVILEGED (overflow unset)" \
     '' ''
 
-  # #487 / ADR 0064, and the mirror of the two gate polarities further down. This
-  # job polls the pool it waits on, so with the organization's overflow lane SET
-  # — which it is, today — a lane-routed caller must land THERE and not on
-  # VERJSON_LANE_PRIVILEGED. Asserting only the unset polarity above would claim
-  # a route production no longer takes.
+  # Native auto-merge promotion performs no waiting, so an overflow variable no
+  # longer diverts this short credential-bound job from the privileged lane.
   assert_route "$privileged_path" privileged_merge Verjson/verjson-authn '' true \
     '["self-hosted","privileged-canary"]' '["self-hosted","untrusted-canary"]' \
-    '["ubuntu-24.04"]' \
-    "$privileged_workflow — with the overflow lane set, an omitted input lands there" \
+    '["self-hosted","privileged-canary"]' \
+    "$privileged_workflow — overflow does not divert the non-waiting promotion" \
     '' '' '["ubuntu-24.04"]'
 
   # The precedence ADR 0053's exclusion paragraph rested on, and the reason #487
@@ -528,10 +525,10 @@ polling_jobs="$(
     ' "$wf"
   done | awk -F'\t' '$3 == 1'
 )"
-# A sweep that finds nothing must not look like a sweep that passed.
-[ -n "$polling_jobs" ] \
-  && pass "the poll-loop sweep found jobs to check" \
-  || fail "no polling job was discovered — the sweep is broken, not the fleet clean"
+# ADR 0079's desired state is no runner-held merge-gate polling job.
+[ -z "$polling_jobs" ] \
+  && pass "no merge-gate job parks a runner while waiting on checks" \
+  || fail "a merge-gate polling job remains after the event-driven redesign"
 while IFS=$'\t' read -r poll_file poll_job _ poll_runs_on; do
   [ -n "$poll_file" ] || continue
   case "$poll_runs_on" in

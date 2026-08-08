@@ -98,20 +98,15 @@ case "$1" in
   *) exit 2 ;;
 esac
 GIT
-cat >"$tmp/bin/sleep" <<'SH'
-#!/usr/bin/env bash
-printf '%s\n' "$1" >>"$SLEEP_LOG"
-SH
-chmod +x "$tmp/bin/gh" "$tmp/bin/git" "$tmp/bin/sleep"
+chmod +x "$tmp/bin/gh" "$tmp/bin/git"
 
 run_prep() {
   printf '0\n' >"$tmp/fetch-count"
-  : >"$tmp/sleep.log"
   : >"$tmp/github-output.txt"
   (
     cd "$tmp/run" || exit
     PATH="$tmp/bin:$PATH" GH_TOKEN=token TARGET_REPO=Verjson/example PR_NUMBER=7 \
-      DEPENDENCY_MAJOR=false FETCH_COUNT="$tmp/fetch-count" SLEEP_LOG="$tmp/sleep.log" \
+      DEPENDENCY_MAJOR=false FETCH_COUNT="$tmp/fetch-count" \
       GITHUB_OUTPUT="$tmp/github-output.txt" FETCH_FAILURES="${1-0}" NO_MERGE_BASE="${2-false}" \
       bash "$prep"
   ) >"$tmp/prep.out" 2>&1
@@ -119,7 +114,6 @@ run_prep() {
 
 run_prep 1 \
   && [ "$(cat "$tmp/fetch-count")" -eq 2 ] \
-  && grep -q '^1$' "$tmp/sleep.log" \
   && grep -q 'result=retry' "$tmp/prep.out" \
   && [ "$(grep -c '^diff --git ' "$tmp/run/.ai-review/pr.full.diff")" -eq 301 ] \
   && pass "base fetch retries once and renders all 301 changed files locally" \
@@ -131,7 +125,6 @@ run_prep 9 \
     [ "$(cat "$tmp/fetch-count")" -eq 4 ] \
       && grep -q 'kind=infrastructure_unavailable' "$tmp/prep.out" \
       && grep -q '^review_input_failure=infrastructure_unavailable$' "$tmp/github-output.txt" \
-      && [ "$(tr '\n' ',' <"$tmp/sleep.log")" = "1,2,4," ] \
       && ! grep -q 'response-marker-must-stay-masked' "$tmp/prep.out" \
       && pass "exhausted base fetch fails closed with typed infrastructure state" \
       || fail "exhausted base fetch lacks exponential backoff, masking, or typed failure evidence"

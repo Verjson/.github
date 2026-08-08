@@ -74,8 +74,6 @@ emit() {
 name: AI privileged merge
 
 on:
-  pull_request_target:
-    types: [opened, reopened, ready_for_review, synchronize, labeled, unlabeled]
   workflow_dispatch:
     inputs:
       pr_number:
@@ -84,19 +82,26 @@ on:
       expected_head_sha:
         required: true
         type: string
-      source_run_id:
+      authorization_check_id:
         required: true
+        type: string
+      arm_run_id:
+        required: true
+        type: string
+      arm_run_attempt:
+        required: true
+        type: string
+      source_run_id:
+        required: false
         type: string
 
 permissions:
   contents: read
 
-# Deliberately NOT the canonical workflow's group name, and keyed by event so
-# the dispatched continuation cannot cancel the pull_request_target check and
-# leave a red mark on a merged PR (ADR 0039).
+# Deliberately distinct from the canonical workflow's concurrency group.
 concurrency:
-  group: ai-privileged-merge-call-\${{ github.event.pull_request.number || inputs.pr_number }}-\${{ github.event_name }}
-  cancel-in-progress: true
+  group: ai-native-automerge-call-\${{ inputs.pr_number }}-\${{ inputs.expected_head_sha }}
+  cancel-in-progress: false
 
 jobs:
   # The job key is CONTRACTUAL: the published check name is
@@ -109,10 +114,11 @@ jobs:
     secrets:
       ORG_ADMIN_TOKEN: \${{ secrets.ORG_ADMIN_TOKEN }}
     with:
-      pr_number: \${{ github.event.pull_request.number || inputs.pr_number }}
-      # The event value MUST win here: on pull_request_target it is the
-      # anti-TOCTOU binding to the head the gate actually attested.
-      expected_head_sha: \${{ github.event.pull_request.head.sha || inputs.expected_head_sha }}
+      pr_number: \${{ inputs.pr_number }}
+      expected_head_sha: \${{ inputs.expected_head_sha }}
+      authorization_check_id: \${{ inputs.authorization_check_id }}
+      arm_run_id: \${{ inputs.arm_run_id }}
+      arm_run_attempt: \${{ inputs.arm_run_attempt }}
       source_run_id: \${{ inputs.source_run_id }}${labels_input}
 YAML
 }

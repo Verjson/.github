@@ -34,7 +34,7 @@ name: gate re-arm
 
 on:
   pull_request_target:
-    types: [ready_for_review, unlabeled, labeled]
+    types: [opened, reopened, synchronize, ready_for_review, converted_to_draft, edited, unlabeled, labeled]
 
 permissions:
   contents: read
@@ -44,8 +44,10 @@ jobs:
     permissions:
       contents: read
       actions: write
-      pull-requests: read
+      pull-requests: write
     uses: $TARGET
+    secrets:
+      AI_REVIEW_APP_PRIVATE_KEY: \${{ secrets.AI_REVIEW_APP_PRIVATE_KEY }}
 YAML
 }
 

@@ -81,6 +81,8 @@ run_watchdog() (
   export WATCHDOG_ORG=TestOrg WATCHDOG_MIN_AGE_MINUTES=35 WATCHDOG_MIN_POLL_MINUTES=10
   export WATCHDOG_DRY_RUN="${WATCHDOG_DRY_RUN:-false}"
   export WATCHDOG_POLL_STEP_DRY_RUN="${WATCHDOG_POLL_STEP_DRY_RUN:-false}"
+  export WATCHDOG_POLL_WORKFLOWS="${WATCHDOG_POLL_WORKFLOWS:-AI review + auto-merge|AI privileged merge}"
+  export WATCHDOG_POLL_STEPS="${WATCHDOG_POLL_STEPS:-AI review + auto-merge=Wait once for the rest of CI to be green}"
   export ACTIONLOG="$tmp/act.log"; : >"$ACTIONLOG"
   bash "$script" >"$tmp/out.txt" 2>&1
   printf 'rc=%s' "$?"
@@ -187,9 +189,9 @@ rc="$(run_bare yes)"
   || fail "WATCHDOG_DRY_RUN=yes did not fail closed ($rc)"
 
 rc="$(run_bare false)"
-{ [ "$rc" = "rc=0" ] && cancelled; } \
-  && pass "an explicit WATCHDOG_DRY_RUN=false still arms the cancel path" \
-  || fail "explicit arming did not cancel ($rc)"
+{ [ "$rc" = "rc=0" ] && ! cancelled; } \
+  && pass "an explicit arm cannot cancel after the production allowlist is retired" \
+  || fail "an inert production watchdog still cancelled a run ($rc)"
 
 # --- #343: preemptability is a state, not an age ----------------------------
 # The AI lane's own poll window is 30 minutes, shorter than MIN_AGE_MINUTES, so
@@ -343,38 +345,12 @@ rc="$(run_watchdog)"
   || fail "a malformed page did not fail closed ($rc)"
 busy_pool >"$RUNNERS_FILE"
 
-# --- the step name is a contract with ai-review-merge.yml -------------------
-# If the gate renames its poll step, the watchdog stops finding it and silently
-# reverts to the age rule that #343 exists to remove — with no failure anywhere.
-# Pin both ends: the script's default must name a step the gate actually has.
-default_step="$(grep -o 'AI review + auto-merge=[^}"]*' "$script" | head -n 1 | sed 's/^[^=]*=//')"
-gate_wf="$here/../.github/workflows/ai-review-merge.yml"
-if [ -f "$gate_wf" ]; then
-  { [ -n "$default_step" ] && grep -qF -e "- name: $default_step" "$gate_wf"; } \
-    && pass "the default poll step name still exists in ai-review-merge.yml" \
-    || fail "poll step '$default_step' is not a step in ai-review-merge.yml — the #343 rule would silently fall back to age"
-else
-  fail "could not locate ai-review-merge.yml to pin the poll step name"
-fi
-
-# The workflow DISPLAY names are the same kind of contract. `POLL_WORKFLOWS`
-# selects candidates by `name:`, so renaming either workflow makes the filter
-# match nothing: the watchdog finds zero candidates forever, silently, with
-# every test still green. Pin each name to a workflow that actually carries it.
 workflows_dir="$here/../.github/workflows"
 default_workflows="$(grep -o 'WATCHDOG_POLL_WORKFLOWS:-[^}]*' "$script" | head -n 1 | sed 's/^[^-]*-//')"
-if [ -n "$default_workflows" ]; then
-  missing=""
-  while IFS= read -r wf_name; do
-    [ -n "$wf_name" ] || continue
-    grep -rqFx -- "name: $wf_name" "$workflows_dir" || missing="$missing '$wf_name'"
-  done < <(printf '%s\n' "$default_workflows" | tr '|' '\n')
-  [ -z "$missing" ] \
-    && pass "every POLL_WORKFLOWS name is still the display name of a real workflow" \
-    || fail "no workflow is named$missing — POLL_WORKFLOWS would match nothing and the watchdog would find zero candidates forever"
-else
-  fail "could not read the POLL_WORKFLOWS default out of $script"
-fi
+[ "$default_workflows" = __no_poll_workflows__ ] \
+  && grep -q 'POLL_STEPS="${WATCHDOG_POLL_STEPS:-}"' "$script" \
+  && pass "production watchdog allowlists are inert after polling retirement" \
+  || fail "retired merge-gate pollers remain cancellable by default"
 
 # --- the arm/disarm decision is a workflow-level contract (#342) ------------
 # The script deliberately carries no default, so these two expressions are the

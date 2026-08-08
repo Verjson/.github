@@ -55,6 +55,8 @@ non-trivial or fanned-out work autonomously:
 
 ## Active Issues / Areas for Improvement
 
+- [#641](https://github.com/Verjson/.github/issues/641) — Provision and validate the dedicated AI-review GitHub App before migrating the required-check ruleset.
+- [#640](https://github.com/Verjson/.github/issues/640) — Restore trusted post-merge follow-up filing and branch cleanup after native auto-merge replaces the synchronous privileged merger.
 - [#624](https://github.com/Verjson/.github/issues/624) — Actions CI contract fixtures inherit the routed runner's `RUNNER_LABELS` bootstrap value.
 - [#622](https://github.com/Verjson/.github/issues/622) — Isolate Actions CI matrix groups from shared self-hosted-runner worktrees.
 - [#609](https://github.com/Verjson/.github/issues/609) — Node CI exposes an unwritable changelog tool cache to cold-cache adopters.

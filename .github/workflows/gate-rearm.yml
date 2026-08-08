@@ -1,145 +1,211 @@
-name: gate re-arm
+name: AI review authorization arm
 
-# Re-arms the merge gate for the pull_request activity types that never reach it
-# (Verjson/.github#468, ADR 0063).
-#
-# `ai-review-merge.yml` is installed org-wide as a REQUIRED WORKFLOW by the
-# `main-protection` ruleset (org ruleset 18098028, ADR 0039). A required workflow
-# is scheduled by the ruleset, not by its own `on:` block: GitHub creates those
-# runs under a separate, API-invisible workflow record and fires them for
-# `opened`, `synchronize` and `reopened` only. The `ready_for_review`, `labeled`
-# and `unlabeled` types the gate declares at ai-review-merge.yml:81 are therefore
-# dead — measured, not inferred (see the ADR for the run-id table).
-#
-# This workflow is NOT required-enforced, so its own triggers are honoured. It
-# converts the events that leave a PR wedged into the one entry point that
-# does work — a `workflow_dispatch` of the gate, which runs under the gate's own
-# workflow record.
-#
-# Safety:
-#   * `pull_request_target` is used because a fork PR's `pull_request` token
-#     cannot dispatch a workflow. Nothing is checked out and no PR-controlled
-#     text reaches a shell, so the privileged context never executes head code.
-#   * No re-entrancy: a dispatch produces a `workflow_dispatch` run, which emits
-#     neither `ready_for_review` nor `unlabeled`. The gate's own label churn
-#     (removing `re-review`) is excluded by the job guard below.
-#   * `hold`, `DO NOT MERGE` and draft stay terminal (ADR 0012) — cheaply checked
-#     in the guard and authoritatively re-checked against live PR state.
-
+# Trusted base-branch entrypoint for ADR 0079. This workflow never checks out
+# or executes pull-request code. The dedicated App must be installed with
+# Checks:write; its identity is the required-check trust boundary.
 on:
   pull_request_target:
-    types: [ready_for_review, unlabeled, labeled]
+    types: [opened, reopened, synchronize, ready_for_review, converted_to_draft, edited, labeled, unlabeled]
   workflow_call:
+    secrets:
+      AI_REVIEW_APP_PRIVATE_KEY:
+        required: true
 
 permissions:
   contents: read
 
+concurrency:
+  group: ai-review-arm-${{ github.event.pull_request.number }}-${{ github.event.pull_request.head.sha }}
+  cancel-in-progress: false
+
 jobs:
-  rearm:
-    # `unlabeled` fires for every label the gate itself removes — `re-review`
-    # above all — so that self-generated event is denied by name. Every other
-    # label removal is admitted because an Actions expression cannot reproduce
-    # the authoritative `gsub("[ _-]+";" ")` hold normalizer: enumerating known
-    # spellings misses valid variants such as `DO__NOT__MERGE`. Draft and any
-    # still-present hold stay terminal. The checks below are a cheap pre-filter;
-    # the authoritative, fully normalized hold check is re-run against live PR
-    # state in the step.
-    # `labeled` is bridged for `re-review` ONLY (#481). The gate documents that
-    # lane and guards it at `ai-review-merge.yml:165`, but a required workflow is
-    # scheduled by the ruleset rather than by its own `on:` block, and the ruleset
-    # fires only `opened`/`synchronize`/`reopened` — so applying the label has
-    # never produced a run. #479 left this out deliberately, because bridging
-    # `labeled` wholesale would dispatch a paid model review on every label
-    # application from a privileged context. Narrowing to the exact label is what
-    # makes it safe, so the name is matched here and not merely re-checked later.
-    #
-    # No re-entrancy: the gate CONSUMES `re-review` by removing it
-    # (`ai-review-merge.yml:403`), which emits `unlabeled` — and the `unlabeled`
-    # arm below explicitly denies that label, so the gate's own cleanup cannot
-    # re-arm the gate.
-    if: >
-      (
-        github.event.action == 'ready_for_review' ||
-        (github.event.action == 'labeled' &&
-          github.event.label.name == 're-review') ||
-        (github.event.action == 'unlabeled' &&
-          github.event.label.name != 're-review')
-      ) &&
-      !github.event.pull_request.draft &&
-      !contains(github.event.pull_request.labels.*.name, 'hold') &&
-      !contains(github.event.pull_request.labels.*.name, 'DO NOT MERGE') &&
-      !contains(github.event.pull_request.title, 'DO NOT MERGE')
-    # Concurrency is claimed by the JOB, not the workflow: a workflow-level group
-    # is claimed before the guard above is evaluated, so an `unlabeled` event for
-    # a non-terminal label would create a run that seizes the group, cancels an
-    # in-flight re-arm that was about to dispatch, and is then skipped by its own
-    # `if:` — losing the re-arm entirely. Cancellation is off for the same
-    # reason: this job is one idempotent dispatch, and the gate has its own
-    # concurrency group, so queueing a second re-arm is strictly safer than
-    # killing the first one mid-dispatch.
-    concurrency:
-      group: gate-rearm-${{ github.event.pull_request.number }}
-      cancel-in-progress: false
-    # One API call and one dispatch; the fast lane keeps it off the shared pool
-    # (ADR 0047/0048). This repository is public, so its minutes are free.
+  arm:
     runs-on: ${{ fromJSON(vars.VERJSON_RUNNER_FASTLANE || '["ubuntu-24.04"]') }}
     timeout-minutes: 5
     permissions:
-      contents: read
       actions: write
-      pull-requests: read
+      contents: read
+      pull-requests: write
     env:
+      APP_ID: ${{ vars.AI_REVIEW_APP_ID }}
+      APP_SLUG: ${{ vars.AI_REVIEW_APP_SLUG }}
+      DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+      EVENT_ACTION: ${{ github.event.action }}
+      EVENT_LABEL: ${{ github.event.label.name || '' }}
+      EVENT_OLD_TITLE: ${{ github.event.changes.title.from || '' }}
       PR_NUMBER: ${{ github.event.pull_request.number }}
       TARGET_REPO: ${{ github.repository }}
-      EVENT_ACTION: ${{ github.event.action }}
-      REMOVED_LABEL: ${{ github.event.label.name || '' }}
     steps:
-      - name: Re-arm the merge gate
-        id: rearm
+      - name: Mint dedicated authorization App token
+        id: app-token
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2
+        with:
+          app-id: ${{ vars.AI_REVIEW_APP_ID }}
+          private-key: ${{ secrets.AI_REVIEW_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+
+      - name: Create exact-head authorization receipt
+        id: arm
         env:
+          ACTIONS_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          set -euo pipefail
+          [[ "$TARGET_REPO" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] || exit 1
+          [[ "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]] || exit 1
+          [[ "$APP_ID" =~ ^[1-9][0-9]*$ ]] || { echo "::error::AI_REVIEW_APP_ID is unavailable"; exit 1; }
+          [[ "$APP_SLUG" =~ ^[a-z0-9][a-z0-9-]*$ ]] || { echo "::error::AI_REVIEW_APP_SLUG is unavailable"; exit 1; }
+
+          meta="$(GH_TOKEN="$ACTIONS_TOKEN" gh pr view "$PR_NUMBER" --repo "$TARGET_REPO" \
+            --json id,state,isDraft,title,labels,headRefOid,headRepositoryOwner,autoMergeRequest)"
+          state="$(jq -r '.state' <<<"$meta")"
+          head_sha="$(jq -r '.headRefOid // ""' <<<"$meta")"
+          head_owner="$(jq -r '.headRepositoryOwner.login // ""' <<<"$meta")"
+          [[ "$head_sha" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::current PR head is unavailable"; exit 1; }
+          [ "$state" = OPEN ] || exit 0
+
+          held="$(jq -r '
+            ([.labels[].name | ascii_upcase | gsub("[ _-]+";" ")]) as $labels
+            | (.isDraft or ($labels | index("HOLD")) or ($labels | index("DO NOT MERGE")) or
+               (.title | ascii_upcase | contains("DO NOT MERGE")))
+            | if . then "true" else "false" end' <<<"$meta")"
+          if [ "$held" = true ]; then
+            if [ "$(jq -r '.autoMergeRequest != null' <<<"$meta")" = true ]; then
+              pr_id="$(jq -r '.id // ""' <<<"$meta")"
+              [ -n "$pr_id" ] || exit 1
+              # $id is a GraphQL variable, not shell expansion.
+              # shellcheck disable=SC2016
+              disable_result="$(GH_TOKEN="$ACTIONS_TOKEN" gh api graphql \
+                -f query='mutation($id:ID!){disablePullRequestAutoMerge(input:{pullRequestId:$id}){pullRequest{id}}}' \
+                -f id="$pr_id")"
+              jq -e --arg id "$pr_id" '
+                (.errors? == null) and
+                .data.disablePullRequestAutoMerge.pullRequest.id == $id
+              ' <<<"$disable_result" >/dev/null || {
+                echo "::error::GitHub did not confirm auto-merge was disabled for the expected PR"; exit 1;
+              }
+              disabled_meta="$(GH_TOKEN="$ACTIONS_TOKEN" gh pr view "$PR_NUMBER" --repo "$TARGET_REPO" \
+                --json id,autoMergeRequest)"
+              jq -e --arg id "$pr_id" '.id == $id and .autoMergeRequest == null' \
+                <<<"$disabled_meta" >/dev/null || {
+                echo "::error::authoritative PR state still reports auto-merge enabled"; exit 1;
+              }
+            fi
+            echo "PR is held or draft; native auto-merge is disabled."
+            exit 0
+          fi
+
+          explicit_rereview=false
+          hold_removed=false
+          [ "$EVENT_ACTION" = labeled ] && [ "$EVENT_LABEL" = re-review ] && explicit_rereview=true
+          if [ "$EVENT_ACTION" = labeled ] && [ "$explicit_rereview" = false ]; then exit 0; fi
+          [ "$EVENT_ACTION" = ready_for_review ] && hold_removed=true
+          if [ "$EVENT_ACTION" = edited ]; then
+            case "${EVENT_OLD_TITLE^^}" in *'DO NOT MERGE'*) hold_removed=true ;; *) exit 0 ;; esac
+          fi
+          if [ "$EVENT_ACTION" = unlabeled ]; then
+            removed_normalized="$(jq -nr --arg raw_label "$EVENT_LABEL" '$raw_label | ascii_upcase | gsub("[ _-]+";" ")')"
+            case "$removed_normalized" in HOLD|'DO NOT MERGE') hold_removed=true ;; *) exit 0 ;; esac
+          fi
+
+          latest="$(gh api "repos/$TARGET_REPO/commits/$head_sha/check-runs" \
+            -H 'Accept: application/vnd.github+json' --jq \
+            "[.check_runs[] | select(.name == \"AI review authorization\" and .app.id == $APP_ID and .app.slug == \"$APP_SLUG\")] | sort_by(.id) | last // {}")"
+          latest_id="$(jq -r '.id // ""' <<<"$latest")"
+          latest_conclusion="$(jq -r '.conclusion // ""' <<<"$latest")"
+          if [ "$hold_removed" = true ] && [[ "$latest_id" =~ ^[1-9][0-9]*$ ]] && [ "$latest_conclusion" = success ]; then
+            details_url="$(jq -r '.details_url // ""' <<<"$latest")"
+            [[ "$details_url" =~ /actions/runs/([1-9][0-9]*)$ ]] || exit 1
+            arm_run_id="${BASH_REMATCH[1]}"
+            arm_run_attempt="$(GH_TOKEN="$ACTIONS_TOKEN" gh api "repos/$TARGET_REPO/actions/runs/$arm_run_id" --jq '.run_attempt // ""')"
+            [[ "$arm_run_attempt" =~ ^[1-9][0-9]*$ ]] || exit 1
+            receipt_name="ai-review-arm-$arm_run_id-$arm_run_attempt"
+            receipt_count="$(GH_TOKEN="$ACTIONS_TOKEN" gh api "repos/$TARGET_REPO/actions/runs/$arm_run_id/artifacts?per_page=100" \
+              --jq "[.artifacts[] | select(.name == \"$receipt_name\" and .expired == false)] | length")"
+            [ "$receipt_count" = 1 ] || {
+              echo "::error::the approved head's arm receipt expired or is ambiguous; an administrator must restore independently verified authorization without dispatching another model review"
+              exit 1
+            }
+            [[ "$DEFAULT_BRANCH" =~ ^[A-Za-z0-9._/-]+$ ]] || exit 1
+            GH_TOKEN="$ACTIONS_TOKEN" gh workflow run ai-privileged-merge.yml --repo "$TARGET_REPO" --ref "$DEFAULT_BRANCH" \
+              -f pr_number="$PR_NUMBER" -f expected_head_sha="$head_sha" -f authorization_check_id="$latest_id" \
+              -f arm_run_id="$arm_run_id" -f arm_run_attempt="$arm_run_attempt"
+            exit 0
+          fi
+          if [ "$explicit_rereview" = false ] && [[ "$latest_id" =~ ^[1-9][0-9]*$ ]]; then
+            echo "Authorization already exists for $head_sha; duplicate event is a no-op."
+            exit 0
+          fi
+
+          nonce="$(openssl rand -hex 32)"
+          [[ "$nonce" =~ ^[0-9a-f]{64}$ ]] || exit 1
+          external_id="ai-review:v1:$TARGET_REPO:$PR_NUMBER:$head_sha:$GITHUB_RUN_ID:$GITHUB_RUN_ATTEMPT:$nonce"
+          details_url="$GITHUB_SERVER_URL/$TARGET_REPO/actions/runs/$GITHUB_RUN_ID"
+          payload="$(jq -nc --arg name 'AI review authorization' --arg sha "$head_sha" \
+            --arg external_id "$external_id" --arg url "$details_url" \
+            '{name:$name,head_sha:$sha,external_id:$external_id,status:"in_progress",details_url:$url,
+              output:{title:"AI review pending",summary:"Trusted review is running for this exact head."}}')"
+          check="$(gh api --method POST "repos/$TARGET_REPO/check-runs" --input - <<<"$payload")"
+          check_id="$(jq -r '.id // ""' <<<"$check")"
+          [[ "$check_id" =~ ^[1-9][0-9]*$ ]] || exit 1
+          jq -e --argjson app_id "$APP_ID" --arg slug "$APP_SLUG" --arg external_id "$external_id" \
+            '.app.id == $app_id and .app.slug == $slug and .external_id == $external_id' <<<"$check" >/dev/null || exit 1
+
+          if [ "$head_owner" != "$GITHUB_REPOSITORY_OWNER" ]; then
+            gh api --method PATCH "repos/$TARGET_REPO/check-runs/$check_id" -f status=completed -f conclusion=failure \
+              -f 'output[title]=Fork review requires a maintainer' \
+              -f 'output[summary]=Secret-backed autonomous review is disabled for fork repositories.'
+            exit 1
+          fi
+
+          receipt_dir="$RUNNER_TEMP/ai-review-arm-receipt"
+          mkdir -m 700 "$receipt_dir"
+          jq -nc --arg repository "$TARGET_REPO" --argjson pr_number "$PR_NUMBER" --arg head_sha "$head_sha" \
+            --argjson check_run_id "$check_id" --argjson arm_run_id "$GITHUB_RUN_ID" \
+            --argjson arm_run_attempt "$GITHUB_RUN_ATTEMPT" --arg nonce "$nonce" --arg external_id "$external_id" \
+            --arg details_url "$details_url" --argjson app_id "$APP_ID" --arg app_slug "$APP_SLUG" \
+            '{schema:1,repository:$repository,pr_number:$pr_number,head_sha:$head_sha,check_run_id:$check_run_id,
+              arm_run_id:$arm_run_id,arm_run_attempt:$arm_run_attempt,nonce:$nonce,external_id:$external_id,
+              details_url:$details_url,app_id:$app_id,app_slug:$app_slug}' >"$receipt_dir/receipt.json"
+          {
+            echo "check_id=$check_id"
+            echo "head_sha=$head_sha"
+            echo "explicit_rereview=$explicit_rereview"
+            echo "receipt_name=ai-review-arm-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          } >>"$GITHUB_OUTPUT"
+
+      - name: Upload immutable arm receipt
+        if: steps.arm.outputs.check_id != ''
+        id: receipt
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ steps.arm.outputs.receipt_name }}
+          path: ${{ runner.temp }}/ai-review-arm-receipt/receipt.json
+          if-no-files-found: error
+          # GitHub's repository maximum keeps authorization recoverable across
+          # long-lived holds without paying for another same-head model review.
+          retention-days: 90
+
+      - name: Dispatch trusted review after receipt publication
+        if: steps.arm.outputs.check_id != ''
+        env:
+          APP_TOKEN: ${{ steps.app-token.outputs.token }}
+          CHECK_ID: ${{ steps.arm.outputs.check_id }}
+          EXPECTED_HEAD_SHA: ${{ steps.arm.outputs.head_sha }}
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          [[ "$TARGET_REPO" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] ||
-            { echo "::error::invalid repository identity"; exit 1; }
-          [ "$TARGET_REPO" = "$GITHUB_REPOSITORY" ] ||
-            { echo "::error::repository identity mismatch"; exit 1; }
-          [[ "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]] ||
-            { echo "::error::invalid PR number"; exit 1; }
-          if [ "$EVENT_ACTION" = "unlabeled" ]; then
-            removed_normalized="$(jq -nr --arg removed "$REMOVED_LABEL" \
-              '$removed | ascii_upcase | gsub("[ _-]+";" ")')"
-            case "$removed_normalized" in
-              HOLD|"DO NOT MERGE") ;;
-              *)
-                echo "Removed label '$REMOVED_LABEL' is not a terminal hold; nothing to re-arm."
-                exit 0 ;;
-            esac
+          [[ "$DEFAULT_BRANCH" =~ ^[A-Za-z0-9._/-]+$ ]] || exit 1
+          if ! gh workflow run ai-review-merge.yml --repo "$TARGET_REPO" --ref "$DEFAULT_BRANCH" \
+            -f pr_number="$PR_NUMBER" -f expected_head_sha="$EXPECTED_HEAD_SHA" \
+            -f authorization_check_id="$CHECK_ID" -f arm_run_id="$GITHUB_RUN_ID" \
+            -f arm_run_attempt="$GITHUB_RUN_ATTEMPT" -f explicit_rereview="${{ steps.arm.outputs.explicit_rereview || false }}"; then
+            GH_TOKEN="$APP_TOKEN" gh api --method PATCH "repos/$TARGET_REPO/check-runs/$CHECK_ID" \
+              -f status=completed -f conclusion=failure -f 'output[title]=Review dispatch failed' \
+              -f 'output[summary]=The trusted review workflow could not be dispatched.'
+            exit 1
           fi
-          # The job `if:` read the event payload, a snapshot taken before this job
-          # was scheduled. Re-read live state so a hold applied in between still
-          # wins. A failed read aborts under `set -e` and dispatches nothing.
-          meta="$(gh pr view "$PR_NUMBER" --repo "$TARGET_REPO" \
-            --json labels,title,isDraft,state)"
-          state="$(jq -r '.state' <<<"$meta")"
-          if [ "$state" != "OPEN" ]; then
-            echo "PR #$PR_NUMBER is $state; nothing to re-arm."
-            exit 0
+          if [ "$EVENT_ACTION" = labeled ] && [ "$EVENT_LABEL" = re-review ]; then
+            gh pr edit "$PR_NUMBER" --repo "$TARGET_REPO" --remove-label re-review || true
           fi
-          # Same hold predicate as the gate's classify and merge checkpoints, so
-          # the three cannot disagree about what "held" means. Materialised into
-          # a string instead of an `if jq -e`: a jq that ERRORS exits non-zero,
-          # which an `if` would read as "not held" and dispatch anyway.
-          held="$(jq -r '(([.labels[].name | ascii_upcase | gsub("[ _-]+";" ")]) as $l | ($l | index("HOLD")) or ($l | index("DO NOT MERGE")) or (.title | ascii_upcase | contains("DO NOT MERGE")) or .isDraft) | if . then "true" else "false" end' <<<"$meta")"
-          case "$held" in
-            true)
-              echo "PR #$PR_NUMBER is held (label/title/draft); not re-arming (ADR 0012)."
-              exit 0 ;;
-            false) ;;
-            *)
-              echo "::error::could not read the hold state of PR #$PR_NUMBER"
-              exit 1 ;;
-          esac
-          gh workflow run ai-review-merge.yml --repo "$TARGET_REPO" \
-            -f pr_number="$PR_NUMBER"
-          echo "Re-armed the merge gate for PR #$PR_NUMBER after $EVENT_ACTION."
