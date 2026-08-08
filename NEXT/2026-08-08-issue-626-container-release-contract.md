@@ -6,4 +6,4 @@ title: Define immutable container release and protected runner deployment
 
 Accept ADR 0078: main publishes immutable candidates, explicit release promotes the exact attested digest set, and an independently approved environment deploys it through a canary and sequential rollout.
 
-The decision defines release and deployment receipt schemas, semantic matrix validation, fail-closed independent environment approval, credential ownership, audit receipts, rollback semantics, and the ordered #628, #627, and #629 migration.
+The decision defines release and deployment receipt schemas, semantic matrix validation, fail-closed independent environment approval, pre-mutation recovery receipts, credential ownership, rollback semantics, and the ordered #628, #627, and #629 migration.

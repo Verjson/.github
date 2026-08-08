@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import argparse
+import hashlib
 import json
 import sys
 from pathlib import Path
@@ -54,6 +55,44 @@ def validate_authorization(evidence: dict[str, Any]) -> None:
         raise PreflightError("deployment reviewer must differ from dispatcher")
     if evidence.get("reviewerSatisfiedRequiredRule") is not True:
         raise PreflightError("deployment review did not satisfy a required reviewer rule")
+
+
+def receipt_digest(receipt: dict[str, Any]) -> str:
+    encoded = json.dumps(
+        receipt, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+    ).encode("utf-8")
+    return "sha256:" + hashlib.sha256(encoded).hexdigest()
+
+
+def validate_attempt_revision(
+    revision: dict[str, Any], previous: dict[str, Any]
+) -> None:
+    for field in ("attemptId", "action", "selectedRelease", "observedDeployedRelease"):
+        if revision.get(field) != previous.get(field):
+            raise PreflightError(f"attempt revision changes immutable {field}")
+    if revision.get("previousReceiptDigest") != receipt_digest(previous):
+        raise PreflightError("attempt revision does not bind the previous receipt")
+
+
+def validate_rollback(
+    rollback_receipt: dict[str, Any], source_attempt: dict[str, Any]
+) -> None:
+    if rollback_receipt.get("action") != "rollback":
+        raise PreflightError("receipt is not a rollback")
+    if source_attempt.get("outcome") not in ("failed", "interrupted"):
+        raise PreflightError("rollback source attempt must be failed or interrupted")
+    observed = source_attempt.get("observedDeployedRelease")
+    if not isinstance(observed, dict):
+        raise PreflightError("rollback source attempt has no observed deployed baseline")
+    if rollback_receipt.get("selectedRelease") != observed:
+        raise PreflightError("rollback selected release differs from attempt baseline")
+    source = rollback_receipt.get("rollbackOfAttempt")
+    if not isinstance(source, dict):
+        raise PreflightError("rollback does not identify its source attempt")
+    if source.get("attemptId") != source_attempt.get("attemptId"):
+        raise PreflightError("rollback source attempt identity differs")
+    if source.get("receiptDigest") != receipt_digest(source_attempt):
+        raise PreflightError("rollback source attempt digest differs")
 
 
 def main() -> int:

@@ -100,10 +100,17 @@ API evidence into that pinned validator rather than reimplementing the decisions
 workflow shell.
 
 `previousRelease` in a release manifest is the immutable predecessor in the stable
-release line. It is not fleet state and never changes after promotion. Immediately before
-mutation, deployment independently observes the fleet, verifies that it agrees with the
-last successful deployment receipt, and records that baseline as
-`observedDeployedRelease` in an immutable receipt conforming to
+release line. It is not fleet state and never changes after promotion. Every deployment
+attempt independently observes the fleet and persists an `admitted` receipt containing
+that `observedDeployedRelease` baseline **before the first `verjson-cli-cloud` mutation**.
+Only after durable receipt storage is confirmed may the canary start. Progress and final
+receipts are append-only revisions of that attempt; each repeats the baseline and records
+completed runner transitions, binds the preceding revision's canonical digest, and is
+rejected if it changes the attempt identity or observed baseline. A failure retains a
+`failed` receipt, and an abrupt stop
+that cannot finalize still retains the pre-mutation `admitted` receipt. Recovery first
+seals an `interrupted` revision from that retained baseline, without touching a runner;
+that revision is the authoritative rollback input. All revisions conform to
 [`deployment-receipt.schema.json`](./deployment-receipt.schema.json). An unexpected fleet
 baseline is drift, not an implicit upgrade path.
 
@@ -117,12 +124,16 @@ timeout, digest mismatch, or probe failure stops the rollout; it never skips a f
 runner or continues in parallel.
 
 Rollback is an independently approved deployment of the exact
-`observedDeployedRelease` manifest recorded in the current successful deployment
-receipt. It neither rewrites the target release manifest nor rebuilds an image; it
-revalidates that retained manifest and provenance and follows the same canary and
-sequential protocol. If no verified previous manifest is retained, automation fails
-closed and an operator must resolve the missing evidence; a mutable tag is not a
-recovery mechanism.
+`observedDeployedRelease` from the failed or interrupted **attempt being recovered**,
+never from the last successful deployment. The rollback receipt binds that attempt ID
+and its canonical receipt digest (UTF-8 JSON with sorted keys and no insignificant
+whitespace), and `scripts/container_deployment_preflight.py` rejects
+the rollback unless `selectedRelease` equals the bound attempt's observed baseline. A
+partial B-over-A failure therefore selects A even if A's older successful receipt had
+observed X. Rollback neither rewrites B's release manifest nor rebuilds an image; it
+revalidates A's retained manifest and provenance and follows the same canary and
+sequential protocol. If the attempt baseline or exact manifest is unavailable,
+automation fails closed; a mutable tag is not a recovery mechanism.
 
 ### Ownership and credential boundary
 
@@ -197,8 +208,8 @@ does not depend on an expired workflow artifact.
 | Environment bypass or self-approval | Preflight requires protected-branch admission, a required reviewer distinct from dispatcher, self-review prevention, and disabled admin bypass; the generated caller cannot override the environment | No credential-bearing job without independent environment approval |
 | Duplicate matrix identity | Semantic validation rejects duplicate variant and platform tuple keys before comparing the exact reviewed matrix and provenance identities | Reject before promotion or deployment |
 | Partial promotion | Verify the complete declared matrix before publishing stable references and make publication restart-safe against exact existing state | Fail without a partially authoritative release |
-| Rollout interruption | Update one runner at a time, retain per-runner receipts, and stop on the first non-success | Preserve known state and require resume or approved rollback |
-| Rollback drift | Bind the observed fleet predecessor in the deployment receipt, roll back by that retained manifest, revalidate provenance, and verify each target digest | Fail closed if fleet state, evidence, or exact artifacts disagree |
+| Rollout interruption | Persist the attempt's observed baseline before mutation, update one runner at a time, retain append-only progress, and stop on the first non-success | The admitted/failed attempt receipt remains a recoverable authority |
+| Rollback drift | Bind rollback to the failed/interrupted attempt receipt and require its selected release to equal that attempt's observed baseline; revalidate provenance and each target digest | Fail closed if receipt identity, fleet state, evidence, or exact artifacts disagree |
 | Compromised reusable caller | Generate callers and contract tests together at one immutable contract SHA; reject edits and mixed pins | CI blocks the consumer change |
 | Compromised update implementation | Keep safety invariants in `verjson-cli-cloud` and require its provenance enforcement before deployment adoption | #629 remains blocked until the upstream invariant exists |
 
