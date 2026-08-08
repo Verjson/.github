@@ -1,10 +1,13 @@
 name: AI native auto-merge promotion
 
 # Required check configuration (ADR 0079): require the context
-# `AI review authorization` from the GitHub Actions app, not the workflow job
-# named `gate`. Roll out this workflow and gate-rearm first, migrate the ruleset
-# identity second, then retire the old required-workflow rule. Roll back by
-# restoring the old required workflow before removing this context.
+# `AI review authorization` from the dedicated authorization App, not the
+# workflow job named `gate`. The App must have Checks and pull requests write
+# permissions; changing its permissions requires organization approval and may
+# require reinstalling the App before these workflows are enabled. Roll out this
+# workflow and gate-rearm first, migrate the ruleset identity second, then retire
+# the old required-workflow rule. Roll back by restoring the old required
+# workflow before removing this context.
 on:
   workflow_dispatch:
     inputs:
@@ -124,7 +127,7 @@ jobs:
           fi
 
           meta="$(gh pr view "$PR_NUMBER" --repo "$TARGET_REPO" \
-            --json id,state,isDraft,title,labels,headRefOid,headRepositoryOwner,autoMergeRequest)"
+            --json id,state,isDraft,title,labels,headRefOid,headRepositoryOwner,autoMergeRequest,reviewDecision)"
           actual_head="$(jq -r '.headRefOid // ""' <<<"$meta")"
           [ "$(jq -r .state <<<"$meta")" = OPEN ] || exit 0
           [ "$actual_head" = "$EXPECTED_HEAD_SHA" ] || {
@@ -151,6 +154,22 @@ jobs:
             .app.slug == env.EXPECTED_APP_SLUG
           ' <<<"$authorization" >/dev/null || {
             echo "::error::authorization is absent, stale, unsuccessful, or from the wrong integration"; exit 1;
+          }
+          reviews="$(gh api --paginate \
+            "repos/$TARGET_REPO/pulls/$PR_NUMBER/reviews?per_page=100" | jq -s '.')"
+          jq -e --arg head "$EXPECTED_HEAD_SHA" \
+            --arg login "${EXPECTED_APP_SLUG}[bot]" \
+            --arg check "$AUTHORIZATION_CHECK_ID" '
+              type == "array" and all(.[]; type == "array") and
+              any(.[][];
+                .state == "APPROVED" and .commit_id == $head and
+                .user.login == $login and
+                (.body | contains("ai-review-authorization:" + $check)))
+            ' <<<"$reviews" >/dev/null || {
+            echo "::error::the exact-head dedicated App approval is absent"; exit 1;
+          }
+          [ "$(jq -r '.reviewDecision // ""' <<<"$meta")" = APPROVED ] || {
+            echo "::error::the dedicated App approval is absent or not effective for this head"; exit 1;
           }
 
           # Idempotent duplicate deliveries do not replace an existing request.
