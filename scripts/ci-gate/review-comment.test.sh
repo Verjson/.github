@@ -123,14 +123,14 @@ run_submit '{"blocking":false,"summary":"trivial docs tweak","review_first":[],"
   fail "approve: empty review_first still rendered a block"
 
 # 3. Blocking -> request-changes body carries both pinpoint + findings; exit 1.
-rc=$(run_submit '{"blocking":true,"summary":"has a bug","review_first":[{"location":"x.ts:1","why":"the mutation"}],"findings":["x.ts:1 — off-by-one"]}')
-{ [ "$rc" = "rc=1" ] && body_has 'Review these first' && body_has 'x.ts:1 — off-by-one'; } &&
+rc=$(run_submit '{"blocking":true,"summary":"has a bug","review_first":[{"location":"x.ts:1","why":"the mutation"}],"findings":[{"location":"x.ts:1","reason":"off-by-one","failure_scenario":"the final item is skipped"}]}')
+{ [ "$rc" = "rc=1" ] && body_has 'Review these first' && body_has 'x.ts:1' && body_has 'off-by-one'; } &&
   pass "blocking: pinpoint + findings render and step exits 1" ||
   fail "blocking path wrong ($rc)"
 
 # 4. Blocking on own PR (request-changes rejected) -> falls back to a comment.
-rc=$(REVIEW_FAIL_MODE=self run_submit '{"blocking":true,"summary":"bug","review_first":[],"findings":["a:1 — boom"]}')
-{ [ "$rc" = "rc=1" ] && comment_has 'Merge gate: blocking verdict' && comment_has 'a:1 — boom'; } &&
+rc=$(REVIEW_FAIL_MODE=self run_submit '{"blocking":true,"summary":"bug","review_first":[],"findings":[{"location":"a:1","reason":"boom","failure_scenario":"the process exits"}]}')
+{ [ "$rc" = "rc=1" ] && comment_has 'Merge gate: blocking verdict' && comment_has 'a:1' && comment_has 'boom'; } &&
   pass "blocking on own PR falls back to a findings comment, still exits 1" ||
   fail "blocking own-PR fallback wrong ($rc)"
 
@@ -161,9 +161,9 @@ rc=$(run_submit 'not-json')
 #    in a terminal error subtype. The model may emit required-field filler while
 #    exhausting its turns or budget; publishing that as CHANGES_REQUESTED would
 #    fabricate findings rather than report an inconclusive review (#441).
-degenerate='{"blocking":true,"summary":"test","review_first":[{"location":"a","why":"b"}],"findings":["c"],"followups":[]}'
+degenerate='{"blocking":true,"summary":"test","review_first":[{"location":"a:1","why":"b"}],"findings":[{"location":"c:1","reason":"d","failure_scenario":"e"}],"followups":[]}'
 rc=$(run_submit "$degenerate" true)
-{ [ "$rc" = "rc=1" ] && act_has EDIT && comment_has 'review could not complete' && ! act_has REVIEW && ! output_has '"findings":["c"]'; } &&
+{ [ "$rc" = "rc=1" ] && act_has EDIT && comment_has 'review could not complete' && ! act_has REVIEW && ! output_has '"location":"c:1"'; } &&
   pass "terminal-error pass: schema-valid filler is routed to no-verdict fail-closed" ||
   fail "terminal-error filler escaped the no-verdict branch ($rc)"
 
@@ -202,7 +202,7 @@ rc=$(REVIEWS_JSON="$reviews" run_submit '{"blocking":false,"summary":"fixed","re
   fail "dismissal crossed reviewer/head trust boundaries ($rc, log=$(tr '\n' ',' <"$tmp/act.log"))"
 
 # A current blocking verdict must never retract the prior blocking record.
-rc=$(REVIEWS_JSON="$reviews" run_submit '{"blocking":true,"summary":"still broken","review_first":[],"findings":["x"],"followups":[]}')
+rc=$(REVIEWS_JSON="$reviews" run_submit '{"blocking":true,"summary":"still broken","review_first":[],"findings":[{"location":"x:1","reason":"broken","failure_scenario":"the request fails"}],"followups":[]}')
 { [ "$rc" = "rc=1" ] && ! act_has DISMISS; } &&
   pass "current blocking verdict does not dismiss any prior review" ||
   fail "blocking verdict retracted a review ($rc, log=$(tr '\n' ',' <"$tmp/act.log"))"
