@@ -31,7 +31,13 @@ group_step = next(
     step for step in groups["steps"]
     if step.get("name") == "Run ${{ matrix.group }} shell contracts without hiding sibling failures"
 )
-assert group_step["run"] == 'bash scripts/actions-ci-group.sh "${{ matrix.group }}"'
+assert group_step["run"] == (
+    'group_root="$RUNNER_TEMP/actions-ci-${{ matrix.group }}"\n'
+    'mkdir -p "$group_root"\n'
+    'cp -a "$GITHUB_WORKSPACE/." "$group_root/"\n'
+    'cd "$group_root"\n'
+    'bash scripts/actions-ci-group.sh "${{ matrix.group }}"\n'
+)
 
 required = jobs["shell-tests"]
 assert required["needs"] == "shell-test-groups"
@@ -53,6 +59,37 @@ then
   pass "three bounded groups fan out while unmatrixed shell-tests preserves the required context"
 else
   fail "bounded fan-out or required-context aggregation is missing"
+fi
+
+mkdir -p "$tmp/source/scripts" "$tmp/runner"
+printf 'original\n' > "$tmp/source/shared-fixture"
+cat > "$tmp/source/scripts/actions-ci-group.sh" <<'SH'
+#!/usr/bin/env bash
+printf 'mutated\n' > shared-fixture
+pwd > "$ISOLATION_PROBE"
+SH
+chmod +x "$tmp/source/scripts/actions-ci-group.sh"
+python3 - "$workflow" "$tmp/run-group.sh" <<'PY'
+import sys
+import yaml
+
+with open(sys.argv[1], encoding="utf-8") as stream:
+    document = yaml.safe_load(stream)
+step = next(
+    step for step in document["jobs"]["shell-test-groups"]["steps"]
+    if step.get("name") == "Run ${{ matrix.group }} shell contracts without hiding sibling failures"
+)
+with open(sys.argv[2], "w", encoding="utf-8") as stream:
+    stream.write(step["run"].replace("${{ matrix.group }}", "platform"))
+PY
+if GITHUB_WORKSPACE="$tmp/source" RUNNER_TEMP="$tmp/runner" \
+  ISOLATION_PROBE="$tmp/probe" bash "$tmp/run-group.sh" \
+  && [ "$(cat "$tmp/source/shared-fixture")" = original ] \
+  && [ "$(cat "$tmp/runner/actions-ci-platform/shared-fixture")" = mutated ] \
+  && [ "$(cat "$tmp/probe")" = "$tmp/runner/actions-ci-platform" ]; then
+  pass "matrix groups execute from independent job-temporary worktrees"
+else
+  fail "matrix groups can mutate the shared Actions checkout"
 fi
 
 if awk -F '\t' '

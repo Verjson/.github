@@ -55,6 +55,7 @@ non-trivial or fanned-out work autonomously:
 
 ## Active Issues / Areas for Improvement
 
+- [#622](https://github.com/Verjson/.github/issues/622) — Isolate Actions CI matrix groups from shared self-hosted-runner worktrees.
 - [#609](https://github.com/Verjson/.github/issues/609) — Node CI exposes an unwritable changelog tool cache to cold-cache adopters.
 - [#261](https://github.com/Verjson/.github/issues/261) — Bind required-workflow privileged-merge provenance to signed workflow identity instead of ambient ruleset configuration.
 - [#477](https://github.com/Verjson/.github/issues/477) — the required-workflow rule makes the gate deaf to `ready_for_review`/`labeled`/`unlabeled` in **every** org repo (ADR 0063); `gate-rearm.yml` fixes only this one, the fleet still needs a generated caller.
