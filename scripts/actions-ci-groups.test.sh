@@ -27,7 +27,11 @@ assert groups["strategy"] == {
     "max-parallel": 3,
     "matrix": {"group": ["platform", "merge-gate", "changelog-release"]},
 }
-assert groups["steps"][1]["run"] == 'bash scripts/actions-ci-group.sh "${{ matrix.group }}"'
+group_step = next(
+    step for step in groups["steps"]
+    if step.get("name") == "Run ${{ matrix.group }} shell contracts without hiding sibling failures"
+)
+assert group_step["run"] == 'bash scripts/actions-ci-group.sh "${{ matrix.group }}"'
 
 required = jobs["shell-tests"]
 assert required["needs"] == "shell-test-groups"
