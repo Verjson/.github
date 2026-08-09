@@ -9,6 +9,7 @@ review = yaml.safe_load((root / ".github/workflows/ai-review-merge.yml").read_te
 promote = yaml.safe_load((root / ".github/workflows/ai-privileged-merge.yml").read_text())
 retry = yaml.safe_load((root / ".github/workflows/ai-promotion-retry.yml").read_text())
 rearm_text = (root / ".github/workflows/gate-rearm.yml").read_text()
+valid_substitute = "eyJhY3RvciI6InRydXN0ZWQtYXJtIiwiYWN0b3JfcGVybWlzc2lvbiI6ImF1dG9tYXRpb24iLCJidWRnZXRfdXNkIjoiYXV0byIsIm1vZGVsIjoiYXV0byIsInByaWNpbmdfdmVyc2lvbiI6ImFudGhyb3BpYy1uYXRpdmUtdjEiLCJwcm92aWRlciI6ImFudGhyb3BpYyJ9"
 
 
 def require_contract(review_doc, promote_doc, retry_doc):
@@ -33,7 +34,7 @@ def require_contract(review_doc, promote_doc, retry_doc):
     retry_run = next(step for step in retry_doc["jobs"]["resolve"]["steps"]
                      if step.get("name") == "Resolve exact-head authorization")["run"]
     assert "ai-review-arm-$arm_run_id-$arm_run_attempt" in retry_run
-    assert 'review_policy="$(jq -er' in retry_run
+    assert 'review_policy="$(jq -er \'.review_policy | select(type == "string")\' "$receipt_dir/receipt.json")"' in retry_run
     assert '^[A-Za-z0-9_-]{1,2048}$' in retry_run
 
 
@@ -47,10 +48,16 @@ changed = deepcopy(review); del changed["jobs"]["dispatch-merge"]["env"]["REVIEW
 changed = deepcopy(retry); del changed["jobs"]["resolve"]["outputs"]["review_policy"]; mutations.append((review, promote, changed))
 changed = deepcopy(review)
 step = next(item for item in changed["jobs"]["dispatch-merge"]["steps"] if item.get("name") == "Dispatch trusted terminal promotion")
-step["run"] = step["run"].replace('-f review_policy="$REVIEW_POLICY"', '-f review_policy="substituted"')
+step["run"] = step["run"].replace('-f review_policy="$REVIEW_POLICY"', f'-f review_policy="{valid_substitute}"')
 mutations.append((changed, promote, retry))
-changed = deepcopy(promote); changed["jobs"]["privileged_merge"]["env"]["REVIEW_POLICY"] = "substituted"; mutations.append((review, changed, retry))
-changed = deepcopy(retry); changed["jobs"]["promote"]["with"]["review_policy"] = "substituted"; mutations.append((review, promote, changed))
+changed = deepcopy(promote); changed["jobs"]["privileged_merge"]["env"]["REVIEW_POLICY"] = valid_substitute; mutations.append((review, changed, retry))
+changed = deepcopy(retry); changed["jobs"]["promote"]["with"]["review_policy"] = valid_substitute; mutations.append((review, promote, changed))
+changed = deepcopy(retry)
+step = next(item for item in changed["jobs"]["resolve"]["steps"] if item.get("name") == "Resolve exact-head authorization")
+step["run"] = step["run"].replace(
+    'review_policy="$(jq -er \'.review_policy | select(type == "string")\' "$receipt_dir/receipt.json")"',
+    f'review_policy="{valid_substitute}"')
+mutations.append((review, promote, changed))
 changed = deepcopy(retry)
 step = next(item for item in changed["jobs"]["resolve"]["steps"] if item.get("name") == "Resolve exact-head authorization")
 step["run"] = step["run"].replace('^[A-Za-z0-9_-]{1,2048}$', '.*')

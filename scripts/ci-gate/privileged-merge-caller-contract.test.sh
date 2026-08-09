@@ -138,8 +138,20 @@ d = yaml.safe_load(open(sys.argv[1]))
 w = d["jobs"]["privileged_merge"].get("with", {})
 if set(w) != {"pr_number", "expected_head_sha", "authorization_check_id", "arm_run_id", "arm_run_attempt", "review_policy", "source_run_id"}:
     sys.exit(1)
-sys.exit(0 if w["expected_head_sha"] == "${{ inputs.expected_head_sha }}" else 1)
+sys.exit(0 if w["expected_head_sha"] == "${{ inputs.expected_head_sha }}" and
+         w["review_policy"] == "${{ inputs.review_policy }}" else 1)
 WITH_PY
+
+cp "$tmp/caller.yml" "$tmp/caller-substituted.yml"
+sed -i 's|${{ inputs.review_policy }}|eyJhY3RvciI6InRydXN0ZWQtYXJtIiwiYWN0b3JfcGVybWlzc2lvbiI6ImF1dG9tYXRpb24iLCJidWRnZXRfdXNkIjoiYXV0byIsIm1vZGVsIjoiYXV0byIsInByaWNpbmdfdmVyc2lvbiI6ImFudGhyb3BpYy1uYXRpdmUtdjEiLCJwcm92aWRlciI6ImFudGhyb3BpYyJ9|' "$tmp/caller-substituted.yml"
+python3 - "$tmp/caller-substituted.yml" <<'SUBSTITUTION_PY' \
+  && fail "valid constant policy substitution escaped generated-caller validation" \
+  || pass "generated caller rejects a valid constant substituted for the exact policy input"
+import sys, yaml
+d = yaml.safe_load(open(sys.argv[1]))
+actual = d["jobs"]["privileged_merge"]["with"].get("review_policy")
+sys.exit(0 if actual == "${{ inputs.review_policy }}" else 1)
+SUBSTITUTION_PY
 
 # --- no fleet label reaches a consumer (#405) --------------------------------
 # The defect this pins: the generator baked `["self-hosted","general"]` into
