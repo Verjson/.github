@@ -48,6 +48,23 @@ The repository-local required CI declaration binds `shell-tests` to GitHub Actio
 the immutable `actions-ci` workflow identity. Adopters must declare their own App,
 workflow ID/path, check name, and explicitly named deterministic completion workflows.
 
+### 2026-08-08 correction ([#664](https://github.com/Verjson/.github/issues/664))
+
+The exact opaque policy envelope is part of terminal promotion identity, alongside
+the PR, head, dedicated-App check, arm run, and arm attempt. The successful review
+passes it directly to the first promotion. CI-completion and hold-removal retries
+read it from the named immutable arm artifact and pass it unchanged; the terminal
+callee strictly decodes it and compares it with the receipt before checking merge
+readiness. Missing, substituted, malformed, non-canonical, or drifted policy fails
+before promotion.
+
+For no-cost recovery after a promotion transport failure, an administrator downloads
+the still-live named arm artifact, takes its opaque `review_policy` string, and
+manually dispatches `ai-privileged-merge.yml` with that string and the receipt's exact
+PR/head/check/run/attempt identities. The callee revalidates the artifact digest and
+every identity. This recovery workflow contains no model action and must never invoke
+`ai-review-merge.yml`.
+
 ## Consequences
 
 - No job sleeps or polls while CI changes state, and CI completion cannot spend model
