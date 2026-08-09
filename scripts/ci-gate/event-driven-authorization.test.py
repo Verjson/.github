@@ -33,6 +33,50 @@ def require(condition: bool, message: str) -> None:
         raise AssertionError(message)
 
 
+def validate_runner_free_external_ci_wait(workflow: dict, job_name: str) -> None:
+    job = workflow["jobs"][job_name]
+    scripts = "\n".join(step.get("run", "") for step in job.get("steps", []))
+    endpoint = re.compile(
+        r"commits/[^\s\"']+/(?:check-runs|status)(?:\?per_page=100)?")
+    expected_queries = 1 if job_name == "privileged_merge" else 0
+    require(len(endpoint.findall(scripts)) == expected_queries,
+            f"{job_name} must contain exactly {expected_queries} external-CI endpoint snapshot(s) job-wide")
+
+    # Endpoint spelling is not the trust boundary. Reject syntactically
+    # infinite shell loops even when they poll through `gh pr checks`, a
+    # variable, or another API spelling. A loop over an infinite condition is
+    # allowed only when its own body carries an explicit terminating command;
+    # this preserves the bounded fetch retry below while rejecting pure polls.
+    infinite_loop = re.compile(
+        r"(?:for\s*\(\(\s*;\s*;\s*\)\)|while\s+(?:true|:)|until\s+false)"
+        r"\s*;?\s*do\b(?P<body>.*?)\bdone\b", re.I | re.S)
+    for loop in infinite_loop.finditer(scripts):
+        require(re.search(r"(?m)^\s*(?:break|return|exit)(?:\s|$)", loop.group("body")),
+                f"{job_name} contains an unbounded loop with no terminating path")
+
+    # Dynamically composing an external-CI endpoint is outside this contract:
+    # the reserved `commits/<head>/(check-runs|status)` text is counted wherever
+    # it appears, including variable assignments, and privileged_merge must also
+    # retain this exact audited snapshot statement. Splitting the endpoint into
+    # runtime fragments would remove that required statement and fail closed.
+    allowed_snapshot = ('all_checks="$(gh api --paginate '
+                        '"repos/$TARGET_REPO/commits/$EXPECTED_HEAD_SHA/check-runs?per_page=100"')
+    if job_name == "privileged_merge":
+        require(scripts.count(allowed_snapshot) == 1,
+                "privileged_merge must retain its one audited literal CI snapshot")
+
+    for step in job.get("steps", []):
+        script = step.get("run", "")
+        require(not re.search(r"\bsleep\b|ci-wait|MERGE_PROBE", script, re.I),
+                f"{job_name} must not sleep or retain a polling-era CI wait")
+        queries = list(endpoint.finditer(script))
+        if not queries:
+            continue
+        prefix = script[:queries[0].start()]
+        require(not re.search(r"(?m)^\s*(?:for\b|while\b|until\b)", prefix),
+                f"{job_name} must not place its external-CI snapshot after a loop opener")
+
+
 def authorization_app_token_uses(workflow: dict, job_name: str) -> str:
     steps = workflow["jobs"][job_name]["steps"]
     matches = [step.get("uses", "") for step in steps
@@ -122,6 +166,8 @@ def main() -> int:
             all(dispatch_inputs[name].get("required") is True for name in receipt_inputs),
             "workflow_dispatch must require the exact head, App check, and arm-receipt identity")
     gate_steps = review["jobs"]["gate"]["steps"]
+    validate_runner_free_external_ci_wait(review, "gate")
+    validate_runner_free_external_ci_wait(promote, "privileged_merge")
     validate_model_admission(gate_steps)
 
     mutated_steps = [dict(step) for step in gate_steps]
@@ -310,15 +356,59 @@ def main() -> int:
     require(promote_text.count("check-runs?per_page=100") == 1,
             "promotion must read required checks once rather than poll")
 
-    require(set(retry[True]) == {"workflow_run"} and
+    mutated_review = yaml.safe_load(yaml.safe_dump(review))
+    mutated_review["jobs"]["gate"]["steps"].append(
+        {"run": "for attempt in $(seq 1 20); do gh api commits/head/check-runs?per_page=100; sleep 30; done"})
+    mutated_promote = yaml.safe_load(yaml.safe_dump(promote))
+    mutated_promote["jobs"]["privileged_merge"]["steps"].append(
+        {"run": "until gh api commits/head/status?per_page=100; do sleep 30; done"})
+    mutated_infinite = yaml.safe_load(yaml.safe_dump(review))
+    mutated_infinite["jobs"]["gate"]["steps"].append(
+        {"run": "for ((;;)); do gh api commits/head/check-runs; done"})
+    mutated_second_step = yaml.safe_load(yaml.safe_dump(promote))
+    mutated_second_step["jobs"]["privileged_merge"]["steps"].append(
+        {"run": "gh api commits/head/check-runs"})
+    mutated_multiline = yaml.safe_load(yaml.safe_dump(promote))
+    promotion_script = mutated_multiline["jobs"]["privileged_merge"]["steps"][-1]["run"]
+    mutated_multiline["jobs"]["privileged_merge"]["steps"][-1]["run"] = (
+        "while\n  true\ndo\n" + promotion_script + "\ndone")
+    mutated_indirect = yaml.safe_load(yaml.safe_dump(promote))
+    mutated_indirect["jobs"]["privileged_merge"]["steps"].append(
+        {"run": 'prefix="repos/$TARGET_REPO/com"\n'
+                'suffix="mits/head/check-runs"\nendpoint="$prefix$suffix"\n'
+                'while true; do gh api "$endpoint"; done'})
+    mutated_pr_checks = yaml.safe_load(yaml.safe_dump(review))
+    mutated_pr_checks["jobs"]["gate"]["steps"].append(
+        {"run": "while true; do gh pr checks 7; done"})
+    mutated_until_false = yaml.safe_load(yaml.safe_dump(review))
+    mutated_until_false["jobs"]["gate"]["steps"].append(
+        {"run": "until\nfalse\ndo\ngh pr checks 7\ndone"})
+    for workflow, job_name in ((mutated_review, "gate"),
+                               (mutated_promote, "privileged_merge"),
+                               (mutated_infinite, "gate"),
+                               (mutated_second_step, "privileged_merge"),
+                               (mutated_multiline, "privileged_merge"),
+                               (mutated_indirect, "privileged_merge"),
+                               (mutated_pr_checks, "gate"),
+                               (mutated_until_false, "gate")):
+        try:
+            validate_runner_free_external_ci_wait(workflow, job_name)
+        except AssertionError:
+            continue
+        raise AssertionError(f"{job_name} polling-loop mutation escaped the structural contract")
+
+    require(set(retry[True]) == {"workflow_run", "workflow_call"} and
             retry[True]["workflow_run"]["types"] == ["completed"],
-            "CI retry must be reachable only from completed deterministic workflows")
+            "CI retry must be callable by generated consumers and directly reachable only from completed deterministic workflows")
     require("ai-review-merge.yml" not in retry_text and MODEL_ACTION not in retry_text and
             "ai-privileged-merge.yml" in retry_text,
             "CI completion path must be structurally unable to invoke paid review")
     require("AI review authorization" in retry_text and "EXPECTED_APP_ID" in retry_text and
             "EXPECTED_APP_SLUG" in retry_text and "HEAD_SHA" in retry_text,
             "CI completion retry must rediscover exact-head dedicated-App evidence")
+    require("--retry" in promote_generator and "ai-promotion-retry.yml" in promote_generator and
+            "workflow_run:" in promote_generator and RETRY.name in promote_generator,
+            "privileged caller generator must also emit the consumer CI-completion bridge")
 
     for path, data in ((REARM, rearm), (PROMOTE, promote)):
         for job in data["jobs"].values():

@@ -665,20 +665,18 @@ jobs:
     # ubuntu-24.04. Verjson targets use the default or untrusted lane variable
     # from preflight visibility; both currently select the permissive `general`
     # pool (#204, ADR 0035).
-    # Fast lane for PUBLIC targets (ADR 0048). This is the job whose occupancy
-    # caused the 2026-08-03 deadlock: it holds a runner for up to 80 minutes
-    # while POLLING for CI it cannot influence, so on a fixed pool the sleepers
-    # starve the CI they are waiting for. Hosted capacity is elastic, which makes
-    # that deadlock structurally impossible — and a disposable VM is also better
-    # isolation for untrusted PR head code than a persistent runner.
+    # Fast lane for PUBLIC targets (ADR 0048). This job no longer waits for
+    # ordinary CI: it performs the bounded review and dispatches one immediate
+    # promotion attempt. Deterministic CI completion re-enters through
+    # ai-promotion-retry.yml (ADRs 0081 and 0087).
     # `== 'false'` is the explicitly-resolved-public case; '' (unreadable) and
     # 'true' both fall through to the lane chain, so visibility that fails to
     # resolve never takes the fast lane. The chain's hosted tail is an
     # operator-error landing (a deleted lane variable), not a routing choice.
     runs-on: ${{ inputs.runner_labels && fromJSON(inputs.runner_labels) || github.repository_owner != 'Verjson' && 'ubuntu-24.04' || needs.preflight.outputs.target_private == 'false' && fromJSON(vars.VERJSON_RUNNER_FASTLANE || '["ubuntu-24.04"]') || fromJSON(vars.VERJSON_RUNNER_OVERFLOW || vars.VERJSON_LANE_TRUSTED || vars.VERJSON_LANE_FALLBACK || '["ubuntu-24.04"]') }}
-    # Fast retains its former 45-minute merge ceiling. AI gets one bounded
-    # aggregate ceiling for the 30-minute CI wait + the former 45-minute review
-    # allowance + checkout/debounce/submit/recheck buffer.
+    # Fast retains its former 45-minute ceiling. AI gets a bounded review
+    # allowance plus checkout, input preparation, submission, and dispatch
+    # buffer; none of this budget is an ordinary-CI wait.
     timeout-minutes: ${{ needs.preflight.outputs.lane == 'ai' && 80 || 45 }}
     permissions:
       contents: read

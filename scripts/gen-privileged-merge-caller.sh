@@ -5,7 +5,9 @@
 # the job key, the `uses:` target, and the values passed in `with:`. The
 # reasoning lives in docs/decisions/0042-privileged-merge-reusable-split.
 #
-# Usage: gen-privileged-merge-caller.sh <40-hex-contract-sha> ['<runner-labels-json>']
+# Usage:
+#   gen-privileged-merge-caller.sh <40-hex-contract-sha> ['<runner-labels-json>']
+#   gen-privileged-merge-caller.sh <40-hex-contract-sha> --retry '<workflow-names-json>'
 #   scripts/gen-privileged-merge-caller.sh <contract-sha> > .github/workflows/ai-privileged-merge.yml
 #
 # The argument is OPTIONAL and should be omitted by every Verjson consumer
@@ -27,6 +29,44 @@ contract_sha="${1-}"
   exit 2
 }
 readonly TARGET="Verjson/.github/.github/workflows/ai-privileged-merge.yml@$contract_sha"
+readonly RETRY_TARGET="Verjson/.github/.github/workflows/ai-promotion-retry.yml@$contract_sha"
+
+if [ "${2-}" = --retry ]; then
+  [ "$#" -eq 3 ] || { echo "--retry requires one workflow-names JSON argument" >&2; exit 2; }
+  workflow_names="$3"
+  command -v jq >/dev/null 2>&1 || { echo "jq is required to validate workflow names" >&2; exit 2; }
+  jq -e 'type == "array" and length > 0 and
+         all(.[]; type == "string" and test("^[A-Za-z0-9._ -]+$") and length > 0)' \
+    <<<"$workflow_names" >/dev/null 2>&1 \
+    || { echo "workflow names must be a non-empty JSON array of safe names" >&2; exit 2; }
+  cat <<YAML
+# GENERATED FILE — do not edit by hand.
+# Regenerate with:
+#   scripts/gen-privileged-merge-caller.sh $contract_sha --retry '$workflow_names' > .github/workflows/ai-promotion-retry.yml
+name: AI terminal promotion retry
+
+on:
+  workflow_run:
+    workflows: $workflow_names
+    types: [completed]
+
+permissions:
+  actions: read
+  checks: read
+  contents: read
+  pull-requests: read
+
+jobs:
+  retry:
+    uses: $RETRY_TARGET
+    secrets:
+      ACTIONS_VARIABLES_TOKEN: \${{ secrets.ACTIONS_VARIABLES_TOKEN }}
+      ORG_ADMIN_TOKEN: \${{ secrets.ORG_ADMIN_TOKEN }}
+YAML
+  exit 0
+fi
+
+[ "$#" -le 2 ] || { echo "unexpected extra arguments" >&2; exit 2; }
 
 # An empty argument is the default case, not an error: `gen … "$LABELS"` with
 # LABELS unset must produce the lane-routed caller rather than a diagnostic about

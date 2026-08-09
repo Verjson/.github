@@ -8,6 +8,12 @@ on:
   workflow_run:
     workflows: [actions-ci]
     types: [completed]
+  workflow_call:
+    secrets:
+      ACTIONS_VARIABLES_TOKEN:
+        required: false
+      ORG_ADMIN_TOKEN:
+        required: true
 
 permissions:
   actions: read
@@ -21,7 +27,7 @@ concurrency:
 
 jobs:
   resolve:
-    runs-on: ${{ fromJSON(vars.VERJSON_RUNNER_FASTLANE || vars.VERJSON_LANE_TRUSTED || vars.VERJSON_LANE_FALLBACK) }}
+    runs-on: ${{ github.repository_owner == 'Verjson' && fromJSON(vars.VERJSON_RUNNER_FASTLANE || vars.VERJSON_LANE_TRUSTED || vars.VERJSON_LANE_FALLBACK || '["ubuntu-24.04"]') || 'ubuntu-24.04' }}
     outputs:
       ready: ${{ steps.resolve.outputs.ready }}
       pr_number: ${{ steps.resolve.outputs.pr_number }}
@@ -75,6 +81,7 @@ jobs:
     if: needs.resolve.outputs.ready == 'true'
     uses: ./.github/workflows/ai-privileged-merge.yml
     secrets:
+      ACTIONS_VARIABLES_TOKEN: ${{ secrets.ACTIONS_VARIABLES_TOKEN }}
       ORG_ADMIN_TOKEN: ${{ secrets.ORG_ADMIN_TOKEN }}
     with:
       pr_number: ${{ needs.resolve.outputs.pr_number }}
