@@ -52,7 +52,8 @@ YAML
 # Contract: $ref
 # Source: Verjson/.github/scripts/container_release_manifest.py@$ref
 HEADER
-    sed '1{/^#!\/usr\/bin\/env python3$/d;}' "$root/scripts/container_release_manifest.py"
+    git -C "$root" show "$ref:scripts/container_release_manifest.py" \
+      | sed '1{/^#!\/usr\/bin\/env python3$/d;}'
     ;;
   contract-test)
     workflow="$("$0" workflow "$ref" "$config_path")"

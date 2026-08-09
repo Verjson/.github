@@ -34,4 +34,5 @@ grep -Fq 'candidate_artifact_digest="${BASH_REMATCH[2]}"' "$workflow"
 ! grep -Fq 'candidate_artifact_digest="${BASH_REMATCH[1]}"' "$workflow"
 grep -q 'existing tag records a divergent release manifest' "$workflow"
 grep -q 'existing GitHub Release manifest diverges' "$workflow"
+bash "$root/scripts/container-contract-coexistence.test.sh"
 echo 'container release canonical contract passed'
