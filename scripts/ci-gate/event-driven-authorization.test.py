@@ -35,23 +35,34 @@ def require(condition: bool, message: str) -> None:
 
 def validate_runner_free_external_ci_wait(workflow: dict, job_name: str) -> None:
     job = workflow["jobs"][job_name]
+    scripts = "\n".join(step.get("run", "") for step in job.get("steps", []))
+    endpoint = re.compile(
+        r"commits/[^\s\"']+/(?:check-runs|status)(?:\?per_page=100)?")
+    expected_queries = 1 if job_name == "privileged_merge" else 0
+    require(len(endpoint.findall(scripts)) == expected_queries,
+            f"{job_name} must contain exactly {expected_queries} external-CI endpoint snapshot(s) job-wide")
+
+    # Dynamically composing an external-CI endpoint is outside this contract:
+    # the reserved `commits/<head>/(check-runs|status)` text is counted wherever
+    # it appears, including variable assignments, and privileged_merge must also
+    # retain this exact audited snapshot statement. Splitting the endpoint into
+    # runtime fragments would remove that required statement and fail closed.
+    allowed_snapshot = ('all_checks="$(gh api --paginate '
+                        '"repos/$TARGET_REPO/commits/$EXPECTED_HEAD_SHA/check-runs?per_page=100"')
+    if job_name == "privileged_merge":
+        require(scripts.count(allowed_snapshot) == 1,
+                "privileged_merge must retain its one audited literal CI snapshot")
+
     for step in job.get("steps", []):
         script = step.get("run", "")
         require(not re.search(r"\bsleep\b|ci-wait|MERGE_PROBE", script, re.I),
                 f"{job_name} must not sleep or retain a polling-era CI wait")
-        queries = list(re.finditer(
-            r"commits/[^\s\"']+/(?:check-runs|status)(?:\?per_page=100)?", script))
+        queries = list(endpoint.finditer(script))
         if not queries:
             continue
-        require(len(queries) <= 1,
-                f"{job_name} must use at most one external-CI snapshot per step")
         prefix = script[:queries[0].start()]
-        loop_open = max((match.start() for match in re.finditer(
-            r"(?:^|[;\n])\s*(?:for\b[^\n;]*|for\s*\(\([^\n]*|while\b[^\n;]*|until\b[^\n;]*)\s*;?\s*do\b",
-            prefix, re.M)), default=-1)
-        loop_close = prefix.rfind("done")
-        require(loop_open <= loop_close,
-                f"{job_name} must not query external CI from inside a loop")
+        require(not re.search(r"(?m)^\s*(?:for\b|while\b|until\b)", prefix),
+                f"{job_name} must not place its external-CI snapshot after a loop opener")
 
 
 def authorization_app_token_uses(workflow: dict, job_name: str) -> str:
@@ -342,9 +353,23 @@ def main() -> int:
     mutated_infinite = yaml.safe_load(yaml.safe_dump(review))
     mutated_infinite["jobs"]["gate"]["steps"].append(
         {"run": "for ((;;)); do gh api commits/head/check-runs; done"})
+    mutated_second_step = yaml.safe_load(yaml.safe_dump(promote))
+    mutated_second_step["jobs"]["privileged_merge"]["steps"].append(
+        {"run": "gh api commits/head/check-runs"})
+    mutated_multiline = yaml.safe_load(yaml.safe_dump(promote))
+    promotion_script = mutated_multiline["jobs"]["privileged_merge"]["steps"][-1]["run"]
+    mutated_multiline["jobs"]["privileged_merge"]["steps"][-1]["run"] = (
+        "while\n  true\ndo\n" + promotion_script + "\ndone")
+    mutated_indirect = yaml.safe_load(yaml.safe_dump(promote))
+    mutated_indirect["jobs"]["privileged_merge"]["steps"].append(
+        {"run": 'endpoint="repos/$TARGET_REPO/commits/head/check-runs"\n'
+                'while true; do gh api "$endpoint"; done'})
     for workflow, job_name in ((mutated_review, "gate"),
                                (mutated_promote, "privileged_merge"),
-                               (mutated_infinite, "gate")):
+                               (mutated_infinite, "gate"),
+                               (mutated_second_step, "privileged_merge"),
+                               (mutated_multiline, "privileged_merge"),
+                               (mutated_indirect, "privileged_merge")):
         try:
             validate_runner_free_external_ci_wait(workflow, job_name)
         except AssertionError:
