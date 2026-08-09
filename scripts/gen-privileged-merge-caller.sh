@@ -91,6 +91,9 @@ on:
       arm_run_attempt:
         required: true
         type: string
+      review_policy:
+        required: true
+        type: string
       source_run_id:
         required: false
         type: string
@@ -119,6 +122,7 @@ jobs:
       authorization_check_id: \${{ inputs.authorization_check_id }}
       arm_run_id: \${{ inputs.arm_run_id }}
       arm_run_attempt: \${{ inputs.arm_run_attempt }}
+      review_policy: \${{ inputs.review_policy }}
       source_run_id: \${{ inputs.source_run_id }}${labels_input}
 YAML
 }

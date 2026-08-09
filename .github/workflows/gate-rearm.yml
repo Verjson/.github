@@ -175,10 +175,17 @@ jobs:
               echo "::error::the approved head's arm receipt expired or is ambiguous; an administrator must restore independently verified authorization without dispatching another model review"
               exit 1
             }
+            receipt_dir="$(mktemp -d "${RUNNER_TEMP:-/tmp}/ai-repromotion.XXXXXX")"
+            trap 'rm -rf "$receipt_dir"' EXIT
+            GH_TOKEN="$ACTIONS_TOKEN" gh run download "$arm_run_id" --repo "$TARGET_REPO" \
+              --name "$receipt_name" --dir "$receipt_dir"
+            [ -f "$receipt_dir/receipt.json" ] || exit 1
+            review_policy="$(jq -er '.review_policy | select(type == "string")' "$receipt_dir/receipt.json")"
+            [[ "$review_policy" =~ ^[A-Za-z0-9_-]{1,2048}$ ]] || exit 1
             [[ "$DEFAULT_BRANCH" =~ ^[A-Za-z0-9._/-]+$ ]] || exit 1
             GH_TOKEN="$ACTIONS_TOKEN" gh workflow run ai-privileged-merge.yml --repo "$TARGET_REPO" --ref "$DEFAULT_BRANCH" \
               -f pr_number="$PR_NUMBER" -f expected_head_sha="$head_sha" -f authorization_check_id="$latest_id" \
-              -f arm_run_id="$arm_run_id" -f arm_run_attempt="$arm_run_attempt"
+              -f arm_run_id="$arm_run_id" -f arm_run_attempt="$arm_run_attempt" -f review_policy="$review_policy"
             exit 0
           fi
           if [ "$hold_removed" = true ]; then

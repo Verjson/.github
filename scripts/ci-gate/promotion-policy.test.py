@@ -1,0 +1,69 @@
+#!/usr/bin/env python3
+from copy import deepcopy
+from pathlib import Path
+
+import yaml
+
+root = Path(__file__).resolve().parents[2]
+review = yaml.safe_load((root / ".github/workflows/ai-review-merge.yml").read_text())
+promote = yaml.safe_load((root / ".github/workflows/ai-privileged-merge.yml").read_text())
+retry = yaml.safe_load((root / ".github/workflows/ai-promotion-retry.yml").read_text())
+rearm_text = (root / ".github/workflows/gate-rearm.yml").read_text()
+
+
+def require_contract(review_doc, promote_doc, retry_doc):
+    dispatch = promote_doc[True]["workflow_dispatch"]["inputs"]
+    called = promote_doc[True]["workflow_call"]["inputs"]
+    assert dispatch["review_policy"]["required"] is True
+    assert called["review_policy"]["required"] is True
+    job = promote_doc["jobs"]["privileged_merge"]
+    assert job["env"]["REVIEW_POLICY"] == "${{ inputs.review_policy }}"
+    checkout = next(step for step in job["steps"] if step.get("name") == "Check out immutable arm verifier")
+    assert "scripts/ci-gate/review-policy-envelope.py" in checkout["with"]["sparse-checkout"]
+
+    review_job = review_doc["jobs"]["dispatch-merge"]
+    assert review_job["env"]["REVIEW_POLICY"] == "${{ inputs.review_policy }}"
+    review_dispatch = next(step for step in review_job["steps"] if step.get("name") == "Dispatch trusted terminal promotion")["run"]
+    assert '-f review_policy="$REVIEW_POLICY"' in review_dispatch
+
+    outputs = retry_doc["jobs"]["resolve"]["outputs"]
+    assert outputs["review_policy"] == "${{ steps.resolve.outputs.review_policy }}"
+    retry_with = retry_doc["jobs"]["promote"]["with"]
+    assert retry_with["review_policy"] == "${{ needs.resolve.outputs.review_policy }}"
+    retry_run = next(step for step in retry_doc["jobs"]["resolve"]["steps"]
+                     if step.get("name") == "Resolve exact-head authorization")["run"]
+    assert "ai-review-arm-$arm_run_id-$arm_run_attempt" in retry_run
+    assert 'review_policy="$(jq -er' in retry_run
+    assert '^[A-Za-z0-9_-]{1,2048}$' in retry_run
+
+
+require_contract(review, promote, retry)
+mutations = []
+for trigger in ("workflow_dispatch", "workflow_call"):
+    changed = deepcopy(promote)
+    del changed[True][trigger]["inputs"]["review_policy"]
+    mutations.append((review, changed, retry))
+changed = deepcopy(review); del changed["jobs"]["dispatch-merge"]["env"]["REVIEW_POLICY"]; mutations.append((changed, promote, retry))
+changed = deepcopy(retry); del changed["jobs"]["resolve"]["outputs"]["review_policy"]; mutations.append((review, promote, changed))
+changed = deepcopy(review)
+step = next(item for item in changed["jobs"]["dispatch-merge"]["steps"] if item.get("name") == "Dispatch trusted terminal promotion")
+step["run"] = step["run"].replace('-f review_policy="$REVIEW_POLICY"', '-f review_policy="substituted"')
+mutations.append((changed, promote, retry))
+changed = deepcopy(promote); changed["jobs"]["privileged_merge"]["env"]["REVIEW_POLICY"] = "substituted"; mutations.append((review, changed, retry))
+changed = deepcopy(retry); changed["jobs"]["promote"]["with"]["review_policy"] = "substituted"; mutations.append((review, promote, changed))
+changed = deepcopy(retry)
+step = next(item for item in changed["jobs"]["resolve"]["steps"] if item.get("name") == "Resolve exact-head authorization")
+step["run"] = step["run"].replace('^[A-Za-z0-9_-]{1,2048}$', '.*')
+mutations.append((review, promote, changed))
+for docs in mutations:
+    try:
+        require_contract(*docs)
+    except (AssertionError, KeyError):
+        continue
+    raise AssertionError("promotion policy mutation escaped contract")
+
+assert '-f review_policy="$review_policy"' in rearm_text
+assert "ai-review-merge.yml" not in (root / ".github/workflows/ai-promotion-retry.yml").read_text()
+adr = (root / "docs/decisions/0081-event-driven-terminal-ai-promotion/README.md").read_text()
+assert "no-cost recovery" in adr and "exact opaque policy envelope" in adr
+print("PASS: terminal promotion binds the exact review-policy envelope on dispatch, callee, and retry")

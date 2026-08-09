@@ -29,6 +29,7 @@ jobs:
       authorization_check_id: ${{ steps.resolve.outputs.authorization_check_id }}
       arm_run_id: ${{ steps.resolve.outputs.arm_run_id }}
       arm_run_attempt: ${{ steps.resolve.outputs.arm_run_attempt }}
+      review_policy: ${{ steps.resolve.outputs.review_policy }}
     steps:
       - name: Resolve exact-head authorization
         id: resolve
@@ -59,8 +60,15 @@ jobs:
           arm_run_id="${BASH_REMATCH[1]}"
           arm_run_attempt="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$arm_run_id" --jq '.run_attempt // ""')"
           [[ "$arm_run_attempt" =~ ^[1-9][0-9]*$ ]] || exit 1
-          printf 'ready=true\npr_number=%s\nexpected_head_sha=%s\nauthorization_check_id=%s\narm_run_id=%s\narm_run_attempt=%s\n' \
-            "$pr_number" "$HEAD_SHA" "$check_id" "$arm_run_id" "$arm_run_attempt" >>"$GITHUB_OUTPUT"
+          receipt_name="ai-review-arm-$arm_run_id-$arm_run_attempt"
+          receipt_dir="$(mktemp -d "${RUNNER_TEMP:-/tmp}/ai-promotion-retry.XXXXXX")"
+          trap 'rm -rf "$receipt_dir"' EXIT
+          gh run download "$arm_run_id" --repo "$GITHUB_REPOSITORY" --name "$receipt_name" --dir "$receipt_dir"
+          [ -f "$receipt_dir/receipt.json" ] || exit 1
+          review_policy="$(jq -er '.review_policy | select(type == "string")' "$receipt_dir/receipt.json")"
+          [[ "$review_policy" =~ ^[A-Za-z0-9_-]{1,2048}$ ]] || exit 1
+          printf 'ready=true\npr_number=%s\nexpected_head_sha=%s\nauthorization_check_id=%s\narm_run_id=%s\narm_run_attempt=%s\nreview_policy=%s\n' \
+            "$pr_number" "$HEAD_SHA" "$check_id" "$arm_run_id" "$arm_run_attempt" "$review_policy" >>"$GITHUB_OUTPUT"
 
   promote:
     needs: resolve
@@ -74,3 +82,4 @@ jobs:
       authorization_check_id: ${{ needs.resolve.outputs.authorization_check_id }}
       arm_run_id: ${{ needs.resolve.outputs.arm_run_id }}
       arm_run_attempt: ${{ needs.resolve.outputs.arm_run_attempt }}
+      review_policy: ${{ needs.resolve.outputs.review_policy }}

@@ -25,6 +25,10 @@ case "$*" in
   *"actions/runs/7001 --jq"*) printf '2\n' ;;
   *"actions/runs/7001") printf '{"event":"pull_request_target","path":".github/workflows/gate-rearm.yml","head_repository":{"full_name":"Verjson/example"},"run_attempt":2}\n' ;;
   *"actions/runs/7001/artifacts?per_page=100 --jq"*) printf '%s\n' "${RECEIPT_COUNT:-1}" ;;
+  "run download 7001 "*)
+    for arg in "$@"; do destination="$arg"; done
+    mkdir -p "$destination"
+    printf '{"review_policy":"eyJhY3RvciI6Im1haW50YWluZXIiLCJhY3Rvcl9wZXJtaXNzaW9uIjoibWFpbnRhaW4iLCJidWRnZXRfdXNkIjoiMS4wMCIsIm1vZGVsIjoiZ3B0LTUuNi1sdW5hIiwicHJpY2luZ192ZXJzaW9uIjoib3BlbmFpLWx1bmEtbG9uZy1jb250ZXh0LTIwMjYtMDgtMDgiLCJwcm92aWRlciI6Im9wZW5haSJ9"}\n' >"$destination/receipt.json" ;;
   *"collaborators/maintainer/permission"*) printf '%s\n' "${ACTOR_PERMISSION:-triage}" ;;
   "workflow run "*) printf 'DISPATCH %s\n' "$*" >>"$CALLS" ;;
   "pr comment "*) printf 'COMMENT %s\n' "$*" >>"$CALLS" ;;
@@ -67,7 +71,8 @@ write_repromotion() {
   export EVENT_ACTION=unlabeled RECEIPT_COUNT=1
 }
 write_repromotion
-if run_arm >"$tmp/out" 2>&1 && grep -q 'workflow run ai-privileged-merge.yml' "$CALLS" && ! grep -q 'workflow run ai-review-merge.yml' "$CALLS"; then
+if run_arm >"$tmp/out" 2>&1 && grep -q 'workflow run ai-privileged-merge.yml' "$CALLS" \
+  && grep -q 'review_policy=eyJ' "$CALLS" && ! grep -q 'workflow run ai-review-merge.yml' "$CALLS"; then
   pass "hold removal reuses a live receipt without another paid review"
 else fail "hold removal did not reuse authorization: $(tail -1 "$tmp/out")"; fi
 write_repromotion; export RECEIPT_COUNT=0

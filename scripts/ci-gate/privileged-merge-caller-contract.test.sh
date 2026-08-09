@@ -84,7 +84,7 @@ on = d.get(True, d.get("on"))
 wc = on.get("workflow_call")
 if not wc: sys.exit(1)
 i = wc.get("inputs", {})
-need = {"pr_number", "expected_head_sha", "authorization_check_id", "arm_run_id", "arm_run_attempt", "source_run_id", "runner_labels"}
+need = {"pr_number", "expected_head_sha", "authorization_check_id", "arm_run_id", "arm_run_attempt", "review_policy", "source_run_id", "runner_labels"}
 if not need <= set(i): sys.exit(1)
 sys.exit(0 if i["runner_labels"].get("required") is False else 1)
 PY
@@ -136,7 +136,7 @@ python3 - "$tmp/caller.yml" <<'WITH_PY' && pass "generated caller forwards exact
 import sys, yaml
 d = yaml.safe_load(open(sys.argv[1]))
 w = d["jobs"]["privileged_merge"].get("with", {})
-if set(w) != {"pr_number", "expected_head_sha", "authorization_check_id", "arm_run_id", "arm_run_attempt", "source_run_id"}:
+if set(w) != {"pr_number", "expected_head_sha", "authorization_check_id", "arm_run_id", "arm_run_attempt", "review_policy", "source_run_id"}:
     sys.exit(1)
 sys.exit(0 if w["expected_head_sha"] == "${{ inputs.expected_head_sha }}" else 1)
 WITH_PY

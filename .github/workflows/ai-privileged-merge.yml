@@ -26,6 +26,10 @@ on:
       arm_run_attempt:
         required: true
         type: string
+      review_policy:
+        description: Exact opaque policy envelope from the immutable arm receipt
+        required: true
+        type: string
       source_run_id:
         required: false
         type: string
@@ -44,6 +48,9 @@ on:
         required: true
         type: string
       arm_run_attempt:
+        required: true
+        type: string
+      review_policy:
         required: true
         type: string
       source_run_id:
@@ -71,6 +78,7 @@ jobs:
       AUTHORIZATION_CHECK_ID: ${{ inputs.authorization_check_id }}
       ARM_RUN_ID: ${{ inputs.arm_run_id }}
       ARM_RUN_ATTEMPT: ${{ inputs.arm_run_attempt }}
+      REVIEW_POLICY: ${{ inputs.review_policy }}
       EXPECTED_HEAD_SHA: ${{ inputs.expected_head_sha }}
       EXPECTED_APP_ID: ${{ vars.AI_REVIEW_APP_ID }}
       EXPECTED_APP_SLUG: ${{ vars.AI_REVIEW_APP_SLUG }}
@@ -91,7 +99,9 @@ jobs:
           repository: Verjson/.github
           ref: ${{ steps.trusted-revision.outputs.sha }}
           path: .gate-trust
-          sparse-checkout: scripts/ci-gate/verify-arm-receipt.sh
+          sparse-checkout: |
+            scripts/ci-gate/verify-arm-receipt.sh
+            scripts/ci-gate/review-policy-envelope.py
           sparse-checkout-cone-mode: false
           persist-credentials: false
 
