@@ -50,7 +50,7 @@ grep -q 'no automatic retry' "$wf" \
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 cp "$wf" "$tmp/workflow.yml"
-printf '\n      - id: claude_retry\n        uses: anthropics/claude-code-action@v1\n        with:\n          claude_args: --max-budget-usd 1.00\n' >>"$tmp/workflow.yml"
+printf '\n      - id: claude_retry\n        uses: anthropics/claude-code-action@6b082c41935b4c8a3b8b0ef85ba4ba4d9eeb8975\n        with:\n          claude_args: --max-budget-usd 1.00\n' >>"$tmp/workflow.yml"
 if check_contract "$tmp/workflow.yml"; then
   fail 'mutation survived: an automatic escalation action was not rejected'
 else
