@@ -112,6 +112,29 @@ def validate_verdict(verdict: object) -> dict:
     return verdict
 
 
+def validate_reasoning_item(item: object) -> None:
+    required = {"id", "type", "summary"}
+    allowed = required | {"content", "encrypted_content", "status"}
+    if not isinstance(item, dict) or not required <= set(item) or not set(item) <= allowed:
+        raise ValueError("response reasoning item has invalid fields")
+    if item["type"] != "reasoning" or not isinstance(item["id"], str) or not item["id"]:
+        raise ValueError("response reasoning item has invalid identity")
+    if item.get("status", "completed") != "completed":
+        raise ValueError("response reasoning item is not completed")
+    encrypted = item.get("encrypted_content")
+    if encrypted is not None and not isinstance(encrypted, str):
+        raise ValueError("response reasoning encrypted content is malformed")
+    content_shapes = (("summary", "summary_text"), ("content", "reasoning_text"))
+    for field, expected_type in content_shapes:
+        nodes = item.get(field, [])
+        if not isinstance(nodes, list):
+            raise ValueError(f"response reasoning {field} is malformed")
+        for node in nodes:
+            if (not isinstance(node, dict) or set(node) != {"type", "text"} or
+                    node.get("type") != expected_type or not isinstance(node.get("text"), str)):
+                raise ValueError(f"response reasoning {field} item is malformed")
+
+
 def extract(response: dict, input_bound: int, cap: int, budget_text: str) -> tuple[str, int, int, Decimal]:
     if not isinstance(response, dict) or response.get("status") != "completed" or response.get("model") != MODEL:
         raise ValueError("response is not completed for the requested model")
@@ -121,21 +144,32 @@ def extract(response: dict, input_bound: int, cap: int, budget_text: str) -> tup
     if not isinstance(usage, dict):
         raise ValueError("response has no usage evidence")
     input_tokens, output_tokens = usage.get("input_tokens"), usage.get("output_tokens")
-    if not isinstance(input_tokens, int) or not isinstance(output_tokens, int) or input_tokens < 0 or output_tokens < 0:
+    if type(input_tokens) is not int or type(output_tokens) is not int or input_tokens < 0 or output_tokens < 0:
         raise ValueError("response usage is malformed")
     cost = (Decimal(input_tokens) * INPUT_USD_PER_MTOK + Decimal(output_tokens) * OUTPUT_USD_PER_MTOK) / Decimal(1_000_000)
     if input_tokens > input_bound or output_tokens > cap or cost > Decimal(budget_text):
         raise ValueError("reported usage exceeds the preflight envelope")
     output = response.get("output")
-    if not isinstance(output, list) or len(output) != 1:
-        raise ValueError("response does not contain exactly one output item")
-    item = output[0]
+    if not isinstance(output, list):
+        raise ValueError("response output is malformed")
+    messages = []
+    for output_item in output:
+        if isinstance(output_item, dict) and output_item.get("type") == "reasoning":
+            validate_reasoning_item(output_item)
+        elif isinstance(output_item, dict) and output_item.get("type") == "message":
+            messages.append(output_item)
+        else:
+            raise ValueError("response contains an unsupported output item")
+    if len(messages) != 1:
+        raise ValueError("response does not contain exactly one assistant message")
+    item = messages[0]
     if not isinstance(item, dict) or item.get("type") != "message" or item.get("status") != "completed" or item.get("role") != "assistant":
         raise ValueError("response output is not one completed assistant message")
     content = item.get("content")
     if not isinstance(content, list) or len(content) != 1 or not isinstance(content[0], dict) or content[0].get("type") != "output_text":
         raise ValueError("response message is not exactly one output_text item")
-    if any(value for node in (response, item, content[0]) for key, value in node.items() if key in {"refusal", "error", "incomplete_details"}):
+    if any(value is not None for node in (response, item, content[0])
+           for key, value in node.items() if key in {"refusal", "error", "incomplete_details"}):
         raise ValueError("response contains refusal, error, or incomplete evidence")
     text = content[0].get("text")
     if not isinstance(text, str):
