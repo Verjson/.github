@@ -11,6 +11,7 @@ Reverse-chronological index of org-level decisions.
 <!-- BEGIN ADR INDEX -->
 | # | Date | Decision |
 |---|------|----------|
+| [0085](0085-immutable-privileged-caller-contract/README.md) | 2026-08-09 | Pin privileged callers to immutable contract revisions |
 | [0084](0084-programmatic-privileged-routing/README.md) | 2026-08-09 | Resolve privileged routing programmatically |
 | [0083](0083-pin-ai-review-action-and-source-bot-logins/README.md) | 2026-08-09 | Pin the AI review action and name source bot logins |
 | [0082](0082-receipt-bound-provider-budget-policy/README.md) | 2026-08-08 | Receipt-bound provider and budget policy |

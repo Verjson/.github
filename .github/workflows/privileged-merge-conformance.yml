@@ -20,4 +20,5 @@ jobs:
       - name: Verify privileged merge delivery across the active fleet
         env:
           GH_TOKEN: ${{ secrets.ORG_ADMIN_TOKEN }}
+          PRIVILEGED_MERGE_CONTRACT_SHA: ${{ github.sha }}
         run: bash scripts/privileged-merge-conformance.sh
