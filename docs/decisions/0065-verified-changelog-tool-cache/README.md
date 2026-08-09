@@ -80,6 +80,13 @@ so each fixture's isolated `HOME` remains its cache boundary. Digest verificatio
 remains the authority boundary; either path provides availability only, as this
 decision requires.
 
+Issue [#630](https://github.com/Verjson/.github/issues/630) extends that verified
+writable-cache invariant to `node-release.yml`: its publication job prepares a
+job-scoped cache under `runner.temp` before any release step, and generated
+changelog-release verify jobs establish the same boundary before invoking the
+renderer. The cache remains an availability mechanism whose contents must pass
+the embedded digest check before execution.
+
 ## Rejected alternatives
 
 - **Trust a commit-keyed filename.** The name does not authenticate writable

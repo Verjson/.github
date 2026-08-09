@@ -77,6 +77,8 @@ jobs:
       new-release-published: ${{ steps.result.outputs.new-release-published }}
       new-release-version: ${{ steps.result.outputs.new-release-version }}
     steps:
+      - name: Prepare job-scoped changelog tool cache
+        run: echo "VERJSON_CHANGELOG_TOOL_CACHE=$RUNNER_TEMP/verjson-changelog-tools" >> "$GITHUB_ENV"
       - name: Require the contract's exact release tag
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

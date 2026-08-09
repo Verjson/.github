@@ -407,6 +407,8 @@ jobs:
     outputs:
       snapshot-exists: \${{ steps.release-state.outputs.snapshot-exists }}
     steps:
+      - name: Prepare job-scoped changelog tool cache
+        run: echo "VERJSON_CHANGELOG_TOOL_CACHE=\$RUNNER_TEMP/verjson-changelog-tools" >> "\$GITHUB_ENV"
       # changelog-release.yml carries this guard too, but there it fires inside
       # \`snapshot\` — after \`verify\` has already spent a full suite run on a ref
       # whose tree will never be tagged. It is asserted here first because
@@ -1111,6 +1113,12 @@ while IFS= read -r release_workflow; do
   printf '%s\n' "$verify_job" \
     | grep -qF 'snapshot-exists: ${{ steps.release-state.outputs.snapshot-exists }}' \
     || fail "$release_workflow does not propagate verified snapshot state"
+  printf '%s\n' "$verify_job" \
+    | grep -qF 'echo "VERJSON_CHANGELOG_TOOL_CACHE=$RUNNER_TEMP/verjson-changelog-tools" >> "$GITHUB_ENV"' \
+    || fail "$release_workflow does not give repository verification hooks a job-writable changelog cache beneath runner.temp (#630)"
+  first_verify_step="$(printf '%s\n' "$verify_job" | awk '/^[[:space:]]+- name:/ { print; exit }')"
+  printf '%s\n' "$first_verify_step" | grep -qF -- '- name: Prepare job-scoped changelog tool cache' \
+    || fail "$release_workflow does not prepare the writable changelog cache before repository verification steps (#630)"
   printf '%s\n' "$verify_job" \
     | grep -qF "if: steps.release-state.outputs.snapshot-exists == 'true'" \
     || fail "$release_workflow does not condition resumed verification on an existing snapshot"
