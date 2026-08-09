@@ -55,6 +55,7 @@ non-trivial or fanned-out work autonomously:
 
 ## Active Issues / Areas for Improvement
 
+- [#622](https://github.com/Verjson/.github/issues/622) — Actions CI matrix jobs still stage from a shared checkout that sibling cleanup can mutate.
 - [#265](https://github.com/Verjson/.github/issues/265) — Org Actions secrets sit at `visibility: all`; scope them to least privilege.
 
 Prune an entry when its issue closes. This list loads into every session, so a

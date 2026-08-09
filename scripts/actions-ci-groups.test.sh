@@ -27,15 +27,22 @@ assert groups["strategy"] == {
     "max-parallel": 3,
     "matrix": {"group": ["platform", "merge-gate", "changelog-release"]},
 }
+checkout = next(step for step in groups["steps"] if "uses" in step)
+assert checkout["with"]["path"] == (
+    ".actions-ci-source-${{ github.run_id }}-"
+    "${{ github.run_attempt }}-${{ matrix.group }}"
+)
 group_step = next(
     step for step in groups["steps"]
     if step.get("name") == "Run ${{ matrix.group }} shell contracts without hiding sibling failures"
 )
 assert group_step["env"] == {"RUNNER_LABELS": ""}
 assert group_step["run"] == (
+    'source_root="$GITHUB_WORKSPACE/.actions-ci-source-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.group }}"\n'
     'group_root="$(mktemp -d "$RUNNER_TEMP/actions-ci-${{ matrix.group }}.XXXXXX")"\n'
-    'trap \'rm -rf "$group_root"\' EXIT\n'
-    'cp -a "$GITHUB_WORKSPACE/." "$group_root/"\n'
+    'trap \'rm -rf "$source_root" "$group_root"\' EXIT\n'
+    'cp -a "$source_root/." "$group_root/"\n'
+    'rm -rf "$source_root"\n'
     'cd "$group_root"\n'
     'bash scripts/actions-ci-group.sh "${{ matrix.group }}"\n'
 )
@@ -62,17 +69,33 @@ else
   fail "bounded fan-out or required-context aggregation is missing"
 fi
 
-mkdir -p "$tmp/source/scripts" "$tmp/runner/actions-ci-platform.stale"
-printf 'original\n' > "$tmp/source/shared-fixture"
+mkdir -p "$tmp/workspace/.actions-ci-source-42-1-platform/scripts" \
+  "$tmp/workspace/.actions-ci-source-42-1-merge-gate/scripts" \
+  "$tmp/runner/actions-ci-platform.stale"
 printf 'stale\n' > "$tmp/runner/actions-ci-platform.stale/stale-fixture"
-cat > "$tmp/source/scripts/actions-ci-group.sh" <<'SH'
+for group in platform merge-gate; do
+  printf 'original\n' > "$tmp/workspace/.actions-ci-source-42-1-$group/shared-fixture"
+done
+cat > "$tmp/group-runner" <<'SH'
 #!/usr/bin/env bash
 [ ! -e stale-fixture ]
 printf 'mutated\n' > shared-fixture
 pwd > "$ISOLATION_PROBE"
+[ -x scripts/actions-ci-group.sh ]
 SH
-chmod +x "$tmp/source/scripts/actions-ci-group.sh"
-python3 - "$workflow" "$tmp/run-group.sh" <<'PY'
+chmod +x "$tmp/group-runner"
+cp "$tmp/group-runner" "$tmp/workspace/.actions-ci-source-42-1-platform/scripts/actions-ci-group.sh"
+cp "$tmp/group-runner" "$tmp/workspace/.actions-ci-source-42-1-merge-gate/scripts/actions-ci-group.sh"
+mkdir -p "$tmp/shared-source/scripts" "$tmp/legacy-copy"
+cp "$tmp/group-runner" "$tmp/shared-source/scripts/actions-ci-group.sh"
+rm -rf "$tmp/shared-source/scripts"
+cp -a "$tmp/shared-source/." "$tmp/legacy-copy/"
+if [ ! -e "$tmp/legacy-copy/scripts/actions-ci-group.sh" ]; then
+  pass "shared-source cleanup reproduces the missing actions-ci group runner from issue 622"
+else
+  fail "the issue 622 shared-source failure fixture did not reproduce"
+fi
+python3 - "$workflow" "$tmp/run-platform.sh" platform <<'PY'
 import sys
 import yaml
 
@@ -83,20 +106,32 @@ step = next(
     if step.get("name") == "Run ${{ matrix.group }} shell contracts without hiding sibling failures"
 )
 with open(sys.argv[2], "w", encoding="utf-8") as stream:
-    stream.write(step["run"].replace("${{ matrix.group }}", "platform"))
+    stream.write(
+        step["run"]
+        .replace("${{ github.run_id }}", "42")
+        .replace("${{ github.run_attempt }}", "1")
+        .replace("${{ matrix.group }}", sys.argv[3])
+    )
 PY
-if GITHUB_WORKSPACE="$tmp/source" RUNNER_TEMP="$tmp/runner" \
-  ISOLATION_PROBE="$tmp/probe-one" bash "$tmp/run-group.sh" \
-  && GITHUB_WORKSPACE="$tmp/source" RUNNER_TEMP="$tmp/runner" \
-    ISOLATION_PROBE="$tmp/probe-two" bash "$tmp/run-group.sh" \
-  && [ "$(cat "$tmp/source/shared-fixture")" = original ] \
+sed 's/platform/merge-gate/g' \
+  "$tmp/run-platform.sh" > "$tmp/run-merge-gate.sh"
+if GITHUB_WORKSPACE="$tmp/workspace" RUNNER_TEMP="$tmp/runner" \
+  ISOLATION_PROBE="$tmp/probe-one" bash "$tmp/run-platform.sh" &
+then platform_pid=$!; else platform_pid=''; fi
+if GITHUB_WORKSPACE="$tmp/workspace" RUNNER_TEMP="$tmp/runner" \
+  ISOLATION_PROBE="$tmp/probe-two" bash "$tmp/run-merge-gate.sh" &
+then merge_gate_pid=$!; else merge_gate_pid=''; fi
+if [ -n "$platform_pid" ] && [ -n "$merge_gate_pid" ] \
+  && wait "$platform_pid" && wait "$merge_gate_pid" \
   && [ "$(cat "$tmp/probe-one")" != "$(cat "$tmp/probe-two")" ] \
   && [ ! -e "$(cat "$tmp/probe-one")" ] \
   && [ ! -e "$(cat "$tmp/probe-two")" ] \
+  && [ ! -e "$tmp/workspace/.actions-ci-source-42-1-platform" ] \
+  && [ ! -e "$tmp/workspace/.actions-ci-source-42-1-merge-gate" ] \
   && [ "$(cat "$tmp/runner/actions-ci-platform.stale/stale-fixture")" = stale ]; then
-  pass "matrix groups execute from unique, cleaned job-temporary worktrees"
+  pass "concurrent matrix groups snapshot unique sources before cleanup and cannot mutate siblings"
 else
-  fail "matrix groups can collide, retain stale files, or mutate the shared checkout"
+  fail "matrix groups can lose their runner during setup, collide, retain stale files, or mutate siblings"
 fi
 
 if awk -F '\t' '
