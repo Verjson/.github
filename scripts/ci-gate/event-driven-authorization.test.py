@@ -33,6 +33,19 @@ def require(condition: bool, message: str) -> None:
         raise AssertionError(message)
 
 
+def validate_runner_free_external_ci_wait(workflow: dict, job_name: str) -> None:
+    job = workflow["jobs"][job_name]
+    scripts = "\n".join(step.get("run", "") for step in job.get("steps", []))
+    require(not re.search(r"\bsleep\b|ci-wait|MERGE_PROBE", scripts, re.I),
+            f"{job_name} must not sleep or retain a polling-era CI wait")
+    check_reads = [line for line in scripts.splitlines()
+                   if "check-runs?per_page=100" in line or "/status?per_page=100" in line]
+    require(len(check_reads) <= 1,
+            f"{job_name} must use at most one external-CI snapshot per invocation")
+    require(not (check_reads and re.search(r"for\s+\w+\s+in\s+\$\(seq|\buntil\b", scripts)),
+            f"{job_name} must not wrap external-CI reads in a retry loop")
+
+
 def authorization_app_token_uses(workflow: dict, job_name: str) -> str:
     steps = workflow["jobs"][job_name]["steps"]
     matches = [step.get("uses", "") for step in steps
@@ -122,6 +135,8 @@ def main() -> int:
             all(dispatch_inputs[name].get("required") is True for name in receipt_inputs),
             "workflow_dispatch must require the exact head, App check, and arm-receipt identity")
     gate_steps = review["jobs"]["gate"]["steps"]
+    validate_runner_free_external_ci_wait(review, "gate")
+    validate_runner_free_external_ci_wait(promote, "privileged_merge")
     validate_model_admission(gate_steps)
 
     mutated_steps = [dict(step) for step in gate_steps]
@@ -309,6 +324,20 @@ def main() -> int:
         require(not forbidden.search(text), f"{path.name} still contains runner-held waiting")
     require(promote_text.count("check-runs?per_page=100") == 1,
             "promotion must read required checks once rather than poll")
+
+    mutated_review = yaml.safe_load(yaml.safe_dump(review))
+    mutated_review["jobs"]["gate"]["steps"].append(
+        {"run": "for attempt in $(seq 1 20); do gh api commits/head/check-runs?per_page=100; sleep 30; done"})
+    mutated_promote = yaml.safe_load(yaml.safe_dump(promote))
+    mutated_promote["jobs"]["privileged_merge"]["steps"].append(
+        {"run": "until gh api commits/head/status?per_page=100; do sleep 30; done"})
+    for workflow, job_name in ((mutated_review, "gate"),
+                               (mutated_promote, "privileged_merge")):
+        try:
+            validate_runner_free_external_ci_wait(workflow, job_name)
+        except AssertionError:
+            continue
+        raise AssertionError(f"{job_name} polling-loop mutation escaped the structural contract")
 
     require(set(retry[True]) == {"workflow_run"} and
             retry[True]["workflow_run"]["types"] == ["completed"],
