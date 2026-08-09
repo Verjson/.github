@@ -15,9 +15,9 @@ done
 [[ "$EXPECTED_APP_ID" =~ ^[1-9][0-9]*$ ]] || exit 1
 [[ "$EXPECTED_APP_SLUG" =~ ^[a-z0-9][a-z0-9-]*$ ]] || exit 1
 for tool in gh jq unzip sha256sum; do command -v "$tool" >/dev/null || exit 1; done
-jq -e 'type == "object" and keys == ["actor","actor_permission","budget_usd","model","pricing_version","provider"] and all(.[]; type == "string")' <<<"$REVIEW_POLICY" >/dev/null || exit 1
-review_actor="$(jq -r .actor <<<"$REVIEW_POLICY")"
-receipt_permission="$(jq -r .actor_permission <<<"$REVIEW_POLICY")"
+review_policy_json="$(python3 "$(dirname "$0")/review-policy-envelope.py" decode "$REVIEW_POLICY")" || exit 1
+review_actor="$(jq -r .actor <<<"$review_policy_json")"
+receipt_permission="$(jq -r .actor_permission <<<"$review_policy_json")"
 if [ "$receipt_permission" != automation ]; then
   [[ "$review_actor" =~ ^[A-Za-z0-9][A-Za-z0-9-]*$ ]] || exit 1
   case "$receipt_permission" in admin|maintain) ;; *) exit 1 ;; esac
@@ -63,7 +63,7 @@ jq -e \
   --arg repository "$TARGET_REPO" --argjson pr_number "$PR_NUMBER" --arg head "$EXPECTED_HEAD_SHA" \
   --argjson check_id "$AUTHORIZATION_CHECK_ID" --argjson run_id "$ARM_RUN_ID" --argjson attempt "$ARM_RUN_ATTEMPT" \
   --arg details_url "$details_url" --argjson app_id "$EXPECTED_APP_ID" --arg app_slug "$EXPECTED_APP_SLUG" \
-  --argjson review_policy "$REVIEW_POLICY" '
+  --arg review_policy "$REVIEW_POLICY" '
   (keys | sort) == (["app_id","app_slug","arm_run_attempt","arm_run_id","check_run_id","details_url","external_id","head_sha","nonce","pr_number","repository","review_policy","schema"] | sort) and
   .schema == 1 and .repository == $repository and .pr_number == $pr_number and .head_sha == $head and
   .check_run_id == $check_id and .arm_run_id == $run_id and .arm_run_attempt == $attempt and

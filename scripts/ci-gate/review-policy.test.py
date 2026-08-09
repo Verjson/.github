@@ -17,6 +17,8 @@ checks = {
     "secondary is selected only by explicit re-review": 'if [ "$explicit_rereview" = true ]; then' in arm and "REREVIEW_PROVIDER" in arm,
     "absent secondary fails before dispatch": "explicit re-review policy is not fully configured" in arm,
     "policy is receipt and dispatch bound": all(surface.count("review_policy") > 0 for surface in (arm, receipt, gate)),
+    "raw policy JSON never crosses Actions outputs": "review_policy=$review_policy_json" not in arm and "base64 -w0" in arm,
+    "trusted consumers use the strict envelope decoder": gate.count("review-policy-envelope.py") >= 3 and "review-policy-envelope.py" in receipt,
     "workflow dispatch stays within GitHub input limit": len(dispatch_inputs) <= 10,
     "paid re-review requires maintainer permission": "collaborators/$REQUEST_ACTOR/permission" in arm and "admin|maintain" in arm and "no longer has maintain/admin" in receipt,
     "provider secrets remain scoped": "OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}" in gate and "anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}" in gate,

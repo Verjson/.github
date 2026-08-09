@@ -13,7 +13,10 @@ export TARGET_REPO=Verjson/example PR_NUMBER=7
 export EXPECTED_HEAD_SHA=0123456789abcdef0123456789abcdef01234567
 export AUTHORIZATION_CHECK_ID=9001 ARM_RUN_ID=7001 ARM_RUN_ATTEMPT=2
 export EXPECTED_APP_ID=4242 EXPECTED_APP_SLUG=verjson-ai-review
-export REVIEW_POLICY='{"provider":"anthropic","model":"auto","budget_usd":"auto","pricing_version":"anthropic-native-v1","actor":"trusted-arm","actor_permission":"automation"}'
+encode_policy() { python3 "$here/review-policy-envelope.py" encode "$1"; }
+anthropic_policy='{"actor":"trusted-arm","actor_permission":"automation","budget_usd":"auto","model":"auto","pricing_version":"anthropic-native-v1","provider":"anthropic"}'
+openai_policy='{"actor":"maintainer","actor_permission":"maintain","budget_usd":"1.00","model":"gpt-5.6-luna","pricing_version":"openai-luna-long-context-2026-08-08","provider":"openai"}'
+export REVIEW_POLICY="$(encode_policy "$anthropic_policy")"
 export GITHUB_SERVER_URL=https://github.com RUNNER_TEMP="$tmp"
 nonce=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 external_id="ai-review:v1:$TARGET_REPO:$PR_NUMBER:$EXPECTED_HEAD_SHA:$ARM_RUN_ID:$ARM_RUN_ATTEMPT:$nonce"
@@ -47,7 +50,7 @@ write_base() {
     --argjson check_run_id "$AUTHORIZATION_CHECK_ID" --argjson arm_run_id "$ARM_RUN_ID" --argjson arm_run_attempt "$ARM_RUN_ATTEMPT" \
     --arg nonce "$nonce" --arg external_id "$external_id" --arg details_url "$details_url" \
     --argjson app_id "$EXPECTED_APP_ID" --arg app_slug "$EXPECTED_APP_SLUG" \
-    --argjson review_policy "$REVIEW_POLICY" \
+    --arg review_policy "$REVIEW_POLICY" \
     '{schema:1,repository:$repository,pr_number:$pr_number,head_sha:$head_sha,check_run_id:$check_run_id,
       arm_run_id:$arm_run_id,arm_run_attempt:$arm_run_attempt,nonce:$nonce,external_id:$external_id,
       details_url:$details_url,app_id:$app_id,app_slug:$app_slug,review_policy:$review_policy}' >"$tmp/archive/receipt.json"
@@ -72,10 +75,10 @@ repack() {
 }
 
 write_base; expect_pass "exact dedicated-App check and immutable receipt are accepted" verify
-write_base; REVIEW_POLICY='{"provider":"openai","model":"gpt-5.6-luna","budget_usd":"1.00","pricing_version":"openai-luna-long-context-2026-08-08","actor":"maintainer","actor_permission":"maintain"}' expect_fail "a provider change after authorization is rejected" verify
-REVIEW_POLICY='{"provider":"openai","model":"gpt-5.6-luna","budget_usd":"1.00","pricing_version":"openai-luna-long-context-2026-08-08","actor":"maintainer","actor_permission":"maintain"}'; write_base; expect_pass "maintainer re-review evidence is reauthorized" verify
+write_base; REVIEW_POLICY="$(encode_policy "$openai_policy")" expect_fail "a provider change after authorization is rejected" verify
+REVIEW_POLICY="$(encode_policy "$openai_policy")"; write_base; expect_pass "maintainer re-review evidence is reauthorized" verify
 write_base; CURRENT_PERMISSION=triage expect_fail "permission revocation after authorization fails closed" verify; unset CURRENT_PERMISSION
-export REVIEW_POLICY='{"provider":"anthropic","model":"auto","budget_usd":"auto","pricing_version":"anthropic-native-v1","actor":"trusted-arm","actor_permission":"automation"}'
+export REVIEW_POLICY="$(encode_policy "$anthropic_policy")"
 write_base; jq '.details_url="https://github.com/Verjson/example/actions/runs/9999"' "$CHECK_FILE" >"$tmp/x" && mv "$tmp/x" "$CHECK_FILE"; expect_fail "forged same-App details URL is rejected" verify
 write_base; jq '.check_run_id=9002' "$tmp/archive/receipt.json" >"$tmp/x" && mv "$tmp/x" "$tmp/archive/receipt.json"; repack; expect_fail "receipt/check ID mismatch is rejected" verify
 write_base; jq '.nonce="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"' "$tmp/archive/receipt.json" >"$tmp/x" && mv "$tmp/x" "$tmp/archive/receipt.json"; repack; expect_fail "nonce/external_id mismatch is rejected" verify
