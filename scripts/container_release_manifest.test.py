@@ -95,6 +95,12 @@ class ContainerReleaseManifestTests(unittest.TestCase):
         candidate["images"].append(duplicate)
         self.assert_rejected(candidate, "duplicate identity 'default'")
 
+    def test_rejects_candidate_contract_pin_different_from_reviewed_config(self):
+        candidate = manifest()
+        candidate["source"]["workflow"] = "Verjson/.github/.github/workflows/container-candidate.yml@" + "c" * 40
+        candidate["images"][0]["provenance"]["builderIdentity"] = candidate["source"]["workflow"]
+        self.assert_rejected(candidate, "provenance builder identity differs")
+
     def test_rejects_duplicate_platform_tuple_even_when_digests_diverge(self):
         candidate = manifest()
         duplicate = copy.deepcopy(candidate["images"][0]["platforms"][0])

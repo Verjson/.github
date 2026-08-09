@@ -199,6 +199,23 @@ does not depend on an expired workflow artifact.
 
 ## Threat model
 
+### Amendment — 2026-08-09: restart-safe stable promotion (#627)
+
+Stable promotion is dispatch-only and consumes an immutable candidate-manifest digest.
+All Git, changelog, release, matrix, provenance, and registry state is preflighted before
+the first alias write. Alias writes follow deterministic variant order and may be retried
+only when every existing alias already names its recorded candidate digest; a divergent
+or unreadable alias fails closed for operator quarantine. The immutable release manifest,
+not mutable aliases, is the deployment input. Promotion never rebuilds an image and never
+invokes deployment. The release job uses the separately scoped `VERJSON_RELEASE_TOKEN`
+because the repository ruleset does not grant `GITHUB_TOKEN` release authority. Candidate
+admission binds the successful source run, protected source ref and commit, reusable
+workflow signer and immutable contract digest through GitHub artifact and OCI attestation
+verification; the reviewed config is read from that candidate source commit. Git commit
+and annotated tag publish atomically. A retry reconciles exact committed manifest,
+snapshot, tag, aliases and GitHub Release attachment, while any divergence stops before
+the next mutation.
+
 | Threat | Required control | Failure behavior |
 | --- | --- | --- |
 | Mutable or replaced tag | Deploy only schema-validated `sha256` digests from a verified release manifest; tags are display aliases | Reject tag inputs and digest disagreement |

@@ -137,6 +137,8 @@ def validate_manifest(manifest: dict[str, Any], config: dict[str, Any]) -> None:
                 )
         if actual_provenance.get("builderIdentity") != source["workflow"]:
             raise ManifestError(f"provenance signer workflow differs for variant {variant!r}")
+        if actual_provenance.get("builderIdentity") != expected_provenance.get("builderIdentity"):
+            raise ManifestError(f"provenance builder identity differs for variant {variant!r}")
         _text(
             actual_provenance.get("attestationId"),
             f"manifest.images[{variant!r}].provenance.attestationId",
