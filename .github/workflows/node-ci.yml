@@ -288,6 +288,8 @@ jobs:
 
           found = set()
           for path, package in lock.get("packages", {}).items():
+              if path == "":
+                  continue
               marker = "node_modules/"
               locked_name = package.get("name")
               path_name = path.rsplit(marker, 1)[1] if marker in path else None

@@ -61,3 +61,15 @@ build job no longer requests an unused package capability. A caller's existing
 
 Callers can omit `secretless-pr` to use the unchanged credentialed path. Reverting the
 implementation removes the opt-in mode without changing existing caller behavior.
+
+## 2026-08-09 correction — root lock entry is not an installed dependency
+
+[Issue #682](https://github.com/Verjson/.github/issues/682) exposed an implementation
+error in the lock validator: `packages[""]` describes the repository root, so a scoped
+root package has neither an installed-package path nor a registry download URL. Treating
+its `name` as an acquired dependency rejected valid same-organization consumers.
+
+The validator now ignores only that exact empty-path entry. Every other lock entry keeps
+the original exact allowlist and canonical GitHub Packages URL checks, including entries
+that try to hide an internal package name under a nonstandard or dot-shaped path. This
+restores the decision's installed-dependency boundary; it does not broaden the allowlist.
