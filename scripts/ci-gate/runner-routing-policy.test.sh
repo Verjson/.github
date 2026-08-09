@@ -785,6 +785,12 @@ for job in publish-base publish-derived candidate-manifest; do
   esac
 done
 
+assert_route "$workflows/container-release.yml" promote Verjson/.github '' false \
+  '["self-hosted","trusted-canary"]' '["self-hosted","untrusted-canary"]' \
+  '["self-hosted","trusted-canary"]' "container-release promote — release stays on the trusted lane"
+assert_route "$workflows/container-release.yml" promote Acme/widgets '' false '' '' \
+  'ubuntu-24.04' "container-release promote — external callers retain hosted portability"
+
 for job in validate preview-admission; do
   expr_no_override="$(extract_runs_on "$workflows/pulumi-ci.yml" "$job")"
   case "$expr_no_override" in

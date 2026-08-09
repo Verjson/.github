@@ -8,11 +8,13 @@
     "schemaVersion",
     "releaseVersion",
     "candidateVersion",
+    "candidateManifestDigest",
     "source",
     "release",
     "images",
     "previousRelease",
-    "timestamps"
+    "timestamps",
+    "promotion"
   ],
   "properties": {
     "schemaVersion": {
@@ -26,6 +28,7 @@
       "type": "string",
       "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)-rc\\.[1-9][0-9]*\\.[1-9][0-9]*$"
     },
+    "candidateManifestDigest": {"$ref": "#/$defs/digest"},
     "source": {
       "type": "object",
       "additionalProperties": false,
@@ -97,7 +100,7 @@
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["variant", "repository", "indexDigest", "platforms", "provenance"],
+        "required": ["variant", "repository", "indexDigest", "platforms", "provenance", "sbom"],
         "properties": {
           "variant": {
             "type": "string",
@@ -153,6 +156,15 @@
                 "minLength": 1
               }
             }
+          },
+          "sbom": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["predicateType", "attestationDigest"],
+            "properties": {
+              "predicateType": {"type": "string", "format": "uri"},
+              "attestationDigest": {"$ref": "#/$defs/digest"}
+            }
           }
         }
       }
@@ -192,6 +204,27 @@
           "type": "string",
           "format": "date-time"
         }
+      }
+    },
+    "promotion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["operationOrder", "operations", "recovery"],
+      "properties": {
+        "operationOrder": {"type": "array", "items": {"type": "string"}},
+        "operations": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["alias", "digest"],
+            "properties": {
+              "alias": {"type": "string"},
+              "digest": {"$ref": "#/$defs/digest"}
+            }
+          }
+        },
+        "recovery": {"type": "string", "minLength": 1}
       }
     }
   },
