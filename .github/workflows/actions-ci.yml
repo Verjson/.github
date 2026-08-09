@@ -67,15 +67,21 @@ jobs:
           # explicitly; tags remain necessary for documented-tag validation.
           fetch-depth: 1
           fetch-tags: true
+          # Co-located persistent runners can share GITHUB_WORKSPACE. Give
+          # every matrix job its own checkout so another checkout's cleanup
+          # cannot remove files while this job snapshots its source (#675).
+          path: .actions-ci-source-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.group }}
       - name: Clear the runner changelog cache override
         run: echo "VERJSON_CHANGELOG_TOOL_CACHE=" >> "$GITHUB_ENV"
       - name: Run ${{ matrix.group }} shell contracts without hiding sibling failures
         env:
           RUNNER_LABELS: ''
         run: |
+          source_root="$GITHUB_WORKSPACE/.actions-ci-source-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.group }}"
           group_root="$(mktemp -d "$RUNNER_TEMP/actions-ci-${{ matrix.group }}.XXXXXX")"
-          trap 'rm -rf "$group_root"' EXIT
-          cp -a "$GITHUB_WORKSPACE/." "$group_root/"
+          trap 'rm -rf "$source_root" "$group_root"' EXIT
+          cp -a "$source_root/." "$group_root/"
+          rm -rf "$source_root"
           cd "$group_root"
           bash scripts/actions-ci-group.sh "${{ matrix.group }}"
 

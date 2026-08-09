@@ -43,15 +43,20 @@ jobs:
       # From actionlint_1.7.7_checksums.txt on the upstream GitHub Release.
       ACTIONLINT_SHA256: '023070a287cd8cccd71515fedc843f1985bf96c436b7effaecce67290e7e0757'
       ACTIONLINT_CONFIG_FILE: ${{ inputs.config-file || '.verjson-actionlint-policy/.github/actionlint.yaml' }}
+    defaults:
+      run:
+        working-directory: .actionlint-source-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          path: .actionlint-source-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
       - name: Check out centrally versioned actionlint policy
         if: inputs.config-file == ''
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           repository: ${{ job.workflow_repository }}
           ref: ${{ job.workflow_sha }}
-          path: .verjson-actionlint-policy
+          path: .actionlint-source-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}/.verjson-actionlint-policy
           sparse-checkout: .github/actionlint.yaml
           persist-credentials: false
       - name: Install actionlint (pinned release binary)
@@ -130,3 +135,7 @@ jobs:
             exit 1
           }
           ./actionlint -config-file "$ACTIONLINT_CONFIG_FILE" -shellcheck=shellcheck -color
+      - name: Remove the isolated actionlint checkout
+        if: ${{ always() }}
+        working-directory: ${{ github.workspace }}
+        run: rm -rf ".actionlint-source-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}"
