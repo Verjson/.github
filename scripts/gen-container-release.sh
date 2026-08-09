@@ -25,11 +25,21 @@ jobs:
 EOF
 ;;
 validator) git -C "$root" show "$ref:scripts/container_release_promotion.py" ;;
-manifest-validator) git -C "$root" show "$ref:scripts/container_release_manifest.py" ;;
+manifest-validator)
+cat <<HEADER
+#!/usr/bin/env python3
+# GENERATED FILE — do not edit by hand.
+# Contract: $ref
+# Source: Verjson/.github/scripts/container_release_manifest.py@$ref
+HEADER
+git -C "$root" show "$ref:scripts/container_release_manifest.py" \
+  | sed '1{/^#!\/usr\/bin\/env python3$/d;}'
+;;
 artifact-extractor) git -C "$root" show "$ref:scripts/container_artifact_extract.py" ;;
 contract-test)
 promotion_digest="$(git -C "$root" show "$ref:scripts/container_release_promotion.py" | sha256sum | cut -d' ' -f1)"
-manifest_digest="$(git -C "$root" show "$ref:scripts/container_release_manifest.py" | sha256sum | cut -d' ' -f1)"
+manifest_validator="$("$0" manifest-validator "$ref" "$config")"
+manifest_digest="$(printf '%s\n' "$manifest_validator" | sha256sum | cut -d' ' -f1)"
 extractor_digest="$(git -C "$root" show "$ref:scripts/container_artifact_extract.py" | sha256sum | cut -d' ' -f1)"
 cat <<EOF
 #!/usr/bin/env bash

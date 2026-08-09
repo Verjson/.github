@@ -2,7 +2,7 @@
 set -euo pipefail
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
-ref="$(printf 'a%.0s' {1..40})"
+ref="$(git -C "$root" rev-parse HEAD)"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 
@@ -46,5 +46,11 @@ before="$(sha256sum "$root/scripts/gen-changelog-caller.sh" "$root/.github/workf
 "$root/scripts/gen-container-candidate.sh" workflow "$ref" >/dev/null
 after="$(sha256sum "$root/scripts/gen-changelog-caller.sh" "$root/.github/workflows/generated-artifacts.yml")"
 [ "$before" = "$after" ] || { echo "container generator drifted changelog contract artifacts" >&2; exit 1; }
+if "$root/scripts/gen-container-candidate.sh" validator "$(printf 'a%.0s' {1..40})" >/dev/null 2>&1; then
+  echo "candidate validator generation resolved a nonexistent pin from local files" >&2
+  exit 1
+fi
+
+bash "$root/scripts/container-contract-coexistence.test.sh"
 
 echo "container candidate canonical contract passed"
