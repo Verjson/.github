@@ -254,3 +254,29 @@ are deliberate gates.
 
 GHCR remains the initial registry. This decision neither selects a replacement registry,
 reimplements runner updates, nor grants permission to add fleet capacity or spend.
+
+## Amendment (2026-08-09) — candidate publication contract (#628)
+
+The candidate stage is implemented by the reusable
+`.github/workflows/container-candidate.yml` and the generated three-file adopter set
+from `scripts/gen-container-candidate.sh`: caller, semantic validator, and contract
+test. The reusable workflow separates a credential-free pull-request build from the
+default-branch publication job. The latter alone receives `packages: write` and
+`id-token: write`, and only the reviewed repository's `ghcr.io/<owner>` namespace is
+admitted.
+
+Each successful default-branch run publishes commit-addressed and unique SemVer `rc`
+identities, records index and platform digests, embeds BuildKit SBOM/provenance, emits
+GitHub OIDC provenance, and retains one attested candidate manifest. Derived variants
+name a reviewed base variant and are bound to the exact base index digest assembled in
+the same run. The validator rejects partial matrices, duplicate identities, mutable or
+malformed digests, wrong repositories/refs/workflows, mixed release-line inputs, and
+cross-namespace publication. Stable promotion and deployment remain the separate #627
+and #629 stages; this amendment grants neither authority.
+
+The source-commit tag is reconciled under commit-scoped workflow concurrency: an absent
+tag is created from the built index digest, an identical tag is accepted, and a
+different digest or an inconclusive registry read fails closed without replacing it.
+The manifest records the attestation ID returned by GitHub's provenance action and
+derives its signer identity from the pinned reusable workflow; reviewed configuration
+selects the expected predicate but is not treated as observed attestation evidence.

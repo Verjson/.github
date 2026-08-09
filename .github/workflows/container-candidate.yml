@@ -1,0 +1,317 @@
+name: immutable container candidate
+
+on:
+  workflow_call:
+    inputs:
+      config-path:
+        description: Reviewed candidate configuration committed to the caller repository
+        required: true
+        type: string
+      contract-ref:
+        description: Immutable Verjson/.github contract commit used by the generated caller
+        required: true
+        type: string
+      runner:
+        description: Optional JSON runner labels for build-only jobs
+        required: false
+        default: ''
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: container-candidate-${{ github.repository }}-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    runs-on: ${{ inputs.runner != '' && fromJSON(inputs.runner) || github.repository_owner != 'Verjson' && 'ubuntu-24.04' || github.event.repository.private == true && fromJSON(vars.VERJSON_LANE_TRUSTED || vars.VERJSON_LANE_FALLBACK || '["ubuntu-24.04"]') || fromJSON(vars.VERJSON_LANE_UNTRUSTED || vars.VERJSON_LANE_FALLBACK || '["ubuntu-24.04"]') }}
+    outputs:
+      matrix: ${{ steps.config.outputs.matrix }}
+      candidate: ${{ steps.config.outputs.candidate }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - id: config
+        env:
+          CONFIG_PATH: ${{ inputs.config-path }}
+          CONTRACT_REF: ${{ inputs.contract-ref }}
+        run: |
+          set -euo pipefail
+          [[ "$CONTRACT_REF" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::contract-ref must be a 40-hex commit"; exit 1; }
+          [ -f "$CONFIG_PATH" ] || { echo "::error::candidate config is missing"; exit 1; }
+          expected_namespace="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}"
+          jq -e --arg repository "$GITHUB_REPOSITORY" --arg namespace "$expected_namespace" '
+            .repository == $repository and .registryNamespace == $namespace
+            and (.nextStableVersion | test("^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$"))
+            and (.images | type == "array" and length > 0)
+            and (all(.images[];
+              (.variant | test("^[a-z0-9][a-z0-9._-]*$"))
+              and (.repository | startswith($namespace + "/"))
+              and (.platforms | type == "array" and length > 0)))
+          ' "$CONFIG_PATH" >/dev/null || { echo "::error::invalid or unauthorized candidate configuration"; exit 1; }
+          jq -e '
+            ([.images[].variant] | length == (unique | length))
+            and (all(.images[]; ([.platforms[] | [.os,.architecture,(.variant // "")]] | length == (unique | length))))
+            and (all(.images[] | select(.baseVariant != null); .baseVariant as $base | any($variants[]; . == $base)))
+          ' --argjson variants "$(jq -c '[.images[].variant]' "$CONFIG_PATH")" "$CONFIG_PATH" >/dev/null \
+            || { echo "::error::duplicate matrix identity or unknown base variant"; exit 1; }
+          matrix="$(jq -c '[.images[] | {
+            variant, repository,
+            platforms: ([.platforms[] | ((.os + "/" + .architecture) + (if (.variant // "") == "" then "" else "/" + .variant end))] | join(",")),
+            context: (.context // "."), file: (.file // "Dockerfile"), target: (.target // ""),
+            baseVariant: (.baseVariant // ""),
+            artifact: ("candidate-image-" + (.variant | gsub("[^A-Za-z0-9._-]"; "-")))
+          }]' "$CONFIG_PATH")"
+          candidate="$(jq -r '.nextStableVersion' "$CONFIG_PATH")-rc.${GITHUB_RUN_ID}.${GITHUB_RUN_ATTEMPT}"
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+          echo "candidate=$candidate" >> "$GITHUB_OUTPUT"
+
+  pull-request-build:
+    if: github.event_name == 'pull_request'
+    needs: prepare
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.prepare.outputs.matrix) }}
+    runs-on: ${{ inputs.runner != '' && fromJSON(inputs.runner) || github.repository_owner != 'Verjson' && 'ubuntu-24.04' || github.event.repository.private == true && fromJSON(vars.VERJSON_LANE_TRUSTED || vars.VERJSON_LANE_FALLBACK || '["ubuntu-24.04"]') || fromJSON(vars.VERJSON_LANE_UNTRUSTED || vars.VERJSON_LANE_FALLBACK || '["ubuntu-24.04"]') }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3.11.1
+      - uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6.18.0
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.file }}
+          target: ${{ matrix.target }}
+          platforms: ${{ matrix.platforms }}
+          push: false
+          provenance: false
+          sbom: false
+
+  publish-base:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && github.event.repository.default_branch == 'main'
+    needs: prepare
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.prepare.outputs.matrix) }}
+    runs-on: ${{ github.repository_owner != 'Verjson' && 'ubuntu-24.04' || fromJSON(vars.VERJSON_LANE_TRUSTED || vars.VERJSON_LANE_FALLBACK || '["ubuntu-24.04"]') }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3.11.1
+      - uses: docker/login-action@9780b0c442fbb1117ed29e0efdff1e18412f7567 # v3.3.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - id: build
+        if: matrix.baseVariant == ''
+        uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6.18.0
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.file }}
+          target: ${{ matrix.target }}
+          platforms: ${{ matrix.platforms }}
+          push: true
+          tags: |
+            ${{ matrix.repository }}:${{ needs.prepare.outputs.candidate }}
+          provenance: mode=max
+          sbom: true
+      - id: provenance
+        if: matrix.baseVariant == ''
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
+        with:
+          subject-name: ${{ matrix.repository }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
+      - name: Record immutable image digest
+        if: matrix.baseVariant == ''
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+          REPOSITORY: ${{ matrix.repository }}
+          VARIANT: ${{ matrix.variant }}
+          ATTESTATION_ID: ${{ steps.provenance.outputs.attestation-id }}
+        run: |
+          set -euo pipefail
+          [[ "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || exit 1
+          [ -n "$ATTESTATION_ID" ] || { echo "::error::provenance action returned no attestation identity"; exit 1; }
+          commit_tag="$REPOSITORY:sha-$GITHUB_SHA"
+          error_file="$(mktemp)"
+          if existing="$(docker buildx imagetools inspect "$commit_tag" --format '{{json .Manifest.Digest}}' 2>"$error_file" | tr -d '"')"; then
+            [ "$existing" = "$DIGEST" ] || { echo "::error::commit identity already records a different digest"; exit 1; }
+          elif grep -Eqi 'manifest unknown|not found' "$error_file"; then
+            docker buildx imagetools create -t "$commit_tag" "$REPOSITORY@$DIGEST"
+            recorded="$(docker buildx imagetools inspect "$commit_tag" --format '{{json .Manifest.Digest}}' | tr -d '"')"
+            [ "$recorded" = "$DIGEST" ] || { echo "::error::commit identity reconciliation diverged"; exit 1; }
+          else
+            cat "$error_file" >&2
+            echo "::error::could not prove commit identity state" >&2
+            exit 1
+          fi
+          jq -n --arg variant "$VARIANT" --arg repository "$REPOSITORY" --arg digest "$DIGEST" \
+            --arg attestationId "$ATTESTATION_ID" \
+            '{variant:$variant,repository:$repository,indexDigest:$digest,provenanceAttestationId:$attestationId}' > image.json
+      - if: matrix.baseVariant == ''
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ matrix.artifact }}
+          path: image.json
+          retention-days: 90
+
+  publish-derived:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && github.event.repository.default_branch == 'main'
+    needs: [prepare, publish-base]
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.prepare.outputs.matrix) }}
+    runs-on: ${{ github.repository_owner != 'Verjson' && 'ubuntu-24.04' || fromJSON(vars.VERJSON_LANE_TRUSTED || vars.VERJSON_LANE_FALLBACK || '["ubuntu-24.04"]') }}
+    steps:
+      - if: matrix.baseVariant != ''
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - if: matrix.baseVariant != ''
+        uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3.11.1
+      - if: matrix.baseVariant != ''
+        uses: docker/login-action@9780b0c442fbb1117ed29e0efdff1e18412f7567 # v3.3.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - id: base
+        if: matrix.baseVariant != ''
+        env:
+          CONFIG_PATH: ${{ inputs.config-path }}
+          BASE_VARIANT: ${{ matrix.baseVariant }}
+        run: |
+          base_repository="$(jq -r --arg variant "$BASE_VARIANT" '.images[] | select(.variant == $variant) | .repository' "$CONFIG_PATH")"
+          base_digest="$(docker buildx imagetools inspect "$base_repository:${{ needs.prepare.outputs.candidate }}" --format '{{json .Manifest.Digest}}' | tr -d '"')"
+          [[ "$base_digest" =~ ^sha256:[0-9a-f]{64}$ ]] || exit 1
+          echo "image=$base_repository@$base_digest" >> "$GITHUB_OUTPUT"
+          echo "digest=$base_digest" >> "$GITHUB_OUTPUT"
+      - id: build
+        if: matrix.baseVariant != ''
+        uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6.18.0
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.file }}
+          target: ${{ matrix.target }}
+          platforms: ${{ matrix.platforms }}
+          build-args: VERJSON_BASE_IMAGE=${{ steps.base.outputs.image }}
+          push: true
+          tags: |
+            ${{ matrix.repository }}:${{ needs.prepare.outputs.candidate }}
+          provenance: mode=max
+          sbom: true
+      - id: provenance
+        if: matrix.baseVariant != ''
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
+        with:
+          subject-name: ${{ matrix.repository }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
+      - if: matrix.baseVariant != ''
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+          BASE_DIGEST: ${{ steps.base.outputs.digest }}
+          ATTESTATION_ID: ${{ steps.provenance.outputs.attestation-id }}
+        run: |
+          set -euo pipefail
+          [ -n "$ATTESTATION_ID" ] || { echo "::error::provenance action returned no attestation identity"; exit 1; }
+          repository='${{ matrix.repository }}'
+          commit_tag="$repository:sha-$GITHUB_SHA"
+          error_file="$(mktemp)"
+          if existing="$(docker buildx imagetools inspect "$commit_tag" --format '{{json .Manifest.Digest}}' 2>"$error_file" | tr -d '"')"; then
+            [ "$existing" = "$DIGEST" ] || { echo "::error::commit identity already records a different digest"; exit 1; }
+          elif grep -Eqi 'manifest unknown|not found' "$error_file"; then
+            docker buildx imagetools create -t "$commit_tag" "$repository@$DIGEST"
+            recorded="$(docker buildx imagetools inspect "$commit_tag" --format '{{json .Manifest.Digest}}' | tr -d '"')"
+            [ "$recorded" = "$DIGEST" ] || { echo "::error::commit identity reconciliation diverged"; exit 1; }
+          else
+            cat "$error_file" >&2
+            echo "::error::could not prove commit identity state" >&2
+            exit 1
+          fi
+          jq -n --arg variant '${{ matrix.variant }}' --arg repository '${{ matrix.repository }}' \
+            --arg digest "$DIGEST" --arg baseVariant '${{ matrix.baseVariant }}' --arg baseDigest "$BASE_DIGEST" \
+            --arg attestationId "$ATTESTATION_ID" \
+            '{variant:$variant,repository:$repository,indexDigest:$digest,base:{variant:$baseVariant,digest:$baseDigest},provenanceAttestationId:$attestationId}' > image.json
+      - if: matrix.baseVariant != ''
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ matrix.artifact }}
+          path: image.json
+          retention-days: 90
+
+  candidate-manifest:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && github.event.repository.default_branch == 'main'
+    needs: [prepare, publish-base, publish-derived]
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+    runs-on: ${{ github.repository_owner != 'Verjson' && 'ubuntu-24.04' || fromJSON(vars.VERJSON_LANE_TRUSTED || vars.VERJSON_LANE_FALLBACK || '["ubuntu-24.04"]') }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3.11.1
+      - uses: docker/login-action@9780b0c442fbb1117ed29e0efdff1e18412f7567 # v3.3.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: candidate-image-*
+          path: candidate-images
+          merge-multiple: false
+      - name: Assemble complete candidate manifest
+        env:
+          CANDIDATE: ${{ needs.prepare.outputs.candidate }}
+          CONFIG_PATH: ${{ inputs.config-path }}
+          CONTRACT_REF: ${{ inputs.contract-ref }}
+        run: |
+          set -euo pipefail
+          for image in candidate-images/*/image.json; do
+            repository="$(jq -r '.repository' "$image")"
+            variant="$(jq -r '.variant' "$image")"
+            index_digest="$(jq -r '.indexDigest' "$image")"
+            raw="$(docker buildx imagetools inspect "$repository@$index_digest" --raw)"
+            reviewed="$(jq -c --arg variant "$variant" '.images[] | select(.variant == $variant)' "$CONFIG_PATH")"
+            base="$(jq -c '.base // null' "$image")"
+            attestation_id="$(jq -r '.provenanceAttestationId' "$image")"
+            jq -n --arg variant "$variant" --arg repository "$repository" --arg index "$index_digest" \
+              --arg commit "sha-$GITHUB_SHA" --arg candidate "$CANDIDATE" --arg workflow "Verjson/.github/.github/workflows/container-candidate.yml@$CONTRACT_REF" \
+              --arg attestationId "$attestation_id" --argjson raw "$raw" --argjson reviewed "$reviewed" --argjson base "$base" '
+                {variant:$variant,repository:$repository,indexDigest:$index,
+                 identities:{commit:$commit,candidate:$candidate},
+                 platforms:[$raw.manifests[] | {os:.platform.os,architecture:.platform.architecture,digest:.digest} + (if .platform.variant then {variant:.platform.variant} else {} end)],
+                 provenance:{predicateType:$reviewed.provenance.predicateType,builderIdentity:$workflow,subjectDigest:$index,attestationId:$attestationId},
+                 sbom:{predicateType:"https://spdx.dev/Document",subjectDigest:$index,ociSubject:($repository+"@"+$index)}}
+                + (if $base then {base:$base} else {} end)' \
+              > "image-$variant.json"
+          done
+          jq -s --arg candidate "$CANDIDATE" --arg commit "$GITHUB_SHA" --arg repository "$GITHUB_REPOSITORY" \
+            --arg ref "$GITHUB_REF" --arg workflow "Verjson/.github/.github/workflows/container-candidate.yml@$CONTRACT_REF" \
+            --arg run "$GITHUB_RUN_ID" --arg attempt "$GITHUB_RUN_ATTEMPT" \
+            '{schemaVersion:1,kind:"container-candidate",candidateVersion:$candidate,
+              source:{repository:$repository,commit:$commit,ref:$ref,workflow:$workflow,runId:$run,runAttempt:$attempt},images:.}' \
+            image-*.json > candidate-manifest.json
+          python3 scripts/container_release_manifest.py --manifest candidate-manifest.json --config "$CONFIG_PATH"
+      - uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
+        with:
+          subject-path: candidate-manifest.json
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: container-candidate-${{ needs.prepare.outputs.candidate }}
+          path: candidate-manifest.json
+          if-no-files-found: error
+          retention-days: 90

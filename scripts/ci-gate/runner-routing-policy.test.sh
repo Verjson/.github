@@ -710,6 +710,8 @@ pulumi-ci.yml preview
 changelog-validate.yml validate
 generated-artifacts.yml validate
 changelog-release.yml release
+container-candidate.yml prepare
+container-candidate.yml pull-request-build
 TARGETS
 }
 
@@ -766,7 +768,22 @@ pulumi-ci.yml preview
 changelog-validate.yml validate
 generated-artifacts.yml validate
 changelog-release.yml release
+container-candidate.yml prepare
+container-candidate.yml pull-request-build
 TARGETS
+
+for job in publish-base publish-derived candidate-manifest; do
+  assert_route "$workflows/container-candidate.yml" "$job" Verjson/.github '' false \
+    '["self-hosted","trusted-canary"]' '["self-hosted","untrusted-canary"]' \
+    '["self-hosted","trusted-canary"]' "container-candidate $job — publication stays on the trusted lane"
+  assert_route "$workflows/container-candidate.yml" "$job" Acme/widgets '' false '' '' \
+    'ubuntu-24.04' "container-candidate $job — external callers retain hosted portability"
+  expression="$(extract_runs_on "$workflows/container-candidate.yml" "$job")"
+  case "$expression" in
+    *inputs.runner*) fail "container-candidate $job must not accept the build-only runner override" ;;
+    *) pass "container-candidate $job rejects the build-only runner override" ;;
+  esac
+done
 
 for job in validate preview-admission; do
   expr_no_override="$(extract_runs_on "$workflows/pulumi-ci.yml" "$job")"
