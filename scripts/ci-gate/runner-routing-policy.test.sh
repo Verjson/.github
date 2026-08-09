@@ -55,12 +55,16 @@ literal_hosted="$(
 #    without knowing anything about its fleet. The tail it replaces named a
 #    Verjson fleet label, which put a fleet rename inside a file that every
 #    consumer would have had to edit (#401).
+#  * node-ci's secretless acquisition job (ADR 0086) — it carries a package
+#    credential while reading a PR-controlled lockfile, so it may use only the
+#    isolated untrusted lane or a fresh hosted runner, never the trusted fallback.
 unsafe_portable="$(
   grep -HnE "^    runs-on:.*ubuntu-(24\\.04|latest)" "${workflow_files[@]}" \
     | grep -v "github.repository_owner != 'Verjson' && 'ubuntu-24.04'" \
     | grep -v "github.repository_owner == 'Verjson'.*|| 'ubuntu-24.04'" \
     | grep -v "inputs.github-hosted-runner" \
     | grep -v "vars.VERJSON_RUNNER_FASTLANE" \
+    | grep -v "vars.VERJSON_LANE_UNTRUSTED || '\[\"ubuntu-24.04\"\]'" \
     | sed "s/vars\.VERJSON_LANE_FALLBACK || '\\[\"ubuntu-24\.04\"\\]'//" \
     | grep -E "ubuntu-(24\\.04|latest)" \
     || true
@@ -73,7 +77,8 @@ unsafe_portable="$(
 # literal labels this replaced.
 lane_without_fallback="$(
   grep -HnE "^    runs-on:.*vars\\.VERJSON_LANE_(TRUSTED|UNTRUSTED|PRIVILEGED)" "${workflow_files[@]}" \
-    | grep -v "vars.VERJSON_LANE_FALLBACK" || true
+    | grep -v "vars.VERJSON_LANE_FALLBACK" \
+    | grep -v "vars.VERJSON_LANE_UNTRUSTED || '\[\"ubuntu-24.04\"\]'" || true
 )"
 [ -z "$lane_without_fallback" ] \
   && pass "every lane selector falls through to VERJSON_LANE_FALLBACK" \
@@ -227,7 +232,8 @@ const [, , raw, repository, runnerInput, priv, varDefault, varUntrusted, varFast
 // bracket access is what lets actionlint.yml be EVALUATED here rather than only
 // grepped, which is how its visibility polarity went untested until ADR 0050.
 const body = raw.trim().replace(/^\$\{\{/, '').replace(/\}\}$/, '')
-  .replace(/inputs\.github-hosted-runner/g, "inputs['github-hosted-runner']");
+  .replace(/inputs\.github-hosted-runner/g, "inputs['github-hosted-runner']")
+  .replace(/inputs\.secretless-pr/g, "inputs['secretless-pr']");
 const github = {
   repository,
   repository_owner: repository.split('/')[0],
@@ -256,6 +262,7 @@ const inputs = {
   runner: runnerInput,
   runner_labels: runnerLabelsInput === undefined ? '' : runnerLabelsInput,
   'github-hosted-runner': false,
+  'secretless-pr': false,
 };
 // preflight resolves the TARGET repository's visibility and publishes it as a
 // STRING ('true' | 'false' | '' when unreadable). gate and dispatch-merge route
@@ -828,6 +835,10 @@ for name in $policy_files; do
     job_count=$((job_count + 1))
     value="${line#*runs-on:}"
     value="${value# }"
+    if [ "$name" = node-ci.yml ] \
+        && [ "$value" = '${{ fromJSON(vars.VERJSON_LANE_UNTRUSTED || '\''["ubuntu-24.04"]'\'') }}' ]; then
+      continue
+    fi
     if ! grep -qF 'VERJSON_LANE_TRUSTED' <<<"$value" \
         || ! grep -qF 'VERJSON_LANE_UNTRUSTED' <<<"$value" \
         || ! grep -qF 'VERJSON_LANE_FALLBACK' <<<"$value"; then

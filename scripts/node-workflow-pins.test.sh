@@ -21,8 +21,12 @@ for wf in "$ci" "$release" "$actions_ci"; do
   name="$(basename "$wf")"
   expected_checkouts=1
   expected_setups=0
+  if [ "$wf" = "$ci" ]; then
+    expected_checkouts=2
+    expected_setups=2
+  fi
   if [ "$wf" != "$actions_ci" ]; then
-    expected_setups=1
+    [ "$wf" = "$ci" ] || expected_setups=1
   fi
   pinned_checkouts="$(grep -cF "uses: $checkout" "$wf")"
   all_checkouts="$(grep -cE 'uses: actions/checkout@' "$wf")"

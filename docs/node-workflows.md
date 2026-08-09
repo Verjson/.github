@@ -37,9 +37,47 @@ jobs:
 
 `cache-dependency-path` may also be a glob understood by `hashFiles` and
 `actions/setup-node`. If it matches no lockfile, caching is skipped and the job
-continues normally. Registry authentication is independent of caching:
-callers that install private `@verjson` packages must still grant
-`packages: read` and pass `NODE_AUTH_TOKEN`.
+continues normally. Registry authentication is independent of the job token and
+caching: callers that install private `@verjson` packages pass
+`NODE_AUTH_TOKEN`. The reusable build job requests no package permission, so a
+caller's legacy `packages: read` grant is harmless but unnecessary.
+
+For pull-request validation of repositories with approved private dependencies,
+`secretless-pr` splits installation from repository-controlled execution. The
+acquisition job receives only `contents: read` plus the explicitly mapped package
+token, validates every `@verjson` package against the exact newline-separated
+allowlist and GitHub Packages URL, rejects repository `.npmrc` files, and runs
+`npm ci --ignore-scripts` with a job-created config that scopes the token only to
+`npm.pkg.github.com`. A separate
+job restores the resulting dependency tree with package, Git, cloud, and OIDC
+credential paths empty before build, typecheck, test, and lint execute:
+
+```yaml
+jobs:
+  ci:
+    permissions:
+      contents: read
+      statuses: read
+    uses: Verjson/.github/.github/workflows/node-ci.yml@<immutable-sha>
+    with:
+      secretless-pr: true
+      approved-internal-packages: |
+        @verjson/identity-contracts
+        @verjson/tsconfig
+    secrets:
+      NODE_AUTH_TOKEN: ${{ secrets.NODE_AUTH_TOKEN }}
+```
+
+Do not use `secrets: inherit` on this route. The caller deliberately omits
+`packages: read`; the package token belongs only to the acquisition job and PR
+code cannot request the job token's package capability. Both jobs ignore the
+caller runner override and use the isolated untrusted lane or a fresh hosted
+fallback. Secretless mode rejects
+non-PR events, fork PRs, schema submodules, repository npm config, unlisted
+internal packages, non-GitHub package URLs, old lockfile formats, and unused
+allowlist entries. Forks fail closed because pull-request secrets are unavailable;
+do not replace `pull_request` with `pull_request_target` to obtain them. Existing callers keep
+the original single-job install path because the mode defaults off.
 
 The `setup-verjson-node` composite also defaults caching off and scopes an
 explicitly enabled cache to the current job. Because a setup composite finishes
