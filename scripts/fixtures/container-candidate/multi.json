@@ -1,0 +1,32 @@
+{
+  "repository": "Verjson/example",
+  "registryNamespace": "ghcr.io/verjson",
+  "nextStableVersion": "1.2.0",
+  "images": [
+    {
+      "variant": "base",
+      "repository": "ghcr.io/verjson/example-base",
+      "platforms": [
+        {"os": "linux", "architecture": "amd64"},
+        {"os": "linux", "architecture": "arm64", "variant": "v8"}
+      ],
+      "provenance": {
+        "predicateType": "https://slsa.dev/provenance/v1",
+        "builderIdentity": "Verjson/.github/.github/workflows/container-candidate.yml@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    },
+    {
+      "variant": "debug",
+      "baseVariant": "base",
+      "repository": "ghcr.io/verjson/example-debug",
+      "platforms": [
+        {"os": "linux", "architecture": "amd64"},
+        {"os": "linux", "architecture": "arm64", "variant": "v8"}
+      ],
+      "provenance": {
+        "predicateType": "https://slsa.dev/provenance/v1",
+        "builderIdentity": "Verjson/.github/.github/workflows/container-candidate.yml@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    }
+  ]
+}
