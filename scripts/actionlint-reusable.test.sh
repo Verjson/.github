@@ -76,6 +76,48 @@ grep -qF 'repository: ${{ job.workflow_repository }}' "$wf" \
   && pass "default central policy is checked out immutably while caller overrides skip it" \
   || fail "central policy checkout is not conditional, immutable, and bounded"
 
+if python3 - "$wf" <<'PY'
+import sys
+import yaml
+
+with open(sys.argv[1], encoding="utf-8") as stream:
+    job = yaml.safe_load(stream)["jobs"]["actionlint"]
+source = ".actionlint-source-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}"
+assert job["defaults"]["run"]["working-directory"] == source
+checkouts = [step for step in job["steps"] if "uses" in step]
+assert checkouts[0]["with"]["path"] == source
+assert checkouts[1]["with"]["path"] == f"{source}/.verjson-actionlint-policy"
+cleanup = next(step for step in job["steps"] if step.get("name") == "Remove the isolated actionlint checkout")
+assert cleanup["if"] == "${{ always() }}"
+assert cleanup["working-directory"] == "${{ github.workspace }}"
+assert cleanup["run"] == f'rm -rf "{source}"'
+PY
+then
+  pass "actionlint checks out, executes, and cleans up in a run-specific source"
+else
+  fail "actionlint can execute from or clean another run's shared checkout"
+fi
+
+mkdir -p "$tmp/workspace/.actionlint-source-41-1-actionlint/.github/workflows" \
+  "$tmp/workspace/.actionlint-source-42-1-actionlint/.github/workflows"
+printf 'run-41\n' > "$tmp/workspace/.actionlint-source-41-1-actionlint/.github/workflows/probe.yml"
+printf 'run-42\n' > "$tmp/workspace/.actionlint-source-42-1-actionlint/.github/workflows/probe.yml"
+(
+  printf 'mutated-41\n' > "$tmp/workspace/.actionlint-source-41-1-actionlint/.github/workflows/probe.yml"
+) &
+run_41_pid=$!
+(
+  printf 'mutated-42\n' > "$tmp/workspace/.actionlint-source-42-1-actionlint/.github/workflows/probe.yml"
+) &
+run_42_pid=$!
+if wait "$run_41_pid" && wait "$run_42_pid" \
+  && [ "$(cat "$tmp/workspace/.actionlint-source-41-1-actionlint/.github/workflows/probe.yml")" = mutated-41 ] \
+  && [ "$(cat "$tmp/workspace/.actionlint-source-42-1-actionlint/.github/workflows/probe.yml")" = mutated-42 ]; then
+  pass "concurrent actionlint runs cannot mutate each other's workflow checkout"
+else
+  fail "concurrent actionlint runs share a mutable workflow checkout"
+fi
+
 behavior_script="$tmp/behavior.sh"
 awk '
   $0 == "      - name: Prove invalid workflows fail actionlint" { seen = 1 }
