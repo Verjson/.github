@@ -161,6 +161,9 @@ bash "$gen" "$contract_sha" '["ubuntu-24.04"]' >"$tmp/caller-labels.yml" 2>/dev/
   && pass "generator still emits a caller for an explicit fleet" || fail "generator failed with explicit labels"
 bash "$gen" "$contract_sha" --retry '["CI","changelog"]' >"$tmp/retry.yml" 2>/dev/null \
   && pass "generator emits a CI-completion retry caller" || fail "generator rejected valid retry workflow names"
+bash "$gen" "$contract_sha" --retry '["Integration (event-hub e2e)","Lint: docs/api"]' >"$tmp/retry-punctuation.yml" 2>/dev/null \
+  && pass "generator accepts punctuation in valid GitHub workflow names" \
+  || fail "generator rejected valid parenthesized workflow names"
 
 python3 - "$tmp/caller.yml" <<'PY' && pass "generated caller's job key is privileged_merge" \
   || fail "generated caller job key is not privileged_merge — deadlocks the gate"
@@ -197,6 +200,18 @@ if job.get("uses") != want or set(job.get("secrets", {})) != {
     sys.exit(1)
 sys.exit(0)
 RETRY_PY
+
+python3 - "$tmp/retry-punctuation.yml" <<'RETRY_PUNCTUATION_PY' \
+  && pass "generated retry caller preserves punctuation-rich workflow names as data" \
+  || fail "generated retry caller changed punctuation-rich workflow names or YAML structure"
+import sys, yaml
+d = yaml.safe_load(open(sys.argv[1]))
+on = d.get(True, d.get("on"))
+if on["workflow_run"]["workflows"] != ["Integration (event-hub e2e)", "Lint: docs/api"]:
+    sys.exit(1)
+sys.exit(0 if set(d) == {"name", True, "permissions", "jobs"} or
+                  set(d) == {"name", "on", "permissions", "jobs"} else 1)
+RETRY_PUNCTUATION_PY
 
 grep -q 'ai-review-merge.yml' "$tmp/retry.yml" \
   && fail "generated CI completion bridge can invoke the paid review workflow" \
@@ -340,6 +355,23 @@ bash "$gen" "$contract_sha" --retry '[]' >/dev/null 2>&1 \
 bash "$gen" "$contract_sha" --retry '["CI", "${{ secrets.X }}"]' >/dev/null 2>&1 \
   && fail "generator accepted an expression as a retry workflow name" \
   || pass "generator rejects unsafe retry workflow names"
+bash "$gen" "$contract_sha" --retry $'["CI", "line\\nbreak"]' >/dev/null 2>&1 \
+  && fail "generator accepted a newline in a retry workflow name" \
+  || pass "generator rejects control characters in retry workflow names"
+bash "$gen" "$contract_sha" --retry $'["CI", "line\u2028break"]' >/dev/null 2>&1 \
+  && fail "generator accepted a Unicode line separator in a retry workflow name" \
+  || pass "generator rejects Unicode line separators in retry workflow names"
+bash "$gen" "$contract_sha" --retry '["CI", "x\"] , \"permissions\": \"write-all"]' >"$tmp/retry-quoted.yml" 2>/dev/null \
+  && python3 - "$tmp/retry-quoted.yml" <<'RETRY_QUOTED_PY' \
+  && pass "quotes and YAML punctuation remain serialized workflow-name data" \
+  || fail "generator let quoted workflow-name data alter YAML structure"
+import sys, yaml
+d = yaml.safe_load(open(sys.argv[1]))
+on = d.get(True, d.get("on"))
+assert on["workflow_run"]["workflows"] == ["CI", 'x"] , "permissions": "write-all']
+assert d["permissions"] == {
+    "actions": "read", "checks": "read", "contents": "read", "pull-requests": "read"}
+RETRY_QUOTED_PY
 
 # An UNSET shell variable is the common way an operator reaches the default:
 # `gen "$SHA" "$LABELS"` passes an empty second argument, which must produce the lane-routed

@@ -33,16 +33,26 @@ readonly RETRY_TARGET="Verjson/.github/.github/workflows/ai-promotion-retry.yml@
 
 if [ "${2-}" = --retry ]; then
   [ "$#" -eq 3 ] || { echo "--retry requires one workflow-names JSON argument" >&2; exit 2; }
-  workflow_names="$3"
   command -v jq >/dev/null 2>&1 || { echo "jq is required to validate workflow names" >&2; exit 2; }
-  jq -e 'type == "array" and length > 0 and
-         all(.[]; type == "string" and test("^[A-Za-z0-9._ -]+$") and length > 0)' \
-    <<<"$workflow_names" >/dev/null 2>&1 \
-    || { echo "workflow names must be a non-empty JSON array of safe names" >&2; exit 2; }
+  # JSON flow collections are valid YAML, so compact JSON serialization admits
+  # GitHub's punctuation-rich workflow names without letting their bytes alter
+  # the surrounding document. Control characters and expressions are different:
+  # they are meaningful after YAML parsing, so reject them at this boundary.
+  workflow_names="$(jq -ce '
+    if type == "array" and length > 0 and
+       all(.[];
+         type == "string" and length > 0 and
+         all(explode[];
+           . >= 32 and (. < 127 or . > 159) and . != 8232 and . != 8233) and
+         (contains("${{") | not))
+    then . else error("unsafe workflow names") end
+  ' <<<"$3" 2>/dev/null)" \
+    || { echo "workflow names must be a non-empty JSON array without controls or expressions" >&2; exit 2; }
+  printf -v workflow_names_shell '%q' "$workflow_names"
   cat <<YAML
 # GENERATED FILE — do not edit by hand.
 # Regenerate with:
-#   scripts/gen-privileged-merge-caller.sh $contract_sha --retry '$workflow_names' > .github/workflows/ai-promotion-retry.yml
+#   scripts/gen-privileged-merge-caller.sh $contract_sha --retry $workflow_names_shell > .github/workflows/ai-promotion-retry.yml
 name: AI terminal promotion retry
 
 on:
