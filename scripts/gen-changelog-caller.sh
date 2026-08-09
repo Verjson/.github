@@ -1000,8 +1000,8 @@ while IFS= read -r release_workflow; do
     found && match($0, /[^[:space:]]/) > depth { print; next }
     found { found = 0 }
   ')"
-  if printf '%s\n' "$push_token_value" \
-    | grep -qiE '\$\{\{[[:space:]]*(secrets\.GITHUB_TOKEN|github\.token)[[:space:]]*\}\}'; then
+  if grep -qiE '\$\{\{[[:space:]]*(secrets\.GITHUB_TOKEN|github\.token)[[:space:]]*\}\}' \
+    <<<"$push_token_value"; then
     fail "$release_workflow passes GITHUB_TOKEN as push_token; the branch ruleset rejects that push. Pass an admin-scoped secret."
   fi
 
@@ -1048,8 +1048,8 @@ while IFS= read -r release_workflow; do
 
   # The reusable workflow and its engine are one contract. Checking only the
   # uses: ref lets a caller execute workflow A with contract_ref B (#349).
-  printf '%s\n' "$snapshot_job" \
-    | grep -qE "^[[:space:]]+contract_ref:[[:space:]]*$CONTRACT_REF[[:space:]]*$" \
+  grep -qE "^[[:space:]]+contract_ref:[[:space:]]*$CONTRACT_REF[[:space:]]*$" \
+    <<<"$snapshot_job" \
     || fail "$release_workflow passes a contract_ref that differs from its changelog-release.yml pin"
 
   # #463/#464. changelog-release.yml consumes NEXT/, writes an immutable
@@ -1057,14 +1057,14 @@ while IFS= read -r release_workflow; do
   # atomic push. Nothing after that is recoverable by re-dispatch: the same
   # version is refused because the tag exists, a higher one because NEXT/ was
   # already consumed. So the snapshot may never be the first job to run.
-  printf '%s\n' "$snapshot_job" | grep -qE '^[[:space:]]+needs:[[:space:]]*[^[:space:]]' \
+  grep -qE '^[[:space:]]+needs:[[:space:]]*[^[:space:]]' <<<"$snapshot_job" \
     || fail "$release_workflow runs the irreversible snapshot with no needs:, so a red tree is discovered only after the tag has been pushed (#463, #464)"
 
   # #465. Omitting the optional runner input lets changelog-release.yml route the
   # snapshot by its own default while the caller's jobs route by another. On a
   # private repository the snapshot half — the half that mutates protected main —
   # then queues on hosted runners with no check run and no error.
-  printf '%s\n' "$snapshot_job" | grep -qE '^[[:space:]]+runner:[[:space:]]*[^[:space:]]' \
+  grep -qE '^[[:space:]]+runner:[[:space:]]*[^[:space:]]' <<<"$snapshot_job" \
     || fail "$release_workflow passes no explicit runner:, so the snapshot and the publish half can land on different runner pools (#465)"
 
   # #519. Verification must see the version selected by workflow_dispatch. The
@@ -1084,46 +1084,45 @@ while IFS= read -r release_workflow; do
   ' "$release_workflow")"
   stamp_before() {
     local job="$1" consumer_pattern="$2" stamp_line consumer_line
-    stamp_line="$(printf '%s\n' "$job" | grep -n -m1 \
-      'npm version .*--no-git-tag-version --ignore-scripts --allow-same-version' | cut -d: -f1)"
-    consumer_line="$(printf '%s\n' "$job" | grep -n -m1 -E "$consumer_pattern" | cut -d: -f1)"
+    stamp_line="$(grep -n -m1 \
+      'npm version .*--no-git-tag-version --ignore-scripts --allow-same-version' \
+      <<<"$job" | cut -d: -f1)"
+    consumer_line="$(grep -n -m1 -E "$consumer_pattern" <<<"$job" | cut -d: -f1)"
     [ -n "$stamp_line" ] && [ -n "$consumer_line" ] && [ "$stamp_line" -lt "$consumer_line" ]
   }
   stamp_before "$verify_job" 'scripts/release-verify\.sh|npm run build|npm run typecheck|npm run lint|npm test' \
     || fail "$release_workflow does not stamp the dispatched package version before the verification build or suite (#519)"
-  printf '%s\n' "$verify_job" | grep -qF "package_dirs=($EXPECTED_RELEASE_PACKAGE_DIRS_SHELL)" \
+  grep -qF "package_dirs=($EXPECTED_RELEASE_PACKAGE_DIRS_SHELL)" <<<"$verify_job" \
     || fail "$release_workflow does not stamp every package directory selected for publication (#557)"
-  prepare_line="$(printf '%s\n' "$verify_job" | grep -n -m1 \
-    'scripts/release-prepare-packages\.sh "${VERSION#v}"' | cut -d: -f1)"
-  stamp_line="$(printf '%s\n' "$verify_job" | grep -n -m1 \
-    'npm version .*--no-git-tag-version --ignore-scripts --allow-same-version' | cut -d: -f1)"
+  prepare_line="$(grep -n -m1 'scripts/release-prepare-packages\.sh "${VERSION#v}"' \
+    <<<"$verify_job" | cut -d: -f1)"
+  stamp_line="$(grep -n -m1 \
+    'npm version .*--no-git-tag-version --ignore-scripts --allow-same-version' \
+    <<<"$verify_job" | cut -d: -f1)"
   [ -n "$prepare_line" ] && [ -n "$stamp_line" ] && [ "$prepare_line" -lt "$stamp_line" ] \
     || fail "$release_workflow does not prepare package metadata before stamping and verifying the release tree (#550)"
-  printf '%s\n' "$publish_job" \
-    | grep -qF "uses: Verjson/.github/.github/workflows/node-release.yml@$CONTRACT_REF" \
+  grep -qF "uses: Verjson/.github/.github/workflows/node-release.yml@$CONTRACT_REF" \
+    <<<"$publish_job" \
     || fail "$release_workflow does not delegate publication to node-release.yml at the immutable contract pin (#455)"
-  printf '%s\n' "$publish_job" | grep -qF 'needs: [verify, snapshot]' \
+  grep -qF 'needs: [verify, snapshot]' <<<"$publish_job" \
     || fail "$release_workflow does not gate publication on both verification and snapshot state"
-  printf '%s\n' "$publish_job" \
-    | grep -qF "if: always() && needs.verify.result == 'success' && (needs.snapshot.result == 'success' || needs.snapshot.result == 'skipped')" \
+  grep -qF "if: always() && needs.verify.result == 'success' && (needs.snapshot.result == 'success' || needs.snapshot.result == 'skipped')" \
+    <<<"$publish_job" \
     || fail "$release_workflow cannot safely resume publication after reusing an immutable snapshot"
-  printf '%s\n' "$snapshot_job" \
-    | grep -qF "if: needs.verify.outputs.snapshot-exists != 'true'" \
+  grep -qF "if: needs.verify.outputs.snapshot-exists != 'true'" <<<"$snapshot_job" \
     || fail "$release_workflow recreates an existing immutable snapshot instead of resuming publication"
-  printf '%s\n' "$verify_job" \
-    | grep -qF 'snapshot-exists: ${{ steps.release-state.outputs.snapshot-exists }}' \
+  grep -qF 'snapshot-exists: ${{ steps.release-state.outputs.snapshot-exists }}' \
+    <<<"$verify_job" \
     || fail "$release_workflow does not propagate verified snapshot state"
-  printf '%s\n' "$verify_job" \
-    | grep -qF 'echo "VERJSON_CHANGELOG_TOOL_CACHE=$RUNNER_TEMP/verjson-changelog-tools" >> "$GITHUB_ENV"' \
+  grep -qF 'echo "VERJSON_CHANGELOG_TOOL_CACHE=$RUNNER_TEMP/verjson-changelog-tools" >> "$GITHUB_ENV"' \
+    <<<"$verify_job" \
     || fail "$release_workflow does not give repository verification hooks a job-writable changelog cache beneath runner.temp (#630)"
-  first_verify_step="$(printf '%s\n' "$verify_job" | awk '/^[[:space:]]+- name:/ { print; exit }')"
-  printf '%s\n' "$first_verify_step" | grep -qF -- '- name: Prepare job-scoped changelog tool cache' \
+  first_verify_step="$(awk '/^[[:space:]]+- name:/ { print; exit }' <<<"$verify_job")"
+  grep -qF -- '- name: Prepare job-scoped changelog tool cache' <<<"$first_verify_step" \
     || fail "$release_workflow does not prepare the writable changelog cache before repository verification steps (#630)"
-  printf '%s\n' "$verify_job" \
-    | grep -qF "if: steps.release-state.outputs.snapshot-exists == 'true'" \
+  grep -qF "if: steps.release-state.outputs.snapshot-exists == 'true'" <<<"$verify_job" \
     || fail "$release_workflow does not condition resumed verification on an existing snapshot"
-  printf '%s\n' "$verify_job" \
-    | grep -qF 'ref: ${{ inputs.version }}' \
+  grep -qF 'ref: ${{ inputs.version }}' <<<"$verify_job" \
     || fail "$release_workflow verifies the later dispatch tree instead of the existing tagged snapshot"
   for publish_input in \
     'version: ${{ inputs.version }}' \
@@ -1131,11 +1130,10 @@ while IFS= read -r release_workflow; do
     "scope: '$EXPECTED_RELEASE_SCOPE'" \
     "package-dirs: '$EXPECTED_RELEASE_PACKAGE_DIRS_JSON'" \
     'runner: ${{'; do
-    printf '%s\n' "$publish_job" | grep -qF "$publish_input" \
+    grep -qF "$publish_input" <<<"$publish_job" \
       || fail "$release_workflow does not pass '$publish_input' to node-release.yml"
   done
-  printf '%s\n' "$publish_job" \
-    | grep -qF 'NODE_AUTH_TOKEN: ${{ secrets.NODE_AUTH_TOKEN }}' \
+  grep -qF 'NODE_AUTH_TOKEN: ${{ secrets.NODE_AUTH_TOKEN }}' <<<"$publish_job" \
     || fail "$release_workflow does not pass the private-dependency token to node-release.yml"
 
   # The trigger surface and the install credential are checked structurally,

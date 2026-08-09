@@ -243,6 +243,19 @@ else
   fail "contract-test syntax validation can still race a producer SIGPIPE"
 fi
 
+# Captured workflow blocks can be much larger than a pipe buffer. A validator
+# such as grep -q or an awk program that exits after its first match may close
+# stdin while printf is still writing, making pipefail replace the policy error
+# with a producer-side Broken pipe. Feed every captured value by redirection so
+# validation status never depends on consumer read-ahead.
+emitted_validation="$(sed -n '/^emit_contract_test()/,/^}$/p' "$gen")"
+if grep -qE 'printf .*\$\{?(snapshot_job|verify_job|publish_job|push_token_value|first_verify_step|job)' \
+    <<<"$emitted_validation"; then
+  fail "emitted contract validation still pipes a captured value into an early-exit consumer"
+else
+  pass "emitted contract validation redirects every captured value without a SIGPIPE producer"
+fi
+
 bash -n "$emitted" 2>/dev/null \
   && pass "emitted contract test is valid bash" \
   || fail "emitted contract test does not parse"
