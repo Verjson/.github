@@ -63,11 +63,61 @@ check_exclusions "$gate" "gate"
 check_exclusions "$canonical" "canonical workflow"
 
 # --- side 2: the canonical workflow's job key --------------------------------
-python3 - "$canonical" <<'PY' && pass "canonical job key is privileged_merge" \
-  || fail "canonical job key changed — the reusable check name would change with it"
+python3 - "$canonical" <<'PY' && pass "canonical route resolver precedes privileged_merge" \
+  || fail "canonical privileged routing topology changed"
 import sys, yaml
 d = yaml.safe_load(open(sys.argv[1]))
-sys.exit(0 if list(d["jobs"]) == ["privileged_merge"] else 1)
+jobs = d["jobs"]
+if list(jobs) != ["resolve_privileged_route", "privileged_merge"]:
+    sys.exit(1)
+route = jobs["resolve_privileged_route"]
+merge = jobs["privileged_merge"]
+if route.get("permissions") != {} or merge.get("needs") != "resolve_privileged_route":
+    sys.exit(1)
+want = "${{ github.repository_owner == 'Verjson' && fromJSON('[\"self-hosted\",\"general\"]') || 'ubuntu-24.04' }}"
+sys.exit(0 if route.get("runs-on") == want else 1)
+PY
+
+python3 - "$canonical" <<'PY' && pass "read-only routing token is optional during caller migration" \
+  || fail "routing-token migration contract changed"
+import sys, yaml
+d = yaml.safe_load(open(sys.argv[1]))
+on = d.get(True, d.get("on"))
+secrets = on["workflow_call"]["secrets"]
+sys.exit(0 if secrets.get("ACTIONS_VARIABLES_TOKEN") == {"required": False} else 1)
+PY
+
+python3 - "$canonical" <<'PY' && pass "resolver is checkout-free and reads only allowlisted Verjson policy" \
+  || fail "resolver trust or credential boundary changed"
+import sys, yaml
+d = yaml.safe_load(open(sys.argv[1]))
+route = d["jobs"]["resolve_privileged_route"]
+step = next(step for step in route["steps"] if step.get("id") == "route")
+if any("checkout" in str(item.get("uses", "")) for item in route["steps"]):
+    sys.exit(1)
+if step.get("env") != {
+    "GH_TOKEN": "${{ secrets.ACTIONS_VARIABLES_TOKEN || secrets.VERJSON_ACTIONS_TOKEN }}",
+    "REPOSITORY_OWNER": "${{ github.repository_owner }}",
+}:
+    sys.exit(1)
+script = step["run"]
+required = (
+    '[ "$REPOSITORY_OWNER" = Verjson ]',
+    "gh api /orgs/Verjson/actions/variables/VERJSON_LANE_PRIVILEGED",
+    'echo "selector="',
+    '. == ["self-hosted", "general"]',
+)
+sys.exit(0 if all(value in script for value in required) and "ORG_ADMIN_TOKEN" not in script else 1)
+PY
+
+python3 - "$canonical" <<'PY' && pass "migration route output wins before legacy selectors" \
+  || fail "resolved organization policy does not have first routing precedence"
+import sys, yaml
+d = yaml.safe_load(open(sys.argv[1]))
+expr = d["jobs"]["privileged_merge"]["runs-on"]
+resolved = "needs.resolve_privileged_route.outputs.selector"
+legacy = "inputs.runner_labels"
+sys.exit(0 if expr.index(resolved) < expr.index(legacy) else 1)
 PY
 
 # `runner_labels` is declared but OPTIONAL (#405). It was required under the
@@ -183,12 +233,16 @@ w = d["jobs"]["privileged_merge"].get("with", {})
 sys.exit(0 if w.get("runner_labels") == '["ubuntu-24.04"]' else 1)
 LABELS_PY
 
-python3 - "$tmp/caller.yml" <<'SECRETS_PY' && pass "generated caller grants only ORG_ADMIN_TOKEN, not its whole store" \
-  || fail "generated caller uses secrets: inherit or omits the explicit grant"
+python3 - "$tmp/caller.yml" <<'SECRETS_PY' && pass "generated caller grants only routing-read and merge tokens" \
+  || fail "generated caller uses secrets: inherit or omits an explicit narrow grant"
 import sys, yaml
 d = yaml.safe_load(open(sys.argv[1]))
 got = d["jobs"]["privileged_merge"].get("secrets")
-sys.exit(0 if got == {"ORG_ADMIN_TOKEN": "${{ secrets.ORG_ADMIN_TOKEN }}"} else 1)
+want = {
+    "ACTIONS_VARIABLES_TOKEN": "${{ secrets.VERJSON_ACTIONS_TOKEN }}",
+    "ORG_ADMIN_TOKEN": "${{ secrets.ORG_ADMIN_TOKEN }}",
+}
+sys.exit(0 if got == want else 1)
 SECRETS_PY
 
 python3 - "$tmp/caller.yml" <<'PERMS_PY' && pass "generated caller keeps least-privilege permissions and trusted dispatch only" \

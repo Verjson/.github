@@ -55,6 +55,8 @@ non-trivial or fanned-out work autonomously:
 
 ## Active Issues / Areas for Improvement
 
+- [#677](https://github.com/Verjson/.github/issues/677) — Repair and wire the stale `require-secrets.test.sh` privileged-workflow contract.
+- [#676](https://github.com/Verjson/.github/issues/676) — Finish privileged caller regeneration and remove the temporary legacy route before any hosted lane cutover.
 - [#265](https://github.com/Verjson/.github/issues/265) — Org Actions secrets sit at `visibility: all`; scope them to least privilege.
 
 Prune an entry when its issue closes. This list loads into every session, so a

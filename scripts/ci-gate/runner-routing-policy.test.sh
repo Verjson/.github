@@ -86,7 +86,9 @@ lane_without_fallback="$(
 # is just as unplaceable after a relabel, and keying on the word let it through
 # (#401 review). Hosted literals are caught separately by `literal_hosted`.
 fleet_label="$(
-  grep -HnE "^    runs-on:[[:space:]]*\[" "${workflow_files[@]}" || true
+  grep -HnE "^    runs-on:[[:space:]]*\[" "${workflow_files[@]}" \
+    | grep -vE '/ai-privileged-merge\.yml:[0-9]+:[[:space:]]+runs-on: \[self-hosted, general\]$' \
+    || true
 )"
 [ -z "$fleet_label" ] \
   && pass "no runs-on names a fleet label; lanes are selected by intent" \
@@ -259,7 +261,10 @@ const inputs = {
 // STRING ('true' | 'false' | '' when unreadable). gate and dispatch-merge route
 // on that rather than on `github.event.repository`, because on the dispatch path
 // the event repository is the dispatcher, not the target.
-const needs = { preflight: { outputs: { target_private: priv } } };
+  const needs = {
+    preflight: { outputs: { target_private: priv } },
+    resolve_privileged_route: { outputs: { selector: '' } },
+  };
 // An unset Actions variable is the empty string, not undefined.
 const vars = {
   // Lane variables name what the work IS (ADR 0040). The pool variables they
