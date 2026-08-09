@@ -1463,6 +1463,7 @@ jobs:
       ARM_RUN_ID: ${{ inputs.arm_run_id }}
       ARM_RUN_ATTEMPT: ${{ inputs.arm_run_attempt }}
       EXPECTED_APP_ID: ${{ vars.AI_REVIEW_APP_ID }}
+      APP_CLIENT_ID: ${{ vars.AI_REVIEW_CLIENT_ID }}
       EXPECTED_APP_SLUG: ${{ vars.AI_REVIEW_APP_SLUG }}
       EXPECTED_HEAD_SHA: ${{ needs.preflight.outputs.head_sha }}
       EXPECTED_AUTHORIZED_HEAD_SHA: ${{ inputs.expected_head_sha }}
@@ -1471,6 +1472,12 @@ jobs:
       PR_NUMBER: ${{ inputs.pr_number }}
       TARGET_REPO: ${{ github.repository }}
     steps:
+      - name: Validate authorization App client ID
+        run: |
+          [[ "$APP_CLIENT_ID" =~ ^Iv[A-Za-z0-9.]{8,126}$ ]] || {
+            echo "::error::AI_REVIEW_CLIENT_ID is unavailable or malformed"; exit 1;
+          }
+
       - name: Resolve executing trusted workflow revision
         id: trusted-revision
         env:
@@ -1493,7 +1500,7 @@ jobs:
         id: app-token
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
         with:
-          app-id: ${{ vars.AI_REVIEW_APP_ID }}
+          client-id: ${{ vars.AI_REVIEW_CLIENT_ID }}
           private-key: ${{ secrets.AI_REVIEW_APP_PRIVATE_KEY }}
           owner: ${{ github.repository_owner }}
           repositories: ${{ github.event.repository.name }}

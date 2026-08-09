@@ -23,6 +23,9 @@ def valid(document):
         env.get("EXPECTED_HEAD_SHA") == "${{ needs.preflight.outputs.head_sha }}"
         and env.get("EXPECTED_REVIEWED_HEAD_SHA") == env.get("EXPECTED_HEAD_SHA")
         and env.get("EXPECTED_AUTHORIZED_HEAD_SHA") == "${{ inputs.expected_head_sha }}"
+        and env.get("APP_CLIENT_ID") == "${{ vars.AI_REVIEW_CLIENT_ID }}"
+        and token["with"].get("client-id") == "${{ vars.AI_REVIEW_CLIENT_ID }}"
+        and "app-id" not in token["with"]
         and token["with"].get("permission-checks") == "write"
         and token["with"].get("permission-pull-requests") == "write"
         and run.index("verify-arm-receipt.sh") < run.index("-f event=APPROVE")
