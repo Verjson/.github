@@ -62,6 +62,8 @@ on:
     secrets:
       ACTIONS_VARIABLES_TOKEN:
         required: false
+      VERJSON_ACTIONS_TOKEN:
+        required: false
       ORG_ADMIN_TOKEN:
         required: true
 

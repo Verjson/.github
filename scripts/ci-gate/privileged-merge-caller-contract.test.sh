@@ -78,13 +78,17 @@ want = "${{ github.repository_owner == 'Verjson' && fromJSON('[\"self-hosted\",\
 sys.exit(0 if route.get("runs-on") == want else 1)
 PY
 
-python3 - "$canonical" <<'PY' && pass "read-only routing token is optional during caller migration" \
+python3 - "$canonical" <<'PY' && pass "read-only routing tokens are optional during caller migration" \
   || fail "routing-token migration contract changed"
 import sys, yaml
 d = yaml.safe_load(open(sys.argv[1]))
 on = d.get(True, d.get("on"))
 secrets = on["workflow_call"]["secrets"]
-sys.exit(0 if secrets.get("ACTIONS_VARIABLES_TOKEN") == {"required": False} else 1)
+expected = {
+    "ACTIONS_VARIABLES_TOKEN": {"required": False},
+    "VERJSON_ACTIONS_TOKEN": {"required": False},
+}
+sys.exit(0 if all(secrets.get(name) == contract for name, contract in expected.items()) else 1)
 PY
 
 python3 - "$canonical" <<'PY' && pass "resolver is checkout-free and reads only allowlisted Verjson policy" \
