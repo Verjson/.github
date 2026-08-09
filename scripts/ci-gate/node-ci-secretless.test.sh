@@ -132,13 +132,16 @@ run_validator() {
 
 fixture="$(mktemp -d)"
 trap 'rm -f "$validator" "$acquire_script" "$boundary_script"; rm -rf "$fixture" "$acquire_fixture"' EXIT
-mkdir -p "$fixture/valid" "$fixture/unapproved" "$fixture/external" "$fixture/unused" "$fixture/alias" "$fixture/direct" "$fixture/dot-segment" "$fixture/backslash"
+mkdir -p "$fixture/valid" "$fixture/scoped-root" "$fixture/hidden-name" "$fixture/dot-root" "$fixture/unapproved" "$fixture/external" "$fixture/unused" "$fixture/alias" "$fixture/direct" "$fixture/dot-segment" "$fixture/backslash"
 
 make_lock() {
   local dir="$1" resolved="$2"
   printf '%s\n' "{\"lockfileVersion\":3,\"packages\":{\"\":{},\"node_modules/@verjson/identity-contracts\":{\"name\":\"@verjson/identity-contracts\",\"resolved\":\"$resolved\"}}}" > "$dir/package-lock.json"
 }
 make_lock "$fixture/valid" "https://npm.pkg.github.com/download/@verjson/identity-contracts/1.2.3/abc"
+printf '%s\n' '{"lockfileVersion":3,"packages":{"":{"name":"@verjson/catalog-worker","version":"1.0.0"},"node_modules/@verjson/identity-contracts":{"name":"@verjson/identity-contracts","resolved":"https://npm.pkg.github.com/download/@verjson/identity-contracts/1.2.3/abc"}}}' > "$fixture/scoped-root/package-lock.json"
+printf '%s\n' '{"lockfileVersion":3,"packages":{"":{"name":"@verjson/catalog-worker"},"packages/hidden":{"name":"@verjson/unapproved-private"}}}' > "$fixture/hidden-name/package-lock.json"
+printf '%s\n' '{"lockfileVersion":3,"packages":{"":{"name":"@verjson/catalog-worker"},".":{"name":"@verjson/unapproved-private"}}}' > "$fixture/dot-root/package-lock.json"
 make_lock "$fixture/unapproved" "https://npm.pkg.github.com/download/@verjson/identity-contracts/1.2.3/abc"
 make_lock "$fixture/external" "https://attacker.invalid/identity-contracts.tgz"
 printf '%s\n' '{"lockfileVersion":3,"packages":{"":{}}}' > "$fixture/unused/package-lock.json"
@@ -150,6 +153,19 @@ printf '%s\n' '{"lockfileVersion":3,"packages":{"":{},"node_modules/@verjson/ide
 run_validator "$fixture/valid" '@verjson/identity-contracts' >/dev/null 2>&1 \
   && pass "an exact allowlisted GitHub Packages dependency is accepted" \
   || fail "an exact allowlisted GitHub Packages dependency was rejected"
+run_validator "$fixture/scoped-root" '@verjson/identity-contracts' >/dev/null 2>&1 \
+  && pass "a scoped @verjson root project is ignored while its dependency is validated" \
+  || fail "a scoped @verjson root project was treated as an installed dependency"
+if run_validator "$fixture/hidden-name" '' >/dev/null 2>&1; then
+  fail "an internal dependency hidden under a non-root lock path was ignored"
+else
+  pass "a named internal dependency under a non-root lock path is validated"
+fi
+if run_validator "$fixture/dot-root" '' >/dev/null 2>&1; then
+  fail "a dot-shaped lock path was mistaken for the root project entry"
+else
+  pass "only the exact empty lock path receives the root-project exemption"
+fi
 if run_validator "$fixture/unapproved" '' >/dev/null 2>&1; then
   fail "an unapproved internal dependency was accepted"
 else
