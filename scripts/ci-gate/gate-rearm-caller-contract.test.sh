@@ -81,6 +81,13 @@ done
 grep -qE '^  workflow_call:' "$canonical" \
   && pass "canonical bridge accepts generated reusable callers" \
   || fail "canonical bridge has no workflow_call entry point"
+if grep -qF 'client-id: ${{ vars.AI_REVIEW_CLIENT_ID }}' "$canonical" \
+   && ! grep -qF 'app-id:' "$canonical" \
+   && grep -qF 'APP_ID: ${{ vars.AI_REVIEW_APP_ID }}' "$canonical"; then
+  pass "canonical caller target mints by client ID while retaining numeric App identity"
+else
+  fail "canonical caller target drifted to legacy token input or lost numeric App verification"
+fi
 
 # The immutable target matters only if the pinned canonical contract remains
 # security-complete. Reuse the exhaustive canonical suite rather than copying

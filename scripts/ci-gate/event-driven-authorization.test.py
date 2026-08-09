@@ -38,6 +38,26 @@ def authorization_app_token_uses(workflow: dict, job_name: str) -> str:
     return matches[0]
 
 
+def validate_authorization_app_token_inputs(workflow: dict, job_name: str) -> None:
+    steps = workflow["jobs"][job_name]["steps"]
+    token = next(step for step in steps
+                 if step.get("name") == "Mint dedicated authorization App token")
+    token_index = steps.index(token)
+    inputs = token.get("with", {})
+    require(inputs.get("client-id") == "${{ vars.AI_REVIEW_CLIENT_ID }}",
+            f"{job_name} must mint with the dedicated App client ID")
+    require("app-id" not in inputs,
+            f"{job_name} token minting must reject the deprecated app-id input")
+    env = workflow["jobs"][job_name].get("env", {})
+    validation_indexes = [index for index, step in enumerate(steps)
+                          if step.get("name") == "Validate authorization App client ID" and
+                          '[[ "$APP_CLIENT_ID" =~ ^Iv[A-Za-z0-9.]{8,126}$ ]]' in step.get("run", "") and
+                          "AI_REVIEW_CLIENT_ID is unavailable or malformed" in step.get("run", "")]
+    require(env.get("APP_CLIENT_ID") == "${{ vars.AI_REVIEW_CLIENT_ID }}" and
+            len(validation_indexes) == 1 and validation_indexes[0] < token_index,
+            f"{job_name} must fail closed before minting with an absent or malformed client ID")
+
+
 def validate_authorization_app_token_pins(uses_values: list[str]) -> None:
     require(all(IMMUTABLE_ACTION.fullmatch(uses) for uses in uses_values),
             "trusted authorization sites must use the official App-token action at a full lowercase 40-hex SHA")
@@ -157,6 +177,19 @@ def main() -> int:
         authorization_app_token_uses(review, "complete-authorization"),
     ]
     validate_authorization_app_token_pins(app_token_uses)
+    validate_authorization_app_token_inputs(rearm, "arm")
+    validate_authorization_app_token_inputs(review, "complete-authorization")
+
+    for workflow, job_name in ((rearm, "arm"), (review, "complete-authorization")):
+        mutated = yaml.safe_load(yaml.safe_dump(workflow))
+        token = next(step for step in mutated["jobs"][job_name]["steps"]
+                     if step.get("name") == "Mint dedicated authorization App token")
+        token["with"]["app-id"] = token["with"].pop("client-id")
+        try:
+            validate_authorization_app_token_inputs(mutated, job_name)
+        except AssertionError:
+            continue
+        raise AssertionError(f"{job_name} legacy app-id mutation escaped token-input contract")
 
     valid_pin = f"{APP_TOKEN_ACTION}@{'a' * 40}"
     invalid_pin_sets = (
@@ -185,6 +218,10 @@ def main() -> int:
             "review must complete the exact check-run supplied by the trusted arm")
     require('head_sha:$sha' in rearm_text and '--arg sha "$head_sha"' in rearm_text,
             "authorization check must be bound to the exact current PR head")
+    require("APP_ID: ${{ vars.AI_REVIEW_APP_ID }}" in rearm_text and
+            "EXPECTED_APP_ID: ${{ vars.AI_REVIEW_APP_ID }}" in review_text and
+            ".app.id" in rearm_text and ".app.id" in verifier_text,
+            "numeric App ID must remain the receipt and check-run identity boundary")
     require("AI review authorization" in rearm_text and "AI review authorization" in promote_text,
             "arm and promotion must agree on the unambiguous required-check name")
     require("gh pr merge" in promote_text and "--admin --squash" in promote_text and
