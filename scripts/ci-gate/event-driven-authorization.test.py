@@ -42,6 +42,18 @@ def validate_runner_free_external_ci_wait(workflow: dict, job_name: str) -> None
     require(len(endpoint.findall(scripts)) == expected_queries,
             f"{job_name} must contain exactly {expected_queries} external-CI endpoint snapshot(s) job-wide")
 
+    # Endpoint spelling is not the trust boundary. Reject syntactically
+    # infinite shell loops even when they poll through `gh pr checks`, a
+    # variable, or another API spelling. A loop over an infinite condition is
+    # allowed only when its own body carries an explicit terminating command;
+    # this preserves the bounded fetch retry below while rejecting pure polls.
+    infinite_loop = re.compile(
+        r"(?:for\s*\(\(\s*;\s*;\s*\)\)|while\s+(?:true|:)|until\s+false)"
+        r"\s*;?\s*do\b(?P<body>.*?)\bdone\b", re.I | re.S)
+    for loop in infinite_loop.finditer(scripts):
+        require(re.search(r"(?m)^\s*(?:break|return|exit)(?:\s|$)", loop.group("body")),
+                f"{job_name} contains an unbounded loop with no terminating path")
+
     # Dynamically composing an external-CI endpoint is outside this contract:
     # the reserved `commits/<head>/(check-runs|status)` text is counted wherever
     # it appears, including variable assignments, and privileged_merge must also
@@ -362,14 +374,23 @@ def main() -> int:
         "while\n  true\ndo\n" + promotion_script + "\ndone")
     mutated_indirect = yaml.safe_load(yaml.safe_dump(promote))
     mutated_indirect["jobs"]["privileged_merge"]["steps"].append(
-        {"run": 'endpoint="repos/$TARGET_REPO/commits/head/check-runs"\n'
+        {"run": 'prefix="repos/$TARGET_REPO/com"\n'
+                'suffix="mits/head/check-runs"\nendpoint="$prefix$suffix"\n'
                 'while true; do gh api "$endpoint"; done'})
+    mutated_pr_checks = yaml.safe_load(yaml.safe_dump(review))
+    mutated_pr_checks["jobs"]["gate"]["steps"].append(
+        {"run": "while true; do gh pr checks 7; done"})
+    mutated_until_false = yaml.safe_load(yaml.safe_dump(review))
+    mutated_until_false["jobs"]["gate"]["steps"].append(
+        {"run": "until\nfalse\ndo\ngh pr checks 7\ndone"})
     for workflow, job_name in ((mutated_review, "gate"),
                                (mutated_promote, "privileged_merge"),
                                (mutated_infinite, "gate"),
                                (mutated_second_step, "privileged_merge"),
                                (mutated_multiline, "privileged_merge"),
-                               (mutated_indirect, "privileged_merge")):
+                               (mutated_indirect, "privileged_merge"),
+                               (mutated_pr_checks, "gate"),
+                               (mutated_until_false, "gate")):
         try:
             validate_runner_free_external_ci_wait(workflow, job_name)
         except AssertionError:
