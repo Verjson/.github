@@ -54,7 +54,7 @@ def manifest():
                 "variant": "default",
                 "repository": "ghcr.io/verjson/runner",
                 "indexDigest": "sha256:" + "1" * 64,
-                "identities": {"commit": "ghcr.io/verjson/runner@sha256:" + "1" * 64, "candidate": "2.4.0-rc.123.1"},
+                "identities": {"commit": "sha-" + "a" * 40, "candidate": "2.4.0-rc.123.1"},
                 "platforms": [
                     {
                         "os": "linux",
@@ -72,8 +72,9 @@ def manifest():
                     "predicateType": "https://slsa.dev/provenance/v1",
                     "builderIdentity": "Verjson/.github/.github/workflows/container-candidate.yml@" + "b" * 40,
                     "subjectDigest": "sha256:" + "1" * 64,
+                    "attestationId": "https://github.com/Verjson/verjson-github-runner/attestations/42",
                 },
-                "sbom": {"predicateType": "https://spdx.dev/Document", "subjectDigest": "sha256:" + "1" * 64},
+                "sbom": {"predicateType": "https://spdx.dev/Document", "subjectDigest": "sha256:" + "1" * 64, "ociSubject": "ghcr.io/verjson/runner@sha256:" + "1" * 64},
             }
         ],
     }
@@ -126,7 +127,7 @@ class ContainerReleaseManifestTests(unittest.TestCase):
     def test_rejects_provenance_identity_substitution(self):
         candidate = manifest()
         candidate["images"][0]["provenance"]["builderIdentity"] = "attacker"
-        self.assert_rejected(candidate, "provenance builderIdentity differs")
+        self.assert_rejected(candidate, "provenance signer workflow differs")
 
     def test_rejects_source_repository_substitution(self):
         candidate = manifest()
@@ -153,6 +154,16 @@ class ContainerReleaseManifestTests(unittest.TestCase):
         candidate["source"]["ref"] = "refs/heads/feature"
         self.assert_rejected(candidate, "source ref")
 
+    def test_rejects_unobserved_provenance_claim(self):
+        candidate = manifest()
+        candidate["images"][0]["provenance"].pop("attestationId")
+        self.assert_rejected(candidate, "attestationId")
+
+    def test_rejects_sbom_for_another_oci_subject(self):
+        candidate = manifest()
+        candidate["images"][0]["sbom"]["ociSubject"] = "ghcr.io/verjson/runner@sha256:" + "9" * 64
+        self.assert_rejected(candidate, "SBOM OCI subject|sbom OCI subject")
+
     def test_rejects_arbitrary_registry_namespace(self):
         candidate = manifest()
         candidate["images"][0]["repository"] = "ghcr.io/attacker/runner"
@@ -169,7 +180,7 @@ class ContainerReleaseManifestTests(unittest.TestCase):
         derived = copy.deepcopy(candidate["images"][0])
         derived["variant"] = "debug"
         derived["indexDigest"] = "sha256:" + "6" * 64
-        derived["identities"]["commit"] = derived["repository"] + "@" + derived["indexDigest"]
+        derived["sbom"]["ociSubject"] = derived["repository"] + "@" + derived["indexDigest"]
         derived["provenance"]["subjectDigest"] = derived["indexDigest"]
         derived["sbom"]["subjectDigest"] = derived["indexDigest"]
         derived["base"] = {"variant": "default", "digest": candidate["images"][0]["indexDigest"]}
@@ -186,7 +197,7 @@ class ContainerReleaseManifestTests(unittest.TestCase):
         derived = copy.deepcopy(candidate["images"][0])
         derived["variant"] = "debug"
         derived["indexDigest"] = "sha256:" + "6" * 64
-        derived["identities"]["commit"] = derived["repository"] + "@" + derived["indexDigest"]
+        derived["sbom"]["ociSubject"] = derived["repository"] + "@" + derived["indexDigest"]
         derived["provenance"]["subjectDigest"] = derived["indexDigest"]
         derived["sbom"]["subjectDigest"] = derived["indexDigest"]
         derived["base"] = {"variant": "default", "digest": "sha256:" + "9" * 64}

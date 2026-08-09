@@ -15,6 +15,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: container-candidate-${{ github.repository }}-${{ github.sha }}
+  cancel-in-progress: false
+
 jobs:
   prepare:
     runs-on: ubuntu-24.04
@@ -30,8 +34,6 @@ jobs:
         run: |
           set -euo pipefail
           [[ "$CONTRACT_REF" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::contract-ref must be a 40-hex commit"; exit 1; }
-          [ "$GITHUB_WORKFLOW_REF" = "Verjson/.github/.github/workflows/container-candidate.yml@$CONTRACT_REF" ] \
-            || { echo "::error::reusable workflow identity does not match contract-ref"; exit 1; }
           [ -f "$CONFIG_PATH" ] || { echo "::error::candidate config is missing"; exit 1; }
           expected_namespace="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}"
           jq -e --arg repository "$GITHUB_REPOSITORY" --arg namespace "$expected_namespace" '
@@ -116,7 +118,8 @@ jobs:
             ${{ matrix.repository }}:${{ needs.prepare.outputs.candidate }}
           provenance: mode=max
           sbom: true
-      - if: matrix.baseVariant == ''
+      - id: provenance
+        if: matrix.baseVariant == ''
         uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
         with:
           subject-name: ${{ matrix.repository }}
@@ -128,11 +131,27 @@ jobs:
           DIGEST: ${{ steps.build.outputs.digest }}
           REPOSITORY: ${{ matrix.repository }}
           VARIANT: ${{ matrix.variant }}
+          ATTESTATION_ID: ${{ steps.provenance.outputs.attestation-id }}
         run: |
           set -euo pipefail
           [[ "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || exit 1
+          [ -n "$ATTESTATION_ID" ] || { echo "::error::provenance action returned no attestation identity"; exit 1; }
+          commit_tag="$REPOSITORY:sha-$GITHUB_SHA"
+          error_file="$(mktemp)"
+          if existing="$(docker buildx imagetools inspect "$commit_tag" --format '{{json .Manifest.Digest}}' 2>"$error_file" | tr -d '"')"; then
+            [ "$existing" = "$DIGEST" ] || { echo "::error::commit identity already records a different digest"; exit 1; }
+          elif grep -Eqi 'manifest unknown|not found' "$error_file"; then
+            docker buildx imagetools create -t "$commit_tag" "$REPOSITORY@$DIGEST"
+            recorded="$(docker buildx imagetools inspect "$commit_tag" --format '{{json .Manifest.Digest}}' | tr -d '"')"
+            [ "$recorded" = "$DIGEST" ] || { echo "::error::commit identity reconciliation diverged"; exit 1; }
+          else
+            cat "$error_file" >&2
+            echo "::error::could not prove commit identity state" >&2
+            exit 1
+          fi
           jq -n --arg variant "$VARIANT" --arg repository "$REPOSITORY" --arg digest "$DIGEST" \
-            '{variant:$variant,repository:$repository,indexDigest:$digest}' > image.json
+            --arg attestationId "$ATTESTATION_ID" \
+            '{variant:$variant,repository:$repository,indexDigest:$digest,provenanceAttestationId:$attestationId}' > image.json
       - if: matrix.baseVariant == ''
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -188,7 +207,8 @@ jobs:
             ${{ matrix.repository }}:${{ needs.prepare.outputs.candidate }}
           provenance: mode=max
           sbom: true
-      - if: matrix.baseVariant != ''
+      - id: provenance
+        if: matrix.baseVariant != ''
         uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
         with:
           subject-name: ${{ matrix.repository }}
@@ -198,10 +218,28 @@ jobs:
         env:
           DIGEST: ${{ steps.build.outputs.digest }}
           BASE_DIGEST: ${{ steps.base.outputs.digest }}
+          ATTESTATION_ID: ${{ steps.provenance.outputs.attestation-id }}
         run: |
+          set -euo pipefail
+          [ -n "$ATTESTATION_ID" ] || { echo "::error::provenance action returned no attestation identity"; exit 1; }
+          repository='${{ matrix.repository }}'
+          commit_tag="$repository:sha-$GITHUB_SHA"
+          error_file="$(mktemp)"
+          if existing="$(docker buildx imagetools inspect "$commit_tag" --format '{{json .Manifest.Digest}}' 2>"$error_file" | tr -d '"')"; then
+            [ "$existing" = "$DIGEST" ] || { echo "::error::commit identity already records a different digest"; exit 1; }
+          elif grep -Eqi 'manifest unknown|not found' "$error_file"; then
+            docker buildx imagetools create -t "$commit_tag" "$repository@$DIGEST"
+            recorded="$(docker buildx imagetools inspect "$commit_tag" --format '{{json .Manifest.Digest}}' | tr -d '"')"
+            [ "$recorded" = "$DIGEST" ] || { echo "::error::commit identity reconciliation diverged"; exit 1; }
+          else
+            cat "$error_file" >&2
+            echo "::error::could not prove commit identity state" >&2
+            exit 1
+          fi
           jq -n --arg variant '${{ matrix.variant }}' --arg repository '${{ matrix.repository }}' \
             --arg digest "$DIGEST" --arg baseVariant '${{ matrix.baseVariant }}' --arg baseDigest "$BASE_DIGEST" \
-            '{variant:$variant,repository:$repository,indexDigest:$digest,base:{variant:$baseVariant,digest:$baseDigest}}' > image.json
+            --arg attestationId "$ATTESTATION_ID" \
+            '{variant:$variant,repository:$repository,indexDigest:$digest,base:{variant:$baseVariant,digest:$baseDigest},provenanceAttestationId:$attestationId}' > image.json
       - if: matrix.baseVariant != ''
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -244,14 +282,15 @@ jobs:
             raw="$(docker buildx imagetools inspect "$repository@$index_digest" --raw)"
             reviewed="$(jq -c --arg variant "$variant" '.images[] | select(.variant == $variant)' "$CONFIG_PATH")"
             base="$(jq -c '.base // null' "$image")"
+            attestation_id="$(jq -r '.provenanceAttestationId' "$image")"
             jq -n --arg variant "$variant" --arg repository "$repository" --arg index "$index_digest" \
-              --arg commit "$repository@$index_digest" --arg candidate "$CANDIDATE" --argjson raw "$raw" \
-              --argjson reviewed "$reviewed" --argjson base "$base" '
+              --arg commit "sha-$GITHUB_SHA" --arg candidate "$CANDIDATE" --arg workflow "Verjson/.github/.github/workflows/container-candidate.yml@$CONTRACT_REF" \
+              --arg attestationId "$attestation_id" --argjson raw "$raw" --argjson reviewed "$reviewed" --argjson base "$base" '
                 {variant:$variant,repository:$repository,indexDigest:$index,
                  identities:{commit:$commit,candidate:$candidate},
                  platforms:[$raw.manifests[] | {os:.platform.os,architecture:.platform.architecture,digest:.digest} + (if .platform.variant then {variant:.platform.variant} else {} end)],
-                 provenance:($reviewed.provenance + {subjectDigest:$index}),
-                 sbom:{predicateType:"https://spdx.dev/Document",subjectDigest:$index}}
+                 provenance:{predicateType:$reviewed.provenance.predicateType,builderIdentity:$workflow,subjectDigest:$index,attestationId:$attestationId},
+                 sbom:{predicateType:"https://spdx.dev/Document",subjectDigest:$index,ociSubject:($repository+"@"+$index)}}
                 + (if $base then {base:$base} else {} end)' \
               > "image-$variant.json"
           done

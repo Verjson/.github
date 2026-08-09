@@ -27,6 +27,12 @@ grep -q "github.event_name == 'push'.*github.event.repository.default_branch" "$
 grep -q 'packages: write' "$workflow"
 grep -q 'id-token: write' "$workflow"
 grep -q 'actions/attest-build-provenance@[0-9a-f]\{40\}' "$workflow"
+grep -q 'commit identity already records a different digest' "$workflow"
+grep -q 'imagetools create -t "\$commit_tag"' "$workflow"
+if grep -q 'GITHUB_WORKFLOW_REF' "$workflow"; then
+  echo "called workflows cannot prove their own pin through github.workflow_ref" >&2
+  exit 1
+fi
 if awk '/^  pull-request-build:/{seen=1} /^  publish-base:/{seen=0} seen' "$workflow" | grep -Eq 'packages: write|id-token: write|docker/login-action|push: true'; then
   echo "pull-request build exposes a publication capability" >&2
   exit 1

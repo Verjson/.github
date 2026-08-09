@@ -273,3 +273,10 @@ the same run. The validator rejects partial matrices, duplicate identities, muta
 malformed digests, wrong repositories/refs/workflows, mixed release-line inputs, and
 cross-namespace publication. Stable promotion and deployment remain the separate #627
 and #629 stages; this amendment grants neither authority.
+
+The source-commit tag is reconciled under commit-scoped workflow concurrency: an absent
+tag is created from the built index digest, an identical tag is accepted, and a
+different digest or an inconclusive registry read fails closed without replacing it.
+The manifest records the attestation ID returned by GitHub's provenance action and
+derives its signer identity from the pinned reusable workflow; reviewed configuration
+selects the expected predicate but is not treated as observed attestation evidence.

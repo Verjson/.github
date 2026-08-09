@@ -119,7 +119,7 @@ def validate_manifest(manifest: dict[str, Any], config: dict[str, Any]) -> None:
         identities = actual.get("identities")
         if not isinstance(identities, dict):
             raise ManifestError(f"identities must be an object for variant {variant!r}")
-        commit_identity = f"{repository}@{actual['indexDigest']}"
+        commit_identity = f"sha-{source['commit']}"
         if identities != {
             "commit": commit_identity,
             "candidate": candidate,
@@ -130,13 +130,17 @@ def validate_manifest(manifest: dict[str, Any], config: dict[str, Any]) -> None:
         actual_provenance = actual.get("provenance")
         if not isinstance(expected_provenance, dict) or not isinstance(actual_provenance, dict):
             raise ManifestError(f"provenance must be an object for variant {variant!r}")
-        for key in ("predicateType", "builderIdentity"):
+        for key in ("predicateType",):
             if actual_provenance.get(key) != expected_provenance.get(key):
                 raise ManifestError(
                     f"provenance {key} differs for variant {variant!r}"
                 )
         if actual_provenance.get("builderIdentity") != source["workflow"]:
             raise ManifestError(f"provenance signer workflow differs for variant {variant!r}")
+        _text(
+            actual_provenance.get("attestationId"),
+            f"manifest.images[{variant!r}].provenance.attestationId",
+        )
         provenance_subject = _digest(
             actual_provenance.get("subjectDigest"),
             f"manifest.images[{variant!r}].provenance.subjectDigest",
@@ -146,6 +150,8 @@ def validate_manifest(manifest: dict[str, Any], config: dict[str, Any]) -> None:
             raise ManifestError(f"sbom must be an object for variant {variant!r}")
         if sbom.get("predicateType") != "https://spdx.dev/Document":
             raise ManifestError(f"sbom predicate differs for variant {variant!r}")
+        if sbom.get("ociSubject") != f"{repository}@{actual['indexDigest']}":
+            raise ManifestError(f"sbom OCI subject differs for variant {variant!r}")
         sbom_subject = _digest(sbom.get("subjectDigest"), f"manifest.images[{variant!r}].sbom.subjectDigest")
         if provenance_subject != actual["indexDigest"] or sbom_subject != actual["indexDigest"]:
             raise ManifestError(f"attestations name a different subject for variant {variant!r}")

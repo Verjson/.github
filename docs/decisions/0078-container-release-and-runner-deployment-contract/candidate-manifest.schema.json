@@ -67,7 +67,11 @@
     "attestation": {
       "type": "object",
       "required": ["subjectDigest"],
-      "properties": {"subjectDigest": {"$ref": "#/$defs/digest"}}
+      "properties": {
+        "subjectDigest": {"$ref": "#/$defs/digest"},
+        "attestationId": {"type": "string", "minLength": 1},
+        "ociSubject": {"type": "string", "minLength": 1}
+      }
     }
   }
 }
