@@ -21,6 +21,7 @@ def valid(document):
     run = complete["run"]
     return (
         env.get("EXPECTED_HEAD_SHA") == "${{ needs.preflight.outputs.head_sha }}"
+        and env.get("EXPECTED_APP_ID") == "${{ vars.AI_REVIEW_APP_ID }}"
         and env.get("EXPECTED_REVIEWED_HEAD_SHA") == env.get("EXPECTED_HEAD_SHA")
         and env.get("EXPECTED_AUTHORIZED_HEAD_SHA") == "${{ inputs.expected_head_sha }}"
         and env.get("APP_CLIENT_ID") == "${{ vars.AI_REVIEW_CLIENT_ID }}"
@@ -42,6 +43,9 @@ assert not valid(missing), "missing EXPECTED_HEAD_SHA mutation escaped"
 mismatch = copy.deepcopy(workflow)
 mismatch["jobs"]["complete-authorization"]["env"]["EXPECTED_HEAD_SHA"] = "${{ inputs.expected_head_sha }}"
 assert not valid(mismatch), "mismatched EXPECTED_HEAD_SHA mutation escaped"
+client_id_as_identity = copy.deepcopy(workflow)
+client_id_as_identity["jobs"]["complete-authorization"]["env"]["EXPECTED_APP_ID"] = "${{ vars.AI_REVIEW_CLIENT_ID }}"
+assert not valid(client_id_as_identity), "client ID substitution escaped numeric App identity contract"
 no_pr_write = copy.deepcopy(workflow)
 token = next(step for step in no_pr_write["jobs"]["complete-authorization"]["steps"]
              if step.get("name") == "Mint dedicated authorization App token")
