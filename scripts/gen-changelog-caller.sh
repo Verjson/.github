@@ -1658,8 +1658,18 @@ for job in doc["jobs"].values():
     ;;
   contract-test)
     out="$(emit_contract_test)"
-    printf '%s\n' "$out" | bash -n 2>/dev/null \
-      || { echo "internal error: generated contract test is not valid bash; refusing to emit" >&2; exit 3; }
+    # Do not pipe a captured generated program into a validator that may exit
+    # before the producer finishes. Under pipefail that turns the intended
+    # syntax diagnostic into printf's SIGPIPE. A file-backed stdin preserves
+    # the validator result independently of output size and read-ahead.
+    syntax_input="$(mktemp)"
+    printf '%s\n' "$out" >"$syntax_input"
+    if ! bash -n <"$syntax_input" 2>/dev/null; then
+      rm -f "$syntax_input"
+      echo "internal error: generated contract test is not valid bash; refusing to emit" >&2
+      exit 3
+    fi
+    rm -f "$syntax_input"
     ;;
   *)
     usage
