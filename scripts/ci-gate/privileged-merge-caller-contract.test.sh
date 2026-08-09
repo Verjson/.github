@@ -165,6 +165,30 @@ bash "$gen" "$contract_sha" --retry '["Integration (event-hub e2e)","Lint: docs/
   && pass "generator accepts punctuation in valid GitHub workflow names" \
   || fail "generator rejected valid parenthesized workflow names"
 
+# The regenerate comment is executable operator guidance, so prove its shell
+# quoting independently from YAML parsing. These are all valid workflow-name
+# bytes; if any escape the one argument, the marker files make execution visible.
+retry_shell_root="$tmp/retry-shell-roundtrip"
+retry_shell_marker_substitution="$tmp/retry-shell-substitution-executed"
+retry_shell_marker_backtick="$tmp/retry-shell-backtick-executed"
+retry_shell_name="Owner's # \$(touch $retry_shell_marker_substitution) \`touch $retry_shell_marker_backtick\` (e2e)"
+retry_shell_json="$(jq -cn --arg name "$retry_shell_name" '["CI", $name]')"
+mkdir -p "$retry_shell_root/scripts" "$retry_shell_root/.github/workflows"
+cp "$gen" "$retry_shell_root/scripts/gen-privileged-merge-caller.sh"
+bash "$gen" "$contract_sha" --retry "$retry_shell_json" >"$tmp/retry-shell-original.yml" 2>/dev/null
+retry_regenerate="$(sed -n 's/^#   //p' "$tmp/retry-shell-original.yml" | head -1)"
+(
+  cd "$retry_shell_root"
+  bash -c "$retry_regenerate"
+)
+if [ ! -e "$retry_shell_marker_substitution" ] &&
+   [ ! -e "$retry_shell_marker_backtick" ] &&
+   cmp -s "$tmp/retry-shell-original.yml" "$retry_shell_root/.github/workflows/ai-promotion-retry.yml"; then
+  pass "retry regeneration shell-quotes accepted punctuation and round-trips byte-identically"
+else
+  fail "retry regeneration executed workflow-name bytes or changed generated output"
+fi
+
 python3 - "$tmp/caller.yml" <<'PY' && pass "generated caller's job key is privileged_merge" \
   || fail "generated caller job key is not privileged_merge — deadlocks the gate"
 import sys, yaml
