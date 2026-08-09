@@ -73,9 +73,11 @@ every identity. This recovery workflow contains no model action and must never i
   evidence is revalidated; the ruleset itself remains unchanged.
 - PR #623's bounded polling implementation is superseded by this event-driven path and
   should close without merge. Its underlying runner-saturation concern is satisfied.
-- Issue #640 remains necessary for follow-up filing and branch cleanup. That post-merge
-  behavior stays separate from authorization and merge authority, but its trigger must
-  observe terminal privileged merges rather than native auto-merge.
+- Issue #640 supplies follow-up filing and branch cleanup through a trusted
+  `pull_request_target: closed` reconciler. It accepts only the unique dedicated-App
+  exact-head approval, the named successful review run, and that run's validated
+  artifact. It can file idempotent issues and delete same-repository merged head refs,
+  but has no merge or workflow-dispatch authority.
 - ADR 0079 continues to govern paid-review deduplication and App authorization; its
   native-auto-merge and GitHub-owned-waiting sections are superseded here.
 
