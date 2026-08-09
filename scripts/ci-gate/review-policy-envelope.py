@@ -1,0 +1,68 @@
+#!/usr/bin/env python3
+import argparse
+import base64
+import json
+import re
+import sys
+
+FIELDS = ("actor", "actor_permission", "budget_usd", "model", "pricing_version", "provider")
+MAX_ENVELOPE_BYTES = 2048
+
+
+def canonical(policy):
+    if not isinstance(policy, dict) or tuple(sorted(policy)) != FIELDS:
+        raise ValueError("policy must contain exactly the six supported fields")
+    if any(not isinstance(policy[field], str) for field in FIELDS):
+        raise ValueError("every policy field must be a string")
+    return json.dumps(policy, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode()
+
+
+def reject_duplicates(pairs):
+    policy = {}
+    for key, value in pairs:
+        if key in policy:
+            raise ValueError(f"duplicate policy field: {key}")
+        policy[key] = value
+    return policy
+
+
+def encode(raw):
+    policy = json.loads(raw, object_pairs_hook=reject_duplicates)
+    encoded = base64.urlsafe_b64encode(canonical(policy)).rstrip(b"=")
+    if len(encoded) > MAX_ENVELOPE_BYTES:
+        raise ValueError("policy envelope is oversized")
+    return encoded.decode("ascii")
+
+
+def decode(envelope):
+    if not envelope or len(envelope.encode("ascii", "ignore")) > MAX_ENVELOPE_BYTES:
+        raise ValueError("policy envelope is empty or oversized")
+    if not re.fullmatch(r"[A-Za-z0-9_-]+", envelope):
+        raise ValueError("policy envelope has invalid alphabet or padding")
+    padding = "=" * (-len(envelope) % 4)
+    try:
+        raw = base64.b64decode(envelope + padding, altchars=b"-_", validate=True)
+        text = raw.decode("utf-8")
+        policy = json.loads(text, object_pairs_hook=reject_duplicates)
+    except (UnicodeError, ValueError, json.JSONDecodeError) as error:
+        raise ValueError("policy envelope cannot be decoded") from error
+    expected = canonical(policy)
+    if raw != expected or encode(expected) != envelope:
+        raise ValueError("policy JSON or envelope is not canonical")
+    return expected.decode("utf-8")
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("mode", choices=("encode", "decode"))
+    parser.add_argument("value")
+    args = parser.parse_args()
+    try:
+        print(encode(args.value) if args.mode == "encode" else decode(args.value))
+    except (UnicodeError, ValueError, json.JSONDecodeError) as error:
+        print(f"review policy rejected: {error}", file=sys.stderr)
+        raise SystemExit(1)
+
+
+if __name__ == "__main__":
+    main()

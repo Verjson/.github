@@ -100,7 +100,7 @@ on:
         type: boolean
         default: false
       review_policy:
-        description: Receipt-bound canonical provider/model/budget/pricing JSON
+        description: Receipt-bound canonical provider/model/budget/pricing base64url envelope
         required: true
       allow_absent_checks:
         description: >-
@@ -150,7 +150,7 @@ on:
       review_policy:
         required: false
         type: string
-        default: '{"provider":"anthropic","model":"auto","budget_usd":"auto","pricing_version":"anthropic-native-v1","actor":"reusable-caller","actor_permission":"maintain"}'
+        default: 'eyJhY3RvciI6InJldXNhYmxlLWNhbGxlciIsImFjdG9yX3Blcm1pc3Npb24iOiJtYWludGFpbiIsImJ1ZGdldF91c2QiOiJhdXRvIiwibW9kZWwiOiJhdXRvIiwicHJpY2luZ192ZXJzaW9uIjoiYW50aHJvcGljLW5hdGl2ZS12MSIsInByb3ZpZGVyIjoiYW50aHJvcGljIn0'
       runner_labels:
         description: 'Optional JSON array of runs-on labels for all three gate jobs, e.g. ["self-hosted","general"], for a self-hosted caller whose org has no VERJSON_LANE_* variables. Omit it (the default) to route by lane and degrade to a hosted runner.'
         required: false
@@ -202,7 +202,7 @@ env:
   ARM_RUN_ATTEMPT: ${{ inputs.arm_run_attempt }}
   EXPECTED_APP_ID: ${{ vars.AI_REVIEW_APP_ID }}
   EXPECTED_APP_SLUG: ${{ vars.AI_REVIEW_APP_SLUG }}
-  REVIEW_POLICY: ${{ inputs.review_policy || '{"provider":"anthropic","model":"auto","budget_usd":"auto","pricing_version":"anthropic-native-v1","actor":"reusable-caller","actor_permission":"maintain"}' }}
+  REVIEW_POLICY: ${{ inputs.review_policy || 'eyJhY3RvciI6InJldXNhYmxlLWNhbGxlciIsImFjdG9yX3Blcm1pc3Npb24iOiJtYWludGFpbiIsImJ1ZGdldF91c2QiOiJhdXRvIiwibW9kZWwiOiJhdXRvIiwicHJpY2luZ192ZXJzaW9uIjoiYW50aHJvcGljLW5hdGl2ZS12MSIsInByb3ZpZGVyIjoiYW50aHJvcGljIn0' }}
 
 jobs:
   preflight:
@@ -413,6 +413,17 @@ jobs:
 
           out proceed true
 
+      - name: Check out immutable policy decoder
+        if: steps.freshness.outputs.proceed == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: Verjson/.github
+          ref: ${{ job.workflow_sha }}
+          path: .gate-policy
+          sparse-checkout: scripts/ci-gate/review-policy-envelope.py
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
       - name: Classify PR into a lane
         id: classify
         if: steps.freshness.outputs.proceed == 'true'
@@ -420,15 +431,16 @@ jobs:
           # Event token: classification reads this PR and public submodule refs.
           GH_TOKEN: ${{ github.token }}
           EXPLICIT_REREVIEW: ${{ inputs.explicit_rereview }}
+          POLICY_DECODER: .gate-policy/scripts/ci-gate/review-policy-envelope.py
         run: |
           set -euo pipefail
           REPO="$TARGET_REPO"
           out() { echo "$1=$2" >> "$GITHUB_OUTPUT"; }
           select_policy() {
             local default_model="$1" default_budget="$2" selected_model selected_budget selected_provider selected_pricing policy
-            policy="${REVIEW_POLICY:-}"
-            [ -n "$policy" ] || policy='{"provider":"anthropic","model":"auto","budget_usd":"auto","pricing_version":"anthropic-native-v1","actor":"reusable-caller","actor_permission":"maintain"}'
-            jq -e 'type == "object" and keys == ["actor","actor_permission","budget_usd","model","pricing_version","provider"] and all(.[]; type == "string")' <<<"$policy" >/dev/null || {
+            policy_envelope="${REVIEW_POLICY:-}"
+            [ -n "$policy_envelope" ] || policy_envelope='eyJhY3RvciI6InJldXNhYmxlLWNhbGxlciIsImFjdG9yX3Blcm1pc3Npb24iOiJtYWludGFpbiIsImJ1ZGdldF91c2QiOiJhdXRvIiwibW9kZWwiOiJhdXRvIiwicHJpY2luZ192ZXJzaW9uIjoiYW50aHJvcGljLW5hdGl2ZS12MSIsInByb3ZpZGVyIjoiYW50aHJvcGljIn0'
+            policy="$(python3 "${POLICY_DECODER:-scripts/ci-gate/review-policy-envelope.py}" decode "$policy_envelope")" || {
               echo "::error::receipt-bound review policy is malformed"; return 1;
             }
             selected_provider="$(jq -r .provider <<<"$policy")"; selected_model="$(jq -r .model <<<"$policy")"
@@ -694,6 +706,7 @@ jobs:
           path: .gate-trust
           sparse-checkout: |
             scripts/ci-gate/verify-arm-receipt.sh
+            scripts/ci-gate/review-policy-envelope.py
             scripts/ci-gate/openai-review.py
           sparse-checkout-cone-mode: false
           persist-credentials: false
@@ -1470,7 +1483,9 @@ jobs:
           repository: Verjson/.github
           ref: ${{ steps.trusted-revision.outputs.sha }}
           path: .gate-trust
-          sparse-checkout: scripts/ci-gate/verify-arm-receipt.sh
+          sparse-checkout: |
+            scripts/ci-gate/verify-arm-receipt.sh
+            scripts/ci-gate/review-policy-envelope.py
           sparse-checkout-cone-mode: false
           persist-credentials: false
 

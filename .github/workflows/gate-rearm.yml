@@ -134,9 +134,11 @@ jobs:
           if [ "$review_budget_usd" != auto ] && { ! [[ "$review_budget_usd" =~ ^(0|[1-9][0-9]*)(\.[0-9]{1,2})?$ ]] || ! awk -v b="$review_budget_usd" 'BEGIN { exit !(b > 0) }'; }; then
             echo "::error::invalid review budget"; exit 1
           fi
-          review_policy="$(jq -cn --arg provider "$review_provider" --arg model "$review_model" --arg budget_usd "$review_budget_usd" \
+          review_policy_json="$(jq -cSn --arg provider "$review_provider" --arg model "$review_model" --arg budget_usd "$review_budget_usd" \
             --arg pricing_version "$review_pricing_version" --arg actor "$review_actor" --arg actor_permission "$actor_permission" \
             '{provider:$provider,model:$model,budget_usd:$budget_usd,pricing_version:$pricing_version,actor:$actor,actor_permission:$actor_permission}')"
+          review_policy="$(printf '%s' "$review_policy_json" | base64 -w0 | tr '+/' '-_' | tr -d '=')"
+          [[ "$review_policy" =~ ^[A-Za-z0-9_-]{1,2048}$ ]] || { echo "::error::review policy envelope is invalid"; exit 1; }
           if [ "$EVENT_ACTION" = labeled ] && [ "$explicit_rereview" = false ]; then exit 0; fi
           [ "$EVENT_ACTION" = ready_for_review ] && hold_removed=true
           if [ "$EVENT_ACTION" = edited ]; then
@@ -239,7 +241,7 @@ jobs:
             --argjson check_run_id "$check_id" --argjson arm_run_id "$GITHUB_RUN_ID" \
             --argjson arm_run_attempt "$GITHUB_RUN_ATTEMPT" --arg nonce "$nonce" --arg external_id "$external_id" \
             --arg details_url "$details_url" --argjson app_id "$APP_ID" --arg app_slug "$APP_SLUG" \
-            --argjson review_policy "$review_policy" \
+            --arg review_policy "$review_policy" \
             '{schema:1,repository:$repository,pr_number:$pr_number,head_sha:$head_sha,check_run_id:$check_run_id,
               arm_run_id:$arm_run_id,arm_run_attempt:$arm_run_attempt,nonce:$nonce,external_id:$external_id,
               details_url:$details_url,app_id:$app_id,app_slug:$app_slug,review_policy:$review_policy}' >"$receipt_dir/receipt.json"

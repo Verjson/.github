@@ -56,6 +56,17 @@ credentials and the trusted OpenAI client receives only `OPENAI_API_KEY`.
 Unknown providers, models, pricing versions, malformed budgets/responses, or
 usage evidence fail closed.
 
+### 2026-08-08 correction ([#657](https://github.com/Verjson/.github/issues/657))
+
+The canonical JSON object is serialized with sorted keys and no insignificant
+whitespace, then crosses Actions outputs and `workflow_dispatch` only as an
+unpadded base64url envelope. Every trusted consumer rejects padding, non-URL
+alphabet bytes, oversized envelopes, duplicate/extra/missing/non-string fields,
+and non-canonical JSON or encoding before it reads any policy value. The receipt
+binds that exact opaque envelope. This corrects the original transport choice:
+raw JSON interpolated into a generated shell command can lose its quotes even
+when the JSON itself was canonical at the producer.
+
 ## Consequences
 
 Operators can deliberately buy a differently modeled second opinion without
