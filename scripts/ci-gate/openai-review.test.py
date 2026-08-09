@@ -22,6 +22,11 @@ class OpenAIReviewTest(unittest.TestCase):
                 "output": [{"type": "message", "status": "completed", "role": "assistant",
                             "content": [{"type": "output_text", "text": json.dumps(verdict)}]}]}
 
+    def reasoning(self):
+        return {"id": "rs_123", "type": "reasoning", "summary": [],
+                "content": [{"type": "reasoning_text", "text": "checked the patch"}],
+                "encrypted_content": "opaque", "status": "completed"}
+
     def test_cap_uses_complete_utf8_bytes_and_worst_case_rates(self):
         bound, cap = review.output_cap("é" * 500, "0.01")
         self.assertEqual(bound, 1000)
@@ -72,6 +77,10 @@ class OpenAIReviewTest(unittest.TestCase):
         for response in (missing, over_input, over_output):
             with self.subTest(response=response), self.assertRaises(ValueError):
                 review.extract(response, 10, 10, "1.00")
+        for field in ("input_tokens", "output_tokens"):
+            response = self.response(); response["usage"][field] = True
+            with self.subTest(field=field), self.assertRaisesRegex(ValueError, "usage is malformed"):
+                review.extract(response, 100, 100, "1.00")
 
     def test_incomplete_wrong_model_refusal_and_multiple_outputs_fail_closed(self):
         mutations = []
@@ -83,6 +92,54 @@ class OpenAIReviewTest(unittest.TestCase):
         for response in mutations:
             with self.subTest(response=response), self.assertRaises(ValueError):
                 review.extract(response, 100, 100, "1.00")
+
+    def test_documented_reasoning_item_is_allowed_before_or_after_the_message(self):
+        for insert_at in (0, 1):
+            response = self.response()
+            response["output"].insert(insert_at, self.reasoning())
+            with self.subTest(insert_at=insert_at):
+                verdict, input_tokens, output_tokens, _ = review.extract(response, 100, 100, "1.00")
+                self.assertFalse(json.loads(verdict)["blocking"])
+                self.assertEqual((input_tokens, output_tokens), (1, 20))
+
+    def test_multiple_messages_and_unknown_or_tool_items_fail_closed(self):
+        mutations = []
+        response = self.response(); response["output"].append(response["output"][0].copy()); mutations.append(response)
+        for item in ({"id": "x", "type": "future_item"},
+                     {"id": "fc_1", "type": "function_call", "name": "shell", "arguments": "{}", "call_id": "c_1"}):
+            response = self.response(); response["output"].insert(0, item); mutations.append(response)
+        for response in mutations:
+            with self.subTest(response=response), self.assertRaises(ValueError):
+                review.extract(response, 100, 100, "1.00")
+
+    def test_malformed_reasoning_and_refusal_or_error_evidence_fail_closed(self):
+        malformed = []
+        for mutation in (
+            {"summary": "not-an-array"},
+            {"summary": [{"type": "summary_text", "text": 1}]},
+            {"summary": [{"type": "other", "text": "x"}]},
+            {"content": [{"type": "reasoning_text", "text": 1}]},
+            {"content": [{"type": "other", "text": "x"}]},
+            {"encrypted_content": 7},
+            {"status": "incomplete"},
+            {"error": "hidden failure"},
+        ):
+            response = self.response(); item = self.reasoning(); item.update(mutation); response["output"].insert(0, item); malformed.append(response)
+        response = self.response(); response["error"] = {"message": "failed"}; malformed.append(response)
+        response = self.response(); response["output"][0]["content"][0]["refusal"] = "cannot comply"; malformed.append(response)
+        for marker, value in (("refusal", ""), ("error", {}), ("incomplete_details", False)):
+            response = self.response(); response["output"][0]["content"][0][marker] = value; malformed.append(response)
+        response = self.response(); item = self.reasoning(); item.pop("id"); response["output"].insert(0, item); malformed.append(response)
+        response = self.response(); item = self.reasoning(); item["extra"] = "unknown"; response["output"].insert(0, item); malformed.append(response)
+        for response in malformed:
+            with self.subTest(response=response), self.assertRaises(ValueError):
+                review.extract(response, 100, 100, "1.00")
+
+    def test_reasoning_item_does_not_bypass_usage_envelope(self):
+        response = self.response(); response["output"].insert(0, self.reasoning())
+        response["usage"]["output_tokens"] = 101
+        with self.assertRaisesRegex(ValueError, "preflight envelope"):
+            review.extract(response, 100, 100, "1.00")
 
     def test_local_schema_and_semantics_reject_model_claims(self):
         bad = [
