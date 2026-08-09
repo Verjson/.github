@@ -104,14 +104,14 @@ for workflow in "$ci" "$release"; do
   fi
 done
 
-[ "$(grep -cF 'timeout-minutes: ${{ inputs.timeout-minutes }}' "$ci")" -eq 2 ] \
-  && pass "node-ci bounds both eligibility and build-test jobs" \
-  || fail "node-ci does not apply the caller bound to both jobs"
+[ "$(grep -cF 'timeout-minutes: ${{ inputs.timeout-minutes }}' "$ci")" -eq 3 ] \
+  && pass "node-ci bounds eligibility, acquisition, and build-test jobs" \
+  || fail "node-ci does not apply the caller bound to every job"
 [ "$(grep -cF 'timeout-minutes: ${{ inputs.timeout-minutes }}' "$release")" -eq 1 ] \
   && pass "node-release bounds its release job" \
   || fail "node-release does not apply the caller bound to its job"
 
-{ grep -qF 'submodules: recursive' "$ci" \
+{ grep -qF 'submodules: ${{ inputs.secretless-pr && '\''false'\'' || '\''recursive'\'' }}' "$ci" \
   && grep -qF "inputs.schema-dir != ''" "$ci" \
   && grep -qF 'working-directory: ${{ inputs.schema-dir }}' "$ci" \
   && [ "$(grep -cF 'NODE_AUTH_TOKEN: ${{ secrets.NODE_AUTH_TOKEN }}' "$ci")" -ge 2 ]; } \

@@ -14,8 +14,6 @@ name: node-ci (reusable)
 #     ci:
 #       permissions:              # REQUIRED by the called workflow's jobs:
 #         contents: read          # a reusable's GITHUB_TOKEN is capped by the
-#         packages: read          # caller, so packages:read must be granted here
-#                                 # or `npm ci` 401s on private @scope deps.
 #         statuses: read          # REQUIRED: lets eligibility read the head's
 #                                 # renovate/stability-days status to defer CI on
 #                                 # held Renovate PRs (#133, ADR 0023). The token
@@ -68,6 +66,23 @@ on:
         required: false
         type: string
         default: '@verjson'
+      secretless-pr:
+        description: >-
+          Acquire approved private dependencies in a non-executing job, then run
+          PR-controlled build and test code in a credentialless job. Intended
+          only for pull_request validation; requires NODE_AUTH_TOKEN and
+          approved-internal-packages, but does not require caller packages: read.
+        required: false
+        type: boolean
+        default: false
+      approved-internal-packages:
+        description: >-
+          Newline-separated exact @verjson package names allowed during
+          secretless dependency acquisition. Every @verjson package in the lock
+          file must be listed; empty is valid only when none are present.
+        required: false
+        type: string
+        default: ''
       schema-dir:
         description: >-
           Path to a schema submodule to `npm ci` before the root install (a Node
@@ -211,8 +226,137 @@ jobs:
             echo "should-run=true" >> "$GITHUB_OUTPUT"
           fi
 
-  build-test:
+  acquire-secretless-dependencies:
     needs: eligibility
+    if: inputs.secretless-pr && needs.eligibility.outputs.should-run != 'false'
+    runs-on: ${{ fromJSON(vars.VERJSON_LANE_UNTRUSTED || '["ubuntu-24.04"]') }}
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    permissions:
+      contents: read
+    steps:
+      - name: Enforce the secretless PR boundary
+        env:
+          APPROVED_INTERNAL_PACKAGES: ${{ inputs.approved-internal-packages }}
+          EVENT_NAME: ${{ github.event_name }}
+          HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
+          NODE_AUTH_TOKEN: ${{ secrets.NODE_AUTH_TOKEN }}
+          REPOSITORY: ${{ github.repository }}
+          SCHEMA_DIR: ${{ inputs.schema-dir }}
+        run: |
+          set -euo pipefail
+          [ "$EVENT_NAME" = pull_request ] || {
+            echo "::error::secretless-pr is restricted to pull_request validation"
+            exit 1
+          }
+          [ "$HEAD_REPOSITORY" = "$REPOSITORY" ] || {
+            echo "::error::secretless-pr requires a same-repository pull request; fork PRs receive no package credential"
+            exit 1
+          }
+          [ -z "$SCHEMA_DIR" ] || {
+            echo "::error::secretless-pr does not permit credentialed submodule acquisition"
+            exit 1
+          }
+          [ -n "$NODE_AUTH_TOKEN" ] || {
+            echo "::error::secretless-pr requires NODE_AUTH_TOKEN for the acquisition job"
+            exit 1
+          }
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: ${{ inputs.node-version }}
+          package-manager-cache: false
+      - name: Validate approved internal dependency lock
+        env:
+          APPROVED_INTERNAL_PACKAGES: ${{ inputs.approved-internal-packages }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import sys
+          from pathlib import Path
+          from urllib.parse import unquote, urlparse
+
+          approved = {line.strip() for line in os.environ["APPROVED_INTERNAL_PACKAGES"].splitlines() if line.strip()}
+          if any(not name.startswith("@verjson/") or name.count("/") != 1 for name in approved):
+              sys.exit("approved-internal-packages accepts exact @verjson package names only")
+
+          lock = json.loads(Path("package-lock.json").read_text(encoding="utf-8"))
+          if lock.get("lockfileVersion") not in (2, 3):
+              sys.exit("secretless-pr requires package-lock lockfileVersion 2 or 3")
+
+          found = set()
+          for path, package in lock.get("packages", {}).items():
+              marker = "node_modules/"
+              locked_name = package.get("name")
+              path_name = path.rsplit(marker, 1)[1] if marker in path else None
+              resolved = package.get("resolved", "")
+              parsed = urlparse(resolved)
+              resolved_path = unquote(parsed.path)
+              registry_name = None
+              if parsed.hostname == "npm.pkg.github.com":
+                  parts = resolved_path.split("/")
+                  if (parsed.scheme != "https" or parsed.netloc != "npm.pkg.github.com"
+                          or parsed.query or parsed.fragment or len(parts) != 6
+                          or resolved != f"https://npm.pkg.github.com{resolved_path}"
+                          or "\\" in resolved_path
+                          or parts[1] != "download" or not parts[2].startswith("@")
+                          or any(part in ("", ".", "..") for part in parts[1:])):
+                      sys.exit(f"invalid GitHub Packages download URL: {resolved}")
+                  registry_name = f"{parts[2]}/{parts[3]}"
+                  if registry_name not in approved:
+                      sys.exit(f"unapproved GitHub Packages download: {registry_name}")
+
+              entry_name = path_name if isinstance(path_name, str) and path_name.startswith("@verjson/") else locked_name
+              if not isinstance(entry_name, str) or not entry_name.startswith("@verjson/"):
+                  continue
+              if locked_name and locked_name != entry_name:
+                  sys.exit(f"{entry_name} lock entry aliases unexpected package {locked_name}")
+              if registry_name != entry_name:
+                  sys.exit(f"{entry_name} is not pinned to its GitHub Packages download URL")
+              found.add(entry_name)
+
+          unapproved = sorted(found - approved)
+          unused = sorted(approved - found)
+          if unapproved:
+              sys.exit("unapproved internal dependencies: " + ", ".join(unapproved))
+          if unused:
+              sys.exit("approved internal dependencies absent from lock: " + ", ".join(unused))
+          PY
+      - name: Acquire dependencies without lifecycle execution
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NODE_AUTH_TOKEN }}
+          NPM_CONFIG_GLOBALCONFIG: ${{ runner.temp }}/secretless-empty-global.npmrc
+          NPM_CONFIG_USERCONFIG: ${{ runner.temp }}/secretless-acquisition.npmrc
+        run: |
+          set -euo pipefail
+          project_config="$(find . -name .npmrc -print -quit)"
+          [ -z "$project_config" ] || {
+            echo "::error::secretless-pr rejects PR-controlled npm config: $project_config"
+            exit 1
+          }
+          umask 077
+          : > "$NPM_CONFIG_GLOBALCONFIG"
+          # npm expands this placeholder only when requesting the scoped host.
+          # shellcheck disable=SC2016
+          printf '%s\n' \
+            'registry=https://registry.npmjs.org/' \
+            '@verjson:registry=https://npm.pkg.github.com/' \
+            '//npm.pkg.github.com/:_authToken=${NODE_AUTH_TOKEN}' \
+            > "$NPM_CONFIG_USERCONFIG"
+          npm ci --ignore-scripts --no-audit --no-fund
+      - name: Package credential-free dependency tree
+        run: tar -czf "$RUNNER_TEMP/secretless-node-modules.tgz" node_modules
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: secretless-node-modules-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/secretless-node-modules.tgz
+          retention-days: 1
+          if-no-files-found: error
+
+  build-test:
+    needs: [eligibility, acquire-secretless-dependencies]
     # Always report this job because consumers require `ci / build-test`.
     # Skipping the JOB left that required context unsatisfied on held Renovate
     # PRs (#191). Only the execution steps skip on an explicit defer; an errored
@@ -226,11 +370,10 @@ jobs:
     # fail-SAFE, not a fallback: unresolved visibility must never put fork code
     # on the persistent pool. Both pools are org variables so a provider move
     # (GCP -> DigitalOcean) is a variable flip, not a PR here.
-    runs-on: ${{ inputs.runner != '' && fromJSON(inputs.runner) || github.repository_owner != 'Verjson' && 'ubuntu-24.04' || github.event.repository.private == true && fromJSON(vars.VERJSON_LANE_TRUSTED || vars.VERJSON_LANE_FALLBACK || '["ubuntu-24.04"]') || fromJSON(vars.VERJSON_LANE_UNTRUSTED || vars.VERJSON_LANE_FALLBACK || '["ubuntu-24.04"]') }}
+    runs-on: ${{ inputs.secretless-pr && fromJSON(vars.VERJSON_LANE_UNTRUSTED || '["ubuntu-24.04"]') || inputs.runner != '' && fromJSON(inputs.runner) || github.repository_owner != 'Verjson' && 'ubuntu-24.04' || github.event.repository.private == true && fromJSON(vars.VERJSON_LANE_TRUSTED || vars.VERJSON_LANE_FALLBACK || '["ubuntu-24.04"]') || fromJSON(vars.VERJSON_LANE_UNTRUSTED || vars.VERJSON_LANE_FALLBACK || '["ubuntu-24.04"]') }}
     timeout-minutes: ${{ inputs.timeout-minutes }}
     permissions:
       contents: read
-      packages: read
     steps:
       - name: Report deferred CI
         if: needs.eligibility.outputs.should-run == 'false'
@@ -238,8 +381,40 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         if: needs.eligibility.outputs.should-run != 'false'
         with:
-          submodules: recursive
-          token: ${{ secrets.submodules-token || github.token }}
+          submodules: ${{ inputs.secretless-pr && 'false' || 'recursive' }}
+          token: ${{ inputs.secretless-pr && github.token || secrets.submodules-token || github.token }}
+          persist-credentials: ${{ !inputs.secretless-pr }}
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        if: needs.eligibility.outputs.should-run != 'false' && inputs.secretless-pr
+        with:
+          name: secretless-node-modules-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/secretless-dependencies
+      - name: Restore secretless dependency tree
+        if: needs.eligibility.outputs.should-run != 'false' && inputs.secretless-pr
+        env:
+          GH_TOKEN: ''
+          GITHUB_TOKEN: ''
+          NODE_AUTH_TOKEN: ''
+          NPM_TOKEN: ''
+          NPM_CONFIG_USERCONFIG: ${{ runner.temp }}/secretless-empty.npmrc
+          AWS_ACCESS_KEY_ID: ''
+          AWS_SECRET_ACCESS_KEY: ''
+          AWS_SESSION_TOKEN: ''
+          GOOGLE_APPLICATION_CREDENTIALS: ''
+          AZURE_CREDENTIALS: ''
+          ACTIONS_ID_TOKEN_REQUEST_TOKEN: ''
+          ACTIONS_ID_TOKEN_REQUEST_URL: ''
+        run: |
+          set -euo pipefail
+          : > "$NPM_CONFIG_USERCONFIG"
+          tar -xzf "$RUNNER_TEMP/secretless-dependencies/secretless-node-modules.tgz"
+          for name in GH_TOKEN GITHUB_TOKEN NODE_AUTH_TOKEN NPM_TOKEN \
+            AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN \
+            GOOGLE_APPLICATION_CREDENTIALS AZURE_CREDENTIALS \
+            ACTIONS_ID_TOKEN_REQUEST_TOKEN ACTIONS_ID_TOKEN_REQUEST_URL; do
+            printf '%s=\n' "$name" >> "$GITHUB_ENV"
+          done
+          printf 'NPM_CONFIG_USERCONFIG=%s\n' "$NPM_CONFIG_USERCONFIG" >> "$GITHUB_ENV"
       - name: Prepare job-scoped changelog tool cache
         if: needs.eligibility.outputs.should-run != 'false'
         run: echo "VERJSON_CHANGELOG_TOOL_CACHE=$RUNNER_TEMP/verjson-changelog-tools" >> "$GITHUB_ENV"
@@ -530,7 +705,7 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NODE_AUTH_TOKEN }}
       - run: npm ci
-        if: needs.eligibility.outputs.should-run != 'false'
+        if: needs.eligibility.outputs.should-run != 'false' && !inputs.secretless-pr
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NODE_AUTH_TOKEN }}
       - run: npm run build
