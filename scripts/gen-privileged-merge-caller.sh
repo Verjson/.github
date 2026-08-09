@@ -112,9 +112,10 @@ jobs:
   # Renaming it makes the gate wait on its own continuation.
   privileged_merge:
     uses: ${TARGET}
-    # Explicit rather than \`inherit\`: the caller grants exactly one secret
-    # instead of its entire store to a workflow that floats on @main.
+    # Explicit rather than \`inherit\`: the caller grants only the routing-read
+    # and terminal merge secrets to a workflow that floats on @main.
     secrets:
+      ACTIONS_VARIABLES_TOKEN: \${{ secrets.ACTIONS_VARIABLES_TOKEN }}
       ORG_ADMIN_TOKEN: \${{ secrets.ORG_ADMIN_TOKEN }}
     with:
       pr_number: \${{ inputs.pr_number }}

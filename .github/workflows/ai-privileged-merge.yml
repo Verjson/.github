@@ -60,6 +60,8 @@ on:
         required: false
         type: string
     secrets:
+      ACTIONS_VARIABLES_TOKEN:
+        required: false
       ORG_ADMIN_TOKEN:
         required: true
 
@@ -71,8 +73,39 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  resolve_privileged_route:
+    runs-on: ${{ github.repository_owner == 'Verjson' && fromJSON('["self-hosted","general"]') || 'ubuntu-24.04' }}
+    timeout-minutes: 2
+    permissions: {}
+    outputs:
+      selector: ${{ steps.route.outputs.selector }}
+    steps:
+      - name: Resolve privileged routing from organization policy
+        id: route
+        env:
+          GH_TOKEN: ${{ secrets.ACTIONS_VARIABLES_TOKEN }}
+          REPOSITORY_OWNER: ${{ github.repository_owner }}
+        run: |
+          set -euo pipefail
+          if [ -z "${GH_TOKEN:-}" ]; then
+            echo "selector=" >>"$GITHUB_OUTPUT"
+            exit 0
+          fi
+          [ "$REPOSITORY_OWNER" = Verjson ] || {
+            echo "::error::organization-variable token is not configured for $REPOSITORY_OWNER"
+            exit 1
+          }
+          selector="$(gh api /orgs/Verjson/actions/variables/VERJSON_LANE_PRIVILEGED --jq '.value // empty')"
+          jq -e '. == ["self-hosted", "general"]' \
+            <<<"$selector" >/dev/null || {
+              echo "::error::stage-one policy permits only the admitted DigitalOcean privileged selector"
+              exit 1
+            }
+          echo "selector=$(jq -c . <<<"$selector")" >>"$GITHUB_OUTPUT"
+
   privileged_merge:
-    runs-on: ${{ inputs.runner_labels && fromJSON(inputs.runner_labels) || github.repository_owner == 'Verjson' && fromJSON(vars.VERJSON_LANE_PRIVILEGED || vars.VERJSON_LANE_FALLBACK || '["ubuntu-24.04"]') || 'ubuntu-24.04' }}
+    needs: resolve_privileged_route
+    runs-on: ${{ needs.resolve_privileged_route.outputs.selector && fromJSON(needs.resolve_privileged_route.outputs.selector) || inputs.runner_labels && fromJSON(inputs.runner_labels) || github.repository_owner == 'Verjson' && fromJSON(vars.VERJSON_LANE_PRIVILEGED || vars.VERJSON_LANE_FALLBACK || '["ubuntu-24.04"]') || 'ubuntu-24.04' }}
     timeout-minutes: 5
     env:
       AUTHORIZATION_CHECK_ID: ${{ inputs.authorization_check_id }}
