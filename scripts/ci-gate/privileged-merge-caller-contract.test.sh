@@ -25,6 +25,7 @@ repo_root="$(cd "$here/../.." && pwd)"
 gate="$repo_root/.github/workflows/ai-review-merge.yml"
 canonical="$repo_root/.github/workflows/ai-privileged-merge.yml"
 gen="$repo_root/scripts/gen-privileged-merge-caller.sh"
+contract_sha="848c49fd4dac307f26180acd420760a27ceff0ba"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 fails=0
@@ -154,9 +155,9 @@ PY
 # The DEFAULT invocation takes no argument. Everything below reads this file,
 # because it is the shape ~90 Verjson consumers receive; the explicit-label
 # variant is asserted separately.
-bash "$gen" >"$tmp/caller.yml" 2>/dev/null \
-  && pass "generator emits a caller with no arguments" || fail "generator requires a runner_labels argument (#405)"
-bash "$gen" '["ubuntu-24.04"]' >"$tmp/caller-labels.yml" 2>/dev/null \
+bash "$gen" "$contract_sha" >"$tmp/caller.yml" 2>/dev/null \
+  && pass "generator emits a caller from an immutable contract SHA" || fail "generator rejected a valid contract SHA"
+bash "$gen" "$contract_sha" '["ubuntu-24.04"]' >"$tmp/caller-labels.yml" 2>/dev/null \
   && pass "generator still emits a caller for an explicit fleet" || fail "generator failed with explicit labels"
 
 python3 - "$tmp/caller.yml" <<'PY' && pass "generated caller's job key is privileged_merge" \
@@ -167,15 +168,14 @@ sys.exit(0 if list(d["jobs"]) == ["privileged_merge"] else 1)
 PY
 
 
-# The trust anchor itself. Asserting only that the ref ends in @main pins the
-# FORM of the pin and leaves the TARGET unasserted — a generator repointed at
-# Attacker/evil/...@main passed the previous version of this test while handing
-# over a secret with merge authority.
-python3 - "$tmp/caller.yml" <<'TARGET_PY' && pass "generated caller targets the canonical workflow at @main" \
-  || fail "generated caller does not target Verjson/.github ai-privileged-merge.yml@main"
+# Assert both the canonical repository/path and the exact caller-selected
+# immutable revision. Checking only the 40-hex suffix would allow a generator
+# repointed at an attacker-controlled workflow to retain merge authority.
+python3 - "$tmp/caller.yml" "$contract_sha" <<'TARGET_PY' && pass "generated caller targets the canonical workflow at the selected immutable SHA" \
+  || fail "generated caller lost its canonical immutable trust anchor"
 import sys, yaml
 d = yaml.safe_load(open(sys.argv[1]))
-want = "Verjson/.github/.github/workflows/ai-privileged-merge.yml@main"
+want = f"Verjson/.github/.github/workflows/ai-privileged-merge.yml@{sys.argv[2]}"
 sys.exit(0 if d["jobs"]["privileged_merge"].get("uses") == want else 1)
 TARGET_PY
 
@@ -296,21 +296,27 @@ case "$call_group" in *inputs.expected_head_sha*) pass "caller concurrency is ke
   *) fail "caller concurrency is not head-bound" ;; esac
 
 # --- generator input validation ----------------------------------------------
-bash "$gen" 'not-json' >/dev/null 2>&1 && fail "generator accepted non-JSON runner_labels" \
+bash "$gen" >/dev/null 2>&1 && fail "generator accepted a missing contract SHA" \
+  || pass "generator requires an immutable contract SHA"
+bash "$gen" main >/dev/null 2>&1 && fail "generator accepted a mutable contract ref" \
+  || pass "generator rejects a mutable contract ref"
+bash "$gen" "${contract_sha^^}" >/dev/null 2>&1 && fail "generator accepted a non-canonical uppercase SHA" \
+  || pass "generator requires canonical lowercase SHA spelling"
+bash "$gen" "$contract_sha" 'not-json' >/dev/null 2>&1 && fail "generator accepted non-JSON runner_labels" \
   || pass "generator rejects non-JSON runner_labels"
-bash "$gen" '[]' >/dev/null 2>&1 && fail "generator accepted empty runner_labels" \
+bash "$gen" "$contract_sha" '[]' >/dev/null 2>&1 && fail "generator accepted empty runner_labels" \
   || pass "generator rejects empty runner_labels"
 # Charset, not just JSON shape: a label carrying an expression would expand a
 # secret into a workflow input, and a quote emits YAML GitHub cannot parse.
-bash "$gen" '["${{ secrets.ORG_ADMIN_TOKEN }}"]' >/dev/null 2>&1 \
+bash "$gen" "$contract_sha" '["${{ secrets.ORG_ADMIN_TOKEN }}"]' >/dev/null 2>&1 \
   && fail "generator accepted an expression as a runner label" \
   || pass "generator rejects a runner label outside [A-Za-z0-9._-]"
 
 # An UNSET shell variable is the common way an operator reaches the default:
-# `gen "$LABELS"` passes an empty argument, which must produce the lane-routed
+# `gen "$SHA" "$LABELS"` passes an empty second argument, which must produce the lane-routed
 # caller rather than a diagnostic — or `runner_labels: ''`, which is a supplied
 # empty string and not the same thing as omitting the input.
-bash "$gen" '' >"$tmp/caller-empty.yml" 2>/dev/null \
+bash "$gen" "$contract_sha" '' >"$tmp/caller-empty.yml" 2>/dev/null \
   && diff -q "$tmp/caller.yml" "$tmp/caller-empty.yml" >/dev/null \
   && pass "an empty argument generates the same lane-routed caller as no argument" \
   || fail "an empty runner_labels argument does not produce the default caller"
@@ -318,10 +324,10 @@ bash "$gen" '' >"$tmp/caller-empty.yml" 2>/dev/null \
 # The regenerate command is copied by operators, so it is part of the contract:
 # it must reproduce the file it heads. A default caller whose comment carried a
 # label would put the hardcoded fleet back on the next regeneration.
-grep -qE "^#   scripts/gen-privileged-merge-caller\.sh > " "$tmp/caller.yml" \
-  && pass "the default caller's regenerate command takes no fleet argument" \
-  || fail "the default caller's regenerate command still passes runner_labels"
-grep -qF "gen-privileged-merge-caller.sh '[\"ubuntu-24.04\"]' >" "$tmp/caller-labels.yml" \
+grep -qF "gen-privileged-merge-caller.sh $contract_sha >" "$tmp/caller.yml" \
+  && pass "the default caller records the exact contract SHA and no fleet argument" \
+  || fail "the default caller's regenerate command does not reproduce its trust anchor"
+grep -qF "gen-privileged-merge-caller.sh $contract_sha '[\"ubuntu-24.04\"]' >" "$tmp/caller-labels.yml" \
   && pass "an explicit fleet is reproduced by the caller's own regenerate command" \
   || fail "the explicit caller's regenerate command does not reproduce its fleet"
 

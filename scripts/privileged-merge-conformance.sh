@@ -5,6 +5,12 @@ readonly ORG="${PRIVILEGED_MERGE_ORG:-Verjson}"
 readonly SECRET_NAME="${PRIVILEGED_MERGE_SECRET_NAME:-ORG_ADMIN_TOKEN}"
 readonly CALLER_PATH=".github/workflows/ai-privileged-merge.yml"
 readonly GENERATOR="scripts/gen-privileged-merge-caller.sh"
+readonly CONTRACT_SHA="${PRIVILEGED_MERGE_CONTRACT_SHA:-}"
+
+[[ "$CONTRACT_SHA" =~ ^[0-9a-f]{40}$ ]] || {
+  echo "::error title=Invalid privileged merge contract SHA::PRIVILEGED_MERGE_CONTRACT_SHA must be a lowercase 40-hex commit SHA."
+  exit 1
+}
 
 if [ -z "${GH_TOKEN:-}" ]; then
   echo "::error title=Missing ORG_ADMIN_TOKEN::Fleet conformance cannot verify privileged merge callers or organization-secret access."
@@ -22,7 +28,7 @@ command -v base64 >/dev/null 2>&1 || {
   echo "::error title=Missing caller generator::Fleet conformance cannot load $GENERATOR."
   exit 1
 }
-canonical_caller="$(bash "$GENERATOR")" || {
+canonical_caller="$(bash "$GENERATOR" "$CONTRACT_SHA")" || {
   echo "::error title=Caller generation failed::Fleet conformance cannot establish canonical caller content."
   exit 1
 }
@@ -90,7 +96,7 @@ while IFS= read -r repository; do
     --jq .content 2>&1)"; then
     caller_error="$caller_response"
     if grep -q 'HTTP 404' <<<"$caller_error"; then
-      echo "::error title=Missing privileged merge caller::repository=$repository path=$CALLER_PATH remediation='scripts/gen-privileged-merge-caller.sh > $CALLER_PATH'"
+      echo "::error title=Missing privileged merge caller::repository=$repository path=$CALLER_PATH remediation='scripts/gen-privileged-merge-caller.sh $CONTRACT_SHA > $CALLER_PATH'"
     else
       echo "::error title=Unreadable privileged merge caller::repository=$repository path=$CALLER_PATH"
     fi
@@ -99,7 +105,7 @@ while IFS= read -r repository; do
     echo "::error title=Unreadable privileged merge caller::repository=$repository path=$CALLER_PATH reason='invalid base64 content'"
     failures=$((failures + 1))
   elif [ "$caller_content" != "$canonical_caller" ]; then
-    echo "::error title=Non-canonical privileged merge caller::repository=$repository path=$CALLER_PATH remediation='scripts/gen-privileged-merge-caller.sh > $CALLER_PATH'"
+    echo "::error title=Non-canonical privileged merge caller::repository=$repository path=$CALLER_PATH remediation='scripts/gen-privileged-merge-caller.sh $CONTRACT_SHA > $CALLER_PATH'"
     failures=$((failures + 1))
   fi
   unset caller_response caller_content caller_error

@@ -6,6 +6,7 @@ root="$(cd "$(dirname "$0")/../.." && pwd)"
 audit="$root/scripts/privileged-merge-conformance.sh"
 generator="$root/scripts/gen-privileged-merge-caller.sh"
 workflow="$root/.github/workflows/privileged-merge-conformance.yml"
+contract_sha=848c49fd4dac307f26180acd420760a27ceff0ba
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 fails=0
@@ -57,8 +58,9 @@ chmod +x "$tmp/bin/gh"
 
 run_audit() {
   local canonical
-  canonical="$(bash "$generator" | base64 | tr -d '\n')"
+  canonical="$(bash "$generator" "$contract_sha" | base64 | tr -d '\n')"
   PATH="$tmp/bin:$PATH" GH_TOKEN="${GH_TOKEN-test-token}" \
+    PRIVILEGED_MERGE_CONTRACT_SHA="${PRIVILEGED_MERGE_CONTRACT_SHA-$contract_sha}" \
     ACTIVE_REPOSITORIES="${ACTIVE_REPOSITORIES-Verjson/alpha}" \
     SECRET_VISIBILITY="${SECRET_VISIBILITY-selected}" \
     SECRET_REPOSITORIES="${SECRET_REPOSITORIES-Verjson/alpha}" \
@@ -140,6 +142,14 @@ GH_TOKEN='' run_audit \
       || fail "missing audit credential lacks an actionable error"
   }
 
+PRIVILEGED_MERGE_CONTRACT_SHA=main run_audit \
+  && fail "mutable audit contract ref reported green" \
+  || {
+    grep -q 'Invalid privileged merge contract SHA' "$tmp/out" \
+      && pass "fleet audit rejects a mutable contract ref before conformance claims" \
+      || fail "invalid contract ref lacks an actionable error"
+  }
+
 if python3 - "$workflow" <<'PY'
 import sys
 import yaml
@@ -157,11 +167,14 @@ checkout, audit = job["steps"]
 assert checkout["uses"].startswith("actions/checkout@")
 assert len(checkout["uses"].split("@", 1)[1]) == 40
 assert checkout["with"] == {"ref": "${{ github.sha }}", "persist-credentials": False}
-assert audit["env"] == {"GH_TOKEN": "${{ secrets.ORG_ADMIN_TOKEN }}"}
+assert audit["env"] == {
+    "GH_TOKEN": "${{ secrets.ORG_ADMIN_TOKEN }}",
+    "PRIVILEGED_MERGE_CONTRACT_SHA": "${{ github.sha }}",
+}
 assert audit["run"] == "bash scripts/privileged-merge-conformance.sh"
 PY
 then
-  pass "scheduled fleet audit is event-SHA-bound and exposes only the org token"
+  pass "scheduled fleet audit binds conformance to its immutable event SHA"
 else
   fail "scheduled fleet audit is missing or its privileged execution surface drifted"
 fi

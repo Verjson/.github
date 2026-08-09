@@ -356,34 +356,25 @@ checkout_depth="${checkout_depth%\'}"; checkout_depth="${checkout_depth#\'}"
   && pass "actions-ci checks out bounded history (fetch-depth: $checkout_depth)" \
   || fail "actions-ci checks out unbounded history (fetch-depth: ${checkout_depth:-unset})"
 
-# --- the ONE deliberate @main exception (ADR 0042) ---------------------------
-# Everything above exists to force immutable full SHAs. The privileged-merge
-# thin caller is the single sanctioned exception, and it is asserted here rather
-# than left as a comment so that a future "pin everything" sweep trips this test
-# instead of silently breaking merge authority.
-#
-# Why it is an exception: the canonical privileged-merge workflow already anchors
-# trust to Verjson/.github@main AT RUNTIME. A SHA-pinned caller would let a
-# repository admin freeze an older gate while the trust anchor moved on — the
-# exact divergence the reusable split removes. Pinning here would be less safe,
-# not more.
+# --- privileged merge uses the same immutable contract rule (ADR 0085) -------
 caller_gen="$root/scripts/gen-privileged-merge-caller.sh"
 if [ -f "$caller_gen" ]; then
-  generated="$(bash "$caller_gen" '["ubuntu-24.04"]' 2>/dev/null)"
+  contract_sha=848c49fd4dac307f26180acd420760a27ceff0ba
+  generated="$(bash "$caller_gen" "$contract_sha" '["ubuntu-24.04"]' 2>/dev/null)"
   caller_ref="$(printf '%s\n' "$generated" \
     | sed -n 's/^[[:space:]]*uses:[[:space:]]*\(Verjson\/\.github\/\.github\/workflows\/ai-privileged-merge\.yml@.*\)$/\1/p')"
 
-  [ "$caller_ref" = "Verjson/.github/.github/workflows/ai-privileged-merge.yml@main" ] \
-    && pass "privileged-merge caller pins @main (sanctioned ADR 0042 exception)" \
-    || fail "privileged-merge caller ref changed: '$caller_ref' — if this was pinned to a SHA, read ADR 0042 before 'fixing' it"
+  [ "$caller_ref" = "Verjson/.github/.github/workflows/ai-privileged-merge.yml@$contract_sha" ] \
+    && pass "privileged-merge caller pins the selected immutable contract SHA" \
+    || fail "privileged-merge caller lost its canonical immutable pin: '$caller_ref'"
 
   printf '%s\n' "$caller_ref" | grep -qE '@[0-9a-f]{40}$' \
-    && fail "privileged-merge caller was SHA-pinned; that lets an admin freeze an older gate (ADR 0042)" \
-    || pass "privileged-merge caller is deliberately not SHA-pinned"
+    && pass "privileged-merge caller is SHA-pinned" \
+    || fail "privileged-merge caller is not pinned to immutable content"
 
-  [ -f "$root/docs/decisions/0042-privileged-merge-reusable-split/README.md" ] \
-    && pass "the @main exception is backed by a decision record" \
-    || fail "ADR 0042 is missing — an unexplained @main is indistinguishable from an unpinned mistake"
+  [ -f "$root/docs/decisions/0085-immutable-privileged-caller-contract/README.md" ] \
+    && pass "the privileged immutable pin is backed by a decision record" \
+    || fail "ADR 0085 is missing — the privileged pin policy is unexplained"
 else
   fail "scripts/gen-privileged-merge-caller.sh is missing; the caller would be hand-written"
 fi

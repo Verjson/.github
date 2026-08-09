@@ -5,8 +5,8 @@
 # the job key, the `uses:` target, and the values passed in `with:`. The
 # reasoning lives in docs/decisions/0042-privileged-merge-reusable-split.
 #
-# Usage: gen-privileged-merge-caller.sh ['<runner-labels-json>']
-#   scripts/gen-privileged-merge-caller.sh > .github/workflows/ai-privileged-merge.yml
+# Usage: gen-privileged-merge-caller.sh <40-hex-contract-sha> ['<runner-labels-json>']
+#   scripts/gen-privileged-merge-caller.sh <contract-sha> > .github/workflows/ai-privileged-merge.yml
 #
 # The argument is OPTIONAL and should be omitted by every Verjson consumer
 # (#405). It used to be mandatory, which meant the generator hardcoded
@@ -21,22 +21,17 @@
 # runners answer to labels only it knows.
 set -euo pipefail
 
-# The target is FIXED, not a parameter. It IS the trust anchor: the canonical
-# workflow validates provenance against Verjson/.github@main at runtime, so a
-# caller pointing anywhere else — or at a frozen SHA — silently opts out of the
-# guarantees this file exists to deliver while still carrying merge authority.
-#
-# An earlier revision accepted a `ref` argument. It injected arbitrary YAML into
-# the job body (a ref of $'main\n    if: false' disabled merge authority
-# outright) and slipped past the pin guard, which inspects only the `uses:`
-# line. Removed rather than validated: its sole legitimate value was a SHA, and
-# ADR 0042 forbids exactly that.
-readonly TARGET="Verjson/.github/.github/workflows/ai-privileged-merge.yml@main"
+contract_sha="${1-}"
+[[ "$contract_sha" =~ ^[0-9a-f]{40}$ ]] || {
+  echo "contract_sha must be an immutable lowercase 40-hex commit SHA" >&2
+  exit 2
+}
+readonly TARGET="Verjson/.github/.github/workflows/ai-privileged-merge.yml@$contract_sha"
 
 # An empty argument is the default case, not an error: `gen … "$LABELS"` with
 # LABELS unset must produce the lane-routed caller rather than a diagnostic about
 # a value the operator never meant to supply.
-runner_labels="${1-}"
+runner_labels="${2-}"
 
 if [ -n "$runner_labels" ]; then
   command -v jq >/dev/null 2>&1 || { echo "jq is required to validate runner_labels" >&2; exit 2; }
@@ -67,7 +62,7 @@ emit() {
   cat <<YAML
 # GENERATED FILE — do not edit by hand.
 # Regenerate with:
-#   scripts/gen-privileged-merge-caller.sh$regen_arg > .github/workflows/ai-privileged-merge.yml
+#   scripts/gen-privileged-merge-caller.sh $contract_sha$regen_arg > .github/workflows/ai-privileged-merge.yml
 #
 # Thin caller for the canonical privileged merge (Verjson/.github). All trust
 # logic lives there; nothing here may re-implement it.
@@ -113,7 +108,7 @@ jobs:
   privileged_merge:
     uses: ${TARGET}
     # Explicit rather than \`inherit\`: the caller grants only the routing-read
-    # and terminal merge secrets to a workflow that floats on @main.
+    # and terminal merge secrets to the immutable canonical contract revision.
     secrets:
       ACTIONS_VARIABLES_TOKEN: \${{ secrets.ACTIONS_VARIABLES_TOKEN }}
       ORG_ADMIN_TOKEN: \${{ secrets.ORG_ADMIN_TOKEN }}
