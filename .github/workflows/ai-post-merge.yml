@@ -1,0 +1,87 @@
+name: AI post-merge follow-ups
+on:
+  pull_request_target:
+    types: [closed]
+permissions:
+  actions: read
+  checks: read
+  contents: write
+  issues: write
+  pull-requests: read
+concurrency:
+  group: ai-post-merge-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+jobs:
+  reconcile:
+    if: github.event.pull_request.merged == true
+    runs-on: ${{ fromJSON(vars.VERJSON_LANE_TRUSTED || vars.VERJSON_LANE_FALLBACK || '["ubuntu-24.04"]') }}
+    timeout-minutes: 5
+    env:
+      TARGET_REPO: ${{ github.repository }}
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+      MERGED_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      HEAD_REF: ${{ github.event.pull_request.head.ref }}
+      HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+      BASE_REF: ${{ github.event.pull_request.base.ref }}
+      DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+      EXPECTED_APP_ID: ${{ vars.AI_REVIEW_APP_ID }}
+      EXPECTED_APP_SLUG: ${{ vars.AI_REVIEW_APP_SLUG }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Check out trusted reconciler
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # pull_request_target base SHA is trusted and immutable; never execute
+          # the merged PR head's copy of this privileged reconciler.
+          ref: ${{ github.event.pull_request.base.sha }}
+          sparse-checkout: scripts/ci-gate/post-merge-reconcile.sh
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+      - name: Validate exact-head review evidence
+        id: evidence
+        run: |
+          set -euo pipefail
+          [[ "$MERGED_HEAD_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$EXPECTED_APP_ID" =~ ^[1-9][0-9]*$ ]]
+          [[ "$EXPECTED_APP_SLUG" =~ ^[A-Za-z0-9-]+$ ]]
+          reviews="$(gh api --paginate "repos/$TARGET_REPO/pulls/$PR_NUMBER/reviews?per_page=100" | jq -s '.')"
+          evidence="$(jq -cer --arg head "$MERGED_HEAD_SHA" --arg login "${EXPECTED_APP_SLUG}[bot]" '
+            [ .[][] | select(.state == "APPROVED" and .commit_id == $head and .user.login == $login)
+              | .body as $body
+              | {check_id: ($body | capture("ai-review-authorization:(?<v>[1-9][0-9]*)").v | tonumber),
+                 run_id: ($body | capture("ai-review-run:(?<v>[1-9][0-9]*)").v | tonumber)} ]
+            | if length == 1 then .[0] else error("expected one exact-head approval") end' <<<"$reviews")"
+          check_id="$(jq -r .check_id <<<"$evidence")"
+          run_id="$(jq -r .run_id <<<"$evidence")"
+          gh api "repos/$TARGET_REPO/check-runs/$check_id" | jq -e \
+            --arg head "$MERGED_HEAD_SHA" --arg slug "$EXPECTED_APP_SLUG" --argjson app "$EXPECTED_APP_ID" \
+            '.name == "AI review authorization" and .head_sha == $head and .conclusion == "success"
+             and .app.id == $app and .app.slug == $slug' >/dev/null
+          run="$(gh api "repos/$TARGET_REPO/actions/runs/$run_id")"
+          jq -e --arg repo "$TARGET_REPO" --arg head "$MERGED_HEAD_SHA" '
+            .repository.full_name == $repo and .head_sha == $head and .event == "workflow_dispatch"
+            and .status == "completed" and .conclusion == "success"
+            and .path == ".github/workflows/ai-review-merge.yml"' <<<"$run" >/dev/null
+          artifacts="$(gh api "repos/$TARGET_REPO/actions/runs/$run_id/artifacts?per_page=100")"
+          artifact_url="$(jq -er --arg name "merge-attestation-$run_id" '
+            [.artifacts[] | select(.name == $name and .expired == false)]
+            | if length == 1 then .[0].archive_download_url else error("ambiguous evidence") end' <<<"$artifacts")"
+          evidence_dir="$RUNNER_TEMP/post-merge-evidence"
+          mkdir -m 700 "$evidence_dir"
+          gh api "$artifact_url" >"$evidence_dir/evidence.zip"
+          unzip -p "$evidence_dir/evidence.zip" attestation.json >"$evidence_dir/attestation.json"
+          jq -e --arg repo "$TARGET_REPO" --arg head "$MERGED_HEAD_SHA" \
+            --argjson pr "$PR_NUMBER" --argjson run "$run_id" '
+            type == "object" and keys == ["followups","head_sha","pr_number","repository","run_id","version"]
+            and .version == 1 and .repository == $repo and .pr_number == $pr
+            and .head_sha == $head and .run_id == $run
+            and (.followups | type == "array" and length <= 50)
+            and all(.followups[]; type == "object" and keys == ["location","note"]
+              and (.location | type == "string" and test("^.+:[1-9][0-9]*$"))
+              and (.note | type == "string" and test("\\S") and length <= 2000))' \
+            "$evidence_dir/attestation.json" >/dev/null
+          echo "path=$evidence_dir/attestation.json" >>"$GITHUB_OUTPUT"
+      - name: File follow-ups and clean merged branch
+        env:
+          ATTESTATION_FILE: ${{ steps.evidence.outputs.path }}
+        run: bash scripts/ci-gate/post-merge-reconcile.sh

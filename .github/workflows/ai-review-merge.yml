@@ -1349,6 +1349,33 @@ jobs:
             $body"
           fi
 
+      - name: Build trusted post-merge evidence
+        env:
+          VERDICT: ${{ steps.submit.outputs.verdict }}
+        run: |
+          set -euo pipefail
+          dir="$RUNNER_TEMP/merge-attestation"
+          rm -rf "$dir"
+          mkdir -m 700 "$dir"
+          followups='[]'
+          if [ -n "${VERDICT:-}" ]; then
+            followups="$(jq -c '.followups // []' <<<"$VERDICT")"
+          fi
+          jq -n --arg repository "$TARGET_REPO" \
+            --argjson pr_number "$PR_NUMBER" --arg head_sha "$EXPECTED_HEAD_SHA" \
+            --argjson run_id "$GITHUB_RUN_ID" --argjson followups "$followups" \
+            '{version:1, repository:$repository, pr_number:$pr_number,
+              head_sha:$head_sha, run_id:$run_id, followups:$followups}' \
+            >"$dir/attestation.json"
+
+      - name: Upload trusted post-merge evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: merge-attestation-${{ github.run_id }}
+          path: ${{ runner.temp }}/merge-attestation/attestation.json
+          retention-days: 7
+          if-no-files-found: error
+
       # --- CI telemetry (best-effort). Every step is `continue-on-error` so it
       # can NEVER fail or block the gate, and it stays dormant until
       # OTEL_EXPORTER_OTLP_ENDPOINT is set — the composite action no-ops without
@@ -1472,6 +1499,7 @@ jobs:
       GATE_STATUS: ${{ needs.gate.result }}
       PR_NUMBER: ${{ inputs.pr_number }}
       TARGET_REPO: ${{ github.repository }}
+      REVIEW_RUN_ID: ${{ github.run_id }}
     steps:
       - name: Validate authorization App client ID
         run: |
@@ -1526,7 +1554,8 @@ jobs:
             approval_body="AI review authorization approved this exact reviewed head.
 
           <!-- ai-review-authorization:${AUTHORIZATION_CHECK_ID} -->
-          <!-- ai-review-head:${EXPECTED_AUTHORIZED_HEAD_SHA} -->"
+          <!-- ai-review-head:${EXPECTED_AUTHORIZED_HEAD_SHA} -->
+          <!-- ai-review-run:${REVIEW_RUN_ID:-0} -->"
             if approval="$(gh api --method POST "repos/$TARGET_REPO/pulls/$PR_NUMBER/reviews" \
               -f event=APPROVE -f commit_id="$EXPECTED_AUTHORIZED_HEAD_SHA" \
               -f body="$approval_body")" &&
