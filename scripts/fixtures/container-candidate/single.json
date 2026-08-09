@@ -1,0 +1,16 @@
+{
+  "repository": "Verjson/example",
+  "registryNamespace": "ghcr.io/verjson",
+  "nextStableVersion": "1.2.0",
+  "images": [{
+    "variant": "default",
+    "repository": "ghcr.io/verjson/example",
+    "context": ".",
+    "file": "Dockerfile",
+    "platforms": [{"os": "linux", "architecture": "amd64"}],
+    "provenance": {
+      "predicateType": "https://slsa.dev/provenance/v1",
+      "builderIdentity": "Verjson/.github/.github/workflows/container-candidate.yml@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+  }]
+}

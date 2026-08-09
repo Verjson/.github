@@ -65,6 +65,7 @@ changelog-release	bash scripts/render-next.sh >/dev/null
 changelog-release	bash scripts/ci-gate/render-next.test.sh
 changelog-release	python3 scripts/changelog.test.py
 changelog-release	python3 scripts/container_release_manifest.test.py
+changelog-release	bash scripts/container-candidate-contract.test.sh
 changelog-release	python3 scripts/container_deployment_preflight.test.py
 changelog-release	bash scripts/ci-gate/changelog-caller-contract.test.sh
 changelog-release	bash scripts/ci-gate/release-node-restart.test.sh
