@@ -235,6 +235,14 @@ else
   exit 1
 fi
 
+contract_validation="$(sed -n '/^  contract-test)/,/^    ;;/p' "$gen")"
+if grep -q 'bash -n <"$syntax_input"' <<<"$contract_validation" \
+   && ! grep -qE "printf .*\\|[[:space:]]*bash -n" <<<"$contract_validation"; then
+  pass "contract-test syntax validation reads a completed file instead of a pipe"
+else
+  fail "contract-test syntax validation can still race a producer SIGPIPE"
+fi
+
 bash -n "$emitted" 2>/dev/null \
   && pass "emitted contract test is valid bash" \
   || fail "emitted contract test does not parse"
@@ -1080,6 +1088,32 @@ expect_backlink_rejection "a rendered back-link carrying the wrong date" 's/^_Da
 expect_backlink_rejection "text appended after the back-link's closing underscore" 's/refs #16_$/refs #16_ and more/'
 expect_backlink_rejection "an unrecognised suffix in place of refs" 's/; refs #16_/; notes #16_/'
 expect_backlink_rejection "a declared refs linkage the render dropped" 's/; refs #16_/_/'
+
+# A validator may reject the first malformed back-link while rendered output is
+# still much larger than a pipe buffer. The generated suite must report that
+# policy diagnostic, never a producer-side Broken pipe made fatal by pipefail.
+large_backlink="$tmproot/backlink-large"
+build_adopter "$large_backlink"
+cp "$refs_adopter/NEXT/2026-08-03-issue-5-refs.md" "$large_backlink/NEXT/"
+python3 - "$large_backlink/NEXT/2026-08-03-issue-5-refs.md" <<'PY'
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+path.write_text(path.read_text(encoding="utf-8") + ("rendered padding\n" * 32768), encoding="utf-8")
+PY
+commit_fixture "$large_backlink" large-backlink
+corrupt_render "$large_backlink" 's/issue #5;/issue #55;/'
+for attempt in 1 2 3 4 5; do
+  if run_adopter "$large_backlink"; then
+    fail "large rendered back-link mutation was accepted on attempt $attempt"
+  elif grep -q 'back-link missing from the rendered log' "$tmproot/run.out" \
+       && ! grep -qi 'broken pipe' "$tmproot/run.out"; then
+    pass "large rendered rejection reports the intended diagnostic on attempt $attempt"
+  else
+    fail "large rendered rejection raced into another failure on attempt $attempt: $(tail -2 "$tmproot/run.out")"
+  fi
+done
 
 # The released form is what an author is asked to read before merge, and under
 # ADR 0059 it is the form that can never be corrected afterwards. A renderer that
