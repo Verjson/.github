@@ -1,6 +1,6 @@
 ---
 date: 2026-08-09
-issue: 622
+issue: 675
 title: Isolate Actions CI source checkouts
 ---
 

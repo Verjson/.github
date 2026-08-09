@@ -91,9 +91,9 @@ cp "$tmp/group-runner" "$tmp/shared-source/scripts/actions-ci-group.sh"
 rm -rf "$tmp/shared-source/scripts"
 cp -a "$tmp/shared-source/." "$tmp/legacy-copy/"
 if [ ! -e "$tmp/legacy-copy/scripts/actions-ci-group.sh" ]; then
-  pass "shared-source cleanup reproduces the missing actions-ci group runner from issue 622"
+  pass "shared-source cleanup reproduces the missing actions-ci group runner from issue 675"
 else
-  fail "the issue 622 shared-source failure fixture did not reproduce"
+  fail "the issue 675 shared-source failure fixture did not reproduce"
 fi
 python3 - "$workflow" "$tmp/run-platform.sh" platform <<'PY'
 import sys

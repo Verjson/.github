@@ -69,7 +69,7 @@ jobs:
           fetch-tags: true
           # Co-located persistent runners can share GITHUB_WORKSPACE. Give
           # every matrix job its own checkout so another checkout's cleanup
-          # cannot remove files while this job snapshots its source (#622).
+          # cannot remove files while this job snapshots its source (#675).
           path: .actions-ci-source-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.group }}
       - name: Clear the runner changelog cache override
         run: echo "VERJSON_CHANGELOG_TOOL_CACHE=" >> "$GITHUB_ENV"
