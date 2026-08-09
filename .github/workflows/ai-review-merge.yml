@@ -1047,15 +1047,16 @@ jobs:
         # cannot produce a usable verdict. Automatic escalation is forbidden:
         # another paid attempt requires a maintainer-authorized `re-review`.
         continue-on-error: true
-        uses: anthropics/claude-code-action@v1
+        uses: anthropics/claude-code-action@6b082c41935b4c8a3b8b0ef85ba4ba4d9eeb8975 # v1
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           github_token: ${{ github.token }}
-          # The action normalizes bot logins by removing a trailing `[bot]`.
-          # Admit only the trusted Actions dispatcher plus existing dependency
-          # bots; receipt validation above remains the dispatch trust boundary.
-          allowed_bots: "renovate,renovate[bot],mend[bot],github-actions"
+          # This audited action revision lowercases logins and removes one
+          # trailing `[bot]` from both sides before comparison. Keep the source
+          # GitHub logins explicit here; receipt validation above remains the
+          # dispatch trust boundary.
+          allowed_bots: "renovate[bot],mend[bot],github-actions[bot]"
           prompt: ${{ steps.prep.outputs.review_prompt }}
           claude_args: |
             --model ${{ needs.preflight.outputs.model }}

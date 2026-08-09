@@ -15,8 +15,12 @@ PROMOTE = ROOT / ".github/workflows/ai-privileged-merge.yml"
 RETRY = ROOT / ".github/workflows/ai-promotion-retry.yml"
 APP_TOKEN_ACTION = "actions/create-github-app-token"
 IMMUTABLE_ACTION = re.compile(rf"^{re.escape(APP_TOKEN_ACTION)}@[0-9a-f]{{40}}$")
-MODEL_ACTION = "anthropics/claude-code-action@v1"
-TRUSTED_BOTS = {"renovate", "renovate[bot]", "mend[bot]", "github-actions"}
+MODEL_ACTION_NAME = "anthropics/claude-code-action"
+MODEL_ACTION_SHA = "6b082c41935b4c8a3b8b0ef85ba4ba4d9eeb8975"
+MODEL_ACTION = f"{MODEL_ACTION_NAME}@{MODEL_ACTION_SHA}"
+IMMUTABLE_MODEL_ACTION = re.compile(
+    rf"^{re.escape(MODEL_ACTION_NAME)}@[0-9a-f]{{40}}$")
+TRUSTED_BOTS = {"renovate[bot]", "mend[bot]", "github-actions[bot]"}
 
 
 def load(path: Path):
@@ -66,6 +70,13 @@ def validate_authorization_app_token_pins(uses_values: list[str]) -> None:
 
 
 def validate_model_admission(steps: list[dict]) -> None:
+    model_uses = [step.get("uses", "") for step in steps
+                  if step.get("uses", "").startswith(f"{MODEL_ACTION_NAME}@")]
+    require(model_uses and all(IMMUTABLE_MODEL_ACTION.fullmatch(uses)
+                               for uses in model_uses),
+            "every Claude review action must use a full lowercase 40-hex SHA")
+    require(len(set(model_uses)) == 1 and model_uses[0] == MODEL_ACTION,
+            "every Claude review pass must share the audited immutable action pin")
     model_indexes = [index for index, step in enumerate(steps)
                      if step.get("uses") == MODEL_ACTION]
     require(len(model_indexes) == 1, "review must retain exactly one automatic paid model pass")
@@ -88,7 +99,7 @@ def validate_model_admission(steps: list[dict]) -> None:
         require("*" not in allowed, "model bot admission must never contain a wildcard")
         allowlists.append({login.strip() for login in allowed.split(",") if login.strip()})
     require(all(allowed == TRUSTED_BOTS for allowed in allowlists),
-            "the model pass must retain the exact trusted dispatcher/Renovate/Mend allowlist")
+            "the model pass must retain exact source bot logins without normalized aliases")
 
 
 def main() -> int:
@@ -126,6 +137,33 @@ def main() -> int:
         pass
     else:
         raise AssertionError("wildcard bot mutation escaped model admission contract")
+
+    for invalid_uses in (f"{MODEL_ACTION_NAME}@v1",
+                         f"{MODEL_ACTION_NAME}@{'a' * 40}"):
+        mutated_pin_steps = [dict(step) for step in gate_steps]
+        mutated_pin_steps[first_model] = {
+            **mutated_pin_steps[first_model], "uses": invalid_uses,
+        }
+        try:
+            validate_model_admission(mutated_pin_steps)
+        except AssertionError:
+            continue
+        raise AssertionError(f"mutable or divergent Claude action pin escaped: {invalid_uses}")
+
+    normalized_alias_steps = [dict(step) for step in gate_steps]
+    normalized_alias_steps[first_model] = {
+        **normalized_alias_steps[first_model],
+        "with": {
+            **normalized_alias_steps[first_model]["with"],
+            "allowed_bots": "renovate,mend,github-actions",
+        },
+    }
+    try:
+        validate_model_admission(normalized_alias_steps)
+    except AssertionError:
+        pass
+    else:
+        raise AssertionError("normalized aliases escaped the source-login bot contract")
 
     validation_index = next(index for index, step in enumerate(gate_steps)
                             if step.get("name") == "Validate trusted head authorization")
