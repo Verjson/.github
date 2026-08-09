@@ -33,6 +33,27 @@ def require(condition: bool, message: str) -> None:
         raise AssertionError(message)
 
 
+def validate_runner_free_external_ci_wait(workflow: dict, job_name: str) -> None:
+    job = workflow["jobs"][job_name]
+    for step in job.get("steps", []):
+        script = step.get("run", "")
+        require(not re.search(r"\bsleep\b|ci-wait|MERGE_PROBE", script, re.I),
+                f"{job_name} must not sleep or retain a polling-era CI wait")
+        queries = list(re.finditer(
+            r"commits/[^\s\"']+/(?:check-runs|status)(?:\?per_page=100)?", script))
+        if not queries:
+            continue
+        require(len(queries) <= 1,
+                f"{job_name} must use at most one external-CI snapshot per step")
+        prefix = script[:queries[0].start()]
+        loop_open = max((match.start() for match in re.finditer(
+            r"(?:^|[;\n])\s*(?:for\b[^\n;]*|for\s*\(\([^\n]*|while\b[^\n;]*|until\b[^\n;]*)\s*;?\s*do\b",
+            prefix, re.M)), default=-1)
+        loop_close = prefix.rfind("done")
+        require(loop_open <= loop_close,
+                f"{job_name} must not query external CI from inside a loop")
+
+
 def authorization_app_token_uses(workflow: dict, job_name: str) -> str:
     steps = workflow["jobs"][job_name]["steps"]
     matches = [step.get("uses", "") for step in steps
@@ -122,6 +143,8 @@ def main() -> int:
             all(dispatch_inputs[name].get("required") is True for name in receipt_inputs),
             "workflow_dispatch must require the exact head, App check, and arm-receipt identity")
     gate_steps = review["jobs"]["gate"]["steps"]
+    validate_runner_free_external_ci_wait(review, "gate")
+    validate_runner_free_external_ci_wait(promote, "privileged_merge")
     validate_model_admission(gate_steps)
 
     mutated_steps = [dict(step) for step in gate_steps]
@@ -310,15 +333,36 @@ def main() -> int:
     require(promote_text.count("check-runs?per_page=100") == 1,
             "promotion must read required checks once rather than poll")
 
-    require(set(retry[True]) == {"workflow_run"} and
+    mutated_review = yaml.safe_load(yaml.safe_dump(review))
+    mutated_review["jobs"]["gate"]["steps"].append(
+        {"run": "for attempt in $(seq 1 20); do gh api commits/head/check-runs?per_page=100; sleep 30; done"})
+    mutated_promote = yaml.safe_load(yaml.safe_dump(promote))
+    mutated_promote["jobs"]["privileged_merge"]["steps"].append(
+        {"run": "until gh api commits/head/status?per_page=100; do sleep 30; done"})
+    mutated_infinite = yaml.safe_load(yaml.safe_dump(review))
+    mutated_infinite["jobs"]["gate"]["steps"].append(
+        {"run": "for ((;;)); do gh api commits/head/check-runs; done"})
+    for workflow, job_name in ((mutated_review, "gate"),
+                               (mutated_promote, "privileged_merge"),
+                               (mutated_infinite, "gate")):
+        try:
+            validate_runner_free_external_ci_wait(workflow, job_name)
+        except AssertionError:
+            continue
+        raise AssertionError(f"{job_name} polling-loop mutation escaped the structural contract")
+
+    require(set(retry[True]) == {"workflow_run", "workflow_call"} and
             retry[True]["workflow_run"]["types"] == ["completed"],
-            "CI retry must be reachable only from completed deterministic workflows")
+            "CI retry must be callable by generated consumers and directly reachable only from completed deterministic workflows")
     require("ai-review-merge.yml" not in retry_text and MODEL_ACTION not in retry_text and
             "ai-privileged-merge.yml" in retry_text,
             "CI completion path must be structurally unable to invoke paid review")
     require("AI review authorization" in retry_text and "EXPECTED_APP_ID" in retry_text and
             "EXPECTED_APP_SLUG" in retry_text and "HEAD_SHA" in retry_text,
             "CI completion retry must rediscover exact-head dedicated-App evidence")
+    require("--retry" in promote_generator and "ai-promotion-retry.yml" in promote_generator and
+            "workflow_run:" in promote_generator and RETRY.name in promote_generator,
+            "privileged caller generator must also emit the consumer CI-completion bridge")
 
     for path, data in ((REARM, rearm), (PROMOTE, promote)):
         for job in data["jobs"].values():

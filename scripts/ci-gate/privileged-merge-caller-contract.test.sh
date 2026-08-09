@@ -159,6 +159,8 @@ bash "$gen" "$contract_sha" >"$tmp/caller.yml" 2>/dev/null \
   && pass "generator emits a caller from an immutable contract SHA" || fail "generator rejected a valid contract SHA"
 bash "$gen" "$contract_sha" '["ubuntu-24.04"]' >"$tmp/caller-labels.yml" 2>/dev/null \
   && pass "generator still emits a caller for an explicit fleet" || fail "generator failed with explicit labels"
+bash "$gen" "$contract_sha" --retry '["CI","changelog"]' >"$tmp/retry.yml" 2>/dev/null \
+  && pass "generator emits a CI-completion retry caller" || fail "generator rejected valid retry workflow names"
 
 python3 - "$tmp/caller.yml" <<'PY' && pass "generated caller's job key is privileged_merge" \
   || fail "generated caller job key is not privileged_merge — deadlocks the gate"
@@ -178,6 +180,27 @@ d = yaml.safe_load(open(sys.argv[1]))
 want = f"Verjson/.github/.github/workflows/ai-privileged-merge.yml@{sys.argv[2]}"
 sys.exit(0 if d["jobs"]["privileged_merge"].get("uses") == want else 1)
 TARGET_PY
+
+python3 - "$tmp/retry.yml" "$contract_sha" <<'RETRY_PY' \
+  && pass "generated retry caller bridges declared workflow completions to the immutable canonical retry" \
+  || fail "generated retry caller lost its event or immutable trust binding"
+import sys, yaml
+d = yaml.safe_load(open(sys.argv[1]))
+on = d.get(True, d.get("on"))
+want = f"Verjson/.github/.github/workflows/ai-promotion-retry.yml@{sys.argv[2]}"
+job = d.get("jobs", {}).get("retry", {})
+if set(on) != {"workflow_run"} or on["workflow_run"] != {
+        "workflows": ["CI", "changelog"], "types": ["completed"]}:
+    sys.exit(1)
+if job.get("uses") != want or set(job.get("secrets", {})) != {
+        "ACTIONS_VARIABLES_TOKEN", "ORG_ADMIN_TOKEN"}:
+    sys.exit(1)
+sys.exit(0)
+RETRY_PY
+
+grep -q 'ai-review-merge.yml' "$tmp/retry.yml" \
+  && fail "generated CI completion bridge can invoke the paid review workflow" \
+  || pass "generated CI completion bridge cannot invoke paid review"
 
 # What the caller PASSES, not merely that it calls something. Each of the
 # following slipped through mutation testing of the previous version.
@@ -311,6 +334,12 @@ bash "$gen" "$contract_sha" '[]' >/dev/null 2>&1 && fail "generator accepted emp
 bash "$gen" "$contract_sha" '["${{ secrets.ORG_ADMIN_TOKEN }}"]' >/dev/null 2>&1 \
   && fail "generator accepted an expression as a runner label" \
   || pass "generator rejects a runner label outside [A-Za-z0-9._-]"
+bash "$gen" "$contract_sha" --retry '[]' >/dev/null 2>&1 \
+  && fail "generator accepted an empty retry workflow list" \
+  || pass "generator requires at least one deterministic completion workflow"
+bash "$gen" "$contract_sha" --retry '["CI", "${{ secrets.X }}"]' >/dev/null 2>&1 \
+  && fail "generator accepted an expression as a retry workflow name" \
+  || pass "generator rejects unsafe retry workflow names"
 
 # An UNSET shell variable is the common way an operator reaches the default:
 # `gen "$SHA" "$LABELS"` passes an empty second argument, which must produce the lane-routed

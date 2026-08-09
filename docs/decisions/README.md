@@ -11,6 +11,7 @@ Reverse-chronological index of org-level decisions.
 <!-- BEGIN ADR INDEX -->
 | # | Date | Decision |
 |---|------|----------|
+| [0087](0087-runner-free-event-driven-ai-gates/README.md) | 2026-08-09 | AI gates never hold runners waiting for external CI |
 | [0086](0086-secretless-node-pr-validation/README.md) | 2026-08-09 | Separate Node dependency acquisition from secretless PR execution |
 | [0085](0085-immutable-privileged-caller-contract/README.md) | 2026-08-09 | Pin privileged callers to immutable contract revisions |
 | [0084](0084-programmatic-privileged-routing/README.md) | 2026-08-09 | Resolve privileged routing programmatically |
