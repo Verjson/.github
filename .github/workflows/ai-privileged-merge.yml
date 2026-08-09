@@ -62,8 +62,6 @@ on:
     secrets:
       ACTIONS_VARIABLES_TOKEN:
         required: false
-      VERJSON_ACTIONS_TOKEN:
-        required: false
       ORG_ADMIN_TOKEN:
         required: true
 
@@ -85,7 +83,7 @@ jobs:
       - name: Resolve privileged routing from organization policy
         id: route
         env:
-          GH_TOKEN: ${{ secrets.ACTIONS_VARIABLES_TOKEN || secrets.VERJSON_ACTIONS_TOKEN }}
+          GH_TOKEN: ${{ secrets.ACTIONS_VARIABLES_TOKEN }}
           REPOSITORY_OWNER: ${{ github.repository_owner }}
         run: |
           set -euo pipefail

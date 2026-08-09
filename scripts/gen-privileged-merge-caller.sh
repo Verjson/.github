@@ -115,7 +115,7 @@ jobs:
     # Explicit rather than \`inherit\`: the caller grants only the routing-read
     # and terminal merge secrets to a workflow that floats on @main.
     secrets:
-      ACTIONS_VARIABLES_TOKEN: \${{ secrets.VERJSON_ACTIONS_TOKEN }}
+      ACTIONS_VARIABLES_TOKEN: \${{ secrets.ACTIONS_VARIABLES_TOKEN }}
       ORG_ADMIN_TOKEN: \${{ secrets.ORG_ADMIN_TOKEN }}
     with:
       pr_number: \${{ inputs.pr_number }}

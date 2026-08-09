@@ -78,17 +78,13 @@ want = "${{ github.repository_owner == 'Verjson' && fromJSON('[\"self-hosted\",\
 sys.exit(0 if route.get("runs-on") == want else 1)
 PY
 
-python3 - "$canonical" <<'PY' && pass "read-only routing tokens are optional during caller migration" \
+python3 - "$canonical" <<'PY' && pass "read-only routing token is optional during caller migration" \
   || fail "routing-token migration contract changed"
 import sys, yaml
 d = yaml.safe_load(open(sys.argv[1]))
 on = d.get(True, d.get("on"))
 secrets = on["workflow_call"]["secrets"]
-expected = {
-    "ACTIONS_VARIABLES_TOKEN": {"required": False},
-    "VERJSON_ACTIONS_TOKEN": {"required": False},
-}
-sys.exit(0 if all(secrets.get(name) == contract for name, contract in expected.items()) else 1)
+sys.exit(0 if secrets.get("ACTIONS_VARIABLES_TOKEN") == {"required": False} else 1)
 PY
 
 python3 - "$canonical" <<'PY' && pass "resolver is checkout-free and reads only allowlisted Verjson policy" \
@@ -100,7 +96,7 @@ step = next(step for step in route["steps"] if step.get("id") == "route")
 if any("checkout" in str(item.get("uses", "")) for item in route["steps"]):
     sys.exit(1)
 if step.get("env") != {
-    "GH_TOKEN": "${{ secrets.ACTIONS_VARIABLES_TOKEN || secrets.VERJSON_ACTIONS_TOKEN }}",
+    "GH_TOKEN": "${{ secrets.ACTIONS_VARIABLES_TOKEN }}",
     "REPOSITORY_OWNER": "${{ github.repository_owner }}",
 }:
     sys.exit(1)
@@ -243,7 +239,7 @@ import sys, yaml
 d = yaml.safe_load(open(sys.argv[1]))
 got = d["jobs"]["privileged_merge"].get("secrets")
 want = {
-    "ACTIONS_VARIABLES_TOKEN": "${{ secrets.VERJSON_ACTIONS_TOKEN }}",
+    "ACTIONS_VARIABLES_TOKEN": "${{ secrets.ACTIONS_VARIABLES_TOKEN }}",
     "ORG_ADMIN_TOKEN": "${{ secrets.ORG_ADMIN_TOKEN }}",
 }
 sys.exit(0 if got == want else 1)
