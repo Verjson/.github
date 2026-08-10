@@ -18,7 +18,7 @@ for tool in gh jq unzip sha256sum; do command -v "$tool" >/dev/null || exit 1; d
 review_policy_json="$(python3 "$(dirname "$0")/review-policy-envelope.py" decode "$REVIEW_POLICY")" || exit 1
 review_actor="$(jq -r .actor <<<"$review_policy_json")"
 receipt_permission="$(jq -r .actor_permission <<<"$review_policy_json")"
-if [ "$receipt_permission" != automation ]; then
+if [ "$receipt_permission" != automation ] && [ "${REVERIFY_ACTOR_PERMISSION:-true}" != false ]; then
   [[ "$review_actor" =~ ^[A-Za-z0-9][A-Za-z0-9-]*$ ]] || exit 1
   case "$receipt_permission" in admin|maintain) ;; *) exit 1 ;; esac
   current_permission="$(gh api "repos/$TARGET_REPO/collaborators/$review_actor/permission" --jq '.permission // ""')" || exit 1

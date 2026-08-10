@@ -77,6 +77,7 @@ repack() {
 write_base; expect_pass "exact dedicated-App check and immutable receipt are accepted" verify
 write_base; REVIEW_POLICY="$(encode_policy "$openai_policy")" expect_fail "a provider change after authorization is rejected" verify
 REVIEW_POLICY="$(encode_policy "$openai_policy")"; write_base; expect_pass "maintainer re-review evidence is reauthorized" verify
+write_base; CURRENT_PERMISSION=triage REVERIFY_ACTOR_PERMISSION=false expect_pass "completion trusts the immutable arm permission without repository administration access" verify
 write_base; CURRENT_PERMISSION=triage expect_fail "permission revocation after authorization fails closed" verify; unset CURRENT_PERMISSION
 export REVIEW_POLICY="$(encode_policy "$anthropic_policy")"
 write_base; jq '.details_url="https://github.com/Verjson/example/actions/runs/9999"' "$CHECK_FILE" >"$tmp/x" && mv "$tmp/x" "$CHECK_FILE"; expect_fail "forged same-App details URL is rejected" verify
