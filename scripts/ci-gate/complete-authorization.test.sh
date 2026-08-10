@@ -19,7 +19,7 @@ def valid(document):
     complete = next(step for step in steps
                     if step.get("name") == "Complete exact head authorization")
     run = complete["run"]
-    app_head = "current_head=\"$(gh api \"repos/$TARGET_REPO/pulls/$PR_NUMBER\" --jq '.head.sha // \"\"')\""
+    workflow_head = "current_head=\"$(GH_TOKEN=\"$ACTIONS_TOKEN\" gh api \"repos/$TARGET_REPO/pulls/$PR_NUMBER\" --jq '.head.sha // \"\"')\""
     return (
         env.get("EXPECTED_HEAD_SHA") == "${{ needs.preflight.outputs.head_sha }}"
         and env.get("EXPECTED_APP_ID") == "${{ vars.AI_REVIEW_APP_ID }}"
@@ -31,8 +31,8 @@ def valid(document):
         and token["with"].get("permission-checks") == "write"
         and token["with"].get("permission-contents") == "read"
         and token["with"].get("permission-pull-requests") == "write"
-        and app_head in run
-        and 'GH_TOKEN="$ACTIONS_TOKEN" gh api "repos/$TARGET_REPO/pulls/$PR_NUMBER"' not in run
+        and workflow_head in run
+        and "workflow token REST head lookup failed" in run
         and "gh pr view" not in run
         and run.index("verify-arm-receipt.sh") < run.index("-f event=APPROVE")
         and run.index("-f event=APPROVE") < run.index("-f status=completed")
@@ -75,13 +75,13 @@ complete["run"] = complete["run"].replace(
     """gh api "repos/$TARGET_REPO/pulls/$PR_NUMBER" --jq '.head.sha // ""'""",
     'gh pr view "$PR_NUMBER" --repo "$TARGET_REPO" --json headRefOid --jq \'.headRefOid // ""\'')
 assert not valid(graphql_head), "GraphQL head lookup mutation escaped least-privilege contract"
-actions_token_head = copy.deepcopy(workflow)
-complete = next(step for step in actions_token_head["jobs"]["complete-authorization"]["steps"]
+app_token_head = copy.deepcopy(workflow)
+complete = next(step for step in app_token_head["jobs"]["complete-authorization"]["steps"]
                 if step.get("name") == "Complete exact head authorization")
 complete["run"] = complete["run"].replace(
-    'current_head="$(gh api',
-    'current_head="$(GH_TOKEN="$ACTIONS_TOKEN" gh api')
-assert not valid(actions_token_head), "workflow-token head lookup escaped App-token separation"
+    'current_head="$(GH_TOKEN="$ACTIONS_TOKEN" gh api',
+    'current_head="$(gh api')
+assert not valid(app_token_head), "App-token head lookup escaped token separation"
 PY
 [ "$?" -eq 0 ] || exit 1
 
