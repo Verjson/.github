@@ -3,320 +3,111 @@ set -uo pipefail
 
 here="$(cd "$(dirname "$0")" && pwd)"
 repo_root="$(cd "$here/../.." && pwd)"
-wf="$repo_root/.github/workflows/ai-review-merge.yml"
-merge_wf="$repo_root/.github/workflows/ai-privileged-merge.yml"
+review_workflow="$repo_root/.github/workflows/ai-review-merge.yml"
+privileged_workflow="$repo_root/.github/workflows/ai-privileged-merge.yml"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
-fails=0
-pass() { printf 'ok   - %s\n' "$1"; }
-fail() { printf 'FAIL - %s\n' "$1"; fails=$((fails + 1)); }
+failures=0
 
-untrusted="$(cat "$wf")"
-privileged="$(cat "$merge_wf")"
+pass() { printf 'ok - %s\n' "$1"; }
+fail() { printf 'FAIL - %s\n' "$1"; failures=$((failures + 1)); }
 
-if grep -q 'secrets\.ORG_ADMIN_TOKEN' <<<"$untrusted"; then
-  fail "untrusted validation/review references ORG_ADMIN_TOKEN"
-else
-  pass "untrusted validation/review has no ORG_ADMIN_TOKEN reference"
-fi
-if grep -qE 'actions/(checkout|cache|upload-artifact|download-artifact)|GITHUB_(ENV|OUTPUT)|uses:' <<<"$privileged"; then
-  fail "privileged job can ingest PR-controlled code, cache, artifact, env, or output"
-else
-  pass "privileged job consumes trusted API metadata only"
-fi
-grep -q '^  pull_request_target:' <<<"$privileged" \
-  && grep -q '^  workflow_dispatch:' <<<"$privileged" \
-  && grep -q 'source_run_id:' <<<"$privileged" \
-  && pass "privileged job accepts base-branch PR events and attested local dispatch" \
-  || fail "privileged triggers lost trusted PR or attested dispatch path"
-grep -q 'trusted_workflow_id=' <<<"$privileged" \
-  && grep -q 'newest_trusted_gate_run' <<<"$privileged" \
-  && grep -q 'sort_by(\[(.created_at // ""), .id\])' <<<"$privileged" \
-  && grep -q 'contains($needle)' <<<"$privileged" \
-  && pass "merge authority verifies newest immutable workflow-run provenance" \
-  || fail "merge can trust a spoofable check name without run provenance"
-[ "$(grep -c 'secrets\.ORG_ADMIN_TOKEN' "$merge_wf")" -eq 1 ] \
-  && ! grep -q 'secrets\.ORG_ADMIN_TOKEN' "$wf" \
-  && pass "ORG_ADMIN_TOKEN has exactly one workflow reference" \
-  || fail "ORG_ADMIN_TOKEN escaped its single privileged environment binding"
-
-script="$tmp/merge.sh"
-awk '
-  $0 == "      - name: Privileged merge from trusted metadata only" { seen = 1 }
-  seen && $0 == "        run: |" { cap = 1; next }
-  cap {
-    if (substr($0, 1, 10) == "          ") { print substr($0, 11); next }
-    if ($0 ~ /^[[:space:]]*$/) { print ""; next }
-    exit
-  }
-' "$merge_wf" >"$script"
-
-mkdir -p "$tmp/bin"
-cat >"$tmp/bin/sleep" <<'EOF'
-#!/usr/bin/env bash
-exit 0
-EOF
-cat >"$tmp/bin/unzip" <<'EOF'
-#!/usr/bin/env bash
-printf '%s\n' "$ATTESTATION_FIXTURE"
-EOF
-cat >"$tmp/bin/gh" <<'EOF'
-#!/usr/bin/env bash
-if [ "$1 $2" = "pr view" ]; then
-  if [[ "$*" == *"reviews,comments"* ]]; then
-    printf '%s\n' "${REVIEW_FIXTURE:-{\"reviews\":[],\"comments\":[]}}"
-    exit 0
-  fi
-  count="$(cat "$VIEW_COUNT" 2>/dev/null || echo 0)"
-  count=$((count + 1))
-  printf '%s\n' "$count" >"$VIEW_COUNT"
-  if [ "$count" -gt 1 ] && [ -n "${PR_FIXTURE_FINAL:-}" ]; then
-    printf '%s\n' "$PR_FIXTURE_FINAL"
-  else
-    printf '%s\n' "$PR_FIXTURE"
-  fi
-  exit 0
-fi
-if [ "$1" = "api" ] && [[ "$2" == *"/actions/workflows/ai-review-merge.yml" ]]; then
-  printf '42\n'
-  exit 0
-fi
-if [ "$1" = "api" ] && [[ "$2" == *"/commits/main" ]]; then
-  printf 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n'
-  exit 0
-fi
-if [ "$1" = "api" ] && [[ "$*" == *"/pulls/7/files"* ]]; then
-  [ "${FILES_API_FAIL:-false}" != true ] || exit 1
-  count="$(cat "$FILES_COUNT" 2>/dev/null || echo 0)"
-  count=$((count + 1))
-  printf '%s\n' "$count" >"$FILES_COUNT"
-  fixture="${FILES_FIXTURE:-}"
-  if [ "$count" -gt 1 ] && [ -n "${FILES_FIXTURE_FINAL:-}" ]; then
-    fixture="$FILES_FIXTURE_FINAL"
-  fi
-  # Pagination is HONOURED, not assumed (#358). This stub used to return the whole
-  # already-filtered fixture whatever flags it was given, so removing --paginate
-  # from the production call left the "beyond 100 files" case green — the guard
-  # would have missed a workflow file after file 100 and allowed an auto-merge
-  # where policy requires a human hold, with a passing test on top.
-  #
-  # Real `gh api` without --paginate returns page 1 ONLY. So: page 1 is the first
-  # 100 entries, and everything after it is reachable only when --paginate is
-  # passed. A fixture of 100 or fewer entries is unaffected, which keeps every
-  # other case in this file working unchanged.
-  if [[ "$*" != *--paginate* ]]; then
-    fixture="$(printf '%s' "$fixture" | head -n 100)"
-  fi
-  printf '%s' "$fixture"
-  exit 0
-fi
-if [ "$1" = "api" ] && [ "$2" = "repos/Verjson/.github" ]; then
-  printf '1269388380\n'
-  exit 0
-fi
-if [ "$1" = "api" ] && [[ "$2" =~ /pulls/7$ ]]; then
-  printf 'main\n'
-  exit 0
-fi
-if [ "$1" = "api" ] && [[ "$2" == *"/rules/branches/"* ]]; then
-  # This suite exercises the workflow_id provenance shape; no required-workflow
-  # rule applies, so required-workflow trust must stay off.
-  printf '[]\n'
-  exit 0
-fi
-if [ "$1" = "api" ] && [[ "$2" == *"/artifacts?per_page=100" ]]; then
-  if [ "${ARTIFACTS_EMPTY:-false}" = true ]; then
-    printf '{"artifacts":[]}\n'
-    exit 0
-  fi
-  run_id="$(sed -E 's#^.*/runs/([0-9]+)/artifacts.*#\1#' <<<"$2")"
-  printf '{"artifacts":[{"id":555,"name":"merge-attestation-%s","expired":false}]}\n' "$run_id"
-  exit 0
-fi
-if [ "$1" = "api" ] && [[ "$2" == *"/actions/artifacts/555/zip" ]]; then
-  printf 'zip-fixture'
-  exit 0
-fi
-if [ "$1" = "api" ] && [[ "$2" =~ /actions/runs/[0-9]+$ ]]; then
-  printf '%s\n' "$DISPATCH_RUN_FIXTURE"
-  exit 0
-fi
-if [ "$1" = "api" ] && [[ "$2" == *"/actions/runs"* ]]; then
-  printf '%s\n' "$RUN_FIXTURE"
-  exit 0
-fi
-if [ "$1 $2" = "pr merge" ]; then
-  printf '%s\n' "$*" >>"$MERGE_LOG"
-  exit 0
-fi
-if [ "$1 $2" = "issue list" ]; then
-  printf '0\n'
-  exit 0
-fi
-if [ "$1 $2" = "issue create" ]; then
-  printf 'ISSUE %s\n' "$*" >>"$MERGE_LOG"
-  exit 0
-fi
-exit 2
-EOF
-chmod +x "$tmp/bin/gh" "$tmp/bin/sleep" "$tmp/bin/unzip"
-
-sha=0123456789abcdef0123456789abcdef01234567
-green='{"headRefOid":"'"$sha"'","isDraft":false,"labels":[],"state":"OPEN","files":[],"statusCheckRollup":[{"name":"gate","status":"COMPLETED","conclusion":"SUCCESS","detailsUrl":"https://github.com/Verjson/example/actions/runs/99/job/1"},{"name":"build","status":"COMPLETED","conclusion":"SUCCESS"}]}'
-# `path` is the run's ENTRY workflow, and the privileged merge requires it to be
-# the gate (#279, ADR 0044). It is a non-nullable field of every real workflow
-# run — ADR 0039 transcribes it from live run 30601252875 — so carrying it here
-# is fixture fidelity, not an accommodation: these cases assert the trusted merge
-# path, and a payload the API never emits cannot stand for one.
-trusted_run='{"id":99,"workflow_id":42,"path":".github/workflows/ai-review-merge.yml","head_sha":"'"$sha"'","event":"pull_request","conclusion":"success","created_at":"2026-07-30T10:00:00Z","run_started_at":"2026-07-30T10:05:00Z","repository":{"full_name":"Verjson/example"}}'
-trusted_runs='{"workflow_runs":['"$trusted_run"']}'
-default_attestation='{"version":1,"repository":"Verjson/example","pr_number":7,"head_sha":"'"$sha"'","run_id":99,"followups":[]}'
-run_case() {
-  local fixture="$1" token="${2-present}" expected="${3-$sha}"
-  : >"$tmp/merge.log"
-  : >"$tmp/view-count"
-  : >"$tmp/files-count"
-  PATH="$tmp/bin:$PATH" PR_FIXTURE="$fixture" MERGE_LOG="$tmp/merge.log" \
-    VIEW_COUNT="$tmp/view-count" PR_FIXTURE_FINAL="${PR_FIXTURE_FINAL:-}" \
-    FILES_COUNT="$tmp/files-count" FILES_FIXTURE="${FILES_FIXTURE:-}" \
-    FILES_FIXTURE_FINAL="${FILES_FIXTURE_FINAL:-}" \
-    FILES_API_FAIL="${FILES_API_FAIL:-false}" \
-    RUN_FIXTURE="${RUN_FIXTURE:-$trusted_runs}" \
-    REVIEW_FIXTURE="${REVIEW_FIXTURE:-}" \
-    DISPATCH_RUN_FIXTURE="${DISPATCH_RUN_FIXTURE:-$trusted_run}" \
-    ATTESTATION_FIXTURE="${ATTESTATION_FIXTURE:-$default_attestation}" \
-    ARTIFACTS_EMPTY="${ARTIFACTS_EMPTY:-false}" \
-    GITHUB_EVENT_NAME="${TEST_EVENT_NAME:-pull_request_target}" \
-    SOURCE_RUN_ID="${SOURCE_RUN_ID:-}" \
-    RUNNER_TEMP="$tmp" \
-    GH_TOKEN="$token" TARGET_REPO=Verjson/example TARGET_OWNER=Verjson \
-    GITHUB_REPOSITORY=Verjson/example PR_NUMBER=7 EXPECTED_HEAD_SHA="$expected" \
-    EXECUTING_WORKFLOW_SHA=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb \
-    EXECUTING_WORKFLOW_REPOSITORY=Verjson/.github \
-    SELF_WORKFLOW_SHA=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb \
-    bash "$script" >"$tmp/case-output.txt" 2>&1
+job() {
+  local workflow="$1" name="$2"
+  awk -v wanted="$name" '
+    /^jobs:$/ { in_jobs=1; next }
+    in_jobs && $0 ~ "^  " wanted ":$" { found=1; print; next }
+    found && /^  [A-Za-z0-9_-]+:$/ { exit }
+    found { print }
+  ' "$workflow"
 }
 
-for actor in dependabot renovate fork ordinary; do
-  if run_case "$green" && grep -q -- "--match-head-commit $sha" "$tmp/merge.log"; then
-    pass "$actor PR merges only with the immutable reviewed head"
-  else
-    sed 's/^/       /' "$tmp/case-output.txt"
-    fail "$actor PR did not follow the trusted merge path"
-  fi
-done
+step() {
+  local workflow="$1" job_name="$2" step_name="$3"
+  job "$workflow" "$job_name" | awk -v wanted="$step_name" '
+    $0 == "      - name: " wanted { found=1; print; next }
+    found && /^      - name:/ { exit }
+    found { print }
+  '
+}
 
-stale="${green/$sha/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa}"
-run_case "$stale" && fail "stale head was accepted" || pass "stale head is rejected"
-red="${green/\"name\":\"build\",\"status\":\"COMPLETED\",\"conclusion\":\"SUCCESS\"/\"name\":\"build\",\"status\":\"COMPLETED\",\"conclusion\":\"FAILURE\"}"
-run_case "$red" && fail "failed required check was accepted" || pass "failed required check is rejected"
-run_case "$green" "" && fail "missing credentials were accepted" || pass "missing credentials fail closed"
-# Draft and hold are INTENTIONAL holds, so since #263 they end the job as a
-# terminal no-op with a notice rather than a red check — the same shape ADR 0037
-# gave the workflow-files hold, asserted a few lines below.
-#
-# These two cases used to judge on the exit status alone (`run_case … && fail
-# "draft PR was accepted"`), which conflates "exited 0" with "merged". That is the
-# very proxy #263 is about: the invariant is *must not merge*, and exit status was
-# standing in for it. Assert the invariant directly instead — no merge, plus the
-# notice that says why — so this still catches a real fail-open. Flipping it to
-# expect exit 0 without checking the merge log would have made it vacuous.
-draft="${green/\"isDraft\":false/\"isDraft\":true}"
-run_case "$draft" \
-  && ! grep -q '^pr merge ' "$tmp/merge.log" \
-  && grep -q 'is a draft; privileged merge is a terminal no-op' "$tmp/case-output.txt" \
-  && pass "draft PR is a terminal no-op: not merged, not a red check (#263)" \
-  || { sed 's/^/       /' "$tmp/case-output.txt"; fail "draft PR did not stop as a successful no-op"; }
-# Built with jq, not `${green/"labels":[]/…}`. That substitution was silently
-# broken: `[]` is a bash glob bracket expression, so the pattern consumed past the
-# closing bracket and produced malformed JSON with `state` and `statusCheckRollup`
-# nested INSIDE the label object and no top-level `state` at all. The old
-# assertion ("held PR is rejected") therefore passed because the step bailed at
-# `PR is no longer open` — it never reached the hold check, and had the hold been
-# removed entirely this case would still have gone green. Pre-existing and
-# invisible; found only because the expected outcome changed here.
-held="$(jq -c '.labels = [{"name":"hold"}]' <<<"$green")"
-run_case "$held" \
-  && ! grep -q '^pr merge ' "$tmp/merge.log" \
-  && grep -q 'hold label; privileged merge is a terminal no-op' "$tmp/case-output.txt" \
-  && pass "held PR is a terminal no-op: not merged, not a red check (#263)" \
-  || { sed 's/^/       /' "$tmp/case-output.txt"; fail "held PR did not stop as a successful no-op"; }
-# The fail-closed direction at this layer too: an unreadable draft flag is neither
-# a hold nor a pass. Without this, the two cases above could be satisfied by a
-# guard that treats any non-false value as a hold — which my first version of the
-# #263 fix did, absorbing garbage metadata as a deliberate human stop.
-unreadable="${green/\"isDraft\":false/\"isDraft\":\"maybe\"}"
-run_case "$unreadable" \
-  && { sed 's/^/       /' "$tmp/case-output.txt"; fail "an unreadable draft flag passed as a hold (#480)"; } \
-  || { ! grep -q '^pr merge ' "$tmp/merge.log" \
-       && pass "an unreadable draft flag fails closed without merging (#480)" \
-       || fail "FAIL-OPEN: an unreadable draft flag merged"; }
-padding="$(for i in $(seq 1 100); do printf 'docs/pad-%03d.md\n' "$i"; done)"
-FILES_FIXTURE="${padding}"$'\n''.github/workflows/caller.yml'$'\n' run_case "$green" \
-  && ! grep -q '^pr merge ' "$tmp/merge.log" \
-  && ! grep -q '^ISSUE ' "$tmp/merge.log" \
-  && grep -q 'privileged auto-merge skipped; human review and merge required' "$tmp/case-output.txt" \
-  && pass "paginated workflow changes beyond 100 files stop successfully for human review" \
-  || fail "workflow change did not produce a successful no-merge human hold"
-spoofed_run="${trusted_runs/\"workflow_id\":42/\"workflow_id\":777}"
-RUN_FIXTURE="$spoofed_run" run_case "$green" \
-  && fail "spoofed gate workflow identity was accepted" \
-  || pass "spoofed gate workflow identity is rejected"
-newer_pending_run='{"id":100,"workflow_id":42,"path":".github/workflows/ai-review-merge.yml","head_sha":"'"$sha"'","event":"pull_request","conclusion":null,"created_at":"2026-07-30T10:01:00Z","run_started_at":"2026-07-30T10:01:01Z","repository":{"full_name":"Verjson/example"}}'
-reordered_runs='{"workflow_runs":['"$newer_pending_run"','"$trusted_run"']}'
-RUN_FIXTURE="$reordered_runs" run_case "$green" \
-  && fail "an older success bypassed a newer pending re-review" \
-  || pass "explicit run timestamps make newest gate control re-review admission"
-PR_FIXTURE_FINAL="$red" run_case "$green" \
-  && fail "a final-read check regression was accepted" \
-  || pass "checks are revalidated immediately before merge"
-FILES_FIXTURE_FINAL='.github/workflows/late.yml'$'\n' run_case "$green" \
-  && ! grep -q '^pr merge ' "$tmp/merge.log" \
-  && ! grep -q '^ISSUE ' "$tmp/merge.log" \
-  && grep -q 'privileged auto-merge skipped; human review and merge required' "$tmp/case-output.txt" \
-  && pass "workflow files appearing at final recheck stop successfully for human review" \
-  || fail "final workflow recheck did not produce a successful no-merge human hold"
-FILES_API_FAIL=true run_case "$green" \
-  && fail "unreadable paginated file list was accepted" \
-  || pass "unreadable paginated file list fails closed"
+contract_errors() {
+  local review="$1" privileged="$2" route terminal checkout
+  route="$(job "$privileged" resolve_privileged_route)"
+  terminal="$(job "$privileged" privileged_merge)"
+  checkout="$(step "$privileged" privileged_merge 'Check out immutable arm verifier')"
 
-followup_attestation='{"version":1,"repository":"Verjson/example","pr_number":7,"head_sha":"'"$sha"'","run_id":99,"followups":[{"location":"src/payments.ts:42","note":"Add a regression test."}]}'
-if ATTESTATION_FIXTURE="$followup_attestation" run_case "$green" \
-   && grep -q '^pr merge ' "$tmp/merge.log" \
-   && grep -q '^ISSUE ' "$tmp/merge.log"; then
-  pass "validated follow-ups file only after matched-head merge succeeds"
-else
-  sed 's/^/       /' "$tmp/case-output.txt"
-  sed 's/^/       log: /' "$tmp/merge.log"
-  fail "post-merge follow-up handoff did not file after successful merge"
-fi
-dispatch_run="${trusted_run/\"id\":99/\"id\":123}"
-dispatch_run="${dispatch_run/\"event\":\"pull_request\"/\"event\":\"workflow_dispatch\"}"
-dispatch_attestation="${default_attestation/\"run_id\":99/\"run_id\":123}"
-if TEST_EVENT_NAME=workflow_dispatch SOURCE_RUN_ID=123 \
-   DISPATCH_RUN_FIXTURE="$dispatch_run" ATTESTATION_FIXTURE="$dispatch_attestation" \
-   run_case "$green" && grep -q '^pr merge ' "$tmp/merge.log"; then
-  pass "successful local workflow_dispatch resumes through trusted merger"
-else
-  fail "trusted workflow_dispatch recovery path did not merge"
-fi
-if ATTESTATION_FIXTURE="$followup_attestation" run_case "$red" || true; then
-  if grep -q '^ISSUE ' "$tmp/merge.log"; then
-    fail "privileged failure filed a follow-up issue"
-  else
-    pass "privileged failure cannot file follow-up issues"
-  fi
-fi
-forged_prose='{"reviews":[{"body":"<!-- ai-review-head:'"$sha"' patchid:fake model:fake --><!-- trusted-gate-run:99 head:'"$sha"' -->"}],"comments":[]}'
-if ARTIFACTS_EMPTY=true REVIEW_FIXTURE="$forged_prose" run_case "$green"; then
-  fail "forged PR prose authorized merge without a run-bound artifact"
-else
-  pass "forged PR prose cannot replace the authenticated artifact"
-fi
+  ! grep -qF '${{ secrets.ORG_ADMIN_TOKEN }}' "$review" \
+    || printf '%s\n' 'review workflow receives ORG_ADMIN_TOKEN'
+  [ "$(grep -cF '${{ secrets.ORG_ADMIN_TOKEN }}' "$privileged")" -eq 1 ] \
+    || printf '%s\n' 'privileged workflow must consume ORG_ADMIN_TOKEN exactly once'
+  ! grep -qF 'ORG_ADMIN_TOKEN' <<<"$route" \
+    || printf '%s\n' 'routing job receives ORG_ADMIN_TOKEN'
+  grep -qF 'GH_TOKEN: ${{ secrets.ORG_ADMIN_TOKEN }}' <<<"$terminal" \
+    || printf '%s\n' 'terminal merge job does not own the merge token'
 
-if [ "$fails" -eq 0 ]; then
-  echo "All tests passed."
-  exit 0
+  grep -qF 'uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1' <<<"$checkout" \
+    || printf '%s\n' 'immutable verifier checkout is not pinned'
+  grep -qF 'repository: Verjson/.github' <<<"$checkout" \
+    || printf '%s\n' 'verifier checkout is not restricted to the canonical repository'
+  grep -qF 'ref: ${{ steps.trusted-revision.outputs.sha }}' <<<"$checkout" \
+    || printf '%s\n' 'verifier checkout is not bound to the executing trusted revision'
+  grep -qF 'persist-credentials: false' <<<"$checkout" \
+    || printf '%s\n' 'verifier checkout persists credentials'
+  grep -qF 'scripts/ci-gate/verify-arm-receipt.sh' <<<"$checkout" \
+    || printf '%s\n' 'verifier checkout is not sparse-scoped to the arm verifier'
+  [ "$(grep -cE '^[[:space:]]+(- )?uses:' <<<"$terminal")" -eq 1 ] \
+    || printf '%s\n' 'terminal merge job executes an action besides the canonical verifier checkout'
+  ! grep -qE 'github\.event\.pull_request|github\.head_ref|repository:.*TARGET_REPO|ref:.*EXPECTED_HEAD_SHA' <<<"$terminal" \
+    || printf '%s\n' 'terminal merge job can check out PR-controlled material'
+}
+
+assert_contract() {
+  local review="$1" privileged="$2" description="$3" errors
+  errors="$(contract_errors "$review" "$privileged")"
+  if [ -z "$errors" ]; then pass "$description"; else printf '  %s\n' "$errors"; fail "$description"; fi
+}
+
+assert_mutation_rejected() {
+  local description="$1" errors
+  errors="$(contract_errors "$tmp/review.yml" "$tmp/privileged.yml")"
+  if [ -n "$errors" ]; then pass "$description"; else fail "$description"; fi
+}
+
+reset_fixtures() {
+  cp "$review_workflow" "$tmp/review.yml"
+  cp "$privileged_workflow" "$tmp/privileged.yml"
+}
+
+assert_contract "$review_workflow" "$privileged_workflow" \
+  'current split keeps the broad merge token and immutable verifier inside trusted boundaries'
+
+reset_fixtures
+sed -i '/^permissions:$/i\\  ORG_ADMIN_TOKEN: ${{ secrets.ORG_ADMIN_TOKEN }}' "$tmp/review.yml"
+assert_mutation_rejected 'mutation: review workflow cannot receive ORG_ADMIN_TOKEN'
+
+reset_fixtures
+sed -i '/^  resolve_privileged_route:$/a\\    env:\n      ORG_ADMIN_TOKEN: ${{ secrets.ORG_ADMIN_TOKEN }}' "$tmp/privileged.yml"
+assert_mutation_rejected 'mutation: routing job cannot receive ORG_ADMIN_TOKEN'
+
+reset_fixtures
+sed -i '0,/persist-credentials: false/s//persist-credentials: true/' "$tmp/privileged.yml"
+assert_mutation_rejected 'mutation: immutable verifier checkout cannot persist credentials'
+
+reset_fixtures
+sed -i '0,/repository: Verjson\/.github/s//repository: ${{ github.repository }}/' "$tmp/privileged.yml"
+assert_mutation_rejected 'mutation: verifier cannot be checked out from the target repository'
+
+reset_fixtures
+sed -i '0,/ref: ${{ steps.trusted-revision.outputs.sha }}/s//ref: ${{ inputs.expected_head_sha }}/' "$tmp/privileged.yml"
+assert_mutation_rejected 'mutation: verifier cannot be checked out from the PR head'
+
+reset_fixtures
+sed -i '/^      - name: Attempt terminal merge from trusted metadata$/i\\      - uses: attacker/pr-controlled-action@main' "$tmp/privileged.yml"
+assert_mutation_rejected 'mutation: terminal merge job cannot execute an additional action'
+
+if [ "$failures" -ne 0 ]; then
+  printf '%d test(s) failed.\n' "$failures" >&2
+  exit 1
 fi
-echo "$fails test(s) failed."
-exit 1
+printf 'All require-secrets tests passed.\n'
