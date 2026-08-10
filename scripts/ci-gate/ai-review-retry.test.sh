@@ -22,13 +22,14 @@ check_contract() {
   budget_args=$(grep -E -- '--max-budget-usd ' "$candidate" || true)
   [ "$(printf '%s\n' "$budget_args" | sed '/^$/d' | wc -l)" -eq 1 ] || return 1
   printf '%s' "$budget_args" | grep -qF '${{ needs.preflight.outputs.budget_usd }}' || return 1
+  [ "$(grep -cF -- '--max-turns 30' "$candidate")" -eq 1 ] || return 1
 }
 
 [ -f "$wf" ] || { echo "FAIL - workflow not found: $wf"; exit 1; }
 
 check_contract "$wf" \
-  && pass 'one automatic paid action uses only the selected first-pass budget' \
-  || fail 'workflow can automatically invoke more than one paid pass or exceed the selected budget'
+  && pass 'one automatic paid action uses the selected budget and bounded 30-turn pass' \
+  || fail 'workflow can automatically invoke more than one paid pass or violate the selected pass bounds'
 
 guard=$(awk '/id: claude$/{f=1} f&&/^ *if:/{print; exit}' "$wf")
 case "$guard" in

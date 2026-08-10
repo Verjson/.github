@@ -80,37 +80,31 @@ files_json() {
     '[range($n) | {filename: ($p + (.|tostring) + ".ts"), changes: $c, status: "modified", patch: "@@ -1 +1 @@\n-a\n+b"}]'
 }
 
-# 1. Small non-sensitive diff keeps the cheap floor.
+# 1. Small non-sensitive diff uses the organization-wide first-pass policy.
 classify "$(files_json 2 20 'src/small')"
-[ "$(out_of budget_usd)" = "0.15" ] && [ "$(out_of model)" = "claude-haiku-4-5" ] &&
-  pass "small non-sensitive diff keeps the \$0.15 cheap tier" ||
+[ "$(out_of budget_usd)" = "1.00" ] && [ "$(out_of model)" = "claude-haiku-4-5" ] &&
+  pass "small non-sensitive diff uses Haiku 4.5 with the \$1.00 cap" ||
   fail "small non-sensitive budget/model wrong (budget=$(out_of budget_usd) model=$(out_of model))"
 
-# 2. The #163 case: a large non-sensitive diff must NOT be given the cheap floor
-#    it demonstrably exhausts.
+# 2. Large non-sensitive diffs use the same bounded first pass.
 classify "$(files_json 8 200 'src/big')"   # 1,600 changed lines
 big="$(out_of budget_usd)"
-[ -n "$big" ] && awk -v b="$big" 'BEGIN{exit !(b > 0.15)}' &&
-  pass "large non-sensitive diff (1600 lines) is raised above the cheap floor (got \$$big)" ||
-  fail "large diff must get a bigger first-pass budget than \$0.15 (got \$${big:-<unset>}) — this is the #163 exhaustion"
+[ "$big" = "1.00" ] && [ "$(out_of model)" = "claude-haiku-4-5" ] &&
+  pass "large non-sensitive diff uses Haiku 4.5 with the \$1.00 cap" ||
+  fail "large non-sensitive first-pass policy wrong (budget=\$${big:-<unset>} model=$(out_of model))"
 
-# 3. The retired $1.00 escalation cap must remain absent from classification.
-[ -n "$big" ] && awk -v b="$big" 'BEGIN{exit !(b < 1.00)}' &&
-  pass "large-diff selected budget stays below the retired \$1.00 cap" ||
-  fail "large-diff budget must stay < \$1.00 (got \$${big:-<unset>})"
-
-# 4. Sensitive paths keep their stronger model and are also size-scaled.
+# 3. Sensitive paths remain classified but use the same default first pass.
 classify "$(files_json 8 200 'src/auth/big')"
 sbig="$(out_of budget_usd)"
-{ [ "$(out_of model)" = "claude-sonnet-5" ] && [ -n "$sbig" ] &&
-  awk -v b="$sbig" 'BEGIN{exit !(b > 0.50 && b < 1.00)}'; } &&
-  pass "large sensitive diff keeps sonnet and is size-scaled under the cap (got \$$sbig)" ||
+{ [ "$(out_of model)" = "claude-haiku-4-5" ] && [ "$sbig" = "1.00" ] &&
+  [ "$(out_of sensitive)" = "true" ]; } &&
+  pass "large sensitive diff is classified and uses the bounded Haiku first pass" ||
   fail "large sensitive diff wrong (model=$(out_of model) budget=\$${sbig:-<unset>})"
 
-# 5. Small sensitive diff keeps its documented $0.50 floor (no accidental bump).
+# 4. Small sensitive diffs use the same default first pass.
 classify "$(files_json 1 30 'src/auth/small')"
-[ "$(out_of budget_usd)" = "0.50" ] && [ "$(out_of model)" = "claude-sonnet-5" ] &&
-  pass "small sensitive diff keeps the \$0.50 floor" ||
+[ "$(out_of budget_usd)" = "1.00" ] && [ "$(out_of model)" = "claude-haiku-4-5" ] &&
+  pass "small sensitive diff uses Haiku 4.5 with the \$1.00 cap" ||
   fail "small sensitive budget/model wrong (budget=$(out_of budget_usd) model=$(out_of model))"
 
 # ---------------------------------------------------------------------------
