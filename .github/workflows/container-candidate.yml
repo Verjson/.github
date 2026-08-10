@@ -45,7 +45,9 @@ jobs:
         env:
           CONFIG_PATH: ${{ inputs.config-path }}
           CONTRACT_REF: ${{ inputs.contract-ref }}
-          JOB_WORKFLOW_SHA: ${{ job.workflow_sha }}
+          # JSON preserves the documented called-job identity while actionlint 1.7.7's
+          # static schema predates job.workflow_sha.
+          JOB_WORKFLOW_SHA: ${{ fromJSON(toJSON(job)).workflow_sha }}
         run: |
           set -euo pipefail
           [[ "$CONTRACT_REF" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::contract-ref must be a 40-hex commit"; exit 1; }
@@ -78,9 +80,11 @@ jobs:
             artifact: ("candidate-image-" + (.variant | gsub("[^A-Za-z0-9._-]"; "-")))
           }]' "$CONFIG_PATH")"
           candidate="$(jq -r '.nextStableVersion' "$CONFIG_PATH")-rc.${GITHUB_RUN_ID}.${GITHUB_RUN_ATTEMPT}"
-          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
-          echo "candidate=$candidate" >> "$GITHUB_OUTPUT"
-          echo "private-node-packages=$(jq -c '.privateNodePackages // []' "$CONFIG_PATH")" >> "$GITHUB_OUTPUT"
+          {
+            echo "matrix=$matrix"
+            echo "candidate=$candidate"
+            echo "private-node-packages=$(jq -c '.privateNodePackages // []' "$CONFIG_PATH")"
+          } >> "$GITHUB_OUTPUT"
 
   acquire-private-node-dependencies:
     needs: prepare

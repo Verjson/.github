@@ -59,8 +59,8 @@ grep -q 'id-token: write' "$workflow"
 grep -q 'actions/attest-build-provenance@[0-9a-f]\{40\}' "$workflow"
 grep -q 'commit identity already records a different digest' "$workflow"
 grep -q 'imagetools create -t "\$commit_tag"' "$workflow"
-if grep -q 'GITHUB_WORKFLOW_REF' "$workflow"; then
-  echo "called workflows cannot prove their own pin through github.workflow_ref" >&2
+if grep -Eq 'GITHUB_WORKFLOW_(REF|SHA)|github\.workflow_(ref|sha)' "$workflow"; then
+  echo "called workflows cannot prove their own pin through the caller-associated github workflow identity" >&2
   exit 1
 fi
 if awk '/^  pull-request-build:/{seen=1} /^  publish-base:/{seen=0} seen' "$workflow" | grep -Eq 'packages: write|id-token: write|docker/login-action|push: true'; then
@@ -69,7 +69,8 @@ if awk '/^  pull-request-build:/{seen=1} /^  publish-base:/{seen=0} seen' "$work
 fi
 acquisition_job="$(awk '/^  acquire-private-node-dependencies:/{seen=1} /^  pull-request-build:/{seen=0} seen' "$workflow")"
 grep -qF 'NODE_AUTH_TOKEN: ${{ secrets.NODE_AUTH_TOKEN }}' <<<"$acquisition_job"
-grep -qF 'JOB_WORKFLOW_SHA: ${{ job.workflow_sha }}' "$workflow"
+grep -qF "# static schema predates job.workflow_sha." "$workflow"
+grep -qF 'JOB_WORKFLOW_SHA: ${{ fromJSON(toJSON(job)).workflow_sha }}' "$workflow"
 grep -qF '[ "$CONTRACT_REF" = "$JOB_WORKFLOW_SHA" ]' "$workflow"
 grep -qF 'npm ci --ignore-scripts --no-audit --no-fund' <<<"$acquisition_job"
 grep -qF 'NPM_CONFIG_USERCONFIG="$user_config"' <<<"$acquisition_job"
