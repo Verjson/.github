@@ -1532,6 +1532,7 @@ jobs:
           owner: ${{ github.repository_owner }}
           repositories: ${{ github.event.repository.name }}
           permission-checks: write
+          permission-contents: read
           permission-pull-requests: write
 
       - name: Complete exact head authorization
