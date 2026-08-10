@@ -36,8 +36,11 @@ def valid(document):
         and complete["env"].get("INSTALLATION_ID") == "${{ steps.app-token.outputs.installation-id }}"
         and "GH_TOKEN" not in complete["env"]
         and 'GH_TOKEN="$APP_TOKEN" gh api' in run
-        and "app_api app-approval --method POST" in run
-        and "app_api authorization-check --method PATCH" in run
+        and 'app_api app-approval "$approval_file" --method POST' in run
+        and 'app_api authorization-check "$RUNNER_TEMP/authorization-check.json" --method PATCH' in run
+        and 'app_api persisted-approval "$persisted_file"' in run
+        and 'approval="$(app_api' not in run
+        and 'persisted="$(app_api' not in run
         and workflow_head in run
         and "workflow token REST head lookup failed" in run
         and "gh pr view" not in run
