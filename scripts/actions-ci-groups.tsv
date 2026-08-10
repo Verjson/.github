@@ -11,6 +11,7 @@ platform	bash scripts/node-workflow-controls.test.sh
 platform	bash scripts/ci-gate/node-ci-secretless.test.sh
 platform	bash scripts/immutable-release-docs.test.sh
 platform	bash scripts/ci-gate/node-ci-db-service.test.sh
+platform	bash scripts/ci-gate/node-ci-cache-service.test.sh
 platform	bash scripts/ci-gate/ci-eligibility.test.sh
 platform	bash scripts/node-release-publish.test.sh
 platform	bash scripts/retired-release-tooling.test.sh

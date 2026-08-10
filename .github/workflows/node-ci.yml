@@ -158,6 +158,24 @@ on:
         required: false
         type: string
         default: ''
+      cache-image:
+        description: >-
+          Optional Redis-compatible image to run alongside the database service
+          for the test job. Empty starts no cache. Port 6379 is published on an
+          OS-assigned loopback port and exported as CACHE_PORT.
+        required: false
+        type: string
+        default: ''
+      cache-env:
+        description: >-
+          Newline-separated KEY=VALUE pairs passed to the cache container and
+          exported to later steps. Use the literal ${CACHE_PORT} placeholder in
+          values such as REDIS_URL=redis://127.0.0.1:${CACHE_PORT}. Values are
+          ordinary workflow inputs, not masked secrets; do not put credentials
+          here.
+        required: false
+        type: string
+        default: ''
     secrets:
       NODE_AUTH_TOKEN:
         description: Token to read @verjson private packages from GitHub Packages
@@ -691,14 +709,93 @@ jobs:
             fi
             sleep 2
           done
-          # pg_isready runs INSIDE the container, so it proves nothing about the
-          # loopback publish the caller's suite actually dials. Probe that from the
-          # host too. A warning, not a failure: the job's own test step is the
-          # authority on whether it can connect, and this line is what turns its
-          # "connection refused" into an answer.
+          # pg_isready runs inside the container; probe the loopback publish too.
           if ! (exec 3<>"/dev/tcp/127.0.0.1/$DB_PORT") 2>/dev/null; then
             echo "warning: the database's published port 127.0.0.1:$DB_PORT is not" \
                  "accepting connections from the host" >&2
+          fi
+
+      - name: Start cache service
+        id: cache-service
+        if: needs.eligibility.outputs.should-run != 'false' && inputs.cache-image != ''
+        env:
+          CACHE_IMAGE: ${{ inputs.cache-image }}
+          CACHE_ENV: ${{ inputs.cache-env }}
+        run: |
+          set -euo pipefail
+          container_scope="${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${GITHUB_JOB:-}-${RUNNER_NAME:-}-${RUNNER_WORKSPACE:-}"
+          CONTAINER_NAME="ci-cache-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-$(
+            printf '%s' "$container_scope" | sha256sum | cut -c1-12)"
+          docker_env=()
+          cache_env_lines=()
+          while IFS= read -r line; do
+            case "${line#"${line%%[![:space:]]*}"}" in
+              ''|'#'*) continue ;;
+            esac
+            case "$line" in
+              *=*) ;;
+              *) echo "cache-env: '$line' is not a KEY=VALUE pair" >&2; exit 1 ;;
+            esac
+            cache_env_lines+=("$line")
+            docker_env+=(-e "$line")
+          done <<< "$CACHE_ENV"
+          sweep_cutoff=$(( $(date +%s) - 6 * 60 * 60 ))
+          if ! stale_listing="$(docker ps -a --filter label=verjson-ci-cache=1 \
+              --format '{{.ID}} {{.CreatedAt}}' 2>&1)"; then
+            echo "warning: could not list CI cache containers to sweep: $stale_listing" >&2
+            stale_listing=""
+          fi
+          while read -r stale_id stale_date stale_time stale_zone _; do
+            [ -n "$stale_id" ] || continue
+            stale_epoch="$(date -d "$stale_date $stale_time $stale_zone" +%s 2>/dev/null || true)"
+            case "$stale_epoch" in
+              ''|*[!0-9]*)
+                echo "warning: not sweeping $stale_id: unreadable creation time" >&2
+                continue ;;
+            esac
+            [ "$stale_epoch" -lt "$sweep_cutoff" ] || continue
+            docker rm -f "$stale_id" >/dev/null 2>&1 \
+              || echo "warning: could not remove leaked cache container $stale_id" >&2
+          done <<< "$stale_listing"
+          run_rc=0
+          CONTAINER_ID="$(docker run -d --name "$CONTAINER_NAME" \
+            --label verjson-ci-cache=1 -p 127.0.0.1::6379 \
+            ${docker_env[@]+"${docker_env[@]}"} "$CACHE_IMAGE")" || run_rc=$?
+          [ -z "$CONTAINER_ID" ] || echo "container-id=$CONTAINER_ID" >> "$GITHUB_OUTPUT"
+          [ "$run_rc" -eq 0 ] || exit "$run_rc"
+          port_map="$(docker port "$CONTAINER_ID" 6379/tcp)"
+          CACHE_PORT="${port_map%%$'\n'*}"
+          CACHE_PORT="${CACHE_PORT##*:}"
+          case "$CACHE_PORT" in
+            ''|*[!0-9]*)
+              echo "could not read the mapped cache port from '$port_map'" >&2
+              docker logs "$CONTAINER_ID" >&2 || true
+              exit 1 ;;
+          esac
+          echo "port=$CACHE_PORT" >> "$GITHUB_OUTPUT"
+          for line in ${cache_env_lines[@]+"${cache_env_lines[@]}"}; do
+            key="${line%%=*}"
+            value="${line#*=}"
+            if [ "$key" = CACHE_PORT ]; then
+              echo "cache-env CACHE_PORT: ignored; the workflow exports Docker's mapped port" >&2
+              continue
+            fi
+            value="${value//'${CACHE_PORT}'/$CACHE_PORT}"
+            printf '%s=%s\n' "$key" "$value" >> "$GITHUB_ENV"
+          done
+          echo "CACHE_PORT=$CACHE_PORT" >> "$GITHUB_ENV"
+          ready=false
+          for attempt in {1..30}; do
+            if docker exec "$CONTAINER_ID" redis-cli ping 2>/dev/null | grep -qx PONG; then
+              ready=true
+              break
+            fi
+            sleep 1
+          done
+          if [ "$ready" != true ]; then
+            docker logs "$CONTAINER_ID" >&2 || true
+            echo "cache service did not become ready" >&2
+            exit 1
           fi
       - name: Install schema submodule deps
         if: needs.eligibility.outputs.should-run != 'false' && inputs.schema-dir != ''
@@ -737,6 +834,18 @@ jobs:
           if [ "$size_kb" -gt "$(( CACHE_MAX_MB * 1024 ))" ]; then
             echo "::warning::npm cache is ${size_mb} MB; clearing it instead of uploading more than ${CACHE_MAX_MB} MB"
             find "$cache_dir" -mindepth 1 -delete
+          fi
+      - name: Stop cache service
+        if: always() && needs.eligibility.outputs.should-run != 'false' && inputs.cache-image != ''
+        env:
+          CONTAINER_ID: ${{ steps.cache-service.outputs.container-id }}
+        run: |
+          [ -n "$CONTAINER_ID" ] || exit 0
+          if ! rm_out="$(docker rm -f "$CONTAINER_ID" 2>&1)"; then
+            grep -Fq 'No such container' <<< "$rm_out" || {
+              echo "$rm_out" >&2
+              exit 1
+            }
           fi
       - name: Stop database service
         # Always tear the job's container down after every consumer and cache
