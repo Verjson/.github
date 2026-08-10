@@ -618,6 +618,7 @@ names = [step.get("name") for step in steps]
 stop = names.index("Stop database service")
 start = names.index("Start database service")
 assert stop == len(steps) - 1
+assert names[stop - 1] == "Stop cache service"
 assert start < stop
 commands = {
     "npm ci",
