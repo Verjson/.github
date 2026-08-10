@@ -108,7 +108,10 @@ cat >"$tmp/bin/gh" <<'SH'
 printf '%s\n' "$*" >>"$CALLS"
 case "$*" in
   "api --method POST "*)
-    [ "${APPROVAL_RC:-0}" -eq 0 ] || exit "$APPROVAL_RC"
+    if [ "${APPROVAL_RC:-0}" -ne 0 ]; then
+      printf 'authorization: token leaked-test-token\nx-github-request-id: TEST:1234\n' >&2
+      exit "$APPROVAL_RC"
+    fi
     jq -nc --arg head "$EXPECTED_AUTHORIZED_HEAD_SHA" \
       --arg login "${EXPECTED_APP_SLUG}[bot]" --arg check "$AUTHORIZATION_CHECK_ID" \
       '{id:81,state:"APPROVED",commit_id:$head,user:{login:$login},body:("<!-- ai-review-authorization:"+$check+" -->")}' ;;
@@ -144,7 +147,12 @@ if run_complete >"$tmp/out" 2>&1 && grep -q 'conclusion=success' "$CALLS"; then
 else fail "valid completion head handoff failed: $(tail -1 "$tmp/out")"; fi
 
 : >"$CALLS"; APPROVAL_RC=1 run_complete >"$tmp/out" 2>&1
-if [ "$?" -ne 0 ] && grep -q 'conclusion=failure' "$CALLS" && ! grep -q 'conclusion=success' "$CALLS"; then
+if [ "$?" -ne 0 ] && grep -q 'conclusion=failure' "$CALLS" \
+  && ! grep -q 'conclusion=success' "$CALLS" \
+  && grep -q 'app-approval failed' "$tmp/out" \
+  && grep -q 'x-github-request-id: TEST:1234' "$tmp/out" \
+  && grep -q 'authorization: token \*\*\*' "$tmp/out" \
+  && ! grep -q 'leaked-test-token' "$tmp/out"; then
   pass "rejected App approval completes authorization as failure"
 else fail "rejected App approval did not fail closed"; fi
 
