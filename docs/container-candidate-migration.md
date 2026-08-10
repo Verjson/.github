@@ -35,6 +35,15 @@ Such a consumer uses the context explicitly, for example:
 COPY --from=verjson_node_modules /node_modules ./node_modules
 ```
 
+Private-package adoption requires two reviewed pull requests. First merge the
+`container-candidate.json` and lockfile containing the complete
+`privateNodePackages` allowlist **without enabling the generated candidate caller**.
+Then generate and enable the candidate caller in a second pull request. The second
+pull request may use package credentials because its requested allowlist exactly
+matches the already reviewed base-branch configuration. A single pull request that
+both introduces `privateNodePackages` and enables the caller intentionally fails
+closed; PR-head configuration cannot authorize its own credential use.
+
 An absent `privateNodePackages` field preserves the existing build path. A fork PR
 that requests private packages fails before credential use, as does an unapproved
 package, a non-registry URL, a stale integrity, or a PR-controlled `.npmrc`.

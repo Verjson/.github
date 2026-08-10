@@ -79,6 +79,36 @@ grep -qF 'env -i \' <<<"$acquisition_job"
 grep -qF 'if find . -name .npmrc -print -quit' <<<"$acquisition_job"
 grep -qF 'git show "$BASE_SHA:$CONFIG_PATH"' <<<"$acquisition_job"
 grep -qF '[ "$base_approved" = "$APPROVED_PRIVATE_PACKAGES" ]' <<<"$acquisition_job"
+
+bootstrap="$tmp/bootstrap"
+mkdir -p "$bootstrap"
+git -C "$bootstrap" init -q
+git -C "$bootstrap" config user.name fixture
+git -C "$bootstrap" config user.email fixture@example.invalid
+cat > "$bootstrap/container-candidate.json" <<'JSON'
+{"privateNodePackages":[]}
+JSON
+git -C "$bootstrap" add container-candidate.json
+git -C "$bootstrap" commit -qm base-config
+base_sha="$(git -C "$bootstrap" rev-parse HEAD)"
+cat > "$bootstrap/container-candidate.json" <<'JSON'
+{"privateNodePackages":["@verjson/private-package"]}
+JSON
+head_approved="$(jq -ce '.privateNodePackages // []' "$bootstrap/container-candidate.json")"
+base_approved="$(git -C "$bootstrap" show "$base_sha:container-candidate.json" | jq -ce '.privateNodePackages // []')"
+if [ "$base_approved" = "$head_approved" ]; then
+  echo "first private-package PR self-authorized credential use" >&2
+  exit 1
+fi
+git -C "$bootstrap" add container-candidate.json
+git -C "$bootstrap" commit -qm reviewed-private-config
+base_sha="$(git -C "$bootstrap" rev-parse HEAD)"
+base_approved="$(git -C "$bootstrap" show "$base_sha:container-candidate.json" | jq -ce '.privateNodePackages // []')"
+[ "$base_approved" = "$head_approved" ] || {
+  echo "reviewed base allowlist did not authorize second-stage caller adoption" >&2
+  exit 1
+}
+
 grep -qF 'npm ci --ignore-scripts' <<<"$acquisition_job"
 ! grep -Eq 'npm (install|run|exec|rebuild)|yarn|pnpm' <<<"$acquisition_job"
 ! grep -Eq 'subprocess|os\.system|extract(all)?\(' "$root/scripts/container_private_dependencies.py"
