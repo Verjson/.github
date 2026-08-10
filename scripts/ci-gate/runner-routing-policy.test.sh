@@ -62,6 +62,7 @@ unsafe_portable="$(
   grep -HnE "^    runs-on:.*ubuntu-(24\\.04|latest)" "${workflow_files[@]}" \
     | grep -v "github.repository_owner != 'Verjson' && 'ubuntu-24.04'" \
     | grep -v "github.repository_owner == 'Verjson'.*|| 'ubuntu-24.04'" \
+    | grep -vE '/ai-privileged-merge\.yml:[0-9]+:.*needs\.resolve_privileged_route\.outputs\.selector.*inputs\.runner_labels.*\|\| '\''ubuntu-24\.04'\''' \
     | grep -v "inputs.github-hosted-runner" \
     | grep -v "vars.VERJSON_RUNNER_FASTLANE" \
     | grep -v "vars.VERJSON_LANE_UNTRUSTED || '\[\"ubuntu-24.04\"\]'" \
@@ -416,62 +417,20 @@ mutate_job_expression() {
   ' "$source" >"$destination"
 }
 
-# The split merger has two declarations during the compatibility window: an
-# inert reusable-file declaration and the live pull_request_target workflow.
-# Evaluate both owner branches instead of rejecting the hosted label text:
-# Verjson must always resolve to an isolated/default self-hosted pool, while an
-# external consumer keeps the required portable hosted route.
+# The credential-free resolver validates a caller-supplied lane before the
+# terminal job is scheduled. Its exact allowlist is covered by the semantic
+# privileged-caller contract; this routing sweep pins the topology and the
+# external portability escape hatches without duplicating that validator.
 for privileged_workflow in ai-privileged-merge.yml; do
   privileged_path="$workflows/$privileged_workflow"
-  grep -qF 'VERJSON_LANE_PRIVILEGED || vars.VERJSON_LANE_FALLBACK' "$privileged_path" \
-    && pass "$privileged_workflow privileged job prefers the privileged lane, then the fallback" \
-    || fail "$privileged_workflow privileged job lost its privileged/fallback preference"
-
-  assert_route "$privileged_path" privileged_merge Verjson/.github '' false \
-    '["self-hosted","isolated-canary"]' '["self-hosted","untrusted-canary"]' \
-    '["self-hosted","isolated-canary"]' \
-    "$privileged_workflow — Verjson privileged merge cannot reach hosted"
-
-  assert_route "$privileged_path" privileged_merge Verjson/.github '' false '' '' \
-    "$UNSET_LANDING" \
-    "$privileged_workflow — no lane variable set lands on the portable hosted default"
+  grep -qF "runs-on: \${{ needs.resolve_privileged_route.outputs.selector && fromJSON(needs.resolve_privileged_route.outputs.selector) || inputs.runner_labels && fromJSON(inputs.runner_labels) || 'ubuntu-24.04' }}" "$privileged_path" \
+    && pass "$privileged_workflow terminal job consumes only the validated route before external fallbacks" \
+    || fail "$privileged_workflow terminal job bypasses or reorders the validated route"
 
   assert_route "$privileged_path" privileged_merge Acme/widgets '' true \
     '["self-hosted","isolated-canary"]' '["self-hosted","untrusted-canary"]' \
     'ubuntu-24.04' \
     "$privileged_workflow — external privileged caller retains hosted portability"
-
-  # #405. The generator used to bake `["self-hosted","general"]` into every
-  # caller, so a Verjson consumer routed on a LABEL and a relabel needed a pull
-  # request in each of ~90 repositories. The generated caller now omits the
-  # input; assert the route that omission produces, rather than trusting that
-  # nothing passes it.
-  assert_route "$privileged_path" privileged_merge Verjson/verjson-authn '' true \
-    '["self-hosted","privileged-canary"]' '["self-hosted","untrusted-canary"]' \
-    '["self-hosted","privileged-canary"]' \
-    "$privileged_workflow — a consumer omitting runner_labels routes through VERJSON_LANE_PRIVILEGED (overflow unset)" \
-    '' ''
-
-  # Native auto-merge promotion performs no waiting, so an overflow variable no
-  # longer diverts this short credential-bound job from the privileged lane.
-  assert_route "$privileged_path" privileged_merge Verjson/verjson-authn '' true \
-    '["self-hosted","privileged-canary"]' '["self-hosted","untrusted-canary"]' \
-    '["self-hosted","privileged-canary"]' \
-    "$privileged_workflow — overflow does not divert the non-waiting promotion" \
-    '' '' '["ubuntu-24.04"]'
-
-  # The precedence ADR 0053's exclusion paragraph rested on, and the reason #487
-  # needs no caller regenerated: overflow sits at the head of the LANE tail, not
-  # of the whole chain, so a caller generated before #405 — still most of them
-  # until the #365 sweep — keeps beating it. If this ever fails, the overflow
-  # term has been hoisted above `inputs.runner_labels` and an organization
-  # variable is now overriding a caller input on the workflow that carries merge
-  # authority. That is the inversion 0053 refused, not a fixture to update.
-  assert_route "$privileged_path" privileged_merge Verjson/verjson-authn '' true \
-    '["self-hosted","privileged-canary"]' '["self-hosted","untrusted-canary"]' \
-    '["self-hosted","general"]' \
-    "$privileged_workflow — a caller generated before #405 still overrides the overflow lane" \
-    '' '["self-hosted","general"]' '["ubuntu-24.04"]'
 
   # The escape hatch, exercised rather than assumed: a self-hosted consumer
   # OUTSIDE Verjson has no lane variables, so the input must still beat the

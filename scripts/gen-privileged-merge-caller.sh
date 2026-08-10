@@ -69,8 +69,9 @@ permissions:
 jobs:
   retry:
     uses: $RETRY_TARGET
+    with:
+      privileged_lane: \${{ vars.VERJSON_LANE_PRIVILEGED }}
     secrets:
-      ACTIONS_VARIABLES_TOKEN: \${{ secrets.ACTIONS_VARIABLES_TOKEN }}
       ORG_ADMIN_TOKEN: \${{ secrets.ORG_ADMIN_TOKEN }}
 YAML
   exit 0
@@ -157,10 +158,9 @@ jobs:
   # Renaming it makes the gate wait on its own continuation.
   privileged_merge:
     uses: ${TARGET}
-    # Explicit rather than \`inherit\`: the caller grants only the routing-read
-    # and terminal merge secrets to the immutable canonical contract revision.
+    # Explicit rather than \`inherit\`: the caller grants only the terminal
+    # merge secret to the immutable canonical contract revision.
     secrets:
-      ACTIONS_VARIABLES_TOKEN: \${{ secrets.ACTIONS_VARIABLES_TOKEN }}
       ORG_ADMIN_TOKEN: \${{ secrets.ORG_ADMIN_TOKEN }}
     with:
       pr_number: \${{ inputs.pr_number }}
@@ -169,7 +169,8 @@ jobs:
       arm_run_id: \${{ inputs.arm_run_id }}
       arm_run_attempt: \${{ inputs.arm_run_attempt }}
       review_policy: \${{ inputs.review_policy }}
-      source_run_id: \${{ inputs.source_run_id }}${labels_input}
+      source_run_id: \${{ inputs.source_run_id }}
+      privileged_lane: \${{ vars.VERJSON_LANE_PRIVILEGED }}${labels_input}
 YAML
 }
 
