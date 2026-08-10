@@ -34,6 +34,7 @@ def valid(document):
         and complete["env"].get("APP_TOKEN") == "${{ steps.app-token.outputs.token }}"
         and complete["env"].get("MINTED_APP_SLUG") == "${{ steps.app-token.outputs.app-slug }}"
         and complete["env"].get("INSTALLATION_ID") == "${{ steps.app-token.outputs.installation-id }}"
+        and complete["env"].get("REVERIFY_ACTOR_PERMISSION") == "false"
         and "GH_TOKEN" not in complete["env"]
         and 'GH_TOKEN="$APP_TOKEN" gh api' in run
         and 'app_api app-approval "$approval_file" --method POST' in run
@@ -92,6 +93,11 @@ complete["run"] = complete["run"].replace(
     'current_head="$(GH_TOKEN="$ACTIONS_TOKEN" gh api',
     'current_head="$(gh api')
 assert not valid(app_token_head), "App-token head lookup escaped token separation"
+permission_reverification = copy.deepcopy(workflow)
+complete = next(step for step in permission_reverification["jobs"]["complete-authorization"]["steps"]
+                if step.get("name") == "Complete exact head authorization")
+complete["env"]["REVERIFY_ACTOR_PERMISSION"] = True
+assert not valid(permission_reverification), "completion actor-permission revalidation escaped token boundary"
 PY
 [ "$?" -eq 0 ] || exit 1
 

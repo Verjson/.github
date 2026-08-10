@@ -1541,6 +1541,7 @@ jobs:
           APP_TOKEN: ${{ steps.app-token.outputs.token }}
           MINTED_APP_SLUG: ${{ steps.app-token.outputs.app-slug }}
           INSTALLATION_ID: ${{ steps.app-token.outputs.installation-id }}
+          REVERIFY_ACTOR_PERMISSION: 'false'
         run: |
           set -euo pipefail
           [[ "$AUTHORIZATION_CHECK_ID" =~ ^[1-9][0-9]*$ ]] || exit 1
