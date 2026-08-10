@@ -163,6 +163,7 @@ composite_registry="$(composite_input registry-url)"
 for test_command in \
   'bash scripts/node-workflow-controls.test.sh' \
   'bash scripts/ci-gate/node-ci-db-service.test.sh' \
+  'bash scripts/ci-gate/node-ci-cache-service.test.sh' \
   'bash scripts/ci-gate/ci-eligibility.test.sh' \
   'bash scripts/node-workflow-pins.test.sh' \
   'bash scripts/node-release-publish.test.sh' \
