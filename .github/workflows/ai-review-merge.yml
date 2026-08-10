@@ -1546,7 +1546,7 @@ jobs:
           conclusion=failure
           title='AI review blocked'
           summary='The review failed, was inconclusive, or returned blocking findings.'
-          current_head="$(GH_TOKEN="$ACTIONS_TOKEN" gh api "repos/$TARGET_REPO/pulls/$PR_NUMBER" --jq '.head.sha // ""')"
+          current_head="$(gh api "repos/$TARGET_REPO/pulls/$PR_NUMBER" --jq '.head.sha // ""')"
           if [ "$GATE_STATUS" = success ] &&
              [ "$current_head" = "$EXPECTED_AUTHORIZED_HEAD_SHA" ] &&
              [ "$EXPECTED_REVIEWED_HEAD_SHA" = "$EXPECTED_AUTHORIZED_HEAD_SHA" ]; then
