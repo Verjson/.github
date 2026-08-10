@@ -1482,6 +1482,7 @@ jobs:
     timeout-minutes: 5
     permissions:
       actions: read
+      checks: read
       contents: read
       pull-requests: read
     env:

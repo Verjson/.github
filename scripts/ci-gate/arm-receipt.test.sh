@@ -25,6 +25,10 @@ details_url="$GITHUB_SERVER_URL/$TARGET_REPO/actions/runs/$ARM_RUN_ID"
 mkdir "$tmp/bin" "$tmp/archive"
 cat >"$tmp/bin/gh" <<'GH'
 #!/usr/bin/env bash
+if [ -n "${API_FAILURE_MATCH:-}" ] && [[ "$*" == *"$API_FAILURE_MATCH"* ]]; then
+  printf 'authorization: token leaked-test-token\nx-github-request-id: TEST:719\n' >&2
+  exit 1
+fi
 case "$*" in
   *"actions/workflows/gate-rearm.yml"*"--jq"*) printf '%s\n' 77 ;;
   *"actions/runs/$ARM_RUN_ID/artifacts"*) cat "$ARTIFACTS_FILE" ;;
@@ -32,7 +36,8 @@ case "$*" in
   *"actions/artifacts/"*"/zip"*) cat "$ZIP_FILE" ;;
   *"check-runs/$AUTHORIZATION_CHECK_ID"*) cat "$CHECK_FILE" ;;
   *"collaborators/maintainer/permission"*) printf '%s\n' "${CURRENT_PERMISSION:-maintain}" ;;
-  "pr view "*) printf '%s\n' "${CURRENT_HEAD:-$EXPECTED_HEAD_SHA}" ;;
+  *"pulls/$PR_NUMBER"*"--jq"*)
+    [ "${CURRENT_STATE:-open}" = open ] && printf '%s\n' "${CURRENT_HEAD:-$EXPECTED_HEAD_SHA}" ;;
   *) echo "unexpected gh call: $*" >&2; exit 2 ;;
 esac
 GH
@@ -84,6 +89,13 @@ write_base; jq '.details_url="https://github.com/Verjson/example/actions/runs/99
 write_base; jq '.check_run_id=9002' "$tmp/archive/receipt.json" >"$tmp/x" && mv "$tmp/x" "$tmp/archive/receipt.json"; repack; expect_fail "receipt/check ID mismatch is rejected" verify
 write_base; jq '.nonce="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"' "$tmp/archive/receipt.json" >"$tmp/x" && mv "$tmp/x" "$tmp/archive/receipt.json"; repack; expect_fail "nonce/external_id mismatch is rejected" verify
 write_base; CURRENT_HEAD=ffffffffffffffffffffffffffffffffffffffff expect_fail "stale PR head is rejected" verify
+write_base; API_FAILURE_MATCH='actions/workflows/gate-rearm.yml' expect_fail "workflow API failures fail closed" verify
+grep -q 'arm-workflow failed' "$tmp/out" \
+  && grep -q 'x-github-request-id: TEST:719' "$tmp/out" \
+  && grep -q 'authorization: token \*\*\*' "$tmp/out" \
+  && ! grep -q 'leaked-test-token' "$tmp/out" \
+  && pass "workflow API failure identifies its phase without leaking credentials" \
+  || fail "workflow API failure diagnostics are unsafe or ambiguous"
 write_base; jq '.run_attempt=3' "$RUN_FILE" >"$tmp/x" && mv "$tmp/x" "$RUN_FILE"; expect_fail "run-attempt replay is rejected" verify
 write_base; printf '{"artifacts":[]}\n' >"$ARTIFACTS_FILE"; expect_fail "missing arm artifact is rejected" verify
 write_base; rm "$tmp/archive/receipt.json" "$ZIP_FILE"; printf 'bad\n' >"$tmp/archive/other"; (cd "$tmp/archive" && python3 -m zipfile -c "$ZIP_FILE" other); digest="$(sha256sum "$ZIP_FILE"|awk '{print $1}')"; size="$(wc -c <"$ZIP_FILE")"; jq -nc --argjson size "$size" --arg digest "sha256:$digest" '{artifacts:[{id:8001,name:"ai-review-arm-7001-2",expired:false,size_in_bytes:$size,digest:$digest}]}' >"$ARTIFACTS_FILE"; expect_fail "malformed artifact archive is rejected" verify
