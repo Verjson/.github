@@ -123,13 +123,13 @@ jobs:
       AUTH_SECRET: ${{ inputs.auth-secret }}
       NEXT_TELEMETRY_DISABLED: '1'
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           submodules: recursive
           token: ${{ secrets.submodules-token || github.token }}
 
       - name: Set up Node + @verjson registry
-        uses: Verjson/.github/.github/actions/setup-verjson-node@main
+        uses: Verjson/.github/.github/actions/setup-verjson-node@9698815cc3b31b2bc66065535250eba55796c653 # org contract at 2026-08-09
         with:
           node-version: ${{ inputs.node-version }}
           scope: ${{ inputs.scope }}
