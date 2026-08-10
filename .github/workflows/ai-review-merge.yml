@@ -1538,10 +1538,30 @@ jobs:
       - name: Complete exact head authorization
         env:
           ACTIONS_TOKEN: ${{ github.token }}
-          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          APP_TOKEN: ${{ steps.app-token.outputs.token }}
+          MINTED_APP_SLUG: ${{ steps.app-token.outputs.app-slug }}
+          INSTALLATION_ID: ${{ steps.app-token.outputs.installation-id }}
         run: |
           set -euo pipefail
           [[ "$AUTHORIZATION_CHECK_ID" =~ ^[1-9][0-9]*$ ]] || exit 1
+          [ "$MINTED_APP_SLUG" = "$EXPECTED_APP_SLUG" ] || {
+            echo "::error::minted App slug does not match the authorization App"
+            exit 1
+          }
+          [[ "$INSTALLATION_ID" =~ ^[1-9][0-9]*$ ]] || {
+            echo "::error::authorization App installation identity is unavailable"
+            exit 1
+          }
+          app_api() {
+            local phase="$1"
+            shift
+            local diagnostics="$RUNNER_TEMP/${phase}.stderr"
+            if ! GH_DEBUG=api GH_TOKEN="$APP_TOKEN" gh api "$@" 2>"$diagnostics"; then
+              echo "::error title=${phase} failed::Dedicated App mutation failed; installation=${INSTALLATION_ID} app=${MINTED_APP_SLUG}"
+              sed -E 's/(authorization: (token|bearer) )[A-Za-z0-9._-]+/\1***/Ig' "$diagnostics" >&2
+              return 1
+            fi
+          }
           GH_TOKEN="$ACTIONS_TOKEN" bash .gate-trust/scripts/ci-gate/verify-arm-receipt.sh
           conclusion=failure
           title='AI review blocked'
@@ -1558,7 +1578,7 @@ jobs:
           <!-- ai-review-authorization:${AUTHORIZATION_CHECK_ID} -->
           <!-- ai-review-head:${EXPECTED_AUTHORIZED_HEAD_SHA} -->
           <!-- ai-review-run:${REVIEW_RUN_ID:-0} -->"
-            if approval="$(gh api --method POST "repos/$TARGET_REPO/pulls/$PR_NUMBER/reviews" \
+            if approval="$(app_api app-approval --method POST "repos/$TARGET_REPO/pulls/$PR_NUMBER/reviews" \
               -f event=APPROVE -f commit_id="$EXPECTED_AUTHORIZED_HEAD_SHA" \
               -f body="$approval_body")" &&
                approval_id="$(jq -er \
@@ -1570,7 +1590,7 @@ jobs:
                      (.body | contains("ai-review-authorization:" + $check)))
                    | .id | select(type == "number")
                  ' <<<"$approval")" &&
-               persisted="$(gh api "repos/$TARGET_REPO/pulls/$PR_NUMBER/reviews/$approval_id")" &&
+               persisted="$(app_api persisted-approval "repos/$TARGET_REPO/pulls/$PR_NUMBER/reviews/$approval_id")" &&
                jq -e --arg head "$EXPECTED_AUTHORIZED_HEAD_SHA" \
                  --arg login "${EXPECTED_APP_SLUG}[bot]" \
                  --arg check "$AUTHORIZATION_CHECK_ID" '
@@ -1586,7 +1606,7 @@ jobs:
               summary='The exact reviewed head did not receive a persisted approval from the dedicated authorization App. Terminal promotion remains blocked.'
             fi
           fi
-          gh api --method PATCH "repos/$TARGET_REPO/check-runs/$AUTHORIZATION_CHECK_ID" \
+          app_api authorization-check --method PATCH "repos/$TARGET_REPO/check-runs/$AUTHORIZATION_CHECK_ID" \
             -f status=completed -f conclusion="$conclusion" \
             -f "output[title]=$title" -f "output[summary]=$summary"
           [ "$conclusion" = success ] || exit 1

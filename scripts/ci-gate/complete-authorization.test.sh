@@ -31,6 +31,13 @@ def valid(document):
         and token["with"].get("permission-checks") == "write"
         and token["with"].get("permission-contents") == "read"
         and token["with"].get("permission-pull-requests") == "write"
+        and complete["env"].get("APP_TOKEN") == "${{ steps.app-token.outputs.token }}"
+        and complete["env"].get("MINTED_APP_SLUG") == "${{ steps.app-token.outputs.app-slug }}"
+        and complete["env"].get("INSTALLATION_ID") == "${{ steps.app-token.outputs.installation-id }}"
+        and "GH_TOKEN" not in complete["env"]
+        and 'GH_TOKEN="$APP_TOKEN" gh api' in run
+        and "app_api app-approval --method POST" in run
+        and "app_api authorization-check --method PATCH" in run
         and workflow_head in run
         and "workflow token REST head lookup failed" in run
         and "gh pr view" not in run
@@ -122,7 +129,8 @@ export AUTHORIZATION_CHECK_ID=9001 ARM_RUN_ID=7001 ARM_RUN_ATTEMPT=2
 export EXPECTED_APP_ID=4242 EXPECTED_APP_SLUG=verjson-ai-review
 export EXPECTED_AUTHORIZED_HEAD_SHA=0123456789abcdef0123456789abcdef01234567
 export EXPECTED_REVIEWED_HEAD_SHA="$EXPECTED_AUTHORIZED_HEAD_SHA" EXPECTED_HEAD_SHA="$EXPECTED_AUTHORIZED_HEAD_SHA"
-export GATE_STATUS=success ACTIONS_TOKEN=actions-token GH_TOKEN=app-token
+export GATE_STATUS=success ACTIONS_TOKEN=actions-token APP_TOKEN=app-token
+export MINTED_APP_SLUG="$EXPECTED_APP_SLUG" INSTALLATION_ID=1234 RUNNER_TEMP="$tmp"
 
 run_complete(){ (cd "$tmp/run" && bash "$tmp/complete.sh"); }
 if (cd "$tmp/run" && .gate-trust/scripts/ci-gate/verify-arm-receipt.sh) >"$tmp/out" 2>&1; then
