@@ -24,6 +24,7 @@ platform	bash scripts/fleet-watchdog-cadence.test.sh
 platform	bash scripts/runner-selector-health.test.sh
 platform	bash scripts/required-checks-audit.test.sh
 platform	python3 scripts/gate_coverage_audit_test.py
+platform	python3 scripts/org_secret_scope_audit_test.py
 platform	bash scripts/classify-repo-stacks.test.sh
 platform	python3 scripts/ci-gate/privileged-scheduled-workflows.test.py
 platform	bash scripts/ci-telemetry/rework-reconcile-trigger.test.sh
