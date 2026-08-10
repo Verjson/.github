@@ -146,7 +146,6 @@ jobs:
           [[ "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]] || exit 1
           [[ "$AUTHORIZATION_CHECK_ID" =~ ^[1-9][0-9]*$ ]] || exit 1
           [[ "$EXPECTED_HEAD_SHA" =~ ^[0-9a-f]{40}$ ]] || exit 1
-          bash .gate-trust/scripts/ci-gate/verify-arm-receipt.sh
 
           default_branch="$(gh api "repos/$TARGET_REPO" --jq '.default_branch // ""')"
           [[ "$default_branch" =~ ^[A-Za-z0-9._/-]+$ ]] || exit 1
@@ -171,8 +170,10 @@ jobs:
           actual_head="$(jq -r '.headRefOid // ""' <<<"$meta")"
           [ "$(jq -r .state <<<"$meta")" = OPEN ] || exit 0
           [ "$actual_head" = "$EXPECTED_HEAD_SHA" ] || {
-            echo "::error::PR head changed; stale authorization cannot promote a merge"; exit 1;
+            echo "Superseded promotion is a no-op: expected $EXPECTED_HEAD_SHA, current head is $actual_head."
+            exit 0
           }
+          bash .gate-trust/scripts/ci-gate/verify-arm-receipt.sh
           [ "$(jq -r '.headRepositoryOwner.login // ""' <<<"$meta")" = "$GITHUB_REPOSITORY_OWNER" ] || {
             echo "::error::fork PRs are not eligible for autonomous merge"; exit 1;
           }

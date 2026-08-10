@@ -20,6 +20,7 @@ awk '
 mkdir -p "$tmp/bin" "$tmp/run/.gate-trust/scripts/ci-gate"
 cat >"$tmp/run/.gate-trust/scripts/ci-gate/verify-arm-receipt.sh" <<'SH'
 #!/usr/bin/env bash
+printf 'verify-arm-receipt\n' >>"$CALLS"
 exit "${VERIFY_RC:-0}"
 SH
 chmod 0644 "$tmp/run/.gate-trust/scripts/ci-gate/verify-arm-receipt.sh"
@@ -109,6 +110,9 @@ else
   pass "unconfirmed merge postcondition fails closed"
 fi
 write_base; jq '.state="MERGED"' "$META_FILE" >"$tmp/x" && mv "$tmp/x" "$META_FILE"; expect_pass "duplicate promotion after merge is idempotent" run_promote; ! grep -q 'pr merge' "$CALLS" || fail "merged PR repeated mutation"
+write_base; jq '.headRefOid="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"' "$META_FILE" >"$tmp/x" && mv "$tmp/x" "$META_FILE"; expect_pass "superseded promotion is a terminal no-op" run_promote
+! grep -q 'verify-arm-receipt' "$CALLS" || fail "stale promotion verified an obsolete receipt"
+! grep -q 'pr merge' "$CALLS" || fail "stale promotion attempted a merge"
 write_base; GH_TOKEN= expect_fail "missing privileged credential fails before mutation" run_promote
 
 [ "$fails" -eq 0 ] && { echo "All tests passed."; exit 0; }

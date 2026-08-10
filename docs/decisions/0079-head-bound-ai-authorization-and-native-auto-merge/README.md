@@ -124,6 +124,19 @@ Existing successful authorizations
 are head-bound and do not become reusable on another commit during either
 transition.
 
+### 2026-08-10 clarification — superseded promotion events are terminal no-ops
+
+Issue [#723](https://github.com/Verjson/.github/issues/723) exposed an expected
+workflow-run race: ordinary CI completed for an authorized head after the PR had
+already advanced. Terminal promotion must still validate its default-branch and
+canonical-workflow provenance, then compare the authoritative live PR head with
+the authorized head before verifying the immutable receipt. A closed PR or a
+different live head is a successful no-op because there is no authorized
+mutation left to perform. The current open head continues through full receipt,
+App approval, required-CI provenance, and exact-head merge verification. This
+does not make authorization reusable; it prevents obsolete events from
+misreporting a security rejection as an operational failure.
+
 ## Consequences
 
 - One head pays for at most one automatic review; an explicit maintainer
