@@ -43,6 +43,8 @@ contract_errors() {
     || printf '%s\n' 'privileged workflow must consume ORG_ADMIN_TOKEN exactly once'
   ! grep -qF 'ORG_ADMIN_TOKEN' <<<"$route" \
     || printf '%s\n' 'routing job receives ORG_ADMIN_TOKEN'
+  ! grep -qF 'ACTIONS_VARIABLES_TOKEN' "$privileged" \
+    || printf '%s\n' 'privileged workflow still depends on an organization-variable PAT'
   grep -qF 'GH_TOKEN: ${{ secrets.ORG_ADMIN_TOKEN }}' <<<"$terminal" \
     || printf '%s\n' 'terminal merge job does not own the merge token'
 

@@ -9,9 +9,11 @@ on:
     workflows: [actions-ci]
     types: [completed]
   workflow_call:
-    secrets:
-      ACTIONS_VARIABLES_TOKEN:
+    inputs:
+      privileged_lane:
         required: false
+        type: string
+    secrets:
       ORG_ADMIN_TOKEN:
         required: true
 
@@ -81,7 +83,6 @@ jobs:
     if: needs.resolve.outputs.ready == 'true'
     uses: ./.github/workflows/ai-privileged-merge.yml
     secrets:
-      ACTIONS_VARIABLES_TOKEN: ${{ secrets.ACTIONS_VARIABLES_TOKEN }}
       ORG_ADMIN_TOKEN: ${{ secrets.ORG_ADMIN_TOKEN }}
     with:
       pr_number: ${{ needs.resolve.outputs.pr_number }}
@@ -90,3 +91,4 @@ jobs:
       arm_run_id: ${{ needs.resolve.outputs.arm_run_id }}
       arm_run_attempt: ${{ needs.resolve.outputs.arm_run_attempt }}
       review_policy: ${{ needs.resolve.outputs.review_policy }}
+      privileged_lane: ${{ inputs.privileged_lane || vars.VERJSON_LANE_PRIVILEGED }}

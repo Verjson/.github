@@ -79,17 +79,19 @@ want = "${{ github.repository_owner == 'Verjson' && fromJSON('[\"self-hosted\",\
 sys.exit(0 if route.get("runs-on") == want else 1)
 PY
 
-python3 - "$canonical" <<'PY' && pass "read-only routing token is optional during caller migration" \
-  || fail "routing-token migration contract changed"
+python3 - "$canonical" <<'PY' && pass "canonical accepts a caller-supplied privileged lane without a routing token" \
+  || fail "privileged-lane input contract changed"
 import sys, yaml
 d = yaml.safe_load(open(sys.argv[1]))
 on = d.get(True, d.get("on"))
-secrets = on["workflow_call"]["secrets"]
-sys.exit(0 if secrets.get("ACTIONS_VARIABLES_TOKEN") == {"required": False} else 1)
+call = on["workflow_call"]
+sys.exit(0 if call["inputs"].get("privileged_lane") == {
+    "required": False, "type": "string"} and
+    "ACTIONS_VARIABLES_TOKEN" not in call.get("secrets", {}) else 1)
 PY
 
-python3 - "$canonical" <<'PY' && pass "resolver is checkout-free and reads only allowlisted Verjson policy" \
-  || fail "resolver trust or credential boundary changed"
+python3 - "$canonical" <<'PY' && pass "resolver is checkout-free, credential-free, and admits only the exact Verjson lane" \
+  || fail "resolver trust, allowlist, or credential boundary changed"
 import sys, yaml
 d = yaml.safe_load(open(sys.argv[1]))
 route = d["jobs"]["resolve_privileged_route"]
@@ -97,18 +99,87 @@ step = next(step for step in route["steps"] if step.get("id") == "route")
 if any("checkout" in str(item.get("uses", "")) for item in route["steps"]):
     sys.exit(1)
 if step.get("env") != {
-    "GH_TOKEN": "${{ secrets.ACTIONS_VARIABLES_TOKEN }}",
+    "PRIVILEGED_LANE": "${{ inputs.privileged_lane || vars.VERJSON_LANE_PRIVILEGED }}",
     "REPOSITORY_OWNER": "${{ github.repository_owner }}",
 }:
     sys.exit(1)
 script = step["run"]
 required = (
-    '[ "$REPOSITORY_OWNER" = Verjson ]',
-    "gh api /orgs/Verjson/actions/variables/VERJSON_LANE_PRIVILEGED",
+    '[ "$REPOSITORY_OWNER" != Verjson ]',
     'echo "selector="',
     '. == ["self-hosted", "general"]',
+    '<<<"$PRIVILEGED_LANE"',
 )
-sys.exit(0 if all(value in script for value in required) and "ORG_ADMIN_TOKEN" not in script else 1)
+for forbidden in ("ORG_ADMIN_TOKEN", "ACTIONS_VARIABLES_TOKEN", "gh api"):
+    if forbidden in script or forbidden in str(step.get("env", {})):
+        sys.exit(1)
+sys.exit(0 if all(value in script for value in required) else 1)
+PY
+
+python3 - "$canonical" <<'PY' && pass "resolver mutations cannot widen or bypass the exact privileged-lane allowlist" \
+  || fail "resolver semantic validator accepted a widened or credentialed mutation"
+import copy
+import sys
+import yaml
+
+workflow = yaml.safe_load(open(sys.argv[1]))
+
+def valid(candidate):
+    route = candidate["jobs"]["resolve_privileged_route"]
+    if route.get("permissions") != {}:
+        return False
+    if route.get("runs-on") != "${{ github.repository_owner == 'Verjson' && fromJSON('[\"self-hosted\",\"general\"]') || 'ubuntu-24.04' }}":
+        return False
+    if any("uses" in step for step in route.get("steps", [])):
+        return False
+    step = next((item for item in route.get("steps", []) if item.get("id") == "route"), {})
+    if step.get("env") != {
+        "PRIVILEGED_LANE": "${{ inputs.privileged_lane || vars.VERJSON_LANE_PRIVILEGED }}",
+        "REPOSITORY_OWNER": "${{ github.repository_owner }}",
+    }:
+        return False
+    script = step.get("run", "")
+    required = (
+        'if [ "$REPOSITORY_OWNER" != Verjson ]; then',
+        "jq -e '. == [\"self-hosted\", \"general\"]'",
+        '<<<"$PRIVILEGED_LANE"',
+        'echo "selector=$(jq -c . <<<"$PRIVILEGED_LANE")"',
+    )
+    return all(item in script for item in required) and not any(
+        item in script or item in str(step.get("env", {}))
+        for item in ("ORG_ADMIN_TOKEN", "ACTIONS_VARIABLES_TOKEN", "gh api")
+    )
+
+if not valid(workflow):
+    sys.exit(1)
+
+def route_step(candidate):
+    return next(item for item in candidate["jobs"]["resolve_privileged_route"]["steps"]
+                if item.get("id") == "route")
+
+mutations = []
+widened = copy.deepcopy(workflow)
+route_step(widened)["run"] = route_step(widened)["run"].replace(
+    '. == ["self-hosted", "general"]',
+    '. == ["self-hosted", "general"] or . == ["ubuntu-24.04"]')
+mutations.append(widened)
+
+fallback = copy.deepcopy(workflow)
+route_step(fallback)["env"]["PRIVILEGED_LANE"] = (
+    "${{ inputs.privileged_lane || vars.VERJSON_LANE_FALLBACK }}")
+mutations.append(fallback)
+
+credential = copy.deepcopy(workflow)
+route_step(credential)["env"]["ACTIONS_VARIABLES_TOKEN"] = "${{ secrets.ACTIONS_VARIABLES_TOKEN }}"
+mutations.append(credential)
+
+api_read = copy.deepcopy(workflow)
+route_step(api_read)["run"] = (
+    "gh api /orgs/Verjson/actions/variables/VERJSON_LANE_PRIVILEGED\n" +
+    route_step(api_read)["run"])
+mutations.append(api_read)
+
+sys.exit(0 if all(not valid(candidate) for candidate in mutations) else 1)
 PY
 
 python3 - "$canonical" <<'PY' && pass "migration route output wins before legacy selectors" \
@@ -136,6 +207,7 @@ wc = on.get("workflow_call")
 if not wc: sys.exit(1)
 i = wc.get("inputs", {})
 need = {"pr_number", "expected_head_sha", "authorization_check_id", "arm_run_id", "arm_run_attempt", "review_policy", "source_run_id", "runner_labels"}
+need.add("privileged_lane")
 if not need <= set(i): sys.exit(1)
 sys.exit(0 if i["runner_labels"].get("required") is False else 1)
 PY
@@ -219,8 +291,9 @@ job = d.get("jobs", {}).get("retry", {})
 if set(on) != {"workflow_run"} or on["workflow_run"] != {
         "workflows": ["CI", "changelog"], "types": ["completed"]}:
     sys.exit(1)
-if job.get("uses") != want or set(job.get("secrets", {})) != {
-        "ACTIONS_VARIABLES_TOKEN", "ORG_ADMIN_TOKEN"}:
+if job.get("uses") != want or set(job.get("secrets", {})) != {"ORG_ADMIN_TOKEN"}:
+    sys.exit(1)
+if job.get("with") != {"privileged_lane": "${{ vars.VERJSON_LANE_PRIVILEGED }}"}:
     sys.exit(1)
 sys.exit(0)
 RETRY_PY
@@ -248,10 +321,11 @@ python3 - "$tmp/caller.yml" <<'WITH_PY' && pass "generated caller forwards exact
 import sys, yaml
 d = yaml.safe_load(open(sys.argv[1]))
 w = d["jobs"]["privileged_merge"].get("with", {})
-if set(w) != {"pr_number", "expected_head_sha", "authorization_check_id", "arm_run_id", "arm_run_attempt", "review_policy", "source_run_id"}:
+if set(w) != {"pr_number", "expected_head_sha", "authorization_check_id", "arm_run_id", "arm_run_attempt", "review_policy", "source_run_id", "privileged_lane"}:
     sys.exit(1)
 sys.exit(0 if w["expected_head_sha"] == "${{ inputs.expected_head_sha }}" and
-         w["review_policy"] == "${{ inputs.review_policy }}" else 1)
+         w["review_policy"] == "${{ inputs.review_policy }}" and
+         w["privileged_lane"] == "${{ vars.VERJSON_LANE_PRIVILEGED }}" else 1)
 WITH_PY
 
 cp "$tmp/caller.yml" "$tmp/caller-substituted.yml"
@@ -264,6 +338,17 @@ d = yaml.safe_load(open(sys.argv[1]))
 actual = d["jobs"]["privileged_merge"]["with"].get("review_policy")
 sys.exit(0 if actual == "${{ inputs.review_policy }}" else 1)
 SUBSTITUTION_PY
+
+cp "$tmp/caller.yml" "$tmp/caller-lane-substituted.yml"
+sed -i 's/vars.VERJSON_LANE_PRIVILEGED/vars.VERJSON_LANE_FALLBACK/' "$tmp/caller-lane-substituted.yml"
+python3 - "$tmp/caller-lane-substituted.yml" <<'LANE_SUBSTITUTION_PY' \
+  && fail "fallback-lane substitution escaped generated-caller validation" \
+  || pass "generated caller rejects a lane source other than VERJSON_LANE_PRIVILEGED"
+import sys, yaml
+d = yaml.safe_load(open(sys.argv[1]))
+actual = d["jobs"]["privileged_merge"]["with"].get("privileged_lane")
+sys.exit(0 if actual == "${{ vars.VERJSON_LANE_PRIVILEGED }}" else 1)
+LANE_SUBSTITUTION_PY
 
 # --- no fleet label reaches a consumer (#405) --------------------------------
 # The defect this pins: the generator baked `["self-hosted","general"]` into
@@ -295,13 +380,12 @@ w = d["jobs"]["privileged_merge"].get("with", {})
 sys.exit(0 if w.get("runner_labels") == '["ubuntu-24.04"]' else 1)
 LABELS_PY
 
-python3 - "$tmp/caller.yml" <<'SECRETS_PY' && pass "generated caller grants only routing-read and merge tokens" \
+python3 - "$tmp/caller.yml" <<'SECRETS_PY' && pass "generated caller grants only the terminal merge token" \
   || fail "generated caller uses secrets: inherit or omits an explicit narrow grant"
 import sys, yaml
 d = yaml.safe_load(open(sys.argv[1]))
 got = d["jobs"]["privileged_merge"].get("secrets")
 want = {
-    "ACTIONS_VARIABLES_TOKEN": "${{ secrets.ACTIONS_VARIABLES_TOKEN }}",
     "ORG_ADMIN_TOKEN": "${{ secrets.ORG_ADMIN_TOKEN }}",
 }
 sys.exit(0 if got == want else 1)
