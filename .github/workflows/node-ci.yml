@@ -780,12 +780,12 @@ jobs:
               echo "cache-env CACHE_PORT: ignored; the workflow exports Docker's mapped port" >&2
               continue
             fi
-            value="${value//'${CACHE_PORT}'/$CACHE_PORT}"
+            value="${value//\$\{CACHE_PORT\}/$CACHE_PORT}"
             printf '%s=%s\n' "$key" "$value" >> "$GITHUB_ENV"
           done
           echo "CACHE_PORT=$CACHE_PORT" >> "$GITHUB_ENV"
           ready=false
-          for attempt in {1..30}; do
+          for _attempt in {1..30}; do
             if docker exec "$CONTAINER_ID" redis-cli ping 2>/dev/null | grep -qx PONG; then
               ready=true
               break
