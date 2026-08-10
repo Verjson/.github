@@ -19,6 +19,7 @@ def valid(document):
     complete = next(step for step in steps
                     if step.get("name") == "Complete exact head authorization")
     run = complete["run"]
+    rest_head = """gh api "repos/$TARGET_REPO/pulls/$PR_NUMBER" --jq '.head.sha // ""'"""
     return (
         env.get("EXPECTED_HEAD_SHA") == "${{ needs.preflight.outputs.head_sha }}"
         and env.get("EXPECTED_APP_ID") == "${{ vars.AI_REVIEW_APP_ID }}"
@@ -30,6 +31,8 @@ def valid(document):
         and token["with"].get("permission-checks") == "write"
         and token["with"].get("permission-contents") == "read"
         and token["with"].get("permission-pull-requests") == "write"
+        and rest_head in run
+        and "gh pr view" not in run
         and run.index("verify-arm-receipt.sh") < run.index("-f event=APPROVE")
         and run.index("-f event=APPROVE") < run.index("-f status=completed")
         and "reviews/$approval_id" in run
@@ -64,6 +67,13 @@ complete["run"] = complete["run"].replace(
     'GH_TOKEN="$ACTIONS_TOKEN" bash .gate-trust/scripts/ci-gate/verify-arm-receipt.sh',
     'true # verifier removed') + '\nGH_TOKEN="$ACTIONS_TOKEN" bash .gate-trust/scripts/ci-gate/verify-arm-receipt.sh'
 assert not valid(reordered), "approval-before-receipt-verification mutation escaped"
+graphql_head = copy.deepcopy(workflow)
+complete = next(step for step in graphql_head["jobs"]["complete-authorization"]["steps"]
+                if step.get("name") == "Complete exact head authorization")
+complete["run"] = complete["run"].replace(
+    """gh api "repos/$TARGET_REPO/pulls/$PR_NUMBER" --jq '.head.sha // ""'""",
+    'gh pr view "$PR_NUMBER" --repo "$TARGET_REPO" --json headRefOid --jq \'.headRefOid // ""\'')
+assert not valid(graphql_head), "GraphQL head lookup mutation escaped least-privilege contract"
 PY
 
 awk '$0=="      - name: Complete exact head authorization"{f=1;next} f&&$0=="        run: |"{r=1;next} r{if($0~/^  [A-Za-z0-9_-]+:/)exit;sub(/^          /,"");print}' \
@@ -81,7 +91,6 @@ cat >"$tmp/bin/gh" <<'SH'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >>"$CALLS"
 case "$*" in
-  "pr view "*) printf '%s\n' "$EXPECTED_AUTHORIZED_HEAD_SHA" ;;
   "api --method POST "*)
     [ "${APPROVAL_RC:-0}" -eq 0 ] || exit "$APPROVAL_RC"
     jq -nc --arg head "$EXPECTED_AUTHORIZED_HEAD_SHA" \
@@ -91,6 +100,8 @@ case "$*" in
     jq -nc --arg head "${PERSISTED_HEAD:-$EXPECTED_AUTHORIZED_HEAD_SHA}" \
       --arg login "${EXPECTED_APP_SLUG}[bot]" --arg check "$AUTHORIZATION_CHECK_ID" \
       '{id:81,state:"APPROVED",commit_id:$head,user:{login:$login},body:("<!-- ai-review-authorization:"+$check+" -->")}' ;;
+  "api repos/"*"/pulls/"*)
+    printf '%s\n' "$EXPECTED_AUTHORIZED_HEAD_SHA" ;;
   "api --method PATCH "*) exit 0 ;;
   *) exit 2 ;;
 esac
