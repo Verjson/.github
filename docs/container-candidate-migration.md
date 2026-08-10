@@ -22,6 +22,25 @@ path. Default-branch pushes publish commit-addressed and
 `<nextStableVersion>-rc.<run_id>.<run_attempt>` identities, then retain the complete
 candidate manifest. Downstream automation consumes its digests, never its tags.
 
+Consumers whose lockfile resolves private `@verjson/*` packages list every exact
+package name in `privateNodePackages`. The canonical acquisition job validates the
+allowlist against `package-lock.json`, accepts only canonical registry URLs with exact
+SHA-512 integrity, and runs `npm ci --ignore-scripts` with isolated npm configuration.
+The resulting `node_modules` tree is bound to the workflow run, attempt, and lockfile
+digest. BuildKit receives only that credential-free tree as the named context
+`verjson_node_modules`; it never receives the acquisition token or npm configuration.
+Such a consumer uses the context explicitly, for example:
+
+```Dockerfile
+COPY --from=verjson_node_modules /node_modules ./node_modules
+```
+
+An absent `privateNodePackages` field preserves the existing build path. A fork PR
+that requests private packages fails before credential use, as does an unapproved
+package, a non-registry URL, a stale integrity, or a PR-controlled `.npmrc`.
+If dependency lifecycle scripts are required, run them later inside credential-free
+Docker execution after copying the context; credentialed acquisition never executes them.
+
 This contract is separate from the repository changelog contract. Continue to use
 `Verjson/.github/scripts/gen-changelog-caller.sh` for the changelog workflow,
 renderer, and contract test at their one immutable contract SHA; do not replace or

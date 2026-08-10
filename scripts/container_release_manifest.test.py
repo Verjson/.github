@@ -88,6 +88,19 @@ class ContainerReleaseManifestTests(unittest.TestCase):
     def test_accepts_complete_manifest_bound_to_reviewed_identity(self):
         manifest_contract.validate_manifest(manifest(), config())
 
+    def test_accepts_exact_reviewed_private_node_packages(self):
+        reviewed = config()
+        reviewed["privateNodePackages"] = ["@verjson/pg", "@verjson/observability"]
+        manifest_contract.validate_manifest(manifest(), reviewed)
+
+    def test_rejects_unapproved_private_package_shapes(self):
+        for unsafe in ("@verjson/pg", ["lodash"], ["@verjson/pg", "@verjson/pg"], ["@verjson/../pg"]):
+            with self.subTest(unsafe=unsafe):
+                reviewed = config()
+                reviewed["privateNodePackages"] = unsafe
+                with self.assertRaisesRegex(manifest_contract.ManifestError, "privateNodePackages"):
+                    manifest_contract.validate_manifest(manifest(), reviewed)
+
     def test_rejects_duplicate_image_variant_even_when_digests_diverge(self):
         candidate = manifest()
         duplicate = copy.deepcopy(candidate["images"][0])

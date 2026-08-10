@@ -11,11 +11,19 @@ on:
         description: Immutable Verjson/.github contract commit used by the generated caller
         required: true
         type: string
+      acquisition-sha256:
+        description: SHA-256 of the canonical credential-bound acquisition implementation
+        required: true
+        type: string
       runner:
         description: Optional JSON runner labels for build-only jobs
         required: false
         default: ''
         type: string
+    secrets:
+      NODE_AUTH_TOKEN:
+        description: Token used only by canonical lockfile-bound package acquisition
+        required: false
 
 permissions:
   contents: read
@@ -30,19 +38,25 @@ jobs:
     outputs:
       matrix: ${{ steps.config.outputs.matrix }}
       candidate: ${{ steps.config.outputs.candidate }}
+      private-node-packages: ${{ steps.config.outputs.private-node-packages }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - id: config
         env:
           CONFIG_PATH: ${{ inputs.config-path }}
           CONTRACT_REF: ${{ inputs.contract-ref }}
+          JOB_WORKFLOW_SHA: ${{ job.workflow_sha }}
         run: |
           set -euo pipefail
           [[ "$CONTRACT_REF" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::contract-ref must be a 40-hex commit"; exit 1; }
+          [ "$CONTRACT_REF" = "$JOB_WORKFLOW_SHA" ] || { echo "::error::contract-ref must identify the executing reusable workflow"; exit 1; }
           [ -f "$CONFIG_PATH" ] || { echo "::error::candidate config is missing"; exit 1; }
           expected_namespace="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}"
           jq -e --arg repository "$GITHUB_REPOSITORY" --arg namespace "$expected_namespace" '
             .repository == $repository and .registryNamespace == $namespace
+            and ((.privateNodePackages // []) | type == "array")
+            and ((.privateNodePackages // []) | all(.[]; type == "string" and test("^@verjson/[a-z0-9][a-z0-9._-]*$")))
+            and ((.privateNodePackages // []) | length == (unique | length))
             and (.nextStableVersion | test("^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$"))
             and (.images | type == "array" and length > 0)
             and (all(.images[];
@@ -66,10 +80,95 @@ jobs:
           candidate="$(jq -r '.nextStableVersion' "$CONFIG_PATH")-rc.${GITHUB_RUN_ID}.${GITHUB_RUN_ATTEMPT}"
           echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
           echo "candidate=$candidate" >> "$GITHUB_OUTPUT"
+          echo "private-node-packages=$(jq -c '.privateNodePackages // []' "$CONFIG_PATH")" >> "$GITHUB_OUTPUT"
+
+  acquire-private-node-dependencies:
+    needs: prepare
+    runs-on: ${{ github.repository_owner == 'Verjson' && fromJSON(vars.VERJSON_LANE_TRUSTED || vars.VERJSON_LANE_FALLBACK || '["ubuntu-24.04"]') || 'ubuntu-24.04' }}
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    outputs:
+      lock-digest: ${{ steps.acquire.outputs.lock-digest }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - id: acquire
+        name: Acquire exact lockfile packages without lifecycle execution
+        env:
+          APPROVED_PRIVATE_PACKAGES: ${{ needs.prepare.outputs.private-node-packages }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          CONFIG_PATH: ${{ inputs.config-path }}
+          EVENT_NAME: ${{ github.event_name }}
+          HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
+          NODE_AUTH_TOKEN: ${{ secrets.NODE_AUTH_TOKEN }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          [ -f package-lock.json ] || { echo "::error::package-lock.json is required"; exit 1; }
+          if find . -name .npmrc -print -quit | grep -q .; then
+            echo "::error::private container dependency acquisition rejects project-controlled .npmrc"
+            exit 1
+          fi
+          if [ "$EVENT_NAME" = pull_request ]; then
+            [ "$HEAD_REPOSITORY" = "$REPOSITORY" ] || {
+              [ "$APPROVED_PRIVATE_PACKAGES" = '[]' ] || { echo "::error::fork pull requests cannot acquire private container dependencies"; exit 1; }
+            }
+            [[ "$BASE_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::pull request base SHA is missing"; exit 1; }
+            base_config="$RUNNER_TEMP/container-candidate-base.json"
+            git show "$BASE_SHA:$CONFIG_PATH" > "$base_config" 2>/dev/null || { echo "::error::candidate config must exist at the reviewed base SHA"; exit 1; }
+            base_approved="$(jq -ce '.privateNodePackages // []' "$base_config")" || { echo "::error::reviewed base privateNodePackages is invalid"; exit 1; }
+            [ "$base_approved" = "$APPROVED_PRIVATE_PACKAGES" ] || { echo "::error::privateNodePackages differs from the reviewed base configuration"; exit 1; }
+          fi
+          if [ "$APPROVED_PRIVATE_PACKAGES" != '[]' ]; then
+            [ -n "$NODE_AUTH_TOKEN" ] || { echo "::error::private container dependency acquisition requires NODE_AUTH_TOKEN"; exit 1; }
+          fi
+          acquisition="$RUNNER_TEMP/container_private_dependencies.py"
+          curl -fsSL "https://raw.githubusercontent.com/Verjson/.github/${{ inputs.contract-ref }}/scripts/container_private_dependencies.py" -o "$acquisition"
+          printf '%s  %s\n' '${{ inputs.acquisition-sha256 }}' "$acquisition" | sha256sum --check --strict
+          python3 "$acquisition" --lock package-lock.json --approved "$APPROVED_PRIVATE_PACKAGES"
+          user_config="$RUNNER_TEMP/container-user.npmrc"
+          global_config="$RUNNER_TEMP/container-global.npmrc"
+          npm_cache="$RUNNER_TEMP/container-npm-cache"
+          npm_home="$RUNNER_TEMP/container-npm-home"
+          mkdir -p "$npm_home"
+          : > "$global_config"
+          cat > "$user_config" <<'NPMRC'
+          registry=https://registry.npmjs.org/
+          @verjson:registry=https://npm.pkg.github.com/
+          //npm.pkg.github.com/:_authToken=${NODE_AUTH_TOKEN}
+          NPMRC
+          env -i \
+            HOME="$npm_home" \
+            NODE_AUTH_TOKEN="$NODE_AUTH_TOKEN" \
+            NPM_CONFIG_CACHE="$npm_cache" \
+            NPM_CONFIG_GLOBALCONFIG="$global_config" \
+            NPM_CONFIG_USERCONFIG="$user_config" \
+            PATH="$PATH" \
+            npm ci --ignore-scripts --no-audit --no-fund
+          artifact="$RUNNER_TEMP/container-node-modules"
+          mkdir -p "$artifact"
+          mv node_modules "$artifact/node_modules"
+          lock_digest="$(sha256sum package-lock.json | cut -d' ' -f1)"
+          printf '%s\n' "$lock_digest" > "$artifact/.verjson-lock-sha256"
+          tar -czf "$RUNNER_TEMP/container-node-modules.tgz" -C "$artifact" .
+          echo "lock-digest=$lock_digest" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: container-node-modules-${{ github.run_id }}-${{ github.run_attempt }}-${{ steps.acquire.outputs.lock-digest }}
+          path: ${{ runner.temp }}/container-node-modules.tgz
+          retention-days: 1
+          if-no-files-found: error
 
   pull-request-build:
     if: github.event_name == 'pull_request'
-    needs: prepare
+    needs: [prepare, acquire-private-node-dependencies]
     permissions:
       contents: read
     strategy:
@@ -79,8 +178,36 @@ jobs:
     runs-on: ${{ inputs.runner != '' && fromJSON(inputs.runner) || github.repository_owner != 'Verjson' && 'ubuntu-24.04' || github.event.repository.private == true && fromJSON(vars.VERJSON_LANE_TRUSTED || vars.VERJSON_LANE_FALLBACK || '["ubuntu-24.04"]') || fromJSON(vars.VERJSON_LANE_UNTRUSTED || vars.VERJSON_LANE_FALLBACK || '["ubuntu-24.04"]') }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: container-node-modules-${{ github.run_id }}-${{ github.run_attempt }}-${{ needs.acquire-private-node-dependencies.outputs.lock-digest }}
+          path: ${{ runner.temp }}/container-node-modules-artifact
+      - name: Restore and verify credential-free node_modules context
+        env:
+          ACTIONS_ID_TOKEN_REQUEST_TOKEN: ''
+          ACTIONS_ID_TOKEN_REQUEST_URL: ''
+          AWS_ACCESS_KEY_ID: ''
+          AWS_SECRET_ACCESS_KEY: ''
+          AZURE_CLIENT_SECRET: ''
+          GOOGLE_APPLICATION_CREDENTIALS: ''
+          GH_TOKEN: ''
+          GITHUB_TOKEN: ''
+          NODE_AUTH_TOKEN: ''
+          NPM_TOKEN: ''
+        run: |
+          set -euo pipefail
+          context="$RUNNER_TEMP/container-node-modules-context"
+          mkdir -p "$context"
+          tar -xzf "$RUNNER_TEMP/container-node-modules-artifact/container-node-modules.tgz" -C "$context"
+          expected="$(sha256sum package-lock.json | cut -d' ' -f1)"
+          [ "$(cat "$context/.verjson-lock-sha256")" = "$expected" ] || { echo "::error::node_modules artifact does not match package-lock.json"; exit 1; }
       - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
       - uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        env:
+          ACTIONS_ID_TOKEN_REQUEST_TOKEN: ''
+          ACTIONS_ID_TOKEN_REQUEST_URL: ''
+          NODE_AUTH_TOKEN: ''
+          NPM_TOKEN: ''
         with:
           context: ${{ matrix.context }}
           file: ${{ matrix.file }}
@@ -89,10 +216,11 @@ jobs:
           push: false
           provenance: false
           sbom: false
+          build-contexts: verjson_node_modules=${{ runner.temp }}/container-node-modules-context
 
   publish-base:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main' && github.event.repository.default_branch == 'main'
-    needs: prepare
+    needs: [prepare, acquire-private-node-dependencies]
     permissions:
       contents: read
       packages: write
@@ -104,6 +232,29 @@ jobs:
     runs-on: ${{ github.repository_owner != 'Verjson' && 'ubuntu-24.04' || fromJSON(vars.VERJSON_LANE_TRUSTED || vars.VERJSON_LANE_FALLBACK || '["ubuntu-24.04"]') }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: container-node-modules-${{ github.run_id }}-${{ github.run_attempt }}-${{ needs.acquire-private-node-dependencies.outputs.lock-digest }}
+          path: ${{ runner.temp }}/container-node-modules-artifact
+      - name: Restore and verify credential-free node_modules context
+        env:
+          ACTIONS_ID_TOKEN_REQUEST_TOKEN: ''
+          ACTIONS_ID_TOKEN_REQUEST_URL: ''
+          AWS_ACCESS_KEY_ID: ''
+          AWS_SECRET_ACCESS_KEY: ''
+          AZURE_CLIENT_SECRET: ''
+          GH_TOKEN: ''
+          GITHUB_TOKEN: ''
+          GOOGLE_APPLICATION_CREDENTIALS: ''
+          NODE_AUTH_TOKEN: ''
+          NPM_TOKEN: ''
+        run: |
+          set -euo pipefail
+          context="$RUNNER_TEMP/container-node-modules-context"
+          mkdir -p "$context"
+          tar -xzf "$RUNNER_TEMP/container-node-modules-artifact/container-node-modules.tgz" -C "$context"
+          expected="$(sha256sum package-lock.json | cut -d' ' -f1)"
+          [ "$(cat "$context/.verjson-lock-sha256")" = "$expected" ] || { echo "::error::node_modules artifact does not match package-lock.json"; exit 1; }
       - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
       - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
@@ -113,6 +264,11 @@ jobs:
       - id: build
         if: matrix.baseVariant == ''
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        env:
+          ACTIONS_ID_TOKEN_REQUEST_TOKEN: ''
+          ACTIONS_ID_TOKEN_REQUEST_URL: ''
+          NODE_AUTH_TOKEN: ''
+          NPM_TOKEN: ''
         with:
           context: ${{ matrix.context }}
           file: ${{ matrix.file }}
@@ -123,6 +279,7 @@ jobs:
             ${{ matrix.repository }}:${{ needs.prepare.outputs.candidate }}
           provenance: mode=max
           sbom: true
+          build-contexts: verjson_node_modules=${{ runner.temp }}/container-node-modules-context
       - id: provenance
         if: matrix.baseVariant == ''
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
@@ -166,7 +323,7 @@ jobs:
 
   publish-derived:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main' && github.event.repository.default_branch == 'main'
-    needs: [prepare, publish-base]
+    needs: [prepare, acquire-private-node-dependencies, publish-base]
     permissions:
       contents: read
       packages: write
@@ -179,6 +336,30 @@ jobs:
     steps:
       - if: matrix.baseVariant != ''
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: container-node-modules-${{ github.run_id }}-${{ github.run_attempt }}-${{ needs.acquire-private-node-dependencies.outputs.lock-digest }}
+          path: ${{ runner.temp }}/container-node-modules-artifact
+      - if: matrix.baseVariant != ''
+        name: Restore and verify credential-free node_modules context
+        env:
+          ACTIONS_ID_TOKEN_REQUEST_TOKEN: ''
+          ACTIONS_ID_TOKEN_REQUEST_URL: ''
+          AWS_ACCESS_KEY_ID: ''
+          AWS_SECRET_ACCESS_KEY: ''
+          AZURE_CLIENT_SECRET: ''
+          GH_TOKEN: ''
+          GITHUB_TOKEN: ''
+          GOOGLE_APPLICATION_CREDENTIALS: ''
+          NODE_AUTH_TOKEN: ''
+          NPM_TOKEN: ''
+        run: |
+          set -euo pipefail
+          context="$RUNNER_TEMP/container-node-modules-context"
+          mkdir -p "$context"
+          tar -xzf "$RUNNER_TEMP/container-node-modules-artifact/container-node-modules.tgz" -C "$context"
+          expected="$(sha256sum package-lock.json | cut -d' ' -f1)"
+          [ "$(cat "$context/.verjson-lock-sha256")" = "$expected" ] || { echo "::error::node_modules artifact does not match package-lock.json"; exit 1; }
       - if: matrix.baseVariant != ''
         uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
       - if: matrix.baseVariant != ''
@@ -201,6 +382,11 @@ jobs:
       - id: build
         if: matrix.baseVariant != ''
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        env:
+          ACTIONS_ID_TOKEN_REQUEST_TOKEN: ''
+          ACTIONS_ID_TOKEN_REQUEST_URL: ''
+          NODE_AUTH_TOKEN: ''
+          NPM_TOKEN: ''
         with:
           context: ${{ matrix.context }}
           file: ${{ matrix.file }}
@@ -212,6 +398,7 @@ jobs:
             ${{ matrix.repository }}:${{ needs.prepare.outputs.candidate }}
           provenance: mode=max
           sbom: true
+          build-contexts: verjson_node_modules=${{ runner.temp }}/container-node-modules-context
       - id: provenance
         if: matrix.baseVariant != ''
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
