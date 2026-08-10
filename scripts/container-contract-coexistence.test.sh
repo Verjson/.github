@@ -12,6 +12,7 @@ cp \
   "$root/scripts/gen-container-release.sh" \
   "$root/scripts/container_release_promotion.py" \
   "$root/scripts/container_release_manifest.py" \
+  "$root/scripts/container_private_dependencies.py" \
   "$root/scripts/container_artifact_extract.py" \
   "$contract/scripts/"
 git -C "$contract" init -q

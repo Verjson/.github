@@ -297,3 +297,20 @@ different digest or an inconclusive registry read fails closed without replacing
 The manifest records the attestation ID returned by GitHub's provenance action and
 derives its signer identity from the pinned reusable workflow; reviewed configuration
 selects the expected predicate but is not treated as observed attestation evidence.
+
+## Amendment (2026-08-09) — private candidate dependency boundary (#690)
+
+Candidate consumers may declare an exact `privateNodePackages` allowlist of
+`@verjson/*` names. A separate trusted acquisition job binds that allowlist to both the
+reviewed pull-request base configuration and a lockfile v2/v3 whose entries use only
+canonical npm or GitHub Packages URLs with exact SHA-512 integrity. Forks cannot request
+private packages, project-controlled `.npmrc` files are rejected, and acquisition uses
+an isolated npm environment with lifecycle scripts disabled.
+
+The acquisition credential is passed explicitly to that job alone. It is never a Docker
+build argument, BuildKit secret, cache, or environment value. The job exports only a
+credential-free `node_modules` tree whose artifact identity includes the workflow run,
+attempt, and lockfile digest. Every build job checks that digest against its checked-out
+lockfile before exposing the tree as the `verjson_node_modules` named context. This
+permits exact private dependencies without moving package credentials or lifecycle
+execution into pull-request-controlled Docker commands.

@@ -20,6 +20,7 @@ usage() {
 
 case "$mode" in
   workflow)
+    acquisition_sha256="$(git -C "$root" show "$ref:scripts/container_private_dependencies.py" | sha256sum | cut -d' ' -f1)"
     cat <<YAML
 # GENERATED FILE — do not edit by hand.
 # Contract: $ref
@@ -43,6 +44,9 @@ jobs:
     with:
       config-path: $config_path
       contract-ref: $ref
+      acquisition-sha256: $acquisition_sha256
+    secrets:
+      NODE_AUTH_TOKEN: \${{ secrets.NODE_AUTH_TOKEN }}
 YAML
     ;;
   validator)
@@ -56,6 +60,7 @@ HEADER
       | sed '1{/^#!\/usr\/bin\/env python3$/d;}'
     ;;
   contract-test)
+    acquisition_sha256="$(git -C "$root" show "$ref:scripts/container_private_dependencies.py" | sha256sum | cut -d' ' -f1)"
     workflow="$("$0" workflow "$ref" "$config_path")"
     workflow_digest="$(printf '%s\n' "$workflow" | sha256sum | cut -d' ' -f1)"
     validator="$("$0" validator "$ref" "$config_path")"
@@ -75,12 +80,15 @@ grep -qx '# Contract: $ref' "\$caller" || fail "caller contract pin differs"
 grep -qx '# Contract: $ref' "\$validator" || fail "validator contract pin differs"
 grep -q 'uses: Verjson/.github/.github/workflows/container-candidate.yml@$ref' "\$caller" || fail "caller does not use the pinned reusable workflow"
 grep -q 'contract-ref: $ref' "\$caller" || fail "caller does not pass the shared pin"
+grep -q 'acquisition-sha256: $acquisition_sha256' "\$caller" || fail "caller does not pin the acquisition implementation digest"
 [ "\$(sha256sum "\$caller" | cut -d' ' -f1)" = "$workflow_digest" ] || fail "generated caller was edited"
 [ "\$(sha256sum "\$validator" | cut -d' ' -f1)" = "$validator_digest" ] || fail "generated validator was edited"
 grep -q '^  pull_request:' "\$caller" || fail "pull requests must exercise the build-only path"
-if grep -Eq 'secrets:|registry-namespace:|environment:' "\$caller"; then
-  fail "caller may not inject credentials, registry namespaces, or environments"
+if grep -Eq 'secrets: inherit|registry-namespace:|environment:' "\$caller"; then
+  fail "caller may not inherit credentials or inject registry namespaces or environments"
 fi
+grep -qF 'NODE_AUTH_TOKEN: \${{ secrets.NODE_AUTH_TOKEN }}' "\$caller" \
+  || fail "caller does not pass only the private-package acquisition token"
 python3 "\$validator" --help >/dev/null
 echo "container candidate generated contract passed"
 TEST
