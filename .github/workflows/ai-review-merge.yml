@@ -1557,7 +1557,7 @@ jobs:
             shift
             local diagnostics="$RUNNER_TEMP/${phase}.stderr"
             if ! GH_DEBUG=api GH_TOKEN="$APP_TOKEN" gh api "$@" 2>"$diagnostics"; then
-              echo "::error title=${phase} failed::Dedicated App mutation failed; installation=${INSTALLATION_ID} app=${MINTED_APP_SLUG}"
+              echo "::error title=${phase} failed::Dedicated App mutation failed; installation=${INSTALLATION_ID} app=${MINTED_APP_SLUG}" >&2
               sed -E 's/(authorization: (token|bearer) )[A-Za-z0-9._-]+/\1***/Ig' "$diagnostics" >&2
               return 1
             fi
