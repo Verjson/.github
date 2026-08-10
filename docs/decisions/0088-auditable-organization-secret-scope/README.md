@@ -27,6 +27,8 @@ The current consumers and safe visibility targets are therefore recorded in `con
 
 Keep an exact, checked-in policy for every organization Actions secret. A read-only, main-bound scheduled workflow compares the live secret names, visibility, and exact selected-repository grants against that policy. It fails closed on unreadable API state, an unmanifested secret, incomplete justification, visibility drift, or missing/excess selected grants. Tests replace `gh` entirely, so no test can read or mutate live organization settings. The trusted scheduled job receives `ORG_ADMIN_TOKEN` only as the API read credential; pull-request CI never receives it.
 
+The schedule has no manually selectable ref, serializes overlapping audits without cancelling an established run, and is registered in the semantic privileged-workflow validator. That validator fixes the exact trigger, permissions, runner route, timeout, steps, immutable checkout, command, and token placement. Boundary validation also treats malformed or duplicate policy and API objects as controlled failures rather than allowing interpreter tracebacks to become the operational signal.
+
 No automation in this decision writes secret values or visibility. Every live visibility change remains a separately authorized, one-secret-at-a-time operation after exact-head review and green CI, with before-state rollback evidence and a semantic consumer run. The policy must be updated and reviewed first; weakening it to match an unexplained live change is nonconformant.
 
 ## Consequences
