@@ -28,6 +28,7 @@ def valid(document):
         and token["with"].get("client-id") == "${{ vars.AI_REVIEW_CLIENT_ID }}"
         and "app-id" not in token["with"]
         and token["with"].get("permission-checks") == "write"
+        and token["with"].get("permission-contents") == "read"
         and token["with"].get("permission-pull-requests") == "write"
         and run.index("verify-arm-receipt.sh") < run.index("-f event=APPROVE")
         and run.index("-f event=APPROVE") < run.index("-f status=completed")
@@ -51,6 +52,11 @@ token = next(step for step in no_pr_write["jobs"]["complete-authorization"]["ste
              if step.get("name") == "Mint dedicated authorization App token")
 del token["with"]["permission-pull-requests"]
 assert not valid(no_pr_write), "missing App pull-request write permission escaped"
+no_contents_read = copy.deepcopy(workflow)
+token = next(step for step in no_contents_read["jobs"]["complete-authorization"]["steps"]
+             if step.get("name") == "Mint dedicated authorization App token")
+del token["with"]["permission-contents"]
+assert not valid(no_contents_read), "missing App contents read permission escaped"
 reordered = copy.deepcopy(workflow)
 complete = next(step for step in reordered["jobs"]["complete-authorization"]["steps"]
                 if step.get("name") == "Complete exact head authorization")

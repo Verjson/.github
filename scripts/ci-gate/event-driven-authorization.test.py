@@ -296,8 +296,9 @@ def main() -> int:
     app_token = next(step for step in completion_steps
                      if step.get("name") == "Mint dedicated authorization App token")
     require(app_token["with"].get("permission-checks") == "write" and
+            app_token["with"].get("permission-contents") == "read" and
             app_token["with"].get("permission-pull-requests") == "write",
-            "dedicated completion App token must request only its required write permissions")
+            "dedicated completion App token must request the exact approval permission envelope")
     require('check-runs/$AUTHORIZATION_CHECK_ID' in review_text,
             "review must complete the exact check-run supplied by the trusted arm")
     require('head_sha:$sha' in rearm_text and '--arg sha "$head_sha"' in rearm_text,
