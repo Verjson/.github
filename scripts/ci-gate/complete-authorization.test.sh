@@ -31,6 +31,9 @@ def valid(document):
         and token["with"].get("permission-checks") == "write"
         and token["with"].get("permission-contents") == "read"
         and token["with"].get("permission-pull-requests") == "write"
+        and document["jobs"]["complete-authorization"]["permissions"].get("actions") == "read"
+        and document["jobs"]["complete-authorization"]["permissions"].get("checks") == "read"
+        and document["jobs"]["complete-authorization"]["permissions"].get("pull-requests") == "read"
         and complete["env"].get("APP_TOKEN") == "${{ steps.app-token.outputs.token }}"
         and complete["env"].get("MINTED_APP_SLUG") == "${{ steps.app-token.outputs.app-slug }}"
         and complete["env"].get("INSTALLATION_ID") == "${{ steps.app-token.outputs.installation-id }}"
@@ -72,6 +75,9 @@ token = next(step for step in no_contents_read["jobs"]["complete-authorization"]
              if step.get("name") == "Mint dedicated authorization App token")
 del token["with"]["permission-contents"]
 assert not valid(no_contents_read), "missing App contents read permission escaped"
+no_workflow_checks_read = copy.deepcopy(workflow)
+del no_workflow_checks_read["jobs"]["complete-authorization"]["permissions"]["checks"]
+assert not valid(no_workflow_checks_read), "missing workflow-token check read permission escaped"
 reordered = copy.deepcopy(workflow)
 complete = next(step for step in reordered["jobs"]["complete-authorization"]["steps"]
                 if step.get("name") == "Complete exact head authorization")

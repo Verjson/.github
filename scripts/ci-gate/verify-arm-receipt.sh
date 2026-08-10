@@ -15,19 +15,37 @@ done
 [[ "$EXPECTED_APP_ID" =~ ^[1-9][0-9]*$ ]] || exit 1
 [[ "$EXPECTED_APP_SLUG" =~ ^[a-z0-9][a-z0-9-]*$ ]] || exit 1
 for tool in gh jq unzip sha256sum; do command -v "$tool" >/dev/null || exit 1; done
+tmp="$(mktemp -d "${RUNNER_TEMP:-/tmp}/ai-review-receipt.XXXXXX")"
+trap 'rm -rf "$tmp"' EXIT
+workflow_api() {
+  local phase="$1"
+  local output="$2"
+  shift 2
+  local diagnostics="$tmp/${phase}.stderr"
+  if ! GH_DEBUG=api gh api "$@" >"$output" 2>"$diagnostics"; then
+    echo "::error title=${phase} failed::Workflow-token arm receipt read failed" >&2
+    sed -E 's/(authorization: (token|bearer) )[A-Za-z0-9._-]+/\1***/Ig' "$diagnostics" >&2
+    return 1
+  fi
+}
 review_policy_json="$(python3 "$(dirname "$0")/review-policy-envelope.py" decode "$REVIEW_POLICY")" || exit 1
 review_actor="$(jq -r .actor <<<"$review_policy_json")"
 receipt_permission="$(jq -r .actor_permission <<<"$review_policy_json")"
 if [ "$receipt_permission" != automation ] && [ "${REVERIFY_ACTOR_PERMISSION:-true}" != false ]; then
   [[ "$review_actor" =~ ^[A-Za-z0-9][A-Za-z0-9-]*$ ]] || exit 1
   case "$receipt_permission" in admin|maintain) ;; *) exit 1 ;; esac
-  current_permission="$(gh api "repos/$TARGET_REPO/collaborators/$review_actor/permission" --jq '.permission // ""')" || exit 1
+  workflow_api actor-permission "$tmp/actor-permission" \
+    "repos/$TARGET_REPO/collaborators/$review_actor/permission" --jq '.permission // ""' || exit 1
+  current_permission="$(<"$tmp/actor-permission")"
   case "$current_permission" in admin|maintain) ;; *) echo "::error::re-review actor no longer has maintain/admin permission"; exit 1 ;; esac
 fi
 
-arm_workflow_id="$(gh api "repos/$TARGET_REPO/actions/workflows/gate-rearm.yml" --jq '.id // ""')"
+workflow_api arm-workflow "$tmp/arm-workflow-id" \
+  "repos/$TARGET_REPO/actions/workflows/gate-rearm.yml" --jq '.id // ""' || exit 1
+arm_workflow_id="$(<"$tmp/arm-workflow-id")"
 [[ "$arm_workflow_id" =~ ^[1-9][0-9]*$ ]] || exit 1
-arm_run="$(gh api "repos/$TARGET_REPO/actions/runs/$ARM_RUN_ID")"
+workflow_api arm-run "$tmp/arm-run.json" "repos/$TARGET_REPO/actions/runs/$ARM_RUN_ID" || exit 1
+arm_run="$(<"$tmp/arm-run.json")"
 jq -e --argjson workflow_id "$arm_workflow_id" --argjson run_id "$ARM_RUN_ID" --argjson attempt "$ARM_RUN_ATTEMPT" --arg repo "$TARGET_REPO" '
   .id == $run_id and .run_attempt == $attempt and
   .workflow_id == $workflow_id and .event == "pull_request_target" and
@@ -35,7 +53,9 @@ jq -e --argjson workflow_id "$arm_workflow_id" --argjson run_id "$ARM_RUN_ID" --
 ' <<<"$arm_run" >/dev/null || { echo "::error::arm run provenance mismatch"; exit 1; }
 
 artifact_name="ai-review-arm-$ARM_RUN_ID-$ARM_RUN_ATTEMPT"
-artifacts="$(gh api "repos/$TARGET_REPO/actions/runs/$ARM_RUN_ID/artifacts?per_page=100")"
+workflow_api arm-artifacts "$tmp/arm-artifacts.json" \
+  "repos/$TARGET_REPO/actions/runs/$ARM_RUN_ID/artifacts?per_page=100" || exit 1
+artifacts="$(<"$tmp/arm-artifacts.json")"
 artifact="$(jq -c --arg name "$artifact_name" '
   [.artifacts[] | select(.name == $name and .expired == false)]
   | if length == 1 then .[0] else error("receipt artifact missing or ambiguous") end
@@ -48,16 +68,17 @@ artifact_digest="$(jq -r '.digest // ""' <<<"$artifact")"
 [[ "$artifact_digest" =~ ^sha256:([0-9a-f]{64})$ ]] || exit 1
 expected_zip_sha="${BASH_REMATCH[1]}"
 
-tmp="$(mktemp -d "${RUNNER_TEMP:-/tmp}/ai-review-receipt.XXXXXX")"
-trap 'rm -rf "$tmp"' EXIT
-gh api "repos/$TARGET_REPO/actions/artifacts/$artifact_id/zip" >"$tmp/receipt.zip"
+workflow_api arm-artifact-download "$tmp/receipt.zip" \
+  "repos/$TARGET_REPO/actions/artifacts/$artifact_id/zip" || exit 1
 actual_zip_sha="$(sha256sum "$tmp/receipt.zip" | awk '{print $1}')"
 [ "$actual_zip_sha" = "$expected_zip_sha" ] || { echo "::error::arm receipt artifact digest mismatch"; exit 1; }
 [ "$(unzip -Z1 "$tmp/receipt.zip")" = receipt.json ] || { echo "::error::arm receipt archive shape is invalid"; exit 1; }
 unzip -p "$tmp/receipt.zip" receipt.json >"$tmp/receipt.json"
 [ "$(wc -c <"$tmp/receipt.json")" -le 8192 ] || exit 1
 
-check="$(gh api "repos/$TARGET_REPO/check-runs/$AUTHORIZATION_CHECK_ID")"
+workflow_api authorization-check "$tmp/authorization-check.json" \
+  "repos/$TARGET_REPO/check-runs/$AUTHORIZATION_CHECK_ID" || exit 1
+check="$(<"$tmp/authorization-check.json")"
 details_url="$GITHUB_SERVER_URL/$TARGET_REPO/actions/runs/$ARM_RUN_ID"
 jq -e \
   --arg repository "$TARGET_REPO" --argjson pr_number "$PR_NUMBER" --arg head "$EXPECTED_HEAD_SHA" \
@@ -83,6 +104,8 @@ jq -e --arg head "$EXPECTED_HEAD_SHA" --argjson check_id "$AUTHORIZATION_CHECK_I
   .app.id == $app_id and .app.slug == $app_slug
 ' <<<"$check" >/dev/null || { echo "::error::authorization check is not receipt-bound"; exit 1; }
 
-current_head="$(gh pr view "$PR_NUMBER" --repo "$TARGET_REPO" --json headRefOid,state --jq 'select(.state == "OPEN") | .headRefOid // ""')"
+workflow_api current-head "$tmp/current-head" "repos/$TARGET_REPO/pulls/$PR_NUMBER" \
+  --jq 'select(.state == "open") | .head.sha // ""' || exit 1
+current_head="$(<"$tmp/current-head")"
 [ "$current_head" = "$EXPECTED_HEAD_SHA" ] || { echo "::error::authorization head is stale"; exit 1; }
 echo "Arm receipt verified for check $AUTHORIZATION_CHECK_ID on $EXPECTED_HEAD_SHA."
