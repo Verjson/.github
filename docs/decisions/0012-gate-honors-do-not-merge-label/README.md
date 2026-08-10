@@ -202,3 +202,19 @@ two-sided, because either half alone is satisfiable by a wrong fix: a held PR mu
 not merge **and** must not fail; an unreadable signal must not merge **and** must
 not pass as a hold. The existing positive control — a legitimate run still merges
 — is what stops the whole set from passing by refusing everything.
+
+### 2026-08-10 clarification — one bounded Haiku first pass
+
+Issue [#725](https://github.com/Verjson/.github/issues/725) standardizes the
+single automatic paid review on `claude-haiku-4-5` with a `$1.00` maximum
+budget. Sensitive-path classification remains fail-closed and is retained in
+telemetry, but no longer changes the default model or cap. A caller may still
+select a supported stronger model only through the immutable receipt-bound
+policy envelope. This keeps automatic spend predictable, gives Haiku enough
+room to finish large diffs, and does not restore an automatic paid retry.
+The first live Haiku run (toquorum run `31442898609`) exhausted the inherited
+15-turn ceiling after 48 seconds without a verdict despite remaining under the
+dollar cap, so the same bounded pass now permits 30 turns. The `$1.00` cap
+remains authoritative: more turns cannot create a second paid pass or exceed
+that spend. Budget or turn exhaustion remains blocking until a maintainer
+explicitly re-reviews.

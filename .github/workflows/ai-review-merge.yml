@@ -529,7 +529,7 @@ jobs:
           files=$(gh api "repos/$REPO/pulls/$PR_NUMBER/files" --paginate --jq '.[]' | jq -s .)
           nfiles=$(jq length <<<"$files")
           if [ "$nfiles" -eq 0 ]; then
-            out lane ai; out reason "empty diff — needs a look"; select_policy claude-haiku-4-5 0.15
+            out lane ai; out reason "empty diff — needs a look"; select_policy claude-haiku-4-5 1.00
             out changed_lines 0
             out sensitive false
             exit 0
@@ -544,48 +544,24 @@ jobs:
           [[ "$changed_lines" =~ ^[0-9]+$ ]] || changed_lines=0
           out changed_lines "$changed_lines"
 
-          # Model tier for the AI lane: sensitive paths get the strong model.
+          # Sensitive-path classification remains fail-closed and observable,
+          # but the default first paid pass uses one organization-wide policy:
+          # Haiku 4.5 with a $1.00 cap. A receipt-bound explicit policy may
+          # still select a supported stronger model.
           #
-          # Fail-closed string form, not `if jq -e …` (#480). A jq error here read
-          # as "not sensitive", which silently downgraded an auth/RBAC/RLS/secrets
-          # PR to the weak model at 30% of the budget — failing open on how hard
-          # the security review tries, on exactly the PRs this classifier exists
-          # to escalate. It also chained into #441: the smaller budget makes
-          # `error_max_budget_usd` likelier, and a budget-exhausted pass emits a
-          # non-blocking placeholder verdict the gate accepts. Unlike the
-          # cheap-lane detectors below — which are fail-closed precisely BECAUSE
-          # an unreadable file list should fall through to a full review — an
-          # unreadable file list here must not silently pick the cheaper review.
+          # Fail-closed string form, not `if jq -e …` (#480). Sensitive status is
+          # security telemetry and may drive an explicit receipt-bound policy;
+          # malformed metadata must not be recorded as non-sensitive. Unlike the
+          # cheap-lane detectors below, an unreadable classification is an error.
           sensitive="$(jq -r '[.[].filename] | any(test("(^|/)\\.github/|abac|(^|/|[._-])auth|polic|payment|ledger|webhook|secret|middleware|rbac|rls"; "i")) | if . then "true" else "false" end' <<<"$files")"
           case "$sensitive" in
             true|false) ;;
             *)
-              echo "::error::could not classify sensitive paths for PR #$PR_NUMBER; failing closed rather than picking the cheaper review (#480)"
+              echo "::error::could not classify sensitive paths for PR #$PR_NUMBER; failing closed (#480)"
               exit 1 ;;
           esac
           out sensitive "$sensitive"
-          if [ "$sensitive" = true ]; then
-            model=claude-sonnet-5
-            # Workflow/security reviews get the strong model and more budget.
-            # This cap is the maximum automatic paid-review spend for the head;
-            # exhaustion fails closed until an explicit `re-review`.
-            budget_usd=0.50
-            large_budget_usd=0.90
-          else
-            model=claude-haiku-4-5
-            budget_usd=0.15
-            large_budget_usd=0.60
-          fi
-          # Diff-size-keyed budget (#181, ADR 0032). The floors above are tuned
-          # for a typical PR; a large diff exhausts them deterministically —
-          # verjson-cli-cloud#163 (1,586 changed lines) burned $0.21 against the
-          # $0.15 floor, died as `error_max_budget_usd`, and forced a ~$0.70
-          # sonnet escalation on every such PR. Raise the sole automatic pass's
-          # cap for big diffs so the selected tier can actually finish.
-          if [ "$changed_lines" -ge 800 ]; then
-            budget_usd="$large_budget_usd"
-          fi
-          select_policy "$model" "$budget_usd"
+          select_policy claude-haiku-4-5 1.00
 
           # ---- Fast lane A: submodule pointer bump -------------------------
           # Every changed file is a gitlink hunk, and each new SHA is already
@@ -1058,7 +1034,7 @@ jobs:
           prompt: ${{ steps.prep.outputs.review_prompt }}
           claude_args: |
             --model ${{ needs.preflight.outputs.model }}
-            --max-turns 15
+            --max-turns 30
             --max-budget-usd ${{ needs.preflight.outputs.budget_usd }}
             --json-schema '{"type":"object","properties":{"blocking":{"type":"boolean"},"summary":{"type":"string"},"review_first":{"type":"array","items":{"type":"object","properties":{"location":{"type":"string","description":"Exactly one file and positive line number (path/to/file.ext:42); no ranges or comma-separated locations."},"why":{"type":"string"}},"required":["location","why"],"additionalProperties":false}},"findings":{"type":"array","items":{"type":"object","properties":{"location":{"type":"string"},"reason":{"type":"string"},"failure_scenario":{"type":"string"}},"required":["location","reason","failure_scenario"],"additionalProperties":false}},"followups":{"type":"array","items":{"type":"object","properties":{"location":{"type":"string"},"note":{"type":"string"}},"required":["location","note"],"additionalProperties":false}}},"required":["blocking","summary","review_first","findings","followups"],"additionalProperties":false}'
             --allowedTools "Read,Grep,Glob"
