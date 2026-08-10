@@ -11,6 +11,7 @@ import yaml
 ROOT = Path(__file__).resolve().parents[2]
 WATCHDOG = ROOT / ".github/workflows/fleet-watchdog.yml"
 ADMISSION = ROOT / ".github/workflows/runner-admission-reconcile.yml"
+SECRET_SCOPE = ROOT / ".github/workflows/org-secret-scope-audit.yml"
 CHECKOUT = re.compile(r"^actions/checkout@[0-9a-f]{40}$")
 
 
@@ -202,6 +203,34 @@ def validate_admission(document: object) -> None:
         require(followup_env["GH_TOKEN"] == "${{ secrets.GITHUB_TOKEN }}", f"{name} gained a privileged token")
 
 
+def validate_secret_scope(document: object) -> None:
+    job, steps = validate_common(document, "audit")
+    permissions = require_keys(document["permissions"], {"contents"}, "permissions")
+    require(permissions["contents"] == "read", "secret-scope contents permission changed")
+    require(
+        workflow_on(document)["schedule"] == [{"cron": "41 9 * * *"}],
+        "secret-scope schedule changed",
+    )
+    concurrency = require_keys(document["concurrency"], {"group", "cancel-in-progress"}, "concurrency")
+    require(concurrency["group"] == "org-secret-scope-audit", "secret-scope concurrency group changed")
+    require(concurrency["cancel-in-progress"] is False, "secret-scope runs must not cancel in progress")
+    require_keys(job, {"runs-on", "timeout-minutes", "steps"}, "jobs.audit")
+    require(
+        job["runs-on"]
+        == "${{ fromJSON(vars.VERJSON_LANE_PRIVILEGED || vars.VERJSON_LANE_FALLBACK || '[\"ubuntu-24.04\"]') }}",
+        "secret-scope runner route changed",
+    )
+    require(job["timeout-minutes"] == 10, "secret-scope timeout changed")
+    require(len(steps) == 2, "secret-scope audit must have exactly two steps")
+    require(steps[0].get("name") == "Check out the secret-scope audit", "secret-scope checkout name changed")
+    validate_checkout(steps[0], "secret-scope checkout")
+    audit = require_keys(steps[1], {"name", "env", "run"}, "secret-scope audit")
+    require(audit["name"] == "Compare live scope with reviewed policy", "secret-scope audit name changed")
+    env = require_keys(audit["env"], {"GH_TOKEN"}, "secret-scope audit env")
+    require(env["GH_TOKEN"] == "${{ secrets.ORG_ADMIN_TOKEN }}", "secret-scope token binding changed")
+    require(audit["run"] == "python3 scripts/org-secret-scope-audit.py", "secret-scope command changed")
+
+
 def load(text: str) -> object:
     return yaml.safe_load(text)
 
@@ -249,9 +278,11 @@ def mutations(text: str, next_step: str) -> tuple[str, str]:
 def main() -> int:
     watchdog_text = WATCHDOG.read_text()
     admission_text = ADMISSION.read_text()
+    secret_scope_text = SECRET_SCOPE.read_text()
     failures = 0
     failures += expect_valid("fleet watchdog is schedule-only and event-SHA-bound", validate_watchdog, watchdog_text)
     failures += expect_valid("runner admission is schedule-only and event-SHA-bound", validate_admission, admission_text)
+    failures += expect_valid("secret-scope audit is schedule-only and event-SHA-bound", validate_secret_scope, secret_scope_text)
 
     cases = [
         (
@@ -266,6 +297,12 @@ def main() -> int:
             admission_text,
             "      - name: Reconcile runner admission against routing policy",
         ),
+        (
+            "secret-scope audit",
+            validate_secret_scope,
+            secret_scope_text,
+            "      - name: Compare live scope with reviewed policy",
+        ),
     ]
     for label, validator, text, marker in cases:
         try:
@@ -276,6 +313,23 @@ def main() -> int:
             continue
         failures += expect_invalid(f"{label} rejects a bare-dash executable step", validator, bare_dash)
         failures += expect_invalid(f"{label} rejects a quoted executable key", validator, quoted_key)
+
+    secret_scope_mutations = {
+        "manual dispatch": secret_scope_text.replace(
+            '    - cron: "41 9 * * *"\n', '    - cron: "41 9 * * *"\n  workflow_dispatch: {}\n', 1
+        ),
+        "widened permissions": secret_scope_text.replace("  contents: read", "  contents: write", 1),
+        "missing concurrency": re.sub(r"\nconcurrency:\n(?:  .*\n){2}", "\n", secret_scope_text, count=1),
+        "cancelling concurrency": secret_scope_text.replace("cancel-in-progress: false", "cancel-in-progress: true", 1),
+        "missing timeout": secret_scope_text.replace("    timeout-minutes: 10\n", "", 1),
+        "mutable checkout": secret_scope_text.replace(
+            "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1", "actions/checkout@v7", 1
+        ),
+        "unsafe runner route": secret_scope_text.replace("vars.VERJSON_LANE_PRIVILEGED", "vars.VERJSON_RUNNER_PRIVILEGED", 1),
+    }
+    for label, mutation in secret_scope_mutations.items():
+        require(mutation != secret_scope_text, f"secret-scope {label} mutation fixture marker not found")
+        failures += expect_invalid(f"secret-scope rejects {label}", validate_secret_scope, mutation)
 
     if failures:
         print(f"{failures} test(s) failed.")
