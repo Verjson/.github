@@ -70,7 +70,10 @@ classify() {
   printf '%s' '{"labels":[],"title":"a PR","isDraft":false,"author":{"login":"human"},"headRefOid":"deadbeefdeadbeefdeadbeefdeadbeefdeadbeef","baseRefName":"main"}' >"$META_FILE"
   printf '%s' "$1" >"$FILES_FILE"
   : >"$GITHUB_OUTPUT"
-  bash "$script" >/dev/null 2>&1
+  if ! bash "$script" >/dev/null 2>&1; then
+    fail "the extracted classify step exited non-zero"
+    return 1
+  fi
 }
 out_of() { awk -F= -v k="$1" '$1==k{v=substr($0,length(k)+2)} END{print v}' "$tmp/out.txt"; }
 

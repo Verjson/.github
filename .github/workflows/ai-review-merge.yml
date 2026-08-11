@@ -623,7 +623,7 @@ jobs:
           fi
 
           out lane ai
-          out reason "code change — AI review required (model: $model)"
+          out reason "code change — AI review required"
 
       - name: Record preflight completion
         id: preflight_complete
