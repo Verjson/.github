@@ -147,7 +147,7 @@ for page in docs/changelog/README.md docs/changelog/migration.md NEXT/README.md;
 done
 
 # A test that actions-ci does not call never runs — the gap that once left
-# hold.test.sh dormant here.
+# an otherwise valid local test dormant here.
 grep -q 'bash scripts/doc-fragment-names.test.sh' \
   "$repo_root/scripts/actions-ci-groups.tsv" \
   && pass "actions-ci runs this test" \

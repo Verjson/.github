@@ -325,7 +325,7 @@ workflow="$here/../../.github/workflows/runner-admission-reconcile.yml"
   || fail "runner admission workflow wiring drifted"
 
 # The wrapper's exit-code contract, executed rather than grepped. House method
-# (hold.test.sh, ci-wait-fail-closed.test.sh): awk-extract the exact `run:` block
+# (gate-hold-disable.test.sh, ci-wait-fail-closed.test.sh): awk-extract the exact `run:` block
 # so the test cannot drift from the shipped logic, then drive it with a stub.
 extract_reconcile_step() {
   awk '
