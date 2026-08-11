@@ -476,7 +476,9 @@ jobs:
           persist-credentials: false
       - uses: ${release_setup_node}
         with:
-          node-version: '${release_node_version}'
+          # Keep the literal inside an expression so Renovate's uses-with
+          # extractor leaves it alone while setup-node receives the same value.
+          node-version: \${{ '${release_node_version}' }}
           registry-url: https://npm.pkg.github.com
           scope: '${release_scope}'
           package-manager-cache: false
@@ -560,7 +562,9 @@ jobs:
     with:
       version: \${{ inputs.version }}
       runner: \${{ ${release_runner_expr} }}
-      node-version: '${release_node_version}'
+      # Keep this byte-coupled input Renovate-inert for the same reason as the
+      # setup-node input in verify (#700).
+      node-version: \${{ '${release_node_version}' }}
       scope: '${release_scope}'
       package-dirs: '${package_dirs_json}'
     secrets:
@@ -1017,7 +1021,11 @@ while IFS= read -r release_workflow; do
   # as the wiring it warns about.
   sed 's/#.*//' "$release_workflow" >"$work/release-stripped.yml"
 
-  [ "$(awk -v expected="node-version: '$EXPECTED_RELEASE_NODE_VERSION'" '
+  # Renovate's GitHub Actions manager does not implement `# renovate: ignore`
+  # for setup-node's uses-with fields. A literal expression remains the same
+  # runtime string but is intentionally dynamic to Renovate (#700).
+  printf -v expected_node_version "node-version: \${{ '%s' }}" "$EXPECTED_RELEASE_NODE_VERSION"
+  [ "$(awk -v expected="$expected_node_version" '
       { line = $0; sub(/^[[:space:]]+/, "", line); sub(/[[:space:]]+$/, "", line) }
       line == expected { count++ }
       END { print count + 0 }
@@ -1126,7 +1134,7 @@ while IFS= read -r release_workflow; do
     || fail "$release_workflow verifies the later dispatch tree instead of the existing tagged snapshot"
   for publish_input in \
     'version: ${{ inputs.version }}' \
-    "node-version: '$EXPECTED_RELEASE_NODE_VERSION'" \
+    "$expected_node_version" \
     "scope: '$EXPECTED_RELEASE_SCOPE'" \
     "package-dirs: '$EXPECTED_RELEASE_PACKAGE_DIRS_JSON'" \
     'runner: ${{'; do

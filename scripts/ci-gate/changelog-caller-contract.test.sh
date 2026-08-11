@@ -109,14 +109,19 @@ done
 bash "$gen" bogus "$sha" >/dev/null 2>&1 \
   && fail "generator accepted an unknown mode" || pass "generator rejects an unknown mode"
 
-printf '%s\n' "$default_release" | grep -q "node-version: '24'" \
+printf '%s\n' "$default_release" | grep -qF "node-version: \${{ '24' }}" \
   && printf '%s\n' "$default_release" | grep -q "scope: '@verjson'" \
   && pass "release-node keeps the Verjson and Node 24 defaults" \
   || fail "release-node changed its backward-compatible defaults"
-printf '%s\n' "$custom_release" | grep -q "node-version: '22.23.1'" \
+printf '%s\n' "$custom_release" | grep -qF "node-version: \${{ '22.23.1' }}" \
   && printf '%s\n' "$custom_release" | grep -q "scope: '@acme'" \
   && pass "release-node emits validated adopter parameters" \
   || fail "release-node ignored custom scope or Node version"
+
+renovate_inert_node_versions="$(printf '%s\n' "$default_release" | grep -cF "node-version: \${{ '24' }}")"
+[ "$renovate_inert_node_versions" -eq 2 ] \
+  && pass "both generated Node-version fields are Renovate-inert" \
+  || fail "release-node emitted $renovate_inert_node_versions of 2 Node-version fields as Renovate-inert expressions"
 
 stamp_command="$(
   printf '%s\n' "$custom_release" | awk '
@@ -849,6 +854,10 @@ drift_release_contract_ref() {
   sed -i "s|contract_ref: $sha|contract_ref: 0000000000000000000000000000000000000000|" \
     "$1/.github/workflows/release.yml"
 }
+expose_node_version_to_renovate() {
+  sed -i "0,/node-version:/s/node-version:.*/node-version: '24'/" \
+    "$1/.github/workflows/release.yml"
+}
 strip_release_provenance() {
   sed -i '/gen-changelog-caller.sh release-node/d' "$1/.github/workflows/release.yml"
 }
@@ -944,6 +953,7 @@ expect_rejection "an unrelated release step exposed to private-package auth (#56
 expect_rejection "a release caller reachable by a push to main" add_push_trigger
 expect_rejection "a release caller on a mutable reusable ref" unpin_release_ref
 expect_rejection "a release caller whose contract_ref drifts from its uses pin" drift_release_contract_ref
+expect_rejection "a release caller whose Node version became Renovate-visible" expose_node_version_to_renovate
 expect_rejection "a hand-written release caller with no generator provenance" strip_release_provenance
 expect_rejection "a push: trigger hidden in a flow-style on:" add_flow_style_push_trigger
 expect_rejection "a release caller exposed as a reusable workflow_call" add_workflow_call_trigger
