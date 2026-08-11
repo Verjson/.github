@@ -37,12 +37,17 @@ jobs:
       EVENT_OLD_TITLE: ${{ github.event.changes.title.from || '' }}
       PR_NUMBER: ${{ github.event.pull_request.number }}
       TARGET_REPO: ${{ github.repository }}
+      REVIEW_AUTHORITY: ${{ vars.AI_REVIEW_AUTHORITY || 'human' }}
       PRIMARY_PROVIDER: ${{ vars.AI_REVIEW_PRIMARY_PROVIDER || 'anthropic' }}
       PRIMARY_MODEL: ${{ vars.AI_REVIEW_PRIMARY_MODEL || 'auto' }}
       PRIMARY_BUDGET_USD: ${{ vars.AI_REVIEW_PRIMARY_BUDGET_USD || 'auto' }}
+      PRIMARY_FALLBACK_MODEL: ${{ vars.AI_REVIEW_PRIMARY_FALLBACK_MODEL }}
+      PRIMARY_FALLBACK_BUDGET_USD: ${{ vars.AI_REVIEW_PRIMARY_FALLBACK_BUDGET_USD }}
       REREVIEW_PROVIDER: ${{ vars.AI_REVIEW_REREVIEW_PROVIDER }}
       REREVIEW_MODEL: ${{ vars.AI_REVIEW_REREVIEW_MODEL }}
       REREVIEW_BUDGET_USD: ${{ vars.AI_REVIEW_REREVIEW_BUDGET_USD }}
+      REREVIEW_FALLBACK_MODEL: ${{ vars.AI_REVIEW_REREVIEW_FALLBACK_MODEL }}
+      REREVIEW_FALLBACK_BUDGET_USD: ${{ vars.AI_REVIEW_REREVIEW_FALLBACK_BUDGET_USD }}
       REQUEST_ACTOR: ${{ github.event.sender.login || github.actor }}
     steps:
       - name: Validate authorization App client ID
@@ -112,10 +117,33 @@ jobs:
           fi
 
           explicit_rereview=false
+          explicit_ai_review=false
           hold_removed=false
           [ "$EVENT_ACTION" = labeled ] && [ "$EVENT_LABEL" = re-review ] && explicit_rereview=true
+          ai_review_label="$(jq -r '[.labels[].name | select((ascii_downcase | gsub("[ _-]+"; "-")) == "ai-review")] | first // ""' <<<"$meta")"
+          authorize_ai_review_actor() {
+            local actor="$1"
+            if ! [[ "$actor" =~ ^[A-Za-z0-9][A-Za-z0-9-]*$ ]]; then
+              GH_TOKEN="$ACTIONS_TOKEN" gh pr edit "$PR_NUMBER" --repo "$TARGET_REPO" --remove-label "$ai_review_label" 2>/dev/null || true
+              echo "::error::AI review label actor is invalid"; return 1
+            fi
+            actor_permission="$(GH_TOKEN="$ACTIONS_TOKEN" gh api "repos/$TARGET_REPO/collaborators/$actor/permission" --jq '.permission // ""')" || {
+              echo "::error::could not authorize AI review actor"; return 1;
+            }
+            case "$actor_permission" in
+              admin|maintain) review_actor="$actor" ;;
+              *)
+                if ! GH_TOKEN="$ACTIONS_TOKEN" gh pr edit "$PR_NUMBER" --repo "$TARGET_REPO" --remove-label "$ai_review_label"; then
+                  echo "::error::unauthorized AI review label could not be removed; future events remain blocked"
+                fi
+                echo "::error::$actor lacks maintain/admin permission for paid AI review"; return 1 ;;
+            esac
+          }
+          authority="${REVIEW_AUTHORITY:-human}"
+          case "$authority" in human|ai-approve|ai-merge) ;; *) echo "::error::AI_REVIEW_AUTHORITY must be human, ai-approve, or ai-merge"; exit 1 ;; esac
           if [ "$explicit_rereview" = true ]; then
             review_provider="${REREVIEW_PROVIDER:-}"; review_model="${REREVIEW_MODEL:-}"; review_budget_usd="${REREVIEW_BUDGET_USD:-}"
+            fallback_model="${REREVIEW_FALLBACK_MODEL:-}"; fallback_budget_usd="${REREVIEW_FALLBACK_BUDGET_USD:-}"
             if [ -z "$review_provider" ] || [ -z "$review_model" ] || [ -z "$review_budget_usd" ]; then
               echo "::error::explicit re-review policy is not fully configured; refusing before paid dispatch"; exit 1
             fi
@@ -127,26 +155,55 @@ jobs:
             review_actor="$REQUEST_ACTOR"
           else
             review_provider="${PRIMARY_PROVIDER:-anthropic}"; review_model="${PRIMARY_MODEL:-auto}"; review_budget_usd="${PRIMARY_BUDGET_USD:-auto}"
+            fallback_model="${PRIMARY_FALLBACK_MODEL:-}"; fallback_budget_usd="${PRIMARY_FALLBACK_BUDGET_USD:-}"
             review_actor=trusted-arm; actor_permission=automation
           fi
           case "$review_provider" in
-            anthropic) review_pricing_version=anthropic-native-v1 ;;
+            anthropic)
+              review_pricing_version=anthropic-native-v1
+              [ -z "$fallback_model$fallback_budget_usd" ] || { echo "::error::Anthropic fallback is unsupported"; exit 1; }
+              ;;
             openai)
               if [ "$explicit_rereview" != true ] || [ "$review_model" != gpt-5.6-luna ]; then
                 echo "::error::OpenAI gpt-5.6-luna is restricted to explicit re-review"; exit 1
               fi
-              review_pricing_version=openai-luna-long-context-2026-08-08 ;;
+              [ -z "$fallback_model$fallback_budget_usd" ] || { echo "::error::OpenAI fallback is unsupported"; exit 1; }
+              review_pricing_version=openai-luna-long-context-2026-08-08
+              ;;
+            deepseek)
+              [ "$review_model" = deepseek-v4-pro ] && [ "$fallback_model" = deepseek-v4-flash ] || {
+                echo "::error::DeepSeek cascade must be deepseek-v4-pro then deepseek-v4-flash"; exit 1;
+              }
+              [ -n "$fallback_budget_usd" ] || { echo "::error::DeepSeek fallback budget is required"; exit 1; }
+              review_pricing_version=deepseek-v4-2026-08-10
+              ;;
             *) echo "::error::unsupported review provider"; exit 1 ;;
           esac
           if [ "$review_budget_usd" != auto ] && { ! [[ "$review_budget_usd" =~ ^(0|[1-9][0-9]*)(\.[0-9]{1,2})?$ ]] || ! awk -v b="$review_budget_usd" 'BEGIN { exit !(b > 0) }'; }; then
             echo "::error::invalid review budget"; exit 1
           fi
+          if [ -n "$fallback_budget_usd" ] && { ! [[ "$fallback_budget_usd" =~ ^(0|[1-9][0-9]*)(\.[0-9]{1,2})?$ ]] || ! awk -v b="$fallback_budget_usd" 'BEGIN { exit !(b > 0) }'; }; then
+            echo "::error::invalid fallback review budget"; exit 1
+          fi
+          if [ "$EVENT_ACTION" = labeled ] && [ "$explicit_rereview" = false ]; then
+            label_normalized="$(jq -nr --arg raw_label "$EVENT_LABEL" '$raw_label | ascii_downcase | gsub("[ _-]+";"-")')"
+            [ "$label_normalized" = ai-review ] || exit 0
+            explicit_ai_review=true
+            [ -n "$ai_review_label" ] || { echo "::error::ai-review event does not match current PR labels"; exit 1; }
+            authorize_ai_review_actor "$REQUEST_ACTOR" || exit 1
+          elif [ -n "$ai_review_label" ]; then
+            ai_review_actor="$(GH_TOKEN="$ACTIONS_TOKEN" gh api --paginate "repos/$TARGET_REPO/issues/$PR_NUMBER/events?per_page=100" \
+              | jq -sr '[.[][] | select(.event == "labeled" and ((.label.name // "" | ascii_downcase | gsub("[ _-]+"; "-")) == "ai-review"))] | sort_by(.id) | last | .actor.login // ""')" || {
+              echo "::error::could not resolve the current ai-review label actor"; exit 1;
+            }
+            authorize_ai_review_actor "$ai_review_actor" || exit 1
+          fi
           review_policy_json="$(jq -cSn --arg provider "$review_provider" --arg model "$review_model" --arg budget_usd "$review_budget_usd" \
-            --arg pricing_version "$review_pricing_version" --arg actor "$review_actor" --arg actor_permission "$actor_permission" \
-            '{provider:$provider,model:$model,budget_usd:$budget_usd,pricing_version:$pricing_version,actor:$actor,actor_permission:$actor_permission}')"
+            --arg fallback_model "$fallback_model" --arg fallback_budget_usd "$fallback_budget_usd" \
+            --arg pricing_version "$review_pricing_version" --arg actor "$review_actor" --arg actor_permission "$actor_permission" --arg authority "$authority" \
+            '{provider:$provider,model:$model,budget_usd:$budget_usd,fallback_model:$fallback_model,fallback_budget_usd:$fallback_budget_usd,pricing_version:$pricing_version,actor:$actor,actor_permission:$actor_permission,authority:$authority}')"
           review_policy="$(printf '%s' "$review_policy_json" | base64 -w0 | tr '+/' '-_' | tr -d '=')"
           [[ "$review_policy" =~ ^[A-Za-z0-9_-]{1,2048}$ ]] || { echo "::error::review policy envelope is invalid"; exit 1; }
-          if [ "$EVENT_ACTION" = labeled ] && [ "$explicit_rereview" = false ]; then exit 0; fi
           [ "$EVENT_ACTION" = ready_for_review ] && hold_removed=true
           if [ "$EVENT_ACTION" = edited ]; then
             case "${EVENT_OLD_TITLE^^}" in *'DO NOT MERGE'*) hold_removed=true ;; *) exit 0 ;; esac
@@ -223,7 +280,7 @@ jobs:
               --body "$notice_body"
             exit 0
           fi
-          if [ "$explicit_rereview" = false ] && [[ "$latest_id" =~ ^[1-9][0-9]*$ ]]; then
+          if [ "$explicit_rereview" = false ] && [ "$explicit_ai_review" = false ] && [[ "$latest_id" =~ ^[1-9][0-9]*$ ]]; then
             echo "Authorization already exists for $head_sha; duplicate event is a no-op."
             exit 0
           fi

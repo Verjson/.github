@@ -5,14 +5,19 @@ import json
 import re
 import sys
 
-FIELDS = ("actor", "actor_permission", "budget_usd", "model", "pricing_version", "provider")
+LEGACY_FIELDS = ("actor", "actor_permission", "budget_usd", "model", "pricing_version", "provider")
+FIELDS = (
+    "actor", "actor_permission", "authority", "budget_usd", "fallback_budget_usd",
+    "fallback_model", "model", "pricing_version", "provider",
+)
 MAX_ENVELOPE_BYTES = 2048
 
 
 def canonical(policy):
-    if not isinstance(policy, dict) or tuple(sorted(policy)) != FIELDS:
-        raise ValueError("policy must contain exactly the six supported fields")
-    if any(not isinstance(policy[field], str) for field in FIELDS):
+    keys = tuple(sorted(policy)) if isinstance(policy, dict) else ()
+    if keys not in (LEGACY_FIELDS, FIELDS):
+        raise ValueError("policy must contain exactly one supported field set")
+    if any(not isinstance(policy[field], str) for field in keys):
         raise ValueError("every policy field must be a string")
     return json.dumps(policy, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode()
 

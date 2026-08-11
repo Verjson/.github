@@ -21,6 +21,9 @@ def require_contract(review_doc, promote_doc, retry_doc):
     assert job["env"]["REVIEW_POLICY"] == "${{ inputs.review_policy }}"
     checkout = next(step for step in job["steps"] if step.get("name") == "Check out immutable arm verifier")
     assert "scripts/ci-gate/review-policy-envelope.py" in checkout["with"]["sparse-checkout"]
+    promotion_run = next(step for step in job["steps"] if step.get("name") == "Attempt terminal merge from trusted metadata")["run"]
+    assert 'review-policy-envelope.py decode "$REVIEW_POLICY"' in promotion_run
+    assert '[ "$(jq -r \'.authority // "human"\' <<<"$policy_json")" = ai-merge ]' in promotion_run
 
     review_job = review_doc["jobs"]["dispatch-merge"]
     assert review_job["env"]["REVIEW_POLICY"] == "${{ inputs.review_policy }}"
@@ -33,9 +36,16 @@ def require_contract(review_doc, promote_doc, retry_doc):
     assert retry_with["review_policy"] == "${{ needs.resolve.outputs.review_policy }}"
     retry_run = next(step for step in retry_doc["jobs"]["resolve"]["steps"]
                      if step.get("name") == "Resolve exact-head authorization")["run"]
+    retry_checkout = next(step for step in retry_doc["jobs"]["resolve"]["steps"]
+                          if step.get("name") == "Check out immutable review-policy decoder")
+    assert retry_checkout["with"]["repository"] == "Verjson/.github"
+    assert retry_checkout["with"]["ref"] == "${{ steps.trusted-revision.outputs.sha }}"
+    assert retry_checkout["with"]["persist-credentials"] is False
     assert "ai-review-arm-$arm_run_id-$arm_run_attempt" in retry_run
     assert 'review_policy="$(jq -er \'.review_policy | select(type == "string")\' "$receipt_dir/receipt.json")"' in retry_run
     assert '^[A-Za-z0-9_-]{1,2048}$' in retry_run
+    assert 'review-policy-envelope.py decode "$review_policy"' in retry_run
+    assert '!= ai-merge' in retry_run
 
 
 require_contract(review, promote, retry)

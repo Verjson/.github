@@ -39,6 +39,22 @@ jobs:
       arm_run_attempt: ${{ steps.resolve.outputs.arm_run_attempt }}
       review_policy: ${{ steps.resolve.outputs.review_policy }}
     steps:
+      - name: Resolve executing trusted workflow revision
+        id: trusted-revision
+        env:
+          EXECUTING_WORKFLOW_SHA: ${{ job.workflow_sha }}
+        run: echo "sha=$EXECUTING_WORKFLOW_SHA" >>"$GITHUB_OUTPUT"
+
+      - name: Check out immutable review-policy decoder
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: Verjson/.github
+          ref: ${{ steps.trusted-revision.outputs.sha }}
+          path: .promotion-trust
+          sparse-checkout: scripts/ci-gate/review-policy-envelope.py
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
       - name: Resolve exact-head authorization
         id: resolve
         env:
@@ -75,6 +91,11 @@ jobs:
           [ -f "$receipt_dir/receipt.json" ] || exit 1
           review_policy="$(jq -er '.review_policy | select(type == "string")' "$receipt_dir/receipt.json")"
           [[ "$review_policy" =~ ^[A-Za-z0-9_-]{1,2048}$ ]] || exit 1
+          policy_json="$(python3 .promotion-trust/scripts/ci-gate/review-policy-envelope.py decode "$review_policy")" || exit 1
+          if [ "$(jq -r '.authority // "human"' <<<"$policy_json")" != ai-merge ]; then
+            echo 'ready=false' >>"$GITHUB_OUTPUT"
+            exit 0
+          fi
           printf 'ready=true\npr_number=%s\nexpected_head_sha=%s\nauthorization_check_id=%s\narm_run_id=%s\narm_run_attempt=%s\nreview_policy=%s\n' \
             "$pr_number" "$HEAD_SHA" "$check_id" "$arm_run_id" "$arm_run_attempt" "$review_policy" >>"$GITHUB_OUTPUT"
 

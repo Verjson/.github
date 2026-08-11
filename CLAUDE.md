@@ -37,11 +37,12 @@ truth) and exercise it against a stubbed `gh`. Add/extend a test for any gate
 change, and wire it into `actions-ci.yml` (a test that isn't wired there does not
 run — that gap once left the `hold.test.sh` pin dormant).
 
-## Autonomous batches — review before the gate merges
+## Autonomous batches — review before AI merge authority is enabled
 
-The org self-gate AI-reviews and **auto-merges on green in ~1–3 min**, so it will
-merge a PR before an out-of-band `code-reviewer` pass finishes. When landing
-non-trivial or fanned-out work autonomously:
+The org gate defaults to human approval and treats AI review as opt-in advice.
+An operator can set `AI_REVIEW_AUTHORITY=ai-merge`, which can merge a green PR
+in ~1–3 minutes before an out-of-band `code-reviewer` pass finishes. When that
+authority is enabled for non-trivial or fanned-out autonomous work:
 
 - Run the independent `code-reviewer` **before pushing**, or open the PR as a
   **draft** (the gate skips drafts) / apply the **`hold`** label until the review
@@ -55,6 +56,7 @@ non-trivial or fanned-out work autonomously:
 
 ## Active Issues / Areas for Improvement
 
+- [#733](https://github.com/Verjson/.github/issues/733) — Refactor stale gate-rearm behavioral extractors into registered CI tests.
 - [#682](https://github.com/Verjson/.github/issues/682) — Ignore scoped root package-lock entries without weakening secretless dependency validation.
 - [#677](https://github.com/Verjson/.github/issues/677) — Repair and wire the stale `require-secrets.test.sh` privileged-workflow contract.
 - [#676](https://github.com/Verjson/.github/issues/676) — Finish privileged caller regeneration and remove the temporary legacy route before any hosted lane cutover.

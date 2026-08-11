@@ -14,8 +14,8 @@ export EXPECTED_HEAD_SHA=0123456789abcdef0123456789abcdef01234567
 export AUTHORIZATION_CHECK_ID=9001 ARM_RUN_ID=7001 ARM_RUN_ATTEMPT=2
 export EXPECTED_APP_ID=4242 EXPECTED_APP_SLUG=verjson-ai-review
 encode_policy() { python3 "$here/review-policy-envelope.py" encode "$1"; }
-anthropic_policy='{"actor":"trusted-arm","actor_permission":"automation","budget_usd":"auto","model":"auto","pricing_version":"anthropic-native-v1","provider":"anthropic"}'
-openai_policy='{"actor":"maintainer","actor_permission":"maintain","budget_usd":"1.00","model":"gpt-5.6-luna","pricing_version":"openai-luna-long-context-2026-08-08","provider":"openai"}'
+anthropic_policy='{"actor":"trusted-arm","actor_permission":"automation","authority":"human","budget_usd":"auto","fallback_budget_usd":"","fallback_model":"","model":"auto","pricing_version":"anthropic-native-v1","provider":"anthropic"}'
+openai_policy='{"actor":"maintainer","actor_permission":"maintain","authority":"ai-approve","budget_usd":"1.00","fallback_budget_usd":"","fallback_model":"","model":"gpt-5.6-luna","pricing_version":"openai-luna-long-context-2026-08-08","provider":"openai"}'
 export REVIEW_POLICY="$(encode_policy "$anthropic_policy")"
 export GITHUB_SERVER_URL=https://github.com RUNNER_TEMP="$tmp"
 nonce=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
