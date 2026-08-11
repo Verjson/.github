@@ -212,7 +212,7 @@ if not expected_publish or publish_uses != expected_publish:
 publish_with = publish.get("with") or {}
 if str(publish_with.get("version") or "").strip() != "${{ inputs.version }}":
     bad("`publish` does not pass the contract-selected version")
-if str(publish_with.get("node-version") or "") != "24":
+if str(publish_with.get("node-version") or "") != "${{ '24' }}":
     bad("`publish` does not pass the generated Node version to node-release.yml")
 if str(publish_with.get("scope") or "") != "@verjson":
     bad("`publish` does not pass the generated npm scope to node-release.yml")
