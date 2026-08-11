@@ -72,7 +72,9 @@ post-change verifier. It fails unless:
   subscriptions, and has exactly Checks write, contents read, metadata read, and pull
   requests write with no extra scopes; and
 - canonical `gate-rearm.yml@main` exposes `pull_request_target` while keeping the arm
-  non-blocking for ADR 0090's human path on provider-hosted capacity.
+  non-blocking for ADR 0090's human path on provider-hosted capacity; and
+- the workflow the ruleset **currently** selects declares at least one trigger a ruleset
+  can fire.
 
 Rollout order is strict: merge the workflow, contract, and audit; deploy canonical
 deterministic required-CI coverage to every governed default branch; obtain separate
@@ -98,3 +100,31 @@ that live proof exists.
 - Emergency rollback restores the verified full preimage, including every bypass actor
   and unrelated rule. That returns to the known dispatch-only incident state and requires
   the existing human/administrator recovery path; it is not proof that AI review works.
+
+## Amendment — 2026-08-11: the selection itself is now verified (#728, #743)
+
+The Context above states that the selected workflow "deliberately declares only
+`workflow_dispatch` and `workflow_call`" as a premise of the migration. It was never
+enforced as an invariant, and the ordering of the audit hid its consequence.
+
+`429d441` (#642) removed the `pull_request` trigger from `ai-review-merge.yml` on
+2026-08-08 while `main-protection` still selected it. The record did not fail loudly: it
+became **unschedulable**, rendering on every governed pull request as "Workflow
+configuration invalid" with no run, no check, and no receipt. The last ruleset-created
+gate run in the fleet is `Verjson/verjson-leads` run `31150760886` on 2026-08-07; every
+repository merged without an arm for the four days that followed. The audit could not
+report it, because it validated only the *replacement* workflow and raised the unrelated
+deterministic-CI readiness gap first — so its output described a rollout that could not
+start rather than a gate that had already stopped.
+
+`verify_selected_workflow_is_schedulable` therefore reads the workflow the **live**
+ruleset selects and requires at least one of `pull_request`, `pull_request_target`, or
+`merge_group`, before any rollout precondition is evaluated. A precondition explains why
+the retarget cannot land yet; an unschedulable selection means the gate is down now, and
+the more urgent fact must be the one the audit prints.
+
+This does not change the decision. It closes the gap between the decision's premise and
+what is verified, and it fixes the reporting order that let a live outage hide behind a
+rollout blocker. Two related defects found in the same investigation are tracked
+separately: #743 (every scheduled workflow in this repository fails, so nothing was
+watching) and #744 (all runner lane variables resolve to one pool).

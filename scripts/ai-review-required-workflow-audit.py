@@ -20,6 +20,9 @@ CONTRACT = Path(
     )
 )
 RULESET_FIELDS = ("name", "target", "enforcement", "bypass_actors", "conditions", "rules")
+# The only events GitHub will start a ruleset-required workflow on. A selected
+# workflow declaring none of them is inert, however valid its YAML is.
+RULESET_ELIGIBLE_TRIGGERS = frozenset({"pull_request", "pull_request_target", "merge_group"})
 
 
 class AuditError(Exception):
@@ -31,16 +34,20 @@ def require(condition: bool, message: str) -> None:
         raise AuditError(message)
 
 
-def workflow_path(payload: dict) -> str:
+def selected_workflow(payload: dict) -> dict:
     workflow_rules = [rule for rule in payload["rules"] if rule.get("type") == "workflows"]
     require(len(workflow_rules) == 1, "ruleset image must contain exactly one workflows rule")
     parameters = workflow_rules[0].get("parameters", {})
     require(parameters.get("do_not_enforce_on_create") is True, "repository-creation bypass drifted")
     workflows = parameters.get("workflows")
     require(isinstance(workflows, list) and len(workflows) == 1, "workflows rule must select one workflow")
-    path = workflows[0].get("path")
-    require(isinstance(path, str), "required workflow path is invalid")
-    return path
+    selected = workflows[0]
+    require(isinstance(selected.get("path"), str), "required workflow path is invalid")
+    return selected
+
+
+def workflow_path(payload: dict) -> str:
+    return selected_workflow(payload)["path"]
 
 
 def read_contract(path: Path = CONTRACT) -> dict:
@@ -369,9 +376,7 @@ def verify_authorization(contract: dict, read, governed: dict[str, bool]) -> Non
     require(installation.get("events") == authorization["app_events"], "authorization App event subscriptions drifted")
 
 
-def verify_replacement_workflow(contract: dict, read) -> None:
-    workflow_rule = next(rule for rule in contract["postimage"]["rules"] if rule["type"] == "workflows")
-    selected = workflow_rule["parameters"]["workflows"][0]
+def read_workflow(read, selected: dict, label: str) -> dict:
     source = single_object(
         read,
         f"repositories/{selected['repository_id']}/contents/{selected['path']}?ref={selected['ref']}",
@@ -379,8 +384,36 @@ def verify_replacement_workflow(contract: dict, read) -> None:
     try:
         workflow = yaml.load(base64.b64decode(source["content"]), Loader=yaml.BaseLoader)
     except (KeyError, ValueError, yaml.YAMLError) as error:
-        raise AuditError(f"replacement workflow is unreadable: {error}") from None
-    require(isinstance(workflow, dict), "replacement workflow is not a YAML object")
+        raise AuditError(f"{label} workflow is unreadable: {error}") from None
+    require(isinstance(workflow, dict), f"{label} workflow is not a YAML object")
+    return workflow
+
+
+def verify_selected_workflow_is_schedulable(live: dict, read) -> None:
+    """Fail while the ruleset selects a workflow GitHub can never schedule.
+
+    A ruleset workflow runs only on `pull_request`, `pull_request_target`, or
+    `merge_group`. Selecting a reusable-only workflow does not disable the rule
+    — it renders on every governed pull request as "Workflow configuration
+    invalid" and produces no run, no check, and no receipt (#728). Nothing
+    verified this, so removing the `pull_request` trigger from the selected
+    workflow took the organization gate down silently for four days.
+    """
+    selected = selected_workflow(live)
+    triggers = read_workflow(read, selected, "selected").get("on")
+    require(isinstance(triggers, dict) and triggers, "selected workflow declares no event triggers")
+    require(
+        set(triggers) & RULESET_ELIGIBLE_TRIGGERS,
+        f"selected required workflow {selected['path']}@{selected['ref']} declares only "
+        f"{', '.join(sorted(triggers))}; a ruleset workflow runs only on "
+        f"{', '.join(sorted(RULESET_ELIGIBLE_TRIGGERS))}, so no governed repository can "
+        "produce a required-workflow run",
+    )
+
+
+def verify_replacement_workflow(contract: dict, read) -> None:
+    selected = selected_workflow(contract["postimage"])
+    workflow = read_workflow(read, selected, "replacement")
     triggers = workflow.get("on")
     require(isinstance(triggers, dict) and "pull_request_target" in triggers, "replacement lacks pull_request_target")
     arm = workflow.get("jobs", {}).get("arm", {})
@@ -395,6 +428,10 @@ def verify_replacement_workflow(contract: dict, read) -> None:
 def audit(contract: dict, read=gh_pages) -> dict:
     state, live = verify_ruleset_state(contract, read)
     current_path = workflow_path(live)
+    # Before any rollout precondition: a precondition explains why the retarget
+    # cannot land yet, which is a different and lesser fact than the currently
+    # selected workflow being unable to run at all.
+    verify_selected_workflow_is_schedulable(live, read)
     candidates = verify_ruleset_exclusivity(contract, read, current_path)
     repositories = paginated_items(
         read,
