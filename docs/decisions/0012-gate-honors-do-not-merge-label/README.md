@@ -61,9 +61,10 @@ merge something previously held.
   regression-tested; `hold` matching also became case-insensitive (a safe
   superset).
 - No new secrets/permissions; pure predicate change in `ai-review-merge.yml`.
-- Unit-tested by extraction (`scripts/ci-gate/hold.test.sh`): the #51 label case,
-  separator/case variants, all prior signals, a positive-control green merge, and
-  the non-open no-op — pinned to the shipped `merge` step so the test can't drift.
+- The original merge-step extractor covered the #51 label case, separator/case
+  variants, prior signals, a positive-control green merge, and the non-open no-op.
+  ADR 0079 later moved those invariants to the current arm and terminal-promotion
+  steps; #733 retired the stale original harness after registering its replacements.
 
 ## Effective change (sensitive hunks)
 
@@ -96,8 +97,8 @@ still run afterward, so removing one terminal signal cannot advance a PR that
 retains another.
 
 This restores the intended terminal-hold lifecycle without broadening arbitrary
-label changes into paid review runs. The trigger and both job predicates are
-regression-tested in `scripts/ci-gate/hold.test.sh`.
+label changes into paid review runs. The current event-driven implementation is
+regression-tested by the registered `gate-hold-disable.test.sh` arm harness.
 
 ## 2026-08-07 amendment — the hold check must fail closed, not merely exist
 
@@ -153,11 +154,11 @@ fails the step outright. A test pins that an empty diff reaches that *named* pat
 rather than arriving at the classifier and picking the cheap tier by accident —
 same model and budget, different reason, so only the reason distinguishes them.
 
-Regression coverage executes the extracted `run:` blocks against a stubbed `gh`
+Regression coverage executes current named workflow steps against a stubbed `gh`
 rather than grepping for the fixed shape, so a rewrite that reintroduces the
-fail-open breaks the tests: six malformed-metadata fixtures in
-`scripts/ci-gate/hold.test.sh`, and the classifier fixtures plus both positive
-controls in `scripts/ci-gate/budget-exceeded.test.sh`.
+fail-open breaks the registered `gate-hold-disable.test.sh` and
+`native-automerge.test.sh` suites. Classifier fixtures and their positive controls
+remain in `budget-exceeded.test.sh`.
 
 ## 2026-08-07 amendment — a hold reports as a no-op, and unreadable is neither
 
@@ -233,3 +234,23 @@ separate validated output and is recorded by the model-phase telemetry. The
 extracted classifier contract now treats any non-zero execution as a failure,
 so outputs written before a late shell error can no longer make a broken live
 step look green in tests.
+
+## 2026-08-11 amendment — retire stale hold and re-arm extractors (#733)
+
+ADR 0079 replaced the old polling merge step and bridge-only re-arm step, but their
+unregistered extraction harnesses remained in the tree and still described those
+removed step IDs as production coverage. Direct execution failed during extraction,
+while Actions remained green because neither file was in the CI command manifest.
+
+The stale harnesses are removed. Their surviving behavioral obligations now run on
+the current surfaces: `gate-hold-disable.test.sh` executes the live arm step and
+covers terminal label/title/draft signals, metadata API failures, empty/null/missing
+and malformed hold metadata, closed/merged states, normalized hold release,
+ready-for-review, title release, unrelated-label suppression, receipt reuse, and
+explicit paid-review authorization; `native-automerge.test.sh` executes the live
+terminal promotion step and rechecks the terminal signals, including empty/null and
+malformed metadata, immediately before merge.
+Both were already registered in `scripts/actions-ci-groups.tsv`; #733 extends them to
+close the cases that existed only in the retired files. Caller, authority-envelope,
+receipt, App-identity, exact-head, and required-CI invariants remain on their existing
+registered contract suites. No production workflow or authorization behavior changes.

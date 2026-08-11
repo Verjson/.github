@@ -18,6 +18,7 @@ cat >"$tmp/bin/gh" <<'GH'
 printf '%s\n' "$*" >>"$CALLS"
 case "$*" in
   "pr view "*)
+    [ "${GH_VIEW_FAIL:-false}" != true ] || exit 1
     count="$(grep -c '^pr view ' "$CALLS")"
     if [ "$count" -eq 1 ]; then cat "$META_FILE"; else cat "$DISABLED_META_FILE"; fi ;;
   "api graphql "*) cat "$GRAPHQL_FILE" ;;
@@ -72,17 +73,110 @@ expect_fail "a mutation response for another PR fails closed"
 write_hold; printf '{"id":"PR_id","autoMergeRequest":{"enabledAt":"still-on"}}\n' >"$DISABLED_META_FILE"
 expect_fail "auto-merge remaining enabled after mutation fails closed"
 
+write_terminal_hold() {
+  : >"$CALLS"
+  jq -nc --arg head "$head_sha" \
+    '{id:"PR_id",state:"OPEN",isDraft:false,title:"change",labels:[],headRefOid:$head,headRepositoryOwner:{login:"Verjson"},autoMergeRequest:null}' \
+    >"$META_FILE"
+  export EVENT_ACTION=synchronize EVENT_LABEL='' EVENT_OLD_TITLE=''
+}
+
+for signal in do-not-merge-label do_not_merge-label title draft; do
+  write_terminal_hold
+  case "$signal" in
+    do-not-merge-label) jq '.labels=[{"name":"do-not-merge"}]' "$META_FILE" >"$tmp/x" ;;
+    do_not_merge-label) jq '.labels=[{"name":"Do_Not_Merge"}]' "$META_FILE" >"$tmp/x" ;;
+    title) jq '.title="chore: DO NOT MERGE until QA"' "$META_FILE" >"$tmp/x" ;;
+    draft) jq '.isDraft=true' "$META_FILE" >"$tmp/x" ;;
+  esac
+  mv "$tmp/x" "$META_FILE"
+  if run_arm >"$tmp/out" 2>&1 && ! grep -q 'check-runs\|workflow run' "$CALLS"; then
+    pass "$signal remains a terminal arm no-op"
+  else
+    fail "$signal reached authorization or dispatch"
+  fi
+done
+
+for malformed in truncated labels-not-array label-name-not-string title-not-string; do
+  write_terminal_hold
+  case "$malformed" in
+    truncated) printf '{"labels":[{"name":"hold"}],"title":"change","isDraft":fal' >"$META_FILE" ;;
+    labels-not-array) jq '.labels="hold"' "$META_FILE" >"$tmp/x" && mv "$tmp/x" "$META_FILE" ;;
+    label-name-not-string) jq '.labels=[{"name":{"value":"hold"}}]' "$META_FILE" >"$tmp/x" && mv "$tmp/x" "$META_FILE" ;;
+    title-not-string) jq '.title=42' "$META_FILE" >"$tmp/x" && mv "$tmp/x" "$META_FILE" ;;
+  esac
+  expect_fail "$malformed hold metadata fails closed before authorization"
+  ! grep -q 'check-runs\|workflow run' "$CALLS" \
+    && pass "$malformed hold metadata cannot authorize or dispatch" \
+    || fail "$malformed hold metadata reached authorization or dispatch"
+done
+
+for unreadable in empty null missing-hold-fields; do
+  write_terminal_hold
+  case "$unreadable" in
+    empty) : >"$META_FILE" ;;
+    null) printf 'null\n' >"$META_FILE" ;;
+    missing-hold-fields)
+      jq 'del(.labels, .title, .isDraft)' "$META_FILE" >"$tmp/x" && mv "$tmp/x" "$META_FILE" ;;
+  esac
+  expect_fail "$unreadable PR metadata fails closed before authorization"
+  ! grep -q 'check-runs\|workflow run' "$CALLS" \
+    && pass "$unreadable PR metadata cannot authorize or dispatch" \
+    || fail "$unreadable PR metadata reached authorization or dispatch"
+done
+
+write_terminal_hold
+export GH_VIEW_FAIL=true
+expect_fail "an arm metadata API failure fails closed"
+unset GH_VIEW_FAIL
+! grep -q 'check-runs\|workflow run' "$CALLS" \
+  && pass "an arm metadata API failure cannot authorize or dispatch" \
+  || fail "an arm metadata API failure reached authorization or dispatch"
+
+for terminal_state in CLOSED MERGED; do
+  write_terminal_hold
+  jq --arg state "$terminal_state" '.state=$state' "$META_FILE" >"$tmp/x" && mv "$tmp/x" "$META_FILE"
+  if run_arm >"$tmp/out" 2>&1 && ! grep -q 'check-runs\|workflow run' "$CALLS"; then
+    pass "$terminal_state PR is a terminal arm no-op"
+  else
+    fail "$terminal_state PR reached authorization or dispatch"
+  fi
+done
+
 write_repromotion() {
   : >"$CALLS"
   jq -nc --arg head "$head_sha" '{id:"PR_id",state:"OPEN",isDraft:false,title:"change",labels:[],headRefOid:$head,headRepositoryOwner:{login:"Verjson"},autoMergeRequest:null}' >"$META_FILE"
   jq -nc --arg head "$head_sha" '{id:9001,conclusion:"success",details_url:"https://github.com/Verjson/example/actions/runs/7001",head_sha:$head}' >"$LATEST_FILE"
-  export EVENT_ACTION=unlabeled RECEIPT_COUNT=1
+  export EVENT_ACTION=unlabeled EVENT_LABEL=hold EVENT_OLD_TITLE='' RECEIPT_COUNT=1
 }
 write_repromotion
 if run_arm >"$tmp/out" 2>&1 && grep -q 'workflow run ai-privileged-merge.yml' "$CALLS" \
   && grep -qF -- "-f review_policy=$receipt_policy" "$CALLS" && ! grep -q 'workflow run ai-review-merge.yml' "$CALLS"; then
   pass "hold removal reuses a live receipt without another paid review"
 else fail "hold removal did not reuse authorization: $(tail -1 "$tmp/out")"; fi
+
+for release_case in normalized-label ready-for-review edited-title; do
+  write_repromotion
+  case "$release_case" in
+    normalized-label) export EVENT_ACTION=unlabeled EVENT_LABEL='Do__Not--Merge' EVENT_OLD_TITLE='' ;;
+    ready-for-review) export EVENT_ACTION=ready_for_review EVENT_LABEL='' EVENT_OLD_TITLE='' ;;
+    edited-title) export EVENT_ACTION=edited EVENT_LABEL='' EVENT_OLD_TITLE='chore: DO NOT MERGE until QA' ;;
+  esac
+  if run_arm >"$tmp/out" 2>&1 && grep -q 'workflow run ai-privileged-merge.yml' "$CALLS" \
+      && ! grep -q 'workflow run ai-review-merge.yml' "$CALLS"; then
+    pass "$release_case reuses exact-head authorization without another paid review"
+  else
+    fail "$release_case did not follow the receipt-preserving re-arm path"
+  fi
+done
+
+write_repromotion
+export EVENT_ACTION=unlabeled EVENT_LABEL=documentation EVENT_OLD_TITLE=''
+if run_arm >"$tmp/out" 2>&1 && ! grep -q 'commits/.*/check-runs\|workflow run' "$CALLS"; then
+  pass "unrelated label removal exits before authorization lookup or dispatch"
+else
+  fail "unrelated label removal reached authorization lookup or dispatch"
+fi
 sed "s|review_policy=\"\$(jq -er .*|review_policy=\"$substitute_policy\"|" "$tmp/arm.sh" >"$tmp/arm-substituted.sh"
 write_repromotion
 if ARM_SCRIPT="$tmp/arm-substituted.sh" run_arm >"$tmp/out" 2>&1 \

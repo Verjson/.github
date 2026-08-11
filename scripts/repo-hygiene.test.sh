@@ -931,7 +931,7 @@ else
     || fail "repo-hygiene.yml does not point the check at the consumer tree"
 fi
 
-# Wired, or it does not run. That gap once left hold.test.sh dormant.
+# Wired, or it does not run. An unregistered local test is dormant in Actions.
 grep -q $'\tbash scripts/repo-hygiene.test.sh$' "$repo_root/scripts/actions-ci-groups.tsv" \
   && pass "this suite is wired into actions-ci" \
   || fail "repo-hygiene.test.sh is not wired into actions-ci.yml — it would never run"
