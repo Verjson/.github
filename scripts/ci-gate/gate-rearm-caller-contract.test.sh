@@ -81,6 +81,42 @@ done
 grep -qE '^  workflow_call:' "$canonical" \
   && pass "canonical bridge accepts generated reusable callers" \
   || fail "canonical bridge has no workflow_call entry point"
+python3 - "$canonical" <<'PY' \
+  && pass "canonical arm preserves exact permissions, concurrency, metadata validation and no-head-checkout boundaries" \
+  || fail "canonical arm structural trust boundary drifted"
+import sys
+import yaml
+
+with open(sys.argv[1], encoding="utf-8") as stream:
+    doc = yaml.load(stream, Loader=yaml.BaseLoader)
+
+assert doc["permissions"] == {"contents": "read"}
+assert doc["concurrency"] == {
+    "group": "ai-review-arm-${{ github.event.pull_request.number }}-${{ github.event.pull_request.head.sha }}",
+    "cancel-in-progress": "false",
+}
+arm = doc["jobs"]["arm"]
+assert arm["permissions"] == {
+    "actions": "write",
+    "contents": "read",
+    "issues": "write",
+    "pull-requests": "write",
+}
+assert arm["env"]["PR_NUMBER"] == "${{ github.event.pull_request.number }}"
+assert arm["env"]["TARGET_REPO"] == "${{ github.repository }}"
+uses = [step["uses"] for step in arm["steps"] if "uses" in step]
+assert uses and all(not value.startswith("actions/checkout@") for value in uses)
+script = "\n".join(step.get("run", "") for step in arm["steps"])
+for marker in (
+    '[[ "$TARGET_REPO" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]]',
+    '[[ "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]]',
+    'gh pr view "$PR_NUMBER" --repo "$TARGET_REPO"',
+    '--json id,state,isDraft,title,labels,headRefOid,headRepositoryOwner,autoMergeRequest',
+    '[[ "$head_sha" =~ ^[0-9a-f]{40}$ ]]',
+    '[ "$state" = OPEN ] || exit 0',
+):
+    assert marker in script
+PY
 if grep -qF 'client-id: ${{ vars.AI_REVIEW_CLIENT_ID }}' "$canonical" \
    && ! grep -qF 'app-id:' "$canonical" \
    && grep -qF 'APP_ID: ${{ vars.AI_REVIEW_APP_ID }}' "$canonical"; then
@@ -89,12 +125,27 @@ else
   fail "canonical caller target drifted to legacy token input or lost numeric App verification"
 fi
 
-# The immutable target matters only if the pinned canonical contract remains
-# security-complete. Reuse the exhaustive canonical suite rather than copying
-# its hold, recursion, checkout, metadata and permission assertions here.
-bash "$here/arm-receipt.test.sh" >"$tmp/canonical.out" 2>&1 \
-  && pass "canonical bridge retains hold, recursion, no-checkout and fail-closed guards" \
-  || fail "canonical bridge contract failed: $(tail -n 1 "$tmp/canonical.out")"
+# The immutable target matters only while the current executable arm, event
+# authorization, and receipt verifier contracts remain green. Point at the
+# registered suites that own each behavior instead of asking the receipt verifier
+# suite to stand in for unrelated arm logic (#733).
+for replacement in \
+  'bash scripts/ci-gate/gate-hold-disable.test.sh' \
+  'python3 scripts/ci-gate/event-driven-authorization.test.py' \
+  'bash scripts/ci-gate/arm-receipt.test.sh'; do
+  grep -q $'\t'"$replacement"'$' "$actions_ci" \
+    && pass "actions-ci registers the canonical replacement: $replacement" \
+    || fail "canonical replacement is not registered: $replacement"
+done
+bash "$here/gate-hold-disable.test.sh" >"$tmp/arm.out" 2>&1 \
+  && pass "canonical arm retains live hold, event-rearm and fail-closed metadata behavior" \
+  || fail "canonical arm behavior failed: $(tail -n 1 "$tmp/arm.out")"
+python3 "$here/event-driven-authorization.test.py" >"$tmp/event.out" 2>&1 \
+  && pass "canonical arm retains caller, App-permission and head-event authorization boundaries" \
+  || fail "canonical event authorization failed: $(tail -n 1 "$tmp/event.out")"
+bash "$here/arm-receipt.test.sh" >"$tmp/receipt.out" 2>&1 \
+  && pass "canonical arm receipt verifier retains exact-run, artifact, App and head binding" \
+  || fail "canonical arm receipt verifier failed: $(tail -n 1 "$tmp/receipt.out")"
 grep -q $'\tbash scripts/ci-gate/gate-rearm-caller-contract.test.sh$' "$actions_ci" \
   && pass "actions-ci executes the generated caller contract" \
   || fail "generated caller contract is not wired into actions-ci"

@@ -52,10 +52,11 @@ Two independent confirmations of the same mechanism:
   `ready_for_review` every time.
 
 The three dead types were added deliberately — `ready_for_review` in the gate's first
-commit, `unlabeled` by #88 ("re-fire after terminal hold removal"). `scripts/ci-gate/hold.test.sh`
-pins both, and both pins have been passing while asserting a capability that never
-existed. This is the same failure shape this repository has hit before: a guard that
-cannot fail.
+commit, `unlabeled` by #88 ("re-fire after terminal hold removal"). The legacy
+`hold.test.sh` pinned both without being registered, so both local assertions could
+pass while the capability never existed. This is the same failure shape this
+repository has hit before: a guard that cannot fail. That retired harness was removed
+under #733 after its live invariants moved to registered current-workflow tests.
 
 ## Decision
 
@@ -69,7 +70,10 @@ on `pull_request_target` to `ready_for_review`, `labeled` for `re-review`, and
 point that does work: a `workflow_dispatch` of `ai-review-merge.yml`, which runs
 under the gate's own record.
 
-Constraints the bridge holds, pinned by `scripts/ci-gate/gate-rearm.test.sh`:
+Constraints the bridge held. Its legacy extractor was retired under #733 after the
+surviving invariants moved to `gate-hold-disable.test.sh`,
+`gate-rearm-caller-contract.test.sh`, and `event-driven-authorization.test.py`, all
+registered in the `merge-gate` group:
 
 - **Terminal stays terminal.** Draft, a `hold` or `DO NOT MERGE` label (case- and
   separator-insensitive), and a `DO NOT MERGE` title marker all suppress the re-arm.

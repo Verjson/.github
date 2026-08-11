@@ -95,6 +95,29 @@ write_base; jq '.[0].commit_id="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"' "$REV
 write_base; jq '.headRepositoryOwner.login="outsider"' "$META_FILE" >"$tmp/x" && mv "$tmp/x" "$META_FILE"; expect_fail "fork PR fails closed" run_promote
 write_base; jq '.isDraft=true' "$META_FILE" >"$tmp/x" && mv "$tmp/x" "$META_FILE"; expect_pass "draft PR is a terminal no-op" run_promote; ! grep -q 'pr merge' "$CALLS" || fail "draft merged"
 write_base; jq '.labels=[{"name":"hold"}]' "$META_FILE" >"$tmp/x" && mv "$tmp/x" "$META_FILE"; expect_pass "held PR is a terminal no-op" run_promote; ! grep -q 'pr merge' "$CALLS" || fail "hold merged"
+write_base; jq '.labels=[{"name":"DO NOT MERGE"}]' "$META_FILE" >"$tmp/x" && mv "$tmp/x" "$META_FILE"; expect_pass "DO NOT MERGE label is a terminal no-op" run_promote; ! grep -q 'pr merge' "$CALLS" || fail "DO NOT MERGE label merged"
+write_base; jq '.labels=[{"name":"Do__Not--Merge"}]' "$META_FILE" >"$tmp/x" && mv "$tmp/x" "$META_FILE"; expect_pass "normalized hold label is a terminal no-op" run_promote; ! grep -q 'pr merge' "$CALLS" || fail "normalized hold label merged"
+write_base; jq '.title="chore: DO NOT MERGE until QA"' "$META_FILE" >"$tmp/x" && mv "$tmp/x" "$META_FILE"; expect_pass "DO NOT MERGE title is a terminal no-op" run_promote; ! grep -q 'pr merge' "$CALLS" || fail "DO NOT MERGE title merged"
+for malformed in truncated labels-not-array label-name-not-string title-not-string; do
+  write_base
+  case "$malformed" in
+    truncated) printf '{"state":"OPEN","isDraft":false,"title":"change","labels":[' >"$META_FILE" ;;
+    labels-not-array) jq '.labels="hold"' "$META_FILE" >"$tmp/x" && mv "$tmp/x" "$META_FILE" ;;
+    label-name-not-string) jq '.labels=[{"name":{"value":"hold"}}]' "$META_FILE" >"$tmp/x" && mv "$tmp/x" "$META_FILE" ;;
+    title-not-string) jq '.title=42' "$META_FILE" >"$tmp/x" && mv "$tmp/x" "$META_FILE" ;;
+  esac
+  expect_fail "$malformed hold metadata fails closed" run_promote
+  ! grep -q 'pr merge' "$CALLS" || fail "$malformed hold metadata merged"
+done
+for unreadable in empty null; do
+  write_base
+  case "$unreadable" in
+    empty) : >"$META_FILE" ;;
+    null) printf 'null\n' >"$META_FILE" ;;
+  esac
+  expect_pass "$unreadable PR metadata is a terminal no-op" run_promote
+  ! grep -q 'pr merge' "$CALLS" || fail "$unreadable PR metadata merged"
+done
 write_base; jq '.check_runs[0].conclusion=null | .check_runs[0].status="in_progress"' "$CI_CHECKS_FILE" >"$tmp/x" && mv "$tmp/x" "$CI_CHECKS_FILE"; expect_pass "pending required CI exits immediately" run_promote; ! grep -q 'pr merge' "$CALLS" || fail "pending CI merged"
 write_base; jq '.check_runs[0].conclusion="failure"' "$CI_CHECKS_FILE" >"$tmp/x" && mv "$tmp/x" "$CI_CHECKS_FILE"; expect_fail "terminal required CI failure blocks" run_promote; ! grep -q 'pr merge' "$CALLS" || fail "failed CI merged"
 write_base; jq '.check_runs=[]' "$CI_CHECKS_FILE" >"$tmp/x" && mv "$tmp/x" "$CI_CHECKS_FILE"; expect_pass "absent required CI remains pending without mutation" run_promote; ! grep -q 'pr merge' "$CALLS" || fail "absent CI merged"
