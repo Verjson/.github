@@ -11,6 +11,7 @@ Reverse-chronological index of org-level decisions.
 <!-- BEGIN ADR INDEX -->
 | # | Date | Decision |
 |---|------|----------|
+| [0090](0090-human-first-opt-in-ai-review/README.md) | 2026-08-10 | Keep human approval available when AI review is opted in |
 | [0089](0089-caller-supplied-privileged-routing/README.md) | 2026-08-10 | Pass privileged routing through the trusted caller |
 | [0088](0088-auditable-organization-secret-scope/README.md) | 2026-08-09 | Make organization secret scope auditable before mutation |
 | [0087](0087-runner-free-event-driven-ai-gates/README.md) | 2026-08-09 | AI gates never hold runners waiting for external CI |

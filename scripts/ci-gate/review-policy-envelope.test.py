@@ -8,10 +8,13 @@ tool = Path(__file__).with_name("review-policy-envelope.py")
 policy = {
     "actor": "maintainer;$(touch /tmp/not-executed)",
     "actor_permission": "maintain",
-    "budget_usd": "1.00",
-    "model": "gpt-5.6-luna",
-    "pricing_version": "openai-luna-long-context-2026-08-08",
-    "provider": "openai",
+    "authority": "ai-merge",
+    "budget_usd": "5.00",
+    "fallback_budget_usd": "5.00",
+    "fallback_model": "deepseek-v4-flash",
+    "model": "deepseek-v4-pro",
+    "pricing_version": "deepseek-v4-2026-08-10",
+    "provider": "deepseek",
 }
 canonical = json.dumps(policy, sort_keys=True, separators=(",", ":"))
 
@@ -25,13 +28,19 @@ assert encoded.returncode == 0, encoded.stderr
 envelope = encoded.stdout.strip()
 decoded = run("decode", envelope)
 assert decoded.returncode == 0 and decoded.stdout.strip() == canonical
-assert "gpt-5.6-luna" in decoded.stdout and "1.00" in decoded.stdout
+assert "deepseek-v4-pro" in decoded.stdout and "ai-merge" in decoded.stdout
+
+legacy = {key: policy[key] for key in ("actor", "actor_permission", "budget_usd", "model", "pricing_version", "provider")}
+legacy_canonical = json.dumps(legacy, sort_keys=True, separators=(",", ":"))
+legacy_encoded = run("encode", legacy_canonical)
+assert legacy_encoded.returncode == 0
+assert run("decode", legacy_encoded.stdout.strip()).stdout.strip() == legacy_canonical
 
 mutations = {
     "quote stripping": canonical.replace('"', ""),
     "key reordering": json.dumps(dict(reversed(tuple(policy.items()))), separators=(",", ":")),
     "whitespace": json.dumps(policy, sort_keys=True),
-    "duplicate keys": canonical[:-1] + ',"provider":"openai"}',
+    "duplicate keys": canonical[:-1] + ',"provider":"deepseek"}',
     "extra field": canonical[:-1] + ',"extra":"x"}',
     "missing field": json.dumps({k: v for k, v in policy.items() if k != "model"}, sort_keys=True, separators=(",", ":")),
 }

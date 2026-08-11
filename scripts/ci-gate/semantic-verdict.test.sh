@@ -8,19 +8,27 @@ pass() { printf 'ok   - %s\n' "$1"; }
 fail() { printf 'FAIL - %s\n' "$1"; fails=$((fails + 1)); }
 
 mapfile -t validators < <(grep 'if jq -e --argjson sensitive' "$workflow")
-if [ "${#validators[@]}" -ne 1 ]; then
-  echo "FAIL - expected exactly one semantic validator command"
+if [ "${#validators[@]}" -ne 2 ]; then
+  echo "FAIL - expected exactly two semantic validator commands"
   exit 1
 fi
 filter=$(sed -E "s/.*--argjson sensitive [^ ]+ '(.*)' <<<.*/\\1/" <<<"${validators[0]}")
+[ "$(sed -E "s/.*--argjson sensitive [^ ]+ '(.*)' <<<.*/\\1/" <<<"${validators[1]}")" = "$filter" ] || {
+  echo "FAIL - cascade semantic validators differ"
+  exit 1
+}
 accepts() { jq -e --argjson sensitive "${2:-false}" "$filter" <<<"$1" >/dev/null; }
 
 mapfile -t normalizers < <(grep 'normalized="$(jq -c' "$workflow")
-if [ "${#normalizers[@]}" -ne 1 ]; then
-  echo "FAIL - expected exactly one review-first normalizer"
+if [ "${#normalizers[@]}" -ne 2 ]; then
+  echo "FAIL - expected exactly two review-first normalizers"
   exit 1
 fi
 normalizer=$(sed -E "s/.*jq -c '(.*)' <<<.*/\\1/" <<<"${normalizers[0]}")
+[ "$(sed -E "s/.*jq -c '(.*)' <<<.*/\\1/" <<<"${normalizers[1]}")" = "$normalizer" ] || {
+  echo "FAIL - cascade review-first normalizers differ"
+  exit 1
+}
 normalize() { jq -c "$normalizer" <<<"$1"; }
 
 [ "$(grep -cF 'Every review_first.location MUST contain exactly one file and one' "$workflow")" -eq 1 ] \
@@ -28,7 +36,7 @@ normalize() { jq -c "$normalizer" <<<"$1"; }
   && pass "prompt and schema require exactly one file:line review-first location" \
   || fail "prompt and schema require exactly one file:line review-first location"
 
-[ "$(grep -cF 'field=review_first.location expected=path/to/file.ext:42' "$workflow")" -eq 1 ] \
+[ "$(grep -cF 'field=review_first.location expected=path/to/file.ext:42' "$workflow")" -eq 2 ] \
   && pass "semantic failure identifies the invalid field and expected shape" \
   || fail "semantic failure identifies the invalid field and expected shape"
 

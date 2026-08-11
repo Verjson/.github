@@ -1,7 +1,9 @@
 name: AI review + auto-merge
 
-# ORG-LEVEL autonomous merge gate (viager-docs ADR-018, as amended), required
-# on every repo via the main-protection org ruleset.
+# ORG-LEVEL merge-policy workflow, required on every repo by the
+# main-protection ruleset. Deterministic policy is always required; AI review
+# is opt-in and advisory unless receipt-bound authority permits the dedicated
+# App to approve or merge (ADR 0090).
 #
 # Cost-lane design (ADR-018 second amendment):
 #   1. `preflight` (free, deterministic bash) updates stale branches and routes
@@ -10,15 +12,15 @@ name: AI review + auto-merge
 #          on the submodule's default branch), Renovate non-major updates
 #          (bot-authored, manifest/lockfile-only diff, `update/<type>` label),
 #          and deletions-only PRs. No model is invoked.
-#        - ai: everything else gets a Claude review — but only AFTER the rest
-#          of CI is green, so red PRs cost $0.
+#        - ai: only explicitly labelled PRs get model review, and only AFTER
+#          the rest of CI is green, so unrequested and red PRs cost $0.
 #        - defer: a Renovate PR whose `renovate/stability-days` age gate is
 #          still pending (e.g. a replacement PR that `internalChecksFilter`
 #          can't hold back). No model, no gate runner — Renovate's rebase once
 #          the release ages re-enters classify for a real review.
-#   2. Model tiering: routine code PRs are reviewed by Haiku; PRs touching
-#      sensitive paths (authz/ABAC, payments/ledger, webhooks, secrets,
-#      workflows) get the stronger default model. Turns are capped.
+#   2. Model policy is immutable receipt data. DeepSeek Pro runs first and
+#      Flash runs only when Pro yields no usable verdict. Each pass has its own
+#      dollar ceiling; any usable verdict ends the cascade.
 #   3. Reviews run on every ready-PR revision (incl. synchronize) so a
 #      Renovate rebase re-fires the gate and the required check stays fresh on
 #      the new head; cost stays bounded because fast-lane synchronizes invoke
@@ -173,6 +175,8 @@ on:
         required: false
       OPENAI_API_KEY:
         required: false
+      DEEPSEEK_API_KEY:
+        required: false
 
 concurrency:
   group: ai-review-${{ github.event.pull_request.number || inputs.pr_number }}
@@ -259,6 +263,9 @@ jobs:
       budget_usd: ${{ steps.classify.outputs.budget_usd }}
       provider: ${{ steps.classify.outputs.provider }}
       pricing_version: ${{ steps.classify.outputs.pricing_version }}
+      authority: ${{ steps.classify.outputs.authority }}
+      fallback_model: ${{ steps.classify.outputs.fallback_model }}
+      fallback_budget_usd: ${{ steps.classify.outputs.fallback_budget_usd }}
       changed_lines: ${{ steps.classify.outputs.changed_lines }}
       sensitive: ${{ steps.classify.outputs.sensitive }}
       dependency_major: ${{ steps.classify.outputs.dependency_major }}
@@ -437,7 +444,7 @@ jobs:
           REPO="$TARGET_REPO"
           out() { echo "$1=$2" >> "$GITHUB_OUTPUT"; }
           select_policy() {
-            local default_model="$1" default_budget="$2" selected_model selected_budget selected_provider selected_pricing policy
+            local default_model="$1" default_budget="$2" selected_model selected_budget selected_provider selected_pricing selected_authority fallback_model fallback_budget policy
             policy_envelope="${REVIEW_POLICY:-}"
             [ -n "$policy_envelope" ] || policy_envelope='eyJhY3RvciI6InJldXNhYmxlLWNhbGxlciIsImFjdG9yX3Blcm1pc3Npb24iOiJtYWludGFpbiIsImJ1ZGdldF91c2QiOiJhdXRvIiwibW9kZWwiOiJhdXRvIiwicHJpY2luZ192ZXJzaW9uIjoiYW50aHJvcGljLW5hdGl2ZS12MSIsInByb3ZpZGVyIjoiYW50aHJvcGljIn0'
             policy="$(python3 "${POLICY_DECODER:-scripts/ci-gate/review-policy-envelope.py}" decode "$policy_envelope")" || {
@@ -445,23 +452,39 @@ jobs:
             }
             selected_provider="$(jq -r .provider <<<"$policy")"; selected_model="$(jq -r .model <<<"$policy")"
             selected_budget="$(jq -r .budget_usd <<<"$policy")"; selected_pricing="$(jq -r .pricing_version <<<"$policy")"
+            selected_authority="$(jq -r '.authority // "human"' <<<"$policy")"
+            fallback_model="$(jq -r '.fallback_model // ""' <<<"$policy")"
+            fallback_budget="$(jq -r '.fallback_budget_usd // ""' <<<"$policy")"
+            case "$selected_authority" in human|ai-approve|ai-merge) ;; *) echo "::error::unsupported review authority"; return 1 ;; esac
             case "$selected_provider:$selected_pricing" in
               anthropic:anthropic-native-v1)
                 [ "$selected_model" = auto ] && selected_model="$default_model"
                 [ "$selected_budget" = auto ] && selected_budget="$default_budget"
                 case "$selected_model" in claude-haiku-4-5|claude-sonnet-5|claude-opus-5) ;; *) echo "::error::unsupported Anthropic model"; return 1 ;; esac
+                [ -z "$fallback_model$fallback_budget" ] || { echo "::error::unsupported Anthropic fallback"; return 1; }
                 ;;
               openai:openai-luna-long-context-2026-08-08)
                 [ "${EXPLICIT_REREVIEW:-false}" = true ] || { echo "::error::OpenAI policy is reachable only through explicit re-review"; return 1; }
                 [ "$selected_model" = gpt-5.6-luna ] || { echo "::error::unsupported OpenAI model/pricing"; return 1; }
                 [ "$selected_budget" != auto ] || { echo "::error::OpenAI budget is required"; return 1; }
+                [ -z "$fallback_model$fallback_budget" ] || { echo "::error::unsupported OpenAI fallback"; return 1; }
+                ;;
+              deepseek:deepseek-v4-2026-08-10)
+                [ "$selected_model" = deepseek-v4-pro ] && [ "$fallback_model" = deepseek-v4-flash ] || {
+                  echo "::error::unsupported DeepSeek cascade"; return 1;
+                }
+                [ "$selected_budget" != auto ] && [ -n "$fallback_budget" ] || { echo "::error::DeepSeek budgets are required"; return 1; }
                 ;;
               *) echo "::error::unknown provider or pricing version"; return 1 ;;
             esac
             if ! [[ "$selected_budget" =~ ^(0|[1-9][0-9]*)(\.[0-9]{1,2})?$ ]] || ! awk -v b="$selected_budget" 'BEGIN { exit !(b > 0) }'; then
               echo "::error::budget must be positive with at most two decimal places"; return 1
             fi
+            if [ -n "$fallback_budget" ] && { ! [[ "$fallback_budget" =~ ^(0|[1-9][0-9]*)(\.[0-9]{1,2})?$ ]] || ! awk -v b="$fallback_budget" 'BEGIN { exit !(b > 0) }'; }; then
+              echo "::error::fallback budget must be positive with at most two decimal places"; return 1
+            fi
             out provider "$selected_provider"; out model "$selected_model"; out budget_usd "$selected_budget"; out pricing_version "$selected_pricing"
+            out authority "$selected_authority"; out fallback_model "$fallback_model"; out fallback_budget_usd "$fallback_budget"
           }
 
           meta=$(gh pr view "$PR_NUMBER" --repo "$REPO" \
@@ -500,6 +523,10 @@ jobs:
           head_sha="$(jq -r '.headRefOid // ""' <<<"$meta")"
           out head_sha "$head_sha"
           out dependency_major false
+          ai_requested="$(jq -r --argjson explicit "${EXPLICIT_REREVIEW:-false}" '
+            $explicit or any(.labels[].name; (ascii_downcase | gsub("[ _-]+"; "-")) == "ai-review")
+          ' <<<"$meta")"
+          case "$ai_requested" in true|false) ;; *) echo "::error::could not resolve AI review opt-in"; exit 1 ;; esac
 
           # Consume the re-review label so it can be re-applied later.
           gh pr edit "$PR_NUMBER" --repo "$REPO" --remove-label re-review 2>/dev/null || true
@@ -529,7 +556,12 @@ jobs:
           files=$(gh api "repos/$REPO/pulls/$PR_NUMBER/files" --paginate --jq '.[]' | jq -s .)
           nfiles=$(jq length <<<"$files")
           if [ "$nfiles" -eq 0 ]; then
-            out lane ai; out reason "empty diff — needs a look"; select_policy claude-haiku-4-5 1.00
+            select_policy claude-haiku-4-5 1.00
+            if [ "$ai_requested" = true ]; then
+              out lane ai; out reason "empty diff — opted-in AI review"
+            else
+              out lane fast; out reason "empty diff — human approval path; AI review not requested"
+            fi
             out changed_lines 0
             out sensitive false
             exit 0
@@ -562,6 +594,11 @@ jobs:
           esac
           out sensitive "$sensitive"
           select_policy claude-haiku-4-5 1.00
+          if [ "$ai_requested" = true ]; then
+            out lane ai
+            out reason "AI review explicitly requested"
+            exit 0
+          fi
 
           # ---- Fast lane A: submodule pointer bump -------------------------
           # Every changed file is a gitlink hunk, and each new SHA is already
@@ -622,8 +659,8 @@ jobs:
             exit 0
           fi
 
-          out lane ai
-          out reason "code change — AI review required (model: $model)"
+          out lane fast
+          out reason "code change — human approval path; AI review not requested"
 
       - name: Record preflight completion
         id: preflight_complete
@@ -636,6 +673,8 @@ jobs:
   gate:
     needs: preflight
     if: needs.preflight.outputs.lane == 'fast' || needs.preflight.outputs.lane == 'ai'
+    outputs:
+      review_outcome: ${{ steps.submit.outputs.outcome || 'skipped' }}
     # A workflow_call consumer sets its own fleet via `with.runner_labels`; the
     # org direct paths leave it empty. Non-Verjson callers run on GitHub-hosted
     # ubuntu-24.04. Verjson targets use the default or untrusted lane variable
@@ -682,6 +721,7 @@ jobs:
             scripts/ci-gate/verify-arm-receipt.sh
             scripts/ci-gate/review-policy-envelope.py
             scripts/ci-gate/openai-review.py
+            scripts/ci-gate/deepseek-review.py
           sparse-checkout-cone-mode: false
           persist-credentials: false
 
@@ -696,6 +736,7 @@ jobs:
             echo "::error::authorization is not pending review"; exit 1;
           }
           install -m 0555 .gate-trust/scripts/ci-gate/openai-review.py "$RUNNER_TEMP/openai-review.py"
+          install -m 0555 .gate-trust/scripts/ci-gate/deepseek-review.py "$RUNNER_TEMP/deepseek-review.py"
 
       - name: Record gate runner timing
         env:
@@ -1056,11 +1097,28 @@ jobs:
           printf '%s' "$REVIEW_PROMPT" >"$PROMPT_FILE"
           python3 "$RUNNER_TEMP/openai-review.py"
 
+      - name: DeepSeek review pass 1
+        id: deepseek_primary
+        if: needs.preflight.outputs.lane == 'ai' && needs.preflight.outputs.provider == 'deepseek' && steps.rereview.outputs.skip_model != 'true'
+        continue-on-error: true
+        env:
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          MODEL: ${{ needs.preflight.outputs.model }}
+          BUDGET_USD: ${{ needs.preflight.outputs.budget_usd }}
+          REVIEW_PROMPT: ${{ steps.prep.outputs.review_prompt }}
+          PROMPT_FILE: ${{ runner.temp }}/ai-review-deepseek-primary-prompt.txt
+          PR_JSON_FILE: ${{ github.workspace }}/.ai-review/pr.json
+          PR_DIFF_FILE: ${{ github.workspace }}/.ai-review/pr.diff
+        run: |
+          umask 077
+          printf '%s' "$REVIEW_PROMPT" >"$PROMPT_FILE"
+          python3 "$RUNNER_TEMP/deepseek-review.py"
+
       - name: Validate pass 1 verdict semantics
         id: verdict_1
         if: always() && needs.preflight.outputs.lane == 'ai' && steps.rereview.outputs.skip_model != 'true'
         env:
-          VERDICT: ${{ needs.preflight.outputs.provider == 'openai' && steps.openai.outputs.structured_output || steps.claude.outputs.structured_output }}
+          VERDICT: ${{ needs.preflight.outputs.provider == 'openai' && steps.openai.outputs.structured_output || needs.preflight.outputs.provider == 'deepseek' && steps.deepseek_primary.outputs.structured_output || steps.claude.outputs.structured_output }}
           SENSITIVE: ${{ needs.preflight.outputs.sensitive }}
         run: |
           usable=false
@@ -1073,14 +1131,48 @@ jobs:
           fi
           echo "usable=$usable" >> "$GITHUB_OUTPUT"
 
+      - name: DeepSeek review pass 2
+        id: deepseek_fallback
+        if: always() && needs.preflight.outputs.lane == 'ai' && needs.preflight.outputs.provider == 'deepseek' && steps.rereview.outputs.skip_model != 'true' && steps.verdict_1.outputs.usable != 'true'
+        continue-on-error: true
+        env:
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          MODEL: ${{ needs.preflight.outputs.fallback_model }}
+          BUDGET_USD: ${{ needs.preflight.outputs.fallback_budget_usd }}
+          REVIEW_PROMPT: ${{ steps.prep.outputs.review_prompt }}
+          PROMPT_FILE: ${{ runner.temp }}/ai-review-deepseek-fallback-prompt.txt
+          PR_JSON_FILE: ${{ github.workspace }}/.ai-review/pr.json
+          PR_DIFF_FILE: ${{ github.workspace }}/.ai-review/pr.diff
+        run: |
+          umask 077
+          printf '%s' "$REVIEW_PROMPT" >"$PROMPT_FILE"
+          python3 "$RUNNER_TEMP/deepseek-review.py"
+
+      - name: Validate pass 2 verdict semantics
+        id: verdict_2
+        if: always() && needs.preflight.outputs.provider == 'deepseek' && steps.deepseek_fallback.conclusion != 'skipped'
+        env:
+          VERDICT: ${{ steps.deepseek_fallback.outputs.structured_output }}
+          SENSITIVE: ${{ needs.preflight.outputs.sensitive }}
+        run: |
+          usable=false
+          normalized="$(jq -c '.review_first |= map(if (.location | type == "string") then (.location | split(",")[0]) as $first | if ($first | test("^.+:[1-9][0-9]*(-[1-9][0-9]*)?$")) then .location = ($first | sub("-[1-9][0-9]*$"; "")) else . end else . end)' <<<"${VERDICT:-}" 2>/dev/null)" || normalized=""
+          if jq -e --argjson sensitive "${SENSITIVE:-false}" 'def text: type == "string" and test("\\S"); def location: text and test("^.+:[1-9][0-9]*$"); type == "object" and (.blocking | type == "boolean") and (.summary | text) and (.review_first | type == "array") and (all(.review_first[]; (.location | location) and (.why | text))) and (($sensitive | not) or (.review_first | length > 0)) and (.findings | type == "array") and (all(.findings[]; (.location | location) and (.reason | text) and (.failure_scenario | text))) and (.blocking == (.findings | length > 0)) and (.followups | type == "array")' <<<"${normalized:-}" >/dev/null; then
+            usable=true
+            echo "verdict=$normalized" >> "$GITHUB_OUTPUT"
+          elif [ -n "${VERDICT//[[:space:]]/}" ]; then
+            echo "::error::phase=model pass=2 result=semantic-invalid field=review_first.location expected=path/to/file.ext:42"
+          fi
+          echo "usable=$usable" >> "$GITHUB_OUTPUT"
+
       - name: Record single-pass model outcome
         id: retry_outcome
         if: always() && needs.preflight.outputs.lane == 'ai'
         env:
           STARTED_EPOCH: ${{ steps.model_timing.outputs.started_epoch }}
-          FIRST_VERDICT: ${{ steps.verdict_1.outputs.usable == 'true' }}
+          FIRST_VERDICT: ${{ steps.verdict_1.outputs.usable == 'true' || steps.verdict_2.outputs.usable == 'true' }}
           EXEC_FILE: ${{ steps.claude.outputs.execution_file }}
-          MODEL_CONCLUSION: ${{ needs.preflight.outputs.provider == 'openai' && steps.openai.conclusion || steps.claude.conclusion }}
+          MODEL_CONCLUSION: ${{ needs.preflight.outputs.provider == 'openai' && steps.openai.conclusion || needs.preflight.outputs.provider == 'deepseek' && steps.verdict_1.outputs.usable == 'true' && steps.deepseek_primary.conclusion || needs.preflight.outputs.provider == 'deepseek' && steps.deepseek_fallback.conclusion || steps.claude.conclusion }}
           PROVIDER: ${{ needs.preflight.outputs.provider }}
         run: |
           elapsed=unknown
@@ -1097,7 +1189,7 @@ jobs:
           terminal_error=false
           execution_evidence_usable=false
           permission_denials=0
-          if [ "$PROVIDER" = openai ] && [ "$MODEL_CONCLUSION" = success ]; then
+          if { [ "$PROVIDER" = openai ] || [ "$PROVIDER" = deepseek ]; } && [ "$MODEL_CONCLUSION" = success ]; then
             execution_evidence_usable=true
           elif [ -n "${EXEC_FILE:-}" ] && [ -f "$EXEC_FILE" ]; then
             subtype=$(jq -r '(if type == "array" then (map(select(.type == "result")) | last) else . end).subtype // ""' "$EXEC_FILE" 2>/dev/null || echo "")
@@ -1156,6 +1248,7 @@ jobs:
           fi
           automatic_paid_attempts=1
           [ "${MODEL_CONCLUSION:-skipped}" = skipped ] && automatic_paid_attempts=0
+          if [ "$PROVIDER" = deepseek ] && [ "${{ steps.deepseek_fallback.conclusion }}" != skipped ]; then automatic_paid_attempts=2; fi
           echo "::notice::phase=model elapsed_seconds=$elapsed first_verdict=$FIRST_VERDICT automatic_paid_attempts=$automatic_paid_attempts budget_exhausted=$budget_exhausted turns_exhausted=$turns_exhausted permission_denials=$permission_denials"
 
       - name: Submit deterministic PR review
@@ -1165,12 +1258,12 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           # On a base-merge-only re-fire (#120) the model never ran; reuse the
           # synthesized approved verdict from the rereview step. Otherwise use
-          # only the single paid pass's semantically validated verdict.
-          VERDICT: ${{ steps.rereview.outputs.skip_model == 'true' && steps.rereview.outputs.skip_verdict || (steps.verdict_1.outputs.usable == 'true' && steps.verdict_1.outputs.verdict || '') }}
+          # the first usable verdict in the receipt-bound DeepSeek cascade.
+          VERDICT: ${{ steps.rereview.outputs.skip_model == 'true' && steps.rereview.outputs.skip_verdict || steps.verdict_1.outputs.usable == 'true' && steps.verdict_1.outputs.verdict || steps.verdict_2.outputs.usable == 'true' && steps.verdict_2.outputs.verdict || '' }}
           # Passed via env (not inline ${{ }}) so the block is plain bash and can
           # be extracted and unit-tested (scripts/ci-gate/review-comment.test.sh).
           HEAD_SHA: ${{ needs.preflight.outputs.head_sha }}
-          MODEL: ${{ needs.preflight.outputs.model }}
+          MODEL: ${{ steps.verdict_2.outputs.usable == 'true' && needs.preflight.outputs.fallback_model || needs.preflight.outputs.model }}
           # PR net patch-id (#120), embedded in the approval marker so a future
           # base-merge re-fire can detect an unchanged diff and skip the model.
           PATCH_ID: ${{ steps.rereview.outputs.patch_id }}
@@ -1183,13 +1276,13 @@ jobs:
           SELECTED_PASS_TERMINAL_ERROR: ${{ steps.retry_outcome.outputs.selected_pass_terminal_error }}
           PERMISSION_DENIALS: ${{ steps.retry_outcome.outputs.permission_denials }}
           CHANGED_LINES: ${{ needs.preflight.outputs.changed_lines }}
-          BUDGET_USD: ${{ needs.preflight.outputs.budget_usd }}
+          BUDGET_USD: ${{ steps.verdict_2.outputs.usable == 'true' && needs.preflight.outputs.fallback_budget_usd || needs.preflight.outputs.budget_usd }}
         run: |
           set -euo pipefail
-          # The single paid pass produced no usable verdict. Fail closed — never
-          # merge unreviewed — but
-          # leave an explained, actionable record and flag for a human instead
-          # of dying on the action's cryptic "did not return structured_output".
+          # Provider failure cannot mint AI authority, but it also cannot make
+          # provider availability a prerequisite for the human approval path.
+          # Leave an explained advisory record and return a successful policy
+          # evaluation so ordinary branch protection remains authoritative.
           #
           # The blank check is load-bearing and must come FIRST (#181, ADR 0032):
           # when the pass returns no structured output, VERDICT is the
@@ -1203,21 +1296,22 @@ jobs:
             # A budget-exhausted review is a legible outcome, not an opaque
             # `error_max_budget_usd`: name the cause, the diff size and the cap
             # so the maintainer knows the PR is oversized rather than broken.
-            # The flag only chooses the wording — every branch here blocks.
-            heading="⚠️ **Merge gate: review could not complete**"
-            detail="The single automatic paid review produced no usable verdict (budget/turn exhaustion, another terminal model error, or semantically invalid structured output). No automatic retry was started. Apply the \`re-review\` label only when a maintainer explicitly authorizes another paid attempt."
+            # The flag only chooses the wording; every branch remains advisory.
+            heading="⚠️ **AI review advisory: review could not complete**"
+            detail="The receipt-bound review cascade produced no usable verdict (budget/turn exhaustion, another terminal model error, or semantically invalid structured output). Human approval remains available. Apply the \`re-review\` label only when a maintainer explicitly authorizes another paid attempt."
             if [ "${BUDGET_EXHAUSTED:-}" = "true" ]; then
-              heading="⚠️ **Merge gate: budget-exceeded — human review required**"
-              detail="The single automatic paid review ended in \`error_max_budget_usd\` without a usable verdict. The diff (~${CHANGED_LINES:-unknown} changed lines) exceeded its selected budget (\$${BUDGET_USD:-unknown}). No automatic escalation was started. Split the PR, review it by hand, or apply \`re-review\` only when a maintainer explicitly authorizes another paid attempt."
+              heading="⚠️ **AI review advisory: budget exceeded**"
+              detail="The selected review pass ended in \`error_max_budget_usd\` without a usable verdict. The diff (~${CHANGED_LINES:-unknown} changed lines) exceeded its selected budget (\$${BUDGET_USD:-unknown}). Human approval remains available."
             fi
             if [[ "${PERMISSION_DENIALS:-0}" =~ ^[1-9][0-9]*$ ]]; then
-              heading="⚠️ **Merge gate: denied tool calls — maintainer action required**"
-              detail="The single automatic paid review recorded ${PERMISSION_DENIALS} denied tool call(s) and produced no usable verdict. This is tool-boundary non-progress, not evidence that the diff is oversized. Align the prompt and \`allowedTools\` before applying \`re-review\` to authorize another paid attempt."
+              heading="⚠️ **AI review advisory: denied tool calls**"
+              detail="The review recorded ${PERMISSION_DENIALS} denied tool call(s) and produced no usable verdict. This is tool-boundary non-progress, not evidence that the diff is oversized."
             fi
             gh pr comment "$PR_NUMBER" --repo "$TARGET_REPO" --body "$heading
 
-          $detail This PR was **not** auto-merged. A maintainer should review and merge it manually."
-            exit 1
+          $detail This advisory result does not block deterministic CI or human approval."
+            echo "outcome=inconclusive" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
           # Expose the verdict so this gate job can file follow-up issues for the
           # non-blocking findings once (and only if) the PR actually merges.
@@ -1245,83 +1339,16 @@ jobs:
           <!-- ai-review-head:${HEAD_SHA} patchid:${PATCH_ID:-} model:${MODEL} -->
           <!-- ai-review-run:${GITHUB_RUN_ID} -->"
           if [ "$(jq -r .blocking <<<"$VERDICT")" = true ]; then
-            # A token may be the PR author's identity. GitHub forbids a user
-            # reviewing their own PR, but the non-zero result must still block
-            # the admin merge and leave an auditable record.
-            gh pr review "$PR_NUMBER" --repo "$TARGET_REPO" --request-changes --body "$body" \
-              || gh pr comment "$PR_NUMBER" --repo "$TARGET_REPO" --body "🚫 **Merge gate: blocking verdict**
+            gh pr comment "$PR_NUMBER" --repo "$TARGET_REPO" --body "🚫 **AI review advisory: blocking verdict**
 
             $body"
-            exit 1
+            echo "outcome=blocking" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
-          # GitHub computes reviewDecision from the latest review per reviewer,
-          # not per commit. A gate-bot CHANGES_REQUESTED on an older head
-          # therefore remains a merge veto after this new-head verdict turns
-          # non-blocking (#452). Dismiss only that stale bot-authored state:
-          # dismissal preserves the finding in the timeline, while filtering by
-          # reviewer and commit keeps human and current-head decisions intact.
-          # `--slurp` is not available in the older GitHub CLI shipped on some
-          # adopter runners. `gh api --paginate` emits one JSON array per page;
-          # jq's stable `-s` mode collects that stream without depending on a
-          # recent gh release. pipefail preserves a failed API call.
-          if ! reviews_pages=$(gh api --paginate \
-            "repos/${TARGET_REPO}/pulls/${PR_NUMBER}/reviews?per_page=100" \
-            | jq -s '.'); then
-            echo "::error::phase=review result=list-failed — could not list prior pull request reviews; refusing to report a green verdict while stale review state is unknown" >&2
-            exit 1
-          fi
-          if ! jq -e --arg head "$HEAD_SHA" '
-            type == "array"
-            and all(.[]; type == "array")
-            and all(.[][]; type == "object")
-            and all(
-              [.[][] | select(
-                .state == "CHANGES_REQUESTED"
-                and .user.login == "github-actions[bot]"
-                and (.commit_id | type) == "string"
-                and .commit_id != ""
-                and .commit_id != $head
-              )][];
-              (.id | type) == "number"
-            )
-          ' <<<"$reviews_pages" >/dev/null 2>&1; then
-            echo "::error::phase=review result=list-invalid — could not validate prior pull request reviews; refusing to dismiss an unverified review target" >&2
-            exit 1
-          fi
-          stale_review_ids=$(jq -r --arg head "$HEAD_SHA" '
-            .[][] | select(
-              .state == "CHANGES_REQUESTED"
-              and .user.login == "github-actions[bot]"
-              and (.commit_id | type) == "string"
-              and .commit_id != ""
-              and .commit_id != $head
-            ) | .id
-          ' <<<"$reviews_pages")
-          while IFS= read -r review_id; do
-            [ -n "$review_id" ] || continue
-            if ! gh api --method PUT \
-              "repos/${TARGET_REPO}/pulls/${PR_NUMBER}/reviews/${review_id}/dismissals" \
-              -f "message=Superseded by the non-blocking automated review on ${HEAD_SHA}"; then
-              echo "::error::phase=review result=dismiss-failed review_id=$review_id — could not dismiss stale gate review $review_id; refusing to report a green verdict" >&2
-              exit 1
-            fi
-          done <<<"$stale_review_ids"
-          if ! approval_error=$(gh pr review "$PR_NUMBER" --repo "$TARGET_REPO" --approve --body "$body" 2>&1); then
-            case "$approval_error" in
-              "Can not approve your own pull request" \
-                | "GraphQL: Can not approve your own pull request (addPullRequestReview)" \
-                | "GraphQL: GitHub Actions is not permitted to approve pull requests. (addPullRequestReview)" \
-                | "failed to create review: GraphQL: GitHub Actions is not permitted to approve pull requests. (addPullRequestReview)") ;;
-              *) echo "$approval_error" >&2; exit 1 ;;
-            esac
-            # The required gate check remains the enforcement
-            # mechanism. A comment is the only GitHub-permitted audit record
-            # when GitHub rejects self-approval or repository policy disables
-            # Actions-authored approvals.
-            gh pr comment "$PR_NUMBER" --repo "$TARGET_REPO" --body "✅ **Merge gate: approved verdict**
+          gh pr comment "$PR_NUMBER" --repo "$TARGET_REPO" --body "✅ **AI review advisory: non-blocking verdict**
 
-            $body"
-          fi
+          $body"
+          echo "outcome=approved" >> "$GITHUB_OUTPUT"
 
       - name: Build trusted post-merge evidence
         env:
@@ -1373,18 +1400,20 @@ jobs:
           # Only the semantically validated verdict published by submit is a verdict.
           VERDICT_JSON: ${{ steps.submit.outputs.verdict }}
           EXECUTION_FILE: ${{ steps.claude.outputs.execution_file }}
-          ACTION_CONCLUSION: ${{ needs.preflight.outputs.provider == 'openai' && steps.openai.conclusion || steps.claude.conclusion }}
+          ACTION_CONCLUSION: ${{ needs.preflight.outputs.provider == 'openai' && steps.openai.conclusion || needs.preflight.outputs.provider == 'deepseek' && steps.verdict_1.outputs.usable == 'true' && steps.deepseek_primary.conclusion || needs.preflight.outputs.provider == 'deepseek' && steps.deepseek_fallback.conclusion || steps.claude.conclusion }}
           LANE: ${{ needs.preflight.outputs.lane }}
           LANE_REASON: ${{ needs.preflight.outputs.reason }}
-          MODEL: ${{ needs.preflight.outputs.model }}
-          BUDGET_USD: ${{ needs.preflight.outputs.budget_usd }}
+          MODEL: ${{ steps.verdict_2.outputs.usable == 'true' && needs.preflight.outputs.fallback_model || needs.preflight.outputs.model }}
+          BUDGET_USD: ${{ steps.verdict_2.outputs.usable == 'true' && needs.preflight.outputs.fallback_budget_usd || needs.preflight.outputs.budget_usd }}
           PROVIDER: ${{ needs.preflight.outputs.provider }}
           PRICING_VERSION: ${{ needs.preflight.outputs.pricing_version }}
-          INPUT_TOKEN_BOUND: ${{ steps.openai.outputs.input_token_bound }}
-          MAX_OUTPUT_TOKENS: ${{ steps.openai.outputs.max_output_tokens }}
-          REPORTED_INPUT_TOKENS: ${{ steps.openai.outputs.reported_input_tokens }}
-          REPORTED_OUTPUT_TOKENS: ${{ steps.openai.outputs.reported_output_tokens }}
-          REPORTED_COST_USD: ${{ steps.openai.outputs.reported_cost_usd }}
+          INPUT_TOKEN_BOUND: ${{ needs.preflight.outputs.provider == 'deepseek' && steps.verdict_2.outputs.usable == 'true' && steps.deepseek_fallback.outputs.input_token_bound || needs.preflight.outputs.provider == 'deepseek' && steps.deepseek_primary.outputs.input_token_bound || steps.openai.outputs.input_token_bound }}
+          MAX_OUTPUT_TOKENS: ${{ needs.preflight.outputs.provider == 'deepseek' && steps.verdict_2.outputs.usable == 'true' && steps.deepseek_fallback.outputs.max_output_tokens || needs.preflight.outputs.provider == 'deepseek' && steps.deepseek_primary.outputs.max_output_tokens || steps.openai.outputs.max_output_tokens }}
+          REPORTED_INPUT_TOKENS: ${{ needs.preflight.outputs.provider == 'deepseek' && steps.verdict_2.outputs.usable == 'true' && steps.deepseek_fallback.outputs.reported_input_tokens || needs.preflight.outputs.provider == 'deepseek' && steps.deepseek_primary.outputs.reported_input_tokens || steps.openai.outputs.reported_input_tokens }}
+          REPORTED_OUTPUT_TOKENS: ${{ needs.preflight.outputs.provider == 'deepseek' && steps.verdict_2.outputs.usable == 'true' && steps.deepseek_fallback.outputs.reported_output_tokens || needs.preflight.outputs.provider == 'deepseek' && steps.deepseek_primary.outputs.reported_output_tokens || steps.openai.outputs.reported_output_tokens }}
+          REPORTED_COST_USD: ${{ needs.preflight.outputs.provider == 'deepseek' && steps.verdict_2.outputs.usable == 'true' && steps.deepseek_fallback.outputs.reported_cost_usd || needs.preflight.outputs.provider == 'deepseek' && steps.deepseek_primary.outputs.reported_cost_usd || steps.openai.outputs.reported_cost_usd }}
+          PRIMARY_COST_USD: ${{ steps.deepseek_primary.outputs.reported_cost_usd }}
+          FALLBACK_COST_USD: ${{ steps.deepseek_fallback.outputs.reported_cost_usd }}
           DEPENDENCY_MAJOR: ${{ needs.preflight.outputs.dependency_major }}
         run: |
           set -uo pipefail    # deliberately no -e: telemetry must never abort
@@ -1407,6 +1436,7 @@ jobs:
             --arg input_token_bound "${INPUT_TOKEN_BOUND:-}" --arg max_output_tokens "${MAX_OUTPUT_TOKENS:-}" \
             --arg reported_input_tokens "${REPORTED_INPUT_TOKENS:-}" --arg reported_output_tokens "${REPORTED_OUTPUT_TOKENS:-}" \
             --arg reported_cost_usd "${REPORTED_COST_USD:-}" \
+            --arg primary_cost_usd "${PRIMARY_COST_USD:-}" --arg fallback_cost_usd "${FALLBACK_COST_USD:-}" \
             --arg action_conclusion "${ACTION_CONCLUSION:-}" \
             --argjson budget_usd "${BUDGET_USD:-0}" \
             --argjson dependency_major "${DEPENDENCY_MAJOR:-false}" \
@@ -1431,6 +1461,8 @@ jobs:
               reported_input_tokens: (if $reported_input_tokens == "" then null else ($reported_input_tokens | tonumber) end),
               reported_output_tokens: (if $reported_output_tokens == "" then null else ($reported_output_tokens | tonumber) end),
               reported_cost_usd: (if $reported_cost_usd == "" then null else ($reported_cost_usd | tonumber) end),
+              cascade_cost_usd: ((if $primary_cost_usd == "" then 0 else ($primary_cost_usd | tonumber) end)
+                + (if $fallback_cost_usd == "" then 0 else ($fallback_cost_usd | tonumber) end)),
               budget_usd: $budget_usd,
               dependency_major: $dependency_major,
               verdict_blocking: $verdict_blocking,
@@ -1454,6 +1486,8 @@ jobs:
   complete-authorization:
     needs: [preflight, gate]
     if: always() && inputs.authorization_check_id != ''
+    outputs:
+      ai_authorized: ${{ steps.complete.outputs.ai_authorized }}
     runs-on: ${{ fromJSON(vars.VERJSON_RUNNER_FASTLANE || '["ubuntu-24.04"]') }}
     timeout-minutes: 5
     permissions:
@@ -1472,6 +1506,8 @@ jobs:
       EXPECTED_AUTHORIZED_HEAD_SHA: ${{ inputs.expected_head_sha }}
       EXPECTED_REVIEWED_HEAD_SHA: ${{ needs.preflight.outputs.head_sha }}
       GATE_STATUS: ${{ needs.gate.result }}
+      REVIEW_AUTHORITY: ${{ needs.preflight.outputs.authority }}
+      REVIEW_OUTCOME: ${{ needs.gate.outputs.review_outcome }}
       PR_NUMBER: ${{ inputs.pr_number }}
       TARGET_REPO: ${{ github.repository }}
       REVIEW_RUN_ID: ${{ github.run_id }}
@@ -1513,6 +1549,7 @@ jobs:
           permission-pull-requests: write
 
       - name: Complete exact head authorization
+        id: complete
         env:
           ACTIONS_TOKEN: ${{ github.token }}
           APP_TOKEN: ${{ steps.app-token.outputs.token }}
@@ -1543,8 +1580,9 @@ jobs:
           }
           GH_TOKEN="$ACTIONS_TOKEN" bash .gate-trust/scripts/ci-gate/verify-arm-receipt.sh
           conclusion=failure
-          title='AI review blocked'
-          summary='The review failed, was inconclusive, or returned blocking findings.'
+          title='Merge policy evaluation failed'
+          summary='The trusted workflow did not complete for this exact head.'
+          ai_authorized=false
           current_head="$(GH_TOKEN="$ACTIONS_TOKEN" gh api "repos/$TARGET_REPO/pulls/$PR_NUMBER" --jq '.head.sha // ""')" || {
             echo "::error::workflow token REST head lookup failed"
             exit 1
@@ -1552,49 +1590,55 @@ jobs:
           if [ "$GATE_STATUS" = success ] &&
              [ "$current_head" = "$EXPECTED_AUTHORIZED_HEAD_SHA" ] &&
              [ "$EXPECTED_REVIEWED_HEAD_SHA" = "$EXPECTED_AUTHORIZED_HEAD_SHA" ]; then
-            approval_body="AI review authorization approved this exact reviewed head.
+            conclusion=success
+            title='Human approval path ready'
+            summary='Deterministic merge policy completed. GitHub branch protection remains authoritative for human approval.'
+            if [ "$REVIEW_OUTCOME" = approved ] && { [ "$REVIEW_AUTHORITY" = ai-approve ] || [ "$REVIEW_AUTHORITY" = ai-merge ]; }; then
+              approval_body="AI review authorization approved this exact reviewed head.
 
           <!-- ai-review-authorization:${AUTHORIZATION_CHECK_ID} -->
           <!-- ai-review-head:${EXPECTED_AUTHORIZED_HEAD_SHA} -->
           <!-- ai-review-run:${REVIEW_RUN_ID:-0} -->"
-            approval_file="$RUNNER_TEMP/app-approval.json"
-            persisted_file="$RUNNER_TEMP/persisted-approval.json"
-            if app_api app-approval "$approval_file" --method POST "repos/$TARGET_REPO/pulls/$PR_NUMBER/reviews" \
-              -f event=APPROVE -f commit_id="$EXPECTED_AUTHORIZED_HEAD_SHA" \
-              -f body="$approval_body" &&
-               approval_id="$(jq -er \
-                 --arg head "$EXPECTED_AUTHORIZED_HEAD_SHA" \
-                 --arg login "${EXPECTED_APP_SLUG}[bot]" \
-                 --arg check "$AUTHORIZATION_CHECK_ID" '
-                   select(.state == "APPROVED" and .commit_id == $head and
-                     .user.login == $login and
-                     (.body | contains("ai-review-authorization:" + $check)))
-                   | .id | select(type == "number")
-                 ' "$approval_file")" &&
-               app_api persisted-approval "$persisted_file" "repos/$TARGET_REPO/pulls/$PR_NUMBER/reviews/$approval_id" &&
-               jq -e --arg head "$EXPECTED_AUTHORIZED_HEAD_SHA" \
-                 --arg login "${EXPECTED_APP_SLUG}[bot]" \
-                 --arg check "$AUTHORIZATION_CHECK_ID" '
-                   .id == ($id | tonumber) and .state == "APPROVED" and
-                   .commit_id == $head and .user.login == $login and
-                   (.body | contains("ai-review-authorization:" + $check))
-                 ' --arg id "$approval_id" "$persisted_file" >/dev/null; then
-              conclusion=success
-              title='AI review authorized and approved'
-              summary='This exact PR head passed deterministic review and received the dedicated App approval. GitHub may merge it only after ordinary required CI passes.'
-            else
-              title='AI review approval failed'
-              summary='The exact reviewed head did not receive a persisted approval from the dedicated authorization App. Terminal promotion remains blocked.'
+              approval_file="$RUNNER_TEMP/app-approval.json"
+              persisted_file="$RUNNER_TEMP/persisted-approval.json"
+              if app_api app-approval "$approval_file" --method POST "repos/$TARGET_REPO/pulls/$PR_NUMBER/reviews" \
+                -f event=APPROVE -f commit_id="$EXPECTED_AUTHORIZED_HEAD_SHA" \
+                -f body="$approval_body" &&
+                 approval_id="$(jq -er \
+                   --arg head "$EXPECTED_AUTHORIZED_HEAD_SHA" \
+                   --arg login "${EXPECTED_APP_SLUG}[bot]" \
+                   --arg check "$AUTHORIZATION_CHECK_ID" '
+                     select(.state == "APPROVED" and .commit_id == $head and
+                       .user.login == $login and
+                       (.body | contains("ai-review-authorization:" + $check)))
+                     | .id | select(type == "number")
+                   ' "$approval_file")" &&
+                 app_api persisted-approval "$persisted_file" "repos/$TARGET_REPO/pulls/$PR_NUMBER/reviews/$approval_id" &&
+                 jq -e --arg head "$EXPECTED_AUTHORIZED_HEAD_SHA" \
+                   --arg login "${EXPECTED_APP_SLUG}[bot]" \
+                   --arg check "$AUTHORIZATION_CHECK_ID" '
+                     .id == ($id | tonumber) and .state == "APPROVED" and
+                     .commit_id == $head and .user.login == $login and
+                     (.body | contains("ai-review-authorization:" + $check))
+                   ' --arg id "$approval_id" "$persisted_file" >/dev/null; then
+                ai_authorized=true
+                title='AI advisory authorized to approve'
+                summary='The opted-in AI review approved this exact head. Ordinary required CI and branch protection remain authoritative.'
+              else
+                title='AI approval unavailable; human path ready'
+                summary='The dedicated App approval could not be persisted. Deterministic policy is green and a human approval may still authorize merge.'
+              fi
             fi
           fi
           app_api authorization-check "$RUNNER_TEMP/authorization-check.json" --method PATCH "repos/$TARGET_REPO/check-runs/$AUTHORIZATION_CHECK_ID" \
             -f status=completed -f conclusion="$conclusion" \
             -f "output[title]=$title" -f "output[summary]=$summary"
+          echo "ai_authorized=$ai_authorized" >> "$GITHUB_OUTPUT"
           [ "$conclusion" = success ] || exit 1
 
   dispatch-merge:
     needs: [preflight, gate, complete-authorization]
-    if: needs.complete-authorization.result == 'success'
+    if: needs.complete-authorization.result == 'success' && needs.complete-authorization.outputs.ai_authorized == 'true' && needs.preflight.outputs.authority == 'ai-merge'
     runs-on: ${{ inputs.runner_labels && fromJSON(inputs.runner_labels) || github.repository_owner != 'Verjson' && 'ubuntu-24.04' || needs.preflight.outputs.target_private == 'false' && fromJSON(vars.VERJSON_RUNNER_FASTLANE || '["ubuntu-24.04"]') || fromJSON(vars.VERJSON_LANE_PRIVILEGED || vars.VERJSON_LANE_FALLBACK || '["ubuntu-24.04"]') }}
     timeout-minutes: 5
     permissions:
@@ -1602,6 +1646,8 @@ jobs:
       contents: read
     env:
       AUTHORIZATION_CHECK_ID: ${{ inputs.authorization_check_id }}
+      ARM_RUN_ID: ${{ inputs.arm_run_id }}
+      ARM_RUN_ATTEMPT: ${{ inputs.arm_run_attempt }}
       EXPECTED_HEAD_SHA: ${{ inputs.expected_head_sha }}
       REVIEW_POLICY: ${{ inputs.review_policy }}
       PR_NUMBER: ${{ inputs.pr_number }}

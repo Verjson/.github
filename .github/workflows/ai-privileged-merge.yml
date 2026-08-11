@@ -174,6 +174,12 @@ jobs:
             exit 0
           }
           bash .gate-trust/scripts/ci-gate/verify-arm-receipt.sh
+          policy_json="$(python3 .gate-trust/scripts/ci-gate/review-policy-envelope.py decode "$REVIEW_POLICY")" || {
+            echo "::error::receipt-bound review policy is malformed"; exit 1;
+          }
+          [ "$(jq -r '.authority // "human"' <<<"$policy_json")" = ai-merge ] || {
+            echo "::error::receipt-bound authority does not permit terminal merge"; exit 1;
+          }
           [ "$(jq -r '.headRepositoryOwner.login // ""' <<<"$meta")" = "$GITHUB_REPOSITORY_OWNER" ] || {
             echo "::error::fork PRs are not eligible for autonomous merge"; exit 1;
           }

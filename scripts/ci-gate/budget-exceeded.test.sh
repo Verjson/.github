@@ -70,7 +70,10 @@ classify() {
   printf '%s' '{"labels":[],"title":"a PR","isDraft":false,"author":{"login":"human"},"headRefOid":"deadbeefdeadbeefdeadbeefdeadbeefdeadbeef","baseRefName":"main"}' >"$META_FILE"
   printf '%s' "$1" >"$FILES_FILE"
   : >"$GITHUB_OUTPUT"
-  bash "$script" >/dev/null 2>&1
+  if ! bash "$script" >/dev/null 2>&1; then
+    fail "the extracted classify step exited non-zero"
+    return 1
+  fi
 }
 out_of() { awk -F= -v k="$1" '$1==k{v=substr($0,length(k)+2)} END{print v}' "$tmp/out.txt"; }
 
@@ -166,21 +169,20 @@ run_submit() {
 comment_has() { grep -qF "$1" "$tmp/comment.txt"; }
 act_has() { grep -q "$1" "$tmp/act.log"; }
 
-# 6. Budget-exhausted with no verdict: blocked (exit 1), never merged, and the
-#    posted comment names budget exhaustion and asks for a human — not an
-#    opaque `error_max_budget_usd`.
+# 6. Budget exhaustion stays advisory: it never authorizes AI approval, and it
+#    leaves the human branch-protection path available.
 rc=$(run_submit '' true)
-{ [ "$rc" = "rc=1" ] && ! act_has approve && act_has COMMENT && comment_has 'budget'; } &&
-  pass "budget-exceeded: blocks the merge and posts a comment" ||
-  fail "budget-exceeded must block and comment ($rc, log=$(tr '\n' ',' <"$tmp/act.log"))"
+{ [ "$rc" = "rc=0" ] && ! act_has approve && act_has COMMENT && comment_has 'budget'; } &&
+  pass "budget-exceeded: records an advisory result without AI approval" ||
+  fail "budget-exceeded must preserve the human path ($rc, log=$(tr '\n' ',' <"$tmp/act.log"))"
 
-{ comment_has 'budget-exceeded' && comment_has '1586' && comment_has '0.60'; } &&
+{ comment_has 'budget exceeded' && comment_has '1586' && comment_has '0.60'; } &&
   pass "budget-exceeded: comment names the outcome, the diff size and the cap" ||
   fail "budget-exceeded comment must name the outcome/diff size/cap, got: $(head -c 400 "$tmp/comment.txt")"
 
-comment_has 'not' && act_has 'EDIT.*ai-review-inconclusive' &&
-  pass "budget-exceeded: still labels the PR inconclusive and says it was not merged" ||
-  fail "budget-exceeded must keep the inconclusive label and the not-merged statement"
+comment_has 'Human approval remains available' && act_has 'EDIT.*ai-review-inconclusive' &&
+  pass "budget-exceeded: labels the advisory inconclusive and names human fallback" ||
+  fail "budget-exceeded must keep the inconclusive label and human fallback"
 
 # 6d. The empty verdict is the shape the workflow actually produces when every
 #     pass returns no structured_output. Whitespace-only and the JSON literals
@@ -190,8 +192,8 @@ comment_has 'not' && act_has 'EDIT.*ai-review-inconclusive' &&
 for v in '' '   ' '
 ' 'null' 'false' '{}' '{"blocking":"true"}' '{"blocking":null}' '[]'; do
   rc=$(run_submit "$v" false)
-  { [ "$rc" = "rc=1" ] && ! act_has 'approve' && act_has COMMENT; } ||
-    fail "verdict [$v] must fail closed without approving ($rc, log=$(tr '\n' ',' <"$tmp/act.log"))"
+  { [ "$rc" = "rc=0" ] && ! act_has 'approve' && act_has COMMENT; } ||
+    fail "verdict [$v] must remain advisory without approving ($rc, log=$(tr '\n' ',' <"$tmp/act.log"))"
 done
 pass "blank/whitespace/null/false/{}/[]/wrong-typed verdicts all fail closed, none approve"
 
@@ -200,30 +202,30 @@ pass "blank/whitespace/null/false/{}/[]/wrong-typed verdicts all fail closed, no
 #    the PR is still blocked.
 for flag in '' 'false' 'yes' 'null' '1'; do
   rc=$(run_submit 'not-json' "$flag")
-  { [ "$rc" = "rc=1" ] && ! act_has approve && act_has COMMENT; } ||
-    fail "no-verdict with BUDGET_EXHAUSTED='$flag' must still block and comment ($rc)"
+  { [ "$rc" = "rc=0" ] && ! act_has approve && act_has COMMENT; } ||
+    fail "no-verdict with BUDGET_EXHAUSTED='$flag' must still defer to human approval ($rc)"
 done
 pass "no-verdict stays fail-closed for every BUDGET_EXHAUSTED value ('' false yes null 1)"
 
 # 8. A malformed size/cap must not abort the fail-closed comment (unset
 #    CHANGED_LINES/BUDGET_USD is what a skipped upstream step produces).
 rc=$(run_submit '' true '' '')
-{ [ "$rc" = "rc=1" ] && act_has COMMENT && ! act_has approve; } &&
-  pass "budget-exceeded survives empty CHANGED_LINES/BUDGET_USD and still blocks" ||
-  fail "empty CHANGED_LINES/BUDGET_USD broke the fail-closed comment ($rc)"
+{ [ "$rc" = "rc=0" ] && act_has COMMENT && ! act_has approve; } &&
+  pass "budget-exceeded survives empty CHANGED_LINES/BUDGET_USD and stays advisory" ||
+  fail "empty CHANGED_LINES/BUDGET_USD broke the advisory comment ($rc)"
 
 # 9. The flag must not hijack a real verdict: an approving verdict still
 #    approves even if a prior pass had been budget-exhausted and recovered.
 rc=$(run_submit '{"blocking":false,"summary":"fine","review_first":[],"findings":[],"followups":[]}' true)
-{ [ "$rc" = "rc=0" ] && act_has REVIEW; } &&
-  pass "a recovered verdict still approves despite the exhaustion flag" ||
-  fail "recovered verdict must still approve ($rc, log=$(tr '\n' ',' <"$tmp/act.log"))"
+{ [ "$rc" = "rc=0" ] && act_has COMMENT; } &&
+  pass "a recovered verdict remains publishable despite the exhaustion flag" ||
+  fail "recovered verdict must still publish ($rc, log=$(tr '\n' ',' <"$tmp/act.log"))"
 
 # 9a. That approval must carry the run marker, which is what makes the run id a
 #     required part of the environment rather than an incidental one.
-grep -qF "ai-review-run:$GATE_RUN_ID" "$tmp/body.txt" &&
-  pass "the approval body carries the ai-review-run marker for this run" ||
-  fail "approval body lost the ai-review-run:$GATE_RUN_ID marker: $(tail -c 200 "$tmp/body.txt")"
+grep -qF "ai-review-run:$GATE_RUN_ID" "$tmp/comment.txt" &&
+  pass "the advisory comment carries the ai-review-run marker for this run" ||
+  fail "advisory comment lost the ai-review-run:$GATE_RUN_ID marker: $(tail -c 200 "$tmp/comment.txt")"
 
 # 9b. Fail-closed direction of the same dependency: if the run id is somehow
 #     absent, the step must die rather than approve. `set -u` gives that for

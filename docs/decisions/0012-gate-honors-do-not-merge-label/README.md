@@ -218,3 +218,18 @@ dollar cap, so the same bounded pass now permits 30 turns. The `$1.00` cap
 remains authoritative: more turns cannot create a second paid pass or exceed
 that spend. Budget or turn exhaustion remains blocking until a maintainer
 explicitly re-reviews.
+
+### 2026-08-10 correction — classification must complete after selecting policy
+
+Issue [#729](https://github.com/Verjson/.github/issues/729) restores the
+clarification above after the first live ordinary-code classification at the new
+policy failed with `model: unbound variable` (review run `31450341729`). The
+standardization removed the classifier's local `model` assignment in favor of
+the receipt-bound `select_policy` output, but its human-readable lane reason
+still interpolated the removed variable under `set -u`.
+
+The reason now states only the lane decision; the selected model remains a
+separate validated output and is recorded by the model-phase telemetry. The
+extracted classifier contract now treats any non-zero execution as a failure,
+so outputs written before a late shell error can no longer make a broken live
+step look green in tests.

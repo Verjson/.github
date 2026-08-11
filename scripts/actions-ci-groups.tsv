@@ -43,8 +43,10 @@ merge-gate	bash scripts/ci-gate/ai-review-retry.test.sh
 merge-gate	bash scripts/ci-gate/semantic-verdict.test.sh
 merge-gate	python3 scripts/ci-gate/event-driven-authorization.test.py
 merge-gate	python3 scripts/ci-gate/openai-review.test.py
+merge-gate	python3 scripts/ci-gate/deepseek-review.test.py
 merge-gate	python3 scripts/ci-gate/review-policy.test.py
 merge-gate	python3 scripts/ci-gate/review-policy-envelope.test.py
+merge-gate	python3 scripts/ci-gate/review-authority.test.py
 merge-gate	python3 scripts/ci-gate/promotion-policy.test.py
 merge-gate	bash scripts/ci-gate/arm-receipt.test.sh
 merge-gate	bash scripts/ci-gate/complete-authorization.test.sh
