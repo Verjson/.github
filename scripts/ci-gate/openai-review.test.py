@@ -141,15 +141,12 @@ class OpenAIReviewTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "preflight envelope"):
             review.extract(response, 100, 100, "1.00")
 
-    def test_local_schema_and_semantics_reject_model_claims(self):
-        bad = [
-            {"blocking": False, "summary": "ok", "review_first": [], "findings": [], "followups": [], "extra": 1},
-            {"blocking": True, "summary": "ok", "review_first": [], "findings": [], "followups": []},
-            {"blocking": True, "summary": "ok", "review_first": [], "findings": [{"location": "bad", "reason": "x", "failure_scenario": "y"}], "followups": []},
-        ]
-        for verdict in bad:
-            with self.subTest(verdict=verdict), self.assertRaises(ValueError):
-                review.extract(self.response(verdict), 100, 100, "1.00")
+    def test_transport_extraction_preserves_json_object_for_canonical_confirmation(self):
+        provider_variant = {"isBlocking": False, "summary": "ok", "reviewFirst": [], "findings": [], "followUps": []}
+
+        extracted, *_ = review.extract(self.response(provider_variant), 100, 100, "1.00")
+
+        self.assertEqual(json.loads(extracted), provider_variant)
 
     def test_main_makes_exactly_one_call_and_emits_structured_verdict(self):
         response = self.response()

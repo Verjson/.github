@@ -721,6 +721,7 @@ jobs:
           sparse-checkout: |
             scripts/ci-gate/verify-arm-receipt.sh
             scripts/ci-gate/review-policy-envelope.py
+            scripts/ci-gate/review-verdict.py
             scripts/ci-gate/openai-review.py
             scripts/ci-gate/deepseek-review.py
           sparse-checkout-cone-mode: false
@@ -738,6 +739,7 @@ jobs:
           }
           install -m 0555 .gate-trust/scripts/ci-gate/openai-review.py "$RUNNER_TEMP/openai-review.py"
           install -m 0555 .gate-trust/scripts/ci-gate/deepseek-review.py "$RUNNER_TEMP/deepseek-review.py"
+          install -m 0555 .gate-trust/scripts/ci-gate/review-verdict.py "$RUNNER_TEMP/review-verdict.py"
 
       - name: Record gate runner timing
         env:
@@ -1121,16 +1123,9 @@ jobs:
         env:
           VERDICT: ${{ needs.preflight.outputs.provider == 'openai' && steps.openai.outputs.structured_output || needs.preflight.outputs.provider == 'deepseek' && steps.deepseek_primary.outputs.structured_output || steps.claude.outputs.structured_output }}
           SENSITIVE: ${{ needs.preflight.outputs.sensitive }}
+          REVIEW_PASS: "1"
         run: |
-          usable=false
-          normalized="$(jq -c '.review_first |= map(if (.location | type == "string") then (.location | split(",")[0]) as $first | if ($first | test("^.+:[1-9][0-9]*(-[1-9][0-9]*)?$")) then .location = ($first | sub("-[1-9][0-9]*$"; "")) else . end else . end)' <<<"${VERDICT:-}" 2>/dev/null)" || normalized=""
-          if jq -e --argjson sensitive "${SENSITIVE:-false}" 'def text: type == "string" and test("\\S"); def location: text and test("^.+:[1-9][0-9]*$"); type == "object" and (.blocking | type == "boolean") and (.summary | text) and (.review_first | type == "array") and (all(.review_first[]; (.location | location) and (.why | text))) and (($sensitive | not) or (.review_first | length > 0)) and (.findings | type == "array") and (all(.findings[]; (.location | location) and (.reason | text) and (.failure_scenario | text))) and (.blocking == (.findings | length > 0)) and (.followups | type == "array")' <<<"${normalized:-}" >/dev/null; then
-            usable=true
-            echo "verdict=$normalized" >> "$GITHUB_OUTPUT"
-          elif [ -n "${VERDICT//[[:space:]]/}" ]; then
-            echo "::error::phase=model pass=1 result=semantic-invalid field=review_first.location expected=path/to/file.ext:42 — no automatic retry; apply re-review for a maintainer-authorized paid attempt"
-          fi
-          echo "usable=$usable" >> "$GITHUB_OUTPUT"
+          python3 "$RUNNER_TEMP/review-verdict.py"
 
       - name: DeepSeek review pass 2
         id: deepseek_fallback
@@ -1155,16 +1150,9 @@ jobs:
         env:
           VERDICT: ${{ steps.deepseek_fallback.outputs.structured_output }}
           SENSITIVE: ${{ needs.preflight.outputs.sensitive }}
+          REVIEW_PASS: "2"
         run: |
-          usable=false
-          normalized="$(jq -c '.review_first |= map(if (.location | type == "string") then (.location | split(",")[0]) as $first | if ($first | test("^.+:[1-9][0-9]*(-[1-9][0-9]*)?$")) then .location = ($first | sub("-[1-9][0-9]*$"; "")) else . end else . end)' <<<"${VERDICT:-}" 2>/dev/null)" || normalized=""
-          if jq -e --argjson sensitive "${SENSITIVE:-false}" 'def text: type == "string" and test("\\S"); def location: text and test("^.+:[1-9][0-9]*$"); type == "object" and (.blocking | type == "boolean") and (.summary | text) and (.review_first | type == "array") and (all(.review_first[]; (.location | location) and (.why | text))) and (($sensitive | not) or (.review_first | length > 0)) and (.findings | type == "array") and (all(.findings[]; (.location | location) and (.reason | text) and (.failure_scenario | text))) and (.blocking == (.findings | length > 0)) and (.followups | type == "array")' <<<"${normalized:-}" >/dev/null; then
-            usable=true
-            echo "verdict=$normalized" >> "$GITHUB_OUTPUT"
-          elif [ -n "${VERDICT//[[:space:]]/}" ]; then
-            echo "::error::phase=model pass=2 result=semantic-invalid field=review_first.location expected=path/to/file.ext:42"
-          fi
-          echo "usable=$usable" >> "$GITHUB_OUTPUT"
+          python3 "$RUNNER_TEMP/review-verdict.py"
 
       - name: Record single-pass model outcome
         id: retry_outcome

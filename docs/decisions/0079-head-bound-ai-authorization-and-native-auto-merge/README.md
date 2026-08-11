@@ -189,3 +189,20 @@ a head checkout, then delegates behavioral claims to the registered arm, event, 
 receipt suites that actually own them. Existing authority-envelope, App identity,
 exact-head, and required-CI coverage remains unchanged. This is a coverage repair
 only; no workflow logic or authority changes.
+
+### 2026-08-11 clarification — provider-neutral verdict confirmation (#739)
+
+Every model adapter now ends at one provider-neutral verdict boundary. Adapters own
+their transport envelope, terminal-state checks, usage evidence, and extraction of
+exactly one assistant JSON object; they do not independently decide whether that
+object authorizes a merge. The canonical validator documents accepted field aliases,
+normalizes structured review locations, projects one strict verdict shape, and
+enforces blocking/findings equivalence plus non-empty review-first guidance for
+sensitive changes.
+
+Confirmation is deterministic and local: it makes no additional model call. Invalid
+or ambiguous output fails closed with bounded field-path diagnostics that exclude the
+raw model response and pull-request diff. Cross-provider conformance tests pass the
+same representative response through the Claude workflow path and the OpenAI and
+DeepSeek transport adapters before applying the canonical validator. This keeps model
+integration generic without guessing arbitrary prose into an approval.

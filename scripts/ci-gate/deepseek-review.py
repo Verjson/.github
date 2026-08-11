@@ -3,7 +3,6 @@
 
 import json
 import os
-import re
 import sys
 import urllib.request
 from decimal import Decimal, InvalidOperation, ROUND_FLOOR
@@ -100,32 +99,6 @@ def priced_request(model: str, messages: list[dict], budget: str) -> tuple[dict,
     raise ValueError("request budget calculation did not converge")
 
 
-def validate_verdict(verdict: object) -> dict:
-    required = {"blocking", "summary", "review_first", "findings", "followups"}
-    if not isinstance(verdict, dict) or set(verdict) != required:
-        raise ValueError("structured verdict has invalid top-level fields")
-    if not isinstance(verdict["blocking"], bool) or not isinstance(verdict["summary"], str) or not verdict["summary"].strip():
-        raise ValueError("structured verdict has invalid blocking or summary")
-    shapes = {
-        "review_first": ({"location", "why"}, ("location", "why")),
-        "findings": ({"location", "reason", "failure_scenario"}, ("location", "reason", "failure_scenario")),
-        "followups": ({"location", "note"}, ("location", "note")),
-    }
-    for field, (keys, text_fields) in shapes.items():
-        if not isinstance(verdict[field], list):
-            raise ValueError(f"structured verdict {field} is not an array")
-        for item in verdict[field]:
-            if not isinstance(item, dict) or set(item) != keys:
-                raise ValueError(f"structured verdict {field} item is invalid")
-            if any(not isinstance(item[name], str) or not item[name].strip() for name in text_fields):
-                raise ValueError(f"structured verdict {field} item is invalid")
-            if not re.fullmatch(r".+:[1-9][0-9]*", item["location"]):
-                raise ValueError(f"structured verdict {field} location is invalid")
-    if verdict["blocking"] != bool(verdict["findings"]):
-        raise ValueError("structured verdict blocking does not match findings")
-    return verdict
-
-
 def usage_cost(usage: object, model: str) -> tuple[int, int, int, int, Decimal]:
     if not isinstance(usage, dict):
         raise ValueError("response has no usage evidence")
@@ -169,7 +142,9 @@ def extract(response: object, model: str, input_bound: int, cap: int, budget_tex
     prompt, completion, hit, miss, cost = usage_cost(response.get("usage"), model)
     if prompt > input_bound or completion > cap or cost > validated_budget(budget_text):
         raise ValueError("reported usage exceeds the preflight envelope")
-    verdict = validate_verdict(json.loads(message["content"]))
+    verdict = json.loads(message["content"])
+    if not isinstance(verdict, dict):
+        raise ValueError("response message is not one JSON object")
     return json.dumps(verdict, separators=(",", ":")), prompt, completion, hit, miss, cost
 
 
