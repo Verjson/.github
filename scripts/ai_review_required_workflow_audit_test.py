@@ -30,6 +30,20 @@ jobs:
     runs-on: ${{ fromJSON(vars.VERJSON_LANE_TRUSTED || vars.VERJSON_LANE_FALLBACK || '["ubuntu-24.04"]') }}
     steps: []
 """
+        # The retired path stays selected until the retarget lands, so the audit
+        # must read it too. `pull_request` is what made it schedulable; #642
+        # removed it and nothing noticed for four days.
+        self.retired_workflow = """\
+name: AI review + auto-merge
+on:
+  pull_request:
+  workflow_dispatch:
+  workflow_call:
+jobs:
+  preflight:
+    runs-on: ubuntu-24.04
+    steps: []
+"""
         self.fixture = self.make_fixture()
 
     def make_fixture(self):
@@ -85,6 +99,9 @@ jobs:
             "repositories/1269388380/contents/.github/workflows/gate-rearm.yml?ref=refs/heads/main": [{
                 "content": base64.b64encode(self.workflow.encode()).decode(),
             }],
+            "repositories/1269388380/contents/.github/workflows/ai-review-merge.yml?ref=refs/heads/main": [{
+                "content": base64.b64encode(self.retired_workflow.encode()).decode(),
+            }],
         }
         for repository in repositories:
             full_name = repository["full_name"]
@@ -110,6 +127,74 @@ jobs:
     def workflow_source(self, text):
         path = "repositories/1269388380/contents/.github/workflows/gate-rearm.yml?ref=refs/heads/main"
         self.fixture[path][0]["content"] = base64.b64encode(text.encode()).decode()
+
+    def retired_workflow_source(self, text):
+        path = "repositories/1269388380/contents/.github/workflows/ai-review-merge.yml?ref=refs/heads/main"
+        self.fixture[path][0]["content"] = base64.b64encode(text.encode()).decode()
+
+    def test_selected_required_workflow_must_declare_a_ruleset_eligible_trigger(self):
+        # The live outage: the selected workflow kept only triggers a ruleset
+        # cannot fire, so every governed repository lost its required-workflow
+        # run and displayed "Workflow configuration invalid" instead.
+        self.retired_workflow_source("""\
+name: AI review + auto-merge
+on:
+  workflow_dispatch:
+  workflow_call:
+jobs:
+  preflight:
+    runs-on: ubuntu-24.04
+    steps: []
+""")
+        self.assert_audit_error(
+            r"ai-review-merge\.yml.*declares only.*workflow_call.*workflow_dispatch",
+        )
+
+    def test_merge_group_alone_keeps_the_selected_workflow_schedulable(self):
+        self.retired_workflow_source("""\
+name: AI review + auto-merge
+on:
+  merge_group:
+jobs:
+  preflight:
+    runs-on: ubuntu-24.04
+    steps: []
+""")
+        self.assertEqual(AUDIT.audit(self.contract, self.read)["state"], "ready")
+
+    def test_an_unschedulable_selection_outranks_the_fleet_readiness_gap(self):
+        # A live outage must not be masked by a rollout precondition. The
+        # deterministic-CI gap is why the retarget cannot land yet; the dead
+        # selection is why the gate is down right now.
+        rows = self.fixture["orgs/Verjson/properties/values?per_page=100"][0]
+        for row in rows:
+            row["properties"] = []
+        self.retired_workflow_source("""\
+name: AI review + auto-merge
+on:
+  workflow_call:
+jobs:
+  preflight:
+    runs-on: ubuntu-24.04
+    steps: []
+""")
+        self.assert_audit_error(r"declares only")
+
+    def test_the_retargeted_selection_is_checked_against_the_replacement(self):
+        self.fixture[self.ruleset_path] = [{
+            "id": self.contract["ruleset_id"], **copy.deepcopy(self.contract["postimage"]),
+        }]
+        self.workflow_source("""\
+name: AI review authorization arm
+on:
+  workflow_call:
+jobs:
+  arm:
+    continue-on-error: true
+    runs-on: ${{ fromJSON(vars.VERJSON_LANE_TRUSTED || vars.VERJSON_LANE_FALLBACK || '["ubuntu-24.04"]') }}
+    steps: []
+""")
+        self.assert_audit_error(r"gate-rearm\.yml.*declares only.*workflow_call")
 
     def test_contract_pins_complete_preimage_postimage_and_rollback(self):
         self.assertEqual(self.contract["rollback_payload"], self.contract["preimage"])
