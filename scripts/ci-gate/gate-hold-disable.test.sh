@@ -30,8 +30,12 @@ case "$*" in
     mkdir -p "$destination"
     printf '{"review_policy":"%s"}\n' "$RECEIPT_POLICY" >"$destination/receipt.json" ;;
   *"collaborators/maintainer/permission"*) printf '%s\n' "${ACTOR_PERMISSION:-triage}" ;;
+  *"issues/7/events?per_page=100"*) printf '[{"event":"labeled","label":{"name":"ai-review"},"actor":{"login":"maintainer"}}]\n' ;;
+  *"--method POST repos/Verjson/example/check-runs --input -"*)
+    jq '. + {id:9100,app:{id:4242,slug:"verjson-ai-review"}}' ;;
   "workflow run "*) printf 'DISPATCH %s\n' "$*" >>"$CALLS" ;;
   "pr comment "*) printf 'COMMENT %s\n' "$*" >>"$CALLS" ;;
+  "pr edit "*) [ "${PR_EDIT_FAIL:-false}" != true ] ;;
   *) echo "unexpected gh call: $*" >&2; exit 2 ;;
 esac
 GH
@@ -43,6 +47,7 @@ export TARGET_REPO=Verjson/example PR_NUMBER=7 APP_ID=4242 APP_SLUG=verjson-ai-r
 export DEFAULT_BRANCH=main EVENT_LABEL=hold EVENT_OLD_TITLE='' GITHUB_REPOSITORY_OWNER=Verjson
 export ACTIONS_TOKEN=actions-token GH_TOKEN=app-token GITHUB_SERVER_URL=https://github.com
 export GITHUB_RUN_ID=8000 GITHUB_RUN_ATTEMPT=1 RUNNER_TEMP="$tmp"
+export GITHUB_OUTPUT="$tmp/github-output"
 receipt_policy='eyJhY3RvciI6Im1haW50YWluZXIiLCJhY3Rvcl9wZXJtaXNzaW9uIjoibWFpbnRhaW4iLCJidWRnZXRfdXNkIjoiMS4wMCIsIm1vZGVsIjoiZ3B0LTUuNi1sdW5hIiwicHJpY2luZ192ZXJzaW9uIjoib3BlbmFpLWx1bmEtbG9uZy1jb250ZXh0LTIwMjYtMDgtMDgiLCJwcm92aWRlciI6Im9wZW5haSJ9'
 substitute_policy='eyJhY3RvciI6InRydXN0ZWQtYXJtIiwiYWN0b3JfcGVybWlzc2lvbiI6ImF1dG9tYXRpb24iLCJidWRnZXRfdXNkIjoiYXV0byIsIm1vZGVsIjoiYXV0byIsInByaWNpbmdfdmVyc2lvbiI6ImFudGhyb3BpYy1uYXRpdmUtdjEiLCJwcm92aWRlciI6ImFudGhyb3BpYyJ9'
 export RECEIPT_POLICY="$receipt_policy"
@@ -120,6 +125,36 @@ export EVENT_ACTION=labeled EVENT_LABEL=re-review REQUEST_ACTOR=maintainer ACTOR
 export REREVIEW_PROVIDER=openai REREVIEW_MODEL=gpt-5.6-luna REREVIEW_BUDGET_USD=1.00
 expect_fail "triage actor cannot authorize a paid re-review"
 ! grep -q 'check-runs' "$CALLS" && pass "unauthorized actor fails before receipt or paid dispatch" || fail "unauthorized actor reached authorization creation"
+
+# An `ai-review` label may be added after the ordinary human-path authorization
+# already completed for this head. That explicit, maintainer-authorized opt-in
+# must create a fresh receipt instead of being mistaken for a duplicate event.
+: >"$CALLS"; : >"$GITHUB_OUTPUT"
+jq -nc --arg head "$head_sha" '{id:"PR_id",state:"OPEN",isDraft:false,title:"change",labels:[{name:"ai-review"}],headRefOid:$head,headRepositoryOwner:{login:"Verjson"},autoMergeRequest:null}' >"$META_FILE"
+jq -nc --arg head "$head_sha" '{id:9001,status:"completed",conclusion:"success",details_url:"https://github.com/Verjson/example/actions/runs/7001",head_sha:$head}' >"$LATEST_FILE"
+export EVENT_ACTION=labeled EVENT_LABEL=ai-review REQUEST_ACTOR=maintainer ACTOR_PERMISSION=maintain
+export REVIEW_AUTHORITY=human PRIMARY_PROVIDER=deepseek PRIMARY_MODEL=deepseek-v4-pro PRIMARY_BUDGET_USD=5.00
+export PRIMARY_FALLBACK_MODEL=deepseek-v4-flash PRIMARY_FALLBACK_BUDGET_USD=5.00
+if run_arm >"$tmp/out" 2>&1 && grep -q -- '--method POST repos/Verjson/example/check-runs --input -' "$CALLS" \
+  && grep -q '^check_id=9100$' "$GITHUB_OUTPUT" \
+  && policy_envelope="$(sed -n 's/^review_policy=//p' "$GITHUB_OUTPUT")" \
+  && policy_json="$(python3 "$root/scripts/ci-gate/review-policy-envelope.py" decode "$policy_envelope")" \
+  && [ "$(jq -r '.actor + ":" + .actor_permission' <<<"$policy_json")" = maintainer:maintain ]; then
+  pass "post-open ai-review opt-in bypasses the existing human-path authorization"
+else
+  fail "post-open ai-review opt-in lost its verified actor permission or failed before receipt creation"
+fi
+
+: >"$CALLS"
+export EVENT_ACTION=labeled EVENT_LABEL=ai-review ACTOR_PERMISSION=triage PR_EDIT_FAIL=true
+expect_fail "unauthorized ai-review label fails even when cleanup cannot remove it"
+: >"$CALLS"
+export EVENT_ACTION=synchronize EVENT_LABEL='' REQUEST_ACTOR=pusher
+expect_fail "a later synchronize rechecks the retained ai-review label actor"
+! grep -q -- '--method POST repos/Verjson/example/check-runs --input -' "$CALLS" \
+  && pass "retained unauthorized ai-review label cannot reach receipt creation" \
+  || fail "retained unauthorized ai-review label authorized paid review"
+unset PR_EDIT_FAIL
 
 [ "$fails" -eq 0 ] && { echo "All tests passed."; exit 0; }
 echo "$fails test(s) failed."; exit 1

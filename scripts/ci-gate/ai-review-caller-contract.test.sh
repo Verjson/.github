@@ -30,7 +30,7 @@ job = workflow["jobs"]["review"]
 assert job["uses"] == f"Verjson/.github/.github/workflows/ai-review-merge.yml@{sha}"
 assert set(job) == {"uses", "secrets", "with"}
 assert set(job["secrets"]) == {
-    "AI_REVIEW_APP_PRIVATE_KEY", "ANTHROPIC_API_KEY", "OPENAI_API_KEY",
+    "AI_REVIEW_APP_PRIVATE_KEY", "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "DEEPSEEK_API_KEY",
 }
 assert set(job["with"]) == {
     "pr_number", "expected_head_sha", "authorization_check_id", "arm_run_id",

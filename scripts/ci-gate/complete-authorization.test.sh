@@ -25,6 +25,8 @@ def valid(document):
         and env.get("EXPECTED_APP_ID") == "${{ vars.AI_REVIEW_APP_ID }}"
         and env.get("EXPECTED_REVIEWED_HEAD_SHA") == env.get("EXPECTED_HEAD_SHA")
         and env.get("EXPECTED_AUTHORIZED_HEAD_SHA") == "${{ inputs.expected_head_sha }}"
+        and env.get("REVIEW_AUTHORITY") == "${{ needs.preflight.outputs.authority }}"
+        and env.get("REVIEW_OUTCOME") == "${{ needs.gate.outputs.review_outcome }}"
         and env.get("APP_CLIENT_ID") == "${{ vars.AI_REVIEW_CLIENT_ID }}"
         and token["with"].get("client-id") == "${{ vars.AI_REVIEW_CLIENT_ID }}"
         and "app-id" not in token["with"]
@@ -51,6 +53,10 @@ def valid(document):
         and run.index("verify-arm-receipt.sh") < run.index("-f event=APPROVE")
         and run.index("-f event=APPROVE") < run.index("-f status=completed")
         and "reviews/$approval_id" in run
+        and '[ "$REVIEW_OUTCOME" = approved ]' in run
+        and '[ "$REVIEW_AUTHORITY" = ai-approve ]' in run
+        and '[ "$REVIEW_AUTHORITY" = ai-merge ]' in run
+        and 'echo "ai_authorized=$ai_authorized" >> "$GITHUB_OUTPUT"' in run
     )
 
 with open(sys.argv[1], encoding="utf-8") as stream:
@@ -149,6 +155,7 @@ export EXPECTED_AUTHORIZED_HEAD_SHA=0123456789abcdef0123456789abcdef01234567
 export EXPECTED_REVIEWED_HEAD_SHA="$EXPECTED_AUTHORIZED_HEAD_SHA" EXPECTED_HEAD_SHA="$EXPECTED_AUTHORIZED_HEAD_SHA"
 export GATE_STATUS=success ACTIONS_TOKEN=actions-token APP_TOKEN=app-token
 export MINTED_APP_SLUG="$EXPECTED_APP_SLUG" INSTALLATION_ID=1234 RUNNER_TEMP="$tmp"
+export REVIEW_AUTHORITY=ai-merge REVIEW_OUTCOME=approved GITHUB_OUTPUT="$tmp/github-output"
 
 run_complete(){ (cd "$tmp/run" && bash "$tmp/complete.sh"); }
 if (cd "$tmp/run" && .gate-trust/scripts/ci-gate/verify-arm-receipt.sh) >"$tmp/out" 2>&1; then
@@ -157,24 +164,30 @@ else
   pass "non-executable completion verifier rejects direct execution"
 fi
 : >"$CALLS"
+: >"$GITHUB_OUTPUT"
 if run_complete >"$tmp/out" 2>&1 && grep -q 'conclusion=success' "$CALLS"; then
   pass "trusted preflight head receives persisted App approval before authorization completion"
 else fail "valid completion head handoff failed: $(tail -1 "$tmp/out")"; fi
 
-: >"$CALLS"; APPROVAL_RC=1 run_complete >"$tmp/out" 2>&1
-if [ "$?" -ne 0 ] && grep -q 'conclusion=failure' "$CALLS" \
-  && ! grep -q 'conclusion=success' "$CALLS" \
+: >"$CALLS"; : >"$GITHUB_OUTPUT"; APPROVAL_RC=1 run_complete >"$tmp/out" 2>&1
+if [ "$?" -eq 0 ] && grep -q 'conclusion=success' "$CALLS" \
+  && grep -q 'ai_authorized=false' "$GITHUB_OUTPUT" \
   && grep -q 'app-approval failed' "$tmp/out" \
   && grep -q 'x-github-request-id: TEST:1234' "$tmp/out" \
   && grep -q 'authorization: token \*\*\*' "$tmp/out" \
   && ! grep -q 'leaked-test-token' "$tmp/out"; then
-  pass "rejected App approval completes authorization as failure"
-else fail "rejected App approval did not fail closed"; fi
+  pass "rejected App approval falls back to human authorization without leaking credentials"
+else fail "rejected App approval did not preserve the human path"; fi
 
-: >"$CALLS"; PERSISTED_HEAD=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa run_complete >"$tmp/out" 2>&1
-if [ "$?" -ne 0 ] && grep -q 'conclusion=failure' "$CALLS"; then
-  pass "persisted approval for another head fails closed"
-else fail "stale persisted approval escaped"; fi
+: >"$CALLS"; : >"$GITHUB_OUTPUT"; PERSISTED_HEAD=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa run_complete >"$tmp/out" 2>&1
+if [ "$?" -eq 0 ] && grep -q 'conclusion=success' "$CALLS" && grep -q 'ai_authorized=false' "$GITHUB_OUTPUT"; then
+  pass "stale App approval cannot authorize AI but leaves the human path ready"
+else fail "stale persisted approval escaped into AI authority"; fi
+
+: >"$CALLS"; : >"$GITHUB_OUTPUT"; REVIEW_AUTHORITY=human REVIEW_OUTCOME=skipped run_complete >"$tmp/out" 2>&1
+if [ "$?" -eq 0 ] && grep -q 'conclusion=success' "$CALLS" && ! grep -q 'api --method POST' "$CALLS" && grep -q 'ai_authorized=false' "$GITHUB_OUTPUT"; then
+  pass "human authority never asks the App to approve"
+else fail "human authority still depends on AI approval"; fi
 
 : >"$CALLS"; EXPECTED_HEAD_SHA= run_complete >"$tmp/out" 2>&1
 if [ "$?" -ne 0 ] && ! grep -q 'api --method PATCH' "$CALLS"; then

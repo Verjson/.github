@@ -54,6 +54,7 @@ jobs:
       AI_REVIEW_APP_PRIVATE_KEY: \${{ secrets.AI_REVIEW_APP_PRIVATE_KEY }}
       ANTHROPIC_API_KEY: \${{ secrets.ANTHROPIC_API_KEY }}
       OPENAI_API_KEY: \${{ secrets.OPENAI_API_KEY }}
+      DEEPSEEK_API_KEY: \${{ secrets.DEEPSEEK_API_KEY }}
     with:
       pr_number: \${{ inputs.pr_number }}
       expected_head_sha: \${{ inputs.expected_head_sha }}
