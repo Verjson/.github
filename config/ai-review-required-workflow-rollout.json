@@ -1,10 +1,25 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "organization": "Verjson",
-  "ruleset": {
-    "id": 18098028,
+  "ruleset_id": 18098028,
+  "retired_path": ".github/workflows/ai-review-merge.yml",
+  "replacement_path": ".github/workflows/gate-rearm.yml",
+  "preimage": {
     "name": "main-protection",
     "target": "branch",
+    "enforcement": "active",
+    "bypass_actors": [
+      {
+        "actor_id": null,
+        "actor_type": "OrganizationAdmin",
+        "bypass_mode": "always"
+      },
+      {
+        "actor_id": 2740,
+        "actor_type": "Integration",
+        "bypass_mode": "always"
+      }
+    ],
     "conditions": {
       "ref_name": {
         "exclude": [],
@@ -15,16 +30,233 @@
         "include": ["~ALL"]
       }
     },
-    "source_repository": "Verjson/.github",
-    "source_repository_id": 1269388380,
-    "ref": "refs/heads/main",
-    "retired_path": ".github/workflows/ai-review-merge.yml",
-    "replacement_path": ".github/workflows/gate-rearm.yml",
-    "forbidden_required_status_contexts": [
-      "gate",
-      "AI review authorization"
+    "rules": [
+      {"type": "deletion"},
+      {"type": "non_fast_forward"},
+      {"type": "required_linear_history"},
+      {
+        "type": "pull_request",
+        "parameters": {
+          "allowed_merge_methods": ["squash"],
+          "dismiss_stale_reviews_on_push": true,
+          "require_code_owner_review": true,
+          "require_last_push_approval": true,
+          "required_approving_review_count": 1,
+          "required_review_thread_resolution": true,
+          "required_reviewers": []
+        }
+      },
+      {
+        "type": "workflows",
+        "parameters": {
+          "do_not_enforce_on_create": true,
+          "workflows": [
+            {
+              "path": ".github/workflows/ai-review-merge.yml",
+              "ref": "refs/heads/main",
+              "repository_id": 1269388380
+            }
+          ]
+        }
+      }
     ]
   },
+  "postimage": {
+    "name": "main-protection",
+    "target": "branch",
+    "enforcement": "active",
+    "bypass_actors": [
+      {
+        "actor_id": null,
+        "actor_type": "OrganizationAdmin",
+        "bypass_mode": "always"
+      },
+      {
+        "actor_id": 2740,
+        "actor_type": "Integration",
+        "bypass_mode": "always"
+      }
+    ],
+    "conditions": {
+      "ref_name": {
+        "exclude": [],
+        "include": ["~DEFAULT_BRANCH", "refs/heads/develop"]
+      },
+      "repository_name": {
+        "exclude": [],
+        "include": ["~ALL"]
+      }
+    },
+    "rules": [
+      {"type": "deletion"},
+      {"type": "non_fast_forward"},
+      {"type": "required_linear_history"},
+      {
+        "type": "pull_request",
+        "parameters": {
+          "allowed_merge_methods": ["squash"],
+          "dismiss_stale_reviews_on_push": true,
+          "require_code_owner_review": true,
+          "require_last_push_approval": true,
+          "required_approving_review_count": 1,
+          "required_review_thread_resolution": true,
+          "required_reviewers": []
+        }
+      },
+      {
+        "type": "workflows",
+        "parameters": {
+          "do_not_enforce_on_create": true,
+          "workflows": [
+            {
+              "path": ".github/workflows/gate-rearm.yml",
+              "ref": "refs/heads/main",
+              "repository_id": 1269388380
+            }
+          ]
+        }
+      }
+    ]
+  },
+  "rollback_payload": {
+    "name": "main-protection",
+    "target": "branch",
+    "enforcement": "active",
+    "bypass_actors": [
+      {
+        "actor_id": null,
+        "actor_type": "OrganizationAdmin",
+        "bypass_mode": "always"
+      },
+      {
+        "actor_id": 2740,
+        "actor_type": "Integration",
+        "bypass_mode": "always"
+      }
+    ],
+    "conditions": {
+      "ref_name": {
+        "exclude": [],
+        "include": ["~DEFAULT_BRANCH", "refs/heads/develop"]
+      },
+      "repository_name": {
+        "exclude": [],
+        "include": ["~ALL"]
+      }
+    },
+    "rules": [
+      {"type": "deletion"},
+      {"type": "non_fast_forward"},
+      {"type": "required_linear_history"},
+      {
+        "type": "pull_request",
+        "parameters": {
+          "allowed_merge_methods": ["squash"],
+          "dismiss_stale_reviews_on_push": true,
+          "require_code_owner_review": true,
+          "require_last_push_approval": true,
+          "required_approving_review_count": 1,
+          "required_review_thread_resolution": true,
+          "required_reviewers": []
+        }
+      },
+      {
+        "type": "workflows",
+        "parameters": {
+          "do_not_enforce_on_create": true,
+          "workflows": [
+            {
+              "path": ".github/workflows/ai-review-merge.yml",
+              "ref": "refs/heads/main",
+              "repository_id": 1269388380
+            }
+          ]
+        }
+      }
+    ]
+  },
+  "forbidden_required_status_contexts": ["gate", "AI review authorization"],
+  "deterministic_required_status_contexts": [
+    "shell-tests",
+    "ci / build-test",
+    "ci / eligibility",
+    "ci / lint-template",
+    "ci / validate",
+    "ci / preview",
+    "generated-artifacts / validate",
+    "changelog / validate"
+  ],
+  "core_checks_property": "verjson-core-checks",
+  "core_checks_value": "enforced",
+  "deterministic_rulesets": [
+    {
+      "id": 20515822,
+      "stack": "actions",
+      "image": {
+        "name": "core-checks-actions",
+        "target": "branch",
+        "enforcement": "active",
+        "bypass_actors": [
+          {"actor_id": null, "actor_type": "OrganizationAdmin", "bypass_mode": "always"}
+        ],
+        "conditions": {
+          "ref_name": {"exclude": [], "include": ["~DEFAULT_BRANCH"]},
+          "repository_property": {
+            "exclude": [],
+            "include": [
+              {"name": "verjson-stack", "property_values": ["actions"], "source": "custom"},
+              {"name": "verjson-core-checks", "property_values": ["enforced"], "source": "custom"}
+            ]
+          }
+        },
+        "rules": [
+          {
+            "type": "required_status_checks",
+            "parameters": {
+              "do_not_enforce_on_create": true,
+              "required_status_checks": [{"context": "shell-tests"}],
+              "strict_required_status_checks_policy": false
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": 20515817,
+      "stack": "node",
+      "image": {
+        "name": "core-checks-node",
+        "target": "branch",
+        "enforcement": "active",
+        "bypass_actors": [
+          {"actor_id": null, "actor_type": "OrganizationAdmin", "bypass_mode": "always"}
+        ],
+        "conditions": {
+          "ref_name": {"exclude": [], "include": ["~DEFAULT_BRANCH"]},
+          "repository_property": {
+            "exclude": [],
+            "include": [
+              {"name": "verjson-stack", "property_values": ["node"], "source": "custom"},
+              {"name": "verjson-core-checks", "property_values": ["enforced"], "source": "custom"}
+            ]
+          }
+        },
+        "rules": [
+          {
+            "type": "required_status_checks",
+            "parameters": {
+              "do_not_enforce_on_create": true,
+              "required_status_checks": [
+                {"context": "ci / build-test"},
+                {"context": "ci / eligibility"}
+              ],
+              "strict_required_status_checks_policy": false
+            }
+          }
+        ]
+      }
+    }
+  ],
   "authorization": {
     "private_key_secret": "AI_REVIEW_APP_PRIVATE_KEY",
     "variables": [
@@ -35,7 +267,9 @@
     "app_permissions": {
       "checks": "write",
       "contents": "read",
+      "metadata": "read",
       "pull_requests": "write"
-    }
+    },
+    "app_events": []
   }
 }

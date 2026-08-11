@@ -30,6 +30,12 @@ and identity variables are currently selected to fewer repositories than the rul
 in those repositories. Requiring both the retired workflow and an App check would be
 worse: one never starts and the other never appears.
 
+The replacement is intentionally non-vetoing so AI infrastructure cannot remove the
+human path. That is safe only where another active rule requires ordinary deterministic
+CI. Live inspection found repositories with no such rule, including `demo-repository`
+and `AiB`; retargeting `~ALL` in that state would leave human review as their only
+automated merge precondition. The rollout must close that coverage gap first.
+
 ## Decision
 
 Change the one workflow selected by `main-protection` from
@@ -37,32 +43,47 @@ Change the one workflow selected by `main-protection` from
 `.github/workflows/gate-rearm.yml@main` in a single ruleset update. Never retain both
 paths, and do not also require `AI review authorization` as a status context.
 
-The arm job is `continue-on-error`: its failures remain visible, but the required
+The arm job runs on fixed GitHub-hosted `ubuntu-24.04` capacity and is
+`continue-on-error`: its failures remain visible, but the required
 workflow cannot veto a merge authorized by the existing human review and deterministic
 CI policy. This does not weaken AI authority. App approval and terminal promotion still
 require the exact successful dedicated-App check, immutable receipt, reviewed head,
 policy envelope, and configured deterministic CI. A missing receipt or failed arm grants
 nothing.
 
+The reviewed contract stores the complete normalized `main-protection` mutation payload:
+name, target, enforcement, every bypass actor, conditions, and every rule. Its postimage
+must be byte-for-byte semantic equality after changing only the selected workflow path.
+The preimage is retained as the exact rollback payload. The audit can render either
+payload only after proving the live ruleset is the corresponding full image; it never
+writes GitHub state.
+
 `scripts/ai-review-required-workflow-audit.py` is the mandatory read-only preflight and
 post-change verifier. It fails unless:
 
-- `main-protection` has the reviewed `~ALL` scope and exactly one recognized workflow;
+- every field of `main-protection` equals the reviewed preimage or postimage;
 - no other organization ruleset requires either arm identity or the App check;
+- every governed default branch has an effective required-status rule naming a
+  canonical deterministic CI context;
 - the private key and App identity variables reach every currently governed repository;
-- the dedicated App installation is unsuspended, covers all repositories, and retains
-  Checks write, contents read, and pull requests write; and
+- no governed repository shadows the organization private key, client ID, numeric App
+  ID, or App slug with a repository-level secret or variable;
+- the dedicated App installation is unsuspended, covers all repositories, has no event
+  subscriptions, and has exactly Checks write, contents read, metadata read, and pull
+  requests write with no extra scopes; and
 - canonical `gate-rearm.yml@main` exposes `pull_request_target` while keeping the arm
-  non-blocking for ADR 0090's human path.
+  non-blocking for ADR 0090's human path on provider-hosted capacity.
 
-Rollout order is strict: merge the workflow, contract, and audit; obtain separate human
-authorization for any secret or variable scope expansion; run the audit until it reports
-`state=ready`; replace the one ruleset workflow path; then run the audit again until it
-reports `state=retargeted`. On a controlled same-repository PR head carrying `ai-review`,
-force a synchronization and verify the ruleset-created arm run, immutable receipt,
-exact-head App check, App review, immutable privileged caller dispatch, and terminal
-promotion waiting on ordinary required CI. The rollout is incomplete until that live
-proof exists.
+Rollout order is strict: merge the workflow, contract, and audit; deploy canonical
+deterministic required-CI coverage to every governed default branch; obtain separate
+human authorization for any secret or variable scope expansion; remove repository-level
+shadowing; run the audit until it reports `state=ready`; render and independently compare
+the retarget payload; replace the one ruleset workflow path; then run the audit again
+until it reports `state=retargeted`. On a controlled same-repository PR head carrying
+`ai-review`, force a synchronization and verify the ruleset-created arm run, immutable
+receipt, exact-head App check, App review, immutable privileged caller dispatch, and
+terminal promotion waiting on ordinary required CI. The rollout is incomplete until
+that live proof exists.
 
 ## Consequences
 
@@ -72,6 +93,8 @@ proof exists.
   provider or authorization outage.
 - The currently incomplete credential scope is a measured rollout blocker, not an
   implicit request to expose the private key organization-wide.
-- Rollback is the inverse single-path replacement after the old workflow has first been
-  restored to a ruleset-supported, human-nonblocking entry surface. Removing the arm
-  before that proof would recreate this incident and is forbidden.
+- Incomplete deterministic-CI coverage is independently blocking; a green arm cannot
+  substitute for ordinary repository tests.
+- Emergency rollback restores the verified full preimage, including every bypass actor
+  and unrelated rule. That returns to the known dispatch-only incident state and requires
+  the existing human/administrator recovery path; it is not proof that AI review works.

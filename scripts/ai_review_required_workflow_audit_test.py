@@ -18,8 +18,7 @@ SPEC.loader.exec_module(AUDIT)
 class AiReviewRequiredWorkflowAuditTest(unittest.TestCase):
     def setUp(self):
         self.contract = AUDIT.read_contract()
-        self.ruleset_id = self.contract["ruleset"]["id"]
-        self.ruleset_path = f"orgs/Verjson/rulesets/{self.ruleset_id}"
+        self.ruleset_path = f"orgs/Verjson/rulesets/{self.contract['ruleset_id']}"
         self.workflow = """\
 name: AI review authorization arm
 on:
@@ -34,27 +33,42 @@ jobs:
         self.fixture = self.make_fixture()
 
     def make_fixture(self):
-        ruleset = {
-            "id": self.ruleset_id,
-            "name": "main-protection",
-            "enforcement": "active",
-            "target": "branch",
-            "conditions": copy.deepcopy(self.contract["ruleset"]["conditions"]),
-            "rules": [{
-                "type": "workflows",
-                "parameters": {"do_not_enforce_on_create": True, "workflows": [{
-                    "path": ".github/workflows/ai-review-merge.yml",
-                    "ref": "refs/heads/main",
-                    "repository_id": 1269388380,
-                }]},
-            }],
+        repositories = [
+            {"full_name": "Verjson/alpha", "private": False, "default_branch": "main"},
+            {"full_name": "Verjson/beta", "private": True, "default_branch": "develop/next"},
+        ]
+        live_preimage = {"id": self.contract["ruleset_id"], **copy.deepcopy(self.contract["preimage"])}
+        node_declaration = next(
+            declaration for declaration in self.contract["deterministic_rulesets"]
+            if declaration["stack"] == "node"
+        )
+        actions_declaration = next(
+            declaration for declaration in self.contract["deterministic_rulesets"]
+            if declaration["stack"] == "actions"
+        )
+        live_node_ruleset = {"id": node_declaration["id"], **copy.deepcopy(node_declaration["image"])}
+        live_actions_ruleset = {
+            "id": actions_declaration["id"], **copy.deepcopy(actions_declaration["image"]),
         }
         fixture = {
-            self.ruleset_path: [ruleset],
-            "orgs/Verjson/rulesets": [[{"id": self.ruleset_id}]],
-            "orgs/Verjson/repos?per_page=100&type=all": [[
-                {"full_name": "Verjson/alpha", "private": False},
-                {"full_name": "Verjson/beta", "private": True},
+            self.ruleset_path: [live_preimage],
+            "orgs/Verjson/rulesets": [[
+                {"id": self.contract["ruleset_id"]},
+                {"id": node_declaration["id"]},
+                {"id": actions_declaration["id"]},
+            ]],
+            f"orgs/Verjson/rulesets/{node_declaration['id']}": [live_node_ruleset],
+            f"orgs/Verjson/rulesets/{actions_declaration['id']}": [live_actions_ruleset],
+            "orgs/Verjson/repos?per_page=100&type=all": [repositories],
+            "orgs/Verjson/properties/values?per_page=100": [[
+                {
+                    "repository_full_name": repository["full_name"],
+                    "properties": [
+                        {"property_name": "verjson-stack", "value": "node"},
+                        {"property_name": "verjson-core-checks", "value": "enforced"},
+                    ],
+                }
+                for repository in repositories
             ]],
             "orgs/Verjson/actions/secrets/AI_REVIEW_APP_PRIVATE_KEY": [{"visibility": "all"}],
             "orgs/Verjson/actions/variables/AI_REVIEW_APP_ID": [{"visibility": "all", "value": "4528902"}],
@@ -65,16 +79,17 @@ jobs:
                 "app_slug": "verjson-ai-review-authorization",
                 "repository_selection": "all",
                 "suspended_at": None,
-                "permissions": {
-                    "checks": "write",
-                    "contents": "read",
-                    "pull_requests": "write",
-                },
+                "events": [],
+                "permissions": copy.deepcopy(self.contract["authorization"]["app_permissions"]),
             }]}],
-            "repos/Verjson/.github/contents/.github/workflows/gate-rearm.yml?ref=main": [{
+            "repositories/1269388380/contents/.github/workflows/gate-rearm.yml?ref=refs/heads/main": [{
                 "content": base64.b64encode(self.workflow.encode()).decode(),
             }],
         }
+        for repository in repositories:
+            full_name = repository["full_name"]
+            fixture[f"repos/{full_name}/actions/secrets?per_page=100"] = [{"secrets": []}]
+            fixture[f"repos/{full_name}/actions/variables?per_page=100"] = [{"variables": []}]
         return fixture
 
     def read(self, path):
@@ -92,114 +107,148 @@ jobs:
         with self.assertRaisesRegex(AUDIT.AuditError, text):
             AUDIT.audit(self.contract, self.read)
 
-    def test_full_fleet_coverage_is_ready_for_one_for_one_retarget(self):
+    def workflow_source(self, text):
+        path = "repositories/1269388380/contents/.github/workflows/gate-rearm.yml?ref=refs/heads/main"
+        self.fixture[path][0]["content"] = base64.b64encode(text.encode()).decode()
+
+    def test_contract_pins_complete_preimage_postimage_and_rollback(self):
+        self.assertEqual(self.contract["rollback_payload"], self.contract["preimage"])
+        self.assertEqual(
+            [rule["type"] for rule in self.contract["preimage"]["rules"]],
+            ["deletion", "non_fast_forward", "required_linear_history", "pull_request", "workflows"],
+        )
+        self.assertEqual(self.contract["preimage"]["bypass_actors"], [
+            {"actor_id": None, "actor_type": "OrganizationAdmin", "bypass_mode": "always"},
+            {"actor_id": 2740, "actor_type": "Integration", "bypass_mode": "always"},
+        ])
+        self.assertEqual(self.contract["preimage"]["conditions"], {
+            "ref_name": {"exclude": [], "include": ["~DEFAULT_BRANCH", "refs/heads/develop"]},
+            "repository_name": {"exclude": [], "include": ["~ALL"]},
+        })
+        pre = copy.deepcopy(self.contract["preimage"])
+        post = copy.deepcopy(self.contract["postimage"])
+        self.assertEqual(AUDIT.workflow_path(pre), ".github/workflows/ai-review-merge.yml")
+        self.assertEqual(AUDIT.workflow_path(post), ".github/workflows/gate-rearm.yml")
+        for rule in pre["rules"]:
+            if rule["type"] == "workflows":
+                rule["parameters"]["workflows"][0]["path"] = ".github/workflows/gate-rearm.yml"
+        self.assertEqual(pre, post)
+
+    def test_full_fleet_is_ready_and_postimage_is_retargeted(self):
         report = AUDIT.audit(self.contract, self.read)
         self.assertEqual(report["state"], "ready")
         self.assertEqual(report["governed_repositories"], 2)
-        self.assertEqual(report["current_path"], ".github/workflows/ai-review-merge.yml")
+        self.fixture[self.ruleset_path] = [{
+            "id": self.contract["ruleset_id"], **copy.deepcopy(self.contract["postimage"]),
+        }]
+        self.assertEqual(AUDIT.audit(self.contract, self.read)["state"], "retargeted")
 
-    def test_checked_in_contract_pins_the_sensitive_boundary(self):
-        self.assertEqual(self.contract["organization"], "Verjson")
-        self.assertEqual(self.contract["ruleset"], {
-            "id": 18098028,
-            "name": "main-protection",
-            "target": "branch",
-            "conditions": {
-                "ref_name": {"exclude": [], "include": ["~DEFAULT_BRANCH", "refs/heads/develop"]},
-                "repository_name": {"exclude": [], "include": ["~ALL"]},
-            },
-            "source_repository": "Verjson/.github",
-            "source_repository_id": 1269388380,
-            "ref": "refs/heads/main",
-            "retired_path": ".github/workflows/ai-review-merge.yml",
-            "replacement_path": ".github/workflows/gate-rearm.yml",
-            "forbidden_required_status_contexts": ["gate", "AI review authorization"],
-        })
-        self.assertEqual(self.contract["authorization"], {
-            "private_key_secret": "AI_REVIEW_APP_PRIVATE_KEY",
-            "variables": ["AI_REVIEW_APP_ID", "AI_REVIEW_APP_SLUG", "AI_REVIEW_CLIENT_ID"],
-            "app_permissions": {"checks": "write", "contents": "read", "pull_requests": "write"},
-        })
+    def test_every_default_branch_requires_canonical_deterministic_ci(self):
+        rows = self.fixture["orgs/Verjson/properties/values?per_page=100"][0]
+        beta = next(row for row in rows if row["repository_full_name"] == "Verjson/beta")
+        beta["properties"] = [{"property_name": "verjson-stack", "value": "node"}]
+        self.assert_audit_error("without canonical deterministic required CI.*Verjson/beta")
+        beta["properties"] = [
+            {"property_name": "verjson-stack", "value": "helm"},
+            {"property_name": "verjson-core-checks", "value": "enforced"},
+        ]
+        self.assert_audit_error("without canonical deterministic required CI.*Verjson/beta")
 
-    def test_exact_selected_coverage_is_accepted(self):
-        names = ["Verjson/alpha", "Verjson/beta"]
-        self.select_scope("secrets", "AI_REVIEW_APP_PRIVATE_KEY", names)
-        for name in self.contract["authorization"]["variables"]:
-            self.select_scope("variables", name, names)
-        self.assertEqual(AUDIT.audit(self.contract, self.read)["state"], "ready")
+    def test_any_collateral_ruleset_drift_rejects_both_rollout_and_rollback(self):
+        self.fixture[self.ruleset_path][0]["bypass_actors"][1]["bypass_mode"] = "pull_request"
+        self.assert_audit_error("differs from both full reviewed preimage and postimage")
+        with self.assertRaisesRegex(AUDIT.AuditError, "differs from both"):
+            AUDIT.render_payload(self.contract, "retarget", self.read)
 
-    def test_missing_secret_or_variable_scope_fails_before_retarget(self):
-        self.select_scope("secrets", "AI_REVIEW_APP_PRIVATE_KEY", ["Verjson/alpha"])
-        self.assert_audit_error("AI_REVIEW_APP_PRIVATE_KEY cannot reach 1 governed.*Verjson/beta")
-
-        self.fixture = self.make_fixture()
-        self.select_scope("variables", "AI_REVIEW_CLIENT_ID", ["Verjson/beta"])
-        self.assert_audit_error("AI_REVIEW_CLIENT_ID cannot reach 1 governed.*Verjson/alpha")
-
-    def test_retired_and_replacement_rules_cannot_coexist(self):
-        second = copy.deepcopy(self.fixture[self.ruleset_path][0])
-        second["id"] = 99
-        second["name"] = "duplicate-arm"
-        second["rules"][0]["parameters"]["workflows"][0]["path"] = ".github/workflows/gate-rearm.yml"
-        self.fixture["orgs/Verjson/rulesets"][0].append({"id": 99})
-        self.fixture["orgs/Verjson/rulesets/99"] = [second]
-        self.assert_audit_error("identities are not exclusive")
-
-    def test_app_check_cannot_be_required_alongside_the_arm(self):
-        second = {
-            "id": 99,
-            "rules": [{
-                "type": "required_status_checks",
-                "parameters": {"required_status_checks": [{"context": "AI review authorization"}]},
-            }],
-        }
-        self.fixture["orgs/Verjson/rulesets"][0].append({"id": 99})
-        self.fixture["orgs/Verjson/rulesets/99"] = [second]
-        self.assert_audit_error("status is also required")
-
-    def test_replacement_must_be_ruleset_compatible_and_human_nonblocking(self):
-        path = "repos/Verjson/.github/contents/.github/workflows/gate-rearm.yml?ref=main"
-        self.fixture[path][0]["content"] = base64.b64encode(
-            self.workflow.replace("pull_request_target", "workflow_dispatch").encode()
-        ).decode()
-        self.assert_audit_error("lacks a ruleset-supported")
-
-        self.fixture = self.make_fixture()
-        self.fixture[path][0]["content"] = base64.b64encode(
-            self.workflow.replace("    continue-on-error: true\n", "").encode()
-        ).decode()
-        self.assert_audit_error("can veto the ADR 0090 human merge path")
-
-    def test_app_installation_must_cover_all_current_and_future_repositories(self):
-        self.fixture["orgs/Verjson/installations"][0]["installations"][0]["repository_selection"] = "selected"
-        self.assert_audit_error("does not cover future ~ALL repositories")
-
-        self.fixture = self.make_fixture()
-        self.fixture["orgs/Verjson/installations"][0]["installations"][0]["permissions"]["checks"] = "read"
-        self.assert_audit_error("permissions drifted")
-
-    def test_post_retarget_state_remains_auditable(self):
-        self.fixture[self.ruleset_path][0]["rules"][0]["parameters"]["workflows"][0]["path"] = (
-            ".github/workflows/gate-rearm.yml"
+    def test_rendered_payloads_are_verified_and_the_tool_has_no_mutation_path(self):
+        self.assertEqual(
+            AUDIT.render_payload(self.contract, "retarget", self.read),
+            self.contract["postimage"],
         )
-        report = AUDIT.audit(self.contract, self.read)
-        self.assertEqual(report["state"], "retargeted")
-
-    def test_audit_has_no_live_mutation_path(self):
+        self.fixture[self.ruleset_path] = [{
+            "id": self.contract["ruleset_id"], **copy.deepcopy(self.contract["postimage"]),
+        }]
+        self.assertEqual(
+            AUDIT.render_payload(self.contract, "rollback", self.read),
+            self.contract["rollback_payload"],
+        )
         source = AUDIT_PATH.read_text(encoding="utf-8")
         self.assertNotIn('"--method"', source)
         self.assertNotIn("rulesets/PUT", source)
         self.assertNotIn("rulesets/PATCH", source)
 
-    def test_malformed_contract_fails_with_a_controlled_diagnostic(self):
-        for mutation, diagnostic in (
-            (("ruleset", "ref", 42), "ruleset ref must be a string"),
-            (("authorization", "variables", [{}]), "authorization variables"),
+    def test_retired_replacement_and_app_status_cannot_coexist(self):
+        second = {"id": 99, **copy.deepcopy(self.contract["postimage"])}
+        self.fixture["orgs/Verjson/rulesets"][0].append({"id": 99})
+        self.fixture["orgs/Verjson/rulesets/99"] = [second]
+        self.assert_audit_error("identities are not exclusive")
+
+        self.fixture = self.make_fixture()
+        self.fixture["orgs/Verjson/rulesets"][0].append({"id": 99})
+        self.fixture["orgs/Verjson/rulesets/99"] = [{"id": 99, "rules": [{
+            "type": "required_status_checks",
+            "parameters": {"required_status_checks": [{"context": "AI review authorization"}]},
+        }]}]
+        self.assert_audit_error("status is also required")
+
+    def test_repository_level_secret_and_variable_shadowing_are_rejected(self):
+        self.fixture["repos/Verjson/alpha/actions/secrets?per_page=100"][0]["secrets"] = [
+            {"name": "AI_REVIEW_APP_PRIVATE_KEY"},
+        ]
+        self.assert_audit_error("credential shadowing.*alpha:secret")
+        self.fixture = self.make_fixture()
+        self.fixture["repos/Verjson/beta/actions/variables?per_page=100"][0]["variables"] = [
+            {"name": "AI_REVIEW_CLIENT_ID"},
+        ]
+        self.assert_audit_error("credential shadowing.*beta:variable")
+
+    def test_secret_and_variables_must_reach_every_governed_repository(self):
+        self.select_scope("secrets", "AI_REVIEW_APP_PRIVATE_KEY", ["Verjson/alpha"])
+        self.assert_audit_error("AI_REVIEW_APP_PRIVATE_KEY.*missing=1.*Verjson/beta")
+        self.fixture = self.make_fixture()
+        self.select_scope("variables", "AI_REVIEW_APP_ID", ["Verjson/beta"])
+        self.assert_audit_error("AI_REVIEW_APP_ID.*missing=1.*Verjson/alpha")
+
+    def test_app_permissions_and_events_are_exact(self):
+        self.assertEqual(self.contract["authorization"], {
+            "private_key_secret": "AI_REVIEW_APP_PRIVATE_KEY",
+            "variables": ["AI_REVIEW_APP_ID", "AI_REVIEW_APP_SLUG", "AI_REVIEW_CLIENT_ID"],
+            "app_permissions": {
+                "checks": "write",
+                "contents": "read",
+                "metadata": "read",
+                "pull_requests": "write",
+            },
+            "app_events": [],
+        })
+        installation = self.fixture["orgs/Verjson/installations"][0]["installations"][0]
+        installation["permissions"]["issues"] = "read"
+        self.assert_audit_error("permission map drifted")
+        self.fixture = self.make_fixture()
+        self.fixture["orgs/Verjson/installations"][0]["installations"][0]["events"] = ["pull_request"]
+        self.assert_audit_error("event subscriptions drifted")
+
+    def test_replacement_requires_supported_trigger_nonveto_and_hosted_capacity(self):
+        self.workflow_source(self.workflow.replace("pull_request_target", "workflow_dispatch"))
+        self.assert_audit_error("lacks pull_request_target")
+        self.fixture = self.make_fixture()
+        self.workflow_source(self.workflow.replace("    continue-on-error: true\n", ""))
+        self.assert_audit_error("can veto ADR 0090")
+        self.fixture = self.make_fixture()
+        self.workflow_source(self.workflow.replace("ubuntu-24.04", "self-hosted"))
+        self.assert_audit_error("not on provider-hosted capacity")
+
+    def test_malformed_contract_fails_with_controlled_diagnostics(self):
+        for section, key, value, diagnostic in (
+            (None, "ruleset_id", True, "ruleset ID"),
+            ("authorization", "variables", [{}], "authorization variables"),
+            ("authorization", "app_permissions", {"checks": "write"}, "permission contract"),
+            ("authorization", "app_events", ["pull_request"], "event contract"),
         ):
             with self.subTest(diagnostic=diagnostic), tempfile.TemporaryDirectory() as directory:
                 contract = copy.deepcopy(self.contract)
-                section, key, value = mutation
-                contract[section][key] = value
+                target = contract if section is None else contract[section]
+                target[key] = value
                 path = Path(directory) / "contract.json"
                 path.write_text(json.dumps(contract), encoding="utf-8")
                 with self.assertRaisesRegex(AUDIT.AuditError, diagnostic):

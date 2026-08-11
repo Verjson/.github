@@ -27,7 +27,10 @@ jobs:
     # Exact-head App approval and terminal promotion still require successful
     # receipt-bound completion, so tolerating this job cannot grant authority.
     continue-on-error: true
-    runs-on: ${{ fromJSON(vars.VERJSON_RUNNER_FASTLANE || '["ubuntu-24.04"]') }}
+    # This workflow becomes a required ruleset entrypoint. Provider-hosted
+    # capacity prevents a missing self-hosted selector or runner outage from
+    # leaving its check pending forever before continue-on-error can apply.
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
       actions: write

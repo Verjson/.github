@@ -23,7 +23,9 @@ fail() { printf 'FAIL - %s\n' "$1"; fails=$((fails + 1)); }
 # expressions in reusable definitions.
 literal_hosted="$(
   grep -HnE '^    runs-on:[[:space:]]+(\[)?ubuntu-(24\.04|latest)([][:space:],]|$)' \
-    "${workflow_files[@]}" || true
+    "${workflow_files[@]}" \
+    | grep -vE '/gate-rearm\.yml:[0-9]+:[[:space:]]+runs-on: ubuntu-24\.04$' \
+    || true
 )"
 [ -z "$literal_hosted" ] \
   && pass "Verjson-local jobs contain no literal GitHub-hosted runs-on selector" \
@@ -58,6 +60,9 @@ literal_hosted="$(
 #  * node-ci's secretless acquisition job (ADR 0086) — it carries a package
 #    credential while reading a PR-controlled lockfile, so it may use only the
 #    isolated untrusted lane or a fresh hosted runner, never the trusted fallback.
+#  * `gate-rearm.yml` (ADR 0091) — this is the organization required-workflow
+#    entrypoint. Provider-hosted capacity is deliberate so a missing selector or
+#    self-hosted outage cannot leave its merge-precondition check queued forever.
 unsafe_portable="$(
   grep -HnE "^    runs-on:.*ubuntu-(24\\.04|latest)" "${workflow_files[@]}" \
     | grep -v "github.repository_owner != 'Verjson' && 'ubuntu-24.04'" \
@@ -66,6 +71,7 @@ unsafe_portable="$(
     | grep -v "inputs.github-hosted-runner" \
     | grep -v "vars.VERJSON_RUNNER_FASTLANE" \
     | grep -v "vars.VERJSON_LANE_UNTRUSTED || '\[\"ubuntu-24.04\"\]'" \
+    | grep -vE '/gate-rearm\.yml:[0-9]+:[[:space:]]+runs-on: ubuntu-24\.04$' \
     | sed "s/vars\.VERJSON_LANE_FALLBACK || '\\[\"ubuntu-24\.04\"\\]'//" \
     | grep -E "ubuntu-(24\\.04|latest)" \
     || true
@@ -112,6 +118,10 @@ fastlane_no_fallback="$(
 [ -z "$unsafe_portable" ] \
   && pass "hosted fallbacks are reachable only by callers outside Verjson" \
   || fail "hosted fallback reachable by a Verjson caller: $unsafe_portable"
+
+[ "$(grep -c '^    runs-on: ubuntu-24\.04$' "$workflows/gate-rearm.yml")" = 1 ] \
+  && pass "the required authorization arm has one deliberate provider-hosted route" \
+  || fail "gate-rearm required-workflow capacity drifted"
 
 grep -qF "github.repository_owner != 'Verjson'" "$workflows/actionlint.yml" \
   && grep -qF 'vars.VERJSON_LANE_FALLBACK' "$workflows/actionlint.yml" \

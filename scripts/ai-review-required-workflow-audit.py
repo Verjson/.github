@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
+import argparse
 import base64
+import copy
 import json
 import os
 import re
@@ -17,6 +19,7 @@ CONTRACT = Path(
         ROOT / "config/ai-review-required-workflow-rollout.json",
     )
 )
+RULESET_FIELDS = ("name", "target", "enforcement", "bypass_actors", "conditions", "rules")
 
 
 class AuditError(Exception):
@@ -28,76 +31,115 @@ def require(condition: bool, message: str) -> None:
         raise AuditError(message)
 
 
+def workflow_path(payload: dict) -> str:
+    workflow_rules = [rule for rule in payload["rules"] if rule.get("type") == "workflows"]
+    require(len(workflow_rules) == 1, "ruleset image must contain exactly one workflows rule")
+    parameters = workflow_rules[0].get("parameters", {})
+    require(parameters.get("do_not_enforce_on_create") is True, "repository-creation bypass drifted")
+    workflows = parameters.get("workflows")
+    require(isinstance(workflows, list) and len(workflows) == 1, "workflows rule must select one workflow")
+    path = workflows[0].get("path")
+    require(isinstance(path, str), "required workflow path is invalid")
+    return path
+
+
 def read_contract(path: Path = CONTRACT) -> dict:
     try:
         contract = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as error:
         raise AuditError(f"cannot read rollout contract: {error}") from None
     require(isinstance(contract, dict), "rollout contract must be an object")
-    require(contract.get("schema_version") == 1, "unsupported rollout contract schema")
+    require(contract.get("schema_version") == 2, "unsupported rollout contract schema")
+    organization = contract.get("organization")
     require(
-        isinstance(contract.get("organization"), str)
-        and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9-]*", contract["organization"]) is not None,
+        isinstance(organization, str)
+        and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9-]*", organization) is not None,
         "contract organization is invalid",
     )
-    ruleset = contract.get("ruleset")
-    authorization = contract.get("authorization")
-    require(isinstance(ruleset, dict), "contract ruleset is missing")
-    require(isinstance(authorization, dict), "contract authorization policy is missing")
-    for key in (
-        "id",
-        "name",
-        "target",
-        "conditions",
-        "source_repository",
-        "source_repository_id",
-        "ref",
-        "retired_path",
-        "replacement_path",
-    ):
-        require(ruleset.get(key) not in (None, ""), f"contract ruleset.{key} is missing")
+    ruleset_id = contract.get("ruleset_id")
     require(
-        ruleset["retired_path"] != ruleset["replacement_path"],
-        "retired and replacement workflow paths must differ",
+        isinstance(ruleset_id, int) and not isinstance(ruleset_id, bool) and ruleset_id > 0,
+        "ruleset ID must be a positive integer",
     )
-    require(
-        isinstance(ruleset["id"], int)
-        and not isinstance(ruleset["id"], bool)
-        and ruleset["id"] > 0
-        and isinstance(ruleset["source_repository_id"], int)
-        and not isinstance(ruleset["source_repository_id"], bool)
-        and ruleset["source_repository_id"] > 0,
-        "ruleset and source repository IDs must be positive integers",
-    )
-    require(
-        ruleset["target"] == "branch" and isinstance(ruleset["conditions"], dict),
-        "ruleset target or conditions are invalid",
-    )
-    for key in ("name", "source_repository", "ref", "retired_path", "replacement_path"):
-        require(isinstance(ruleset[key], str), f"ruleset {key} must be a string")
-    require(
-        re.fullmatch(r"refs/heads/[A-Za-z0-9._/-]+", ruleset["ref"]) is not None,
-        "ruleset ref must be a full branch ref",
-    )
-    for key in ("retired_path", "replacement_path"):
+    for name in ("retired_path", "replacement_path"):
+        value = contract.get(name)
         require(
-            re.fullmatch(r"\.github/workflows/[A-Za-z0-9._-]+\.ya?ml", ruleset[key]) is not None,
-            f"ruleset {key} is not a workflow path",
+            isinstance(value, str)
+            and re.fullmatch(r"\.github/workflows/[A-Za-z0-9._-]+\.ya?ml", value) is not None,
+            f"contract {name} is invalid",
         )
-    forbidden_contexts = ruleset.get("forbidden_required_status_contexts")
+    require(contract["retired_path"] != contract["replacement_path"], "workflow paths must differ")
+
+    images = {}
+    for name in ("preimage", "postimage", "rollback_payload"):
+        image = contract.get(name)
+        require(isinstance(image, dict), f"contract {name} is missing")
+        require(set(image) == set(RULESET_FIELDS), f"contract {name} is not a complete mutation payload")
+        images[name] = image
+    require(images["rollback_payload"] == images["preimage"], "rollback payload must equal the verified preimage")
+    require(workflow_path(images["preimage"]) == contract["retired_path"], "preimage does not select the retired workflow")
+    require(workflow_path(images["postimage"]) == contract["replacement_path"], "postimage does not select the replacement workflow")
+    derived = copy.deepcopy(images["preimage"])
+    for rule in derived["rules"]:
+        if rule.get("type") == "workflows":
+            rule["parameters"]["workflows"][0]["path"] = contract["replacement_path"]
+    require(derived == images["postimage"], "postimage changes fields beyond the intended workflow path")
+
+    for name in ("forbidden_required_status_contexts", "deterministic_required_status_contexts"):
+        values = contract.get(name)
+        require(
+            isinstance(values, list)
+            and values
+            and all(isinstance(value, str) and value for value in values)
+            and len(values) == len(set(values)),
+            f"contract {name} must contain unique non-empty contexts",
+        )
     require(
-        isinstance(forbidden_contexts, list)
-        and forbidden_contexts
-        and all(isinstance(context, str) and context for context in forbidden_contexts)
-        and len(forbidden_contexts) == len(set(forbidden_contexts)),
-        "forbidden status contexts must be unique non-empty names",
+        not set(contract["forbidden_required_status_contexts"])
+        & set(contract["deterministic_required_status_contexts"]),
+        "forbidden and deterministic contexts overlap",
     )
-    require(
-        isinstance(authorization.get("private_key_secret"), str)
-        and re.fullmatch(r"[A-Z][A-Z0-9_]*", authorization["private_key_secret"]) is not None,
-        "private-key secret is invalid",
-    )
+    for name in ("core_checks_property", "core_checks_value"):
+        require(
+            isinstance(contract.get(name), str) and contract[name],
+            f"contract {name} is invalid",
+        )
+    deterministic_rulesets = contract.get("deterministic_rulesets")
+    require(isinstance(deterministic_rulesets, list) and deterministic_rulesets, "deterministic rulesets are missing")
+    ids = []
+    stacks = []
+    allowed_contexts = set(contract["deterministic_required_status_contexts"])
+    for index, declaration in enumerate(deterministic_rulesets):
+        require(isinstance(declaration, dict), f"deterministic ruleset {index} is invalid")
+        ruleset_id = declaration.get("id")
+        stack = declaration.get("stack")
+        image = declaration.get("image")
+        require(
+            isinstance(ruleset_id, int) and not isinstance(ruleset_id, bool) and ruleset_id > 0,
+            f"deterministic ruleset {index} ID is invalid",
+        )
+        require(isinstance(stack, str) and stack, f"deterministic ruleset {index} stack is invalid")
+        require(
+            isinstance(image, dict) and set(image) == set(RULESET_FIELDS),
+            f"deterministic ruleset {index} image is incomplete",
+        )
+        contexts = {
+            check.get("context")
+            for rule in image["rules"]
+            if rule.get("type") == "required_status_checks"
+            for check in rule.get("parameters", {}).get("required_status_checks", [])
+        }
+        require(contexts and contexts <= allowed_contexts, f"deterministic ruleset {index} contexts are invalid")
+        ids.append(ruleset_id)
+        stacks.append(stack)
+    require(len(ids) == len(set(ids)), "deterministic ruleset IDs must be unique")
+    require(len(stacks) == len(set(stacks)), "deterministic stack declarations must be unique")
+
+    authorization = contract.get("authorization")
+    require(isinstance(authorization, dict), "authorization contract is missing")
+    secret = authorization.get("private_key_secret")
     variables = authorization.get("variables")
+    require(secret == "AI_REVIEW_APP_PRIVATE_KEY", "private-key secret is invalid")
     require(
         isinstance(variables, list)
         and variables
@@ -106,15 +148,24 @@ def read_contract(path: Path = CONTRACT) -> dict:
             for name in variables
         )
         and len(variables) == len(set(variables)),
-        "authorization variables must be unique non-empty names",
+        "authorization variables are invalid",
+    )
+    require(
+        variables == ["AI_REVIEW_APP_ID", "AI_REVIEW_APP_SLUG", "AI_REVIEW_CLIENT_ID"],
+        "authorization variable contract drifted",
     )
     permissions = authorization.get("app_permissions")
     require(
-        isinstance(permissions, dict)
-        and permissions
-        and all(isinstance(key, str) and isinstance(value, str) for key, value in permissions.items()),
-        "authorization App permissions are missing",
+        permissions
+        == {
+            "checks": "write",
+            "contents": "read",
+            "metadata": "read",
+            "pull_requests": "write",
+        },
+        "authorization App permission contract drifted",
     )
+    require(authorization.get("app_events") == [], "authorization App event contract drifted")
     return contract
 
 
@@ -151,22 +202,27 @@ def paginated_items(read, path: str, field: str | None = None) -> list[dict]:
     return items
 
 
+def normalize_ruleset(live: dict) -> dict:
+    require(all(field in live for field in RULESET_FIELDS), "live ruleset omits mutation fields")
+    return {field: live[field] for field in RULESET_FIELDS}
+
+
+def concise_missing(name: str, missing: list[str]) -> None:
+    sample = missing[:8]
+    suffix = f" (plus {len(missing) - len(sample)} more)" if len(missing) > len(sample) else ""
+    require(not missing, f"{name}: missing={len(missing)} sample={sample}{suffix}")
+
+
 def selected_repositories(read, organization: str, kind: str, name: str) -> set[str]:
     path = f"orgs/{organization}/actions/{kind}/{name}/repositories"
     repositories = paginated_items(read, path, "repositories")
     names = [repository.get("full_name") for repository in repositories]
-    require(all(isinstance(name, str) and name for name in names), f"invalid repository grant for {name}")
+    require(all(isinstance(value, str) and value for value in names), f"invalid repository grant for {name}")
     require(len(names) == len(set(names)), f"duplicate repository grant for {name}")
     return set(names)
 
 
-def require_scope(
-    read,
-    organization: str,
-    kind: str,
-    name: str,
-    governed: dict[str, bool],
-) -> dict:
+def require_scope(read, organization: str, kind: str, name: str, governed: dict[str, bool]) -> dict:
     item = single_object(read, f"orgs/{organization}/actions/{kind}/{name}")
     visibility = item.get("visibility")
     if visibility == "all":
@@ -174,98 +230,121 @@ def require_scope(
     if visibility == "private":
         missing = sorted(repository for repository, private in governed.items() if not private)
     elif visibility == "selected":
-        granted = selected_repositories(read, organization, kind, name)
-        missing = sorted(set(governed) - granted)
+        missing = sorted(set(governed) - selected_repositories(read, organization, kind, name))
     else:
         raise AuditError(f"{name} has unsupported visibility {visibility!r}")
-    sample = missing[:8]
-    suffix = f" (plus {len(missing) - len(sample)} more)" if len(missing) > len(sample) else ""
-    require(
-        not missing,
-        f"{name} cannot reach {len(missing)} governed repositories; sample={sample}{suffix}",
-    )
+    concise_missing(f"{name} cannot reach governed repositories", missing)
     return item
 
 
-def audit(contract: dict, read=gh_pages) -> dict:
+def verify_ruleset_state(contract: dict, read, expected: str | None = None) -> tuple[str, dict]:
+    path = f"orgs/{contract['organization']}/rulesets/{contract['ruleset_id']}"
+    live = normalize_ruleset(single_object(read, path))
+    if live == contract["preimage"]:
+        state = "ready"
+    elif live == contract["postimage"]:
+        state = "retargeted"
+    else:
+        raise AuditError("main-protection differs from both full reviewed preimage and postimage")
+    require(expected is None or state == expected, f"ruleset state is {state}, expected {expected}")
+    return state, live
+
+
+def verify_ruleset_exclusivity(contract: dict, read, current_path: str) -> dict[int, dict]:
     organization = contract["organization"]
-    ruleset_contract = contract["ruleset"]
-    authorization = contract["authorization"]
-    ruleset_id = ruleset_contract["id"]
-    ruleset = single_object(read, f"orgs/{organization}/rulesets/{ruleset_id}")
-    require(ruleset.get("name") == ruleset_contract["name"], "ruleset identity drifted")
-    require(ruleset.get("enforcement") == "active", "ruleset is not active")
-    require(
-        ruleset.get("target") == ruleset_contract["target"]
-        and ruleset.get("conditions") == ruleset_contract["conditions"],
-        "ruleset target or conditions drifted from the reviewed scope",
-    )
-
-    workflow_rules = [rule for rule in ruleset.get("rules", []) if rule.get("type") == "workflows"]
-    require(len(workflow_rules) == 1, "main-protection must contain exactly one workflows rule")
-    workflows = workflow_rules[0].get("parameters", {}).get("workflows")
-    require(isinstance(workflows, list) and len(workflows) == 1, "workflows rule must select exactly one workflow")
-    require(
-        workflow_rules[0].get("parameters", {}).get("do_not_enforce_on_create") is True,
-        "required workflow must preserve repository-creation bypass",
-    )
-    selected = workflows[0]
-    require(
-        selected.get("repository_id") == ruleset_contract["source_repository_id"]
-        and selected.get("ref") == ruleset_contract["ref"],
-        "required workflow source or ref drifted",
-    )
-    current_path = selected.get("path")
-    require(
-        current_path in {ruleset_contract["retired_path"], ruleset_contract["replacement_path"]},
-        f"unexpected required workflow path {current_path!r}",
-    )
-
-    rulesets = paginated_items(read, f"orgs/{organization}/rulesets")
-    recognized_paths = []
-    conflicting_status_rules = []
-    for summary in rulesets:
+    recognized = []
+    conflicts = []
+    candidates = {}
+    for summary in paginated_items(read, f"orgs/{organization}/rulesets"):
         candidate = single_object(read, f"orgs/{organization}/rulesets/{summary.get('id')}")
+        candidate_id = candidate.get("id")
+        require(isinstance(candidate_id, int) and candidate_id not in candidates, "organization ruleset identity is invalid")
+        candidates[candidate_id] = candidate
         for rule in candidate.get("rules", []):
             parameters = rule.get("parameters", {})
             if rule.get("type") == "workflows":
                 for workflow in parameters.get("workflows", []):
-                    if workflow.get("path") in {
-                        ruleset_contract["retired_path"],
-                        ruleset_contract["replacement_path"],
-                    }:
-                        recognized_paths.append((candidate.get("id"), workflow.get("path")))
+                    if workflow.get("path") in {contract["retired_path"], contract["replacement_path"]}:
+                        recognized.append((candidate.get("id"), workflow.get("path")))
             if rule.get("type") == "required_status_checks":
                 for check in parameters.get("required_status_checks", []):
-                    if check.get("context") in ruleset_contract["forbidden_required_status_contexts"]:
-                        conflicting_status_rules.append(
-                            (candidate.get("id"), check.get("context"))
-                        )
+                    if check.get("context") in contract["forbidden_required_status_contexts"]:
+                        conflicts.append((candidate.get("id"), check.get("context")))
     require(
-        recognized_paths == [(ruleset_id, current_path)],
-        f"retired and replacement workflow identities are not exclusive: {recognized_paths}",
+        recognized == [(contract["ruleset_id"], current_path)],
+        f"retired and replacement workflow identities are not exclusive: {recognized}",
     )
-    require(
-        not conflicting_status_rules,
-        f"retired or App authorization status is also required: {conflicting_status_rules}",
-    )
+    require(not conflicts, f"retired or App authorization status is also required: {conflicts}")
+    return candidates
 
-    repositories = paginated_items(read, f"orgs/{organization}/repos?per_page=100&type=all")
-    governed = {}
-    for repository in repositories:
-        full_name = repository.get("full_name")
-        require(isinstance(full_name, str) and full_name, "organization repository has no full_name")
-        require(full_name not in governed, f"duplicate organization repository {full_name}")
-        governed[full_name] = bool(repository.get("private"))
-    require(governed, "organization has no governed repositories")
 
-    require_scope(
+def verify_deterministic_ci(
+    contract: dict,
+    read,
+    repositories: list[dict],
+    candidates: dict[int, dict],
+) -> None:
+    declarations = {}
+    for declaration in contract["deterministic_rulesets"]:
+        ruleset_id = declaration["id"]
+        require(ruleset_id in candidates, f"deterministic ruleset {ruleset_id} is absent")
+        require(
+            normalize_ruleset(candidates[ruleset_id]) == declaration["image"],
+            f"deterministic ruleset {ruleset_id} drifted from its full reviewed image",
+        )
+        declarations[declaration["stack"]] = declaration
+    property_rows = paginated_items(
         read,
-        organization,
-        "secrets",
-        authorization["private_key_secret"],
-        governed,
+        f"orgs/{contract['organization']}/properties/values?per_page=100",
     )
+    properties_by_repository = {}
+    for row in property_rows:
+        full_name = row.get("repository_full_name")
+        values = row.get("properties")
+        require(
+            isinstance(full_name, str)
+            and full_name not in properties_by_repository
+            and isinstance(values, list),
+            "organization property inventory is invalid",
+        )
+        properties_by_repository[full_name] = {
+            item.get("property_name"): item.get("value")
+            for item in values
+            if isinstance(item, dict)
+        }
+    missing = []
+    for repository in repositories:
+        full_name = repository["full_name"]
+        values = properties_by_repository.get(full_name, {})
+        stack = values.get("verjson-stack")
+        if (
+            values.get(contract["core_checks_property"]) != contract["core_checks_value"]
+            or stack not in declarations
+        ):
+            missing.append(full_name)
+    concise_missing("governed default branches without canonical deterministic required CI", sorted(missing))
+
+
+def verify_no_repository_shadowing(contract: dict, read, repositories: list[dict]) -> None:
+    authorization = contract["authorization"]
+    protected_secret = authorization["private_key_secret"]
+    protected_variables = set(authorization["variables"])
+    shadows = []
+    for repository in repositories:
+        full_name = repository["full_name"]
+        secrets = paginated_items(read, f"repos/{full_name}/actions/secrets?per_page=100", "secrets")
+        variables = paginated_items(read, f"repos/{full_name}/actions/variables?per_page=100", "variables")
+        if protected_secret in {item.get("name") for item in secrets}:
+            shadows.append(f"{full_name}:secret:{protected_secret}")
+        for name in sorted(protected_variables & {item.get("name") for item in variables}):
+            shadows.append(f"{full_name}:variable:{name}")
+    concise_missing("repository-level authorization credential shadowing", shadows)
+
+
+def verify_authorization(contract: dict, read, governed: dict[str, bool]) -> None:
+    organization = contract["organization"]
+    authorization = contract["authorization"]
+    require_scope(read, organization, "secrets", authorization["private_key_secret"], governed)
     variables = {
         name: require_scope(read, organization, "variables", name, governed)
         for name in authorization["variables"]
@@ -274,15 +353,8 @@ def audit(contract: dict, read=gh_pages) -> dict:
     app_slug = variables["AI_REVIEW_APP_SLUG"].get("value")
     client_id = variables["AI_REVIEW_CLIENT_ID"].get("value")
     require(isinstance(app_id, str) and app_id.isdigit() and int(app_id) > 0, "AI_REVIEW_APP_ID is invalid")
-    require(
-        isinstance(app_slug, str) and app_slug and app_slug == app_slug.lower(),
-        "AI_REVIEW_APP_SLUG is invalid",
-    )
-    require(
-        isinstance(client_id, str) and client_id.startswith("Iv") and len(client_id) >= 10,
-        "AI_REVIEW_CLIENT_ID is invalid",
-    )
-
+    require(isinstance(app_slug, str) and re.fullmatch(r"[a-z0-9][a-z0-9-]*", app_slug), "AI_REVIEW_APP_SLUG is invalid")
+    require(isinstance(client_id, str) and re.fullmatch(r"Iv[A-Za-z0-9.]{8,126}", client_id), "AI_REVIEW_CLIENT_ID is invalid")
     installations = paginated_items(read, f"orgs/{organization}/installations", "installations")
     matching = [
         installation
@@ -292,21 +364,17 @@ def audit(contract: dict, read=gh_pages) -> dict:
     require(len(matching) == 1, "dedicated authorization App installation is missing or ambiguous")
     installation = matching[0]
     require(installation.get("suspended_at") is None, "authorization App installation is suspended")
-    require(
-        installation.get("repository_selection") == "all",
-        "authorization App installation does not cover future ~ALL repositories",
-    )
-    permissions = installation.get("permissions", {})
-    require(
-        all(permissions.get(name) == value for name, value in authorization["app_permissions"].items()),
-        "authorization App permissions drifted",
-    )
+    require(installation.get("repository_selection") == "all", "authorization App installation is not ~ALL")
+    require(installation.get("permissions") == authorization["app_permissions"], "authorization App permission map drifted")
+    require(installation.get("events") == authorization["app_events"], "authorization App event subscriptions drifted")
 
-    source_path = ruleset_contract["replacement_path"]
-    source_ref = ruleset_contract["ref"].removeprefix("refs/heads/")
+
+def verify_replacement_workflow(contract: dict, read) -> None:
+    workflow_rule = next(rule for rule in contract["postimage"]["rules"] if rule["type"] == "workflows")
+    selected = workflow_rule["parameters"]["workflows"][0]
     source = single_object(
         read,
-        f"repos/{ruleset_contract['source_repository']}/contents/{source_path}?ref={source_ref}",
+        f"repositories/{selected['repository_id']}/contents/{selected['path']}?ref={selected['ref']}",
     )
     try:
         workflow = yaml.load(base64.b64decode(source["content"]), Loader=yaml.BaseLoader)
@@ -314,33 +382,71 @@ def audit(contract: dict, read=gh_pages) -> dict:
         raise AuditError(f"replacement workflow is unreadable: {error}") from None
     require(isinstance(workflow, dict), "replacement workflow is not a YAML object")
     triggers = workflow.get("on")
-    require(
-        isinstance(triggers, dict) and "pull_request_target" in triggers,
-        "replacement workflow lacks a ruleset-supported pull_request_target trigger",
-    )
+    require(isinstance(triggers, dict) and "pull_request_target" in triggers, "replacement lacks pull_request_target")
     arm = workflow.get("jobs", {}).get("arm", {})
-    require(
-        arm.get("continue-on-error") == "true",
-        "replacement arm can veto the ADR 0090 human merge path",
-    )
+    require(arm.get("continue-on-error") == "true", "replacement can veto ADR 0090 human merges")
+    require(arm.get("runs-on") == "ubuntu-24.04", "required arm is not on provider-hosted capacity")
 
+
+def audit(contract: dict, read=gh_pages) -> dict:
+    state, live = verify_ruleset_state(contract, read)
+    current_path = workflow_path(live)
+    candidates = verify_ruleset_exclusivity(contract, read, current_path)
+    repositories = paginated_items(
+        read,
+        f"orgs/{contract['organization']}/repos?per_page=100&type=all",
+    )
+    require(repositories, "organization has no governed repositories")
+    governed = {}
+    for repository in repositories:
+        full_name = repository.get("full_name")
+        require(isinstance(full_name, str) and full_name, "organization repository has no full_name")
+        require(full_name not in governed, f"duplicate organization repository {full_name}")
+        governed[full_name] = bool(repository.get("private"))
+    verify_deterministic_ci(contract, read, repositories, candidates)
+    verify_no_repository_shadowing(contract, read, repositories)
+    verify_authorization(contract, read, governed)
+    verify_replacement_workflow(contract, read)
     return {
-        "organization": organization,
-        "ruleset_id": ruleset_id,
+        "organization": contract["organization"],
+        "ruleset_id": contract["ruleset_id"],
         "current_path": current_path,
-        "replacement_path": ruleset_contract["replacement_path"],
+        "replacement_path": contract["replacement_path"],
         "governed_repositories": len(governed),
-        "state": "retargeted" if current_path == ruleset_contract["replacement_path"] else "ready",
+        "state": state,
     }
 
 
+def render_payload(contract: dict, mode: str, read=gh_pages) -> dict:
+    if mode == "retarget":
+        require(audit(contract, read)["state"] == "ready", "retarget payload requires ready preflight")
+        return contract["postimage"]
+    verify_ruleset_state(contract, read, "retargeted")
+    return contract["rollback_payload"]
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Audit the AI authorization-arm ruleset rollout")
+    modes = parser.add_mutually_exclusive_group()
+    modes.add_argument("--render-retarget-payload", action="store_true")
+    modes.add_argument("--render-rollback-payload", action="store_true")
+    return parser.parse_args()
+
+
 def main() -> int:
+    args = parse_args()
     try:
-        report = audit(read_contract())
+        contract = read_contract()
+        if args.render_retarget_payload:
+            result = render_payload(contract, "retarget")
+        elif args.render_rollback_payload:
+            result = render_payload(contract, "rollback")
+        else:
+            result = audit(contract)
     except AuditError as error:
         print(f"ERROR: authorization-arm-rollout-not-ready: {error}", file=sys.stderr)
         return 1
-    print(json.dumps(report, sort_keys=True, separators=(",", ":")))
+    print(json.dumps(result, sort_keys=True, separators=(",", ":")))
     return 0
 
 
