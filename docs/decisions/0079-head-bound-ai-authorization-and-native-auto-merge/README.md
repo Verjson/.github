@@ -169,3 +169,23 @@ Focused coverage was not discarded with the polling implementation:
 Model retry, semantic verdict, review publication, freshness, diff acquisition,
 fast-lane classification, target visibility, and budget-exhaustion suites remain
 unchanged and continue to run in the merge-gate group.
+
+### 2026-08-11 clarification — remove superseded unregistered extractors (#733)
+
+The migration table above named the current replacement suites, but the retired
+`gate-rearm.test.sh` and `hold.test.sh` files remained in the repository. They were
+not registered in `scripts/actions-ci-groups.tsv` and still searched for step IDs
+removed by this ADR, so their coverage claims were both stale and invisible to CI.
+
+Those files are removed. The registered `gate-hold-disable.test.sh` now carries the
+live arm's hold and event-rearm truth table, including normalized hold release,
+ready-for-review, title release, unrelated-label suppression, metadata API failures,
+empty/null/missing and malformed metadata, closed/merged states, receipt reuse, and
+explicit review lanes. The registered `native-automerge.test.sh` now carries every
+terminal hold spelling plus empty/null and malformed metadata against the current
+privileged promotion step. The caller contract pins the canonical arm's exact
+permissions, concurrency, trusted metadata sources, input validation, and absence of
+a head checkout, then delegates behavioral claims to the registered arm, event, and
+receipt suites that actually own them. Existing authority-envelope, App identity,
+exact-head, and required-CI coverage remains unchanged. This is a coverage repair
+only; no workflow logic or authority changes.

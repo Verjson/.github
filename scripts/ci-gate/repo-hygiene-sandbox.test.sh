@@ -100,7 +100,7 @@ root_status_after="$(git -C "$repo_root" status --porcelain 2>/dev/null)"
   || { fail "the hygiene suite failed in the sandbox (rc=$suite_rc)"; \
        sed 's/^/diag - /' "$tmp/suite.out"; }
 
-# Wired, or it does not run. That gap once left hold.test.sh dormant.
+# Wired, or it does not run. An unregistered local test is dormant in Actions.
 grep -q $'\tbash scripts/ci-gate/repo-hygiene-sandbox.test.sh$' \
   "$repo_root/scripts/actions-ci-groups.tsv" \
   && pass "this suite is wired into actions-ci" \

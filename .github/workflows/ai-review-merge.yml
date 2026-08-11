@@ -1,9 +1,10 @@
 name: AI review + auto-merge
 
-# ORG-LEVEL merge-policy workflow, required on every repo by the
-# main-protection ruleset. Deterministic policy is always required; AI review
-# is opt-in and advisory unless receipt-bound authority permits the dedicated
-# App to approve or merge (ADR 0090).
+# Receipt-bound review workflow dispatched by the trusted authorization arm.
+# The main-protection ruleset requires gate-rearm.yml, not this dispatch-only
+# workflow. Deterministic policy is always required; AI review is opt-in and
+# advisory unless receipt-bound authority permits the dedicated App to approve
+# or merge (ADR 0090, ADR 0091).
 #
 # Cost-lane design (ADR-018 second amendment):
 #   1. `preflight` (free, deterministic bash) updates stale branches and routes
@@ -42,9 +43,9 @@ name: AI review + auto-merge
 # reusable, so consumers in other orgs (e.g. tequityapp) pin it instead of
 # hand-copying it — upstream fixes then reach every consumer via `@v1` and the
 # shipped `scripts/ci-gate/*.test.sh` guard the shared logic once for everyone.
-# The three triggers share one file: the Verjson org ruleset injects it on
-# `pull_request`; an operator re-gates via `workflow_dispatch`; a cross-org
-# consumer adds a thin caller that `uses:` it under `workflow_call`. When called,
+# The dispatch and reusable entrypoints share one file: the trusted arm invokes
+# `workflow_dispatch`; a cross-org consumer adds a thin caller that `uses:` it
+# under `workflow_call`. When called,
 # `github.repository`/`github.event`/`github.repository_owner` are inherited from
 # the CALLER, so `TARGET_REPO` and the PR number resolve to the consumer's own
 # repository. Consumers must

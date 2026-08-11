@@ -31,11 +31,10 @@ exemption from decision-record coverage.
 
 ## CI-gate tests
 
-The gate's shell logic is unit-tested by extraction — `scripts/ci-gate/*.test.sh`
-awk-extract the exact `run:` block from `ai-review-merge.yml` (single source of
-truth) and exercise it against a stubbed `gh`. Add/extend a test for any gate
-change, and wire it into `actions-ci.yml` (a test that isn't wired there does not
-run — that gap once left the `hold.test.sh` pin dormant).
+Gate shell tests execute the current named workflow steps against stubbed
+dependencies or exercise checked-in helpers directly. Add or extend a behavioral
+test for every gate change and register it in `scripts/actions-ci-groups.tsv`; an
+unregistered test does not run in Actions.
 
 ## Autonomous batches — review before AI merge authority is enabled
 
@@ -56,7 +55,6 @@ authority is enabled for non-trivial or fanned-out autonomous work:
 
 ## Active Issues / Areas for Improvement
 
-- [#733](https://github.com/Verjson/.github/issues/733) — Refactor stale gate-rearm behavioral extractors into registered CI tests.
 - [#682](https://github.com/Verjson/.github/issues/682) — Ignore scoped root package-lock entries without weakening secretless dependency validation.
 - [#677](https://github.com/Verjson/.github/issues/677) — Repair and wire the stale `require-secrets.test.sh` privileged-workflow contract.
 - [#676](https://github.com/Verjson/.github/issues/676) — Finish privileged caller regeneration and remove the temporary legacy route before any hosted lane cutover.

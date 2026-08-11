@@ -122,7 +122,7 @@ wrong package and severity, the `review-by` boundary day, a second unlisted high
 beside an excused one, an unattributable critical **alongside a live allowlist
 entry**, an advisory with an absent or uppercase severity, non-numeric severity
 counts, and the wiring itself — and is wired into `actions-ci.yml` (an unwired test
-does not run; that gap once left `hold.test.sh` dormant). The cases that pair a
+does not run; an unregistered local test is dormant in Actions). The cases that pair a
 live allowlist entry with a broken report are deliberate: with an empty allowlist
 the shape guards mask each other, which is exactly how the original fail-open
 survived review.
