@@ -1,8 +1,9 @@
 name: AI review authorization arm
 
-# Trusted base-branch entrypoint for ADR 0079. This workflow never checks out
-# or executes pull-request code. The dedicated App must be installed with
-# Checks:write; its identity is the required-check trust boundary.
+# Trusted base-branch entrypoint for ADR 0079 and the organization ruleset
+# workflow selected by ADR 0091. This workflow never checks out or executes
+# pull-request code. The dedicated App must be installed with Checks:write; its
+# identity and the immutable receipt are the AI authorization trust boundary.
 on:
   pull_request_target:
     types: [opened, reopened, synchronize, ready_for_review, converted_to_draft, edited, labeled, unlabeled]
@@ -20,6 +21,12 @@ concurrency:
 
 jobs:
   arm:
+    # AI remains advisory under ADR 0090. A missing credential, App outage, or
+    # authorization defect must fail this job visibly without turning the
+    # ruleset workflow into a veto on an otherwise-authorized human merge.
+    # Exact-head App approval and terminal promotion still require successful
+    # receipt-bound completion, so tolerating this job cannot grant authority.
+    continue-on-error: true
     runs-on: ${{ fromJSON(vars.VERJSON_RUNNER_FASTLANE || '["ubuntu-24.04"]') }}
     timeout-minutes: 5
     permissions:

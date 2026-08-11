@@ -1,0 +1,41 @@
+{
+  "schema_version": 1,
+  "organization": "Verjson",
+  "ruleset": {
+    "id": 18098028,
+    "name": "main-protection",
+    "target": "branch",
+    "conditions": {
+      "ref_name": {
+        "exclude": [],
+        "include": ["~DEFAULT_BRANCH", "refs/heads/develop"]
+      },
+      "repository_name": {
+        "exclude": [],
+        "include": ["~ALL"]
+      }
+    },
+    "source_repository": "Verjson/.github",
+    "source_repository_id": 1269388380,
+    "ref": "refs/heads/main",
+    "retired_path": ".github/workflows/ai-review-merge.yml",
+    "replacement_path": ".github/workflows/gate-rearm.yml",
+    "forbidden_required_status_contexts": [
+      "gate",
+      "AI review authorization"
+    ]
+  },
+  "authorization": {
+    "private_key_secret": "AI_REVIEW_APP_PRIVATE_KEY",
+    "variables": [
+      "AI_REVIEW_APP_ID",
+      "AI_REVIEW_APP_SLUG",
+      "AI_REVIEW_CLIENT_ID"
+    ],
+    "app_permissions": {
+      "checks": "write",
+      "contents": "read",
+      "pull_requests": "write"
+    }
+  }
+}
