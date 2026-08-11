@@ -27,7 +27,7 @@ on:
 jobs:
   arm:
     continue-on-error: true
-    runs-on: ubuntu-24.04
+    runs-on: ${{ fromJSON(vars.VERJSON_LANE_TRUSTED || vars.VERJSON_LANE_FALLBACK || '["ubuntu-24.04"]') }}
     steps: []
 """
         self.fixture = self.make_fixture()
@@ -228,15 +228,15 @@ jobs:
         self.fixture["orgs/Verjson/installations"][0]["installations"][0]["events"] = ["pull_request"]
         self.assert_audit_error("event subscriptions drifted")
 
-    def test_replacement_requires_supported_trigger_nonveto_and_hosted_capacity(self):
+    def test_replacement_requires_supported_trigger_nonveto_and_trusted_lane(self):
         self.workflow_source(self.workflow.replace("pull_request_target", "workflow_dispatch"))
         self.assert_audit_error("lacks pull_request_target")
         self.fixture = self.make_fixture()
         self.workflow_source(self.workflow.replace("    continue-on-error: true\n", ""))
         self.assert_audit_error("can veto ADR 0090")
         self.fixture = self.make_fixture()
-        self.workflow_source(self.workflow.replace("ubuntu-24.04", "self-hosted"))
-        self.assert_audit_error("not on provider-hosted capacity")
+        self.workflow_source(self.workflow.replace("VERJSON_LANE_TRUSTED", "VERJSON_LANE_PRIVILEGED"))
+        self.assert_audit_error("not routed through the trusted lane")
 
     def test_malformed_contract_fails_with_controlled_diagnostics(self):
         for section, key, value, diagnostic in (
