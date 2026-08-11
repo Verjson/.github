@@ -3,7 +3,6 @@
 
 import json
 import os
-import re
 import sys
 import urllib.request
 from decimal import Decimal, InvalidOperation, ROUND_FLOOR
@@ -89,29 +88,6 @@ def priced_request(model: str, request_input: list[dict], budget: str) -> tuple[
     raise ValueError("request budget calculation did not converge")
 
 
-def validate_verdict(verdict: object) -> dict:
-    if not isinstance(verdict, dict) or set(verdict) != set(SCHEMA["required"]):
-        raise ValueError("structured verdict has invalid top-level fields")
-    if not isinstance(verdict["blocking"], bool) or not isinstance(verdict["summary"], str) or not verdict["summary"].strip():
-        raise ValueError("structured verdict has invalid blocking or summary")
-    shapes = {
-        "review_first": ({"location", "why"}, ("location", "why")),
-        "findings": ({"location", "reason", "failure_scenario"}, ("location", "reason", "failure_scenario")),
-        "followups": ({"location", "note"}, ("location", "note")),
-    }
-    for field, (keys, text_fields) in shapes.items():
-        if not isinstance(verdict[field], list):
-            raise ValueError(f"structured verdict {field} is not an array")
-        for item in verdict[field]:
-            if not isinstance(item, dict) or set(item) != keys or any(not isinstance(item[name], str) or not item[name].strip() for name in text_fields):
-                raise ValueError(f"structured verdict {field} item is invalid")
-            if not re.fullmatch(r".+:[1-9][0-9]*", item["location"]):
-                raise ValueError(f"structured verdict {field} location is invalid")
-    if verdict["blocking"] != bool(verdict["findings"]):
-        raise ValueError("structured verdict blocking does not match findings")
-    return verdict
-
-
 def validate_reasoning_item(item: object) -> None:
     required = {"id", "type", "summary"}
     allowed = required | {"content", "encrypted_content", "status"}
@@ -174,7 +150,9 @@ def extract(response: dict, input_bound: int, cap: int, budget_text: str) -> tup
     text = content[0].get("text")
     if not isinstance(text, str):
         raise ValueError("response output text is malformed")
-    verdict = validate_verdict(json.loads(text))
+    verdict = json.loads(text)
+    if not isinstance(verdict, dict):
+        raise ValueError("response output is not one JSON object")
     return json.dumps(verdict, separators=(",", ":")), input_tokens, output_tokens, cost
 
 

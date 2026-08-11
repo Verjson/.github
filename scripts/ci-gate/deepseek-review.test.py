@@ -83,13 +83,18 @@ class DeepSeekReviewTest(unittest.TestCase):
             with self.subTest(response=response), self.assertRaises(ValueError):
                 review.extract(response, "deepseek-v4-pro", 1000, 1000, "5.00")
 
-    def test_schema_and_blocking_semantics_are_enforced_locally(self):
-        bad = self.verdict(); bad["extra"] = True
-        mismatch = self.verdict(); mismatch["blocking"] = True
-        location = self.verdict(True); location["findings"][0]["location"] = "app.py"
-        for verdict in (bad, mismatch, location):
-            with self.subTest(verdict=verdict), self.assertRaises(ValueError):
-                review.extract(self.response(verdict=verdict), "deepseek-v4-pro", 1000, 1000, "5.00")
+    def test_transport_extraction_preserves_json_object_for_canonical_confirmation(self):
+        provider_variant = {"isBlocking": False, "summary": "ok", "reviewFirst": [], "findings": [], "followUps": []}
+
+        extracted, *_ = review.extract(
+            self.response(verdict=provider_variant),
+            "deepseek-v4-pro",
+            1000,
+            1000,
+            "5.00",
+        )
+
+        self.assertEqual(json.loads(extracted), provider_variant)
 
     def test_main_makes_exactly_one_call_and_emits_provider_usage(self):
         class Context(io.BytesIO):
