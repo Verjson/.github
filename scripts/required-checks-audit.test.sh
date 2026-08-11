@@ -27,11 +27,21 @@ else
 fi
 
 jq -e '
-  .mutation_authorized == false and
-  .ruleset_plan.requested_enforcement == "evaluate" and
+  .mode == "staged" and
+  .mutation_authorized == true and
+  .ruleset_plan.requested_enforcement == "active" and
   .ruleset_plan.human_gate_required == true and
+  .ruleset_plan.rollout == {
+    issue: 731,
+    organization: "Verjson",
+    ruleset_id: 20515817,
+    ruleset_name: "core-checks-node",
+    required_context: "changelog-contract",
+    apply_acknowledgement: "apply-issue-731-core-checks-node",
+    rollback_acknowledgement: "rollback-issue-731-core-checks-node"
+  } and
   .universal_contexts == ["gate"] and
-  .stacks.node.contexts == ["ci / build-test", "ci / eligibility", "generated-artifacts / validate"] and
+  .stacks.node.contexts == ["ci / build-test", "ci / eligibility", "changelog-contract", "generated-artifacts / validate"] and
   .stacks.ui.contexts == ["ci / build-test", "generated-artifacts / validate"] and
   .stacks.helm.contexts == ["ci / lint-template", "generated-artifacts / validate"] and
   .caller_job_names.generated_artifacts == "generated-artifacts" and
@@ -42,12 +52,29 @@ jq -e '
     "changelog-contract-required", "core-checks-actions", "core-checks-helm",
     "core-checks-node", "core-checks-pulumi", "core-checks-ui",
     "core-checks-universal"
-  ] | sort)
+  ] | sort) and
+  (.ruleset_plan.rulesets[] | select(.name == "core-checks-node") | .contexts) ==
+    ["ci / build-test", "ci / eligibility", "changelog-contract"] and
+  (.ruleset_plan.rulesets[] | select(.name == "changelog-contract-required") | .contexts) ==
+    ["generated-artifacts / validate"]
 ' "$contract" >/dev/null \
-  && pass "declared contract pins every context and a human-gated evaluate plan" \
-  || fail "required-check declaration or non-mutating plan drifted"
+  && pass "declared contract pins every context and a human-gated staged rollout" \
+  || fail "required-check declaration or staged rollout drifted"
 
 mkdir -p "$tmp/bin" "$tmp/checks"
+content_root="$tmp/content"
+mkdir -p "$content_root/.github/workflows" "$content_root/scripts"
+contract_pin="$(git -C "$here/.." rev-parse HEAD)"
+generator="$here/gen-changelog-caller.sh"
+bash "$generator" generated-artifacts "$contract_pin" >"$content_root/.github/workflows/generated-artifacts.yml"
+bash "$generator" renderer "$contract_pin" >"$content_root/scripts/render-next.sh"
+bash "$generator" contract-test "$contract_pin" >"$content_root/scripts/changelog-contract.test.sh"
+bash "$generator" release-node "$contract_pin" >"$content_root/.github/workflows/release.yml"
+mkdir -p "$tmp/artifact-baseline/.github/workflows" "$tmp/artifact-baseline/scripts"
+cp "$content_root/.github/workflows/generated-artifacts.yml" "$tmp/artifact-baseline/.github/workflows/generated-artifacts.yml"
+cp "$content_root/.github/workflows/release.yml" "$tmp/artifact-baseline/.github/workflows/release.yml"
+cp "$content_root/scripts/render-next.sh" "$tmp/artifact-baseline/scripts/render-next.sh"
+cp "$content_root/scripts/changelog-contract.test.sh" "$tmp/artifact-baseline/scripts/changelog-contract.test.sh"
 # Stub `gh`. The real one applies `--jq` client-side; a stub that ignored it
 # would hand the script raw JSON where it expects a stream, and every lookup
 # would read as "nothing found" — the audit would then report every context
@@ -69,12 +96,24 @@ case "$*" in
   *"/properties/values"*)
     [ "${PROPS_FAIL:-false}" = true ] && exit 1
     emit "$PROPS_FILE"; exit 0 ;;
-  *"/contents/.github/workflows/"*)
-    [ "${WORKFLOWS_FAIL:-false}" = true ] && exit 1
-    emit "$WORKFLOW_CONTENT_FILE"; exit 0 ;;
-  *"/contents/.github/workflows"*)
+  *"repos/Verjson/.github/contents/scripts/gen-changelog-caller.sh"*)
+    printf 'fetch\n' >>"$GENERATOR_FETCHES"
+    git -C "$REPO_ROOT" show "$CONTRACT_PIN:scripts/gen-changelog-caller.sh"; exit 0 ;;
+  *"repos/Verjson/.github/compare/"*) printf '{"status":"%s"}\n' "${PIN_ANCESTRY_STATUS:-identical}" | { if [ -n "$filter" ]; then jq -r "$filter"; else cat; fi; }; exit 0 ;;
+  *"repos/Verjson/.github/branches/main"*) printf '{"commit":{"sha":"%s"}}\n' "$CONTRACT_PIN" | { if [ -n "$filter" ]; then jq -r "$filter"; else cat; fi; }; exit 0 ;;
+  *"repos/Verjson/.github"*) printf '{"default_branch":"main"}\n' | { if [ -n "$filter" ]; then jq -r "$filter"; else cat; fi; }; exit 0 ;;
+  *"/contents/.github/workflows"|*"/contents/.github/workflows?ref="*)
     [ "${WORKFLOWS_FAIL:-false}" = true ] && exit 1
     emit "$WORKFLOW_LIST_FILE"; exit 0 ;;
+  *"/contents/"*)
+    [ "${WORKFLOWS_FAIL:-false}" = true ] && exit 1
+    endpoint="${args[1]}"
+    path="${endpoint#*contents/}"; path="${path%%\?*}"
+    source="$CONTENT_ROOT/$path"
+    [ -f "$source" ] || exit 1
+    response="$STUB_TMP/content-response.json"
+    jq -n --arg content "$(base64 -w0 "$source")" '{content:$content}' >"$response"
+    emit "$response"; exit 0 ;;
   *"/pulls?"*)
     [ "${PULLS_FAIL:-false}" = true ] && exit 1
     emit "$PULLS_FILE"; exit 0 ;;
@@ -94,6 +133,21 @@ exit 64
 GH
 chmod +x "$tmp/bin/gh"
 
+cat >"$tmp/bin/curl" <<'CURL'
+#!/usr/bin/env bash
+url="${*: -1}"
+case "$url" in
+  https://raw.githubusercontent.com/Verjson/.github/*/scripts/changelog.py)
+    ref="${url#*Verjson/.github/}"; ref="${ref%%/*}"
+    git -C "$REPO_ROOT" show "$ref:scripts/changelog.py" ;;
+  https://raw.githubusercontent.com/Verjson/.github/*/scripts/gen-adr-index.sh)
+    ref="${url#*Verjson/.github/}"; ref="${ref%%/*}"
+    git -C "$REPO_ROOT" show "$ref:scripts/gen-adr-index.sh" ;;
+  *) exit 1 ;;
+esac
+CURL
+chmod +x "$tmp/bin/curl"
+
 export PATH="$tmp/bin:$PATH"
 export CHECKDIR="$tmp/checks"
 export PROPS_FILE="$tmp/props.json"
@@ -101,12 +155,22 @@ export PULLS_FILE="$tmp/pulls.json"
 export REPOS_FILE="$tmp/repos.json"
 export WORKFLOW_LIST_FILE="$tmp/workflows.json"
 export WORKFLOW_CONTENT_FILE="$tmp/workflow-content.json"
+export CONTENT_ROOT="$content_root"
+export CONTRACT_PIN="$contract_pin"
+export GENERATOR_FETCHES="$tmp/generator-fetches.log"
+export REPO_ROOT="$here/.."
+export STUB_TMP="$tmp"
 export RCA_ORG=Verjson
 export RCA_SAMPLE_PRS=2
 export RCA_REPOS=alpha
+: >"$GENERATOR_FETCHES"
 
 workflow_for() {
   local stack="$1" stack_workflow=''
+  cp "$tmp/artifact-baseline/.github/workflows/generated-artifacts.yml" "$content_root/.github/workflows/generated-artifacts.yml"
+  cp "$tmp/artifact-baseline/.github/workflows/release.yml" "$content_root/.github/workflows/release.yml"
+  cp "$tmp/artifact-baseline/scripts/render-next.sh" "$content_root/scripts/render-next.sh"
+  cp "$tmp/artifact-baseline/scripts/changelog-contract.test.sh" "$content_root/scripts/changelog-contract.test.sh"
   case "$stack" in
     node) stack_workflow=node-ci.yml ;;
     ui) stack_workflow=ui-ci.yml ;;
@@ -119,16 +183,16 @@ workflow_for() {
     if [ -n "$stack_workflow" ]; then
       printf '  ci:\n    uses: Verjson/.github/.github/workflows/%s@0123456789abcdef0123456789abcdef01234567\n' "$stack_workflow"
     fi
-    if [ "$stack" = node ] || [ "$stack" = ui ] || [ "$stack" = helm ]; then
-      printf '  generated-artifacts:\n    uses: Verjson/.github/.github/workflows/generated-artifacts.yml@0123456789abcdef0123456789abcdef01234567\n'
+    if [ "$stack" = node ]; then
+      printf '  changelog-contract:\n    runs-on: ubuntu-24.04\n    steps:\n      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1\n      - run: bash scripts/changelog-contract.test.sh\n'
     fi
   } >"$tmp/workflow.yml"
   encode_workflow
-  printf '[{"type":"file","path":".github/workflows/ci.yml"}]\n' >"$WORKFLOW_LIST_FILE"
+  printf '[{"type":"file","path":".github/workflows/ci.yml"},{"type":"file","path":".github/workflows/generated-artifacts.yml"},{"type":"file","path":".github/workflows/release.yml"}]\n' >"$WORKFLOW_LIST_FILE"
 }
 
 encode_workflow() {
-  jq -n --arg content "$(base64 -w0 "$tmp/workflow.yml")" '{content:$content}' >"$WORKFLOW_CONTENT_FILE"
+  cp "$tmp/workflow.yml" "$content_root/.github/workflows/ci.yml"
 }
 
 stack() {
@@ -165,21 +229,33 @@ rc="$(run_audit)"
 # --- the happy path ----------------------------------------------------------
 stack node
 pulls s1 s2
-head_with s1 gate "ci / build-test" "ci / eligibility" "generated-artifacts / validate"
-head_with s2 gate "ci / build-test" "ci / eligibility" "generated-artifacts / validate"
+head_with s1 gate "ci / build-test" "ci / eligibility" changelog-contract "generated-artifacts / validate"
+head_with s2 gate "ci / build-test" "ci / eligibility" changelog-contract "generated-artifacts / validate"
 rc="$(run_audit)"
 { [ "$rc" = "rc=0" ] && grep -q 'result=conformant' "$tmp/out.txt"; } \
   && pass "a node repository emitting its full core set is conformant" \
   || { fail "a conformant node repository was not recognised ($rc)"; out | sed 's/^/diag - /'; }
 
 # --- THE finding this exists for: a missing context is non-zero --------------
+# A generated release contract can drift independently of fragment validation.
+# Requiring only `generated-artifacts / validate` leaves the caller, renderer,
+# contract test, and release caller free to disagree about their immutable pin.
+stack node
+pulls s1 s2
+head_with s1 gate "ci / build-test" "ci / eligibility" "generated-artifacts / validate"
+head_with s2 gate "ci / build-test" "ci / eligibility" "generated-artifacts / validate"
+rc="$(run_audit)"
+{ [ "$rc" != "rc=0" ] && grep -q 'missing-core-contexts' "$tmp/out.txt" && grep -q 'missing=changelog-contract;' "$tmp/out.txt"; } \
+  && pass "a node repository omitting generated contract conformance is nonconformant" \
+  || { fail "an absent changelog-contract context was not reported ($rc)"; out | sed 's/^/diag - /'; }
+
 # `generated-artifacts / validate` is core for package repositories, and a repository not
 # yet wired to the changelog contract emits nothing for it. Requiring it there
 # is the permanently-pending wedge.
 stack node
 pulls s1 s2
-head_with s1 gate "ci / build-test" "ci / eligibility"
-head_with s2 gate "ci / build-test" "ci / eligibility"
+head_with s1 gate "ci / build-test" "ci / eligibility" changelog-contract
+head_with s2 gate "ci / build-test" "ci / eligibility" changelog-contract
 rc="$(run_audit)"
 { [ "$rc" != "rc=0" ] && grep -q 'missing-core-contexts' "$tmp/out.txt" && grep -q 'generated-artifacts / validate' "$tmp/out.txt"; } \
   && pass "a package repository not wired to the changelog contract is reported as missing it" \
@@ -195,6 +271,7 @@ pulls s1 s2
 jq -n '{check_runs:[{name:"gate",conclusion:"success"},
                     {name:"ci / build-test",conclusion:"success"},
                     {name:"ci / eligibility",conclusion:"skipped"},
+                    {name:"changelog-contract",conclusion:"success"},
                     {name:"generated-artifacts / validate",conclusion:"success"}]}' >"$CHECKDIR/s1.json"
 cp "$CHECKDIR/s1.json" "$CHECKDIR/s2.json"
 rc="$(run_audit)"
@@ -294,8 +371,8 @@ rc="$(run_audit)"
 
 # --- source contract: callers must be unconditional and canonically named ---
 stack node; pulls s1 s2
-head_with s1 gate "ci / build-test" "ci / eligibility" "generated-artifacts / validate"
-head_with s2 gate "ci / build-test" "ci / eligibility" "generated-artifacts / validate"
+head_with s1 gate "ci / build-test" "ci / eligibility" changelog-contract "generated-artifacts / validate"
+head_with s2 gate "ci / build-test" "ci / eligibility" changelog-contract "generated-artifacts / validate"
 sed -i '/^  pull_request:$/a\    paths:\n      - "src/**"' "$tmp/workflow.yml"
 encode_workflow
 rc="$(run_audit)"
@@ -320,12 +397,122 @@ rc="$(run_audit)"
   || { fail "a noncanonical stack caller name was accepted ($rc)"; out | sed 's/^/diag - /'; }
 
 stack node
-sed -i 's/^  generated-artifacts:$/  generated-docs:/' "$tmp/workflow.yml"
-encode_workflow
+sed -i 's/^  generated-artifacts:$/  generated-docs:/' "$content_root/.github/workflows/generated-artifacts.yml"
 rc="$(run_audit)"
 { [ "$rc" != "rc=0" ] && grep -q 'caller-job-name expected=generated-artifacts actual=generated-docs' "$tmp/out.txt"; } \
   && pass "the generated-artifacts caller must publish generated-artifacts / validate" \
   || { fail "a noncanonical changelog caller name was accepted ($rc)"; out | sed 's/^/diag - /'; }
+
+stack node
+unmerged_pin=ffffffffffffffffffffffffffffffffffffffff
+for artifact in \
+  "$content_root/.github/workflows/generated-artifacts.yml" \
+  "$content_root/.github/workflows/release.yml" \
+  "$content_root/scripts/render-next.sh" \
+  "$content_root/scripts/changelog-contract.test.sh"; do
+  sed -i "s/$contract_pin/$unmerged_pin/g" "$artifact"
+done
+: >"$GENERATOR_FETCHES"
+export PIN_ANCESTRY_STATUS=diverged
+rc="$(run_audit)"
+unset PIN_ANCESTRY_STATUS
+{ [ "$rc" != "rc=0" ] && grep -q 'generated-contract-pin-not-on-default' "$tmp/out.txt" && [ ! -s "$GENERATOR_FETCHES" ]; } \
+  && pass "an unmerged consumer-selected generator pin is rejected before fetch or execution" \
+  || { fail "an unmerged generator pin reached trusted execution ($rc)"; out | sed 's/^/diag - /'; }
+
+stack node
+printf '\n# handwritten drift\n' >>"$content_root/scripts/render-next.sh"
+rc="$(run_audit)"
+{ [ "$rc" != "rc=0" ] && grep -q 'generated-contract-byte-drift artifact=render-next.sh' "$tmp/out.txt"; } \
+  && pass "a handwritten renderer lookalike cannot satisfy generated provenance" \
+  || { fail "renderer byte drift was accepted ($rc)"; out | sed 's/^/diag - /'; }
+
+stack node
+printf '#!/usr/bin/env bash\nexit 0\n' >"$content_root/scripts/changelog-contract.test.sh"
+rc="$(run_audit)"
+{ [ "$rc" != "rc=0" ] && grep -qE 'generated-contract-(parameters-invalid|byte-drift)' "$tmp/out.txt"; } \
+  && pass "a trivial replacement contract test cannot satisfy generated provenance" \
+  || { fail "a trivial generated-test escape was accepted ($rc)"; out | sed 's/^/diag - /'; }
+
+stack node
+sed -i 's/^  changelog-contract:$/  contract-conformance:/' "$tmp/workflow.yml"
+encode_workflow
+rc="$(run_audit)"
+{ [ "$rc" != "rc=0" ] && grep -q 'changelog-contract-job-count expected=1 actual=0' "$tmp/out.txt"; } \
+  && pass "the current workflow source must publish the literal changelog-contract job" \
+  || { fail "a renamed changelog-contract job was accepted ($rc)"; out | sed 's/^/diag - /'; }
+
+stack node
+sed -i '/^  changelog-contract:$/a\    if: false' "$tmp/workflow.yml"
+encode_workflow
+rc="$(run_audit)"
+{ [ "$rc" != "rc=0" ] && grep -q 'changelog-contract-job-invalid' "$tmp/out.txt"; } \
+  && pass "a conditional changelog-contract job cannot satisfy the source contract" \
+  || { fail "a conditional changelog-contract job was accepted ($rc)"; out | sed 's/^/diag - /'; }
+
+stack node
+sed -i '/^  changelog-contract:$/a\    name: harmless-looking-name' "$tmp/workflow.yml"
+encode_workflow
+rc="$(run_audit)"
+{ [ "$rc" != "rc=0" ] && grep -q 'changelog-contract-job-invalid' "$tmp/out.txt"; } \
+  && pass "a display name cannot replace the literal required context" \
+  || { fail "a renamed check context was accepted ($rc)"; out | sed 's/^/diag - /'; }
+
+stack node
+sed -i '/^  changelog-contract:$/a\    strategy:\n      matrix:\n        shard: [1, 2]' "$tmp/workflow.yml"
+encode_workflow
+rc="$(run_audit)"
+{ [ "$rc" != "rc=0" ] && grep -q 'changelog-contract-job-invalid' "$tmp/out.txt"; } \
+  && pass "a matrix cannot suffix the literal required context" \
+  || { fail "a matrix check-name escape was accepted ($rc)"; out | sed 's/^/diag - /'; }
+
+stack node
+sed -i '/^  changelog-contract:$/a\    continue-on-error: true' "$tmp/workflow.yml"
+encode_workflow
+rc="$(run_audit)"
+{ [ "$rc" != "rc=0" ] && grep -q 'changelog-contract-job-invalid' "$tmp/out.txt"; } \
+  && pass "continue-on-error cannot make contract failures advisory" \
+  || { fail "continue-on-error was accepted ($rc)"; out | sed 's/^/diag - /'; }
+
+stack node
+sed -i '/uses: actions\/checkout@/a\        with:\n          ref: main' "$tmp/workflow.yml"
+encode_workflow
+rc="$(run_audit)"
+{ [ "$rc" != "rc=0" ] && grep -q 'changelog-contract-job-invalid' "$tmp/out.txt"; } \
+  && pass "the contract job cannot test a substituted checkout ref" \
+  || { fail "a default-branch checkout escape was accepted ($rc)"; out | sed 's/^/diag - /'; }
+
+stack node
+sed -i '/uses: actions\/checkout@/a\        with:\n          repository: attacker/lookalike' "$tmp/workflow.yml"
+encode_workflow
+rc="$(run_audit)"
+{ [ "$rc" != "rc=0" ] && grep -q 'changelog-contract-job-invalid' "$tmp/out.txt"; } \
+  && pass "the contract job cannot substitute another repository" \
+  || { fail "a repository checkout escape was accepted ($rc)"; out | sed 's/^/diag - /'; }
+
+stack node
+sed -i 's#bash scripts/changelog-contract.test.sh#bash scripts/other.test.sh#' "$tmp/workflow.yml"
+encode_workflow
+rc="$(run_audit)"
+{ [ "$rc" != "rc=0" ] && grep -q 'changelog-contract-job-invalid' "$tmp/out.txt"; } \
+  && pass "the required job must execute the generated changelog contract test" \
+  || { fail "a changelog-contract job that runs another command was accepted ($rc)"; out | sed 's/^/diag - /'; }
+
+stack node
+sed -i 's/^  pull_request:$/  workflow_dispatch:/' "$tmp/workflow.yml"
+encode_workflow
+rc="$(run_audit)"
+{ [ "$rc" != "rc=0" ] && grep -q 'workflow-trigger-missing' "$tmp/out.txt"; } \
+  && pass "the required job must run for pull requests" \
+  || { fail "a non-PR changelog-contract job was accepted ($rc)"; out | sed 's/^/diag - /'; }
+
+stack node
+sed -i '/^  pull_request:$/a\    types: [opened]' "$tmp/workflow.yml"
+encode_workflow
+rc="$(run_audit)"
+{ [ "$rc" != "rc=0" ] && grep -q 'workflow-trigger-missing' "$tmp/out.txt"; } \
+  && pass "pull-request type filters cannot omit synchronize events" \
+  || { fail "a type-filtered pull_request trigger was accepted ($rc)"; out | sed 's/^/diag - /'; }
 
 # --- repository enumeration is paginated, filters archives, and fails closed -
 stack actions; pulls s1 s2

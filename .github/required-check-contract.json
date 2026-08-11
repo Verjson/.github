@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
-  "mode": "plan-only",
-  "mutation_authorized": false,
+  "mode": "staged",
+  "mutation_authorized": true,
   "universal_contexts": [
     "gate"
   ],
@@ -10,6 +10,7 @@
       "contexts": [
         "ci / build-test",
         "ci / eligibility",
+        "changelog-contract",
         "generated-artifacts / validate"
       ],
       "reusable_workflow": "node-ci.yml",
@@ -75,9 +76,9 @@
     ]
   },
   "ruleset_plan": {
-    "requested_enforcement": "evaluate",
+    "requested_enforcement": "active",
     "human_gate_required": true,
-    "blocker": "Verjson is on GitHub Team; rule-suite evaluation results return HTTP 403, so evaluate mode cannot be measured. Do not create or activate rulesets until a human approves an alternative measurement and apply procedure.",
+    "blocker": "Do not update core-checks-node until the staged rollout enumerates its live property-selected repositories, every selected repository passes the read-only conformance audit, and this contract is byte-identical to the default-branch copy.",
     "target": "branch",
     "ref_name": {
       "include": [
@@ -93,6 +94,15 @@
         "bypass_mode": "always"
       }
     ],
+    "rollout": {
+      "issue": 731,
+      "organization": "Verjson",
+      "ruleset_id": 20515817,
+      "ruleset_name": "core-checks-node",
+      "required_context": "changelog-contract",
+      "apply_acknowledgement": "apply-issue-731-core-checks-node",
+      "rollback_acknowledgement": "rollback-issue-731-core-checks-node"
+    },
     "rulesets": [
       {
         "name": "core-checks-universal",
@@ -119,7 +129,8 @@
         ],
         "contexts": [
           "ci / build-test",
-          "ci / eligibility"
+          "ci / eligibility",
+          "changelog-contract"
         ]
       },
       {

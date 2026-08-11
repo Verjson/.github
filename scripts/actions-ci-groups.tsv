@@ -25,6 +25,8 @@ platform	bash scripts/fleet-watchdog.test.sh
 platform	bash scripts/fleet-watchdog-cadence.test.sh
 platform	bash scripts/runner-selector-health.test.sh
 platform	bash scripts/required-checks-audit.test.sh
+platform	bash scripts/required-checks-rollout.test.sh
+platform	bash scripts/required-checks-rollback.test.sh
 platform	python3 scripts/gate_coverage_audit_test.py
 platform	python3 scripts/org_secret_scope_audit_test.py
 platform	python3 scripts/ai_review_required_workflow_audit_test.py

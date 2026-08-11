@@ -11,6 +11,7 @@ Reverse-chronological index of org-level decisions.
 <!-- BEGIN ADR INDEX -->
 | # | Date | Decision |
 |---|------|----------|
+| [0092](0092-stage-generated-changelog-contract-requirement/README.md) | 2026-08-10 | Stage the generated changelog contract requirement behind fleet conformance |
 | [0091](0091-ruleset-requires-authorization-arm/README.md) | 2026-08-10 | Require the authorization arm, not the dispatched AI review |
 | [0090](0090-human-first-opt-in-ai-review/README.md) | 2026-08-10 | Keep human approval available when AI review is opted in |
 | [0089](0089-caller-supplied-privileged-routing/README.md) | 2026-08-10 | Pass privileged routing through the trusted caller |
