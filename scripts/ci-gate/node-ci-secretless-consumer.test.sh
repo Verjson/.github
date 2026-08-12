@@ -30,7 +30,7 @@ steps = acquire["steps"]
 validator_index = next(i for i, step in enumerate(steps) if step.get("name") == "Validate approved internal dependency lock")
 resolve_index = next(i for i, step in enumerate(steps) if step.get("name") == "Resolve immutable auxiliary source")
 checkout_index = next(i for i, step in enumerate(steps) if step.get("name") == "Acquire immutable auxiliary source")
-install_index = next(i for i, step in enumerate(steps) if step.get("name") == "Acquire dependencies without lifecycle execution")
+install_index = next(i for i, step in enumerate(steps) if step.get("name") == "Populate verified private dependency cache")
 assert validator_index < resolve_index < checkout_index < install_index
 checkout = steps[checkout_index]
 assert checkout["uses"] == "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1"

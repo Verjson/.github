@@ -32,9 +32,8 @@ assert "node_modules" not in upload["with"]["path"]
 
 package = next(step for step in acquire["steps"] if step.get("name") == "Package bounded credential-free npm cache")
 assert package["env"]["MAX_PAYLOAD_BYTES"] == "83886080"
-assert package["env"]["NPM_CONFIG_GLOBALCONFIG"].startswith("${{ runner.temp }}/")
-assert package["env"]["NPM_CONFIG_USERCONFIG"].startswith("${{ runner.temp }}/")
-assert "_cacache" in package["run"]
+assert "_cacache/content-v2" in package["run"]
+assert "npm-private-cache.tar" in package["run"]
 assert "payload_bytes" in package["run"]
 assert "run_attempt=$RUN_ATTEMPT" in package["run"]
 assert "lock_sha256=$lock_sha256" in package["run"]
@@ -61,10 +60,13 @@ assert install["env"]["MAX_PAYLOAD_BYTES"] == package["env"]["MAX_PAYLOAD_BYTES"
 assert install["env"]["NPM_CONFIG_CACHE"].startswith("${{ runner.temp }}/secretless-runtime-cache-")
 assert install["env"]["NPM_CONFIG_GLOBALCONFIG"].startswith("${{ runner.temp }}/")
 assert install["env"]["NPM_CONFIG_USERCONFIG"].startswith("${{ runner.temp }}/")
-assert "npm ci --offline --ignore-scripts --no-audit --no-fund" in install["run"]
+assert "npm ci --ignore-scripts --prefer-offline --no-audit --no-fund" in install["run"]
 assert "manifest_run_attempt" in install["run"]
 assert "manifest_lock_sha256" in install["run"]
 assert "manifest_payload_sha256" in install["run"]
+assert 'tarfile.open(sys.argv[1], "r:")' in install["run"]
+assert '-xf "$payload"' in install["run"]
+assert "locked private package content is missing or corrupt" in install["run"]
 build_cleanup = next(step for step in build["steps"] if step.get("name") == "Remove local secretless transfer state")
 assert "always()" in build_cleanup["if"]
 assert "needs.eligibility.outputs.should-run != 'false'" in build_cleanup["if"]
@@ -107,9 +109,14 @@ for job in doc["jobs"].values():
                 stream.write(step["run"])
 PY
 
-mkdir -p "$tmp/bin" "$tmp/acquire/cache/_cacache/content-v2/sha512/aa" "$tmp/acquire/node_modules"
-printf 'cached package bytes\n' > "$tmp/acquire/cache/_cacache/content-v2/sha512/aa/blob"
-printf '%s\n' '{"name":"fixture","version":"1.0.0","lockfileVersion":3,"packages":{"":{"name":"fixture","version":"1.0.0"}}}' \
+mkdir -p "$tmp/bin" "$tmp/acquire/cache/_cacache/content-v2/sha512" "$tmp/acquire/node_modules"
+printf 'cached private package bytes\n' > "$tmp/private-package.tgz"
+private_digest="$(sha512sum "$tmp/private-package.tgz" | cut -d' ' -f1)"
+private_integrity="sha512-$(openssl dgst -sha512 -binary "$tmp/private-package.tgz" | base64 -w0)"
+private_content="$tmp/acquire/cache/_cacache/content-v2/sha512/${private_digest:0:2}/${private_digest:2:2}/${private_digest:4}"
+mkdir -p "$(dirname "$private_content")"
+cp "$tmp/private-package.tgz" "$private_content"
+printf '%s\n' "{\"name\":\"fixture\",\"version\":\"1.0.0\",\"lockfileVersion\":3,\"packages\":{\"\":{\"name\":\"fixture\",\"version\":\"1.0.0\"},\"node_modules/@verjson/private-fixture\":{\"name\":\"@verjson/private-fixture\",\"version\":\"1.0.0\",\"resolved\":\"https://npm.pkg.github.com/download/@verjson/private-fixture/1.0.0/abc\",\"integrity\":\"$private_integrity\"}}}" \
   > "$tmp/acquire/package-lock.json"
 printf '%s\n' '#!/usr/bin/env bash' 'printf '\''%s\n'\'' "$*" >> "$NPM_STUB_LOG"' > "$tmp/bin/npm"
 chmod +x "$tmp/bin/npm"
@@ -124,14 +131,16 @@ if (cd "$tmp/acquire" && PATH="$tmp/bin:$PATH" NPM_STUB_LOG="$tmp/npm.log" \
     && [ ! -d "$tmp/acquire/node_modules" ] \
     && grep -qFx 'run_id=7001' "$tmp/acquire/transfer/manifest" \
     && grep -qFx 'run_attempt=3' "$tmp/acquire/transfer/manifest" \
-    && grep -qFx 'cache verify --cache '"$tmp/acquire/cache" "$tmp/npm.log"; then
-  pass "packaging removes node_modules and binds the cache to run, attempt, lock, digest, and size"
+    && tar -tf "$tmp/acquire/transfer/npm-private-cache.tar" | grep -q '^_cacache/content-v2/' \
+    && ! tar -tf "$tmp/acquire/transfer/npm-private-cache.tar" | grep -q 'index-v5'; then
+  pass "packaging transfers only private content blobs and binds run, attempt, lock, digest, and size"
 else
   fail "packaging did not produce the bounded identity-bound cache transfer"
 fi
 
-mkdir -p "$tmp/oversize/cache/_cacache" "$tmp/oversize/node_modules"
-printf '%2048s' x > "$tmp/oversize/cache/_cacache/blob"
+mkdir -p "$tmp/oversize/cache/_cacache/content-v2" "$tmp/oversize/node_modules"
+for index in $(seq 1 256); do printf '%s' "$index" | sha256sum; done \
+  > "$tmp/oversize/cache/_cacache/content-v2/blob"
 cp "$tmp/acquire/package-lock.json" "$tmp/oversize/package-lock.json"
 if (cd "$tmp/oversize" && PATH="$tmp/bin:$PATH" NPM_STUB_LOG="$tmp/npm.log" \
     CACHE_DIR="$tmp/oversize/cache" TRANSFER_DIR="$tmp/oversize/transfer" \
@@ -160,23 +169,108 @@ run_install() {
     bash "$tmp/install.sh")
 }
 
+rebind_payload_manifest() {
+  local fixture="$1"
+  local payload="$fixture/transfer/npm-private-cache.tar"
+  local digest bytes
+  digest="$(sha256sum "$payload" | cut -d' ' -f1)"
+  bytes="$(stat -c %s "$payload")"
+  sed -i "s/^payload_sha256=.*/payload_sha256=$digest/; s/^payload_bytes=.*/payload_bytes=$bytes/" \
+    "$fixture/transfer/manifest"
+}
+
 mkdir -p "$tmp/build"
 cp "$tmp/acquire/package-lock.json" "$tmp/build/package-lock.json"
 cp -R "$tmp/acquire/transfer" "$tmp/build/transfer"
 if run_install "$tmp/build" \
-    && grep -qF 'ci --offline --ignore-scripts --no-audit --no-fund --cache ' "$tmp/build/npm.log" \
+    && grep -qF 'ci --ignore-scripts --prefer-offline --no-audit --no-fund --cache ' "$tmp/build/npm.log" \
     && [ ! -e "$tmp/build/transfer" ] && [ ! -e "$tmp/build/build-cache" ] \
     && grep -qFx 'NODE_AUTH_TOKEN=' "$tmp/build/github.env" \
     && grep -qFx 'npm_config_cache='"$tmp/build/runtime-cache" "$tmp/build/github.env" \
     && grep -qFx 'ACTIONS_ID_TOKEN_REQUEST_TOKEN=' "$tmp/build/github.env"; then
-  pass "a matching transfer installs offline and scrubs credentials and local transfer state"
+  pass "a matching private-only transfer installs credentiallessly and scrubs local state"
 else
-  fail "the credentialless offline install did not consume and clean a valid transfer"
+  fail "the credentialless install did not consume and clean a valid private-only transfer"
+fi
+
+mkdir -p "$tmp/missing-private"
+cp "$tmp/acquire/package-lock.json" "$tmp/missing-private/package-lock.json"
+cp -R "$tmp/acquire/transfer" "$tmp/missing-private/transfer"
+missing_payload="$tmp/missing-private/transfer/npm-private-cache.tar"
+python3 - "$missing_payload" <<'PY'
+import sys
+import tarfile
+import tempfile
+from pathlib import Path
+
+payload = Path(sys.argv[1])
+with tempfile.TemporaryDirectory() as directory:
+    root = Path(directory)
+    with tarfile.open(payload, "r:") as archive:
+        archive.extractall(root, filter="data")
+    for content in (root / "_cacache" / "content-v2" / "sha512").glob("*/*/*"):
+        content.unlink()
+        break
+    with tarfile.open(payload, "w:") as archive:
+        archive.add(root / "_cacache", arcname="_cacache")
+PY
+rebind_payload_manifest "$tmp/missing-private"
+if missing_output="$(run_install "$tmp/missing-private" 2>&1)" \
+    || [ -e "$tmp/missing-private/npm.log" ] \
+    || ! grep -qF 'locked private package content is missing or corrupt' <<< "$missing_output"; then
+  fail "missing private content was not rejected before npm"
+else
+  pass "missing private content fails closed before npm or lifecycle scripts"
+fi
+
+for mutation in poisoned-private extra-private; do
+  mkdir -p "$tmp/$mutation"
+  cp "$tmp/acquire/package-lock.json" "$tmp/$mutation/package-lock.json"
+  cp -R "$tmp/acquire/transfer" "$tmp/$mutation/transfer"
+  python3 - "$tmp/$mutation/transfer/npm-private-cache.tar" "$mutation" <<'PY'
+import sys
+import tarfile
+import tempfile
+from pathlib import Path
+
+payload = Path(sys.argv[1])
+mutation = sys.argv[2]
+with tempfile.TemporaryDirectory() as directory:
+    root = Path(directory)
+    with tarfile.open(payload, "r:") as archive:
+        archive.extractall(root, filter="data")
+    content_root = root / "_cacache" / "content-v2" / "sha512"
+    if mutation == "poisoned-private":
+        next(content_root.glob("*/*/*")).write_bytes(b"poisoned\n")
+    else:
+        extra = content_root / "00" / "00" / ("0" * 124)
+        extra.parent.mkdir(parents=True)
+        extra.write_bytes(b"extra\n")
+    with tarfile.open(payload, "w:") as archive:
+        archive.add(root / "_cacache", arcname="_cacache")
+PY
+  rebind_payload_manifest "$tmp/$mutation"
+done
+if poisoned_output="$(run_install "$tmp/poisoned-private" 2>&1)" \
+    || [ -e "$tmp/poisoned-private/npm.log" ] \
+    || ! grep -qF 'locked private package content is missing or corrupt' <<< "$poisoned_output"; then
+  fail "poisoned private content was not rejected before npm"
+else
+  pass "poisoned private content fails closed before npm or lifecycle scripts"
+fi
+if extra_output="$(run_install "$tmp/extra-private" 2>&1)" \
+    || [ -e "$tmp/extra-private/npm.log" ] \
+    || ! grep -qF 'private cache contains content outside the locked package set' <<< "$extra_output"; then
+  fail "extra private cache content was not rejected before npm"
+else
+  pass "content outside the locked private package set fails before npm"
 fi
 
 auxiliary_commit='aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
-mkdir -p "$tmp/aux-acquire/cache/_cacache" "$tmp/aux-acquire/.worker-schema/migrations"
-printf 'cache\n' > "$tmp/aux-acquire/cache/_cacache/blob"
+mkdir -p "$tmp/aux-acquire/cache/_cacache/content-v2/sha512/${private_digest:0:2}/${private_digest:2:2}" \
+  "$tmp/aux-acquire/.worker-schema/migrations"
+cp "$tmp/private-package.tgz" \
+  "$tmp/aux-acquire/cache/_cacache/content-v2/sha512/${private_digest:0:2}/${private_digest:2:2}/${private_digest:4}"
 printf 'create table fixture();\n' > "$tmp/aux-acquire/.worker-schema/migrations/102_storage.sql"
 cp "$tmp/acquire/package-lock.json" "$tmp/aux-acquire/package-lock.json"
 if (cd "$tmp/aux-acquire" && PATH="$tmp/bin:$PATH" NPM_STUB_LOG="$tmp/npm.log" \
@@ -221,7 +315,7 @@ for mutation in attempt lock digest; do
   case "$mutation" in
     attempt) run_id=7001; run_attempt=4 ;;
     lock) printf '\n' >> "$fixture/package-lock.json"; run_id=7001; run_attempt=3 ;;
-    digest) printf 'tamper\n' >> "$fixture/transfer/npm-cache.tar"; run_id=7001; run_attempt=3 ;;
+    digest) printf 'tamper\n' >> "$fixture/transfer/npm-private-cache.tar"; run_id=7001; run_attempt=3 ;;
   esac
   if run_install "$fixture" "$run_id" "$run_attempt" >/dev/null 2>&1 || [ -e "$fixture/npm.log" ]; then
     fail "a transfer with a mismatched $mutation identity reached npm"
@@ -229,6 +323,49 @@ for mutation in attempt lock digest; do
     pass "a transfer with a mismatched $mutation identity fails before npm"
   fi
 done
+
+mkdir -p "$tmp/corrupt"
+cp "$tmp/acquire/package-lock.json" "$tmp/corrupt/package-lock.json"
+cp -R "$tmp/acquire/transfer" "$tmp/corrupt/transfer"
+printf 'not a tar archive\n' > "$tmp/corrupt/transfer/npm-private-cache.tar"
+if ! rebind_payload_manifest "$tmp/corrupt"; then
+  fail "could not prepare the corrupt private payload fixture"
+elif run_install "$tmp/corrupt" >/dev/null 2>&1 || [ -e "$tmp/corrupt/npm.log" ]; then
+  fail "a corrupt private payload reached npm"
+else
+  pass "a corrupt private payload fails before npm"
+fi
+
+mkdir -p "$tmp/traversal"
+cp "$tmp/acquire/package-lock.json" "$tmp/traversal/package-lock.json"
+cp -R "$tmp/acquire/transfer" "$tmp/traversal/transfer"
+python3 - "$tmp/traversal/transfer/npm-private-cache.tar" <<'PY'
+import io
+import sys
+import tarfile
+
+with tarfile.open(sys.argv[1], "w:") as archive:
+    cache = tarfile.TarInfo("_cacache")
+    cache.type = tarfile.DIRTYPE
+    archive.addfile(cache)
+    content = tarfile.TarInfo("_cacache/content-v2")
+    content.type = tarfile.DIRTYPE
+    archive.addfile(content)
+    content = b"escape\n"
+    member = tarfile.TarInfo("../escape")
+    member.size = len(content)
+    archive.addfile(member, io.BytesIO(content))
+PY
+if ! rebind_payload_manifest "$tmp/traversal"; then
+  fail "could not prepare the traversal private payload fixture"
+elif traversal_output="$(run_install "$tmp/traversal" 2>&1)"; then
+  fail "a traversal member escaped private payload validation"
+elif [ -e "$tmp/traversal/npm.log" ] || [ -e "$tmp/traversal/escape" ] \
+    || ! grep -qF 'unsafe secretless transfer path: ../escape' <<< "$traversal_output"; then
+  fail "a traversal member escaped private payload validation"
+else
+  pass "a traversal member in a private payload fails before extraction and npm"
+fi
 
 printf '%s\n' '#!/usr/bin/env bash' \
   'if [ "$1 $2" = "api --method" ]; then printf '\''%s\n'\'' "$*" >> "$GH_STUB_LOG"; exit 0; fi' \

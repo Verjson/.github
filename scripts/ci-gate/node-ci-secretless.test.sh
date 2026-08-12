@@ -46,15 +46,16 @@ consumer_config_indexes = [i for i, step in enumerate(acquire_steps)
 assert len(consumer_config_indexes) == 1
 consumer_config_index = consumer_config_indexes[0]
 auxiliary_checkout_index = next(i for i, step in enumerate(acquire_steps) if step.get("name") == "Acquire immutable auxiliary source")
-install_index = next(i for i, step in enumerate(acquire_steps) if step.get("name") == "Acquire dependencies without lifecycle execution")
+install_index = next(i for i, step in enumerate(acquire_steps) if step.get("name") == "Populate verified private dependency cache")
 consumer_config = acquire_steps[consumer_config_index]
 assert primary_checkout_index < consumer_config_index < auxiliary_checkout_index < install_index
 assert "find . -name .npmrc" in consumer_config["run"]
-install = next(step for step in acquire_steps if step.get("name") == "Acquire dependencies without lifecycle execution")
+install = next(step for step in acquire_steps if step.get("name") == "Populate verified private dependency cache")
 assert install["env"]["NODE_AUTH_TOKEN"] == "${{ secrets.NODE_AUTH_TOKEN }}"
 assert install["env"]["NPM_CONFIG_USERCONFIG"].startswith("${{ runner.temp }}/")
 assert "find . -name .npmrc" not in install["run"]
-assert "npm ci --ignore-scripts --no-audit --no-fund" in install["run"]
+assert 'npm cache add "$resolved"' in install["run"]
+assert 'rm -rf "$NPM_CONFIG_CACHE/_cacache/index-v5"' in install["run"]
 checkout = next(step for step in acquire_steps if str(step.get("uses", "")).startswith("actions/checkout@"))
 assert checkout["with"]["persist-credentials"] is False
 
@@ -83,7 +84,7 @@ for step in doc["jobs"]["acquire-secretless-dependencies"]["steps"]:
         open(sys.argv[2], "w", encoding="utf-8").write(step["run"])
     if step.get("name") == "Reject consumer-controlled npm configuration":
         open(sys.argv[3], "w", encoding="utf-8").write(step["run"])
-    if step.get("name") == "Acquire dependencies without lifecycle execution":
+    if step.get("name") == "Populate verified private dependency cache":
         print(step["run"])
 PY
 
@@ -103,8 +104,15 @@ printf '%s\n' \
   '//attacker.invalid/:_authToken=${NODE_AUTH_TOKEN}' \
   > "$acquire_fixture/malicious/.npmrc"
 printf '%s\n' '#!/usr/bin/env bash' \
-  'printf '\''%s\n'\'' "$*" > "$NPM_STUB_LOG"' \
+  'printf '\''%s\n'\'' "$*" >> "$NPM_STUB_LOG"' \
   '[ -z "${NPM_STUB_CONFIG_LOG:-}" ] || "$REAL_NPM" config get registry > "$NPM_STUB_CONFIG_LOG"' \
+  'if [ "$1 $2" = "cache add" ]; then' \
+  '  while IFS=$'\''\t'\'' read -r _ digest_hex; do' \
+  '    content="$NPM_CONFIG_CACHE/_cacache/content-v2/sha512/${digest_hex:0:2}/${digest_hex:2:2}/${digest_hex:4}"' \
+  '    mkdir -p "$(dirname "$content")" "$NPM_CONFIG_CACHE/_cacache/index-v5"' \
+  '    printf '\''cached private package\n'\'' > "$content"' \
+  '  done < "$PRIVATE_CACHE_ENTRIES"' \
+  'fi' \
   > "$acquire_fixture/bin/npm"
 chmod +x "$acquire_fixture/bin/npm"
 
@@ -112,13 +120,20 @@ trusted_user_config="$acquire_fixture/runner/secretless-acquisition.npmrc"
 trusted_global_config="$acquire_fixture/runner/secretless-empty-global.npmrc"
 trusted_cache="$acquire_fixture/runner/secretless-npm-cache"
 mkdir -p "$acquire_fixture/runner" "$trusted_cache/_cacache"
+private_digest="$(printf 'cached private package\n' | sha512sum | cut -d' ' -f1)"
+private_entries="$acquire_fixture/runner/private-entries"
+printf 'https://npm.pkg.github.com/download/@verjson/identity-contracts/1.2.3/abc\t%s\n' \
+  "$private_digest" > "$private_entries"
 if (cd "$acquire_fixture/clean" && PATH="$acquire_fixture/bin:$PATH" \
     NODE_AUTH_TOKEN='package-secret' NPM_STUB_LOG="$acquire_fixture/npm.log" \
     APPROVED_INTERNAL_SCOPES=$'@tequityapp\n@verjson' \
     NPM_CONFIG_CACHE="$trusted_cache" \
     NPM_CONFIG_USERCONFIG="$trusted_user_config" \
-    NPM_CONFIG_GLOBALCONFIG="$trusted_global_config" bash "$acquire_script") \
-    && grep -qFx 'ci --ignore-scripts --no-audit --no-fund' "$acquire_fixture/npm.log" \
+    NPM_CONFIG_GLOBALCONFIG="$trusted_global_config" PRIVATE_CACHE_ENTRIES="$private_entries" \
+    bash "$acquire_script") \
+    && grep -qF 'cache add https://npm.pkg.github.com/download/@verjson/identity-contracts/1.2.3/abc' "$acquire_fixture/npm.log" \
+    && grep -qF 'cache verify --cache ' "$acquire_fixture/npm.log" \
+    && [ ! -e "$trusted_cache/_cacache/index-v5" ] \
     && grep -qFx 'registry=https://registry.npmjs.org/' "$trusted_user_config" \
     && grep -qFx '@tequityapp:registry=https://npm.pkg.github.com/' "$trusted_user_config" \
     && grep -qFx '@verjson:registry=https://npm.pkg.github.com/' "$trusted_user_config" \
@@ -150,8 +165,9 @@ if (cd "$acquire_fixture/trusted-auxiliary" && bash "$consumer_config_script" \
       APPROVED_INTERNAL_SCOPES=$'@tequityapp\n@verjson' \
       NPM_CONFIG_CACHE="$trusted_cache" \
       NPM_CONFIG_USERCONFIG="$trusted_user_config" \
-      NPM_CONFIG_GLOBALCONFIG="$trusted_global_config" bash "$acquire_script") \
-    && grep -qFx 'ci --ignore-scripts --no-audit --no-fund' "$acquire_fixture/trusted-auxiliary.log" \
+      NPM_CONFIG_GLOBALCONFIG="$trusted_global_config" PRIVATE_CACHE_ENTRIES="$private_entries" \
+      bash "$acquire_script") \
+    && grep -qF 'cache add https://npm.pkg.github.com/download/@verjson/identity-contracts/1.2.3/abc' "$acquire_fixture/trusted-auxiliary.log" \
     && grep -qFx 'https://registry.npmjs.org/' "$acquire_fixture/trusted-auxiliary-config.log" \
     && ! grep -qF 'attacker.invalid' "$acquire_fixture/trusted-auxiliary-config.log"; then
   pass "trusted auxiliary root npmrc is materialized after the consumer guard and ignored by npm"
@@ -170,21 +186,27 @@ awk '
 
 run_validator() {
   local fixture="$1" approved="$2" scopes="${3:-@verjson}" policy="${4:-}"
+  local entries="$fixture/private-cache-entries"
+  rm -f "$entries"
   (cd "$fixture" && APPROVED_INTERNAL_PACKAGES="$approved" \
-    APPROVED_INTERNAL_SCOPES="$scopes" TRUSTED_PACKAGE_POLICY="$policy" python3 "$validator")
+    APPROVED_INTERNAL_SCOPES="$scopes" PRIVATE_CACHE_ENTRIES="$entries" \
+    TRUSTED_PACKAGE_POLICY="$policy" python3 "$validator")
 }
 
 fixture="$(mktemp -d)"
 trap 'rm -f "$validator" "$acquire_script" "$boundary_script" "$consumer_config_script"; rm -rf "$fixture" "$acquire_fixture"' EXIT
-mkdir -p "$fixture/valid" "$fixture/second-scope" "$fixture/scoped-root" "$fixture/hidden-name" "$fixture/dot-root" "$fixture/unapproved" "$fixture/external" "$fixture/unused" "$fixture/alias" "$fixture/direct" "$fixture/dot-segment" "$fixture/backslash"
+mkdir -p "$fixture/valid" "$fixture/missing-integrity" "$fixture/second-scope" "$fixture/scoped-root" "$fixture/hidden-name" "$fixture/dot-root" "$fixture/unapproved" "$fixture/external" "$fixture/unused" "$fixture/alias" "$fixture/direct" "$fixture/dot-segment" "$fixture/backslash"
+
+fixture_integrity="sha512-$(printf 'cached private package\n' | openssl dgst -sha512 -binary | base64 -w0)"
 
 make_lock() {
   local dir="$1" resolved="$2"
-  printf '%s\n' "{\"lockfileVersion\":3,\"packages\":{\"\":{},\"node_modules/@verjson/identity-contracts\":{\"name\":\"@verjson/identity-contracts\",\"resolved\":\"$resolved\"}}}" > "$dir/package-lock.json"
+  printf '%s\n' "{\"lockfileVersion\":3,\"packages\":{\"\":{},\"node_modules/@verjson/identity-contracts\":{\"name\":\"@verjson/identity-contracts\",\"resolved\":\"$resolved\",\"integrity\":\"$fixture_integrity\"}}}" > "$dir/package-lock.json"
 }
 make_lock "$fixture/valid" "https://npm.pkg.github.com/download/@verjson/identity-contracts/1.2.3/abc"
-printf '%s\n' '{"lockfileVersion":3,"packages":{"":{},"node_modules/@tequityapp/tequity-schema":{"name":"@tequityapp/tequity-schema","resolved":"https://npm.pkg.github.com/download/@tequityapp/tequity-schema/1.2.3/abc"},"node_modules/@verjson/identity-contracts":{"name":"@verjson/identity-contracts","resolved":"https://npm.pkg.github.com/download/@verjson/identity-contracts/1.2.3/abc"}}}' > "$fixture/second-scope/package-lock.json"
-printf '%s\n' '{"lockfileVersion":3,"packages":{"":{"name":"@verjson/catalog-worker","version":"1.0.0"},"node_modules/@verjson/identity-contracts":{"name":"@verjson/identity-contracts","resolved":"https://npm.pkg.github.com/download/@verjson/identity-contracts/1.2.3/abc"}}}' > "$fixture/scoped-root/package-lock.json"
+printf '%s\n' '{"lockfileVersion":3,"packages":{"":{},"node_modules/@verjson/identity-contracts":{"name":"@verjson/identity-contracts","resolved":"https://npm.pkg.github.com/download/@verjson/identity-contracts/1.2.3/abc"}}}' > "$fixture/missing-integrity/package-lock.json"
+printf '%s\n' "{\"lockfileVersion\":3,\"packages\":{\"\":{},\"node_modules/@tequityapp/tequity-schema\":{\"name\":\"@tequityapp/tequity-schema\",\"resolved\":\"https://npm.pkg.github.com/download/@tequityapp/tequity-schema/1.2.3/abc\",\"integrity\":\"$fixture_integrity\"},\"node_modules/@verjson/identity-contracts\":{\"name\":\"@verjson/identity-contracts\",\"resolved\":\"https://npm.pkg.github.com/download/@verjson/identity-contracts/1.2.3/abc\",\"integrity\":\"$fixture_integrity\"}}}" > "$fixture/second-scope/package-lock.json"
+printf '%s\n' "{\"lockfileVersion\":3,\"packages\":{\"\":{\"name\":\"@verjson/catalog-worker\",\"version\":\"1.0.0\"},\"node_modules/@verjson/identity-contracts\":{\"name\":\"@verjson/identity-contracts\",\"resolved\":\"https://npm.pkg.github.com/download/@verjson/identity-contracts/1.2.3/abc\",\"integrity\":\"$fixture_integrity\"}}}" > "$fixture/scoped-root/package-lock.json"
 printf '%s\n' '{"lockfileVersion":3,"packages":{"":{"name":"@verjson/catalog-worker"},"packages/hidden":{"name":"@verjson/unapproved-private"}}}' > "$fixture/hidden-name/package-lock.json"
 printf '%s\n' '{"lockfileVersion":3,"packages":{"":{"name":"@verjson/catalog-worker"},".":{"name":"@verjson/unapproved-private"}}}' > "$fixture/dot-root/package-lock.json"
 make_lock "$fixture/unapproved" "https://npm.pkg.github.com/download/@verjson/identity-contracts/1.2.3/abc"
@@ -198,6 +220,11 @@ printf '%s\n' '{"lockfileVersion":3,"packages":{"":{},"node_modules/@verjson/ide
 run_validator "$fixture/valid" '@verjson/identity-contracts' >/dev/null 2>&1 \
   && pass "an exact allowlisted GitHub Packages dependency is accepted" \
   || fail "an exact allowlisted GitHub Packages dependency was rejected"
+if run_validator "$fixture/missing-integrity" '@verjson/identity-contracts' >/dev/null 2>&1; then
+  fail "an approved private package without lock integrity was accepted"
+else
+  pass "every approved private package requires exact sha512 lock integrity"
+fi
 package_policy='{"scopes":["@tequityapp","@verjson"],"packages":["@tequityapp/tequity-schema","@verjson/identity-contracts"]}'
 run_validator "$fixture/second-scope" $'@tequityapp/tequity-schema\n@verjson/identity-contracts' \
   $'@tequityapp\n@verjson' "$package_policy" >/dev/null 2>&1 \

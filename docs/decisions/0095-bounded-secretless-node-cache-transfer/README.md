@@ -1,4 +1,4 @@
-# 0095 — Bound secretless Node transfer to an exact-attempt offline cache
+# 0095 — Bound secretless Node transfer to an exact-attempt private cache
 
 - **Date:** 2026-08-12
 - **Issue:** [Verjson/.github#750](https://github.com/Verjson/.github/issues/750)
@@ -24,26 +24,40 @@ run nor a rerun attempt may restore another attempt's dependency input.
 
 ## Decision
 
-Keep separate acquisition and build jobs. Acquisition continues to run
-`npm ci --ignore-scripts` with a host-scoped npm configuration and a fresh
-run-attempt cache. After npm verifies the locked downloads, discard
-`node_modules` and transfer only `_cacache`, npm's content-addressed package
-tarball store. Reject a cache tar larger than 80 MiB before upload and disable
-artifact recompression, keeping the complete two-file artifact envelope below an
-81 MiB per-attempt quota budget. A clean acquisition of the affected Tequity API
-lock produced a 70,000,640-byte cache tar instead of a 503,314,936-byte installed
-tree; it is less than half the consumer's observed 155 MB average compressed
-`node_modules` artifact while preserving enough headroom for ordinary lockfile
-growth.
+Keep separate acquisition and build jobs. Under a trusted host-scoped npm
+configuration, acquisition populates a fresh run-attempt cache with `npm cache
+add` for only the exact validated GitHub Packages download URLs in the lock. Each
+private entry must carry SHA-512 integrity; acquisition verifies the corresponding
+content-addressed blob, scans it for the package token, and removes npm's cache
+index because its redirect keys contain short-lived signed URLs. Transfer only
+`_cacache/content-v2` plus the optional auxiliary tree. Reject the actual tar bytes
+when larger than 80 MiB before upload and disable artifact recompression, keeping
+the complete two-file artifact envelope below an 81 MiB per-attempt quota budget.
+
+**2026-08-12 correction ([#754](https://github.com/Verjson/.github/issues/754)).**
+The earlier 70,000,640-byte evidence measured a compressed cache from an older
+lock, but the first implementation emitted an uncompressed tar while disabling
+artifact recompression. On the current Tequity API lock, the full npm cache held
+163,310,428 bytes and its deterministic gzip payload was 152,659,959 bytes, so
+compression cannot satisfy the 80 MiB limit. Populating only the 15 unique exact
+private URLs produced a 1,331,200-byte `_cacache` tar; after excluding the cache
+index, the 15 integrity-addressed blobs produced a 1,249,280-byte transfer tar. A
+clean tokenless `npm ci --ignore-scripts --prefer-offline` then installed 1,010
+packages: npm consumed private blobs by lock integrity and fetched public registry
+packages online. The build rejects a missing or corrupt private blob before npm,
+so an unavailable private dependency cannot fall through to an unauthenticated
+network request.
 
 Bind the handoff manifest to `run_id`, `run_attempt`, the exact
-`package-lock.json` SHA-256, the cache tar SHA-256, and its byte length. The build
-job downloads the exact run-attempt artifact, revalidates every binding, and runs
-`npm ci --offline --ignore-scripts` with package, repository, cloud, and OIDC
-credential paths empty. npm rechecks the lockfile integrity while materializing
-`node_modules`; secretless mode disables the optional setup-node Actions cache,
-and later consumer npm commands use a job-scoped runtime cache removed at
-teardown, so no cross-run or cross-attempt cache restore exists.
+`package-lock.json` SHA-256, the private-content archive SHA-256, and its byte
+length. The build job downloads the exact run-attempt artifact, revalidates every
+binding and tar member, and verifies every locked GitHub Packages integrity blob
+before invoking `npm ci --ignore-scripts --prefer-offline` with package,
+repository, cloud, and OIDC credential paths empty. npm may fetch public registry
+packages online while materializing `node_modules`; secretless mode disables the
+optional setup-node Actions cache, and later consumer npm commands use a
+job-scoped runtime cache removed at teardown, so no cross-run or cross-attempt
+cache restore exists.
 
 Generalize package authorization through an exact newline-separated set of npm
 scopes (defaulting to `@verjson`) while keeping every locked internal package
@@ -61,7 +75,7 @@ validates every tar member before extraction and restores only that path;
 acquisition teardown removes the entire auxiliary checkout, including Git
 metadata.
 
-After credential scrub and offline installation, permit an exact newline-separated
+After credential scrub and dependency installation, permit an exact newline-separated
 set of locked packages to reach `npm rebuild`, and an optional unique JSON array of
 exact `package.json` script names to run in order. A script entry may remove a
 bounded set of non-credential environment names for that step, while protected
@@ -86,8 +100,10 @@ immediate quota reclamation because GitHub's accounting can lag by 6–12 hours.
   by less than 81 MiB, rather than an unbounded installed tree per attempt.
 - A dependency set whose verified npm cache exceeds 80 MiB fails before upload;
   raising the canonical cap requires a new quota decision, not a caller override.
-- Install work happens twice, but only the second, offline install precedes
-  consumer build and test execution, and neither install runs lifecycle scripts.
+- Public packages are downloaded only by the credentialless build job. The
+  credentialed acquisition job fetches exact private tarballs without installing
+  dependencies or running lifecycle scripts; the build install also disables
+  lifecycle scripts.
 - Multi-scope packages, one immutable sparse auxiliary tree, selective rebuilds,
   and a custom command plan are opt-in and fail closed; existing callers retain
   the `@verjson` scope and standard command sequence.
