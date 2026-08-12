@@ -1567,16 +1567,24 @@ jobs:
               return 1
             fi
           }
-          GH_TOKEN="$ACTIONS_TOKEN" bash .gate-trust/scripts/ci-gate/verify-arm-receipt.sh
+          receipt_ok=true
+          GH_TOKEN="$ACTIONS_TOKEN" bash .gate-trust/scripts/ci-gate/verify-arm-receipt.sh || receipt_ok=false
           conclusion=failure
           title='Merge policy evaluation failed'
           summary='The trusted workflow did not complete for this exact head.'
           ai_authorized=false
-          current_head="$(GH_TOKEN="$ACTIONS_TOKEN" gh api "repos/$TARGET_REPO/pulls/$PR_NUMBER" --jq '.head.sha // ""')" || {
-            echo "::error::workflow token REST head lookup failed"
-            exit 1
-          }
-          if [ "$GATE_STATUS" = success ] &&
+          current_head=""
+          if [ "$receipt_ok" = true ]; then
+            current_head="$(GH_TOKEN="$ACTIONS_TOKEN" gh api "repos/$TARGET_REPO/pulls/$PR_NUMBER" --jq '.head.sha // ""')" || {
+              echo "::error::workflow token REST head lookup failed"
+              receipt_ok=false
+            }
+          else
+            echo "::error::arm receipt verification failed for this exact head"
+            title='Arm receipt verification failed'
+            summary='The arm receipt could not be verified for this exact head; no approval was requested.'
+          fi
+          if [ "$receipt_ok" = true ] && [ "$GATE_STATUS" = success ] &&
              [ "$current_head" = "$EXPECTED_AUTHORIZED_HEAD_SHA" ] &&
              [ "$EXPECTED_REVIEWED_HEAD_SHA" = "$EXPECTED_AUTHORIZED_HEAD_SHA" ]; then
             conclusion=success
