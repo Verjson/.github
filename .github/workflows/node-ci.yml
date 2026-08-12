@@ -119,7 +119,7 @@ on:
           Optional JSON array of exact package.json script names or objects with
           exactly script and unsetEnv. unsetEnv removes up to 16 non-credential
           environment names for that script only. Entries run in order after the
-          credentialless offline install and any approved rebuild. Empty preserves
+          credentialless private-cache install and any approved rebuild. Empty preserves
           the standard build/typecheck/test/lint sequence.
         required: false
         type: string
@@ -342,9 +342,11 @@ jobs:
         env:
           APPROVED_INTERNAL_PACKAGES: ${{ inputs.approved-internal-packages }}
           APPROVED_INTERNAL_SCOPES: ${{ inputs.approved-internal-scopes }}
+          PRIVATE_CACHE_ENTRIES: ${{ runner.temp }}/secretless-private-entries-${{ github.run_id }}-${{ github.run_attempt }}
           TRUSTED_PACKAGE_POLICY: ${{ vars.VERJSON_SECRETLESS_PACKAGE_POLICY }}
         run: |
           python3 - <<'PY'
+          import base64
           import json
           import os
           import sys
@@ -383,6 +385,7 @@ jobs:
               sys.exit("secretless-pr requires package-lock lockfileVersion 2 or 3")
 
           found = set()
+          private_downloads = {}
           for path, package in lock.get("packages", {}).items():
               if path == "":
                   continue
@@ -405,6 +408,20 @@ jobs:
                   registry_name = f"{parts[2]}/{parts[3]}"
                   if parts[2] not in scopes or registry_name not in approved:
                       sys.exit(f"unapproved GitHub Packages download: {registry_name}")
+                  integrity = package.get("integrity")
+                  if not isinstance(integrity, str) or re.fullmatch(
+                          r"sha512-[A-Za-z0-9+/]{86}==", integrity) is None:
+                      sys.exit(f"{registry_name} requires one exact sha512 lock integrity")
+                  try:
+                      digest = base64.b64decode(integrity.removeprefix("sha512-"), validate=True)
+                  except ValueError:
+                      sys.exit(f"{registry_name} has invalid sha512 lock integrity")
+                  if len(digest) != 64:
+                      sys.exit(f"{registry_name} has invalid sha512 lock integrity")
+                  digest_hex = digest.hex()
+                  prior_digest = private_downloads.setdefault(resolved, digest_hex)
+                  if prior_digest != digest_hex:
+                      sys.exit(f"{registry_name} repeats one download URL with different integrity")
 
               path_is_internal = (isinstance(path_name, str)
                                   and any(path_name.startswith(scope + "/") for scope in scopes))
@@ -424,6 +441,14 @@ jobs:
               sys.exit("unapproved internal dependencies: " + ", ".join(unapproved))
           if unused:
               sys.exit("approved internal dependencies absent from lock: " + ", ".join(unused))
+
+          entries = Path(os.environ["PRIVATE_CACHE_ENTRIES"])
+          try:
+              with entries.open("x", encoding="utf-8") as stream:
+                  for resolved, digest_hex in sorted(private_downloads.items()):
+                      stream.write(f"{resolved}\t{digest_hex}\n")
+          except FileExistsError:
+              sys.exit("private cache entry file already exists")
           PY
       - name: Resolve immutable auxiliary source
         id: resolve-auxiliary-source
@@ -523,16 +548,21 @@ jobs:
           path: ${{ steps.resolve-auxiliary-source.outputs.checkout-path }}
           sparse-checkout: ${{ steps.resolve-auxiliary-source.outputs.sparse-path }}
           persist-credentials: false
-      - name: Acquire dependencies without lifecycle execution
+      - name: Populate verified private dependency cache
         env:
           APPROVED_INTERNAL_SCOPES: ${{ inputs.approved-internal-scopes }}
           NODE_AUTH_TOKEN: ${{ secrets.NODE_AUTH_TOKEN }}
-          NPM_CONFIG_CACHE: ${{ runner.temp }}/secretless-npm-cache-${{ github.run_id }}-${{ github.run_attempt }}
+          NPM_CONFIG_CACHE: ${{ runner.temp }}/secretless-private-npm-cache-${{ github.run_id }}-${{ github.run_attempt }}
           NPM_CONFIG_GLOBALCONFIG: ${{ runner.temp }}/secretless-empty-global.npmrc
           NPM_CONFIG_USERCONFIG: ${{ runner.temp }}/secretless-acquisition.npmrc
+          PRIVATE_CACHE_ENTRIES: ${{ runner.temp }}/secretless-private-entries-${{ github.run_id }}-${{ github.run_attempt }}
         run: |
           set -euo pipefail
           umask 077
+          [ -s "$PRIVATE_CACHE_ENTRIES" ] || {
+            echo "::error::secretless-pr requires validated private package downloads"
+            exit 1
+          }
           : > "$NPM_CONFIG_GLOBALCONFIG"
           # npm expands this placeholder only when requesting the scoped host.
           # shellcheck disable=SC2016
@@ -547,35 +577,65 @@ jobs:
             # shellcheck disable=SC2016
             printf '%s\n' '//npm.pkg.github.com/:_authToken=${NODE_AUTH_TOKEN}'
           } > "$NPM_CONFIG_USERCONFIG"
-          npm ci --ignore-scripts --no-audit --no-fund
-          if grep -R -a -qF -- "$NODE_AUTH_TOKEN" "$NPM_CONFIG_CACHE/_cacache"; then
+          while IFS=$'\t' read -r resolved digest_hex extra; do
+            [ -z "$extra" ] && [[ "$resolved" == https://npm.pkg.github.com/* ]] \
+              && [[ "$digest_hex" =~ ^[0-9a-f]{128}$ ]] || {
+                echo "::error::invalid validated private cache entry"
+                exit 1
+              }
+            npm cache add "$resolved" --cache "$NPM_CONFIG_CACHE" --no-audit --no-fund
+          done < "$PRIVATE_CACHE_ENTRIES"
+          npm cache verify --cache "$NPM_CONFIG_CACHE"
+          declare -A expected_content=()
+          while IFS=$'\t' read -r _ digest_hex; do
+            content_path="$NPM_CONFIG_CACHE/_cacache/content-v2/sha512/${digest_hex:0:2}/${digest_hex:2:2}/${digest_hex:4}"
+            [ -f "$content_path" ] && [ ! -L "$content_path" ] \
+              && [ "$(sha512sum "$content_path" | cut -d' ' -f1)" = "$digest_hex" ] || {
+                echo "::error::npm did not populate the exact locked private package content"
+                exit 1
+              }
+            expected_content["$content_path"]=1
+          done < "$PRIVATE_CACHE_ENTRIES"
+          actual_content_count=0
+          while IFS= read -r -d '' content_path; do
+            [ -n "${expected_content[$content_path]:-}" ] || {
+              echo "::error::npm populated content outside the exact locked private package set"
+              exit 1
+            }
+            actual_content_count=$((actual_content_count + 1))
+          done < <(find "$NPM_CONFIG_CACHE/_cacache/content-v2" -type f -print0)
+          [ "$actual_content_count" -eq "${#expected_content[@]}" ] || {
+            echo "::error::npm private content set does not match the validated lock"
+            exit 1
+          }
+          if grep -R -a -qF -- "$NODE_AUTH_TOKEN" "$NPM_CONFIG_CACHE/_cacache/content-v2"; then
             echo "::error::the npm cache contains the acquisition credential"
             exit 1
           fi
+          rm -rf "$NPM_CONFIG_CACHE/_cacache/index-v5" "$NPM_CONFIG_CACHE/_cacache/tmp"
+          [ ! -e "$NPM_CONFIG_CACHE/_cacache/index-v5" ] || {
+            echo "::error::private cache index containing signed redirect URLs was not removed"
+            exit 1
+          }
       - name: Package bounded credential-free npm cache
         env:
           AUXILIARY_COMMIT: ${{ steps.resolve-auxiliary-source.outputs.commit }}
           AUXILIARY_CONTENT_PATH: ${{ steps.resolve-auxiliary-source.outputs.content-path }}
           AUXILIARY_REPOSITORY: ${{ steps.resolve-auxiliary-source.outputs.repository }}
-          CACHE_DIR: ${{ runner.temp }}/secretless-npm-cache-${{ github.run_id }}-${{ github.run_attempt }}
+          CACHE_DIR: ${{ runner.temp }}/secretless-private-npm-cache-${{ github.run_id }}-${{ github.run_attempt }}
           MAX_PAYLOAD_BYTES: '83886080'
-          NPM_CONFIG_GLOBALCONFIG: ${{ runner.temp }}/secretless-empty-global.npmrc
-          NPM_CONFIG_USERCONFIG: ${{ runner.temp }}/secretless-empty-package.npmrc
           RUN_ATTEMPT: ${{ github.run_attempt }}
           RUN_ID: ${{ github.run_id }}
           TRANSFER_DIR: ${{ runner.temp }}/secretless-transfer-${{ github.run_id }}-${{ github.run_attempt }}
         run: |
           set -euo pipefail
-          [ -d "$CACHE_DIR/_cacache" ] || {
-            echo "::error::npm produced no content-addressed cache for offline transfer"
+          [ -d "$CACHE_DIR/_cacache/content-v2" ] || {
+            echo "::error::npm produced no private content-addressed package blobs for transfer"
             exit 1
           }
-          : > "$NPM_CONFIG_GLOBALCONFIG"
-          : > "$NPM_CONFIG_USERCONFIG"
-          npm cache verify --cache "$CACHE_DIR"
           rm -rf node_modules "$TRANSFER_DIR"
           mkdir -p "$TRANSFER_DIR"
-          tar_inputs=(-C "$CACHE_DIR" _cacache)
+          tar_inputs=(-C "$CACHE_DIR" _cacache/content-v2)
           if [ -n "$AUXILIARY_CONTENT_PATH" ]; then
             [ -e "$AUXILIARY_CONTENT_PATH" ] || {
               echo "::error::approved auxiliary sparse path was not acquired"
@@ -588,13 +648,13 @@ jobs:
             }
             tar_inputs+=(-C "$GITHUB_WORKSPACE" "$AUXILIARY_CONTENT_PATH")
           fi
-          tar -cf "$TRANSFER_DIR/npm-cache.tar" "${tar_inputs[@]}"
-          payload_bytes="$(stat -c %s "$TRANSFER_DIR/npm-cache.tar")"
+          tar -cf "$TRANSFER_DIR/npm-private-cache.tar" "${tar_inputs[@]}"
+          payload_bytes="$(stat -c %s "$TRANSFER_DIR/npm-private-cache.tar")"
           if [ "$payload_bytes" -gt "$MAX_PAYLOAD_BYTES" ]; then
             echo "::error::secretless cache payload is ${payload_bytes} bytes; the 80 MiB payload budget is ${MAX_PAYLOAD_BYTES} bytes"
             exit 1
           fi
-          payload_sha256="$(sha256sum "$TRANSFER_DIR/npm-cache.tar" | cut -d' ' -f1)"
+          payload_sha256="$(sha256sum "$TRANSFER_DIR/npm-private-cache.tar" | cut -d' ' -f1)"
           lock_sha256="$(sha256sum package-lock.json | cut -d' ' -f1)"
           printf '%s\n' \
             "run_id=$RUN_ID" \
@@ -618,13 +678,15 @@ jobs:
         if: always()
         env:
           AUXILIARY_CHECKOUT_PATH: ${{ steps.resolve-auxiliary-source.outputs.checkout-path }}
-          CACHE_DIR: ${{ runner.temp }}/secretless-npm-cache-${{ github.run_id }}-${{ github.run_attempt }}
+          CACHE_DIR: ${{ runner.temp }}/secretless-private-npm-cache-${{ github.run_id }}-${{ github.run_attempt }}
+          PRIVATE_CACHE_ENTRIES: ${{ runner.temp }}/secretless-private-entries-${{ github.run_id }}-${{ github.run_attempt }}
           TRANSFER_DIR: ${{ runner.temp }}/secretless-transfer-${{ github.run_id }}-${{ github.run_attempt }}
         run: |
           rm -rf node_modules "$CACHE_DIR" "$TRANSFER_DIR"
           [ -z "$AUXILIARY_CHECKOUT_PATH" ] || find "$AUXILIARY_CHECKOUT_PATH" -depth -delete
           rm -f "$RUNNER_TEMP/secretless-acquisition.npmrc" "$RUNNER_TEMP/secretless-empty-global.npmrc" \
             "$RUNNER_TEMP/secretless-empty-package.npmrc"
+          rm -f "$PRIVATE_CACHE_ENTRIES"
 
   build-test:
     needs: [eligibility, acquire-secretless-dependencies]
@@ -712,7 +774,7 @@ jobs:
           : > "$NPM_CONFIG_GLOBALCONFIG"
           : > "$NPM_CONFIG_USERCONFIG"
           manifest="$TRANSFER_DIR/manifest"
-          payload="$TRANSFER_DIR/npm-cache.tar"
+          payload="$TRANSFER_DIR/npm-private-cache.tar"
           [ -f "$manifest" ] && [ -f "$payload" ] || {
             echo "::error::secretless cache transfer is incomplete"
             exit 1
@@ -781,7 +843,8 @@ jobs:
                   if (path.is_absolute() or not path.parts or "\\" in member.name
                           or any(part in ("", ".", "..") for part in path.parts)):
                       raise SystemExit(f"unsafe secretless transfer path: {member.name}")
-                  allowed = path.parts[0] == "_cacache"
+                  allowed = (path.parts == ("_cacache",)
+                             or path.parts[:2] == ("_cacache", "content-v2"))
                   if allowed_aux:
                       allowed = allowed or member.name == allowed_aux or member.name.startswith(allowed_aux + "/")
                   if not allowed or not (member.isfile() or member.isdir()):
@@ -789,10 +852,46 @@ jobs:
           PY
           mkdir -p "$SECRETLESS_CACHE_DIR"
           tar --no-same-owner --no-same-permissions -C "$SECRETLESS_CACHE_DIR" -xf "$payload"
-          [ -d "$SECRETLESS_CACHE_DIR/_cacache" ] || {
-            echo "::error::secretless transfer contains no npm content-addressed cache"
+          [ -d "$SECRETLESS_CACHE_DIR/_cacache/content-v2" ] \
+            && [ ! -e "$SECRETLESS_CACHE_DIR/_cacache/index-v5" ] || {
+            echo "::error::secretless transfer must contain only private content-addressed package blobs"
             exit 1
           }
+          SECRETLESS_CACHE_DIR="$SECRETLESS_CACHE_DIR" python3 - <<'PY'
+          import base64
+          import hashlib
+          import json
+          import os
+          import re
+          from pathlib import Path
+          from urllib.parse import urlparse
+
+          cache = Path(os.environ["SECRETLESS_CACHE_DIR"])
+          lock = json.loads(Path("package-lock.json").read_text(encoding="utf-8"))
+          expected_content = {}
+          for package in lock.get("packages", {}).values():
+              resolved = package.get("resolved", "")
+              if urlparse(resolved).hostname != "npm.pkg.github.com":
+                  continue
+              integrity = package.get("integrity")
+              if not isinstance(integrity, str) or re.fullmatch(
+                      r"sha512-[A-Za-z0-9+/]{86}==", integrity) is None:
+                  raise SystemExit("locked private package has invalid sha512 integrity")
+              digest = base64.b64decode(integrity.removeprefix("sha512-"), validate=True)
+              digest_hex = digest.hex()
+              content = cache / "_cacache" / "content-v2" / "sha512" \
+                  / digest_hex[:2] / digest_hex[2:4] / digest_hex[4:]
+              expected_content[content] = digest
+              if not content.is_file():
+                  raise SystemExit("locked private package content is missing or corrupt")
+              with content.open("rb") as stream:
+                  if hashlib.file_digest(stream, "sha512").digest() != digest:
+                      raise SystemExit("locked private package content is missing or corrupt")
+          actual_content = {path for path in (cache / "_cacache" / "content-v2").rglob("*")
+                            if path.is_file()}
+          if actual_content != set(expected_content):
+              raise SystemExit("private cache contains content outside the locked package set")
+          PY
           if [ -n "$EXPECTED_AUXILIARY_CONTENT_PATH" ]; then
             auxiliary_source="$SECRETLESS_CACHE_DIR/$EXPECTED_AUXILIARY_CONTENT_PATH"
             auxiliary_target="$GITHUB_WORKSPACE/$EXPECTED_AUXILIARY_CONTENT_PATH"
@@ -814,7 +913,7 @@ jobs:
             printf 'NPM_CONFIG_GLOBALCONFIG=%s\n' "$NPM_CONFIG_GLOBALCONFIG"
             printf 'NPM_CONFIG_USERCONFIG=%s\n' "$NPM_CONFIG_USERCONFIG"
           } >> "$GITHUB_ENV"
-          npm ci --offline --ignore-scripts --no-audit --no-fund --cache "$SECRETLESS_CACHE_DIR"
+          npm ci --ignore-scripts --prefer-offline --no-audit --no-fund --cache "$SECRETLESS_CACHE_DIR"
       - name: Remove local secretless transfer state
         if: always() && needs.eligibility.outputs.should-run != 'false' && inputs.secretless-pr
         env:
