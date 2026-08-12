@@ -65,6 +65,26 @@ PR/head/check/run/attempt identities. The callee revalidates the artifact digest
 every identity. This recovery workflow contains no model action and must never invoke
 `ai-review-merge.yml`.
 
+### 2026-08-12 correction ([#759](https://github.com/Verjson/.github/issues/759))
+
+The authorization check run is **always driven to a terminal state once created**.
+This decision already treats a completed check as the authorization signal, but the
+completion path was reachable only when verification succeeded: `complete-authorization`
+carries `if: always()` so it can report failure, and its step then aborted at the arm
+receipt verifier — 52 lines before the PATCH that completes the check. A failed
+receipt therefore left the check `in_progress` forever, blocking the PR with no
+signal and nothing to rerun. Observed on #758, where check run `94125910988` stayed
+pending indefinitely after the gate raised `arm run provenance mismatch`.
+
+The verifier's status is now captured rather than fatal, and the same applies to the
+workflow-token head lookup. Both failures fall through to complete the check with
+`conclusion=failure`, then exit non-zero. This does **not** relax authorization: an
+unverified receipt can never reach `conclusion=success`, and the approval `POST` is
+still never issued — that mutation is what the original ordering protected, and it
+remains gated. Only the *reporting* of failure moved; the authority to approve did
+not. A hang is strictly worse than a red check, because branch protection blocks the
+merge while naming no cause.
+
 ## Consequences
 
 - No job sleeps or polls while CI changes state, and CI completion cannot spend model

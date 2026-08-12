@@ -52,6 +52,9 @@ def valid(document):
         and "gh pr view" not in run
         and run.index("verify-arm-receipt.sh") < run.index("-f event=APPROVE")
         and run.index("-f event=APPROVE") < run.index("-f status=completed")
+        and ('GH_TOKEN="$ACTIONS_TOKEN" bash .gate-trust/scripts/ci-gate/verify-arm-receipt.sh'
+             ' || receipt_ok=false') in run
+        and '[ "$receipt_ok" = true ] && [ "$GATE_STATUS" = success ]' in run
         and "reviews/$approval_id" in run
         and '[ "$REVIEW_OUTCOME" = approved ]' in run
         and '[ "$REVIEW_AUTHORITY" = ai-approve ]' in run
@@ -105,6 +108,20 @@ complete["run"] = complete["run"].replace(
     'current_head="$(GH_TOKEN="$ACTIONS_TOKEN" gh api',
     'current_head="$(gh api')
 assert not valid(app_token_head), "App-token head lookup escaped token separation"
+fatal_verifier = copy.deepcopy(workflow)
+complete = next(step for step in fatal_verifier["jobs"]["complete-authorization"]["steps"]
+                if step.get("name") == "Complete exact head authorization")
+complete["run"] = complete["run"].replace(
+    'bash .gate-trust/scripts/ci-gate/verify-arm-receipt.sh || receipt_ok=false',
+    'bash .gate-trust/scripts/ci-gate/verify-arm-receipt.sh')
+assert not valid(fatal_verifier), "aborting verifier mutation escaped; a failed receipt would wedge the check run"
+unguarded_success = copy.deepcopy(workflow)
+complete = next(step for step in unguarded_success["jobs"]["complete-authorization"]["steps"]
+                if step.get("name") == "Complete exact head authorization")
+complete["run"] = complete["run"].replace(
+    '[ "$receipt_ok" = true ] && [ "$GATE_STATUS" = success ]',
+    '[ "$GATE_STATUS" = success ]')
+assert not valid(unguarded_success), "fail-open mutation escaped; an unverified receipt could conclude success"
 permission_reverification = copy.deepcopy(workflow)
 complete = next(step for step in permission_reverification["jobs"]["complete-authorization"]["steps"]
                 if step.get("name") == "Complete exact head authorization")
@@ -141,6 +158,7 @@ case "$*" in
       --arg login "${EXPECTED_APP_SLUG}[bot]" --arg check "$AUTHORIZATION_CHECK_ID" \
       '{id:81,state:"APPROVED",commit_id:$head,user:{login:$login},body:("<!-- ai-review-authorization:"+$check+" -->")}' ;;
   "api repos/"*"/pulls/"*)
+    [ "${HEAD_RC:-0}" -eq 0 ] || exit "$HEAD_RC"
     printf '%s\n' "$EXPECTED_AUTHORIZED_HEAD_SHA" ;;
   "api --method PATCH "*) exit 0 ;;
   *) exit 2 ;;
@@ -189,15 +207,40 @@ if [ "$?" -eq 0 ] && grep -q 'conclusion=success' "$CALLS" && ! grep -q 'api --m
   pass "human authority never asks the App to approve"
 else fail "human authority still depends on AI approval"; fi
 
-: >"$CALLS"; EXPECTED_HEAD_SHA= run_complete >"$tmp/out" 2>&1
-if [ "$?" -ne 0 ] && ! grep -q 'api --method PATCH' "$CALLS"; then
-  pass "omitted EXPECTED_HEAD_SHA fails before authorization mutation"
-else fail "missing completion head escaped verifier"; fi
+# A failed receipt must still complete the check run. The job carries `if: always()`
+# so it can report that failure; aborting before the PATCH leaves the check run
+# `in_progress` forever, which blocks the PR with no signal and no rerun path.
+# The approval POST must still never happen — that is the authorization mutation.
+: >"$CALLS"; : >"$GITHUB_OUTPUT"; EXPECTED_HEAD_SHA= run_complete >"$tmp/out" 2>&1
+if [ "$?" -ne 0 ] && grep -q 'api --method PATCH' "$CALLS" \
+  && grep -q 'conclusion=failure' "$CALLS" \
+  && ! grep -q 'api --method POST' "$CALLS" \
+  && grep -q 'ai_authorized=false' "$GITHUB_OUTPUT"; then
+  pass "omitted EXPECTED_HEAD_SHA completes the check run as failure without requesting approval"
+else fail "missing completion head left the authorization check unresolved"; fi
 
-: >"$CALLS"; EXPECTED_HEAD_SHA=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa run_complete >"$tmp/out" 2>&1
-if [ "$?" -ne 0 ] && ! grep -q 'api --method PATCH' "$CALLS"; then
-  pass "mismatched EXPECTED_HEAD_SHA fails before authorization mutation"
-else fail "mismatched completion head escaped verifier"; fi
+: >"$CALLS"; : >"$GITHUB_OUTPUT"; EXPECTED_HEAD_SHA=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa run_complete >"$tmp/out" 2>&1
+if [ "$?" -ne 0 ] && grep -q 'api --method PATCH' "$CALLS" \
+  && grep -q 'conclusion=failure' "$CALLS" \
+  && ! grep -q 'api --method POST' "$CALLS" \
+  && grep -q 'ai_authorized=false' "$GITHUB_OUTPUT"; then
+  pass "mismatched EXPECTED_HEAD_SHA completes the check run as failure without requesting approval"
+else fail "mismatched completion head left the authorization check unresolved"; fi
+
+: >"$CALLS"; : >"$GITHUB_OUTPUT"; HEAD_RC=1 run_complete >"$tmp/out" 2>&1
+if [ "$?" -ne 0 ] && grep -q 'api --method PATCH' "$CALLS" \
+  && grep -q 'conclusion=failure' "$CALLS" \
+  && ! grep -q 'api --method POST' "$CALLS" \
+  && grep -q 'workflow token REST head lookup failed' "$tmp/out"; then
+  pass "failed head lookup completes the check run as failure without requesting approval"
+else fail "failed head lookup left the authorization check unresolved"; fi
+
+# Fail-closed direction: a verifier failure must never reach conclusion=success,
+# even when every other precondition is green.
+: >"$CALLS"; : >"$GITHUB_OUTPUT"; EXPECTED_HEAD_SHA= GATE_STATUS=success run_complete >"$tmp/out" 2>&1
+if ! grep -q 'conclusion=success' "$CALLS"; then
+  pass "unverified receipt cannot conclude success while the gate is green"
+else fail "unverified receipt concluded success — fail-open"; fi
 
 [ "$fails" -eq 0 ] && { echo "All tests passed."; exit 0; }
 echo "$fails test(s) failed."; exit 1
