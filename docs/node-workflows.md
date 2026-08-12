@@ -45,17 +45,34 @@ caller's legacy `packages: read` grant is harmless but unnecessary.
 For pull-request validation of repositories with approved private dependencies,
 `secretless-pr` splits installation from repository-controlled execution. The
 acquisition job receives only `contents: read` plus the explicitly mapped package
-token, validates every `@verjson` package against the exact newline-separated
-allowlist and GitHub Packages URL, rejects repository `.npmrc` files, and runs
-`npm ci --ignore-scripts` with a job-created config that scopes the token only to
-`npm.pkg.github.com`. A separate
-job restores the resulting dependency tree with package, Git, cloud, and OIDC
-credential paths empty before build, typecheck, test, and lint execute:
+token, validates every package under the exact approved scopes against the
+newline-separated package allowlist and GitHub Packages URL, rejects repository
+`.npmrc` files, and runs `npm ci --ignore-scripts` with a job-created config that
+scopes the token only to `npm.pkg.github.com`. The default approved scope is
+`@verjson`; callers that need another internal scope must name it exactly and set
+the protected repository variable `VERJSON_SECRETLESS_PACKAGE_POLICY` to a JSON
+object containing the exact `scopes` and `packages` arrays. An optional auxiliary
+source resolves one repository-controlled pin to a full commit SHA, performs one
+sparse private checkout, and adds only the exact sparse content path to the
+transfer. Its four input fields must exactly match protected repository variable
+`VERJSON_SECRETLESS_AUXILIARY_POLICY`, so a PR cannot redirect the acquisition
+token to another repository or path. It transfers npm's verified content-addressed download
+cache, never `node_modules`, under an 80 MiB payload cap (the complete two-file
+artifact envelope is budgeted below 81 MiB). A separate job verifies the exact run,
+attempt, package-lock digest, auxiliary repository/commit/path identity, payload
+digest, and size before running
+`npm ci --offline --ignore-scripts` with package, Git, cloud, and OIDC credential
+paths empty. The local transfer is removed immediately after installation and a
+no-checkout cleanup job deletes the exact artifact after build, test, and lint
+finish or fail. Secretless mode ignores `cache: true`; it neither restores nor
+uploads the cross-run Actions npm cache, and consumer npm commands use a
+job-scoped runtime cache that is removed at teardown:
 
 ```yaml
 jobs:
   ci:
     permissions:
+      actions: write
       contents: read
       statuses: read
     uses: Verjson/.github/.github/workflows/node-ci.yml@<immutable-sha>
@@ -70,14 +87,115 @@ jobs:
 
 Do not use `secrets: inherit` on this route. The caller deliberately omits
 `packages: read`; the package token belongs only to the acquisition job and PR
-code cannot request the job token's package capability. Both jobs ignore the
-caller runner override and use the isolated untrusted lane or a fresh hosted
-fallback. Secretless mode rejects
+code cannot request the job token's package capability. `actions: write` is
+available only to the no-checkout deletion job; the build job retains
+`contents: read` and scrubs GitHub token paths before repository commands. All
+three jobs ignore the caller runner override and use the isolated untrusted lane
+or a fresh hosted fallback. Secretless mode rejects
 non-PR events, fork PRs, schema submodules, repository npm config, unlisted
 internal packages, non-GitHub package URLs, old lockfile formats, and unused
 allowlist entries. Forks fail closed because pull-request secrets are unavailable;
 do not replace `pull_request` with `pull_request_target` to obtain them. Existing callers keep
 the original single-job install path because the mode defaults off.
+
+Consumers that need a reviewed private auxiliary tree, selective lifecycle
+rebuilds, or a repository-specific command sequence keep those choices explicit.
+The auxiliary source accepts exactly `repository`, `pinFile`, `checkoutPath`, and
+`sparsePath`; the pin file must name the same repository and a lowercase 40-hex
+commit. Rebuild entries must be exact locked package names. The script plan must
+be a unique JSON array of exact `package.json` script names or exact
+`{"script":"name","unsetEnv":["NAME"]}` objects. `unsetEnv` may remove up to 16
+non-credential environment names for that single script; package, Git, cloud, and
+OIDC credential controls cannot be removed. Both features execute only after
+credential scrub and the offline install. When a script plan is supplied it
+replaces the default build/typecheck/test/lint sequence.
+
+Artifact deletion is bounded to five minutes and runs under `always()` after
+success, failure, or cancellation. One-day retention remains a platform fallback
+when GitHub cannot schedule cleanup; deletion and expiry do not imply immediate
+quota reclamation because GitHub storage accounting can lag by 6–12 hours.
+Use **Re-run all jobs** for a new attempt. Re-running only a failed build job
+cannot reuse the deleted prior-attempt artifact and fails closed by design.
+
+To adopt the #750 contract, pin the reusable path to the 40-hex commit that
+contains this change—never a branch or moving tag:
+
+```yaml
+uses: Verjson/.github/.github/workflows/node-ci.yml@<40-hex-canonical-contract-sha>
+```
+
+Add `actions: write`, preserve the exact internal-package allowlist, and update
+that pin atomically. This Node caller is not generated by the changelog tooling.
+If the same adoption also advances canonical changelog artifacts, run
+`Verjson/.github/scripts/gen-changelog-caller.sh` at that same immutable SHA and
+regenerate its `workflow`, `renderer`, `contract-test`, and release caller
+together; never handwrite or partially repin those generated artifacts.
+
+For `tequityapp/tequity-api`, the canonical caller that replaces its handwritten
+acquisition/build split is:
+
+```text
+VERJSON_SECRETLESS_PACKAGE_POLICY={"scopes":["@tequityapp","@verjson"],"packages":["@tequityapp/tequity-schema","@verjson/ai","@verjson/authn","@verjson/authz","@verjson/cloud-storage","@verjson/customer-lifecycle","@verjson/graphql-conventions","@verjson/identity-contracts","@verjson/object-storage","@verjson/observability","@verjson/oidc-claims-middleware","@verjson/payments","@verjson/pg"]}
+VERJSON_SECRETLESS_AUXILIARY_POLICY={"repository":"tequityapp/tequity-worker","pinFile":"config/worker-schema-pin.json","checkoutPath":".worker-schema","sparsePath":"migrations"}
+```
+
+Set both values as repository variables outside the PR branch, then use:
+
+```yaml
+jobs:
+  ci:
+    permissions:
+      actions: write
+      contents: read
+      statuses: read
+    uses: Verjson/.github/.github/workflows/node-ci.yml@<40-hex-canonical-contract-sha>
+    with:
+      secretless-pr: true
+      approved-internal-scopes: |
+        @tequityapp
+        @verjson
+      approved-internal-packages: |
+        @tequityapp/tequity-schema
+        @verjson/ai
+        @verjson/authn
+        @verjson/authz
+        @verjson/cloud-storage
+        @verjson/customer-lifecycle
+        @verjson/graphql-conventions
+        @verjson/identity-contracts
+        @verjson/object-storage
+        @verjson/observability
+        @verjson/oidc-claims-middleware
+        @verjson/payments
+        @verjson/pg
+      secretless-auxiliary-source: >-
+        {"repository":"tequityapp/tequity-worker","pinFile":"config/worker-schema-pin.json","checkoutPath":".worker-schema","sparsePath":"migrations"}
+      secretless-rebuild-packages: |
+        argon2
+        esbuild
+      secretless-ci-script-plan: >-
+        ["verify:worker-schema","build","audit:deps","lint","test","typecheck:smoke",{"script":"smoke:otel","unsetEnv":["OTEL_SDK_DISABLED"]}]
+      db-image: pgvector/pgvector:pg16
+      db-env: |
+        POSTGRES_PASSWORD=postgres
+        POSTGRES_DB=tequity
+        DATABASE_URL=postgres://postgres:postgres@127.0.0.1:${DB_PORT}/tequity
+        TEQUITY_DISPOSABLE_TEST_CLUSTER=true
+        OPENAI_API_KEY=ci-dummy-key
+        OTEL_SDK_DISABLED=true
+        TEQUITY_WORKER_MIGRATIONS_DIR=${{ github.workspace }}/.worker-schema/migrations
+      cache-image: redis:7-alpine
+      cache-env: |
+        TEST_REDIS_URL=redis://127.0.0.1:${CACHE_PORT}
+    secrets:
+      NODE_AUTH_TOKEN: ${{ secrets.NODE_AUTH_TOKEN }}
+```
+
+Keep the pin file and every allowlist entry repository-reviewed. The caller uses
+the reusable workflow directly; do not copy its acquisition or validation steps
+into the consumer. If changelog contract artifacts move in the same adoption,
+generate all four with `Verjson/.github/scripts/gen-changelog-caller.sh` at the
+same immutable contract SHA.
 
 The `setup-verjson-node` composite also defaults caching off and scopes an
 explicitly enabled cache to the current job. Because a setup composite finishes

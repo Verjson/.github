@@ -19,6 +19,7 @@ inputs = doc[True]["workflow_call"]["inputs"]
 jobs = doc["jobs"]
 assert inputs["secretless-pr"]["default"] is False
 assert inputs["approved-internal-packages"]["default"] == ""
+assert inputs["approved-internal-scopes"]["default"] == "@verjson"
 
 acquire = jobs["acquire-secretless-dependencies"]
 build = jobs["build-test"]
@@ -90,13 +91,17 @@ chmod +x "$acquire_fixture/bin/npm"
 
 trusted_user_config="$acquire_fixture/runner/secretless-acquisition.npmrc"
 trusted_global_config="$acquire_fixture/runner/secretless-empty-global.npmrc"
-mkdir -p "$acquire_fixture/runner"
+trusted_cache="$acquire_fixture/runner/secretless-npm-cache"
+mkdir -p "$acquire_fixture/runner" "$trusted_cache/_cacache"
 if (cd "$acquire_fixture/clean" && PATH="$acquire_fixture/bin:$PATH" \
     NODE_AUTH_TOKEN='package-secret' NPM_STUB_LOG="$acquire_fixture/npm.log" \
+    APPROVED_INTERNAL_SCOPES=$'@tequityapp\n@verjson' \
+    NPM_CONFIG_CACHE="$trusted_cache" \
     NPM_CONFIG_USERCONFIG="$trusted_user_config" \
     NPM_CONFIG_GLOBALCONFIG="$trusted_global_config" bash "$acquire_script") \
     && grep -qFx 'ci --ignore-scripts --no-audit --no-fund' "$acquire_fixture/npm.log" \
     && grep -qFx 'registry=https://registry.npmjs.org/' "$trusted_user_config" \
+    && grep -qFx '@tequityapp:registry=https://npm.pkg.github.com/' "$trusted_user_config" \
     && grep -qFx '@verjson:registry=https://npm.pkg.github.com/' "$trusted_user_config" \
     && grep -qFx '//npm.pkg.github.com/:_authToken=${NODE_AUTH_TOKEN}' "$trusted_user_config" \
     && ! grep -q 'package-secret' "$trusted_user_config" \
@@ -108,6 +113,8 @@ fi
 
 if (cd "$acquire_fixture/malicious" && PATH="$acquire_fixture/bin:$PATH" \
     NODE_AUTH_TOKEN='package-secret' NPM_STUB_LOG="$acquire_fixture/malicious.log" \
+    APPROVED_INTERNAL_SCOPES=$'@tequityapp\n@verjson' \
+    NPM_CONFIG_CACHE="$trusted_cache" \
     NPM_CONFIG_USERCONFIG="$trusted_user_config" \
     NPM_CONFIG_GLOBALCONFIG="$trusted_global_config" bash "$acquire_script") >/dev/null 2>&1 \
     || [ -e "$acquire_fixture/malicious.log" ]; then
@@ -126,19 +133,21 @@ awk '
 ' "$workflow" > "$validator"
 
 run_validator() {
-  local fixture="$1" approved="$2"
-  (cd "$fixture" && APPROVED_INTERNAL_PACKAGES="$approved" python3 "$validator")
+  local fixture="$1" approved="$2" scopes="${3:-@verjson}" policy="${4:-}"
+  (cd "$fixture" && APPROVED_INTERNAL_PACKAGES="$approved" \
+    APPROVED_INTERNAL_SCOPES="$scopes" TRUSTED_PACKAGE_POLICY="$policy" python3 "$validator")
 }
 
 fixture="$(mktemp -d)"
 trap 'rm -f "$validator" "$acquire_script" "$boundary_script"; rm -rf "$fixture" "$acquire_fixture"' EXIT
-mkdir -p "$fixture/valid" "$fixture/scoped-root" "$fixture/hidden-name" "$fixture/dot-root" "$fixture/unapproved" "$fixture/external" "$fixture/unused" "$fixture/alias" "$fixture/direct" "$fixture/dot-segment" "$fixture/backslash"
+mkdir -p "$fixture/valid" "$fixture/second-scope" "$fixture/scoped-root" "$fixture/hidden-name" "$fixture/dot-root" "$fixture/unapproved" "$fixture/external" "$fixture/unused" "$fixture/alias" "$fixture/direct" "$fixture/dot-segment" "$fixture/backslash"
 
 make_lock() {
   local dir="$1" resolved="$2"
   printf '%s\n' "{\"lockfileVersion\":3,\"packages\":{\"\":{},\"node_modules/@verjson/identity-contracts\":{\"name\":\"@verjson/identity-contracts\",\"resolved\":\"$resolved\"}}}" > "$dir/package-lock.json"
 }
 make_lock "$fixture/valid" "https://npm.pkg.github.com/download/@verjson/identity-contracts/1.2.3/abc"
+printf '%s\n' '{"lockfileVersion":3,"packages":{"":{},"node_modules/@tequityapp/tequity-schema":{"name":"@tequityapp/tequity-schema","resolved":"https://npm.pkg.github.com/download/@tequityapp/tequity-schema/1.2.3/abc"},"node_modules/@verjson/identity-contracts":{"name":"@verjson/identity-contracts","resolved":"https://npm.pkg.github.com/download/@verjson/identity-contracts/1.2.3/abc"}}}' > "$fixture/second-scope/package-lock.json"
 printf '%s\n' '{"lockfileVersion":3,"packages":{"":{"name":"@verjson/catalog-worker","version":"1.0.0"},"node_modules/@verjson/identity-contracts":{"name":"@verjson/identity-contracts","resolved":"https://npm.pkg.github.com/download/@verjson/identity-contracts/1.2.3/abc"}}}' > "$fixture/scoped-root/package-lock.json"
 printf '%s\n' '{"lockfileVersion":3,"packages":{"":{"name":"@verjson/catalog-worker"},"packages/hidden":{"name":"@verjson/unapproved-private"}}}' > "$fixture/hidden-name/package-lock.json"
 printf '%s\n' '{"lockfileVersion":3,"packages":{"":{"name":"@verjson/catalog-worker"},".":{"name":"@verjson/unapproved-private"}}}' > "$fixture/dot-root/package-lock.json"
@@ -153,6 +162,27 @@ printf '%s\n' '{"lockfileVersion":3,"packages":{"":{},"node_modules/@verjson/ide
 run_validator "$fixture/valid" '@verjson/identity-contracts' >/dev/null 2>&1 \
   && pass "an exact allowlisted GitHub Packages dependency is accepted" \
   || fail "an exact allowlisted GitHub Packages dependency was rejected"
+package_policy='{"scopes":["@tequityapp","@verjson"],"packages":["@tequityapp/tequity-schema","@verjson/identity-contracts"]}'
+run_validator "$fixture/second-scope" $'@tequityapp/tequity-schema\n@verjson/identity-contracts' \
+  $'@tequityapp\n@verjson' "$package_policy" >/dev/null 2>&1 \
+  && pass "exact packages under two approved scopes are accepted" \
+  || fail "a second exact approved internal scope was rejected"
+if run_validator "$fixture/second-scope" $'@tequityapp/tequity-schema\n@verjson/identity-contracts' \
+    $'@attacker\n@verjson' "$package_policy" >/dev/null 2>&1; then
+  fail "PR-controlled internal scopes overrode trusted repository policy"
+else
+  pass "PR-controlled internal scopes cannot expand trusted package policy"
+fi
+if run_validator "$fixture/second-scope" $'@tequityapp/tequity-schema\n@verjson/identity-contracts' '@verjson' >/dev/null 2>&1; then
+  fail "a package under an unapproved scope was accepted"
+else
+  pass "a package under an unapproved scope is rejected"
+fi
+if run_validator "$fixture/valid" '@verjson/identity-contracts' '@verjson/../attacker' >/dev/null 2>&1; then
+  fail "a malformed internal scope was accepted"
+else
+  pass "malformed internal scopes fail closed"
+fi
 run_validator "$fixture/scoped-root" '@verjson/identity-contracts' >/dev/null 2>&1 \
   && pass "a scoped @verjson root project is ignored while its dependency is validated" \
   || fail "a scoped @verjson root project was treated as an installed dependency"
