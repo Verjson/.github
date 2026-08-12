@@ -23,6 +23,7 @@ build = jobs["build-test"]
 cleanup = jobs["cleanup-secretless-transfer"]
 
 assert acquire["outputs"]["transfer-artifact-id"] == "${{ steps.upload-secretless-transfer.outputs.artifact-id }}"
+assert acquire["outputs"]["auxiliary-content-path"] == "${{ steps.resolve-auxiliary-source.outputs.content-path }}"
 upload = next(step for step in acquire["steps"] if step.get("id") == "upload-secretless-transfer")
 assert upload["with"]["name"] == "secretless-npm-cache-${{ github.run_id }}-${{ github.run_attempt }}"
 assert upload["with"]["retention-days"] == 1
@@ -37,6 +38,7 @@ assert "_cacache" in package["run"]
 assert "payload_bytes" in package["run"]
 assert "run_attempt=$RUN_ATTEMPT" in package["run"]
 assert "lock_sha256=$lock_sha256" in package["run"]
+assert "auxiliary_commit=$AUXILIARY_COMMIT" in package["run"]
 acquire_cleanup = next(step for step in acquire["steps"] if step.get("name") == "Remove local acquisition and transfer state")
 assert acquire_cleanup["if"] == "always()"
 
@@ -114,6 +116,8 @@ chmod +x "$tmp/bin/npm"
 
 if (cd "$tmp/acquire" && PATH="$tmp/bin:$PATH" NPM_STUB_LOG="$tmp/npm.log" \
     CACHE_DIR="$tmp/acquire/cache" TRANSFER_DIR="$tmp/acquire/transfer" \
+    AUXILIARY_COMMIT='' AUXILIARY_CONTENT_PATH='' AUXILIARY_REPOSITORY='' \
+    GITHUB_WORKSPACE="$tmp/acquire" \
     NPM_CONFIG_GLOBALCONFIG="$tmp/acquire/empty-global.npmrc" \
     NPM_CONFIG_USERCONFIG="$tmp/acquire/empty-user.npmrc" \
     MAX_PAYLOAD_BYTES=83886080 RUN_ID=7001 RUN_ATTEMPT=3 bash "$tmp/package.sh") \
@@ -131,6 +135,8 @@ printf '%2048s' x > "$tmp/oversize/cache/_cacache/blob"
 cp "$tmp/acquire/package-lock.json" "$tmp/oversize/package-lock.json"
 if (cd "$tmp/oversize" && PATH="$tmp/bin:$PATH" NPM_STUB_LOG="$tmp/npm.log" \
     CACHE_DIR="$tmp/oversize/cache" TRANSFER_DIR="$tmp/oversize/transfer" \
+    AUXILIARY_COMMIT='' AUXILIARY_CONTENT_PATH='' AUXILIARY_REPOSITORY='' \
+    GITHUB_WORKSPACE="$tmp/oversize" \
     NPM_CONFIG_GLOBALCONFIG="$tmp/oversize/empty-global.npmrc" \
     NPM_CONFIG_USERCONFIG="$tmp/oversize/empty-user.npmrc" \
     MAX_PAYLOAD_BYTES=1024 RUN_ID=7001 RUN_ATTEMPT=3 bash "$tmp/package.sh") >/dev/null 2>&1; then
@@ -141,10 +147,14 @@ fi
 
 run_install() {
   local fixture="$1" run_id="${2:-7001}" run_attempt="${3:-3}"
+  local auxiliary_repository="${4:-}" auxiliary_commit="${5:-}" auxiliary_content_path="${6:-}"
   (cd "$fixture" && PATH="$tmp/bin:$PATH" NPM_STUB_LOG="$fixture/npm.log" \
     GITHUB_ENV="$fixture/github.env" NPM_CONFIG_USERCONFIG="$fixture/empty.npmrc" \
     NPM_CONFIG_CACHE="$fixture/runtime-cache" \
     NPM_CONFIG_GLOBALCONFIG="$fixture/empty-global.npmrc" \
+    EXPECTED_AUXILIARY_COMMIT="$auxiliary_commit" \
+    EXPECTED_AUXILIARY_CONTENT_PATH="$auxiliary_content_path" \
+    EXPECTED_AUXILIARY_REPOSITORY="$auxiliary_repository" GITHUB_WORKSPACE="$fixture" \
     SECRETLESS_CACHE_DIR="$fixture/build-cache" TRANSFER_DIR="$fixture/transfer" \
     MAX_PAYLOAD_BYTES=83886080 RUN_ID="$run_id" RUN_ATTEMPT="$run_attempt" \
     bash "$tmp/install.sh")
@@ -162,6 +172,45 @@ if run_install "$tmp/build" \
   pass "a matching transfer installs offline and scrubs credentials and local transfer state"
 else
   fail "the credentialless offline install did not consume and clean a valid transfer"
+fi
+
+auxiliary_commit='aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+mkdir -p "$tmp/aux-acquire/cache/_cacache" "$tmp/aux-acquire/.worker-schema/migrations"
+printf 'cache\n' > "$tmp/aux-acquire/cache/_cacache/blob"
+printf 'create table fixture();\n' > "$tmp/aux-acquire/.worker-schema/migrations/102_storage.sql"
+cp "$tmp/acquire/package-lock.json" "$tmp/aux-acquire/package-lock.json"
+if (cd "$tmp/aux-acquire" && PATH="$tmp/bin:$PATH" NPM_STUB_LOG="$tmp/npm.log" \
+    AUXILIARY_REPOSITORY=tequityapp/tequity-worker AUXILIARY_COMMIT="$auxiliary_commit" \
+    AUXILIARY_CONTENT_PATH=.worker-schema/migrations GITHUB_WORKSPACE="$tmp/aux-acquire" \
+    CACHE_DIR="$tmp/aux-acquire/cache" TRANSFER_DIR="$tmp/aux-acquire/transfer" \
+    NPM_CONFIG_GLOBALCONFIG="$tmp/aux-acquire/empty-global.npmrc" \
+    NPM_CONFIG_USERCONFIG="$tmp/aux-acquire/empty-user.npmrc" \
+    MAX_PAYLOAD_BYTES=83886080 RUN_ID=7001 RUN_ATTEMPT=3 bash "$tmp/package.sh") \
+    && grep -qFx 'auxiliary_repository=tequityapp/tequity-worker' "$tmp/aux-acquire/transfer/manifest" \
+    && grep -qFx "auxiliary_commit=$auxiliary_commit" "$tmp/aux-acquire/transfer/manifest"; then
+  pass "the immutable auxiliary sparse content shares the bounded identity-bound payload"
+else
+  fail "auxiliary sparse content was not bound into the transfer"
+fi
+
+mkdir -p "$tmp/aux-build"
+cp "$tmp/aux-acquire/package-lock.json" "$tmp/aux-build/package-lock.json"
+cp -R "$tmp/aux-acquire/transfer" "$tmp/aux-build/transfer"
+if run_install "$tmp/aux-build" 7001 3 tequityapp/tequity-worker "$auxiliary_commit" .worker-schema/migrations \
+    && grep -qFx 'create table fixture();' "$tmp/aux-build/.worker-schema/migrations/102_storage.sql"; then
+  pass "a matching auxiliary source is restored only after full manifest verification"
+else
+  fail "a valid auxiliary source was not restored for credentialless execution"
+fi
+
+mkdir -p "$tmp/aux-wrong"
+cp "$tmp/aux-acquire/package-lock.json" "$tmp/aux-wrong/package-lock.json"
+cp -R "$tmp/aux-acquire/transfer" "$tmp/aux-wrong/transfer"
+if run_install "$tmp/aux-wrong" 7001 3 attacker/other "$auxiliary_commit" .worker-schema/migrations >/dev/null 2>&1 \
+    || [ -e "$tmp/aux-wrong/npm.log" ]; then
+  fail "a mismatched auxiliary repository reached npm"
+else
+  pass "a mismatched auxiliary repository fails before npm"
 fi
 
 for mutation in attempt lock digest; do
