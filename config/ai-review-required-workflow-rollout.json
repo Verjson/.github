@@ -1,5 +1,5 @@
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "organization": "Verjson",
   "ruleset_id": 18098028,
   "retired_path": ".github/workflows/ai-review-merge.yml",
@@ -102,7 +102,43 @@
           "required_review_thread_resolution": true,
           "required_reviewers": []
         }
+      }
+    ]
+  },
+  "arm_ruleset_name": "ai-authorization-arm-required",
+  "arm_ruleset": {
+    "name": "ai-authorization-arm-required",
+    "target": "branch",
+    "enforcement": "active",
+    "bypass_actors": [
+      {
+        "actor_id": null,
+        "actor_type": "OrganizationAdmin",
+        "bypass_mode": "always"
       },
+      {
+        "actor_id": 2740,
+        "actor_type": "Integration",
+        "bypass_mode": "always"
+      }
+    ],
+    "conditions": {
+      "ref_name": {
+        "exclude": [],
+        "include": ["~DEFAULT_BRANCH", "refs/heads/develop"]
+      },
+      "repository_property": {
+        "exclude": [],
+        "include": [
+          {
+            "name": "verjson-core-checks",
+            "property_values": ["enforced"],
+            "source": "custom"
+          }
+        ]
+      }
+    },
+    "rules": [
       {
         "type": "workflows",
         "parameters": {

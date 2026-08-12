@@ -109,6 +109,17 @@ jobs:
             fixture[f"repos/{full_name}/actions/variables?per_page=100"] = [{"variables": []}]
         return fixture
 
+    def enter_split_state(self):
+        """Stub the organization as it looks after the split has been applied."""
+        self.arm_id = 4242
+        self.fixture[self.ruleset_path] = [{
+            "id": self.contract["ruleset_id"], **copy.deepcopy(self.contract["postimage"]),
+        }]
+        self.fixture["orgs/Verjson/rulesets"][0].append({"id": self.arm_id})
+        self.fixture[f"orgs/Verjson/rulesets/{self.arm_id}"] = [{
+            "id": self.arm_id, **copy.deepcopy(self.contract["arm_ruleset"]),
+        }]
+
     def read(self, path):
         if path not in self.fixture:
             raise AssertionError(f"unexpected API read: {path}")
@@ -180,10 +191,8 @@ jobs:
 """)
         self.assert_audit_error(r"declares only")
 
-    def test_the_retargeted_selection_is_checked_against_the_replacement(self):
-        self.fixture[self.ruleset_path] = [{
-            "id": self.contract["ruleset_id"], **copy.deepcopy(self.contract["postimage"]),
-        }]
+    def test_the_split_selection_is_checked_against_the_replacement(self):
+        self.enter_split_state()
         self.workflow_source("""\
 name: AI review authorization arm
 on:
@@ -195,6 +204,39 @@ jobs:
     steps: []
 """)
         self.assert_audit_error(r"gate-rearm\.yml.*declares only.*workflow_call")
+
+    def test_the_split_can_be_rendered_while_the_dead_selection_it_repairs_persists(self):
+        # The selection being unschedulable is the outage; the split is its
+        # remedy. An audit must still refuse, or the finding disappears.
+        self.retired_workflow_source("name: x\non:\n  workflow_call:\njobs: {}\n")
+        self.assert_audit_error(r"declares only")
+        self.assertEqual(
+            AUDIT.render_payload(self.contract, "split", self.read),
+            self.contract["postimage"],
+        )
+        self.assertEqual(
+            AUDIT.render_payload(self.contract, "arm-ruleset", self.read),
+            self.contract["arm_ruleset"],
+        )
+
+    def test_the_escape_never_excuses_a_dead_selection_after_the_split(self):
+        # Post-split, an unschedulable selection is a fresh regression rather
+        # than a state being repaired, so nothing may wave it through.
+        self.enter_split_state()
+        self.workflow_source("name: x\non:\n  workflow_call:\njobs:\n  arm:\n    steps: []\n")
+        with self.assertRaisesRegex(AUDIT.AuditError, r"declares only"):
+            AUDIT.audit(self.contract, self.read, allow_unschedulable_selection=True)
+
+    def test_the_escape_does_not_suppress_any_other_precondition(self):
+        rows = self.fixture["orgs/Verjson/properties/values?per_page=100"][0]
+        beta = next(row for row in rows if row["repository_full_name"] == "Verjson/beta")
+        beta["properties"] = [
+            {"property_name": "verjson-stack", "value": "helm"},
+            {"property_name": "verjson-core-checks", "value": "enforced"},
+        ]
+        self.retired_workflow_source("name: x\non:\n  workflow_call:\njobs: {}\n")
+        with self.assertRaisesRegex(AUDIT.AuditError, "armed default branches without canonical"):
+            AUDIT.render_payload(self.contract, "split", self.read)
 
     def test_contract_pins_complete_preimage_postimage_and_rollback(self):
         self.assertEqual(self.contract["rollback_payload"], self.contract["preimage"])
@@ -212,32 +254,78 @@ jobs:
         })
         pre = copy.deepcopy(self.contract["preimage"])
         post = copy.deepcopy(self.contract["postimage"])
+        arm = copy.deepcopy(self.contract["arm_ruleset"])
         self.assertEqual(AUDIT.workflow_path(pre), ".github/workflows/ai-review-merge.yml")
-        self.assertEqual(AUDIT.workflow_path(post), ".github/workflows/gate-rearm.yml")
-        for rule in pre["rules"]:
-            if rule["type"] == "workflows":
-                rule["parameters"]["workflows"][0]["path"] = ".github/workflows/gate-rearm.yml"
+        self.assertEqual(AUDIT.workflow_path(arm), ".github/workflows/gate-rearm.yml")
+        # Branch protection is untouched: the postimage is the preimage minus one
+        # rule, and every remaining rule still applies to `~ALL`.
+        self.assertEqual(
+            [rule["type"] for rule in post["rules"]],
+            ["deletion", "non_fast_forward", "required_linear_history", "pull_request"],
+        )
+        self.assertEqual(post["conditions"]["repository_name"], {"exclude": [], "include": ["~ALL"]})
+        pre["rules"] = [rule for rule in pre["rules"] if rule["type"] != "workflows"]
         self.assertEqual(pre, post)
+        # The arm is scoped by property, never by name, so it governs exactly the
+        # repositories that also carry canonical deterministic CI.
+        self.assertNotIn("repository_name", arm["conditions"])
+        self.assertEqual(arm["conditions"]["repository_property"]["include"], [{
+            "name": "verjson-core-checks", "property_values": ["enforced"], "source": "custom",
+        }])
 
-    def test_full_fleet_is_ready_and_postimage_is_retargeted(self):
-        report = AUDIT.audit(self.contract, self.read)
+    def test_fleet_is_ready_before_the_split_and_recognised_after_it(self):
+        report = AUDIT.audit(self.contract, self.read, allow_unschedulable_selection=True)
         self.assertEqual(report["state"], "ready")
         self.assertEqual(report["governed_repositories"], 2)
+        self.assertEqual(report["armed_repositories"], 2)
+        self.enter_split_state()
+        report = AUDIT.audit(self.contract, self.read)
+        self.assertEqual(report["state"], "split")
+        self.assertEqual(report["current_path"], ".github/workflows/gate-rearm.yml")
+
+    def test_split_state_requires_the_arm_ruleset_to_exist_and_match(self):
         self.fixture[self.ruleset_path] = [{
             "id": self.contract["ruleset_id"], **copy.deepcopy(self.contract["postimage"]),
         }]
-        self.assertEqual(AUDIT.audit(self.contract, self.read)["state"], "retargeted")
+        self.assert_audit_error("must have exactly one arm ruleset")
+        self.fixture = self.make_fixture()
+        self.enter_split_state()
+        self.fixture[f"orgs/Verjson/rulesets/{self.arm_id}"][0]["enforcement"] = "evaluate"
+        self.assert_audit_error("arm ruleset drifted from its full reviewed image")
 
-    def test_every_default_branch_requires_canonical_deterministic_ci(self):
+    def test_the_arm_ruleset_must_not_exist_before_the_split(self):
+        self.fixture["orgs/Verjson/rulesets"][0].append({"id": 4242})
+        self.fixture["orgs/Verjson/rulesets/4242"] = [{
+            "id": 4242, **copy.deepcopy(self.contract["arm_ruleset"]),
+        }]
+        self.assert_audit_error("arm ruleset already exists before the split")
+
+    def test_an_armed_repository_without_deterministic_ci_is_rejected(self):
         rows = self.fixture["orgs/Verjson/properties/values?per_page=100"][0]
         beta = next(row for row in rows if row["repository_full_name"] == "Verjson/beta")
-        beta["properties"] = [{"property_name": "verjson-stack", "value": "node"}]
-        self.assert_audit_error("without canonical deterministic required CI.*Verjson/beta")
+        # Armed (property set) but on an undeclared stack: nothing deterministic
+        # stands behind the non-vetoing arm. That is the hazard, and it is rejected.
         beta["properties"] = [
             {"property_name": "verjson-stack", "value": "helm"},
             {"property_name": "verjson-core-checks", "value": "enforced"},
         ]
-        self.assert_audit_error("without canonical deterministic required CI.*Verjson/beta")
+        self.assert_audit_error("armed default branches without canonical deterministic required CI.*Verjson/beta")
+
+    def test_an_unarmed_repository_is_not_required_to_have_deterministic_ci(self):
+        # The split's whole purpose: a repository the arm does not govern keeps
+        # human review and is not a rollout blocker. Under the ~ALL rule it was.
+        rows = self.fixture["orgs/Verjson/properties/values?per_page=100"][0]
+        beta = next(row for row in rows if row["repository_full_name"] == "Verjson/beta")
+        beta["properties"] = []
+        self.enter_split_state()
+        report = AUDIT.audit(self.contract, self.read)
+        self.assertEqual(report["governed_repositories"], 2)
+        self.assertEqual(report["armed_repositories"], 1)
+
+    def test_an_arm_governing_nothing_is_rejected(self):
+        for row in self.fixture["orgs/Verjson/properties/values?per_page=100"][0]:
+            row["properties"] = []
+        self.assert_audit_error("the arm would govern nothing")
 
     def test_any_collateral_ruleset_drift_rejects_both_rollout_and_rollback(self):
         self.fixture[self.ruleset_path][0]["bypass_actors"][1]["bypass_mode"] = "pull_request"
@@ -247,12 +335,14 @@ jobs:
 
     def test_rendered_payloads_are_verified_and_the_tool_has_no_mutation_path(self):
         self.assertEqual(
-            AUDIT.render_payload(self.contract, "retarget", self.read),
+            AUDIT.render_payload(self.contract, "split", self.read),
             self.contract["postimage"],
         )
-        self.fixture[self.ruleset_path] = [{
-            "id": self.contract["ruleset_id"], **copy.deepcopy(self.contract["postimage"]),
-        }]
+        self.assertEqual(
+            AUDIT.render_payload(self.contract, "arm-ruleset", self.read),
+            self.contract["arm_ruleset"],
+        )
+        self.enter_split_state()
         self.assertEqual(
             AUDIT.render_payload(self.contract, "rollback", self.read),
             self.contract["rollback_payload"],
@@ -263,10 +353,10 @@ jobs:
         self.assertNotIn("rulesets/PATCH", source)
 
     def test_retired_replacement_and_app_status_cannot_coexist(self):
-        second = {"id": 99, **copy.deepcopy(self.contract["postimage"])}
+        second = {"id": 99, **copy.deepcopy(self.contract["arm_ruleset"])}
         self.fixture["orgs/Verjson/rulesets"][0].append({"id": 99})
         self.fixture["orgs/Verjson/rulesets/99"] = [second]
-        self.assert_audit_error("identities are not exclusive")
+        self.assert_audit_error("arm ruleset already exists before the split")
 
         self.fixture = self.make_fixture()
         self.fixture["orgs/Verjson/rulesets"][0].append({"id": 99})
@@ -322,6 +412,79 @@ jobs:
         self.fixture = self.make_fixture()
         self.workflow_source(self.workflow.replace("VERJSON_LANE_TRUSTED", "VERJSON_LANE_PRIVILEGED"))
         self.assert_audit_error("not routed through the trusted lane")
+
+    def assert_contract_rejected(self, mutate, diagnostic):
+        contract = copy.deepcopy(self.contract)
+        mutate(contract)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "contract.json"
+            path.write_text(json.dumps(contract), encoding="utf-8")
+            with self.assertRaisesRegex(AUDIT.AuditError, diagnostic):
+                AUDIT.read_contract(path)
+
+    def test_the_split_may_not_smuggle_in_any_other_protection_change(self):
+        # The postimage is derived, not trusted. A contract that also relaxes
+        # enforcement, widens a bypass, or drops another rule while "just moving
+        # the workflows rule" is exactly what a reviewer would miss in a 7 KB diff.
+        def relax(contract):
+            contract["postimage"]["enforcement"] = "evaluate"
+        self.assert_contract_rejected(relax, "beyond removing the workflows rule")
+
+        def widen_bypass(contract):
+            contract["postimage"]["bypass_actors"].append(
+                {"actor_id": 5, "actor_type": "Integration", "bypass_mode": "always"},
+            )
+        self.assert_contract_rejected(widen_bypass, "beyond removing the workflows rule")
+
+        def drop_protection(contract):
+            contract["postimage"]["rules"] = [
+                rule for rule in contract["postimage"]["rules"] if rule["type"] != "non_fast_forward"
+            ]
+        self.assert_contract_rejected(drop_protection, "beyond removing the workflows rule")
+
+        def narrow_scope(contract):
+            contract["postimage"]["conditions"]["repository_name"]["include"] = ["verjson-leads"]
+        self.assert_contract_rejected(narrow_scope, "beyond removing the workflows rule")
+
+    def test_the_arm_may_not_be_scoped_by_name_or_to_the_wrong_property(self):
+        # Scoping the arm by name would re-create the ~ALL hazard the split
+        # exists to remove, and silently decouple it from deterministic CI.
+        def by_name(contract):
+            contract["arm_ruleset"]["conditions"]["repository_name"] = {"exclude": [], "include": ["~ALL"]}
+        self.assert_contract_rejected(by_name, "scoped by repository property, not by name")
+
+        def wrong_property(contract):
+            contract["arm_ruleset"]["conditions"]["repository_property"]["include"][0]["name"] = "verjson-stack"
+        self.assert_contract_rejected(wrong_property, "not scoped to the deterministic-CI property")
+
+        def wrong_value(contract):
+            contract["arm_ruleset"]["conditions"]["repository_property"]["include"][0]["property_values"] = ["all"]
+        self.assert_contract_rejected(wrong_value, "not scoped to the deterministic-CI property")
+
+        def other_refs(contract):
+            contract["arm_ruleset"]["conditions"]["ref_name"]["include"] = ["~ALL"]
+        self.assert_contract_rejected(other_refs, "targets different refs")
+
+    def test_the_relocated_rule_must_be_the_same_rule(self):
+        def creation_bypass(contract):
+            contract["arm_ruleset"]["rules"][0]["parameters"]["do_not_enforce_on_create"] = False
+        self.assert_contract_rejected(creation_bypass, "repository-creation bypass drifted")
+
+        def mutable_ref(contract):
+            contract["arm_ruleset"]["rules"][0]["parameters"]["workflows"][0]["ref"] = "refs/heads/dev"
+        self.assert_contract_rejected(mutable_ref, "not the relocated workflows rule")
+
+        def wrong_source(contract):
+            contract["arm_ruleset"]["rules"][0]["parameters"]["workflows"][0]["repository_id"] = 1
+        self.assert_contract_rejected(wrong_source, "not the relocated workflows rule")
+
+        def inactive(contract):
+            contract["arm_ruleset"]["enforcement"] = "evaluate"
+        self.assert_contract_rejected(inactive, "arm ruleset must be active")
+
+        def wider_bypass(contract):
+            contract["arm_ruleset"]["bypass_actors"] = []
+        self.assert_contract_rejected(wider_bypass, "bypass actors diverge")
 
     def test_malformed_contract_fails_with_controlled_diagnostics(self):
         for section, key, value, diagnostic in (
