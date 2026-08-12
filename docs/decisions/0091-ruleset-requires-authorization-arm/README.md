@@ -1,7 +1,7 @@
 # 0091 — Require the authorization arm, not the dispatched AI review
 
 - **Date:** 2026-08-10
-- **Status:** Accepted
+- **Status:** Superseded by [ADR 0094](../0094-arm-required-by-its-own-property-scoped-ruleset/README.md)
 - **Issue:** [#728](https://github.com/Verjson/.github/issues/728)
 - **Amends:** [ADR 0079](../0079-head-bound-ai-authorization-and-native-auto-merge/README.md), [ADR 0090](../0090-human-first-opt-in-ai-review/README.md)
 

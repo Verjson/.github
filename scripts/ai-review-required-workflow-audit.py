@@ -56,7 +56,7 @@ def read_contract(path: Path = CONTRACT) -> dict:
     except (OSError, json.JSONDecodeError) as error:
         raise AuditError(f"cannot read rollout contract: {error}") from None
     require(isinstance(contract, dict), "rollout contract must be an object")
-    require(contract.get("schema_version") == 2, "unsupported rollout contract schema")
+    require(contract.get("schema_version") == 3, "unsupported rollout contract schema")
     organization = contract.get("organization")
     require(
         isinstance(organization, str)
@@ -77,20 +77,69 @@ def read_contract(path: Path = CONTRACT) -> dict:
         )
     require(contract["retired_path"] != contract["replacement_path"], "workflow paths must differ")
 
+    for name in ("core_checks_property", "core_checks_value"):
+        require(
+            isinstance(contract.get(name), str) and contract[name],
+            f"contract {name} is invalid",
+        )
+
     images = {}
-    for name in ("preimage", "postimage", "rollback_payload"):
+    for name in ("preimage", "postimage", "rollback_payload", "arm_ruleset"):
         image = contract.get(name)
         require(isinstance(image, dict), f"contract {name} is missing")
         require(set(image) == set(RULESET_FIELDS), f"contract {name} is not a complete mutation payload")
         images[name] = image
     require(images["rollback_payload"] == images["preimage"], "rollback payload must equal the verified preimage")
     require(workflow_path(images["preimage"]) == contract["retired_path"], "preimage does not select the retired workflow")
-    require(workflow_path(images["postimage"]) == contract["replacement_path"], "postimage does not select the replacement workflow")
+    require(
+        not [rule for rule in images["postimage"]["rules"] if rule.get("type") == "workflows"],
+        "postimage must not retain a workflows rule",
+    )
+    # The split moves one rule and changes nothing else about branch protection.
+    # Deriving the postimage here is what makes that reviewable rather than
+    # asserted: `deletion`, `non_fast_forward`, `required_linear_history`, and
+    # `pull_request` stay at `~ALL` for every governed repository.
     derived = copy.deepcopy(images["preimage"])
-    for rule in derived["rules"]:
-        if rule.get("type") == "workflows":
-            rule["parameters"]["workflows"][0]["path"] = contract["replacement_path"]
-    require(derived == images["postimage"], "postimage changes fields beyond the intended workflow path")
+    derived["rules"] = [rule for rule in derived["rules"] if rule.get("type") != "workflows"]
+    require(derived == images["postimage"], "postimage changes fields beyond removing the workflows rule")
+
+    arm_name = contract.get("arm_ruleset_name")
+    require(isinstance(arm_name, str) and arm_name, "arm ruleset name is invalid")
+    require(images["arm_ruleset"]["name"] == arm_name, "arm ruleset payload name disagrees with the contract")
+    require(images["arm_ruleset"]["enforcement"] == "active", "arm ruleset must be active")
+    require(workflow_path(images["arm_ruleset"]) == contract["replacement_path"], "arm ruleset does not select the replacement workflow")
+    # The moved rule must be the SAME rule, not a lookalike: same parameters,
+    # same creation bypass, differing only in the selected path.
+    moved = copy.deepcopy(next(rule for rule in images["preimage"]["rules"] if rule.get("type") == "workflows"))
+    moved["parameters"]["workflows"][0]["path"] = contract["replacement_path"]
+    require(images["arm_ruleset"]["rules"] == [moved], "arm ruleset rule is not the relocated workflows rule")
+    require(
+        images["arm_ruleset"]["bypass_actors"] == images["preimage"]["bypass_actors"],
+        "arm ruleset bypass actors diverge from the protection ruleset",
+    )
+    # Coverage is the whole point of the split: the arm is required exactly where
+    # the property that also gates deterministic CI is set, and nowhere else.
+    conditions = images["arm_ruleset"]["conditions"]
+    require(
+        conditions.get("ref_name") == images["preimage"]["conditions"]["ref_name"],
+        "arm ruleset targets different refs than the protection ruleset",
+    )
+    require(
+        "repository_name" not in conditions,
+        "arm ruleset must be scoped by repository property, not by name",
+    )
+    require(
+        conditions.get("repository_property")
+        == {
+            "exclude": [],
+            "include": [{
+                "name": contract["core_checks_property"],
+                "property_values": [contract["core_checks_value"]],
+                "source": "custom",
+            }],
+        },
+        "arm ruleset is not scoped to the deterministic-CI property",
+    )
 
     for name in ("forbidden_required_status_contexts", "deterministic_required_status_contexts"):
         values = contract.get(name)
@@ -106,11 +155,6 @@ def read_contract(path: Path = CONTRACT) -> dict:
         & set(contract["deterministic_required_status_contexts"]),
         "forbidden and deterministic contexts overlap",
     )
-    for name in ("core_checks_property", "core_checks_value"):
-        require(
-            isinstance(contract.get(name), str) and contract[name],
-            f"contract {name} is invalid",
-        )
     deterministic_rulesets = contract.get("deterministic_rulesets")
     require(isinstance(deterministic_rulesets, list) and deterministic_rulesets, "deterministic rulesets are missing")
     ids = []
@@ -250,14 +294,14 @@ def verify_ruleset_state(contract: dict, read, expected: str | None = None) -> t
     if live == contract["preimage"]:
         state = "ready"
     elif live == contract["postimage"]:
-        state = "retargeted"
+        state = "split"
     else:
         raise AuditError("main-protection differs from both full reviewed preimage and postimage")
     require(expected is None or state == expected, f"ruleset state is {state}, expected {expected}")
     return state, live
 
 
-def verify_ruleset_exclusivity(contract: dict, read, current_path: str) -> dict[int, dict]:
+def verify_ruleset_exclusivity(contract: dict, read, state: str) -> dict[int, dict]:
     organization = contract["organization"]
     recognized = []
     conflicts = []
@@ -277,10 +321,29 @@ def verify_ruleset_exclusivity(contract: dict, read, current_path: str) -> dict[
                 for check in parameters.get("required_status_checks", []):
                     if check.get("context") in contract["forbidden_required_status_contexts"]:
                         conflicts.append((candidate.get("id"), check.get("context")))
-    require(
-        recognized == [(contract["ruleset_id"], current_path)],
-        f"retired and replacement workflow identities are not exclusive: {recognized}",
-    )
+    named = [
+        candidate_id
+        for candidate_id, candidate in candidates.items()
+        if candidate.get("name") == contract["arm_ruleset_name"]
+    ]
+    if state == "ready":
+        # Exactly one selector, on the protection ruleset, still on the retired
+        # path — and the replacement ruleset must not exist yet.
+        require(not named, f"arm ruleset already exists before the split: {named}")
+        require(
+            recognized == [(contract["ruleset_id"], contract["retired_path"])],
+            f"retired and replacement workflow identities are not exclusive: {recognized}",
+        )
+    else:
+        require(len(named) == 1, f"split state must have exactly one arm ruleset, found {named}")
+        require(
+            recognized == [(named[0], contract["replacement_path"])],
+            f"retired and replacement workflow identities are not exclusive: {recognized}",
+        )
+        require(
+            normalize_ruleset(candidates[named[0]]) == contract["arm_ruleset"],
+            "arm ruleset drifted from its full reviewed image",
+        )
     require(not conflicts, f"retired or App authorization status is also required: {conflicts}")
     return candidates
 
@@ -319,17 +382,25 @@ def verify_deterministic_ci(
             for item in values
             if isinstance(item, dict)
         }
+    # Scoped to the repositories the arm rule covers, which after the split is
+    # exactly those carrying the deterministic-CI property. A repository outside
+    # that set gets no arm, so the arm cannot become its only merge precondition
+    # — which is the hazard ADR 0091 guarded against with a fleet-wide demand it
+    # could not satisfy. Repositories with the property but no declared stack are
+    # still a hole: they would be armed with nothing deterministic behind them.
+    covered = []
     missing = []
     for repository in repositories:
         full_name = repository["full_name"]
         values = properties_by_repository.get(full_name, {})
-        stack = values.get("verjson-stack")
-        if (
-            values.get(contract["core_checks_property"]) != contract["core_checks_value"]
-            or stack not in declarations
-        ):
+        if values.get(contract["core_checks_property"]) != contract["core_checks_value"]:
+            continue
+        covered.append(full_name)
+        if values.get("verjson-stack") not in declarations:
             missing.append(full_name)
-    concise_missing("governed default branches without canonical deterministic required CI", sorted(missing))
+    require(covered, "no repository carries the deterministic-CI property; the arm would govern nothing")
+    concise_missing("armed default branches without canonical deterministic required CI", sorted(missing))
+    return sorted(covered)
 
 
 def verify_no_repository_shadowing(contract: dict, read, repositories: list[dict]) -> None:
@@ -389,7 +460,7 @@ def read_workflow(read, selected: dict, label: str) -> dict:
     return workflow
 
 
-def verify_selected_workflow_is_schedulable(live: dict, read) -> None:
+def verify_selected_workflow_is_schedulable(carrier: dict, read) -> None:
     """Fail while the ruleset selects a workflow GitHub can never schedule.
 
     A ruleset workflow runs only on `pull_request`, `pull_request_target`, or
@@ -399,7 +470,7 @@ def verify_selected_workflow_is_schedulable(live: dict, read) -> None:
     verified this, so removing the `pull_request` trigger from the selected
     workflow took the organization gate down silently for four days.
     """
-    selected = selected_workflow(live)
+    selected = selected_workflow(carrier)
     triggers = read_workflow(read, selected, "selected").get("on")
     require(isinstance(triggers, dict) and triggers, "selected workflow declares no event triggers")
     require(
@@ -412,7 +483,7 @@ def verify_selected_workflow_is_schedulable(live: dict, read) -> None:
 
 
 def verify_replacement_workflow(contract: dict, read) -> None:
-    selected = selected_workflow(contract["postimage"])
+    selected = selected_workflow(contract["arm_ruleset"])
     workflow = read_workflow(read, selected, "replacement")
     triggers = workflow.get("on")
     require(isinstance(triggers, dict) and "pull_request_target" in triggers, "replacement lacks pull_request_target")
@@ -425,14 +496,27 @@ def verify_replacement_workflow(contract: dict, read) -> None:
     require(arm.get("runs-on") == expected_runner, "required arm is not routed through the trusted lane")
 
 
-def audit(contract: dict, read=gh_pages) -> dict:
+def audit(contract: dict, read=gh_pages, allow_unschedulable_selection: bool = False) -> dict:
     state, live = verify_ruleset_state(contract, read)
-    current_path = workflow_path(live)
-    # Before any rollout precondition: a precondition explains why the retarget
+    candidates = verify_ruleset_exclusivity(contract, read, state)
+    # Whichever ruleset carries the workflows rule right now is the one whose
+    # selection has to be startable.
+    carrier = live if state == "ready" else next(
+        normalize_ruleset(candidate)
+        for candidate in candidates.values()
+        if candidate.get("name") == contract["arm_ruleset_name"]
+    )
+    current_path = workflow_path(carrier)
+    # Before any rollout precondition: a precondition explains why the split
     # cannot land yet, which is a different and lesser fact than the currently
     # selected workflow being unable to run at all.
-    verify_selected_workflow_is_schedulable(live, read)
-    candidates = verify_ruleset_exclusivity(contract, read, current_path)
+    # `allow_unschedulable_selection` is ONLY for rendering the split payloads,
+    # because the split is this defect's remedy: refusing to render it while the
+    # selection is dead would make the audit guard the outage in place. It never
+    # suppresses the finding for a plain audit, and it never applies once split —
+    # a dead selection then is a live regression, not a state being repaired.
+    if not (allow_unschedulable_selection and state == "ready"):
+        verify_selected_workflow_is_schedulable(carrier, read)
     repositories = paginated_items(
         read,
         f"orgs/{contract['organization']}/repos?per_page=100&type=all",
@@ -444,9 +528,12 @@ def audit(contract: dict, read=gh_pages) -> dict:
         require(isinstance(full_name, str) and full_name, "organization repository has no full_name")
         require(full_name not in governed, f"duplicate organization repository {full_name}")
         governed[full_name] = bool(repository.get("private"))
-    verify_deterministic_ci(contract, read, repositories, candidates)
+    covered = verify_deterministic_ci(contract, read, repositories, candidates)
     verify_no_repository_shadowing(contract, read, repositories)
-    verify_authorization(contract, read, governed)
+    # The App credential only has to reach where the arm actually runs. Demanding
+    # organization-wide reach for a rule that governs a subset is what made the
+    # credential scope look like a blocker rather than a decision.
+    verify_authorization(contract, read, {name: governed[name] for name in covered})
     verify_replacement_workflow(contract, read)
     return {
         "organization": contract["organization"],
@@ -454,22 +541,28 @@ def audit(contract: dict, read=gh_pages) -> dict:
         "current_path": current_path,
         "replacement_path": contract["replacement_path"],
         "governed_repositories": len(governed),
+        "armed_repositories": len(covered),
         "state": state,
     }
 
 
+SPLIT_MODES = {"split": "postimage", "arm-ruleset": "arm_ruleset"}
+
+
 def render_payload(contract: dict, mode: str, read=gh_pages) -> dict:
-    if mode == "retarget":
-        require(audit(contract, read)["state"] == "ready", "retarget payload requires ready preflight")
-        return contract["postimage"]
-    verify_ruleset_state(contract, read, "retargeted")
+    if mode in SPLIT_MODES:
+        report = audit(contract, read, allow_unschedulable_selection=True)
+        require(report["state"] == "ready", f"{mode} payload requires ready preflight")
+        return contract[SPLIT_MODES[mode]]
+    verify_ruleset_state(contract, read, "split")
     return contract["rollback_payload"]
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Audit the AI authorization-arm ruleset rollout")
     modes = parser.add_mutually_exclusive_group()
-    modes.add_argument("--render-retarget-payload", action="store_true")
+    modes.add_argument("--render-split-payload", action="store_true")
+    modes.add_argument("--render-arm-ruleset-payload", action="store_true")
     modes.add_argument("--render-rollback-payload", action="store_true")
     return parser.parse_args()
 
@@ -478,8 +571,10 @@ def main() -> int:
     args = parse_args()
     try:
         contract = read_contract()
-        if args.render_retarget_payload:
-            result = render_payload(contract, "retarget")
+        if args.render_split_payload:
+            result = render_payload(contract, "split")
+        elif args.render_arm_ruleset_payload:
+            result = render_payload(contract, "arm-ruleset")
         elif args.render_rollback_payload:
             result = render_payload(contract, "rollback")
         else:
