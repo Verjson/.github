@@ -90,9 +90,11 @@ chmod +x "$acquire_fixture/bin/npm"
 
 trusted_user_config="$acquire_fixture/runner/secretless-acquisition.npmrc"
 trusted_global_config="$acquire_fixture/runner/secretless-empty-global.npmrc"
-mkdir -p "$acquire_fixture/runner"
+trusted_cache="$acquire_fixture/runner/secretless-npm-cache"
+mkdir -p "$acquire_fixture/runner" "$trusted_cache/_cacache"
 if (cd "$acquire_fixture/clean" && PATH="$acquire_fixture/bin:$PATH" \
     NODE_AUTH_TOKEN='package-secret' NPM_STUB_LOG="$acquire_fixture/npm.log" \
+    NPM_CONFIG_CACHE="$trusted_cache" \
     NPM_CONFIG_USERCONFIG="$trusted_user_config" \
     NPM_CONFIG_GLOBALCONFIG="$trusted_global_config" bash "$acquire_script") \
     && grep -qFx 'ci --ignore-scripts --no-audit --no-fund' "$acquire_fixture/npm.log" \
@@ -108,6 +110,7 @@ fi
 
 if (cd "$acquire_fixture/malicious" && PATH="$acquire_fixture/bin:$PATH" \
     NODE_AUTH_TOKEN='package-secret' NPM_STUB_LOG="$acquire_fixture/malicious.log" \
+    NPM_CONFIG_CACHE="$trusted_cache" \
     NPM_CONFIG_USERCONFIG="$trusted_user_config" \
     NPM_CONFIG_GLOBALCONFIG="$trusted_global_config" bash "$acquire_script") >/dev/null 2>&1 \
     || [ -e "$acquire_fixture/malicious.log" ]; then

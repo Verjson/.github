@@ -13,6 +13,7 @@ name: node-ci (reusable)
 #   jobs:
 #     ci:
 #       permissions:              # REQUIRED by the called workflow's jobs:
+#         actions: write          # REQUIRED only for secretless-pr transfer cleanup
 #         contents: read          # a reusable's GITHUB_TOKEN is capped by the
 #         statuses: read          # REQUIRED: lets eligibility read the head's
 #                                 # renovate/stability-days status to defer CI on
@@ -71,7 +72,8 @@ on:
           Acquire approved private dependencies in a non-executing job, then run
           PR-controlled build and test code in a credentialless job. Intended
           only for pull_request validation; requires NODE_AUTH_TOKEN and
-          approved-internal-packages, but does not require caller packages: read.
+          approved-internal-packages plus caller actions: write for exact-artifact
+          cleanup, but does not require caller packages: read.
         required: false
         type: boolean
         default: false
@@ -251,6 +253,8 @@ jobs:
     timeout-minutes: ${{ inputs.timeout-minutes }}
     permissions:
       contents: read
+    outputs:
+      transfer-artifact-id: ${{ steps.upload-secretless-transfer.outputs.artifact-id }}
     steps:
       - name: Enforce the secretless PR boundary
         env:
@@ -347,6 +351,7 @@ jobs:
       - name: Acquire dependencies without lifecycle execution
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NODE_AUTH_TOKEN }}
+          NPM_CONFIG_CACHE: ${{ runner.temp }}/secretless-npm-cache-${{ github.run_id }}-${{ github.run_attempt }}
           NPM_CONFIG_GLOBALCONFIG: ${{ runner.temp }}/secretless-empty-global.npmrc
           NPM_CONFIG_USERCONFIG: ${{ runner.temp }}/secretless-acquisition.npmrc
         run: |
@@ -366,14 +371,62 @@ jobs:
             '//npm.pkg.github.com/:_authToken=${NODE_AUTH_TOKEN}' \
             > "$NPM_CONFIG_USERCONFIG"
           npm ci --ignore-scripts --no-audit --no-fund
-      - name: Package credential-free dependency tree
-        run: tar -czf "$RUNNER_TEMP/secretless-node-modules.tgz" node_modules
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+          if grep -R -a -qF -- "$NODE_AUTH_TOKEN" "$NPM_CONFIG_CACHE/_cacache"; then
+            echo "::error::the npm cache contains the acquisition credential"
+            exit 1
+          fi
+      - name: Package bounded credential-free npm cache
+        env:
+          CACHE_DIR: ${{ runner.temp }}/secretless-npm-cache-${{ github.run_id }}-${{ github.run_attempt }}
+          MAX_PAYLOAD_BYTES: '83886080'
+          NPM_CONFIG_GLOBALCONFIG: ${{ runner.temp }}/secretless-empty-global.npmrc
+          NPM_CONFIG_USERCONFIG: ${{ runner.temp }}/secretless-empty-package.npmrc
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          RUN_ID: ${{ github.run_id }}
+          TRANSFER_DIR: ${{ runner.temp }}/secretless-transfer-${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          [ -d "$CACHE_DIR/_cacache" ] || {
+            echo "::error::npm produced no content-addressed cache for offline transfer"
+            exit 1
+          }
+          : > "$NPM_CONFIG_GLOBALCONFIG"
+          : > "$NPM_CONFIG_USERCONFIG"
+          npm cache verify --cache "$CACHE_DIR"
+          rm -rf node_modules "$TRANSFER_DIR"
+          mkdir -p "$TRANSFER_DIR"
+          tar -C "$CACHE_DIR" -cf "$TRANSFER_DIR/npm-cache.tar" _cacache
+          payload_bytes="$(stat -c %s "$TRANSFER_DIR/npm-cache.tar")"
+          if [ "$payload_bytes" -gt "$MAX_PAYLOAD_BYTES" ]; then
+            echo "::error::secretless cache payload is ${payload_bytes} bytes; the 80 MiB payload budget is ${MAX_PAYLOAD_BYTES} bytes"
+            exit 1
+          fi
+          payload_sha256="$(sha256sum "$TRANSFER_DIR/npm-cache.tar" | cut -d' ' -f1)"
+          lock_sha256="$(sha256sum package-lock.json | cut -d' ' -f1)"
+          printf '%s\n' \
+            "run_id=$RUN_ID" \
+            "run_attempt=$RUN_ATTEMPT" \
+            "lock_sha256=$lock_sha256" \
+            "payload_sha256=$payload_sha256" \
+            "payload_bytes=$payload_bytes" \
+            > "$TRANSFER_DIR/manifest"
+      - id: upload-secretless-transfer
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: secretless-node-modules-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/secretless-node-modules.tgz
+          name: secretless-npm-cache-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/secretless-transfer-${{ github.run_id }}-${{ github.run_attempt }}
+          compression-level: 0
           retention-days: 1
           if-no-files-found: error
+      - name: Remove local acquisition and transfer state
+        if: always()
+        env:
+          CACHE_DIR: ${{ runner.temp }}/secretless-npm-cache-${{ github.run_id }}-${{ github.run_attempt }}
+          TRANSFER_DIR: ${{ runner.temp }}/secretless-transfer-${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          rm -rf node_modules "$CACHE_DIR" "$TRANSFER_DIR"
+          rm -f "$RUNNER_TEMP/secretless-acquisition.npmrc" "$RUNNER_TEMP/secretless-empty-global.npmrc" \
+            "$RUNNER_TEMP/secretless-empty-package.npmrc"
 
   build-test:
     needs: [eligibility, acquire-secretless-dependencies]
@@ -404,42 +457,11 @@ jobs:
           submodules: ${{ inputs.secretless-pr && 'false' || 'recursive' }}
           token: ${{ inputs.secretless-pr && github.token || secrets.submodules-token || github.token }}
           persist-credentials: ${{ !inputs.secretless-pr }}
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        if: needs.eligibility.outputs.should-run != 'false' && inputs.secretless-pr
-        with:
-          name: secretless-node-modules-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/secretless-dependencies
-      - name: Restore secretless dependency tree
-        if: needs.eligibility.outputs.should-run != 'false' && inputs.secretless-pr
-        env:
-          GH_TOKEN: ''
-          GITHUB_TOKEN: ''
-          NODE_AUTH_TOKEN: ''
-          NPM_TOKEN: ''
-          NPM_CONFIG_USERCONFIG: ${{ runner.temp }}/secretless-empty.npmrc
-          AWS_ACCESS_KEY_ID: ''
-          AWS_SECRET_ACCESS_KEY: ''
-          AWS_SESSION_TOKEN: ''
-          GOOGLE_APPLICATION_CREDENTIALS: ''
-          AZURE_CREDENTIALS: ''
-          ACTIONS_ID_TOKEN_REQUEST_TOKEN: ''
-          ACTIONS_ID_TOKEN_REQUEST_URL: ''
-        run: |
-          set -euo pipefail
-          : > "$NPM_CONFIG_USERCONFIG"
-          tar -xzf "$RUNNER_TEMP/secretless-dependencies/secretless-node-modules.tgz"
-          for name in GH_TOKEN GITHUB_TOKEN NODE_AUTH_TOKEN NPM_TOKEN \
-            AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN \
-            GOOGLE_APPLICATION_CREDENTIALS AZURE_CREDENTIALS \
-            ACTIONS_ID_TOKEN_REQUEST_TOKEN ACTIONS_ID_TOKEN_REQUEST_URL; do
-            printf '%s=\n' "$name" >> "$GITHUB_ENV"
-          done
-          printf 'NPM_CONFIG_USERCONFIG=%s\n' "$NPM_CONFIG_USERCONFIG" >> "$GITHUB_ENV"
       - name: Prepare job-scoped changelog tool cache
         if: needs.eligibility.outputs.should-run != 'false'
         run: echo "VERJSON_CHANGELOG_TOOL_CACHE=$RUNNER_TEMP/verjson-changelog-tools" >> "$GITHUB_ENV"
       - name: Prepare job-scoped npm cache
-        if: needs.eligibility.outputs.should-run != 'false' && inputs.cache
+        if: needs.eligibility.outputs.should-run != 'false' && inputs.cache && !inputs.secretless-pr
         run: echo "npm_config_cache=$RUNNER_TEMP/verjson-npm-cache" >> "$GITHUB_ENV"
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         if: needs.eligibility.outputs.should-run != 'false'
@@ -448,11 +470,112 @@ jobs:
           # setup-node caches npm's download cache, never node_modules or build
           # output. An absent lockfile disables caching instead of failing jobs
           # in repositories that do not use npm lockfiles.
-          cache: ${{ inputs.cache && hashFiles(inputs.cache-dependency-path) != '' && 'npm' || '' }}
+          cache: ${{ !inputs.secretless-pr && inputs.cache && hashFiles(inputs.cache-dependency-path) != '' && 'npm' || '' }}
           cache-dependency-path: ${{ inputs.cache-dependency-path }}
           package-manager-cache: false
           registry-url: ${{ inputs.scope != '' && 'https://npm.pkg.github.com' || '' }}
           scope: ${{ inputs.scope }}
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        if: needs.eligibility.outputs.should-run != 'false' && inputs.secretless-pr
+        with:
+          name: secretless-npm-cache-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/secretless-transfer-${{ github.run_id }}-${{ github.run_attempt }}
+      - name: Install from verified secretless npm cache
+        if: needs.eligibility.outputs.should-run != 'false' && inputs.secretless-pr
+        env:
+          GH_TOKEN: ''
+          GITHUB_TOKEN: ''
+          NODE_AUTH_TOKEN: ''
+          NPM_TOKEN: ''
+          NPM_CONFIG_CACHE: ${{ runner.temp }}/secretless-runtime-cache-${{ github.run_id }}-${{ github.run_attempt }}
+          NPM_CONFIG_GLOBALCONFIG: ${{ runner.temp }}/secretless-empty-global-build.npmrc
+          NPM_CONFIG_USERCONFIG: ${{ runner.temp }}/secretless-empty.npmrc
+          AWS_ACCESS_KEY_ID: ''
+          AWS_SECRET_ACCESS_KEY: ''
+          AWS_SESSION_TOKEN: ''
+          GOOGLE_APPLICATION_CREDENTIALS: ''
+          AZURE_CREDENTIALS: ''
+          ACTIONS_ID_TOKEN_REQUEST_TOKEN: ''
+          ACTIONS_ID_TOKEN_REQUEST_URL: ''
+          MAX_PAYLOAD_BYTES: '83886080'
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          RUN_ID: ${{ github.run_id }}
+          SECRETLESS_CACHE_DIR: ${{ runner.temp }}/secretless-build-cache-${{ github.run_id }}-${{ github.run_attempt }}
+          TRANSFER_DIR: ${{ runner.temp }}/secretless-transfer-${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          cleanup() {
+            rm -rf "$SECRETLESS_CACHE_DIR" "$TRANSFER_DIR"
+          }
+          trap cleanup EXIT
+          : > "$NPM_CONFIG_GLOBALCONFIG"
+          : > "$NPM_CONFIG_USERCONFIG"
+          manifest="$TRANSFER_DIR/manifest"
+          payload="$TRANSFER_DIR/npm-cache.tar"
+          [ -f "$manifest" ] && [ -f "$payload" ] || {
+            echo "::error::secretless cache transfer is incomplete"
+            exit 1
+          }
+          [ "$(wc -l < "$manifest")" -eq 5 ] || {
+            echo "::error::secretless cache manifest has an unexpected shape"
+            exit 1
+          }
+          manifest_value() {
+            local key="$1"
+            local value
+            value="$(sed -n "s/^${key}=//p" "$manifest")"
+            [ -n "$value" ] && [ "$(grep -c "^${key}=" "$manifest")" -eq 1 ] || return 1
+            printf '%s' "$value"
+          }
+          manifest_run_id="$(manifest_value run_id)"
+          manifest_run_attempt="$(manifest_value run_attempt)"
+          manifest_lock_sha256="$(manifest_value lock_sha256)"
+          manifest_payload_sha256="$(manifest_value payload_sha256)"
+          manifest_payload_bytes="$(manifest_value payload_bytes)"
+          [[ "$manifest_run_id" =~ ^[0-9]+$ && "$manifest_run_attempt" =~ ^[0-9]+$ ]]
+          [[ "$manifest_lock_sha256" =~ ^[0-9a-f]{64}$ && "$manifest_payload_sha256" =~ ^[0-9a-f]{64}$ ]]
+          [[ "$manifest_payload_bytes" =~ ^[0-9]+$ ]]
+          [ "$manifest_run_id" = "$RUN_ID" ] && [ "$manifest_run_attempt" = "$RUN_ATTEMPT" ] || {
+            echo "::error::secretless cache belongs to another run attempt"
+            exit 1
+          }
+          [ "$manifest_lock_sha256" = "$(sha256sum package-lock.json | cut -d' ' -f1)" ] || {
+            echo "::error::secretless cache does not match this package lock"
+            exit 1
+          }
+          actual_payload_bytes="$(stat -c %s "$payload")"
+          [ "$actual_payload_bytes" = "$manifest_payload_bytes" ] && [ "$actual_payload_bytes" -le "$MAX_PAYLOAD_BYTES" ] || {
+            echo "::error::secretless cache size is invalid"
+            exit 1
+          }
+          [ "$manifest_payload_sha256" = "$(sha256sum "$payload" | cut -d' ' -f1)" ] || {
+            echo "::error::secretless cache digest mismatch"
+            exit 1
+          }
+          mkdir -p "$SECRETLESS_CACHE_DIR"
+          tar --no-same-owner --no-same-permissions -C "$SECRETLESS_CACHE_DIR" -xf "$payload"
+          [ -d "$SECRETLESS_CACHE_DIR/_cacache" ] || {
+            echo "::error::secretless transfer contains no npm content-addressed cache"
+            exit 1
+          }
+          {
+            for name in GH_TOKEN GITHUB_TOKEN NODE_AUTH_TOKEN NPM_TOKEN \
+              AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN \
+              GOOGLE_APPLICATION_CREDENTIALS AZURE_CREDENTIALS \
+              ACTIONS_ID_TOKEN_REQUEST_TOKEN ACTIONS_ID_TOKEN_REQUEST_URL; do
+              printf '%s=\n' "$name"
+            done
+            printf 'npm_config_cache=%s\n' "$NPM_CONFIG_CACHE"
+            printf 'NPM_CONFIG_GLOBALCONFIG=%s\n' "$NPM_CONFIG_GLOBALCONFIG"
+            printf 'NPM_CONFIG_USERCONFIG=%s\n' "$NPM_CONFIG_USERCONFIG"
+          } >> "$GITHUB_ENV"
+          npm ci --offline --ignore-scripts --no-audit --no-fund --cache "$SECRETLESS_CACHE_DIR"
+      - name: Remove local secretless transfer state
+        if: always() && needs.eligibility.outputs.should-run != 'false' && inputs.secretless-pr
+        env:
+          SECRETLESS_CACHE_DIR: ${{ runner.temp }}/secretless-build-cache-${{ github.run_id }}-${{ github.run_attempt }}
+          TRANSFER_DIR: ${{ runner.temp }}/secretless-transfer-${{ github.run_id }}-${{ github.run_attempt }}
+        run: rm -rf "$SECRETLESS_CACHE_DIR" "$TRANSFER_DIR"
       - name: Start database service
         # Optional Postgres service for DB-backed test suites (e.g. Jest against
         # pgvector/pgvector:pg16 with DATABASE_URL). Default-off: this whole step
@@ -815,8 +938,13 @@ jobs:
         if: needs.eligibility.outputs.should-run != 'false'
       - run: npm run lint --if-present
         if: needs.eligibility.outputs.should-run != 'false'
+      - name: Remove job-scoped secretless runtime cache
+        if: always() && needs.eligibility.outputs.should-run != 'false' && inputs.secretless-pr
+        env:
+          RUNTIME_CACHE_DIR: ${{ runner.temp }}/secretless-runtime-cache-${{ github.run_id }}-${{ github.run_attempt }}
+        run: rm -rf "$RUNTIME_CACHE_DIR"
       - name: Bound npm cache upload
-        if: always() && needs.eligibility.outputs.should-run != 'false' && inputs.cache
+        if: always() && needs.eligibility.outputs.should-run != 'false' && inputs.cache && !inputs.secretless-pr
         env:
           CACHE_MAX_MB: ${{ inputs.cache-max-mb }}
         run: |
@@ -873,3 +1001,35 @@ jobs:
                 exit 1 ;;
             esac
           fi
+
+  cleanup-secretless-transfer:
+    needs: [eligibility, acquire-secretless-dependencies, build-test]
+    if: always() && inputs.secretless-pr && needs.acquire-secretless-dependencies.outputs.transfer-artifact-id != ''
+    runs-on: ${{ fromJSON(vars.VERJSON_LANE_UNTRUSTED || '["ubuntu-24.04"]') }}
+    timeout-minutes: 5
+    permissions:
+      actions: write
+    steps:
+      - name: Delete exact run-attempt transfer artifact
+        env:
+          ARTIFACT_ID: ${{ needs.acquire-secretless-dependencies.outputs.transfer-artifact-id }}
+          EXPECTED_NAME: secretless-npm-cache-${{ github.run_id }}-${{ github.run_attempt }}
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          [[ "$ARTIFACT_ID" =~ ^[1-9][0-9]*$ && "$RUN_ID" =~ ^[1-9][0-9]*$ ]] || {
+            echo "::error::invalid secretless transfer artifact identity"
+            exit 1
+          }
+          metadata="$(gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$ARTIFACT_ID")"
+          jq -e \
+            --arg name "$EXPECTED_NAME" \
+            --argjson artifact_id "$ARTIFACT_ID" \
+            --argjson run_id "$RUN_ID" \
+            '.id == $artifact_id and .name == $name and .expired == false and .workflow_run.id == $run_id' \
+            <<< "$metadata" >/dev/null || {
+              echo "::error::secretless transfer artifact identity mismatch"
+              exit 1
+            }
+          gh api --method DELETE "repos/$GITHUB_REPOSITORY/actions/artifacts/$ARTIFACT_ID"
