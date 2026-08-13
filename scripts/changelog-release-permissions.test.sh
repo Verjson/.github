@@ -1,14 +1,12 @@
 #!/usr/bin/env bash
 # Exercises the token authority of the reusable changelog release workflow
-# (Verjson/.github#295).
+# (Verjson/.github#295, Verjson/.github#784).
 #
-# A called workflow's `permissions` block is the cap — a caller granting
-# contents: write cannot raise it. When the release job inherited the
-# workflow-level `contents: read` default, the push credential reached the final
-# atomic push read-only and every consumer release died with HTTP 403 after
-# generating the snapshot. The assertions below pin the shape that failure
-# requires: write authority scoped to the job that pushes, read everywhere else,
-# and a short-lived App token constrained to the current repository (#329).
+# The release job once pushed with GITHUB_TOKEN-derived credentials, so it had
+# to grant that token contents-write (#295). The dedicated release App now owns
+# the push credential (#329); the job token only reads the canonical contract.
+# The assertions below keep both workflow and generated caller GITHUB_TOKENs
+# read-only while the short-lived App token alone receives contents-write.
 set -uo pipefail
 
 here="$(cd "$(dirname "$0")" && pwd)"
@@ -20,9 +18,8 @@ pass() { printf 'ok   - %s\n' "$1"; }
 fail() { printf 'FAIL - %s\n' "$1"; fails=$((fails + 1)); }
 
 # The release job's header: everything from `  release:` up to its `steps:`.
-# Scoping matters — a workflow-level `contents: write` would satisfy a bare
-# file-wide grep while granting the permission far more broadly than the push
-# needs.
+# Scoping matters — a file-wide read check would not prove that this job did not
+# override the workflow default with write authority.
 job_header="$(awk '
   /^  release:/ { inside = 1; next }
   inside && /^    steps:/ { exit }
@@ -30,16 +27,16 @@ job_header="$(awk '
   inside { print }
 ' "$workflow")"
 
-grep -qE '^      contents: write$' <<<"$job_header" \
-  && pass "the release job grants contents: write to its own token" \
-  || fail "the release job does not grant contents: write, so its push cannot succeed"
+grep -qE '^      contents: read$' <<<"$job_header" \
+  && pass "the release job keeps GITHUB_TOKEN contents-read-only" \
+  || fail "the release job grants GITHUB_TOKEN more than contents-read"
 
 grep -qE '^    permissions:$' <<<"$job_header" \
-  && pass "the write grant is scoped to the release job" \
+  && pass "the release job declares its read-only token boundary" \
   || fail "the release job declares no permissions block of its own"
 
-# Least privilege is the reason the job-level override exists at all: anything
-# this workflow gains later must ask for it explicitly.
+# Least privilege is the reason the explicit workflow and job boundaries exist:
+# anything this workflow gains later must ask for it explicitly.
 workflow_default="$(awk '
   /^permissions:/ { inside = 1; next }
   inside && /^[^ ]/ { exit }
@@ -50,8 +47,9 @@ workflow_default="$(awk '
   && pass "the workflow-level default stays contents: read" \
   || fail "the workflow-level default is no longer a bare contents: read"
 
-# The permission only matters because of what the job does with it. If either of
-# these changes, the grant above needs re-justifying rather than inheriting.
+# The read-only boundary is safe because the push uses an independent App token.
+# If this wiring changes, the token grants need re-justifying rather than
+# inheriting.
 python3 - "$workflow" <<'PY'
 import sys
 

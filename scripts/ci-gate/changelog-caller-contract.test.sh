@@ -757,6 +757,22 @@ wire_github_token() {
   sed -i '/^      release_app_private_key: /c\      push_token: ${{ secrets.GITHUB_TOKEN }}' \
     "$1/.github/workflows/release.yml"
 }
+grant_snapshot_github_token_write() {
+  python3 - "$1/.github/workflows/release.yml" <<'PY'
+import sys
+
+path = sys.argv[1]
+text = open(path, encoding="utf-8").read()
+start = text.index("  snapshot:")
+end = text.index("  publish:", start)
+snapshot = text[start:end]
+needle = "      contents: read\n"
+if needle not in snapshot:
+    raise SystemExit("snapshot fixture no longer has a read-only GITHUB_TOKEN")
+snapshot = snapshot.replace(needle, "      contents: write\n", 1)
+open(path, "w", encoding="utf-8").write(text[:start] + snapshot + text[end:])
+PY
+}
 
 # #463/#464/#465. Each mutation below reproduces one defect the hand-copied
 # release caller shipped to every migrated repository, applied to the generated
@@ -929,6 +945,7 @@ grep -qE 'dedicated release App credential|RELEASE_APP_PRIVATE_KEY' "$tmproot/ru
   && pass "the broad-token rejection names the dedicated release App remedy" \
   || fail "the last credential case failed for some other reason: $(tail -2 "$tmproot/run.out")"
 
+expect_rejection "a snapshot caller granting GITHUB_TOKEN contents-write (#784)" grant_snapshot_github_token_write
 expect_rejection "a snapshot job that verifies nothing first (#463, #464)" drop_snapshot_needs
 expect_rejection "a snapshot job with no explicit runner (#465)" drop_snapshot_runner
 expect_rejection "a resumed release that verifies the later dispatch tree instead of its tagged snapshot (#591)" drop_resume_snapshot_checkout

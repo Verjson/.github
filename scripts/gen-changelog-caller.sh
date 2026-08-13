@@ -537,7 +537,9 @@ jobs:
     if: needs.verify.outputs.snapshot-exists != 'true'
     uses: Verjson/.github/.github/workflows/changelog-release.yml@${ref}
     permissions:
-      contents: write
+      # The reusable workflow pushes with its separately minted release App
+      # token. This caller grant caps only its read-only GITHUB_TOKEN (#784).
+      contents: read
     with:
       contract_ref: ${ref}
       version: \${{ inputs.version }}
@@ -1039,6 +1041,15 @@ while IFS= read -r release_workflow; do
   ! sed 's/#.*//' <<<"$snapshot_job" \
     | grep -qE 'ORG_ADMIN_TOKEN|push_token|secrets\.(GITHUB_TOKEN|github_token)|github\.token' \
     || fail "$release_workflow snapshot still passes a broad or repository Actions push token instead of the dedicated release App credential"
+  snapshot_permissions="$(awk '
+    /^    permissions:[[:space:]]*$/ { in_permissions = 1; next }
+    in_permissions && /^    [^[:space:]]/ { exit }
+    in_permissions { print }
+  ' <<<"$snapshot_job")"
+  snapshot_permissions_effective="$(sed 's/#.*//' <<<"$snapshot_permissions" | sed '/^[[:space:]]*$/d')"
+  [ "$(grep -c . <<<"$snapshot_permissions_effective")" -eq 1 ] \
+    && grep -qE '^[[:space:]]+contents:[[:space:]]+read[[:space:]]*$' <<<"$snapshot_permissions_effective" \
+    || fail "$release_workflow snapshot grants GITHUB_TOKEN more than contents-read; only the dedicated release App token may push (#784)"
 
   # The reusable workflow and its engine are one contract. Checking only the
   # uses: ref lets a caller execute workflow A with contract_ref B (#349).
