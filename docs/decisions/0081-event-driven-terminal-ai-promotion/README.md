@@ -110,6 +110,17 @@ Only an exact check/head `ai-merge` marker proceeds to the existing exact-head a
 review-run, and attestation validation. A present but malformed, stale, duplicated, or
 forged AI marker remains a hard failure rather than being misclassified as human.
 
+During rollout, an exact legacy marker without the authority suffix is accepted only
+after the same validated review run proves its authority through the unique
+`dispatch-merge` job: completed success means `ai-merge`, while completed skipped means
+the non-merging `ai-approve` path and remains a no-op. A missing, duplicate, incomplete,
+cancelled, or failed dispatch job fails closed. This compatibility is necessary because
+`pull_request_target: closed` executes the newly merged reconciler while the approval
+marker on that same PR was emitted by the pre-merge default-branch workflow. The review
+run is default-branch code, so its Actions `head_sha` identifies that trusted workflow
+revision rather than the reviewed PR head; the approval, check, and attestation retain
+the exact reviewed-head binding.
+
 ## Consequences
 
 - No job sleeps or polls while CI changes state, and CI completion cannot spend model

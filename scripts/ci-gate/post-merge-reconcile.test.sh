@@ -27,6 +27,7 @@ case "$*" in
   "api --paginate "*"/reviews?per_page=100") cat "$REVIEWS_FILE" ;;
   "api repos/"*"/check-runs/9001") cat "$CHECK_FILE" ;;
   "api repos/"*"/actions/runs/8001") cat "$RUN_FILE" ;;
+  "api repos/"*"/actions/runs/8001/jobs?per_page=100") cat "$JOBS_FILE" ;;
   "api repos/"*"/actions/runs/8001/artifacts?per_page=100") cat "$ARTIFACTS_FILE" ;;
   "api https://api.github.test/artifacts/81") printf 'fixture zip\n' ;;
   *) echo "unexpected evidence gh call: $*" >&2; exit 2 ;;
@@ -41,11 +42,12 @@ chmod +x "$tmp/evidence-bin/gh" "$tmp/evidence-bin/unzip"
 
 export PATH="$tmp/evidence-bin:$PATH" EVIDENCE_LOG="$tmp/evidence.log"
 export CHECK_FILE="$tmp/check.json" REVIEWS_FILE="$tmp/reviews.json" RUN_FILE="$tmp/run.json"
-export ARTIFACTS_FILE="$tmp/artifacts.json" ATTESTATION_SOURCE="$tmp/attestation-source.json"
+export JOBS_FILE="$tmp/jobs.json" ARTIFACTS_FILE="$tmp/artifacts.json"
+export ATTESTATION_SOURCE="$tmp/attestation-source.json"
 export TARGET_REPO=Verjson/example PR_NUMBER=7
 export MERGED_HEAD_SHA=1111111111111111111111111111111111111111
 export EXPECTED_APP_ID=4242 EXPECTED_APP_SLUG=verjson-ai-review-authorization
-export RUNNER_TEMP="$tmp" GITHUB_OUTPUT="$tmp/evidence-output"
+export DEFAULT_BRANCH=main RUNNER_TEMP="$tmp" GITHUB_OUTPUT="$tmp/evidence-output"
 
 write_check() {
   local summary="$1" status="${2:-completed}" conclusion="${3:-success}"
@@ -60,7 +62,8 @@ write_valid_ai_evidence() {
       body:"<!-- ai-review-authorization:9001 -->\n<!-- ai-review-run:8001 -->"}' \
     | jq -s '.' >"$REVIEWS_FILE"
   jq -nc --arg head "$MERGED_HEAD_SHA" \
-    '{repository:{full_name:"Verjson/example"},head_sha:$head,event:"workflow_dispatch",status:"completed",
+    '{repository:{full_name:"Verjson/example"},head_sha:"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",head_branch:"main",
+      event:"workflow_dispatch",status:"completed",
       conclusion:"success",path:".github/workflows/ai-review-merge.yml"}' >"$RUN_FILE"
   printf '{"artifacts":[{"name":"merge-attestation-8001","expired":false,"archive_download_url":"https://api.github.test/artifacts/81"}]}\n' >"$ARTIFACTS_FILE"
   jq -nc --arg head "$MERGED_HEAD_SHA" \
@@ -69,6 +72,7 @@ write_valid_ai_evidence() {
 }
 run_evidence() {
   : >"$EVIDENCE_LOG"; : >"$GITHUB_OUTPUT"
+  rm -rf "$RUNNER_TEMP/post-merge-evidence"
   bash "$tmp/evidence.sh" >"$tmp/evidence.out" 2>&1
 }
 expect_noop() {
@@ -90,6 +94,21 @@ expect_rejected() {
     exit 1
   fi
 }
+expect_legacy_noop() {
+  local label="$1"
+  if run_evidence && grep -qx 'eligible=false' "$GITHUB_OUTPUT" \
+     && grep -q '/reviews' "$EVIDENCE_LOG" && grep -q '/jobs?per_page=100' "$EVIDENCE_LOG" \
+     && ! grep -q '/artifacts' "$EVIDENCE_LOG"; then
+    printf 'ok   - %s\n' "$label"
+  else
+    printf 'FAIL - %s\n' "$label"
+    exit 1
+  fi
+}
+write_dispatch_job() {
+  jq -nc --arg conclusion "$1" \
+    '{jobs:[{id:71,name:"dispatch-merge",status:"completed",conclusion:$conclusion}]}' >"$JOBS_FILE"
+}
 
 for outcome in human skipped inconclusive blocking failed-app-approval; do
   write_check "$outcome path; ordinary branch protection authorized the merge"
@@ -110,6 +129,28 @@ else
   echo 'FAIL - exact-head ai-merge evidence did not reach attestation processing'
   exit 1
 fi
+
+write_valid_ai_evidence
+write_check $'Legacy AI approval persisted.\n<!-- ai-review-authorized:v1:9001:1111111111111111111111111111111111111111 -->'
+write_dispatch_job success
+if run_evidence && grep -qx 'eligible=true' "$GITHUB_OUTPUT" \
+   && grep -q '/jobs?per_page=100' "$EVIDENCE_LOG" \
+   && grep -q '^path=.*/post-merge-evidence/attestation.json$' "$GITHUB_OUTPUT"; then
+  printf 'ok   - legacy exact-head marker with successful ai-merge dispatch is accepted\n'
+else
+  echo "FAIL - legacy ai-merge dispatch evidence was not accepted: $(tail -1 "$tmp/evidence.out")"
+  sed 's/^/call: /' "$EVIDENCE_LOG"
+  exit 1
+fi
+
+write_dispatch_job skipped
+expect_legacy_noop "legacy ai-approve marker with skipped dispatch is a successful no-op"
+write_dispatch_job failure
+expect_rejected "legacy marker with failed dispatch evidence fails closed"
+printf '{"jobs":[]}\n' >"$JOBS_FILE"
+expect_rejected "legacy marker without dispatch evidence fails closed"
+printf '{"jobs":[{"name":"dispatch-merge","status":"completed","conclusion":"success"},{"name":"dispatch-merge","status":"completed","conclusion":"success"}]}\n' >"$JOBS_FILE"
+expect_rejected "ambiguous legacy dispatch evidence fails closed"
 
 write_check $'AI approval persisted.\n<!-- ai-review-authorized:v1:9001:2222222222222222222222222222222222222222:ai-merge -->'
 expect_rejected "stale AI authorization marker fails closed"
