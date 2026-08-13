@@ -42,13 +42,15 @@ caching: callers that install private `@verjson` packages pass
 `NODE_AUTH_TOKEN`. The reusable build job requests no package permission, so a
 caller's legacy `packages: read` grant is harmless but unnecessary.
 
-For pull-request validation of repositories with approved private dependencies,
-`secretless-pr` splits installation from repository-controlled execution. The
+For validation of repositories with approved private dependencies, the
+`secretless-pr` and `secretless-trusted-ref` modes split acquisition from
+repository-controlled execution. The
 acquisition job receives only `contents: read` plus the explicitly mapped package
 token, validates every package under the exact approved scopes against the
 newline-separated package allowlist and GitHub Packages URL, rejects repository
-`.npmrc` files, and runs `npm ci --ignore-scripts` with a job-created config that
-scopes the token only to `npm.pkg.github.com`. The default approved scope is
+`.npmrc` files, and populates a cache with only the exact private download URLs
+under a job-created config that scopes the token to `npm.pkg.github.com`.
+No install or lifecycle script runs in acquisition. The default approved scope is
 `@verjson`; callers that need another internal scope must name it exactly and set
 the protected repository variable `VERJSON_SECRETLESS_PACKAGE_POLICY` to a JSON
 object containing the exact `scopes` and `packages` arrays. An optional auxiliary
@@ -61,7 +63,7 @@ cache, never `node_modules`, under an 80 MiB payload cap (the complete two-file
 artifact envelope is budgeted below 81 MiB). A separate job verifies the exact run,
 attempt, package-lock digest, auxiliary repository/commit/path identity, payload
 digest, and size before running
-`npm ci --offline --ignore-scripts` with package, Git, cloud, and OIDC credential
+`npm ci --prefer-offline --ignore-scripts` with package, Git, cloud, and OIDC credential
 paths empty. The local transfer is removed immediately after installation and a
 no-checkout cleanup job deletes the exact artifact after build, test, and lint
 finish or fail. Secretless mode ignores `cache: true`; it neither restores nor
@@ -90,13 +92,71 @@ Do not use `secrets: inherit` on this route. The caller deliberately omits
 code cannot request the job token's package capability. `actions: write` is
 available only to the no-checkout deletion job; the build job retains
 `contents: read` and scrubs GitHub token paths before repository commands. All
-three jobs ignore the caller runner override and use the isolated untrusted lane
-or a fresh hosted fallback. Secretless mode rejects
-non-PR events, fork PRs, schema submodules, repository npm config, unlisted
-internal packages, non-GitHub package URLs, old lockfile formats, and unused
+PR acquisition and build jobs ignore the caller runner override and use the
+isolated untrusted lane or a fresh hosted fallback. `secretless-pr` rejects
+non-PR events and fork PRs. Both modes reject schema submodules, repository npm
+config, unlisted internal packages, non-GitHub package URLs, old lockfile
+formats, and unused
 allowlist entries. Forks fail closed because pull-request secrets are unavailable;
 do not replace `pull_request` with `pull_request_target` to obtain them. Existing callers keep
 the original single-job install path because the mode defaults off.
+
+Trusted post-merge or direct-ref validation uses a separate caller job with
+`secretless-trusted-ref: true`. The credentialed acquisition job still runs on
+the isolated lane and still executes no repository lifecycle or consumer script.
+The credentialless build job follows the normal trusted-ref runner route (or an
+explicit caller runner), after checkout credentials and package, Git, cloud, and
+OIDC paths are scrubbed. Admission accepts only `push` and an explicit
+`workflow_dispatch`; `pull_request`, `pull_request_target`, schedules, and every
+other event fail before token use. The two booleans are mutually exclusive.
+A trusted push bypasses a stale `renovate/stability-days` status. Existing
+eligibility behavior stays intact for other events, while explicit dispatch
+retains its established manual override.
+
+Keep event admission and permissions visible in the caller. Do not use
+`secrets: inherit`; map only `NODE_AUTH_TOKEN` into each reusable invocation:
+
+```yaml
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  pull-request:
+    if: github.event_name == 'pull_request'
+    permissions:
+      actions: write
+      contents: read
+      statuses: read
+    uses: Verjson/.github/.github/workflows/node-ci.yml@<40-hex-canonical-contract-sha>
+    with:
+      secretless-pr: true
+      approved-internal-packages: '@verjson/identity-contracts'
+    secrets:
+      NODE_AUTH_TOKEN: ${{ secrets.NODE_AUTH_TOKEN }}
+
+  trusted-ref:
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    permissions:
+      actions: write
+      contents: read
+      statuses: read
+    uses: Verjson/.github/.github/workflows/node-ci.yml@<40-hex-canonical-contract-sha>
+    with:
+      secretless-trusted-ref: true
+      approved-internal-packages: '@verjson/identity-contracts'
+    secrets:
+      NODE_AUTH_TOKEN: ${{ secrets.NODE_AUTH_TOKEN }}
+```
+
+For parity with PR validation, pass the same exact
+`approved-internal-scopes`, `approved-internal-packages`,
+`secretless-auxiliary-source`, `secretless-rebuild-packages`, and
+`secretless-ci-script-plan` values to both jobs. That keeps the private cache,
+immutable auxiliary tree, rebuild allowlist, and ordered audit/smoke plan
+identical across the event split.
 
 Consumers that need a reviewed private auxiliary tree, selective lifecycle
 rebuilds, or a repository-specific command sequence keep those choices explicit.

@@ -5,8 +5,8 @@
 # drifting, while inlining keeps an exact-pinned reusable from calling back into
 # this repository through a separately-maintained self-pin. The script must:
 # defer only on an ACTIVE pending status, fail OPEN on any uncertainty, and never
-# defer a workflow_dispatch. Plain bash + awk; no test-framework or YAML-library
-# dependency (runs on the bare self-hosted pool).
+# defer a workflow_dispatch or push. Plain bash + awk; no test-framework or
+# YAML-library dependency (runs on the bare self-hosted pool).
 set -uo pipefail
 
 here="$(cd "$(dirname "$0")" && pwd)"
@@ -111,13 +111,31 @@ run_case() {
   && pass "workflow_dispatch forces should-run=true and skips the status check" \
   || fail "workflow_dispatch did not force a run / still called the API"
 
+# (e) A push is already the trusted post-merge/direct-ref target. A stale PR
+# release-age status on that commit cannot suppress validation.
+[ "$(run_case push 1 '')" = "should-run=true called=0" ] \
+  && pass "push bypasses the stability status check" \
+  || fail "push validation was deferred by a stale stability-days status"
+
+# (f) The new compatibility exception is push-only. Preserve the prior status
+# behavior for every other non-dispatch event instead of silently broadening it.
+other_events_stable=true
+for event_name in pull_request_target merge_group schedule; do
+  if [ "$(run_case "$event_name" 1 '')" != "should-run=false called=1" ]; then
+    other_events_stable=false
+  fi
+done
+[ "$other_events_stable" = true ] \
+  && pass "pull_request_target, merge_group, and schedule remain stability-gated" \
+  || fail "the push exception bypassed stability checks for another event"
+
 # ---- node-ci.yml wiring (structural) --------------------------------------
 # Eligibility only defers if node-ci wires the inline step correctly. Pin the
 # seams a refactor could silently break: output/env wiring, fail-open job gating,
 # and the statuses read grant.
 adr="$repo_root/docs/decisions/0023-skip-ci-while-stability-days-pending/README.md"
 
-# (e) node-ci must keep the composite action's input/output contract while
+# (g) node-ci must keep the composite action's input/output contract while
 # avoiding a remote ci-eligibility self-dependency.
 eligibility_job="$tmp/eligibility-job.yml"
 awk '
@@ -133,7 +151,7 @@ awk '
   && pass "node-ci preserves eligibility output/env wiring without a remote self-dependency" \
   || fail "node-ci eligibility output/env wiring or no-self-dependency invariant regressed"
 
-# (f) build-test itself must always report the required context (#191). Only its
+# (h) build-test itself must always report the required context (#191). Only its
 # execution steps may skip on an active defer; an eligibility error still fails
 # open by running the suite.
 python3 - "$nodeci" <<'PY' \
@@ -158,7 +176,7 @@ for step in steps:
     assert "needs.eligibility.outputs.should-run != 'false'" in condition
 PY
 
-# (g) The eligibility job must request `statuses: read` (contents:read cannot read
+# (i) The eligibility job must request `statuses: read` (contents:read cannot read
 # a commit's combined status). Because a called workflow cannot elevate the
 # caller token, callers must grant the same permission or the call fails at startup.
 awk '
@@ -169,7 +187,7 @@ awk '
   && pass "eligibility job requests statuses: read" \
   || fail "eligibility job lacks statuses: read — status lookup would 403 and never defer"
 
-# (h) The caller contract must describe `statuses: read` as required and preserve
+# (j) The caller contract must describe `statuses: read` as required and preserve
 # the startup-failure boundary. The action itself still fails open on runtime API
 # errors, but an ungranted permission prevents GitHub from starting the workflow.
 grep -qF '#         statuses: read          # REQUIRED:' "$nodeci" \
@@ -179,7 +197,7 @@ grep -qF '#         statuses: read          # REQUIRED:' "$nodeci" \
   && pass "caller contract marks statuses: read required before startup" \
   || fail "caller contract no longer documents statuses: read as startup-required"
 
-# (i) Prevent the original false contract from returning in node-ci or its
+# (k) Prevent the original false contract from returning in node-ci or its
 # controlling ADR: omission must never be described as a fail-open path.
 false_contract_re='(omit(ted|s|ting)|absent|withheld)[^.;]{0,160}(check[[:space:]]+)?fails?[[:space:]]+open'
 if cat "$nodeci" "$adr" | tr '\n' ' ' | grep -qiE "$false_contract_re"; then
