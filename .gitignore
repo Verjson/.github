@@ -13,6 +13,13 @@
 .claude/settings.local.json
 .claude/.headroom_wrap_marker.json
 
+# The other half of the same residue: Claude Code writes its scratch checkouts to
+# .claude/worktrees/, while the Codex and plain `git worktree` flows write here.
+# Only the first was ignored, so every agent run through the second left `git
+# status` reporting an untracked .worktrees/ that no sweep could clear — a
+# standing false signal competing with real uncommitted work.
+.worktrees/
+
 # PM orchestrator run state — a plan and run brief written per session and deleted
 # at terminal completion. Scratch, like the worktrees above, never repo content.
 .pm-*
