@@ -183,13 +183,15 @@ else
 fi
 : >"$CALLS"
 : >"$GITHUB_OUTPUT"
-if run_complete >"$tmp/out" 2>&1 && grep -q 'conclusion=success' "$CALLS"; then
+if run_complete >"$tmp/out" 2>&1 && grep -q 'conclusion=success' "$CALLS" \
+   && grep -q "ai-review-authorized:v1:${AUTHORIZATION_CHECK_ID}:${EXPECTED_AUTHORIZED_HEAD_SHA}" "$CALLS"; then
   pass "trusted preflight head receives persisted App approval before authorization completion"
 else fail "valid completion head handoff failed: $(tail -1 "$tmp/out")"; fi
 
 : >"$CALLS"; : >"$GITHUB_OUTPUT"; APPROVAL_RC=1 run_complete >"$tmp/out" 2>&1
 if [ "$?" -eq 0 ] && grep -q 'conclusion=success' "$CALLS" \
-  && grep -q 'ai_authorized=false' "$GITHUB_OUTPUT" \
+   && grep -q 'ai_authorized=false' "$GITHUB_OUTPUT" \
+   && ! grep -q 'ai-review-authorized:v1:' "$CALLS" \
   && grep -q 'app-approval failed' "$tmp/out" \
   && grep -q 'x-github-request-id: TEST:1234' "$tmp/out" \
   && grep -q 'authorization: token \*\*\*' "$tmp/out" \
@@ -198,12 +200,14 @@ if [ "$?" -eq 0 ] && grep -q 'conclusion=success' "$CALLS" \
 else fail "rejected App approval did not preserve the human path"; fi
 
 : >"$CALLS"; : >"$GITHUB_OUTPUT"; PERSISTED_HEAD=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa run_complete >"$tmp/out" 2>&1
-if [ "$?" -eq 0 ] && grep -q 'conclusion=success' "$CALLS" && grep -q 'ai_authorized=false' "$GITHUB_OUTPUT"; then
+if [ "$?" -eq 0 ] && grep -q 'conclusion=success' "$CALLS" && grep -q 'ai_authorized=false' "$GITHUB_OUTPUT" \
+   && ! grep -q 'ai-review-authorized:v1:' "$CALLS"; then
   pass "stale App approval cannot authorize AI but leaves the human path ready"
 else fail "stale persisted approval escaped into AI authority"; fi
 
 : >"$CALLS"; : >"$GITHUB_OUTPUT"; REVIEW_AUTHORITY=human REVIEW_OUTCOME=skipped run_complete >"$tmp/out" 2>&1
-if [ "$?" -eq 0 ] && grep -q 'conclusion=success' "$CALLS" && ! grep -q 'api --method POST' "$CALLS" && grep -q 'ai_authorized=false' "$GITHUB_OUTPUT"; then
+if [ "$?" -eq 0 ] && grep -q 'conclusion=success' "$CALLS" && ! grep -q 'api --method POST' "$CALLS" \
+   && grep -q 'ai_authorized=false' "$GITHUB_OUTPUT" && ! grep -q 'ai-review-authorized:v1:' "$CALLS"; then
   pass "human authority never asks the App to approve"
 else fail "human authority still depends on AI approval"; fi
 

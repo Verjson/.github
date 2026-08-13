@@ -85,6 +85,23 @@ remains gated. Only the *reporting* of failure moved; the authority to approve d
 not. A hang is strictly worse than a red check, because branch protection blocks the
 merge while naming no cause.
 
+### 2026-08-12 correction ([#766](https://github.com/Verjson/.github/issues/766))
+
+Deterministic CI completion retries terminal promotion only when the newest dedicated-
+App authorization check for the exact head contains the versioned marker emitted after
+that App's approval was persisted. A successful authorization check alone is not AI
+authority: human-path, skipped, blocking, inconclusive, and failed-App-approval outcomes
+also complete the check successfully so ordinary branch protection can proceed.
+
+The marker binds its authorization-check ID and reviewed head SHA. It is written into
+the App-owned check summary only after the approval response and its persisted form both
+match that check and head. The retry requires the exact marker and a receipt policy with
+`ai-merge` authority before dispatch; `ai-approve` remains non-merging. Selecting the
+newest check before evaluating its state prevents an older success from overriding a
+newer failed or human-path authorization. The privileged callee still independently
+verifies the receipt, policy, dedicated-App check, and exact-head App approval, so this
+early terminal no-op does not weaken the final fail-closed boundary.
+
 ## Consequences
 
 - No job sleeps or polls while CI changes state, and CI completion cannot spend model

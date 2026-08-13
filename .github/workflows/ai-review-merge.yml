@@ -1620,7 +1620,9 @@ jobs:
                    ' --arg id "$approval_id" "$persisted_file" >/dev/null; then
                 ai_authorized=true
                 title='AI advisory authorized to approve'
-                summary='The opted-in AI review approved this exact head. Ordinary required CI and branch protection remain authoritative.'
+                summary="The opted-in AI review approved this exact head. Ordinary required CI and branch protection remain authoritative.
+
+          <!-- ai-review-authorized:v1:${AUTHORIZATION_CHECK_ID}:${EXPECTED_AUTHORIZED_HEAD_SHA} -->"
               else
                 title='AI approval unavailable; human path ready'
                 summary='The dedicated App approval could not be persisted. Deterministic policy is green and a human approval may still authorize merge.'

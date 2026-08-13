@@ -29,6 +29,10 @@ def require_contract(review_doc, promote_doc, retry_doc):
     assert review_job["env"]["REVIEW_POLICY"] == "${{ inputs.review_policy }}"
     review_dispatch = next(step for step in review_job["steps"] if step.get("name") == "Dispatch trusted terminal promotion")["run"]
     assert '-f review_policy="$REVIEW_POLICY"' in review_dispatch
+    review_complete = next(step for step in review_doc["jobs"]["complete-authorization"]["steps"]
+                           if step.get("name") == "Complete exact head authorization")["run"]
+    authorization_marker = "ai-review-authorized:v1:${AUTHORIZATION_CHECK_ID}:${EXPECTED_AUTHORIZED_HEAD_SHA}"
+    assert authorization_marker in review_complete
 
     outputs = retry_doc["jobs"]["resolve"]["outputs"]
     assert outputs["review_policy"] == "${{ steps.resolve.outputs.review_policy }}"
@@ -46,6 +50,8 @@ def require_contract(review_doc, promote_doc, retry_doc):
     assert '^[A-Za-z0-9_-]{1,2048}$' in retry_run
     assert 'review-policy-envelope.py decode "$review_policy"' in retry_run
     assert '!= ai-merge' in retry_run
+    assert 'ai-review-authorized:v1:${check_id}:${HEAD_SHA}' in retry_run
+    assert ".output.summary | strings" in retry_run
 
 
 require_contract(review, promote, retry)
@@ -71,6 +77,14 @@ mutations.append((review, promote, changed))
 changed = deepcopy(retry)
 step = next(item for item in changed["jobs"]["resolve"]["steps"] if item.get("name") == "Resolve exact-head authorization")
 step["run"] = step["run"].replace('^[A-Za-z0-9_-]{1,2048}$', '.*')
+mutations.append((review, promote, changed))
+changed = deepcopy(review)
+step = next(item for item in changed["jobs"]["complete-authorization"]["steps"] if item.get("name") == "Complete exact head authorization")
+step["run"] = step["run"].replace("ai-review-authorized:v1:${AUTHORIZATION_CHECK_ID}:${EXPECTED_AUTHORIZED_HEAD_SHA}", "human-path")
+mutations.append((changed, promote, retry))
+changed = deepcopy(retry)
+step = next(item for item in changed["jobs"]["resolve"]["steps"] if item.get("name") == "Resolve exact-head authorization")
+step["run"] = step["run"].replace("ai-review-authorized:v1:${check_id}:${HEAD_SHA}", "human-path")
 mutations.append((review, promote, changed))
 for docs in mutations:
     try:
