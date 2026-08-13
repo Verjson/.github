@@ -40,17 +40,45 @@ if [ "$receipt_permission" != automation ] && [ "${REVERIFY_ACTOR_PERMISSION:-tr
   case "$current_permission" in admin|maintain) ;; *) echo "::error::re-review actor no longer has maintain/admin permission"; exit 1 ;; esac
 fi
 
-workflow_api arm-workflow "$tmp/arm-workflow-id" \
-  "repos/$TARGET_REPO/actions/workflows/gate-rearm.yml" --jq '.id // ""' || exit 1
-arm_workflow_id="$(<"$tmp/arm-workflow-id")"
-[[ "$arm_workflow_id" =~ ^[1-9][0-9]*$ ]] || exit 1
 workflow_api arm-run "$tmp/arm-run.json" "repos/$TARGET_REPO/actions/runs/$ARM_RUN_ID" || exit 1
 arm_run="$(<"$tmp/arm-run.json")"
-jq -e --argjson workflow_id "$arm_workflow_id" --argjson run_id "$ARM_RUN_ID" --argjson attempt "$ARM_RUN_ATTEMPT" --arg repo "$TARGET_REPO" '
+arm_workflow_id="$(jq -r '.workflow_id // ""' <<<"$arm_run")"
+[[ "$arm_workflow_id" =~ ^[1-9][0-9]*$ ]] || exit 1
+jq -e --argjson run_id "$ARM_RUN_ID" --argjson attempt "$ARM_RUN_ATTEMPT" --arg repo "$TARGET_REPO" '
   .id == $run_id and .run_attempt == $attempt and
-  .workflow_id == $workflow_id and .event == "pull_request_target" and
+  .event == "pull_request_target" and
   .path == ".github/workflows/gate-rearm.yml" and .head_repository.full_name == $repo
 ' <<<"$arm_run" >/dev/null || { echo "::error::arm run provenance mismatch"; exit 1; }
+required_workflow_url="https://api.github.com/repos/$TARGET_REPO/actions/required_workflows/$arm_workflow_id"
+if [ "$(jq -r '.workflow_url // ""' <<<"$arm_run")" = "$required_workflow_url" ]; then
+  workflow_api arm-base "$tmp/arm-base" \
+    "repos/$TARGET_REPO/pulls/$PR_NUMBER" --jq '.base.ref // ""' || exit 1
+  arm_base_branch="$(<"$tmp/arm-base")"
+  [[ "$arm_base_branch" =~ ^[A-Za-z0-9._/-]+$ ]] &&
+    [[ "$arm_base_branch" != /* && "$arm_base_branch" != *..* && "$arm_base_branch" != *//* ]] || exit 1
+  workflow_api arm-rules "$tmp/arm-rules-pages.json" --paginate \
+    "repos/$TARGET_REPO/rules/branches/$arm_base_branch" || exit 1
+  jq -se '
+    all(.[]; type == "array") and
+    ([.[][]
+      | select(.type == "workflows") as $rule
+      | $rule.parameters.workflows[]?
+      | select(.path == ".github/workflows/gate-rearm.yml")
+      | {source_type: $rule.ruleset_source_type, source: $rule.ruleset_source,
+         repository_id, ref}]
+     | length > 0 and all(.[];
+         .source_type == "Organization" and .source == "Verjson" and
+         .repository_id == 1269388380 and .ref == "refs/heads/main"))
+  ' "$tmp/arm-rules-pages.json" >/dev/null || {
+    echo "::error::arm run provenance mismatch"; exit 1;
+  }
+else
+  workflow_api arm-workflow "$tmp/arm-workflow-id" \
+    "repos/$TARGET_REPO/actions/workflows/gate-rearm.yml" --jq '.id // ""' || exit 1
+  [ "$(<"$tmp/arm-workflow-id")" = "$arm_workflow_id" ] || {
+    echo "::error::arm run provenance mismatch"; exit 1;
+  }
+fi
 
 artifact_name="ai-review-arm-$ARM_RUN_ID-$ARM_RUN_ATTEMPT"
 workflow_api arm-artifacts "$tmp/arm-artifacts.json" \
