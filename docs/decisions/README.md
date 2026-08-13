@@ -11,6 +11,7 @@ Reverse-chronological index of org-level decisions.
 <!-- BEGIN ADR INDEX -->
 | # | Date | Decision |
 |---|------|----------|
+| [0100](0100-bind-blocking-review-findings-to-exact-head-source/README.md) | 2026-08-13 | Bind blocking review findings to exact-head source |
 | [0098](0098-require-bounded-ai-review-for-code/README.md) | 2026-08-12 | Require bounded AI review for code changes |
 | [0097](0097-secretless-trusted-ref-node-validation/README.md) | 2026-08-12 | Extend secretless Node validation to trusted refs |
 | [0096](0096-isolate-checkouts-on-reusable-runner-workspaces/README.md) | 2026-08-12 | Isolate checkouts on reusable runner workspaces |

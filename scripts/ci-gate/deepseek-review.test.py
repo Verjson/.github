@@ -17,7 +17,12 @@ spec.loader.exec_module(review)
 
 class DeepSeekReviewTest(unittest.TestCase):
     def verdict(self, blocking=False):
-        findings = [{"location": "app.py:7", "reason": "broken", "failure_scenario": "request fails"}] if blocking else []
+        findings = [{
+            "location": "app.py:7",
+            "reason": "broken",
+            "failure_scenario": "request fails",
+            "evidence": "return response.value",
+        }] if blocking else []
         return {"blocking": blocking, "summary": "reviewed", "review_first": [], "findings": findings, "followups": []}
 
     def response(self, model="deepseek-v4-pro", verdict=None):

@@ -1083,10 +1083,19 @@ jobs:
           Return exactly one JSON object with these canonical fields and item
           shapes: blocking: boolean; summary: string;
           review_first: [{location, why}];
-          findings: [{location, reason, failure_scenario}];
+          findings: [{location, reason, failure_scenario, evidence}];
           followups: [{location, note}]. Return the verdict as soon as you can
           support it. Do not call GitHub or submit a review yourself. Set
           blocking=true only for real defects. Keep summary concise.
+
+          Every blocking finding MUST include "evidence": a single-line exact
+          source fragment copied from its cited location at the checked-out PR
+          head. Use 8-240 characters when the source line is at least 8
+          characters; for a shorter line, copy the entire trimmed line. Do not
+          copy evidence from a nearby line, a test mutation, the base branch,
+          or another file. A deterministic validator resolves the cited line
+          from the reviewed commit and rejects the entire verdict when the
+          fragment does not occur on that exact line.
 
           Also return "review_first": the specific file:line hunks a human
           should eyeball first, highest blast-radius first, each with a one-line
@@ -1145,7 +1154,7 @@ jobs:
             --model ${{ needs.preflight.outputs.model }}
             --max-turns 30
             --max-budget-usd ${{ needs.preflight.outputs.budget_usd }}
-            --json-schema '{"type":"object","properties":{"blocking":{"type":"boolean"},"summary":{"type":"string"},"review_first":{"type":"array","items":{"type":"object","properties":{"location":{"type":"string","description":"Exactly one file and positive line number (path/to/file.ext:42); no ranges or comma-separated locations."},"why":{"type":"string"}},"required":["location","why"],"additionalProperties":false}},"findings":{"type":"array","items":{"type":"object","properties":{"location":{"type":"string"},"reason":{"type":"string"},"failure_scenario":{"type":"string"}},"required":["location","reason","failure_scenario"],"additionalProperties":false}},"followups":{"type":"array","items":{"type":"object","properties":{"location":{"type":"string"},"note":{"type":"string"}},"required":["location","note"],"additionalProperties":false}}},"required":["blocking","summary","review_first","findings","followups"],"additionalProperties":false}'
+            --json-schema '{"type":"object","properties":{"blocking":{"type":"boolean"},"summary":{"type":"string"},"review_first":{"type":"array","items":{"type":"object","properties":{"location":{"type":"string","description":"Exactly one file and positive line number (path/to/file.ext:42); no ranges or comma-separated locations."},"why":{"type":"string"}},"required":["location","why"],"additionalProperties":false}},"findings":{"type":"array","items":{"type":"object","properties":{"location":{"type":"string"},"reason":{"type":"string"},"failure_scenario":{"type":"string"},"evidence":{"type":"string","description":"An 8-240 character exact fragment from the cited source line, or the entire trimmed line when shorter than 8 characters."}},"required":["location","reason","failure_scenario","evidence"],"additionalProperties":false}},"followups":{"type":"array","items":{"type":"object","properties":{"location":{"type":"string"},"note":{"type":"string"}},"required":["location","note"],"additionalProperties":false}}},"required":["blocking","summary","review_first","findings","followups"],"additionalProperties":false}'
             --allowedTools "Read,Grep,Glob"
 
       - name: OpenAI review (explicit re-review only)
@@ -1189,6 +1198,8 @@ jobs:
           VERDICT: ${{ needs.preflight.outputs.provider == 'openai' && steps.openai.outputs.structured_output || needs.preflight.outputs.provider == 'deepseek' && steps.deepseek_primary.outputs.structured_output || steps.claude.outputs.structured_output }}
           SENSITIVE: ${{ needs.preflight.outputs.sensitive }}
           REVIEW_PASS: "1"
+          REVIEW_REPOSITORY: ${{ github.workspace }}
+          REVIEWED_HEAD_SHA: ${{ needs.preflight.outputs.head_sha }}
         run: |
           python3 "$RUNNER_TEMP/review-verdict.py"
 
@@ -1252,6 +1263,8 @@ jobs:
           VERDICT: ${{ steps.deepseek_fallback.outputs.structured_output }}
           SENSITIVE: ${{ needs.preflight.outputs.sensitive }}
           REVIEW_PASS: "2"
+          REVIEW_REPOSITORY: ${{ github.workspace }}
+          REVIEWED_HEAD_SHA: ${{ needs.preflight.outputs.head_sha }}
         run: |
           python3 "$RUNNER_TEMP/review-verdict.py"
 
@@ -1428,7 +1441,7 @@ jobs:
                     + (.review_first | map("- `" + .location + "` — " + .why) | join("\n"))
                else "" end)
             + (if ((.findings // []) | length) > 0
-               then "\n\n**Findings**\n" + (.findings | map("- `" + .location + "` — " + .reason + " Failure scenario: " + .failure_scenario) | join("\n"))
+               then "\n\n**Findings**\n" + (.findings | map("- `" + .location + "` — " + .reason + " Failure scenario: " + .failure_scenario + " Source evidence: <code>" + (.evidence | @html) + "</code>") | join("\n"))
                else "" end)
             + (if ((.followups // []) | length) > 0
                then "\n\n**Follow-ups** (filed as issues on merge)\n"

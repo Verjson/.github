@@ -18,7 +18,7 @@ MAX_DIFF_BYTES = 2 * 1024 * 1024
 SCHEMA = {"type": "object", "properties": {
     "blocking": {"type": "boolean"}, "summary": {"type": "string"},
     "review_first": {"type": "array", "items": {"type": "object", "properties": {"location": {"type": "string"}, "why": {"type": "string"}}, "required": ["location", "why"], "additionalProperties": False}},
-    "findings": {"type": "array", "items": {"type": "object", "properties": {"location": {"type": "string"}, "reason": {"type": "string"}, "failure_scenario": {"type": "string"}}, "required": ["location", "reason", "failure_scenario"], "additionalProperties": False}},
+    "findings": {"type": "array", "items": {"type": "object", "properties": {"location": {"type": "string"}, "reason": {"type": "string"}, "failure_scenario": {"type": "string"}, "evidence": {"type": "string"}}, "required": ["location", "reason", "failure_scenario", "evidence"], "additionalProperties": False}},
     "followups": {"type": "array", "items": {"type": "object", "properties": {"location": {"type": "string"}, "note": {"type": "string"}}, "required": ["location", "note"], "additionalProperties": False}},
 }, "required": ["blocking", "summary", "review_first", "findings", "followups"], "additionalProperties": False}
 
