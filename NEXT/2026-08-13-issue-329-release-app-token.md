@@ -22,3 +22,9 @@ organization-wide installation and credential-availability trade-off.
 The generated-caller contract tests now inspect complete in-memory output
 without early-closing `grep -q` pipelines, so larger release callers cannot
 turn a successful assertion into a nondeterministic `pipefail` failure.
+
+After the first two live canary attempts exposed a missing workspace file on the
+persistent runner, the canary was hardened to materialize the checked-in release
+CLI from the exact dispatch commit with Git replacement objects disabled. Its
+behavioral regression removes the workspace copy and plants a poisoned replacement
+ref, proving the canonical CLI still creates the release commit and annotated tag.

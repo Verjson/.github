@@ -77,6 +77,16 @@ both refs still resolve exactly to this run's commit and tag object. Cleanup is
 one atomic deletion and then proves both refs absent; a mismatch is preserved for
 investigation instead of deleting someone else's ref.
 
+On 2026-08-13, the first two live attempts while completing issue
+[#329](https://github.com/Verjson/.github/issues/329) exposed a persistent-runner
+failure mode: checkout resolved the required default-branch SHA, but the expected
+workspace file was absent. The canary therefore materializes
+`scripts/changelog.py` from that exact commit's Git object into its run-unique
+temporary directory with replacement objects disabled, then executes the
+materialized copy. This restores the existing checked-in-CLI invariant without
+trusting residual workspace contents or replacement refs and without weakening the
+dispatch SHA binding.
+
 This is strong live evidence for the exact organization ruleset and App bypass,
 but it is not evidence about a rule scoped only to the default branch or the
 default branch ref itself. The production release path retains its own

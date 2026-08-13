@@ -92,7 +92,10 @@ jobs:
           git -C "$canary_root" add "$fragment"
           git -C "$canary_root" commit -qm "test(release): seed App canary"
 
-          python3 "$GITHUB_WORKSPACE/scripts/changelog.py" release \
+          release_cli="$RUNNER_TEMP/release-app-canary-changelog-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT.py"
+          git --no-replace-objects -C "$GITHUB_WORKSPACE" \
+            show "$GITHUB_SHA:scripts/changelog.py" > "$release_cli"
+          python3 "$release_cli" release \
             --repo-root "$canary_root" \
             --version "$CANARY_VERSION" \
             --fragment "$fragment"

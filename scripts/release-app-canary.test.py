@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import os
 import pathlib
 import re
 import subprocess
@@ -84,7 +85,10 @@ def validate(document: dict, raw: str) -> list[str]:
         problems.append("canary tag is not a fixed run-unique SemVer prerelease")
     required_push_fragments = (
         'ls-remote --refs "$remote_url" "$CANARY_BRANCH_REF" "$tag_ref"',
-        'python3 "$GITHUB_WORKSPACE/scripts/changelog.py" release',
+        'release_cli="$RUNNER_TEMP/release-app-canary-changelog-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT.py"',
+        'git --no-replace-objects -C "$GITHUB_WORKSPACE"',
+        'show "$GITHUB_SHA:scripts/changelog.py" > "$release_cli"',
+        'python3 "$release_cli" release',
         'fragment_id="$(date -u +%Y%m%dT%H%M%SZ)"',
         "-issue-${fragment_id}-release-app-canary.md",
         "id: $fragment_id",
@@ -201,6 +205,86 @@ def prove_peeled_annotated_tag_query() -> None:
     print("ok - old ls-remote --refs form suppresses the peeled annotated-tag line")
 
 
+def prove_cli_materializes_from_bound_object(push_run: str) -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = pathlib.Path(tmp)
+        workspace = root / "workspace"
+        runner_temp = root / "runner-temp"
+        canary_root = runner_temp / "release-app-canary-1-1"
+        workspace.mkdir()
+        runner_temp.mkdir()
+        git("init", "-q", "-b", "main", str(workspace))
+        git("config", "user.name", "Canary Test", cwd=workspace)
+        git("config", "user.email", "canary@example.test", cwd=workspace)
+        cli = workspace / "scripts/changelog.py"
+        cli.parent.mkdir()
+        cli.write_bytes((ROOT / "scripts/changelog.py").read_bytes())
+        git("add", "scripts/changelog.py", cwd=workspace)
+        git("commit", "-qm", "seed bound release CLI", cwd=workspace)
+        bound_sha = git("rev-parse", "HEAD", cwd=workspace)
+        cli.write_text("raise SystemExit('poisoned replacement executed')\n", encoding="utf-8")
+        git("add", "scripts/changelog.py", cwd=workspace)
+        git("commit", "-qm", "seed poisoned replacement", cwd=workspace)
+        poisoned_sha = git("rev-parse", "HEAD", cwd=workspace)
+        git("reset", "--hard", "-q", bound_sha, cwd=workspace)
+        git("replace", bound_sha, poisoned_sha, cwd=workspace)
+        assert "poisoned replacement" in git("show", f"{bound_sha}:scripts/changelog.py", cwd=workspace)
+        cli.unlink()
+        assert not cli.exists()
+
+        fragment = "NEXT/2026-08-13-issue-20260813T000000Z-release-app-canary.md"
+        (canary_root / "NEXT").mkdir(parents=True)
+        git("init", "-q", "-b", "canary", str(canary_root))
+        git("config", "user.name", "Canary Test", cwd=canary_root)
+        git("config", "user.email", "canary@example.test", cwd=canary_root)
+        (canary_root / fragment).write_text(
+            "---\n"
+            "date: 2026-08-13\n"
+            "id: 20260813T000000Z\n"
+            "title: Prove object-backed release CLI execution\n"
+            "impact: patch\n"
+            "---\n\n"
+            "Exercise the canonical release path.\n",
+            encoding="utf-8",
+        )
+        git("add", fragment, cwd=canary_root)
+        git("commit", "-qm", "seed canary", cwd=canary_root)
+
+        lines = push_run.splitlines()
+        start = next(i for i, line in enumerate(lines) if line.strip().startswith("release_cli="))
+        end = next(
+            i
+            for i, line in enumerate(lines[start:], start=start)
+            if line.strip() == '--fragment "$fragment"'
+        )
+        materialize_and_release = "\n".join(lines[start : end + 1])
+        environment = os.environ.copy()
+        environment.update(
+            {
+                "GITHUB_WORKSPACE": str(workspace),
+                "GITHUB_SHA": bound_sha,
+                "GITHUB_RUN_ID": "1",
+                "GITHUB_RUN_ATTEMPT": "1",
+                "RUNNER_TEMP": str(runner_temp),
+                "CANARY_VERSION": "v0.0.1-release-app-canary.1.1",
+                "canary_root": str(canary_root),
+                "fragment": fragment,
+            }
+        )
+        subprocess.run(
+            ["bash", "-euo", "pipefail", "-c", materialize_and_release],
+            check=True,
+            env=environment,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        assert (canary_root / "CHANGELOG/v0.0.1-release-app-canary.1.1.md").is_file()
+        assert not (canary_root / fragment).exists()
+        git("rev-parse", "v0.0.1-release-app-canary.1.1^{tag}", cwd=canary_root)
+    print("ok - bound git object ignores replacement refs when the workspace file is missing")
+
+
 def rejected(label: str, document: dict, raw: str) -> None:
     if not validate(document, raw):
         raise AssertionError(f"mutation survived: {label}")
@@ -229,6 +313,7 @@ def main() -> int:
         i for i, step in enumerate(steps) if step.get("name") == "Delete only this run's verified canary refs"
     )
     receipt_index = next(i for i, step in enumerate(steps) if step.get("name") == "Retain the canary receipt")
+    prove_cli_materializes_from_bound_object(steps[push_index]["run"])
 
     mutants: list[tuple[str, dict, str]] = []
     mutant = copy.deepcopy(document)
@@ -259,6 +344,21 @@ def main() -> int:
     mutant = copy.deepcopy(document)
     mutant["jobs"]["canary"]["steps"][push_index]["env"]["CANARY_VERSION"] = "${{ inputs.version }}"
     mutants.append(("a user-controlled or non-unique canary tag", mutant, raw))
+    mutant = copy.deepcopy(document)
+    mutant["jobs"]["canary"]["steps"][push_index]["run"] = mutant["jobs"]["canary"]["steps"][push_index][
+        "run"
+    ].replace('$GITHUB_SHA:scripts/changelog.py', 'HEAD:scripts/changelog.py')
+    mutants.append(("release CLI materialization not bound to the dispatch SHA", mutant, raw))
+    mutant = copy.deepcopy(document)
+    mutant["jobs"]["canary"]["steps"][push_index]["run"] = mutant["jobs"]["canary"]["steps"][push_index][
+        "run"
+    ].replace("git --no-replace-objects", "git")
+    mutants.append(("release CLI materialization that honors persistent replacement refs", mutant, raw))
+    mutant = copy.deepcopy(document)
+    mutant["jobs"]["canary"]["steps"][push_index]["run"] = mutant["jobs"]["canary"]["steps"][push_index][
+        "run"
+    ].replace('python3 "$release_cli" release', 'python3 "$GITHUB_WORKSPACE/scripts/changelog.py" release')
+    mutants.append(("release CLI execution from the persistent workspace", mutant, raw))
     mutant = copy.deepcopy(document)
     mutant["jobs"]["canary"]["steps"][push_index]["run"] = mutant["jobs"]["canary"]["steps"][push_index][
         "run"
