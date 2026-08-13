@@ -1,0 +1,81 @@
+#!/usr/bin/env python3
+import json
+import subprocess
+import unittest
+from pathlib import Path
+
+
+SCRIPT = Path(__file__).with_name("review-attempt-count.py")
+APP = "verjson-ai-review-authorization[bot]"
+HEAD = "a" * 40
+
+
+def review(author: str, body: str, *, head: str = HEAD, state: str = "COMMENTED") -> dict[str, object]:
+    return {"user": {"login": author}, "body": body, "commit_id": head, "state": state}
+
+
+def marker(pass_number: int, *, pr: int = 7, head: str = HEAD, run: int = 101, attempt: int = 1) -> str:
+    return (
+        f"<!-- ai-review-pass:v2:{pass_number}/2 pr:{pr} check:9001 head:{head} "
+        f"run:{run} attempt:{attempt} provider:anthropic model:haiku -->"
+    )
+
+
+def count(*reviews: dict[str, object]) -> int:
+    result = subprocess.run(
+        ["python3", str(SCRIPT), "--app-login", APP, "--pr-number", "7"],
+        input=json.dumps(list(reviews)),
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise AssertionError(result.stderr)
+    return int(result.stdout)
+
+
+class ReviewAttemptCountTest(unittest.TestCase):
+    def test_each_exact_head_app_reservation_counts(self) -> None:
+        self.assertEqual(count(review(APP, marker(1)), review(APP, marker(2, run=102))), 2)
+
+    def test_failed_or_inconclusive_reserved_pass_still_counts(self) -> None:
+        self.assertEqual(count(review(APP, "AI review pass consumed before invocation.\n" + marker(1))), 1)
+
+    def test_shared_actions_identity_cannot_forge_reservations(self) -> None:
+        self.assertEqual(count(review("github-actions[bot]", marker(1))), 0)
+
+    def test_foreign_pr_or_head_marker_does_not_count(self) -> None:
+        self.assertEqual(
+            count(
+                review(APP, marker(1, pr=8)),
+                review(APP, marker(1, head="b" * 40)),
+            ),
+            0,
+        )
+
+    def test_approval_or_malformed_marker_does_not_count(self) -> None:
+        self.assertEqual(
+            count(
+                review(APP, marker(1), state="APPROVED"),
+                review(APP, "<!-- ai-review-pass:v2:3/2 pr:7 check:9001 head:" + HEAD + " run:102 attempt:1 provider:openai model:luna -->"),
+            ),
+            0,
+        )
+
+    def test_duplicate_delivery_of_same_reservation_counts_once(self) -> None:
+        reservation = marker(1, attempt=2)
+        self.assertEqual(count(review(APP, reservation), review(APP, reservation)), 1)
+
+    def test_invalid_api_payload_fails_closed(self) -> None:
+        result = subprocess.run(
+            ["python3", str(SCRIPT), "--app-login", APP, "--pr-number", "7"],
+            input="{}",
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertNotEqual(result.returncode, 0)
+
+
+if __name__ == "__main__":
+    unittest.main()

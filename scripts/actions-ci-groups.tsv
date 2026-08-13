@@ -70,6 +70,8 @@ merge-gate	bash scripts/ci-gate/privileged-merge-caller-contract.test.sh
 merge-gate	bash scripts/ci-gate/reusable-workflow.test.sh
 merge-gate	bash scripts/ci-gate/preflight-timing.test.sh
 merge-gate	bash scripts/ci-gate/classify-fast-lane.test.sh
+merge-gate	python3 scripts/ci-gate/classify-review-policy.test.py
+merge-gate	python3 scripts/ci-gate/review-attempt-count.test.py
 merge-gate	bash scripts/ci-gate/elide-lockfiles.test.sh
 merge-gate	bash scripts/ci-gate/rereview-skip.test.sh
 merge-gate	bash scripts/ci-gate/dispatch-target-guard.test.sh

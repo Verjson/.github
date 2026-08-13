@@ -178,4 +178,11 @@ MB=base1 DIFF="+net change" PID=PIDMATCH PRDATA="$(approved PIDMATCH)" run_rerev
   pass "skip emits a synthesized approved (blocking=false) verdict" ||
   fail "skip must emit an approved verdict for the submit step"
 
+# (i) An explicit maintainer re-review consumes the next cumulative slot even
+# when the patch is unchanged; only automatic base updates reuse the verdict.
+MB=base1 DIFF="+net change" PID=PIDMATCH PRDATA="$(approved PIDMATCH)" EXPLICIT_REREVIEW=true run_rereview
+skip_is false &&
+  pass "explicit re-review does not reuse an unchanged-patch approval" ||
+  fail "explicit re-review must reach cumulative pass accounting"
+
 if [ "$fails" -eq 0 ]; then echo "All tests passed."; exit 0; else echo "$fails test(s) failed."; exit 1; fi
