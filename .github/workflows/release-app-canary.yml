@@ -112,6 +112,7 @@ jobs:
             echo "version=$CANARY_VERSION"
           } >> "$GITHUB_OUTPUT"
 
+          # Do not add --refs: it suppresses the annotated tag's peeled ^{} line.
           remote_refs="$(git -c http.extraHeader="AUTHORIZATION: basic $auth" \
             ls-remote "$remote_url" "$CANARY_BRANCH_REF" "$tag_ref" "${tag_ref}^{}")"
           remote_branch_commit="$(awk -v ref="$CANARY_BRANCH_REF" '$2 == ref { print $1 }' <<<"$remote_refs")"
@@ -153,6 +154,7 @@ jobs:
           auth="$(printf 'x-access-token:%s' "$APP_TOKEN" | base64 -w0)"
           branch_ref="refs/heads/develop"
           tag_ref="refs/tags/$CANARY_VERSION"
+          # Do not add --refs: ownership includes the annotated tag's peeled commit.
           remote_refs="$(git -c http.extraHeader="AUTHORIZATION: basic $auth" \
             ls-remote "$remote_url" "$branch_ref" "$tag_ref" "${tag_ref}^{}")"
           remote_branch_commit="$(awk -v ref="$branch_ref" '$2 == ref { print $1 }' <<<"$remote_refs")"

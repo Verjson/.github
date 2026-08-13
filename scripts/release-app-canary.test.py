@@ -5,7 +5,9 @@ from __future__ import annotations
 import copy
 import pathlib
 import re
+import subprocess
 import sys
+import tempfile
 
 import yaml
 
@@ -83,6 +85,9 @@ def validate(document: dict, raw: str) -> list[str]:
     required_push_fragments = (
         'ls-remote --refs "$remote_url" "$CANARY_BRANCH_REF" "$tag_ref"',
         'python3 "$GITHUB_WORKSPACE/scripts/changelog.py" release',
+        'fragment_id="$(date -u +%Y%m%dT%H%M%SZ)"',
+        "-issue-${fragment_id}-release-app-canary.md",
+        "id: $fragment_id",
         'push --atomic origin',
         '"$release_commit:$CANARY_BRANCH_REF"',
         '"$tag_ref"',
@@ -91,6 +96,7 @@ def validate(document: dict, raw: str) -> list[str]:
         'test "$remote_branch_commit" = "$release_commit"',
         'test "$remote_tag_object" = "$tag_object"',
         'test "$remote_tag_commit" = "$release_commit"',
+        'ls-remote "$remote_url" "$CANARY_BRANCH_REF" "$tag_ref" "${tag_ref}^{}"',
     )
     for fragment in required_push_fragments:
         if fragment not in push_run:
@@ -134,6 +140,7 @@ def validate(document: dict, raw: str) -> list[str]:
         '"$remote_branch_commit" != "$RELEASE_COMMIT"',
         '"$remote_tag_object" != "$TAG_OBJECT"',
         '"$remote_tag_commit" != "$RELEASE_COMMIT"',
+        'ls-remote "$remote_url" "$branch_ref" "$tag_ref" "${tag_ref}^{}"',
         "refusing cleanup",
         'push --atomic "$remote_url"',
         '":$branch_ref"',
@@ -146,6 +153,52 @@ def validate(document: dict, raw: str) -> list[str]:
     if "${{ inputs." in raw or "repository:" in raw or "CANARY_BRANCH_REF: ${{" in raw:
         problems.append("canary exposes a user-controlled target")
     return problems
+
+
+def git(*args: str, cwd: pathlib.Path | None = None) -> str:
+    return subprocess.run(
+        ["git", *args],
+        cwd=cwd,
+        check=True,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    ).stdout.strip()
+
+
+def prove_peeled_annotated_tag_query() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = pathlib.Path(tmp)
+        remote = root / "remote.git"
+        local = root / "local"
+        git("init", "--bare", "-q", str(remote))
+        git("init", "-q", "-b", "canary", str(local))
+        git("config", "user.name", "Canary Test", cwd=local)
+        git("config", "user.email", "canary@example.test", cwd=local)
+        (local / "receipt.txt").write_text("canary\n", encoding="utf-8")
+        git("add", "receipt.txt", cwd=local)
+        git("commit", "-qm", "seed canary", cwd=local)
+        commit = git("rev-parse", "HEAD", cwd=local)
+        tag = "v0.0.1-release-app-canary.1.1"
+        tag_ref = f"refs/tags/{tag}"
+        git("tag", "-a", tag, "-m", "canary", cwd=local)
+        tag_object = git("rev-parse", f"{tag}^{{tag}}", cwd=local)
+        git("remote", "add", "origin", str(remote), cwd=local)
+        git("push", "-q", "--atomic", "origin", "HEAD:refs/heads/develop", tag_ref, cwd=local)
+
+        patterns = ("refs/heads/develop", tag_ref, f"{tag_ref}^{{}}")
+        exact = git("ls-remote", str(remote), *patterns).splitlines()
+        refs_only = git("ls-remote", "--refs", str(remote), *patterns).splitlines()
+        mapping = {ref: oid for oid, ref in (line.split("\t", 1) for line in exact)}
+        refs_only_mapping = {
+            ref: oid for oid, ref in (line.split("\t", 1) for line in refs_only)
+        }
+        assert mapping["refs/heads/develop"] == commit
+        assert mapping[tag_ref] == tag_object
+        assert mapping[f"{tag_ref}^{{}}"] == commit
+        assert f"{tag_ref}^{{}}" not in refs_only_mapping
+    print("ok - ls-remote without --refs returns annotated tag object and peeled commit")
+    print("ok - old ls-remote --refs form suppresses the peeled annotated-tag line")
 
 
 def rejected(label: str, document: dict, raw: str) -> None:
@@ -162,6 +215,7 @@ def main() -> int:
         print("FAIL - " + "; ".join(problems))
         return 1
     print("ok - protected release App canary contract is bounded and recoverable")
+    prove_peeled_annotated_tag_query()
 
     job = document["jobs"]["canary"]
     steps = job["steps"]
@@ -211,6 +265,14 @@ def main() -> int:
     ].replace("push --atomic origin", "push origin")
     mutants.append(("a non-atomic canary push", mutant, raw))
     mutant = copy.deepcopy(document)
+    mutant["jobs"]["canary"]["steps"][push_index]["run"] = mutant["jobs"]["canary"]["steps"][push_index][
+        "run"
+    ].replace(
+        'ls-remote "$remote_url" "$CANARY_BRANCH_REF" "$tag_ref" "${tag_ref}^{}"',
+        'ls-remote --refs "$remote_url" "$CANARY_BRANCH_REF" "$tag_ref" "${tag_ref}^{}"',
+    )
+    mutants.append(("push verification that suppresses the peeled tag line", mutant, raw))
+    mutant = copy.deepcopy(document)
     mutant["jobs"]["canary"]["steps"][cleanup_index]["if"] = "always()"
     mutants.append(("cleanup without successful-push ownership gate", mutant, raw))
     mutant = copy.deepcopy(document)
@@ -218,6 +280,14 @@ def main() -> int:
         "run"
     ].replace('"$remote_tag_object" != "$TAG_OBJECT"', '"$remote_tag_object" != ""')
     mutants.append(("cleanup without exact tag-object ownership", mutant, raw))
+    mutant = copy.deepcopy(document)
+    mutant["jobs"]["canary"]["steps"][cleanup_index]["run"] = mutant["jobs"]["canary"]["steps"][cleanup_index][
+        "run"
+    ].replace(
+        'ls-remote "$remote_url" "$branch_ref" "$tag_ref" "${tag_ref}^{}"',
+        'ls-remote --refs "$remote_url" "$branch_ref" "$tag_ref" "${tag_ref}^{}"',
+    )
+    mutants.append(("cleanup ownership query that suppresses the peeled tag line", mutant, raw))
     mutant = copy.deepcopy(document)
     mutant["jobs"]["canary"]["steps"][receipt_index]["run"] = "echo receipt"
     mutants.append(("a non-retained or incomplete receipt", mutant, raw))
