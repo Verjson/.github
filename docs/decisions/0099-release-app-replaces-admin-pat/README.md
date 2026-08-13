@@ -59,14 +59,27 @@ token broker that derives the repository from an authenticated workflow identity
 could retain convenient adoption with a stronger boundary, at higher operational
 complexity. Neither is adopted here.
 
-No permanent canary-only workflow is added. Proving the material property means
-atomically advancing the exact protected default branch and creating an exact
-tag as this App. A supposedly disposable canary must then mutate the protected
-branch again and delete a tag, testing extra authorization and leaving audit
-history; a feature-branch or temporary-repository test would not exercise the
-exact ruleset. The first canonical production release at the new contract pin is
-therefore the live canary, and its run URL, snapshot commit, and tag are the
-required receipt before treating the operational migration as proven.
+A permanent manual canary proves the authorization boundary before a production
+release. It has no user-controlled repository, ref, or version inputs, runs only
+from the default-branch revision on a GitHub-hosted runner, and fixes its remote
+target to the otherwise-absent `develop` branch plus a run-unique SemVer
+prerelease tag. Organization ruleset `main-protection` (ID `18098028`) explicitly
+targets `develop`, so an atomic push there exercises the same ruleset and named
+App bypass as the canonical default-branch push without mutating `main`.
+
+The canary creates an isolated local history and fragment, then invokes the exact
+checked-in `scripts/changelog.py release` path to produce the snapshot commit and
+annotated tag. It records a successful push before verifying both remote refs,
+retains the run URL, App slug and installation, commit, tag, ruleset and proof
+boundary in the Actions step summary, and cleans up under `always()` only after
+both refs still resolve exactly to this run's commit and tag object. Cleanup is
+one atomic deletion and then proves both refs absent; a mismatch is preserved for
+investigation instead of deleting someone else's ref.
+
+This is strong live evidence for the exact organization ruleset and App bypass,
+but it is not evidence about a rule scoped only to the default branch or the
+default branch ref itself. The production release path retains its own
+default-branch and immutable-snapshot guards.
 
 ## Consequences
 
@@ -79,8 +92,9 @@ required receipt before treating the operational migration as proven.
   above.
 - Consumers must regenerate both `release-node` and `contract-test` at the same
   immutable contract commit. Handwritten partial migration is unsupported.
-- Closing the repository work does not by itself prove live authorization. The
-  first production release receipt is the operational evidence boundary.
+- Closing the repository work does not by itself prove live authorization. A
+  successful manual canary receipt is the operational evidence boundary for the
+  shared ruleset and App bypass.
 
 ## Rollback
 

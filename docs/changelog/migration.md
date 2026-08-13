@@ -178,7 +178,11 @@
    or a local `push_token`: the pinned reusable workflow mints the dedicated
    App's short-lived token and constrains it to the current repository with only
    Contents write. The App must be installed for that repository and named as
-   an always-bypass actor on the exact `main-protection` ruleset.
+   an always-bypass actor on the exact `main-protection` ruleset. After the
+   contract commit lands on the default branch, dispatch this repository's
+   input-free `release-app-canary.yml` and retain its step-summary receipt. That
+   proves the App bypass on the same organization ruleset through its protected
+   `develop` target, not the default branch ref itself.
 8. Rebase queued pull requests once, remove aggregate edits, normalize their
    fragments, and verify no selected fragment was already consumed. A branch cut
    before the migration needs `origin/main` merged in first, which surfaces the

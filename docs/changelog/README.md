@@ -221,6 +221,15 @@ release job remains explicit-dispatch-only and default-branch-bound. Its
 installation token expires automatically and is narrower than the temporary
 admin PAT retired by ADR 0099.
 
+Administrators can verify the live authorization path with the manual
+`release-app-canary.yml` workflow after its commit is on the default branch. It
+accepts no target inputs and atomically pushes an isolated canonical snapshot to
+the otherwise-absent protected `develop` ref plus a run-unique prerelease tag,
+verifies the annotated tag and branch resolve to the exact snapshot, writes a
+retained receipt, and atomically deletes only refs still owned by that run. The
+canary exercises organization ruleset `main-protection` and its App bypass; it
+does not claim to exercise the default branch ref itself.
+
 ### The release caller is generated, not copied
 
 `--atomic` protects the *push*, not the release. Once that push lands, the
