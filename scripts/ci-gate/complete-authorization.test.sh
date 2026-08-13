@@ -184,7 +184,7 @@ fi
 : >"$CALLS"
 : >"$GITHUB_OUTPUT"
 if run_complete >"$tmp/out" 2>&1 && grep -q 'conclusion=success' "$CALLS" \
-   && grep -q "ai-review-authorized:v1:${AUTHORIZATION_CHECK_ID}:${EXPECTED_AUTHORIZED_HEAD_SHA}" "$CALLS"; then
+   && grep -q "ai-review-authorized:v1:${AUTHORIZATION_CHECK_ID}:${EXPECTED_AUTHORIZED_HEAD_SHA}:ai-merge" "$CALLS"; then
   pass "trusted preflight head receives persisted App approval before authorization completion"
 else fail "valid completion head handoff failed: $(tail -1 "$tmp/out")"; fi
 
@@ -204,6 +204,12 @@ if [ "$?" -eq 0 ] && grep -q 'conclusion=success' "$CALLS" && grep -q 'ai_author
    && ! grep -q 'ai-review-authorized:v1:' "$CALLS"; then
   pass "stale App approval cannot authorize AI but leaves the human path ready"
 else fail "stale persisted approval escaped into AI authority"; fi
+
+: >"$CALLS"; : >"$GITHUB_OUTPUT"; REVIEW_AUTHORITY=ai-approve run_complete >"$tmp/out" 2>&1
+if [ "$?" -eq 0 ] && grep -q 'ai_authorized=true' "$GITHUB_OUTPUT" \
+   && grep -q "ai-review-authorized:v1:${AUTHORIZATION_CHECK_ID}:${EXPECTED_AUTHORIZED_HEAD_SHA}:ai-approve" "$CALLS"; then
+  pass "ai-approve persistence records non-merging authority in the exact-head marker"
+else fail "ai-approve marker did not preserve its non-merging authority"; fi
 
 : >"$CALLS"; : >"$GITHUB_OUTPUT"; REVIEW_AUTHORITY=human REVIEW_OUTCOME=skipped run_complete >"$tmp/out" 2>&1
 if [ "$?" -eq 0 ] && grep -q 'conclusion=success' "$CALLS" && ! grep -q 'api --method POST' "$CALLS" \

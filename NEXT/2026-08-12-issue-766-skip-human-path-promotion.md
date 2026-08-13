@@ -4,11 +4,12 @@ issue: 766
 title: Skip terminal promotion for human-path authorization
 ---
 
-Terminal promotion retries now exit successfully without dispatching privileged merge
-unless the newest exact-head authorization check carries the dedicated App's persisted
-AI-authorization marker and the receipt permits `ai-merge`.
+Terminal promotion retries and post-merge reconciliation now exit successfully without
+privileged processing unless the newest exact-head authorization check carries the
+dedicated App's persisted `ai-merge` marker.
 
 Human-path, skipped, blocking, inconclusive, `ai-approve`, and failed-App-approval
-outcomes remain terminal no-ops. The marker binds the check ID and reviewed head, while
-the privileged merge keeps its independent receipt and exact-head App-approval checks.
-ADR 0081 records the corrected event-driven eligibility boundary.
+outcomes remain terminal no-ops. The marker binds the check ID, reviewed head, and
+receipt-derived authority, while privileged merge and post-merge follow-up processing
+keep their independent exact-head evidence checks. ADR 0081 records the corrected
+event-driven eligibility boundary.

@@ -86,7 +86,7 @@ jobs:
             echo 'ready=false' >>"$GITHUB_OUTPUT"
             exit 0
           fi
-          authorization_marker="<!-- ai-review-authorized:v1:${check_id}:${HEAD_SHA} -->"
+          authorization_marker="<!-- ai-review-authorized:v1:${check_id}:${HEAD_SHA}:ai-merge -->"
           if ! jq -er --arg marker "$authorization_marker" '
             .output.summary | strings | split("\n") | index($marker) != null
           ' <<<"$check" >/dev/null; then

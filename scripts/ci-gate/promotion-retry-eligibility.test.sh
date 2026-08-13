@@ -76,13 +76,13 @@ expect_noop "failed App approval remains on the human path"
 jq '.conclusion="failure"' "$CHECK_FILE" >"$tmp/changed.json" && mv "$tmp/changed.json" "$CHECK_FILE"
 expect_noop "newest unsuccessful authorization supersedes older success"
 
-write_check $'The opted-in AI review approved this exact head.\n\n<!-- ai-review-authorized:v1:9001:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa -->'
+write_check $'The opted-in AI review approved this exact head.\n\n<!-- ai-review-authorized:v1:9001:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:ai-merge -->'
 expect_noop "stale exact-head AI authorization marker is rejected"
 
-write_check $'The opted-in AI review approved this exact head.\n\n<!-- ai-review-authorized:v1:9999:0123456789abcdef0123456789abcdef01234567 -->'
+write_check $'The opted-in AI review approved this exact head.\n\n<!-- ai-review-authorized:v1:9999:0123456789abcdef0123456789abcdef01234567:ai-merge -->'
 expect_noop "forged authorization-check marker is rejected"
 
-write_check $'The opted-in AI review approved this exact head.\n\n<!-- ai-review-authorized:v1:9001:0123456789abcdef0123456789abcdef01234567 -->'
+write_check $'The opted-in AI review approved this exact head.\n\n<!-- ai-review-authorized:v1:9001:0123456789abcdef0123456789abcdef01234567:ai-merge -->'
 if run_case && grep -qx 'ready=true' "$GITHUB_OUTPUT" \
    && grep -qx 'pr_number=7' "$GITHUB_OUTPUT" \
    && grep -qx 'expected_head_sha=0123456789abcdef0123456789abcdef01234567' "$GITHUB_OUTPUT"; then
@@ -91,8 +91,11 @@ else
   fail "exact-head ai-merge App authorization did not become promotion-ready"
 fi
 
+write_check $'The opted-in AI review approved this exact head.\n\n<!-- ai-review-authorized:v1:9001:0123456789abcdef0123456789abcdef01234567:ai-approve -->'
+expect_noop "ai-approve marker cannot satisfy an ai-merge receipt"
+
 export REVIEW_POLICY="$(policy ai-approve)"
-write_check $'The opted-in AI review approved this exact head.\n\n<!-- ai-review-authorized:v1:9001:0123456789abcdef0123456789abcdef01234567 -->'
+write_check $'The opted-in AI review approved this exact head.\n\n<!-- ai-review-authorized:v1:9001:0123456789abcdef0123456789abcdef01234567:ai-approve -->'
 expect_noop "ai-approve authorization cannot dispatch privileged promotion"
 
 [ "$fails" -eq 0 ] && { echo "All tests passed."; exit 0; }

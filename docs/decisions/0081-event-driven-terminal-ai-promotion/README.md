@@ -93,14 +93,22 @@ that App's approval was persisted. A successful authorization check alone is not
 authority: human-path, skipped, blocking, inconclusive, and failed-App-approval outcomes
 also complete the check successfully so ordinary branch protection can proceed.
 
-The marker binds its authorization-check ID and reviewed head SHA. It is written into
-the App-owned check summary only after the approval response and its persisted form both
-match that check and head. The retry requires the exact marker and a receipt policy with
-`ai-merge` authority before dispatch; `ai-approve` remains non-merging. Selecting the
+The marker binds its authorization-check ID, reviewed head SHA, and receipt-derived
+authority. It is written into the App-owned check summary only after the approval
+response and its persisted form both match that check and head. The retry requires the
+exact `ai-merge` marker and a receipt policy with `ai-merge` authority before dispatch;
+`ai-approve` remains non-merging. Selecting the
 newest check before evaluating its state prevents an older success from overriding a
 newer failed or human-path authorization. The privileged callee still independently
 verifies the receipt, policy, dedicated-App check, and exact-head App approval, so this
 early terminal no-op does not weaken the final fail-closed boundary.
+
+Post-merge reconciliation uses the same newest-check marker boundary before reading
+reviews or attestations. A merge completed through the human path, or after a skipped,
+blocking, inconclusive, `ai-approve`, or failed-App outcome, is a successful no-op.
+Only an exact check/head `ai-merge` marker proceeds to the existing exact-head approval,
+review-run, and attestation validation. A present but malformed, stale, duplicated, or
+forged AI marker remains a hard failure rather than being misclassified as human.
 
 ## Consequences
 
@@ -111,10 +119,11 @@ early terminal no-op does not weaken the final fail-closed boundary.
 - PR #623's bounded polling implementation is superseded by this event-driven path and
   should close without merge. Its underlying runner-saturation concern is satisfied.
 - Issue #640 supplies follow-up filing and branch cleanup through a trusted
-  `pull_request_target: closed` reconciler. It accepts only the unique dedicated-App
-  exact-head approval, the named successful review run, and that run's validated
-  artifact. It can file idempotent issues and delete same-repository merged head refs,
-  but has no merge or workflow-dispatch authority.
+  `pull_request_target: closed` reconciler. For exact-head `ai-merge` authorizations, it
+  accepts only the unique dedicated-App approval, the named successful review run, and
+  that run's validated artifact; every non-merging authority is a no-op. It can file
+  idempotent issues and delete same-repository merged head refs, but has no merge or
+  workflow-dispatch authority.
 - ADR 0079 continues to govern paid-review deduplication and App authorization; its
   native-auto-merge and GitHub-owned-waiting sections are superseded here.
 
