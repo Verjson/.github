@@ -30,12 +30,16 @@ if [ -n "${API_FAILURE_MATCH:-}" ] && [[ "$*" == *"$API_FAILURE_MATCH"* ]]; then
   exit 1
 fi
 case "$*" in
-  *"actions/workflows/gate-rearm.yml"*"--jq"*) printf '%s\n' 77 ;;
+  *"actions/workflows/gate-rearm.yml"*"--jq"*)
+    [ "${LOCAL_WORKFLOW_MISSING:-false}" = false ] || exit 1
+    printf '%s\n' 77 ;;
   *"actions/runs/$ARM_RUN_ID/artifacts"*) cat "$ARTIFACTS_FILE" ;;
   *"actions/runs/$ARM_RUN_ID"*) cat "$RUN_FILE" ;;
+  *"rules/branches/"*) cat "$RULES_FILE" ;;
   *"actions/artifacts/"*"/zip"*) cat "$ZIP_FILE" ;;
   *"check-runs/$AUTHORIZATION_CHECK_ID"*) cat "$CHECK_FILE" ;;
   *"collaborators/maintainer/permission"*) printf '%s\n' "${CURRENT_PERMISSION:-maintain}" ;;
+  *"pulls/$PR_NUMBER"*".base.ref"*) printf '%s\n' main ;;
   *"pulls/$PR_NUMBER"*"--jq"*)
     [ "${CURRENT_STATE:-open}" = open ] && printf '%s\n' "${CURRENT_HEAD:-$EXPECTED_HEAD_SHA}" ;;
   *) echo "unexpected gh call: $*" >&2; exit 2 ;;
@@ -43,11 +47,13 @@ esac
 GH
 chmod +x "$tmp/bin/gh"
 export PATH="$tmp/bin:$PATH" RUN_FILE="$tmp/run.json" ARTIFACTS_FILE="$tmp/artifacts.json"
-export CHECK_FILE="$tmp/check.json" ZIP_FILE="$tmp/receipt.zip"
+export CHECK_FILE="$tmp/check.json" ZIP_FILE="$tmp/receipt.zip" RULES_FILE="$tmp/rules.json"
 
 write_base() {
+  printf '%s\n' '[{"type":"workflows","ruleset_source_type":"Organization","ruleset_source":"Verjson","parameters":{"workflows":[{"path":".github/workflows/gate-rearm.yml","ref":"refs/heads/main","repository_id":1269388380}]}}]' >"$RULES_FILE"
   jq -nc --argjson id "$ARM_RUN_ID" --argjson attempt "$ARM_RUN_ATTEMPT" --arg repo "$TARGET_REPO" \
-    '{id:$id,run_attempt:$attempt,workflow_id:77,event:"pull_request_target",path:".github/workflows/gate-rearm.yml",head_repository:{full_name:$repo}}' >"$RUN_FILE"
+    --arg workflow_url "https://api.github.com/repos/$TARGET_REPO/actions/workflows/77" \
+    '{id:$id,run_attempt:$attempt,workflow_id:77,event:"pull_request_target",path:".github/workflows/gate-rearm.yml",workflow_url:$workflow_url,head_repository:{full_name:$repo}}' >"$RUN_FILE"
   jq -nc --argjson id "$AUTHORIZATION_CHECK_ID" --arg head "$EXPECTED_HEAD_SHA" --arg external "$external_id" \
     --arg url "$details_url" --argjson app "$EXPECTED_APP_ID" --arg slug "$EXPECTED_APP_SLUG" \
     '{id:$id,name:"AI review authorization",head_sha:$head,external_id:$external,details_url:$url,app:{id:$app,slug:$slug},status:"in_progress",conclusion:null}' >"$CHECK_FILE"
@@ -68,8 +74,24 @@ write_base() {
   unset CURRENT_HEAD
 }
 
+write_ruleset_run() {
+  write_base
+  jq '.workflow_id=88 | .workflow_url="https://api.github.com/repos/Verjson/example/actions/required_workflows/88"' \
+    "$RUN_FILE" >"$tmp/x" && mv "$tmp/x" "$RUN_FILE"
+}
+
 expect_pass() { label="$1"; shift; if "$@" >"$tmp/out" 2>&1; then pass "$label"; else fail "$label: $(tail -1 "$tmp/out")"; fi; }
 expect_fail() { label="$1"; shift; if "$@" >"$tmp/out" 2>&1; then fail "$label"; else pass "$label"; fi; }
+expect_provenance_fail() {
+  label="$1"; shift
+  if "$@" >"$tmp/out" 2>&1; then
+    fail "$label"
+  elif grep -qF '::error::arm run provenance mismatch' "$tmp/out"; then
+    pass "$label"
+  else
+    fail "$label: $(tail -1 "$tmp/out")"
+  fi
+}
 verify() { bash "$verifier"; }
 repack() {
   rm -f "$ZIP_FILE"
@@ -80,6 +102,25 @@ repack() {
 }
 
 write_base; expect_pass "exact dedicated-App check and immutable receipt are accepted" verify
+write_ruleset_run
+LOCAL_WORKFLOW_MISSING=true expect_pass "ruleset-created arm is accepted without a repository-local caller" verify
+write_ruleset_run
+printf '%s\n' '[{"type":"workflows","ruleset_source_type":"Repository","ruleset_source":"Verjson/example","parameters":{"workflows":[{"path":".github/workflows/gate-rearm.yml","ref":"refs/heads/main","repository_id":1269388380}]}}]' >"$RULES_FILE"
+LOCAL_WORKFLOW_MISSING=true expect_provenance_fail "matching-path required workflow from an untrusted ruleset origin is rejected" verify
+write_ruleset_run
+jq '.[0].ruleset_source="OtherOrg"' "$RULES_FILE" >"$tmp/x" && mv "$tmp/x" "$RULES_FILE"
+LOCAL_WORKFLOW_MISSING=true expect_provenance_fail "matching-path required workflow from the wrong organization is rejected" verify
+write_ruleset_run
+jq '.[0].parameters.workflows[0].repository_id=999' "$RULES_FILE" >"$tmp/x" && mv "$tmp/x" "$RULES_FILE"
+LOCAL_WORKFLOW_MISSING=true expect_provenance_fail "matching-path required workflow from the wrong canonical repository is rejected" verify
+write_ruleset_run
+printf '%s\n%s\n' \
+  '[{"type":"workflows","ruleset_source_type":"Organization","ruleset_source":"Verjson","parameters":{"workflows":[{"path":".github/workflows/gate-rearm.yml","ref":"refs/heads/main","repository_id":1269388380}]}}]' \
+  '[{"type":"workflows","ruleset_source_type":"Repository","ruleset_source":"Verjson/example","parameters":{"workflows":[{"path":".github/workflows/gate-rearm.yml","ref":"refs/heads/main","repository_id":1269388380}]}}]' >"$RULES_FILE"
+LOCAL_WORKFLOW_MISSING=true expect_provenance_fail "a later matching-path impostor rule withdraws required-workflow trust" verify
+write_ruleset_run
+jq '.[0].parameters.workflows[0].ref="refs/heads/topic"' "$RULES_FILE" >"$tmp/x" && mv "$tmp/x" "$RULES_FILE"
+LOCAL_WORKFLOW_MISSING=true expect_provenance_fail "a matching-path rule at an untrusted source ref is rejected" verify
 write_base; REVIEW_POLICY="$(encode_policy "$openai_policy")" expect_fail "a provider change after authorization is rejected" verify
 REVIEW_POLICY="$(encode_policy "$openai_policy")"; write_base; expect_pass "maintainer re-review evidence is reauthorized" verify
 write_base; CURRENT_PERMISSION=triage REVERIFY_ACTOR_PERMISSION=false expect_pass "completion trusts the immutable arm permission without repository administration access" verify
