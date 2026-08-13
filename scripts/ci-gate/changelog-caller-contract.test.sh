@@ -53,31 +53,29 @@ printf '%s\n' "$renderer" | bash -n \
   && pass "generated renderer parses as bash" || fail "generated renderer is not valid bash"
 
 # 4. Least privilege: the workflow requests no write scope.
-printf '%s\n' "$workflow" | grep -q 'contents: read' \
+grep -q 'contents: read' <<<"$workflow" \
   && pass "workflow declares contents: read" || fail "workflow does not declare contents: read"
-printf '%s\n' "$workflow" | grep -qE '\bwrite\b' \
+grep -qE '\bwrite\b' <<<"$workflow" \
   && fail "workflow requests a write permission" || pass "workflow requests no write permission"
 
 # 4a. The shared generated-artifacts caller is generated at the same immutable
 # pin. Changelog-only stays the safe default; ADR checking is a separate mode
 # because opting in before acquiring the generator is a counted failure.
-printf '%s\n' "$generated_artifacts" \
-  | grep -q "generated-artifacts.yml@$sha" \
+grep -q "generated-artifacts.yml@$sha" <<<"$generated_artifacts" \
   && pass "generated-artifacts caller pins the requested workflow commit" \
   || fail "generated-artifacts caller does not pin $sha"
-printf '%s\n' "$generated_artifacts" | grep -qE '^  generated-artifacts:$' \
+grep -qE '^  generated-artifacts:$' <<<"$generated_artifacts" \
   && pass "generated-artifacts caller publishes the canonical required-check prefix" \
   || fail "generated-artifacts caller does not publish generated-artifacts / validate"
-printf '%s\n' "$generated_artifacts" | grep -qE '^ +changelog: true$' \
-  && printf '%s\n' "$generated_artifacts" | grep -qE "^ +contract_ref: $sha$" \
+grep -qE '^ +changelog: true$' <<<"$generated_artifacts" \
+  && grep -qE "^ +contract_ref: $sha$" <<<"$generated_artifacts" \
   && pass "generated-artifacts caller enables changelog validation at the pin" \
   || fail "generated-artifacts caller does not enable pinned changelog validation"
-printf '%s\n' "$generated_artifacts" | grep -qE '^ +adr-index: true$' \
+grep -qE '^ +adr-index: true$' <<<"$generated_artifacts" \
   && fail "changelog-only generated-artifacts caller enables ADR checking without its generator" \
   || pass "changelog-only generated-artifacts caller does not opt into ADR checking"
-printf '%s\n' "$generated_artifacts_with_adr" | grep -qE '^ +adr-index: true$' \
-  && printf '%s\n' "$generated_artifacts_with_adr" \
-    | grep -q "generated-artifacts.yml@$sha" \
+grep -qE '^ +adr-index: true$' <<<"$generated_artifacts_with_adr" \
+  && grep -q "generated-artifacts.yml@$sha" <<<"$generated_artifacts_with_adr" \
   && pass "ADR-index caller explicitly enables ADR checking at the pin" \
   || fail "ADR-index caller does not enable ADR checking"
 cmp -s <(printf '%s\n' "$adr_index_generator") "$repo_root/scripts/gen-adr-index.sh" \
@@ -109,12 +107,12 @@ done
 bash "$gen" bogus "$sha" >/dev/null 2>&1 \
   && fail "generator accepted an unknown mode" || pass "generator rejects an unknown mode"
 
-printf '%s\n' "$default_release" | grep -qF "node-version: \${{ '24' }}" \
-  && printf '%s\n' "$default_release" | grep -q "scope: '@verjson'" \
+grep -qF "node-version: \${{ '24' }}" <<<"$default_release" \
+  && grep -q "scope: '@verjson'" <<<"$default_release" \
   && pass "release-node keeps the Verjson and Node 24 defaults" \
   || fail "release-node changed its backward-compatible defaults"
-printf '%s\n' "$custom_release" | grep -qF "node-version: \${{ '22.23.1' }}" \
-  && printf '%s\n' "$custom_release" | grep -q "scope: '@acme'" \
+grep -qF "node-version: \${{ '22.23.1' }}" <<<"$custom_release" \
+  && grep -q "scope: '@acme'" <<<"$custom_release" \
   && pass "release-node emits validated adopter parameters" \
   || fail "release-node ignored custom scope or Node version"
 

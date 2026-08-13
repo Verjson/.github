@@ -17,3 +17,7 @@ the same organization ruleset and App bypass through its fixed protected
 that still belong to its run. ADR 0099 records
 that proof boundary and the intentionally organization-wide installation and
 credential-availability trade-off.
+
+The generated-caller contract tests now inspect complete in-memory output
+without early-closing `grep -q` pipelines, so larger release callers cannot
+turn a successful assertion into a nondeterministic `pipefail` failure.
