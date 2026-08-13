@@ -73,6 +73,31 @@ flushed progress at most every 30 seconds or 1 MiB, plus completion, using only
 elapsed time and numeric counters. Verdict, reasoning, prompt, diff, key, payload,
 and exception details never enter telemetry.
 
+When a completed DeepSeek response passes exact-model, usage, cost, and JSON
+transport extraction but later fails canonical source validation or publication,
+the gate may retain a one-day diagnostic replay. The bundle contains only the
+reconstructed verdict object, projected validated numeric usage and bounds, the
+exact reviewed head/repository/PR/pass/sensitive classification/check identity,
+and SHA-256 digests of the receipt policy and bounded inputs. It is explicitly
+non-authorizing and non-cacheable; no workflow consumes or downloads it. An
+operator reproduces canonical validation from a checkout at `reviewed_head` by
+passing the bundle's compact `response.verdict`, `provenance.sensitive`, and
+reviewed head to `review-verdict.py`:
+
+```bash
+git checkout "$(jq -r .provenance.reviewed_head replay.json)"
+VERDICT="$(jq -c .response.verdict replay.json)" \
+SENSITIVE="$(jq -r .provenance.sensitive replay.json)" \
+REVIEW_PASS="$(jq -r .provenance.review_pass replay.json)" \
+REVIEW_REPOSITORY="$PWD" \
+REVIEWED_HEAD_SHA="$(jq -r .provenance.reviewed_head replay.json)" \
+GITHUB_OUTPUT="$(mktemp)" python3 scripts/ci-gate/review-verdict.py
+```
+
+Raw SSE, reasoning, prompts, diffs, keys,
+headers, provider extensions, and exception details are never persisted, and an
+incomplete transport or successful end-to-end review creates no uploaded replay.
+
 A repository provider override is authoritative over inherited organization
 fallback variables. Selecting Anthropic or OpenAI therefore normalizes stale
 DeepSeek fallback model and budget values to empty before provider validation and

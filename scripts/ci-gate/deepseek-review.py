@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """Execute one budget-bounded, tool-free DeepSeek Chat Completions review."""
 
+import hashlib
 import json
 import os
+import re
 import sys
 import time
 import urllib.request
@@ -29,6 +31,7 @@ MAX_DIFF_BYTES = 2 * 1024 * 1024
 # verdict. Bound wire data in proportion to the independently bounded output
 # token envelope while allowing generous per-event framing overhead.
 MAX_STREAM_BYTES = MAX_OUTPUT_TOKENS * 1024
+MAX_REPLAY_BYTES = 1024 * 1024
 PROGRESS_INTERVAL_SECONDS = 30
 PROGRESS_INTERVAL_BYTES = 1024 * 1024
 
@@ -101,6 +104,36 @@ def bounded_text(path: str, limit: int, label: str) -> str:
         return data.decode("utf-8")
     except UnicodeDecodeError as exc:
         raise ValueError(f"{label} is not valid UTF-8") from exc
+
+
+def file_digest(path: str) -> str:
+    digest = hashlib.sha256()
+    with open(path, "rb") as source:
+        for chunk in iter(lambda: source.read(65536), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def write_replay_bundle(path: str, verdict: str, model: str, usage: dict, provenance: dict, bounds: dict) -> None:
+    bundle = {
+        "schema": 1,
+        "purpose": "diagnostic-replay",
+        "authorizing": False,
+        "cacheable": False,
+        "transport": "completed",
+        "provenance": provenance,
+        "response": {
+            "model": model,
+            "usage": usage,
+            "verdict": json.loads(verdict),
+            "bounds": bounds,
+        },
+    }
+    encoded = json.dumps(bundle, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    if len(encoded) > MAX_REPLAY_BYTES:
+        raise ValueError("diagnostic replay exceeds its bounded limit")
+    with open(path, "wb") as output:
+        output.write(encoded + b"\n")
 
 
 def role_separated_messages(prompt: str, metadata: str, diff: str) -> list[dict]:
@@ -294,10 +327,24 @@ def streamed_response(raw: object, model: str, progress: StreamProgress | None =
 
 
 def main() -> int:
-    required = ("MODEL", "BUDGET_USD", "PROMPT_FILE", "PR_JSON_FILE", "PR_DIFF_FILE", "GITHUB_OUTPUT")
+    required = (
+        "MODEL", "BUDGET_USD", "PROMPT_FILE", "PR_JSON_FILE", "PR_DIFF_FILE", "GITHUB_OUTPUT",
+        "REPLAY_FILE", "REVIEWED_HEAD_SHA", "REVIEW_POLICY", "AUTHORIZATION_CHECK_ID",
+        "TARGET_REPO", "PR_NUMBER", "REVIEW_PASS", "SENSITIVE",
+    )
     values = {name: os.environ.get(name, "") for name in required}
     if not all(values.values()):
         raise ValueError(f"{', '.join(required)} are required")
+    if not re.fullmatch(r"[0-9a-f]{40}", values["REVIEWED_HEAD_SHA"]):
+        raise ValueError("reviewed head is malformed")
+    if not re.fullmatch(r"[1-9][0-9]*", values["AUTHORIZATION_CHECK_ID"]):
+        raise ValueError("authorization check ID is malformed")
+    if not re.fullmatch(r"[A-Za-z0-9._-]+/[A-Za-z0-9._-]+", values["TARGET_REPO"]):
+        raise ValueError("target repository is malformed")
+    if not re.fullmatch(r"[1-9][0-9]*", values["PR_NUMBER"]) or values["REVIEW_PASS"] not in {"1", "2"}:
+        raise ValueError("review identity is malformed")
+    if values["SENSITIVE"] not in {"true", "false"}:
+        raise ValueError("sensitive classification is malformed")
     with open(values["PROMPT_FILE"], encoding="utf-8") as prompt:
         prompt_text = prompt.read()
     messages = role_separated_messages(
@@ -341,6 +388,35 @@ def main() -> int:
     verdict, prompt_tokens, completion_tokens, hit_tokens, miss_tokens, cost = extract(
         response, values["MODEL"], input_bound, body["max_tokens"], values["BUDGET_USD"]
     )
+    try:
+        write_replay_bundle(
+            values["REPLAY_FILE"], verdict, values["MODEL"],
+            {
+                "prompt_tokens": prompt_tokens,
+                "completion_tokens": completion_tokens,
+                "cache_hit_tokens": hit_tokens,
+                "cache_miss_tokens": miss_tokens,
+            },
+            {
+                "reviewed_head": values["REVIEWED_HEAD_SHA"],
+                "authorization_check_id": values["AUTHORIZATION_CHECK_ID"],
+                "repository": values["TARGET_REPO"],
+                "pr_number": int(values["PR_NUMBER"]),
+                "review_pass": int(values["REVIEW_PASS"]),
+                "sensitive": values["SENSITIVE"] == "true",
+                "review_policy_sha256": hashlib.sha256(values["REVIEW_POLICY"].encode("utf-8")).hexdigest(),
+                "prompt_sha256": file_digest(values["PROMPT_FILE"]),
+                "pr_metadata_sha256": file_digest(values["PR_JSON_FILE"]),
+                "pr_diff_sha256": file_digest(values["PR_DIFF_FILE"]),
+            },
+            {
+                "input_token_bound": input_bound,
+                "max_output_tokens": body["max_tokens"],
+                "reported_cost_usd": str(cost),
+            },
+        )
+    except (OSError, ValueError, json.JSONDecodeError):
+        print("::warning::DeepSeek diagnostic replay unavailable; detail redacted", file=sys.stderr, flush=True)
     with open(values["GITHUB_OUTPUT"], "a", encoding="utf-8") as out:
         out.write(f"structured_output={verdict}\n")
         out.write(f"input_token_bound={input_bound}\nmax_output_tokens={body['max_tokens']}\npricing_version={PRICING_VERSION}\n")

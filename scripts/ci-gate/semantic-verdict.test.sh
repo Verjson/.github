@@ -10,9 +10,9 @@ legacy_normalizer="normalized=\"\$(jq -c"
 
 grep -qF 'scripts/ci-gate/review-verdict.py' "$workflow"
 [ "$(grep -cF "$validator_invocation" "$workflow")" -eq 2 ]
-[ "$(grep -cF 'REVIEW_PASS: "1"' "$workflow")" -eq 1 ]
-[ "$(grep -cF 'REVIEW_PASS: "2"' "$workflow")" -eq 1 ]
-[ "$(grep -cF '          REVIEWED_HEAD_SHA: ${{ needs.preflight.outputs.head_sha }}' "$workflow")" -eq 2 ]
+[ "$(grep -cF 'REVIEW_PASS: "1"' "$workflow")" -eq 2 ]
+[ "$(grep -cF 'REVIEW_PASS: "2"' "$workflow")" -eq 2 ]
+[ "$(grep -cF '          REVIEWED_HEAD_SHA: ${{ needs.preflight.outputs.head_sha }}' "$workflow")" -eq 4 ]
 [ "$(grep -cF 'REVIEW_REPOSITORY: ${{ github.workspace }}' "$workflow")" -eq 2 ]
 if grep -q 'if jq -e --argjson sensitive' "$workflow"; then exit 1; fi
 if grep -qF "$legacy_normalizer" "$workflow"; then exit 1; fi

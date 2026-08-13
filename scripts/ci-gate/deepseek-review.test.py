@@ -226,14 +226,17 @@ class DeepSeekReviewTest(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            prompt, metadata, diff, output = (root / name for name in ("prompt", "pr.json", "pr.diff", "output"))
-            prompt.write_text("review", encoding="utf-8")
-            metadata.write_text('{"title":"sentinel"}', encoding="utf-8")
-            diff.write_text("diff --git sentinel", encoding="utf-8")
+            prompt, metadata, diff, output, replay = (root / name for name in ("prompt", "pr.json", "pr.diff", "output", "replay.json"))
+            prompt.write_text("replay-private-prompt-719", encoding="utf-8")
+            metadata.write_text('{"title":"replay-private-metadata-719"}', encoding="utf-8")
+            diff.write_text("diff --git replay-private-diff-719", encoding="utf-8")
             env = {
                 "MODEL": "deepseek-v4-pro", "BUDGET_USD": "5.00", "PROMPT_FILE": str(prompt),
                 "PR_JSON_FILE": str(metadata), "PR_DIFF_FILE": str(diff), "GITHUB_OUTPUT": str(output),
-                "DEEPSEEK_API_KEY": "secret",
+                "DEEPSEEK_API_KEY": "replay-private-key-719",
+                "REPLAY_FILE": str(replay), "REVIEWED_HEAD_SHA": "a" * 40,
+                "REVIEW_POLICY": "receipt-policy", "AUTHORIZATION_CHECK_ID": "9001",
+                "TARGET_REPO": "Verjson/.github", "PR_NUMBER": "7", "REVIEW_PASS": "1", "SENSITIVE": "false",
             }
             notices = io.StringIO()
             with patch.dict(os.environ, env, clear=True), patch.object(review.urllib.request, "urlopen", return_value=Context(self.stream())) as call, patch("sys.stdout", notices):
@@ -244,7 +247,7 @@ class DeepSeekReviewTest(unittest.TestCase):
                 self.assertEqual(sent["thinking"], {"type": "enabled"})
                 self.assertEqual(sent["reasoning_effort"], "high")
                 self.assertEqual(sent["temperature"], 0.2)
-                self.assertIn("sentinel", sent["messages"][1]["content"])
+                self.assertIn("replay-private-metadata-719", sent["messages"][1]["content"])
                 self.assertTrue(sent["stream"])
                 self.assertEqual(call.call_args.args[0].headers["Accept"], "text/event-stream")
             self.assertIn("result=started", notices.getvalue())
@@ -258,6 +261,20 @@ class DeepSeekReviewTest(unittest.TestCase):
             self.assertIn("structured_output=", result)
             self.assertIn("reported_cache_hit_tokens=40", result)
             self.assertIn("pricing_version=deepseek-v4-2026-08-10", result)
+            bundle = json.loads(replay.read_text())
+            self.assertEqual(bundle["purpose"], "diagnostic-replay")
+            self.assertFalse(bundle["authorizing"])
+            self.assertFalse(bundle["cacheable"])
+            self.assertEqual(bundle["provenance"]["reviewed_head"], "a" * 40)
+            self.assertEqual(set(bundle["response"]["usage"]), {
+                "prompt_tokens", "completion_tokens", "cache_hit_tokens", "cache_miss_tokens"
+            })
+            replay_text = replay.read_text()
+            for secret in (
+                "replay-private-prompt-719", "replay-private-metadata-719",
+                "replay-private-diff-719", "replay-private-key-719", "reasoning_content",
+            ):
+                self.assertNotIn(secret, replay_text)
 
     def test_transport_failure_logs_only_bounded_metadata(self):
         class ResettingContext:
@@ -267,7 +284,7 @@ class DeepSeekReviewTest(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            prompt, metadata, diff, output = (root / name for name in ("prompt", "pr.json", "pr.diff", "output"))
+            prompt, metadata, diff, output, replay = (root / name for name in ("prompt", "pr.json", "pr.diff", "output", "replay.json"))
             prompt.write_text("sensitive prompt", encoding="utf-8")
             metadata.write_text('{"title":"sensitive metadata"}', encoding="utf-8")
             diff.write_text("sensitive diff", encoding="utf-8")
@@ -275,6 +292,9 @@ class DeepSeekReviewTest(unittest.TestCase):
                 "MODEL": "deepseek-v4-pro", "BUDGET_USD": "5.00", "PROMPT_FILE": str(prompt),
                 "PR_JSON_FILE": str(metadata), "PR_DIFF_FILE": str(diff), "GITHUB_OUTPUT": str(output),
                 "DEEPSEEK_API_KEY": "sensitive key",
+                "REPLAY_FILE": str(replay), "REVIEWED_HEAD_SHA": "a" * 40,
+                "REVIEW_POLICY": "receipt-policy", "AUTHORIZATION_CHECK_ID": "9001",
+                "TARGET_REPO": "Verjson/.github", "PR_NUMBER": "7", "REVIEW_PASS": "1", "SENSITIVE": "false",
             }
             errors = io.StringIO()
             with patch.dict(os.environ, env, clear=True), patch.object(review.urllib.request, "urlopen", return_value=ResettingContext()), patch("sys.stderr", errors), self.assertRaises(ConnectionResetError):
@@ -284,6 +304,33 @@ class DeepSeekReviewTest(unittest.TestCase):
             self.assertIn("error_type=ConnectionResetError", diagnostic)
             for secret in ("sensitive prompt", "sensitive metadata", "sensitive diff", "sensitive key", "private response detail"):
                 self.assertNotIn(secret, diagnostic)
+            self.assertFalse(replay.exists())
+
+    def test_replay_write_failure_never_changes_a_successful_provider_result(self):
+        class Context(io.BytesIO):
+            def __enter__(self): return self
+            def __exit__(self, *_): return False
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            prompt, metadata, diff, output = (root / name for name in ("prompt", "pr.json", "pr.diff", "output"))
+            prompt.write_text("review", encoding="utf-8")
+            metadata.write_text("{}", encoding="utf-8")
+            diff.write_text("diff", encoding="utf-8")
+            env = {
+                "MODEL": "deepseek-v4-pro", "BUDGET_USD": "5.00", "PROMPT_FILE": str(prompt),
+                "PR_JSON_FILE": str(metadata), "PR_DIFF_FILE": str(diff), "GITHUB_OUTPUT": str(output),
+                "DEEPSEEK_API_KEY": "secret", "REPLAY_FILE": str(root / "missing" / "replay.json"),
+                "REVIEWED_HEAD_SHA": "a" * 40, "REVIEW_POLICY": "policy", "AUTHORIZATION_CHECK_ID": "9001",
+                "TARGET_REPO": "Verjson/.github", "PR_NUMBER": "7", "REVIEW_PASS": "1", "SENSITIVE": "false",
+            }
+            errors = io.StringIO()
+            with patch.dict(os.environ, env, clear=True), patch.object(
+                review.urllib.request, "urlopen", return_value=Context(self.stream())
+            ), patch("sys.stderr", errors):
+                self.assertEqual(review.main(), 0)
+            self.assertIn("structured_output=", output.read_text())
+            self.assertIn("diagnostic replay unavailable", errors.getvalue())
 
 
 if __name__ == "__main__":
