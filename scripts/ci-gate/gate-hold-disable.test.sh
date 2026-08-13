@@ -239,7 +239,28 @@ else
   fail "post-open ai-review opt-in lost its verified actor permission or failed before receipt creation"
 fi
 
+# GitHub can omit a label-triggered pull_request_target delivery entirely. A
+# maintainer can rerun a prior exact-head arm attempt; attempt 2 must bypass
+# same-head deduplication only after the arm re-reads current PR/head state, and
+# the new receipt must bind that run attempt. This does not simulate or claim a
+# repaired label delivery.
+: >"$CALLS"; : >"$GITHUB_OUTPUT"
+jq -nc --arg head "$head_sha" '{id:"PR_id",state:"OPEN",isDraft:false,title:"change",labels:[],headRefOid:$head,headRepositoryOwner:{login:"Verjson"},autoMergeRequest:null}' >"$META_FILE"
+recovery_temp="$tmp/recovery"
+mkdir "$recovery_temp"
+export EVENT_ACTION=synchronize EVENT_LABEL='' REQUEST_ACTOR=pusher GITHUB_RUN_ATTEMPT=2 RUNNER_TEMP="$recovery_temp"
+if run_arm >"$tmp/out" 2>&1 \
+  && grep -q -- '--method POST repos/Verjson/example/check-runs --input -' "$CALLS" \
+  && grep -q '^head_sha=0123456789abcdef0123456789abcdef01234567$' "$GITHUB_OUTPUT" \
+  && grep -q '^receipt_name=ai-review-arm-8000-2$' "$GITHUB_OUTPUT"; then
+  pass "operator rerun revalidates the exact head and creates an attempt-bound recovery receipt"
+else
+  fail "operator rerun did not preserve the exact-head receipt boundary: $(tail -1 "$tmp/out")"
+fi
+export GITHUB_RUN_ATTEMPT=1 RUNNER_TEMP="$tmp"
+
 : >"$CALLS"
+jq '.labels=[{"name":"ai-review"}]' "$META_FILE" >"$tmp/x" && mv "$tmp/x" "$META_FILE"
 export EVENT_ACTION=labeled EVENT_LABEL=ai-review ACTOR_PERMISSION=triage PR_EDIT_FAIL=true
 expect_fail "unauthorized ai-review label fails even when cleanup cannot remove it"
 : >"$CALLS"

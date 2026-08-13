@@ -10,15 +10,19 @@ FIELDS = (
     "actor", "actor_permission", "authority", "budget_usd", "fallback_budget_usd",
     "fallback_model", "model", "pricing_version", "provider",
 )
+EXPLICIT_FIELDS = (*FIELDS, "explicit_rereview")
 MAX_ENVELOPE_BYTES = 2048
 
 
 def canonical(policy):
     keys = tuple(sorted(policy)) if isinstance(policy, dict) else ()
-    if keys not in (LEGACY_FIELDS, FIELDS):
+    if keys not in (LEGACY_FIELDS, FIELDS, tuple(sorted(EXPLICIT_FIELDS))):
         raise ValueError("policy must contain exactly one supported field set")
-    if any(not isinstance(policy[field], str) for field in keys):
+    string_fields = tuple(field for field in keys if field != "explicit_rereview")
+    if any(not isinstance(policy[field], str) for field in string_fields):
         raise ValueError("every policy field must be a string")
+    if "explicit_rereview" in keys and not isinstance(policy["explicit_rereview"], bool):
+        raise ValueError("explicit_rereview must be a boolean")
     return json.dumps(policy, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode()
 
 

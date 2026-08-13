@@ -53,6 +53,22 @@ single-pass behaviour. `review_first` inspection pointers and non-blocking
 `followups` do not grant authorization, so this decision does not add evidence
 fields to them.
 
+The ordinary automatic allowance remains capped at two cumulative reservation
+reviews. A maintainer or administrator may deliberately request one additional
+diagnostic pass by applying the consumed `re-review` label. That authorization
+is bound into the arm receipt and produces a distinct App-authored
+`ai-review-explicit:v1` reservation marker. Explicit reservations count in
+cumulative telemetry, bypass the ordinary cap for that one invocation, and
+never trigger the DeepSeek fallback; every further diagnostic pass requires a
+new authorized label event and receipt.
+
+GitHub may fail to create a `pull_request_target` run for a label event. Workflow
+logic cannot repair an event it never receives. An operator may rerun an
+existing arm attempt for the same exact PR head: the trusted arm re-reads the
+current PR state, labels, hold state, actor policy, and head before creating a
+new immutable receipt and dispatch. This is a recovery mechanism, not evidence
+that label delivery succeeded, and it does not weaken model reservation limits.
+
 ## Consequences
 
 - Nearby commands and synthetic mutation fixtures cannot substantiate a
@@ -71,5 +87,6 @@ fields to them.
 The registered merge-gate suite executes valid exact-head binding, the nearby
 canary `--refs` confusion, the generator-versus-synthetic-fixture confusion,
 range/list location rejection, head mismatch, unsafe paths, provider schema
-conformance, publication rendering, and the unchanged one-to-two cumulative
-reservation guard.
+conformance, publication rendering, edge-whitespace versus interior-token
+matching, the unchanged one-to-two automatic reservation guard, the one-shot
+explicit marker, and exact-head operator recovery after an absent label wake.

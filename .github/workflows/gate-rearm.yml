@@ -130,6 +130,10 @@ jobs:
           explicit_ai_review=false
           hold_removed=false
           [ "$EVENT_ACTION" = labeled ] && [ "$EVENT_LABEL" = re-review ] && explicit_rereview=true
+          if [ "$explicit_rereview" = true ] && [ "${GITHUB_RUN_ATTEMPT:-1}" -ne 1 ]; then
+            echo "::error::an explicit re-review requires a new authorized label event; reruns cannot spend another diagnostic pass"
+            exit 1
+          fi
           ai_review_label="$(jq -r '[.labels[].name | select((ascii_downcase | gsub("[ _-]+"; "-")) == "ai-review")] | first // ""' <<<"$meta")"
           authorize_ai_review_actor() {
             local actor="$1"
@@ -211,7 +215,8 @@ jobs:
           review_policy_json="$(jq -cSn --arg provider "$review_provider" --arg model "$review_model" --arg budget_usd "$review_budget_usd" \
             --arg fallback_model "$fallback_model" --arg fallback_budget_usd "$fallback_budget_usd" \
             --arg pricing_version "$review_pricing_version" --arg actor "$review_actor" --arg actor_permission "$actor_permission" --arg authority "$authority" \
-            '{provider:$provider,model:$model,budget_usd:$budget_usd,fallback_model:$fallback_model,fallback_budget_usd:$fallback_budget_usd,pricing_version:$pricing_version,actor:$actor,actor_permission:$actor_permission,authority:$authority}')"
+            --argjson explicit_rereview "$explicit_rereview" \
+            '{provider:$provider,model:$model,budget_usd:$budget_usd,fallback_model:$fallback_model,fallback_budget_usd:$fallback_budget_usd,pricing_version:$pricing_version,actor:$actor,actor_permission:$actor_permission,authority:$authority,explicit_rereview:$explicit_rereview}')"
           review_policy="$(printf '%s' "$review_policy_json" | base64 -w0 | tr '+/' '-_' | tr -d '=')"
           [[ "$review_policy" =~ ^[A-Za-z0-9_-]{1,2048}$ ]] || { echo "::error::review policy envelope is invalid"; exit 1; }
           [ "$EVENT_ACTION" = ready_for_review ] && hold_removed=true
@@ -290,7 +295,14 @@ jobs:
               --body "$notice_body"
             exit 0
           fi
-          if [ "$explicit_rereview" = false ] && [ "$explicit_ai_review" = false ] && [[ "$latest_id" =~ ^[1-9][0-9]*$ ]]; then
+          # A GitHub label delivery outage can leave no new arm run at all. An
+          # operator may rerun an existing exact-head arm: the incremented run
+          # attempt creates a fresh receipt and dispatch after revalidating the
+          # current PR/head/holds. This is not evidence that label delivery ran,
+          # and ordinary review accounting still denies automatic pass three.
+          operator_recovery=false
+          [ "${GITHUB_RUN_ATTEMPT:-1}" -gt 1 ] && operator_recovery=true
+          if [ "$explicit_rereview" = false ] && [ "$explicit_ai_review" = false ] && [ "$operator_recovery" = false ] && [[ "$latest_id" =~ ^[1-9][0-9]*$ ]]; then
             echo "Authorization already exists for $head_sha; duplicate event is a no-op."
             exit 0
           fi

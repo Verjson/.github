@@ -21,6 +21,13 @@ def marker(pass_number: int, *, pr: int = 7, head: str = HEAD, run: int = 101, a
     )
 
 
+def explicit_marker(*, pr: int = 7, head: str = HEAD, run: int = 201, attempt: int = 1) -> str:
+    return (
+        f"<!-- ai-review-explicit:v1 pr:{pr} check:9001 head:{head} "
+        f"run:{run} attempt:{attempt} provider:openai model:gpt-5.6-luna -->"
+    )
+
+
 def count(*reviews: dict[str, object]) -> int:
     result = subprocess.run(
         ["python3", str(SCRIPT), "--app-login", APP, "--pr-number", "7"],
@@ -41,6 +48,16 @@ class ReviewAttemptCountTest(unittest.TestCase):
     def test_failed_or_inconclusive_reserved_pass_still_counts(self) -> None:
         self.assertEqual(count(review(APP, "AI review pass consumed before invocation.\n" + marker(1))), 1)
 
+    def test_explicit_reservations_count_in_cumulative_telemetry(self) -> None:
+        self.assertEqual(
+            count(
+                review(APP, marker(1)),
+                review(APP, marker(2, run=102)),
+                review(APP, explicit_marker()),
+            ),
+            3,
+        )
+
     def test_shared_actions_identity_cannot_forge_reservations(self) -> None:
         self.assertEqual(count(review("github-actions[bot]", marker(1))), 0)
 
@@ -49,6 +66,8 @@ class ReviewAttemptCountTest(unittest.TestCase):
             count(
                 review(APP, marker(1, pr=8)),
                 review(APP, marker(1, head="b" * 40)),
+                review(APP, explicit_marker(pr=8)),
+                review(APP, explicit_marker(head="b" * 40)),
             ),
             0,
         )
@@ -58,6 +77,7 @@ class ReviewAttemptCountTest(unittest.TestCase):
             count(
                 review(APP, marker(1), state="APPROVED"),
                 review(APP, "<!-- ai-review-pass:v2:3/2 pr:7 check:9001 head:" + HEAD + " run:102 attempt:1 provider:openai model:luna -->"),
+                review(APP, "<!-- ai-review-explicit:v2 pr:7 check:9001 head:" + HEAD + " run:103 attempt:1 provider:openai model:luna -->"),
             ),
             0,
         )
@@ -65,6 +85,9 @@ class ReviewAttemptCountTest(unittest.TestCase):
     def test_duplicate_delivery_of_same_reservation_counts_once(self) -> None:
         reservation = marker(1, attempt=2)
         self.assertEqual(count(review(APP, reservation), review(APP, reservation)), 1)
+
+        explicit = explicit_marker(attempt=2)
+        self.assertEqual(count(review(APP, explicit), review(APP, explicit)), 1)
 
     def test_invalid_api_payload_fails_closed(self) -> None:
         result = subprocess.run(

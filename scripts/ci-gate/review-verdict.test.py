@@ -333,6 +333,31 @@ after=$(git ls-remote --refs origin "$tag_ref")
         self.assertEqual(result["diagnostic"]["path"], "findings[0].evidence")
         self.assertEqual(result["diagnostic"]["observed"], "fragment mismatch")
 
+    def test_evidence_trims_edges_but_preserves_interior_spacing(self):
+        source = "    return  response.value    \n"
+        with tempfile.TemporaryDirectory() as directory:
+            head = self.committed_fixture(directory, {"src/client.py": source})
+            verdict = {
+                "blocking": True,
+                "summary": "The response is returned without validation.",
+                "review_first": [],
+                "findings": [{
+                    "location": "src/client.py:1",
+                    "reason": "The return bypasses validation.",
+                    "failure_scenario": "Invalid data reaches the caller.",
+                    "evidence": "  return  response.value  ",
+                }],
+                "followups": [],
+            }
+            accepted = review.confirm_output(json.dumps(verdict), False, directory, head)
+            verdict["findings"][0]["evidence"] = "return response.value"
+            rejected = review.confirm_output(json.dumps(verdict), False, directory, head)
+
+        self.assertTrue(accepted["usable"])
+        self.assertEqual(accepted["verdict"]["findings"][0]["evidence"], "return  response.value")
+        self.assertFalse(rejected["usable"])
+        self.assertEqual(rejected["diagnostic"]["observed"], "fragment mismatch")
+
     def test_canary_range_cannot_collapse_nearby_probe_evidence_to_its_first_line(self):
         canary = """before=$(git ls-remote --refs origin "$tag_ref")
 commit=$(git ls-remote origin "$branch_ref")
