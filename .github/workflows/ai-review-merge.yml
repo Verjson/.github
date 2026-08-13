@@ -1239,6 +1239,7 @@ jobs:
           REVIEWED_HEAD_SHA: ${{ needs.preflight.outputs.head_sha }}
           REVIEW_PASS: "1"
           SENSITIVE: ${{ needs.preflight.outputs.sensitive }}
+          TRUSTED_REVIEW_SHA: ${{ steps.trusted-revision.outputs.sha }}
         run: |
           umask 077
           printf '%s' "$REVIEW_PROMPT" >"$PROMPT_FILE"
@@ -1308,6 +1309,7 @@ jobs:
           REVIEWED_HEAD_SHA: ${{ needs.preflight.outputs.head_sha }}
           REVIEW_PASS: "2"
           SENSITIVE: ${{ needs.preflight.outputs.sensitive }}
+          TRUSTED_REVIEW_SHA: ${{ steps.trusted-revision.outputs.sha }}
         run: |
           umask 077
           printf '%s' "$REVIEW_PROMPT" >"$PROMPT_FILE"
@@ -1533,15 +1535,19 @@ jobs:
           EXPECTED_MODEL: ${{ needs.preflight.outputs.model }}
           EXPECTED_HEAD: ${{ needs.preflight.outputs.head_sha }}
           EXPECTED_SENSITIVE: ${{ needs.preflight.outputs.sensitive }}
+          EXPECTED_TRUSTED_REVIEW_SHA: ${{ steps.trusted-revision.outputs.sha }}
         run: |
+          diagnostic=${DIAGNOSTIC:-}
+          [ -n "$diagnostic" ] || diagnostic='{}'
           python3 "$RUNNER_TEMP/prepare-deepseek-replay.py" \
             --source "$RUNNER_TEMP/deepseek-replay-pass-1.json" \
             --output "$RUNNER_TEMP/deepseek-replay-upload/pass-1.json" \
             --transport "$TRANSPORT" --usable "$USABLE" --publication "$PUBLICATION" \
-            --diagnostic "${DIAGNOSTIC:-{}}" --expected-head "$EXPECTED_HEAD" \
+            --diagnostic "$diagnostic" --expected-head "$EXPECTED_HEAD" \
             --expected-check-id "$AUTHORIZATION_CHECK_ID" \
             --expected-model "$EXPECTED_MODEL" --expected-repository "$TARGET_REPO" \
             --expected-pr "$PR_NUMBER" --expected-pass 1 --expected-sensitive "$EXPECTED_SENSITIVE" \
+            --expected-trusted-review-sha "$EXPECTED_TRUSTED_REVIEW_SHA" \
             --github-output "$GITHUB_OUTPUT"
 
       - name: Upload failed DeepSeek pass 1 replay
@@ -1566,15 +1572,19 @@ jobs:
           EXPECTED_MODEL: ${{ needs.preflight.outputs.fallback_model }}
           EXPECTED_HEAD: ${{ needs.preflight.outputs.head_sha }}
           EXPECTED_SENSITIVE: ${{ needs.preflight.outputs.sensitive }}
+          EXPECTED_TRUSTED_REVIEW_SHA: ${{ steps.trusted-revision.outputs.sha }}
         run: |
+          diagnostic=${DIAGNOSTIC:-}
+          [ -n "$diagnostic" ] || diagnostic='{}'
           python3 "$RUNNER_TEMP/prepare-deepseek-replay.py" \
             --source "$RUNNER_TEMP/deepseek-replay-pass-2.json" \
             --output "$RUNNER_TEMP/deepseek-replay-upload/pass-2.json" \
             --transport "$TRANSPORT" --usable "$USABLE" --publication "$PUBLICATION" \
-            --diagnostic "${DIAGNOSTIC:-{}}" --expected-head "$EXPECTED_HEAD" \
+            --diagnostic "$diagnostic" --expected-head "$EXPECTED_HEAD" \
             --expected-check-id "$AUTHORIZATION_CHECK_ID" \
             --expected-model "$EXPECTED_MODEL" --expected-repository "$TARGET_REPO" \
             --expected-pr "$PR_NUMBER" --expected-pass 2 --expected-sensitive "$EXPECTED_SENSITIVE" \
+            --expected-trusted-review-sha "$EXPECTED_TRUSTED_REVIEW_SHA" \
             --github-output "$GITHUB_OUTPUT"
 
       - name: Upload failed DeepSeek pass 2 replay

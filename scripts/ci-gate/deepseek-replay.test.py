@@ -25,6 +25,7 @@ def bundle() -> dict:
         "provenance": {
             "reviewed_head": HEAD, "authorization_check_id": "9001",
             "repository": "Verjson/.github", "pr_number": 7, "review_pass": 1, "sensitive": False,
+            "trusted_review_sha": "f" * 40,
             "review_policy_sha256": "b" * 64, "prompt_sha256": "c" * 64,
             "pr_metadata_sha256": "d" * 64, "pr_diff_sha256": "e" * 64,
         },
@@ -51,6 +52,7 @@ class DeepSeekReplayTest(unittest.TestCase):
         available = replay.prepare(
             source, output, transport, usable, publication, diagnostic, HEAD, "9001", MODEL,
             "Verjson/.github", 7, 1, False,
+            "f" * 40,
         )
         return temp, output, available
 
@@ -72,6 +74,7 @@ class DeepSeekReplayTest(unittest.TestCase):
             source, output, "success", "false", "success",
             json.dumps(result["diagnostic"]), reviewed_head, "9001", MODEL,
             "Verjson/.github", 7, 1, False,
+            "f" * 40,
         )
         staged = json.loads(output.read_text())
         self.assertTrue(available)
@@ -117,7 +120,7 @@ class DeepSeekReplayTest(unittest.TestCase):
             source.write_text(json.dumps(candidate), encoding="utf-8")
             with self.assertRaisesRegex(ValueError, "provenance"):
                 replay.prepare(source, output, "success", "false", "success", "{}", HEAD, "9001", MODEL,
-                               "Verjson/.github", 7, 1, False)
+                               "Verjson/.github", 7, 1, False, "f" * 40)
 
     def test_authorization_check_substitution_is_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -126,7 +129,16 @@ class DeepSeekReplayTest(unittest.TestCase):
             source.write_text(json.dumps(bundle()), encoding="utf-8")
             with self.assertRaisesRegex(ValueError, "provenance"):
                 replay.prepare(source, output, "success", "false", "success", "{}", HEAD, "9002", MODEL,
-                               "Verjson/.github", 7, 1, False)
+                               "Verjson/.github", 7, 1, False, "f" * 40)
+
+    def test_trusted_review_revision_substitution_is_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source, output = root / "source", root / "output"
+            source.write_text(json.dumps(bundle()), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "provenance"):
+                replay.prepare(source, output, "success", "false", "success", "{}", HEAD, "9001", MODEL,
+                               "Verjson/.github", 7, 1, False, "e" * 40)
 
     def test_workflow_upload_is_failure_only_best_effort_and_short_lived(self):
         workflow = (ROOT / ".github/workflows/ai-review-merge.yml").read_text()
@@ -140,10 +152,16 @@ class DeepSeekReplayTest(unittest.TestCase):
         self.assertEqual(workflow.count("SENSITIVE: ${{ needs.preflight.outputs.sensitive }}"), 6)
         for argument in (
             "--expected-check-id", "--expected-repository", "--expected-pr",
-            "--expected-pass", "--expected-sensitive",
+            "--expected-pass", "--expected-sensitive", "--expected-trusted-review-sha",
         ):
             self.assertEqual(workflow.count(argument), 2)
         self.assertNotIn("download-artifact", workflow)
+
+    def test_documented_replay_uses_separate_trusted_and_target_checkouts(self):
+        decision = (ROOT / "docs/decisions/0090-human-first-opt-in-ai-review/README.md").read_text()
+        self.assertIn("provenance.trusted_review_sha", decision)
+        self.assertIn('python3 "$trusted_checkout/scripts/ci-gate/review-verdict.py"', decision)
+        self.assertIn("REVIEW_REPOSITORY=\"$target_checkout\"", decision)
 
 
 if __name__ == "__main__":

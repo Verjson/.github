@@ -11,7 +11,8 @@ MAX_REPLAY_BYTES = 1024 * 1024
 
 def prepare(source: Path, output: Path, transport: str, usable: str, publication: str,
             diagnostic: str, expected_head: str, expected_check_id: str, expected_model: str,
-            expected_repository: str, expected_pr: int, expected_pass: int, expected_sensitive: bool) -> bool:
+            expected_repository: str, expected_pr: int, expected_pass: int, expected_sensitive: bool,
+            expected_trusted_review_sha: str) -> bool:
     if transport != "success" or (usable == "true" and publication != "failure"):
         return False
     raw = source.read_bytes()
@@ -30,7 +31,7 @@ def prepare(source: Path, output: Path, transport: str, usable: str, publication
         or bundle["transport"] != "completed"
         or set(provenance) != {
             "reviewed_head", "authorization_check_id", "repository", "pr_number",
-            "review_pass", "sensitive", *digest_fields,
+            "review_pass", "sensitive", "trusted_review_sha", *digest_fields,
         }
         or provenance.get("reviewed_head") != expected_head
         or not re.fullmatch(r"[0-9a-f]{40}", expected_head)
@@ -40,6 +41,8 @@ def prepare(source: Path, output: Path, transport: str, usable: str, publication
         or provenance.get("pr_number") != expected_pr
         or provenance.get("review_pass") != expected_pass
         or provenance.get("sensitive") is not expected_sensitive
+        or not re.fullmatch(r"[0-9a-f]{40}", expected_trusted_review_sha)
+        or provenance.get("trusted_review_sha") != expected_trusted_review_sha
         or any(not re.fullmatch(r"[0-9a-f]{64}", provenance.get(field, "")) for field in digest_fields)
         or set(response) != {"model", "usage", "verdict", "bounds"}
         or response.get("model") != expected_model
@@ -80,12 +83,13 @@ def main() -> int:
     parser.add_argument("--expected-pr", type=int, required=True)
     parser.add_argument("--expected-pass", type=int, required=True)
     parser.add_argument("--expected-sensitive", choices=("true", "false"), required=True)
+    parser.add_argument("--expected-trusted-review-sha", required=True)
     parser.add_argument("--github-output", type=Path, required=True)
     args = parser.parse_args()
     available = prepare(args.source, args.output, args.transport, args.usable, args.publication,
                         args.diagnostic, args.expected_head, args.expected_check_id, args.expected_model,
                         args.expected_repository, args.expected_pr, args.expected_pass,
-                        args.expected_sensitive == "true")
+                        args.expected_sensitive == "true", args.expected_trusted_review_sha)
     with args.github_output.open("a", encoding="utf-8") as output:
         output.write(f"available={'true' if available else 'false'}\n")
     return 0

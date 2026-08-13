@@ -32,6 +32,18 @@ MAX_DIFF_BYTES = 2 * 1024 * 1024
 # token envelope while allowing generous per-event framing overhead.
 MAX_STREAM_BYTES = MAX_OUTPUT_TOKENS * 1024
 MAX_REPLAY_BYTES = 1024 * 1024
+REDACTED_UNKNOWN = "__REDACTED_UNKNOWN_VALUE__"
+TOP_LEVEL_ALIASES = {
+    "blocking", "isBlocking", "is_blocking", "summary", "review_first", "reviewFirst",
+    "findings", "followups", "followUps", "follow_ups", "confidence",
+}
+LOCATION_FIELDS = {"location", "file", "path", "line", "line_number"}
+ITEM_METADATA_FIELDS = {"confidence", "priority", "severity"}
+REVIEW_FIRST_FIELDS = LOCATION_FIELDS | {"why", "reason", "rationale"} | ITEM_METADATA_FIELDS
+FINDING_FIELDS = LOCATION_FIELDS | {
+    "reason", "why", "description", "failure_scenario", "scenario", "impact", "evidence",
+} | ITEM_METADATA_FIELDS
+FOLLOWUP_FIELDS = LOCATION_FIELDS | {"note", "reason", "description"} | ITEM_METADATA_FIELDS
 PROGRESS_INTERVAL_SECONDS = 30
 PROGRESS_INTERVAL_BYTES = 1024 * 1024
 
@@ -114,6 +126,52 @@ def file_digest(path: str) -> str:
     return digest.hexdigest()
 
 
+def redacted_shape(value: object) -> object:
+    if isinstance(value, dict):
+        return {"__redacted_shape__": "object"}
+    if isinstance(value, list):
+        return [REDACTED_UNKNOWN] if value else []
+    return REDACTED_UNKNOWN
+
+
+def sanitize_item(value: object, allowed: set[str]) -> object:
+    if not isinstance(value, dict):
+        return redacted_shape(value)
+    sanitized = {}
+    for field, field_value in value.items():
+        if field not in allowed or field in ITEM_METADATA_FIELDS:
+            sanitized[field] = redacted_shape(field_value)
+        elif isinstance(field_value, str) or field_value is None or type(field_value) in {bool, int, float}:
+            sanitized[field] = field_value
+        else:
+            sanitized[field] = redacted_shape(field_value)
+    return sanitized
+
+
+def sanitize_verdict_for_replay(verdict: object) -> object:
+    if not isinstance(verdict, dict):
+        return redacted_shape(verdict)
+    sanitized = {}
+    list_fields = {
+        "review_first": REVIEW_FIRST_FIELDS, "reviewFirst": REVIEW_FIRST_FIELDS,
+        "findings": FINDING_FIELDS,
+        "followups": FOLLOWUP_FIELDS, "followUps": FOLLOWUP_FIELDS, "follow_ups": FOLLOWUP_FIELDS,
+    }
+    for field, value in verdict.items():
+        if field not in TOP_LEVEL_ALIASES or field == "confidence":
+            sanitized[field] = redacted_shape(value)
+        elif field in list_fields:
+            sanitized[field] = (
+                [sanitize_item(item, list_fields[field]) for item in value]
+                if isinstance(value, list) else redacted_shape(value)
+            )
+        elif isinstance(value, str) or value is None or type(value) in {bool, int, float}:
+            sanitized[field] = value
+        else:
+            sanitized[field] = redacted_shape(value)
+    return sanitized
+
+
 def write_replay_bundle(path: str, verdict: str, model: str, usage: dict, provenance: dict, bounds: dict) -> None:
     bundle = {
         "schema": 1,
@@ -125,7 +183,7 @@ def write_replay_bundle(path: str, verdict: str, model: str, usage: dict, proven
         "response": {
             "model": model,
             "usage": usage,
-            "verdict": json.loads(verdict),
+            "verdict": sanitize_verdict_for_replay(json.loads(verdict)),
             "bounds": bounds,
         },
     }
@@ -331,6 +389,7 @@ def main() -> int:
         "MODEL", "BUDGET_USD", "PROMPT_FILE", "PR_JSON_FILE", "PR_DIFF_FILE", "GITHUB_OUTPUT",
         "REPLAY_FILE", "REVIEWED_HEAD_SHA", "REVIEW_POLICY", "AUTHORIZATION_CHECK_ID",
         "TARGET_REPO", "PR_NUMBER", "REVIEW_PASS", "SENSITIVE",
+        "TRUSTED_REVIEW_SHA",
     )
     values = {name: os.environ.get(name, "") for name in required}
     if not all(values.values()):
@@ -345,6 +404,8 @@ def main() -> int:
         raise ValueError("review identity is malformed")
     if values["SENSITIVE"] not in {"true", "false"}:
         raise ValueError("sensitive classification is malformed")
+    if not re.fullmatch(r"[0-9a-f]{40}", values["TRUSTED_REVIEW_SHA"]):
+        raise ValueError("trusted review revision is malformed")
     with open(values["PROMPT_FILE"], encoding="utf-8") as prompt:
         prompt_text = prompt.read()
     messages = role_separated_messages(
@@ -404,6 +465,7 @@ def main() -> int:
                 "pr_number": int(values["PR_NUMBER"]),
                 "review_pass": int(values["REVIEW_PASS"]),
                 "sensitive": values["SENSITIVE"] == "true",
+                "trusted_review_sha": values["TRUSTED_REVIEW_SHA"],
                 "review_policy_sha256": hashlib.sha256(values["REVIEW_POLICY"].encode("utf-8")).hexdigest(),
                 "prompt_sha256": file_digest(values["PROMPT_FILE"]),
                 "pr_metadata_sha256": file_digest(values["PR_JSON_FILE"]),

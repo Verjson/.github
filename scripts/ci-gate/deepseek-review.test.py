@@ -13,6 +13,10 @@ path = Path(__file__).with_name("deepseek-review.py")
 spec = importlib.util.spec_from_file_location("deepseek_review", path)
 review = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(review)
+verdict_path = Path(__file__).with_name("review-verdict.py")
+verdict_spec = importlib.util.spec_from_file_location("review_verdict", verdict_path)
+review_verdict = importlib.util.module_from_spec(verdict_spec)
+verdict_spec.loader.exec_module(review_verdict)
 
 
 class DeepSeekReviewTest(unittest.TestCase):
@@ -237,6 +241,7 @@ class DeepSeekReviewTest(unittest.TestCase):
                 "REPLAY_FILE": str(replay), "REVIEWED_HEAD_SHA": "a" * 40,
                 "REVIEW_POLICY": "receipt-policy", "AUTHORIZATION_CHECK_ID": "9001",
                 "TARGET_REPO": "Verjson/.github", "PR_NUMBER": "7", "REVIEW_PASS": "1", "SENSITIVE": "false",
+                "TRUSTED_REVIEW_SHA": "f" * 40,
             }
             notices = io.StringIO()
             with patch.dict(os.environ, env, clear=True), patch.object(review.urllib.request, "urlopen", return_value=Context(self.stream())) as call, patch("sys.stdout", notices):
@@ -276,6 +281,67 @@ class DeepSeekReviewTest(unittest.TestCase):
             ):
                 self.assertNotIn(secret, replay_text)
 
+    def test_replay_redacts_hostile_unknown_values_and_preserves_canonical_rejection(self):
+        sentinels = {
+            "prompt": "hostile-prompt-sentinel-784",
+            "diff": "hostile-diff-sentinel-784",
+            "key": "hostile-key-sentinel-784",
+            "reasoning": "hostile-reasoning-sentinel-784",
+        }
+        source_evidence = "return response.value"
+        verdict = {
+            "blocking": True,
+            "summary": "The response can fail.",
+            "review_first": [{
+                "location": "app.py:7",
+                "why": "Inspect the response boundary.",
+                "provider_context": {"prompt": sentinels["prompt"]},
+            }],
+            "findings": [{
+                "location": "app.py:7",
+                "reason": "The error is not handled.",
+                "failure_scenario": "A failed request escapes.",
+                "evidence": source_evidence,
+                "provider_trace": [sentinels["diff"], sentinels["key"]],
+            }],
+            "followups": [],
+            "provider_extension": {"reasoning": sentinels["reasoning"]},
+        }
+
+        with tempfile.TemporaryDirectory() as directory:
+            replay_path = Path(directory) / "replay.json"
+            review.write_replay_bundle(
+                str(replay_path), json.dumps(verdict), "deepseek-v4-pro",
+                {"prompt_tokens": 10, "completion_tokens": 5, "cache_hit_tokens": 2, "cache_miss_tokens": 8},
+                {"reviewed_head": "a" * 40},
+                {"input_token_bound": 100, "max_output_tokens": 1024, "reported_cost_usd": "0.01"},
+            )
+            replay_text = replay_path.read_text(encoding="utf-8")
+            replay_verdict = json.loads(replay_text)["response"]["verdict"]
+
+        for sentinel in sentinels.values():
+            self.assertNotIn(sentinel, replay_text)
+        self.assertEqual(replay_verdict["findings"][0]["evidence"], source_evidence)
+        self.assertEqual(replay_verdict["provider_extension"], {"__redacted_shape__": "object"})
+        self.assertEqual(
+            replay_verdict["review_first"][0]["provider_context"],
+            {"__redacted_shape__": "object"},
+        )
+        self.assertEqual(
+            replay_verdict["findings"][0]["provider_trace"],
+            [review.REDACTED_UNKNOWN],
+        )
+
+        top_level = review_verdict.confirm_output(json.dumps(replay_verdict), sensitive=False)
+        self.assertFalse(top_level["usable"])
+        self.assertEqual(top_level["diagnostic"]["path"], "$")
+
+        nested_only = dict(replay_verdict)
+        del nested_only["provider_extension"]
+        nested = review_verdict.confirm_output(json.dumps(nested_only), sensitive=False)
+        self.assertFalse(nested["usable"])
+        self.assertEqual(nested["diagnostic"]["path"], "review_first[0]")
+
     def test_transport_failure_logs_only_bounded_metadata(self):
         class ResettingContext:
             def __enter__(self): return self
@@ -295,6 +361,7 @@ class DeepSeekReviewTest(unittest.TestCase):
                 "REPLAY_FILE": str(replay), "REVIEWED_HEAD_SHA": "a" * 40,
                 "REVIEW_POLICY": "receipt-policy", "AUTHORIZATION_CHECK_ID": "9001",
                 "TARGET_REPO": "Verjson/.github", "PR_NUMBER": "7", "REVIEW_PASS": "1", "SENSITIVE": "false",
+                "TRUSTED_REVIEW_SHA": "f" * 40,
             }
             errors = io.StringIO()
             with patch.dict(os.environ, env, clear=True), patch.object(review.urllib.request, "urlopen", return_value=ResettingContext()), patch("sys.stderr", errors), self.assertRaises(ConnectionResetError):
@@ -323,6 +390,7 @@ class DeepSeekReviewTest(unittest.TestCase):
                 "DEEPSEEK_API_KEY": "secret", "REPLAY_FILE": str(root / "missing" / "replay.json"),
                 "REVIEWED_HEAD_SHA": "a" * 40, "REVIEW_POLICY": "policy", "AUTHORIZATION_CHECK_ID": "9001",
                 "TARGET_REPO": "Verjson/.github", "PR_NUMBER": "7", "REVIEW_PASS": "1", "SENSITIVE": "false",
+                "TRUSTED_REVIEW_SHA": "f" * 40,
             }
             errors = io.StringIO()
             with patch.dict(os.environ, env, clear=True), patch.object(
