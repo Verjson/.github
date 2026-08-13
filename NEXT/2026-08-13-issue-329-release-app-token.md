@@ -14,9 +14,10 @@ Contents write before atomically pushing the immutable snapshot and tag.
 The input-free manual canary uses the trusted organization runner lane, exercises
 the same organization ruleset and App bypass through its fixed protected
 `develop` target, retains an Actions receipt, and atomically removes only refs
-that still belong to its run. ADR 0099 records
-that proof boundary and the intentionally organization-wide installation and
-credential-availability trade-off.
+that still belong to its run. Migration guidance identifies this as a central
+`Verjson/.github` proof rather than a workflow each consumer copies or
+dispatches. ADR 0099 records that proof boundary and the intentionally
+organization-wide installation and credential-availability trade-off.
 
 The generated-caller contract tests now inspect complete in-memory output
 without early-closing `grep -q` pipelines, so larger release callers cannot
