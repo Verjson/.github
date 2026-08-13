@@ -104,6 +104,11 @@ Contents write because that token supplied the checkout credential used by the
 final atomic push. This ADR moved that push to the App token but initially left
 the obsolete job grant in place.
 
+This amendment supersedes only ADR 0038's obsolete token-source requirement
+that the release job and caller grant `GITHUB_TOKEN` Contents write. It does not
+supersede ADR 0038's requirement for a Contents-write release credential,
+default-branch execution, immutable snapshots, or release serialization.
+
 The release workflow and generated snapshot caller now grant their
 `GITHUB_TOKEN`s only Contents read. The App-mint action authenticates from the
 client ID and private key, requests its own repository-scoped Contents-write

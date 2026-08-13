@@ -68,6 +68,12 @@ Contents-write turned out to be necessary and not sufficient: the same push is
 also refused by the default branch's ruleset. ADR 0052 (#389) covers that second
 gate and what `push_token` must be.
 
+> **Partially superseded (2026-08-13):** [ADR 0099's #784 amendment](../0099-release-app-replaces-admin-pat/README.md)
+> supersedes only this amendment's requirement that the release job and caller
+> grant `GITHUB_TOKEN` Contents write. The release still requires a
+> Contents-write credential, now supplied by the separately minted release App
+> token; the remaining canonical release invariants above are unchanged.
+
 ## Amendment (2026-08-02) — the contract test is generated too (#309)
 
 Adoption was defined above as two generated files plus "a repository-local test
