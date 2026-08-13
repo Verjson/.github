@@ -17,8 +17,9 @@ The organization now has a dedicated `verjson-release-authorization` GitHub App.
 Its repository permissions are only Contents read/write and implicit Metadata
 read. It has no Pull requests, Actions, Administration, or organization
 permission, and it is an always-bypass actor on the exact organization
-`main-protection` ruleset. The organization variable `RELEASE_APP_ID` contains
-its numeric App ID; `RELEASE_APP_PRIVATE_KEY` contains its private key.
+`main-protection` ruleset. The organization variable `RELEASE_APP_CLIENT_ID`
+contains its `Iv...` client ID; `RELEASE_APP_PRIVATE_KEY` contains its private
+key.
 
 The App installation and both organization credential values are available to
 the Verjson repository fleet. The owner explicitly chose this convenience-first
@@ -34,16 +35,18 @@ token with the audited immutable
 `actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1`
 pin. Every mint supplies exactly:
 
-- the numeric App ID and private key;
+- the App client ID and private key;
 - `owner: ${{ github.repository_owner }}`;
 - `repositories: ${{ github.event.repository.name }}`; and
 - `permission-contents: write`.
 
-The workflow rejects an empty, zero, or client-ID-shaped App ID before calling
-the action. The checkout persists only that minted token for the final atomic
+The pinned action's v3 contract deprecates legacy `app-id` and recommends
+`client-id`. The workflow rejects an empty or numeric legacy ID and accepts the
+GitHub `Iv...` client-ID form without imposing an undocumented fixed length.
+The checkout persists only that minted token for the final atomic
 push. The reusable contract no longer accepts `push_token`, and generated
-callers no longer receive `ORG_ADMIN_TOKEN`; they pass only `RELEASE_APP_ID` and
-`RELEASE_APP_PRIVATE_KEY`.
+callers no longer receive `ORG_ADMIN_TOKEN`; they pass only
+`RELEASE_APP_CLIENT_ID` and `RELEASE_APP_PRIVATE_KEY`.
 
 Repository binding in the canonical workflow is a defense against accidental or
 future generator drift, not a cryptographic limit on the organization-wide

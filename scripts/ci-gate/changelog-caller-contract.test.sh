@@ -745,8 +745,8 @@ uncanonical_fragment() {
 strip_executable() { chmod -x "$1/scripts/render-next.sh"; }
 # The generated caller supplies only the dedicated App identity material. The
 # reusable workflow owns token minting and constrains it to this repository.
-drop_release_app_id() {
-  sed -i '/^      release_app_id: /d' "$1/.github/workflows/release.yml"
+drop_release_app_client_id() {
+  sed -i '/^      release_app_client_id: /d' "$1/.github/workflows/release.yml"
 }
 drop_release_app_private_key() {
   sed -i '/^      release_app_private_key: /d' "$1/.github/workflows/release.yml"
@@ -919,7 +919,7 @@ expect_rejection "a .releaserc.json that reintroduces release-on-merge" add_rele
 expect_rejection "a second authored running log in NEXT.md" add_authored_log
 expect_rejection "a fragment whose filename is not canonical" uncanonical_fragment
 expect_rejection "a non-executable renderer" strip_executable
-expect_rejection "a release caller without RELEASE_APP_ID" drop_release_app_id
+expect_rejection "a release caller without RELEASE_APP_CLIENT_ID" drop_release_app_client_id
 expect_rejection "a release caller without RELEASE_APP_PRIVATE_KEY" drop_release_app_private_key
 expect_rejection "a release caller restoring ORG_ADMIN_TOKEN" restore_org_admin_token
 expect_rejection "a release caller wiring GITHUB_TOKEN" wire_github_token

@@ -25,8 +25,8 @@ on:
         required: false
         type: string
         default: ''
-      release_app_id:
-        description: Numeric App ID for the dedicated release authorization App
+      release_app_client_id:
+        description: Client ID for the dedicated release authorization App
         required: true
         type: string
     secrets:
@@ -80,19 +80,19 @@ jobs:
             exit 1
           fi
           echo "Dispatched from $DEFAULT_BRANCH; proceeding."
-      - name: Require the numeric release App ID
+      - name: Require the release App client ID
         env:
-          RELEASE_APP_ID: ${{ inputs.release_app_id }}
+          RELEASE_APP_CLIENT_ID: ${{ inputs.release_app_client_id }}
         run: |
-          if [[ ! "$RELEASE_APP_ID" =~ ^[1-9][0-9]*$ ]]; then
-            echo "::error::RELEASE_APP_ID must be the numeric GitHub App ID, not its client ID."
+          if [[ ! "$RELEASE_APP_CLIENT_ID" =~ ^Iv[A-Za-z0-9]+$ ]]; then
+            echo "::error::RELEASE_APP_CLIENT_ID must be the GitHub App client ID in Iv... form."
             exit 1
           fi
       - name: Mint repository-scoped release App token
         id: release-app-token
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
         with:
-          app-id: ${{ inputs.release_app_id }}
+          client-id: ${{ inputs.release_app_client_id }}
           private-key: ${{ secrets.release_app_private_key }}
           owner: ${{ github.repository_owner }}
           repositories: ${{ github.event.repository.name }}

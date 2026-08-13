@@ -70,14 +70,14 @@ checkout = next(
     {},
 )
 problems = []
-if not (inputs.get("release_app_id") or {}).get("required"):
-    problems.append("workflow_call does not require release_app_id")
+if not (inputs.get("release_app_client_id") or {}).get("required"):
+    problems.append("workflow_call does not require release_app_client_id")
 if set(secrets) != {"release_app_private_key"} or not secrets["release_app_private_key"].get("required"):
     problems.append("workflow_call accepts a secret other than the required release App private key")
 if mint.get("uses") != "actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1":
     problems.append("release token action is not at the audited immutable pin")
 expected = {
-    "app-id": "${{ inputs.release_app_id }}",
+    "client-id": "${{ inputs.release_app_client_id }}",
     "private-key": "${{ secrets.release_app_private_key }}",
     "owner": "${{ github.repository_owner }}",
     "repositories": "${{ github.event.repository.name }}",
@@ -99,14 +99,33 @@ else
   fail "the release App token contract is not least-privilege"
 fi
 
-app_id_guard="$(awk '
-  /^      - name: Require the numeric release App ID$/ { found = 1; next }
+client_id_guard="$(awk '
+  /^      - name: Require the release App client ID$/ { found = 1; next }
   found && /^      - name:/ { exit }
   found { print }
 ' "$workflow")"
-grep -qF '[[ ! "$RELEASE_APP_ID" =~ ^[1-9][0-9]*$ ]]' <<<"$app_id_guard" \
-  && pass "the release workflow rejects client IDs before minting" \
-  || fail "the release workflow does not require a numeric GitHub App ID"
+grep -qF '[[ ! "$RELEASE_APP_CLIENT_ID" =~ ^Iv[A-Za-z0-9]+$ ]]' <<<"$client_id_guard" \
+  && pass "the release workflow requires an Iv-prefixed App client ID" \
+  || fail "the release workflow does not validate the GitHub App client ID"
+
+client_id_run="$(awk '
+  /^      - name: Require the release App client ID$/ { found = 1; next }
+  found && /^        run: \|$/ { run = 1; next }
+  run && /^      - name:/ { exit }
+  run { sub(/^          /, ""); print }
+' "$workflow")"
+if RELEASE_APP_CLIENT_ID=Iv23liIrniWY27YJKYDP bash -c "$client_id_run" >/dev/null; then
+  pass "the release workflow accepts the configured GitHub App client ID"
+else
+  fail "the release workflow rejects a valid Iv-prefixed App client ID"
+fi
+for invalid_client_id in '' 4583107; do
+  if RELEASE_APP_CLIENT_ID="$invalid_client_id" bash -c "$client_id_run" >/dev/null 2>&1; then
+    fail "the release workflow accepts an empty or numeric legacy App ID"
+  else
+    pass "the release workflow rejects legacy App ID '${invalid_client_id:-<empty>}'"
+  fi
+done
 
 grep -qF 'git push --atomic origin \' "$workflow" \
   && grep -qF '"$release_commit:refs/heads/$DEFAULT_BRANCH" \' "$workflow" \

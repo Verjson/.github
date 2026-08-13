@@ -543,8 +543,8 @@ jobs:
       version: \${{ inputs.version }}
       fragments: \${{ inputs.fragments }}
       component: \${{ inputs.component }}
-      # The reusable workflow rejects client-ID-shaped values before minting.
-      release_app_id: \${{ vars.RELEASE_APP_ID }}
+      # v3 recommends the App client ID and deprecates its legacy numeric ID.
+      release_app_client_id: \${{ vars.RELEASE_APP_CLIENT_ID }}
       # Explicit, so both halves of one release share one pool (#465).
       runner: \${{ ${release_runner_expr} }}
     secrets:
@@ -1030,9 +1030,9 @@ while IFS= read -r release_workflow; do
     END { if (!done && block ~ /changelog-release\.yml@/) printf "%s", block }
   ' "$release_workflow")"
 
-  grep -qE '^[[:space:]]+release_app_id:[[:space:]]*\$\{\{[[:space:]]*vars\.RELEASE_APP_ID[[:space:]]*\}\}[[:space:]]*$' \
+  grep -qE '^[[:space:]]+release_app_client_id:[[:space:]]*\$\{\{[[:space:]]*vars\.RELEASE_APP_CLIENT_ID[[:space:]]*\}\}[[:space:]]*$' \
     <<<"$snapshot_job" \
-    || fail "$release_workflow does not pass the organization RELEASE_APP_ID variable to the release workflow"
+    || fail "$release_workflow does not pass the organization RELEASE_APP_CLIENT_ID variable to the release workflow"
   grep -qE '^[[:space:]]+release_app_private_key:[[:space:]]*\$\{\{[[:space:]]*secrets\.RELEASE_APP_PRIVATE_KEY[[:space:]]*\}\}[[:space:]]*$' \
     <<<"$snapshot_job" \
     || fail "$release_workflow does not pass only RELEASE_APP_PRIVATE_KEY to the release workflow"

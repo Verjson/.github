@@ -184,13 +184,14 @@ The generated caller passes only the App identity material:
 
 ```yaml
     with:
-      release_app_id: ${{ vars.RELEASE_APP_ID }}
+      release_app_client_id: ${{ vars.RELEASE_APP_CLIENT_ID }}
     secrets:
       release_app_private_key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
 ```
 
-The reusable workflow validates that `RELEASE_APP_ID` is numeric, then mints a
-short-lived token with the immutable `actions/create-github-app-token` pin. The
+The reusable workflow validates `RELEASE_APP_CLIENT_ID` as a GitHub `Iv...`
+client ID, then mints a short-lived token with the immutable
+`actions/create-github-app-token` pin. The
 mint is explicitly constrained to `github.repository_owner`, the current
 repository name, and `permission-contents: write`; the App has no Pull requests,
 Actions, Administration, or organization permission. The App's explicit

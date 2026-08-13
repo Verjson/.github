@@ -35,8 +35,8 @@ def validate(document: dict, raw: str) -> list[str]:
         {},
     )
 
-    if not (inputs.get("release_app_id") or {}).get("required"):
-        problems.append("release_app_id is not required")
+    if not (inputs.get("release_app_client_id") or {}).get("required"):
+        problems.append("release_app_client_id is not required")
     if set(secrets) != {"release_app_private_key"}:
         problems.append("workflow accepts secrets beyond the release App private key")
     elif not secrets["release_app_private_key"].get("required"):
@@ -44,7 +44,7 @@ def validate(document: dict, raw: str) -> list[str]:
     if mint.get("uses") != TOKEN_ACTION:
         problems.append("token action pin changed")
     expected_inputs = {
-        "app-id": "${{ inputs.release_app_id }}",
+        "client-id": "${{ inputs.release_app_client_id }}",
         "private-key": "${{ secrets.release_app_private_key }}",
         "owner": "${{ github.repository_owner }}",
         "repositories": "${{ github.event.repository.name }}",
@@ -57,9 +57,9 @@ def validate(document: dict, raw: str) -> list[str]:
     if "ORG_ADMIN_TOKEN" in raw or "secrets.push_token" in raw:
         problems.append("temporary broad release credential remains")
     if not re.search(
-        r'\[\[ ! "\$RELEASE_APP_ID" =~ \^\[1-9\]\[0-9\]\*\$ \]\]', raw
+        r'\[\[ ! "\$RELEASE_APP_CLIENT_ID" =~ \^Iv\[A-Za-z0-9\]\+\$ \]\]', raw
     ):
-        problems.append("numeric App ID guard is absent")
+        problems.append("App client ID guard is absent")
     return problems
 
 
@@ -98,6 +98,11 @@ def main() -> int:
         mutations.append((f"minting without {key}", mutant, raw))
 
     mutant = copy.deepcopy(document)
+    mint_inputs = mutant["jobs"]["release"]["steps"][mint_index]["with"]
+    mint_inputs["app-id"] = mint_inputs.pop("client-id")
+    mutations.append(("the deprecated numeric app-id action input", mutant, raw))
+
+    mutant = copy.deepcopy(document)
     mutant["jobs"]["release"]["steps"][mint_index]["with"]["permission-pull-requests"] = "write"
     mutations.append(("an extra App-token permission", mutant, raw))
 
@@ -109,8 +114,10 @@ def main() -> int:
     workflow_call(mutant)["secrets"]["push_token"] = {"required": True}
     mutations.append(("the temporary push_token secret", mutant, raw + "\nsecrets.push_token"))
 
-    guardless = raw.replace('[[ ! "$RELEASE_APP_ID" =~ ^[1-9][0-9]*$ ]]', "true")
-    mutations.append(("a missing numeric App ID guard", copy.deepcopy(document), guardless))
+    guardless = raw.replace(
+        '[[ ! "$RELEASE_APP_CLIENT_ID" =~ ^Iv[A-Za-z0-9]+$ ]]', "true"
+    )
+    mutations.append(("a missing App client ID guard", copy.deepcopy(document), guardless))
 
     for label, mutant, mutant_raw in mutations:
         require_rejected(label, mutant, mutant_raw)

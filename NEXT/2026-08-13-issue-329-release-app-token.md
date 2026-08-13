@@ -6,7 +6,7 @@ impact: patch
 ---
 
 Canonical Node release callers now pass the dedicated release App identity
-instead of `ORG_ADMIN_TOKEN`. The reusable workflow validates the numeric App ID
+instead of `ORG_ADMIN_TOKEN`. The reusable workflow validates the App client ID
 and mints a short-lived installation token constrained to the current repository
 and Contents write before atomically pushing the immutable snapshot and tag.
 
