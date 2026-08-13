@@ -1080,15 +1080,17 @@ jobs:
 
           ${lockfile_note}
 
-          Return the required JSON verdict as soon as you can support it. Do
-          not call GitHub or submit a review yourself. Set blocking=true only
-          for real defects. Each blocking finding (in "findings") is an object
-          with an actionable file:line "location", a "reason" it is wrong, and
-          a concrete "failure_scenario". Keep summary concise.
+          Return exactly one JSON object with these canonical fields and item
+          shapes: blocking: boolean; summary: string;
+          review_first: [{location, why}];
+          findings: [{location, reason, failure_scenario}];
+          followups: [{location, note}]. Return the verdict as soon as you can
+          support it. Do not call GitHub or submit a review yourself. Set
+          blocking=true only for real defects. Keep summary concise.
 
           Also return "review_first": the specific file:line hunks a human
           should eyeball first, highest blast-radius first, each with a one-line
-          reason it is load-bearing. This is MANDATORY (must be non-empty) when
+          "why" it is load-bearing. This is MANDATORY (must be non-empty) when
           the diff touches a sensitive area — authn/authz, RBAC/ABAC, secrets,
           IAM/OIDC, database migrations, money-handling, or CI / rulesets /
           branch protection — so the human's eye lands on the exact lines that
