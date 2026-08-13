@@ -13,6 +13,7 @@ name: node-ci (reusable)
 #   jobs:
 #     ci:
 #       permissions:              # REQUIRED by the called workflow's jobs:
+#         actions: write          # REQUIRED only for secretless-pr transfer cleanup
 #         contents: read          # a reusable's GITHUB_TOKEN is capped by the
 #         statuses: read          # REQUIRED: lets eligibility read the head's
 #                                 # renovate/stability-days status to defer CI on
@@ -71,15 +72,55 @@ on:
           Acquire approved private dependencies in a non-executing job, then run
           PR-controlled build and test code in a credentialless job. Intended
           only for pull_request validation; requires NODE_AUTH_TOKEN and
-          approved-internal-packages, but does not require caller packages: read.
+          approved-internal-packages plus caller actions: write for exact-artifact
+          cleanup, but does not require caller packages: read.
         required: false
         type: boolean
         default: false
       approved-internal-packages:
         description: >-
-          Newline-separated exact @verjson package names allowed during
-          secretless dependency acquisition. Every @verjson package in the lock
-          file must be listed; empty is valid only when none are present.
+          Newline-separated exact package names allowed during secretless
+          dependency acquisition. Every package under approved-internal-scopes
+          in the lock file must be listed; empty is valid only when none exist.
+        required: false
+        type: string
+        default: ''
+      approved-internal-scopes:
+        description: >-
+          Newline-separated exact npm scopes whose packages may be authorized by
+          approved-internal-packages. Each scope is routed only to GitHub
+          Packages. Defaults to @verjson. Any other scope requires an exact match
+          with the caller repository variable VERJSON_SECRETLESS_PACKAGE_POLICY.
+        required: false
+        type: string
+        default: '@verjson'
+      secretless-auxiliary-source:
+        description: >-
+          Optional JSON object describing one immutable private sparse checkout:
+          repository, pinFile, checkoutPath, and sparsePath. pinFile is a
+          repository-controlled JSON record whose repository must match and whose
+          commit must be a full 40-hex SHA. The object must exactly match the
+          caller repository variable VERJSON_SECRETLESS_AUXILIARY_POLICY, so PR
+          code cannot redirect the acquisition token. Only checkoutPath/sparsePath
+          enters the bounded transfer. Empty disables auxiliary acquisition.
+        required: false
+        type: string
+        default: ''
+      secretless-rebuild-packages:
+        description: >-
+          Newline-separated exact locked package names whose lifecycle scripts
+          may run through npm rebuild after credentials are scrubbed. Empty runs
+          no rebuild.
+        required: false
+        type: string
+        default: ''
+      secretless-ci-script-plan:
+        description: >-
+          Optional JSON array of exact package.json script names or objects with
+          exactly script and unsetEnv. unsetEnv removes up to 16 non-credential
+          environment names for that script only. Entries run in order after the
+          credentialless private-cache install and any approved rebuild. Empty preserves
+          the standard build/typecheck/test/lint sequence.
         required: false
         type: string
         default: ''
@@ -178,7 +219,7 @@ on:
         default: ''
     secrets:
       NODE_AUTH_TOKEN:
-        description: Token to read @verjson private packages from GitHub Packages
+        description: Token to read approved private packages and the optional auxiliary repository
         required: false
       submodules-token:
         description: >-
@@ -251,6 +292,11 @@ jobs:
     timeout-minutes: ${{ inputs.timeout-minutes }}
     permissions:
       contents: read
+    outputs:
+      auxiliary-commit: ${{ steps.resolve-auxiliary-source.outputs.commit }}
+      auxiliary-content-path: ${{ steps.resolve-auxiliary-source.outputs.content-path }}
+      auxiliary-repository: ${{ steps.resolve-auxiliary-source.outputs.repository }}
+      transfer-artifact-id: ${{ steps.upload-secretless-transfer.outputs.artifact-id }}
     steps:
       - name: Enforce the secretless PR boundary
         env:
@@ -281,6 +327,13 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
+      - name: Reject consumer-controlled npm configuration
+        run: |
+          project_config="$(find . -name .npmrc -print -quit)"
+          [ -z "$project_config" ] || {
+            echo "::error::secretless-pr rejects PR-controlled npm config: $project_config"
+            exit 1
+          }
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
           node-version: ${{ inputs.node-version }}
@@ -288,23 +341,51 @@ jobs:
       - name: Validate approved internal dependency lock
         env:
           APPROVED_INTERNAL_PACKAGES: ${{ inputs.approved-internal-packages }}
+          APPROVED_INTERNAL_SCOPES: ${{ inputs.approved-internal-scopes }}
+          PRIVATE_CACHE_ENTRIES: ${{ runner.temp }}/secretless-private-entries-${{ github.run_id }}-${{ github.run_attempt }}
+          TRUSTED_PACKAGE_POLICY: ${{ vars.VERJSON_SECRETLESS_PACKAGE_POLICY }}
         run: |
           python3 - <<'PY'
+          import base64
           import json
           import os
           import sys
           from pathlib import Path
+          import re
           from urllib.parse import unquote, urlparse
 
           approved = {line.strip() for line in os.environ["APPROVED_INTERNAL_PACKAGES"].splitlines() if line.strip()}
-          if any(not name.startswith("@verjson/") or name.count("/") != 1 for name in approved):
-              sys.exit("approved-internal-packages accepts exact @verjson package names only")
+          scopes = {line.strip() for line in os.environ["APPROVED_INTERNAL_SCOPES"].splitlines() if line.strip()}
+          if not scopes or any(re.fullmatch(r"@[a-z0-9][a-z0-9._-]*", scope) is None for scope in scopes):
+              sys.exit("approved-internal-scopes accepts exact lowercase npm scopes only")
+          package_pattern = re.compile(r"@[a-z0-9][a-z0-9._-]*/[a-z0-9][a-z0-9._-]*")
+          if any(package_pattern.fullmatch(name) is None or name.split("/", 1)[0] not in scopes for name in approved):
+              sys.exit("approved-internal-packages accepts exact names under approved-internal-scopes only")
+          trusted_policy = os.environ.get("TRUSTED_PACKAGE_POLICY", "")
+          if scopes != {"@verjson"} or trusted_policy:
+              try:
+                  policy = json.loads(trusted_policy)
+              except json.JSONDecodeError as error:
+                  sys.exit(f"VERJSON_SECRETLESS_PACKAGE_POLICY must be valid JSON: {error}")
+              if not isinstance(policy, dict) or set(policy) != {"scopes", "packages"}:
+                  sys.exit("VERJSON_SECRETLESS_PACKAGE_POLICY requires exactly scopes and packages")
+              policy_scopes = policy["scopes"]
+              policy_packages = policy["packages"]
+              if (not isinstance(policy_scopes, list) or not policy_scopes
+                      or len(policy_scopes) != len(set(policy_scopes))
+                      or any(not isinstance(scope, str) for scope in policy_scopes)
+                      or not isinstance(policy_packages, list)
+                      or len(policy_packages) != len(set(policy_packages))
+                      or any(not isinstance(name, str) for name in policy_packages)
+                      or set(policy_scopes) != scopes or set(policy_packages) != approved):
+                  sys.exit("approved internal scopes and packages must exactly match trusted repository policy")
 
           lock = json.loads(Path("package-lock.json").read_text(encoding="utf-8"))
           if lock.get("lockfileVersion") not in (2, 3):
               sys.exit("secretless-pr requires package-lock lockfileVersion 2 or 3")
 
           found = set()
+          private_downloads = {}
           for path, package in lock.get("packages", {}).items():
               if path == "":
                   continue
@@ -325,11 +406,28 @@ jobs:
                           or any(part in ("", ".", "..") for part in parts[1:])):
                       sys.exit(f"invalid GitHub Packages download URL: {resolved}")
                   registry_name = f"{parts[2]}/{parts[3]}"
-                  if registry_name not in approved:
+                  if parts[2] not in scopes or registry_name not in approved:
                       sys.exit(f"unapproved GitHub Packages download: {registry_name}")
+                  integrity = package.get("integrity")
+                  if not isinstance(integrity, str) or re.fullmatch(
+                          r"sha512-[A-Za-z0-9+/]{86}==", integrity) is None:
+                      sys.exit(f"{registry_name} requires one exact sha512 lock integrity")
+                  try:
+                      digest = base64.b64decode(integrity.removeprefix("sha512-"), validate=True)
+                  except ValueError:
+                      sys.exit(f"{registry_name} has invalid sha512 lock integrity")
+                  if len(digest) != 64:
+                      sys.exit(f"{registry_name} has invalid sha512 lock integrity")
+                  digest_hex = digest.hex()
+                  prior_digest = private_downloads.setdefault(resolved, digest_hex)
+                  if prior_digest != digest_hex:
+                      sys.exit(f"{registry_name} repeats one download URL with different integrity")
 
-              entry_name = path_name if isinstance(path_name, str) and path_name.startswith("@verjson/") else locked_name
-              if not isinstance(entry_name, str) or not entry_name.startswith("@verjson/"):
+              path_is_internal = (isinstance(path_name, str)
+                                  and any(path_name.startswith(scope + "/") for scope in scopes))
+              entry_name = path_name if path_is_internal else locked_name
+              if (not isinstance(entry_name, str)
+                      or not any(entry_name.startswith(scope + "/") for scope in scopes)):
                   continue
               if locked_name and locked_name != entry_name:
                   sys.exit(f"{entry_name} lock entry aliases unexpected package {locked_name}")
@@ -343,37 +441,252 @@ jobs:
               sys.exit("unapproved internal dependencies: " + ", ".join(unapproved))
           if unused:
               sys.exit("approved internal dependencies absent from lock: " + ", ".join(unused))
+
+          entries = Path(os.environ["PRIVATE_CACHE_ENTRIES"])
+          try:
+              with entries.open("x", encoding="utf-8") as stream:
+                  for resolved, digest_hex in sorted(private_downloads.items()):
+                      stream.write(f"{resolved}\t{digest_hex}\n")
+          except FileExistsError:
+              sys.exit("private cache entry file already exists")
           PY
-      - name: Acquire dependencies without lifecycle execution
+      - name: Resolve immutable auxiliary source
+        id: resolve-auxiliary-source
+        if: inputs.secretless-auxiliary-source != ''
         env:
+          AUXILIARY_SOURCE: ${{ inputs.secretless-auxiliary-source }}
+          TRUSTED_AUXILIARY_POLICY: ${{ vars.VERJSON_SECRETLESS_AUXILIARY_POLICY }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import re
+          import sys
+          from pathlib import Path, PurePosixPath
+
+          try:
+              source = json.loads(os.environ["AUXILIARY_SOURCE"])
+          except json.JSONDecodeError as error:
+              sys.exit(f"secretless-auxiliary-source must be valid JSON: {error}")
+          required = {"repository", "pinFile", "checkoutPath", "sparsePath"}
+          if not isinstance(source, dict) or set(source) != required:
+              sys.exit("secretless-auxiliary-source requires exactly repository, pinFile, checkoutPath, and sparsePath")
+          try:
+              policy = json.loads(os.environ["TRUSTED_AUXILIARY_POLICY"])
+          except json.JSONDecodeError as error:
+              sys.exit(f"VERJSON_SECRETLESS_AUXILIARY_POLICY must be valid JSON: {error}")
+          if not isinstance(policy, dict) or set(policy) != required or source != policy:
+              sys.exit("secretless-auxiliary-source must exactly match trusted repository policy")
+          if not isinstance(source["repository"], str) or re.fullmatch(
+                  r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", source["repository"]) is None:
+              sys.exit("auxiliary repository must be an exact owner/name")
+          repository_parts = source["repository"].split("/")
+          if any(part in (".", "..") or part.lower() == ".git" for part in repository_parts):
+              sys.exit("auxiliary repository contains a reserved component")
+
+          def relative_path(name, value):
+              if not isinstance(value, str) or "\\" in value:
+                  sys.exit(f"auxiliary {name} must be a POSIX relative path")
+              path = PurePosixPath(value)
+              if (path.is_absolute() or not path.parts or str(path) != value
+                      or any(part in ("", ".", "..") for part in path.parts)):
+                  sys.exit(f"auxiliary {name} must stay within its checkout")
+              if any(part.lower() == ".git" for part in path.parts):
+                  sys.exit(f"auxiliary {name} cannot contain .git")
+              if any(re.fullmatch(r"[A-Za-z0-9._-]+", part) is None for part in path.parts):
+                  sys.exit(f"auxiliary {name} contains an unsupported path component")
+              return path
+
+          pin_file = relative_path("pinFile", source["pinFile"])
+          checkout_path = relative_path("checkoutPath", source["checkoutPath"])
+          sparse_path = relative_path("sparsePath", source["sparsePath"])
+          if len(checkout_path.parts) != 1 or not checkout_path.name.startswith(".") \
+                  or checkout_path.name in (".", "..", ".git"):
+              sys.exit("auxiliary checkoutPath must be one isolated hidden top-level directory")
+          if any(any(character in part for character in "*?[]") for part in sparse_path.parts):
+              sys.exit("auxiliary sparsePath must be an exact path without glob syntax")
+
+          root = Path.cwd().resolve()
+          pin_path = root.joinpath(*pin_file.parts)
+          resolved_pin = pin_path.resolve()
+          candidate = root
+          has_symlink = False
+          for part in pin_file.parts:
+              candidate /= part
+              has_symlink = has_symlink or candidate.is_symlink()
+          if root not in resolved_pin.parents or has_symlink or not resolved_pin.is_file():
+              sys.exit("auxiliary pinFile must be a regular file within the checked-out repository")
+          checkout_target = root / checkout_path.name
+          if checkout_target.exists() or checkout_target.is_symlink():
+              sys.exit("auxiliary checkoutPath already exists in the consumer repository")
+          try:
+              pin = json.loads(resolved_pin.read_text(encoding="utf-8"))
+          except (OSError, json.JSONDecodeError) as error:
+              sys.exit(f"could not read auxiliary pinFile: {error}")
+          if not isinstance(pin, dict) or pin.get("repository") != source["repository"]:
+              sys.exit("auxiliary pinFile repository does not match the approved repository")
+          commit = pin.get("commit")
+          if not isinstance(commit, str) or re.fullmatch(r"[0-9a-f]{40}", commit) is None:
+              sys.exit("auxiliary pinFile commit must be a full lowercase 40-hex SHA")
+
+          content_path = str(checkout_path / sparse_path)
+          output = Path(os.environ["GITHUB_OUTPUT"])
+          with output.open("a", encoding="utf-8") as stream:
+              stream.write(f"repository={source['repository']}\n")
+              stream.write(f"commit={commit}\n")
+              stream.write(f"checkout-path={checkout_path}\n")
+              stream.write(f"sparse-path={sparse_path}\n")
+              stream.write(f"content-path={content_path}\n")
+          PY
+      - name: Acquire immutable auxiliary source
+        if: inputs.secretless-auxiliary-source != ''
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: ${{ steps.resolve-auxiliary-source.outputs.repository }}
+          ref: ${{ steps.resolve-auxiliary-source.outputs.commit }}
+          token: ${{ secrets.NODE_AUTH_TOKEN }}
+          path: ${{ steps.resolve-auxiliary-source.outputs.checkout-path }}
+          sparse-checkout: ${{ steps.resolve-auxiliary-source.outputs.sparse-path }}
+          persist-credentials: false
+      - name: Populate verified private dependency cache
+        env:
+          APPROVED_INTERNAL_SCOPES: ${{ inputs.approved-internal-scopes }}
           NODE_AUTH_TOKEN: ${{ secrets.NODE_AUTH_TOKEN }}
+          NPM_CONFIG_CACHE: ${{ runner.temp }}/secretless-private-npm-cache-${{ github.run_id }}-${{ github.run_attempt }}
           NPM_CONFIG_GLOBALCONFIG: ${{ runner.temp }}/secretless-empty-global.npmrc
           NPM_CONFIG_USERCONFIG: ${{ runner.temp }}/secretless-acquisition.npmrc
+          PRIVATE_CACHE_ENTRIES: ${{ runner.temp }}/secretless-private-entries-${{ github.run_id }}-${{ github.run_attempt }}
         run: |
           set -euo pipefail
-          project_config="$(find . -name .npmrc -print -quit)"
-          [ -z "$project_config" ] || {
-            echo "::error::secretless-pr rejects PR-controlled npm config: $project_config"
+          umask 077
+          [ -s "$PRIVATE_CACHE_ENTRIES" ] || {
+            echo "::error::secretless-pr requires validated private package downloads"
             exit 1
           }
-          umask 077
           : > "$NPM_CONFIG_GLOBALCONFIG"
           # npm expands this placeholder only when requesting the scoped host.
           # shellcheck disable=SC2016
+          {
+            printf '%s\n' 'registry=https://registry.npmjs.org/'
+            while IFS= read -r scope; do
+              scope="${scope#"${scope%%[![:space:]]*}"}"
+              scope="${scope%"${scope##*[![:space:]]}"}"
+              [ -z "$scope" ] || printf '%s:registry=https://npm.pkg.github.com/\n' "$scope"
+            done <<< "$APPROVED_INTERNAL_SCOPES"
+            # npm expands this placeholder only when requesting the scoped host.
+            # shellcheck disable=SC2016
+            printf '%s\n' '//npm.pkg.github.com/:_authToken=${NODE_AUTH_TOKEN}'
+          } > "$NPM_CONFIG_USERCONFIG"
+          while IFS=$'\t' read -r resolved digest_hex extra; do
+            [ -z "$extra" ] && [[ "$resolved" == https://npm.pkg.github.com/* ]] \
+              && [[ "$digest_hex" =~ ^[0-9a-f]{128}$ ]] || {
+                echo "::error::invalid validated private cache entry"
+                exit 1
+              }
+            npm cache add "$resolved" --cache "$NPM_CONFIG_CACHE" --no-audit --no-fund
+          done < "$PRIVATE_CACHE_ENTRIES"
+          npm cache verify --cache "$NPM_CONFIG_CACHE"
+          declare -A expected_content=()
+          while IFS=$'\t' read -r _ digest_hex; do
+            content_path="$NPM_CONFIG_CACHE/_cacache/content-v2/sha512/${digest_hex:0:2}/${digest_hex:2:2}/${digest_hex:4}"
+            [ -f "$content_path" ] && [ ! -L "$content_path" ] \
+              && [ "$(sha512sum "$content_path" | cut -d' ' -f1)" = "$digest_hex" ] || {
+                echo "::error::npm did not populate the exact locked private package content"
+                exit 1
+              }
+            expected_content["$content_path"]=1
+          done < "$PRIVATE_CACHE_ENTRIES"
+          actual_content_count=0
+          while IFS= read -r -d '' content_path; do
+            [ -n "${expected_content[$content_path]:-}" ] || {
+              echo "::error::npm populated content outside the exact locked private package set"
+              exit 1
+            }
+            actual_content_count=$((actual_content_count + 1))
+          done < <(find "$NPM_CONFIG_CACHE/_cacache/content-v2" -type f -print0)
+          [ "$actual_content_count" -eq "${#expected_content[@]}" ] || {
+            echo "::error::npm private content set does not match the validated lock"
+            exit 1
+          }
+          if grep -R -a -qF -- "$NODE_AUTH_TOKEN" "$NPM_CONFIG_CACHE/_cacache/content-v2"; then
+            echo "::error::the npm cache contains the acquisition credential"
+            exit 1
+          fi
+          rm -rf "$NPM_CONFIG_CACHE/_cacache/index-v5" "$NPM_CONFIG_CACHE/_cacache/tmp"
+          [ ! -e "$NPM_CONFIG_CACHE/_cacache/index-v5" ] || {
+            echo "::error::private cache index containing signed redirect URLs was not removed"
+            exit 1
+          }
+      - name: Package bounded credential-free npm cache
+        env:
+          AUXILIARY_COMMIT: ${{ steps.resolve-auxiliary-source.outputs.commit }}
+          AUXILIARY_CONTENT_PATH: ${{ steps.resolve-auxiliary-source.outputs.content-path }}
+          AUXILIARY_REPOSITORY: ${{ steps.resolve-auxiliary-source.outputs.repository }}
+          CACHE_DIR: ${{ runner.temp }}/secretless-private-npm-cache-${{ github.run_id }}-${{ github.run_attempt }}
+          MAX_PAYLOAD_BYTES: '83886080'
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          RUN_ID: ${{ github.run_id }}
+          TRANSFER_DIR: ${{ runner.temp }}/secretless-transfer-${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          [ -d "$CACHE_DIR/_cacache/content-v2" ] || {
+            echo "::error::npm produced no private content-addressed package blobs for transfer"
+            exit 1
+          }
+          rm -rf node_modules "$TRANSFER_DIR"
+          mkdir -p "$TRANSFER_DIR"
+          tar_inputs=(-C "$CACHE_DIR" _cacache/content-v2)
+          if [ -n "$AUXILIARY_CONTENT_PATH" ]; then
+            [ -e "$AUXILIARY_CONTENT_PATH" ] || {
+              echo "::error::approved auxiliary sparse path was not acquired"
+              exit 1
+            }
+            unsafe_entry="$(find "$AUXILIARY_CONTENT_PATH" \! -type f \! -type d -print -quit)"
+            [ -z "$unsafe_entry" ] || {
+              echo "::error::auxiliary transfer rejects non-file entry: $unsafe_entry"
+              exit 1
+            }
+            tar_inputs+=(-C "$GITHUB_WORKSPACE" "$AUXILIARY_CONTENT_PATH")
+          fi
+          tar -cf "$TRANSFER_DIR/npm-private-cache.tar" "${tar_inputs[@]}"
+          payload_bytes="$(stat -c %s "$TRANSFER_DIR/npm-private-cache.tar")"
+          if [ "$payload_bytes" -gt "$MAX_PAYLOAD_BYTES" ]; then
+            echo "::error::secretless cache payload is ${payload_bytes} bytes; the 80 MiB payload budget is ${MAX_PAYLOAD_BYTES} bytes"
+            exit 1
+          fi
+          payload_sha256="$(sha256sum "$TRANSFER_DIR/npm-private-cache.tar" | cut -d' ' -f1)"
+          lock_sha256="$(sha256sum package-lock.json | cut -d' ' -f1)"
           printf '%s\n' \
-            'registry=https://registry.npmjs.org/' \
-            '@verjson:registry=https://npm.pkg.github.com/' \
-            '//npm.pkg.github.com/:_authToken=${NODE_AUTH_TOKEN}' \
-            > "$NPM_CONFIG_USERCONFIG"
-          npm ci --ignore-scripts --no-audit --no-fund
-      - name: Package credential-free dependency tree
-        run: tar -czf "$RUNNER_TEMP/secretless-node-modules.tgz" node_modules
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+            "run_id=$RUN_ID" \
+            "run_attempt=$RUN_ATTEMPT" \
+            "lock_sha256=$lock_sha256" \
+            "auxiliary_repository=$AUXILIARY_REPOSITORY" \
+            "auxiliary_commit=$AUXILIARY_COMMIT" \
+            "auxiliary_content_path=$AUXILIARY_CONTENT_PATH" \
+            "payload_sha256=$payload_sha256" \
+            "payload_bytes=$payload_bytes" \
+            > "$TRANSFER_DIR/manifest"
+      - id: upload-secretless-transfer
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: secretless-node-modules-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/secretless-node-modules.tgz
+          name: secretless-npm-cache-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/secretless-transfer-${{ github.run_id }}-${{ github.run_attempt }}
+          compression-level: 0
           retention-days: 1
           if-no-files-found: error
+      - name: Remove local acquisition and transfer state
+        if: always()
+        env:
+          AUXILIARY_CHECKOUT_PATH: ${{ steps.resolve-auxiliary-source.outputs.checkout-path }}
+          CACHE_DIR: ${{ runner.temp }}/secretless-private-npm-cache-${{ github.run_id }}-${{ github.run_attempt }}
+          PRIVATE_CACHE_ENTRIES: ${{ runner.temp }}/secretless-private-entries-${{ github.run_id }}-${{ github.run_attempt }}
+          TRANSFER_DIR: ${{ runner.temp }}/secretless-transfer-${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          rm -rf node_modules "$CACHE_DIR" "$TRANSFER_DIR"
+          [ -z "$AUXILIARY_CHECKOUT_PATH" ] || find "$AUXILIARY_CHECKOUT_PATH" -depth -delete
+          rm -f "$RUNNER_TEMP/secretless-acquisition.npmrc" "$RUNNER_TEMP/secretless-empty-global.npmrc" \
+            "$RUNNER_TEMP/secretless-empty-package.npmrc"
+          rm -f "$PRIVATE_CACHE_ENTRIES"
 
   build-test:
     needs: [eligibility, acquire-secretless-dependencies]
@@ -404,42 +717,11 @@ jobs:
           submodules: ${{ inputs.secretless-pr && 'false' || 'recursive' }}
           token: ${{ inputs.secretless-pr && github.token || secrets.submodules-token || github.token }}
           persist-credentials: ${{ !inputs.secretless-pr }}
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        if: needs.eligibility.outputs.should-run != 'false' && inputs.secretless-pr
-        with:
-          name: secretless-node-modules-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/secretless-dependencies
-      - name: Restore secretless dependency tree
-        if: needs.eligibility.outputs.should-run != 'false' && inputs.secretless-pr
-        env:
-          GH_TOKEN: ''
-          GITHUB_TOKEN: ''
-          NODE_AUTH_TOKEN: ''
-          NPM_TOKEN: ''
-          NPM_CONFIG_USERCONFIG: ${{ runner.temp }}/secretless-empty.npmrc
-          AWS_ACCESS_KEY_ID: ''
-          AWS_SECRET_ACCESS_KEY: ''
-          AWS_SESSION_TOKEN: ''
-          GOOGLE_APPLICATION_CREDENTIALS: ''
-          AZURE_CREDENTIALS: ''
-          ACTIONS_ID_TOKEN_REQUEST_TOKEN: ''
-          ACTIONS_ID_TOKEN_REQUEST_URL: ''
-        run: |
-          set -euo pipefail
-          : > "$NPM_CONFIG_USERCONFIG"
-          tar -xzf "$RUNNER_TEMP/secretless-dependencies/secretless-node-modules.tgz"
-          for name in GH_TOKEN GITHUB_TOKEN NODE_AUTH_TOKEN NPM_TOKEN \
-            AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN \
-            GOOGLE_APPLICATION_CREDENTIALS AZURE_CREDENTIALS \
-            ACTIONS_ID_TOKEN_REQUEST_TOKEN ACTIONS_ID_TOKEN_REQUEST_URL; do
-            printf '%s=\n' "$name" >> "$GITHUB_ENV"
-          done
-          printf 'NPM_CONFIG_USERCONFIG=%s\n' "$NPM_CONFIG_USERCONFIG" >> "$GITHUB_ENV"
       - name: Prepare job-scoped changelog tool cache
         if: needs.eligibility.outputs.should-run != 'false'
         run: echo "VERJSON_CHANGELOG_TOOL_CACHE=$RUNNER_TEMP/verjson-changelog-tools" >> "$GITHUB_ENV"
       - name: Prepare job-scoped npm cache
-        if: needs.eligibility.outputs.should-run != 'false' && inputs.cache
+        if: needs.eligibility.outputs.should-run != 'false' && inputs.cache && !inputs.secretless-pr
         run: echo "npm_config_cache=$RUNNER_TEMP/verjson-npm-cache" >> "$GITHUB_ENV"
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         if: needs.eligibility.outputs.should-run != 'false'
@@ -448,11 +730,196 @@ jobs:
           # setup-node caches npm's download cache, never node_modules or build
           # output. An absent lockfile disables caching instead of failing jobs
           # in repositories that do not use npm lockfiles.
-          cache: ${{ inputs.cache && hashFiles(inputs.cache-dependency-path) != '' && 'npm' || '' }}
+          cache: ${{ !inputs.secretless-pr && inputs.cache && hashFiles(inputs.cache-dependency-path) != '' && 'npm' || '' }}
           cache-dependency-path: ${{ inputs.cache-dependency-path }}
           package-manager-cache: false
           registry-url: ${{ inputs.scope != '' && 'https://npm.pkg.github.com' || '' }}
           scope: ${{ inputs.scope }}
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        if: needs.eligibility.outputs.should-run != 'false' && inputs.secretless-pr
+        with:
+          name: secretless-npm-cache-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/secretless-transfer-${{ github.run_id }}-${{ github.run_attempt }}
+      - name: Install from verified secretless npm cache
+        if: needs.eligibility.outputs.should-run != 'false' && inputs.secretless-pr
+        env:
+          GH_TOKEN: ''
+          GITHUB_TOKEN: ''
+          NODE_AUTH_TOKEN: ''
+          NPM_TOKEN: ''
+          NPM_CONFIG_CACHE: ${{ runner.temp }}/secretless-runtime-cache-${{ github.run_id }}-${{ github.run_attempt }}
+          NPM_CONFIG_GLOBALCONFIG: ${{ runner.temp }}/secretless-empty-global-build.npmrc
+          NPM_CONFIG_USERCONFIG: ${{ runner.temp }}/secretless-empty.npmrc
+          AWS_ACCESS_KEY_ID: ''
+          AWS_SECRET_ACCESS_KEY: ''
+          AWS_SESSION_TOKEN: ''
+          GOOGLE_APPLICATION_CREDENTIALS: ''
+          AZURE_CREDENTIALS: ''
+          ACTIONS_ID_TOKEN_REQUEST_TOKEN: ''
+          ACTIONS_ID_TOKEN_REQUEST_URL: ''
+          EXPECTED_AUXILIARY_COMMIT: ${{ needs.acquire-secretless-dependencies.outputs.auxiliary-commit }}
+          EXPECTED_AUXILIARY_CONTENT_PATH: ${{ needs.acquire-secretless-dependencies.outputs.auxiliary-content-path }}
+          EXPECTED_AUXILIARY_REPOSITORY: ${{ needs.acquire-secretless-dependencies.outputs.auxiliary-repository }}
+          MAX_PAYLOAD_BYTES: '83886080'
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          RUN_ID: ${{ github.run_id }}
+          SECRETLESS_CACHE_DIR: ${{ runner.temp }}/secretless-build-cache-${{ github.run_id }}-${{ github.run_attempt }}
+          TRANSFER_DIR: ${{ runner.temp }}/secretless-transfer-${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          cleanup() {
+            rm -rf "$SECRETLESS_CACHE_DIR" "$TRANSFER_DIR"
+          }
+          trap cleanup EXIT
+          : > "$NPM_CONFIG_GLOBALCONFIG"
+          : > "$NPM_CONFIG_USERCONFIG"
+          manifest="$TRANSFER_DIR/manifest"
+          payload="$TRANSFER_DIR/npm-private-cache.tar"
+          [ -f "$manifest" ] && [ -f "$payload" ] || {
+            echo "::error::secretless cache transfer is incomplete"
+            exit 1
+          }
+          [ "$(wc -l < "$manifest")" -eq 8 ] || {
+            echo "::error::secretless cache manifest has an unexpected shape"
+            exit 1
+          }
+          manifest_value() {
+            local key="$1"
+            local value
+            value="$(sed -n "s/^${key}=//p" "$manifest")"
+            [ "$(grep -c "^${key}=" "$manifest")" -eq 1 ] || return 1
+            printf '%s' "$value"
+          }
+          manifest_run_id="$(manifest_value run_id)"
+          manifest_run_attempt="$(manifest_value run_attempt)"
+          manifest_lock_sha256="$(manifest_value lock_sha256)"
+          manifest_auxiliary_repository="$(manifest_value auxiliary_repository)"
+          manifest_auxiliary_commit="$(manifest_value auxiliary_commit)"
+          manifest_auxiliary_content_path="$(manifest_value auxiliary_content_path)"
+          manifest_payload_sha256="$(manifest_value payload_sha256)"
+          manifest_payload_bytes="$(manifest_value payload_bytes)"
+          [[ "$manifest_run_id" =~ ^[0-9]+$ && "$manifest_run_attempt" =~ ^[0-9]+$ ]]
+          [[ "$manifest_lock_sha256" =~ ^[0-9a-f]{64}$ && "$manifest_payload_sha256" =~ ^[0-9a-f]{64}$ ]]
+          [[ "$manifest_payload_bytes" =~ ^[0-9]+$ ]]
+          [ "$manifest_run_id" = "$RUN_ID" ] && [ "$manifest_run_attempt" = "$RUN_ATTEMPT" ] || {
+            echo "::error::secretless cache belongs to another run attempt"
+            exit 1
+          }
+          [ "$manifest_lock_sha256" = "$(sha256sum package-lock.json | cut -d' ' -f1)" ] || {
+            echo "::error::secretless cache does not match this package lock"
+            exit 1
+          }
+          [ "$manifest_auxiliary_repository" = "$EXPECTED_AUXILIARY_REPOSITORY" ] \
+            && [ "$manifest_auxiliary_commit" = "$EXPECTED_AUXILIARY_COMMIT" ] \
+            && [ "$manifest_auxiliary_content_path" = "$EXPECTED_AUXILIARY_CONTENT_PATH" ] || {
+              echo "::error::secretless cache auxiliary source identity mismatch"
+              exit 1
+            }
+          if [ -n "$EXPECTED_AUXILIARY_CONTENT_PATH" ]; then
+            [[ "$EXPECTED_AUXILIARY_REPOSITORY" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]
+            [[ "$EXPECTED_AUXILIARY_COMMIT" =~ ^[0-9a-f]{40}$ ]]
+          else
+            [ -z "$EXPECTED_AUXILIARY_REPOSITORY" ] && [ -z "$EXPECTED_AUXILIARY_COMMIT" ] || exit 1
+          fi
+          actual_payload_bytes="$(stat -c %s "$payload")"
+          [ "$actual_payload_bytes" = "$manifest_payload_bytes" ] && [ "$actual_payload_bytes" -le "$MAX_PAYLOAD_BYTES" ] || {
+            echo "::error::secretless cache size is invalid"
+            exit 1
+          }
+          [ "$manifest_payload_sha256" = "$(sha256sum "$payload" | cut -d' ' -f1)" ] || {
+            echo "::error::secretless cache digest mismatch"
+            exit 1
+          }
+          PAYLOAD_ALLOWED_AUX="$EXPECTED_AUXILIARY_CONTENT_PATH" python3 - "$payload" <<'PY'
+          import os
+          import sys
+          import tarfile
+          from pathlib import PurePosixPath
+
+          allowed_aux = os.environ["PAYLOAD_ALLOWED_AUX"]
+          with tarfile.open(sys.argv[1], "r:") as archive:
+              for member in archive.getmembers():
+                  path = PurePosixPath(member.name)
+                  if (path.is_absolute() or not path.parts or "\\" in member.name
+                          or any(part in ("", ".", "..") for part in path.parts)):
+                      raise SystemExit(f"unsafe secretless transfer path: {member.name}")
+                  allowed = (path.parts == ("_cacache",)
+                             or path.parts[:2] == ("_cacache", "content-v2"))
+                  if allowed_aux:
+                      allowed = allowed or member.name == allowed_aux or member.name.startswith(allowed_aux + "/")
+                  if not allowed or not (member.isfile() or member.isdir()):
+                      raise SystemExit(f"unexpected secretless transfer entry: {member.name}")
+          PY
+          mkdir -p "$SECRETLESS_CACHE_DIR"
+          tar --no-same-owner --no-same-permissions -C "$SECRETLESS_CACHE_DIR" -xf "$payload"
+          [ -d "$SECRETLESS_CACHE_DIR/_cacache/content-v2" ] \
+            && [ ! -e "$SECRETLESS_CACHE_DIR/_cacache/index-v5" ] || {
+            echo "::error::secretless transfer must contain only private content-addressed package blobs"
+            exit 1
+          }
+          SECRETLESS_CACHE_DIR="$SECRETLESS_CACHE_DIR" python3 - <<'PY'
+          import base64
+          import hashlib
+          import json
+          import os
+          import re
+          from pathlib import Path
+          from urllib.parse import urlparse
+
+          cache = Path(os.environ["SECRETLESS_CACHE_DIR"])
+          lock = json.loads(Path("package-lock.json").read_text(encoding="utf-8"))
+          expected_content = {}
+          for package in lock.get("packages", {}).values():
+              resolved = package.get("resolved", "")
+              if urlparse(resolved).hostname != "npm.pkg.github.com":
+                  continue
+              integrity = package.get("integrity")
+              if not isinstance(integrity, str) or re.fullmatch(
+                      r"sha512-[A-Za-z0-9+/]{86}==", integrity) is None:
+                  raise SystemExit("locked private package has invalid sha512 integrity")
+              digest = base64.b64decode(integrity.removeprefix("sha512-"), validate=True)
+              digest_hex = digest.hex()
+              content = cache / "_cacache" / "content-v2" / "sha512" \
+                  / digest_hex[:2] / digest_hex[2:4] / digest_hex[4:]
+              expected_content[content] = digest
+              if not content.is_file():
+                  raise SystemExit("locked private package content is missing or corrupt")
+              with content.open("rb") as stream:
+                  if hashlib.file_digest(stream, "sha512").digest() != digest:
+                      raise SystemExit("locked private package content is missing or corrupt")
+          actual_content = {path for path in (cache / "_cacache" / "content-v2").rglob("*")
+                            if path.is_file()}
+          if actual_content != set(expected_content):
+              raise SystemExit("private cache contains content outside the locked package set")
+          PY
+          if [ -n "$EXPECTED_AUXILIARY_CONTENT_PATH" ]; then
+            auxiliary_source="$SECRETLESS_CACHE_DIR/$EXPECTED_AUXILIARY_CONTENT_PATH"
+            auxiliary_target="$GITHUB_WORKSPACE/$EXPECTED_AUXILIARY_CONTENT_PATH"
+            [ -e "$auxiliary_source" ] && [ ! -e "$auxiliary_target" ] || {
+              echo "::error::secretless auxiliary content restore target is invalid"
+              exit 1
+            }
+            mkdir -p "$(dirname "$auxiliary_target")"
+            cp -a "$auxiliary_source" "$auxiliary_target"
+          fi
+          {
+            for name in GH_TOKEN GITHUB_TOKEN NODE_AUTH_TOKEN NPM_TOKEN \
+              AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN \
+              GOOGLE_APPLICATION_CREDENTIALS AZURE_CREDENTIALS \
+              ACTIONS_ID_TOKEN_REQUEST_TOKEN ACTIONS_ID_TOKEN_REQUEST_URL; do
+              printf '%s=\n' "$name"
+            done
+            printf 'npm_config_cache=%s\n' "$NPM_CONFIG_CACHE"
+            printf 'NPM_CONFIG_GLOBALCONFIG=%s\n' "$NPM_CONFIG_GLOBALCONFIG"
+            printf 'NPM_CONFIG_USERCONFIG=%s\n' "$NPM_CONFIG_USERCONFIG"
+          } >> "$GITHUB_ENV"
+          npm ci --ignore-scripts --prefer-offline --no-audit --no-fund --cache "$SECRETLESS_CACHE_DIR"
+      - name: Remove local secretless transfer state
+        if: always() && needs.eligibility.outputs.should-run != 'false' && inputs.secretless-pr
+        env:
+          SECRETLESS_CACHE_DIR: ${{ runner.temp }}/secretless-build-cache-${{ github.run_id }}-${{ github.run_attempt }}
+          TRANSFER_DIR: ${{ runner.temp }}/secretless-transfer-${{ github.run_id }}-${{ github.run_attempt }}
+        run: rm -rf "$SECRETLESS_CACHE_DIR" "$TRANSFER_DIR"
       - name: Start database service
         # Optional Postgres service for DB-backed test suites (e.g. Jest against
         # pgvector/pgvector:pg16 with DATABASE_URL). Default-off: this whole step
@@ -807,16 +1274,121 @@ jobs:
         if: needs.eligibility.outputs.should-run != 'false' && !inputs.secretless-pr
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NODE_AUTH_TOKEN }}
+      - name: Rebuild exact approved lifecycle packages without credentials
+        if: needs.eligibility.outputs.should-run != 'false' && inputs.secretless-pr && inputs.secretless-rebuild-packages != ''
+        env:
+          REBUILD_PACKAGES: ${{ inputs.secretless-rebuild-packages }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import re
+          import subprocess
+          import sys
+          from pathlib import Path
+
+          requested = [line.strip() for line in os.environ["REBUILD_PACKAGES"].splitlines() if line.strip()]
+          package_pattern = re.compile(r"(?:@[a-z0-9][a-z0-9._-]*/)?[a-z0-9][a-z0-9._-]*")
+          if not requested or len(requested) != len(set(requested)) \
+                  or any(package_pattern.fullmatch(name) is None for name in requested):
+              sys.exit("secretless-rebuild-packages accepts unique exact npm package names only")
+          lock = json.loads(Path("package-lock.json").read_text(encoding="utf-8"))
+          installed = set()
+          for path, package in lock.get("packages", {}).items():
+              if "node_modules/" not in path:
+                  continue
+              path_name = path.rsplit("node_modules/", 1)[1]
+              locked_name = package.get("name")
+              installed.add(locked_name if isinstance(locked_name, str) else path_name)
+          missing = sorted(set(requested) - installed)
+          if missing:
+              sys.exit("approved rebuild packages absent from lock: " + ", ".join(missing))
+          subprocess.run(["npm", "rebuild", *requested], check=True)
+          PY
+      - name: Run exact credentialless consumer script plan
+        if: needs.eligibility.outputs.should-run != 'false' && inputs.secretless-pr && inputs.secretless-ci-script-plan != ''
+        env:
+          CI_SCRIPT_PLAN: ${{ inputs.secretless-ci-script-plan }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import re
+          import subprocess
+          import sys
+          from pathlib import Path
+
+          try:
+              plan = json.loads(os.environ["CI_SCRIPT_PLAN"])
+          except json.JSONDecodeError as error:
+              sys.exit(f"secretless-ci-script-plan must be valid JSON: {error}")
+          script_pattern = re.compile(r"[A-Za-z0-9][A-Za-z0-9:._-]*")
+          env_pattern = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+          protected_env = {
+              "GH_TOKEN", "GITHUB_TOKEN", "NODE_AUTH_TOKEN", "NPM_TOKEN",
+              "NPM_CONFIG_CACHE", "NPM_CONFIG_GLOBALCONFIG", "NPM_CONFIG_USERCONFIG",
+              "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN",
+              "GOOGLE_APPLICATION_CREDENTIALS", "AZURE_CREDENTIALS",
+              "ACTIONS_ID_TOKEN_REQUEST_TOKEN", "ACTIONS_ID_TOKEN_REQUEST_URL",
+          }
+          if not isinstance(plan, list) or not plan or len(plan) > 32:
+              sys.exit("secretless-ci-script-plan accepts 1-32 unique exact npm script entries")
+          normalized = []
+          for entry in plan:
+              if isinstance(entry, str):
+                  script = entry
+                  unset_env = []
+              elif isinstance(entry, dict) and set(entry) == {"script", "unsetEnv"}:
+                  script = entry["script"]
+                  unset_env = entry["unsetEnv"]
+              else:
+                  sys.exit("secretless-ci-script-plan entries must be script names or exact script/unsetEnv objects")
+              if not isinstance(script, str) or script_pattern.fullmatch(script) is None:
+                  sys.exit("secretless-ci-script-plan contains an invalid script name")
+              if (not isinstance(unset_env, list) or len(unset_env) > 16
+                      or len(unset_env) != len(set(unset_env))
+                      or any(not isinstance(name, str) or env_pattern.fullmatch(name) is None
+                             or name in protected_env for name in unset_env)):
+                  sys.exit("secretless-ci-script-plan unsetEnv accepts up to 16 unique non-credential environment names")
+              normalized.append((script, unset_env))
+          scripts_in_plan = [script for script, _ in normalized]
+          if len(scripts_in_plan) != len(set(scripts_in_plan)):
+              sys.exit("secretless-ci-script-plan accepts unique script names")
+          package = json.loads(Path("package.json").read_text(encoding="utf-8"))
+          scripts = package.get("scripts")
+          if not isinstance(scripts, dict):
+              sys.exit("package.json has no scripts object")
+          missing = [name for name in scripts_in_plan if name not in scripts]
+          if missing:
+              sys.exit("planned npm scripts absent from package.json: " + ", ".join(missing))
+          for name, unset_env in normalized:
+              script_env = os.environ.copy()
+              for env_name in unset_env:
+                  script_env.pop(env_name, None)
+              subprocess.run(["npm", "run", name], check=True, env=script_env)
+          PY
       - run: npm run build
-        if: needs.eligibility.outputs.should-run != 'false'
+        if: needs.eligibility.outputs.should-run != 'false' && (!inputs.secretless-pr || inputs.secretless-ci-script-plan == '')
       - run: npm run typecheck --if-present
-        if: needs.eligibility.outputs.should-run != 'false'
+        if: needs.eligibility.outputs.should-run != 'false' && (!inputs.secretless-pr || inputs.secretless-ci-script-plan == '')
       - run: npm test
-        if: needs.eligibility.outputs.should-run != 'false'
+        if: needs.eligibility.outputs.should-run != 'false' && (!inputs.secretless-pr || inputs.secretless-ci-script-plan == '')
       - run: npm run lint --if-present
-        if: needs.eligibility.outputs.should-run != 'false'
+        if: needs.eligibility.outputs.should-run != 'false' && (!inputs.secretless-pr || inputs.secretless-ci-script-plan == '')
+      - name: Remove job-scoped secretless runtime cache
+        if: always() && needs.eligibility.outputs.should-run != 'false' && inputs.secretless-pr
+        env:
+          RUNTIME_CACHE_DIR: ${{ runner.temp }}/secretless-runtime-cache-${{ github.run_id }}-${{ github.run_attempt }}
+        run: rm -rf "$RUNTIME_CACHE_DIR"
+      - name: Remove restored secretless auxiliary content
+        if: always() && needs.eligibility.outputs.should-run != 'false' && inputs.secretless-pr && needs.acquire-secretless-dependencies.outputs.auxiliary-content-path != ''
+        env:
+          AUXILIARY_CONTENT_PATH: ${{ needs.acquire-secretless-dependencies.outputs.auxiliary-content-path }}
+        run: |
+          auxiliary_target="$GITHUB_WORKSPACE/$AUXILIARY_CONTENT_PATH"
+          [ ! -e "$auxiliary_target" ] || find "$auxiliary_target" -depth -delete
       - name: Bound npm cache upload
-        if: always() && needs.eligibility.outputs.should-run != 'false' && inputs.cache
+        if: always() && needs.eligibility.outputs.should-run != 'false' && inputs.cache && !inputs.secretless-pr
         env:
           CACHE_MAX_MB: ${{ inputs.cache-max-mb }}
         run: |
@@ -873,3 +1445,35 @@ jobs:
                 exit 1 ;;
             esac
           fi
+
+  cleanup-secretless-transfer:
+    needs: [eligibility, acquire-secretless-dependencies, build-test]
+    if: always() && inputs.secretless-pr && needs.acquire-secretless-dependencies.outputs.transfer-artifact-id != ''
+    runs-on: ${{ fromJSON(vars.VERJSON_LANE_UNTRUSTED || '["ubuntu-24.04"]') }}
+    timeout-minutes: 5
+    permissions:
+      actions: write
+    steps:
+      - name: Delete exact run-attempt transfer artifact
+        env:
+          ARTIFACT_ID: ${{ needs.acquire-secretless-dependencies.outputs.transfer-artifact-id }}
+          EXPECTED_NAME: secretless-npm-cache-${{ github.run_id }}-${{ github.run_attempt }}
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          [[ "$ARTIFACT_ID" =~ ^[1-9][0-9]*$ && "$RUN_ID" =~ ^[1-9][0-9]*$ ]] || {
+            echo "::error::invalid secretless transfer artifact identity"
+            exit 1
+          }
+          metadata="$(gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$ARTIFACT_ID")"
+          jq -e \
+            --arg name "$EXPECTED_NAME" \
+            --argjson artifact_id "$ARTIFACT_ID" \
+            --argjson run_id "$RUN_ID" \
+            '.id == $artifact_id and .name == $name and .expired == false and .workflow_run.id == $run_id' \
+            <<< "$metadata" >/dev/null || {
+              echo "::error::secretless transfer artifact identity mismatch"
+              exit 1
+            }
+          gh api --method DELETE "repos/$GITHUB_REPOSITORY/actions/artifacts/$ARTIFACT_ID"

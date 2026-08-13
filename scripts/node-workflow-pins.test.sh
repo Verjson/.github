@@ -22,7 +22,7 @@ for wf in "$ci" "$release" "$actions_ci"; do
   expected_checkouts=1
   expected_setups=0
   if [ "$wf" = "$ci" ]; then
-    expected_checkouts=2
+    expected_checkouts=3
     expected_setups=2
   fi
   if [ "$wf" != "$actions_ci" ]; then

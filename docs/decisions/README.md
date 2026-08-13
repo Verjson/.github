@@ -11,6 +11,8 @@ Reverse-chronological index of org-level decisions.
 <!-- BEGIN ADR INDEX -->
 | # | Date | Decision |
 |---|------|----------|
+| [0095](0095-bounded-secretless-node-cache-transfer/README.md) | 2026-08-12 | Bound secretless Node transfer to an exact-attempt private cache |
+| [0094](0094-arm-required-by-its-own-property-scoped-ruleset/README.md) | 2026-08-11 | Require the authorization arm from its own property-scoped ruleset |
 | [0093](0093-authorization-arm-uses-trusted-runner-lane/README.md) | 2026-08-11 | Route the authorization arm through the trusted runner lane |
 | [0092](0092-stage-generated-changelog-contract-requirement/README.md) | 2026-08-10 | Stage the generated changelog contract requirement behind fleet conformance |
 | [0091](0091-ruleset-requires-authorization-arm/README.md) | 2026-08-10 | Require the authorization arm, not the dispatched AI review |

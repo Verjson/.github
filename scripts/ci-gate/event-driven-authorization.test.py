@@ -328,7 +328,8 @@ def main() -> int:
             "authorization must be receipt-, digest-, run-, and dedicated-App-bound")
     verifier_invocation = re.compile(
         r"(?m)^(?P<indent>\s*)(?:GH_TOKEN=\"\$ACTIONS_TOKEN\" )?"
-        r"(?P<shell>bash )?\.gate-trust/scripts/ci-gate/verify-arm-receipt\.sh$"
+        r"(?P<shell>bash )?\.gate-trust/scripts/ci-gate/verify-arm-receipt\.sh"
+        r"(?: \|\| receipt_ok=false)?$"
     )
     invocations = [
         match for text in (review_text, promote_text)
