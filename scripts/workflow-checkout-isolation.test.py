@@ -56,6 +56,19 @@ def validate_cleanup(job: dict, checkout_path: str, location: str) -> None:
     )
 
 
+def validate_run_step_directories(job: dict, checkout_path: str, location: str) -> None:
+    steps = job.get("steps")
+    require(isinstance(steps, list) and steps, f"{location} must have steps")
+    for index, step in enumerate(steps[:-1]):
+        if not isinstance(step, dict) or "run" not in step:
+            continue
+        working_directory = step.get("working-directory")
+        require(
+            working_directory in (None, checkout_path),
+            f"{location} business run step {index} must stay in the isolated checkout",
+        )
+
+
 def validate_sparse_checkouts(documents: dict[Path, dict]) -> None:
     for path, document in documents.items():
         for job_name, job in document.get("jobs", {}).items():
@@ -73,6 +86,11 @@ def validate_sparse_checkouts(documents: dict[Path, dict]) -> None:
                             checkout_path,
                             f"{path.name}: jobs.{job_name}",
                         )
+                        validate_run_step_directories(
+                            job,
+                            checkout_path,
+                            f"{path.name}: jobs.{job_name}",
+                        )
 
 
 def validate_scheduled_checkouts(documents: dict[Path, dict]) -> None:
@@ -86,6 +104,11 @@ def validate_scheduled_checkouts(documents: dict[Path, dict]) -> None:
             checkouts = checkout_steps(job)
             if not checkouts:
                 continue
+            strategy = job.get("strategy") if isinstance(job, dict) else None
+            require(
+                not isinstance(strategy, dict) or "matrix" not in strategy,
+                f"{path.name}: jobs.{job_name} matrix children would share one checkout path",
+            )
             require(
                 len(checkouts) == 1,
                 f"{path.name}: jobs.{job_name} must have one unambiguous checkout root",
@@ -110,6 +133,7 @@ def validate_scheduled_checkouts(documents: dict[Path, dict]) -> None:
                 f"{path.name}: jobs.{job_name} run steps must use the isolated checkout path",
             )
             validate_cleanup(job, checkout_path, f"{path.name}: jobs.{job_name}")
+            validate_run_step_directories(job, checkout_path, f"{path.name}: jobs.{job_name}")
     require(scheduled_count > 0, "no scheduled workflows were examined")
 
 
@@ -158,6 +182,25 @@ def main() -> int:
         "scheduled checkout without a unique path is rejected",
         validate_scheduled_checkouts,
         scheduled_mutation,
+    )
+
+    matrix_mutation = deepcopy(documents)
+    watchdog = matrix_mutation[WORKFLOWS / "fleet-watchdog.yml"]
+    watchdog["jobs"]["watchdog"]["strategy"] = {"matrix": {"shard": [1, 2]}}
+    failures += expect_invalid(
+        "scheduled checkout matrix without a child discriminator is rejected",
+        validate_scheduled_checkouts,
+        matrix_mutation,
+    )
+
+    working_directory_mutation = deepcopy(documents)
+    post_merge = working_directory_mutation[WORKFLOWS / "ai-post-merge.yml"]
+    business_step = next(step for step in post_merge["jobs"]["reconcile"]["steps"] if "run" in step)
+    business_step["working-directory"] = "${{ github.workspace }}"
+    failures += expect_invalid(
+        "business run step outside its isolated checkout is rejected",
+        validate_sparse_checkouts,
+        working_directory_mutation,
     )
 
     if failures:

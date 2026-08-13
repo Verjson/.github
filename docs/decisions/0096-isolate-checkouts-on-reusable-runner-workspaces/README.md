@@ -18,10 +18,11 @@ filesystem path assigned to each execution.
 ## Decision
 
 Every job in a schedule-triggered workflow that checks out this repository uses a directory
-whose name includes `github.run_id`, `github.run_attempt`, and `github.job`. Job-level run
-defaults route commands into that directory. An `always()` cleanup step runs from
-`github.workspace` and removes only the execution's exact directory, preventing both
-cross-run mutation and unbounded residue.
+whose name includes `github.run_id`, `github.run_attempt`, and `github.job`. Scheduled checkout
+jobs do not use a matrix because matrix children share `github.job`; a future matrix must first
+add a validated child discriminator. Job-level run defaults route commands into that directory,
+and business steps cannot override that routing. On normal job completion, an `always()` cleanup
+step runs from `github.workspace` and removes only the execution's exact directory.
 
 Every sparse checkout in this repository must set `path:`. The trusted post-merge reconciler
 therefore gets the same per-execution path and command routing even though it is not scheduled.
@@ -40,7 +41,8 @@ SHA pins, and sparse checkout contents do not change.
 - Jobs continue to use their existing trusted, privileged, or fast lane and retain their
   existing secret boundary.
 - The cleanup is deliberately path-exact. It does not attempt to clean legacy root state or
-  another run's directory; runner-wide workspace lifecycle remains tracked by
+  another run's directory. Cancellation, timeout, or runner loss can prevent even an `always()`
+  step from running, so runner-wide workspace lifecycle and residual cleanup remain tracked by
   [#629](https://github.com/Verjson/.github/issues/629).
 
 ## Rejected alternatives
@@ -56,9 +58,10 @@ SHA pins, and sparse checkout contents do not change.
 
 `scripts/workflow-checkout-isolation.test.py` rejects a sparse checkout without `path:`, a
 scheduled checkout without run/attempt/job uniqueness, missing command routing, and cleanup
-that could escape its exact isolated directory. Existing privileged scheduled-workflow tests
-continue to pin runner lanes, permissions, token bindings, event SHA, and the expanded
-checkout lifecycle.
+that could escape its exact isolated directory. It also rejects undiscriminated scheduled-job
+matrices and business steps that override routing outside the isolated checkout. Existing
+privileged scheduled-workflow tests continue to pin runner lanes, permissions, token bindings,
+event SHA, and the expanded checkout lifecycle.
 
 ## Sensitive-hunk summary
 
