@@ -55,6 +55,10 @@ class DeepSeekReviewTest(unittest.TestCase):
         self.assertEqual(review.PRICES["deepseek-v4-flash"]["input_cache_miss"], Decimal("0.14"))
         self.assertEqual(review.PRICES["deepseek-v4-flash"]["output"], Decimal("0.28"))
 
+    def test_stream_wire_bound_scales_with_the_output_token_envelope(self):
+        self.assertEqual(review.MAX_STREAM_BYTES, review.MAX_OUTPUT_TOKENS * 1024)
+        self.assertGreater(review.MAX_STREAM_BYTES, 4 * 1024 * 1024)
+
     def test_cap_prices_complete_bytes_as_cache_miss(self):
         cap = review.output_cap_bytes(1_000_000, "0.44", "deepseek-v4-pro")
         self.assertEqual(cap, 5747)
