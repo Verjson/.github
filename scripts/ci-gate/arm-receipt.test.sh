@@ -108,6 +108,12 @@ write_ruleset_run
 printf '%s\n' '[{"type":"workflows","ruleset_source_type":"Repository","ruleset_source":"Verjson/example","parameters":{"workflows":[{"path":".github/workflows/gate-rearm.yml","ref":"refs/heads/main","repository_id":1269388380}]}}]' >"$RULES_FILE"
 LOCAL_WORKFLOW_MISSING=true expect_provenance_fail "matching-path required workflow from an untrusted ruleset origin is rejected" verify
 write_ruleset_run
+jq '.[0].ruleset_source="OtherOrg"' "$RULES_FILE" >"$tmp/x" && mv "$tmp/x" "$RULES_FILE"
+LOCAL_WORKFLOW_MISSING=true expect_provenance_fail "matching-path required workflow from the wrong organization is rejected" verify
+write_ruleset_run
+jq '.[0].parameters.workflows[0].repository_id=999' "$RULES_FILE" >"$tmp/x" && mv "$tmp/x" "$RULES_FILE"
+LOCAL_WORKFLOW_MISSING=true expect_provenance_fail "matching-path required workflow from the wrong canonical repository is rejected" verify
+write_ruleset_run
 printf '%s\n%s\n' \
   '[{"type":"workflows","ruleset_source_type":"Organization","ruleset_source":"Verjson","parameters":{"workflows":[{"path":".github/workflows/gate-rearm.yml","ref":"refs/heads/main","repository_id":1269388380}]}}]' \
   '[{"type":"workflows","ruleset_source_type":"Repository","ruleset_source":"Verjson/example","parameters":{"workflows":[{"path":".github/workflows/gate-rearm.yml","ref":"refs/heads/main","repository_id":1269388380}]}}]' >"$RULES_FILE"
