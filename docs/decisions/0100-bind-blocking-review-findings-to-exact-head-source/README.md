@@ -60,14 +60,20 @@ is bound into the arm receipt and produces a distinct App-authored
 `ai-review-explicit:v1` reservation marker. Explicit reservations count in
 cumulative telemetry, bypass the ordinary cap for that one invocation, and
 never trigger the DeepSeek fallback; every further diagnostic pass requires a
-new authorized label event and receipt.
+new authorized label event and receipt. The reservation guard also rejects a
+second explicit marker for the same authorization check, so a fresh manual
+dispatch cannot replay a still-open receipt even though its run attempt starts
+at one.
 
 GitHub may fail to create a `pull_request_target` run for a label event. Workflow
 logic cannot repair an event it never receives. An operator may rerun an
 existing arm attempt for the same exact PR head: the trusted arm re-reads the
-current PR state, labels, hold state, actor policy, and head before creating a
-new immutable receipt and dispatch. This is a recovery mechanism, not evidence
-that label delivery succeeded, and it does not weaken model reservation limits.
+current PR state, labels, hold state, actor policy, and head. When `re-review`
+is currently applied, recovery resolves its latest label actor from issue-event
+history, requires maintain/admin permission, binds that explicit authorization
+into a new immutable receipt, and consumes the label after dispatch. This is a
+recovery mechanism, not evidence that label delivery succeeded, and it does not
+weaken model reservation limits.
 
 ## Consequences
 

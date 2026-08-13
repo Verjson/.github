@@ -129,10 +129,22 @@ jobs:
           explicit_rereview=false
           explicit_ai_review=false
           hold_removed=false
+          operator_recovery=false
+          [ "${GITHUB_RUN_ATTEMPT:-1}" -gt 1 ] && operator_recovery=true
           [ "$EVENT_ACTION" = labeled ] && [ "$EVENT_LABEL" = re-review ] && explicit_rereview=true
           if [ "$explicit_rereview" = true ] && [ "${GITHUB_RUN_ATTEMPT:-1}" -ne 1 ]; then
             echo "::error::an explicit re-review requires a new authorized label event; reruns cannot spend another diagnostic pass"
             exit 1
+          fi
+          rereview_actor="${REQUEST_ACTOR:-}"
+          rereview_label="$(jq -r '[.labels[].name | select((ascii_downcase | gsub("[ _-]+"; "-")) == "re-review")] | first // ""' <<<"$meta")"
+          if [ "$operator_recovery" = true ] && [ "$explicit_rereview" = false ] && [ -n "$rereview_label" ]; then
+            rereview_actor="$(GH_TOKEN="$ACTIONS_TOKEN" gh api --paginate "repos/$TARGET_REPO/issues/$PR_NUMBER/events?per_page=100" \
+              | jq -sr '[.[][] | select(.event == "labeled" and ((.label.name // "" | ascii_downcase | gsub("[ _-]+"; "-")) == "re-review"))] | sort_by(.id) | last | .actor.login // ""')" || {
+              echo "::error::could not resolve the current re-review label actor during operator recovery"; exit 1;
+            }
+            [ -n "$rereview_actor" ] || { echo "::error::current re-review label has no attributable actor"; exit 1; }
+            explicit_rereview=true
           fi
           ai_review_label="$(jq -r '[.labels[].name | select((ascii_downcase | gsub("[ _-]+"; "-")) == "ai-review")] | first // ""' <<<"$meta")"
           authorize_ai_review_actor() {
@@ -161,12 +173,12 @@ jobs:
             if [ -z "$review_provider" ] || [ -z "$review_model" ] || [ -z "$review_budget_usd" ]; then
               echo "::error::explicit re-review policy is not fully configured; refusing before paid dispatch"; exit 1
             fi
-            [[ "$REQUEST_ACTOR" =~ ^[A-Za-z0-9][A-Za-z0-9-]*$ ]] || { echo "::error::re-review actor is invalid"; exit 1; }
-            actor_permission="$(GH_TOKEN="$ACTIONS_TOKEN" gh api "repos/$TARGET_REPO/collaborators/$REQUEST_ACTOR/permission" --jq '.permission // ""')" || {
+            [[ "$rereview_actor" =~ ^[A-Za-z0-9][A-Za-z0-9-]*$ ]] || { echo "::error::re-review actor is invalid"; exit 1; }
+            actor_permission="$(GH_TOKEN="$ACTIONS_TOKEN" gh api "repos/$TARGET_REPO/collaborators/$rereview_actor/permission" --jq '.permission // ""')" || {
               echo "::error::could not authorize re-review actor"; exit 1;
             }
-            case "$actor_permission" in admin|maintain) ;; *) echo "::error::$REQUEST_ACTOR lacks maintain/admin permission for paid re-review"; exit 1 ;; esac
-            review_actor="$REQUEST_ACTOR"
+            case "$actor_permission" in admin|maintain) ;; *) echo "::error::$rereview_actor lacks maintain/admin permission for paid re-review"; exit 1 ;; esac
+            review_actor="$rereview_actor"
           else
             review_provider="${PRIMARY_PROVIDER:-anthropic}"; review_model="${PRIMARY_MODEL:-auto}"; review_budget_usd="${PRIMARY_BUDGET_USD:-auto}"
             fallback_model="${PRIMARY_FALLBACK_MODEL:-}"; fallback_budget_usd="${PRIMARY_FALLBACK_BUDGET_USD:-}"
@@ -300,8 +312,6 @@ jobs:
           # attempt creates a fresh receipt and dispatch after revalidating the
           # current PR/head/holds. This is not evidence that label delivery ran,
           # and ordinary review accounting still denies automatic pass three.
-          operator_recovery=false
-          [ "${GITHUB_RUN_ATTEMPT:-1}" -gt 1 ] && operator_recovery=true
           if [ "$explicit_rereview" = false ] && [ "$explicit_ai_review" = false ] && [ "$operator_recovery" = false ] && [[ "$latest_id" =~ ^[1-9][0-9]*$ ]]; then
             echo "Authorization already exists for $head_sha; duplicate event is a no-op."
             exit 0
@@ -378,6 +388,6 @@ jobs:
               -f 'output[summary]=The trusted review workflow could not be dispatched.'
             exit 1
           fi
-          if [ "$EVENT_ACTION" = labeled ] && [ "$EVENT_LABEL" = re-review ]; then
+          if [ "${{ steps.arm.outputs.explicit_rereview || false }}" = true ]; then
             gh pr edit "$PR_NUMBER" --repo "$TARGET_REPO" --remove-label re-review || true
           fi

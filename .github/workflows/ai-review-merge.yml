@@ -875,11 +875,14 @@ jobs:
           reviews="$(gh api --paginate "repos/$TARGET_REPO/pulls/$PR_NUMBER/reviews?per_page=100" | jq -s 'add // []')"
           pass_marker_re='ai-review-pass:v2:([12])/2 pr:([1-9][0-9]*) check:([1-9][0-9]*) head:([0-9a-f]{40}) run:([1-9][0-9]*) attempt:([1-9][0-9]*) provider:([a-z0-9_-]+) model:([A-Za-z0-9._-]+)'
           explicit_marker_re='ai-review-explicit:v1 pr:([1-9][0-9]*) check:([1-9][0-9]*) head:([0-9a-f]{40}) run:([1-9][0-9]*) attempt:([1-9][0-9]*) provider:([a-z0-9_-]+) model:([A-Za-z0-9._-]+)'
+          explicit_receipt_consumed=false
           while IFS=$'\t' read -r review_head review_body; do
-            marker_pr='' marker_check='' marker_head=''
+            marker_kind='' marker_pr='' marker_check='' marker_head=''
             if [[ "$review_body" =~ $pass_marker_re ]]; then
+              marker_kind=automatic
               marker_pr="${BASH_REMATCH[2]}"; marker_check="${BASH_REMATCH[3]}"; marker_head="${BASH_REMATCH[4]}"
             elif [[ "$review_body" =~ $explicit_marker_re ]]; then
+              marker_kind=explicit
               marker_pr="${BASH_REMATCH[1]}"; marker_check="${BASH_REMATCH[2]}"; marker_head="${BASH_REMATCH[3]}"
             else
               continue
@@ -894,6 +897,9 @@ jobs:
               ' <<<"$check" >/dev/null || {
                 echo "::error::App review reservation is not bound to a trusted exact-head authorization check"; exit 1;
               }
+            if [ "$marker_kind" = explicit ] && [ "$marker_check" = "$AUTHORIZATION_CHECK_ID" ]; then
+              explicit_receipt_consumed=true
+            fi
           done < <(jq -r --arg login "$app_login" '.[] | select(.state == "COMMENTED" and .user.login == $login) | [.commit_id, .body] | @tsv' <<<"$reviews")
           consumed="$(python3 "$RUNNER_TEMP/review-attempt-count.py" --app-login "$app_login" --pr-number "$PR_NUMBER" <<<"$reviews")"
           [[ "$consumed" =~ ^[0-9]+$ ]] || exit 1
@@ -928,6 +934,12 @@ jobs:
               echo "::error::the one-time PR #769 legacy provider attempt cannot be proven"; exit 1
             fi
             consumed=$((consumed + 1))
+          fi
+          if [ "${EXPLICIT_REREVIEW:-false}" = true ] && [ "$explicit_receipt_consumed" = true ]; then
+            echo "allowed=false" >>"$GITHUB_OUTPUT"
+            echo "count=$consumed" >>"$GITHUB_OUTPUT"
+            echo "::error::this explicit authorization check already reserved its one diagnostic pass; apply a new authorized re-review label"
+            exit 0
           fi
           if [ "${EXPLICIT_REREVIEW:-false}" != true ] && [ "$consumed" -ge 2 ]; then
             echo "allowed=false" >>"$GITHUB_OUTPUT"

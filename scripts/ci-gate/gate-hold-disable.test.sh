@@ -31,7 +31,7 @@ case "$*" in
     mkdir -p "$destination"
     printf '{"review_policy":"%s"}\n' "$RECEIPT_POLICY" >"$destination/receipt.json" ;;
   *"collaborators/maintainer/permission"*) printf '%s\n' "${ACTOR_PERMISSION:-triage}" ;;
-  *"issues/7/events?per_page=100"*) printf '[{"event":"labeled","label":{"name":"ai-review"},"actor":{"login":"maintainer"}}]\n' ;;
+  *"issues/7/events?per_page=100"*) printf '[{"id":1,"event":"labeled","label":{"name":"ai-review"},"actor":{"login":"maintainer"}},{"id":2,"event":"labeled","label":{"name":"re-review"},"actor":{"login":"maintainer"}}]\n' ;;
   *"--method POST repos/Verjson/example/check-runs --input -"*)
     jq '. + {id:9100,app:{id:4242,slug:"verjson-ai-review"}}' ;;
   "workflow run "*) printf 'DISPATCH %s\n' "$*" >>"$CALLS" ;;
@@ -245,15 +245,19 @@ fi
 # the new receipt must bind that run attempt. This does not simulate or claim a
 # repaired label delivery.
 : >"$CALLS"; : >"$GITHUB_OUTPUT"
-jq -nc --arg head "$head_sha" '{id:"PR_id",state:"OPEN",isDraft:false,title:"change",labels:[],headRefOid:$head,headRepositoryOwner:{login:"Verjson"},autoMergeRequest:null}' >"$META_FILE"
+jq -nc --arg head "$head_sha" '{id:"PR_id",state:"OPEN",isDraft:false,title:"change",labels:[{name:"re-review"}],headRefOid:$head,headRepositoryOwner:{login:"Verjson"},autoMergeRequest:null}' >"$META_FILE"
 recovery_temp="$tmp/recovery"
 mkdir "$recovery_temp"
-export EVENT_ACTION=synchronize EVENT_LABEL='' REQUEST_ACTOR=pusher GITHUB_RUN_ATTEMPT=2 RUNNER_TEMP="$recovery_temp"
+export EVENT_ACTION=synchronize EVENT_LABEL='' REQUEST_ACTOR=pusher ACTOR_PERMISSION=maintain GITHUB_RUN_ATTEMPT=2 RUNNER_TEMP="$recovery_temp"
 if run_arm >"$tmp/out" 2>&1 \
   && grep -q -- '--method POST repos/Verjson/example/check-runs --input -' "$CALLS" \
   && grep -q '^head_sha=0123456789abcdef0123456789abcdef01234567$' "$GITHUB_OUTPUT" \
-  && grep -q '^receipt_name=ai-review-arm-8000-2$' "$GITHUB_OUTPUT"; then
-  pass "operator rerun revalidates the exact head and creates an attempt-bound recovery receipt"
+  && grep -q '^receipt_name=ai-review-arm-8000-2$' "$GITHUB_OUTPUT" \
+  && policy_envelope="$(sed -n 's/^review_policy=//p' "$GITHUB_OUTPUT")" \
+  && policy_json="$(python3 "$root/scripts/ci-gate/review-policy-envelope.py" decode "$policy_envelope")" \
+  && [ "$(jq -r '.explicit_rereview|tostring' <<<"$policy_json")" = true ] \
+  && [ "$(jq -r '.actor + ":" + .actor_permission' <<<"$policy_json")" = maintainer:maintain ]; then
+  pass "operator rerun authorizes the current re-review label and creates an exact-head attempt-bound receipt"
 else
   fail "operator rerun did not preserve the exact-head receipt boundary: $(tail -1 "$tmp/out")"
 fi

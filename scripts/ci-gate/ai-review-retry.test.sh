@@ -27,6 +27,8 @@ check_contract() {
   grep -qF 'GH_TOKEN: ${{ steps.reservation-app-token.outputs.token }}' "$candidate" || return 1
   grep -qF 'ai-review-pass:v2:${next}/2 pr:${PR_NUMBER} check:${AUTHORIZATION_CHECK_ID} head:${EXPECTED_HEAD_SHA}' "$candidate" || return 1
   grep -qF 'ai-review-explicit:v1 pr:${PR_NUMBER} check:${AUTHORIZATION_CHECK_ID} head:${EXPECTED_HEAD_SHA}' "$candidate" || return 1
+  grep -qF '[ "$marker_check" = "$AUTHORIZATION_CHECK_ID" ]' "$candidate" || return 1
+  grep -qF '[ "$explicit_receipt_consumed" = true ]' "$candidate" || return 1
   grep -qF '.app.id == $app_id and .app.slug == $slug' "$candidate" || return 1
   reserve_two=$(awk '/id: reserve_2$/{found=1} found{print} found&&/^      - name: DeepSeek review pass 2/{exit}' "$candidate")
   printf '%s' "$reserve_two" | grep -qF 'consumed="${{ steps.reserve_1.outputs.count }}"' || return 1
@@ -63,6 +65,7 @@ grep -q "event.label.name == 're-review'" "$workflow" \
   && grep -q -- '--remove-label re-review' "$arm" \
   && grep -qF 'explicit re-review requires a new authorized label event' "$arm" \
   && grep -qF 'explicit re-review dispatch cannot be rerun' "$workflow" \
+  && grep -qF 'this explicit authorization check already reserved its one diagnostic pass' "$workflow" \
   && pass "a later same-head attempt still requires consumed maintainer re-review authorization" \
   || fail "explicit later re-review authorization is not wired"
 
@@ -76,6 +79,9 @@ if check_contract "$tmp/workflow.yml"; then fail "mutation survived: fallback ca
 
 sed 's/\[ "$consumed" -ge 2 \]/[ "$consumed" -ge 3 ]/g' "$workflow" >"$tmp/workflow.yml"
 if check_contract "$tmp/workflow.yml"; then fail "mutation survived: a third cumulative PR pass was admitted"; else pass "mutation rejected: the PR-wide pass cap cannot exceed two"; fi
+
+sed 's/\[ "$explicit_receipt_consumed" = true \]/[ "$explicit_receipt_consumed" = false ]/' "$workflow" >"$tmp/workflow.yml"
+if check_contract "$tmp/workflow.yml"; then fail "mutation survived: a fresh dispatch replayed an explicit authorization check"; else pass "mutation rejected: each explicit authorization check reserves at most one diagnostic pass"; fi
 
 [ "$fails" -eq 0 ] && { echo "All tests passed."; exit 0; }
 echo "$fails test(s) failed."
