@@ -165,13 +165,14 @@ same commit as the required `contract_ref` input. A release tag is convenient,
 but it is not newer merely because `main` documents a feature; check the
 capability table above.
 
-### The release caller's `push_token`
+### The release authorization App
 
 Step 5 pushes the snapshot commit and its tag **directly to the default
 branch**. Every Verjson repository carries an identical `main-protection`
 ruleset whose `pull_request` and `workflows` rules forbid exactly that, and
-whose only bypass actors are `OrganizationAdmin` and Renovate. `GITHUB_TOKEN`
-is neither, so a release caller wiring it is rejected at the last step:
+whose bypass actors include the dedicated `verjson-release-authorization` App.
+`GITHUB_TOKEN` is not a bypass actor, so a release using it is rejected at the
+last step:
 
 ```
 remote: error: GH013: Repository rule violations found for refs/heads/main.
@@ -179,25 +180,56 @@ remote: - Changes must be made through a pull request.
  ! [remote rejected] v0.4.0 -> v0.4.0 (atomic transaction failed)
 ```
 
-Release callers must therefore pass an admin-scoped credential:
+The generated caller passes only the App identity material:
 
 ```yaml
+    with:
+      release_app_client_id: ${{ vars.RELEASE_APP_CLIENT_ID }}
     secrets:
-      # NOT GITHUB_TOKEN — see Verjson/.github ADR 0052.
-      push_token: ${{ secrets.ORG_ADMIN_TOKEN }}
+      release_app_private_key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
 ```
+
+The reusable workflow rejects an empty or all-numeric legacy
+`RELEASE_APP_CLIENT_ID`, then delegates full client-ID validation to the
+immutable action while minting a short-lived token with the
+`actions/create-github-app-token` pin. The
+mint is explicitly constrained to `github.repository_owner`, the current
+repository name, and `permission-contents: write`; the App has no Pull requests,
+Actions, Administration, or organization permission. The App's explicit
+`main-protection` bypass is still required because Contents write and ruleset
+authorization are separate checks.
+
+The App installation and both organization credential values are intentionally
+available across the Verjson repository fleet to avoid per-repository admission
+work. This is a convenience-first exception, not least-privilege secret
+distribution: a compromised trusted workflow with the organization-wide private
+key could ask GitHub to mint a token for another installed repository. The
+canonical workflow's constraints prevent accidental cross-repository minting,
+but they cannot constrain a different trusted workflow. Selected-repository App
+installation and secret visibility, or a central broker that refuses arbitrary
+repository requests, are the stricter alternatives (ADR 0099).
 
 The release caller must live at `.github/workflows/release.yml`. That path is
 what `scripts/changelog-contract.test.sh` looks for, so a caller named anything
-else silently loses both the pin check and the `push_token` check — it is
+else silently loses both the pin check and the release-App check — it is
 treated as an adopter that has nothing to release. Adopters with genuinely
 nothing to publish have no such file, which is a supported shape.
 
 The push is `--atomic`, so a rejected release leaves no tag, no snapshot, no
 package and `NEXT/` untouched. It fails safely; it simply cannot succeed. The
-trade-off is stated in ADR 0052: the release job holds a wider credential than
-the repository-scoped default, which is why it must run only on explicit
-dispatch and from the default branch.
+release job remains explicit-dispatch-only and default-branch-bound. Its
+installation token expires automatically and is narrower than the temporary
+admin PAT retired by ADR 0099.
+
+Administrators can verify the live authorization path with the manual
+`release-app-canary.yml` workflow after its commit is on the default branch. It
+accepts no target inputs, routes through the trusted organization lane with
+`VERJSON_LANE_FALLBACK`, and atomically pushes an isolated canonical snapshot to
+the otherwise-absent protected `develop` ref plus a run-unique prerelease tag,
+verifies the annotated tag and branch resolve to the exact snapshot, writes a
+retained receipt, and atomically deletes only refs still owned by that run. The
+canary exercises organization ruleset `main-protection` and its App bypass; it
+does not claim to exercise the default branch ref itself.
 
 ### The release caller is generated, not copied
 

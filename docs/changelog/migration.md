@@ -172,7 +172,20 @@
    issue names the remaining consumer.
 7. If the repository publishes, commit the generated reusable release caller
    and protect its environment when approval is required. Releases must run on
-   the default branch.
+   the default branch. Confirm the repository can read the organization variable
+   `RELEASE_APP_CLIENT_ID` (the GitHub App's `Iv...` client ID) and the
+   organization secret `RELEASE_APP_PRIVATE_KEY`. Do not add `ORG_ADMIN_TOKEN`
+   or a local `push_token`: the pinned reusable workflow mints the dedicated
+   App's short-lived token and constrains it to the current repository with only
+   Contents write. The App must be installed for that repository and named as
+   an always-bypass actor on the exact `main-protection` ruleset. Before rolling
+   this contract out to consumers, dispatch the input-free
+   `release-app-canary.yml` in `Verjson/.github` from its default branch and
+   retain the step-summary receipt. That central canary proves the shared
+   organization ruleset and App bypass through the protected `develop` target;
+   consumer repositories do not copy or dispatch the canary, and their App
+   installation plus ruleset-bypass configuration remains a separate adoption
+   prerequisite.
 8. Rebase queued pull requests once, remove aggregate edits, normalize their
    fragments, and verify no selected fragment was already consumed. A branch cut
    before the migration needs `origin/main` merged in first, which surfaces the

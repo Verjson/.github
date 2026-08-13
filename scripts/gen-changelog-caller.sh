@@ -543,13 +543,15 @@ jobs:
       version: \${{ inputs.version }}
       fragments: \${{ inputs.fragments }}
       component: \${{ inputs.component }}
+      # v3 recommends the App client ID and deprecates its legacy numeric ID.
+      release_app_client_id: \${{ vars.RELEASE_APP_CLIENT_ID }}
       # Explicit, so both halves of one release share one pool (#465).
       runner: \${{ ${release_runner_expr} }}
     secrets:
-      # NOT GITHUB_TOKEN — see Verjson/.github ADR 0052. The push targets the
-      # default branch, which the standard main-protection ruleset forbids for
-      # every actor outside its bypass list.
-      push_token: \${{ secrets.ORG_ADMIN_TOKEN }}
+      # The reusable workflow mints a short-lived installation token constrained
+      # to this owner, this repository, and contents-write. The dedicated App is
+      # the named main-protection bypass actor (ADR 0099, #329).
+      release_app_private_key: \${{ secrets.RELEASE_APP_PRIVATE_KEY }}
 
   publish:
     name: Publish the released snapshot
@@ -984,31 +986,6 @@ while IFS= read -r release_workflow; do
   [ -n "$release_workflow" ] || continue
   grep -q "changelog-release.yml@$CONTRACT_REF" "$release_workflow" \
     || fail "$release_workflow does not call the release workflow at the pin"
-  # The release pushes its snapshot commit and tag straight to the default
-  # branch, which the standard Verjson `main-protection` ruleset forbids for
-  # every actor outside its bypass list. GITHUB_TOKEN is not on that list, so a
-  # caller wiring it is rejected by GH013 at the last step of the last job —
-  # past everything a pull request or a remote-less fixture can observe. Pass an
-  # admin-scoped secret instead (Verjson/.github ADR 0052).
-  #
-  # The value is isolated before matching rather than grepped for inline. A
-  # guard on the raw line misses every ordinary spelling of the same wiring —
-  # a quoted scalar, the `github.token` alias, the case-insensitive
-  # `secrets.github_token`, a folded value on the following line — and each
-  # miss reports green while reproducing the failure exactly. It also fires on
-  # a `# NOT GITHUB_TOKEN` comment sitting above a correct wiring, which is a
-  # comment this contract's own documentation recommends writing.
-  push_token_value="$(sed 's/#.*//' "$release_workflow" | awk '
-    /^[[:space:]]*push_token:/ { depth = match($0, /[^[:space:]]/); found = 1; print; next }
-    found && $0 ~ /^[[:space:]]*$/ { next }
-    found && match($0, /[^[:space:]]/) > depth { print; next }
-    found { found = 0 }
-  ')"
-  if grep -qiE '\$\{\{[[:space:]]*(secrets\.GITHUB_TOKEN|github\.token)[[:space:]]*\}\}' \
-    <<<"$push_token_value"; then
-    fail "$release_workflow passes GITHUB_TOKEN as push_token; the branch ruleset rejects that push. Pass an admin-scoped secret."
-  fi
-
   # The release caller was the last adopter file still hand-copied from a
   # sibling, so one ordering bug propagated to every migrated repository at once
   # (#463, #464, #465). Provenance is asserted first because it is the only check
@@ -1016,9 +993,8 @@ while IFS= read -r release_workflow; do
   grep -q "gen-changelog-caller.sh release-node $CONTRACT_REF" "$release_workflow" \
     || fail "$release_workflow is not the generated release caller at $CONTRACT_REF. Regenerate it: scripts/gen-changelog-caller.sh release-node $CONTRACT_REF > .github/workflows/release.yml"
 
-  # Comments stripped before structural matching, for the reason the push_token
-  # guard already states: the documented `# NOT GITHUB_TOKEN` note must not read
-  # as the wiring it warns about.
+  # Comments stripped before structural matching so a migration note naming a
+  # retired token does not read as live credential wiring.
   sed 's/#.*//' "$release_workflow" >"$work/release-stripped.yml"
 
   # Renovate's GitHub Actions manager does not implement `# renovate: ignore`
@@ -1053,6 +1029,16 @@ while IFS= read -r release_workflow; do
     { block = block $0 "\n" }
     END { if (!done && block ~ /changelog-release\.yml@/) printf "%s", block }
   ' "$release_workflow")"
+
+  grep -qE '^[[:space:]]+release_app_client_id:[[:space:]]*\$\{\{[[:space:]]*vars\.RELEASE_APP_CLIENT_ID[[:space:]]*\}\}[[:space:]]*$' \
+    <<<"$snapshot_job" \
+    || fail "$release_workflow does not pass the organization RELEASE_APP_CLIENT_ID variable to the release workflow"
+  grep -qE '^[[:space:]]+release_app_private_key:[[:space:]]*\$\{\{[[:space:]]*secrets\.RELEASE_APP_PRIVATE_KEY[[:space:]]*\}\}[[:space:]]*$' \
+    <<<"$snapshot_job" \
+    || fail "$release_workflow does not pass only RELEASE_APP_PRIVATE_KEY to the release workflow"
+  ! sed 's/#.*//' <<<"$snapshot_job" \
+    | grep -qE 'ORG_ADMIN_TOKEN|push_token|secrets\.(GITHUB_TOKEN|github_token)|github\.token' \
+    || fail "$release_workflow snapshot still passes a broad or repository Actions push token instead of the dedicated release App credential"
 
   # The reusable workflow and its engine are one contract. Checking only the
   # uses: ref lets a caller execute workflow A with contract_ref B (#349).

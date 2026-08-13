@@ -53,31 +53,29 @@ printf '%s\n' "$renderer" | bash -n \
   && pass "generated renderer parses as bash" || fail "generated renderer is not valid bash"
 
 # 4. Least privilege: the workflow requests no write scope.
-printf '%s\n' "$workflow" | grep -q 'contents: read' \
+grep -q 'contents: read' <<<"$workflow" \
   && pass "workflow declares contents: read" || fail "workflow does not declare contents: read"
-printf '%s\n' "$workflow" | grep -qE '\bwrite\b' \
+grep -qE '\bwrite\b' <<<"$workflow" \
   && fail "workflow requests a write permission" || pass "workflow requests no write permission"
 
 # 4a. The shared generated-artifacts caller is generated at the same immutable
 # pin. Changelog-only stays the safe default; ADR checking is a separate mode
 # because opting in before acquiring the generator is a counted failure.
-printf '%s\n' "$generated_artifacts" \
-  | grep -q "generated-artifacts.yml@$sha" \
+grep -q "generated-artifacts.yml@$sha" <<<"$generated_artifacts" \
   && pass "generated-artifacts caller pins the requested workflow commit" \
   || fail "generated-artifacts caller does not pin $sha"
-printf '%s\n' "$generated_artifacts" | grep -qE '^  generated-artifacts:$' \
+grep -qE '^  generated-artifacts:$' <<<"$generated_artifacts" \
   && pass "generated-artifacts caller publishes the canonical required-check prefix" \
   || fail "generated-artifacts caller does not publish generated-artifacts / validate"
-printf '%s\n' "$generated_artifacts" | grep -qE '^ +changelog: true$' \
-  && printf '%s\n' "$generated_artifacts" | grep -qE "^ +contract_ref: $sha$" \
+grep -qE '^ +changelog: true$' <<<"$generated_artifacts" \
+  && grep -qE "^ +contract_ref: $sha$" <<<"$generated_artifacts" \
   && pass "generated-artifacts caller enables changelog validation at the pin" \
   || fail "generated-artifacts caller does not enable pinned changelog validation"
-printf '%s\n' "$generated_artifacts" | grep -qE '^ +adr-index: true$' \
+grep -qE '^ +adr-index: true$' <<<"$generated_artifacts" \
   && fail "changelog-only generated-artifacts caller enables ADR checking without its generator" \
   || pass "changelog-only generated-artifacts caller does not opt into ADR checking"
-printf '%s\n' "$generated_artifacts_with_adr" | grep -qE '^ +adr-index: true$' \
-  && printf '%s\n' "$generated_artifacts_with_adr" \
-    | grep -q "generated-artifacts.yml@$sha" \
+grep -qE '^ +adr-index: true$' <<<"$generated_artifacts_with_adr" \
+  && grep -q "generated-artifacts.yml@$sha" <<<"$generated_artifacts_with_adr" \
   && pass "ADR-index caller explicitly enables ADR checking at the pin" \
   || fail "ADR-index caller does not enable ADR checking"
 cmp -s <(printf '%s\n' "$adr_index_generator") "$repo_root/scripts/gen-adr-index.sh" \
@@ -109,12 +107,12 @@ done
 bash "$gen" bogus "$sha" >/dev/null 2>&1 \
   && fail "generator accepted an unknown mode" || pass "generator rejects an unknown mode"
 
-printf '%s\n' "$default_release" | grep -qF "node-version: \${{ '24' }}" \
-  && printf '%s\n' "$default_release" | grep -q "scope: '@verjson'" \
+grep -qF "node-version: \${{ '24' }}" <<<"$default_release" \
+  && grep -q "scope: '@verjson'" <<<"$default_release" \
   && pass "release-node keeps the Verjson and Node 24 defaults" \
   || fail "release-node changed its backward-compatible defaults"
-printf '%s\n' "$custom_release" | grep -qF "node-version: \${{ '22.23.1' }}" \
-  && printf '%s\n' "$custom_release" | grep -q "scope: '@acme'" \
+grep -qF "node-version: \${{ '22.23.1' }}" <<<"$custom_release" \
+  && grep -q "scope: '@acme'" <<<"$custom_release" \
   && pass "release-node emits validated adopter parameters" \
   || fail "release-node ignored custom scope or Node version"
 
@@ -254,7 +252,7 @@ fi
 # with a producer-side Broken pipe. Feed every captured value by redirection so
 # validation status never depends on consumer read-ahead.
 emitted_validation="$(sed -n '/^emit_contract_test()/,/^}$/p' "$gen")"
-if grep -qE 'printf .*\$\{?(snapshot_job|verify_job|publish_job|push_token_value|first_verify_step|job)' \
+if grep -qE 'printf .*\$\{?(snapshot_job|verify_job|publish_job|first_verify_step|job)' \
     <<<"$emitted_validation"; then
   fail "emitted contract validation still pipes a captured value into an early-exit consumer"
 else
@@ -743,28 +741,20 @@ uncanonical_fragment() {
     >"$1/NEXT/2026-08-01-bad-name.md"
 }
 strip_executable() { chmod -x "$1/scripts/render-next.sh"; }
-# The release push lands on the default branch, which `main-protection` forbids
-# for GITHUB_TOKEN. That rejection happens on a real remote, so no fixture can
-# reproduce it — the emitted suite has to reject the wiring statically (#389).
-# Every spelling below is the same credential, so a guard that catches only the
-# first one reports green on a release that cannot run.
-wire_push_token() {
-  # wire_push_token <dir> <value>
-  local escaped
-  escaped="$(printf '%s' "$2" | sed 's/[&/\]/\\&/g')"
-  sed -i "s/\${{ secrets.ORG_ADMIN_TOKEN }}/$escaped/" \
+# The generated caller supplies only the dedicated App identity material. The
+# reusable workflow owns token minting and constrains it to this repository.
+drop_release_app_client_id() {
+  sed -i '/^      release_app_client_id: /d' "$1/.github/workflows/release.yml"
+}
+drop_release_app_private_key() {
+  sed -i '/^      release_app_private_key: /d' "$1/.github/workflows/release.yml"
+}
+restore_org_admin_token() {
+  sed -i '/^      release_app_private_key: /c\      push_token: ${{ secrets.ORG_ADMIN_TOKEN }}' \
     "$1/.github/workflows/release.yml"
 }
-wire_unprivileged_push_token() { wire_push_token "$1" '${{ secrets.GITHUB_TOKEN }}'; }
-wire_quoted_push_token() { wire_push_token "$1" '"${{ secrets.GITHUB_TOKEN }}"'; }
-wire_alias_push_token() { wire_push_token "$1" '${{ github.token }}'; }
-wire_lowercase_push_token() { wire_push_token "$1" '${{ secrets.github_token }}'; }
-wire_folded_push_token() {
-  # Inserted on the line after the key, which is where YAML puts a folded
-  # scalar's value — not appended at EOF, which in the generated caller lands
-  # inside a later job and so would exercise nothing.
-  wire_push_token "$1" '>-'
-  sed -i 's|^      push_token: >-$|      push_token: >-\n        ${{ secrets.GITHUB_TOKEN }}|' \
+wire_github_token() {
+  sed -i '/^      release_app_private_key: /c\      push_token: ${{ secrets.GITHUB_TOKEN }}' \
     "$1/.github/workflows/release.yml"
 }
 
@@ -927,18 +917,17 @@ expect_rejection "a .releaserc.json that reintroduces release-on-merge" add_rele
 expect_rejection "a second authored running log in NEXT.md" add_authored_log
 expect_rejection "a fragment whose filename is not canonical" uncanonical_fragment
 expect_rejection "a non-executable renderer" strip_executable
-expect_rejection "a release caller wiring GITHUB_TOKEN as push_token" wire_unprivileged_push_token
-expect_rejection "a quoted GITHUB_TOKEN push_token" wire_quoted_push_token
-expect_rejection "the github.token alias as push_token" wire_alias_push_token
-expect_rejection "a lower-case secrets.github_token push_token" wire_lowercase_push_token
-expect_rejection "a folded GITHUB_TOKEN push_token on the next line" wire_folded_push_token
+expect_rejection "a release caller without RELEASE_APP_CLIENT_ID" drop_release_app_client_id
+expect_rejection "a release caller without RELEASE_APP_PRIVATE_KEY" drop_release_app_private_key
+expect_rejection "a release caller restoring ORG_ADMIN_TOKEN" restore_org_admin_token
+expect_rejection "a release caller wiring GITHUB_TOKEN" wire_github_token
 
 # Rejected for the stated reason, not incidentally. expect_rejection only asserts
 # a non-zero exit, so without this the guard could rot while its case stays green.
-# It reads the LAST run, so it has to sit immediately after the push_token cases.
-grep -q 'push_token' "$tmproot/run.out" \
-  && pass "the push_token rejection names push_token as the cause" \
-  || fail "the last push_token case failed for some other reason: $(tail -2 "$tmproot/run.out")"
+# It reads the LAST run, so it has to sit immediately after the credential cases.
+grep -qE 'dedicated release App credential|RELEASE_APP_PRIVATE_KEY' "$tmproot/run.out" \
+  && pass "the broad-token rejection names the dedicated release App remedy" \
+  || fail "the last credential case failed for some other reason: $(tail -2 "$tmproot/run.out")"
 
 expect_rejection "a snapshot job that verifies nothing first (#463, #464)" drop_snapshot_needs
 expect_rejection "a snapshot job with no explicit runner (#465)" drop_snapshot_runner
@@ -984,11 +973,11 @@ grep -q 'gen-changelog-caller.sh release-node' "$tmproot/run.out" \
 # the build of everyone who followed the documentation.
 commented="$tmproot/adopter-commented"
 build_adopter "$commented"
-sed -i 's|^      push_token:|      # NOT GITHUB_TOKEN — see Verjson/.github ADR 0052.\n      push_token:|' \
+sed -i 's|^      release_app_private_key:|      # ORG_ADMIN_TOKEN and push_token are retired by ADR 0099.\n      release_app_private_key:|' \
   "$commented/.github/workflows/release.yml"
 run_adopter "$commented" \
-  && pass "emitted suite accepts a correct wiring carrying a GITHUB_TOKEN warning comment" \
-  || fail "emitted suite rejected a documented comment: $(tail -2 "$tmproot/run.out")"
+  && pass "emitted suite ignores retired-token names in comments" \
+  || fail "emitted suite treated a comment as credential wiring: $(tail -2 "$tmproot/run.out")"
 
 # A quoted title is the correct spelling, not a tolerated one, so the emitted
 # suite has to read it the way the engine does. Both quote styles, because the

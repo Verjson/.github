@@ -1,0 +1,183 @@
+name: Release App ruleset canary
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-app-ruleset-canary
+  cancel-in-progress: false
+
+jobs:
+  canary:
+    runs-on: ${{ fromJSON(vars.VERJSON_LANE_TRUSTED || vars.VERJSON_LANE_FALLBACK || '["ubuntu-24.04"]') }}
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Require the default-branch revision
+        env:
+          DISPATCH_REF: ${{ github.ref }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          if [ "$DISPATCH_REF" != "refs/heads/$DEFAULT_BRANCH" ]; then
+            echo "::error::Dispatch this canary from the default branch, not '$DISPATCH_REF'."
+            exit 1
+          fi
+
+      - name: Check out the executing default-branch revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Require the release App client ID
+        env:
+          RELEASE_APP_CLIENT_ID: ${{ vars.RELEASE_APP_CLIENT_ID }}
+        run: |
+          if [[ -z "$RELEASE_APP_CLIENT_ID" || "$RELEASE_APP_CLIENT_ID" =~ ^[0-9]+$ ]]; then
+            echo "::error::RELEASE_APP_CLIENT_ID must be the GitHub App client ID, not an empty or numeric legacy App ID."
+            exit 1
+          fi
+
+      - name: Mint repository-scoped release App token
+        id: release-app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
+        with:
+          client-id: ${{ vars.RELEASE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          permission-contents: write
+
+      - name: Create, push, and verify the protected canary refs
+        id: push
+        env:
+          APP_TOKEN: ${{ steps.release-app-token.outputs.token }}
+          CANARY_BRANCH_REF: refs/heads/develop
+          CANARY_VERSION: v0.0.1-release-app-canary.${{ github.run_id }}.${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          remote_url="https://github.com/$GITHUB_REPOSITORY.git"
+          auth="$(printf 'x-access-token:%s' "$APP_TOKEN" | base64 -w0)"
+          tag_ref="refs/tags/$CANARY_VERSION"
+          existing="$(git -c http.extraHeader="AUTHORIZATION: basic $auth" \
+            ls-remote --refs "$remote_url" "$CANARY_BRANCH_REF" "$tag_ref")"
+          if [ -n "$existing" ]; then
+            echo "::error::Canary refuses to overwrite existing $CANARY_BRANCH_REF or $tag_ref."
+            exit 1
+          fi
+
+          canary_root="$RUNNER_TEMP/release-app-canary-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          mkdir -p "$canary_root/NEXT"
+          git -C "$canary_root" init -q -b canary
+          git -C "$canary_root" config user.name verjson-release-canary
+          git -C "$canary_root" config user.email release-canary@verjson.dev
+          fragment_date="$(date -u +%F)"
+          fragment_id="$(date -u +%Y%m%dT%H%M%SZ)"
+          fragment="NEXT/${fragment_date}-issue-${fragment_id}-release-app-canary.md"
+          cat >"$canary_root/$fragment" <<FRAGMENT
+          ---
+          date: $fragment_date
+          id: $fragment_id
+          title: Prove the release App ruleset bypass
+          impact: patch
+          ---
+
+          Exercise the canonical snapshot and tag push against protected refs.
+          FRAGMENT
+          git -C "$canary_root" add "$fragment"
+          git -C "$canary_root" commit -qm "test(release): seed App canary"
+
+          python3 "$GITHUB_WORKSPACE/scripts/changelog.py" release \
+            --repo-root "$canary_root" \
+            --version "$CANARY_VERSION" \
+            --fragment "$fragment"
+          release_commit="$(git -C "$canary_root" rev-parse HEAD)"
+          tag_object="$(git -C "$canary_root" rev-parse "$CANARY_VERSION^{tag}")"
+          test "$(git -C "$canary_root" rev-list -n 1 "$CANARY_VERSION")" = "$release_commit"
+
+          git -C "$canary_root" remote add origin "$remote_url"
+          git -C "$canary_root" -c http.extraHeader="AUTHORIZATION: basic $auth" \
+            push --atomic origin \
+            "$release_commit:$CANARY_BRANCH_REF" \
+            "$tag_ref"
+          {
+            echo "pushed=true"
+            echo "release-commit=$release_commit"
+            echo "tag-object=$tag_object"
+            echo "version=$CANARY_VERSION"
+          } >> "$GITHUB_OUTPUT"
+
+          # Do not add --refs: it suppresses the annotated tag's peeled ^{} line.
+          remote_refs="$(git -c http.extraHeader="AUTHORIZATION: basic $auth" \
+            ls-remote "$remote_url" "$CANARY_BRANCH_REF" "$tag_ref" "${tag_ref}^{}")"
+          remote_branch_commit="$(awk -v ref="$CANARY_BRANCH_REF" '$2 == ref { print $1 }' <<<"$remote_refs")"
+          remote_tag_object="$(awk -v ref="$tag_ref" '$2 == ref { print $1 }' <<<"$remote_refs")"
+          remote_tag_commit="$(awk -v ref="${tag_ref}^{}" '$2 == ref { print $1 }' <<<"$remote_refs")"
+          test "$remote_branch_commit" = "$release_commit"
+          test "$remote_tag_object" = "$tag_object"
+          test "$remote_tag_commit" = "$release_commit"
+
+      - name: Retain the canary receipt
+        env:
+          APP_SLUG: ${{ steps.release-app-token.outputs.app-slug }}
+          INSTALLATION_ID: ${{ steps.release-app-token.outputs.installation-id }}
+          RELEASE_COMMIT: ${{ steps.push.outputs.release-commit }}
+          CANARY_VERSION: ${{ steps.push.outputs.version }}
+        run: |
+          {
+            echo "## Release App ruleset canary receipt"
+            echo
+            echo "- Run: https://github.com/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/attempts/$GITHUB_RUN_ATTEMPT"
+            echo "- App: $APP_SLUG (installation $INSTALLATION_ID)"
+            echo "- Snapshot commit: \`$RELEASE_COMMIT\`"
+            echo "- Annotated tag: \`$CANARY_VERSION\` (dereferenced to the snapshot commit)"
+            echo "- Protected branch ref: \`refs/heads/develop\`"
+            echo "- Organization ruleset: \`main-protection\` (ID \`18098028\`), which explicitly targets \`develop\`"
+            echo "- Proof boundary: exact ruleset and App bypass; this does not exercise the default branch ref itself"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Delete only this run's verified canary refs
+        if: always() && steps.push.outputs.pushed == 'true'
+        env:
+          APP_TOKEN: ${{ steps.release-app-token.outputs.token }}
+          RELEASE_COMMIT: ${{ steps.push.outputs.release-commit }}
+          TAG_OBJECT: ${{ steps.push.outputs.tag-object }}
+          CANARY_VERSION: ${{ steps.push.outputs.version }}
+        run: |
+          set -euo pipefail
+          remote_url="https://github.com/$GITHUB_REPOSITORY.git"
+          auth="$(printf 'x-access-token:%s' "$APP_TOKEN" | base64 -w0)"
+          branch_ref="refs/heads/develop"
+          tag_ref="refs/tags/$CANARY_VERSION"
+          # Do not add --refs: ownership includes the annotated tag's peeled commit.
+          remote_refs="$(git -c http.extraHeader="AUTHORIZATION: basic $auth" \
+            ls-remote "$remote_url" "$branch_ref" "$tag_ref" "${tag_ref}^{}")"
+          remote_branch_commit="$(awk -v ref="$branch_ref" '$2 == ref { print $1 }' <<<"$remote_refs")"
+          remote_tag_object="$(awk -v ref="$tag_ref" '$2 == ref { print $1 }' <<<"$remote_refs")"
+          remote_tag_commit="$(awk -v ref="${tag_ref}^{}" '$2 == ref { print $1 }' <<<"$remote_refs")"
+          if [ "$remote_branch_commit" != "$RELEASE_COMMIT" ] ||
+            [ "$remote_tag_object" != "$TAG_OBJECT" ] ||
+            [ "$remote_tag_commit" != "$RELEASE_COMMIT" ]; then
+            echo "::error::Canary refs no longer belong exactly to this run; refusing cleanup."
+            exit 1
+          fi
+
+          git -c http.extraHeader="AUTHORIZATION: basic $auth" \
+            push --atomic "$remote_url" \
+            ":$branch_ref" \
+            ":$tag_ref"
+          remaining="$(git -c http.extraHeader="AUTHORIZATION: basic $auth" \
+            ls-remote --refs "$remote_url" "$branch_ref" "$tag_ref")"
+          if [ -n "$remaining" ]; then
+            echo "::error::Canary cleanup left a branch or tag ref behind."
+            exit 1
+          fi
+          {
+            echo "- Cleanup: atomically deleted the owned branch and tag after exact-SHA verification"
+            echo "- Cleanup verification: both remote refs are absent"
+          } >> "$GITHUB_STEP_SUMMARY"
