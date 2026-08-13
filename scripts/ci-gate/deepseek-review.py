@@ -4,6 +4,7 @@
 import json
 import os
 import sys
+import time
 import urllib.request
 from decimal import Decimal, InvalidOperation, ROUND_FLOOR
 
@@ -24,6 +25,7 @@ MIN_OUTPUT_TOKENS = 1024
 MAX_OUTPUT_TOKENS = 65536
 MAX_METADATA_BYTES = 65536
 MAX_DIFF_BYTES = 2 * 1024 * 1024
+MAX_STREAM_BYTES = 4 * 1024 * 1024
 
 
 def validated_budget(text: str) -> Decimal:
@@ -83,7 +85,8 @@ def request_body(model: str, messages: list[dict], cap: int) -> dict:
         "messages": messages,
         "max_tokens": cap,
         "response_format": {"type": "json_object"},
-        "stream": False,
+        "stream": True,
+        "stream_options": {"include_usage": True},
     }
 
 
@@ -148,6 +151,83 @@ def extract(response: object, model: str, input_bound: int, cap: int, budget_tex
     return json.dumps(verdict, separators=(",", ":")), prompt, completion, hit, miss, cost
 
 
+def streamed_response(raw: object, model: str) -> dict:
+    content: list[str] = []
+    usage = None
+    stopped = False
+    done = False
+    total_bytes = 0
+
+    for encoded_line in raw:
+        if not isinstance(encoded_line, bytes):
+            raise ValueError("stream yielded a non-byte line")
+        total_bytes += len(encoded_line)
+        if total_bytes > MAX_STREAM_BYTES:
+            raise ValueError("stream exceeds the bounded response limit")
+        try:
+            line = encoded_line.decode("utf-8").strip()
+        except UnicodeDecodeError as exc:
+            raise ValueError("stream is not valid UTF-8") from exc
+        if not line or line.startswith(":"):
+            continue
+        if done:
+            raise ValueError("stream contains data after its terminal marker")
+        if not line.startswith("data:"):
+            raise ValueError("stream contains a malformed event")
+        payload = line.removeprefix("data:").strip()
+        if payload == "[DONE]":
+            done = True
+            continue
+
+        chunk = json.loads(payload)
+        if not isinstance(chunk, dict) or chunk.get("object") != "chat.completion.chunk" or chunk.get("model") != model:
+            raise ValueError("stream chunk is not for the requested model")
+        chunk_usage = chunk.get("usage")
+        if chunk_usage is not None:
+            if usage is not None:
+                raise ValueError("stream contains duplicate usage evidence")
+            usage = chunk_usage
+        choices = chunk.get("choices")
+        if not isinstance(choices, list) or len(choices) > 1:
+            raise ValueError("stream chunk choices are malformed")
+        if not choices:
+            if chunk_usage is None:
+                raise ValueError("empty stream chunk has no usage evidence")
+            continue
+        if stopped:
+            raise ValueError("stream contains a choice after completion")
+        choice = choices[0]
+        if not isinstance(choice, dict) or choice.get("index") != 0:
+            raise ValueError("stream choice is malformed")
+        finish_reason = choice.get("finish_reason")
+        if finish_reason not in (None, "stop"):
+            raise ValueError("stream choice is incomplete or malformed")
+        delta = choice.get("delta")
+        if not isinstance(delta, dict) or delta.get("role") not in (None, "assistant"):
+            raise ValueError("stream delta is malformed")
+        if delta.get("tool_calls") not in (None, []):
+            raise ValueError("stream attempted a tool call")
+        for field in ("content", "reasoning_content"):
+            if delta.get(field) is not None and not isinstance(delta[field], str):
+                raise ValueError("stream delta is malformed")
+        content.append(delta.get("content") or "")
+        if finish_reason == "stop":
+            stopped = True
+
+    if not done or not stopped or usage is None:
+        raise ValueError("stream ended without a complete response and usage evidence")
+    return {
+        "object": "chat.completion",
+        "model": model,
+        "choices": [{
+            "index": 0,
+            "finish_reason": "stop",
+            "message": {"role": "assistant", "content": "".join(content)},
+        }],
+        "usage": usage,
+    }
+
+
 def main() -> int:
     required = ("MODEL", "BUDGET_USD", "PROMPT_FILE", "PR_JSON_FILE", "PR_DIFF_FILE", "GITHUB_OUTPUT")
     values = {name: os.environ.get(name, "") for name in required}
@@ -167,11 +247,34 @@ def main() -> int:
     request = urllib.request.Request(
         "https://api.deepseek.com/chat/completions",
         data=serialized,
-        headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+        headers={
+            "Authorization": f"Bearer {key}",
+            "Content-Type": "application/json",
+            "Accept": "text/event-stream",
+        },
         method="POST",
     )
-    with urllib.request.urlopen(request, timeout=900) as raw:
-        response = json.load(raw)
+    started = time.monotonic()
+    print(
+        f"::notice::phase=provider-request transport=sse provider=deepseek model={values['MODEL']} result=started"
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=900) as raw:
+            response = streamed_response(raw, values["MODEL"])
+    except (OSError, ValueError, json.JSONDecodeError) as error:
+        elapsed = int(time.monotonic() - started)
+        print(
+            f"::error::phase=provider-request transport=sse provider=deepseek "
+            f"model={values['MODEL']} result=failed elapsed_seconds={elapsed} "
+            f"error_type={type(error).__name__}",
+            file=sys.stderr,
+        )
+        raise
+    elapsed = int(time.monotonic() - started)
+    print(
+        f"::notice::phase=provider-request transport=sse provider=deepseek "
+        f"model={values['MODEL']} result=completed elapsed_seconds={elapsed}"
+    )
     verdict, prompt_tokens, completion_tokens, hit_tokens, miss_tokens, cost = extract(
         response, values["MODEL"], input_bound, body["max_tokens"], values["BUDGET_USD"]
     )
