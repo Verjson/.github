@@ -2,26 +2,28 @@ name: AI review + auto-merge
 
 # Receipt-bound review workflow dispatched by the trusted authorization arm.
 # The main-protection ruleset requires gate-rearm.yml, not this dispatch-only
-# workflow. Deterministic policy is always required; AI review is opt-in and
-# advisory unless receipt-bound authority permits the dedicated App to approve
-# or merge (ADR 0090, ADR 0091).
+# workflow. Deterministic policy is always required; code and agent-instruction
+# changes require AI review, while human approval remains the outage fallback
+# unless receipt-bound authority permits the dedicated App to approve or merge
+# (ADR 0098, ADR 0091).
 #
 # Cost-lane design (ADR-018 second amendment):
 #   1. `preflight` (free, deterministic bash) updates stale branches and routes
 #      each current PR into a lane on one runner assignment:
-#        - fast: submodule pointer bumps (every new gitlink SHA verified to be
-#          on the submodule's default branch), Renovate non-major updates
-#          (bot-authored, manifest/lockfile-only diff, `update/<type>` label),
-#          and deletions-only PRs. No model is invoked.
-#        - ai: only explicitly labelled PRs get model review, and only AFTER
-#          the rest of CI is green, so unrequested and red PRs cost $0.
+#        - fast: generated-lockfile-only changes and non-agent documentation.
+#          No model is invoked because the review payload elides lockfiles and
+#          deterministic integrity/CI is the stronger evidence.
+#        - ai: code, executable workflow/action, dependency manifest, prompt,
+#          policy, and agent-instruction changes get one or two cumulative model
+#          passes. Deletions are classified by the deleted surface.
 #        - defer: a Renovate PR whose `renovate/stability-days` age gate is
 #          still pending (e.g. a replacement PR that `internalChecksFilter`
 #          can't hold back). No model, no gate runner — Renovate's rebase once
 #          the release ages re-enters classify for a real review.
-#   2. Model policy is immutable receipt data. DeepSeek Pro runs first and
-#      Flash runs only when Pro yields no usable verdict. Each pass has its own
-#      dollar ceiling; any usable verdict ends the cascade.
+#   2. Model policy is immutable receipt data. Every provider invocation first
+#      reserves a PR-visible cumulative pass slot. DeepSeek Pro runs first and
+#      Flash runs only when Pro yields no usable verdict and pass 2 remains.
+#      Any usable verdict ends the cascade; no PR can consume a third pass.
 #   3. Reviews run on every ready-PR revision (incl. synchronize) so a
 #      Renovate rebase re-fires the gate and the required check stays fresh on
 #      the new head; cost stays bounded because fast-lane synchronizes invoke
@@ -428,7 +430,9 @@ jobs:
           repository: Verjson/.github
           ref: ${{ job.workflow_sha }}
           path: .gate-policy
-          sparse-checkout: scripts/ci-gate/review-policy-envelope.py
+          sparse-checkout: |
+            scripts/ci-gate/review-policy-envelope.py
+            scripts/ci-gate/classify-review-policy.py
           sparse-checkout-cone-mode: false
           persist-credentials: false
 
@@ -440,6 +444,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           EXPLICIT_REREVIEW: ${{ inputs.explicit_rereview }}
           POLICY_DECODER: .gate-policy/scripts/ci-gate/review-policy-envelope.py
+          REVIEW_CLASSIFIER: .gate-policy/scripts/ci-gate/classify-review-policy.py
         run: |
           set -euo pipefail
           REPO="$TARGET_REPO"
@@ -524,11 +529,6 @@ jobs:
           head_sha="$(jq -r '.headRefOid // ""' <<<"$meta")"
           out head_sha "$head_sha"
           out dependency_major false
-          ai_requested="$(jq -r --argjson explicit "${EXPLICIT_REREVIEW:-false}" '
-            $explicit or any(.labels[].name; (ascii_downcase | gsub("[ _-]+"; "-")) == "ai-review")
-          ' <<<"$meta")"
-          case "$ai_requested" in true|false) ;; *) echo "::error::could not resolve AI review opt-in"; exit 1 ;; esac
-
           # Consume the re-review label so it can be re-applied later.
           gh pr edit "$PR_NUMBER" --repo "$REPO" --remove-label re-review 2>/dev/null || true
 
@@ -558,10 +558,10 @@ jobs:
           nfiles=$(jq length <<<"$files")
           if [ "$nfiles" -eq 0 ]; then
             select_policy claude-haiku-4-5 1.00
-            if [ "$ai_requested" = true ]; then
-              out lane ai; out reason "empty diff — opted-in AI review"
+            if [ "${EXPLICIT_REREVIEW:-false}" = true ]; then
+              out lane ai; out reason "empty diff — explicit re-review"
             else
-              out lane fast; out reason "empty diff — human approval path; AI review not requested"
+              out lane fast; out reason "empty diff; no reviewable patch"
             fi
             out changed_lines 0
             out sensitive false
@@ -595,73 +595,28 @@ jobs:
           esac
           out sensitive "$sensitive"
           select_policy claude-haiku-4-5 1.00
-          if [ "$ai_requested" = true ]; then
+          if [ "${EXPLICIT_REREVIEW:-false}" = true ]; then
             out lane ai
-            out reason "AI review explicitly requested"
+            out reason "explicit re-review requested"
             exit 0
           fi
 
-          # ---- Fast lane A: submodule pointer bump -------------------------
-          # Every changed file is a gitlink hunk, and each new SHA is already
-          # on the submodule's default branch (identical or behind = ancestor).
-          if jq -e 'all(.[]; (.patch // "") | test("^@@[^\\n]*\\n(-Subproject commit [0-9a-f]{40}\\n?|\\+Subproject commit [0-9a-f]{40}\\n?)+$"))' <<<"$files" >/dev/null; then
-            base=$(jq -r .baseRefName <<<"$meta")
-            gm=$(mktemp)
-            gh api "repos/$REPO/contents/.gitmodules?ref=$base" --jq .content | base64 -d > "$gm"
-            ok=true
-            while IFS=$'\t' read -r path sha; do
-              name=$(git config -f "$gm" --list | awk -F= -v p="$path" '$2==p && $1 ~ /\.path$/ {sub(/^submodule\./,"",$1); sub(/\.path$/,"",$1); print $1; exit}')
-              url=$(git config -f "$gm" --get "submodule.$name.url" || true)
-              sub=$(sed -E 's#^(git@github\.com:|https://github\.com/)##; s#\.git$##; s#/*$##' <<<"$url")
-              if [ -z "$sub" ]; then ok=false; echo "no submodule mapping for $path"; break; fi
-              def=$(gh api "repos/$sub" --jq .default_branch)
-              status=$(gh api "repos/$sub/compare/$def...$sha" --jq .status 2>/dev/null || echo unknown)
-              echo "gitlink $path -> $sub@$sha vs $def: $status"
-              case "$status" in identical|behind) ;; *) ok=false; break ;; esac
-            done < <(jq -r '.[] | [.filename, ((.patch // "") | capture("\\+Subproject commit (?<s>[0-9a-f]{40})").s)] | @tsv' <<<"$files")
-            if $ok; then
-              out lane fast
-              out reason "submodule pointer bump: every new gitlink SHA verified on its submodule's default branch"
-              exit 0
-            fi
-          fi
-
-          # ---- Fast lane B: Renovate non-major dependency update ----------
+          # Preserve dependency-major prompt telemetry, but dependency pins and
+          # manifests now follow the same mandatory AI lane as other code.
           author=$(jq -r .author.login <<<"$meta")
           if [[ "$author" =~ ^(app/)?renovate(\[bot\])?$ ]]; then
-            commit_ok=$(gh api "repos/$REPO/pulls/$PR_NUMBER/commits" --paginate --jq '.[] | (.author.login // "MISSING")' \
-              | jq -Rs 'split("\n") | map(select(length > 0)) | all(test("^renovate(\\[bot\\])?$"))')
-            nonmajor=$(jq '.labels | map(.name) | any(test("^update/(patch|minor|pin|digest|pinDigest|lockFileMaintenance)$"))' <<<"$meta")
-            # Keep the implementation aligned with the documented guarantee:
-            # bot identity and labels alone are not enough for the fast lane.
-            files_ok=$(jq '[.[].filename] | all(test("(^|/)(package(-lock)?\\.json|pnpm-lock\\.yaml|yarn\\.lock|bun\\.lockb?|Cargo\\.(toml|lock)|go\\.(mod|sum)|requirements[^/]*\\.txt|poetry\\.lock|pyproject\\.toml|Gemfile(\\.lock)?|composer\\.(json|lock)|gradle\\.lockfile|pom\\.xml|Chart\\.yaml|Chart\\.lock|values[^/]*\\.ya?ml|Dockerfile|\\.github/dependabot\\.yml)$"))' <<<"$files")
-            if [ "$commit_ok" = true ] && [ "$nonmajor" = true ] && [ "$files_ok" = true ]; then
-              out lane fast
-              out reason "Renovate non-major update: bot-authored commits only, update-type label $(jq -r '.labels|map(.name)|map(select(startswith("update/")))|join(",")' <<<"$meta")"
-              exit 0
-            fi
             major=$(jq '.labels | map(.name) | index("update/major") != null' <<<"$meta")
             [ "$major" = true ] && out dependency_major true
-            echo "renovate PR but not fast-lane eligible: commits_ok=$commit_ok nonmajor=$nonmajor files_ok=$files_ok"
           fi
 
-          # Documentation and community-health changes have no executable
-          # behavior. CI remains mandatory, but a model review adds little.
-          if jq -e '[.[].filename] | all(test("(^NEXT(\\.md|/[^/]+\\.md)$|(^|/)(docs/.*|README(\\.[^/]*)?|CHANGELOG(\\.[^/]*)?|CONTRIBUTING(\\.[^/]*)?|CODE_OF_CONDUCT(\\.[^/]*)?|SECURITY(\\.[^/]*)?|SUPPORT(\\.[^/]*)?|LICENSE(\\.[^/]*)?|\\.github/(ISSUE_TEMPLATE/.*|PULL_REQUEST_TEMPLATE\\.md|FUNDING\\.yml))$)"; "i"))' <<<"$files" >/dev/null; then
-            out lane fast
-            out reason "documentation/community-health-only change ($nfiles file(s)); CI must still pass"
-            exit 0
-          fi
-
-          # ---- Fast lane C: deletions-only ---------------------------------
-          if jq -e 'all(.[]; .status == "removed")' <<<"$files" >/dev/null; then
-            out lane fast
-            out reason "deletions-only PR ($nfiles file(s) removed, no content added); CI must still pass"
-            exit 0
-          fi
-
-          out lane fast
-          out reason "code change — human approval path; AI review not requested"
+          classification="$(python3 "$REVIEW_CLASSIFIER" <<<"$files")" || {
+            echo "::error::review policy classifier failed; refusing to skip AI review"
+            exit 1
+          }
+          lane="$(jq -er '.lane | select(. == "ai" or . == "fast")' <<<"$classification")"
+          reason="$(jq -er '.reason | select(type == "string" and length > 0)' <<<"$classification")"
+          out lane "$lane"
+          out reason "$reason"
 
       - name: Record preflight completion
         id: preflight_complete
@@ -702,6 +657,7 @@ jobs:
       checks: read
       statuses: read
     env:
+      APP_CLIENT_ID: ${{ vars.AI_REVIEW_CLIENT_ID }}
       LANE: ${{ needs.preflight.outputs.lane }}
       LANE_REASON: ${{ needs.preflight.outputs.reason }}
       EXPECTED_HEAD_SHA: ${{ needs.preflight.outputs.head_sha }}
@@ -724,6 +680,7 @@ jobs:
             scripts/ci-gate/review-verdict.py
             scripts/ci-gate/openai-review.py
             scripts/ci-gate/deepseek-review.py
+            scripts/ci-gate/review-attempt-count.py
           sparse-checkout-cone-mode: false
           persist-credentials: false
 
@@ -740,6 +697,25 @@ jobs:
           install -m 0555 .gate-trust/scripts/ci-gate/openai-review.py "$RUNNER_TEMP/openai-review.py"
           install -m 0555 .gate-trust/scripts/ci-gate/deepseek-review.py "$RUNNER_TEMP/deepseek-review.py"
           install -m 0555 .gate-trust/scripts/ci-gate/review-verdict.py "$RUNNER_TEMP/review-verdict.py"
+          install -m 0555 .gate-trust/scripts/ci-gate/review-attempt-count.py "$RUNNER_TEMP/review-attempt-count.py"
+
+      - name: Validate review-reservation App client ID
+        if: needs.preflight.outputs.lane == 'ai'
+        run: |
+          [[ "$APP_CLIENT_ID" =~ ^Iv[A-Za-z0-9.]{8,126}$ ]] || {
+            echo "::error::AI_REVIEW_CLIENT_ID is unavailable or malformed"; exit 1;
+          }
+
+      - name: Mint review-reservation App token
+        if: needs.preflight.outputs.lane == 'ai'
+        id: reservation-app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
+        with:
+          client-id: ${{ vars.AI_REVIEW_CLIENT_ID }}
+          private-key: ${{ secrets.AI_REVIEW_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          permission-pull-requests: write
 
       - name: Record gate runner timing
         env:
@@ -784,6 +760,7 @@ jobs:
         if: needs.preflight.outputs.lane == 'ai'
         env:
           GH_TOKEN: ${{ github.token }}
+          EXPLICIT_REREVIEW: ${{ inputs.explicit_rereview }}
         run: |
           # GitHub runs `run:` under `bash -e`, and `set -uo pipefail` does NOT
           # clear that. Explicitly disable errexit so a transient or no-match
@@ -844,7 +821,7 @@ jobs:
           fi
 
           # 3. Skip ONLY on a non-empty exact match against a prior approval.
-          if [ -n "$patch_id" ] && [ -n "$prior_patch" ] && [ "$patch_id" = "$prior_patch" ]; then
+          if [ "${EXPLICIT_REREVIEW:-false}" != true ] && [ -n "$patch_id" ] && [ -n "$prior_patch" ] && [ "$patch_id" = "$prior_patch" ]; then
             skip=true
           fi
 
@@ -870,9 +847,95 @@ jobs:
             echo "::notice::phase=rereview result=review patch_id=${patch_id:-unknown}"
           fi
 
+      - name: Reserve cumulative AI review pass 1
+        id: reserve_1
+        if: needs.preflight.outputs.lane == 'ai' && steps.rereview.outputs.skip_model != 'true'
+        env:
+          ACTIONS_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ steps.reservation-app-token.outputs.token }}
+          PROVIDER: ${{ needs.preflight.outputs.provider }}
+          MODEL: ${{ needs.preflight.outputs.model }}
+        run: |
+          set -euo pipefail
+          app_login="${EXPECTED_APP_SLUG}[bot]"
+          reviews="$(gh api --paginate "repos/$TARGET_REPO/pulls/$PR_NUMBER/reviews?per_page=100" | jq -s 'add // []')"
+          marker_re='ai-review-pass:v2:([12])/2 pr:([1-9][0-9]*) check:([1-9][0-9]*) head:([0-9a-f]{40}) run:([1-9][0-9]*) attempt:([1-9][0-9]*) provider:([a-z0-9_-]+) model:([A-Za-z0-9._-]+)'
+          while IFS=$'\t' read -r review_head review_body; do
+            if [[ "$review_body" =~ $marker_re ]] && [ "${BASH_REMATCH[2]}" = "$PR_NUMBER" ] && [ "${BASH_REMATCH[4]}" = "$review_head" ]; then
+              marker_check="${BASH_REMATCH[3]}"
+              marker_head="${BASH_REMATCH[4]}"
+              check="$(GH_TOKEN="$ACTIONS_TOKEN" gh api "repos/$TARGET_REPO/check-runs/$marker_check")"
+              jq -e --argjson app_id "$EXPECTED_APP_ID" --arg slug "$EXPECTED_APP_SLUG" \
+                --arg head "$marker_head" --arg repo "$TARGET_REPO" --arg pr "$PR_NUMBER" '
+                  .name == "AI review authorization" and .head_sha == $head and
+                  .app.id == $app_id and .app.slug == $slug and
+                  (.external_id | startswith("ai-review:v1:" + $repo + ":" + $pr + ":" + $head + ":"))
+                ' <<<"$check" >/dev/null || {
+                  echo "::error::App review reservation is not bound to a trusted exact-head authorization check"; exit 1;
+                }
+            fi
+          done < <(jq -r --arg login "$app_login" '.[] | select(.state == "COMMENTED" and .user.login == $login) | [.commit_id, .body] | @tsv' <<<"$reviews")
+          consumed="$(python3 "$RUNNER_TEMP/review-attempt-count.py" --app-login "$app_login" --pr-number "$PR_NUMBER" <<<"$reviews")"
+          [[ "$consumed" =~ ^[0-9]+$ ]] || exit 1
+          # One rollout attempt predates App-authored reservation reviews. Count
+          # it only after independently revalidating its immutable workflow run,
+          # exact App-owned arm check, PR, and head. This narrowly bound migration
+          # record prevents corrected PR #769 from receiving two more calls.
+          if [ "$TARGET_REPO:$PR_NUMBER" = "Verjson/.github:769" ]; then
+            legacy_run="$(GH_TOKEN="$ACTIONS_TOKEN" gh api "repos/$TARGET_REPO/actions/runs/31660690749")"
+            legacy_check="$(GH_TOKEN="$ACTIONS_TOKEN" gh api "repos/$TARGET_REPO/check-runs/94324686490")"
+            legacy_jobs="$(GH_TOKEN="$ACTIONS_TOKEN" gh api "repos/$TARGET_REPO/actions/runs/31660690749/jobs?per_page=100")"
+            if ! jq -e '
+              .id == 31660690749 and .event == "workflow_dispatch" and
+              .path == ".github/workflows/ai-review-merge.yml" and
+              .head_repository.full_name == "Verjson/.github" and
+              .head_branch == "main" and .run_attempt == 1
+            ' <<<"$legacy_run" >/dev/null; then
+              echo "::error::the one-time PR #769 legacy workflow run cannot be proven"; exit 1
+            fi
+            if ! jq -e --argjson app_id "$EXPECTED_APP_ID" --arg slug "$EXPECTED_APP_SLUG" '
+              .id == 94324686490 and .name == "AI review authorization" and
+              .head_sha == "1e7762067a23edcef7f36c1687e94a277f4e6ccf" and
+              .app.id == $app_id and .app.slug == $slug and
+              (.external_id | startswith("ai-review:v1:Verjson/.github:769:1e7762067a23edcef7f36c1687e94a277f4e6ccf:31660681868:1:"))
+            ' <<<"$legacy_check" >/dev/null; then
+              echo "::error::the one-time PR #769 legacy authorization check cannot be proven"; exit 1
+            fi
+            if ! jq -e '
+              any(.jobs[]; .name == "gate" and
+                any(.steps[]; .name == "DeepSeek review pass 1" and .status == "completed" and .conclusion == "success"))
+            ' <<<"$legacy_jobs" >/dev/null; then
+              echo "::error::the one-time PR #769 legacy provider attempt cannot be proven"; exit 1
+            fi
+            consumed=$((consumed + 1))
+          fi
+          if [ "$consumed" -ge 2 ]; then
+            echo "allowed=false" >>"$GITHUB_OUTPUT"
+            echo "count=$consumed" >>"$GITHUB_OUTPUT"
+            echo "::error::AI review pass cap exhausted ($consumed/2); refusing a third model invocation"
+            exit 0
+          fi
+          next=$((consumed + 1))
+          marker="<!-- ai-review-pass:v2:${next}/2 pr:${PR_NUMBER} check:${AUTHORIZATION_CHECK_ID} head:${EXPECTED_HEAD_SHA} run:${GITHUB_RUN_ID} attempt:${GITHUB_RUN_ATTEMPT} provider:${PROVIDER} model:${MODEL} -->"
+          body="🤖 **AI code review pass ${next}/2 consumed**
+
+          This cumulative pass slot is reserved before provider invocation, so a failed or inconclusive attempt still counts toward the two-pass PR maximum.
+
+          $marker"
+          created="$(gh api --method POST "repos/$TARGET_REPO/pulls/$PR_NUMBER/reviews" \
+            -f event=COMMENT -f commit_id="$EXPECTED_HEAD_SHA" -f body="$body")"
+          jq -e --arg login "$app_login" --arg head "$EXPECTED_HEAD_SHA" --arg marker "$marker" '
+            .state == "COMMENTED" and .commit_id == $head and .user.login == $login and
+            (.body | contains($marker)) and (.id | type == "number")
+          ' <<<"$created" >/dev/null || {
+            echo "::error::dedicated App review reservation was not persisted exactly"; exit 1;
+          }
+          echo "allowed=true" >>"$GITHUB_OUTPUT"
+          echo "count=$next" >>"$GITHUB_OUTPUT"
+
       - name: Prepare bounded review context
         id: prep
-        if: needs.preflight.outputs.lane == 'ai' && steps.rereview.outputs.skip_model != 'true'
+        if: needs.preflight.outputs.lane == 'ai' && steps.rereview.outputs.skip_model != 'true' && steps.reserve_1.outputs.allowed == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           DEPENDENCY_MAJOR: ${{ needs.preflight.outputs.dependency_major }}
@@ -1052,7 +1115,7 @@ jobs:
 
       - name: Record model phase start
         id: model_timing
-        if: needs.preflight.outputs.lane == 'ai' && steps.rereview.outputs.skip_model != 'true'
+        if: needs.preflight.outputs.lane == 'ai' && steps.rereview.outputs.skip_model != 'true' && steps.reserve_1.outputs.allowed == 'true'
         run: |
           started_epoch="$(date +%s)"
           echo "started_epoch=$started_epoch" >> "$GITHUB_OUTPUT"
@@ -1060,7 +1123,7 @@ jobs:
 
       - name: Claude review (merge gate)
         id: claude
-        if: needs.preflight.outputs.lane == 'ai' && needs.preflight.outputs.provider == 'anthropic' && steps.rereview.outputs.skip_model != 'true'
+        if: needs.preflight.outputs.lane == 'ai' && needs.preflight.outputs.provider == 'anthropic' && steps.rereview.outputs.skip_model != 'true' && steps.reserve_1.outputs.allowed == 'true'
         # Preserve the transcript and fail closed below when this one paid pass
         # cannot produce a usable verdict. Automatic escalation is forbidden:
         # another paid attempt requires a maintainer-authorized `re-review`.
@@ -1085,7 +1148,7 @@ jobs:
 
       - name: OpenAI review (explicit re-review only)
         id: openai
-        if: needs.preflight.outputs.lane == 'ai' && needs.preflight.outputs.provider == 'openai' && steps.rereview.outputs.skip_model != 'true'
+        if: needs.preflight.outputs.lane == 'ai' && needs.preflight.outputs.provider == 'openai' && steps.rereview.outputs.skip_model != 'true' && steps.reserve_1.outputs.allowed == 'true'
         continue-on-error: true
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
@@ -1102,7 +1165,7 @@ jobs:
 
       - name: DeepSeek review pass 1
         id: deepseek_primary
-        if: needs.preflight.outputs.lane == 'ai' && needs.preflight.outputs.provider == 'deepseek' && steps.rereview.outputs.skip_model != 'true'
+        if: needs.preflight.outputs.lane == 'ai' && needs.preflight.outputs.provider == 'deepseek' && steps.rereview.outputs.skip_model != 'true' && steps.reserve_1.outputs.allowed == 'true'
         continue-on-error: true
         env:
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
@@ -1119,7 +1182,7 @@ jobs:
 
       - name: Validate pass 1 verdict semantics
         id: verdict_1
-        if: always() && needs.preflight.outputs.lane == 'ai' && steps.rereview.outputs.skip_model != 'true'
+        if: always() && needs.preflight.outputs.lane == 'ai' && steps.rereview.outputs.skip_model != 'true' && steps.reserve_1.outputs.allowed == 'true'
         env:
           VERDICT: ${{ needs.preflight.outputs.provider == 'openai' && steps.openai.outputs.structured_output || needs.preflight.outputs.provider == 'deepseek' && steps.deepseek_primary.outputs.structured_output || steps.claude.outputs.structured_output }}
           SENSITIVE: ${{ needs.preflight.outputs.sensitive }}
@@ -1127,9 +1190,45 @@ jobs:
         run: |
           python3 "$RUNNER_TEMP/review-verdict.py"
 
+      - name: Reserve cumulative AI review pass 2
+        id: reserve_2
+        if: always() && needs.preflight.outputs.provider == 'deepseek' && steps.reserve_1.outputs.allowed == 'true' && steps.verdict_1.outputs.usable != 'true'
+        env:
+          GH_TOKEN: ${{ steps.reservation-app-token.outputs.token }}
+          PROVIDER: deepseek
+          MODEL: ${{ needs.preflight.outputs.fallback_model }}
+        run: |
+          set -euo pipefail
+          app_login="${EXPECTED_APP_SLUG}[bot]"
+          consumed="${{ steps.reserve_1.outputs.count }}"
+          [[ "$consumed" =~ ^[0-9]+$ ]] || exit 1
+          if [ "$consumed" -ge 2 ]; then
+            echo "allowed=false" >>"$GITHUB_OUTPUT"
+            echo "count=$consumed" >>"$GITHUB_OUTPUT"
+            echo "::notice::DeepSeek fallback suppressed because the PR has consumed $consumed/2 AI review passes"
+            exit 0
+          fi
+          next=$((consumed + 1))
+          marker="<!-- ai-review-pass:v2:${next}/2 pr:${PR_NUMBER} check:${AUTHORIZATION_CHECK_ID} head:${EXPECTED_HEAD_SHA} run:${GITHUB_RUN_ID} attempt:${GITHUB_RUN_ATTEMPT} provider:${PROVIDER} model:${MODEL} -->"
+          body="🤖 **AI code review pass ${next}/2 consumed**
+
+          The first pass produced no usable verdict. This fallback slot is reserved before invocation and counts even if the provider attempt fails or is inconclusive.
+
+          $marker"
+          created="$(gh api --method POST "repos/$TARGET_REPO/pulls/$PR_NUMBER/reviews" \
+            -f event=COMMENT -f commit_id="$EXPECTED_HEAD_SHA" -f body="$body")"
+          jq -e --arg login "$app_login" --arg head "$EXPECTED_HEAD_SHA" --arg marker "$marker" '
+            .state == "COMMENTED" and .commit_id == $head and .user.login == $login and
+            (.body | contains($marker)) and (.id | type == "number")
+          ' <<<"$created" >/dev/null || {
+            echo "::error::dedicated App fallback reservation was not persisted exactly"; exit 1;
+          }
+          echo "allowed=true" >>"$GITHUB_OUTPUT"
+          echo "count=$next" >>"$GITHUB_OUTPUT"
+
       - name: DeepSeek review pass 2
         id: deepseek_fallback
-        if: always() && needs.preflight.outputs.lane == 'ai' && needs.preflight.outputs.provider == 'deepseek' && steps.rereview.outputs.skip_model != 'true' && steps.verdict_1.outputs.usable != 'true'
+        if: always() && needs.preflight.outputs.lane == 'ai' && needs.preflight.outputs.provider == 'deepseek' && steps.rereview.outputs.skip_model != 'true' && steps.verdict_1.outputs.usable != 'true' && steps.reserve_2.outputs.allowed == 'true'
         continue-on-error: true
         env:
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
@@ -1154,7 +1253,7 @@ jobs:
         run: |
           python3 "$RUNNER_TEMP/review-verdict.py"
 
-      - name: Record single-pass model outcome
+      - name: Record bounded model outcome
         id: retry_outcome
         if: always() && needs.preflight.outputs.lane == 'ai'
         env:
@@ -1163,6 +1262,7 @@ jobs:
           EXEC_FILE: ${{ steps.claude.outputs.execution_file }}
           MODEL_CONCLUSION: ${{ needs.preflight.outputs.provider == 'openai' && steps.openai.conclusion || needs.preflight.outputs.provider == 'deepseek' && steps.verdict_1.outputs.usable == 'true' && steps.deepseek_primary.conclusion || needs.preflight.outputs.provider == 'deepseek' && steps.deepseek_fallback.conclusion || steps.claude.conclusion }}
           PROVIDER: ${{ needs.preflight.outputs.provider }}
+          PASS_COUNT: ${{ steps.reserve_2.outputs.count || steps.reserve_1.outputs.count || '0' }}
         run: |
           elapsed=unknown
           if [[ "$STARTED_EPOCH" =~ ^[0-9]+$ ]]; then
@@ -1220,8 +1320,12 @@ jobs:
             echo "permission_denials=$permission_denials"
           } >> "$GITHUB_OUTPUT"
           # Say in words what the red `error_max_budget_usd` annotation means.
+          retry_guidance='A maintainer may apply re-review to authorize the remaining paid attempt.'
+          if [[ "${PASS_COUNT:-0}" =~ ^[2-9][0-9]*$ ]]; then
+            retry_guidance='The PR-wide two-pass maximum is exhausted; no further model review is allowed.'
+          fi
           if [ "$budget_exhausted" = true ]; then
-            echo "::error::phase=model budget_exhausted=true outcome=blocked — the single paid review hit its cost cap; no automatic retry is allowed. The gate blocks this PR. A maintainer may apply re-review to authorize another paid attempt."
+            echo "::error::phase=model budget_exhausted=true outcome=blocked — the paid review hit its cost cap; no automatic retry is allowed. The gate blocks this PR. $retry_guidance"
           fi
           # Same treatment for the turn cap (#442). Stated separately rather than
           # folded into the budget wording, because the remedies diverge: a budget
@@ -1230,7 +1334,7 @@ jobs:
           # Telling a maintainer to split a PR that is not oversized is the false
           # positive the budget probe already takes care to avoid.
           if [ "$turns_exhausted" = true ]; then
-            echo "::error::phase=model turns_exhausted=true outcome=blocked — the single paid review hit its turn cap; no automatic retry is allowed. The gate blocks this PR. A maintainer may apply re-review to authorize another paid attempt."
+            echo "::error::phase=model turns_exhausted=true outcome=blocked — the paid review hit its turn cap; no automatic retry is allowed. The gate blocks this PR. $retry_guidance"
           fi
           if [ "$permission_denials" -gt 0 ] && [ "$usable_verdict" != true ]; then
             echo "::error::phase=model permission_denials=$permission_denials outcome=blocked — denied tool calls prevented useful progress in the single paid review. Align the prompt and allowedTools before authorizing re-review."
@@ -1238,7 +1342,7 @@ jobs:
           automatic_paid_attempts=1
           [ "${MODEL_CONCLUSION:-skipped}" = skipped ] && automatic_paid_attempts=0
           if [ "$PROVIDER" = deepseek ] && [ "${{ steps.deepseek_fallback.conclusion }}" != skipped ]; then automatic_paid_attempts=2; fi
-          echo "::notice::phase=model elapsed_seconds=$elapsed first_verdict=$FIRST_VERDICT automatic_paid_attempts=$automatic_paid_attempts budget_exhausted=$budget_exhausted turns_exhausted=$turns_exhausted permission_denials=$permission_denials"
+          echo "::notice::phase=model elapsed_seconds=$elapsed first_verdict=$FIRST_VERDICT run_paid_attempts=$automatic_paid_attempts cumulative_pass_count=$PASS_COUNT/2 budget_exhausted=$budget_exhausted turns_exhausted=$turns_exhausted permission_denials=$permission_denials"
 
       - name: Submit deterministic PR review
         id: submit
@@ -1264,6 +1368,8 @@ jobs:
           # verdict even if the action surfaced schema-valid filler (#441).
           SELECTED_PASS_TERMINAL_ERROR: ${{ steps.retry_outcome.outputs.selected_pass_terminal_error }}
           PERMISSION_DENIALS: ${{ steps.retry_outcome.outputs.permission_denials }}
+          PASS_CAP_EXHAUSTED: ${{ steps.rereview.outputs.skip_model != 'true' && (steps.reserve_1.outputs.allowed == 'false' || steps.reserve_1.outputs.count == '2' || steps.reserve_2.outputs.count == '2') }}
+          REVIEW_PASS_COUNT: ${{ steps.reserve_2.outputs.count || steps.reserve_1.outputs.count || '0' }}
           CHANGED_LINES: ${{ needs.preflight.outputs.changed_lines }}
           BUDGET_USD: ${{ steps.verdict_2.outputs.usable == 'true' && needs.preflight.outputs.fallback_budget_usd || needs.preflight.outputs.budget_usd }}
         run: |
@@ -1295,6 +1401,10 @@ jobs:
             if [[ "${PERMISSION_DENIALS:-0}" =~ ^[1-9][0-9]*$ ]]; then
               heading="⚠️ **AI review advisory: denied tool calls**"
               detail="The review recorded ${PERMISSION_DENIALS} denied tool call(s) and produced no usable verdict. This is tool-boundary non-progress, not evidence that the diff is oversized."
+            fi
+            if [ "${PASS_CAP_EXHAUSTED:-false}" = "true" ]; then
+              heading="🛑 **AI review advisory: two-pass maximum reached**"
+              detail="This PR has consumed ${REVIEW_PASS_COUNT:-2}/2 cumulative model passes and its current patch has no reusable usable verdict. A third provider invocation is forbidden; autonomous AI approval and merge remain fail-closed. Human review remains available."
             fi
             gh pr comment "$PR_NUMBER" --repo "$TARGET_REPO" --body "$heading
 
@@ -1620,7 +1730,7 @@ jobs:
                    ' --arg id "$approval_id" "$persisted_file" >/dev/null; then
                 ai_authorized=true
                 title='AI advisory authorized to approve'
-                summary="The opted-in AI review approved this exact head. Ordinary required CI and branch protection remain authoritative.
+                summary="The required AI review approved this exact head. Ordinary required CI and branch protection remain authoritative.
 
           <!-- ai-review-authorized:v1:${AUTHORIZATION_CHECK_ID}:${EXPECTED_AUTHORIZED_HEAD_SHA}:${REVIEW_AUTHORITY} -->"
               else

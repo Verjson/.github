@@ -67,6 +67,7 @@ classify() {
   export PATH="$tmp/bin:$PATH" TARGET_REPO="Verjson/foo" PR_NUMBER=7
   export META_FILE="$tmp/meta.json" FILES_FILE="$tmp/files.json"
   export GITHUB_OUTPUT="$tmp/out.txt" GITHUB_EVENT_NAME=pull_request
+  export REVIEW_CLASSIFIER="$repo_root/scripts/ci-gate/classify-review-policy.py"
   printf '%s' '{"labels":[],"title":"a PR","isDraft":false,"author":{"login":"human"},"headRefOid":"deadbeefdeadbeefdeadbeefdeadbeefdeadbeef","baseRefName":"main"}' >"$META_FILE"
   printf '%s' "$1" >"$FILES_FILE"
   : >"$GITHUB_OUTPUT"
@@ -163,6 +164,7 @@ run_submit() {
   if [ -n "$GATE_RUN_ID" ]; then export GITHUB_RUN_ID="$GATE_RUN_ID"; else unset GITHUB_RUN_ID; fi
   : >"$ACTIONLOG"; : >"$BODYFILE"; : >"$COMMENTFILE"; : >"$GITHUB_OUTPUT"
   export VERDICT="$1" BUDGET_EXHAUSTED="$2" CHANGED_LINES="${3-1586}" BUDGET_USD="${4-0.60}"
+  export PASS_CAP_EXHAUSTED="${5-false}" REVIEW_PASS_COUNT="${6-1}"
   bash -eo pipefail "$submit" >/dev/null 2>&1
   echo "rc=$?"
 }
@@ -214,6 +216,12 @@ rc=$(run_submit '' true '' '')
   pass "budget-exceeded survives empty CHANGED_LINES/BUDGET_USD and stays advisory" ||
   fail "empty CHANGED_LINES/BUDGET_USD broke the advisory comment ($rc)"
 
+rc=$(run_submit '' false 100 1.00 true 2)
+{ [ "$rc" = "rc=0" ] && comment_has 'two-pass maximum reached' && comment_has '2/2' &&
+  ! comment_has 'Apply the `re-review` label'; } &&
+  pass "second unusable pass reports the cap and never invites a third review" ||
+  fail "two-pass exhaustion did not produce durable operator guidance"
+
 # 9. The flag must not hijack a real verdict: an approving verdict still
 #    approves even if a prior pass had been budget-exhausted and recovered.
 rc=$(run_submit '{"blocking":false,"summary":"fine","review_first":[],"findings":[],"followups":[]}' true)
@@ -248,7 +256,7 @@ GATE_RUN_ID=4242424242
 
 outcome="$tmp/outcome.sh"
 awk '
-  $0 == "      - name: Record single-pass model outcome" { seen = 1 }
+  $0 == "      - name: Record bounded model outcome" { seen = 1 }
   seen && $0 == "        run: |" { cap = 1; next }
   cap && $0 ~ /^      - name:/ { exit }
   cap {
@@ -268,6 +276,7 @@ exec_file() { # exec_file <path> <subtype>
 run_single_outcome() {
   export GITHUB_OUTPUT="$tmp/outcome_out.txt" STARTED_EPOCH=1
   export EXEC_FILE="$1" FIRST_VERDICT="$2" MODEL_CONCLUSION="${3:-success}"
+  export PASS_COUNT="${4:-1}" PROVIDER=anthropic
   : >"$GITHUB_OUTPUT"
   bash "$outcome" >"$tmp/outcome.log" 2>&1
   echo "rc=$?"
@@ -287,6 +296,11 @@ rc=$(run_single_outcome "$tmp/single-budget.json" false)
   olog 'no automatic retry is allowed' && olog 'apply re-review'; } \
   && pass 'single budget-exhausted pass fails closed with explicit re-review direction' \
   || fail "single budget exhaustion was not actionable ($rc): $(cat "$tmp/outcome.log")"
+
+rc=$(run_single_outcome "$tmp/single-budget.json" false success 2)
+{ [ "$rc" = "rc=0" ] && olog 'two-pass maximum is exhausted' && ! olog 'remaining paid attempt'; } \
+  && pass 'second budget-exhausted pass refuses further model review' \
+  || fail "second-pass budget exhaustion invited a third review: $(cat "$tmp/outcome.log")"
 
 rc=$(run_single_outcome "$tmp/single-turns.json" false)
 { [ "$rc" = "rc=0" ] && [ "$(oout turns_exhausted)" = true ] &&
@@ -318,20 +332,15 @@ rc=$(run_single_outcome '' true)
   || fail 'missing terminal evidence could authorize a purported verdict'
 
 rc=$(run_single_outcome '' false skipped)
-olog 'automatic_paid_attempts=0' \
+olog 'run_paid_attempts=0' \
   && pass 'unchanged-patch model skip records zero paid attempts' \
   || fail 'unchanged-patch model skip overcounted paid attempts'
 
-while IFS= read -r detector; do
-  [ -n "$detector" ] || continue
-  grep -qF "$detector" "$wf" \
-    && pass "cheap-lane detector remains fail-closed (${detector:0:40}…)" \
-    || fail "cheap-lane detector was changed (${detector:0:40}…)"
-done <<'DETECTORS'
-if jq -e 'all(.[]; .status == "removed")'
-if jq -e 'all(.[]; (.patch // "") | test("^@@
-if jq -e '[.[].filename] | all(test("(^NEXT
-DETECTORS
+if grep -qF 'deletions-only PR' "$wf" || grep -qF 'submodule pointer bump: every new gitlink' "$wf"; then
+  fail 'a blanket code/dependency fast lane survived the mandatory review policy'
+else
+  pass 'blanket deletion and submodule-pointer bypasses are retired'
+fi
 
 if [ "$fails" -eq 0 ]; then echo 'All tests passed.'; exit 0; fi
 echo "$fails test(s) failed."

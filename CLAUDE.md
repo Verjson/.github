@@ -38,7 +38,10 @@ unregistered test does not run in Actions.
 
 ## Autonomous batches — review before AI merge authority is enabled
 
-The org gate defaults to human approval and treats AI review as opt-in advice.
+The org gate defaults to human approval, but code, executable dependency,
+workflow, policy, prompt, and agent-instruction changes automatically receive
+one or two cumulative AI review passes. Generated lockfile-only and non-agent
+documentation changes may use the no-model lane.
 An operator can set `AI_REVIEW_AUTHORITY=ai-merge`, which can merge a green PR
 in ~1–3 minutes before an out-of-band `code-reviewer` pass finishes. When that
 authority is enabled for non-trivial or fanned-out autonomous work:
