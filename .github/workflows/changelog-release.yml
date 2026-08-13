@@ -25,13 +25,15 @@ on:
         required: false
         type: string
         default: ''
+      release_app_id:
+        description: Numeric App ID for the dedicated release authorization App
+        required: true
+        type: string
     secrets:
-      push_token:
-        # Must satisfy the target repository's branch rules, not merely hold
-        # contents-write. The final step pushes straight to the default branch,
-        # and the standard `main-protection` ruleset every Verjson repository
-        # carries rejects that push for anything outside its bypass actors —
-        # `GITHUB_TOKEN` is not one of them (ADR 0052, #389).
+      release_app_private_key:
+        # Used only to mint a short-lived installation token constrained to the
+        # current repository and contents-write. The App itself is the named
+        # main-protection bypass actor (ADR 0099, #329).
         required: true
 
 permissions:
@@ -54,9 +56,8 @@ jobs:
     #
     # Contents-write is necessary and not sufficient. The push targets the
     # default branch directly, which the standard `main-protection` ruleset
-    # forbids (`pull_request`, `workflows`), so `push_token` must additionally be
-    # a credential the ruleset bypasses — in practice an admin-scoped PAT
-    # (ADR 0052, #389).
+    # forbids (`pull_request`, `workflows`), so the dedicated release App must
+    # also be a named bypass actor (ADR 0099, #329).
     permissions:
       contents: write
     runs-on: ${{ inputs.runner != '' && fromJSON(inputs.runner) || github.repository_owner != 'Verjson' && 'ubuntu-24.04' || github.event.repository.private == true && fromJSON(vars.VERJSON_RUNNER_OVERFLOW || vars.VERJSON_LANE_TRUSTED || vars.VERJSON_LANE_FALLBACK || '["ubuntu-24.04"]') || fromJSON(vars.VERJSON_RUNNER_OVERFLOW || vars.VERJSON_LANE_UNTRUSTED || vars.VERJSON_LANE_FALLBACK || '["ubuntu-24.04"]') }}
@@ -79,6 +80,23 @@ jobs:
             exit 1
           fi
           echo "Dispatched from $DEFAULT_BRANCH; proceeding."
+      - name: Require the numeric release App ID
+        env:
+          RELEASE_APP_ID: ${{ inputs.release_app_id }}
+        run: |
+          if [[ ! "$RELEASE_APP_ID" =~ ^[1-9][0-9]*$ ]]; then
+            echo "::error::RELEASE_APP_ID must be the numeric GitHub App ID, not its client ID."
+            exit 1
+          fi
+      - name: Mint repository-scoped release App token
+        id: release-app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
+        with:
+          app-id: ${{ inputs.release_app_id }}
+          private-key: ${{ secrets.release_app_private_key }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          permission-contents: write
       - name: Check out release repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -98,7 +116,7 @@ jobs:
           # merge fails the release with no tag pushed and every fragment still
           # unconsumed — recoverable by re-dispatch (ADR 0062).
           ref: ${{ github.sha }}
-          token: ${{ secrets.push_token }}
+          token: ${{ steps.release-app-token.outputs.token }}
       - name: Check out canonical contract
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:

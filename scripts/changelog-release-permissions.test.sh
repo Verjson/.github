@@ -4,10 +4,11 @@
 #
 # A called workflow's `permissions` block is the cap — a caller granting
 # contents: write cannot raise it. When the release job inherited the
-# workflow-level `contents: read` default, the push_token reached the final
+# workflow-level `contents: read` default, the push credential reached the final
 # atomic push read-only and every consumer release died with HTTP 403 after
 # generating the snapshot. The assertions below pin the shape that failure
-# requires: write authority scoped to the job that pushes, read everywhere else.
+# requires: write authority scoped to the job that pushes, read everywhere else,
+# and a short-lived App token constrained to the current repository (#329).
 set -uo pipefail
 
 here="$(cd "$(dirname "$0")" && pwd)"
@@ -51,9 +52,61 @@ workflow_default="$(awk '
 
 # The permission only matters because of what the job does with it. If either of
 # these changes, the grant above needs re-justifying rather than inheriting.
-grep -qF 'token: ${{ secrets.push_token }}' "$workflow" \
-  && pass "the checkout still persists push_token for the push" \
-  || fail "the checkout no longer uses push_token, so the write grant may be misplaced"
+python3 - "$workflow" <<'PY'
+import sys
+
+import yaml
+
+path = sys.argv[1]
+doc = yaml.safe_load(open(path, encoding="utf-8"))
+call = doc.get("on", doc.get(True))["workflow_call"]
+inputs = call.get("inputs") or {}
+secrets = call.get("secrets") or {}
+release = doc["jobs"]["release"]
+steps = release.get("steps") or []
+mint = next((step for step in steps if step.get("id") == "release-app-token"), {})
+checkout = next(
+    (step for step in steps if str(step.get("uses", "")).startswith("actions/checkout@")),
+    {},
+)
+problems = []
+if not (inputs.get("release_app_id") or {}).get("required"):
+    problems.append("workflow_call does not require release_app_id")
+if set(secrets) != {"release_app_private_key"} or not secrets["release_app_private_key"].get("required"):
+    problems.append("workflow_call accepts a secret other than the required release App private key")
+if mint.get("uses") != "actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1":
+    problems.append("release token action is not at the audited immutable pin")
+expected = {
+    "app-id": "${{ inputs.release_app_id }}",
+    "private-key": "${{ secrets.release_app_private_key }}",
+    "owner": "${{ github.repository_owner }}",
+    "repositories": "${{ github.event.repository.name }}",
+    "permission-contents": "write",
+}
+if mint.get("with") != expected:
+    problems.append("release token is not constrained to owner, current repository, and contents-write")
+if (checkout.get("with") or {}).get("token") != "${{ steps.release-app-token.outputs.token }}":
+    problems.append("release checkout does not persist the short-lived App token")
+raw = open(path, encoding="utf-8").read()
+if "secrets.push_token" in raw or "ORG_ADMIN_TOKEN" in raw:
+    problems.append("release workflow retains the temporary broad push credential")
+if problems:
+    raise SystemExit("\n".join(problems))
+PY
+if [ "$?" -eq 0 ]; then
+  pass "the release push uses only a current-repository contents-write App token"
+else
+  fail "the release App token contract is not least-privilege"
+fi
+
+app_id_guard="$(awk '
+  /^      - name: Require the numeric release App ID$/ { found = 1; next }
+  found && /^      - name:/ { exit }
+  found { print }
+' "$workflow")"
+grep -qF '[[ ! "$RELEASE_APP_ID" =~ ^[1-9][0-9]*$ ]]' <<<"$app_id_guard" \
+  && pass "the release workflow rejects client IDs before minting" \
+  || fail "the release workflow does not require a numeric GitHub App ID"
 
 grep -qF 'git push --atomic origin \' "$workflow" \
   && grep -qF '"$release_commit:refs/heads/$DEFAULT_BRANCH" \' "$workflow" \

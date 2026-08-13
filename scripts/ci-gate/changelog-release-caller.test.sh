@@ -224,14 +224,18 @@ publish_expr = re.fullmatch(r"\$\{\{(.*)\}\}", publish_runner, re.S)
 if not publish_expr or publish_expr.group(1).strip() != snapshot_pool:
     bad("`publish` and `snapshot` do not route on the same pool")
 
-# ADR 0052: the snapshot pushes to the default branch, which main-protection
-# forbids for GITHUB_TOKEN.
-push_token = str((snapshot.get("secrets") or {}).get("push_token") or "")
-if not push_token:
-    bad("`snapshot` passes no push_token")
-elif GITHUB_TOKEN.search(push_token):
-    bad("`snapshot` passes GITHUB_TOKEN as push_token; the branch ruleset "
-        "rejects that push (ADR 0052)")
+# ADR 0099: the reusable workflow mints the ruleset-bypassing token, while the
+# generated caller passes only the dedicated App identity material.
+snapshot_with = snapshot.get("with") or {}
+if snapshot_with.get("release_app_id") != "${{ vars.RELEASE_APP_ID }}":
+    bad("`snapshot` does not pass vars.RELEASE_APP_ID")
+snapshot_secrets = snapshot.get("secrets") or {}
+if snapshot_secrets != {
+    "release_app_private_key": "${{ secrets.RELEASE_APP_PRIVATE_KEY }}"
+}:
+    bad("`snapshot` does not pass only RELEASE_APP_PRIVATE_KEY")
+if "ORG_ADMIN_TOKEN" in raw or "push_token:" in raw:
+    bad("release caller retains the temporary broad push credential")
 
 # verify must verify the content the snapshot will take, and must actually run
 # a suite rather than merely existing as a gate-shaped no-op.
@@ -370,8 +374,10 @@ skew_contract_ref() {
 drop_component_selection() {
   sed -i '/^      component: /d' "$1"
 }
-wire_github_token_push_token() {
-  sed -i 's|push_token: ${{ secrets.ORG_ADMIN_TOKEN }}|push_token: ${{ secrets.GITHUB_TOKEN }}|' "$1"
+drop_release_app_id() { sed -i '/^      release_app_id: /d' "$1"; }
+drop_release_app_private_key() { sed -i '/^      release_app_private_key: /d' "$1"; }
+restore_org_admin_token() {
+  sed -i '/^      release_app_private_key: /c\      push_token: ${{ secrets.ORG_ADMIN_TOKEN }}' "$1"
 }
 verify_a_different_ref() {
   sed -i 's|          ref: ${{ github.sha }}|          ref: ${{ github.ref }}|' "$1"
@@ -412,7 +418,9 @@ expect_shape_rejection "a push: trigger that derives a release from a merge" add
 expect_shape_rejection "an unpinned reusable ref" unpin_reusable_ref
 expect_shape_rejection "a contract_ref that disagrees with the uses: pin" skew_contract_ref
 expect_shape_rejection "a snapshot that drops the selected component" drop_component_selection
-expect_shape_rejection "GITHUB_TOKEN as push_token (ADR 0052)" wire_github_token_push_token
+expect_shape_rejection "snapshot without RELEASE_APP_ID (ADR 0099)" drop_release_app_id
+expect_shape_rejection "snapshot without RELEASE_APP_PRIVATE_KEY (ADR 0099)" drop_release_app_private_key
+expect_shape_rejection "the temporary ORG_ADMIN_TOKEN release credential" restore_org_admin_token
 expect_shape_rejection "verifying a ref other than github.sha" verify_a_different_ref
 expect_shape_rejection "a verify job that runs no suite" hollow_out_the_suite
 expect_shape_rejection "a verify job with no release-verify.sh hook" drop_verify_hook

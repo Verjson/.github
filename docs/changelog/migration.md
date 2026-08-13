@@ -172,7 +172,13 @@
    issue names the remaining consumer.
 7. If the repository publishes, commit the generated reusable release caller
    and protect its environment when approval is required. Releases must run on
-   the default branch.
+   the default branch. Confirm the repository can read the organization variable
+   `RELEASE_APP_ID` (the numeric App ID, not the `Iv...` client ID) and the
+   organization secret `RELEASE_APP_PRIVATE_KEY`. Do not add `ORG_ADMIN_TOKEN`
+   or a local `push_token`: the pinned reusable workflow mints the dedicated
+   App's short-lived token and constrains it to the current repository with only
+   Contents write. The App must be installed for that repository and named as
+   an always-bypass actor on the exact `main-protection` ruleset.
 8. Rebase queued pull requests once, remove aggregate edits, normalize their
    fragments, and verify no selected fragment was already consumed. A branch cut
    before the migration needs `origin/main` merged in first, which surfaces the
