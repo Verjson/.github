@@ -2,6 +2,7 @@
 import importlib.util
 import json
 import os
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -15,6 +16,25 @@ spec.loader.exec_module(review)
 
 
 class ReviewVerdictTest(unittest.TestCase):
+    def committed_fixture(self, root, files):
+        repository = Path(root)
+        for relative_path, content in files.items():
+            path = repository / relative_path
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(content, encoding="utf-8")
+        subprocess.run(["git", "init", "-q"], cwd=repository, check=True)
+        subprocess.run(["git", "config", "user.name", "Test"], cwd=repository, check=True)
+        subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repository, check=True)
+        subprocess.run(["git", "add", "."], cwd=repository, check=True)
+        subprocess.run(["git", "commit", "-qm", "fixture"], cwd=repository, check=True)
+        return subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=repository,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+
     def test_canonical_verdict_is_confirmed_without_changes(self):
         verdict = {
             "blocking": False,
@@ -80,6 +100,7 @@ class ReviewVerdictTest(unittest.TestCase):
                     "line": 7,
                     "why": "Null is dereferenced.",
                     "impact": "An empty response crashes the worker.",
+                    "evidence": "return response.value",
                     "severity": "high",
                 },
             ],
@@ -92,7 +113,12 @@ class ReviewVerdictTest(unittest.TestCase):
         self.assertEqual(set(confirmed), review.REQUIRED_FIELDS)
         self.assertEqual(
             confirmed["findings"],
-            [{"location": "app.py:7", "reason": "Null is dereferenced.", "failure_scenario": "An empty response crashes the worker."}],
+            [{
+                "location": "app.py:7",
+                "reason": "Null is dereferenced.",
+                "failure_scenario": "An empty response crashes the worker.",
+                "evidence": "return response.value",
+            }],
         )
         self.assertEqual(confirmed["followups"], [{"location": "app.py:12", "note": "Simplify the retry path."}])
 
@@ -253,6 +279,172 @@ class ReviewVerdictTest(unittest.TestCase):
         self.assertFalse(result["usable"])
         self.assertEqual(result["diagnostic"]["path"], "$")
         self.assertNotIn(secret_key, json.dumps(result))
+
+    def test_blocking_evidence_is_bound_to_the_exact_cited_head_line(self):
+        canary = """before=$(git ls-remote --refs origin "$tag_ref")
+commit=$(git ls-remote origin "$branch_ref")
+peeled=$(git ls-remote origin "$tag_ref^{}")
+after=$(git ls-remote --refs origin "$tag_ref")
+"""
+        with tempfile.TemporaryDirectory() as directory:
+            head = self.committed_fixture(directory, {".github/workflows/release-app-canary.yml": canary})
+            verdict = {
+                "blocking": True,
+                "summary": "Tag verification is wrong.",
+                "review_first": [],
+                "findings": [{
+                    "location": ".github/workflows/release-app-canary.yml:3",
+                    "reason": "The peeled lookup suppresses the tag.",
+                    "failure_scenario": "The canary rejects a successful push.",
+                    "evidence": "git ls-remote origin \"$tag_ref^{}\"",
+                }],
+                "followups": [],
+            }
+
+            result = review.confirm_output(json.dumps(verdict), False, directory, head)
+
+        self.assertTrue(result["usable"])
+        self.assertEqual(result["verdict"]["findings"][0]["evidence"], verdict["findings"][0]["evidence"])
+
+    def test_nearby_canary_refs_probe_cannot_evidence_a_different_line(self):
+        canary = """before=$(git ls-remote --refs origin "$tag_ref")
+commit=$(git ls-remote origin "$branch_ref")
+peeled=$(git ls-remote origin "$tag_ref^{}")
+after=$(git ls-remote --refs origin "$tag_ref")
+"""
+        with tempfile.TemporaryDirectory() as directory:
+            head = self.committed_fixture(directory, {".github/workflows/release-app-canary.yml": canary})
+            verdict = {
+                "blocking": True,
+                "summary": "Tag verification is wrong.",
+                "review_first": [],
+                "findings": [{
+                    "location": ".github/workflows/release-app-canary.yml:3",
+                    "reason": "The peeled lookup suppresses the tag.",
+                    "failure_scenario": "The canary rejects a successful push.",
+                    "evidence": "git ls-remote --refs origin \"$tag_ref\"",
+                }],
+                "followups": [],
+            }
+
+            result = review.confirm_output(json.dumps(verdict), False, directory, head)
+
+        self.assertFalse(result["usable"])
+        self.assertEqual(result["diagnostic"]["path"], "findings[0].evidence")
+        self.assertEqual(result["diagnostic"]["observed"], "fragment mismatch")
+
+    def test_evidence_trims_edges_but_preserves_interior_spacing(self):
+        source = "    return  response.value    \n"
+        with tempfile.TemporaryDirectory() as directory:
+            head = self.committed_fixture(directory, {"src/client.py": source})
+            verdict = {
+                "blocking": True,
+                "summary": "The response is returned without validation.",
+                "review_first": [],
+                "findings": [{
+                    "location": "src/client.py:1",
+                    "reason": "The return bypasses validation.",
+                    "failure_scenario": "Invalid data reaches the caller.",
+                    "evidence": "  return  response.value  ",
+                }],
+                "followups": [],
+            }
+            accepted = review.confirm_output(json.dumps(verdict), False, directory, head)
+            verdict["findings"][0]["evidence"] = "return response.value"
+            rejected = review.confirm_output(json.dumps(verdict), False, directory, head)
+
+        self.assertTrue(accepted["usable"])
+        self.assertEqual(accepted["verdict"]["findings"][0]["evidence"], "return  response.value")
+        self.assertFalse(rejected["usable"])
+        self.assertEqual(rejected["diagnostic"]["observed"], "fragment mismatch")
+
+    def test_canary_range_cannot_collapse_nearby_probe_evidence_to_its_first_line(self):
+        canary = """before=$(git ls-remote --refs origin "$tag_ref")
+commit=$(git ls-remote origin "$branch_ref")
+peeled=$(git ls-remote origin "$tag_ref^{}")
+after=$(git ls-remote --refs origin "$tag_ref")
+"""
+        with tempfile.TemporaryDirectory() as directory:
+            head = self.committed_fixture(directory, {".github/workflows/release-app-canary.yml": canary})
+            verdict = {
+                "blocking": True,
+                "summary": "Tag verification is wrong.",
+                "review_first": [],
+                "findings": [{
+                    "location": ".github/workflows/release-app-canary.yml:1-3, 3",
+                    "reason": "The peeled lookup suppresses the tag.",
+                    "failure_scenario": "The canary rejects a successful push.",
+                    "evidence": "git ls-remote --refs origin \"$tag_ref\"",
+                }],
+                "followups": [],
+            }
+
+            result = review.confirm_output(json.dumps(verdict), False, directory, head)
+
+        self.assertFalse(result["usable"])
+        self.assertEqual(result["diagnostic"]["path"], "findings[0].location")
+        self.assertEqual(result["diagnostic"]["expected"], "one file and exactly one positive line")
+
+    def test_non_authorizing_locations_retain_documented_range_normalization(self):
+        verdict = {
+            "blocking": False,
+            "summary": "No defects found.",
+            "review_first": [{"location": "gate.yml:8-10, 15", "why": "Inspect this hunk."}],
+            "findings": [],
+            "followups": [{"location": "app.py:12-14, 20", "note": "Improve this later."}],
+        }
+
+        confirmed = review.canonicalize_verdict(verdict, sensitive=True)
+
+        self.assertEqual(confirmed["review_first"][0]["location"], "gate.yml:8")
+        self.assertEqual(confirmed["followups"][0]["location"], "app.py:12")
+
+    def test_synthetic_generator_mutation_cannot_evidence_the_generator(self):
+        files = {
+            "scripts/gen-changelog-caller.sh": "printf '%s\\n' 'release_app_private_key: inherited'\n",
+            "scripts/ci-gate/changelog-release-caller.test.sh": "# ORG_ADMIN_TOKEN retirement comment mutation\n",
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            head = self.committed_fixture(directory, files)
+            verdict = {
+                "blocking": True,
+                "summary": "The generator emits retired credentials.",
+                "review_first": [],
+                "findings": [{
+                    "location": "scripts/gen-changelog-caller.sh:1",
+                    "reason": "Generated callers contain the retired token.",
+                    "failure_scenario": "Every generated caller fails policy.",
+                    "evidence": "ORG_ADMIN_TOKEN retirement comment mutation",
+                }],
+                "followups": [],
+            }
+
+            result = review.confirm_output(json.dumps(verdict), False, directory, head)
+
+        self.assertFalse(result["usable"])
+        self.assertEqual(result["diagnostic"]["path"], "findings[0].evidence")
+
+    def test_source_evidence_rejects_head_mismatch_and_unsafe_paths_without_reading_them(self):
+        with tempfile.TemporaryDirectory() as directory:
+            head = self.committed_fixture(directory, {"app.py": "return value\n"})
+            finding = {
+                "reason": "Broken.",
+                "failure_scenario": "Request fails.",
+                "evidence": "return value",
+            }
+            base = {
+                "blocking": True,
+                "summary": "Broken.",
+                "review_first": [],
+                "findings": [{"location": "app.py:1", **finding}],
+                "followups": [],
+            }
+            mismatch = review.confirm_output(json.dumps(base), False, directory, "0" * 40)
+            base["findings"][0]["location"] = "../secret:1"
+            unsafe = review.confirm_output(json.dumps(base), False, directory, head)
+
+        self.assertEqual(mismatch["diagnostic"]["path"], "reviewed_head")
+        self.assertEqual(unsafe["diagnostic"]["path"], "findings[0].location")
 
 
 if __name__ == "__main__":

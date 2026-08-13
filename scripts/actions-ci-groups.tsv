@@ -46,6 +46,7 @@ platform	bash scripts/ci-gate/repo-hygiene-sandbox.test.sh
 merge-gate	bash scripts/ci-gate/freshness.test.sh
 merge-gate	bash scripts/ci-gate/review-comment.test.sh
 merge-gate	bash scripts/ci-gate/review-context.test.sh
+merge-gate	bash scripts/ci-gate/read-pr-files.test.sh
 merge-gate	bash scripts/ci-gate/ai-review-retry.test.sh
 merge-gate	bash scripts/ci-gate/semantic-verdict.test.sh
 merge-gate	python3 scripts/ci-gate/event-driven-authorization.test.py
