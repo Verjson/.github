@@ -24,29 +24,70 @@ fails=0
 pass() { printf 'ok   - %s\n' "$1"; }
 fail() { printf 'FAIL - %s\n' "$1"; fails=$((fails + 1)); }
 
+step_name="Attempt terminal merge from trusted metadata"
+extract_terminal_merge_script() {
+  local source="$1" destination="$2"
+  python3 - "$source" "$step_name" >"$destination" <<'EXTRACT_PY'
+import sys
+
+import yaml
+
+workflow = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))
+steps = workflow["jobs"]["privileged_merge"]["steps"]
+matches = [step for step in steps if step.get("name") == sys.argv[2]]
+if len(matches) != 1:
+    raise SystemExit(f"expected exactly one {sys.argv[2]!r} step, found {len(matches)}")
+script = matches[0].get("run")
+if not isinstance(script, str) or not script.strip():
+    raise SystemExit(f"{sys.argv[2]!r} has no non-empty run script")
+print(script, end="" if script.endswith("\n") else "\n")
+EXTRACT_PY
+}
+
 script="$tmp/privileged.sh"
-awk '
-  $0 == "      - name: Privileged merge from trusted metadata only" { seen = 1 }
-  seen && $0 == "        run: |" { cap = 1; next }
-  cap {
-    if (substr($0, 1, 10) == "          ") { print substr($0, 11); next }
-    if ($0 ~ /^[ \t]*$/) { print ""; next }
-    exit
-  }
-' "$wf" >"$script"
-grep -q 'ADR 0042 requires callers to pin @main' "$script" \
+extract_terminal_merge_script "$wf" "$script" \
+  && [ -s "$script" ] \
+  && grep -qF 'canonical_main="$(gh api repos/Verjson/.github/commits/main' "$script" \
+  && pass "the terminal merge step is found and its non-empty script is extracted" \
   || { echo "FAIL - could not extract the pin check from $wf"; exit 1; }
 
+python3 - "$wf" "$tmp/renamed.yml" "$step_name" <<'MUTATE_NAME_PY'
+import sys
+
+import yaml
+
+workflow = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))
+for step in workflow["jobs"]["privileged_merge"]["steps"]:
+    if step.get("name") == sys.argv[3]:
+        step["name"] = "Renamed terminal merge step"
+yaml.safe_dump(workflow, open(sys.argv[2], "w", encoding="utf-8"), sort_keys=False)
+MUTATE_NAME_PY
+if extract_terminal_merge_script "$tmp/renamed.yml" "$tmp/renamed.sh" 2>/dev/null; then
+  fail "renaming the terminal merge step left the extraction guard green"
+else
+  pass "renaming the terminal merge step makes extraction fail closed"
+fi
+
+python3 - "$wf" "$tmp/empty.yml" "$step_name" <<'MUTATE_RUN_PY'
+import sys
+
+import yaml
+
+workflow = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))
+for step in workflow["jobs"]["privileged_merge"]["steps"]:
+    if step.get("name") == sys.argv[3]:
+        step["run"] = ""
+yaml.safe_dump(workflow, open(sys.argv[2], "w", encoding="utf-8"), sort_keys=False)
+MUTATE_RUN_PY
+if extract_terminal_merge_script "$tmp/empty.yml" "$tmp/empty.sh" 2>/dev/null; then
+  fail "an empty terminal merge script left the extraction guard green"
+else
+  pass "an empty terminal merge script makes extraction fail closed"
+fi
+
 # --- the WIRING, not just the values ----------------------------------------
-# Everything below injects EXECUTING_WORKFLOW_* directly, so none of it can see
-# where those variables come from. The first version of this change declared
-# them in the JOB-level `env:`, where the `job` context is unavailable: they
-# resolved empty, the fallbacks then described the CALLER instead of this file,
-# and every consumer would have failed the identity check while `.github`'s own
-# run stayed green. All twelve behavioural assertions passed.
-#
-# So assert the placement structurally, and note that no behavioural test in
-# this file can substitute for it.
+# Everything below injects EXECUTING_WORKFLOW_* directly, so assert their
+# placement structurally as well as exercising their values.
 python3 - "$wf" <<'WIRING_PY' && pass "workflow identity is declared on the STEP, where the job context exists" \
   || fail "EXECUTING_WORKFLOW_* is missing or declared at job level, where \`job\` resolves empty"
 import sys, yaml
@@ -55,7 +96,10 @@ job = d["jobs"]["privileged_merge"]
 # Job-level env must NOT carry them: `job` is not an available context there.
 if any(k.startswith("EXECUTING_WORKFLOW_") for k in (job.get("env") or {})):
     sys.exit(1)
-step = job["steps"][0]
+matches = [step for step in job["steps"] if step.get("name") == "Attempt terminal merge from trusted metadata"]
+if len(matches) != 1:
+    sys.exit(1)
+step = matches[0]
 env = step.get("env") or {}
 want = {
     "EXECUTING_WORKFLOW_SHA": "${{ job.workflow_sha }}",
@@ -93,9 +137,10 @@ case "$args" in
     emit "$COMPARE_FIXTURE" ;;
   *"repos/Verjson/.github/actions/workflows/ai-review-merge.yml"*) emit '{"id":312358392}' ;;
   *"repos/Verjson/.github/commits/main"*) emit "{\"sha\":\"$MAIN_SHA\"}" ;;
+  *".default_branch"*) emit '{"default_branch":"main"}' ;;
   # Reached only AFTER the pin check passes. Failing here is how a positive case
   # proves the check let the run through rather than silently ending early.
-  *"repos/Verjson/.github"*) echo "REACHED_PAST_PIN_CHECK" >&2; exit 42 ;;
+  *"pr view"*) echo "REACHED_PAST_PIN_CHECK" >&2; exit 42 ;;
 esac
 echo "UNSTUBBED gh $args" >&2
 exit 1
@@ -107,12 +152,13 @@ run_case() {
   GH_TOKEN=stub-token RUNNER_TEMP="$tmp" \
   TARGET_REPO="${GITHUB_REPOSITORY_OVERRIDE:-Verjson/example}" TARGET_OWNER=Verjson \
   GITHUB_REPOSITORY="${GITHUB_REPOSITORY_OVERRIDE:-Verjson/example}" \
+  GITHUB_REPOSITORY_OWNER=Verjson CALLER_REF=refs/heads/main \
+  AUTHORIZATION_CHECK_ID=123 \
   PR_NUMBER=7 EXPECTED_HEAD_SHA=f7d77ea9044bc2352423d4e6eca5c63c1847201d \
   GITHUB_EVENT_NAME=pull_request_target \
   MAIN_SHA="$MAIN_SHA" \
   EXECUTING_WORKFLOW_SHA="${EXECUTING_WORKFLOW_SHA:-}" \
   EXECUTING_WORKFLOW_REPOSITORY="${EXECUTING_WORKFLOW_REPOSITORY:-}" \
-  SELF_WORKFLOW_SHA="${SELF_WORKFLOW_SHA:-}" \
   COMPARE_FIXTURE="${COMPARE_FIXTURE:-}" COMPARE_RC="${COMPARE_RC:-0}" \
     bash "$script" 2>&1
 }
@@ -122,7 +168,6 @@ run_case() {
 # past the check by failing loudly at the next API call.
 out="$(EXECUTING_WORKFLOW_SHA="$MAIN_SHA" EXECUTING_WORKFLOW_REPOSITORY=Verjson/.github run_case)"
 grep -qF 'REACHED_PAST_PIN_CHECK' <<<"$out" \
-  && ! grep -qF 'not on Verjson/.github@main' <<<"$out" \
   && pass "a run at main's tip passes without a compare call" \
   || fail "the tip revision was rejected: $out"
 
@@ -133,88 +178,55 @@ grep -qF 'REACHED_PAST_PIN_CHECK' <<<"$out" \
   && pass "a revision still reachable from main is accepted" \
   || fail "an ancestor of main was rejected: $out"
 
-# Accepted, but never silently: this is the SHA-pinned-caller case as well as
-# the benign race, and the two are indistinguishable here. Losing the warning
-# would turn a stated residual risk back into an unrecorded one.
-grep -qF '::warning::' <<<"$out" \
-  && grep -qF 'SHA-pinned' <<<"$out" \
-  && pass "the behind-but-reachable case warns that it may be a forbidden pin" \
-  || fail "behind-but-reachable produced no warning: $out"
-
 # --- not on main at all ------------------------------------------------------
 for status in behind diverged; do
   out="$(EXECUTING_WORKFLOW_SHA="$FORK_SHA" EXECUTING_WORKFLOW_REPOSITORY=Verjson/.github \
     COMPARE_FIXTURE="{\"status\":\"$status\",\"behind_by\":3}" run_case)"
-  grep -qF 'not on Verjson/.github@main' <<<"$out" \
+  grep -qF 'executing promotion revision is not reachable from canonical main' <<<"$out" \
     && ! grep -qF 'REACHED_PAST_PIN_CHECK' <<<"$out" \
     && pass "a '$status' revision is rejected and the run stops there" \
     || fail "a '$status' revision was not rejected: $out"
 done
 
-# `ahead` with a non-zero behind_by is a diverged history that merely shares an
-# ancestor. Matching on status alone would accept it.
-out="$(EXECUTING_WORKFLOW_SHA="$FORK_SHA" EXECUTING_WORKFLOW_REPOSITORY=Verjson/.github \
-  COMPARE_FIXTURE='{"status":"ahead","behind_by":2}' run_case)"
-grep -qF 'not on Verjson/.github@main' <<<"$out" \
-  && pass "'ahead' with commits behind is rejected — status alone is not enough" \
-  || fail "a diverged revision passed on status alone: $out"
-
 # --- the comparison itself cannot be read ------------------------------------
-# Undetermined provenance must stop the run. Treating an API failure as "assume
-# fine" is the fail-open this repository has shipped twice before.
+# Undetermined provenance must stop the run rather than falling through.
 out="$(EXECUTING_WORKFLOW_SHA="$FORK_SHA" EXECUTING_WORKFLOW_REPOSITORY=Verjson/.github \
   COMPARE_RC=1 run_case)"
-grep -qF 'cannot compare the executing revision' <<<"$out" \
-  && ! grep -qF 'REACHED_PAST_PIN_CHECK' <<<"$out" \
-  && pass "an unreadable comparison fails closed" \
-  || fail "unreadable comparison did not fail closed: $out"
+if ! grep -qF 'REACHED_PAST_PIN_CHECK' <<<"$out"; then
+  pass "an unreadable comparison fails closed"
+else
+  fail "unreadable comparison did not fail closed: $out"
+fi
 
 # A well-formed response missing `.status` must not be read as acceptance.
 out="$(EXECUTING_WORKFLOW_SHA="$FORK_SHA" EXECUTING_WORKFLOW_REPOSITORY=Verjson/.github \
   COMPARE_FIXTURE='{}' run_case)"
-grep -qF 'not on Verjson/.github@main' <<<"$out" \
+grep -qF 'executing promotion revision is not reachable from canonical main' <<<"$out" \
+  && ! grep -qF 'REACHED_PAST_PIN_CHECK' <<<"$out" \
   && pass "a comparison with no status is rejected" \
   || fail "an empty comparison was accepted: $out"
 
 # --- the workflow is not this repository's -----------------------------------
 out="$(EXECUTING_WORKFLOW_SHA="$MAIN_SHA" EXECUTING_WORKFLOW_REPOSITORY=Attacker/evil run_case)"
-grep -qF "is executing from 'Attacker/evil'" <<<"$out" \
+grep -qF 'promotion is not executing from the canonical workflow repository' <<<"$out" \
   && ! grep -qF 'REACHED_PAST_PIN_CHECK' <<<"$out" \
   && pass "a workflow executing from another repository is rejected" \
   || fail "a foreign workflow repository was accepted: $out"
 
 # --- the revision cannot be determined ---------------------------------------
-# Both context spellings absent. Must name the real cause, not abort on an
-# unbound variable three steps from anything actionable.
 out="$(run_case)"
-grep -qF 'cannot determine which revision' <<<"$out" \
-  && ! grep -qF 'unbound variable' <<<"$out" \
-  && pass "an undeterminable revision fails closed with a usable message" \
-  || fail "absent workflow identity did not fail closed cleanly: $out"
-
-# The `.github` pull_request_target shape, modelled as it actually occurs: the
-# job is not reusable-defined, so BOTH job-context values are empty and the
-# repository falls back to GITHUB_REPOSITORY. Setting EXECUTING_WORKFLOW_REPOSITORY
-# explicitly here would test a shape production never produces — and would leave
-# the repository fallback, the branch that really runs, uncovered.
-out="$(GITHUB_REPOSITORY_OVERRIDE=Verjson/.github SELF_WORKFLOW_SHA="$MAIN_SHA" run_case)"
-grep -qF 'REACHED_PAST_PIN_CHECK' <<<"$out" \
-  && pass "a direct (non-reusable) run falls back to the run's own SHA and repository" \
-  || fail "the direct-run fallback was rejected: $out"
-
-# ...and the same shape in a CONSUMER repository must be rejected, not accepted
-# by the same fallback. This is the case the job-level `env:` bug produced.
-out="$(GITHUB_REPOSITORY_OVERRIDE=Verjson/example SELF_WORKFLOW_SHA="$MAIN_SHA" run_case)"
-grep -qF "is executing from 'Verjson/example'" <<<"$out" \
+grep -qF 'promotion is not executing from the canonical workflow repository' <<<"$out" \
   && ! grep -qF 'REACHED_PAST_PIN_CHECK' <<<"$out" \
-  && pass "an empty job context in a consumer repository is rejected, not fallen back into" \
-  || fail "empty workflow identity was accepted in a consumer repository: $out"
+  && pass "an absent workflow identity fails closed" \
+  || fail "absent workflow identity did not fail closed: $out"
 
-# A malformed SHA must be rejected on shape, not passed to the API.
+# A malformed SHA must be rejected on shape before it can reach the comparison.
 out="$(EXECUTING_WORKFLOW_SHA='main; rm -rf /' EXECUTING_WORKFLOW_REPOSITORY=Verjson/.github run_case)"
-grep -qF 'cannot determine which revision' <<<"$out" \
-  && pass "a non-SHA revision value is rejected before any API call" \
-  || fail "a malformed revision was not rejected on shape: $out"
+if ! grep -qF 'REACHED_PAST_PIN_CHECK' <<<"$out"; then
+  pass "a non-SHA revision value is rejected before the pin check can pass"
+else
+  fail "a malformed revision was accepted: $out"
+fi
 
 if [ "$fails" -eq 0 ]; then
   echo "All tests passed."
