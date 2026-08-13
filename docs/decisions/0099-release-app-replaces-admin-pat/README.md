@@ -61,8 +61,9 @@ complexity. Neither is adopted here.
 
 A permanent manual canary proves the authorization boundary before a production
 release. It has no user-controlled repository, ref, or version inputs, runs only
-from the default-branch revision on a GitHub-hosted runner, and fixes its remote
-target to the otherwise-absent `develop` branch plus a run-unique SemVer
+from the default-branch revision through the existing trusted organization lane
+and `VERJSON_LANE_FALLBACK` contract, and fixes its remote target to the
+otherwise-absent `develop` branch plus a run-unique SemVer
 prerelease tag. Organization ruleset `main-protection` (ID `18098028`) explicitly
 targets `develop`, so an atomic push there exercises the same ruleset and named
 App bypass as the canonical default-branch push without mutating `main`.

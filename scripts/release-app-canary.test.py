@@ -34,8 +34,9 @@ def validate(document: dict, raw: str) -> list[str]:
         problems.append("workflow GITHUB_TOKEN is not contents-read-only")
 
     job = (document.get("jobs") or {}).get("canary") or {}
-    if job.get("runs-on") != "ubuntu-24.04":
-        problems.append("canary does not use the fixed GitHub-hosted runner")
+    expected_runner = "${{ fromJSON(vars.VERJSON_LANE_TRUSTED || vars.VERJSON_LANE_FALLBACK || '[\"ubuntu-24.04\"]') }}"
+    if job.get("runs-on") != expected_runner:
+        problems.append("canary does not route through the trusted organization lane and fallback")
     if job.get("permissions") != {"contents": "read"}:
         problems.append("job GITHUB_TOKEN is not contents-read-only")
     steps = job.get("steps") or []
@@ -182,6 +183,9 @@ def main() -> int:
     mutant = copy.deepcopy(document)
     triggers(mutant)["workflow_dispatch"] = {"inputs": {"ref": {"required": True}}}
     mutants.append(("a user-controlled dispatch input", mutant, raw))
+    mutant = copy.deepcopy(document)
+    mutant["jobs"]["canary"]["runs-on"] = "ubuntu-24.04"
+    mutants.append(("a literal hosted runner outside the organization lane contract", mutant, raw))
     mutant = copy.deepcopy(document)
     mutant["jobs"]["canary"]["steps"][mint_index]["uses"] = "actions/create-github-app-token@v3"
     mutants.append(("a mutable token action ref", mutant, raw))

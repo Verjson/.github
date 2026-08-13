@@ -223,7 +223,8 @@ admin PAT retired by ADR 0099.
 
 Administrators can verify the live authorization path with the manual
 `release-app-canary.yml` workflow after its commit is on the default branch. It
-accepts no target inputs and atomically pushes an isolated canonical snapshot to
+accepts no target inputs, routes through the trusted organization lane with
+`VERJSON_LANE_FALLBACK`, and atomically pushes an isolated canonical snapshot to
 the otherwise-absent protected `develop` ref plus a run-unique prerelease tag,
 verifies the annotated tag and branch resolve to the exact snapshot, writes a
 retained receipt, and atomically deletes only refs still owned by that run. The
