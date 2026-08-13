@@ -15,6 +15,9 @@ jobs:
   reconcile:
     if: github.event.pull_request.merged == true
     runs-on: ${{ fromJSON(vars.VERJSON_LANE_TRUSTED || vars.VERJSON_LANE_FALLBACK || '["ubuntu-24.04"]') }}
+    defaults:
+      run:
+        working-directory: .ai-post-merge-source-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
     timeout-minutes: 5
     env:
       TARGET_REPO: ${{ github.repository }}
@@ -34,6 +37,7 @@ jobs:
           # pull_request_target base SHA is trusted and immutable; never execute
           # the merged PR head's copy of this privileged reconciler.
           ref: ${{ github.event.pull_request.base.sha }}
+          path: .ai-post-merge-source-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
           sparse-checkout: scripts/ci-gate/post-merge-reconcile.sh
           sparse-checkout-cone-mode: false
           persist-credentials: false
@@ -85,3 +89,7 @@ jobs:
         env:
           ATTESTATION_FILE: ${{ steps.evidence.outputs.path }}
         run: bash scripts/ci-gate/post-merge-reconcile.sh
+      - name: Remove the isolated post-merge checkout
+        if: ${{ always() }}
+        working-directory: ${{ github.workspace }}
+        run: rm -rf ".ai-post-merge-source-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}"

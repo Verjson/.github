@@ -11,7 +11,8 @@ Reverse-chronological index of org-level decisions.
 <!-- BEGIN ADR INDEX -->
 | # | Date | Decision |
 |---|------|----------|
-| [0096](0096-secretless-trusted-ref-node-validation/README.md) | 2026-08-12 | Extend secretless Node validation to trusted refs |
+| [0097](0097-secretless-trusted-ref-node-validation/README.md) | 2026-08-12 | Extend secretless Node validation to trusted refs |
+| [0096](0096-isolate-checkouts-on-reusable-runner-workspaces/README.md) | 2026-08-12 | Isolate checkouts on reusable runner workspaces |
 | [0095](0095-bounded-secretless-node-cache-transfer/README.md) | 2026-08-12 | Bound secretless Node transfer to an exact-attempt private cache |
 | [0094](0094-arm-required-by-its-own-property-scoped-ruleset/README.md) | 2026-08-11 | Require the authorization arm from its own property-scoped ruleset |
 | [0093](0093-authorization-arm-uses-trusted-runner-lane/README.md) | 2026-08-11 | Route the authorization arm through the trusted runner lane |

@@ -13,6 +13,10 @@ WATCHDOG = ROOT / ".github/workflows/fleet-watchdog.yml"
 ADMISSION = ROOT / ".github/workflows/runner-admission-reconcile.yml"
 SECRET_SCOPE = ROOT / ".github/workflows/org-secret-scope-audit.yml"
 CHECKOUT = re.compile(r"^actions/checkout@[0-9a-f]{40}$")
+UNIQUE_SUFFIX = "${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}"
+WATCHDOG_SOURCE = f".fleet-watchdog-source-{UNIQUE_SUFFIX}"
+ADMISSION_SOURCE = f".runner-admission-reconcile-source-{UNIQUE_SUFFIX}"
+SECRET_SCOPE_SOURCE = f".org-secret-scope-audit-source-{UNIQUE_SUFFIX}"
 
 
 class ContractError(Exception):
@@ -60,13 +64,35 @@ def validate_common(
     return job, steps
 
 
-def validate_checkout(step: dict, name: str) -> None:
+def validate_isolation(job: dict, source: str, name: str) -> None:
+    defaults = require_keys(job["defaults"], {"run"}, f"{name}.defaults")
+    run_defaults = require_keys(defaults["run"], {"working-directory"}, f"{name}.defaults.run")
+    require(
+        run_defaults["working-directory"] == source,
+        f"{name} run steps must use the isolated checkout",
+    )
+
+
+def validate_checkout(step: dict, name: str, source: str) -> None:
     require_keys(step, {"name", "uses", "with"}, name)
     require(isinstance(step["uses"], str), f"{name}.uses must be a string")
     require(CHECKOUT.fullmatch(step["uses"]) is not None, f"{name}.uses must be a full-SHA checkout pin")
-    checkout_with = require_keys(step["with"], {"ref", "persist-credentials"}, f"{name}.with")
+    checkout_with = require_keys(
+        step["with"], {"ref", "path", "persist-credentials"}, f"{name}.with"
+    )
     require(checkout_with["ref"] == "${{ github.sha }}", f"{name}.with.ref must equal github.sha")
+    require(checkout_with["path"] == source, f"{name} path must be unique per run, attempt, and job")
     require(checkout_with["persist-credentials"] is False, f"{name} must not persist credentials")
+
+
+def validate_cleanup(step: dict, name: str, source: str) -> None:
+    require_keys(step, {"name", "if", "working-directory", "run"}, name)
+    require(step["if"] == "${{ always() }}", f"{name} must always run")
+    require(
+        step["working-directory"] == "${{ github.workspace }}",
+        f"{name} must run from the workspace root",
+    )
+    require(step["run"] == f'rm -rf "{source}"', f"{name} must remove only its isolated checkout")
 
 
 def validate_watchdog(document: object) -> None:
@@ -77,10 +103,11 @@ def validate_watchdog(document: object) -> None:
     require(document["permissions"]["contents"] == "read", "watchdog contents permission changed")
     schedule = require_keys(workflow_on(document), {"schedule"}, "on")["schedule"]
     require(schedule == [{"cron": "*/15 * * * *"}], "watchdog nominal schedule changed")
-    require_keys(job, {"runs-on", "timeout-minutes", "steps"}, "jobs.watchdog")
-    require(len(steps) == 3, "watchdog must have exactly three steps")
+    require_keys(job, {"runs-on", "defaults", "timeout-minutes", "steps"}, "jobs.watchdog")
+    validate_isolation(job, WATCHDOG_SOURCE, "jobs.watchdog")
+    require(len(steps) == 4, "watchdog must have exactly four steps")
     require(steps[0]["name"] == "Check out the watchdog", "watchdog checkout step name changed")
-    validate_checkout(steps[0], "watchdog checkout")
+    validate_checkout(steps[0], "watchdog checkout", WATCHDOG_SOURCE)
 
     sweep = require_keys(steps[1], {"name", "env", "run"}, "watchdog sweep")
     require(
@@ -116,26 +143,28 @@ def validate_watchdog(document: object) -> None:
         cadence["run"] == "python3 scripts/fleet-watchdog-cadence.py",
         "watchdog cadence command must remain static",
     )
+    validate_cleanup(steps[3], "watchdog cleanup", WATCHDOG_SOURCE)
 
     selector_job = require_keys(
         document["jobs"]["selector-health"],
-        {"runs-on", "timeout-minutes", "steps"},
+        {"runs-on", "defaults", "timeout-minutes", "steps"},
         "jobs.selector-health",
     )
+    validate_isolation(selector_job, WATCHDOG_SOURCE, "jobs.selector-health")
     require(
         selector_job["timeout-minutes"] == 10,
         "selector health must have a budget independent from watchdog",
     )
     selector_steps = selector_job["steps"]
     require(
-        isinstance(selector_steps, list) and len(selector_steps) == 2,
-        "selector health must have exactly two steps",
+        isinstance(selector_steps, list) and len(selector_steps) == 3,
+        "selector health must have exactly three steps",
     )
     require(
         selector_steps[0]["name"] == "Check out selector health",
         "selector-health checkout step name changed",
     )
-    validate_checkout(selector_steps[0], "selector-health checkout")
+    validate_checkout(selector_steps[0], "selector-health checkout", WATCHDOG_SOURCE)
     selector_health = require_keys(
         selector_steps[1], {"name", "env", "run"}, "selector health report"
     )
@@ -154,14 +183,16 @@ def validate_watchdog(document: object) -> None:
         selector_health["run"] == "bash scripts/runner-selector-health.sh",
         "selector health must remain report-only",
     )
+    validate_cleanup(selector_steps[2], "selector-health cleanup", WATCHDOG_SOURCE)
 
 
 def validate_admission(document: object) -> None:
     job, steps = validate_common(document, "reconcile")
-    require_keys(job, {"runs-on", "timeout-minutes", "steps"}, "jobs.reconcile")
-    require(len(steps) == 4, "runner admission must have exactly four steps")
+    require_keys(job, {"runs-on", "defaults", "timeout-minutes", "steps"}, "jobs.reconcile")
+    validate_isolation(job, ADMISSION_SOURCE, "jobs.reconcile")
+    require(len(steps) == 5, "runner admission must have exactly five steps")
     require(steps[0]["name"] == "Check out the runner admission reconciler", "admission checkout step name changed")
-    validate_checkout(steps[0], "admission checkout")
+    validate_checkout(steps[0], "admission checkout", ADMISSION_SOURCE)
 
     reconcile = require_keys(steps[1], {"name", "id", "env", "run"}, "admission reconcile")
     require(reconcile["name"] == "Reconcile runner admission against routing policy", "reconcile step name changed")
@@ -201,6 +232,7 @@ def validate_admission(document: object) -> None:
         require(followup["if"] == f"steps.reconcile.outputs.code == '{code}'", f"{name} condition changed")
         followup_env = require_keys(followup["env"], env_keys, f"{name} env")
         require(followup_env["GH_TOKEN"] == "${{ secrets.GITHUB_TOKEN }}", f"{name} gained a privileged token")
+    validate_cleanup(steps[4], "admission cleanup", ADMISSION_SOURCE)
 
 
 def validate_secret_scope(document: object) -> None:
@@ -214,21 +246,23 @@ def validate_secret_scope(document: object) -> None:
     concurrency = require_keys(document["concurrency"], {"group", "cancel-in-progress"}, "concurrency")
     require(concurrency["group"] == "org-secret-scope-audit", "secret-scope concurrency group changed")
     require(concurrency["cancel-in-progress"] is False, "secret-scope runs must not cancel in progress")
-    require_keys(job, {"runs-on", "timeout-minutes", "steps"}, "jobs.audit")
+    require_keys(job, {"runs-on", "defaults", "timeout-minutes", "steps"}, "jobs.audit")
+    validate_isolation(job, SECRET_SCOPE_SOURCE, "jobs.audit")
     require(
         job["runs-on"]
         == "${{ fromJSON(vars.VERJSON_LANE_PRIVILEGED || vars.VERJSON_LANE_FALLBACK || '[\"ubuntu-24.04\"]') }}",
         "secret-scope runner route changed",
     )
     require(job["timeout-minutes"] == 10, "secret-scope timeout changed")
-    require(len(steps) == 2, "secret-scope audit must have exactly two steps")
+    require(len(steps) == 3, "secret-scope audit must have exactly three steps")
     require(steps[0].get("name") == "Check out the secret-scope audit", "secret-scope checkout name changed")
-    validate_checkout(steps[0], "secret-scope checkout")
+    validate_checkout(steps[0], "secret-scope checkout", SECRET_SCOPE_SOURCE)
     audit = require_keys(steps[1], {"name", "env", "run"}, "secret-scope audit")
     require(audit["name"] == "Compare live scope with reviewed policy", "secret-scope audit name changed")
     env = require_keys(audit["env"], {"GH_TOKEN"}, "secret-scope audit env")
     require(env["GH_TOKEN"] == "${{ secrets.ORG_ADMIN_TOKEN }}", "secret-scope token binding changed")
     require(audit["run"] == "python3 scripts/org-secret-scope-audit.py", "secret-scope command changed")
+    validate_cleanup(steps[2], "secret-scope cleanup", SECRET_SCOPE_SOURCE)
 
 
 def load(text: str) -> object:

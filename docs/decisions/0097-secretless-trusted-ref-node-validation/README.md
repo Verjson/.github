@@ -1,4 +1,4 @@
-# 0096 — Extend secretless Node validation to trusted refs
+# 0097 — Extend secretless Node validation to trusted refs
 
 - **Date:** 2026-08-12
 - **Issue:** [Verjson/.github#761](https://github.com/Verjson/.github/issues/761)

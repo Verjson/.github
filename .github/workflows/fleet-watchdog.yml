@@ -57,12 +57,16 @@ jobs:
     # Independent from watchdog: a slow or failed org-wide inventory must never
     # consume the deadlock cancellation job's established 10-minute budget.
     runs-on: ${{ fromJSON(vars.VERJSON_RUNNER_FASTLANE || '["ubuntu-24.04"]') }}
+    defaults:
+      run:
+        working-directory: .fleet-watchdog-source-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
     timeout-minutes: 10
     steps:
       - name: Check out selector health
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ github.sha }}
+          path: .fleet-watchdog-source-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
           persist-credentials: false
 
       - name: Report unsatisfiable runner selectors
@@ -75,9 +79,17 @@ jobs:
           ORG: ${{ github.repository_owner }}
         run: bash scripts/runner-selector-health.sh
 
+      - name: Remove the isolated selector-health checkout
+        if: ${{ always() }}
+        working-directory: ${{ github.workspace }}
+        run: rm -rf ".fleet-watchdog-source-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}"
+
   watchdog:
     # Never gate this job on the fleet it is policing.
     runs-on: ${{ fromJSON(vars.VERJSON_RUNNER_FASTLANE || '["ubuntu-24.04"]') }}
+    defaults:
+      run:
+        working-directory: .fleet-watchdog-source-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
     timeout-minutes: 10
     steps:
       - name: Check out the watchdog
@@ -85,6 +97,7 @@ jobs:
         with:
           # Schedule resolves this to the immutable default-branch SHA for the run.
           ref: ${{ github.sha }}
+          path: .fleet-watchdog-source-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
           persist-credentials: false
 
       - name: Confirm the retired poll watchdog has no candidates
@@ -126,3 +139,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           WATCHDOG_MAX_GAP_MINUTES: '30'
         run: python3 scripts/fleet-watchdog-cadence.py
+
+      - name: Remove the isolated watchdog checkout
+        if: ${{ always() }}
+        working-directory: ${{ github.workspace }}
+        run: rm -rf ".fleet-watchdog-source-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}"

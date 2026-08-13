@@ -27,8 +27,13 @@ permissions:
 jobs:
   reconcile:
     runs-on: ${{ fromJSON(vars.VERJSON_LANE_TRUSTED || vars.VERJSON_LANE_FALLBACK || '["ubuntu-24.04"]') }}
+    defaults:
+      run:
+        working-directory: .rework-reconcile-source-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: .rework-reconcile-source-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
 
       - name: Reconcile rework telemetry (observe-and-report only)
         id: reconcile
@@ -57,3 +62,8 @@ jobs:
             --title "AI-work rework — weekly reconciler ($(date -u +%Y-%m-%d))" \
             --label rework-telemetry \
             --body-file "${{ steps.reconcile.outputs.body_file }}"
+
+      - name: Remove the isolated rework checkout
+        if: ${{ always() }}
+        working-directory: ${{ github.workspace }}
+        run: rm -rf ".rework-reconcile-source-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}"
