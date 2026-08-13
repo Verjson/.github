@@ -10,15 +10,23 @@ permissions:
 jobs:
   audit:
     runs-on: ${{ fromJSON(vars.VERJSON_RUNNER_FASTLANE || '["ubuntu-24.04"]') }}
+    defaults:
+      run:
+        working-directory: .privileged-merge-conformance-source-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
     timeout-minutes: 10
     steps:
       - name: Check out the fleet conformance audit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ github.sha }}
+          path: .privileged-merge-conformance-source-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
           persist-credentials: false
       - name: Verify privileged merge delivery across the active fleet
         env:
           GH_TOKEN: ${{ secrets.ORG_ADMIN_TOKEN }}
           PRIVILEGED_MERGE_CONTRACT_SHA: ${{ github.sha }}
         run: bash scripts/privileged-merge-conformance.sh
+      - name: Remove the isolated fleet-conformance checkout
+        if: ${{ always() }}
+        working-directory: ${{ github.workspace }}
+        run: rm -rf ".privileged-merge-conformance-source-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}"

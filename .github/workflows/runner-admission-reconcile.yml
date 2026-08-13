@@ -40,6 +40,9 @@ jobs:
     # supposed to report. Hosted is also the safer host for ORG_ADMIN_TOKEN: this
     # is scheduled default-branch code with no fork input, on an ephemeral runner.
     runs-on: ${{ fromJSON(vars.VERJSON_RUNNER_FASTLANE || '["ubuntu-24.04"]') }}
+    defaults:
+      run:
+        working-directory: .runner-admission-reconcile-source-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
     timeout-minutes: 15
     steps:
       - name: Check out the runner admission reconciler
@@ -47,6 +50,7 @@ jobs:
         with:
           # Schedule resolves this to the immutable default-branch SHA for the run.
           ref: ${{ github.sha }}
+          path: .runner-admission-reconcile-source-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
           persist-credentials: false
 
       - name: Reconcile runner admission against routing policy
@@ -146,3 +150,8 @@ jobs:
             gh issue close "$existing" --repo "$GITHUB_REPOSITORY" \
               --comment 'Runner admission is reconciled again — every active repository is admitted to the group its visibility routes it to, both lanes have online capacity, and no runner sits in the default group.'
           fi
+
+      - name: Remove the isolated runner-admission checkout
+        if: ${{ always() }}
+        working-directory: ${{ github.workspace }}
+        run: rm -rf ".runner-admission-reconcile-source-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}"

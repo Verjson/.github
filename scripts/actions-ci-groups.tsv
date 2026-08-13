@@ -3,6 +3,7 @@ platform	bash scripts/actionlint-trigger.test.sh
 platform	bash scripts/actionlint-install.test.sh
 platform	bash scripts/actionlint-reusable.test.sh
 platform	python3 scripts/action-pin-conformance.test.py
+platform	python3 scripts/workflow-checkout-isolation.test.py
 platform	bash scripts/actions-ci-policy.test.sh
 platform	bash scripts/actions-ci-groups.test.sh
 platform	bash scripts/make-portability.test.sh
