@@ -31,6 +31,11 @@ at least eight characters when the source line permits; a shorter source line
 requires its complete trimmed text. The canonical validator rejects missing,
 multiline, oversized, trivial, or non-matching evidence.
 
+A blocking finding location names exactly one repository-relative file and one
+positive line. Ranges and comma-separated line lists are rejected rather than
+collapsed to their first line. Historical normalization of those shapes remains
+only for non-authorizing `review_first` inspection pointers and `followups`.
+
 The validator receives the receipt-bound review head, requires it to equal the
 checked-out `HEAD`, and reads `HEAD:path` through Git's object database. It
 accepts only repository-relative paths and UTF-8 blobs, verifies the cited line
@@ -65,5 +70,6 @@ fields to them.
 
 The registered merge-gate suite executes valid exact-head binding, the nearby
 canary `--refs` confusion, the generator-versus-synthetic-fixture confusion,
-head mismatch, unsafe paths, provider schema conformance, publication rendering,
-and the unchanged one-to-two cumulative reservation guard.
+range/list location rejection, head mismatch, unsafe paths, provider schema
+conformance, publication rendering, and the unchanged one-to-two cumulative
+reservation guard.

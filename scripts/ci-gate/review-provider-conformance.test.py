@@ -57,11 +57,16 @@ class ReviewProviderConformanceTest(unittest.TestCase):
 
         self.assertIn("review_first: [{location, why}]", prompt)
         self.assertIn("findings: [{location, reason, failure_scenario, evidence}]", prompt)
+        self.assertIn("Every findings.location MUST contain exactly one repository-relative", prompt)
         self.assertIn("followups: [{location, note}]", prompt)
         self.assertIn(".review_first | map(\"- `\" + .location + \"` — \" + .why)", renderer)
         self.assertIn("(.evidence | @html)", renderer)
         self.assertIn("prompt: ${{ steps.prep.outputs.review_prompt }}", workflow)
         self.assertEqual(workflow.count("REVIEW_PROMPT: ${{ steps.prep.outputs.review_prompt }}"), 3)
+        self.assertIn(
+            "no ranges or comma-separated locations",
+            openai.SCHEMA["properties"]["findings"]["items"]["properties"]["location"]["description"],
+        )
 
     def test_every_provider_output_path_uses_the_same_canonical_confirmation(self):
         canonical_text = json.dumps(CANONICAL)

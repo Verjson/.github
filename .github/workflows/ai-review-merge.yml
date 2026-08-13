@@ -1088,6 +1088,10 @@ jobs:
           support it. Do not call GitHub or submit a review yourself. Set
           blocking=true only for real defects. Keep summary concise.
 
+          Every findings.location MUST contain exactly one repository-relative
+          file and one positive line number in the form path/to/file.ext:42.
+          Never return a line range or comma-separated lines for a finding; the
+          evidence validator rejects rather than normalizes those locations.
           Every blocking finding MUST include "evidence": a single-line exact
           source fragment copied from its cited location at the checked-out PR
           head. Use 8-240 characters when the source line is at least 8
@@ -1154,7 +1158,7 @@ jobs:
             --model ${{ needs.preflight.outputs.model }}
             --max-turns 30
             --max-budget-usd ${{ needs.preflight.outputs.budget_usd }}
-            --json-schema '{"type":"object","properties":{"blocking":{"type":"boolean"},"summary":{"type":"string"},"review_first":{"type":"array","items":{"type":"object","properties":{"location":{"type":"string","description":"Exactly one file and positive line number (path/to/file.ext:42); no ranges or comma-separated locations."},"why":{"type":"string"}},"required":["location","why"],"additionalProperties":false}},"findings":{"type":"array","items":{"type":"object","properties":{"location":{"type":"string"},"reason":{"type":"string"},"failure_scenario":{"type":"string"},"evidence":{"type":"string","description":"An 8-240 character exact fragment from the cited source line, or the entire trimmed line when shorter than 8 characters."}},"required":["location","reason","failure_scenario","evidence"],"additionalProperties":false}},"followups":{"type":"array","items":{"type":"object","properties":{"location":{"type":"string"},"note":{"type":"string"}},"required":["location","note"],"additionalProperties":false}}},"required":["blocking","summary","review_first","findings","followups"],"additionalProperties":false}'
+            --json-schema '{"type":"object","properties":{"blocking":{"type":"boolean"},"summary":{"type":"string"},"review_first":{"type":"array","items":{"type":"object","properties":{"location":{"type":"string","description":"Exactly one file and positive line number (path/to/file.ext:42); no ranges or comma-separated locations."},"why":{"type":"string"}},"required":["location","why"],"additionalProperties":false}},"findings":{"type":"array","items":{"type":"object","properties":{"location":{"type":"string","description":"Exactly one repository-relative file and one positive line number (path/to/file.ext:42); no ranges or comma-separated locations."},"reason":{"type":"string"},"failure_scenario":{"type":"string"},"evidence":{"type":"string","description":"An 8-240 character exact fragment from the cited source line, or the entire trimmed line when shorter than 8 characters."}},"required":["location","reason","failure_scenario","evidence"],"additionalProperties":false}},"followups":{"type":"array","items":{"type":"object","properties":{"location":{"type":"string"},"note":{"type":"string"}},"required":["location","note"],"additionalProperties":false}}},"required":["blocking","summary","review_first","findings","followups"],"additionalProperties":false}'
             --allowedTools "Read,Grep,Glob"
 
       - name: OpenAI review (explicit re-review only)

@@ -333,6 +333,47 @@ after=$(git ls-remote --refs origin "$tag_ref")
         self.assertEqual(result["diagnostic"]["path"], "findings[0].evidence")
         self.assertEqual(result["diagnostic"]["observed"], "fragment mismatch")
 
+    def test_canary_range_cannot_collapse_nearby_probe_evidence_to_its_first_line(self):
+        canary = """before=$(git ls-remote --refs origin "$tag_ref")
+commit=$(git ls-remote origin "$branch_ref")
+peeled=$(git ls-remote origin "$tag_ref^{}")
+after=$(git ls-remote --refs origin "$tag_ref")
+"""
+        with tempfile.TemporaryDirectory() as directory:
+            head = self.committed_fixture(directory, {".github/workflows/release-app-canary.yml": canary})
+            verdict = {
+                "blocking": True,
+                "summary": "Tag verification is wrong.",
+                "review_first": [],
+                "findings": [{
+                    "location": ".github/workflows/release-app-canary.yml:1-3, 3",
+                    "reason": "The peeled lookup suppresses the tag.",
+                    "failure_scenario": "The canary rejects a successful push.",
+                    "evidence": "git ls-remote --refs origin \"$tag_ref\"",
+                }],
+                "followups": [],
+            }
+
+            result = review.confirm_output(json.dumps(verdict), False, directory, head)
+
+        self.assertFalse(result["usable"])
+        self.assertEqual(result["diagnostic"]["path"], "findings[0].location")
+        self.assertEqual(result["diagnostic"]["expected"], "one file and exactly one positive line")
+
+    def test_non_authorizing_locations_retain_documented_range_normalization(self):
+        verdict = {
+            "blocking": False,
+            "summary": "No defects found.",
+            "review_first": [{"location": "gate.yml:8-10, 15", "why": "Inspect this hunk."}],
+            "findings": [],
+            "followups": [{"location": "app.py:12-14, 20", "note": "Improve this later."}],
+        }
+
+        confirmed = review.canonicalize_verdict(verdict, sensitive=True)
+
+        self.assertEqual(confirmed["review_first"][0]["location"], "gate.yml:8")
+        self.assertEqual(confirmed["followups"][0]["location"], "app.py:12")
+
     def test_synthetic_generator_mutation_cannot_evidence_the_generator(self):
         files = {
             "scripts/gen-changelog-caller.sh": "printf '%s\\n' 'release_app_private_key: inherited'\n",

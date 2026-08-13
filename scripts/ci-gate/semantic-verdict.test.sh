@@ -20,6 +20,7 @@ if grep -qF "$legacy_normalizer" "$workflow"; then exit 1; fi
 grep -qF 'Every review_first.location MUST contain exactly one file and one' "$workflow"
 grep -qF 'no ranges or comma-separated locations.' "$workflow"
 grep -qF 'fragment does not occur on that exact line.' "$workflow"
+grep -qF 'Never return a line range or comma-separated lines for a finding' "$workflow"
 
 python3 -m py_compile "$validator"
 

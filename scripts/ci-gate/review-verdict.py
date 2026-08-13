@@ -24,9 +24,10 @@ MAX_EVIDENCE_CHARS = 240
 MIN_EVIDENCE_CHARS = 8
 MAX_SOURCE_BLOB_BYTES = 2 * 1024 * 1024
 LINE_REFERENCE = r"[1-9][0-9]*(?:-[1-9][0-9]*)?"
-LOCATION = re.compile(
+NORMALIZABLE_LOCATION = re.compile(
     rf"^(?P<path>[^\r\n]+):(?P<line>[1-9][0-9]*)(?:-[1-9][0-9]*)?(?:\s*,\s*{LINE_REFERENCE})*$"
 )
+EXACT_LOCATION = re.compile(r"^(?P<path>[^\r\n]+):(?P<line>[1-9][0-9]*)$")
 
 
 class VerdictError(ValueError):
@@ -72,26 +73,27 @@ def reject_unknown_fields(item: dict, accepted: set[str], path: str) -> None:
         raise VerdictError(path, "documented fields and metadata", "one or more unknown fields")
 
 
-def normalize_location_text(location: object, path: str) -> str:
+def normalize_location_text(location: object, path: str, *, exact_line: bool = False) -> str:
     if not isinstance(location, str):
         raise VerdictError(path, "location text", observed_shape(location))
-    match = LOCATION.fullmatch(location.strip())
+    match = (EXACT_LOCATION if exact_line else NORMALIZABLE_LOCATION).fullmatch(location.strip())
     if not match:
-        raise VerdictError(path, "one file and positive line", "invalid location text")
+        expected = "one file and exactly one positive line" if exact_line else "one file and positive line"
+        raise VerdictError(path, expected, "invalid location text")
     return f"{match.group('path').strip()}:{match.group('line')}"
 
 
-def normalize_location(item: dict, path: str) -> str:
+def normalize_location(item: dict, path: str, *, exact_line: bool = False) -> str:
     location = alias_value(item, ("location",), path)
     file = alias_value(item, ("file", "path"), path)
     line = alias_value(item, ("line", "line_number"), path)
     candidates = []
     if location is not MISSING:
-        candidates.append(normalize_location_text(location, path))
+        candidates.append(normalize_location_text(location, path, exact_line=exact_line))
     if file is not MISSING or line is not MISSING:
         if not isinstance(file, str) or not isinstance(line, (int, str)) or isinstance(line, bool):
             raise VerdictError(path, "file/path plus line", observed_shape(item))
-        candidates.append(normalize_location_text(f"{file}:{line}", path))
+        candidates.append(normalize_location_text(f"{file}:{line}", path, exact_line=exact_line))
     if not candidates:
         raise VerdictError(path, "location text or file/path plus line", observed_shape(item))
     if any(candidate != candidates[0] for candidate in candidates[1:]):
@@ -129,7 +131,7 @@ def required_text(item: dict, aliases: tuple[str, ...], path: str) -> str:
 def normalize_finding(item: object, index: int) -> dict:
     if not isinstance(item, dict):
         raise VerdictError(f"findings[{index}]", "object", observed_shape(item))
-    location = normalize_location(item, f"findings[{index}].location")
+    location = normalize_location(item, f"findings[{index}].location", exact_line=True)
     reason = required_text(item, ("reason", "why", "description"), f"findings[{index}].reason")
     failure_scenario = required_text(
         item,
