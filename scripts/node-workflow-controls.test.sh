@@ -78,7 +78,7 @@ for workflow in "$ci" "$release"; do
 
   cache_guard="cache: \${{ inputs.cache && hashFiles(inputs.cache-dependency-path) != '' && 'npm' || '' }}"
   [ "$workflow" = "$ci" ] \
-    && cache_guard="cache: \${{ !inputs.secretless-pr && inputs.cache && hashFiles(inputs.cache-dependency-path) != '' && 'npm' || '' }}"
+    && cache_guard="cache: \${{ !(inputs.secretless-pr || inputs.secretless-trusted-ref) && inputs.cache && hashFiles(inputs.cache-dependency-path) != '' && 'npm' || '' }}"
   grep -qF "$cache_guard" "$workflow" \
     && pass "$name enables setup-node's npm cache only for a matching lockfile" \
     || fail "$name does not condition npm caching on cache-dependency-path"
@@ -115,7 +115,7 @@ done
   && pass "node-release bounds its release job" \
   || fail "node-release does not apply the caller bound to its job"
 
-{ grep -qF 'submodules: ${{ inputs.secretless-pr && '\''false'\'' || '\''recursive'\'' }}' "$ci" \
+{ grep -qF 'submodules: ${{ (inputs.secretless-pr || inputs.secretless-trusted-ref) && '\''false'\'' || '\''recursive'\'' }}' "$ci" \
   && grep -qF "inputs.schema-dir != ''" "$ci" \
   && grep -qF 'working-directory: ${{ inputs.schema-dir }}' "$ci" \
   && [ "$(grep -cF 'NODE_AUTH_TOKEN: ${{ secrets.NODE_AUTH_TOKEN }}' "$ci")" -ge 2 ]; } \

@@ -32,7 +32,7 @@ assert build["runs-on"].startswith("${{ inputs.secretless-pr && fromJSON(vars.VE
 assert build["runs-on"].index("inputs.secretless-pr") < build["runs-on"].index("inputs.runner")
 
 acquire_steps = acquire["steps"]
-boundary = next(step for step in acquire_steps if step.get("name") == "Enforce the secretless PR boundary")
+boundary = next(step for step in acquire_steps if step.get("name") == "Enforce the secretless event boundary")
 assert boundary["env"]["HEAD_REPOSITORY"] == "${{ github.event.pull_request.head.repo.full_name }}"
 assert boundary["env"]["REPOSITORY"] == "${{ github.repository }}"
 assert "same-repository pull request" in boundary["run"]
@@ -61,11 +61,11 @@ assert checkout["with"]["persist-credentials"] is False
 
 build_steps = build["steps"]
 build_checkout = next(step for step in build_steps if str(step.get("uses", "")).startswith("actions/checkout@"))
-assert "secretless-pr" in build_checkout["with"]["persist-credentials"]
-assert "secretless-pr" in build_checkout["with"]["submodules"]
-assert build_checkout["with"]["token"].startswith("${{ inputs.secretless-pr && github.token")
+assert "inputs.secretless-pr || inputs.secretless-trusted-ref" in build_checkout["with"]["persist-credentials"]
+assert "inputs.secretless-pr || inputs.secretless-trusted-ref" in build_checkout["with"]["submodules"]
+assert "inputs.secretless-pr || inputs.secretless-trusted-ref" in build_checkout["with"]["token"]
 root_install = next(step for step in build_steps if step.get("run") == "npm ci" and "working-directory" not in step)
-assert "!inputs.secretless-pr" in root_install["if"]
+assert "!(inputs.secretless-pr || inputs.secretless-trusted-ref)" in root_install["if"]
 for command in ("npm run build", "npm run typecheck --if-present", "npm test", "npm run lint --if-present"):
     step = next(step for step in build_steps if step.get("run") == command)
     assert "secrets." not in str(step.get("env", {}))
@@ -80,7 +80,7 @@ import yaml
 
 doc = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))
 for step in doc["jobs"]["acquire-secretless-dependencies"]["steps"]:
-    if step.get("name") == "Enforce the secretless PR boundary":
+    if step.get("name") == "Enforce the secretless event boundary":
         open(sys.argv[2], "w", encoding="utf-8").write(step["run"])
     if step.get("name") == "Reject consumer-controlled npm configuration":
         open(sys.argv[3], "w", encoding="utf-8").write(step["run"])
@@ -89,9 +89,11 @@ for step in doc["jobs"]["acquire-secretless-dependencies"]["steps"]:
 PY
 
 if EVENT_NAME=pull_request HEAD_REPOSITORY=Verjson/example REPOSITORY=Verjson/example \
-    NODE_AUTH_TOKEN=token SCHEMA_DIR='' APPROVED_INTERNAL_PACKAGES='' bash "$boundary_script" \
+    NODE_AUTH_TOKEN=token SCHEMA_DIR='' APPROVED_INTERNAL_PACKAGES='' \
+    SECRETLESS_PR=true SECRETLESS_TRUSTED_REF=false bash "$boundary_script" \
     && ! EVENT_NAME=pull_request HEAD_REPOSITORY=attacker/fork REPOSITORY=Verjson/example \
-      NODE_AUTH_TOKEN=token SCHEMA_DIR='' APPROVED_INTERNAL_PACKAGES='' bash "$boundary_script" >/dev/null 2>&1; then
+      NODE_AUTH_TOKEN=token SCHEMA_DIR='' APPROVED_INTERNAL_PACKAGES='' \
+      SECRETLESS_PR=true SECRETLESS_TRUSTED_REF=false bash "$boundary_script" >/dev/null 2>&1; then
   pass "same-repository PRs are admitted and fork PRs fail closed"
 else
   fail "secretless event admission does not enforce same-repository pull requests"

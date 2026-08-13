@@ -1,0 +1,107 @@
+#!/usr/bin/env bash
+set -uo pipefail
+
+root="$(cd "$(dirname "$0")/../.." && pwd)"
+workflow="$root/.github/workflows/node-ci.yml"
+docs="$root/docs/node-workflows.md"
+failures=0
+
+pass() { printf 'ok - %s\n' "$1"; }
+fail() { printf 'not ok - %s\n' "$1" >&2; failures=$((failures + 1)); }
+
+python3 - "$workflow" <<'PY' \
+  && pass "trusted-ref mode reuses the bounded secretless pipeline" \
+  || fail "trusted-ref mode does not preserve the secretless pipeline boundary"
+import sys
+from pathlib import Path
+
+import yaml
+
+workflow = yaml.safe_load(Path(sys.argv[1]).read_text(encoding="utf-8"))
+inputs = workflow[True]["workflow_call"]["inputs"]
+jobs = workflow["jobs"]
+assert inputs["secretless-pr"]["default"] is False
+assert inputs["secretless-trusted-ref"]["default"] is False
+
+acquire = jobs["acquire-secretless-dependencies"]
+build = jobs["build-test"]
+cleanup = jobs["cleanup-secretless-transfer"]
+assert acquire["if"] == "(inputs.secretless-pr || inputs.secretless-trusted-ref) && needs.eligibility.outputs.should-run != 'false'"
+assert acquire["permissions"] == {"contents": "read"}
+assert acquire["runs-on"] == "${{ fromJSON(vars.VERJSON_LANE_UNTRUSTED || '[\"ubuntu-24.04\"]') }}"
+assert build["permissions"] == {"contents": "read"}
+assert build["runs-on"].startswith("${{ inputs.secretless-pr && fromJSON(vars.VERJSON_LANE_UNTRUSTED")
+assert "secretless-trusted-ref" not in build["runs-on"]
+assert cleanup["permissions"] == {"actions": "write"}
+assert "inputs.secretless-pr || inputs.secretless-trusted-ref" in cleanup["if"]
+
+steps = build["steps"]
+checkout = next(step for step in steps if str(step.get("uses", "")).startswith("actions/checkout@"))
+assert "inputs.secretless-pr || inputs.secretless-trusted-ref" in checkout["with"]["submodules"]
+assert "inputs.secretless-pr || inputs.secretless-trusted-ref" in checkout["with"]["token"]
+assert "inputs.secretless-pr || inputs.secretless-trusted-ref" in checkout["with"]["persist-credentials"]
+download = next(step for step in steps if str(step.get("uses", "")).startswith("actions/download-artifact@"))
+install = next(step for step in steps if step.get("name") == "Install from verified secretless npm cache")
+rebuild = next(step for step in steps if step.get("name") == "Rebuild exact approved lifecycle packages without credentials")
+plan = next(step for step in steps if step.get("name") == "Run exact credentialless consumer script plan")
+for step in (download, install, rebuild, plan):
+    assert "inputs.secretless-pr || inputs.secretless-trusted-ref" in step["if"]
+for name in ("GH_TOKEN", "GITHUB_TOKEN", "NODE_AUTH_TOKEN", "NPM_TOKEN",
+             "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN",
+             "GOOGLE_APPLICATION_CREDENTIALS", "AZURE_CREDENTIALS",
+             "ACTIONS_ID_TOKEN_REQUEST_TOKEN", "ACTIONS_ID_TOKEN_REQUEST_URL"):
+    assert install["env"][name] == ""
+assert "npm ci --ignore-scripts" in install["run"]
+assert "printf '%s=\\n' \"$name\"" in install["run"]
+assert 'subprocess.run(["npm", "rebuild", *requested], check=True)' in rebuild["run"]
+assert 'subprocess.run(["npm", "run", name], check=True, env=script_env)' in plan["run"]
+
+for command in ("npm run build", "npm run typecheck --if-present", "npm test", "npm run lint --if-present"):
+    step = next(step for step in steps if step.get("run") == command)
+    assert "!(inputs.secretless-pr || inputs.secretless-trusted-ref)" in step["if"]
+PY
+
+boundary_script="$(mktemp)"
+trap 'rm -f "$boundary_script"' EXIT
+python3 - "$workflow" "$boundary_script" <<'PY'
+import sys
+from pathlib import Path
+
+import yaml
+
+workflow = yaml.safe_load(Path(sys.argv[1]).read_text(encoding="utf-8"))
+step = next(step for step in workflow["jobs"]["acquire-secretless-dependencies"]["steps"]
+            if step.get("name") == "Enforce the secretless event boundary")
+Path(sys.argv[2]).write_text(step["run"], encoding="utf-8")
+assert step["env"]["SECRETLESS_PR"] == "${{ inputs.secretless-pr }}"
+assert step["env"]["SECRETLESS_TRUSTED_REF"] == "${{ inputs.secretless-trusted-ref }}"
+PY
+
+run_boundary() {
+  EVENT_NAME="$1" HEAD_REPOSITORY="$2" REPOSITORY="Verjson/example" \
+    NODE_AUTH_TOKEN="${3-token}" SCHEMA_DIR='' APPROVED_INTERNAL_PACKAGES='' \
+    SECRETLESS_PR="$4" SECRETLESS_TRUSTED_REF="$5" bash "$boundary_script" >/dev/null 2>&1
+}
+
+if run_boundary pull_request Verjson/example token true false \
+    && ! run_boundary pull_request attacker/fork token true false \
+    && run_boundary push '' token false true \
+    && run_boundary workflow_dispatch '' token false true \
+    && ! run_boundary pull_request Verjson/example token false true \
+    && ! run_boundary push '' token true false \
+    && ! run_boundary push '' token true true \
+    && ! run_boundary push '' '' false true; then
+  pass "event admission keeps PR and trusted-ref credential lanes disjoint"
+else
+  fail "event admission permits an untrusted or ambiguous credential lane"
+fi
+
+grep -qF 'secretless-trusted-ref: true' "$docs" \
+  && grep -qF 'on:' "$docs" \
+  && grep -qF 'push:' "$docs" \
+  && grep -qF 'workflow_dispatch:' "$docs" \
+  && grep -qF 'secrets: inherit' "$docs" \
+  && pass "adopter guidance documents the trusted event and permission split" \
+  || fail "adopter guidance omits the trusted event or permission split"
+
+exit "$failures"

@@ -13,7 +13,7 @@ name: node-ci (reusable)
 #   jobs:
 #     ci:
 #       permissions:              # REQUIRED by the called workflow's jobs:
-#         actions: write          # REQUIRED only for secretless-pr transfer cleanup
+#         actions: write          # REQUIRED for either secretless transfer cleanup
 #         contents: read          # a reusable's GITHUB_TOKEN is capped by the
 #         statuses: read          # REQUIRED: lets eligibility read the head's
 #                                 # renovate/stability-days status to defer CI on
@@ -74,6 +74,15 @@ on:
           only for pull_request validation; requires NODE_AUTH_TOKEN and
           approved-internal-packages plus caller actions: write for exact-artifact
           cleanup, but does not require caller packages: read.
+        required: false
+        type: boolean
+        default: false
+      secretless-trusted-ref:
+        description: >-
+          Apply the secretless acquisition, transfer, credential scrub, rebuild,
+          and script-plan boundary to push or explicit workflow_dispatch
+          validation. Rejected for pull_request and every other event so
+          PR-controlled code cannot enter the credentialed acquisition job.
         required: false
         type: boolean
         default: false
@@ -273,6 +282,14 @@ jobs:
             echo "::notice::workflow_dispatch — running CI (eligibility check bypassed)."
             exit 0
           fi
+          # Stability-days is a pull-request release-age gate. A trusted push is
+          # already the post-merge/direct-ref validation target and must never be
+          # suppressed by a stale status attached to that commit.
+          if [ "${GITHUB_EVENT_NAME:-}" != "pull_request" ]; then
+            echo "should-run=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::non-PR event — running CI (stability-days does not apply)."
+            exit 0
+          fi
           # Defer only when the release-age gate is ACTIVELY pending. Any
           # uncertainty (API error, missing status) fails OPEN → run CI, so a real
           # PR is never silently skipped. Same signal the gate uses to `defer`.
@@ -287,7 +304,7 @@ jobs:
 
   acquire-secretless-dependencies:
     needs: eligibility
-    if: inputs.secretless-pr && needs.eligibility.outputs.should-run != 'false'
+    if: (inputs.secretless-pr || inputs.secretless-trusted-ref) && needs.eligibility.outputs.should-run != 'false'
     runs-on: ${{ fromJSON(vars.VERJSON_LANE_UNTRUSTED || '["ubuntu-24.04"]') }}
     timeout-minutes: ${{ inputs.timeout-minutes }}
     permissions:
@@ -298,7 +315,7 @@ jobs:
       auxiliary-repository: ${{ steps.resolve-auxiliary-source.outputs.repository }}
       transfer-artifact-id: ${{ steps.upload-secretless-transfer.outputs.artifact-id }}
     steps:
-      - name: Enforce the secretless PR boundary
+      - name: Enforce the secretless event boundary
         env:
           APPROVED_INTERNAL_PACKAGES: ${{ inputs.approved-internal-packages }}
           EVENT_NAME: ${{ github.event_name }}
@@ -306,22 +323,37 @@ jobs:
           NODE_AUTH_TOKEN: ${{ secrets.NODE_AUTH_TOKEN }}
           REPOSITORY: ${{ github.repository }}
           SCHEMA_DIR: ${{ inputs.schema-dir }}
+          SECRETLESS_PR: ${{ inputs.secretless-pr }}
+          SECRETLESS_TRUSTED_REF: ${{ inputs.secretless-trusted-ref }}
         run: |
           set -euo pipefail
-          [ "$EVENT_NAME" = pull_request ] || {
-            echo "::error::secretless-pr is restricted to pull_request validation"
+          [ "$SECRETLESS_PR" != "$SECRETLESS_TRUSTED_REF" ] || {
+            echo "::error::enable exactly one secretless event mode"
             exit 1
           }
-          [ "$HEAD_REPOSITORY" = "$REPOSITORY" ] || {
-            echo "::error::secretless-pr requires a same-repository pull request; fork PRs receive no package credential"
-            exit 1
-          }
+          if [ "$SECRETLESS_PR" = true ]; then
+            [ "$EVENT_NAME" = pull_request ] || {
+              echo "::error::secretless-pr is restricted to pull_request validation"
+              exit 1
+            }
+            [ "$HEAD_REPOSITORY" = "$REPOSITORY" ] || {
+              echo "::error::secretless-pr requires a same-repository pull request; fork PRs receive no package credential"
+              exit 1
+            }
+          else
+            case "$EVENT_NAME" in
+              push|workflow_dispatch) ;;
+              *)
+                echo "::error::secretless-trusted-ref accepts only push or explicit workflow_dispatch validation"
+                exit 1 ;;
+            esac
+          fi
           [ -z "$SCHEMA_DIR" ] || {
-            echo "::error::secretless-pr does not permit credentialed submodule acquisition"
+            echo "::error::secretless modes do not permit credentialed submodule acquisition"
             exit 1
           }
           [ -n "$NODE_AUTH_TOKEN" ] || {
-            echo "::error::secretless-pr requires NODE_AUTH_TOKEN for the acquisition job"
+            echo "::error::secretless mode requires NODE_AUTH_TOKEN for the acquisition job"
             exit 1
           }
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -331,7 +363,7 @@ jobs:
         run: |
           project_config="$(find . -name .npmrc -print -quit)"
           [ -z "$project_config" ] || {
-            echo "::error::secretless-pr rejects PR-controlled npm config: $project_config"
+            echo "::error::secretless mode rejects repository-controlled npm config: $project_config"
             exit 1
           }
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
@@ -382,7 +414,7 @@ jobs:
 
           lock = json.loads(Path("package-lock.json").read_text(encoding="utf-8"))
           if lock.get("lockfileVersion") not in (2, 3):
-              sys.exit("secretless-pr requires package-lock lockfileVersion 2 or 3")
+              sys.exit("secretless mode requires package-lock lockfileVersion 2 or 3")
 
           found = set()
           private_downloads = {}
@@ -560,7 +592,7 @@ jobs:
           set -euo pipefail
           umask 077
           [ -s "$PRIVATE_CACHE_ENTRIES" ] || {
-            echo "::error::secretless-pr requires validated private package downloads"
+            echo "::error::secretless mode requires validated private package downloads"
             exit 1
           }
           : > "$NPM_CONFIG_GLOBALCONFIG"
@@ -714,14 +746,14 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         if: needs.eligibility.outputs.should-run != 'false'
         with:
-          submodules: ${{ inputs.secretless-pr && 'false' || 'recursive' }}
-          token: ${{ inputs.secretless-pr && github.token || secrets.submodules-token || github.token }}
-          persist-credentials: ${{ !inputs.secretless-pr }}
+          submodules: ${{ (inputs.secretless-pr || inputs.secretless-trusted-ref) && 'false' || 'recursive' }}
+          token: ${{ (inputs.secretless-pr || inputs.secretless-trusted-ref) && github.token || secrets.submodules-token || github.token }}
+          persist-credentials: ${{ !(inputs.secretless-pr || inputs.secretless-trusted-ref) }}
       - name: Prepare job-scoped changelog tool cache
         if: needs.eligibility.outputs.should-run != 'false'
         run: echo "VERJSON_CHANGELOG_TOOL_CACHE=$RUNNER_TEMP/verjson-changelog-tools" >> "$GITHUB_ENV"
       - name: Prepare job-scoped npm cache
-        if: needs.eligibility.outputs.should-run != 'false' && inputs.cache && !inputs.secretless-pr
+        if: needs.eligibility.outputs.should-run != 'false' && inputs.cache && !(inputs.secretless-pr || inputs.secretless-trusted-ref)
         run: echo "npm_config_cache=$RUNNER_TEMP/verjson-npm-cache" >> "$GITHUB_ENV"
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         if: needs.eligibility.outputs.should-run != 'false'
@@ -730,18 +762,18 @@ jobs:
           # setup-node caches npm's download cache, never node_modules or build
           # output. An absent lockfile disables caching instead of failing jobs
           # in repositories that do not use npm lockfiles.
-          cache: ${{ !inputs.secretless-pr && inputs.cache && hashFiles(inputs.cache-dependency-path) != '' && 'npm' || '' }}
+          cache: ${{ !(inputs.secretless-pr || inputs.secretless-trusted-ref) && inputs.cache && hashFiles(inputs.cache-dependency-path) != '' && 'npm' || '' }}
           cache-dependency-path: ${{ inputs.cache-dependency-path }}
           package-manager-cache: false
           registry-url: ${{ inputs.scope != '' && 'https://npm.pkg.github.com' || '' }}
           scope: ${{ inputs.scope }}
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        if: needs.eligibility.outputs.should-run != 'false' && inputs.secretless-pr
+        if: needs.eligibility.outputs.should-run != 'false' && (inputs.secretless-pr || inputs.secretless-trusted-ref)
         with:
           name: secretless-npm-cache-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/secretless-transfer-${{ github.run_id }}-${{ github.run_attempt }}
       - name: Install from verified secretless npm cache
-        if: needs.eligibility.outputs.should-run != 'false' && inputs.secretless-pr
+        if: needs.eligibility.outputs.should-run != 'false' && (inputs.secretless-pr || inputs.secretless-trusted-ref)
         env:
           GH_TOKEN: ''
           GITHUB_TOKEN: ''
@@ -915,7 +947,7 @@ jobs:
           } >> "$GITHUB_ENV"
           npm ci --ignore-scripts --prefer-offline --no-audit --no-fund --cache "$SECRETLESS_CACHE_DIR"
       - name: Remove local secretless transfer state
-        if: always() && needs.eligibility.outputs.should-run != 'false' && inputs.secretless-pr
+        if: always() && needs.eligibility.outputs.should-run != 'false' && (inputs.secretless-pr || inputs.secretless-trusted-ref)
         env:
           SECRETLESS_CACHE_DIR: ${{ runner.temp }}/secretless-build-cache-${{ github.run_id }}-${{ github.run_attempt }}
           TRANSFER_DIR: ${{ runner.temp }}/secretless-transfer-${{ github.run_id }}-${{ github.run_attempt }}
@@ -1271,11 +1303,11 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NODE_AUTH_TOKEN }}
       - run: npm ci
-        if: needs.eligibility.outputs.should-run != 'false' && !inputs.secretless-pr
+        if: needs.eligibility.outputs.should-run != 'false' && !(inputs.secretless-pr || inputs.secretless-trusted-ref)
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NODE_AUTH_TOKEN }}
       - name: Rebuild exact approved lifecycle packages without credentials
-        if: needs.eligibility.outputs.should-run != 'false' && inputs.secretless-pr && inputs.secretless-rebuild-packages != ''
+        if: needs.eligibility.outputs.should-run != 'false' && (inputs.secretless-pr || inputs.secretless-trusted-ref) && inputs.secretless-rebuild-packages != ''
         env:
           REBUILD_PACKAGES: ${{ inputs.secretless-rebuild-packages }}
         run: |
@@ -1306,7 +1338,7 @@ jobs:
           subprocess.run(["npm", "rebuild", *requested], check=True)
           PY
       - name: Run exact credentialless consumer script plan
-        if: needs.eligibility.outputs.should-run != 'false' && inputs.secretless-pr && inputs.secretless-ci-script-plan != ''
+        if: needs.eligibility.outputs.should-run != 'false' && (inputs.secretless-pr || inputs.secretless-trusted-ref) && inputs.secretless-ci-script-plan != ''
         env:
           CI_SCRIPT_PLAN: ${{ inputs.secretless-ci-script-plan }}
         run: |
@@ -1368,27 +1400,27 @@ jobs:
               subprocess.run(["npm", "run", name], check=True, env=script_env)
           PY
       - run: npm run build
-        if: needs.eligibility.outputs.should-run != 'false' && (!inputs.secretless-pr || inputs.secretless-ci-script-plan == '')
+        if: needs.eligibility.outputs.should-run != 'false' && (!(inputs.secretless-pr || inputs.secretless-trusted-ref) || inputs.secretless-ci-script-plan == '')
       - run: npm run typecheck --if-present
-        if: needs.eligibility.outputs.should-run != 'false' && (!inputs.secretless-pr || inputs.secretless-ci-script-plan == '')
+        if: needs.eligibility.outputs.should-run != 'false' && (!(inputs.secretless-pr || inputs.secretless-trusted-ref) || inputs.secretless-ci-script-plan == '')
       - run: npm test
-        if: needs.eligibility.outputs.should-run != 'false' && (!inputs.secretless-pr || inputs.secretless-ci-script-plan == '')
+        if: needs.eligibility.outputs.should-run != 'false' && (!(inputs.secretless-pr || inputs.secretless-trusted-ref) || inputs.secretless-ci-script-plan == '')
       - run: npm run lint --if-present
-        if: needs.eligibility.outputs.should-run != 'false' && (!inputs.secretless-pr || inputs.secretless-ci-script-plan == '')
+        if: needs.eligibility.outputs.should-run != 'false' && (!(inputs.secretless-pr || inputs.secretless-trusted-ref) || inputs.secretless-ci-script-plan == '')
       - name: Remove job-scoped secretless runtime cache
-        if: always() && needs.eligibility.outputs.should-run != 'false' && inputs.secretless-pr
+        if: always() && needs.eligibility.outputs.should-run != 'false' && (inputs.secretless-pr || inputs.secretless-trusted-ref)
         env:
           RUNTIME_CACHE_DIR: ${{ runner.temp }}/secretless-runtime-cache-${{ github.run_id }}-${{ github.run_attempt }}
         run: rm -rf "$RUNTIME_CACHE_DIR"
       - name: Remove restored secretless auxiliary content
-        if: always() && needs.eligibility.outputs.should-run != 'false' && inputs.secretless-pr && needs.acquire-secretless-dependencies.outputs.auxiliary-content-path != ''
+        if: always() && needs.eligibility.outputs.should-run != 'false' && (inputs.secretless-pr || inputs.secretless-trusted-ref) && needs.acquire-secretless-dependencies.outputs.auxiliary-content-path != ''
         env:
           AUXILIARY_CONTENT_PATH: ${{ needs.acquire-secretless-dependencies.outputs.auxiliary-content-path }}
         run: |
           auxiliary_target="$GITHUB_WORKSPACE/$AUXILIARY_CONTENT_PATH"
           [ ! -e "$auxiliary_target" ] || find "$auxiliary_target" -depth -delete
       - name: Bound npm cache upload
-        if: always() && needs.eligibility.outputs.should-run != 'false' && inputs.cache && !inputs.secretless-pr
+        if: always() && needs.eligibility.outputs.should-run != 'false' && inputs.cache && !(inputs.secretless-pr || inputs.secretless-trusted-ref)
         env:
           CACHE_MAX_MB: ${{ inputs.cache-max-mb }}
         run: |
@@ -1448,7 +1480,7 @@ jobs:
 
   cleanup-secretless-transfer:
     needs: [eligibility, acquire-secretless-dependencies, build-test]
-    if: always() && inputs.secretless-pr && needs.acquire-secretless-dependencies.outputs.transfer-artifact-id != ''
+    if: always() && (inputs.secretless-pr || inputs.secretless-trusted-ref) && needs.acquire-secretless-dependencies.outputs.transfer-artifact-id != ''
     runs-on: ${{ fromJSON(vars.VERJSON_LANE_UNTRUSTED || '["ubuntu-24.04"]') }}
     timeout-minutes: 5
     permissions:

@@ -48,7 +48,7 @@ setup_index = next(index for index, step in enumerate(build["steps"]) if str(ste
 setup = build["steps"][setup_index]
 install_index = build["steps"].index(install)
 assert setup_index < install_index
-assert "!inputs.secretless-pr" in setup["with"]["cache"]
+assert "!(inputs.secretless-pr || inputs.secretless-trusted-ref)" in setup["with"]["cache"]
 for credential in (
     "GH_TOKEN", "GITHUB_TOKEN", "NODE_AUTH_TOKEN", "NPM_TOKEN",
     "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN",
@@ -75,7 +75,7 @@ assert "always()" in runtime_cleanup["if"]
 assert "inputs.secretless-pr" in runtime_cleanup["if"]
 
 assert cleanup["needs"] == ["eligibility", "acquire-secretless-dependencies", "build-test"]
-assert cleanup["if"].startswith("always() && inputs.secretless-pr")
+assert cleanup["if"].startswith("always() && (inputs.secretless-pr || inputs.secretless-trusted-ref)")
 assert cleanup["timeout-minutes"] == 5
 assert cleanup["permissions"] == {"actions": "write"}
 assert not any(str(step.get("uses", "")).startswith("actions/checkout@") for step in cleanup["steps"])
