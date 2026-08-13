@@ -322,10 +322,15 @@ def main() -> int:
     require("(.conclusion | ascii_upcase) == \"SUCCESS\"" in promote_text,
             "only successful authorization may permit terminal promotion")
     require(all(marker in verifier_text for marker in
-                (".workflow_id == $workflow_id", '.event == "pull_request_target"',
+                ('[ "$(<"$tmp/arm-workflow-id")" = "$arm_workflow_id" ]',
+                 'actions/required_workflows/$arm_workflow_id',
+                 'workflow_api arm-rules', '--paginate',
+                 '.source_type == "Organization"', '.source == "Verjson"',
+                 '.repository_id == 1269388380', '.ref == "refs/heads/main"',
+                 '.event == "pull_request_target"',
                  '.path == ".github/workflows/gate-rearm.yml"', ".external_id == $external_id",
                  "artifact_digest", "actual_zip_sha")),
-            "authorization must be receipt-, digest-, run-, and dedicated-App-bound")
+            "authorization must bind local or organization-required arm provenance, receipt digest, run, and dedicated App")
     verifier_invocation = re.compile(
         r"(?m)^(?P<indent>\s*)(?:GH_TOKEN=\"\$ACTIONS_TOKEN\" )?"
         r"(?P<shell>bash )?\.gate-trust/scripts/ci-gate/verify-arm-receipt\.sh"

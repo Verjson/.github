@@ -116,3 +116,38 @@ condition.
 - Rollback is two mutations rather than one: restore the preimage and delete the
   arm ruleset. The audit refuses to render the rollback unless it first proves
   the live state is the full split image.
+
+## 2026-08-12 amendment — arm receipts bind required-workflow runs to the organization rule (#757)
+
+The split exposed a false assumption in receipt verification. A run created by an
+organization `workflows` rule has a consumer-scoped `workflow_id` and a
+`workflow_url` under `actions/required_workflows`; it does not share the ID returned
+by the consumer's repository-local `actions/workflows/gate-rearm.yml` registration.
+Run `31597679007` demonstrated both IDs in this repository: required-workflow ID
+`332376738` versus local-workflow ID `328994427`. Seventeen of the 21 armed
+repositories had no local registration at all, so the path lookup returned 404
+before a receipt could be checked.
+
+Receipt verification now recognizes the two installation shapes without weakening
+the provenance invariant:
+
+- a repository-local arm still requires exact equality with the workflow ID resolved
+  from that repository's `gate-rearm.yml` registration;
+- a ruleset-created arm requires the run's exact consumer-scoped
+  `actions/required_workflows/<workflow_id>` URL and an active rule on the pull
+  request's base branch. Every rule selecting `gate-rearm.yml` must originate from
+  the `Verjson` organization, name canonical repository ID `1269388380`, and pin
+  `refs/heads/main`.
+
+The run's path is only a selector for rules that must then pass the source checks; it
+never establishes trust by itself. A repository ruleset using the same path is
+rejected, and an impostor beside a valid organization rule withdraws trust. This is
+the arm-specific application of ADR 0039's required-workflow provenance boundary and
+retains its ambient-configuration limitation: configuration is read when the receipt
+is verified and is re-read by the verifier at terminal promotion, rather than being a
+signed property embedded in the historical run.
+
+`scripts/ci-gate/arm-receipt.test.sh` exercises a consumer with no local caller and
+rejects repository-sourced, wrong-ref, and later-page same-path forgeries while still
+requiring the immutable receipt, exact run attempt, App identity, and current pull
+request head.
