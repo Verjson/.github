@@ -25,7 +25,10 @@ MIN_OUTPUT_TOKENS = 1024
 MAX_OUTPUT_TOKENS = 65536
 MAX_METADATA_BYTES = 65536
 MAX_DIFF_BYTES = 2 * 1024 * 1024
-MAX_STREAM_BYTES = 4 * 1024 * 1024
+# DeepSeek may emit one SSE/JSON event per reasoning token before the compact
+# verdict. Bound wire data in proportion to the independently bounded output
+# token envelope while allowing generous per-event framing overhead.
+MAX_STREAM_BYTES = MAX_OUTPUT_TOKENS * 1024
 
 
 def validated_budget(text: str) -> Decimal:
