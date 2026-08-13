@@ -16,7 +16,8 @@ check_contract() {
   [ "$(grep -c 'id: deepseek_fallback' "$candidate")" -eq 1 ] || return 1
   ! grep -Eq 'id: (deepseek_third|verdict_3)' "$candidate" || return 1
   [ "$(grep -c 'name: Reserve cumulative AI review pass' "$candidate")" -eq 2 ] || return 1
-  [ "$(grep -c 'if \[ "$consumed" -ge 2 \]' "$candidate")" -eq 2 ] || return 1
+  [ "$(grep -c '\[ "$consumed" -ge 2 \]' "$candidate")" -eq 2 ] || return 1
+  grep -qF '[ "${EXPLICIT_REREVIEW:-false}" != true ] && [ "$consumed" -ge 2 ]' "$candidate" || return 1
   grep -qF "steps.reserve_1.outputs.allowed == 'true'" "$candidate" || return 1
   grep -qF "steps.reserve_2.outputs.allowed == 'true'" "$candidate" || return 1
   reservation_token=$(awk '/id: reservation-app-token$/{found=1} found&&/^      - name:/{exit} found{print}' "$candidate")
@@ -25,6 +26,9 @@ check_contract() {
   printf '%s' "$reservation_token" | grep -Eq 'permission-(contents|actions|checks|issues):' && return 1
   grep -qF 'GH_TOKEN: ${{ steps.reservation-app-token.outputs.token }}' "$candidate" || return 1
   grep -qF 'ai-review-pass:v2:${next}/2 pr:${PR_NUMBER} check:${AUTHORIZATION_CHECK_ID} head:${EXPECTED_HEAD_SHA}' "$candidate" || return 1
+  grep -qF 'ai-review-explicit:v1 pr:${PR_NUMBER} check:${AUTHORIZATION_CHECK_ID} head:${EXPECTED_HEAD_SHA}' "$candidate" || return 1
+  grep -qF '[ "$marker_check" = "$AUTHORIZATION_CHECK_ID" ]' "$candidate" || return 1
+  grep -qF '[ "$explicit_receipt_consumed" = true ]' "$candidate" || return 1
   grep -qF '.app.id == $app_id and .app.slug == $slug' "$candidate" || return 1
   reserve_two=$(awk '/id: reserve_2$/{found=1} found{print} found&&/^      - name: DeepSeek review pass 2/{exit}' "$candidate")
   printf '%s' "$reserve_two" | grep -qF 'consumed="${{ steps.reserve_1.outputs.count }}"' || return 1
@@ -53,12 +57,15 @@ case "$primary_guard" in
   *) fail "primary DeepSeek guard is unsafe: $primary_guard" ;;
 esac
 case "$fallback_guard" in
-  *"needs.preflight.outputs.provider == 'deepseek'"*"steps.verdict_1.outputs.usable != 'true'"*"steps.reserve_2.outputs.allowed == 'true'"*) pass "fallback runs only when the DeepSeek primary has no usable verdict and pass 2 is reserved" ;;
+  *"inputs.explicit_rereview != true"*"needs.preflight.outputs.provider == 'deepseek'"*"steps.verdict_1.outputs.usable != 'true'"*"steps.reserve_2.outputs.allowed == 'true'"*) pass "fallback runs only for an automatic DeepSeek primary with no usable verdict and pass 2 reserved" ;;
   *) fail "fallback DeepSeek guard is unsafe: $fallback_guard" ;;
 esac
 
 grep -q "event.label.name == 're-review'" "$workflow" \
   && grep -q -- '--remove-label re-review' "$arm" \
+  && grep -qF 'explicit re-review requires a new authorized label event' "$arm" \
+  && grep -qF 'explicit re-review dispatch cannot be rerun' "$workflow" \
+  && grep -qF 'this explicit authorization check already reserved its one diagnostic pass' "$workflow" \
   && pass "a later same-head attempt still requires consumed maintainer re-review authorization" \
   || fail "explicit later re-review authorization is not wired"
 
@@ -70,8 +77,11 @@ if check_contract "$tmp/workflow.yml"; then fail "mutation survived: an unbounde
 sed "s/steps.verdict_1.outputs.usable != 'true'/steps.verdict_1.outputs.usable == 'true'/" "$workflow" >"$tmp/workflow.yml"
 if check_contract "$tmp/workflow.yml"; then fail "mutation survived: fallback can run after a usable primary verdict"; else pass "mutation rejected: usable primary verdict terminates the cascade"; fi
 
-sed 's/if \[ "$consumed" -ge 2 \]/if [ "$consumed" -ge 3 ]/' "$workflow" >"$tmp/workflow.yml"
+sed 's/\[ "$consumed" -ge 2 \]/[ "$consumed" -ge 3 ]/g' "$workflow" >"$tmp/workflow.yml"
 if check_contract "$tmp/workflow.yml"; then fail "mutation survived: a third cumulative PR pass was admitted"; else pass "mutation rejected: the PR-wide pass cap cannot exceed two"; fi
+
+sed 's/\[ "$explicit_receipt_consumed" = true \]/[ "$explicit_receipt_consumed" = false ]/' "$workflow" >"$tmp/workflow.yml"
+if check_contract "$tmp/workflow.yml"; then fail "mutation survived: a fresh dispatch replayed an explicit authorization check"; else pass "mutation rejected: each explicit authorization check reserves at most one diagnostic pass"; fi
 
 [ "$fails" -eq 0 ] && { echo "All tests passed."; exit 0; }
 echo "$fails test(s) failed."

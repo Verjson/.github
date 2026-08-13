@@ -4,7 +4,9 @@
 import json
 import os
 import re
+import subprocess
 import sys
+from pathlib import Path, PurePosixPath
 
 
 REQUIRED_FIELDS = {"blocking", "summary", "review_first", "findings", "followups"}
@@ -18,10 +20,14 @@ FIELD_ALIASES = {
 }
 TOP_LEVEL_METADATA_FIELDS = {"confidence"}
 ITEM_METADATA_FIELDS = {"confidence", "priority", "severity"}
+MAX_EVIDENCE_CHARS = 240
+MIN_EVIDENCE_CHARS = 8
+MAX_SOURCE_BLOB_BYTES = 2 * 1024 * 1024
 LINE_REFERENCE = r"[1-9][0-9]*(?:-[1-9][0-9]*)?"
-LOCATION = re.compile(
+NORMALIZABLE_LOCATION = re.compile(
     rf"^(?P<path>[^\r\n]+):(?P<line>[1-9][0-9]*)(?:-[1-9][0-9]*)?(?:\s*,\s*{LINE_REFERENCE})*$"
 )
+EXACT_LOCATION = re.compile(r"^(?P<path>[^\r\n]+):(?P<line>[1-9][0-9]*)$")
 
 
 class VerdictError(ValueError):
@@ -67,26 +73,27 @@ def reject_unknown_fields(item: dict, accepted: set[str], path: str) -> None:
         raise VerdictError(path, "documented fields and metadata", "one or more unknown fields")
 
 
-def normalize_location_text(location: object, path: str) -> str:
+def normalize_location_text(location: object, path: str, *, exact_line: bool = False) -> str:
     if not isinstance(location, str):
         raise VerdictError(path, "location text", observed_shape(location))
-    match = LOCATION.fullmatch(location.strip())
+    match = (EXACT_LOCATION if exact_line else NORMALIZABLE_LOCATION).fullmatch(location.strip())
     if not match:
-        raise VerdictError(path, "one file and positive line", "invalid location text")
+        expected = "one file and exactly one positive line" if exact_line else "one file and positive line"
+        raise VerdictError(path, expected, "invalid location text")
     return f"{match.group('path').strip()}:{match.group('line')}"
 
 
-def normalize_location(item: dict, path: str) -> str:
+def normalize_location(item: dict, path: str, *, exact_line: bool = False) -> str:
     location = alias_value(item, ("location",), path)
     file = alias_value(item, ("file", "path"), path)
     line = alias_value(item, ("line", "line_number"), path)
     candidates = []
     if location is not MISSING:
-        candidates.append(normalize_location_text(location, path))
+        candidates.append(normalize_location_text(location, path, exact_line=exact_line))
     if file is not MISSING or line is not MISSING:
         if not isinstance(file, str) or not isinstance(line, (int, str)) or isinstance(line, bool):
             raise VerdictError(path, "file/path plus line", observed_shape(item))
-        candidates.append(normalize_location_text(f"{file}:{line}", path))
+        candidates.append(normalize_location_text(f"{file}:{line}", path, exact_line=exact_line))
     if not candidates:
         raise VerdictError(path, "location text or file/path plus line", observed_shape(item))
     if any(candidate != candidates[0] for candidate in candidates[1:]):
@@ -124,18 +131,25 @@ def required_text(item: dict, aliases: tuple[str, ...], path: str) -> str:
 def normalize_finding(item: object, index: int) -> dict:
     if not isinstance(item, dict):
         raise VerdictError(f"findings[{index}]", "object", observed_shape(item))
-    location = normalize_location(item, f"findings[{index}].location")
+    location = normalize_location(item, f"findings[{index}].location", exact_line=True)
     reason = required_text(item, ("reason", "why", "description"), f"findings[{index}].reason")
     failure_scenario = required_text(
         item,
         ("failure_scenario", "scenario", "impact"),
         f"findings[{index}].failure_scenario",
     )
+    evidence = required_text(item, ("evidence",), f"findings[{index}].evidence")
+    if any(ord(character) < 32 or ord(character) == 127 for character in evidence) or len(evidence) > MAX_EVIDENCE_CHARS:
+        raise VerdictError(
+            f"findings[{index}].evidence",
+            f"one source-line fragment of at most {MAX_EVIDENCE_CHARS} characters",
+            "multiline or oversized text",
+        )
     reject_unknown_fields(
         item,
         {
             "location", "file", "path", "line", "line_number",
-            "reason", "why", "description", "failure_scenario", "scenario", "impact",
+            "reason", "why", "description", "failure_scenario", "scenario", "impact", "evidence",
         }
         | ITEM_METADATA_FIELDS,
         f"findings[{index}]",
@@ -144,6 +158,7 @@ def normalize_finding(item: object, index: int) -> dict:
         "location": location,
         "reason": reason,
         "failure_scenario": failure_scenario,
+        "evidence": evidence,
     }
 
 
@@ -227,7 +242,87 @@ def parse_json_value(raw: str) -> object:
     return json.loads(text)
 
 
-def confirm_output(raw: str, sensitive: bool) -> dict:
+def source_path(location: str, finding_path: str) -> tuple[str, int]:
+    path_text, line_text = location.rsplit(":", 1)
+    path = PurePosixPath(path_text)
+    parts = path_text.split("/")
+    if (
+        path.is_absolute()
+        or "\\" in path_text
+        or any(part in {"", ".", ".."} for part in parts)
+        or path_text == ".git"
+        or path_text.startswith(".git/")
+    ):
+        raise VerdictError(finding_path, "repository-relative source path", "unsafe path")
+    return path_text, int(line_text)
+
+
+def git_output(repository: Path, *arguments: str) -> bytes:
+    try:
+        return subprocess.run(
+            ["git", "-C", str(repository), *arguments],
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            timeout=10,
+        ).stdout
+    except (OSError, subprocess.SubprocessError) as error:
+        raise ValueError("review source repository is unavailable") from error
+
+
+def validate_source_evidence(verdict: dict, repository_text: str, reviewed_head: str) -> None:
+    if not verdict["findings"]:
+        return
+    if not re.fullmatch(r"[0-9a-f]{40}", reviewed_head):
+        raise VerdictError("reviewed_head", "40-character lowercase commit SHA", "invalid value")
+    repository = Path(repository_text).resolve()
+    try:
+        checkout_head = git_output(repository, "rev-parse", "HEAD").decode("ascii").strip()
+    except (UnicodeDecodeError, ValueError) as error:
+        raise VerdictError("reviewed_head", "available exact-head checkout", "repository unavailable") from error
+    if checkout_head != reviewed_head:
+        raise VerdictError("reviewed_head", "checked-out exact reviewed head", "head mismatch")
+
+    for index, finding in enumerate(verdict["findings"]):
+        evidence_path = f"findings[{index}].evidence"
+        path_text, line_number = source_path(finding["location"], f"findings[{index}].location")
+        object_name = f"{reviewed_head}:{path_text}"
+        try:
+            object_type = git_output(repository, "cat-file", "-t", object_name).decode("ascii").strip()
+            source_size = int(git_output(repository, "cat-file", "-s", object_name).decode("ascii").strip())
+            if source_size > MAX_SOURCE_BLOB_BYTES:
+                raise VerdictError(
+                    evidence_path,
+                    f"source file no larger than {MAX_SOURCE_BLOB_BYTES} bytes",
+                    "source exceeds bounded validation size",
+                )
+            source = git_output(repository, "cat-file", "blob", object_name).decode("utf-8")
+        except VerdictError:
+            raise
+        except (UnicodeDecodeError, ValueError) as error:
+            raise VerdictError(evidence_path, "UTF-8 source at reviewed head", "source unavailable") from error
+        if object_type != "blob":
+            raise VerdictError(evidence_path, "source file blob at reviewed head", object_type)
+        lines = source.splitlines()
+        if line_number > len(lines):
+            raise VerdictError(evidence_path, "existing line at reviewed head", "line is past end of file")
+        source_line = lines[line_number - 1].strip()
+        evidence = finding["evidence"]
+        required_length = min(MIN_EVIDENCE_CHARS, len(source_line))
+        if not source_line or len(evidence) < required_length or evidence not in source_line:
+            raise VerdictError(
+                evidence_path,
+                "nontrivial exact fragment of the cited source line at reviewed head",
+                "fragment mismatch",
+            )
+
+
+def confirm_output(
+    raw: str,
+    sensitive: bool,
+    repository: str = "",
+    reviewed_head: str = "",
+) -> dict:
     if not isinstance(raw, str) or not raw.strip():
         return {
             "usable": False,
@@ -236,6 +331,7 @@ def confirm_output(raw: str, sensitive: bool) -> dict:
     try:
         parsed = parse_json_value(raw)
         verdict = canonicalize_verdict(parsed, sensitive)
+        validate_source_evidence(verdict, repository, reviewed_head)
     except json.JSONDecodeError:
         return {
             "usable": False,
@@ -258,11 +354,13 @@ def main() -> int:
     sensitive_text = os.environ.get("SENSITIVE", "")
     output_path = os.environ.get("GITHUB_OUTPUT", "")
     review_pass = os.environ.get("REVIEW_PASS", "unknown")
+    repository = os.environ.get("REVIEW_REPOSITORY", "")
+    reviewed_head = os.environ.get("REVIEWED_HEAD_SHA", "")
     if review_pass not in {"1", "2"}:
         review_pass = "unknown"
     if sensitive_text not in {"true", "false"} or not output_path:
         raise ValueError("SENSITIVE must be true or false and GITHUB_OUTPUT is required")
-    result = confirm_output(raw, sensitive_text == "true")
+    result = confirm_output(raw, sensitive_text == "true", repository, reviewed_head)
     with open(output_path, "a", encoding="utf-8") as output:
         output.write(f"usable={'true' if result['usable'] else 'false'}\n")
         if result["usable"]:

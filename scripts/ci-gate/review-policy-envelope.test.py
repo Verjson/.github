@@ -15,6 +15,7 @@ policy = {
     "model": "deepseek-v4-pro",
     "pricing_version": "deepseek-v4-2026-08-10",
     "provider": "deepseek",
+    "explicit_rereview": True,
 }
 canonical = json.dumps(policy, sort_keys=True, separators=(",", ":"))
 
@@ -36,6 +37,12 @@ legacy_encoded = run("encode", legacy_canonical)
 assert legacy_encoded.returncode == 0
 assert run("decode", legacy_encoded.stdout.strip()).stdout.strip() == legacy_canonical
 
+ordinary = {key: value for key, value in policy.items() if key != "explicit_rereview"}
+ordinary_canonical = json.dumps(ordinary, sort_keys=True, separators=(",", ":"))
+ordinary_encoded = run("encode", ordinary_canonical)
+assert ordinary_encoded.returncode == 0
+assert run("decode", ordinary_encoded.stdout.strip()).stdout.strip() == ordinary_canonical
+
 mutations = {
     "quote stripping": canonical.replace('"', ""),
     "key reordering": json.dumps(dict(reversed(tuple(policy.items()))), separators=(",", ":")),
@@ -43,6 +50,7 @@ mutations = {
     "duplicate keys": canonical[:-1] + ',"provider":"deepseek"}',
     "extra field": canonical[:-1] + ',"extra":"x"}',
     "missing field": json.dumps({k: v for k, v in policy.items() if k != "model"}, sort_keys=True, separators=(",", ":")),
+    "string explicit flag": canonical.replace('"explicit_rereview":true', '"explicit_rereview":"true"'),
 }
 for name, raw in mutations.items():
     candidate = base64.urlsafe_b64encode(raw.encode()).decode().rstrip("=")

@@ -15,6 +15,21 @@ def load(name: str, filename: str):
 verdicts = load("review_verdict", "review-verdict.py")
 openai = load("openai_review", "openai-review.py")
 deepseek = load("deepseek_review", "deepseek-review.py")
+WORKFLOW = Path(__file__).parents[2] / ".github/workflows/ai-review-merge.yml"
+
+
+CANONICAL = {
+    "blocking": False,
+    "summary": "No defects found.",
+    "review_first": [
+        {
+            "location": "scripts/ci-gate/review-verdict.py:42",
+            "why": "Canonical trust boundary.",
+        },
+    ],
+    "findings": [],
+    "followups": [],
+}
 
 
 VARIANT = {
@@ -34,8 +49,28 @@ VARIANT = {
 
 
 class ReviewProviderConformanceTest(unittest.TestCase):
+    def test_provider_neutral_prompt_and_renderer_share_the_canonical_shape(self):
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        prompt = workflow.split('echo "review_prompt<<PROMPT_EOF"', 1)[1].split('echo "PROMPT_EOF"', 1)[0]
+        submit = workflow.split("      - name: Submit deterministic PR review", 1)[1]
+        renderer = submit.split("body=$(jq -r '", 1)[1].split("' <<<\"$VERDICT\")", 1)[0]
+
+        self.assertIn("review_first: [{location, why}]", prompt)
+        self.assertIn("findings: [{location, reason, failure_scenario, evidence}]", prompt)
+        self.assertIn("Every findings.location MUST contain exactly one repository-relative", prompt)
+        self.assertIn("followups: [{location, note}]", prompt)
+        self.assertIn(".review_first | map(\"- `\" + .location + \"` — \" + .why)", renderer)
+        self.assertIn("(.evidence | @html)", renderer)
+        self.assertIn("prompt: ${{ steps.prep.outputs.review_prompt }}", workflow)
+        self.assertEqual(workflow.count("REVIEW_PROMPT: ${{ steps.prep.outputs.review_prompt }}"), 3)
+        self.assertIn(
+            "no ranges or comma-separated locations",
+            openai.SCHEMA["properties"]["findings"]["items"]["properties"]["location"]["description"],
+        )
+
     def test_every_provider_output_path_uses_the_same_canonical_confirmation(self):
-        text = json.dumps(VARIANT)
+        canonical_text = json.dumps(CANONICAL)
+        deepseek_variant = json.dumps(VARIANT)
         openai_response = {
             "status": "completed",
             "model": openai.MODEL,
@@ -47,7 +82,7 @@ class ReviewProviderConformanceTest(unittest.TestCase):
                     "type": "message",
                     "status": "completed",
                     "role": "assistant",
-                    "content": [{"type": "output_text", "text": text}],
+                    "content": [{"type": "output_text", "text": canonical_text}],
                 },
             ],
         }
@@ -58,7 +93,7 @@ class ReviewProviderConformanceTest(unittest.TestCase):
                 {
                     "index": 0,
                     "finish_reason": "stop",
-                    "message": {"role": "assistant", "content": text},
+                    "message": {"role": "assistant", "content": deepseek_variant},
                 },
             ],
             "usage": {
@@ -69,7 +104,7 @@ class ReviewProviderConformanceTest(unittest.TestCase):
             },
         }
         provider_outputs = {
-            "claude-workflow": text,
+            "claude-workflow": canonical_text,
             "openai": openai.extract(openai_response, 100, 100, "5.00")[0],
             "deepseek": deepseek.extract(deepseek_response, "deepseek-v4-pro", 100, 100, "5.00")[0],
         }
@@ -82,8 +117,21 @@ class ReviewProviderConformanceTest(unittest.TestCase):
         self.assertTrue(all(result["usable"] for result in confirmations.values()))
         self.assertEqual(
             {json.dumps(result["verdict"], sort_keys=True) for result in confirmations.values()},
-            {json.dumps(confirmations["claude-workflow"]["verdict"], sort_keys=True)},
+            {json.dumps(CANONICAL, sort_keys=True)},
         )
+
+    def test_review_first_reason_and_rationale_remain_compatible_aliases(self):
+        for alias in ("reason", "rationale"):
+            variant = dict(CANONICAL)
+            variant["review_first"] = [
+                {
+                    "location": "scripts/ci-gate/review-verdict.py:42",
+                    alias: "Canonical trust boundary.",
+                },
+            ]
+
+            with self.subTest(alias=alias):
+                self.assertEqual(verdicts.canonicalize_verdict(variant, sensitive=True), CANONICAL)
 
 
 if __name__ == "__main__":

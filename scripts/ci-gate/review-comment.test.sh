@@ -55,15 +55,21 @@ rc="$(run_submit "$approved")"
 { [ "$rc" = rc=0 ] && has_comment 'AI review advisory: non-blocking verdict' && has_comment 'Review these first' && has_output outcome=approved && ! has_action REVIEW; } \
   && pass "non-blocking verdict comments and records approval eligibility without submitting a review" \
   || fail "non-blocking advisory path drifted ($rc)"
+has_comment '`auth.ts:42` — gates admin' \
+  && pass "canonical review_first.why reaches the rendered advisory" \
+  || fail "review_first.why drifted from the renderer"
 has_comment '<!-- ai-review-head:deadbeef patchid:patch123 model:deepseek-v4-pro -->' \
   && pass "advisory marker binds head, patch, and selected model" \
   || fail "advisory marker lost immutable review identity"
 
-blocking='{"blocking":true,"summary":"bug","review_first":[],"findings":[{"location":"app.py:7","reason":"broken","failure_scenario":"request fails"}],"followups":[]}'
+blocking='{"blocking":true,"summary":"bug","review_first":[],"findings":[{"location":"app.py:7","reason":"broken","failure_scenario":"request fails","evidence":"return <value> && done"}],"followups":[]}'
 rc="$(run_submit "$blocking")"
 { [ "$rc" = rc=0 ] && has_comment 'AI review advisory: blocking verdict' && has_comment 'app.py:7' && has_output outcome=blocking && ! has_action REVIEW; } \
   && pass "blocking AI verdict remains advisory and leaves human approval available" \
   || fail "blocking advisory path became a merge veto ($rc)"
+has_comment 'Source evidence: <code>return &lt;value&gt; &amp;&amp; done</code>' \
+  && pass "validated exact-head evidence is safely published as code" \
+  || fail "blocking source evidence was not safely published"
 
 rc="$(run_submit not-json)"
 { [ "$rc" = rc=0 ] && has_action EDIT && has_comment 'review could not complete' && has_output outcome=inconclusive; } \

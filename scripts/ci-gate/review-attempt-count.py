@@ -10,12 +10,17 @@ PASS_MARKER = re.compile(
     r"head:([0-9a-f]{40}) run:([1-9][0-9]*) attempt:([1-9][0-9]*) "
     r"provider:([a-z0-9_-]+) model:([A-Za-z0-9._-]+) -->"
 )
+EXPLICIT_MARKER = re.compile(
+    r"<!-- ai-review-explicit:v1 pr:([1-9][0-9]*) check:([1-9][0-9]*) "
+    r"head:([0-9a-f]{40}) run:([1-9][0-9]*) attempt:([1-9][0-9]*) "
+    r"provider:([a-z0-9_-]+) model:([A-Za-z0-9._-]+) -->"
+)
 
 
 def count_attempts(reviews: object, app_login: str, pr_number: int) -> int:
     if not isinstance(reviews, list):
         raise ValueError("reviews payload must be an array")
-    reservations: set[tuple[str, str, str]] = set()
+    reservations: set[tuple[str, str, str, str]] = set()
     for review in reviews:
         if not isinstance(review, dict):
             raise ValueError("each review must be an object")
@@ -31,7 +36,12 @@ def count_attempts(reviews: object, app_login: str, pr_number: int) -> int:
             ordinal, marker_pr, _, head, run_id, run_attempt, _, _ = marker.groups()
             if int(marker_pr) != pr_number or commit_id != head:
                 continue
-            reservations.add((run_id, run_attempt, ordinal))
+            reservations.add(("automatic", run_id, run_attempt, ordinal))
+        for marker in EXPLICIT_MARKER.finditer(body):
+            marker_pr, _, head, run_id, run_attempt, _, _ = marker.groups()
+            if int(marker_pr) != pr_number or commit_id != head:
+                continue
+            reservations.add(("explicit", run_id, run_attempt, "1"))
     return len(reservations)
 
 

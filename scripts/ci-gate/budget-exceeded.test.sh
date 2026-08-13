@@ -67,6 +67,7 @@ classify() {
   export PATH="$tmp/bin:$PATH" TARGET_REPO="Verjson/foo" PR_NUMBER=7
   export META_FILE="$tmp/meta.json" FILES_FILE="$tmp/files.json"
   export GITHUB_OUTPUT="$tmp/out.txt" GITHUB_EVENT_NAME=pull_request
+  export PR_FILES_READER="$repo_root/scripts/ci-gate/read-pr-files.sh"
   export REVIEW_CLASSIFIER="$repo_root/scripts/ci-gate/classify-review-policy.py"
   printf '%s' '{"labels":[],"title":"a PR","isDraft":false,"author":{"login":"human"},"headRefOid":"deadbeefdeadbeefdeadbeefdeadbeefdeadbeef","baseRefName":"main"}' >"$META_FILE"
   printf '%s' "$1" >"$FILES_FILE"

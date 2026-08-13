@@ -157,6 +157,7 @@ for command in \
   "bash scripts/ci-gate/arm-receipt.test.sh" \
   "bash scripts/ci-gate/gate-hold-disable.test.sh" \
   "bash scripts/ci-gate/native-automerge.test.sh" \
+  "bash scripts/ci-gate/privileged-merge-pin.test.sh" \
   "bash scripts/ci-gate/changelog-caller-contract.test.sh" \
   "bash scripts/runner-selector-health.test.sh" \
   "python3 scripts/changelog.py validate --repo-root ."; do
