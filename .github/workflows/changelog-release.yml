@@ -84,8 +84,8 @@ jobs:
         env:
           RELEASE_APP_CLIENT_ID: ${{ inputs.release_app_client_id }}
         run: |
-          if [[ ! "$RELEASE_APP_CLIENT_ID" =~ ^Iv[A-Za-z0-9]+$ ]]; then
-            echo "::error::RELEASE_APP_CLIENT_ID must be the GitHub App client ID in Iv... form."
+          if [[ -z "$RELEASE_APP_CLIENT_ID" || "$RELEASE_APP_CLIENT_ID" =~ ^[0-9]+$ ]]; then
+            echo "::error::RELEASE_APP_CLIENT_ID must be the GitHub App client ID, not an empty or numeric legacy App ID."
             exit 1
           fi
       - name: Mint repository-scoped release App token

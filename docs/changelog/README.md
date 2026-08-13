@@ -189,8 +189,9 @@ The generated caller passes only the App identity material:
       release_app_private_key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
 ```
 
-The reusable workflow validates `RELEASE_APP_CLIENT_ID` as a GitHub `Iv...`
-client ID, then mints a short-lived token with the immutable
+The reusable workflow rejects an empty or all-numeric legacy
+`RELEASE_APP_CLIENT_ID`, then delegates full client-ID validation to the
+immutable action while minting a short-lived token with the
 `actions/create-github-app-token` pin. The
 mint is explicitly constrained to `github.repository_owner`, the current
 repository name, and `permission-contents: write`; the App has no Pull requests,

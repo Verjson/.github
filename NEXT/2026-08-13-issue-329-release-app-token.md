@@ -6,9 +6,10 @@ impact: patch
 ---
 
 Canonical Node release callers now pass the dedicated release App identity
-instead of `ORG_ADMIN_TOKEN`. The reusable workflow validates the App client ID
-and mints a short-lived installation token constrained to the current repository
-and Contents write before atomically pushing the immutable snapshot and tag.
+instead of `ORG_ADMIN_TOKEN`. The reusable workflow rejects empty and numeric
+legacy IDs, delegates the supported client-ID grammar to the pinned action, and
+mints a short-lived installation token constrained to the current repository and
+Contents write before atomically pushing the immutable snapshot and tag.
 
 ADR 0099 records the intentionally organization-wide installation and credential
 availability trade-off, as well as why the first real canonical release is the

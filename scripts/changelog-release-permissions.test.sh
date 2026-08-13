@@ -104,9 +104,9 @@ client_id_guard="$(awk '
   found && /^      - name:/ { exit }
   found { print }
 ' "$workflow")"
-grep -qF '[[ ! "$RELEASE_APP_CLIENT_ID" =~ ^Iv[A-Za-z0-9]+$ ]]' <<<"$client_id_guard" \
-  && pass "the release workflow requires an Iv-prefixed App client ID" \
-  || fail "the release workflow does not validate the GitHub App client ID"
+grep -qF '[[ -z "$RELEASE_APP_CLIENT_ID" || "$RELEASE_APP_CLIENT_ID" =~ ^[0-9]+$ ]]' <<<"$client_id_guard" \
+  && pass "the release workflow rejects only empty and numeric legacy App IDs locally" \
+  || fail "the release workflow does not defer full client-ID validation to the pinned action"
 
 client_id_run="$(awk '
   /^      - name: Require the release App client ID$/ { found = 1; next }
@@ -114,11 +114,13 @@ client_id_run="$(awk '
   run && /^      - name:/ { exit }
   run { sub(/^          /, ""); print }
 ' "$workflow")"
-if RELEASE_APP_CLIENT_ID=Iv23liIrniWY27YJKYDP bash -c "$client_id_run" >/dev/null; then
-  pass "the release workflow accepts the configured GitHub App client ID"
-else
-  fail "the release workflow rejects a valid Iv-prefixed App client ID"
-fi
+for valid_client_id in Iv23liIrniWY27YJKYDP Iv1.0123456789abcdef; do
+  if RELEASE_APP_CLIENT_ID="$valid_client_id" bash -c "$client_id_run" >/dev/null; then
+    pass "the release workflow delegates supported client ID '$valid_client_id' to the pinned action"
+  else
+    fail "the release workflow rejects supported client ID '$valid_client_id'"
+  fi
+done
 for invalid_client_id in '' 4583107; do
   if RELEASE_APP_CLIENT_ID="$invalid_client_id" bash -c "$client_id_run" >/dev/null 2>&1; then
     fail "the release workflow accepts an empty or numeric legacy App ID"

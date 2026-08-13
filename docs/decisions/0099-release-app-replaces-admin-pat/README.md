@@ -41,9 +41,11 @@ pin. Every mint supplies exactly:
 - `permission-contents: write`.
 
 The pinned action's v3 contract deprecates legacy `app-id` and recommends
-`client-id`. The workflow rejects an empty or numeric legacy ID and accepts the
-GitHub `Iv...` client-ID form without imposing an undocumented fixed length.
-The checkout persists only that minted token for the final atomic
+`client-id`. The workflow rejects an empty or all-numeric legacy ID, then
+delegates the full client-ID grammar to that pinned action. In particular, it
+does not assume an undocumented length or character set; the action's own dotted
+`Iv1.0123456789abcdef` fixture remains supported. The checkout persists only
+that minted token for the final atomic
 push. The reusable contract no longer accepts `push_token`, and generated
 callers no longer receive `ORG_ADMIN_TOKEN`; they pass only
 `RELEASE_APP_CLIENT_ID` and `RELEASE_APP_PRIVATE_KEY`.
