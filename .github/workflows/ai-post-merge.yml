@@ -48,6 +48,41 @@ jobs:
           [[ "$MERGED_HEAD_SHA" =~ ^[0-9a-f]{40}$ ]]
           [[ "$EXPECTED_APP_ID" =~ ^[1-9][0-9]*$ ]]
           [[ "$EXPECTED_APP_SLUG" =~ ^[A-Za-z0-9-]+$ ]]
+          authorization="$(gh api "repos/$TARGET_REPO/commits/$MERGED_HEAD_SHA/check-runs" \
+            --jq "[.check_runs[] | select(.name == \"AI review authorization\" and .head_sha == \"$MERGED_HEAD_SHA\" and .app.id == $EXPECTED_APP_ID and .app.slug == \"$EXPECTED_APP_SLUG\")] | sort_by(.id) | last // {}")"
+          check_id="$(jq -r '.id // ""' <<<"$authorization")"
+          if [ -z "$check_id" ] && jq -e 'type == "object" and length == 0' <<<"$authorization" >/dev/null; then
+            echo 'eligible=false' >>"$GITHUB_OUTPUT"
+            exit 0
+          fi
+          [[ "$check_id" =~ ^[1-9][0-9]*$ ]]
+          authorization_markers="$(jq -r '
+            (.output.summary // "") | strings | split("\n")[]
+            | select(startswith("<!-- ai-review-authorized:v1:"))
+          ' <<<"$authorization")"
+          if [ -z "$authorization_markers" ]; then
+            echo 'eligible=false' >>"$GITHUB_OUTPUT"
+            exit 0
+          fi
+          jq -e --arg head "$MERGED_HEAD_SHA" --arg slug "$EXPECTED_APP_SLUG" --argjson app "$EXPECTED_APP_ID" '
+            .name == "AI review authorization" and .head_sha == $head
+            and .status == "completed" and .conclusion == "success"
+            and .app.id == $app and .app.slug == $slug
+          ' <<<"$authorization" >/dev/null
+          ai_approve_marker="<!-- ai-review-authorized:v1:${check_id}:${MERGED_HEAD_SHA}:ai-approve -->"
+          ai_merge_marker="<!-- ai-review-authorized:v1:${check_id}:${MERGED_HEAD_SHA}:ai-merge -->"
+          legacy_marker="<!-- ai-review-authorized:v1:${check_id}:${MERGED_HEAD_SHA} -->"
+          legacy_authorization=false
+          if [ "$authorization_markers" = "$ai_approve_marker" ]; then
+            echo 'eligible=false' >>"$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ "$authorization_markers" = "$legacy_marker" ]; then
+            legacy_authorization=true
+          elif [ "$authorization_markers" != "$ai_merge_marker" ]; then
+            echo '::error::AI authorization marker is malformed, stale, or forged'
+            exit 1
+          fi
           reviews="$(gh api --paginate "repos/$TARGET_REPO/pulls/$PR_NUMBER/reviews?per_page=100" | jq -s '.')"
           evidence="$(jq -cer --arg head "$MERGED_HEAD_SHA" --arg login "${EXPECTED_APP_SLUG}[bot]" '
             [ .[][] | select(.state == "APPROVED" and .commit_id == $head and .user.login == $login)
@@ -55,17 +90,33 @@ jobs:
               | {check_id: ($body | capture("ai-review-authorization:(?<v>[1-9][0-9]*)").v | tonumber),
                  run_id: ($body | capture("ai-review-run:(?<v>[1-9][0-9]*)").v | tonumber)} ]
             | if length == 1 then .[0] else error("expected one exact-head approval") end' <<<"$reviews")"
-          check_id="$(jq -r .check_id <<<"$evidence")"
+          approval_check_id="$(jq -r .check_id <<<"$evidence")"
+          [ "$approval_check_id" = "$check_id" ] || {
+            echo '::error::exact-head approval is bound to another authorization check'
+            exit 1
+          }
           run_id="$(jq -r .run_id <<<"$evidence")"
-          gh api "repos/$TARGET_REPO/check-runs/$check_id" | jq -e \
-            --arg head "$MERGED_HEAD_SHA" --arg slug "$EXPECTED_APP_SLUG" --argjson app "$EXPECTED_APP_ID" \
-            '.name == "AI review authorization" and .head_sha == $head and .conclusion == "success"
-             and .app.id == $app and .app.slug == $slug' >/dev/null
           run="$(gh api "repos/$TARGET_REPO/actions/runs/$run_id")"
-          jq -e --arg repo "$TARGET_REPO" --arg head "$MERGED_HEAD_SHA" '
-            .repository.full_name == $repo and .head_sha == $head and .event == "workflow_dispatch"
+          jq -e --arg repo "$TARGET_REPO" --arg default_branch "$DEFAULT_BRANCH" '
+            .repository.full_name == $repo and .head_branch == $default_branch and .event == "workflow_dispatch"
             and .status == "completed" and .conclusion == "success"
             and .path == ".github/workflows/ai-review-merge.yml"' <<<"$run" >/dev/null
+          if [ "$legacy_authorization" = true ]; then
+            dispatch_merge="$(gh api "repos/$TARGET_REPO/actions/runs/$run_id/jobs?per_page=100" | jq -cer '
+              [.jobs[] | select(.name == "dispatch-merge")]
+              | if length == 1 then .[0] else error("expected one dispatch-merge job") end
+            ')"
+            dispatch_status="$(jq -r '.status // ""' <<<"$dispatch_merge")"
+            dispatch_conclusion="$(jq -r '.conclusion // ""' <<<"$dispatch_merge")"
+            if [ "$dispatch_status" = completed ] && [ "$dispatch_conclusion" = skipped ]; then
+              echo 'eligible=false' >>"$GITHUB_OUTPUT"
+              exit 0
+            fi
+            [ "$dispatch_status" = completed ] && [ "$dispatch_conclusion" = success ] || {
+              echo '::error::legacy AI authorization lacks a successful ai-merge dispatch'
+              exit 1
+            }
+          fi
           artifacts="$(gh api "repos/$TARGET_REPO/actions/runs/$run_id/artifacts?per_page=100")"
           artifact_url="$(jq -er --arg name "merge-attestation-$run_id" '
             [.artifacts[] | select(.name == $name and .expired == false)]
@@ -85,7 +136,9 @@ jobs:
               and (.note | type == "string" and test("\\S") and length <= 2000))' \
             "$evidence_dir/attestation.json" >/dev/null
           echo "path=$evidence_dir/attestation.json" >>"$GITHUB_OUTPUT"
+          echo 'eligible=true' >>"$GITHUB_OUTPUT"
       - name: File follow-ups and clean merged branch
+        if: steps.evidence.outputs.eligible == 'true'
         env:
           ATTESTATION_FILE: ${{ steps.evidence.outputs.path }}
         run: bash scripts/ci-gate/post-merge-reconcile.sh

@@ -85,6 +85,42 @@ remains gated. Only the *reporting* of failure moved; the authority to approve d
 not. A hang is strictly worse than a red check, because branch protection blocks the
 merge while naming no cause.
 
+### 2026-08-12 correction ([#766](https://github.com/Verjson/.github/issues/766))
+
+Deterministic CI completion retries terminal promotion only when the newest dedicated-
+App authorization check for the exact head contains the versioned marker emitted after
+that App's approval was persisted. A successful authorization check alone is not AI
+authority: human-path, skipped, blocking, inconclusive, and failed-App-approval outcomes
+also complete the check successfully so ordinary branch protection can proceed.
+
+The marker binds its authorization-check ID, reviewed head SHA, and receipt-derived
+authority. It is written into the App-owned check summary only after the approval
+response and its persisted form both match that check and head. The retry requires the
+exact `ai-merge` marker and a receipt policy with `ai-merge` authority before dispatch;
+`ai-approve` remains non-merging. Selecting the
+newest check before evaluating its state prevents an older success from overriding a
+newer failed or human-path authorization. The privileged callee still independently
+verifies the receipt, policy, dedicated-App check, and exact-head App approval, so this
+early terminal no-op does not weaken the final fail-closed boundary.
+
+Post-merge reconciliation uses the same newest-check marker boundary before reading
+reviews or attestations. A merge completed through the human path, or after a skipped,
+blocking, inconclusive, `ai-approve`, or failed-App outcome, is a successful no-op.
+Only an exact check/head `ai-merge` marker proceeds to the existing exact-head approval,
+review-run, and attestation validation. A present but malformed, stale, duplicated, or
+forged AI marker remains a hard failure rather than being misclassified as human.
+
+During rollout, an exact legacy marker without the authority suffix is accepted only
+after the same validated review run proves its authority through the unique
+`dispatch-merge` job: completed success means `ai-merge`, while completed skipped means
+the non-merging `ai-approve` path and remains a no-op. A missing, duplicate, incomplete,
+cancelled, or failed dispatch job fails closed. This compatibility is necessary because
+`pull_request_target: closed` executes the newly merged reconciler while the approval
+marker on that same PR was emitted by the pre-merge default-branch workflow. The review
+run is default-branch code, so its Actions `head_sha` identifies that trusted workflow
+revision rather than the reviewed PR head; the approval, check, and attestation retain
+the exact reviewed-head binding.
+
 ## Consequences
 
 - No job sleeps or polls while CI changes state, and CI completion cannot spend model
@@ -94,10 +130,11 @@ merge while naming no cause.
 - PR #623's bounded polling implementation is superseded by this event-driven path and
   should close without merge. Its underlying runner-saturation concern is satisfied.
 - Issue #640 supplies follow-up filing and branch cleanup through a trusted
-  `pull_request_target: closed` reconciler. It accepts only the unique dedicated-App
-  exact-head approval, the named successful review run, and that run's validated
-  artifact. It can file idempotent issues and delete same-repository merged head refs,
-  but has no merge or workflow-dispatch authority.
+  `pull_request_target: closed` reconciler. For exact-head `ai-merge` authorizations, it
+  accepts only the unique dedicated-App approval, the named successful review run, and
+  that run's validated artifact; every non-merging authority is a no-op. It can file
+  idempotent issues and delete same-repository merged head refs, but has no merge or
+  workflow-dispatch authority.
 - ADR 0079 continues to govern paid-review deduplication and App authorization; its
   native-auto-merge and GitHub-owned-waiting sections are superseded here.
 
