@@ -31,7 +31,7 @@ jobs:
   resolve:
     runs-on: ${{ github.repository_owner == 'Verjson' && fromJSON(vars.VERJSON_RUNNER_FASTLANE || vars.VERJSON_LANE_TRUSTED || vars.VERJSON_LANE_FALLBACK || '["ubuntu-24.04"]') || 'ubuntu-24.04' }}
     outputs:
-      ready: ${{ steps.resolve.outputs.ready }}
+      ready: ${{ steps.resolve.outputs.ready || steps.adoption.outputs.ready }}
       pr_number: ${{ steps.resolve.outputs.pr_number }}
       expected_head_sha: ${{ steps.resolve.outputs.expected_head_sha }}
       authorization_check_id: ${{ steps.resolve.outputs.authorization_check_id }}
@@ -39,13 +39,44 @@ jobs:
       arm_run_attempt: ${{ steps.resolve.outputs.arm_run_attempt }}
       review_policy: ${{ steps.resolve.outputs.review_policy }}
     steps:
+      - name: Resolve AI review adoption
+        id: adoption
+        env:
+          EXPECTED_APP_ID: ${{ vars.AI_REVIEW_APP_ID }}
+          EXPECTED_APP_SLUG: ${{ vars.AI_REVIEW_APP_SLUG }}
+        run: |
+          set -euo pipefail
+          if [ -z "$EXPECTED_APP_ID" ] && [ -z "$EXPECTED_APP_SLUG" ]; then
+            printf 'adopted=false\nready=false\n' >>"$GITHUB_OUTPUT"
+            exit 0
+          fi
+          [ -n "$EXPECTED_APP_ID" ] || {
+            echo '::error::AI_REVIEW_APP_ID is required when AI_REVIEW_APP_SLUG is configured'
+            exit 1
+          }
+          [ -n "$EXPECTED_APP_SLUG" ] || {
+            echo '::error::AI_REVIEW_APP_SLUG is required when AI_REVIEW_APP_ID is configured'
+            exit 1
+          }
+          [[ "$EXPECTED_APP_ID" =~ ^[1-9][0-9]*$ ]] || {
+            echo '::error::AI_REVIEW_APP_ID must be a positive decimal App ID'
+            exit 1
+          }
+          [[ "$EXPECTED_APP_SLUG" =~ ^[a-z0-9][a-z0-9-]*$ ]] || {
+            echo '::error::AI_REVIEW_APP_SLUG must be a lowercase GitHub App slug'
+            exit 1
+          }
+          echo 'adopted=true' >>"$GITHUB_OUTPUT"
+
       - name: Resolve executing trusted workflow revision
         id: trusted-revision
+        if: steps.adoption.outputs.adopted == 'true'
         env:
           EXECUTING_WORKFLOW_SHA: ${{ job.workflow_sha }}
         run: echo "sha=$EXECUTING_WORKFLOW_SHA" >>"$GITHUB_OUTPUT"
 
       - name: Check out immutable review-policy decoder
+        if: steps.adoption.outputs.adopted == 'true'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           repository: Verjson/.github
@@ -57,6 +88,7 @@ jobs:
 
       - name: Resolve exact-head authorization
         id: resolve
+        if: steps.adoption.outputs.adopted == 'true'
         env:
           EXPECTED_APP_ID: ${{ vars.AI_REVIEW_APP_ID }}
           EXPECTED_APP_SLUG: ${{ vars.AI_REVIEW_APP_SLUG }}
@@ -71,8 +103,6 @@ jobs:
           pr_number="$(jq -r '.[0].number // ""' <<<"$PULL_REQUESTS")"
           [[ "$pr_number" =~ ^[1-9][0-9]*$ ]] || exit 1
           [[ "$HEAD_SHA" =~ ^[0-9a-f]{40}$ ]] || exit 1
-          [[ "$EXPECTED_APP_ID" =~ ^[1-9][0-9]*$ ]] || exit 1
-          [[ "$EXPECTED_APP_SLUG" =~ ^[a-z0-9][a-z0-9-]*$ ]] || exit 1
           check="$(gh api "repos/$GITHUB_REPOSITORY/commits/$HEAD_SHA/check-runs" \
             --jq "[.check_runs[] | select(.name == \"AI review authorization\" and .head_sha == \"$HEAD_SHA\" and .app.id == $EXPECTED_APP_ID and .app.slug == \"$EXPECTED_APP_SLUG\")] | sort_by(.id) | last // {}")"
           check_id="$(jq -r '.id // ""' <<<"$check")"
