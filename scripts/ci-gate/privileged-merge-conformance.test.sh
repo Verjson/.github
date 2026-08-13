@@ -160,18 +160,27 @@ on = document.get(True, document.get("on"))
 assert set(on) == {"schedule"}
 assert document["permissions"] == {"contents": "read"}
 job = document["jobs"]["audit"]
-assert set(job) == {"runs-on", "timeout-minutes", "steps"}
+source = ".privileged-merge-conformance-source-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}"
+assert set(job) == {"runs-on", "defaults", "timeout-minutes", "steps"}
 assert job["runs-on"] == "${{ fromJSON(vars.VERJSON_RUNNER_FASTLANE || '[\"ubuntu-24.04\"]') }}"
+assert job["defaults"] == {"run": {"working-directory": source}}
 assert job["timeout-minutes"] == 10
-checkout, audit = job["steps"]
+checkout, audit, cleanup = job["steps"]
 assert checkout["uses"].startswith("actions/checkout@")
 assert len(checkout["uses"].split("@", 1)[1]) == 40
-assert checkout["with"] == {"ref": "${{ github.sha }}", "persist-credentials": False}
+assert checkout["with"] == {
+    "ref": "${{ github.sha }}",
+    "path": source,
+    "persist-credentials": False,
+}
 assert audit["env"] == {
     "GH_TOKEN": "${{ secrets.ORG_ADMIN_TOKEN }}",
     "PRIVILEGED_MERGE_CONTRACT_SHA": "${{ github.sha }}",
 }
 assert audit["run"] == "bash scripts/privileged-merge-conformance.sh"
+assert cleanup["if"] == "${{ always() }}"
+assert cleanup["working-directory"] == "${{ github.workspace }}"
+assert cleanup["run"] == f'rm -rf "{source}"'
 PY
 then
   pass "scheduled fleet audit binds conformance to its immutable event SHA"

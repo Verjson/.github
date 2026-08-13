@@ -57,7 +57,6 @@ authority is enabled for non-trivial or fanned-out autonomous work:
 
 - [#701](https://github.com/Verjson/.github/issues/701) — **Blocks the merge gate.** The arm now runs but its dispatch 404s in 17 of 21 armed repos that have no generated `ai-review-merge.yml` caller.
 - [#728](https://github.com/Verjson/.github/issues/728) — The 2026-08-08 gate outage; ruleset half fixed by ADR 0094, remainder blocked on #701.
-- [#743](https://github.com/Verjson/.github/issues/743) — Every scheduled workflow fails: reused self-hosted workspace + static `ref:` makes checkout a no-op. Fix is per-run `path:` isolation.
 - [#702](https://github.com/Verjson/.github/issues/702) — Authorization App cannot submit exact-head pull-request approvals.
 - [#731](https://github.com/Verjson/.github/issues/731) — Require the generated changelog contract check in the canonical Node ruleset.
 - [#676](https://github.com/Verjson/.github/issues/676) — Finish privileged caller regeneration and remove the temporary legacy route.
