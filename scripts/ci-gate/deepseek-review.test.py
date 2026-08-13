@@ -164,7 +164,8 @@ class DeepSeekReviewTest(unittest.TestCase):
                 "PR_JSON_FILE": str(metadata), "PR_DIFF_FILE": str(diff), "GITHUB_OUTPUT": str(output),
                 "DEEPSEEK_API_KEY": "secret",
             }
-            with patch.dict(os.environ, env, clear=True), patch.object(review.urllib.request, "urlopen", return_value=Context(self.stream())) as call:
+            notices = io.StringIO()
+            with patch.dict(os.environ, env, clear=True), patch.object(review.urllib.request, "urlopen", return_value=Context(self.stream())) as call, patch("sys.stdout", notices):
                 self.assertEqual(review.main(), 0)
                 self.assertEqual(call.call_count, 1)
                 sent = json.loads(call.call_args.args[0].data)
@@ -172,10 +173,38 @@ class DeepSeekReviewTest(unittest.TestCase):
                 self.assertIn("sentinel", sent["messages"][1]["content"])
                 self.assertTrue(sent["stream"])
                 self.assertEqual(call.call_args.args[0].headers["Accept"], "text/event-stream")
+            self.assertIn("result=started", notices.getvalue())
+            self.assertIn("result=completed elapsed_seconds=", notices.getvalue())
             result = output.read_text()
             self.assertIn("structured_output=", result)
             self.assertIn("reported_cache_hit_tokens=40", result)
             self.assertIn("pricing_version=deepseek-v4-2026-08-10", result)
+
+    def test_transport_failure_logs_only_bounded_metadata(self):
+        class ResettingContext:
+            def __enter__(self): return self
+            def __exit__(self, *_): return False
+            def __iter__(self): raise ConnectionResetError("private response detail")
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            prompt, metadata, diff, output = (root / name for name in ("prompt", "pr.json", "pr.diff", "output"))
+            prompt.write_text("sensitive prompt", encoding="utf-8")
+            metadata.write_text('{"title":"sensitive metadata"}', encoding="utf-8")
+            diff.write_text("sensitive diff", encoding="utf-8")
+            env = {
+                "MODEL": "deepseek-v4-pro", "BUDGET_USD": "5.00", "PROMPT_FILE": str(prompt),
+                "PR_JSON_FILE": str(metadata), "PR_DIFF_FILE": str(diff), "GITHUB_OUTPUT": str(output),
+                "DEEPSEEK_API_KEY": "sensitive key",
+            }
+            errors = io.StringIO()
+            with patch.dict(os.environ, env, clear=True), patch.object(review.urllib.request, "urlopen", return_value=ResettingContext()), patch("sys.stderr", errors), self.assertRaises(ConnectionResetError):
+                review.main()
+            diagnostic = errors.getvalue()
+            self.assertIn("result=failed", diagnostic)
+            self.assertIn("error_type=ConnectionResetError", diagnostic)
+            for secret in ("sensitive prompt", "sensitive metadata", "sensitive diff", "sensitive key", "private response detail"):
+                self.assertNotIn(secret, diagnostic)
 
 
 if __name__ == "__main__":

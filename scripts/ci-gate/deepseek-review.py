@@ -4,6 +4,7 @@
 import json
 import os
 import sys
+import time
 import urllib.request
 from decimal import Decimal, InvalidOperation, ROUND_FLOOR
 
@@ -253,8 +254,27 @@ def main() -> int:
         },
         method="POST",
     )
-    with urllib.request.urlopen(request, timeout=900) as raw:
-        response = streamed_response(raw, values["MODEL"])
+    started = time.monotonic()
+    print(
+        f"::notice::phase=provider-request transport=sse provider=deepseek model={values['MODEL']} result=started"
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=900) as raw:
+            response = streamed_response(raw, values["MODEL"])
+    except (OSError, ValueError, json.JSONDecodeError) as error:
+        elapsed = int(time.monotonic() - started)
+        print(
+            f"::error::phase=provider-request transport=sse provider=deepseek "
+            f"model={values['MODEL']} result=failed elapsed_seconds={elapsed} "
+            f"error_type={type(error).__name__}",
+            file=sys.stderr,
+        )
+        raise
+    elapsed = int(time.monotonic() - started)
+    print(
+        f"::notice::phase=provider-request transport=sse provider=deepseek "
+        f"model={values['MODEL']} result=completed elapsed_seconds={elapsed}"
+    )
     verdict, prompt_tokens, completion_tokens, hit_tokens, miss_tokens, cost = extract(
         response, values["MODEL"], input_bound, body["max_tokens"], values["BUDGET_USD"]
     )
