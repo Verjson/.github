@@ -78,6 +78,7 @@ merge-gate	bash scripts/ci-gate/dispatch-target-guard.test.sh
 merge-gate	bash scripts/ci-gate/target-visibility.test.sh
 merge-gate	bash scripts/ci-gate/privileged-merge-conformance.test.sh
 merge-gate	bash scripts/ci-gate/require-secrets.test.sh
+merge-gate	bash scripts/ci-gate/privileged-merge-pin.test.sh
 merge-gate	bash scripts/ci-gate/budget-exceeded.test.sh
 changelog-release	bash scripts/tag-major.test.sh
 changelog-release	bash scripts/gen-adr-index.sh --check
