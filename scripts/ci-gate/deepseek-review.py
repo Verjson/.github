@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """Execute one budget-bounded, tool-free DeepSeek Chat Completions review."""
 
+import hashlib
 import json
 import os
+import re
 import sys
 import time
 import urllib.request
@@ -29,6 +31,20 @@ MAX_DIFF_BYTES = 2 * 1024 * 1024
 # verdict. Bound wire data in proportion to the independently bounded output
 # token envelope while allowing generous per-event framing overhead.
 MAX_STREAM_BYTES = MAX_OUTPUT_TOKENS * 1024
+MAX_REPLAY_BYTES = 1024 * 1024
+REDACTED_UNKNOWN = "__REDACTED_UNKNOWN_VALUE__"
+REDACTED_UNKNOWN_FIELD = "__redacted_unknown_field__"
+TOP_LEVEL_ALIASES = {
+    "blocking", "isBlocking", "is_blocking", "summary", "review_first", "reviewFirst",
+    "findings", "followups", "followUps", "follow_ups", "confidence",
+}
+LOCATION_FIELDS = {"location", "file", "path", "line", "line_number"}
+ITEM_METADATA_FIELDS = {"confidence", "priority", "severity"}
+REVIEW_FIRST_FIELDS = LOCATION_FIELDS | {"why", "reason", "rationale"} | ITEM_METADATA_FIELDS
+FINDING_FIELDS = LOCATION_FIELDS | {
+    "reason", "why", "description", "failure_scenario", "scenario", "impact", "evidence",
+} | ITEM_METADATA_FIELDS
+FOLLOWUP_FIELDS = LOCATION_FIELDS | {"note", "reason", "description"} | ITEM_METADATA_FIELDS
 PROGRESS_INTERVAL_SECONDS = 30
 PROGRESS_INTERVAL_BYTES = 1024 * 1024
 
@@ -101,6 +117,86 @@ def bounded_text(path: str, limit: int, label: str) -> str:
         return data.decode("utf-8")
     except UnicodeDecodeError as exc:
         raise ValueError(f"{label} is not valid UTF-8") from exc
+
+
+def file_digest(path: str) -> str:
+    digest = hashlib.sha256()
+    with open(path, "rb") as source:
+        for chunk in iter(lambda: source.read(65536), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def redacted_shape(value: object) -> object:
+    if isinstance(value, dict):
+        return {"__redacted_shape__": "object"}
+    if isinstance(value, list):
+        return [REDACTED_UNKNOWN] if value else []
+    return REDACTED_UNKNOWN
+
+
+def sanitize_item(value: object, allowed: set[str]) -> object:
+    if not isinstance(value, dict):
+        return redacted_shape(value)
+    sanitized = {}
+    for field, field_value in value.items():
+        if field not in allowed:
+            sanitized[REDACTED_UNKNOWN_FIELD] = REDACTED_UNKNOWN
+        elif field in ITEM_METADATA_FIELDS:
+            sanitized[field] = redacted_shape(field_value)
+        elif isinstance(field_value, str) or field_value is None or type(field_value) in {bool, int, float}:
+            sanitized[field] = field_value
+        else:
+            sanitized[field] = redacted_shape(field_value)
+    return sanitized
+
+
+def sanitize_verdict_for_replay(verdict: object) -> object:
+    if not isinstance(verdict, dict):
+        return redacted_shape(verdict)
+    sanitized = {}
+    list_fields = {
+        "review_first": REVIEW_FIRST_FIELDS, "reviewFirst": REVIEW_FIRST_FIELDS,
+        "findings": FINDING_FIELDS,
+        "followups": FOLLOWUP_FIELDS, "followUps": FOLLOWUP_FIELDS, "follow_ups": FOLLOWUP_FIELDS,
+    }
+    for field, value in verdict.items():
+        if field not in TOP_LEVEL_ALIASES:
+            sanitized[REDACTED_UNKNOWN_FIELD] = REDACTED_UNKNOWN
+        elif field == "confidence":
+            sanitized[field] = redacted_shape(value)
+        elif field in list_fields:
+            sanitized[field] = (
+                [sanitize_item(item, list_fields[field]) for item in value]
+                if isinstance(value, list) else redacted_shape(value)
+            )
+        elif isinstance(value, str) or value is None or type(value) in {bool, int, float}:
+            sanitized[field] = value
+        else:
+            sanitized[field] = redacted_shape(value)
+    return sanitized
+
+
+def write_replay_bundle(path: str, verdict: str, model: str, usage: dict, provenance: dict, bounds: dict) -> None:
+    bundle = {
+        "schema": 1,
+        "purpose": "diagnostic-replay",
+        "authorizing": False,
+        "cacheable": False,
+        "transport": "completed",
+        "provenance": provenance,
+        "response": {
+            "model": model,
+            "usage": usage,
+            "verdict": sanitize_verdict_for_replay(json.loads(verdict)),
+            "bounds": bounds,
+        },
+    }
+    encoded = json.dumps(bundle, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    if len(encoded) > MAX_REPLAY_BYTES:
+        raise ValueError("diagnostic replay exceeds its bounded limit")
+    with open(path, "wb") as output:
+        output.write(encoded + b"\n")
 
 
 def role_separated_messages(prompt: str, metadata: str, diff: str) -> list[dict]:
@@ -294,10 +390,27 @@ def streamed_response(raw: object, model: str, progress: StreamProgress | None =
 
 
 def main() -> int:
-    required = ("MODEL", "BUDGET_USD", "PROMPT_FILE", "PR_JSON_FILE", "PR_DIFF_FILE", "GITHUB_OUTPUT")
+    required = (
+        "MODEL", "BUDGET_USD", "PROMPT_FILE", "PR_JSON_FILE", "PR_DIFF_FILE", "GITHUB_OUTPUT",
+        "REPLAY_FILE", "REVIEWED_HEAD_SHA", "REVIEW_POLICY", "AUTHORIZATION_CHECK_ID",
+        "TARGET_REPO", "PR_NUMBER", "REVIEW_PASS", "SENSITIVE",
+        "TRUSTED_REVIEW_SHA",
+    )
     values = {name: os.environ.get(name, "") for name in required}
     if not all(values.values()):
         raise ValueError(f"{', '.join(required)} are required")
+    if not re.fullmatch(r"[0-9a-f]{40}", values["REVIEWED_HEAD_SHA"]):
+        raise ValueError("reviewed head is malformed")
+    if not re.fullmatch(r"[1-9][0-9]*", values["AUTHORIZATION_CHECK_ID"]):
+        raise ValueError("authorization check ID is malformed")
+    if not re.fullmatch(r"[A-Za-z0-9._-]+/[A-Za-z0-9._-]+", values["TARGET_REPO"]):
+        raise ValueError("target repository is malformed")
+    if not re.fullmatch(r"[1-9][0-9]*", values["PR_NUMBER"]) or values["REVIEW_PASS"] not in {"1", "2"}:
+        raise ValueError("review identity is malformed")
+    if values["SENSITIVE"] not in {"true", "false"}:
+        raise ValueError("sensitive classification is malformed")
+    if not re.fullmatch(r"[0-9a-f]{40}", values["TRUSTED_REVIEW_SHA"]):
+        raise ValueError("trusted review revision is malformed")
     with open(values["PROMPT_FILE"], encoding="utf-8") as prompt:
         prompt_text = prompt.read()
     messages = role_separated_messages(
@@ -341,6 +454,36 @@ def main() -> int:
     verdict, prompt_tokens, completion_tokens, hit_tokens, miss_tokens, cost = extract(
         response, values["MODEL"], input_bound, body["max_tokens"], values["BUDGET_USD"]
     )
+    try:
+        write_replay_bundle(
+            values["REPLAY_FILE"], verdict, values["MODEL"],
+            {
+                "prompt_tokens": prompt_tokens,
+                "completion_tokens": completion_tokens,
+                "cache_hit_tokens": hit_tokens,
+                "cache_miss_tokens": miss_tokens,
+            },
+            {
+                "reviewed_head": values["REVIEWED_HEAD_SHA"],
+                "authorization_check_id": values["AUTHORIZATION_CHECK_ID"],
+                "repository": values["TARGET_REPO"],
+                "pr_number": int(values["PR_NUMBER"]),
+                "review_pass": int(values["REVIEW_PASS"]),
+                "sensitive": values["SENSITIVE"] == "true",
+                "trusted_review_sha": values["TRUSTED_REVIEW_SHA"],
+                "review_policy_sha256": hashlib.sha256(values["REVIEW_POLICY"].encode("utf-8")).hexdigest(),
+                "prompt_sha256": file_digest(values["PROMPT_FILE"]),
+                "pr_metadata_sha256": file_digest(values["PR_JSON_FILE"]),
+                "pr_diff_sha256": file_digest(values["PR_DIFF_FILE"]),
+            },
+            {
+                "input_token_bound": input_bound,
+                "max_output_tokens": body["max_tokens"],
+                "reported_cost_usd": str(cost),
+            },
+        )
+    except (OSError, ValueError, json.JSONDecodeError):
+        print("::warning::DeepSeek diagnostic replay unavailable; detail redacted", file=sys.stderr, flush=True)
     with open(values["GITHUB_OUTPUT"], "a", encoding="utf-8") as out:
         out.write(f"structured_output={verdict}\n")
         out.write(f"input_token_bound={input_bound}\nmax_output_tokens={body['max_tokens']}\npricing_version={PRICING_VERSION}\n")

@@ -73,6 +73,40 @@ flushed progress at most every 30 seconds or 1 MiB, plus completion, using only
 elapsed time and numeric counters. Verdict, reasoning, prompt, diff, key, payload,
 and exception details never enter telemetry.
 
+When a completed DeepSeek response passes exact-model, usage, cost, and JSON
+transport extraction but later fails canonical source validation or publication,
+the gate may retain a one-day diagnostic replay. The bundle contains a
+schema-aware sanitized verdict object, projected validated numeric usage and
+bounds, the exact reviewed head/repository/PR/pass/sensitive
+classification/check identity, the trusted validator revision, and SHA-256
+digests of the receipt policy and bounded inputs. Documented verdict fields,
+including evidence, may quote reviewed source. Unknown provider field names and
+values collapse to one fixed unknown-field key/value sentinel. The bundle is explicitly
+non-authorizing and non-cacheable; no workflow consumes or downloads it. An
+operator reproduces canonical validation by executing the validator from a
+trusted `Verjson/.github` checkout at `trusted_review_sha` against a separate
+target repository checkout at `reviewed_head`:
+
+```bash
+trusted_checkout=/path/to/trusted-review
+target_checkout=/path/to/target-repository
+
+git -C "$trusted_checkout" checkout "$(jq -r .provenance.trusted_review_sha replay.json)"
+git -C "$target_checkout" checkout "$(jq -r .provenance.reviewed_head replay.json)"
+
+VERDICT="$(jq -c .response.verdict replay.json)" \
+SENSITIVE="$(jq -r .provenance.sensitive replay.json)" \
+REVIEW_PASS="$(jq -r .provenance.review_pass replay.json)" \
+REVIEW_REPOSITORY="$target_checkout" \
+REVIEWED_HEAD_SHA="$(jq -r .provenance.reviewed_head replay.json)" \
+GITHUB_OUTPUT="$(mktemp)" \
+python3 "$trusted_checkout/scripts/ci-gate/review-verdict.py"
+```
+
+Raw SSE, reasoning, prompt, metadata, and diff input files, keys, headers,
+unknown provider names and values, and exception details are never persisted, and an
+incomplete transport or successful end-to-end review creates no uploaded replay.
+
 A repository provider override is authoritative over inherited organization
 fallback variables. Selecting Anthropic or OpenAI therefore normalizes stale
 DeepSeek fallback model and budget values to empty before provider validation and

@@ -693,6 +693,7 @@ jobs:
             scripts/ci-gate/review-verdict.py
             scripts/ci-gate/openai-review.py
             scripts/ci-gate/deepseek-review.py
+            scripts/ci-gate/prepare-deepseek-replay.py
             scripts/ci-gate/review-attempt-count.py
           sparse-checkout-cone-mode: false
           persist-credentials: false
@@ -709,6 +710,7 @@ jobs:
           }
           install -m 0555 .gate-trust/scripts/ci-gate/openai-review.py "$RUNNER_TEMP/openai-review.py"
           install -m 0555 .gate-trust/scripts/ci-gate/deepseek-review.py "$RUNNER_TEMP/deepseek-review.py"
+          install -m 0555 .gate-trust/scripts/ci-gate/prepare-deepseek-replay.py "$RUNNER_TEMP/prepare-deepseek-replay.py"
           install -m 0555 .gate-trust/scripts/ci-gate/review-verdict.py "$RUNNER_TEMP/review-verdict.py"
           install -m 0555 .gate-trust/scripts/ci-gate/review-attempt-count.py "$RUNNER_TEMP/review-attempt-count.py"
 
@@ -1233,6 +1235,11 @@ jobs:
           PROMPT_FILE: ${{ runner.temp }}/ai-review-deepseek-primary-prompt.txt
           PR_JSON_FILE: ${{ github.workspace }}/.ai-review/pr.json
           PR_DIFF_FILE: ${{ github.workspace }}/.ai-review/pr.diff
+          REPLAY_FILE: ${{ runner.temp }}/deepseek-replay-pass-1.json
+          REVIEWED_HEAD_SHA: ${{ needs.preflight.outputs.head_sha }}
+          REVIEW_PASS: "1"
+          SENSITIVE: ${{ needs.preflight.outputs.sensitive }}
+          TRUSTED_REVIEW_SHA: ${{ steps.trusted-revision.outputs.sha }}
         run: |
           umask 077
           printf '%s' "$REVIEW_PROMPT" >"$PROMPT_FILE"
@@ -1298,6 +1305,11 @@ jobs:
           PROMPT_FILE: ${{ runner.temp }}/ai-review-deepseek-fallback-prompt.txt
           PR_JSON_FILE: ${{ github.workspace }}/.ai-review/pr.json
           PR_DIFF_FILE: ${{ github.workspace }}/.ai-review/pr.diff
+          REPLAY_FILE: ${{ runner.temp }}/deepseek-replay-pass-2.json
+          REVIEWED_HEAD_SHA: ${{ needs.preflight.outputs.head_sha }}
+          REVIEW_PASS: "2"
+          SENSITIVE: ${{ needs.preflight.outputs.sensitive }}
+          TRUSTED_REVIEW_SHA: ${{ steps.trusted-revision.outputs.sha }}
         run: |
           umask 077
           printf '%s' "$REVIEW_PROMPT" >"$PROMPT_FILE"
@@ -1510,6 +1522,80 @@ jobs:
 
           $body"
           echo "outcome=approved" >> "$GITHUB_OUTPUT"
+
+      - name: Prepare failed DeepSeek pass 1 replay
+        id: replay_primary
+        if: always() && needs.preflight.outputs.lane == 'ai' && needs.preflight.outputs.provider == 'deepseek'
+        continue-on-error: true
+        env:
+          TRANSPORT: ${{ steps.deepseek_primary.conclusion }}
+          USABLE: ${{ steps.verdict_1.outputs.usable }}
+          PUBLICATION: ${{ steps.submit.conclusion }}
+          DIAGNOSTIC: ${{ steps.verdict_1.outputs.diagnostic }}
+          EXPECTED_MODEL: ${{ needs.preflight.outputs.model }}
+          EXPECTED_HEAD: ${{ needs.preflight.outputs.head_sha }}
+          EXPECTED_SENSITIVE: ${{ needs.preflight.outputs.sensitive }}
+          EXPECTED_TRUSTED_REVIEW_SHA: ${{ steps.trusted-revision.outputs.sha }}
+        run: |
+          diagnostic=${DIAGNOSTIC:-}
+          [ -n "$diagnostic" ] || diagnostic='{}'
+          python3 "$RUNNER_TEMP/prepare-deepseek-replay.py" \
+            --source "$RUNNER_TEMP/deepseek-replay-pass-1.json" \
+            --output "$RUNNER_TEMP/deepseek-replay-upload/pass-1.json" \
+            --transport "$TRANSPORT" --usable "$USABLE" --publication "$PUBLICATION" \
+            --diagnostic "$diagnostic" --expected-head "$EXPECTED_HEAD" \
+            --expected-check-id "$AUTHORIZATION_CHECK_ID" \
+            --expected-model "$EXPECTED_MODEL" --expected-repository "$TARGET_REPO" \
+            --expected-pr "$PR_NUMBER" --expected-pass 1 --expected-sensitive "$EXPECTED_SENSITIVE" \
+            --expected-trusted-review-sha "$EXPECTED_TRUSTED_REVIEW_SHA" \
+            --github-output "$GITHUB_OUTPUT"
+
+      - name: Upload failed DeepSeek pass 1 replay
+        if: always() && steps.replay_primary.outputs.available == 'true'
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: deepseek-diagnostic-replay-${{ github.run_id }}-${{ github.run_attempt }}-pass-1
+          path: ${{ runner.temp }}/deepseek-replay-upload/pass-1.json
+          retention-days: 1
+          if-no-files-found: error
+
+      - name: Prepare failed DeepSeek pass 2 replay
+        id: replay_fallback
+        if: always() && needs.preflight.outputs.lane == 'ai' && needs.preflight.outputs.provider == 'deepseek'
+        continue-on-error: true
+        env:
+          TRANSPORT: ${{ steps.deepseek_fallback.conclusion }}
+          USABLE: ${{ steps.verdict_2.outputs.usable }}
+          PUBLICATION: ${{ steps.submit.conclusion }}
+          DIAGNOSTIC: ${{ steps.verdict_2.outputs.diagnostic }}
+          EXPECTED_MODEL: ${{ needs.preflight.outputs.fallback_model }}
+          EXPECTED_HEAD: ${{ needs.preflight.outputs.head_sha }}
+          EXPECTED_SENSITIVE: ${{ needs.preflight.outputs.sensitive }}
+          EXPECTED_TRUSTED_REVIEW_SHA: ${{ steps.trusted-revision.outputs.sha }}
+        run: |
+          diagnostic=${DIAGNOSTIC:-}
+          [ -n "$diagnostic" ] || diagnostic='{}'
+          python3 "$RUNNER_TEMP/prepare-deepseek-replay.py" \
+            --source "$RUNNER_TEMP/deepseek-replay-pass-2.json" \
+            --output "$RUNNER_TEMP/deepseek-replay-upload/pass-2.json" \
+            --transport "$TRANSPORT" --usable "$USABLE" --publication "$PUBLICATION" \
+            --diagnostic "$diagnostic" --expected-head "$EXPECTED_HEAD" \
+            --expected-check-id "$AUTHORIZATION_CHECK_ID" \
+            --expected-model "$EXPECTED_MODEL" --expected-repository "$TARGET_REPO" \
+            --expected-pr "$PR_NUMBER" --expected-pass 2 --expected-sensitive "$EXPECTED_SENSITIVE" \
+            --expected-trusted-review-sha "$EXPECTED_TRUSTED_REVIEW_SHA" \
+            --github-output "$GITHUB_OUTPUT"
+
+      - name: Upload failed DeepSeek pass 2 replay
+        if: always() && steps.replay_fallback.outputs.available == 'true'
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: deepseek-diagnostic-replay-${{ github.run_id }}-${{ github.run_attempt }}-pass-2
+          path: ${{ runner.temp }}/deepseek-replay-upload/pass-2.json
+          retention-days: 1
+          if-no-files-found: error
 
       - name: Build trusted post-merge evidence
         env:
