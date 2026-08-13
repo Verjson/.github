@@ -35,6 +35,10 @@ def validate(document: dict, raw: str) -> list[str]:
         {},
     )
 
+    if document.get("permissions") != {"contents": "read"}:
+        problems.append("workflow GITHUB_TOKEN is not contents-read-only")
+    if release.get("permissions") != {"contents": "read"}:
+        problems.append("release-job GITHUB_TOKEN is not contents-read-only")
     if not (inputs.get("release_app_client_id") or {}).get("required"):
         problems.append("release_app_client_id is not required")
     if set(secrets) != {"release_app_private_key"}:
@@ -87,6 +91,14 @@ def main() -> int:
     )
 
     mutations = []
+
+    mutant = copy.deepcopy(document)
+    mutant["permissions"]["contents"] = "write"
+    mutations.append(("a write-capable workflow GITHUB_TOKEN", mutant, raw))
+
+    mutant = copy.deepcopy(document)
+    mutant["jobs"]["release"]["permissions"]["contents"] = "write"
+    mutations.append(("a write-capable release-job GITHUB_TOKEN", mutant, raw))
 
     mutable = copy.deepcopy(document)
     mutable["jobs"]["release"]["steps"][mint_index]["uses"] = "actions/create-github-app-token@v3"

@@ -45,21 +45,12 @@ concurrency:
 
 jobs:
   release:
-    # The final step pushes the release commit and its exact tag atomically. A
-    # called workflow's permissions are the cap, not the caller's: with only the
-    # `contents: read` default above, the push token reaches the push read-only
-    # and GitHub answers "Write access to repository not granted" (403) before
-    # any tag or release exists. ADR 0038 already requires release callers to
-    # hold contents-write credentials; this is where that requirement has to be
-    # expressed. The caller's own grant still caps this — a caller that withholds
-    # `contents: write` gets a read-only token regardless (#295).
-    #
-    # Contents-write is necessary and not sufficient. The push targets the
-    # default branch directly, which the standard `main-protection` ruleset
-    # forbids (`pull_request`, `workflows`), so the dedicated release App must
-    # also be a named bypass actor (ADR 0099, #329).
+    # The job token reads only the canonical contract checkout. The final atomic
+    # push uses the repository-scoped contents-write token minted below, so the
+    # job's GITHUB_TOKEN needs no write authority (#784). The App must also be a
+    # named `main-protection` bypass actor (ADR 0099, #329).
     permissions:
-      contents: write
+      contents: read
     runs-on: ${{ inputs.runner != '' && fromJSON(inputs.runner) || github.repository_owner != 'Verjson' && 'ubuntu-24.04' || github.event.repository.private == true && fromJSON(vars.VERJSON_RUNNER_OVERFLOW || vars.VERJSON_LANE_TRUSTED || vars.VERJSON_LANE_FALLBACK || '["ubuntu-24.04"]') || fromJSON(vars.VERJSON_RUNNER_OVERFLOW || vars.VERJSON_LANE_UNTRUSTED || vars.VERJSON_LANE_FALLBACK || '["ubuntu-24.04"]') }}
     timeout-minutes: 10
     steps:

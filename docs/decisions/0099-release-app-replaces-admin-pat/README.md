@@ -107,6 +107,31 @@ default-branch and immutable-snapshot guards.
   successful manual canary receipt is the operational evidence boundary for the
   shared ruleset and App bypass.
 
+## Amendment (2026-08-13) — the Actions token returns to read-only (#784)
+
+ADR 0038's 2026-08-01 amendment granted the release job's `GITHUB_TOKEN`
+Contents write because that token supplied the checkout credential used by the
+final atomic push. This ADR moved that push to the App token but initially left
+the obsolete job grant in place.
+
+This amendment supersedes only ADR 0038's obsolete token-source requirement
+that the release job and caller grant `GITHUB_TOKEN` Contents write. It does not
+supersede ADR 0038's requirement for a Contents-write release credential,
+default-branch execution, immutable snapshots, or release serialization.
+
+The release workflow and generated snapshot caller now grant their
+`GITHUB_TOKEN`s only Contents read. The App-mint action authenticates from the
+client ID and private key, requests its own repository-scoped Contents-write
+installation token, and the release checkout persists that token for the push.
+The separate canonical-contract checkout is the only remaining consumer of the
+job token and requires only Contents read. This restores least privilege without
+changing release behavior or the App's required ruleset bypass.
+
+`scripts/changelog-release-permissions.test.sh` and
+`scripts/changelog-release-app-token.test.py` pin both token boundaries, and the
+generated adopter contract test rejects a snapshot caller that restores the
+obsolete write grant.
+
 ## Rollback
 
 Revert the implementing pull request and repin consumers. That restores the
