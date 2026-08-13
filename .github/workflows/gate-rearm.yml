@@ -186,14 +186,17 @@ jobs:
           fi
           case "$review_provider" in
             anthropic)
+              # Repository-level provider selection overrides the inherited
+              # organization DeepSeek cascade as one policy unit. Clear stale
+              # fallback values before validating and binding the receipt.
+              fallback_model=""; fallback_budget_usd=""
               review_pricing_version=anthropic-native-v1
-              [ -z "$fallback_model$fallback_budget_usd" ] || { echo "::error::Anthropic fallback is unsupported"; exit 1; }
               ;;
             openai)
               if [ "$explicit_rereview" != true ] || [ "$review_model" != gpt-5.6-luna ]; then
                 echo "::error::OpenAI gpt-5.6-luna is restricted to explicit re-review"; exit 1
               fi
-              [ -z "$fallback_model$fallback_budget_usd" ] || { echo "::error::OpenAI fallback is unsupported"; exit 1; }
+              fallback_model=""; fallback_budget_usd=""
               review_pricing_version=openai-luna-long-context-2026-08-08
               ;;
             deepseek)
