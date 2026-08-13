@@ -55,6 +55,9 @@ rc="$(run_submit "$approved")"
 { [ "$rc" = rc=0 ] && has_comment 'AI review advisory: non-blocking verdict' && has_comment 'Review these first' && has_output outcome=approved && ! has_action REVIEW; } \
   && pass "non-blocking verdict comments and records approval eligibility without submitting a review" \
   || fail "non-blocking advisory path drifted ($rc)"
+has_comment '`auth.ts:42` — gates admin' \
+  && pass "canonical review_first.why reaches the rendered advisory" \
+  || fail "review_first.why drifted from the renderer"
 has_comment '<!-- ai-review-head:deadbeef patchid:patch123 model:deepseek-v4-pro -->' \
   && pass "advisory marker binds head, patch, and selected model" \
   || fail "advisory marker lost immutable review identity"

@@ -206,3 +206,17 @@ raw model response and pull-request diff. Cross-provider conformance tests pass 
 same representative response through the Claude workflow path and the OpenAI and
 DeepSeek transport adapters before applying the canonical validator. This keeps model
 integration generic without guessing arbitrary prose into an approval.
+
+### 2026-08-13 clarification — prompt canonical verdict field names (#771)
+
+The shared provider-neutral prompt must request the same strict item shapes that the
+canonical validator returns and the deterministic renderer consumes. In particular,
+`review_first` entries use `{location, why}`; `reason` belongs to blocking findings,
+not to the canonical review-first shape. The validator continues to accept `reason`
+and `rationale` as compatibility aliases for historical output and ordinary model
+variance, but the first-party prompt does not ask providers to spend that flexibility.
+
+Contract coverage binds the shared prompt supplied to Claude, OpenAI, and both
+DeepSeek passes to the renderer's `review_first[].why` access, then confirms canonical
+and aliased provider outputs converge before publication. This restores the existing
+provider-neutral verdict boundary and does not change review or merge authority.
