@@ -81,7 +81,7 @@ bounds, the exact reviewed head/repository/PR/pass/sensitive
 classification/check identity, the trusted validator revision, and SHA-256
 digests of the receipt policy and bounded inputs. Documented verdict fields,
 including evidence, may quote reviewed source. Unknown provider field names and
-shapes are retained only with fixed redaction values. The bundle is explicitly
+values collapse to one fixed unknown-field key/value sentinel. The bundle is explicitly
 non-authorizing and non-cacheable; no workflow consumes or downloads it. An
 operator reproduces canonical validation by executing the validator from a
 trusted `Verjson/.github` checkout at `trusted_review_sha` against a separate
@@ -104,7 +104,7 @@ python3 "$trusted_checkout/scripts/ci-gate/review-verdict.py"
 ```
 
 Raw SSE, reasoning, prompt, metadata, and diff input files, keys, headers,
-unknown provider values, and exception details are never persisted, and an
+unknown provider names and values, and exception details are never persisted, and an
 incomplete transport or successful end-to-end review creates no uploaded replay.
 
 A repository provider override is authoritative over inherited organization

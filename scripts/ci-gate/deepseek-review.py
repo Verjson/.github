@@ -33,6 +33,7 @@ MAX_DIFF_BYTES = 2 * 1024 * 1024
 MAX_STREAM_BYTES = MAX_OUTPUT_TOKENS * 1024
 MAX_REPLAY_BYTES = 1024 * 1024
 REDACTED_UNKNOWN = "__REDACTED_UNKNOWN_VALUE__"
+REDACTED_UNKNOWN_FIELD = "__redacted_unknown_field__"
 TOP_LEVEL_ALIASES = {
     "blocking", "isBlocking", "is_blocking", "summary", "review_first", "reviewFirst",
     "findings", "followups", "followUps", "follow_ups", "confidence",
@@ -139,7 +140,9 @@ def sanitize_item(value: object, allowed: set[str]) -> object:
         return redacted_shape(value)
     sanitized = {}
     for field, field_value in value.items():
-        if field not in allowed or field in ITEM_METADATA_FIELDS:
+        if field not in allowed:
+            sanitized[REDACTED_UNKNOWN_FIELD] = REDACTED_UNKNOWN
+        elif field in ITEM_METADATA_FIELDS:
             sanitized[field] = redacted_shape(field_value)
         elif isinstance(field_value, str) or field_value is None or type(field_value) in {bool, int, float}:
             sanitized[field] = field_value
@@ -158,7 +161,9 @@ def sanitize_verdict_for_replay(verdict: object) -> object:
         "followups": FOLLOWUP_FIELDS, "followUps": FOLLOWUP_FIELDS, "follow_ups": FOLLOWUP_FIELDS,
     }
     for field, value in verdict.items():
-        if field not in TOP_LEVEL_ALIASES or field == "confidence":
+        if field not in TOP_LEVEL_ALIASES:
+            sanitized[REDACTED_UNKNOWN_FIELD] = REDACTED_UNKNOWN
+        elif field == "confidence":
             sanitized[field] = redacted_shape(value)
         elif field in list_fields:
             sanitized[field] = (

@@ -288,6 +288,9 @@ class DeepSeekReviewTest(unittest.TestCase):
             "key": "hostile-key-sentinel-784",
             "reasoning": "hostile-reasoning-sentinel-784",
         }
+        review_unknown = f"provider-context-{sentinels['prompt']}"
+        finding_unknown = f"provider-trace-{sentinels['diff']}"
+        top_unknown = f"provider-extension-{sentinels['reasoning']}"
         source_evidence = "return response.value"
         verdict = {
             "blocking": True,
@@ -295,17 +298,17 @@ class DeepSeekReviewTest(unittest.TestCase):
             "review_first": [{
                 "location": "app.py:7",
                 "why": "Inspect the response boundary.",
-                "provider_context": {"prompt": sentinels["prompt"]},
+                review_unknown: {"prompt": sentinels["key"]},
             }],
             "findings": [{
                 "location": "app.py:7",
                 "reason": "The error is not handled.",
                 "failure_scenario": "A failed request escapes.",
                 "evidence": source_evidence,
-                "provider_trace": [sentinels["diff"], sentinels["key"]],
+                finding_unknown: [sentinels["reasoning"], sentinels["prompt"]],
             }],
-            "followups": [],
-            "provider_extension": {"reasoning": sentinels["reasoning"]},
+            "followups": [{"location": "app.py:9", "note": "Harden this later."}],
+            top_unknown: {"diff": sentinels["diff"]},
         }
 
         with tempfile.TemporaryDirectory() as directory:
@@ -321,15 +324,23 @@ class DeepSeekReviewTest(unittest.TestCase):
 
         for sentinel in sentinels.values():
             self.assertNotIn(sentinel, replay_text)
-        self.assertEqual(replay_verdict["findings"][0]["evidence"], source_evidence)
-        self.assertEqual(replay_verdict["provider_extension"], {"__redacted_shape__": "object"})
+        self.assertEqual(replay_verdict["summary"], verdict["summary"])
+        self.assertEqual(replay_verdict["review_first"][0]["why"], verdict["review_first"][0]["why"])
+        self.assertEqual(replay_verdict["findings"][0]["reason"], verdict["findings"][0]["reason"])
         self.assertEqual(
-            replay_verdict["review_first"][0]["provider_context"],
-            {"__redacted_shape__": "object"},
+            replay_verdict["findings"][0]["failure_scenario"],
+            verdict["findings"][0]["failure_scenario"],
+        )
+        self.assertEqual(replay_verdict["findings"][0]["evidence"], source_evidence)
+        self.assertEqual(replay_verdict["followups"][0]["note"], verdict["followups"][0]["note"])
+        self.assertEqual(replay_verdict[review.REDACTED_UNKNOWN_FIELD], review.REDACTED_UNKNOWN)
+        self.assertEqual(
+            replay_verdict["review_first"][0][review.REDACTED_UNKNOWN_FIELD],
+            review.REDACTED_UNKNOWN,
         )
         self.assertEqual(
-            replay_verdict["findings"][0]["provider_trace"],
-            [review.REDACTED_UNKNOWN],
+            replay_verdict["findings"][0][review.REDACTED_UNKNOWN_FIELD],
+            review.REDACTED_UNKNOWN,
         )
 
         top_level = review_verdict.confirm_output(json.dumps(replay_verdict), sensitive=False)
@@ -337,7 +348,7 @@ class DeepSeekReviewTest(unittest.TestCase):
         self.assertEqual(top_level["diagnostic"]["path"], "$")
 
         nested_only = dict(replay_verdict)
-        del nested_only["provider_extension"]
+        del nested_only[review.REDACTED_UNKNOWN_FIELD]
         nested = review_verdict.confirm_output(json.dumps(nested_only), sensitive=False)
         self.assertFalse(nested["usable"])
         self.assertEqual(nested["diagnostic"]["path"], "review_first[0]")
