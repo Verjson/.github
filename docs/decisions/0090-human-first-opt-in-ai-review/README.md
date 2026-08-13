@@ -62,6 +62,25 @@ cache-miss rate. A pricing change requires a new reviewed pricing-version allowl
 reusable callers declare the secret, but consumer repositories receive no organization
 grant unless separately reviewed.
 
+### 2026-08-13 amendment — observable thinking streams and provider-local fallback policy
+
+The Pro pass explicitly enables DeepSeek thinking mode, fixes the supported
+`reasoning_effort` to `high`, and uses temperature `0.2`; the Flash fallback
+explicitly enables thinking but does not inherit Pro-only effort or temperature.
+The budget-derived `max_tokens` remains capped at 65,536 and JSON-object,
+tool-free, exact-model, usage, and cost validation are unchanged. Streaming emits
+flushed progress at most every 30 seconds or 1 MiB, plus completion, using only
+elapsed time and numeric counters. Verdict, reasoning, prompt, diff, key, payload,
+and exception details never enter telemetry.
+
+A repository provider override is authoritative over inherited organization
+fallback variables. Selecting Anthropic or OpenAI therefore normalizes stale
+DeepSeek fallback model and budget values to empty before provider validation and
+receipt generation; selecting DeepSeek still requires the exact Pro-to-Flash
+cascade. This preserves receipt determinism while allowing a repository to choose
+a supported single-pass provider without first clearing organization-wide
+DeepSeek defaults.
+
 ## Consequences
 
 - Deterministic CI and human review can authorize merge during any AI outage.

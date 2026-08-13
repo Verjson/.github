@@ -29,6 +29,44 @@ MAX_DIFF_BYTES = 2 * 1024 * 1024
 # verdict. Bound wire data in proportion to the independently bounded output
 # token envelope while allowing generous per-event framing overhead.
 MAX_STREAM_BYTES = MAX_OUTPUT_TOKENS * 1024
+PROGRESS_INTERVAL_SECONDS = 30
+PROGRESS_INTERVAL_BYTES = 1024 * 1024
+
+
+class StreamProgress:
+    def __init__(self, started: float, model: str, output: object, clock=time.monotonic):
+        self.started = started
+        self.model = model
+        self.output = output
+        self.clock = clock
+        self.event_count = 0
+        self.wire_bytes = 0
+        self.verdict_content_bytes = 0
+        self.reasoning_bytes = 0
+        self.usage_seen = False
+        self.done_seen = False
+        self.last_elapsed = 0
+        self.last_wire_bytes = 0
+
+    def emit_if_due(self, *, completed: bool = False) -> None:
+        elapsed = max(0, int(self.clock() - self.started))
+        if not completed and (
+            elapsed - self.last_elapsed < PROGRESS_INTERVAL_SECONDS
+            and self.wire_bytes - self.last_wire_bytes < PROGRESS_INTERVAL_BYTES
+        ):
+            return
+        result = "completed" if completed else "progress"
+        print(
+            "::notice::phase=provider-request transport=sse provider=deepseek "
+            f"model={self.model} result={result} elapsed_seconds={elapsed} event_count={self.event_count} "
+            f"wire_bytes={self.wire_bytes} verdict_content_bytes={self.verdict_content_bytes} "
+            f"reasoning_bytes={self.reasoning_bytes} usage_seen={str(self.usage_seen).lower()} "
+            f"done_seen={str(self.done_seen).lower()}",
+            file=self.output,
+            flush=True,
+        )
+        self.last_elapsed = elapsed
+        self.last_wire_bytes = self.wire_bytes
 
 
 def validated_budget(text: str) -> Decimal:
@@ -83,14 +121,19 @@ def role_separated_messages(prompt: str, metadata: str, diff: str) -> list[dict]
 def request_body(model: str, messages: list[dict], cap: int) -> dict:
     if model not in PRICES:
         raise ValueError(f"unsupported DeepSeek pricing model: {model}")
-    return {
+    body = {
         "model": model,
         "messages": messages,
         "max_tokens": cap,
         "response_format": {"type": "json_object"},
+        "thinking": {"type": "enabled"},
         "stream": True,
         "stream_options": {"include_usage": True},
     }
+    if model == "deepseek-v4-pro":
+        body["reasoning_effort"] = "high"
+        body["temperature"] = 0.2
+    return body
 
 
 def priced_request(model: str, messages: list[dict], budget: str) -> tuple[dict, bytes, int]:
@@ -154,7 +197,7 @@ def extract(response: object, model: str, input_bound: int, cap: int, budget_tex
     return json.dumps(verdict, separators=(",", ":")), prompt, completion, hit, miss, cost
 
 
-def streamed_response(raw: object, model: str) -> dict:
+def streamed_response(raw: object, model: str, progress: StreamProgress | None = None) -> dict:
     content: list[str] = []
     usage = None
     stopped = False
@@ -165,6 +208,9 @@ def streamed_response(raw: object, model: str) -> dict:
         if not isinstance(encoded_line, bytes):
             raise ValueError("stream yielded a non-byte line")
         total_bytes += len(encoded_line)
+        if progress is not None:
+            progress.wire_bytes = total_bytes
+            progress.emit_if_due()
         if total_bytes > MAX_STREAM_BYTES:
             raise ValueError("stream exceeds the bounded response limit")
         try:
@@ -180,9 +226,15 @@ def streamed_response(raw: object, model: str) -> dict:
         payload = line.removeprefix("data:").strip()
         if payload == "[DONE]":
             done = True
+            if progress is not None:
+                progress.event_count += 1
+                progress.done_seen = True
+                progress.emit_if_due()
             continue
 
         chunk = json.loads(payload)
+        if progress is not None:
+            progress.event_count += 1
         if not isinstance(chunk, dict) or chunk.get("object") != "chat.completion.chunk" or chunk.get("model") != model:
             raise ValueError("stream chunk is not for the requested model")
         chunk_usage = chunk.get("usage")
@@ -190,6 +242,8 @@ def streamed_response(raw: object, model: str) -> dict:
             if usage is not None:
                 raise ValueError("stream contains duplicate usage evidence")
             usage = chunk_usage
+            if progress is not None:
+                progress.usage_seen = True
         choices = chunk.get("choices")
         if not isinstance(choices, list) or len(choices) > 1:
             raise ValueError("stream chunk choices are malformed")
@@ -213,12 +267,20 @@ def streamed_response(raw: object, model: str) -> dict:
         for field in ("content", "reasoning_content"):
             if delta.get(field) is not None and not isinstance(delta[field], str):
                 raise ValueError("stream delta is malformed")
-        content.append(delta.get("content") or "")
+        content_delta = delta.get("content") or ""
+        reasoning_delta = delta.get("reasoning_content") or ""
+        content.append(content_delta)
+        if progress is not None:
+            progress.verdict_content_bytes += len(content_delta.encode("utf-8"))
+            progress.reasoning_bytes += len(reasoning_delta.encode("utf-8"))
+            progress.emit_if_due()
         if finish_reason == "stop":
             stopped = True
 
     if not done or not stopped or usage is None:
         raise ValueError("stream ended without a complete response and usage evidence")
+    if progress is not None:
+        progress.emit_if_due(completed=True)
     return {
         "object": "chat.completion",
         "model": model,
@@ -259,11 +321,13 @@ def main() -> int:
     )
     started = time.monotonic()
     print(
-        f"::notice::phase=provider-request transport=sse provider=deepseek model={values['MODEL']} result=started"
+        f"::notice::phase=provider-request transport=sse provider=deepseek model={values['MODEL']} result=started",
+        flush=True,
     )
+    progress = StreamProgress(started, values["MODEL"], sys.stdout)
     try:
         with urllib.request.urlopen(request, timeout=900) as raw:
-            response = streamed_response(raw, values["MODEL"])
+            response = streamed_response(raw, values["MODEL"], progress)
     except (OSError, ValueError, json.JSONDecodeError) as error:
         elapsed = int(time.monotonic() - started)
         print(
@@ -271,13 +335,9 @@ def main() -> int:
             f"model={values['MODEL']} result=failed elapsed_seconds={elapsed} "
             f"error_type={type(error).__name__}",
             file=sys.stderr,
+            flush=True,
         )
         raise
-    elapsed = int(time.monotonic() - started)
-    print(
-        f"::notice::phase=provider-request transport=sse provider=deepseek "
-        f"model={values['MODEL']} result=completed elapsed_seconds={elapsed}"
-    )
     verdict, prompt_tokens, completion_tokens, hit_tokens, miss_tokens, cost = extract(
         response, values["MODEL"], input_bound, body["max_tokens"], values["BUDGET_USD"]
     )
@@ -292,6 +352,10 @@ def main() -> int:
 if __name__ == "__main__":
     try:
         raise SystemExit(main())
-    except (ValueError, OSError, json.JSONDecodeError) as error:
-        print(f"::error::{error}", file=sys.stderr)
+    except (ValueError, OSError, json.JSONDecodeError):
+        print(
+            "::error::DeepSeek review failed; payload and exception detail are redacted",
+            file=sys.stderr,
+            flush=True,
+        )
         raise SystemExit(1)

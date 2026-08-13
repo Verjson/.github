@@ -239,6 +239,38 @@ else
   fail "post-open ai-review opt-in lost its verified actor permission or failed before receipt creation"
 fi
 
+# A repository-level provider choice overrides the inherited organization
+# DeepSeek policy as a unit. Stale Pro->Flash fallback variables must not make
+# Anthropic/OpenAI invalid or leak into their receipt policy.
+: >"$CALLS"; : >"$GITHUB_OUTPUT"
+provider_temp="$tmp/provider-anthropic"; mkdir "$provider_temp"; export RUNNER_TEMP="$provider_temp"
+export PRIMARY_PROVIDER=anthropic PRIMARY_MODEL=auto PRIMARY_BUDGET_USD=auto
+export PRIMARY_FALLBACK_MODEL=deepseek-v4-flash PRIMARY_FALLBACK_BUDGET_USD=5.00
+if run_arm >"$tmp/out" 2>&1 \
+  && policy_envelope="$(sed -n 's/^review_policy=//p' "$GITHUB_OUTPUT")" \
+  && policy_json="$(python3 "$root/scripts/ci-gate/review-policy-envelope.py" decode "$policy_envelope")" \
+  && [ "$(jq -r '.provider + ":" + .fallback_model + ":" + .fallback_budget_usd' <<<"$policy_json")" = 'anthropic::' ]; then
+  pass "repository Anthropic override clears inherited DeepSeek fallback policy"
+else
+  fail "repository Anthropic override retained inherited DeepSeek fallback policy"
+fi
+
+: >"$CALLS"; : >"$GITHUB_OUTPUT"
+provider_temp="$tmp/provider-openai"; mkdir "$provider_temp"; export RUNNER_TEMP="$provider_temp"
+jq '.labels=[{"name":"re-review"}]' "$META_FILE" >"$tmp/x" && mv "$tmp/x" "$META_FILE"
+export EVENT_ACTION=labeled EVENT_LABEL=re-review REQUEST_ACTOR=maintainer ACTOR_PERMISSION=maintain
+export REREVIEW_PROVIDER=openai REREVIEW_MODEL=gpt-5.6-luna REREVIEW_BUDGET_USD=1.00
+export REREVIEW_FALLBACK_MODEL=deepseek-v4-flash REREVIEW_FALLBACK_BUDGET_USD=5.00
+if run_arm >"$tmp/out" 2>&1 \
+  && policy_envelope="$(sed -n 's/^review_policy=//p' "$GITHUB_OUTPUT")" \
+  && policy_json="$(python3 "$root/scripts/ci-gate/review-policy-envelope.py" decode "$policy_envelope")" \
+  && [ "$(jq -r '.provider + ":" + .fallback_model + ":" + .fallback_budget_usd' <<<"$policy_json")" = 'openai::' ]; then
+  pass "repository OpenAI override clears inherited DeepSeek fallback policy"
+else
+  fail "repository OpenAI override retained inherited DeepSeek fallback policy"
+fi
+export RUNNER_TEMP="$tmp"
+
 # GitHub can omit a label-triggered pull_request_target delivery entirely. A
 # maintainer can rerun a prior exact-head arm attempt; attempt 2 must bypass
 # same-head deduplication only after the arm re-reads current PR/head state, and
