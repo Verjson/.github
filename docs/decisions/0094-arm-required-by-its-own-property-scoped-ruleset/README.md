@@ -151,3 +151,42 @@ signed property embedded in the historical run.
 rejects repository-sourced, wrong-ref, and later-page same-path forgeries while still
 requiring the immutable receipt, exact run attempt, App identity, and current pull
 request head.
+
+## 2026-08-13 amendment — scope the complete local-caller policy family atomically (#789)
+
+An armed repository that uses repository-local generated callers is a separate
+installation shape from the organization required-workflow path. Assigning
+`verjson-core-checks=enforced` scopes the required arm itself, but it does not make
+the organization variables consumed by the local arm and review caller visible.
+Partial variable rollout therefore fails after admission: the caller can be present
+and trusted while one of its identity, authority, provider, model, or budget inputs
+is absent or silently takes a default.
+
+Adopting this existing arm policy through repository-local generated callers now
+requires one atomic selected-repository grant for the complete primary identity and
+policy family:
+
+- `AI_REVIEW_APP_ID`, `AI_REVIEW_APP_SLUG`, and `AI_REVIEW_CLIENT_ID`;
+- `AI_REVIEW_AUTHORITY`;
+- `AI_REVIEW_PRIMARY_PROVIDER`, `AI_REVIEW_PRIMARY_MODEL`, and
+  `AI_REVIEW_PRIMARY_BUDGET_USD`;
+- `AI_REVIEW_PRIMARY_FALLBACK_MODEL` and
+  `AI_REVIEW_PRIMARY_FALLBACK_BUDGET_USD`.
+
+The grant is complete only when an exact selected-repository membership read proves
+all nine variables reach the repository. The dedicated App installation is verified
+separately: its App ID, unsuspended state, repository selection, and exact permission
+map remain deployment prerequisites. Provider and App secrets are also verified
+separately by name and visibility without reading or recording secret values. A
+successful variable grant is not evidence that either prerequisite is satisfied, and
+an organization-wide App installation or secret does not repair an incomplete
+selected-variable family.
+
+The live pre-rollout receipt for `Verjson/verjson-ai` on 2026-08-13 recorded the
+authorization App as unsuspended, App ID `4528902`, `repository_selection: all`, and
+permissions `checks: write`, `contents: read`, `pull_requests: write`, and
+`metadata: read`. `AI_REVIEW_APP_PRIVATE_KEY` and `DEEPSEEK_API_KEY` both had
+`visibility: all`; no secret value was read. Exact organization selected-repository
+membership reads found the repository absent from all nine variables above. This
+amendment records the adoption precondition and evidence; it does not itself mutate
+organization settings or change the authority architecture decided by ADR 0079.
