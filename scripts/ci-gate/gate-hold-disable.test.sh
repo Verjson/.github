@@ -261,6 +261,21 @@ if run_arm >"$tmp/out" 2>&1 \
 else
   fail "operator rerun did not preserve the exact-head receipt boundary: $(tail -1 "$tmp/out")"
 fi
+
+: >"$CALLS"; : >"$GITHUB_OUTPUT"
+jq '.labels=[]' "$META_FILE" >"$tmp/x" && mv "$tmp/x" "$META_FILE"
+repeated_recovery_temp="$tmp/repeated-recovery"
+mkdir "$repeated_recovery_temp"
+export GITHUB_RUN_ATTEMPT=3 RUNNER_TEMP="$repeated_recovery_temp"
+if run_arm >"$tmp/out" 2>&1 \
+  && repeated_policy_envelope="$(sed -n 's/^review_policy=//p' "$GITHUB_OUTPUT")" \
+  && repeated_policy_json="$(python3 "$root/scripts/ci-gate/review-policy-envelope.py" decode "$repeated_policy_envelope")" \
+  && [ "$(jq -r '.explicit_rereview|tostring' <<<"$repeated_policy_json")" = false ] \
+  && ! grep -q 'issues/7/events' "$CALLS"; then
+  pass "repeated operator recovery cannot reuse a consumed re-review label event"
+else
+  fail "repeated operator recovery retained explicit authority after label consumption"
+fi
 export GITHUB_RUN_ATTEMPT=1 RUNNER_TEMP="$tmp"
 
 : >"$CALLS"

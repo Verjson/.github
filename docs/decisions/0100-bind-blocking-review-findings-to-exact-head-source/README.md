@@ -71,9 +71,12 @@ existing arm attempt for the same exact PR head: the trusted arm re-reads the
 current PR state, labels, hold state, actor policy, and head. When `re-review`
 is currently applied, recovery resolves its latest label actor from issue-event
 history, requires maintain/admin permission, binds that explicit authorization
-into a new immutable receipt, and consumes the label after dispatch. This is a
-recovery mechanism, not evidence that label delivery succeeded, and it does not
-weaken model reservation limits.
+into a new immutable receipt, and makes verified label consumption a precondition
+for dispatch. A failed edit may proceed only when an authoritative PR reread
+proves the label is already absent; a retained or unreadable label state fails
+the authorization check before provider spend. This is a recovery mechanism,
+not evidence that label delivery succeeded, and it does not weaken model
+reservation limits.
 
 ## Consequences
 

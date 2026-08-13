@@ -378,16 +378,35 @@ jobs:
         run: |
           set -euo pipefail
           [[ "$DEFAULT_BRANCH" =~ ^[A-Za-z0-9._/-]+$ ]] || exit 1
+          fail_authorization() {
+            local title="$1" summary="$2"
+            GH_TOKEN="$APP_TOKEN" gh api --method PATCH "repos/$TARGET_REPO/check-runs/$CHECK_ID" \
+              -f status=completed -f conclusion=failure \
+              -f "output[title]=$title" -f "output[summary]=$summary"
+          }
+          if [ "${{ steps.arm.outputs.explicit_rereview || false }}" = true ]; then
+            # Consuming the authorization label is a precondition for spend.
+            # A failed edit is acceptable only when an authoritative reread
+            # proves the label is already absent (for example, a racing event).
+            gh pr edit "$PR_NUMBER" --repo "$TARGET_REPO" --remove-label re-review 2>/dev/null || true
+            if ! remaining_labels="$(gh pr view "$PR_NUMBER" --repo "$TARGET_REPO" --json labels)" ||
+               ! jq -e '.labels | type == "array" and all(.[]; .name | type == "string")' <<<"$remaining_labels" >/dev/null; then
+              fail_authorization 'Re-review label consumption unverified' \
+                'The trusted arm could not verify that the explicit authorization label was consumed; no review was dispatched.'
+              exit 1
+            fi
+            if jq -e 'any(.labels[]; (.name | ascii_downcase | gsub("[ _-]+"; "-")) == "re-review")' <<<"$remaining_labels" >/dev/null; then
+              fail_authorization 'Re-review label consumption failed' \
+                'The explicit authorization label remains applied, so dispatch was refused before provider spend.'
+              exit 1
+            fi
+          fi
           if ! gh workflow run ai-review-merge.yml --repo "$TARGET_REPO" --ref "$DEFAULT_BRANCH" \
             -f pr_number="$PR_NUMBER" -f expected_head_sha="$EXPECTED_HEAD_SHA" \
             -f authorization_check_id="$CHECK_ID" -f arm_run_id="$GITHUB_RUN_ID" \
             -f arm_run_attempt="$GITHUB_RUN_ATTEMPT" -f explicit_rereview="${{ steps.arm.outputs.explicit_rereview || false }}" \
             -f review_policy="${{ steps.arm.outputs.review_policy }}"; then
-            GH_TOKEN="$APP_TOKEN" gh api --method PATCH "repos/$TARGET_REPO/check-runs/$CHECK_ID" \
-              -f status=completed -f conclusion=failure -f 'output[title]=Review dispatch failed' \
-              -f 'output[summary]=The trusted review workflow could not be dispatched.'
+            fail_authorization 'Review dispatch failed' \
+              'The trusted review workflow could not be dispatched.'
             exit 1
-          fi
-          if [ "${{ steps.arm.outputs.explicit_rereview || false }}" = true ]; then
-            gh pr edit "$PR_NUMBER" --repo "$TARGET_REPO" --remove-label re-review || true
           fi
