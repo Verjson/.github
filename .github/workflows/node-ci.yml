@@ -282,12 +282,12 @@ jobs:
             echo "::notice::workflow_dispatch — running CI (eligibility check bypassed)."
             exit 0
           fi
-          # Stability-days is a pull-request release-age gate. A trusted push is
-          # already the post-merge/direct-ref validation target and must never be
-          # suppressed by a stale status attached to that commit.
-          if [ "${GITHUB_EVENT_NAME:-}" != "pull_request" ]; then
+          # A trusted push is already the post-merge/direct-ref validation target
+          # and must never be suppressed by a stale status attached to that
+          # commit. Keep every other event on the existing status path.
+          if [ "${GITHUB_EVENT_NAME:-}" = "push" ]; then
             echo "should-run=true" >> "$GITHUB_OUTPUT"
-            echo "::notice::non-PR event — running CI (stability-days does not apply)."
+            echo "::notice::push — running CI (stability-days check bypassed)."
             exit 0
           fi
           # Defer only when the release-age gate is ACTIVELY pending. Any

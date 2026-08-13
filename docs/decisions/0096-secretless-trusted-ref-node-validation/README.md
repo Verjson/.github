@@ -47,10 +47,10 @@ checkout credentials are not persisted and package, GitHub, cloud, and OIDC
 paths are cleared through the job environment before `npm ci --ignore-scripts`,
 approved rebuilds, or consumer scripts.
 
-Limit stability-days deferral to pull requests. `renovate/stability-days` is a
-release-age gate for Renovate PRs; a stale status attached to a pushed commit
-cannot suppress post-merge or direct-ref validation. Manual dispatch retains its
-existing explicit bypass.
+Bypass stability-days deferral for `push` only. A stale status attached to a
+pushed commit cannot suppress post-merge or direct-ref validation. Manual
+dispatch retains its existing explicit bypass, while every other event keeps
+the eligibility action's prior status-check behavior.
 
 ## Consequences
 
