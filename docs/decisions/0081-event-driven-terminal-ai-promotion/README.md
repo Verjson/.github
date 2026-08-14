@@ -121,6 +121,22 @@ run is default-branch code, so its Actions `head_sha` identifies that trusted wo
 revision rather than the reviewed PR head; the approval, check, and attestation retain
 the exact reviewed-head binding.
 
+### 2026-08-13 correction ([#789](https://github.com/Verjson/.github/issues/789))
+
+The deterministic-CI retry is intentionally inert in a repository that has not
+adopted the AI authorization App identity. When both `AI_REVIEW_APP_ID` and
+`AI_REVIEW_APP_SLUG` are absent, resolution now emits `ready=false` and succeeds
+without reading check runs, artifacts, or promotion inputs. Because the promotion
+job requires `ready=true`, this quiet path cannot dispatch or merge.
+
+Absence is an adoption state only when both variables are empty. A partial identity
+or a non-empty malformed ID or slug remains a configuration failure and now emits an
+explicit GitHub error annotation naming the invalid boundary before exiting nonzero.
+This distinction keeps unadopted repositories from reddening their default branches
+while preventing an attacker or operator mistake from converting a corrupted App
+identity into the no-op path. The downstream privileged workflow continues to repeat
+the exact-head receipt, App, policy, and merge-readiness verification.
+
 ## Consequences
 
 - No job sleeps or polls while CI changes state, and CI completion cannot spend model
