@@ -83,6 +83,13 @@ jobs:
         run: |
           args=(--repo-root "$GITHUB_WORKSPACE")
           if [ -n "$LEGACY_DIR" ]; then args+=(--legacy-dir "$LEGACY_DIR"); fi
+          if [ -n "$BASE_SHA" ] && [ -n "$HEAD_SHA" ]; then
+            args+=(--base "$BASE_SHA" --head "$HEAD_SHA")
+            # #800: branches created under the implicit-patch contract have a
+            # bounded migration window. From 2026-08-30 UTC, every fragment a
+            # pull request adds must state major, minor, or patch explicitly.
+            args+=(--allow-missing-impact-through 2026-08-29)
+          fi
           python3 .changelog-contract/scripts/changelog.py validate "${args[@]}"
           if [ -n "$BASE_SHA" ] && [ -n "$HEAD_SHA" ]; then
             python3 .changelog-contract/scripts/changelog.py check-pr \

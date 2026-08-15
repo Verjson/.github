@@ -157,6 +157,15 @@ jobs:
                 args+=(--legacy-dir "$LEGACY_DIR")
                 shown+=(--legacy-dir "$LEGACY_DIR")
               fi
+              if [ -n "$BASE_SHA" ] && [ -n "$HEAD_SHA" ]; then
+                args+=(--base "$BASE_SHA" --head "$HEAD_SHA")
+                shown+=(--base "$BASE_SHA" --head "$HEAD_SHA")
+                # #800: branches created under the implicit-patch contract have
+                # a bounded migration window. From 2026-08-30 UTC, every new
+                # pull-request fragment must declare its release impact.
+                args+=(--allow-missing-impact-through 2026-08-29)
+                shown+=(--allow-missing-impact-through 2026-08-29)
+              fi
 
               # The remedy is the command this job ran, against the engine path
               # this job used. Under ADR 0038 the engine lives only in

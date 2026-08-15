@@ -848,7 +848,7 @@ class ChangelogContractTests(unittest.TestCase):
 
         self.assertTrue(scoped.exists())
 
-    def test_impact_defaults_to_patch_and_does_not_change_rendered_notes(self) -> None:
+    def test_legacy_impact_defaults_to_patch_and_does_not_change_rendered_notes(self) -> None:
         fragment(self.root, "2026-07-30-issue-249-default.md")
 
         entries = changelog.fragments(self.root)
@@ -865,6 +865,126 @@ class ChangelogContractTests(unittest.TestCase):
 
         with self.assertRaisesRegex(changelog.ChangelogError, "impact"):
             changelog.fragments(self.root)
+
+    def test_new_fragment_requires_an_explicit_impact_with_permitted_values(self) -> None:
+        self.init_git()
+        self.root.joinpath("README.md").write_text("base\n", encoding="utf-8")
+        self.commit_all("base")
+        base = run(self.root, "git", "rev-parse", "HEAD")
+        fragment(self.root, "2026-07-30-issue-249-missing-impact.md")
+        self.commit_all("new fragment")
+
+        with self.assertRaisesRegex(
+            changelog.ChangelogError,
+            "impact is required.*major, minor, or patch",
+        ):
+            changelog.validate_new_fragment_impacts(self.root, base, "HEAD")
+
+    def test_new_fragment_with_explicit_impact_is_accepted(self) -> None:
+        self.init_git()
+        self.root.joinpath("README.md").write_text("base\n", encoding="utf-8")
+        self.commit_all("base")
+        base = run(self.root, "git", "rev-parse", "HEAD")
+        fragment(
+            self.root,
+            "2026-07-30-issue-249-explicit-impact.md",
+            impact="minor",
+        )
+        self.commit_all("new fragment")
+
+        changelog.validate_new_fragment_impacts(self.root, base, "HEAD")
+
+    def test_existing_fragment_keeps_its_legacy_patch_fallback(self) -> None:
+        self.init_git()
+        fragment(self.root, "2026-07-30-issue-249-legacy-impact.md")
+        self.commit_all("legacy fragment")
+        base = run(self.root, "git", "rev-parse", "HEAD")
+        self.root.joinpath("README.md").write_text("change\n", encoding="utf-8")
+        self.commit_all("unrelated change")
+
+        changelog.validate_new_fragment_impacts(self.root, base, "HEAD")
+        self.assertEqual("patch", changelog.release_impact(changelog.fragments(self.root)))
+
+    def test_missing_impact_migration_deadline_is_validated_and_expires(self) -> None:
+        self.assertFalse(changelog.impact_migration_window_active("1970-01-01"))
+        with self.assertRaisesRegex(changelog.ChangelogError, "YYYY-MM-DD"):
+            changelog.impact_migration_window_active("tomorrow")
+
+    def test_validate_command_requires_impact_for_fragments_added_since_base(self) -> None:
+        self.init_git()
+        self.root.joinpath("README.md").write_text("base\n", encoding="utf-8")
+        self.commit_all("base")
+        base = run(self.root, "git", "rev-parse", "HEAD")
+        fragment(self.root, "2026-07-30-issue-249-command-impact.md")
+        self.commit_all("new fragment")
+
+        completed = subprocess.run(
+            [
+                sys.executable,
+                str(MODULE_PATH),
+                "validate",
+                "--repo-root",
+                str(self.root),
+                "--base",
+                base,
+                "--head",
+                "HEAD",
+            ],
+            cwd=self.root,
+            check=False,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+
+        self.assertEqual(1, completed.returncode)
+        self.assertIn("impact is required", completed.stderr)
+        self.assertIn("major, minor, or patch", completed.stderr)
+
+    def test_validate_command_allows_legacy_branch_fragments_during_migration_window(self) -> None:
+        self.init_git()
+        self.root.joinpath("README.md").write_text("base\n", encoding="utf-8")
+        self.commit_all("base")
+        base = run(self.root, "git", "rev-parse", "HEAD")
+        fragment(self.root, "2026-07-30-issue-249-grace.md")
+        self.commit_all("legacy branch fragment")
+
+        completed = subprocess.run(
+            [
+                sys.executable,
+                str(MODULE_PATH),
+                "validate",
+                "--repo-root",
+                str(self.root),
+                "--base",
+                base,
+                "--allow-missing-impact-through",
+                "9999-12-31",
+            ],
+            cwd=self.root,
+            check=False,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+
+        self.assertEqual(0, completed.returncode, completed.stderr)
+
+    def test_required_checks_enforce_new_fragment_impact_after_one_shared_grace_date(self) -> None:
+        repository = MODULE_PATH.parent.parent
+        workflows = [
+            repository / ".github/workflows/changelog-validate.yml",
+            repository / ".github/workflows/generated-artifacts.yml",
+        ]
+
+        for workflow in workflows:
+            with self.subTest(workflow=workflow.name):
+                text = workflow.read_text(encoding="utf-8")
+                self.assertIn('args+=(--base "$BASE_SHA" --head "$HEAD_SHA")', text)
+                self.assertIn(
+                    "--allow-missing-impact-through 2026-08-29",
+                    text,
+                )
 
     def test_mixed_release_impacts_choose_the_highest_selected_impact(self) -> None:
         fragment(self.root, "2026-07-30-issue-249-patch.md", impact="patch")

@@ -21,6 +21,7 @@ The fragment starts with YAML-style metadata understood by
 ---
 date: 2026-07-30
 issue: 249
+impact: minor
 title: Adopt immutable changelog snapshots
 ---
 
@@ -50,7 +51,7 @@ The migration guide recommends immutable commit
 | `refs` | no | **no** | yes |
 | `summary` | no | **no** | yes |
 | `component` | no | **no** | yes |
-| `impact` | no | **no** | yes |
+| `impact` | yes for new fragments | **no** | yes |
 <!-- contract-pin-metadata:end -->
 
 `scripts/contract-pin.test.sh` executes the engine from that exact commit
@@ -114,9 +115,20 @@ still cover every stream. See
 
 ### Release impact
 
-Every fragment may declare `impact: major`, `impact: minor`, or `impact: patch`.
-An omitted impact explicitly defaults to `patch`, so existing fragments remain
-valid. Impact is metadata only and never appears in rendered notes.
+Every new fragment declares `impact: major`, `impact: minor`, or `impact: patch`.
+The pull-request validation command compares the base and head revisions and
+rejects an added fragment that omits it, naming all three permitted values.
+Fragments already present on the base retain the historical patch fallback, so
+adoption does not reinterpret old unreleased work. Released `CHANGELOG/`
+snapshots remain immutable prose and are never parsed as fragments. Impact is
+metadata only and never appears in rendered notes.
+
+The reusable required checks pass a dated migration grace through 2026-08-29
+UTC. During that window, branches authored against the implicit-patch contract
+remain valid; from 2026-08-30 UTC, newly added fragments must declare impact.
+The canonical engine exposes that bounded compatibility seam as
+`validate --allow-missing-impact-through YYYY-MM-DD`; callers should not extend
+it or implement a second impact policy.
 
 At release time the central engine computes the highest impact among the
 selected fragments and requires the exact next SemVer version on that axis.
@@ -396,6 +408,12 @@ includes bot-authored updates: actor identity is not an exemption. To acquire
 the rule, fetch one immutable Verjson/.github commit and run the `workflow`,
 `renderer`, and `contract-test` commands above with that exact `PIN`; never
 patch an adopter's generated caller or contract test locally.
+
+At a pin containing #800, `validate --base <base> --head <head>` also requires
+explicit `impact` metadata on each fragment the pull request adds. Acquire the
+workflow, renderer, contract test, and release caller (when present) from one
+immutable pin with `scripts/gen-changelog-caller.sh`; do not hand-edit only the
+workflow to approximate the policy.
 
 `scripts/render-next.sh` does not implement rendering. It fetches this
 repository's `scripts/changelog.py` at the pinned commit, caches it by content

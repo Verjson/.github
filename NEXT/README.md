@@ -28,6 +28,7 @@ The file is one entry with metadata, e.g.:
 ---
 date: 2026-07-20
 issue: 123
+impact: patch
 title: Short imperative title
 ---
 
@@ -51,6 +52,9 @@ scripts/render-next.sh --as-released   # what a release would publish
   and never allocate a global sequence.
 - Rendering uses metadata date and stable identity, not a globally reserved
   filename position.
+- New fragments declare exactly one release impact: `major`, `minor`, or
+  `patch`. The required check rejects omission after the bounded migration
+  window; old unreleased fragments retain their historical patch fallback.
 - Two fragments for the same issue signal potentially overlapping ownership.
   Consolidate them instead of assigning unrelated numbers.
 - Never edit another entry's file, and never reintroduce a shared, hand-edited

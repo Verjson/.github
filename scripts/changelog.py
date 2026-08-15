@@ -395,6 +395,66 @@ def fragments(
     return result
 
 
+def added_fragment_paths(repo_root: Path, base: str, head: str) -> set[str]:
+    added: set[str] = set()
+    for line in git(
+        repo_root,
+        "diff",
+        "--find-renames",
+        "--name-status",
+        f"{base}...{head}",
+    ).splitlines():
+        fields = line.split("\t")
+        status = fields[0]
+        if status == "A" and len(fields) == 2 and fields[1].startswith(f"{UNRELEASED_DIR}/"):
+            added.add(fields[1])
+        if (
+            status.startswith("R")
+            and len(fields) == 3
+            and not fields[1].startswith(f"{UNRELEASED_DIR}/")
+            and fields[2].startswith(f"{UNRELEASED_DIR}/")
+        ):
+            added.add(fields[2])
+    return added
+
+
+def validate_new_fragment_impacts(
+    repo_root: Path,
+    base: str,
+    head: str,
+    entries: list[Fragment] | None = None,
+) -> None:
+    if entries is None:
+        entries = fragments(repo_root)
+    entries_by_path = {
+        str(entry.path.relative_to(repo_root)): entry
+        for entry in entries
+        if entry.canonical
+    }
+    missing = sorted(
+        path
+        for path in added_fragment_paths(repo_root, base, head)
+        if path in entries_by_path and "impact" not in entries_by_path[path].metadata
+    )
+    if missing:
+        raise ChangelogError(
+            f"{missing[0]}: impact is required for every new fragment and must be one of "
+            "major, minor, or patch"
+        )
+
+
+def impact_migration_window_active(through: str | None) -> bool:
+    if through is None:
+        return False
+    try:
+        deadline = dt.date.fromisoformat(through)
+    except ValueError as exc:
+        raise ChangelogError(
+            "missing-impact migration deadline must be YYYY-MM-DD"
+        ) from exc
+    return dt.datetime.now(dt.timezone.utc).date() <= deadline
+
+
 def _rendered_refs(entry: Fragment) -> str:
     numbers = reference_issues(entry.path, entry.metadata)
     if not numbers:
@@ -879,7 +939,18 @@ def parser() -> argparse.ArgumentParser:
         sub.add_argument("--repo-root", type=Path, default=Path.cwd())
         sub.add_argument("--legacy-dir")
         sub.add_argument("--allow-legacy-next", action="store_true")
-        if name == "render-next":
+        if name == "validate":
+            sub.add_argument(
+                "--base",
+                help="require explicit impact on fragments added since this Git revision",
+            )
+            sub.add_argument("--head", default="HEAD")
+            sub.add_argument(
+                "--allow-missing-impact-through",
+                metavar="YYYY-MM-DD",
+                help="temporarily accept added fragments without impact through this UTC date",
+            )
+        else:
             # The released form is the one nobody reads until it can no longer
             # be changed. This makes it viewable while the fragments still can.
             sub.add_argument("--as-released", action="store_true")
@@ -945,7 +1016,21 @@ def main() -> int:
     try:
         repo_root = args.repo_root.resolve()
         if args.command == "validate":
-            fragments(repo_root, args.legacy_dir, args.allow_legacy_next)
+            entries = fragments(repo_root, args.legacy_dir, args.allow_legacy_next)
+            grace_active = impact_migration_window_active(
+                args.allow_missing_impact_through
+            )
+            if args.allow_missing_impact_through and not args.base:
+                raise ChangelogError(
+                    "--allow-missing-impact-through requires --base"
+                )
+            if args.base and not grace_active:
+                validate_new_fragment_impacts(
+                    repo_root,
+                    args.base,
+                    args.head,
+                    entries,
+                )
         elif args.command == "render-next":
             sys.stdout.write(
                 render_next(
