@@ -991,6 +991,60 @@ class ChangelogContractTests(unittest.TestCase):
 
         self.assertEqual("py-v2.5.0", output)
 
+    def test_released_preview_honors_the_same_fragment_selection_as_release(self) -> None:
+        selected = fragment(
+            self.root,
+            "2026-07-30-issue-250-selected.md",
+            issue="250",
+            body="Selected release note.\n",
+        )
+        fragment(
+            self.root,
+            "2026-07-30-issue-251-deferred.md",
+            issue="251",
+            body="Deferred release note.\n",
+        )
+
+        output = run(
+            self.root,
+            sys.executable,
+            str(MODULE_PATH),
+            "render-next",
+            "--repo-root",
+            str(self.root),
+            "--as-released",
+            "--fragment",
+            f"NEXT/{selected.name}",
+        )
+
+        self.assertIn("Selected release note.", output)
+        self.assertNotIn("Deferred release note.", output)
+
+    def test_released_preview_rejects_duplicate_fragment_selection(self) -> None:
+        selected = fragment(self.root, "2026-07-30-issue-250-selected.md", issue="250")
+
+        completed = subprocess.run(
+            [
+                sys.executable,
+                str(MODULE_PATH),
+                "render-next",
+                "--repo-root",
+                str(self.root),
+                "--fragment",
+                selected.name,
+                "--fragment",
+                f"NEXT/{selected.name}",
+            ],
+            cwd=self.root,
+            check=False,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+
+        self.assertEqual(1, completed.returncode)
+        self.assertIn("selected fragment was repeated", completed.stderr)
+
     def test_duplicate_fragment_selectors_fail_before_release_mutates_the_tree(self) -> None:
         self.init_git()
         snapshots = self.root / "CHANGELOG"

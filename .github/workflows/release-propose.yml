@@ -1,0 +1,124 @@
+name: release proposal
+
+on:
+  workflow_call:
+    inputs:
+      contract_ref:
+        description: Immutable Verjson/.github commit containing this workflow and engine
+        required: true
+        type: string
+      autonomy:
+        description: Update one proposal issue or dispatch the existing Release workflow
+        required: true
+        type: string
+      fragments:
+        description: Newline-separated NEXT fragment filenames; empty selects the component stream
+        required: false
+        type: string
+        default: ''
+      component:
+        description: Optional component stream; empty selects only unscoped fragments
+        required: false
+        type: string
+        default: ''
+      prefix:
+        description: Release tag prefix used by next-version
+        required: false
+        type: string
+        default: v
+      runner:
+        description: Optional JSON runner labels; Verjson defaults by visibility, external callers use ubuntu-24.04.
+        required: false
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-propose-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  release-propose:
+    runs-on: ${{ inputs.runner != '' && fromJSON(inputs.runner) || github.repository_owner != 'Verjson' && 'ubuntu-24.04' || github.event.repository.private == true && fromJSON(vars.VERJSON_RUNNER_OVERFLOW || vars.VERJSON_LANE_TRUSTED || vars.VERJSON_LANE_FALLBACK || '["ubuntu-24.04"]') || fromJSON(vars.VERJSON_RUNNER_OVERFLOW || vars.VERJSON_LANE_UNTRUSTED || vars.VERJSON_LANE_FALLBACK || '["ubuntu-24.04"]') }}
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      issues: write
+      actions: write
+    steps:
+      - name: Admit the configured autonomy on the default branch
+        env:
+          AUTONOMY: ${{ inputs.autonomy }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          DISPATCH_REF: ${{ github.ref }}
+          CONTRACT_REF: ${{ inputs.contract_ref }}
+        run: |
+          if [ "$AUTONOMY" != propose ] && [ "$AUTONOMY" != dispatch ]; then
+            echo "::error::autonomy must be exactly 'propose' or 'dispatch'"
+            exit 1
+          fi
+          if [[ ! "$CONTRACT_REF" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::contract_ref must be an immutable 40-character commit"
+            exit 1
+          fi
+          if [ "$DISPATCH_REF" != "refs/heads/$DEFAULT_BRANCH" ]; then
+            echo "::error::release proposals run only from $DEFAULT_BRANCH, not '$DISPATCH_REF'"
+            exit 1
+          fi
+      - name: Check out the proposed release tree
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Check out the canonical contract
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: Verjson/.github
+          ref: ${{ inputs.contract_ref }}
+          path: .changelog-contract
+          persist-credentials: false
+      - name: Derive the exact version and released preview
+        id: release
+        env:
+          COMPONENT: ${{ inputs.component }}
+          FRAGMENTS: ${{ inputs.fragments }}
+          PREFIX: ${{ inputs.prefix }}
+        run: |
+          version_args=(next-version --repo-root "$GITHUB_WORKSPACE" --prefix "$PREFIX")
+          preview_args=(render-next --repo-root "$GITHUB_WORKSPACE" --as-released)
+          if [ -n "$COMPONENT" ]; then
+            version_args+=(--component "$COMPONENT")
+            preview_args+=(--component "$COMPONENT")
+          fi
+          while IFS= read -r fragment; do
+            [ -z "$fragment" ] || {
+              version_args+=(--fragment "$fragment")
+              preview_args+=(--fragment "$fragment")
+            }
+          done <<<"$FRAGMENTS"
+          version="$(python3 .changelog-contract/scripts/changelog.py "${version_args[@]}")"
+          python3 .changelog-contract/scripts/changelog.py "${preview_args[@]}" \
+            >"$RUNNER_TEMP/release-preview.md"
+          printf 'version=%s\n' "$version" >>"$GITHUB_OUTPUT"
+      - name: Apply the selected release autonomy
+        env:
+          AUTONOMY: ${{ inputs.autonomy }}
+          COMPONENT: ${{ inputs.component }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          FRAGMENTS: ${{ inputs.fragments }}
+          GITHUB_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          python3 .changelog-contract/scripts/release-propose.py \
+            --mode "$AUTONOMY" \
+            --repository "$GITHUB_REPOSITORY" \
+            --workflow release.yml \
+            --branch "$DEFAULT_BRANCH" \
+            --head-sha "$GITHUB_SHA" \
+            --version "$VERSION" \
+            --fragments "$FRAGMENTS" \
+            --component "$COMPONENT" \
+            --preview-file "$RUNNER_TEMP/release-preview.md"

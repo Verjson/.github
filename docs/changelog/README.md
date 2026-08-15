@@ -308,11 +308,44 @@ that adopter-owned hook to update compatibility dependencies or generate
 secondary manifests; the caller itself applies the dispatched version to every
 package and gives each artifact the same restart-safe integrity proof.
 
+### Release proposals are generated and explicitly autonomous
+
+`scripts/gen-changelog-caller.sh release-propose` emits a daily and
+operator-triggered caller. Adoption requires an explicit autonomy choice; there
+is no default that can silently gain write authority. Here, `PIN` must be an
+immutable contract commit containing #799; a previously advertised pin does not
+gain a new generator mode retroactively:
+
+```bash
+# Maintain one open issue containing the derived tag and released preview.
+scripts/gen-changelog-caller.sh release-propose "$PIN" --autonomy propose \
+  > .github/workflows/release-propose.yml
+
+# Or dispatch the existing generated Release workflow with the derived tag.
+scripts/gen-changelog-caller.sh release-propose "$PIN" --autonomy dispatch \
+  > .github/workflows/release-propose.yml
+```
+
+The generated `propose` caller receives `issues: write` but not `actions: write`.
+The generated `dispatch` caller receives `actions: write` but not `issues: write`.
+The reusable workflow validates that it is running from the default branch,
+uses `next-version` and `render-next --as-released` against the same selected
+component and fragments, and serializes decisions per repository. Proposal mode
+updates one marker-owned open issue in place. Dispatch mode first looks for an
+exact-version, exact-head `Release` run and waits for the dispatched run to
+become visible, so retrying the proposer does not create a second release run.
+
+Neither mode runs `changelog.py release`, consumes a fragment, creates a tag, or
+pushes a commit. Dispatch mode can only invoke the generated `Release` workflow;
+that workflow retains the `verify → snapshot → publish` boundary and remains the
+only path that can mutate release history.
+
 ## Consumer adoption
 
 A consumer needs three files, and they must pin the **same** commit — plus a
-fourth if it publishes something. Generate all of them rather than writing them;
-the reasoning is in the generator's header.
+fourth if it publishes something and an optional fifth when it adopts release
+proposals. Generate all of them rather than writing them; the reasoning is in
+the generator's header.
 
 ```bash
 PIN=3495f24c2cd81be7cc94b90c1c4650ca272102b1

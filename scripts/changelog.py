@@ -475,11 +475,19 @@ def render_next(
     legacy_dir: str | None = None,
     allow_legacy_next: bool = False,
     released: bool = False,
+    selected_names: list[str] | None = None,
 ) -> str:
-    selected = select_component(
-        fragments(repo_root, legacy_dir, allow_legacy_next),
-        component,
-    )
+    if selected_names is None:
+        selected = select_component(
+            fragments(repo_root, legacy_dir, allow_legacy_next),
+            component,
+        )
+    else:
+        if legacy_dir or allow_legacy_next:
+            raise ChangelogError(
+                "fragment selection is available only for canonical NEXT/ fragments"
+            )
+        selected = select_release_fragments(repo_root, selected_names, component)
     if not selected:
         stream = f" for component {component}" if component is not None else ""
         raise ChangelogError(f"no unreleased fragments{stream}")
@@ -842,6 +850,12 @@ def parser() -> argparse.ArgumentParser:
             # be changed. This makes it viewable while the fragments still can.
             sub.add_argument("--as-released", action="store_true")
             sub.add_argument("--component")
+            sub.add_argument(
+                "--fragment",
+                action="append",
+                default=None,
+                help="render one selected NEXT fragment; repeat to select several",
+            )
     released = subparsers.add_parser("render-released")
     released.add_argument("--repo-root", type=Path, default=Path.cwd())
     pr = subparsers.add_parser("check-pr")
@@ -894,6 +908,7 @@ def main() -> int:
                     legacy_dir=args.legacy_dir,
                     allow_legacy_next=args.allow_legacy_next,
                     released=args.as_released,
+                    selected_names=args.fragment,
                 )
             )
         elif args.command == "render-released":

@@ -327,6 +327,8 @@ build_adopter() {
   chmod +x "$dir/scripts/render-next.sh" "$dir/scripts/changelog-contract.test.sh"
   if [ "$with_release" = yes ]; then
     bash "$gen" release-node "$sha" >"$dir/.github/workflows/release.yml"
+    bash "$gen" release-propose "$sha" --autonomy propose \
+      >"$dir/.github/workflows/release-propose.yml"
   elif [ "$with_release" = legacy ]; then
     cat >"$dir/.github/workflows/release.yml" <<YAML
 name: release
@@ -409,9 +411,37 @@ grep -q "changelog-release.yml@$sha" "$adopter/.github/workflows/release.yml" \
   && grep -qE "^ +contract_ref: $sha$" "$adopter/.github/workflows/release.yml" \
   && pass "canonical release caller pins uses and contract_ref to the same commit" \
   || fail "canonical release caller does not bind uses and contract_ref to $sha"
+grep -q "release-propose.yml@$sha" "$adopter/.github/workflows/release-propose.yml" \
+  && grep -qE "^ +contract_ref: $sha$" "$adopter/.github/workflows/release-propose.yml" \
+  && pass "canonical release proposer pins uses and contract_ref to the same commit" \
+  || fail "canonical release proposer does not bind uses and contract_ref to $sha"
 run_adopter "$adopter" \
   && pass "emitted suite passes against an unreleased adopter" \
   || fail "emitted suite failed before any release: $(tail -2 "$tmproot/run.out")"
+
+stale_proposer="$tmproot/adopter-stale-proposer"
+cp -a "$adopter" "$stale_proposer"
+sed -i "s/release-propose.yml@$sha/release-propose.yml@0000000000000000000000000000000000000000/" \
+  "$stale_proposer/.github/workflows/release-propose.yml"
+run_adopter "$stale_proposer" \
+  && fail "emitted suite accepted a release proposer on another pin" \
+  || pass "emitted suite rejects a release proposer on another pin"
+
+overprivileged_proposer="$tmproot/adopter-overprivileged-proposer"
+cp -a "$adopter" "$overprivileged_proposer"
+sed -i '/^      issues: write$/a\      actions: write' \
+  "$overprivileged_proposer/.github/workflows/release-propose.yml"
+run_adopter "$overprivileged_proposer" \
+  && fail "emitted suite accepted both issue and dispatch authority in propose mode" \
+  || pass "emitted suite rejects mixed release-proposer write authority"
+
+event_selected_proposer="$tmproot/adopter-event-selected-proposer"
+cp -a "$adopter" "$event_selected_proposer"
+sed -i 's/^      autonomy: propose$/      autonomy: ${{ inputs.autonomy }}/' \
+  "$event_selected_proposer/.github/workflows/release-propose.yml"
+run_adopter "$event_selected_proposer" \
+  && fail "emitted suite accepted event-selected release autonomy" \
+  || pass "emitted suite rejects event-selected release autonomy"
 
 custom_adopter="$tmproot/adopter-custom-release"
 build_adopter "$custom_adopter"

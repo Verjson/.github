@@ -128,6 +128,12 @@
    scripts/gen-changelog-caller.sh release-node "$PIN" > .github/workflows/release.yml
    ```
 
+   At an immutable pin containing #799, a publisher may add a fifth generated
+   file, fixing one reviewed `propose` or `dispatch` autonomy in source rather
+   than accepting it from an event input. The recommended pin in the executable
+   block above predates that mode and remains valid for its advertised baseline;
+   see `docs/changelog/README.md` for the proposer command and permission split.
+
    The command defaults to `@verjson` and Node 24. For another supported
    scaffold, pass identical `--scope` and `--node-version` options to both
    `release-node` and `contract-test`; the latter enforces that the two release
