@@ -8,6 +8,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 MODULE_PATH = Path(__file__).with_name("changelog.py")
 SPEC = importlib.util.spec_from_file_location("changelog", MODULE_PATH)
@@ -881,6 +882,365 @@ class ChangelogContractTests(unittest.TestCase):
         )
 
         self.assertEqual("major", changelog.release_impact(changelog.fragments(self.root)))
+
+    def test_next_version_matches_the_version_release_accepts_without_using_git(self) -> None:
+        self.init_git()
+        snapshots = self.root / "CHANGELOG"
+        snapshots.mkdir()
+        (snapshots / "v1.2.3.md").write_text("previous\n", encoding="utf-8")
+        fragment(
+            self.root,
+            "2026-07-30-issue-249-feature.md",
+            impact="minor",
+        )
+        self.commit_all("release candidate")
+
+        with mock.patch.object(
+            changelog,
+            "git",
+            side_effect=AssertionError("next-version must not invoke git"),
+        ):
+            version = changelog.next_version(self.root, [])
+
+        self.assertEqual("v1.3.0", version)
+        selected = changelog.select_release_fragments(self.root, [])
+        changelog.validate_release_bump(self.root, version, selected)
+        with self.assertRaisesRegex(changelog.ChangelogError, "require a minor bump"):
+            changelog.validate_release_bump(self.root, "v1.2.4", selected)
+
+    def test_next_version_cli_is_read_only_even_with_a_dirty_tree(self) -> None:
+        self.init_git()
+        snapshots = self.root / "CHANGELOG"
+        snapshots.mkdir()
+        (snapshots / "v4.5.6.md").write_text("previous\n", encoding="utf-8")
+        selected = fragment(
+            self.root,
+            "2026-07-30-issue-249-fix.md",
+            impact="patch",
+        )
+        self.commit_all("release candidate")
+        selected.write_text(selected.read_text(encoding="utf-8") + "\nDirty.\n")
+        before_head = run(self.root, "git", "rev-parse", "HEAD")
+        before_diff = run(self.root, "git", "diff")
+        before_tags = run(self.root, "git", "tag", "--list")
+
+        output = run(
+            self.root,
+            sys.executable,
+            str(MODULE_PATH),
+            "next-version",
+            "--repo-root",
+            str(self.root),
+        )
+
+        self.assertEqual("v4.5.7", output)
+        self.assertEqual(before_head, run(self.root, "git", "rev-parse", "HEAD"))
+        self.assertEqual(before_diff, run(self.root, "git", "diff"))
+        self.assertEqual(before_tags, run(self.root, "git", "tag", "--list"))
+        self.assertTrue(selected.exists())
+        self.assertFalse((snapshots / "v4.5.7.md").exists())
+
+    def test_next_version_honors_component_and_repeated_fragment_selection(self) -> None:
+        snapshots = self.root / "CHANGELOG"
+        snapshots.mkdir()
+        (snapshots / "v9.9.9.md").write_text("default\n", encoding="utf-8")
+        (snapshots / "py-v2.4.0.md").write_text("python\n", encoding="utf-8")
+        fragment(
+            self.root,
+            "2026-07-30-issue-249-default.md",
+            impact="major",
+        )
+        patch = fragment(
+            self.root,
+            "2026-07-30-issue-250-python-fix.md",
+            issue="250",
+            component="python",
+            impact="patch",
+        )
+        minor = fragment(
+            self.root,
+            "2026-07-30-issue-251-python-feature.md",
+            issue="251",
+            component="python",
+            impact="minor",
+        )
+        fragment(
+            self.root,
+            "2026-07-30-issue-252-python-breaking.md",
+            issue="252",
+            component="python",
+            impact="major",
+        )
+
+        output = run(
+            self.root,
+            sys.executable,
+            str(MODULE_PATH),
+            "next-version",
+            "--repo-root",
+            str(self.root),
+            "--component",
+            "python",
+            "--prefix",
+            "py-v",
+            "--fragment",
+            f"NEXT/{patch.name}",
+            "--fragment",
+            minor.name,
+        )
+
+        self.assertEqual("py-v2.5.0", output)
+
+    def test_duplicate_fragment_selectors_fail_before_release_mutates_the_tree(self) -> None:
+        self.init_git()
+        snapshots = self.root / "CHANGELOG"
+        snapshots.mkdir()
+        (snapshots / "v1.0.0.md").write_text("previous\n", encoding="utf-8")
+        selected = fragment(self.root, "2026-07-30-issue-249-fix.md")
+        self.commit_all("release candidate")
+        before_head = run(self.root, "git", "rev-parse", "HEAD")
+        before_tree = run(self.root, "git", "write-tree")
+        before_tags = run(self.root, "git", "tag", "--list")
+
+        for command in (
+            ["next-version"],
+            ["release", "--version", "v1.0.1"],
+        ):
+            with self.subTest(command=command[0]):
+                completed = subprocess.run(
+                    [
+                        sys.executable,
+                        str(MODULE_PATH),
+                        *command,
+                        "--repo-root",
+                        str(self.root),
+                        "--fragment",
+                        selected.name,
+                        "--fragment",
+                        f"NEXT/{selected.name}",
+                    ],
+                    cwd=self.root,
+                    check=False,
+                    text=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                )
+
+                self.assertEqual(1, completed.returncode)
+                self.assertIn("selected fragment was repeated", completed.stderr)
+                self.assertEqual(before_head, run(self.root, "git", "rev-parse", "HEAD"))
+                self.assertEqual(before_tree, run(self.root, "git", "write-tree"))
+                self.assertEqual(before_tags, run(self.root, "git", "tag", "--list"))
+                self.assertEqual("", run(self.root, "git", "status", "--porcelain"))
+                self.assertTrue(selected.exists())
+                self.assertFalse((snapshots / "v1.0.1.md").exists())
+
+    def test_next_version_keeps_component_and_version_namespace_independent(self) -> None:
+        snapshots = self.root / "CHANGELOG"
+        snapshots.mkdir()
+        (snapshots / "v8.0.0.md").write_text("default namespace\n", encoding="utf-8")
+        (snapshots / "worker-v2.0.0.md").write_text(
+            "worker namespace\n",
+            encoding="utf-8",
+        )
+        fragment(
+            self.root,
+            "2026-07-30-issue-250-python.md",
+            issue="250",
+            component="python",
+            impact="patch",
+        )
+
+        self.assertEqual(
+            "v8.0.1",
+            changelog.next_version(self.root, [], component="python"),
+        )
+        self.assertEqual(
+            "worker-v2.0.1",
+            changelog.next_version(
+                self.root,
+                [],
+                component="python",
+                prefix="worker-v",
+            ),
+        )
+
+    def test_next_version_preserves_release_selection_diagnostics(self) -> None:
+        scoped = fragment(
+            self.root,
+            "2026-07-30-issue-250-python.md",
+            issue="250",
+            component="python",
+        )
+
+        for arguments, expected in (
+            ([], "release selected no fragments"),
+            (["--fragment", scoped.name], "belongs to component python"),
+            (["--fragment", "../missing.md"], "must not traverse directories"),
+        ):
+            with self.subTest(arguments=arguments):
+                completed = subprocess.run(
+                    [
+                        sys.executable,
+                        str(MODULE_PATH),
+                        "next-version",
+                        "--repo-root",
+                        str(self.root),
+                        *arguments,
+                    ],
+                    cwd=self.root,
+                    check=False,
+                    text=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                )
+                self.assertEqual(1, completed.returncode)
+                self.assertEqual("", completed.stdout)
+                self.assertTrue(completed.stderr.startswith("changelog: "))
+                self.assertIn(expected, completed.stderr)
+
+    def test_next_version_refuses_to_invent_a_first_release_baseline(self) -> None:
+        fragment(self.root, "2026-07-30-issue-249-first.md", impact="major")
+
+        completed = subprocess.run(
+            [
+                sys.executable,
+                str(MODULE_PATH),
+                "next-version",
+                "--repo-root",
+                str(self.root),
+            ],
+            cwd=self.root,
+            check=False,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+
+        self.assertEqual(1, completed.returncode)
+        self.assertEqual("", completed.stdout)
+        self.assertIn("without a previous release", completed.stderr)
+
+    def test_next_version_rejects_an_invalid_version_prefix(self) -> None:
+        snapshots = self.root / "CHANGELOG"
+        snapshots.mkdir()
+        (snapshots / "v1.0.0.md").write_text("previous\n", encoding="utf-8")
+        fragment(self.root, "2026-07-30-issue-249-next.md")
+
+        for invalid in ("../python-v", "v1", "python-v1", "Python-v"):
+            with self.subTest(prefix=invalid):
+                with self.assertRaisesRegex(changelog.ChangelogError, "version prefix"):
+                    changelog.next_version(self.root, [], prefix=invalid)
+
+    def test_next_version_preserves_invalid_impact_diagnostics(self) -> None:
+        snapshots = self.root / "CHANGELOG"
+        snapshots.mkdir()
+        (snapshots / "v1.0.0.md").write_text("previous\n", encoding="utf-8")
+        fragment(
+            self.root,
+            "2026-07-30-issue-249-invalid.md",
+            impact="breaking",
+        )
+
+        completed = subprocess.run(
+            [
+                sys.executable,
+                str(MODULE_PATH),
+                "next-version",
+                "--repo-root",
+                str(self.root),
+            ],
+            cwd=self.root,
+            check=False,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+
+        self.assertEqual(1, completed.returncode)
+        self.assertIn("impact must be one of", completed.stderr)
+
+    def test_invalid_semver_prerelease_and_build_identifiers_fail_without_mutation(self) -> None:
+        self.init_git()
+        snapshots = self.root / "CHANGELOG"
+        snapshots.mkdir()
+        (snapshots / "v1.0.0.md").write_text("previous\n", encoding="utf-8")
+        selected = fragment(self.root, "2026-07-30-issue-249-next.md")
+        self.commit_all("release candidate")
+        before_head = run(self.root, "git", "rev-parse", "HEAD")
+        before_tree = run(self.root, "git", "write-tree")
+
+        for invalid in (
+            "v1.0.1-01",
+            "v1.0.1-..",
+            "v1.0.1-alpha..1",
+            "v1.0.1-alpha_1",
+            "v1.0.1+..",
+            "v1.0.1+build..1",
+        ):
+            with self.subTest(version=invalid):
+                with self.assertRaisesRegex(changelog.ChangelogError, "SemVer"):
+                    changelog.release(self.root, invalid, [])
+                self.assertEqual(before_head, run(self.root, "git", "rev-parse", "HEAD"))
+                self.assertEqual(before_tree, run(self.root, "git", "write-tree"))
+                self.assertEqual("", run(self.root, "git", "status", "--porcelain"))
+                self.assertTrue(selected.exists())
+                self.assertFalse((snapshots / f"{invalid}.md").exists())
+
+    def test_invalid_semver_snapshots_cannot_become_a_release_baseline(self) -> None:
+        snapshots = self.root / "CHANGELOG"
+        snapshots.mkdir()
+        fragment(self.root, "2026-07-30-issue-249-next.md")
+
+        for invalid in (
+            "v1.2.3-01",
+            "v1.2.3-..",
+            "v1.2.3+..",
+        ):
+            with self.subTest(version=invalid):
+                path = snapshots / f"{invalid}.md"
+                path.write_text("invalid baseline\n", encoding="utf-8")
+                with self.assertRaisesRegex(
+                    changelog.ChangelogError,
+                    "without a previous release",
+                ):
+                    changelog.next_version(self.root, [])
+                path.unlink()
+
+    def test_valid_semver_prerelease_and_build_history_is_preserved(self) -> None:
+        snapshots = self.root / "CHANGELOG"
+        snapshots.mkdir()
+        (snapshots / "v1.2.3-rc.1+build.007.md").write_text(
+            "previous\n",
+            encoding="utf-8",
+        )
+        fragment(self.root, "2026-07-30-issue-249-next.md")
+
+        selected = changelog.select_release_fragments(self.root, [])
+
+        self.assertEqual("v1.2.4", changelog.next_version(self.root, []))
+        changelog.validate_release_bump(
+            self.root,
+            "v1.2.4-rc.1+build.007",
+            selected,
+        )
+
+    def test_help_names_next_version_as_read_only_and_documents_its_selectors(self) -> None:
+        top_level = run(self.root, sys.executable, str(MODULE_PATH), "--help")
+        command = run(
+            self.root,
+            sys.executable,
+            str(MODULE_PATH),
+            "next-version",
+            "--help",
+        )
+
+        self.assertIn("next-version", top_level)
+        self.assertIn("without changing the", top_level)
+        self.assertIn("repository", top_level)
+        self.assertIn("--component", command)
+        self.assertIn("--fragment", command)
+        self.assertIn("--prefix", command)
 
     def test_render_next_can_show_the_released_shape_before_it_is_immutable(self) -> None:
         fragment(self.root, "2026-07-30-issue-249-diary.md", body=DIARY)

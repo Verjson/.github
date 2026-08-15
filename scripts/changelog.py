@@ -166,10 +166,21 @@ KNOWN_KEYS = frozenset(
 )
 COMPONENT_NAME = re.compile(r"^[a-z0-9](?:[a-z0-9._-]{0,62}[a-z0-9])?$")
 RELEASE_IMPACTS = ("patch", "minor", "major")
+SEMVER_PREFIX_PATTERN = r"(?:[a-z0-9][a-z0-9._-]*-)?v"
+SEMVER_PREFIX = re.compile(rf"^{SEMVER_PREFIX_PATTERN}$")
+SEMVER_PRERELEASE_IDENTIFIER_PATTERN = (
+    r"(?:0|[1-9]\d*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)"
+)
+SEMVER_PRERELEASE_PATTERN = (
+    rf"{SEMVER_PRERELEASE_IDENTIFIER_PATTERN}"
+    rf"(?:\.{SEMVER_PRERELEASE_IDENTIFIER_PATTERN})*"
+)
+SEMVER_BUILD_PATTERN = r"[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*"
 SEMVER_RELEASE = re.compile(
-    r"^(?P<prefix>(?:[a-z0-9][a-z0-9._-]*-)?v)"
+    rf"^(?P<prefix>{SEMVER_PREFIX_PATTERN})"
     r"(?P<major>0|[1-9]\d*)\.(?P<minor>0|[1-9]\d*)\.(?P<patch>0|[1-9]\d*)"
-    r"(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$"
+    rf"(?:-(?P<prerelease>{SEMVER_PRERELEASE_PATTERN}))?"
+    rf"(?:\+(?P<build>{SEMVER_BUILD_PATTERN}))?$"
 )
 
 
@@ -526,16 +537,11 @@ def release_impact(entries: list[Fragment]) -> str:
     )
 
 
-def validate_release_bump(repo_root: Path, version: str, selected: list[Fragment]) -> None:
-    requested = SEMVER_RELEASE.fullmatch(version)
-    if requested is None:
-        raise ChangelogError(
-            "version must be v-prefixed SemVer, optionally with a stream prefix"
-        )
-    prefix = requested["prefix"]
-    requested_core = tuple(
-        int(requested[name]) for name in ("major", "minor", "patch")
-    )
+def derived_release_bump(
+    repo_root: Path,
+    prefix: str,
+    selected: list[Fragment],
+) -> tuple[tuple[int, int, int], str, tuple[int, int, int]] | None:
     previous_cores = []
     for path in snapshot_paths(repo_root):
         previous = SEMVER_RELEASE.fullmatch(path.stem)
@@ -544,7 +550,7 @@ def validate_release_bump(repo_root: Path, version: str, selected: list[Fragment
                 tuple(int(previous[name]) for name in ("major", "minor", "patch"))
             )
     if not previous_cores:
-        return
+        return None
     previous_core = max(previous_cores)
     impact = release_impact(selected)
     if impact == "major":
@@ -553,9 +559,37 @@ def validate_release_bump(repo_root: Path, version: str, selected: list[Fragment
         expected = (previous_core[0], previous_core[1] + 1, 0)
     else:
         expected = (previous_core[0], previous_core[1], previous_core[2] + 1)
-    if requested_core != expected:
+    return previous_core, impact, expected
+
+
+def derived_release_version(
+    repo_root: Path,
+    prefix: str,
+    selected: list[Fragment],
+) -> str | None:
+    bump = derived_release_bump(repo_root, prefix, selected)
+    if bump is None:
+        return None
+    return prefix + ".".join(map(str, bump[2]))
+
+
+def validate_release_bump(repo_root: Path, version: str, selected: list[Fragment]) -> None:
+    requested = SEMVER_RELEASE.fullmatch(version)
+    if requested is None:
+        raise ChangelogError(
+            "version must be v-prefixed SemVer, optionally with a stream prefix"
+        )
+    prefix = requested["prefix"]
+    bump = derived_release_bump(repo_root, prefix, selected)
+    if bump is None:
+        return
+    requested_core = tuple(
+        int(requested[name]) for name in ("major", "minor", "patch")
+    )
+    previous_core, impact, expected_core = bump
+    if requested_core != expected_core:
         previous_text = ".".join(map(str, previous_core))
-        expected_text = ".".join(map(str, expected))
+        expected_text = ".".join(map(str, expected_core))
         requested_text = ".".join(map(str, requested_core))
         raise ChangelogError(
             f"selected fragments require a {impact} bump from {prefix}{previous_text}"
@@ -611,6 +645,53 @@ def _selected_key(name: str, by_name: dict[str, "Fragment"]) -> str:
     return key
 
 
+def select_release_fragments(
+    repo_root: Path,
+    selected_names: list[str],
+    component: str | None = None,
+) -> list[Fragment]:
+    entries = fragments(repo_root)
+    by_name = {entry.path.name: entry for entry in entries if entry.canonical}
+    stream_entries = select_component(entries, component)
+    selected = stream_entries if not selected_names else []
+    selected_keys: set[str] = set()
+    for name in selected_names:
+        key = _selected_key(name, by_name)
+        if key in selected_keys:
+            raise ChangelogError(f"selected fragment was repeated: {name}")
+        selected_keys.add(key)
+        entry = by_name[key]
+        if entry not in stream_entries:
+            actual = entry.metadata.get("component") or "unscoped"
+            expected = component or "unscoped"
+            raise ChangelogError(
+                f"selected fragment belongs to component {actual}, not {expected}"
+            )
+        selected.append(entry)
+    if not selected:
+        raise ChangelogError("release selected no fragments")
+    return selected
+
+
+def next_version(
+    repo_root: Path,
+    selected_names: list[str],
+    component: str | None = None,
+    prefix: str = "v",
+) -> str:
+    selected = select_release_fragments(repo_root, selected_names, component)
+    if SEMVER_PREFIX.fullmatch(prefix) is None:
+        raise ChangelogError(
+            "version prefix must be v or a lowercase stream name followed by -v"
+        )
+    version = derived_release_version(repo_root, prefix, selected)
+    if version is None:
+        raise ChangelogError(
+            f"cannot derive the next version for {prefix} without a previous release"
+        )
+    return version
+
+
 def release(
     repo_root: Path,
     version: str,
@@ -633,21 +714,7 @@ def release(
         snapshot = repo_root / "CHANGELOG" / f"{version}.md"
         if snapshot.exists():
             raise ChangelogError(f"released snapshot already exists: {snapshot}")
-        entries = fragments(repo_root)
-        by_name = {entry.path.name: entry for entry in entries if entry.canonical}
-        stream_entries = select_component(entries, component)
-        selected = stream_entries if not selected_names else []
-        for name in selected_names:
-            entry = by_name[_selected_key(name, by_name)]
-            if entry not in stream_entries:
-                actual = entry.metadata.get("component") or "unscoped"
-                expected = component or "unscoped"
-                raise ChangelogError(
-                    f"selected fragment belongs to component {actual}, not {expected}"
-                )
-            selected.append(entry)
-        if not selected:
-            raise ChangelogError("release selected no fragments")
+        selected = select_release_fragments(repo_root, selected_names, component)
         validate_release_bump(repo_root, version, selected)
         snapshot.parent.mkdir(parents=True, exist_ok=True)
         snapshot.write_text(render(selected, released=True), encoding="utf-8")
@@ -761,7 +828,9 @@ def check_pr(repo_root: Path, base: str, head: str) -> None:
 
 
 def parser() -> argparse.ArgumentParser:
-    result = argparse.ArgumentParser()
+    result = argparse.ArgumentParser(
+        description="Validate, render, inspect, and release changelog fragments."
+    )
     subparsers = result.add_subparsers(dest="command", required=True)
     for name in ("validate", "render-next"):
         sub = subparsers.add_parser(name)
@@ -784,6 +853,30 @@ def parser() -> argparse.ArgumentParser:
     release_parser.add_argument("--version", required=True)
     release_parser.add_argument("--fragment", action="append", default=[])
     release_parser.add_argument("--component")
+    next_parser = subparsers.add_parser(
+        "next-version",
+        help="print the exact next release tag without changing the repository",
+        description=(
+            "Print the exact tag accepted by release for the selected fragments "
+            "without changing the repository."
+        ),
+    )
+    next_parser.add_argument("--repo-root", type=Path, default=Path.cwd())
+    next_parser.add_argument(
+        "--fragment",
+        action="append",
+        default=[],
+        help="select one NEXT fragment; repeat to select several",
+    )
+    next_parser.add_argument(
+        "--component",
+        help="select one component stream; omitted selects the unscoped stream",
+    )
+    next_parser.add_argument(
+        "--prefix",
+        default="v",
+        help="select the version history prefix; defaults to v",
+    )
     return result
 
 
@@ -809,6 +902,15 @@ def main() -> int:
             check_pr(repo_root, args.base, args.head)
         elif args.command == "release":
             release(repo_root, args.version, args.fragment, component=args.component)
+        elif args.command == "next-version":
+            print(
+                next_version(
+                    repo_root,
+                    args.fragment,
+                    component=args.component,
+                    prefix=args.prefix,
+                )
+            )
     except ChangelogError as exc:
         print(f"changelog: {exc}", file=sys.stderr)
         return 1

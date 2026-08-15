@@ -1570,6 +1570,11 @@ write_fragment NEXT/2026-08-01-issue-43-impact.md \
 git -C "$fixture_root/case" add .
 git -C "$fixture_root/case" commit -qm initial
 before="$(git -C "$fixture_root/case" status --porcelain)"
+next_version="$(python3 "$contract" next-version --repo-root "$fixture_root/case")"
+[ "$next_version" = v1.1.0 ] \
+  || fail "next-version derived '$next_version' instead of v1.1.0"
+[ "$(git -C "$fixture_root/case" status --porcelain)" = "$before" ] \
+  || fail "next-version mutated the release tree"
 if python3 "$contract" release --repo-root "$fixture_root/case" --version v1.0.1 \
   2>"$fixture_root/error"; then
   fail "a release smaller than the selected impact was accepted"
@@ -1580,10 +1585,11 @@ grep -q 'require a minor bump' "$fixture_root/error"
 rendered="$(python3 "$contract" render-next --repo-root "$fixture_root/case")"
 [[ "$rendered" != *"impact:"* ]] \
   || fail "release impact leaked into rendered changelog text"
-python3 "$contract" release --repo-root "$fixture_root/case" --version v1.1.0 >/dev/null
+python3 "$contract" release --repo-root "$fixture_root/case" \
+  --version "$next_version" >/dev/null
 [ -f "$fixture_root/case/CHANGELOG/v1.1.0.md" ] \
   || fail "the required impact bump wrote no snapshot"
-echo "ok - release impact is enforced centrally without entering rendered notes"
+echo "ok - next-version matches release enforcement without mutating the tree"
 
 # The regression this file exists to prevent: prove that the repository-level
 # assertions above survive a real release, instead of asserting a pre-release
