@@ -8,27 +8,37 @@
     "schemaVersion",
     "attemptId",
     "action",
+    "deploymentContractCommit",
     "outcome",
     "environment",
+    "manifestIdentity",
+    "fleetSelector",
+    "canaryRunner",
     "selectedRelease",
     "observedDeployedRelease",
     "previousReceiptDigest",
     "rollbackOfAttempt",
     "authorization",
     "runners",
+    "finalFleet",
+    "failure",
     "observedAt",
     "startedAt",
     "completedAt"
   ],
   "properties": {
-    "schemaVersion": {"const": 1},
-    "attemptId": {
-      "type": "string",
-      "pattern": "^[1-9][0-9]*\\.[1-9][0-9]*$"
-    },
+    "schemaVersion": {"const": 2},
+    "attemptId": {"type": "string", "pattern": "^[1-9][0-9]*\\.[1-9][0-9]*$"},
     "action": {"enum": ["deploy", "rollback"]},
+    "deploymentContractCommit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
     "outcome": {"enum": ["admitted", "in_progress", "succeeded", "failed", "interrupted"]},
     "environment": {"const": "production"},
+    "manifestIdentity": {
+      "type": "string",
+      "pattern": "^ghcr\\.io/[a-z0-9_.-]+/[a-z0-9_.-]+@sha256:[0-9a-f]{64}$"
+    },
+    "fleetSelector": {"type": "string", "pattern": "^[a-z][a-z0-9_-]{1,31}$"},
+    "canaryRunner": {"type": "string", "minLength": 1},
     "selectedRelease": {"$ref": "#/$defs/release"},
     "observedDeployedRelease": {
       "description": "Release verified on the fleet immediately before mutation; null only for an admitted first deployment.",
@@ -47,10 +57,7 @@
           "additionalProperties": false,
           "required": ["attemptId", "receiptDigest"],
           "properties": {
-            "attemptId": {
-              "type": "string",
-              "pattern": "^[1-9][0-9]*\\.[1-9][0-9]*$"
-            },
+            "attemptId": {"type": "string", "pattern": "^[1-9][0-9]*\\.[1-9][0-9]*$"},
             "receiptDigest": {"$ref": "#/$defs/digest"}
           }
         }
@@ -69,28 +76,25 @@
     },
     "runners": {
       "type": "array",
-      "minItems": 0,
+      "items": {"$ref": "#/$defs/runnerTransition"}
+    },
+    "finalFleet": {
+      "type": "array",
+      "minItems": 1,
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["name", "beforeDigest", "afterDigest", "probe", "completedAt"],
+        "required": ["name", "release"],
         "properties": {
           "name": {"type": "string", "minLength": 1},
-          "beforeDigest": {"$ref": "#/$defs/digest"},
-          "afterDigest": {"$ref": "#/$defs/digest"},
-          "probe": {"enum": ["passed", "failed"]},
-          "completedAt": {"type": "string", "format": "date-time"}
+          "release": {"$ref": "#/$defs/release"}
         }
       }
     },
+    "failure": {"oneOf": [{"type": "null"}, {"type": "string", "minLength": 1}]},
     "observedAt": {"type": "string", "format": "date-time"},
     "startedAt": {"type": "string", "format": "date-time"},
-    "completedAt": {
-      "oneOf": [
-        {"type": "null"},
-        {"type": "string", "format": "date-time"}
-      ]
-    }
+    "completedAt": {"oneOf": [{"type": "null"}, {"type": "string", "format": "date-time"}]}
   },
   "allOf": [
     {
@@ -112,21 +116,20 @@
         "properties": {
           "runners": {"type": "array", "maxItems": 0},
           "completedAt": {"type": "null"},
-          "previousReceiptDigest": {"type": "null"}
+          "previousReceiptDigest": {"type": "null"},
+          "failure": {"type": "null"}
         }
       },
-      "else": {
-        "properties": {
-          "previousReceiptDigest": {"type": "string"}
-        }
-      }
+      "else": {"properties": {"previousReceiptDigest": {"type": "string"}}}
+    },
+    {
+      "if": {"properties": {"outcome": {"enum": ["failed", "interrupted"]}}},
+      "then": {"properties": {"failure": {"type": "string"}}},
+      "else": {"properties": {"failure": {"type": "null"}}}
     }
   ],
   "$defs": {
-    "digest": {
-      "type": "string",
-      "pattern": "^sha256:[0-9a-f]{64}$"
-    },
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
     "release": {
       "type": "object",
       "additionalProperties": false,
@@ -137,6 +140,18 @@
           "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$"
         },
         "manifestDigest": {"$ref": "#/$defs/digest"}
+      }
+    },
+    "runnerTransition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "beforeDigest", "afterDigest", "probe", "completedAt"],
+      "properties": {
+        "name": {"type": "string", "minLength": 1},
+        "beforeDigest": {"$ref": "#/$defs/digest"},
+        "afterDigest": {"$ref": "#/$defs/digest"},
+        "probe": {"enum": ["passed", "failed"]},
+        "completedAt": {"type": "string", "format": "date-time"}
       }
     }
   }

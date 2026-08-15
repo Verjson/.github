@@ -298,6 +298,34 @@ The manifest records the attestation ID returned by GitHub's provenance action a
 derives its signer identity from the pinned reusable workflow; reviewed configuration
 selects the expected predicate but is not treated as observed attestation evidence.
 
+## Amendment (2026-08-14) — protected runner deployment contract (#629)
+
+The deployment stage is implemented by the reusable
+`.github/workflows/container-deployment.yml` and the generated five-file adopter set
+from `scripts/gen-container-deployment.sh`: a thin dispatch caller, controller,
+authorization preflight, receipt schema, and contract test. Every generated artifact
+binds one immutable deployment-contract commit. The caller passes no secret or
+environment override; the reusable mutation job names `production` and exposes its
+environment-scoped credential only to the controller execution step.
+
+Receipt schema version 2 adds the deployment-contract commit, immutable manifest
+identity, fleet selector, ordinary canary identity, failure evidence, and complete final
+fleet state. The admitted revision remains durable before mutation, and every progress
+revision binds the canonical digest of its predecessor. The controller owns ordering,
+capacity, time bounds, state transitions, idempotent resume, and semantic receipt checks;
+`verjson-cli-cloud` continues to own drain, update, digest verification, and admission
+mechanics. Consumer-owned evidence and representative-probe adapters are reviewed Python
+argument vectors invoked without a shell.
+
+Failure stops before an unstarted host. Recovery does not silently restore a guessed
+predecessor inside that failed dispatch: rollback is a new protected dispatch bound to
+the failed or interrupted attempt's observed baseline and receipt digest, then follows
+the same canary and sequential protocol. This preserves independent approval while
+satisfying the requirement that rollback use the previous verified digest without a
+rebuild. Dry-run has no production credential or mutation adapter, mutable tags and raw
+digests are rejected at admission, workflow concurrency prevents overlap, and the fixed
+CLI argument shape has no capacity or spend-increasing operation.
+
 ## Amendment (2026-08-09) — private candidate dependency boundary (#690)
 
 Candidate consumers may declare an exact `privateNodePackages` allowlist of
