@@ -74,9 +74,11 @@ retained chain. For each unknown host, the evidence adapter must report its immu
 manifest identity, release, and deployed image digest. Exact selected-release evidence
 seals a `reconciled` transition and resumes at probe/observation without another drain;
 exact attempt-baseline evidence removes the uncertain transition and permits a new
-bounded update. Any other release, inconsistent manifest, or absent digest stops with an
-operator-safe error. Preserve the chain and quarantine the host until evidence is
-repaired or an independently approved rollback is dispatched.
+bounded update only when `releaseManifest` canonical bytes match the recorded baseline
+manifest identity and its reviewed variant index digest exactly matches the live deployed
+digest. A missing baseline manifest, any other release, inconsistent manifest, or absent
+or unrelated digest stops with an operator-safe error. Preserve the chain and quarantine
+the host until evidence is repaired or an independently approved rollback is dispatched.
 
 ## Rollback
 

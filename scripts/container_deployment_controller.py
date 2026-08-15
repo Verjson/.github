@@ -185,6 +185,31 @@ def _validate_release_evidence(
     )
 
 
+def _release_variant_digest(
+    manifest_value: Any,
+    release: dict[str, Any],
+    variant: str,
+    field: str,
+) -> str:
+    manifest = _object(manifest_value, field)
+    if canonical_digest(manifest) != release.get("manifestDigest"):
+        raise DeploymentError(f"{field} canonical bytes differ from release identity")
+    if manifest.get("releaseVersion") != release.get("releaseVersion"):
+        raise DeploymentError(f"{field} version differs from release identity")
+    images = manifest.get("images")
+    if not isinstance(images, list) or sum(
+        1 for image in images if isinstance(image, dict) and image.get("variant") == variant
+    ) != 1:
+        raise DeploymentError(f"{field} must contain exactly one reviewed release variant")
+    selected_image = next(
+        image for image in images if isinstance(image, dict) and image.get("variant") == variant
+    )
+    digest = selected_image.get("indexDigest")
+    if not isinstance(digest, str) or DIGEST.fullmatch(digest) is None:
+        raise DeploymentError(f"{field} release variant has no immutable image digest")
+    return digest
+
+
 def _date_time(value: Any, field: str) -> datetime:
     if not isinstance(value, str):
         raise DeploymentError(f"{field} must be an RFC 3339 timestamp")
@@ -610,6 +635,7 @@ def reconcile_unknown_state(
     plan: dict[str, Any],
     previous: dict[str, Any],
     evidence: dict[str, Any],
+    config: dict[str, Any],
 ) -> dict[str, Any]:
     try:
         validate_receipt(previous)
@@ -638,6 +664,18 @@ def reconcile_unknown_state(
             raise DeploymentError(f"reconciliation changes immutable {field}")
     if previous.get("planDigest") != canonical_digest(plan):
         raise DeploymentError("reconciliation changes immutable plan authority")
+    expected_release = _object(config.get("expectedRelease"), "expectedRelease")
+    variant = _text(expected_release.get("variant"), "expectedRelease.variant")
+    if evidence.get("manifestIdentity") != plan.get("manifestIdentity"):
+        raise DeploymentError("reconciliation changes selected manifest identity")
+    selected_digest = _release_variant_digest(
+        evidence.get("manifest"),
+        _object(plan.get("selectedRelease"), "selectedRelease"),
+        variant,
+        "selected release manifest",
+    )
+    if selected_digest != plan.get("targetDigest"):
+        raise DeploymentError("selected release manifest differs from plan image digest")
     live_runners = {
         runner.get("name"): runner
         for runner in _object(evidence.get("fleet"), "fleet evidence").get("runners", [])
@@ -684,7 +722,9 @@ def reconcile_unknown_state(
         if not isinstance(deployed_digest, str) or DIGEST.fullmatch(deployed_digest) is None:
             raise DeploymentError("unknown runner lacks an immutable live image digest")
         if live_release == plan["selectedRelease"]:
-            if deployed_digest != plan["targetDigest"]:
+            if live.get("manifestIdentity") != plan.get("manifestIdentity"):
+                raise DeploymentError("selected live release identity differs from plan")
+            if deployed_digest != selected_digest:
                 raise DeploymentError("selected live release has the wrong image digest")
             reconciled.append(
                 {
@@ -700,7 +740,18 @@ def reconcile_unknown_state(
                     "completedAt": None,
                 }
             )
-        elif live_release != previous["observedDeployedRelease"]:
+        elif live_release == previous["observedDeployedRelease"]:
+            if live.get("manifestIdentity") != plan.get("observedManifestIdentity"):
+                raise DeploymentError("baseline live release identity differs from plan")
+            baseline_digest = _release_variant_digest(
+                live.get("releaseManifest"),
+                _object(plan.get("observedDeployedRelease"), "observedDeployedRelease"),
+                variant,
+                f"baseline release manifest for {name}",
+            )
+            if deployed_digest != baseline_digest:
+                raise DeploymentError("baseline live release has the wrong image digest")
+        else:
             raise DeploymentError("unknown runner is neither selected nor baseline release")
     revision = copy.deepcopy(previous)
     revision["revision"] = previous["revision"] + 1
@@ -1373,6 +1424,7 @@ def main() -> int:
                 _persist_directory(args.receipt_dir)(receipt)
         elif args.command == "reconcile":
             plan = _load(args.plan)
+            config = _load(args.config)
             evidence = _load(args.evidence)
             existing = sorted(args.receipt_dir.glob("revision-*.json"))
             receipts = [_load(path) for path in existing]
@@ -1385,7 +1437,7 @@ def main() -> int:
                 runner.get("state") == "unknown"
                 for runner in latest.get("runners", [])
             ):
-                reconciled = reconcile_unknown_state(plan, latest, evidence)
+                reconciled = reconcile_unknown_state(plan, latest, evidence, config)
                 _persist_directory(args.receipt_dir, len(existing))(reconciled)
             elif latest.get("outcome") in ("failed", "succeeded"):
                 raise DeploymentError(

@@ -128,9 +128,12 @@ runner or continues in parallel. A verified update is retained before its probe;
 or timed-out probe records the selected actual release, while indeterminate mutation
 evidence records the runner state as unknown rather than claiming the predecessor.
 An unknown state becomes runnable only through an append-only reconciliation revision
-bound to live manifest, release, and image-digest evidence. A passing canary remains
-observation-pending in retained state until the complete window is durably recorded;
-resume repeats a pending window and cannot advance to the next host.
+bound to live manifest, release, and image-digest evidence. Selected-release evidence is
+bound to the admitted target manifest and variant digest; baseline evidence must provide
+canonical release-manifest bytes whose recorded identity and reviewed variant index digest
+match the live host exactly. A passing canary remains observation-pending in retained
+state until the complete window is durably recorded; resume repeats a pending window and
+cannot advance to the next host.
 
 Rollback is an independently approved deployment of the exact
 `observedDeployedRelease` from the failed or interrupted **attempt being recovered**,

@@ -12,7 +12,7 @@ The reusable workflow, controller, preflight, receipt schema, adversarial tests,
 runbook enforce signer/source/contract pins, bounded capacity and time policy,
 canonical manifest bytes, strict version 3 receipts, exact-plan dry-run evidence,
 authority-checked append-only resume, truthful verified-or-unknown post-update state,
-evidence-bound unknown-state reconciliation, durable canary-observation progress,
+manifest/index-digest-bound unknown-state reconciliation, durable canary-observation progress,
 independently approved rollback, least privilege, and no capacity-creating or
 spend-increasing operations. Live
 `Verjson/verjson-github-runner` adoption remains a separate post-merge handoff.

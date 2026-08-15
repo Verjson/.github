@@ -905,7 +905,9 @@ class DeploymentExecutionTests(unittest.TestCase):
         live_runner["manifestIdentity"] = plan["manifestIdentity"]
         live_runner["deployedDigest"] = plan["targetDigest"]
 
-        reconciled = controller.reconcile_unknown_state(plan, interrupted, live)
+        reconciled = controller.reconcile_unknown_state(
+            plan, interrupted, live, configuration()
+        )
 
         self.assertEqual("in_progress", reconciled["outcome"])
         self.assertEqual("reconciled", reconciled["runners"][0]["state"])
@@ -942,7 +944,7 @@ class DeploymentExecutionTests(unittest.TestCase):
         live["fleet"]["runners"][0]["deployedDigest"] = "sha256:" + "9" * 64
 
         with self.assertRaisesRegex(controller.DeploymentError, "neither selected nor baseline"):
-            controller.reconcile_unknown_state(plan, interrupted, live)
+            controller.reconcile_unknown_state(plan, interrupted, live, configuration())
 
     def test_unknown_update_at_baseline_reconciles_to_a_safe_retry(self):
         plan = controller.build_plan(configuration(), evidence(), "production")
@@ -956,8 +958,13 @@ class DeploymentExecutionTests(unittest.TestCase):
         )
         live = evidence()
         live["fleet"]["runners"][0]["deployedDigest"] = "sha256:" + "1" * 64
+        live["fleet"]["runners"][0]["releaseManifest"] = release_manifest(
+            "1.0.0", "1"
+        )
 
-        reconciled = controller.reconcile_unknown_state(plan, interrupted, live)
+        reconciled = controller.reconcile_unknown_state(
+            plan, interrupted, live, configuration()
+        )
 
         self.assertEqual([], reconciled["runners"])
         self.assertEqual(
@@ -978,6 +985,70 @@ class DeploymentExecutionTests(unittest.TestCase):
             ["capacity", "update", "probe", "observe"],
             [call[0] for call in adapter.calls],
         )
+
+    def test_unknown_baseline_reconciliation_rejects_unrelated_deployed_digest(self):
+        plan = controller.build_plan(configuration(), evidence(), "production")
+        interrupted = controller.execute_plan(
+            plan,
+            configuration(),
+            evidence(),
+            FakeAdapter(interrupt_update="gha-gate-1"),
+            lambda _receipt: None,
+            clock=FakeClock(),
+        )
+        live = evidence()
+        live_runner = live["fleet"]["runners"][0]
+        live_runner["deployedDigest"] = "sha256:" + "9" * 64
+        live_runner["releaseManifest"] = release_manifest("1.0.0", "1")
+
+        with self.assertRaisesRegex(
+            controller.DeploymentError, "baseline live release has the wrong image digest"
+        ):
+            controller.reconcile_unknown_state(
+                plan, interrupted, live, configuration()
+            )
+
+    def test_unknown_baseline_reconciliation_requires_release_manifest(self):
+        plan = controller.build_plan(configuration(), evidence(), "production")
+        interrupted = controller.execute_plan(
+            plan,
+            configuration(),
+            evidence(),
+            FakeAdapter(interrupt_update="gha-gate-1"),
+            lambda _receipt: None,
+            clock=FakeClock(),
+        )
+        live = evidence()
+        live["fleet"]["runners"][0]["deployedDigest"] = "sha256:" + "1" * 64
+
+        with self.assertRaisesRegex(
+            controller.DeploymentError, "baseline release manifest.*must be an object"
+        ):
+            controller.reconcile_unknown_state(
+                plan, interrupted, live, configuration()
+            )
+
+    def test_unknown_baseline_reconciliation_rejects_unbound_release_manifest(self):
+        plan = controller.build_plan(configuration(), evidence(), "production")
+        interrupted = controller.execute_plan(
+            plan,
+            configuration(),
+            evidence(),
+            FakeAdapter(interrupt_update="gha-gate-1"),
+            lambda _receipt: None,
+            clock=FakeClock(),
+        )
+        live = evidence()
+        live_runner = live["fleet"]["runners"][0]
+        live_runner["deployedDigest"] = "sha256:" + "1" * 64
+        live_runner["releaseManifest"] = release_manifest("1.0.0", "2")
+
+        with self.assertRaisesRegex(
+            controller.DeploymentError, "canonical bytes differ from release identity"
+        ):
+            controller.reconcile_unknown_state(
+                plan, interrupted, live, configuration()
+            )
 
     def test_process_adapter_keeps_secret_out_of_arguments_and_never_scales(self):
         completed = mock.Mock()
