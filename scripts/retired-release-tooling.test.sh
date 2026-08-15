@@ -23,7 +23,6 @@ done
 
 live_surfaces=(
   "$root/.github/workflows/actions-ci.yml"
-  "$root/renovate.json"
   "$root/scripts/node-workflow-controls.test.sh"
   "$root/scripts/node-workflow-pins.test.sh"
   "$root/scripts/ci-gate/runner-routing-policy.test.sh"

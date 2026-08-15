@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Guards the immutable nested dependencies in every Node workflow/setup surface
 # (Verjson/.github#89, #152, #162): audited action SHAs, the complete live
-# node-ci dependency graph and Renovate maintenance.
+# node-ci dependency graph.
 set -uo pipefail
 
 here="$(cd "$(dirname "$0")" && pwd)"
@@ -10,7 +10,6 @@ ci="$root/.github/workflows/node-ci.yml"
 release="$root/.github/workflows/node-release.yml"
 composite="$root/.github/actions/setup-verjson-node/action.yml"
 actions_ci="$root/.github/workflows/actions-ci.yml"
-renovate="$root/renovate.json"
 fails=0
 pass() { printf 'ok   - %s\n' "$1"; }
 fail() { printf 'FAIL - %s\n' "$1"; fails=$((fails + 1)); }
@@ -59,18 +58,6 @@ grep -qF 'semantic-release' "$release" \
   && grep -qF 'git describe --tags --exact-match HEAD' "$release"; } \
   && pass "node-release checks out and verifies only the caller-selected tag" \
   || fail "node-release is not bound to the caller-selected tag"
-
-jq -e '
-  any(.packageRules[];
-    .pinDigests == true and
-    (.matchManagers | index("github-actions")) != null and
-    (.matchFileNames | index(".github/actions/setup-verjson-node/action.yml")) != null and
-    (.matchFileNames | index(".github/workflows/actions-ci.yml")) != null and
-    (.matchFileNames | index(".github/workflows/node-ci.yml")) != null and
-    (.matchFileNames | index(".github/workflows/node-release.yml")) != null)
-' "$renovate" >/dev/null \
-  && pass "Renovate maintains every Node workflow/setup digest pin" \
-  || fail "Renovate digest-pin maintenance does not cover every Node surface"
 
 # node-ci inlines eligibility rather than calling a separately-versioned copy of
 # this repository. This removes the manually-maintained self-pin from #162 and
@@ -332,12 +319,6 @@ else
   fail "unfetchable pin failed for the wrong reason: $graph_error"
 fi
 git -C "$shallow_clone" remote add origin "file://$origin_repo"
-
-jq -e '
-  all(.packageRules[]; .pinDigests != false)
-' "$renovate" >/dev/null \
-  && pass "Renovate has no exception that permits mutable Node dependencies" \
-  || fail "renovate.json still contains a pinDigests:false exception"
 
 # --- bounded checkout history (#234) -----------------------------------------
 # Full history was only ever a proxy for "the pinned objects are present". The

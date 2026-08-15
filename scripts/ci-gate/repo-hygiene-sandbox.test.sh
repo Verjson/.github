@@ -42,7 +42,12 @@ root_status_before="$(git -C "$repo_root" status --porcelain 2>/dev/null)"
 # silently staging a wrong tree, and the guard below turns that into an abort.
 host="$tmp/host"
 mkdir -p "$host"
-( cd "$repo_root" && git ls-files -z | xargs -0 cp --parents -t "$host" ) \
+( cd "$repo_root" && while IFS= read -r -d '' path; do
+    # `git ls-files` includes tracked paths deleted in the working tree. Skip
+    # those paths so the sandbox represents the candidate tree being tested.
+    [ -e "$path" ] || [ -L "$path" ] || continue
+    cp --parents -t "$host" -- "$path" || exit
+  done < <(git ls-files -z) ) \
   || { echo "FAIL - could not stage a sandbox copy of the tracked tree"; exit 1; }
 # Every setup command is checked. Unchecked and output-suppressed, a failed
 # `git commit` here leaves HEAD unborn, and the HEAD assertion below then

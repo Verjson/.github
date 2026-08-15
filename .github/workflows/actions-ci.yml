@@ -14,7 +14,10 @@ on:
       # workflow surface that can carry a pin example (#287).
       - '.github/workflows/**'
       - 'Makefile'
-      - 'renovate.json'
+      - 'renovate.json*'
+      - '.renovaterc*'
+      - '.github/renovate.json*'
+      - 'package.json'
       - 'scripts/**'
       - 'docs/**'
       - 'NEXT/**'
@@ -33,7 +36,10 @@ on:
       # verifies both sets and every repository-wide scanner input.
       - '.github/workflows/**'
       - 'Makefile'
-      - 'renovate.json'
+      - 'renovate.json*'
+      - '.renovaterc*'
+      - '.github/renovate.json*'
+      - 'package.json'
       - 'scripts/**'
       - 'docs/**'
       - 'NEXT/**'
