@@ -99,11 +99,32 @@ unsafe_portable="$(
 # empty `runs-on`, and one that stops before the hosted tail leaves an org with no
 # lane variables unplaceable — the queue-forever failure, one level up from the
 # literal labels this replaced.
+#
+# The OS-scoped lanes of ADR 0103 (#814) are the one exception, and it runs the
+# other way: `VERJSON_LANE_TRUSTED_MACOS` and `_WINDOWS` must carry NO fallback,
+# because degrading a macOS leg to Linux produces a non-installable artifact
+# behind a green check. The trailing `([^A-Z_]|$)` is what encodes that — without
+# it, `VERJSON_LANE_TRUSTED_MACOS` matches the `TRUSTED` alternative and this
+# rule would demand exactly the fallback ADR 0103 forbids. The exception is
+# encoded here rather than left for the OS lane to evade.
+lane_selector_pattern="vars\\.VERJSON_LANE_(TRUSTED|UNTRUSTED|PRIVILEGED)([^A-Z_]|\$)"
 lane_without_fallback="$(
-  grep -HnE "^    runs-on:.*vars\\.VERJSON_LANE_(TRUSTED|UNTRUSTED|PRIVILEGED)" "${workflow_files[@]}" \
+  grep -HnE "^    runs-on:.*$lane_selector_pattern" "${workflow_files[@]}" \
     | grep -v "vars.VERJSON_LANE_FALLBACK" \
     | grep -v "vars.VERJSON_LANE_UNTRUSTED || '\[\"ubuntu-24.04\"\]'" || true
 )"
+
+# The exception, asserted directly rather than inferred from a green sweep. This
+# repository has no OS-lane workflow — R5 forbids one — so the narrowing above
+# is unobservable against the live tree, and a revert to the unanchored pattern
+# would leave every assertion in this file passing. Both polarities, because
+# over-narrowing (dropping the ordinary lanes) fails just as silently.
+grep -qE "$lane_selector_pattern" \
+  <<<"    runs-on: \${{ fromJSON(vars.VERJSON_LANE_TRUSTED || vars.VERJSON_LANE_FALLBACK) }}" \
+  && ! grep -qE "$lane_selector_pattern" \
+    <<<"    runs-on: \${{ fromJSON(vars.VERJSON_LANE_TRUSTED_MACOS) }}" \
+  && pass "the fallback rule binds the ordinary lanes and exempts the OS-scoped lanes (ADR 0103)" \
+  || fail "the fallback rule's OS-lane exception drifted: it must match VERJSON_LANE_TRUSTED and not VERJSON_LANE_TRUSTED_MACOS"
 [ -z "$lane_without_fallback" ] \
   && pass "every lane selector falls through to VERJSON_LANE_FALLBACK" \
   || fail "lane selector that cannot degrade: $lane_without_fallback"
@@ -961,6 +982,38 @@ expected_labels="$(printf '%s\n' general | sort)"
 [ "$declared_labels" = "$expected_labels" ] \
   && pass "the declared runner-label set is exactly the lanes the fleet serves" \
   || fail "declared runner labels drifted from the bounded set:"$'\n'"got: $(printf '%s' "$declared_labels" | tr '\n' ' ')"$'\n'"want: $(printf '%s' "$expected_labels" | tr '\n' ' ')"
+
+# --------------------------------------------------------------------------
+# The metered hosted SKUs (#814, ADR 0103). Every literal-selector assertion
+# above keys on `ubuntu-(24\.04|latest)`, so `runs-on: macos-latest` passed this
+# entire file — the two families at 10x and 2x multipliers were the two it could
+# not see. With the organization raising its Actions spending limit for AiB's
+# installer legs (#810), that check is the only remaining bound on hosted spend.
+#
+# The rules live in a separate, parameterized script rather than in more
+# assertions here, for two reasons. This repository has no macOS or Windows
+# selector and no OS-scoped lane, so an assertion against the live tree could
+# never fail and would prove nothing — the negative path is provable only
+# against fixtures, which `hosted-selector-policy.test.sh` owns. And #815 has to
+# point the same rules at a consumer's checkout, which a check hardcoded to
+# `$root/.github/workflows` cannot do.
+#
+# `--visibility public` is the measured fact about THIS repository, not a
+# default: `Verjson/.github` is public, so its hosted minutes are free and the
+# Tier B literal-Linux rule does not fire here. The stricter standard `.github`
+# is actually held to is the closed, exact-site ADR 0089 inventory above, which
+# this change does not touch.
+hosted_selector_policy="$root/scripts/ci-gate/hosted-selector-policy.sh"
+hosted_selector_out="$(bash "$hosted_selector_policy" --visibility public "$workflows" 2>&1)"
+hosted_selector_rc=$?
+case "$hosted_selector_rc" in
+  0) pass "no workflow names a metered hosted runner family or an unbounded OS lane" ;;
+  # Exit 2 is reported separately from exit 1 on purpose: "the sweep could not
+  # decide" and "the sweep found a violation" are different problems, and
+  # collapsing them is how a check that scanned nothing gets read as a pass.
+  2) fail "hosted-selector policy could not run: $hosted_selector_out" ;;
+  *) fail "hosted-selector policy violation: $hosted_selector_out" ;;
+esac
 
 if [ "$fails" -eq 0 ]; then
   echo "All tests passed."
