@@ -69,11 +69,12 @@ grep -qF 'ACTIONLINT_VERSION: 1.7.7' "$wf" \
 
 grep -qF 'repository: ${{ job.workflow_repository }}' "$wf" \
   && grep -qF 'ref: ${{ job.workflow_sha }}' "$wf" \
-  && grep -qF "if: inputs.config-file == ''" "$wf" \
-  && grep -qF 'sparse-checkout: .github/actionlint.yaml' "$wf" \
+  && grep -qF "if: inputs.config-file == '' || github.repository_owner == 'Verjson'" "$wf" \
+  && grep -qF '            .github/actionlint.yaml' "$wf" \
+  && grep -qF '            scripts/ci-gate/hosted-selector-policy.py' "$wf" \
   && grep -qF 'persist-credentials: false' "$wf" \
   && grep -qF "ACTIONLINT_CONFIG_FILE: \${{ inputs.config-file || '.verjson-actionlint-policy/.github/actionlint.yaml' }}" "$wf" \
-  && pass "default central policy is checked out immutably while caller overrides skip it" \
+  && pass "central policies are checked out immutably for Verjson while foreign overrides skip them" \
   || fail "central policy checkout is not conditional, immutable, and bounded"
 
 if python3 - "$wf" <<'PY'

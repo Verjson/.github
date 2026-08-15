@@ -107,6 +107,20 @@ def assert_undetermined(label: str, *arguments: str) -> None:
         fail(f"{label} (expected exit 2, got {code}: {output.strip()})")
 
 
+def assert_metered_only(fixture: str, expected_code: int, label: str) -> None:
+    exercised_fixtures.add(fixture)
+    code, output = run_policy(
+        "--metered-families-only", os.path.join(FIXTURES, fixture)
+    )
+    if code == expected_code:
+        ok(label)
+    else:
+        fail(
+            f"{label} (expected exit {expected_code}, got {code}: "
+            f"{output.strip()})"
+        )
+
+
 # ---------------------------------------------------------------------------
 # R1 / R2 (Tier A) — the metered families, zero exceptions.
 # ---------------------------------------------------------------------------
@@ -116,10 +130,28 @@ assert_undetermined(
 )
 assert_violation("public", "metered-macos", "metered hosted runner family",
                  "a metered macOS selector is a hard failure")
+assert_violation("public", "metered-windows", "metered hosted runner family",
+                 "a metered Windows selector is a hard failure")
 assert_violation("public", "metered-macos", "rolling -latest image",
                  "a rolling image in a metered family is reported as its own defect")
 assert_violation("public", "rolling-linux-latest", "rolling -latest image",
                  "a rolling Linux image is refused independently of billing visibility")
+
+# #815 exports only the visibility-independent metered-family rule through the
+# reusable actionlint workflow. The repository-local R2/Tier B/R3-R6 rules stay
+# local; #816 owns consumer Linux drift. The parser boundary remains fail closed.
+assert_metered_only("metered-macos", 1,
+                    "consumer mode refuses literal macOS hosted selectors")
+assert_metered_only("metered-windows", 1,
+                    "consumer mode refuses literal Windows hosted selectors")
+assert_metered_only("evasion-matrix", 1,
+                    "consumer mode resolves a metered matrix selector structurally")
+assert_metered_only("rolling-linux-latest", 0,
+                    "consumer mode does not activate the deferred ubuntu-latest rule")
+assert_metered_only("linux-hosted-literal", 0,
+                    "consumer mode does not activate private literal-Linux policy")
+assert_metered_only("invalid-yaml", 2,
+                    "consumer mode remains fail closed on unparseable workflow YAML")
 
 # ---------------------------------------------------------------------------
 # Tier B — literal Linux hosted selectors, keyed on repository visibility.
@@ -229,6 +261,12 @@ assert_undetermined("an unrecognized option is undetermined",
 assert_undetermined("a repeated --visibility is undetermined, not last-wins",
                     "--visibility", "private", "--visibility", "public",
                     os.path.join(FIXTURES, "linux-hosted-literal"))
+assert_undetermined("consumer mode cannot accidentally add visibility-scoped rules",
+                    "--metered-families-only", "--visibility", "private",
+                    os.path.join(FIXTURES, "metered-macos"))
+assert_undetermined("consumer mode cannot sanction repository-local OS-lane paths",
+                    "--metered-families-only", "--sanctioned", "desktop-release.yml",
+                    os.path.join(FIXTURES, "metered-macos"))
 assert_undetermined("a stray positional cannot silently sanction a workflow",
                     "--visibility", "public",
                     os.path.join(FIXTURES, "os-lane-unsanctioned"), "ci.yml")

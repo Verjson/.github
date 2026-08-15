@@ -223,6 +223,26 @@ up. Enforcing that half for public repositories is #816; recording it here makes
 deferral a decision rather than an oversight. `.github` itself is held to the stricter
 standard regardless, by its own ADR 0089 inventory, which this change does not touch.
 
+### Amendment (2026-08-15) — the metered-family invariant reaches consumers (#815)
+
+The reusable `actionlint.yml` now applies R1 to every Verjson caller's checked-out workflow
+tree. The checker is sparse-checked from `job.workflow_repository` at `job.workflow_sha`, so
+the policy under review cannot replace the policy reviewing it. Foreign callers skip both
+the dependency bootstrap and the enforcement step, preserving ADR 0040's portability tail.
+
+This export is deliberately **R1 only**. The full checker also contains `.github`'s rolling
+Linux image, visibility-keyed literal Linux, lane-tail, OS-lane timeout, sanctioned-path, and
+dispatch rules. Activating those across consumers would silently bundle #816 and repository-
+local release policy into a spend-containment change. Consumer mode still parses every YAML
+document and job with the fail-closed loader and folds referenced matrix strategy sources
+into R1; it simply returns after the metered-family verdict.
+
+PyYAML is not assumed to exist on a selected runner. The workflow downloads the pinned 6.0.2
+source archive, verifies its SHA-256 digest before extraction, exposes only its pure-Python
+`yaml` package through an isolated `PYTHONPATH`, and starts Python with site loading disabled.
+This makes the parser dependency part of the immutable reusable-workflow contract instead of
+an ambient property of whichever runner a lane selects.
+
 ## Consequences
 
 - The metered SKUs are refused by a check rather than by a spending limit, which is what

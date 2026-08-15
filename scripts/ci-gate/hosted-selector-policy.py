@@ -2,6 +2,7 @@
 """Refuse metered GitHub-hosted runner selectors and unbounded hosted jobs.
 
     hosted-selector-policy.py --visibility public|private [--sanctioned NAME]... <workflow-dir>
+    hosted-selector-policy.py --metered-families-only <workflow-dir>
 
 Exit 0 is "scanned and clean", 1 is "policy violation", 2 is "undetermined".
 The three are distinct because a sweep that scans nothing must not look like a
@@ -379,7 +380,7 @@ class Report:
 
 
 def check_job(report: Report, path: str, name: str, body: dict, line: int,
-              visibility: str) -> None:
+              visibility: str, metered_families_only: bool = False) -> None:
     if "runs-on" not in body:
         # A job-level `uses:` calls a reusable workflow and declares no runner of
         # its own; the requirement belongs to the called workflow.
@@ -392,12 +393,13 @@ def check_job(report: Report, path: str, name: str, body: dict, line: int,
     raw_runs_on = flatten(body["runs-on"])
     if "matrix." in normalize_dereferences(raw_runs_on):
         selector_values.append(body.get("strategy"))
-    try:
-        for value in selector_values:
-            validate_selector_expressions(value)
-    except Undetermined as error:
-        report.anomaly(f"{path}:{runs_on_line}: job '{name}': {error}")
-        return
+    if not metered_families_only:
+        try:
+            for value in selector_values:
+                validate_selector_expressions(value)
+        except Undetermined as error:
+            report.anomaly(f"{path}:{runs_on_line}: job '{name}': {error}")
+            return
 
     runs_on = normalize_dereferences(raw_runs_on)
 
@@ -424,6 +426,16 @@ def check_job(report: Report, path: str, name: str, body: dict, line: int,
             path, runs_on_line,
             f"R1 metered hosted runner family in job '{name}' runs-on: {runs_on}",
         )
+
+    # The reusable actionlint path deliberately exports only R1. The other
+    # rules describe this repository's complete routing contract: exporting R2
+    # would activate the separately deferred consumer ubuntu-latest sweep
+    # (#816), while R3-R6 govern the one sanctioned desktop release path rather
+    # than ordinary package consumers. Parsing and job extraction still fail
+    # closed, and matrix sources are still folded in, so narrowing the rule set
+    # does not narrow the YAML shapes R1 can see.
+    if metered_families_only:
+        return
 
     # R2 — a rolling standard hosted image, independent of billing. R1 already
     # refuses the metered macOS/Windows families; R2 separately asks whether a
@@ -601,6 +613,7 @@ def parse_arguments(argv: list[str]) -> argparse.Namespace:
     # No default. A caller that does not say what it is scanning gets no verdict,
     # because a permissive default here silently disables Tier B.
     parser.add_argument("--visibility", action="append")
+    parser.add_argument("--metered-families-only", action="store_true")
     # Behind a flag, not a trailing positional: in a script that fails closed
     # everywhere else, a stray argument must not quietly sanction a file and
     # narrow the sweep.
@@ -620,7 +633,16 @@ def parse_arguments(argv: list[str]) -> argparse.Namespace:
         # policy tier being enforced.
         raise Undetermined(f"--visibility given {len(visibility)} times")
     arguments.visibility = visibility[0] if visibility else ""
-    if arguments.visibility not in ("public", "private"):
+    if arguments.metered_families_only:
+        if arguments.visibility:
+            raise Undetermined(
+                "--metered-families-only and --visibility are mutually exclusive"
+            )
+        if arguments.sanctioned:
+            raise Undetermined(
+                "--sanctioned does not apply to --metered-families-only"
+            )
+    elif arguments.visibility not in ("public", "private"):
         raise Undetermined(
             "--visibility must be exactly 'public' or 'private' "
             f"(got '{arguments.visibility}')"
@@ -663,7 +685,9 @@ def main(argv: list[str]) -> int:
     report = Report()
 
     for path in workflow_files:
-        references_os_lane = check_os_lane_references(report, path, sanctioned)
+        references_os_lane = False
+        if not arguments.metered_families_only:
+            references_os_lane = check_os_lane_references(report, path, sanctioned)
         try:
             document = load_workflow(path)
             jobs = extract_jobs(path, document)
@@ -673,7 +697,15 @@ def main(argv: list[str]) -> int:
         if references_os_lane:
             check_os_lane_trigger(report, path, document)
         for name, body, line in jobs:
-            check_job(report, path, name, body, line, arguments.visibility)
+            check_job(
+                report,
+                path,
+                name,
+                body,
+                line,
+                arguments.visibility,
+                arguments.metered_families_only,
+            )
 
     for message in report.anomalies:
         print(message, file=sys.stderr)
