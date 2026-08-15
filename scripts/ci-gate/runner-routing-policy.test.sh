@@ -18,12 +18,24 @@ fails=0
 pass() { printf 'ok   - %s\n' "$1"; }
 fail() { printf 'FAIL - %s\n' "$1"; fails=$((fails + 1)); }
 
-# A literal job selector in this Verjson-owned repository must never target a
-# GitHub-hosted label. Portable fallbacks belong only in organization-aware
+# A literal hosted selector is allowed only where fixed hosted placement is a
+# security boundary: the credentialless invalid-route guard and the privileged
+# fleet audit. Portable fallbacks otherwise belong only in organization-aware
 # expressions in reusable definitions.
+literal_hosted_sites="$(
+  grep -HnE '^    runs-on:[[:space:]]+ubuntu-24\.04$' "${workflow_files[@]}" \
+    | sed -E 's#^.*/([^/]+):[0-9]+:#\1:#' \
+    | sort
+)"
+expected_literal_hosted_sites=$'ai-privileged-merge.yml:    runs-on: ubuntu-24.04\nprivileged-merge-conformance.yml:    runs-on: ubuntu-24.04'
+[ "$literal_hosted_sites" = "$expected_literal_hosted_sites" ] \
+  && pass "the two security-boundary jobs use exact fixed hosted selectors" \
+  || fail "fixed hosted selector inventory drifted: $literal_hosted_sites"
+
 literal_hosted="$(
   grep -HnE '^    runs-on:[[:space:]]+(\[)?ubuntu-(24\.04|latest)([][:space:],]|$)' \
     "${workflow_files[@]}" \
+    | grep -vE '/ai-privileged-merge\.yml:[0-9]+:[[:space:]]+runs-on: ubuntu-24\.04$' \
     | grep -vE '/privileged-merge-conformance\.yml:[0-9]+:[[:space:]]+runs-on: ubuntu-24\.04$' \
     || true
 )"
@@ -54,6 +66,10 @@ literal_hosted="$(
 #  * `privileged-merge-conformance.yml` — holds the privileged audit token, so
 #    its exact fixed hosted selector prevents mutable variables or a persistent
 #    worker from choosing the token's execution environment (ADR 0089).
+#  * `ai-privileged-merge.yml`'s invalid-route guard — deliberately carries no
+#    credential and uses fixed hosted capacity so unavailable visibility or an
+#    unregistered route produces an observable failure without trusting a
+#    persistent worker or mutable placement variable (ADR 0089).
 #  * the tail of a lane chain, `vars.VERJSON_LANE_FALLBACK || '["ubuntu-24.04"]'`
 #    — ADR 0040's portability contract. It is only reached when an organization
 #    has no lane variable set at all, and hosted is the one landing that works
@@ -68,6 +84,7 @@ unsafe_portable="$(
     | grep -v "github.repository_owner != 'Verjson' && 'ubuntu-24.04'" \
     | grep -v "github.repository_owner == 'Verjson'.*|| 'ubuntu-24.04'" \
     | grep -vE '/ai-privileged-merge\.yml:[0-9]+:.*github\.event\.repository\.visibility == '\''public'\'' && '\''ubuntu-24\.04'\''.*self-hosted.*general' \
+    | grep -vE '/ai-privileged-merge\.yml:[0-9]+:[[:space:]]+runs-on: ubuntu-24\.04$' \
     | grep -vE '/privileged-merge-conformance\.yml:[0-9]+:[[:space:]]+runs-on: ubuntu-24\.04$' \
     | grep -v "inputs.github-hosted-runner" \
     | grep -v "vars.VERJSON_RUNNER_FASTLANE" \

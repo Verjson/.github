@@ -6,9 +6,20 @@ readonly SECRET_NAME="${PRIVILEGED_MERGE_SECRET_NAME:-ORG_ADMIN_TOKEN}"
 readonly CALLER_PATH=".github/workflows/ai-privileged-merge.yml"
 readonly GENERATOR="scripts/gen-privileged-merge-caller.sh"
 readonly CANONICAL_REPOSITORY="$ORG/.github"
+readonly AUDIT_SHA="${PRIVILEGED_MERGE_AUDIT_SHA:-}"
+readonly REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+readonly LOCAL_CANONICAL_WORKFLOW="$REPO_ROOT/$CALLER_PATH"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 
+if [[ ! "$AUDIT_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+  echo "::error title=Invalid privileged merge audit SHA::PRIVILEGED_MERGE_AUDIT_SHA must be a canonical lowercase 40-character commit SHA."
+  exit 1
+fi
+if [ ! -r "$LOCAL_CANONICAL_WORKFLOW" ]; then
+  echo "::error title=Missing local canonical privileged merge workflow::path=$CALLER_PATH"
+  exit 1
+fi
 if [ -z "${GH_TOKEN:-}" ]; then
   echo "::error title=Missing ORG_ADMIN_TOKEN::Fleet conformance cannot verify privileged merge callers or organization-secret access."
   exit 1
@@ -79,105 +90,128 @@ while IFS= read -r repository; do
     continue
   fi
 
+  direct_consumer=false
+  content_ref="$default_branch"
+  if [ "$repository" = "$CANONICAL_REPOSITORY" ]; then
+    direct_consumer=true
+    content_ref="$AUDIT_SHA"
+    consumers=$((consumers + 1))
+  fi
+
   caller_response=""
   caller_error=""
-  if ! caller_response="$(gh api "repos/$repository/contents/$CALLER_PATH?ref=$default_branch" \
+  caller_available=false
+  caller_file="$tmp/caller-$repositories_scanned.yml"
+  if ! caller_response="$(gh api "repos/$repository/contents/$CALLER_PATH?ref=$content_ref" \
     --jq .content 2>&1)"; then
     caller_error="$caller_response"
     if grep -q 'HTTP 404' <<<"$caller_error"; then
-      # Secret visibility is not consumer registration: this credential is
-      # organization-wide, while only repositories with a caller can invoke
-      # the reusable terminal workflow.
-      continue
+      if [ "$direct_consumer" = true ]; then
+        echo "::error title=Missing canonical privileged merge workflow::repository=$repository path=$CALLER_PATH audit_sha=$AUDIT_SHA"
+        failures=$((failures + 1))
+      else
+        # Secret visibility is not consumer registration: this credential is
+        # organization-wide, while only repositories with a caller can invoke
+        # the reusable terminal workflow.
+        continue
+      fi
     else
-      echo "::error title=Unreadable privileged merge caller::repository=$repository path=$CALLER_PATH"
+      if [ "$direct_consumer" = true ]; then
+        echo "::error title=Unreadable canonical privileged merge workflow::repository=$repository path=$CALLER_PATH audit_sha=$AUDIT_SHA"
+      else
+        echo "::error title=Unreadable privileged merge caller::repository=$repository path=$CALLER_PATH"
+      fi
+      failures=$((failures + 1))
+      [ "$direct_consumer" = true ] || continue
+    fi
+  elif ! printf '%s' "$caller_response" | base64 --decode >"$caller_file" 2>/dev/null; then
+    if [ "$direct_consumer" = true ]; then
+      echo "::error title=Unreadable canonical privileged merge workflow::repository=$repository path=$CALLER_PATH reason='invalid base64 content'"
+    else
+      echo "::error title=Unreadable privileged merge caller::repository=$repository path=$CALLER_PATH reason='invalid base64 content'"
     fi
     failures=$((failures + 1))
-    continue
-  elif ! caller_content="$(printf '%s' "$caller_response" | base64 --decode 2>/dev/null)"; then
-    echo "::error title=Unreadable privileged merge caller::repository=$repository path=$CALLER_PATH reason='invalid base64 content'"
-    failures=$((failures + 1))
-    continue
-  fi
-
-  mapfile -t caller_pins < <(
-    sed -nE 's#^[[:space:]]+uses: Verjson/\.github/\.github/workflows/ai-privileged-merge\.yml@([0-9a-f]{40})[[:space:]]*$#\1#p' \
-      <<<"$caller_content"
-  )
-  direct_consumer=false
-  # Verjson/.github owns the canonical implementation at the caller path. It is
-  # a direct consumer whose secret access is still part of this inventory, but
-  # it is not a generated caller whose bytes this audit compares.
-  if [ "${#caller_pins[@]}" -eq 0 ] && [ "$repository" = "$ORG/.github" ]; then
-    direct_consumer=true
-  fi
-
-  consumers=$((consumers + 1))
-  if [ "$direct_consumer" = true ]; then
-    :
-  elif [ "${#caller_pins[@]}" -ne 1 ]; then
-    echo "::error title=Invalid privileged merge caller pin::repository=$repository path=$CALLER_PATH reason='expected exactly one immutable canonical workflow pin'"
-    failures=$((failures + 1))
+    [ "$direct_consumer" = true ] || continue
   else
-    caller_contract_sha="${caller_pins[0]}"
-    relation="$(gh api "repos/$CANONICAL_REPOSITORY/compare/$caller_contract_sha...main" --jq .status)" || {
-      echo "::error title=Untrusted privileged merge caller pin::repository=$repository contract_sha=$caller_contract_sha reason='pin is absent from canonical main history'"
+    caller_available=true
+    caller_content="$(<"$caller_file")"
+  fi
+
+  if [ "$direct_consumer" = true ]; then
+    if [ "$caller_available" = true ] && ! cmp -s "$LOCAL_CANONICAL_WORKFLOW" "$caller_file"; then
+      echo "::error title=Mismatched canonical privileged merge workflow::repository=$repository path=$CALLER_PATH audit_sha=$AUDIT_SHA reason='remote bytes differ from the checked-out audit revision'"
       failures=$((failures + 1))
-      relation=""
-    }
-    case "$relation" in
-      ahead|identical) ;;
-      "") ;;
-      *)
-        echo "::error title=Untrusted privileged merge caller pin::repository=$repository contract_sha=$caller_contract_sha relation=$relation reason='pin is not reachable from canonical main'"
+    fi
+  elif [ "$caller_available" = true ]; then
+    consumers=$((consumers + 1))
+    mapfile -t caller_pins < <(
+      sed -nE 's#^[[:space:]]+uses: Verjson/\.github/\.github/workflows/ai-privileged-merge\.yml@([0-9a-f]{40})[[:space:]]*$#\1#p' \
+        <<<"$caller_content"
+    )
+    if [ "${#caller_pins[@]}" -ne 1 ]; then
+      echo "::error title=Invalid privileged merge caller pin::repository=$repository path=$CALLER_PATH reason='expected exactly one immutable canonical workflow pin'"
+      failures=$((failures + 1))
+    else
+      caller_contract_sha="${caller_pins[0]}"
+      relation="$(gh api "repos/$CANONICAL_REPOSITORY/compare/$caller_contract_sha...main" --jq .status)" || {
+        echo "::error title=Untrusted privileged merge caller pin::repository=$repository contract_sha=$caller_contract_sha reason='pin is absent from canonical main history'"
         failures=$((failures + 1))
         relation=""
-        ;;
-    esac
-
-    historical_generator=""
-    historical_workflow=""
-    if [ -n "$relation" ]; then
-      if ! generator_response="$(gh api "repos/$CANONICAL_REPOSITORY/contents/$GENERATOR?ref=$caller_contract_sha" --jq .content)" ||
-        ! historical_generator="$(printf '%s' "$generator_response" | base64 --decode 2>/dev/null)"; then
-        echo "::error title=Unreadable historical caller generator::repository=$repository contract_sha=$caller_contract_sha"
-        failures=$((failures + 1))
-      fi
-      if ! workflow_response="$(gh api "repos/$CANONICAL_REPOSITORY/contents/$CALLER_PATH?ref=$caller_contract_sha" --jq .content)" ||
-        ! historical_workflow="$(printf '%s' "$workflow_response" | base64 --decode 2>/dev/null)"; then
-        echo "::error title=Unreadable historical privileged workflow::repository=$repository contract_sha=$caller_contract_sha"
-        failures=$((failures + 1))
-      fi
-    fi
-
-    workflow_call_block="$(awk '
-      $0 == "  workflow_call:" { capture=1 }
-      capture && /^[^ ]/ { exit }
-      capture { print }
-    ' <<<"$historical_workflow")"
-    if [ -n "$relation" ] && {
-      [ -z "$historical_generator" ] ||
-      ! grep -q '^      privileged_lane:$' <<<"$workflow_call_block" ||
-      ! grep -q '^  privileged_merge:$' <<<"$historical_workflow";
-    }; then
-      echo "::error title=Incompatible privileged merge contract::repository=$repository contract_sha=$caller_contract_sha reason='historical generator or reusable interface is incomplete'"
-      failures=$((failures + 1))
-    elif [ -n "$relation" ] && [ -n "$historical_generator" ]; then
-      printf '%s\n' "$historical_generator" >"$tmp/historical-generator.sh"
-      canonical_caller="$(env -u GH_TOKEN bash "$tmp/historical-generator.sh" "$caller_contract_sha")" || {
-        echo "::error title=Caller generation failed::repository=$repository contract_sha=$caller_contract_sha"
-        failures=$((failures + 1))
-        canonical_caller=""
       }
-      if [ -n "$canonical_caller" ] && [ "$caller_content" != "$canonical_caller" ]; then
-        echo "::error title=Non-canonical privileged merge caller::repository=$repository path=$CALLER_PATH remediation='scripts/gen-privileged-merge-caller.sh $caller_contract_sha > $CALLER_PATH'"
+      case "$relation" in
+        ahead|identical) ;;
+        "") ;;
+        *)
+          echo "::error title=Untrusted privileged merge caller pin::repository=$repository contract_sha=$caller_contract_sha relation=$relation reason='pin is not reachable from canonical main'"
+          failures=$((failures + 1))
+          relation=""
+          ;;
+      esac
+
+      historical_generator=""
+      historical_workflow=""
+      if [ -n "$relation" ]; then
+        if ! generator_response="$(gh api "repos/$CANONICAL_REPOSITORY/contents/$GENERATOR?ref=$caller_contract_sha" --jq .content)" ||
+          ! historical_generator="$(printf '%s' "$generator_response" | base64 --decode 2>/dev/null)"; then
+          echo "::error title=Unreadable historical caller generator::repository=$repository contract_sha=$caller_contract_sha"
+          failures=$((failures + 1))
+        fi
+        if ! workflow_response="$(gh api "repos/$CANONICAL_REPOSITORY/contents/$CALLER_PATH?ref=$caller_contract_sha" --jq .content)" ||
+          ! historical_workflow="$(printf '%s' "$workflow_response" | base64 --decode 2>/dev/null)"; then
+          echo "::error title=Unreadable historical privileged workflow::repository=$repository contract_sha=$caller_contract_sha"
+          failures=$((failures + 1))
+        fi
+      fi
+
+      workflow_call_block="$(awk '
+        $0 == "  workflow_call:" { capture=1 }
+        capture && /^[^ ]/ { exit }
+        capture { print }
+      ' <<<"$historical_workflow")"
+      if [ -n "$relation" ] && {
+        [ -z "$historical_generator" ] ||
+        ! grep -q '^      privileged_lane:$' <<<"$workflow_call_block" ||
+        ! grep -q '^  privileged_merge:$' <<<"$historical_workflow";
+      }; then
+        echo "::error title=Incompatible privileged merge contract::repository=$repository contract_sha=$caller_contract_sha reason='historical generator or reusable interface is incomplete'"
         failures=$((failures + 1))
+      elif [ -n "$relation" ] && [ -n "$historical_generator" ]; then
+        printf '%s\n' "$historical_generator" >"$tmp/historical-generator.sh"
+        canonical_caller="$(env -u GH_TOKEN bash "$tmp/historical-generator.sh" "$caller_contract_sha")" || {
+          echo "::error title=Caller generation failed::repository=$repository contract_sha=$caller_contract_sha"
+          failures=$((failures + 1))
+          canonical_caller=""
+        }
+        if [ -n "$canonical_caller" ] && [ "$caller_content" != "$canonical_caller" ]; then
+          echo "::error title=Non-canonical privileged merge caller::repository=$repository path=$CALLER_PATH remediation='scripts/gen-privileged-merge-caller.sh $caller_contract_sha > $CALLER_PATH'"
+          failures=$((failures + 1))
+        fi
       fi
     fi
   fi
   unset caller_response caller_content caller_error caller_pins caller_contract_sha canonical_caller \
-    direct_consumer relation historical_generator historical_workflow generator_response \
-    workflow_response workflow_call_block
+    caller_available caller_file content_ref direct_consumer relation historical_generator \
+    historical_workflow generator_response workflow_response workflow_call_block
 
   has_secret=false
   case "$visibility" in

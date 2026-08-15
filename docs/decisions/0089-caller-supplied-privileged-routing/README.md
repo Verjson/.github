@@ -61,8 +61,10 @@ the two exact repository identities only with `public` visibility and the `runs-
 expression selects exactly `ubuntu-24.04`; no job output participates. Every other
 Verjson repository must be an unlisted `private` identity and receives the literal
 `["self-hosted","general"]` selector. Unknown public identities, unknown visibility, and
-visibility drift skip the terminal job before `ORG_ADMIN_TOKEN` is available. External
-organizations retain the existing `runner_labels` portability path.
+visibility drift cannot schedule the terminal job. A complementary credentialless guard
+runs on fixed `ubuntu-24.04` capacity and fails explicitly for those states, so the
+workflow cannot conclude successfully merely because the secret-bearing job was skipped.
+External organizations retain the existing `runner_labels` portability path.
 
 This is a narrow reversible stage, not the organization-wide cutover. No organization
 variable changes, new capacity, or credential changes are authorized by it. The runner
@@ -71,8 +73,11 @@ its staged route becomes active, and representative terminal canaries remain req
 
 Fleet conformance now inventories the canonical direct consumer plus generated caller
 files rather than assuming every active repository is a consumer. It verifies secret
-scope for both shapes. For a generated caller it proves the pin exists on canonical main,
-fetches the historical generator and reusable-workflow interface at that exact pin, and
+scope for both shapes. The direct workflow is required at the audit event SHA and must
+match the checked-out canonical bytes exactly; a missing, unreadable, undecodable, or
+mismatched direct workflow fails closed. For a generated caller it proves the pin exists
+on canonical main, fetches the historical generator and reusable-workflow interface at
+that exact pin, and
 compares the caller with credentialless historical generation. The audit checkout stays
 event-SHA-bound, while an unrelated audit commit no longer makes every unchanged caller
 non-canonical. The audit itself is fixed to `ubuntu-24.04`; its privileged read token is

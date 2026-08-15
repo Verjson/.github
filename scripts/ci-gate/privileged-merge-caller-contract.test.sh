@@ -69,14 +69,15 @@ python3 - "$canonical" <<'PY' && pass "terminal routing has no runner-produced t
 import sys, yaml
 d = yaml.safe_load(open(sys.argv[1]))
 jobs = d["jobs"]
-if list(jobs) != ["privileged_merge"]:
+if list(jobs) != ["invalid_verjson_route", "privileged_merge"]:
     sys.exit(1)
+guard = jobs["invalid_verjson_route"]
 merge = jobs["privileged_merge"]
 serialized = str(d)
 for forbidden in ("needs.", "resolve_privileged_route", "steps.route.outputs"):
     if forbidden in serialized:
         sys.exit(1)
-if "needs" in merge or "outputs" in merge:
+if any(key in job for job in (guard, merge) for key in ("needs", "outputs")):
     sys.exit(1)
 sys.exit(0)
 PY
@@ -101,17 +102,27 @@ import yaml
 workflow = yaml.safe_load(open(sys.argv[1]))
 
 allowed = ("Verjson/.github", "Verjson/verjson-github-runner")
+want_guard_if = "${{ github.repository_owner == 'Verjson' && !(github.event.repository.visibility == 'public' && (github.repository == 'Verjson/.github' || github.repository == 'Verjson/verjson-github-runner') || github.event.repository.visibility == 'private' && github.repository != 'Verjson/.github' && github.repository != 'Verjson/verjson-github-runner') }}"
 want_if = "${{ github.repository_owner != 'Verjson' || github.event.repository.visibility == 'public' && (github.repository == 'Verjson/.github' || github.repository == 'Verjson/verjson-github-runner') || github.event.repository.visibility == 'private' && github.repository != 'Verjson/.github' && github.repository != 'Verjson/verjson-github-runner' }}"
 want_runs_on = "${{ github.repository_owner != 'Verjson' && inputs.runner_labels && fromJSON(inputs.runner_labels) || github.repository_owner != 'Verjson' && 'ubuntu-24.04' || github.event.repository.visibility == 'public' && 'ubuntu-24.04' || fromJSON('[\"self-hosted\",\"general\"]') }}"
 
 def valid(candidate):
-    merge = candidate.get("jobs", {}).get("privileged_merge", {})
+    jobs = candidate.get("jobs", {})
+    guard = jobs.get("invalid_verjson_route", {})
+    merge = jobs.get("privileged_merge", {})
+    guard_steps = guard.get("steps", [])
     return (
-        list(candidate.get("jobs", {})) == ["privileged_merge"]
+        list(jobs) == ["invalid_verjson_route", "privileged_merge"]
+        and guard.get("if") == want_guard_if
+        and guard.get("runs-on") == "ubuntu-24.04"
+        and guard.get("timeout-minutes") == 1
+        and guard.get("permissions") == {}
+        and len(guard_steps) == 1
+        and "exit 1" in guard_steps[0].get("run", "")
+        and "secrets." not in str(guard)
         and merge.get("if") == want_if
         and merge.get("runs-on") == want_runs_on
-        and "needs" not in merge
-        and "outputs" not in merge
+        and all(key not in job for job in (guard, merge) for key in ("needs", "outputs"))
         and all(name in want_if for name in allowed)
         and "vars." not in want_runs_on
         and "inputs.privileged_lane" not in want_runs_on
@@ -121,6 +132,20 @@ if not valid(workflow):
     sys.exit(1)
 
 mutations = []
+widened_guard = copy.deepcopy(workflow)
+widened_guard["jobs"]["invalid_verjson_route"]["if"] = "${{ github.repository_owner == 'Verjson' }}"
+mutations.append(widened_guard)
+
+credentialed_guard = copy.deepcopy(workflow)
+credentialed_guard["jobs"]["invalid_verjson_route"]["env"] = {
+    "GH_TOKEN": "${{ secrets.ORG_ADMIN_TOKEN }}"
+}
+mutations.append(credentialed_guard)
+
+non_failing_guard = copy.deepcopy(workflow)
+non_failing_guard["jobs"]["invalid_verjson_route"]["steps"][0]["run"] = "exit 0"
+mutations.append(non_failing_guard)
+
 widened = copy.deepcopy(workflow)
 widened["jobs"]["privileged_merge"]["if"] = widened["jobs"]["privileged_merge"]["if"].replace(
     "github.repository == 'Verjson/.github' || github.repository == 'Verjson/verjson-github-runner'",

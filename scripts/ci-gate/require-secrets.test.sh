@@ -32,7 +32,8 @@ step() {
 }
 
 contract_errors() {
-  local review="$1" privileged="$2" terminal checkout
+  local review="$1" privileged="$2" guard terminal checkout
+  guard="$(job "$privileged" invalid_verjson_route)"
   terminal="$(job "$privileged" privileged_merge)"
   checkout="$(step "$privileged" privileged_merge 'Check out immutable arm verifier')"
 
@@ -44,6 +45,10 @@ contract_errors() {
     || printf '%s\n' 'runner-produced data can select terminal credential placement'
   ! grep -qF 'ACTIONS_VARIABLES_TOKEN' "$privileged" \
     || printf '%s\n' 'privileged workflow still depends on an organization-variable PAT'
+  ! grep -qE 'secrets\.|ORG_ADMIN_TOKEN|GH_TOKEN:' <<<"$guard" \
+    || printf '%s\n' 'invalid-route observability guard receives a terminal credential'
+  grep -qF 'permissions: {}' <<<"$guard" \
+    || printf '%s\n' 'invalid-route observability guard is not credentialless'
   grep -qF 'GH_TOKEN: ${{ secrets.ORG_ADMIN_TOKEN }}' <<<"$terminal" \
     || printf '%s\n' 'terminal merge job does not own the merge token'
 
@@ -90,6 +95,10 @@ assert_mutation_rejected 'mutation: review workflow cannot receive ORG_ADMIN_TOK
 reset_fixtures
 sed -i '/^  privileged_merge:$/a\\    needs: attacker_route\n    runs-on: ${{ needs.attacker_route.outputs.selector }}' "$tmp/privileged.yml"
 assert_mutation_rejected 'mutation: runner-produced output cannot route the terminal credential'
+
+reset_fixtures
+sed -i '/^  invalid_verjson_route:$/a\\    env:\n      GH_TOKEN: ${{ secrets.ORG_ADMIN_TOKEN }}' "$tmp/privileged.yml"
+assert_mutation_rejected 'mutation: invalid-route observability cannot receive the terminal credential'
 
 reset_fixtures
 sed -i '0,/persist-credentials: false/s//persist-credentials: true/' "$tmp/privileged.yml"
