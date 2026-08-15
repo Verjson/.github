@@ -662,14 +662,18 @@ jobs:
           MAX_PAYLOAD_BYTES: '83886080'
           RUN_ATTEMPT: ${{ github.run_attempt }}
           RUN_ID: ${{ github.run_id }}
-          TRANSFER_DIR: ${{ runner.temp }}/secretless-transfer-${{ github.run_id }}-${{ github.run_attempt }}
+          TRANSFER_DIR: ${{ github.workspace }}/.verjson-secretless-transfer-${{ github.run_id }}-${{ github.run_attempt }}
         run: |
           set -euo pipefail
           [ -d "$CACHE_DIR/_cacache/content-v2" ] || {
             echo "::error::npm produced no private content-addressed package blobs for transfer"
             exit 1
           }
-          rm -rf node_modules "$TRANSFER_DIR"
+          rm -rf node_modules
+          [ ! -e "$TRANSFER_DIR" ] && [ ! -L "$TRANSFER_DIR" ] || {
+            echo "::error::reserved secretless transfer path exists before packaging"
+            exit 1
+          }
           mkdir -p "$TRANSFER_DIR"
           tar_inputs=(-C "$CACHE_DIR" _cacache/content-v2)
           if [ -n "$AUXILIARY_CONTENT_PATH" ]; then
@@ -725,7 +729,7 @@ jobs:
       - id: save-secretless-transfer
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          path: ${{ runner.temp }}/secretless-transfer-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .verjson-secretless-transfer-${{ github.run_id }}-${{ github.run_attempt }}
           key: ${{ steps.create-secretless-cache-key.outputs.cache-key }}
       - name: Remove local acquisition and transfer state
         if: always()
@@ -733,7 +737,7 @@ jobs:
           AUXILIARY_CHECKOUT_PATH: ${{ steps.resolve-auxiliary-source.outputs.checkout-path }}
           CACHE_DIR: ${{ runner.temp }}/secretless-private-npm-cache-${{ github.run_id }}-${{ github.run_attempt }}
           PRIVATE_CACHE_ENTRIES: ${{ runner.temp }}/secretless-private-entries-${{ github.run_id }}-${{ github.run_attempt }}
-          TRANSFER_DIR: ${{ runner.temp }}/secretless-transfer-${{ github.run_id }}-${{ github.run_attempt }}
+          TRANSFER_DIR: ${{ github.workspace }}/.verjson-secretless-transfer-${{ github.run_id }}-${{ github.run_attempt }}
         run: |
           rm -rf node_modules "$CACHE_DIR" "$TRANSFER_DIR"
           [ -z "$AUXILIARY_CHECKOUT_PATH" ] || find "$AUXILIARY_CHECKOUT_PATH" -depth -delete
@@ -788,11 +792,20 @@ jobs:
           package-manager-cache: false
           registry-url: ${{ inputs.scope != '' && 'https://npm.pkg.github.com' || '' }}
           scope: ${{ inputs.scope }}
+      - name: Require an unused secretless restore path
+        if: needs.eligibility.outputs.should-run != 'false' && (inputs.secretless-pr || inputs.secretless-trusted-ref)
+        env:
+          TRANSFER_DIR: ${{ github.workspace }}/.verjson-secretless-transfer-${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          [ ! -e "$TRANSFER_DIR" ] && [ ! -L "$TRANSFER_DIR" ] || {
+            echo "::error::reserved secretless transfer path exists before restore"
+            exit 1
+          }
       - id: restore-secretless-transfer
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         if: needs.eligibility.outputs.should-run != 'false' && (inputs.secretless-pr || inputs.secretless-trusted-ref)
         with:
-          path: ${{ runner.temp }}/secretless-transfer-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .verjson-secretless-transfer-${{ github.run_id }}-${{ github.run_attempt }}
           key: ${{ needs.acquire-secretless-dependencies.outputs.transfer-cache-key }}
           fail-on-cache-miss: true
       - name: Install from verified secretless npm cache
@@ -821,7 +834,7 @@ jobs:
           RUN_ATTEMPT: ${{ github.run_attempt }}
           RUN_ID: ${{ github.run_id }}
           SECRETLESS_CACHE_DIR: ${{ runner.temp }}/secretless-build-cache-${{ github.run_id }}-${{ github.run_attempt }}
-          TRANSFER_DIR: ${{ runner.temp }}/secretless-transfer-${{ github.run_id }}-${{ github.run_attempt }}
+          TRANSFER_DIR: ${{ github.workspace }}/.verjson-secretless-transfer-${{ github.run_id }}-${{ github.run_attempt }}
         run: |
           set -euo pipefail
           cleanup() {
@@ -981,7 +994,7 @@ jobs:
         if: always() && needs.eligibility.outputs.should-run != 'false' && (inputs.secretless-pr || inputs.secretless-trusted-ref)
         env:
           SECRETLESS_CACHE_DIR: ${{ runner.temp }}/secretless-build-cache-${{ github.run_id }}-${{ github.run_attempt }}
-          TRANSFER_DIR: ${{ runner.temp }}/secretless-transfer-${{ github.run_id }}-${{ github.run_attempt }}
+          TRANSFER_DIR: ${{ github.workspace }}/.verjson-secretless-transfer-${{ github.run_id }}-${{ github.run_attempt }}
         run: rm -rf "$SECRETLESS_CACHE_DIR" "$TRANSFER_DIR"
       - name: Start database service
         # Optional Postgres service for DB-backed test suites (e.g. Jest against

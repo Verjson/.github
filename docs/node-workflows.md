@@ -172,7 +172,9 @@ replaces the default build/typecheck/test/lint sequence.
 The handoff uses the repository cache service rather than organization artifact
 storage. Acquisition generates an unguessable nonce and binds it with
 `github.run_id` and `github.run_attempt`; restore uses the internally passed key
-with no prefix and fails on a missing exact match. Use **Re-run all jobs** for a new
+with no prefix and fails on a missing exact match. Save and restore use the same
+stable relative workspace path, so cache version identity does not depend on a
+runner's work root. Use **Re-run all jobs** for a new
 attempt. Re-running only a failed build job cannot create its missing acquisition
 cache and fails closed by design.
 
