@@ -132,7 +132,92 @@ changing release behavior or the App's required ruleset bypass.
 generated adopter contract test rejects a snapshot caller that restores the
 obsolete write grant.
 
+## Amendment (2026-08-14) — every `~DEFAULT_BRANCH` ruleset carries the release bypass (#803)
+
+The original decision named `main-protection` as the App's authorization
+boundary. That was necessary but incomplete. A canonical release pushes its
+verified snapshot commit directly to the default branch, so every organization
+ruleset whose branch conditions include `~DEFAULT_BRANCH` evaluates that push.
+Required-status-check and required-workflow rulesets can therefore reject a
+release even when `main-protection` correctly names the App.
+
+Issue [#803](https://github.com/Verjson/.github/issues/803) exposed this latent
+failure on the first enforced adopter release after the newer rulesets were
+created. The release transaction failed atomically, leaving no snapshot commit,
+tag, or consumed fragment. Read-only inspection then found the same omission on
+`core-checks-actions`; it remains part of #803 rather than a separate issue.
+Issue [#731](https://github.com/Verjson/.github/issues/731) may change a required
+context on one of these rulesets, but neither work item blocks the other's
+policy invariant.
+
+The release App's `Integration:4583107` identity in `always` mode is now required
+on **every organization branch ruleset whose `ref_name.include` contains
+`~DEFAULT_BRANCH`**, irrespective of its other conditions, rules, enforcement
+mode, or existing bypass actors. Adding that one actor must preserve the complete
+reviewed ruleset preimage: all other bypass actors, rules, conditions, target,
+and enforcement remain unchanged.
+
+This is an exact GitHub selector-token contract, not a semantic claim about every
+rule that might affect a repository's default branch. The automated requirement
+matches only `target: branch` plus a literal `~DEFAULT_BRANCH` include. It does
+not classify `~ALL` or an explicit ref such as `refs/heads/main`: `~ALL` is a
+different policy surface, while an explicit branch may or may not be the default
+across the repositories selected by the rule's other conditions. Any such rule
+that applies to a releasable repository still needs the release bypass, but its
+applicability requires separate author review. Ruleset authors expressing the
+canonical default-branch contract use `~DEFAULT_BRANCH` so this check can enforce
+it without guessing repository semantics.
+
+`scripts/org-ruleset-conformance.py` enforces the invariant without holding a
+mutation path. It paginates the organization ruleset listing, reads every
+ruleset detail with explicit GET requests, validates the bypass, rule, and
+condition response shapes, and only then evaluates the actor requirement. Any
+pagination, API, JSON, schema, duplicate-ID, or detail mismatch fails closed.
+Diagnostics name only public ruleset identities and never print response bodies,
+credentials, secrets, or variable values.
+
+The schedule is default-branch event-SHA-bound, grants its Actions token only
+Contents read, and runs on the trusted organization lane. Its no-argument command
+resolves the policy beside the event-SHA script; inherited runner environment
+cannot redirect it. The explicit `--test-policy` path exists only for isolated
+tests, and the workflow contract rejects both that argument and a policy-path
+environment binding.
+
+The audit invokes only one exact wrapper shape: `gh api --hostname github.com
+--method GET --paginate --slurp`, against the organization ruleset listing and
+the IDs returned by that listing. Tests replace `gh` entirely and reject method,
+hostname, pagination, argument, or endpoint drift.
+
+### Residual credential (2026-08-15)
+
+A metadata-only inventory of organization Actions secret names found no dedicated
+credential with organization Administration read. No secret or variable value was
+read. `ORG_ADMIN_TOKEN` therefore remains the scheduled audit's explicit residual:
+it is broader than this GET-only task, but it is the only available credential
+whose name and existing policy establish the required organization access.
+
+Replace that binding once a credential exists with only organization
+Administration read (plus unavoidable metadata), is available only to
+`Verjson/.github`, and successfully proves both paginated ruleset listing and
+per-ruleset detail GETs. The migration must update the scheduled-workflow contract
+and organization secret-scope policy together; until all criteria hold, an
+unproven narrower token would turn the audit into a fail-closed outage rather than
+reduce authority safely.
+
+This repository check is durable authoring-time evidence, not authorization to
+repair live state. A live correction remains a separately reviewed sensitive
+operation: capture and compare the full preimage, add only the required actor,
+and verify every preserved actor, rule, condition, target, and enforcement field
+afterward.
+
+The operator-facing interpretation and local verification boundary are recorded
+in [`docs/ruleset-conformance.md`](../../ruleset-conformance.md).
+
 ## Rollback
+
+Reverting the #803 implementation removes the scheduled conformance signal but
+does not alter any live ruleset or revoke the App. That is a monitoring rollback,
+not an authorization rollback.
 
 Revert the implementing pull request and repin consumers. That restores the
 temporary `ORG_ADMIN_TOKEN` contract and its broad authority; it is an emergency
