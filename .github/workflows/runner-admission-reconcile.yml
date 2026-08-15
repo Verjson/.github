@@ -122,6 +122,9 @@ jobs:
           REPORT: ${{ steps.reconcile.outputs.report }}
           MARKER: '<!-- runner-admission-drift -->'
           DRIFT_ISSUE: '820'
+          # Immutable database id of github-actions[bot]. Login strings are
+          # mutable and public commenters can copy MARKER verbatim.
+          REPORT_ACTOR_ID: '41898282'
         run: |
           set -euo pipefail
           body="$(printf '%s\n\n%s\n' "$REPORT" "$MARKER")"
@@ -135,9 +138,10 @@ jobs:
           fi
           comments="$(gh api --paginate \
             "/repos/$GITHUB_REPOSITORY/issues/$DRIFT_ISSUE/comments?per_page=100" \
-            --jq '.[] | {id,body}')"
+            --jq '.[] | {id,body,author_id:.user.id}')"
           comment_ids="$(jq -sr --arg marker "$MARKER" \
-            '[.[] | select((.body | type) == "string" and (.body | contains($marker))) | .id]' \
+            --argjson actor_id "$REPORT_ACTOR_ID" \
+            '[.[] | select(.author_id == $actor_id and (.body | type) == "string" and (.body | contains($marker))) | .id]' \
             <<<"$comments")"
           comment_count="$(jq -r 'length' <<<"$comment_ids")"
           if [ "$comment_count" = '0' ]; then

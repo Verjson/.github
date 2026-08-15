@@ -1,0 +1,7 @@
+name: dynamic format selector
+on: pull_request
+jobs:
+  build:
+    runs-on: ${{ format('{0}{1}{2}', 'mac', 'os-', '15') }}
+    steps:
+      - run: true

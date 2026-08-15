@@ -134,6 +134,14 @@ selector this parser reads may name a metered family, and nothing it cannot read
 which is materially stronger than the pattern-matching predecessor and materially weaker
 than "no `runs-on` anywhere".
 
+Expressions are accepted only in the reviewed selector grammar: references, fixed string
+literals, boolean selection, and one-argument `fromJSON` calls. Dynamic construction such
+as `format(...)`, `join(...)`, arithmetic, or a mixed literal/expression selector is
+undetermined because it can assemble `macos-*` or `windows-*` without either complete word
+appearing in source. Both GitHub dereference forms — `vars.NAME` and `vars['NAME']` — are
+normalized before every rule, so bracket syntax cannot detach an OS lane from its timeout,
+fallback, and trigger bounds.
+
 The first implementation of this check matched `runs-on:` with line-oriented shell patterns,
 and two review passes found five parser-level false negatives in shapes GitHub accepts: a
 TAB/IFS field collapse, a matrix indirection, a flow-style job body
@@ -164,13 +172,16 @@ change away from real. [#820](https://github.com/Verjson/.github/issues/820) the
 extends `scripts/ci-gate/runner-admission-reconcile.sh` to assert that inventory daily,
 which is the right tier for it: the reconciler already holds the org-admin token and checks
 fleet-level facts that the hot path cannot (`docs/runner-routing.md`, "Where each check
-belongs"). Its reviewed ID allowlist is the repository file
+belongs"). Its reviewed identity allowlist is the repository file
 `scripts/ci-gate/hosted-larger-runner-allowlist.json`, empty by default. A non-empty live
-inventory is drift unless every runner ID is present there; an unreadable, malformed,
+inventory is drift unless every exact `{id,name}` object is present there; an unreadable, malformed,
 incomplete, or pagination-inconsistent response is undetermined and fails the scheduled
 run rather than being mistaken for zero. The inventory and allowlist must match exactly,
-so a stale approval is drift too. Re-run the command above rather than trusting this
-snapshot; runner inventories change without touching this file.
+so a rename or stale approval is drift too. Reports update only the comment owned by
+GitHub Actions' immutable bot actor ID; a public commenter copying the marker is ignored,
+and multiple trusted report comments fail closed. Organization-variable contents are
+redacted before the public Actions log or durable issue report. Re-run the command above
+rather than trusting this snapshot; runner inventories change without touching this file.
 
 ### Two tiers, and why they differ
 
@@ -178,16 +189,19 @@ This is the part most likely to be re-litigated later as "the check is too noisy
 argument is settled here rather than in a future pull-request thread.
 
 **Tier A — visibility-independent, zero exceptions.** The metered families are refused
-regardless of what the repository is today, and `-latest` inside those families keeps its
-own distinct message. Repository visibility is a *mutable organization-settings fact*.
+regardless of what the repository is today. Separately, every standard hosted rolling image
+— `ubuntu-latest`, `macos-latest`, and `windows-latest` — is refused under R2 regardless of
+visibility; a mutable build image violates the pinned-image acceptance criterion even when
+its minutes happen to be free. Repository visibility is a *mutable organization-settings fact*.
 Encoding it in a workflow file is exactly the "encodes in workflow YAML a fact that lives in
 org settings, so it is stale by construction" defect ADR 0033 diagnosed and ADR 0040 saw
 repeat. A public repository flipped private turns a free `macos-latest` job into a 10x
 metered one with no commit, no review, and no signal — so a refusal that depended on
 visibility would be silently wrong at exactly the moment it mattered.
 
-**Tier B — visibility-keyed.** Literal Linux hosted selectors (`ubuntu-*`, including
-`ubuntu-latest` and `ubuntu-24.04`) fail only when the target repository is private. Hosted
+**Tier B — visibility-keyed.** Pinned literal Linux hosted selectors (`ubuntu-*`, such as
+`ubuntu-24.04`) fail only when the target repository is private. `ubuntu-latest` already
+fails visibility-independent R2. Hosted
 minutes are free for public repositories (measured 2026-08-01; ADR 0047 corrected ADR 0033's
 "unfunded" premise), so the same line spends nothing in a public repository and rides the
 spending limit in a private one.
@@ -197,7 +211,7 @@ literal. The organization already has a sanctioned path for public work to reach
 capacity: `VERJSON_RUNNER_FASTLANE`, a **variable** (ADR 0047/0048), already carved out in
 the routing check. Because it is a variable, a capacity or provider move stays an
 org-variable edit rather than a pull request in ~89 repositories, which is the ADR 0041
-property. A hardcoded `ubuntu-latest` reaches the same runner while giving that property
+property. A hardcoded `ubuntu-24.04` reaches the same runner while giving that property
 up. Enforcing that half for public repositories is #816; recording it here makes the
 deferral a decision rather than an oversight. `.github` itself is held to the stricter
 standard regardless, by its own ADR 0089 inventory, which this change does not touch.
@@ -209,6 +223,8 @@ standard regardless, by its own ADR 0089 inventory, which this change does not t
 - An OS lane that is unset fails loudly on self-hosted Linux instead of quietly shipping a
   Linux binary as a macOS installer.
 - A hung hosted step costs at most 45 minutes of wall time rather than six hours of billing.
+- A sanctioned OS-lane workflow is accepted only when its trigger set is exactly
+  `workflow_dispatch`; `pull_request`, `push`, and `schedule` cannot reach metered legs.
 - One grep — for `VERJSON_LANE_TRUSTED_MACOS` or `VERJSON_LANE_TRUSTED_WINDOWS` — answers
   which workflows can spend hosted minutes.
 - **The guarantee is split across the only two authoritative surfaces.** The parser refuses

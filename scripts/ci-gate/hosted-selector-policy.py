@@ -52,7 +52,9 @@ import yaml
 # Preceded by a non-word character so `VERJSON_LANE_TRUSTED_MACOS` — the lane
 # variable NAME, governed by R5 — is not read as a macOS selector.
 METERED_FAMILY = re.compile(r"(?:^|[^A-Za-z0-9_])(?:macos|windows)-[A-Za-z0-9]", re.I)
-METERED_LATEST = re.compile(r"(?:^|[^A-Za-z0-9_])(?:macos|windows)-latest", re.I)
+METERED_LATEST = re.compile(
+    r"(?:^|[^A-Za-z0-9_])(?:ubuntu|macos|windows)-latest", re.I
+)
 LINUX_HOSTED_LITERAL = re.compile(r"(?:^|[^A-Za-z0-9_])ubuntu-[A-Za-z0-9]", re.I)
 
 # The OS-scoped lanes of ADR 0103. Repository variables on the one desktop
@@ -242,6 +244,67 @@ def flatten(value) -> str:
 
 
 EXPRESSION = re.compile(r"\$\{\{.*?\}\}", re.S)
+FULL_EXPRESSION = re.compile(r"^\s*\$\{\{(.*)\}\}\s*$", re.S)
+FUNCTION_CALL = re.compile(r"\b([A-Za-z_][A-Za-z0-9_]*)\s*\(")
+QUOTED_EXPRESSION_STRING = re.compile(r"'(?:''|[^'])*'")
+BRACKET_DEREFERENCE = re.compile(
+    r"\b(vars|inputs|matrix|github|needs)\[(?:'([^']+)'|\"([^\"]+)\")\]"
+)
+
+
+def normalize_dereferences(text: str) -> str:
+    """Normalize both GitHub property syntaxes before applying policy rules."""
+    return BRACKET_DEREFERENCE.sub(
+        lambda match: f"{match.group(1)}.{match.group(2) or match.group(3)}",
+        text,
+    )
+
+
+def _selector_strings(value):
+    if isinstance(value, dict):
+        for key, item in value.items():
+            yield from _selector_strings(key)
+            yield from _selector_strings(item)
+    elif isinstance(value, (list, tuple)):
+        for item in value:
+            yield from _selector_strings(item)
+    elif isinstance(value, str):
+        yield value
+
+
+def validate_selector_expressions(value) -> None:
+    """Refuse selector expressions that construct labels dynamically.
+
+    The accepted language is intentionally small: references, fixed quoted
+    literals, boolean comparisons/chains, parentheses, and one-argument
+    ``fromJSON`` calls. ``format``/``join`` and mixed literal-expression strings
+    can synthesize a hosted label whose complete value never appears in source.
+    """
+    for text in _selector_strings(value):
+        if "${{" not in text and "}}" not in text:
+            continue
+        match = FULL_EXPRESSION.fullmatch(text)
+        if match is None:
+            raise Undetermined(
+                "runs-on contains a mixed or malformed selector expression"
+            )
+        expression = normalize_dereferences(match.group(1))
+        scrubbed = QUOTED_EXPRESSION_STRING.sub("LITERAL", expression)
+        functions = FUNCTION_CALL.findall(scrubbed)
+        unsupported = sorted({name for name in functions if name != "fromJSON"})
+        if unsupported:
+            raise Undetermined(
+                "runs-on uses unsupported selector-construction function(s): "
+                + ", ".join(unsupported)
+            )
+        # Brackets left after normalizing supported property dereferences, or
+        # arithmetic/list punctuation outside a fixed string, are an expression
+        # shape this policy does not evaluate. Commas would also imply more than
+        # fromJSON's single accepted argument.
+        if re.search(r"[\[\]+*/%,?:]", scrubbed):
+            raise Undetermined(
+                "runs-on uses unsupported dynamic selector expression syntax"
+            )
 
 
 def outside_expressions(text: str) -> str:
@@ -276,7 +339,18 @@ def check_job(report: Report, path: str, name: str, body: dict, line: int,
     runs_on_line = lines.get("runs-on", line)
     timeout_line = lines.get("timeout-minutes", runs_on_line)
 
-    runs_on = flatten(body["runs-on"])
+    selector_values = [body["runs-on"]]
+    raw_runs_on = flatten(body["runs-on"])
+    if "matrix." in normalize_dereferences(raw_runs_on):
+        selector_values.append(body.get("strategy"))
+    try:
+        for value in selector_values:
+            validate_selector_expressions(value)
+    except Undetermined as error:
+        report.anomaly(f"{path}:{runs_on_line}: job '{name}': {error}")
+        return
+
+    runs_on = normalize_dereferences(raw_runs_on)
 
     # EVERY rule below judges `selector`, never `runs_on`. That divergence
     # produced a live false negative once already: with the lane variable in
@@ -292,7 +366,9 @@ def check_job(report: Report, path: str, name: str, body: dict, line: int,
     # key; a false negative costs money. Pinned by `matrix-unreferenced-key`.
     selector = runs_on
     if "matrix." in runs_on:
-        selector = f"{runs_on} {flatten(body.get('strategy'))}"
+        selector = normalize_dereferences(
+            f"{runs_on} {flatten(body.get('strategy'))}"
+        )
 
     if METERED_FAMILY.search(selector):
         report.violation(
@@ -300,11 +376,11 @@ def check_job(report: Report, path: str, name: str, body: dict, line: int,
             f"R1 metered hosted runner family in job '{name}' runs-on: {runs_on}",
         )
 
-    # R2 — a rolling image inside a metered family. R1 already refuses the
-    # selector, so this message is the point: R1 asks whether the org may spend
-    # here at all, R2 whether a signed installer's build environment can change
-    # without a commit. Keeping them distinct stops `macos-latest` ->
-    # `windows-latest` reading as a fix.
+    # R2 — a rolling standard hosted image, independent of billing. R1 already
+    # refuses the metered macOS/Windows families; R2 separately asks whether a
+    # build environment can change without a commit, including free public
+    # Linux minutes. Keeping the rules distinct stops `macos-latest` ->
+    # `ubuntu-latest` reading as a fix.
     if METERED_LATEST.search(selector):
         report.violation(
             path, runs_on_line,
@@ -397,7 +473,7 @@ def check_job(report: Report, path: str, name: str, body: dict, line: int,
         )
 
 
-def check_os_lane_references(report: Report, path: str, sanctioned: set[str]) -> None:
+def check_os_lane_references(report: Report, path: str, sanctioned: set[str]) -> bool:
     """R5 — a file-wide TEXT scan, deliberately independent of the parser.
 
     Every other rule depends on resolving the document; this one must hold even
@@ -406,20 +482,59 @@ def check_os_lane_references(report: Report, path: str, sanctioned: set[str]) ->
     commented-out selector is a copy-paste away from a live one, which is exactly
     how this defect class regrew four times (#175, #182, #192, #203).
     """
-    if os.path.basename(path) in sanctioned:
-        return
+    found = False
     try:
         with open(path, encoding="utf-8", errors="replace") as stream:
             for number, text in enumerate(stream, start=1):
                 if OS_LANE_TEXT.search(text):
-                    report.violation(
-                        path, number,
-                        "R5 off-path reference to an OS lane variable — only the "
-                        "sanctioned desktop-release path may name "
-                        "VERJSON_LANE_TRUSTED_MACOS or VERJSON_LANE_TRUSTED_WINDOWS",
-                    )
+                    found = True
+                    if os.path.basename(path) not in sanctioned:
+                        report.violation(
+                            path, number,
+                            "R5 off-path reference to an OS lane variable — only the "
+                            "sanctioned desktop-release path may name "
+                            "VERJSON_LANE_TRUSTED_MACOS or VERJSON_LANE_TRUSTED_WINDOWS",
+                        )
     except OSError as error:
         report.anomaly(f"{path}: cannot read: {error}")
+    return found
+
+
+def check_os_lane_trigger(report: Report, path: str, document: dict) -> None:
+    """R6 — every workflow that can select an OS lane is dispatch-only."""
+    has_text_key = "on" in document
+    has_yaml11_key = True in document
+    if has_text_key and has_yaml11_key:
+        report.anomaly(f"{path}: ambiguous duplicate 'on' trigger key")
+        return
+    if has_text_key:
+        trigger = document["on"]
+    elif has_yaml11_key:
+        # PyYAML follows YAML 1.1 and resolves the unquoted key `on` to True.
+        # GitHub treats it as the literal workflow trigger key.
+        trigger = document[True]
+    else:
+        report.violation(path, 0, "R6 OS-lane workflow is not dispatch-only: no on key")
+        return
+
+    if isinstance(trigger, str):
+        events = [trigger]
+    elif isinstance(trigger, list) and all(isinstance(item, str) for item in trigger):
+        events = trigger
+    elif isinstance(trigger, dict) and all(isinstance(key, str) for key in trigger):
+        events = list(trigger)
+    else:
+        report.anomaly(f"{path}: workflow trigger has an unsupported shape")
+        return
+
+    if events != ["workflow_dispatch"]:
+        line = getattr(document, "lines", {}).get("on", 0)
+        report.violation(
+            path,
+            line,
+            "R6 OS-lane workflow is not dispatch-only; trigger set must be exactly "
+            "workflow_dispatch",
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -499,13 +614,15 @@ def main(argv: list[str]) -> int:
     report = Report()
 
     for path in workflow_files:
-        check_os_lane_references(report, path, sanctioned)
+        references_os_lane = check_os_lane_references(report, path, sanctioned)
         try:
             document = load_workflow(path)
             jobs = extract_jobs(path, document)
         except Undetermined as error:
             report.anomaly(str(error))
             continue
+        if references_os_lane:
+            check_os_lane_trigger(report, path, document)
         for name, body, line in jobs:
             check_job(report, path, name, body, line, arguments.visibility)
 

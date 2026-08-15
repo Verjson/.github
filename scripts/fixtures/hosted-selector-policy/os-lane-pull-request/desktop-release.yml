@@ -1,0 +1,8 @@
+name: pull request desktop release
+on: pull_request
+jobs:
+  installer:
+    runs-on: ${{ fromJSON(vars.VERJSON_LANE_TRUSTED_MACOS) }}
+    timeout-minutes: 45
+    steps:
+      - run: npm run dist

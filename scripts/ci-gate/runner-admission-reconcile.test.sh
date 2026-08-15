@@ -146,13 +146,55 @@ out="$(run_case)"
 allowlisted="$tmp/allowlisted"
 mkdir -p "$allowlisted"
 cp "$script" "$allowlisted/runner-admission-reconcile.sh"
-printf '[42]\n' >"$allowlisted/hosted-larger-runner-allowlist.json"
+printf '[{"id":42,"name":"general"}]\n' \
+  >"$allowlisted/hosted-larger-runner-allowlist.json"
 out="$(bash "$allowlisted/runner-admission-reconcile.sh" 2>&1)"
 code=$?
 [ "$code" = "0" ] \
   && grep -qF '1 reviewed GitHub-hosted larger runner' <<<"$out" \
-  && pass "a larger runner covered by the reviewed ID allowlist reconciles cleanly" \
+  && pass "a larger runner covered by the reviewed ID/name allowlist reconciles cleanly" \
   || fail "reviewed larger-runner allowlist was not honored: $out"
+
+HOSTED_RUNNERS_PAGES='{"total_count":1,"runners":[{"id":42,"name":"general","runner_group_id":7,"state":"ready","maximum_runners":4}]}'
+out="$(bash "$allowlisted/runner-admission-reconcile.sh" 2>&1)"
+code=$?
+[ "$code" = "0" ] \
+  && grep -qF '1 reviewed GitHub-hosted larger runner' <<<"$out" \
+  && pass "mutable hosted-runner API fields do not defeat exact ID/name approval" \
+  || fail "full hosted-runner API object was compared to the identity allowlist: $out"
+HOSTED_RUNNERS_PAGES='{"total_count":1,"runners":[{"id":42,"name":"general"}]}'
+
+printf '[{"id":42,"name":"general-old"}]\n' \
+  >"$allowlisted/hosted-larger-runner-allowlist.json"
+out="$(bash "$allowlisted/runner-admission-reconcile.sh" 2>&1)"
+code=$?
+[ "$code" = "1" ] \
+  && grep -qF 'identity differs' <<<"$out" \
+  && pass "renaming an allowlisted larger runner requires reviewed identity update" \
+  || fail "renamed larger runner retained ID-only approval: $out"
+
+printf '[{"id":42,"name":"general"},{"id":99,"name":"retired-xl"}]\n' \
+  >"$allowlisted/hosted-larger-runner-allowlist.json"
+out="$(bash "$allowlisted/runner-admission-reconcile.sh" 2>&1)"
+code=$?
+[ "$code" = "1" ] \
+  && grep -qF 'absent from live inventory' <<<"$out" \
+  && pass "a stale reviewed larger-runner identity is drift" \
+  || fail "stale larger-runner approval was treated as clean: $out"
+
+for malformed_allowlist in \
+  '[{"id":42,"name":"general"},{"id":42,"name":"other"}]' \
+  '[{"id":42,"name":"general"},{"id":43,"name":"general"}]' \
+  '[{"id":42,"name":""}]' \
+  '[42]'; do
+  printf '%s\n' "$malformed_allowlist" \
+    >"$allowlisted/hosted-larger-runner-allowlist.json"
+  out="$(bash "$allowlisted/runner-admission-reconcile.sh" 2>&1)"
+  code=$?
+  [ "$code" = "2" ] \
+    && pass "malformed or duplicate reviewed larger-runner identity is undetermined" \
+    || fail "invalid larger-runner allowlist was accepted: $malformed_allowlist: $out"
+done
 
 # Two response objects model two pages. Both runners must survive collection;
 # keeping only the final page would omit `general` and weaken the report.
@@ -178,6 +220,17 @@ HOSTED_RUNNERS_PAGES='{"total_count":1,"runners":[{"name":"general"}]}'
 [ "$(code_of)" = "2" ] \
   && pass "a larger-runner object without an id is undetermined" \
   || fail "malformed larger-runner object did not fail closed: $(code_of)"
+
+for malformed_inventory in \
+  '{"total_count":1,"runners":[{"id":42,"name":""}]}' \
+  '{"total_count":2,"runners":[{"id":42,"name":"general"},{"id":42,"name":"other"}]}' \
+  '{"total_count":2,"runners":[{"id":42,"name":"general"},{"id":43,"name":"general"}]}' \
+  $'{"total_count":2,"runners":[{"id":42,"name":"general"}]}\n{"total_count":3,"runners":[{"id":43,"name":"other"}]}'; do
+  HOSTED_RUNNERS_PAGES="$malformed_inventory"
+  [ "$(code_of)" = "2" ] \
+    && pass "malformed, duplicate, or count-inconsistent live identity is undetermined" \
+    || fail "invalid larger-runner inventory was accepted: $malformed_inventory"
+done
 
 HOSTED_RUNNERS_PAGES='{"total_count":0,"runners":[]}'
 HOSTED_RUNNERS_404='1'
@@ -264,9 +317,11 @@ UNTRUSTED_VAR='{"value":"[\"self-hosted\",\"general\"]","visibility":"selected"}
   || fail "non-global variable did not return exit 2"
 
 UNTRUSTED_VAR='{"value":"[\"self-hosted\",\"unknown-lane\"]","visibility":"all"}'
+out="$(run_case)"
 [ "$(code_of)" = "2" ] \
+  && ! grep -qF 'unknown-lane' <<<"$out" \
   && pass "ungoverned lane selector is undetermined" \
-  || fail "ungoverned lane did not return exit 2"
+  || fail "ungoverned lane did not return exit 2 without leaking its value: $out"
 
 UNTRUSTED_VAR='{"value":"[\"self-hosted\",\"general\"]","visibility":"all"}'
 FAIL_PATH='/actions/variables/VERJSON_RUNNER_DEFAULT'
@@ -477,6 +532,104 @@ grep -qF "DRIFT_ISSUE: '820'" "$workflow" \
   && pass "drift reuses issue 820 and cannot create a new tracker" \
   || fail "runner admission can still create a new issue instead of reusing #820"
 
+# Execute the exact durable-report step. A public issue lets anyone copy the
+# marker, so ownership must be established from GitHub's immutable bot actor id
+# before a comment can become the PATCH target.
+extract_drift_report_step() {
+  awk '
+    $0 == "      - name: Reopen or update the durable drift issue" { seen = 1 }
+    seen && $0 == "        run: |" { cap = 1; next }
+    cap && $0 ~ /^      - name:/ { exit }
+    cap {
+      if (substr($0, 1, 10) == "          ") { print substr($0, 11); next }
+      if ($0 ~ /^[ \t]*$/) { print ""; next }
+      exit
+    }
+  ' "$workflow"
+}
+
+comment_step="$tmp/comment-step.sh"
+extract_drift_report_step >"$comment_step"
+comment_bin="$tmp/comment-bin"
+mkdir -p "$comment_bin"
+cat >"$comment_bin/gh" <<'GH'
+#!/usr/bin/env bash
+set -eu
+if [ "$1" = issue ] && [ "$2" = view ]; then
+  printf 'OPEN\n'
+  exit 0
+fi
+if [ "$1" = issue ] && [ "$2" = reopen ]; then
+  printf 'REOPEN\n' >>"$COMMENT_ACTIONS"
+  exit 0
+fi
+if [ "$1" = api ]; then
+  method=GET
+  path=''
+  shift
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --method) method="$2"; shift 2 ;;
+      /repos/*) path="$1"; shift ;;
+      *) shift ;;
+    esac
+  done
+  if [ "$method" = GET ] && [[ "$path" == *'/comments?per_page=100' ]]; then
+    printf '%s\n' "$COMMENT_FIXTURE"
+    exit 0
+  fi
+  printf '%s %s\n' "$method" "$path" >>"$COMMENT_ACTIONS"
+  exit 0
+fi
+printf 'unexpected gh call: %s\n' "$*" >&2
+exit 1
+GH
+chmod +x "$comment_bin/gh"
+
+run_comment_case() {
+  local fixture="$1" case_name="$2" case_dir="$tmp/comment-$2" rc
+  mkdir -p "$case_dir"
+  : >"$case_dir/actions"
+  COMMENT_FIXTURE="$fixture" COMMENT_ACTIONS="$case_dir/actions" \
+    PATH="$comment_bin:$PATH" GH_TOKEN=fixture REPORT='fixture report' \
+    MARKER='<!-- runner-admission-drift -->' DRIFT_ISSUE=820 \
+    REPORT_ACTOR_ID=41898282 \
+    GITHUB_REPOSITORY='Verjson/.github' bash "$comment_step" \
+    >"$case_dir/output" 2>&1
+  rc=$?
+  printf '%s %s\n' "$rc" "$case_dir"
+}
+
+read -r comment_rc comment_case < <(run_comment_case '' zero)
+[ "$comment_rc" = 0 ] \
+  && grep -qF 'POST /repos/Verjson/.github/issues/820/comments' "$comment_case/actions" \
+  && pass "zero trusted report comments creates exactly one bot-owned report comment" \
+  || fail "zero-comment report path did not create its durable comment"
+
+foreign='{"id":900,"body":"<!-- runner-admission-drift -->","author_id":12345}'
+read -r comment_rc comment_case < <(run_comment_case "$foreign" foreign)
+[ "$comment_rc" = 0 ] \
+  && grep -qF 'POST /repos/Verjson/.github/issues/820/comments' "$comment_case/actions" \
+  && ! grep -qF '/issues/comments/900' "$comment_case/actions" \
+  && pass "a foreign marker comment is ignored and never patched" \
+  || fail "a foreign marker captured the report target"
+
+one_trusted=$'{"id":100,"body":"<!-- runner-admission-drift -->","author_id":41898282}\n{"id":900,"body":"<!-- runner-admission-drift -->","author_id":12345}'
+read -r comment_rc comment_case < <(run_comment_case "$one_trusted" one)
+[ "$comment_rc" = 0 ] \
+  && grep -qF 'PATCH /repos/Verjson/.github/issues/comments/100' "$comment_case/actions" \
+  && ! grep -qF '/issues/comments/900' "$comment_case/actions" \
+  && ! grep -qF 'POST ' "$comment_case/actions" \
+  && pass "one trusted bot report is the only update target" \
+  || fail "one trusted report did not update exactly its bot-owned comment"
+
+two_trusted=$'{"id":100,"body":"<!-- runner-admission-drift -->","author_id":41898282}\n{"id":101,"body":"<!-- runner-admission-drift -->","author_id":41898282}'
+read -r comment_rc comment_case < <(run_comment_case "$two_trusted" multiple)
+[ "$comment_rc" != 0 ] \
+  && [ ! -s "$comment_case/actions" ] \
+  && pass "multiple trusted reports fail closed before comment mutation" \
+  || fail "ambiguous trusted reports mutated an arbitrary comment"
+
 # --------------------------------------------------------------------------
 # Runner placement (#275).
 #
@@ -608,8 +761,9 @@ LEGACY_UNTRUSTED_VAR='{"value":"[\"self-hosted\",\"general\"]","visibility":"all
 out="$(run_case)"
 [ "$(code_of)" = "1" ] \
   && grep -qF 'VERJSON_RUNNER_DEFAULT' <<<"$out" \
+  && ! grep -qF 'gone' <<<"$out" \
   && pass "a retired variable that has drifted from its lane is reported" \
-  || fail "legacy/lane divergence was not reported: $out"
+  || fail "legacy/lane divergence was not safely reported: $out"
 LEGACY_DEFAULT_VAR='{"value":"[\"self-hosted\",\"general\"]","visibility":"all"}'
 
 # A lane pointed at hosted capacity has no runner group and no self-hosted

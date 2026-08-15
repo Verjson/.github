@@ -6,9 +6,11 @@ title: Reconcile GitHub-hosted larger-runner inventory
 ---
 
 The scheduled organization runner reconciler now rejects GitHub-hosted larger runners
-unless their numeric IDs appear in an explicit reviewed allowlist, which is empty by
-default, closing the arbitrary-label route around static hosted-selector policy.
+unless their exact ID/name identities appear in an explicit reviewed allowlist, which is
+empty by default, closing the arbitrary-label route around static hosted-selector policy.
 
 The inventory query validates complete pagination and response shape; a 404, malformed
-response, count mismatch, or API failure is undetermined rather than clean. Drift reuses
-the durable #820 issue and cannot create tracker churn. Decided in ADR 0103.
+response, duplicate identity, count mismatch, or API failure is undetermined rather than
+clean. Renames and stale entries are drift. Durable reporting reuses #820, updates only the
+GitHub Actions bot's immutable-ID-owned comment, ignores foreign markers, and redacts
+organization-variable contents. Decided in ADR 0103.

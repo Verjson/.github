@@ -228,7 +228,7 @@ def validate_admission(document: object) -> None:
         (
             "Reopen or update the durable drift issue",
             "1",
-            {"GH_TOKEN", "REPORT", "MARKER", "DRIFT_ISSUE"},
+            {"GH_TOKEN", "REPORT", "MARKER", "DRIFT_ISSUE", "REPORT_ACTOR_ID"},
         ),
         (
             "Close the durable drift issue once the org is clean again",
@@ -243,6 +243,11 @@ def validate_admission(document: object) -> None:
         followup_env = require_keys(followup["env"], env_keys, f"{name} env")
         require(followup_env["GH_TOKEN"] == "${{ secrets.GITHUB_TOKEN }}", f"{name} gained a privileged token")
         require(followup_env["DRIFT_ISSUE"] == "820", f"{name} must reuse issue 820")
+        if code == "1":
+            require(
+                followup_env["REPORT_ACTOR_ID"] == "41898282",
+                f"{name} must bind report comments to github-actions[bot]'s immutable id",
+            )
     validate_cleanup(steps[4], "admission cleanup", ADMISSION_SOURCE)
 
 

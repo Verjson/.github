@@ -1,0 +1,7 @@
+name: bracket macOS lane
+on: workflow_dispatch
+jobs:
+  installer:
+    runs-on: ${{ fromJSON(vars['VERJSON_LANE_TRUSTED_MACOS']) }}
+    steps:
+      - run: npm run dist

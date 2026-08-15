@@ -49,11 +49,15 @@ Where verJSON CI jobs run, and how to choose a `runs-on` value. The model is dec
   scan can cover is a GitHub-hosted **larger runner**, whose label is chosen by an
   administrator and is textually indistinguishable from a self-hosted fleet label while
   billing metered minutes. That gap is closed by the scheduled reconciler's organization
-  inventory query, not by reading files. Its reviewed numeric-ID allowlist is
+  inventory query, not by reading files. Its reviewed exact `{id,name}` allowlist is
   `scripts/ci-gate/hosted-larger-runner-allowlist.json` and is empty by default; any
   unapproved runner is drift and any unreadable or malformed response is undetermined.
   See [ADR 0103](decisions/0103-os-scoped-hosted-lanes/README.md) and
   [#820](https://github.com/Verjson/.github/issues/820).
+- **Never use a standard hosted `-latest` image.** `ubuntu-latest`, `macos-latest`, and
+  `windows-latest` are refused regardless of repository visibility. Billing visibility and
+  reproducible image selection are separate rules; free public Linux minutes do not make a
+  rolling build image immutable.
 - Self-hosted runners have **no ambient Node** and a **persistent shared `~/.gitconfig`** —
   use `actions/setup-node` and idempotent git config, or the
   [`setup-verjson-node`](../.github/actions/setup-verjson-node/README.md) composite action.
@@ -120,6 +124,9 @@ free hosted minutes.
 contract, never on `pull_request`, `push`, or a tag push. That binds spend to release
 cadence — a handful of runs a month — rather than to pull-request volume, which is the
 difference between a bounded bill and an unbounded one.
+The selector policy parses `on` semantically — including PyYAML's YAML 1.1 coercion of an
+unquoted `on` key — and requires the event set to be exactly `workflow_dispatch` for every
+sanctioned workflow that references an OS lane.
 
 **Bounded at 45 minutes**, with a conformance ceiling of 60. Presence of `timeout-minutes`
 is not enough: `timeout-minutes: 360` satisfies "has a timeout" while being exactly the
@@ -134,6 +141,9 @@ spend hosted minutes".
 The rules are enforced by `scripts/ci-gate/hosted-selector-policy.py`, which
 `runner-routing-policy.test.sh` runs against this repository's own workflows. Decided in
 [ADR 0103](decisions/0103-os-scoped-hosted-lanes/README.md).
+The checker accepts only reviewed expression shapes and treats constructed selectors such
+as `format(...)` or `join(...)` as undetermined. Dot and bracket dereferences are normalized
+before every OS-lane rule, so syntax cannot bypass dispatch, timeout, or fallback bounds.
 
 ## Three axes
 
@@ -304,9 +314,12 @@ context that never executes pull-request code.
 GitHub-hosted larger runners belong in the same tier. Their administrator-chosen labels
 are indistinguishable from self-hosted labels in `runs-on`, so no required workflow can
 classify them statically. `runner-admission-reconcile.sh` queries the organization setting
-directly and compares numeric runner IDs with the reviewed, empty-by-default
+directly and compares exact runner ID/name identities with the reviewed, empty-by-default
 `scripts/ci-gate/hosted-larger-runner-allowlist.json`. It never treats a 404, malformed
-response, partial pagination, or API failure as an empty inventory.
+response, partial pagination, or API failure as an empty inventory. A rename requires a
+reviewed allowlist change; stale entries are drift. Public reporting selects only the
+GitHub Actions bot's immutable actor ID before matching its marker, and redacts
+organization-variable contents.
 
 A required workflow runs as its **own check alongside** a repository's workflows. It cannot
 inject `runs-on` into another workflow's jobs, and its outputs cannot cross into them. It

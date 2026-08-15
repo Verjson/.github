@@ -9,7 +9,9 @@ Runner-routing conformance now refuses any `runs-on` naming the metered
 `macos-*` or `windows-*` runner families, requires a bounded `timeout-minutes`
 on every job that resolves to an OS-scoped lane, forbids those lanes from
 degrading to Linux through `VERJSON_LANE_FALLBACK`, and fails any workflow that
-references the OS lane variables off the sanctioned desktop-release path.
+references the OS lane variables off the sanctioned desktop-release path or
+from any trigger other than `workflow_dispatch`. Rolling `ubuntu-latest` is
+also refused independently of repository visibility.
 
 The organization is raising its Actions spending limit so `Verjson/AiB` can
 build Electron installers on hosted macOS and Windows (#810), which removes the
@@ -21,4 +23,6 @@ that prove each negative, so #815 can point the same check at a consumer
 checkout without duplicating it. The refusal of the metered families is
 visibility-independent; literal Linux hosted selectors are keyed on repository
 visibility, and the closed ADR 0089 `ubuntu-24.04` inventory stands unchanged.
+Constructed selector expressions fail undetermined, and dot/bracket variable
+dereferences are normalized before every timeout, fallback, and trigger rule.
 Decided in ADR 0103.

@@ -52,13 +52,22 @@ fetch() {
   || die_undetermined "larger-runner allowlist is unreadable: $larger_runner_allowlist_file"
 larger_runner_allowlist="$(jq -ce '
   if (type == "array"
-    and all(.[]; type == "number" and . > 0 and . == floor)
-    and length == (unique | length))
+    and all(.[];
+      type == "object"
+      and keys == ["id", "name"]
+      and (.id | type) == "number"
+      and .id > 0
+      and .id == (.id | floor)
+      and (.name | type) == "string"
+      and (.name | test("\\S")))
+    and (map(.id) | length) == (map(.id) | unique | length)
+    and (map(.name | ascii_downcase) | length)
+      == (map(.name | ascii_downcase) | unique | length))
   then .
   else error("invalid allowlist")
   end
 ' "$larger_runner_allowlist_file" 2>/dev/null)" \
-  || die_undetermined "larger-runner allowlist must be an array of unique positive integer runner ids"
+  || die_undetermined "larger-runner allowlist must contain exact id/name objects with unique ids and names"
 
 # Keep whole page objects until local validation. A server-side `.runners[]`
 # projection can erase a missing collection into an empty stream; an unreadable
@@ -86,11 +95,14 @@ if ! larger_runners="$(jq -cse '
         or .id <= 0
         or .id != (.id | floor)
         or (.name | type) != "string"
-        or (.name | length) == 0)
+        or (.name | test("\\S") | not))
       then error("malformed runner")
       elif ($runners | map(.id) | unique | length) != ($runners | length)
       then error("duplicate runner id")
-      else $runners
+      elif ($runners | map(.name | ascii_downcase) | unique | length)
+        != ($runners | length)
+      then error("duplicate runner name")
+      else $runners | map({id, name})
       end
   end
 ' <<<"$larger_runner_pages" 2>/dev/null)"; then
@@ -98,13 +110,19 @@ if ! larger_runners="$(jq -cse '
 fi
 
 unapproved_larger_runners="$(jq -c --argjson allowed "$larger_runner_allowlist" '
-  map(select(.id as $id | ($allowed | index($id)) == null))
+  map(select(. as $runner | ($allowed | index($runner)) == null))
 ' <<<"$larger_runners")" \
   || die_undetermined "could not compare larger-runner inventory with its allowlist"
-stale_larger_runner_ids="$(jq -c --argjson inventory "$larger_runners" '
-  map(select(. as $id | ($inventory | map(.id) | index($id)) == null))
+stale_larger_runner_identities="$(jq -c --argjson inventory "$larger_runners" '
+  map(select(. as $runner | ($inventory | index($runner)) == null))
 ' <<<"$larger_runner_allowlist")" \
   || die_undetermined "could not compare the larger-runner allowlist with inventory"
+renamed_larger_runners="$(jq -c --argjson allowed "$larger_runner_allowlist" '
+  map(select(. as $runner |
+    ($allowed | map(.id) | index($runner.id)) != null
+    and ($allowed | index($runner)) == null))
+' <<<"$larger_runners")" \
+  || die_undetermined "could not compare larger-runner names with reviewed identities"
 
 repos_raw="$(fetch "/orgs/$ORG/repos?per_page=100" \
   '.[] | select(.archived == false) | "\(.full_name)\t\(.private)"')" || exit 2
@@ -200,7 +218,7 @@ group_for_selector() {
     or index("untrusted-pr") != null' <<<"$labels" >/dev/null; then
     printf 'untrusted\n'
   else
-    die_undetermined "$name selector has no governed lane label: $labels"
+    die_undetermined "$name selector has no governed lane label; value redacted"
   fi
 }
 
@@ -337,10 +355,16 @@ if jq -e 'length > 0' <<<"$unapproved_larger_runners" >/dev/null; then
   larger_runner_names="$(jq -r 'map("\(.name | @json) (id \(.id))") | join(", ")' \
     <<<"$unapproved_larger_runners")" \
     || die_undetermined "could not render unapproved larger-runner inventory"
-  drift="$drift- GitHub-hosted larger runner(s) exist outside the reviewed allowlist: $larger_runner_names. Remove them, or add their numeric ids to \`scripts/ci-gate/hosted-larger-runner-allowlist.json\` through review before use"$'\n'
+  drift="$drift- GitHub-hosted larger runner(s) exist outside the reviewed allowlist: $larger_runner_names. Remove them, or add their exact id/name identities to \`scripts/ci-gate/hosted-larger-runner-allowlist.json\` through review before use"$'\n'
 fi
-if jq -e 'length > 0' <<<"$stale_larger_runner_ids" >/dev/null; then
-  drift="$drift- reviewed GitHub-hosted larger-runner allowlist contains ids absent from live inventory: $(jq -r 'join(", ")' <<<"$stale_larger_runner_ids"). Remove stale entries through review"$'\n'
+if jq -e 'length > 0' <<<"$renamed_larger_runners" >/dev/null; then
+  drift="$drift- live GitHub-hosted larger-runner identity differs from the reviewed id/name allowlist; rename approval requires a reviewed code change"$'\n'
+fi
+if jq -e 'length > 0' <<<"$stale_larger_runner_identities" >/dev/null; then
+  stale_larger_runner_names="$(jq -r 'map("\(.name | @json) (id \(.id))") | join(", ")' \
+    <<<"$stale_larger_runner_identities")" \
+    || die_undetermined "could not render stale larger-runner identities"
+  drift="$drift- reviewed GitHub-hosted larger-runner identities are absent from live inventory: $stale_larger_runner_names. Remove stale entries through review"$'\n'
 fi
 
 while IFS=$'\t' read -r repo private; do
@@ -416,7 +440,7 @@ legacy_drift() {
   local name="$1" variable="$2" lane_value="$3" value
   [ -n "$variable" ] || return 0
   value="$(jq -r '.value' <<<"$variable" 2>/dev/null)" || return 0
-  [ "$value" = "$lane_value" ] || drift="$drift- \`$name\` is \`$value\` but the lane it was replaced by is \`$lane_value\`; consumers pinned to a pre-migration SHA route somewhere this run did not check"$'\n'
+  [ "$value" = "$lane_value" ] || drift="$drift- \`$name\` differs from the lane that replaced it; values redacted because org-variable contents must not enter public logs or issues; consumers pinned to a pre-migration SHA route somewhere this run did not check"$'\n'
 }
 legacy_drift VERJSON_RUNNER_DEFAULT "$legacy_default_var" "$default_selector"
 legacy_drift VERJSON_RUNNER_UNTRUSTED "$legacy_untrusted_var" "$untrusted_selector"

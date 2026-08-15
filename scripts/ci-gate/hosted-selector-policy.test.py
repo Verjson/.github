@@ -118,14 +118,16 @@ assert_violation("public", "metered-macos", "metered hosted runner family",
                  "a metered macOS selector is a hard failure")
 assert_violation("public", "metered-macos", "rolling -latest image",
                  "a rolling image in a metered family is reported as its own defect")
+assert_violation("public", "rolling-linux-latest", "rolling -latest image",
+                 "a rolling Linux image is refused independently of billing visibility")
 
 # ---------------------------------------------------------------------------
 # Tier B — literal Linux hosted selectors, keyed on repository visibility.
 # ---------------------------------------------------------------------------
 assert_violation("private", "linux-hosted-literal", "literal Linux hosted selector",
                  "a private repository may not hardcode a Linux hosted selector")
-assert_clean("public", "linux-hosted-literal",
-             "the same selector on a public repository spends nothing and is not Tier B")
+assert_violation("public", "linux-hosted-literal", "rolling -latest image",
+                 "public visibility does not permit a rolling Linux image")
 
 # ---------------------------------------------------------------------------
 # R3 — bounded, not merely annotated.
@@ -140,6 +142,9 @@ assert_violation("public", "os-lane-timeout-over",
                  "desktop-release.yml")
 assert_clean("public", "os-lane-bounded",
              "both OS lanes bounded at 45 minutes, with no fallback tail, are accepted",
+             "desktop-release.yml")
+assert_clean("public", "os-lane-dispatch-mapping",
+             "a mapped workflow_dispatch trigger with reviewed inputs is accepted",
              "desktop-release.yml")
 # 60 is the ceiling and is accepted; 61 is not. A strict `<` would move the
 # boundary without anyone deciding to. A step-level timeout does not bound the
@@ -188,6 +193,16 @@ assert_violation("public", "os-lane-reference-off-runs-on",
 assert_clean("public", "os-lane-bounded",
              "the sanctioned desktop-release path may name the OS lane variables",
              "desktop-release.yml")
+for trigger_fixture, trigger_name in (
+    ("os-lane-pull-request", "pull_request"),
+    ("os-lane-push", "push"),
+    ("os-lane-schedule", "schedule"),
+):
+    assert_violation(
+        "public", trigger_fixture, "dispatch-only",
+        f"an OS lane reachable from {trigger_name} is refused",
+        "desktop-release.yml",
+    )
 
 # ---------------------------------------------------------------------------
 # Undetermined outcomes. Each is a way the sweep ends up knowing nothing, and
@@ -243,6 +258,16 @@ assert_clean("public", "comment-mentions-metered",
 assert_violation("public", "matrix-unreferenced-key", "metered hosted runner family",
                  "a metered word anywhere in a referenced strategy block is refused, "
                  "conservatively")
+assert_undetermined_fixture(
+    "dynamic-format",
+    "a format-built selector is unresolved rather than silently clean",
+)
+assert_undetermined_fixture(
+    "dynamic-join-fromjson",
+    "a join/fromJSON-built selector is unresolved rather than silently clean",
+)
+assert_clean("public", "lane-with-fallback",
+             "known fromJSON lane chains remain permitted selector expressions")
 
 # ---------------------------------------------------------------------------
 # Parser-level shapes GitHub accepts (#818 review). Each of these returned
@@ -294,14 +319,22 @@ assert_violation("public", "matrix-os-lane-fallback", "R4 OS lane carries a fall
 assert_violation("public", "matrix-os-lane-fallback", "exceeds the 60 ceiling",
                  "an OS lane reached through a matrix is still bound by the ceiling",
                  "desktop-release.yml")
+assert_violation("public", "bracket-os-lane-no-timeout",
+                 "R3 OS-lane job declares no timeout-minutes",
+                 "single-quoted bracket OS lanes remain bound by R3",
+                 "desktop-release.yml")
+assert_violation("public", "bracket-os-lane-fallback",
+                 "R4 OS lane carries a fallback tail",
+                 "double-quoted bracket OS lanes remain bound by R4",
+                 "desktop-release.yml")
 assert_violation("public", "matrix-lane-without-terminal-landing",
                  "R4 lane selector with no terminal landing",
                  "an ordinary lane reached through a matrix still needs a terminal landing")
 assert_violation("private", "matrix-linux-literal", "literal Linux hosted selector",
                  "a Linux literal placed through a matrix is still a literal on a "
                  "private repository")
-assert_clean("public", "matrix-linux-literal",
-             "the same matrix literal on a public repository spends nothing and is not Tier B")
+assert_violation("public", "matrix-linux-literal", "rolling -latest image",
+                 "a matrix cannot permit a rolling Linux image through public visibility")
 assert_clean("public", "matrix-os-lane-bounded",
              "the conforming matrix form — both lanes, bounded, no fallback — is accepted",
              "desktop-release.yml")
