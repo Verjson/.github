@@ -1,0 +1,10 @@
+# A metered macOS selector, the shape runner-routing-policy.test.sh could not
+# see before #814: every literal-selector assertion keyed on ubuntu only.
+name: build
+on: workflow_dispatch
+jobs:
+  dist:
+    runs-on: macos-latest
+    timeout-minutes: 45
+    steps:
+      - run: npm run dist
