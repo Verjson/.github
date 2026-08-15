@@ -84,7 +84,10 @@ def unquote_scalar(value: str) -> str:
 
 
 def parse_frontmatter(path: Path) -> tuple[dict[str, str], str]:
-    text = path.read_text(encoding="utf-8")
+    return parse_frontmatter_text(path, path.read_text(encoding="utf-8"))
+
+
+def parse_frontmatter_text(path: Path, text: str) -> tuple[dict[str, str], str]:
     lines = text.splitlines()
     if not lines or lines[0] != "---":
         raise ChangelogError(f"{path}: missing metadata front matter")
@@ -301,10 +304,14 @@ def reference_issues(path: Path, metadata: dict[str, str]) -> list[int]:
 
 
 def load_canonical(path: Path) -> Fragment:
+    return load_canonical_text(path, path.read_text(encoding="utf-8"))
+
+
+def load_canonical_text(path: Path, text: str) -> Fragment:
     match = CANONICAL_NAME.fullmatch(path.name)
     if not match:
         raise ChangelogError(f"{path}: filename does not follow the canonical contract")
-    metadata, body = parse_frontmatter(path)
+    metadata, body = parse_frontmatter_text(path, text)
     identity = validate_metadata(path, metadata)
     filename_identity = match["identity"].lower()
     expected_identity = metadata.get("issue", metadata.get("id", "")).lower()
@@ -408,14 +415,47 @@ def added_fragment_paths(repo_root: Path, base: str, head: str) -> set[str]:
         status = fields[0]
         if status == "A" and len(fields) == 2 and fields[1].startswith(f"{UNRELEASED_DIR}/"):
             added.add(fields[1])
-        if (
-            status.startswith("R")
-            and len(fields) == 3
-            and not fields[1].startswith(f"{UNRELEASED_DIR}/")
-            and fields[2].startswith(f"{UNRELEASED_DIR}/")
-        ):
-            added.add(fields[2])
+        if status.startswith("R") and len(fields) == 3:
+            source, destination = fields[1:]
+            if destination.startswith(f"{UNRELEASED_DIR}/") and (
+                not source.startswith(f"{UNRELEASED_DIR}/")
+                or not same_canonical_fragment_identity(
+                    repo_root,
+                    base,
+                    source,
+                    destination,
+                )
+            ):
+                added.add(destination)
     return added
+
+
+def same_canonical_fragment_identity(
+    repo_root: Path,
+    base: str,
+    source: str,
+    destination: str,
+) -> bool:
+    source_path = PurePosixPath(source)
+    destination_path = PurePosixPath(destination)
+    canonical_parent = PurePosixPath(UNRELEASED_DIR)
+    if source_path.parent != canonical_parent or destination_path.parent != canonical_parent:
+        return False
+    try:
+        source_fragment = load_canonical_text(
+            Path(source),
+            git(repo_root, "show", f"{base}:{source}"),
+        )
+        destination_fragment = load_canonical(repo_root / destination)
+    except ChangelogError:
+        return False
+    return (
+        source_fragment.metadata["date"],
+        source_fragment.identity,
+    ) == (
+        destination_fragment.metadata["date"],
+        destination_fragment.identity,
+    )
 
 
 def validate_new_fragment_impacts(

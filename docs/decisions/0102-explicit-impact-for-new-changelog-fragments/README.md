@@ -26,6 +26,10 @@ Every newly added canonical fragment declares exactly one of `impact: major`,
 base and head revisions, identifies fragments added or renamed into `NEXT/`, and
 rejects omission with a diagnostic naming all three permitted values.
 
+A `NEXT/` rename remains legacy-compatible only when the canonical date and
+identity are unchanged, as in a slug correction. A rename that changes either
+is a new fragment for this rule, regardless of Git's similarity classification.
+
 The historical patch fallback remains only for fragments already present at the
 base revision. Release and rendering continue to accept those entries, and
 released `CHANGELOG/<version>.md` snapshots remain immutable prose rather than
@@ -45,6 +49,8 @@ Generated adopter artifacts continue to share one immutable contract pin.
   reinterpreted.
 - Old unmerged branches have a dated window to add metadata, while the policy
   cannot remain disabled indefinitely.
+- Git rename detection cannot launder a new fragment identity through the
+  historical patch fallback.
 - Release impact remains independent of Conventional Commit subjects and is
   still evaluated only across the selected fragment set.
 

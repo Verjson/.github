@@ -11,4 +11,6 @@ and immutable released snapshots.
 
 The canonical required checks provide a bounded migration window through
 2026-08-29 UTC, and generated adopter contract tests exercise the strict and
-compatibility paths from the same immutable pin.
+compatibility paths from the same immutable pin. Identity- or date-changing
+renames within `NEXT/` count as new fragments, while same-identity slug renames
+retain legacy compatibility.
