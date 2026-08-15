@@ -107,6 +107,20 @@ def assert_undetermined(label: str, *arguments: str) -> None:
         fail(f"{label} (expected exit 2, got {code}: {output.strip()})")
 
 
+def assert_metered_only(fixture: str, expected_code: int, label: str) -> None:
+    exercised_fixtures.add(fixture)
+    code, output = run_policy(
+        "--metered-families-only", os.path.join(FIXTURES, fixture)
+    )
+    if code == expected_code:
+        ok(label)
+    else:
+        fail(
+            f"{label} (expected exit {expected_code}, got {code}: "
+            f"{output.strip()})"
+        )
+
+
 # ---------------------------------------------------------------------------
 # R1 / R2 (Tier A) — the metered families, zero exceptions.
 # ---------------------------------------------------------------------------
@@ -116,10 +130,69 @@ assert_undetermined(
 )
 assert_violation("public", "metered-macos", "metered hosted runner family",
                  "a metered macOS selector is a hard failure")
+assert_violation("public", "metered-windows", "metered hosted runner family",
+                 "a metered Windows selector is a hard failure")
 assert_violation("public", "metered-macos", "rolling -latest image",
                  "a rolling image in a metered family is reported as its own defect")
 assert_violation("public", "rolling-linux-latest", "rolling -latest image",
                  "a rolling Linux image is refused independently of billing visibility")
+
+# #815 exports only the visibility-independent metered-family rule through the
+# reusable actionlint workflow. The repository-local R2/Tier B/R3-R6 rules stay
+# local; #816 owns consumer Linux drift. The parser boundary remains fail closed.
+assert_metered_only("metered-macos", 1,
+                    "consumer mode refuses literal macOS hosted selectors")
+assert_metered_only("metered-windows", 1,
+                    "consumer mode refuses literal Windows hosted selectors")
+assert_metered_only("evasion-matrix", 1,
+                    "consumer mode resolves a metered matrix selector structurally")
+assert_metered_only("rolling-linux-latest", 0,
+                    "consumer mode does not activate the deferred ubuntu-latest rule")
+assert_metered_only("linux-hosted-literal", 0,
+                    "consumer mode does not activate private literal-Linux policy")
+assert_metered_only("invalid-yaml", 2,
+                    "consumer mode remains fail closed on unparseable workflow YAML")
+assert_metered_only("dynamic-format", 2,
+                    "consumer mode refuses a format-built selector")
+assert_metered_only("dynamic-join-fromjson", 2,
+                    "consumer mode refuses a join/fromJSON-built selector")
+for source_fixture, source_name in (
+    ("dynamic-input-direct", "a direct arbitrary input"),
+    ("dynamic-input-fromjson", "a fromJSON-decoded arbitrary input"),
+    ("dynamic-var-direct", "a direct unreviewed repository variable"),
+    ("dynamic-var-fromjson", "a fromJSON-decoded unreviewed repository variable"),
+    ("dynamic-needs-direct", "a direct unreviewed needs output"),
+    ("dynamic-needs-fromjson", "a fromJSON-decoded unreviewed needs output"),
+):
+    assert_metered_only(
+        source_fixture,
+        2,
+        f"consumer mode refuses {source_name}",
+    )
+assert_metered_only("lane-with-fallback", 0,
+                    "consumer mode retains reviewed canonical lane expressions")
+assert_metered_only("matrix-linux-literal", 0,
+                    "consumer mode retains static Linux matrix selectors")
+assert_metered_only("reusable-input-macos", 1,
+                    "consumer mode refuses macOS through with.runner")
+assert_metered_only("reusable-input-windows", 1,
+                    "consumer mode refuses Windows through with.runner_labels")
+assert_metered_only("reusable-input-dynamic", 2,
+                    "consumer mode refuses a dynamic reusable runner input")
+assert_metered_only("reusable-input-linux", 0,
+                    "consumer mode preserves deferred Linux reusable inputs")
+assert_metered_only("reusable-input-unrelated", 0,
+                    "consumer mode ignores unrelated reusable inputs mentioning macOS")
+assert_metered_only("step-input-unrelated", 0,
+                    "consumer mode ignores step inputs mentioning macOS")
+assert_metered_only("reusable-input-malformed", 2,
+                    "consumer mode fails closed on a malformed reusable with mapping")
+assert_metered_only("reusable-input-canonical", 0,
+                    "consumer mode preserves the generated canonical runner expression")
+assert_metered_only("reusable-input-static-matrix", 0,
+                    "consumer mode resolves and accepts a static Linux input matrix")
+assert_metered_only("reusable-input-metered-matrix", 1,
+                    "consumer mode resolves and refuses a metered input matrix")
 
 # ---------------------------------------------------------------------------
 # Tier B — literal Linux hosted selectors, keyed on repository visibility.
@@ -229,6 +302,12 @@ assert_undetermined("an unrecognized option is undetermined",
 assert_undetermined("a repeated --visibility is undetermined, not last-wins",
                     "--visibility", "private", "--visibility", "public",
                     os.path.join(FIXTURES, "linux-hosted-literal"))
+assert_undetermined("consumer mode cannot accidentally add visibility-scoped rules",
+                    "--metered-families-only", "--visibility", "private",
+                    os.path.join(FIXTURES, "metered-macos"))
+assert_undetermined("consumer mode cannot sanction repository-local OS-lane paths",
+                    "--metered-families-only", "--sanctioned", "desktop-release.yml",
+                    os.path.join(FIXTURES, "metered-macos"))
 assert_undetermined("a stray positional cannot silently sanction a workflow",
                     "--visibility", "public",
                     os.path.join(FIXTURES, "os-lane-unsanctioned"), "ci.yml")

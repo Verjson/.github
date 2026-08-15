@@ -2,6 +2,7 @@
 """Refuse metered GitHub-hosted runner selectors and unbounded hosted jobs.
 
     hosted-selector-policy.py --visibility public|private [--sanctioned NAME]... <workflow-dir>
+    hosted-selector-policy.py --metered-families-only <workflow-dir>
 
 Exit 0 is "scanned and clean", 1 is "policy violation", 2 is "undetermined".
 The three are distinct because a sweep that scans nothing must not look like a
@@ -296,6 +297,26 @@ REVIEWED_SELECTOR_EXPRESSIONS = frozenset(
     )
 )
 
+# The only job-level reusable-workflow inputs in the organization contract that
+# select the called workflow's runner. These are NOT arbitrary `with:` keys:
+# step inputs and prose-bearing reusable inputs must not become policy text.
+REUSABLE_RUNNER_INPUTS = ("runner", "runner_labels")
+
+# A reusable input receives selector JSON rather than a resolved runs-on value,
+# so its reviewed grammar is intentionally smaller than runs-on's. The first
+# expression is emitted by gen-changelog-caller.sh. Static matrix references are
+# safe only because check_reusable_runner_inputs folds the complete strategy
+# source into the metered-family verdict.
+REVIEWED_REUSABLE_INPUT_EXPRESSIONS = frozenset(
+    " ".join(expression.split())
+    for expression in (
+        "github.repository_owner == 'Verjson' && (vars.VERJSON_RUNNER_DEFAULT || '[\"self-hosted\",\"general\"]') || '[\"ubuntu-24.04\"]'",
+        "matrix.os",
+        "matrix.runner",
+        "matrix.runner_labels",
+    )
+)
+
 
 def normalize_dereferences(text: str) -> str:
     """Normalize both GitHub property syntaxes before applying policy rules."""
@@ -317,7 +338,10 @@ def _selector_strings(value):
         yield value
 
 
-def validate_selector_expressions(value) -> None:
+def validate_selector_expressions(
+    value,
+    reviewed_expressions: frozenset[str] = REVIEWED_SELECTOR_EXPRESSIONS,
+) -> None:
     """Refuse selector expressions that construct labels dynamically.
 
     The accepted language is intentionally small: references, fixed quoted
@@ -331,7 +355,7 @@ def validate_selector_expressions(value) -> None:
         match = FULL_EXPRESSION.fullmatch(text)
         if match is None:
             raise Undetermined(
-                "runs-on contains a mixed or malformed selector expression"
+                "selector contains a mixed or malformed expression"
             )
         expression = " ".join(normalize_dereferences(match.group(1)).split())
         scrubbed = QUOTED_EXPRESSION_STRING.sub("LITERAL", expression)
@@ -339,7 +363,7 @@ def validate_selector_expressions(value) -> None:
         unsupported = sorted({name for name in functions if name != "fromJSON"})
         if unsupported:
             raise Undetermined(
-                "runs-on uses unsupported selector-construction function(s): "
+                "selector uses unsupported construction function(s): "
                 + ", ".join(unsupported)
             )
         # Brackets left after normalizing supported property dereferences, or
@@ -348,11 +372,11 @@ def validate_selector_expressions(value) -> None:
         # fromJSON's single accepted argument.
         if re.search(r"[\[\]+*/%,?:]", scrubbed):
             raise Undetermined(
-                "runs-on uses unsupported dynamic selector expression syntax"
+                "selector uses unsupported dynamic expression syntax"
             )
-        if expression not in REVIEWED_SELECTOR_EXPRESSIONS:
+        if expression not in reviewed_expressions:
             raise Undetermined(
-                "runs-on uses an unreviewed routing expression source or shape"
+                "selector uses an unreviewed routing expression source or shape"
             )
 
 
@@ -378,11 +402,85 @@ class Report:
         self.anomalies.append(f"UNDETERMINED: {message}")
 
 
+def check_reusable_runner_inputs(
+    report: Report,
+    path: str,
+    name: str,
+    body: dict,
+    line: int,
+) -> None:
+    """Apply R1 only to canonical job-level runner-routing inputs.
+
+    Reusable jobs have no runs-on of their own, but canonical workflows consume
+    `with.runner` or `with.runner_labels` and route on the supplied value. Scan
+    exactly those names at job level; scanning every `with` value would turn
+    descriptions and step inputs into false placement signals.
+    """
+    if "uses" not in body or "with" not in body:
+        return
+
+    body_lines = getattr(body, "lines", {})
+    with_line = body_lines.get("with", line)
+    inputs = body["with"]
+    if not isinstance(inputs, dict):
+        report.anomaly(
+            f"{path}:{with_line}: reusable job '{name}': 'with' is not a mapping"
+        )
+        return
+
+    input_lines = getattr(inputs, "lines", {})
+    for input_name in REUSABLE_RUNNER_INPUTS:
+        if input_name not in inputs:
+            continue
+        input_line = input_lines.get(input_name, with_line)
+        value = inputs[input_name]
+        if not isinstance(value, str):
+            report.anomaly(
+                f"{path}:{input_line}: reusable job '{name}' input "
+                f"'{input_name}' is not a string selector"
+            )
+            continue
+
+        raw_selector = flatten(value)
+        normalized_selector = normalize_dereferences(raw_selector)
+        selector_values = [value]
+        if "matrix." in normalized_selector:
+            selector_values.append(body.get("strategy"))
+        try:
+            for selector_value in selector_values:
+                validate_selector_expressions(
+                    selector_value,
+                    REVIEWED_REUSABLE_INPUT_EXPRESSIONS,
+                )
+        except Undetermined as error:
+            report.anomaly(
+                f"{path}:{input_line}: reusable job '{name}' input "
+                f"'{input_name}': {error}"
+            )
+            continue
+
+        selector = normalized_selector
+        if "matrix." in normalized_selector:
+            selector = normalize_dereferences(
+                f"{normalized_selector} {flatten(body.get('strategy'))}"
+            )
+        if METERED_FAMILY.search(selector):
+            report.violation(
+                path,
+                input_line,
+                f"R1 metered hosted runner family in reusable job '{name}' "
+                f"input '{input_name}': {raw_selector}",
+            )
+
+
 def check_job(report: Report, path: str, name: str, body: dict, line: int,
-              visibility: str) -> None:
+              visibility: str, metered_families_only: bool = False) -> None:
+    if metered_families_only:
+        check_reusable_runner_inputs(report, path, name, body, line)
     if "runs-on" not in body:
-        # A job-level `uses:` calls a reusable workflow and declares no runner of
-        # its own; the requirement belongs to the called workflow.
+        # A job-level `uses:` calls a reusable workflow and declares no runner
+        # of its own. Consumer mode checks the two canonical pass-through inputs
+        # above; full local policy remains scoped to this repository's runs-on.
         return
     lines = getattr(body, "lines", {})
     runs_on_line = lines.get("runs-on", line)
@@ -424,6 +522,17 @@ def check_job(report: Report, path: str, name: str, body: dict, line: int,
             path, runs_on_line,
             f"R1 metered hosted runner family in job '{name}' runs-on: {runs_on}",
         )
+
+    # The reusable actionlint path deliberately exports only R1. The other
+    # rules describe this repository's complete routing contract: exporting R2
+    # would activate the separately deferred consumer ubuntu-latest sweep
+    # (#816), while R3-R6 govern the one sanctioned desktop release path rather
+    # than ordinary package consumers. Parsing and job extraction still fail
+    # closed, expression construction stays inside the reviewed grammar, and
+    # matrix sources are still folded in, so narrowing the rule set does not
+    # narrow the YAML shapes R1 can see.
+    if metered_families_only:
+        return
 
     # R2 — a rolling standard hosted image, independent of billing. R1 already
     # refuses the metered macOS/Windows families; R2 separately asks whether a
@@ -601,6 +710,7 @@ def parse_arguments(argv: list[str]) -> argparse.Namespace:
     # No default. A caller that does not say what it is scanning gets no verdict,
     # because a permissive default here silently disables Tier B.
     parser.add_argument("--visibility", action="append")
+    parser.add_argument("--metered-families-only", action="store_true")
     # Behind a flag, not a trailing positional: in a script that fails closed
     # everywhere else, a stray argument must not quietly sanction a file and
     # narrow the sweep.
@@ -620,7 +730,16 @@ def parse_arguments(argv: list[str]) -> argparse.Namespace:
         # policy tier being enforced.
         raise Undetermined(f"--visibility given {len(visibility)} times")
     arguments.visibility = visibility[0] if visibility else ""
-    if arguments.visibility not in ("public", "private"):
+    if arguments.metered_families_only:
+        if arguments.visibility:
+            raise Undetermined(
+                "--metered-families-only and --visibility are mutually exclusive"
+            )
+        if arguments.sanctioned:
+            raise Undetermined(
+                "--sanctioned does not apply to --metered-families-only"
+            )
+    elif arguments.visibility not in ("public", "private"):
         raise Undetermined(
             "--visibility must be exactly 'public' or 'private' "
             f"(got '{arguments.visibility}')"
@@ -663,7 +782,9 @@ def main(argv: list[str]) -> int:
     report = Report()
 
     for path in workflow_files:
-        references_os_lane = check_os_lane_references(report, path, sanctioned)
+        references_os_lane = False
+        if not arguments.metered_families_only:
+            references_os_lane = check_os_lane_references(report, path, sanctioned)
         try:
             document = load_workflow(path)
             jobs = extract_jobs(path, document)
@@ -673,7 +794,15 @@ def main(argv: list[str]) -> int:
         if references_os_lane:
             check_os_lane_trigger(report, path, document)
         for name, body, line in jobs:
-            check_job(report, path, name, body, line, arguments.visibility)
+            check_job(
+                report,
+                path,
+                name,
+                body,
+                line,
+                arguments.visibility,
+                arguments.metered_families_only,
+            )
 
     for message in report.anomalies:
         print(message, file=sys.stderr)

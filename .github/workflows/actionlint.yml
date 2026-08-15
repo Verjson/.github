@@ -42,6 +42,9 @@ jobs:
       ACTIONLINT_VERSION: 1.7.7
       # From actionlint_1.7.7_checksums.txt on the upstream GitHub Release.
       ACTIONLINT_SHA256: '023070a287cd8cccd71515fedc843f1985bf96c436b7effaecce67290e7e0757'
+      PYYAML_VERSION: 6.0.2
+      PYYAML_SHA256: 'd584d9ec91ad65861cc08d42e834324ef890a082e591037abe114850ff7bbc3e'
+      PYYAML_SOURCE_URL: 'https://files.pythonhosted.org/packages/54/ed/79a089b6be93607fa5cdaedf301d7dfb23af5f25c398d5ead2525b063e17/pyyaml-6.0.2.tar.gz'
       ACTIONLINT_CONFIG_FILE: ${{ inputs.config-file || '.verjson-actionlint-policy/.github/actionlint.yaml' }}
     defaults:
       run:
@@ -51,13 +54,15 @@ jobs:
         with:
           path: .actionlint-source-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
       - name: Check out centrally versioned actionlint policy
-        if: inputs.config-file == ''
+        if: inputs.config-file == '' || github.repository_owner == 'Verjson'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           repository: ${{ job.workflow_repository }}
           ref: ${{ job.workflow_sha }}
           path: .actionlint-source-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}/.verjson-actionlint-policy
-          sparse-checkout: .github/actionlint.yaml
+          sparse-checkout: |
+            .github/actionlint.yaml
+            scripts/ci-gate/hosted-selector-policy.py
           persist-credentials: false
       - name: Install actionlint (pinned release binary)
         run: |
@@ -127,6 +132,71 @@ jobs:
             echo "::error::actionlint accepted a runner label absent from the central policy"
             exit 1
           fi
+      - name: Install hosted-selector policy dependency
+        if: github.repository_owner == 'Verjson'
+        run: |
+          set -euo pipefail
+          umask 077
+          runner_temp="$(cd "${{ runner.temp }}" && pwd -P)"
+          workspace="$(cd "$GITHUB_WORKSPACE" && pwd -P)"
+          case "$runner_temp/" in
+            "$workspace/"*)
+              echo "::error::RUNNER_TEMP must be outside the caller workspace"
+              exit 1
+              ;;
+          esac
+          policy_dir="$(mktemp -d "$runner_temp/verjson-hosted-selector-policy.XXXXXX")"
+          printf 'VERJSON_HOSTED_SELECTOR_POLICY_DIR=%s\n' "$policy_dir" >>"$GITHUB_ENV"
+          archive="$policy_dir/pyyaml-${PYYAML_VERSION}.tar.gz"
+          dependency_dir="$policy_dir/python"
+          curl -fsSL "$PYYAML_SOURCE_URL" -o "$archive"
+          printf '%s  %s\n' "$PYYAML_SHA256" "$archive" | sha256sum --check --strict
+          mkdir -p "$dependency_dir"
+          tar -xzf "$archive" -C "$dependency_dir" --strip-components=2 \
+            "pyyaml-${PYYAML_VERSION}/lib/yaml"
+          test -f "$dependency_dir/yaml/__init__.py"
+      - name: Refuse metered hosted selectors in Verjson callers
+        if: github.repository_owner == 'Verjson'
+        run: |
+          set -euo pipefail
+          runner_temp="$(cd "${{ runner.temp }}" && pwd -P)"
+          policy_dir="${VERJSON_HOSTED_SELECTOR_POLICY_DIR:?policy dependency path is unavailable}"
+          case "$policy_dir" in
+            "$runner_temp"/verjson-hosted-selector-policy.*) ;;
+            *)
+              echo "::error::Hosted-selector policy dependency escaped RUNNER_TEMP"
+              exit 1
+              ;;
+          esac
+          if [ ! -d "$policy_dir" ] || [ -L "$policy_dir" ]; then
+            echo "::error::Hosted-selector policy dependency is not a secure directory"
+            exit 1
+          fi
+          PYTHONPATH="$policy_dir/python" \
+            PYTHONNOUSERSITE=1 \
+            python3 -S \
+            .verjson-actionlint-policy/scripts/ci-gate/hosted-selector-policy.py \
+            --metered-families-only .github/workflows
+      - name: Remove hosted-selector policy dependency
+        if: ${{ always() && github.repository_owner == 'Verjson' }}
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          policy_dir="${VERJSON_HOSTED_SELECTOR_POLICY_DIR:-}"
+          [ -n "$policy_dir" ] || exit 0
+          runner_temp="$(cd "${{ runner.temp }}" && pwd -P)"
+          case "$policy_dir" in
+            "$runner_temp"/verjson-hosted-selector-policy.*) ;;
+            *)
+              echo "::error::Refusing to clean a policy path outside RUNNER_TEMP"
+              exit 1
+              ;;
+          esac
+          if [ -L "$policy_dir" ]; then
+            echo "::error::Refusing to follow a policy dependency symlink"
+            exit 1
+          fi
+          [ ! -e "$policy_dir" ] || rm -rf -- "$policy_dir"
       - name: Run actionlint over all workflows
         run: |
           set -euo pipefail

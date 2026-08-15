@@ -1,0 +1,7 @@
+name: reusable Windows selector
+on: push
+jobs:
+  delegated:
+    uses: Verjson/.github/.github/workflows/ai-privileged-merge.yml@0123456789abcdef0123456789abcdef01234567
+    with:
+      runner_labels: '["windows-2025"]'

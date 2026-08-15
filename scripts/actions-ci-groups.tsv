@@ -25,6 +25,7 @@ platform	bash scripts/ci-gate/pulumi-comment-pipefail.test.sh
 platform	bash scripts/ci-gate/generated-artifacts.test.sh
 platform	bash scripts/ci-gate/runner-routing-policy.test.sh
 platform	python3 scripts/ci-gate/hosted-selector-policy.test.py
+platform	bash scripts/ci-gate/actionlint-hosted-selector-policy.test.sh
 platform	bash scripts/ci-gate/runner-admission-reconcile.test.sh
 platform	bash scripts/fleet-watchdog.test.sh
 platform	bash scripts/fleet-watchdog-cadence.test.sh

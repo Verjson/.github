@@ -1,0 +1,11 @@
+name: metered reusable selector matrix
+on: push
+jobs:
+  delegated:
+    strategy:
+      matrix:
+        runner:
+          - '["macos-15"]'
+    uses: Verjson/.github/.github/workflows/node-ci.yml@0123456789abcdef0123456789abcdef01234567
+    with:
+      runner: ${{ matrix.runner }}
