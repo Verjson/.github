@@ -38,6 +38,11 @@ Where verJSON CI jobs run, and how to choose a `runs-on` value. The model is dec
   case as drift.
 - **Admission is enforced by runner *groups*, never by a label.** `runs-on` lives in a file
   a pull request can edit, so a label is chosen by whoever writes the PR.
+- **The metered families are refused outright.** No `runs-on` anywhere may name `macos-*` or
+  `windows-*` except through the two OS-scoped lanes below, and those are repository
+  variables on the one desktop repository. This is not a convention with exceptions: there
+  is no allowlist and no override, because no security-boundary argument has ever needed a
+  10x or 2x SKU ([ADR 0103](decisions/0103-os-scoped-hosted-lanes/README.md)).
 - Self-hosted runners have **no ambient Node** and a **persistent shared `~/.gitconfig`** —
   use `actions/setup-node` and idempotent git config, or the
   [`setup-verjson-node`](../.github/actions/setup-verjson-node/README.md) composite action.
@@ -67,6 +72,57 @@ proven.
 
 `UNTRUSTED` points at self-hosted even though hosted runners work, because a *private*
 repository on hosted rides a spending ceiling (see [Cost](#cost-and-hosted-availability)).
+
+## The two OS-scoped lanes — a different class, with different rules
+
+The four lanes above all resolve to the Linux self-hosted pool, and every rule stated so far
+assumes that. There is exactly one kind of work that cannot be done there: building and
+signing a macOS or Windows desktop installer. It gets its own lane class, and almost every
+rule is inverted, so read this section as an exception rather than as two more rows.
+
+| Lane variable | Value | Scope |
+|---|---|---|
+| `VERJSON_LANE_TRUSTED_MACOS` | `["macos-15"]` | **repository variable on `Verjson/AiB` only** |
+| `VERJSON_LANE_TRUSTED_WINDOWS` | `["windows-2025"]` | **repository variable on `Verjson/AiB` only** |
+
+**Repository-scoped, never organization-scoped**, and that scoping is the containment, not a
+tidiness preference. An organization variable is readable by every repository in its
+visibility set, so defining these org-wide would hand ~89 private repositories a working
+hosted selector — which is the copy-paste vector that regrew four times (#175, #182, #192,
+#203). Runner *groups* cannot help here: they enforce admission for self-hosted capacity,
+but they do not scope standard hosted labels, so there is no group-shaped way to say "only
+this repository may ask for `macos-15`". A repository variable is the strongest primitive
+GitHub actually offers for this, and everything below is defence in depth behind it.
+
+**They carry no fallback tail, and that is deliberate.** Everywhere else on this page, a
+chain that cannot degrade is a bug. Here it is the requirement: an unset macOS lane that
+falls through to `'["ubuntu-24.04"]'` produces a *non-installable artifact behind a green
+check*, which is worse than a failed release. So these lanes fail closed, and
+`runner-routing-policy.test.sh`'s "every lane selector falls through to
+`VERJSON_LANE_FALLBACK`" rule encodes the exception rather than letting the OS lane slip
+past it. An unset lane is caught by a preflight job on `VERJSON_LANE_TRUSTED` — the resolver
+tier in [Where each check belongs](#where-each-check-belongs) — so a repository that copied
+the workflow without the variables gets a legible failure on self-hosted Linux instead of
+free hosted minutes.
+
+**Dispatch only.** These legs run under `workflow_dispatch` as part of the canonical release
+contract, never on `pull_request`, `push`, or a tag push. That binds spend to release
+cadence — a handful of runs a month — rather than to pull-request volume, which is the
+difference between a bounded bill and an unbounded one.
+
+**Bounded at 45 minutes**, with a conformance ceiling of 60. Presence of `timeout-minutes`
+is not enough: `timeout-minutes: 360` satisfies "has a timeout" while being exactly the
+runaway the rule exists to stop, because six hours at macOS's 10x multiplier is up to 3,600
+billable minutes from one hung step.
+
+**No other workflow may name these variables at all.** The check fails on the *reference*,
+not on the resulting misconfiguration, so a copy is refused during review rather than
+queueing forever with an empty `runs-on`. It also means one grep answers "which workflows can
+spend hosted minutes".
+
+The rules are enforced by `scripts/ci-gate/hosted-selector-policy.sh`, which
+`runner-routing-policy.test.sh` runs against this repository's own workflows. Decided in
+[ADR 0103](decisions/0103-os-scoped-hosted-lanes/README.md).
 
 ## Three axes
 
