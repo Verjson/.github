@@ -297,6 +297,26 @@ REVIEWED_SELECTOR_EXPRESSIONS = frozenset(
     )
 )
 
+# The only job-level reusable-workflow inputs in the organization contract that
+# select the called workflow's runner. These are NOT arbitrary `with:` keys:
+# step inputs and prose-bearing reusable inputs must not become policy text.
+REUSABLE_RUNNER_INPUTS = ("runner", "runner_labels")
+
+# A reusable input receives selector JSON rather than a resolved runs-on value,
+# so its reviewed grammar is intentionally smaller than runs-on's. The first
+# expression is emitted by gen-changelog-caller.sh. Static matrix references are
+# safe only because check_reusable_runner_inputs folds the complete strategy
+# source into the metered-family verdict.
+REVIEWED_REUSABLE_INPUT_EXPRESSIONS = frozenset(
+    " ".join(expression.split())
+    for expression in (
+        "github.repository_owner == 'Verjson' && (vars.VERJSON_RUNNER_DEFAULT || '[\"self-hosted\",\"general\"]') || '[\"ubuntu-24.04\"]'",
+        "matrix.os",
+        "matrix.runner",
+        "matrix.runner_labels",
+    )
+)
+
 
 def normalize_dereferences(text: str) -> str:
     """Normalize both GitHub property syntaxes before applying policy rules."""
@@ -318,7 +338,10 @@ def _selector_strings(value):
         yield value
 
 
-def validate_selector_expressions(value) -> None:
+def validate_selector_expressions(
+    value,
+    reviewed_expressions: frozenset[str] = REVIEWED_SELECTOR_EXPRESSIONS,
+) -> None:
     """Refuse selector expressions that construct labels dynamically.
 
     The accepted language is intentionally small: references, fixed quoted
@@ -332,7 +355,7 @@ def validate_selector_expressions(value) -> None:
         match = FULL_EXPRESSION.fullmatch(text)
         if match is None:
             raise Undetermined(
-                "runs-on contains a mixed or malformed selector expression"
+                "selector contains a mixed or malformed expression"
             )
         expression = " ".join(normalize_dereferences(match.group(1)).split())
         scrubbed = QUOTED_EXPRESSION_STRING.sub("LITERAL", expression)
@@ -340,7 +363,7 @@ def validate_selector_expressions(value) -> None:
         unsupported = sorted({name for name in functions if name != "fromJSON"})
         if unsupported:
             raise Undetermined(
-                "runs-on uses unsupported selector-construction function(s): "
+                "selector uses unsupported construction function(s): "
                 + ", ".join(unsupported)
             )
         # Brackets left after normalizing supported property dereferences, or
@@ -349,11 +372,11 @@ def validate_selector_expressions(value) -> None:
         # fromJSON's single accepted argument.
         if re.search(r"[\[\]+*/%,?:]", scrubbed):
             raise Undetermined(
-                "runs-on uses unsupported dynamic selector expression syntax"
+                "selector uses unsupported dynamic expression syntax"
             )
-        if expression not in REVIEWED_SELECTOR_EXPRESSIONS:
+        if expression not in reviewed_expressions:
             raise Undetermined(
-                "runs-on uses an unreviewed routing expression source or shape"
+                "selector uses an unreviewed routing expression source or shape"
             )
 
 
@@ -379,11 +402,85 @@ class Report:
         self.anomalies.append(f"UNDETERMINED: {message}")
 
 
+def check_reusable_runner_inputs(
+    report: Report,
+    path: str,
+    name: str,
+    body: dict,
+    line: int,
+) -> None:
+    """Apply R1 only to canonical job-level runner-routing inputs.
+
+    Reusable jobs have no runs-on of their own, but canonical workflows consume
+    `with.runner` or `with.runner_labels` and route on the supplied value. Scan
+    exactly those names at job level; scanning every `with` value would turn
+    descriptions and step inputs into false placement signals.
+    """
+    if "uses" not in body or "with" not in body:
+        return
+
+    body_lines = getattr(body, "lines", {})
+    with_line = body_lines.get("with", line)
+    inputs = body["with"]
+    if not isinstance(inputs, dict):
+        report.anomaly(
+            f"{path}:{with_line}: reusable job '{name}': 'with' is not a mapping"
+        )
+        return
+
+    input_lines = getattr(inputs, "lines", {})
+    for input_name in REUSABLE_RUNNER_INPUTS:
+        if input_name not in inputs:
+            continue
+        input_line = input_lines.get(input_name, with_line)
+        value = inputs[input_name]
+        if not isinstance(value, str):
+            report.anomaly(
+                f"{path}:{input_line}: reusable job '{name}' input "
+                f"'{input_name}' is not a string selector"
+            )
+            continue
+
+        raw_selector = flatten(value)
+        normalized_selector = normalize_dereferences(raw_selector)
+        selector_values = [value]
+        if "matrix." in normalized_selector:
+            selector_values.append(body.get("strategy"))
+        try:
+            for selector_value in selector_values:
+                validate_selector_expressions(
+                    selector_value,
+                    REVIEWED_REUSABLE_INPUT_EXPRESSIONS,
+                )
+        except Undetermined as error:
+            report.anomaly(
+                f"{path}:{input_line}: reusable job '{name}' input "
+                f"'{input_name}': {error}"
+            )
+            continue
+
+        selector = normalized_selector
+        if "matrix." in normalized_selector:
+            selector = normalize_dereferences(
+                f"{normalized_selector} {flatten(body.get('strategy'))}"
+            )
+        if METERED_FAMILY.search(selector):
+            report.violation(
+                path,
+                input_line,
+                f"R1 metered hosted runner family in reusable job '{name}' "
+                f"input '{input_name}': {raw_selector}",
+            )
+
+
 def check_job(report: Report, path: str, name: str, body: dict, line: int,
               visibility: str, metered_families_only: bool = False) -> None:
+    if metered_families_only:
+        check_reusable_runner_inputs(report, path, name, body, line)
     if "runs-on" not in body:
-        # A job-level `uses:` calls a reusable workflow and declares no runner of
-        # its own; the requirement belongs to the called workflow.
+        # A job-level `uses:` calls a reusable workflow and declares no runner
+        # of its own. Consumer mode checks the two canonical pass-through inputs
+        # above; full local policy remains scoped to this repository's runs-on.
         return
     lines = getattr(body, "lines", {})
     runs_on_line = lines.get("runs-on", line)

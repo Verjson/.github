@@ -239,6 +239,12 @@ into R1. It retains the reviewed expression grammar so `format`, `join`, or an a
 input, variable, or needs output cannot assemble a metered selector invisibly; it simply
 returns after the metered-family verdict for a selector whose shape can be resolved.
 
+R1 covers both direct `runs-on` and the two canonical job-level reusable-workflow inputs that
+delegate placement: `with.runner` and `with.runner_labels`. Only those names are inspected.
+Other job inputs and every step-level `with` remain ordinary data, so prose mentioning an OS
+does not become a placement false positive. A malformed reusable-job `with` mapping or an
+unreviewed expression in either routing input is undetermined rather than clean.
+
 PyYAML is not assumed to exist on a selected runner. The workflow downloads the pinned 6.0.2
 source archive, verifies its SHA-256 digest before extraction, exposes only its pure-Python
 `yaml` package through an isolated `PYTHONPATH`, and starts Python with site loading disabled.

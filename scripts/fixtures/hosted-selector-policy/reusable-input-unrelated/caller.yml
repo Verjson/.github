@@ -1,0 +1,7 @@
+name: unrelated reusable input
+on: push
+jobs:
+  delegated:
+    uses: Verjson/.github/.github/workflows/node-ci.yml@0123456789abcdef0123456789abcdef01234567
+    with:
+      component: macos-15-documentation

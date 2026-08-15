@@ -1,0 +1,9 @@
+name: unrelated step input
+on: push
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: example/action@0123456789abcdef0123456789abcdef01234567
+        with:
+          runner: macos-15-documentation

@@ -334,6 +334,8 @@ inject `runs-on` into another workflow's jobs, and its outputs cannot cross into
 The reusable `actionlint.yml` check implements the metered-family part from its own immutable
 workflow revision. It parses the caller checkout with the centrally versioned
 `hosted-selector-policy.py`; foreign callers skip both dependency bootstrap and enforcement.
+The scan covers direct `runs-on` plus canonical reusable-job `with.runner` and
+`with.runner_labels` pass-throughs; it does not inspect unrelated job inputs or step inputs.
 Its consumer mode deliberately does not export this repository's `ubuntu-latest`, visibility,
 OS-lane timeout, or sanctioned-release rules. That narrower surface is the #815 containment
 boundary; #816 owns the measured consumer Linux sweep. Unreviewed selector expressions still

@@ -173,6 +173,26 @@ assert_metered_only("lane-with-fallback", 0,
                     "consumer mode retains reviewed canonical lane expressions")
 assert_metered_only("matrix-linux-literal", 0,
                     "consumer mode retains static Linux matrix selectors")
+assert_metered_only("reusable-input-macos", 1,
+                    "consumer mode refuses macOS through with.runner")
+assert_metered_only("reusable-input-windows", 1,
+                    "consumer mode refuses Windows through with.runner_labels")
+assert_metered_only("reusable-input-dynamic", 2,
+                    "consumer mode refuses a dynamic reusable runner input")
+assert_metered_only("reusable-input-linux", 0,
+                    "consumer mode preserves deferred Linux reusable inputs")
+assert_metered_only("reusable-input-unrelated", 0,
+                    "consumer mode ignores unrelated reusable inputs mentioning macOS")
+assert_metered_only("step-input-unrelated", 0,
+                    "consumer mode ignores step inputs mentioning macOS")
+assert_metered_only("reusable-input-malformed", 2,
+                    "consumer mode fails closed on a malformed reusable with mapping")
+assert_metered_only("reusable-input-canonical", 0,
+                    "consumer mode preserves the generated canonical runner expression")
+assert_metered_only("reusable-input-static-matrix", 0,
+                    "consumer mode resolves and accepts a static Linux input matrix")
+assert_metered_only("reusable-input-metered-matrix", 1,
+                    "consumer mode resolves and refuses a metered input matrix")
 
 # ---------------------------------------------------------------------------
 # Tier B — literal Linux hosted selectors, keyed on repository visibility.

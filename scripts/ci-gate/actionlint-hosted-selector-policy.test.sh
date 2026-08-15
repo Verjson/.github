@@ -222,6 +222,20 @@ else
   fail "the reusable step broadened #815 into consumer Linux policy"
 fi
 
+run_policy_fixture reusable-input-macos
+if [ "$POLICY_RC" -eq 1 ]; then
+  pass "the reusable step rejects a metered runner passed into another reusable workflow"
+else
+  fail "the reusable step missed a metered reusable-workflow runner input"
+fi
+
+run_policy_fixture reusable-input-dynamic
+if [ "$POLICY_RC" -eq 2 ]; then
+  pass "the reusable step fails closed on a dynamic runner pass-through"
+else
+  fail "the reusable step accepted an unresolved runner pass-through"
+fi
+
 if [ ! -e "$GOOD_CASE_DIR/hostile-module-executed" ] \
   && [ -f "$GOOD_REDIRECT/yaml/_yaml.py" ] \
   && [ ! -e "$GOOD_REDIRECT/python" ]; then
