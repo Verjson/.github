@@ -1649,6 +1649,36 @@ python3 "$contract" validate --repo-root "$fixture_root/case" \
   --base "$base" --head HEAD
 echo "ok - legacy implicit-patch fragments remain valid while new fragments declare impact"
 
+new_fixture
+init_fixture_repo
+write_fragment NEXT/2026-08-01-issue-43-legacy-rename.md \
+  2026-08-01 "issue: 43" "Renamed identity"
+git -C "$fixture_root/case" add .
+git -C "$fixture_root/case" commit -qm base
+base="$(git -C "$fixture_root/case" rev-parse HEAD)"
+mv "$fixture_root/case/NEXT/2026-08-01-issue-43-legacy-rename.md" \
+  "$fixture_root/case/NEXT/2026-08-01-issue-800-renamed-identity.md"
+python3 - "$fixture_root/case/NEXT/2026-08-01-issue-800-renamed-identity.md" <<'PY'
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+path.write_text(
+    path.read_text(encoding="utf-8").replace("issue: 43", "issue: 800"),
+    encoding="utf-8",
+)
+PY
+git -C "$fixture_root/case" add .
+git -C "$fixture_root/case" commit -qm "rename to a different identity"
+git -C "$fixture_root/case" diff --find-renames --name-status "$base...HEAD" \
+  | grep -q '^R' || fail "identity-change fixture was not classified as a rename"
+if python3 "$contract" validate --repo-root "$fixture_root/case" \
+  --base "$base" --head HEAD 2>"$fixture_root/error"; then
+  fail "a NEXT rename to a different identity bypassed explicit impact"
+fi
+grep -q 'impact is required.*major, minor, or patch' "$fixture_root/error"
+echo "ok - NEXT renames to a different identity require explicit impact"
+
 # ADR 0017's check-pr rule, both halves: an ordinary pull request may neither
 # write released history nor consume a fragment.
 new_fixture

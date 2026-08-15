@@ -905,6 +905,89 @@ class ChangelogContractTests(unittest.TestCase):
         changelog.validate_new_fragment_impacts(self.root, base, "HEAD")
         self.assertEqual("patch", changelog.release_impact(changelog.fragments(self.root)))
 
+    def test_next_rename_to_a_different_identity_requires_explicit_impact(self) -> None:
+        self.init_git()
+        original = fragment(
+            self.root,
+            "2026-07-30-issue-249-legacy-impact.md",
+        )
+        self.commit_all("legacy fragment")
+        base = run(self.root, "git", "rev-parse", "HEAD")
+        destination = self.root / "NEXT/2026-07-30-issue-250-new-identity.md"
+        original.rename(destination)
+        destination.write_text(
+            destination.read_text(encoding="utf-8").replace("issue: 249", "issue: 250"),
+            encoding="utf-8",
+        )
+        self.commit_all("rename to a different fragment identity")
+        self.assertTrue(
+            run(
+                self.root,
+                "git",
+                "diff",
+                "--find-renames",
+                "--name-status",
+                f"{base}...HEAD",
+            ).startswith("R"),
+            "fixture must exercise Git's rename classification",
+        )
+
+        with self.assertRaisesRegex(changelog.ChangelogError, "impact is required"):
+            changelog.validate_new_fragment_impacts(self.root, base, "HEAD")
+
+    def test_same_identity_slug_rename_keeps_legacy_impact_compatibility(self) -> None:
+        self.init_git()
+        original = fragment(
+            self.root,
+            "2026-07-30-issue-249-old-slug.md",
+        )
+        self.commit_all("legacy fragment")
+        base = run(self.root, "git", "rev-parse", "HEAD")
+        original.rename(self.root / "NEXT/2026-07-30-issue-249-clearer-slug.md")
+        self.commit_all("rename fragment slug")
+
+        changelog.validate_new_fragment_impacts(self.root, base, "HEAD")
+
+    def test_rename_from_noncanonical_next_subdirectory_is_a_new_fragment(self) -> None:
+        self.init_git()
+        original = fragment(
+            self.root,
+            "2026-07-30-issue-249-nested.md",
+        )
+        nested = self.root / "NEXT/archive/2026-07-30-issue-249-nested.md"
+        nested.parent.mkdir()
+        original.rename(nested)
+        self.commit_all("noncanonical nested entry")
+        base = run(self.root, "git", "rev-parse", "HEAD")
+        nested.rename(self.root / "NEXT/2026-07-30-issue-249-nested.md")
+        self.commit_all("move entry into canonical NEXT")
+
+        with self.assertRaisesRegex(changelog.ChangelogError, "impact is required"):
+            changelog.validate_new_fragment_impacts(self.root, base, "HEAD")
+
+    def test_rename_from_issue_to_same_spelling_id_is_a_new_fragment(self) -> None:
+        self.init_git()
+        original = fragment(
+            self.root,
+            "2026-07-30-issue-123456-old-slug.md",
+            issue="123456",
+        )
+        self.commit_all("legacy issue fragment")
+        base = run(self.root, "git", "rev-parse", "HEAD")
+        destination = self.root / "NEXT/2026-07-30-issue-123456-new-slug.md"
+        original.rename(destination)
+        destination.write_text(
+            destination.read_text(encoding="utf-8").replace(
+                "issue: 123456",
+                "id: 123456",
+            ),
+            encoding="utf-8",
+        )
+        self.commit_all("rename issue fragment to id fragment")
+
+        with self.assertRaisesRegex(changelog.ChangelogError, "impact is required"):
+            changelog.validate_new_fragment_impacts(self.root, base, "HEAD")
+
     def test_missing_impact_migration_deadline_is_validated_and_expires(self) -> None:
         self.assertFalse(changelog.impact_migration_window_active("1970-01-01"))
         with self.assertRaisesRegex(changelog.ChangelogError, "YYYY-MM-DD"):

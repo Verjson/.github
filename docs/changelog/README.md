@@ -123,6 +123,11 @@ adoption does not reinterpret old unreleased work. Released `CHANGELOG/`
 snapshots remain immutable prose and are never parsed as fragments. Impact is
 metadata only and never appears in rendered notes.
 
+A rename within `NEXT/` retains that compatibility only when its canonical date
+and identity are unchanged (for example, correcting the slug). Changing the
+canonical identity or date creates a new fragment for impact validation; Git's
+rename detection cannot turn a new release entry into a legacy one.
+
 The reusable required checks pass a dated migration grace through 2026-08-29
 UTC. During that window, branches authored against the implicit-patch contract
 remain valid; from 2026-08-30 UTC, newly added fragments must declare impact.
