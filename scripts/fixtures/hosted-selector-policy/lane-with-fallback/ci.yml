@@ -1,0 +1,14 @@
+# The two conforming Linux shapes: the full ADR 0040 chain, and ADR 0086's
+# secretless acquisition job, which lands on the portable hosted tail directly
+# rather than on the trusted fallback it must not reach.
+name: ci
+on: pull_request
+jobs:
+  build:
+    runs-on: ${{ fromJSON(vars.VERJSON_LANE_TRUSTED || vars.VERJSON_LANE_FALLBACK || '["ubuntu-24.04"]') }}
+    steps:
+      - run: npm test
+  acquire:
+    runs-on: ${{ fromJSON(vars.VERJSON_LANE_UNTRUSTED || '["ubuntu-24.04"]') }}
+    steps:
+      - run: npm ci

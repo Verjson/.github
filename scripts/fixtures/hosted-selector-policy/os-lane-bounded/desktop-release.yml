@@ -1,0 +1,15 @@
+# The conforming shape: both OS lanes, dispatch-only, bounded at 45 minutes,
+# and no fallback tail on either lane.
+name: desktop release
+on: workflow_dispatch
+jobs:
+  macos-dist:
+    runs-on: ${{ fromJSON(vars.VERJSON_LANE_TRUSTED_MACOS) }}
+    timeout-minutes: 45
+    steps:
+      - run: npm run dist
+  windows-dist:
+    runs-on: ${{ fromJSON(vars.VERJSON_LANE_TRUSTED_WINDOWS) }}
+    timeout-minutes: 45
+    steps:
+      - run: npm run dist

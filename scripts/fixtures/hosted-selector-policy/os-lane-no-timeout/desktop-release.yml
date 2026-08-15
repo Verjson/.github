@@ -1,0 +1,10 @@
+# An OS-lane job with no timeout at all. GitHub's default job timeout is six
+# hours; at macOS's 10x multiplier one hung step is up to 3,600 billable
+# minutes from a single dispatch.
+name: desktop release
+on: workflow_dispatch
+jobs:
+  macos-dist:
+    runs-on: ${{ fromJSON(vars.VERJSON_LANE_TRUSTED_MACOS) }}
+    steps:
+      - run: npm run dist

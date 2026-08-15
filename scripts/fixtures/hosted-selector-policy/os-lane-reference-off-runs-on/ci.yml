@@ -1,0 +1,12 @@
+# The reference is not in runs-on at all. R5 is a file-wide reference rule
+# precisely so one grep answers "who can spend hosted minutes"; a rule that
+# only read runs-on would be walked around by staging the value first.
+name: ci
+on: pull_request
+env:
+  DESKTOP_LANE: ${{ vars.VERJSON_LANE_TRUSTED_WINDOWS }}
+jobs:
+  build:
+    runs-on: ${{ fromJSON(vars.VERJSON_LANE_TRUSTED || vars.VERJSON_LANE_FALLBACK || '["ubuntu-24.04"]') }}
+    steps:
+      - run: echo "$DESKTOP_LANE"
