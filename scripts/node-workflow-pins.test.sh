@@ -364,7 +364,8 @@ checkout_depth="${checkout_depth%\'}"; checkout_depth="${checkout_depth#\'}"
 caller_gen="$root/scripts/gen-privileged-merge-caller.sh"
 if [ -f "$caller_gen" ]; then
   contract_sha=848c49fd4dac307f26180acd420760a27ceff0ba
-  generated="$(bash "$caller_gen" "$contract_sha" '["ubuntu-24.04"]' 2>/dev/null)"
+  required_checks='[{"name":"shell-tests","app_id":15368,"workflow_id":315894159,"workflow_path":".github/workflows/actions-ci.yml"}]'
+  generated="$(bash "$caller_gen" "$contract_sha" "$required_checks" '["ubuntu-24.04"]' 2>/dev/null)"
   caller_ref="$(printf '%s\n' "$generated" \
     | sed -n 's/^[[:space:]]*uses:[[:space:]]*\(Verjson\/\.github\/\.github\/workflows\/ai-privileged-merge\.yml@.*\)$/\1/p')"
 

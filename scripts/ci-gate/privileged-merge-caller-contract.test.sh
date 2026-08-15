@@ -26,6 +26,8 @@ gate="$repo_root/.github/workflows/ai-review-merge.yml"
 canonical="$repo_root/.github/workflows/ai-privileged-merge.yml"
 gen="$repo_root/scripts/gen-privileged-merge-caller.sh"
 contract_sha="848c49fd4dac307f26180acd420760a27ceff0ba"
+required_checks='[{"name":"shell-tests","app_id":15368,"workflow_id":315894159,"workflow_path":".github/workflows/actions-ci.yml"}]'
+printf -v required_checks_shell '%q' "$required_checks"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 fails=0
@@ -179,10 +181,11 @@ on = d.get(True, d.get("on"))
 wc = on.get("workflow_call")
 if not wc: sys.exit(1)
 i = wc.get("inputs", {})
-need = {"pr_number", "expected_head_sha", "authorization_check_id", "arm_run_id", "arm_run_attempt", "review_policy", "source_run_id", "runner_labels"}
+need = {"pr_number", "expected_head_sha", "authorization_check_id", "arm_run_id", "arm_run_attempt", "review_policy", "source_run_id", "required_checks", "runner_labels"}
 need.add("privileged_lane")
 if not need <= set(i): sys.exit(1)
-sys.exit(0 if i["runner_labels"].get("required") is False else 1)
+sys.exit(0 if i["runner_labels"].get("required") is False and
+                  i["required_checks"] == {"required": True, "type": "string"} else 1)
 PY
 
 # The input must survive as an input. Dropping it would strand a genuinely
@@ -196,17 +199,42 @@ on = d.get(True, d.get("on"))
 sys.exit(0 if "runner_labels" in on.get("workflow_call", {}).get("inputs", {}) else 1)
 PY
 
+python3 - "$canonical" "$repo_root/.github/workflows/ai-promotion-retry.yml" "$required_checks" <<'PY' \
+  && pass "canonical direct and retry paths carry the same reviewed repository-specific policy" \
+  || fail "canonical required-check policy is hidden, variable-backed, or inconsistent across retry"
+import sys
+import yaml
+
+promotion = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))
+retry = yaml.safe_load(open(sys.argv[2], encoding="utf-8"))
+expected = sys.argv[3]
+promotion_on = promotion.get(True, promotion.get("on"))
+retry_on = retry.get(True, retry.get("on"))
+call_policy = promotion_on["workflow_call"]["inputs"]["required_checks"]
+env = promotion["jobs"]["privileged_merge"]["env"]
+retry_call_policy = retry_on["workflow_call"]["inputs"]["required_checks"]
+retry_value = retry["jobs"]["promote"]["with"]["required_checks"]
+assert "required_checks" not in promotion_on["workflow_dispatch"]["inputs"]
+assert call_policy == {"required": True, "type": "string"}
+assert retry_call_policy == {"required": True, "type": "string"}
+assert expected in env["REQUIRED_CHECK_POLICY"]
+assert "github.repository == 'Verjson/.github'" in env["REQUIRED_CHECK_POLICY"]
+assert "inputs.required_checks" in env["REQUIRED_CHECK_POLICY"]
+assert "vars.AI_REVIEW_REQUIRED_CHECKS" not in str(promotion)
+assert expected in retry_value and "github.repository == 'Verjson/.github'" in retry_value and "inputs.required_checks" in retry_value
+PY
+
 # --- the generated caller honours both sides ---------------------------------
 # The DEFAULT invocation takes no argument. Everything below reads this file,
 # because it is the shape ~90 Verjson consumers receive; the explicit-label
 # variant is asserted separately.
-bash "$gen" "$contract_sha" >"$tmp/caller.yml" 2>/dev/null \
+bash "$gen" "$contract_sha" "$required_checks" >"$tmp/caller.yml" 2>/dev/null \
   && pass "generator emits a caller from an immutable contract SHA" || fail "generator rejected a valid contract SHA"
-bash "$gen" "$contract_sha" '["ubuntu-24.04"]' >"$tmp/caller-labels.yml" 2>/dev/null \
+bash "$gen" "$contract_sha" "$required_checks" '["ubuntu-24.04"]' >"$tmp/caller-labels.yml" 2>/dev/null \
   && pass "generator still emits a caller for an explicit fleet" || fail "generator failed with explicit labels"
-bash "$gen" "$contract_sha" --retry '["CI","changelog"]' >"$tmp/retry.yml" 2>/dev/null \
+bash "$gen" "$contract_sha" --retry '["CI","changelog"]' "$required_checks" >"$tmp/retry.yml" 2>/dev/null \
   && pass "generator emits a CI-completion retry caller" || fail "generator rejected valid retry workflow names"
-bash "$gen" "$contract_sha" --retry '["Integration (event-hub e2e)","Lint: docs/api"]' >"$tmp/retry-punctuation.yml" 2>/dev/null \
+bash "$gen" "$contract_sha" --retry '["Integration (event-hub e2e)","Lint: docs/api"]' "$required_checks" >"$tmp/retry-punctuation.yml" 2>/dev/null \
   && pass "generator accepts punctuation in valid GitHub workflow names" \
   || fail "generator rejected valid parenthesized workflow names"
 
@@ -220,7 +248,7 @@ retry_shell_name="Owner's # \$(touch $retry_shell_marker_substitution) \`touch $
 retry_shell_json="$(jq -cn --arg name "$retry_shell_name" '["CI", $name]')"
 mkdir -p "$retry_shell_root/scripts" "$retry_shell_root/.github/workflows"
 cp "$gen" "$retry_shell_root/scripts/gen-privileged-merge-caller.sh"
-bash "$gen" "$contract_sha" --retry "$retry_shell_json" >"$tmp/retry-shell-original.yml" 2>/dev/null
+bash "$gen" "$contract_sha" --retry "$retry_shell_json" "$required_checks" >"$tmp/retry-shell-original.yml" 2>/dev/null
 retry_regenerate="$(sed -n 's/^#   //p' "$tmp/retry-shell-original.yml" | head -1)"
 (
   cd "$retry_shell_root"
@@ -266,7 +294,9 @@ if set(on) != {"workflow_run"} or on["workflow_run"] != {
     sys.exit(1)
 if job.get("uses") != want or set(job.get("secrets", {})) != {"ORG_ADMIN_TOKEN"}:
     sys.exit(1)
-if job.get("with") != {"privileged_lane": "${{ vars.VERJSON_LANE_PRIVILEGED }}"}:
+if job.get("with") != {
+        "required_checks": '[{"name":"shell-tests","app_id":15368,"workflow_id":315894159,"workflow_path":".github/workflows/actions-ci.yml"}]',
+        "privileged_lane": "${{ vars.VERJSON_LANE_PRIVILEGED }}"}:
     sys.exit(1)
 sys.exit(0)
 RETRY_PY
@@ -294,10 +324,11 @@ python3 - "$tmp/caller.yml" <<'WITH_PY' && pass "generated caller forwards exact
 import sys, yaml
 d = yaml.safe_load(open(sys.argv[1]))
 w = d["jobs"]["privileged_merge"].get("with", {})
-if set(w) != {"pr_number", "expected_head_sha", "authorization_check_id", "arm_run_id", "arm_run_attempt", "review_policy", "source_run_id", "privileged_lane"}:
+if set(w) != {"pr_number", "expected_head_sha", "authorization_check_id", "arm_run_id", "arm_run_attempt", "review_policy", "source_run_id", "required_checks", "privileged_lane"}:
     sys.exit(1)
 sys.exit(0 if w["expected_head_sha"] == "${{ inputs.expected_head_sha }}" and
          w["review_policy"] == "${{ inputs.review_policy }}" and
+         w["required_checks"] == '[{"name":"shell-tests","app_id":15368,"workflow_id":315894159,"workflow_path":".github/workflows/actions-ci.yml"}]' and
          w["privileged_lane"] == "${{ vars.VERJSON_LANE_PRIVILEGED }}" else 1)
 WITH_PY
 
@@ -417,32 +448,48 @@ case "$call_group" in *inputs.expected_head_sha*) pass "caller concurrency is ke
 # --- generator input validation ----------------------------------------------
 bash "$gen" >/dev/null 2>&1 && fail "generator accepted a missing contract SHA" \
   || pass "generator requires an immutable contract SHA"
-bash "$gen" main >/dev/null 2>&1 && fail "generator accepted a mutable contract ref" \
+bash "$gen" "$contract_sha" >/dev/null 2>&1 && fail "generator accepted a missing required-check policy" \
+  || pass "generator requires every adopter to supply a reviewed required-check policy"
+bash "$gen" "$contract_sha" '[]' >/dev/null 2>&1 && fail "generator accepted an empty required-check policy" \
+  || pass "generator rejects an empty required-check policy"
+bash "$gen" "$contract_sha" '[{"name":"shell-tests","app_id":15368,"workflow_path":".github/workflows/actions-ci.yml"}]' >/dev/null 2>&1 \
+  && fail "generator accepted a required check without a workflow ID" \
+  || pass "generator requires exact check, App, workflow ID, and workflow path fields"
+bash "$gen" "$contract_sha" '[{"name":"shell-tests","app_id":15368,"workflow_id":315894159,"workflow_path":".github/workflows/actions-ci.yml"},{"name":"shell-tests","app_id":15368,"workflow_id":315894159,"workflow_path":".github/workflows/actions-ci.yml"}]' >/dev/null 2>&1 \
+  && fail "generator accepted duplicate required-check names" \
+  || pass "generator rejects ambiguous duplicate required-check names"
+bash "$gen" "$contract_sha" '[{"name":"AI terminal merge promotion","app_id":15368,"workflow_id":315894159,"workflow_path":".github/workflows/actions-ci.yml"}]' >/dev/null 2>&1 \
+  && fail "generator accepted the promotion check as its own prerequisite" \
+  || pass "generator rejects circular promotion checks"
+bash "$gen" main "$required_checks" >/dev/null 2>&1 && fail "generator accepted a mutable contract ref" \
   || pass "generator rejects a mutable contract ref"
-bash "$gen" "${contract_sha^^}" >/dev/null 2>&1 && fail "generator accepted a non-canonical uppercase SHA" \
+bash "$gen" "${contract_sha^^}" "$required_checks" >/dev/null 2>&1 && fail "generator accepted a non-canonical uppercase SHA" \
   || pass "generator requires canonical lowercase SHA spelling"
-bash "$gen" "$contract_sha" 'not-json' >/dev/null 2>&1 && fail "generator accepted non-JSON runner_labels" \
+bash "$gen" "$contract_sha" "$required_checks" 'not-json' >/dev/null 2>&1 && fail "generator accepted non-JSON runner_labels" \
   || pass "generator rejects non-JSON runner_labels"
-bash "$gen" "$contract_sha" '[]' >/dev/null 2>&1 && fail "generator accepted empty runner_labels" \
+bash "$gen" "$contract_sha" "$required_checks" '[]' >/dev/null 2>&1 && fail "generator accepted empty runner_labels" \
   || pass "generator rejects empty runner_labels"
 # Charset, not just JSON shape: a label carrying an expression would expand a
 # secret into a workflow input, and a quote emits YAML GitHub cannot parse.
-bash "$gen" "$contract_sha" '["${{ secrets.ORG_ADMIN_TOKEN }}"]' >/dev/null 2>&1 \
+bash "$gen" "$contract_sha" "$required_checks" '["${{ secrets.ORG_ADMIN_TOKEN }}"]' >/dev/null 2>&1 \
   && fail "generator accepted an expression as a runner label" \
   || pass "generator rejects a runner label outside [A-Za-z0-9._-]"
-bash "$gen" "$contract_sha" --retry '[]' >/dev/null 2>&1 \
+bash "$gen" "$contract_sha" --retry '[]' "$required_checks" >/dev/null 2>&1 \
   && fail "generator accepted an empty retry workflow list" \
   || pass "generator requires at least one deterministic completion workflow"
-bash "$gen" "$contract_sha" --retry '["CI", "${{ secrets.X }}"]' >/dev/null 2>&1 \
+bash "$gen" "$contract_sha" --retry '["CI","CI"]' "$required_checks" >/dev/null 2>&1 \
+  && fail "generator accepted duplicate retry workflow names" \
+  || pass "generator rejects ambiguous duplicate retry workflow names"
+bash "$gen" "$contract_sha" --retry '["CI", "${{ secrets.X }}"]' "$required_checks" >/dev/null 2>&1 \
   && fail "generator accepted an expression as a retry workflow name" \
   || pass "generator rejects unsafe retry workflow names"
-bash "$gen" "$contract_sha" --retry $'["CI", "line\\nbreak"]' >/dev/null 2>&1 \
+bash "$gen" "$contract_sha" --retry $'["CI", "line\\nbreak"]' "$required_checks" >/dev/null 2>&1 \
   && fail "generator accepted a newline in a retry workflow name" \
   || pass "generator rejects control characters in retry workflow names"
-bash "$gen" "$contract_sha" --retry $'["CI", "line\u2028break"]' >/dev/null 2>&1 \
+bash "$gen" "$contract_sha" --retry $'["CI", "line\u2028break"]' "$required_checks" >/dev/null 2>&1 \
   && fail "generator accepted a Unicode line separator in a retry workflow name" \
   || pass "generator rejects Unicode line separators in retry workflow names"
-bash "$gen" "$contract_sha" --retry '["CI", "x\"] , \"permissions\": \"write-all"]' >"$tmp/retry-quoted.yml" 2>/dev/null \
+bash "$gen" "$contract_sha" --retry '["CI", "x\"] , \"permissions\": \"write-all"]' "$required_checks" >"$tmp/retry-quoted.yml" 2>/dev/null \
   && python3 - "$tmp/retry-quoted.yml" <<'RETRY_QUOTED_PY' \
   && pass "quotes and YAML punctuation remain serialized workflow-name data" \
   || fail "generator let quoted workflow-name data alter YAML structure"
@@ -458,7 +505,7 @@ RETRY_QUOTED_PY
 # `gen "$SHA" "$LABELS"` passes an empty second argument, which must produce the lane-routed
 # caller rather than a diagnostic — or `runner_labels: ''`, which is a supplied
 # empty string and not the same thing as omitting the input.
-bash "$gen" "$contract_sha" '' >"$tmp/caller-empty.yml" 2>/dev/null \
+bash "$gen" "$contract_sha" "$required_checks" '' >"$tmp/caller-empty.yml" 2>/dev/null \
   && diff -q "$tmp/caller.yml" "$tmp/caller-empty.yml" >/dev/null \
   && pass "an empty argument generates the same lane-routed caller as no argument" \
   || fail "an empty runner_labels argument does not produce the default caller"
@@ -466,10 +513,10 @@ bash "$gen" "$contract_sha" '' >"$tmp/caller-empty.yml" 2>/dev/null \
 # The regenerate command is copied by operators, so it is part of the contract:
 # it must reproduce the file it heads. A default caller whose comment carried a
 # label would put the hardcoded fleet back on the next regeneration.
-grep -qF "gen-privileged-merge-caller.sh $contract_sha >" "$tmp/caller.yml" \
+grep -qF "gen-privileged-merge-caller.sh $contract_sha $required_checks_shell >" "$tmp/caller.yml" \
   && pass "the default caller records the exact contract SHA and no fleet argument" \
   || fail "the default caller's regenerate command does not reproduce its trust anchor"
-grep -qF "gen-privileged-merge-caller.sh $contract_sha '[\"ubuntu-24.04\"]' >" "$tmp/caller-labels.yml" \
+grep -qF "gen-privileged-merge-caller.sh $contract_sha $required_checks_shell '[\"ubuntu-24.04\"]' >" "$tmp/caller-labels.yml" \
   && pass "an explicit fleet is reproduced by the caller's own regenerate command" \
   || fail "the explicit caller's regenerate command does not reproduce its fleet"
 

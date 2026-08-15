@@ -314,9 +314,12 @@ def main() -> int:
             "trusted continuation must terminally merge only the exact authorized head")
     require("retention-days: 90" in rearm_text,
             "arm receipts must survive the supported long-lived hold window")
-    require("AI_REVIEW_REQUIRED_CHECKS" in promote_text and
+    require("REQUIRED_CHECK_POLICY" in promote_text and "vars.AI_REVIEW_REQUIRED_CHECKS" not in promote_text and
             "check-runs?per_page=100" in promote_text and "sort_by(.id) | last" in promote_text and
             ".workflow_id == $workflow_id" in promote_text and
+            "actions/runs/$ci_run_id/jobs?per_page=100" in promote_text and
+            ".check_suite.id" in promote_text and ".check_suite_id" in promote_text and
+            ".check_run_url == $url" in promote_text and
             "head_workflow_blob" in promote_text and "trusted_workflow_blob" in promote_text,
             "terminal promotion must enforce latest-run App/workflow/revision-bound required CI")
     require("(.conclusion | ascii_upcase) == \"SUCCESS\"" in promote_text,

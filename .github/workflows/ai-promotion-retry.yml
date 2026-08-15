@@ -10,6 +10,9 @@ on:
     types: [completed]
   workflow_call:
     inputs:
+      required_checks:
+        required: true
+        type: string
       privileged_lane:
         required: false
         type: string
@@ -154,4 +157,5 @@ jobs:
       arm_run_id: ${{ needs.resolve.outputs.arm_run_id }}
       arm_run_attempt: ${{ needs.resolve.outputs.arm_run_attempt }}
       review_policy: ${{ needs.resolve.outputs.review_policy }}
+      required_checks: ${{ github.repository == 'Verjson/.github' && '[{"name":"shell-tests","app_id":15368,"workflow_id":315894159,"workflow_path":".github/workflows/actions-ci.yml"}]' || inputs.required_checks }}
       privileged_lane: ${{ inputs.privileged_lane || vars.VERJSON_LANE_PRIVILEGED }}
