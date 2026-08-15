@@ -799,6 +799,20 @@ assert_route "$workflows/container-release.yml" promote Verjson/.github '' false
 assert_route "$workflows/container-release.yml" promote Acme/widgets '' false '' '' \
   'ubuntu-24.04' "container-release promote — external callers retain hosted portability"
 
+for job in dry-run deploy; do
+  assert_route "$workflows/container-deployment.yml" "$job" Verjson/.github '' false \
+    '["self-hosted","trusted-canary"]' '["self-hosted","untrusted-canary"]' \
+    '["self-hosted","trusted-canary"]' \
+    "container-deployment $job — protected orchestration stays on the trusted lane"
+  assert_route "$workflows/container-deployment.yml" "$job" Acme/widgets '' false '' '' \
+    'ubuntu-24.04' "container-deployment $job — external callers retain hosted portability"
+  expression="$(extract_runs_on "$workflows/container-deployment.yml" "$job")"
+  case "$expression" in
+    *inputs.runner*) fail "container-deployment $job must not accept a caller runner override" ;;
+    *) pass "container-deployment $job rejects caller-selected runner routing" ;;
+  esac
+done
+
 for job in validate preview-admission; do
   expr_no_override="$(extract_runs_on "$workflows/pulumi-ci.yml" "$job")"
   case "$expr_no_override" in

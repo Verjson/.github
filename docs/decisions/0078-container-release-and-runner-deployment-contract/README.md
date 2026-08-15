@@ -106,7 +106,10 @@ that `observedDeployedRelease` baseline **before the first `verjson-cli-cloud` m
 Only after durable receipt storage is confirmed may the canary start. Progress and final
 receipts are append-only revisions of that attempt; each repeats the baseline and records
 completed runner transitions, binds the preceding revision's canonical digest, and is
-rejected if it changes the attempt identity or observed baseline. A failure retains a
+rejected if it changes the attempt identity, checked-out head, canonical plan digest, or
+observed baseline. The controller restores only a complete contiguous chain returned with
+keyed attempt/artifact authority and only when live fleet evidence agrees with its final
+state. A failure retains a
 `failed` receipt, and an abrupt stop
 that cannot finalize still retains the pre-mutation `admitted` receipt. Recovery first
 seals an `interrupted` revision from that retained baseline, without touching a runner;
@@ -121,7 +124,16 @@ window and success criteria are committed consumer inputs. Only a passing canary
 the remaining runners to update one at a time in a deterministic order, with readiness
 and the same representative probe checked after each update. The first interruption,
 timeout, digest mismatch, or probe failure stops the rollout; it never skips a failed
-runner or continues in parallel.
+runner or continues in parallel. A verified update is retained before its probe; a failed
+or timed-out probe records the selected actual release, while indeterminate mutation
+evidence records the runner state as unknown rather than claiming the predecessor.
+An unknown state becomes runnable only through an append-only reconciliation revision
+bound to live manifest, release, and image-digest evidence. Selected-release evidence is
+bound to the admitted target manifest and variant digest; baseline evidence must provide
+canonical release-manifest bytes whose recorded identity and reviewed variant index digest
+match the live host exactly. A passing canary remains observation-pending in retained
+state until the complete window is durably recorded; resume repeats a pending window and
+cannot advance to the next host.
 
 Rollback is an independently approved deployment of the exact
 `observedDeployedRelease` from the failed or interrupted **attempt being recovered**,
@@ -297,6 +309,37 @@ different digest or an inconclusive registry read fails closed without replacing
 The manifest records the attestation ID returned by GitHub's provenance action and
 derives its signer identity from the pinned reusable workflow; reviewed configuration
 selects the expected predicate but is not treated as observed attestation evidence.
+
+## Amendment (2026-08-14) — protected runner deployment contract (#629)
+
+The deployment stage is implemented by the reusable
+`.github/workflows/container-deployment.yml` and the generated five-file adopter set
+from `scripts/gen-container-deployment.sh`: a thin dispatch caller, controller,
+authorization preflight, receipt schema, and contract test. Every generated artifact
+binds one immutable deployment-contract commit. The caller passes no secret or
+environment override; the reusable mutation job names `production` and exposes its
+environment-scoped credential only to the controller execution step.
+
+Receipt schema version 3 binds each revision to its ordinal, checked-out head, canonical
+plan digest, deployment-contract commit, canonical immutable manifest identity, fleet
+selector, ordinary canary identity, failure evidence, and verified-or-unknown final fleet
+state. The admitted revision remains durable before mutation, and every progress revision
+binds the canonical digest of its predecessor. The controller owns ordering, capacity,
+worst-case timing with a 15-minute job margin, one-host progress phases, state transitions,
+authority-checked resume, strict schema and semantic receipt checks;
+`verjson-cli-cloud` continues to own drain, update, digest verification, and admission
+mechanics. Consumer-owned evidence and representative-probe adapters are reviewed Python
+argument vectors invoked without a shell.
+
+Failure stops before an unstarted host. Recovery does not silently restore a guessed
+predecessor inside that failed dispatch: rollback is a new protected dispatch bound to
+the failed or interrupted attempt's observed baseline and receipt digest, then follows
+the same canary and sequential protocol. This preserves independent approval while
+satisfying the requirement that rollback use the previous verified digest without a
+rebuild. Dry-run has no production credential or mutation adapter and uploads its exact
+redacted plan for inspection; mutable tags and raw
+digests are rejected at admission, workflow concurrency prevents overlap, and the fixed
+CLI argument shape has no capacity or spend-increasing operation.
 
 ## Amendment (2026-08-09) — private candidate dependency boundary (#690)
 

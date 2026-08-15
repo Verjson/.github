@@ -1,0 +1,217 @@
+name: protected runner deployment
+
+on:
+  workflow_call:
+    inputs:
+      manifest-identity:
+        required: true
+        type: string
+      fleet-selector:
+        required: true
+        type: string
+      action:
+        required: true
+        type: string
+      rollback-receipt:
+        required: false
+        type: string
+        default: ''
+      config-path:
+        required: true
+        type: string
+      contract-ref:
+        required: true
+        type: string
+      dry-run:
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  actions: read
+  attestations: read
+  contents: read
+
+concurrency:
+  group: runner-deployment-${{ github.repository }}-${{ inputs.fleet-selector }}
+  cancel-in-progress: false
+
+jobs:
+  dry-run:
+    if: inputs.dry-run
+    runs-on: ${{ github.repository_owner != 'Verjson' && 'ubuntu-24.04' || fromJSON(vars.VERJSON_LANE_TRUSTED || vars.VERJSON_LANE_FALLBACK || '["ubuntu-24.04"]') }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6.0.2
+        with:
+          persist-credentials: false
+      - name: Produce exact mutation-free host plan
+        env:
+          ACTION: ${{ inputs.action }}
+          CONFIG_PATH: ${{ inputs.config-path }}
+          CONTRACT_REF: ${{ inputs.contract-ref }}
+          FLEET_SELECTOR: ${{ inputs.fleet-selector }}
+          GH_TOKEN: ${{ github.token }}
+          MANIFEST_IDENTITY: ${{ inputs.manifest-identity }}
+          ROLLBACK_RECEIPT: ${{ inputs.rollback-receipt }}
+        run: |
+          set -euo pipefail
+          [[ "$CONTRACT_REF" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$MANIFEST_IDENTITY" =~ ^ghcr\.io/[a-z0-9_.-]+/[a-z0-9_.-]+@sha256:[0-9a-f]{64}$ ]]
+          python3 scripts/container_deployment_controller.py collect-evidence \
+            --config "$CONFIG_PATH" --manifest-identity "$MANIFEST_IDENTITY" \
+            --fleet "$FLEET_SELECTOR" --rollback-receipt "$ROLLBACK_RECEIPT" \
+            --output deployment-evidence.json
+          args=(plan --config "$CONFIG_PATH" --evidence deployment-evidence.json \
+            --fleet "$FLEET_SELECTOR" --action "$ACTION" --contract-ref "$CONTRACT_REF" \
+            --output deployment-plan.json)
+          python3 scripts/container_deployment_controller.py "${args[@]}"
+          jq -e '.rolloutMode == "sequential" and (.steps[0].phase == "canary")' deployment-plan.json
+      - name: Retain exact redacted mutation-free plan
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: runner-deployment-${{ github.run_id }}-${{ github.run_attempt }}-dry-run-plan
+          path: deployment-plan.json
+          if-no-files-found: error
+          retention-days: 90
+
+  deploy:
+    if: ${{ !inputs.dry-run }}
+    environment: production
+    runs-on: ${{ github.repository_owner != 'Verjson' && 'ubuntu-24.04' || fromJSON(vars.VERJSON_LANE_TRUSTED || vars.VERJSON_LANE_FALLBACK || '["ubuntu-24.04"]') }}
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6.0.2
+        with:
+          persist-credentials: false
+      - name: Collect normalized manifest, fleet, and approval evidence
+        env:
+          CONFIG_PATH: ${{ inputs.config-path }}
+          FLEET_SELECTOR: ${{ inputs.fleet-selector }}
+          GH_TOKEN: ${{ github.token }}
+          MANIFEST_IDENTITY: ${{ inputs.manifest-identity }}
+          ROLLBACK_RECEIPT: ${{ inputs.rollback-receipt }}
+        run: |
+          set -euo pipefail
+          python3 scripts/container_deployment_controller.py collect-evidence \
+            --config "$CONFIG_PATH" --manifest-identity "$MANIFEST_IDENTITY" \
+            --fleet "$FLEET_SELECTOR" --rollback-receipt "$ROLLBACK_RECEIPT" \
+            --output deployment-evidence.json
+          python3 scripts/container_deployment_preflight.py --evidence deployment-evidence.json
+      - name: Admit immutable sequential plan
+        env:
+          ACTION: ${{ inputs.action }}
+          CONFIG_PATH: ${{ inputs.config-path }}
+          CONTRACT_REF: ${{ inputs.contract-ref }}
+          FLEET_SELECTOR: ${{ inputs.fleet-selector }}
+        run: |
+          set -euo pipefail
+          args=(plan --config "$CONFIG_PATH" --evidence deployment-evidence.json \
+            --fleet "$FLEET_SELECTOR" --action "$ACTION" --contract-ref "$CONTRACT_REF" \
+            --output deployment-plan.json)
+          python3 scripts/container_deployment_controller.py "${args[@]}"
+          mkdir -p deployment-receipts
+          python3 scripts/container_deployment_controller.py admit \
+            --plan deployment-plan.json --config "$CONFIG_PATH" \
+            --evidence deployment-evidence.json --receipt-dir deployment-receipts
+          python3 scripts/container_deployment_controller.py reconcile \
+            --plan deployment-plan.json --config "$CONFIG_PATH" \
+            --evidence deployment-evidence.json --receipt-dir deployment-receipts
+      - name: Retain admitted or reconciled authority
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: runner-deployment-${{ github.run_id }}-${{ github.run_attempt }}-admitted
+          path: deployment-receipts/
+          if-no-files-found: error
+          retention-days: 90
+      - name: Advance one bounded runner transition
+        id: advance_1
+        env:
+          CONFIG_PATH: ${{ inputs.config-path }}
+          GH_TOKEN: ${{ github.token }}
+          VERJSON_RUNNER_DEPLOY_TOKEN: ${{ secrets.VERJSON_RUNNER_DEPLOY_TOKEN }}
+        run: |
+          set -euo pipefail
+          python3 scripts/container_deployment_controller.py execute \
+            --plan deployment-plan.json --config "$CONFIG_PATH" \
+            --evidence deployment-evidence.json --receipt-dir deployment-receipts
+      - name: Retain append-only progress after transition 1
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: runner-deployment-${{ github.run_id }}-${{ github.run_attempt }}-progress-1
+          path: deployment-receipts/
+          if-no-files-found: error
+          retention-days: 90
+      - name: Refresh live fleet evidence after transition 1
+        if: ${{ steps.advance_1.outcome == 'success' }}
+        id: refresh_1
+        env:
+          CONFIG_PATH: ${{ inputs.config-path }}
+          FLEET_SELECTOR: ${{ inputs.fleet-selector }}
+          GH_TOKEN: ${{ github.token }}
+          MANIFEST_IDENTITY: ${{ inputs.manifest-identity }}
+          ROLLBACK_RECEIPT: ${{ inputs.rollback-receipt }}
+        run: |
+          set -euo pipefail
+          python3 scripts/container_deployment_controller.py collect-evidence \
+            --config "$CONFIG_PATH" --manifest-identity "$MANIFEST_IDENTITY" \
+            --fleet "$FLEET_SELECTOR" --rollback-receipt "$ROLLBACK_RECEIPT" \
+            --output deployment-evidence.json
+          python3 scripts/container_deployment_preflight.py --evidence deployment-evidence.json
+      - name: Advance second bounded runner transition
+        if: ${{ steps.refresh_1.outcome == 'success' }}
+        id: advance_2
+        env:
+          CONFIG_PATH: ${{ inputs.config-path }}
+          GH_TOKEN: ${{ github.token }}
+          VERJSON_RUNNER_DEPLOY_TOKEN: ${{ secrets.VERJSON_RUNNER_DEPLOY_TOKEN }}
+        run: |
+          set -euo pipefail
+          python3 scripts/container_deployment_controller.py execute \
+            --plan deployment-plan.json --config "$CONFIG_PATH" \
+            --evidence deployment-evidence.json --receipt-dir deployment-receipts
+      - name: Retain append-only progress after transition 2
+        if: ${{ always() && steps.refresh_1.outcome == 'success' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: runner-deployment-${{ github.run_id }}-${{ github.run_attempt }}-progress-2
+          path: deployment-receipts/
+          if-no-files-found: error
+          retention-days: 90
+      - name: Refresh live fleet evidence after transition 2
+        if: ${{ steps.advance_2.outcome == 'success' }}
+        id: refresh_2
+        env:
+          CONFIG_PATH: ${{ inputs.config-path }}
+          FLEET_SELECTOR: ${{ inputs.fleet-selector }}
+          GH_TOKEN: ${{ github.token }}
+          MANIFEST_IDENTITY: ${{ inputs.manifest-identity }}
+          ROLLBACK_RECEIPT: ${{ inputs.rollback-receipt }}
+        run: |
+          set -euo pipefail
+          python3 scripts/container_deployment_controller.py collect-evidence \
+            --config "$CONFIG_PATH" --manifest-identity "$MANIFEST_IDENTITY" \
+            --fleet "$FLEET_SELECTOR" --rollback-receipt "$ROLLBACK_RECEIPT" \
+            --output deployment-evidence.json
+          python3 scripts/container_deployment_preflight.py --evidence deployment-evidence.json
+      - name: Advance third bounded runner transition
+        if: ${{ steps.refresh_2.outcome == 'success' }}
+        id: advance_3
+        env:
+          CONFIG_PATH: ${{ inputs.config-path }}
+          GH_TOKEN: ${{ github.token }}
+          VERJSON_RUNNER_DEPLOY_TOKEN: ${{ secrets.VERJSON_RUNNER_DEPLOY_TOKEN }}
+        run: |
+          set -euo pipefail
+          python3 scripts/container_deployment_controller.py execute \
+            --plan deployment-plan.json --config "$CONFIG_PATH" \
+            --evidence deployment-evidence.json --receipt-dir deployment-receipts
+      - name: Retain append-only progress after transition 3
+        if: ${{ always() && steps.refresh_2.outcome == 'success' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: runner-deployment-${{ github.run_id }}-${{ github.run_attempt }}-progress-3
+          path: deployment-receipts/
+          if-no-files-found: error
+          retention-days: 90
