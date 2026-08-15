@@ -5,6 +5,7 @@
   [#814](https://github.com/Verjson/.github/issues/814),
   [#815](https://github.com/Verjson/.github/issues/815),
   [#816](https://github.com/Verjson/.github/issues/816),
+  [#820](https://github.com/Verjson/.github/issues/820),
   [Verjson/AiB#229](https://github.com/Verjson/AiB/issues/229)
 - **Extends:** [ADR 0040](../0040-runner-lanes-and-admission-axes/README.md) (lanes name the work),
   [ADR 0041](../0041-shared-admission-hosted-and-self-hosted/README.md) (capacity moves are variable edits)
@@ -106,7 +107,7 @@ ADR 0060 retired `node-release.yml`, and the canonical release path is a dispatc
 `changelog-release.yml` that **builds nothing**. AiB owns its own desktop release workflow.
 So in this repository the sanctioned set for the OS lane variables is **empty**, and the
 conformance rule is simply that no workflow here may reference them at all. The set is an
-explicit constant in `scripts/ci-gate/hosted-selector-policy.sh` rather than an implicit
+explicit constant in `scripts/ci-gate/hosted-selector-policy.py` rather than an implicit
 absence, so #815 extends it deliberately rather than by accident.
 
 The check does **not** hardcode `github.repository == 'Verjson/AiB'`. A repository
@@ -116,13 +117,55 @@ ADR 0041 exists to preserve. The repository-scoped variables already are the all
 reference rule only makes the inability visible instead of implicit, and gives one grep
 that answers "who can spend hosted minutes".
 
-### The metered-SKU ban has zero exceptions
+### The metered-SKU ban has zero exceptions — and one honest boundary
 
 Any `runs-on` naming `macos-*` or `windows-*` fails. No allowlist, no parameter, no
 environment override. No security-boundary argument has ever required either family, unlike
 the closed `ubuntu-24.04` inventory of ADR 0089 — which stands **unchanged**, still limited
 to the credentialless invalid-route guard and the privileged conformance audit, and still
 pinned by exact-site equality so it cannot grow silently.
+
+**The scope of that "any" is what the checker resolves, and saying otherwise would be a
+defect in this record.** `scripts/ci-gate/hosted-selector-policy.py` parses each workflow
+with `yaml.safe_load` and refuses — as *undetermined*, never as clean — any file it cannot
+resolve into jobs: unparseable YAML, a non-mapping `jobs`, a non-mapping job, more than one
+document, an anchor, or a file past the size ceiling. So the claim that holds is "no
+selector this parser reads may name a metered family, and nothing it cannot read is passed",
+which is materially stronger than the pattern-matching predecessor and materially weaker
+than "no `runs-on` anywhere".
+
+The first implementation of this check matched `runs-on:` with line-oriented shell patterns,
+and two review passes found five parser-level false negatives in shapes GitHub accepts: a
+TAB/IFS field collapse, a matrix indirection, a flow-style job body
+(`mac: {runs-on: macos-latest, …}`), a flow-mapping `jobs:`, and `runs-on : macos-15` with a
+space before the colon. Each returned exit 0 on a genuinely metered job. That rate — five in
+two passes — is why the parser was replaced rather than patched: patching known evasions
+leaves the unknown ones, and for the single control standing between this organization and
+metered spend, a false negative is silent and costs money.
+
+### What no static scan can catch: larger runners
+
+GitHub-hosted **larger runners** are configured at the organization level with
+administrator-chosen labels. In `runs-on` they are textually indistinguishable from a
+self-hosted fleet label — `runs-on: [self-hosted, big-linux]` and a hosted larger runner
+named `big-linux` read identically — and they bill metered minutes. No amount of workflow
+parsing can tell them apart, because the distinguishing fact is not in the workflow.
+
+The containment for that class is **inventory**, not file reading. Measured at the time of
+this decision:
+
+```console
+$ gh api /orgs/Verjson/actions/hosted-runners
+{"total_count":0,"runners":[]}
+```
+
+Zero exist today, so the gap is currently theoretical — but it is one organization-settings
+change away from real, and nothing in this decision would notice.
+[#820](https://github.com/Verjson/.github/issues/820) asserts that inventory in the
+scheduled reconciler, which is the right tier for it: the reconciler already holds the
+org-admin token and already checks fleet-level facts that the hot path cannot
+(`docs/runner-routing.md`, "Where each check belongs"). Re-run the command above rather than
+trusting this snapshot; runner inventories change without touching this file.
 
 ### Two tiers, and why they differ
 
@@ -163,6 +206,11 @@ standard regardless, by its own ADR 0089 inventory, which this change does not t
 - A hung hosted step costs at most 45 minutes of wall time rather than six hours of billing.
 - One grep — for `VERJSON_LANE_TRUSTED_MACOS` or `VERJSON_LANE_TRUSTED_WINDOWS` — answers
   which workflows can spend hosted minutes.
+- **The guarantee is bounded by what the checker can resolve, and by inventory it cannot
+  see.** The parser refuses rather than guesses, so an unreadable workflow is undetermined
+  and not clean; larger runners remain outside any static scan and are covered by #820.
+  Stating the boundary is deliberate: an ADR that claims more than the code delivers is a
+  defect in the durable record, and it outlives the code bug.
 - **Accepted cost:** a future second desktop repository needs its own repository variables
   rather than inheriting them. That gives up one property ADR 0041 exists to preserve, and
   it is deliberate friction: a second hosted consumer should be an explicit act, not an

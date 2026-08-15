@@ -38,11 +38,19 @@ Where verJSON CI jobs run, and how to choose a `runs-on` value. The model is dec
   case as drift.
 - **Admission is enforced by runner *groups*, never by a label.** `runs-on` lives in a file
   a pull request can edit, so a label is chosen by whoever writes the PR.
-- **The metered families are refused outright.** No `runs-on` anywhere may name `macos-*` or
-  `windows-*` except through the two OS-scoped lanes below, and those are repository
-  variables on the one desktop repository. This is not a convention with exceptions: there
-  is no allowlist and no override, because no security-boundary argument has ever needed a
-  10x or 2x SKU ([ADR 0103](decisions/0103-os-scoped-hosted-lanes/README.md)).
+- **The metered families are refused outright — within what a workflow file can express.**
+  No `runs-on` that `scripts/ci-gate/hosted-selector-policy.py` resolves may name `macos-*`
+  or `windows-*` except through the two OS-scoped lanes below, and those are repository
+  variables on the one desktop repository. There is no allowlist and no override, because
+  no security-boundary argument has ever needed a 10x or 2x SKU.
+  The boundary is worth stating precisely rather than claiming more than holds: the check
+  parses each workflow with `yaml.safe_load` and **refuses what it cannot resolve** rather
+  than guessing, so the guarantee covers every selector the parser reads. What no static
+  scan can cover is a GitHub-hosted **larger runner**, whose label is chosen by an
+  administrator and is textually indistinguishable from a self-hosted fleet label while
+  billing metered minutes. That gap is closed by inventory, not by reading files — see
+  [ADR 0103](decisions/0103-os-scoped-hosted-lanes/README.md) and
+  [#820](https://github.com/Verjson/.github/issues/820).
 - Self-hosted runners have **no ambient Node** and a **persistent shared `~/.gitconfig`** —
   use `actions/setup-node` and idempotent git config, or the
   [`setup-verjson-node`](../.github/actions/setup-verjson-node/README.md) composite action.
@@ -120,7 +128,7 @@ not on the resulting misconfiguration, so a copy is refused during review rather
 queueing forever with an empty `runs-on`. It also means one grep answers "which workflows can
 spend hosted minutes".
 
-The rules are enforced by `scripts/ci-gate/hosted-selector-policy.sh`, which
+The rules are enforced by `scripts/ci-gate/hosted-selector-policy.py`, which
 `runner-routing-policy.test.sh` runs against this repository's own workflows. Decided in
 [ADR 0103](decisions/0103-os-scoped-hosted-lanes/README.md).
 

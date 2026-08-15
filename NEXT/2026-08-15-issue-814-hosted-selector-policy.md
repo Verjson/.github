@@ -16,7 +16,7 @@ build Electron installers on hosted macOS and Windows (#810), which removes the
 limit that was doing the containment. `scripts/ci-gate/runner-routing-policy.test.sh`
 keyed every literal-selector assertion on `ubuntu-(24\.04|latest)`, so
 `runs-on: macos-latest` passed the whole file. The rules now live in the
-parameterized `scripts/ci-gate/hosted-selector-policy.sh`, driven by fixtures
+parameterized `scripts/ci-gate/hosted-selector-policy.py`, driven by fixtures
 that prove each negative, so #815 can point the same check at a consumer
 checkout without duplicating it. The refusal of the metered families is
 visibility-independent; literal Linux hosted selectors are keyed on repository
