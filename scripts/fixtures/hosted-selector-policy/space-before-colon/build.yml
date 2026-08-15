@@ -1,0 +1,10 @@
+# A space before the colon is valid YAML. A pattern requiring the colon to abut
+# the key drops the selector entirely.
+name: build
+on: workflow_dispatch
+jobs:
+  mac:
+    runs-on : macos-15
+    timeout-minutes: 45
+    steps:
+      - run: npm run dist

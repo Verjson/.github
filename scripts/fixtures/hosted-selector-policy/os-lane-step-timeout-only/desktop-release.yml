@@ -1,0 +1,11 @@
+# A step-level timeout does not bound the JOB. GitHub applies its six-hour
+# default to the job regardless, so this shape is the presence check's other
+# false positive.
+name: desktop release
+on: workflow_dispatch
+jobs:
+  macos-dist:
+    runs-on: ${{ fromJSON(vars.VERJSON_LANE_TRUSTED_MACOS) }}
+    steps:
+      - run: npm run dist
+        timeout-minutes: 45

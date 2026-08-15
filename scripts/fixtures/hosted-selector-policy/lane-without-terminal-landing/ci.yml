@@ -1,0 +1,10 @@
+# A chain that stops at its own lane variable. An organization that set only
+# VERJSON_LANE_FALLBACK resolves this to an EMPTY runs-on, and GitHub queues an
+# unplaceable job forever with no check-run diagnostic (#401).
+name: ci
+on: pull_request
+jobs:
+  build:
+    runs-on: ${{ fromJSON(vars.VERJSON_LANE_TRUSTED) }}
+    steps:
+      - run: npm test

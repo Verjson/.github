@@ -1,0 +1,11 @@
+# A `.yaml` suffix. GitHub runs it identically to `.yml`, and every sweep in
+# runner-routing-policy.test.sh once globbed `*.yml` alone, so renaming the file
+# evaded all of them (#401 review).
+name: build
+on: workflow_dispatch
+jobs:
+  dist:
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+      - run: npm run dist

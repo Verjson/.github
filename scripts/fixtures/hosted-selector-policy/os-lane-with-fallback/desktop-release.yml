@@ -1,0 +1,11 @@
+# The chain that is correct for Linux work and actively wrong here: an unset
+# macOS lane degrades to Ubuntu and produces a non-installable artifact behind a
+# green check. OS lanes fail closed instead.
+name: desktop release
+on: workflow_dispatch
+jobs:
+  macos-dist:
+    runs-on: ${{ fromJSON(vars.VERJSON_LANE_TRUSTED_MACOS || vars.VERJSON_LANE_FALLBACK || '["ubuntu-24.04"]') }}
+    timeout-minutes: 45
+    steps:
+      - run: npm run dist

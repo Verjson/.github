@@ -1,0 +1,13 @@
+# `runs-on` as a mapping is valid GitHub — a runner group plus labels. The
+# metered family is nested inside it, so a check that only understands a string
+# or a list never sees it.
+name: build
+on: workflow_dispatch
+jobs:
+  mac:
+    runs-on:
+      group: desktop
+      labels: [macos-15]
+    timeout-minutes: 45
+    steps:
+      - run: npm run dist

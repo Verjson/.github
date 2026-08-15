@@ -1,0 +1,9 @@
+# A quoted scalar.
+name: build
+on: workflow_dispatch
+jobs:
+  dist:
+    runs-on: "macos-latest"
+    timeout-minutes: 45
+    steps:
+      - run: npm run dist

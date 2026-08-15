@@ -1,0 +1,7 @@
+name: dynamic join selector
+on: pull_request
+jobs:
+  build:
+    runs-on: ${{ join(fromJSON('["win","dows-2025"]'), '') }}
+    steps:
+      - run: true

@@ -1,0 +1,7 @@
+name: arbitrary direct needs selector
+on: pull_request
+jobs:
+  build:
+    runs-on: ${{ needs.plan.outputs.runner }}
+    steps:
+      - run: true

@@ -27,6 +27,11 @@ if [ -n "${FAIL_PATH:-}" ] && [[ "$path" == *"$FAIL_PATH"* ]]; then
   echo "HTTP 403: Resource not accessible" >&2
   exit 1
 fi
+if [ "${HOSTED_RUNNERS_404:-0}" = "1" ] && [[ "$path" == */actions/hosted-runners* ]]; then
+  echo '{"message":"Not Found","status":"404"}' >&2
+  echo "gh: Not Found (HTTP 404)" >&2
+  exit 1
+fi
 # A deleted group is gone from BOTH surfaces: the id 404s and it is absent from
 # the listing. Modelling only the 404 would let a test pass for the wrong reason.
 deleted() {
@@ -40,6 +45,7 @@ for id in 4 6; do
   fi
 done
 case "$path" in
+  */actions/hosted-runners*) printf '%s\n' "$HOSTED_RUNNERS_PAGES" ;;
   # The LANE variables are what every `runs-on:` resolves, so they are what the
   # reconciler reads. The RUNNER pair is still served because it is still set
   # org-wide for consumers pinned to a pre-migration SHA, and divergence between
@@ -104,6 +110,8 @@ export G6_RUNNERS=''
 export REPOS_FIXTURE=$'Verjson/private-lib\ttrue\nVerjson/public-app\tfalse'
 export FAIL_PATH=''
 export DELETED_GROUPS=''
+export HOSTED_RUNNERS_PAGES='{"total_count":0,"runners":[]}'
+export HOSTED_RUNNERS_404='0'
 # Supplied the way the workflow supplies it, because the script no longer ships a
 # default for this one: the name it used to default to (`isolated`) has named a
 # deleted group since 2026-07-31. The general lane keeps a default and the
@@ -120,6 +128,123 @@ out="$(run_case)"
   && grep -qF 'No drift' <<<"$out" \
   && pass "organization-wide permissive group admits new private and public repositories" \
   || fail "clean permissive policy did not reconcile: $out"
+
+# GitHub-hosted larger runners have arbitrary administrator-chosen labels. A
+# static runs-on scan cannot distinguish one named `general` from the
+# self-hosted fleet label, so the org-admin reconciler must inspect inventory.
+HOSTED_RUNNERS_PAGES='{"total_count":1,"runners":[{"id":42,"name":"general"}]}'
+out="$(run_case)"
+[ "$(code_of)" = "1" ] \
+  && grep -qF 'GitHub-hosted larger runner' <<<"$out" \
+  && grep -qF '"general" (id 42)' <<<"$out" \
+  && pass "an arbitrary-label larger runner is actionable drift" \
+  || fail "larger hosted runner inventory was not reported: $out"
+
+# The allowlist is a reviewed repository file, not an org variable or an
+# environment override. Exercise a reviewed entry against a disposable copy so
+# the production file can remain empty.
+allowlisted="$tmp/allowlisted"
+mkdir -p "$allowlisted"
+cp "$script" "$allowlisted/runner-admission-reconcile.sh"
+printf '[{"id":42,"name":"general"}]\n' \
+  >"$allowlisted/hosted-larger-runner-allowlist.json"
+out="$(bash "$allowlisted/runner-admission-reconcile.sh" 2>&1)"
+code=$?
+[ "$code" = "0" ] \
+  && grep -qF '1 reviewed GitHub-hosted larger runner' <<<"$out" \
+  && pass "a larger runner covered by the reviewed ID/name allowlist reconciles cleanly" \
+  || fail "reviewed larger-runner allowlist was not honored: $out"
+
+HOSTED_RUNNERS_PAGES='{"total_count":1,"runners":[{"id":42,"name":"general","runner_group_id":7,"state":"ready","maximum_runners":4}]}'
+out="$(bash "$allowlisted/runner-admission-reconcile.sh" 2>&1)"
+code=$?
+[ "$code" = "0" ] \
+  && grep -qF '1 reviewed GitHub-hosted larger runner' <<<"$out" \
+  && pass "mutable hosted-runner API fields do not defeat exact ID/name approval" \
+  || fail "full hosted-runner API object was compared to the identity allowlist: $out"
+HOSTED_RUNNERS_PAGES='{"total_count":1,"runners":[{"id":42,"name":"general"}]}'
+
+printf '[{"id":42,"name":"general-old"}]\n' \
+  >"$allowlisted/hosted-larger-runner-allowlist.json"
+out="$(bash "$allowlisted/runner-admission-reconcile.sh" 2>&1)"
+code=$?
+[ "$code" = "1" ] \
+  && grep -qF 'identity differs' <<<"$out" \
+  && pass "renaming an allowlisted larger runner requires reviewed identity update" \
+  || fail "renamed larger runner retained ID-only approval: $out"
+
+printf '[{"id":42,"name":"general"},{"id":99,"name":"retired-xl"}]\n' \
+  >"$allowlisted/hosted-larger-runner-allowlist.json"
+out="$(bash "$allowlisted/runner-admission-reconcile.sh" 2>&1)"
+code=$?
+[ "$code" = "1" ] \
+  && grep -qF 'absent from live inventory' <<<"$out" \
+  && pass "a stale reviewed larger-runner identity is drift" \
+  || fail "stale larger-runner approval was treated as clean: $out"
+
+for malformed_allowlist in \
+  '[{"id":42,"name":"general"},{"id":42,"name":"other"}]' \
+  '[{"id":42,"name":"general"},{"id":43,"name":"general"}]' \
+  '[{"id":42,"name":""}]' \
+  '[42]'; do
+  printf '%s\n' "$malformed_allowlist" \
+    >"$allowlisted/hosted-larger-runner-allowlist.json"
+  out="$(bash "$allowlisted/runner-admission-reconcile.sh" 2>&1)"
+  code=$?
+  [ "$code" = "2" ] \
+    && pass "malformed or duplicate reviewed larger-runner identity is undetermined" \
+    || fail "invalid larger-runner allowlist was accepted: $malformed_allowlist: $out"
+done
+
+# Two response objects model two pages. Both runners must survive collection;
+# keeping only the final page would omit `general` and weaken the report.
+HOSTED_RUNNERS_PAGES=$'{"total_count":2,"runners":[{"id":42,"name":"general"}]}\n{"total_count":2,"runners":[{"id":43,"name":"release-xl"}]}'
+out="$(run_case)"
+[ "$(code_of)" = "1" ] \
+  && grep -qF '"general" (id 42)' <<<"$out" \
+  && grep -qF '"release-xl" (id 43)' <<<"$out" \
+  && pass "larger-runner inventory is collected across every page" \
+  || fail "paginated larger-runner inventory was under-reported: $out"
+
+HOSTED_RUNNERS_PAGES='{"total_count":1,"runners":{}}'
+[ "$(code_of)" = "2" ] \
+  && pass "a malformed larger-runner response is undetermined, never clean" \
+  || fail "malformed larger-runner response did not fail closed: $(code_of)"
+
+HOSTED_RUNNERS_PAGES='{"total_count":2,"runners":[{"id":42,"name":"general"}]}'
+[ "$(code_of)" = "2" ] \
+  && pass "an incomplete larger-runner page count is undetermined" \
+  || fail "incomplete larger-runner pagination did not fail closed: $(code_of)"
+
+HOSTED_RUNNERS_PAGES='{"total_count":1,"runners":[{"name":"general"}]}'
+[ "$(code_of)" = "2" ] \
+  && pass "a larger-runner object without an id is undetermined" \
+  || fail "malformed larger-runner object did not fail closed: $(code_of)"
+
+for malformed_inventory in \
+  '{"total_count":1,"runners":[{"id":42,"name":""}]}' \
+  '{"total_count":2,"runners":[{"id":42,"name":"general"},{"id":42,"name":"other"}]}' \
+  '{"total_count":2,"runners":[{"id":42,"name":"general"},{"id":43,"name":"general"}]}' \
+  $'{"total_count":2,"runners":[{"id":42,"name":"general"}]}\n{"total_count":3,"runners":[{"id":43,"name":"other"}]}'; do
+  HOSTED_RUNNERS_PAGES="$malformed_inventory"
+  [ "$(code_of)" = "2" ] \
+    && pass "malformed, duplicate, or count-inconsistent live identity is undetermined" \
+    || fail "invalid larger-runner inventory was accepted: $malformed_inventory"
+done
+
+HOSTED_RUNNERS_PAGES='{"total_count":0,"runners":[]}'
+HOSTED_RUNNERS_404='1'
+[ "$(code_of)" = "2" ] \
+  && pass "a 404 reading larger-runner inventory is undetermined" \
+  || fail "larger-runner 404 did not fail closed: $(code_of)"
+HOSTED_RUNNERS_404='0'
+
+FAIL_PATH='/actions/hosted-runners'
+[ "$(code_of)" = "2" ] \
+  && pass "a larger-runner API failure is undetermined" \
+  || fail "larger-runner API failure did not fail closed: $(code_of)"
+FAIL_PATH=''
+HOSTED_RUNNERS_PAGES='{"total_count":0,"runners":[]}'
 
 G4_GROUP='{"id":4,"name":"DigitalOcean","visibility":"all","allows_public_repositories":false}'
 out="$(run_case)"
@@ -192,9 +317,11 @@ UNTRUSTED_VAR='{"value":"[\"self-hosted\",\"general\"]","visibility":"selected"}
   || fail "non-global variable did not return exit 2"
 
 UNTRUSTED_VAR='{"value":"[\"self-hosted\",\"unknown-lane\"]","visibility":"all"}'
+out="$(run_case)"
 [ "$(code_of)" = "2" ] \
+  && ! grep -qF 'unknown-lane' <<<"$out" \
   && pass "ungoverned lane selector is undetermined" \
-  || fail "ungoverned lane did not return exit 2"
+  || fail "ungoverned lane did not return exit 2 without leaking its value: $out"
 
 UNTRUSTED_VAR='{"value":"[\"self-hosted\",\"general\"]","visibility":"all"}'
 FAIL_PATH='/actions/variables/VERJSON_RUNNER_DEFAULT'
@@ -235,15 +362,15 @@ UNTRUSTED_GROUP_NAME='isolated'
 # pinned the id, went undetermined on every run. Two distinct behaviours have to
 # hold, and the second is the one that was actually broken.
 
-# 1. A group a lane genuinely needs, gone: still fail closed — but name it. The
-#    old code emitted only the request path, so asserting on the NAME is what
-#    makes this fail against a reconciler that resolves by literal id.
+# 1. A group a lane genuinely needs, gone: still fail closed and name the lane,
+#    while keeping the org-variable-backed group name out of public output.
 DELETED_GROUPS='6'
 out="$(run_case)"
 [ "$(code_of)" = "2" ] \
-  && grep -qF 'isolated' <<<"$out" \
-  && pass "a lane-selected group that no longer exists fails closed, naming the group" \
-  || fail "missing selected group was not reported by name: $out"
+  && grep -qF 'untrusted lane' <<<"$out" \
+  && ! grep -qF 'isolated' <<<"$out" \
+  && pass "a missing lane-selected group fails closed without disclosing its configured name" \
+  || fail "missing selected group was not safely reported by lane: $out"
 
 # 2. A group NO lane selects, gone: irrelevant, so it must not take the run down.
 #    This is the live regression — all three lanes resolve to `general`, nothing
@@ -262,9 +389,10 @@ DELETED_GROUPS='4'
 DEFAULT_VAR='{"value":"[\"self-hosted\",\"lane-general\"]","visibility":"all"}'
 out="$(run_case)"
 [ "$(code_of)" = "2" ] \
-  && grep -qF 'DigitalOcean' <<<"$out" \
-  && pass "the general lane's group going missing fails closed, naming the group" \
-  || fail "missing general group was not reported by name: $out"
+  && grep -qF 'general lane' <<<"$out" \
+  && ! grep -qF 'DigitalOcean' <<<"$out" \
+  && pass "the general lane's group going missing fails closed without disclosing its configured name" \
+  || fail "missing general group was not safely reported by lane: $out"
 
 # The fixtures above use the shipped default group name deliberately, so a stale
 # default is a failing suite rather than a monitor that resolves nothing in
@@ -276,6 +404,35 @@ reconcile_workflow="$(cd "$(dirname "$0")/../.." && pwd)/.github/workflows/runne
 grep -qF "GENERAL_GROUP_NAME: \${{ vars.VERJSON_RUNNER_GENERAL_GROUP || 'DigitalOcean' }}" "$reconcile_workflow" \
   && pass "the general group name is repointable from org variables, with a fallback" \
   || fail "runner-admission-reconcile.yml does not source GENERAL_GROUP_NAME from a variable with a fallback"
+
+# Treat organization-variable values as secret-shaped payloads even though the
+# GitHub setting is not a secret store: the report is copied into a public issue.
+export GENERAL_GROUP_NAME='org-variable-general-canary'
+export UNTRUSTED_GROUP_NAME='org-variable-untrusted-canary'
+G4_GROUP='{"id":4,"name":"org-variable-general-canary","visibility":"all","allows_public_repositories":true,"default":false}'
+G6_GROUP='{"id":6,"name":"org-variable-untrusted-canary","visibility":"all","allows_public_repositories":true,"default":false}'
+DELETED_GROUPS=''
+out="$(run_case)"
+[ "$(code_of)" = "0" ] \
+  && ! grep -qF 'org-variable-general-canary' <<<"$out" \
+  && ! grep -qF 'org-variable-untrusted-canary' <<<"$out" \
+  && pass "clean output discloses no org-variable-backed runner-group name" \
+  || fail "clean output disclosed an org-variable-backed group name: $out"
+
+G4_GROUP='{"id":4,"name":"org-variable-general-canary","visibility":"selected","allows_public_repositories":true,"default":false}'
+out="$(run_case)"
+[ "$(code_of)" = "1" ] \
+  && grep -qF 'general lane' <<<"$out" \
+  && grep -qF 'id 4' <<<"$out" \
+  && ! grep -qF 'org-variable-general-canary' <<<"$out" \
+  && ! grep -qF 'org-variable-untrusted-canary' <<<"$out" \
+  && pass "admission drift uses a lane and numeric id without org-variable payloads" \
+  || fail "admission drift disclosed an org-variable-backed group name: $out"
+
+export GENERAL_GROUP_NAME='DigitalOcean'
+export UNTRUSTED_GROUP_NAME='isolated'
+G4_GROUP='{"id":4,"name":"DigitalOcean","visibility":"all","allows_public_repositories":true,"default":false}'
+G6_GROUP='{"id":6,"name":"isolated","visibility":"all","allows_public_repositories":true,"default":false}'
 
 # The matching invariant — this job must not ride the pool it monitors — lives in
 # runner-routing-policy.test.sh with every other routing assertion, and is
@@ -397,6 +554,112 @@ grep -qF "steps.reconcile.outputs.code == '0'" "$workflow" \
   && pass "the issue-closing step is still gated on the clean code" \
   || fail "issue-closing step condition drifted from code == '0'"
 
+grep -qF "DRIFT_ISSUE: '820'" "$workflow" \
+  && ! grep -qF 'gh issue create' "$workflow" \
+  && grep -qF 'gh issue reopen "$DRIFT_ISSUE"' "$workflow" \
+  && ! grep -qF 'gh issue edit "$DRIFT_ISSUE"' "$workflow" \
+  && grep -qF '/issues/comments/$comment_id' "$workflow" \
+  && pass "drift reuses issue 820 and cannot create a new tracker" \
+  || fail "runner admission can still create a new issue instead of reusing #820"
+
+# Execute the exact durable-report step. A public issue lets anyone copy the
+# marker, so ownership must be established from GitHub's immutable bot actor id
+# before a comment can become the PATCH target.
+extract_drift_report_step() {
+  awk '
+    $0 == "      - name: Reopen or update the durable drift issue" { seen = 1 }
+    seen && $0 == "        run: |" { cap = 1; next }
+    cap && $0 ~ /^      - name:/ { exit }
+    cap {
+      if (substr($0, 1, 10) == "          ") { print substr($0, 11); next }
+      if ($0 ~ /^[ \t]*$/) { print ""; next }
+      exit
+    }
+  ' "$workflow"
+}
+
+comment_step="$tmp/comment-step.sh"
+extract_drift_report_step >"$comment_step"
+comment_bin="$tmp/comment-bin"
+mkdir -p "$comment_bin"
+cat >"$comment_bin/gh" <<'GH'
+#!/usr/bin/env bash
+set -eu
+if [ "$1" = issue ] && [ "$2" = view ]; then
+  printf 'OPEN\n'
+  exit 0
+fi
+if [ "$1" = issue ] && [ "$2" = reopen ]; then
+  printf 'REOPEN\n' >>"$COMMENT_ACTIONS"
+  exit 0
+fi
+if [ "$1" = api ]; then
+  method=GET
+  path=''
+  shift
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --method) method="$2"; shift 2 ;;
+      /repos/*) path="$1"; shift ;;
+      *) shift ;;
+    esac
+  done
+  if [ "$method" = GET ] && [[ "$path" == *'/comments?per_page=100' ]]; then
+    printf '%s\n' "$COMMENT_FIXTURE"
+    exit 0
+  fi
+  printf '%s %s\n' "$method" "$path" >>"$COMMENT_ACTIONS"
+  exit 0
+fi
+printf 'unexpected gh call: %s\n' "$*" >&2
+exit 1
+GH
+chmod +x "$comment_bin/gh"
+
+run_comment_case() {
+  local fixture="$1" case_name="$2" case_dir="$tmp/comment-$2" rc
+  mkdir -p "$case_dir"
+  : >"$case_dir/actions"
+  COMMENT_FIXTURE="$fixture" COMMENT_ACTIONS="$case_dir/actions" \
+    PATH="$comment_bin:$PATH" GH_TOKEN=fixture REPORT='fixture report' \
+    MARKER='<!-- runner-admission-drift -->' DRIFT_ISSUE=820 \
+    REPORT_ACTOR_ID=41898282 \
+    GITHUB_REPOSITORY='Verjson/.github' bash "$comment_step" \
+    >"$case_dir/output" 2>&1
+  rc=$?
+  printf '%s %s\n' "$rc" "$case_dir"
+}
+
+read -r comment_rc comment_case < <(run_comment_case '' zero)
+[ "$comment_rc" = 0 ] \
+  && grep -qF 'POST /repos/Verjson/.github/issues/820/comments' "$comment_case/actions" \
+  && pass "zero trusted report comments creates exactly one bot-owned report comment" \
+  || fail "zero-comment report path did not create its durable comment"
+
+foreign='{"id":900,"body":"<!-- runner-admission-drift -->","author_id":12345}'
+read -r comment_rc comment_case < <(run_comment_case "$foreign" foreign)
+[ "$comment_rc" = 0 ] \
+  && grep -qF 'POST /repos/Verjson/.github/issues/820/comments' "$comment_case/actions" \
+  && ! grep -qF '/issues/comments/900' "$comment_case/actions" \
+  && pass "a foreign marker comment is ignored and never patched" \
+  || fail "a foreign marker captured the report target"
+
+one_trusted=$'{"id":100,"body":"<!-- runner-admission-drift -->","author_id":41898282}\n{"id":900,"body":"<!-- runner-admission-drift -->","author_id":12345}'
+read -r comment_rc comment_case < <(run_comment_case "$one_trusted" one)
+[ "$comment_rc" = 0 ] \
+  && grep -qF 'PATCH /repos/Verjson/.github/issues/comments/100' "$comment_case/actions" \
+  && ! grep -qF '/issues/comments/900' "$comment_case/actions" \
+  && ! grep -qF 'POST ' "$comment_case/actions" \
+  && pass "one trusted bot report is the only update target" \
+  || fail "one trusted report did not update exactly its bot-owned comment"
+
+two_trusted=$'{"id":100,"body":"<!-- runner-admission-drift -->","author_id":41898282}\n{"id":101,"body":"<!-- runner-admission-drift -->","author_id":41898282}'
+read -r comment_rc comment_case < <(run_comment_case "$two_trusted" multiple)
+[ "$comment_rc" != 0 ] \
+  && [ ! -s "$comment_case/actions" ] \
+  && pass "multiple trusted reports fail closed before comment mutation" \
+  || fail "ambiguous trusted reports mutated an arbitrary comment"
+
 # --------------------------------------------------------------------------
 # Runner placement (#275).
 #
@@ -424,6 +687,18 @@ out="$(run_case)"
   && grep -qF 'gha-stray-2' <<<"$out" \
   && pass "an offline runner in the default group is still drift" \
   || fail "offline stray runner was not reported: $out"
+
+export GENERAL_GROUP_NAME='org-variable-remediation-canary'
+G4_GROUP='{"id":4,"name":"org-variable-remediation-canary","visibility":"all","allows_public_repositories":true,"default":false}'
+out="$(run_case)"
+[ "$(code_of)" = "1" ] \
+  && grep -qF 'general lane' <<<"$out" \
+  && grep -qF 'id 4' <<<"$out" \
+  && ! grep -qF 'org-variable-remediation-canary' <<<"$out" \
+  && pass "default-group remediation redacts the configured destination name" \
+  || fail "default-group remediation disclosed its org-variable-backed destination: $out"
+export GENERAL_GROUP_NAME='DigitalOcean'
+G4_GROUP='{"id":4,"name":"DigitalOcean","visibility":"all","allows_public_repositories":true,"default":false}'
 
 # The report is filed as an issue and an operator acts on it. Both halves of the
 # remedy have to survive: --runnergroup fixes the NEXT registration and does
@@ -493,8 +768,9 @@ export G1_RUNNERS='{"name":"gha-stray-5","status":"online","labels":["self-hoste
 out="$(run_case)"
 [ "$(code_of)" = "1" ] \
   && grep -qF 'gha-stray-5' <<<"$out" \
-  && grep -qF 'Renamed Default' <<<"$out" \
-  && pass "the default group is resolved by its flag, not by the id 1" \
+  && grep -qF 'id 9' <<<"$out" \
+  && ! grep -qF 'Renamed Default' <<<"$out" \
+  && pass "the default group is resolved by its flag and reported by id, not name" \
   || fail "default group resolution is pinned to an id: $out"
 export G1_RUNNERS=''
 
@@ -528,8 +804,9 @@ LEGACY_UNTRUSTED_VAR='{"value":"[\"self-hosted\",\"general\"]","visibility":"all
 out="$(run_case)"
 [ "$(code_of)" = "1" ] \
   && grep -qF 'VERJSON_RUNNER_DEFAULT' <<<"$out" \
+  && ! grep -qF 'gone' <<<"$out" \
   && pass "a retired variable that has drifted from its lane is reported" \
-  || fail "legacy/lane divergence was not reported: $out"
+  || fail "legacy/lane divergence was not safely reported: $out"
 LEGACY_DEFAULT_VAR='{"value":"[\"self-hosted\",\"general\"]","visibility":"all"}'
 
 # A lane pointed at hosted capacity has no runner group and no self-hosted

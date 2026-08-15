@@ -1,0 +1,10 @@
+# Exactly the ceiling. The rule is "at or below 60", so this is accepted; a
+# strict `<` would move the boundary without anyone deciding to.
+name: desktop release
+on: workflow_dispatch
+jobs:
+  macos-dist:
+    runs-on: ${{ fromJSON(vars.VERJSON_LANE_TRUSTED_MACOS) }}
+    timeout-minutes: 60
+    steps:
+      - run: npm run dist

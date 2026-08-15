@@ -1,0 +1,7 @@
+name: arbitrary decoded variable selector
+on: pull_request
+jobs:
+  build:
+    runs-on: ${{ fromJSON(vars.ADMIN_CHOSEN_RUNNER) }}
+    steps:
+      - run: true

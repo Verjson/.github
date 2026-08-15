@@ -1,0 +1,14 @@
+# The same indirection, this time carrying both defects R3 and R4 exist to
+# catch: a six-hour bound, and a tail that degrades the macOS leg to Linux.
+name: desktop release
+on: workflow_dispatch
+jobs:
+  installer:
+    strategy:
+      matrix:
+        include:
+          - lane: ${{ vars.VERJSON_LANE_TRUSTED_MACOS || vars.VERJSON_LANE_FALLBACK }}
+    runs-on: ${{ fromJSON(matrix.lane) }}
+    timeout-minutes: 360
+    steps:
+      - run: npm run dist

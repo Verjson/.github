@@ -1,0 +1,11 @@
+# `"runs-on"` is a legal YAML key. A key pattern that only accepts the bare
+# spelling reads this job as having no selector at all — a false NEGATIVE, which
+# is the direction that costs money.
+name: build
+on: workflow_dispatch
+jobs:
+  dist:
+    "runs-on": macos-15
+    timeout-minutes: 45
+    steps:
+      - run: npm run dist

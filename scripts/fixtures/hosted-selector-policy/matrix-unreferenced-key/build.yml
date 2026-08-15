@@ -1,0 +1,18 @@
+# The known imprecision, pinned so it is a decision rather than a surprise. The
+# selector references matrix.os, which names only Linux; the metered word is in
+# an unreferenced cross-compile key. The scan judges the whole strategy block,
+# so this is refused. That is the safe direction — a false positive costs an
+# argument, a false negative costs money — and the remedy is to rename or
+# restructure the key. Making it precise would mean re-implementing YAML
+# scoping inside the scan, which is where a false NEGATIVE would come from.
+name: build
+on: workflow_dispatch
+jobs:
+  dist:
+    strategy:
+      matrix:
+        os: [ubuntu-24.04]
+        target: [linux-x64, windows-x64]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - run: npm run build -- --target ${{ matrix.target }}

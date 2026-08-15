@@ -1,0 +1,10 @@
+# A literal Linux hosted selector. Free on a public repository, metered against
+# the spending limit on a private one — so this fixture is judged by
+# --visibility, unlike the Tier A families.
+name: ci
+on: pull_request
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - run: npm run lint

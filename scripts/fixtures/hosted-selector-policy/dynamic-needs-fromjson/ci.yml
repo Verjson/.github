@@ -1,0 +1,7 @@
+name: arbitrary decoded needs selector
+on: pull_request
+jobs:
+  build:
+    runs-on: ${{ fromJSON(needs.plan.outputs.runner) }}
+    steps:
+      - run: true

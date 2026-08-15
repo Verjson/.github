@@ -1,0 +1,8 @@
+# A workflow file with no jobs: block. If the whole scanned set parses to zero
+# jobs, the sweep learned nothing and must say so rather than report clean.
+name: reusable
+on:
+  workflow_call:
+    inputs:
+      runner:
+        type: string

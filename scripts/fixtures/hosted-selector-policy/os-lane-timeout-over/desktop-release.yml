@@ -1,0 +1,11 @@
+# The presence-only failure, made concrete. This job HAS timeout-minutes, and
+# GitHub's own six-hour default is what it declares — 3,600 billable minutes at
+# a 10x multiplier. A check that only asserted the key exists would pass it.
+name: desktop release
+on: workflow_dispatch
+jobs:
+  macos-dist:
+    runs-on: ${{ fromJSON(vars.VERJSON_LANE_TRUSTED_MACOS) }}
+    timeout-minutes: 360
+    steps:
+      - run: npm run dist

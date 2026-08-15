@@ -1,0 +1,13 @@
+name: explicitly dispatched desktop release
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        required: true
+        type: string
+jobs:
+  installer:
+    runs-on: ${{ fromJSON(vars.VERJSON_LANE_TRUSTED_MACOS) }}
+    timeout-minutes: 45
+    steps:
+      - run: npm run dist

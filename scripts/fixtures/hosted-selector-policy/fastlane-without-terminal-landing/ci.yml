@@ -1,0 +1,11 @@
+# The fast lane (ADR 0047/0048) with no tail. `fromJSON('')` on an org that has
+# not set the variable is a workflow-level startup failure, and an empty array
+# queues forever with no check-run diagnostic — the #401 mode. The rule covers
+# every placement variable, not only the three lane names.
+name: ci
+on: pull_request
+jobs:
+  build:
+    runs-on: ${{ fromJSON(vars.VERJSON_RUNNER_FASTLANE) }}
+    steps:
+      - run: npm test

@@ -1,0 +1,7 @@
+name: arbitrary direct variable selector
+on: pull_request
+jobs:
+  build:
+    runs-on: ${{ vars.ADMIN_CHOSEN_RUNNER }}
+    steps:
+      - run: true

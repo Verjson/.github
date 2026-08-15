@@ -1,0 +1,12 @@
+# A copy of the desktop release path under another name. The variables are
+# repository-scoped, so this resolves to an empty runs-on and queues forever —
+# a puzzling misconfiguration rather than a refusal. R5 makes the reference
+# itself the failure, which turns an accident into a reviewed decision.
+name: ci
+on: pull_request
+jobs:
+  macos-dist:
+    runs-on: ${{ fromJSON(vars.VERJSON_LANE_TRUSTED_MACOS) }}
+    timeout-minutes: 45
+    steps:
+      - run: npm run dist

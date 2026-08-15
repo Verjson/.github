@@ -1,0 +1,7 @@
+name: arbitrary direct input selector
+on: workflow_call
+jobs:
+  build:
+    runs-on: ${{ inputs.runner }}
+    steps:
+      - run: true

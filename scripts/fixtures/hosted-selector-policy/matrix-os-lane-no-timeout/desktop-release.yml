@@ -1,0 +1,15 @@
+# The shape #810 proposes and AiB will adopt: the OS lane is reached through a
+# matrix indirection, so the lane variable is in the strategy block and never in
+# `runs-on:` itself. Every rule that reads `runs-on` alone is blind to it, which
+# is how R3 and R4 went missing on precisely the workflow they were written for.
+name: desktop release
+on: workflow_dispatch
+jobs:
+  installer:
+    strategy:
+      matrix:
+        include:
+          - lane: ${{ vars.VERJSON_LANE_TRUSTED_MACOS }}
+    runs-on: ${{ fromJSON(matrix.lane) }}
+    steps:
+      - run: npm run dist

@@ -38,6 +38,26 @@ Where verJSON CI jobs run, and how to choose a `runs-on` value. The model is dec
   case as drift.
 - **Admission is enforced by runner *groups*, never by a label.** `runs-on` lives in a file
   a pull request can edit, so a label is chosen by whoever writes the PR.
+- **The metered families are refused outright — within what a workflow file can express.**
+  No `runs-on` that `scripts/ci-gate/hosted-selector-policy.py` resolves may name `macos-*`
+  or `windows-*` except through the two OS-scoped lanes below, and those are repository
+  variables on the one desktop repository. There is no allowlist and no override, because
+  no security-boundary argument has ever needed a 10x or 2x SKU.
+  The boundary is worth stating precisely rather than claiming more than holds: the check
+  parses each workflow with `yaml.safe_load` and **refuses what it cannot resolve** rather
+  than guessing, so the guarantee covers every selector the parser reads. What no static
+  scan can cover is a GitHub-hosted **larger runner**, whose label is chosen by an
+  administrator and is textually indistinguishable from a self-hosted fleet label while
+  billing metered minutes. That gap is closed by the scheduled reconciler's organization
+  inventory query, not by reading files. Its reviewed exact `{id,name}` allowlist is
+  `scripts/ci-gate/hosted-larger-runner-allowlist.json` and is empty by default; any
+  unapproved runner is drift and any unreadable or malformed response is undetermined.
+  See [ADR 0103](decisions/0103-os-scoped-hosted-lanes/README.md) and
+  [#820](https://github.com/Verjson/.github/issues/820).
+- **Never use a standard hosted `-latest` image.** `ubuntu-latest`, `macos-latest`, and
+  `windows-latest` are refused regardless of repository visibility. Billing visibility and
+  reproducible image selection are separate rules; free public Linux minutes do not make a
+  rolling build image immutable.
 - Self-hosted runners have **no ambient Node** and a **persistent shared `~/.gitconfig`** —
   use `actions/setup-node` and idempotent git config, or the
   [`setup-verjson-node`](../.github/actions/setup-verjson-node/README.md) composite action.
@@ -67,6 +87,67 @@ proven.
 
 `UNTRUSTED` points at self-hosted even though hosted runners work, because a *private*
 repository on hosted rides a spending ceiling (see [Cost](#cost-and-hosted-availability)).
+
+## The two OS-scoped lanes — a different class, with different rules
+
+The four lanes above all resolve to the Linux self-hosted pool, and every rule stated so far
+assumes that. There is exactly one kind of work that cannot be done there: building and
+signing a macOS or Windows desktop installer. It gets its own lane class, and almost every
+rule is inverted, so read this section as an exception rather than as two more rows.
+
+| Lane variable | Value | Scope |
+|---|---|---|
+| `VERJSON_LANE_TRUSTED_MACOS` | `["macos-15"]` | **repository variable on `Verjson/AiB` only** |
+| `VERJSON_LANE_TRUSTED_WINDOWS` | `["windows-2025"]` | **repository variable on `Verjson/AiB` only** |
+
+**Repository-scoped, never organization-scoped**, and that scoping is the containment, not a
+tidiness preference. An organization variable is readable by every repository in its
+visibility set, so defining these org-wide would hand ~89 private repositories a working
+hosted selector — which is the copy-paste vector that regrew four times (#175, #182, #192,
+#203). Runner *groups* cannot help here: they enforce admission for self-hosted capacity,
+but they do not scope standard hosted labels, so there is no group-shaped way to say "only
+this repository may ask for `macos-15`". A repository variable is the strongest primitive
+GitHub actually offers for this, and everything below is defence in depth behind it.
+
+**They carry no fallback tail, and that is deliberate.** Everywhere else on this page, a
+chain that cannot degrade is a bug. Here it is the requirement: an unset macOS lane that
+falls through to `'["ubuntu-24.04"]'` produces a *non-installable artifact behind a green
+check*, which is worse than a failed release. So these lanes fail closed, and
+`runner-routing-policy.test.sh`'s "every lane selector falls through to
+`VERJSON_LANE_FALLBACK`" rule encodes the exception rather than letting the OS lane slip
+past it. An unset lane is caught by a preflight job on `VERJSON_LANE_TRUSTED` — the resolver
+tier in [Where each check belongs](#where-each-check-belongs) — so a repository that copied
+the workflow without the variables gets a legible failure on self-hosted Linux instead of
+free hosted minutes.
+
+**Dispatch only.** These legs run under `workflow_dispatch` as part of the canonical release
+contract, never on `pull_request`, `push`, or a tag push. That binds spend to release
+cadence — a handful of runs a month — rather than to pull-request volume, which is the
+difference between a bounded bill and an unbounded one.
+The selector policy parses `on` semantically — including PyYAML's YAML 1.1 coercion of an
+unquoted `on` key — and requires the event set to be exactly `workflow_dispatch` for every
+sanctioned workflow that references an OS lane.
+
+**Bounded at 45 minutes**, with a conformance ceiling of 60. Presence of `timeout-minutes`
+is not enough: `timeout-minutes: 360` satisfies "has a timeout" while being exactly the
+runaway the rule exists to stop, because six hours at macOS's 10x multiplier is up to 3,600
+billable minutes from one hung step.
+
+**No other workflow may name these variables at all.** The check fails on the *reference*,
+not on the resulting misconfiguration, so a copy is refused during review rather than
+queueing forever with an empty `runs-on`. It also means one grep answers "which workflows can
+spend hosted minutes".
+
+The rules are enforced by `scripts/ci-gate/hosted-selector-policy.py`, which
+`runner-routing-policy.test.sh` runs against this repository's own workflows. Decided in
+[ADR 0103](decisions/0103-os-scoped-hosted-lanes/README.md).
+The checker allowlists complete normalized routing expressions, not individual input or
+variable names. A guarded source inside a canonical caller does not make the same source
+valid by itself; direct or `fromJSON`-decoded arbitrary inputs, variables, and needs outputs
+are undetermined. Matrix selectors are accepted only with their inspected static strategy
+sources. Constructed selectors such as `format(...)` or `join(...)` are also undetermined.
+Dot and bracket dereferences are normalized before every OS-lane rule, so syntax cannot
+bypass dispatch, timeout, or fallback bounds.
 
 ## Three axes
 
@@ -217,7 +298,7 @@ earlier decisions.
 | Tier | Runs | Checks | Token |
 |---|---|---|---|
 | Resolver job | per job, hot path | lane variable exists and is a well-formed non-empty JSON array | none |
-| Reconciler | scheduled | every lane resolves to ≥1 **online** runner; group admission | `ORG_ADMIN_TOKEN` |
+| Reconciler | scheduled | every lane resolves to ≥1 **online** runner; group admission; GitHub-hosted larger-runner inventory exactly matches the reviewed allowlist | `ORG_ADMIN_TOKEN` |
 | Required workflow | per PR, org-wide | no workflow hardcodes `runs-on` | none |
 
 The reconciler evaluates `TRUSTED`, `UNTRUSTED`, and the `PRIVILEGED` cutover seam
@@ -233,6 +314,18 @@ call in 89 repositories' PR paths widens its blast radius. Availability is a fle
 fact and belongs in the scheduled reconciler
 (`scripts/ci-gate/runner-admission-reconcile.sh`), which already holds that token in a
 context that never executes pull-request code.
+
+GitHub-hosted larger runners belong in the same tier. Their administrator-chosen labels
+are indistinguishable from self-hosted labels in `runs-on`, so no required workflow can
+classify them statically. `runner-admission-reconcile.sh` queries the organization setting
+directly and compares exact runner ID/name identities with the reviewed, empty-by-default
+`scripts/ci-gate/hosted-larger-runner-allowlist.json`. It never treats a 404, malformed
+response, partial pagination, or API failure as an empty inventory. A rename requires a
+reviewed allowlist change; stale entries are drift. Public reporting selects only the
+GitHub Actions bot's immutable actor ID before matching its marker, and redacts
+organization-variable contents. Runner-group values are reported only as lane identities
+and safe numeric IDs; configured and live group names never enter missing-group errors,
+admission drift, remediation text, or clean summaries.
 
 A required workflow runs as its **own check alongside** a repository's workflows. It cannot
 inject `runs-on` into another workflow's jobs, and its outputs cannot cross into them. It

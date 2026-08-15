@@ -1,0 +1,10 @@
+# A perfectly readable sibling. Its presence must not license ignoring the file
+# next to it: job accounting is per file, because a global "did we parse
+# anything" counter only fires when NOTHING parses.
+name: ci
+on: pull_request
+jobs:
+  build:
+    runs-on: ${{ fromJSON(vars.VERJSON_LANE_TRUSTED || vars.VERJSON_LANE_FALLBACK || '["ubuntu-24.04"]') }}
+    steps:
+      - run: npm test
