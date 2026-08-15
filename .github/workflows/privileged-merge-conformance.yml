@@ -9,7 +9,7 @@ permissions:
 
 jobs:
   audit:
-    runs-on: ${{ fromJSON(vars.VERJSON_RUNNER_FASTLANE || '["ubuntu-24.04"]') }}
+    runs-on: ubuntu-24.04
     defaults:
       run:
         working-directory: .privileged-merge-conformance-source-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}

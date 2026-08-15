@@ -32,8 +32,7 @@ step() {
 }
 
 contract_errors() {
-  local review="$1" privileged="$2" route terminal checkout
-  route="$(job "$privileged" resolve_privileged_route)"
+  local review="$1" privileged="$2" terminal checkout
   terminal="$(job "$privileged" privileged_merge)"
   checkout="$(step "$privileged" privileged_merge 'Check out immutable arm verifier')"
 
@@ -41,8 +40,8 @@ contract_errors() {
     || printf '%s\n' 'review workflow receives ORG_ADMIN_TOKEN'
   [ "$(grep -cF '${{ secrets.ORG_ADMIN_TOKEN }}' "$privileged")" -eq 1 ] \
     || printf '%s\n' 'privileged workflow must consume ORG_ADMIN_TOKEN exactly once'
-  ! grep -qF 'ORG_ADMIN_TOKEN' <<<"$route" \
-    || printf '%s\n' 'routing job receives ORG_ADMIN_TOKEN'
+  ! grep -qE 'needs\..*outputs|resolve_privileged_route' "$privileged" \
+    || printf '%s\n' 'runner-produced data can select terminal credential placement'
   ! grep -qF 'ACTIONS_VARIABLES_TOKEN' "$privileged" \
     || printf '%s\n' 'privileged workflow still depends on an organization-variable PAT'
   grep -qF 'GH_TOKEN: ${{ secrets.ORG_ADMIN_TOKEN }}' <<<"$terminal" \
@@ -89,8 +88,8 @@ sed -i '/^permissions:$/i\\  ORG_ADMIN_TOKEN: ${{ secrets.ORG_ADMIN_TOKEN }}' "$
 assert_mutation_rejected 'mutation: review workflow cannot receive ORG_ADMIN_TOKEN'
 
 reset_fixtures
-sed -i '/^  resolve_privileged_route:$/a\\    env:\n      ORG_ADMIN_TOKEN: ${{ secrets.ORG_ADMIN_TOKEN }}' "$tmp/privileged.yml"
-assert_mutation_rejected 'mutation: routing job cannot receive ORG_ADMIN_TOKEN'
+sed -i '/^  privileged_merge:$/a\\    needs: attacker_route\n    runs-on: ${{ needs.attacker_route.outputs.selector }}' "$tmp/privileged.yml"
+assert_mutation_rejected 'mutation: runner-produced output cannot route the terminal credential'
 
 reset_fixtures
 sed -i '0,/persist-credentials: false/s//persist-credentials: true/' "$tmp/privileged.yml"

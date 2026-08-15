@@ -53,20 +53,27 @@ consumer inventory found 55 active workflow locations: the canonical direct work
 public: `Verjson/.github` and `Verjson/verjson-github-runner`; the other 53 generated
 callers are private.
 
-The resolver therefore recognizes those two exact repository identities only when the
-event reports `public` visibility and selects exactly `["ubuntu-24.04"]`. Every other
-Verjson repository must report `private` visibility and still supply exactly
-`["self-hosted","general"]`; an unknown public repository, visibility drift, malformed
-selector, hosted selector from a private caller, or widened persistent selector fails
-before the terminal job receives `ORG_ADMIN_TOKEN`. External organizations retain the
-existing `runner_labels` portability path.
+An independent adversarial review rejected a runner-executed resolver: even without a
+credential or checkout, a compromised persistent worker could forge its job output and
+place the following secret-bearing job back on that worker. Terminal placement therefore
+uses GitHub control-plane context directly. The job-level admission expression recognizes
+the two exact repository identities only with `public` visibility and the `runs-on`
+expression selects exactly `ubuntu-24.04`; no job output participates. Every other
+Verjson repository must be an unlisted `private` identity and receives the literal
+`["self-hosted","general"]` selector. Unknown public identities, unknown visibility, and
+visibility drift skip the terminal job before `ORG_ADMIN_TOKEN` is available. External
+organizations retain the existing `runner_labels` portability path.
 
 This is a narrow reversible stage, not the organization-wide cutover. No organization
 variable changes, new capacity, or credential changes are authorized by it. The runner
 repository must regenerate its caller at the eventual immutable merge revision before
 its staged route becomes active, and representative terminal canaries remain required.
 
-Fleet conformance now inventories caller files rather than assuming every active
-repository is a consumer. It extracts each caller's immutable canonical workflow pin and
-regenerates expected bytes with that same pin. The audit checkout stays event-SHA-bound,
-while an unrelated audit commit no longer makes every unchanged caller non-canonical.
+Fleet conformance now inventories the canonical direct consumer plus generated caller
+files rather than assuming every active repository is a consumer. It verifies secret
+scope for both shapes. For a generated caller it proves the pin exists on canonical main,
+fetches the historical generator and reusable-workflow interface at that exact pin, and
+compares the caller with credentialless historical generation. The audit checkout stays
+event-SHA-bound, while an unrelated audit commit no longer makes every unchanged caller
+non-canonical. The audit itself is fixed to `ubuntu-24.04`; its privileged read token is
+never placed by a repository variable or persistent runner output.

@@ -44,7 +44,7 @@ Where verJSON CI jobs run, and how to choose a `runs-on` value. The model is dec
 |---|---|---|
 | `VERJSON_LANE_TRUSTED` | ordinary organization CI; secrets available | self-hosted general pool |
 | `VERJSON_LANE_UNTRUSTED` | fork/PR content; must not see secrets | self-hosted general pool |
-| `VERJSON_LANE_PRIVILEGED` | the merge gate and its elevated token | staged: exact public allowlist on `ubuntu-24.04`; private consumers on self-hosted general |
+| `VERJSON_LANE_PRIVILEGED` | the merge gate and its elevated token | staged terminal policy: canonical public consumer on `ubuntu-24.04` after merge; runner consumer after caller regeneration; private consumers on self-hosted general |
 | `VERJSON_LANE_FALLBACK` | **our** default when a lane is unset — switchable, not tied to GitHub-hosted | configurable |
 
 Pick by what the job **is**, not by where it currently runs: gate preflight/review that
@@ -52,10 +52,11 @@ touches PR content → `UNTRUSTED`; privileged merge → `PRIVILEGED`; everythin
 `TRUSTED`.
 
 The trusted and untrusted lanes currently resolve to the same pool. Privileged routing
-has a bounded exception: the canonical resolver sends only the exact public repositories
-recorded by ADR 0089 to `ubuntu-24.04`; private consumers remain on the persistent pool
-until private hosted capacity and budget are proven. [#676](https://github.com/Verjson/.github/issues/676)
-tracks the remaining cutover.
+has a bounded exception in canonical workflow control-plane expressions: `.github`
+becomes hosted when this contract merges, while `verjson-github-runner` remains on its
+previous immutable caller until regeneration. Private consumers remain on the persistent
+pool until private hosted capacity and budget are proven.
+[#676](https://github.com/Verjson/.github/issues/676) tracks the remaining cutover.
 
 `UNTRUSTED` points at self-hosted even though hosted runners work, because a *private*
 repository on hosted rides a spending ceiling (see [Cost](#cost-and-hosted-availability)).

@@ -7,6 +7,8 @@ audit="$root/scripts/privileged-merge-conformance.sh"
 generator="$root/scripts/gen-privileged-merge-caller.sh"
 workflow="$root/.github/workflows/privileged-merge-conformance.yml"
 contract_sha=848c49fd4dac307f26180acd420760a27ceff0ba
+alternate_contract_sha=a6b3ccc0590f4fcfdacd7818279ab3eea6b30155
+absent_contract_sha=0123456789abcdef0123456789abcdef01234567
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 fails=0
@@ -45,6 +47,18 @@ case "$*" in
   api*"repos/Verjson/.github/contents/.github/workflows/ai-privileged-merge.yml?ref=main"*"--jq .content")
     printf '%s\n' "$CANONICAL_CONTENT"
     ;;
+  api*"repos/Verjson/.github/compare/"*"...main --jq .status")
+    case "$*" in
+      *"/0123456789abcdef0123456789abcdef01234567...main"*) echo "HTTP 404: Not Found" >&2; exit 1 ;;
+      *) printf '%s\n' "${PIN_RELATION:-ahead}" ;;
+    esac
+    ;;
+  api*"repos/Verjson/.github/contents/scripts/gen-privileged-merge-caller.sh?ref="*"--jq .content")
+    printf '%s\n' "$HISTORICAL_GENERATOR_CONTENT"
+    ;;
+  api*"repos/Verjson/.github/contents/.github/workflows/ai-privileged-merge.yml?ref="*"--jq .content")
+    printf '%s\n' "$HISTORICAL_WORKFLOW_CONTENT"
+    ;;
   "api repos/Verjson/alpha --jq [.default_branch,.visibility] | @tsv")
     printf '%s\n' $'main\tpublic'
     ;;
@@ -63,8 +77,18 @@ GH
 chmod +x "$tmp/bin/gh"
 
 run_audit() {
-  local canonical
+  local canonical historical_workflow
   canonical="$(bash "$generator" "$contract_sha" | base64 | tr -d '\n')"
+  historical_workflow="$(printf '%s\n' \
+    'on:' \
+    '  workflow_call:' \
+    '    inputs:' \
+    '      privileged_lane:' \
+    '        required: false' \
+    '        type: string' \
+    'jobs:' \
+    '  privileged_merge:' \
+    '    runs-on: ubuntu-24.04' | base64 | tr -d '\n')"
   PATH="$tmp/bin:$PATH" GH_TOKEN="${GH_TOKEN-test-token}" \
     ACTIVE_REPOSITORIES="${ACTIVE_REPOSITORIES-Verjson/alpha}" \
     SECRET_VISIBILITY="${SECRET_VISIBILITY-selected}" \
@@ -74,6 +98,9 @@ run_audit() {
     ALPHA_CONTENT="${ALPHA_CONTENT-$canonical}" \
     BETA_CONTENT="${BETA_CONTENT-$canonical}" \
     CANONICAL_CONTENT="${CANONICAL_CONTENT-$(printf '%s\n' 'name: AI terminal merge promotion' | base64 | tr -d '\n')}" \
+    HISTORICAL_GENERATOR_CONTENT="${HISTORICAL_GENERATOR_CONTENT-$(base64 <"$generator" | tr -d '\n')}" \
+    HISTORICAL_WORKFLOW_CONTENT="${HISTORICAL_WORKFLOW_CONTENT-$historical_workflow}" \
+    PIN_RELATION="${PIN_RELATION-ahead}" \
     bash "$audit" >"$tmp/out" 2>&1
 }
 
@@ -82,10 +109,20 @@ run_audit \
   && pass "active managed repository with caller and selected secret access conforms" \
   || fail "conformant repository did not pass"
 
-ACTIVE_REPOSITORIES=$'Verjson/.github\nVerjson/alpha' run_audit \
-  && grep -q 'result=conformant repositories_scanned=2 consumers=1' "$tmp/out" \
-  && pass "canonical implementation is not misclassified as its own generated caller" \
-  || fail "canonical repository polluted the generated-consumer inventory"
+ACTIVE_REPOSITORIES=$'Verjson/.github\nVerjson/alpha' \
+  SECRET_REPOSITORIES=$'Verjson/.github\nVerjson/alpha' run_audit \
+  && grep -q 'result=conformant repositories_scanned=2 consumers=2' "$tmp/out" \
+  && pass "canonical direct workflow is inventoried without generated-caller byte comparison" \
+  || fail "canonical direct consumer was omitted or misclassified"
+
+ACTIVE_REPOSITORIES=Verjson/.github SECRET_REPOSITORIES=Verjson/alpha run_audit \
+  && fail "canonical direct consumer without selected-secret access reported green" \
+  || {
+    grep -q 'Missing ORG_ADMIN_TOKEN access' "$tmp/out" \
+      && grep -q 'repository=Verjson/.github' "$tmp/out" \
+      && pass "canonical direct consumer requires selected-secret access evidence" \
+      || fail "canonical direct consumer bypassed secret-scope validation"
+  }
 
 ACTIVE_REPOSITORIES=$'Verjson/alpha\nVerjson/beta' \
   SECRET_REPOSITORIES=$'Verjson/alpha\nVerjson/beta' \
@@ -141,10 +178,26 @@ ACTIVE_REPOSITORIES=$'Verjson/alpha\nVerjson/beta' \
   && pass "organization-wide secret visibility admits every active repository" \
   || fail "all-repository secret visibility was not honored"
 
-ALPHA_CONTENT="$(bash "$generator" 0123456789abcdef0123456789abcdef01234567 | base64 | tr -d '\n')" run_audit \
+ALPHA_CONTENT="$(bash "$generator" "$alternate_contract_sha" | base64 | tr -d '\n')" run_audit \
   && grep -q 'result=conformant repositories_scanned=1 consumers=1' "$tmp/out" \
-  && pass "caller bytes are canonical for their stable immutable pin, not the audit event SHA" \
+  && pass "caller bytes are canonical for a verified stable immutable pin, not the audit event SHA" \
   || fail "audit incorrectly rebound canonical caller bytes to an unrelated event SHA"
+
+ALPHA_CONTENT="$(bash "$generator" "$absent_contract_sha" | base64 | tr -d '\n')" run_audit \
+  && fail "absent 40-hex canonical pin reported green" \
+  || {
+    grep -q 'Untrusted privileged merge caller pin' "$tmp/out" \
+      && pass "caller pin must exist on canonical main history" \
+      || fail "absent caller pin lacks canonical-history evidence"
+  }
+
+HISTORICAL_WORKFLOW_CONTENT="$(printf '%s\n' 'name: incompatible' | base64 | tr -d '\n')" run_audit \
+  && fail "incompatible historical reusable interface reported green" \
+  || {
+    grep -q 'Incompatible privileged merge contract' "$tmp/out" \
+      && pass "caller pin must expose the historical reusable interface" \
+      || fail "incompatible caller pin lacks interface evidence"
+  }
 
 ALPHA_CONTENT="$(bash "$generator" "$contract_sha" | sed "s/@$contract_sha/@main/" | base64 | tr -d '\n')" run_audit \
   && fail "mutable caller pin reported green" \
@@ -174,7 +227,7 @@ assert document["permissions"] == {"contents": "read"}
 job = document["jobs"]["audit"]
 source = ".privileged-merge-conformance-source-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}"
 assert set(job) == {"runs-on", "defaults", "timeout-minutes", "steps"}
-assert job["runs-on"] == "${{ fromJSON(vars.VERJSON_RUNNER_FASTLANE || '[\"ubuntu-24.04\"]') }}"
+assert job["runs-on"] == "ubuntu-24.04"
 assert job["defaults"] == {"run": {"working-directory": source}}
 assert job["timeout-minutes"] == 10
 checkout, audit, cleanup = job["steps"]
@@ -194,7 +247,7 @@ assert cleanup["working-directory"] == "${{ github.workspace }}"
 assert cleanup["run"] == f'rm -rf "{source}"'
 PY
 then
-  pass "scheduled fleet audit binds its code checkout, not every caller, to the event SHA"
+  pass "scheduled fleet audit binds code to the event SHA and its privileged token to fixed hosted capacity"
 else
   fail "scheduled fleet audit is missing or its privileged execution surface drifted"
 fi
