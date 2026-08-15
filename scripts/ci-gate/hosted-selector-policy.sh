@@ -210,6 +210,28 @@ os_lane='vars\.VERJSON_LANE_TRUSTED_(MACOS|WINDOWS)'
 # leg that grows past it is a decision rather than a drift.
 HOSTED_TIMEOUT_CEILING=60
 
+# Remove every `${{ … }}` span, leaving only the literal text around them.
+#
+# Scanned by index rather than by regex: `sed -E 's/\$\{\{[^}]*\}\}//g'` is
+# defeated by a `}` inside an expression, and the greedy form eats everything
+# between the first `${{` and the last `}}`. Both failure modes drop literal
+# text, and dropping text here is a false NEGATIVE.
+strip_expressions() {
+  local text="$1" out="" head tail
+  while [[ "$text" == *'${{'* ]]; do
+    head="${text%%'${{'*}"
+    tail="${text#*'${{'}"
+    out+="$head "
+    if [[ "$tail" == *'}}'* ]]; then
+      text="${tail#*'}}'}"
+    else
+      # An unterminated expression: the rest of the value is inside it.
+      text=""
+    fi
+  done
+  printf '%s %s' "$out" "$text"
+}
+
 is_sanctioned() {
   local candidate
   [ "${#sanctioned[@]}" -gt 0 ] || return 1
@@ -250,6 +272,30 @@ while IFS=$'\037' read -r file job runs_on_line runs_on timeout_line timeout str
   # `matrix-unreferenced-key` fixture so it stays a decision.
   selector="$runs_on"
   case "$runs_on" in *matrix.*) selector="$runs_on $strategy" ;; esac
+
+  # ------------------------------------------------------------------------
+  # EVERY rule below judges `$selector`, never `$runs_on`. That divergence is
+  # not a style preference — it produced a live false negative, in the
+  # direction that costs money, and it was invisible fifty lines further down.
+  #
+  # The shape that evaded it is the one #810 proposes and AiB will adopt:
+  #
+  #     strategy: { matrix: { include: [ { lane: '${{ vars.VERJSON_LANE_TRUSTED_MACOS }}' } ] } }
+  #     runs-on: ${{ fromJSON(matrix.lane) }}
+  #
+  # With the lane variable in the strategy block and never in `runs-on:`, the
+  # OS-lane test read `$runs_on`, found nothing, and `continue`d past R3 and R4
+  # entirely. R1 and R2 already folded the strategy in, so the suite looked
+  # healthy while the two rules that exist specifically to BOUND hosted spend
+  # were absent on the one workflow they were written for.
+  #
+  # `$selector` differs from `$runs_on` only when `runs-on` references
+  # `matrix.`, so the folding is scoped to jobs whose placement genuinely lives
+  # in the strategy block. Anything added below must read `$selector` unless it
+  # is asking a question about the literal text of the `runs-on:` value itself
+  # — and the one rule that does (Tier B's "is this an expression at all")
+  # states that reason at its own site.
+  # ------------------------------------------------------------------------
 
   if grep -qiE "$metered_family" <<<"$selector"; then
     report "$file" "$runs_on_line" \
@@ -292,14 +338,22 @@ while IFS=$'\037' read -r file job runs_on_line runs_on timeout_line timeout str
   # reason. Firing on it would reject ~89 private repositories for conforming to
   # the contract, and a check nobody can keep switched on enforces nothing. The
   # word in the requirement is *literal*, and this is where that word is cashed.
+  # "Not an expression" is asked of the TEXT OUTSIDE every `${{ … }}` span
+  # rather than of `$runs_on` wholesale. Both directions matter, and the
+  # earlier `[[ "$runs_on" != *'${{'* ]]` form got each of them wrong once:
+  #  * `runs-on: ${{ matrix.os }}` with `matrix: { os: [ubuntu-latest] }` is a
+  #    hardcoded selector placed through an indirection. The old form saw an
+  #    expression and skipped it — the same matrix blind spot as R3/R4.
+  #  * `'["ubuntu-24.04"]'` inside a lane chain is ADR 0040's portability tail
+  #    and must stay exempt, which is what stripping the expression preserves.
   if [ "$visibility" = private ] \
-    && [[ "$runs_on" != *'${{'* ]] \
-    && grep -qiE '(^|[^A-Za-z0-9_])ubuntu-[A-Za-z0-9]' <<<"$selector"; then
+    && grep -qiE '(^|[^A-Za-z0-9_])ubuntu-[A-Za-z0-9]' \
+      <<<"$(strip_expressions "$selector")"; then
     report "$file" "$runs_on_line" \
       "TierB literal Linux hosted selector on a private repository in job '$job' — use vars.VERJSON_RUNNER_FASTLANE or a lane variable: $runs_on"
   fi
 
-  if ! grep -qE "$os_lane" <<<"$runs_on"; then
+  if ! grep -qE "$os_lane" <<<"$selector"; then
     # R4, the ordinary half. A non-OS lane chain must have a terminal landing —
     # `VERJSON_LANE_FALLBACK`, or the portable `'["ubuntu-24.04"]'` tail that
     # ADR 0040 put there for an organization with no lane variables at all. A
@@ -312,8 +366,8 @@ while IFS=$'\037' read -r file job runs_on_line runs_on timeout_line timeout str
     # `VERJSON_LANE_UNTRUSTED || '["ubuntu-24.04"]'`, never the trusted
     # fallback — is covered by the rule instead of by a repository-specific
     # carve-out this script would have to carry into ~89 consumers.
-    if grep -qE 'vars\.VERJSON_LANE_(TRUSTED|UNTRUSTED|PRIVILEGED)([^A-Z_]|$)' <<<"$runs_on" \
-      && ! grep -qE "vars\\.VERJSON_LANE_FALLBACK|ubuntu-[A-Za-z0-9]" <<<"$runs_on"; then
+    if grep -qE 'vars\.VERJSON_LANE_(TRUSTED|UNTRUSTED|PRIVILEGED)([^A-Z_]|$)' <<<"$selector" \
+      && ! grep -qE "vars\\.VERJSON_LANE_FALLBACK|ubuntu-[A-Za-z0-9]" <<<"$selector"; then
       report "$file" "$runs_on_line" \
         "R4 lane selector with no terminal landing in job '$job' — it resolves to an empty runs-on when the lane variable is unset: $runs_on"
     fi
@@ -325,7 +379,7 @@ while IFS=$'\037' read -r file job runs_on_line runs_on timeout_line timeout str
   # `'["ubuntu-…"]'` tail either: both spellings degrade a macOS or Windows leg
   # onto Linux, which produces a non-installable artifact behind a green check.
   # Failing closed is louder and cheaper than shipping the wrong binary.
-  if grep -qE "vars\\.VERJSON_LANE_FALLBACK|ubuntu-[A-Za-z0-9]" <<<"$runs_on"; then
+  if grep -qE "vars\\.VERJSON_LANE_FALLBACK|ubuntu-[A-Za-z0-9]" <<<"$selector"; then
     report "$file" "$runs_on_line" \
       "R4 OS lane carries a fallback tail in job '$job' — an unset OS lane must fail closed, never degrade to Linux: $runs_on"
   fi

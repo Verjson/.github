@@ -1,0 +1,15 @@
+# The ordinary half of R4, reached through the same indirection. An org that set
+# only VERJSON_LANE_FALLBACK resolves this to an empty runs-on and the job queues
+# forever with no check-run diagnostic (#401) — the defect is identical whether
+# the chain sits in `runs-on:` or in the matrix that feeds it.
+name: ci
+on: pull_request
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - lane: ${{ vars.VERJSON_LANE_TRUSTED }}
+    runs-on: ${{ fromJSON(matrix.lane) }}
+    steps:
+      - run: npm test

@@ -195,6 +195,37 @@ assert_violation public unicode-job-name 'metered hosted runner family' \
 assert_violation public matrix-unreferenced-key 'metered hosted runner family' \
   "a metered word anywhere in a referenced strategy block is refused, conservatively"
 
+# --------------------------------------------------------------------------
+# The matrix indirection, against EVERY rule rather than only the two that
+# happened to fold the strategy block in.
+#
+# This is the shape #810 proposes and AiB will adopt: the lane variable lives in
+# `strategy.matrix`, and `runs-on:` is only `${{ fromJSON(matrix.lane) }}`. R1
+# and R2 folded the strategy in and looked healthy; R3, R4 and Tier B read
+# `runs-on` alone and were therefore absent on precisely the workflow they were
+# written for. The existing `os-lane-*` fixtures all use the direct form, which
+# is why none of them caught it.
+#
+# Every one of these must be SANCTIONED in the invocation. Without that, R5
+# fires on the OS-lane reference and returns exit 1 for the wrong reason —
+# masking the exact gap under test, which is how a fixture can look like
+# coverage while proving nothing.
+# --------------------------------------------------------------------------
+assert_violation public matrix-os-lane-no-timeout 'R3 OS-lane job declares no timeout-minutes' \
+  "an OS lane reached through a matrix is still bound by R3" desktop-release.yml
+assert_violation public matrix-os-lane-fallback 'R4 OS lane carries a fallback tail' \
+  "an OS lane reached through a matrix may not degrade to Linux" desktop-release.yml
+assert_violation public matrix-os-lane-fallback 'exceeds the 60 ceiling' \
+  "an OS lane reached through a matrix is still bound by the ceiling" desktop-release.yml
+assert_violation public matrix-lane-without-terminal-landing 'R4 lane selector with no terminal landing' \
+  "an ordinary lane reached through a matrix still needs a terminal landing"
+assert_violation private matrix-linux-literal 'literal Linux hosted selector' \
+  "a Linux literal placed through a matrix is still a literal on a private repository"
+assert_clean public matrix-linux-literal \
+  "the same matrix literal on a public repository spends nothing and is not Tier B"
+assert_clean public matrix-os-lane-bounded \
+  "the conforming matrix form — both lanes, bounded, no fallback — is accepted" desktop-release.yml
+
 # The false-positive direction of the comment handling. A comment is prose, not
 # a selector. A check that refused this would be unexplainable inside the files
 # it governs, and one people work around by deleting comments is worse than none.

@@ -1,0 +1,13 @@
+# A hardcoded Linux hosted selector placed through a matrix. On a private
+# repository this rides the spending limit exactly as `runs-on: ubuntu-latest`
+# does; the indirection changes where the literal is written, not what it costs.
+name: ci
+on: pull_request
+jobs:
+  build:
+    strategy:
+      matrix:
+        os: [ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - run: npm test

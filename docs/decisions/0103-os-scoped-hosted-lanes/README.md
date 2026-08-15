@@ -177,8 +177,13 @@ standard regardless, by its own ADR 0089 inventory, which this change does not t
   ~89 private repositories for conforming to the contract, and a check nobody can keep
   switched on enforces nothing. This mirrors the strip that `runner-routing-policy.test.sh`
   already performs for the same reason.
-- **A matrix indirection is judged against the whole `strategy` block, not only the
-  referenced key**, so a metered word in an unreferenced cross-compile key is refused too.
+- **A matrix indirection is judged against the whole `strategy` block by *every* rule, not
+  only the referenced key.** The lane variable of a real desktop release lives in
+  `strategy.matrix` rather than in `runs-on:`, so a rule that reads the selector line alone
+  is absent on exactly the workflow it was written for. That is not hypothetical: the first
+  implementation bounded and fail-closed only the direct form, and the matrix form — the
+  shape #810 proposes — passed with no timeout and with a fallback tail. Consequently a
+  metered word in an unreferenced cross-compile key is refused too.
   That imprecision is chosen: resolving the reference exactly means re-implementing YAML
   scoping inside the scan, and a bug there would fail *open*. A false positive costs an
   argument and is fixed by renaming a key; a false negative costs money.

@@ -1,0 +1,16 @@
+# The conforming matrix form. Both lanes, bounded, no fallback tail — this is
+# what a real desktop release looks like, and it must stay accepted.
+name: desktop release
+on: workflow_dispatch
+jobs:
+  installer:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - lane: ${{ vars.VERJSON_LANE_TRUSTED_MACOS }}
+          - lane: ${{ vars.VERJSON_LANE_TRUSTED_WINDOWS }}
+    runs-on: ${{ fromJSON(matrix.lane) }}
+    timeout-minutes: 45
+    steps:
+      - run: npm run dist
