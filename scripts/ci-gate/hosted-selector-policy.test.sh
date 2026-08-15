@@ -185,11 +185,41 @@ assert_violation public evasion-matrix 'metered hosted runner family' \
 assert_violation public unicode-job-name 'metered hosted runner family' \
   "a non-ASCII job key does not fall out of the job parse"
 
+# The known imprecision, asserted so it is a recorded decision rather than a
+# surprise: a matrix indirection is judged against the WHOLE strategy block, not
+# only the referenced key, so a metered word in an unreferenced cross-compile
+# key is refused too. That is the safe direction — a false positive costs an
+# argument, a false negative costs money — and making it precise would mean
+# re-implementing YAML scoping inside the scan, which is where a false negative
+# would come from.
+assert_violation public matrix-unreferenced-key 'metered hosted runner family' \
+  "a metered word anywhere in a referenced strategy block is refused, conservatively"
+
 # The false-positive direction of the comment handling. A comment is prose, not
 # a selector. A check that refused this would be unexplainable inside the files
 # it governs, and one people work around by deleting comments is worse than none.
 assert_clean public comment-mentions-metered \
   "a comment naming a metered family is prose, not a selector"
+assert_violation public evasion-quoted-key 'metered hosted runner family' \
+  "a quoted \"runs-on\" key is still a selector"
+
+# The Tier B boundary that matters for #815. ADR 0040's portability tail —
+# `vars.VERJSON_LANE_FALLBACK || '[\"ubuntu-24.04\"]'` — appears in the
+# generated caller of every consumer, and ADR 0086's acquisition job lands on
+# the same tail directly. Those are lane chains, not hardcoded placements, and
+# `runner-routing-policy.test.sh:~92` already strips them for exactly this
+# reason. Firing Tier B on them would reject ~89 private repositories for
+# conforming to the contract, which is a check nobody could keep switched on.
+assert_clean private lane-with-fallback \
+  "the sanctioned portability tail is not a hardcoded selector, even on a private repository"
+assert_clean private os-lane-bounded \
+  "an OS-lane release workflow on a private repository is Tier A's business, not Tier B's" desktop-release.yml
+
+# A scanned set that parses to zero jobs taught the sweep nothing. This is the
+# subtlest way to get a green check out of a check that enforced nothing: point
+# it at real files it cannot read.
+assert_undetermined "a workflow set that yields no jobs at all is undetermined" \
+  --visibility public "$fixtures/no-jobs"
 
 # --------------------------------------------------------------------------
 # R3 boundaries. 60 is the ceiling and is accepted; 61 is not. A step-level

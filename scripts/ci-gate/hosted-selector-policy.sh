@@ -64,6 +64,17 @@ shopt -u nullglob
 [ "${#workflow_files[@]}" -gt 0 ] \
   || undetermined "no .yml or .yaml workflow files found under $workflow_dir"
 
+# Job records are US-separated, so a filename carrying US or a newline would
+# silently corrupt a record into a shorter one and drop the rules that read its
+# later fields — a false NEGATIVE, in the direction that costs money. Such a
+# name is legal on disk and creatable through a pull request, so it is refused
+# as undetermined rather than parsed hopefully.
+for workflow_file in "${workflow_files[@]}"; do
+  case "$workflow_file" in
+    *$'\037'*|*$'\n'*) undetermined "workflow filename contains a record separator or newline: $workflow_file" ;;
+  esac
+done
+
 # R5's sanctioned desktop-release path, as an EXPLICIT constant rather than an
 # implicit absence. In `Verjson/.github` the set is empty and that is the whole
 # rule: no workflow here may name an OS lane variable at all. `.github`
@@ -83,7 +94,10 @@ shopt -u nullglob
 # this repository instead of a variable edit, which is the property ADR 0041
 # exists to preserve.
 SANCTIONED_OS_LANE_WORKFLOWS=()
-sanctioned=("${SANCTIONED_OS_LANE_WORKFLOWS[@]}" "${sanctioned[@]}")
+sanctioned=(
+  ${SANCTIONED_OS_LANE_WORKFLOWS[@]+"${SANCTIONED_OS_LANE_WORKFLOWS[@]}"}
+  ${sanctioned[@]+"${sanctioned[@]}"}
+)
 
 violations=0
 report() {
@@ -91,8 +105,15 @@ report() {
   violations=$((violations + 1))
 }
 
-# Emit one tab-separated record per job:
+# Emit one record per job, separated by US (0x1f):
 #   file, job, runs-on line, runs-on value, timeout line, timeout value, strategy text
+#
+# US rather than TAB, and that is load-bearing rather than fussy. TAB is an IFS
+# *whitespace* character, so bash `read` collapses a run of them into one
+# delimiter: a job with an empty `timeout-minutes` and a non-empty `strategy`
+# had the strategy text read into `timeout`, leaving the selector unscanned.
+# That was a live false NEGATIVE — a matrix job with no job-level timeout — and
+# the `matrix-unreferenced-key` fixture is what caught it.
 #
 # Parsed structurally rather than grepped, because every interesting evasion is
 # a shape rather than a word: a flow sequence (`runs-on: [macos-15]`), a block
@@ -106,15 +127,16 @@ report() {
 # level. Those are step-script heredocs — actionlint.yml carries four, as lint
 # fixtures — and they place no job.
 parse_jobs() {
-  awk -v file="$1" '
+  awk -v file="$1" -v SEP=$'\037' '
     function trim(s) { sub(/^[[:space:]]+/, "", s); sub(/[[:space:]]+$/, "", s); return s }
     # A comment after a plain scalar needs whitespace before the `#` in YAML, so
     # this strips the comment without eating a `#` inside a value.
     function strip_comment(s) { sub(/[[:space:]]+#.*$/, "", s); return s }
     function flush() {
       if (job != "")
-        printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", \
-          file, job, runs_on_line, runs_on, timeout_line, timeout, strategy
+        printf "%s%s%s%s%s%s%s%s%s%s%s%s%s\n", \
+          file, SEP, job, SEP, runs_on_line, SEP, runs_on, SEP, \
+          timeout_line, SEP, timeout, SEP, strategy
       job = ""
     }
     { line = $0; sub(/\r$/, "", line) }
@@ -138,11 +160,15 @@ parse_jobs() {
     }
     job == "" { next }
     prop_indent < 0 { prop_indent = indent }
-    indent == prop_indent && line ~ /^[[:space:]]*[A-Za-z0-9_.-]+:/ {
+    # The optional quotes are not cosmetic: a quoted `runs-on` key is legal YAML,
+    # and a key pattern accepting only the bare spelling reads that job as having
+    # no selector at all — a false negative, in the direction that costs money.
+    indent == prop_indent && line ~ /^[[:space:]]*["\047]?[A-Za-z0-9_.-]+["\047]?:/ {
       key = trim(line)
       sub(/:.*$/, "", key)
+      gsub(/^["\047]|["\047]$/, "", key)
       value = line
-      sub(/^[[:space:]]*[A-Za-z0-9_.-]+:[[:space:]]*/, "", value)
+      sub(/^[[:space:]]*["\047]?[A-Za-z0-9_.-]+["\047]?:[[:space:]]*/, "", value)
       value = trim(strip_comment(value))
       collect = ""
       if (key == "runs-on") { runs_on = value; runs_on_line = NR; collect = "runs-on" }
@@ -186,7 +212,8 @@ HOSTED_TIMEOUT_CEILING=60
 
 is_sanctioned() {
   local candidate
-  for candidate in ${sanctioned+"${sanctioned[@]}"}; do
+  [ "${#sanctioned[@]}" -gt 0 ] || return 1
+  for candidate in "${sanctioned[@]}"; do
     [ "$candidate" = "$1" ] && return 0
   done
   return 1
@@ -207,10 +234,20 @@ for workflow_file in "${workflow_files[@]}"; do
   done < <(grep -nE 'VERJSON_LANE_TRUSTED_(MACOS|WINDOWS)' "$workflow_file" || true)
 done
 
-while IFS=$'\t' read -r file job runs_on_line runs_on timeout_line timeout strategy; do
+jobs_seen=0
+while IFS=$'\037' read -r file job runs_on_line runs_on timeout_line timeout strategy; do
+  jobs_seen=$((jobs_seen + 1))
   [ -n "${runs_on:-}" ] || continue
   # A matrix indirection places the job from `strategy.matrix`, so the selector
   # to judge is there rather than in `runs-on:` itself.
+  #
+  # Known imprecision, chosen deliberately: the WHOLE strategy block is judged,
+  # not only the key the selector references, so a metered word in an
+  # unreferenced cross-compile key is refused too. Resolving the reference
+  # precisely means re-implementing YAML scoping here, and a bug in that would
+  # produce a false NEGATIVE. A false positive costs an argument and is fixed by
+  # renaming a key; a false negative costs money. Pinned by the
+  # `matrix-unreferenced-key` fixture so it stays a decision.
   selector="$runs_on"
   case "$runs_on" in *matrix.*) selector="$runs_on $strategy" ;; esac
 
@@ -248,7 +285,15 @@ while IFS=$'\t' read -r file job runs_on_line runs_on timeout_line timeout strat
   # repositories is #816; this comment is here so the deferral is a recorded
   # decision rather than an oversight, and `.github` itself is held to the
   # stricter standard by its own ADR 0089 inventory regardless.
+  # Scoped to a LITERAL selector — a value that is not an Actions expression at
+  # all. Inside a `${{ … }}` chain, `'["ubuntu-24.04"]'` is ADR 0040's
+  # portability tail, which appears in the generated caller of every consumer
+  # and which runner-routing-policy.test.sh:~92 already strips for this exact
+  # reason. Firing on it would reject ~89 private repositories for conforming to
+  # the contract, and a check nobody can keep switched on enforces nothing. The
+  # word in the requirement is *literal*, and this is where that word is cashed.
   if [ "$visibility" = private ] \
+    && [[ "$runs_on" != *'${{'* ]] \
     && grep -qiE '(^|[^A-Za-z0-9_])ubuntu-[A-Za-z0-9]' <<<"$selector"; then
     report "$file" "$runs_on_line" \
       "TierB literal Linux hosted selector on a private repository in job '$job' — use vars.VERJSON_RUNNER_FASTLANE or a lane variable: $runs_on"
@@ -308,5 +353,12 @@ done < <(
   done
 )
 
+# The subtlest way to get a green check out of a check that enforced nothing:
+# point it at real files it cannot read. Files present but zero jobs parsed means
+# the parser did not understand the tree, not that the tree is clean — so it is
+# undetermined even though the sweep ran. Reported after the rules rather than
+# before, so a violation that WAS found is still reported as a violation.
 [ "$violations" -eq 0 ] || exit 1
+[ "$jobs_seen" -gt 0 ] \
+  || undetermined "parsed ${#workflow_files[@]} workflow file(s) under $workflow_dir but found no jobs"
 exit 0
