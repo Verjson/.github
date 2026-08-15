@@ -10,6 +10,8 @@ consumer's protected production environment.
 
 The reusable workflow, controller, preflight, receipt schema, adversarial tests, and
 runbook enforce signer/source/contract pins, bounded capacity and time policy,
-idempotent receipt-linked recovery, independently approved rollback, least privilege,
-and no capacity-creating or spend-increasing operations. Live
+canonical manifest bytes, strict version 3 receipts, exact-plan dry-run evidence,
+authority-checked append-only resume, truthful verified-or-unknown post-update state,
+independently approved rollback, least privilege, and no capacity-creating or
+spend-increasing operations. Live
 `Verjson/verjson-github-runner` adoption remains a separate post-merge handoff.

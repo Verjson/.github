@@ -6,9 +6,12 @@
   "additionalProperties": false,
   "required": [
     "schemaVersion",
+    "revision",
     "attemptId",
     "action",
     "deploymentContractCommit",
+    "headCommit",
+    "planDigest",
     "outcome",
     "environment",
     "manifestIdentity",
@@ -27,10 +30,13 @@
     "completedAt"
   ],
   "properties": {
-    "schemaVersion": {"const": 2},
+    "schemaVersion": {"const": 3},
+    "revision": {"type": "integer", "minimum": 0},
     "attemptId": {"type": "string", "pattern": "^[1-9][0-9]*\\.[1-9][0-9]*$"},
     "action": {"enum": ["deploy", "rollback"]},
     "deploymentContractCommit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "headCommit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "planDigest": {"$ref": "#/$defs/digest"},
     "outcome": {"enum": ["admitted", "in_progress", "succeeded", "failed", "interrupted"]},
     "environment": {"const": "production"},
     "manifestIdentity": {
@@ -38,7 +44,7 @@
       "pattern": "^ghcr\\.io/[a-z0-9_.-]+/[a-z0-9_.-]+@sha256:[0-9a-f]{64}$"
     },
     "fleetSelector": {"type": "string", "pattern": "^[a-z][a-z0-9_-]{1,31}$"},
-    "canaryRunner": {"type": "string", "minLength": 1},
+    "canaryRunner": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"},
     "selectedRelease": {"$ref": "#/$defs/release"},
     "observedDeployedRelease": {
       "description": "Release verified on the fleet immediately before mutation; null only for an admitted first deployment.",
@@ -68,8 +74,8 @@
       "additionalProperties": false,
       "required": ["dispatcher", "reviewer", "workflowRunId", "environmentProtectionRuleId"],
       "properties": {
-        "dispatcher": {"type": "string", "minLength": 1},
-        "reviewer": {"type": "string", "minLength": 1},
+        "dispatcher": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$"},
+        "reviewer": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$"},
         "workflowRunId": {"type": "integer", "minimum": 1},
         "environmentProtectionRuleId": {"type": "integer", "minimum": 1}
       }
@@ -84,10 +90,11 @@
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["name", "release"],
+        "required": ["name", "release", "state"],
         "properties": {
-          "name": {"type": "string", "minLength": 1},
-          "release": {"$ref": "#/$defs/release"}
+          "name": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"},
+          "release": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/release"}]},
+          "state": {"enum": ["verified", "unknown"]}
         }
       }
     },
@@ -114,6 +121,7 @@
       "if": {"properties": {"outcome": {"const": "admitted"}}},
       "then": {
         "properties": {
+          "revision": {"const": 0},
           "runners": {"type": "array", "maxItems": 0},
           "completedAt": {"type": "null"},
           "previousReceiptDigest": {"type": "null"},
@@ -145,13 +153,15 @@
     "runnerTransition": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["name", "beforeDigest", "afterDigest", "probe", "completedAt"],
+      "required": ["name", "beforeDigest", "afterDigest", "afterRelease", "state", "probe", "completedAt"],
       "properties": {
-        "name": {"type": "string", "minLength": 1},
-        "beforeDigest": {"$ref": "#/$defs/digest"},
-        "afterDigest": {"$ref": "#/$defs/digest"},
-        "probe": {"enum": ["passed", "failed"]},
-        "completedAt": {"type": "string", "format": "date-time"}
+        "name": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"},
+        "beforeDigest": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/digest"}]},
+        "afterDigest": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/digest"}]},
+        "afterRelease": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/release"}]},
+        "state": {"enum": ["updated", "restored", "unknown"]},
+        "probe": {"enum": ["not_run", "passed", "failed", "timeout"]},
+        "completedAt": {"oneOf": [{"type": "null"}, {"type": "string", "format": "date-time"}]}
       }
     }
   }

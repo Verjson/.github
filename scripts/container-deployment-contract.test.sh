@@ -121,17 +121,25 @@ assert jobs["deploy"]["environment"] == "production"
 assert "environment" not in jobs["dry-run"]
 assert workflow["concurrency"]["cancel-in-progress"] is False
 assert set(workflow["permissions"]) == {"actions", "attestations", "contents"}
-mutation_step = next(
+mutation_steps = [
     step for step in jobs["deploy"]["steps"]
-    if step.get("name") == "Execute bounded canary and sequential rollout"
-)
-assert mutation_step["env"] == {
+    if step.get("name", "").startswith("Advance ")
+]
+assert len(mutation_steps) == 3
+expected_mutation_env = {
     "CONFIG_PATH": "${{ inputs.config-path }}",
     "GH_TOKEN": "${{ github.token }}",
     "VERJSON_RUNNER_DEPLOY_TOKEN": "${{ secrets.VERJSON_RUNNER_DEPLOY_TOKEN }}",
 }
+assert all(step["env"] == expected_mutation_env for step in mutation_steps)
+dry_uploads = [
+    step for step in jobs["dry-run"]["steps"]
+    if step.get("uses", "").startswith("actions/upload-artifact@")
+]
+assert len(dry_uploads) == 1
+assert dry_uploads[0]["with"]["path"] == "deployment-plan.json"
 for step in jobs["deploy"]["steps"]:
-    if step is not mutation_step:
+    if step not in mutation_steps:
         assert "VERJSON_RUNNER_DEPLOY_TOKEN" not in str(step)
 PY
 

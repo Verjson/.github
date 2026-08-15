@@ -40,6 +40,7 @@ def release(version, digit):
 
 def failed_attempt(outcome="failed"):
     return {
+        "revision": 0 if outcome == "admitted" else 1,
         "attemptId": "1001.1",
         "action": "deploy",
         "outcome": outcome,

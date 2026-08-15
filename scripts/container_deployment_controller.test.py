@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
 
 import copy
+import hashlib
 import importlib.util
+import json
 import sys
+import tempfile
 import unittest
 from unittest import mock
 from datetime import datetime, timedelta, timezone
@@ -21,6 +24,36 @@ def release(version: str, digit: str) -> dict:
         "releaseVersion": version,
         "manifestDigest": "sha256:" + digit * 64,
     }
+
+
+def release_manifest(version: str, image_digit: str) -> dict:
+    return {
+        "schemaVersion": 1,
+        "releaseVersion": version,
+        "source": {"repository": "Verjson/verjson-github-runner"},
+        "release": {
+            "workflow": {
+                "path": ".github/workflows/container-release.yml",
+                "contractCommit": "a" * 40,
+            }
+        },
+        "images": [
+            {
+                "variant": "runner",
+                "repository": "ghcr.io/verjson/verjson-github-runner",
+                "indexDigest": "sha256:" + image_digit * 64,
+            }
+        ],
+    }
+
+
+def manifest_release(manifest: dict) -> dict:
+    digest = "sha256:" + hashlib.sha256(
+        json.dumps(
+            manifest, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+        ).encode("utf-8")
+    ).hexdigest()
+    return {"releaseVersion": manifest["releaseVersion"], "manifestDigest": digest}
 
 
 def configuration() -> dict:
@@ -57,29 +90,15 @@ def configuration() -> dict:
 
 def evidence() -> dict:
     now = datetime.now(timezone.utc)
-    selected = release("2.0.0", "2")
+    manifest = release_manifest("2.0.0", "3")
+    selected = manifest_release(manifest)
+    baseline_manifest = release_manifest("1.0.0", "1")
+    baseline = manifest_release(baseline_manifest)
     return {
         "manifestIdentity": (
             "ghcr.io/verjson/verjson-github-runner-release@" + selected["manifestDigest"]
         ),
-        "manifest": {
-            "schemaVersion": 1,
-            "releaseVersion": selected["releaseVersion"],
-            "source": {"repository": "Verjson/verjson-github-runner"},
-            "release": {
-                "workflow": {
-                    "path": ".github/workflows/container-release.yml",
-                    "contractCommit": "a" * 40,
-                }
-            },
-            "images": [
-                {
-                    "variant": "runner",
-                    "repository": "ghcr.io/verjson/verjson-github-runner",
-                    "indexDigest": "sha256:" + "3" * 64,
-                }
-            ],
-        },
+        "manifest": manifest,
         "attestation": {
             "verified": True,
             "repository": "Verjson/verjson-github-runner",
@@ -91,6 +110,7 @@ def evidence() -> dict:
         },
         "requestedAt": now.isoformat().replace("+00:00", "Z"),
         "activeDeploymentCount": 0,
+        "headCommit": "c" * 40,
         "authorization": {
             "dispatcher": "release-operator",
             "reviewer": "release-approver",
@@ -101,10 +121,10 @@ def evidence() -> dict:
             "runners": [
                 {
                     "name": name,
-                    "release": release("1.0.0", "1"),
+                    "release": copy.deepcopy(baseline),
                     "manifestIdentity": (
-                        "ghcr.io/verjson/verjson-github-runner-release@sha256:"
-                        + "1" * 64
+                        "ghcr.io/verjson/verjson-github-runner-release@"
+                        + baseline["manifestDigest"]
                     ),
                     "online": True,
                     "admitted": True,
@@ -229,6 +249,41 @@ class DeploymentPlannerTests(unittest.TestCase):
                 with self.assertRaisesRegex(controller.DeploymentError, expected):
                     controller.build_plan(configuration(), candidate, "production")
 
+    def test_rejects_rollout_digest_mutation_without_new_manifest_identity(self):
+        candidate = evidence()
+        candidate["manifest"]["images"][0]["indexDigest"] = "sha256:" + "4" * 64
+
+        with self.assertRaisesRegex(controller.DeploymentError, "canonical manifest"):
+            controller.build_plan(configuration(), candidate, "production")
+
+    def test_rejects_option_shaped_dynamic_cli_tokens(self):
+        mutations = (
+            ("lane", "--help"),
+            ("project", "-danger"),
+            ("runnerGroup", "--group"),
+        )
+        for field, value in mutations:
+            with self.subTest(field=field):
+                candidate = configuration()
+                candidate["fleets"]["production"][field] = value
+                with self.assertRaisesRegex(controller.DeploymentError, "safe token"):
+                    controller.build_plan(candidate, evidence(), "production")
+
+        candidate = configuration()
+        candidate["expectedRelease"]["variant"] = "--variant"
+        with self.assertRaisesRegex(controller.DeploymentError, "safe token"):
+            controller.build_plan(candidate, evidence(), "production")
+
+    def test_rejects_fleet_timing_without_fifteen_minute_job_margin(self):
+        candidate = configuration()
+        fleet = candidate["fleets"]["production"]
+        fleet["drainTimeoutSeconds"] = 1_000
+        fleet["probeTimeoutSeconds"] = 900
+        fleet["observationSeconds"] = 900
+
+        with self.assertRaisesRegex(controller.DeploymentError, "job margin"):
+            controller.build_plan(candidate, evidence(), "production")
+
     def test_rejects_inventory_drift_and_insufficient_capacity(self):
         missing = evidence()
         missing["fleet"]["runners"].pop()
@@ -335,6 +390,10 @@ class DeploymentExecutionTests(unittest.TestCase):
             ["capacity", "update", "probe"], [call[0] for call in adapter.calls]
         )
         self.assertEqual("failed", final["runners"][0]["probe"])
+        self.assertEqual(final["selectedRelease"], final["finalFleet"][0]["release"])
+        self.assertEqual("verified", final["finalFleet"][0]["state"])
+        self.assertEqual("not_run", persisted[-2]["runners"][0]["probe"])
+        self.assertEqual(final["selectedRelease"], persisted[-2]["finalFleet"][0]["release"])
 
     def test_rejects_failed_admission_evidence_before_touching_next_host(self):
         cases = (
@@ -397,7 +456,12 @@ class DeploymentExecutionTests(unittest.TestCase):
             clock=FakeClock(),
         )
         self.assertEqual("interrupted", final["outcome"])
-        self.assertEqual(["gha-gate-1"], [r["name"] for r in final["runners"]])
+        self.assertEqual(
+            ["gha-gate-1", "gha-gate-2"],
+            [r["name"] for r in final["runners"]],
+        )
+        self.assertEqual("unknown", final["runners"][1]["state"])
+        self.assertIsNone(final["finalFleet"][1]["release"])
         self.assertNotIn("gha-gate-3", [call[1] for call in adapter.calls if call[0] == "update"])
 
     def test_capacity_drop_stops_before_next_runner_mutation(self):
@@ -471,10 +535,10 @@ class DeploymentExecutionTests(unittest.TestCase):
         rollback_evidence["manifestIdentity"] = rollback_evidence["fleet"]["runners"][0][
             "manifestIdentity"
         ]
-        rollback_evidence["manifest"]["releaseVersion"] = "1.0.0"
-        rollback_evidence["attestation"]["subjectDigest"] = release("1.0.0", "1")[
-            "manifestDigest"
-        ]
+        rollback_evidence["manifest"] = release_manifest("1.0.0", "1")
+        rollback_evidence["attestation"]["subjectDigest"] = rollback_evidence[
+            "fleet"
+        ]["runners"][0]["release"]["manifestDigest"]
 
         plan = controller.build_plan(
             configuration(),
@@ -516,10 +580,10 @@ class DeploymentExecutionTests(unittest.TestCase):
         rollback_evidence["manifestIdentity"] = rollback_evidence["fleet"]["runners"][0][
             "manifestIdentity"
         ]
-        rollback_evidence["manifest"]["releaseVersion"] = "1.0.0"
-        rollback_evidence["attestation"]["subjectDigest"] = release("1.0.0", "1")[
-            "manifestDigest"
-        ]
+        rollback_evidence["manifest"] = release_manifest("1.0.0", "1")
+        rollback_evidence["attestation"]["subjectDigest"] = rollback_evidence[
+            "fleet"
+        ]["runners"][0]["release"]["manifestDigest"]
         plan = controller.build_plan(
             configuration(),
             rollback_evidence,
@@ -562,10 +626,10 @@ class DeploymentExecutionTests(unittest.TestCase):
         rollback_evidence["manifestIdentity"] = rollback_evidence["fleet"]["runners"][1][
             "manifestIdentity"
         ]
-        rollback_evidence["manifest"]["releaseVersion"] = "1.0.0"
-        rollback_evidence["attestation"]["subjectDigest"] = release("1.0.0", "1")[
-            "manifestDigest"
-        ]
+        rollback_evidence["manifest"] = release_manifest("1.0.0", "1")
+        rollback_evidence["attestation"]["subjectDigest"] = rollback_evidence[
+            "fleet"
+        ]["runners"][1]["release"]["manifestDigest"]
 
         plan = controller.build_plan(
             configuration(),
@@ -594,21 +658,29 @@ class DeploymentExecutionTests(unittest.TestCase):
             plan, configuration(), evidence(), FakeClock().now()
         )
         previous["outcome"] = "in_progress"
+        previous["revision"] = 1
         previous["previousReceiptDigest"] = "sha256:" + "0" * 64
         previous["runners"] = [
             {
                 "name": "gha-gate-1",
                 "beforeDigest": "sha256:" + "1" * 64,
                 "afterDigest": "sha256:" + "3" * 64,
+                "afterRelease": copy.deepcopy(previous["selectedRelease"]),
+                "state": "updated",
                 "probe": "passed",
                 "completedAt": "2026-08-14T00:00:01Z",
             }
         ]
+        previous["finalFleet"][0]["release"] = copy.deepcopy(previous["selectedRelease"])
 
+        resumed_evidence = evidence()
+        resumed_evidence["fleet"]["runners"][0]["release"] = copy.deepcopy(
+            previous["selectedRelease"]
+        )
         final = controller.execute_plan(
             plan,
             configuration(),
-            evidence(),
+            resumed_evidence,
             adapter,
             lambda receipt: persisted.append(copy.deepcopy(receipt)),
             previous_receipt=previous,
@@ -617,6 +689,149 @@ class DeploymentExecutionTests(unittest.TestCase):
 
         self.assertEqual("succeeded", final["outcome"])
         self.assertNotIn("gha-gate-1", [call[1] for call in adapter.calls if call[0] == "update"])
+
+    def test_restores_only_an_exact_authorized_receipt_chain(self):
+        plan = controller.build_plan(configuration(), evidence(), "production")
+        admitted = controller.admitted_receipt(
+            plan, configuration(), evidence(), FakeClock().now()
+        )
+        interrupted = controller._next_revision(
+            admitted,
+            outcome="interrupted",
+            runners=[],
+            completed_at="2026-08-14T00:00:02Z",
+            failure="operator interruption before mutation",
+        )
+        retained_evidence = evidence()
+        retained_evidence["retainedRevisions"] = [admitted, interrupted]
+        retained_evidence["retainedReceiptAuthority"] = (
+            f"{interrupted['attemptId']}/42@"
+            f"{controller.retained_authority_digest(plan, [admitted, interrupted])}"
+        )
+
+        with tempfile.TemporaryDirectory() as directory:
+            restored = controller._restore_receipts(
+                retained_evidence, plan, Path(directory)
+            )
+            self.assertEqual(interrupted, restored)
+            self.assertEqual(2, len(list(Path(directory).glob("revision-*.json"))))
+
+        retained_evidence["retainedReceiptAuthority"] = (
+            f"{interrupted['attemptId']}/42@sha256:" + "0" * 64
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaisesRegex(controller.DeploymentError, "exact chain"):
+                controller._restore_receipts(retained_evidence, plan, Path(directory))
+
+    def test_resume_probes_retained_post_update_revision_without_redraining(self):
+        plan = controller.build_plan(configuration(), evidence(), "production")
+        admitted = controller.admitted_receipt(
+            plan, configuration(), evidence(), FakeClock().now()
+        )
+        pending = controller._next_revision(
+            admitted,
+            outcome="in_progress",
+            runners=[
+                {
+                    "name": "gha-gate-1",
+                    "beforeDigest": "sha256:" + "1" * 64,
+                    "afterDigest": "sha256:" + "3" * 64,
+                    "afterRelease": copy.deepcopy(plan["selectedRelease"]),
+                    "state": "updated",
+                    "probe": "not_run",
+                    "completedAt": None,
+                }
+            ],
+            completed_at=None,
+        )
+        live = evidence()
+        live["fleet"]["runners"][0]["release"] = copy.deepcopy(plan["selectedRelease"])
+        adapter = FakeAdapter()
+
+        final = controller.execute_plan(
+            plan,
+            configuration(),
+            live,
+            adapter,
+            lambda _receipt: None,
+            previous_receipt=pending,
+            max_hosts=1,
+            clock=FakeClock(),
+        )
+
+        self.assertEqual("in_progress", final["outcome"])
+        self.assertEqual("passed", final["runners"][0]["probe"])
+        self.assertNotIn("gha-gate-1", [call[1] for call in adapter.calls if call[0] == "update"])
+        self.assertEqual(["probe", "observe"], [call[0] for call in adapter.calls])
+
+    def test_resume_uses_exact_retained_plan_for_a_valid_mixed_fleet(self):
+        plan = controller.build_plan(configuration(), evidence(), "production")
+        admitted = controller.admitted_receipt(
+            plan, configuration(), evidence(), FakeClock().now()
+        )
+        pending = controller._next_revision(
+            admitted,
+            outcome="in_progress",
+            runners=[
+                {
+                    "name": "gha-gate-1",
+                    "beforeDigest": "sha256:" + "1" * 64,
+                    "afterDigest": "sha256:" + "3" * 64,
+                    "afterRelease": copy.deepcopy(plan["selectedRelease"]),
+                    "state": "updated",
+                    "probe": "not_run",
+                    "completedAt": None,
+                }
+            ],
+            completed_at=None,
+        )
+        resume_evidence = evidence()
+        resume_evidence["fleet"]["runners"][0]["release"] = copy.deepcopy(
+            plan["selectedRelease"]
+        )
+        resume_evidence["retainedPlan"] = copy.deepcopy(plan)
+        resume_evidence["retainedRevisions"] = [admitted, pending]
+        resume_evidence["retainedReceiptAuthority"] = (
+            f"{pending['attemptId']}/42@"
+            f"{controller.retained_authority_digest(plan, [admitted, pending])}"
+        )
+
+        self.assertEqual(
+            plan,
+            controller.retained_plan(
+                configuration(),
+                resume_evidence,
+                "production",
+                "deploy",
+                "0" * 40,
+            ),
+        )
+
+        resume_evidence["retainedPlan"]["steps"].reverse()
+        with self.assertRaisesRegex(controller.DeploymentError, "exact chain"):
+            controller.retained_plan(
+                configuration(),
+                resume_evidence,
+                "production",
+                "deploy",
+                "0" * 40,
+            )
+
+    def test_receipt_schema_rejects_malformed_authority_and_self_review(self):
+        plan = controller.build_plan(configuration(), evidence(), "production")
+        receipt = controller.admitted_receipt(
+            plan, configuration(), evidence(), FakeClock().now()
+        )
+        receipt["authorization"]["workflowRunId"] = "40"
+        with self.assertRaisesRegex(ValueError, "integer"):
+            controller.validate_receipt(receipt)
+
+        receipt = controller.admitted_receipt(
+            plan, configuration(), evidence(), FakeClock().now()
+        )
+        receipt["authorization"]["reviewer"] = receipt["authorization"]["dispatcher"]
+        with self.assertRaisesRegex(ValueError, "self review"):
+            controller.validate_receipt(receipt)
 
     def test_process_adapter_keeps_secret_out_of_arguments_and_never_scales(self):
         completed = mock.Mock()
@@ -647,6 +862,16 @@ class DeploymentExecutionTests(unittest.TestCase):
             run.call_args.kwargs["env"]["DIGITALOCEAN_ACCESS_TOKEN"],
         )
         self.assertEqual(720, run.call_args.kwargs["timeout"])
+
+    def test_collect_evidence_rejects_option_injection_before_adapter_execution(self):
+        with mock.patch.object(controller.ProcessAdapter, "_run") as run:
+            with self.assertRaisesRegex(controller.DeploymentError, "safe token"):
+                controller._collect_evidence(
+                    configuration(),
+                    "ghcr.io/verjson/verjson-github-runner-release@sha256:" + "2" * 64,
+                    "--help",
+                )
+        run.assert_not_called()
 
 
 if __name__ == "__main__":

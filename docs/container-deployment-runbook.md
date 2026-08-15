@@ -32,16 +32,20 @@ and credential scope as sensitive changes; never print their values.
 ## Dry-run and deployment
 
 Dispatch with `dry-run: true` first. The unprotected dry-run resolves the immutable
-manifest and prints the exact canary-first host order without receiving a deployment
+manifest and uploads the exact redacted canary-first host plan without receiving a deployment
 credential or mutating an external system. Reject any plan with an unexpected host,
 baseline, signer, source ref, release-contract pin, label/tool requirement, or capacity
 floor.
 
 Dispatch the same manifest digest and fleet selector with `dry-run: false`. The job waits
-at `production`, re-collects current evidence, retains revision `0000` before the first
-mutation, then calls `verjson-cloud runner update --only <host>` one host at a time. The
+at `production`, re-collects current evidence, restores and validates any retained
+append-only chain for the exact run attempt, head, manifest, and plan, or retains a new
+revision `0000` before the first mutation. It then calls
+`verjson-cloud runner update --only <host>` one host at a time. The
 canary's exact routed probe and observation window must pass before a second host starts.
-Every later revision binds the canonical digest of its predecessor.
+Every later revision binds the canonical digest of its predecessor. A post-update
+revision is retained before probing, and each bounded host phase uploads progress. Fleet
+timing must leave at least 15 minutes of the 90-minute job unused.
 
 ## Pause, resume, and interruption
 
@@ -51,10 +55,14 @@ has started, a failed drain, admission check, probe, timeout, or operator cancel
 stops the state machine; it never skips to another host.
 
 An interrupted run retains at least its admitted revision. Seal an `interrupted` revision
-from that exact attempt before recovery. Resume only when the current fleet agrees with
-the recorded completed transitions and untouched baseline. Supply the latest retained
-receipt so the controller skips already verified hosts; never restart from a guessed
-host or mutable tag.
+from that exact attempt before recovery. The evidence adapter must retrieve the complete
+contiguous revision chain, exact retained plan, and keyed
+`<attempt>/<artifact>@sha256:<artifact-digest>` authority over both.
+Resume only when the current fleet agrees with every retained final-fleet entry and the
+attempt, checked-out head, manifest, and canonical plan digest are unchanged. The
+controller skips only transitions whose update and routed probe are both verified. An
+unknown post-mutation state fails closed until live evidence seals it; never restart from
+a guessed host or mutable tag.
 
 ## Rollback
 

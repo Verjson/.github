@@ -2,6 +2,7 @@
 
 import argparse
 import copy
+import hashlib
 import json
 import os
 import re
@@ -16,6 +17,7 @@ from container_deployment_preflight import (
     receipt_digest,
     validate_attempt_revision,
     validate_receipt,
+    validate_receipt_chain,
     validate_rollback,
 )
 
@@ -28,6 +30,14 @@ MAX_DRAIN_SECONDS = 1_800
 MAX_PROBE_SECONDS = 900
 MAX_OBSERVATION_SECONDS = 900
 MAX_REQUEST_AGE_SECONDS = 3_600
+MAX_FLEET_SIZE = 3
+JOB_SECONDS = 5_400
+SAFETY_MARGIN_SECONDS = 900
+UPDATE_COMMAND_OVERHEAD_SECONDS = 120
+POST_UPDATE_EVIDENCE_SECONDS = 120
+CAPACITY_EVIDENCE_SECONDS = 120
+ADMISSION_EVIDENCE_SECONDS = 120
+PROBE_COMMAND_OVERHEAD_SECONDS = 30
 
 
 class DeploymentError(ValueError):
@@ -48,6 +58,26 @@ def _text(value: Any, field: str) -> str:
     if not isinstance(value, str) or not value:
         raise DeploymentError(f"{field} must be a non-empty string")
     return value
+
+
+def _safe_token(value: Any, field: str, pattern: str) -> str:
+    token = _text(value, field)
+    if token.startswith("-") or re.fullmatch(pattern, token) is None:
+        raise DeploymentError(f"{field} must be a non-option safe token")
+    return token
+
+
+def canonical_digest(value: dict[str, Any]) -> str:
+    encoded = json.dumps(
+        value, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+    ).encode("utf-8")
+    return "sha256:" + hashlib.sha256(encoded).hexdigest()
+
+
+def retained_authority_digest(
+    plan: dict[str, Any], receipts: list[dict[str, Any]]
+) -> str:
+    return canonical_digest({"plan": plan, "revisions": receipts})
 
 
 def _load(path: Path) -> dict[str, Any]:
@@ -113,6 +143,8 @@ def _validate_release_evidence(
         raise DeploymentError("release attestation is expired")
 
     manifest = _object(evidence.get("manifest"), "manifest")
+    if canonical_digest(manifest) != identity_match.group("digest"):
+        raise DeploymentError("canonical manifest bytes differ from manifest identity")
     source = _object(manifest.get("source"), "manifest.source")
     if source.get("repository") != expected.get("sourceRepository"):
         raise DeploymentError("manifest source repository differs")
@@ -165,6 +197,8 @@ def _date_time(value: Any, field: str) -> datetime:
 
 
 def _validate_policy(fleet: dict[str, Any]) -> None:
+    _safe_token(fleet.get("lane"), "lane", r"[a-z][a-z0-9-]{1,29}")
+    _safe_token(fleet.get("project"), "project", r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
     bounds = (
         ("drainTimeoutSeconds", MAX_DRAIN_SECONDS),
         ("probeTimeoutSeconds", MAX_PROBE_SECONDS),
@@ -183,7 +217,24 @@ def _validate_policy(fleet: dict[str, Any]) -> None:
             or len(set(values)) != len(values)
         ):
             raise DeploymentError(f"{field} must declare unique values")
-    _text(fleet.get("runnerGroup"), "runnerGroup")
+    _safe_token(
+        fleet.get("runnerGroup"),
+        "runnerGroup",
+        r"[A-Za-z0-9][A-Za-z0-9 ._-]{0,99}",
+    )
+    runners = fleet.get("runners")
+    if not isinstance(runners, list) or len(runners) > MAX_FLEET_SIZE:
+        raise DeploymentError(f"fleet may contain at most {MAX_FLEET_SIZE} runners")
+    worst_case = MAX_FLEET_SIZE * ADMISSION_EVIDENCE_SECONDS + len(runners) * (
+        CAPACITY_EVIDENCE_SECONDS
+        + fleet["drainTimeoutSeconds"]
+        + UPDATE_COMMAND_OVERHEAD_SECONDS
+        + POST_UPDATE_EVIDENCE_SECONDS
+        + fleet["probeTimeoutSeconds"]
+        + PROBE_COMMAND_OVERHEAD_SECONDS
+    ) + fleet["observationSeconds"]
+    if worst_case >= JOB_SECONDS - SAFETY_MARGIN_SECONDS:
+        raise DeploymentError("reviewed fleet timing leaves less than the required job margin")
 
 
 def _validate_commands(config: dict[str, Any]) -> None:
@@ -275,6 +326,12 @@ def build_plan(
     if re.fullmatch(r"[0-9a-f]{40}", deployment_contract_ref) is None:
         raise DeploymentError("deployment contract ref must be an immutable commit")
     expected = _object(config.get("expectedRelease"), "expectedRelease")
+    _safe_token(
+        expected.get("variant"),
+        "expectedRelease.variant",
+        r"[a-z0-9][a-z0-9._-]{0,63}",
+    )
+    _safe_token(fleet_selector, "fleet selector", r"[a-z][a-z0-9_-]{1,31}")
     identity = _text(evidence.get("manifestIdentity"), "manifestIdentity")
     identity_match = MANIFEST_IDENTITY.fullmatch(identity)
     if identity_match is None:
@@ -292,7 +349,12 @@ def build_plan(
     if (
         not isinstance(runners, list)
         or not runners
-        or any(not isinstance(name, str) or not name for name in runners)
+        or any(
+            not isinstance(name, str)
+            or name.startswith("-")
+            or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", name) is None
+            for name in runners
+        )
         or len(set(runners)) != len(runners)
         or canary not in runners
     ):
@@ -309,6 +371,9 @@ def build_plan(
         fleet, evidence, rollback_source if action == "rollback" else None
     )
     authorization = _object(evidence.get("authorization"), "authorization")
+    head_commit = evidence.get("headCommit")
+    if not isinstance(head_commit, str) or re.fullmatch(r"[0-9a-f]{40}", head_commit) is None:
+        raise DeploymentError("checked-out head commit evidence is invalid")
     run_id = authorization.get("workflowRunId")
     run_attempt = evidence.get("workflowRunAttempt", 1)
     if (
@@ -346,6 +411,7 @@ def build_plan(
         "action": action,
         "attemptId": f"{run_id}.{run_attempt}",
         "deploymentContractCommit": deployment_contract_ref,
+        "headCommit": head_commit,
         "manifestIdentity": identity,
         "selectedRelease": selected_release,
         "targetDigest": target_digest,
@@ -382,7 +448,8 @@ def admitted_receipt(
         )
     }
     return {
-        "schemaVersion": 2,
+        "schemaVersion": 3,
+        "revision": 0,
         "attemptId": plan["attemptId"],
         "action": plan["action"],
         "outcome": "admitted",
@@ -392,13 +459,19 @@ def admitted_receipt(
         "previousReceiptDigest": None,
         "rollbackOfAttempt": copy.deepcopy(plan["rollbackOfAttempt"]),
         "deploymentContractCommit": plan["deploymentContractCommit"],
+        "headCommit": plan["headCommit"],
+        "planDigest": canonical_digest(plan),
         "manifestIdentity": plan["manifestIdentity"],
         "fleetSelector": plan["fleetSelector"],
         "canaryRunner": plan["steps"][0]["runner"],
         "authorization": required_authorization,
         "runners": [],
         "finalFleet": [
-            {"name": runner["name"], "release": copy.deepcopy(runner["release"])}
+            {
+                "name": runner["name"],
+                "release": copy.deepcopy(runner["release"]),
+                "state": "verified",
+            }
             for runner in evidence["fleet"]["runners"]
         ],
         "failure": None,
@@ -406,6 +479,84 @@ def admitted_receipt(
         "startedAt": _timestamp(now),
         "completedAt": None,
     }
+
+
+def retained_plan(
+    config: dict[str, Any],
+    evidence: dict[str, Any],
+    fleet_selector: str,
+    action: str,
+    deployment_contract_ref: str,
+) -> dict[str, Any] | None:
+    plan = evidence.get("retainedPlan")
+    retained = evidence.get("retainedRevisions")
+    authority = evidence.get("retainedReceiptAuthority")
+    if plan is None and retained in (None, []) and authority is None:
+        return None
+    if not isinstance(plan, dict) or not isinstance(retained, list) or not retained:
+        raise DeploymentError("resume evidence omits the exact retained plan or receipt chain")
+    try:
+        validate_receipt_chain(retained)
+    except ValueError as error:
+        raise DeploymentError(f"retained receipt chain is invalid: {error}") from error
+    latest = retained[-1]
+    expected_authority = (
+        rf"{re.escape(latest['attemptId'])}/[1-9][0-9]*@"
+        + re.escape(retained_authority_digest(plan, retained))
+    )
+    if not isinstance(authority, str) or re.fullmatch(expected_authority, authority) is None:
+        raise DeploymentError("retained receipt authority does not bind the exact chain")
+    expected_fields = {
+        "attemptId": latest["attemptId"],
+        "action": action,
+        "deploymentContractCommit": deployment_contract_ref,
+        "headCommit": evidence.get("headCommit"),
+        "manifestIdentity": evidence.get("manifestIdentity"),
+        "fleetSelector": fleet_selector,
+        "selectedRelease": latest["selectedRelease"],
+        "observedDeployedRelease": latest["observedDeployedRelease"],
+    }
+    if any(plan.get(field) != value for field, value in expected_fields.items()):
+        raise DeploymentError("retained plan differs from current immutable authority")
+    if latest.get("planDigest") != canonical_digest(plan):
+        raise DeploymentError("retained plan bytes differ from receipt authority")
+    fleet = _object(_object(config.get("fleets"), "fleets").get(fleet_selector), "fleet")
+    _validate_policy(fleet)
+    expected_order = [
+        fleet["canary"],
+        *sorted(name for name in fleet["runners"] if name != fleet["canary"]),
+    ]
+    if plan.get("steps") != [
+        {"runner": runner, "phase": "canary" if index == 0 else "rollout"}
+        for index, runner in enumerate(expected_order)
+    ]:
+        raise DeploymentError("retained plan runner order differs from reviewed configuration")
+    identity = _text(evidence.get("manifestIdentity"), "manifestIdentity")
+    identity_match = MANIFEST_IDENTITY.fullmatch(identity)
+    if identity_match is None:
+        raise DeploymentError("manifestIdentity must be an immutable digest reference")
+    expected_release, target_digest = _validate_release_evidence(
+        _object(config.get("expectedRelease"), "expectedRelease"),
+        evidence,
+        identity_match,
+        datetime.now(timezone.utc),
+    )
+    if plan.get("selectedRelease") != expected_release or plan.get("targetDigest") != target_digest:
+        raise DeploymentError("retained plan release differs from current attested manifest")
+    live_by_name = {
+        runner.get("name"): runner.get("release")
+        for runner in _object(evidence.get("fleet"), "fleet evidence").get("runners", [])
+        if isinstance(runner, dict)
+    }
+    if any(
+        runner.get("state") != "verified"
+        or live_by_name.get(runner.get("name")) != runner.get("release")
+        for runner in latest["finalFleet"]
+    ):
+        raise DeploymentError("live fleet differs from retained resume state")
+    if latest.get("outcome") not in ("admitted", "in_progress", "interrupted"):
+        raise DeploymentError("retained receipt chain is not resumable")
+    return plan
 
 
 def _next_revision(
@@ -417,15 +568,23 @@ def _next_revision(
     failure: str | None = None,
 ) -> dict[str, Any]:
     revision = copy.deepcopy(previous)
+    revision["revision"] = previous["revision"] + 1
     revision["outcome"] = outcome
     revision["previousReceiptDigest"] = receipt_digest(previous)
     revision["runners"] = copy.deepcopy(runners)
     revision["completedAt"] = completed_at
     revision["failure"] = failure
-    passed_names = {runner["name"] for runner in runners if runner["probe"] == "passed"}
+    transitions = {runner["name"]: runner for runner in runners}
     for runner in revision["finalFleet"]:
-        if runner["name"] in passed_names:
-            runner["release"] = copy.deepcopy(revision["selectedRelease"])
+        transition = transitions.get(runner["name"])
+        if transition is None:
+            continue
+        if transition["state"] == "unknown":
+            runner["release"] = None
+            runner["state"] = "unknown"
+        else:
+            runner["release"] = copy.deepcopy(transition["afterRelease"])
+            runner["state"] = "verified"
     try:
         validate_attempt_revision(revision, previous)
     except ValueError as error:
@@ -442,6 +601,7 @@ def execute_plan(
     *,
     dry_run: bool = False,
     previous_receipt: dict[str, Any] | None = None,
+    max_hosts: int | None = None,
     clock: Any | None = None,
 ) -> dict[str, Any]:
     if dry_run:
@@ -454,82 +614,163 @@ def execute_plan(
         persist(copy.deepcopy(current))
     else:
         current = copy.deepcopy(previous_receipt)
+        try:
+            validate_receipt(current)
+        except ValueError as error:
+            raise DeploymentError(f"resume receipt is invalid: {error}") from error
+        if current.get("outcome") not in ("admitted", "in_progress", "interrupted"):
+            raise DeploymentError("resume receipt is not resumable")
         for field in (
             "attemptId",
             "action",
             "deploymentContractCommit",
+            "headCommit",
             "manifestIdentity",
             "fleetSelector",
             "selectedRelease",
             "observedDeployedRelease",
         ):
-            expected = (
-                plan[field]
-                if field != "attemptId"
-                else previous_receipt.get("attemptId")
-            )
+            expected = plan[field]
             if current.get(field) != expected:
                 raise DeploymentError(f"resume changes immutable {field}")
+        if current.get("planDigest") != canonical_digest(plan):
+            raise DeploymentError("resume changes immutable plan authority")
+        live_by_name = {
+            runner.get("name"): runner.get("release")
+            for runner in _object(evidence.get("fleet"), "fleet evidence").get("runners", [])
+            if isinstance(runner, dict)
+        }
+        for runner in current["finalFleet"]:
+            if (
+                runner["state"] != "verified"
+                or live_by_name.get(runner["name"]) != runner["release"]
+            ):
+                raise DeploymentError("live fleet differs from retained resume state")
 
     fleet = config["fleets"][plan["fleetSelector"]]
-    completed = list(current.get("runners", []))
+    completed = copy.deepcopy(current.get("runners", []))
     completed_names = {
         runner.get("name")
         for runner in completed
         if runner.get("probe") == "passed"
+        and runner.get("state") in ("updated", "restored")
+        and runner.get("afterRelease") == current.get("selectedRelease")
     }
     target_variant = config["expectedRelease"]["variant"]
+    advanced = 0
     for step in plan["steps"]:
         runner = step["runner"]
         if runner in completed_names:
             continue
-        try:
-            if adapter.available_capacity() - 1 < fleet["minimumAvailable"]:
-                raise DeploymentError("live spare capacity would fall below policy floor")
-            result = adapter.update_runner(
-                runner,
-                plan["manifestIdentity"],
-                target_variant,
-                fleet["drainTimeoutSeconds"],
+        if max_hosts is not None and advanced >= max_hosts:
+            break
+        pending = next(
+            (
+                transition
+                for transition in completed
+                if transition.get("name") == runner
+                and transition.get("probe") == "not_run"
+                and transition.get("state") in ("updated", "restored")
+                and transition.get("afterRelease") == plan["selectedRelease"]
+            ),
+            None,
+        )
+        if pending is None:
+            try:
+                if adapter.available_capacity() - 1 < fleet["minimumAvailable"]:
+                    raise DeploymentError("live spare capacity would fall below policy floor")
+            except (DeploymentError, OSError, RuntimeError, subprocess.SubprocessError) as error:
+                failed = _next_revision(
+                    current,
+                    outcome="failed",
+                    runners=completed,
+                    completed_at=_timestamp(clock.now()),
+                    failure=str(error),
+                )
+                persist(copy.deepcopy(failed))
+                return failed
+            try:
+                result = adapter.update_runner(
+                    runner,
+                    plan["manifestIdentity"],
+                    target_variant,
+                    fleet["drainTimeoutSeconds"],
+                )
+                _validate_runner_result(result, runner, plan, fleet)
+            except DeploymentInterrupted as error:
+                completed.append({
+                    "name": runner,
+                    "beforeDigest": None,
+                    "afterDigest": None,
+                    "afterRelease": None,
+                    "state": "unknown",
+                    "probe": "not_run",
+                    "completedAt": None,
+                })
+                interrupted = _next_revision(
+                    current,
+                    outcome="interrupted",
+                    runners=completed,
+                    completed_at=_timestamp(clock.now()),
+                    failure=str(error),
+                )
+                persist(copy.deepcopy(interrupted))
+                return interrupted
+            except (DeploymentError, OSError, RuntimeError, subprocess.SubprocessError) as error:
+                completed.append({
+                    "name": runner,
+                    "beforeDigest": None,
+                    "afterDigest": None,
+                    "afterRelease": None,
+                    "state": "unknown",
+                    "probe": "not_run",
+                    "completedAt": None,
+                })
+                failed = _next_revision(
+                    current,
+                    outcome="failed",
+                    runners=completed,
+                    completed_at=_timestamp(clock.now()),
+                    failure=str(error),
+                )
+                persist(copy.deepcopy(failed))
+                return failed
+            entry = {
+                "name": runner,
+                "beforeDigest": result["beforeDigest"],
+                "afterDigest": result["afterDigest"],
+                "afterRelease": copy.deepcopy(plan["selectedRelease"]),
+                "state": "restored" if plan["action"] == "rollback" else "updated",
+                "probe": "not_run",
+                "completedAt": None,
+            }
+            completed.append(entry)
+            current = _next_revision(
+                current,
+                outcome="in_progress",
+                runners=completed,
+                completed_at=None,
             )
-            _validate_runner_result(result, runner, plan, fleet)
+            persist(copy.deepcopy(current))
+        else:
+            entry = pending
+        try:
             probe_result = adapter.probe_runner(runner, fleet["probeTimeoutSeconds"])
             probe = _validate_probe(probe_result, runner)
-        except DeploymentInterrupted as error:
-            interrupted = _next_revision(
-                current,
-                outcome="interrupted",
-                runners=completed,
-                completed_at=_timestamp(clock.now()),
-                failure=str(error),
-            )
-            persist(copy.deepcopy(interrupted))
-            return interrupted
         except (DeploymentError, OSError, RuntimeError, subprocess.SubprocessError) as error:
-            failed = _next_revision(
-                current,
-                outcome="failed",
-                runners=completed,
-                completed_at=_timestamp(clock.now()),
-                failure=str(error),
-            )
-            persist(copy.deepcopy(failed))
-            return failed
-        entry = {
-            "name": runner,
-            "beforeDigest": result["beforeDigest"],
-            "afterDigest": result["afterDigest"],
-            "probe": probe,
-            "completedAt": _timestamp(clock.now()),
-        }
-        completed.append(entry)
+            probe = "timeout"
+            probe_failure = str(error)
+        else:
+            probe_failure = f"representative probe {probe}"
+        entry["probe"] = probe
+        entry["completedAt"] = _timestamp(clock.now())
         if probe != "passed":
             failed = _next_revision(
                 current,
                 outcome="failed",
                 runners=completed,
                 completed_at=_timestamp(clock.now()),
-                failure="representative probe failed",
+                failure=probe_failure,
             )
             persist(copy.deepcopy(failed))
             return failed
@@ -541,9 +782,30 @@ def execute_plan(
             completed_at=None,
         )
         persist(copy.deepcopy(current))
+        advanced += 1
         if step["phase"] == "canary":
-            adapter.observe(fleet["observationSeconds"])
+            try:
+                adapter.observe(fleet["observationSeconds"])
+            except (OSError, RuntimeError) as error:
+                failed = _next_revision(
+                    current,
+                    outcome="failed",
+                    runners=completed,
+                    completed_at=_timestamp(clock.now()),
+                    failure=f"canary observation interrupted: {error}",
+                )
+                persist(copy.deepcopy(failed))
+                return failed
 
+    remaining = {
+        step["runner"] for step in plan["steps"]
+    } - {
+        runner["name"]
+        for runner in completed
+        if runner.get("probe") == "passed"
+    }
+    if remaining:
+        return current
     succeeded = _next_revision(
         current,
         outcome="succeeded",
@@ -639,7 +901,7 @@ class ProcessAdapter:
         completed = cls._invoke(
             command,
             env,
-            timeout_seconds=timeout_seconds,
+            timeout_seconds=POST_UPDATE_EVIDENCE_SECONDS,
         )
         try:
             value = json.loads(completed.stdout)
@@ -700,7 +962,8 @@ class ProcessAdapter:
                 "--fleet",
                 self.fleet["lane"],
                 "--capacity-only",
-            ]
+            ],
+            timeout_seconds=CAPACITY_EVIDENCE_SECONDS,
         )
         capacity = result.get("availableCapacity")
         if not isinstance(capacity, int) or capacity < 0:
@@ -743,12 +1006,55 @@ def _persist_directory(receipt_dir: Path, start_index: int = 0):
     return persist
 
 
+def _restore_receipts(
+    evidence: dict[str, Any], plan: dict[str, Any], receipt_dir: Path
+) -> dict[str, Any] | None:
+    retained = evidence.get("retainedRevisions", [])
+    authority = evidence.get("retainedReceiptAuthority")
+    if retained == [] and authority is None:
+        return None
+    if not isinstance(retained, list) or not retained or not all(
+        isinstance(receipt, dict) for receipt in retained
+    ):
+        raise DeploymentError("retained receipt revisions are malformed")
+    try:
+        validate_receipt_chain(retained)
+    except ValueError as error:
+        raise DeploymentError(f"retained receipt chain is invalid: {error}") from error
+    latest = retained[-1]
+    expected_authority = (
+        rf"{re.escape(latest['attemptId'])}/[1-9][0-9]*@"
+        + re.escape(retained_authority_digest(plan, retained))
+    )
+    if not isinstance(authority, str) or re.fullmatch(expected_authority, authority) is None:
+        raise DeploymentError("retained receipt authority does not bind the exact chain")
+    expected = {
+        "attemptId": plan["attemptId"],
+        "headCommit": plan["headCommit"],
+        "manifestIdentity": plan["manifestIdentity"],
+        "planDigest": canonical_digest(plan),
+    }
+    if any(latest.get(field) != value for field, value in expected.items()):
+        raise DeploymentError("retained receipt authority differs from this exact plan")
+    for receipt in retained:
+        destination = receipt_dir / f"revision-{receipt['revision']:04d}.json"
+        if destination.exists():
+            if _load(destination) != receipt:
+                raise DeploymentError("local receipt revision differs from retained authority")
+        else:
+            _write(destination, receipt)
+    return latest
+
+
 def _collect_evidence(
     config: dict[str, Any],
     manifest_identity: str,
     fleet_selector: str,
     rollback_receipt: str = "",
 ) -> dict[str, Any]:
+    if MANIFEST_IDENTITY.fullmatch(manifest_identity) is None:
+        raise DeploymentError("manifest identity must be an immutable digest reference")
+    _safe_token(fleet_selector, "fleet selector", r"[a-z][a-z0-9_-]{1,31}")
     command = [
         *_command(config, "evidenceCommand"),
         "--manifest-identity",
@@ -760,7 +1066,22 @@ def _collect_evidence(
         if DIGEST.fullmatch(rollback_receipt) is None:
             raise DeploymentError("rollback receipt identity must be a canonical digest")
         command.extend(("--rollback-receipt", rollback_receipt))
-    evidence = ProcessAdapter._run(command)
+    evidence = ProcessAdapter._run(
+        command, timeout_seconds=ADMISSION_EVIDENCE_SECONDS
+    )
+    github_sha = os.environ.get("GITHUB_SHA")
+    if github_sha and evidence.get("headCommit") != github_sha:
+        raise DeploymentError("evidence checked-out head differs from workflow authority")
+    authorization = evidence.get("authorization")
+    github_run_id = os.environ.get("GITHUB_RUN_ID")
+    github_run_attempt = os.environ.get("GITHUB_RUN_ATTEMPT")
+    if github_run_id and (
+        not isinstance(authorization, dict)
+        or authorization.get("workflowRunId") != int(github_run_id)
+    ):
+        raise DeploymentError("evidence workflow run differs from workflow authority")
+    if github_run_attempt and evidence.get("workflowRunAttempt") != int(github_run_attempt):
+        raise DeploymentError("evidence workflow attempt differs from workflow authority")
     observed_identity = evidence.get("manifestIdentity")
     if observed_identity not in (None, manifest_identity):
         raise DeploymentError("evidence command substituted manifest identity")
@@ -806,7 +1127,6 @@ def main() -> int:
     execute.add_argument("--config", required=True, type=Path)
     execute.add_argument("--evidence", required=True, type=Path)
     execute.add_argument("--receipt-dir", required=True, type=Path)
-    execute.add_argument("--resume", required=True, type=Path)
 
     args = parser.parse_args()
     try:
@@ -825,6 +1145,13 @@ def main() -> int:
         elif args.command == "plan":
             config = _load(args.config)
             evidence = _load(args.evidence)
+            resume_plan = retained_plan(
+                config,
+                evidence,
+                args.fleet,
+                args.action,
+                args.contract_ref,
+            )
             rollback_source = (
                 _load(args.rollback_source)
                 if args.rollback_source
@@ -832,7 +1159,8 @@ def main() -> int:
             )
             _write(
                 args.output,
-                build_plan(
+                resume_plan
+                or build_plan(
                     config,
                     evidence,
                     args.fleet,
@@ -845,24 +1173,38 @@ def main() -> int:
             plan = _load(args.plan)
             config = _load(args.config)
             evidence = _load(args.evidence)
-            receipt = admitted_receipt(plan, config, evidence, datetime.now(timezone.utc))
-            _persist_directory(args.receipt_dir)(receipt)
+            receipt = _restore_receipts(evidence, plan, args.receipt_dir)
+            if receipt is None:
+                receipt = admitted_receipt(plan, config, evidence, datetime.now(timezone.utc))
+                _persist_directory(args.receipt_dir)(receipt)
         else:
             plan = _load(args.plan)
             config = _load(args.config)
             evidence = _load(args.evidence)
-            previous = _load(args.resume)
             fleet = config["fleets"][plan["fleetSelector"]]
             existing = sorted(args.receipt_dir.glob("revision-*.json"))
-            final_receipt = execute_plan(
-                plan,
-                config,
-                evidence,
-                ProcessAdapter(config, fleet),
-                _persist_directory(args.receipt_dir, len(existing)),
-                previous_receipt=previous,
-            )
+            receipts = [_load(path) for path in existing]
+            if any(
+                path.name != f"revision-{receipt.get('revision', -1):04d}.json"
+                for path, receipt in zip(existing, receipts)
+            ):
+                raise DeploymentError("local receipt filename differs from its revision")
+            try:
+                validate_receipt_chain(receipts)
+            except ValueError as error:
+                raise DeploymentError(f"local receipt chain is invalid: {error}") from error
+            final_receipt = receipts[-1]
             if final_receipt.get("outcome") != "succeeded":
+                final_receipt = execute_plan(
+                    plan,
+                    config,
+                    evidence,
+                    ProcessAdapter(config, fleet),
+                    _persist_directory(args.receipt_dir, len(existing)),
+                    previous_receipt=final_receipt,
+                    max_hosts=1,
+                )
+            if final_receipt.get("outcome") not in ("in_progress", "succeeded"):
                 raise DeploymentError(
                     f"deployment stopped with outcome {final_receipt.get('outcome')}"
                 )

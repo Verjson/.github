@@ -67,6 +67,13 @@ jobs:
             --output deployment-plan.json)
           python3 scripts/container_deployment_controller.py "${args[@]}"
           jq -e '.rolloutMode == "sequential" and (.steps[0].phase == "canary")' deployment-plan.json
+      - name: Retain exact redacted mutation-free plan
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: runner-deployment-${{ github.run_id }}-${{ github.run_attempt }}-dry-run-plan
+          path: deployment-plan.json
+          if-no-files-found: error
+          retention-days: 90
 
   deploy:
     if: ${{ !inputs.dry-run }}
@@ -108,13 +115,14 @@ jobs:
             --plan deployment-plan.json --config "$CONFIG_PATH" \
             --evidence deployment-evidence.json --receipt-dir deployment-receipts
       - name: Retain pre-mutation admission authority
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: runner-deployment-${{ github.run_id }}-${{ github.run_attempt }}-admitted
           path: deployment-receipts/
           if-no-files-found: error
           retention-days: 90
-      - name: Execute bounded canary and sequential rollout
+      - name: Advance one bounded runner transition
+        id: advance_1
         env:
           CONFIG_PATH: ${{ inputs.config-path }}
           GH_TOKEN: ${{ github.token }}
@@ -123,13 +131,84 @@ jobs:
           set -euo pipefail
           python3 scripts/container_deployment_controller.py execute \
             --plan deployment-plan.json --config "$CONFIG_PATH" \
-            --evidence deployment-evidence.json --receipt-dir deployment-receipts \
-            --resume deployment-receipts/revision-0000.json
-      - name: Retain append-only progress and final receipts
+            --evidence deployment-evidence.json --receipt-dir deployment-receipts
+      - name: Retain append-only progress after transition 1
         if: ${{ always() }}
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: runner-deployment-${{ github.run_id }}-${{ github.run_attempt }}-revisions
+          name: runner-deployment-${{ github.run_id }}-${{ github.run_attempt }}-progress-1
+          path: deployment-receipts/
+          if-no-files-found: error
+          retention-days: 90
+      - name: Refresh live fleet evidence after transition 1
+        if: ${{ steps.advance_1.outcome == 'success' }}
+        id: refresh_1
+        env:
+          CONFIG_PATH: ${{ inputs.config-path }}
+          FLEET_SELECTOR: ${{ inputs.fleet-selector }}
+          GH_TOKEN: ${{ github.token }}
+          MANIFEST_IDENTITY: ${{ inputs.manifest-identity }}
+          ROLLBACK_RECEIPT: ${{ inputs.rollback-receipt }}
+        run: |
+          set -euo pipefail
+          python3 scripts/container_deployment_controller.py collect-evidence \
+            --config "$CONFIG_PATH" --manifest-identity "$MANIFEST_IDENTITY" \
+            --fleet "$FLEET_SELECTOR" --rollback-receipt "$ROLLBACK_RECEIPT" \
+            --output deployment-evidence.json
+          python3 scripts/container_deployment_preflight.py --evidence deployment-evidence.json
+      - name: Advance second bounded runner transition
+        if: ${{ steps.refresh_1.outcome == 'success' }}
+        id: advance_2
+        env:
+          CONFIG_PATH: ${{ inputs.config-path }}
+          GH_TOKEN: ${{ github.token }}
+          VERJSON_RUNNER_DEPLOY_TOKEN: ${{ secrets.VERJSON_RUNNER_DEPLOY_TOKEN }}
+        run: |
+          set -euo pipefail
+          python3 scripts/container_deployment_controller.py execute \
+            --plan deployment-plan.json --config "$CONFIG_PATH" \
+            --evidence deployment-evidence.json --receipt-dir deployment-receipts
+      - name: Retain append-only progress after transition 2
+        if: ${{ always() && steps.refresh_1.outcome == 'success' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: runner-deployment-${{ github.run_id }}-${{ github.run_attempt }}-progress-2
+          path: deployment-receipts/
+          if-no-files-found: error
+          retention-days: 90
+      - name: Refresh live fleet evidence after transition 2
+        if: ${{ steps.advance_2.outcome == 'success' }}
+        id: refresh_2
+        env:
+          CONFIG_PATH: ${{ inputs.config-path }}
+          FLEET_SELECTOR: ${{ inputs.fleet-selector }}
+          GH_TOKEN: ${{ github.token }}
+          MANIFEST_IDENTITY: ${{ inputs.manifest-identity }}
+          ROLLBACK_RECEIPT: ${{ inputs.rollback-receipt }}
+        run: |
+          set -euo pipefail
+          python3 scripts/container_deployment_controller.py collect-evidence \
+            --config "$CONFIG_PATH" --manifest-identity "$MANIFEST_IDENTITY" \
+            --fleet "$FLEET_SELECTOR" --rollback-receipt "$ROLLBACK_RECEIPT" \
+            --output deployment-evidence.json
+          python3 scripts/container_deployment_preflight.py --evidence deployment-evidence.json
+      - name: Advance third bounded runner transition
+        if: ${{ steps.refresh_2.outcome == 'success' }}
+        id: advance_3
+        env:
+          CONFIG_PATH: ${{ inputs.config-path }}
+          GH_TOKEN: ${{ github.token }}
+          VERJSON_RUNNER_DEPLOY_TOKEN: ${{ secrets.VERJSON_RUNNER_DEPLOY_TOKEN }}
+        run: |
+          set -euo pipefail
+          python3 scripts/container_deployment_controller.py execute \
+            --plan deployment-plan.json --config "$CONFIG_PATH" \
+            --evidence deployment-evidence.json --receipt-dir deployment-receipts
+      - name: Retain append-only progress after transition 3
+        if: ${{ always() && steps.refresh_2.outcome == 'success' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: runner-deployment-${{ github.run_id }}-${{ github.run_attempt }}-progress-3
           path: deployment-receipts/
           if-no-files-found: error
           retention-days: 90
