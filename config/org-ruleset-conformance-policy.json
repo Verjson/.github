@@ -1,0 +1,8 @@
+{
+  "organization": "Verjson",
+  "release_authorization_bypass": {
+    "actor_type": "Integration",
+    "actor_id": 4583107,
+    "bypass_mode": "always"
+  }
+}

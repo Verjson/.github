@@ -1,0 +1,35 @@
+name: Organization ruleset conformance
+
+on:
+  schedule:
+    - cron: "53 9 * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: org-ruleset-conformance
+  cancel-in-progress: false
+
+jobs:
+  audit:
+    runs-on: ${{ fromJSON(vars.VERJSON_LANE_PRIVILEGED || vars.VERJSON_LANE_FALLBACK || '["ubuntu-24.04"]') }}
+    defaults:
+      run:
+        working-directory: .org-ruleset-conformance-source-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
+    timeout-minutes: 10
+    steps:
+      - name: Check out the ruleset conformance audit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          path: .org-ruleset-conformance-source-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
+          persist-credentials: false
+      - name: Verify release authorization across default-branch rulesets
+        env:
+          GH_TOKEN: ${{ secrets.ORG_ADMIN_TOKEN }}
+        run: python3 scripts/org-ruleset-conformance.py
+      - name: Remove the isolated ruleset-conformance checkout
+        if: ${{ always() }}
+        working-directory: ${{ github.workspace }}
+        run: rm -rf ".org-ruleset-conformance-source-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}"

@@ -12,11 +12,13 @@ ROOT = Path(__file__).resolve().parents[2]
 WATCHDOG = ROOT / ".github/workflows/fleet-watchdog.yml"
 ADMISSION = ROOT / ".github/workflows/runner-admission-reconcile.yml"
 SECRET_SCOPE = ROOT / ".github/workflows/org-secret-scope-audit.yml"
+RULESET_CONFORMANCE = ROOT / ".github/workflows/org-ruleset-conformance.yml"
 CHECKOUT = re.compile(r"^actions/checkout@[0-9a-f]{40}$")
 UNIQUE_SUFFIX = "${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}"
 WATCHDOG_SOURCE = f".fleet-watchdog-source-{UNIQUE_SUFFIX}"
 ADMISSION_SOURCE = f".runner-admission-reconcile-source-{UNIQUE_SUFFIX}"
 SECRET_SCOPE_SOURCE = f".org-secret-scope-audit-source-{UNIQUE_SUFFIX}"
+RULESET_CONFORMANCE_SOURCE = f".org-ruleset-conformance-source-{UNIQUE_SUFFIX}"
 
 
 class ContractError(Exception):
@@ -265,6 +267,58 @@ def validate_secret_scope(document: object) -> None:
     validate_cleanup(steps[2], "secret-scope cleanup", SECRET_SCOPE_SOURCE)
 
 
+def validate_ruleset_conformance(document: object) -> None:
+    job, steps = validate_common(document, "audit")
+    permissions = require_keys(document["permissions"], {"contents"}, "permissions")
+    require(permissions["contents"] == "read", "ruleset-conformance contents permission changed")
+    require(
+        workflow_on(document)["schedule"] == [{"cron": "53 9 * * *"}],
+        "ruleset-conformance schedule changed",
+    )
+    concurrency = require_keys(document["concurrency"], {"group", "cancel-in-progress"}, "concurrency")
+    require(
+        concurrency["group"] == "org-ruleset-conformance",
+        "ruleset-conformance concurrency group changed",
+    )
+    require(
+        concurrency["cancel-in-progress"] is False,
+        "ruleset-conformance runs must not cancel in progress",
+    )
+    require_keys(job, {"runs-on", "defaults", "timeout-minutes", "steps"}, "jobs.audit")
+    validate_isolation(job, RULESET_CONFORMANCE_SOURCE, "jobs.audit")
+    require(
+        job["runs-on"]
+        == "${{ fromJSON(vars.VERJSON_LANE_PRIVILEGED || vars.VERJSON_LANE_FALLBACK || '[\"ubuntu-24.04\"]') }}",
+        "ruleset-conformance runner route changed",
+    )
+    require(job["timeout-minutes"] == 10, "ruleset-conformance timeout changed")
+    require(len(steps) == 3, "ruleset-conformance audit must have exactly three steps")
+    require(
+        steps[0].get("name") == "Check out the ruleset conformance audit",
+        "ruleset-conformance checkout name changed",
+    )
+    validate_checkout(
+        steps[0], "ruleset-conformance checkout", RULESET_CONFORMANCE_SOURCE
+    )
+    audit = require_keys(steps[1], {"name", "env", "run"}, "ruleset-conformance audit")
+    require(
+        audit["name"] == "Verify release authorization across default-branch rulesets",
+        "ruleset-conformance audit name changed",
+    )
+    env = require_keys(audit["env"], {"GH_TOKEN"}, "ruleset-conformance audit env")
+    require(
+        env["GH_TOKEN"] == "${{ secrets.ORG_ADMIN_TOKEN }}",
+        "ruleset-conformance token binding changed",
+    )
+    require(
+        audit["run"] == "python3 scripts/org-ruleset-conformance.py",
+        "ruleset-conformance command changed",
+    )
+    validate_cleanup(
+        steps[2], "ruleset-conformance cleanup", RULESET_CONFORMANCE_SOURCE
+    )
+
+
 def load(text: str) -> object:
     return yaml.safe_load(text)
 
@@ -313,10 +367,16 @@ def main() -> int:
     watchdog_text = WATCHDOG.read_text()
     admission_text = ADMISSION.read_text()
     secret_scope_text = SECRET_SCOPE.read_text()
+    ruleset_conformance_text = RULESET_CONFORMANCE.read_text()
     failures = 0
     failures += expect_valid("fleet watchdog is schedule-only and event-SHA-bound", validate_watchdog, watchdog_text)
     failures += expect_valid("runner admission is schedule-only and event-SHA-bound", validate_admission, admission_text)
     failures += expect_valid("secret-scope audit is schedule-only and event-SHA-bound", validate_secret_scope, secret_scope_text)
+    failures += expect_valid(
+        "ruleset-conformance audit is schedule-only and event-SHA-bound",
+        validate_ruleset_conformance,
+        ruleset_conformance_text,
+    )
 
     cases = [
         (
@@ -336,6 +396,12 @@ def main() -> int:
             validate_secret_scope,
             secret_scope_text,
             "      - name: Compare live scope with reviewed policy",
+        ),
+        (
+            "ruleset-conformance audit",
+            validate_ruleset_conformance,
+            ruleset_conformance_text,
+            "      - name: Verify release authorization across default-branch rulesets",
         ),
     ]
     for label, validator, text, marker in cases:
@@ -364,6 +430,44 @@ def main() -> int:
     for label, mutation in secret_scope_mutations.items():
         require(mutation != secret_scope_text, f"secret-scope {label} mutation fixture marker not found")
         failures += expect_invalid(f"secret-scope rejects {label}", validate_secret_scope, mutation)
+
+    ruleset_conformance_mutations = {
+        "manual dispatch": ruleset_conformance_text.replace(
+            '    - cron: "53 9 * * *"\n',
+            '    - cron: "53 9 * * *"\n  workflow_dispatch: {}\n',
+            1,
+        ),
+        "widened permissions": ruleset_conformance_text.replace(
+            "  contents: read", "  contents: write", 1
+        ),
+        "missing concurrency": re.sub(
+            r"\nconcurrency:\n(?:  .*\n){2}", "\n", ruleset_conformance_text, count=1
+        ),
+        "cancelling concurrency": ruleset_conformance_text.replace(
+            "cancel-in-progress: false", "cancel-in-progress: true", 1
+        ),
+        "missing timeout": ruleset_conformance_text.replace(
+            "    timeout-minutes: 10\n", "", 1
+        ),
+        "mutable checkout": ruleset_conformance_text.replace(
+            "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+            "actions/checkout@v7",
+            1,
+        ),
+        "unsafe runner route": ruleset_conformance_text.replace(
+            "vars.VERJSON_LANE_PRIVILEGED", "vars.VERJSON_RUNNER_PRIVILEGED", 1
+        ),
+    }
+    for label, mutation in ruleset_conformance_mutations.items():
+        require(
+            mutation != ruleset_conformance_text,
+            f"ruleset-conformance {label} mutation fixture marker not found",
+        )
+        failures += expect_invalid(
+            f"ruleset-conformance rejects {label}",
+            validate_ruleset_conformance,
+            mutation,
+        )
 
     if failures:
         print(f"{failures} test(s) failed.")

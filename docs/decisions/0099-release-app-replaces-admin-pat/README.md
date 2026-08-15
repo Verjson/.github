@@ -132,7 +132,58 @@ changing release behavior or the App's required ruleset bypass.
 generated adopter contract test rejects a snapshot caller that restores the
 obsolete write grant.
 
+## Amendment (2026-08-14) — every default-branch ruleset carries the release bypass (#803)
+
+The original decision named `main-protection` as the App's authorization
+boundary. That was necessary but incomplete. A canonical release pushes its
+verified snapshot commit directly to the default branch, so every organization
+ruleset whose branch conditions include `~DEFAULT_BRANCH` evaluates that push.
+Required-status-check and required-workflow rulesets can therefore reject a
+release even when `main-protection` correctly names the App.
+
+Issue [#803](https://github.com/Verjson/.github/issues/803) exposed this latent
+failure on the first enforced adopter release after the newer rulesets were
+created. The release transaction failed atomically, leaving no snapshot commit,
+tag, or consumed fragment. Read-only inspection then found the same omission on
+`core-checks-actions`; it remains part of #803 rather than a separate issue.
+Issue [#731](https://github.com/Verjson/.github/issues/731) may change a required
+context on one of these rulesets, but neither work item blocks the other's
+policy invariant.
+
+The release App's `Integration:4583107` identity in `always` mode is now required
+on **every organization branch ruleset whose `ref_name.include` contains
+`~DEFAULT_BRANCH`**, irrespective of its other conditions, rules, enforcement
+mode, or existing bypass actors. Adding that one actor must preserve the complete
+reviewed ruleset preimage: all other bypass actors, rules, conditions, target,
+and enforcement remain unchanged.
+
+`scripts/org-ruleset-conformance.py` enforces the invariant without holding a
+mutation path. It paginates the organization ruleset listing, reads every
+ruleset detail with explicit GET requests, validates the bypass, rule, and
+condition response shapes, and only then evaluates the actor requirement. Any
+pagination, API, JSON, schema, duplicate-ID, or detail mismatch fails closed.
+Diagnostics name only public ruleset identities and never print response bodies,
+credentials, secrets, or variable values.
+
+The schedule is default-branch event-SHA-bound, grants its Actions token only
+Contents read, and runs on the trusted organization lane because the available
+organization-ruleset read credential is privileged. The audit invokes only
+read-only REST endpoints; tests replace `gh` entirely and reject any method or
+argument drift away from explicit GET. A future credential with only the
+organization Administration-read capability should replace the current shared
+credential when one is provisioned, without changing the policy or audit.
+
+This repository check is durable authoring-time evidence, not authorization to
+repair live state. A live correction remains a separately reviewed sensitive
+operation: capture and compare the full preimage, add only the required actor,
+and verify every preserved actor, rule, condition, target, and enforcement field
+afterward.
+
 ## Rollback
+
+Reverting the #803 implementation removes the scheduled conformance signal but
+does not alter any live ruleset or revoke the App. That is a monitoring rollback,
+not an authorization rollback.
 
 Revert the implementing pull request and repin consumers. That restores the
 temporary `ORG_ADMIN_TOKEN` contract and its broad authority; it is an emergency
