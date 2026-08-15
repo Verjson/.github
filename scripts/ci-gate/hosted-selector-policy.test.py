@@ -152,6 +152,27 @@ assert_metered_only("linux-hosted-literal", 0,
                     "consumer mode does not activate private literal-Linux policy")
 assert_metered_only("invalid-yaml", 2,
                     "consumer mode remains fail closed on unparseable workflow YAML")
+assert_metered_only("dynamic-format", 2,
+                    "consumer mode refuses a format-built selector")
+assert_metered_only("dynamic-join-fromjson", 2,
+                    "consumer mode refuses a join/fromJSON-built selector")
+for source_fixture, source_name in (
+    ("dynamic-input-direct", "a direct arbitrary input"),
+    ("dynamic-input-fromjson", "a fromJSON-decoded arbitrary input"),
+    ("dynamic-var-direct", "a direct unreviewed repository variable"),
+    ("dynamic-var-fromjson", "a fromJSON-decoded unreviewed repository variable"),
+    ("dynamic-needs-direct", "a direct unreviewed needs output"),
+    ("dynamic-needs-fromjson", "a fromJSON-decoded unreviewed needs output"),
+):
+    assert_metered_only(
+        source_fixture,
+        2,
+        f"consumer mode refuses {source_name}",
+    )
+assert_metered_only("lane-with-fallback", 0,
+                    "consumer mode retains reviewed canonical lane expressions")
+assert_metered_only("matrix-linux-literal", 0,
+                    "consumer mode retains static Linux matrix selectors")
 
 # ---------------------------------------------------------------------------
 # Tier B — literal Linux hosted selectors, keyed on repository visibility.

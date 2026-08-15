@@ -235,13 +235,18 @@ Linux image, visibility-keyed literal Linux, lane-tail, OS-lane timeout, sanctio
 dispatch rules. Activating those across consumers would silently bundle #816 and repository-
 local release policy into a spend-containment change. Consumer mode still parses every YAML
 document and job with the fail-closed loader and folds referenced matrix strategy sources
-into R1; it simply returns after the metered-family verdict.
+into R1. It retains the reviewed expression grammar so `format`, `join`, or an arbitrary
+input, variable, or needs output cannot assemble a metered selector invisibly; it simply
+returns after the metered-family verdict for a selector whose shape can be resolved.
 
 PyYAML is not assumed to exist on a selected runner. The workflow downloads the pinned 6.0.2
 source archive, verifies its SHA-256 digest before extraction, exposes only its pure-Python
 `yaml` package through an isolated `PYTHONPATH`, and starts Python with site loading disabled.
-This makes the parser dependency part of the immutable reusable-workflow contract instead of
-an ambient property of whichever runner a lane selects.
+The archive and package are extracted into a new mode-0700 directory allocated by `mktemp`
+under `RUNNER_TEMP`, outside the caller checkout, and the exact bounded path is validated
+before use and cleanup. This makes the parser dependency part of the immutable reusable-
+workflow contract instead of an ambient or caller-prepopulated property of whichever runner
+a lane selects.
 
 ## Consequences
 

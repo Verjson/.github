@@ -336,7 +336,9 @@ workflow revision. It parses the caller checkout with the centrally versioned
 `hosted-selector-policy.py`; foreign callers skip both dependency bootstrap and enforcement.
 Its consumer mode deliberately does not export this repository's `ubuntu-latest`, visibility,
 OS-lane timeout, or sanctioned-release rules. That narrower surface is the #815 containment
-boundary; #816 owns the measured consumer Linux sweep.
+boundary; #816 owns the measured consumer Linux sweep. Unreviewed selector expressions still
+fail closed so a caller cannot assemble a hidden metered family with `format`, `join`, or an
+arbitrary input, variable, or needs output.
 
 ## Constraints every self-hosted job must respect
 

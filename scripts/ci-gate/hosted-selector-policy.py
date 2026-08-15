@@ -393,13 +393,12 @@ def check_job(report: Report, path: str, name: str, body: dict, line: int,
     raw_runs_on = flatten(body["runs-on"])
     if "matrix." in normalize_dereferences(raw_runs_on):
         selector_values.append(body.get("strategy"))
-    if not metered_families_only:
-        try:
-            for value in selector_values:
-                validate_selector_expressions(value)
-        except Undetermined as error:
-            report.anomaly(f"{path}:{runs_on_line}: job '{name}': {error}")
-            return
+    try:
+        for value in selector_values:
+            validate_selector_expressions(value)
+    except Undetermined as error:
+        report.anomaly(f"{path}:{runs_on_line}: job '{name}': {error}")
+        return
 
     runs_on = normalize_dereferences(raw_runs_on)
 
@@ -432,8 +431,9 @@ def check_job(report: Report, path: str, name: str, body: dict, line: int,
     # would activate the separately deferred consumer ubuntu-latest sweep
     # (#816), while R3-R6 govern the one sanctioned desktop release path rather
     # than ordinary package consumers. Parsing and job extraction still fail
-    # closed, and matrix sources are still folded in, so narrowing the rule set
-    # does not narrow the YAML shapes R1 can see.
+    # closed, expression construction stays inside the reviewed grammar, and
+    # matrix sources are still folded in, so narrowing the rule set does not
+    # narrow the YAML shapes R1 can see.
     if metered_families_only:
         return
 

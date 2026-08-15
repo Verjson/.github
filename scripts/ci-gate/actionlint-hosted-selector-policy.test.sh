@@ -34,11 +34,18 @@ assert checkout["with"]["persist-credentials"] is False
 
 install = steps["Install hosted-selector policy dependency"]
 enforce = steps["Refuse metered hosted selectors in Verjson callers"]
+cleanup = steps["Remove hosted-selector policy dependency"]
 assert install["if"] == "github.repository_owner == 'Verjson'"
 assert enforce["if"] == "github.repository_owner == 'Verjson'"
+assert cleanup["if"] == "${{ always() && github.repository_owner == 'Verjson' }}"
+assert cleanup["working-directory"] == "${{ github.workspace }}"
 assert "--metered-families-only .github/workflows" in enforce["run"]
 assert "--visibility" not in enforce["run"]
 assert "python3 -S" in enforce["run"]
+assert 'mktemp -d "$runner_temp/verjson-hosted-selector-policy.XXXXXX"' in install["run"]
+assert '>>"$GITHUB_ENV"' in install["run"]
+assert 'PYTHONPATH="$policy_dir/python"' in enforce["run"]
+assert 'rm -rf -- "$policy_dir"' in cleanup["run"]
 
 environment = job["env"]
 assert environment["PYYAML_VERSION"] == "6.0.2"
@@ -68,8 +75,10 @@ extract_step() {
 
 install_script="$tmp/install.sh"
 enforce_script="$tmp/enforce.sh"
+cleanup_script="$tmp/cleanup.sh"
 extract_step "Install hosted-selector policy dependency" "$install_script"
 extract_step "Refuse metered hosted selectors in Verjson callers" "$enforce_script"
+extract_step "Remove hosted-selector policy dependency" "$cleanup_script"
 
 mkdir -p "$tmp/bin"
 cat >"$tmp/bin/curl" <<'SH'
@@ -94,34 +103,61 @@ while [ "$#" -gt 0 ]; do
 done
 printf 'tar\n' >>"$POLICY_ACTIONS"
 mkdir -p "$destination/yaml"
-printf '# fixture yaml package\n' >"$destination/yaml/__init__.py"
+cp -R "$SYSTEM_YAML/." "$destination/yaml/"
 SH
 chmod +x "$tmp/bin/curl" "$tmp/bin/tar"
+
+system_yaml="$(python3 -c 'import os, yaml; print(os.path.dirname(yaml.__file__))')"
+base_path="$PATH"
 
 run_install() {
   local checksum="$1" case_dir
   case_dir="$(mktemp -d "$tmp/install.XXXXXX")"
-  export PATH="$tmp/bin:$PATH"
+  mkdir -p "$case_dir/workspace" "$case_dir/runner-temp" \
+    "$case_dir/caller-redirect/yaml"
+  cat >"$case_dir/caller-redirect/yaml/_yaml.py" <<SH
+from pathlib import Path
+Path(${case_dir@Q} + "/hostile-module-executed").write_text("executed")
+SH
+  ln -s "$case_dir/caller-redirect" \
+    "$case_dir/workspace/.verjson-hosted-selector-policy-deps"
+  export PATH="$tmp/bin:$base_path"
   export PYYAML_VERSION=6.0.2
   export PYYAML_SOURCE_URL=https://example.invalid/pyyaml-6.0.2.tar.gz
   export PYYAML_SHA256="$checksum"
   export DOWNLOAD_CONTENT='fixture archive bytes'
+  export SYSTEM_YAML="$system_yaml"
   export POLICY_ACTIONS="$case_dir/actions.log"
+  export RUNNER_TEMP="$case_dir/runner-temp"
+  export GITHUB_WORKSPACE="$case_dir/workspace"
+  export GITHUB_ENV="$case_dir/github-env"
   : >"$POLICY_ACTIONS"
-  (cd "$case_dir" && bash "$install_script") >"$case_dir/out.txt" 2>&1
+  : >"$GITHUB_ENV"
+  (cd "$GITHUB_WORKSPACE" && bash "$install_script") >"$case_dir/out.txt" 2>&1
   INSTALL_RC=$?
   INSTALL_CASE_DIR="$case_dir"
+  INSTALL_POLICY_DIR="$(sed -n 's/^VERJSON_HOSTED_SELECTOR_POLICY_DIR=//p' "$GITHUB_ENV")"
 }
 
 good="$(printf '%s' 'fixture archive bytes' | sha256sum | awk '{print $1}')"
 run_install "$good"
 if [ "$INSTALL_RC" -eq 0 ] \
   && grep -qxF tar "$POLICY_ACTIONS" \
-  && [ -f "$INSTALL_CASE_DIR/.verjson-hosted-selector-policy-deps/yaml/__init__.py" ]; then
-  pass "a matching dependency checksum permits only the pinned YAML package extraction"
+  && [ -f "$INSTALL_POLICY_DIR/python/yaml/__init__.py" ] \
+  && [ ! -L "$INSTALL_POLICY_DIR" ] \
+  && [ "$(stat -c '%a' "$INSTALL_POLICY_DIR")" = 700 ] \
+  && [[ "$INSTALL_POLICY_DIR" == "$RUNNER_TEMP"/verjson-hosted-selector-policy.* ]] \
+  && [ ! -e "$INSTALL_CASE_DIR/hostile-module-executed" ] \
+  && [ ! -e "$INSTALL_CASE_DIR/caller-redirect/pyyaml-6.0.2.tar.gz" ]; then
+  pass "a matching archive installs only in a new secure runner-temporary directory"
 else
-  fail "the pinned YAML dependency did not install from a matching archive"
+  fail "the pinned YAML dependency used caller-controlled or predictable storage"
 fi
+GOOD_CASE_DIR="$INSTALL_CASE_DIR"
+GOOD_POLICY_DIR="$INSTALL_POLICY_DIR"
+GOOD_RUNNER_TEMP="$RUNNER_TEMP"
+GOOD_WORKSPACE="$GITHUB_WORKSPACE"
+GOOD_REDIRECT="$INSTALL_CASE_DIR/caller-redirect"
 
 bad="0${good:1}"
 [ "${good:0:1}" = 0 ] && bad="1${good:1}"
@@ -132,13 +168,15 @@ else
   fail "a mismatched YAML dependency reached archive extraction"
 fi
 
-source_dir="$tmp/source"
+source_dir="$GOOD_WORKSPACE"
 mkdir -p "$source_dir/.verjson-actionlint-policy/scripts/ci-gate" \
   "$source_dir/.github/workflows"
 cp "$root/scripts/ci-gate/hosted-selector-policy.py" \
   "$source_dir/.verjson-actionlint-policy/scripts/ci-gate/hosted-selector-policy.py"
 
-(cd "$source_dir" && bash "$enforce_script") >"$tmp/missing-dependency.out" 2>&1
+(cd "$source_dir" && env -u VERJSON_HOSTED_SELECTOR_POLICY_DIR \
+  RUNNER_TEMP="$GOOD_RUNNER_TEMP" GITHUB_WORKSPACE="$GOOD_WORKSPACE" \
+  bash "$enforce_script") >"$tmp/missing-dependency.out" 2>&1
 missing_dependency_rc=$?
 if [ "$missing_dependency_rc" -ne 0 ]; then
   pass "the enforcement step cannot fall back to an ambient PyYAML installation"
@@ -146,15 +184,15 @@ else
   fail "the enforcement step passed without its pinned YAML dependency"
 fi
 
-system_yaml="$(python3 -c 'import os, yaml; print(os.path.dirname(yaml.__file__))')"
-mkdir -p "$source_dir/.verjson-hosted-selector-policy-deps"
-cp -R "$system_yaml" "$source_dir/.verjson-hosted-selector-policy-deps/yaml"
-
 run_policy_fixture() {
   local fixture="$1"
   find "$source_dir/.github/workflows" -type f -delete
   cp "$fixtures/$fixture"/* "$source_dir/.github/workflows/"
-  (cd "$source_dir" && bash "$enforce_script") >"$tmp/policy.out" 2>&1
+  (cd "$source_dir" && \
+    RUNNER_TEMP="$GOOD_RUNNER_TEMP" \
+    GITHUB_WORKSPACE="$GOOD_WORKSPACE" \
+    VERJSON_HOSTED_SELECTOR_POLICY_DIR="$GOOD_POLICY_DIR" \
+    bash "$enforce_script") >"$tmp/policy.out" 2>&1
   POLICY_RC=$?
 }
 
@@ -177,6 +215,41 @@ if [ "$POLICY_RC" -eq 0 ]; then
   pass "the reusable step leaves the deferred consumer ubuntu-latest rule inactive"
 else
   fail "the reusable step broadened #815 into consumer Linux policy"
+fi
+
+if [ ! -e "$GOOD_CASE_DIR/hostile-module-executed" ] \
+  && [ -f "$GOOD_REDIRECT/yaml/_yaml.py" ] \
+  && [ ! -e "$GOOD_REDIRECT/python" ]; then
+  pass "a caller-prepopulated optional module and dependency symlink are neither executed nor written"
+else
+  fail "caller-controlled dependency content influenced installation or enforcement"
+fi
+
+RUNNER_TEMP="$GOOD_RUNNER_TEMP" \
+  VERJSON_HOSTED_SELECTOR_POLICY_DIR="$GOOD_POLICY_DIR" \
+  bash "$cleanup_script" >"$tmp/cleanup.out" 2>&1
+cleanup_rc=$?
+if [ "$cleanup_rc" -eq 0 ] && [ ! -e "$GOOD_POLICY_DIR" ]; then
+  pass "cleanup removes the exact secure runner-temporary directory"
+else
+  fail "cleanup did not remove the bounded policy directory"
+fi
+
+cleanup_redirect="$tmp/cleanup-redirect"
+mkdir -p "$cleanup_redirect"
+printf 'preserve\n' >"$cleanup_redirect/sentinel"
+cleanup_symlink="$GOOD_RUNNER_TEMP/verjson-hosted-selector-policy.hostile"
+ln -s "$cleanup_redirect" "$cleanup_symlink"
+RUNNER_TEMP="$GOOD_RUNNER_TEMP" \
+  VERJSON_HOSTED_SELECTOR_POLICY_DIR="$cleanup_symlink" \
+  bash "$cleanup_script" >"$tmp/symlink-cleanup.out" 2>&1
+symlink_cleanup_rc=$?
+if [ "$symlink_cleanup_rc" -ne 0 ] \
+  && [ -L "$cleanup_symlink" ] \
+  && [ -f "$cleanup_redirect/sentinel" ]; then
+  pass "cleanup refuses a substituted symlink without touching its target"
+else
+  fail "cleanup followed or removed a substituted dependency symlink"
 fi
 
 if [ "$fails" -eq 0 ]; then
