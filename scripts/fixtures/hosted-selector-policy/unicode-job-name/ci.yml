@@ -1,0 +1,10 @@
+# A non-ASCII job key. The parser keys on indentation, not on an ASCII-only
+# identifier pattern, so a job named this way is still bound by the policy.
+name: ci
+on: workflow_dispatch
+jobs:
+  "build-café-🍎":
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+      - run: npm run dist

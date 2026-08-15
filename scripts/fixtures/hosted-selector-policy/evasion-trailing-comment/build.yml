@@ -1,0 +1,10 @@
+# A trailing comment after the value. Anchored line matches such as
+# `^    runs-on: macos-15$` do not match this line.
+name: build
+on: workflow_dispatch
+jobs:
+  dist:
+    runs-on: macos-15   # pinned, reviewed, still metered
+    timeout-minutes: 45
+    steps:
+      - run: npm run dist

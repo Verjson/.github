@@ -1,0 +1,10 @@
+# The false-positive direction. A comment is prose, not a selector: refusing
+# this would make the rule impossible to explain in the file it governs, and a
+# check people work around by deleting comments is worse than no check.
+name: ci
+on: pull_request
+jobs:
+  build:
+    runs-on: ${{ fromJSON(vars.VERJSON_LANE_TRUSTED || vars.VERJSON_LANE_FALLBACK || '["ubuntu-24.04"]') }}  # never macos-15, see ADR 0103
+    steps:
+      - run: npm test

@@ -57,6 +57,12 @@ esac
 shopt -s nullglob
 workflow_files=("$workflow_dir"/*.yml "$workflow_dir"/*.yaml)
 shopt -u nullglob
+# A sweep that scans nothing must not look like a sweep that found nothing. An
+# empty or mis-pointed directory is the single most likely way this check ends
+# up reporting green while enforcing no policy at all — a deleted workflow
+# directory, a renamed path in a consumer checkout, a typo in the #815 caller.
+[ "${#workflow_files[@]}" -gt 0 ] \
+  || undetermined "no .yml or .yaml workflow files found under $workflow_dir"
 
 # R5's sanctioned desktop-release path, as an EXPLICIT constant rather than an
 # implicit absence. In `Verjson/.github` the set is empty and that is the whole

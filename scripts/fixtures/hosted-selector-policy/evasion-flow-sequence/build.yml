@@ -1,0 +1,9 @@
+# A YAML flow sequence rather than a bare scalar.
+name: build
+on: workflow_dispatch
+jobs:
+  dist:
+    runs-on: [windows-2025]
+    timeout-minutes: 45
+    steps:
+      - run: npm run dist

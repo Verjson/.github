@@ -143,6 +143,65 @@ assert_violation public os-lane-reference-off-runs-on 'R5 off-path reference to 
 assert_clean public os-lane-bounded \
   "the sanctioned desktop-release path may name the OS lane variables" desktop-release.yml
 
+# --------------------------------------------------------------------------
+# Undetermined outcomes. Each of these is a way the sweep can end up knowing
+# nothing, and every one of them must be exit 2 — the failure mode being
+# guarded against is a check that reports green because it never looked.
+# --------------------------------------------------------------------------
+empty_dir="$(mktemp -d)"
+trap 'rm -rf "$empty_dir"' EXIT
+assert_undetermined "a directory containing no workflow files is undetermined" \
+  --visibility public "$empty_dir"
+assert_undetermined "no visibility at all is undetermined, never permissive" \
+  "$fixtures/metered-macos"
+assert_undetermined "an empty visibility is undetermined" \
+  --visibility= "$fixtures/metered-macos"
+assert_undetermined "an unrecognized visibility is undetermined" \
+  --visibility internal "$fixtures/metered-macos"
+assert_undetermined "a --visibility flag with no value is undetermined" \
+  --visibility
+assert_undetermined "no directory at all is undetermined" --visibility public
+assert_undetermined "an unrecognized option is undetermined" \
+  --visibility public --allow-macos "$fixtures/metered-macos"
+
+# --------------------------------------------------------------------------
+# Evasion shapes. Each is a way a metered selector reaches a runner while
+# looking like something a line-anchored grep would not match. The house style
+# elsewhere is `grep -HnE '^    runs-on: …'`, and every one of these defeats
+# that form — which is why this script parses job blocks instead.
+# --------------------------------------------------------------------------
+assert_violation public evasion-yaml-suffix 'metered hosted runner family' \
+  "a .yaml workflow is scanned, not evaded by the suffix (#401)"
+assert_violation public evasion-flow-sequence 'metered hosted runner family' \
+  "a flow sequence is scanned"
+assert_violation public evasion-block-sequence 'metered hosted runner family' \
+  "a block sequence, whose value is on the next line, is scanned"
+assert_violation public evasion-quoted 'metered hosted runner family' \
+  "a quoted scalar is scanned"
+assert_violation public evasion-trailing-comment 'metered hosted runner family' \
+  "a trailing comment does not hide the value it follows"
+assert_violation public evasion-matrix 'metered hosted runner family' \
+  "a matrix indirection is resolved back to the values that place the job"
+assert_violation public unicode-job-name 'metered hosted runner family' \
+  "a non-ASCII job key does not fall out of the job parse"
+
+# The false-positive direction of the comment handling. A comment is prose, not
+# a selector. A check that refused this would be unexplainable inside the files
+# it governs, and one people work around by deleting comments is worse than none.
+assert_clean public comment-mentions-metered \
+  "a comment naming a metered family is prose, not a selector"
+
+# --------------------------------------------------------------------------
+# R3 boundaries. 60 is the ceiling and is accepted; 61 is not. A step-level
+# timeout does not bound the JOB, so it does not satisfy R3 either.
+# --------------------------------------------------------------------------
+assert_violation public os-lane-timeout-boundary-61 'exceeds the 60 ceiling' \
+  "one minute over the ceiling is refused" desktop-release.yml
+assert_clean public os-lane-timeout-boundary-60 \
+  "exactly the ceiling is accepted" desktop-release.yml
+assert_violation public os-lane-step-timeout-only 'R3 OS-lane job declares no timeout-minutes' \
+  "a step-level timeout does not bound the job" desktop-release.yml
+
 if [ "$fails" -eq 0 ]; then
   echo "All tests passed."
   exit 0

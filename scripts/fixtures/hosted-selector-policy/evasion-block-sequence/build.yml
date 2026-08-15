@@ -1,0 +1,11 @@
+# A YAML block sequence: the value is on the following line, not on the
+# `runs-on:` line at all, so any check that reads one line is blind to it.
+name: build
+on: workflow_dispatch
+jobs:
+  dist:
+    runs-on:
+      - macos-15
+    timeout-minutes: 45
+    steps:
+      - run: npm run dist

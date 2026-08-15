@@ -1,0 +1,14 @@
+# The selector names nothing metered; the matrix does. Reading `runs-on:` alone
+# sees `${{ matrix.os }}` and finds no family to object to.
+name: build
+on: workflow_dispatch
+jobs:
+  dist:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, windows-2025]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    steps:
+      - run: npm run dist
