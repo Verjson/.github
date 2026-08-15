@@ -48,8 +48,11 @@ Where verJSON CI jobs run, and how to choose a `runs-on` value. The model is dec
   than guessing, so the guarantee covers every selector the parser reads. What no static
   scan can cover is a GitHub-hosted **larger runner**, whose label is chosen by an
   administrator and is textually indistinguishable from a self-hosted fleet label while
-  billing metered minutes. That gap is closed by inventory, not by reading files — see
-  [ADR 0103](decisions/0103-os-scoped-hosted-lanes/README.md) and
+  billing metered minutes. That gap is closed by the scheduled reconciler's organization
+  inventory query, not by reading files. Its reviewed numeric-ID allowlist is
+  `scripts/ci-gate/hosted-larger-runner-allowlist.json` and is empty by default; any
+  unapproved runner is drift and any unreadable or malformed response is undetermined.
+  See [ADR 0103](decisions/0103-os-scoped-hosted-lanes/README.md) and
   [#820](https://github.com/Verjson/.github/issues/820).
 - Self-hosted runners have **no ambient Node** and a **persistent shared `~/.gitconfig`** —
   use `actions/setup-node` and idempotent git config, or the
@@ -281,7 +284,7 @@ earlier decisions.
 | Tier | Runs | Checks | Token |
 |---|---|---|---|
 | Resolver job | per job, hot path | lane variable exists and is a well-formed non-empty JSON array | none |
-| Reconciler | scheduled | every lane resolves to ≥1 **online** runner; group admission | `ORG_ADMIN_TOKEN` |
+| Reconciler | scheduled | every lane resolves to ≥1 **online** runner; group admission; GitHub-hosted larger-runner inventory exactly matches the reviewed allowlist | `ORG_ADMIN_TOKEN` |
 | Required workflow | per PR, org-wide | no workflow hardcodes `runs-on` | none |
 
 The reconciler evaluates `TRUSTED`, `UNTRUSTED`, and the `PRIVILEGED` cutover seam
@@ -297,6 +300,13 @@ call in 89 repositories' PR paths widens its blast radius. Availability is a fle
 fact and belongs in the scheduled reconciler
 (`scripts/ci-gate/runner-admission-reconcile.sh`), which already holds that token in a
 context that never executes pull-request code.
+
+GitHub-hosted larger runners belong in the same tier. Their administrator-chosen labels
+are indistinguishable from self-hosted labels in `runs-on`, so no required workflow can
+classify them statically. `runner-admission-reconcile.sh` queries the organization setting
+directly and compares numeric runner IDs with the reviewed, empty-by-default
+`scripts/ci-gate/hosted-larger-runner-allowlist.json`. It never treats a 404, malformed
+response, partial pagination, or API failure as an empty inventory.
 
 A required workflow runs as its **own check alongside** a repository's workflows. It cannot
 inject `runs-on` into another workflow's jobs, and its outputs cannot cross into them. It

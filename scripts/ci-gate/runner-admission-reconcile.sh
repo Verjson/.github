@@ -22,6 +22,8 @@ GENERAL_GROUP_NAME="${GENERAL_GROUP_NAME:-DigitalOcean}"
 # lane_group_name saying no group is configured, rather than fails closed saying
 # a group nobody has heard of is missing.
 UNTRUSTED_GROUP_NAME="${UNTRUSTED_GROUP_NAME:-}"
+script_dir="$(cd "$(dirname "$0")" && pwd)"
+larger_runner_allowlist_file="$script_dir/hosted-larger-runner-allowlist.json"
 
 die_undetermined() {
   printf 'UNDETERMINED: %s\n' "$1" >&2
@@ -40,6 +42,69 @@ fetch() {
   fi
   printf '%s\n' "$out"
 }
+
+# GitHub-hosted larger runners have administrator-chosen labels, so a workflow
+# selector cannot distinguish one from a self-hosted fleet label. Inventory is
+# the only authoritative boundary. The allowlist is a repository file on
+# purpose: admitting metered capacity must require a reviewed code change, not
+# an organization-variable edit beside the setting this check governs.
+[ -r "$larger_runner_allowlist_file" ] \
+  || die_undetermined "larger-runner allowlist is unreadable: $larger_runner_allowlist_file"
+larger_runner_allowlist="$(jq -ce '
+  if (type == "array"
+    and all(.[]; type == "number" and . > 0 and . == floor)
+    and length == (unique | length))
+  then .
+  else error("invalid allowlist")
+  end
+' "$larger_runner_allowlist_file" 2>/dev/null)" \
+  || die_undetermined "larger-runner allowlist must be an array of unique positive integer runner ids"
+
+# Keep whole page objects until local validation. A server-side `.runners[]`
+# projection can erase a missing collection into an empty stream; an unreadable
+# inventory must never look like an empty one.
+larger_runner_pages="$(fetch "/orgs/$ORG/actions/hosted-runners?per_page=100" '.')" || exit 2
+if ! larger_runners="$(jq -cse '
+  if length == 0 then error("no response pages")
+  elif any(.[];
+    type != "object"
+    or (.total_count | type) != "number"
+    or .total_count < 0
+    or .total_count != (.total_count | floor)
+    or (.runners | type) != "array")
+  then error("malformed response page")
+  else
+    . as $pages
+    | [$pages[].runners[]] as $runners
+    | if ($pages | map(.total_count) | unique | length) != 1
+      then error("page counts disagree")
+      elif ($runners | length) != $pages[0].total_count
+      then error("paginated count mismatch")
+      elif any($runners[];
+        type != "object"
+        or (.id | type) != "number"
+        or .id <= 0
+        or .id != (.id | floor)
+        or (.name | type) != "string"
+        or (.name | length) == 0)
+      then error("malformed runner")
+      elif ($runners | map(.id) | unique | length) != ($runners | length)
+      then error("duplicate runner id")
+      else $runners
+      end
+  end
+' <<<"$larger_runner_pages" 2>/dev/null)"; then
+  die_undetermined "GitHub-hosted larger-runner inventory response was malformed, incomplete, or pagination-inconsistent"
+fi
+
+unapproved_larger_runners="$(jq -c --argjson allowed "$larger_runner_allowlist" '
+  map(select(.id as $id | ($allowed | index($id)) == null))
+' <<<"$larger_runners")" \
+  || die_undetermined "could not compare larger-runner inventory with its allowlist"
+stale_larger_runner_ids="$(jq -c --argjson inventory "$larger_runners" '
+  map(select(. as $id | ($inventory | map(.id) | index($id)) == null))
+' <<<"$larger_runner_allowlist")" \
+  || die_undetermined "could not compare the larger-runner allowlist with inventory"
 
 repos_raw="$(fetch "/orgs/$ORG/repos?per_page=100" \
   '.[] | select(.archived == false) | "\(.full_name)\t\(.private)"')" || exit 2
@@ -268,6 +333,16 @@ fi
 drift=""
 count=0
 
+if jq -e 'length > 0' <<<"$unapproved_larger_runners" >/dev/null; then
+  larger_runner_names="$(jq -r 'map("\(.name | @json) (id \(.id))") | join(", ")' \
+    <<<"$unapproved_larger_runners")" \
+    || die_undetermined "could not render unapproved larger-runner inventory"
+  drift="$drift- GitHub-hosted larger runner(s) exist outside the reviewed allowlist: $larger_runner_names. Remove them, or add their numeric ids to \`scripts/ci-gate/hosted-larger-runner-allowlist.json\` through review before use"$'\n'
+fi
+if jq -e 'length > 0' <<<"$stale_larger_runner_ids" >/dev/null; then
+  drift="$drift- reviewed GitHub-hosted larger-runner allowlist contains ids absent from live inventory: $(jq -r 'join(", ")' <<<"$stale_larger_runner_ids"). Remove stale entries through review"$'\n'
+fi
+
 while IFS=$'\t' read -r repo private; do
   [ -n "$repo" ] || continue
   count=$((count + 1))
@@ -412,5 +487,6 @@ if [ -n "$drift" ]; then
   exit 1
 fi
 
-printf 'No drift: variables are valid, every repository is admitted, all three lanes have online capacity, and no runner sits in the default group `%s`.\n' \
-  "$default_group_name"
+larger_runner_count="$(jq -r 'length' <<<"$larger_runners")"
+printf 'No drift: variables are valid, every repository is admitted, all three lanes have online capacity, no runner sits in the default group `%s`, and %d reviewed GitHub-hosted larger runner(s) exactly match the repository allowlist.\n' \
+  "$default_group_name" "$larger_runner_count"

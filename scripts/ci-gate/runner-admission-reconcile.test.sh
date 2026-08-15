@@ -27,6 +27,11 @@ if [ -n "${FAIL_PATH:-}" ] && [[ "$path" == *"$FAIL_PATH"* ]]; then
   echo "HTTP 403: Resource not accessible" >&2
   exit 1
 fi
+if [ "${HOSTED_RUNNERS_404:-0}" = "1" ] && [[ "$path" == */actions/hosted-runners* ]]; then
+  echo '{"message":"Not Found","status":"404"}' >&2
+  echo "gh: Not Found (HTTP 404)" >&2
+  exit 1
+fi
 # A deleted group is gone from BOTH surfaces: the id 404s and it is absent from
 # the listing. Modelling only the 404 would let a test pass for the wrong reason.
 deleted() {
@@ -40,6 +45,7 @@ for id in 4 6; do
   fi
 done
 case "$path" in
+  */actions/hosted-runners*) printf '%s\n' "$HOSTED_RUNNERS_PAGES" ;;
   # The LANE variables are what every `runs-on:` resolves, so they are what the
   # reconciler reads. The RUNNER pair is still served because it is still set
   # org-wide for consumers pinned to a pre-migration SHA, and divergence between
@@ -104,6 +110,8 @@ export G6_RUNNERS=''
 export REPOS_FIXTURE=$'Verjson/private-lib\ttrue\nVerjson/public-app\tfalse'
 export FAIL_PATH=''
 export DELETED_GROUPS=''
+export HOSTED_RUNNERS_PAGES='{"total_count":0,"runners":[]}'
+export HOSTED_RUNNERS_404='0'
 # Supplied the way the workflow supplies it, because the script no longer ships a
 # default for this one: the name it used to default to (`isolated`) has named a
 # deleted group since 2026-07-31. The general lane keeps a default and the
@@ -120,6 +128,70 @@ out="$(run_case)"
   && grep -qF 'No drift' <<<"$out" \
   && pass "organization-wide permissive group admits new private and public repositories" \
   || fail "clean permissive policy did not reconcile: $out"
+
+# GitHub-hosted larger runners have arbitrary administrator-chosen labels. A
+# static runs-on scan cannot distinguish one named `general` from the
+# self-hosted fleet label, so the org-admin reconciler must inspect inventory.
+HOSTED_RUNNERS_PAGES='{"total_count":1,"runners":[{"id":42,"name":"general"}]}'
+out="$(run_case)"
+[ "$(code_of)" = "1" ] \
+  && grep -qF 'GitHub-hosted larger runner' <<<"$out" \
+  && grep -qF '"general" (id 42)' <<<"$out" \
+  && pass "an arbitrary-label larger runner is actionable drift" \
+  || fail "larger hosted runner inventory was not reported: $out"
+
+# The allowlist is a reviewed repository file, not an org variable or an
+# environment override. Exercise a reviewed entry against a disposable copy so
+# the production file can remain empty.
+allowlisted="$tmp/allowlisted"
+mkdir -p "$allowlisted"
+cp "$script" "$allowlisted/runner-admission-reconcile.sh"
+printf '[42]\n' >"$allowlisted/hosted-larger-runner-allowlist.json"
+out="$(bash "$allowlisted/runner-admission-reconcile.sh" 2>&1)"
+code=$?
+[ "$code" = "0" ] \
+  && grep -qF '1 reviewed GitHub-hosted larger runner' <<<"$out" \
+  && pass "a larger runner covered by the reviewed ID allowlist reconciles cleanly" \
+  || fail "reviewed larger-runner allowlist was not honored: $out"
+
+# Two response objects model two pages. Both runners must survive collection;
+# keeping only the final page would omit `general` and weaken the report.
+HOSTED_RUNNERS_PAGES=$'{"total_count":2,"runners":[{"id":42,"name":"general"}]}\n{"total_count":2,"runners":[{"id":43,"name":"release-xl"}]}'
+out="$(run_case)"
+[ "$(code_of)" = "1" ] \
+  && grep -qF '"general" (id 42)' <<<"$out" \
+  && grep -qF '"release-xl" (id 43)' <<<"$out" \
+  && pass "larger-runner inventory is collected across every page" \
+  || fail "paginated larger-runner inventory was under-reported: $out"
+
+HOSTED_RUNNERS_PAGES='{"total_count":1,"runners":{}}'
+[ "$(code_of)" = "2" ] \
+  && pass "a malformed larger-runner response is undetermined, never clean" \
+  || fail "malformed larger-runner response did not fail closed: $(code_of)"
+
+HOSTED_RUNNERS_PAGES='{"total_count":2,"runners":[{"id":42,"name":"general"}]}'
+[ "$(code_of)" = "2" ] \
+  && pass "an incomplete larger-runner page count is undetermined" \
+  || fail "incomplete larger-runner pagination did not fail closed: $(code_of)"
+
+HOSTED_RUNNERS_PAGES='{"total_count":1,"runners":[{"name":"general"}]}'
+[ "$(code_of)" = "2" ] \
+  && pass "a larger-runner object without an id is undetermined" \
+  || fail "malformed larger-runner object did not fail closed: $(code_of)"
+
+HOSTED_RUNNERS_PAGES='{"total_count":0,"runners":[]}'
+HOSTED_RUNNERS_404='1'
+[ "$(code_of)" = "2" ] \
+  && pass "a 404 reading larger-runner inventory is undetermined" \
+  || fail "larger-runner 404 did not fail closed: $(code_of)"
+HOSTED_RUNNERS_404='0'
+
+FAIL_PATH='/actions/hosted-runners'
+[ "$(code_of)" = "2" ] \
+  && pass "a larger-runner API failure is undetermined" \
+  || fail "larger-runner API failure did not fail closed: $(code_of)"
+FAIL_PATH=''
+HOSTED_RUNNERS_PAGES='{"total_count":0,"runners":[]}'
 
 G4_GROUP='{"id":4,"name":"DigitalOcean","visibility":"all","allows_public_repositories":false}'
 out="$(run_case)"
@@ -396,6 +468,14 @@ grep -qF "steps.reconcile.outputs.code == '1'" "$workflow" \
 grep -qF "steps.reconcile.outputs.code == '0'" "$workflow" \
   && pass "the issue-closing step is still gated on the clean code" \
   || fail "issue-closing step condition drifted from code == '0'"
+
+grep -qF "DRIFT_ISSUE: '820'" "$workflow" \
+  && ! grep -qF 'gh issue create' "$workflow" \
+  && grep -qF 'gh issue reopen "$DRIFT_ISSUE"' "$workflow" \
+  && ! grep -qF 'gh issue edit "$DRIFT_ISSUE"' "$workflow" \
+  && grep -qF '/issues/comments/$comment_id' "$workflow" \
+  && pass "drift reuses issue 820 and cannot create a new tracker" \
+  || fail "runner admission can still create a new issue instead of reusing #820"
 
 # --------------------------------------------------------------------------
 # Runner placement (#275).

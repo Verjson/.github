@@ -160,12 +160,17 @@ $ gh api /orgs/Verjson/actions/hosted-runners
 ```
 
 Zero exist today, so the gap is currently theoretical — but it is one organization-settings
-change away from real, and nothing in this decision would notice.
-[#820](https://github.com/Verjson/.github/issues/820) asserts that inventory in the
-scheduled reconciler, which is the right tier for it: the reconciler already holds the
-org-admin token and already checks fleet-level facts that the hot path cannot
-(`docs/runner-routing.md`, "Where each check belongs"). Re-run the command above rather than
-trusting this snapshot; runner inventories change without touching this file.
+change away from real. [#820](https://github.com/Verjson/.github/issues/820) therefore
+extends `scripts/ci-gate/runner-admission-reconcile.sh` to assert that inventory daily,
+which is the right tier for it: the reconciler already holds the org-admin token and checks
+fleet-level facts that the hot path cannot (`docs/runner-routing.md`, "Where each check
+belongs"). Its reviewed ID allowlist is the repository file
+`scripts/ci-gate/hosted-larger-runner-allowlist.json`, empty by default. A non-empty live
+inventory is drift unless every runner ID is present there; an unreadable, malformed,
+incomplete, or pagination-inconsistent response is undetermined and fails the scheduled
+run rather than being mistaken for zero. The inventory and allowlist must match exactly,
+so a stale approval is drift too. Re-run the command above rather than trusting this
+snapshot; runner inventories change without touching this file.
 
 ### Two tiers, and why they differ
 
@@ -206,9 +211,10 @@ standard regardless, by its own ADR 0089 inventory, which this change does not t
 - A hung hosted step costs at most 45 minutes of wall time rather than six hours of billing.
 - One grep — for `VERJSON_LANE_TRUSTED_MACOS` or `VERJSON_LANE_TRUSTED_WINDOWS` — answers
   which workflows can spend hosted minutes.
-- **The guarantee is bounded by what the checker can resolve, and by inventory it cannot
-  see.** The parser refuses rather than guesses, so an unreadable workflow is undetermined
-  and not clean; larger runners remain outside any static scan and are covered by #820.
+- **The guarantee is split across the only two authoritative surfaces.** The parser refuses
+  rather than guesses, so an unreadable workflow is undetermined and not clean; larger
+  runners remain outside every static scan and are covered by the scheduled organization
+  inventory reconciliation from #820.
   Stating the boundary is deliberate: an ADR that claims more than the code delivers is a
   defect in the durable record, and it outlives the code bug.
 - **Accepted cost:** a future second desktop repository needs its own repository variables

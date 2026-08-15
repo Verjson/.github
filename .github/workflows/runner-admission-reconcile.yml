@@ -10,9 +10,9 @@ name: runner-admission-reconcile
 # simply queues. So this detects the condition on a schedule instead, before it
 # surfaces as someone's wedged PR.
 #
-# Observe-and-report: it opens or updates an issue and never mutates runner
-# groups. Pool admission is the org admin's security boundary (ADR 0031, 0033) —
-# a scheduled job is the wrong thing to hold that pen.
+# Observe-and-report: it reuses the durable #820 issue and never mutates runner
+# groups or creates tracker churn. Pool admission is the org admin's security
+# boundary (ADR 0031, 0033) — a scheduled job is the wrong thing to hold that pen.
 
 on:
   schedule:
@@ -115,40 +115,59 @@ jobs:
           esac
           exit 0
 
-      - name: Open or update the drift issue
+      - name: Reopen or update the durable drift issue
         if: steps.reconcile.outputs.code == '1'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPORT: ${{ steps.reconcile.outputs.report }}
           MARKER: '<!-- runner-admission-drift -->'
+          DRIFT_ISSUE: '820'
         run: |
           set -euo pipefail
           body="$(printf '%s\n\n%s\n' "$REPORT" "$MARKER")"
-          existing="$(gh issue list --repo "$GITHUB_REPOSITORY" --state open \
-            --search "in:body $MARKER" --json number --jq '.[0].number // empty')"
-          if [ -n "$existing" ]; then
-            # Update in place rather than filing daily duplicates.
-            gh issue edit "$existing" --repo "$GITHUB_REPOSITORY" --body "$body"
-            echo "::warning title=Runner admission drift::Updated existing issue #$existing"
-          else
-            gh issue create --repo "$GITHUB_REPOSITORY" \
-              --title 'Runner admission drift: admission, lane capacity, or runner placement' \
-              --body "$body"
-            echo "::warning title=Runner admission drift::Filed a new issue"
+          state="$(gh issue view "$DRIFT_ISSUE" --repo "$GITHUB_REPOSITORY" \
+            --json state --jq '.state')"
+          if [ "$state" = 'CLOSED' ]; then
+            gh issue reopen "$DRIFT_ISSUE" --repo "$GITHUB_REPOSITORY"
+          elif [ "$state" != 'OPEN' ]; then
+            echo "::error title=Runner admission report target invalid::Issue #$DRIFT_ISSUE returned state '$state'."
+            exit 1
           fi
+          comments="$(gh api --paginate \
+            "/repos/$GITHUB_REPOSITORY/issues/$DRIFT_ISSUE/comments?per_page=100" \
+            --jq '.[] | {id,body}')"
+          comment_ids="$(jq -sr --arg marker "$MARKER" \
+            '[.[] | select((.body | type) == "string" and (.body | contains($marker))) | .id]' \
+            <<<"$comments")"
+          comment_count="$(jq -r 'length' <<<"$comment_ids")"
+          if [ "$comment_count" = '0' ]; then
+            gh api --method POST "/repos/$GITHUB_REPOSITORY/issues/$DRIFT_ISSUE/comments" \
+              -f body="$body" >/dev/null
+          elif [ "$comment_count" = '1' ]; then
+            comment_id="$(jq -er '.[0]' <<<"$comment_ids")"
+            gh api --method PATCH "/repos/$GITHUB_REPOSITORY/issues/comments/$comment_id" \
+              -f body="$body" >/dev/null
+          else
+            echo "::error title=Runner admission report target ambiguous::Issue #$DRIFT_ISSUE has $comment_count report comments; refusing to update an arbitrary one."
+            exit 1
+          fi
+          echo "::warning title=Runner admission drift::Updated durable issue #$DRIFT_ISSUE"
 
-      - name: Close the drift issue once the org is clean again
+      - name: Close the durable drift issue once the org is clean again
         if: steps.reconcile.outputs.code == '0'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          MARKER: '<!-- runner-admission-drift -->'
+          DRIFT_ISSUE: '820'
         run: |
           set -euo pipefail
-          existing="$(gh issue list --repo "$GITHUB_REPOSITORY" --state open \
-            --search "in:body $MARKER" --json number --jq '.[0].number // empty')"
-          if [ -n "$existing" ]; then
-            gh issue close "$existing" --repo "$GITHUB_REPOSITORY" \
-              --comment 'Runner admission is reconciled again — every active repository is admitted to the group its visibility routes it to, both lanes have online capacity, and no runner sits in the default group.'
+          state="$(gh issue view "$DRIFT_ISSUE" --repo "$GITHUB_REPOSITORY" \
+            --json state --jq '.state')"
+          if [ "$state" = 'OPEN' ]; then
+            gh issue close "$DRIFT_ISSUE" --repo "$GITHUB_REPOSITORY" \
+              --comment 'Runner admission is reconciled again — every active repository is admitted to its selected group, all lanes have online capacity, no runner sits in the default group, and GitHub-hosted larger-runner inventory exactly matches the reviewed allowlist.'
+          elif [ "$state" != 'CLOSED' ]; then
+            echo "::error title=Runner admission report target invalid::Issue #$DRIFT_ISSUE returned state '$state'."
+            exit 1
           fi
 
       - name: Remove the isolated runner-admission checkout
