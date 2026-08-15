@@ -63,20 +63,23 @@ check_exclusions() { # check_exclusions <file> <label>
 check_exclusions "$gate" "gate"
 check_exclusions "$canonical" "canonical workflow"
 
-# --- side 2: the canonical workflow's job key --------------------------------
-python3 - "$canonical" <<'PY' && pass "canonical route resolver precedes privileged_merge" \
-  || fail "canonical privileged routing topology changed"
+# --- side 2: GitHub control-plane routing selects terminal capacity -----------
+python3 - "$canonical" <<'PY' && pass "terminal routing has no runner-produced trust transfer" \
+  || fail "a runner output can still select the secret-bearing terminal job"
 import sys, yaml
 d = yaml.safe_load(open(sys.argv[1]))
 jobs = d["jobs"]
-if list(jobs) != ["resolve_privileged_route", "privileged_merge"]:
+if list(jobs) != ["invalid_verjson_route", "privileged_merge"]:
     sys.exit(1)
-route = jobs["resolve_privileged_route"]
+guard = jobs["invalid_verjson_route"]
 merge = jobs["privileged_merge"]
-if route.get("permissions") != {} or merge.get("needs") != "resolve_privileged_route":
+serialized = str(d)
+for forbidden in ("needs.", "resolve_privileged_route", "steps.route.outputs"):
+    if forbidden in serialized:
+        sys.exit(1)
+if any(key in job for job in (guard, merge) for key in ("needs", "outputs")):
     sys.exit(1)
-want = "${{ github.repository_owner == 'Verjson' && fromJSON('[\"self-hosted\",\"general\"]') || 'ubuntu-24.04' }}"
-sys.exit(0 if route.get("runs-on") == want else 1)
+sys.exit(0)
 PY
 
 python3 - "$canonical" <<'PY' && pass "canonical accepts a caller-supplied privileged lane without a routing token" \
@@ -90,106 +93,76 @@ sys.exit(0 if call["inputs"].get("privileged_lane") == {
     "ACTIONS_VARIABLES_TOKEN" not in call.get("secrets", {}) else 1)
 PY
 
-python3 - "$canonical" <<'PY' && pass "resolver is checkout-free, credential-free, and admits only the exact Verjson lane" \
-  || fail "resolver trust, allowlist, or credential boundary changed"
-import sys, yaml
-d = yaml.safe_load(open(sys.argv[1]))
-route = d["jobs"]["resolve_privileged_route"]
-step = next(step for step in route["steps"] if step.get("id") == "route")
-if any("checkout" in str(item.get("uses", "")) for item in route["steps"]):
-    sys.exit(1)
-if step.get("env") != {
-    "PRIVILEGED_LANE": "${{ inputs.privileged_lane || vars.VERJSON_LANE_PRIVILEGED }}",
-    "REPOSITORY_OWNER": "${{ github.repository_owner }}",
-}:
-    sys.exit(1)
-script = step["run"]
-required = (
-    '[ "$REPOSITORY_OWNER" != Verjson ]',
-    'echo "selector="',
-    '. == ["self-hosted", "general"]',
-    '<<<"$PRIVILEGED_LANE"',
-)
-for forbidden in ("ORG_ADMIN_TOKEN", "ACTIONS_VARIABLES_TOKEN", "gh api"):
-    if forbidden in script or forbidden in str(step.get("env", {})):
-        sys.exit(1)
-sys.exit(0 if all(value in script for value in required) else 1)
-PY
-
-python3 - "$canonical" <<'PY' && pass "resolver mutations cannot widen or bypass the exact privileged-lane allowlist" \
-  || fail "resolver semantic validator accepted a widened or credentialed mutation"
+python3 - "$canonical" <<'PY' && pass "terminal route is exact, repository-bound, and fail-closed" \
+  || fail "terminal route or admission guard changed"
 import copy
 import sys
 import yaml
 
 workflow = yaml.safe_load(open(sys.argv[1]))
 
+allowed = ("Verjson/.github", "Verjson/verjson-github-runner")
+want_guard_if = "${{ github.repository_owner == 'Verjson' && !(github.event.repository.visibility == 'public' && (github.repository == 'Verjson/.github' || github.repository == 'Verjson/verjson-github-runner') || github.event.repository.visibility == 'private' && github.repository != 'Verjson/.github' && github.repository != 'Verjson/verjson-github-runner') }}"
+want_if = "${{ github.repository_owner != 'Verjson' || github.event.repository.visibility == 'public' && (github.repository == 'Verjson/.github' || github.repository == 'Verjson/verjson-github-runner') || github.event.repository.visibility == 'private' && github.repository != 'Verjson/.github' && github.repository != 'Verjson/verjson-github-runner' }}"
+want_runs_on = "${{ github.repository_owner != 'Verjson' && inputs.runner_labels && fromJSON(inputs.runner_labels) || github.repository_owner != 'Verjson' && 'ubuntu-24.04' || github.event.repository.visibility == 'public' && 'ubuntu-24.04' || fromJSON('[\"self-hosted\",\"general\"]') }}"
+
 def valid(candidate):
-    route = candidate["jobs"]["resolve_privileged_route"]
-    if route.get("permissions") != {}:
-        return False
-    if route.get("runs-on") != "${{ github.repository_owner == 'Verjson' && fromJSON('[\"self-hosted\",\"general\"]') || 'ubuntu-24.04' }}":
-        return False
-    if any("uses" in step for step in route.get("steps", [])):
-        return False
-    step = next((item for item in route.get("steps", []) if item.get("id") == "route"), {})
-    if step.get("env") != {
-        "PRIVILEGED_LANE": "${{ inputs.privileged_lane || vars.VERJSON_LANE_PRIVILEGED }}",
-        "REPOSITORY_OWNER": "${{ github.repository_owner }}",
-    }:
-        return False
-    script = step.get("run", "")
-    required = (
-        'if [ "$REPOSITORY_OWNER" != Verjson ]; then',
-        "jq -e '. == [\"self-hosted\", \"general\"]'",
-        '<<<"$PRIVILEGED_LANE"',
-        'echo "selector=$(jq -c . <<<"$PRIVILEGED_LANE")"',
-    )
-    return all(item in script for item in required) and not any(
-        item in script or item in str(step.get("env", {}))
-        for item in ("ORG_ADMIN_TOKEN", "ACTIONS_VARIABLES_TOKEN", "gh api")
+    jobs = candidate.get("jobs", {})
+    guard = jobs.get("invalid_verjson_route", {})
+    merge = jobs.get("privileged_merge", {})
+    guard_steps = guard.get("steps", [])
+    return (
+        list(jobs) == ["invalid_verjson_route", "privileged_merge"]
+        and guard.get("if") == want_guard_if
+        and guard.get("runs-on") == "ubuntu-24.04"
+        and guard.get("timeout-minutes") == 1
+        and guard.get("permissions") == {}
+        and len(guard_steps) == 1
+        and "exit 1" in guard_steps[0].get("run", "")
+        and "secrets." not in str(guard)
+        and merge.get("if") == want_if
+        and merge.get("runs-on") == want_runs_on
+        and all(key not in job for job in (guard, merge) for key in ("needs", "outputs"))
+        and all(name in want_if for name in allowed)
+        and "vars." not in want_runs_on
+        and "inputs.privileged_lane" not in want_runs_on
     )
 
 if not valid(workflow):
     sys.exit(1)
 
-def route_step(candidate):
-    return next(item for item in candidate["jobs"]["resolve_privileged_route"]["steps"]
-                if item.get("id") == "route")
-
 mutations = []
+widened_guard = copy.deepcopy(workflow)
+widened_guard["jobs"]["invalid_verjson_route"]["if"] = "${{ github.repository_owner == 'Verjson' }}"
+mutations.append(widened_guard)
+
+credentialed_guard = copy.deepcopy(workflow)
+credentialed_guard["jobs"]["invalid_verjson_route"]["env"] = {
+    "GH_TOKEN": "${{ secrets.ORG_ADMIN_TOKEN }}"
+}
+mutations.append(credentialed_guard)
+
+non_failing_guard = copy.deepcopy(workflow)
+non_failing_guard["jobs"]["invalid_verjson_route"]["steps"][0]["run"] = "exit 0"
+mutations.append(non_failing_guard)
+
 widened = copy.deepcopy(workflow)
-route_step(widened)["run"] = route_step(widened)["run"].replace(
-    '. == ["self-hosted", "general"]',
-    '. == ["self-hosted", "general"] or . == ["ubuntu-24.04"]')
+widened["jobs"]["privileged_merge"]["if"] = widened["jobs"]["privileged_merge"]["if"].replace(
+    "github.repository == 'Verjson/.github' || github.repository == 'Verjson/verjson-github-runner'",
+    "startsWith(github.repository, 'Verjson/')")
 mutations.append(widened)
 
-fallback = copy.deepcopy(workflow)
-route_step(fallback)["env"]["PRIVILEGED_LANE"] = (
-    "${{ inputs.privileged_lane || vars.VERJSON_LANE_FALLBACK }}")
-mutations.append(fallback)
+forged = copy.deepcopy(workflow)
+forged["jobs"]["privileged_merge"]["needs"] = "attacker_controlled_route"
+forged["jobs"]["privileged_merge"]["runs-on"] = "${{ needs.attacker_controlled_route.outputs.selector }}"
+mutations.append(forged)
 
-credential = copy.deepcopy(workflow)
-route_step(credential)["env"]["ACTIONS_VARIABLES_TOKEN"] = "${{ secrets.ACTIONS_VARIABLES_TOKEN }}"
-mutations.append(credential)
-
-api_read = copy.deepcopy(workflow)
-route_step(api_read)["run"] = (
-    "gh api /orgs/Verjson/actions/variables/VERJSON_LANE_PRIVILEGED\n" +
-    route_step(api_read)["run"])
-mutations.append(api_read)
+private_hosted = copy.deepcopy(workflow)
+private_hosted["jobs"]["privileged_merge"]["runs-on"] = want_runs_on.replace(
+    "fromJSON('[\"self-hosted\",\"general\"]')", "'ubuntu-24.04'")
+mutations.append(private_hosted)
 
 sys.exit(0 if all(not valid(candidate) for candidate in mutations) else 1)
-PY
-
-python3 - "$canonical" <<'PY' && pass "migration route output wins before legacy selectors" \
-  || fail "resolved organization policy does not have first routing precedence"
-import sys, yaml
-d = yaml.safe_load(open(sys.argv[1]))
-expr = d["jobs"]["privileged_merge"]["runs-on"]
-resolved = "needs.resolve_privileged_route.outputs.selector"
-legacy = "inputs.runner_labels"
-sys.exit(0 if expr.index(resolved) < expr.index(legacy) else 1)
 PY
 
 # `runner_labels` is declared but OPTIONAL (#405). It was required under the
