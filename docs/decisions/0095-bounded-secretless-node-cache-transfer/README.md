@@ -103,7 +103,9 @@ Replace artifact upload, download, and deletion with `actions/cache/save` and
 contains the exact repository-scoped `run_id` and `run_attempt` plus an
 acquisition-generated 256-bit nonce that prevents a caller-controlled sibling
 job from reserving the key first; restore supplies no prefix and fails on a
-missing exact key. The manifest, tar validation, 80 MiB
+missing exact key. Both actions receive the same stable relative path so the
+toolkit's path-derived cache version is identical across acquisition and build
+runners with different work roots. The manifest, tar validation, 80 MiB
 pre-save cap, credential scrub, and job-local `always()` cleanup remain unchanged.
 The cache service has a separate per-repository quota and eviction policy, and no
 transfer artifact exists on success, failure, or cancellation. Callers no longer

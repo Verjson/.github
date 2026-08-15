@@ -32,6 +32,9 @@ assert "secretless-npm-cache-${RUN_ID}-${RUN_ATTEMPT}-${nonce}" in create_key["r
 save = next(step for step in acquire["steps"] if step.get("id") == "save-secretless-transfer")
 assert save["uses"] == "actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9"
 assert save["with"]["key"] == "${{ steps.create-secretless-cache-key.outputs.cache-key }}"
+stable_transfer_path = ".verjson-secretless-transfer-${{ github.run_id }}-${{ github.run_attempt }}"
+assert save["with"]["path"] == stable_transfer_path
+assert "runner.temp" not in save["with"]["path"]
 assert "node_modules" not in save["with"]["path"]
 
 package = next(step for step in acquire["steps"] if step.get("name") == "Package bounded credential-free npm cache")
@@ -52,8 +55,10 @@ assert acquire_cleanup["if"] == "always()"
 restore = next(step for step in build["steps"] if step.get("id") == "restore-secretless-transfer")
 assert restore["uses"] == "actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9"
 assert restore["with"]["key"] == "${{ needs.acquire-secretless-dependencies.outputs.transfer-cache-key }}"
+assert restore["with"]["path"] == stable_transfer_path
 assert restore["with"]["fail-on-cache-miss"] is True
 assert "restore-keys" not in restore["with"]
+assert save["with"]["path"] == restore["with"]["path"]
 install = next(step for step in build["steps"] if step.get("name") == "Install from verified secretless npm cache")
 setup_index = next(index for index, step in enumerate(build["steps"]) if str(step.get("uses", "")).startswith("actions/setup-node@"))
 setup = build["steps"][setup_index]
@@ -70,6 +75,10 @@ for credential in (
 assert install["env"]["MAX_PAYLOAD_BYTES"] == package["env"]["MAX_PAYLOAD_BYTES"]
 assert install["env"]["EXPECTED_PAYLOAD_BYTES"] == "${{ needs.acquire-secretless-dependencies.outputs.transfer-payload-bytes }}"
 assert install["env"]["EXPECTED_PAYLOAD_SHA256"] == "${{ needs.acquire-secretless-dependencies.outputs.transfer-payload-sha256 }}"
+stable_workspace_transfer = "${{ github.workspace }}/" + stable_transfer_path
+assert package["env"]["TRANSFER_DIR"] == stable_workspace_transfer
+assert acquire_cleanup["env"]["TRANSFER_DIR"] == stable_workspace_transfer
+assert install["env"]["TRANSFER_DIR"] == stable_workspace_transfer
 assert install["env"]["NPM_CONFIG_CACHE"].startswith("${{ runner.temp }}/secretless-runtime-cache-")
 assert install["env"]["NPM_CONFIG_GLOBALCONFIG"].startswith("${{ runner.temp }}/")
 assert install["env"]["NPM_CONFIG_USERCONFIG"].startswith("${{ runner.temp }}/")
@@ -85,6 +94,7 @@ assert "locked private package content is missing or corrupt" in install["run"]
 build_cleanup = next(step for step in build["steps"] if step.get("name") == "Remove local secretless transfer state")
 assert "always()" in build_cleanup["if"]
 assert "needs.eligibility.outputs.should-run != 'false'" in build_cleanup["if"]
+assert build_cleanup["env"]["TRANSFER_DIR"] == stable_workspace_transfer
 runtime_cleanup = next(step for step in build["steps"] if step.get("name") == "Remove job-scoped secretless runtime cache")
 assert "always()" in runtime_cleanup["if"]
 assert "inputs.secretless-pr" in runtime_cleanup["if"]
