@@ -38,6 +38,7 @@ POST_UPDATE_EVIDENCE_SECONDS = 120
 CAPACITY_EVIDENCE_SECONDS = 120
 ADMISSION_EVIDENCE_SECONDS = 120
 PROBE_COMMAND_OVERHEAD_SECONDS = 30
+MAX_ADAPTER_JSON_SECONDS = MAX_PROBE_SECONDS + PROBE_COMMAND_OVERHEAD_SECONDS
 
 
 class DeploymentError(ValueError):
@@ -543,18 +544,31 @@ def retained_plan(
     )
     if plan.get("selectedRelease") != expected_release or plan.get("targetDigest") != target_digest:
         raise DeploymentError("retained plan release differs from current attested manifest")
-    live_by_name = {
-        runner.get("name"): runner.get("release")
+    live_runners = {
+        runner.get("name"): runner
         for runner in _object(evidence.get("fleet"), "fleet evidence").get("runners", [])
         if isinstance(runner, dict)
     }
-    if any(
-        runner.get("state") != "verified"
-        or live_by_name.get(runner.get("name")) != runner.get("release")
-        for runner in latest["finalFleet"]
+    has_unknown = False
+    for runner in latest["finalFleet"]:
+        live = live_runners.get(runner.get("name"))
+        if not isinstance(live, dict):
+            raise DeploymentError("live fleet differs from retained resume state")
+        if runner.get("state") == "verified":
+            if live.get("release") != runner.get("release"):
+                raise DeploymentError("live fleet differs from retained resume state")
+            continue
+        has_unknown = True
+        if live.get("release") not in (
+            latest.get("selectedRelease"),
+            latest.get("observedDeployedRelease"),
+        ) or not isinstance(live.get("deployedDigest"), str) or DIGEST.fullmatch(
+            live["deployedDigest"]
+        ) is None:
+            raise DeploymentError("unknown runner requires exact live reconciliation evidence")
+    if latest.get("outcome") not in ("admitted", "in_progress", "interrupted") and not (
+        latest.get("outcome") == "failed" and has_unknown
     ):
-        raise DeploymentError("live fleet differs from retained resume state")
-    if latest.get("outcome") not in ("admitted", "in_progress", "interrupted"):
         raise DeploymentError("retained receipt chain is not resumable")
     return plan
 
@@ -589,6 +603,125 @@ def _next_revision(
         validate_attempt_revision(revision, previous)
     except ValueError as error:
         raise DeploymentError(str(error)) from error
+    return revision
+
+
+def reconcile_unknown_state(
+    plan: dict[str, Any],
+    previous: dict[str, Any],
+    evidence: dict[str, Any],
+) -> dict[str, Any]:
+    try:
+        validate_receipt(previous)
+    except ValueError as error:
+        raise DeploymentError(f"reconciliation receipt is invalid: {error}") from error
+    if previous.get("outcome") not in ("failed", "interrupted"):
+        raise DeploymentError("only a failed or interrupted unknown state can be reconciled")
+    unknown_names = {
+        runner.get("name")
+        for runner in previous.get("runners", [])
+        if runner.get("state") == "unknown"
+    }
+    if not unknown_names:
+        raise DeploymentError("receipt has no unknown runner state to reconcile")
+    for field in (
+        "attemptId",
+        "action",
+        "deploymentContractCommit",
+        "headCommit",
+        "manifestIdentity",
+        "fleetSelector",
+        "selectedRelease",
+        "observedDeployedRelease",
+    ):
+        if previous.get(field) != plan.get(field):
+            raise DeploymentError(f"reconciliation changes immutable {field}")
+    if previous.get("planDigest") != canonical_digest(plan):
+        raise DeploymentError("reconciliation changes immutable plan authority")
+    live_runners = {
+        runner.get("name"): runner
+        for runner in _object(evidence.get("fleet"), "fleet evidence").get("runners", [])
+        if isinstance(runner, dict)
+    }
+    final_names = {runner["name"] for runner in previous["finalFleet"]}
+    if set(live_runners) != final_names:
+        raise DeploymentError("reconciliation live fleet inventory differs")
+    for name, live in live_runners.items():
+        live_release = _object(live.get("release"), f"live release for {name}")
+        normalized_release = _release(
+            live_release.get("releaseVersion"),
+            live_release.get("manifestDigest"),
+            f"live release for {name}",
+        )
+        if live_release != normalized_release:
+            raise DeploymentError(f"live release for {name} has unrecognized fields")
+        live_identity = live.get("manifestIdentity")
+        identity_match = (
+            MANIFEST_IDENTITY.fullmatch(live_identity)
+            if isinstance(live_identity, str)
+            else None
+        )
+        if (
+            identity_match is None
+            or identity_match.group("digest") != live_release["manifestDigest"]
+        ):
+            raise DeploymentError(f"live manifest identity for {name} is inconsistent")
+    transitions = copy.deepcopy(previous["runners"])
+    reconciled: list[dict[str, Any]] = []
+    for transition in transitions:
+        name = transition["name"]
+        live = live_runners[name]
+        live_release = live.get("release")
+        deployed_digest = live.get("deployedDigest")
+        if name not in unknown_names:
+            recorded = next(
+                runner for runner in previous["finalFleet"] if runner["name"] == name
+            )
+            if recorded.get("state") != "verified" or live_release != recorded.get("release"):
+                raise DeploymentError("verified runner changed during reconciliation")
+            reconciled.append(transition)
+            continue
+        if not isinstance(deployed_digest, str) or DIGEST.fullmatch(deployed_digest) is None:
+            raise DeploymentError("unknown runner lacks an immutable live image digest")
+        if live_release == plan["selectedRelease"]:
+            if deployed_digest != plan["targetDigest"]:
+                raise DeploymentError("selected live release has the wrong image digest")
+            reconciled.append(
+                {
+                    "name": name,
+                    "beforeDigest": None,
+                    "afterDigest": deployed_digest,
+                    "afterRelease": copy.deepcopy(live_release),
+                    "state": "reconciled",
+                    "probe": "not_run",
+                    "observation": (
+                        "pending" if name == previous["canaryRunner"] else "not_required"
+                    ),
+                    "completedAt": None,
+                }
+            )
+        elif live_release != previous["observedDeployedRelease"]:
+            raise DeploymentError("unknown runner is neither selected nor baseline release")
+    revision = copy.deepcopy(previous)
+    revision["revision"] = previous["revision"] + 1
+    revision["outcome"] = "in_progress"
+    revision["previousReceiptDigest"] = receipt_digest(previous)
+    revision["runners"] = reconciled
+    revision["finalFleet"] = [
+        {
+            "name": runner["name"],
+            "release": copy.deepcopy(live_runners[runner["name"]]["release"]),
+            "state": "verified",
+        }
+        for runner in previous["finalFleet"]
+    ]
+    revision["failure"] = None
+    revision["completedAt"] = None
+    try:
+        validate_attempt_revision(revision, previous)
+        validate_receipt(revision)
+    except ValueError as error:
+        raise DeploymentError(f"reconciled receipt is invalid: {error}") from error
     return revision
 
 
@@ -653,8 +786,9 @@ def execute_plan(
         runner.get("name")
         for runner in completed
         if runner.get("probe") == "passed"
-        and runner.get("state") in ("updated", "restored")
+        and runner.get("state") in ("updated", "restored", "reconciled")
         and runner.get("afterRelease") == current.get("selectedRelease")
+        and runner.get("observation") in ("not_required", "passed")
     }
     target_variant = config["expectedRelease"]["variant"]
     advanced = 0
@@ -664,13 +798,47 @@ def execute_plan(
             continue
         if max_hosts is not None and advanced >= max_hosts:
             break
+        observation_pending = next(
+            (
+                transition
+                for transition in completed
+                if transition.get("name") == runner
+                and transition.get("probe") == "passed"
+                and transition.get("observation") == "pending"
+            ),
+            None,
+        )
+        if observation_pending is not None:
+            try:
+                adapter.observe(fleet["observationSeconds"])
+            except (OSError, RuntimeError) as error:
+                failed = _next_revision(
+                    current,
+                    outcome="interrupted",
+                    runners=completed,
+                    completed_at=_timestamp(clock.now()),
+                    failure=f"canary observation interrupted: {error}",
+                )
+                persist(copy.deepcopy(failed))
+                return failed
+            observation_pending["observation"] = "passed"
+            observation_pending["completedAt"] = _timestamp(clock.now())
+            current = _next_revision(
+                current,
+                outcome="in_progress",
+                runners=completed,
+                completed_at=None,
+            )
+            persist(copy.deepcopy(current))
+            advanced += 1
+            continue
         pending = next(
             (
                 transition
                 for transition in completed
                 if transition.get("name") == runner
                 and transition.get("probe") == "not_run"
-                and transition.get("state") in ("updated", "restored")
+                and transition.get("state") in ("updated", "restored", "reconciled")
                 and transition.get("afterRelease") == plan["selectedRelease"]
             ),
             None,
@@ -705,6 +873,7 @@ def execute_plan(
                     "afterRelease": None,
                     "state": "unknown",
                     "probe": "not_run",
+                    "observation": "not_required",
                     "completedAt": None,
                 })
                 interrupted = _next_revision(
@@ -724,6 +893,7 @@ def execute_plan(
                     "afterRelease": None,
                     "state": "unknown",
                     "probe": "not_run",
+                    "observation": "not_required",
                     "completedAt": None,
                 })
                 failed = _next_revision(
@@ -742,6 +912,7 @@ def execute_plan(
                 "afterRelease": copy.deepcopy(plan["selectedRelease"]),
                 "state": "restored" if plan["action"] == "rollback" else "updated",
                 "probe": "not_run",
+                "observation": "pending" if step["phase"] == "canary" else "not_required",
                 "completedAt": None,
             }
             completed.append(entry)
@@ -763,8 +934,9 @@ def execute_plan(
         else:
             probe_failure = f"representative probe {probe}"
         entry["probe"] = probe
-        entry["completedAt"] = _timestamp(clock.now())
         if probe != "passed":
+            entry["observation"] = "not_required"
+            entry["completedAt"] = _timestamp(clock.now())
             failed = _next_revision(
                 current,
                 outcome="failed",
@@ -775,6 +947,8 @@ def execute_plan(
             persist(copy.deepcopy(failed))
             return failed
 
+        if step["phase"] != "canary":
+            entry["completedAt"] = _timestamp(clock.now())
         current = _next_revision(
             current,
             outcome="in_progress",
@@ -782,20 +956,29 @@ def execute_plan(
             completed_at=None,
         )
         persist(copy.deepcopy(current))
-        advanced += 1
         if step["phase"] == "canary":
             try:
                 adapter.observe(fleet["observationSeconds"])
             except (OSError, RuntimeError) as error:
                 failed = _next_revision(
                     current,
-                    outcome="failed",
+                    outcome="interrupted",
                     runners=completed,
                     completed_at=_timestamp(clock.now()),
                     failure=f"canary observation interrupted: {error}",
                 )
                 persist(copy.deepcopy(failed))
                 return failed
+            entry["observation"] = "passed"
+            entry["completedAt"] = _timestamp(clock.now())
+            current = _next_revision(
+                current,
+                outcome="in_progress",
+                runners=completed,
+                completed_at=None,
+            )
+            persist(copy.deepcopy(current))
+        advanced += 1
 
     remaining = {
         step["runner"] for step in plan["steps"]
@@ -803,6 +986,7 @@ def execute_plan(
         runner["name"]
         for runner in completed
         if runner.get("probe") == "passed"
+        and runner.get("observation") in ("not_required", "passed")
     }
     if remaining:
         return current
@@ -896,12 +1080,21 @@ class ProcessAdapter:
         command: list[str],
         env: dict[str, str] | None = None,
         *,
-        timeout_seconds: int = 2_000,
+        timeout_seconds: int = POST_UPDATE_EVIDENCE_SECONDS,
     ) -> dict[str, Any]:
+        if (
+            not isinstance(timeout_seconds, int)
+            or isinstance(timeout_seconds, bool)
+            or timeout_seconds < 1
+            or timeout_seconds > MAX_ADAPTER_JSON_SECONDS
+        ):
+            raise DeploymentError(
+                f"adapter timeout must be between 1 and {MAX_ADAPTER_JSON_SECONDS} seconds"
+            )
         completed = cls._invoke(
             command,
             env,
-            timeout_seconds=POST_UPDATE_EVIDENCE_SECONDS,
+            timeout_seconds=timeout_seconds,
         )
         try:
             value = json.loads(completed.stdout)
@@ -952,7 +1145,7 @@ class ProcessAdapter:
                 self.fleet["lane"],
                 "--post-update",
             ],
-            timeout_seconds=timeout_seconds,
+            timeout_seconds=POST_UPDATE_EVIDENCE_SECONDS,
         )
 
     def available_capacity(self) -> int:
@@ -1116,7 +1309,8 @@ def main() -> int:
     plan_parser.add_argument("--output", required=True, type=Path)
 
     admit = subparsers.add_parser("admit")
-    for target in (admit,):
+    reconcile = subparsers.add_parser("reconcile")
+    for target in (admit, reconcile):
         target.add_argument("--plan", required=True, type=Path)
         target.add_argument("--config", required=True, type=Path)
         target.add_argument("--evidence", required=True, type=Path)
@@ -1177,6 +1371,26 @@ def main() -> int:
             if receipt is None:
                 receipt = admitted_receipt(plan, config, evidence, datetime.now(timezone.utc))
                 _persist_directory(args.receipt_dir)(receipt)
+        elif args.command == "reconcile":
+            plan = _load(args.plan)
+            evidence = _load(args.evidence)
+            existing = sorted(args.receipt_dir.glob("revision-*.json"))
+            receipts = [_load(path) for path in existing]
+            try:
+                validate_receipt_chain(receipts)
+            except ValueError as error:
+                raise DeploymentError(f"local receipt chain is invalid: {error}") from error
+            latest = receipts[-1]
+            if any(
+                runner.get("state") == "unknown"
+                for runner in latest.get("runners", [])
+            ):
+                reconciled = reconcile_unknown_state(plan, latest, evidence)
+                _persist_directory(args.receipt_dir, len(existing))(reconciled)
+            elif latest.get("outcome") in ("failed", "succeeded"):
+                raise DeploymentError(
+                    "terminal receipt has no unknown state to reconcile; use protected rollback"
+                )
         else:
             plan = _load(args.plan)
             config = _load(args.config)

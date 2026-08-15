@@ -114,7 +114,10 @@ jobs:
           python3 scripts/container_deployment_controller.py admit \
             --plan deployment-plan.json --config "$CONFIG_PATH" \
             --evidence deployment-evidence.json --receipt-dir deployment-receipts
-      - name: Retain pre-mutation admission authority
+          python3 scripts/container_deployment_controller.py reconcile \
+            --plan deployment-plan.json --config "$CONFIG_PATH" \
+            --evidence deployment-evidence.json --receipt-dir deployment-receipts
+      - name: Retain admitted or reconciled authority
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: runner-deployment-${{ github.run_id }}-${{ github.run_attempt }}-admitted

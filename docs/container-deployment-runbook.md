@@ -47,6 +47,11 @@ Every later revision binds the canonical digest of its predecessor. A post-updat
 revision is retained before probing, and each bounded host phase uploads progress. Fleet
 timing must leave at least 15 minutes of the 90-minute job unused.
 
+The canary receipt records observation as `pending` after its probe passes and records a
+second revision as `passed` only after the full window returns. Cancellation while the
+window is pending repeats the bounded observation on resume; it cannot make a later host
+eligible.
+
 ## Pause, resume, and interruption
 
 Do not cancel a healthy update merely because the observation window is quiet. To pause
@@ -63,6 +68,15 @@ attempt, checked-out head, manifest, and canonical plan digest are unchanged. Th
 controller skips only transitions whose update and routed probe are both verified. An
 unknown post-mutation state fails closed until live evidence seals it; never restart from
 a guessed host or mutable tag.
+
+The protected workflow runs the controller's `reconcile` command after restoring a
+retained chain. For each unknown host, the evidence adapter must report its immutable
+manifest identity, release, and deployed image digest. Exact selected-release evidence
+seals a `reconciled` transition and resumes at probe/observation without another drain;
+exact attempt-baseline evidence removes the uncertain transition and permits a new
+bounded update. Any other release, inconsistent manifest, or absent digest stops with an
+operator-safe error. Preserve the chain and quarantine the host until evidence is
+repaired or an independently approved rollback is dispatched.
 
 ## Rollback
 

@@ -89,7 +89,8 @@ grep -q 'if: inputs.dry-run' "$workflow"
 grep -q 'if: \${{ !inputs.dry-run }}' "$workflow"
 grep -q 'cancel-in-progress: false' "$workflow"
 grep -q 'container_deployment_preflight.py' "$workflow"
-grep -q 'Retain pre-mutation admission authority' "$workflow"
+grep -q 'Retain admitted or reconciled authority' "$workflow"
+grep -q 'container_deployment_controller.py reconcile' "$workflow"
 # The literal shell variable must never become a path argument.
 # shellcheck disable=SC2016
 if grep -q -- '--rollback-source "\$ROLLBACK_RECEIPT"' "$workflow"; then

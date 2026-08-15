@@ -4,6 +4,7 @@ import copy
 import hashlib
 import importlib.util
 import json
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -395,6 +396,47 @@ class DeploymentExecutionTests(unittest.TestCase):
         self.assertEqual("not_run", persisted[-2]["runners"][0]["probe"])
         self.assertEqual(final["selectedRelease"], persisted[-2]["finalFleet"][0]["release"])
 
+    def test_observation_interruption_resumes_observation_without_starting_rollout(self):
+        plan = controller.build_plan(configuration(), evidence(), "production")
+        crashing = FakeAdapter()
+        persisted = []
+
+        def crash_during_observation(_seconds):
+            crashing.calls.append(("observe",))
+            raise KeyboardInterrupt("simulated cancellation")
+
+        crashing.observe = crash_during_observation
+        with self.assertRaises(KeyboardInterrupt):
+            controller.execute_plan(
+                plan,
+                configuration(),
+                evidence(),
+                crashing,
+                lambda receipt: persisted.append(copy.deepcopy(receipt)),
+                max_hosts=1,
+                clock=FakeClock(),
+            )
+
+        retained = persisted[-1]
+        self.assertEqual("pending", retained["runners"][0]["observation"])
+        self.assertIsNone(retained["runners"][0]["completedAt"])
+        live = evidence()
+        live["fleet"]["runners"][0]["release"] = copy.deepcopy(plan["selectedRelease"])
+        resumed = FakeAdapter()
+        final = controller.execute_plan(
+            plan,
+            configuration(),
+            live,
+            resumed,
+            lambda _receipt: None,
+            previous_receipt=retained,
+            max_hosts=1,
+            clock=FakeClock(),
+        )
+
+        self.assertEqual(["observe"], [call[0] for call in resumed.calls])
+        self.assertEqual("passed", final["runners"][0]["observation"])
+
     def test_rejects_failed_admission_evidence_before_touching_next_host(self):
         cases = (
             ({"drained": False}, "drain"),
@@ -668,6 +710,7 @@ class DeploymentExecutionTests(unittest.TestCase):
                 "afterRelease": copy.deepcopy(previous["selectedRelease"]),
                 "state": "updated",
                 "probe": "passed",
+                "observation": "passed",
                 "completedAt": "2026-08-14T00:00:01Z",
             }
         ]
@@ -723,6 +766,17 @@ class DeploymentExecutionTests(unittest.TestCase):
             with self.assertRaisesRegex(controller.DeploymentError, "exact chain"):
                 controller._restore_receipts(retained_evidence, plan, Path(directory))
 
+    def test_receipt_chain_rejects_a_fabricated_non_admitted_root(self):
+        plan = controller.build_plan(configuration(), evidence(), "production")
+        fabricated = controller.admitted_receipt(
+            plan, configuration(), evidence(), FakeClock().now()
+        )
+        fabricated["outcome"] = "in_progress"
+        fabricated["previousReceiptDigest"] = "sha256:" + "0" * 64
+
+        with self.assertRaisesRegex(ValueError, "root.*admitted"):
+            controller.validate_receipt_chain([fabricated])
+
     def test_resume_probes_retained_post_update_revision_without_redraining(self):
         plan = controller.build_plan(configuration(), evidence(), "production")
         admitted = controller.admitted_receipt(
@@ -739,6 +793,7 @@ class DeploymentExecutionTests(unittest.TestCase):
                     "afterRelease": copy.deepcopy(plan["selectedRelease"]),
                     "state": "updated",
                     "probe": "not_run",
+                    "observation": "pending",
                     "completedAt": None,
                 }
             ],
@@ -780,6 +835,7 @@ class DeploymentExecutionTests(unittest.TestCase):
                     "afterRelease": copy.deepcopy(plan["selectedRelease"]),
                     "state": "updated",
                     "probe": "not_run",
+                    "observation": "pending",
                     "completedAt": None,
                 }
             ],
@@ -833,6 +889,96 @@ class DeploymentExecutionTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "self review"):
             controller.validate_receipt(receipt)
 
+    def test_unknown_update_state_is_reconciled_from_live_evidence_then_probed(self):
+        plan = controller.build_plan(configuration(), evidence(), "production")
+        interrupted = controller.execute_plan(
+            plan,
+            configuration(),
+            evidence(),
+            FakeAdapter(interrupt_update="gha-gate-1"),
+            lambda _receipt: None,
+            clock=FakeClock(),
+        )
+        live = evidence()
+        live_runner = live["fleet"]["runners"][0]
+        live_runner["release"] = copy.deepcopy(plan["selectedRelease"])
+        live_runner["manifestIdentity"] = plan["manifestIdentity"]
+        live_runner["deployedDigest"] = plan["targetDigest"]
+
+        reconciled = controller.reconcile_unknown_state(plan, interrupted, live)
+
+        self.assertEqual("in_progress", reconciled["outcome"])
+        self.assertEqual("reconciled", reconciled["runners"][0]["state"])
+        self.assertEqual("verified", reconciled["finalFleet"][0]["state"])
+        adapter = FakeAdapter()
+        resumed = controller.execute_plan(
+            plan,
+            configuration(),
+            live,
+            adapter,
+            lambda _receipt: None,
+            previous_receipt=reconciled,
+            max_hosts=1,
+            clock=FakeClock(),
+        )
+        self.assertEqual(["probe", "observe"], [call[0] for call in adapter.calls])
+        self.assertEqual("passed", resumed["runners"][0]["observation"])
+
+    def test_unknown_update_reconciliation_rejects_unrecognized_live_release(self):
+        plan = controller.build_plan(configuration(), evidence(), "production")
+        interrupted = controller.execute_plan(
+            plan,
+            configuration(),
+            evidence(),
+            FakeAdapter(interrupt_update="gha-gate-1"),
+            lambda _receipt: None,
+            clock=FakeClock(),
+        )
+        live = evidence()
+        live["fleet"]["runners"][0]["release"] = release("9.0.0", "9")
+        live["fleet"]["runners"][0]["manifestIdentity"] = (
+            "ghcr.io/verjson/verjson-github-runner-release@sha256:" + "9" * 64
+        )
+        live["fleet"]["runners"][0]["deployedDigest"] = "sha256:" + "9" * 64
+
+        with self.assertRaisesRegex(controller.DeploymentError, "neither selected nor baseline"):
+            controller.reconcile_unknown_state(plan, interrupted, live)
+
+    def test_unknown_update_at_baseline_reconciles_to_a_safe_retry(self):
+        plan = controller.build_plan(configuration(), evidence(), "production")
+        interrupted = controller.execute_plan(
+            plan,
+            configuration(),
+            evidence(),
+            FakeAdapter(interrupt_update="gha-gate-1"),
+            lambda _receipt: None,
+            clock=FakeClock(),
+        )
+        live = evidence()
+        live["fleet"]["runners"][0]["deployedDigest"] = "sha256:" + "1" * 64
+
+        reconciled = controller.reconcile_unknown_state(plan, interrupted, live)
+
+        self.assertEqual([], reconciled["runners"])
+        self.assertEqual(
+            plan["observedDeployedRelease"], reconciled["finalFleet"][0]["release"]
+        )
+        adapter = FakeAdapter()
+        controller.execute_plan(
+            plan,
+            configuration(),
+            live,
+            adapter,
+            lambda _receipt: None,
+            previous_receipt=reconciled,
+            max_hosts=1,
+            clock=FakeClock(),
+        )
+        self.assertEqual(
+            ["capacity", "update", "probe", "observe"],
+            [call[0] for call in adapter.calls],
+        )
+
     def test_process_adapter_keeps_secret_out_of_arguments_and_never_scales(self):
         completed = mock.Mock()
         completed.stdout = "runner update complete"
@@ -872,6 +1018,57 @@ class DeploymentExecutionTests(unittest.TestCase):
                     "--help",
                 )
         run.assert_not_called()
+
+    def test_process_adapter_honors_policy_sized_json_command_timeouts(self):
+        completed = mock.Mock(stdout="{}")
+        with mock.patch.object(
+            controller.ProcessAdapter, "_invoke", return_value=completed
+        ) as invoke:
+            for timeout in (330, 930):
+                with self.subTest(timeout=timeout):
+                    controller.ProcessAdapter._run(
+                        ["python3", "adapter.py"], timeout_seconds=timeout
+                    )
+                    self.assertEqual(timeout, invoke.call_args.kwargs["timeout_seconds"])
+
+            with self.assertRaisesRegex(controller.DeploymentError, "timeout"):
+                controller.ProcessAdapter._run(
+                    ["python3", "adapter.py"], timeout_seconds=931
+                )
+
+    def test_probe_adapter_maps_reviewed_probe_windows_to_process_timeouts(self):
+        adapter = controller.ProcessAdapter(
+            configuration(), configuration()["fleets"]["production"]
+        )
+        with mock.patch.object(
+            controller.ProcessAdapter,
+            "_run",
+            return_value={"outcome": "passed", "routedRunner": "gha-gate-1"},
+        ) as run:
+            for policy_timeout, process_timeout in ((300, 330), (900, 930)):
+                with self.subTest(policy_timeout=policy_timeout):
+                    adapter.probe_runner("gha-gate-1", policy_timeout)
+                    self.assertEqual(
+                        process_timeout, run.call_args.kwargs["timeout_seconds"]
+                    )
+
+    def test_probe_process_timeout_maps_to_truthful_timeout_receipt(self):
+        adapter = FakeAdapter()
+
+        def timeout(_runner, timeout_seconds):
+            raise subprocess.TimeoutExpired("probe", timeout_seconds)
+
+        adapter.probe_runner = timeout
+        final = controller.execute_plan(
+            controller.build_plan(configuration(), evidence(), "production"),
+            configuration(),
+            evidence(),
+            adapter,
+            lambda _receipt: None,
+            clock=FakeClock(),
+        )
+        self.assertEqual("timeout", final["runners"][0]["probe"])
+        self.assertRegex(final["failure"], "timed out")
 
 
 if __name__ == "__main__":

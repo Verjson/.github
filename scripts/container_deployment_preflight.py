@@ -271,6 +271,13 @@ def validate_receipt(receipt: dict[str, Any]) -> None:
                 or entry.get("afterRelease") is not None
             ):
                 raise PreflightError("unknown runner transition claims an actual release")
+        elif entry.get("state") == "reconciled":
+            if (
+                entry.get("beforeDigest") is not None
+                or entry.get("afterDigest") is None
+                or entry.get("afterRelease") is None
+            ):
+                raise PreflightError("reconciled runner transition lacks live actual state")
         elif (
             entry.get("beforeDigest") is None
             or entry.get("afterDigest") is None
@@ -279,7 +286,29 @@ def validate_receipt(receipt: dict[str, Any]) -> None:
             raise PreflightError("verified runner transition omits its actual release")
         if entry.get("probe") == "not_run" and entry.get("completedAt") is not None:
             raise PreflightError("unprobed runner transition cannot be complete")
+        is_canary = entry.get("name") == receipt.get("canaryRunner")
+        observation = entry.get("observation")
+        if entry.get("state") == "unknown":
+            if observation != "not_required":
+                raise PreflightError("unknown runner cannot claim observation progress")
+        elif is_canary and entry.get("probe") in ("not_run", "passed"):
+            if observation not in ("pending", "passed") or (
+                entry.get("probe") == "not_run" and observation != "pending"
+            ):
+                raise PreflightError("passing canary omits its observation state")
+        elif observation != "not_required":
+            raise PreflightError("runner transition has an inapplicable observation state")
+        if observation == "pending" and entry.get("completedAt") is not None:
+            raise PreflightError("pending canary observation cannot be complete")
     final_by_name = {entry["name"]: entry for entry in final_fleet}
+    unknown_transition_names = {
+        entry["name"] for entry in runners if entry.get("state") == "unknown"
+    }
+    unknown_final_names = {
+        entry["name"] for entry in final_fleet if entry.get("state") == "unknown"
+    }
+    if unknown_transition_names != unknown_final_names:
+        raise PreflightError("unknown final fleet state lacks its runner transition")
     for entry in final_fleet:
         if (entry.get("state") == "unknown") != (entry.get("release") is None):
             raise PreflightError("final fleet state and release disagree")
@@ -292,7 +321,12 @@ def validate_receipt(receipt: dict[str, Any]) -> None:
             raise PreflightError("runner transition and final fleet release disagree")
     if outcome == "succeeded":
         if set(runner_names) != set(final_names) or any(
-            entry.get("probe") != "passed" for entry in runners
+            entry.get("probe") != "passed"
+            or (
+                entry.get("name") == receipt.get("canaryRunner")
+                and entry.get("observation") != "passed"
+            )
+            for entry in runners
         ):
             raise PreflightError("successful receipt does not verify every fleet runner")
         if any(
@@ -306,6 +340,8 @@ def validate_receipt(receipt: dict[str, Any]) -> None:
 def validate_receipt_chain(receipts: list[dict[str, Any]]) -> None:
     if not receipts:
         raise PreflightError("receipt chain is empty")
+    if receipts[0].get("outcome") != "admitted":
+        raise PreflightError("receipt chain root must be the exact admitted receipt")
     for index, receipt in enumerate(receipts):
         validate_receipt(receipt)
         if receipt.get("revision") != index:

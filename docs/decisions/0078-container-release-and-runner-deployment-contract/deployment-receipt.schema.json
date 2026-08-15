@@ -153,14 +153,15 @@
     "runnerTransition": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["name", "beforeDigest", "afterDigest", "afterRelease", "state", "probe", "completedAt"],
+      "required": ["name", "beforeDigest", "afterDigest", "afterRelease", "state", "probe", "observation", "completedAt"],
       "properties": {
         "name": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"},
         "beforeDigest": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/digest"}]},
         "afterDigest": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/digest"}]},
         "afterRelease": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/release"}]},
-        "state": {"enum": ["updated", "restored", "unknown"]},
+        "state": {"enum": ["updated", "restored", "reconciled", "unknown"]},
         "probe": {"enum": ["not_run", "passed", "failed", "timeout"]},
+        "observation": {"enum": ["not_required", "pending", "passed"]},
         "completedAt": {"oneOf": [{"type": "null"}, {"type": "string", "format": "date-time"}]}
       }
     }
