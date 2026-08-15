@@ -112,7 +112,19 @@ base_approved="$(git -C "$bootstrap" show "$base_sha:container-candidate.json" |
 grep -qF 'npm ci --ignore-scripts' <<<"$acquisition_job"
 ! grep -Eq 'npm (install|run|exec|rebuild)|yarn|pnpm' <<<"$acquisition_job"
 ! grep -Eq 'subprocess|os\.system|extract(all)?\(' "$root/scripts/container_private_dependencies.py"
-grep -qF 'container-node-modules-${{ github.run_id }}-${{ github.run_attempt }}-${{ steps.acquire.outputs.lock-digest }}' <<<"$acquisition_job"
+grep -qF 'transfer-cache-key: ${{ steps.create-node-modules-cache-key.outputs.cache-key }}' <<<"$acquisition_job"
+grep -qF 'openssl rand -hex 32' <<<"$acquisition_job"
+grep -qF '[[ "$nonce" =~ ^[0-9a-f]{64}$ ]]' <<<"$acquisition_job"
+grep -qF 'container-node-modules-${RUN_ID}-${RUN_ATTEMPT}-${nonce}' <<<"$acquisition_job"
+grep -qF 'uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9' <<<"$acquisition_job"
+grep -qF 'path: .verjson-container-node-modules-${{ github.run_id }}-${{ github.run_attempt }}' <<<"$acquisition_job"
+grep -qF 'key: ${{ steps.create-node-modules-cache-key.outputs.cache-key }}' <<<"$acquisition_job"
+if grep -qF 'actions/upload-artifact@' <<<"$acquisition_job"; then
+  echo "private dependency acquisition still uses organization artifact storage" >&2
+  exit 1
+fi
+grep -qF 'name: Remove local acquisition and transfer state' <<<"$acquisition_job"
+grep -qF 'if: always()' <<<"$acquisition_job"
 for build_job in pull-request-build publish-base publish-derived; do
   build_block="$(awk -v start="  $build_job:" '
     $0 == start { seen=1; next }
@@ -120,7 +132,17 @@ for build_job in pull-request-build publish-base publish-derived; do
     seen { print }
   ' "$workflow")"
   grep -qF 'build-contexts: verjson_node_modules=${{ runner.temp }}/container-node-modules-context' <<<"$build_block"
-  grep -qF 'needs.acquire-private-node-dependencies.outputs.lock-digest' <<<"$build_block"
+  grep -qF 'uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9' <<<"$build_block"
+  grep -qF 'path: .verjson-container-node-modules-${{ github.run_id }}-${{ github.run_attempt }}' <<<"$build_block"
+  grep -qF 'key: ${{ needs.acquire-private-node-dependencies.outputs.transfer-cache-key }}' <<<"$build_block"
+  grep -qF 'fail-on-cache-miss: true' <<<"$build_block"
+  grep -qF 'name: Remove local node_modules transfer state' <<<"$build_block"
+  grep -Eq 'if: always\(\)( && matrix\.baseVariant != '\'''\'')?' <<<"$build_block"
+  grep -qF 'run: rm -rf "$TRANSFER_DIR"' <<<"$build_block"
+  if grep -qF 'restore-keys:' <<<"$build_block" || grep -qF 'actions/download-artifact@' <<<"$build_block"; then
+    echo "$build_job permits an inexact cache restore or still uses artifact storage" >&2
+    exit 1
+  fi
   grep -qF '.verjson-lock-sha256' <<<"$build_block"
   grep -qF "NODE_AUTH_TOKEN: ''" <<<"$build_block"
   grep -qF "ACTIONS_ID_TOKEN_REQUEST_TOKEN: ''" <<<"$build_block"
