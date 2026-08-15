@@ -11,6 +11,7 @@ Reverse-chronological index of org-level decisions.
 <!-- BEGIN ADR INDEX -->
 | # | Date | Decision |
 |---|------|----------|
+| [0102](0102-explicit-impact-for-new-changelog-fragments/README.md) | 2026-08-15 | Require explicit impact for new changelog fragments |
 | [0101](0101-explicit-release-proposal-autonomy/README.md) | 2026-08-15 | Make release-proposal autonomy explicit and non-releasing |
 | [0100](0100-bind-blocking-review-findings-to-exact-head-source/README.md) | 2026-08-13 | Bind blocking review findings to exact-head source |
 | [0099](0099-release-app-replaces-admin-pat/README.md) | 2026-08-13 | A dedicated release App replaces the admin PAT |

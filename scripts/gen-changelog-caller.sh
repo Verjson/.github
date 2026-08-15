@@ -1612,6 +1612,43 @@ write_fragment NEXT/2026-08-01-issue-20260801T184500Z-timestamped.md \
 python3 "$contract" validate --repo-root "$fixture_root/case"
 echo "ok - issue-less work may use a UTC timestamp identity"
 
+# New fragments must state release intent at review time. Existing unreleased
+# fragments keep their patch fallback, so adopting this contract never rewrites
+# an old NEXT/ entry or an immutable CHANGELOG/ snapshot (#800).
+new_fixture
+init_fixture_repo
+printf 'base\n' >"$fixture_root/case/README.md"
+git -C "$fixture_root/case" add .
+git -C "$fixture_root/case" commit -qm base
+base="$(git -C "$fixture_root/case" rev-parse HEAD)"
+write_fragment NEXT/2026-08-15-issue-800-missing-impact.md \
+  2026-08-15 "issue: 800" "Missing impact"
+git -C "$fixture_root/case" add .
+git -C "$fixture_root/case" commit -qm "new fragment without impact"
+if python3 "$contract" validate --repo-root "$fixture_root/case" \
+  --base "$base" --head HEAD 2>"$fixture_root/error"; then
+  fail "a new fragment without explicit impact was accepted"
+fi
+grep -q 'impact is required.*major, minor, or patch' "$fixture_root/error"
+python3 "$contract" validate --repo-root "$fixture_root/case" \
+  --base "$base" --head HEAD --allow-missing-impact-through 9999-12-31
+echo "ok - new fragments require explicit impact after the bounded migration window"
+
+new_fixture
+init_fixture_repo
+write_fragment NEXT/2026-08-01-issue-43-legacy-impact.md \
+  2026-08-01 "issue: 43" "Legacy implicit patch"
+git -C "$fixture_root/case" add .
+git -C "$fixture_root/case" commit -qm base
+base="$(git -C "$fixture_root/case" rev-parse HEAD)"
+write_fragment NEXT/2026-08-15-issue-800-explicit-impact.md \
+  2026-08-15 "issue: 800" "Explicit impact" minor
+git -C "$fixture_root/case" add .
+git -C "$fixture_root/case" commit -qm "new fragment with impact"
+python3 "$contract" validate --repo-root "$fixture_root/case" \
+  --base "$base" --head HEAD
+echo "ok - legacy implicit-patch fragments remain valid while new fragments declare impact"
+
 # ADR 0017's check-pr rule, both halves: an ordinary pull request may neither
 # write released history nor consume a fragment.
 new_fixture
