@@ -9,7 +9,7 @@ permissions:
 
 jobs:
   audit:
-    runs-on: ${{ fromJSON(vars.VERJSON_RUNNER_FASTLANE || '["ubuntu-24.04"]') }}
+    runs-on: ubuntu-24.04
     defaults:
       run:
         working-directory: .privileged-merge-conformance-source-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
@@ -24,7 +24,7 @@ jobs:
       - name: Verify privileged merge delivery across the active fleet
         env:
           GH_TOKEN: ${{ secrets.ORG_ADMIN_TOKEN }}
-          PRIVILEGED_MERGE_CONTRACT_SHA: ${{ github.sha }}
+          PRIVILEGED_MERGE_AUDIT_SHA: ${{ github.sha }}
         run: bash scripts/privileged-merge-conformance.sh
       - name: Remove the isolated fleet-conformance checkout
         if: ${{ always() }}

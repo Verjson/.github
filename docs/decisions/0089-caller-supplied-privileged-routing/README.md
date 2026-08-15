@@ -1,7 +1,8 @@
 # 0089 — Pass privileged routing through the trusted caller
 
 - **Date:** 2026-08-10
-- **Issue:** [Verjson/.github#721](https://github.com/Verjson/.github/issues/721)
+- **Issues:** [Verjson/.github#721](https://github.com/Verjson/.github/issues/721),
+  [Verjson/.github#676](https://github.com/Verjson/.github/issues/676)
 - **Supersedes:** [ADR 0084](../0084-programmatic-privileged-routing/README.md)
 - **Extends:** ADR 0036's separation of privileged merge from review execution
 
@@ -42,3 +43,42 @@ checks are unchanged.
 - A future lane change requires a reviewed canonical allowlist update before callers can
   schedule the terminal job on that lane.
 - Existing callers must be regenerated at this contract revision to supply the input.
+
+## 2026-08-14 amendment — repository-bound public hosted stage
+
+The organization-wide lane cannot move yet: current private hosted capacity and budget
+evidence does not prove that private privileged continuations remain placeable. The
+consumer inventory found 55 active workflow locations: the canonical direct workflow in
+`Verjson/.github` and 54 generated callers. Exactly two consuming repositories are
+public: `Verjson/.github` and `Verjson/verjson-github-runner`; the other 53 generated
+callers are private.
+
+An independent adversarial review rejected a runner-executed resolver: even without a
+credential or checkout, a compromised persistent worker could forge its job output and
+place the following secret-bearing job back on that worker. Terminal placement therefore
+uses GitHub control-plane context directly. The job-level admission expression recognizes
+the two exact repository identities only with `public` visibility and the `runs-on`
+expression selects exactly `ubuntu-24.04`; no job output participates. Every other
+Verjson repository must be an unlisted `private` identity and receives the literal
+`["self-hosted","general"]` selector. Unknown public identities, unknown visibility, and
+visibility drift cannot schedule the terminal job. A complementary credentialless guard
+runs on fixed `ubuntu-24.04` capacity and fails explicitly for those states, so the
+workflow cannot conclude successfully merely because the secret-bearing job was skipped.
+External organizations retain the existing `runner_labels` portability path.
+
+This is a narrow reversible stage, not the organization-wide cutover. No organization
+variable changes, new capacity, or credential changes are authorized by it. The runner
+repository must regenerate its caller at the eventual immutable merge revision before
+its staged route becomes active, and representative terminal canaries remain required.
+
+Fleet conformance now inventories the canonical direct consumer plus generated caller
+files rather than assuming every active repository is a consumer. It verifies secret
+scope for both shapes. The direct workflow is required at the audit event SHA and must
+match the checked-out canonical bytes exactly; a missing, unreadable, undecodable, or
+mismatched direct workflow fails closed. For a generated caller it proves the pin exists
+on canonical main, fetches the historical generator and reusable-workflow interface at
+that exact pin, and
+compares the caller with credentialless historical generation. The audit checkout stays
+event-SHA-bound, while an unrelated audit commit no longer makes every unchanged caller
+non-canonical. The audit itself is fixed to `ubuntu-24.04`; its privileged read token is
+never placed by a repository variable or persistent runner output.

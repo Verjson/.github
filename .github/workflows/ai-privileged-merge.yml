@@ -74,34 +74,20 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  resolve_privileged_route:
-    runs-on: ${{ github.repository_owner == 'Verjson' && fromJSON('["self-hosted","general"]') || 'ubuntu-24.04' }}
-    timeout-minutes: 2
+  invalid_verjson_route:
+    if: ${{ github.repository_owner == 'Verjson' && !(github.event.repository.visibility == 'public' && (github.repository == 'Verjson/.github' || github.repository == 'Verjson/verjson-github-runner') || github.event.repository.visibility == 'private' && github.repository != 'Verjson/.github' && github.repository != 'Verjson/verjson-github-runner') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 1
     permissions: {}
-    outputs:
-      selector: ${{ steps.route.outputs.selector }}
     steps:
-      - name: Resolve privileged routing from organization policy
-        id: route
-        env:
-          PRIVILEGED_LANE: ${{ inputs.privileged_lane || vars.VERJSON_LANE_PRIVILEGED }}
-          REPOSITORY_OWNER: ${{ github.repository_owner }}
+      - name: Reject unavailable or unregistered privileged route
         run: |
-          set -euo pipefail
-          if [ "$REPOSITORY_OWNER" != Verjson ]; then
-            echo "selector=" >>"$GITHUB_OUTPUT"
-            exit 0
-          fi
-          jq -e '. == ["self-hosted", "general"]' \
-            <<<"$PRIVILEGED_LANE" >/dev/null || {
-              echo "::error::stage-one policy permits only the admitted DigitalOcean privileged selector"
-              exit 1
-            }
-          echo "selector=$(jq -c . <<<"$PRIVILEGED_LANE")" >>"$GITHUB_OUTPUT"
+          echo "::error::privileged terminal route is unregistered or visibility is unavailable"
+          exit 1
 
   privileged_merge:
-    needs: resolve_privileged_route
-    runs-on: ${{ needs.resolve_privileged_route.outputs.selector && fromJSON(needs.resolve_privileged_route.outputs.selector) || inputs.runner_labels && fromJSON(inputs.runner_labels) || 'ubuntu-24.04' }}
+    if: ${{ github.repository_owner != 'Verjson' || github.event.repository.visibility == 'public' && (github.repository == 'Verjson/.github' || github.repository == 'Verjson/verjson-github-runner') || github.event.repository.visibility == 'private' && github.repository != 'Verjson/.github' && github.repository != 'Verjson/verjson-github-runner' }}
+    runs-on: ${{ github.repository_owner != 'Verjson' && inputs.runner_labels && fromJSON(inputs.runner_labels) || github.repository_owner != 'Verjson' && 'ubuntu-24.04' || github.event.repository.visibility == 'public' && 'ubuntu-24.04' || fromJSON('["self-hosted","general"]') }}
     timeout-minutes: 5
     env:
       AUTHORIZATION_CHECK_ID: ${{ inputs.authorization_check_id }}
