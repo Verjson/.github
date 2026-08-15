@@ -81,6 +81,11 @@ if set(triggers) != {"workflow_dispatch"}:
 inputs = (triggers.get("workflow_dispatch") or {}).get("inputs") or {}
 if not (inputs.get("version") or {}).get("required"):
     bad("workflow_dispatch does not require a `version` input")
+if (inputs.get("prefix") or {}).get("default") != "v":
+    bad("workflow_dispatch does not default the independent release prefix to `v`")
+for receipt_input in ("expected_head", "selector_digest"):
+    if (inputs.get(receipt_input) or {}).get("default") != "":
+        bad("workflow_dispatch does not expose empty-default `%s`" % receipt_input)
 if (inputs.get("component") or {}).get("default") != "":
     bad("workflow_dispatch does not expose an empty-default `component` input")
 
@@ -179,6 +184,34 @@ if (
 ):
     bad("`verify` does not export a job-writable runner.temp cache before repository steps (#630)")
 
+head_receipts = [
+    step for step in steps_of(verify)
+    if step.get("name") == "Bind a proposer dispatch to its exact derived head"
+]
+if len(head_receipts) != 1:
+    bad("`verify` does not contain exactly one exact-head proposer guard")
+else:
+    head_receipt = head_receipts[0]
+    receipt_env = head_receipt.get("env") or {}
+    receipt_run = str(head_receipt.get("run") or "")
+    if receipt_env.get("EXPECTED_HEAD") != "${{ inputs.expected_head }}":
+        bad("the proposer guard does not read expected_head")
+    if receipt_env.get("SELECTOR_DIGEST") != "${{ inputs.selector_digest }}":
+        bad("the proposer guard does not bind selector_digest with expected_head")
+    if '"$GITHUB_SHA" != "$EXPECTED_HEAD"' not in receipt_run:
+        bad("the proposer guard does not fail a mutable-branch TOCTOU head change")
+
+selector_receipts = [
+    step for step in steps_of(verify)
+    if step.get("name") == "Verify the proposer selection receipt"
+]
+if len(selector_receipts) != 1:
+    bad("`verify` does not contain exactly one canonical selector guard")
+else:
+    selector_run = str(selector_receipts[0].get("run") or "")
+    if "selection-digest" not in selector_run or "EXPECTED_SELECTOR_DIGEST" not in selector_run:
+        bad("the selector guard does not recompute the canonical selection digest")
+
 
 # #465(1). A repository-scoped GITHUB_TOKEN cannot read a private GitHub
 # Packages package owned by another repository, so an install wired to it 401s
@@ -212,6 +245,8 @@ if not expected_publish or publish_uses != expected_publish:
 publish_with = publish.get("with") or {}
 if str(publish_with.get("version") or "").strip() != "${{ inputs.version }}":
     bad("`publish` does not pass the contract-selected version")
+if str(publish_with.get("prefix") or "").strip() != "${{ inputs.prefix }}":
+    bad("`publish` does not pass the independent release namespace")
 if str(publish_with.get("node-version") or "") != "${{ '24' }}":
     bad("`publish` does not pass the generated Node version to node-release.yml")
 if str(publish_with.get("scope") or "") != "@verjson":
@@ -404,6 +439,15 @@ tautological_branch_guard() {
   # the workflow would have got wrong (#466).
   sed -i 's|          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}|          DEFAULT_BRANCH: ${{ github.ref_name }}|' "$1"
 }
+tautological_exact_head_guard() {
+  sed -i 's/"$GITHUB_SHA" != "$EXPECTED_HEAD"/"$EXPECTED_HEAD" != "$EXPECTED_HEAD"/' "$1"
+}
+drift_selector_receipt() {
+  sed -i '/^      - name: Verify the proposer selection receipt$/,/^      - name: Resolve restart-safe release state$/ s/selection-digest/next-version/' "$1"
+}
+drop_publish_prefix() {
+  sed -i '/^  publish:/,$ { /^      prefix: /d; }' "$1"
+}
 
 expect_shape_rejection "snapshot without needs: verify (#463, #464)" drop_needs_verify
 expect_shape_rejection "publish without needs: snapshot" drop_needs_snapshot
@@ -430,6 +474,9 @@ expect_shape_rejection "a publish job without its private dependency token" drop
 expect_shape_rejection "a publish job without its generated Node version" drop_publish_node_version
 expect_shape_rejection "a publish job without its generated npm scope" drop_publish_scope
 expect_shape_rejection "a branch guard that compares github.ref to itself" tautological_branch_guard
+expect_shape_rejection "an exact-head guard made tautological across the dispatch race" tautological_exact_head_guard
+expect_shape_rejection "a selector receipt not recomputed by the canonical digest" drift_selector_receipt
+expect_shape_rejection "a publish job without the release namespace" drop_publish_prefix
 
 # The hand-copied shape every adopter carries today must be rejected, otherwise
 # regenerating changes nothing observable.
@@ -508,6 +555,8 @@ PY
 
 branch_guard="$tmp/branch-guard.sh"
 extract_run verify "default branch" >"$branch_guard" || fail "cannot extract the branch guard"
+head_guard="$tmp/head-guard.sh"
+extract_run verify "exact derived head" >"$head_guard" || fail "cannot extract the exact-head guard"
 version_guard="$tmp/version-guard.sh"
 extract_run verify "SemVer version" >"$version_guard" || fail "cannot extract the version guard"
 tag_guard="$tmp/tag-guard.sh"
@@ -539,17 +588,49 @@ for ref in refs/heads/topic refs/tags/v1.0.0 refs/heads/mainline; do
   fi
 done
 
-for good in v1.2.3 v0.0.1 v10.20.30 v1.2.3-rc.1 v1.2.3+build.5; do
-  if run_guard "$version_guard" "VERSION=$good"; then
-    pass "the version guard accepts $good"
+expected_head="$(printf 'a%.0s' {1..40})"
+selector_digest="$(printf 'b%.0s' {1..64})"
+if run_guard "$head_guard" EXPECTED_HEAD= SELECTOR_DIGEST= GITHUB_SHA="$(printf 'c%.0s' {1..40})"; then
+  pass "the exact-head guard preserves explicit manual dispatch"
+else
+  fail "the exact-head guard rejected a manual dispatch: $(cat "$tmp/guard.out")"
+fi
+if run_guard "$head_guard" "EXPECTED_HEAD=$expected_head" "SELECTOR_DIGEST=$selector_digest" "GITHUB_SHA=$expected_head"; then
+  pass "the exact-head guard accepts the derived default-branch head"
+else
+  fail "the exact-head guard rejected its derived head: $(cat "$tmp/guard.out")"
+fi
+if run_guard "$head_guard" "EXPECTED_HEAD=$expected_head" "SELECTOR_DIGEST=$selector_digest" "GITHUB_SHA=$(printf 'd%.0s' {1..40})"; then
+  fail "the exact-head guard admitted a newer branch head after proposer derivation"
+else
+  pass "the exact-head guard rejects the mutable-branch TOCTOU race before verification"
+fi
+if run_guard "$head_guard" "EXPECTED_HEAD=$expected_head" SELECTOR_DIGEST= "GITHUB_SHA=$expected_head"; then
+  fail "the exact-head guard admitted a partial proposer receipt"
+else
+  pass "the exact-head guard rejects partial proposer receipts"
+fi
+
+while IFS=' ' read -r prefix good; do
+  : >"$tmp/version-output"
+  if run_guard "$version_guard" "PREFIX=$prefix" "VERSION=$good" "GITHUB_OUTPUT=$tmp/version-output"; then
+    pass "the version guard accepts $good in namespace $prefix"
   else
-    fail "the version guard rejected $good: $(cat "$tmp/guard.out")"
+    fail "the version guard rejected $good in namespace $prefix: $(cat "$tmp/guard.out")"
   fi
-done
+done <<'GOOD'
+v v1.2.3
+v v0.0.1
+v v10.20.30
+v v1.2.3-rc.1
+v v1.2.3+build.5
+python-v python-v1.2.3
+worker_2-v worker_2-v3.4.5
+GOOD
 # `1.2.3` is the case #464 names: the engine strips a leading v, so a bare
 # version cuts a tag that sorts apart from every v-prefixed sibling.
 while IFS= read -r bad; do
-  if run_guard "$version_guard" "VERSION=$bad"; then
+  if run_guard "$version_guard" PREFIX=v "VERSION=$bad" "GITHUB_OUTPUT=$tmp/version-output"; then
     fail "the version guard accepted '$bad'"
   else
     pass "the version guard rejects '${bad//$'\n'/\\n}'"
@@ -567,11 +648,24 @@ BAD
 
 # Anchored against the whole string, not per line: a version carrying a second
 # line would otherwise be admitted on the strength of its first.
-if run_guard "$version_guard" "$(printf 'VERSION=v1.0.0\nevil')"; then
+if run_guard "$version_guard" PREFIX=v "$(printf 'VERSION=v1.0.0\nevil')" "GITHUB_OUTPUT=$tmp/version-output"; then
   fail "the version guard accepted a multi-line version"
 else
   pass "the version guard rejects a multi-line version"
 fi
+
+while IFS=' ' read -r prefix version; do
+  if run_guard "$version_guard" "PREFIX=$prefix" "VERSION=$version" "GITHUB_OUTPUT=$tmp/version-output"; then
+    fail "the version guard accepted namespace '$prefix' for '$version'"
+  else
+    pass "the version guard rejects namespace '$prefix' for '$version'"
+  fi
+done <<'BAD_NAMESPACE'
+python-v v1.2.3
+v python-v1.2.3
+Python-v Python-v1.2.3
+python python1.2.3
+BAD_NAMESPACE
 
 mkdir -p "$tmp/sandbox/CHANGELOG"
 printf 'immutable\n' >"$tmp/sandbox/CHANGELOG/v1.2.3.md"

@@ -128,6 +128,16 @@
    scripts/gen-changelog-caller.sh release-node "$PIN" > .github/workflows/release.yml
    ```
 
+   At an immutable pin containing #799, a publisher may add a fifth generated
+   file, fixing one reviewed `propose` or `dispatch` autonomy in source rather
+   than accepting it from an event input. The recommended pin in the executable
+   block above predates that mode and remains valid for its advertised baseline;
+   see `docs/changelog/README.md` for the proposer command and permission split.
+   An empty scheduled selection exits successfully. Dispatch mode carries an
+   exact-head, exact-selection receipt into `Release`; for a component stream,
+   pass its existing namespace prefix explicitly (for example `python-v`) rather
+   than assuming the component name determines it.
+
    The command defaults to `@verjson` and Node 24. For another supported
    scaffold, pass identical `--scope` and `--node-version` options to both
    `release-node` and `contract-test`; the latter enforces that the two release

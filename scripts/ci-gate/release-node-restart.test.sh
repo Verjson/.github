@@ -101,10 +101,10 @@ STUB
 chmod +x "$work/bin/npm" "$work/bin/gh"
 
 run_publish() {
-  ( cd "$work/repo" && PATH="$work/bin:$PATH" TEST_STATE="$work/state" VERSION=v1.2.3 \
+  ( cd "$work/repo" && PATH="$work/bin:$PATH" TEST_STATE="$work/state" PACKAGE_VERSION=1.2.3 \
       bash -euo pipefail "$work/prepare.sh" && \
     PATH="$work/bin:$PATH" TEST_STATE="$work/state" \
-      REQUESTED_TAG=v1.2.3 NODE_AUTH_TOKEN=test PACKAGE_DIRS_JSON='[".","compat"]' \
+      REQUESTED_TAG=v1.2.3 PACKAGE_VERSION=1.2.3 NODE_AUTH_TOKEN=test PACKAGE_DIRS_JSON='[".","compat"]' \
       VIEW_MODE="${VIEW_MODE:-}" PACK_MODE="${PACK_MODE:-matching}" \
       AUTH_FAIL="${AUTH_FAIL:-0}" NETWORK_FAIL="${NETWORK_FAIL:-0}" \
       bash -euo pipefail "$work/publish.sh" )

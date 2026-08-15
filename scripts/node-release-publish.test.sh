@@ -20,6 +20,7 @@ on = doc.get("on", doc.get(True))
 assert set(on) == {"workflow_call"}, "node-release must not be triggerable by push or dispatch"
 inputs = on["workflow_call"]["inputs"]
 assert inputs["version"]["required"] is True, "version must be required"
+assert inputs["prefix"]["default"] == "v"
 assert inputs["scope"]["default"] == "@verjson"
 assert "Required lowercase npm scope" in inputs["scope"]["description"]
 assert inputs["package-dirs"]["default"] == '["."]'
@@ -52,11 +53,11 @@ assert stamp_index < build_index, "the dispatched version must be stamped before
 assert "--allow-same-version" in steps[stamp_index]["run"], \
     "publisher stamp must accept a scaffold already at the dispatched first version"
 for guard in (
-    'scripts/release-prepare-packages.sh "${VERSION#v}"',
+    'scripts/release-prepare-packages.sh "$PACKAGE_VERSION"',
     'for package_dir in "${package_dirs[@]}"',
     'package_path="./$package_dir"',
     'npm pack "$package_path" --json --ignore-scripts',
-    'npm view "$package_name@$package_version" --json',
+    'npm view "$package_name@$published_version" --json',
     '--registry=https://npm.pkg.github.com >"$registry_json"',
     "published.name !== expectedName",
     "published.version !== expectedVersion",
@@ -98,18 +99,31 @@ printf '%s\n' '#!/usr/bin/env bash' 'exit "${GH_STUB_STATUS:-0}"' >"$sandbox/bin
 chmod +x "$sandbox/bin/gh"
 
 run_guard() {
-  env VERSION="$1" SCOPE="${3-@verjson}" PACKAGE_DIRS='["."]' \
+  : >"$sandbox/output"
+  env VERSION="$1" PREFIX="${4-v}" SCOPE="${3-@verjson}" PACKAGE_DIRS='["."]' \
     GITHUB_REPOSITORY=Verjson/example GH_STUB_STATUS="$2" \
+    GITHUB_OUTPUT="$sandbox/output" \
     PATH="$sandbox/bin:$PATH" bash -eo pipefail "$sandbox/guard.sh" >/dev/null 2>&1
 }
 
 run_guard v1.2.3 0 \
   && pass "the guard accepts an exact existing v-prefixed SemVer tag" \
   || fail "the guard rejected a valid existing tag"
+run_guard python-v1.2.3 0 @verjson python-v \
+  && [ "$(cat "$sandbox/output")" = 'package-version=1.2.3' ] \
+  && pass "the guard accepts a stream namespace and extracts the package SemVer" \
+  || fail "the guard rejected or mis-stamped a valid stream-prefixed tag"
 for version in 1.2.3 v01.2.3 v1.2 vlatest; do
   run_guard "$version" 0 \
     && fail "the guard accepted invalid version '$version'" \
     || pass "the guard rejects invalid version '$version'"
+done
+for pair in 'python-v v1.2.3' 'v python-v1.2.3' 'Python-v Python-v1.2.3' 'python python1.2.3'; do
+  prefix="${pair%% *}"
+  version="${pair#* }"
+  run_guard "$version" 0 @verjson "$prefix" \
+    && fail "the guard accepted namespace '$prefix' for '$version'" \
+    || pass "the guard rejects namespace '$prefix' for '$version'"
 done
 run_guard v1.2.3 2 \
   && fail "the guard accepted a version before its contract tag exists" \

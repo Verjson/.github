@@ -991,6 +991,154 @@ class ChangelogContractTests(unittest.TestCase):
 
         self.assertEqual("py-v2.5.0", output)
 
+    def test_released_preview_honors_the_same_fragment_selection_as_release(self) -> None:
+        selected = fragment(
+            self.root,
+            "2026-07-30-issue-250-selected.md",
+            issue="250",
+            body="Selected release note.\n",
+        )
+        fragment(
+            self.root,
+            "2026-07-30-issue-251-deferred.md",
+            issue="251",
+            body="Deferred release note.\n",
+        )
+
+        output = run(
+            self.root,
+            sys.executable,
+            str(MODULE_PATH),
+            "render-next",
+            "--repo-root",
+            str(self.root),
+            "--as-released",
+            "--fragment",
+            f"NEXT/{selected.name}",
+        )
+
+        self.assertIn("Selected release note.", output)
+        self.assertNotIn("Deferred release note.", output)
+
+    def test_released_preview_rejects_duplicate_fragment_selection(self) -> None:
+        selected = fragment(self.root, "2026-07-30-issue-250-selected.md", issue="250")
+
+        completed = subprocess.run(
+            [
+                sys.executable,
+                str(MODULE_PATH),
+                "render-next",
+                "--repo-root",
+                str(self.root),
+                "--fragment",
+                selected.name,
+                "--fragment",
+                f"NEXT/{selected.name}",
+            ],
+            cwd=self.root,
+            check=False,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+
+        self.assertEqual(1, completed.returncode)
+        self.assertIn("selected fragment was repeated", completed.stderr)
+
+    def test_selection_digest_is_empty_for_an_empty_default_or_component_stream(self) -> None:
+        fragment(
+            self.root,
+            "2026-07-30-issue-250-python.md",
+            issue="250",
+            component="python",
+        )
+
+        default_digest = run(
+            self.root,
+            sys.executable,
+            str(MODULE_PATH),
+            "selection-digest",
+            "--repo-root",
+            str(self.root),
+        )
+        missing_component_digest = run(
+            self.root,
+            sys.executable,
+            str(MODULE_PATH),
+            "selection-digest",
+            "--repo-root",
+            str(self.root),
+            "--component",
+            "worker",
+            "--prefix",
+            "worker-v",
+        )
+
+        self.assertEqual("", default_digest)
+        self.assertEqual("", missing_component_digest)
+
+    def test_selection_digest_normalizes_fragment_order_and_binds_stream_inputs(self) -> None:
+        first = fragment(
+            self.root,
+            "2026-07-30-issue-250-python.md",
+            issue="250",
+            component="python",
+        )
+        second = fragment(
+            self.root,
+            "2026-07-30-issue-251-python.md",
+            issue="251",
+            component="python",
+        )
+
+        def digest(prefix: str, names: list[str]) -> str:
+            arguments = [
+                sys.executable,
+                str(MODULE_PATH),
+                "selection-digest",
+                "--repo-root",
+                str(self.root),
+                "--component",
+                "python",
+                "--prefix",
+                prefix,
+            ]
+            for name in names:
+                arguments.extend(("--fragment", name))
+            return run(self.root, *arguments)
+
+        forward = digest("python-v", [first.name, second.name])
+        reverse = digest("python-v", [second.name, first.name])
+
+        self.assertRegex(forward, r"^[0-9a-f]{64}$")
+        self.assertEqual(forward, reverse)
+        self.assertNotEqual(forward, digest("v", [first.name, second.name]))
+        self.assertNotEqual(forward, digest("python-v", [first.name]))
+
+    def test_selection_digest_rejects_noncanonical_version_namespaces(self) -> None:
+        fragment(self.root, "2026-07-30-issue-250-default.md", issue="250")
+
+        for prefix in ("Python-v", "-python-v", "python", "python-v-"):
+            with self.subTest(prefix=prefix):
+                completed = subprocess.run(
+                    [
+                        sys.executable,
+                        str(MODULE_PATH),
+                        "selection-digest",
+                        "--repo-root",
+                        str(self.root),
+                        "--prefix",
+                        prefix,
+                    ],
+                    cwd=self.root,
+                    check=False,
+                    text=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                )
+                self.assertNotEqual(0, completed.returncode)
+                self.assertTrue(completed.stderr.strip())
+
     def test_duplicate_fragment_selectors_fail_before_release_mutates_the_tree(self) -> None:
         self.init_git()
         snapshots = self.root / "CHANGELOG"

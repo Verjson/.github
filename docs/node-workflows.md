@@ -299,10 +299,12 @@ where the event and publication semantics are known.
 
 ## Publishing a contract-selected release
 
-`node-release.yml` is publish-only. It requires an existing v-prefixed SemVer
-tag, checks out that exact tag, verifies its immutable `CHANGELOG/<version>.md`,
-then publishes the package and GitHub release. It cannot create a tag, push a
-commit, inspect commit subjects, or choose a version.
+`node-release.yml` is publish-only. It requires an existing SemVer tag in the
+declared `v` or stream namespace, checks out that exact tag, verifies its
+immutable `CHANGELOG/<version>.md`, then publishes the package and GitHub release.
+The full namespace is stripped before package stamping, so `python-v1.2.3`
+publishes package version `1.2.3`. It cannot create a tag, push a commit, inspect
+commit subjects, or choose a version.
 
 Use the generated dispatched caller; it verifies the source tree, calls
 `changelog-release.yml` to create the snapshot and tag, then calls
@@ -315,6 +317,7 @@ jobs:
     uses: Verjson/.github/.github/workflows/node-release.yml@<immutable-sha>
     with:
       version: ${{ inputs.version }}
+      prefix: ${{ inputs.prefix }}
       node-version: '24'
       scope: '@verjson'
       package-dirs: '["."]'
