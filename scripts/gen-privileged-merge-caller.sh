@@ -6,11 +6,11 @@
 # reasoning lives in docs/decisions/0042-privileged-merge-reusable-split.
 #
 # Usage:
-#   gen-privileged-merge-caller.sh <40-hex-contract-sha> ['<runner-labels-json>']
-#   gen-privileged-merge-caller.sh <40-hex-contract-sha> --retry '<workflow-names-json>'
-#   scripts/gen-privileged-merge-caller.sh <contract-sha> > .github/workflows/ai-privileged-merge.yml
+#   gen-privileged-merge-caller.sh <40-hex-contract-sha> '<required-checks-json>' ['<runner-labels-json>']
+#   gen-privileged-merge-caller.sh <40-hex-contract-sha> --retry '<workflow-names-json>' '<required-checks-json>'
+#   scripts/gen-privileged-merge-caller.sh <contract-sha> "$required_checks" > .github/workflows/ai-privileged-merge.yml
 #
-# The argument is OPTIONAL and should be omitted by every Verjson consumer
+# The runner-label argument is OPTIONAL and should be omitted by every Verjson consumer
 # (#405). It used to be mandatory, which meant the generator hardcoded
 # `["self-hosted","general"]` into ~90 repositories: a fleet relabel then needed
 # a pull request in each of them, which is precisely the coupling the
@@ -32,7 +32,7 @@ readonly TARGET="Verjson/.github/.github/workflows/ai-privileged-merge.yml@$cont
 readonly RETRY_TARGET="Verjson/.github/.github/workflows/ai-promotion-retry.yml@$contract_sha"
 
 if [ "${2-}" = --retry ]; then
-  [ "$#" -eq 3 ] || { echo "--retry requires one workflow-names JSON argument" >&2; exit 2; }
+  [ "$#" -eq 4 ] || { echo "--retry requires workflow-names and required-checks JSON arguments" >&2; exit 2; }
   command -v jq >/dev/null 2>&1 || { echo "jq is required to validate workflow names" >&2; exit 2; }
   # JSON flow collections are valid YAML, so compact JSON serialization admits
   # GitHub's punctuation-rich workflow names without letting their bytes alter
@@ -40,6 +40,7 @@ if [ "${2-}" = --retry ]; then
   # they are meaningful after YAML parsing, so reject them at this boundary.
   workflow_names="$(jq -ce '
     if type == "array" and length > 0 and
+       (unique | length) == length and
        all(.[];
          type == "string" and length > 0 and
          all(explode[];
@@ -48,11 +49,44 @@ if [ "${2-}" = --retry ]; then
     then . else error("unsafe workflow names") end
   ' <<<"$3" 2>/dev/null)" \
     || { echo "workflow names must be a non-empty JSON array without controls or expressions" >&2; exit 2; }
+  required_checks_raw="$4"
+else
+  [ "$#" -ge 2 ] && [ "$#" -le 3 ] || {
+    echo "required-checks JSON is mandatory; runner-labels JSON is optional" >&2
+    exit 2
+  }
+  required_checks_raw="$2"
+fi
+
+command -v jq >/dev/null 2>&1 || { echo "jq is required to validate required checks" >&2; exit 2; }
+required_checks="$(jq -ce '
+  if type == "array" and length > 0 and
+     ([.[].name] | unique | length) == length and
+     all(.[];
+       type == "object" and
+       (keys | sort) == ["app_id", "name", "workflow_id", "workflow_path"] and
+       (.name | type == "string" and length > 0 and
+        all(explode[]; . >= 32 and (. < 127 or . > 159) and . != 8232 and . != 8233) and
+        (contains("${{") | not)) and
+       (.app_id | type == "number" and . > 0 and floor == .) and
+       (.workflow_id | type == "number" and . > 0 and floor == .) and
+       (.workflow_path | type == "string" and test("^\\.github/workflows/[A-Za-z0-9._-]+\\.ya?ml$")) and
+       (.name | test("^(AI review authorization|AI terminal merge promotion|AI terminal promotion retry)$") | not) and
+       (.workflow_path | test("/ai-(review-merge|privileged-merge|promotion-retry)\\.yml$") | not))
+  then . else error("unsafe required checks") end
+' <<<"$required_checks_raw" 2>/dev/null)" || {
+  echo "required checks must be a non-empty unique array of exact check/App/workflow identities" >&2
+  exit 2
+}
+printf -v required_checks_shell '%q' "$required_checks"
+required_checks_yaml="${required_checks//\'/\'\'}"
+
+if [ "${2-}" = --retry ]; then
   printf -v workflow_names_shell '%q' "$workflow_names"
   cat <<YAML
 # GENERATED FILE — do not edit by hand.
 # Regenerate with:
-#   scripts/gen-privileged-merge-caller.sh $contract_sha --retry $workflow_names_shell > .github/workflows/ai-promotion-retry.yml
+#   scripts/gen-privileged-merge-caller.sh $contract_sha --retry $workflow_names_shell $required_checks_shell > .github/workflows/ai-promotion-retry.yml
 name: AI terminal promotion retry
 
 on:
@@ -70,6 +104,7 @@ jobs:
   retry:
     uses: $RETRY_TARGET
     with:
+      required_checks: '$required_checks_yaml'
       privileged_lane: \${{ vars.VERJSON_LANE_PRIVILEGED }}
     secrets:
       ORG_ADMIN_TOKEN: \${{ secrets.ORG_ADMIN_TOKEN }}
@@ -77,12 +112,10 @@ YAML
   exit 0
 fi
 
-[ "$#" -le 2 ] || { echo "unexpected extra arguments" >&2; exit 2; }
-
 # An empty argument is the default case, not an error: `gen … "$LABELS"` with
 # LABELS unset must produce the lane-routed caller rather than a diagnostic about
 # a value the operator never meant to supply.
-runner_labels="${2-}"
+runner_labels="${3-}"
 
 if [ -n "$runner_labels" ]; then
   command -v jq >/dev/null 2>&1 || { echo "jq is required to validate runner_labels" >&2; exit 2; }
@@ -113,7 +146,7 @@ emit() {
   cat <<YAML
 # GENERATED FILE — do not edit by hand.
 # Regenerate with:
-#   scripts/gen-privileged-merge-caller.sh $contract_sha$regen_arg > .github/workflows/ai-privileged-merge.yml
+#   scripts/gen-privileged-merge-caller.sh $contract_sha $required_checks_shell$regen_arg > .github/workflows/ai-privileged-merge.yml
 #
 # Thin caller for the canonical privileged merge (Verjson/.github). All trust
 # logic lives there; nothing here may re-implement it.
@@ -170,6 +203,7 @@ jobs:
       arm_run_attempt: \${{ inputs.arm_run_attempt }}
       review_policy: \${{ inputs.review_policy }}
       source_run_id: \${{ inputs.source_run_id }}
+      required_checks: '$required_checks_yaml'
       privileged_lane: \${{ vars.VERJSON_LANE_PRIVILEGED }}${labels_input}
 YAML
 }

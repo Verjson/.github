@@ -137,6 +137,42 @@ while preventing an attacker or operator mistake from converting a corrupted App
 identity into the no-op path. The downstream privileged workflow continues to repeat
 the exact-head receipt, App, policy, and merge-readiness verification.
 
+### 2026-08-14 correction ([#801](https://github.com/Verjson/.github/issues/801))
+
+The required-check trust declaration is reviewed repository code, not an Actions
+variable. A workflow ID is repository-local, so one organization variable cannot
+portably identify the same trusted workflow across adopters. Every generated
+privileged-merge caller and deterministic-completion retry now embeds a mandatory,
+repository-specific JSON policy naming each exact check context, GitHub App ID,
+workflow ID, and workflow path. The canonical `.github` direct-dispatch path carries
+the same declaration as a non-overridable event-bound policy. The reusable workflow
+has no `AI_REVIEW_REQUIRED_CHECKS` variable fallback.
+
+Fleet conformance reconstructs both generated callers with their historical pinned
+generator and requires the privileged and retry callers to share one exact pin and
+required-check policy. Retry workflow names must equal the names resolved from the
+policy's repository-local workflow IDs. Effective default-branch requirements are
+compared as a multiplicity-preserving `(context, integration_id)` list: an absent App
+binding, duplicate same-name requirements, or an App mismatch fails closed. Workflow
+ID/path/state and recent pull-request job/App evidence are then verified. Evidence
+search examines complete 100-run pages up to an explicit five-page bound; saturation
+fails rather than letting newer queued noise hide old completed evidence. Missing,
+renamed, deleted, wrong-App, and wrong-workflow declarations therefore fail during
+adoption or scheduled conformance instead of waiting for the first privileged merge.
+
+At terminal promotion, workflow identity is validated before check readiness. A
+workflow that has not started, or an active workflow run that has not published its
+check yet, remains a successful defer so a later completion can retry. A completed
+successful workflow that did not publish the reviewed name is permanent policy drift
+and fails with an error. A selected check must also share the exact check suite with
+its claimed Actions run and appear exactly once as that run's paginated job check URL;
+a same-App token cannot forge a name and details URL around an unrelated successful
+run. Deleted, renamed, inactive, wrong-App, wrong-workflow, and terminally
+unsuccessful evidence also fail closed. Exact-head, same-owner, receipt,
+authorization, hold, provenance, workflow-blob, and post-merge protections are
+unchanged. The operator procedure is
+[`docs/privileged-merge-adoption.md`](../../privileged-merge-adoption.md).
+
 ## Consequences
 
 - No job sleeps or polls while CI changes state, and CI completion cannot spend model

@@ -56,6 +56,9 @@ on:
       source_run_id:
         required: false
         type: string
+      required_checks:
+        required: true
+        type: string
       runner_labels:
         required: false
         type: string
@@ -100,7 +103,7 @@ jobs:
       PR_NUMBER: ${{ inputs.pr_number }}
       TARGET_REPO: ${{ github.repository }}
       GH_TOKEN: ${{ secrets.ORG_ADMIN_TOKEN }}
-      AI_REVIEW_REQUIRED_CHECKS: ${{ vars.AI_REVIEW_REQUIRED_CHECKS || github.repository == 'Verjson/.github' && '[{"name":"shell-tests","app_id":15368,"workflow_id":315894159,"workflow_path":".github/workflows/actions-ci.yml"}]' || '' }}
+      REQUIRED_CHECK_POLICY: ${{ github.repository == 'Verjson/.github' && '[{"name":"shell-tests","app_id":15368,"workflow_id":315894159,"workflow_path":".github/workflows/actions-ci.yml"}]' || inputs.required_checks }}
     steps:
       - name: Resolve executing trusted workflow revision
         id: trusted-revision
@@ -201,31 +204,66 @@ jobs:
             ' <<<"$reviews" >/dev/null || {
             echo "::error::the exact-head dedicated App approval is absent"; exit 1;
           }
-          required_checks="${AI_REVIEW_REQUIRED_CHECKS:-}"
-          jq -e 'type == "array" and length > 0 and all(.[];
+          required_checks="${REQUIRED_CHECK_POLICY:-}"
+          jq -e 'type == "array" and length > 0 and
+            ([.[].name] | unique | length) == length and all(.[];
             type == "object" and
-            (.name | type == "string" and length > 0) and
-            (.app_id | type == "number" and . > 0) and
-            (.workflow_id | type == "number" and . > 0) and
+            (keys | sort) == ["app_id", "name", "workflow_id", "workflow_path"] and
+            (.name | type == "string" and length > 0 and
+             all(explode[]; . >= 32 and (. < 127 or . > 159) and . != 8232 and . != 8233) and
+             (contains("$" + "{{") | not)) and
+            (.app_id | type == "number" and . > 0 and floor == .) and
+            (.workflow_id | type == "number" and . > 0 and floor == .) and
             (.workflow_path | type == "string" and test("^\\.github/workflows/[A-Za-z0-9._-]+\\.ya?ml$")) and
             (.name | test("^(AI review authorization|AI terminal merge promotion|AI terminal promotion retry)$") | not) and
             (.workflow_path | test("/ai-(review-merge|privileged-merge|promotion-retry)\\.yml$") | not)
           )' \
             <<<"$required_checks" >/dev/null || {
-            echo "::error::AI_REVIEW_REQUIRED_CHECKS must declare trusted non-promotion Actions checks"; exit 1;
+            echo "::error::required_checks must declare trusted non-promotion Actions checks"; exit 1;
           }
           all_checks="$(gh api --paginate "repos/$TARGET_REPO/commits/$EXPECTED_HEAD_SHA/check-runs?per_page=100" | jq -s '[.[].check_runs[]]')"
           default_branch="$(gh api "repos/$TARGET_REPO" --jq '.default_branch // ""')"
           [[ "$default_branch" =~ ^[A-Za-z0-9._/-]+$ ]] || exit 1
           while IFS= read -r required; do
             name="$(jq -r .name <<<"$required")"
+            expected_app_id="$(jq -r .app_id <<<"$required")"
+            expected_workflow_id="$(jq -r .workflow_id <<<"$required")"
+            workflow_path="$(jq -r .workflow_path <<<"$required")"
+            workflow_metadata=""
+            if ! workflow_metadata="$(gh api "repos/$TARGET_REPO/actions/workflows/$expected_workflow_id")"; then
+              echo "::error::required check $name names a deleted or unreadable workflow ID $expected_workflow_id"
+              exit 1
+            fi
+            jq -e --arg path "$workflow_path" --argjson workflow_id "$expected_workflow_id" '
+              .id == $workflow_id and .path == $path and .state == "active"
+            ' <<<"$workflow_metadata" >/dev/null || {
+              echo "::error::required check $name names a wrong, renamed, or inactive workflow"; exit 1;
+            }
             latest="$(jq -c --arg name "$name" '[.[] | select(.name == $name)] | sort_by(.id) | last // {}' <<<"$all_checks")"
             check_id="$(jq -r '.id // ""' <<<"$latest")"
             if ! [[ "$check_id" =~ ^[1-9][0-9]*$ ]]; then
-              echo "Required check $name is absent; a later workflow completion will retry promotion."
-              exit 0
+              workflow_runs="$(gh api --paginate \
+                "repos/$TARGET_REPO/actions/workflows/$expected_workflow_id/runs?head_sha=$EXPECTED_HEAD_SHA&event=pull_request&per_page=100" \
+                | jq -s '[.[].workflow_runs[]]')"
+              latest_workflow_run="$(jq -c '[.[]] | sort_by(.id) | last // {}' <<<"$workflow_runs")"
+              workflow_run_id="$(jq -r '.id // ""' <<<"$latest_workflow_run")"
+              if ! [[ "$workflow_run_id" =~ ^[1-9][0-9]*$ ]]; then
+                echo "Required check $name has not been reported because its trusted workflow has not started; a later workflow event will retry promotion."
+                exit 0
+              fi
+              workflow_run_status="$(jq -r '.status // "" | ascii_upcase' <<<"$latest_workflow_run")"
+              workflow_run_conclusion="$(jq -r '.conclusion // "" | ascii_upcase' <<<"$latest_workflow_run")"
+              [ "$workflow_run_status" = COMPLETED ] || {
+                echo "Required check $name is pending in trusted workflow run $workflow_run_id; a later workflow completion will retry promotion."
+                exit 0
+              }
+              [ "$workflow_run_conclusion" = SUCCESS ] || {
+                echo "::error::trusted workflow for required check $name is terminally unsuccessful: $workflow_run_conclusion"
+                exit 1
+              }
+              echo "::error::trusted workflow completed successfully without required check $name; the reviewed policy is missing or renamed"
+              exit 1
             fi
-            expected_app_id="$(jq -r .app_id <<<"$required")"
             jq -e --argjson app_id "$expected_app_id" '.app.id == $app_id' <<<"$latest" >/dev/null || {
               echo "::error::latest required check $name is from the wrong App"; exit 1;
             }
@@ -248,8 +286,19 @@ jobs:
             }
             ci_run_id="${BASH_REMATCH[1]}"
             ci_run="$(gh api "repos/$TARGET_REPO/actions/runs/$ci_run_id")"
-            expected_workflow_id="$(jq -r .workflow_id <<<"$required")"
-            workflow_path="$(jq -r .workflow_path <<<"$required")"
+            expected_check_run_url="$GITHUB_API_URL/repos/$TARGET_REPO/check-runs/$check_id"
+            ci_jobs="$(gh api --paginate "repos/$TARGET_REPO/actions/runs/$ci_run_id/jobs?per_page=100" \
+              | jq -s '[.[].jobs[]]')"
+            check_suite_id="$(jq -r '.check_suite.id // ""' <<<"$latest")"
+            run_check_suite_id="$(jq -r '.check_suite_id // ""' <<<"$ci_run")"
+            [[ "$check_suite_id" =~ ^[1-9][0-9]*$ ]] && [ "$check_suite_id" = "$run_check_suite_id" ] || {
+              echo "::error::required check $name is not a member of its claimed trusted workflow run"; exit 1;
+            }
+            jq -e --arg url "$expected_check_run_url" --arg name "$name" '
+              [.[] | select(.check_run_url == $url and .name == $name)] | length == 1
+            ' <<<"$ci_jobs" >/dev/null || {
+              echo "::error::required check $name is not the exact job check run of its claimed trusted workflow run"; exit 1;
+            }
             jq -e --arg head "$EXPECTED_HEAD_SHA" --arg repo "$TARGET_REPO" \
               --arg path "$workflow_path" --argjson workflow_id "$expected_workflow_id" '
                 .workflow_id == $workflow_id and .path == $path and
