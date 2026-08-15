@@ -28,6 +28,7 @@ make adr-index   # checks the generated ADR index without editing it
 # Focused tests remain directly runnable:
 bash scripts/repo-hygiene.test.sh        # or any single scripts/**/*.test.sh
 python3 scripts/changelog.py validate --repo-root .
+python3 scripts/changelog.py next-version --help
 ```
 
 Add a `NEXT/` fragment in the same commit as any change to behaviour, pins,

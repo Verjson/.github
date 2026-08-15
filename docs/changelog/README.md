@@ -105,10 +105,12 @@ digit. They are stream names, not paths.
 The default renderer and release select only fragments with no `component`, so
 single-package repositories are unchanged and scoped work cannot leak into
 their release. Preview or release one explicit stream with
-`render-next --component python` or `release --component python`. An explicit
-fragment list can narrow that stream but cannot select across component
-boundaries. Validation and pull-request consumption checks still cover every
-stream. See [ADR 0070](../decisions/0070-component-scoped-changelog-streams/README.md).
+`render-next --component python`, inspect its derived tag with `next-version
+--component python --prefix python-v`, or release it with `release --component
+python`. An explicit fragment list can narrow that stream but cannot select
+across component boundaries. Validation and pull-request consumption checks
+still cover every stream. See
+[ADR 0070](../decisions/0070-component-scoped-changelog-streams/README.md).
 
 ### Release impact
 
@@ -128,6 +130,33 @@ so on). Explicit-fragment releases calculate impact only from their selected
 fragments. Consumers pass versions and selectors to `scripts/changelog.py`;
 they must not carry their own impact parser. See
 [ADR 0071](../decisions/0071-changelog-impact-governs-version-bumps/README.md).
+
+Inspect the exact tag `release` will accept without changing the repository:
+
+```bash
+python3 scripts/changelog.py next-version --repo-root .
+python3 scripts/changelog.py next-version --repo-root . \
+  --component python --prefix python-v
+python3 scripts/changelog.py next-version --repo-root . \
+  --fragment NEXT/2026-08-07-issue-390-python.md
+```
+
+`--fragment` may be repeated and has exactly the same path and component-stream
+rules as `release`; naming the same fragment twice is rejected before either
+command mutates release state. `--prefix` selects the existing snapshot
+namespace and defaults to `v`; it is deliberately independent of `--component`,
+preserving the caller-owned namespace decision in ADR 0070, including
+conventions where a `python` component releases under a prefix other than
+`python-v`. The command only reads snapshots and fragments: it does not require
+a clean tree, invoke Git, write a snapshot, consume a fragment, commit, or tag.
+A stream with no previous snapshot has no unique next version because its first
+`release` establishes the baseline; `next-version` therefore exits non-zero
+instead of inventing one.
+
+Release versions follow SemVer 2 identifier rules: prerelease and build
+identifiers are nonempty dot-separated ASCII alphanumeric/hyphen values, and a
+numeric prerelease identifier cannot have a leading zero. Invalid snapshots do
+not become release baselines.
 
 The date and identity in the filename must match the metadata. Work that
 legitimately has no issue uses `id` instead of `issue`; its identity must be a
