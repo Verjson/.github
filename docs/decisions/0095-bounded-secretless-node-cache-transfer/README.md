@@ -94,11 +94,33 @@ makes cleanup fail visibly. One-day artifact retention remains a fallback when
 GitHub cannot schedule cleanup. Neither API deletion nor expiry is represented as
 immediate quota reclamation because GitHub's accounting can lag by 6–12 hours.
 
+**2026-08-15 correction ([#824](https://github.com/Verjson/.github/issues/824)).**
+Organization artifact storage reached quota while current and pinned consumers
+were using this handoff. The cleanup permission also prevented a pin-only rollout
+for compliant callers that grant only `contents: read` and `statuses: read`.
+Replace artifact upload, download, and deletion with `actions/cache/save` and
+`actions/cache/restore` pinned to the same immutable v6.1.0 commit. The cache key
+contains the exact repository-scoped `run_id` and `run_attempt` plus an
+acquisition-generated 256-bit nonce that prevents a caller-controlled sibling
+job from reserving the key first; restore supplies no prefix and fails on a
+missing exact key. The manifest, tar validation, 80 MiB
+pre-save cap, credential scrub, and job-local `always()` cleanup remain unchanged.
+The cache service has a separate per-repository quota and eviction policy, and no
+transfer artifact exists on success, failure, or cancellation. Callers no longer
+grant `actions: write` for secretless validation.
+
+An empty approved package set remains valid when the lock contains no internal
+package. Acquisition creates an empty private content-addressed tree without an
+npm request under the package token; the same manifest and exact-lock validation
+then bind the empty payload before the credentialless build installs public
+dependencies. Non-empty private-package locks retain every exact URL, SHA-512,
+allowlist, and content-set check.
+
 ## Consequences
 
-- Normal concurrent and rerun storage is the number of live attempts multiplied
-  by less than 81 MiB, rather than an unbounded installed tree per attempt.
-- A dependency set whose verified npm cache exceeds 80 MiB fails before upload;
+- The bounded handoff uses per-repository cache storage and never organization
+  artifact storage; exact-attempt entries are eligible for normal cache eviction.
+- A dependency set whose verified npm cache exceeds 80 MiB fails before save;
   raising the canonical cap requires a new quota decision, not a caller override.
 - Public packages are downloaded only by the credentialless build job. The
   credentialed acquisition job fetches exact private tarballs without installing
@@ -109,20 +131,18 @@ immediate quota reclamation because GitHub's accounting can lag by 6–12 hours.
   the `@verjson` scope and standard command sequence.
 - Approved rebuild and consumer scripts execute repository-controlled code, but
   only in the credentialless build job after the transfer is fully validated.
-- Cleanup uses a narrowly scoped repository token in a job that never checks out
-  or evaluates PR-controlled content. Build and test do not receive that token.
 - A retry uses **Re-run all jobs** so the new attempt reacquires its own cache;
-  failed-jobs-only retries cannot consume the deleted prior-attempt input.
-- GitHub can still delay physical deletion or quota accounting. The workflow
-  bounds what it uploads and requests exact deletion; it does not promise control
-  over platform garbage collection.
+  failed-jobs-only retries cannot create a missing acquisition entry.
+- Unpredictable exact-run cache keys prevent sibling-job prepopulation and
+  cross-run or cross-attempt fallback. Cache branch scope is an additional
+  platform boundary, not a substitute for manifest checks.
 
 ## Adoption
 
 Consumers pin
 `Verjson/.github/.github/workflows/node-ci.yml@<40-hex-canonical-contract-sha>`,
-grant caller `actions: write`, and preserve their exact internal-scope and package
-allowlists, auxiliary identity, rebuild list, and script plan. If an adoption also
+preserve their existing read-only caller permissions and exact internal-scope and
+package allowlists, auxiliary identity, rebuild list, and script plan. If an adoption also
 advances generated changelog artifacts, all
 `Verjson/.github/scripts/gen-changelog-caller.sh` outputs—workflow, renderer,
 contract test, and release caller—must be regenerated at the same immutable SHA.
