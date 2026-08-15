@@ -362,15 +362,15 @@ UNTRUSTED_GROUP_NAME='isolated'
 # pinned the id, went undetermined on every run. Two distinct behaviours have to
 # hold, and the second is the one that was actually broken.
 
-# 1. A group a lane genuinely needs, gone: still fail closed — but name it. The
-#    old code emitted only the request path, so asserting on the NAME is what
-#    makes this fail against a reconciler that resolves by literal id.
+# 1. A group a lane genuinely needs, gone: still fail closed and name the lane,
+#    while keeping the org-variable-backed group name out of public output.
 DELETED_GROUPS='6'
 out="$(run_case)"
 [ "$(code_of)" = "2" ] \
-  && grep -qF 'isolated' <<<"$out" \
-  && pass "a lane-selected group that no longer exists fails closed, naming the group" \
-  || fail "missing selected group was not reported by name: $out"
+  && grep -qF 'untrusted lane' <<<"$out" \
+  && ! grep -qF 'isolated' <<<"$out" \
+  && pass "a missing lane-selected group fails closed without disclosing its configured name" \
+  || fail "missing selected group was not safely reported by lane: $out"
 
 # 2. A group NO lane selects, gone: irrelevant, so it must not take the run down.
 #    This is the live regression — all three lanes resolve to `general`, nothing
@@ -389,9 +389,10 @@ DELETED_GROUPS='4'
 DEFAULT_VAR='{"value":"[\"self-hosted\",\"lane-general\"]","visibility":"all"}'
 out="$(run_case)"
 [ "$(code_of)" = "2" ] \
-  && grep -qF 'DigitalOcean' <<<"$out" \
-  && pass "the general lane's group going missing fails closed, naming the group" \
-  || fail "missing general group was not reported by name: $out"
+  && grep -qF 'general lane' <<<"$out" \
+  && ! grep -qF 'DigitalOcean' <<<"$out" \
+  && pass "the general lane's group going missing fails closed without disclosing its configured name" \
+  || fail "missing general group was not safely reported by lane: $out"
 
 # The fixtures above use the shipped default group name deliberately, so a stale
 # default is a failing suite rather than a monitor that resolves nothing in
@@ -403,6 +404,35 @@ reconcile_workflow="$(cd "$(dirname "$0")/../.." && pwd)/.github/workflows/runne
 grep -qF "GENERAL_GROUP_NAME: \${{ vars.VERJSON_RUNNER_GENERAL_GROUP || 'DigitalOcean' }}" "$reconcile_workflow" \
   && pass "the general group name is repointable from org variables, with a fallback" \
   || fail "runner-admission-reconcile.yml does not source GENERAL_GROUP_NAME from a variable with a fallback"
+
+# Treat organization-variable values as secret-shaped payloads even though the
+# GitHub setting is not a secret store: the report is copied into a public issue.
+export GENERAL_GROUP_NAME='org-variable-general-canary'
+export UNTRUSTED_GROUP_NAME='org-variable-untrusted-canary'
+G4_GROUP='{"id":4,"name":"org-variable-general-canary","visibility":"all","allows_public_repositories":true,"default":false}'
+G6_GROUP='{"id":6,"name":"org-variable-untrusted-canary","visibility":"all","allows_public_repositories":true,"default":false}'
+DELETED_GROUPS=''
+out="$(run_case)"
+[ "$(code_of)" = "0" ] \
+  && ! grep -qF 'org-variable-general-canary' <<<"$out" \
+  && ! grep -qF 'org-variable-untrusted-canary' <<<"$out" \
+  && pass "clean output discloses no org-variable-backed runner-group name" \
+  || fail "clean output disclosed an org-variable-backed group name: $out"
+
+G4_GROUP='{"id":4,"name":"org-variable-general-canary","visibility":"selected","allows_public_repositories":true,"default":false}'
+out="$(run_case)"
+[ "$(code_of)" = "1" ] \
+  && grep -qF 'general lane' <<<"$out" \
+  && grep -qF 'id 4' <<<"$out" \
+  && ! grep -qF 'org-variable-general-canary' <<<"$out" \
+  && ! grep -qF 'org-variable-untrusted-canary' <<<"$out" \
+  && pass "admission drift uses a lane and numeric id without org-variable payloads" \
+  || fail "admission drift disclosed an org-variable-backed group name: $out"
+
+export GENERAL_GROUP_NAME='DigitalOcean'
+export UNTRUSTED_GROUP_NAME='isolated'
+G4_GROUP='{"id":4,"name":"DigitalOcean","visibility":"all","allows_public_repositories":true,"default":false}'
+G6_GROUP='{"id":6,"name":"isolated","visibility":"all","allows_public_repositories":true,"default":false}'
 
 # The matching invariant — this job must not ride the pool it monitors — lives in
 # runner-routing-policy.test.sh with every other routing assertion, and is
@@ -658,6 +688,18 @@ out="$(run_case)"
   && pass "an offline runner in the default group is still drift" \
   || fail "offline stray runner was not reported: $out"
 
+export GENERAL_GROUP_NAME='org-variable-remediation-canary'
+G4_GROUP='{"id":4,"name":"org-variable-remediation-canary","visibility":"all","allows_public_repositories":true,"default":false}'
+out="$(run_case)"
+[ "$(code_of)" = "1" ] \
+  && grep -qF 'general lane' <<<"$out" \
+  && grep -qF 'id 4' <<<"$out" \
+  && ! grep -qF 'org-variable-remediation-canary' <<<"$out" \
+  && pass "default-group remediation redacts the configured destination name" \
+  || fail "default-group remediation disclosed its org-variable-backed destination: $out"
+export GENERAL_GROUP_NAME='DigitalOcean'
+G4_GROUP='{"id":4,"name":"DigitalOcean","visibility":"all","allows_public_repositories":true,"default":false}'
+
 # The report is filed as an issue and an operator acts on it. Both halves of the
 # remedy have to survive: --runnergroup fixes the NEXT registration and does
 # nothing for the runner just named, so a message carrying only that leaves the
@@ -726,8 +768,9 @@ export G1_RUNNERS='{"name":"gha-stray-5","status":"online","labels":["self-hoste
 out="$(run_case)"
 [ "$(code_of)" = "1" ] \
   && grep -qF 'gha-stray-5' <<<"$out" \
-  && grep -qF 'Renamed Default' <<<"$out" \
-  && pass "the default group is resolved by its flag, not by the id 1" \
+  && grep -qF 'id 9' <<<"$out" \
+  && ! grep -qF 'Renamed Default' <<<"$out" \
+  && pass "the default group is resolved by its flag and reported by id, not name" \
   || fail "default group resolution is pinned to an id: $out"
 export G1_RUNNERS=''
 

@@ -141,9 +141,13 @@ spend hosted minutes".
 The rules are enforced by `scripts/ci-gate/hosted-selector-policy.py`, which
 `runner-routing-policy.test.sh` runs against this repository's own workflows. Decided in
 [ADR 0103](decisions/0103-os-scoped-hosted-lanes/README.md).
-The checker accepts only reviewed expression shapes and treats constructed selectors such
-as `format(...)` or `join(...)` as undetermined. Dot and bracket dereferences are normalized
-before every OS-lane rule, so syntax cannot bypass dispatch, timeout, or fallback bounds.
+The checker allowlists complete normalized routing expressions, not individual input or
+variable names. A guarded source inside a canonical caller does not make the same source
+valid by itself; direct or `fromJSON`-decoded arbitrary inputs, variables, and needs outputs
+are undetermined. Matrix selectors are accepted only with their inspected static strategy
+sources. Constructed selectors such as `format(...)` or `join(...)` are also undetermined.
+Dot and bracket dereferences are normalized before every OS-lane rule, so syntax cannot
+bypass dispatch, timeout, or fallback bounds.
 
 ## Three axes
 
@@ -319,7 +323,9 @@ directly and compares exact runner ID/name identities with the reviewed, empty-b
 response, partial pagination, or API failure as an empty inventory. A rename requires a
 reviewed allowlist change; stale entries are drift. Public reporting selects only the
 GitHub Actions bot's immutable actor ID before matching its marker, and redacts
-organization-variable contents.
+organization-variable contents. Runner-group values are reported only as lane identities
+and safe numeric IDs; configured and live group names never enter missing-group errors,
+admission drift, remediation text, or clean summaries.
 
 A required workflow runs as its **own check alongside** a repository's workflows. It cannot
 inject `runs-on` into another workflow's jobs, and its outputs cannot cross into them. It

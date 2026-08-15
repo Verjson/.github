@@ -23,6 +23,8 @@ that prove each negative, so #815 can point the same check at a consumer
 checkout without duplicating it. The refusal of the metered families is
 visibility-independent; literal Linux hosted selectors are keyed on repository
 visibility, and the closed ADR 0089 `ubuntu-24.04` inventory stands unchanged.
-Constructed selector expressions fail undetermined, and dot/bracket variable
+Only complete reviewed routing-expression shapes are accepted; arbitrary direct or
+`fromJSON`-decoded input, variable, and needs sources fail undetermined. Constructed
+selectors fail the same way, matrix sources are inspected, and dot/bracket variable
 dereferences are normalized before every timeout, fallback, and trigger rule.
 Decided in ADR 0103.

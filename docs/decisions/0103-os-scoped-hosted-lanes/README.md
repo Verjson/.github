@@ -134,13 +134,17 @@ selector this parser reads may name a metered family, and nothing it cannot read
 which is materially stronger than the pattern-matching predecessor and materially weaker
 than "no `runs-on` anywhere".
 
-Expressions are accepted only in the reviewed selector grammar: references, fixed string
-literals, boolean selection, and one-argument `fromJSON` calls. Dynamic construction such
-as `format(...)`, `join(...)`, arithmetic, or a mixed literal/expression selector is
-undetermined because it can assemble `macos-*` or `windows-*` without either complete word
-appearing in source. Both GitHub dereference forms — `vars.NAME` and `vars['NAME']` — are
-normalized before every rule, so bracket syntax cannot detach an OS lane from its timeout,
-fallback, and trigger bounds.
+Expressions are accepted only when their complete normalized routing shape is in the
+reviewed grammar. Blessing a reference name is insufficient: canonical callers may contain
+guarded `inputs.runner` or `needs.preflight` clauses, but `${{ inputs.runner }}` and
+`${{ fromJSON(inputs.runner) }}` alone remain undetermined. The same rule refuses arbitrary
+repository variables and admits `matrix.os` / `matrix.lane` only while inspecting their
+static strategy sources. Dynamic construction such as `format(...)`, `join(...)`,
+arithmetic, or a mixed literal/expression selector is also undetermined because it can
+assemble `macos-*` or `windows-*` without either complete word appearing in source. Both
+GitHub dereference forms — `vars.NAME` and `vars['NAME']` — are normalized before every
+rule, so bracket syntax cannot detach an OS lane from its timeout, fallback, and trigger
+bounds.
 
 The first implementation of this check matched `runs-on:` with line-oriented shell patterns,
 and two review passes found five parser-level false negatives in shapes GitHub accepts: a
@@ -180,8 +184,11 @@ run rather than being mistaken for zero. The inventory and allowlist must match 
 so a rename or stale approval is drift too. Reports update only the comment owned by
 GitHub Actions' immutable bot actor ID; a public commenter copying the marker is ignored,
 and multiple trusted report comments fail closed. Organization-variable contents are
-redacted before the public Actions log or durable issue report. Re-run the command above
-rather than trusting this snapshot; runner inventories change without touching this file.
+redacted before the public Actions log or durable issue report. Runner-group values are
+rendered as lane identities plus safe numeric IDs; missing-group errors, admission drift,
+default-group remediation, and clean output never echo the configured or live group names.
+Re-run the command above rather than trusting this snapshot; runner inventories change
+without touching this file.
 
 ### Two tiers, and why they differ
 

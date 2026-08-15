@@ -1,0 +1,7 @@
+name: arbitrary decoded input selector
+on: workflow_call
+jobs:
+  build:
+    runs-on: ${{ fromJSON(inputs.runner) }}
+    steps:
+      - run: true

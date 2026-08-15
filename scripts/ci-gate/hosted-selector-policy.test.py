@@ -266,6 +266,18 @@ assert_undetermined_fixture(
     "dynamic-join-fromjson",
     "a join/fromJSON-built selector is unresolved rather than silently clean",
 )
+for source_fixture, source_name in (
+    ("dynamic-input-direct", "a direct arbitrary input"),
+    ("dynamic-input-fromjson", "a fromJSON-decoded arbitrary input"),
+    ("dynamic-var-direct", "a direct unreviewed repository variable"),
+    ("dynamic-var-fromjson", "a fromJSON-decoded unreviewed repository variable"),
+    ("dynamic-needs-direct", "a direct unreviewed needs output"),
+    ("dynamic-needs-fromjson", "a fromJSON-decoded unreviewed needs output"),
+):
+    assert_undetermined_fixture(
+        source_fixture,
+        f"{source_name} is unresolved rather than trusted as a routing source",
+    )
 assert_clean("public", "lane-with-fallback",
              "known fromJSON lane chains remain permitted selector expressions")
 

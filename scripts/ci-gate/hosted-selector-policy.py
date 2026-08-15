@@ -251,6 +251,51 @@ BRACKET_DEREFERENCE = re.compile(
     r"\b(vars|inputs|matrix|github|needs)\[(?:'([^']+)'|\"([^\"]+)\")\]"
 )
 
+# Complete routing expressions reviewed by the organization contract. This is
+# deliberately a full-expression allowlist, not a list of blessed reference
+# names: accepting `inputs.runner` because one guarded canonical expression uses
+# that input would also accept `${{ fromJSON(inputs.runner) }}` by itself. New
+# routing shapes must therefore become visible code changes here.
+REVIEWED_SELECTOR_EXPRESSIONS = frozenset(
+    " ".join(expression.split())
+    for expression in (
+        "(github.repository_owner != 'Verjson' || inputs.github-hosted-runner) && 'ubuntu-24.04' || github.event.repository.private == true && fromJSON(vars.VERJSON_LANE_TRUSTED || vars.VERJSON_LANE_FALLBACK || '[\"ubuntu-24.04\"]') || github.event.repository.visibility == 'public' && fromJSON(vars.VERJSON_RUNNER_FASTLANE || vars.VERJSON_LANE_UNTRUSTED || vars.VERJSON_LANE_FALLBACK || '[\"ubuntu-24.04\"]') || fromJSON(vars.VERJSON_LANE_UNTRUSTED || vars.VERJSON_LANE_FALLBACK || '[\"ubuntu-24.04\"]')",
+        "fromJSON(vars.VERJSON_LANE_PRIVILEGED || vars.VERJSON_LANE_FALLBACK || '[\"ubuntu-24.04\"]')",
+        "fromJSON(vars.VERJSON_LANE_TRUSTED || vars.VERJSON_LANE_FALLBACK || '[\"ubuntu-24.04\"]')",
+        "fromJSON(vars.VERJSON_LANE_UNTRUSTED || '[\"ubuntu-24.04\"]')",
+        "fromJSON(vars.VERJSON_RUNNER_FASTLANE || '[\"ubuntu-24.04\"]')",
+        "fromJSON(vars.VERJSON_RUNNER_FASTLANE || vars.VERJSON_LANE_TRUSTED || vars.VERJSON_LANE_FALLBACK || '[\"ubuntu-24.04\"]')",
+        "github.repository_owner != 'Verjson' && 'ubuntu-24.04' || fromJSON(vars.VERJSON_LANE_TRUSTED || vars.VERJSON_LANE_FALLBACK || '[\"ubuntu-24.04\"]')",
+        "github.repository_owner != 'Verjson' && 'ubuntu-24.04' || github.event.repository.private == true && fromJSON(vars.VERJSON_LANE_TRUSTED || vars.VERJSON_LANE_FALLBACK || '[\"ubuntu-24.04\"]') || fromJSON(vars.VERJSON_LANE_UNTRUSTED || vars.VERJSON_LANE_FALLBACK || '[\"ubuntu-24.04\"]')",
+        "github.repository_owner != 'Verjson' && inputs.runner_labels && fromJSON(inputs.runner_labels) || github.repository_owner != 'Verjson' && 'ubuntu-24.04' || github.event.repository.visibility == 'public' && 'ubuntu-24.04' || fromJSON('[\"self-hosted\",\"general\"]')",
+        "github.repository_owner == 'Verjson' && fromJSON(vars.VERJSON_LANE_TRUSTED || vars.VERJSON_LANE_FALLBACK || '[\"ubuntu-24.04\"]') || 'ubuntu-24.04'",
+        "github.repository_owner == 'Verjson' && fromJSON(vars.VERJSON_RUNNER_FASTLANE || vars.VERJSON_LANE_TRUSTED || vars.VERJSON_LANE_FALLBACK || '[\"ubuntu-24.04\"]') || 'ubuntu-24.04'",
+        "inputs.runner != '' && fromJSON(inputs.runner) || github.repository_owner != 'Verjson' && 'ubuntu-24.04' || github.event.repository.private == true && fromJSON(vars.VERJSON_LANE_TRUSTED || vars.VERJSON_LANE_FALLBACK || '[\"ubuntu-24.04\"]') || fromJSON(vars.VERJSON_LANE_UNTRUSTED || vars.VERJSON_LANE_FALLBACK || '[\"ubuntu-24.04\"]')",
+        "inputs.runner != '' && fromJSON(inputs.runner) || github.repository_owner != 'Verjson' && 'ubuntu-24.04' || github.event.repository.private == true && fromJSON(vars.VERJSON_RUNNER_OVERFLOW || vars.VERJSON_LANE_TRUSTED || vars.VERJSON_LANE_FALLBACK || '[\"ubuntu-24.04\"]') || fromJSON(vars.VERJSON_RUNNER_OVERFLOW || vars.VERJSON_LANE_UNTRUSTED || vars.VERJSON_LANE_FALLBACK || '[\"ubuntu-24.04\"]')",
+        "inputs.runner_labels && fromJSON(inputs.runner_labels) || github.repository_owner != 'Verjson' && 'ubuntu-24.04' || github.event.repository.private == false && fromJSON(vars.VERJSON_RUNNER_FASTLANE || '[\"ubuntu-24.04\"]') || fromJSON(vars.VERJSON_RUNNER_OVERFLOW || vars.VERJSON_LANE_UNTRUSTED || vars.VERJSON_LANE_FALLBACK || '[\"ubuntu-24.04\"]')",
+        "inputs.runner_labels && fromJSON(inputs.runner_labels) || github.repository_owner != 'Verjson' && 'ubuntu-24.04' || needs.preflight.outputs.target_private == 'false' && fromJSON(vars.VERJSON_RUNNER_FASTLANE || '[\"ubuntu-24.04\"]') || fromJSON(vars.VERJSON_LANE_PRIVILEGED || vars.VERJSON_LANE_FALLBACK || '[\"ubuntu-24.04\"]')",
+        "inputs.runner_labels && fromJSON(inputs.runner_labels) || github.repository_owner != 'Verjson' && 'ubuntu-24.04' || needs.preflight.outputs.target_private == 'false' && fromJSON(vars.VERJSON_RUNNER_FASTLANE || '[\"ubuntu-24.04\"]') || fromJSON(vars.VERJSON_RUNNER_OVERFLOW || vars.VERJSON_LANE_TRUSTED || vars.VERJSON_LANE_FALLBACK || '[\"ubuntu-24.04\"]')",
+        "inputs.secretless-pr && fromJSON(vars.VERJSON_LANE_UNTRUSTED || '[\"ubuntu-24.04\"]') || inputs.runner != '' && fromJSON(inputs.runner) || github.repository_owner != 'Verjson' && 'ubuntu-24.04' || github.event.repository.private == true && fromJSON(vars.VERJSON_LANE_TRUSTED || vars.VERJSON_LANE_FALLBACK || '[\"ubuntu-24.04\"]') || fromJSON(vars.VERJSON_LANE_UNTRUSTED || vars.VERJSON_LANE_FALLBACK || '[\"ubuntu-24.04\"]')",
+        # Known negative fixtures stay inside the grammar so R3/R4 can return a
+        # definite policy violation instead of hiding behind undetermined.
+        "fromJSON(vars.VERJSON_LANE_TRUSTED)",
+        "fromJSON(vars.VERJSON_RUNNER_FASTLANE)",
+        "fromJSON(vars.VERJSON_RUNNER_OVERFLOW)",
+        "fromJSON(vars.VERJSON_LANE_TRUSTED_MACOS)",
+        "fromJSON(vars.VERJSON_LANE_TRUSTED_WINDOWS)",
+        "fromJSON(vars.VERJSON_LANE_TRUSTED_MACOS || vars.VERJSON_LANE_FALLBACK || '[\"ubuntu-24.04\"]')",
+        "fromJSON(vars.VERJSON_LANE_TRUSTED_WINDOWS || vars.VERJSON_LANE_FALLBACK)",
+        "matrix.os",
+        "fromJSON(matrix.lane)",
+        # Static matrix source expressions are checked with the strategy block
+        # whenever runs-on dereferences matrix.*.
+        "vars.VERJSON_LANE_TRUSTED",
+        "vars.VERJSON_LANE_TRUSTED_MACOS",
+        "vars.VERJSON_LANE_TRUSTED_WINDOWS",
+        "vars.VERJSON_LANE_TRUSTED_MACOS || vars.VERJSON_LANE_FALLBACK",
+    )
+)
+
 
 def normalize_dereferences(text: str) -> str:
     """Normalize both GitHub property syntaxes before applying policy rules."""
@@ -288,7 +333,7 @@ def validate_selector_expressions(value) -> None:
             raise Undetermined(
                 "runs-on contains a mixed or malformed selector expression"
             )
-        expression = normalize_dereferences(match.group(1))
+        expression = " ".join(normalize_dereferences(match.group(1)).split())
         scrubbed = QUOTED_EXPRESSION_STRING.sub("LITERAL", expression)
         functions = FUNCTION_CALL.findall(scrubbed)
         unsupported = sorted({name for name in functions if name != "fromJSON"})
@@ -304,6 +349,10 @@ def validate_selector_expressions(value) -> None:
         if re.search(r"[\[\]+*/%,?:]", scrubbed):
             raise Undetermined(
                 "runs-on uses unsupported dynamic selector expression syntax"
+            )
+        if expression not in REVIEWED_SELECTOR_EXPRESSIONS:
+            raise Undetermined(
+                "runs-on uses an unreviewed routing expression source or shape"
             )
 
 

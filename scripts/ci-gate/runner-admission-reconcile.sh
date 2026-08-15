@@ -275,16 +275,17 @@ lane_group_name() {
   esac
 }
 
-# Fail closed, and say WHICH group — the id-in-a-URL message this replaces did
-# not identify the group, which is what made the outage hard to read.
+# Fail closed and name the selected lane, never the configured group-name value.
+# This output is copied into a public issue, while both names come from
+# organization variables.
 resolve_group() {
   local lane="$1" name group
   name="$(lane_group_name "$lane")" || exit 2
   group="$(jq -c --arg name "$name" \
     'map(select(.name == $name)) | .[0] // empty' <<<"$groups")" \
-    || die_undetermined "could not search runner groups for '$name'"
+    || die_undetermined "could not resolve the runner group selected by the $lane lane; configured name redacted"
   [ -n "$group" ] || die_undetermined \
-    "runner group '$name' (selected by the $lane lane) does not exist in $ORG; present groups: $(jq -r 'map(.name) | join(", ")' <<<"$groups")"
+    "runner group selected by the $lane lane does not exist in $ORG; configured and live group names redacted"
   printf '%s\n' "$group"
 }
 
@@ -318,19 +319,20 @@ slurp_strings() { jq -Rsc 'split("\n") | map(select(length > 0))'; }
 slurp_objects() { jq -sc '.'; }
 
 group_id_of() {
+  local group="$1" identity="$2"
   # `.id // empty` rather than `.id | tostring`: tostring turns a MISSING id into
   # the literal string "null" and exits 0, which builds `/runner-groups/null/...`
   # and only fails closed by accident when the API 404s. `// empty` produces no
   # output, so jq -e exits 4 and the guard below actually fires.
-  jq -er '.id // empty' <<<"$1" \
-    || die_undetermined "runner group object has no id: $1"
+  jq -er '.id // empty' <<<"$group" \
+    || die_undetermined "$identity runner group has no readable id; object contents redacted"
 }
 
 general_id=""
 general_members='[]'
 general_runners='[]'
 if [ -n "$general_group" ]; then
-  general_id="$(group_id_of "$general_group")" || exit 2
+  general_id="$(group_id_of "$general_group" 'general-lane')" || exit 2
   general_members="$(fetch "/orgs/$ORG/actions/runner-groups/$general_id/repositories?per_page=100" \
     '.repositories[].full_name' | slurp_strings)" || exit 2
   general_runners="$(fetch "/orgs/$ORG/actions/runner-groups/$general_id/runners?per_page=100" \
@@ -341,7 +343,7 @@ untrusted_id=""
 untrusted_members='[]'
 untrusted_runners='[]'
 if [ -n "$untrusted_group" ]; then
-  untrusted_id="$(group_id_of "$untrusted_group")" || exit 2
+  untrusted_id="$(group_id_of "$untrusted_group" 'untrusted-lane')" || exit 2
   untrusted_members="$(fetch "/orgs/$ORG/actions/runner-groups/$untrusted_id/repositories?per_page=100" \
     '.repositories[].full_name' | slurp_strings)" || exit 2
   untrusted_runners="$(fetch "/orgs/$ORG/actions/runner-groups/$untrusted_id/runners?per_page=100" \
@@ -377,9 +379,9 @@ while IFS=$'\t' read -r repo private; do
   fi
   case "$lane" in
     general) group="$general_group"; members="$general_members"
-             group_label="$GENERAL_GROUP_NAME (id $general_id)" ;;
+             group_label="runner group selected by the general lane (id $general_id)" ;;
     untrusted) group="$untrusted_group"; members="$untrusted_members"
-             group_label="$UNTRUSTED_GROUP_NAME (id $untrusted_id)" ;;
+             group_label="runner group selected by the untrusted lane (id $untrusted_id)" ;;
     # GitHub-hosted: every repository is admitted, so there is nothing to check.
     hosted) group="" ;;
     # Without this, an unhandled lane silently reuses the PREVIOUS iteration's
@@ -391,9 +393,9 @@ while IFS=$'\t' read -r repo private; do
 
   case "$privileged_lane" in
     general) privileged_group="$general_group"; privileged_members="$general_members"
-             privileged_group_label="$GENERAL_GROUP_NAME (id $general_id)" ;;
+             privileged_group_label="runner group selected by the general lane (id $general_id)" ;;
     untrusted) privileged_group="$untrusted_group"; privileged_members="$untrusted_members"
-             privileged_group_label="$UNTRUSTED_GROUP_NAME (id $untrusted_id)" ;;
+             privileged_group_label="runner group selected by the untrusted lane (id $untrusted_id)" ;;
     hosted) privileged_group="" ;;
     *) die_undetermined "unhandled privileged lane '$privileged_lane' for repository $repo" ;;
   esac
@@ -463,13 +465,13 @@ default_group_count="$(jq -r 'length' <<<"$default_groups")"
 # this check exists to close. Absence and multiplicity are the same kind of
 # surprise and get the same answer.
 [ "$default_group_count" = "1" ] || die_undetermined \
-  "expected exactly one runner group in $ORG marked default, found $default_group_count; GitHub marks one and a custom group cannot become it (ADR 0003), so this listing is not what it should be: $(jq -r 'map(.name) | join(", ")' <<<"$groups")"
+  "expected exactly one runner group in $ORG marked default, found $default_group_count; GitHub marks one and a custom group cannot become it (ADR 0003); group names redacted"
 default_group="$(jq -c '.[0]' <<<"$default_groups")" \
   || die_undetermined "could not read the default runner group"
 
-default_group_id="$(group_id_of "$default_group")" || exit 2
-default_group_name="$(jq -er '.name // empty' <<<"$default_group")" \
-  || die_undetermined "default runner group has no name: $default_group"
+default_group_id="$(group_id_of "$default_group" default)" || exit 2
+jq -e '(.name | type) == "string" and (.name | length) > 0' <<<"$default_group" >/dev/null \
+  || die_undetermined "default runner group has no readable name; object contents redacted"
 
 # Fetched unconditionally, and a failure here exits 2. Treating an unreadable
 # group as empty would turn this check into a rubber stamp — the fail-open shape
@@ -500,7 +502,9 @@ if jq -e 'length > 0' <<<"$strays" >/dev/null; then
   # repositories" would be a false claim about live org config the moment the
   # group is narrowed.
   default_group_traits="visibility \`$(jq -r '.visibility // "unknown"' <<<"$default_group")\`, public repositories $(jq -r 'if .allows_public_repositories == true then "allowed" elif .allows_public_repositories == false then "denied" else "unknown" end' <<<"$default_group")"
-  drift="$drift- runner(s) sit in the default group \`$default_group_name\` (id $default_group_id; $default_group_traits), which no lane selects and no label discipline governs: $(jq -r 'join(", ")' <<<"$strays"). Move them into \`$GENERAL_GROUP_NAME\` now, and register future runners with \`--runnergroup\` — provisioning lives in verjson-cli-cloud"$'\n'
+  general_destination="the runner group selected by the general lane"
+  [ -z "$general_id" ] || general_destination="$general_destination (id $general_id)"
+  drift="$drift- runner(s) sit in the default runner group (id $default_group_id; $default_group_traits), which no lane selects and no label discipline governs: $(jq -r 'join(", ")' <<<"$strays"). Move them into $general_destination now, and register future runners with \`--runnergroup\` — provisioning lives in verjson-cli-cloud"$'\n'
 fi
 
 printf '## Runner admission reconciliation (%s)\n\n' "$ORG"
@@ -512,5 +516,5 @@ if [ -n "$drift" ]; then
 fi
 
 larger_runner_count="$(jq -r 'length' <<<"$larger_runners")"
-printf 'No drift: variables are valid, every repository is admitted, all three lanes have online capacity, no runner sits in the default group `%s`, and %d reviewed GitHub-hosted larger runner(s) exactly match the repository allowlist.\n' \
-  "$default_group_name" "$larger_runner_count"
+printf 'No drift: variables are valid, every repository is admitted, all three lanes have online capacity, no runner sits in the default runner group (id %s), and %d reviewed GitHub-hosted larger runner(s) exactly match the repository allowlist.\n' \
+  "$default_group_id" "$larger_runner_count"

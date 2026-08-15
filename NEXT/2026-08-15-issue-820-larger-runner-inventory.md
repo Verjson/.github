@@ -13,4 +13,5 @@ The inventory query validates complete pagination and response shape; a 404, mal
 response, duplicate identity, count mismatch, or API failure is undetermined rather than
 clean. Renames and stale entries are drift. Durable reporting reuses #820, updates only the
 GitHub Actions bot's immutable-ID-owned comment, ignores foreign markers, and redacts
-organization-variable contents. Decided in ADR 0103.
+organization-variable contents. Runner-group values are replaced by lane identities and
+safe numeric IDs in errors, drift, remediation, and clean output. Decided in ADR 0103.
