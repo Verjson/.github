@@ -137,7 +137,7 @@ jobs:
         run: |
           set -euo pipefail
           umask 077
-          runner_temp="$(cd "$RUNNER_TEMP" && pwd -P)"
+          runner_temp="$(cd "${{ runner.temp }}" && pwd -P)"
           workspace="$(cd "$GITHUB_WORKSPACE" && pwd -P)"
           case "$runner_temp/" in
             "$workspace/"*)
@@ -159,7 +159,7 @@ jobs:
         if: github.repository_owner == 'Verjson'
         run: |
           set -euo pipefail
-          runner_temp="$(cd "$RUNNER_TEMP" && pwd -P)"
+          runner_temp="$(cd "${{ runner.temp }}" && pwd -P)"
           policy_dir="${VERJSON_HOSTED_SELECTOR_POLICY_DIR:?policy dependency path is unavailable}"
           case "$policy_dir" in
             "$runner_temp"/verjson-hosted-selector-policy.*) ;;
@@ -184,7 +184,7 @@ jobs:
           set -euo pipefail
           policy_dir="${VERJSON_HOSTED_SELECTOR_POLICY_DIR:-}"
           [ -n "$policy_dir" ] || exit 0
-          runner_temp="$(cd "$RUNNER_TEMP" && pwd -P)"
+          runner_temp="$(cd "${{ runner.temp }}" && pwd -P)"
           case "$policy_dir" in
             "$runner_temp"/verjson-hosted-selector-policy.*) ;;
             *)

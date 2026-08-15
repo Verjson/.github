@@ -39,6 +39,8 @@ assert install["if"] == "github.repository_owner == 'Verjson'"
 assert enforce["if"] == "github.repository_owner == 'Verjson'"
 assert cleanup["if"] == "${{ always() && github.repository_owner == 'Verjson' }}"
 assert cleanup["working-directory"] == "${{ github.workspace }}"
+for step in (install, enforce, cleanup):
+    assert 'runner_temp="$(cd "${{ runner.temp }}" && pwd -P)"' in step["run"]
 assert "--metered-families-only .github/workflows" in enforce["run"]
 assert "--visibility" not in enforce["run"]
 assert "python3 -S" in enforce["run"]
@@ -79,6 +81,9 @@ cleanup_script="$tmp/cleanup.sh"
 extract_step "Install hosted-selector policy dependency" "$install_script"
 extract_step "Refuse metered hosted selectors in Verjson callers" "$enforce_script"
 extract_step "Remove hosted-selector policy dependency" "$cleanup_script"
+for extracted in "$install_script" "$enforce_script" "$cleanup_script"; do
+  sed -i 's#${{ runner.temp }}#${RUNNER_TEMP}#g' "$extracted"
+done
 
 mkdir -p "$tmp/bin"
 cat >"$tmp/bin/curl" <<'SH'
