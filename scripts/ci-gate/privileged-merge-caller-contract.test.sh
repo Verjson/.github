@@ -100,6 +100,8 @@ if any("checkout" in str(item.get("uses", "")) for item in route["steps"]):
     sys.exit(1)
 if step.get("env") != {
     "PRIVILEGED_LANE": "${{ inputs.privileged_lane || vars.VERJSON_LANE_PRIVILEGED }}",
+    "TARGET_REPOSITORY": "${{ github.repository }}",
+    "TARGET_VISIBILITY": "${{ github.event.repository.visibility }}",
     "REPOSITORY_OWNER": "${{ github.repository_owner }}",
 }:
     sys.exit(1)
@@ -107,6 +109,10 @@ script = step["run"]
 required = (
     '[ "$REPOSITORY_OWNER" != Verjson ]',
     'echo "selector="',
+    'Verjson/.github|Verjson/verjson-github-runner)',
+    '[ "$TARGET_VISIBILITY" = public ]',
+    'echo \'selector=["ubuntu-24.04"]\'',
+    '[ "$TARGET_VISIBILITY" = private ]',
     '. == ["self-hosted", "general"]',
     '<<<"$PRIVILEGED_LANE"',
 )
@@ -135,12 +141,18 @@ def valid(candidate):
     step = next((item for item in route.get("steps", []) if item.get("id") == "route"), {})
     if step.get("env") != {
         "PRIVILEGED_LANE": "${{ inputs.privileged_lane || vars.VERJSON_LANE_PRIVILEGED }}",
+        "TARGET_REPOSITORY": "${{ github.repository }}",
+        "TARGET_VISIBILITY": "${{ github.event.repository.visibility }}",
         "REPOSITORY_OWNER": "${{ github.repository_owner }}",
     }:
         return False
     script = step.get("run", "")
     required = (
         'if [ "$REPOSITORY_OWNER" != Verjson ]; then',
+        'Verjson/.github|Verjson/verjson-github-runner)',
+        '[ "$TARGET_VISIBILITY" = public ]',
+        'echo \'selector=["ubuntu-24.04"]\'',
+        '[ "$TARGET_VISIBILITY" = private ]',
         "jq -e '. == [\"self-hosted\", \"general\"]'",
         '<<<"$PRIVILEGED_LANE"',
         'echo "selector=$(jq -c . <<<"$PRIVILEGED_LANE")"',
@@ -160,8 +172,8 @@ def route_step(candidate):
 mutations = []
 widened = copy.deepcopy(workflow)
 route_step(widened)["run"] = route_step(widened)["run"].replace(
-    '. == ["self-hosted", "general"]',
-    '. == ["self-hosted", "general"] or . == ["ubuntu-24.04"]')
+    'Verjson/.github|Verjson/verjson-github-runner)',
+    'Verjson/*)')
 mutations.append(widened)
 
 fallback = copy.deepcopy(workflow)
@@ -179,8 +191,57 @@ route_step(api_read)["run"] = (
     route_step(api_read)["run"])
 mutations.append(api_read)
 
+private_hosted = copy.deepcopy(workflow)
+route_step(private_hosted)["run"] = route_step(private_hosted)["run"].replace(
+    '. == ["self-hosted", "general"]',
+    '. == ["self-hosted", "general"] or . == ["ubuntu-24.04"]')
+mutations.append(private_hosted)
+
 sys.exit(0 if all(not valid(candidate) for candidate in mutations) else 1)
 PY
+
+python3 - "$canonical" "$tmp/route.sh" <<'PY'
+import sys, yaml
+d = yaml.safe_load(open(sys.argv[1]))
+route = d["jobs"]["resolve_privileged_route"]
+step = next(item for item in route["steps"] if item.get("id") == "route")
+open(sys.argv[2], "w").write(step["run"])
+PY
+
+assert_resolver() {
+  local owner="$1" repository="$2" visibility="$3" lane="$4" expected_rc="$5" expected_selector="$6" label="$7"
+  local output="$tmp/route-output"
+  : >"$output"
+  REPOSITORY_OWNER="$owner" TARGET_REPOSITORY="$repository" TARGET_VISIBILITY="$visibility" \
+  PRIVILEGED_LANE="$lane" GITHUB_OUTPUT="$output" bash "$tmp/route.sh" >/dev/null 2>&1
+  local rc=$?
+  local valid=false
+  if [ "$expected_rc" -ne 0 ]; then
+    [ "$rc" -eq "$expected_rc" ] && [ ! -s "$output" ] && valid=true
+  else
+    [ "$rc" -eq 0 ] && grep -qxF "selector=$expected_selector" "$output" && valid=true
+  fi
+  if [ "$valid" = true ]; then
+    pass "$label"
+  else
+    fail "$label (rc=$rc selector=$(tr '\n' ' ' <"$output"))"
+  fi
+}
+
+assert_resolver Verjson Verjson/.github public '["self-hosted","general"]' 0 '["ubuntu-24.04"]' \
+  "staged .github terminal merge resolves to exact hosted capacity"
+assert_resolver Verjson Verjson/verjson-github-runner public '["self-hosted","general"]' 0 '["ubuntu-24.04"]' \
+  "staged runner terminal merge resolves to exact hosted capacity"
+assert_resolver Verjson Verjson/new-public-consumer public '["self-hosted","general"]' 1 '' \
+  "an unproven public Verjson consumer fails closed"
+assert_resolver Verjson Verjson/private-consumer private '["self-hosted","general"]' 0 '["self-hosted","general"]' \
+  "a private Verjson consumer retains the exact persistent selector"
+assert_resolver Verjson Verjson/private-consumer private '["ubuntu-24.04"]' 1 '' \
+  "a private Verjson consumer cannot opt into unproven hosted capacity"
+assert_resolver Verjson Verjson/private-consumer public '["self-hosted","general"]' 1 '' \
+  "repository visibility drift fails closed before terminal credentials"
+assert_resolver Acme Acme/widgets public '' 0 '' \
+  "an external caller keeps the portable caller-controlled route"
 
 python3 - "$canonical" <<'PY' && pass "migration route output wins before legacy selectors" \
   || fail "resolved organization policy does not have first routing precedence"

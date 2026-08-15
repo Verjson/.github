@@ -5,7 +5,7 @@
 # indistinguishable from "everything passed". The gate concluded green and
 # auto-merged a PR that was never built, tested or linted.
 #
-# Same house method as gate-hold-disable.test.sh / gate-queue.test.sh: awk-extract the exact
+# Same house method as gate-hold-disable.test.sh: awk-extract the exact
 # `run:` block from ai-review-merge.yml (single source of truth, so the test can't
 # drift from the shipped logic) and exercise it against a stubbed `gh`.
 # Plain bash + awk + jq; no test-framework dependency (runs on the bare pool).

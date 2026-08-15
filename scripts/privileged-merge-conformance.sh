@@ -5,12 +5,6 @@ readonly ORG="${PRIVILEGED_MERGE_ORG:-Verjson}"
 readonly SECRET_NAME="${PRIVILEGED_MERGE_SECRET_NAME:-ORG_ADMIN_TOKEN}"
 readonly CALLER_PATH=".github/workflows/ai-privileged-merge.yml"
 readonly GENERATOR="scripts/gen-privileged-merge-caller.sh"
-readonly CONTRACT_SHA="${PRIVILEGED_MERGE_CONTRACT_SHA:-}"
-
-[[ "$CONTRACT_SHA" =~ ^[0-9a-f]{40}$ ]] || {
-  echo "::error title=Invalid privileged merge contract SHA::PRIVILEGED_MERGE_CONTRACT_SHA must be a lowercase 40-hex commit SHA."
-  exit 1
-}
 
 if [ -z "${GH_TOKEN:-}" ]; then
   echo "::error title=Missing ORG_ADMIN_TOKEN::Fleet conformance cannot verify privileged merge callers or organization-secret access."
@@ -28,11 +22,6 @@ command -v base64 >/dev/null 2>&1 || {
   echo "::error title=Missing caller generator::Fleet conformance cannot load $GENERATOR."
   exit 1
 }
-canonical_caller="$(bash "$GENERATOR" "$CONTRACT_SHA")" || {
-  echo "::error title=Caller generation failed::Fleet conformance cannot establish canonical caller content."
-  exit 1
-}
-
 visibility="$(
   gh api "orgs/$ORG/actions/secrets/$SECRET_NAME" --jq .visibility
 )" || {
@@ -74,10 +63,11 @@ if [ "$visibility" = selected ]; then
 fi
 
 failures=0
-count=0
+repositories_scanned=0
+consumers=0
 while IFS= read -r repository; do
   [ -n "$repository" ] || continue
-  count=$((count + 1))
+  repositories_scanned=$((repositories_scanned + 1))
   metadata="$(gh api "repos/$repository" --jq '[.default_branch,.visibility] | @tsv')" || {
     echo "::error title=Unreadable repository metadata::repository=$repository"
     failures=$((failures + 1))
@@ -96,19 +86,49 @@ while IFS= read -r repository; do
     --jq .content 2>&1)"; then
     caller_error="$caller_response"
     if grep -q 'HTTP 404' <<<"$caller_error"; then
-      echo "::error title=Missing privileged merge caller::repository=$repository path=$CALLER_PATH remediation='scripts/gen-privileged-merge-caller.sh $CONTRACT_SHA > $CALLER_PATH'"
+      # Secret visibility is not consumer registration: this credential is
+      # organization-wide, while only repositories with a caller can invoke
+      # the reusable terminal workflow.
+      continue
     else
       echo "::error title=Unreadable privileged merge caller::repository=$repository path=$CALLER_PATH"
     fi
     failures=$((failures + 1))
+    continue
   elif ! caller_content="$(printf '%s' "$caller_response" | base64 --decode 2>/dev/null)"; then
     echo "::error title=Unreadable privileged merge caller::repository=$repository path=$CALLER_PATH reason='invalid base64 content'"
     failures=$((failures + 1))
-  elif [ "$caller_content" != "$canonical_caller" ]; then
-    echo "::error title=Non-canonical privileged merge caller::repository=$repository path=$CALLER_PATH remediation='scripts/gen-privileged-merge-caller.sh $CONTRACT_SHA > $CALLER_PATH'"
-    failures=$((failures + 1))
+    continue
   fi
-  unset caller_response caller_content caller_error
+
+  mapfile -t caller_pins < <(
+    sed -nE 's#^[[:space:]]+uses: Verjson/\.github/\.github/workflows/ai-privileged-merge\.yml@([0-9a-f]{40})[[:space:]]*$#\1#p' \
+      <<<"$caller_content"
+  )
+  # Verjson/.github owns the canonical implementation at the caller path. It is
+  # a direct consumer, but not a generated caller whose bytes this audit owns.
+  if [ "${#caller_pins[@]}" -eq 0 ] && [ "$repository" = "$ORG/.github" ]; then
+    unset caller_response caller_content caller_error caller_pins
+    continue
+  fi
+
+  consumers=$((consumers + 1))
+  if [ "${#caller_pins[@]}" -ne 1 ]; then
+    echo "::error title=Invalid privileged merge caller pin::repository=$repository path=$CALLER_PATH reason='expected exactly one immutable canonical workflow pin'"
+    failures=$((failures + 1))
+  else
+    caller_contract_sha="${caller_pins[0]}"
+    canonical_caller="$(bash "$GENERATOR" "$caller_contract_sha")" || {
+      echo "::error title=Caller generation failed::repository=$repository contract_sha=$caller_contract_sha"
+      failures=$((failures + 1))
+      canonical_caller=""
+    }
+    if [ -n "$canonical_caller" ] && [ "$caller_content" != "$canonical_caller" ]; then
+      echo "::error title=Non-canonical privileged merge caller::repository=$repository path=$CALLER_PATH remediation='scripts/gen-privileged-merge-caller.sh $caller_contract_sha > $CALLER_PATH'"
+      failures=$((failures + 1))
+    fi
+  fi
+  unset caller_response caller_content caller_error caller_pins caller_contract_sha canonical_caller
 
   has_secret=false
   case "$visibility" in
@@ -126,13 +146,17 @@ while IFS= read -r repository; do
   fi
 done <<<"$repositories"
 
-if [ "$count" -eq 0 ]; then
+if [ "$repositories_scanned" -eq 0 ]; then
   echo "::error title=Empty managed fleet::No active $ORG repositories were available for conformance verification."
   exit 1
 fi
+if [ "$consumers" -eq 0 ]; then
+  echo "::error title=Empty privileged consumer inventory::No generated privileged merge callers were found across $repositories_scanned active repositories."
+  exit 1
+fi
 if [ "$failures" -ne 0 ]; then
-  echo "result=nonconformant repositories=$count failures=$failures"
+  echo "result=nonconformant repositories_scanned=$repositories_scanned consumers=$consumers failures=$failures"
   exit 1
 fi
 
-echo "result=conformant repositories=$count"
+echo "result=conformant repositories_scanned=$repositories_scanned consumers=$consumers"

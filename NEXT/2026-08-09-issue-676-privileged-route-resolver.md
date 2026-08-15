@@ -1,10 +1,9 @@
 ---
 date: 2026-08-09
 issue: 676
-title: Stage organization-authoritative privileged route resolution
+title: Stage repository-bound hosted privileged routing
 ---
 
-Adds a checkout-free resolver that reads the Verjson privileged lane with a dedicated
-read-only token and gives that selector first precedence for regenerated callers. The
-existing route remains available only during caller migration; the live privileged
-variable remains on the DigitalOcean general fleet.
+Route terminal merge authority for the two proven public Verjson consumers to exact GitHub-hosted capacity while private consumers remain fail-closed on the admitted persistent selector.
+
+Fleet conformance now inventories actual generated callers and validates stable canonical bytes at each caller's immutable pin instead of rebinding every caller to an unrelated audit event SHA. ADR 0089 records the bounded rollout and remaining private-capacity, caller-regeneration, and canary gates.

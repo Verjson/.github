@@ -42,11 +42,17 @@ case "$*" in
     esac
     printf '%s\n' "$BETA_CONTENT"
     ;;
+  api*"repos/Verjson/.github/contents/.github/workflows/ai-privileged-merge.yml?ref=main"*"--jq .content")
+    printf '%s\n' "$CANONICAL_CONTENT"
+    ;;
   "api repos/Verjson/alpha --jq [.default_branch,.visibility] | @tsv")
     printf '%s\n' $'main\tpublic'
     ;;
   "api repos/Verjson/beta --jq [.default_branch,.visibility] | @tsv")
     printf '%s\n' $'trunk\tprivate'
+    ;;
+  "api repos/Verjson/.github --jq [.default_branch,.visibility] | @tsv")
+    printf '%s\n' $'main\tpublic'
     ;;
   *)
     printf 'unexpected gh call: %s\n' "$*" >&2
@@ -60,7 +66,6 @@ run_audit() {
   local canonical
   canonical="$(bash "$generator" "$contract_sha" | base64 | tr -d '\n')"
   PATH="$tmp/bin:$PATH" GH_TOKEN="${GH_TOKEN-test-token}" \
-    PRIVILEGED_MERGE_CONTRACT_SHA="${PRIVILEGED_MERGE_CONTRACT_SHA-$contract_sha}" \
     ACTIVE_REPOSITORIES="${ACTIVE_REPOSITORIES-Verjson/alpha}" \
     SECRET_VISIBILITY="${SECRET_VISIBILITY-selected}" \
     SECRET_REPOSITORIES="${SECRET_REPOSITORIES-Verjson/alpha}" \
@@ -68,24 +73,26 @@ run_audit() {
     BETA_CALLER="${BETA_CALLER-present}" \
     ALPHA_CONTENT="${ALPHA_CONTENT-$canonical}" \
     BETA_CONTENT="${BETA_CONTENT-$canonical}" \
+    CANONICAL_CONTENT="${CANONICAL_CONTENT-$(printf '%s\n' 'name: AI terminal merge promotion' | base64 | tr -d '\n')}" \
     bash "$audit" >"$tmp/out" 2>&1
 }
 
 run_audit \
-  && grep -q 'result=conformant repositories=1' "$tmp/out" \
+  && grep -q 'result=conformant repositories_scanned=1 consumers=1' "$tmp/out" \
   && pass "active managed repository with caller and selected secret access conforms" \
   || fail "conformant repository did not pass"
+
+ACTIVE_REPOSITORIES=$'Verjson/.github\nVerjson/alpha' run_audit \
+  && grep -q 'result=conformant repositories_scanned=2 consumers=1' "$tmp/out" \
+  && pass "canonical implementation is not misclassified as its own generated caller" \
+  || fail "canonical repository polluted the generated-consumer inventory"
 
 ACTIVE_REPOSITORIES=$'Verjson/alpha\nVerjson/beta' \
   SECRET_REPOSITORIES=$'Verjson/alpha\nVerjson/beta' \
   BETA_CALLER=missing run_audit \
-  && fail "missing generated caller reported green" \
-  || {
-    grep -q 'repository=Verjson/beta' "$tmp/out" \
-      && grep -q 'scripts/gen-privileged-merge-caller.sh' "$tmp/out" \
-      && pass "missing caller fails with repository-scoped generator remediation" \
-      || fail "missing caller lacks actionable repository-scoped evidence"
-  }
+  && grep -q 'result=conformant repositories_scanned=2 consumers=1' "$tmp/out" \
+  && pass "repositories without a privileged caller are not invented as consumers" \
+  || fail "non-consumer repository was treated as a missing caller"
 
 ACTIVE_REPOSITORIES=$'Verjson/alpha\nVerjson/beta' \
   SECRET_REPOSITORIES=$'Verjson/alpha\nVerjson/beta' \
@@ -100,7 +107,7 @@ ACTIVE_REPOSITORIES=$'Verjson/alpha\nVerjson/beta' \
 
 ACTIVE_REPOSITORIES=$'Verjson/alpha\nVerjson/beta' \
   SECRET_REPOSITORIES=$'Verjson/alpha\nVerjson/beta' \
-  BETA_CONTENT="$(printf '%s\n' '# obsolete generated caller' | base64 | tr -d '\n')" run_audit \
+  BETA_CONTENT="$(bash "$generator" "$contract_sha" | sed 's/name: AI privileged merge/name: drifted privileged merge/' | base64 | tr -d '\n')" run_audit \
   && fail "non-canonical generated caller reported green" \
   || {
     grep -q 'Non-canonical privileged merge caller' "$tmp/out" \
@@ -130,9 +137,22 @@ ACTIVE_REPOSITORIES=$'Verjson/alpha\nVerjson/beta' \
 
 ACTIVE_REPOSITORIES=$'Verjson/alpha\nVerjson/beta' \
   SECRET_VISIBILITY=all SECRET_REPOSITORIES='' run_audit \
-  && grep -q 'result=conformant repositories=2' "$tmp/out" \
+  && grep -q 'result=conformant repositories_scanned=2 consumers=2' "$tmp/out" \
   && pass "organization-wide secret visibility admits every active repository" \
   || fail "all-repository secret visibility was not honored"
+
+ALPHA_CONTENT="$(bash "$generator" 0123456789abcdef0123456789abcdef01234567 | base64 | tr -d '\n')" run_audit \
+  && grep -q 'result=conformant repositories_scanned=1 consumers=1' "$tmp/out" \
+  && pass "caller bytes are canonical for their stable immutable pin, not the audit event SHA" \
+  || fail "audit incorrectly rebound canonical caller bytes to an unrelated event SHA"
+
+ALPHA_CONTENT="$(bash "$generator" "$contract_sha" | sed "s/@$contract_sha/@main/" | base64 | tr -d '\n')" run_audit \
+  && fail "mutable caller pin reported green" \
+  || {
+    grep -q 'Invalid privileged merge caller pin' "$tmp/out" \
+      && pass "consumer inventory fails closed on a mutable canonical workflow pin" \
+      || fail "mutable caller pin lacks actionable evidence"
+  }
 
 GH_TOKEN='' run_audit \
   && fail "missing audit credential reported green" \
@@ -140,14 +160,6 @@ GH_TOKEN='' run_audit \
     grep -q 'Missing ORG_ADMIN_TOKEN' "$tmp/out" \
       && pass "missing audit credential fails before claiming fleet conformance" \
       || fail "missing audit credential lacks an actionable error"
-  }
-
-PRIVILEGED_MERGE_CONTRACT_SHA=main run_audit \
-  && fail "mutable audit contract ref reported green" \
-  || {
-    grep -q 'Invalid privileged merge contract SHA' "$tmp/out" \
-      && pass "fleet audit rejects a mutable contract ref before conformance claims" \
-      || fail "invalid contract ref lacks an actionable error"
   }
 
 if python3 - "$workflow" <<'PY'
@@ -175,7 +187,6 @@ assert checkout["with"] == {
 }
 assert audit["env"] == {
     "GH_TOKEN": "${{ secrets.ORG_ADMIN_TOKEN }}",
-    "PRIVILEGED_MERGE_CONTRACT_SHA": "${{ github.sha }}",
 }
 assert audit["run"] == "bash scripts/privileged-merge-conformance.sh"
 assert cleanup["if"] == "${{ always() }}"
@@ -183,7 +194,7 @@ assert cleanup["working-directory"] == "${{ github.workspace }}"
 assert cleanup["run"] == f'rm -rf "{source}"'
 PY
 then
-  pass "scheduled fleet audit binds conformance to its immutable event SHA"
+  pass "scheduled fleet audit binds its code checkout, not every caller, to the event SHA"
 else
   fail "scheduled fleet audit is missing or its privileged execution surface drifted"
 fi

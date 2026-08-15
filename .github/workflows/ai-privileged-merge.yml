@@ -86,15 +86,39 @@ jobs:
         env:
           PRIVILEGED_LANE: ${{ inputs.privileged_lane || vars.VERJSON_LANE_PRIVILEGED }}
           REPOSITORY_OWNER: ${{ github.repository_owner }}
+          TARGET_REPOSITORY: ${{ github.repository }}
+          TARGET_VISIBILITY: ${{ github.event.repository.visibility }}
         run: |
           set -euo pipefail
           if [ "$REPOSITORY_OWNER" != Verjson ]; then
             echo "selector=" >>"$GITHUB_OUTPUT"
             exit 0
           fi
+
+          case "$TARGET_REPOSITORY" in
+            Verjson/.github|Verjson/verjson-github-runner)
+              [ "$TARGET_VISIBILITY" = public ] || {
+                echo "::error::staged hosted routing requires an exact public repository binding"
+                exit 1
+              }
+              echo 'selector=["ubuntu-24.04"]' >>"$GITHUB_OUTPUT"
+              exit 0
+              ;;
+            Verjson/*)
+              [ "$TARGET_VISIBILITY" = private ] || {
+                echo "::error::unregistered public repositories cannot receive privileged hosted routing"
+                exit 1
+              }
+              ;;
+            *)
+              echo "::error::repository identity does not match its Verjson owner context"
+              exit 1
+              ;;
+          esac
+
           jq -e '. == ["self-hosted", "general"]' \
             <<<"$PRIVILEGED_LANE" >/dev/null || {
-              echo "::error::stage-one policy permits only the admitted DigitalOcean privileged selector"
+              echo "::error::private stage-one policy permits only the admitted DigitalOcean privileged selector"
               exit 1
             }
           echo "selector=$(jq -c . <<<"$PRIVILEGED_LANE")" >>"$GITHUB_OUTPUT"
