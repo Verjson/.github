@@ -6,6 +6,8 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import fcntl
+import hashlib
+import json
 import os
 import re
 import subprocess
@@ -657,6 +659,7 @@ def select_release_fragments(
     repo_root: Path,
     selected_names: list[str],
     component: str | None = None,
+    allow_empty: bool = False,
 ) -> list[Fragment]:
     entries = fragments(repo_root)
     by_name = {entry.path.name: entry for entry in entries if entry.canonical}
@@ -676,9 +679,40 @@ def select_release_fragments(
                 f"selected fragment belongs to component {actual}, not {expected}"
             )
         selected.append(entry)
-    if not selected:
+    if not selected and not allow_empty:
         raise ChangelogError("release selected no fragments")
     return selected
+
+
+def selection_digest(
+    repo_root: Path,
+    selected_names: list[str],
+    component: str | None = None,
+    prefix: str = "v",
+) -> str | None:
+    if SEMVER_PREFIX.fullmatch(prefix) is None:
+        raise ChangelogError(
+            "version prefix must be v or a lowercase stream name followed by -v"
+        )
+    selected = select_release_fragments(
+        repo_root,
+        selected_names,
+        component,
+        allow_empty=True,
+    )
+    if not selected:
+        return None
+    canonical = json.dumps(
+        {
+            "component": component or "",
+            "fragments": sorted(entry.identity for entry in selected),
+            "prefix": prefix,
+        },
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 def next_version(
@@ -891,6 +925,18 @@ def parser() -> argparse.ArgumentParser:
         default="v",
         help="select the version history prefix; defaults to v",
     )
+    digest_parser = subparsers.add_parser(
+        "selection-digest",
+        help="print a canonical digest for one release selection",
+        description=(
+            "Print a stable digest of the component, version prefix, and selected "
+            "fragment identities; print nothing when the selected stream is empty."
+        ),
+    )
+    digest_parser.add_argument("--repo-root", type=Path, default=Path.cwd())
+    digest_parser.add_argument("--fragment", action="append", default=[])
+    digest_parser.add_argument("--component")
+    digest_parser.add_argument("--prefix", default="v")
     return result
 
 
@@ -926,6 +972,15 @@ def main() -> int:
                     prefix=args.prefix,
                 )
             )
+        elif args.command == "selection-digest":
+            digest = selection_digest(
+                repo_root,
+                args.fragment,
+                component=args.component,
+                prefix=args.prefix,
+            )
+            if digest is not None:
+                print(digest)
     except ChangelogError as exc:
         print(f"changelog: {exc}", file=sys.stderr)
         return 1

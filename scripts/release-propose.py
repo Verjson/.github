@@ -16,10 +16,12 @@ from urllib.parse import quote
 PROPOSAL_MARKER = "<!-- verjson-release-proposal:v1 -->"
 REPOSITORY = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 VERSION = re.compile(
-    r"^(?:v|[a-z][a-z0-9-]*-v)(?:0|[1-9][0-9]*)\."
+    r"^(?:[a-z0-9][a-z0-9._-]*-)?v(?:0|[1-9][0-9]*)\."
     r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)"
     r"(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$"
 )
+PREFIX = re.compile(r"^(?:[a-z0-9][a-z0-9._-]*-)?v$")
+SELECTOR_DIGEST = re.compile(r"^[0-9a-f]{64}$")
 WORKFLOW = re.compile(r"^[A-Za-z0-9_.-]+\.ya?ml$")
 
 
@@ -75,12 +77,21 @@ class GitHubClient:
         )
 
 
-def proposal_body(version: str, branch: str, head_sha: str, preview: str) -> str:
+def proposal_body(
+    version: str,
+    prefix: str,
+    selector_digest: str,
+    branch: str,
+    head_sha: str,
+    preview: str,
+) -> str:
     return (
         f"{PROPOSAL_MARKER}\n\n"
         "This issue is maintained by the canonical release proposer. "
         "Re-running it updates this surface instead of opening another issue.\n\n"
         f"Proposed version: `{version}`  \n"
+        f"Version namespace: `{prefix}`  \n"
+        f"Selection digest: `{selector_digest}`  \n"
         f"Default branch: `{branch}`  \n"
         f"Derived head: `{head_sha}`\n\n"
         "## Released changelog preview\n\n"
@@ -117,12 +128,21 @@ def ensure_proposal(
     client: GitHubClient,
     repository: str,
     version: str,
+    prefix: str,
+    selector_digest: str,
     branch: str,
     head_sha: str,
     preview: str,
 ) -> str:
     title = f"Release proposal: {version}"
-    body = proposal_body(version, branch, head_sha, preview)
+    body = proposal_body(
+        version,
+        prefix,
+        selector_digest,
+        branch,
+        head_sha,
+        preview,
+    )
     proposals = open_proposals(client, repository)
     if len(proposals) > 1:
         numbers = sorted(str(issue.get("number", "?")) for issue in proposals)
@@ -187,9 +207,9 @@ def require_current_head(
 
 
 def matching_dispatch(
-    runs: list[dict[str, object]], version: str, head_sha: str
+    runs: list[dict[str, object]], version: str, head_sha: str, selector_digest: str
 ) -> dict[str, object] | None:
-    title = f"Release {version}"
+    title = f"Release {version} {selector_digest}"
     return next(
         (
             run
@@ -209,13 +229,18 @@ def ensure_dispatch(
     branch: str,
     head_sha: str,
     version: str,
+    prefix: str,
+    selector_digest: str,
     fragments: str,
     component: str,
     acknowledgement_attempts: int,
     acknowledgement_delay: float,
 ) -> str:
     existing = matching_dispatch(
-        workflow_runs(client, repository, workflow), version, head_sha
+        workflow_runs(client, repository, workflow),
+        version,
+        head_sha,
+        selector_digest,
     )
     if existing is not None:
         return f"release dispatch already exists as run {existing.get('id', '?')}"
@@ -227,6 +252,9 @@ def ensure_dispatch(
             "ref": branch,
             "inputs": {
                 "version": version,
+                "prefix": prefix,
+                "expected_head": head_sha,
+                "selector_digest": selector_digest,
                 "fragments": fragments,
                 "component": component,
             },
@@ -234,7 +262,10 @@ def ensure_dispatch(
     )
     for attempt in range(acknowledgement_attempts):
         observed = matching_dispatch(
-            workflow_runs(client, repository, workflow), version, head_sha
+            workflow_runs(client, repository, workflow),
+            version,
+            head_sha,
+            selector_digest,
         )
         if observed is not None:
             return f"dispatched release as run {observed.get('id', '?')}"
@@ -253,6 +284,8 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--branch", required=True)
     result.add_argument("--head-sha", required=True)
     result.add_argument("--version", required=True)
+    result.add_argument("--prefix", required=True)
+    result.add_argument("--selector-digest", required=True)
     result.add_argument("--fragments", default="")
     result.add_argument("--component", default="")
     result.add_argument("--preview-file", type=Path, required=True)
@@ -267,6 +300,10 @@ def main() -> int:
         raise ProposalError("repository must be an owner/name pair")
     if VERSION.fullmatch(args.version) is None:
         raise ProposalError("version must be an exact supported release tag")
+    if PREFIX.fullmatch(args.prefix) is None or not args.version.startswith(args.prefix):
+        raise ProposalError("prefix must be canonical and match the exact release tag")
+    if SELECTOR_DIGEST.fullmatch(args.selector_digest) is None:
+        raise ProposalError("selector digest must be a lowercase SHA-256")
     if WORKFLOW.fullmatch(args.workflow) is None:
         raise ProposalError("workflow must be a repository workflow filename")
     if not re.fullmatch(r"[0-9a-f]{40}", args.head_sha):
@@ -289,6 +326,8 @@ def main() -> int:
             client,
             args.repository,
             args.version,
+            args.prefix,
+            args.selector_digest,
             args.branch,
             args.head_sha,
             preview,
@@ -301,6 +340,8 @@ def main() -> int:
             args.branch,
             args.head_sha,
             args.version,
+            args.prefix,
+            args.selector_digest,
             args.fragments,
             args.component,
             args.acknowledgement_attempts,

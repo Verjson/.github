@@ -135,8 +135,8 @@ mkdir "$stamp_root/compat"
 printf '{"name":"same-version-compat-fixture","version":"0.1.0"}\n' >"$stamp_root/compat/package.json"
 if (
   cd "$stamp_root" &&
-  VERSION=v0.1.0 eval "$stamp_command" >/dev/null &&
-  VERSION=v0.2.0 eval "$stamp_command" >/dev/null &&
+  PACKAGE_VERSION=0.1.0 eval "$stamp_command" >/dev/null &&
+  PACKAGE_VERSION=0.2.0 eval "$stamp_command" >/dev/null &&
   [ "$(node -p "require('./package.json').version")" = "0.2.0" ] &&
   [ "$(node -p "require('./compat/package.json').version")" = "0.2.0" ]
 ); then
@@ -868,7 +868,7 @@ text = open(path, encoding="utf-8").read()
 start = text.index("      - name: Stamp the dispatched package versions")
 end = text.index("      - name:", start + 1)
 step = text[start:end]
-needle = "          VERSION: ${{ inputs.version }}\n"
+needle = "          PACKAGE_VERSION: ${{ steps.release-version.outputs.package-version }}\n"
 if needle not in step:
     raise SystemExit("stamp step fixture no longer matches generated output")
 step = step.replace(
@@ -954,6 +954,7 @@ PY
 # Keying the checks on one filename let any other name collect none of them.
 rename_release_caller() {
   mv "$1/.github/workflows/release.yml" "$1/.github/workflows/publish-package.yml"
+  rm "$1/.github/workflows/release-propose.yml"
   sed -i '/^    needs: verify$/d' "$1/.github/workflows/publish-package.yml"
 }
 

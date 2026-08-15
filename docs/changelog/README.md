@@ -329,11 +329,21 @@ scripts/gen-changelog-caller.sh release-propose "$PIN" --autonomy dispatch \
 The generated `propose` caller receives `issues: write` but not `actions: write`.
 The generated `dispatch` caller receives `actions: write` but not `issues: write`.
 The reusable workflow validates that it is running from the default branch,
-uses `next-version` and `render-next --as-released` against the same selected
-component and fragments, and serializes decisions per repository. Proposal mode
-updates one marker-owned open issue in place. Dispatch mode first looks for an
-exact-version, exact-head `Release` run and waits for the dispatched run to
-become visible, so retrying the proposer does not create a second release run.
+uses `selection-digest`, `next-version`, and `render-next --as-released` against
+the same prefix, component, and fragments, and serializes decisions per
+repository. A scheduled run with no selected fragments is a green no-op, while
+an invalid explicit selector still fails. Proposal mode updates one marker-owned
+open issue in place. Dispatch mode first looks for an exact-version, exact-head,
+exact-selection `Release` run and waits for the dispatched run to become visible,
+so retrying the same proposer selection does not create a second release run and
+a different subset is never suppressed merely because it derives the same tag.
+
+The dispatched `Release` checks the receipt head before checkout or verification
+and recomputes its selector digest through the immutable contract before release
+state, snapshot, or publication. It also carries the chosen tag namespace through
+the generated snapshot and reusable Node publisher: `python-v1.2.3` is a tag in
+the `python-v` namespace and publishes package version `1.2.3`. Prefix remains
+independent from component; neither is inferred from the other.
 
 Neither mode runs `changelog.py release`, consumes a fragment, creates a tag, or
 pushes a commit. Dispatch mode can only invoke the generated `Release` workflow;

@@ -38,6 +38,8 @@ class ReleaseProposalEffectsTests(unittest.TestCase):
     repository = "Verjson/example"
     branch = "main"
     version = "v1.2.3"
+    prefix = "v"
+    selector = "b" * 64
     head = "a" * 40
     issue_path = "repos/Verjson/example/issues?state=open&per_page=100"
     runs_path = (
@@ -51,7 +53,12 @@ class ReleaseProposalEffectsTests(unittest.TestCase):
             "title": f"Release proposal: {self.version}",
             "user": {"login": "github-actions[bot]"},
             "body": release_propose.proposal_body(
-                self.version, self.branch, self.head, preview
+                self.version,
+                self.prefix,
+                self.selector,
+                self.branch,
+                self.head,
+                preview,
             ),
         }
 
@@ -68,7 +75,14 @@ class ReleaseProposalEffectsTests(unittest.TestCase):
         )
 
         outcome = release_propose.ensure_proposal(
-            client, self.repository, self.version, self.branch, self.head, "Preview.\n"
+            client,
+            self.repository,
+            self.version,
+            self.prefix,
+            self.selector,
+            self.branch,
+            self.head,
+            "Preview.\n",
         )
 
         self.assertEqual("release proposal #42 is already current", outcome)
@@ -78,7 +92,14 @@ class ReleaseProposalEffectsTests(unittest.TestCase):
         client = FakeClient({self.issue_path: [[[self.proposal(42, "Old.")]]]})
 
         outcome = release_propose.ensure_proposal(
-            client, self.repository, self.version, self.branch, self.head, "New.\n"
+            client,
+            self.repository,
+            self.version,
+            self.prefix,
+            self.selector,
+            self.branch,
+            self.head,
+            "New.\n",
         )
 
         self.assertEqual("updated release proposal #42", outcome)
@@ -92,7 +113,14 @@ class ReleaseProposalEffectsTests(unittest.TestCase):
         client = FakeClient({self.issue_path: [[[]]]})
 
         outcome = release_propose.ensure_proposal(
-            client, self.repository, self.version, self.branch, self.head, "Preview.\n"
+            client,
+            self.repository,
+            self.version,
+            self.prefix,
+            self.selector,
+            self.branch,
+            self.head,
+            "Preview.\n",
         )
 
         self.assertEqual("created release proposal", outcome)
@@ -116,7 +144,14 @@ class ReleaseProposalEffectsTests(unittest.TestCase):
             release_propose.ProposalError, "multiple open release proposal"
         ):
             release_propose.ensure_proposal(
-                client, self.repository, self.version, self.branch, self.head, "Preview.\n"
+                client,
+                self.repository,
+                self.version,
+                self.prefix,
+                self.selector,
+                self.branch,
+                self.head,
+                "Preview.\n",
             )
 
         self.assertEqual([], client.mutations)
@@ -133,6 +168,8 @@ class ReleaseProposalEffectsTests(unittest.TestCase):
                 client,
                 self.repository,
                 self.version,
+                self.prefix,
+                self.selector,
                 self.branch,
                 self.head,
                 "Preview.\n",
@@ -140,12 +177,17 @@ class ReleaseProposalEffectsTests(unittest.TestCase):
 
         self.assertEqual([], client.mutations)
 
-    def run_record(self, run_id: int = 91) -> dict[str, object]:
+    def run_record(
+        self,
+        run_id: int = 91,
+        selector: str | None = None,
+        head: str | None = None,
+    ) -> dict[str, object]:
         return {
             "id": run_id,
             "event": "workflow_dispatch",
-            "display_title": f"Release {self.version}",
-            "head_sha": self.head,
+            "display_title": f"Release {self.version} {selector or self.selector}",
+            "head_sha": head or self.head,
         }
 
     def test_dispatch_scans_every_page_and_does_not_duplicate_an_exact_run(self) -> None:
@@ -167,6 +209,8 @@ class ReleaseProposalEffectsTests(unittest.TestCase):
             self.branch,
             self.head,
             self.version,
+            self.prefix,
+            self.selector,
             "",
             "",
             1,
@@ -175,6 +219,65 @@ class ReleaseProposalEffectsTests(unittest.TestCase):
 
         self.assertEqual("release dispatch already exists as run 91", outcome)
         self.assertEqual([], client.mutations)
+
+    def test_dispatch_does_not_let_subset_a_suppress_subset_b(self) -> None:
+        selector_a = "c" * 64
+        client = FakeClient(
+            {
+                self.runs_path: [
+                    [{"workflow_runs": [self.run_record(91, selector_a)]}],
+                    [{"workflow_runs": [self.run_record(99)]}],
+                ]
+            }
+        )
+
+        outcome = release_propose.ensure_dispatch(
+            client,
+            self.repository,
+            "release.yml",
+            self.branch,
+            self.head,
+            self.version,
+            self.prefix,
+            self.selector,
+            "NEXT/subset-b.md",
+            "",
+            1,
+            0,
+        )
+
+        self.assertEqual("dispatched release as run 99", outcome)
+        self.assertEqual(1, len(client.mutations))
+
+    def test_dispatch_race_cannot_acknowledge_a_newer_default_branch_head(self) -> None:
+        client = FakeClient(
+            {
+                self.runs_path: [
+                    [{"workflow_runs": []}],
+                    [{"workflow_runs": [self.run_record(99, head="d" * 40)]}],
+                ]
+            }
+        )
+
+        with self.assertRaisesRegex(
+            release_propose.ProposalError, "no exact-version, exact-head run"
+        ):
+            release_propose.ensure_dispatch(
+                client,
+                self.repository,
+                "release.yml",
+                self.branch,
+                self.head,
+                self.version,
+                self.prefix,
+                self.selector,
+                "",
+                "",
+                1,
+                0,
+            )
+
+        self.assertEqual(self.head, client.mutations[0][2]["inputs"]["expected_head"])
 
     def test_dispatch_posts_only_the_exact_derived_inputs_and_waits_for_receipt(self) -> None:
         client = FakeClient(
@@ -193,6 +296,8 @@ class ReleaseProposalEffectsTests(unittest.TestCase):
             self.branch,
             self.head,
             self.version,
+            self.prefix,
+            self.selector,
             "NEXT/one.md\nNEXT/two.md",
             "python",
             1,
@@ -209,6 +314,9 @@ class ReleaseProposalEffectsTests(unittest.TestCase):
                         "ref": "main",
                         "inputs": {
                             "version": "v1.2.3",
+                            "prefix": "v",
+                            "expected_head": "a" * 40,
+                            "selector_digest": "b" * 64,
                             "fragments": "NEXT/one.md\nNEXT/two.md",
                             "component": "python",
                         },
@@ -238,6 +346,8 @@ class ReleaseProposalEffectsTests(unittest.TestCase):
                 self.branch,
                 self.head,
                 self.version,
+                self.prefix,
+                self.selector,
                 "",
                 "",
                 1,
@@ -359,6 +469,9 @@ class GeneratedCallerTests(unittest.TestCase):
             document["concurrency"],
         )
         self.assertIn("next-version", raw)
+        self.assertIn("selection-digest", raw)
+        self.assertIn('echo "selected=false"', raw)
+        self.assertIn("steps.release.outputs.selected == 'true'", raw)
         self.assertIn("render-next", raw)
         self.assertIn("--as-released", raw)
         self.assertIn("scripts/release-propose.py", raw)
@@ -381,7 +494,14 @@ class GeneratedCallerTests(unittest.TestCase):
         )
         document = yaml.safe_load(result.stdout)
 
-        self.assertEqual("Release ${{ inputs.version }}", document["run-name"])
+        self.assertEqual(
+            "Release ${{ inputs.version }} ${{ inputs.selector_digest || 'manual' }}",
+            document["run-name"],
+        )
+        inputs = document.get("on", document.get(True))["workflow_dispatch"]["inputs"]
+        self.assertEqual("v", inputs["prefix"]["default"])
+        self.assertEqual("", inputs["expected_head"]["default"])
+        self.assertEqual("", inputs["selector_digest"]["default"])
 
 
 if __name__ == "__main__":

@@ -8,9 +8,14 @@ on:
   workflow_call:
     inputs:
       version:
-        description: Existing v-prefixed SemVer tag created by the changelog contract
+        description: Existing SemVer tag in the expected v or stream-v namespace
         required: true
         type: string
+      prefix:
+        description: Exact version namespace prefix; independent from component
+        required: false
+        type: string
+        default: v
       node-version:
         description: Node.js version used to install, build, and publish
         required: false
@@ -56,7 +61,7 @@ on:
         description: "'true' only after npm and GitHub release publication both succeed"
         value: ${{ jobs.release.outputs.new-release-published }}
       new-release-version:
-        description: Published version without the v tag prefix
+        description: Published package version without its tag namespace prefix
         value: ${{ jobs.release.outputs.new-release-version }}
     secrets:
       NODE_AUTH_TOKEN:
@@ -80,13 +85,21 @@ jobs:
       - name: Prepare job-scoped changelog tool cache
         run: echo "VERJSON_CHANGELOG_TOOL_CACHE=$RUNNER_TEMP/verjson-changelog-tools" >> "$GITHUB_ENV"
       - name: Require the contract's exact release tag
+        id: release-tag
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PREFIX: ${{ inputs.prefix }}
           SCOPE: ${{ inputs.scope }}
           VERSION: ${{ inputs.version }}
         run: |
-          if [[ ! "$VERSION" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]; then
-            echo "::error::'$VERSION' is not an exact v-prefixed SemVer tag."
+          if [[ ! "$PREFIX" =~ ^([a-z0-9][a-z0-9._-]*-)?v$ ]]; then
+            echo "::error::'$PREFIX' is not a canonical v or stream-v release namespace."
+            exit 1
+          fi
+          package_version="${VERSION#"$PREFIX"}"
+          if [ "$package_version" = "$VERSION" ] ||
+            [[ ! "$package_version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::'$VERSION' is not exact SemVer in namespace '$PREFIX'."
             exit 1
           fi
           if [[ ! "$SCOPE" =~ ^@[a-z0-9][a-z0-9._~-]*$ || ${#SCOPE} -gt 214 ]]; then
@@ -97,6 +110,7 @@ jobs:
             echo "::error::Could not verify tag $VERSION. The changelog snapshot must exist and GitHub's API must be reachable before publication."
             exit 1
           fi
+          printf 'package-version=%s\n' "$package_version" >>"$GITHUB_OUTPUT"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ inputs.version }}
@@ -147,7 +161,7 @@ jobs:
           NODE_AUTH_TOKEN: ${{ secrets.NODE_AUTH_TOKEN }}
       - name: Prepare release package metadata
         env:
-          VERSION: ${{ inputs.version }}
+          PACKAGE_VERSION: ${{ steps.release-tag.outputs.package-version }}
         run: |
           # RELEASE_PREPARE_PACKAGES_BEGIN
           if [ -e scripts/release-prepare-packages.sh ] && [ ! -x scripts/release-prepare-packages.sh ]; then
@@ -155,17 +169,18 @@ jobs:
             exit 1
           fi
           if [ -x scripts/release-prepare-packages.sh ]; then
-            scripts/release-prepare-packages.sh "${VERSION#v}"
+            scripts/release-prepare-packages.sh "$PACKAGE_VERSION"
           fi
           # RELEASE_PREPARE_PACKAGES_END
       - name: Stamp the dispatched package version
         env:
-          VERSION: ${{ inputs.version }}
-        run: npm version "${VERSION#v}" --no-git-tag-version --ignore-scripts --allow-same-version
+          PACKAGE_VERSION: ${{ steps.release-tag.outputs.package-version }}
+        run: npm version "$PACKAGE_VERSION" --no-git-tag-version --ignore-scripts --allow-same-version
       - run: npm run build --if-present
       - name: Publish the exact snapshot version
         env:
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PACKAGE_VERSION: ${{ steps.release-tag.outputs.package-version }}
           PACKAGE_DIRS_JSON: ${{ inputs.package-dirs }}
           REQUESTED_TAG: ${{ inputs.version }}
         run: |
@@ -175,7 +190,7 @@ jobs:
           registry_json="$(mktemp)"
           package_file=
           trap 'rm -f "$pack_json" "$package_meta" "$registry_json"; [ -z "$package_file" ] || rm -f -- "$package_file"' EXIT
-          version="${REQUESTED_TAG#v}"
+          expected_version="$PACKAGE_VERSION"
           mapfile -t package_dirs < <(jq -r '.[]' <<<"$PACKAGE_DIRS_JSON")
 
           for package_dir in "${package_dirs[@]}"; do
@@ -188,10 +203,10 @@ jobs:
             # LOCAL_PACKAGE_PATH_END
             [ -d "$package_path" ] \
               || { echo "::error::Configured release package directory '$package_dir' does not exist."; exit 1; }
-            npm version "$version" --prefix "$package_path" --no-git-tag-version \
+            npm version "$expected_version" --prefix "$package_path" --no-git-tag-version \
               --ignore-scripts --allow-same-version
             npm pack "$package_path" --json --ignore-scripts >"$pack_json"
-            node - "$pack_json" "$version" >"$package_meta" <<'NODE'
+            node - "$pack_json" "$expected_version" >"$package_meta" <<'NODE'
           const fs = require("fs");
           const path = require("path");
           const [packPath, expectedVersion] = process.argv.slice(2);
@@ -216,16 +231,16 @@ jobs:
           }
           process.stdout.write([item.name, item.version, item.integrity, item.filename].join("\t") + "\n");
           NODE
-            IFS=$'\t' read -r package_name package_version package_integrity package_file <"$package_meta"
+            IFS=$'\t' read -r package_name published_version package_integrity package_file <"$package_meta"
 
             if npm publish "$package_file" --ignore-scripts --registry=https://npm.pkg.github.com; then
-              echo "Published $package_name@$package_version."
+              echo "Published $package_name@$published_version."
             else
               echo "::warning::npm publish failed; proving whether an identical immutable version already exists before continuing."
-              npm view "$package_name@$package_version" --json \
+              npm view "$package_name@$published_version" --json \
                 --registry=https://npm.pkg.github.com >"$registry_json" \
                 || { echo "::error::Cannot read the allegedly existing registry version with the publication credential after npm publish failed."; exit 1; }
-              node - "$registry_json" "$package_name" "$package_version" "$package_integrity" <<'NODE'
+              node - "$registry_json" "$package_name" "$published_version" "$package_integrity" <<'NODE'
           const fs = require("fs");
           const [viewPath, expectedName, expectedVersion, expectedIntegrity] = process.argv.slice(2);
           const published = JSON.parse(fs.readFileSync(viewPath, "utf8"));
@@ -238,7 +253,7 @@ jobs:
             throw new Error("registry package identity or integrity does not match the attested release snapshot");
           }
           NODE
-              echo "Registry already contains the identical $package_name@$package_version; package publication is complete."
+              echo "Registry already contains the identical $package_name@$published_version; package publication is complete."
             fi
             rm -f -- "$package_file"
             package_file=
@@ -282,10 +297,10 @@ jobs:
       - name: Report successful publication
         id: result
         env:
-          VERSION: ${{ inputs.version }}
+          PACKAGE_VERSION: ${{ steps.release-tag.outputs.package-version }}
         run: |
           echo "new-release-published=true" >> "$GITHUB_OUTPUT"
-          echo "new-release-version=${VERSION#v}" >> "$GITHUB_OUTPUT"
+          echo "new-release-version=$PACKAGE_VERSION" >> "$GITHUB_OUTPUT"
       - name: Bound npm cache upload
         if: always() && inputs.cache
         env:

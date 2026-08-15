@@ -87,23 +87,36 @@ jobs:
           FRAGMENTS: ${{ inputs.fragments }}
           PREFIX: ${{ inputs.prefix }}
         run: |
+          selection_args=(selection-digest --repo-root "$GITHUB_WORKSPACE" --prefix "$PREFIX")
           version_args=(next-version --repo-root "$GITHUB_WORKSPACE" --prefix "$PREFIX")
           preview_args=(render-next --repo-root "$GITHUB_WORKSPACE" --as-released)
           if [ -n "$COMPONENT" ]; then
+            selection_args+=(--component "$COMPONENT")
             version_args+=(--component "$COMPONENT")
             preview_args+=(--component "$COMPONENT")
           fi
           while IFS= read -r fragment; do
             [ -z "$fragment" ] || {
+              selection_args+=(--fragment "$fragment")
               version_args+=(--fragment "$fragment")
               preview_args+=(--fragment "$fragment")
             }
           done <<<"$FRAGMENTS"
+          exec 3>>"$GITHUB_OUTPUT"
+          selector_digest="$(python3 .changelog-contract/scripts/changelog.py "${selection_args[@]}")"
+          if [ -z "$selector_digest" ]; then
+            echo "selected=false" >&3
+            echo "No unreleased fragments are selected; there is no release to propose."
+            exit 0
+          fi
           version="$(python3 .changelog-contract/scripts/changelog.py "${version_args[@]}")"
           python3 .changelog-contract/scripts/changelog.py "${preview_args[@]}" \
             >"$RUNNER_TEMP/release-preview.md"
-          printf 'version=%s\n' "$version" >>"$GITHUB_OUTPUT"
+          echo "selected=true" >&3
+          printf 'selector-digest=%s\n' "$selector_digest" >&3
+          printf 'version=%s\n' "$version" >&3
       - name: Apply the selected release autonomy
+        if: steps.release.outputs.selected == 'true'
         env:
           AUTONOMY: ${{ inputs.autonomy }}
           COMPONENT: ${{ inputs.component }}
@@ -111,6 +124,8 @@ jobs:
           FRAGMENTS: ${{ inputs.fragments }}
           GITHUB_TOKEN: ${{ github.token }}
           VERSION: ${{ steps.release.outputs.version }}
+          PREFIX: ${{ inputs.prefix }}
+          SELECTOR_DIGEST: ${{ steps.release.outputs.selector-digest }}
         run: |
           python3 .changelog-contract/scripts/release-propose.py \
             --mode "$AUTONOMY" \
@@ -119,6 +134,8 @@ jobs:
             --branch "$DEFAULT_BRANCH" \
             --head-sha "$GITHUB_SHA" \
             --version "$VERSION" \
+            --prefix "$PREFIX" \
+            --selector-digest "$SELECTOR_DIGEST" \
             --fragments "$FRAGMENTS" \
             --component "$COMPONENT" \
             --preview-file "$RUNNER_TEMP/release-preview.md"

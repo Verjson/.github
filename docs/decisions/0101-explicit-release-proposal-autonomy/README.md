@@ -37,9 +37,20 @@ operator dispatch, and serialize per repository without cancelling an in-flight
 decision. The reusable workflow fails outside the default branch, derives the
 version through the pinned `next-version`, and renders the exact selected
 fragments through the same pinned engine. The generated `Release` run name binds
-its derived version into the Actions run record. Dispatch mode searches all run
-pages for that exact version and head before dispatching, and waits for the same
-receipt afterwards, making retries idempotent across the workflow boundary.
+its derived version and a canonical digest of the component, prefix, and selected
+fragment identities into the Actions run record. Dispatch mode searches all run
+pages for that exact version, head, and selector digest before dispatching, and
+waits for the same receipt afterwards, making retries idempotent across the
+workflow boundary without conflating two fragment subsets that derive the same
+version.
+
+The dispatch also carries the derived default-branch head and selector digest as
+inputs. `Release` rejects a partial or malformed receipt, rejects a head other
+than the dispatch commit before checkout or verification, and recomputes the
+selection digest with the pinned contract before any snapshot or publication.
+Manual dispatch remains supported only when both receipt fields are absent. A
+scheduled run whose selection is empty succeeds without applying either GitHub
+effect; an explicit invalid selector still fails.
 
 The proposer never calls `release`, writes the checkout, consumes fragments,
 commits, tags, or pushes. Its only dispatch target is the generated `Release`
@@ -56,7 +67,12 @@ the dedicated release-App authorization for its atomic snapshot push.
   failed releases remain an operator-visible recovery decision rather than a
   schedule-driven retry loop.
 - A component or explicit fragment subset produces a preview matching the set
-  passed to `Release`; deferred fragments stay out of that preview.
+  passed to `Release`; deferred fragments stay out of that preview, and a
+  different subset has a different receipt even when it derives the same tag.
+- The version namespace is carried through proposal, snapshot, and Node
+  publication. Stream tags such as `python-v1.2.3` publish package version
+  `1.2.3`; prefix and component remain independent as established by ADR 0070.
+- An empty scheduled stream is a green no-op rather than an operational failure.
 - First releases still require an explicit baseline because `next-version`
   refuses to invent a version without prior release history.
 
@@ -64,7 +80,8 @@ the dedicated release-App authorization for its atomic snapshot push.
 
 The registered changelog-release suite executes generated caller shape,
 mode-specific permissions, serialization, pagination, API failure, proposal
-deduplication, exact dispatch inputs and receipt acknowledgement. All GitHub
+deduplication, empty-selection behavior, exact-head binding, selector mutation,
+stream namespaces, exact dispatch inputs and receipt acknowledgement. All GitHub
 mutations use mocked clients in tests. The disposable contract exercise derives
 and previews selected fragments without changing the tree, then passes the same
 derived version to the exact pinned `release` path.
