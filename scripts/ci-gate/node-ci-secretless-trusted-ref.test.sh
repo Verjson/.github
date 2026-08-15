@@ -25,26 +25,24 @@ assert inputs["secretless-trusted-ref"]["default"] is False
 
 acquire = jobs["acquire-secretless-dependencies"]
 build = jobs["build-test"]
-cleanup = jobs["cleanup-secretless-transfer"]
 assert acquire["if"] == "(inputs.secretless-pr || inputs.secretless-trusted-ref) && needs.eligibility.outputs.should-run != 'false'"
 assert acquire["permissions"] == {"contents": "read"}
 assert acquire["runs-on"] == "${{ fromJSON(vars.VERJSON_LANE_UNTRUSTED || '[\"ubuntu-24.04\"]') }}"
 assert build["permissions"] == {"contents": "read"}
 assert build["runs-on"].startswith("${{ inputs.secretless-pr && fromJSON(vars.VERJSON_LANE_UNTRUSTED")
 assert "secretless-trusted-ref" not in build["runs-on"]
-assert cleanup["permissions"] == {"actions": "write"}
-assert "inputs.secretless-pr || inputs.secretless-trusted-ref" in cleanup["if"]
+assert "cleanup-secretless-transfer" not in jobs
 
 steps = build["steps"]
 checkout = next(step for step in steps if str(step.get("uses", "")).startswith("actions/checkout@"))
 assert "inputs.secretless-pr || inputs.secretless-trusted-ref" in checkout["with"]["submodules"]
 assert "inputs.secretless-pr || inputs.secretless-trusted-ref" in checkout["with"]["token"]
 assert "inputs.secretless-pr || inputs.secretless-trusted-ref" in checkout["with"]["persist-credentials"]
-download = next(step for step in steps if str(step.get("uses", "")).startswith("actions/download-artifact@"))
+restore = next(step for step in steps if str(step.get("uses", "")).startswith("actions/cache/restore@"))
 install = next(step for step in steps if step.get("name") == "Install from verified secretless npm cache")
 rebuild = next(step for step in steps if step.get("name") == "Rebuild exact approved lifecycle packages without credentials")
 plan = next(step for step in steps if step.get("name") == "Run exact credentialless consumer script plan")
-for step in (download, install, rebuild, plan):
+for step in (restore, install, rebuild, plan):
     assert "inputs.secretless-pr || inputs.secretless-trusted-ref" in step["if"]
 for name in ("GH_TOKEN", "GITHUB_TOKEN", "NODE_AUTH_TOKEN", "NPM_TOKEN",
              "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN",

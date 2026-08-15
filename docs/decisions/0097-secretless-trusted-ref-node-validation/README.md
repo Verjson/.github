@@ -27,7 +27,7 @@ Add an opt-in `secretless-trusted-ref` input to `node-ci.yml`. It reuses the
 same acquisition job, exact package and scope policy, lifecycle-script-free
 private cache population, 80 MiB identity-bound transfer, optional immutable
 auxiliary sparse tree, credential scrub, lifecycle rebuild allowlist, ordered
-script plan, and exact artifact cleanup as `secretless-pr`.
+script plan, and exact-attempt cache handoff as `secretless-pr`.
 
 Keep the event modes mutually exclusive. `secretless-pr` continues to admit only
 same-repository `pull_request` events and reject forks. The trusted-ref mode
@@ -61,9 +61,9 @@ the eligibility action's prior status-check behavior.
 - A repository writer can change code on a pushed ref, but that code runs only
   after credential removal. Package and auxiliary acquisition remain limited by
   protected repository policy and immutable lock or commit identities.
-- Callers need two visible event-gated jobs and the `actions: write`,
-  `contents: read`, and `statuses: read` permissions for both reusable
-  invocations.
+- Callers need two visible event-gated jobs with `contents: read` and
+  `statuses: read` permissions for both reusable invocations. The #824
+  correction to ADR 0095 removed the former transfer-only `actions: write` grant.
 - Secretless modes still reject schema submodules and project `.npmrc` files;
   consumers needing those must use another reviewed canonical contract.
 

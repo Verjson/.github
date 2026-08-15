@@ -108,8 +108,8 @@ for workflow in "$ci" "$release"; do
 done
 
 [ "$(grep -cF 'timeout-minutes: ${{ inputs.timeout-minutes }}' "$ci")" -eq 3 ] \
-  && grep -qF 'timeout-minutes: 5' "$ci" \
-  && pass "node-ci bounds eligibility, acquisition, build-test, and cleanup jobs" \
+  && ! grep -qF 'cleanup-secretless-transfer:' "$ci" \
+  && pass "node-ci bounds eligibility, acquisition, and build-test jobs" \
   || fail "node-ci does not apply the caller bound to every job"
 [ "$(grep -cF 'timeout-minutes: ${{ inputs.timeout-minutes }}' "$release")" -eq 1 ] \
   && pass "node-release bounds its release job" \

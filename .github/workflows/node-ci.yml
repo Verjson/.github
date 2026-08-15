@@ -13,7 +13,6 @@ name: node-ci (reusable)
 #   jobs:
 #     ci:
 #       permissions:              # REQUIRED by the called workflow's jobs:
-#         actions: write          # REQUIRED for either secretless transfer cleanup
 #         contents: read          # a reusable's GITHUB_TOKEN is capped by the
 #         statuses: read          # REQUIRED: lets eligibility read the head's
 #                                 # renovate/stability-days status to defer CI on
@@ -72,8 +71,7 @@ on:
           Acquire approved private dependencies in a non-executing job, then run
           PR-controlled build and test code in a credentialless job. Intended
           only for pull_request validation; requires NODE_AUTH_TOKEN and
-          approved-internal-packages plus caller actions: write for exact-artifact
-          cleanup, but does not require caller packages: read.
+          approved-internal-packages, but does not require caller packages: read.
         required: false
         type: boolean
         default: false
@@ -313,7 +311,9 @@ jobs:
       auxiliary-commit: ${{ steps.resolve-auxiliary-source.outputs.commit }}
       auxiliary-content-path: ${{ steps.resolve-auxiliary-source.outputs.content-path }}
       auxiliary-repository: ${{ steps.resolve-auxiliary-source.outputs.repository }}
-      transfer-artifact-id: ${{ steps.upload-secretless-transfer.outputs.artifact-id }}
+      transfer-cache-key: ${{ steps.create-secretless-cache-key.outputs.cache-key }}
+      transfer-payload-bytes: ${{ steps.package-secretless-transfer.outputs.payload-bytes }}
+      transfer-payload-sha256: ${{ steps.package-secretless-transfer.outputs.payload-sha256 }}
     steps:
       - name: Enforce the secretless event boundary
         env:
@@ -591,33 +591,36 @@ jobs:
         run: |
           set -euo pipefail
           umask 077
-          [ -s "$PRIVATE_CACHE_ENTRIES" ] || {
-            echo "::error::secretless mode requires validated private package downloads"
+          [ -f "$PRIVATE_CACHE_ENTRIES" ] && [ ! -L "$PRIVATE_CACHE_ENTRIES" ] || {
+            echo "::error::secretless mode requires a validated private package entry file"
             exit 1
           }
           : > "$NPM_CONFIG_GLOBALCONFIG"
-          # npm expands this placeholder only when requesting the scoped host.
-          # shellcheck disable=SC2016
-          {
-            printf '%s\n' 'registry=https://registry.npmjs.org/'
-            while IFS= read -r scope; do
-              scope="${scope#"${scope%%[![:space:]]*}"}"
-              scope="${scope%"${scope##*[![:space:]]}"}"
-              [ -z "$scope" ] || printf '%s:registry=https://npm.pkg.github.com/\n' "$scope"
-            done <<< "$APPROVED_INTERNAL_SCOPES"
-            # npm expands this placeholder only when requesting the scoped host.
-            # shellcheck disable=SC2016
-            printf '%s\n' '//npm.pkg.github.com/:_authToken=${NODE_AUTH_TOKEN}'
-          } > "$NPM_CONFIG_USERCONFIG"
-          while IFS=$'\t' read -r resolved digest_hex extra; do
-            [ -z "$extra" ] && [[ "$resolved" == https://npm.pkg.github.com/* ]] \
-              && [[ "$digest_hex" =~ ^[0-9a-f]{128}$ ]] || {
-                echo "::error::invalid validated private cache entry"
-                exit 1
-              }
-            npm cache add "$resolved" --cache "$NPM_CONFIG_CACHE" --no-audit --no-fund
-          done < "$PRIVATE_CACHE_ENTRIES"
-          npm cache verify --cache "$NPM_CONFIG_CACHE"
+          mkdir -p "$NPM_CONFIG_CACHE/_cacache/content-v2"
+          if [ -s "$PRIVATE_CACHE_ENTRIES" ]; then
+            {
+              printf '%s\n' 'registry=https://registry.npmjs.org/'
+              while IFS= read -r scope; do
+                scope="${scope#"${scope%%[![:space:]]*}"}"
+                scope="${scope%"${scope##*[![:space:]]}"}"
+                [ -z "$scope" ] || printf '%s:registry=https://npm.pkg.github.com/\n' "$scope"
+              done <<< "$APPROVED_INTERNAL_SCOPES"
+              # npm expands this placeholder only when requesting the scoped host.
+              # shellcheck disable=SC2016
+              printf '%s\n' '//npm.pkg.github.com/:_authToken=${NODE_AUTH_TOKEN}'
+            } > "$NPM_CONFIG_USERCONFIG"
+            while IFS=$'\t' read -r resolved digest_hex extra; do
+              [ -z "$extra" ] && [[ "$resolved" == https://npm.pkg.github.com/* ]] \
+                && [[ "$digest_hex" =~ ^[0-9a-f]{128}$ ]] || {
+                  echo "::error::invalid validated private cache entry"
+                  exit 1
+                }
+              npm cache add "$resolved" --cache "$NPM_CONFIG_CACHE" --no-audit --no-fund
+            done < "$PRIVATE_CACHE_ENTRIES"
+            npm cache verify --cache "$NPM_CONFIG_CACHE"
+          else
+            : > "$NPM_CONFIG_USERCONFIG"
+          fi
           declare -A expected_content=()
           while IFS=$'\t' read -r _ digest_hex; do
             content_path="$NPM_CONFIG_CACHE/_cacache/content-v2/sha512/${digest_hex:0:2}/${digest_hex:2:2}/${digest_hex:4}"
@@ -625,7 +628,7 @@ jobs:
               && [ "$(sha512sum "$content_path" | cut -d' ' -f1)" = "$digest_hex" ] || {
                 echo "::error::npm did not populate the exact locked private package content"
                 exit 1
-              }
+            }
             expected_content["$content_path"]=1
           done < "$PRIVATE_CACHE_ENTRIES"
           actual_content_count=0
@@ -650,6 +653,7 @@ jobs:
             exit 1
           }
       - name: Package bounded credential-free npm cache
+        id: package-secretless-transfer
         env:
           AUXILIARY_COMMIT: ${{ steps.resolve-auxiliary-source.outputs.commit }}
           AUXILIARY_CONTENT_PATH: ${{ steps.resolve-auxiliary-source.outputs.content-path }}
@@ -698,14 +702,31 @@ jobs:
             "payload_sha256=$payload_sha256" \
             "payload_bytes=$payload_bytes" \
             > "$TRANSFER_DIR/manifest"
-      - id: upload-secretless-transfer
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+          printf 'payload-bytes=%s\npayload-sha256=%s\n' \
+            "$payload_bytes" "$payload_sha256" >> "$GITHUB_OUTPUT"
+      - name: Create unguessable exact-attempt cache key
+        id: create-secretless-cache-key
+        env:
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          [[ "$RUN_ID" =~ ^[1-9][0-9]*$ && "$RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]] || {
+            echo "::error::invalid secretless cache run identity"
+            exit 1
+          }
+          nonce="$(openssl rand -hex 32)"
+          [[ "$nonce" =~ ^[0-9a-f]{64}$ ]] || {
+            echo "::error::could not generate secretless cache nonce"
+            exit 1
+          }
+          cache_key="secretless-npm-cache-${RUN_ID}-${RUN_ATTEMPT}-${nonce}"
+          printf 'cache-key=%s\n' "$cache_key" >> "$GITHUB_OUTPUT"
+      - id: save-secretless-transfer
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          name: secretless-npm-cache-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/secretless-transfer-${{ github.run_id }}-${{ github.run_attempt }}
-          compression-level: 0
-          retention-days: 1
-          if-no-files-found: error
+          key: ${{ steps.create-secretless-cache-key.outputs.cache-key }}
       - name: Remove local acquisition and transfer state
         if: always()
         env:
@@ -767,11 +788,13 @@ jobs:
           package-manager-cache: false
           registry-url: ${{ inputs.scope != '' && 'https://npm.pkg.github.com' || '' }}
           scope: ${{ inputs.scope }}
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - id: restore-secretless-transfer
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         if: needs.eligibility.outputs.should-run != 'false' && (inputs.secretless-pr || inputs.secretless-trusted-ref)
         with:
-          name: secretless-npm-cache-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/secretless-transfer-${{ github.run_id }}-${{ github.run_attempt }}
+          key: ${{ needs.acquire-secretless-dependencies.outputs.transfer-cache-key }}
+          fail-on-cache-miss: true
       - name: Install from verified secretless npm cache
         if: needs.eligibility.outputs.should-run != 'false' && (inputs.secretless-pr || inputs.secretless-trusted-ref)
         env:
@@ -792,6 +815,8 @@ jobs:
           EXPECTED_AUXILIARY_COMMIT: ${{ needs.acquire-secretless-dependencies.outputs.auxiliary-commit }}
           EXPECTED_AUXILIARY_CONTENT_PATH: ${{ needs.acquire-secretless-dependencies.outputs.auxiliary-content-path }}
           EXPECTED_AUXILIARY_REPOSITORY: ${{ needs.acquire-secretless-dependencies.outputs.auxiliary-repository }}
+          EXPECTED_PAYLOAD_BYTES: ${{ needs.acquire-secretless-dependencies.outputs.transfer-payload-bytes }}
+          EXPECTED_PAYLOAD_SHA256: ${{ needs.acquire-secretless-dependencies.outputs.transfer-payload-sha256 }}
           MAX_PAYLOAD_BYTES: '83886080'
           RUN_ATTEMPT: ${{ github.run_attempt }}
           RUN_ID: ${{ github.run_id }}
@@ -833,6 +858,12 @@ jobs:
           [[ "$manifest_run_id" =~ ^[0-9]+$ && "$manifest_run_attempt" =~ ^[0-9]+$ ]]
           [[ "$manifest_lock_sha256" =~ ^[0-9a-f]{64}$ && "$manifest_payload_sha256" =~ ^[0-9a-f]{64}$ ]]
           [[ "$manifest_payload_bytes" =~ ^[0-9]+$ ]]
+          [[ "$EXPECTED_PAYLOAD_SHA256" =~ ^[0-9a-f]{64}$ && "$EXPECTED_PAYLOAD_BYTES" =~ ^[0-9]+$ ]] \
+            && [ "$manifest_payload_sha256" = "$EXPECTED_PAYLOAD_SHA256" ] \
+            && [ "$manifest_payload_bytes" = "$EXPECTED_PAYLOAD_BYTES" ] || {
+              echo "::error::secretless cache does not match the trusted acquisition output"
+              exit 1
+            }
           [ "$manifest_run_id" = "$RUN_ID" ] && [ "$manifest_run_attempt" = "$RUN_ATTEMPT" ] || {
             echo "::error::secretless cache belongs to another run attempt"
             exit 1
@@ -1477,35 +1508,3 @@ jobs:
                 exit 1 ;;
             esac
           fi
-
-  cleanup-secretless-transfer:
-    needs: [eligibility, acquire-secretless-dependencies, build-test]
-    if: always() && (inputs.secretless-pr || inputs.secretless-trusted-ref) && needs.acquire-secretless-dependencies.outputs.transfer-artifact-id != ''
-    runs-on: ${{ fromJSON(vars.VERJSON_LANE_UNTRUSTED || '["ubuntu-24.04"]') }}
-    timeout-minutes: 5
-    permissions:
-      actions: write
-    steps:
-      - name: Delete exact run-attempt transfer artifact
-        env:
-          ARTIFACT_ID: ${{ needs.acquire-secretless-dependencies.outputs.transfer-artifact-id }}
-          EXPECTED_NAME: secretless-npm-cache-${{ github.run_id }}-${{ github.run_attempt }}
-          GH_TOKEN: ${{ github.token }}
-          RUN_ID: ${{ github.run_id }}
-        run: |
-          set -euo pipefail
-          [[ "$ARTIFACT_ID" =~ ^[1-9][0-9]*$ && "$RUN_ID" =~ ^[1-9][0-9]*$ ]] || {
-            echo "::error::invalid secretless transfer artifact identity"
-            exit 1
-          }
-          metadata="$(gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$ARTIFACT_ID")"
-          jq -e \
-            --arg name "$EXPECTED_NAME" \
-            --argjson artifact_id "$ARTIFACT_ID" \
-            --argjson run_id "$RUN_ID" \
-            '.id == $artifact_id and .name == $name and .expired == false and .workflow_run.id == $run_id' \
-            <<< "$metadata" >/dev/null || {
-              echo "::error::secretless transfer artifact identity mismatch"
-              exit 1
-            }
-          gh api --method DELETE "repos/$GITHUB_REPOSITORY/actions/artifacts/$ARTIFACT_ID"

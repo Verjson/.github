@@ -50,6 +50,8 @@ token, validates every package under the exact approved scopes against the
 newline-separated package allowlist and GitHub Packages URL, rejects repository
 `.npmrc` files, and populates a cache with only the exact private download URLs
 under a job-created config that scopes the token to `npm.pkg.github.com`.
+When the lock contains no internal package and the allowlist is empty,
+acquisition creates an empty content set without making a tokened npm request.
 No install or lifecycle script runs in acquisition. The default approved scope is
 `@verjson`; callers that need another internal scope must name it exactly and set
 the protected repository variable `VERJSON_SECRETLESS_PACKAGE_POLICY` to a JSON
@@ -59,22 +61,22 @@ sparse private checkout, and adds only the exact sparse content path to the
 transfer. Its four input fields must exactly match protected repository variable
 `VERJSON_SECRETLESS_AUXILIARY_POLICY`, so a PR cannot redirect the acquisition
 token to another repository or path. It transfers npm's verified content-addressed download
-cache, never `node_modules`, under an 80 MiB payload cap (the complete two-file
-artifact envelope is budgeted below 81 MiB). A separate job verifies the exact run,
+cache, never `node_modules`, under an 80 MiB payload cap. Acquisition saves the
+two-file envelope under an exact run-attempt Actions cache key with no restore
+prefix. The build job requires that exact cache hit and verifies the exact run,
 attempt, package-lock digest, auxiliary repository/commit/path identity, payload
 digest, and size before running
 `npm ci --prefer-offline --ignore-scripts` with package, Git, cloud, and OIDC credential
-paths empty. The local transfer is removed immediately after installation and a
-no-checkout cleanup job deletes the exact artifact after build, test, and lint
-finish or fail. Secretless mode ignores `cache: true`; it neither restores nor
-uploads the cross-run Actions npm cache, and consumer npm commands use a
-job-scoped runtime cache that is removed at teardown:
+paths empty. Job-local `always()` cleanup removes acquisition and restored state
+on success, failure, and cancellation. No Actions artifact is created. Secretless
+mode ignores the caller's `cache: true`; its handoff cache has one exact-attempt
+key and no cross-run restore, and consumer npm commands use a job-scoped runtime
+cache that is removed at teardown:
 
 ```yaml
 jobs:
   ci:
     permissions:
-      actions: write
       contents: read
       statuses: read
     uses: Verjson/.github/.github/workflows/node-ci.yml@<immutable-sha>
@@ -89,9 +91,8 @@ jobs:
 
 Do not use `secrets: inherit` on this route. The caller deliberately omits
 `packages: read`; the package token belongs only to the acquisition job and PR
-code cannot request the job token's package capability. `actions: write` is
-available only to the no-checkout deletion job; the build job retains
-`contents: read` and scrubs GitHub token paths before repository commands. All
+code cannot request the job token's package capability. The reusable jobs require
+only `contents: read`; the build job scrubs GitHub token paths before repository commands. All
 PR acquisition and build jobs ignore the caller runner override and use the
 isolated untrusted lane or a fresh hosted fallback. `secretless-pr` rejects
 non-PR events and fork PRs. Both modes reject schema submodules, repository npm
@@ -127,7 +128,6 @@ jobs:
   pull-request:
     if: github.event_name == 'pull_request'
     permissions:
-      actions: write
       contents: read
       statuses: read
     uses: Verjson/.github/.github/workflows/node-ci.yml@<40-hex-canonical-contract-sha>
@@ -140,7 +140,6 @@ jobs:
   trusted-ref:
     if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
     permissions:
-      actions: write
       contents: read
       statuses: read
     uses: Verjson/.github/.github/workflows/node-ci.yml@<40-hex-canonical-contract-sha>
@@ -170,12 +169,12 @@ OIDC credential controls cannot be removed. Both features execute only after
 credential scrub and the offline install. When a script plan is supplied it
 replaces the default build/typecheck/test/lint sequence.
 
-Artifact deletion is bounded to five minutes and runs under `always()` after
-success, failure, or cancellation. One-day retention remains a platform fallback
-when GitHub cannot schedule cleanup; deletion and expiry do not imply immediate
-quota reclamation because GitHub storage accounting can lag by 6–12 hours.
-Use **Re-run all jobs** for a new attempt. Re-running only a failed build job
-cannot reuse the deleted prior-attempt artifact and fails closed by design.
+The handoff uses the repository cache service rather than organization artifact
+storage. Acquisition generates an unguessable nonce and binds it with
+`github.run_id` and `github.run_attempt`; restore uses the internally passed key
+with no prefix and fails on a missing exact match. Use **Re-run all jobs** for a new
+attempt. Re-running only a failed build job cannot create its missing acquisition
+cache and fails closed by design.
 
 To adopt the #750 contract, pin the reusable path to the 40-hex commit that
 contains this change—never a branch or moving tag:
@@ -184,8 +183,8 @@ contains this change—never a branch or moving tag:
 uses: Verjson/.github/.github/workflows/node-ci.yml@<40-hex-canonical-contract-sha>
 ```
 
-Add `actions: write`, preserve the exact internal-package allowlist, and update
-that pin atomically. This Node caller is not generated by the changelog tooling.
+Preserve the exact internal-package allowlist and update that pin atomically. No
+caller permission change is required. This Node caller is not generated by the changelog tooling.
 If the same adoption also advances canonical changelog artifacts, run
 `Verjson/.github/scripts/gen-changelog-caller.sh` at that same immutable SHA and
 regenerate its `workflow`, `renderer`, `contract-test`, and release caller
@@ -205,7 +204,6 @@ Set both values as repository variables outside the PR branch, then use:
 jobs:
   ci:
     permissions:
-      actions: write
       contents: read
       statuses: read
     uses: Verjson/.github/.github/workflows/node-ci.yml@<40-hex-canonical-contract-sha>
