@@ -1,0 +1,7 @@
+# A flow-style job body. Valid YAML, accepted by GitHub, and a line-oriented
+# parser consumes the whole thing as the job key — leaving `runs-on` empty, so
+# every rule keyed on the selector is skipped on a real metered job.
+name: build
+on: workflow_dispatch
+jobs:
+  mac: {runs-on: macos-latest, timeout-minutes: 360, steps: [{run: npm run dist}]}

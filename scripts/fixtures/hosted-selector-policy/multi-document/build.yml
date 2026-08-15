@@ -1,0 +1,17 @@
+name: first
+on: workflow_dispatch
+jobs:
+  build:
+    runs-on: ${{ fromJSON(vars.VERJSON_LANE_TRUSTED || vars.VERJSON_LANE_FALLBACK || '["ubuntu-24.04"]') }}
+    steps:
+      - run: npm test
+---
+# A second document. GitHub reads the first; a reader that silently takes one of
+# them is guessing, and the metered selector can live in the other.
+name: second
+on: workflow_dispatch
+jobs:
+  mac:
+    runs-on: macos-15
+    steps:
+      - run: npm run dist

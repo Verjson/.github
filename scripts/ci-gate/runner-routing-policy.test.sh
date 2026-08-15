@@ -994,26 +994,42 @@ expected_labels="$(printf '%s\n' general | sort)"
 # assertions here, for two reasons. This repository has no macOS or Windows
 # selector and no OS-scoped lane, so an assertion against the live tree could
 # never fail and would prove nothing — the negative path is provable only
-# against fixtures, which `hosted-selector-policy.test.sh` owns. And #815 has to
+# against fixtures, which `hosted-selector-policy.test.py` owns. And #815 has to
 # point the same rules at a consumer's checkout, which a check hardcoded to
 # `$root/.github/workflows` cannot do.
+#
+# It is Python, and that is a correctness decision rather than a preference. The
+# first implementation matched `runs-on:` with shell patterns like the ones
+# above, and two review passes found five parser-level false negatives in shapes
+# GitHub accepts — a flow-style job body, a flow-mapping `jobs:`, a space before
+# the colon, a matrix indirection, and a TAB/IFS field collapse — each returning
+# exit 0 on a genuinely metered job. `yaml.safe_load` understands the language
+# instead of recognising shapes, and refuses what it cannot resolve.
 #
 # `--visibility public` is the measured fact about THIS repository, not a
 # default: `Verjson/.github` is public, so its hosted minutes are free and the
 # Tier B literal-Linux rule does not fire here. The stricter standard `.github`
 # is actually held to is the closed, exact-site ADR 0089 inventory above, which
 # this change does not touch.
-hosted_selector_policy="$root/scripts/ci-gate/hosted-selector-policy.sh"
-hosted_selector_out="$(bash "$hosted_selector_policy" --visibility public "$workflows" 2>&1)"
-hosted_selector_rc=$?
-case "$hosted_selector_rc" in
-  0) pass "no workflow names a metered hosted runner family or an unbounded OS lane" ;;
-  # Exit 2 is reported separately from exit 1 on purpose: "the sweep could not
-  # decide" and "the sweep found a violation" are different problems, and
-  # collapsing them is how a check that scanned nothing gets read as a pass.
-  2) fail "hosted-selector policy could not run: $hosted_selector_out" ;;
-  *) fail "hosted-selector policy violation: $hosted_selector_out" ;;
-esac
+hosted_selector_policy="$root/scripts/ci-gate/hosted-selector-policy.py"
+if ! command -v python3 >/dev/null 2>&1; then
+  fail "python3 is required to run the hosted-selector policy"
+else
+  hosted_selector_out="$(python3 "$hosted_selector_policy" --visibility public "$workflows" 2>&1)"
+  hosted_selector_rc=$?
+  case "$hosted_selector_rc" in
+    0) pass "no workflow names a metered hosted runner family or an unbounded OS lane" ;;
+    1) fail "hosted-selector policy violation: $hosted_selector_out" ;;
+    # Exit 2 is reported separately from exit 1 on purpose: "the sweep could not
+    # decide" and "the sweep found a violation" are different problems, and
+    # collapsing them is how a check that scanned nothing gets read as a pass.
+    2) fail "hosted-selector policy could not run: $hosted_selector_out" ;;
+    # Anything else is the script failing to execute at all — a missing
+    # interpreter or an import error. Left in the catch-all it would have been
+    # reported as a policy violation, which sends the reader to the workflows.
+    *) fail "hosted-selector policy exited $hosted_selector_rc (it did not run): $hosted_selector_out" ;;
+  esac
+fi
 
 if [ "$fails" -eq 0 ]; then
   echo "All tests passed."

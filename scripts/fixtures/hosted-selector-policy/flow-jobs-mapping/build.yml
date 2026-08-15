@@ -1,0 +1,5 @@
+# `jobs:` itself as a flow mapping. A parser that recognises the jobs block by
+# matching `^jobs:$` never enters it, so the entire file goes unscanned.
+name: build
+on: workflow_dispatch
+jobs: {mac: {runs-on: macos-15, steps: [{run: npm run dist}]}}

@@ -1,0 +1,8 @@
+# The overflow lane (ADR 0053) with no tail, same failure mode.
+name: ci
+on: pull_request
+jobs:
+  gate:
+    runs-on: ${{ fromJSON(vars.VERJSON_RUNNER_OVERFLOW) }}
+    steps:
+      - run: sleep 5

@@ -1,0 +1,6 @@
+# `jobs` is a sequence, not a mapping. Nothing here can be resolved into jobs,
+# so the sweep did not learn this file is clean — it learned nothing about it.
+name: broken
+on: workflow_dispatch
+jobs:
+  - runs-on: macos-15
