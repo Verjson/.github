@@ -132,7 +132,7 @@ changing release behavior or the App's required ruleset bypass.
 generated adopter contract test rejects a snapshot caller that restores the
 obsolete write grant.
 
-## Amendment (2026-08-14) — every default-branch ruleset carries the release bypass (#803)
+## Amendment (2026-08-14) — every `~DEFAULT_BRANCH` ruleset carries the release bypass (#803)
 
 The original decision named `main-protection` as the App's authorization
 boundary. That was necessary but incomplete. A canonical release pushes its
@@ -157,6 +157,17 @@ mode, or existing bypass actors. Adding that one actor must preserve the complet
 reviewed ruleset preimage: all other bypass actors, rules, conditions, target,
 and enforcement remain unchanged.
 
+This is an exact GitHub selector-token contract, not a semantic claim about every
+rule that might affect a repository's default branch. The automated requirement
+matches only `target: branch` plus a literal `~DEFAULT_BRANCH` include. It does
+not classify `~ALL` or an explicit ref such as `refs/heads/main`: `~ALL` is a
+different policy surface, while an explicit branch may or may not be the default
+across the repositories selected by the rule's other conditions. Any such rule
+that applies to a releasable repository still needs the release bypass, but its
+applicability requires separate author review. Ruleset authors expressing the
+canonical default-branch contract use `~DEFAULT_BRANCH` so this check can enforce
+it without guessing repository semantics.
+
 `scripts/org-ruleset-conformance.py` enforces the invariant without holding a
 mutation path. It paginates the organization ruleset listing, reads every
 ruleset detail with explicit GET requests, validates the bypass, rule, and
@@ -166,18 +177,41 @@ Diagnostics name only public ruleset identities and never print response bodies,
 credentials, secrets, or variable values.
 
 The schedule is default-branch event-SHA-bound, grants its Actions token only
-Contents read, and runs on the trusted organization lane because the available
-organization-ruleset read credential is privileged. The audit invokes only
-read-only REST endpoints; tests replace `gh` entirely and reject any method or
-argument drift away from explicit GET. A future credential with only the
-organization Administration-read capability should replace the current shared
-credential when one is provisioned, without changing the policy or audit.
+Contents read, and runs on the trusted organization lane. Its no-argument command
+resolves the policy beside the event-SHA script; inherited runner environment
+cannot redirect it. The explicit `--test-policy` path exists only for isolated
+tests, and the workflow contract rejects both that argument and a policy-path
+environment binding.
+
+The audit invokes only one exact wrapper shape: `gh api --hostname github.com
+--method GET --paginate --slurp`, against the organization ruleset listing and
+the IDs returned by that listing. Tests replace `gh` entirely and reject method,
+hostname, pagination, argument, or endpoint drift.
+
+### Residual credential (2026-08-15)
+
+A metadata-only inventory of organization Actions secret names found no dedicated
+credential with organization Administration read. No secret or variable value was
+read. `ORG_ADMIN_TOKEN` therefore remains the scheduled audit's explicit residual:
+it is broader than this GET-only task, but it is the only available credential
+whose name and existing policy establish the required organization access.
+
+Replace that binding once a credential exists with only organization
+Administration read (plus unavoidable metadata), is available only to
+`Verjson/.github`, and successfully proves both paginated ruleset listing and
+per-ruleset detail GETs. The migration must update the scheduled-workflow contract
+and organization secret-scope policy together; until all criteria hold, an
+unproven narrower token would turn the audit into a fail-closed outage rather than
+reduce authority safely.
 
 This repository check is durable authoring-time evidence, not authorization to
 repair live state. A live correction remains a separately reviewed sensitive
 operation: capture and compare the full preimage, add only the required actor,
 and verify every preserved actor, rule, condition, target, and enforcement field
 afterward.
+
+The operator-facing interpretation and local verification boundary are recorded
+in [`docs/ruleset-conformance.md`](../../ruleset-conformance.md).
 
 ## Rollback
 

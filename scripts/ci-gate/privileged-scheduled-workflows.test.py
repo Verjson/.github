@@ -302,7 +302,7 @@ def validate_ruleset_conformance(document: object) -> None:
     )
     audit = require_keys(steps[1], {"name", "env", "run"}, "ruleset-conformance audit")
     require(
-        audit["name"] == "Verify release authorization across default-branch rulesets",
+        audit["name"] == "Verify release authorization across ~DEFAULT_BRANCH rulesets",
         "ruleset-conformance audit name changed",
     )
     env = require_keys(audit["env"], {"GH_TOKEN"}, "ruleset-conformance audit env")
@@ -401,7 +401,7 @@ def main() -> int:
             "ruleset-conformance audit",
             validate_ruleset_conformance,
             ruleset_conformance_text,
-            "      - name: Verify release authorization across default-branch rulesets",
+            "      - name: Verify release authorization across ~DEFAULT_BRANCH rulesets",
         ),
     ]
     for label, validator, text, marker in cases:
@@ -456,6 +456,17 @@ def main() -> int:
         ),
         "unsafe runner route": ruleset_conformance_text.replace(
             "vars.VERJSON_LANE_PRIVILEGED", "vars.VERJSON_RUNNER_PRIVILEGED", 1
+        ),
+        "inherited policy path": ruleset_conformance_text.replace(
+            "          GH_TOKEN: ${{ secrets.ORG_ADMIN_TOKEN }}\n",
+            "          GH_TOKEN: ${{ secrets.ORG_ADMIN_TOKEN }}\n"
+            "          ORG_RULESET_POLICY: /tmp/untrusted.json\n",
+            1,
+        ),
+        "test policy argument": ruleset_conformance_text.replace(
+            "run: python3 scripts/org-ruleset-conformance.py",
+            "run: python3 scripts/org-ruleset-conformance.py --test-policy /tmp/untrusted.json",
+            1,
         ),
     }
     for label, mutation in ruleset_conformance_mutations.items():

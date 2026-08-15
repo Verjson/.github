@@ -1,17 +1,12 @@
 #!/usr/bin/env python3
 import json
-import os
 import subprocess
 import sys
 from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parent.parent
-POLICY = Path(
-    os.environ.get(
-        "ORG_RULESET_POLICY", ROOT / "config/org-ruleset-conformance-policy.json"
-    )
-)
+CHECKED_IN_POLICY = ROOT / "config/org-ruleset-conformance-policy.json"
 
 
 class AuditDataError(Exception):
@@ -91,9 +86,23 @@ def gh_json_pages(path: str):
     return pages
 
 
-def read_policy():
+def select_policy(arguments: list[str]):
+    if not arguments:
+        return CHECKED_IN_POLICY
+    if (
+        len(arguments) == 2
+        and arguments[0] == "--test-policy"
+        and arguments[1]
+    ):
+        return Path(arguments[1])
+    raise AuditDataError(
+        "usage: org-ruleset-conformance.py [--test-policy PATH]"
+    )
+
+
+def read_policy(policy: Path):
     document = require_mapping(
-        load_json(POLICY.read_text(encoding="utf-8"), "ruleset policy"),
+        load_json(policy.read_text(encoding="utf-8"), "ruleset policy"),
         "ruleset policy",
     )
     require_exact_keys(
@@ -231,7 +240,7 @@ def read_ruleset(organization: str, ruleset_id: int):
     return ruleset
 
 
-def targets_default_branch(ruleset: dict):
+def targets_default_branch_token(ruleset: dict):
     return (
         ruleset["target"] == "branch"
         and "~DEFAULT_BRANCH" in ruleset["conditions"]["ref_name"]["include"]
@@ -247,21 +256,22 @@ def has_expected_actor(ruleset: dict, expected: dict):
     )
 
 
-def main() -> int:
+def main(arguments: list[str] | None = None) -> int:
     try:
-        organization, expected_actor = read_policy()
+        policy = select_policy(sys.argv[1:] if arguments is None else arguments)
+        organization, expected_actor = read_policy(policy)
         ruleset_ids = list_ruleset_ids(organization)
         rulesets = [read_ruleset(organization, ruleset_id) for ruleset_id in ruleset_ids]
     except (OSError, AuditDataError, RuntimeError) as error:
         print(f"ERROR: cannot establish organization ruleset state: {error}", file=sys.stderr)
         return 2
 
-    default_branch_rulesets = [
-        ruleset for ruleset in rulesets if targets_default_branch(ruleset)
+    default_branch_token_rulesets = [
+        ruleset for ruleset in rulesets if targets_default_branch_token(ruleset)
     ]
     failures = [
         ruleset
-        for ruleset in default_branch_rulesets
+        for ruleset in default_branch_token_rulesets
         if not has_expected_actor(ruleset, expected_actor)
     ]
     if failures:
@@ -275,7 +285,8 @@ def main() -> int:
 
     print(
         f"ruleset-policy=conformant organization={organization} "
-        f"rulesets={len(rulesets)} default_branch_rulesets={len(default_branch_rulesets)}"
+        f"rulesets={len(rulesets)} "
+        f"default_branch_token_rulesets={len(default_branch_token_rulesets)}"
     )
     return 0
 

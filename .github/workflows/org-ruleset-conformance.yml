@@ -25,7 +25,7 @@ jobs:
           ref: ${{ github.sha }}
           path: .org-ruleset-conformance-source-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
           persist-credentials: false
-      - name: Verify release authorization across default-branch rulesets
+      - name: Verify release authorization across ~DEFAULT_BRANCH rulesets
         env:
           GH_TOKEN: ${{ secrets.ORG_ADMIN_TOKEN }}
         run: python3 scripts/org-ruleset-conformance.py

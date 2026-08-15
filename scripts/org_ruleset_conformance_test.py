@@ -47,7 +47,17 @@ def ruleset(
 
 
 class OrgRulesetConformanceTest(unittest.TestCase):
-    def run_audit(self, pages, details, *, failing_paths=None, raw_policy=None):
+    def run_audit(
+        self,
+        pages,
+        details,
+        *,
+        failing_paths=None,
+        raw_policy=None,
+        use_test_policy=True,
+        inherited_policy=None,
+        extra_arguments=None,
+    ):
         with tempfile.TemporaryDirectory() as directory:
             temp = Path(directory)
             policy = temp / "policy.json"
@@ -93,12 +103,20 @@ class OrgRulesetConformanceTest(unittest.TestCase):
             )
             env = os.environ | {
                 "PATH": f"{temp}:{os.environ['PATH']}",
-                "ORG_RULESET_POLICY": str(policy),
                 "RESPONSES": json.dumps(responses),
                 "FAILING_PATHS": json.dumps(failing_paths or []),
                 "CALLS": str(calls),
             }
-            result = subprocess.run(["python3", str(AUDIT)], env=env, capture_output=True, text=True)
+            env.pop("ORG_RULESET_POLICY", None)
+            if inherited_policy is not None:
+                inherited = temp / "inherited-policy.json"
+                inherited.write_text(json.dumps(inherited_policy), encoding="utf-8")
+                env["ORG_RULESET_POLICY"] = str(inherited)
+            command = ["python3", str(AUDIT)]
+            if use_test_policy:
+                command.extend(["--test-policy", str(policy)])
+            command.extend(extra_arguments or [])
+            result = subprocess.run(command, env=env, capture_output=True, text=True)
             recorded = []
             if calls.exists():
                 recorded = [json.loads(line) for line in calls.read_text(encoding="utf-8").splitlines()]
@@ -123,7 +141,7 @@ class OrgRulesetConformanceTest(unittest.TestCase):
         result, calls = self.run_audit([[{"id": 1}]], {1: detail})
 
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("rulesets=1 default_branch_rulesets=1", result.stdout)
+        self.assertIn("rulesets=1 default_branch_token_rulesets=1", result.stdout)
         self.assertEqual(detail, original)
         self.assertEqual(
             calls,
@@ -146,6 +164,41 @@ class OrgRulesetConformanceTest(unittest.TestCase):
                 },
             },
         )
+
+    def test_inherited_policy_environment_cannot_redirect_production_policy(self):
+        detail = ruleset(13)
+        result, calls = self.run_audit(
+            [[{"id": 13}]],
+            {13: detail},
+            use_test_policy=False,
+            inherited_policy={
+                "organization": "Attacker",
+                "release_authorization_bypass": {
+                    "actor_type": "Integration",
+                    "actor_id": 1,
+                    "bypass_mode": "always",
+                },
+            },
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("organization=Verjson", result.stdout)
+        self.assertTrue(
+            all(call[-1].startswith("orgs/Verjson/rulesets") for call in calls),
+            calls,
+        )
+
+    def test_only_the_explicit_test_policy_argument_is_accepted(self):
+        result, _ = self.run_audit(
+            [[{"id": 14}]],
+            {14: ruleset(14)},
+            use_test_policy=False,
+            extra_arguments=["--policy", "/tmp/untrusted.json"],
+        )
+
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("usage: org-ruleset-conformance.py [--test-policy PATH]", result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
 
     def test_current_core_checks_actions_shape_without_release_actor_fails(self):
         detail = ruleset(
@@ -175,14 +228,19 @@ class OrgRulesetConformanceTest(unittest.TestCase):
                 self.assertEqual(result.returncode, 1)
                 self.assertIn("required release authorization bypass is absent", result.stderr)
 
-    def test_non_default_branch_and_non_branch_rulesets_do_not_require_actor(self):
+    def test_only_literal_default_branch_token_on_branch_target_requires_actor(self):
         develop_only = ruleset(3, include=["refs/heads/develop"], bypass_actors=[])
         tag_target = ruleset(4, target="tag", bypass_actors=[])
+        all_branches = ruleset(15, include=["~ALL"], bypass_actors=[])
+        explicit_main = ruleset(16, include=["refs/heads/main"], bypass_actors=[])
 
-        result, _ = self.run_audit([[{"id": 3}, {"id": 4}]], {3: develop_only, 4: tag_target})
+        result, _ = self.run_audit(
+            [[{"id": 3}, {"id": 4}, {"id": 15}, {"id": 16}]],
+            {3: develop_only, 4: tag_target, 15: all_branches, 16: explicit_main},
+        )
 
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("rulesets=2 default_branch_rulesets=0", result.stdout)
+        self.assertIn("rulesets=4 default_branch_token_rulesets=0", result.stdout)
 
     def test_paginated_listing_is_fully_enumerated(self):
         first = ruleset(5)
