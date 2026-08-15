@@ -27,8 +27,10 @@ package name in `privateNodePackages`. The canonical acquisition job validates t
 allowlist against `package-lock.json`, accepts only canonical registry URLs with exact
 SHA-512 integrity, and runs `npm ci --ignore-scripts` with isolated npm configuration.
 The resulting `node_modules` tree is bound to the workflow run, attempt, and lockfile
-digest. BuildKit receives only that credential-free tree as the named context
-`verjson_node_modules`; it never receives the acquisition token or npm configuration.
+digest. The trusted job saves it under an unguessable exact-attempt repository cache
+key; build jobs use no restore prefix and fail on a miss. BuildKit receives only that
+credential-free tree as the named context `verjson_node_modules`; it never receives the
+acquisition token or npm configuration.
 Such a consumer uses the context explicitly, for example:
 
 ```Dockerfile

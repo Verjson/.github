@@ -357,3 +357,17 @@ attempt, and lockfile digest. Every build job checks that digest against its che
 lockfile before exposing the tree as the `verjson_node_modules` named context. This
 permits exact private dependencies without moving package credentials or lifecycle
 execution into pull-request-controlled Docker commands.
+
+## Amendment (2026-08-15) — quota-independent private dependency handoff (#830)
+
+The credential-free `node_modules` tree crosses the trusted acquisition boundary through
+the repository cache service, not organization artifact storage. The acquisition job
+creates a 256-bit random exact-run-attempt key and exposes it only as a downstream job
+output. Build jobs restore only that complete key, use no prefix fallback, and fail closed
+on a miss before checking the embedded lockfile digest. A stable workspace-relative path
+keeps the cache version identical across runners, while job-local cleanup removes the
+restored transfer directory on every step outcome.
+
+This preserves the #690 credential boundary while isolating transient handoff capacity
+from the organization artifact quota. Cache entries are immutable and auto-evict from the
+consumer repository's quota; rollback pins callers to the preceding contract SHA.
