@@ -171,6 +171,17 @@ standard regardless, by its own ADR 0089 inventory, which this change does not t
   repository has no macOS or Windows selector and no OS-scoped lane — an assertion against
   the live tree could never fail and would prove nothing. #815 points the same script at
   consumer checkouts without duplicating it.
+- **Tier B is scoped to a *literal* selector — a `runs-on` value that is not an Actions
+  expression.** Inside a `${{ … }}` chain, `'["ubuntu-24.04"]'` is ADR 0040's portability
+  tail, which appears in the generated caller of every consumer; firing on it would reject
+  ~89 private repositories for conforming to the contract, and a check nobody can keep
+  switched on enforces nothing. This mirrors the strip that `runner-routing-policy.test.sh`
+  already performs for the same reason.
+- **A matrix indirection is judged against the whole `strategy` block, not only the
+  referenced key**, so a metered word in an unreferenced cross-compile key is refused too.
+  That imprecision is chosen: resolving the reference exactly means re-implementing YAML
+  scoping inside the scan, and a bug there would fail *open*. A false positive costs an
+  argument and is fixed by renaming a key; a false negative costs money.
 
 ## Rejected alternatives
 
