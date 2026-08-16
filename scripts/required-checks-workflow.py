@@ -12,6 +12,17 @@ class WorkflowSyntaxError(ValueError):
     pass
 
 
+UNSUPPORTED_YAML = re.compile(
+    r"^\s*(?:(?:<<|'<<'|\"<<\")\s*:|(?:-\s+|[^:#]+:\s*)[&*!][A-Za-z0-9_-]+(?:\s|$))"
+)
+
+
+def reject_unsupported_yaml(lines: list[str]) -> None:
+    for line in lines:
+        if UNSUPPORTED_YAML.match(line):
+            raise WorkflowSyntaxError("YAML anchors, aliases, merge keys, and tags are unsupported")
+
+
 def strip_comment(line: str) -> str:
     out: list[str] = []
     quote: str | None = None
@@ -351,6 +362,7 @@ def main() -> int:
         raise WorkflowSyntaxError("expected canonical changelog job name")
     lines = [strip_comment(line) for line in sys.stdin.read().splitlines()]
     lines = [line for line in lines if line not in {"---", "..."}]
+    reject_unsupported_yaml(lines)
     path_filter, pull_request = trigger_state(lines)
     parsed_jobs = jobs(lines)
     json.dump(

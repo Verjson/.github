@@ -250,6 +250,20 @@ rc="$(run_audit)"
   && pass "valid YAML document markers do not fault workflow inspection" \
   || { fail "YAML document markers changed audit behavior ($rc)"; out | sed 's/^/diag - /'; }
 
+cp "$content_root/.github/workflows/ci.yml" "$tmp/canonical-ci.yml"
+for unsupported_yaml in \
+  'jobs: &shared-jobs' \
+  '  <<: *shared-job' \
+  'on: !canonical pull_request'; do
+  cp "$tmp/canonical-ci.yml" "$content_root/.github/workflows/ci.yml"
+  printf '\n%s\n' "$unsupported_yaml" >>"$content_root/.github/workflows/ci.yml"
+  rc="$(run_audit)"
+  { [ "$rc" != "rc=0" ] && ! grep -q 'result=conformant' "$tmp/out.txt"; } \
+    && pass "unsupported YAML syntax fails workflow inspection closed: $unsupported_yaml" \
+    || { fail "unsupported YAML syntax was accepted: $unsupported_yaml ($rc)"; out | sed 's/^/diag - /'; }
+done
+cp "$tmp/canonical-ci.yml" "$content_root/.github/workflows/ci.yml"
+
 rc="$(RCA_WORKFLOW_INSPECTOR="$tmp/missing-workflow-inspector.py" run_audit)"
 { [ "$rc" = "rc=2" ] && grep -q 'workflow-inspector-missing' "$tmp/out.txt"; } \
   && pass "a missing hermetic workflow inspector fails at startup" \
