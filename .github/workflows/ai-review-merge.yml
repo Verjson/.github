@@ -954,15 +954,19 @@ jobs:
             consumed=$((consumed + 1))
           fi
           if [ "${EXPLICIT_REREVIEW:-false}" = true ] && [ "$explicit_receipt_consumed" = true ]; then
-            echo "allowed=false" >>"$GITHUB_OUTPUT"
-            echo "count=$consumed" >>"$GITHUB_OUTPUT"
+            {
+              echo "allowed=false"
+              echo "count=$consumed"
+            } >>"$GITHUB_OUTPUT"
             echo "::error::this explicit authorization check already reserved its one diagnostic pass; apply a new authorized re-review label"
             exit 0
           fi
           if [ "${EXPLICIT_REREVIEW:-false}" != true ] && [ "$consumed" -ge 2 ]; then
-            echo "allowed=false" >>"$GITHUB_OUTPUT"
-            echo "count=$consumed" >>"$GITHUB_OUTPUT"
-            echo "cap_exhausted=true" >>"$GITHUB_OUTPUT"
+            {
+              echo "allowed=false"
+              echo "count=$consumed"
+              echo "cap_exhausted=true"
+            } >>"$GITHUB_OUTPUT"
             echo "::error::AI review exact-head pass cap exhausted ($consumed/2); refusing a third model invocation"
             exit 0
           fi
@@ -990,8 +994,10 @@ jobs:
           ' <<<"$created" >/dev/null || {
             echo "::error::dedicated App review reservation was not persisted exactly"; exit 1;
           }
-          echo "allowed=true" >>"$GITHUB_OUTPUT"
-          echo "count=$next" >>"$GITHUB_OUTPUT"
+          {
+            echo "allowed=true"
+            echo "count=$next"
+          } >>"$GITHUB_OUTPUT"
 
       - name: Prepare bounded review context
         id: prep
@@ -1302,9 +1308,11 @@ jobs:
             echo "cap_exhausted=false"
           } >>"$GITHUB_OUTPUT"
           if [ "$consumed" -ge 2 ]; then
-            echo "allowed=false" >>"$GITHUB_OUTPUT"
-            echo "count=$consumed" >>"$GITHUB_OUTPUT"
-            echo "cap_exhausted=true" >>"$GITHUB_OUTPUT"
+            {
+              echo "allowed=false"
+              echo "count=$consumed"
+              echo "cap_exhausted=true"
+            } >>"$GITHUB_OUTPUT"
             echo "::notice::DeepSeek fallback suppressed because this exact head has consumed $consumed/2 AI review passes"
             exit 0
           fi
@@ -1323,8 +1331,10 @@ jobs:
           ' <<<"$created" >/dev/null || {
             echo "::error::dedicated App fallback reservation was not persisted exactly"; exit 1;
           }
-          echo "allowed=true" >>"$GITHUB_OUTPUT"
-          echo "count=$next" >>"$GITHUB_OUTPUT"
+          {
+            echo "allowed=true"
+            echo "count=$next"
+          } >>"$GITHUB_OUTPUT"
 
       - name: DeepSeek review pass 2
         id: deepseek_fallback
