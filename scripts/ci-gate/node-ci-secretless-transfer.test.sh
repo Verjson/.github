@@ -39,7 +39,10 @@ assert "node_modules" not in save["with"]["path"]
 
 package = next(step for step in acquire["steps"] if step.get("name") == "Package bounded credential-free npm cache")
 assert package["id"] == "package-secretless-transfer"
+assert acquire["steps"].index(package) < acquire["steps"].index(save)
 assert package["env"]["MAX_PAYLOAD_BYTES"] == "83886080"
+assert '[ ! -e "$TRANSFER_DIR" ] && [ ! -L "$TRANSFER_DIR" ]' in package["run"]
+assert "reserved secretless transfer path exists before packaging" in package["run"]
 assert "_cacache/content-v2" in package["run"]
 assert "npm-private-cache.tar" in package["run"]
 assert "payload_bytes" in package["run"]
@@ -52,7 +55,13 @@ assert '>> "$GITHUB_OUTPUT"' in package["run"]
 acquire_cleanup = next(step for step in acquire["steps"] if step.get("name") == "Remove local acquisition and transfer state")
 assert acquire_cleanup["if"] == "always()"
 
+stable_workspace_transfer = "${{ github.workspace }}/" + stable_transfer_path
+restore_guard = next(step for step in build["steps"] if step.get("name") == "Require an unused secretless restore path")
 restore = next(step for step in build["steps"] if step.get("id") == "restore-secretless-transfer")
+assert build["steps"].index(restore_guard) < build["steps"].index(restore)
+assert restore_guard["env"]["TRANSFER_DIR"] == stable_workspace_transfer
+assert '[ ! -e "$TRANSFER_DIR" ] && [ ! -L "$TRANSFER_DIR" ]' in restore_guard["run"]
+assert "reserved secretless transfer path exists before restore" in restore_guard["run"]
 assert restore["uses"] == "actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9"
 assert restore["with"]["key"] == "${{ needs.acquire-secretless-dependencies.outputs.transfer-cache-key }}"
 assert restore["with"]["path"] == stable_transfer_path
@@ -75,7 +84,6 @@ for credential in (
 assert install["env"]["MAX_PAYLOAD_BYTES"] == package["env"]["MAX_PAYLOAD_BYTES"]
 assert install["env"]["EXPECTED_PAYLOAD_BYTES"] == "${{ needs.acquire-secretless-dependencies.outputs.transfer-payload-bytes }}"
 assert install["env"]["EXPECTED_PAYLOAD_SHA256"] == "${{ needs.acquire-secretless-dependencies.outputs.transfer-payload-sha256 }}"
-stable_workspace_transfer = "${{ github.workspace }}/" + stable_transfer_path
 assert package["env"]["TRANSFER_DIR"] == stable_workspace_transfer
 assert acquire_cleanup["env"]["TRANSFER_DIR"] == stable_workspace_transfer
 assert install["env"]["TRANSFER_DIR"] == stable_workspace_transfer
@@ -253,6 +261,29 @@ rebind_payload_manifest() {
   sed -i "s/^payload_sha256=.*/payload_sha256=$digest/; s/^payload_bytes=.*/payload_bytes=$bytes/" \
     "$fixture/transfer/manifest"
 }
+
+printf '%s\n' \
+  '{"name":"empty-fixture","version":"1.0.0","lockfileVersion":3,"packages":{"":{"name":"empty-fixture","version":"1.0.0"}}}' \
+  > "$tmp/empty/package-lock.json"
+if (cd "$tmp/empty" && PATH="$tmp/bin:$PATH" NPM_STUB_LOG="$tmp/empty/npm.log" \
+    CACHE_DIR="$tmp/empty/cache" TRANSFER_DIR="$tmp/empty/transfer" \
+    AUXILIARY_COMMIT='' AUXILIARY_CONTENT_PATH='' AUXILIARY_REPOSITORY='' \
+    GITHUB_WORKSPACE="$tmp/empty" GITHUB_OUTPUT="$tmp/empty/package.outputs" \
+    NPM_CONFIG_GLOBALCONFIG="$tmp/empty/empty-global.npmrc" \
+    NPM_CONFIG_USERCONFIG="$tmp/empty/empty-user.npmrc" \
+    MAX_PAYLOAD_BYTES=83886080 RUN_ID=7001 RUN_ATTEMPT=3 bash "$tmp/package.sh") \
+    && empty_payload_bytes="$(stat -c %s "$tmp/empty/transfer/npm-private-cache.tar")" \
+    && [ "$empty_payload_bytes" = "$(sed -n 's/^payload_bytes=//p' "$tmp/empty/transfer/manifest")" ] \
+    && grep -qFx "payload-bytes=$empty_payload_bytes" "$tmp/empty/package.outputs" \
+    && [ "$(tar -tf "$tmp/empty/transfer/npm-private-cache.tar" | grep -vc '/$')" -eq 0 ] \
+    && run_install "$tmp/empty" \
+    && grep -qF 'ci --ignore-scripts --prefer-offline --no-audit --no-fund --cache ' "$tmp/empty/npm.log" \
+    && [ ! -e "$tmp/empty/transfer" ] \
+    && [ ! -e "$tmp/empty/build-cache" ]; then
+  pass "an empty approved package set completes the packaged credential-free handoff"
+else
+  fail "an empty approved package set failed the packaged credential-free handoff"
+fi
 
 mkdir -p "$tmp/build"
 cp "$tmp/acquire/package-lock.json" "$tmp/build/package-lock.json"
