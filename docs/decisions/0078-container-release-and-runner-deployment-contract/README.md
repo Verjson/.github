@@ -343,6 +343,22 @@ gh attestation verify "$manifest" --repo "$repository" \
   --source-digest "$source_commit"
 ```
 
+## Amendment (2026-08-16) — parent-index evidence binding (#851)
+
+The generated candidate caller grants `actions: read` so GitHub can satisfy every
+called job's declared permission without a reusable-workflow startup failure. The
+SBOM-signing job alone receives `packages: write` for `push-to-registry`; build-only
+pull-request jobs retain read-only source authority. A checked-in reusable-call canary
+keeps GitHub's own workflow parser and permission negotiation on the changed contract.
+
+BuildKit evidence is resolved from the parent OCI index rather than a child platform
+manifest. Deployable descriptors must equal the reviewed platform matrix exactly.
+Every `unknown/unknown` descriptor must be a uniquely bound attestation manifest for
+one reviewed platform digest, and every such manifest must contain exactly one SPDX
+layer. Missing, duplicate, ambiguous, unbound, partially unknown, or non-attestation
+descriptors fail before signing or manifest assembly. Evidence descriptors are
+validated separately and never enter the deployable platform list.
+
 ## Amendment (2026-08-14) — protected runner deployment contract (#629)
 
 The deployment stage is implemented by the reusable
