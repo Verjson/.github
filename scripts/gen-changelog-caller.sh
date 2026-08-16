@@ -872,6 +872,8 @@ validation_job="$(awk '
   capture && /^  [^ ]/ { exit }
   capture { print }
 ' "$validation_workflow")"
+[ "$(grep -Ec '^    [^[:space:]#]' <<<"$validation_job")" = 2 ] \
+  || fail "$validation_workflow changelog job may contain only the canonical uses and with fields; name, strategy, matrix, and other check-shaping fields are forbidden"
 [ "$(grep -Ec '^    uses: Verjson/\.github/\.github/workflows/generated-artifacts\.yml@[0-9a-f]{40}$' <<<"$validation_job")" = 1 ] \
   && grep -qE "^    uses: Verjson/\\.github/\\.github/workflows/generated-artifacts\\.yml@$CONTRACT_REF$" <<<"$validation_job" \
   || fail "$validation_workflow does not call generated-artifacts.yml at the shared pin"

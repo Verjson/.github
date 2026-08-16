@@ -5,6 +5,7 @@
 - **Extends:** [ADR 0058](../0058-github-waits-for-checks-not-the-gate/README.md), [ADR 0075](../0075-generated-artifacts-is-the-changelog-check-prefix/README.md)
 - **Category:** Organization ruleset / branch protection — **sensitive class**
 - **Status:** Accepted, rollout blocked on consumer conformance
+- **Context-name choice superseded by:** [ADR 0106](../0106-generated-changelog-publishes-live-required-context/README.md)
 
 ## Context
 

@@ -31,9 +31,11 @@ generated-artifacts implementation.
 
 The generated contract test binds the reusable workflow, `changelog: true`, and
 the immutable `contract_ref` to that one `changelog` job. A second job with the
-right name cannot mask a misnamed reusable caller. The declared required-check
-contract and read-only audit use the same caller name and context as the active
-ruleset. No organization ruleset mutation is part of this change.
+right name cannot mask a misnamed reusable caller. Job-level `name`, `strategy`,
+matrix, and other check-shaping fields are forbidden. The declared
+required-check contract and PyYAML-backed read-only audit validate the same
+exact mapping and context as the active ruleset. No organization ruleset
+mutation is part of this change.
 
 ## Consequences
 

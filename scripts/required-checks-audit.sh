@@ -144,6 +144,52 @@ caller_job_for() { # stdin = workflow source, $1 = reusable workflow filename
   '
 }
 
+generated_changelog_job_state() { # stdin = workflow source, $1 = expected job name
+  python3 -c '
+import re, sys, yaml
+
+expected_job = sys.argv[1]
+doc = yaml.load(sys.stdin, Loader=yaml.BaseLoader)
+jobs = doc.get("jobs", {}) if isinstance(doc, dict) else {}
+if not isinstance(jobs, dict):
+    print("invalid")
+    raise SystemExit
+
+target = "/.github/workflows/generated-artifacts.yml@"
+callers = []
+for job_name, job in jobs.items():
+    uses = job.get("uses", "") if isinstance(job, dict) else ""
+    if isinstance(uses, str) and target in uses:
+        callers.append((job_name, job, uses))
+
+if not callers:
+    print("absent")
+    raise SystemExit
+if len(callers) != 1:
+    print("invalid")
+    raise SystemExit
+
+job_name, job, uses = callers[0]
+match = re.fullmatch(
+    r"Verjson/\.github/\.github/workflows/generated-artifacts\.yml@([0-9a-f]{40})",
+    uses,
+)
+inputs = job.get("with") if isinstance(job, dict) else None
+allowed_inputs = {"changelog", "contract_ref", "adr-index"}
+valid = (
+    job_name == expected_job
+    and set(job) == {"uses", "with"}
+    and match is not None
+    and isinstance(inputs, dict)
+    and set(inputs).issubset(allowed_inputs)
+    and inputs.get("changelog") == "true"
+    and inputs.get("contract_ref") == match.group(1)
+    and ("adr-index" not in inputs or inputs["adr-index"] == "true")
+)
+print("valid" if valid else "invalid")
+' "$1"
+}
+
 changelog_contract_job_state() { # stdin = workflow source
   python3 -c '
 import re, sys, yaml
@@ -319,8 +365,9 @@ PY
 )
 
 source_contract_for_repo() { # $1 = repo, $2 = stack
-  local repo="$1" stack="$2" listing paths path source stack_workflow head='' ref_query=''
-  local stack_job='' changelog_job='' changelog_contract_jobs=0 source_fault=0
+  local repo="$1" stack="$2" listing paths path source stack_workflow head='' ref_query='' changelog_state
+  local stack_job='' changelog_callers=0 changelog_contract_jobs=0 source_fault=0
+  local expected_stack_job expected_changelog_job
 
   case "$stack" in
     actions|none) return 0 ;;
@@ -330,6 +377,8 @@ source_contract_for_repo() { # $1 = repo, $2 = stack
   fi
   [ -z "$head" ] || ref_query="?ref=$head"
   stack_workflow="$(stack_workflow_for "$stack")" || return 2
+  expected_stack_job="$(jq -r '.caller_job_names.stack' "$CONTRACT_FILE")"
+  expected_changelog_job="$(jq -r '.caller_job_names.changelog' "$CONTRACT_FILE")"
   listing="$(gh api "repos/$ORG/$repo/contents/.github/workflows$ref_query" 2>/dev/null)" ||
     return 2
   jq -e 'type == "array"' <<<"$listing" >/dev/null 2>&1 || return 2
@@ -359,19 +408,27 @@ source_contract_for_repo() { # $1 = repo, $2 = stack
     fi
 
     if [ "$stack" = node ] || [ "$stack" = ui ] || [ "$stack" = helm ]; then
-      found="$(
-        {
-          caller_job_for generated-artifacts.yml <<<"$source"
-          caller_job_for changelog-validate.yml <<<"$source"
-        } | sed '/^$/d' | sort -u
-      )"
-      if [ -n "$found" ]; then
-        changelog_job="$found"
-        if [ "$path_filter" = true ]; then
-          echo "::error::phase=audit repo=$repo stack=$stack result=workflow-path-filter path=$path — changelog / validate can be absent permanently."
+      changelog_state="$(generated_changelog_job_state "$expected_changelog_job" <<<"$source")" || {
+        source_fault=1
+        break
+      }
+      case "$changelog_state" in
+        valid)
+          changelog_callers=$((changelog_callers + 1))
+          if [ "$(has_pull_request_trigger <<<"$source")" != true ]; then
+            echo "::error::phase=audit repo=$repo stack=$stack result=workflow-trigger-missing path=$path — changelog / validate must run on pull_request."
+            return 1
+          fi
+          if [ "$path_filter" = true ]; then
+            echo "::error::phase=audit repo=$repo stack=$stack result=workflow-path-filter path=$path — changelog / validate can be absent permanently."
+            return 1
+          fi
+          ;;
+        invalid)
+          echo "::error::phase=audit repo=$repo stack=$stack result=changelog-caller-invalid path=$path — require one exact generated changelog job with no name or matrix override."
           return 1
-        fi
-      fi
+          ;;
+      esac
     fi
 
     if [ "$stack" = node ]; then
@@ -405,16 +462,13 @@ source_contract_for_repo() { # $1 = repo, $2 = stack
     echo "::error::phase=audit repo=$repo stack=$stack result=stack-caller-missing expected='ci / ${stack_workflow%.yml}'"
     return 1
   fi
-  local expected_stack_job expected_changelog_job
-  expected_stack_job="$(jq -r '.caller_job_names.stack' "$CONTRACT_FILE")"
-  expected_changelog_job="$(jq -r '.caller_job_names.changelog' "$CONTRACT_FILE")"
   if [ "$stack_job" != "$expected_stack_job" ]; then
     echo "::error::phase=audit repo=$repo stack=$stack result=caller-job-name expected=$expected_stack_job actual=$stack_job"
     return 1
   fi
   if { [ "$stack" = node ] || [ "$stack" = ui ] || [ "$stack" = helm ]; } &&
-    [ "$changelog_job" != "$expected_changelog_job" ]; then
-    echo "::error::phase=audit repo=$repo stack=$stack result=caller-job-name expected=$expected_changelog_job actual=${changelog_job:-missing}"
+    [ "$changelog_callers" -ne 1 ]; then
+    echo "::error::phase=audit repo=$repo stack=$stack result=changelog-caller-missing expected=1 actual=$changelog_callers"
     return 1
   fi
   if [ "$stack" = node ] && [ "$changelog_contract_jobs" -ne 1 ]; then

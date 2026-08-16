@@ -556,6 +556,22 @@ run_adopter "$cross_job_adopter" \
   && fail "emitted suite accepts canonical fields spread across different jobs" \
   || pass "emitted suite binds the canonical caller fields to the changelog job (#835)"
 
+named_job_adopter="$tmproot/adopter-named-changelog-job"
+cp -a "$generated_adopter" "$named_job_adopter"
+sed -i '/^  changelog:$/a\    name: renamed required check' \
+  "$named_job_adopter/.github/workflows/changelog.yml"
+run_adopter "$named_job_adopter" \
+  && fail "emitted suite accepts a changelog job with a check-name override" \
+  || pass "emitted suite rejects a job-level name that changes the required context (#835)"
+
+matrix_job_adopter="$tmproot/adopter-matrix-changelog-job"
+cp -a "$generated_adopter" "$matrix_job_adopter"
+sed -i '/^  changelog:$/a\    strategy:\n      matrix:\n        shard: [one, two]' \
+  "$matrix_job_adopter/.github/workflows/changelog.yml"
+run_adopter "$matrix_job_adopter" \
+  && fail "emitted suite accepts a matrixed changelog job" \
+  || pass "emitted suite rejects strategy fields that suffix the required context (#835)"
+
 split_adopter="$tmproot/adopter-split-generated-artifacts"
 build_split_adopter "$split_adopter"
 run_adopter "$split_adopter" \

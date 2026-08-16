@@ -399,9 +399,45 @@ rc="$(run_audit)"
 stack node
 sed -i 's/^  changelog:$/  generated-docs:/' "$content_root/.github/workflows/generated-artifacts.yml"
 rc="$(run_audit)"
-{ [ "$rc" != "rc=0" ] && grep -q 'caller-job-name expected=changelog actual=generated-docs' "$tmp/out.txt"; } \
+{ [ "$rc" != "rc=0" ] && grep -q 'changelog-caller-invalid' "$tmp/out.txt"; } \
   && pass "the generated-artifacts caller must publish changelog / validate" \
   || { fail "a noncanonical changelog caller name was accepted ($rc)"; out | sed 's/^/diag - /'; }
+
+stack helm; pulls s1 s2
+head_with s1 gate "ci / lint-template" "changelog / validate"
+head_with s2 gate "ci / lint-template" "changelog / validate"
+sed -i '/^  changelog:$/a\    name: renamed required check' "$content_root/.github/workflows/generated-artifacts.yml"
+rc="$(run_audit)"
+{ [ "$rc" != "rc=0" ] && grep -q 'changelog-caller-invalid' "$tmp/out.txt"; } \
+  && pass "a job-level name cannot disguise a changed changelog context" \
+  || { fail "a named changelog caller was accepted ($rc)"; out | sed 's/^/diag - /'; }
+
+stack helm; pulls s1 s2
+head_with s1 gate "ci / lint-template" "changelog / validate"
+head_with s2 gate "ci / lint-template" "changelog / validate"
+sed -i '/^  changelog:$/a\    strategy:\n      matrix:\n        shard: [one, two]' "$content_root/.github/workflows/generated-artifacts.yml"
+rc="$(run_audit)"
+{ [ "$rc" != "rc=0" ] && grep -q 'changelog-caller-invalid' "$tmp/out.txt"; } \
+  && pass "a matrix cannot suffix the generated changelog context" \
+  || { fail "a matrixed changelog caller was accepted ($rc)"; out | sed 's/^/diag - /'; }
+
+stack helm; pulls s1 s2
+head_with s1 gate "ci / lint-template" "changelog / validate"
+head_with s2 gate "ci / lint-template" "changelog / validate"
+sed -i 's/^      changelog: true$/      changelog: false/' "$content_root/.github/workflows/generated-artifacts.yml"
+rc="$(run_audit)"
+{ [ "$rc" != "rc=0" ] && grep -q 'changelog-caller-invalid' "$tmp/out.txt"; } \
+  && pass "the source audit requires changelog validation to be enabled" \
+  || { fail "a changelog-disabled generated caller was accepted ($rc)"; out | sed 's/^/diag - /'; }
+
+stack helm; pulls s1 s2
+head_with s1 gate "ci / lint-template" "changelog / validate"
+head_with s2 gate "ci / lint-template" "changelog / validate"
+sed -i 's|^    uses: Verjson/|    # uses: Verjson/|' "$content_root/.github/workflows/generated-artifacts.yml"
+rc="$(run_audit)"
+{ [ "$rc" != "rc=0" ] && grep -q 'changelog-caller-missing' "$tmp/out.txt"; } \
+  && pass "a commented uses lookalike cannot satisfy source inspection" \
+  || { fail "a comment-only generated caller was accepted ($rc)"; out | sed 's/^/diag - /'; }
 
 stack node
 unmerged_pin=ffffffffffffffffffffffffffffffffffffffff

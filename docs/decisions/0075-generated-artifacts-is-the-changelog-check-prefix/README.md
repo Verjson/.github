@@ -49,10 +49,9 @@ separate human authorization gate.
 On 2026-08-16, issue #835 found that the live `changelog-contract-required`
 ruleset still required the superseded context while the compatibility
 `workflow` generator and generated adopter test continued to accept it. The
-generator now emits the canonical caller in every changelog-validation mode,
-the adopter test rejects the retired caller, and the live ruleset is migrated
-with a captured recovery preimage under the separately authorized operational
-change.
+planned live migration in this decision never occurred. ADR 0106 instead
+preserves the active ruleset context and makes every generated caller publish
+it exactly.
 
 ## Consequences
 
