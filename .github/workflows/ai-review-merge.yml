@@ -1484,7 +1484,8 @@ jobs:
           # A pass that ended in an SDK terminal error did not produce a usable
           # verdict even if the action surfaced schema-valid filler (#441).
           SELECTED_PASS_TERMINAL_ERROR: ${{ steps.retry_outcome.outputs.selected_pass_terminal_error }}
-          EXTRACTION_DIAGNOSTIC: ${{ steps.deepseek_fallback.outputs.extraction_diagnostic || steps.deepseek_primary.outputs.extraction_diagnostic }}
+          PRIMARY_EXTRACTION_DIAGNOSTIC: ${{ steps.deepseek_primary.outputs.extraction_diagnostic }}
+          FALLBACK_EXTRACTION_DIAGNOSTIC: ${{ steps.deepseek_fallback.outputs.extraction_diagnostic }}
           PERMISSION_DENIALS: ${{ steps.retry_outcome.outputs.permission_denials }}
           PASS_CAP_EXHAUSTED: ${{ steps.rereview.outputs.skip_model != 'true' && (steps.reserve_1.outputs.cap_exhausted == 'true' || steps.reserve_2.outputs.cap_exhausted == 'true' || steps.reserve_2.outputs.count == '2') }}
           REVIEW_PASS_COUNT: ${{ steps.reserve_2.outputs.count || steps.reserve_1.outputs.count || '0' }}
@@ -1524,16 +1525,25 @@ jobs:
             heading="⚠️ **AI review advisory: review could not complete**"
             detail="The receipt-bound review cascade produced no usable verdict (budget/turn exhaustion, another terminal model error, or semantically invalid structured output). Human approval remains available. Apply the \`re-review\` label only when a maintainer explicitly authorizes another paid attempt."
             extraction_detail=""
-            extraction_kind="$(jq -er '
-              if .stage == "completed_response_extraction"
-                 and (.kind | IN("json_decode", "response_shape", "usage_envelope", "tool_call", "verdict_shape"))
-                 and (.content_bytes | type == "number")
-                 and (.content_sha256 | type == "string" and test("^[0-9a-f]{64}$"))
-              then .kind else empty end
-            ' <<<"${EXTRACTION_DIAGNOSTIC:-}" 2>/dev/null || true)"
-            if [ -n "$extraction_kind" ]; then
+            extraction_kind() {
+              jq -er '
+                if .stage == "completed_response_extraction"
+                   and (.kind | IN("json_decode", "response_shape", "usage_envelope", "tool_call", "verdict_shape"))
+                   and (.content_bytes | type == "number")
+                   and (.content_sha256 | type == "string" and test("^[0-9a-f]{64}$"))
+                then .kind else empty end
+              ' <<<"$1" 2>/dev/null || true
+            }
+            primary_extraction_kind="$(extraction_kind "${PRIMARY_EXTRACTION_DIAGNOSTIC:-}")"
+            fallback_extraction_kind="$(extraction_kind "${FALLBACK_EXTRACTION_DIAGNOSTIC:-}")"
+            if [ -n "$primary_extraction_kind" ]; then
+              extraction_detail="DeepSeek pass 1 completed-response extraction failed with typed cause \`$primary_extraction_kind\`; its bounded, non-content diagnostic artifact is retained. "
+            fi
+            if [ -n "$fallback_extraction_kind" ]; then
+              extraction_detail="${extraction_detail}DeepSeek pass 2 completed-response extraction failed with typed cause \`$fallback_extraction_kind\`; its bounded, non-content diagnostic artifact is retained. "
+            fi
+            if [ -n "$extraction_detail" ]; then
               heading="⚠️ **AI review advisory: completed-response extraction failed**"
-              extraction_detail="The selected completed DeepSeek response failed extraction with typed cause \`$extraction_kind\`; its bounded, non-content diagnostic artifact is retained. "
               detail="${extraction_detail}Human approval remains available."
             fi
             if [ "${BUDGET_EXHAUSTED:-}" = "true" ]; then

@@ -36,10 +36,13 @@ classification, trusted workflow revision, and input digests. The staging helper
 only the closed schema and trusted cause vocabulary. Artifacts retain the existing
 one-day diagnostic lifetime.
 
-Deterministic publication validates the typed output against the same closed vocabulary
-before naming the cause in its advisory. A malformed or absent diagnostic degrades to
-the generic inconclusive wording. Extraction diagnostics never become verdicts, never
-authorize approval or merge, and do not change the exact-head two-pass reservation cap.
+Deterministic publication validates each pass's typed output independently against the
+same closed vocabulary before naming the cause and pass in its advisory. It never falls
+back from an absent pass-2 diagnostic to pass 1 as though pass 1 were the selected cause,
+and it retains two distinct extraction causes when both passes fail extraction. A
+malformed or absent diagnostic degrades to the generic inconclusive wording. Extraction
+diagnostics never become verdicts, never authorize approval or merge, and do not change
+the exact-head two-pass reservation cap.
 
 ## Consequences
 

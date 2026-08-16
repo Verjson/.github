@@ -158,6 +158,34 @@ class DeepSeekReplayTest(unittest.TestCase):
             self.assertTrue(available)
             self.assertLess(output.stat().st_size, 16 * 1024)
 
+    def test_two_passes_stage_distinct_extraction_causes_without_collapsing(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            primary = extraction_bundle()
+            fallback = extraction_bundle()
+            fallback["model"] = "deepseek-v4-flash"
+            fallback["provenance"]["review_pass"] = 2
+            fallback["failure"] = {
+                "stage": "completed_response_extraction", "kind": "usage_envelope",
+                "content_bytes": 60, "content_sha256": "2" * 64,
+            }
+            staged = []
+            for pass_number, model, candidate in (
+                (1, MODEL, primary), (2, "deepseek-v4-flash", fallback),
+            ):
+                source, output = root / f"source-{pass_number}.json", root / f"output-{pass_number}.json"
+                source.write_text(json.dumps(candidate), encoding="utf-8")
+                self.assertTrue(replay.prepare(
+                    source, output, "failure", "false", "success", "{}", HEAD, "9001", model,
+                    "Verjson/.github", 7, pass_number, False, "f" * 40,
+                ))
+                staged.append(json.loads(output.read_text()))
+
+            self.assertEqual(
+                [candidate["failure"]["kind"] for candidate in staged],
+                ["json_decode", "usage_envelope"],
+            )
+
     def test_provenance_mutation_and_sensitive_unknown_fields_fail_closed(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -206,6 +234,19 @@ class DeepSeekReplayTest(unittest.TestCase):
         for step_id in ("deepseek_primary", "deepseek_fallback"):
             self.assertIn(f"TRANSPORT: ${{{{ steps.{step_id}.outcome }}}}", workflow)
             self.assertNotIn(f"TRANSPORT: ${{{{ steps.{step_id}.conclusion }}}}", workflow)
+        self.assertIn(
+            "PRIMARY_EXTRACTION_DIAGNOSTIC: ${{ steps.deepseek_primary.outputs.extraction_diagnostic }}",
+            workflow,
+        )
+        self.assertIn(
+            "FALLBACK_EXTRACTION_DIAGNOSTIC: ${{ steps.deepseek_fallback.outputs.extraction_diagnostic }}",
+            workflow,
+        )
+        self.assertNotIn(
+            "steps.deepseek_fallback.outputs.extraction_diagnostic || "
+            "steps.deepseek_primary.outputs.extraction_diagnostic",
+            workflow,
+        )
 
     def test_documented_replay_uses_separate_trusted_and_target_checkouts(self):
         decision = (ROOT / "docs/decisions/0090-human-first-opt-in-ai-review/README.md").read_text()
