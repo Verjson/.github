@@ -144,9 +144,9 @@ allowlist, and content-set check.
 Consumers pin
 `Verjson/.github/.github/workflows/node-ci.yml@<40-hex-canonical-contract-sha>`,
 preserve their exact internal-scope and package allowlists, auxiliary identity,
-rebuild list, and script plan. A caller mapping `GITHUB_TOKEN` as the package token
-also grants `packages: read`; a dedicated package token remains independent of caller
-permissions. If an adoption also
+rebuild list, and script plan. Every secretless caller grants `packages: read` so
+the reusable acquisition job can request it, regardless of the token mapped to
+`NODE_AUTH_TOKEN`. If an adoption also
 advances generated changelog artifacts, all
 `Verjson/.github/scripts/gen-changelog-caller.sh` outputs—workflow, renderer,
 contract test, and release caller—must be regenerated at the same immutable SHA.

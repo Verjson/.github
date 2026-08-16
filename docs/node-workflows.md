@@ -39,8 +39,9 @@ jobs:
 `actions/setup-node`. If it matches no lockfile, caching is skipped and the job
 continues normally. Registry authentication is independent of the job token and
 caching: callers that install private `@verjson` packages pass
-`NODE_AUTH_TOKEN`. The reusable build job requests no package permission, so a
-caller's legacy `packages: read` grant is harmless but unnecessary.
+`NODE_AUTH_TOKEN`. Every caller also grants `packages: read` because the reusable
+acquisition job requests it, although the build job itself requests no package
+permission.
 
 For validation of repositories with approved private dependencies, the
 `secretless-pr` and `secretless-trusted-ref` modes split acquisition from
@@ -79,6 +80,7 @@ jobs:
   ci:
     permissions:
       contents: read
+      packages: read
       statuses: read
     uses: Verjson/.github/.github/workflows/node-ci.yml@<immutable-sha>
     with:
@@ -90,13 +92,11 @@ jobs:
       NODE_AUTH_TOKEN: ${{ secrets.NODE_AUTH_TOKEN }}
 ```
 
-Do not use `secrets: inherit` on this route. A caller that maps a dedicated
-`NODE_AUTH_TOKEN` may omit `packages: read` because that token has independent
-package authority. A caller that maps `secrets.GITHUB_TOKEN` must grant
-`packages: read`; reusable-workflow permission intersection otherwise strips the
-token's package access. That capability exists only in acquisition. The build job
-retains only `contents: read` and scrubs GitHub token paths before repository
-commands. All
+Do not use `secrets: inherit` on this route. Every caller grants `packages: read`
+because reusable-workflow job permissions cannot elevate the caller permission
+ceiling, even when `NODE_AUTH_TOKEN` is a dedicated token. That capability exists
+only in acquisition. The build job retains only `contents: read` and scrubs
+GitHub token paths before repository commands. All
 PR acquisition and build jobs ignore the caller runner override and use the
 isolated untrusted lane or a fresh hosted fallback. `secretless-pr` rejects
 non-PR events and fork PRs. Both modes reject schema submodules, repository npm
@@ -133,6 +133,7 @@ jobs:
     if: github.event_name == 'pull_request'
     permissions:
       contents: read
+      packages: read
       statuses: read
     uses: Verjson/.github/.github/workflows/node-ci.yml@<40-hex-canonical-contract-sha>
     with:
@@ -145,6 +146,7 @@ jobs:
     if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
     permissions:
       contents: read
+      packages: read
       statuses: read
     uses: Verjson/.github/.github/workflows/node-ci.yml@<40-hex-canonical-contract-sha>
     with:
@@ -154,9 +156,8 @@ jobs:
       NODE_AUTH_TOKEN: ${{ secrets.NODE_AUTH_TOKEN }}
 ```
 
-The example uses a dedicated package token. If either job maps
-`NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}`, add `packages: read` to that
-caller's permissions.
+Both jobs grant `packages: read` because both invoke the reusable acquisition
+job. The mapped package token does not change that caller contract.
 
 For parity with PR validation, pass the same exact
 `approved-internal-scopes`, `approved-internal-packages`,
@@ -215,6 +216,7 @@ jobs:
   ci:
     permissions:
       contents: read
+      packages: read
       statuses: read
     uses: Verjson/.github/.github/workflows/node-ci.yml@<40-hex-canonical-contract-sha>
     with:

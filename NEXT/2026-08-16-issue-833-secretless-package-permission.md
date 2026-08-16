@@ -9,8 +9,8 @@ The secretless Node acquisition job now requests package-read authority, restori
 fresh private-package downloads while keeping the token out of PR-controlled
 execution.
 
-Callers that map `GITHUB_TOKEN` must grant `packages: read`; callers using a
-dedicated package token keep that token's independent scope. Exact package
-allowlists, canonical download URLs, integrity checks, credential scrubbing, and
-exact-attempt cache validation remain unchanged
+Every secretless caller must grant `packages: read`, including callers using a
+dedicated package token, because reusable jobs cannot elevate the caller
+permission ceiling. Exact package allowlists, canonical download URLs, integrity
+checks, credential scrubbing, and exact-attempt cache validation remain unchanged
 ([ADR 0086](../docs/decisions/0086-secretless-node-pr-validation/README.md)).
