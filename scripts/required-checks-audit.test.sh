@@ -250,6 +250,38 @@ rc="$(run_audit)"
   && pass "valid YAML document markers do not fault workflow inspection" \
   || { fail "YAML document markers changed audit behavior ($rc)"; out | sed 's/^/diag - /'; }
 
+cp "$content_root/.github/workflows/ci.yml" "$tmp/canonical-ci.yml"
+for unsupported_yaml in \
+  'jobs: &shared-jobs' \
+  '  <<: *shared-job' \
+  'on: !canonical pull_request' \
+  'on: ! {pull_request: {}}' \
+  'jobs: {base: &base {runs-on: ubuntu-24.04}, copy: *base}' \
+  'jobs: {base: !<tag:example.com,2026:job> {runs-on: ubuntu-24.04}}' \
+  'jobs: {base: &base !canonical {runs-on: ubuntu-24.04}}'; do
+  cp "$tmp/canonical-ci.yml" "$content_root/.github/workflows/ci.yml"
+  printf '\n%s\n' "$unsupported_yaml" >>"$content_root/.github/workflows/ci.yml"
+  rc="$(run_audit)"
+  { [ "$rc" != "rc=0" ] && ! grep -q 'result=conformant' "$tmp/out.txt"; } \
+    && pass "unsupported YAML syntax fails workflow inspection closed: $unsupported_yaml" \
+    || { fail "unsupported YAML syntax was accepted: $unsupported_yaml ($rc)"; out | sed 's/^/diag - /'; }
+done
+cp "$tmp/canonical-ci.yml" "$content_root/.github/workflows/ci.yml"
+
+block_scalar_result="$tmp/block-scalar-result.json"
+printf '%s\n' \
+  'jobs:' \
+  '  example:' \
+  '    if: ${{ !cancelled() }}' \
+  '    steps:' \
+  '      - run: |' \
+  '          echo result: !important' \
+  | python3 -I "$here/required-checks-workflow.py" changelog >"$block_scalar_result"
+rc=$?
+{ [ "$rc" -eq 0 ] && jq -e '.changelog_contract == "absent"' "$block_scalar_result" >/dev/null; } \
+  && pass "YAML-like shell text inside a block scalar remains supported content" \
+  || fail "block scalar shell content was mistaken for unsupported YAML syntax (rc=$rc)"
+
 rc="$(RCA_WORKFLOW_INSPECTOR="$tmp/missing-workflow-inspector.py" run_audit)"
 { [ "$rc" = "rc=2" ] && grep -q 'workflow-inspector-missing' "$tmp/out.txt"; } \
   && pass "a missing hermetic workflow inspector fails at startup" \

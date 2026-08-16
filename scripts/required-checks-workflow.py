@@ -12,6 +12,63 @@ class WorkflowSyntaxError(ValueError):
     pass
 
 
+BLOCK_SCALAR = re.compile(r":\s*[|>](?:[1-9][+-]?|[+-][1-9]?)?\s*$")
+MERGE_KEY = re.compile(r"(?:^|[\[{,])\s*(?:-\s*)?<<\s*:")
+NODE_PROPERTY = re.compile(
+    r"(?:^|[\[{,:])\s*(?:-\s*)?(?:[&*][A-Za-z0-9_-]+|!(?!=)(?:[^\s,\]}]+)?)"
+)
+
+
+def mask_quoted(value: str) -> str:
+    masked = list(value)
+    quote: str | None = None
+    escaped = False
+    index = 0
+    while index < len(value):
+        char = value[index]
+        if quote == '"':
+            masked[index] = " "
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == quote:
+                quote = None
+        elif quote == "'":
+            masked[index] = " "
+            if char == quote:
+                if index + 1 < len(value) and value[index + 1] == quote:
+                    masked[index + 1] = " "
+                    index += 1
+                else:
+                    quote = None
+        elif char in "'\"":
+            quote = char
+            masked[index] = " "
+        index += 1
+    return "".join(masked)
+
+
+def mask_expressions(value: str) -> str:
+    return re.sub(r"\$\{\{.*?\}\}", lambda match: " " * len(match.group()), value)
+
+
+def reject_unsupported_yaml(lines: list[str]) -> None:
+    block_scalar_indent: int | None = None
+    for line in lines:
+        if not line.strip():
+            continue
+        line_indent = indentation(line)
+        if block_scalar_indent is not None and line_indent > block_scalar_indent:
+            continue
+        block_scalar_indent = None
+        structural = mask_expressions(mask_quoted(line))
+        if MERGE_KEY.search(structural) or NODE_PROPERTY.search(structural):
+            raise WorkflowSyntaxError("YAML anchors, aliases, merge keys, and tags are unsupported")
+        if BLOCK_SCALAR.search(structural):
+            block_scalar_indent = line_indent
+
+
 def strip_comment(line: str) -> str:
     out: list[str] = []
     quote: str | None = None
@@ -351,6 +408,7 @@ def main() -> int:
         raise WorkflowSyntaxError("expected canonical changelog job name")
     lines = [strip_comment(line) for line in sys.stdin.read().splitlines()]
     lines = [line for line in lines if line not in {"---", "..."}]
+    reject_unsupported_yaml(lines)
     path_filter, pull_request = trigger_state(lines)
     parsed_jobs = jobs(lines)
     json.dump(
