@@ -505,6 +505,25 @@ rc="$(run_audit)"
 stack helm; pulls s1 s2
 head_with s1 gate "ci / lint-template" "changelog / validate"
 head_with s2 gate "ci / lint-template" "changelog / validate"
+cat >"$content_root/.github/workflows/alternate-indentation.yml" <<YAML
+name: alternate indentation
+on: pull_request
+jobs:
+    changelog:
+        uses: Verjson/.github/.github/workflows/generated-artifacts.yml@$contract_pin
+        with:
+            changelog: true
+            contract_ref: $contract_pin
+YAML
+printf '[{"type":"file","path":".github/workflows/alternate-indentation.yml"},{"type":"file","path":".github/workflows/ci.yml"},{"type":"file","path":".github/workflows/changelog.yml"},{"type":"file","path":".github/workflows/release.yml"}]\n' >"$WORKFLOW_LIST_FILE"
+rc="$(run_audit)"
+{ [ "$rc" != "rc=0" ] && grep -q 'changelog-caller-missing expected=1 actual=2' "$tmp/out.txt"; } \
+  && pass "alternate YAML indentation cannot hide a duplicate caller" \
+  || { fail "an alternately indented duplicate caller was accepted ($rc)"; out | sed 's/^/diag - /'; }
+
+stack helm; pulls s1 s2
+head_with s1 gate "ci / lint-template" "changelog / validate"
+head_with s2 gate "ci / lint-template" "changelog / validate"
 cp "$content_root/.github/workflows/changelog.yml" "$content_root/.github/workflows/docs-validation.yml"
 printf '[{"type":"file","path":".github/workflows/ci.yml"},{"type":"file","path":".github/workflows/changelog.yml"},{"type":"file","path":".github/workflows/docs-validation.yml"},{"type":"file","path":".github/workflows/release.yml"}]\n' >"$WORKFLOW_LIST_FILE"
 rc="$(run_audit)"

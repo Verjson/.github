@@ -216,7 +216,14 @@ def jobs(lines: list[str]) -> dict[str, dict[str, tuple[str, list[str]]]]:
     for name, (inline, body) in direct_entries(children, job_indent).items():
         if inline:
             raise WorkflowSyntaxError("job definitions must be block mappings")
-        result[name] = direct_entries(body, job_indent + 2)
+        body_lines = [line for line in body if line.strip()]
+        if not body_lines:
+            result[name] = {}
+            continue
+        body_indent = min(indentation(line) for line in body_lines)
+        if body_indent <= job_indent:
+            raise WorkflowSyntaxError("job body must be nested below its key")
+        result[name] = direct_entries(body, body_indent)
     return result
 
 
@@ -291,7 +298,9 @@ def step_mappings(entry: tuple[str, list[str]]) -> list[dict[str, str]]:
             key, item = split_mapping_entry(first)
             values[key] = scalar(item)
         if body:
-            for key, (item, nested) in direct_entries(body, item_indent + 2).items():
+            body_lines = [line for line in body if line.strip()]
+            body_indent = min((indentation(line) for line in body_lines), default=item_indent + 1)
+            for key, (item, nested) in direct_entries(body, body_indent).items():
                 if item in {"|", "|-", ">", ">-"}:
                     values[key] = "\n".join(line.strip() for line in nested if line.strip()).strip()
                 else:
