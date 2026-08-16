@@ -236,6 +236,18 @@ rc="$(run_audit)"
   && pass "a node repository emitting its full core set is conformant" \
   || { fail "a conformant node repository was not recognised ($rc)"; out | sed 's/^/diag - /'; }
 
+mkdir -p "$tmp/hostile-python"
+printf 'raise SystemExit("ambient yaml module executed")\n' >"$tmp/hostile-python/yaml.py"
+rc="$(PYTHONPATH="$tmp/hostile-python" run_audit)"
+{ [ "$rc" = "rc=0" ] && grep -q 'result=conformant' "$tmp/out.txt"; } \
+  && pass "workflow inspection ignores ambient Python packages" \
+  || { fail "an ambient Python package changed audit behavior ($rc)"; out | sed 's/^/diag - /'; }
+
+rc="$(RCA_WORKFLOW_INSPECTOR="$tmp/missing-workflow-inspector.py" run_audit)"
+{ [ "$rc" = "rc=2" ] && grep -q 'workflow-inspector-missing' "$tmp/out.txt"; } \
+  && pass "a missing hermetic workflow inspector fails at startup" \
+  || { fail "the audit ran without its workflow inspector ($rc)"; out | sed 's/^/diag - /'; }
+
 # The documented single-caller layout is one .github/workflows/changelog.yml
 # generated at the shared pin. Exercise every package stack through the full
 # source audit so the fixture cannot drift back to the retired file path.
@@ -473,6 +485,44 @@ rc="$(run_audit)"
 { [ "$rc" != "rc=0" ] && grep -q 'changelog-caller-missing expected=1 actual=2' "$tmp/out.txt"; } \
   && pass "duplicate generated changelog callers fail as ambiguous" \
   || { fail "duplicate caller files were accepted ($rc)"; out | sed 's/^/diag - /'; }
+
+stack helm; pulls s1 s2
+head_with s1 gate "ci / lint-template" "changelog / validate"
+head_with s2 gate "ci / lint-template" "changelog / validate"
+cp "$content_root/.github/workflows/changelog.yml" "$content_root/.github/workflows/docs-validation.yml"
+printf '[{"type":"file","path":".github/workflows/ci.yml"},{"type":"file","path":".github/workflows/changelog.yml"},{"type":"file","path":".github/workflows/docs-validation.yml"},{"type":"file","path":".github/workflows/release.yml"}]\n' >"$WORKFLOW_LIST_FILE"
+rc="$(run_audit)"
+{ [ "$rc" != "rc=0" ] && grep -q 'changelog-caller-missing expected=1 actual=2' "$tmp/out.txt"; } \
+  && pass "a renamed duplicate generated caller fails as ambiguous" \
+  || { fail "a renamed duplicate caller was accepted ($rc)"; out | sed 's/^/diag - /'; }
+
+stack helm; pulls s1 s2
+head_with s1 gate "ci / lint-template" "changelog / validate"
+head_with s2 gate "ci / lint-template" "changelog / validate"
+cat >"$content_root/.github/workflows/legacy-validation.yml" <<YAML
+name: legacy validation
+on:
+  pull_request:
+jobs:
+  legacy:
+    uses: Verjson/.github/.github/workflows/changelog-validate.yml@$contract_pin
+    with:
+      contract_ref: $contract_pin
+YAML
+printf '[{"type":"file","path":".github/workflows/ci.yml"},{"type":"file","path":".github/workflows/changelog.yml"},{"type":"file","path":".github/workflows/legacy-validation.yml"},{"type":"file","path":".github/workflows/release.yml"}]\n' >"$WORKFLOW_LIST_FILE"
+rc="$(run_audit)"
+{ [ "$rc" != "rc=0" ] && grep -q 'changelog-caller-invalid path=.github/workflows/legacy-validation.yml' "$tmp/out.txt"; } \
+  && pass "a legacy changelog-validate caller cannot coexist with the canonical caller" \
+  || { fail "an additional legacy caller was accepted ($rc)"; out | sed 's/^/diag - /'; }
+
+stack helm; pulls s1 s2
+head_with s1 gate "ci / lint-template" "changelog / validate"
+head_with s2 gate "ci / lint-template" "changelog / validate"
+sed -i '/^      contract_ref:/a\      unexpected_input: true' "$content_root/.github/workflows/changelog.yml"
+rc="$(run_audit)"
+{ [ "$rc" != "rc=0" ] && grep -q 'changelog-caller-invalid' "$tmp/out.txt"; } \
+  && pass "the generated caller rejects additional nested inputs" \
+  || { fail "an additional generated caller input was accepted ($rc)"; out | sed 's/^/diag - /'; }
 
 stack helm; pulls s1 s2
 head_with s1 gate "ci / lint-template" "changelog / validate"

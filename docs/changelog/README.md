@@ -405,9 +405,12 @@ chmod +x scripts/gen-adr-index.sh
 ```
 
 The selected command is the only validation caller and its output path is
-`.github/workflows/changelog.yml`. Do not retain a second
-`.github/workflows/generated-artifacts.yml`; the generated contract and central
-audit reject that retired split topology as ambiguous.
+`.github/workflows/changelog.yml`. Do not retain a second caller under any
+workflow filename: the generated contract and central audit scan every `.yml`
+and `.yaml` workflow and reject renamed generated copies as well as callers of
+the retired `changelog-validate.yml` workflow. The canonical job inputs are
+exactly `changelog` and `contract_ref`, plus `adr-index` only in the generated
+ADR-index mode.
 
 `adr-index: true` without that generated script is deliberately a failure, not
 a clean result. Do not copy the script from another repository or hand-edit the

@@ -15,6 +15,7 @@ script_dir="$(cd "$(dirname "$0")" && pwd)"
 repo_root="$(cd "$script_dir/.." && pwd)"
 contract_override_set="${RCA_CONTRACT_FILE+x}"
 audit_override_set="${RCA_AUDIT_SCRIPT+x}"
+inspector_override_set="${RCA_WORKFLOW_INSPECTOR+x}"
 branch_override_set="${RCA_DEFAULT_BRANCH+x}"
 CONTRACT_FILE="${RCA_CONTRACT_FILE:-$script_dir/../.github/required-check-contract.json}"
 AUDIT_SCRIPT="${RCA_AUDIT_SCRIPT:-$script_dir/required-checks-audit.sh}"
@@ -47,8 +48,9 @@ expected_org="$(jq -r '.ruleset_plan.rollout.organization' "$CONTRACT_FILE")"
 [ "$ORG" = "$expected_org" ] || fault authorization organization-mismatch "expected=$expected_org actual=$ORG"
 
 if [ "$APPLY" = true ]; then
-  [ -z "$contract_override_set" ] && [ -z "$audit_override_set" ] && [ -z "$branch_override_set" ] ||
-    fault authorization apply-override-forbidden "RCA_CONTRACT_FILE, RCA_AUDIT_SCRIPT, and RCA_DEFAULT_BRANCH are read-only test overrides"
+  [ -z "$contract_override_set" ] && [ -z "$audit_override_set" ] && \
+    [ -z "$inspector_override_set" ] && [ -z "$branch_override_set" ] ||
+    fault authorization apply-override-forbidden "RCA_CONTRACT_FILE, RCA_AUDIT_SCRIPT, RCA_WORKFLOW_INSPECTOR, and RCA_DEFAULT_BRANCH are read-only test overrides"
 fi
 
 planned="$(jq -c --arg name "$ruleset_name" '.ruleset_plan.rulesets[] | select(.name == $name)' "$CONTRACT_FILE")"
@@ -63,6 +65,7 @@ if [ "$APPLY" = true ]; then
   for binding in \
     ".github/required-check-contract.json:$CONTRACT_FILE" \
     "scripts/required-checks-audit.sh:$AUDIT_SCRIPT" \
+    "scripts/required-checks-workflow.py:$script_dir/required-checks-workflow.py" \
     "scripts/required-checks-rollout.sh:$(readlink -f "$0")"; do
     remote_path="${binding%%:*}"
     local_path="${binding#*:}"

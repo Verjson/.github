@@ -40,12 +40,13 @@ for tool in gh jq base64 python3 curl diff mktemp mkdir env; do
   command -v "$tool" >/dev/null 2>&1 ||
     fault startup toolchain-missing "tool=$tool — install it or this cannot run."
 done
-python3 -c 'import yaml' >/dev/null 2>&1 ||
-  fault startup toolchain-missing "tool=python3-pyyaml — install it or workflow triggers cannot be audited."
 
 ORG="${RCA_ORG:?RCA_ORG must name the organization}"
 script_dir="$(cd "$(dirname "$0")" && pwd)"
 repo_root="$(cd "$script_dir/.." && pwd)"
+WORKFLOW_INSPECTOR="${RCA_WORKFLOW_INSPECTOR:-$script_dir/required-checks-workflow.py}"
+[ -f "$WORKFLOW_INSPECTOR" ] && [ ! -L "$WORKFLOW_INSPECTOR" ] ||
+  fault startup workflow-inspector-missing "path=$WORKFLOW_INSPECTOR"
 CONTRACT_FILE="${RCA_CONTRACT_FILE:-$script_dir/../.github/required-check-contract.json}"
 jq -e '
   .schema_version == 1 and
@@ -117,21 +118,6 @@ stack_workflow_for() {
   printf '%s' "$value"
 }
 
-workflow_path_filter_state() {
-  python3 -c '
-import sys, yaml
-doc = yaml.load(sys.stdin, Loader=yaml.BaseLoader)
-events = doc.get("on", {}) if isinstance(doc, dict) else {}
-if not isinstance(events, dict):
-    print("false")
-else:
-    print("true" if any(
-        isinstance(config, dict) and ("paths" in config or "paths-ignore" in config)
-        for config in events.values()
-    ) else "false")
-'
-}
-
 caller_job_for() { # stdin = workflow source, $1 = reusable workflow filename
   awk -v target="/.github/workflows/$1@" '
     /^jobs:[[:space:]]*$/ { in_jobs = 1; next }
@@ -142,98 +128,6 @@ caller_job_for() { # stdin = workflow source, $1 = reusable workflow filename
     }
     in_jobs && index($0, target) { print job }
   '
-}
-
-generated_changelog_job_state() { # stdin = workflow source, $1 = expected job name
-  python3 -c '
-import re, sys, yaml
-
-expected_job = sys.argv[1]
-doc = yaml.load(sys.stdin, Loader=yaml.BaseLoader)
-jobs = doc.get("jobs", {}) if isinstance(doc, dict) else {}
-if not isinstance(jobs, dict):
-    print("invalid")
-    raise SystemExit
-
-target = "/.github/workflows/generated-artifacts.yml@"
-callers = []
-for job_name, job in jobs.items():
-    uses = job.get("uses", "") if isinstance(job, dict) else ""
-    if isinstance(uses, str) and target in uses:
-        callers.append((job_name, job, uses))
-
-if not callers:
-    print("absent")
-    raise SystemExit
-if len(callers) != 1:
-    print("invalid")
-    raise SystemExit
-
-job_name, job, uses = callers[0]
-match = re.fullmatch(
-    r"Verjson/\.github/\.github/workflows/generated-artifacts\.yml@([0-9a-f]{40})",
-    uses,
-)
-inputs = job.get("with") if isinstance(job, dict) else None
-allowed_inputs = {"changelog", "contract_ref", "adr-index"}
-valid = (
-    job_name == expected_job
-    and set(job) == {"uses", "with"}
-    and match is not None
-    and isinstance(inputs, dict)
-    and set(inputs).issubset(allowed_inputs)
-    and inputs.get("changelog") == "true"
-    and inputs.get("contract_ref") == match.group(1)
-    and ("adr-index" not in inputs or inputs["adr-index"] == "true")
-)
-print("valid" if valid else "invalid")
-' "$1"
-}
-
-changelog_contract_job_state() { # stdin = workflow source
-  python3 -c '
-import re, sys, yaml
-doc = yaml.load(sys.stdin, Loader=yaml.BaseLoader)
-jobs = doc.get("jobs", {}) if isinstance(doc, dict) else {}
-job = jobs.get("changelog-contract") if isinstance(jobs, dict) else None
-if job is None:
-    print("absent")
-else:
-    allowed = {"permissions", "runs-on", "timeout-minutes", "steps"}
-    steps = job.get("steps", []) if isinstance(job, dict) else []
-    checkout = steps[0] if len(steps) == 2 and isinstance(steps[0], dict) else {}
-    command = steps[1] if len(steps) == 2 and isinstance(steps[1], dict) else {}
-    valid = (
-        isinstance(job, dict) and
-        set(job).issubset(allowed) and
-        "runs-on" in job and
-        isinstance(steps, list) and len(steps) == 2 and
-        set(checkout).issubset({"uses", "name"}) and
-        re.fullmatch(r"actions/checkout@[0-9a-f]{40}", checkout.get("uses", "")) is not None and
-        (
-            isinstance(job["runs-on"], str) and bool(job["runs-on"].strip()) or
-            isinstance(job["runs-on"], list) and bool(job["runs-on"]) and
-            all(isinstance(label, str) and label.strip() for label in job["runs-on"])
-        )
-    )
-    valid = valid and set(command).issubset({"run", "name"}) and command.get("run", "").strip() == "bash scripts/changelog-contract.test.sh"
-    print("valid" if valid else "invalid")
-'
-}
-
-has_pull_request_trigger() { # stdin = workflow source
-  python3 -c '
-import sys, yaml
-doc = yaml.load(sys.stdin, Loader=yaml.BaseLoader)
-events = doc.get("on") if isinstance(doc, dict) else None
-if events == "pull_request" or isinstance(events, list) and "pull_request" in events:
-    print("true")
-elif isinstance(events, dict) and "pull_request" in events:
-    config = events["pull_request"]
-    print("true" if config in (None, "", {}) else "false")
-else:
-    print("false")
-'
 }
 
 head_for_repo() { # $1 = repo, optional RCA_HEADS_FILE = repo<TAB>branch<TAB>sha
@@ -367,7 +261,7 @@ PY
 source_contract_for_repo() { # $1 = repo, $2 = stack
   local repo="$1" stack="$2" listing paths path source stack_workflow head='' ref_query='' changelog_state
   local stack_job='' changelog_callers=0 changelog_caller_path='' changelog_contract_jobs=0 source_fault=0
-  local expected_stack_job expected_changelog_job
+  local expected_stack_job expected_changelog_job inspection path_filter
 
   case "$stack" in
     actions|none) return 0 ;;
@@ -393,8 +287,12 @@ source_contract_for_repo() { # $1 = repo, $2 = stack
       break
     }
 
-    local found path_filter
-    path_filter="$(workflow_path_filter_state <<<"$source")" || {
+    local found
+    inspection="$(python3 -I "$WORKFLOW_INSPECTOR" "$expected_changelog_job" <<<"$source")" || {
+      source_fault=1
+      break
+    }
+    path_filter="$(jq -r '.path_filter' <<<"$inspection")" || {
       source_fault=1
       break
     }
@@ -408,15 +306,12 @@ source_contract_for_repo() { # $1 = repo, $2 = stack
     fi
 
     if [ "$stack" = node ] || [ "$stack" = ui ] || [ "$stack" = helm ]; then
-      changelog_state="$(generated_changelog_job_state "$expected_changelog_job" <<<"$source")" || {
-        source_fault=1
-        break
-      }
+      changelog_state="$(jq -r '.generated_changelog' <<<"$inspection")"
       case "$changelog_state" in
         valid)
           changelog_callers=$((changelog_callers + 1))
           changelog_caller_path="$path"
-          if [ "$(has_pull_request_trigger <<<"$source")" != true ]; then
+          if [ "$(jq -r '.pull_request' <<<"$inspection")" != true ]; then
             echo "::error::phase=audit repo=$repo stack=$stack result=workflow-trigger-missing path=$path — changelog / validate must run on pull_request."
             return 1
           fi
@@ -434,14 +329,11 @@ source_contract_for_repo() { # $1 = repo, $2 = stack
 
     if [ "$stack" = node ]; then
       local contract_job_state
-      contract_job_state="$(changelog_contract_job_state <<<"$source")" || {
-        source_fault=1
-        break
-      }
+      contract_job_state="$(jq -r '.changelog_contract' <<<"$inspection")"
       case "$contract_job_state" in
         valid)
           changelog_contract_jobs=$((changelog_contract_jobs + 1))
-          if [ "$(has_pull_request_trigger <<<"$source")" != true ]; then
+          if [ "$(jq -r '.pull_request' <<<"$inspection")" != true ]; then
             echo "::error::phase=audit repo=$repo stack=$stack result=workflow-trigger-missing path=$path — changelog-contract must run on pull_request."
             return 1
           fi

@@ -18,6 +18,8 @@ cp "$script" "$bundle/scripts/required-checks-rollout.sh"
 cp "$contract" "$bundle/.github/required-check-contract.json"
 cp "$bundle/scripts/required-checks-rollout.sh" "$remote_bundle/scripts/required-checks-rollout.sh"
 cp "$bundle/.github/required-check-contract.json" "$remote_bundle/.github/required-check-contract.json"
+printf '%s\n' '# workflow inspector fixture' >"$bundle/scripts/required-checks-workflow.py"
+cp "$bundle/scripts/required-checks-workflow.py" "$remote_bundle/scripts/required-checks-workflow.py"
 
 cat >"$bundle/scripts/required-checks-audit.sh" <<'AUDIT'
 #!/usr/bin/env bash
@@ -142,7 +144,7 @@ run_readonly() {
   ( printf '{"hostile":"stdin"}\n' | RCA_ORG=Verjson RCA_APPLY=false RCA_CONTRACT_FILE="$contract" RCA_AUDIT_SCRIPT="$bundle/scripts/required-checks-audit.sh" "$script" >"$tmp/out.txt" 2>&1; echo "rc=$?" )
 }
 run_apply() {
-  ( printf '{"hostile":"stdin"}\n' | env -u RCA_CONTRACT_FILE -u RCA_AUDIT_SCRIPT -u RCA_DEFAULT_BRANCH \
+  ( printf '{"hostile":"stdin"}\n' | env -u RCA_CONTRACT_FILE -u RCA_AUDIT_SCRIPT -u RCA_WORKFLOW_INSPECTOR -u RCA_DEFAULT_BRANCH \
       RCA_ORG=Verjson RCA_APPLY=true RCA_ACK=apply-issue-731-core-checks-node \
       "$bundle/scripts/required-checks-rollout.sh" >"$tmp/out.txt" 2>&1; echo "rc=$?" )
 }
@@ -161,6 +163,12 @@ rc="$(RCA_APPLY=true RCA_ACK=apply-issue-731-core-checks-node RCA_ORG=Verjson RC
   || fail "an apply override reached the gated path"
 
 reset_fixture
+rc="$(RCA_APPLY=true RCA_ACK=apply-issue-731-core-checks-node RCA_ORG=Verjson RCA_WORKFLOW_INSPECTOR="$tmp/hostile.py" "$script" 2>&1; echo "rc=$?")"
+{ [[ "$rc" == *"rc=2"* ]] && [[ "$rc" == *"apply-override-forbidden"* ]] && [ ! -s "$MUTATIONS" ]; } \
+  && pass "apply mode rejects workflow-inspector overrides before conformance" \
+  || fail "a workflow-inspector override reached the gated path"
+
+reset_fixture
 export AUDIT_FAIL=true
 rc="$(run_apply)"
 { [ "$rc" = "rc=2" ] && [ ! -s "$MUTATIONS" ] && grep -q 'selected-repositories-nonconformant' "$tmp/out.txt"; } \
@@ -174,6 +182,14 @@ rc="$(run_apply)"
   && pass "apply binds the canonical audit and rollout implementation to merged bytes" \
   || fail "unmerged canonical code reached conformance or mutation ($rc)"
 cp "$bundle/scripts/required-checks-audit.sh" "$remote_bundle/scripts/required-checks-audit.sh"
+
+reset_fixture
+printf '\n# remote drift\n' >>"$remote_bundle/scripts/required-checks-workflow.py"
+rc="$(run_apply)"
+{ [ "$rc" = "rc=2" ] && [ ! -s "$MUTATIONS" ] && grep -q 'canonical-file-not-on-default' "$tmp/out.txt"; } \
+  && pass "apply binds the workflow inspector to merged canonical bytes" \
+  || fail "unmerged workflow-inspector code reached conformance or mutation ($rc)"
+cp "$bundle/scripts/required-checks-workflow.py" "$remote_bundle/scripts/required-checks-workflow.py"
 
 reset_fixture
 export HEAD_DRIFT_AT=3

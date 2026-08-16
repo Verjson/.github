@@ -588,11 +588,43 @@ run_adopter "$typo_job_adopter" \
   && fail "emitted suite accepts changelog inputs nested under a typo mapping" \
   || pass "emitted suite rejects a typo in the canonical with mapping (#835)"
 
+extra_input_adopter="$tmproot/adopter-extra-changelog-input"
+cp -a "$generated_adopter" "$extra_input_adopter"
+sed -i '/^      contract_ref:/a\      unexpected_input: true' \
+  "$extra_input_adopter/.github/workflows/changelog.yml"
+run_adopter "$extra_input_adopter" \
+  && fail "emitted suite accepts an additional changelog caller input" \
+  || pass "emitted suite enforces the exact changelog caller input set (#835)"
+
 split_adopter="$tmproot/adopter-split-generated-artifacts"
 build_split_adopter "$split_adopter"
 run_adopter "$split_adopter" \
   && fail "emitted suite accepts duplicate changelog callers at two paths" \
   || pass "emitted suite retires the ambiguous split caller topology (#835)"
+
+renamed_duplicate_adopter="$tmproot/adopter-renamed-duplicate-changelog"
+cp -a "$generated_adopter" "$renamed_duplicate_adopter"
+cp "$renamed_duplicate_adopter/.github/workflows/changelog.yml" \
+  "$renamed_duplicate_adopter/.github/workflows/docs-validation.yml"
+run_adopter "$renamed_duplicate_adopter" \
+  && fail "emitted suite accepts a duplicate caller hidden behind another filename" \
+  || pass "emitted suite scans every workflow for renamed duplicate callers (#835)"
+
+legacy_duplicate_adopter="$tmproot/adopter-legacy-duplicate-changelog"
+cp -a "$generated_adopter" "$legacy_duplicate_adopter"
+cat >"$legacy_duplicate_adopter/.github/workflows/legacy-validation.yml" <<YAML
+name: legacy validation
+on:
+  pull_request:
+jobs:
+  legacy:
+    uses: Verjson/.github/.github/workflows/changelog-validate.yml@$sha
+    with:
+      contract_ref: $sha
+YAML
+run_adopter "$legacy_duplicate_adopter" \
+  && fail "emitted suite accepts a legacy caller beside the canonical caller" \
+  || pass "emitted suite rejects an additional changelog-validate caller (#835)"
 
 adr_adopter="$tmproot/adopter-generated-artifacts-adr"
 build_adopter "$adr_adopter" no generated-artifacts-with-adr-index
