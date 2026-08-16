@@ -45,9 +45,10 @@ caller's legacy `packages: read` grant is harmless but unnecessary.
 For validation of repositories with approved private dependencies, the
 `secretless-pr` and `secretless-trusted-ref` modes split acquisition from
 repository-controlled execution. The
-acquisition job receives only `contents: read` plus the explicitly mapped package
-token, validates every package under the exact approved scopes against the
-newline-separated package allowlist and GitHub Packages URL, rejects repository
+acquisition job requests only `contents: read` and `packages: read` plus the
+explicitly mapped package token, validates every package under the exact approved
+scopes against the newline-separated package allowlist and GitHub Packages URL,
+rejects repository
 `.npmrc` files, and populates a cache with only the exact private download URLs
 under a job-created config that scopes the token to `npm.pkg.github.com`.
 When the lock contains no internal package and the allowlist is empty,
@@ -89,10 +90,13 @@ jobs:
       NODE_AUTH_TOKEN: ${{ secrets.NODE_AUTH_TOKEN }}
 ```
 
-Do not use `secrets: inherit` on this route. The caller deliberately omits
-`packages: read`; the package token belongs only to the acquisition job and PR
-code cannot request the job token's package capability. The reusable jobs require
-only `contents: read`; the build job scrubs GitHub token paths before repository commands. All
+Do not use `secrets: inherit` on this route. A caller that maps a dedicated
+`NODE_AUTH_TOKEN` may omit `packages: read` because that token has independent
+package authority. A caller that maps `secrets.GITHUB_TOKEN` must grant
+`packages: read`; reusable-workflow permission intersection otherwise strips the
+token's package access. That capability exists only in acquisition. The build job
+retains only `contents: read` and scrubs GitHub token paths before repository
+commands. All
 PR acquisition and build jobs ignore the caller runner override and use the
 isolated untrusted lane or a fresh hosted fallback. `secretless-pr` rejects
 non-PR events and fork PRs. Both modes reject schema submodules, repository npm
@@ -149,6 +153,10 @@ jobs:
     secrets:
       NODE_AUTH_TOKEN: ${{ secrets.NODE_AUTH_TOKEN }}
 ```
+
+The example uses a dedicated package token. If either job maps
+`NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}`, add `packages: read` to that
+caller's permissions.
 
 For parity with PR validation, pass the same exact
 `approved-internal-scopes`, `approved-internal-packages`,

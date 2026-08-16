@@ -16,14 +16,17 @@ import yaml
 
 doc = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))
 inputs = doc[True]["workflow_call"]["inputs"]
+secrets = doc[True]["workflow_call"]["secrets"]
 jobs = doc["jobs"]
 assert inputs["secretless-pr"]["default"] is False
+assert "Callers mapping GITHUB_TOKEN must grant packages: read" in inputs["secretless-pr"]["description"]
+assert "Mapping GITHUB_TOKEN requires caller packages: read" in secrets["NODE_AUTH_TOKEN"]["description"]
 assert inputs["approved-internal-packages"]["default"] == ""
 assert inputs["approved-internal-scopes"]["default"] == "@verjson"
 
 acquire = jobs["acquire-secretless-dependencies"]
 build = jobs["build-test"]
-assert acquire["permissions"] == {"contents": "read"}
+assert acquire["permissions"] == {"contents": "read", "packages": "read"}
 assert "inputs.secretless-pr" in acquire["if"]
 assert acquire["runs-on"] == "${{ fromJSON(vars.VERJSON_LANE_UNTRUSTED || '[\"ubuntu-24.04\"]') }}"
 assert "acquire-secretless-dependencies" in build["needs"]
