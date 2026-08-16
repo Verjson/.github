@@ -20,31 +20,45 @@ generator="$tmp/contract/scripts/gen-container-candidate.sh"
 for fixture in single multi; do
   consumer="$tmp/$fixture"
   mkdir -p "$consumer/.github/workflows" "$consumer/scripts"
-  "$generator" workflow "$ref" container-candidate.json \
+  cp "$root/scripts/fixtures/container-candidate/$fixture.json" "$consumer/container-candidate.json"
+  (cd "$consumer" && "$generator" workflow "$ref" container-candidate.json) \
     > "$consumer/.github/workflows/container-candidate.yml"
-  "$generator" validator "$ref" container-candidate.json \
+  (cd "$consumer" && "$generator" validator "$ref" container-candidate.json) \
     > "$consumer/scripts/container_release_manifest.py"
-  "$generator" contract-test "$ref" container-candidate.json \
+  (cd "$consumer" && "$generator" contract-test "$ref" container-candidate.json) \
     > "$consumer/scripts/container-candidate-contract.test.sh"
   chmod +x "$consumer/scripts/"*.sh "$consumer/scripts/"*.py
-  cp "$root/scripts/fixtures/container-candidate/$fixture.json" "$consumer/container-candidate.json"
   jq -e '.images | length > 0' "$consumer/container-candidate.json" >/dev/null
   bash "$consumer/scripts/container-candidate-contract.test.sh"
   cp "$consumer/.github/workflows/container-candidate.yml" "$consumer/.github/workflows/container-candidate.yml.clean"
-  sed -i 's/NODE_AUTH_TOKEN: \${{ secrets.NODE_AUTH_TOKEN }}/secrets: inherit/' "$consumer/.github/workflows/container-candidate.yml"
+  sed -i '0,/^    with:$/s//    secrets: inherit\n&/' "$consumer/.github/workflows/container-candidate.yml"
   if bash "$consumer/scripts/container-candidate-contract.test.sh" >/dev/null 2>&1; then
     echo "generated contract accepted credential-routing tampering" >&2
     exit 1
   fi
   mv "$consumer/.github/workflows/container-candidate.yml.clean" "$consumer/.github/workflows/container-candidate.yml"
   cp "$consumer/.github/workflows/container-candidate.yml" "$consumer/.github/workflows/container-candidate.yml.clean"
-  sed -i '/^  actions: read$/d' "$consumer/.github/workflows/container-candidate.yml"
+  sed -i '0,/^      actions: read$/d' "$consumer/.github/workflows/container-candidate.yml"
   if bash "$consumer/scripts/container-candidate-contract.test.sh" >/dev/null 2>&1; then
     echo "generated contract accepted an unsatisfied reusable Actions permission" >&2
     exit 1
   fi
   mv "$consumer/.github/workflows/container-candidate.yml.clean" "$consumer/.github/workflows/container-candidate.yml"
 done
+
+private_consumer="$tmp/private-generated"
+mkdir -p "$private_consumer/.github/workflows" "$private_consumer/scripts"
+jq '.privateNodePackages = ["@verjson/private-package"]' \
+  "$root/scripts/fixtures/container-candidate/single.json" \
+  > "$private_consumer/container-candidate.json"
+(cd "$private_consumer" && "$generator" workflow "$ref" container-candidate.json) \
+  > "$private_consumer/.github/workflows/container-candidate.yml"
+(cd "$private_consumer" && "$generator" validator "$ref" container-candidate.json) \
+  > "$private_consumer/scripts/container_release_manifest.py"
+(cd "$private_consumer" && "$generator" contract-test "$ref" container-candidate.json) \
+  > "$private_consumer/scripts/container-candidate-contract.test.sh"
+chmod +x "$private_consumer/scripts/"*.sh "$private_consumer/scripts/"*.py
+bash "$private_consumer/scripts/container-candidate-contract.test.sh"
 
 workflow="$root/.github/workflows/container-candidate.yml"
 canary="$root/.github/workflows/container-candidate-reusable-contract.yml"
@@ -62,27 +76,41 @@ with open(os.environ["CALLEE_WORKFLOW"], encoding="utf-8") as stream:
 with open(os.environ["CANARY_WORKFLOW"], encoding="utf-8") as stream:
     canary = yaml.safe_load(stream)
 
-caller_permissions = caller["permissions"]
-expected = {
+validation_permissions = {"actions": "read", "contents": "read"}
+publication_permissions = {
     "actions": "read",
     "attestations": "write",
     "contents": "read",
     "packages": "write",
     "id-token": "write",
 }
-assert caller_permissions == expected, "generated caller permissions are not exact"
+assert caller["jobs"]["validate"]["permissions"] == validation_permissions, (
+    "generated pull-request validation permissions are not exact"
+)
+assert caller["jobs"]["publish"]["permissions"] == publication_permissions, (
+    "generated publication permissions are not exact"
+)
+assert "secrets" not in caller["jobs"]["validate"], (
+    "public-only pull-request validation must not receive secrets"
+)
+assert "secrets" not in caller["jobs"]["publish"], (
+    "public-only publication must not receive an unnecessary package token"
+)
 levels = {None: 0, "none": 0, "read": 1, "write": 2}
 default_permissions = callee.get("permissions", {})
 for job_name, job in callee["jobs"].items():
     requested = job.get("permissions", default_permissions)
     for permission, level in requested.items():
-        assert permission in caller_permissions, f"caller omits {job_name} permission {permission}"
-        assert levels[level] <= levels[caller_permissions[permission]], (
+        assert permission in publication_permissions, f"publication caller omits {job_name} permission {permission}"
+        assert levels[level] <= levels[publication_permissions[permission]], (
             f"caller cannot satisfy {job_name} permission {permission}: {level}"
         )
-assert canary["jobs"]["candidate"]["with"]["runner"] == '"ubuntu-24.04"', (
-    "reusable-call canary must use a JSON-encoded GitHub-hosted runner"
-)
+assert canary["jobs"]["validate"]["permissions"] == validation_permissions
+assert canary["jobs"]["publish"]["permissions"] == publication_permissions
+for job in ("validate", "publish"):
+    assert canary["jobs"][job]["with"]["runner"] == '"ubuntu-24.04"', (
+        "reusable-call canary must use a JSON-encoded GitHub-hosted runner"
+    )
 PY
 python3 "$root/scripts/container_private_dependencies.test.py"
 python3 "$root/scripts/container_oci_index.test.py"
@@ -402,13 +430,10 @@ if grep -qF -- "repository='\${{ matrix.repository }}'" <<<"$publish_derived_job
   echo "publish-derived embeds candidate configuration into shell source" >&2
   exit 1
 fi
-grep -qF 'uses: ./.github/workflows/container-candidate.yml' "$canary"
-for permission in 'actions: read' 'attestations: write' 'contents: read' 'packages: write' 'id-token: write'; do
-  grep -q "^  $permission$" "$canary" || {
-    echo "reusable-call canary omits $permission" >&2
-    exit 1
-  }
-done
+[ "$(grep -cF 'uses: ./.github/workflows/container-candidate.yml' "$canary")" -eq 2 ] || {
+  echo "reusable-call canary does not exercise both trust paths" >&2
+  exit 1
+}
 jq -e '.repository == "Verjson/.github" and .images[0].platforms == [{"os":"linux","architecture":"amd64"}]' \
   "$root/scripts/fixtures/container-candidate/canary.json" >/dev/null
 prepare_job="$(awk '/^  prepare:/{seen=1} /^  acquire-private-node-dependencies:/{seen=0} seen' "$workflow")"
@@ -521,7 +546,7 @@ if grep -Eq 'uses: [^ ]+@(main|master|v[0-9]+)$' "$workflow"; then
 fi
 
 before="$(sha256sum "$root/scripts/gen-changelog-caller.sh" "$root/.github/workflows/generated-artifacts.yml")"
-"$generator" workflow "$ref" >/dev/null
+(cd "$tmp/single" && "$generator" workflow "$ref") >/dev/null
 after="$(sha256sum "$root/scripts/gen-changelog-caller.sh" "$root/.github/workflows/generated-artifacts.yml")"
 [ "$before" = "$after" ] || { echo "container generator drifted changelog contract artifacts" >&2; exit 1; }
 if "$generator" validator "$(printf 'a%.0s' {1..40})" >/dev/null 2>&1; then

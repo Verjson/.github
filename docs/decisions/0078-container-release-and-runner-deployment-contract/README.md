@@ -441,3 +441,19 @@ validation, isolated lifecycle-free acquisition, exact cache restoration, digest
 verification, and unconditional cleanup. First adoption is therefore supported only
 without credential use; introducing private packages remains a separately reviewed
 second step.
+
+## Amendment (2026-08-16) — generated callers separate validation from publication (#869)
+
+The canonical candidate generator emits distinct reusable-workflow caller jobs for
+pull-request validation and trusted default-branch publication. Public-only candidate
+configurations give validation only `actions: read` and `contents: read`, and forward
+no package token on either event path. Publication alone receives package write,
+attestation write, and OIDC authority, guarded by an exact main-branch push condition.
+
+Configurations with an explicitly reviewed non-empty `privateNodePackages` allowlist
+retain the existing acquisition boundary: validation may read packages and receives
+only `NODE_AUTH_TOKEN`, while publication receives the same acquisition token plus its
+publication permissions. Generated contract tests bind both event-specific permission
+maps and reject public-only callers that expose package credentials. This restores the
+credential-free pull-request invariant recorded above without weakening private-package
+admission or granting stable release authority.

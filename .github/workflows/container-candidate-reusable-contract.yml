@@ -11,15 +11,27 @@ on:
       - 'scripts/fixtures/container-candidate/canary.json'
   workflow_dispatch:
 
-permissions:
-  actions: read
-  attestations: write
-  contents: read
-  packages: write
-  id-token: write
-
 jobs:
-  candidate:
+  validate:
+    if: github.event_name == 'pull_request'
+    permissions:
+      actions: read
+      contents: read
+    uses: ./.github/workflows/container-candidate.yml
+    with:
+      config-path: scripts/fixtures/container-candidate/canary.json
+      contract-ref: ${{ github.sha }}
+      acquisition-sha256: '0000000000000000000000000000000000000000000000000000000000000000'
+      runner: '"ubuntu-24.04"'
+
+  publish:
+    if: github.event_name == 'workflow_dispatch'
+    permissions:
+      actions: read
+      attestations: write
+      contents: read
+      packages: write
+      id-token: write
     uses: ./.github/workflows/container-candidate.yml
     with:
       config-path: scripts/fixtures/container-candidate/canary.json
