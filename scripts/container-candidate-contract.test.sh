@@ -48,12 +48,152 @@ jq '.privateNodePackages = ["@verjson/private-package"]' \
 [ "$(jq -r '((.privateNodePackages // []) | length > 0)' "$private_config")" = true ]
 
 prepare_script="$tmp/prepare-config.sh"
-awk '
-  $0 == "      - id: config" { step = 1; next }
-  step && $0 == "        run: |" { script = 1; next }
-  script && /^          / { sub(/^          /, ""); print; next }
-  script { exit }
-' "$workflow" >"$prepare_script"
+extract_config_run() {
+  local source=$1
+  local destination=$2
+
+  if ! awk '
+    function fail(message) {
+      print message > "/dev/stderr"
+      failed = 1
+      exit 1
+    }
+
+    in_script && /^          / {
+      sub(/^          /, "")
+      print
+      if ($0 !~ /^[[:space:]]*$/) found_body = 1
+      next
+    }
+    in_script && /^ *$/ { print ""; next }
+    in_script { exit }
+
+    $0 == "  prepare:" {
+      found_prepare = 1
+      in_prepare = 1
+      next
+    }
+    in_prepare && /^  [A-Za-z0-9_.-]+:/ {
+      fail("prepare job ended before its config run block")
+    }
+    in_prepare && $0 == "      - id: config" {
+      if (found_step) fail("prepare job contains multiple config steps")
+      found_step = 1
+      in_step = 1
+      next
+    }
+    in_step && /^      - / { fail("config step is missing a run block") }
+    in_step && /^        run:/ {
+      if ($0 != "        run: |") {
+        fail("config step run block is not a literal block")
+      }
+      found_run = 1
+      in_step = 0
+      in_script = 1
+      next
+    }
+
+    END {
+      if (failed) exit 1
+      if (!found_prepare) fail("prepare job is missing")
+      if (!found_step) fail("config step is missing")
+      if (!found_run) fail("config step is missing a run block")
+      if (!found_body) fail("config step run block is empty")
+    }
+  ' "$source" >"$destination"; then
+    rm -f "$destination"
+    return 1
+  fi
+}
+
+extraction_fixture="$tmp/config-step.yml"
+cat >"$extraction_fixture" <<'YAML'
+jobs:
+  prepare:
+    steps:
+      - id: config
+        name: Prepare candidate configuration
+        shell: bash
+        env:
+          OPTIONAL_KEY: present
+        run: |
+          printf 'config\n' >"$EXTRACTION_MARKER"
+      - name: Unrelated step
+        run: |
+          printf 'unrelated\n' >"$EXTRACTION_MARKER"
+YAML
+extracted_fixture_script="$tmp/extracted-config-step.sh"
+extract_config_run "$extraction_fixture" "$extracted_fixture_script"
+extraction_marker="$tmp/extraction-marker"
+EXTRACTION_MARKER="$extraction_marker" bash "$extracted_fixture_script"
+grep -qx config "$extraction_marker"
+
+missing_run_fixture="$tmp/config-step-missing-run.yml"
+cat >"$missing_run_fixture" <<'YAML'
+jobs:
+  prepare:
+    steps:
+      - id: config
+        name: Missing run block
+  later:
+    steps:
+      - id: config
+        run: |
+          exit 0
+YAML
+if extract_config_run "$missing_run_fixture" "$tmp/missing-run.sh" 2>/dev/null; then
+  echo "config extraction accepted a missing run block" >&2
+  exit 1
+fi
+
+malformed_run_fixture="$tmp/config-step-malformed-run.yml"
+cat >"$malformed_run_fixture" <<'YAML'
+jobs:
+  prepare:
+    steps:
+      - id: config
+        shell: bash
+        run: >
+          exit 0
+YAML
+if extract_config_run "$malformed_run_fixture" "$tmp/malformed-run.sh" 2>/dev/null; then
+  echo "config extraction accepted a malformed run block" >&2
+  exit 1
+fi
+
+empty_run_fixture="$tmp/config-step-empty-run.yml"
+cat >"$empty_run_fixture" <<'YAML'
+jobs:
+  prepare:
+    steps:
+      - id: config
+        run: |
+
+YAML
+if extract_config_run "$empty_run_fixture" "$tmp/empty-run.sh" 2>/dev/null; then
+  echo "config extraction accepted an empty run block" >&2
+  exit 1
+fi
+
+blank_line_fixture="$tmp/config-step-blank-line.yml"
+printf '%s\n' \
+  'jobs:' \
+  '  prepare:' \
+  '    steps:' \
+  '      - id: config' \
+  '        run: |' \
+  '          printf '\''before\n'\'' >"$EXTRACTION_MARKER"' \
+  '        ' \
+  '          printf '\''after\n'\'' >>"$EXTRACTION_MARKER"' \
+  >"$blank_line_fixture"
+blank_line_script="$tmp/config-step-blank-line.sh"
+extract_config_run "$blank_line_fixture" "$blank_line_script"
+blank_line_marker="$tmp/config-step-blank-line-marker"
+EXTRACTION_MARKER="$blank_line_marker" bash "$blank_line_script"
+[ "$(sed -n '1p' "$blank_line_marker")" = before ]
+[ "$(sed -n '2p' "$blank_line_marker")" = after ]
+
+extract_config_run "$workflow" "$prepare_script"
 bash -n "$prepare_script"
 first_adoption="$tmp/first-adoption"
 mkdir -p "$first_adoption"
