@@ -41,11 +41,11 @@ jq -e '
     rollback_acknowledgement: "rollback-issue-731-core-checks-node"
   } and
   .universal_contexts == ["gate"] and
-  .stacks.node.contexts == ["ci / build-test", "ci / eligibility", "changelog-contract", "generated-artifacts / validate"] and
-  .stacks.ui.contexts == ["ci / build-test", "generated-artifacts / validate"] and
-  .stacks.helm.contexts == ["ci / lint-template", "generated-artifacts / validate"] and
-  .caller_job_names.generated_artifacts == "generated-artifacts" and
-  (.caller_job_names | has("changelog") | not) and
+  .stacks.node.contexts == ["ci / build-test", "ci / eligibility", "changelog-contract", "changelog / validate"] and
+  .stacks.ui.contexts == ["ci / build-test", "changelog / validate"] and
+  .stacks.helm.contexts == ["ci / lint-template", "changelog / validate"] and
+  .caller_job_names.changelog == "changelog" and
+  (.caller_job_names | has("generated_artifacts") | not) and
   .stacks.pulumi.contexts == ["ci / validate", "ci / preview"] and
   .stacks.actions.contexts == ["shell-tests"] and
   ([.ruleset_plan.rulesets[].name] | sort) == ([
@@ -56,7 +56,7 @@ jq -e '
   (.ruleset_plan.rulesets[] | select(.name == "core-checks-node") | .contexts) ==
     ["ci / build-test", "ci / eligibility", "changelog-contract"] and
   (.ruleset_plan.rulesets[] | select(.name == "changelog-contract-required") | .contexts) ==
-    ["generated-artifacts / validate"]
+    ["changelog / validate"]
 ' "$contract" >/dev/null \
   && pass "declared contract pins every context and a human-gated staged rollout" \
   || fail "required-check declaration or staged rollout drifted"
@@ -229,8 +229,8 @@ rc="$(run_audit)"
 # --- the happy path ----------------------------------------------------------
 stack node
 pulls s1 s2
-head_with s1 gate "ci / build-test" "ci / eligibility" changelog-contract "generated-artifacts / validate"
-head_with s2 gate "ci / build-test" "ci / eligibility" changelog-contract "generated-artifacts / validate"
+head_with s1 gate "ci / build-test" "ci / eligibility" changelog-contract "changelog / validate"
+head_with s2 gate "ci / build-test" "ci / eligibility" changelog-contract "changelog / validate"
 rc="$(run_audit)"
 { [ "$rc" = "rc=0" ] && grep -q 'result=conformant' "$tmp/out.txt"; } \
   && pass "a node repository emitting its full core set is conformant" \
@@ -238,18 +238,18 @@ rc="$(run_audit)"
 
 # --- THE finding this exists for: a missing context is non-zero --------------
 # A generated release contract can drift independently of fragment validation.
-# Requiring only `generated-artifacts / validate` leaves the caller, renderer,
+# Requiring only `changelog / validate` leaves the caller, renderer,
 # contract test, and release caller free to disagree about their immutable pin.
 stack node
 pulls s1 s2
-head_with s1 gate "ci / build-test" "ci / eligibility" "generated-artifacts / validate"
-head_with s2 gate "ci / build-test" "ci / eligibility" "generated-artifacts / validate"
+head_with s1 gate "ci / build-test" "ci / eligibility" "changelog / validate"
+head_with s2 gate "ci / build-test" "ci / eligibility" "changelog / validate"
 rc="$(run_audit)"
 { [ "$rc" != "rc=0" ] && grep -q 'missing-core-contexts' "$tmp/out.txt" && grep -q 'missing=changelog-contract;' "$tmp/out.txt"; } \
   && pass "a node repository omitting generated contract conformance is nonconformant" \
   || { fail "an absent changelog-contract context was not reported ($rc)"; out | sed 's/^/diag - /'; }
 
-# `generated-artifacts / validate` is core for package repositories, and a repository not
+# `changelog / validate` is core for package repositories, and a repository not
 # yet wired to the changelog contract emits nothing for it. Requiring it there
 # is the permanently-pending wedge.
 stack node
@@ -257,7 +257,7 @@ pulls s1 s2
 head_with s1 gate "ci / build-test" "ci / eligibility" changelog-contract
 head_with s2 gate "ci / build-test" "ci / eligibility" changelog-contract
 rc="$(run_audit)"
-{ [ "$rc" != "rc=0" ] && grep -q 'missing-core-contexts' "$tmp/out.txt" && grep -q 'generated-artifacts / validate' "$tmp/out.txt"; } \
+{ [ "$rc" != "rc=0" ] && grep -q 'missing-core-contexts' "$tmp/out.txt" && grep -q 'changelog / validate' "$tmp/out.txt"; } \
   && pass "a package repository not wired to the changelog contract is reported as missing it" \
   || { fail "an absent core context was not reported ($rc)"; out | sed 's/^/diag - /'; }
 
@@ -272,7 +272,7 @@ jq -n '{check_runs:[{name:"gate",conclusion:"success"},
                     {name:"ci / build-test",conclusion:"success"},
                     {name:"ci / eligibility",conclusion:"skipped"},
                     {name:"changelog-contract",conclusion:"success"},
-                    {name:"generated-artifacts / validate",conclusion:"success"}]}' >"$CHECKDIR/s1.json"
+                    {name:"changelog / validate",conclusion:"success"}]}' >"$CHECKDIR/s1.json"
 cp "$CHECKDIR/s1.json" "$CHECKDIR/s2.json"
 rc="$(run_audit)"
 { [ "$rc" = "rc=0" ] && ! grep -q 'missing-core-contexts' "$tmp/out.txt"; } \
@@ -284,8 +284,8 @@ rc="$(run_audit)"
 # audit would demand `ci / build-test` from a repository that never emits it.
 stack helm
 pulls s1 s2
-head_with s1 gate "ci / lint-template" "generated-artifacts / validate"
-head_with s2 gate "ci / lint-template" "generated-artifacts / validate"
+head_with s1 gate "ci / lint-template" "changelog / validate"
+head_with s2 gate "ci / lint-template" "changelog / validate"
 rc="$(run_audit)"
 { [ "$rc" = "rc=0" ]; } \
   && pass "a helm repository is judged against helm's contract, not node's" \
@@ -371,8 +371,8 @@ rc="$(run_audit)"
 
 # --- source contract: callers must be unconditional and canonically named ---
 stack node; pulls s1 s2
-head_with s1 gate "ci / build-test" "ci / eligibility" changelog-contract "generated-artifacts / validate"
-head_with s2 gate "ci / build-test" "ci / eligibility" changelog-contract "generated-artifacts / validate"
+head_with s1 gate "ci / build-test" "ci / eligibility" changelog-contract "changelog / validate"
+head_with s2 gate "ci / build-test" "ci / eligibility" changelog-contract "changelog / validate"
 sed -i '/^  pull_request:$/a\    paths:\n      - "src/**"' "$tmp/workflow.yml"
 encode_workflow
 rc="$(run_audit)"
@@ -397,10 +397,10 @@ rc="$(run_audit)"
   || { fail "a noncanonical stack caller name was accepted ($rc)"; out | sed 's/^/diag - /'; }
 
 stack node
-sed -i 's/^  generated-artifacts:$/  generated-docs:/' "$content_root/.github/workflows/generated-artifacts.yml"
+sed -i 's/^  changelog:$/  generated-docs:/' "$content_root/.github/workflows/generated-artifacts.yml"
 rc="$(run_audit)"
-{ [ "$rc" != "rc=0" ] && grep -q 'caller-job-name expected=generated-artifacts actual=generated-docs' "$tmp/out.txt"; } \
-  && pass "the generated-artifacts caller must publish generated-artifacts / validate" \
+{ [ "$rc" != "rc=0" ] && grep -q 'caller-job-name expected=changelog actual=generated-docs' "$tmp/out.txt"; } \
+  && pass "the generated-artifacts caller must publish changelog / validate" \
   || { fail "a noncanonical changelog caller name was accepted ($rc)"; out | sed 's/^/diag - /'; }
 
 stack node

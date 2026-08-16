@@ -6,6 +6,7 @@
 - **Extends:** ADR 0038 (canonical changelog contract)
 - **Category:** Required-check contract / organization policy — **sensitive class**
 - **Status:** Accepted
+- **Superseded by:** [ADR 0106](../0106-generated-changelog-publishes-live-required-context/README.md)
 
 ## Context
 

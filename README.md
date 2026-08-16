@@ -181,8 +181,8 @@ than reporting green. A requested check whose generator is absent is reported as
 *unavailable* and fails, distinctly from a *stale* artifact, so nobody is sent to
 re-run a script the repository does not have.
 
-The called job ID is `validate`, so with the caller job ID above the check is
-`generated-artifacts / validate` — the **caller's** job ID, not the reusable
+The called job ID is `validate`, so with the generated caller job ID the check is
+`changelog / validate` — the **caller's** job ID, not the reusable
 workflow's display name. Select the check emitted by a completed run when
 configuring a ruleset; a context that no run produces stays pending forever.
 

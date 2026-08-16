@@ -17,6 +17,9 @@
 #   scripts/gen-changelog-caller.sh release-node <sha> [--scope <scope>] [--node-version <version>] > .github/workflows/release.yml
 #   scripts/gen-changelog-caller.sh release-propose <sha> --autonomy {propose|dispatch} > .github/workflows/release-propose.yml
 #
+# Every changelog-enabled workflow mode publishes the organization ruleset's
+# required check: changelog / validate.
+#
 # `release-node` is the fourth output and the newest. It was added because the
 # release caller was the one adopter file still hand-copied from a sibling, and
 # every defect in the copied shape propagated to every migrated repository at
@@ -40,6 +43,7 @@ set -euo pipefail
 
 usage() {
   echo "usage: $(basename "$0") {workflow|generated-artifacts|generated-artifacts-with-adr-index|renovate-attribution|adr-index-generator|renderer|contract-test|release-node|release-propose} <40-hex-commit> [--scope <npm-scope>] [--node-version <version>] [--package-dir <relative-dir>]... [--autonomy {propose|dispatch}]" >&2
+  echo "required check: changelog / validate" >&2
   exit 2
 }
 
@@ -286,7 +290,7 @@ permissions:
   contents: read
 
 jobs:
-  generated-artifacts:
+  changelog:
     uses: Verjson/.github/.github/workflows/generated-artifacts.yml@${ref}
     with:
       changelog: true
@@ -859,12 +863,12 @@ echo "ok - canonical validation accepts this repository"
 
 # One pin, shared by every generated artifact: local rendering must predict the
 # CI run that gates the PR, and the release must write the shape both assumed.
-[ "$(grep -Ec '^  generated-artifacts:$' "$validation_workflow")" = 1 ] \
-  || fail "$validation_workflow does not publish the canonical generated-artifacts / validate context"
+[ "$(grep -Ec '^  changelog:$' "$validation_workflow")" = 1 ] \
+  || fail "$validation_workflow does not publish the required changelog / validate context"
 validation_job="$(awk '
   /^jobs:$/ { in_jobs = 1; next }
   in_jobs && /^[^ ]/ { exit }
-  in_jobs && /^  generated-artifacts:$/ { capture = 1; print; next }
+  in_jobs && /^  changelog:$/ { capture = 1; print; next }
   capture && /^  [^ ]/ { exit }
   capture { print }
 ' "$validation_workflow")"

@@ -54,7 +54,7 @@ jq -e '
   (.universal_contexts | type == "array" and length > 0) and
   (.stacks | type == "object") and
   (.caller_job_names.stack | type == "string") and
-  (.caller_job_names.generated_artifacts | type == "string")
+  (.caller_job_names.changelog | type == "string")
 ' "$CONTRACT_FILE" >/dev/null 2>&1 ||
   fault contract declaration-invalid "file=$CONTRACT_FILE"
 
@@ -320,7 +320,7 @@ PY
 
 source_contract_for_repo() { # $1 = repo, $2 = stack
   local repo="$1" stack="$2" listing paths path source stack_workflow head='' ref_query=''
-  local stack_job='' generated_artifacts_job='' changelog_contract_jobs=0 source_fault=0
+  local stack_job='' changelog_job='' changelog_contract_jobs=0 source_fault=0
 
   case "$stack" in
     actions|none) return 0 ;;
@@ -366,9 +366,9 @@ source_contract_for_repo() { # $1 = repo, $2 = stack
         } | sed '/^$/d' | sort -u
       )"
       if [ -n "$found" ]; then
-        generated_artifacts_job="$found"
+        changelog_job="$found"
         if [ "$path_filter" = true ]; then
-          echo "::error::phase=audit repo=$repo stack=$stack result=workflow-path-filter path=$path — generated-artifacts / validate can be absent permanently."
+          echo "::error::phase=audit repo=$repo stack=$stack result=workflow-path-filter path=$path — changelog / validate can be absent permanently."
           return 1
         fi
       fi
@@ -405,16 +405,16 @@ source_contract_for_repo() { # $1 = repo, $2 = stack
     echo "::error::phase=audit repo=$repo stack=$stack result=stack-caller-missing expected='ci / ${stack_workflow%.yml}'"
     return 1
   fi
-  local expected_stack_job expected_generated_artifacts_job
+  local expected_stack_job expected_changelog_job
   expected_stack_job="$(jq -r '.caller_job_names.stack' "$CONTRACT_FILE")"
-  expected_generated_artifacts_job="$(jq -r '.caller_job_names.generated_artifacts' "$CONTRACT_FILE")"
+  expected_changelog_job="$(jq -r '.caller_job_names.changelog' "$CONTRACT_FILE")"
   if [ "$stack_job" != "$expected_stack_job" ]; then
     echo "::error::phase=audit repo=$repo stack=$stack result=caller-job-name expected=$expected_stack_job actual=$stack_job"
     return 1
   fi
   if { [ "$stack" = node ] || [ "$stack" = ui ] || [ "$stack" = helm ]; } &&
-    [ "$generated_artifacts_job" != "$expected_generated_artifacts_job" ]; then
-    echo "::error::phase=audit repo=$repo stack=$stack result=caller-job-name expected=$expected_generated_artifacts_job actual=${generated_artifacts_job:-missing}"
+    [ "$changelog_job" != "$expected_changelog_job" ]; then
+    echo "::error::phase=audit repo=$repo stack=$stack result=caller-job-name expected=$expected_changelog_job actual=${changelog_job:-missing}"
     return 1
   fi
   if [ "$stack" = node ] && [ "$changelog_contract_jobs" -ne 1 ]; then

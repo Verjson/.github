@@ -2,9 +2,9 @@
 date: 2026-08-16
 issue: 835
 impact: patch
-title: Align changelog generation and enforcement on the canonical check
+title: Make generated changelog callers publish the live required check
 ---
 
-Make every changelog caller generator publish `generated-artifacts / validate`, reject retired caller shapes in generated contract tests, and align the live organization ruleset with that canonical context.
+Generated changelog callers use the `changelog` job prefix while invoking the consolidated `generated-artifacts.yml` workflow, so every changelog-enabled mode publishes the active ruleset's exact `changelog / validate` context.
 
-This restores the invariant recorded in ADR 0075 while retaining `workflow` as a compatibility command for existing automation.
+The generated contract and central required-check audit bind the caller, immutable pin, changelog input, and declared context to that live requirement. ADR 0106 supersedes the earlier context-name decision without weakening organization protection, while `workflow` remains a compatibility command for existing automation.

@@ -377,9 +377,9 @@ reasoning is in the generator's header.
 
 ```bash
 PIN=3495f24c2cd81be7cc94b90c1c4650ca272102b1
-# Changelog-only repositories keep the backwards-compatible caller:
+# `workflow` remains an alias for automation using the original command name:
 scripts/gen-changelog-caller.sh workflow "$PIN" > .github/workflows/changelog.yml
-# Repositories consolidating generated checks use this instead:
+# New adopters use the explicit generated-artifacts mode:
 scripts/gen-changelog-caller.sh generated-artifacts "$PIN" > .github/workflows/changelog.yml
 scripts/gen-changelog-caller.sh renderer "$PIN" > scripts/render-next.sh
 scripts/gen-changelog-caller.sh contract-test "$PIN" > scripts/changelog-contract.test.sh
@@ -392,8 +392,9 @@ scripts/gen-changelog-caller.sh release-node "$PIN" > .github/workflows/release.
 chmod +x scripts/render-next.sh scripts/changelog-contract.test.sh
 ```
 
-Choose exactly one workflow command. `generated-artifacts` enables changelog
-validation but leaves ADR-index checking off. A repository with
+Choose exactly one workflow command. Every changelog-enabled mode publishes the
+organization-required `changelog / validate` check. `generated-artifacts`
+enables changelog validation but leaves ADR-index checking off. A repository with
 `docs/decisions/` may opt into both checks only by acquiring the pinned
 generator and generating the matching caller together:
 

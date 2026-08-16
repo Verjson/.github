@@ -34,6 +34,7 @@ generated_artifacts="$(bash "$gen" generated-artifacts "$sha")"
 generated_artifacts_with_adr="$(bash "$gen" generated-artifacts-with-adr-index "$sha")"
 renovate_attribution="$(bash "$gen" renovate-attribution "$sha")"
 adr_index_generator="$(bash "$gen" adr-index-generator "$sha")"
+usage_text="$(bash "$gen" 2>&1 || :)"
 
 # 1. The workflow pins its `uses:` and its contract_ref to the same commit.
 uses_ref="$(printf '%s\n' "$workflow" | sed -n 's#.*generated-artifacts\.yml@\([0-9a-f]\{40\}\).*#\1#p')"
@@ -42,9 +43,9 @@ input_ref="$(printf '%s\n' "$workflow" | sed -n 's/^ *contract_ref: \([0-9a-f]\{
   || fail "workflow uses: is '$uses_ref', expected $sha"
 [ "$input_ref" = "$sha" ] && pass "workflow passes contract_ref as the same commit" \
   || fail "workflow contract_ref is '$input_ref', expected $sha"
-grep -qE '^  generated-artifacts:$' <<<"$workflow" \
+grep -qE '^  changelog:$' <<<"$workflow" \
   && pass "workflow compatibility mode publishes the canonical required-check prefix" \
-  || fail "workflow compatibility mode does not publish generated-artifacts / validate"
+  || fail "workflow compatibility mode does not publish changelog / validate"
 grep -qE '^ +changelog: true$' <<<"$workflow" \
   && pass "workflow compatibility mode enables changelog validation" \
   || fail "workflow compatibility mode does not enable changelog validation"
@@ -71,9 +72,9 @@ grep -qE '\bwrite\b' <<<"$workflow" \
 grep -q "generated-artifacts.yml@$sha" <<<"$generated_artifacts" \
   && pass "generated-artifacts caller pins the requested workflow commit" \
   || fail "generated-artifacts caller does not pin $sha"
-grep -qE '^  generated-artifacts:$' <<<"$generated_artifacts" \
+grep -qE '^  changelog:$' <<<"$generated_artifacts" \
   && pass "generated-artifacts caller publishes the canonical required-check prefix" \
-  || fail "generated-artifacts caller does not publish generated-artifacts / validate"
+  || fail "generated-artifacts caller does not publish changelog / validate"
 grep -qE '^ +changelog: true$' <<<"$generated_artifacts" \
   && grep -qE "^ +contract_ref: $sha$" <<<"$generated_artifacts" \
   && pass "generated-artifacts caller enables changelog validation at the pin" \
@@ -91,6 +92,9 @@ cmp -s <(printf '%s\n' "$adr_index_generator") "$repo_root/scripts/gen-adr-index
 printf '%s\n' "$adr_index_generator" | bash -n \
   && pass "generated ADR index generator parses as bash" \
   || fail "generated ADR index generator is not valid bash"
+grep -qF 'required check: changelog / validate' <<<"$usage_text" \
+  && pass "usage names the check required by the active organization ruleset" \
+  || fail "usage does not name the active changelog / validate requirement"
 
 grep -q "renovate-changelog.yml@$sha" <<<"$renovate_attribution" \
   && grep -qE "^ +contract_ref: $sha$" <<<"$renovate_attribution" \
@@ -528,30 +532,29 @@ run_adopter "$generated_adopter" \
   && pass "emitted suite accepts the generated-artifacts caller" \
   || fail "emitted suite rejects the generated-artifacts caller: $(tail -2 "$tmproot/run.out")"
 
-retired_adopter="$tmproot/adopter-retired-changelog-caller"
+retired_adopter="$tmproot/adopter-retired-changelog-workflow"
 build_adopter "$retired_adopter" no workflow
 sed -i \
-  -e 's/^  generated-artifacts:$/  changelog:/' \
   -e "s#generated-artifacts.yml@$sha#changelog-validate.yml@$sha#" \
   -e '/^      changelog: true$/d' \
   "$retired_adopter/.github/workflows/changelog.yml"
 run_adopter "$retired_adopter" \
-  && fail "emitted suite accepts the retired changelog / validate caller" \
-  || pass "emitted suite rejects a caller that cannot satisfy the canonical required context (#835)"
+  && fail "emitted suite accepts the retired changelog-validate workflow" \
+  || pass "emitted suite requires the generated workflow behind the required context (#835)"
 
-cross_job_adopter="$tmproot/adopter-cross-job-changelog-caller"
+cross_job_adopter="$tmproot/adopter-cross-job-generated-artifacts-caller"
 build_adopter "$cross_job_adopter" no workflow
-sed -i 's/^  generated-artifacts:$/  changelog:/' \
+sed -i 's/^  changelog:$/  generated-artifacts:/' \
   "$cross_job_adopter/.github/workflows/changelog.yml"
 cat >>"$cross_job_adopter/.github/workflows/changelog.yml" <<'YAML'
-  generated-artifacts:
+  changelog:
     runs-on: ubuntu-24.04
     steps:
       - run: 'true'
 YAML
 run_adopter "$cross_job_adopter" \
   && fail "emitted suite accepts canonical fields spread across different jobs" \
-  || pass "emitted suite binds the canonical caller fields to the generated-artifacts job (#835)"
+  || pass "emitted suite binds the canonical caller fields to the changelog job (#835)"
 
 split_adopter="$tmproot/adopter-split-generated-artifacts"
 build_split_adopter "$split_adopter"
