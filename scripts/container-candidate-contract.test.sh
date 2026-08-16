@@ -77,7 +77,7 @@ extract_config_run() {
     in_script && /^          / {
       sub(/^          /, "")
       print
-      found_body = 1
+      if ($0 !~ /^[[:space:]]*$/) found_body = 1
       next
     }
     in_script && $0 == "" { print; next }
@@ -139,6 +139,18 @@ cat >"$malformed_run_fixture" <<'YAML'
 YAML
 if extract_config_run "$malformed_run_fixture" "$tmp/malformed-run.sh" 2>/dev/null; then
   echo "config extraction accepted a malformed run block" >&2
+  exit 1
+fi
+
+empty_run_fixture="$tmp/config-step-empty-run.yml"
+cat >"$empty_run_fixture" <<'YAML'
+    steps:
+      - id: config
+        run: |
+
+YAML
+if extract_config_run "$empty_run_fixture" "$tmp/empty-run.sh" 2>/dev/null; then
+  echo "config extraction accepted an empty run block" >&2
   exit 1
 fi
 
