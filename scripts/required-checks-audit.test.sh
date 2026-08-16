@@ -243,6 +243,13 @@ rc="$(PYTHONPATH="$tmp/hostile-python" run_audit)"
   && pass "workflow inspection ignores ambient Python packages" \
   || { fail "an ambient Python package changed audit behavior ($rc)"; out | sed 's/^/diag - /'; }
 
+sed -i '1i---' "$content_root/.github/workflows/ci.yml"
+printf '\n...\n' >>"$content_root/.github/workflows/ci.yml"
+rc="$(run_audit)"
+{ [ "$rc" = "rc=0" ] && grep -q 'result=conformant' "$tmp/out.txt"; } \
+  && pass "valid YAML document markers do not fault workflow inspection" \
+  || { fail "YAML document markers changed audit behavior ($rc)"; out | sed 's/^/diag - /'; }
+
 rc="$(RCA_WORKFLOW_INSPECTOR="$tmp/missing-workflow-inspector.py" run_audit)"
 { [ "$rc" = "rc=2" ] && grep -q 'workflow-inspector-missing' "$tmp/out.txt"; } \
   && pass "a missing hermetic workflow inspector fails at startup" \

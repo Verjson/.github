@@ -326,6 +326,7 @@ def main() -> int:
     if len(sys.argv) != 2:
         raise WorkflowSyntaxError("expected canonical changelog job name")
     lines = [strip_comment(line) for line in sys.stdin.read().splitlines()]
+    lines = [line for line in lines if line not in {"---", "..."}]
     path_filter, pull_request = trigger_state(lines)
     parsed_jobs = jobs(lines)
     json.dump(
