@@ -41,6 +41,53 @@ done
 
 workflow="$root/.github/workflows/container-candidate.yml"
 python3 "$root/scripts/container_private_dependencies.test.py"
+[ "$(jq -r '((.privateNodePackages // []) | length > 0)' "$root/scripts/fixtures/container-candidate/single.json")" = false ]
+private_config="$tmp/private-container-candidate.json"
+jq '.privateNodePackages = ["@verjson/private-package"]' \
+  "$root/scripts/fixtures/container-candidate/single.json" >"$private_config"
+[ "$(jq -r '((.privateNodePackages // []) | length > 0)' "$private_config")" = true ]
+
+prepare_script="$tmp/prepare-config.sh"
+awk '
+  $0 == "      - id: config" { step = 1; next }
+  step && $0 == "        run: |" { script = 1; next }
+  script && /^          / { sub(/^          /, ""); print; next }
+  script { exit }
+' "$workflow" >"$prepare_script"
+bash -n "$prepare_script"
+first_adoption="$tmp/first-adoption"
+mkdir -p "$first_adoption"
+git -C "$first_adoption" init -q
+git -C "$first_adoption" config user.name fixture
+git -C "$first_adoption" config user.email fixture@example.invalid
+printf 'base\n' >"$first_adoption/README.md"
+git -C "$first_adoption" add README.md
+git -C "$first_adoption" commit -qm base-without-container-config
+first_adoption_base="$(git -C "$first_adoption" rev-parse HEAD)"
+cp "$root/scripts/fixtures/container-candidate/single.json" \
+  "$first_adoption/container-candidate.json"
+git -C "$first_adoption" add container-candidate.json
+git -C "$first_adoption" commit -qm add-container-config
+[ ! -e "$first_adoption/package-lock.json" ]
+if git -C "$first_adoption" cat-file -e "$first_adoption_base:container-candidate.json" 2>/dev/null; then
+  echo "first-adoption fixture unexpectedly has candidate config on its base" >&2
+  exit 1
+fi
+first_adoption_output="$tmp/first-adoption-output"
+(
+  cd "$first_adoption"
+  CONFIG_PATH=container-candidate.json \
+    CONTRACT_REF="$ref" \
+    GITHUB_OUTPUT="$first_adoption_output" \
+    GITHUB_REPOSITORY=Verjson/example \
+    GITHUB_REPOSITORY_OWNER=Verjson \
+    GITHUB_RUN_ATTEMPT=1 \
+    GITHUB_RUN_ID=12345 \
+    JOB_WORKFLOW_SHA="$ref" \
+    bash "$prepare_script"
+)
+grep -qx 'has-private-node-packages=false' "$first_adoption_output"
+
 lifecycle="$tmp/lifecycle"
 mkdir -p "$lifecycle/package"
 cat > "$lifecycle/package/package.json" <<JSON
@@ -67,7 +114,12 @@ if awk '/^  pull-request-build:/{seen=1} /^  publish-base:/{seen=0} seen' "$work
   echo "pull-request build exposes a publication capability" >&2
   exit 1
 fi
+prepare_job="$(awk '/^  prepare:/{seen=1} /^  acquire-private-node-dependencies:/{seen=0} seen' "$workflow")"
 acquisition_job="$(awk '/^  acquire-private-node-dependencies:/{seen=1} /^  pull-request-build:/{seen=0} seen' "$workflow")"
+grep -qF 'has-private-node-packages: ${{ steps.config.outputs.has-private-node-packages }}' <<<"$prepare_job"
+grep -qF 'has-private-node-packages=$(jq -r' <<<"$prepare_job"
+grep -qF 'length > 0)' <<<"$prepare_job"
+grep -qF "if: needs.prepare.outputs.has-private-node-packages == 'true'" <<<"$acquisition_job"
 grep -qF 'NODE_AUTH_TOKEN: ${{ secrets.NODE_AUTH_TOKEN }}' <<<"$acquisition_job"
 grep -qF "# static schema predates job.workflow_sha." "$workflow"
 grep -qF 'JOB_WORKFLOW_SHA: ${{ fromJSON(toJSON(job)).workflow_sha }}' "$workflow"
@@ -131,13 +183,24 @@ for build_job in pull-request-build publish-base publish-derived; do
     seen && /^  [A-Za-z0-9_.-]+:/ { exit }
     seen { print }
   ' "$workflow")"
-  grep -qF 'build-contexts: verjson_node_modules=${{ runner.temp }}/container-node-modules-context' <<<"$build_block"
+  job_if="$(awk '
+    /^    if:/ { seen=1; print; next }
+    seen && /^      / { print; next }
+    seen { exit }
+  ' <<<"$build_block")"
+  [ "$(grep -c '^    if:' <<<"$build_block")" -eq 1 ]
+  grep -qx '    if: >-' <<<"$job_if"
+  grep -qx '      always()' <<<"$job_if"
+  grep -qx "      && needs.prepare.result == 'success'" <<<"$job_if"
+  grep -qx "      && (needs.acquire-private-node-dependencies.result == 'success'" <<<"$job_if"
+  grep -qx "      || needs.acquire-private-node-dependencies.result == 'skipped')" <<<"$job_if"
+  grep -qF "build-contexts: \${{ needs.prepare.outputs.has-private-node-packages == 'true' && format('verjson_node_modules={0}/container-node-modules-context', runner.temp) || '' }}" <<<"$build_block"
   grep -qF 'uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9' <<<"$build_block"
   grep -qF 'path: .verjson-container-node-modules-${{ github.run_id }}-${{ github.run_attempt }}' <<<"$build_block"
   grep -qF 'key: ${{ needs.acquire-private-node-dependencies.outputs.transfer-cache-key }}' <<<"$build_block"
   grep -qF 'fail-on-cache-miss: true' <<<"$build_block"
   grep -qF 'name: Remove local node_modules transfer state' <<<"$build_block"
-  grep -Eq 'if: always\(\)( && matrix\.baseVariant != '\'''\'')?' <<<"$build_block"
+  [ "$(grep -cF "needs.prepare.outputs.has-private-node-packages == 'true'" <<<"$build_block")" -ge 4 ]
   grep -qF 'run: rm -rf "$TRANSFER_DIR"' <<<"$build_block"
   if grep -qF 'restore-keys:' <<<"$build_block" || grep -qF 'actions/download-artifact@' <<<"$build_block"; then
     echo "$build_job permits an inexact cache restore or still uses artifact storage" >&2
@@ -151,6 +214,10 @@ for build_job in pull-request-build publish-base publish-derived; do
     exit 1
   fi
 done
+if grep -Eqi 'package-lock\.json|setup-node|node_modules|npm|yarn|pnpm|BASE_SHA|git (show|cat-file|ls-tree)' <<<"$prepare_job"; then
+  echo "credential-free preparation imposes Node or reviewed-base requirements" >&2
+  exit 1
+fi
 if grep -Eq 'uses: [^ ]+@(main|master|v[0-9]+)$' "$workflow"; then
   echo "container workflow contains an unpinned action" >&2
   exit 1
