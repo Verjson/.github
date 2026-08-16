@@ -15,7 +15,7 @@ class WorkflowSyntaxError(ValueError):
 BLOCK_SCALAR = re.compile(r":\s*[|>](?:[1-9][+-]?|[+-][1-9]?)?\s*$")
 MERGE_KEY = re.compile(r"(?:^|[\[{,])\s*(?:-\s*)?<<\s*:")
 NODE_PROPERTY = re.compile(
-    r"(?:^|[\[{,:])\s*(?:-\s*)?(?:[&*][A-Za-z0-9_-]+|!(?!=)[^\s,\]}]+)"
+    r"(?:^|[\[{,:])\s*(?:-\s*)?(?:[&*][A-Za-z0-9_-]+|!(?!=)(?:[^\s,\]}]+)?)"
 )
 
 

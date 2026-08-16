@@ -255,6 +255,7 @@ for unsupported_yaml in \
   'jobs: &shared-jobs' \
   '  <<: *shared-job' \
   'on: !canonical pull_request' \
+  'on: ! {pull_request: {}}' \
   'jobs: {base: &base {runs-on: ubuntu-24.04}, copy: *base}' \
   'jobs: {base: !<tag:example.com,2026:job> {runs-on: ubuntu-24.04}}' \
   'jobs: {base: &base !canonical {runs-on: ubuntu-24.04}}'; do
