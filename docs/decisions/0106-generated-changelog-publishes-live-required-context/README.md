@@ -2,7 +2,7 @@
 
 - **Date:** 2026-08-16
 - **Issue:** [#835](https://github.com/Verjson/.github/issues/835)
-- **Supersedes:** [ADR 0075](../0075-generated-artifacts-is-the-changelog-check-prefix/README.md) and ADR 0092's changelog context-name choice
+- **Supersedes:** [ADR 0075](../0075-generated-artifacts-is-the-changelog-check-prefix/README.md) and [ADR 0092](../0092-stage-generated-changelog-contract-requirement/README.md)'s changelog context-name choice
 - **Category:** Required-check contract / organization policy — **sensitive class**
 - **Status:** Accepted
 
@@ -24,10 +24,12 @@ only the generated caller prefix needs to agree with live protection.
 ## Decision
 
 Every changelog-enabled mode of `scripts/gen-changelog-caller.sh` emits a caller
-job named `changelog` that invokes the pinned `generated-artifacts.yml` reusable
-workflow with `changelog: true`. GitHub therefore publishes the exact active
-required context, `changelog / validate`, while retaining the consolidated
-generated-artifacts implementation.
+at `.github/workflows/changelog.yml` with a job named `changelog` that invokes
+the pinned `generated-artifacts.yml` reusable workflow with `changelog: true`.
+GitHub therefore publishes the exact active required context,
+`changelog / validate`, while retaining the consolidated generated-artifacts
+implementation. The former two-file topology is retired because two generated
+`changelog` jobs make required-check provenance ambiguous.
 
 The generated contract test binds the reusable workflow, `changelog: true`, and
 the immutable `contract_ref` to that one `changelog` job. A second job with the

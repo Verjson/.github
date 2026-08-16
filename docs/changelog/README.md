@@ -404,6 +404,11 @@ scripts/gen-changelog-caller.sh generated-artifacts-with-adr-index "$PIN" > .git
 chmod +x scripts/gen-adr-index.sh
 ```
 
+The selected command is the only validation caller and its output path is
+`.github/workflows/changelog.yml`. Do not retain a second
+`.github/workflows/generated-artifacts.yml`; the generated contract and central
+audit reject that retired split topology as ambiguous.
+
 `adr-index: true` without that generated script is deliberately a failure, not
 a clean result. Do not copy the script from another repository or hand-edit the
 caller: the generated contract test verifies that the script's digest matches

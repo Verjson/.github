@@ -572,52 +572,27 @@ run_adopter "$matrix_job_adopter" \
   && fail "emitted suite accepts a matrixed changelog job" \
   || pass "emitted suite rejects strategy fields that suffix the required context (#835)"
 
+secrets_job_adopter="$tmproot/adopter-secrets-changelog-job"
+cp -a "$generated_adopter" "$secrets_job_adopter"
+sed -i 's/^    with:$/    secrets:/' \
+  "$secrets_job_adopter/.github/workflows/changelog.yml"
+run_adopter "$secrets_job_adopter" \
+  && fail "emitted suite accepts changelog inputs nested under secrets" \
+  || pass "emitted suite binds changelog inputs to the canonical with mapping (#835)"
+
+typo_job_adopter="$tmproot/adopter-typo-changelog-job"
+cp -a "$generated_adopter" "$typo_job_adopter"
+sed -i 's/^    with:$/    wiht:/' \
+  "$typo_job_adopter/.github/workflows/changelog.yml"
+run_adopter "$typo_job_adopter" \
+  && fail "emitted suite accepts changelog inputs nested under a typo mapping" \
+  || pass "emitted suite rejects a typo in the canonical with mapping (#835)"
+
 split_adopter="$tmproot/adopter-split-generated-artifacts"
 build_split_adopter "$split_adopter"
 run_adopter "$split_adopter" \
-  && pass "emitted suite accepts the supported split caller topology (#610)" \
-  || fail "emitted suite rejects the split caller topology: $(tail -2 "$tmproot/run.out")"
-
-split_stale_pin="$tmproot/adopter-split-stale-pin"
-cp -a "$split_adopter" "$split_stale_pin"
-sed -i "s/generated-artifacts.yml@$sha/generated-artifacts.yml@0000000000000000000000000000000000000000/" \
-  "$split_stale_pin/.github/workflows/generated-artifacts.yml"
-run_adopter "$split_stale_pin" \
-  && fail "split topology accepts a stale generated-artifacts uses pin" \
-  || pass "split topology rejects a stale generated-artifacts uses pin (#610)"
-
-split_stale_ref="$tmproot/adopter-split-stale-contract-ref"
-cp -a "$split_adopter" "$split_stale_ref"
-sed -i "s/contract_ref: $sha/contract_ref: 0000000000000000000000000000000000000000/" \
-  "$split_stale_ref/.github/workflows/generated-artifacts.yml"
-run_adopter "$split_stale_ref" \
-  && fail "split topology accepts a stale generated-artifacts contract_ref" \
-  || pass "split topology rejects a stale generated-artifacts contract_ref (#610)"
-
-split_shadow_pin="$tmproot/adopter-split-shadow-pin"
-cp -a "$split_adopter" "$split_shadow_pin"
-sed -i "s/generated-artifacts.yml@$sha/generated-artifacts.yml@0000000000000000000000000000000000000000/" \
-  "$split_shadow_pin/.github/workflows/generated-artifacts.yml"
-printf '# uses: Verjson/.github/.github/workflows/generated-artifacts.yml@%s\n# contract_ref: %s\n' \
-  "$sha" "$sha" >>"$split_shadow_pin/.github/workflows/generated-artifacts.yml"
-run_adopter "$split_shadow_pin" \
-  && fail "split topology accepts stale fields shadowed by correct comments" \
-  || pass "split topology rejects stale fields shadowed by correct comments (#610)"
-
-split_missing_adr="$tmproot/adopter-split-missing-adr"
-cp -a "$split_adopter" "$split_missing_adr"
-sed -i '/^ *adr-index: true$/d' \
-  "$split_missing_adr/.github/workflows/generated-artifacts.yml"
-run_adopter "$split_missing_adr" \
-  && fail "split topology accepts generated-artifacts without ADR-index validation" \
-  || pass "split topology requires ADR-index validation (#610)"
-
-split_wrong_generator="$tmproot/adopter-split-wrong-adr-generator"
-cp -a "$split_adopter" "$split_wrong_generator"
-printf '\n# drift\n' >>"$split_wrong_generator/scripts/gen-adr-index.sh"
-run_adopter "$split_wrong_generator" \
-  && fail "split topology accepts the wrong ADR-index generator" \
-  || pass "split topology rejects the wrong ADR-index generator (#610)"
+  && fail "emitted suite accepts duplicate changelog callers at two paths" \
+  || pass "emitted suite retires the ambiguous split caller topology (#835)"
 
 adr_adopter="$tmproot/adopter-generated-artifacts-adr"
 build_adopter "$adr_adopter" no generated-artifacts-with-adr-index
