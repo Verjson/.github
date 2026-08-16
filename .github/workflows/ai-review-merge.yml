@@ -1932,9 +1932,33 @@ jobs:
           if [ "$receipt_ok" = true ] && [ "$GATE_STATUS" = success ] &&
              [ "$current_head" = "$EXPECTED_AUTHORIZED_HEAD_SHA" ] &&
              [ "$EXPECTED_REVIEWED_HEAD_SHA" = "$EXPECTED_AUTHORIZED_HEAD_SHA" ]; then
-            conclusion=success
-            title='Human approval path ready'
-            summary='Deterministic merge policy completed. GitHub branch protection remains authoritative for human approval.'
+            conclusion=neutral
+            case "$REVIEW_OUTCOME" in
+              blocking)
+                title='AI advisory blocking; human path ready'
+                summary='AI reported blocking findings. The verdict is advisory under ADR 0090; GitHub branch protection remains authoritative and an authorized human may still approve.'
+                ;;
+              inconclusive)
+                title='AI review inconclusive; human path ready'
+                summary='AI did not produce a reusable verdict. The result is advisory under ADR 0090; an authorized human may still approve after reviewing the available evidence.'
+                ;;
+              approved)
+                title='AI advisory non-blocking; human path ready'
+                summary='AI returned a non-blocking verdict, but no App approval has been persisted. GitHub branch protection remains authoritative for human approval.'
+                ;;
+              skipped)
+                title='AI review skipped; human path ready'
+                summary='AI review was not required or requested. Deterministic policy completed and GitHub branch protection remains authoritative for human approval.'
+                ;;
+              superseded)
+                title='AI review superseded; human path ready'
+                summary='The reviewed head was superseded before publication. This result grants no AI authority; GitHub branch protection remains authoritative for the current head.'
+                ;;
+              *)
+                title='AI review unavailable; human path ready'
+                summary='AI did not authorize this exact head. Deterministic policy completed and GitHub branch protection remains authoritative for human approval.'
+                ;;
+            esac
             if [ "$REVIEW_OUTCOME" = approved ] && { [ "$REVIEW_AUTHORITY" = ai-approve ] || [ "$REVIEW_AUTHORITY" = ai-merge ]; }; then
               approval_body="AI review authorization approved this exact reviewed head.
 
@@ -1964,13 +1988,14 @@ jobs:
                      (.body | contains("ai-review-authorization:" + $check))
                    ' --arg id "$approval_id" "$persisted_file" >/dev/null; then
                 ai_authorized=true
-                title='AI advisory authorized to approve'
+                conclusion=success
+                title='AI approval persisted for exact head'
                 summary="The required AI review approved this exact head. Ordinary required CI and branch protection remain authoritative.
 
           <!-- ai-review-authorized:v1:${AUTHORIZATION_CHECK_ID}:${EXPECTED_AUTHORIZED_HEAD_SHA}:${REVIEW_AUTHORITY} -->"
               else
                 title='AI approval unavailable; human path ready'
-                summary='The dedicated App approval could not be persisted. Deterministic policy is green and a human approval may still authorize merge.'
+                summary='No exact-head App approval was persisted and verified. Deterministic policy is green and a human approval may still authorize merge.'
               fi
             fi
           fi
@@ -1978,7 +2003,7 @@ jobs:
             -f status=completed -f conclusion="$conclusion" \
             -f "output[title]=$title" -f "output[summary]=$summary"
           echo "ai_authorized=$ai_authorized" >> "$GITHUB_OUTPUT"
-          [ "$conclusion" = success ] || exit 1
+          [ "$conclusion" != failure ] || exit 1
 
   dispatch-merge:
     needs: [preflight, gate, complete-authorization]
