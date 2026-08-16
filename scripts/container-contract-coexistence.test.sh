@@ -19,6 +19,7 @@ cp \
   "$root/scripts/container_release_manifest.py" \
   "$root/scripts/container_private_dependencies.py" \
   "$root/scripts/container_artifact_extract.py" \
+  "$root/scripts/container_attestation_verify.py" \
   "$root/scripts/container_deployment_controller.py" \
   "$root/scripts/container_deployment_preflight.py" \
   "$contract/scripts/"
@@ -44,6 +45,7 @@ candidate_validator_digest="$(sha256sum "$consumer/scripts/container_release_man
 "$release" manifest-validator "$ref" container-candidate.json >"$consumer/scripts/container_release_manifest.py"
 release_validator_digest="$(sha256sum "$consumer/scripts/container_release_manifest.py")"
 "$release" artifact-extractor "$ref" container-candidate.json >"$consumer/scripts/container_artifact_extract.py"
+"$release" attestation-verifier "$ref" container-candidate.json >"$consumer/scripts/container_attestation_verify.py"
 "$release" contract-test "$ref" container-candidate.json >"$consumer/scripts/container-release-contract.test.sh"
 
 "$deployment" workflow "$ref" container-deployment.json >"$consumer/.github/workflows/container-deployment.yml"

@@ -37,6 +37,7 @@ jobs:
     runs-on: ${{ inputs.runner != '' && fromJSON(inputs.runner) || github.repository_owner != 'Verjson' && 'ubuntu-24.04' || github.event.repository.private == true && fromJSON(vars.VERJSON_LANE_TRUSTED || vars.VERJSON_LANE_FALLBACK || '["ubuntu-24.04"]') || fromJSON(vars.VERJSON_LANE_UNTRUSTED || vars.VERJSON_LANE_FALLBACK || '["ubuntu-24.04"]') }}
     outputs:
       matrix: ${{ steps.config.outputs.matrix }}
+      sbom-matrix: ${{ steps.config.outputs.sbom-matrix }}
       candidate: ${{ steps.config.outputs.candidate }}
       private-node-packages: ${{ steps.config.outputs.private-node-packages }}
       has-private-node-packages: ${{ steps.config.outputs.has-private-node-packages }}
@@ -80,9 +81,19 @@ jobs:
             baseVariant: (.baseVariant // ""),
             artifact: ("candidate-image-" + (.variant | gsub("[^A-Za-z0-9._-]"; "-")))
           }]' "$CONFIG_PATH")"
+          sbom_matrix="$(jq -c '[.images[] as $image | $image.platforms[] | {
+            imageVariant: $image.variant,
+            repository: $image.repository,
+            os,
+            architecture,
+            platformVariant: (.variant // ""),
+            imageArtifact: ("candidate-image-" + ($image.variant | gsub("[^A-Za-z0-9._-]"; "-"))),
+            sbomArtifact: ("candidate-sbom-" + ($image.variant | gsub("[^A-Za-z0-9._-]"; "-")) + "-" + .os + "-" + .architecture + (if (.variant // "") == "" then "" else "-" + .variant end))
+          }]' "$CONFIG_PATH")"
           candidate="$(jq -r '.nextStableVersion' "$CONFIG_PATH")-rc.${GITHUB_RUN_ID}.${GITHUB_RUN_ATTEMPT}"
           {
             echo "matrix=$matrix"
+            echo "sbom-matrix=$sbom_matrix"
             echo "candidate=$candidate"
             echo "private-node-packages=$(jq -c '.privateNodePackages // []' "$CONFIG_PATH")"
             echo "has-private-node-packages=$(jq -r '((.privateNodePackages // []) | length > 0)' "$CONFIG_PATH")"
@@ -280,6 +291,7 @@ jobs:
       || needs.acquire-private-node-dependencies.result == 'skipped')
     needs: [prepare, acquire-private-node-dependencies]
     permissions:
+      attestations: write
       contents: read
       packages: write
       id-token: write
@@ -400,6 +412,7 @@ jobs:
       && needs.publish-base.result == 'success'
     needs: [prepare, acquire-private-node-dependencies, publish-base]
     permissions:
+      attestations: write
       contents: read
       packages: write
       id-token: write
@@ -522,13 +535,95 @@ jobs:
           path: image.json
           retention-days: 90
 
-  candidate-manifest:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && github.event.repository.default_branch == 'main'
+  attest-sbom:
+    if: >-
+      always()
+      && github.event_name == 'push'
+      && github.ref == 'refs/heads/main'
+      && github.event.repository.default_branch == 'main'
+      && needs.prepare.result == 'success'
+      && needs.publish-base.result == 'success'
+      && needs.publish-derived.result == 'success'
     needs: [prepare, publish-base, publish-derived]
     permissions:
+      actions: read
+      attestations: write
       contents: read
-      packages: write
       id-token: write
+      packages: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.prepare.outputs.sbom-matrix) }}
+    runs-on: ${{ github.repository_owner != 'Verjson' && 'ubuntu-24.04' || fromJSON(vars.VERJSON_LANE_TRUSTED || vars.VERJSON_LANE_FALLBACK || '["ubuntu-24.04"]') }}
+    steps:
+      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ${{ matrix.imageArtifact }}
+          path: candidate-image
+      - id: sbom-subject
+        name: Extract the BuildKit SPDX document for the exact platform digest
+        env:
+          ARCHITECTURE: ${{ matrix.architecture }}
+          OS: ${{ matrix.os }}
+          PLATFORM_VARIANT: ${{ matrix.platformVariant }}
+          REPOSITORY: ${{ matrix.repository }}
+        run: |
+          set -euo pipefail
+          index_digest="$(jq -er .indexDigest candidate-image/image.json)"
+          platform_digest="$(docker buildx imagetools inspect "$REPOSITORY@$index_digest" --raw | jq -er \
+            --arg os "$OS" --arg architecture "$ARCHITECTURE" --arg variant "$PLATFORM_VARIANT" \
+            '[.manifests[] | select(.platform.os == $os and .platform.architecture == $architecture and (.platform.variant // "") == $variant)]
+             | if length == 1 then .[0].digest else error("platform digest is missing or ambiguous") end')"
+          [[ "$platform_digest" =~ ^sha256:[0-9a-f]{64}$ ]] || exit 1
+          docker buildx imagetools inspect "$REPOSITORY@$platform_digest" --format '{{json .SBOM}}' \
+            | jq -e '.SPDX | select(.spdxVersion == "SPDX-2.3" and .SPDXID == "SPDXRef-DOCUMENT")' \
+            > sbom.spdx.json
+          echo "digest=$platform_digest" >> "$GITHUB_OUTPUT"
+      - id: sbom-attestation
+        uses: actions/attest@59d89421af93a897026c735860bf21b6eb4f7b26 # v4.1.0
+        with:
+          subject-name: ${{ matrix.repository }}
+          subject-digest: ${{ steps.sbom-subject.outputs.digest }}
+          sbom-path: sbom.spdx.json
+          push-to-registry: true
+      - name: Record signed platform SBOM identity
+        env:
+          ARCHITECTURE: ${{ matrix.architecture }}
+          ATTESTATION_ID: ${{ steps.sbom-attestation.outputs.attestation-id }}
+          DIGEST: ${{ steps.sbom-subject.outputs.digest }}
+          IMAGE_VARIANT: ${{ matrix.imageVariant }}
+          OS: ${{ matrix.os }}
+          PLATFORM_VARIANT: ${{ matrix.platformVariant }}
+        run: |
+          set -euo pipefail
+          [ -n "$ATTESTATION_ID" ] || { echo "::error::SBOM action returned no attestation identity"; exit 1; }
+          jq -n --arg imageVariant "$IMAGE_VARIANT" --arg os "$OS" --arg architecture "$ARCHITECTURE" \
+            --arg platformVariant "$PLATFORM_VARIANT" --arg digest "$DIGEST" --arg attestationId "$ATTESTATION_ID" \
+            '{imageVariant:$imageVariant,os:$os,architecture:$architecture,digest:$digest,attestationId:$attestationId}
+             + if $platformVariant == "" then {} else {variant:$platformVariant} end' > sbom.json
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ matrix.sbomArtifact }}
+          path: sbom.json
+          if-no-files-found: error
+          retention-days: 90
+
+  candidate-manifest:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && github.event.repository.default_branch == 'main'
+    needs: [prepare, publish-base, publish-derived, attest-sbom]
+    permissions:
+      actions: read
+      attestations: write
+      contents: read
+      id-token: write
+      packages: read
     runs-on: ${{ github.repository_owner != 'Verjson' && 'ubuntu-24.04' || fromJSON(vars.VERJSON_LANE_TRUSTED || vars.VERJSON_LANE_FALLBACK || '["ubuntu-24.04"]') }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -542,6 +637,11 @@ jobs:
         with:
           pattern: candidate-image-*
           path: candidate-images
+          merge-multiple: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: candidate-sbom-*
+          path: candidate-sboms
           merge-multiple: false
       - name: Assemble complete candidate manifest
         env:
@@ -558,21 +658,25 @@ jobs:
             reviewed="$(jq -c --arg variant "$variant" '.images[] | select(.variant == $variant)' "$CONFIG_PATH")"
             base="$(jq -c '.base // null' "$image")"
             attestation_id="$(jq -r '.provenanceAttestationId' "$image")"
+            sbom_attestations="$(jq -sc --arg variant "$variant" \
+              '[.[] | select(.imageVariant == $variant) | del(.imageVariant)] | sort_by(.os,.architecture,(.variant // ""))' \
+              candidate-sboms/*/sbom.json)"
             jq -n --arg variant "$variant" --arg repository "$repository" --arg index "$index_digest" \
               --arg commit "sha-$GITHUB_SHA" --arg candidate "$CANDIDATE" --arg workflow "Verjson/.github/.github/workflows/container-candidate.yml@$CONTRACT_REF" \
-              --arg attestationId "$attestation_id" --argjson raw "$raw" --argjson reviewed "$reviewed" --argjson base "$base" '
+              --arg attestationId "$attestation_id" --argjson raw "$raw" --argjson reviewed "$reviewed" \
+              --argjson base "$base" --argjson sbomAttestations "$sbom_attestations" '
                 {variant:$variant,repository:$repository,indexDigest:$index,
                  identities:{commit:$commit,candidate:$candidate},
                  platforms:[$raw.manifests[] | {os:.platform.os,architecture:.platform.architecture,digest:.digest} + (if .platform.variant then {variant:.platform.variant} else {} end)],
                  provenance:{predicateType:$reviewed.provenance.predicateType,builderIdentity:$workflow,subjectDigest:$index,attestationId:$attestationId},
-                 sbom:{predicateType:"https://spdx.dev/Document",subjectDigest:$index,ociSubject:($repository+"@"+$index)}}
+                 sbom:{predicateType:"https://spdx.dev/Document/v2.3",attestations:$sbomAttestations}}
                 + (if $base then {base:$base} else {} end)' \
               > "image-$variant.json"
           done
           jq -s --arg candidate "$CANDIDATE" --arg commit "$GITHUB_SHA" --arg repository "$GITHUB_REPOSITORY" \
             --arg ref "$GITHUB_REF" --arg workflow "Verjson/.github/.github/workflows/container-candidate.yml@$CONTRACT_REF" \
             --arg run "$GITHUB_RUN_ID" --arg attempt "$GITHUB_RUN_ATTEMPT" \
-            '{schemaVersion:1,kind:"container-candidate",candidateVersion:$candidate,
+            '{schemaVersion:2,kind:"container-candidate",candidateVersion:$candidate,
               source:{repository:$repository,commit:$commit,ref:$ref,workflow:$workflow,runId:$run,runAttempt:$attempt},images:.}' \
             image-*.json > candidate-manifest.json
           python3 scripts/container_release_manifest.py --manifest candidate-manifest.json --config "$CONFIG_PATH"

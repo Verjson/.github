@@ -13,15 +13,18 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: container-release-${{ github.repository }}-${{ inputs.version }}
+  cancel-in-progress: false
+
 jobs:
   promote:
     if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.event.repository.default_branch == 'main'
     runs-on: ${{ github.repository_owner != 'Verjson' && 'ubuntu-24.04' || fromJSON(vars.VERJSON_LANE_TRUSTED || vars.VERJSON_LANE_FALLBACK || '["ubuntu-24.04"]') }}
     permissions:
       actions: read
-      attestations: read
-      contents: write
-      packages: write
+      attestations: write
+      contents: read
       id-token: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -79,7 +82,6 @@ jobs:
           candidate_artifact_digest="${BASH_REMATCH[2]}"
           [[ "$GH_TOKEN" != "$BUILTIN_TOKEN" ]] || { echo "::error::admin-scoped release credential required"; exit 1; }
           [[ "$CONFIG_PATH" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]*\.json$ && "/$CONFIG_PATH/" != *"/../"* ]] || { echo "::error::config path must be repository relative"; exit 1; }
-          source_commit="$(jq -r .source.commit candidate.json)"
           release_run="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID")"
           previous=null
           while read -r tag; do
@@ -97,7 +99,8 @@ jobs:
             context="$(jq -n --arg contract "$CONTRACT_REF" --arg candidateTime "$(jq -r .created_at candidate-run.json)" \
               --arg releaseTime "$(jq -r .created_at <<<"$release_run")" --argjson run "$GITHUB_RUN_ID" \
               --argjson attempt "$GITHUB_RUN_ATTEMPT" --argjson previous "$previous" \
-              '{release:{workflow:{path:".github/workflows/container-release.yml",contractCommit:$contract},runId:$run,runAttempt:$attempt},timestamps:{candidatePublishedAt:$candidateTime,releasedAt:$releaseTime},previousRelease:$previous}')"
+              --arg sourceCommit "$GITHUB_SHA" \
+              '{release:{workflow:{path:".github/workflows/container-release.yml",contractCommit:$contract},sourceCommit:$sourceCommit,runId:$run,runAttempt:$attempt},timestamps:{candidatePublishedAt:$candidateTime,releasedAt:$releaseTime},previousRelease:$previous}')"
           fi
           jq -n --arg digest "$candidate_artifact_digest" --argjson context "$context" \
             '{candidateManifestDigest:$digest,aliases:{},provenance:{},sbom:{}} + $context' > state.json
@@ -110,25 +113,9 @@ jobs:
               cat "$error_file" >&2; echo "::error::could not prove stable alias state"; exit 1
             fi
           done < <(jq -r '.images | sort_by(.variant)[] | .repository' candidate-config.json)
-          signer="$(jq -r .source.workflow candidate.json)"; source_ref="$(jq -r .source.ref candidate.json)"
           mkdir receipts
-          while IFS=$'\t' read -r variant repository digest; do
-            gh attestation verify "oci://$repository@$digest" --repo "$GITHUB_REPOSITORY" \
-              --signer-workflow "${signer%@*}" --signer-digest "${signer##*@}" \
-              --source-ref "$source_ref" --source-digest "$source_commit" --format json > "receipts/$variant-provenance.json"
-            jq -cS . "receipts/$variant-provenance.json" > receipt.next; mv receipt.next "receipts/$variant-provenance.json"
-            receipt_digest="sha256:$(sha256sum "receipts/$variant-provenance.json" | cut -d' ' -f1)"
-            jq --arg variant "$variant" --arg digest "$receipt_digest" '.provenance[$variant]=$digest' state.json > state.next
-            mv state.next state.json
-            gh attestation verify "oci://$repository@$digest" --repo "$GITHUB_REPOSITORY" \
-              --bundle-from-oci --predicate-type https://spdx.dev/Document \
-              --signer-workflow "${signer%@*}" --signer-digest "${signer##*@}" \
-              --source-ref "$source_ref" --source-digest "$source_commit" --format json > "receipts/$variant-sbom.json"
-            jq -cS . "receipts/$variant-sbom.json" > receipt.next; mv receipt.next "receipts/$variant-sbom.json"
-            sbom_digest="sha256:$(sha256sum "receipts/$variant-sbom.json" | cut -d' ' -f1)"
-            jq --arg variant "$variant" --arg digest "$sbom_digest" '.sbom[$variant]=$digest' state.json > state.next
-            mv state.next state.json
-          done < <(jq -r '.images[] | [.variant,.repository,.indexDigest] | @tsv' candidate.json)
+          python scripts/container_attestation_verify.py --candidate candidate.json \
+            --config candidate-config.json --state state.json --receipts receipts
           python scripts/container_release_promotion.py --candidate candidate.json \
             --config candidate-config.json --state state.json --version "$VERSION" --output release-manifest.json
           release_path="RELEASES/containers/v$VERSION.json"
@@ -165,6 +152,18 @@ jobs:
             [ "$observed" = "$digest" ] || docker buildx imagetools create -t "$alias" "${alias%:*}@$digest"
             [ "$(docker buildx imagetools inspect "$alias" --format '{{json .Manifest.Digest}}' | tr -d '"')" = "$digest" ] || exit 1
           done
+          jq -c '.promotion.operations[]' release-manifest.json | while read -r operation; do
+            alias="$(jq -r .alias <<<"$operation")"; digest="$(jq -r .digest <<<"$operation")"
+            observed="$(docker buildx imagetools inspect "$alias" --format '{{json .Manifest.Digest}}' | tr -d '"')" \
+              || { echo "::error::complete stable alias set could not be reconciled"; exit 1; }
+            [ "$observed" = "$digest" ] \
+              || { echo "::error::complete stable alias set diverged before publication"; exit 1; }
+          done
+      - id: release-manifest-attestation
+        name: Attest immutable release manifest before publication
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: release-manifest.json
       - name: Canonical changelog, Git tag, release and machine output
         env: {VERSION: "${{ inputs.version }}", GH_TOKEN: "${{ secrets.release-token }}"}
         run: |

@@ -38,7 +38,7 @@ def config():
 
 def manifest():
     return {
-        "schemaVersion": 1,
+        "schemaVersion": 2,
         "kind": "container-candidate",
         "candidateVersion": "2.4.0-rc.123.1",
         "source": {
@@ -74,7 +74,24 @@ def manifest():
                     "subjectDigest": "sha256:" + "1" * 64,
                     "attestationId": "https://github.com/Verjson/verjson-github-runner/attestations/42",
                 },
-                "sbom": {"predicateType": "https://spdx.dev/Document", "subjectDigest": "sha256:" + "1" * 64, "ociSubject": "ghcr.io/verjson/runner@sha256:" + "1" * 64},
+                "sbom": {
+                    "predicateType": "https://spdx.dev/Document/v2.3",
+                    "attestations": [
+                        {
+                            "os": "linux",
+                            "architecture": "amd64",
+                            "digest": "sha256:" + "2" * 64,
+                            "attestationId": "https://github.com/Verjson/verjson-github-runner/attestations/43",
+                        },
+                        {
+                            "os": "linux",
+                            "architecture": "arm64",
+                            "variant": "v8",
+                            "digest": "sha256:" + "3" * 64,
+                            "attestationId": "https://github.com/Verjson/verjson-github-runner/attestations/44",
+                        },
+                    ],
+                },
             }
         ],
     }
@@ -178,10 +195,20 @@ class ContainerReleaseManifestTests(unittest.TestCase):
         candidate["images"][0]["provenance"].pop("attestationId")
         self.assert_rejected(candidate, "attestationId")
 
-    def test_rejects_sbom_for_another_oci_subject(self):
+    def test_rejects_missing_platform_sbom_attestation(self):
         candidate = manifest()
-        candidate["images"][0]["sbom"]["ociSubject"] = "ghcr.io/verjson/runner@sha256:" + "9" * 64
-        self.assert_rejected(candidate, "SBOM OCI subject|sbom OCI subject")
+        candidate["images"][0]["sbom"]["attestations"].pop()
+        self.assert_rejected(candidate, "SBOM platform attestations differ")
+
+    def test_rejects_wrong_sbom_predicate(self):
+        candidate = manifest()
+        candidate["images"][0]["sbom"]["predicateType"] = "https://example.invalid/sbom"
+        self.assert_rejected(candidate, "SBOM predicate differs")
+
+    def test_rejects_sbom_for_another_platform_digest(self):
+        candidate = manifest()
+        candidate["images"][0]["sbom"]["attestations"][0]["digest"] = "sha256:" + "9" * 64
+        self.assert_rejected(candidate, "SBOM digest differs")
 
     def test_rejects_arbitrary_registry_namespace(self):
         candidate = manifest()
@@ -199,9 +226,7 @@ class ContainerReleaseManifestTests(unittest.TestCase):
         derived = copy.deepcopy(candidate["images"][0])
         derived["variant"] = "debug"
         derived["indexDigest"] = "sha256:" + "6" * 64
-        derived["sbom"]["ociSubject"] = derived["repository"] + "@" + derived["indexDigest"]
         derived["provenance"]["subjectDigest"] = derived["indexDigest"]
-        derived["sbom"]["subjectDigest"] = derived["indexDigest"]
         derived["base"] = {"variant": "default", "digest": candidate["images"][0]["indexDigest"]}
         candidate["images"].append(derived)
         manifest_contract.validate_manifest(candidate, reviewed)
@@ -216,9 +241,7 @@ class ContainerReleaseManifestTests(unittest.TestCase):
         derived = copy.deepcopy(candidate["images"][0])
         derived["variant"] = "debug"
         derived["indexDigest"] = "sha256:" + "6" * 64
-        derived["sbom"]["ociSubject"] = derived["repository"] + "@" + derived["indexDigest"]
         derived["provenance"]["subjectDigest"] = derived["indexDigest"]
-        derived["sbom"]["subjectDigest"] = derived["indexDigest"]
         derived["base"] = {"variant": "default", "digest": "sha256:" + "9" * 64}
         candidate["images"].append(derived)
         with self.assertRaisesRegex(manifest_contract.ManifestError, "same-run base digest"):

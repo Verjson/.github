@@ -310,6 +310,39 @@ The manifest records the attestation ID returned by GitHub's provenance action a
 derives its signer identity from the pinned reusable workflow; reviewed configuration
 selects the expected predicate but is not treated as observed attestation evidence.
 
+## Amendment (2026-08-16) — attested, race-safe release publication (#847)
+
+Candidate schema version 2 binds a GitHub attestation identity to the BuildKit-produced
+SPDX 2.3 document for every platform digest. Publication jobs and generated callers
+receive only `attestations: write`, `id-token: write`, and the read or package scopes
+their specific work requires. Release admission verifies the exact repository, reusable
+workflow and contract digest, source ref and commit, predicate type, and subject digest
+for image provenance and for every platform SBOM. Missing or substituted evidence stops
+before alias mutation.
+
+Release schema version 2 records the dispatch source commit. Releases are serialized by
+consumer repository and version; after deterministic alias writes, the complete alias
+set is read again and must match the selected candidate digests before the manifest is
+attested or any Git commit, tag, or GitHub Release is published. Retries reconcile the
+same manifest and fail closed on divergent Git, registry, receipt, or release state.
+
+The canonical release generator emits the thin caller, promotion and manifest
+validators, artifact extractor, attestation verifier, and adopter contract test at one
+immutable contract SHA. The reusable workflow attests `release-manifest.json` before
+Git publication. A downloaded release asset is verified with values recorded inside it:
+
+```bash
+manifest=release-manifest.json
+repository="$(jq -r .source.repository "$manifest")"
+contract="$(jq -r .release.workflow.contractCommit "$manifest")"
+source_commit="$(jq -r .release.sourceCommit "$manifest")"
+gh attestation verify "$manifest" --repo "$repository" \
+  --predicate-type https://slsa.dev/provenance/v1 \
+  --signer-workflow Verjson/.github/.github/workflows/container-release.yml \
+  --signer-digest "$contract" --source-ref refs/heads/main \
+  --source-digest "$source_commit"
+```
+
 ## Amendment (2026-08-14) — protected runner deployment contract (#629)
 
 The deployment stage is implemented by the reusable
