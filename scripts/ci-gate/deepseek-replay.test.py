@@ -40,6 +40,19 @@ def bundle() -> dict:
     }
 
 
+def extraction_bundle() -> dict:
+    candidate = bundle()
+    candidate["purpose"] = "extraction-diagnostic"
+    candidate.pop("response")
+    candidate["model"] = MODEL
+    candidate["failure"] = {
+        "stage": "completed_response_extraction", "kind": "json_decode",
+        "content_bytes": 42, "content_sha256": "1" * 64,
+        "json_error": {"line": 1, "column": 43, "position": 42},
+    }
+    return candidate
+
+
 class DeepSeekReplayTest(unittest.TestCase):
     def run_prepare(self, transport="success", usable="false", publication="success", diagnostic=None):
         temp = tempfile.TemporaryDirectory()
@@ -111,6 +124,40 @@ class DeepSeekReplayTest(unittest.TestCase):
             "phase": "publication", "diagnostic": "publication step failed"
         })
 
+    def test_completed_extraction_failure_stages_bounded_non_authorizing_diagnostic(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source, output = root / "source.json", root / "output.json"
+            source.write_text(json.dumps(extraction_bundle()), encoding="utf-8")
+            available = replay.prepare(
+                source, output, "failure", "false", "success", "{}", HEAD, "9001", MODEL,
+                "Verjson/.github", 7, 1, False, "f" * 40,
+            )
+
+            self.assertTrue(available)
+            staged = json.loads(output.read_text())
+            self.assertEqual(staged["purpose"], "extraction-diagnostic")
+            self.assertEqual(staged["failure"]["kind"], "json_decode")
+            self.assertFalse(staged["authorizing"])
+            self.assertFalse(staged["cacheable"])
+            self.assertNotIn("response", staged)
+
+    def test_diagnostic_artifact_size_is_independent_of_bounded_response_size(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source, output = root / "source.json", root / "output.json"
+            candidate = extraction_bundle()
+            candidate["failure"]["content_bytes"] = 2 * 1024 * 1024
+            source.write_text(json.dumps(candidate), encoding="utf-8")
+
+            available = replay.prepare(
+                source, output, "failure", "false", "success", "{}", HEAD, "9001", MODEL,
+                "Verjson/.github", 7, 1, False, "f" * 40,
+            )
+
+            self.assertTrue(available)
+            self.assertLess(output.stat().st_size, 16 * 1024)
+
     def test_provenance_mutation_and_sensitive_unknown_fields_fail_closed(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -156,6 +203,9 @@ class DeepSeekReplayTest(unittest.TestCase):
         ):
             self.assertEqual(workflow.count(argument), 2)
         self.assertNotIn("download-artifact", workflow)
+        for step_id in ("deepseek_primary", "deepseek_fallback"):
+            self.assertIn(f"TRANSPORT: ${{{{ steps.{step_id}.outcome }}}}", workflow)
+            self.assertNotIn(f"TRANSPORT: ${{{{ steps.{step_id}.conclusion }}}}", workflow)
 
     def test_documented_replay_uses_separate_trusted_and_target_checkouts(self):
         decision = (ROOT / "docs/decisions/0090-human-first-opt-in-ai-review/README.md").read_text()

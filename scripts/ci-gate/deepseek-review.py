@@ -32,6 +32,7 @@ MAX_DIFF_BYTES = 2 * 1024 * 1024
 # token envelope while allowing generous per-event framing overhead.
 MAX_STREAM_BYTES = MAX_OUTPUT_TOKENS * 1024
 MAX_REPLAY_BYTES = 1024 * 1024
+MAX_DIAGNOSTIC_BYTES = 16 * 1024
 REDACTED_UNKNOWN = "__REDACTED_UNKNOWN_VALUE__"
 REDACTED_UNKNOWN_FIELD = "__redacted_unknown_field__"
 TOP_LEVEL_ALIASES = {
@@ -47,6 +48,13 @@ FINDING_FIELDS = LOCATION_FIELDS | {
 FOLLOWUP_FIELDS = LOCATION_FIELDS | {"note", "reason", "description"} | ITEM_METADATA_FIELDS
 PROGRESS_INTERVAL_SECONDS = 30
 PROGRESS_INTERVAL_BYTES = 1024 * 1024
+
+
+class ExtractionFailure(ValueError):
+    def __init__(self, kind: str, json_error: dict | None = None):
+        super().__init__(f"completed response extraction failed: {kind}")
+        self.kind = kind
+        self.json_error = json_error
 
 
 class StreamProgress:
@@ -199,6 +207,46 @@ def write_replay_bundle(path: str, verdict: str, model: str, usage: dict, proven
         output.write(encoded + b"\n")
 
 
+def extraction_diagnostic(response: object, failure: ExtractionFailure) -> dict:
+    content = ""
+    if isinstance(response, dict):
+        choices = response.get("choices")
+        if isinstance(choices, list) and len(choices) == 1 and isinstance(choices[0], dict):
+            message = choices[0].get("message")
+            if isinstance(message, dict) and isinstance(message.get("content"), str):
+                content = message["content"]
+    encoded_content = content.encode("utf-8")
+    diagnostic = {
+        "stage": "completed_response_extraction",
+        "kind": failure.kind,
+        "content_bytes": len(encoded_content),
+        "content_sha256": hashlib.sha256(encoded_content).hexdigest(),
+    }
+    if failure.json_error is not None:
+        diagnostic["json_error"] = failure.json_error
+    return diagnostic
+
+
+def write_extraction_diagnostic_bundle(
+    path: str, model: str, diagnostic: dict, provenance: dict,
+) -> None:
+    bundle = {
+        "schema": 1,
+        "purpose": "extraction-diagnostic",
+        "authorizing": False,
+        "cacheable": False,
+        "transport": "completed",
+        "model": model,
+        "provenance": provenance,
+        "failure": diagnostic,
+    }
+    encoded = json.dumps(bundle, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    if len(encoded) > MAX_DIAGNOSTIC_BYTES:
+        raise ValueError("extraction diagnostic exceeds its bounded limit")
+    with open(path, "wb") as output:
+        output.write(encoded + b"\n")
+
+
 def role_separated_messages(prompt: str, metadata: str, diff: str) -> list[dict]:
     trusted = (
         prompt
@@ -272,24 +320,33 @@ def usage_cost(usage: object, model: str) -> tuple[int, int, int, int, Decimal]:
 
 def extract(response: object, model: str, input_bound: int, cap: int, budget_text: str) -> tuple[str, int, int, int, int, Decimal]:
     if not isinstance(response, dict) or response.get("object") != "chat.completion" or response.get("model") != model:
-        raise ValueError("response is not a chat completion for the requested model")
+        raise ExtractionFailure("response_shape")
     choices = response.get("choices")
     if not isinstance(choices, list) or len(choices) != 1 or not isinstance(choices[0], dict):
-        raise ValueError("response does not contain exactly one choice")
+        raise ExtractionFailure("response_shape")
     choice = choices[0]
     if choice.get("finish_reason") != "stop" or choice.get("index") != 0:
-        raise ValueError("response choice is incomplete or malformed")
+        raise ExtractionFailure("response_shape")
     message = choice.get("message")
     if not isinstance(message, dict) or message.get("role") != "assistant" or not isinstance(message.get("content"), str):
-        raise ValueError("response message is malformed")
+        raise ExtractionFailure("response_shape")
     if message.get("tool_calls") not in (None, []):
-        raise ValueError("response attempted a tool call")
-    prompt, completion, hit, miss, cost = usage_cost(response.get("usage"), model)
+        raise ExtractionFailure("tool_call")
+    try:
+        prompt, completion, hit, miss, cost = usage_cost(response.get("usage"), model)
+    except ValueError as error:
+        raise ExtractionFailure("usage_envelope") from error
     if prompt > input_bound or completion > cap or cost > validated_budget(budget_text):
-        raise ValueError("reported usage exceeds the preflight envelope")
-    verdict = json.loads(message["content"])
+        raise ExtractionFailure("usage_envelope")
+    try:
+        verdict = json.loads(message["content"])
+    except json.JSONDecodeError as error:
+        raise ExtractionFailure(
+            "json_decode",
+            {"line": error.lineno, "column": error.colno, "position": error.pos},
+        ) from error
     if not isinstance(verdict, dict):
-        raise ValueError("response message is not one JSON object")
+        raise ExtractionFailure("verdict_shape")
     return json.dumps(verdict, separators=(",", ":")), prompt, completion, hit, miss, cost
 
 
@@ -451,9 +508,45 @@ def main() -> int:
             flush=True,
         )
         raise
-    verdict, prompt_tokens, completion_tokens, hit_tokens, miss_tokens, cost = extract(
-        response, values["MODEL"], input_bound, body["max_tokens"], values["BUDGET_USD"]
-    )
+    provenance = {
+        "reviewed_head": values["REVIEWED_HEAD_SHA"],
+        "authorization_check_id": values["AUTHORIZATION_CHECK_ID"],
+        "repository": values["TARGET_REPO"],
+        "pr_number": int(values["PR_NUMBER"]),
+        "review_pass": int(values["REVIEW_PASS"]),
+        "sensitive": values["SENSITIVE"] == "true",
+        "trusted_review_sha": values["TRUSTED_REVIEW_SHA"],
+        "review_policy_sha256": hashlib.sha256(values["REVIEW_POLICY"].encode("utf-8")).hexdigest(),
+        "prompt_sha256": file_digest(values["PROMPT_FILE"]),
+        "pr_metadata_sha256": file_digest(values["PR_JSON_FILE"]),
+        "pr_diff_sha256": file_digest(values["PR_DIFF_FILE"]),
+    }
+    try:
+        verdict, prompt_tokens, completion_tokens, hit_tokens, miss_tokens, cost = extract(
+            response, values["MODEL"], input_bound, body["max_tokens"], values["BUDGET_USD"]
+        )
+    except ExtractionFailure as error:
+        diagnostic = extraction_diagnostic(response, error)
+        encoded_diagnostic = json.dumps(diagnostic, sort_keys=True, separators=(",", ":"))
+        try:
+            write_extraction_diagnostic_bundle(
+                values["REPLAY_FILE"], values["MODEL"], diagnostic, provenance,
+            )
+        except (OSError, ValueError):
+            print("::warning::DeepSeek extraction diagnostic artifact unavailable; detail redacted", file=sys.stderr, flush=True)
+        try:
+            with open(values["GITHUB_OUTPUT"], "a", encoding="utf-8") as out:
+                out.write(f"extraction_diagnostic={encoded_diagnostic}\n")
+        except OSError:
+            print("::warning::DeepSeek extraction diagnostic output unavailable; detail redacted", file=sys.stderr, flush=True)
+        print(
+            "::error::phase=completed-response-extraction provider=deepseek "
+            f"model={values['MODEL']} kind={error.kind} content_bytes={diagnostic['content_bytes']} "
+            f"content_sha256={diagnostic['content_sha256']}",
+            file=sys.stderr,
+            flush=True,
+        )
+        raise
     try:
         write_replay_bundle(
             values["REPLAY_FILE"], verdict, values["MODEL"],
@@ -463,19 +556,7 @@ def main() -> int:
                 "cache_hit_tokens": hit_tokens,
                 "cache_miss_tokens": miss_tokens,
             },
-            {
-                "reviewed_head": values["REVIEWED_HEAD_SHA"],
-                "authorization_check_id": values["AUTHORIZATION_CHECK_ID"],
-                "repository": values["TARGET_REPO"],
-                "pr_number": int(values["PR_NUMBER"]),
-                "review_pass": int(values["REVIEW_PASS"]),
-                "sensitive": values["SENSITIVE"] == "true",
-                "trusted_review_sha": values["TRUSTED_REVIEW_SHA"],
-                "review_policy_sha256": hashlib.sha256(values["REVIEW_POLICY"].encode("utf-8")).hexdigest(),
-                "prompt_sha256": file_digest(values["PROMPT_FILE"]),
-                "pr_metadata_sha256": file_digest(values["PR_JSON_FILE"]),
-                "pr_diff_sha256": file_digest(values["PR_DIFF_FILE"]),
-            },
+            provenance,
             {
                 "input_token_bound": input_bound,
                 "max_output_tokens": body["max_tokens"],

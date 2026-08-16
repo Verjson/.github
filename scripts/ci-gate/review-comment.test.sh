@@ -44,6 +44,7 @@ run_submit() {
   export PATH="$tmp/bin:$PATH" TARGET_REPO=Verjson/example PR_NUMBER=7 HEAD_SHA=deadbeef MODEL=deepseek-v4-pro
   export PATCH_ID=patch123 GITHUB_RUN_ID=12345 GITHUB_OUTPUT="$tmp/output" COMMENT_FILE="$tmp/comment" ACTION_LOG="$tmp/actions"
   export VERDICT="$1" SELECTED_PASS_TERMINAL_ERROR="${2:-false}" BUDGET_EXHAUSTED="${3:-false}"
+  export EXTRACTION_DIAGNOSTIC="${5:-}"
   export CURRENT_HEAD="${4:-deadbeef}" SUPERSEDED=false
   export CHANGED_LINES=42 BUDGET_USD=5.00 PERMISSION_DENIALS=0
   : >"$GITHUB_OUTPUT"; : >"$COMMENT_FILE"; : >"$ACTION_LOG"
@@ -79,6 +80,12 @@ rc="$(run_submit not-json)"
 { [ "$rc" = rc=0 ] && has_action EDIT && has_comment 'review could not complete' && has_output outcome=inconclusive; } \
   && pass "inconclusive provider result cannot block human approval" \
   || fail "inconclusive provider result blocked the required workflow ($rc)"
+
+extraction_diagnostic='{"stage":"completed_response_extraction","kind":"json_decode","content_bytes":42,"content_sha256":"1111111111111111111111111111111111111111111111111111111111111111","json_error":{"line":1,"column":43,"position":42}}'
+rc="$(run_submit '' false false deadbeef "$extraction_diagnostic")"
+{ [ "$rc" = rc=0 ] && has_action EDIT && has_comment 'completed-response extraction' && has_comment '`json_decode`' && has_output outcome=inconclusive && ! has_action REVIEW; } \
+  && pass "typed extraction failure is named in a non-authorizing deterministic advisory" \
+  || fail "typed extraction failure collapsed into a generic advisory or authorized review ($rc)"
 
 rc="$(run_submit "$approved" true)"
 { [ "$rc" = rc=0 ] && has_output outcome=inconclusive && ! has_output outcome=approved; } \
