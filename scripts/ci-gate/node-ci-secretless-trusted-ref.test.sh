@@ -9,7 +9,7 @@ failures=0
 pass() { printf 'ok - %s\n' "$1"; }
 fail() { printf 'not ok - %s\n' "$1" >&2; failures=$((failures + 1)); }
 
-python3 - "$workflow" <<'PY' \
+python3 - "$workflow" "$docs" <<'PY' \
   && pass "trusted-ref mode reuses the bounded secretless pipeline" \
   || fail "trusted-ref mode does not preserve the secretless pipeline boundary"
 import sys
@@ -18,6 +18,7 @@ from pathlib import Path
 import yaml
 
 workflow = yaml.safe_load(Path(sys.argv[1]).read_text(encoding="utf-8"))
+docs = Path(sys.argv[2]).read_text(encoding="utf-8")
 inputs = workflow[True]["workflow_call"]["inputs"]
 jobs = workflow["jobs"]
 assert inputs["secretless-pr"]["default"] is False
@@ -32,6 +33,7 @@ assert build["permissions"] == {"contents": "read"}
 assert build["runs-on"].startswith("${{ inputs.secretless-pr && fromJSON(vars.VERJSON_LANE_UNTRUSTED")
 assert "secretless-trusted-ref" not in build["runs-on"]
 assert "cleanup-secretless-transfer" not in jobs
+assert docs.count("permissions:\n      contents: read\n      packages: read\n      statuses: read") == 4
 
 steps = build["steps"]
 checkout = next(step for step in steps if str(step.get("uses", "")).startswith("actions/checkout@"))

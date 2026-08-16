@@ -41,8 +41,9 @@ contract.
 
 The existing route remains the default and keeps its authenticated install. The package
 secret, not the job token, has always performed cross-repository acquisition, so the
-build job no longer requests an unused package capability. A caller's existing
-`packages: read` grant remains accepted, while secretless calls start without it.
+build job no longer requests an unused package capability. Secretless callers grant
+`packages: read` so the acquisition job can request it; the correction below records
+why this caller permission is required even with a separate package token.
 
 ## Consequences
 
@@ -78,15 +79,17 @@ restores the decision's installed-dependency boundary; it does not broaden the a
 
 [Issue #833](https://github.com/Verjson/.github/issues/833) exposed a false premise in
 the caller contract. A reusable workflow's job permissions intersect with the caller's
-permissions. Mapping `secrets.GITHUB_TOKEN` into `NODE_AUTH_TOKEN` therefore cannot read
-private packages when acquisition requests only `contents: read`. A prior successful
-`npm ci` on the persistent runner used npm's default cross-run cache and did not prove a
-fresh authenticated download; the fresh run-attempt cache correctly exposed the missing
-authority with GitHub Packages `E403`.
+permissions, so a caller must grant every permission requested by the called job
+regardless of which secret token the job uses. Mapping `secrets.GITHUB_TOKEN` into
+`NODE_AUTH_TOKEN` made the defect observable as a private-package `E403`. A prior
+successful `npm ci` on the persistent runner used npm's default cross-run cache and did
+not prove a fresh authenticated download; the fresh run-attempt cache correctly exposed
+the missing authority.
 
-The acquisition job now requests `packages: read`. Callers mapping `GITHUB_TOKEN` must
-also grant that permission. Callers may instead map a dedicated package token, whose
-authority is independent of the job token. The package capability remains confined to
-the non-executing acquisition job: exact scope/package/URL/integrity validation still
-precedes network access, repository lifecycle code still never runs there, and the build
-job remains credentialless with only `contents: read`.
+The acquisition job now requests `packages: read`, and every caller must grant it.
+Reusable-workflow permissions cannot elevate the caller permission ceiling, even when
+`NODE_AUTH_TOKEN` is a dedicated package token rather than `GITHUB_TOKEN`. The package
+capability remains confined to the non-executing acquisition job: exact
+scope/package/URL/integrity validation still precedes network access, repository
+lifecycle code still never runs there, and the build job remains credentialless with
+only `contents: read`.
