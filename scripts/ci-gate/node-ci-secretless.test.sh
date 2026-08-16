@@ -124,7 +124,8 @@ chmod +x "$acquire_fixture/bin/npm"
 trusted_user_config="$acquire_fixture/runner/secretless-acquisition.npmrc"
 trusted_global_config="$acquire_fixture/runner/secretless-empty-global.npmrc"
 trusted_cache="$acquire_fixture/runner/secretless-npm-cache"
-mkdir -p "$acquire_fixture/runner" "$trusted_cache/_cacache"
+trusted_auxiliary_cache="$acquire_fixture/runner/secretless-auxiliary-npm-cache"
+mkdir -p "$acquire_fixture/runner"
 private_digest="$(printf 'cached private package\n' | sha512sum | cut -d' ' -f1)"
 private_entries="$acquire_fixture/runner/private-entries"
 printf 'https://npm.pkg.github.com/download/@verjson/identity-contracts/1.2.3/abc\t%s\n' \
@@ -168,7 +169,7 @@ if (cd "$acquire_fixture/trusted-auxiliary" && bash "$consumer_config_script" \
       NODE_AUTH_TOKEN='package-secret' NPM_STUB_LOG="$acquire_fixture/trusted-auxiliary.log" \
       NPM_STUB_CONFIG_LOG="$acquire_fixture/trusted-auxiliary-config.log" \
       APPROVED_INTERNAL_SCOPES=$'@tequityapp\n@verjson' \
-      NPM_CONFIG_CACHE="$trusted_cache" \
+      NPM_CONFIG_CACHE="$trusted_auxiliary_cache" \
       NPM_CONFIG_USERCONFIG="$trusted_user_config" \
       NPM_CONFIG_GLOBALCONFIG="$trusted_global_config" PRIVATE_CACHE_ENTRIES="$private_entries" \
       bash "$acquire_script") \

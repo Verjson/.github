@@ -600,6 +600,10 @@ jobs:
             echo "::error::secretless mode requires a validated private package entry file"
             exit 1
           }
+          if ! mkdir "$NPM_CONFIG_CACHE"; then
+            echo "::error::secretless private cache path must be fresh for this run attempt"
+            exit 1
+          fi
           : > "$NPM_CONFIG_GLOBALCONFIG"
           mkdir -p "$NPM_CONFIG_CACHE/_cacache/content-v2"
           if [ -s "$PRIVATE_CACHE_ENTRIES" ]; then
@@ -620,7 +624,10 @@ jobs:
                   echo "::error::invalid validated private cache entry"
                   exit 1
                 }
-              npm cache add "$resolved" --cache "$NPM_CONFIG_CACHE" --no-audit --no-fund
+              if ! npm cache add "$resolved" --cache "$NPM_CONFIG_CACHE" --no-audit --no-fund; then
+                echo "::error::fresh private-package acquisition failed; verify the caller grants packages: read and NODE_AUTH_TOKEN can read every approved package"
+                exit 1
+              fi
             done < "$PRIVATE_CACHE_ENTRIES"
             npm cache verify --cache "$NPM_CONFIG_CACHE"
           else

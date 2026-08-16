@@ -137,6 +137,8 @@ for job in doc["jobs"].values():
 populate = next(step for step in doc["jobs"]["acquire-secretless-dependencies"]["steps"]
                 if step.get("name") == "Populate verified private dependency cache")
 assert '${#expected_content[@]}' in populate["run"]
+assert 'private cache path must be fresh for this run attempt' in populate["run"]
+assert 'verify the caller grants packages: read' in populate["run"]
 PY
 
 mkdir -p "$tmp/bin" "$tmp/acquire/cache/_cacache/content-v2/sha512" "$tmp/acquire/node_modules"
@@ -150,6 +152,7 @@ printf '%s\n' "{\"name\":\"fixture\",\"version\":\"1.0.0\",\"lockfileVersion\":3
   > "$tmp/acquire/package-lock.json"
 printf '%s\n' \
   '#!/usr/bin/env bash' \
+  'if [ "${NPM_STUB_FAIL:-false}" = true ]; then exit 1; fi' \
   'printf '\''%s\n'\'' "$*" >> "$NPM_STUB_LOG"' \
   'if [ "${1:-} ${2:-}" = "cache add" ]; then' \
   '  while [ "$#" -gt 0 ]; do' \
@@ -177,6 +180,44 @@ if PRIVATE_CACHE_ENTRIES="$tmp/empty/private-entries" \
   pass "an empty approved package set produces a valid empty private cache without tokened npm requests"
 else
   fail "an empty approved package set did not produce a bounded credential-free handoff"
+fi
+
+mkdir -p "$tmp/stale-cache/cache"
+printf '%s\t%s\n' \
+  'https://npm.pkg.github.com/download/@verjson/private-fixture/1.0.0/abc' "$private_digest" \
+  > "$tmp/stale-cache/private-entries"
+if PRIVATE_CACHE_ENTRIES="$tmp/stale-cache/private-entries" \
+    APPROVED_INTERNAL_SCOPES=@verjson NODE_AUTH_TOKEN=token \
+    NPM_CONFIG_CACHE="$tmp/stale-cache/cache" \
+    NPM_CONFIG_GLOBALCONFIG="$tmp/stale-cache/empty-global.npmrc" \
+    NPM_CONFIG_USERCONFIG="$tmp/stale-cache/acquisition.npmrc" \
+    NPM_STUB_CONTENT="$tmp/private-package.tgz" NPM_STUB_DIGEST="$private_digest" \
+    NPM_STUB_LOG="$tmp/stale-cache/npm.log" PATH="$tmp/bin:$PATH" \
+    bash "$tmp/populate.sh" >"$tmp/stale-cache/output" 2>&1; then
+  fail "a pre-existing private cache was accepted as fresh acquisition evidence"
+elif grep -qF 'private cache path must be fresh for this run attempt' "$tmp/stale-cache/output" \
+    && [ ! -e "$tmp/stale-cache/npm.log" ]; then
+  pass "pre-existing cache cannot masquerade as fresh private-package acquisition"
+else
+  fail "pre-existing private cache did not fail closed before network acquisition"
+fi
+
+mkdir -p "$tmp/forbidden"
+printf '%s\t%s\n' \
+  'https://npm.pkg.github.com/download/@verjson/private-fixture/1.0.0/abc' "$private_digest" \
+  > "$tmp/forbidden/private-entries"
+if PRIVATE_CACHE_ENTRIES="$tmp/forbidden/private-entries" \
+    APPROVED_INTERNAL_SCOPES=@verjson NODE_AUTH_TOKEN=token \
+    NPM_CONFIG_CACHE="$tmp/forbidden/cache" \
+    NPM_CONFIG_GLOBALCONFIG="$tmp/forbidden/empty-global.npmrc" \
+    NPM_CONFIG_USERCONFIG="$tmp/forbidden/acquisition.npmrc" \
+    NPM_STUB_FAIL=true NPM_STUB_LOG="$tmp/forbidden/npm.log" PATH="$tmp/bin:$PATH" \
+    bash "$tmp/populate.sh" >"$tmp/forbidden/output" 2>&1; then
+  fail "a denied private-package download did not fail acquisition"
+elif grep -qF 'verify the caller grants packages: read' "$tmp/forbidden/output"; then
+  pass "denied fresh acquisition reports the package authority boundary"
+else
+  fail "denied fresh acquisition omitted actionable package authority diagnostics"
 fi
 
 mkdir -p "$tmp/duplicate-digest"

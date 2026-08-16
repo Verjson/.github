@@ -93,3 +93,9 @@ capability remains confined to the non-executing acquisition job: exact
 scope/package/URL/integrity validation still precedes network access, repository
 lifecycle code still never runs there, and the build job remains credentialless with
 only `contents: read`.
+
+The acquisition cache path must not exist before the job populates it. This makes the
+validated content set evidence of a fresh authenticated request rather than a hit from
+persistent runner state. A denied download fails with a caller-permission diagnostic;
+there is no contents-only fallback because it would either be ineffective for
+`GITHUB_TOKEN` or move package authority into the repository-controlled build job.
