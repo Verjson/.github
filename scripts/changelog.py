@@ -856,6 +856,8 @@ def release(
         snapshot = repo_root / "CHANGELOG" / f"{version}.md"
         if snapshot.exists():
             raise ChangelogError(f"released snapshot already exists: {snapshot}")
+        if git(repo_root, "tag", "--list", version):
+            raise ChangelogError(f"release tag already exists: {version}")
         selected = select_release_fragments(repo_root, selected_names, component)
         validate_release_bump(repo_root, version, selected)
         snapshot.parent.mkdir(parents=True, exist_ok=True)
