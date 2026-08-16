@@ -107,6 +107,10 @@ for job_name, job in callee["jobs"].items():
         )
 assert canary["jobs"]["validate"]["permissions"] == validation_permissions
 assert canary["jobs"]["publish"]["permissions"] == publication_permissions
+assert canary["jobs"]["publish"]["if"] == (
+    "github.event_name == 'workflow_dispatch' "
+    "&& github.ref == format('refs/heads/{0}', github.event.repository.default_branch)"
+), "privileged canary dispatch must be bound to the repository default branch"
 for job in ("validate", "publish"):
     assert canary["jobs"][job]["with"]["runner"] == '"ubuntu-24.04"', (
         "reusable-call canary must use a JSON-encoded GitHub-hosted runner"

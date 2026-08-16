@@ -457,3 +457,8 @@ publication permissions. Generated contract tests bind both event-specific permi
 maps and reject public-only callers that expose package credentials. This restores the
 credential-free pull-request invariant recorded above without weakening private-package
 admission or granting stable release authority.
+
+The repository's reusable-call canary applies the same trust split. Its privileged
+manual publication job runs only when the dispatch ref is the repository's current
+default branch, so a writer cannot select branch-local reusable workflow or candidate
+configuration code and grant it package, attestation, or OIDC authority.
