@@ -31,14 +31,15 @@ git -C "$contract" config user.email fixture@example.invalid
 git -C "$contract" add scripts docs
 git -C "$contract" commit -qm fixture
 ref="$(git -C "$contract" rev-parse HEAD)"
+cp "$root/scripts/fixtures/container-candidate/single.json" "$consumer/container-candidate.json"
 
 candidate="$contract/scripts/gen-container-candidate.sh"
 release="$contract/scripts/gen-container-release.sh"
 deployment="$contract/scripts/gen-container-deployment.sh"
-"$candidate" workflow "$ref" container-candidate.json >"$consumer/.github/workflows/container-candidate.yml"
+(cd "$consumer" && "$candidate" workflow "$ref" container-candidate.json) >"$consumer/.github/workflows/container-candidate.yml"
 "$candidate" validator "$ref" container-candidate.json >"$consumer/scripts/container_release_manifest.py"
 candidate_validator_digest="$(sha256sum "$consumer/scripts/container_release_manifest.py")"
-"$candidate" contract-test "$ref" container-candidate.json >"$consumer/scripts/container-candidate-contract.test.sh"
+(cd "$consumer" && "$candidate" contract-test "$ref" container-candidate.json) >"$consumer/scripts/container-candidate-contract.test.sh"
 
 "$release" workflow "$ref" container-candidate.json >"$consumer/.github/workflows/container-release.yml"
 "$release" validator "$ref" container-candidate.json >"$consumer/scripts/container_release_promotion.py"
