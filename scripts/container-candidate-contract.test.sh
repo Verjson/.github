@@ -59,7 +59,25 @@ extract_config_run() {
       exit 1
     }
 
-    $0 == "      - id: config" {
+    in_script && /^          / {
+      sub(/^          /, "")
+      print
+      if ($0 !~ /^[[:space:]]*$/) found_body = 1
+      next
+    }
+    in_script && /^ *$/ { print ""; next }
+    in_script { exit }
+
+    $0 == "  prepare:" {
+      found_prepare = 1
+      in_prepare = 1
+      next
+    }
+    in_prepare && /^  [A-Za-z0-9_.-]+:/ {
+      fail("prepare job ended before its config run block")
+    }
+    in_prepare && $0 == "      - id: config" {
+      if (found_step) fail("prepare job contains multiple config steps")
       found_step = 1
       in_step = 1
       next
@@ -74,17 +92,10 @@ extract_config_run() {
       in_script = 1
       next
     }
-    in_script && /^          / {
-      sub(/^          /, "")
-      print
-      if ($0 !~ /^[[:space:]]*$/) found_body = 1
-      next
-    }
-    in_script && $0 == "" { print; next }
-    in_script { exit }
 
     END {
       if (failed) exit 1
+      if (!found_prepare) fail("prepare job is missing")
       if (!found_step) fail("config step is missing")
       if (!found_run) fail("config step is missing a run block")
       if (!found_body) fail("config step run block is empty")
@@ -97,6 +108,8 @@ extract_config_run() {
 
 extraction_fixture="$tmp/config-step.yml"
 cat >"$extraction_fixture" <<'YAML'
+jobs:
+  prepare:
     steps:
       - id: config
         name: Prepare candidate configuration
@@ -117,10 +130,14 @@ grep -qx config "$extraction_marker"
 
 missing_run_fixture="$tmp/config-step-missing-run.yml"
 cat >"$missing_run_fixture" <<'YAML'
+jobs:
+  prepare:
     steps:
       - id: config
         name: Missing run block
-      - name: Unrelated step
+  later:
+    steps:
+      - id: config
         run: |
           exit 0
 YAML
@@ -131,6 +148,8 @@ fi
 
 malformed_run_fixture="$tmp/config-step-malformed-run.yml"
 cat >"$malformed_run_fixture" <<'YAML'
+jobs:
+  prepare:
     steps:
       - id: config
         shell: bash
@@ -144,6 +163,8 @@ fi
 
 empty_run_fixture="$tmp/config-step-empty-run.yml"
 cat >"$empty_run_fixture" <<'YAML'
+jobs:
+  prepare:
     steps:
       - id: config
         run: |
@@ -153,6 +174,24 @@ if extract_config_run "$empty_run_fixture" "$tmp/empty-run.sh" 2>/dev/null; then
   echo "config extraction accepted an empty run block" >&2
   exit 1
 fi
+
+blank_line_fixture="$tmp/config-step-blank-line.yml"
+printf '%s\n' \
+  'jobs:' \
+  '  prepare:' \
+  '    steps:' \
+  '      - id: config' \
+  '        run: |' \
+  '          printf '\''before\n'\'' >"$EXTRACTION_MARKER"' \
+  '        ' \
+  '          printf '\''after\n'\'' >>"$EXTRACTION_MARKER"' \
+  >"$blank_line_fixture"
+blank_line_script="$tmp/config-step-blank-line.sh"
+extract_config_run "$blank_line_fixture" "$blank_line_script"
+blank_line_marker="$tmp/config-step-blank-line-marker"
+EXTRACTION_MARKER="$blank_line_marker" bash "$blank_line_script"
+[ "$(sed -n '1p' "$blank_line_marker")" = before ]
+[ "$(sed -n '2p' "$blank_line_marker")" = after ]
 
 extract_config_run "$workflow" "$prepare_script"
 bash -n "$prepare_script"
