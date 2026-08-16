@@ -26,7 +26,7 @@ assert inputs["secretless-trusted-ref"]["default"] is False
 acquire = jobs["acquire-secretless-dependencies"]
 build = jobs["build-test"]
 assert acquire["if"] == "(inputs.secretless-pr || inputs.secretless-trusted-ref) && needs.eligibility.outputs.should-run != 'false'"
-assert acquire["permissions"] == {"contents": "read"}
+assert acquire["permissions"] == {"contents": "read", "packages": "read"}
 assert acquire["runs-on"] == "${{ fromJSON(vars.VERJSON_LANE_UNTRUSTED || '[\"ubuntu-24.04\"]') }}"
 assert build["permissions"] == {"contents": "read"}
 assert build["runs-on"].startswith("${{ inputs.secretless-pr && fromJSON(vars.VERJSON_LANE_UNTRUSTED")

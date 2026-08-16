@@ -71,7 +71,8 @@ on:
           Acquire approved private dependencies in a non-executing job, then run
           PR-controlled build and test code in a credentialless job. Intended
           only for pull_request validation; requires NODE_AUTH_TOKEN and
-          approved-internal-packages, but does not require caller packages: read.
+          approved-internal-packages. Callers mapping GITHUB_TOKEN must grant
+          packages: read; a separate package token is independent of that grant.
         required: false
         type: boolean
         default: false
@@ -226,7 +227,9 @@ on:
         default: ''
     secrets:
       NODE_AUTH_TOKEN:
-        description: Token to read approved private packages and the optional auxiliary repository
+        description: >-
+          Token to read approved private packages and the optional auxiliary
+          repository. Mapping GITHUB_TOKEN requires caller packages: read.
         required: false
       submodules-token:
         description: >-
@@ -307,6 +310,7 @@ jobs:
     timeout-minutes: ${{ inputs.timeout-minutes }}
     permissions:
       contents: read
+      packages: read
     outputs:
       auxiliary-commit: ${{ steps.resolve-auxiliary-source.outputs.commit }}
       auxiliary-content-path: ${{ steps.resolve-auxiliary-source.outputs.content-path }}
