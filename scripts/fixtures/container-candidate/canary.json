@@ -1,0 +1,19 @@
+{
+  "repository": "Verjson/.github",
+  "registryNamespace": "ghcr.io/verjson",
+  "nextStableVersion": "0.0.1",
+  "images": [
+    {
+      "variant": "contract-canary",
+      "repository": "ghcr.io/verjson/container-candidate-contract",
+      "context": "scripts/fixtures/container-candidate/canary",
+      "file": "scripts/fixtures/container-candidate/canary/Dockerfile",
+      "platforms": [
+        {"os": "linux", "architecture": "amd64"}
+      ],
+      "provenance": {
+        "predicateType": "https://slsa.dev/provenance/v1"
+      }
+    }
+  ]
+}

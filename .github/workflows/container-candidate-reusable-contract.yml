@@ -1,0 +1,28 @@
+name: container candidate reusable-call contract
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/container-candidate.yml'
+      - '.github/workflows/container-candidate-reusable-contract.yml'
+      - 'scripts/container_oci_index.py'
+      - 'scripts/gen-container-candidate.sh'
+      - 'scripts/fixtures/container-candidate/canary/**'
+      - 'scripts/fixtures/container-candidate/canary.json'
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  attestations: write
+  contents: read
+  packages: write
+  id-token: write
+
+jobs:
+  candidate:
+    uses: ./.github/workflows/container-candidate.yml
+    with:
+      config-path: scripts/fixtures/container-candidate/canary.json
+      contract-ref: ${{ github.sha }}
+      acquisition-sha256: '0000000000000000000000000000000000000000000000000000000000000000'
+      runner: '"ubuntu-24.04"'
