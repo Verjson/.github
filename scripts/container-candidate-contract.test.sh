@@ -37,10 +37,55 @@ for fixture in single multi; do
     exit 1
   fi
   mv "$consumer/.github/workflows/container-candidate.yml.clean" "$consumer/.github/workflows/container-candidate.yml"
+  cp "$consumer/.github/workflows/container-candidate.yml" "$consumer/.github/workflows/container-candidate.yml.clean"
+  sed -i '/^  actions: read$/d' "$consumer/.github/workflows/container-candidate.yml"
+  if bash "$consumer/scripts/container-candidate-contract.test.sh" >/dev/null 2>&1; then
+    echo "generated contract accepted an unsatisfied reusable Actions permission" >&2
+    exit 1
+  fi
+  mv "$consumer/.github/workflows/container-candidate.yml.clean" "$consumer/.github/workflows/container-candidate.yml"
 done
 
 workflow="$root/.github/workflows/container-candidate.yml"
+canary="$root/.github/workflows/container-candidate-reusable-contract.yml"
+CALLER_WORKFLOW="$tmp/single/.github/workflows/container-candidate.yml" \
+CALLEE_WORKFLOW="$workflow" CANARY_WORKFLOW="$canary" python3 - <<'PY'
+import os
+
+import yaml
+
+
+with open(os.environ["CALLER_WORKFLOW"], encoding="utf-8") as stream:
+    caller = yaml.safe_load(stream)
+with open(os.environ["CALLEE_WORKFLOW"], encoding="utf-8") as stream:
+    callee = yaml.safe_load(stream)
+with open(os.environ["CANARY_WORKFLOW"], encoding="utf-8") as stream:
+    canary = yaml.safe_load(stream)
+
+caller_permissions = caller["permissions"]
+expected = {
+    "actions": "read",
+    "attestations": "write",
+    "contents": "read",
+    "packages": "write",
+    "id-token": "write",
+}
+assert caller_permissions == expected, "generated caller permissions are not exact"
+levels = {None: 0, "none": 0, "read": 1, "write": 2}
+default_permissions = callee.get("permissions", {})
+for job_name, job in callee["jobs"].items():
+    requested = job.get("permissions", default_permissions)
+    for permission, level in requested.items():
+        assert permission in caller_permissions, f"caller omits {job_name} permission {permission}"
+        assert levels[level] <= levels[caller_permissions[permission]], (
+            f"caller cannot satisfy {job_name} permission {permission}: {level}"
+        )
+assert canary["jobs"]["candidate"]["with"]["runner"] == '"ubuntu-24.04"', (
+    "reusable-call canary must use a JSON-encoded GitHub-hosted runner"
+)
+PY
 python3 "$root/scripts/container_private_dependencies.test.py"
+python3 "$root/scripts/container_oci_index.test.py"
 [ "$(jq -r '((.privateNodePackages // []) | length > 0)' "$root/scripts/fixtures/container-candidate/single.json")" = false ]
 private_config="$tmp/private-container-candidate.json"
 jq '.privateNodePackages = ["@verjson/private-package"]' \
@@ -228,6 +273,66 @@ first_adoption_output="$tmp/first-adoption-output"
 )
 grep -qx 'has-private-node-packages=false' "$first_adoption_output"
 
+run_invalid_config() {
+  local config_path=$1
+  local output=$2
+
+  if (
+    cd "$first_adoption"
+    CONFIG_PATH="$config_path" \
+      CONTRACT_REF="$ref" \
+      GITHUB_OUTPUT="$output" \
+      GITHUB_REPOSITORY=Verjson/example \
+      GITHUB_REPOSITORY_OWNER=Verjson \
+      GITHUB_RUN_ATTEMPT=1 \
+      GITHUB_RUN_ID=12345 \
+      JOB_WORKFLOW_SHA="$ref" \
+      bash "$prepare_script"
+  ) >/dev/null 2>&1; then
+    echo "candidate config unexpectedly passed: $config_path" >&2
+    exit 1
+  fi
+}
+
+repository_marker="$tmp/repository-injection-executed"
+jq --arg repository "ghcr.io/verjson/x'; touch $repository_marker; #'" \
+  '.images[0].repository = $repository' \
+  "$root/scripts/fixtures/container-candidate/single.json" \
+  > "$first_adoption/malicious-repository.json"
+run_invalid_config malicious-repository.json "$tmp/malicious-repository-output"
+[ ! -e "$repository_marker" ] || {
+  echo "repository configuration executed as shell source" >&2
+  exit 1
+}
+
+platform_marker="$tmp/platform-injection-executed"
+jq --arg os "linux'; touch $platform_marker; #'" \
+  '.images[0].platforms[0].os = $os' \
+  "$root/scripts/fixtures/container-candidate/single.json" \
+  > "$first_adoption/malicious-platform.json"
+run_invalid_config malicious-platform.json "$tmp/malicious-platform-output"
+[ ! -e "$platform_marker" ] || {
+  echo "platform configuration executed as shell source" >&2
+  exit 1
+}
+
+jq '.images[0].platforms = [
+  {"os":"linux","architecture":"amd64-v8"},
+  {"os":"linux","architecture":"amd64","variant":"v8"}
+]' "$root/scripts/fixtures/container-candidate/single.json" \
+  > "$first_adoption/colliding-platform-fields.json"
+run_invalid_config colliding-platform-fields.json "$tmp/colliding-platform-fields-output"
+
+jq '
+  .images[0].variant = "a-b"
+  | .images[0].platforms = [{"os":"linux","architecture":"amd64"}]
+  | .images[1].variant = "a"
+  | .images[1].baseVariant = "a-b"
+  | .images[1].platforms = [{"os":"b-linux","architecture":"amd64"}]
+' "$root/scripts/fixtures/container-candidate/multi.json" \
+  > "$first_adoption/colliding-image-platform-fields.json"
+run_invalid_config colliding-image-platform-fields.json "$tmp/colliding-image-platform-fields-output"
+
 lifecycle="$tmp/lifecycle"
 mkdir -p "$lifecycle/package"
 cat > "$lifecycle/package/package.json" <<JSON
@@ -246,8 +351,11 @@ grep -q 'id-token: write' "$workflow"
 grep -q 'attestations: write' "$workflow"
 grep -q 'actions/attest-build-provenance@[0-9a-f]\{40\}' "$workflow"
 grep -q 'actions/attest@[0-9a-f]\{40\}' "$workflow"
-grep -qF '.SPDX | select(.spdxVersion == "SPDX-2.3"' "$workflow"
+grep -qF '.[$platform].SPDX | select(.spdxVersion == "SPDX-2.3"' "$workflow"
 grep -qF 'predicateType:"https://spdx.dev/Document/v2.3"' "$workflow"
+grep -qF 'python3 "$helper" index --index "$raw_index" --reviewed-platforms "$reviewed_platforms"' "$workflow"
+grep -qF 'python3 "$helper" spdx-evidence --manifest "$evidence_manifest"' "$workflow"
+grep -qF 'platforms:$platforms' "$workflow"
 grep -q 'commit identity already records a different digest' "$workflow"
 grep -q 'imagetools create -t "\$commit_tag"' "$workflow"
 if grep -Eq 'GITHUB_WORKFLOW_(REF|SHA)|github\.workflow_(ref|sha)' "$workflow"; then
@@ -258,6 +366,51 @@ if awk '/^  pull-request-build:/{seen=1} /^  publish-base:/{seen=0} seen' "$work
   echo "pull-request build exposes a publication capability" >&2
   exit 1
 fi
+attest_sbom_job="$(awk '/^  attest-sbom:/{seen=1} /^  candidate-manifest:/{seen=0} seen' "$workflow")"
+attest_sbom_permissions="$(awk '
+  /^    permissions:$/ { seen=1; next }
+  seen && /^    [A-Za-z0-9_.-]+:/ { exit }
+  seen { print }
+' <<<"$attest_sbom_job")"
+expected_attest_sbom_permissions="$(cat <<'PERMISSIONS'
+      actions: read
+      attestations: write
+      contents: read
+      id-token: write
+      packages: write
+PERMISSIONS
+)"
+[ "$attest_sbom_permissions" = "$expected_attest_sbom_permissions" ] || {
+  echo "SBOM publication permissions are not exact least privilege" >&2
+  exit 1
+}
+if grep -Eq 'secrets\.|NODE_AUTH_TOKEN|NPM_TOKEN|AWS_|AZURE_|GOOGLE_' <<<"$attest_sbom_job"; then
+  echo "SBOM publication exposes a credential beyond its job token" >&2
+  exit 1
+fi
+grep -qF 'uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1' <<<"$attest_sbom_job" || {
+  echo "SBOM evidence binding cannot read the reviewed configuration" >&2
+  exit 1
+}
+publish_derived_job="$(awk '/^  publish-derived:/{seen=1} /^  attest-sbom:/{seen=0} seen' "$workflow")"
+grep -qF 'REPOSITORY: ${{ matrix.repository }}' <<<"$publish_derived_job"
+grep -qF 'IMAGE_VARIANT: ${{ matrix.variant }}' <<<"$publish_derived_job"
+grep -qF 'BASE_VARIANT: ${{ matrix.baseVariant }}' <<<"$publish_derived_job"
+if grep -qF -- "repository='\${{ matrix.repository }}'" <<<"$publish_derived_job" \
+  || grep -qF -- "--arg variant '\${{ matrix.variant }}'" <<<"$publish_derived_job" \
+  || grep -qF -- "--arg baseVariant '\${{ matrix.baseVariant }}'" <<<"$publish_derived_job"; then
+  echo "publish-derived embeds candidate configuration into shell source" >&2
+  exit 1
+fi
+grep -qF 'uses: ./.github/workflows/container-candidate.yml' "$canary"
+for permission in 'actions: read' 'attestations: write' 'contents: read' 'packages: write' 'id-token: write'; do
+  grep -q "^  $permission$" "$canary" || {
+    echo "reusable-call canary omits $permission" >&2
+    exit 1
+  }
+done
+jq -e '.repository == "Verjson/.github" and .images[0].platforms == [{"os":"linux","architecture":"amd64"}]' \
+  "$root/scripts/fixtures/container-candidate/canary.json" >/dev/null
 prepare_job="$(awk '/^  prepare:/{seen=1} /^  acquire-private-node-dependencies:/{seen=0} seen' "$workflow")"
 acquisition_job="$(awk '/^  acquire-private-node-dependencies:/{seen=1} /^  pull-request-build:/{seen=0} seen' "$workflow")"
 grep -qF 'has-private-node-packages: ${{ steps.config.outputs.has-private-node-packages }}' <<<"$prepare_job"
