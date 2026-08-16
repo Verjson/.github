@@ -241,10 +241,11 @@ def write_extraction_diagnostic_bundle(
         "failure": diagnostic,
     }
     encoded = json.dumps(bundle, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    if len(encoded) > MAX_DIAGNOSTIC_BYTES:
+    encoded_with_newline = encoded + b"\n"
+    if len(encoded_with_newline) > MAX_DIAGNOSTIC_BYTES:
         raise ValueError("extraction diagnostic exceeds its bounded limit")
     with open(path, "wb") as output:
-        output.write(encoded + b"\n")
+        output.write(encoded_with_newline)
 
 
 def role_separated_messages(prompt: str, metadata: str, diff: str) -> list[dict]:

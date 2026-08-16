@@ -29,8 +29,9 @@ line, column, and position for JSON decoding failures. Raw verdict content, reas
 usage values, exception text, prompts, diffs, metadata, and credentials are never written
 to the diagnostic output, logs, or artifact.
 
-The client writes a bounded extraction-diagnostic artifact even though no replayable
-verdict exists. It is explicitly non-authorizing and non-cacheable, bound to the exact
+The client writes an extraction-diagnostic artifact bounded to 16 KiB including its
+trailing newline even though no replayable verdict exists. It is explicitly
+non-authorizing and non-cacheable, bound to the exact
 head, dedicated authorization check, repository, PR, pass, model, sensitive
 classification, trusted workflow revision, and input digests. The staging helper accepts
 only the closed schema and trusted cause vocabulary. Artifacts retain the existing

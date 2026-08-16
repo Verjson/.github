@@ -515,6 +515,38 @@ class DeepSeekReviewTest(unittest.TestCase):
             self.assertIn("structured_output=", output.read_text())
             self.assertIn("diagnostic replay unavailable", errors.getvalue())
 
+    def test_extraction_diagnostic_limit_counts_the_trailing_newline(self):
+        diagnostic = {
+            "stage": "completed_response_extraction", "kind": "usage_envelope",
+            "content_bytes": 60, "content_sha256": "1" * 64,
+        }
+        provenance = {
+            "reviewed_head": "a" * 40, "authorization_check_id": "9001",
+            "repository": "Verjson/.github", "pr_number": 7, "review_pass": 2,
+            "sensitive": False, "trusted_review_sha": "f" * 40,
+            "review_policy_sha256": "b" * 64, "prompt_sha256": "c" * 64,
+            "pr_metadata_sha256": "d" * 64, "pr_diff_sha256": "e" * 64,
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "diagnostic.json"
+            review.write_extraction_diagnostic_bundle(
+                str(path), "deepseek-v4-flash", diagnostic, provenance,
+            )
+            encoded_bytes = path.stat().st_size - 1
+
+            with patch.object(review, "MAX_DIAGNOSTIC_BYTES", encoded_bytes), self.assertRaisesRegex(
+                ValueError, "bounded limit",
+            ):
+                review.write_extraction_diagnostic_bundle(
+                    str(path), "deepseek-v4-flash", diagnostic, provenance,
+                )
+
+            with patch.object(review, "MAX_DIAGNOSTIC_BYTES", encoded_bytes + 1):
+                review.write_extraction_diagnostic_bundle(
+                    str(path), "deepseek-v4-flash", diagnostic, provenance,
+                )
+            self.assertEqual(path.stat().st_size, encoded_bytes + 1)
+
 
 if __name__ == "__main__":
     unittest.main()
