@@ -99,6 +99,14 @@ if problems:
 
 verify, snapshot, publish = jobs["verify"], jobs["snapshot"], jobs["publish"]
 
+header, trigger_separator, _ = raw.partition("\non:")
+header_warning = """# The verification suite runs after package.json has been stamped to the
+# dispatched version. Its expected version must be read dynamically from
+# package.json; never assert a hardcoded version literal. This order is
+# intentional: the suite verifies the exact package metadata that will ship."""
+if not trigger_separator or header_warning not in header:
+    bad("the stamped-version warning is not inside the generated header before `on:` (#862)")
+
 
 def needs_of(job):
     value = job.get("needs") or []
@@ -323,10 +331,26 @@ suite_steps = [
 if len(suite_steps) != 1:
     bad("`verify` must contain exactly one named release verification suite step")
 else:
-    token = str((suite_steps[0].get("env") or {}).get("NODE_AUTH_TOKEN") or "")
+    suite_step = suite_steps[0]
+    suite_env = suite_step.get("env") or {}
+    token = str(suite_env.get("NODE_AUTH_TOKEN") or "")
     if token.strip() != private_token:
         bad("the release verification hook/default suite does not receive "
             "NODE_AUTH_TOKEN from secrets.NODE_AUTH_TOKEN (#569)")
+    if str(suite_env.get("PACKAGE_VERSION") or "").strip() != "${{ steps.release-version.outputs.package-version }}":
+        bad("the release verification suite cannot diagnose the stamped dispatch version (#862)")
+    diagnostic_command = (
+        'echo "::error::Release verification failed against stamped dispatch version '
+        '$PACKAGE_VERSION. Check for the hardcoded-version footgun: version assertions '
+        'can pass in pull requests and local runs, then fail only here; read the expected '
+        'version dynamically from package.json."'
+    )
+    if not any(
+        line.strip() == diagnostic_command
+        for line in str(suite_step.get("run") or "").splitlines()
+    ):
+        bad("the release verification step does not execute the canonical "
+            "stamped-version failure diagnostic (#862)")
 for job_name, job in jobs.items():
     job_token = str((job.get("env") or {}).get("NODE_AUTH_TOKEN") or "")
     if job_token == private_token:
@@ -418,11 +442,30 @@ verify_a_different_ref() {
   sed -i 's|          ref: ${{ github.sha }}|          ref: ${{ github.ref }}|' "$1"
 }
 hollow_out_the_suite() {
-  sed -i 's|^          npm test$|          echo skipping|' "$1"
+  sed -i '/npm test || verification_status=/c\              echo skipping || verification_status=$?' "$1"
 }
 drop_verify_hook() { sed -i '/scripts\/release-verify.sh/d' "$1"; }
 drop_verify_suite_token() {
   sed -i '/^      - name: Run the release verification suite$/,+2{/NODE_AUTH_TOKEN:/d;}' "$1"
+}
+shadow_stamped_version_header() {
+  python3 - "$1" <<'PY'
+import sys
+
+path = sys.argv[1]
+text = open(path, encoding="utf-8").read()
+warning = """# The verification suite runs after package.json has been stamped to the
+# dispatched version. Its expected version must be read dynamically from
+# package.json; never assert a hardcoded version literal. This order is
+# intentional: the suite verifies the exact package metadata that will ship.
+"""
+if text.count(warning) != 1:
+    raise SystemExit("stamped-version header fixture no longer matches generated output")
+open(path, "w", encoding="utf-8").write(text.replace(warning, "", 1) + "\n" + warning)
+PY
+}
+noop_stamped_version_diagnostic() {
+  sed -i 's|echo "::error::Release verification failed against stamped dispatch version|: "::error::Release verification failed against stamped dispatch version|' "$1"
 }
 strip_provenance() { sed -i '/gen-changelog-caller.sh release-node/d' "$1"; }
 drop_publish_token() { sed -i '/^      NODE_AUTH_TOKEN: /d' "$1"; }
@@ -469,6 +512,14 @@ expect_shape_rejection "verifying a ref other than github.sha" verify_a_differen
 expect_shape_rejection "a verify job that runs no suite" hollow_out_the_suite
 expect_shape_rejection "a verify job with no release-verify.sh hook" drop_verify_hook
 expect_shape_rejection "a release verification suite without private-package auth (#569)" drop_verify_suite_token
+expect_shape_rejection "stamped-version warning text shadowed outside the generated header (#862)" shadow_stamped_version_header
+grep -qF 'the stamped-version warning is not inside the generated header before `on:` (#862)' "$tmp/shape.out" \
+  && pass "the shape validator rejects the shadowed warning for leaving the header" \
+  || fail "the shadowed warning failed shape validation for another reason: $(cat "$tmp/shape.out")"
+expect_shape_rejection "a no-op stamped-version failure diagnostic (#862)" noop_stamped_version_diagnostic
+grep -qF 'does not execute the canonical stamped-version failure diagnostic (#862)' "$tmp/shape.out" \
+  && pass "the shape validator rejects the no-op diagnostic as non-executable" \
+  || fail "the no-op diagnostic failed shape validation for another reason: $(cat "$tmp/shape.out")"
 expect_shape_rejection "a caller carrying no generator provenance" strip_provenance
 expect_shape_rejection "a publish job without its private dependency token" drop_publish_token
 expect_shape_rejection "a publish job without its generated Node version" drop_publish_node_version
@@ -715,6 +766,26 @@ grep -q '^npm test$' "$tmp/guard.out" \
   && pass "the default suite runs npm test" \
   || fail "the default suite never ran npm test: $(cat "$tmp/guard.out")"
 
+printf '%s\n' '#!/usr/bin/env bash' \
+  'echo "npm $*"' \
+  'if [ "$1 $2" = "run typecheck" ]; then exit 4; fi' >"$tmp/bin/npm"
+if run_guard "$suite_step" "PATH=$tmp/bin:$PATH" PACKAGE_VERSION=4.5.6; then
+  fail "a failing default suite still passed the verify job"
+else
+  suite_rc=$?
+  [ "$suite_rc" -eq 4 ] \
+    && pass "a failing default suite preserves its exit status" \
+    || fail "a failing default suite exited $suite_rc instead of 4"
+  grep -qF 'Release verification failed against stamped dispatch version 4.5.6. Check for the hardcoded-version footgun:' "$tmp/guard.out" \
+    && pass "a default-suite failure receives the stamped-version diagnostic (#862)" \
+    || fail "a default-suite failure omits the stamped-version diagnostic: $(cat "$tmp/guard.out")"
+  ! grep -qE '^npm run lint|^npm test$' "$tmp/guard.out" \
+    && pass "the default suite stops at its first failing command" \
+    || fail "the default suite continued after typecheck failed: $(cat "$tmp/guard.out")"
+fi
+printf '%s\n' '#!/usr/bin/env bash' 'echo "npm $*"' >"$tmp/bin/npm"
+chmod +x "$tmp/bin/npm"
+
 mkdir -p "$tmp/sandbox/scripts"
 printf '%s\n' '#!/usr/bin/env bash' \
   'set -e' \
@@ -779,10 +850,19 @@ unset VERJSON_CHANGELOG_TOOL_CACHE
 
 # A failing hook must fail the job, or the verify gate is decorative.
 printf '%s\n' '#!/usr/bin/env bash' 'exit 3' >"$tmp/sandbox/scripts/release-verify.sh"
-if run_guard "$suite_step" "PATH=$tmp/bin:$PATH"; then
+if run_guard "$suite_step" "PATH=$tmp/bin:$PATH" PACKAGE_VERSION=9.8.7 NODE_AUTH_TOKEN=do-not-print-this; then
   fail "a failing release-verify.sh still passed the verify job"
 else
-  pass "a failing release-verify.sh fails the verify job"
+  suite_rc=$?
+  [ "$suite_rc" -eq 3 ] \
+    && pass "a failing release-verify.sh preserves its exit status" \
+    || fail "a failing release-verify.sh exited $suite_rc instead of 3"
+  grep -qF 'Release verification failed against stamped dispatch version 9.8.7. Check for the hardcoded-version footgun:' "$tmp/guard.out" \
+    && pass "a suite failure diagnoses the stamped version and hardcoded-version footgun (#862)" \
+    || fail "a suite failure omits the stamped-version diagnostic: $(cat "$tmp/guard.out")"
+  ! grep -qF 'do-not-print-this' "$tmp/guard.out" \
+    && pass "the stamped-version diagnostic does not expose the verification credential" \
+    || fail "the stamped-version diagnostic leaked the verification credential"
 fi
 
 # Committing the hook without the executable bit is the ordinary way to get this
