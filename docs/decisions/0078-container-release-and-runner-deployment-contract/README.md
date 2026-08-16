@@ -347,9 +347,14 @@ gh attestation verify "$manifest" --repo "$repository" \
 
 The generated candidate caller grants `actions: read` so GitHub can satisfy every
 called job's declared permission without a reusable-workflow startup failure. The
-SBOM-signing job alone receives `packages: write` for `push-to-registry`; build-only
+SBOM-signing job receives `packages: write` for `push-to-registry`, as do the base and
+derived image publication jobs for their intentional registry writes; build-only
 pull-request jobs retain read-only source authority. A checked-in reusable-call canary
 keeps GitHub's own workflow parser and permission negotiation on the changed contract.
+The canary explicitly selects an isolated GitHub-hosted runner so a shared self-hosted
+workspace cannot turn permission/syntax evidence into a checkout race. This test-only
+routing does not remediate the production runner isolation defect tracked in
+`Verjson/verjson-github-runner#155`.
 
 BuildKit evidence is resolved from the parent OCI index rather than a child platform
 manifest. Deployable descriptors must equal the reviewed platform matrix exactly.

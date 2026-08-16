@@ -57,6 +57,13 @@ jobs:
           [ -f "$CONFIG_PATH" ] || { echo "::error::candidate config is missing"; exit 1; }
           expected_namespace="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}"
           jq -e --arg repository "$GITHUB_REPOSITORY" --arg namespace "$expected_namespace" '
+            def safe_component:
+              type == "string" and length <= 64
+              and test("^[a-z0-9]+(?:[._-][a-z0-9]+)*$");
+            def safe_repository:
+              type == "string" and length <= 255
+              and startswith($namespace + "/")
+              and test("^ghcr\\.io/[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*(?:/[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*)*$");
             .repository == $repository and .registryNamespace == $namespace
             and ((.privateNodePackages // []) | type == "array")
             and ((.privateNodePackages // []) | all(.[]; type == "string" and test("^@verjson/[a-z0-9][a-z0-9._-]*$")))
@@ -64,16 +71,25 @@ jobs:
             and (.nextStableVersion | test("^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$"))
             and (.images | type == "array" and length > 0)
             and (all(.images[];
-              (.variant | test("^[a-z0-9][a-z0-9._-]*$"))
-              and (.repository | startswith($namespace + "/"))
-              and (.platforms | type == "array" and length > 0)))
+              (.variant | safe_component)
+              and (.repository | safe_repository)
+              and (.platforms | type == "array" and length > 0)
+              and all(.platforms[];
+                type == "object"
+                and (.os | safe_component)
+                and (.architecture | safe_component)
+                and ((.variant // "") == "" or (.variant | safe_component)))))
           ' "$CONFIG_PATH" >/dev/null || { echo "::error::invalid or unauthorized candidate configuration"; exit 1; }
           jq -e '
             ([.images[].variant] | length == (unique | length))
             and (all(.images[]; ([.platforms[] | [.os,.architecture,(.variant // "")]] | length == (unique | length))))
+            and ([.images[] as $image | $image.platforms[] |
+              "candidate-sbom-\($image.variant)-\(.os)-\(.architecture)\(if (.variant // "") == "" then "" else "-\(.variant)" end)"] as $artifacts
+              | ($artifacts | length) == ($artifacts | unique | length)
+              and all($artifacts[]; length <= 255))
             and (all(.images[] | select(.baseVariant != null); .baseVariant as $base | any($variants[]; . == $base)))
           ' --argjson variants "$(jq -c '[.images[].variant]' "$CONFIG_PATH")" "$CONFIG_PATH" >/dev/null \
-            || { echo "::error::duplicate matrix identity or unknown base variant"; exit 1; }
+            || { echo "::error::duplicate matrix or artifact identity, or unknown base variant"; exit 1; }
           matrix="$(jq -c '[.images[] | {
             variant, repository,
             platforms: ([.platforms[] | ((.os + "/" + .architecture) + (if (.variant // "") == "" then "" else "/" + .variant end))] | join(",")),
@@ -507,16 +523,18 @@ jobs:
           DIGEST: ${{ steps.build.outputs.digest }}
           BASE_DIGEST: ${{ steps.base.outputs.digest }}
           ATTESTATION_ID: ${{ steps.provenance.outputs.attestation-id }}
+          BASE_VARIANT: ${{ matrix.baseVariant }}
+          IMAGE_VARIANT: ${{ matrix.variant }}
+          REPOSITORY: ${{ matrix.repository }}
         run: |
           set -euo pipefail
           [ -n "$ATTESTATION_ID" ] || { echo "::error::provenance action returned no attestation identity"; exit 1; }
-          repository='${{ matrix.repository }}'
-          commit_tag="$repository:sha-$GITHUB_SHA"
+          commit_tag="$REPOSITORY:sha-$GITHUB_SHA"
           error_file="$(mktemp)"
           if existing="$(docker buildx imagetools inspect "$commit_tag" --format '{{json .Manifest.Digest}}' 2>"$error_file" | tr -d '"')"; then
             [ "$existing" = "$DIGEST" ] || { echo "::error::commit identity already records a different digest"; exit 1; }
           elif grep -Eqi 'manifest unknown|not found' "$error_file"; then
-            docker buildx imagetools create -t "$commit_tag" "$repository@$DIGEST"
+            docker buildx imagetools create -t "$commit_tag" "$REPOSITORY@$DIGEST"
             recorded="$(docker buildx imagetools inspect "$commit_tag" --format '{{json .Manifest.Digest}}' | tr -d '"')"
             [ "$recorded" = "$DIGEST" ] || { echo "::error::commit identity reconciliation diverged"; exit 1; }
           else
@@ -524,8 +542,8 @@ jobs:
             echo "::error::could not prove commit identity state" >&2
             exit 1
           fi
-          jq -n --arg variant '${{ matrix.variant }}' --arg repository '${{ matrix.repository }}' \
-            --arg digest "$DIGEST" --arg baseVariant '${{ matrix.baseVariant }}' --arg baseDigest "$BASE_DIGEST" \
+          jq -n --arg variant "$IMAGE_VARIANT" --arg repository "$REPOSITORY" \
+            --arg digest "$DIGEST" --arg baseVariant "$BASE_VARIANT" --arg baseDigest "$BASE_DIGEST" \
             --arg attestationId "$ATTESTATION_ID" \
             '{variant:$variant,repository:$repository,indexDigest:$digest,base:{variant:$baseVariant,digest:$baseDigest},provenanceAttestationId:$attestationId}' > image.json
       - if: matrix.baseVariant != ''
