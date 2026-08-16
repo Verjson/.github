@@ -307,7 +307,22 @@ def changelog_contract_state(parsed_jobs: dict[str, dict[str, tuple[str, list[st
     allowed = {"permissions", "runs-on", "timeout-minutes", "steps"}
     if not set(job).issubset(allowed) or "runs-on" not in job or "steps" not in job:
         return "invalid"
-    if not scalar(job["runs-on"][0]):
+    runner_value, runner_children = job["runs-on"]
+    if runner_value.startswith("["):
+        runners = flow_sequence(runner_value)
+    elif runner_value:
+        runners = [scalar(runner_value)]
+    else:
+        significant = [line for line in runner_children if line.strip()]
+        runner_indent = min((indentation(line) for line in significant), default=0)
+        runners = [
+            scalar(line.strip()[1:].strip())
+            for line in significant
+            if indentation(line) == runner_indent and line.strip().startswith("-")
+        ]
+        if len(runners) != len(significant):
+            return "invalid"
+    if not runners or not all(runners):
         return "invalid"
     steps = step_mappings(job["steps"])
     if len(steps) != 2:

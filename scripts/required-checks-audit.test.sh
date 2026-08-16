@@ -255,6 +255,15 @@ rc="$(RCA_WORKFLOW_INSPECTOR="$tmp/missing-workflow-inspector.py" run_audit)"
   && pass "a missing hermetic workflow inspector fails at startup" \
   || { fail "the audit ran without its workflow inspector ($rc)"; out | sed 's/^/diag - /'; }
 
+stack node; pulls s1 s2
+head_with s1 gate "ci / build-test" "ci / eligibility" changelog-contract "changelog / validate"
+head_with s2 gate "ci / build-test" "ci / eligibility" changelog-contract "changelog / validate"
+"$generator" workflow "$contract_pin" >"$content_root/.github/workflows/changelog.yml"
+rc="$(run_audit)"
+{ [ "$rc" = "rc=0" ] && grep -q 'result=conformant' "$tmp/out.txt"; } \
+  && pass "the documented workflow compatibility mode remains conformant" \
+  || { fail "workflow compatibility mode failed provenance ($rc)"; out | sed 's/^/diag - /'; }
+
 # The documented single-caller layout is one .github/workflows/changelog.yml
 # generated at the shared pin. Exercise every package stack through the full
 # source audit so the fixture cannot drift back to the retired file path.
@@ -576,6 +585,17 @@ rc="$(run_audit)"
 { [ "$rc" != "rc=0" ] && grep -qE 'generated-contract-(parameters-invalid|byte-drift)' "$tmp/out.txt"; } \
   && pass "a trivial replacement contract test cannot satisfy generated provenance" \
   || { fail "a trivial generated-test escape was accepted ($rc)"; out | sed 's/^/diag - /'; }
+
+stack node
+pulls s1 s2
+head_with s1 gate "ci / build-test" "ci / eligibility" changelog-contract "changelog / validate"
+head_with s2 gate "ci / build-test" "ci / eligibility" changelog-contract "changelog / validate"
+sed -i 's/^    runs-on: ubuntu-24.04$/    runs-on:\n      - self-hosted\n      - linux/' "$tmp/workflow.yml"
+encode_workflow
+rc="$(run_audit)"
+{ [ "$rc" = "rc=0" ] && grep -q 'result=conformant' "$tmp/out.txt"; } \
+  && pass "a block-sequence runner label remains conformant" \
+  || { fail "a valid block-sequence runs-on was rejected ($rc)"; out | sed 's/^/diag - /'; }
 
 stack node
 sed -i 's/^  changelog-contract:$/  contract-conformance:/' "$tmp/workflow.yml"
