@@ -11,7 +11,7 @@
         "ci / build-test",
         "ci / eligibility",
         "changelog-contract",
-        "generated-artifacts / validate"
+        "changelog / validate"
       ],
       "reusable_workflow": "node-ci.yml",
       "package": true
@@ -19,7 +19,7 @@
     "ui": {
       "contexts": [
         "ci / build-test",
-        "generated-artifacts / validate"
+        "changelog / validate"
       ],
       "reusable_workflow": "ui-ci.yml",
       "package": true
@@ -27,7 +27,7 @@
     "helm": {
       "contexts": [
         "ci / lint-template",
-        "generated-artifacts / validate"
+        "changelog / validate"
       ],
       "reusable_workflow": "helm-ci.yml",
       "package": true
@@ -55,7 +55,7 @@
   },
   "caller_job_names": {
     "stack": "ci",
-    "generated_artifacts": "generated-artifacts"
+    "changelog": "changelog"
   },
   "property_schemas": {
     "verjson-stack": [
@@ -225,7 +225,7 @@
           }
         ],
         "contexts": [
-          "generated-artifacts / validate"
+          "changelog / validate"
         ]
       }
     ]

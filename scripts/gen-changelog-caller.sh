@@ -17,6 +17,9 @@
 #   scripts/gen-changelog-caller.sh release-node <sha> [--scope <scope>] [--node-version <version>] > .github/workflows/release.yml
 #   scripts/gen-changelog-caller.sh release-propose <sha> --autonomy {propose|dispatch} > .github/workflows/release-propose.yml
 #
+# Every changelog-enabled workflow mode publishes the organization ruleset's
+# required check: changelog / validate.
+#
 # `release-node` is the fourth output and the newest. It was added because the
 # release caller was the one adopter file still hand-copied from a sibling, and
 # every defect in the copied shape propagated to every migrated repository at
@@ -40,6 +43,7 @@ set -euo pipefail
 
 usage() {
   echo "usage: $(basename "$0") {workflow|generated-artifacts|generated-artifacts-with-adr-index|renovate-attribution|adr-index-generator|renderer|contract-test|release-node|release-propose} <40-hex-commit> [--scope <npm-scope>] [--node-version <version>] [--package-dir <relative-dir>]... [--autonomy {propose|dispatch}]" >&2
+  echo "required check: changelog / validate" >&2
   exit 2
 }
 
@@ -286,7 +290,7 @@ permissions:
   contents: read
 
 jobs:
-  generated-artifacts:
+  changelog:
     uses: Verjson/.github/.github/workflows/generated-artifacts.yml@${ref}
     with:
       changelog: true
@@ -852,7 +856,6 @@ EOF
 root="$(cd "$(dirname "$0")/.." && pwd)"
 renderer="$root/scripts/render-next.sh"
 validation_workflow="$root/.github/workflows/changelog.yml"
-generated_artifacts_workflow="$root/.github/workflows/generated-artifacts.yml"
 renovate_attribution_workflow="$root/.github/workflows/renovate-changelog.yml"
 release_propose_workflow="$root/.github/workflows/release-propose.yml"
 
@@ -872,15 +875,19 @@ echo "ok - canonical validation accepts this repository"
 
 # One pin, shared by every generated artifact: local rendering must predict the
 # CI run that gates the PR, and the release must write the shape both assumed.
-[ "$(grep -Ec '^  generated-artifacts:$' "$validation_workflow")" = 1 ] \
-  || fail "$validation_workflow does not publish the canonical generated-artifacts / validate context"
+[ "$(grep -Ec '^  changelog:$' "$validation_workflow")" = 1 ] \
+  || fail "$validation_workflow does not publish the required changelog / validate context"
 validation_job="$(awk '
   /^jobs:$/ { in_jobs = 1; next }
   in_jobs && /^[^ ]/ { exit }
-  in_jobs && /^  generated-artifacts:$/ { capture = 1; print; next }
+  in_jobs && /^  changelog:$/ { capture = 1; print; next }
   capture && /^  [^ ]/ { exit }
   capture { print }
 ' "$validation_workflow")"
+[ "$(grep -Ec '^    [^[:space:]#]' <<<"$validation_job")" = 2 ] \
+  || fail "$validation_workflow changelog job may contain only the canonical uses and with fields; name, strategy, matrix, and other check-shaping fields are forbidden"
+[ "$(grep -Ec '^    with:$' <<<"$validation_job")" = 1 ] \
+  || fail "$validation_workflow changelog inputs must be nested under exactly one canonical with mapping"
 [ "$(grep -Ec '^    uses: Verjson/\.github/\.github/workflows/generated-artifacts\.yml@[0-9a-f]{40}$' <<<"$validation_job")" = 1 ] \
   && grep -qE "^    uses: Verjson/\\.github/\\.github/workflows/generated-artifacts\\.yml@$CONTRACT_REF$" <<<"$validation_job" \
   || fail "$validation_workflow does not call generated-artifacts.yml at the shared pin"
@@ -889,6 +896,12 @@ validation_job="$(awk '
 [ "$(grep -Ec '^      contract_ref: [0-9a-f]{40}$' <<<"$validation_job")" = 1 ] \
   && grep -qE "^      contract_ref: $CONTRACT_REF$" <<<"$validation_job" \
   || fail "$validation_workflow does not pass the pinned contract_ref"
+expected_input_count=2
+if grep -qE '^      adr-index: true$' <<<"$validation_job"; then
+  expected_input_count=3
+fi
+[ "$(grep -Ec '^      [^[:space:]#][^:]*:' <<<"$validation_job")" = "$expected_input_count" ] \
+  || fail "$validation_workflow changelog inputs must be exactly changelog and contract_ref, plus optional canonical adr-index"
 validate_adr_generator() {
   adr_generator="$root/scripts/gen-adr-index.sh"
   [ -n "$ADR_INDEX_SHA256" ] \
@@ -901,17 +914,14 @@ validate_adr_generator() {
 if grep -qE '^ +adr-index: true$' "$validation_workflow"; then
   validate_adr_generator
 fi
-if [ -e "$generated_artifacts_workflow" ]; then
-  [ "$(grep -Ec '^ +uses: Verjson/\.github/\.github/workflows/generated-artifacts\.yml@[0-9a-f]{40}$' "$generated_artifacts_workflow")" = 1 ] \
-    && grep -qE "^ +uses: Verjson/\\.github/\\.github/workflows/generated-artifacts\\.yml@$CONTRACT_REF$" "$generated_artifacts_workflow" \
-    || fail "$generated_artifacts_workflow does not call generated-artifacts.yml at the shared pin"
-  [ "$(grep -Ec '^ +contract_ref: [0-9a-f]{40}$' "$generated_artifacts_workflow")" = 1 ] \
-    && grep -qE "^ +contract_ref: $CONTRACT_REF$" "$generated_artifacts_workflow" \
-    || fail "$generated_artifacts_workflow does not pass the shared pinned contract_ref"
-  [ "$(grep -Ec '^ +adr-index: true$' "$generated_artifacts_workflow")" = 1 ] \
-    || fail "$generated_artifacts_workflow must enable ADR-index validation in the split caller topology"
-  validate_adr_generator
-fi
+changelog_caller_count=0
+for candidate in "$root"/.github/workflows/*.yml "$root"/.github/workflows/*.yaml; do
+  [ -f "$candidate" ] || continue
+  capable_calls="$(grep -Ec "^    uses:[[:space:]]*['\"]?(Verjson/\.github/\.github/workflows/(generated-artifacts|changelog-validate)\.yml@|\./\.github/workflows/changelog-validate\.yml)" "$candidate" || true)"
+  changelog_caller_count=$((changelog_caller_count + capable_calls))
+done
+[ "$changelog_caller_count" -eq 1 ] \
+  || fail "workflow set contains $changelog_caller_count reusable callers capable of publishing changelog / validate; keep only .github/workflows/changelog.yml"
 if [ -e "$renovate_attribution_workflow" ]; then
   [ "$(grep -Ec "^# Generated by Verjson/\.github scripts/gen-changelog-caller\.sh renovate-attribution $CONTRACT_REF$" "$renovate_attribution_workflow")" = 1 ] \
     || fail "$renovate_attribution_workflow is not the generated Renovate attribution caller at $CONTRACT_REF"

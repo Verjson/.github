@@ -41,11 +41,11 @@ jq -e '
     rollback_acknowledgement: "rollback-issue-731-core-checks-node"
   } and
   .universal_contexts == ["gate"] and
-  .stacks.node.contexts == ["ci / build-test", "ci / eligibility", "changelog-contract", "generated-artifacts / validate"] and
-  .stacks.ui.contexts == ["ci / build-test", "generated-artifacts / validate"] and
-  .stacks.helm.contexts == ["ci / lint-template", "generated-artifacts / validate"] and
-  .caller_job_names.generated_artifacts == "generated-artifacts" and
-  (.caller_job_names | has("changelog") | not) and
+  .stacks.node.contexts == ["ci / build-test", "ci / eligibility", "changelog-contract", "changelog / validate"] and
+  .stacks.ui.contexts == ["ci / build-test", "changelog / validate"] and
+  .stacks.helm.contexts == ["ci / lint-template", "changelog / validate"] and
+  .caller_job_names.changelog == "changelog" and
+  (.caller_job_names | has("generated_artifacts") | not) and
   .stacks.pulumi.contexts == ["ci / validate", "ci / preview"] and
   .stacks.actions.contexts == ["shell-tests"] and
   ([.ruleset_plan.rulesets[].name] | sort) == ([
@@ -56,7 +56,7 @@ jq -e '
   (.ruleset_plan.rulesets[] | select(.name == "core-checks-node") | .contexts) ==
     ["ci / build-test", "ci / eligibility", "changelog-contract"] and
   (.ruleset_plan.rulesets[] | select(.name == "changelog-contract-required") | .contexts) ==
-    ["generated-artifacts / validate"]
+    ["changelog / validate"]
 ' "$contract" >/dev/null \
   && pass "declared contract pins every context and a human-gated staged rollout" \
   || fail "required-check declaration or staged rollout drifted"
@@ -66,12 +66,12 @@ content_root="$tmp/content"
 mkdir -p "$content_root/.github/workflows" "$content_root/scripts"
 contract_pin="$(git -C "$here/.." rev-parse HEAD)"
 generator="$here/gen-changelog-caller.sh"
-bash "$generator" generated-artifacts "$contract_pin" >"$content_root/.github/workflows/generated-artifacts.yml"
+bash "$generator" generated-artifacts "$contract_pin" >"$content_root/.github/workflows/changelog.yml"
 bash "$generator" renderer "$contract_pin" >"$content_root/scripts/render-next.sh"
 bash "$generator" contract-test "$contract_pin" >"$content_root/scripts/changelog-contract.test.sh"
 bash "$generator" release-node "$contract_pin" >"$content_root/.github/workflows/release.yml"
 mkdir -p "$tmp/artifact-baseline/.github/workflows" "$tmp/artifact-baseline/scripts"
-cp "$content_root/.github/workflows/generated-artifacts.yml" "$tmp/artifact-baseline/.github/workflows/generated-artifacts.yml"
+cp "$content_root/.github/workflows/changelog.yml" "$tmp/artifact-baseline/.github/workflows/changelog.yml"
 cp "$content_root/.github/workflows/release.yml" "$tmp/artifact-baseline/.github/workflows/release.yml"
 cp "$content_root/scripts/render-next.sh" "$tmp/artifact-baseline/scripts/render-next.sh"
 cp "$content_root/scripts/changelog-contract.test.sh" "$tmp/artifact-baseline/scripts/changelog-contract.test.sh"
@@ -167,7 +167,7 @@ export RCA_REPOS=alpha
 
 workflow_for() {
   local stack="$1" stack_workflow=''
-  cp "$tmp/artifact-baseline/.github/workflows/generated-artifacts.yml" "$content_root/.github/workflows/generated-artifacts.yml"
+  cp "$tmp/artifact-baseline/.github/workflows/changelog.yml" "$content_root/.github/workflows/changelog.yml"
   cp "$tmp/artifact-baseline/.github/workflows/release.yml" "$content_root/.github/workflows/release.yml"
   cp "$tmp/artifact-baseline/scripts/render-next.sh" "$content_root/scripts/render-next.sh"
   cp "$tmp/artifact-baseline/scripts/changelog-contract.test.sh" "$content_root/scripts/changelog-contract.test.sh"
@@ -188,7 +188,7 @@ workflow_for() {
     fi
   } >"$tmp/workflow.yml"
   encode_workflow
-  printf '[{"type":"file","path":".github/workflows/ci.yml"},{"type":"file","path":".github/workflows/generated-artifacts.yml"},{"type":"file","path":".github/workflows/release.yml"}]\n' >"$WORKFLOW_LIST_FILE"
+  printf '[{"type":"file","path":".github/workflows/ci.yml"},{"type":"file","path":".github/workflows/changelog.yml"},{"type":"file","path":".github/workflows/release.yml"}]\n' >"$WORKFLOW_LIST_FILE"
 }
 
 encode_workflow() {
@@ -229,27 +229,80 @@ rc="$(run_audit)"
 # --- the happy path ----------------------------------------------------------
 stack node
 pulls s1 s2
-head_with s1 gate "ci / build-test" "ci / eligibility" changelog-contract "generated-artifacts / validate"
-head_with s2 gate "ci / build-test" "ci / eligibility" changelog-contract "generated-artifacts / validate"
+head_with s1 gate "ci / build-test" "ci / eligibility" changelog-contract "changelog / validate"
+head_with s2 gate "ci / build-test" "ci / eligibility" changelog-contract "changelog / validate"
 rc="$(run_audit)"
 { [ "$rc" = "rc=0" ] && grep -q 'result=conformant' "$tmp/out.txt"; } \
   && pass "a node repository emitting its full core set is conformant" \
   || { fail "a conformant node repository was not recognised ($rc)"; out | sed 's/^/diag - /'; }
 
+mkdir -p "$tmp/hostile-python"
+printf 'raise SystemExit("ambient yaml module executed")\n' >"$tmp/hostile-python/yaml.py"
+rc="$(PYTHONPATH="$tmp/hostile-python" run_audit)"
+{ [ "$rc" = "rc=0" ] && grep -q 'result=conformant' "$tmp/out.txt"; } \
+  && pass "workflow inspection ignores ambient Python packages" \
+  || { fail "an ambient Python package changed audit behavior ($rc)"; out | sed 's/^/diag - /'; }
+
+sed -i '1i---' "$content_root/.github/workflows/ci.yml"
+printf '\n...\n' >>"$content_root/.github/workflows/ci.yml"
+rc="$(run_audit)"
+{ [ "$rc" = "rc=0" ] && grep -q 'result=conformant' "$tmp/out.txt"; } \
+  && pass "valid YAML document markers do not fault workflow inspection" \
+  || { fail "YAML document markers changed audit behavior ($rc)"; out | sed 's/^/diag - /'; }
+
+rc="$(RCA_WORKFLOW_INSPECTOR="$tmp/missing-workflow-inspector.py" run_audit)"
+{ [ "$rc" = "rc=2" ] && grep -q 'workflow-inspector-missing' "$tmp/out.txt"; } \
+  && pass "a missing hermetic workflow inspector fails at startup" \
+  || { fail "the audit ran without its workflow inspector ($rc)"; out | sed 's/^/diag - /'; }
+
+stack node; pulls s1 s2
+head_with s1 gate "ci / build-test" "ci / eligibility" changelog-contract "changelog / validate"
+head_with s2 gate "ci / build-test" "ci / eligibility" changelog-contract "changelog / validate"
+"$generator" workflow "$contract_pin" >"$content_root/.github/workflows/changelog.yml"
+rc="$(run_audit)"
+{ [ "$rc" = "rc=0" ] && grep -q 'result=conformant' "$tmp/out.txt"; } \
+  && pass "the documented workflow compatibility mode remains conformant" \
+  || { fail "workflow compatibility mode failed provenance ($rc)"; out | sed 's/^/diag - /'; }
+
+# The documented single-caller layout is one .github/workflows/changelog.yml
+# generated at the shared pin. Exercise every package stack through the full
+# source audit so the fixture cannot drift back to the retired file path.
+for documented_stack in node ui helm; do
+  stack "$documented_stack"; pulls s1 s2
+  case "$documented_stack" in
+    node)
+      head_with s1 gate "ci / build-test" "ci / eligibility" changelog-contract "changelog / validate"
+      head_with s2 gate "ci / build-test" "ci / eligibility" changelog-contract "changelog / validate"
+      ;;
+    ui)
+      head_with s1 gate "ci / build-test" "changelog / validate"
+      head_with s2 gate "ci / build-test" "changelog / validate"
+      ;;
+    helm)
+      head_with s1 gate "ci / lint-template" "changelog / validate"
+      head_with s2 gate "ci / lint-template" "changelog / validate"
+      ;;
+  esac
+  rc="$(run_audit)"
+  { [ "$rc" = "rc=0" ] && grep -q 'result=conformant' "$tmp/out.txt"; } \
+    && pass "the documented $documented_stack changelog.yml layout is conformant" \
+    || { fail "the documented $documented_stack layout was rejected ($rc)"; out | sed 's/^/diag - /'; }
+done
+
 # --- THE finding this exists for: a missing context is non-zero --------------
 # A generated release contract can drift independently of fragment validation.
-# Requiring only `generated-artifacts / validate` leaves the caller, renderer,
+# Requiring only `changelog / validate` leaves the caller, renderer,
 # contract test, and release caller free to disagree about their immutable pin.
 stack node
 pulls s1 s2
-head_with s1 gate "ci / build-test" "ci / eligibility" "generated-artifacts / validate"
-head_with s2 gate "ci / build-test" "ci / eligibility" "generated-artifacts / validate"
+head_with s1 gate "ci / build-test" "ci / eligibility" "changelog / validate"
+head_with s2 gate "ci / build-test" "ci / eligibility" "changelog / validate"
 rc="$(run_audit)"
 { [ "$rc" != "rc=0" ] && grep -q 'missing-core-contexts' "$tmp/out.txt" && grep -q 'missing=changelog-contract;' "$tmp/out.txt"; } \
   && pass "a node repository omitting generated contract conformance is nonconformant" \
   || { fail "an absent changelog-contract context was not reported ($rc)"; out | sed 's/^/diag - /'; }
 
-# `generated-artifacts / validate` is core for package repositories, and a repository not
+# `changelog / validate` is core for package repositories, and a repository not
 # yet wired to the changelog contract emits nothing for it. Requiring it there
 # is the permanently-pending wedge.
 stack node
@@ -257,7 +310,7 @@ pulls s1 s2
 head_with s1 gate "ci / build-test" "ci / eligibility" changelog-contract
 head_with s2 gate "ci / build-test" "ci / eligibility" changelog-contract
 rc="$(run_audit)"
-{ [ "$rc" != "rc=0" ] && grep -q 'missing-core-contexts' "$tmp/out.txt" && grep -q 'generated-artifacts / validate' "$tmp/out.txt"; } \
+{ [ "$rc" != "rc=0" ] && grep -q 'missing-core-contexts' "$tmp/out.txt" && grep -q 'changelog / validate' "$tmp/out.txt"; } \
   && pass "a package repository not wired to the changelog contract is reported as missing it" \
   || { fail "an absent core context was not reported ($rc)"; out | sed 's/^/diag - /'; }
 
@@ -272,7 +325,7 @@ jq -n '{check_runs:[{name:"gate",conclusion:"success"},
                     {name:"ci / build-test",conclusion:"success"},
                     {name:"ci / eligibility",conclusion:"skipped"},
                     {name:"changelog-contract",conclusion:"success"},
-                    {name:"generated-artifacts / validate",conclusion:"success"}]}' >"$CHECKDIR/s1.json"
+                    {name:"changelog / validate",conclusion:"success"}]}' >"$CHECKDIR/s1.json"
 cp "$CHECKDIR/s1.json" "$CHECKDIR/s2.json"
 rc="$(run_audit)"
 { [ "$rc" = "rc=0" ] && ! grep -q 'missing-core-contexts' "$tmp/out.txt"; } \
@@ -284,8 +337,8 @@ rc="$(run_audit)"
 # audit would demand `ci / build-test` from a repository that never emits it.
 stack helm
 pulls s1 s2
-head_with s1 gate "ci / lint-template" "generated-artifacts / validate"
-head_with s2 gate "ci / lint-template" "generated-artifacts / validate"
+head_with s1 gate "ci / lint-template" "changelog / validate"
+head_with s2 gate "ci / lint-template" "changelog / validate"
 rc="$(run_audit)"
 { [ "$rc" = "rc=0" ]; } \
   && pass "a helm repository is judged against helm's contract, not node's" \
@@ -371,8 +424,8 @@ rc="$(run_audit)"
 
 # --- source contract: callers must be unconditional and canonically named ---
 stack node; pulls s1 s2
-head_with s1 gate "ci / build-test" "ci / eligibility" changelog-contract "generated-artifacts / validate"
-head_with s2 gate "ci / build-test" "ci / eligibility" changelog-contract "generated-artifacts / validate"
+head_with s1 gate "ci / build-test" "ci / eligibility" changelog-contract "changelog / validate"
+head_with s2 gate "ci / build-test" "ci / eligibility" changelog-contract "changelog / validate"
 sed -i '/^  pull_request:$/a\    paths:\n      - "src/**"' "$tmp/workflow.yml"
 encode_workflow
 rc="$(run_audit)"
@@ -397,16 +450,134 @@ rc="$(run_audit)"
   || { fail "a noncanonical stack caller name was accepted ($rc)"; out | sed 's/^/diag - /'; }
 
 stack node
-sed -i 's/^  generated-artifacts:$/  generated-docs:/' "$content_root/.github/workflows/generated-artifacts.yml"
+sed -i 's/^  changelog:$/  generated-docs:/' "$content_root/.github/workflows/changelog.yml"
 rc="$(run_audit)"
-{ [ "$rc" != "rc=0" ] && grep -q 'caller-job-name expected=generated-artifacts actual=generated-docs' "$tmp/out.txt"; } \
-  && pass "the generated-artifacts caller must publish generated-artifacts / validate" \
+{ [ "$rc" != "rc=0" ] && grep -q 'changelog-caller-invalid' "$tmp/out.txt"; } \
+  && pass "the generated-artifacts caller must publish changelog / validate" \
   || { fail "a noncanonical changelog caller name was accepted ($rc)"; out | sed 's/^/diag - /'; }
+
+stack helm; pulls s1 s2
+head_with s1 gate "ci / lint-template" "changelog / validate"
+head_with s2 gate "ci / lint-template" "changelog / validate"
+sed -i '/^  changelog:$/a\    name: renamed required check' "$content_root/.github/workflows/changelog.yml"
+rc="$(run_audit)"
+{ [ "$rc" != "rc=0" ] && grep -q 'changelog-caller-invalid' "$tmp/out.txt"; } \
+  && pass "a job-level name cannot disguise a changed changelog context" \
+  || { fail "a named changelog caller was accepted ($rc)"; out | sed 's/^/diag - /'; }
+
+stack helm; pulls s1 s2
+head_with s1 gate "ci / lint-template" "changelog / validate"
+head_with s2 gate "ci / lint-template" "changelog / validate"
+sed -i '/^  changelog:$/a\    strategy:\n      matrix:\n        shard: [one, two]' "$content_root/.github/workflows/changelog.yml"
+rc="$(run_audit)"
+{ [ "$rc" != "rc=0" ] && grep -q 'changelog-caller-invalid' "$tmp/out.txt"; } \
+  && pass "a matrix cannot suffix the generated changelog context" \
+  || { fail "a matrixed changelog caller was accepted ($rc)"; out | sed 's/^/diag - /'; }
+
+stack helm; pulls s1 s2
+head_with s1 gate "ci / lint-template" "changelog / validate"
+head_with s2 gate "ci / lint-template" "changelog / validate"
+sed -i 's/^      changelog: true$/      changelog: false/' "$content_root/.github/workflows/changelog.yml"
+rc="$(run_audit)"
+{ [ "$rc" != "rc=0" ] && grep -q 'changelog-caller-invalid' "$tmp/out.txt"; } \
+  && pass "the source audit requires changelog validation to be enabled" \
+  || { fail "a changelog-disabled generated caller was accepted ($rc)"; out | sed 's/^/diag - /'; }
+
+stack helm; pulls s1 s2
+head_with s1 gate "ci / lint-template" "changelog / validate"
+head_with s2 gate "ci / lint-template" "changelog / validate"
+sed -i 's|^    uses: Verjson/|    # uses: Verjson/|' "$content_root/.github/workflows/changelog.yml"
+rc="$(run_audit)"
+{ [ "$rc" != "rc=0" ] && grep -q 'changelog-caller-missing' "$tmp/out.txt"; } \
+  && pass "a commented uses lookalike cannot satisfy source inspection" \
+  || { fail "a comment-only generated caller was accepted ($rc)"; out | sed 's/^/diag - /'; }
+
+stack helm; pulls s1 s2
+head_with s1 gate "ci / lint-template" "changelog / validate"
+head_with s2 gate "ci / lint-template" "changelog / validate"
+cp "$content_root/.github/workflows/changelog.yml" "$content_root/.github/workflows/generated-artifacts.yml"
+printf '[{"type":"file","path":".github/workflows/ci.yml"},{"type":"file","path":".github/workflows/changelog.yml"},{"type":"file","path":".github/workflows/generated-artifacts.yml"},{"type":"file","path":".github/workflows/release.yml"}]\n' >"$WORKFLOW_LIST_FILE"
+rc="$(run_audit)"
+{ [ "$rc" != "rc=0" ] && grep -q 'changelog-caller-missing expected=1 actual=2' "$tmp/out.txt"; } \
+  && pass "duplicate generated changelog callers fail as ambiguous" \
+  || { fail "duplicate caller files were accepted ($rc)"; out | sed 's/^/diag - /'; }
+
+stack helm; pulls s1 s2
+head_with s1 gate "ci / lint-template" "changelog / validate"
+head_with s2 gate "ci / lint-template" "changelog / validate"
+cat >"$content_root/.github/workflows/alternate-indentation.yml" <<YAML
+name: alternate indentation
+on: pull_request
+jobs:
+    changelog:
+        uses: Verjson/.github/.github/workflows/generated-artifacts.yml@$contract_pin
+        with:
+            changelog: true
+            contract_ref: $contract_pin
+YAML
+printf '[{"type":"file","path":".github/workflows/alternate-indentation.yml"},{"type":"file","path":".github/workflows/ci.yml"},{"type":"file","path":".github/workflows/changelog.yml"},{"type":"file","path":".github/workflows/release.yml"}]\n' >"$WORKFLOW_LIST_FILE"
+rc="$(run_audit)"
+{ [ "$rc" != "rc=0" ] && grep -q 'changelog-caller-missing expected=1 actual=2' "$tmp/out.txt"; } \
+  && pass "alternate YAML indentation cannot hide a duplicate caller" \
+  || { fail "an alternately indented duplicate caller was accepted ($rc)"; out | sed 's/^/diag - /'; }
+
+stack helm; pulls s1 s2
+head_with s1 gate "ci / lint-template" "changelog / validate"
+head_with s2 gate "ci / lint-template" "changelog / validate"
+cp "$content_root/.github/workflows/changelog.yml" "$content_root/.github/workflows/docs-validation.yml"
+printf '[{"type":"file","path":".github/workflows/ci.yml"},{"type":"file","path":".github/workflows/changelog.yml"},{"type":"file","path":".github/workflows/docs-validation.yml"},{"type":"file","path":".github/workflows/release.yml"}]\n' >"$WORKFLOW_LIST_FILE"
+rc="$(run_audit)"
+{ [ "$rc" != "rc=0" ] && grep -q 'changelog-caller-missing expected=1 actual=2' "$tmp/out.txt"; } \
+  && pass "a renamed duplicate generated caller fails as ambiguous" \
+  || { fail "a renamed duplicate caller was accepted ($rc)"; out | sed 's/^/diag - /'; }
+
+stack helm; pulls s1 s2
+head_with s1 gate "ci / lint-template" "changelog / validate"
+head_with s2 gate "ci / lint-template" "changelog / validate"
+cat >"$content_root/.github/workflows/legacy-validation.yml" <<YAML
+name: legacy validation
+on:
+  pull_request:
+jobs:
+  legacy:
+    uses: Verjson/.github/.github/workflows/changelog-validate.yml@$contract_pin
+    with:
+      contract_ref: $contract_pin
+YAML
+printf '[{"type":"file","path":".github/workflows/ci.yml"},{"type":"file","path":".github/workflows/changelog.yml"},{"type":"file","path":".github/workflows/legacy-validation.yml"},{"type":"file","path":".github/workflows/release.yml"}]\n' >"$WORKFLOW_LIST_FILE"
+rc="$(run_audit)"
+{ [ "$rc" != "rc=0" ] && grep -q 'changelog-caller-invalid path=.github/workflows/legacy-validation.yml' "$tmp/out.txt"; } \
+  && pass "a legacy changelog-validate caller cannot coexist with the canonical caller" \
+  || { fail "an additional legacy caller was accepted ($rc)"; out | sed 's/^/diag - /'; }
+
+stack helm; pulls s1 s2
+head_with s1 gate "ci / lint-template" "changelog / validate"
+head_with s2 gate "ci / lint-template" "changelog / validate"
+sed -i '/^      contract_ref:/a\      unexpected_input: true' "$content_root/.github/workflows/changelog.yml"
+rc="$(run_audit)"
+{ [ "$rc" != "rc=0" ] && grep -q 'changelog-caller-invalid' "$tmp/out.txt"; } \
+  && pass "the generated caller rejects additional nested inputs" \
+  || { fail "an additional generated caller input was accepted ($rc)"; out | sed 's/^/diag - /'; }
+
+stack helm; pulls s1 s2
+head_with s1 gate "ci / lint-template" "changelog / validate"
+head_with s2 gate "ci / lint-template" "changelog / validate"
+cat >>"$content_root/.github/workflows/changelog.yml" <<YAML
+  duplicate-changelog:
+    uses: Verjson/.github/.github/workflows/generated-artifacts.yml@$contract_pin
+    with:
+      changelog: true
+      contract_ref: $contract_pin
+YAML
+rc="$(run_audit)"
+{ [ "$rc" != "rc=0" ] && grep -q 'changelog-caller-invalid' "$tmp/out.txt"; } \
+  && pass "multiple generated changelog jobs in one workflow fail as ambiguous" \
+  || { fail "ambiguous caller jobs were accepted ($rc)"; out | sed 's/^/diag - /'; }
 
 stack node
 unmerged_pin=ffffffffffffffffffffffffffffffffffffffff
 for artifact in \
-  "$content_root/.github/workflows/generated-artifacts.yml" \
+  "$content_root/.github/workflows/changelog.yml" \
   "$content_root/.github/workflows/release.yml" \
   "$content_root/scripts/render-next.sh" \
   "$content_root/scripts/changelog-contract.test.sh"; do
@@ -433,6 +604,17 @@ rc="$(run_audit)"
 { [ "$rc" != "rc=0" ] && grep -qE 'generated-contract-(parameters-invalid|byte-drift)' "$tmp/out.txt"; } \
   && pass "a trivial replacement contract test cannot satisfy generated provenance" \
   || { fail "a trivial generated-test escape was accepted ($rc)"; out | sed 's/^/diag - /'; }
+
+stack node
+pulls s1 s2
+head_with s1 gate "ci / build-test" "ci / eligibility" changelog-contract "changelog / validate"
+head_with s2 gate "ci / build-test" "ci / eligibility" changelog-contract "changelog / validate"
+sed -i 's/^    runs-on: ubuntu-24.04$/    runs-on:\n      - self-hosted\n      - linux/' "$tmp/workflow.yml"
+encode_workflow
+rc="$(run_audit)"
+{ [ "$rc" = "rc=0" ] && grep -q 'result=conformant' "$tmp/out.txt"; } \
+  && pass "a block-sequence runner label remains conformant" \
+  || { fail "a valid block-sequence runs-on was rejected ($rc)"; out | sed 's/^/diag - /'; }
 
 stack node
 sed -i 's/^  changelog-contract:$/  contract-conformance:/' "$tmp/workflow.yml"

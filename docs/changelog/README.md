@@ -377,9 +377,9 @@ reasoning is in the generator's header.
 
 ```bash
 PIN=3495f24c2cd81be7cc94b90c1c4650ca272102b1
-# Changelog-only repositories keep the backwards-compatible caller:
+# `workflow` remains an alias for automation using the original command name:
 scripts/gen-changelog-caller.sh workflow "$PIN" > .github/workflows/changelog.yml
-# Repositories consolidating generated checks use this instead:
+# New adopters use the explicit generated-artifacts mode:
 scripts/gen-changelog-caller.sh generated-artifacts "$PIN" > .github/workflows/changelog.yml
 scripts/gen-changelog-caller.sh renderer "$PIN" > scripts/render-next.sh
 scripts/gen-changelog-caller.sh contract-test "$PIN" > scripts/changelog-contract.test.sh
@@ -392,8 +392,9 @@ scripts/gen-changelog-caller.sh release-node "$PIN" > .github/workflows/release.
 chmod +x scripts/render-next.sh scripts/changelog-contract.test.sh
 ```
 
-Choose exactly one workflow command. `generated-artifacts` enables changelog
-validation but leaves ADR-index checking off. A repository with
+Choose exactly one workflow command. Every changelog-enabled mode publishes the
+organization-required `changelog / validate` check. `generated-artifacts`
+enables changelog validation but leaves ADR-index checking off. A repository with
 `docs/decisions/` may opt into both checks only by acquiring the pinned
 generator and generating the matching caller together:
 
@@ -402,6 +403,14 @@ scripts/gen-changelog-caller.sh adr-index-generator "$PIN" > scripts/gen-adr-ind
 scripts/gen-changelog-caller.sh generated-artifacts-with-adr-index "$PIN" > .github/workflows/changelog.yml
 chmod +x scripts/gen-adr-index.sh
 ```
+
+The selected command is the only validation caller and its output path is
+`.github/workflows/changelog.yml`. Do not retain a second caller under any
+workflow filename: the generated contract and central audit scan every `.yml`
+and `.yaml` workflow and reject renamed generated copies as well as callers of
+the retired `changelog-validate.yml` workflow. The canonical job inputs are
+exactly `changelog` and `contract_ref`, plus `adr-index` only in the generated
+ADR-index mode.
 
 `adr-index: true` without that generated script is deliberately a failure, not
 a clean result. Do not copy the script from another repository or hand-edit the
