@@ -371,3 +371,19 @@ restored transfer directory on every step outcome.
 This preserves the #690 credential boundary while isolating transient handoff capacity
 from the organization artifact quota. Cache entries are immutable and auto-evict from the
 consumer repository's quota; rollback pins callers to the preceding contract SHA.
+
+## Amendment (2026-08-16) — private dependencies remain optional (#839)
+
+The trusted Node acquisition job runs only when the reviewed candidate configuration
+requests at least one private package. With an empty or absent `privateNodePackages`
+allowlist, the candidate workflow requires no lockfile, npm installation, transfer
+cache, base-branch configuration, or `node_modules` build context. Build jobs treat the
+skipped acquisition as an intentional credential-free path while still requiring
+successful configuration preparation.
+
+A non-empty allowlist retains every #690 and #830 boundary: same-repository pull
+requests, exact equality with the reviewed base configuration, lockfile and integrity
+validation, isolated lifecycle-free acquisition, exact cache restoration, digest
+verification, and unconditional cleanup. First adoption is therefore supported only
+without credential use; introducing private packages remains a separately reviewed
+second step.

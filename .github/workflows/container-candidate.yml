@@ -39,6 +39,7 @@ jobs:
       matrix: ${{ steps.config.outputs.matrix }}
       candidate: ${{ steps.config.outputs.candidate }}
       private-node-packages: ${{ steps.config.outputs.private-node-packages }}
+      has-private-node-packages: ${{ steps.config.outputs.has-private-node-packages }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - id: config
@@ -84,9 +85,11 @@ jobs:
             echo "matrix=$matrix"
             echo "candidate=$candidate"
             echo "private-node-packages=$(jq -c '.privateNodePackages // []' "$CONFIG_PATH")"
+            echo "has-private-node-packages=$(jq -r '((.privateNodePackages // []) | length > 0)' "$CONFIG_PATH")"
           } >> "$GITHUB_OUTPUT"
 
   acquire-private-node-dependencies:
+    if: needs.prepare.outputs.has-private-node-packages == 'true'
     needs: prepare
     runs-on: ${{ github.repository_owner == 'Verjson' && fromJSON(vars.VERJSON_LANE_TRUSTED || vars.VERJSON_LANE_FALLBACK || '["ubuntu-24.04"]') || 'ubuntu-24.04' }}
     timeout-minutes: 30
@@ -201,7 +204,12 @@ jobs:
             "$RUNNER_TEMP/container_private_dependencies.py"
 
   pull-request-build:
-    if: github.event_name == 'pull_request'
+    if: >-
+      always()
+      && github.event_name == 'pull_request'
+      && needs.prepare.result == 'success'
+      && (needs.acquire-private-node-dependencies.result == 'success'
+      || needs.acquire-private-node-dependencies.result == 'skipped')
     needs: [prepare, acquire-private-node-dependencies]
     permissions:
       contents: read
@@ -213,11 +221,13 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: needs.prepare.outputs.has-private-node-packages == 'true'
         with:
           path: .verjson-container-node-modules-${{ github.run_id }}-${{ github.run_attempt }}
           key: ${{ needs.acquire-private-node-dependencies.outputs.transfer-cache-key }}
           fail-on-cache-miss: true
       - name: Restore and verify credential-free node_modules context
+        if: needs.prepare.outputs.has-private-node-packages == 'true'
         env:
           ACTIONS_ID_TOKEN_REQUEST_TOKEN: ''
           ACTIONS_ID_TOKEN_REQUEST_URL: ''
@@ -238,7 +248,7 @@ jobs:
           expected="$(sha256sum package-lock.json | cut -d' ' -f1)"
           [ "$(cat "$context/.verjson-lock-sha256")" = "$expected" ] || { echo "::error::node_modules artifact does not match package-lock.json"; exit 1; }
       - name: Remove local node_modules transfer state
-        if: always()
+        if: always() && needs.prepare.outputs.has-private-node-packages == 'true'
         env:
           TRANSFER_DIR: ${{ github.workspace }}/.verjson-container-node-modules-${{ github.run_id }}-${{ github.run_attempt }}
         run: rm -rf "$TRANSFER_DIR"
@@ -257,10 +267,17 @@ jobs:
           push: false
           provenance: false
           sbom: false
-          build-contexts: verjson_node_modules=${{ runner.temp }}/container-node-modules-context
+          build-contexts: ${{ needs.prepare.outputs.has-private-node-packages == 'true' && format('verjson_node_modules={0}/container-node-modules-context', runner.temp) || '' }}
 
   publish-base:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && github.event.repository.default_branch == 'main'
+    if: >-
+      always()
+      && github.event_name == 'push'
+      && github.ref == 'refs/heads/main'
+      && github.event.repository.default_branch == 'main'
+      && needs.prepare.result == 'success'
+      && (needs.acquire-private-node-dependencies.result == 'success'
+      || needs.acquire-private-node-dependencies.result == 'skipped')
     needs: [prepare, acquire-private-node-dependencies]
     permissions:
       contents: read
@@ -274,11 +291,13 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: needs.prepare.outputs.has-private-node-packages == 'true'
         with:
           path: .verjson-container-node-modules-${{ github.run_id }}-${{ github.run_attempt }}
           key: ${{ needs.acquire-private-node-dependencies.outputs.transfer-cache-key }}
           fail-on-cache-miss: true
       - name: Restore and verify credential-free node_modules context
+        if: needs.prepare.outputs.has-private-node-packages == 'true'
         env:
           ACTIONS_ID_TOKEN_REQUEST_TOKEN: ''
           ACTIONS_ID_TOKEN_REQUEST_URL: ''
@@ -299,7 +318,7 @@ jobs:
           expected="$(sha256sum package-lock.json | cut -d' ' -f1)"
           [ "$(cat "$context/.verjson-lock-sha256")" = "$expected" ] || { echo "::error::node_modules artifact does not match package-lock.json"; exit 1; }
       - name: Remove local node_modules transfer state
-        if: always()
+        if: always() && needs.prepare.outputs.has-private-node-packages == 'true'
         env:
           TRANSFER_DIR: ${{ github.workspace }}/.verjson-container-node-modules-${{ github.run_id }}-${{ github.run_attempt }}
         run: rm -rf "$TRANSFER_DIR"
@@ -327,7 +346,7 @@ jobs:
             ${{ matrix.repository }}:${{ needs.prepare.outputs.candidate }}
           provenance: mode=max
           sbom: true
-          build-contexts: verjson_node_modules=${{ runner.temp }}/container-node-modules-context
+          build-contexts: ${{ needs.prepare.outputs.has-private-node-packages == 'true' && format('verjson_node_modules={0}/container-node-modules-context', runner.temp) || '' }}
       - id: provenance
         if: matrix.baseVariant == ''
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
@@ -370,7 +389,15 @@ jobs:
           retention-days: 90
 
   publish-derived:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && github.event.repository.default_branch == 'main'
+    if: >-
+      always()
+      && github.event_name == 'push'
+      && github.ref == 'refs/heads/main'
+      && github.event.repository.default_branch == 'main'
+      && needs.prepare.result == 'success'
+      && (needs.acquire-private-node-dependencies.result == 'success'
+      || needs.acquire-private-node-dependencies.result == 'skipped')
+      && needs.publish-base.result == 'success'
     needs: [prepare, acquire-private-node-dependencies, publish-base]
     permissions:
       contents: read
@@ -384,13 +411,13 @@ jobs:
     steps:
       - if: matrix.baseVariant != ''
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - if: matrix.baseVariant != ''
+      - if: matrix.baseVariant != '' && needs.prepare.outputs.has-private-node-packages == 'true'
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .verjson-container-node-modules-${{ github.run_id }}-${{ github.run_attempt }}
           key: ${{ needs.acquire-private-node-dependencies.outputs.transfer-cache-key }}
           fail-on-cache-miss: true
-      - if: matrix.baseVariant != ''
+      - if: matrix.baseVariant != '' && needs.prepare.outputs.has-private-node-packages == 'true'
         name: Restore and verify credential-free node_modules context
         env:
           ACTIONS_ID_TOKEN_REQUEST_TOKEN: ''
@@ -411,7 +438,7 @@ jobs:
           tar -xzf "$TRANSFER_DIR/container-node-modules.tgz" -C "$context"
           expected="$(sha256sum package-lock.json | cut -d' ' -f1)"
           [ "$(cat "$context/.verjson-lock-sha256")" = "$expected" ] || { echo "::error::node_modules artifact does not match package-lock.json"; exit 1; }
-      - if: always() && matrix.baseVariant != ''
+      - if: always() && matrix.baseVariant != '' && needs.prepare.outputs.has-private-node-packages == 'true'
         name: Remove local node_modules transfer state
         env:
           TRANSFER_DIR: ${{ github.workspace }}/.verjson-container-node-modules-${{ github.run_id }}-${{ github.run_attempt }}
@@ -454,7 +481,7 @@ jobs:
             ${{ matrix.repository }}:${{ needs.prepare.outputs.candidate }}
           provenance: mode=max
           sbom: true
-          build-contexts: verjson_node_modules=${{ runner.temp }}/container-node-modules-context
+          build-contexts: ${{ needs.prepare.outputs.has-private-node-packages == 'true' && format('verjson_node_modules={0}/container-node-modules-context', runner.temp) || '' }}
       - id: provenance
         if: matrix.baseVariant != ''
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
