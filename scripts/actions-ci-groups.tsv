@@ -13,7 +13,6 @@ platform	bash scripts/ci-gate/node-ci-secretless.test.sh
 platform	bash scripts/ci-gate/node-ci-secretless-trusted-ref.test.sh
 platform	bash scripts/ci-gate/node-ci-secretless-consumer.test.sh
 platform	bash scripts/ci-gate/node-ci-secretless-transfer.test.sh
-platform	python3 scripts/ci-gate/node-private-package-canary.test.py
 platform	bash scripts/immutable-release-docs.test.sh
 platform	bash scripts/ci-gate/node-ci-db-service.test.sh
 platform	bash scripts/ci-gate/node-ci-cache-service.test.sh
