@@ -1,0 +1,335 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import base64
+import datetime as dt
+import importlib.util
+import sys
+import unittest
+from pathlib import Path
+from typing import Any
+
+
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT / "scripts"))
+SPEC = importlib.util.spec_from_file_location(
+    "renovate_changelog", ROOT / "scripts/renovate-changelog.py"
+)
+assert SPEC and SPEC.loader
+renovate_changelog = importlib.util.module_from_spec(SPEC)
+sys.modules[SPEC.name] = renovate_changelog
+SPEC.loader.exec_module(renovate_changelog)
+
+
+HEAD = "a" * 40
+TREE = "b" * 40
+BLOB = "c" * 40
+NEW_TREE = "d" * 40
+NEW_COMMIT = "e" * 40
+REPOSITORY = "Verjson/example"
+PR_NUMBER = 263
+BODY = """This PR contains the following updates:
+
+| Package | Change |
+|---|---|
+| [ip-address](https://redirect.github.com/ip-num/ip-num) | [`10.4.0` → `10.5.0`](https://renovatebot.com/diffs/npm/ip-address/10.4.0/10.5.0) |
+"""
+
+
+class FakeClient:
+    def __init__(self, responses: dict[tuple[str, str], list[Any]], pages: list[Any] | None = None):
+        self.responses = {key: list(values) for key, values in responses.items()}
+        self.page_values = list(pages or [])
+        self.calls: list[tuple[str, str, Any]] = []
+
+    def request(self, method: str, path: str, payload: Any = None) -> Any:
+        self.calls.append((method, path, payload))
+        key = (method, path)
+        if key not in self.responses or not self.responses[key]:
+            raise AssertionError(f"unexpected API call: {method} {path}")
+        value = self.responses[key].pop(0)
+        if isinstance(value, Exception):
+            raise value
+        return value
+
+    def pages(self, path: str) -> list[Any]:
+        self.calls.append(("PAGES", path, None))
+        return list(self.page_values)
+
+
+def pull_request(
+    *,
+    body: str = BODY,
+    author: str = "app/renovate",
+    head_repository: str = REPOSITORY,
+    head_ref: str = "renovate/ip-address-10.x",
+    head_sha: str = HEAD,
+    base_ref: str = "main",
+) -> dict[str, Any]:
+    return {
+        "number": PR_NUMBER,
+        "state": "open",
+        "merged": False,
+        "user": {"login": author},
+        "body": body,
+        "head": {
+            "ref": head_ref,
+            "sha": head_sha,
+            "repo": {"full_name": head_repository},
+        },
+        "base": {"ref": base_ref},
+    }
+
+
+class RenovateTableTests(unittest.TestCase):
+    def test_strictly_parses_the_documented_renovate_update_row(self) -> None:
+        self.assertEqual(
+            (
+                renovate_changelog.Update(
+                    package="ip-address", from_version="10.4.0", to_version="10.5.0"
+                ),
+            ),
+            renovate_changelog.parse_updates(BODY),
+        )
+
+    def test_rejects_ambiguous_or_unlinked_package_tables(self) -> None:
+        duplicate = BODY + "\n" + BODY
+        unlinked = BODY.replace(
+            "[ip-address](https://redirect.github.com/ip-num/ip-num)", "ip-address"
+        )
+        malformed_change = BODY.replace(" → ", " -> ")
+        for body in (duplicate, unlinked, malformed_change):
+            with self.subTest(body=body):
+                with self.assertRaises(renovate_changelog.AutomationError):
+                    renovate_changelog.parse_updates(body)
+
+    def test_rejects_duplicate_package_rows(self) -> None:
+        row = BODY.splitlines()[-1]
+        with self.assertRaisesRegex(
+            renovate_changelog.AutomationError, "repeats a package"
+        ):
+            renovate_changelog.parse_updates(BODY + row + "\n")
+
+    def test_rejects_version_text_that_could_inject_markdown(self) -> None:
+        injected = BODY.replace(
+            "`10.5.0`", "`10.5.0](https://attacker.invalid)`", 1
+        )
+        with self.assertRaisesRegex(renovate_changelog.AutomationError, "unsafe version"):
+            renovate_changelog.parse_updates(injected)
+
+    def test_accepts_common_range_prefixes_from_grouped_renovate_updates(self) -> None:
+        grouped = BODY.replace("`10.4.0`", "`^10.4.0`").replace(
+            "`10.5.0`", "`^10.5.0`"
+        )
+        update = renovate_changelog.parse_updates(grouped)[0]
+        self.assertEqual(("^10.4.0", "^10.5.0"), (update.from_version, update.to_version))
+
+
+class AdmissionAndPlanningTests(unittest.TestCase):
+    def test_accepts_only_same_repository_renovate_branches_and_authors(self) -> None:
+        fixtures = (
+            (pull_request(author="attacker"), "approved Renovate App"),
+            (pull_request(head_repository="attacker/example"), "cross-repository"),
+            (pull_request(head_ref="feature/not-renovate"), "renovate/"),
+            (pull_request(head_sha="f" * 40), "triggering event"),
+        )
+        for document, message in fixtures:
+            with self.subTest(message=message):
+                with self.assertRaisesRegex(renovate_changelog.AutomationError, message):
+                    renovate_changelog.admit_pull_request(
+                        document, REPOSITORY, PR_NUMBER, HEAD, "main"
+                    )
+
+    def test_noops_when_the_pr_already_adds_a_canonical_fragment(self) -> None:
+        path = "NEXT/2026-08-15-issue-263-existing.md"
+        content = """---
+date: 2026-08-15
+issue: 263
+impact: patch
+title: Document dependency update
+---
+
+Document the dependency update.
+"""
+        encoded_content = base64.b64encode(content.encode()).decode()
+        client = FakeClient(
+            {
+                ("GET", f"repos/{REPOSITORY}/pulls/{PR_NUMBER}"): [pull_request()],
+                (
+                    "GET",
+                    f"repos/{REPOSITORY}/contents/{path}?ref={HEAD}",
+                ): [
+                    {
+                        "type": "file",
+                        "encoding": "base64",
+                        "content": "\n".join(
+                            encoded_content[index : index + 60]
+                            for index in range(0, len(encoded_content), 60)
+                        ),
+                    }
+                ],
+            },
+            pages=[{"filename": path, "status": "added"}],
+        )
+        result = renovate_changelog.plan(
+            client, REPOSITORY, PR_NUMBER, HEAD, "main", dt.date(2026, 8, 16)
+        )
+        self.assertFalse(result["required"])
+        self.assertNotIn("fragment_content", result)
+
+    def test_synthesizes_a_fragment_when_an_added_fragment_omits_impact(self) -> None:
+        path = "NEXT/2026-08-15-issue-263-existing.md"
+        content = """---
+date: 2026-08-15
+issue: 263
+title: Document dependency update
+---
+
+Document the dependency update.
+"""
+        client = FakeClient(
+            {
+                ("GET", f"repos/{REPOSITORY}/pulls/{PR_NUMBER}"): [pull_request()],
+                ("GET", f"repos/{REPOSITORY}/contents/{path}?ref={HEAD}"): [
+                    {
+                        "type": "file",
+                        "encoding": "base64",
+                        "content": base64.b64encode(content.encode()).decode(),
+                    }
+                ],
+            },
+            pages=[{"filename": path, "status": "added"}],
+        )
+        result = renovate_changelog.plan(
+            client, REPOSITORY, PR_NUMBER, HEAD, "main", dt.date(2026, 8, 16)
+        )
+        self.assertTrue(result["required"])
+        self.assertIn("impact: patch", result["fragment_content"])
+
+    def test_accepts_a_slash_containing_base_branch_from_the_event_and_api(self) -> None:
+        client = FakeClient(
+            {
+                ("GET", f"repos/{REPOSITORY}/pulls/{PR_NUMBER}"): [
+                    pull_request(base_ref="release/1.x")
+                ]
+            },
+            pages=[],
+        )
+        result = renovate_changelog.plan(
+            client,
+            REPOSITORY,
+            PR_NUMBER,
+            HEAD,
+            "release/1.x",
+            dt.date(2026, 8, 16),
+        )
+        self.assertTrue(result["required"])
+
+    def test_builds_a_valid_issue_bound_fragment_from_the_update_table(self) -> None:
+        client = FakeClient(
+            {("GET", f"repos/{REPOSITORY}/pulls/{PR_NUMBER}"): [pull_request()]},
+            pages=[],
+        )
+        result = renovate_changelog.plan(
+            client, REPOSITORY, PR_NUMBER, HEAD, "main", dt.date(2026, 8, 16)
+        )
+        self.assertTrue(result["required"])
+        self.assertEqual(
+            "NEXT/2026-08-16-issue-263-renovate-dependencies.md",
+            result["fragment_path"],
+        )
+        self.assertIn("dependency ip-address", result["fragment_content"])
+        self.assertIn("from `10.4.0` to `10.5.0`", result["fragment_content"])
+
+
+class GitDataWriteTests(unittest.TestCase):
+    def required_plan(self) -> dict[str, Any]:
+        client = FakeClient(
+            {("GET", f"repos/{REPOSITORY}/pulls/{PR_NUMBER}"): [pull_request()]},
+            pages=[],
+        )
+        return renovate_changelog.plan(
+            client, REPOSITORY, PR_NUMBER, HEAD, "main", dt.date(2026, 8, 16)
+        )
+
+    def read_client(self) -> FakeClient:
+        fragment_path = "NEXT/2026-08-16-issue-263-renovate-dependencies.md"
+        return FakeClient(
+            {
+                ("GET", f"repos/{REPOSITORY}/pulls/{PR_NUMBER}"): [pull_request()],
+                (
+                    "GET",
+                    f"repos/{REPOSITORY}/contents/{fragment_path}?ref={HEAD}",
+                ): [renovate_changelog.GitHubApiError("GET", fragment_path, 404)],
+            },
+            pages=[],
+        )
+
+    def write_client(self, ref_sha: str = HEAD) -> FakeClient:
+        return FakeClient(
+            {
+                (
+                    "GET",
+                    f"repos/{REPOSITORY}/git/ref/heads/renovate/ip-address-10.x",
+                ): [{"object": {"type": "commit", "sha": ref_sha}}],
+                ("GET", f"repos/{REPOSITORY}/git/commits/{HEAD}"): [
+                    {"tree": {"sha": TREE}}
+                ],
+                ("POST", f"repos/{REPOSITORY}/git/blobs"): [{"sha": BLOB}],
+                ("POST", f"repos/{REPOSITORY}/git/trees"): [{"sha": NEW_TREE}],
+                ("POST", f"repos/{REPOSITORY}/git/commits"): [{"sha": NEW_COMMIT}],
+                (
+                    "PATCH",
+                    f"repos/{REPOSITORY}/git/refs/heads/renovate/ip-address-10.x",
+                ): [{"object": {"sha": NEW_COMMIT}}],
+            },
+            pages=[],
+        )
+
+    def test_creates_a_blob_tree_commit_and_non_force_exact_head_ref_update(self) -> None:
+        read_client = self.read_client()
+        write_client = self.write_client()
+        result = renovate_changelog.apply(
+            read_client, write_client, self.required_plan()
+        )
+        self.assertIn(NEW_COMMIT, result)
+        self.assertTrue(any("/pulls/" in path for _, path, _ in read_client.calls))
+        self.assertFalse(any("/pulls/" in path for _, path, _ in write_client.calls))
+        mutations = [
+            call for call in write_client.calls if call[0] in {"POST", "PATCH"}
+        ]
+        self.assertEqual(
+            ["POST", "POST", "POST", "PATCH"], [method for method, _, _ in mutations]
+        )
+        self.assertEqual({"sha": NEW_COMMIT, "force": False}, mutations[-1][2])
+        self.assertEqual([HEAD], mutations[-2][2]["parents"])
+
+    def test_refuses_to_write_when_the_branch_moved(self) -> None:
+        read_client = self.read_client()
+        write_client = self.write_client(ref_sha="f" * 40)
+        with self.assertRaisesRegex(renovate_changelog.AutomationError, "moved"):
+            renovate_changelog.apply(
+                read_client, write_client, self.required_plan()
+            )
+        self.assertFalse(
+            any(method in {"POST", "PATCH"} for method, _, _ in write_client.calls)
+        )
+
+    def test_refuses_a_canonical_but_tampered_fragment_plan(self) -> None:
+        read_client = self.read_client()
+        write_client = self.write_client()
+        planned = self.required_plan()
+        planned["fragment_content"] = planned["fragment_content"].replace(
+            "Update `ip-address`", "Update `other-package`"
+        )
+        with self.assertRaisesRegex(
+            renovate_changelog.AutomationError, "admitted Renovate updates"
+        ):
+            renovate_changelog.apply(read_client, write_client, planned)
+        self.assertFalse(
+            any(method in {"POST", "PATCH"} for method, _, _ in write_client.calls)
+        )
+
+
+if __name__ == "__main__":
+    unittest.main()

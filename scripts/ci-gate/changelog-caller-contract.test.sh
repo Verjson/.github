@@ -32,6 +32,7 @@ custom_release="$(bash "$gen" release-node "$sha" --scope @acme --node-version 2
 custom_contract="$(bash "$gen" contract-test "$sha" --scope @acme --node-version 22.23.1 --package-dir compat)"
 generated_artifacts="$(bash "$gen" generated-artifacts "$sha")"
 generated_artifacts_with_adr="$(bash "$gen" generated-artifacts-with-adr-index "$sha")"
+renovate_attribution="$(bash "$gen" renovate-attribution "$sha")"
 adr_index_generator="$(bash "$gen" adr-index-generator "$sha")"
 
 # 1. The workflow pins its `uses:` and its contract_ref to the same commit.
@@ -91,6 +92,28 @@ printf '%s\n' "$adr_index_generator" | bash -n \
   && pass "generated ADR index generator parses as bash" \
   || fail "generated ADR index generator is not valid bash"
 
+grep -q "renovate-changelog.yml@$sha" <<<"$renovate_attribution" \
+  && grep -qE "^ +contract_ref: $sha$" <<<"$renovate_attribution" \
+  && pass "Renovate attribution caller binds reusable workflow and helper contract pin" \
+  || fail "Renovate attribution caller does not bind its immutable pin"
+grep -qE '^  pull_request_target:$' <<<"$renovate_attribution" \
+  && grep -qE '^    types: \[opened, reopened, synchronize\]$' <<<"$renovate_attribution" \
+  && ! grep -qE '^  (pull_request|push|workflow_dispatch|workflow_run|schedule):' <<<"$renovate_attribution" \
+  && pass "Renovate attribution caller is limited to reviewed pull_request_target events" \
+  || fail "Renovate attribution caller exposes an unsafe event"
+grep -qF "github.event.pull_request.head.repo.full_name == github.repository" <<<"$renovate_attribution" \
+  && grep -qF "github.event.pull_request.user.login == 'app/renovate'" <<<"$renovate_attribution" \
+  && grep -qF "github.event.pull_request.user.login == 'renovate[bot]'" <<<"$renovate_attribution" \
+  && grep -qF "startsWith(github.event.pull_request.head.ref, 'renovate/')" <<<"$renovate_attribution" \
+  && pass "Renovate attribution caller rejects forks, other authors, and other branches" \
+  || fail "Renovate attribution caller lacks an admission predicate"
+grep -qF 'release_app_client_id: ${{ vars.RELEASE_APP_CLIENT_ID }}' <<<"$renovate_attribution" \
+  && grep -qF 'release_app_private_key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}' <<<"$renovate_attribution" \
+  && grep -qE '^  pull-requests: read$' <<<"$renovate_attribution" \
+  && ! grep -qE 'secrets: inherit|ORG_ADMIN_TOKEN|contents: write' <<<"$renovate_attribution" \
+  && pass "Renovate attribution caller passes the dedicated App credential and exact read scopes" \
+  || fail "Renovate attribution caller broadens credentials or lacks PR-read permission"
+
 # 5. A ref that is not a bare commit is rejected, not quoted and passed through.
 # An earlier sibling generator accepted a ref and let YAML be injected through
 # it; the guard is asserted, not assumed.
@@ -101,7 +124,7 @@ for bad in 'main' "$(printf 'main\n    if: false')" '../../evil' "${sha^^}" "${s
     pass "generator rejects non-commit ref: '${bad//$'\n'/\\n}'"
   fi
 done
-for mode in generated-artifacts generated-artifacts-with-adr-index adr-index-generator; do
+for mode in generated-artifacts generated-artifacts-with-adr-index renovate-attribution adr-index-generator; do
   if bash "$gen" "$mode" main >/dev/null 2>&1; then
     fail "$mode accepted a mutable ref"
   else
@@ -325,6 +348,7 @@ build_adopter() {
   mkdir -p "$dir/NEXT" "$dir/scripts" "$dir/.github/workflows"
   bash "$gen" renderer "$sha" >"$dir/scripts/render-next.sh"
   bash "$gen" "$caller" "$sha" >"$dir/.github/workflows/changelog.yml"
+  bash "$gen" renovate-attribution "$sha" >"$dir/.github/workflows/renovate-changelog.yml"
   if [ "$caller" = generated-artifacts-with-adr-index ]; then
     bash "$gen" adr-index-generator "$sha" >"$dir/scripts/gen-adr-index.sh"
     chmod +x "$dir/scripts/gen-adr-index.sh"
@@ -424,6 +448,30 @@ grep -q "release-propose.yml@$sha" "$adopter/.github/workflows/release-propose.y
 run_adopter "$adopter" \
   && pass "emitted suite passes against an unreleased adopter" \
   || fail "emitted suite failed before any release: $(tail -2 "$tmproot/run.out")"
+
+stale_renovate_caller="$tmproot/adopter-stale-renovate-caller"
+cp -a "$adopter" "$stale_renovate_caller"
+sed -i "s/renovate-changelog.yml@$sha/renovate-changelog.yml@0000000000000000000000000000000000000000/" \
+  "$stale_renovate_caller/.github/workflows/renovate-changelog.yml"
+run_adopter "$stale_renovate_caller" \
+  && fail "emitted suite accepted a stale Renovate attribution reusable pin" \
+  || pass "emitted suite rejects a stale Renovate attribution reusable pin"
+
+overprivileged_renovate_caller="$tmproot/adopter-overprivileged-renovate-caller"
+cp -a "$adopter" "$overprivileged_renovate_caller"
+sed -i 's/^  contents: read$/  contents: write/' \
+  "$overprivileged_renovate_caller/.github/workflows/renovate-changelog.yml"
+run_adopter "$overprivileged_renovate_caller" \
+  && fail "emitted suite accepted a Contents-write Renovate attribution caller" \
+  || pass "emitted suite rejects a Contents-write Renovate attribution caller"
+
+wrong_event_renovate_caller="$tmproot/adopter-wrong-event-renovate-caller"
+cp -a "$adopter" "$wrong_event_renovate_caller"
+sed -i 's/^  pull_request_target:$/  pull_request:/' \
+  "$wrong_event_renovate_caller/.github/workflows/renovate-changelog.yml"
+run_adopter "$wrong_event_renovate_caller" \
+  && fail "emitted suite accepted an event that cannot write the bot head" \
+  || pass "emitted suite rejects a Renovate attribution caller on the wrong event"
 
 stale_proposer="$tmproot/adopter-stale-proposer"
 cp -a "$adopter" "$stale_proposer"
