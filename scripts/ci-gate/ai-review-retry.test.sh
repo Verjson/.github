@@ -116,6 +116,9 @@ grep -q 'deepseek-v4-pro then deepseek-v4-flash' "$arm" \
 
 primary_guard=$(awk '/id: deepseek_primary$/{found=1} found&&/^ *if:/{print; exit}' "$workflow")
 fallback_guard=$(awk '/id: deepseek_fallback$/{found=1} found&&/^ *if:/{print; exit}' "$workflow")
+grep -qF "steps.reserve_2.outputs.count == '2'" "$workflow" \
+  && pass "the second exact-head reservation makes the deterministic advisory name cap exhaustion" \
+  || fail "a fully consumed two-pass cascade can still advertise an unavailable later attempt"
 case "$primary_guard" in
   *"needs.preflight.outputs.lane == 'ai'"*"steps.rereview.outputs.skip_model != 'true'"*"steps.reserve_1.outputs.allowed == 'true'"*) pass "primary pass requires the AI lane, deterministic non-reuse, and a reserved cumulative slot" ;;
   *) fail "primary DeepSeek guard is unsafe: $primary_guard" ;;

@@ -1484,8 +1484,10 @@ jobs:
           # A pass that ended in an SDK terminal error did not produce a usable
           # verdict even if the action surfaced schema-valid filler (#441).
           SELECTED_PASS_TERMINAL_ERROR: ${{ steps.retry_outcome.outputs.selected_pass_terminal_error }}
+          PRIMARY_EXTRACTION_DIAGNOSTIC: ${{ steps.deepseek_primary.outputs.extraction_diagnostic }}
+          FALLBACK_EXTRACTION_DIAGNOSTIC: ${{ steps.deepseek_fallback.outputs.extraction_diagnostic }}
           PERMISSION_DENIALS: ${{ steps.retry_outcome.outputs.permission_denials }}
-          PASS_CAP_EXHAUSTED: ${{ steps.rereview.outputs.skip_model != 'true' && (steps.reserve_1.outputs.cap_exhausted == 'true' || steps.reserve_2.outputs.cap_exhausted == 'true') }}
+          PASS_CAP_EXHAUSTED: ${{ steps.rereview.outputs.skip_model != 'true' && (steps.reserve_1.outputs.cap_exhausted == 'true' || steps.reserve_2.outputs.cap_exhausted == 'true' || steps.reserve_2.outputs.count == '2') }}
           REVIEW_PASS_COUNT: ${{ steps.reserve_2.outputs.count || steps.reserve_1.outputs.count || '0' }}
           SUPERSEDED: ${{ steps.reserve_1.outputs.superseded == 'true' || steps.reserve_2.outputs.superseded == 'true' }}
           CHANGED_LINES: ${{ needs.preflight.outputs.changed_lines }}
@@ -1522,6 +1524,28 @@ jobs:
             # The flag only chooses the wording; every branch remains advisory.
             heading="⚠️ **AI review advisory: review could not complete**"
             detail="The receipt-bound review cascade produced no usable verdict (budget/turn exhaustion, another terminal model error, or semantically invalid structured output). Human approval remains available. Apply the \`re-review\` label only when a maintainer explicitly authorizes another paid attempt."
+            extraction_detail=""
+            extraction_kind() {
+              jq -er '
+                if .stage == "completed_response_extraction"
+                   and (.kind | IN("json_decode", "response_shape", "usage_envelope", "tool_call", "verdict_shape"))
+                   and (.content_bytes | type == "number")
+                   and (.content_sha256 | type == "string" and test("^[0-9a-f]{64}$"))
+                then .kind else empty end
+              ' <<<"$1" 2>/dev/null || true
+            }
+            primary_extraction_kind="$(extraction_kind "${PRIMARY_EXTRACTION_DIAGNOSTIC:-}")"
+            fallback_extraction_kind="$(extraction_kind "${FALLBACK_EXTRACTION_DIAGNOSTIC:-}")"
+            if [ -n "$primary_extraction_kind" ]; then
+              extraction_detail="DeepSeek pass 1 completed-response extraction failed with typed cause \`$primary_extraction_kind\`; its bounded, non-content diagnostic artifact is retained. "
+            fi
+            if [ -n "$fallback_extraction_kind" ]; then
+              extraction_detail="${extraction_detail}DeepSeek pass 2 completed-response extraction failed with typed cause \`$fallback_extraction_kind\`; its bounded, non-content diagnostic artifact is retained. "
+            fi
+            if [ -n "$extraction_detail" ]; then
+              heading="⚠️ **AI review advisory: completed-response extraction failed**"
+              detail="${extraction_detail}Human approval remains available."
+            fi
             if [ "${BUDGET_EXHAUSTED:-}" = "true" ]; then
               heading="⚠️ **AI review advisory: budget exceeded**"
               detail="The selected review pass ended in \`error_max_budget_usd\` without a usable verdict. The diff (~${CHANGED_LINES:-unknown} changed lines) exceeded its selected budget (\$${BUDGET_USD:-unknown}). Human approval remains available."
@@ -1532,7 +1556,7 @@ jobs:
             fi
             if [ "${PASS_CAP_EXHAUSTED:-false}" = "true" ]; then
               heading="🛑 **AI review advisory: two-pass maximum reached**"
-              detail="This exact head has consumed ${REVIEW_PASS_COUNT:-2}/2 model passes and has no usable verdict. A third provider invocation for the same head is forbidden; autonomous AI approval and merge remain fail-closed. Human review remains available."
+              detail="This exact head has consumed ${REVIEW_PASS_COUNT:-2}/2 model passes and has no usable verdict. ${extraction_detail}A third provider invocation for the same head is forbidden; autonomous AI approval and merge remain fail-closed. Human review remains available."
             fi
             gh pr comment "$PR_NUMBER" --repo "$TARGET_REPO" --body "$heading
 
@@ -1591,7 +1615,7 @@ jobs:
         if: always() && needs.preflight.outputs.lane == 'ai' && needs.preflight.outputs.provider == 'deepseek'
         continue-on-error: true
         env:
-          TRANSPORT: ${{ steps.deepseek_primary.conclusion }}
+          TRANSPORT: ${{ steps.deepseek_primary.outcome }}
           USABLE: ${{ steps.verdict_1.outputs.usable }}
           PUBLICATION: ${{ steps.submit.conclusion }}
           DIAGNOSTIC: ${{ steps.verdict_1.outputs.diagnostic }}
@@ -1628,7 +1652,7 @@ jobs:
         if: always() && needs.preflight.outputs.lane == 'ai' && needs.preflight.outputs.provider == 'deepseek'
         continue-on-error: true
         env:
-          TRANSPORT: ${{ steps.deepseek_fallback.conclusion }}
+          TRANSPORT: ${{ steps.deepseek_fallback.outcome }}
           USABLE: ${{ steps.verdict_2.outputs.usable }}
           PUBLICATION: ${{ steps.submit.conclusion }}
           DIAGNOSTIC: ${{ steps.verdict_2.outputs.diagnostic }}

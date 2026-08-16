@@ -179,6 +179,23 @@ class DeepSeekReviewTest(unittest.TestCase):
             with self.subTest(response=response), self.assertRaises(ValueError):
                 review.extract(response, "deepseek-v4-pro", 1000, 1000, "5.00")
 
+    def test_extraction_failure_kinds_distinguish_response_tool_and_verdict_shapes(self):
+        wrong_model = self.response()
+        wrong_model["model"] = "deepseek-v4-flash"
+        tool_call = self.response()
+        tool_call["choices"][0]["message"]["tool_calls"] = [{"id": "private-tool-call-856"}]
+        verdict_list = self.response(verdict=[])
+        verdict_list["choices"][0]["message"]["content"] = "[]"
+
+        for response, expected_kind in (
+            (wrong_model, "response_shape"),
+            (tool_call, "tool_call"),
+            (verdict_list, "verdict_shape"),
+        ):
+            with self.subTest(expected_kind=expected_kind), self.assertRaises(review.ExtractionFailure) as raised:
+                review.extract(response, "deepseek-v4-pro", 1000, 1000, "5.00")
+            self.assertEqual(raised.exception.kind, expected_kind)
+
     def test_transport_extraction_preserves_json_object_for_canonical_confirmation(self):
         provider_variant = {"isBlocking": False, "summary": "ok", "reviewFirst": [], "findings": [], "followUps": []}
 
@@ -280,6 +297,93 @@ class DeepSeekReviewTest(unittest.TestCase):
                 "replay-private-diff-719", "replay-private-key-719", "reasoning_content",
             ):
                 self.assertNotIn(secret, replay_text)
+
+    def test_completed_stream_extraction_failures_emit_typed_content_free_diagnostics(self):
+        class Context(io.BytesIO):
+            def __enter__(self): return self
+            def __exit__(self, *_): return False
+
+        def completed_stream(model, content, usage):
+            chunks = [
+                {
+                    "object": "chat.completion.chunk", "model": model,
+                    "choices": [{
+                        "index": 0, "finish_reason": "stop",
+                        "delta": {"role": "assistant", "content": content},
+                    }],
+                },
+                {"object": "chat.completion.chunk", "model": model, "choices": [], "usage": usage},
+            ]
+            events = [f"data: {json.dumps(chunk)}\n\n".encode() for chunk in chunks]
+            events.append(b"data: [DONE]\n\n")
+            return b"".join(events)
+
+        cases = (
+            (
+                "deepseek-v4-pro", "{\"blocking\":private-json-sentinel-856", self.response()["usage"],
+                "json_decode", {"line": 1, "column": 13, "position": 12},
+            ),
+            (
+                "deepseek-v4-flash", "{\"summary\":\"private-verdict-sentinel-856\"}",
+                {
+                    "prompt_tokens": "private-usage-sentinel-856", "completion_tokens": 20,
+                    "prompt_cache_hit_tokens": 0, "prompt_cache_miss_tokens": 0,
+                },
+                "usage_envelope", None,
+            ),
+        )
+        for model, content, usage, expected_kind, expected_json_error in cases:
+            with self.subTest(model=model), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                prompt, metadata, diff, output, replay = (
+                    root / name for name in ("prompt", "pr.json", "pr.diff", "output", "replay.json")
+                )
+                prompt.write_text("private-prompt-sentinel-856", encoding="utf-8")
+                metadata.write_text('{"title":"private-metadata-sentinel-856"}', encoding="utf-8")
+                diff.write_text("private-diff-sentinel-856", encoding="utf-8")
+                env = {
+                    "MODEL": model, "BUDGET_USD": "5.00", "PROMPT_FILE": str(prompt),
+                    "PR_JSON_FILE": str(metadata), "PR_DIFF_FILE": str(diff),
+                    "GITHUB_OUTPUT": str(output), "DEEPSEEK_API_KEY": "private-key-sentinel-856",
+                    "REPLAY_FILE": str(replay), "REVIEWED_HEAD_SHA": "a" * 40,
+                    "REVIEW_POLICY": "receipt-policy", "AUTHORIZATION_CHECK_ID": "9001",
+                    "TARGET_REPO": "Verjson/.github", "PR_NUMBER": "7", "REVIEW_PASS": "2",
+                    "SENSITIVE": "false", "TRUSTED_REVIEW_SHA": "f" * 40,
+                }
+                stdout, stderr = io.StringIO(), io.StringIO()
+                stream = completed_stream(model, content, usage)
+                with (
+                    patch.dict(os.environ, env, clear=True),
+                    patch.object(review.urllib.request, "urlopen", return_value=Context(stream)),
+                    patch("sys.stdout", stdout), patch("sys.stderr", stderr),
+                    self.assertRaises(review.ExtractionFailure) as raised,
+                ):
+                    review.main()
+
+                self.assertEqual(raised.exception.kind, expected_kind)
+                self.assertIn("result=completed", stdout.getvalue())
+                output_values = dict(line.split("=", 1) for line in output.read_text().splitlines())
+                diagnostic = json.loads(output_values["extraction_diagnostic"])
+                self.assertEqual(diagnostic["stage"], "completed_response_extraction")
+                self.assertEqual(diagnostic["kind"], expected_kind)
+                self.assertEqual(diagnostic["content_bytes"], len(content.encode("utf-8")))
+                self.assertEqual(diagnostic["content_sha256"], __import__("hashlib").sha256(content.encode()).hexdigest())
+                if expected_json_error is None:
+                    self.assertNotIn("json_error", diagnostic)
+                else:
+                    self.assertEqual(diagnostic["json_error"], expected_json_error)
+                artifact = json.loads(replay.read_text())
+                self.assertEqual(artifact["purpose"], "extraction-diagnostic")
+                self.assertFalse(artifact["authorizing"])
+                self.assertFalse(artifact["cacheable"])
+                self.assertEqual(artifact["failure"], diagnostic)
+                retained = stdout.getvalue() + stderr.getvalue() + output.read_text() + replay.read_text()
+                for secret in (
+                    content, "private-usage-sentinel-856", "private-prompt-sentinel-856",
+                    "private-metadata-sentinel-856", "private-diff-sentinel-856",
+                    "private-key-sentinel-856",
+                ):
+                    self.assertNotIn(secret, retained)
 
     def test_replay_redacts_hostile_unknown_values_and_preserves_canonical_rejection(self):
         sentinels = {
@@ -410,6 +514,38 @@ class DeepSeekReviewTest(unittest.TestCase):
                 self.assertEqual(review.main(), 0)
             self.assertIn("structured_output=", output.read_text())
             self.assertIn("diagnostic replay unavailable", errors.getvalue())
+
+    def test_extraction_diagnostic_limit_counts_the_trailing_newline(self):
+        diagnostic = {
+            "stage": "completed_response_extraction", "kind": "usage_envelope",
+            "content_bytes": 60, "content_sha256": "1" * 64,
+        }
+        provenance = {
+            "reviewed_head": "a" * 40, "authorization_check_id": "9001",
+            "repository": "Verjson/.github", "pr_number": 7, "review_pass": 2,
+            "sensitive": False, "trusted_review_sha": "f" * 40,
+            "review_policy_sha256": "b" * 64, "prompt_sha256": "c" * 64,
+            "pr_metadata_sha256": "d" * 64, "pr_diff_sha256": "e" * 64,
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "diagnostic.json"
+            review.write_extraction_diagnostic_bundle(
+                str(path), "deepseek-v4-flash", diagnostic, provenance,
+            )
+            encoded_bytes = path.stat().st_size - 1
+
+            with patch.object(review, "MAX_DIAGNOSTIC_BYTES", encoded_bytes), self.assertRaisesRegex(
+                ValueError, "bounded limit",
+            ):
+                review.write_extraction_diagnostic_bundle(
+                    str(path), "deepseek-v4-flash", diagnostic, provenance,
+                )
+
+            with patch.object(review, "MAX_DIAGNOSTIC_BYTES", encoded_bytes + 1):
+                review.write_extraction_diagnostic_bundle(
+                    str(path), "deepseek-v4-flash", diagnostic, provenance,
+                )
+            self.assertEqual(path.stat().st_size, encoded_bytes + 1)
 
 
 if __name__ == "__main__":
