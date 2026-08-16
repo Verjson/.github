@@ -12,15 +12,61 @@ class WorkflowSyntaxError(ValueError):
     pass
 
 
-UNSUPPORTED_YAML = re.compile(
-    r"^\s*(?:(?:<<|'<<'|\"<<\")\s*:|(?:-\s+|[^:#]+:\s*)[&*!][A-Za-z0-9_-]+(?:\s|$))"
+BLOCK_SCALAR = re.compile(r":\s*[|>](?:[1-9][+-]?|[+-][1-9]?)?\s*$")
+MERGE_KEY = re.compile(r"(?:^|[\[{,])\s*(?:-\s*)?<<\s*:")
+NODE_PROPERTY = re.compile(
+    r"(?:^|[\[{,:])\s*(?:-\s*)?(?:[&*][A-Za-z0-9_-]+|!(?!=)[^\s,\]}]+)"
 )
 
 
+def mask_quoted(value: str) -> str:
+    masked = list(value)
+    quote: str | None = None
+    escaped = False
+    index = 0
+    while index < len(value):
+        char = value[index]
+        if quote == '"':
+            masked[index] = " "
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == quote:
+                quote = None
+        elif quote == "'":
+            masked[index] = " "
+            if char == quote:
+                if index + 1 < len(value) and value[index + 1] == quote:
+                    masked[index + 1] = " "
+                    index += 1
+                else:
+                    quote = None
+        elif char in "'\"":
+            quote = char
+            masked[index] = " "
+        index += 1
+    return "".join(masked)
+
+
+def mask_expressions(value: str) -> str:
+    return re.sub(r"\$\{\{.*?\}\}", lambda match: " " * len(match.group()), value)
+
+
 def reject_unsupported_yaml(lines: list[str]) -> None:
+    block_scalar_indent: int | None = None
     for line in lines:
-        if UNSUPPORTED_YAML.match(line):
+        if not line.strip():
+            continue
+        line_indent = indentation(line)
+        if block_scalar_indent is not None and line_indent > block_scalar_indent:
+            continue
+        block_scalar_indent = None
+        structural = mask_expressions(mask_quoted(line))
+        if MERGE_KEY.search(structural) or NODE_PROPERTY.search(structural):
             raise WorkflowSyntaxError("YAML anchors, aliases, merge keys, and tags are unsupported")
+        if BLOCK_SCALAR.search(structural):
+            block_scalar_indent = line_indent
 
 
 def strip_comment(line: str) -> str:
