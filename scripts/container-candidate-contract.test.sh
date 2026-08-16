@@ -48,12 +48,101 @@ jq '.privateNodePackages = ["@verjson/private-package"]' \
 [ "$(jq -r '((.privateNodePackages // []) | length > 0)' "$private_config")" = true ]
 
 prepare_script="$tmp/prepare-config.sh"
-awk '
-  $0 == "      - id: config" { step = 1; next }
-  step && $0 == "        run: |" { script = 1; next }
-  script && /^          / { sub(/^          /, ""); print; next }
-  script { exit }
-' "$workflow" >"$prepare_script"
+extract_config_run() {
+  local source=$1
+  local destination=$2
+
+  if ! awk '
+    function fail(message) {
+      print message > "/dev/stderr"
+      failed = 1
+      exit 1
+    }
+
+    $0 == "      - id: config" {
+      found_step = 1
+      in_step = 1
+      next
+    }
+    in_step && /^      - / { fail("config step is missing a run block") }
+    in_step && /^        run:/ {
+      if ($0 != "        run: |") {
+        fail("config step run block is not a literal block")
+      }
+      found_run = 1
+      in_step = 0
+      in_script = 1
+      next
+    }
+    in_script && /^          / {
+      sub(/^          /, "")
+      print
+      found_body = 1
+      next
+    }
+    in_script && $0 == "" { print; next }
+    in_script { exit }
+
+    END {
+      if (failed) exit 1
+      if (!found_step) fail("config step is missing")
+      if (!found_run) fail("config step is missing a run block")
+      if (!found_body) fail("config step run block is empty")
+    }
+  ' "$source" >"$destination"; then
+    rm -f "$destination"
+    return 1
+  fi
+}
+
+extraction_fixture="$tmp/config-step.yml"
+cat >"$extraction_fixture" <<'YAML'
+    steps:
+      - id: config
+        name: Prepare candidate configuration
+        shell: bash
+        env:
+          OPTIONAL_KEY: present
+        run: |
+          printf 'config\n' >"$EXTRACTION_MARKER"
+      - name: Unrelated step
+        run: |
+          printf 'unrelated\n' >"$EXTRACTION_MARKER"
+YAML
+extracted_fixture_script="$tmp/extracted-config-step.sh"
+extract_config_run "$extraction_fixture" "$extracted_fixture_script"
+extraction_marker="$tmp/extraction-marker"
+EXTRACTION_MARKER="$extraction_marker" bash "$extracted_fixture_script"
+grep -qx config "$extraction_marker"
+
+missing_run_fixture="$tmp/config-step-missing-run.yml"
+cat >"$missing_run_fixture" <<'YAML'
+    steps:
+      - id: config
+        name: Missing run block
+      - name: Unrelated step
+        run: |
+          exit 0
+YAML
+if extract_config_run "$missing_run_fixture" "$tmp/missing-run.sh" 2>/dev/null; then
+  echo "config extraction accepted a missing run block" >&2
+  exit 1
+fi
+
+malformed_run_fixture="$tmp/config-step-malformed-run.yml"
+cat >"$malformed_run_fixture" <<'YAML'
+    steps:
+      - id: config
+        shell: bash
+        run: >
+          exit 0
+YAML
+if extract_config_run "$malformed_run_fixture" "$tmp/malformed-run.sh" 2>/dev/null; then
+  echo "config extraction accepted a malformed run block" >&2
+  exit 1
+fi
+
+extract_config_run "$workflow" "$prepare_script"
 bash -n "$prepare_script"
 first_adoption="$tmp/first-adoption"
 mkdir -p "$first_adoption"
