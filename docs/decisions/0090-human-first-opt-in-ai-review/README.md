@@ -115,6 +115,31 @@ cascade. This preserves receipt determinism while allowing a repository to choos
 a supported single-pass provider without first clearing organization-wide
 DeepSeek defaults.
 
+### 2026-08-16 amendment — neutral advisory check runs and explicit approval success (#858)
+
+The dedicated `AI review authorization` check run uses `neutral` whenever trusted
+deterministic policy completed but the dedicated App did not persist an exact-head
+approval. Its title and summary name the actual advisory state: blocking,
+inconclusive, skipped, superseded, non-blocking without authority, or App approval
+unavailable. `success` is reserved for a non-blocking verdict whose exact-head App
+approval was persisted and verified. Trust failures still conclude `failure`.
+
+This changes presentation, not authority. GitHub documents that a
+[required status check may be successful, skipped, or neutral](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-protected-branches/about-protected-branches#require-status-checks-before-merging)
+before a protected branch can change. The completion job therefore accepts both
+`neutral` and `success`, preserving the authorized human path. Terminal AI promotion
+still requires `ai_authorized=true`, which is emitted only after the exact-head App
+approval is read back and verified. A neutral blocking or inconclusive advisory can
+satisfy check availability, but cannot mint an approval or dispatch a merge.
+
+The GitHub-visible contract is:
+
+| Review state | Check conclusion | Meaning |
+| --- | --- | --- |
+| Blocking, inconclusive, skipped, superseded, or human-only non-blocking | `neutral` | AI did not authorize the head; human approval remains available |
+| Exact-head App approval persisted and verified | `success` | AI approval exists for this exact head |
+| Receipt, trusted-head, or deterministic-policy failure | `failure` | Authorization evaluation failed closed |
+
 ## Consequences
 
 - Deterministic CI and human review can authorize merge during any AI outage.

@@ -5,6 +5,7 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = Path(__file__).with_name("prepare-deepseek-replay.py")
@@ -38,6 +39,19 @@ def bundle() -> dict:
             "bounds": {"input_token_bound": 100, "max_output_tokens": 65536, "reported_cost_usd": "0.01"},
         },
     }
+
+
+def extraction_bundle() -> dict:
+    candidate = bundle()
+    candidate["purpose"] = "extraction-diagnostic"
+    candidate.pop("response")
+    candidate["model"] = MODEL
+    candidate["failure"] = {
+        "stage": "completed_response_extraction", "kind": "json_decode",
+        "content_bytes": 42, "content_sha256": "1" * 64,
+        "json_error": {"line": 1, "column": 43, "position": 42},
+    }
+    return candidate
 
 
 class DeepSeekReplayTest(unittest.TestCase):
@@ -111,6 +125,92 @@ class DeepSeekReplayTest(unittest.TestCase):
             "phase": "publication", "diagnostic": "publication step failed"
         })
 
+    def test_completed_extraction_failure_stages_bounded_non_authorizing_diagnostic(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source, output = root / "source.json", root / "output.json"
+            source.write_text(json.dumps(extraction_bundle()), encoding="utf-8")
+            available = replay.prepare(
+                source, output, "failure", "false", "success", "{}", HEAD, "9001", MODEL,
+                "Verjson/.github", 7, 1, False, "f" * 40,
+            )
+
+            self.assertTrue(available)
+            staged = json.loads(output.read_text())
+            self.assertEqual(staged["purpose"], "extraction-diagnostic")
+            self.assertEqual(staged["failure"]["kind"], "json_decode")
+            self.assertFalse(staged["authorizing"])
+            self.assertFalse(staged["cacheable"])
+            self.assertNotIn("response", staged)
+
+    def test_diagnostic_artifact_size_is_independent_of_bounded_response_size(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source, output = root / "source.json", root / "output.json"
+            candidate = extraction_bundle()
+            candidate["failure"]["content_bytes"] = 2 * 1024 * 1024
+            source.write_text(json.dumps(candidate), encoding="utf-8")
+
+            available = replay.prepare(
+                source, output, "failure", "false", "success", "{}", HEAD, "9001", MODEL,
+                "Verjson/.github", 7, 1, False, "f" * 40,
+            )
+
+            self.assertTrue(available)
+            self.assertLess(output.stat().st_size, 16 * 1024)
+
+    def test_staged_extraction_diagnostic_limit_counts_a_normalized_newline(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source, output = root / "source.json", root / "output.json"
+            raw = json.dumps(extraction_bundle(), separators=(",", ":")).encode("utf-8")
+            source.write_bytes(raw)
+
+            with patch.object(replay, "MAX_DIAGNOSTIC_BYTES", len(raw)), self.assertRaisesRegex(
+                ValueError, "non-authorizing provenance contract",
+            ):
+                replay.prepare(
+                    source, output, "failure", "false", "success", "{}", HEAD, "9001", MODEL,
+                    "Verjson/.github", 7, 1, False, "f" * 40,
+                )
+
+            with patch.object(replay, "MAX_DIAGNOSTIC_BYTES", len(raw) + 1):
+                available = replay.prepare(
+                    source, output, "failure", "false", "success", "{}", HEAD, "9001", MODEL,
+                    "Verjson/.github", 7, 1, False, "f" * 40,
+                )
+            self.assertTrue(available)
+            self.assertEqual(output.stat().st_size, len(raw) + 1)
+            self.assertTrue(output.read_bytes().endswith(b"\n"))
+
+    def test_two_passes_stage_distinct_extraction_causes_without_collapsing(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            primary = extraction_bundle()
+            fallback = extraction_bundle()
+            fallback["model"] = "deepseek-v4-flash"
+            fallback["provenance"]["review_pass"] = 2
+            fallback["failure"] = {
+                "stage": "completed_response_extraction", "kind": "usage_envelope",
+                "content_bytes": 60, "content_sha256": "2" * 64,
+            }
+            staged = []
+            for pass_number, model, candidate in (
+                (1, MODEL, primary), (2, "deepseek-v4-flash", fallback),
+            ):
+                source, output = root / f"source-{pass_number}.json", root / f"output-{pass_number}.json"
+                source.write_text(json.dumps(candidate), encoding="utf-8")
+                self.assertTrue(replay.prepare(
+                    source, output, "failure", "false", "success", "{}", HEAD, "9001", model,
+                    "Verjson/.github", 7, pass_number, False, "f" * 40,
+                ))
+                staged.append(json.loads(output.read_text()))
+
+            self.assertEqual(
+                [candidate["failure"]["kind"] for candidate in staged],
+                ["json_decode", "usage_envelope"],
+            )
+
     def test_provenance_mutation_and_sensitive_unknown_fields_fail_closed(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -156,6 +256,22 @@ class DeepSeekReplayTest(unittest.TestCase):
         ):
             self.assertEqual(workflow.count(argument), 2)
         self.assertNotIn("download-artifact", workflow)
+        for step_id in ("deepseek_primary", "deepseek_fallback"):
+            self.assertIn(f"TRANSPORT: ${{{{ steps.{step_id}.outcome }}}}", workflow)
+            self.assertNotIn(f"TRANSPORT: ${{{{ steps.{step_id}.conclusion }}}}", workflow)
+        self.assertIn(
+            "PRIMARY_EXTRACTION_DIAGNOSTIC: ${{ steps.deepseek_primary.outputs.extraction_diagnostic }}",
+            workflow,
+        )
+        self.assertIn(
+            "FALLBACK_EXTRACTION_DIAGNOSTIC: ${{ steps.deepseek_fallback.outputs.extraction_diagnostic }}",
+            workflow,
+        )
+        self.assertNotIn(
+            "steps.deepseek_fallback.outputs.extraction_diagnostic || "
+            "steps.deepseek_primary.outputs.extraction_diagnostic",
+            workflow,
+        )
 
     def test_documented_replay_uses_separate_trusted_and_target_checkouts(self):
         decision = (ROOT / "docs/decisions/0090-human-first-opt-in-ai-review/README.md").read_text()

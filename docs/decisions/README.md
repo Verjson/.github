@@ -11,6 +11,7 @@ Reverse-chronological index of org-level decisions.
 <!-- BEGIN ADR INDEX -->
 | # | Date | Decision |
 |---|------|----------|
+| [0107](0107-retain-typed-ai-extraction-diagnostics/README.md) | 2026-08-16 | Retain typed AI extraction diagnostics without provider content |
 | [0106](0106-generated-changelog-publishes-live-required-context/README.md) | 2026-08-16 | Generated changelog publishes the live required context |
 | [0105](0105-preserve-ai-review-across-head-supersession/README.md) | 2026-08-16 | Preserve AI review across head supersession |
 | [0104](0104-trusted-renovate-changelog-attribution/README.md) | 2026-08-16 | Trusted automation attributes hosted Renovate changes |
