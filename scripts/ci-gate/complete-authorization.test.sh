@@ -236,6 +236,34 @@ if [ "$?" -eq 0 ] && grep -q 'conclusion=neutral' "$CALLS" \
   pass "human authority never asks the App to approve"
 else fail "human authority still depends on AI approval"; fi
 
+: >"$CALLS"; : >"$GITHUB_OUTPUT"; REVIEW_AUTHORITY=ai-merge REVIEW_OUTCOME=superseded run_complete >"$tmp/out" 2>&1
+if [ "$?" -eq 0 ] \
+   && grep -Fq 'conclusion=neutral' "$CALLS" \
+   && ! grep -Fq 'conclusion=success' "$CALLS" \
+   && ! grep -Fq 'conclusion=failure' "$CALLS" \
+   && grep -Fq 'output[title]=AI review superseded; human path ready' "$CALLS" \
+   && grep -Fq 'output[summary]=The reviewed head was superseded before publication. This result grants no AI authority; GitHub branch protection remains authoritative for the current head.' "$CALLS" \
+   && ! grep -q 'api --method POST' "$CALLS" \
+   && grep -Fxq 'ai_authorized=false' "$GITHUB_OUTPUT" \
+   && ! grep -Fq 'ai_authorized=true' "$GITHUB_OUTPUT" \
+   && ! grep -Fq 'ai-review-authorized:v1:' "$CALLS"; then
+  pass "superseded AI review is a neutral human fallback without AI authority"
+else fail "superseded AI review escaped its neutral human-fallback contract"; fi
+
+: >"$CALLS"; : >"$GITHUB_OUTPUT"; REVIEW_AUTHORITY=ai-merge REVIEW_OUTCOME=future-outcome run_complete >"$tmp/out" 2>&1
+if [ "$?" -eq 0 ] \
+   && grep -Fq 'conclusion=neutral' "$CALLS" \
+   && ! grep -Fq 'conclusion=success' "$CALLS" \
+   && ! grep -Fq 'conclusion=failure' "$CALLS" \
+   && grep -Fq 'output[title]=AI review unavailable; human path ready' "$CALLS" \
+   && grep -Fq 'output[summary]=AI did not authorize this exact head. Deterministic policy completed and GitHub branch protection remains authoritative for human approval.' "$CALLS" \
+   && ! grep -q 'api --method POST' "$CALLS" \
+   && grep -Fxq 'ai_authorized=false' "$GITHUB_OUTPUT" \
+   && ! grep -Fq 'ai_authorized=true' "$GITHUB_OUTPUT" \
+   && ! grep -Fq 'ai-review-authorized:v1:' "$CALLS"; then
+  pass "unknown AI review outcome is a neutral human fallback without AI authority"
+else fail "unknown AI review outcome escaped the wildcard human-fallback contract"; fi
+
 : >"$CALLS"; : >"$GITHUB_OUTPUT"; REVIEW_AUTHORITY=ai-merge REVIEW_OUTCOME=blocking run_complete >"$tmp/out" 2>&1
 if [ "$?" -eq 0 ] && grep -q 'conclusion=neutral' "$CALLS" \
    && grep -q 'output\[title\]=AI advisory blocking; human path ready' "$CALLS" \
