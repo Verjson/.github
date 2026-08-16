@@ -7,7 +7,7 @@ import tempfile
 import unittest
 from decimal import Decimal
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 path = Path(__file__).with_name("deepseek-review.py")
 spec = importlib.util.spec_from_file_location("deepseek_review", path)
@@ -613,6 +613,28 @@ class DeepSeekReviewTest(unittest.TestCase):
                     str(path), "deepseek-v4-flash", diagnostic, provenance,
                 ))
             self.assertEqual(path.stat().st_size, encoded_bytes + 1)
+
+    def test_extraction_diagnostic_rejects_a_partial_write(self):
+        diagnostic = {
+            "stage": "completed_response_extraction", "kind": "usage_envelope",
+            "content_bytes": 60, "content_sha256": "1" * 64,
+        }
+        provenance = {
+            "reviewed_head": "a" * 40, "authorization_check_id": "9001",
+            "repository": "Verjson/.github", "pr_number": 7, "review_pass": 2,
+            "sensitive": False, "trusted_review_sha": "f" * 40,
+            "review_policy_sha256": "b" * 64, "prompt_sha256": "c" * 64,
+            "pr_metadata_sha256": "d" * 64, "pr_diff_sha256": "e" * 64,
+        }
+
+        output = MagicMock()
+        output.__enter__.return_value = output
+        output.write.side_effect = lambda encoded: len(encoded) - 1
+
+        with patch("builtins.open", return_value=output):
+            self.assertFalse(review.write_extraction_diagnostic_bundle(
+                "diagnostic.json", "deepseek-v4-flash", diagnostic, provenance,
+            ))
 
 
 if __name__ == "__main__":
