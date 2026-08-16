@@ -138,7 +138,7 @@ populate = next(step for step in doc["jobs"]["acquire-secretless-dependencies"][
                 if step.get("name") == "Populate verified private dependency cache")
 assert '${#expected_content[@]}' in populate["run"]
 assert 'private cache path must be fresh for this run attempt' in populate["run"]
-assert 'verify the caller grants packages: read' in populate["run"]
+assert 'when mapping github.token, the caller grants packages: read' in populate["run"]
 PY
 
 mkdir -p "$tmp/bin" "$tmp/acquire/cache/_cacache/content-v2/sha512" "$tmp/acquire/node_modules"
@@ -214,7 +214,7 @@ if PRIVATE_CACHE_ENTRIES="$tmp/forbidden/private-entries" \
     NPM_STUB_FAIL=true NPM_STUB_LOG="$tmp/forbidden/npm.log" PATH="$tmp/bin:$PATH" \
     bash "$tmp/populate.sh" >"$tmp/forbidden/output" 2>&1; then
   fail "a denied private-package download did not fail acquisition"
-elif grep -qF 'verify the caller grants packages: read' "$tmp/forbidden/output"; then
+elif grep -qF 'when mapping github.token, the caller grants packages: read' "$tmp/forbidden/output"; then
   pass "denied fresh acquisition reports the package authority boundary"
 else
   fail "denied fresh acquisition omitted actionable package authority diagnostics"

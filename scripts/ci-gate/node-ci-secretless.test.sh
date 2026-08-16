@@ -19,8 +19,8 @@ inputs = doc[True]["workflow_call"]["inputs"]
 secrets = doc[True]["workflow_call"]["secrets"]
 jobs = doc["jobs"]
 assert inputs["secretless-pr"]["default"] is False
-assert "Every caller must grant packages: read" in inputs["secretless-pr"]["description"]
-assert "Caller must grant packages: read" in secrets["NODE_AUTH_TOKEN"]["description"]
+assert "Callers mapping github.token must grant" in inputs["secretless-pr"]["description"]
+assert "When mapping github.token" in secrets["NODE_AUTH_TOKEN"]["description"]
 assert inputs["approved-internal-packages"]["default"] == ""
 assert inputs["approved-internal-scopes"]["default"] == "@verjson"
 

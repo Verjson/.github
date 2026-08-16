@@ -86,16 +86,20 @@ successful `npm ci` on the persistent runner used npm's default cross-run cache 
 not prove a fresh authenticated download; the fresh run-attempt cache correctly exposed
 the missing authority.
 
-The acquisition job now requests `packages: read`, and every caller must grant it.
-Reusable-workflow permissions cannot elevate the caller permission ceiling, even when
-`NODE_AUTH_TOKEN` is a dedicated package token rather than `GITHUB_TOKEN`. The package
-capability remains confined to the non-executing acquisition job: exact
+The acquisition job now requests `packages: read`. A caller mapping its
+`GITHUB_TOKEN` into `NODE_AUTH_TOKEN` must grant that permission because a reusable
+workflow cannot elevate the caller token's permission ceiling. A separately issued
+PAT or App token carries its own authority, but the canonical caller contract requires
+`packages: read` uniformly so its GitHub-token path cannot silently depend on runner
+state. The package capability remains confined to the non-executing acquisition job: exact
 scope/package/URL/integrity validation still precedes network access, repository
 lifecycle code still never runs there, and the build job remains credentialless with
 only `contents: read`.
 
 The acquisition cache path must not exist before the job populates it. This makes the
 validated content set evidence of a fresh authenticated request rather than a hit from
-persistent runner state. A denied download fails with a caller-permission diagnostic;
-there is no contents-only fallback because it would either be ineffective for
-`GITHUB_TOKEN` or move package authority into the repository-controlled build job.
+persistent runner state. A denied download reports both possible boundaries without
+claiming which caused it: the mapped credential must read every approved package and a
+mapped `GITHUB_TOKEN` requires caller `packages: read`. There is no contents-only
+`GITHUB_TOKEN` fallback because moving that token into repository-controlled execution
+would weaken the boundary without granting package authority.

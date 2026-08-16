@@ -72,8 +72,8 @@ on:
           Acquire approved private dependencies in a non-executing job, then run
           PR-controlled build and test code in a credentialless job. Intended
           only for pull_request validation; requires NODE_AUTH_TOKEN and
-          approved-internal-packages. Every caller must grant packages: read,
-          including callers that map a separate package token.
+          approved-internal-packages. Callers mapping github.token must grant
+          packages: read; the canonical contract requires it uniformly.
         required: false
         type: boolean
         default: false
@@ -230,7 +230,8 @@ on:
       NODE_AUTH_TOKEN:
         description: >-
           Token to read approved private packages and the optional auxiliary
-          repository. Caller must grant packages: read for the reusable job.
+          repository. When mapping github.token, the caller must grant packages:
+          read; the canonical contract requires it uniformly.
         required: false
       submodules-token:
         description: >-
@@ -625,7 +626,7 @@ jobs:
                   exit 1
                 }
               if ! npm cache add "$resolved" --cache "$NPM_CONFIG_CACHE" --no-audit --no-fund; then
-                echo "::error::fresh private-package acquisition failed; verify the caller grants packages: read and NODE_AUTH_TOKEN can read every approved package"
+                echo "::error::fresh private-package acquisition failed; verify NODE_AUTH_TOKEN can read every approved package and, when mapping github.token, the caller grants packages: read"
                 exit 1
               fi
             done < "$PRIVATE_CACHE_ENTRIES"

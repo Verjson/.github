@@ -1,0 +1,53 @@
+name: Node private package acquisition canary
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/node-ci.yml'
+      - '.github/workflows/node-private-package-canary.yml'
+
+permissions: {}
+
+jobs:
+  fresh-cache-add:
+    runs-on: ${{ fromJSON(vars.VERJSON_LANE_UNTRUSTED || '["ubuntu-24.04"]') }}
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - name: Acquire one fixed private package into a fresh cache
+        env:
+          EXPECTED_SHA512: 631b605f35b3a3cd62039fee1bb918157cf05ce45a3efe960ae36b87a4694ea44123b98f5db6f4d218c13e45d5fe2916c6a52793db3589501e5b22fd5ad9ef21
+          NODE_AUTH_TOKEN: ${{ github.token }}
+          NPM_CONFIG_CACHE: ${{ runner.temp }}/node-private-package-canary-${{ github.run_id }}-${{ github.run_attempt }}
+          NPM_CONFIG_GLOBALCONFIG: ${{ runner.temp }}/node-private-package-canary-empty-global.npmrc
+          NPM_CONFIG_USERCONFIG: ${{ runner.temp }}/node-private-package-canary.npmrc
+          PACKAGE_URL: https://npm.pkg.github.com/download/@verjson/eslint-config/0.1.5/82a9d2eaf6862dc9210f7b368618ef153976758c
+        run: |
+          set -euo pipefail
+          umask 077
+          mkdir "$NPM_CONFIG_CACHE"
+          : > "$NPM_CONFIG_GLOBALCONFIG"
+          # shellcheck disable=SC2016
+          printf '%s\n' '//npm.pkg.github.com/:_authToken=${NODE_AUTH_TOKEN}' > "$NPM_CONFIG_USERCONFIG"
+          npm cache add "$PACKAGE_URL" --cache "$NPM_CONFIG_CACHE" --no-audit --no-fund
+          content="$NPM_CONFIG_CACHE/_cacache/content-v2/sha512/${EXPECTED_SHA512:0:2}/${EXPECTED_SHA512:2:2}/${EXPECTED_SHA512:4}"
+          [ -f "$content" ] || {
+            echo "::error::authenticated cache-add did not produce the pinned package digest"
+            exit 1
+          }
+          [ "$(find "$NPM_CONFIG_CACHE/_cacache/content-v2" -type f | wc -l)" -eq 1 ] || {
+            echo "::error::canary cache contains content outside the one pinned package"
+            exit 1
+          }
+      - name: Remove canary credential and cache state
+        if: always()
+        run: |
+          rm -rf "$RUNNER_TEMP/node-private-package-canary-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          rm -f "$RUNNER_TEMP/node-private-package-canary.npmrc" \
+            "$RUNNER_TEMP/node-private-package-canary-empty-global.npmrc"
