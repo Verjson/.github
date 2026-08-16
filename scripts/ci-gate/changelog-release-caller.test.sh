@@ -99,14 +99,13 @@ if problems:
 
 verify, snapshot, publish = jobs["verify"], jobs["snapshot"], jobs["publish"]
 
-header_lines = (
-    "# The verification suite runs after package.json has been stamped to the",
-    "# dispatched version. Its expected version must be read dynamically from",
-    "# package.json; never assert a hardcoded version literal.",
-)
-if any(line not in raw for line in header_lines):
-    bad("the generated header does not warn adopters that verification uses the "
-        "stamped dispatch version and version assertions must read package.json (#862)")
+header, trigger_separator, _ = raw.partition("\non:")
+header_warning = """# The verification suite runs after package.json has been stamped to the
+# dispatched version. Its expected version must be read dynamically from
+# package.json; never assert a hardcoded version literal. This order is
+# intentional: the suite verifies the exact package metadata that will ship."""
+if not trigger_separator or header_warning not in header:
+    bad("the stamped-version warning is not inside the generated header before `on:` (#862)")
 
 
 def needs_of(job):
@@ -340,13 +339,18 @@ else:
             "NODE_AUTH_TOKEN from secrets.NODE_AUTH_TOKEN (#569)")
     if str(suite_env.get("PACKAGE_VERSION") or "").strip() != "${{ steps.release-version.outputs.package-version }}":
         bad("the release verification suite cannot diagnose the stamped dispatch version (#862)")
-    diagnostic = (
-        "Release verification failed against stamped dispatch version $PACKAGE_VERSION. "
-        "Check for the hardcoded-version footgun:"
+    diagnostic_command = (
+        'echo "::error::Release verification failed against stamped dispatch version '
+        '$PACKAGE_VERSION. Check for the hardcoded-version footgun: version assertions '
+        'can pass in pull requests and local runs, then fail only here; read the expected '
+        'version dynamically from package.json."'
     )
-    if diagnostic not in str(suite_step.get("run") or ""):
-        bad("the release verification failure does not name the stamped version and "
-            "hardcoded-version footgun (#862)")
+    if not any(
+        line.strip() == diagnostic_command
+        for line in str(suite_step.get("run") or "").splitlines()
+    ):
+        bad("the release verification step does not execute the canonical "
+            "stamped-version failure diagnostic (#862)")
 for job_name, job in jobs.items():
     job_token = str((job.get("env") or {}).get("NODE_AUTH_TOKEN") or "")
     if job_token == private_token:
@@ -444,11 +448,24 @@ drop_verify_hook() { sed -i '/scripts\/release-verify.sh/d' "$1"; }
 drop_verify_suite_token() {
   sed -i '/^      - name: Run the release verification suite$/,+2{/NODE_AUTH_TOKEN:/d;}' "$1"
 }
-drop_stamped_version_header() {
-  sed -i '/^# The verification suite runs after package.json has been stamped to the$/,+3d' "$1"
+shadow_stamped_version_header() {
+  python3 - "$1" <<'PY'
+import sys
+
+path = sys.argv[1]
+text = open(path, encoding="utf-8").read()
+warning = """# The verification suite runs after package.json has been stamped to the
+# dispatched version. Its expected version must be read dynamically from
+# package.json; never assert a hardcoded version literal. This order is
+# intentional: the suite verifies the exact package metadata that will ship.
+"""
+if text.count(warning) != 1:
+    raise SystemExit("stamped-version header fixture no longer matches generated output")
+open(path, "w", encoding="utf-8").write(text.replace(warning, "", 1) + "\n" + warning)
+PY
 }
-drop_stamped_version_diagnostic() {
-  sed -i '/Release verification failed against stamped dispatch version/d' "$1"
+noop_stamped_version_diagnostic() {
+  sed -i 's|echo "::error::Release verification failed against stamped dispatch version|: "::error::Release verification failed against stamped dispatch version|' "$1"
 }
 strip_provenance() { sed -i '/gen-changelog-caller.sh release-node/d' "$1"; }
 drop_publish_token() { sed -i '/^      NODE_AUTH_TOKEN: /d' "$1"; }
@@ -495,8 +512,14 @@ expect_shape_rejection "verifying a ref other than github.sha" verify_a_differen
 expect_shape_rejection "a verify job that runs no suite" hollow_out_the_suite
 expect_shape_rejection "a verify job with no release-verify.sh hook" drop_verify_hook
 expect_shape_rejection "a release verification suite without private-package auth (#569)" drop_verify_suite_token
-expect_shape_rejection "a caller without the stamped-version header warning (#862)" drop_stamped_version_header
-expect_shape_rejection "a suite without the stamped-version failure diagnostic (#862)" drop_stamped_version_diagnostic
+expect_shape_rejection "stamped-version warning text shadowed outside the generated header (#862)" shadow_stamped_version_header
+grep -qF 'the stamped-version warning is not inside the generated header before `on:` (#862)' "$tmp/shape.out" \
+  && pass "the shape validator rejects the shadowed warning for leaving the header" \
+  || fail "the shadowed warning failed shape validation for another reason: $(cat "$tmp/shape.out")"
+expect_shape_rejection "a no-op stamped-version failure diagnostic (#862)" noop_stamped_version_diagnostic
+grep -qF 'does not execute the canonical stamped-version failure diagnostic (#862)' "$tmp/shape.out" \
+  && pass "the shape validator rejects the no-op diagnostic as non-executable" \
+  || fail "the no-op diagnostic failed shape validation for another reason: $(cat "$tmp/shape.out")"
 expect_shape_rejection "a caller carrying no generator provenance" strip_provenance
 expect_shape_rejection "a publish job without its private dependency token" drop_publish_token
 expect_shape_rejection "a publish job without its generated Node version" drop_publish_node_version

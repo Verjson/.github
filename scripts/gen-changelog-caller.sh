@@ -1115,16 +1115,16 @@ elif set(triggers) != {"workflow_dispatch"}:
         % ", ".join(sorted(set(triggers)) or ["nothing"])
     )
 
-header_lines = (
-    "# The verification suite runs after package.json has been stamped to the",
-    "# dispatched version. Its expected version must be read dynamically from",
-    "# package.json; never assert a hardcoded version literal.",
-)
 raw = "\n".join(raw_lines)
-if any(line not in raw for line in header_lines):
+header, trigger_separator, _ = raw.partition("\non:")
+header_warning = """# The verification suite runs after package.json has been stamped to the
+# dispatched version. Its expected version must be read dynamically from
+# package.json; never assert a hardcoded version literal. This order is
+# intentional: the suite verifies the exact package metadata that will ship."""
+if not trigger_separator or header_warning not in header:
     problems.append(
-        "does not warn adopters that verification uses the stamped dispatch "
-        "version and version assertions must read package.json (#862)"
+        "does not carry the stamped-version warning inside the generated header "
+        "before `on:` (#862)"
     )
 
 GITHUB_TOKEN = re.compile(
@@ -1196,18 +1196,6 @@ else:
         problems.append(
             "cannot diagnose the stamped dispatch version when verification fails (#862)"
         )
-    diagnostic = (
-        "Release verification failed against stamped dispatch version $PACKAGE_VERSION. "
-        "Check for the hardcoded-version footgun:"
-    )
-    if verification_step is None or not any(
-        diagnostic in entry for entry in verification_step
-    ):
-        problems.append(
-            "does not name the stamped version and hardcoded-version footgun when "
-            "verification fails (#862)"
-        )
-
 for index, line in enumerate(lines):
     if "NODE_AUTH_TOKEN" not in line or not PRIVATE_NODE_TOKEN.search(line):
         continue
@@ -1430,6 +1418,37 @@ while IFS= read -r release_workflow; do
   # fallback would put every adopter without it on the untested path.
   python3 "$work/release-shape.py" "$release_workflow" \
     || fail "$release_workflow: see above"
+
+  # Text presence is not behavior: a no-op shell command can carry the entire
+  # diagnostic and emit nothing. Execute the generated failure path with a
+  # failing repository hook and require its original status and safe output.
+  verification_fixture="$(mktemp -d "$work/release-verification.XXXXXX")"
+  verification_script="$verification_fixture/verify.sh"
+  awk '
+    /^      - name: Run the release verification suite$/ { found = 1; next }
+    found && /^        run: \|$/ { capture = 1; next }
+    capture && /^      - / { exit }
+    capture { sub(/^          /, ""); print }
+  ' "$release_workflow" >"$verification_script"
+  [ -s "$verification_script" ] \
+    || fail "$release_workflow has no executable release verification body"
+  mkdir -p "$verification_fixture/scripts"
+  printf '%s\n' '#!/usr/bin/env bash' 'exit 23' \
+    >"$verification_fixture/scripts/release-verify.sh"
+  chmod +x "$verification_fixture/scripts/release-verify.sh"
+  verification_rc=0
+  (
+    cd "$verification_fixture"
+    PACKAGE_VERSION=9.8.7 NODE_AUTH_TOKEN=do-not-print-this \
+      bash -eo pipefail "$verification_script"
+  ) >"$verification_fixture/output" 2>&1 || verification_rc=$?
+  [ "$verification_rc" -eq 23 ] \
+    || fail "$release_workflow does not preserve a failing suite's exit status (#862)"
+  grep -qF 'Release verification failed against stamped dispatch version 9.8.7. Check for the hardcoded-version footgun:' \
+    "$verification_fixture/output" \
+    || fail "$release_workflow does not emit the stamped-version failure diagnostic (#862)"
+  ! grep -qF 'do-not-print-this' "$verification_fixture/output" \
+    || fail "$release_workflow exposes the verification credential in its failure diagnostic (#862)"
 done <<RELEASE_WORKFLOWS
 $release_workflows
 RELEASE_WORKFLOWS
