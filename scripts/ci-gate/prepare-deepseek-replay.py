@@ -78,8 +78,9 @@ def prepare(source: Path, output: Path, transport: str, usable: str, publication
     bundle = json.loads(raw)
     provenance = bundle.get("provenance", {})
     if bundle.get("purpose") == "extraction-diagnostic":
+        staged_raw = raw if raw.endswith(b"\n") else raw + b"\n"
         if (
-            len(raw) > MAX_DIAGNOSTIC_BYTES
+            len(staged_raw) > MAX_DIAGNOSTIC_BYTES
             or transport != "failure" or usable == "true"
             or set(bundle) != {
                 "schema", "purpose", "authorizing", "cacheable", "transport",
@@ -96,7 +97,7 @@ def prepare(source: Path, output: Path, transport: str, usable: str, publication
         ):
             raise ValueError("extraction diagnostic violates its non-authorizing provenance contract")
         output.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-        output.write_bytes(raw if raw.endswith(b"\n") else raw + b"\n")
+        output.write_bytes(staged_raw)
         return True
     if transport != "success" or (usable == "true" and publication != "failure"):
         return False

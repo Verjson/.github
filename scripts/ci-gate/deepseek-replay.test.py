@@ -5,6 +5,7 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = Path(__file__).with_name("prepare-deepseek-replay.py")
@@ -157,6 +158,30 @@ class DeepSeekReplayTest(unittest.TestCase):
 
             self.assertTrue(available)
             self.assertLess(output.stat().st_size, 16 * 1024)
+
+    def test_staged_extraction_diagnostic_limit_counts_a_normalized_newline(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source, output = root / "source.json", root / "output.json"
+            raw = json.dumps(extraction_bundle(), separators=(",", ":")).encode("utf-8")
+            source.write_bytes(raw)
+
+            with patch.object(replay, "MAX_DIAGNOSTIC_BYTES", len(raw)), self.assertRaisesRegex(
+                ValueError, "non-authorizing provenance contract",
+            ):
+                replay.prepare(
+                    source, output, "failure", "false", "success", "{}", HEAD, "9001", MODEL,
+                    "Verjson/.github", 7, 1, False, "f" * 40,
+                )
+
+            with patch.object(replay, "MAX_DIAGNOSTIC_BYTES", len(raw) + 1):
+                available = replay.prepare(
+                    source, output, "failure", "false", "success", "{}", HEAD, "9001", MODEL,
+                    "Verjson/.github", 7, 1, False, "f" * 40,
+                )
+            self.assertTrue(available)
+            self.assertEqual(output.stat().st_size, len(raw) + 1)
+            self.assertTrue(output.read_bytes().endswith(b"\n"))
 
     def test_two_passes_stage_distinct_extraction_causes_without_collapsing(self):
         with tempfile.TemporaryDirectory() as directory:
