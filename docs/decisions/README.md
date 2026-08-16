@@ -11,6 +11,7 @@ Reverse-chronological index of org-level decisions.
 <!-- BEGIN ADR INDEX -->
 | # | Date | Decision |
 |---|------|----------|
+| [0105](0105-preserve-ai-review-across-head-supersession/README.md) | 2026-08-16 | Preserve AI review across head supersession |
 | [0104](0104-trusted-renovate-changelog-attribution/README.md) | 2026-08-16 | Trusted automation attributes hosted Renovate changes |
 | [0103](0103-os-scoped-hosted-lanes/README.md) | 2026-08-15 | OS-scoped hosted lanes are repository-scoped, bounded, and fail closed |
 | [0102](0102-explicit-impact-for-new-changelog-fragments/README.md) | 2026-08-15 | Require explicit impact for new changelog fragments |
