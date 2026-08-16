@@ -371,8 +371,9 @@ only path that can mutate release history.
 
 A consumer needs three files, and they must pin the **same** commit — plus a
 fourth if it publishes something and an optional fifth when it adopts release
-proposals. Generate all of them rather than writing them; the reasoning is in
-the generator's header.
+proposals. Repositories using hosted Renovate may add the generated attribution
+caller as a sixth file. Generate all of them rather than writing them; the
+reasoning is in the generator's header.
 
 ```bash
 PIN=3495f24c2cd81be7cc94b90c1c4650ca272102b1
@@ -382,6 +383,9 @@ scripts/gen-changelog-caller.sh workflow "$PIN" > .github/workflows/changelog.ym
 scripts/gen-changelog-caller.sh generated-artifacts "$PIN" > .github/workflows/changelog.yml
 scripts/gen-changelog-caller.sh renderer "$PIN" > scripts/render-next.sh
 scripts/gen-changelog-caller.sh contract-test "$PIN" > scripts/changelog-contract.test.sh
+# Hosted Renovate repositories add this trusted pull_request_target caller. It
+# adds a fragment through the Git Data API when the bot did not provide one.
+scripts/gen-changelog-caller.sh renovate-attribution "$PIN" > .github/workflows/renovate-changelog.yml
 # Only if the repository publishes a Node package. Adopters with nothing to
 # publish keep having no release caller at all.
 scripts/gen-changelog-caller.sh release-node "$PIN" > .github/workflows/release.yml
@@ -411,8 +415,12 @@ At a pin containing #524, `check-pr` requires a newly added, valid `NEXT/`
 fragment whenever a supported dependency manifest or lockfile changes. This
 includes bot-authored updates: actor identity is not an exemption. To acquire
 the rule, fetch one immutable Verjson/.github commit and run the `workflow`,
-`renderer`, and `contract-test` commands above with that exact `PIN`; never
-patch an adopter's generated caller or contract test locally.
+`renderer`, `contract-test`, and (for hosted Renovate) `renovate-attribution`
+commands above with that exact `PIN`; never patch an adopter's generated caller
+or contract test locally. The attribution workflow accepts only same-repository
+`renovate/*` pull requests authored by the Renovate App, parses its update table
+strictly, and never checks out or executes pull-request-head code. It no-ops when
+the pull request already adds a valid fragment.
 
 At a pin containing #800, `validate --base <base> --head <head>` also requires
 explicit `impact` metadata on each fragment the pull request adds. Acquire the
