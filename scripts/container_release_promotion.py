@@ -37,6 +37,8 @@ def release(candidate: dict, config: dict, state: dict, version: str) -> dict:
     sbom_receipts = state.get("sbom")
     if not isinstance(release_context, dict) or not isinstance(timestamps, dict) or not isinstance(provenance, dict) or not isinstance(sbom_receipts, dict):
         raise ManifestError("release identity, timestamps, and verified provenance are required")
+    if not re.fullmatch(r"[0-9a-f]{40}", str(release_context.get("sourceCommit", ""))):
+        raise ManifestError("release source commit must be a 40-hex commit")
     previous = state.get("previousRelease")
     if previous is not None:
         if not isinstance(previous, dict) or not SEMVER.fullmatch(str(previous.get("releaseVersion", ""))):
@@ -70,7 +72,7 @@ def release(candidate: dict, config: dict, state: dict, version: str) -> dict:
     if not workflow.startswith(path_prefix):
         raise ManifestError("candidate workflow is outside the contract repository")
     return {
-        "schemaVersion": 1,
+        "schemaVersion": 2,
         "releaseVersion": version,
         "candidateVersion": candidate["candidateVersion"],
         "candidateManifestDigest": candidate_digest,

@@ -74,8 +74,8 @@ def validate_manifest(manifest: dict[str, Any], config: dict[str, Any]) -> None:
     if len(private_packages) != len(set(private_packages)):
         raise ManifestError("config.privateNodePackages contains duplicate package names")
 
-    if manifest.get("schemaVersion") != 1:
-        raise ManifestError("manifest.schemaVersion must be 1")
+    if manifest.get("schemaVersion") != 2:
+        raise ManifestError("manifest.schemaVersion must be 2")
     if manifest.get("kind") != "container-candidate":
         raise ManifestError("manifest.kind must be container-candidate")
 
@@ -160,13 +160,10 @@ def validate_manifest(manifest: dict[str, Any], config: dict[str, Any]) -> None:
         sbom = actual.get("sbom")
         if not isinstance(sbom, dict):
             raise ManifestError(f"sbom must be an object for variant {variant!r}")
-        if sbom.get("predicateType") != "https://spdx.dev/Document":
-            raise ManifestError(f"sbom predicate differs for variant {variant!r}")
-        if sbom.get("ociSubject") != f"{repository}@{actual['indexDigest']}":
-            raise ManifestError(f"sbom OCI subject differs for variant {variant!r}")
-        sbom_subject = _digest(sbom.get("subjectDigest"), f"manifest.images[{variant!r}].sbom.subjectDigest")
-        if provenance_subject != actual["indexDigest"] or sbom_subject != actual["indexDigest"]:
-            raise ManifestError(f"attestations name a different subject for variant {variant!r}")
+        if sbom.get("predicateType") != "https://spdx.dev/Document/v2.3":
+            raise ManifestError(f"SBOM predicate differs for variant {variant!r}")
+        if provenance_subject != actual["indexDigest"]:
+            raise ManifestError(f"provenance names a different subject for variant {variant!r}")
 
         base_variant = expected.get("baseVariant")
         if base_variant is not None:
@@ -195,6 +192,32 @@ def validate_manifest(manifest: dict[str, Any], config: dict[str, Any]) -> None:
             )
         for identity, platform in actual_platforms.items():
             _digest(platform.get("digest"), f"manifest.images[{variant!r}].platforms[{identity!r}].digest")
+
+        sbom_attestations = _index_unique(
+            _objects(
+                sbom.get("attestations"),
+                f"manifest.images[{variant!r}].sbom.attestations",
+            ),
+            f"manifest.images[{variant!r}].sbom.attestations",
+            _platform_identity,
+        )
+        if sbom_attestations.keys() != actual_platforms.keys():
+            raise ManifestError(
+                f"SBOM platform attestations differ for variant {variant!r}"
+            )
+        for identity, attestation in sbom_attestations.items():
+            _text(
+                attestation.get("attestationId"),
+                f"manifest.images[{variant!r}].sbom.attestations[{identity!r}].attestationId",
+            )
+            digest = _digest(
+                attestation.get("digest"),
+                f"manifest.images[{variant!r}].sbom.attestations[{identity!r}].digest",
+            )
+            if digest != actual_platforms[identity]["digest"]:
+                raise ManifestError(
+                    f"SBOM digest differs for variant {variant!r} platform {identity!r}"
+                )
 
 
 def _load(path: Path) -> dict[str, Any]:

@@ -34,6 +34,7 @@ on:
   pull_request:
 
 permissions:
+  attestations: write
   contents: read
   packages: write
   id-token: write
@@ -81,6 +82,7 @@ grep -qx '# Contract: $ref' "\$validator" || fail "validator contract pin differ
 grep -q 'uses: Verjson/.github/.github/workflows/container-candidate.yml@$ref' "\$caller" || fail "caller does not use the pinned reusable workflow"
 grep -q 'contract-ref: $ref' "\$caller" || fail "caller does not pass the shared pin"
 grep -q 'acquisition-sha256: $acquisition_sha256' "\$caller" || fail "caller does not pin the acquisition implementation digest"
+grep -q '^  attestations: write$' "\$caller" || fail "caller cannot publish signed attestations"
 [ "\$(sha256sum "\$caller" | cut -d' ' -f1)" = "$workflow_digest" ] || fail "generated caller was edited"
 [ "\$(sha256sum "\$validator" | cut -d' ' -f1)" = "$validator_digest" ] || fail "generated validator was edited"
 grep -q '^  pull_request:' "\$caller" || fail "pull requests must exercise the build-only path"

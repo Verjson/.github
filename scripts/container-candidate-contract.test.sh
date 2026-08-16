@@ -243,14 +243,18 @@ grep -q "github.event_name == 'pull_request'" "$workflow"
 grep -q "github.event_name == 'push'.*github.event.repository.default_branch" "$workflow"
 grep -q 'packages: write' "$workflow"
 grep -q 'id-token: write' "$workflow"
+grep -q 'attestations: write' "$workflow"
 grep -q 'actions/attest-build-provenance@[0-9a-f]\{40\}' "$workflow"
+grep -q 'actions/attest@[0-9a-f]\{40\}' "$workflow"
+grep -qF '.SPDX | select(.spdxVersion == "SPDX-2.3"' "$workflow"
+grep -qF 'predicateType:"https://spdx.dev/Document/v2.3"' "$workflow"
 grep -q 'commit identity already records a different digest' "$workflow"
 grep -q 'imagetools create -t "\$commit_tag"' "$workflow"
 if grep -Eq 'GITHUB_WORKFLOW_(REF|SHA)|github\.workflow_(ref|sha)' "$workflow"; then
   echo "called workflows cannot prove their own pin through the caller-associated github workflow identity" >&2
   exit 1
 fi
-if awk '/^  pull-request-build:/{seen=1} /^  publish-base:/{seen=0} seen' "$workflow" | grep -Eq 'packages: write|id-token: write|docker/login-action|push: true'; then
+if awk '/^  pull-request-build:/{seen=1} /^  publish-base:/{seen=0} seen' "$workflow" | grep -Eq 'attestations: write|packages: write|id-token: write|docker/login-action|push: true'; then
   echo "pull-request build exposes a publication capability" >&2
   exit 1
 fi
