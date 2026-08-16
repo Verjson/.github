@@ -1632,6 +1632,29 @@ class ChangelogContractTests(unittest.TestCase):
         with self.assertRaisesRegex(changelog.ChangelogError, "already exists"):
             changelog.release(self.root, "v1.0.0", [])
 
+    def test_release_refuses_an_existing_tag_before_mutating_the_repository(self) -> None:
+        self.init_git()
+        selected = fragment(self.root, "2026-07-30-issue-249-contract.md")
+        self.commit_all("initial")
+        run(self.root, "git", "tag", "-a", "v1.0.0", "-m", "Existing release")
+        initial_head = run(self.root, "git", "rev-parse", "HEAD")
+        initial_tree = run(self.root, "git", "rev-parse", "HEAD^{tree}")
+        initial_fragment = selected.read_bytes()
+
+        with self.assertRaisesRegex(changelog.ChangelogError, "tag already exists"):
+            changelog.release(self.root, "v1.0.0", [])
+
+        self.assertEqual(initial_head, run(self.root, "git", "rev-parse", "HEAD"))
+        self.assertEqual(initial_tree, run(self.root, "git", "write-tree"))
+        self.assertEqual(
+            initial_head,
+            run(self.root, "git", "rev-list", "-n", "1", "v1.0.0"),
+        )
+        self.assertEqual(initial_fragment, selected.read_bytes())
+        self.assertFalse((self.root / "CHANGELOG/v1.0.0.md").exists())
+        self.assertFalse((self.root / "CHANGELOG.md").exists())
+        self.assertEqual("", run(self.root, "git", "status", "--porcelain"))
+
     def test_release_refuses_a_version_smaller_than_selected_impact_without_mutation(self) -> None:
         self.init_git()
         snapshots = self.root / "CHANGELOG"
