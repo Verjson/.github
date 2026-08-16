@@ -143,6 +143,7 @@ case "$1 $2" in
   "pr edit")    echo "EDIT ${args[*]}" >>"$ACTIONLOG" ;;
   "pr merge")   echo "MERGE" >>"$ACTIONLOG" ;;
   "api --paginate") printf '[]' ;;
+  "api repos/Verjson/foo/pulls/7") printf '%s\n' "$CURRENT_HEAD" ;;
 esac
 exit 0
 GH
@@ -166,6 +167,7 @@ run_submit() {
   : >"$ACTIONLOG"; : >"$BODYFILE"; : >"$COMMENTFILE"; : >"$GITHUB_OUTPUT"
   export VERDICT="$1" BUDGET_EXHAUSTED="$2" CHANGED_LINES="${3-1586}" BUDGET_USD="${4-0.60}"
   export PASS_CAP_EXHAUSTED="${5-false}" REVIEW_PASS_COUNT="${6-1}"
+  export CURRENT_HEAD="$HEAD_SHA" SUPERSEDED=false
   bash -eo pipefail "$submit" >/dev/null 2>&1
   echo "rc=$?"
 }
@@ -299,7 +301,7 @@ rc=$(run_single_outcome "$tmp/single-budget.json" false)
   || fail "single budget exhaustion was not actionable ($rc): $(cat "$tmp/outcome.log")"
 
 rc=$(run_single_outcome "$tmp/single-budget.json" false success 2)
-{ [ "$rc" = "rc=0" ] && olog 'two-pass maximum is exhausted' && ! olog 'remaining paid attempt'; } \
+{ [ "$rc" = "rc=0" ] && olog 'exact head exhausted its two-pass maximum' && ! olog 'remaining paid attempt'; } \
   && pass 'second budget-exhausted pass refuses further model review' \
   || fail "second-pass budget exhaustion invited a third review: $(cat "$tmp/outcome.log")"
 

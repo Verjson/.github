@@ -21,9 +21,9 @@ name: AI review + auto-merge
 #          can't hold back). No model, no gate runner — Renovate's rebase once
 #          the release ages re-enters classify for a real review.
 #   2. Model policy is immutable receipt data. Every provider invocation first
-#      reserves a PR-visible cumulative pass slot. DeepSeek Pro runs first and
+#      reserves an exact-head, PR-visible pass slot. DeepSeek Pro runs first and
 #      Flash runs only when Pro yields no usable verdict and pass 2 remains.
-#      Any usable verdict ends the cascade; no PR can consume a third pass.
+#      Any usable verdict ends the cascade; no exact head can consume a third pass.
 #   3. Reviews run on every ready-PR revision (incl. synchronize) so a
 #      Renovate rebase re-fires the gate and the required check stays fresh on
 #      the new head; cost stays bounded because fast-lane synchronizes invoke
@@ -874,6 +874,21 @@ jobs:
         run: |
           set -euo pipefail
           app_login="${EXPECTED_APP_SLUG}[bot]"
+          current_head="$(GH_TOKEN="$ACTIONS_TOKEN" gh api "repos/$TARGET_REPO/pulls/$PR_NUMBER" --jq '.head.sha // ""')"
+          if [ "$current_head" != "$EXPECTED_HEAD_SHA" ]; then
+            {
+              echo "allowed=false"
+              echo "count=0"
+              echo "superseded=true"
+              echo "cap_exhausted=false"
+            } >>"$GITHUB_OUTPUT"
+            echo "::warning::phase=model result=superseded expected_head=$EXPECTED_HEAD_SHA current_head=$current_head — refusing to reserve a paid pass for a stale head"
+            exit 0
+          fi
+          {
+            echo "superseded=false"
+            echo "cap_exhausted=false"
+          } >>"$GITHUB_OUTPUT"
           reviews="$(gh api --paginate "repos/$TARGET_REPO/pulls/$PR_NUMBER/reviews?per_page=100" | jq -s 'add // []')"
           pass_marker_re='ai-review-pass:v2:([12])/2 pr:([1-9][0-9]*) check:([1-9][0-9]*) head:([0-9a-f]{40}) run:([1-9][0-9]*) attempt:([1-9][0-9]*) provider:([a-z0-9_-]+) model:([A-Za-z0-9._-]+)'
           explicit_marker_re='ai-review-explicit:v1 pr:([1-9][0-9]*) check:([1-9][0-9]*) head:([0-9a-f]{40}) run:([1-9][0-9]*) attempt:([1-9][0-9]*) provider:([a-z0-9_-]+) model:([A-Za-z0-9._-]+)'
@@ -890,6 +905,7 @@ jobs:
               continue
             fi
             [ "$marker_pr" = "$PR_NUMBER" ] && [ "$marker_head" = "$review_head" ] || continue
+            [ "$marker_head" = "$EXPECTED_HEAD_SHA" ] || continue
             check="$(GH_TOKEN="$ACTIONS_TOKEN" gh api "repos/$TARGET_REPO/check-runs/$marker_check")"
             jq -e --argjson app_id "$EXPECTED_APP_ID" --arg slug "$EXPECTED_APP_SLUG" \
               --arg head "$marker_head" --arg repo "$TARGET_REPO" --arg pr "$PR_NUMBER" '
@@ -903,13 +919,13 @@ jobs:
               explicit_receipt_consumed=true
             fi
           done < <(jq -r --arg login "$app_login" '.[] | select(.state == "COMMENTED" and .user.login == $login) | [.commit_id, .body] | @tsv' <<<"$reviews")
-          consumed="$(python3 "$RUNNER_TEMP/review-attempt-count.py" --app-login "$app_login" --pr-number "$PR_NUMBER" <<<"$reviews")"
+          consumed="$(python3 "$RUNNER_TEMP/review-attempt-count.py" --app-login "$app_login" --pr-number "$PR_NUMBER" --head-sha "$EXPECTED_HEAD_SHA" <<<"$reviews")"
           [[ "$consumed" =~ ^[0-9]+$ ]] || exit 1
           # One rollout attempt predates App-authored reservation reviews. Count
           # it only after independently revalidating its immutable workflow run,
           # exact App-owned arm check, PR, and head. This narrowly bound migration
           # record prevents corrected PR #769 from receiving two more calls.
-          if [ "$TARGET_REPO:$PR_NUMBER" = "Verjson/.github:769" ]; then
+          if [ "$TARGET_REPO:$PR_NUMBER:$EXPECTED_HEAD_SHA" = "Verjson/.github:769:1e7762067a23edcef7f36c1687e94a277f4e6ccf" ]; then
             legacy_run="$(GH_TOKEN="$ACTIONS_TOKEN" gh api "repos/$TARGET_REPO/actions/runs/31660690749")"
             legacy_check="$(GH_TOKEN="$ACTIONS_TOKEN" gh api "repos/$TARGET_REPO/check-runs/94324686490")"
             legacy_jobs="$(GH_TOKEN="$ACTIONS_TOKEN" gh api "repos/$TARGET_REPO/actions/runs/31660690749/jobs?per_page=100")"
@@ -938,15 +954,20 @@ jobs:
             consumed=$((consumed + 1))
           fi
           if [ "${EXPLICIT_REREVIEW:-false}" = true ] && [ "$explicit_receipt_consumed" = true ]; then
-            echo "allowed=false" >>"$GITHUB_OUTPUT"
-            echo "count=$consumed" >>"$GITHUB_OUTPUT"
+            {
+              echo "allowed=false"
+              echo "count=$consumed"
+            } >>"$GITHUB_OUTPUT"
             echo "::error::this explicit authorization check already reserved its one diagnostic pass; apply a new authorized re-review label"
             exit 0
           fi
           if [ "${EXPLICIT_REREVIEW:-false}" != true ] && [ "$consumed" -ge 2 ]; then
-            echo "allowed=false" >>"$GITHUB_OUTPUT"
-            echo "count=$consumed" >>"$GITHUB_OUTPUT"
-            echo "::error::AI review pass cap exhausted ($consumed/2); refusing a third model invocation"
+            {
+              echo "allowed=false"
+              echo "count=$consumed"
+              echo "cap_exhausted=true"
+            } >>"$GITHUB_OUTPUT"
+            echo "::error::AI review exact-head pass cap exhausted ($consumed/2); refusing a third model invocation"
             exit 0
           fi
           next=$((consumed + 1))
@@ -961,7 +982,7 @@ jobs:
             marker="<!-- ai-review-pass:v2:${next}/2 pr:${PR_NUMBER} check:${AUTHORIZATION_CHECK_ID} head:${EXPECTED_HEAD_SHA} run:${GITHUB_RUN_ID} attempt:${GITHUB_RUN_ATTEMPT} provider:${PROVIDER} model:${MODEL} -->"
             body="🤖 **AI code review pass ${next}/2 consumed**
 
-          This cumulative pass slot is reserved before provider invocation, so a failed or inconclusive attempt still counts toward the two-pass PR maximum.
+          This pass slot is reserved before provider invocation, so a failed or inconclusive attempt still counts toward this exact head's two-pass maximum.
 
           $marker"
           fi
@@ -973,8 +994,10 @@ jobs:
           ' <<<"$created" >/dev/null || {
             echo "::error::dedicated App review reservation was not persisted exactly"; exit 1;
           }
-          echo "allowed=true" >>"$GITHUB_OUTPUT"
-          echo "count=$next" >>"$GITHUB_OUTPUT"
+          {
+            echo "allowed=true"
+            echo "count=$next"
+          } >>"$GITHUB_OUTPUT"
 
       - name: Prepare bounded review context
         id: prep
@@ -1269,17 +1292,35 @@ jobs:
           app_login="${EXPECTED_APP_SLUG}[bot]"
           consumed="${{ steps.reserve_1.outputs.count }}"
           [[ "$consumed" =~ ^[0-9]+$ ]] || exit 1
+          current_head="$(gh api "repos/$TARGET_REPO/pulls/$PR_NUMBER" --jq '.head.sha // ""')"
+          if [ "$current_head" != "$EXPECTED_HEAD_SHA" ]; then
+            {
+              echo "allowed=false"
+              echo "count=$consumed"
+              echo "superseded=true"
+              echo "cap_exhausted=false"
+            } >>"$GITHUB_OUTPUT"
+            echo "::warning::phase=model result=superseded expected_head=$EXPECTED_HEAD_SHA current_head=$current_head — refusing to reserve fallback for a stale head"
+            exit 0
+          fi
+          {
+            echo "superseded=false"
+            echo "cap_exhausted=false"
+          } >>"$GITHUB_OUTPUT"
           if [ "$consumed" -ge 2 ]; then
-            echo "allowed=false" >>"$GITHUB_OUTPUT"
-            echo "count=$consumed" >>"$GITHUB_OUTPUT"
-            echo "::notice::DeepSeek fallback suppressed because the PR has consumed $consumed/2 AI review passes"
+            {
+              echo "allowed=false"
+              echo "count=$consumed"
+              echo "cap_exhausted=true"
+            } >>"$GITHUB_OUTPUT"
+            echo "::notice::DeepSeek fallback suppressed because this exact head has consumed $consumed/2 AI review passes"
             exit 0
           fi
           next=$((consumed + 1))
           marker="<!-- ai-review-pass:v2:${next}/2 pr:${PR_NUMBER} check:${AUTHORIZATION_CHECK_ID} head:${EXPECTED_HEAD_SHA} run:${GITHUB_RUN_ID} attempt:${GITHUB_RUN_ATTEMPT} provider:${PROVIDER} model:${MODEL} -->"
           body="🤖 **AI code review pass ${next}/2 consumed**
 
-          The first pass produced no usable verdict. This fallback slot is reserved before invocation and counts even if the provider attempt fails or is inconclusive.
+          The first pass produced no usable verdict. This exact-head fallback slot is reserved before invocation and counts even if the provider attempt fails or is inconclusive.
 
           $marker"
           created="$(gh api --method POST "repos/$TARGET_REPO/pulls/$PR_NUMBER/reviews" \
@@ -1290,8 +1331,10 @@ jobs:
           ' <<<"$created" >/dev/null || {
             echo "::error::dedicated App fallback reservation was not persisted exactly"; exit 1;
           }
-          echo "allowed=true" >>"$GITHUB_OUTPUT"
-          echo "count=$next" >>"$GITHUB_OUTPUT"
+          {
+            echo "allowed=true"
+            echo "count=$next"
+          } >>"$GITHUB_OUTPUT"
 
       - name: DeepSeek review pass 2
         id: deepseek_fallback
@@ -1396,7 +1439,7 @@ jobs:
           # Say in words what the red `error_max_budget_usd` annotation means.
           retry_guidance='A maintainer may apply re-review to authorize the remaining paid attempt.'
           if [[ "${PASS_COUNT:-0}" =~ ^[2-9][0-9]*$ ]]; then
-            retry_guidance='The PR-wide two-pass maximum is exhausted; no further model review is allowed.'
+            retry_guidance='This exact head exhausted its two-pass maximum; no further model review is allowed for it.'
           fi
           if [ "$budget_exhausted" = true ]; then
             echo "::error::phase=model budget_exhausted=true outcome=blocked — the paid review hit its cost cap; no automatic retry is allowed. The gate blocks this PR. $retry_guidance"
@@ -1420,7 +1463,7 @@ jobs:
 
       - name: Submit deterministic PR review
         id: submit
-        if: needs.preflight.outputs.lane == 'ai'
+        if: always() && needs.preflight.outputs.lane == 'ai'
         env:
           GH_TOKEN: ${{ github.token }}
           # On a base-merge-only re-fire (#120) the model never ran; reuse the
@@ -1442,12 +1485,23 @@ jobs:
           # verdict even if the action surfaced schema-valid filler (#441).
           SELECTED_PASS_TERMINAL_ERROR: ${{ steps.retry_outcome.outputs.selected_pass_terminal_error }}
           PERMISSION_DENIALS: ${{ steps.retry_outcome.outputs.permission_denials }}
-          PASS_CAP_EXHAUSTED: ${{ steps.rereview.outputs.skip_model != 'true' && (steps.reserve_1.outputs.allowed == 'false' || steps.reserve_1.outputs.count == '2' || steps.reserve_2.outputs.count == '2') }}
+          PASS_CAP_EXHAUSTED: ${{ steps.rereview.outputs.skip_model != 'true' && (steps.reserve_1.outputs.cap_exhausted == 'true' || steps.reserve_2.outputs.cap_exhausted == 'true') }}
           REVIEW_PASS_COUNT: ${{ steps.reserve_2.outputs.count || steps.reserve_1.outputs.count || '0' }}
+          SUPERSEDED: ${{ steps.reserve_1.outputs.superseded == 'true' || steps.reserve_2.outputs.superseded == 'true' }}
           CHANGED_LINES: ${{ needs.preflight.outputs.changed_lines }}
           BUDGET_USD: ${{ steps.verdict_2.outputs.usable == 'true' && needs.preflight.outputs.fallback_budget_usd || needs.preflight.outputs.budget_usd }}
         run: |
           set -euo pipefail
+          current_head="$(gh api "repos/$TARGET_REPO/pulls/$PR_NUMBER" --jq '.head.sha // ""')"
+          superseded="${SUPERSEDED:-false}"
+          [ "$current_head" = "$HEAD_SHA" ] || superseded=true
+          if [ "$superseded" = true ] && { [ "${SELECTED_PASS_TERMINAL_ERROR:-}" = "true" ] || [ -z "${VERDICT//[[:space:]]/}" ]; }; then
+            gh pr comment "$PR_NUMBER" --repo "$TARGET_REPO" --body "⚠️ **AI review advisory: reviewed head superseded**
+
+          Review of exact head \`$HEAD_SHA\` stopped without a usable verdict because the PR advanced to \`$current_head\`. Its reserved attempts do not consume the replacement head's allowance; the replacement run must review that head independently."
+            echo "outcome=superseded" >>"$GITHUB_OUTPUT"
+            exit 0
+          fi
           # Provider failure cannot mint AI authority, but it also cannot make
           # provider availability a prerequisite for the human approval path.
           # Leave an explained advisory record and return a successful policy
@@ -1478,7 +1532,7 @@ jobs:
             fi
             if [ "${PASS_CAP_EXHAUSTED:-false}" = "true" ]; then
               heading="🛑 **AI review advisory: two-pass maximum reached**"
-              detail="This PR has consumed ${REVIEW_PASS_COUNT:-2}/2 cumulative model passes and its current patch has no reusable usable verdict. A third provider invocation is forbidden; autonomous AI approval and merge remain fail-closed. Human review remains available."
+              detail="This exact head has consumed ${REVIEW_PASS_COUNT:-2}/2 model passes and has no usable verdict. A third provider invocation for the same head is forbidden; autonomous AI approval and merge remain fail-closed. Human review remains available."
             fi
             gh pr comment "$PR_NUMBER" --repo "$TARGET_REPO" --body "$heading
 
@@ -1511,6 +1565,15 @@ jobs:
 
           <!-- ai-review-head:${HEAD_SHA} patchid:${PATCH_ID:-} model:${MODEL} -->
           <!-- ai-review-run:${GITHUB_RUN_ID} -->"
+          if [ "$superseded" = true ]; then
+            gh pr comment "$PR_NUMBER" --repo "$TARGET_REPO" --body "⚠️ **AI review advisory: stale-head verdict retained**
+
+          The following validator-confirmed verdict reviewed superseded head \`$HEAD_SHA\`, while the current head is \`$current_head\`. It is diagnostic evidence only and cannot authorize the current head.
+
+          $body"
+            echo "outcome=superseded" >>"$GITHUB_OUTPUT"
+            exit 0
+          fi
           if [ "$(jq -r .blocking <<<"$VERDICT")" = true ]; then
             gh pr comment "$PR_NUMBER" --repo "$TARGET_REPO" --body "🚫 **AI review advisory: blocking verdict**
 

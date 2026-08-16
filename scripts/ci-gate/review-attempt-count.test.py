@@ -28,9 +28,18 @@ def explicit_marker(*, pr: int = 7, head: str = HEAD, run: int = 201, attempt: i
     )
 
 
-def count(*reviews: dict[str, object]) -> int:
+def count(*reviews: dict[str, object], head: str = HEAD) -> int:
     result = subprocess.run(
-        ["python3", str(SCRIPT), "--app-login", APP, "--pr-number", "7"],
+        [
+            "python3",
+            str(SCRIPT),
+            "--app-login",
+            APP,
+            "--pr-number",
+            "7",
+            "--head-sha",
+            head,
+        ],
         input=json.dumps(list(reviews)),
         text=True,
         capture_output=True,
@@ -47,6 +56,16 @@ class ReviewAttemptCountTest(unittest.TestCase):
 
     def test_failed_or_inconclusive_reserved_pass_still_counts(self) -> None:
         self.assertEqual(count(review(APP, "AI review pass consumed before invocation.\n" + marker(1))), 1)
+
+    def test_superseded_head_reservations_do_not_consume_current_head_allowance(self) -> None:
+        old_head = "b" * 40
+        self.assertEqual(
+            count(
+                review(APP, marker(1, head=old_head), head=old_head),
+                review(APP, marker(2, head=old_head, run=102), head=old_head),
+            ),
+            0,
+        )
 
     def test_explicit_reservations_count_in_cumulative_telemetry(self) -> None:
         self.assertEqual(
@@ -91,7 +110,16 @@ class ReviewAttemptCountTest(unittest.TestCase):
 
     def test_invalid_api_payload_fails_closed(self) -> None:
         result = subprocess.run(
-            ["python3", str(SCRIPT), "--app-login", APP, "--pr-number", "7"],
+            [
+                "python3",
+                str(SCRIPT),
+                "--app-login",
+                APP,
+                "--pr-number",
+                "7",
+                "--head-sha",
+                HEAD,
+            ],
             input="{}",
             text=True,
             capture_output=True,

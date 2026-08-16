@@ -17,7 +17,9 @@ EXPLICIT_MARKER = re.compile(
 )
 
 
-def count_attempts(reviews: object, app_login: str, pr_number: int) -> int:
+def count_attempts(
+    reviews: object, app_login: str, pr_number: int, head_sha: str
+) -> int:
     if not isinstance(reviews, list):
         raise ValueError("reviews payload must be an array")
     reservations: set[tuple[str, str, str, str]] = set()
@@ -34,12 +36,12 @@ def count_attempts(reviews: object, app_login: str, pr_number: int) -> int:
             continue
         for marker in PASS_MARKER.finditer(body):
             ordinal, marker_pr, _, head, run_id, run_attempt, _, _ = marker.groups()
-            if int(marker_pr) != pr_number or commit_id != head:
+            if int(marker_pr) != pr_number or commit_id != head or head != head_sha:
                 continue
             reservations.add(("automatic", run_id, run_attempt, ordinal))
         for marker in EXPLICIT_MARKER.finditer(body):
             marker_pr, _, head, run_id, run_attempt, _, _ = marker.groups()
-            if int(marker_pr) != pr_number or commit_id != head:
+            if int(marker_pr) != pr_number or commit_id != head or head != head_sha:
                 continue
             reservations.add(("explicit", run_id, run_attempt, "1"))
     return len(reservations)
@@ -49,14 +51,17 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--app-login", required=True)
     parser.add_argument("--pr-number", required=True, type=int)
+    parser.add_argument("--head-sha", required=True)
     args = parser.parse_args()
     if not re.fullmatch(r"[a-z0-9][a-z0-9-]*\[bot\]", args.app_login):
         parser.error("App login is malformed")
     if args.pr_number < 1:
         parser.error("PR number must be positive")
+    if not re.fullmatch(r"[0-9a-f]{40}", args.head_sha):
+        parser.error("head SHA must be 40 lowercase hexadecimal characters")
     try:
         reviews = json.load(sys.stdin)
-        print(count_attempts(reviews, args.app_login, args.pr_number))
+        print(count_attempts(reviews, args.app_login, args.pr_number, args.head_sha))
     except (json.JSONDecodeError, OSError, TypeError, ValueError) as error:
         print(f"review attempt accounting failed closed: {error}", file=sys.stderr)
         return 1

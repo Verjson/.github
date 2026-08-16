@@ -34,6 +34,9 @@ case "$1 $2" in
   "pr edit") echo EDIT >>"$ACTION_LOG" ;;
   "pr review") echo REVIEW >>"$ACTION_LOG"; exit 90 ;;
 esac
+if [ "$1" = api ]; then
+  printf '%s\n' "$CURRENT_HEAD"
+fi
 GH
 chmod +x "$tmp/bin/gh"
 
@@ -41,6 +44,7 @@ run_submit() {
   export PATH="$tmp/bin:$PATH" TARGET_REPO=Verjson/example PR_NUMBER=7 HEAD_SHA=deadbeef MODEL=deepseek-v4-pro
   export PATCH_ID=patch123 GITHUB_RUN_ID=12345 GITHUB_OUTPUT="$tmp/output" COMMENT_FILE="$tmp/comment" ACTION_LOG="$tmp/actions"
   export VERDICT="$1" SELECTED_PASS_TERMINAL_ERROR="${2:-false}" BUDGET_EXHAUSTED="${3:-false}"
+  export CURRENT_HEAD="${4:-deadbeef}" SUPERSEDED=false
   export CHANGED_LINES=42 BUDGET_USD=5.00 PERMISSION_DENIALS=0
   : >"$GITHUB_OUTPUT"; : >"$COMMENT_FILE"; : >"$ACTION_LOG"
   bash -eo pipefail "$tmp/submit.sh" >"$tmp/log" 2>&1
@@ -85,6 +89,16 @@ rc="$(run_submit "$approved" true true)"
 { [ "$rc" = rc=0 ] && has_comment 'budget exceeded' && has_comment 'Human approval remains available'; } \
   && pass "budget exhaustion is advisory and actionable" \
   || fail "budget exhaustion lost the human fallback ($rc)"
+
+rc="$(run_submit '' false false cafebabe)"
+{ [ "$rc" = rc=0 ] && has_comment 'reviewed head superseded' && has_comment 'deadbeef' && has_comment 'cafebabe' && has_output outcome=superseded && ! has_action EDIT; } \
+  && pass "a canceled stale-head review reports the exact supersession instead of a generic no-verdict advisory" \
+  || fail "stale-head no-verdict diagnosis was not persisted ($rc)"
+
+rc="$(run_submit "$blocking" false false cafebabe)"
+{ [ "$rc" = rc=0 ] && has_comment 'stale-head verdict retained' && has_comment 'app.py:7' && has_comment 'cannot authorize the current head' && has_output outcome=superseded && ! has_output outcome=blocking; } \
+  && pass "a validator-confirmed stale-head verdict is retained without authorizing the replacement head" \
+  || fail "stale-head verdict evidence was lost or mis-authorized ($rc)"
 
 grep -q -- '--request-changes' "$tmp/submit.sh" \
   && fail "AI advisory still submits a blocking review" \
