@@ -140,6 +140,15 @@ grep -qF "node-version: \${{ '24' }}" <<<"$default_release" \
   && grep -q "scope: '@verjson'" <<<"$default_release" \
   && pass "release-node keeps the Verjson and Node 24 defaults" \
   || fail "release-node changed its backward-compatible defaults"
+grep -qF '# The verification suite runs after package.json has been stamped to the' <<<"$default_release" \
+  && grep -qF '# dispatched version. Its expected version must be read dynamically from' <<<"$default_release" \
+  && grep -qF '# package.json; never assert a hardcoded version literal.' <<<"$default_release" \
+  && pass "release-node warns adopters to derive version expectations from stamped package metadata (#862)" \
+  || fail "release-node omits the stamped-version warning from its generated header"
+grep -qF 'PACKAGE_VERSION: ${{ steps.release-version.outputs.package-version }}' <<<"$default_release" \
+  && grep -qF 'Release verification failed against stamped dispatch version $PACKAGE_VERSION. Check for the hardcoded-version footgun:' <<<"$default_release" \
+  && pass "release-node diagnoses the stamped version and hardcoded-version footgun (#862)" \
+  || fail "release-node omits the stamped-version verification diagnostic"
 grep -qF "node-version: \${{ '22.23.1' }}" <<<"$custom_release" \
   && grep -q "scope: '@acme'" <<<"$custom_release" \
   && pass "release-node emits validated adopter parameters" \
@@ -938,6 +947,14 @@ drop_verification_suite_token() {
   sed -i '/^      - name: Run the release verification suite$/,+2{/NODE_AUTH_TOKEN:/d;}' \
     "$1/.github/workflows/release.yml"
 }
+drop_stamped_version_header() {
+  sed -i '/^# The verification suite runs after package.json has been stamped to the$/,+3d' \
+    "$1/.github/workflows/release.yml"
+}
+drop_stamped_version_diagnostic() {
+  sed -i '/Release verification failed against stamped dispatch version/d' \
+    "$1/.github/workflows/release.yml"
+}
 expose_private_token_to_unrelated_step() {
   python3 - "$1/.github/workflows/release.yml" <<'PY'
 import sys
@@ -1065,6 +1082,8 @@ expect_rejection "a verification suite with no dispatched version stamp (#519)" 
 expect_rejection "version stamps that can run package lifecycle scripts (#519)" enable_stamp_lifecycle_scripts
 expect_rejection "a first release whose scaffold version already matches the dispatch (#579)" reject_same_version_stamp
 expect_rejection "a release verification suite without private-package auth (#569)" drop_verification_suite_token
+expect_rejection "a generated release caller without the stamped-version header warning (#862)" drop_stamped_version_header
+expect_rejection "a generated release caller without the stamped-version failure diagnostic (#862)" drop_stamped_version_diagnostic
 expect_rejection "an unrelated release step exposed to private-package auth (#569)" expose_private_token_to_unrelated_step
 expect_rejection "a release caller reachable by a push to main" add_push_trigger
 expect_rejection "a release caller on a mutable reusable ref" unpin_release_ref

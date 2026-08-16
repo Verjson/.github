@@ -411,6 +411,11 @@ run-name: Release \${{ inputs.version }} \${{ inputs.selector_digest || 'manual'
 # artifact — an artifact adopters must edit is the defect this generator removes,
 # not a compromise it makes.
 #
+# The verification suite runs after package.json has been stamped to the
+# dispatched version. Its expected version must be read dynamically from
+# package.json; never assert a hardcoded version literal. This order is
+# intentional: the suite verifies the exact package metadata that will ship.
+#
 # Dispatched, never derived. A release states the version it cuts; no push
 # trigger may infer one from commit subjects (ADR 0038, ADR 0060).
 
@@ -619,6 +624,7 @@ jobs:
       - name: Run the release verification suite
         env:
           NODE_AUTH_TOKEN: \${{ secrets.NODE_AUTH_TOKEN }}
+          PACKAGE_VERSION: \${{ steps.release-version.outputs.package-version }}
         run: |
           # Existence and executability are checked separately on purpose. A
           # single \`-x\` test reads a hook committed without the executable bit
@@ -631,12 +637,19 @@ jobs:
           fi
           if [ -x scripts/release-verify.sh ]; then
             echo "Running this repository's scripts/release-verify.sh"
-            exec scripts/release-verify.sh
+            verification_status=0
+            scripts/release-verify.sh || verification_status=\$?
+          else
+            verification_status=0
+            npm run build --if-present &&
+              npm run typecheck --if-present &&
+              npm run lint --if-present &&
+              npm test || verification_status=\$?
           fi
-          npm run build --if-present
-          npm run typecheck --if-present
-          npm run lint --if-present
-          npm test
+          if [ "\$verification_status" -ne 0 ]; then
+            echo "::error::Release verification failed against stamped dispatch version \$PACKAGE_VERSION. Check for the hardcoded-version footgun: version assertions can pass in pull requests and local runs, then fail only here; read the expected version dynamically from package.json."
+            exit "\$verification_status"
+          fi
 
   snapshot:
     # The irreversible act, and the only job that may not run first.
@@ -1102,6 +1115,18 @@ elif set(triggers) != {"workflow_dispatch"}:
         % ", ".join(sorted(set(triggers)) or ["nothing"])
     )
 
+header_lines = (
+    "# The verification suite runs after package.json has been stamped to the",
+    "# dispatched version. Its expected version must be read dynamically from",
+    "# package.json; never assert a hardcoded version literal.",
+)
+raw = "\n".join(raw_lines)
+if any(line not in raw for line in header_lines):
+    problems.append(
+        "does not warn adopters that verification uses the stamped dispatch "
+        "version and version assertions must read package.json (#862)"
+    )
+
 GITHUB_TOKEN = re.compile(
     r"\$\{\{\s*(secrets\.GITHUB_TOKEN|github\.token)\s*\}\}", re.IGNORECASE
 )
@@ -1162,6 +1187,25 @@ else:
         problems.append(
             "does not expose secrets.NODE_AUTH_TOKEN to the release verification "
             "hook/default suite step (#569)"
+        )
+    if verification_step is None or not any(
+        "PACKAGE_VERSION" in entry
+        and "steps.release-version.outputs.package-version" in entry
+        for entry in verification_step
+    ):
+        problems.append(
+            "cannot diagnose the stamped dispatch version when verification fails (#862)"
+        )
+    diagnostic = (
+        "Release verification failed against stamped dispatch version $PACKAGE_VERSION. "
+        "Check for the hardcoded-version footgun:"
+    )
+    if verification_step is None or not any(
+        diagnostic in entry for entry in verification_step
+    ):
+        problems.append(
+            "does not name the stamped version and hardcoded-version footgun when "
+            "verification fails (#862)"
         )
 
 for index, line in enumerate(lines):
