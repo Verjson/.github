@@ -229,7 +229,7 @@ def extraction_diagnostic(response: object, failure: ExtractionFailure) -> dict:
 
 def write_extraction_diagnostic_bundle(
     path: str, model: str, diagnostic: dict, provenance: dict,
-) -> None:
+) -> bool:
     bundle = {
         "schema": 1,
         "purpose": "extraction-diagnostic",
@@ -242,10 +242,14 @@ def write_extraction_diagnostic_bundle(
     }
     encoded = json.dumps(bundle, sort_keys=True, separators=(",", ":")).encode("utf-8")
     encoded_with_newline = encoded + b"\n"
-    if len(encoded_with_newline) > MAX_DIAGNOSTIC_BYTES:
-        raise ValueError("extraction diagnostic exceeds its bounded limit")
-    with open(path, "wb") as output:
-        output.write(encoded_with_newline)
+    try:
+        if len(encoded_with_newline) > MAX_DIAGNOSTIC_BYTES:
+            raise ValueError("extraction diagnostic exceeds its bounded limit")
+        with open(path, "wb") as output:
+            written = output.write(encoded_with_newline)
+    except (OSError, ValueError):
+        return False
+    return written == len(encoded_with_newline)
 
 
 def role_separated_messages(prompt: str, metadata: str, diff: str) -> list[dict]:
@@ -529,17 +533,17 @@ def main() -> int:
     except ExtractionFailure as error:
         diagnostic = extraction_diagnostic(response, error)
         encoded_diagnostic = json.dumps(diagnostic, sort_keys=True, separators=(",", ":"))
-        try:
-            write_extraction_diagnostic_bundle(
-                values["REPLAY_FILE"], values["MODEL"], diagnostic, provenance,
-            )
-        except (OSError, ValueError):
+        diagnostic_retained = write_extraction_diagnostic_bundle(
+            values["REPLAY_FILE"], values["MODEL"], diagnostic, provenance,
+        )
+        if not diagnostic_retained:
             print("::warning::DeepSeek extraction diagnostic artifact unavailable; detail redacted", file=sys.stderr, flush=True)
-        try:
-            with open(values["GITHUB_OUTPUT"], "a", encoding="utf-8") as out:
-                out.write(f"extraction_diagnostic={encoded_diagnostic}\n")
-        except OSError:
-            print("::warning::DeepSeek extraction diagnostic output unavailable; detail redacted", file=sys.stderr, flush=True)
+        if diagnostic_retained:
+            try:
+                with open(values["GITHUB_OUTPUT"], "a", encoding="utf-8") as out:
+                    out.write(f"extraction_diagnostic={encoded_diagnostic}\n")
+            except OSError:
+                print("::warning::DeepSeek extraction diagnostic output unavailable; detail redacted", file=sys.stderr, flush=True)
         print(
             "::error::phase=completed-response-extraction provider=deepseek "
             f"model={values['MODEL']} kind={error.kind} content_bytes={diagnostic['content_bytes']} "

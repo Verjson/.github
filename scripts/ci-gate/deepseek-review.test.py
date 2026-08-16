@@ -385,6 +385,75 @@ class DeepSeekReviewTest(unittest.TestCase):
                 ):
                     self.assertNotIn(secret, retained)
 
+    def test_failed_extraction_diagnostic_write_suppresses_github_output(self):
+        class Context(io.BytesIO):
+            def __enter__(self): return self
+            def __exit__(self, *_): return False
+
+        content = '{"blocking":private-json-sentinel-859'
+        chunks = [
+            {
+                "object": "chat.completion.chunk", "model": "deepseek-v4-pro",
+                "choices": [{
+                    "index": 0, "finish_reason": "stop",
+                    "delta": {"role": "assistant", "content": content},
+                }],
+            },
+            {
+                "object": "chat.completion.chunk", "model": "deepseek-v4-pro",
+                "choices": [], "usage": self.response()["usage"],
+            },
+        ]
+        stream = b"".join(f"data: {json.dumps(chunk)}\n\n".encode() for chunk in chunks)
+        stream += b"data: [DONE]\n\n"
+
+        real_open = open
+        for failure_type, failure_detail in (
+            ("OSError", "private-filesystem-detail-859"),
+            ("ValueError", "private-bound-detail-859"),
+        ):
+            with self.subTest(error_type=failure_type), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                prompt, metadata, diff, output, replay = (
+                    root / name for name in ("prompt", "pr.json", "pr.diff", "output", "replay.json")
+                )
+                prompt.write_text("private-prompt-sentinel-859", encoding="utf-8")
+                metadata.write_text('{"title":"private-metadata-sentinel-859"}', encoding="utf-8")
+                diff.write_text("private-diff-sentinel-859", encoding="utf-8")
+                output.write_text("existing=preserved\n", encoding="utf-8")
+                env = {
+                    "MODEL": "deepseek-v4-pro", "BUDGET_USD": "5.00", "PROMPT_FILE": str(prompt),
+                    "PR_JSON_FILE": str(metadata), "PR_DIFF_FILE": str(diff),
+                    "GITHUB_OUTPUT": str(output), "DEEPSEEK_API_KEY": "private-key-sentinel-859",
+                    "REPLAY_FILE": str(replay), "REVIEWED_HEAD_SHA": "a" * 40,
+                    "REVIEW_POLICY": "receipt-policy", "AUTHORIZATION_CHECK_ID": "9001",
+                    "TARGET_REPO": "Verjson/.github", "PR_NUMBER": "7", "REVIEW_PASS": "2",
+                    "SENSITIVE": "false", "TRUSTED_REVIEW_SHA": "f" * 40,
+                }
+                stderr = io.StringIO()
+
+                def diagnostic_open(path, *args, **kwargs):
+                    if failure_type == "OSError" and os.fspath(path) == str(replay) and args == ("wb",):
+                        raise OSError(failure_detail)
+                    return real_open(path, *args, **kwargs)
+
+                with (
+                    patch.dict(os.environ, env, clear=True),
+                    patch.object(review.urllib.request, "urlopen", return_value=Context(stream)),
+                    patch("builtins.open", side_effect=diagnostic_open),
+                    patch.object(
+                        review, "MAX_DIAGNOSTIC_BYTES",
+                        0 if failure_type == "ValueError" else review.MAX_DIAGNOSTIC_BYTES,
+                    ),
+                    patch("sys.stderr", stderr),
+                    self.assertRaises(review.ExtractionFailure),
+                ):
+                    review.main()
+
+                self.assertEqual(output.read_text(encoding="utf-8"), "existing=preserved\n")
+                self.assertIn("extraction diagnostic artifact unavailable", stderr.getvalue())
+                self.assertNotIn(failure_detail, stderr.getvalue())
+
     def test_replay_redacts_hostile_unknown_values_and_preserves_canonical_rejection(self):
         sentinels = {
             "prompt": "hostile-prompt-sentinel-784",
@@ -529,22 +598,20 @@ class DeepSeekReviewTest(unittest.TestCase):
         }
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "diagnostic.json"
-            review.write_extraction_diagnostic_bundle(
+            self.assertTrue(review.write_extraction_diagnostic_bundle(
                 str(path), "deepseek-v4-flash", diagnostic, provenance,
-            )
+            ))
             encoded_bytes = path.stat().st_size - 1
 
-            with patch.object(review, "MAX_DIAGNOSTIC_BYTES", encoded_bytes), self.assertRaisesRegex(
-                ValueError, "bounded limit",
-            ):
-                review.write_extraction_diagnostic_bundle(
+            with patch.object(review, "MAX_DIAGNOSTIC_BYTES", encoded_bytes):
+                self.assertFalse(review.write_extraction_diagnostic_bundle(
                     str(path), "deepseek-v4-flash", diagnostic, provenance,
-                )
+                ))
 
             with patch.object(review, "MAX_DIAGNOSTIC_BYTES", encoded_bytes + 1):
-                review.write_extraction_diagnostic_bundle(
+                self.assertTrue(review.write_extraction_diagnostic_bundle(
                     str(path), "deepseek-v4-flash", diagnostic, provenance,
-                )
+                ))
             self.assertEqual(path.stat().st_size, encoded_bytes + 1)
 
 
