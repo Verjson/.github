@@ -141,11 +141,11 @@ assert 'private cache path must be fresh for this run attempt' in populate["run"
 assert 'when mapping github.token, the caller grants packages: read' in populate["run"]
 PY
 
-mkdir -p "$tmp/bin" "$tmp/acquire/cache/_cacache/content-v2/sha512" "$tmp/acquire/node_modules"
+mkdir -p "$tmp/bin" "$tmp/package-cache/_cacache/content-v2/sha512" "$tmp/acquire/node_modules"
 printf 'cached private package bytes\n' > "$tmp/private-package.tgz"
 private_digest="$(sha512sum "$tmp/private-package.tgz" | cut -d' ' -f1)"
 private_integrity="sha512-$(openssl dgst -sha512 -binary "$tmp/private-package.tgz" | base64 -w0)"
-private_content="$tmp/acquire/cache/_cacache/content-v2/sha512/${private_digest:0:2}/${private_digest:2:2}/${private_digest:4}"
+private_content="$tmp/package-cache/_cacache/content-v2/sha512/${private_digest:0:2}/${private_digest:2:2}/${private_digest:4}"
 mkdir -p "$(dirname "$private_content")"
 cp "$tmp/private-package.tgz" "$private_content"
 printf '%s\n' "{\"name\":\"fixture\",\"version\":\"1.0.0\",\"lockfileVersion\":3,\"packages\":{\"\":{\"name\":\"fixture\",\"version\":\"1.0.0\"},\"node_modules/@verjson/private-fixture\":{\"name\":\"@verjson/private-fixture\",\"version\":\"1.0.0\",\"resolved\":\"https://npm.pkg.github.com/download/@verjson/private-fixture/1.0.0/abc\",\"integrity\":\"$private_integrity\"}}}" \
@@ -239,7 +239,7 @@ else
 fi
 
 if (cd "$tmp/acquire" && PATH="$tmp/bin:$PATH" NPM_STUB_LOG="$tmp/npm.log" \
-    CACHE_DIR="$tmp/acquire/cache" TRANSFER_DIR="$tmp/acquire/transfer" \
+    CACHE_DIR="$tmp/package-cache" TRANSFER_DIR="$tmp/acquire/transfer" \
     AUXILIARY_COMMIT='' AUXILIARY_CONTENT_PATH='' AUXILIARY_REPOSITORY='' \
     GITHUB_WORKSPACE="$tmp/acquire" \
     GITHUB_OUTPUT="$tmp/acquire/package.outputs" \
