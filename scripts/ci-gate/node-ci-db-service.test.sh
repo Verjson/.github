@@ -76,10 +76,18 @@ case "${1:-}" in
     fi
     seq=$(( $(cat "$DOCKER_IDSEQ" 2>/dev/null || echo 0) + 1 ))
     printf '%s\n' "$seq" >"$DOCKER_IDSEQ"
-    printf 'c0ffeeba5e%06d\n' "$seq"
+    printf 'c0ffeeba5e%06d\n' "$seq" | tee "$DOCKER_LAST_ID"
     ;;
   # `MAPPED_PORT=` (set but empty) models a daemon that reports no host mapping.
   port) printf '%s:%s\n' "${MAPPED_HOST:-127.0.0.1}" "${MAPPED_PORT-0}" ;;
+  inspect)
+    if [ "${INSPECT_REQUIRE_LAST_ID:-0}" = 1 ] \
+      && [ "${*: -1}" != "$(cat "$DOCKER_LAST_ID")" ]; then
+      echo "inspect did not receive the exact started container ID" >&2
+      exit 1
+    fi
+    printf '%s\n' "${CONTAINER_IP:-172.17.0.2}"
+    ;;
   # `docker ps` REJECTS a filter it does not implement rather than returning an
   # empty list — `until` in particular is prune-only. Model that refusal, or a
   # sweep built on an invalid filter looks alive while sweeping nothing.
@@ -104,6 +112,16 @@ esac
 exit 0
 DOCKER
 chmod +x "$tmp/bin/docker"
+cat >"$tmp/bin/timeout" <<'TIMEOUT'
+#!/usr/bin/env bash
+host="${@: -2:1}"
+port="${@: -1}"
+case ",${UNREACHABLE_ENDPOINTS:-}," in
+  *",$host:$port,"*) exit 1 ;;
+  *) exit 0 ;;
+esac
+TIMEOUT
+chmod +x "$tmp/bin/timeout"
 export PATH="$tmp/bin:$PATH"
 
 export DB_IMAGE="pgvector/pgvector:pg16"
@@ -126,6 +144,7 @@ run_db_step() {
   mkdir -p "$box"
   : >"$box/docker.log"; : >"$box/github_env"; : >"$box/github_output"
   env DOCKER_LOG="$box/docker.log" DOCKER_IDSEQ="$tmp/docker-idseq" \
+    DOCKER_LAST_ID="$box/docker-last-id" \
       GITHUB_ENV="$box/github_env" GITHUB_OUTPUT="$box/github_output" "$@" \
       bash -eo pipefail "$script" >"$box/out.txt" 2>&1
 }
@@ -484,11 +503,80 @@ rc=$?
 # nothing about the loopback publish — the thing this change actually introduced.
 # The step must also probe the mapped port from the host and say so when it is
 # not accepting connections (port 9/discard stands in for a dead publish).
-run_db_step job-hostprobe "${job_a[@]}" MAPPED_PORT=9
+run_db_step job-bare-host "${job_a[@]}" \
+  'DB_ENV=DATABASE_URL=postgres://app@$DB_HOST:${DB_PORT}/app_test'
 rc=$?
-{ [ "$rc" -eq 0 ] && grep -qF '127.0.0.1:9' "$tmp/job-hostprobe/out.txt"; } \
-  && pass "the step probes the mapped port from the host and reports it unreachable" \
-  || fail "step exited $rc with no host-side reachability probe: $(cat "$tmp/job-hostprobe/out.txt")"
+{ [ "$rc" -ne 0 ] && grep -qF 'brace-less $DB_HOST' "$tmp/job-bare-host/out.txt"; } \
+  && pass "brace-less \$DB_HOST is rejected by name, pointing at \${DB_HOST}" \
+  || fail "brace-less DB_HOST was not rejected directly: $(cat "$tmp/job-bare-host/out.txt")"
+
+{ grep -qxF 'DB_HOST=127.0.0.1' "$tmp/job-a/github_env" \
+  && grep -qxF 'DB_PORT=49187' "$tmp/job-a/github_env"; } \
+  && pass "auto selects and exports a reachable loopback endpoint" \
+  || fail "auto did not export the reachable loopback endpoint"
+
+run_db_step job-hostprobe "${job_a[@]}" MAPPED_PORT=9 DB_HOST_MODE=loopback \
+  UNREACHABLE_ENDPOINTS=127.0.0.1:9
+rc=$?
+{ [ "$rc" -ne 0 ] && grep -qF 'database endpoint 127.0.0.1:9 is not reachable' "$tmp/job-hostprobe/out.txt"; } \
+  && pass "configured loopback fails early when unreachable" \
+  || fail "configured unreachable loopback exited $rc without a direct diagnosis: $(cat "$tmp/job-hostprobe/out.txt")"
+
+run_db_step job-container-fallback "${job_a[@]}" MAPPED_PORT=49189 \
+  CONTAINER_IP=172.18.0.7 UNREACHABLE_ENDPOINTS=127.0.0.1:49189 \
+  'DB_ENV=DATABASE_URL=postgres://app@${DB_HOST}:${DB_PORT}/app_test'
+rc=$?
+{ [ "$rc" -eq 0 ] \
+  && grep -qxF 'DB_HOST=172.18.0.7' "$tmp/job-container-fallback/github_env" \
+  && grep -qxF 'DB_PORT=5432' "$tmp/job-container-fallback/github_env" \
+  && grep -qxF 'DATABASE_URL=postgres://app@172.18.0.7:5432/app_test' "$tmp/job-container-fallback/github_env"; } \
+  && pass "auto selects the exact container endpoint when host loopback is isolated" \
+  || fail "auto fallback exited $rc without exporting the container endpoint"
+
+run_db_step job-container-dead "${job_a[@]}" DB_HOST_MODE=container \
+  CONTAINER_IP=172.18.0.8 UNREACHABLE_ENDPOINTS=172.18.0.8:5432
+rc=$?
+{ [ "$rc" -ne 0 ] \
+  && grep -qF 'database endpoint 172.18.0.8:5432 is not reachable' "$tmp/job-container-dead/out.txt" \
+  && ! grep -q '^DATABASE_URL=' "$tmp/job-container-dead/github_env"; } \
+  && pass "configured container endpoint fails before caller environment export when unreachable" \
+  || fail "configured unreachable container endpoint did not fail early"
+
+run_db_step job-invalid-host-mode "${job_a[@]}" DB_HOST_MODE=external
+rc=$?
+{ [ "$rc" -ne 0 ] \
+  && grep -qF "db-host: 'external' is invalid; use auto, loopback, or container" \
+    "$tmp/job-invalid-host-mode/out.txt" \
+  && ! grep -q '^DATABASE_URL=' "$tmp/job-invalid-host-mode/github_env"; } \
+  && pass "an invalid db-host selector fails closed before caller environment export" \
+  || fail "invalid db-host selector did not fail closed"
+
+for fixture in malformed out-of-range multi-network; do
+  case "$fixture" in
+    malformed) container_ip=not-an-ip ;;
+    out-of-range) container_ip=172.18.0.256 ;;
+    multi-network) container_ip=172.18.0.7172.19.0.8 ;;
+  esac
+  run_db_step "job-container-$fixture" "${job_a[@]}" DB_HOST_MODE=container \
+    CONTAINER_IP="$container_ip"
+  rc=$?
+  { [ "$rc" -ne 0 ] \
+    && grep -qF "could not read a valid database container bridge IPv4 from '$container_ip'" \
+      "$tmp/job-container-$fixture/out.txt" \
+    && ! grep -q '^DATABASE_URL=' "$tmp/job-container-$fixture/github_env"; } \
+    && pass "$fixture Docker inspect address fails closed before environment export" \
+    || fail "$fixture Docker inspect address was accepted or diagnosed ambiguously"
+done
+
+run_db_step job-inspect-identity "${job_a[@]}" DB_HOST_MODE=container \
+  INSPECT_REQUIRE_LAST_ID=1
+rc=$?
+started_id="$(published_handle_of job-inspect-identity)"
+{ [ "$rc" -eq 0 ] \
+  && grep -qF "inspect --format {{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}} $started_id" \
+    "$tmp/job-inspect-identity/docker.log"; } \
+  && pass "container endpoint inspection is bound to the exact captured container ID" \
+  || fail "container endpoint inspection was not bound to captured ID $started_id"
 
 # Hardening: if the port can't be read back there is no usable connection at all,
 # so the step must fail instead of exporting a URL pointing nowhere.
