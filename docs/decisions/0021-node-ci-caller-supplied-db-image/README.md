@@ -213,3 +213,27 @@ inversion.
 **Not re-opened.** The boundary condition of the original decision still stands: an
 arbitrary caller-supplied image plus unmasked `db-env` on a shared runner is safe
 only while callers are first-party and trusted.
+
+## Amendment — 2026-08-17: runner-reachable database endpoint (#842)
+
+Some general-pool runners execute the job inside a Docker container while sharing
+the host Docker daemon. The database's host-loopback publish is then healthy on
+the Docker host but unreachable from the job container's own loopback. An
+in-container `pg_isready` therefore passed, the host probe only warned, and the
+consumer failed much later with an opaque connection error.
+
+`node-ci` now selects and verifies the endpoint before exporting caller
+environment. `db-host: auto` prefers the existing `127.0.0.1:<assigned-port>` and,
+when that is unreachable, obtains the exact started container's validated bridge
+IPv4 by container ID and uses its internal port 5432. Callers may require either
+route with `loopback` or `container`. The selected `DB_HOST` and `DB_PORT` are
+exported and are available as literal `${DB_HOST}` / `${DB_PORT}` placeholders in
+`db-env`. An invalid mode, malformed container address, or unreachable selected
+endpoint fails the setup step before migrations or tests run.
+
+This does not widen the Docker publish: `-p 127.0.0.1::5432` remains unchanged, so
+the database is not exposed on the host's pool-facing interfaces. Container mode
+uses only the bridge address belonging to the captured container ID; it neither
+discovers arbitrary labelled containers nor probes a caller-supplied host. The
+original first-party caller trust boundary and unmasked-test-credential rule are
+unchanged.

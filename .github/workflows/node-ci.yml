@@ -157,6 +157,18 @@ on:
         required: false
         type: string
         default: ''
+      db-host:
+        description: >-
+          Endpoint selection for db-image: auto (default) uses the published
+          loopback port when reachable and otherwise the exact container's
+          bridge IPv4; loopback or container require that endpoint explicitly.
+          The selected endpoint is exported as DB_HOST and DB_PORT. Use the
+          literal ${DB_HOST} and ${DB_PORT} placeholders in db-env. The setup
+          fails before consumer commands when the selected endpoint is not
+          reachable from the runner.
+        required: false
+        type: string
+        default: auto
       db-env:
         description: >-
           Newline-separated KEY=VALUE pairs (dotenv style) used only when
@@ -166,13 +178,14 @@ on:
             POSTGRES_USER=app
             POSTGRES_PASSWORD=secret
             POSTGRES_DB=app_test
-            DATABASE_URL=postgres://app:secret@127.0.0.1:${DB_PORT}/app_test
+            DATABASE_URL=postgres://app:secret@${DB_HOST}:${DB_PORT}/app_test
 
           The container publishes on an OS-assigned loopback port so DB-backed
           jobs can run concurrently on one self-hosted host (#116), and that port
           is only known once the container is up. So write the literal placeholder
-          `${DB_PORT}` wherever the port belongs and this step substitutes the
-          real one. Braces are REQUIRED: a brace-less `$DB_PORT` fails the step,
+          `${DB_HOST}` and `${DB_PORT}` wherever the endpoint belongs and this
+          step substitutes the selected reachable endpoint. Braces are REQUIRED:
+          a brace-less `$DB_PORT` fails the step,
           because it has no end boundary and `$DB_PORTX` would silently expand to
           the port plus a stray `X`. It is a plain token replacement — no scheme
           detection, no URL parsing — so it works in ANY value shape: an
@@ -198,10 +211,6 @@ on:
           `DB_PORT` line here is ignored. POSTGRES_* pairs reach the container
           verbatim — it starts before the port is known, so a placeholder there
           is not substituted.
-
-          Prefer `127.0.0.1` over `localhost` in these values: the publish is
-          IPv4-only, so a host that resolves `localhost` to `::1` first would
-          fail to connect.
 
           Values are NOT GitHub-masked (these are inputs, not secrets), so pass
           only trusted data and avoid real secrets here.
@@ -1045,9 +1054,11 @@ jobs:
         if: needs.eligibility.outputs.should-run != 'false' && inputs.db-image != ''
         env:
           DB_IMAGE: ${{ inputs.db-image }}
+          DB_HOST_MODE: ${{ inputs.db-host }}
           DB_ENV: ${{ inputs.db-env }}
         run: |
           set -euo pipefail
+          DB_HOST_MODE="${DB_HOST_MODE:-auto}"
           # Name the container per JOB, not per run: run_id/run_attempt are shared
           # by every job of a run, so a name built from them alone collides as soon
           # as two DB-backed jobs are in flight on one persistent self-hosted host
@@ -1161,10 +1172,75 @@ jobs:
               docker logs "$CONTAINER_ID" >&2 || true
               exit 1 ;;
           esac
+          MAPPED_DB_PORT="$DB_PORT"
+          for attempt in $(seq 1 30); do
+            if docker exec "$CONTAINER_ID" pg_isready >/dev/null 2>&1; then
+              echo "database is ready"
+              break
+            fi
+            if [ "$attempt" -eq 30 ]; then
+              echo "database failed to become ready" >&2
+              docker logs "$CONTAINER_ID" >&2 || true
+              exit 1
+            fi
+            sleep 2
+          done
+          probe_database_endpoint() {
+            timeout 2 bash -c 'exec 3<>"/dev/tcp/$1/$2"' _ "$1" "$2" 2>/dev/null
+          }
+          container_endpoint() {
+            local candidate octet octet1 octet2 octet3 octet4 extra
+            candidate="$(docker inspect --format \
+              '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' \
+              "$CONTAINER_ID")"
+            case "$candidate" in
+              ''|*[!0-9.]*)
+                echo "could not read a valid database container bridge IPv4 from '$candidate'" >&2
+                exit 1 ;;
+            esac
+            IFS=. read -r octet1 octet2 octet3 octet4 extra <<< "$candidate"
+            for octet in "$octet1" "$octet2" "$octet3" "$octet4"; do
+              case "$octet" in
+                ''|*[!0-9]*|0[0-9]*)
+                  echo "could not read a valid database container bridge IPv4 from '$candidate'" >&2
+                  exit 1 ;;
+              esac
+              [ "$octet" -le 255 ] || {
+                echo "could not read a valid database container bridge IPv4 from '$candidate'" >&2
+                exit 1
+              }
+            done
+            [ -z "$extra" ] || {
+              echo "could not read a valid database container bridge IPv4 from '$candidate'" >&2
+              exit 1
+            }
+            DB_HOST="$candidate"
+            DB_PORT=5432
+          }
+          case "$DB_HOST_MODE" in
+            auto)
+              DB_HOST=127.0.0.1
+              DB_PORT="$MAPPED_DB_PORT"
+              if ! probe_database_endpoint "$DB_HOST" "$DB_PORT"; then
+                container_endpoint
+              fi ;;
+            loopback)
+              DB_HOST=127.0.0.1
+              DB_PORT="$MAPPED_DB_PORT" ;;
+            container) container_endpoint ;;
+            *)
+              echo "db-host: '$DB_HOST_MODE' is invalid; use auto, loopback, or container" >&2
+              exit 1 ;;
+          esac
+          if ! probe_database_endpoint "$DB_HOST" "$DB_PORT"; then
+            echo "database endpoint $DB_HOST:$DB_PORT is not reachable from the runner" >&2
+            exit 1
+          fi
+          echo "host=$DB_HOST" >> "$GITHUB_OUTPUT"
           echo "port=$DB_PORT" >> "$GITHUB_OUTPUT"
-          # The caller marks where the port belongs with the literal placeholder
-          # `${DB_PORT}` — braces required; this substitutes the port docker
-          # actually assigned. That token replacement IS the contract — there is
+          # The caller marks the endpoint with literal `${DB_HOST}` and
+          # `${DB_PORT}` placeholders — braces required. Those exact token
+          # replacements ARE the contract — there is
           # no scheme detection, no host parsing and no guessing which colon is a
           # port, so the step can neither splice a port into a value it misreads
           # (an earlier URL rewrite turned `API_URL=https://internal.svc/v1` into
@@ -1187,9 +1263,9 @@ jobs:
             # $GITHUB_ENV is last-wins and the db-env lines are appended after the
             # step's own exports, so a caller's DB_PORT line would silently replace
             # the real mapped port for every later step. Drop it, loudly.
-            if [ "$key" = "DB_PORT" ]; then
-              echo "db-env DB_PORT: ignored — DB_PORT is set by this step to the" \
-                   "host port docker assigned" >&2
+            if [ "$key" = "DB_PORT" ] || [ "$key" = "DB_HOST" ]; then
+              echo "db-env $key: ignored — $key is set by this step to the" \
+                   "selected reachable database endpoint" >&2
               continue
             fi
             # A hardcoded 5432 is REJECTED, never quietly rewritten. The port is
@@ -1242,7 +1318,7 @@ jobs:
             # Checked before substitution — `${DB_PORT}` does not contain the
             # literal `$DB_PORT` (the brace sits between), so only the
             # brace-less form reaches here.
-            # `$DB_PORT` is intentionally literal in this pattern.
+            # `$DB_PORT` and `$DB_HOST` are intentionally literal in these patterns.
             # shellcheck disable=SC2016
             case "$value" in
               *'$DB_PORT'*)
@@ -1253,7 +1329,16 @@ jobs:
                      "DATABASE_URL=postgres://app:pw@127.0.0.1:\${DB_PORT}/app)." >&2
                 exit 1 ;;
             esac
+            # shellcheck disable=SC2016
+            case "$value" in
+              *'$DB_HOST'*)
+                echo "db-env $key: '$value' uses the brace-less \$DB_HOST, which is" \
+                     "not a placeholder. Write \${DB_HOST} instead (e.g." \
+                     "DATABASE_URL=postgres://app:pw@\${DB_HOST}:\${DB_PORT}/app)." >&2
+                exit 1 ;;
+            esac
             raw_value="$value"
+            value="${value//\$\{DB_HOST\}/$DB_HOST}"
             value="${value//\$\{DB_PORT\}/$DB_PORT}"
             # Pass-through must not be SILENT for the one shape that resolves to
             # a database port by itself: a postgres URL with no port defaults to
@@ -1262,35 +1347,22 @@ jobs:
             # the caller may well mean an external database — but the step says
             # which key looks like it meant THIS one and never named it. This is
             # the only place a scheme is looked at, and it only prints advice.
-            if [ "$value" = "$raw_value" ]; then
+            case "$raw_value" in
+              *'${DB_PORT}'*) ;;
+              *)
               case "$value" in
                 *postgres://*|*postgresql://*)
                   echo "note: db-env $key carries no \${DB_PORT} placeholder, so it is" \
-                       "exported unchanged and does NOT point at the database this step" \
-                       "started (127.0.0.1:$DB_PORT)." >&2 ;;
+                       "not configured with the selected database port and may NOT point" \
+                       "at the database this step started ($DB_HOST:$DB_PORT)." >&2 ;;
               esac
-            fi
+              ;;
+            esac
             printf '%s=%s\n' "$key" "$value" >> "$GITHUB_ENV"
           done
-          # Written last so it wins the last-wins $GITHUB_ENV merge outright.
+          # Written last so these win the last-wins $GITHUB_ENV merge outright.
+          echo "DB_HOST=$DB_HOST" >> "$GITHUB_ENV"
           echo "DB_PORT=$DB_PORT" >> "$GITHUB_ENV"
-          for attempt in $(seq 1 30); do
-            if docker exec "$CONTAINER_ID" pg_isready >/dev/null 2>&1; then
-              echo "database is ready"
-              break
-            fi
-            if [ "$attempt" -eq 30 ]; then
-              echo "database failed to become ready" >&2
-              docker logs "$CONTAINER_ID" >&2 || true
-              exit 1
-            fi
-            sleep 2
-          done
-          # pg_isready runs inside the container; probe the loopback publish too.
-          if ! (exec 3<>"/dev/tcp/127.0.0.1/$DB_PORT") 2>/dev/null; then
-            echo "warning: the database's published port 127.0.0.1:$DB_PORT is not" \
-                 "accepting connections from the host" >&2
-          fi
 
       - name: Start cache service
         id: cache-service
