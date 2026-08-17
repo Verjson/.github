@@ -481,11 +481,37 @@ jobs:
               packages = lock.get("packages")
               if not isinstance(packages, dict):
                   sys.exit("secretless pnpm lock requires a packages mapping")
+              def pnpm_package_name(key):
+                  if not isinstance(key, str) or any(ord(char) < 32 for char in key):
+                      raise ValueError("pnpm package key must be a printable string")
+                  scoped = re.fullmatch(
+                      r"(@[a-z0-9][a-z0-9._-]*/[a-z0-9][a-z0-9._-]*)@(.+)", key)
+                  unscoped = re.fullmatch(r"([a-z0-9][a-z0-9._-]*)@(.+)", key)
+                  match = scoped or unscoped
+                  if match is None:
+                      raise ValueError(f"invalid pnpm package key: {key}")
+                  reference = match.group(2)
+                  if reference.startswith("npm:"):
+                      raise ValueError(f"pnpm package alias is not an exact package identity: {key}")
+                  depth = 0
+                  for char in reference:
+                      if char == "(":
+                          depth += 1
+                      elif char == ")":
+                          depth -= 1
+                          if depth < 0:
+                              raise ValueError(f"unbalanced pnpm peer context: {key}")
+                  if depth != 0:
+                      raise ValueError(f"unbalanced pnpm peer context: {key}")
+                  return match.group(1)
               candidates = []
               for key, package in packages.items():
-                  if not isinstance(key, str) or not isinstance(package, dict):
-                      sys.exit("secretless pnpm packages must be string-keyed mappings")
-                  name = key.rsplit("@", 1)[0] if key.startswith("@") and "@" in key[1:] else None
+                  if not isinstance(package, dict):
+                      sys.exit("secretless pnpm packages must map exact keys to package records")
+                  try:
+                      name = pnpm_package_name(key)
+                  except ValueError as error:
+                      sys.exit(str(error))
                   resolution = package.get("resolution", {})
                   if not isinstance(resolution, dict):
                       sys.exit(f"{key} has invalid pnpm resolution")
@@ -1514,8 +1540,37 @@ jobs:
           else:
               import yaml
               lock = yaml.safe_load(Path("pnpm-lock.yaml").read_text(encoding="utf-8"))
-              installed = {key.rsplit("@", 1)[0] for key in lock.get("packages", {})
-                           if isinstance(key, str) and key.startswith("@") and "@" in key[1:]}
+              def pnpm_package_name(key):
+                  if not isinstance(key, str) or any(ord(char) < 32 for char in key):
+                      raise ValueError("pnpm package key must be a printable string")
+                  scoped = re.fullmatch(
+                      r"(@[a-z0-9][a-z0-9._-]*/[a-z0-9][a-z0-9._-]*)@(.+)", key)
+                  unscoped = re.fullmatch(r"([a-z0-9][a-z0-9._-]*)@(.+)", key)
+                  match = scoped or unscoped
+                  if match is None:
+                      raise ValueError(f"invalid pnpm package key: {key}")
+                  reference = match.group(2)
+                  if reference.startswith("npm:"):
+                      raise ValueError(f"pnpm package alias is not an exact package identity: {key}")
+                  depth = 0
+                  for char in reference:
+                      if char == "(":
+                          depth += 1
+                      elif char == ")":
+                          depth -= 1
+                          if depth < 0:
+                              raise ValueError(f"unbalanced pnpm peer context: {key}")
+                  if depth != 0:
+                      raise ValueError(f"unbalanced pnpm peer context: {key}")
+                  return match.group(1)
+              package_sets = (lock.get("packages", {}), lock.get("snapshots", {}))
+              if any(not isinstance(package_set, dict) for package_set in package_sets):
+                  sys.exit("pnpm lock packages and snapshots must be mappings")
+              try:
+                  installed = {pnpm_package_name(key) for package_set in package_sets
+                               for key in package_set}
+              except ValueError as error:
+                  sys.exit(str(error))
           missing = sorted(set(requested) - installed)
           if missing:
               sys.exit("approved rebuild packages absent from lock: " + ", ".join(missing))

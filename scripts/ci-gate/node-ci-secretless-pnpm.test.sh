@@ -30,6 +30,14 @@ run_validator() {
 }
 valid="$fixture/valid"
 write_fixture "$valid" '@verjson/contracts' 'https://npm.pkg.github.com/download/@verjson/contracts/1.2.3/abc' "$integrity"
+sed -i "s|'@verjson/contracts@1.2.3':|'@verjson/contracts@1.2.3(@scope/peer@2.0.0)':|" "$valid/pnpm-lock.yaml"
+cat >> "$valid/pnpm-lock.yaml" <<'EOF'
+  'react-dom@19.0.0(react@19.0.0)':
+    resolution: {integrity: sha512-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==}
+snapshots:
+  '@verjson/contracts@1.2.3(@scope/peer@2.0.0)': {}
+  'react-dom@19.0.0(react@19.0.0)': {}
+EOF
 if run_validator "$valid" '@verjson/contracts' && grep -qF 'https://npm.pkg.github.com/download/@verjson/contracts/1.2.3/abc' "$valid/private-entries"; then
   pass "pnpm lock admits one exact allowlisted private package"
 else fail "pnpm lock rejected an exact allowlisted private package"; fi
@@ -45,10 +53,59 @@ duplicate="$fixture/duplicate"
 write_fixture "$duplicate" '@verjson/contracts' 'https://npm.pkg.github.com/download/@verjson/contracts/1.2.3/abc' "$integrity"
 printf "  '@verjson/contracts@1.2.3':\n    resolution: {integrity: %s, tarball: https://npm.pkg.github.com/download/@verjson/contracts/1.2.3/abc}\n" "$integrity" >> "$duplicate/pnpm-lock.yaml"
 if run_validator "$duplicate" '@verjson/contracts' >/dev/null 2>&1; then fail "pnpm lock admitted duplicate YAML keys"; else pass "pnpm lock rejects duplicate-key ambiguity"; fi
+alias="$fixture/alias"
+write_fixture "$alias" '@verjson/contracts' 'https://npm.pkg.github.com/download/@verjson/contracts/1.2.3/abc' "$integrity"
+sed -i "s|'@verjson/contracts@1.2.3':|'@verjson/contracts@npm:@verjson/other@1.2.3':|" "$alias/pnpm-lock.yaml"
+if run_validator "$alias" '@verjson/contracts' >/dev/null 2>&1; then fail "pnpm lock admitted an alias as exact package identity"; else pass "pnpm lock rejects package aliases before authorization"; fi
+malformed="$fixture/malformed-peer"
+write_fixture "$malformed" '@verjson/contracts' 'https://npm.pkg.github.com/download/@verjson/contracts/1.2.3/abc' "$integrity"
+sed -i "s|'@verjson/contracts@1.2.3':|'@verjson/contracts@1.2.3(peer@2.0.0':|" "$malformed/pnpm-lock.yaml"
+if run_validator "$malformed" '@verjson/contracts' >/dev/null 2>&1; then fail "pnpm lock admitted an unbalanced peer context"; else pass "pnpm lock rejects malformed peer-context near misses"; fi
+
+rebuild="$fixture/rebuild.sh"
+python3 - "$workflow" "$rebuild" <<'PY'
+import sys, yaml
+doc = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))
+step = next(step for step in doc["jobs"]["build-test"]["steps"]
+            if step.get("name") == "Rebuild exact approved lifecycle packages without credentials")
+open(sys.argv[2], "w", encoding="utf-8").write(step["run"])
+PY
+rebuild_fixture="$fixture/rebuild"
+mkdir -p "$rebuild_fixture/bin"
+cat > "$rebuild_fixture/pnpm-lock.yaml" <<'EOF'
+lockfileVersion: '9.0'
+packages:
+  '@verjson/native@1.2.3(peer-lib@2.0.0)': {resolution: {integrity: sha512-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==}}
+snapshots:
+  'native-helper@3.4.5(@scope/peer@6.7.8)': {}
+EOF
+cat > "$rebuild_fixture/bin/corepack" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$COREPACK_LOG"
+EOF
+chmod +x "$rebuild_fixture/bin/corepack"
+if (cd "$rebuild_fixture" && PATH="$rebuild_fixture/bin:$PATH" PACKAGE_MANAGER=pnpm \
+    REBUILD_PACKAGES=$'@verjson/native\nnative-helper' COREPACK_LOG="$rebuild_fixture/corepack.log" \
+    bash "$rebuild") \
+    && grep -qFx 'pnpm rebuild @verjson/native native-helper' "$rebuild_fixture/corepack.log"; then
+  pass "pnpm rebuild accepts exact scoped and unscoped peer-context package identities from packages and snapshots"
+else
+  fail "pnpm rebuild misparsed valid package or snapshot identities"
+fi
+sed -i "s|'native-helper@3.4.5(@scope/peer@6.7.8)'|'native-helper@npm:@scope/other@3.4.5'|" "$rebuild_fixture/pnpm-lock.yaml"
+: > "$rebuild_fixture/corepack.log"
+if (cd "$rebuild_fixture" && PATH="$rebuild_fixture/bin:$PATH" PACKAGE_MANAGER=pnpm \
+    REBUILD_PACKAGES='native-helper' COREPACK_LOG="$rebuild_fixture/corepack.log" bash "$rebuild") >/dev/null 2>&1; then
+  fail "pnpm rebuild admitted an aliased snapshot identity"
+elif [ -s "$rebuild_fixture/corepack.log" ]; then
+  fail "pnpm rebuild invoked package code before rejecting an alias"
+else
+  pass "pnpm rebuild rejects aliased snapshot identities before execution"
+fi
 python3 - "$workflow" <<'PY' \
   && pass "pnpm execution remains credentialless, frozen, bounded, and cleaned" \
   || fail "pnpm execution weakened the secretless handoff"
-import sys, yaml
+import ast, sys, textwrap, yaml
 doc = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))
 inputs = doc[True]["workflow_call"]["inputs"]
 assert inputs["package-manager"]["default"] == "npm"
@@ -62,5 +119,16 @@ assert "corepack pnpm install --frozen-lockfile --ignore-scripts --prefer-offlin
 assert 'rm -rf "$SECRETLESS_CACHE_DIR" "$PNPM_STORE_DIR" "$TRANSFER_DIR"' in script
 boundary = next(step for step in doc["jobs"]["acquire-secretless-dependencies"]["steps"] if step.get("name") == "Enforce the secretless event boundary")
 assert "same-repository pull request" in boundary["run"]
+validator = next(step for step in doc["jobs"]["acquire-secretless-dependencies"]["steps"]
+                 if step.get("name") == "Validate approved internal dependency lock")["run"]
+rebuild = next(step for step in steps
+               if step.get("name") == "Rebuild exact approved lifecycle packages without credentials")["run"]
+def parser_ast(script):
+    source = script.split("python3 - <<'PY'\n", 1)[1].rsplit("\nPY", 1)[0]
+    tree = ast.parse(textwrap.dedent(source))
+    function = next(node for node in ast.walk(tree)
+                    if isinstance(node, ast.FunctionDef) and node.name == "pnpm_package_name")
+    return ast.dump(function, include_attributes=False)
+assert parser_ast(validator) == parser_ast(rebuild)
 PY
 exit "$failures"
