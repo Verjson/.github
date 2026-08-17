@@ -114,7 +114,10 @@ install = next(step for step in steps if step.get("name") == "Install from verif
 for credential in ("GH_TOKEN", "GITHUB_TOKEN", "NODE_AUTH_TOKEN", "NPM_TOKEN"):
     assert install["env"][credential] == ""
 script = install["run"]
-assert 'corepack pnpm store add --store-dir "$PNPM_STORE_DIR" "$package_blob"' in script
+assert 'package_spec="$(mktemp "$PNPM_IMPORT_DIR/package-XXXXXX.tgz")"' in script
+assert 'cp -- "$package_blob" "$package_spec"' in script
+assert 'corepack pnpm store add --store-dir "$PNPM_STORE_DIR" "$package_spec"' in script
+assert 'corepack pnpm store add --store-dir "$PNPM_STORE_DIR" "$package_blob"' not in script
 assert "corepack pnpm install --frozen-lockfile --ignore-scripts --prefer-offline" in script
 assert 'rm -rf "$SECRETLESS_CACHE_DIR" "$PNPM_STORE_DIR" "$TRANSFER_DIR"' in script
 boundary = next(step for step in doc["jobs"]["acquire-secretless-dependencies"]["steps"] if step.get("name") == "Enforce the secretless event boundary")

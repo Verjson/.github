@@ -1149,9 +1149,12 @@ jobs:
           if [ "$PACKAGE_MANAGER" = npm ]; then
             npm ci --ignore-scripts --prefer-offline --no-audit --no-fund --cache "$SECRETLESS_CACHE_DIR"
           else
-            mkdir -p "$PNPM_STORE_DIR"
+            PNPM_IMPORT_DIR="$PNPM_STORE_DIR/import"
+            mkdir -p "$PNPM_IMPORT_DIR"
             while IFS= read -r -d '' package_blob; do
-              corepack pnpm store add --store-dir "$PNPM_STORE_DIR" "$package_blob"
+              package_spec="$(mktemp "$PNPM_IMPORT_DIR/package-XXXXXX.tgz")"
+              cp -- "$package_blob" "$package_spec"
+              corepack pnpm store add --store-dir "$PNPM_STORE_DIR" "$package_spec"
             done < <(find "$SECRETLESS_CACHE_DIR/_cacache/content-v2" -type f -print0)
             corepack pnpm install --frozen-lockfile --ignore-scripts --prefer-offline \
               --store-dir "$PNPM_STORE_DIR"
