@@ -128,6 +128,17 @@ allowlist, and content-set check.
   credentialed acquisition job fetches exact private tarballs without installing
   dependencies or running lifecycle scripts; the build install also disables
   lifecycle scripts.
+
+**2026-08-17 extension ([#879](https://github.com/Verjson/.github/issues/879)).**
+The boundary now admits an explicit pnpm mode without changing the npm default.
+pnpm callers commit lockfile version 9 and an integrity-pinned Corepack
+`packageManager` field. Canonical validation parses the pnpm package resolutions,
+rejects ambiguous YAML, and applies the same exact scope, package, GitHub Packages
+URL, and SHA-512 requirements before acquisition. The token-bearing job continues
+to populate only npm's non-executing content cache, so it never invokes pnpm or
+consumer lifecycle code. The credentialless build verifies the exact lock and
+payload, imports each verified tarball into a job-local pnpm store, and performs a
+frozen, lifecycle-free pnpm install. The store is removed on success or failure.
 - Multi-scope packages, one immutable sparse auxiliary tree, selective rebuilds,
   and a custom command plan are opt-in and fail closed; existing callers retain
   the `@verjson` scope and standard command sequence.

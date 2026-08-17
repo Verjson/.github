@@ -49,7 +49,7 @@ rebuild = next(step for step in build["steps"] if step.get("name") == "Rebuild e
 plan = next(step for step in build["steps"] if step.get("name") == "Run exact credentialless consumer script plan")
 assert "inputs.secretless-pr" in rebuild["if"] and "secrets." not in str(rebuild.get("env", {}))
 assert "inputs.secretless-pr" in plan["if"] and "secrets." not in str(plan.get("env", {}))
-assert 'subprocess.run(["npm", "rebuild", *requested]' in rebuild["run"]
+assert 'subprocess.run([*command, *requested]' in rebuild["run"]
 assert 'subprocess.run(["npm", "run", name]' in plan["run"]
 assert "env=script_env" in plan["run"]
 for command in ("npm run build", "npm run typecheck --if-present", "npm test", "npm run lint --if-present"):
