@@ -520,7 +520,9 @@ for build_job in pull-request-build publish-base publish-derived; do
   grep -qx "      && needs.prepare.result == 'success'" <<<"$job_if"
   grep -qx "      && (needs.acquire-private-node-dependencies.result == 'success'" <<<"$job_if"
   grep -qx "      || needs.acquire-private-node-dependencies.result == 'skipped')" <<<"$job_if"
-  grep -qF "build-contexts: \${{ needs.prepare.outputs.has-private-node-packages == 'true' && format('verjson_node_modules={0}/container-node-modules-context', runner.temp) || '' }}" <<<"$build_block"
+  grep -qF 'name: Prepare credential-free dependency build context' <<<"$build_block"
+  grep -qF '[ ! -e "$context" ] && [ ! -L "$context" ]' <<<"$build_block"
+  grep -qF 'build-contexts: verjson_node_modules=${{ runner.temp }}/container-node-modules-context' <<<"$build_block"
   grep -qF 'uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9' <<<"$build_block"
   grep -qF 'path: .verjson-container-node-modules-${{ github.run_id }}-${{ github.run_attempt }}' <<<"$build_block"
   grep -qF 'key: ${{ needs.acquire-private-node-dependencies.outputs.transfer-cache-key }}' <<<"$build_block"
@@ -540,6 +542,36 @@ for build_job in pull-request-build publish-base publish-derived; do
     exit 1
   fi
 done
+
+non_node_runner_temp="$tmp/non-node-runner-temp"
+mkdir -p "$non_node_runner_temp"
+NON_NODE_SCRIPT="$tmp/non-node-context.sh" WORKFLOW="$workflow" python3 - <<'PY'
+import os
+import yaml
+
+with open(os.environ["WORKFLOW"], encoding="utf-8") as stream:
+    workflow = yaml.safe_load(stream)
+steps = workflow["jobs"]["pull-request-build"]["steps"]
+step = next(
+    item for item in steps
+    if item.get("name") == "Prepare credential-free dependency build context"
+)
+with open(os.environ["NON_NODE_SCRIPT"], "w", encoding="utf-8") as stream:
+    stream.write(step["run"])
+PY
+(
+  cd "$tmp/single"
+  RUNNER_TEMP="$non_node_runner_temp" bash "$tmp/non-node-context.sh"
+)
+[ -d "$non_node_runner_temp/container-node-modules-context" ]
+[ -z "$(find "$non_node_runner_temp/container-node-modules-context" -mindepth 1 -print -quit)" ]
+if RUNNER_TEMP="$non_node_runner_temp" bash "$tmp/non-node-context.sh" >/dev/null 2>&1; then
+  echo "dependency context preparation accepted a pre-existing reserved path" >&2
+  exit 1
+fi
+[ ! -e "$tmp/single/package.json" ]
+[ ! -e "$tmp/single/package-lock.json" ]
+[ ! -e "$tmp/single/node_modules" ]
 if grep -Eqi 'package-lock\.json|setup-node|node_modules|npm|yarn|pnpm|BASE_SHA|git (show|cat-file|ls-tree)' <<<"$prepare_job"; then
   echo "credential-free preparation imposes Node or reviewed-base requirements" >&2
   exit 1
