@@ -54,6 +54,9 @@ assert "payload-sha256=%s" in package["run"]
 assert '>> "$GITHUB_OUTPUT"' in package["run"]
 acquire_cleanup = next(step for step in acquire["steps"] if step.get("name") == "Remove local acquisition and transfer state")
 assert acquire_cleanup["if"] == "always()"
+populate = next(step for step in acquire["steps"] if step.get("id") == "populate-private-cache")
+assert package["env"]["CACHE_DIR"] == "${{ steps.populate-private-cache.outputs.cache-dir }}"
+assert acquire_cleanup["env"]["CACHE_DIR"] == "${{ steps.populate-private-cache.outputs.cache-dir }}"
 
 stable_workspace_transfer = "${{ github.workspace }}/" + stable_transfer_path
 restore_guard = next(step for step in build["steps"] if step.get("name") == "Require an unused secretless restore path")
@@ -137,8 +140,11 @@ for job in doc["jobs"].values():
 populate = next(step for step in doc["jobs"]["acquire-secretless-dependencies"]["steps"]
                 if step.get("name") == "Populate verified private dependency cache")
 assert '${#expected_content[@]}' in populate["run"]
-assert 'private cache path must be fresh for this run attempt' in populate["run"]
-assert 'when mapping github.token, the caller grants packages: read' in populate["run"]
+assert 'mktemp -d "$RUNNER_TEMP/secretless-private-npm-cache-${RUN_ID}-${RUN_ATTEMPT}-XXXXXX"' in populate["run"]
+assert 'trap cleanup_failed_cache EXIT' in populate["run"]
+assert 'Possible causes include package authorization' in populate["run"]
+assert '${diagnostic_line//$NODE_AUTH_TOKEN/[REDACTED]}' in populate["run"]
+assert 'tail -c 8192 "$npm_diagnostic" | tail -n 20' in populate["run"]
 PY
 
 mkdir -p "$tmp/bin" "$tmp/package-cache/_cacache/content-v2/sha512" "$tmp/acquire/node_modules"
@@ -152,7 +158,7 @@ printf '%s\n' "{\"name\":\"fixture\",\"version\":\"1.0.0\",\"lockfileVersion\":3
   > "$tmp/acquire/package-lock.json"
 printf '%s\n' \
   '#!/usr/bin/env bash' \
-  'if [ "${NPM_STUB_FAIL:-false}" = true ]; then exit 1; fi' \
+  'if [ "${NPM_STUB_FAIL:-false}" = true ]; then echo "npm ERR! network timeout for token=$NODE_AUTH_TOKEN" >&2; exit 42; fi' \
   'printf '\''%s\n'\'' "$*" >> "$NPM_STUB_LOG"' \
   'if [ "${1:-} ${2:-}" = "cache add" ]; then' \
   '  while [ "$#" -gt 0 ]; do' \
@@ -169,55 +175,48 @@ chmod +x "$tmp/bin/npm"
 mkdir -p "$tmp/empty"
 : > "$tmp/empty/private-entries"
 if PRIVATE_CACHE_ENTRIES="$tmp/empty/private-entries" \
-    APPROVED_INTERNAL_SCOPES=@verjson NODE_AUTH_TOKEN=token \
-    NPM_CONFIG_CACHE="$tmp/empty/cache" \
+    APPROVED_INTERNAL_SCOPES=@verjson NODE_AUTH_TOKEN=super-secret-value \
     NPM_CONFIG_GLOBALCONFIG="$tmp/empty/empty-global.npmrc" \
     NPM_CONFIG_USERCONFIG="$tmp/empty/acquisition.npmrc" \
+    RUNNER_TEMP="$tmp/empty" RUN_ID=7001 RUN_ATTEMPT=3 GITHUB_OUTPUT="$tmp/empty/output" \
     NPM_STUB_LOG="$tmp/empty/npm.log" PATH="$tmp/bin:$PATH" \
     bash "$tmp/populate.sh" \
-    && [ -d "$tmp/empty/cache/_cacache/content-v2" ] \
+    && empty_cache="$(sed -n 's/^cache-dir=//p' "$tmp/empty/output")" \
+    && [ -d "$empty_cache/_cacache/content-v2" ] \
     && [ ! -e "$tmp/empty/npm.log" ]; then
   pass "an empty approved package set produces a valid empty private cache without tokened npm requests"
 else
   fail "an empty approved package set did not produce a bounded credential-free handoff"
 fi
 
-mkdir -p "$tmp/stale-cache/cache"
+mkdir -p "$tmp/failed-retry"
 printf '%s\t%s\n' \
   'https://npm.pkg.github.com/download/@verjson/private-fixture/1.0.0/abc' "$private_digest" \
-  > "$tmp/stale-cache/private-entries"
-if PRIVATE_CACHE_ENTRIES="$tmp/stale-cache/private-entries" \
-    APPROVED_INTERNAL_SCOPES=@verjson NODE_AUTH_TOKEN=token \
-    NPM_CONFIG_CACHE="$tmp/stale-cache/cache" \
-    NPM_CONFIG_GLOBALCONFIG="$tmp/stale-cache/empty-global.npmrc" \
-    NPM_CONFIG_USERCONFIG="$tmp/stale-cache/acquisition.npmrc" \
-    NPM_STUB_CONTENT="$tmp/private-package.tgz" NPM_STUB_DIGEST="$private_digest" \
-    NPM_STUB_LOG="$tmp/stale-cache/npm.log" PATH="$tmp/bin:$PATH" \
-    bash "$tmp/populate.sh" >"$tmp/stale-cache/output" 2>&1; then
-  fail "a pre-existing private cache was accepted as fresh acquisition evidence"
-elif grep -qF 'private cache path must be fresh for this run attempt' "$tmp/stale-cache/output" \
-    && [ ! -e "$tmp/stale-cache/npm.log" ]; then
-  pass "pre-existing cache cannot masquerade as fresh private-package acquisition"
+  > "$tmp/failed-retry/private-entries"
+if PRIVATE_CACHE_ENTRIES="$tmp/failed-retry/private-entries" \
+    APPROVED_INTERNAL_SCOPES=@verjson NODE_AUTH_TOKEN=super-secret-value \
+    NPM_CONFIG_GLOBALCONFIG="$tmp/failed-retry/empty-global.npmrc" \
+    NPM_CONFIG_USERCONFIG="$tmp/failed-retry/acquisition.npmrc" \
+    RUNNER_TEMP="$tmp/failed-retry" RUN_ID=7001 RUN_ATTEMPT=3 GITHUB_OUTPUT="$tmp/failed-retry/failed-output" \
+    NPM_STUB_FAIL=true NPM_STUB_LOG="$tmp/failed-retry/npm.log" PATH="$tmp/bin:$PATH" \
+    bash "$tmp/populate.sh" >"$tmp/failed-retry/diagnostic" 2>&1; then
+  fail "a failed private-package download unexpectedly succeeded"
+elif grep -qF 'npm exit 42' "$tmp/failed-retry/diagnostic" \
+    && grep -qF 'network timeout for token=[REDACTED]' "$tmp/failed-retry/diagnostic" \
+    && grep -qF 'network or registry availability' "$tmp/failed-retry/diagnostic" \
+    && ! grep -qF 'super-secret-value' "$tmp/failed-retry/diagnostic" \
+    && [ -z "$(find "$tmp/failed-retry" -maxdepth 1 -type d -name 'secretless-private-npm-cache-*' -print -quit)" ] \
+    && PRIVATE_CACHE_ENTRIES="$tmp/failed-retry/private-entries" \
+      APPROVED_INTERNAL_SCOPES=@verjson NODE_AUTH_TOKEN=token \
+      NPM_CONFIG_GLOBALCONFIG="$tmp/failed-retry/empty-global.npmrc" \
+      NPM_CONFIG_USERCONFIG="$tmp/failed-retry/acquisition.npmrc" \
+      RUNNER_TEMP="$tmp/failed-retry" RUN_ID=7002 RUN_ATTEMPT=1 GITHUB_OUTPUT="$tmp/failed-retry/retry-output" \
+      NPM_STUB_CONTENT="$tmp/private-package.tgz" NPM_STUB_DIGEST="$private_digest" \
+      NPM_STUB_LOG="$tmp/failed-retry/retry.log" PATH="$tmp/bin:$PATH" \
+      bash "$tmp/populate.sh"; then
+  pass "failed acquisition cleans its unique cache, reports safe npm context, and permits a fresh retry"
 else
-  fail "pre-existing private cache did not fail closed before network acquisition"
-fi
-
-mkdir -p "$tmp/forbidden"
-printf '%s\t%s\n' \
-  'https://npm.pkg.github.com/download/@verjson/private-fixture/1.0.0/abc' "$private_digest" \
-  > "$tmp/forbidden/private-entries"
-if PRIVATE_CACHE_ENTRIES="$tmp/forbidden/private-entries" \
-    APPROVED_INTERNAL_SCOPES=@verjson NODE_AUTH_TOKEN=token \
-    NPM_CONFIG_CACHE="$tmp/forbidden/cache" \
-    NPM_CONFIG_GLOBALCONFIG="$tmp/forbidden/empty-global.npmrc" \
-    NPM_CONFIG_USERCONFIG="$tmp/forbidden/acquisition.npmrc" \
-    NPM_STUB_FAIL=true NPM_STUB_LOG="$tmp/forbidden/npm.log" PATH="$tmp/bin:$PATH" \
-    bash "$tmp/populate.sh" >"$tmp/forbidden/output" 2>&1; then
-  fail "a denied private-package download did not fail acquisition"
-elif grep -qF 'when mapping github.token, the caller grants packages: read' "$tmp/forbidden/output"; then
-  pass "denied fresh acquisition reports the package authority boundary"
-else
-  fail "denied fresh acquisition omitted actionable package authority diagnostics"
+  fail "failed acquisition left partial state, leaked its token, obscured npm context, or poisoned retry"
 fi
 
 mkdir -p "$tmp/duplicate-digest"
@@ -227,9 +226,9 @@ printf '%s\t%s\n%s\t%s\n' \
   > "$tmp/duplicate-digest/private-entries"
 if PRIVATE_CACHE_ENTRIES="$tmp/duplicate-digest/private-entries" \
     APPROVED_INTERNAL_SCOPES=@verjson NODE_AUTH_TOKEN=token \
-    NPM_CONFIG_CACHE="$tmp/duplicate-digest/cache" \
     NPM_CONFIG_GLOBALCONFIG="$tmp/duplicate-digest/empty-global.npmrc" \
     NPM_CONFIG_USERCONFIG="$tmp/duplicate-digest/acquisition.npmrc" \
+    RUNNER_TEMP="$tmp/duplicate-digest" RUN_ID=7003 RUN_ATTEMPT=1 GITHUB_OUTPUT="$tmp/duplicate-digest/output" \
     NPM_STUB_CONTENT="$tmp/private-package.tgz" NPM_STUB_DIGEST="$private_digest" \
     NPM_STUB_LOG="$tmp/duplicate-digest/npm.log" PATH="$tmp/bin:$PATH" \
     bash "$tmp/populate.sh"; then
@@ -307,7 +306,7 @@ printf '%s\n' \
   '{"name":"empty-fixture","version":"1.0.0","lockfileVersion":3,"packages":{"":{"name":"empty-fixture","version":"1.0.0"}}}' \
   > "$tmp/empty/package-lock.json"
 if (cd "$tmp/empty" && PATH="$tmp/bin:$PATH" NPM_STUB_LOG="$tmp/empty/npm.log" \
-    CACHE_DIR="$tmp/empty/cache" TRANSFER_DIR="$tmp/empty/transfer" \
+    CACHE_DIR="$empty_cache" TRANSFER_DIR="$tmp/empty/transfer" \
     AUXILIARY_COMMIT='' AUXILIARY_CONTENT_PATH='' AUXILIARY_REPOSITORY='' \
     GITHUB_WORKSPACE="$tmp/empty" GITHUB_OUTPUT="$tmp/empty/package.outputs" \
     NPM_CONFIG_GLOBALCONFIG="$tmp/empty/empty-global.npmrc" \
