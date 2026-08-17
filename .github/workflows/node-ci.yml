@@ -1186,6 +1186,7 @@ jobs:
             sleep 2
           done
           probe_database_endpoint() {
+            # shellcheck disable=SC2016 # Positional parameters expand in the child bash.
             timeout 2 bash -c 'exec 3<>"/dev/tcp/$1/$2"' _ "$1" "$2" 2>/dev/null
           }
           container_endpoint() {
@@ -1347,6 +1348,7 @@ jobs:
             # the caller may well mean an external database — but the step says
             # which key looks like it meant THIS one and never named it. This is
             # the only place a scheme is looked at, and it only prints advice.
+            # shellcheck disable=SC2016 # Match the caller's literal placeholder.
             case "$raw_value" in
               *'${DB_PORT}'*) ;;
               *)

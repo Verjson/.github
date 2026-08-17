@@ -76,11 +76,18 @@ case "${1:-}" in
     fi
     seq=$(( $(cat "$DOCKER_IDSEQ" 2>/dev/null || echo 0) + 1 ))
     printf '%s\n' "$seq" >"$DOCKER_IDSEQ"
-    printf 'c0ffeeba5e%06d\n' "$seq"
+    printf 'c0ffeeba5e%06d\n' "$seq" | tee "$DOCKER_LAST_ID"
     ;;
   # `MAPPED_PORT=` (set but empty) models a daemon that reports no host mapping.
   port) printf '%s:%s\n' "${MAPPED_HOST:-127.0.0.1}" "${MAPPED_PORT-0}" ;;
-  inspect) printf '%s\n' "${CONTAINER_IP:-172.17.0.2}" ;;
+  inspect)
+    if [ "${INSPECT_REQUIRE_LAST_ID:-0}" = 1 ] \
+      && [ "${*: -1}" != "$(cat "$DOCKER_LAST_ID")" ]; then
+      echo "inspect did not receive the exact started container ID" >&2
+      exit 1
+    fi
+    printf '%s\n' "${CONTAINER_IP:-172.17.0.2}"
+    ;;
   # `docker ps` REJECTS a filter it does not implement rather than returning an
   # empty list — `until` in particular is prune-only. Model that refusal, or a
   # sweep built on an invalid filter looks alive while sweeping nothing.
@@ -137,6 +144,7 @@ run_db_step() {
   mkdir -p "$box"
   : >"$box/docker.log"; : >"$box/github_env"; : >"$box/github_output"
   env DOCKER_LOG="$box/docker.log" DOCKER_IDSEQ="$tmp/docker-idseq" \
+    DOCKER_LAST_ID="$box/docker-last-id" \
       GITHUB_ENV="$box/github_env" GITHUB_OUTPUT="$box/github_output" "$@" \
       bash -eo pipefail "$script" >"$box/out.txt" 2>&1
 }
@@ -533,6 +541,42 @@ rc=$?
   && ! grep -q '^DATABASE_URL=' "$tmp/job-container-dead/github_env"; } \
   && pass "configured container endpoint fails before caller environment export when unreachable" \
   || fail "configured unreachable container endpoint did not fail early"
+
+run_db_step job-invalid-host-mode "${job_a[@]}" DB_HOST_MODE=external
+rc=$?
+{ [ "$rc" -ne 0 ] \
+  && grep -qF "db-host: 'external' is invalid; use auto, loopback, or container" \
+    "$tmp/job-invalid-host-mode/out.txt" \
+  && ! grep -q '^DATABASE_URL=' "$tmp/job-invalid-host-mode/github_env"; } \
+  && pass "an invalid db-host selector fails closed before caller environment export" \
+  || fail "invalid db-host selector did not fail closed"
+
+for fixture in malformed out-of-range multi-network; do
+  case "$fixture" in
+    malformed) container_ip=not-an-ip ;;
+    out-of-range) container_ip=172.18.0.256 ;;
+    multi-network) container_ip=172.18.0.7172.19.0.8 ;;
+  esac
+  run_db_step "job-container-$fixture" "${job_a[@]}" DB_HOST_MODE=container \
+    CONTAINER_IP="$container_ip"
+  rc=$?
+  { [ "$rc" -ne 0 ] \
+    && grep -qF "could not read a valid database container bridge IPv4 from '$container_ip'" \
+      "$tmp/job-container-$fixture/out.txt" \
+    && ! grep -q '^DATABASE_URL=' "$tmp/job-container-$fixture/github_env"; } \
+    && pass "$fixture Docker inspect address fails closed before environment export" \
+    || fail "$fixture Docker inspect address was accepted or diagnosed ambiguously"
+done
+
+run_db_step job-inspect-identity "${job_a[@]}" DB_HOST_MODE=container \
+  INSPECT_REQUIRE_LAST_ID=1
+rc=$?
+started_id="$(published_handle_of job-inspect-identity)"
+{ [ "$rc" -eq 0 ] \
+  && grep -qF "inspect --format {{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}} $started_id" \
+    "$tmp/job-inspect-identity/docker.log"; } \
+  && pass "container endpoint inspection is bound to the exact captured container ID" \
+  || fail "container endpoint inspection was not bound to captured ID $started_id"
 
 # Hardening: if the port can't be read back there is no usable connection at all,
 # so the step must fail instead of exporting a URL pointing nowhere.
