@@ -528,7 +528,7 @@ for build_job in pull-request-build publish-base publish-derived; do
   grep -qF 'key: ${{ needs.acquire-private-node-dependencies.outputs.transfer-cache-key }}' <<<"$build_block"
   grep -qF 'fail-on-cache-miss: true' <<<"$build_block"
   grep -qF 'name: Remove local node_modules transfer state' <<<"$build_block"
-  [ "$(grep -cF "needs.prepare.outputs.has-private-node-packages == 'true'" <<<"$build_block")" -ge 4 ]
+  [ "$(grep -cF "needs.prepare.outputs.has-private-node-packages == 'true'" <<<"$build_block")" -eq 3 ]
   grep -qF 'run: rm -rf "$TRANSFER_DIR"' <<<"$build_block"
   if grep -qF 'restore-keys:' <<<"$build_block" || grep -qF 'actions/download-artifact@' <<<"$build_block"; then
     echo "$build_job permits an inexact cache restore or still uses artifact storage" >&2
@@ -542,6 +542,56 @@ for build_job in pull-request-build publish-base publish-derived; do
     exit 1
   fi
 done
+
+WORKFLOW="$workflow" python3 - <<'PY'
+import os
+import yaml
+
+with open(os.environ["WORKFLOW"], encoding="utf-8") as stream:
+    workflow = yaml.safe_load(stream)
+
+private_gate = "needs.prepare.outputs.has-private-node-packages == 'true'"
+for job_name in ("pull-request-build", "publish-base", "publish-derived"):
+    steps = workflow["jobs"][job_name]["steps"]
+    context_steps = [
+        step for step in steps
+        if step.get("name") == "Prepare credential-free dependency build context"
+    ]
+    cache_steps = [
+        step for step in steps
+        if step.get("uses", "").startswith("actions/cache/restore@")
+    ]
+    verification_steps = [
+        step for step in steps
+        if "credential-free node_modules context" in step.get("name", "")
+    ]
+    cleanup_steps = [
+        step for step in steps
+        if step.get("name", "").startswith("Remove local node_modules")
+    ]
+    build_steps = [
+        step for step in steps
+        if step.get("uses", "").startswith("docker/build-push-action@")
+    ]
+
+    assert len(context_steps) == 1, f"{job_name}: dependency context step missing"
+    assert private_gate not in context_steps[0].get("if", ""), (
+        f"{job_name}: empty dependency context is private-package gated"
+    )
+    for label, guarded_steps in (
+        ("cache restore", cache_steps),
+        ("lock verification", verification_steps),
+        ("transfer cleanup", cleanup_steps),
+    ):
+        assert len(guarded_steps) == 1, f"{job_name}: {label} step missing"
+        assert private_gate in guarded_steps[0].get("if", ""), (
+            f"{job_name}: {label} is not private-package gated"
+        )
+    assert len(build_steps) == 1, f"{job_name}: Docker build step missing"
+    assert build_steps[0]["with"]["build-contexts"] == (
+        "verjson_node_modules=${{ runner.temp }}/container-node-modules-context"
+    ), f"{job_name}: dependency build context is not unconditional"
+PY
 
 non_node_runner_temp="$tmp/non-node-runner-temp"
 mkdir -p "$non_node_runner_temp"
