@@ -520,13 +520,15 @@ for build_job in pull-request-build publish-base publish-derived; do
   grep -qx "      && needs.prepare.result == 'success'" <<<"$job_if"
   grep -qx "      && (needs.acquire-private-node-dependencies.result == 'success'" <<<"$job_if"
   grep -qx "      || needs.acquire-private-node-dependencies.result == 'skipped')" <<<"$job_if"
-  grep -qF "build-contexts: \${{ needs.prepare.outputs.has-private-node-packages == 'true' && format('verjson_node_modules={0}/container-node-modules-context', runner.temp) || '' }}" <<<"$build_block"
+  grep -qF 'name: Prepare credential-free dependency build context' <<<"$build_block"
+  grep -qF '[ ! -e "$context" ] && [ ! -L "$context" ]' <<<"$build_block"
+  grep -qF 'build-contexts: verjson_node_modules=${{ runner.temp }}/container-node-modules-context' <<<"$build_block"
   grep -qF 'uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9' <<<"$build_block"
   grep -qF 'path: .verjson-container-node-modules-${{ github.run_id }}-${{ github.run_attempt }}' <<<"$build_block"
   grep -qF 'key: ${{ needs.acquire-private-node-dependencies.outputs.transfer-cache-key }}' <<<"$build_block"
   grep -qF 'fail-on-cache-miss: true' <<<"$build_block"
   grep -qF 'name: Remove local node_modules transfer state' <<<"$build_block"
-  [ "$(grep -cF "needs.prepare.outputs.has-private-node-packages == 'true'" <<<"$build_block")" -ge 4 ]
+  [ "$(grep -cF "needs.prepare.outputs.has-private-node-packages == 'true'" <<<"$build_block")" -eq 3 ]
   grep -qF 'run: rm -rf "$TRANSFER_DIR"' <<<"$build_block"
   if grep -qF 'restore-keys:' <<<"$build_block" || grep -qF 'actions/download-artifact@' <<<"$build_block"; then
     echo "$build_job permits an inexact cache restore or still uses artifact storage" >&2
@@ -540,6 +542,86 @@ for build_job in pull-request-build publish-base publish-derived; do
     exit 1
   fi
 done
+
+WORKFLOW="$workflow" python3 - <<'PY'
+import os
+import yaml
+
+with open(os.environ["WORKFLOW"], encoding="utf-8") as stream:
+    workflow = yaml.safe_load(stream)
+
+private_gate = "needs.prepare.outputs.has-private-node-packages == 'true'"
+for job_name in ("pull-request-build", "publish-base", "publish-derived"):
+    steps = workflow["jobs"][job_name]["steps"]
+    context_steps = [
+        step for step in steps
+        if step.get("name") == "Prepare credential-free dependency build context"
+    ]
+    cache_steps = [
+        step for step in steps
+        if step.get("uses", "").startswith("actions/cache/restore@")
+    ]
+    verification_steps = [
+        step for step in steps
+        if "credential-free node_modules context" in step.get("name", "")
+    ]
+    cleanup_steps = [
+        step for step in steps
+        if step.get("name", "").startswith("Remove local node_modules")
+    ]
+    build_steps = [
+        step for step in steps
+        if step.get("uses", "").startswith("docker/build-push-action@")
+    ]
+
+    assert len(context_steps) == 1, f"{job_name}: dependency context step missing"
+    assert private_gate not in context_steps[0].get("if", ""), (
+        f"{job_name}: empty dependency context is private-package gated"
+    )
+    for label, guarded_steps in (
+        ("cache restore", cache_steps),
+        ("lock verification", verification_steps),
+        ("transfer cleanup", cleanup_steps),
+    ):
+        assert len(guarded_steps) == 1, f"{job_name}: {label} step missing"
+        assert private_gate in guarded_steps[0].get("if", ""), (
+            f"{job_name}: {label} is not private-package gated"
+        )
+    assert len(build_steps) == 1, f"{job_name}: Docker build step missing"
+    assert build_steps[0]["with"]["build-contexts"] == (
+        "verjson_node_modules=${{ runner.temp }}/container-node-modules-context"
+    ), f"{job_name}: dependency build context is not unconditional"
+PY
+
+non_node_runner_temp="$tmp/non-node-runner-temp"
+mkdir -p "$non_node_runner_temp"
+NON_NODE_SCRIPT="$tmp/non-node-context.sh" WORKFLOW="$workflow" python3 - <<'PY'
+import os
+import yaml
+
+with open(os.environ["WORKFLOW"], encoding="utf-8") as stream:
+    workflow = yaml.safe_load(stream)
+steps = workflow["jobs"]["pull-request-build"]["steps"]
+step = next(
+    item for item in steps
+    if item.get("name") == "Prepare credential-free dependency build context"
+)
+with open(os.environ["NON_NODE_SCRIPT"], "w", encoding="utf-8") as stream:
+    stream.write(step["run"])
+PY
+(
+  cd "$tmp/single"
+  RUNNER_TEMP="$non_node_runner_temp" bash "$tmp/non-node-context.sh"
+)
+[ -d "$non_node_runner_temp/container-node-modules-context" ]
+[ -z "$(find "$non_node_runner_temp/container-node-modules-context" -mindepth 1 -print -quit)" ]
+if RUNNER_TEMP="$non_node_runner_temp" bash "$tmp/non-node-context.sh" >/dev/null 2>&1; then
+  echo "dependency context preparation accepted a pre-existing reserved path" >&2
+  exit 1
+fi
+[ ! -e "$tmp/single/package.json" ]
+[ ! -e "$tmp/single/package-lock.json" ]
+[ ! -e "$tmp/single/node_modules" ]
 if grep -Eqi 'package-lock\.json|setup-node|node_modules|npm|yarn|pnpm|BASE_SHA|git (show|cat-file|ls-tree)' <<<"$prepare_job"; then
   echo "credential-free preparation imposes Node or reviewed-base requirements" >&2
   exit 1

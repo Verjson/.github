@@ -442,6 +442,16 @@ verification, and unconditional cleanup. First adoption is therefore supported o
 without credential use; introducing private packages remains a separately reviewed
 second step.
 
+## Amendment (2026-08-17) — stable empty dependency context for non-Node adopters (#837)
+
+Every candidate Docker build receives the `verjson_node_modules` named context. Build
+jobs create it as an empty, credential-free directory before any optional private-package
+cache restoration. Non-Node first adopters can therefore use the same Docker build
+interface without a package graph, lockfile, npm execution, or credential. When a
+reviewed non-empty allowlist requests private packages, the existing exact cache restore,
+lock-digest validation, credential isolation, and cleanup boundaries populate that same
+context and continue to fail closed.
+
 ## Amendment (2026-08-16) — generated callers separate validation from publication (#869)
 
 The canonical candidate generator emits distinct reusable-workflow caller jobs for
