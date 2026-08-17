@@ -123,8 +123,8 @@ chmod +x "$acquire_fixture/bin/npm"
 
 trusted_user_config="$acquire_fixture/runner/secretless-acquisition.npmrc"
 trusted_global_config="$acquire_fixture/runner/secretless-empty-global.npmrc"
-trusted_cache="$acquire_fixture/runner/secretless-npm-cache"
-trusted_auxiliary_cache="$acquire_fixture/runner/secretless-auxiliary-npm-cache"
+trusted_output="$acquire_fixture/runner/acquisition.output"
+trusted_auxiliary_output="$acquire_fixture/runner/auxiliary-acquisition.output"
 mkdir -p "$acquire_fixture/runner"
 private_digest="$(printf 'cached private package\n' | sha512sum | cut -d' ' -f1)"
 private_entries="$acquire_fixture/runner/private-entries"
@@ -133,10 +133,11 @@ printf 'https://npm.pkg.github.com/download/@verjson/identity-contracts/1.2.3/ab
 if (cd "$acquire_fixture/clean" && PATH="$acquire_fixture/bin:$PATH" \
     NODE_AUTH_TOKEN='package-secret' NPM_STUB_LOG="$acquire_fixture/npm.log" \
     APPROVED_INTERNAL_SCOPES=$'@tequityapp\n@verjson' \
-    NPM_CONFIG_CACHE="$trusted_cache" \
     NPM_CONFIG_USERCONFIG="$trusted_user_config" \
     NPM_CONFIG_GLOBALCONFIG="$trusted_global_config" PRIVATE_CACHE_ENTRIES="$private_entries" \
+    RUNNER_TEMP="$acquire_fixture/runner" RUN_ID=8001 RUN_ATTEMPT=1 GITHUB_OUTPUT="$trusted_output" \
     bash "$acquire_script") \
+    && trusted_cache="$(sed -n 's/^cache-dir=//p' "$trusted_output")" \
     && grep -qF 'cache add https://npm.pkg.github.com/download/@verjson/identity-contracts/1.2.3/abc' "$acquire_fixture/npm.log" \
     && grep -qF 'cache verify --cache ' "$acquire_fixture/npm.log" \
     && [ ! -e "$trusted_cache/_cacache/index-v5" ] \
@@ -169,9 +170,9 @@ if (cd "$acquire_fixture/trusted-auxiliary" && bash "$consumer_config_script" \
       NODE_AUTH_TOKEN='package-secret' NPM_STUB_LOG="$acquire_fixture/trusted-auxiliary.log" \
       NPM_STUB_CONFIG_LOG="$acquire_fixture/trusted-auxiliary-config.log" \
       APPROVED_INTERNAL_SCOPES=$'@tequityapp\n@verjson' \
-      NPM_CONFIG_CACHE="$trusted_auxiliary_cache" \
       NPM_CONFIG_USERCONFIG="$trusted_user_config" \
       NPM_CONFIG_GLOBALCONFIG="$trusted_global_config" PRIVATE_CACHE_ENTRIES="$private_entries" \
+      RUNNER_TEMP="$acquire_fixture/runner" RUN_ID=8002 RUN_ATTEMPT=1 GITHUB_OUTPUT="$trusted_auxiliary_output" \
       bash "$acquire_script") \
     && grep -qF 'cache add https://npm.pkg.github.com/download/@verjson/identity-contracts/1.2.3/abc' "$acquire_fixture/trusted-auxiliary.log" \
     && grep -qFx 'https://registry.npmjs.org/' "$acquire_fixture/trusted-auxiliary-config.log" \

@@ -587,13 +587,15 @@ jobs:
           sparse-checkout: ${{ steps.resolve-auxiliary-source.outputs.sparse-path }}
           persist-credentials: false
       - name: Populate verified private dependency cache
+        id: populate-private-cache
         env:
           APPROVED_INTERNAL_SCOPES: ${{ inputs.approved-internal-scopes }}
           NODE_AUTH_TOKEN: ${{ secrets.NODE_AUTH_TOKEN }}
-          NPM_CONFIG_CACHE: ${{ runner.temp }}/secretless-private-npm-cache-${{ github.run_id }}-${{ github.run_attempt }}
           NPM_CONFIG_GLOBALCONFIG: ${{ runner.temp }}/secretless-empty-global.npmrc
           NPM_CONFIG_USERCONFIG: ${{ runner.temp }}/secretless-acquisition.npmrc
           PRIVATE_CACHE_ENTRIES: ${{ runner.temp }}/secretless-private-entries-${{ github.run_id }}-${{ github.run_attempt }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          RUN_ID: ${{ github.run_id }}
         run: |
           set -euo pipefail
           umask 077
@@ -601,10 +603,19 @@ jobs:
             echo "::error::secretless mode requires a validated private package entry file"
             exit 1
           }
-          if ! mkdir "$NPM_CONFIG_CACHE"; then
-            echo "::error::secretless private cache path must be fresh for this run attempt"
+          NPM_CONFIG_CACHE="$(mktemp -d "$RUNNER_TEMP/secretless-private-npm-cache-${RUN_ID}-${RUN_ATTEMPT}-XXXXXX")" || {
+            echo "::error::could not allocate a fresh secretless private cache directory"
             exit 1
-          fi
+          }
+          export NPM_CONFIG_CACHE
+          cleanup_failed_cache() {
+            status=$?
+            if [ "$status" -ne 0 ]; then
+              rm -rf -- "$NPM_CONFIG_CACHE"
+            fi
+          }
+          trap cleanup_failed_cache EXIT
+          printf 'cache-dir=%s\n' "$NPM_CONFIG_CACHE" >> "$GITHUB_OUTPUT"
           : > "$NPM_CONFIG_GLOBALCONFIG"
           mkdir -p "$NPM_CONFIG_CACHE/_cacache/content-v2"
           if [ -s "$PRIVATE_CACHE_ENTRIES" ]; then
@@ -625,8 +636,18 @@ jobs:
                   echo "::error::invalid validated private cache entry"
                   exit 1
                 }
-              if ! npm cache add "$resolved" --cache "$NPM_CONFIG_CACHE" --no-audit --no-fund; then
-                echo "::error::fresh private-package acquisition failed; verify NODE_AUTH_TOKEN can read every approved package and, when mapping github.token, the caller grants packages: read"
+              npm_diagnostic="$NPM_CONFIG_CACHE/npm-cache-add.stderr"
+              if npm cache add "$resolved" --cache "$NPM_CONFIG_CACHE" --no-audit --no-fund 2> "$npm_diagnostic"; then
+                rm -f "$npm_diagnostic"
+              else
+                npm_status=$?
+                echo "::error::fresh private-package acquisition failed (npm exit $npm_status). Possible causes include package authorization, caller packages: read permission when mapping github.token, network or registry availability, and lockfile integrity. npm stderr follows."
+                while IFS= read -r diagnostic_line; do
+                  diagnostic_line="${diagnostic_line//$NODE_AUTH_TOKEN/[REDACTED]}"
+                  diagnostic_line="${diagnostic_line//$'\r'/}"
+                  printf 'npm: %s\n' "$diagnostic_line"
+                done < <(tail -c 8192 "$npm_diagnostic" | tail -n 20)
+                rm -f "$npm_diagnostic"
                 exit 1
               fi
             done < "$PRIVATE_CACHE_ENTRIES"
@@ -671,7 +692,7 @@ jobs:
           AUXILIARY_COMMIT: ${{ steps.resolve-auxiliary-source.outputs.commit }}
           AUXILIARY_CONTENT_PATH: ${{ steps.resolve-auxiliary-source.outputs.content-path }}
           AUXILIARY_REPOSITORY: ${{ steps.resolve-auxiliary-source.outputs.repository }}
-          CACHE_DIR: ${{ runner.temp }}/secretless-private-npm-cache-${{ github.run_id }}-${{ github.run_attempt }}
+          CACHE_DIR: ${{ steps.populate-private-cache.outputs.cache-dir }}
           MAX_PAYLOAD_BYTES: '83886080'
           RUN_ATTEMPT: ${{ github.run_attempt }}
           RUN_ID: ${{ github.run_id }}
@@ -748,7 +769,7 @@ jobs:
         if: always()
         env:
           AUXILIARY_CHECKOUT_PATH: ${{ steps.resolve-auxiliary-source.outputs.checkout-path }}
-          CACHE_DIR: ${{ runner.temp }}/secretless-private-npm-cache-${{ github.run_id }}-${{ github.run_attempt }}
+          CACHE_DIR: ${{ steps.populate-private-cache.outputs.cache-dir }}
           PRIVATE_CACHE_ENTRIES: ${{ runner.temp }}/secretless-private-entries-${{ github.run_id }}-${{ github.run_attempt }}
           TRANSFER_DIR: ${{ github.workspace }}/.verjson-secretless-transfer-${{ github.run_id }}-${{ github.run_attempt }}
         run: |
