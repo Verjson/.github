@@ -72,8 +72,8 @@ on:
           Acquire approved private dependencies in a non-executing job, then run
           PR-controlled build and test code in a credentialless job. Intended
           only for pull_request validation; requires NODE_AUTH_TOKEN and
-          approved-internal-packages. Every caller must grant packages: read,
-          including callers that map a separate package token.
+          approved-internal-packages. Callers mapping github.token must grant
+          packages: read; the canonical contract requires it uniformly.
         required: false
         type: boolean
         default: false
@@ -230,7 +230,8 @@ on:
       NODE_AUTH_TOKEN:
         description: >-
           Token to read approved private packages and the optional auxiliary
-          repository. Caller must grant packages: read for the reusable job.
+          repository. When mapping github.token, the caller must grant packages:
+          read; the canonical contract requires it uniformly.
         required: false
       submodules-token:
         description: >-
@@ -600,6 +601,10 @@ jobs:
             echo "::error::secretless mode requires a validated private package entry file"
             exit 1
           }
+          if ! mkdir "$NPM_CONFIG_CACHE"; then
+            echo "::error::secretless private cache path must be fresh for this run attempt"
+            exit 1
+          fi
           : > "$NPM_CONFIG_GLOBALCONFIG"
           mkdir -p "$NPM_CONFIG_CACHE/_cacache/content-v2"
           if [ -s "$PRIVATE_CACHE_ENTRIES" ]; then
@@ -620,7 +625,10 @@ jobs:
                   echo "::error::invalid validated private cache entry"
                   exit 1
                 }
-              npm cache add "$resolved" --cache "$NPM_CONFIG_CACHE" --no-audit --no-fund
+              if ! npm cache add "$resolved" --cache "$NPM_CONFIG_CACHE" --no-audit --no-fund; then
+                echo "::error::fresh private-package acquisition failed; verify NODE_AUTH_TOKEN can read every approved package and, when mapping github.token, the caller grants packages: read"
+                exit 1
+              fi
             done < "$PRIVATE_CACHE_ENTRIES"
             npm cache verify --cache "$NPM_CONFIG_CACHE"
           else
