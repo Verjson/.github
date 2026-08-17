@@ -54,6 +54,32 @@ rejects repository
 under a job-created config that scopes the token to `npm.pkg.github.com`.
 When the lock contains no internal package and the allowlist is empty,
 acquisition creates an empty content set without making a tokened npm request.
+
+Secretless callers may set `package-manager: pnpm`. The caller must commit
+`pnpm-lock.yaml` lockfile version 9 and an integrity-pinned Corepack
+`packageManager` value such as `pnpm@11.20.0+sha512.<digest>` in `package.json`.
+The same exact package/scope/URL/SHA-512 policy applies. Acquisition downloads
+only those reviewed private tarballs and runs no pnpm command. After credential
+scrub, the build imports the verified blobs into a run-attempt-local pnpm store
+and runs `pnpm install --frozen-lockfile --ignore-scripts --prefer-offline`.
+The default remains `npm`, so existing callers and their package-lock behavior
+do not change.
+
+A pnpm-only caller adds the same input to both secretless jobs and can retain its
+ordered browser-test plan:
+
+```yaml
+with:
+  package-manager: pnpm
+  secretless-pr: true
+  approved-internal-packages: |
+    @verjson/identity-contracts
+  secretless-ci-script-plan: >-
+    ["typecheck", "build", "test:visual"]
+```
+
+Use `secretless-trusted-ref: true` instead of `secretless-pr` in the trusted-ref
+job; all other package policy and script-plan inputs must remain identical.
 No install or lifecycle script runs in acquisition. The default approved scope is
 `@verjson`; callers that need another internal scope must name it exactly and set
 the protected repository variable `VERJSON_SECRETLESS_PACKAGE_POLICY` to a JSON

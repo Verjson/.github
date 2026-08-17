@@ -62,6 +62,14 @@ on:
         required: false
         type: string
         default: package-lock.json
+      package-manager:
+        description: >-
+          Package manager used by secretless dependency validation and install.
+          Accepts npm (package-lock.json) or pnpm (pnpm-lock.yaml plus an
+          integrity-pinned packageManager field in package.json).
+        required: false
+        type: string
+        default: npm
       scope:
         description: npm scope for the GitHub Packages registry (empty to skip registry auth)
         required: false
@@ -382,6 +390,7 @@ jobs:
           APPROVED_INTERNAL_SCOPES: ${{ inputs.approved-internal-scopes }}
           PRIVATE_CACHE_ENTRIES: ${{ runner.temp }}/secretless-private-entries-${{ github.run_id }}-${{ github.run_attempt }}
           TRUSTED_PACKAGE_POLICY: ${{ vars.VERJSON_SECRETLESS_PACKAGE_POLICY }}
+          PACKAGE_MANAGER: ${{ inputs.package-manager }}
         run: |
           python3 - <<'PY'
           import base64
@@ -418,19 +427,73 @@ jobs:
                       or set(policy_scopes) != scopes or set(policy_packages) != approved):
                   sys.exit("approved internal scopes and packages must exactly match trusted repository policy")
 
-          lock = json.loads(Path("package-lock.json").read_text(encoding="utf-8"))
-          if lock.get("lockfileVersion") not in (2, 3):
-              sys.exit("secretless mode requires package-lock lockfileVersion 2 or 3")
-
           found = set()
           private_downloads = {}
-          for path, package in lock.get("packages", {}).items():
-              if path == "":
-                  continue
-              marker = "node_modules/"
-              locked_name = package.get("name")
-              path_name = path.rsplit(marker, 1)[1] if marker in path else None
-              resolved = package.get("resolved", "")
+          package_manager = os.environ.get("PACKAGE_MANAGER", "npm")
+          if package_manager == "npm":
+              lock_path = Path("package-lock.json")
+              lock = json.loads(lock_path.read_text(encoding="utf-8"))
+              if lock.get("lockfileVersion") not in (2, 3):
+                  sys.exit("secretless npm mode requires package-lock lockfileVersion 2 or 3")
+              candidates = []
+              for path, package in lock.get("packages", {}).items():
+                  if path == "":
+                      continue
+                  marker = "node_modules/"
+                  locked_name = package.get("name")
+                  path_name = path.rsplit(marker, 1)[1] if marker in path else None
+                  path_is_internal = (isinstance(path_name, str)
+                                      and any(path_name.startswith(scope + "/") for scope in scopes))
+                  entry_name = path_name if path_is_internal else locked_name
+                  candidates.append((entry_name, locked_name, package.get("resolved", ""), package.get("integrity")))
+          elif package_manager == "pnpm":
+              lock_path = Path("pnpm-lock.yaml")
+              if lock_path.stat().st_size > 10 * 1024 * 1024:
+                  sys.exit("secretless pnpm lock exceeds the 10 MiB validation bound")
+              try:
+                  import yaml
+              except ImportError:
+                  sys.exit("secretless pnpm mode requires the runner's PyYAML parser")
+              for token in yaml.scan(lock_path.read_text(encoding="utf-8")):
+                  if isinstance(token, (yaml.AliasToken, yaml.AnchorToken, yaml.TagToken)):
+                      sys.exit("secretless pnpm lock rejects YAML aliases, anchors, and tags")
+              class ExactLoader(yaml.SafeLoader):
+                  pass
+              def exact_mapping(loader, node, deep=False):
+                  result = {}
+                  for key_node, value_node in node.value:
+                      key = loader.construct_object(key_node, deep=deep)
+                      if key in result:
+                          raise ValueError(f"duplicate pnpm lock key: {key}")
+                      result[key] = loader.construct_object(value_node, deep=deep)
+                  return result
+              ExactLoader.add_constructor(yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, exact_mapping)
+              try:
+                  lock = yaml.load(lock_path.read_text(encoding="utf-8"), Loader=ExactLoader)
+              except (yaml.YAMLError, ValueError) as error:
+                  sys.exit(f"invalid pnpm lock: {error}")
+              if not isinstance(lock, dict) or str(lock.get("lockfileVersion")) != "9.0":
+                  sys.exit("secretless pnpm mode requires pnpm lockfileVersion 9.0")
+              manifest = json.loads(Path("package.json").read_text(encoding="utf-8"))
+              pinned = manifest.get("packageManager", "")
+              if re.fullmatch(r"pnpm@[1-9][0-9]*\.[0-9]+\.[0-9]+\+sha512\.[0-9a-f]{128}", pinned) is None:
+                  sys.exit("secretless pnpm mode requires an integrity-pinned packageManager field")
+              packages = lock.get("packages")
+              if not isinstance(packages, dict):
+                  sys.exit("secretless pnpm lock requires a packages mapping")
+              candidates = []
+              for key, package in packages.items():
+                  if not isinstance(key, str) or not isinstance(package, dict):
+                      sys.exit("secretless pnpm packages must be string-keyed mappings")
+                  name = key.rsplit("@", 1)[0] if key.startswith("@") and "@" in key[1:] else None
+                  resolution = package.get("resolution", {})
+                  if not isinstance(resolution, dict):
+                      sys.exit(f"{key} has invalid pnpm resolution")
+                  candidates.append((name, name, resolution.get("tarball", ""), resolution.get("integrity")))
+          else:
+              sys.exit("package-manager accepts only npm or pnpm")
+
+          for entry_name, locked_name, resolved, integrity in candidates:
               parsed = urlparse(resolved)
               resolved_path = unquote(parsed.path)
               registry_name = None
@@ -446,7 +509,6 @@ jobs:
                   registry_name = f"{parts[2]}/{parts[3]}"
                   if parts[2] not in scopes or registry_name not in approved:
                       sys.exit(f"unapproved GitHub Packages download: {registry_name}")
-                  integrity = package.get("integrity")
                   if not isinstance(integrity, str) or re.fullmatch(
                           r"sha512-[A-Za-z0-9+/]{86}==", integrity) is None:
                       sys.exit(f"{registry_name} requires one exact sha512 lock integrity")
@@ -460,10 +522,6 @@ jobs:
                   prior_digest = private_downloads.setdefault(resolved, digest_hex)
                   if prior_digest != digest_hex:
                       sys.exit(f"{registry_name} repeats one download URL with different integrity")
-
-              path_is_internal = (isinstance(path_name, str)
-                                  and any(path_name.startswith(scope + "/") for scope in scopes))
-              entry_name = path_name if path_is_internal else locked_name
               if (not isinstance(entry_name, str)
                       or not any(entry_name.startswith(scope + "/") for scope in scopes)):
                   continue
@@ -696,9 +754,11 @@ jobs:
           MAX_PAYLOAD_BYTES: '83886080'
           RUN_ATTEMPT: ${{ github.run_attempt }}
           RUN_ID: ${{ github.run_id }}
+          PACKAGE_MANAGER: ${{ inputs.package-manager }}
           TRANSFER_DIR: ${{ github.workspace }}/.verjson-secretless-transfer-${{ github.run_id }}-${{ github.run_attempt }}
         run: |
           set -euo pipefail
+          PACKAGE_MANAGER="${PACKAGE_MANAGER:-npm}"
           [ -d "$CACHE_DIR/_cacache/content-v2" ] || {
             echo "::error::npm produced no private content-addressed package blobs for transfer"
             exit 1
@@ -729,10 +789,16 @@ jobs:
             exit 1
           fi
           payload_sha256="$(sha256sum "$TRANSFER_DIR/npm-private-cache.tar" | cut -d' ' -f1)"
-          lock_sha256="$(sha256sum package-lock.json | cut -d' ' -f1)"
+          case "$PACKAGE_MANAGER" in
+            npm) lock_file=package-lock.json ;;
+            pnpm) lock_file=pnpm-lock.yaml ;;
+            *) echo "::error::package-manager accepts only npm or pnpm"; exit 1 ;;
+          esac
+          lock_sha256="$(sha256sum "$lock_file" | cut -d' ' -f1)"
           printf '%s\n' \
             "run_id=$RUN_ID" \
             "run_attempt=$RUN_ATTEMPT" \
+            "package_manager=$PACKAGE_MANAGER" \
             "lock_sha256=$lock_sha256" \
             "auxiliary_repository=$AUXILIARY_REPOSITORY" \
             "auxiliary_commit=$AUXILIARY_COMMIT" \
@@ -852,6 +918,7 @@ jobs:
           NPM_CONFIG_CACHE: ${{ runner.temp }}/secretless-runtime-cache-${{ github.run_id }}-${{ github.run_attempt }}
           NPM_CONFIG_GLOBALCONFIG: ${{ runner.temp }}/secretless-empty-global-build.npmrc
           NPM_CONFIG_USERCONFIG: ${{ runner.temp }}/secretless-empty.npmrc
+          PACKAGE_MANAGER: ${{ inputs.package-manager }}
           AWS_ACCESS_KEY_ID: ''
           AWS_SECRET_ACCESS_KEY: ''
           AWS_SESSION_TOKEN: ''
@@ -868,11 +935,14 @@ jobs:
           RUN_ATTEMPT: ${{ github.run_attempt }}
           RUN_ID: ${{ github.run_id }}
           SECRETLESS_CACHE_DIR: ${{ runner.temp }}/secretless-build-cache-${{ github.run_id }}-${{ github.run_attempt }}
+          PNPM_STORE_DIR: ${{ runner.temp }}/secretless-pnpm-store-${{ github.run_id }}-${{ github.run_attempt }}
           TRANSFER_DIR: ${{ github.workspace }}/.verjson-secretless-transfer-${{ github.run_id }}-${{ github.run_attempt }}
         run: |
           set -euo pipefail
+          PACKAGE_MANAGER="${PACKAGE_MANAGER:-npm}"
+          PNPM_STORE_DIR="${PNPM_STORE_DIR:-}"
           cleanup() {
-            rm -rf "$SECRETLESS_CACHE_DIR" "$TRANSFER_DIR"
+            rm -rf "$SECRETLESS_CACHE_DIR" "$PNPM_STORE_DIR" "$TRANSFER_DIR"
           }
           trap cleanup EXIT
           : > "$NPM_CONFIG_GLOBALCONFIG"
@@ -883,7 +953,7 @@ jobs:
             echo "::error::secretless cache transfer is incomplete"
             exit 1
           }
-          [ "$(wc -l < "$manifest")" -eq 8 ] || {
+          [ "$(wc -l < "$manifest")" -eq 9 ] || {
             echo "::error::secretless cache manifest has an unexpected shape"
             exit 1
           }
@@ -896,6 +966,7 @@ jobs:
           }
           manifest_run_id="$(manifest_value run_id)"
           manifest_run_attempt="$(manifest_value run_attempt)"
+          manifest_package_manager="$(manifest_value package_manager)"
           manifest_lock_sha256="$(manifest_value lock_sha256)"
           manifest_auxiliary_repository="$(manifest_value auxiliary_repository)"
           manifest_auxiliary_commit="$(manifest_value auxiliary_commit)"
@@ -915,7 +986,16 @@ jobs:
             echo "::error::secretless cache belongs to another run attempt"
             exit 1
           }
-          [ "$manifest_lock_sha256" = "$(sha256sum package-lock.json | cut -d' ' -f1)" ] || {
+          [ "$manifest_package_manager" = "$PACKAGE_MANAGER" ] || {
+            echo "::error::secretless cache uses another package manager"
+            exit 1
+          }
+          case "$PACKAGE_MANAGER" in
+            npm) lock_file=package-lock.json ;;
+            pnpm) lock_file=pnpm-lock.yaml ;;
+            *) echo "::error::package-manager accepts only npm or pnpm"; exit 1 ;;
+          esac
+          [ "$manifest_lock_sha256" = "$(sha256sum "$lock_file" | cut -d' ' -f1)" ] || {
             echo "::error::secretless cache does not match this package lock"
             exit 1
           }
@@ -967,7 +1047,7 @@ jobs:
             echo "::error::secretless transfer must contain only private content-addressed package blobs"
             exit 1
           }
-          SECRETLESS_CACHE_DIR="$SECRETLESS_CACHE_DIR" python3 - <<'PY'
+          SECRETLESS_CACHE_DIR="$SECRETLESS_CACHE_DIR" PACKAGE_MANAGER="$PACKAGE_MANAGER" python3 - <<'PY'
           import base64
           import hashlib
           import json
@@ -977,13 +1057,21 @@ jobs:
           from urllib.parse import urlparse
 
           cache = Path(os.environ["SECRETLESS_CACHE_DIR"])
-          lock = json.loads(Path("package-lock.json").read_text(encoding="utf-8"))
+          package_manager = os.environ.get("PACKAGE_MANAGER", "npm")
           expected_content = {}
-          for package in lock.get("packages", {}).values():
-              resolved = package.get("resolved", "")
+          if package_manager == "npm":
+              lock = json.loads(Path("package-lock.json").read_text(encoding="utf-8"))
+              resolutions = [(package.get("resolved", ""), package.get("integrity"))
+                             for package in lock.get("packages", {}).values()]
+          else:
+              import yaml
+              lock = yaml.safe_load(Path("pnpm-lock.yaml").read_text(encoding="utf-8"))
+              resolutions = [(package.get("resolution", {}).get("tarball", ""),
+                              package.get("resolution", {}).get("integrity"))
+                             for package in lock.get("packages", {}).values()]
+          for resolved, integrity in resolutions:
               if urlparse(resolved).hostname != "npm.pkg.github.com":
                   continue
-              integrity = package.get("integrity")
               if not isinstance(integrity, str) or re.fullmatch(
                       r"sha512-[A-Za-z0-9+/]{86}==", integrity) is None:
                   raise SystemExit("locked private package has invalid sha512 integrity")
@@ -1023,13 +1111,23 @@ jobs:
             printf 'NPM_CONFIG_GLOBALCONFIG=%s\n' "$NPM_CONFIG_GLOBALCONFIG"
             printf 'NPM_CONFIG_USERCONFIG=%s\n' "$NPM_CONFIG_USERCONFIG"
           } >> "$GITHUB_ENV"
-          npm ci --ignore-scripts --prefer-offline --no-audit --no-fund --cache "$SECRETLESS_CACHE_DIR"
+          if [ "$PACKAGE_MANAGER" = npm ]; then
+            npm ci --ignore-scripts --prefer-offline --no-audit --no-fund --cache "$SECRETLESS_CACHE_DIR"
+          else
+            mkdir -p "$PNPM_STORE_DIR"
+            while IFS= read -r -d '' package_blob; do
+              corepack pnpm store add --store-dir "$PNPM_STORE_DIR" "$package_blob"
+            done < <(find "$SECRETLESS_CACHE_DIR/_cacache/content-v2" -type f -print0)
+            corepack pnpm install --frozen-lockfile --ignore-scripts --prefer-offline \
+              --store-dir "$PNPM_STORE_DIR"
+          fi
       - name: Remove local secretless transfer state
         if: always() && needs.eligibility.outputs.should-run != 'false' && (inputs.secretless-pr || inputs.secretless-trusted-ref)
         env:
           SECRETLESS_CACHE_DIR: ${{ runner.temp }}/secretless-build-cache-${{ github.run_id }}-${{ github.run_attempt }}
+          PNPM_STORE_DIR: ${{ runner.temp }}/secretless-pnpm-store-${{ github.run_id }}-${{ github.run_attempt }}
           TRANSFER_DIR: ${{ github.workspace }}/.verjson-secretless-transfer-${{ github.run_id }}-${{ github.run_attempt }}
-        run: rm -rf "$SECRETLESS_CACHE_DIR" "$TRANSFER_DIR"
+        run: rm -rf "$SECRETLESS_CACHE_DIR" "$PNPM_STORE_DIR" "$TRANSFER_DIR"
       - name: Start database service
         # Optional Postgres service for DB-backed test suites (e.g. Jest against
         # pgvector/pgvector:pg16 with DATABASE_URL). Default-off: this whole step
@@ -1387,6 +1485,7 @@ jobs:
       - name: Rebuild exact approved lifecycle packages without credentials
         if: needs.eligibility.outputs.should-run != 'false' && (inputs.secretless-pr || inputs.secretless-trusted-ref) && inputs.secretless-rebuild-packages != ''
         env:
+          PACKAGE_MANAGER: ${{ inputs.package-manager }}
           REBUILD_PACKAGES: ${{ inputs.secretless-rebuild-packages }}
         run: |
           python3 - <<'PY'
@@ -1402,18 +1501,26 @@ jobs:
           if not requested or len(requested) != len(set(requested)) \
                   or any(package_pattern.fullmatch(name) is None for name in requested):
               sys.exit("secretless-rebuild-packages accepts unique exact npm package names only")
-          lock = json.loads(Path("package-lock.json").read_text(encoding="utf-8"))
-          installed = set()
-          for path, package in lock.get("packages", {}).items():
-              if "node_modules/" not in path:
-                  continue
-              path_name = path.rsplit("node_modules/", 1)[1]
-              locked_name = package.get("name")
-              installed.add(locked_name if isinstance(locked_name, str) else path_name)
+          package_manager = os.environ.get("PACKAGE_MANAGER", "npm")
+          if package_manager == "npm":
+              lock = json.loads(Path("package-lock.json").read_text(encoding="utf-8"))
+              installed = set()
+              for path, package in lock.get("packages", {}).items():
+                  if "node_modules/" not in path:
+                      continue
+                  path_name = path.rsplit("node_modules/", 1)[1]
+                  locked_name = package.get("name")
+                  installed.add(locked_name if isinstance(locked_name, str) else path_name)
+          else:
+              import yaml
+              lock = yaml.safe_load(Path("pnpm-lock.yaml").read_text(encoding="utf-8"))
+              installed = {key.rsplit("@", 1)[0] for key in lock.get("packages", {})
+                           if isinstance(key, str) and key.startswith("@") and "@" in key[1:]}
           missing = sorted(set(requested) - installed)
           if missing:
               sys.exit("approved rebuild packages absent from lock: " + ", ".join(missing))
-          subprocess.run(["npm", "rebuild", *requested], check=True)
+          command = ["npm", "rebuild"] if package_manager == "npm" else ["corepack", "pnpm", "rebuild"]
+          subprocess.run([*command, *requested], check=True)
           PY
       - name: Run exact credentialless consumer script plan
         if: needs.eligibility.outputs.should-run != 'false' && (inputs.secretless-pr || inputs.secretless-trusted-ref) && inputs.secretless-ci-script-plan != ''

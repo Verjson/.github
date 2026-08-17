@@ -53,7 +53,8 @@ for name in ("GH_TOKEN", "GITHUB_TOKEN", "NODE_AUTH_TOKEN", "NPM_TOKEN",
     assert install["env"][name] == ""
 assert "npm ci --ignore-scripts" in install["run"]
 assert "printf '%s=\\n' \"$name\"" in install["run"]
-assert 'subprocess.run(["npm", "rebuild", *requested], check=True)' in rebuild["run"]
+assert 'command = ["npm", "rebuild"] if package_manager == "npm" else ["corepack", "pnpm", "rebuild"]' in rebuild["run"]
+assert 'subprocess.run([*command, *requested], check=True)' in rebuild["run"]
 assert 'subprocess.run(["npm", "run", name], check=True, env=script_env)' in plan["run"]
 
 for command in ("npm run build", "npm run typecheck --if-present", "npm test", "npm run lint --if-present"):
