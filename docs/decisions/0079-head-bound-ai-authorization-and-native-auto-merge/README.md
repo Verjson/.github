@@ -117,6 +117,39 @@ the retired workflow context would keep every PR blocked. Confirm that native
 auto-merge and squash merging are enabled and that the promotion credential can
 request auto-merge but is not configured as a bypass actor.
 
+### 2026-08-18 clarification — configure adopters before activation (#836)
+
+Issue [#836](https://github.com/Verjson/.github/issues/836) exposed an omitted
+adoption prerequisite: generated callers can be present while organization
+variables remain unavailable to the repository. Enabling the property in that
+state immediately creates a required authorization check that can only fail.
+
+Before enabling `verjson-core-checks=enforced` for an adopter, an organization
+owner must prove that every `AI_REVIEW_*` organization variable consumed by the
+generated arm and review callers is visible to that repository. This includes the
+App identity, authority, provider, model, and budget variables for both the
+primary review and re-review paths. Separately verify that
+`AI_REVIEW_APP_PRIVATE_KEY` and every provider secret selectable by the primary,
+primary-fallback, re-review, and re-review-fallback inputs are visible without
+reading or recording their values. The current generated caller inputs bind those
+providers to `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, and `DEEPSEEK_API_KEY`; all
+three must therefore be available even when the current policy selects only one.
+Variable visibility does not prove secret visibility or that the App is installed
+with the required permissions.
+
+The adoption order is therefore: install the App and verify its permissions;
+make the complete variable and secret families visible; deploy the generated
+callers; then set `verjson-core-checks=enforced` and use a controlled pull request
+to prove the arm, exact-head review, authorization, and terminal promotion. The
+property is last because it activates the required arm immediately; enabling it
+before its organization configuration is reachable creates a required check that
+can only fail.
+
+On 2026-08-18, organization metadata showed the complete variable family and all
+four required secrets at organization-wide visibility. Controlled adopter runs in
+`Verjson/verjson-cli-cloud#328` and `Verjson/verjson-cli-projects#95` then produced
+green arm and authorization checks, providing the missing end-to-end evidence.
+
 Rollback reverses that order: restore the immutable old required workflow and
 verify its context appears on a test PR before removing the new required check.
 Then restore the prior workflow revision and revoke the App private key.
