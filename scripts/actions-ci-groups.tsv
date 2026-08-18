@@ -11,6 +11,7 @@ platform	bash scripts/node-workflow-pins.test.sh
 platform	bash scripts/node-workflow-controls.test.sh
 platform	bash scripts/ci-gate/node-ci-secretless.test.sh
 platform	bash scripts/ci-gate/node-ci-secretless-pnpm.test.sh
+platform	bash scripts/ci-gate/node-ci-secretless-pnpm-install.test.sh
 platform	bash scripts/ci-gate/node-ci-secretless-trusted-ref.test.sh
 platform	bash scripts/ci-gate/node-ci-secretless-consumer.test.sh
 platform	bash scripts/ci-gate/node-ci-secretless-transfer.test.sh
