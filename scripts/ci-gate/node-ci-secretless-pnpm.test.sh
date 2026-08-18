@@ -102,8 +102,8 @@ elif [ -s "$rebuild_fixture/corepack.log" ]; then
 else
   pass "pnpm rebuild rejects aliased snapshot identities before execution"
 fi
-python3 - "$workflow" <<'PY' \
-  && pass "pnpm execution remains credentialless, frozen, bounded, and cleaned" \
+python3 - "$workflow" "$valid/pnpm-lock.yaml" <<'PY' \
+  && pass "registry-addressed private pnpm packages resolve locally in a credentialless, frozen, bounded, and cleaned install" \
   || fail "pnpm execution weakened the secretless handoff"
 import ast, sys, textwrap, yaml
 doc = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))
@@ -114,11 +114,17 @@ install = next(step for step in steps if step.get("name") == "Install from verif
 for credential in ("GH_TOKEN", "GITHUB_TOKEN", "NODE_AUTH_TOKEN", "NPM_TOKEN"):
     assert install["env"][credential] == ""
 script = install["run"]
+lock = open(sys.argv[2], encoding="utf-8").read()
+assert "https://npm.pkg.github.com/download/@verjson/contracts/1.2.3/abc" in lock
 assert 'package_spec="$(mktemp "$PNPM_IMPORT_DIR/package-XXXXXX.tgz")"' in script
 assert 'cp -- "$package_blob" "$package_spec"' in script
 assert 'corepack pnpm store add --store-dir "$PNPM_STORE_DIR" "$package_spec"' in script
 assert 'corepack pnpm store add --store-dir "$PNPM_STORE_DIR" "$package_blob"' not in script
+assert 'urlparse(resolution.get("tarball", "")).hostname != "npm.pkg.github.com"' in script
+assert 'resolution["tarball"] = mappings[digest]' in script
+assert 'Path(path).resolve().as_uri()' in script
 assert "corepack pnpm install --frozen-lockfile --ignore-scripts --prefer-offline" in script
+assert 'cp -- "$PNPM_STORE_DIR/pnpm-lock.original.yaml" pnpm-lock.yaml' in script
 assert 'rm -rf "$SECRETLESS_CACHE_DIR" "$PNPM_STORE_DIR" "$TRANSFER_DIR"' in script
 boundary = next(step for step in doc["jobs"]["acquire-secretless-dependencies"]["steps"] if step.get("name") == "Enforce the secretless event boundary")
 assert "same-repository pull request" in boundary["run"]
