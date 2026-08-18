@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Refuse metered GitHub-hosted runner selectors and unbounded hosted jobs.
+"""Refuse literal GitHub-hosted runner selectors and unbounded hosted jobs.
 
     hosted-selector-policy.py --visibility public|private [--sanctioned NAME]... <workflow-dir>
-    hosted-selector-policy.py --metered-families-only <workflow-dir>
+    hosted-selector-policy.py --consumer-policy <workflow-dir>
 
 Exit 0 is "scanned and clean", 1 is "policy violation", 2 is "undetermined".
 The three are distinct because a sweep that scans nothing must not look like a
@@ -471,11 +471,18 @@ def check_reusable_runner_inputs(
                 f"R1 metered hosted runner family in reusable job '{name}' "
                 f"input '{input_name}': {raw_selector}",
             )
+        if LINUX_HOSTED_LITERAL.search(outside_expressions(selector)):
+            report.violation(
+                path,
+                input_line,
+                f"TierB literal Linux hosted selector in reusable job '{name}' "
+                f"input '{input_name}' — use a VERJSON lane variable: {raw_selector}",
+            )
 
 
 def check_job(report: Report, path: str, name: str, body: dict, line: int,
-              visibility: str, metered_families_only: bool = False) -> None:
-    if metered_families_only:
+              visibility: str, consumer_policy: bool = False) -> None:
+    if consumer_policy:
         check_reusable_runner_inputs(report, path, name, body, line)
     if "runs-on" not in body:
         # A job-level `uses:` calls a reusable workflow and declares no runner
@@ -523,15 +530,19 @@ def check_job(report: Report, path: str, name: str, body: dict, line: int,
             f"R1 metered hosted runner family in job '{name}' runs-on: {runs_on}",
         )
 
-    # The reusable actionlint path deliberately exports only R1. The other
-    # rules describe this repository's complete routing contract: exporting R2
-    # would activate the separately deferred consumer ubuntu-latest sweep
-    # (#816), while R3-R6 govern the one sanctioned desktop release path rather
-    # than ordinary package consumers. Parsing and job extraction still fail
-    # closed, expression construction stays inside the reviewed grammar, and
-    # matrix sources are still folded in, so narrowing the rule set does not
-    # narrow the YAML shapes R1 can see.
-    if metered_families_only:
+    # Consumer mode exports the visibility-independent selector rules: metered
+    # families and literal Linux hosted selectors. R3-R6 govern the one
+    # sanctioned desktop release path rather than ordinary package consumers.
+    # Parsing and job extraction still fail closed, expression construction
+    # stays inside the reviewed grammar, and matrix sources are still folded in.
+    if consumer_policy:
+        if LINUX_HOSTED_LITERAL.search(outside_expressions(selector)):
+            report.violation(
+                path,
+                runs_on_line,
+                f"TierB literal Linux hosted selector in consumer job '{name}' "
+                f"runs-on — use a VERJSON lane variable: {runs_on}",
+            )
         return
 
     # R2 — a rolling standard hosted image, independent of billing. R1 already
@@ -710,7 +721,12 @@ def parse_arguments(argv: list[str]) -> argparse.Namespace:
     # No default. A caller that does not say what it is scanning gets no verdict,
     # because a permissive default here silently disables Tier B.
     parser.add_argument("--visibility", action="append")
-    parser.add_argument("--metered-families-only", action="store_true")
+    parser.add_argument(
+        "--consumer-policy",
+        "--metered-families-only",
+        dest="consumer_policy",
+        action="store_true",
+    )
     # Behind a flag, not a trailing positional: in a script that fails closed
     # everywhere else, a stray argument must not quietly sanction a file and
     # narrow the sweep.
@@ -730,14 +746,14 @@ def parse_arguments(argv: list[str]) -> argparse.Namespace:
         # policy tier being enforced.
         raise Undetermined(f"--visibility given {len(visibility)} times")
     arguments.visibility = visibility[0] if visibility else ""
-    if arguments.metered_families_only:
+    if arguments.consumer_policy:
         if arguments.visibility:
             raise Undetermined(
-                "--metered-families-only and --visibility are mutually exclusive"
+                "--consumer-policy and --visibility are mutually exclusive"
             )
         if arguments.sanctioned:
             raise Undetermined(
-                "--sanctioned does not apply to --metered-families-only"
+                "--sanctioned does not apply to --consumer-policy"
             )
     elif arguments.visibility not in ("public", "private"):
         raise Undetermined(
@@ -783,7 +799,7 @@ def main(argv: list[str]) -> int:
 
     for path in workflow_files:
         references_os_lane = False
-        if not arguments.metered_families_only:
+        if not arguments.consumer_policy:
             references_os_lane = check_os_lane_references(report, path, sanctioned)
         try:
             document = load_workflow(path)
@@ -801,7 +817,7 @@ def main(argv: list[str]) -> int:
                 body,
                 line,
                 arguments.visibility,
-                arguments.metered_families_only,
+                arguments.consumer_policy,
             )
 
     for message in report.anomalies:

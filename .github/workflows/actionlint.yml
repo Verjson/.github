@@ -155,7 +155,7 @@ jobs:
           tar -xzf "$archive" -C "$dependency_dir" --strip-components=2 \
             "pyyaml-${PYYAML_VERSION}/lib/yaml"
           test -f "$dependency_dir/yaml/__init__.py"
-      - name: Refuse metered hosted selectors in Verjson callers
+      - name: Refuse literal hosted selectors in Verjson callers
         if: github.repository_owner == 'Verjson'
         run: |
           set -euo pipefail
@@ -176,7 +176,7 @@ jobs:
             PYTHONNOUSERSITE=1 \
             python3 -S \
             .verjson-actionlint-policy/scripts/ci-gate/hosted-selector-policy.py \
-            --metered-families-only .github/workflows
+            --consumer-policy .github/workflows
       - name: Remove hosted-selector policy dependency
         if: ${{ always() && github.repository_owner == 'Verjson' }}
         working-directory: ${{ github.workspace }}

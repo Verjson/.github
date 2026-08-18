@@ -110,7 +110,7 @@ def assert_undetermined(label: str, *arguments: str) -> None:
 def assert_metered_only(fixture: str, expected_code: int, label: str) -> None:
     exercised_fixtures.add(fixture)
     code, output = run_policy(
-        "--metered-families-only", os.path.join(FIXTURES, fixture)
+        "--consumer-policy", os.path.join(FIXTURES, fixture)
     )
     if code == expected_code:
         ok(label)
@@ -146,10 +146,10 @@ assert_metered_only("metered-windows", 1,
                     "consumer mode refuses literal Windows hosted selectors")
 assert_metered_only("evasion-matrix", 1,
                     "consumer mode resolves a metered matrix selector structurally")
-assert_metered_only("rolling-linux-latest", 0,
-                    "consumer mode does not activate the deferred ubuntu-latest rule")
-assert_metered_only("linux-hosted-literal", 0,
-                    "consumer mode does not activate private literal-Linux policy")
+assert_metered_only("rolling-linux-latest", 1,
+                    "consumer mode refuses a rolling Linux hosted selector")
+assert_metered_only("linux-hosted-literal", 1,
+                    "consumer mode refuses a pinned Linux hosted selector")
 assert_metered_only("invalid-yaml", 2,
                     "consumer mode remains fail closed on unparseable workflow YAML")
 assert_metered_only("dynamic-format", 2,
@@ -171,16 +171,16 @@ for source_fixture, source_name in (
     )
 assert_metered_only("lane-with-fallback", 0,
                     "consumer mode retains reviewed canonical lane expressions")
-assert_metered_only("matrix-linux-literal", 0,
-                    "consumer mode retains static Linux matrix selectors")
+assert_metered_only("matrix-linux-literal", 1,
+                    "consumer mode refuses static Linux matrix selectors")
 assert_metered_only("reusable-input-macos", 1,
                     "consumer mode refuses macOS through with.runner")
 assert_metered_only("reusable-input-windows", 1,
                     "consumer mode refuses Windows through with.runner_labels")
 assert_metered_only("reusable-input-dynamic", 2,
                     "consumer mode refuses a dynamic reusable runner input")
-assert_metered_only("reusable-input-linux", 0,
-                    "consumer mode preserves deferred Linux reusable inputs")
+assert_metered_only("reusable-input-linux", 1,
+                    "consumer mode refuses literal Linux reusable inputs")
 assert_metered_only("reusable-input-unrelated", 0,
                     "consumer mode ignores unrelated reusable inputs mentioning macOS")
 assert_metered_only("step-input-unrelated", 0,
@@ -189,8 +189,8 @@ assert_metered_only("reusable-input-malformed", 2,
                     "consumer mode fails closed on a malformed reusable with mapping")
 assert_metered_only("reusable-input-canonical", 0,
                     "consumer mode preserves the generated canonical runner expression")
-assert_metered_only("reusable-input-static-matrix", 0,
-                    "consumer mode resolves and accepts a static Linux input matrix")
+assert_metered_only("reusable-input-static-matrix", 1,
+                    "consumer mode resolves and refuses a static Linux input matrix")
 assert_metered_only("reusable-input-metered-matrix", 1,
                     "consumer mode resolves and refuses a metered input matrix")
 
@@ -303,10 +303,10 @@ assert_undetermined("a repeated --visibility is undetermined, not last-wins",
                     "--visibility", "private", "--visibility", "public",
                     os.path.join(FIXTURES, "linux-hosted-literal"))
 assert_undetermined("consumer mode cannot accidentally add visibility-scoped rules",
-                    "--metered-families-only", "--visibility", "private",
+                    "--consumer-policy", "--visibility", "private",
                     os.path.join(FIXTURES, "metered-macos"))
 assert_undetermined("consumer mode cannot sanction repository-local OS-lane paths",
-                    "--metered-families-only", "--sanctioned", "desktop-release.yml",
+                    "--consumer-policy", "--sanctioned", "desktop-release.yml",
                     os.path.join(FIXTURES, "metered-macos"))
 assert_undetermined("a stray positional cannot silently sanction a workflow",
                     "--visibility", "public",
