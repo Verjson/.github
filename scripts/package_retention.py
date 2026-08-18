@@ -213,9 +213,9 @@ def plan_target(
             stable_tags = [tag for tag in tags if STABLE_VERSION.fullmatch(tag)]
             if not stable_tags:
                 continue
-            if len(stable_tags) != 1 or len(tags) != 1:
+            if len(stable_tags) != 1:
                 raise RetentionError(
-                    f"container version {version_id} mixes a numbered release with other tags: {tags}"
+                    f"container version {version_id} maps multiple numbered releases to one digest: {tags}"
                 )
             name = stable_tags[0]
         if STABLE_VERSION.fullmatch(name):
@@ -291,7 +291,7 @@ def _container_safety(
         if not isinstance(digest, str) or not DIGEST.fullmatch(digest):
             raise RetentionError(f"container version {version.get('id')} has no canonical digest name")
         stable_tags = [tag for tag in tags if isinstance(tag, str) and STABLE_VERSION.fullmatch(tag)]
-        if len(stable_tags) == 1 and len(tags) == 1:
+        if len(stable_tags) == 1:
             stable.append((stable_tags[0], digest))
         elif not tags:
             untagged.append(version)

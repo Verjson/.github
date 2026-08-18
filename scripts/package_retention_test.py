@@ -88,10 +88,23 @@ class PackageRetentionTest(unittest.TestCase):
         with self.assertRaisesRegex(retention.RetentionError, "historical cleanup"):
             retention.plan_target(target, versions)
 
-    def test_fails_closed_when_container_numbered_tag_shares_a_manifest(self):
+    def test_container_numbered_releases_may_share_their_digest_with_aliases(self):
+        target = retention.Target("container", "api", "4.0.0")
+        versions = [
+            {"id": 1, "metadata": {"container": {"tags": ["1.0.0", "1"]}}},
+            {"id": 2, "metadata": {"container": {"tags": ["2.0.0", "2"]}}},
+            {"id": 3, "metadata": {"container": {"tags": ["3.0.0", "3"]}}},
+            {"id": 4, "metadata": {"container": {"tags": ["4.0.0", "4", "latest"]}}},
+        ]
+
+        plan = retention.plan_target(target, versions)
+
+        self.assertEqual([(item.version_id, item.labels) for item in plan], [(1, ("1.0.0", "1"))])
+
+    def test_fails_closed_when_container_digest_has_multiple_numbered_tags(self):
         target = retention.Target("container", "api", "2.0.0")
-        versions = [{"id": 1, "metadata": {"container": {"tags": ["2.0.0", "latest"]}}}]
-        with self.assertRaisesRegex(retention.RetentionError, "mixes a numbered release"):
+        versions = [{"id": 1, "metadata": {"container": {"tags": ["1.0.0", "2.0.0"]}}}]
+        with self.assertRaisesRegex(retention.RetentionError, "multiple numbered releases"):
             retention.plan_target(target, versions)
 
     def test_fails_closed_on_duplicate_semver_or_version_id(self):
@@ -195,6 +208,46 @@ class PackageRetentionTest(unittest.TestCase):
         self.assertIn(10, safety.protected_version_ids)
         self.assertIn(13, safety.protected_version_ids)
         self.assertNotIn(f"ghcr.io/Verjson/api@{fresh_digest}", [call.args[0] for call in inspector.raw.call_args_list])
+
+    def test_retained_alias_tagged_index_protects_its_untagged_children(self):
+        target = retention.Target("container", "api", "3.0.0")
+        now = datetime.datetime(2026, 8, 18, tzinfo=datetime.timezone.utc)
+
+        child_raw = json.dumps({
+            "schemaVersion": 2,
+            "mediaType": "application/vnd.oci.image.manifest.v1+json",
+        }, separators=(",", ":")).encode()
+        child_digest = f"sha256:{hashlib.sha256(child_raw).hexdigest()}"
+        index_raw = json.dumps({
+            "schemaVersion": 2,
+            "mediaType": "application/vnd.oci.image.index.v1+json",
+            "manifests": [{"digest": child_digest}],
+        }, separators=(",", ":")).encode()
+        index_digest = f"sha256:{hashlib.sha256(index_raw).hexdigest()}"
+        versions = [
+            {
+                "id": 1,
+                "name": index_digest,
+                "created_at": "2026-07-01T00:00:00Z",
+                "metadata": {"container": {"tags": ["3.0.0", "3", "latest"]}},
+            },
+            {
+                "id": 2,
+                "name": child_digest,
+                "created_at": "2026-07-01T00:00:00Z",
+                "metadata": {"container": {"tags": []}},
+            },
+        ]
+        inspector = mock.Mock()
+        inspector.raw.side_effect = {
+            "ghcr.io/Verjson/api:3.0.0": index_raw,
+            f"ghcr.io/Verjson/api@{child_digest}": child_raw,
+        }.__getitem__
+
+        safety = retention._container_safety("Verjson", target, versions, inspector, now)
+
+        self.assertIn(2, safety.protected_version_ids)
+        self.assertNotIn(2, safety.deletable_untagged_ids)
 
     def test_nested_retained_index_protects_an_old_numbered_digest(self):
         target = retention.Target("container", "api", "3.0.0")
