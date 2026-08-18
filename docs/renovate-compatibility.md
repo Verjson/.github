@@ -7,8 +7,8 @@ human-reviewed policy pull request remains the only way to add or remove a hold.
 
 ## App permissions
 
-Install a dedicated GitHub App and expose its ID as
-`RENOVATE_COMPATIBILITY_APP_ID` and private key as
+Install a dedicated GitHub App and expose its client ID as
+`RENOVATE_COMPATIBILITY_CLIENT_ID` and private key as
 `RENOVATE_COMPATIBILITY_APP_PRIVATE_KEY`. Grant read access to organization/repository
 metadata, contents, pull requests, checks/statuses, and Actions runs/artifacts. Do not
 grant contents, pull-request, issue, package, administration, deployment, or workflow
