@@ -19,6 +19,7 @@ platform	bash scripts/ci-gate/node-ci-db-service.test.sh
 platform	bash scripts/ci-gate/node-ci-cache-service.test.sh
 platform	bash scripts/ci-gate/ci-eligibility.test.sh
 platform	bash scripts/node-release-publish.test.sh
+platform	python3 scripts/package_retention_test.py
 platform	bash scripts/retired-release-tooling.test.sh
 platform	bash .github/actions/setup-verjson-node/configure-git.test.sh
 platform	bash scripts/ci-gate/pulumi-comment.test.sh

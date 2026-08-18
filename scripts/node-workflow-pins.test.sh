@@ -24,6 +24,8 @@ for wf in "$ci" "$release" "$actions_ci"; do
   if [ "$wf" = "$ci" ]; then
     expected_checkouts=3
     expected_setups=2
+  elif [ "$wf" = "$release" ]; then
+    expected_checkouts=2
   fi
   if [ "$wf" != "$actions_ci" ]; then
     [ "$wf" = "$ci" ] || expected_setups=1

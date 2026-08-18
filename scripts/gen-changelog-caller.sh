@@ -690,6 +690,7 @@ jobs:
     with:
       version: \${{ inputs.version }}
       prefix: \${{ inputs.prefix }}
+      contract-ref: ${ref}
       runner: \${{ ${release_runner_expr} }}
       # Keep this byte-coupled input Renovate-inert for the same reason as the
       # setup-node input in verify (#700).
@@ -1405,6 +1406,7 @@ while IFS= read -r release_workflow; do
   for publish_input in \
     'version: ${{ inputs.version }}' \
     'prefix: ${{ inputs.prefix }}' \
+    "contract-ref: $CONTRACT_REF" \
     "$expected_node_version" \
     "scope: '$EXPECTED_RELEASE_SCOPE'" \
     "package-dirs: '$EXPECTED_RELEASE_PACKAGE_DIRS_JSON'" \
