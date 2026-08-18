@@ -16,3 +16,7 @@ manifest/index-digest-bound unknown-state reconciliation, durable canary-observa
 independently approved rollback, least privilege, and no capacity-creating or
 spend-increasing operations. Live
 `Verjson/verjson-github-runner` adoption remains a separate post-merge handoff.
+The final upstream admission integration uses the exact SHA-256 identity of the
+canonical `release-manifest.json` asset throughout the workflow, controller, and
+receipts; legacy registry-qualified manifest references fail before evidence
+collection or fleet mutation.

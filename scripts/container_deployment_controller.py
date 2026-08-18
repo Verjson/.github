@@ -23,9 +23,7 @@ from container_deployment_preflight import (
 
 
 DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
-MANIFEST_IDENTITY = re.compile(
-    r"(?P<repository>ghcr\.io/[a-z0-9_.-]+/[a-z0-9_.-]+)@(?P<digest>sha256:[0-9a-f]{64})"
-)
+MANIFEST_IDENTITY = re.compile(r"(?P<digest>sha256:[0-9a-f]{64})")
 MAX_DRAIN_SECONDS = 1_800
 MAX_PROBE_SECONDS = 900
 MAX_OBSERVATION_SECONDS = 900
@@ -362,8 +360,6 @@ def build_plan(
     identity_match = MANIFEST_IDENTITY.fullmatch(identity)
     if identity_match is None:
         raise DeploymentError("manifestIdentity must be an immutable digest reference")
-    if identity_match.group("repository") != expected.get("repository"):
-        raise DeploymentError("manifestIdentity repository differs from reviewed configuration")
     selected_release, target_digest = _validate_release_evidence(
         expected, evidence, identity_match, now
     )

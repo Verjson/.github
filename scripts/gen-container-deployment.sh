@@ -32,7 +32,7 @@ on:
   workflow_dispatch:
     inputs:
       manifest-identity:
-        description: Immutable release manifest OCI digest identity
+        description: Immutable canonical release-manifest asset digest
         required: true
         type: string
       fleet-selector:

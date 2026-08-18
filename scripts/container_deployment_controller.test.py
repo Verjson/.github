@@ -64,7 +64,6 @@ def configuration() -> dict:
         "evidenceCommand": ["python3", "scripts/runner-deployment-evidence.py"],
         "probeCommand": ["python3", "scripts/runner-deployment-probe.py"],
         "expectedRelease": {
-            "repository": "ghcr.io/verjson/verjson-github-runner-release",
             "sourceRepository": "Verjson/verjson-github-runner",
             "sourceRef": "refs/heads/main",
             "signerWorkflow": "Verjson/.github/.github/workflows/container-release.yml",
@@ -96,9 +95,7 @@ def evidence() -> dict:
     baseline_manifest = release_manifest("1.0.0", "1")
     baseline = manifest_release(baseline_manifest)
     return {
-        "manifestIdentity": (
-            "ghcr.io/verjson/verjson-github-runner-release@" + selected["manifestDigest"]
-        ),
+        "manifestIdentity": selected["manifestDigest"],
         "manifest": manifest,
         "attestation": {
             "verified": True,
@@ -123,10 +120,7 @@ def evidence() -> dict:
                 {
                     "name": name,
                     "release": copy.deepcopy(baseline),
-                    "manifestIdentity": (
-                        "ghcr.io/verjson/verjson-github-runner-release@"
-                        + baseline["manifestDigest"]
-                    ),
+                    "manifestIdentity": baseline["manifestDigest"],
                     "online": True,
                     "admitted": True,
                     "busy": False,
@@ -222,6 +216,16 @@ class DeploymentPlannerTests(unittest.TestCase):
         candidate = evidence()
         candidate["manifestIdentity"] = (
             "ghcr.io/verjson/verjson-github-runner-release:stable"
+        )
+
+        with self.assertRaisesRegex(controller.DeploymentError, "immutable digest"):
+            controller.build_plan(configuration(), candidate, "production")
+
+    def test_rejects_legacy_registry_qualified_manifest_identity(self):
+        candidate = evidence()
+        candidate["manifestIdentity"] = (
+            "ghcr.io/verjson/verjson-github-runner-release@"
+            + candidate["manifestIdentity"]
         )
 
         with self.assertRaisesRegex(controller.DeploymentError, "immutable digest"):
@@ -939,7 +943,7 @@ class DeploymentExecutionTests(unittest.TestCase):
         live = evidence()
         live["fleet"]["runners"][0]["release"] = release("9.0.0", "9")
         live["fleet"]["runners"][0]["manifestIdentity"] = (
-            "ghcr.io/verjson/verjson-github-runner-release@sha256:" + "9" * 64
+            "sha256:" + "9" * 64
         )
         live["fleet"]["runners"][0]["deployedDigest"] = "sha256:" + "9" * 64
 
@@ -1065,7 +1069,7 @@ class DeploymentExecutionTests(unittest.TestCase):
         ) as run, mock.patch.object(controller.ProcessAdapter, "_run", return_value={}):
             adapter.update_runner(
                 "gha-gate-1",
-                "ghcr.io/verjson/verjson-github-runner-release@sha256:" + "2" * 64,
+                "sha256:" + "2" * 64,
                 "runner",
                 600,
             )
@@ -1085,7 +1089,7 @@ class DeploymentExecutionTests(unittest.TestCase):
             with self.assertRaisesRegex(controller.DeploymentError, "safe token"):
                 controller._collect_evidence(
                     configuration(),
-                    "ghcr.io/verjson/verjson-github-runner-release@sha256:" + "2" * 64,
+                    "sha256:" + "2" * 64,
                     "--help",
                 )
         run.assert_not_called()

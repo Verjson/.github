@@ -37,6 +37,10 @@ credential or mutating an external system. Reject any plan with an unexpected ho
 baseline, signer, source ref, release-contract pin, label/tool requirement, or capacity
 floor.
 
+The manifest identity is the bare `sha256:<64 lowercase hex>` digest of the canonical
+`release-manifest.json` GitHub Release asset. A registry-qualified reference, image
+digest, or tag is not a release identity and is rejected before evidence collection.
+
 Dispatch the same manifest digest and fleet selector with `dry-run: false`. The job waits
 at `production`, re-collects current evidence, restores and validates any retained
 append-only chain for the exact run attempt, head, manifest, and plan, or retains a new

@@ -39,7 +39,6 @@ cat >"$consumer/container-deployment.json" <<JSON
   "evidenceCommand": ["python3", "scripts/runner-deployment-evidence.py"],
   "probeCommand": ["python3", "scripts/runner-deployment-probe.py"],
   "expectedRelease": {
-    "repository": "ghcr.io/verjson/example-release",
     "sourceRepository": "Verjson/example",
     "sourceRef": "refs/heads/main",
     "signerWorkflow": "Verjson/.github/.github/workflows/container-release.yml",

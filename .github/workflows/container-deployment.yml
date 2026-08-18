@@ -57,7 +57,7 @@ jobs:
         run: |
           set -euo pipefail
           [[ "$CONTRACT_REF" =~ ^[0-9a-f]{40}$ ]]
-          [[ "$MANIFEST_IDENTITY" =~ ^ghcr\.io/[a-z0-9_.-]+/[a-z0-9_.-]+@sha256:[0-9a-f]{64}$ ]]
+          [[ "$MANIFEST_IDENTITY" =~ ^sha256:[0-9a-f]{64}$ ]]
           python3 scripts/container_deployment_controller.py collect-evidence \
             --config "$CONFIG_PATH" --manifest-identity "$MANIFEST_IDENTITY" \
             --fleet "$FLEET_SELECTOR" --rollback-receipt "$ROLLBACK_RECEIPT" \
