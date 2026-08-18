@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Exercises the reusable actionlint boundary that exports #815's metered-family
-# policy to Verjson callers without exporting repository-local Linux rules.
+# Exercises the reusable actionlint boundary that exports the hosted-selector
+# policy to Verjson callers while retaining .github's reviewed local exceptions.
 set -uo pipefail
 
 here="$(cd "$(dirname "$0")" && pwd)"
@@ -33,7 +33,7 @@ assert set(checkout["with"]["sparse-checkout"].splitlines()) == {
 assert checkout["with"]["persist-credentials"] is False
 
 install = steps["Install hosted-selector policy dependency"]
-enforce = steps["Refuse metered hosted selectors in Verjson callers"]
+enforce = steps["Refuse literal hosted selectors in Verjson callers"]
 cleanup = steps["Remove hosted-selector policy dependency"]
 assert install["if"] == "github.repository_owner == 'Verjson'"
 assert enforce["if"] == "github.repository_owner == 'Verjson'"
@@ -41,8 +41,9 @@ assert cleanup["if"] == "${{ always() && github.repository_owner == 'Verjson' }}
 assert cleanup["working-directory"] == "${{ github.workspace }}"
 for step in (install, enforce, cleanup):
     assert 'runner_temp="$(cd "${{ runner.temp }}" && pwd -P)"' in step["run"]
-assert "--metered-families-only .github/workflows" in enforce["run"]
-assert "--visibility" not in enforce["run"]
+assert "policy_mode=(--consumer-policy)" in enforce["run"]
+assert "GITHUB_REPOSITORY" in enforce["run"]
+assert "policy_mode=(--visibility public)" in enforce["run"]
 assert "python3 -S" in enforce["run"]
 assert 'mktemp -d "$runner_temp/verjson-hosted-selector-policy.XXXXXX"' in install["run"]
 assert '>>"$GITHUB_ENV"' in install["run"]
@@ -79,7 +80,7 @@ install_script="$tmp/install.sh"
 enforce_script="$tmp/enforce.sh"
 cleanup_script="$tmp/cleanup.sh"
 extract_step "Install hosted-selector policy dependency" "$install_script"
-extract_step "Refuse metered hosted selectors in Verjson callers" "$enforce_script"
+extract_step "Refuse literal hosted selectors in Verjson callers" "$enforce_script"
 extract_step "Remove hosted-selector policy dependency" "$cleanup_script"
 for extracted in "$install_script" "$enforce_script" "$cleanup_script"; do
   sed -i 's#${{ runner.temp }}#${RUNNER_TEMP}#g' "$extracted"
@@ -181,6 +182,7 @@ cp "$root/scripts/ci-gate/hosted-selector-policy.py" \
 
 (cd "$source_dir" && env -u VERJSON_HOSTED_SELECTOR_POLICY_DIR \
   RUNNER_TEMP="$GOOD_RUNNER_TEMP" GITHUB_WORKSPACE="$GOOD_WORKSPACE" \
+  GITHUB_REPOSITORY="Verjson/consumer" \
   bash "$enforce_script") >"$tmp/missing-dependency.out" 2>&1
 missing_dependency_rc=$?
 if [ "$missing_dependency_rc" -ne 0 ]; then
@@ -191,11 +193,13 @@ fi
 
 run_policy_fixture() {
   local fixture="$1"
+  local repository="${2:-Verjson/consumer}"
   find "$source_dir/.github/workflows" -type f -delete
   cp "$fixtures/$fixture"/* "$source_dir/.github/workflows/"
   (cd "$source_dir" && \
     RUNNER_TEMP="$GOOD_RUNNER_TEMP" \
     GITHUB_WORKSPACE="$GOOD_WORKSPACE" \
+    GITHUB_REPOSITORY="$repository" \
     VERJSON_HOSTED_SELECTOR_POLICY_DIR="$GOOD_POLICY_DIR" \
     bash "$enforce_script") >"$tmp/policy.out" 2>&1
   POLICY_RC=$?
@@ -216,10 +220,34 @@ else
 fi
 
 run_policy_fixture rolling-linux-latest
-if [ "$POLICY_RC" -eq 0 ]; then
-  pass "the reusable step leaves the deferred consumer ubuntu-latest rule inactive"
+if [ "$POLICY_RC" -eq 1 ]; then
+  pass "the reusable step rejects a caller's literal Linux selector"
 else
-  fail "the reusable step broadened #815 into consumer Linux policy"
+  fail "the reusable step did not reject a literal Linux selector"
+fi
+
+run_policy_fixture linux-hosted-literal
+if [ "$POLICY_RC" -eq 1 ]; then
+  pass "the reusable step rejects a caller's pinned Linux selector"
+else
+  fail "the reusable step did not reject a pinned Linux selector"
+fi
+
+find "$source_dir/.github/workflows" -type f -delete
+cp "$root/.github/workflows/ai-privileged-merge.yml" \
+  "$root/.github/workflows/privileged-merge-conformance.yml" \
+  "$source_dir/.github/workflows/"
+(cd "$source_dir" && \
+  RUNNER_TEMP="$GOOD_RUNNER_TEMP" \
+  GITHUB_WORKSPACE="$GOOD_WORKSPACE" \
+  GITHUB_REPOSITORY="Verjson/.github" \
+  VERJSON_HOSTED_SELECTOR_POLICY_DIR="$GOOD_POLICY_DIR" \
+  bash "$enforce_script") >"$tmp/local-policy.out" 2>&1
+local_policy_rc=$?
+if [ "$local_policy_rc" -eq 0 ]; then
+  pass "the local policy branch preserves .github's reviewed fixed-hosted exceptions"
+else
+  fail "the local policy branch did not preserve .github's reviewed exceptions"
 fi
 
 run_policy_fixture reusable-input-macos
