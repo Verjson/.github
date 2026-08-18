@@ -298,10 +298,12 @@ explicitly enabled cache to the current job. Because a setup composite finishes
 before caller-owned install/build steps, bespoke callers—not the composite—own
 any end-of-job size guard.
 
-`node-ci.yml` also exports `VERJSON_CHANGELOG_TOOL_CACHE` beneath
-`runner.temp`. This keeps a cold changelog-contract cache writable by the job
-user without trusting persistent runner state; generated changelog tooling
-still verifies every cached file against its pinned digest.
+`node-ci.yml` also allocates `VERJSON_CHANGELOG_TOOL_CACHE` with `mktemp`
+beneath the checked-out workspace. The directory is created by the job user,
+so a runner whose nominal `runner.temp` is a protected bootstrap path cannot
+break a cold contract fetch. The unpredictable directory name and the
+generated tooling's pinned digest prevent repository content or persistent
+runner state from selecting executable contract bytes.
 
 ## Runner security tiers
 

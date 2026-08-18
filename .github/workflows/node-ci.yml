@@ -911,7 +911,9 @@ jobs:
           persist-credentials: ${{ !(inputs.secretless-pr || inputs.secretless-trusted-ref) }}
       - name: Prepare job-scoped changelog tool cache
         if: needs.eligibility.outputs.should-run != 'false'
-        run: echo "VERJSON_CHANGELOG_TOOL_CACHE=$RUNNER_TEMP/verjson-changelog-tools" >> "$GITHUB_ENV"
+        run: |
+          cache_root="$(mktemp -d "$GITHUB_WORKSPACE/.verjson-changelog-tools.XXXXXX")"
+          echo "VERJSON_CHANGELOG_TOOL_CACHE=$cache_root" >> "$GITHUB_ENV"
       - name: Prepare job-scoped npm cache
         if: needs.eligibility.outputs.should-run != 'false' && inputs.cache && !(inputs.secretless-pr || inputs.secretless-trusted-ref)
         run: echo "npm_config_cache=$RUNNER_TEMP/verjson-npm-cache" >> "$GITHUB_ENV"
