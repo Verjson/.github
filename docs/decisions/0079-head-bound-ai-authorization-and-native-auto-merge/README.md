@@ -117,6 +117,24 @@ the retired workflow context would keep every PR blocked. Confirm that native
 auto-merge and squash merging are enabled and that the promotion credential can
 request auto-merge but is not configured as a bypass actor.
 
+Before enabling `verjson-core-checks=enforced` for an adopter, an organization
+owner must also prove that every `AI_REVIEW_*` organization variable consumed by
+the generated arm and review callers is visible to that repository. This includes
+the App identity, authority, provider, model, and budget variables for both the
+primary review and re-review paths. Separately verify that
+`AI_REVIEW_APP_PRIVATE_KEY` and the configured provider secret (including
+`ANTHROPIC_API_KEY` when Anthropic is selected) are visible without reading or
+recording their values. Variable visibility does not prove secret visibility or
+that the App is installed with the required permissions.
+
+The adoption order is therefore: install the App and verify its permissions;
+make the complete variable and secret families visible; deploy the generated
+callers; then set `verjson-core-checks=enforced` and use a controlled pull request
+to prove the arm, exact-head review, authorization, and terminal promotion. The
+property is last because it activates the required arm immediately; enabling it
+before its organization configuration is reachable creates a required check that
+can only fail.
+
 Rollback reverses that order: restore the immutable old required workflow and
 verify its context appears on a test PR before removing the new required check.
 Then restore the prior workflow revision and revoke the App private key.
