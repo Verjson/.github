@@ -120,8 +120,11 @@ assert 'package_spec="$(mktemp "$PNPM_IMPORT_DIR/package-XXXXXX.tgz")"' in scrip
 assert 'cp -- "$package_blob" "$package_spec"' in script
 assert 'corepack pnpm store add --store-dir "$PNPM_STORE_DIR" "$package_spec"' in script
 assert 'corepack pnpm store add --store-dir "$PNPM_STORE_DIR" "$package_blob"' not in script
-assert 'urlparse(resolution.get("tarball", "")).hostname != "npm.pkg.github.com"' in script
-assert 'resolution["tarball"] = mappings[digest]' in script
+assert 'urlparse(tarball.value).hostname != "npm.pkg.github.com"' in script
+assert 'lock = yaml.compose(lock_text, Loader=yaml.SafeLoader)' in script
+assert '(tarball.start_mark.index, tarball.end_mark.index, json.dumps(mappings[digest]))' in script
+assert 'lock_text = lock_text[:start] + replacement + lock_text[end:]' in script
+assert 'yaml.safe_dump(lock' not in script
 assert 'Path(path).resolve().as_uri()' in script
 assert "corepack pnpm install --frozen-lockfile --ignore-scripts --prefer-offline" in script
 assert 'cp -- "$PNPM_STORE_DIR/pnpm-lock.original.yaml" pnpm-lock.yaml' in script

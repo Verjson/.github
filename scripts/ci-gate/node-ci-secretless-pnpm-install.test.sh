@@ -50,11 +50,20 @@ path = sys.argv[1]
 document = yaml.safe_load(open(path, encoding="utf-8"))
 package = next(iter(document["packages"].values()))
 package["resolution"]["tarball"] = "https://npm.pkg.github.com/download/@verjson/contracts/1.2.3/fixture"
-document["yes"] = {"no": "preserve-package-like-identifiers"}
-open(path, "w", encoding="utf-8").write(yaml.safe_dump(document, sort_keys=False))
+text = yaml.safe_dump(document, sort_keys=False)
+text += """x-preservation:
+  yes: no
+  0123: 0123
+  1:20: 1:20
+  ~: ~
+  2026-08-18: 2026-08-18
+  1.20: 1.20
+"""
+open(path, "w", encoding="utf-8").write(text)
 PY
 original="$fixture/original.yaml"
 cp -- "$app_dir/pnpm-lock.yaml" "$original"
+sed -n '/^x-preservation:/,$p' "$original" > "$fixture/preservation.original"
 mapping="$fixture/import-map.tsv"
 printf '%s\t%s\n' "$digest" "$tarball" > "$mapping"
 store="$fixture/store"
@@ -67,20 +76,49 @@ else
   fail "rewritten private tarball did not complete a real frozen pnpm install"
 fi
 
-if python3 - "$app_dir/pnpm-lock.yaml" <<'PY'
+if python3 - "$original" "$app_dir/pnpm-lock.yaml" "$tarball" <<'PY'
+import json
 import sys
-import yaml
+from pathlib import Path
 
-document = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))
-assert "yes" in document
-assert "no" in document["yes"]
-assert True not in document
+before = Path(sys.argv[1]).read_text(encoding="utf-8")
+after = Path(sys.argv[2]).read_text(encoding="utf-8")
+registry = "https://npm.pkg.github.com/download/@verjson/contracts/1.2.3/fixture"
+replacement = json.dumps(Path(sys.argv[3]).resolve().as_uri())
+assert before.count(registry) == 1
+assert before.replace(registry, replacement, 1) == after
 PY
 then
-  pass "YAML 1.1 yes/no identifiers remain strings after the rewrite"
+  pass "the private tarball scalar is the rewrite's sole byte delta"
 else
-  fail "YAML 1.1 yes/no identifiers were mangled by the rewrite"
+  fail "the rewrite changed bytes outside the private tarball scalar"
 fi
+
+sed -n '/^x-preservation:/,$p' "$app_dir/pnpm-lock.yaml" > "$fixture/preservation.rewritten"
+if cmp -s "$fixture/preservation.original" "$fixture/preservation.rewritten"; then
+  pass "non-JSON YAML scalars and keys remain byte-identical after the rewrite"
+else
+  fail "the rewrite mangled an unrelated YAML scalar or key"
+fi
+
+for unsafe_yaml in alias tag; do
+  cp -- "$original" "$app_dir/pnpm-lock.yaml"
+  if [ "$unsafe_yaml" = alias ]; then
+    sed -i '1i x-anchor: &private https://npm.pkg.github.com/download/@verjson/contracts/1.2.3/fixture' "$app_dir/pnpm-lock.yaml"
+    sed -i '/tarball:/ s#https://npm.pkg.github.com/download/@verjson/contracts/1.2.3/fixture#*private#' "$app_dir/pnpm-lock.yaml"
+  else
+    sed -i 's#https://npm.pkg.github.com/download/@verjson/contracts/1.2.3/fixture#!private https://npm.pkg.github.com/download/@verjson/contracts/1.2.3/fixture#' "$app_dir/pnpm-lock.yaml"
+  fi
+  cp -- "$app_dir/pnpm-lock.yaml" "$fixture/$unsafe_yaml.original"
+  if (cd "$app_dir" && PNPM_IMPORT_MAP="$mapping" python3 "$rewrite") >"$fixture/$unsafe_yaml.out" 2>&1; then
+    fail "rewrite accepted a YAML $unsafe_yaml"
+  elif grep -qF 'rejects YAML aliases, anchors, and tags' "$fixture/$unsafe_yaml.out" \
+      && cmp -s "$fixture/$unsafe_yaml.original" "$app_dir/pnpm-lock.yaml"; then
+    pass "YAML $unsafe_yaml is rejected without modifying the lockfile"
+  else
+    fail "YAML $unsafe_yaml rejection was not fail-closed"
+  fi
+done
 
 cp -- "$original" "$app_dir/pnpm-lock.yaml"
 : > "$mapping"
