@@ -1168,11 +1168,16 @@ jobs:
             cp -- pnpm-lock.yaml "$PNPM_STORE_DIR/pnpm-lock.original.yaml"
             PNPM_IMPORT_MAP="$PNPM_IMPORT_MAP" python3 - <<'PY'
           import base64
+          import json
           import os
           from pathlib import Path
           from urllib.parse import urlparse
 
           import yaml
+
+          version = tuple(int(part) for part in yaml.__version__.split(".")[:3])
+          if version < (6, 0, 1):
+              raise SystemExit("secretless pnpm lock rewrite requires PyYAML >= 6.0.1")
 
           mappings = {}
           for line in Path(os.environ["PNPM_IMPORT_MAP"]).read_text(encoding="utf-8").splitlines():
@@ -1182,21 +1187,59 @@ jobs:
               mappings[digest] = Path(path).resolve().as_uri()
 
           lock_path = Path("pnpm-lock.yaml")
-          lock = yaml.safe_load(lock_path.read_text(encoding="utf-8"))
+          lock_text = lock_path.read_text(encoding="utf-8")
+          for token in yaml.scan(lock_text):
+              if isinstance(token, (yaml.AliasToken, yaml.AnchorToken, yaml.TagToken)):
+                  raise SystemExit("pnpm lock rewrite rejects YAML aliases, anchors, and tags")
+          lock = yaml.compose(lock_text, Loader=yaml.SafeLoader)
+
+          def mapping_value(mapping, key):
+              if not isinstance(mapping, yaml.MappingNode):
+                  raise SystemExit("pnpm lock contains a non-mapping package entry")
+              matches = [
+                  value
+                  for candidate, value in mapping.value
+                  if isinstance(candidate, yaml.ScalarNode) and candidate.value == key
+              ]
+              if len(matches) > 1:
+                  raise SystemExit(f"pnpm lock contains duplicate {key!r} fields")
+              return matches[0] if matches else None
+
+          packages = mapping_value(lock, "packages")
+          if not isinstance(packages, yaml.MappingNode):
+              raise SystemExit("pnpm lock packages field is absent or malformed")
           used = set()
-          for package in lock.get("packages", {}).values():
-              resolution = package.get("resolution", {})
-              if urlparse(resolution.get("tarball", "")).hostname != "npm.pkg.github.com":
+          replacements = []
+          for _, package in packages.value:
+              resolution = mapping_value(package, "resolution")
+              if resolution is None:
                   continue
-              integrity = resolution.get("integrity", "")
-              digest = base64.b64decode(integrity.removeprefix("sha512-"), validate=True).hex()
+              tarball = mapping_value(resolution, "tarball")
+              if tarball is None or not isinstance(tarball, yaml.ScalarNode):
+                  continue
+              if urlparse(tarball.value).hostname != "npm.pkg.github.com":
+                  continue
+              integrity = mapping_value(resolution, "integrity")
+              if not isinstance(integrity, yaml.ScalarNode):
+                  raise SystemExit("private pnpm resolution has no scalar integrity")
+              digest = base64.b64decode(
+                  integrity.value.removeprefix("sha512-"), validate=True
+              ).hex()
               if digest not in mappings:
                   raise SystemExit("private pnpm resolution is absent from the verified transfer")
-              resolution["tarball"] = mappings[digest]
+              replacements.append(
+                  (tarball.start_mark.index, tarball.end_mark.index, json.dumps(mappings[digest]))
+              )
               used.add(digest)
-          if used != mappings.keys():
-              raise SystemExit("verified pnpm transfer contains an unmapped private package")
-          lock_path.write_text(yaml.safe_dump(lock, sort_keys=False), encoding="utf-8")
+          surplus = sorted(mappings.keys() - used)
+          if surplus:
+              raise SystemExit(
+                  "verified pnpm transfer contains surplus package digest(s): "
+                  + ", ".join(surplus)
+              )
+          for start, end, replacement in reversed(replacements):
+              lock_text = lock_text[:start] + replacement + lock_text[end:]
+          lock_path.write_text(lock_text, encoding="utf-8")
           PY
             corepack pnpm install --frozen-lockfile --ignore-scripts --prefer-offline \
               --store-dir "$PNPM_STORE_DIR"
