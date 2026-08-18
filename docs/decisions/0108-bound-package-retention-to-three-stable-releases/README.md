@@ -28,8 +28,14 @@ commit as the release workflow.
 For each released package or image, the implementation inventories every GitHub package
 version before making any deletion request. It orders exact stable `major.minor.patch`
 versions by semantic version and retains the highest three. It deletes older stable
-numbered versions. For container packages it also deletes every untagged version. It
-does not count or delete prereleases or non-numbered tags.
+numbered versions unless that package-version digest is reachable from a retained OCI
+index. Reachability wins over tag class because GitHub deletes the entire version, not
+only its older tag. It does not count or delete prereleases or non-numbered tags.
+Untagged image cleanup has a
+seven-day grace period and first resolves the complete OCI descriptor graph of all three
+retained indexes. A digest reachable from a retained index is protected regardless of
+its age or lack of a tag. Only an old, unreachable object that validates as an OCI image
+manifest or index is eligible; ambiguous or artifact metadata fails closed.
 
 The inventory fails closed before deletion when the requested release is absent, IDs or
 stable versions are duplicated, pagination leaves the configured GitHub API origin, or
@@ -41,12 +47,19 @@ credential.
 Cleanup has `continue-on-error` at the job boundary and depends on successful publication.
 An unavailable deletion API or insufficient GitHub package administration permission is
 visible as a failed cleanup job but cannot retroactively change publication to failure.
+Canonical Node and container releases serialize per repository with cancellation disabled.
+Immediately before every deletion request, cleanup inventories the package and resolves
+the retained OCI graph again; any changed tag, digest, or candidate set invalidates the
+stale plan and stops further deletion.
 
 ## Consequences
 
-- Only the newest three stable numbered versions are supported for install and rollback.
+- Only the newest three stable numbered versions are supported for install and rollback;
+  an older numbered image object can remain physically present when a retained index
+  still references its digest.
 - Older numbered releases and untagged container versions are intentionally destroyed,
-  subject to GitHub's time-limited restoration behavior.
+  subject to GitHub's time-limited restoration behavior. Fresh untagged objects and all
+  platform/provenance manifests reachable from retained indexes remain protected.
 - Prereleases and non-numbered container tags do not consume the stable retention slots.
 - Ambiguous tagging stops all deletion for the invocation and requires correction rather
   than guessing.
@@ -55,7 +68,9 @@ visible as a failed cleanup job but cannot retroactively change publication to f
 
 ## Verification
 
-`package_retention_test.py` covers semantic ordering, exact retention, untagged cleanup,
+`package_retention_test.py` covers semantic ordering, exact retention, age- and
+reference-safe untagged cleanup with live-shaped nested multi-architecture indexes,
+old-numbered digest reachability, and mutation between planning and deletion,
 multi-target inventory-before-delete, malformed boundaries, duplicate identities, mixed
 container tags, and pagination-origin validation. The Node and container release contract
 tests prove cleanup runs after publication, has least privilege, uses the pinned canonical
