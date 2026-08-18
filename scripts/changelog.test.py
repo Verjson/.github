@@ -1621,6 +1621,20 @@ class ChangelogContractTests(unittest.TestCase):
         self.assertEqual(run(self.root, "git", "rev-parse", "HEAD"), run(self.root, "git", "rev-list", "-n", "1", "v1.0.0"))
         self.assertEqual("", run(self.root, "git", "status", "--porcelain"))
 
+    def test_release_does_not_commit_untracked_workspace_cache(self) -> None:
+        self.init_git()
+        fragment(self.root, "2026-07-30-issue-249-contract.md")
+        self.commit_all("initial")
+        cache = self.root / ".verjson-changelog-tools.random"
+        cache.mkdir()
+        (cache / "resolver.py").write_text("untrusted cache residue\n", encoding="utf-8")
+
+        changelog.release(self.root, "v1.0.0", [])
+
+        committed = run(self.root, "git", "show", "--pretty=", "--name-only", "HEAD")
+        self.assertNotIn(cache.name, committed)
+        self.assertIn(f"?? {cache.name}/", run(self.root, "git", "status", "--porcelain"))
+
     def test_release_refuses_to_overwrite_snapshot(self) -> None:
         self.init_git()
         fragment(self.root, "2026-07-30-issue-249-contract.md")
