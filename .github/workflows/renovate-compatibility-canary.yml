@@ -1,0 +1,90 @@
+name: Renovate compatibility canary
+
+on:
+  workflow_call:
+    inputs:
+      package:
+        type: string
+        required: true
+      candidate:
+        type: string
+        required: true
+      stack-profile:
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  canary:
+    runs-on: ${{ fromJSON(vars.VERJSON_LANE_UNTRUSTED || '["ubuntu-24.04"]') }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+          cache: npm
+      - name: Validate public candidate coordinates
+        env:
+          PACKAGE: ${{ inputs.package }}
+          CANDIDATE: ${{ inputs.candidate }}
+        run: |
+          set -euo pipefail
+          [[ "$PACKAGE" =~ ^(@[a-z0-9._-]+/)?[a-z0-9._-]+$ ]]
+          [[ "$CANDIDATE" =~ ^[0-9]+\.[0-9]+\.[0-9]+([+-][0-9A-Za-z.-]+)?$ ]]
+          npm view --registry=https://registry.npmjs.org/ "$PACKAGE@$CANDIDATE" version >/dev/null
+      - name: Install exact candidate without lifecycle scripts or credentials
+        env:
+          PACKAGE: ${{ inputs.package }}
+          CANDIDATE: ${{ inputs.candidate }}
+          NPM_CONFIG_USERCONFIG: ${{ runner.temp }}/empty-npmrc
+        run: |
+          set -euo pipefail
+          : > "$NPM_CONFIG_USERCONFIG"
+          unset NODE_AUTH_TOKEN NPM_TOKEN GH_TOKEN GITHUB_TOKEN
+          npm install --package-lock-only --ignore-scripts --no-audit --no-fund --save-exact "$PACKAGE@$CANDIDATE"
+          npm ci --ignore-scripts --no-audit --no-fund
+      - name: Run bounded compatibility commands
+        run: |
+          set -euo pipefail
+          for command in build typecheck test; do
+            if npm pkg get "scripts.$command" | grep -vq '^{}$\|^null$'; then
+              npm run "$command"
+            fi
+          done
+  receipt:
+    if: ${{ always() }}
+    needs: canary
+    permissions: {}
+    runs-on: ${{ fromJSON(vars.VERJSON_LANE_TRUSTED || vars.VERJSON_LANE_FALLBACK || '["ubuntu-24.04"]') }}
+    timeout-minutes: 5
+    steps:
+      - name: Write authoritative machine-readable receipt
+        env:
+          PACKAGE: ${{ inputs.package }}
+          CANDIDATE: ${{ inputs.candidate }}
+          PROFILE: ${{ inputs.stack-profile }}
+          RESULT: ${{ needs.canary.result }}
+          CALLER_REF: ${{ github.workflow_ref }}
+          CALLER_SHA: ${{ github.workflow_sha }}
+        run: |
+          set -euo pipefail
+          jq -n --arg package "$PACKAGE" --arg candidate "$CANDIDATE" \
+            --arg profile "$PROFILE" --arg repository "$GITHUB_REPOSITORY" \
+            --arg commit "$GITHUB_SHA" --arg result "$RESULT" \
+            --arg callerRef "$CALLER_REF" --arg callerSha "$CALLER_SHA" \
+            '{package:$package,candidate:$candidate,stackProfile:$profile,
+              repository:$repository,commit:$commit,result:$result,
+              caller:{ref:$callerRef,sha:$callerSha},
+              commandContract:["npm:build","npm:typecheck","npm:test"]}' \
+            > compatibility-receipt.json
+      - name: Upload canary receipt
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: renovate-compatibility-${{ github.run_id }}-${{ github.run_attempt }}
+          path: compatibility-receipt.json
+          if-no-files-found: error
