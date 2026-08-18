@@ -57,6 +57,7 @@ permissions:
   actions: read
   attestations: read
   contents: read
+  packages: read
 jobs:
   deploy:
     uses: Verjson/.github/.github/workflows/container-deployment.yml@$ref
@@ -98,7 +99,7 @@ test "\$(sha256sum scripts/deployment-receipt.schema.json | cut -d' ' -f1)" = "$
 test -f "$config"
 jq -e '
   .schemaVersion == 1 and
-  .cliCommand == ["npx", "--no-install", "verjson-cloud"] and
+  .cliCommand == ["verjson-cloud"] and
   (.evidenceCommand | length == 2) and
   (.probeCommand | length == 2) and
   (.fleets | type == "object" and length > 0)
@@ -124,7 +125,7 @@ assert set(trigger) == {"workflow_dispatch"}
 job = workflow["jobs"]["deploy"]
 assert set(job) == {"uses", "with"}
 assert job["uses"].startswith("Verjson/.github/.github/workflows/container-deployment.yml@")
-assert set(workflow["permissions"]) == {"actions", "attestations", "contents"}
+assert set(workflow["permissions"]) == {"actions", "attestations", "contents", "packages"}
 PY
 EOF
     ;;

@@ -385,6 +385,14 @@ authority-checked resume, strict schema and semantic receipt checks;
 mechanics. Consumer-owned evidence and representative-probe adapters are reviewed Python
 argument vectors invoked without a shell.
 
+The reusable workflow obtains the deployment CLI from the same immutable contract
+commit. That commit contains an npm v3 lockfile fixing `@verjson/cli-cloud` and every
+transitive dependency to registry URLs and SHA-512 integrity values. Acquisition uses
+only `packages: read`, disables lifecycle scripts, audit, and funding requests, and
+adds the verified local binary to `PATH`; consumer configuration cannot select a
+version or registry. A missing package, changed tarball, lock drift, or absent binary
+stops both dry-run and production before evidence collection or fleet mutation.
+
 Failure stops before an unstarted host. Recovery does not silently restore a guessed
 predecessor inside that failed dispatch: rollback is a new protected dispatch bound to
 the failed or interrupted attempt's observed baseline and receipt digest, then follows

@@ -7,6 +7,7 @@ trap 'rm -rf "$tmp"' EXIT
 contract="$tmp/contract"
 consumer="$tmp/consumer"
 mkdir -p \
+  "$contract/contracts/container-deployment-cli" \
   "$contract/scripts" \
   "$contract/docs/decisions/0078-container-release-and-runner-deployment-contract" \
   "$consumer/.github/workflows" \
@@ -19,6 +20,11 @@ cp \
 cp \
   "$root/docs/decisions/0078-container-release-and-runner-deployment-contract/deployment-receipt.schema.json" \
   "$contract/docs/decisions/0078-container-release-and-runner-deployment-contract/"
+cp \
+  "$root/contracts/container-deployment-cli/package.json" \
+  "$root/contracts/container-deployment-cli/package-lock.json" \
+  "$root/contracts/container-deployment-cli/.npmrc" \
+  "$contract/contracts/container-deployment-cli/"
 git -C "$contract" init -q
 git -C "$contract" config user.name fixture
 git -C "$contract" config user.email fixture@example.invalid
@@ -35,7 +41,7 @@ generator="$contract/scripts/gen-container-deployment.sh"
 cat >"$consumer/container-deployment.json" <<JSON
 {
   "schemaVersion": 1,
-  "cliCommand": ["npx", "--no-install", "verjson-cloud"],
+  "cliCommand": ["verjson-cloud"],
   "evidenceCommand": ["python3", "scripts/runner-deployment-evidence.py"],
   "probeCommand": ["python3", "scripts/runner-deployment-probe.py"],
   "expectedRelease": {
@@ -88,6 +94,15 @@ grep -q 'if: inputs.dry-run' "$workflow"
 grep -q 'if: \${{ !inputs.dry-run }}' "$workflow"
 grep -q 'cancel-in-progress: false' "$workflow"
 grep -q 'container_deployment_preflight.py' "$workflow"
+test "$(jq -r '.packages["node_modules/@verjson/cli-cloud"].version' \
+  "$root/contracts/container-deployment-cli/package-lock.json")" = '0.28.1'
+test "$(jq -r '.packages["node_modules/@verjson/cli-cloud"].integrity' \
+  "$root/contracts/container-deployment-cli/package-lock.json")" = \
+  'sha512-CQAcOuV2lFccmhE8iNMrcms57GMCI4zudFGm0brYx4/S/0pHeuRuBBD8bsh9rEh05uzqXnmQfTQecyo8UVje4Q=='
+grep -q 'npm ci --ignore-scripts --no-audit --no-fund' "$workflow"
+grep -q 'repos/Verjson/.github/tarball/\$CONTRACT_REF' "$workflow"
+grep -q 'test -x "\$cli_bin/verjson-cloud"' "$workflow"
+grep -q 'VERJSON_DEPLOYMENT_CLI_ROOT=' "$workflow"
 grep -q 'Retain admitted or reconciled authority' "$workflow"
 grep -q 'container_deployment_controller.py reconcile' "$workflow"
 # The literal shell variable must never become a path argument.
@@ -108,7 +123,10 @@ if grep -Eq 'doctl|droplet|--replicas|--standard|resize|create' \
   exit 1
 fi
 
-python3 - "$workflow" <<'PY'
+python3 - "$workflow" "$consumer" "$ref" <<'PY'
+import os
+from pathlib import Path
+import subprocess
 import sys
 import yaml
 
@@ -120,7 +138,38 @@ jobs = workflow["jobs"]
 assert jobs["deploy"]["environment"] == "production"
 assert "environment" not in jobs["dry-run"]
 assert workflow["concurrency"]["cancel-in-progress"] is False
-assert set(workflow["permissions"]) == {"actions", "attestations", "contents"}
+assert set(workflow["permissions"]) == {"actions", "attestations", "contents", "packages"}
+for job_name in ("dry-run", "deploy"):
+    steps = jobs[job_name]["steps"]
+    setup = [step for step in steps if step.get("uses", "").startswith("actions/setup-node@")]
+    assert len(setup) == 1
+    assert setup[0]["uses"] == "actions/setup-node@820762786026740c76f36085b0efc47a31fe5020"
+    assert setup[0]["with"]["node-version"] == "24.16.0"
+    binding = [step for step in steps if step.get("name") == "Verify caller binds this immutable contract"]
+    assert len(binding) == 1
+
+consumer = Path(sys.argv[2])
+contract = sys.argv[3]
+binding_script = next(
+    step["run"] for step in jobs["dry-run"]["steps"]
+    if step.get("name") == "Verify caller binds this immutable contract"
+)
+environment = os.environ | {
+    "CONTRACT_REF": contract,
+    "GITHUB_REPOSITORY": "fixture/consumer",
+    "GITHUB_WORKSPACE": str(consumer),
+    "WORKFLOW_REF": "fixture/consumer/.github/workflows/container-deployment.yml@refs/heads/main",
+}
+subprocess.run(["bash", "-c", binding_script], check=True, env=environment, cwd=consumer)
+caller = consumer / ".github/workflows/container-deployment.yml"
+original = caller.read_text(encoding="utf-8")
+caller.write_text(original.replace(f"contract-ref: {contract}", "contract-ref: " + "0" * 40), encoding="utf-8")
+rejected = subprocess.run(
+    ["bash", "-c", binding_script], env=environment, cwd=consumer,
+    capture_output=True, text=True,
+)
+assert rejected.returncode != 0
+caller.write_text(original, encoding="utf-8")
 mutation_steps = [
     step for step in jobs["deploy"]["steps"]
     if step.get("name", "").startswith("Advance ")

@@ -60,7 +60,7 @@ def manifest_release(manifest: dict) -> dict:
 def configuration() -> dict:
     return {
         "schemaVersion": 1,
-        "cliCommand": ["npx", "--no-install", "verjson-cloud"],
+        "cliCommand": ["verjson-cloud"],
         "evidenceCommand": ["python3", "scripts/runner-deployment-evidence.py"],
         "probeCommand": ["python3", "scripts/runner-deployment-probe.py"],
         "expectedRelease": {
@@ -1060,19 +1060,28 @@ class DeploymentExecutionTests(unittest.TestCase):
         config = configuration()
         fleet = config["fleets"]["production"]
         adapter = controller.ProcessAdapter(config, fleet)
-        with mock.patch.dict(
-            controller.os.environ,
-            {"VERJSON_RUNNER_DEPLOY_TOKEN": "redacted-fixture"},
-            clear=False,
-        ), mock.patch.object(
-            controller.subprocess, "run", return_value=completed
-        ) as run, mock.patch.object(controller.ProcessAdapter, "_run", return_value={}):
-            adapter.update_runner(
-                "gha-gate-1",
-                "sha256:" + "2" * 64,
-                "runner",
-                600,
-            )
+        with tempfile.TemporaryDirectory() as directory:
+            cli = Path(directory) / "node_modules/.bin/verjson-cloud"
+            cli.parent.mkdir(parents=True)
+            cli.write_text("#!/bin/sh\n", encoding="utf-8")
+            cli.chmod(0o700)
+            with mock.patch.dict(
+                controller.os.environ,
+                {
+                    "VERJSON_DEPLOYMENT_CLI": str(cli),
+                    "VERJSON_DEPLOYMENT_CLI_ROOT": directory,
+                    "VERJSON_RUNNER_DEPLOY_TOKEN": "redacted-fixture",
+                },
+                clear=False,
+            ), mock.patch.object(
+                controller.subprocess, "run", return_value=completed
+            ) as run, mock.patch.object(controller.ProcessAdapter, "_run", return_value={}):
+                adapter.update_runner(
+                    "gha-gate-1",
+                    "sha256:" + "2" * 64,
+                    "runner",
+                    600,
+                )
 
         command = run.call_args.args[0]
         self.assertIn("--only", command)
@@ -1083,6 +1092,27 @@ class DeploymentExecutionTests(unittest.TestCase):
             run.call_args.kwargs["env"]["DIGITALOCEAN_ACCESS_TOKEN"],
         )
         self.assertEqual(720, run.call_args.kwargs["timeout"])
+
+    def test_process_adapter_rejects_cli_outside_immutable_acquisition_root(self):
+        with tempfile.TemporaryDirectory() as root, tempfile.TemporaryDirectory() as outside:
+            cli = Path(outside) / "verjson-cloud"
+            cli.write_text("#!/bin/sh\n", encoding="utf-8")
+            cli.chmod(0o700)
+            with mock.patch.dict(
+                controller.os.environ,
+                {
+                    "VERJSON_DEPLOYMENT_CLI": str(cli),
+                    "VERJSON_DEPLOYMENT_CLI_ROOT": root,
+                    "VERJSON_RUNNER_DEPLOY_TOKEN": "redacted-fixture",
+                },
+                clear=False,
+            ):
+                with self.assertRaisesRegex(controller.DeploymentError, "escapes"):
+                    controller.ProcessAdapter(
+                        configuration(), configuration()["fleets"]["production"]
+                    ).update_runner(
+                        "gha-gate-1", "sha256:" + "2" * 64, "runner", 600
+                    )
 
     def test_collect_evidence_rejects_option_injection_before_adapter_execution(self):
         with mock.patch.object(controller.ProcessAdapter, "_run") as run:

@@ -1,0 +1,8 @@
+{
+  "name": "@verjson/container-deployment-cli-contract",
+  "version": "1.0.0",
+  "private": true,
+  "dependencies": {
+    "@verjson/cli-cloud": "0.28.1"
+  }
+}

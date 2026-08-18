@@ -21,8 +21,15 @@ scripts/gen-container-deployment.sh contract-test <contract-sha> container-deplo
 Commit a reviewed `container-deployment.json`. Its fleet selector fixes the existing
 lane, project, ordinary canary, deterministic runner inventory, minimum available
 capacity, time bounds, runner group, labels, tools, and consumer-owned evidence/probe
-scripts. The local CLI command is exactly `npx --no-install verjson-cloud`; generation
-does not install or select a mutable CLI. Run the generated contract test in CI.
+scripts. The local CLI selector is exactly `verjson-cloud`; the controller resolves it
+only from the immutable acquisition root supplied by the reusable workflow. Run the
+generated contract test in CI.
+
+The reusable workflow acquires `@verjson/cli-cloud` from the immutable contract
+checkout using the contract's committed npm lockfile. GitHub Packages receives only
+the job token with `packages: read`; `npm ci --ignore-scripts` verifies the locked
+SHA-512 dependency graph before the local CLI bin directory enters `PATH`. The
+consumer must not install, cache, or select another deployment CLI.
 
 Configure the consumer's `production` environment to admit protected branches only,
 require an independent reviewer, prevent self-review, and disable administrator bypass.

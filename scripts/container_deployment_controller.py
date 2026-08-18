@@ -264,10 +264,26 @@ def _validate_policy(fleet: dict[str, Any]) -> None:
 def _validate_commands(config: dict[str, Any]) -> None:
     _command(config, "evidenceCommand")
     _command(config, "probeCommand")
-    if config.get("cliCommand") != ["npx", "--no-install", "verjson-cloud"]:
-        raise DeploymentError(
-            "cliCommand must use the reviewed local verjson-cloud executable without install"
-        )
+    if config.get("cliCommand") != ["verjson-cloud"]:
+        raise DeploymentError("cliCommand must select the contract-acquired verjson-cloud executable")
+
+
+def _deployment_cli() -> str:
+    raw_path = os.environ.get("VERJSON_DEPLOYMENT_CLI")
+    raw_root = os.environ.get("VERJSON_DEPLOYMENT_CLI_ROOT")
+    if not raw_path or not raw_root:
+        raise DeploymentError("contract-acquired verjson-cloud executable is unavailable")
+    path = Path(raw_path)
+    root = Path(raw_root)
+    try:
+        resolved_path = path.resolve(strict=True)
+        resolved_root = root.resolve(strict=True)
+        resolved_path.relative_to(resolved_root)
+    except (OSError, ValueError) as error:
+        raise DeploymentError("deployment CLI escapes its immutable acquisition root") from error
+    if not path.is_absolute() or not root.is_absolute() or not os.access(path, os.X_OK):
+        raise DeploymentError("contract-acquired verjson-cloud executable is invalid")
+    return str(path)
 
 
 def _validate_inventory(
@@ -1158,7 +1174,7 @@ class ProcessAdapter:
         environment = os.environ.copy()
         environment["DIGITALOCEAN_ACCESS_TOKEN"] = deploy_token
         command = [
-            *self.config["cliCommand"],
+            _deployment_cli(),
             "runner",
             "update",
             self.fleet["lane"],

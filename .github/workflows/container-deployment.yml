@@ -31,6 +31,7 @@ permissions:
   actions: read
   attestations: read
   contents: read
+  packages: read
 
 concurrency:
   group: runner-deployment-${{ github.repository }}-${{ inputs.fleet-selector }}
@@ -45,6 +46,56 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Verify caller binds this immutable contract
+        env:
+          CONTRACT_REF: ${{ inputs.contract-ref }}
+          WORKFLOW_REF: ${{ github.workflow_ref }}
+        run: |
+          python3 - <<'PY'
+          import os
+          import re
+          from pathlib import Path
+
+          contract = os.environ["CONTRACT_REF"]
+          repository = os.environ["GITHUB_REPOSITORY"]
+          workflow_ref = os.environ["WORKFLOW_REF"]
+          prefix = f"{repository}/"
+          if not workflow_ref.startswith(prefix) or "@" not in workflow_ref:
+              raise SystemExit("caller workflow identity is malformed")
+          workflow_path, _ = workflow_ref[len(prefix):].rsplit("@", 1)
+          if not re.fullmatch(r"\.github/workflows/[A-Za-z0-9_.-]+\.ya?ml", workflow_path):
+              raise SystemExit("caller workflow path is outside .github/workflows")
+          text = (Path(os.environ["GITHUB_WORKSPACE"]) / workflow_path).read_text(encoding="utf-8")
+          uses = re.findall(
+              r"(?m)^\s*uses:\s*Verjson/\.github/\.github/workflows/container-deployment\.yml@([0-9a-f]{40})\s*$",
+              text,
+          )
+          refs = re.findall(r"(?m)^\s*contract-ref:\s*([0-9a-f]{40})\s*$", text)
+          if uses != [contract] or refs != [contract]:
+              raise SystemExit("caller workflow does not bind one matching deployment contract")
+          PY
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24.16.0
+          registry-url: https://npm.pkg.github.com
+      - name: Acquire immutable deployment CLI
+        env:
+          CONTRACT_REF: ${{ inputs.contract-ref }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          [[ "$CONTRACT_REF" =~ ^[0-9a-f]{40}$ ]]
+          gh api "repos/Verjson/.github/tarball/$CONTRACT_REF" > "$RUNNER_TEMP/deployment-contract.tar.gz"
+          mkdir "$RUNNER_TEMP/deployment-contract"
+          tar -xzf "$RUNNER_TEMP/deployment-contract.tar.gz" \
+            --strip-components=1 -C "$RUNNER_TEMP/deployment-contract"
+          NODE_AUTH_TOKEN="$GH_TOKEN" npm ci --ignore-scripts --no-audit --no-fund \
+            --prefix "$RUNNER_TEMP/deployment-contract/contracts/container-deployment-cli"
+          cli_bin="$RUNNER_TEMP/deployment-contract/contracts/container-deployment-cli/node_modules/.bin"
+          test -x "$cli_bin/verjson-cloud"
+          printf 'VERJSON_DEPLOYMENT_CLI=%s\n' "$cli_bin/verjson-cloud" >> "$GITHUB_ENV"
+          printf 'VERJSON_DEPLOYMENT_CLI_ROOT=%s\n' \
+            "$RUNNER_TEMP/deployment-contract/contracts/container-deployment-cli" >> "$GITHUB_ENV"
       - name: Produce exact mutation-free host plan
         env:
           ACTION: ${{ inputs.action }}
@@ -84,6 +135,56 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Verify caller binds this immutable contract
+        env:
+          CONTRACT_REF: ${{ inputs.contract-ref }}
+          WORKFLOW_REF: ${{ github.workflow_ref }}
+        run: |
+          python3 - <<'PY'
+          import os
+          import re
+          from pathlib import Path
+
+          contract = os.environ["CONTRACT_REF"]
+          repository = os.environ["GITHUB_REPOSITORY"]
+          workflow_ref = os.environ["WORKFLOW_REF"]
+          prefix = f"{repository}/"
+          if not workflow_ref.startswith(prefix) or "@" not in workflow_ref:
+              raise SystemExit("caller workflow identity is malformed")
+          workflow_path, _ = workflow_ref[len(prefix):].rsplit("@", 1)
+          if not re.fullmatch(r"\.github/workflows/[A-Za-z0-9_.-]+\.ya?ml", workflow_path):
+              raise SystemExit("caller workflow path is outside .github/workflows")
+          text = (Path(os.environ["GITHUB_WORKSPACE"]) / workflow_path).read_text(encoding="utf-8")
+          uses = re.findall(
+              r"(?m)^\s*uses:\s*Verjson/\.github/\.github/workflows/container-deployment\.yml@([0-9a-f]{40})\s*$",
+              text,
+          )
+          refs = re.findall(r"(?m)^\s*contract-ref:\s*([0-9a-f]{40})\s*$", text)
+          if uses != [contract] or refs != [contract]:
+              raise SystemExit("caller workflow does not bind one matching deployment contract")
+          PY
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24.16.0
+          registry-url: https://npm.pkg.github.com
+      - name: Acquire immutable deployment CLI
+        env:
+          CONTRACT_REF: ${{ inputs.contract-ref }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          [[ "$CONTRACT_REF" =~ ^[0-9a-f]{40}$ ]]
+          gh api "repos/Verjson/.github/tarball/$CONTRACT_REF" > "$RUNNER_TEMP/deployment-contract.tar.gz"
+          mkdir "$RUNNER_TEMP/deployment-contract"
+          tar -xzf "$RUNNER_TEMP/deployment-contract.tar.gz" \
+            --strip-components=1 -C "$RUNNER_TEMP/deployment-contract"
+          NODE_AUTH_TOKEN="$GH_TOKEN" npm ci --ignore-scripts --no-audit --no-fund \
+            --prefix "$RUNNER_TEMP/deployment-contract/contracts/container-deployment-cli"
+          cli_bin="$RUNNER_TEMP/deployment-contract/contracts/container-deployment-cli/node_modules/.bin"
+          test -x "$cli_bin/verjson-cloud"
+          printf 'VERJSON_DEPLOYMENT_CLI=%s\n' "$cli_bin/verjson-cloud" >> "$GITHUB_ENV"
+          printf 'VERJSON_DEPLOYMENT_CLI_ROOT=%s\n' \
+            "$RUNNER_TEMP/deployment-contract/contracts/container-deployment-cli" >> "$GITHUB_ENV"
       - name: Collect normalized manifest, fleet, and approval evidence
         env:
           CONFIG_PATH: ${{ inputs.config-path }}
