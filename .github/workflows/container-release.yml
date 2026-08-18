@@ -204,12 +204,22 @@ jobs:
       contents: read
       packages: write
     steps:
+      - name: Validate the immutable retention contract ref
+        env:
+          CONTRACT_REF: ${{ inputs.contract-ref }}
+        run: '[[ "$CONTRACT_REF" =~ ^[0-9a-f]{40}$ ]]'
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           repository: Verjson/.github
           ref: ${{ inputs.contract-ref }}
           path: .package-retention-contract
           persist-credentials: false
+      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.release-token }}
       - name: Delete image versions outside canonical retention
         env:
           GH_TOKEN: ${{ secrets.release-token }}

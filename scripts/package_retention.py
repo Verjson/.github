@@ -4,9 +4,12 @@
 from __future__ import annotations
 
 import argparse
+import datetime
+import hashlib
 import json
 import os
 import re
+import subprocess
 import sys
 import urllib.error
 import urllib.parse
@@ -17,6 +20,14 @@ from typing import Any
 
 STABLE_VERSION = re.compile(r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$")
 PACKAGE_NAME = re.compile(r"^[a-z0-9][a-z0-9._/-]*$")
+DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
+OCI_IMAGE_TYPES = {
+    "application/vnd.docker.distribution.manifest.v2+json",
+    "application/vnd.docker.distribution.manifest.list.v2+json",
+    "application/vnd.oci.image.index.v1+json",
+    "application/vnd.oci.image.manifest.v1+json",
+}
+UNTAGGED_MINIMUM_AGE = datetime.timedelta(days=7)
 
 
 class RetentionError(Exception):
@@ -82,10 +93,28 @@ class GitHubPackages:
         )
 
 
+class OciInspector:
+    def raw(self, reference: str) -> bytes:
+        try:
+            result = subprocess.run(
+                ["docker", "buildx", "imagetools", "inspect", reference, "--raw"],
+                check=True,
+                capture_output=True,
+                timeout=30,
+            )
+        except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as error:
+            raise RetentionError(f"cannot inspect OCI reference {reference}") from error
+        return result.stdout
+
+
 def _next_path(link: str | None, api_url: str) -> str:
     if not link:
         return ""
     next_urls = re.findall(r'<([^>]+)>;\s*rel="next"', link)
+    if not next_urls:
+        if 'rel="next"' in link:
+            raise RetentionError("malformed GitHub API next-page metadata")
+        return ""
     if len(next_urls) != 1:
         raise RetentionError("ambiguous GitHub API pagination metadata")
     next_url = next_urls[0]
@@ -139,7 +168,12 @@ def _version_tuple(version: str) -> tuple[int, int, int]:
     return tuple(map(int, match.groups()))  # type: ignore[return-value]
 
 
-def plan_target(target: Target, versions: list[dict[str, Any]], keep: int = 3) -> list[Deletion]:
+def plan_target(
+    target: Target,
+    versions: list[dict[str, Any]],
+    keep: int = 3,
+    deletable_untagged_ids: set[int] | None = None,
+) -> list[Deletion]:
     if keep != 3:
         raise RetentionError("canonical retention count must remain exactly three")
     stable: dict[str, tuple[int, tuple[str, ...]]] = {}
@@ -200,13 +234,115 @@ def plan_target(target: Target, versions: list[dict[str, Any]], keep: int = 3) -
         deletions.extend(
             Deletion(target, version_id, "untagged container version", labels)
             for version_id, labels in untagged
+            if version_id in (deletable_untagged_ids or set())
         )
     return sorted(deletions, key=lambda item: item.version_id)
 
 
-def build_plan(client: GitHubPackages, targets: list[Target]) -> list[Deletion]:
+def _parse_time(value: Any, context: str) -> datetime.datetime:
+    if not isinstance(value, str):
+        raise RetentionError(f"{context} has no created_at timestamp")
+    try:
+        parsed = datetime.datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as error:
+        raise RetentionError(f"{context} has an invalid created_at timestamp") from error
+    if parsed.tzinfo is None:
+        raise RetentionError(f"{context} has a timezone-less created_at timestamp")
+    return parsed
+
+
+def _manifest(raw: bytes, reference: str) -> dict[str, Any]:
+    try:
+        manifest = json.loads(raw)
+    except json.JSONDecodeError as error:
+        raise RetentionError(f"OCI reference {reference} returned invalid JSON") from error
+    if not isinstance(manifest, dict) or manifest.get("mediaType") not in OCI_IMAGE_TYPES:
+        raise RetentionError(f"OCI reference {reference} is not an image manifest or index")
+    if "artifactType" in manifest:
+        raise RetentionError(f"OCI reference {reference} is an artifact, not a deletable image")
+    return manifest
+
+
+def _safe_untagged_ids(
+    owner: str,
+    target: Target,
+    versions: list[dict[str, Any]],
+    inspector: OciInspector,
+    now: datetime.datetime,
+) -> set[int]:
+    repository = f"ghcr.io/{owner}/{target.name}"
+    stable: list[tuple[str, str]] = []
+    untagged: list[dict[str, Any]] = []
+    for version in versions:
+        metadata = version.get("metadata") if isinstance(version, dict) else None
+        container = metadata.get("container") if isinstance(metadata, dict) else None
+        tags = container.get("tags") if isinstance(container, dict) else None
+        if not isinstance(tags, list):
+            raise RetentionError(f"container version metadata is ambiguous for {target.name}")
+        digest = version.get("name")
+        if not isinstance(digest, str) or not DIGEST.fullmatch(digest):
+            raise RetentionError(f"container version {version.get('id')} has no canonical digest name")
+        stable_tags = [tag for tag in tags if isinstance(tag, str) and STABLE_VERSION.fullmatch(tag)]
+        if len(stable_tags) == 1 and len(tags) == 1:
+            stable.append((stable_tags[0], digest))
+        elif not tags:
+            untagged.append(version)
+
+    retained = sorted(stable, key=lambda item: _version_tuple(item[0]), reverse=True)[:3]
+    protected = {digest for _, digest in retained}
+    queue = [(f"{repository}:{tag}", digest) for tag, digest in retained]
+    visited: set[str] = set()
+    while queue:
+        reference, expected_digest = queue.pop()
+        if expected_digest in visited:
+            continue
+        raw = inspector.raw(reference)
+        actual_digest = f"sha256:{hashlib.sha256(raw).hexdigest()}"
+        if actual_digest != expected_digest:
+            raise RetentionError(f"OCI reference {reference} does not match GitHub package digest")
+        manifest = _manifest(raw, reference)
+        visited.add(expected_digest)
+        children = manifest.get("manifests", [])
+        if not isinstance(children, list):
+            raise RetentionError(f"OCI reference {reference} has ambiguous child descriptors")
+        for child in children:
+            digest = child.get("digest") if isinstance(child, dict) else None
+            if not isinstance(digest, str) or not DIGEST.fullmatch(digest):
+                raise RetentionError(f"OCI reference {reference} has an invalid child digest")
+            protected.add(digest)
+            queue.append((f"{repository}@{digest}", digest))
+
+    cutoff = now - UNTAGGED_MINIMUM_AGE
+    safe: set[int] = set()
+    for version in untagged:
+        version_id = version["id"]
+        digest = version["name"]
+        if _parse_time(version.get("created_at"), f"container version {version_id}") > cutoff:
+            continue
+        if digest in protected:
+            continue
+        _manifest(inspector.raw(f"{repository}@{digest}"), f"{repository}@{digest}")
+        safe.add(version_id)
+    return safe
+
+
+def build_plan(
+    client: GitHubPackages,
+    targets: list[Target],
+    owner: str = "",
+    inspector: OciInspector | None = None,
+    now: datetime.datetime | None = None,
+) -> list[Deletion]:
     inventories = [(target, client.versions(target)) for target in targets]
-    return [deletion for target, versions in inventories for deletion in plan_target(target, versions)]
+    plans: list[Deletion] = []
+    for target, versions in inventories:
+        deletable_untagged_ids: set[int] | None = None
+        if target.package_type == "container":
+            if not owner or inspector is None or now is None:
+                raise RetentionError("container cleanup requires an owner, OCI inspector, and current time")
+            deletable_untagged_ids = _safe_untagged_ids(owner, target, versions, inspector, now)
+        plans.extend(plan_target(target, versions, deletable_untagged_ids=deletable_untagged_ids))
+    return plans
 
 
 def main() -> int:
@@ -220,7 +356,13 @@ def main() -> int:
         raise RetentionError("GH_TOKEN is required")
     targets = parse_targets(args.targets, args.owner)
     client = GitHubPackages(args.owner, token, os.environ.get("GITHUB_API_URL", "https://api.github.com"))
-    deletions = build_plan(client, targets)
+    deletions = build_plan(
+        client,
+        targets,
+        owner=args.owner,
+        inspector=OciInspector(),
+        now=datetime.datetime.now(datetime.timezone.utc),
+    )
     print(json.dumps({"delete": [deletion.__dict__ | {"target": deletion.target.__dict__} for deletion in deletions]}, default=list))
     if not args.apply:
         print("Dry run only; pass --apply to delete the validated inventory.")

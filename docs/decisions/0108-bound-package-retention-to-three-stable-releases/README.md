@@ -28,8 +28,12 @@ commit as the release workflow.
 For each released package or image, the implementation inventories every GitHub package
 version before making any deletion request. It orders exact stable `major.minor.patch`
 versions by semantic version and retains the highest three. It deletes older stable
-numbered versions. For container packages it also deletes every untagged version. It
-does not count or delete prereleases or non-numbered tags.
+numbered versions. It does not count or delete prereleases or non-numbered tags.
+Untagged image cleanup has a
+seven-day grace period and first resolves the complete OCI descriptor graph of all three
+retained indexes. A digest reachable from a retained index is protected regardless of
+its age or lack of a tag. Only an old, unreachable object that validates as an OCI image
+manifest or index is eligible; ambiguous or artifact metadata fails closed.
 
 The inventory fails closed before deletion when the requested release is absent, IDs or
 stable versions are duplicated, pagination leaves the configured GitHub API origin, or
@@ -46,7 +50,8 @@ visible as a failed cleanup job but cannot retroactively change publication to f
 
 - Only the newest three stable numbered versions are supported for install and rollback.
 - Older numbered releases and untagged container versions are intentionally destroyed,
-  subject to GitHub's time-limited restoration behavior.
+  subject to GitHub's time-limited restoration behavior. Fresh untagged objects and all
+  platform/provenance manifests reachable from retained indexes remain protected.
 - Prereleases and non-numbered container tags do not consume the stable retention slots.
 - Ambiguous tagging stops all deletion for the invocation and requires correction rather
   than guessing.
@@ -55,7 +60,8 @@ visible as a failed cleanup job but cannot retroactively change publication to f
 
 ## Verification
 
-`package_retention_test.py` covers semantic ordering, exact retention, untagged cleanup,
+`package_retention_test.py` covers semantic ordering, exact retention, age- and
+reference-safe untagged cleanup with a live-shaped multi-architecture index,
 multi-target inventory-before-delete, malformed boundaries, duplicate identities, mixed
 container tags, and pagination-origin validation. The Node and container release contract
 tests prove cleanup runs after publication, has least privilege, uses the pinned canonical

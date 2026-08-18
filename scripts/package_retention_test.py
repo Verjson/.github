@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 
 import importlib.util
+import datetime
+import hashlib
+import json
 import pathlib
 import sys
 import unittest
@@ -30,7 +33,7 @@ class PackageRetentionTest(unittest.TestCase):
 
         self.assertEqual([(item.version_id, item.labels) for item in plan], [(1, ("1.0.0",))])
 
-    def test_container_deletes_old_numbered_and_all_untagged_versions(self):
+    def test_container_deletes_old_numbered_and_only_prevalidated_untagged_versions(self):
         target = retention.Target("container", "api", "1.3.0")
         versions = [
             {"id": 10, "metadata": {"container": {"tags": ["1.0.0"]}}},
@@ -41,7 +44,7 @@ class PackageRetentionTest(unittest.TestCase):
             {"id": 15, "metadata": {"container": {"tags": ["candidate-abc"]}}},
         ]
 
-        plan = retention.plan_target(target, versions)
+        plan = retention.plan_target(target, versions, deletable_untagged_ids={14})
 
         self.assertEqual([(item.version_id, item.reason) for item in plan], [
             (10, "numbered release older than newest three"),
@@ -117,6 +120,79 @@ class PackageRetentionTest(unittest.TestCase):
             retention._next_path('<https://api.github.com/p?page=2>; rel="next"', "https://api.github.com"),
             "/p?page=2",
         )
+        self.assertEqual(
+            retention._next_path('<https://api.github.com/p?page=1>; rel="first", <https://api.github.com/p?page=1>; rel="prev"', "https://api.github.com"),
+            "",
+        )
+
+    def test_versions_accepts_a_full_first_page_and_final_page_without_next_link(self):
+        target = retention.Target("npm", "cli", "101.0.0")
+        client = retention.GitHubPackages("Verjson", "token", "https://api.github.test")
+        first = [{"id": number, "name": f"{number}.0.0"} for number in range(1, 101)]
+        final = [{"id": 101, "name": "101.0.0"}]
+        client._request = mock.Mock(side_effect=[
+            (first, '<https://api.github.test/p?page=2>; rel="next"'),
+            (final, '<https://api.github.test/p?page=1>; rel="prev", <https://api.github.test/p?page=1>; rel="first"'),
+        ])
+
+        versions = client.versions(target)
+
+        self.assertEqual(len(versions), 101)
+        self.assertEqual(client._request.call_count, 2)
+
+    def test_multiarch_children_and_fresh_untagged_versions_are_never_deleted(self):
+        target = retention.Target("container", "api", "3.0.0")
+        now = datetime.datetime(2026, 8, 18, tzinfo=datetime.timezone.utc)
+
+        def raw_manifest(media_type, **extra):
+            return json.dumps({"schemaVersion": 2, "mediaType": media_type, **extra}, separators=(",", ":")).encode()
+
+        child_raw = raw_manifest("application/vnd.oci.image.manifest.v1+json")
+        child_digest = f"sha256:{hashlib.sha256(child_raw).hexdigest()}"
+        provenance_raw = raw_manifest(
+            "application/vnd.oci.image.manifest.v1+json",
+            annotations={"vnd.docker.reference.type": "attestation-manifest"},
+        )
+        provenance_digest = f"sha256:{hashlib.sha256(provenance_raw).hexdigest()}"
+        indexes = []
+        for version in ("1.0.0", "2.0.0", "3.0.0"):
+            raw = raw_manifest(
+                "application/vnd.oci.image.index.v1+json",
+                manifests=[
+                    {"mediaType": "application/vnd.oci.image.manifest.v1+json", "digest": child_digest, "platform": {"os": "linux", "architecture": "amd64"}},
+                    {"mediaType": "application/vnd.oci.image.manifest.v1+json", "digest": provenance_digest, "platform": {"os": "unknown", "architecture": "unknown"}, "annotations": {"vnd.docker.reference.type": "attestation-manifest"}},
+                ],
+                annotations={"version": version},
+            )
+            indexes.append((version, raw, f"sha256:{hashlib.sha256(raw).hexdigest()}"))
+        orphan_raw = raw_manifest("application/vnd.oci.image.manifest.v1+json", annotations={"orphan": "true"})
+        orphan_digest = f"sha256:{hashlib.sha256(orphan_raw).hexdigest()}"
+        fresh_raw = raw_manifest("application/vnd.oci.image.manifest.v1+json", annotations={"fresh": "true"})
+        fresh_digest = f"sha256:{hashlib.sha256(fresh_raw).hexdigest()}"
+        versions = [
+            {"id": index, "name": digest, "created_at": "2026-07-01T00:00:00Z", "metadata": {"container": {"tags": [version]}}}
+            for index, (version, _, digest) in enumerate(indexes, 1)
+        ] + [
+            {"id": 10, "name": child_digest, "created_at": "2026-07-01T00:00:00Z", "metadata": {"container": {"tags": []}}},
+            {"id": 13, "name": provenance_digest, "created_at": "2026-07-01T00:00:00Z", "metadata": {"container": {"tags": []}}},
+            {"id": 11, "name": orphan_digest, "created_at": "2026-07-01T00:00:00Z", "metadata": {"container": {"tags": []}}},
+            {"id": 12, "name": fresh_digest, "created_at": "2026-08-17T12:00:00Z", "metadata": {"container": {"tags": []}}},
+        ]
+        raw_by_reference = {
+            **{f"ghcr.io/Verjson/api:{version}": raw for version, raw, _ in indexes},
+            f"ghcr.io/Verjson/api@{child_digest}": child_raw,
+            f"ghcr.io/Verjson/api@{provenance_digest}": provenance_raw,
+            f"ghcr.io/Verjson/api@{orphan_digest}": orphan_raw,
+            f"ghcr.io/Verjson/api@{fresh_digest}": fresh_raw,
+        }
+        inspector = mock.Mock()
+        inspector.raw.side_effect = raw_by_reference.__getitem__
+
+        safe = retention._safe_untagged_ids("Verjson", target, versions, inspector, now)
+
+        self.assertEqual(safe, {11})
+        self.assertNotIn(13, safe)
+        self.assertNotIn(f"ghcr.io/Verjson/api@{fresh_digest}", [call.args[0] for call in inspector.raw.call_args_list])
 
     def test_delete_uses_encoded_supported_package_endpoint_and_bearer_token(self):
         target = retention.Target("container", "studio/api", "1.0.0")
