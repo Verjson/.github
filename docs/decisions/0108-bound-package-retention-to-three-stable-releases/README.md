@@ -28,7 +28,9 @@ commit as the release workflow.
 For each released package or image, the implementation inventories every GitHub package
 version before making any deletion request. It orders exact stable `major.minor.patch`
 versions by semantic version and retains the highest three. It deletes older stable
-numbered versions. It does not count or delete prereleases or non-numbered tags.
+numbered versions unless that package-version digest is reachable from a retained OCI
+index. Reachability wins over tag class because GitHub deletes the entire version, not
+only its older tag. It does not count or delete prereleases or non-numbered tags.
 Untagged image cleanup has a
 seven-day grace period and first resolves the complete OCI descriptor graph of all three
 retained indexes. A digest reachable from a retained index is protected regardless of
@@ -45,10 +47,16 @@ credential.
 Cleanup has `continue-on-error` at the job boundary and depends on successful publication.
 An unavailable deletion API or insufficient GitHub package administration permission is
 visible as a failed cleanup job but cannot retroactively change publication to failure.
+Canonical Node and container releases serialize per repository with cancellation disabled.
+Immediately before every deletion request, cleanup inventories the package and resolves
+the retained OCI graph again; any changed tag, digest, or candidate set invalidates the
+stale plan and stops further deletion.
 
 ## Consequences
 
-- Only the newest three stable numbered versions are supported for install and rollback.
+- Only the newest three stable numbered versions are supported for install and rollback;
+  an older numbered image object can remain physically present when a retained index
+  still references its digest.
 - Older numbered releases and untagged container versions are intentionally destroyed,
   subject to GitHub's time-limited restoration behavior. Fresh untagged objects and all
   platform/provenance manifests reachable from retained indexes remain protected.
@@ -61,7 +69,8 @@ visible as a failed cleanup job but cannot retroactively change publication to f
 ## Verification
 
 `package_retention_test.py` covers semantic ordering, exact retention, age- and
-reference-safe untagged cleanup with a live-shaped multi-architecture index,
+reference-safe untagged cleanup with live-shaped nested multi-architecture indexes,
+old-numbered digest reachability, and mutation between planning and deletion,
 multi-target inventory-before-delete, malformed boundaries, duplicate identities, mixed
 container tags, and pagination-origin validation. The Node and container release contract
 tests prove cleanup runs after publication, has least privilege, uses the pinned canonical

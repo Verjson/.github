@@ -188,11 +188,89 @@ class PackageRetentionTest(unittest.TestCase):
         inspector = mock.Mock()
         inspector.raw.side_effect = raw_by_reference.__getitem__
 
-        safe = retention._safe_untagged_ids("Verjson", target, versions, inspector, now)
+        safety = retention._container_safety("Verjson", target, versions, inspector, now)
 
-        self.assertEqual(safe, {11})
-        self.assertNotIn(13, safe)
+        self.assertEqual(safety.deletable_untagged_ids, {11})
+        self.assertNotIn(13, safety.deletable_untagged_ids)
+        self.assertIn(10, safety.protected_version_ids)
+        self.assertIn(13, safety.protected_version_ids)
         self.assertNotIn(f"ghcr.io/Verjson/api@{fresh_digest}", [call.args[0] for call in inspector.raw.call_args_list])
+
+    def test_nested_retained_index_protects_an_old_numbered_digest(self):
+        target = retention.Target("container", "api", "3.0.0")
+        now = datetime.datetime(2026, 8, 18, tzinfo=datetime.timezone.utc)
+
+        def raw_manifest(media_type, manifests=None, marker=""):
+            value = {"schemaVersion": 2, "mediaType": media_type, "annotations": {"marker": marker}}
+            if manifests is not None:
+                value["manifests"] = manifests
+            return json.dumps(value, separators=(",", ":")).encode()
+
+        old_raw = raw_manifest("application/vnd.oci.image.manifest.v1+json", marker="old-numbered")
+        old_digest = f"sha256:{hashlib.sha256(old_raw).hexdigest()}"
+        nested_raw = raw_manifest(
+            "application/vnd.oci.image.index.v1+json",
+            manifests=[{"digest": old_digest}],
+            marker="nested",
+        )
+        nested_digest = f"sha256:{hashlib.sha256(nested_raw).hexdigest()}"
+        indexes = []
+        for version in ("1.0.0", "2.0.0", "3.0.0"):
+            children = [{"digest": nested_digest}] if version == "3.0.0" else []
+            raw = raw_manifest("application/vnd.oci.image.index.v1+json", manifests=children, marker=version)
+            indexes.append((version, raw, f"sha256:{hashlib.sha256(raw).hexdigest()}"))
+        versions = [
+            {"id": 99, "name": old_digest, "created_at": "2026-01-01T00:00:00Z", "metadata": {"container": {"tags": ["0.5.0"]}}},
+            *[
+                {"id": index, "name": digest, "created_at": "2026-07-01T00:00:00Z", "metadata": {"container": {"tags": [version]}}}
+                for index, (version, _, digest) in enumerate(indexes, 1)
+            ],
+        ]
+        raw_by_reference = {
+            **{f"ghcr.io/Verjson/api:{version}": raw for version, raw, _ in indexes},
+            f"ghcr.io/Verjson/api@{nested_digest}": nested_raw,
+            f"ghcr.io/Verjson/api@{old_digest}": old_raw,
+        }
+        inspector = mock.Mock()
+        inspector.raw.side_effect = raw_by_reference.__getitem__
+
+        safety = retention._container_safety("Verjson", target, versions, inspector, now)
+        plan = retention.plan_target(
+            target,
+            versions,
+            protected_version_ids=set(safety.protected_version_ids),
+        )
+
+        self.assertIn(99, safety.protected_version_ids)
+        self.assertNotIn(99, [deletion.version_id for deletion in plan])
+
+    def test_apply_reinventories_and_refuses_when_a_concurrent_run_changed_versions(self):
+        target = retention.Target("npm", "cli", "4.0.0")
+        initial = [
+            {"id": 1, "name": "1.0.0"},
+            {"id": 2, "name": "2.0.0"},
+            {"id": 3, "name": "3.0.0"},
+            {"id": 4, "name": "4.0.0"},
+        ]
+        changed = initial[1:]
+
+        class Client:
+            def __init__(self):
+                self.inventories = [initial, changed]
+                self.deleted = []
+
+            def versions(self, _target):
+                return self.inventories.pop(0)
+
+            def delete(self, deletion):
+                self.deleted.append(deletion)
+
+        client = Client()
+        plan = retention.build_plan(client, [target])
+
+        with self.assertRaisesRegex(retention.RetentionError, "inventory changed"):
+            retention.apply_plan(client, plan, "Verjson", mock.Mock())
+        self.assertEqual(client.deleted, [])
 
     def test_delete_uses_encoded_supported_package_endpoint_and_bearer_token(self):
         target = retention.Target("container", "studio/api", "1.0.0")

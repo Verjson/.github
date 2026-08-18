@@ -14,7 +14,9 @@ permissions:
   contents: read
 
 concurrency:
-  group: container-release-${{ github.repository }}-${{ inputs.version }}
+  # Package retention is destructive. Serialize releases for this repository so
+  # two version-keyed runs cannot validate and delete the same package concurrently.
+  group: container-release-${{ github.repository }}
   cancel-in-progress: false
 
 jobs:

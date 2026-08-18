@@ -49,6 +49,12 @@ class Deletion:
     labels: tuple[str, ...]
 
 
+@dataclass(frozen=True)
+class ContainerSafety:
+    deletable_untagged_ids: frozenset[int]
+    protected_version_ids: frozenset[int]
+
+
 class GitHubPackages:
     def __init__(self, owner: str, token: str, api_url: str) -> None:
         self.owner = owner
@@ -173,6 +179,7 @@ def plan_target(
     versions: list[dict[str, Any]],
     keep: int = 3,
     deletable_untagged_ids: set[int] | None = None,
+    protected_version_ids: set[int] | None = None,
 ) -> list[Deletion]:
     if keep != 3:
         raise RetentionError("canonical retention count must remain exactly three")
@@ -229,6 +236,7 @@ def plan_target(
         Deletion(target, version_id, "numbered release older than newest three", labels)
         for name, (version_id, labels) in stable.items()
         if name not in retained
+        and version_id not in (protected_version_ids or set())
     ]
     if target.package_type == "container":
         deletions.extend(
@@ -263,13 +271,13 @@ def _manifest(raw: bytes, reference: str) -> dict[str, Any]:
     return manifest
 
 
-def _safe_untagged_ids(
+def _container_safety(
     owner: str,
     target: Target,
     versions: list[dict[str, Any]],
     inspector: OciInspector,
     now: datetime.datetime,
-) -> set[int]:
+) -> ContainerSafety:
     repository = f"ghcr.io/{owner}/{target.name}"
     stable: list[tuple[str, str]] = []
     untagged: list[dict[str, Any]] = []
@@ -323,7 +331,12 @@ def _safe_untagged_ids(
             continue
         _manifest(inspector.raw(f"{repository}@{digest}"), f"{repository}@{digest}")
         safe.add(version_id)
-    return safe
+    protected_version_ids = {
+        version["id"]
+        for version in versions
+        if isinstance(version, dict) and version.get("name") in protected
+    }
+    return ContainerSafety(frozenset(safe), frozenset(protected_version_ids))
 
 
 def build_plan(
@@ -337,12 +350,43 @@ def build_plan(
     plans: list[Deletion] = []
     for target, versions in inventories:
         deletable_untagged_ids: set[int] | None = None
+        protected_version_ids: set[int] | None = None
         if target.package_type == "container":
             if not owner or inspector is None or now is None:
                 raise RetentionError("container cleanup requires an owner, OCI inspector, and current time")
-            deletable_untagged_ids = _safe_untagged_ids(owner, target, versions, inspector, now)
-        plans.extend(plan_target(target, versions, deletable_untagged_ids=deletable_untagged_ids))
+            safety = _container_safety(owner, target, versions, inspector, now)
+            deletable_untagged_ids = set(safety.deletable_untagged_ids)
+            protected_version_ids = set(safety.protected_version_ids)
+        plans.extend(
+            plan_target(
+                target,
+                versions,
+                deletable_untagged_ids=deletable_untagged_ids,
+                protected_version_ids=protected_version_ids,
+            )
+        )
     return plans
+
+
+def apply_plan(
+    client: GitHubPackages,
+    deletions: list[Deletion],
+    owner: str,
+    inspector: OciInspector,
+) -> None:
+    for deletion in deletions:
+        fresh_plan = build_plan(
+            client,
+            [deletion.target],
+            owner=owner,
+            inspector=inspector,
+            now=datetime.datetime.now(datetime.timezone.utc),
+        )
+        if deletion not in fresh_plan:
+            raise RetentionError(
+                f"package inventory changed before deleting version id {deletion.version_id}; refusing stale plan"
+            )
+        client.delete(deletion)
 
 
 def main() -> int:
@@ -356,19 +400,20 @@ def main() -> int:
         raise RetentionError("GH_TOKEN is required")
     targets = parse_targets(args.targets, args.owner)
     client = GitHubPackages(args.owner, token, os.environ.get("GITHUB_API_URL", "https://api.github.com"))
+    inspector = OciInspector()
     deletions = build_plan(
         client,
         targets,
         owner=args.owner,
-        inspector=OciInspector(),
+        inspector=inspector,
         now=datetime.datetime.now(datetime.timezone.utc),
     )
     print(json.dumps({"delete": [deletion.__dict__ | {"target": deletion.target.__dict__} for deletion in deletions]}, default=list))
     if not args.apply:
         print("Dry run only; pass --apply to delete the validated inventory.")
         return 0
+    apply_plan(client, deletions, args.owner, inspector)
     for deletion in deletions:
-        client.delete(deletion)
         print(
             f"Deleted {deletion.target.package_type}/{deletion.target.name} version id "
             f"{deletion.version_id}: {deletion.reason}."
