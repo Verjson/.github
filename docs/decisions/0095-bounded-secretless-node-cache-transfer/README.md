@@ -148,6 +148,24 @@ the original lock, temporarily maps only its approved private resolutions to
 exact run-local tarballs, performs the frozen install while public dependencies
 remain available from the public registry, and restores the committed lock.
 Missing or surplus mappings fail closed before install.
+
+**2026-08-18 correction ([#896](https://github.com/Verjson/.github/issues/896)).**
+A live consumer reproduced `ERR_PNPM_RESOLUTION_SHAPE_MISMATCH` against the
+`file:`-rewrite above: pnpm's own supply-chain policy rejects a registry-style
+`name@version` dependency path whose resolution is not itself an `http(s)`
+registry tarball, so pointing that field at a local path is rejected by pnpm
+regardless of content integrity. Mapping to a local path also cannot satisfy
+pnpm's separate live tarball-URL/metadata cross-check, which is why a bare
+`--offline` content-store import was insufficient on its own. The build now
+starts a loopback-only (`127.0.0.1`) HTTP mock registry for the run, publishes
+each verified private tarball plus a matching packument (name, version, exact
+locked integrity) under it, rewrites only the affected tarball URLs to that
+local `http://127.0.0.1` address, and writes a run-local npmrc mapping each
+affected package scope to the mock registry so pnpm's resolver and its
+supply-chain verifier both resolve locally instead of contacting
+`npm.pkg.github.com`. The mock registry and its npmrc override are torn down,
+and the committed lock restored, under the existing `always()` cleanup. Public
+dependencies remain resolvable from the public registry throughout.
 - Multi-scope packages, one immutable sparse auxiliary tree, selective rebuilds,
   and a custom command plan are opt-in and fail closed; existing callers retain
   the `@verjson` scope and standard command sequence.

@@ -982,6 +982,9 @@ jobs:
             if [ -n "$PNPM_STORE_DIR" ] && [ -f "$PNPM_STORE_DIR/pnpm-lock.original.yaml" ]; then
               cp -- "$PNPM_STORE_DIR/pnpm-lock.original.yaml" pnpm-lock.yaml
             fi
+            if [ -n "${MOCK_REGISTRY_PID:-}" ]; then
+              kill "$MOCK_REGISTRY_PID" 2>/dev/null || true
+            fi
             rm -rf "$SECRETLESS_CACHE_DIR" "$PNPM_STORE_DIR" "$TRANSFER_DIR"
           }
           trap cleanup EXIT
@@ -1154,20 +1157,50 @@ jobs:
           if [ "$PACKAGE_MANAGER" = npm ]; then
             npm ci --ignore-scripts --prefer-offline --no-audit --no-fund --cache "$SECRETLESS_CACHE_DIR"
           else
-            PNPM_IMPORT_DIR="$PNPM_STORE_DIR/import"
             PNPM_IMPORT_MAP="$PNPM_STORE_DIR/import-map.tsv"
-            mkdir -p "$PNPM_IMPORT_DIR"
+            MOCK_REGISTRY_DIR="$PNPM_STORE_DIR/mock-registry"
+            MOCK_REGISTRY_PORT_FILE="$PNPM_STORE_DIR/mock-registry.port"
+            MOCK_REGISTRY_NPMRC="$PNPM_STORE_DIR/mock-registry.npmrc"
+            MOCK_REGISTRY_SERVER="$PNPM_STORE_DIR/mock-registry-server.py"
+            mkdir -p "$MOCK_REGISTRY_DIR/tarball"
             : > "$PNPM_IMPORT_MAP"
             while IFS= read -r -d '' package_blob; do
-              package_spec="$(mktemp "$PNPM_IMPORT_DIR/package-XXXXXX.tgz")"
-              cp -- "$package_blob" "$package_spec"
-              corepack pnpm store add --store-dir "$PNPM_STORE_DIR" "$package_spec"
-              printf '%s\t%s\n' "$(sha512sum "$package_spec" | cut -d' ' -f1)" "$package_spec" \
+              printf '%s\t%s\n' "$(sha512sum "$package_blob" | cut -d' ' -f1)" "$package_blob" \
                 >> "$PNPM_IMPORT_MAP"
             done < <(find "$SECRETLESS_CACHE_DIR/_cacache/content-v2" -type f -print0)
             cp -- pnpm-lock.yaml "$PNPM_STORE_DIR/pnpm-lock.original.yaml"
-            PNPM_IMPORT_MAP="$PNPM_IMPORT_MAP" python3 - <<'PY'
+            cat > "$MOCK_REGISTRY_SERVER" <<'PY'
+          import functools
+          import http.server
+          import sys
+
+          directory, port_file = sys.argv[1], sys.argv[2]
+
+          class QuietHandler(http.server.SimpleHTTPRequestHandler):
+              def log_message(self, *args):
+                  pass
+
+          handler = functools.partial(QuietHandler, directory=directory)
+          httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
+          with open(port_file, "w", encoding="utf-8") as stream:
+              stream.write(str(httpd.server_address[1]))
+          httpd.serve_forever()
+          PY
+            python3 "$MOCK_REGISTRY_SERVER" "$MOCK_REGISTRY_DIR" "$MOCK_REGISTRY_PORT_FILE" &
+            MOCK_REGISTRY_PID=$!
+            for _ in $(seq 1 50); do
+              [ -s "$MOCK_REGISTRY_PORT_FILE" ] && break
+              sleep 0.1
+            done
+            [ -s "$MOCK_REGISTRY_PORT_FILE" ] || {
+              echo "::error::secretless pnpm mock registry failed to start"
+              exit 1
+            }
+            MOCK_REGISTRY_PORT="$(cat "$MOCK_REGISTRY_PORT_FILE")" \
+              PNPM_IMPORT_MAP="$PNPM_IMPORT_MAP" MOCK_REGISTRY_DIR="$MOCK_REGISTRY_DIR" \
+              MOCK_REGISTRY_NPMRC="$MOCK_REGISTRY_NPMRC" python3 - <<'PY'
           import base64
+          import hashlib
           import json
           import os
           from pathlib import Path
@@ -1184,7 +1217,7 @@ jobs:
               digest, path = line.split("\t", 1)
               if digest in mappings:
                   raise SystemExit("duplicate pnpm import digest")
-              mappings[digest] = Path(path).resolve().as_uri()
+              mappings[digest] = Path(path)
 
           lock_path = Path("pnpm-lock.yaml")
           lock_text = lock_path.read_text(encoding="utf-8")
@@ -1208,8 +1241,13 @@ jobs:
           packages = mapping_value(lock, "packages")
           if not isinstance(packages, yaml.MappingNode):
               raise SystemExit("pnpm lock packages field is absent or malformed")
+
+          port = os.environ["MOCK_REGISTRY_PORT"]
+          registry_dir = Path(os.environ["MOCK_REGISTRY_DIR"])
           used = set()
           replacements = []
+          packuments = {}
+          scopes = set()
           for _, package in packages.value:
               resolution = mapping_value(package, "resolution")
               if resolution is None:
@@ -1217,7 +1255,8 @@ jobs:
               tarball = mapping_value(resolution, "tarball")
               if tarball is None or not isinstance(tarball, yaml.ScalarNode):
                   continue
-              if urlparse(tarball.value).hostname != "npm.pkg.github.com":
+              parsed = urlparse(tarball.value)
+              if parsed.hostname != "npm.pkg.github.com":
                   continue
               integrity = mapping_value(resolution, "integrity")
               if not isinstance(integrity, yaml.ScalarNode):
@@ -1227,21 +1266,51 @@ jobs:
               ).hex()
               if digest not in mappings:
                   raise SystemExit("private pnpm resolution is absent from the verified transfer")
+              parts = parsed.path.split("/")
+              if len(parts) != 6 or parts[1] != "download" or not parts[2].startswith("@"):
+                  raise SystemExit(f"unrecognized GitHub Packages download URL: {tarball.value}")
+              scope, name, pkg_version = parts[2], parts[3], parts[4]
+              scopes.add(scope)
+              local_url = f"http://127.0.0.1:{port}/tarball/{digest}.tgz"
               replacements.append(
-                  (tarball.start_mark.index, tarball.end_mark.index, json.dumps(mappings[digest]))
+                  (tarball.start_mark.index, tarball.end_mark.index, json.dumps(local_url))
               )
               used.add(digest)
+              content_bytes = mappings[digest].read_bytes()
+              (registry_dir / "tarball" / f"{digest}.tgz").write_bytes(content_bytes)
+              packuments.setdefault(f"{scope}/{name}", {})[pkg_version] = {
+                  "name": f"{scope}/{name}",
+                  "version": pkg_version,
+                  "dist": {
+                      "shasum": hashlib.sha1(content_bytes).hexdigest(),
+                      "integrity": integrity.value,
+                      "tarball": local_url,
+                  },
+              }
           surplus = sorted(mappings.keys() - used)
           if surplus:
               raise SystemExit(
                   "verified pnpm transfer contains surplus package digest(s): "
                   + ", ".join(surplus)
               )
+          for full_name, versions in packuments.items():
+              packument_path = registry_dir / full_name
+              packument_path.parent.mkdir(parents=True, exist_ok=True)
+              latest = sorted(
+                  versions, key=lambda v: [int(p) if p.isdigit() else p for p in v.split(".")]
+              )[-1]
+              packument_path.write_text(json.dumps({
+                  "name": full_name,
+                  "dist-tags": {"latest": latest},
+                  "versions": versions,
+              }), encoding="utf-8")
+          npmrc_lines = [f"{scope}:registry=http://127.0.0.1:{port}/\n" for scope in sorted(scopes)]
+          Path(os.environ["MOCK_REGISTRY_NPMRC"]).write_text("".join(npmrc_lines), encoding="utf-8")
           for start, end, replacement in reversed(replacements):
               lock_text = lock_text[:start] + replacement + lock_text[end:]
           lock_path.write_text(lock_text, encoding="utf-8")
           PY
-            corepack pnpm install --frozen-lockfile --ignore-scripts --prefer-offline \
+            NPM_CONFIG_USERCONFIG="$MOCK_REGISTRY_NPMRC" corepack pnpm install --frozen-lockfile --ignore-scripts --prefer-offline \
               --store-dir "$PNPM_STORE_DIR"
           fi
       - name: Remove local secretless transfer state

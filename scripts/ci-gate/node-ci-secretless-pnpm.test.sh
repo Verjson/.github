@@ -116,18 +116,20 @@ for credential in ("GH_TOKEN", "GITHUB_TOKEN", "NODE_AUTH_TOKEN", "NPM_TOKEN"):
 script = install["run"]
 lock = open(sys.argv[2], encoding="utf-8").read()
 assert "https://npm.pkg.github.com/download/@verjson/contracts/1.2.3/abc" in lock
-assert 'package_spec="$(mktemp "$PNPM_IMPORT_DIR/package-XXXXXX.tgz")"' in script
-assert 'cp -- "$package_blob" "$package_spec"' in script
-assert 'corepack pnpm store add --store-dir "$PNPM_STORE_DIR" "$package_spec"' in script
-assert 'corepack pnpm store add --store-dir "$PNPM_STORE_DIR" "$package_blob"' not in script
-assert 'urlparse(tarball.value).hostname != "npm.pkg.github.com"' in script
+assert 'corepack pnpm store add' not in script
+assert '.resolve().as_uri()' not in script
+assert 'parsed = urlparse(tarball.value)' in script
+assert 'if parsed.hostname != "npm.pkg.github.com":' in script
 assert 'lock = yaml.compose(lock_text, Loader=yaml.SafeLoader)' in script
-assert '(tarball.start_mark.index, tarball.end_mark.index, json.dumps(mappings[digest]))' in script
+assert '(tarball.start_mark.index, tarball.end_mark.index, json.dumps(local_url))' in script
 assert 'lock_text = lock_text[:start] + replacement + lock_text[end:]' in script
 assert 'yaml.safe_dump(lock' not in script
-assert 'Path(path).resolve().as_uri()' in script
-assert "corepack pnpm install --frozen-lockfile --ignore-scripts --prefer-offline" in script
+assert 'local_url = f"http://127.0.0.1:{port}/tarball/{digest}.tgz"' in script
+assert 'httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)' in script
+assert 'npmrc_lines = [f"{scope}:registry=http://127.0.0.1:{port}/\\n" for scope in sorted(scopes)]' in script
+assert 'NPM_CONFIG_USERCONFIG="$MOCK_REGISTRY_NPMRC" corepack pnpm install --frozen-lockfile --ignore-scripts --prefer-offline' in script
 assert 'cp -- "$PNPM_STORE_DIR/pnpm-lock.original.yaml" pnpm-lock.yaml' in script
+assert 'kill "$MOCK_REGISTRY_PID" 2>/dev/null || true' in script
 assert 'rm -rf "$SECRETLESS_CACHE_DIR" "$PNPM_STORE_DIR" "$TRANSFER_DIR"' in script
 boundary = next(step for step in doc["jobs"]["acquire-secretless-dependencies"]["steps"] if step.get("name") == "Enforce the secretless event boundary")
 assert "same-repository pull request" in boundary["run"]
