@@ -15,6 +15,19 @@ grep -q 'mode:\"observe-only\"' "$reconcile" \
   && pass "reconciler cannot create holds" || fail "observe-only boundary missing"
 ! grep -Eq 'ORG_ADMIN_TOKEN|contents: write|pull-requests: write|issues: write' "$reconcile" \
   && pass "reconciler has no mutation grant" || fail "reconciler is overprivileged"
+grep -q 'client-id: \${{ vars.RENOVATE_COMPATIBILITY_CLIENT_ID }}' "$reconcile" \
+  && ! grep -q 'app-id:' "$reconcile" \
+  && pass "reconciler uses dedicated compatibility App client ID" \
+  || fail "reconciler App identity drifted"
+reconcile_mint="$(sed -n '/name: Mint compatibility observer token/,/name: Fetch the reviewed policy registry/p' "$reconcile")"
+[ "$(grep -c 'permission-' <<<"$reconcile_mint")" -eq 4 ] \
+  && grep -q 'permission-contents: read' <<<"$reconcile_mint" \
+  && grep -q 'permission-pull-requests: read' <<<"$reconcile_mint" \
+  && grep -q 'permission-checks: read' <<<"$reconcile_mint" \
+  && grep -q 'permission-statuses: read' <<<"$reconcile_mint" \
+  && ! grep -Eq 'permission-[^:]+: write' <<<"$reconcile_mint" \
+  && pass "reconciler token is limited to exact observation reads" \
+  || fail "reconciler token permissions are absent or broadened"
 grep -q 'persist-credentials: false' "$canary" \
   && grep -q 'unset NODE_AUTH_TOKEN NPM_TOKEN GH_TOKEN GITHUB_TOKEN' "$canary" \
   && grep -q -- '--ignore-scripts' "$canary" \
@@ -39,14 +52,25 @@ fi
 grep -qF "fromJSON(vars.VERJSON_LANE_TRUSTED || vars.VERJSON_LANE_FALLBACK || '[\"ubuntu-24.04\"]')" "$reconcile" \
   && [ "$(grep -cF "fromJSON(vars.VERJSON_LANE_UNTRUSTED || '[\"ubuntu-24.04\"]')" "$canary")" -eq 1 ] \
   && [ "$(grep -cF "fromJSON(vars.VERJSON_LANE_TRUSTED || vars.VERJSON_LANE_FALLBACK || '[\"ubuntu-24.04\"]')" "$canary")" -eq 1 ] \
-  && grep -qF "fromJSON(vars.VERJSON_LANE_UNTRUSTED || '[\"ubuntu-24.04\"]')" "$planner" \
+  && grep -qF "fromJSON(vars.VERJSON_LANE_TRUSTED || vars.VERJSON_LANE_FALLBACK || '[\"ubuntu-24.04\"]')" "$planner" \
   && pass "new jobs use the canonical portable organization lane boundary" \
   || fail "runner selector bypasses the canonical lane boundary"
 grep -q 'dd08f8471fdfabbdbbb32051e03387fcf5df63bd' "$planner" \
   && grep -q 'scripts/plan-compatibility.mjs' "$planner" \
-  && ! grep -Eq 'contents: write|pull-requests: write|issues: write|secrets:' "$planner" \
+  && ! grep -Eq 'contents: write|pull-requests: write|issues: write' "$planner" \
   && pass "planner consumes the immutable prerequisite without mutation authority" \
   || fail "planner contract or authority drifted"
+grep -q 'client-id: \${{ vars.RENOVATE_COMPATIBILITY_CLIENT_ID }}' "$planner" \
+  && grep -q 'token: \${{ steps.app-token.outputs.token }}' "$planner" \
+  && ! grep -q 'app-id:' "$planner" \
+  && pass "planner authenticates private policy checkout with dedicated reader" \
+  || fail "planner private policy authentication drifted"
+planner_mint="$(sed -n '/name: Mint compatibility policy reader token/,/name: Check out immutable organization policy/p' "$planner")"
+[ "$(grep -c 'permission-' <<<"$planner_mint")" -eq 1 ] \
+  && grep -q 'permission-contents: read' <<<"$planner_mint" \
+  && ! grep -Eq 'permission-[^:]+: write' <<<"$planner_mint" \
+  && pass "planner token is limited to contents read" \
+  || fail "planner token permissions are absent or broadened"
 
 sha=0123456789abcdef0123456789abcdef01234567
 caller="$(bash "$generator" "$sha" typescript 7.1.0 node-jest-ts-jest)" || fail "caller generation failed"

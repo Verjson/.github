@@ -63,3 +63,18 @@ consumer rollout proves its availability, preventing a fleet-wide absent-check o
 - Operators can roll back by disabling the scheduled workflow. Existing Renovate
   behavior and holds remain unchanged because observe-only automation makes no policy
   mutation.
+
+## 2026-08-18 authentication-boundary clarification
+
+The observe-first workflows authenticate with the dedicated compatibility App's client
+ID and private key. Each mint further narrows the installation token to the exact call
+surface: the reconciler receives `contents`, `pull-requests`, `checks`, and `statuses`
+read permissions; the grouping planner receives only `contents: read`. Neither token
+has mutation authority.
+
+The grouping planner runs on the trusted lane because minting the App token introduces
+a protected private key. It checks out the private policy repository at the immutable
+reviewed commit recorded in the workflow, passes the short-lived token only to that
+checkout, and sets `persist-credentials: false`. Candidate code remains confined to the
+credentialless untrusted canary lane; this clarification does not authorize automatic
+issues, holds, policy changes, or Renovate rollout.
