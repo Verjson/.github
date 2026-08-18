@@ -41,7 +41,7 @@
     "environment": {"const": "production"},
     "manifestIdentity": {
       "type": "string",
-      "pattern": "^ghcr\\.io/[a-z0-9_.-]+/[a-z0-9_.-]+@sha256:[0-9a-f]{64}$"
+      "pattern": "^sha256:[0-9a-f]{64}$"
     },
     "fleetSelector": {"type": "string", "pattern": "^[a-z][a-z0-9_-]{1,31}$"},
     "canaryRunner": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"},

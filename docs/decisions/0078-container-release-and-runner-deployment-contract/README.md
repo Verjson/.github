@@ -395,6 +395,18 @@ redacted plan for inspection; mutable tags and raw
 digests are rejected at admission, workflow concurrency prevents overlap, and the fixed
 CLI argument shape has no capacity or spend-increasing operation.
 
+### Clarification (2026-08-18) — canonical manifest asset identity
+
+The protected deployment input and every retained receipt use the bare
+`sha256:<64 lowercase hex>` identity of the canonical `release-manifest.json` GitHub
+Release asset. They do not accept the preceding registry-qualified OCI-manifest form.
+This matches `verjson-cli-cloud`'s #258 admission boundary: the CLI resolves the exact
+asset only from `Verjson/verjson-github-runner`, re-hashes its bytes, verifies the
+canonical release signer, protected source ref and commit, and verifies each selected
+image's provenance and SBOM before cloud inventory or runner mutation. Keeping the
+orchestrator and mutation authority on the same identity prevents a reviewed plan from
+being reinterpreted as a raw image digest at execution time.
+
 ## Amendment (2026-08-09) — private candidate dependency boundary (#690)
 
 Candidate consumers may declare an exact `privateNodePackages` allowlist of
