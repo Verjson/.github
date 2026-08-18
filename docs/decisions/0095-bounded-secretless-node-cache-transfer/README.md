@@ -139,6 +139,15 @@ to populate only npm's non-executing content cache, so it never invokes pnpm or
 consumer lifecycle code. The credentialless build verifies the exact lock and
 payload, imports each verified tarball into a job-local pnpm store, and performs a
 frozen, lifecycle-free pnpm install. The store is removed on success or failure.
+
+**2026-08-18 clarification ([#896](https://github.com/Verjson/.github/issues/896)).**
+Importing verified tarballs into pnpm's job-local store is not by itself a
+network boundary: `--prefer-offline` may still request private-registry metadata
+when a lockfile retains its registry resolution. The build therefore verifies
+the original lock, temporarily maps only its approved private resolutions to
+exact run-local tarballs, performs the frozen install while public dependencies
+remain available from the public registry, and restores the committed lock.
+Missing or surplus mappings fail closed before install.
 - Multi-scope packages, one immutable sparse auxiliary tree, selective rebuilds,
   and a custom command plan are opt-in and fail closed; existing callers retain
   the `@verjson` scope and standard command sequence.

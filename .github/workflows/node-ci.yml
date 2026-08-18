@@ -977,6 +977,9 @@ jobs:
           PACKAGE_MANAGER="${PACKAGE_MANAGER:-npm}"
           PNPM_STORE_DIR="${PNPM_STORE_DIR:-}"
           cleanup() {
+            if [ -n "$PNPM_STORE_DIR" ] && [ -f "$PNPM_STORE_DIR/pnpm-lock.original.yaml" ]; then
+              cp -- "$PNPM_STORE_DIR/pnpm-lock.original.yaml" pnpm-lock.yaml
+            fi
             rm -rf "$SECRETLESS_CACHE_DIR" "$PNPM_STORE_DIR" "$TRANSFER_DIR"
           }
           trap cleanup EXIT
@@ -1150,12 +1153,49 @@ jobs:
             npm ci --ignore-scripts --prefer-offline --no-audit --no-fund --cache "$SECRETLESS_CACHE_DIR"
           else
             PNPM_IMPORT_DIR="$PNPM_STORE_DIR/import"
+            PNPM_IMPORT_MAP="$PNPM_STORE_DIR/import-map.tsv"
             mkdir -p "$PNPM_IMPORT_DIR"
+            : > "$PNPM_IMPORT_MAP"
             while IFS= read -r -d '' package_blob; do
               package_spec="$(mktemp "$PNPM_IMPORT_DIR/package-XXXXXX.tgz")"
               cp -- "$package_blob" "$package_spec"
               corepack pnpm store add --store-dir "$PNPM_STORE_DIR" "$package_spec"
+              printf '%s\t%s\n' "$(sha512sum "$package_spec" | cut -d' ' -f1)" "$package_spec" \
+                >> "$PNPM_IMPORT_MAP"
             done < <(find "$SECRETLESS_CACHE_DIR/_cacache/content-v2" -type f -print0)
+            cp -- pnpm-lock.yaml "$PNPM_STORE_DIR/pnpm-lock.original.yaml"
+            PNPM_IMPORT_MAP="$PNPM_IMPORT_MAP" python3 - <<'PY'
+          import base64
+          import os
+          from pathlib import Path
+          from urllib.parse import urlparse
+
+          import yaml
+
+          mappings = {}
+          for line in Path(os.environ["PNPM_IMPORT_MAP"]).read_text(encoding="utf-8").splitlines():
+              digest, path = line.split("\t", 1)
+              if digest in mappings:
+                  raise SystemExit("duplicate pnpm import digest")
+              mappings[digest] = Path(path).resolve().as_uri()
+
+          lock_path = Path("pnpm-lock.yaml")
+          lock = yaml.safe_load(lock_path.read_text(encoding="utf-8"))
+          used = set()
+          for package in lock.get("packages", {}).values():
+              resolution = package.get("resolution", {})
+              if urlparse(resolution.get("tarball", "")).hostname != "npm.pkg.github.com":
+                  continue
+              integrity = resolution.get("integrity", "")
+              digest = base64.b64decode(integrity.removeprefix("sha512-"), validate=True).hex()
+              if digest not in mappings:
+                  raise SystemExit("private pnpm resolution is absent from the verified transfer")
+              resolution["tarball"] = mappings[digest]
+              used.add(digest)
+          if used != mappings.keys():
+              raise SystemExit("verified pnpm transfer contains an unmapped private package")
+          lock_path.write_text(yaml.safe_dump(lock, sort_keys=False), encoding="utf-8")
+          PY
             corepack pnpm install --frozen-lockfile --ignore-scripts --prefer-offline \
               --store-dir "$PNPM_STORE_DIR"
           fi
