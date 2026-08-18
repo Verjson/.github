@@ -155,7 +155,7 @@ jobs:
           tar -xzf "$archive" -C "$dependency_dir" --strip-components=2 \
             "pyyaml-${PYYAML_VERSION}/lib/yaml"
           test -f "$dependency_dir/yaml/__init__.py"
-      - name: Refuse metered hosted selectors in Verjson callers
+      - name: Refuse literal hosted selectors in Verjson callers
         if: github.repository_owner == 'Verjson'
         run: |
           set -euo pipefail
@@ -172,11 +172,17 @@ jobs:
             echo "::error::Hosted-selector policy dependency is not a secure directory"
             exit 1
           fi
+          policy_mode=(--consumer-policy)
+          if [ "${GITHUB_REPOSITORY:?repository identity is unavailable}" = "Verjson/.github" ]; then
+            # This repository retains ADR 0089's two exact, fixed-hosted
+            # security boundaries. Consumers have no such exception.
+            policy_mode=(--visibility public)
+          fi
           PYTHONPATH="$policy_dir/python" \
             PYTHONNOUSERSITE=1 \
             python3 -S \
             .verjson-actionlint-policy/scripts/ci-gate/hosted-selector-policy.py \
-            --metered-families-only .github/workflows
+            "${policy_mode[@]}" .github/workflows
       - name: Remove hosted-selector policy dependency
         if: ${{ always() && github.repository_owner == 'Verjson' }}
         working-directory: ${{ github.workspace }}

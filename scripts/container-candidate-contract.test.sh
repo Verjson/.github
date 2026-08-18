@@ -111,9 +111,14 @@ assert canary["jobs"]["publish"]["if"] == (
     "github.event_name == 'workflow_dispatch' "
     "&& github.ref == format('refs/heads/{0}', github.event.repository.default_branch)"
 ), "privileged canary dispatch must be bound to the repository default branch"
+expected_runner = (
+    "${{ github.repository_owner == 'Verjson' && "
+    "(vars.VERJSON_RUNNER_DEFAULT || '[\"self-hosted\",\"general\"]') || "
+    "'[\"ubuntu-24.04\"]' }}"
+)
 for job in ("validate", "publish"):
-    assert canary["jobs"][job]["with"]["runner"] == '"ubuntu-24.04"', (
-        "reusable-call canary must use a JSON-encoded GitHub-hosted runner"
+    assert canary["jobs"][job]["with"]["runner"] == expected_runner, (
+        "reusable-call canary must use the canonical organization-aware runner lane"
     )
 PY
 python3 "$root/scripts/container_private_dependencies.test.py"
