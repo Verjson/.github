@@ -26,6 +26,8 @@ jobs:
       attestations: write
       contents: read
       id-token: write
+    outputs:
+      retention-targets: ${{ steps.release-output.outputs.retention-targets }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with: {fetch-depth: 0, token: "${{ secrets.release-token }}"}
@@ -164,7 +166,8 @@ jobs:
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: release-manifest.json
-      - name: Canonical changelog, Git tag, release and machine output
+      - id: release-output
+        name: Canonical changelog, Git tag, release and machine output
         env: {VERSION: "${{ inputs.version }}", GH_TOKEN: "${{ secrets.release-token }}"}
         run: |
           set -euo pipefail
@@ -182,3 +185,35 @@ jobs:
             gh release create "v$VERSION" --verify-tag --title "v$VERSION" --notes-file "CHANGELOG/v$VERSION.md" release-manifest.json receipts/*.json
           fi
           jq -c '{version:.releaseVersion,manifestDigest:.candidateManifestDigest,images:[.images[]|{variant,repository,indexDigest}]}' release-manifest.json | tee release-output.json
+          targets="$(jq -c --arg owner "$GITHUB_REPOSITORY_OWNER" --arg version "$VERSION" '
+            [.images[].repository | capture("^ghcr.io/(?<owner>[^/]+)/(?<name>.+)$") |
+              select((.owner | ascii_downcase) == ($owner | ascii_downcase)) |
+              {type:"container",name:.name,releasedVersion:$version}]' release-manifest.json)"
+          [ "$(jq 'length' <<<"$targets")" = "$(jq '.images | length' release-manifest.json)" ] \
+            || { echo "::error::release manifest contains an image outside ghcr.io/$GITHUB_REPOSITORY_OWNER"; exit 1; }
+          printf 'retention-targets=%s\n' "$targets" >>"$GITHUB_OUTPUT"
+
+  retention:
+    name: Retain three numbered image releases
+    needs: promote
+    if: needs.promote.result == 'success'
+    continue-on-error: true
+    runs-on: ${{ github.repository_owner != 'Verjson' && 'ubuntu-24.04' || fromJSON(vars.VERJSON_LANE_TRUSTED || vars.VERJSON_LANE_FALLBACK || '["ubuntu-24.04"]') }}
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: Verjson/.github
+          ref: ${{ inputs.contract-ref }}
+          path: .package-retention-contract
+          persist-credentials: false
+      - name: Delete image versions outside canonical retention
+        env:
+          GH_TOKEN: ${{ secrets.release-token }}
+          TARGETS: ${{ needs.promote.outputs.retention-targets }}
+        run: >-
+          python3 .package-retention-contract/scripts/package_retention.py
+          --owner "$GITHUB_REPOSITORY_OWNER" --targets "$TARGETS" --apply

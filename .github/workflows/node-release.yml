@@ -51,6 +51,10 @@ on:
         required: false
         type: string
         default: '["."]'
+      contract-ref:
+        description: Immutable Verjson/.github commit supplying the retention implementation
+        required: true
+        type: string
       runner:
         description: Optional JSON runner labels; Verjson defaults general, external callers ubuntu-24.04.
         required: false
@@ -81,6 +85,7 @@ jobs:
     outputs:
       new-release-published: ${{ steps.result.outputs.new-release-published }}
       new-release-version: ${{ steps.result.outputs.new-release-version }}
+      retention-targets: ${{ steps.package-dirs.outputs.retention-targets }}
     steps:
       - name: Prepare job-scoped changelog tool cache
         run: echo "VERJSON_CHANGELOG_TOOL_CACHE=$RUNNER_TEMP/verjson-changelog-tools" >> "$GITHUB_ENV"
@@ -134,11 +139,16 @@ jobs:
           registry-url: https://npm.pkg.github.com
           scope: ${{ inputs.scope }}
       - name: Validate release package directories
+        id: package-dirs
         env:
           PACKAGE_DIRS: ${{ inputs.package-dirs }}
+          PACKAGE_VERSION: ${{ steps.release-tag.outputs.package-version }}
+          SCOPE: ${{ inputs.scope }}
         run: |
-          node - "$PACKAGE_DIRS" <<'NODE'
+          node - "$PACKAGE_DIRS" "$PACKAGE_VERSION" "$SCOPE" <<'NODE'
           const packageDirs = JSON.parse(process.argv[2]);
+          const packageVersion = process.argv[3];
+          const scope = process.argv[4];
           if (!Array.isArray(packageDirs) || packageDirs.length === 0) {
             throw new Error("package-dirs must be a non-empty JSON array");
           }
@@ -154,6 +164,19 @@ jobs:
             }
             seen.add(packageDir);
           }
+          const targets = packageDirs.map((packageDir) => {
+            const packageJson = require(require("path").resolve(packageDir, "package.json"));
+            const prefix = `${scope}/`;
+            if (typeof packageJson.name !== "string" || !packageJson.name.startsWith(prefix)) {
+              throw new Error(`package in ${packageDir} is not owned by configured scope ${scope}`);
+            }
+            const name = packageJson.name.slice(prefix.length);
+            if (!/^[a-z0-9][a-z0-9._-]*$/.test(name)) {
+              throw new Error(`package in ${packageDir} has an invalid GitHub Packages basename`);
+            }
+            return {type: "npm", name, releasedVersion: packageVersion};
+          });
+          require("fs").appendFileSync(process.env.GITHUB_OUTPUT, `retention-targets=${JSON.stringify(targets)}\n`);
           NODE
       - name: Install dependencies
         run: npm ci
@@ -316,3 +339,32 @@ jobs:
             echo "::warning::npm cache is ${size_mb} MB; clearing it instead of uploading more than ${CACHE_MAX_MB} MB"
             find "$cache_dir" -mindepth 1 -delete
           fi
+
+  retention:
+    name: Retain three numbered package releases
+    needs: release
+    if: needs.release.outputs.new-release-published == 'true'
+    continue-on-error: true
+    runs-on: ${{ inputs.runner != '' && fromJSON(inputs.runner) || github.repository_owner != 'Verjson' && 'ubuntu-24.04' || github.event.repository.private == true && fromJSON(vars.VERJSON_LANE_TRUSTED || vars.VERJSON_LANE_FALLBACK || '["ubuntu-24.04"]') || fromJSON(vars.VERJSON_LANE_UNTRUSTED || vars.VERJSON_LANE_FALLBACK || '["ubuntu-24.04"]') }}
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Validate the immutable retention contract ref
+        env:
+          CONTRACT_REF: ${{ inputs.contract-ref }}
+        run: '[[ "$CONTRACT_REF" =~ ^[0-9a-f]{40}$ ]]'
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: Verjson/.github
+          ref: ${{ inputs.contract-ref }}
+          path: .package-retention-contract
+          persist-credentials: false
+      - name: Delete package versions outside canonical retention
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TARGETS: ${{ needs.release.outputs.retention-targets }}
+        run: >-
+          python3 .package-retention-contract/scripts/package_retention.py
+          --owner "$GITHUB_REPOSITORY_OWNER" --targets "$TARGETS" --apply
