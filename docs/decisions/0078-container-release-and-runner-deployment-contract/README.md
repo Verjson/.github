@@ -407,6 +407,25 @@ image's provenance and SBOM before cloud inventory or runner mutation. Keeping t
 orchestrator and mutation authority on the same identity prevents a reviewed plan from
 being reinterpreted as a raw image digest at execution time.
 
+### Clarification (2026-08-18) — immutable deployment CLI acquisition
+
+The reusable workflow obtains the deployment CLI from the same immutable contract
+commit. That commit contains an npm v3 lockfile fixing `@verjson/cli-cloud` and every
+transitive dependency to canonical `registry.npmjs.org` or `npm.pkg.github.com` HTTPS
+URLs and SHA-512 integrity values. Every non-root lock entry is validated before npm
+runs; missing integrity, weaker hashes, Git/file sources, plain HTTP, alternate hosts,
+credentials, ports, query strings, and fragments fail closed.
+
+Acquisition uses an exact Node runtime and action pin, only `packages: read`, and
+disables lifecycle scripts, audit, and funding requests. Its npm cache is unique to the
+job run and attempt beneath `RUNNER_TEMP`. The caller's literal reusable-workflow SHA
+and `contract-ref` must match before the contract archive is fetched, and the
+controller accepts the executable only within that immutable acquisition root.
+Always-run cleanup removes the archive, extracted dependency tree, and isolated cache
+after dry-run or production completion. A missing package, changed tarball, lock drift,
+absent binary, or cleanup path escape stops without selecting another CLI or retaining
+cross-job package residue.
+
 ## Amendment (2026-08-09) — private candidate dependency boundary (#690)
 
 Candidate consumers may declare an exact `privateNodePackages` allowlist of
