@@ -305,6 +305,7 @@ options to both coupled outputs:
 ```bash
 scripts/gen-changelog-caller.sh release-node "$PIN" --scope @acme --node-version 22 > .github/workflows/release.yml
 scripts/gen-changelog-caller.sh contract-test "$PIN" --scope @acme --node-version 22 > scripts/changelog-contract.test.sh
+scripts/gen-changelog-caller.sh pr-gate "$PIN" > .github/workflows/changelog-contract.yml
 ```
 
 The generated contract test then rejects drift in either release job. Do not

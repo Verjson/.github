@@ -34,6 +34,7 @@ generated_artifacts="$(bash "$gen" generated-artifacts "$sha")"
 generated_artifacts_with_adr="$(bash "$gen" generated-artifacts-with-adr-index "$sha")"
 renovate_attribution="$(bash "$gen" renovate-attribution "$sha")"
 adr_index_generator="$(bash "$gen" adr-index-generator "$sha")"
+pr_gate="$(bash "$gen" pr-gate "$sha")"
 usage_text="$(bash "$gen" 2>&1 || :)"
 
 # 1. The workflow pins its `uses:` and its contract_ref to the same commit.
@@ -96,6 +97,17 @@ grep -qF 'required check: changelog / validate' <<<"$usage_text" \
   && pass "usage names the check required by the active organization ruleset" \
   || fail "usage does not name the active changelog / validate requirement"
 
+grep -qE '^  changelog-contract:$' <<<"$pr_gate" \
+  && grep -qF 'VERJSON_CHANGELOG_TOOL_CACHE=$RUNNER_TEMP/verjson-changelog-tools' <<<"$pr_gate" \
+  && ! grep -qF '/opt/verjson/changelog-tools' <<<"$pr_gate" \
+  && pass "generated PR gate prepares a job-writable changelog cache (#822)" \
+  || fail "generated PR gate retains runner-global changelog cache state"
+cache_line="$(grep -nF 'VERJSON_CHANGELOG_TOOL_CACHE=$RUNNER_TEMP/verjson-changelog-tools' <<<"$pr_gate" | cut -d: -f1)"
+test_line="$(grep -nF 'bash scripts/changelog-contract.test.sh' <<<"$pr_gate" | cut -d: -f1)"
+[ -n "$cache_line" ] && [ -n "$test_line" ] && [ "$cache_line" -lt "$test_line" ] \
+  && pass "generated PR gate prepares its cache before contract validation" \
+  || fail "generated PR gate prepares its cache after contract validation"
+
 grep -q "renovate-changelog.yml@$sha" <<<"$renovate_attribution" \
   && grep -qE "^ +contract_ref: $sha$" <<<"$renovate_attribution" \
   && pass "Renovate attribution caller binds reusable workflow and helper contract pin" \
@@ -128,7 +140,7 @@ for bad in 'main' "$(printf 'main\n    if: false')" '../../evil' "${sha^^}" "${s
     pass "generator rejects non-commit ref: '${bad//$'\n'/\\n}'"
   fi
 done
-for mode in generated-artifacts generated-artifacts-with-adr-index renovate-attribution adr-index-generator; do
+for mode in generated-artifacts generated-artifacts-with-adr-index renovate-attribution adr-index-generator pr-gate; do
   if bash "$gen" "$mode" main >/dev/null 2>&1; then
     fail "$mode accepted a mutable ref"
   else
@@ -361,6 +373,7 @@ build_adopter() {
   mkdir -p "$dir/NEXT" "$dir/scripts" "$dir/.github/workflows"
   bash "$gen" renderer "$sha" >"$dir/scripts/render-next.sh"
   bash "$gen" "$caller" "$sha" >"$dir/.github/workflows/changelog.yml"
+  bash "$gen" pr-gate "$sha" >"$dir/.github/workflows/changelog-contract.yml"
   bash "$gen" renovate-attribution "$sha" >"$dir/.github/workflows/renovate-changelog.yml"
   if [ "$caller" = generated-artifacts-with-adr-index ]; then
     bash "$gen" adr-index-generator "$sha" >"$dir/scripts/gen-adr-index.sh"
