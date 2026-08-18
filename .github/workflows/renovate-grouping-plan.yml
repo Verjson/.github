@@ -1,0 +1,46 @@
+name: Renovate grouping plan
+
+on:
+  workflow_dispatch:
+    inputs:
+      candidates:
+        description: JSON array of dependency candidates from Renovate's dependency dashboard
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  plan:
+    runs-on: ${{ fromJSON(vars.VERJSON_LANE_UNTRUSTED || '["ubuntu-24.04"]') }}
+    timeout-minutes: 10
+    steps:
+      - name: Check out immutable organization policy
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: Verjson/renovate-config
+          ref: dd08f8471fdfabbdbbb32051e03387fcf5df63bd
+          persist-credentials: false
+      - name: Validate candidates and render the dry-run plan
+        env:
+          CANDIDATES: ${{ inputs.candidates }}
+        run: |
+          set -euo pipefail
+          jq -e 'type == "array" and all(.[];
+            (.ecosystem | type == "string") and
+            (.package | type == "string") and
+            (.stackProfile | type == "string") and
+            (.targetMajor | type == "number") and
+            ((keys - ["ecosystem","package","securityAdvisory","stackProfile","targetMajor"]) | length == 0))' \
+            <<<"$CANDIDATES" > candidates.json
+          node scripts/plan-compatibility.mjs candidates.json > grouping-plan.json
+          jq '{actionableGroups:(.actionable | length), held:(.held | length), plan:.}' \
+            grouping-plan.json >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload pre-approval plan
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: renovate-grouping-plan-${{ github.run_id }}-${{ github.run_attempt }}
+          path: grouping-plan.json
+          if-no-files-found: error
+          retention-days: 14

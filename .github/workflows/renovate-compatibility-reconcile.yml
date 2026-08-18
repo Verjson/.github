@@ -1,0 +1,76 @@
+name: Renovate compatibility reconciliation
+
+on:
+  schedule:
+    - cron: '23 5 * * *'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: renovate-compatibility-reconcile
+  cancel-in-progress: false
+
+jobs:
+  observe:
+    runs-on: ${{ fromJSON(vars.VERJSON_LANE_TRUSTED || vars.VERJSON_LANE_FALLBACK || '["ubuntu-24.04"]') }}
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: .renovate-compatibility-source-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: .renovate-compatibility-source-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
+          persist-credentials: false
+      - name: Mint compatibility observer token
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
+        with:
+          app-id: ${{ vars.RENOVATE_COMPATIBILITY_APP_ID }}
+          private-key: ${{ secrets.RENOVATE_COMPATIBILITY_APP_PRIVATE_KEY }}
+          owner: Verjson
+      - name: Fetch the reviewed policy registry
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          POLICY_SHA: dd08f8471fdfabbdbbb32051e03387fcf5df63bd
+        run: |
+          set -euo pipefail
+          gh api "repos/Verjson/renovate-config/contents/compatibility-holds.json?ref=$POLICY_SHA" \
+            --jq .content | base64 -d > compatibility-holds.json
+      - name: Inventory Renovate failures for controlled retry triage
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          set -euo pipefail
+          # GraphQL and jq variables are data for those interpreters, not shell variables.
+          # shellcheck disable=SC2016
+          gh api graphql --paginate -f query='query($endCursor:String) {
+            organization(login:"Verjson") { repositories(first:100,after:$endCursor) {
+              pageInfo { hasNextPage endCursor }
+              nodes { nameWithOwner pullRequests(first:50,states:OPEN,orderBy:{field:UPDATED_AT,direction:DESC}) {
+                nodes { number url headRefOid baseRefName author { login } commits(last:1) { nodes { commit {
+                  statusCheckRollup { state }
+                } } } }
+              } }
+            } }
+          }' --jq '[.data.organization.repositories.nodes[] as $repo |
+            $repo.pullRequests.nodes[] |
+            select(.author.login == "renovate" or .author.login == "renovate[bot]") |
+            select(.commits.nodes[0].commit.statusCheckRollup.state == "FAILURE") |
+            {repository:$repo.nameWithOwner,pullRequest:.number,url,headSha:.headRefOid,
+             disposition:"needs-controlled-retry"}]' > compatibility-observations.json
+          jq '{mode:"observe-only", observations:.}' compatibility-observations.json > compatibility-report.json
+          jq . compatibility-report.json >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload immutable observation report
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: renovate-compatibility-observations-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .renovate-compatibility-source-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}/compatibility-report.json
+          if-no-files-found: error
+          retention-days: 14
+      - name: Remove the isolated observer checkout
+        if: ${{ always() }}
+        working-directory: ${{ github.workspace }}
+        run: rm -rf ".renovate-compatibility-source-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}"
