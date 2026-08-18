@@ -19,7 +19,4 @@ spend-increasing operations. Live
 The final upstream admission integration uses the exact SHA-256 identity of the
 canonical `release-manifest.json` asset throughout the workflow, controller, and
 receipts; legacy registry-qualified manifest references fail before evidence
-collection or fleet mutation. The deployment workflow acquires its CLI from the
-immutable contract checkout with the exact npm lockfile, SHA-512 integrity
-enforcement, read-only package authority, and disabled lifecycle scripts before any
-evidence collection or fleet mutation.
+collection or fleet mutation.

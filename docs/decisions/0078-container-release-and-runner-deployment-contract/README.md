@@ -385,14 +385,6 @@ authority-checked resume, strict schema and semantic receipt checks;
 mechanics. Consumer-owned evidence and representative-probe adapters are reviewed Python
 argument vectors invoked without a shell.
 
-The reusable workflow obtains the deployment CLI from the same immutable contract
-commit. That commit contains an npm v3 lockfile fixing `@verjson/cli-cloud` and every
-transitive dependency to registry URLs and SHA-512 integrity values. Acquisition uses
-only `packages: read`, disables lifecycle scripts, audit, and funding requests, and
-adds the verified local binary to `PATH`; consumer configuration cannot select a
-version or registry. A missing package, changed tarball, lock drift, or absent binary
-stops both dry-run and production before evidence collection or fleet mutation.
-
 Failure stops before an unstarted host. Recovery does not silently restore a guessed
 predecessor inside that failed dispatch: rollback is a new protected dispatch bound to
 the failed or interrupted attempt's observed baseline and receipt digest, then follows
@@ -414,6 +406,25 @@ canonical release signer, protected source ref and commit, and verifies each sel
 image's provenance and SBOM before cloud inventory or runner mutation. Keeping the
 orchestrator and mutation authority on the same identity prevents a reviewed plan from
 being reinterpreted as a raw image digest at execution time.
+
+### Clarification (2026-08-18) — immutable deployment CLI acquisition
+
+The reusable workflow obtains the deployment CLI from the same immutable contract
+commit. That commit contains an npm v3 lockfile fixing `@verjson/cli-cloud` and every
+transitive dependency to canonical `registry.npmjs.org` or `npm.pkg.github.com` HTTPS
+URLs and SHA-512 integrity values. Every non-root lock entry is validated before npm
+runs; missing integrity, weaker hashes, Git/file sources, plain HTTP, alternate hosts,
+credentials, ports, query strings, and fragments fail closed.
+
+Acquisition uses an exact Node runtime and action pin, only `packages: read`, and
+disables lifecycle scripts, audit, and funding requests. Its npm cache is unique to the
+job run and attempt beneath `RUNNER_TEMP`. The caller's literal reusable-workflow SHA
+and `contract-ref` must match before the contract archive is fetched, and the
+controller accepts the executable only within that immutable acquisition root.
+Always-run cleanup removes the archive, extracted dependency tree, and isolated cache
+after dry-run or production completion. A missing package, changed tarball, lock drift,
+absent binary, or cleanup path escape stops without selecting another CLI or retaining
+cross-job package residue.
 
 ## Amendment (2026-08-09) — private candidate dependency boundary (#690)
 

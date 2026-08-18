@@ -28,8 +28,11 @@ generated contract test in CI.
 The reusable workflow acquires `@verjson/cli-cloud` from the immutable contract
 checkout using the contract's committed npm lockfile. GitHub Packages receives only
 the job token with `packages: read`; `npm ci --ignore-scripts` verifies the locked
-SHA-512 dependency graph before the local CLI bin directory enters `PATH`. The
-consumer must not install, cache, or select another deployment CLI.
+SHA-512 dependency graph and canonical npm/GitHub Packages URLs before the local CLI
+is admitted. The exact Node runtime and setup action are pinned. Each job uses a unique
+cache under `RUNNER_TEMP`; an always-run final step removes that cache, the contract
+archive, and the extracted dependency tree. The consumer must not install, cache, or
+select another deployment CLI.
 
 Configure the consumer's `production` environment to admit protected branches only,
 require an independent reviewer, prevent self-review, and disable administrator bypass.

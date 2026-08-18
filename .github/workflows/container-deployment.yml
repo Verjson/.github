@@ -82,6 +82,7 @@ jobs:
         env:
           CONTRACT_REF: ${{ inputs.contract-ref }}
           GH_TOKEN: ${{ github.token }}
+          NPM_CONFIG_CACHE: ${{ runner.temp }}/npm-cache-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
         run: |
           set -euo pipefail
           [[ "$CONTRACT_REF" =~ ^[0-9a-f]{40}$ ]]
@@ -89,6 +90,8 @@ jobs:
           mkdir "$RUNNER_TEMP/deployment-contract"
           tar -xzf "$RUNNER_TEMP/deployment-contract.tar.gz" \
             --strip-components=1 -C "$RUNNER_TEMP/deployment-contract"
+          python3 "$RUNNER_TEMP/deployment-contract/scripts/validate-container-deployment-cli-lock.py" \
+            "$RUNNER_TEMP/deployment-contract/contracts/container-deployment-cli/package-lock.json"
           NODE_AUTH_TOKEN="$GH_TOKEN" npm ci --ignore-scripts --no-audit --no-fund \
             --prefix "$RUNNER_TEMP/deployment-contract/contracts/container-deployment-cli"
           cli_bin="$RUNNER_TEMP/deployment-contract/contracts/container-deployment-cli/node_modules/.bin"
@@ -125,6 +128,21 @@ jobs:
           path: deployment-plan.json
           if-no-files-found: error
           retention-days: 90
+      - name: Remove deployment acquisition state
+        if: ${{ always() }}
+        env:
+          NPM_CONFIG_CACHE: ${{ runner.temp }}/npm-cache-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
+        run: |
+          set -euo pipefail
+          for target in \
+            "$RUNNER_TEMP/deployment-contract.tar.gz" \
+            "$RUNNER_TEMP/deployment-contract" \
+            "$NPM_CONFIG_CACHE"; do
+            case "$target" in
+              "$RUNNER_TEMP"/*) rm -rf -- "$target" ;;
+              *) echo "cleanup target escaped runner temp" >&2; exit 1 ;;
+            esac
+          done
 
   deploy:
     if: ${{ !inputs.dry-run }}
@@ -171,6 +189,7 @@ jobs:
         env:
           CONTRACT_REF: ${{ inputs.contract-ref }}
           GH_TOKEN: ${{ github.token }}
+          NPM_CONFIG_CACHE: ${{ runner.temp }}/npm-cache-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
         run: |
           set -euo pipefail
           [[ "$CONTRACT_REF" =~ ^[0-9a-f]{40}$ ]]
@@ -178,6 +197,8 @@ jobs:
           mkdir "$RUNNER_TEMP/deployment-contract"
           tar -xzf "$RUNNER_TEMP/deployment-contract.tar.gz" \
             --strip-components=1 -C "$RUNNER_TEMP/deployment-contract"
+          python3 "$RUNNER_TEMP/deployment-contract/scripts/validate-container-deployment-cli-lock.py" \
+            "$RUNNER_TEMP/deployment-contract/contracts/container-deployment-cli/package-lock.json"
           NODE_AUTH_TOKEN="$GH_TOKEN" npm ci --ignore-scripts --no-audit --no-fund \
             --prefix "$RUNNER_TEMP/deployment-contract/contracts/container-deployment-cli"
           cli_bin="$RUNNER_TEMP/deployment-contract/contracts/container-deployment-cli/node_modules/.bin"
@@ -316,3 +337,18 @@ jobs:
           path: deployment-receipts/
           if-no-files-found: error
           retention-days: 90
+      - name: Remove deployment acquisition state
+        if: ${{ always() }}
+        env:
+          NPM_CONFIG_CACHE: ${{ runner.temp }}/npm-cache-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
+        run: |
+          set -euo pipefail
+          for target in \
+            "$RUNNER_TEMP/deployment-contract.tar.gz" \
+            "$RUNNER_TEMP/deployment-contract" \
+            "$NPM_CONFIG_CACHE"; do
+            case "$target" in
+              "$RUNNER_TEMP"/*) rm -rf -- "$target" ;;
+              *) echo "cleanup target escaped runner temp" >&2; exit 1 ;;
+            esac
+          done

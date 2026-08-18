@@ -16,6 +16,7 @@ cp \
   "$root/scripts/gen-container-deployment.sh" \
   "$root/scripts/container_deployment_controller.py" \
   "$root/scripts/container_deployment_preflight.py" \
+  "$root/scripts/validate-container-deployment-cli-lock.py" \
   "$contract/scripts/"
 cp \
   "$root/docs/decisions/0078-container-release-and-runner-deployment-contract/deployment-receipt.schema.json" \
@@ -99,7 +100,45 @@ test "$(jq -r '.packages["node_modules/@verjson/cli-cloud"].version' \
 test "$(jq -r '.packages["node_modules/@verjson/cli-cloud"].integrity' \
   "$root/contracts/container-deployment-cli/package-lock.json")" = \
   'sha512-CQAcOuV2lFccmhE8iNMrcms57GMCI4zudFGm0brYx4/S/0pHeuRuBBD8bsh9rEh05uzqXnmQfTQecyo8UVje4Q=='
+python3 "$root/scripts/validate-container-deployment-cli-lock.py" \
+  "$root/contracts/container-deployment-cli/package-lock.json"
+python3 - "$root/contracts/container-deployment-cli/package-lock.json" "$tmp" <<'PY'
+import copy
+import json
+from pathlib import Path
+import sys
+
+source = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+destination = Path(sys.argv[2])
+package_name = next(name for name in source["packages"] if name)
+mutations = {
+    "missing-integrity": ("integrity", None),
+    "wrong-integrity": ("integrity", "sha256-" + "A" * 44),
+    "file-url": ("resolved", "file:///tmp/package.tgz"),
+    "git-url": ("resolved", "git+https://github.com/example/package.git"),
+    "plain-http": ("resolved", "http://registry.npmjs.org/package/-/package.tgz"),
+    "foreign-host": ("resolved", "https://packages.example.invalid/package.tgz"),
+}
+for name, (field, value) in mutations.items():
+    candidate = copy.deepcopy(source)
+    if value is None:
+        candidate["packages"][package_name].pop(field, None)
+    else:
+        candidate["packages"][package_name][field] = value
+    (destination / f"lock-{name}.json").write_text(
+        json.dumps(candidate), encoding="utf-8"
+    )
+PY
+for hostile_lock in "$tmp"/lock-*.json; do
+  if python3 "$root/scripts/validate-container-deployment-cli-lock.py" \
+      "$hostile_lock" >/dev/null 2>&1; then
+    echo "deployment CLI lock validator accepted $(basename "$hostile_lock")" >&2
+    exit 1
+  fi
+done
 grep -q 'npm ci --ignore-scripts --no-audit --no-fund' "$workflow"
+grep -q 'NPM_CONFIG_CACHE:.*npm-cache-' "$workflow"
+grep -q 'validate-container-deployment-cli-lock.py' "$workflow"
 grep -q 'repos/Verjson/.github/tarball/\$CONTRACT_REF' "$workflow"
 grep -q 'test -x "\$cli_bin/verjson-cloud"' "$workflow"
 grep -q 'VERJSON_DEPLOYMENT_CLI_ROOT=' "$workflow"
@@ -147,6 +186,15 @@ for job_name in ("dry-run", "deploy"):
     assert setup[0]["with"]["node-version"] == "24.16.0"
     binding = [step for step in steps if step.get("name") == "Verify caller binds this immutable contract"]
     assert len(binding) == 1
+    acquisition = [step for step in steps if step.get("name") == "Acquire immutable deployment CLI"]
+    assert len(acquisition) == 1
+    assert "NPM_CONFIG_CACHE" in acquisition[0]["env"]
+    cleanup = [step for step in steps if step.get("name") == "Remove deployment acquisition state"]
+    assert len(cleanup) == 1
+    assert cleanup[0]["if"] == "${{ always() }}"
+    assert "deployment-contract.tar.gz" in cleanup[0]["run"]
+    assert "deployment-contract" in cleanup[0]["run"]
+    assert "NPM_CONFIG_CACHE" in cleanup[0]["run"]
 
 consumer = Path(sys.argv[2])
 contract = sys.argv[3]
