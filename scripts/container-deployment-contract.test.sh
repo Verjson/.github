@@ -183,7 +183,7 @@ for job_name in ("dry-run", "deploy"):
     setup = [step for step in steps if step.get("uses", "").startswith("actions/setup-node@")]
     assert len(setup) == 1
     assert setup[0]["uses"] == "actions/setup-node@820762786026740c76f36085b0efc47a31fe5020"
-    assert setup[0]["with"]["node-version"] == "24.16.0"
+    assert setup[0]["with"]["node-version"] == "24.19.0"
     binding = [step for step in steps if step.get("name") == "Verify caller binds this immutable contract"]
     assert len(binding) == 1
     acquisition = [step for step in steps if step.get("name") == "Acquire immutable deployment CLI"]
