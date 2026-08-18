@@ -75,7 +75,7 @@ assert outputs["new-release-published"]["value"] == "${{ jobs.release.outputs.ne
 assert outputs["new-release-version"]["value"] == "${{ jobs.release.outputs.new-release-version }}"
 retention = doc["jobs"]["retention"]
 assert retention["needs"] == "release"
-assert retention["continue-on-error"] is True, "cleanup must not invalidate successful publication"
+assert not retention.get("continue-on-error", False), "cleanup authorization failures must fail the release workflow"
 assert retention["permissions"] == {"contents": "read", "packages": "write"}
 assert retention["if"] == "needs.release.outputs.new-release-published == 'true'"
 cleanup = retention["steps"][-1]
@@ -86,7 +86,7 @@ print("ok   - publication verifies the existing tag and immutable snapshot")
 print("ok   - install and publication tokens are separated by purpose")
 print("ok   - publication stamps before build and is restart-safe")
 print("ok   - successful publication remains observable by callers")
-print("ok   - destructive retention is isolated from publication and least-privileged")
+print("ok   - destructive retention is least-privileged and its authorization failures remain visible")
 PY
 
 # Execute the real version/tag guard. `git` is stubbed so both sides of the
