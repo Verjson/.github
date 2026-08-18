@@ -87,8 +87,6 @@ jobs:
       new-release-version: ${{ steps.result.outputs.new-release-version }}
       retention-targets: ${{ steps.package-dirs.outputs.retention-targets }}
     steps:
-      - name: Prepare job-scoped changelog tool cache
-        run: echo "VERJSON_CHANGELOG_TOOL_CACHE=$RUNNER_TEMP/verjson-changelog-tools" >> "$GITHUB_ENV"
       - name: Require the contract's exact release tag
         id: release-tag
         env:
@@ -121,6 +119,10 @@ jobs:
           ref: ${{ inputs.version }}
           fetch-depth: 0
           persist-credentials: false
+      - name: Prepare job-scoped changelog tool cache
+        run: |
+          cache_root="$(mktemp -d "$GITHUB_WORKSPACE/.verjson-changelog-tools.XXXXXX")"
+          echo "VERJSON_CHANGELOG_TOOL_CACHE=$cache_root" >> "$GITHUB_ENV"
       - name: Verify the checked-out tag and immutable release note
         env:
           VERSION: ${{ inputs.version }}

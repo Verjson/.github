@@ -87,6 +87,16 @@ changelog-release verify jobs establish the same boundary before invoking the
 renderer. The cache remains an availability mechanism whose contents must pass
 the embedded digest check before execution.
 
+## 2026-08-18 correction
+
+Issue [#902](https://github.com/Verjson/.github/issues/902) demonstrated that
+`runner.temp` is not itself a portability guarantee: a shared runner exposed a
+protected bootstrap directory there, so an empty verified cache could not be
+populated. Node CI and release now create a uniquely named cache beneath the
+checked-out workspace with `mktemp`. The job user therefore owns the directory,
+while the existing pinned SHA-256 verification remains the authority over
+which contract bytes may execute.
+
 ## Rejected alternatives
 
 - **Trust a commit-keyed filename.** The name does not authenticate writable

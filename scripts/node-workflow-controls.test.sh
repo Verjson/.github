@@ -124,18 +124,22 @@ done
 grep -qF 'run: npm run typecheck --if-present' "$ci" \
   && pass "node-ci runs a declared consumer typecheck without requiring the script" \
   || fail "node-ci does not conditionally enforce the consumer typecheck"
-grep -qF 'echo "VERJSON_CHANGELOG_TOOL_CACHE=$RUNNER_TEMP/verjson-changelog-tools" >> "$GITHUB_ENV"' "$ci" \
+grep -qF 'cache_root="$(mktemp -d "$GITHUB_WORKSPACE/.verjson-changelog-tools.XXXXXX")"' "$ci" \
   && pass "node-ci gives changelog tooling a job-writable cache" \
-  || fail "node-ci does not scope the changelog tool cache beneath runner.temp"
-grep -qF 'echo "VERJSON_CHANGELOG_TOOL_CACHE=$RUNNER_TEMP/verjson-changelog-tools" >> "$GITHUB_ENV"' "$release" \
+  || fail "node-ci does not allocate the changelog tool cache beneath the workspace"
+grep -qF 'cache_root="$(mktemp -d "$GITHUB_WORKSPACE/.verjson-changelog-tools.XXXXXX")"' "$release" \
   && pass "node-release gives publish builds a job-writable changelog tool cache" \
-  || fail "node-release does not scope the changelog tool cache beneath runner.temp"
+  || fail "node-release does not allocate the changelog tool cache beneath the workspace"
 python3 - "$release" <<'PY' \
-  && pass "node-release prepares the changelog cache before every publish step" \
-  || fail "node-release prepares the changelog cache too late"
+  && pass "node-release prepares the changelog cache after checkout cleanup and before release consumers" \
+  || fail "node-release changelog cache is exposed to checkout cleanup or prepared too late"
 import sys, yaml
 doc = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))
-assert doc["jobs"]["release"]["steps"][0].get("name") == "Prepare job-scoped changelog tool cache"
+steps = doc["jobs"]["release"]["steps"]
+checkout = next(i for i, step in enumerate(steps) if str(step.get("uses", "")).startswith("actions/checkout@"))
+cache = next(i for i, step in enumerate(steps) if step.get("name") == "Prepare job-scoped changelog tool cache")
+verify = next(i for i, step in enumerate(steps) if step.get("name") == "Verify the checked-out tag and immutable release note")
+assert checkout < cache < verify
 PY
 grep -qF 'echo "VERJSON_CHANGELOG_TOOL_CACHE=" >> "$GITHUB_ENV"' "$actions_ci_workflow" \
   && pass "actions-ci clears the persistent runner changelog cache override" \
@@ -178,22 +182,32 @@ for test_command in \
 done
 
 changelog_cache_script="$(mktemp)"
-awk '
-  /- name: Prepare job-scoped changelog tool cache/ { found = 1; next }
-  found && /^        run: / { sub(/^        run: /, ""); print; exit }
-' "$ci" > "$changelog_cache_script"
-changelog_runner_temp="$(mktemp -d)"
+python3 - "$ci" > "$changelog_cache_script" <<'PY'
+import sys, yaml
+doc = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))
+for step in doc["jobs"]["build-test"]["steps"]:
+    if step.get("name") == "Prepare job-scoped changelog tool cache":
+        print(step["run"])
+        break
+else:
+    raise AssertionError("missing changelog cache preparation step")
+PY
+changelog_runner_temp="/proc/verjson-unwritable-runner-temp"
+changelog_workspace="$(mktemp -d)"
 changelog_github_env="$(mktemp)"
-if RUNNER_TEMP="$changelog_runner_temp" GITHUB_ENV="$changelog_github_env" bash "$changelog_cache_script" \
-  && grep -Fx "VERJSON_CHANGELOG_TOOL_CACHE=$changelog_runner_temp/verjson-changelog-tools" "$changelog_github_env"; then
-  pass "node-ci exports a cold-cache location writable by the job user"
+if RUNNER_TEMP="$changelog_runner_temp" GITHUB_WORKSPACE="$changelog_workspace" GITHUB_ENV="$changelog_github_env" bash "$changelog_cache_script" \
+    && changelog_cache="$(sed -n 's/^VERJSON_CHANGELOG_TOOL_CACHE=//p' "$changelog_github_env")" \
+    && [ -d "$changelog_cache" ] \
+    && [ "${changelog_cache#"$changelog_workspace/.verjson-changelog-tools."}" != "$changelog_cache" ]; then
+  pass "node-ci exports a cold-cache location independently of runner.temp"
 else
-  fail "node-ci cannot prepare a writable cold-cache location"
+  fail "node-ci cannot prepare a writable cold-cache location with unwritable runner.temp"
 fi
 rm -f "$changelog_cache_script" "$changelog_github_env"
-rm -rf "$changelog_runner_temp"
+rm -rf "$changelog_workspace"
 
-publish_runner_temp="$(mktemp -d)"
+publish_runner_temp="/proc/verjson-unwritable-runner-temp"
+publish_workspace="$(mktemp -d)"
 ambient_publish_cache="/proc/verjson-persistent-changelog-cache"
 export VERJSON_CHANGELOG_TOOL_CACHE="$ambient_publish_cache"
 publish_contract_sha="0123456789abcdef0123456789abcdef01234567"
@@ -206,7 +220,7 @@ for step in doc["jobs"]["release"]["steps"]:
         print(step["run"])
 PY
 publish_github_env="$(mktemp)"
-RUNNER_TEMP="$publish_runner_temp" GITHUB_ENV="$publish_github_env" \
+RUNNER_TEMP="$publish_runner_temp" GITHUB_WORKSPACE="$publish_workspace" GITHUB_ENV="$publish_github_env" \
   bash -eo pipefail "$publish_cache_step"
 publish_cache="$(sed -n 's/^VERJSON_CHANGELOG_TOOL_CACHE=//p' "$publish_github_env")"
 populate_publish_cache() {
@@ -224,7 +238,7 @@ fi
 
 release_without_cache="$(mktemp)"
 cp "$release" "$release_without_cache"
-sed -i '/^      - name: Prepare job-scoped changelog tool cache$/,+1d' "$release_without_cache"
+sed -i '/^      - name: Prepare job-scoped changelog tool cache$/,+3d' "$release_without_cache"
 missing_publish_step="$(mktemp)"
 python3 - "$release_without_cache" >"$missing_publish_step" <<'PY'
 import sys, yaml
@@ -241,7 +255,7 @@ else
 fi
 unset VERJSON_CHANGELOG_TOOL_CACHE
 rm -f "$release_without_cache" "$publish_cache_step" "$publish_github_env" "$missing_publish_step"
-rm -rf "$publish_runner_temp"
+rm -rf "$publish_workspace"
 
 { grep -qF '`timeout-minutes`' "$docs" \
   && grep -qF '`cache-dependency-path`' "$docs" \
