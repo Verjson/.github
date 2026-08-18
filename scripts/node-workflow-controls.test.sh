@@ -131,11 +131,15 @@ grep -qF 'cache_root="$(mktemp -d "$GITHUB_WORKSPACE/.verjson-changelog-tools.XX
   && pass "node-release gives publish builds a job-writable changelog tool cache" \
   || fail "node-release does not allocate the changelog tool cache beneath the workspace"
 python3 - "$release" <<'PY' \
-  && pass "node-release prepares the changelog cache before every publish step" \
-  || fail "node-release prepares the changelog cache too late"
+  && pass "node-release prepares the changelog cache after checkout cleanup and before release consumers" \
+  || fail "node-release changelog cache is exposed to checkout cleanup or prepared too late"
 import sys, yaml
 doc = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))
-assert doc["jobs"]["release"]["steps"][0].get("name") == "Prepare job-scoped changelog tool cache"
+steps = doc["jobs"]["release"]["steps"]
+checkout = next(i for i, step in enumerate(steps) if str(step.get("uses", "")).startswith("actions/checkout@"))
+cache = next(i for i, step in enumerate(steps) if step.get("name") == "Prepare job-scoped changelog tool cache")
+verify = next(i for i, step in enumerate(steps) if step.get("name") == "Verify the checked-out tag and immutable release note")
+assert checkout < cache < verify
 PY
 grep -qF 'echo "VERJSON_CHANGELOG_TOOL_CACHE=" >> "$GITHUB_ENV"' "$actions_ci_workflow" \
   && pass "actions-ci clears the persistent runner changelog cache override" \
