@@ -68,6 +68,7 @@ mkdir -p "$tmp/adopter/.github/workflows" "$tmp/adopter/scripts" \
 cp "$tmp/render-next.sh" "$tmp/adopter/scripts/render-next.sh"
 cp "$tmp/contract-test.sh" "$tmp/adopter/scripts/changelog-contract.test.sh"
 "$generator" workflow "$ref" >"$tmp/adopter/.github/workflows/changelog.yml"
+"$generator" pr-gate "$ref" >"$tmp/adopter/.github/workflows/changelog-contract.yml"
 chmod +x "$tmp/adopter/scripts/changelog-contract.test.sh"
 printf -- '---\ndate: 2026-08-02\nissue: 1\ntitle: fixture entry\n---\n\nbody\n' \
   >"$tmp/adopter/NEXT/2026-08-02-issue-1-fixture.md"
