@@ -62,8 +62,8 @@ authority is enabled for non-trivial or fanned-out autonomous work:
 - [#856](https://github.com/Verjson/.github/issues/856) — Completed DeepSeek responses lose typed extraction diagnostics when no verdict can be replayed.
 - [#701](https://github.com/Verjson/.github/issues/701) — **Blocks the merge gate.** The arm now runs but its dispatch 404s in 17 of 21 armed repos that have no generated `ai-review-merge.yml` caller.
 - [#728](https://github.com/Verjson/.github/issues/728) — The 2026-08-08 gate outage; ruleset half fixed by ADR 0094, remainder blocked on #701.
-- [#702](https://github.com/Verjson/.github/issues/702) — Authorization App cannot submit exact-head pull-request approvals.
 - [#731](https://github.com/Verjson/.github/issues/731) — Require the generated changelog contract check in the canonical Node ruleset.
+- [#933](https://github.com/Verjson/.github/issues/933) — Generated caller pins go stale silently; toquorum's gate-rearm.yml predates deepseek provider support.
 - [#676](https://github.com/Verjson/.github/issues/676) — Finish privileged caller regeneration and remove the temporary legacy route.
 - [#629](https://github.com/Verjson/.github/issues/629) — Protected canary and rolling runner deployment contract.
 - [#718](https://github.com/Verjson/.github/issues/718) — GitHub Packages has no per-customer entitlement; blocking paid distribution.
