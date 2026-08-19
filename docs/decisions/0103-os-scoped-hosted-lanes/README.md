@@ -21,13 +21,14 @@ refused the jobs; afterwards nothing structural stops any of ~89 private reposit
 consuming hosted minutes, and the only remaining bound is whatever contract this
 organization builds.
 
-The guarantee this decision has to hold is narrow and absolute: **once the limit is
-raised, the only jobs anywhere in the organization that may consume GitHub-hosted minutes
-are AiB's macOS and Windows installer legs of a dispatched release.** Everything else —
-all pull-request CI, all Linux work, every other repository — stays on the self-hosted
-`general` lane, plus the two already-sanctioned `ubuntu-24.04` security-boundary jobs of
-[ADR 0089](../0089-caller-supplied-privileged-routing/README.md), whose minutes
-are free because `.github` is public.
+The guarantee this decision has to hold is narrow and absolute at the surface it actually
+controls: **once the limit is raised, no *merged* workflow anywhere in the organization may
+route GitHub-hosted minutes outside AiB's macOS and Windows installer legs of a dispatched
+release.** Everything else — all pull-request CI, all Linux work, every other repository —
+stays on the self-hosted `general` lane, plus the two already-sanctioned `ubuntu-24.04`
+security-boundary jobs of [ADR 0089](../0089-caller-supplied-privileged-routing/README.md),
+whose minutes are free because `.github` is public. See the 2026-08-19 amendment below for
+the residual this merge-time framing leaves open and why it is accepted rather than closed.
 
 ADR 0040 already records why a convention will not hold this. The hardcoded-selector
 defect regrew four times under a documented convention (#175, #182, #192, #203). The
@@ -98,8 +99,10 @@ A hosted job does one thing: install dependencies, build its own OS's installer,
 artifact. Version resolution, the changelog snapshot, tagging, verification, release
 creation, and asset attachment all stay on self-hosted Linux. Minimizing hosted job
 *content* bounds spend far more than minimizing job count. A hosted job also receives no
-`secrets: inherit`; artifact upload needs no organization secret, and a hosted runner sits
-outside the admission boundary that runner groups enforce for self-hosted capacity.
+`secrets: inherit`, and at most the single named registry credential its
+dependency-acquisition step requires, scrubbed before any lifecycle-script step — artifact
+*upload* itself needs no organization secret — and a hosted runner sits outside the
+admission boundary that runner groups enforce for self-hosted capacity.
 
 ### `.github` does not grow a cross-platform release workflow
 
@@ -253,6 +256,44 @@ under `RUNNER_TEMP`, outside the caller checkout, and the exact bounded path is 
 before use and cleanup. This makes the parser dependency part of the immutable reusable-
 workflow contract instead of an ambient or caller-prepopulated property of whichever runner
 a lane selects.
+
+### Amendment (2026-08-19) — correct two overclaims found during AiB's adoption (#810)
+
+`Verjson/AiB#229`'s adoption (merged `Verjson/AiB#234` at `97e4528`) surfaced two places
+where this record claimed more than the code delivers. Both are documentation corrections;
+neither changes the decision, the containment primitive, or any control. Evidence:
+[first finding](https://github.com/Verjson/.github/issues/810#issuecomment-5333643215),
+[second finding](https://github.com/Verjson/.github/issues/810#issuecomment-5333760738).
+
+1. **The guarantee is merge-time, not runtime.** Every control this ADR specifies — the
+   fail-closed preflight, `timeout-minutes`, the dispatch-only trigger, the no-fallback-tail
+   rule, `hosted-selector-policy.py` itself — is enforced on the *merged* workflow file.
+   `workflow_dispatch` executes the workflow **as it exists on the dispatched ref**, not on
+   the default branch. Once the spending limit is raised, anyone with write access to
+   `Verjson/AiB` can push a branch whose workflow ignores the lane variables entirely — an
+   uncapped `runs-on: macos-latest-xlarge` with no `timeout-minutes` — and dispatch it
+   without opening a pull request, so no conformance check ever runs. The repository-scoped
+   variables still hold their part of the guarantee: they confine this residual to `AiB`
+   and keep the other ~88 private repositories out, because standard hosted labels are not
+   variable-gated and a branch that ignores the lane variables is unaffected by them either
+   way. The corrected, defensible claim is "no *merged* workflow may route metered minutes
+   outside AiB's release legs" — not "the only jobs that may consume hosted minutes are
+   AiB's dispatched installer legs." The residual is accepted, not closed: it is bounded by
+   the spend backstop in #817 (the org- and repository-scoped Actions budgets with
+   `prevent_further_usage=true`), not by this contract. Closing it is a runtime-side lever
+   — required dispatch reviewers, restricted dispatch actors, or a ruleset on dispatchable
+   refs — each with its own cost, and is left to a future decision if the residual proves
+   material rather than theoretical.
+2. **A private-dependency consumer's hosted job does receive one organization secret.**
+   The original text said artifact upload needs no organization secret and left the
+   impression the hosted job needs none at all. `Verjson/AiB`'s installer legs must run
+   `npm ci` against `npm.pkg.github.com` to acquire `@verjson/ai`, so the hosted job needs
+   `secrets.VERJSON_PACKAGES_TOKEN`. The corrected shape — the one AiB's adoption
+   implements and this ADR now sanctions — is: no `secrets: inherit`, at most one named
+   registry credential scoped to the acquisition step, an `.npmrc` written to `RUNNER_TEMP`
+   holding the literal `${NODE_AUTH_TOKEN}` reference rather than the value, and a test
+   asserting the token cannot survive into any lifecycle-script step. Artifact *upload*
+   itself still needs no secret; dependency *acquisition* does.
 
 ## Consequences
 
