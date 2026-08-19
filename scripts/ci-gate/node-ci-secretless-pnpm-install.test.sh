@@ -93,6 +93,7 @@ printf '%s\t%s\n' "$digest" "$tarball" > "$mapping"
 run_rewrite() {
   (cd "$app_dir" && PNPM_IMPORT_MAP="$mapping" MOCK_REGISTRY_DIR="$mock_dir" \
     MOCK_REGISTRY_PORT="4873" MOCK_REGISTRY_NPMRC="$fixture/mock-registry.npmrc" \
+    APPROVED_INTERNAL_SCOPES=$'@verjson' \
     python3 "$rewrite")
 }
 
@@ -185,7 +186,8 @@ port="$(cat "$port_file" 2>/dev/null || true)"
 store="$fixture/store"
 if [ -n "$port" ] \
     && (cd "$app_dir" && PNPM_IMPORT_MAP="$mapping" MOCK_REGISTRY_DIR="$mock_dir" \
-        MOCK_REGISTRY_PORT="$port" MOCK_REGISTRY_NPMRC="$fixture/live.npmrc" python3 "$rewrite") \
+        MOCK_REGISTRY_PORT="$port" MOCK_REGISTRY_NPMRC="$fixture/live.npmrc" \
+        APPROVED_INTERNAL_SCOPES=$'@verjson' python3 "$rewrite") \
     && (cd "$app_dir" && NPM_CONFIG_USERCONFIG="$fixture/live.npmrc" corepack pnpm install \
         --frozen-lockfile --ignore-scripts --prefer-offline --store-dir "$store" >"$fixture/live-install.out" 2>&1) \
     && [ "$(cd "$app_dir" && node -p "require('./node_modules/@verjson/contracts/package.json').version" 2>/dev/null)" = "1.2.3" ]; then
@@ -212,6 +214,21 @@ if cmp -s "$original" "$app_dir/pnpm-lock.yaml"; then
   pass "failure after rewriting restores the original lockfile"
 else
   fail "failure after rewriting left a mutated lockfile"
+fi
+
+cp -- "$original" "$app_dir/pnpm-lock.yaml"
+rm -rf "$mock_dir"; mkdir -p "$mock_dir/tarball"
+printf '%s\t%s\n' "$digest" "$tarball" > "$mapping"
+if (cd "$app_dir" && PNPM_IMPORT_MAP="$mapping" MOCK_REGISTRY_DIR="$mock_dir" \
+    MOCK_REGISTRY_PORT="4873" MOCK_REGISTRY_NPMRC="$fixture/unapproved.npmrc" \
+    APPROVED_INTERNAL_SCOPES=$'@other-scope' \
+    python3 "$rewrite") >"$fixture/unapproved.out" 2>&1; then
+  fail "rewrite mapped a scope absent from APPROVED_INTERNAL_SCOPES to the mock registry"
+elif grep -qF 'is not under an approved internal scope' "$fixture/unapproved.out" \
+    && cmp -s "$original" "$app_dir/pnpm-lock.yaml"; then
+  pass "the rewrite refuses to reroute a scope outside APPROVED_INTERNAL_SCOPES (#918)"
+else
+  fail "the unapproved-scope rejection was not fail-closed"
 fi
 
 exit "$failures"

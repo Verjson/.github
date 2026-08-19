@@ -69,14 +69,26 @@ case "$command" in
     touch "$state"
     ;;
   view)
-    [ "${AUTH_FAIL:-0}" != 1 ] || exit 1
-    [ "${NETWORK_FAIL:-0}" != 1 ] || exit 1
+    if [ "${AUTH_FAIL:-0}" = 1 ]; then
+      echo "npm error code E401" >&2
+      echo "npm error 401 Unauthorized" >&2
+      exit 1
+    fi
+    if [ "${NETWORK_FAIL:-0}" = 1 ]; then
+      echo "npm error code ENOTFOUND" >&2
+      echo "npm error network request failed" >&2
+      exit 1
+    fi
     case "${VIEW_MODE:-matching}:$1" in
       matching:*compat*) printf '%s\n' '{"name":"@acme/compat","version":"1.2.3","dist":{"integrity":"sha512-compat"}}' ;;
       matching:*) printf '%s\n' '{"name":"@acme/pkg","version":"1.2.3","dist":{"integrity":"sha512-expected"}}' ;;
       mismatch:*) printf '%s\n' '{"name":"@acme/pkg","version":"1.2.3","dist":{"integrity":"sha512-other"}}' ;;
       spoof:*) printf '%s\n' '{"name":"@attacker/pkg","version":"1.2.3","dist":{"integrity":"sha512-expected"}}' ;;
-      missing:*) exit 1 ;;
+      missing:*)
+        echo "npm error code E404" >&2
+        echo "npm error 404 Not Found - GET https://npm.pkg.github.com/@acme%2fpkg" >&2
+        exit 1
+        ;;
     esac
     ;;
   *) exit 90 ;;
@@ -158,16 +170,30 @@ for mode in mismatch spoof; do
 done
 
 rm -rf "$work/state"; mkdir -p "$work/state"; touch "$work/state/registry-root"
-if AUTH_FAIL=1 run_publish >/dev/null 2>&1; then
+auth_out="$work/auth-fail.out"
+if AUTH_FAIL=1 run_publish >"$auth_out" 2>&1; then
   echo "FAIL - rerun accepted unproven registry authorization" >&2
   exit 1
 fi
-echo "ok - rerun fails closed when registry authorization cannot be proven"
-if NETWORK_FAIL=1 run_publish >/dev/null 2>&1; then
+if grep -qF 'could not confirm either way' "$auth_out" && ! grep -qF 'does not have it either' "$auth_out"; then
+  echo "ok - rerun fails closed when registry authorization cannot be proven, without claiming it confirmed the version missing (#924)"
+else
+  echo "FAIL - an unproven-authorization failure did not distinguish itself from a confirmed-missing version" >&2
+  cat "$auth_out" >&2
+  exit 1
+fi
+network_out="$work/network-fail.out"
+if NETWORK_FAIL=1 run_publish >"$network_out" 2>&1; then
   echo "FAIL - rerun accepted unavailable registry state" >&2
   exit 1
 fi
-echo "ok - rerun fails closed when registry metadata is unavailable"
+if grep -qF 'could not confirm either way' "$network_out" && ! grep -qF 'does not have it either' "$network_out"; then
+  echo "ok - rerun fails closed when registry metadata is unavailable, without claiming it confirmed the version missing (#924)"
+else
+  echo "FAIL - an unavailable-registry failure did not distinguish itself from a confirmed-missing version" >&2
+  cat "$network_out" >&2
+  exit 1
+fi
 
 rm -rf "$work/state"; mkdir -p "$work/state"
 publish_out="$work/publish-fail.out"
@@ -184,8 +210,9 @@ if grep -qF 'allegedly existing' "$publish_out"; then
   exit 1
 fi
 if grep -qF 'expected-recoverable state, not a wedged release' "$publish_out" \
-    && grep -qF 're-dispatching this exact same version is safe' "$publish_out"; then
-  echo "ok - a genuine publish failure names its safe remedy instead of implying a wedged release (#921)"
+    && grep -qF 're-dispatching this exact same version is safe' "$publish_out" \
+    && grep -qF 'does not have it either' "$publish_out"; then
+  echo "ok - a genuine publish failure names its safe remedy and confirms the version is genuinely missing (#921, #924)"
 else
   echo "FAIL - a genuine publish failure did not explain that re-dispatching the same version is safe" >&2
   cat "$publish_out" >&2
