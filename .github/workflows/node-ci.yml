@@ -956,6 +956,7 @@ jobs:
           NPM_CONFIG_GLOBALCONFIG: ${{ runner.temp }}/secretless-empty-global-build.npmrc
           NPM_CONFIG_USERCONFIG: ${{ runner.temp }}/secretless-empty.npmrc
           PACKAGE_MANAGER: ${{ inputs.package-manager }}
+          APPROVED_INTERNAL_SCOPES: ${{ inputs.approved-internal-scopes }}
           AWS_ACCESS_KEY_ID: ''
           AWS_SECRET_ACCESS_KEY: ''
           AWS_SESSION_TOKEN: ''
@@ -1244,6 +1245,9 @@ jobs:
 
           port = os.environ["MOCK_REGISTRY_PORT"]
           registry_dir = Path(os.environ["MOCK_REGISTRY_DIR"])
+          approved_scopes = {
+              line.strip() for line in os.environ["APPROVED_INTERNAL_SCOPES"].splitlines() if line.strip()
+          }
           used = set()
           replacements = []
           packuments = {}
@@ -1270,6 +1274,8 @@ jobs:
               if len(parts) != 6 or parts[1] != "download" or not parts[2].startswith("@"):
                   raise SystemExit(f"unrecognized GitHub Packages download URL: {tarball.value}")
               scope, name, pkg_version = parts[2], parts[3], parts[4]
+              if scope not in approved_scopes:
+                  raise SystemExit(f"{scope}/{name} is not under an approved internal scope")
               scopes.add(scope)
               local_url = f"http://127.0.0.1:{port}/tarball/{digest}.tgz"
               replacements.append(
@@ -1296,9 +1302,13 @@ jobs:
           for full_name, versions in packuments.items():
               packument_path = registry_dir / full_name
               packument_path.parent.mkdir(parents=True, exist_ok=True)
-              latest = sorted(
-                  versions, key=lambda v: [int(p) if p.isdigit() else p for p in v.split(".")]
-              )[-1]
+              # Any locked version is a valid dist-tags.latest here: --frozen-lockfile
+              # skips pnpm's resolution step entirely (the exact locked version is
+              # consumed directly), so this value is never used to select a version.
+              # A real semver comparison would still need to handle prerelease
+              # segments that mix digit and non-digit components (e.g. 1.0.0-beta.1),
+              # which a naive per-component int/str sort cannot compare.
+              latest = next(iter(versions))
               packument_path.write_text(json.dumps({
                   "name": full_name,
                   "dist-tags": {"latest": latest},

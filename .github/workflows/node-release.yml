@@ -262,9 +262,20 @@ jobs:
               echo "Published $package_name@$published_version."
             else
               echo "::warning::npm publish failed; proving whether an identical immutable version already exists before continuing."
-              npm view "$package_name@$published_version" --json \
-                --registry=https://npm.pkg.github.com >"$registry_json" \
-                || { echo "::error::npm publish failed for $package_name@$published_version and the registry does not (yet) have it either — this run did not publish it. This is expected-recoverable state, not a wedged release: tag $REQUESTED_TAG and its immutable CHANGELOG/$REQUESTED_TAG.md already exist on the default branch (changelog-release.yml completed before this job ever started, per ADR 0069's verify-then-snapshot-then-publish ordering), and re-dispatching this exact same version is safe. The dispatched caller's verify job will detect the existing tag/snapshot and skip snapshot automatically, retrying only publication."; exit 1; }
+              view_stderr="$(mktemp)"
+              if ! npm view "$package_name@$published_version" --json \
+                --registry=https://npm.pkg.github.com >"$registry_json" 2>"$view_stderr"; then
+                if grep -qE '\bE404\b' "$view_stderr"; then
+                  registry_state="the registry does not have it either — this run did not publish it"
+                else
+                  registry_state="the registry could not confirm either way (its response indicated an auth, network, or other transient error, not a confirmed-missing version)"
+                fi
+                cat "$view_stderr" >&2
+                rm -f "$view_stderr"
+                echo "::error::npm publish failed for $package_name@$published_version and $registry_state. Either way, this is expected-recoverable state, not a wedged release: tag $REQUESTED_TAG and its immutable CHANGELOG/$REQUESTED_TAG.md already exist on the default branch (changelog-release.yml completed before this job ever started, per ADR 0069's verify-then-snapshot-then-publish ordering), and re-dispatching this exact same version is safe. The dispatched caller's verify job will detect the existing tag/snapshot and skip snapshot automatically, retrying only publication."
+                exit 1
+              fi
+              rm -f "$view_stderr"
               node - "$registry_json" "$package_name" "$published_version" "$package_integrity" <<'NODE'
           const fs = require("fs");
           const [viewPath, expectedName, expectedVersion, expectedIntegrity] = process.argv.slice(2);
