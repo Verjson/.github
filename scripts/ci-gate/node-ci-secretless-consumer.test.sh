@@ -148,8 +148,9 @@ printf '%s\n' '#!/usr/bin/env bash' \
 chmod +x "$tmp/bin/npm"
 printf '%s\n' '{"scripts":{"verify:worker-schema":"fixture","build":"fixture","audit:deps":"fixture","lint":"fixture","test":"fixture","typecheck:smoke":"fixture","smoke:otel":"fixture"}}' \
   > "$tmp/commands/package.json"
-printf '%s\n' '{"lockfileVersion":3,"packages":{"":{},"node_modules/argon2":{"name":"argon2","hasInstallScript":true},"node_modules/esbuild":{"name":"esbuild","hasInstallScript":true},"node_modules/leftpad":{"name":"leftpad"}}}' \
+printf '%s\n' '{"lockfileVersion":3,"packages":{"":{},"node_modules/argon2":{"name":"argon2","hasInstallScript":true},"node_modules/esbuild":{"name":"esbuild","hasInstallScript":true},"node_modules/leftpad":{"name":"leftpad"},"node_modules/@esbuild/linux-x64":{"name":"@esbuild/linux-x64","optional":true,"os":["linux"],"hasInstallScript":true}}}' \
   > "$tmp/commands/package-lock.json"
+mkdir -p "$tmp/commands/node_modules/argon2" "$tmp/commands/node_modules/esbuild" "$tmp/commands/node_modules/leftpad"
 
 plan='["verify:worker-schema","build","audit:deps","lint","test","typecheck:smoke",{"script":"smoke:otel","unsetEnv":["OTEL_SDK_DISABLED"]}]'
 if (cd "$tmp/commands" && PATH="$tmp/bin:$PATH" NPM_STUB_LOG="$tmp/plan.log" \
@@ -213,6 +214,18 @@ if (cd "$tmp/commands" && PATH="$tmp/bin:$PATH" NPM_STUB_LOG="$tmp/unnecessary-r
   fail "an allowlisted package the lock does not mark as needing install scripts reached npm (#932)"
 else
   pass "the allowlist may not name a package the lock does not mark as needing install scripts (#932)"
+fi
+
+# #941: a lock-declared install-script package for another platform (never
+# installed into node_modules/ on this runner) must not be forced into the
+# allowlist, and must not be rebuilt if it somehow were named.
+: > "$tmp/cross-platform-rebuild.log"
+if (cd "$tmp/commands" && PATH="$tmp/bin:$PATH" NPM_STUB_LOG="$tmp/cross-platform-rebuild.log" \
+    REBUILD_PACKAGES=$'argon2\nesbuild' bash "$tmp/rebuild.sh") \
+    && grep -qFx 'rebuild argon2 esbuild' "$tmp/cross-platform-rebuild.log"; then
+  pass "a lock-declared install-script package absent from node_modules/ is not forced into the allowlist (#941)"
+else
+  fail "a cross-platform lock entry incorrectly demanded allowlisting (#941)"
 fi
 
 exit "$failures"

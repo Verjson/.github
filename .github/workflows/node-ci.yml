@@ -1822,6 +1822,17 @@ jobs:
                   }
               except ValueError as error:
                   sys.exit(str(error))
+          # A pnpm or npm lock records every platform variant of an optional
+          # native dependency (e.g. @esbuild/darwin-arm64, @esbuild/linux-x64),
+          # but --frozen-lockfile/--ignore-scripts installed only the ones this
+          # runner's os/cpu actually match. Scoping to the lock's full declared
+          # universe would force the allowlist to name a package that was never
+          # installed here, then fail rebuilding it (#941). node_modules/ on
+          # disk after that install is the platform-accurate source of truth.
+          lifecycle_scoped = {
+              name for name in lifecycle_scoped
+              if (Path("node_modules") / name).is_dir()
+          }
           missing = sorted(set(requested) - installed)
           if missing:
               sys.exit("approved rebuild packages absent from lock: " + ", ".join(missing))
