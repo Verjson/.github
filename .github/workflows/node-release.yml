@@ -266,7 +266,7 @@ jobs:
               if ! npm view "$package_name@$published_version" --json \
                 --registry=https://npm.pkg.github.com >"$registry_json" 2>"$view_stderr"; then
                 if grep -qE '\bE404\b' "$view_stderr"; then
-                  registry_state="the registry does not have it either — this run did not publish it"
+                  registry_state="the registry returned 404 for it, which is not a confirmed-missing version by itself: GitHub Packages also returns 404 for a private package this job's token cannot read, so this could equally be an authorization gap rather than proof the version was never published"
                 else
                   registry_state="the registry could not confirm either way (its response indicated an auth, network, or other transient error, not a confirmed-missing version)"
                 fi

@@ -225,10 +225,53 @@ if (cd "$app_dir" && PNPM_IMPORT_MAP="$mapping" MOCK_REGISTRY_DIR="$mock_dir" \
     python3 "$rewrite") >"$fixture/unapproved.out" 2>&1; then
   fail "rewrite mapped a scope absent from APPROVED_INTERNAL_SCOPES to the mock registry"
 elif grep -qF 'is not under an approved internal scope' "$fixture/unapproved.out" \
-    && cmp -s "$original" "$app_dir/pnpm-lock.yaml"; then
-  pass "the rewrite refuses to reroute a scope outside APPROVED_INTERNAL_SCOPES (#918)"
+    && cmp -s "$original" "$app_dir/pnpm-lock.yaml" \
+    && [ ! -e "$fixture/unapproved.npmrc" ]; then
+  pass "the rewrite refuses to reroute a scope outside APPROVED_INTERNAL_SCOPES and writes no partial npmrc override (#918)"
 else
   fail "the unapproved-scope rejection was not fail-closed"
+fi
+
+# #917 guard: dist-tags.latest is picked from a locked-version dict without a
+# real semver comparison, so a packument spanning a version with a mixed
+# digit/non-digit prerelease segment (e.g. 1.0.0-beta.1) alongside a plain
+# version must not raise a TypeError.
+prerelease_dir="$fixture/package-prerelease"
+mkdir -p "$prerelease_dir"
+printf '%s\n' '{"name":"@verjson/contracts","version":"1.0.0-beta.1","files":["index.js"]}' > "$prerelease_dir/package.json"
+printf '%s\n' 'module.exports = "fixture-prerelease";' > "$prerelease_dir/index.js"
+(cd "$prerelease_dir" && npm pack --silent --pack-destination "$fixture" >/dev/null)
+prerelease_tarball="$(ls "$fixture"/verjson-contracts-1.0.0-beta.1*.tgz)"
+prerelease_digest="$(sha512sum "$prerelease_tarball" | cut -d' ' -f1)"
+prerelease_integrity="sha512-$(openssl dgst -sha512 -binary "$prerelease_tarball" | openssl base64 -A)"
+
+multi_dir="$fixture/multi-version"
+multi_mock="$fixture/multi-version-mock"
+mkdir -p "$multi_dir" "$multi_mock/tarball"
+cat > "$multi_dir/pnpm-lock.yaml" <<EOF
+lockfileVersion: '9.0'
+packages:
+  '@verjson/contracts@1.2.3':
+    resolution:
+      integrity: $integrity
+      tarball: https://npm.pkg.github.com/download/@verjson/contracts/1.2.3/fixture
+  '@verjson/contracts@1.0.0-beta.1':
+    resolution:
+      integrity: $prerelease_integrity
+      tarball: https://npm.pkg.github.com/download/@verjson/contracts/1.0.0-beta.1/fixture
+EOF
+multi_mapping="$fixture/multi-version-import-map.tsv"
+printf '%s\t%s\n%s\t%s\n' "$digest" "$tarball" "$prerelease_digest" "$prerelease_tarball" > "$multi_mapping"
+multi_npmrc="$fixture/multi-version.npmrc"
+if (cd "$multi_dir" && PNPM_IMPORT_MAP="$multi_mapping" MOCK_REGISTRY_DIR="$multi_mock" \
+    MOCK_REGISTRY_PORT="4874" MOCK_REGISTRY_NPMRC="$multi_npmrc" \
+    APPROVED_INTERNAL_SCOPES=$'@verjson' python3 "$rewrite") >"$fixture/multi-version.out" 2>&1 \
+    && grep -qF '"1.2.3"' "$multi_mock/@verjson/contracts" \
+    && grep -qF '"1.0.0-beta.1"' "$multi_mock/@verjson/contracts"; then
+  pass "the rewrite selects dist-tags.latest across mixed digit/non-digit prerelease versions without a TypeError (#917)"
+else
+  fail "the rewrite raised or omitted a version while resolving dist-tags.latest across mixed prerelease versions"
+  cat "$fixture/multi-version.out" >&2 2>/dev/null || true
 fi
 
 exit "$failures"
