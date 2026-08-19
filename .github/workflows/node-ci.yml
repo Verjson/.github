@@ -1772,12 +1772,16 @@ jobs:
           if package_manager == "npm":
               lock = json.loads(Path("package-lock.json").read_text(encoding="utf-8"))
               installed = set()
+              lifecycle_scoped = set()
               for path, package in lock.get("packages", {}).items():
                   if "node_modules/" not in path:
                       continue
                   path_name = path.rsplit("node_modules/", 1)[1]
                   locked_name = package.get("name")
-                  installed.add(locked_name if isinstance(locked_name, str) else path_name)
+                  resolved_name = locked_name if isinstance(locked_name, str) else path_name
+                  installed.add(resolved_name)
+                  if package.get("hasInstallScript") is True:
+                      lifecycle_scoped.add(resolved_name)
           else:
               import yaml
               lock = yaml.safe_load(Path("pnpm-lock.yaml").read_text(encoding="utf-8"))
@@ -1810,11 +1814,34 @@ jobs:
               try:
                   installed = {pnpm_package_name(key) for package_set in package_sets
                                for key in package_set}
+                  lifecycle_scoped = {
+                      pnpm_package_name(key)
+                      for package_set in package_sets
+                      for key, entry in package_set.items()
+                      if isinstance(entry, dict) and entry.get("requiresBuild") is True
+                  }
               except ValueError as error:
                   sys.exit(str(error))
           missing = sorted(set(requested) - installed)
           if missing:
               sys.exit("approved rebuild packages absent from lock: " + ", ".join(missing))
+          # secretless-rebuild-packages is the complete, reviewed set of packages
+          # allowed to execute code at install time under --ignore-scripts (#932):
+          # an exact match, not a hint, so a dependency update that silently adds
+          # or drops a lifecycle script anywhere in the tree fails closed instead
+          # of passing unreviewed.
+          undeclared = sorted(lifecycle_scoped - set(requested))
+          if undeclared:
+              sys.exit(
+                  "lock declares install scripts for packages absent from "
+                  "secretless-rebuild-packages: " + ", ".join(undeclared)
+              )
+          unnecessary = sorted(set(requested) - lifecycle_scoped)
+          if unnecessary:
+              sys.exit(
+                  "secretless-rebuild-packages names packages the lock does not mark "
+                  "as needing install scripts: " + ", ".join(unnecessary)
+              )
           command = ["npm", "rebuild"] if package_manager == "npm" else ["corepack", "pnpm", "rebuild"]
           subprocess.run([*command, *requested], check=True)
           PY
