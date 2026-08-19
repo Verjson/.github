@@ -75,6 +75,34 @@ release-note publication. Unreadable, unauthorized, or mismatched registry state
 fails closed. The tag and changelog snapshot remain the authoritative recovery
 data; reversing the order would create the opposite partial state.
 
+**2026-08-19 clarification ([#921](https://github.com/Verjson/.github/issues/921)).**
+Two independent adopters hit `npm publish` failing for reasons this ADR already
+treats as recoverable — an organization billing limit and a transient `429`
+fetching `actions/checkout` before any step ran — and in both cases the
+follow-up `npm view` correctly reported the version does not exist yet (it
+never published). The failure message at that point read "cannot read the
+allegedly existing registry version," which is only true of the *mismatch*
+and *spoof* cases this step also guards against, not of a genuine publish
+failure. An operator reading it reasonably concluded the release was wedged
+and filed a bug asserting the workflow "refuses an existing tag"
+(`verjson-ai#298`) — a misdiagnosis this ADR's own "Consequences" section had
+already answered: "the tag and changelog snapshot remain the authoritative
+recovery data." The fix does not reorder anything decided above; it makes the
+existing recoverable path say so. When `npm view` cannot confirm an existing,
+matching registry version after a `npm publish` failure, the error now states
+plainly that the tag and immutable snapshot already exist, that this is
+expected-recoverable state rather than a wedged release, and that
+re-dispatching the same version is safe because the caller's `verify` job
+detects the existing tag/snapshot and skips `snapshot` automatically. Options
+that reorder publish ahead of the tag, or retry the registry write in-place,
+were considered and deliberately deferred: reordering would invert which half
+gets stranded on partial failure — exactly the tradeoff this ADR's
+"Consequences" section already declined — and an in-job retry would not have
+prevented either observed incident (a billing limit does not clear inside a
+retry window; the `429` happened in the runner's implicit `Set up job`, before
+any workflow step executes). `scripts/ci-gate/release-node-restart.test.sh`
+pins the new message and asserts the old "allegedly existing" text is gone.
+
 ## Verification
 
 `scripts/node-release-publish.test.sh` structurally pins the trigger, inputs,

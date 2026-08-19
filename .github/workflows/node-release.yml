@@ -264,7 +264,7 @@ jobs:
               echo "::warning::npm publish failed; proving whether an identical immutable version already exists before continuing."
               npm view "$package_name@$published_version" --json \
                 --registry=https://npm.pkg.github.com >"$registry_json" \
-                || { echo "::error::Cannot read the allegedly existing registry version with the publication credential after npm publish failed."; exit 1; }
+                || { echo "::error::npm publish failed for $package_name@$published_version and the registry does not (yet) have it either — this run did not publish it. This is expected-recoverable state, not a wedged release: tag $REQUESTED_TAG and its immutable CHANGELOG/$REQUESTED_TAG.md already exist on the default branch (changelog-release.yml completed before this job ever started, per ADR 0069's verify-then-snapshot-then-publish ordering), and re-dispatching this exact same version is safe. The dispatched caller's verify job will detect the existing tag/snapshot and skip snapshot automatically, retrying only publication."; exit 1; }
               node - "$registry_json" "$package_name" "$published_version" "$package_integrity" <<'NODE'
           const fs = require("fs");
           const [viewPath, expectedName, expectedVersion, expectedIntegrity] = process.argv.slice(2);

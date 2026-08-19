@@ -60,6 +60,7 @@ case "$command" in
     esac
     ;;
   publish)
+    [ "${PUBLISH_FAIL:-0}" != 1 ] || exit 1
     case "$1" in
       *compat*) state="$TEST_STATE/registry-compat" ;;
       *) state="$TEST_STATE/registry-root" ;;
@@ -75,6 +76,7 @@ case "$command" in
       matching:*) printf '%s\n' '{"name":"@acme/pkg","version":"1.2.3","dist":{"integrity":"sha512-expected"}}' ;;
       mismatch:*) printf '%s\n' '{"name":"@acme/pkg","version":"1.2.3","dist":{"integrity":"sha512-other"}}' ;;
       spoof:*) printf '%s\n' '{"name":"@attacker/pkg","version":"1.2.3","dist":{"integrity":"sha512-expected"}}' ;;
+      missing:*) exit 1 ;;
     esac
     ;;
   *) exit 90 ;;
@@ -107,6 +109,7 @@ run_publish() {
       REQUESTED_TAG=v1.2.3 PACKAGE_VERSION=1.2.3 NODE_AUTH_TOKEN=test PACKAGE_DIRS_JSON='[".","compat"]' \
       VIEW_MODE="${VIEW_MODE:-}" PACK_MODE="${PACK_MODE:-matching}" \
       AUTH_FAIL="${AUTH_FAIL:-0}" NETWORK_FAIL="${NETWORK_FAIL:-0}" \
+      PUBLISH_FAIL="${PUBLISH_FAIL:-0}" \
       bash -euo pipefail "$work/publish.sh" )
 }
 run_notes() {
@@ -165,3 +168,26 @@ if NETWORK_FAIL=1 run_publish >/dev/null 2>&1; then
   exit 1
 fi
 echo "ok - rerun fails closed when registry metadata is unavailable"
+
+rm -rf "$work/state"; mkdir -p "$work/state"
+publish_out="$work/publish-fail.out"
+if PUBLISH_FAIL=1 VIEW_MODE=missing run_publish >"$publish_out" 2>&1; then
+  echo "FAIL - a genuine first-attempt publish failure unexpectedly succeeded" >&2
+  exit 1
+fi
+[ ! -e "$work/state/registry-root" ] && [ ! -e "$work/state/registry-compat" ] || {
+  echo "FAIL - a genuine publish failure left partial registry state" >&2
+  exit 1
+}
+if grep -qF 'allegedly existing' "$publish_out"; then
+  echo "FAIL - the genuine-failure path still emits the misleading 'allegedly existing' message (Verjson/.github#921)" >&2
+  exit 1
+fi
+if grep -qF 'expected-recoverable state, not a wedged release' "$publish_out" \
+    && grep -qF 're-dispatching this exact same version is safe' "$publish_out"; then
+  echo "ok - a genuine publish failure names its safe remedy instead of implying a wedged release (#921)"
+else
+  echo "FAIL - a genuine publish failure did not explain that re-dispatching the same version is safe" >&2
+  cat "$publish_out" >&2
+  exit 1
+fi
