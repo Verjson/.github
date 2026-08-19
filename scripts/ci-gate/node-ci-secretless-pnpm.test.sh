@@ -80,12 +80,14 @@ snapshots:
   'native-helper@3.4.5(@scope/peer@6.7.8)': {requiresBuild: true}
   '@verjson/native@1.2.3(peer-lib@2.0.0)': {requiresBuild: true}
   'leftpad@1.0.0': {}
+  '@rollup/rollup-linux-x64-gnu@4.0.0': {requiresBuild: true}
 EOF
 cat > "$rebuild_fixture/bin/corepack" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$COREPACK_LOG"
 EOF
 chmod +x "$rebuild_fixture/bin/corepack"
+mkdir -p "$rebuild_fixture/node_modules/@verjson/native" "$rebuild_fixture/node_modules/native-helper"
 if (cd "$rebuild_fixture" && PATH="$rebuild_fixture/bin:$PATH" PACKAGE_MANAGER=pnpm \
     REBUILD_PACKAGES=$'@verjson/native\nnative-helper' COREPACK_LOG="$rebuild_fixture/corepack.log" \
     bash "$rebuild") \
@@ -113,6 +115,18 @@ if (cd "$rebuild_fixture" && PATH="$rebuild_fixture/bin:$PATH" PACKAGE_MANAGER=p
   fail "an allowlisted package the lock does not mark requiresBuild reached pnpm rebuild (#932)"
 else
   pass "the allowlist may not name a package the lock does not mark requiresBuild (#932)"
+fi
+
+# #941: a requiresBuild package for a platform other than this runner's (never
+# installed into node_modules/) must not be forced into the allowlist.
+: > "$rebuild_fixture/corepack.log"
+if (cd "$rebuild_fixture" && PATH="$rebuild_fixture/bin:$PATH" PACKAGE_MANAGER=pnpm \
+    REBUILD_PACKAGES=$'@verjson/native\nnative-helper' COREPACK_LOG="$rebuild_fixture/corepack.log" \
+    bash "$rebuild") \
+    && grep -qFx 'pnpm rebuild @verjson/native native-helper' "$rebuild_fixture/corepack.log"; then
+  pass "a requiresBuild package absent from node_modules/ is not forced into the allowlist (#941)"
+else
+  fail "a cross-platform lock entry incorrectly demanded allowlisting (#941)"
 fi
 
 sed -i "s|'native-helper@3.4.5(@scope/peer@6.7.8)'|'native-helper@npm:@scope/other@3.4.5'|" "$rebuild_fixture/pnpm-lock.yaml"
