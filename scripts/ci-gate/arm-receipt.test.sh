@@ -37,6 +37,9 @@ case "$*" in
   *"actions/runs/$ARM_RUN_ID"*) cat "$RUN_FILE" ;;
   *"rules/branches/"*) cat "$RULES_FILE" ;;
   *"actions/artifacts/"*"/zip"*) cat "$ZIP_FILE" ;;
+  *"--method DELETE"*"actions/artifacts/"*)
+    [ "${DELETE_FAILURE:-false}" = false ] || exit 1
+    printf '{}' ;;
   *"check-runs/$AUTHORIZATION_CHECK_ID"*) cat "$CHECK_FILE" ;;
   *"collaborators/maintainer/permission"*) printf '%s\n' "${CURRENT_PERMISSION:-maintain}" ;;
   *"pulls/$PR_NUMBER"*".base.ref"*) printf '%s\n' main ;;
@@ -142,6 +145,25 @@ write_base; printf '{"artifacts":[]}\n' >"$ARTIFACTS_FILE"; expect_fail "missing
 write_base; rm "$tmp/archive/receipt.json" "$ZIP_FILE"; printf 'bad\n' >"$tmp/archive/other"; (cd "$tmp/archive" && python3 -m zipfile -c "$ZIP_FILE" other); digest="$(sha256sum "$ZIP_FILE"|awk '{print $1}')"; size="$(wc -c <"$ZIP_FILE")"; jq -nc --argjson size "$size" --arg digest "sha256:$digest" '{artifacts:[{id:8001,name:"ai-review-arm-7001-2",expired:false,size_in_bytes:$size,digest:$digest}]}' >"$ARTIFACTS_FILE"; expect_fail "malformed artifact archive is rejected" verify
 write_base; jq '.artifacts[0].digest="sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"' "$ARTIFACTS_FILE" >"$tmp/x" && mv "$tmp/x" "$ARTIFACTS_FILE"; expect_fail "substituted artifact digest is rejected" verify
 write_base; jq '.app.id=9999' "$CHECK_FILE" >"$tmp/x" && mv "$tmp/x" "$CHECK_FILE"; expect_fail "shared or wrong App identity is rejected" verify
+
+# #931: CONSUME_RECEIPT is opt-in, best-effort, and never turns a valid
+# authorization into a failure when deletion itself fails.
+write_base
+if CONSUME_RECEIPT=true verify >"$tmp/out" 2>&1 && grep -qF 'Consumed arm receipt artifact 8001.' "$tmp/out"; then
+  pass "CONSUME_RECEIPT=true deletes the consumed receipt artifact on success"
+else
+  fail "CONSUME_RECEIPT=true did not consume the receipt artifact: $(tail -1 "$tmp/out")"
+fi
+write_base
+if CONSUME_RECEIPT=true DELETE_FAILURE=true verify >"$tmp/out" 2>&1 \
+    && grep -qF '::warning::failed to delete consumed arm receipt artifact 8001' "$tmp/out" \
+    && ! grep -qF 'Consumed arm receipt artifact' "$tmp/out"; then
+  pass "a failed receipt deletion is non-fatal and does not fail an otherwise-valid authorization"
+else
+  fail "a failed receipt deletion incorrectly failed the authorization: $(tail -1 "$tmp/out")"
+fi
+write_base; expect_pass "CONSUME_RECEIPT unset (default) never attempts deletion" verify
+grep -qF 'Consumed arm receipt artifact' "$tmp/out" && fail "default run unexpectedly deleted the receipt artifact"
 
 [ "$fails" -eq 0 ] && { echo "All tests passed."; exit 0; }
 echo "$fails test(s) failed."

@@ -33,7 +33,7 @@ def valid(document):
         and token["with"].get("permission-checks") == "write"
         and token["with"].get("permission-contents") == "read"
         and token["with"].get("permission-pull-requests") == "write"
-        and document["jobs"]["complete-authorization"]["permissions"].get("actions") == "read"
+        and document["jobs"]["complete-authorization"]["permissions"].get("actions") == "write"
         and document["jobs"]["complete-authorization"]["permissions"].get("checks") == "read"
         and document["jobs"]["complete-authorization"]["permissions"].get("pull-requests") == "read"
         and complete["env"].get("APP_TOKEN") == "${{ steps.app-token.outputs.token }}"
