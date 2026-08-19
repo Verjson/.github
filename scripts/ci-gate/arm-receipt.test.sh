@@ -163,6 +163,16 @@ fi
 write_base; expect_pass "ARM_RECEIPT_ARTIFACT_ID_FILE unset (default) never writes or deletes anything" verify
 grep -qF 'Consumed arm receipt artifact' "$tmp/out" && fail "default run unexpectedly deleted the receipt artifact"
 
+# #947: recording the artifact ID for deferred deletion is best-effort too --
+# a write failure must not turn an otherwise-successful verification into one.
+write_base
+if ARM_RECEIPT_ARTIFACT_ID_FILE="$tmp/nonexistent-dir/artifact-id" verify >"$tmp/out" 2>&1 \
+    && grep -qF '::warning::failed to record consumed arm receipt artifact ID' "$tmp/out"; then
+  pass "an unwritable ARM_RECEIPT_ARTIFACT_ID_FILE is non-fatal to an otherwise-valid verification (#947)"
+else
+  fail "an unwritable ARM_RECEIPT_ARTIFACT_ID_FILE incorrectly failed verification (#947)"
+fi
+
 [ "$fails" -eq 0 ] && { echo "All tests passed."; exit 0; }
 echo "$fails test(s) failed."
 exit 1

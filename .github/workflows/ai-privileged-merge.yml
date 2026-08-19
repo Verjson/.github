@@ -334,10 +334,12 @@ jobs:
           if [ -s "$RUNNER_TEMP/arm-receipt-artifact-id" ]; then
             receipt_artifact_id="$(<"$RUNNER_TEMP/arm-receipt-artifact-id")"
             if [[ "$receipt_artifact_id" =~ ^[1-9][0-9]*$ ]]; then
-              if gh api --method DELETE "repos/$TARGET_REPO/actions/artifacts/$receipt_artifact_id"; then
+              if gh api --method DELETE "repos/$TARGET_REPO/actions/artifacts/$receipt_artifact_id" \
+                  >/dev/null 2>"$RUNNER_TEMP/arm-artifact-delete.stderr"; then
                 echo "Consumed arm receipt artifact $receipt_artifact_id."
               else
                 echo "::warning::failed to delete consumed arm receipt artifact $receipt_artifact_id (non-fatal; its own retention window still bounds it)"
+                sed -E 's/(authorization: (token|bearer) )[A-Za-z0-9._-]+/\1***/Ig' "$RUNNER_TEMP/arm-artifact-delete.stderr" >&2
               fi
             fi
           fi

@@ -149,5 +149,9 @@ echo "Arm receipt verified for check $AUTHORIZATION_CHECK_ID on $EXPECTED_HEAD_S
 # does not delete anything; every caller that leaves this unset keeps
 # retention-only behavior.
 if [ -n "${ARM_RECEIPT_ARTIFACT_ID_FILE:-}" ]; then
-  printf '%s\n' "$artifact_id" >"$ARM_RECEIPT_ARTIFACT_ID_FILE"
+  # Best-effort like the deletion it enables (#947): a write failure here is
+  # bookkeeping for a cleanup optimization, not a verification result, and
+  # must not turn an otherwise-successful verification into a failure.
+  printf '%s\n' "$artifact_id" >"$ARM_RECEIPT_ARTIFACT_ID_FILE" || \
+    echo "::warning::failed to record consumed arm receipt artifact ID for deferred deletion (non-fatal; verification itself succeeded)"
 fi
