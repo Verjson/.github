@@ -1211,7 +1211,7 @@ jobs:
         # cannot produce a usable verdict. Automatic escalation is forbidden:
         # another paid attempt requires a maintainer-authorized `re-review`.
         continue-on-error: true
-        uses: anthropics/claude-code-action@459ad358ae43fea66bfefd0a1f8d840b4b9791fb # v1
+        uses: anthropics/claude-code-action@e2a4b761cd77a1138a5b41410eda9b28581f9bcd # v1
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
