@@ -82,3 +82,33 @@ as a one-time operational cleanup in #931, separate from this structural fix.
 - **Shorten `retention-days` instead of consuming on read.** Trades the outage for a
   narrower one: a review that legitimately takes longer than the shortened window (a
   held PR, a slow re-review) would lose its receipt before authorization completes.
+
+### Amendment (2026-08-19) — consume at the caller's true terminal success, not at verification (#943)
+
+A non-blocking AI-review follow-up on the implementing PR caught a real ordering gap
+this record's original text did not account for: `CONSUME_RECEIPT=true` deleted the
+artifact **inside `verify-arm-receipt.sh`**, immediately on successful verification —
+before the rest of the calling step's own work (completing the check run with its
+actual conclusion, or the terminal merge) had run at all. If that later work then
+failed for an unrelated reason (a transient API error, say) and the step or job were
+retried, the retry's own re-verification would find the receipt already gone, wedging
+an otherwise-recoverable transient failure into a dead end that could only be cleared
+by restarting the whole arm cycle.
+
+**Corrected design:** `verify-arm-receipt.sh` no longer deletes anything itself. When a
+caller sets `ARM_RECEIPT_ARTIFACT_ID_FILE` to a path, the script writes the verified
+`artifact_id` there on success and stops — a record of *which* artifact this was, not a
+deletion. Each caller deletes it itself, from its own code, at the point it has
+independently confirmed its **own** true terminal success:
+
+- `complete-authorization` deletes it immediately after the authorization check-run's
+  `PATCH ... status=completed` call succeeds — regardless of `conclusion`, since even a
+  `failure` conclusion is a settled outcome, not an intermediate step a retry could
+  still repeat.
+- `privileged_merge` deletes it after `gh pr merge` and the subsequent `state == MERGED`
+  confirmation succeed — the actual terminal merge, not the authorization check that
+  permits attempting it.
+
+Both still treat deletion as best-effort cleanup: a delete failure at either site logs
+`::warning::` and does not fail an already-completed check or an already-merged PR. The
+`actions: write` permission grant on `complete-authorization` is unchanged.

@@ -104,10 +104,6 @@ jobs:
       TARGET_REPO: ${{ github.repository }}
       GH_TOKEN: ${{ secrets.ORG_ADMIN_TOKEN }}
       REQUIRED_CHECK_POLICY: ${{ github.repository == 'Verjson/.github' && '[{"name":"shell-tests","app_id":15368,"workflow_id":315894159,"workflow_path":".github/workflows/actions-ci.yml"}]' || inputs.required_checks }}
-      # This job is always the receipt's last required read: it runs only
-      # under ai-merge authority, after ai-review-merge.yml's own
-      # complete-authorization job has deliberately deferred consumption to it.
-      CONSUME_RECEIPT: 'true'
     steps:
       - name: Resolve executing trusted workflow revision
         id: trusted-revision
@@ -166,7 +162,8 @@ jobs:
             echo "Superseded promotion is a no-op: expected $EXPECTED_HEAD_SHA, current head is $actual_head."
             exit 0
           }
-          bash .gate-trust/scripts/ci-gate/verify-arm-receipt.sh
+          ARM_RECEIPT_ARTIFACT_ID_FILE="$RUNNER_TEMP/arm-receipt-artifact-id" \
+            bash .gate-trust/scripts/ci-gate/verify-arm-receipt.sh
           policy_json="$(python3 .gate-trust/scripts/ci-gate/review-policy-envelope.py decode "$REVIEW_POLICY")" || {
             echo "::error::receipt-bound review policy is malformed"; exit 1;
           }
@@ -327,3 +324,20 @@ jobs:
             echo "::error::GitHub did not confirm terminal merge of the authorized head"; exit 1;
           }
           echo "Merged authorized head $EXPECTED_HEAD_SHA after every declared required check succeeded."
+
+          # The receipt has now served its purpose: this is the terminal
+          # consumption, confirmed by GitHub's own merged state above, not an
+          # intermediate check a retry could still repeat. Deleting it here
+          # (instead of only at its 90-day retention limit) is a storage-cost
+          # cleanup, not a trust boundary: a delete failure is logged and does
+          # not fail an already-completed merge.
+          if [ -s "$RUNNER_TEMP/arm-receipt-artifact-id" ]; then
+            receipt_artifact_id="$(<"$RUNNER_TEMP/arm-receipt-artifact-id")"
+            if [[ "$receipt_artifact_id" =~ ^[1-9][0-9]*$ ]]; then
+              if gh api --method DELETE "repos/$TARGET_REPO/actions/artifacts/$receipt_artifact_id"; then
+                echo "Consumed arm receipt artifact $receipt_artifact_id."
+              else
+                echo "::warning::failed to delete consumed arm receipt artifact $receipt_artifact_id (non-fatal; its own retention window still bounds it)"
+              fi
+            fi
+          fi
