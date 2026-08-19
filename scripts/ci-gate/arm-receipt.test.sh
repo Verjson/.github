@@ -146,23 +146,21 @@ write_base; rm "$tmp/archive/receipt.json" "$ZIP_FILE"; printf 'bad\n' >"$tmp/ar
 write_base; jq '.artifacts[0].digest="sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"' "$ARTIFACTS_FILE" >"$tmp/x" && mv "$tmp/x" "$ARTIFACTS_FILE"; expect_fail "substituted artifact digest is rejected" verify
 write_base; jq '.app.id=9999' "$CHECK_FILE" >"$tmp/x" && mv "$tmp/x" "$CHECK_FILE"; expect_fail "shared or wrong App identity is rejected" verify
 
-# #931: CONSUME_RECEIPT is opt-in, best-effort, and never turns a valid
-# authorization into a failure when deletion itself fails.
-write_base
-if CONSUME_RECEIPT=true verify >"$tmp/out" 2>&1 && grep -qF 'Consumed arm receipt artifact 8001.' "$tmp/out"; then
-  pass "CONSUME_RECEIPT=true deletes the consumed receipt artifact on success"
-else
-  fail "CONSUME_RECEIPT=true did not consume the receipt artifact: $(tail -1 "$tmp/out")"
-fi
-write_base
-if CONSUME_RECEIPT=true DELETE_FAILURE=true verify >"$tmp/out" 2>&1 \
-    && grep -qF '::warning::failed to delete consumed arm receipt artifact 8001' "$tmp/out" \
+# #931/#943: this script never deletes the receipt itself -- deletion happens
+# too early here, before the calling step's own later work (completing the
+# check run, or the terminal merge) has actually succeeded. A caller that has
+# reached its own true terminal consumption point may ask, via
+# ARM_RECEIPT_ARTIFACT_ID_FILE, to be told which artifact this was, so it can
+# delete it itself once that later success is confirmed.
+write_base; artifact_id_file="$tmp/artifact-id"; rm -f "$artifact_id_file"
+if ARM_RECEIPT_ARTIFACT_ID_FILE="$artifact_id_file" verify >"$tmp/out" 2>&1 \
+    && [ "$(cat "$artifact_id_file")" = 8001 ] \
     && ! grep -qF 'Consumed arm receipt artifact' "$tmp/out"; then
-  pass "a failed receipt deletion is non-fatal and does not fail an otherwise-valid authorization"
+  pass "ARM_RECEIPT_ARTIFACT_ID_FILE records the verified artifact ID without deleting it"
 else
-  fail "a failed receipt deletion incorrectly failed the authorization: $(tail -1 "$tmp/out")"
+  fail "ARM_RECEIPT_ARTIFACT_ID_FILE did not record the artifact ID, or the script deleted it itself"
 fi
-write_base; expect_pass "CONSUME_RECEIPT unset (default) never attempts deletion" verify
+write_base; expect_pass "ARM_RECEIPT_ARTIFACT_ID_FILE unset (default) never writes or deletes anything" verify
 grep -qF 'Consumed arm receipt artifact' "$tmp/out" && fail "default run unexpectedly deleted the receipt artifact"
 
 [ "$fails" -eq 0 ] && { echo "All tests passed."; exit 0; }
