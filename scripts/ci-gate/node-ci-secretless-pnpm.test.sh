@@ -77,7 +77,9 @@ lockfileVersion: '9.0'
 packages:
   '@verjson/native@1.2.3(peer-lib@2.0.0)': {resolution: {integrity: sha512-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==}}
 snapshots:
-  'native-helper@3.4.5(@scope/peer@6.7.8)': {}
+  'native-helper@3.4.5(@scope/peer@6.7.8)': {requiresBuild: true}
+  '@verjson/native@1.2.3(peer-lib@2.0.0)': {requiresBuild: true}
+  'leftpad@1.0.0': {}
 EOF
 cat > "$rebuild_fixture/bin/corepack" <<'EOF'
 #!/usr/bin/env bash
@@ -92,6 +94,27 @@ if (cd "$rebuild_fixture" && PATH="$rebuild_fixture/bin:$PATH" PACKAGE_MANAGER=p
 else
   fail "pnpm rebuild misparsed valid package or snapshot identities"
 fi
+
+# #932: secretless-rebuild-packages must exactly match the lock's requiresBuild
+# surface, not merely name packages present in the lock.
+: > "$rebuild_fixture/corepack.log"
+if (cd "$rebuild_fixture" && PATH="$rebuild_fixture/bin:$PATH" PACKAGE_MANAGER=pnpm \
+    REBUILD_PACKAGES='native-helper' COREPACK_LOG="$rebuild_fixture/corepack.log" bash "$rebuild") >/dev/null 2>&1 \
+    || [ -s "$rebuild_fixture/corepack.log" ]; then
+  fail "a lock-declared requiresBuild package absent from the allowlist reached pnpm rebuild (#932)"
+else
+  pass "the lock's requiresBuild surface must be fully named in the allowlist (#932)"
+fi
+: > "$rebuild_fixture/corepack.log"
+if (cd "$rebuild_fixture" && PATH="$rebuild_fixture/bin:$PATH" PACKAGE_MANAGER=pnpm \
+    REBUILD_PACKAGES=$'@verjson/native\nnative-helper\nleftpad' COREPACK_LOG="$rebuild_fixture/corepack.log" \
+    bash "$rebuild") >/dev/null 2>&1 \
+    || [ -s "$rebuild_fixture/corepack.log" ]; then
+  fail "an allowlisted package the lock does not mark requiresBuild reached pnpm rebuild (#932)"
+else
+  pass "the allowlist may not name a package the lock does not mark requiresBuild (#932)"
+fi
+
 sed -i "s|'native-helper@3.4.5(@scope/peer@6.7.8)'|'native-helper@npm:@scope/other@3.4.5'|" "$rebuild_fixture/pnpm-lock.yaml"
 : > "$rebuild_fixture/corepack.log"
 if (cd "$rebuild_fixture" && PATH="$rebuild_fixture/bin:$PATH" PACKAGE_MANAGER=pnpm \

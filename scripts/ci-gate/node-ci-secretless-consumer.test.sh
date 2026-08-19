@@ -148,7 +148,7 @@ printf '%s\n' '#!/usr/bin/env bash' \
 chmod +x "$tmp/bin/npm"
 printf '%s\n' '{"scripts":{"verify:worker-schema":"fixture","build":"fixture","audit:deps":"fixture","lint":"fixture","test":"fixture","typecheck:smoke":"fixture","smoke:otel":"fixture"}}' \
   > "$tmp/commands/package.json"
-printf '%s\n' '{"lockfileVersion":3,"packages":{"":{},"node_modules/argon2":{"name":"argon2"},"node_modules/esbuild":{"name":"esbuild"}}}' \
+printf '%s\n' '{"lockfileVersion":3,"packages":{"":{},"node_modules/argon2":{"name":"argon2","hasInstallScript":true},"node_modules/esbuild":{"name":"esbuild","hasInstallScript":true},"node_modules/leftpad":{"name":"leftpad"}}}' \
   > "$tmp/commands/package-lock.json"
 
 plan='["verify:worker-schema","build","audit:deps","lint","test","typecheck:smoke",{"script":"smoke:otel","unsetEnv":["OTEL_SDK_DISABLED"]}]'
@@ -194,5 +194,25 @@ for bad_rebuild in $'argon2\n--foreground-scripts' 'missing-package' $'argon2\na
     pass "invalid lifecycle rebuild list fails before npm"
   fi
 done
+
+# #932: secretless-rebuild-packages must exactly match the lock's install-script
+# surface, not merely name packages present in the lock.
+: > "$tmp/undeclared-rebuild.log"
+if (cd "$tmp/commands" && PATH="$tmp/bin:$PATH" NPM_STUB_LOG="$tmp/undeclared-rebuild.log" \
+    REBUILD_PACKAGES=argon2 bash "$tmp/rebuild.sh") >/dev/null 2>&1 \
+    || [ -s "$tmp/undeclared-rebuild.log" ]; then
+  fail "a lock-declared lifecycle package absent from the allowlist reached npm (#932)"
+else
+  pass "the lock's install-script surface must be fully named in the allowlist (#932)"
+fi
+
+: > "$tmp/unnecessary-rebuild.log"
+if (cd "$tmp/commands" && PATH="$tmp/bin:$PATH" NPM_STUB_LOG="$tmp/unnecessary-rebuild.log" \
+    REBUILD_PACKAGES=$'argon2\nesbuild\nleftpad' bash "$tmp/rebuild.sh") >/dev/null 2>&1 \
+    || [ -s "$tmp/unnecessary-rebuild.log" ]; then
+  fail "an allowlisted package the lock does not mark as needing install scripts reached npm (#932)"
+else
+  pass "the allowlist may not name a package the lock does not mark as needing install scripts (#932)"
+fi
 
 exit "$failures"
