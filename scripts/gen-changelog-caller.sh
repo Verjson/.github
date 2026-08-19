@@ -14,7 +14,7 @@
 #   scripts/gen-changelog-caller.sh adr-index-generator <sha> > scripts/gen-adr-index.sh
 #   scripts/gen-changelog-caller.sh renderer <sha> > scripts/render-next.sh
 #   scripts/gen-changelog-caller.sh contract-test <sha> [--scope <scope>] [--node-version <version>] > scripts/changelog-contract.test.sh
-#   scripts/gen-changelog-caller.sh pr-gate <sha> > .github/workflows/changelog-contract.yml
+#   scripts/gen-changelog-caller.sh pr-gate <sha> [--untrusted-runner <label>[,<label>...]] > .github/workflows/changelog-contract.yml
 #   scripts/gen-changelog-caller.sh release-node <sha> [--scope <scope>] [--node-version <version>] > .github/workflows/release.yml
 #   scripts/gen-changelog-caller.sh release-propose <sha> --autonomy {propose|dispatch} > .github/workflows/release-propose.yml
 #
@@ -23,6 +23,13 @@
 #
 # `pr-gate` is generated separately from repository-specific CI so the required
 # changelog-contract job cannot miss runner-safety fixes when adopters repin.
+# It defaults to GitHub-hosted `ubuntu-24.04`: the job runs `pull_request`,
+# so `actions/checkout` resolves the PR's own ref and the job then executes
+# PR-authored `scripts/changelog-contract.test.sh` from that checkout. A
+# persistent self-hosted runner turns that into arbitrary code execution from
+# any PR author; an ephemeral hosted runner does not. Adopters with a genuinely
+# isolated, ephemeral, per-job untrusted-PR lane may opt into it explicitly
+# with `--untrusted-runner` (#935) — never default to self-hosted here.
 # `release-node` is the fifth output. It was added because the
 # release caller was the one adopter file still hand-copied from a sibling, and
 # every defect in the copied shape propagated to every migrated repository at
@@ -45,7 +52,7 @@
 set -euo pipefail
 
 usage() {
-  echo "usage: $(basename "$0") {workflow|generated-artifacts|generated-artifacts-with-adr-index|renovate-attribution|adr-index-generator|renderer|contract-test|pr-gate|release-node|release-propose} <40-hex-commit> [--scope <npm-scope>] [--node-version <version>] [--package-dir <relative-dir>]... [--autonomy {propose|dispatch}]" >&2
+  echo "usage: $(basename "$0") {workflow|generated-artifacts|generated-artifacts-with-adr-index|renovate-attribution|adr-index-generator|renderer|contract-test|pr-gate|release-node|release-propose} <40-hex-commit> [--scope <npm-scope>] [--node-version <version>] [--package-dir <relative-dir>]... [--autonomy {propose|dispatch}] [--untrusted-runner <label>[,<label>...]]" >&2
   echo "required check: changelog / validate" >&2
   exit 2
 }
@@ -62,6 +69,8 @@ release_node_version_set=false
 release_package_dirs=(".")
 release_package_dirs_set=false
 release_autonomy=""
+pr_gate_untrusted_runner=""
+pr_gate_untrusted_runner_set=false
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --scope)
@@ -87,6 +96,12 @@ while [ "$#" -gt 0 ]; do
       release_autonomy="$2"
       shift 2
       ;;
+    --untrusted-runner)
+      [ "$#" -ge 2 ] && [ "$pr_gate_untrusted_runner_set" = false ] || usage
+      pr_gate_untrusted_runner="$2"
+      pr_gate_untrusted_runner_set=true
+      shift 2
+      ;;
     *)
       usage
       ;;
@@ -102,6 +117,23 @@ fi
 if [ -n "$release_autonomy" ] && [ "$mode" != release-propose ]; then
   echo "$(basename "$0"): --autonomy is accepted only by release-propose" >&2
   exit 2
+fi
+if [ "$pr_gate_untrusted_runner_set" = true ] && [ "$mode" != pr-gate ]; then
+  echo "$(basename "$0"): --untrusted-runner is accepted only by pr-gate" >&2
+  exit 2
+fi
+pr_gate_runs_on="ubuntu-24.04"
+if [ "$pr_gate_untrusted_runner_set" = true ]; then
+  [[ "$pr_gate_untrusted_runner" =~ ^[a-z0-9][a-z0-9_-]*(,[a-z0-9][a-z0-9_-]*)*$ ]] || {
+    echo "$(basename "$0"): --untrusted-runner must be a comma-separated list of runner labels" >&2
+    exit 2
+  }
+  IFS=',' read -ra _pr_gate_labels <<<"$pr_gate_untrusted_runner"
+  _pr_gate_joined=""
+  for _pr_gate_label in "${_pr_gate_labels[@]}"; do
+    _pr_gate_joined="${_pr_gate_joined:+$_pr_gate_joined, }$_pr_gate_label"
+  done
+  pr_gate_runs_on="[$_pr_gate_joined]"
 fi
 if [ "$mode" = release-propose ]; then
   [ "$release_autonomy" = propose ] || [ "$release_autonomy" = dispatch ] || {
@@ -347,7 +379,7 @@ permissions:
 
 jobs:
   changelog-contract:
-    runs-on: [self-hosted, general]
+    runs-on: ${pr_gate_runs_on}
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
