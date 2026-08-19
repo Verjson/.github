@@ -253,3 +253,68 @@ Contract coverage binds the shared prompt supplied to Claude, OpenAI, and both
 DeepSeek passes to the renderer's `review_first[].why` access, then confirms canonical
 and aliased provider outputs converge before publication. This restores the existing
 provider-neutral verdict boundary and does not change review or merge authority.
+
+### 2026-08-19 correction — the App's permission envelope was never the defect (#702)
+
+[#702](https://github.com/Verjson/.github/issues/702) reported that the dedicated
+App's `pulls/reviews` and check-run mutations returned `403 Resource not
+accessible by integration` even though the live installation reported
+`checks: write`, `pull_requests: write`, `repository_selection: all`, and not
+suspended — language that read as a contradiction of the permission envelope this
+ADR requires. It was not: the installation's envelope was correct throughout, and
+the defect was entirely in how the completion workflow used its tokens, in four
+layers uncovered one at a time by controlled runs against `Verjson/toquorum`:
+
+1. PR-head resolution used `gh pr view --json headRefOid`, a GraphQL call, under
+   the least-privilege App token; the App had no Contents access at the time, so
+   the underlying read 403'd and the step aborted under `set -e` before any
+   approval was attempted (#703 added the App-level `Contents: Read-only`
+   permission this ADR's App provisioning omitted).
+2. The head lookup was moved to the REST `pulls/{pull_number}` endpoint, but a
+   `GH_TOKEN=""` prefix on that call silently substituted the restricted
+   workflow token for the dedicated App token (#705, #707, #708 restored the
+   intended token on that read).
+3. Even with both fixed, a controlled run (31404494311) still 403'd: the job's
+   `env:` blocks aliased both the workflow token and the App token through a
+   shared `GH_TOKEN` name at different scopes, so it was not reliably provable
+   which token a given `gh api` call actually inherited. #711 removed the
+   ambient alias entirely — every dedicated-App call now goes through a shared
+   `app_api` helper that binds `GH_TOKEN="$APP_TOKEN"` explicitly per
+   invocation, and validates the minted App slug and installation ID before any
+   mutation. #714 made a failed mutation's phase, operation, and sanitized
+   GitHub diagnostics visible on `stderr` instead of swallowing them in command
+   substitution.
+4. No installation, permission, or App-recreation change was needed at any
+   point; the 2026-08-18 installation snapshot (`checks: write`,
+   `contents: read`, `pull_requests: write`, `repository_selection: all`,
+   updated `2026-08-18T21:47:01Z`) matches the 2026-08-10 snapshot quoted in the
+   issue. The "contradicts ADR 0079" framing was the imprecise part, not the
+   installation.
+
+**Live proof.** `Verjson/toquorum#596` produced three independent exact-head
+`verjson-ai-review-authorization[bot]` `APPROVE` reviews, each matching its
+commit via `commit_id` and carrying the `ai-review-authorization:<check-id>`
+marker, with the dedicated `AI review authorization` check completing
+`success` and the promotion job dispatching native auto-merge:
+
+| Head | Review | Check run | Workflow run |
+| --- | --- | --- | --- |
+| `2ce5edf3` | submitted 2026-08-14T19:15:17Z | 94870822424 (success) | 31832421537 |
+| `2081c8ff` | submitted 2026-08-15T00:17:23Z | 94932616877 (success) | 31853145540 |
+| `ffc31da9` | submitted 2026-08-15T16:52:48Z | 95040989359 (success) | 31896699431 |
+
+This closes [#702](https://github.com/Verjson/.github/issues/702) and
+`Verjson/toquorum#558`. No further owner or GitHub-UI action is required for
+the App's permission envelope.
+
+A separate, unrelated defect surfaced while reproducing this: `toquorum`'s
+generated `gate-rearm.yml` caller remains pinned to contract commit
+`a6b3ccc0590f4fcfdacd7818279ab3eea6b30155` (2026-08-10), which predates
+`deepseek` review-provider support. Since the organization's
+`AI_REVIEW_PRIMARY_PROVIDER` variable moved to `deepseek` org-wide on
+2026-08-16, every arm run in `toquorum` since then fails immediately with
+`unsupported review provider`, before ever reaching the authorization step
+this ADR governs (reproduced live 2026-08-19, `toquorum` run 32208257958 on
+PR #524). That is a consumer caller-pin-staleness gap, not a recurrence of
+this ADR's permission envelope, and is tracked separately
+([#933](https://github.com/Verjson/.github/issues/933)).
