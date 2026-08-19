@@ -175,7 +175,7 @@ if AUTH_FAIL=1 run_publish >"$auth_out" 2>&1; then
   echo "FAIL - rerun accepted unproven registry authorization" >&2
   exit 1
 fi
-if grep -qF 'could not confirm either way' "$auth_out" && ! grep -qF 'does not have it either' "$auth_out"; then
+if grep -qF 'could not confirm either way' "$auth_out" && ! grep -qF 'authorization gap' "$auth_out"; then
   echo "ok - rerun fails closed when registry authorization cannot be proven, without claiming it confirmed the version missing (#924)"
 else
   echo "FAIL - an unproven-authorization failure did not distinguish itself from a confirmed-missing version" >&2
@@ -187,7 +187,7 @@ if NETWORK_FAIL=1 run_publish >"$network_out" 2>&1; then
   echo "FAIL - rerun accepted unavailable registry state" >&2
   exit 1
 fi
-if grep -qF 'could not confirm either way' "$network_out" && ! grep -qF 'does not have it either' "$network_out"; then
+if grep -qF 'could not confirm either way' "$network_out" && ! grep -qF 'authorization gap' "$network_out"; then
   echo "ok - rerun fails closed when registry metadata is unavailable, without claiming it confirmed the version missing (#924)"
 else
   echo "FAIL - an unavailable-registry failure did not distinguish itself from a confirmed-missing version" >&2
@@ -211,8 +211,8 @@ if grep -qF 'allegedly existing' "$publish_out"; then
 fi
 if grep -qF 'expected-recoverable state, not a wedged release' "$publish_out" \
     && grep -qF 're-dispatching this exact same version is safe' "$publish_out" \
-    && grep -qF 'does not have it either' "$publish_out"; then
-  echo "ok - a genuine publish failure names its safe remedy and confirms the version is genuinely missing (#921, #924)"
+    && grep -qF 'authorization gap' "$publish_out"; then
+  echo "ok - a genuine publish failure names its safe remedy without overclaiming the version is confirmed missing, since GitHub Packages 404s a private package the token can't read too (#921, #924, #929)"
 else
   echo "FAIL - a genuine publish failure did not explain that re-dispatching the same version is safe" >&2
   cat "$publish_out" >&2
