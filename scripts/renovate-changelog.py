@@ -28,7 +28,8 @@ RENOVATE_REF = re.compile(
 )
 PACKAGE = re.compile(
     r"^\[([@A-Za-z0-9][@A-Za-z0-9._/+~:-]{0,213})\]"
-    r"\(https://[^()\s]+\)$"
+    r"\(https://[^()\s]+\)"
+    r"(?:\s+\(\[[^\]]{1,64}\]\(https://[^()\s]+\)\))*$"
 )
 CHANGE = re.compile(
     r"^(?:\[)?`([^`\r\n|]{1,128})` → `([^`\r\n|]{1,128})`"

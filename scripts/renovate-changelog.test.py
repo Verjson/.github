@@ -124,6 +124,30 @@ class RenovateTableTests(unittest.TestCase):
         update = renovate_changelog.parse_updates(grouped)[0]
         self.assertEqual(("^10.4.0", "^10.5.0"), (update.from_version, update.to_version))
 
+    def test_accepts_a_package_cell_with_renovates_default_source_link(self) -> None:
+        # Verbatim from live PR bodies (Verjson/.github#925): Renovate appends
+        # ` ([source](…))` to the Package cell whenever a package's sourceUrl
+        # differs from its homepage, which is the default presentation, not an
+        # opt-in.
+        for package_cell, expected_name in (
+            (
+                "[vitest](https://vitest.dev) "
+                "([source](https://redirect.github.com/vitest-dev/vitest/tree/HEAD/packages/vitest))",
+                "vitest",
+            ),
+            (
+                "[@types/node](https://redirect.github.com/DefinitelyTyped/DefinitelyTyped/tree/HEAD/types/node) "
+                "([source](https://redirect.github.com/DefinitelyTyped/DefinitelyTyped/tree/HEAD/types/node))",
+                "@types/node",
+            ),
+        ):
+            with self.subTest(package_cell=package_cell):
+                body = BODY.replace(
+                    "[ip-address](https://redirect.github.com/ip-num/ip-num)", package_cell
+                )
+                update = renovate_changelog.parse_updates(body)[0]
+                self.assertEqual(expected_name, update.package)
+
 
 class AdmissionAndPlanningTests(unittest.TestCase):
     def test_accepts_only_same_repository_renovate_branches_and_authors(self) -> None:
