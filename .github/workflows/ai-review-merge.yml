@@ -1825,7 +1825,7 @@ jobs:
     runs-on: ${{ fromJSON(vars.VERJSON_RUNNER_FASTLANE || '["ubuntu-24.04"]') }}
     timeout-minutes: 5
     permissions:
-      actions: read
+      actions: write
       checks: read
       contents: read
       pull-requests: read
@@ -1890,6 +1890,12 @@ jobs:
           MINTED_APP_SLUG: ${{ steps.app-token.outputs.app-slug }}
           INSTALLATION_ID: ${{ steps.app-token.outputs.installation-id }}
           REVERIFY_ACTOR_PERMISSION: 'false'
+          # ai-merge authority hands the receipt on to ai-privileged-merge.yml's
+          # terminal merge job, which is the receipt's actual last read; this
+          # job stays its last read, and therefore its consumer, for every
+          # other authority (human review completes the merge without a
+          # further receipt-bound job).
+          CONSUME_RECEIPT: ${{ env.REVIEW_AUTHORITY != 'ai-merge' && 'true' || 'false' }}
         run: |
           set -euo pipefail
           [[ "$AUTHORIZATION_CHECK_ID" =~ ^[1-9][0-9]*$ ]] || exit 1

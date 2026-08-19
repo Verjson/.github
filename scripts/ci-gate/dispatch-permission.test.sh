@@ -10,7 +10,7 @@ pass() { printf 'ok   - %s\n' "$1"; }
 fail() { printf 'FAIL - %s\n' "$1"; fails=$((fails + 1)); }
 
 preflight="$(awk '/^  preflight:/{cap=1} cap&&/^  gate:/{exit} cap{print}' "$wf")"
-gate="$(awk '/^  gate:/{cap=1} cap&&/^  dispatch-merge:/{exit} cap{print}' "$wf")"
+gate="$(awk '/^  gate:/{cap=1} cap&&/^  complete-authorization:/{exit} cap{print}' "$wf")"
 dispatch="$(awk '/^  dispatch-merge:/{cap=1} cap{print}' "$wf")"
 
 grep -q '^      actions: read$' <<<"$gate" \

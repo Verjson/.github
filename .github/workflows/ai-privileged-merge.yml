@@ -104,6 +104,10 @@ jobs:
       TARGET_REPO: ${{ github.repository }}
       GH_TOKEN: ${{ secrets.ORG_ADMIN_TOKEN }}
       REQUIRED_CHECK_POLICY: ${{ github.repository == 'Verjson/.github' && '[{"name":"shell-tests","app_id":15368,"workflow_id":315894159,"workflow_path":".github/workflows/actions-ci.yml"}]' || inputs.required_checks }}
+      # This job is always the receipt's last required read: it runs only
+      # under ai-merge authority, after ai-review-merge.yml's own
+      # complete-authorization job has deliberately deferred consumption to it.
+      CONSUME_RECEIPT: 'true'
     steps:
       - name: Resolve executing trusted workflow revision
         id: trusted-revision

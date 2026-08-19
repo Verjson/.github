@@ -137,3 +137,17 @@ workflow_api current-head "$tmp/current-head" "repos/$TARGET_REPO/pulls/$PR_NUMB
 current_head="$(<"$tmp/current-head")"
 [ "$current_head" = "$EXPECTED_HEAD_SHA" ] || { echo "::error::authorization head is stale"; exit 1; }
 echo "Arm receipt verified for check $AUTHORIZATION_CHECK_ID on $EXPECTED_HEAD_SHA."
+
+# Deletion is best-effort cleanup, never a security control: a caller sets
+# CONSUME_RECEIPT=true only when this is the receipt's last required read, so
+# a delete failure here must not fail an otherwise-valid authorization. An
+# unconsumed receipt still expires under the artifact's own retention.
+if [ "${CONSUME_RECEIPT:-false}" = true ]; then
+  if gh api --method DELETE "repos/$TARGET_REPO/actions/artifacts/$artifact_id" \
+      >"$tmp/arm-artifact-delete.out" 2>"$tmp/arm-artifact-delete.stderr"; then
+    echo "Consumed arm receipt artifact $artifact_id."
+  else
+    echo "::warning::failed to delete consumed arm receipt artifact $artifact_id (non-fatal; its own retention window still bounds it)"
+    sed -E 's/(authorization: (token|bearer) )[A-Za-z0-9._-]+/\1***/Ig' "$tmp/arm-artifact-delete.stderr" >&2
+  fi
+fi
