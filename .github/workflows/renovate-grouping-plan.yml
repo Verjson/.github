@@ -19,8 +19,9 @@ jobs:
       - name: Check out immutable organization policy
         # Interim auth per ADR 0111 (supersedes ADR 0109's App-token mint for
         # this repository until the dedicated compatibility App is
-        # provisioned): a human-held PAT with only the read access this job
-        # needs, not a broader organization credential.
+        # provisioned): the owner's own PAT, which carries their full org-wide
+        # read access -- broader than this job needs. See ADR 0111 for the
+        # accepted blast-radius tradeoff; this is not a least-privilege token.
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: Verjson/renovate-config
