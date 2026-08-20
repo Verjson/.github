@@ -15,19 +15,13 @@ grep -q 'mode:\"observe-only\"' "$reconcile" \
   && pass "reconciler cannot create holds" || fail "observe-only boundary missing"
 ! grep -Eq 'ORG_ADMIN_TOKEN|contents: write|pull-requests: write|issues: write' "$reconcile" \
   && pass "reconciler has no mutation grant" || fail "reconciler is overprivileged"
-grep -q 'client-id: \${{ vars.RENOVATE_COMPATIBILITY_CLIENT_ID }}' "$reconcile" \
-  && ! grep -q 'app-id:' "$reconcile" \
-  && pass "reconciler uses dedicated compatibility App client ID" \
-  || fail "reconciler App identity drifted"
-reconcile_mint="$(sed -n '/name: Mint compatibility observer token/,/name: Fetch the reviewed policy registry/p' "$reconcile")"
-[ "$(grep -c 'permission-' <<<"$reconcile_mint")" -eq 4 ] \
-  && grep -q 'permission-contents: read' <<<"$reconcile_mint" \
-  && grep -q 'permission-pull-requests: read' <<<"$reconcile_mint" \
-  && grep -q 'permission-checks: read' <<<"$reconcile_mint" \
-  && grep -q 'permission-statuses: read' <<<"$reconcile_mint" \
-  && ! grep -Eq 'permission-[^:]+: write' <<<"$reconcile_mint" \
-  && pass "reconciler token is limited to exact observation reads" \
-  || fail "reconciler token permissions are absent or broadened"
+# Interim per ADR 0111: a human-held PAT stands in for the dedicated App
+# until it's provisioned. No App-token mint, client ID, or private key
+# should be present on this path while that ADR is in effect.
+[ "$(grep -c 'GH_TOKEN: \${{ secrets.RENOVATE_COMPATIBILITY_PAT }}' "$reconcile")" -eq 2 ] \
+  && ! grep -q 'RENOVATE_COMPATIBILITY_CLIENT_ID\|RENOVATE_COMPATIBILITY_APP_PRIVATE_KEY\|create-github-app-token\|app-id:' "$reconcile" \
+  && pass "reconciler authenticates with the interim compatibility PAT (ADR 0111)" \
+  || fail "reconciler interim PAT authentication drifted"
 grep -q 'persist-credentials: false' "$canary" \
   && grep -q 'unset NODE_AUTH_TOKEN NPM_TOKEN GH_TOKEN GITHUB_TOKEN' "$canary" \
   && grep -q -- '--ignore-scripts' "$canary" \
@@ -60,17 +54,12 @@ grep -q 'dd08f8471fdfabbdbbb32051e03387fcf5df63bd' "$planner" \
   && ! grep -Eq 'contents: write|pull-requests: write|issues: write' "$planner" \
   && pass "planner consumes the immutable prerequisite without mutation authority" \
   || fail "planner contract or authority drifted"
-grep -q 'client-id: \${{ vars.RENOVATE_COMPATIBILITY_CLIENT_ID }}' "$planner" \
-  && grep -q 'token: \${{ steps.app-token.outputs.token }}' "$planner" \
-  && ! grep -q 'app-id:' "$planner" \
-  && pass "planner authenticates private policy checkout with dedicated reader" \
-  || fail "planner private policy authentication drifted"
-planner_mint="$(sed -n '/name: Mint compatibility policy reader token/,/name: Check out immutable organization policy/p' "$planner")"
-[ "$(grep -c 'permission-' <<<"$planner_mint")" -eq 1 ] \
-  && grep -q 'permission-contents: read' <<<"$planner_mint" \
-  && ! grep -Eq 'permission-[^:]+: write' <<<"$planner_mint" \
-  && pass "planner token is limited to contents read" \
-  || fail "planner token permissions are absent or broadened"
+# Interim per ADR 0111: same human-held PAT stand-in as the reconciler, no
+# App-token mint on this path while that ADR is in effect.
+grep -q 'token: \${{ secrets.RENOVATE_COMPATIBILITY_PAT }}' "$planner" \
+  && ! grep -q 'RENOVATE_COMPATIBILITY_CLIENT_ID\|RENOVATE_COMPATIBILITY_APP_PRIVATE_KEY\|create-github-app-token\|app-id:' "$planner" \
+  && pass "planner authenticates private policy checkout with the interim compatibility PAT (ADR 0111)" \
+  || fail "planner interim PAT authentication drifted"
 
 sha=0123456789abcdef0123456789abcdef01234567
 caller="$(bash "$generator" "$sha" typescript 7.1.0 node-jest-ts-jest)" || fail "caller generation failed"

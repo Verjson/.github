@@ -12,6 +12,7 @@ Reverse-chronological index of org-level decisions.
 | # | Date | Decision |
 |---|------|----------|
 | [0112](0112-arm-authorization-checks-reach-a-terminal-state/README.md) | 2026-08-20 | An armed authorization check always reaches a terminal state |
+| [0111](0111-interim-pat-for-renovate-compatibility-control-plane/README.md) | 2026-08-20 | Interim human PAT for the Renovate compatibility control plane |
 | [0110](0110-consume-arm-receipt-artifact-on-last-read/README.md) | 2026-08-19 | Delete the arm receipt artifact on its last required read |
 | [0109](0109-observe-first-renovate-compatibility-control-plane/README.md) | 2026-08-18 | Observe-first Renovate compatibility control plane |
 | [0108](0108-bound-package-retention-to-three-stable-releases/README.md) | 2026-08-18 | Bound package retention to three stable releases |
