@@ -183,12 +183,29 @@ def parse_package_table(headers: list[str], rows: list[list[str]]) -> tuple[Upda
     return updates
 
 
+def lock_file_rows(
+    headers: list[str], lines: list[str], index: int
+) -> list[list[str]] | None:
+    """Rows of a lockFileMaintenance table, or None when this table is not one.
+
+    Recognition is keyed on the `lockFileMaintenance` update type rather than on the
+    headers alone, so an unrelated two-column table quoted in a package pull request's
+    release notes stays as invisible to the parser as it was before this shape existed.
+    """
+    if headers != LOCK_FILE_HEADERS:
+        return None
+    try:
+        rows = table_rows(headers, lines, index)
+    except AutomationError:
+        return None
+    if not any(cells[0] == LOCK_FILE_UPDATE_TYPE for cells in rows):
+        return None
+    return rows
+
+
 def parse_lock_file_table(rows: list[list[str]]) -> tuple[Update, ...]:
-    if len(rows) != 1:
-        raise AutomationError("Renovate lock file maintenance table must contain one row")
-    update_type, change = rows[0]
-    if update_type != LOCK_FILE_UPDATE_TYPE or LOCK_FILE_CHANGE.fullmatch(change) is None:
-        raise AutomationError("Renovate update table contains an unsupported update or change cell")
+    if len(rows) != 1 or LOCK_FILE_CHANGE.fullmatch(rows[0][1]) is None:
+        raise AutomationError("Renovate lock file maintenance table is not the documented shape")
     return LOCK_FILE_MAINTENANCE
 
 
@@ -206,8 +223,10 @@ def parse_updates(body: str) -> tuple[Update, ...]:
             continue
         if "Package" in headers and "Change" in headers:
             tables.append(parse_package_table(headers, table_rows(headers, lines, index)))
-        elif headers == LOCK_FILE_HEADERS:
-            tables.append(parse_lock_file_table(table_rows(headers, lines, index)))
+            continue
+        rows = lock_file_rows(headers, lines, index)
+        if rows is not None:
+            tables.append(parse_lock_file_table(rows))
     if len(tables) != 1:
         raise AutomationError("pull-request body must contain exactly one Renovate update table")
     updates = tables[0]

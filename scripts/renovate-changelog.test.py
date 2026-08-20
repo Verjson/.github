@@ -105,6 +105,54 @@ class RenovateTableTests(unittest.TestCase):
         updates = renovate_changelog.parse_updates(LOCK_FILE_BODY)
         self.assertEqual(renovate_changelog.LOCK_FILE_MAINTENANCE, updates)
 
+    def test_accepts_lock_file_change_wording_that_renovate_may_reword(self) -> None:
+        body = LOCK_FILE_BODY.replace("All locks refreshed", "All lock files refreshed")
+        self.assertEqual(
+            renovate_changelog.LOCK_FILE_MAINTENANCE,
+            renovate_changelog.parse_updates(body),
+        )
+
+    def test_ignores_an_unrelated_two_column_table_in_a_package_body(self) -> None:
+        quoted = BODY + "\n| Update | Change |\n|---|---|\n| Docs | Rewritten |\n"
+        self.assertEqual(
+            (
+                renovate_changelog.Update(
+                    package="ip-address", from_version="10.4.0", to_version="10.5.0"
+                ),
+            ),
+            renovate_changelog.parse_updates(quoted),
+        )
+
+    def test_rejects_lock_file_tables_outside_the_documented_shape(self) -> None:
+        row = LOCK_FILE_BODY.splitlines()[-1] + "\n"
+        fixtures = (
+            ("a second update table", LOCK_FILE_BODY + "\n" + BODY),
+            ("a repeated maintenance row", LOCK_FILE_BODY + row),
+            (
+                "an unexpected update type",
+                LOCK_FILE_BODY.replace("lockFileMaintenance", "rangeStrategy"),
+            ),
+            (
+                "a marked-up change cell",
+                LOCK_FILE_BODY.replace(
+                    "All locks refreshed", "[All locks refreshed](https://attacker.invalid)"
+                ),
+            ),
+            ("an empty change cell", LOCK_FILE_BODY.replace("All locks refreshed", "")),
+            (
+                "an extra column",
+                LOCK_FILE_BODY.replace("| Update | Change |", "| Update | Change | Notes |"),
+            ),
+            (
+                "renamed columns",
+                LOCK_FILE_BODY.replace("| Update | Change |", "| Type | Result |"),
+            ),
+        )
+        for description, body in fixtures:
+            with self.subTest(description=description):
+                with self.assertRaises(renovate_changelog.AutomationError):
+                    renovate_changelog.parse_updates(body)
+
     def test_rejects_ambiguous_or_unlinked_package_tables(self) -> None:
         duplicate = BODY + "\n" + BODY
         unlinked = BODY.replace(
@@ -369,6 +417,51 @@ class GitDataWriteTests(unittest.TestCase):
         )
         self.assertEqual({"sha": NEW_COMMIT, "force": False}, mutations[-1][2])
         self.assertEqual([HEAD], mutations[-2][2]["parents"])
+
+    def test_writes_the_fixed_fragment_for_a_lock_file_maintenance_branch(self) -> None:
+        head_ref = "renovate/lock-file-maintenance"
+        fragment_path = "NEXT/2026-08-16-issue-263-renovate-lock-file-maintenance.md"
+        document = pull_request(body=LOCK_FILE_BODY, head_ref=head_ref)
+        planned = renovate_changelog.plan(
+            FakeClient(
+                {("GET", f"repos/{REPOSITORY}/pulls/{PR_NUMBER}"): [document]}, pages=[]
+            ),
+            REPOSITORY,
+            PR_NUMBER,
+            HEAD,
+            "main",
+            dt.date(2026, 8, 16),
+        )
+        read_client = FakeClient(
+            {
+                ("GET", f"repos/{REPOSITORY}/pulls/{PR_NUMBER}"): [document],
+                ("GET", f"repos/{REPOSITORY}/contents/{fragment_path}?ref={HEAD}"): [
+                    renovate_changelog.GitHubApiError("GET", fragment_path, 404)
+                ],
+            },
+            pages=[],
+        )
+        write_client = FakeClient(
+            {
+                ("GET", f"repos/{REPOSITORY}/git/ref/heads/{head_ref}"): [
+                    {"object": {"type": "commit", "sha": HEAD}}
+                ],
+                ("GET", f"repos/{REPOSITORY}/git/commits/{HEAD}"): [
+                    {"tree": {"sha": TREE}}
+                ],
+                ("POST", f"repos/{REPOSITORY}/git/blobs"): [{"sha": BLOB}],
+                ("POST", f"repos/{REPOSITORY}/git/trees"): [{"sha": NEW_TREE}],
+                ("POST", f"repos/{REPOSITORY}/git/commits"): [{"sha": NEW_COMMIT}],
+                ("PATCH", f"repos/{REPOSITORY}/git/refs/heads/{head_ref}"): [
+                    {"object": {"sha": NEW_COMMIT}}
+                ],
+            },
+            pages=[],
+        )
+        self.assertEqual(
+            f"created {fragment_path} at {NEW_COMMIT}",
+            renovate_changelog.apply(read_client, write_client, planned),
+        )
 
     def test_refuses_to_write_when_the_branch_moved(self) -> None:
         read_client = self.read_client()

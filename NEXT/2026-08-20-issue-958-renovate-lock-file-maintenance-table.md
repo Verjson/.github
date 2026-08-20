@@ -18,7 +18,11 @@ and the fragment still had to be written by hand (`Verjson/AiB#231` and two earl
 The parser stays strict for the `Package`/`Change` shape: this is an additional recognized
 shape, requiring exactly the `Update`/`Change` headers, exactly one row, the literal
 `lockFileMaintenance` update type, and a plain-text change cell. A body carrying that table
-plus any other update table still fails the "exactly one" guard rather than guessing. Since
+plus any other update table still fails the "exactly one" guard rather than guessing.
+Recognition is keyed on the `lockFileMaintenance` update type rather than on the headers
+alone, so an unrelated two-column table quoted in a package pull request's release notes
+stays as invisible to the parser as it was before this shape existed — the fix must not
+trade one fail-closed class for another on the majority class. Since
 the change refreshes every transitive lock entry rather than named dependencies, the
 generated fragment carries no per-package rows and lands at
 `NEXT/<date>-issue-<pr>-renovate-lock-file-maintenance.md`. See
