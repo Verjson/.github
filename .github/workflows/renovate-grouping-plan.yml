@@ -16,20 +16,16 @@ jobs:
     runs-on: ${{ fromJSON(vars.VERJSON_LANE_TRUSTED || vars.VERJSON_LANE_FALLBACK || '["ubuntu-24.04"]') }}
     timeout-minutes: 10
     steps:
-      - name: Mint compatibility policy reader token
-        id: app-token
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
-        with:
-          client-id: ${{ vars.RENOVATE_COMPATIBILITY_CLIENT_ID }}
-          private-key: ${{ secrets.RENOVATE_COMPATIBILITY_APP_PRIVATE_KEY }}
-          owner: Verjson
-          permission-contents: read
       - name: Check out immutable organization policy
+        # Interim auth per ADR 0111 (supersedes ADR 0109's App-token mint for
+        # this repository until the dedicated compatibility App is
+        # provisioned): a human-held PAT with only the read access this job
+        # needs, not a broader organization credential.
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: Verjson/renovate-config
           ref: dd08f8471fdfabbdbbb32051e03387fcf5df63bd
-          token: ${{ steps.app-token.outputs.token }}
+          token: ${{ secrets.RENOVATE_COMPATIBILITY_PAT }}
           persist-credentials: false
       - name: Validate candidates and render the dry-run plan
         env:

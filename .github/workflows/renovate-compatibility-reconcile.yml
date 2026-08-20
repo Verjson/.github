@@ -24,20 +24,13 @@ jobs:
         with:
           path: .renovate-compatibility-source-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
           persist-credentials: false
-      - name: Mint compatibility observer token
-        id: app-token
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
-        with:
-          client-id: ${{ vars.RENOVATE_COMPATIBILITY_CLIENT_ID }}
-          private-key: ${{ secrets.RENOVATE_COMPATIBILITY_APP_PRIVATE_KEY }}
-          owner: Verjson
-          permission-contents: read
-          permission-pull-requests: read
-          permission-checks: read
-          permission-statuses: read
       - name: Fetch the reviewed policy registry
+        # Interim auth per ADR 0111 (supersedes ADR 0109's App-token mint for
+        # this repository until the dedicated compatibility App is
+        # provisioned): a human-held PAT with only the read access this job
+        # needs, not a broader organization credential.
         env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          GH_TOKEN: ${{ secrets.RENOVATE_COMPATIBILITY_PAT }}
           POLICY_SHA: dd08f8471fdfabbdbbb32051e03387fcf5df63bd
         run: |
           set -euo pipefail
@@ -45,7 +38,7 @@ jobs:
             --jq .content | base64 -d > compatibility-holds.json
       - name: Inventory Renovate failures for controlled retry triage
         env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          GH_TOKEN: ${{ secrets.RENOVATE_COMPATIBILITY_PAT }}
         run: |
           set -euo pipefail
           # GraphQL and jq variables are data for those interpreters, not shell variables.
