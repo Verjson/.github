@@ -156,6 +156,8 @@ def parse_update_row(package_cell: str, change_cell: str) -> Update:
 def table_rows(headers: list[str], lines: list[str], index: int) -> list[list[str]]:
     if len(headers) != len(set(headers)):
         raise AutomationError("Renovate update table contains duplicate column names")
+    if index + 1 >= len(lines):
+        raise AutomationError("Renovate update table has no separator row")
     separators = table_cells(lines[index + 1])
     if len(separators) != len(headers) or not all(
         TABLE_SEPARATOR.fullmatch(cell) for cell in separators

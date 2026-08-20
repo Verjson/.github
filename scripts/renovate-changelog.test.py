@@ -153,6 +153,14 @@ class RenovateTableTests(unittest.TestCase):
                 with self.assertRaises(renovate_changelog.AutomationError):
                     renovate_changelog.parse_updates(body)
 
+    def test_rejects_a_header_row_with_no_lines_after_it(self) -> None:
+        # #971: a body whose final line is a bare header row has no separator
+        # row to read; that must fail closed as AutomationError, not raise an
+        # unhandled IndexError past the AutomationError boundary.
+        truncated = "This PR contains the following updates:\n\n| Package | Change |"
+        with self.assertRaises(renovate_changelog.AutomationError):
+            renovate_changelog.parse_updates(truncated)
+
     def test_rejects_ambiguous_or_unlinked_package_tables(self) -> None:
         duplicate = BODY + "\n" + BODY
         unlinked = BODY.replace(
