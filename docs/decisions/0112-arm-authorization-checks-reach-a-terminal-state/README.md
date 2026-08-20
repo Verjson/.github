@@ -1,4 +1,4 @@
-# 0111 — An armed authorization check always reaches a terminal state
+# 0112 — An armed authorization check always reaches a terminal state
 
 - **Date:** 2026-08-20
 - **Status:** Accepted

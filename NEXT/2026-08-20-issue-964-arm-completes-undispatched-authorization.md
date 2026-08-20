@@ -21,5 +21,5 @@ three conclusion-less `in_progress` authorization checks. The new guard only eve
 a failure, skips any check-run a dispatched review or an earlier failure path already
 owns, and is covered by
 `scripts/ci-gate/arm-authorization-terminal-state.test.sh`. See
-[ADR 0111](../docs/decisions/0111-arm-authorization-checks-reach-a-terminal-state/README.md);
+[ADR 0112](../docs/decisions/0112-arm-authorization-checks-reach-a-terminal-state/README.md);
 automatic re-arming of a dead authorization is deliberately left out of scope there.
