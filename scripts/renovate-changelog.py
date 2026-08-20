@@ -37,6 +37,9 @@ CHANGE = re.compile(
 )
 VERSION = re.compile(r"^[0-9A-Za-z~^<>=*][0-9A-Za-z._+:/@~^<>=* -]{0,127}$")
 TABLE_SEPARATOR = re.compile(r"^:?-{3,}:?$")
+LOCK_FILE_HEADERS = ["Update", "Change"]
+LOCK_FILE_UPDATE_TYPE = "lockFileMaintenance"
+LOCK_FILE_CHANGE = re.compile(r"^[A-Za-z][A-Za-z0-9 ._-]{0,63}$")
 MAX_UPDATES = 50
 MAX_FRAGMENT_BYTES = 256 * 1024
 
@@ -56,6 +59,11 @@ class Update:
     package: str
     from_version: str
     to_version: str
+
+
+# Renovate's lockFileMaintenance class refreshes every transitive lock entry
+# rather than named dependencies, so its admitted table carries no package rows.
+LOCK_FILE_MAINTENANCE: tuple[Update, ...] = ()
 
 
 class GitHubClient:
@@ -145,6 +153,45 @@ def parse_update_row(package_cell: str, change_cell: str) -> Update:
     return Update(package_match.group(1), from_version, to_version)
 
 
+def table_rows(headers: list[str], lines: list[str], index: int) -> list[list[str]]:
+    if len(headers) != len(set(headers)):
+        raise AutomationError("Renovate update table contains duplicate column names")
+    separators = table_cells(lines[index + 1])
+    if len(separators) != len(headers) or not all(
+        TABLE_SEPARATOR.fullmatch(cell) for cell in separators
+    ):
+        raise AutomationError("Renovate update table separator is malformed")
+    rows: list[list[str]] = []
+    row_index = index + 2
+    while row_index < len(lines) and lines[row_index].startswith("|"):
+        cells = table_cells(lines[row_index])
+        if len(cells) != len(headers):
+            raise AutomationError("Renovate update table row has the wrong number of columns")
+        rows.append(cells)
+        row_index += 1
+    return rows
+
+
+def parse_package_table(headers: list[str], rows: list[list[str]]) -> tuple[Update, ...]:
+    package_index = headers.index("Package")
+    change_index = headers.index("Change")
+    updates = tuple(
+        parse_update_row(cells[package_index], cells[change_index]) for cells in rows
+    )
+    if not updates:
+        raise AutomationError("Renovate update table contains no updates")
+    return updates
+
+
+def parse_lock_file_table(rows: list[list[str]]) -> tuple[Update, ...]:
+    if len(rows) != 1:
+        raise AutomationError("Renovate lock file maintenance table must contain one row")
+    update_type, change = rows[0]
+    if update_type != LOCK_FILE_UPDATE_TYPE or LOCK_FILE_CHANGE.fullmatch(change) is None:
+        raise AutomationError("Renovate update table contains an unsupported update or change cell")
+    return LOCK_FILE_MAINTENANCE
+
+
 def parse_updates(body: str) -> tuple[Update, ...]:
     if not isinstance(body, str) or len(body.encode("utf-8")) > 1024 * 1024:
         raise AutomationError("Renovate pull-request body is missing or too large")
@@ -157,28 +204,10 @@ def parse_updates(body: str) -> tuple[Update, ...]:
             headers = table_cells(line)
         except AutomationError:
             continue
-        if "Package" not in headers or "Change" not in headers:
-            continue
-        if len(headers) != len(set(headers)):
-            raise AutomationError("Renovate update table contains duplicate column names")
-        separators = table_cells(lines[index + 1])
-        if len(separators) != len(headers) or not all(
-            TABLE_SEPARATOR.fullmatch(cell) for cell in separators
-        ):
-            raise AutomationError("Renovate update table separator is malformed")
-        package_index = headers.index("Package")
-        change_index = headers.index("Change")
-        updates: list[Update] = []
-        row_index = index + 2
-        while row_index < len(lines) and lines[row_index].startswith("|"):
-            cells = table_cells(lines[row_index])
-            if len(cells) != len(headers):
-                raise AutomationError("Renovate update table row has the wrong number of columns")
-            updates.append(parse_update_row(cells[package_index], cells[change_index]))
-            row_index += 1
-        if not updates:
-            raise AutomationError("Renovate update table contains no updates")
-        tables.append(tuple(updates))
+        if "Package" in headers and "Change" in headers:
+            tables.append(parse_package_table(headers, table_rows(headers, lines, index)))
+        elif headers == LOCK_FILE_HEADERS:
+            tables.append(parse_lock_file_table(table_rows(headers, lines, index)))
     if len(tables) != 1:
         raise AutomationError("pull-request body must contain exactly one Renovate update table")
     updates = tables[0]
@@ -280,8 +309,12 @@ def valid_added_fragment(client: Any, repository: str, pr_number: int, head_sha:
 def fragment_for(
     pr_number: int, updates: tuple[Update, ...], today: dt.date
 ) -> tuple[str, str]:
-    path = f"NEXT/{today.isoformat()}-issue-{pr_number}-renovate-dependencies.md"
-    if len(updates) == 1:
+    slug = "renovate-dependencies"
+    if updates == LOCK_FILE_MAINTENANCE:
+        slug = "renovate-lock-file-maintenance"
+        title = "Refresh all lock file dependencies"
+        body = "Refresh all lock file dependencies with Renovate lock file maintenance."
+    elif len(updates) == 1:
         update = updates[0]
         title = (
             f"Update dependency {update.package} from {update.from_version} "
@@ -298,6 +331,7 @@ def fragment_for(
             for update in updates
         )
         body = f"Update dependencies with Renovate: {changes}."
+    path = f"NEXT/{today.isoformat()}-issue-{pr_number}-{slug}.md"
     content = (
         "---\n"
         f"date: {today.isoformat()}\n"

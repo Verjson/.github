@@ -34,6 +34,15 @@ BODY = """This PR contains the following updates:
 |---|---|
 | [ip-address](https://redirect.github.com/ip-num/ip-num) | [`10.4.0` → `10.5.0`](https://renovatebot.com/diffs/npm/ip-address/10.4.0/10.5.0) |
 """
+# Verbatim body of Verjson/AiB#231 ("chore(deps): lock file maintenance"): the
+# weekly lockFileMaintenance class carries a two-column `Update`/`Change` table
+# with no `Package` column at all (Verjson/.github#958).
+LOCK_FILE_BODY = """This PR contains the following updates:
+
+| Update | Change |
+|---|---|
+| lockFileMaintenance | All locks refreshed |
+"""
 
 
 class FakeClient:
@@ -91,6 +100,10 @@ class RenovateTableTests(unittest.TestCase):
             ),
             renovate_changelog.parse_updates(BODY),
         )
+
+    def test_recognizes_the_lock_file_maintenance_table_shape(self) -> None:
+        updates = renovate_changelog.parse_updates(LOCK_FILE_BODY)
+        self.assertEqual(renovate_changelog.LOCK_FILE_MAINTENANCE, updates)
 
     def test_rejects_ambiguous_or_unlinked_package_tables(self) -> None:
         duplicate = BODY + "\n" + BODY
@@ -264,6 +277,35 @@ Document the dependency update.
         )
         self.assertIn("dependency ip-address", result["fragment_content"])
         self.assertIn("from `10.4.0` to `10.5.0`", result["fragment_content"])
+
+
+    def test_builds_a_fixed_fragment_for_a_lock_file_maintenance_pull_request(self) -> None:
+        client = FakeClient(
+            {
+                ("GET", f"repos/{REPOSITORY}/pulls/{PR_NUMBER}"): [
+                    pull_request(
+                        body=LOCK_FILE_BODY, head_ref="renovate/lock-file-maintenance"
+                    )
+                ]
+            },
+            pages=[],
+        )
+        result = renovate_changelog.plan(
+            client, REPOSITORY, PR_NUMBER, HEAD, "main", dt.date(2026, 8, 16)
+        )
+        self.assertTrue(result["required"])
+        self.assertEqual([], result["updates"])
+        self.assertEqual(
+            "NEXT/2026-08-16-issue-263-renovate-lock-file-maintenance.md",
+            result["fragment_path"],
+        )
+        self.assertIn(
+            "title: Refresh all lock file dependencies", result["fragment_content"]
+        )
+        self.assertIn(
+            "Refresh all lock file dependencies with Renovate lock file maintenance.",
+            result["fragment_content"],
+        )
 
 
 class GitDataWriteTests(unittest.TestCase):
