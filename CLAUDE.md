@@ -58,15 +58,19 @@ authority is enabled for non-trivial or fanned-out autonomous work:
 
 ## Active Issues / Areas for Improvement
 
+- [#931](https://github.com/Verjson/.github/issues/931) — **Blocks #701/#728 too.** Actions artifact storage quota exhausted org-wide; ~5.15GB of expired artifacts reclaimed 2026-08-19, but GitHub's usage counter can lag 6-12h — not yet empirically confirmed clear as of 2026-08-20T00:30Z. Re-check `verjson-browser-agent#46` / `verjson-cloud-storage#92`'s `arm` check after the window elapses.
 - [#858](https://github.com/Verjson/.github/issues/858) — Make advisory AI outcomes visibly neutral without removing ADR 0090's human fallback.
 - [#856](https://github.com/Verjson/.github/issues/856) — Completed DeepSeek responses lose typed extraction diagnostics when no verdict can be replayed.
-- [#701](https://github.com/Verjson/.github/issues/701) — **Blocks the merge gate.** The arm now runs but its dispatch 404s in 17 of 21 armed repos that have no generated `ai-review-merge.yml` caller.
-- [#728](https://github.com/Verjson/.github/issues/728) — The 2026-08-08 gate outage; ruleset half fixed by ADR 0094, remainder blocked on #701.
+- [#701](https://github.com/Verjson/.github/issues/701) — **Blocks the merge gate.** 15/17 previously-broken adopter repos now fixed; the remaining 2 (`verjson-browser-agent#46`, `verjson-cloud-storage#92`) are code-correct and blocked purely on #931 clearing.
+- [#728](https://github.com/Verjson/.github/issues/728) — The 2026-08-08 gate outage; ruleset half fixed by ADR 0094, remainder closes on the same #931 trigger as #701.
 - [#731](https://github.com/Verjson/.github/issues/731) — Require the generated changelog contract check in the canonical Node ruleset.
-- [#933](https://github.com/Verjson/.github/issues/933) — Generated caller pins go stale silently; toquorum's gate-rearm.yml predates deepseek provider support.
-- [#676](https://github.com/Verjson/.github/issues/676) — Finish privileged caller regeneration and remove the temporary legacy route.
-- [#629](https://github.com/Verjson/.github/issues/629) — Protected canary and rolling runner deployment contract.
-- [#718](https://github.com/Verjson/.github/issues/718) — GitHub Packages has no per-customer entitlement; blocking paid distribution.
+- [#933](https://github.com/Verjson/.github/issues/933) — Part 1 (bump `toquorum`'s stale `gate-rearm.yml` pin) landed via `toquorum#636` but not yet empirically confirmed (no post-merge arm run observed as of 2026-08-20). Part 2 (systemic drift-detection mechanism for stale consumer caller pins) not started — needs a dedicated design pass + ADR.
+- [#676](https://github.com/Verjson/.github/issues/676) — Finish privileged caller regeneration and remove the temporary legacy route; blocked on GitHub-hosted compute availability for private privileged jobs (owner-confirmed hold).
+- [#629](https://github.com/Verjson/.github/issues/629) — Protected canary and rolling runner deployment contract; blocked on 3 external inputs from the repo owner (DigitalOcean project ID, a `production` deploy secret, a `verjson-cloud` CLI-acquisition path).
+- [#718](https://github.com/Verjson/.github/issues/718) — GitHub Packages has no per-customer entitlement; blocking paid distribution. Design-gated on a user-owned product decision (target registry/entitlement model).
+- [#699](https://github.com/Verjson/.github/issues/699) — Renovate grouping/compatibility control plane; code side done (PR #908), blocked on an org admin provisioning a dedicated least-privilege GitHub App per ADR 0109.
+- [#157](https://github.com/Verjson/.github/issues/157) — Cross-repo commit coverage for the rework reconciler; implementation and runbook merged (#183), blocked on an org admin provisioning `REWORK_RECONCILE_TOKEN`.
+- [#819](https://github.com/Verjson/.github/issues/819) / [#810](https://github.com/Verjson/.github/issues/810) — REQ-10 runner-lane remediation; blocked on 6 unmanaged-repo PMs landing lane migrations or recording exceptions (one, `AiB#229`, just landed). No `.github`-side action item.
 - Several `scripts/ci-gate/*.test.sh` files are not registered in `scripts/actions-ci-groups.tsv` and so never run in Actions — they've drifted badly unnoticed: `dispatch-permission.test.sh` (28 failures as of 2026-08-19), `self-job-exclusion.test.sh`, `entry-workflow-provenance.test.sh`, `merge-branch-cleanup.test.sh`, `ci-wait-fail-closed.test.sh`, `required-workflow-provenance.test.sh` (all fail outright, "could not extract ... block"). Found while adding `#931`'s arm-receipt cleanup; out of scope there. Needs its own triage: register-and-fix or delete-as-dead per file.
 
 Prune an entry when its issue closes. This list loads into every session, so a
