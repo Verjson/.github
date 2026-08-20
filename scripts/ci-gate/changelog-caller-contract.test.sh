@@ -122,22 +122,40 @@ import os
 import yaml
 
 mode = os.environ["MODE"]
-# (mode, step name) -> the later step in the same job that consumes the
-# persisted credential, which is why that checkout may keep it.
+# (mode, checkout step name) -> the later step, in the same job, that must
+# still exist and still perform the remote git operation the exemption is
+# named for. #971: checked structurally below, not just matched by name, so
+# renaming or deleting that consuming step re-flags the checkout instead of
+# silently keeping the exemption alive.
 justified = {
-    ("release-node", "Check out the tree that will be released"):
-        "Resolve restart-safe release state runs git ls-remote/git fetch against origin",
+    ("release-node", "Check out the tree that will be released"): {
+        "consumer": "Resolve restart-safe release state",
+        "requires": ("git ls-remote", "git fetch"),
+    },
 }
 workflow = yaml.safe_load(os.environ["WORKFLOW"])
 checkouts = 0
 violations = []
 for job_name, job in (workflow.get("jobs") or {}).items():
-    for index, step in enumerate(job.get("steps") or []):
+    steps = job.get("steps") or []
+    steps_by_name = {step.get("name"): step for step in steps}
+    for index, step in enumerate(steps):
         if not str(step.get("uses") or "").startswith("actions/checkout@"):
             continue
         checkouts += 1
         name = step.get("name")
-        if (mode, name) in justified:
+        exemption = justified.get((mode, name))
+        if exemption is not None:
+            consumer = steps_by_name.get(exemption["consumer"])
+            consumer_run = str((consumer or {}).get("run") or "")
+            if consumer is not None and all(
+                needle in consumer_run for needle in exemption["requires"]
+            ):
+                continue
+            violations.append(
+                f"{name} (exemption stale: consumer {exemption['consumer']!r} "
+                "missing or no longer performs the justifying remote operation)"
+            )
             continue
         if ((step.get("with") or {}).get("persist-credentials")) is not False:
             violations.append(name or f"{job_name}[{index}] (unnamed)")
@@ -157,6 +175,48 @@ for audited_mode in pr-gate release-node release-propose workflow \
     && pass "generated $audited_mode keeps no job credential in the checked-out tree, #959 ($audit_report)" \
     || fail "generated $audited_mode persists the job credential into checked-out code (#959): $audit_report"
 done
+
+# #971: the release-node exemption above is only as good as the consuming step
+# it names. Tamper with a genuine release-node workflow two ways and confirm
+# the audit re-flags the checkout instead of trusting the step-name match alone.
+release_node_workflow="$(bash "$gen" release-node "$sha")"
+tampered_renamed="$(WORKFLOW="$release_node_workflow" python3 - <<'PY'
+import os
+
+import yaml
+
+workflow = yaml.safe_load(os.environ["WORKFLOW"])
+for job in (workflow.get("jobs") or {}).values():
+    for step in job.get("steps") or []:
+        if step.get("name") == "Resolve restart-safe release state":
+            step["name"] = "Renamed"
+print(yaml.safe_dump(workflow, sort_keys=False))
+PY
+)"
+audit_report="$(audit_checkout_credentials release-node "$tampered_renamed" 2>&1)" \
+  && fail "audit did not notice the consuming step was renamed away (#971)" \
+  || { grep -q "exemption stale" <<<"$audit_report" \
+    && pass "renaming the consuming step re-flags the checkout (#971)" \
+    || fail "audit failed for the wrong reason: $audit_report"; }
+
+tampered_defanged="$(WORKFLOW="$release_node_workflow" python3 - <<'PY'
+import os
+
+import yaml
+
+workflow = yaml.safe_load(os.environ["WORKFLOW"])
+for job in (workflow.get("jobs") or {}).values():
+    for step in job.get("steps") or []:
+        if step.get("name") == "Resolve restart-safe release state":
+            step["run"] = "echo no longer touches origin"
+print(yaml.safe_dump(workflow, sort_keys=False))
+PY
+)"
+audit_report="$(audit_checkout_credentials release-node "$tampered_defanged" 2>&1)" \
+  && fail "audit did not notice the consuming step stopped using the credential (#971)" \
+  || { grep -q "exemption stale" <<<"$audit_report" \
+    && pass "a consuming step that drops the remote git operation re-flags the checkout (#971)" \
+    || fail "audit failed for the wrong reason: $audit_report"; }
 
 grep -q "renovate-changelog.yml@$sha" <<<"$renovate_attribution" \
   && grep -qE "^ +contract_ref: $sha$" <<<"$renovate_attribution" \
