@@ -151,7 +151,14 @@ echo "Arm receipt verified for check $AUTHORIZATION_CHECK_ID on $EXPECTED_HEAD_S
 if [ -n "${ARM_RECEIPT_ARTIFACT_ID_FILE:-}" ]; then
   # Best-effort like the deletion it enables (#947): a write failure here is
   # bookkeeping for a cleanup optimization, not a verification result, and
-  # must not turn an otherwise-successful verification into a failure.
-  printf '%s\n' "$artifact_id" >"$ARM_RECEIPT_ARTIFACT_ID_FILE" || \
+  # must not turn an otherwise-successful verification into a failure. Written
+  # via a same-directory temp file and atomic rename (#950): a partial write
+  # (e.g. ENOSPC/EIO) can then never leave a truncated artifact ID at the
+  # target path for a later deletion step to read.
+  receipt_id_tmp="$(mktemp "${ARM_RECEIPT_ARTIFACT_ID_FILE}.XXXXXX" 2>/dev/null)" && \
+    printf '%s\n' "$artifact_id" >"$receipt_id_tmp" && \
+    mv -f "$receipt_id_tmp" "$ARM_RECEIPT_ARTIFACT_ID_FILE" || {
     echo "::warning::failed to record consumed arm receipt artifact ID for deferred deletion (non-fatal; verification itself succeeded)"
+    rm -f "${receipt_id_tmp:-}" 2>/dev/null
+  }
 fi
