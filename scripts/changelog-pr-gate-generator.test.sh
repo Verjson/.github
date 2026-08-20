@@ -26,6 +26,29 @@ test_line="$(grep -n 'bash scripts/changelog-contract.test.sh' "$tmp/changelog-c
 echo "ok - generated PR gate uses a job-writable changelog cache before validation"
 echo "ok - generated PR gate defaults to an ephemeral hosted runner (#935)"
 
+# #959. Adopters cannot hand-edit generated output, so a step this file emits
+# without a `name:` sits in the blind spot of every downstream policy scanner
+# that keys sections off the `- name:` marker — the reporting adopter's
+# credential-hygiene check reported "valid" while never reading this job's
+# checkout at all. Naming every emitted step costs nothing and keeps the
+# generated gate visible to those scans.
+python3 - "$tmp/changelog-contract.yml" <<'PY'
+import sys
+
+import yaml
+
+workflow = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))
+unnamed = [
+    f"{job_name}[{index}]"
+    for job_name, job in (workflow.get("jobs") or {}).items()
+    for index, step in enumerate(job.get("steps") or [])
+    if not step.get("name")
+]
+if unnamed:
+    raise SystemExit("FAIL - generated PR gate emits un-named steps: " + ", ".join(unnamed))
+PY
+echo "ok - every generated PR gate step carries a name downstream scanners can key on (#959)"
+
 "$generator" pr-gate "$ref" --untrusted-runner self-hosted,untrusted-pr,ephemeral \
   >"$tmp/changelog-contract-override.yml"
 grep -q 'runs-on: \[self-hosted, untrusted-pr, ephemeral\]' \
