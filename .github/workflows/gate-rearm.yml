@@ -372,6 +372,7 @@ jobs:
           retention-days: 90
 
       - name: Dispatch trusted review after receipt publication
+        id: dispatch
         if: steps.arm.outputs.check_id != ''
         env:
           APP_TOKEN: ${{ steps.app-token.outputs.token }}
@@ -413,3 +414,26 @@ jobs:
               'The trusted review workflow could not be dispatched.'
             exit 1
           fi
+
+      # The check-run is created before the receipt is published, so a failure
+      # between the two -- an artifact-quota rejection, for example -- leaves a
+      # required check pending forever: no review was dispatched, so nothing
+      # else ever completes it, and ADR 0081's promotion retry deliberately
+      # waits on a pending required check instead of resolving one. Give that
+      # check-run a terminal state here. This can only ever write a failure, so
+      # it cannot grant authorization, and it never touches a check-run that a
+      # dispatched review or an earlier failure path already owns.
+      - name: Complete the authorization when no review was dispatched
+        if: always() && steps.arm.outputs.check_id != '' && steps.dispatch.outcome != 'success'
+        env:
+          APP_TOKEN: ${{ steps.app-token.outputs.token }}
+          CHECK_ID: ${{ steps.arm.outputs.check_id }}
+        run: |
+          set -euo pipefail
+          [[ "$CHECK_ID" =~ ^[1-9][0-9]*$ ]] || exit 1
+          status="$(GH_TOKEN="$APP_TOKEN" gh api "repos/$TARGET_REPO/check-runs/$CHECK_ID" --jq '.status // ""')"
+          [ "$status" = in_progress ] || exit 0
+          GH_TOKEN="$APP_TOKEN" gh api --method PATCH "repos/$TARGET_REPO/check-runs/$CHECK_ID" \
+            -f status=completed -f conclusion=failure \
+            -f 'output[title]=Authorization receipt unavailable' \
+            -f 'output[summary]=The immutable arm receipt was not published, so no trusted review was dispatched and no model charge was incurred. Rerun this arm run to recover the authorization; do not add the re-review label.'
