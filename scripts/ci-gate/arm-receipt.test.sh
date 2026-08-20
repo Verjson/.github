@@ -176,19 +176,25 @@ fi
 # #950: the artifact ID is written via a same-directory temp file and atomic
 # rename, so a write failure can never leave a truncated ID at the target
 # path. A pre-existing (e.g. prior-run) target file must survive untouched.
-write_base
-readonly_dir="$tmp/readonly-dir"; mkdir -p "$readonly_dir"
-artifact_id_file="$readonly_dir/artifact-id"
-printf 'sentinel-prior-id\n' >"$artifact_id_file"
-chmod 555 "$readonly_dir"
-if ARM_RECEIPT_ARTIFACT_ID_FILE="$artifact_id_file" verify >"$tmp/out" 2>&1 \
-    && grep -qF '::warning::failed to record consumed arm receipt artifact ID' "$tmp/out" \
-    && [ "$(cat "$artifact_id_file")" = sentinel-prior-id ]; then
-  pass "a write failure never truncates or overwrites a pre-existing artifact ID file (#950)"
+# #953: a root runner ignores directory permission bits, so chmod 555 would
+# not actually deny the write there -- skip rather than false-fail.
+if [ "$(id -u)" -eq 0 ]; then
+  pass "a write failure never truncates or overwrites a pre-existing artifact ID file (#950, skipped: running as root, permission bits do not restrict root)"
 else
-  fail "a write failure corrupted or replaced the pre-existing artifact ID file (#950)"
+  write_base
+  readonly_dir="$tmp/readonly-dir"; mkdir -p "$readonly_dir"
+  artifact_id_file="$readonly_dir/artifact-id"
+  printf 'sentinel-prior-id\n' >"$artifact_id_file"
+  chmod 555 "$readonly_dir"
+  if ARM_RECEIPT_ARTIFACT_ID_FILE="$artifact_id_file" verify >"$tmp/out" 2>&1 \
+      && grep -qF '::warning::failed to record consumed arm receipt artifact ID' "$tmp/out" \
+      && [ "$(cat "$artifact_id_file")" = sentinel-prior-id ]; then
+    pass "a write failure never truncates or overwrites a pre-existing artifact ID file (#950)"
+  else
+    fail "a write failure corrupted or replaced the pre-existing artifact ID file (#950)"
+  fi
+  chmod 755 "$readonly_dir"
 fi
-chmod 755 "$readonly_dir"
 
 [ "$fails" -eq 0 ] && { echo "All tests passed."; exit 0; }
 echo "$fails test(s) failed."
