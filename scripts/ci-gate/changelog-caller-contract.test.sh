@@ -108,6 +108,56 @@ test_line="$(grep -nF 'bash scripts/changelog-contract.test.sh' <<<"$pr_gate" | 
   && pass "generated PR gate prepares its cache before contract validation" \
   || fail "generated PR gate prepares its cache after contract validation"
 
+# #959. `actions/checkout` persists the job's GITHUB_TOKEN into `.git/config` by
+# default, and every generated caller then runs repository code out of that same
+# workspace — PR-authored code, in the pr-gate case. A checkout may keep the
+# credential only where a later step of the same job actually uses it for a
+# remote operation; that exception is named here, so a mode that grows a new
+# checkout cannot inherit the persisting default unnoticed. Audited across every
+# workflow-emitting mode rather than only the one the report arrived about.
+audit_checkout_credentials() {
+  MODE="$1" WORKFLOW="$2" python3 - <<'PY'
+import os
+
+import yaml
+
+mode = os.environ["MODE"]
+# (mode, step name) -> the later step in the same job that consumes the
+# persisted credential, which is why that checkout may keep it.
+justified = {
+    ("release-node", "Check out the tree that will be released"):
+        "Resolve restart-safe release state runs git ls-remote/git fetch against origin",
+}
+workflow = yaml.safe_load(os.environ["WORKFLOW"])
+checkouts = 0
+violations = []
+for job_name, job in (workflow.get("jobs") or {}).items():
+    for index, step in enumerate(job.get("steps") or []):
+        if not str(step.get("uses") or "").startswith("actions/checkout@"):
+            continue
+        checkouts += 1
+        name = step.get("name")
+        if (mode, name) in justified:
+            continue
+        if ((step.get("with") or {}).get("persist-credentials")) is not False:
+            violations.append(name or f"{job_name}[{index}] (unnamed)")
+print(f"{checkouts} checkout(s)", end="")
+if violations:
+    print("; persists credentials: " + ", ".join(violations))
+    raise SystemExit(1)
+print()
+PY
+}
+for audited_mode in pr-gate release-node release-propose workflow \
+  generated-artifacts generated-artifacts-with-adr-index renovate-attribution; do
+  audit_args=("$audited_mode" "$sha")
+  [ "$audited_mode" != release-propose ] || audit_args+=(--autonomy propose)
+  audit_report="$(audit_checkout_credentials "$audited_mode" \
+    "$(bash "$gen" "${audit_args[@]}")" 2>&1)" \
+    && pass "generated $audited_mode keeps no job credential in the checked-out tree, #959 ($audit_report)" \
+    || fail "generated $audited_mode persists the job credential into checked-out code (#959): $audit_report"
+done
+
 grep -q "renovate-changelog.yml@$sha" <<<"$renovate_attribution" \
   && grep -qE "^ +contract_ref: $sha$" <<<"$renovate_attribution" \
   && pass "Renovate attribution caller binds reusable workflow and helper contract pin" \

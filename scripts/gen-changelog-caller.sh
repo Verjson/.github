@@ -382,10 +382,18 @@ jobs:
     runs-on: ${pr_gate_runs_on}
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: Check out the pull request under validation
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          # The next step runs PR-authored scripts/changelog-contract.test.sh out
+          # of this workspace, and nothing here fetches or pushes afterwards — so
+          # leaving actions/checkout's default on would hand the job's
+          # GITHUB_TOKEN to arbitrary PR code in .git/config for no gain (#959).
+          persist-credentials: false
       - name: Prepare job-scoped changelog tool cache
         run: echo "VERJSON_CHANGELOG_TOOL_CACHE=\$RUNNER_TEMP/verjson-changelog-tools" >> "\$GITHUB_ENV"
-      - run: bash scripts/changelog-contract.test.sh
+      - name: Validate the changelog contract
+        run: bash scripts/changelog-contract.test.sh
 EOF
 }
 
