@@ -99,19 +99,32 @@ widened, or shadowed values fail closed") did not exist in code: a
 misconfigured, shadowed, or absent `VERJSON_LANE_PRIVILEGED` produced no
 diagnostic anywhere.
 
-The fix adds a `validate_privileged_lane` job ahead of `privileged_merge` in
-the reusable workflow, gated by `needs:`, that exact-matches the effective
+The fix adds a validation step as the FIRST step of the existing
+`privileged_merge` job that exact-matches the effective
 `inputs.privileged_lane` against `["self-hosted","general"]` for the
 private-Verjson route and fails the run with a `::error::` diagnostic on any
-other value — missing, malformed, hosted, widened, or shadowed. It is
-deliberately **not** wired the way the rejected 2026-08-14 runner-executed
-resolver would have been: the validation job carries no credential, never
-leaves fixed `ubuntu-24.04` capacity, and produces no output — `runs-on:` on
-`privileged_merge` keeps the exact same fixed literal it always had rather
-than reading anything the validation job returns, so a compromised runner
-still cannot forge its way into selecting the terminal job's capacity. The
-`needs:` relationship exists purely to block scheduling on a failed
-validation, not to carry routing data forward.
+other value — missing, malformed, hosted, widened, or shadowed. `runs-on:` on
+`privileged_merge` is byte-identical to before this fix: the step never reads
+anything a runner produces and never changes where the job lands, so a
+compromised runner still cannot forge its way into selecting the terminal
+job's capacity — the same guarantee the rejected 2026-08-14 runner-executed
+resolver would have broken.
+
+The first attempt at this fix (PR #989, merged 2026-08-21 by this
+organization's own AI-merge authority before the review below was acted on)
+used a separate preceding job gated by `needs:`, run unconditionally on fixed
+`ubuntu-24.04` capacity. The automated review on that PR correctly flagged
+that this forced every caller — including an external self-hosted-only org
+using the `runner_labels` escape hatch, which never otherwise needs
+GitHub-hosted capacity for this workflow — to also obtain hosted capacity
+just to reach a check that is a no-op for their route. A same-day follow-up
+(#989's immediate successor) replaced the separate job with the in-job step
+described above: it runs on whatever capacity `runs-on:` already resolved to
+for that caller, so it adds no new capacity requirement for anyone. A
+preceding job was the ADR's naturally-read shape ("before the terminal merge
+job is scheduled"), but since `runs-on:` here is a fixed literal rather than
+a value derived from any prior resolution step, an early step in the same job
+delivers the identical fail-closed guarantee without that regression.
 
 This restores an invariant already decided above; it does not change the
 decision, so no new ADR number was minted for it.

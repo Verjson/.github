@@ -66,35 +66,21 @@ check_exclusions "$gate" "gate"
 check_exclusions "$canonical" "canonical workflow"
 
 # --- side 2: GitHub control-plane routing selects terminal capacity -----------
-# ADR 0089 amendment (#988): `validate_privileged_lane` is a permitted
-# exception to "no needs anywhere" — it GATES scheduling (needs:) but must
-# never let a runner-produced OUTPUT select where the secret-bearing job
-# lands. So the check narrows from "no needs/outputs token anywhere in the
-# file" to the invariant that actually matters: the validation job produces no
-# output, holds no secret, never leaves fixed hosted capacity, and
-# `privileged_merge`'s `runs-on:` expression itself never references `needs.`.
 python3 - "$canonical" <<'PY' && pass "terminal routing has no runner-produced trust transfer" \
   || fail "a runner output can still select the secret-bearing terminal job"
 import sys, yaml
 d = yaml.safe_load(open(sys.argv[1]))
 jobs = d["jobs"]
-if list(jobs) != ["invalid_verjson_route", "validate_privileged_lane", "privileged_merge"]:
+if list(jobs) != ["invalid_verjson_route", "privileged_merge"]:
     sys.exit(1)
 guard = jobs["invalid_verjson_route"]
-validate = jobs["validate_privileged_lane"]
 merge = jobs["privileged_merge"]
-if any("outputs" in job for job in (guard, validate, merge)):
-    sys.exit(1)
-if "needs" in guard or "needs" in validate:
-    sys.exit(1)
-if merge.get("needs") != ["validate_privileged_lane"]:
-    sys.exit(1)
-if validate.get("runs-on") != "ubuntu-24.04" or "secrets" in str(validate):
-    sys.exit(1)
-runs_on = str(merge.get("runs-on", ""))
+serialized = str(d)
 for forbidden in ("needs.", "resolve_privileged_route", "steps.route.outputs"):
-    if forbidden in runs_on:
+    if forbidden in serialized:
         sys.exit(1)
+if any(key in job for job in (guard, merge) for key in ("needs", "outputs")):
+    sys.exit(1)
 sys.exit(0)
 PY
 
@@ -125,11 +111,10 @@ want_runs_on = "${{ github.repository_owner != 'Verjson' && inputs.runner_labels
 def valid(candidate):
     jobs = candidate.get("jobs", {})
     guard = jobs.get("invalid_verjson_route", {})
-    validate = jobs.get("validate_privileged_lane", {})
     merge = jobs.get("privileged_merge", {})
     guard_steps = guard.get("steps", [])
     return (
-        list(jobs) == ["invalid_verjson_route", "validate_privileged_lane", "privileged_merge"]
+        list(jobs) == ["invalid_verjson_route", "privileged_merge"]
         and guard.get("if") == want_guard_if
         and guard.get("runs-on") == "ubuntu-24.04"
         and guard.get("timeout-minutes") == 1
@@ -139,16 +124,7 @@ def valid(candidate):
         and "secrets." not in str(guard)
         and merge.get("if") == want_if
         and merge.get("runs-on") == want_runs_on
-        and merge.get("needs") == ["validate_privileged_lane"]
-        and "needs" not in guard and "needs" not in validate
-        and all("outputs" not in job for job in (guard, validate, merge))
-        # ADR 0089 amendment (#988): the gate must stay off self-hosted
-        # capacity and carry no secret — a runner-produced trust transfer is
-        # exactly what this validation job must never become.
-        and validate.get("runs-on") == "ubuntu-24.04"
-        and validate.get("permissions") == {}
-        and "secrets" not in validate
-        and "needs." not in str(merge.get("runs-on", ""))
+        and all(key not in job for job in (guard, merge) for key in ("needs", "outputs"))
         and all(name in want_if for name in allowed)
         and "vars." not in want_runs_on
         and "inputs.privileged_lane" not in want_runs_on
@@ -187,30 +163,6 @@ private_hosted = copy.deepcopy(workflow)
 private_hosted["jobs"]["privileged_merge"]["runs-on"] = want_runs_on.replace(
     "fromJSON('[\"self-hosted\",\"general\"]')", "'ubuntu-24.04'")
 mutations.append(private_hosted)
-
-# --- ADR 0089 amendment (#988): the validation gate itself must be tamper-evident
-unwired = copy.deepcopy(workflow)
-del unwired["jobs"]["privileged_merge"]["needs"]
-mutations.append(unwired)
-
-self_hosted_validator = copy.deepcopy(workflow)
-self_hosted_validator["jobs"]["validate_privileged_lane"]["runs-on"] = "self-hosted"
-mutations.append(self_hosted_validator)
-
-credentialed_validator = copy.deepcopy(workflow)
-credentialed_validator["jobs"]["validate_privileged_lane"]["secrets"] = {
-    "ORG_ADMIN_TOKEN": "${{ secrets.ORG_ADMIN_TOKEN }}"
-}
-mutations.append(credentialed_validator)
-
-output_trust_transfer = copy.deepcopy(workflow)
-output_trust_transfer["jobs"]["validate_privileged_lane"]["outputs"] = {
-    "selector": "${{ steps.validate.outputs.selector }}"
-}
-output_trust_transfer["jobs"]["privileged_merge"]["runs-on"] = (
-    "${{ needs.validate_privileged_lane.outputs.selector }}"
-)
-mutations.append(output_trust_transfer)
 
 sys.exit(0 if all(not valid(candidate) for candidate in mutations) else 1)
 PY
