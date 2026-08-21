@@ -11,6 +11,7 @@ Reverse-chronological index of org-level decisions.
 <!-- BEGIN ADR INDEX -->
 | # | Date | Decision |
 |---|------|----------|
+| [0113](0113-refresh-rework-thresholds-repo-list/README.md) | 2026-08-21 | Refresh the rework-telemetry repo list to activity-ranked repos |
 | [0112](0112-arm-authorization-checks-reach-a-terminal-state/README.md) | 2026-08-20 | An armed authorization check always reaches a terminal state |
 | [0111](0111-interim-pat-for-renovate-compatibility-control-plane/README.md) | 2026-08-20 | Interim human PAT for the Renovate compatibility control plane |
 | [0110](0110-consume-arm-receipt-artifact-on-last-read/README.md) | 2026-08-19 | Delete the arm receipt artifact on its last required read |
