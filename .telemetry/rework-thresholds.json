@@ -20,14 +20,17 @@
     "min_sample": 20,
     "hysteresis": 0.05
   },
+  "repos_comment": "Refreshed 2026-08-21 per ADR 0113: top 10 org repos by 6-week bot-filtered commit-activity, excluding verjson-agents (tooling, not a shipped product). See the ADR for methodology and the ranked list.",
   "repos": [
+    "Verjson/nomico",
     "Verjson/.github",
-    "Verjson/catalog-api",
-    "Verjson/catalog-ui",
-    "Verjson/catalog-worker",
-    "Verjson/viager-app",
-    "Verjson/viager-infra",
+    "Verjson/toquorum",
+    "Verjson/SelfPublish-Internal",
+    "Verjson/catalog",
+    "Verjson/verjson-cli-cloud",
+    "Verjson/verjson-ai",
+    "Verjson/AiB",
     "Verjson/verjson-authn",
-    "Verjson/verjson-authz"
+    "Verjson/verjson-observability"
   ]
 }
