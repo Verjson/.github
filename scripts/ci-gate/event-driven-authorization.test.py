@@ -16,7 +16,7 @@ RETRY = ROOT / ".github/workflows/ai-promotion-retry.yml"
 APP_TOKEN_ACTION = "actions/create-github-app-token"
 IMMUTABLE_ACTION = re.compile(rf"^{re.escape(APP_TOKEN_ACTION)}@[0-9a-f]{{40}}$")
 MODEL_ACTION_NAME = "anthropics/claude-code-action"
-MODEL_ACTION_SHA = "e2a4b761cd77a1138a5b41410eda9b28581f9bcd"
+MODEL_ACTION_SHA = "3f854a8fb5146b39d5cbf8b57f70d80810e1366f"
 MODEL_ACTION = f"{MODEL_ACTION_NAME}@{MODEL_ACTION_SHA}"
 IMMUTABLE_MODEL_ACTION = re.compile(
     rf"^{re.escape(MODEL_ACTION_NAME)}@[0-9a-f]{{40}}$")
