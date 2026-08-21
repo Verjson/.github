@@ -138,7 +138,7 @@ checkouts = 0
 violations = []
 for job_name, job in (workflow.get("jobs") or {}).items():
     steps = job.get("steps") or []
-    steps_by_name = {step.get("name"): step for step in steps}
+    steps_by_name = {step.get("name"): (i, step) for i, step in enumerate(steps)}
     for index, step in enumerate(steps):
         if not str(step.get("uses") or "").startswith("actions/checkout@"):
             continue
@@ -146,15 +146,21 @@ for job_name, job in (workflow.get("jobs") or {}).items():
         name = step.get("name")
         exemption = justified.get((mode, name))
         if exemption is not None:
-            consumer = steps_by_name.get(exemption["consumer"])
+            consumer_index, consumer = steps_by_name.get(
+                exemption["consumer"], (None, None)
+            )
             consumer_run = str((consumer or {}).get("run") or "")
-            if consumer is not None and all(
-                needle in consumer_run for needle in exemption["requires"]
+            if (
+                consumer is not None
+                and consumer_index is not None
+                and consumer_index > index
+                and all(needle in consumer_run for needle in exemption["requires"])
             ):
                 continue
             violations.append(
                 f"{name} (exemption stale: consumer {exemption['consumer']!r} "
-                "missing or no longer performs the justifying remote operation)"
+                "missing, not after this checkout, or no longer performs the "
+                "justifying remote operation)"
             )
             continue
         if ((step.get("with") or {}).get("persist-credentials")) is not False:
@@ -216,6 +222,33 @@ audit_report="$(audit_checkout_credentials release-node "$tampered_defanged" 2>&
   && fail "audit did not notice the consuming step stopped using the credential (#971)" \
   || { grep -q "exemption stale" <<<"$audit_report" \
     && pass "a consuming step that drops the remote git operation re-flags the checkout (#971)" \
+    || fail "audit failed for the wrong reason: $audit_report"; }
+
+tampered_reordered="$(WORKFLOW="$release_node_workflow" python3 - <<'PY'
+import os
+
+import yaml
+
+workflow = yaml.safe_load(os.environ["WORKFLOW"])
+for job in (workflow.get("jobs") or {}).values():
+    steps = job.get("steps") or []
+    names = [step.get("name") for step in steps]
+    if "Resolve restart-safe release state" not in names:
+        continue
+    checkout_index = next(
+        i for i, step in enumerate(steps)
+        if str(step.get("uses") or "").startswith("actions/checkout@")
+    )
+    consumer_index = names.index("Resolve restart-safe release state")
+    steps.insert(checkout_index, steps.pop(consumer_index))
+    job["steps"] = steps
+print(yaml.safe_dump(workflow, sort_keys=False))
+PY
+)"
+audit_report="$(audit_checkout_credentials release-node "$tampered_reordered" 2>&1)" \
+  && fail "audit did not notice the consuming step now runs before the checkout (#974)" \
+  || { grep -q "exemption stale" <<<"$audit_report" \
+    && pass "moving the consuming step before the checkout re-flags it (#974)" \
     || fail "audit failed for the wrong reason: $audit_report"; }
 
 grep -q "renovate-changelog.yml@$sha" <<<"$renovate_attribution" \
