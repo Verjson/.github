@@ -27,7 +27,7 @@ literal_hosted_sites="$(
     | sed -E 's#^.*/([^/]+):[0-9]+:#\1:#' \
     | sort
 )"
-expected_literal_hosted_sites=$'ai-privileged-merge.yml:    runs-on: ubuntu-24.04\nprivileged-merge-conformance.yml:    runs-on: ubuntu-24.04'
+expected_literal_hosted_sites=$'ai-privileged-merge.yml:    runs-on: ubuntu-24.04\nai-privileged-merge.yml:    runs-on: ubuntu-24.04\nprivileged-merge-conformance.yml:    runs-on: ubuntu-24.04'
 [ "$literal_hosted_sites" = "$expected_literal_hosted_sites" ] \
   && pass "the two security-boundary jobs use exact fixed hosted selectors" \
   || fail "fixed hosted selector inventory drifted: $literal_hosted_sites"
@@ -70,6 +70,11 @@ literal_hosted="$(
 #    credential and uses fixed hosted capacity so unavailable visibility or an
 #    unregistered route produces an observable failure without trusting a
 #    persistent worker or mutable placement variable (ADR 0089).
+#  * `ai-privileged-merge.yml`'s `validate_privileged_lane` job — the fail-closed
+#    check ADR 0089 requires for the caller-supplied `privileged_lane` input
+#    (#988). Fixed hosted capacity and no secret for the same reason as the
+#    invalid-route guard: nothing about this validation may depend on a
+#    mutable placement variable or a persistent worker's own output.
 #  * the tail of a lane chain, `vars.VERJSON_LANE_FALLBACK || '["ubuntu-24.04"]'`
 #    — ADR 0040's portability contract. It is only reached when an organization
 #    has no lane variable set at all, and hosted is the one landing that works

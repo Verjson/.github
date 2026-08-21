@@ -88,7 +88,42 @@ jobs:
           echo "::error::privileged terminal route is unregistered or visibility is unavailable"
           exit 1
 
+  # ADR 0089: `privileged_lane` is caller-supplied, untrusted routing data — a
+  # repository-level variable can shadow the organization one. This job is the
+  # fail-closed check the ADR requires before the terminal job is scheduled.
+  # It runs on fixed hosted capacity, holds no secret, and produces no output:
+  # `privileged_merge`'s own `runs-on:` below deliberately keeps its fixed
+  # literal rather than reading anything this job returns, so a runner-produced
+  # output can never select where the secret-bearing job lands.
+  validate_privileged_lane:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 1
+    permissions: {}
+    env:
+      PRIVILEGED_LANE: ${{ inputs.privileged_lane }}
+      REPO_OWNER: ${{ github.repository_owner }}
+      REPO_VISIBILITY: ${{ github.event.repository.visibility }}
+      TARGET_REPO: ${{ github.repository }}
+    steps:
+      - name: Validate caller-supplied privileged lane routing
+        run: |
+          set -euo pipefail
+          # Only the private-Verjson self-hosted route reads privileged_lane:
+          # external orgs use runner_labels, and the two public Verjson repos
+          # resolve to a fixed ubuntu-24.04 literal the input never touches.
+          if [ "$REPO_OWNER" != "Verjson" ] || [ "$REPO_VISIBILITY" != "private" ] ||
+             [ "$TARGET_REPO" = "Verjson/.github" ] || [ "$TARGET_REPO" = "Verjson/verjson-github-runner" ]; then
+            echo "privileged_lane validation does not apply to this route."
+            exit 0
+          fi
+          jq -e '. == ["self-hosted","general"]' >/dev/null 2>&1 <<<"${PRIVILEGED_LANE:-}" || {
+            echo "::error::privileged_lane is missing, malformed, or is not the exact admitted self-hosted/general lane (ADR 0089); got: ${PRIVILEGED_LANE:-<empty>}"
+            exit 1
+          }
+          echo "privileged_lane validated: exact match for the admitted self-hosted/general lane."
+
   privileged_merge:
+    needs: [validate_privileged_lane]
     if: ${{ github.repository_owner != 'Verjson' || github.event.repository.visibility == 'public' && (github.repository == 'Verjson/.github' || github.repository == 'Verjson/verjson-github-runner') || github.event.repository.visibility == 'private' && github.repository != 'Verjson/.github' && github.repository != 'Verjson/verjson-github-runner' }}
     runs-on: ${{ github.repository_owner != 'Verjson' && inputs.runner_labels && fromJSON(inputs.runner_labels) || github.repository_owner != 'Verjson' && 'ubuntu-24.04' || github.event.repository.visibility == 'public' && 'ubuntu-24.04' || fromJSON('["self-hosted","general"]') }}
     timeout-minutes: 5

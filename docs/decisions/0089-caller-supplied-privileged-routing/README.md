@@ -82,3 +82,36 @@ compares the caller with credentialless historical generation. The audit checkou
 event-SHA-bound, while an unrelated audit commit no longer makes every unchanged caller
 non-canonical. The audit itself is fixed to `ubuntu-24.04`; its privileged read token is
 never placed by a repository variable or persistent runner output.
+
+## 2026-08-21 amendment — the promised fail-closed check was never wired up
+
+[Verjson/.github#988](https://github.com/Verjson/.github/issues/988) found that
+`ai-privileged-merge.yml` declared `privileged_lane` as a `workflow_call` input,
+and every generated caller correctly supplied
+`vars.VERJSON_LANE_PRIVILEGED` for it (`scripts/gen-privileged-merge-caller.sh`),
+but the reusable workflow itself never read, validated, or otherwise referenced
+that input anywhere past its declaration. The private-Verjson branch of
+`privileged_merge`'s `runs-on:` hardcoded `fromJSON('["self-hosted","general"]')`
+unconditionally. Practical impact was limited — the literal selector cannot
+itself be widened by a malicious input it never reads — but the fail-closed
+validation this ADR's Decision section promises ("Missing, malformed, hosted,
+widened, or shadowed values fail closed") did not exist in code: a
+misconfigured, shadowed, or absent `VERJSON_LANE_PRIVILEGED` produced no
+diagnostic anywhere.
+
+The fix adds a `validate_privileged_lane` job ahead of `privileged_merge` in
+the reusable workflow, gated by `needs:`, that exact-matches the effective
+`inputs.privileged_lane` against `["self-hosted","general"]` for the
+private-Verjson route and fails the run with a `::error::` diagnostic on any
+other value — missing, malformed, hosted, widened, or shadowed. It is
+deliberately **not** wired the way the rejected 2026-08-14 runner-executed
+resolver would have been: the validation job carries no credential, never
+leaves fixed `ubuntu-24.04` capacity, and produces no output — `runs-on:` on
+`privileged_merge` keeps the exact same fixed literal it always had rather
+than reading anything the validation job returns, so a compromised runner
+still cannot forge its way into selecting the terminal job's capacity. The
+`needs:` relationship exists purely to block scheduling on a failed
+validation, not to carry routing data forward.
+
+This restores an invariant already decided above; it does not change the
+decision, so no new ADR number was minted for it.
