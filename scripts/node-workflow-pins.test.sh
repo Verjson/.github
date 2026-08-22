@@ -26,6 +26,10 @@ for wf in "$ci" "$release" "$actions_ci"; do
     expected_setups=2
   elif [ "$wf" = "$release" ]; then
     expected_checkouts=2
+  elif [ "$wf" = "$actions_ci" ]; then
+    # shell-test-groups' own checkout, plus adr-number-collision's isolated
+    # checkout of live PR state (Verjson/.github#983).
+    expected_checkouts=2
   fi
   if [ "$wf" != "$actions_ci" ]; then
     [ "$wf" = "$ci" ] || expected_setups=1

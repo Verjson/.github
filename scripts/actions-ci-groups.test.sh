@@ -18,7 +18,7 @@ import yaml
 with open(sys.argv[1], encoding="utf-8") as stream:
     document = yaml.safe_load(stream)
 jobs = document["jobs"]
-assert set(jobs) == {"shell-test-groups", "shell-tests"}
+assert set(jobs) == {"shell-test-groups", "adr-number-collision", "shell-tests"}
 
 groups = jobs["shell-test-groups"]
 assert groups["timeout-minutes"] == 12
@@ -48,19 +48,29 @@ assert group_step["run"] == (
 )
 
 required = jobs["shell-tests"]
-assert required["needs"] == "shell-test-groups"
+assert required["needs"] == ["shell-test-groups", "adr-number-collision"]
 assert required["if"] == "${{ always() }}"
 assert required["timeout-minutes"] == 2
 assert "strategy" not in required
 assert required["steps"][0]["env"] == {
-    "GROUP_RESULT": "${{ needs.shell-test-groups.result }}"
+    "GROUP_RESULT": "${{ needs.shell-test-groups.result }}",
+    "COLLISION_RESULT": "${{ needs.adr-number-collision.result }}",
 }
 assert required["steps"][0]["run"] == (
     'if [ "$GROUP_RESULT" != "success" ]; then\n'
     '  echo "::error::one or more shell-test groups failed"\n'
     "  exit 1\n"
     "fi\n"
+    '# adr-number-collision only runs on pull_request (needs live PR\n'
+    "# state), so 'skipped' -- e.g. on a push to main -- is not a failure.\n"
+    'if [ "$COLLISION_RESULT" != "success" ] && [ "$COLLISION_RESULT" != "skipped" ]; then\n'
+    '  echo "::error::ADR number collision check failed"\n'
+    "  exit 1\n"
+    "fi\n"
 )
+
+adr_collision = jobs["adr-number-collision"]
+assert adr_collision["if"] == "github.event_name == 'pull_request'"
 assert groups["runs-on"] == required["runs-on"]
 PY
 then
