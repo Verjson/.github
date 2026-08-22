@@ -61,21 +61,70 @@ def read_json(path: str, label: str):
         raise AuditError(f"cannot read {label} ({path}): {error}") from None
 
 
-def commit_exists(sha: str) -> bool:
+_unshallow_attempted = False
+
+
+def _is_shallow_repository() -> bool:
     result = subprocess.run(
-        ["git", "-C", str(ROOT), "cat-file", "-e", f"{sha}^{{commit}}"],
+        ["git", "-C", str(ROOT), "rev-parse", "--is-shallow-repository"],
+        capture_output=True,
+        check=False,
+    )
+    return result.returncode == 0 and result.stdout.decode().strip() == "true"
+
+
+def _attempt_unshallow() -> bool:
+    """Bounded, once-per-run deepening fetch for a shallow checkout.
+
+    `actions-ci.yml` checks this repo out with `fetch-depth: 1` for cost
+    reasons, but `commit_exists`/`is_ancestor` need history reaching back to
+    each capability's `introduced_at` commit and each pin's `pinned_sha`.
+    Mirrors the retry-then-fail-closed idiom already established for this
+    exact shallow-history problem in `ai-review-merge.yml`'s "Prepare bounded
+    review context" step (see `scripts/ci-gate/review-context.test.sh`): try
+    the check first, and only pay for a deepening fetch -- once -- when the
+    checkout turns out to be shallow. Callers still fail closed with a typed
+    `AuditError` if the retry after this doesn't resolve it.
+    """
+    global _unshallow_attempted
+    if _unshallow_attempted:
+        return False
+    _unshallow_attempted = True
+    if not _is_shallow_repository():
+        return False
+    result = subprocess.run(
+        ["git", "-C", str(ROOT), "fetch", "--no-tags", "--unshallow", "origin"],
         capture_output=True,
         check=False,
     )
     return result.returncode == 0
 
 
+def commit_exists(sha: str) -> bool:
+    def check() -> subprocess.CompletedProcess:
+        return subprocess.run(
+            ["git", "-C", str(ROOT), "cat-file", "-e", f"{sha}^{{commit}}"],
+            capture_output=True,
+            check=False,
+        )
+
+    result = check()
+    if result.returncode != 0 and _attempt_unshallow():
+        result = check()
+    return result.returncode == 0
+
+
 def is_ancestor(ancestor: str, descendant: str) -> bool:
-    result = subprocess.run(
-        ["git", "-C", str(ROOT), "merge-base", "--is-ancestor", ancestor, descendant],
-        capture_output=True,
-        check=False,
-    )
+    def check() -> subprocess.CompletedProcess:
+        return subprocess.run(
+            ["git", "-C", str(ROOT), "merge-base", "--is-ancestor", ancestor, descendant],
+            capture_output=True,
+            check=False,
+        )
+
+    result = check()
+    if result.returncode not in (0, 1) and _attempt_unshallow():
+        result = check()
     if result.returncode not in (0, 1):
         raise AuditError(
             f"git merge-base --is-ancestor failed unexpectedly for {ancestor}..{descendant}: "

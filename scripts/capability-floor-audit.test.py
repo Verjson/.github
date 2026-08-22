@@ -80,17 +80,20 @@ with tempfile.TemporaryDirectory() as tmp:
     check("toquorum's post-fix pin is reported current", CURRENT_PIN in current_shas)
     check("post-fix pin is not also reported stale", CURRENT_PIN not in stale_shas)
     check("pre-fix pin is not also reported current", STALE_PIN not in current_shas)
-    stale_row = next(row for row in report["stale"] if row["pinned_sha"] == STALE_PIN)
-    check("stale row names the capability", stale_row["capability_id"] == "ai-review-deepseek-provider")
-    check(
-        "stale row surfaces the org variable this capability assumes",
-        stale_row["assumed_by_org_variable"] == {"name": "AI_REVIEW_PRIMARY_PROVIDER", "value": "deepseek"},
-    )
+    stale_row = next((row for row in report.get("stale", []) if row["pinned_sha"] == STALE_PIN), None)
+    check("stale row is present for the pre-fix pin", stale_row is not None)
+    if stale_row is not None:
+        check("stale row names the capability", stale_row["capability_id"] == "ai-review-deepseek-provider")
+        check(
+            "stale row surfaces the org variable this capability assumes",
+            stale_row["assumed_by_org_variable"] == {"name": "AI_REVIEW_PRIMARY_PROVIDER", "value": "deepseek"},
+        )
 
     # --- --fail-on-stale flips the exit code without changing the report. ---
     fail_result = run(["--pins", str(real_pins), "--fail-on-stale"])
     check("--fail-on-stale exits 1 when stale pins are present", fail_result.returncode == 1)
-    check("--fail-on-stale still emits the report on stdout", json.loads(fail_result.stdout)["any_stale"] is True)
+    if fail_result.returncode == 1:
+        check("--fail-on-stale still emits the report on stdout", json.loads(fail_result.stdout)["any_stale"] is True)
 
     # --- A pin naming an untracked generator is skipped, not an error. ---
     untracked_pins = write_json(
@@ -100,9 +103,9 @@ with tempfile.TemporaryDirectory() as tmp:
     )
     untracked_result = run(["--pins", str(untracked_pins)])
     check("untracked-generator run exits 0", untracked_result.returncode == 0)
-    untracked_report = json.loads(untracked_result.stdout)
-    check("untracked generator produces no stale/current rows", not untracked_report["stale"] and not untracked_report["current"])
-    check("untracked generator is not treated as unresolvable", not untracked_report["unresolvable"])
+    untracked_report = json.loads(untracked_result.stdout) if untracked_result.returncode == 0 else {}
+    check("untracked generator produces no stale/current rows", not untracked_report.get("stale") and not untracked_report.get("current"))
+    check("untracked generator is not treated as unresolvable", not untracked_report.get("unresolvable"))
 
     # --- An unresolvable pinned_sha is reported, not crashed on. ---
     unresolvable_pins = write_json(
@@ -112,9 +115,9 @@ with tempfile.TemporaryDirectory() as tmp:
     )
     unresolvable_result = run(["--pins", str(unresolvable_pins)])
     check("unresolvable-sha run exits 0 without --fail-on-stale", unresolvable_result.returncode == 0)
-    unresolvable_report = json.loads(unresolvable_result.stdout)
-    check("unresolvable sha is reported", unresolvable_report["unresolvable"] and unresolvable_report["unresolvable"][0]["pinned_sha"] == UNKNOWN_SHA)
-    check("unresolvable sha sets any_stale", unresolvable_report["any_stale"] is True)
+    unresolvable_report = json.loads(unresolvable_result.stdout) if unresolvable_result.returncode == 0 else {}
+    check("unresolvable sha is reported", unresolvable_report.get("unresolvable") and unresolvable_report["unresolvable"][0]["pinned_sha"] == UNKNOWN_SHA)
+    check("unresolvable sha sets any_stale", unresolvable_report.get("any_stale") is True)
     unresolvable_fail = run(["--pins", str(unresolvable_pins), "--fail-on-stale"])
     check("--fail-on-stale exits 1 on an unresolvable pin too", unresolvable_fail.returncode == 1)
 
@@ -183,7 +186,7 @@ with tempfile.TemporaryDirectory() as tmp:
     check("shipped config/capability-floors.json loads with zero pins", shipped_result.returncode == 0)
     check(
         "shipped config reports both seeded capabilities",
-        json.loads(shipped_result.stdout)["capabilities_checked"] == 2,
+        shipped_result.returncode == 0 and json.loads(shipped_result.stdout)["capabilities_checked"] == 2,
     )
 
 if failures:
