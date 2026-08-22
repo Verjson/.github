@@ -16,6 +16,7 @@
 #   scripts/gen-changelog-caller.sh contract-test <sha> [--scope <scope>] [--node-version <version>] > scripts/changelog-contract.test.sh
 #   scripts/gen-changelog-caller.sh pr-gate <sha> [--untrusted-runner <label>[,<label>...]] > .github/workflows/changelog-contract.yml
 #   scripts/gen-changelog-caller.sh release-node <sha> [--scope <scope>] [--node-version <version>] > .github/workflows/release.yml
+#   scripts/gen-changelog-caller.sh release-artifact <sha> --build-runner <label>... [--scope <scope>] [--node-version <version>] > .github/workflows/release.yml
 #   scripts/gen-changelog-caller.sh release-propose <sha> --autonomy {propose|dispatch} > .github/workflows/release-propose.yml
 #
 # Every changelog-enabled workflow mode publishes the organization ruleset's
@@ -38,6 +39,13 @@
 # landing on two runner pools (#465). Adopters with nothing to publish keep
 # having no release caller at all; that is still a supported shape.
 #
+# `release-artifact` (#975) is for an adopter with nothing to publish to a
+# registry but that does ship GitHub Release assets — an Electron desktop app's
+# OS installers, concretely. It shares release-node's immutable
+# verify -> snapshot boundary unchanged and replaces publish's delegation to
+# node-release.yml with a caller-declared --build-runner matrix plus an inlined,
+# restart-safe GitHub Release publication step.
+#
 # Consumers pin an immutable commit (docs/changelog/README.md) rather than a
 # branch: the contract defines their release history's shape, so it must not
 # move under them between a local render and the CI run that gates the PR.
@@ -52,7 +60,7 @@
 set -euo pipefail
 
 usage() {
-  echo "usage: $(basename "$0") {workflow|generated-artifacts|generated-artifacts-with-adr-index|renovate-attribution|adr-index-generator|renderer|contract-test|pr-gate|release-node|release-propose} <40-hex-commit> [--scope <npm-scope>] [--node-version <version>] [--package-dir <relative-dir>]... [--autonomy {propose|dispatch}] [--untrusted-runner <label>[,<label>...]]" >&2
+  echo "usage: $(basename "$0") {workflow|generated-artifacts|generated-artifacts-with-adr-index|renovate-attribution|adr-index-generator|renderer|contract-test|pr-gate|release-node|release-artifact|release-propose} <40-hex-commit> [--scope <npm-scope>] [--node-version <version>] [--package-dir <relative-dir>]... [--build-runner <runner-label>]... [--autonomy {propose|dispatch}] [--untrusted-runner <label>[,<label>...]]" >&2
   echo "required check: changelog / validate" >&2
   exit 2
 }
@@ -68,6 +76,7 @@ release_scope_set=false
 release_node_version_set=false
 release_package_dirs=(".")
 release_package_dirs_set=false
+release_build_runners=()
 release_autonomy=""
 pr_gate_untrusted_runner=""
 pr_gate_untrusted_runner_set=false
@@ -91,6 +100,11 @@ while [ "$#" -gt 0 ]; do
       release_package_dirs_set=true
       shift 2
       ;;
+    --build-runner)
+      [ "$#" -ge 2 ] || usage
+      release_build_runners+=("$2")
+      shift 2
+      ;;
     --autonomy)
       [ "$#" -ge 2 ] && [ -z "$release_autonomy" ] || usage
       release_autonomy="$2"
@@ -110,10 +124,24 @@ done
 
 if { [ "$release_scope_set" = true ] || [ "$release_node_version_set" = true ] \
   || [ "$release_package_dirs_set" = true ]; } \
-  && [ "$mode" != release-node ] && [ "$mode" != contract-test ]; then
-  echo "$(basename "$0"): release parameters are accepted only by release-node and contract-test" >&2
+  && [ "$mode" != release-node ] && [ "$mode" != release-artifact ] && [ "$mode" != contract-test ]; then
+  echo "$(basename "$0"): release parameters are accepted only by release-node, release-artifact and contract-test" >&2
   exit 2
 fi
+if [ "${#release_build_runners[@]}" -gt 0 ] && [ "$mode" != release-artifact ]; then
+  echo "$(basename "$0"): --build-runner is accepted only by release-artifact" >&2
+  exit 2
+fi
+if [ "$mode" = release-artifact ] && [ "${#release_build_runners[@]}" -eq 0 ]; then
+  echo "$(basename "$0"): release-artifact requires at least one --build-runner" >&2
+  exit 2
+fi
+for release_build_runner in "${release_build_runners[@]}"; do
+  [[ "$release_build_runner" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || {
+    echo "$(basename "$0"): --build-runner must be a bare runner label such as macos-14" >&2
+    exit 2
+  }
+done
 if [ -n "$release_autonomy" ] && [ "$mode" != release-propose ]; then
   echo "$(basename "$0"): --autonomy is accepted only by release-propose" >&2
   exit 2
@@ -419,6 +447,8 @@ release_runner_expr="github.repository_owner == 'Verjson' && (vars.VERJSON_RUNNE
 # (scripts/node-workflow-pins.test.sh).
 release_checkout='actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7'
 release_setup_node='actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7'
+release_upload_artifact='actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1'
+release_download_artifact='actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1'
 
 emit_release_node() {
   local generation_command="release-node ${ref}"
@@ -773,6 +803,450 @@ jobs:
 EOF
 }
 
+emit_release_artifact() {
+  local generation_command="release-artifact ${ref}"
+  local package_dirs_shell=''
+  [ "$release_scope" = "@verjson" ] \
+    || generation_command="$generation_command --scope $release_scope"
+  [ "$release_node_version" = "24" ] \
+    || generation_command="$generation_command --node-version $release_node_version"
+  for package_dir in "${release_package_dirs[@]:1}"; do
+    generation_command="$generation_command --package-dir $package_dir"
+  done
+  for build_runner in "${release_build_runners[@]}"; do
+    generation_command="$generation_command --build-runner $build_runner"
+  done
+  printf -v package_dirs_shell '%q ' "${release_package_dirs[@]}"
+  package_dirs_shell="${package_dirs_shell% }"
+  local build_runners_json='[' build_runner sep=''
+  for build_runner in "${release_build_runners[@]}"; do
+    build_runners_json="${build_runners_json}${sep}\"${build_runner}\""
+    sep=', '
+  done
+  build_runners_json="${build_runners_json}]"
+  cat <<EOF
+name: Release
+run-name: Release \${{ inputs.version }} \${{ inputs.selector_digest || 'manual' }}
+
+concurrency:
+  group: release-\${{ github.repository }}
+  cancel-in-progress: false
+
+# Generated by Verjson/.github scripts/gen-changelog-caller.sh ${generation_command}
+# — do not edit by hand. Regenerate it whenever the pinned contract commit moves,
+# together with .github/workflows/changelog.yml, scripts/render-next.sh and
+# scripts/changelog-contract.test.sh. A partial regeneration is the divergence
+# the generator exists to prevent.
+#
+# WHY THE JOB ORDER IS THE POINT OF THIS FILE (Verjson/.github #463, #464, #465, #975)
+#
+# \`verify\` and \`snapshot\` are byte-identical in spirit to release-node's: the
+# irreversible changelog-release.yml snapshot may never be the first job to run,
+# and \`verify\`/\`snapshot\` must share one runner pool (see release-node's header
+# for the full rationale — it applies unchanged here).
+#
+# This mode exists for adopters with nothing to publish to a package registry —
+# concretely, an Electron desktop app that ships OS installers as GitHub Release
+# assets (#975). \`build\` replaces \`publish\`'s call to node-release.yml: it is a
+# caller-declared matrix of runner labels (one per --build-runner passed at
+# generation time), each running an adopter-owned, fail-closed
+# \`scripts/release-build.sh <version> <output-dir>\` hook that must leave every
+# artifact for that runner inside the given directory. \`publish\` downloads every
+# runner's artifacts and attaches them to the tag's GitHub Release, using the
+# immutable CHANGELOG/<version>.md as the release notes — the same restart-safe
+# release-notes logic node-release.yml uses, inlined here because there is no
+# separate reusable publication workflow for artifact releases.
+#
+# HOW TO CONFIGURE THE SUITE WITHOUT EDITING THIS FILE
+#
+# If your suite is not \`npm test\`, commit an executable \`scripts/release-verify.sh\`
+# and \`verify\` runs it instead of the default Node sequence. The escape hatch is a
+# separate file you own precisely so that no adopter has to edit a generated
+# artifact — an artifact adopters must edit is the defect this generator removes,
+# not a compromise it makes. Each build leg requires its own executable
+# \`scripts/release-build.sh\`; it receives the exact dispatched version and an
+# empty output directory and must exit non-zero on failure.
+#
+# The verification suite runs after package.json has been stamped to the
+# dispatched version. Its expected version must be read dynamically from
+# package.json; never assert a hardcoded version literal. This order is
+# intentional: the suite verifies the exact package metadata that will ship.
+#
+# Dispatched, never derived. A release states the version it cuts; no push
+# trigger may infer one from commit subjects (ADR 0038, ADR 0060).
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Exact next SemVer tag, including its v or stream-v prefix
+        required: true
+        type: string
+      prefix:
+        description: Exact version namespace prefix; independent from component
+        required: false
+        type: string
+        default: v
+      expected_head:
+        description: Optional exact default-branch head derived by release-propose
+        required: false
+        type: string
+        default: ''
+      selector_digest:
+        description: Optional canonical selection digest derived by release-propose
+        required: false
+        type: string
+        default: ''
+      fragments:
+        description: Newline-separated NEXT fragment filenames; empty selects the requested component stream
+        required: false
+        type: string
+        default: ''
+      component:
+        description: Optional component stream; empty selects only unscoped fragments
+        required: false
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Verify the tree the snapshot will tag
+    runs-on: \${{ fromJSON(${release_runner_expr}) }}
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    outputs:
+      snapshot-exists: \${{ steps.release-state.outputs.snapshot-exists }}
+    steps:
+      - name: Prepare job-scoped changelog tool cache
+        run: echo "VERJSON_CHANGELOG_TOOL_CACHE=\$RUNNER_TEMP/verjson-changelog-tools" >> "\$GITHUB_ENV"
+      # changelog-release.yml carries this guard too, but there it fires inside
+      # \`snapshot\` — after \`verify\` has already spent a full suite run on a ref
+      # whose tree will never be tagged. It is asserted here first because
+      # verifying any ref other than the default branch proves nothing about the
+      # content the snapshot takes (#466).
+      - name: Release only from the default branch
+        env:
+          DISPATCH_REF: \${{ github.ref }}
+          DEFAULT_BRANCH: \${{ github.event.repository.default_branch }}
+        run: |
+          if [ "\$DISPATCH_REF" != "refs/heads/\$DEFAULT_BRANCH" ]; then
+            echo "::error::A release must be dispatched from \$DEFAULT_BRANCH, but this run was dispatched from '\$DISPATCH_REF'. The snapshot is always taken from \$DEFAULT_BRANCH, so verifying any other ref proves nothing about the tree that would be tagged."
+            exit 1
+          fi
+          echo "Dispatched from \$DEFAULT_BRANCH; verifying its head."
+      - name: Bind a proposer dispatch to its exact derived head
+        env:
+          EXPECTED_HEAD: \${{ inputs.expected_head }}
+          SELECTOR_DIGEST: \${{ inputs.selector_digest }}
+        run: |
+          if [ -z "\$EXPECTED_HEAD" ] && [ -z "\$SELECTOR_DIGEST" ]; then
+            echo "Manual dispatch has no proposer receipt to bind."
+          elif [[ ! "\$EXPECTED_HEAD" =~ ^[0-9a-f]{40}\$ ]] ||
+            [[ ! "\$SELECTOR_DIGEST" =~ ^[0-9a-f]{64}\$ ]]; then
+            echo "::error::expected_head and selector_digest must either both be empty or both be canonical lowercase digests."
+            exit 1
+          elif [ "\$GITHUB_SHA" != "\$EXPECTED_HEAD" ]; then
+            echo "::error::The default branch advanced from derived head \$EXPECTED_HEAD to dispatch head \$GITHUB_SHA. Derive the proposal again; this run will not verify, snapshot, or publish."
+            exit 1
+          else
+            echo "Dispatch is bound to derived head \$EXPECTED_HEAD and selector \$SELECTOR_DIGEST."
+          fi
+      - name: Require the exact release namespace and SemVer version
+        id: release-version
+        env:
+          PREFIX: \${{ inputs.prefix }}
+          VERSION: \${{ inputs.version }}
+        run: |
+          if [[ ! "\$PREFIX" =~ ^([a-z0-9][a-z0-9._-]*-)?v\$ ]]; then
+            echo "::error::'\$PREFIX' is not a canonical v or stream-v release namespace."
+            exit 1
+          fi
+          package_version="\${VERSION#"\$PREFIX"}"
+          if [ "\$package_version" = "\$VERSION" ] ||
+            [[ ! "\$package_version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?\$ ]]; then
+            echo "::error::'\$VERSION' is not exact SemVer in namespace '\$PREFIX'."
+            exit 1
+          fi
+          printf 'package-version=%s\n' "\$package_version" >>"\$GITHUB_OUTPUT"
+          echo "Cutting \$VERSION."
+      - name: Check out the tree that will be released
+        uses: ${release_checkout}
+        with:
+          # github.sha is the default branch head at dispatch time, and
+          # changelog-release.yml checks out that same commit rather than
+          # re-resolving the branch name at snapshot time — so the tree verified
+          # here is the tree that gets tagged, even if something merges to the
+          # default branch while this job is running. Both halves must agree:
+          # pinning only one of them reintroduces the window (#463, #464).
+          ref: \${{ github.sha }}
+          fetch-depth: 0
+      - name: Check out the canonical selection contract
+        uses: ${release_checkout}
+        with:
+          repository: Verjson/.github
+          ref: ${ref}
+          path: .changelog-contract
+          persist-credentials: false
+      - name: Verify the proposer selection receipt
+        env:
+          COMPONENT: \${{ inputs.component }}
+          EXPECTED_SELECTOR_DIGEST: \${{ inputs.selector_digest }}
+          FRAGMENTS: \${{ inputs.fragments }}
+          PREFIX: \${{ inputs.prefix }}
+        run: |
+          if [ -z "\$EXPECTED_SELECTOR_DIGEST" ]; then
+            echo "Manual dispatch carries no proposer selection receipt."
+            exit 0
+          fi
+          args=(selection-digest --repo-root "\$GITHUB_WORKSPACE" --prefix "\$PREFIX")
+          [ -z "\$COMPONENT" ] || args+=(--component "\$COMPONENT")
+          while IFS= read -r fragment; do
+            [ -z "\$fragment" ] || args+=(--fragment "\$fragment")
+          done <<<"\$FRAGMENTS"
+          actual="\$(python3 .changelog-contract/scripts/changelog.py "\${args[@]}")"
+          if [ "\$actual" != "\$EXPECTED_SELECTOR_DIGEST" ]; then
+            echo "::error::Selected fragments resolve to \$actual, not proposer receipt \$EXPECTED_SELECTOR_DIGEST."
+            exit 1
+          fi
+      - name: Resolve restart-safe release state
+        id: release-state
+        env:
+          VERSION: \${{ inputs.version }}
+        run: |
+          if git ls-remote --exit-code --tags origin "refs/tags/\$VERSION" >/dev/null 2>&1; then
+            git fetch --force origin "refs/tags/\$VERSION:refs/tags/\$VERSION"
+            if [ ! -f "CHANGELOG/\$VERSION.md" ] ||
+              ! git cat-file -e "\$VERSION:CHANGELOG/\$VERSION.md" ||
+              ! git merge-base --is-ancestor "\$VERSION" HEAD ||
+              ! git diff --quiet "\$VERSION" HEAD -- "CHANGELOG/\$VERSION.md"; then
+              echo "::error::Tag \$VERSION exists but is not the immutable release snapshot reachable from this default-branch head. Refusing to resume a conflicting release."
+              exit 1
+            fi
+            echo "snapshot-exists=true" >> "\$GITHUB_OUTPUT"
+            echo "\$VERSION already has its immutable snapshot; verifying current release inputs before resuming publication."
+          elif [ -e "CHANGELOG/\$VERSION.md" ]; then
+            echo "::error::CHANGELOG/\$VERSION.md already exists, and a released snapshot is immutable (ADR 0059). Cut the next version instead."
+            exit 1
+          else
+            echo "snapshot-exists=false" >> "\$GITHUB_OUTPUT"
+            echo "\$VERSION is unused."
+          fi
+      - name: Check out the existing snapshot for resumed verification
+        if: steps.release-state.outputs.snapshot-exists == 'true'
+        uses: ${release_checkout}
+        with:
+          ref: \${{ inputs.version }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: ${release_setup_node}
+        with:
+          # Keep the literal inside an expression so Renovate's uses-with
+          # extractor leaves it alone while setup-node receives the same value.
+          node-version: \${{ '${release_node_version}' }}
+          registry-url: https://npm.pkg.github.com
+          scope: '${release_scope}'
+          package-manager-cache: false
+      - name: Install dependencies
+        run: npm ci
+        env:
+          # NOT GITHUB_TOKEN (#465). A repository-scoped GITHUB_TOKEN cannot read
+          # a private GitHub Packages package owned by a DIFFERENT repository, so
+          # an adopter with a private @verjson devDependency 401s here. Canonical
+          # node-ci.yml states the same requirement for the same reason.
+          NODE_AUTH_TOKEN: \${{ secrets.NODE_AUTH_TOKEN }}
+      - name: Prepare release package metadata
+        env:
+          PACKAGE_VERSION: \${{ steps.release-version.outputs.package-version }}
+        run: |
+          if [ -e scripts/release-prepare-packages.sh ] && [ ! -x scripts/release-prepare-packages.sh ]; then
+            echo "::error::scripts/release-prepare-packages.sh exists but is not executable."
+            exit 1
+          fi
+          if [ -x scripts/release-prepare-packages.sh ]; then
+            scripts/release-prepare-packages.sh "\$PACKAGE_VERSION"
+          fi
+      - name: Stamp the dispatched package versions
+        env:
+          PACKAGE_VERSION: \${{ steps.release-version.outputs.package-version }}
+        run: |
+          package_dirs=(${package_dirs_shell})
+          for package_dir in "\${package_dirs[@]}"; do
+            npm version --prefix "\$package_dir" "\$PACKAGE_VERSION" --no-git-tag-version --ignore-scripts --allow-same-version
+          done
+      - name: Run the release verification suite
+        env:
+          NODE_AUTH_TOKEN: \${{ secrets.NODE_AUTH_TOKEN }}
+          PACKAGE_VERSION: \${{ steps.release-version.outputs.package-version }}
+        run: |
+          # Existence and executability are checked separately on purpose. A
+          # single \`-x\` test reads a hook committed without the executable bit
+          # as "no hook here" and quietly runs the Node default instead — so an
+          # adopter who deliberately replaced their suite watches a green
+          # release verified by the suite they replaced.
+          if [ -e scripts/release-verify.sh ] && [ ! -x scripts/release-verify.sh ]; then
+            echo "::error::scripts/release-verify.sh exists but is not executable, so this release would silently fall back to the default Node suite. Run: chmod +x scripts/release-verify.sh && git update-index --chmod=+x scripts/release-verify.sh"
+            exit 1
+          fi
+          if [ -x scripts/release-verify.sh ]; then
+            echo "Running this repository's scripts/release-verify.sh"
+            verification_status=0
+            scripts/release-verify.sh || verification_status=\$?
+          else
+            verification_status=0
+            npm run build --if-present &&
+              npm run typecheck --if-present &&
+              npm run lint --if-present &&
+              npm test || verification_status=\$?
+          fi
+          if [ "\$verification_status" -ne 0 ]; then
+            echo "::error::Release verification failed against stamped dispatch version \$PACKAGE_VERSION. Check for the hardcoded-version footgun: version assertions can pass in pull requests and local runs, then fail only here; read the expected version dynamically from package.json."
+            exit "\$verification_status"
+          fi
+
+  snapshot:
+    # The irreversible act, and the only job that may not run first.
+    needs: verify
+    if: needs.verify.outputs.snapshot-exists != 'true'
+    uses: Verjson/.github/.github/workflows/changelog-release.yml@${ref}
+    permissions:
+      # The reusable workflow pushes with its separately minted release App
+      # token. This caller grant caps only its read-only GITHUB_TOKEN (#784).
+      contents: read
+    with:
+      contract_ref: ${ref}
+      version: \${{ inputs.version }}
+      fragments: \${{ inputs.fragments }}
+      component: \${{ inputs.component }}
+      # v3 recommends the App client ID and deprecates its legacy numeric ID.
+      release_app_client_id: \${{ vars.RELEASE_APP_CLIENT_ID }}
+      # Explicit, so both halves of one release share one pool (#465).
+      runner: \${{ ${release_runner_expr} }}
+    secrets:
+      # The reusable workflow mints a short-lived installation token constrained
+      # to this owner, this repository, and contents-write. The dedicated App is
+      # the named main-protection bypass actor (ADR 0099, #329).
+      release_app_private_key: \${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+
+  build:
+    name: Build release artifacts (\${{ matrix.build-runner }})
+    needs: [verify, snapshot]
+    if: always() && needs.verify.result == 'success' && (needs.snapshot.result == 'success' || needs.snapshot.result == 'skipped')
+    strategy:
+      fail-fast: false
+      matrix:
+        build-runner: ${build_runners_json}
+    runs-on: \${{ matrix.build-runner }}
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    steps:
+      - name: Check out the tagged release tree
+        uses: ${release_checkout}
+        with:
+          ref: \${{ inputs.version }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Require the release build hook
+        run: |
+          if [ -e scripts/release-build.sh ] && [ ! -x scripts/release-build.sh ]; then
+            echo "::error::scripts/release-build.sh exists but is not executable. Run: chmod +x scripts/release-build.sh && git update-index --chmod=+x scripts/release-build.sh"
+            exit 1
+          fi
+          if [ ! -x scripts/release-build.sh ]; then
+            echo "::error::release-artifact requires an executable scripts/release-build.sh. It receives the released version and an empty output directory and must leave every artifact for this runner inside that directory, or exit non-zero."
+            exit 1
+          fi
+      - name: Build this runner's release artifacts
+        env:
+          RELEASE_VERSION: \${{ inputs.version }}
+        run: |
+          mkdir -p release-artifacts
+          scripts/release-build.sh "\$RELEASE_VERSION" release-artifacts
+          if [ -z "\$(find release-artifacts -type f -print -quit)" ]; then
+            echo "::error::scripts/release-build.sh produced no files in release-artifacts/"
+            exit 1
+          fi
+      - name: Upload this runner's release artifacts
+        uses: ${release_upload_artifact}
+        with:
+          name: release-artifacts-\${{ strategy.job-index }}
+          path: release-artifacts/*
+          if-no-files-found: error
+          retention-days: 1
+
+  publish:
+    name: Publish the released snapshot
+    needs: [verify, snapshot, build]
+    if: always() && needs.verify.result == 'success' && (needs.snapshot.result == 'success' || needs.snapshot.result == 'skipped') && needs.build.result == 'success'
+    runs-on: \${{ fromJSON(${release_runner_expr}) }}
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: ${release_checkout}
+        with:
+          ref: \${{ inputs.version }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify the checked-out tag and immutable release note
+        env:
+          VERSION: \${{ inputs.version }}
+        run: |
+          test "\$(git describe --tags --exact-match HEAD)" = "\$VERSION"
+          test -f "CHANGELOG/\$VERSION.md"
+      - name: Download every runner's release artifacts
+        uses: ${release_download_artifact}
+        with:
+          pattern: release-artifacts-*
+          path: release-artifacts
+          merge-multiple: true
+      - name: Require at least one produced artifact
+        run: |
+          [ -n "\$(find release-artifacts -type f -print -quit)" ] \\
+            || { echo "::error::no release artifacts were produced by the build matrix"; exit 1; }
+      - name: Publish the snapshot release and artifacts
+        env:
+          GH_TOKEN: \${{ secrets.GITHUB_TOKEN }}
+          VERSION: \${{ inputs.version }}
+        run: |
+          # RESTART_SAFE_GH_RELEASE_BEGIN
+          snapshot="CHANGELOG/\$VERSION.md"
+          notes="\$snapshot"
+          notes_limit=125000
+          if [ "\$(wc -c <"\$snapshot")" -gt "\$notes_limit" ]; then
+            temp_root="\${RUNNER_TEMP:-/tmp}"
+            notes="\$(mktemp "\$temp_root/release-notes.XXXXXX")"
+            cleanup_release_notes() { rm -f -- "\$notes"; }
+            trap cleanup_release_notes EXIT
+            head -c 120000 "\$snapshot" | sed '\$d' >"\$notes"
+            {
+              printf "\n\n---\n\n"
+              printf "_These notes were truncated at GitHub's 125,000-character limit. "
+              printf "The complete and immutable snapshot for this release is "
+              printf "[\\\`%s\\\`](%s/%s/blob/%s/%s)._\n" \\
+                "\$snapshot" "\$GITHUB_SERVER_URL" "\$GITHUB_REPOSITORY" "\$VERSION" "\$snapshot"
+            } >>"\$notes"
+            [ "\$(wc -c <"\$notes")" -le "\$notes_limit" ] \\
+              || { echo "::error::Bounded GitHub Release notes exceed \$notes_limit bytes."; exit 1; }
+            echo "::notice::Release notes were truncated by bytes; the full immutable snapshot is \$snapshot."
+          fi
+          existing_tag="\$(gh release view "\$VERSION" --json tagName --jq .tagName 2>/dev/null || true)"
+          if [ -n "\$existing_tag" ]; then
+            [ "\$existing_tag" = "\$VERSION" ] \\
+              || { echo "::error::GitHub Release lookup returned unexpected tag '\$existing_tag'."; exit 1; }
+            gh release edit "\$VERSION" --notes-file "\$notes"
+          else
+            gh release create "\$VERSION" --verify-tag --notes-file "\$notes"
+          fi
+          gh release upload "\$VERSION" release-artifacts/* --clobber
+          # RESTART_SAFE_GH_RELEASE_END
+EOF
+}
+
 emit_release_propose() {
   local write_permission
   if [ "$release_autonomy" = propose ]; then
@@ -922,6 +1396,8 @@ EXPECTED_RELEASE_SCOPE="${release_scope}"
 EXPECTED_RELEASE_NODE_VERSION="${release_node_version}"
 EXPECTED_RELEASE_PACKAGE_DIRS_JSON='${release_package_dirs_json}'
 EXPECTED_RELEASE_PACKAGE_DIRS_SHELL='${release_package_dirs_shell}'
+EXPECTED_RELEASE_UPLOAD_ARTIFACT='${release_upload_artifact}'
+EXPECTED_RELEASE_DOWNLOAD_ARTIFACT='${release_download_artifact}'
 EOF
   cat <<'EOF'
 
@@ -1348,9 +1824,18 @@ while IFS= read -r release_workflow; do
   # The release caller was the last adopter file still hand-copied from a
   # sibling, so one ordering bug propagated to every migrated repository at once
   # (#463, #464, #465). Provenance is asserted first because it is the only check
-  # that also catches the defects nobody has named yet.
-  grep -q "gen-changelog-caller.sh release-node $CONTRACT_REF" "$release_workflow" \
-    || fail "$release_workflow is not the generated release caller at $CONTRACT_REF. Regenerate it: scripts/gen-changelog-caller.sh release-node $CONTRACT_REF > .github/workflows/release.yml"
+  # that also catches the defects nobody has named yet. A caller is conformant
+  # only if it is the BYTE-IDENTICAL output of one of the generator's own release
+  # modes — the mode name in its own provenance comment selects which shape the
+  # rest of this loop enforces; nothing here infers the mode from file content.
+  release_mode=""
+  if grep -q "gen-changelog-caller.sh release-node $CONTRACT_REF" "$release_workflow"; then
+    release_mode=release-node
+  elif grep -q "gen-changelog-caller.sh release-artifact $CONTRACT_REF" "$release_workflow"; then
+    release_mode=release-artifact
+  else
+    fail "$release_workflow is not a generated release caller at $CONTRACT_REF. Regenerate it: scripts/gen-changelog-caller.sh release-node $CONTRACT_REF > .github/workflows/release.yml (or release-artifact for a non-npm publication)"
+  fi
   grep -qF "run-name: Release \${{ inputs.version }} \${{ inputs.selector_digest || 'manual' }}" "$release_workflow" \
     || fail "$release_workflow lacks the exact-version run title required for idempotent dispatch"
 
@@ -1360,20 +1845,25 @@ while IFS= read -r release_workflow; do
 
   # Renovate's GitHub Actions manager does not implement `# renovate: ignore`
   # for setup-node's uses-with fields. A literal expression remains the same
-  # runtime string but is intentionally dynamic to Renovate (#700).
+  # runtime string but is intentionally dynamic to Renovate (#700). release-node
+  # stamps this in both its verify and publish jobs (node-release.yml receives
+  # it too); release-artifact has no publish-side Node job, so it appears only
+  # once, in verify's setup-node.
+  release_node_occurrences=2
+  [ "$release_mode" = release-artifact ] && release_node_occurrences=1
   printf -v expected_node_version "node-version: \${{ '%s' }}" "$EXPECTED_RELEASE_NODE_VERSION"
   [ "$(awk -v expected="$expected_node_version" '
       { line = $0; sub(/^[[:space:]]+/, "", line); sub(/[[:space:]]+$/, "", line) }
       line == expected { count++ }
       END { print count + 0 }
-    ' "$work/release-stripped.yml")" -eq 2 ] \
-    || fail "$release_workflow does not use Node $EXPECTED_RELEASE_NODE_VERSION in both release jobs; regenerate release-node and contract-test with the same --node-version (#520)"
+    ' "$work/release-stripped.yml")" -eq "$release_node_occurrences" ] \
+    || fail "$release_workflow does not use Node $EXPECTED_RELEASE_NODE_VERSION consistently; regenerate $release_mode and contract-test with the same --node-version (#520)"
   [ "$(awk -v expected="scope: '$EXPECTED_RELEASE_SCOPE'" '
       { line = $0; sub(/^[[:space:]]+/, "", line); sub(/[[:space:]]+$/, "", line) }
       line == expected { count++ }
       END { print count + 0 }
-    ' "$work/release-stripped.yml")" -eq 2 ] \
-    || fail "$release_workflow does not use npm scope $EXPECTED_RELEASE_SCOPE in both release jobs; regenerate release-node and contract-test with the same --scope (#520)"
+    ' "$work/release-stripped.yml")" -eq "$release_node_occurrences" ] \
+    || fail "$release_workflow does not use npm scope $EXPECTED_RELEASE_SCOPE consistently; regenerate $release_mode and contract-test with the same --scope (#520)"
 
   # The job that calls changelog-release.yml, isolated as a block rather than
   # grepped for. `needs:` and `runner:` are ordinary keys that also appear under
@@ -1446,6 +1936,11 @@ while IFS= read -r release_workflow; do
     in_job && /^  [A-Za-z0-9_.-]+:[[:space:]]*$/ && $0 !~ /^  publish:/ { exit }
     in_job { print }
   ' "$release_workflow")"
+  build_job="$(awk '
+    /^  build:[[:space:]]*$/ { in_job = 1 }
+    in_job && /^  [A-Za-z0-9_.-]+:[[:space:]]*$/ && $0 !~ /^  build:/ { exit }
+    in_job { print }
+  ' "$release_workflow")"
   stamp_before() {
     local job="$1" consumer_pattern="$2" stamp_line consumer_line
     stamp_line="$(grep -n -m1 \
@@ -1465,17 +1960,59 @@ while IFS= read -r release_workflow; do
     <<<"$verify_job" | cut -d: -f1)"
   [ -n "$prepare_line" ] && [ -n "$stamp_line" ] && [ "$prepare_line" -lt "$stamp_line" ] \
     || fail "$release_workflow does not prepare package metadata before stamping and verifying the release tree (#550)"
-  grep -qF "uses: Verjson/.github/.github/workflows/node-release.yml@$CONTRACT_REF" \
-    <<<"$publish_job" \
-    || fail "$release_workflow does not delegate publication to node-release.yml at the immutable contract pin (#455)"
+  if [ "$release_mode" = release-node ]; then
+    grep -qF "uses: Verjson/.github/.github/workflows/node-release.yml@$CONTRACT_REF" \
+      <<<"$publish_job" \
+      || fail "$release_workflow does not delegate publication to node-release.yml at the immutable contract pin (#455)"
+    grep -qF 'needs: [verify, snapshot]' <<<"$publish_job" \
+      || fail "$release_workflow does not gate publication on both verification and snapshot state"
+    grep -qF "if: always() && needs.verify.result == 'success' && (needs.snapshot.result == 'success' || needs.snapshot.result == 'skipped')" \
+      <<<"$publish_job" \
+      || fail "$release_workflow cannot safely resume publication after reusing an immutable snapshot"
+  else
+    # release-artifact: publication is not a reusable-workflow delegation —
+    # there is no artifact-release.yml counterpart to node-release.yml — so the
+    # caller must instead run a caller-declared build matrix and inline the
+    # restart-safe GitHub Release logic itself (#975).
+    [ -n "$build_job" ] \
+      || fail "$release_workflow has no build job; release-artifact requires a caller-declared build matrix (#975)"
+    grep -qE '^[[:space:]]+strategy:[[:space:]]*$' <<<"$build_job" \
+      && grep -qE '^[[:space:]]+build-runner:[[:space:]]*\[.+\][[:space:]]*$' <<<"$build_job" \
+      || fail "$release_workflow build job has no non-empty build-runner matrix"
+    grep -qF 'needs: [verify, snapshot]' <<<"$build_job" \
+      || fail "$release_workflow does not gate the build matrix on both verification and snapshot state"
+    grep -qF "if: always() && needs.verify.result == 'success' && (needs.snapshot.result == 'success' || needs.snapshot.result == 'skipped')" \
+      <<<"$build_job" \
+      || fail "$release_workflow cannot safely resume the build matrix after reusing an immutable snapshot"
+    grep -qF 'ref: ${{ inputs.version }}' <<<"$build_job" \
+      || fail "$release_workflow builds artifacts from a ref other than the tagged snapshot"
+    grep -qF -- '-x scripts/release-build.sh' <<<"$build_job" \
+      || fail "$release_workflow does not require an executable scripts/release-build.sh build hook"
+    grep -qF "uses: $EXPECTED_RELEASE_UPLOAD_ARTIFACT" <<<"$build_job" \
+      || fail "$release_workflow build job does not upload artifacts at the pinned actions/upload-artifact commit"
+    grep -qF 'name: release-artifacts-${{ strategy.job-index }}' <<<"$build_job" \
+      || fail "$release_workflow build job does not key each runner's upload uniquely by strategy.job-index"
+    grep -qF 'needs: [verify, snapshot, build]' <<<"$publish_job" \
+      || fail "$release_workflow does not gate publication on verification, snapshot, and build state"
+    grep -qF "if: always() && needs.verify.result == 'success' && (needs.snapshot.result == 'success' || needs.snapshot.result == 'skipped') && needs.build.result == 'success'" \
+      <<<"$publish_job" \
+      || fail "$release_workflow cannot safely resume publication after reusing an immutable snapshot and build matrix"
+    grep -qF "uses: $EXPECTED_RELEASE_DOWNLOAD_ARTIFACT" <<<"$publish_job" \
+      || fail "$release_workflow publish job does not download artifacts at the pinned actions/download-artifact commit"
+    grep -qF 'pattern: release-artifacts-*' <<<"$publish_job" \
+      && grep -qF 'merge-multiple: true' <<<"$publish_job" \
+      || fail "$release_workflow publish job does not merge every runner's release-artifacts-* upload"
+    grep -qF 'test -f "CHANGELOG/$VERSION.md"' <<<"$publish_job" \
+      || fail "$release_workflow publish job does not verify the immutable release note before publishing"
+    grep -qF '# RESTART_SAFE_GH_RELEASE_BEGIN' <<<"$publish_job" \
+      && grep -qF '# RESTART_SAFE_GH_RELEASE_END' <<<"$publish_job" \
+      || fail "$release_workflow publish job does not use the restart-safe GitHub Release publication shape (#862)"
+    grep -qF 'gh release upload "$VERSION" release-artifacts/* --clobber' <<<"$publish_job" \
+      || fail "$release_workflow publish job does not idempotently attach every downloaded artifact to the release"
+  fi
   grep -qF 'group: release-${{ github.repository }}' "$release_workflow" \
     && grep -qF 'cancel-in-progress: false' "$release_workflow" \
     || fail "$release_workflow does not serialize destructive package cleanup across release versions (#889)"
-  grep -qF 'needs: [verify, snapshot]' <<<"$publish_job" \
-    || fail "$release_workflow does not gate publication on both verification and snapshot state"
-  grep -qF "if: always() && needs.verify.result == 'success' && (needs.snapshot.result == 'success' || needs.snapshot.result == 'skipped')" \
-    <<<"$publish_job" \
-    || fail "$release_workflow cannot safely resume publication after reusing an immutable snapshot"
   grep -qF "if: needs.verify.outputs.snapshot-exists != 'true'" <<<"$snapshot_job" \
     || fail "$release_workflow recreates an existing immutable snapshot instead of resuming publication"
   grep -qF 'snapshot-exists: ${{ steps.release-state.outputs.snapshot-exists }}' \
@@ -1491,19 +2028,21 @@ while IFS= read -r release_workflow; do
     || fail "$release_workflow does not condition resumed verification on an existing snapshot"
   grep -qF 'ref: ${{ inputs.version }}' <<<"$verify_job" \
     || fail "$release_workflow verifies the later dispatch tree instead of the existing tagged snapshot"
-  for publish_input in \
-    'version: ${{ inputs.version }}' \
-    'prefix: ${{ inputs.prefix }}' \
-    "contract-ref: $CONTRACT_REF" \
-    "$expected_node_version" \
-    "scope: '$EXPECTED_RELEASE_SCOPE'" \
-    "package-dirs: '$EXPECTED_RELEASE_PACKAGE_DIRS_JSON'" \
-    'runner: ${{'; do
-    grep -qF "$publish_input" <<<"$publish_job" \
-      || fail "$release_workflow does not pass '$publish_input' to node-release.yml"
-  done
-  grep -qF 'NODE_AUTH_TOKEN: ${{ secrets.NODE_AUTH_TOKEN }}' <<<"$publish_job" \
-    || fail "$release_workflow does not pass the private-dependency token to node-release.yml"
+  if [ "$release_mode" = release-node ]; then
+    for publish_input in \
+      'version: ${{ inputs.version }}' \
+      'prefix: ${{ inputs.prefix }}' \
+      "contract-ref: $CONTRACT_REF" \
+      "$expected_node_version" \
+      "scope: '$EXPECTED_RELEASE_SCOPE'" \
+      "package-dirs: '$EXPECTED_RELEASE_PACKAGE_DIRS_JSON'" \
+      'runner: ${{'; do
+      grep -qF "$publish_input" <<<"$publish_job" \
+        || fail "$release_workflow does not pass '$publish_input' to node-release.yml"
+    done
+    grep -qF 'NODE_AUTH_TOKEN: ${{ secrets.NODE_AUTH_TOKEN }}' <<<"$publish_job" \
+      || fail "$release_workflow does not pass the private-dependency token to node-release.yml"
+  fi
 
   # The trigger surface and the install credential are checked structurally,
   # because both were shipped here as line-oriented greps first and both were
@@ -2131,6 +2670,27 @@ case "$mode" in
     fi
     # The verify job's guards are shell, and a release caller that cannot parse
     # fails at the step that was supposed to protect the release.
+    if command -v python3 >/dev/null 2>&1 && python3 -c 'import yaml' 2>/dev/null; then
+      printf '%s\n' "$out" | python3 -c '
+import sys, yaml
+doc = yaml.safe_load(sys.stdin)
+for job in doc["jobs"].values():
+    for step in job.get("steps", []):
+        if "run" in step:
+            print(step["run"])
+            print("")
+' 2>/dev/null | bash -n 2>/dev/null \
+        || { echo "internal error: generated release caller contains invalid bash; refusing to emit" >&2; exit 3; }
+    fi
+    ;;
+  release-artifact)
+    out="$(emit_release_artifact)"
+    if command -v python3 >/dev/null 2>&1 && python3 -c 'import yaml' 2>/dev/null; then
+      printf '%s\n' "$out" | python3 -c 'import sys, yaml; yaml.safe_load(sys.stdin)' 2>/dev/null \
+        || { echo "internal error: generated release caller is not valid YAML; refusing to emit" >&2; exit 3; }
+    fi
+    # The verify/build job guards are shell, and a release caller that cannot
+    # parse fails at the step that was supposed to protect the release.
     if command -v python3 >/dev/null 2>&1 && python3 -c 'import yaml' 2>/dev/null; then
       printf '%s\n' "$out" | python3 -c '
 import sys, yaml
