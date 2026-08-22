@@ -184,7 +184,7 @@ workflow_for() {
       printf '  ci:\n    uses: Verjson/.github/.github/workflows/%s@0123456789abcdef0123456789abcdef01234567\n' "$stack_workflow"
     fi
     if [ "$stack" = node ]; then
-      printf '  changelog-contract:\n    runs-on: ubuntu-24.04\n    steps:\n      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1\n      - run: bash scripts/changelog-contract.test.sh\n'
+      printf '  changelog-contract:\n    runs-on: ubuntu-24.04\n    steps:\n      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1\n        with:\n          persist-credentials: false\n      - run: echo "VERJSON_CHANGELOG_TOOL_CACHE=$RUNNER_TEMP/verjson-changelog-tools" >> "$GITHUB_ENV"\n      - run: bash scripts/changelog-contract.test.sh\n'
     fi
   } >"$tmp/workflow.yml"
   encode_workflow
@@ -689,7 +689,7 @@ rc="$(run_audit)"
   || { fail "continue-on-error was accepted ($rc)"; out | sed 's/^/diag - /'; }
 
 stack node
-sed -i '/uses: actions\/checkout@/a\        with:\n          ref: main' "$tmp/workflow.yml"
+sed -i '/^          persist-credentials: false$/a\          ref: main' "$tmp/workflow.yml"
 encode_workflow
 rc="$(run_audit)"
 { [ "$rc" != "rc=0" ] && grep -q 'changelog-contract-job-invalid' "$tmp/out.txt"; } \
@@ -697,7 +697,7 @@ rc="$(run_audit)"
   || { fail "a default-branch checkout escape was accepted ($rc)"; out | sed 's/^/diag - /'; }
 
 stack node
-sed -i '/uses: actions\/checkout@/a\        with:\n          repository: attacker/lookalike' "$tmp/workflow.yml"
+sed -i '/^          persist-credentials: false$/a\          repository: attacker/lookalike' "$tmp/workflow.yml"
 encode_workflow
 rc="$(run_audit)"
 { [ "$rc" != "rc=0" ] && grep -q 'changelog-contract-job-invalid' "$tmp/out.txt"; } \
