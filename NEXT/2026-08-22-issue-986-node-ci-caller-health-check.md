@@ -14,6 +14,6 @@ Every existing caller is unaffected: the new inputs default to today's exact
 checks and port (`pg_isready`, `redis-cli ping`, `5432`), so a caller that
 doesn't set them gets byte-identical behaviour. The health command runs only as
 literal `docker exec` arguments — never through a shell or `eval` — so it cannot
-escape to the runner regardless of its content. ADR 0114 records the design
+escape to the runner regardless of its content. ADR 0116 records the design
 choice (a caller-supplied command over a generic `services:` list or a third
 hardwired slot) and the trust-boundary reasoning.

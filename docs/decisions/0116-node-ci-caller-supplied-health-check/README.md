@@ -1,4 +1,4 @@
-# 0114 — node-ci accepts a caller-supplied health check and container port
+# 0116 — node-ci accepts a caller-supplied health check and container port
 
 - **Date:** 2026-08-22
 - **Issue:** [#986](https://github.com/Verjson/.github/issues/986)

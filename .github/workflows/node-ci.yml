@@ -1517,15 +1517,20 @@ jobs:
               exit 1 ;;
           esac
           MAPPED_DB_PORT="$DB_PORT"
+          # DB_HEALTH_CMD is caller-supplied data (default: pg_isready, this
+          # workflow's existing check — byte-identical for every caller that
+          # does not set db-health-cmd). Read into an array (whitespace-split,
+          # same as unquoted word-splitting) rather than expanded unquoted:
+          # unquoted expansion also undergoes pathname/glob expansion, so a
+          # command containing `*`/`?`/`[...]` that happened to match a file in
+          # the runner's working directory would silently gain extra argv the
+          # caller never wrote. An array built by `read` performs no such
+          # expansion. Either way the tokens reach `docker exec` as literal
+          # argv, never through a shell or `eval`, so they cannot escape to the
+          # runner regardless of content (#986).
+          IFS=' ' read -ra DB_HEALTH_CMD_ARGV <<< "$DB_HEALTH_CMD"
           for attempt in $(seq 1 30); do
-            # DB_HEALTH_CMD is caller-supplied data (default: pg_isready, this
-            # workflow's existing check — byte-identical for every caller that
-            # does not set db-health-cmd). It is split on whitespace and passed
-            # as literal `docker exec` arguments, never through a shell or
-            # `eval`, so it cannot escape to the runner regardless of its
-            # content (#986).
-            # shellcheck disable=SC2086
-            if docker exec "$CONTAINER_ID" $DB_HEALTH_CMD >/dev/null 2>&1; then
+            if docker exec "$CONTAINER_ID" "${DB_HEALTH_CMD_ARGV[@]}" >/dev/null 2>&1; then
               echo "database is ready"
               break
             fi
@@ -1791,23 +1796,29 @@ jobs:
           done
           echo "CACHE_PORT=$CACHE_PORT" >> "$GITHUB_ENV"
           ready=false
+          # CACHE_HEALTH_CMD is read into an array (whitespace-split) rather
+          # than expanded unquoted: unquoted expansion also undergoes
+          # pathname/glob expansion, so a command containing `*`/`?`/`[...]`
+          # that happened to match a file in the runner's working directory
+          # would silently gain extra argv the caller never wrote. Either way
+          # the tokens reach `docker exec` as literal argv, never through a
+          # shell or `eval`, so they cannot escape to the runner regardless of
+          # content (#986).
+          IFS=' ' read -ra CACHE_HEALTH_CMD_ARGV <<< "$CACHE_HEALTH_CMD"
           for _attempt in {1..30}; do
             # The default `redis-cli ping` keeps today's exact check byte-for-byte
             # (exit status AND a literal PONG reply — some failure paths still
             # exit 0 while printing an error, which is why the default alone
             # isn't just an exit-code check). A caller-supplied cache-health-cmd
-            # is treated like any other engine's health command: success is exit
-            # code 0. Either way the command runs ONLY as literal `docker exec`
-            # arguments (whitespace-split, never through a shell or `eval`), so
-            # it cannot escape to the runner regardless of its content (#986).
+            # is treated like any other engine's health command: success is
+            # exit code 0.
             if [ "$CACHE_HEALTH_CMD" = "redis-cli ping" ]; then
               if docker exec "$CONTAINER_ID" redis-cli ping 2>/dev/null | grep -qx PONG; then
                 ready=true
                 break
               fi
             else
-              # shellcheck disable=SC2086
-              if docker exec "$CONTAINER_ID" $CACHE_HEALTH_CMD >/dev/null 2>&1; then
+              if docker exec "$CONTAINER_ID" "${CACHE_HEALTH_CMD_ARGV[@]}" >/dev/null 2>&1; then
                 ready=true
                 break
               fi

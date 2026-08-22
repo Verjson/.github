@@ -834,6 +834,29 @@ rc=$?
   && pass "a health command that never succeeds fails after 30 attempts, naming the image and command" \
   || fail "step exited $rc without naming the image/command on health-check exhaustion: $(cat "$tmp/job-health-never-ready/out.txt")"
 
+# (l) #986 hardening: db-health-cmd must reach `docker exec` with NEITHER shell
+# reinterpretation (already proven above) NOR bash's own pathname/glob
+# expansion. An earlier revision expanded $DB_HEALTH_CMD unquoted, which
+# undergoes word-splitting AND glob expansion — a command containing
+# `*`/`?`/`[...]` that happened to match a file in the runner's working
+# directory would silently gain extra argv the caller never wrote. Run the step
+# from a directory salted with filenames that WOULD match the glob if expanded,
+# and assert the literal `*` reaches docker unexpanded.
+glob_cwd="$tmp/glob-cwd"
+mkdir -p "$glob_cwd"
+touch "$glob_cwd/pg_isready-extra" "$glob_cwd/pg_isready-other"
+(
+  cd "$glob_cwd" || exit 1
+  run_db_step job-glob-payload "${job_a[@]}" 'DB_HEALTH_CMD=pg_isready-*'
+)
+rc=$?
+{ [ "$rc" -eq 0 ] \
+    && grep -qE '^exec [^ ]+ pg_isready-\*$' "$tmp/job-glob-payload/docker.log" \
+    && ! grep -qF -- 'pg_isready-extra' "$tmp/job-glob-payload/docker.log" \
+    && ! grep -qF -- 'pg_isready-other' "$tmp/job-glob-payload/docker.log"; } \
+  && pass "a glob-shaped db-health-cmd reaches docker exec literally, never pathname-expanded" \
+  || fail "db-health-cmd underwent pathname expansion: $(grep -E '^exec ' "$tmp/job-glob-payload/docker.log")"
+
 if [ "$fails" -eq 0 ]; then
   echo "All tests passed."
   exit 0

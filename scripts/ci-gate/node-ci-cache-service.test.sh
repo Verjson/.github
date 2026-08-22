@@ -151,5 +151,31 @@ else
     || fail "cache health-check exhaustion did not name the image/command: $(cat "$tmp/out")"
 fi
 
+# #986 hardening: cache-health-cmd must reach `docker exec` with NEITHER shell
+# reinterpretation (proven above) NOR bash's own pathname/glob expansion. An
+# earlier revision expanded $CACHE_HEALTH_CMD unquoted, which undergoes
+# word-splitting AND glob expansion — a command containing `*`/`?`/`[...]`
+# that happened to match a file in the runner's working directory would
+# silently gain extra argv the caller never wrote. Run the step from a
+# directory salted with filenames that WOULD match the glob if expanded, and
+# assert the literal `*` reaches docker unexpanded.
+glob_cwd="$tmp/cache-glob-cwd"
+mkdir -p "$glob_cwd"
+touch "$glob_cwd/memcached-tool-extra" "$glob_cwd/memcached-tool-other"
+: > "$tmp/docker.log"; : > "$tmp/env"; : > "$tmp/output"
+(
+  cd "$glob_cwd" || exit 1
+  DOCKER_LOG="$tmp/docker.log" GITHUB_ENV="$tmp/env" GITHUB_OUTPUT="$tmp/output" \
+    MAPPED_PORT=49321 CACHE_HEALTH_CMD='memcached-tool-*' \
+    bash -eo pipefail "$start" >"$tmp/out" 2>&1
+)
+rc=$?
+{ [ "$rc" -eq 0 ] \
+    && grep -qF -- 'exec cache-container-id memcached-tool-*' "$tmp/docker.log" \
+    && ! grep -qF -- 'memcached-tool-extra' "$tmp/docker.log" \
+    && ! grep -qF -- 'memcached-tool-other' "$tmp/docker.log"; } \
+  && pass "a glob-shaped cache-health-cmd reaches docker exec literally, never pathname-expanded" \
+  || fail "cache-health-cmd underwent pathname expansion: $(grep -E '^exec ' "$tmp/docker.log")"
+
 [ "$fails" -eq 0 ] && { echo "All tests passed."; exit 0; }
 echo "$fails test(s) failed."; exit 1
