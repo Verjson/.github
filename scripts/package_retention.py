@@ -181,8 +181,15 @@ def plan_target(
     deletable_untagged_ids: set[int] | None = None,
     protected_version_ids: set[int] | None = None,
 ) -> list[Deletion]:
-    if keep != 3:
-        raise RetentionError("canonical retention count must remain exactly three")
+    # `keep` defaults to the ADR 0108 policy of three and is a plain parameter
+    # (CLI `--keep`, sourced from an org variable in the calling workflow) so a
+    # human can change the retention window with a config change, not a code
+    # change. Raising or lowering it from 3 is a storage-cost-vs-consumer-
+    # breakage policy call for a human with billing visibility (verjson-agents
+    # issue #987) — this function only enforces that whatever value is chosen
+    # is a usable retention count, never which value is "correct".
+    if not isinstance(keep, int) or isinstance(keep, bool) or keep < 1:
+        raise RetentionError("retention count must be a positive integer")
     stable: dict[str, tuple[int, tuple[str, ...]]] = {}
     untagged: list[tuple[int, tuple[str, ...]]] = []
     seen_ids: set[int] = set()
@@ -277,6 +284,7 @@ def _container_safety(
     versions: list[dict[str, Any]],
     inspector: OciInspector,
     now: datetime.datetime,
+    keep: int = 3,
 ) -> ContainerSafety:
     repository = f"ghcr.io/{owner}/{target.name}"
     stable: list[tuple[str, str]] = []
@@ -296,7 +304,7 @@ def _container_safety(
         elif not tags:
             untagged.append(version)
 
-    retained = sorted(stable, key=lambda item: _version_tuple(item[0]), reverse=True)[:3]
+    retained = sorted(stable, key=lambda item: _version_tuple(item[0]), reverse=True)[:keep]
     protected = {digest for _, digest in retained}
     queue = [(f"{repository}:{tag}", digest) for tag, digest in retained]
     visited: set[str] = set()
@@ -345,6 +353,7 @@ def build_plan(
     owner: str = "",
     inspector: OciInspector | None = None,
     now: datetime.datetime | None = None,
+    keep: int = 3,
 ) -> list[Deletion]:
     inventories = [(target, client.versions(target)) for target in targets]
     plans: list[Deletion] = []
@@ -354,13 +363,14 @@ def build_plan(
         if target.package_type == "container":
             if not owner or inspector is None or now is None:
                 raise RetentionError("container cleanup requires an owner, OCI inspector, and current time")
-            safety = _container_safety(owner, target, versions, inspector, now)
+            safety = _container_safety(owner, target, versions, inspector, now, keep=keep)
             deletable_untagged_ids = set(safety.deletable_untagged_ids)
             protected_version_ids = set(safety.protected_version_ids)
         plans.extend(
             plan_target(
                 target,
                 versions,
+                keep=keep,
                 deletable_untagged_ids=deletable_untagged_ids,
                 protected_version_ids=protected_version_ids,
             )
@@ -373,6 +383,7 @@ def apply_plan(
     deletions: list[Deletion],
     owner: str,
     inspector: OciInspector,
+    keep: int = 3,
 ) -> None:
     for deletion in deletions:
         fresh_plan = build_plan(
@@ -381,6 +392,7 @@ def apply_plan(
             owner=owner,
             inspector=inspector,
             now=datetime.datetime.now(datetime.timezone.utc),
+            keep=keep,
         )
         if deletion not in fresh_plan:
             raise RetentionError(
@@ -393,6 +405,16 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--owner", required=True)
     parser.add_argument("--targets", required=True)
+    parser.add_argument(
+        "--keep",
+        type=int,
+        default=3,
+        help=(
+            "Number of newest stable versions to retain per package. Defaults to the ADR 0108 "
+            "policy of three; changing it is a storage-cost-vs-consumer-breakage policy decision "
+            "for a human (verjson-agents issue #987), not something this script decides."
+        ),
+    )
     parser.add_argument("--apply", action="store_true")
     args = parser.parse_args()
     token = os.environ.get("GH_TOKEN", "")
@@ -407,12 +429,13 @@ def main() -> int:
         owner=args.owner,
         inspector=inspector,
         now=datetime.datetime.now(datetime.timezone.utc),
+        keep=args.keep,
     )
     print(json.dumps({"delete": [deletion.__dict__ | {"target": deletion.target.__dict__} for deletion in deletions]}, default=list))
     if not args.apply:
         print("Dry run only; pass --apply to delete the validated inventory.")
         return 0
-    apply_plan(client, deletions, args.owner, inspector)
+    apply_plan(client, deletions, args.owner, inspector, keep=args.keep)
     for deletion in deletions:
         print(
             f"Deleted {deletion.target.package_type}/{deletion.target.name} version id "

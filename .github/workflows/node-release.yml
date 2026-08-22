@@ -51,6 +51,17 @@ on:
         required: false
         type: string
         default: '["."]'
+      deprecates:
+        description: >-
+          JSON array of {"name","message"} old npm package names (unscoped basenames, same
+          scope as `scope`) to mark deprecated via `npm deprecate` once this release
+          publishes successfully. Required on the first release after a package rename so
+          retention never ages the old name out with no forwarding pointer
+          (verjson-agents#987); the receiving release is the natural place to couple the
+          two, since retention runs immediately after it.
+        required: false
+        type: string
+        default: '[]'
       contract-ref:
         description: Immutable Verjson/.github commit supplying the retention implementation
         required: true
@@ -330,6 +341,54 @@ jobs:
             gh release create "$VERSION" --verify-tag --notes-file "$notes"
           fi
           # RESTART_SAFE_GH_RELEASE_END
+      - name: Deprecate renamed package names
+        if: inputs.deprecates != '[]'
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SCOPE: ${{ inputs.scope }}
+          DEPRECATES: ${{ inputs.deprecates }}
+        run: |
+          # DEPRECATE_RENAMED_PACKAGES_BEGIN
+          set -euo pipefail
+          entries="$(mktemp)"
+          trap 'rm -f "$entries"' EXIT
+          node - "$DEPRECATES" "$SCOPE" "$entries" <<'NODE'
+          const fs = require("fs");
+          const [raw, scope, outPath] = process.argv.slice(2);
+          let parsed;
+          try {
+            parsed = JSON.parse(raw);
+          } catch (error) {
+            throw new Error(`deprecates is not valid JSON: ${error.message}`);
+          }
+          if (!Array.isArray(parsed)) {
+            throw new Error("deprecates must be a JSON array");
+          }
+          const seen = new Set();
+          const lines = [];
+          for (const entry of parsed) {
+            if (
+              typeof entry !== "object" || entry === null ||
+              typeof entry.name !== "string" || entry.name === "" ||
+              typeof entry.message !== "string" || entry.message === "" ||
+              !/^[a-z0-9][a-z0-9._-]*$/.test(entry.name)
+            ) {
+              throw new Error("each deprecates entry needs a non-empty basename 'name' and 'message'");
+            }
+            if (seen.has(entry.name)) {
+              throw new Error(`duplicate deprecates entry: ${entry.name}`);
+            }
+            seen.add(entry.name);
+            lines.push(`${scope}/${entry.name}\t${entry.message}`);
+          }
+          fs.writeFileSync(outPath, lines.join("\n") + (lines.length ? "\n" : ""));
+          NODE
+          while IFS=$'\t' read -r package_name message; do
+            [ -n "$package_name" ] || continue
+            echo "Deprecating $package_name: $message"
+            npm deprecate "$package_name@*" "$message" --registry=https://npm.pkg.github.com
+          done <"$entries"
+          # DEPRECATE_RENAMED_PACKAGES_END
       - name: Report successful publication
         id: result
         env:
@@ -377,6 +436,14 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TARGETS: ${{ needs.release.outputs.retention-targets }}
-        run: >-
-          python3 .package-retention-contract/scripts/package_retention.py
-          --owner "$GITHUB_REPOSITORY_OWNER" --targets "$TARGETS" --apply
+          # Org-wide retention window (verjson-agents#987). Defaults to the ADR
+          # 0108 policy of 3 and changes nothing until a human sets this
+          # variable — raising it is a storage-cost decision, not a code change.
+          RETENTION_KEEP: ${{ vars.VERJSON_PACKAGE_RETENTION_KEEP || '3' }}
+        run: |
+          if [[ ! "$RETENTION_KEEP" =~ ^[1-9][0-9]*$ ]]; then
+            echo "::error::VERJSON_PACKAGE_RETENTION_KEEP must be a positive integer, got '$RETENTION_KEEP'."
+            exit 1
+          fi
+          python3 .package-retention-contract/scripts/package_retention.py \
+            --owner "$GITHUB_REPOSITORY_OWNER" --targets "$TARGETS" --keep "$RETENTION_KEEP" --apply
