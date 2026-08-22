@@ -1684,9 +1684,92 @@ git -C "$leaked_secret_adopter" commit -aqm 'leak the release App private key in
 if run_adopter "$leaked_secret_adopter"; then
   fail "emitted suite accepted a release-artifact caller whose build step env leaked RELEASE_APP_PRIVATE_KEY"
 else
-  grep -qF 'build job references a secrets.* context' "$tmproot/run.out" \
+  grep -qF 'build job references a secrets context' "$tmproot/run.out" \
     && pass "emitted suite rejects a release-artifact caller with a release-App secret leaked into the build job" \
     || fail "emitted suite rejected the leaked secret, but for the wrong reason: $(tail -2 "$tmproot/run.out")"
+fi
+
+# A second independent review found the dot-accessor-only pattern above
+# (secrets\.) is itself bypassable three ways, all reproduced end-to-end
+# against a real generated caller before this fix: bracket-index access,
+# toJSON(secrets), and workflow-level env: indirection. Each must now be
+# rejected too (#975 review finding, round 2).
+
+bracket_secret_adopter="$tmproot/adopter-artifact-bracket-secret"
+cp -a "$artifact_adopter" "$bracket_secret_adopter"
+sed -i \
+  "s/RELEASE_VERSION: \${{ inputs.version }}/RELEASE_VERSION: \${{ inputs.version }}\n          RELEASE_APP_PRIVATE_KEY: \${{ secrets['RELEASE_APP_PRIVATE_KEY'] }}/" \
+  "$bracket_secret_adopter/.github/workflows/release.yml"
+grep -qF "RELEASE_APP_PRIVATE_KEY: \${{ secrets['RELEASE_APP_PRIVATE_KEY'] }}" \
+  "$bracket_secret_adopter/.github/workflows/release.yml" \
+  || fail "test setup did not actually inject a bracket-syntax secrets[...] reference into the build step's env"
+git -C "$bracket_secret_adopter" commit -aqm 'leak the release App private key via secrets[...] bracket syntax'
+if run_adopter "$bracket_secret_adopter"; then
+  fail "emitted suite accepted a release-artifact caller whose build step env leaked a secret via bracket syntax (secrets['NAME'])"
+else
+  grep -qF 'build job references a secrets context' "$tmproot/run.out" \
+    && pass "emitted suite rejects a release-artifact caller leaking a secret via bracket syntax" \
+    || fail "emitted suite rejected the bracket-syntax leak, but for the wrong reason: $(tail -2 "$tmproot/run.out")"
+fi
+
+tojson_secret_adopter="$tmproot/adopter-artifact-tojson-secret"
+cp -a "$artifact_adopter" "$tojson_secret_adopter"
+sed -i \
+  's/RELEASE_VERSION: \${{ inputs.version }}/RELEASE_VERSION: ${{ inputs.version }}\n          ALL_SECRETS: ${{ toJSON(secrets) }}/' \
+  "$tojson_secret_adopter/.github/workflows/release.yml"
+grep -qF 'ALL_SECRETS: ${{ toJSON(secrets) }}' \
+  "$tojson_secret_adopter/.github/workflows/release.yml" \
+  || fail "test setup did not actually inject a toJSON(secrets) dump into the build step's env"
+git -C "$tojson_secret_adopter" commit -aqm 'dump every secret into the build step env via toJSON(secrets)'
+if run_adopter "$tojson_secret_adopter"; then
+  fail "emitted suite accepted a release-artifact caller whose build step env dumped the entire secrets context via toJSON(secrets)"
+else
+  grep -qF 'build job references a secrets context' "$tmproot/run.out" \
+    && pass "emitted suite rejects a release-artifact caller dumping secrets via toJSON(secrets)" \
+    || fail "emitted suite rejected the toJSON(secrets) leak, but for the wrong reason: $(tail -2 "$tmproot/run.out")"
+fi
+
+toplevel_env_secret_adopter="$tmproot/adopter-artifact-toplevel-env-secret"
+cp -a "$artifact_adopter" "$toplevel_env_secret_adopter"
+awk '
+  /^jobs:[[:space:]]*$/ && !done {
+    print "env:"
+    print "  RELEASE_APP_PRIVATE_KEY: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}"
+    print ""
+    done = 1
+  }
+  { print }
+' "$toplevel_env_secret_adopter/.github/workflows/release.yml" \
+  >"$toplevel_env_secret_adopter/.github/workflows/release.yml.new"
+mv "$toplevel_env_secret_adopter/.github/workflows/release.yml.new" \
+  "$toplevel_env_secret_adopter/.github/workflows/release.yml"
+sed -i \
+  's/RELEASE_VERSION: \${{ inputs.version }}/RELEASE_VERSION: ${{ inputs.version }}\n          RELEASE_APP_PRIVATE_KEY: ${{ env.RELEASE_APP_PRIVATE_KEY }}/' \
+  "$toplevel_env_secret_adopter/.github/workflows/release.yml"
+grep -qE '^env:[[:space:]]*$' "$toplevel_env_secret_adopter/.github/workflows/release.yml" \
+  || fail "test setup did not actually add a workflow-level env: block"
+grep -qF 'RELEASE_APP_PRIVATE_KEY: ${{ env.RELEASE_APP_PRIVATE_KEY }}' \
+  "$toplevel_env_secret_adopter/.github/workflows/release.yml" \
+  || fail "test setup did not actually make the build step consume the workflow-level env indirection"
+# The literal word "secrets" never appears inside the build: job block itself
+# in this bypass — it only appears in the workflow-level env: block the build
+# job indirectly reads via ${{ env.RELEASE_APP_PRIVATE_KEY }} — so this proves
+# the per-job secrets scan alone cannot catch it; only the workflow-level env:
+# block rejection can.
+build_job_slice="$(awk '
+  /^  build:[[:space:]]*$/ { in_job = 1 }
+  in_job && /^  [A-Za-z0-9_.-]+:[[:space:]]*$/ && $0 !~ /^  build:/ { exit }
+  in_job { print }
+' "$toplevel_env_secret_adopter/.github/workflows/release.yml")"
+! grep -q 'secrets' <<<"$build_job_slice" \
+  || fail "test setup leaked the literal word secrets into the build job block, which would make this test pass for the wrong reason"
+git -C "$toplevel_env_secret_adopter" commit -aqm 'leak the release App private key via a workflow-level env: indirection'
+if run_adopter "$toplevel_env_secret_adopter"; then
+  fail "emitted suite accepted a release-artifact caller smuggling a secret through a workflow-level env: block"
+else
+  grep -qF 'declares a workflow-level env: block' "$tmproot/run.out" \
+    && pass "emitted suite rejects a release-artifact caller smuggling a secret through a workflow-level env: block" \
+    || fail "emitted suite rejected the workflow-level env indirection, but for the wrong reason: $(tail -2 "$tmproot/run.out")"
 fi
 
 [ "$fails" -eq 0 ] || exit 1
