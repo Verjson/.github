@@ -1528,7 +1528,7 @@ jobs:
           # expansion. Either way the tokens reach `docker exec` as literal
           # argv, never through a shell or `eval`, so they cannot escape to the
           # runner regardless of content (#986).
-          IFS=' ' read -ra DB_HEALTH_CMD_ARGV <<< "$DB_HEALTH_CMD"
+          IFS=' ' read -r -ra DB_HEALTH_CMD_ARGV <<< "$DB_HEALTH_CMD"
           for attempt in $(seq 1 30); do
             if docker exec "$CONTAINER_ID" "${DB_HEALTH_CMD_ARGV[@]}" >/dev/null 2>&1; then
               echo "database is ready"
@@ -1804,7 +1804,7 @@ jobs:
           # the tokens reach `docker exec` as literal argv, never through a
           # shell or `eval`, so they cannot escape to the runner regardless of
           # content (#986).
-          IFS=' ' read -ra CACHE_HEALTH_CMD_ARGV <<< "$CACHE_HEALTH_CMD"
+          IFS=' ' read -r -ra CACHE_HEALTH_CMD_ARGV <<< "$CACHE_HEALTH_CMD"
           for _attempt in {1..30}; do
             # The default `redis-cli ping` keeps today's exact check byte-for-byte
             # (exit status AND a literal PONG reply — some failure paths still
