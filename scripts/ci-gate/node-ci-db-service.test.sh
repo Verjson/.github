@@ -108,6 +108,12 @@ case "${1:-}" in
     ;;
   # $RM_FAIL models a removal the daemon refuses, message and all.
   rm) [ -z "${RM_FAIL:-}" ] || { printf '%s\n' "$RM_FAIL" >&2; exit 1; } ;;
+  # `exec` backs the health-check probe (#986). The full invocation, including
+  # every token of the caller's health command, is already captured verbatim by
+  # the unconditional log line above — proof the value reaches `docker exec` as
+  # literal argv, never through a shell that could reinterpret it. $HEALTH_CMD_FAIL
+  # models a health command that never succeeds.
+  exec) [ -z "${HEALTH_CMD_FAIL:-}" ] || exit 1 ;;
 esac
 exit 0
 DOCKER
@@ -122,6 +128,14 @@ case ",${UNREACHABLE_ENDPOINTS:-}," in
 esac
 TIMEOUT
 chmod +x "$tmp/bin/timeout"
+# A no-op `sleep`: only the health-retry-exhaustion test drives all 30 attempts,
+# and a real 2s sleep per attempt would cost ~a minute of wall clock for a check
+# whose content (not timing) is what's under test.
+cat >"$tmp/bin/sleep" <<'SLEEP'
+#!/usr/bin/env bash
+exit 0
+SLEEP
+chmod +x "$tmp/bin/sleep"
 export PATH="$tmp/bin:$PATH"
 
 export DB_IMAGE="pgvector/pgvector:pg16"
@@ -745,6 +759,103 @@ over_cap="$(awk '
 [ -z "$over_cap" ] \
   && pass "no job declares a timeout-minutes above the 6h bound the sweep relies on" \
   || fail "a timeout-minutes above 360 lets a job outlive the sweep's age bound, so the sweep can remove a LIVE container: $over_cap"
+
+# (i) #986: a caller-supplied db-port changes which container-internal port is
+# published and looked up. Every assertion above (none of which set
+# DB_CONTAINER_PORT) already proves the unset default stays the literal 5432.
+run_db_step job-custom-port "${job_a[@]}" DB_CONTAINER_PORT=7687 MAPPED_PORT=54321
+rc=$?
+{ [ "$rc" -eq 0 ] \
+    && grep -qF -- '-p 127.0.0.1::7687' "$tmp/job-custom-port/docker.log" \
+    && grep -qF -- 'port c0ffeeba5e' "$tmp/job-custom-port/docker.log" \
+    && grep -qF -- '7687/tcp' "$tmp/job-custom-port/docker.log" \
+    && grep -qxF 'DB_PORT=54321' "$tmp/job-custom-port/github_env"; } \
+  && pass "db-port publishes and looks up the caller-selected container port" \
+  || fail "step exited $rc without honoring a custom db-port: $(grep -E '^(run|port)' "$tmp/job-custom-port/docker.log" | tr '\n' ' ')"
+
+# ...and the container-bridge fallback (auto/container mode) exports THAT port,
+# not the hardcoded 5432 the fallback used before db-port existed.
+run_db_step job-custom-port-fallback "${job_a[@]}" DB_CONTAINER_PORT=7687 \
+  MAPPED_PORT=54322 CONTAINER_IP=172.20.0.9 UNREACHABLE_ENDPOINTS=127.0.0.1:54322
+rc=$?
+{ [ "$rc" -eq 0 ] \
+    && grep -qxF 'DB_HOST=172.20.0.9' "$tmp/job-custom-port-fallback/github_env" \
+    && grep -qxF 'DB_PORT=7687' "$tmp/job-custom-port-fallback/github_env"; } \
+  && pass "the container-bridge fallback exports the caller-selected db-port, not a hardcoded 5432" \
+  || fail "step exited $rc and did not export DB_PORT=7687 on fallback: $(cat "$tmp/job-custom-port-fallback/github_env")"
+
+# (j) #986: a caller-supplied db-health-cmd replaces pg_isready, run the same way
+# (docker exec against the started container, retried on failure).
+run_db_step job-custom-health "${job_a[@]}" \
+  'DB_HEALTH_CMD=cypher-shell -u neo4j -p neo4j RETURN 1'
+rc=$?
+id_custom_health="$(published_handle_of job-custom-health)"
+{ [ "$rc" -eq 0 ] \
+    && grep -qF -- "exec $id_custom_health cypher-shell -u neo4j -p neo4j RETURN 1" \
+      "$tmp/job-custom-health/docker.log" \
+    && ! grep -qF -- "exec $id_custom_health pg_isready" "$tmp/job-custom-health/docker.log"; } \
+  && pass "db-health-cmd replaces pg_isready with the caller's command" \
+  || fail "step exited $rc and did not run the caller's health command: $(grep -E '^exec ' "$tmp/job-custom-health/docker.log")"
+
+# ...and the default, unset case still runs exactly `pg_isready` with no extra
+# args ever appended — every earlier test in this file left DB_HEALTH_CMD unset.
+grep -qE '^exec [^ ]+ pg_isready$' "$tmp/job-a/docker.log" \
+  && pass "the default db-health-cmd invocation is exactly 'pg_isready', unchanged" \
+  || fail "the default invocation is not the bare 'pg_isready' command: $(grep -E '^exec ' "$tmp/job-a/docker.log")"
+
+# ...and it is a TRUST BOUNDARY, not a second shell: db-health-cmd is caller data
+# executed in CI. It must reach `docker exec` as literal argv — split on
+# whitespace only — and never through a shell/eval that would let a `;` or `$()`
+# escape the container it targets and run on the runner itself. Proven here by
+# planting a marker: the injected `touch` becomes an inert docker-exec ARGUMENT
+# (logged verbatim by the stub), never an actual command the test's shell runs.
+marker="$tmp/pwned-marker"
+run_db_step job-health-injection "${job_a[@]}" \
+  "DB_HEALTH_CMD=pg_isready; touch $marker"
+rc=$?
+id_injection="$(published_handle_of job-health-injection)"
+{ [ "$rc" -eq 0 ] \
+    && grep -qF -- "exec $id_injection pg_isready; touch $marker" \
+      "$tmp/job-health-injection/docker.log" \
+    && [ ! -e "$marker" ]; } \
+  && pass "db-health-cmd reaches docker exec as literal argv; shell metacharacters cannot escape to the runner" \
+  || fail "a ';'-separated db-health-cmd token was not passed literally, or the runner executed it (marker exists: $( [ -e "$marker" ] && echo yes || echo no ))"
+
+# (k) #986: a health command that never succeeds fails the step after the same
+# bound pg_isready always had (30 attempts) — naming the image and the exact
+# command, so the operator does not have to guess which changed engine failed.
+run_db_step job-health-never-ready "${job_a[@]}" \
+  'DB_HEALTH_CMD=cypher-shell -u neo4j -p neo4j RETURN 1' HEALTH_CMD_FAIL=1
+rc=$?
+{ [ "$rc" -ne 0 ] \
+    && grep -qF "database image '$DB_IMAGE' failed health check 'cypher-shell -u neo4j -p neo4j RETURN 1' after 30 attempts" \
+      "$tmp/job-health-never-ready/out.txt" \
+    && ! grep -q '^DATABASE_URL=' "$tmp/job-health-never-ready/github_env"; } \
+  && pass "a health command that never succeeds fails after 30 attempts, naming the image and command" \
+  || fail "step exited $rc without naming the image/command on health-check exhaustion: $(cat "$tmp/job-health-never-ready/out.txt")"
+
+# (l) #986 hardening: db-health-cmd must reach `docker exec` with NEITHER shell
+# reinterpretation (already proven above) NOR bash's own pathname/glob
+# expansion. An earlier revision expanded $DB_HEALTH_CMD unquoted, which
+# undergoes word-splitting AND glob expansion — a command containing
+# `*`/`?`/`[...]` that happened to match a file in the runner's working
+# directory would silently gain extra argv the caller never wrote. Run the step
+# from a directory salted with filenames that WOULD match the glob if expanded,
+# and assert the literal `*` reaches docker unexpanded.
+glob_cwd="$tmp/glob-cwd"
+mkdir -p "$glob_cwd"
+touch "$glob_cwd/pg_isready-extra" "$glob_cwd/pg_isready-other"
+(
+  cd "$glob_cwd" || exit 1
+  run_db_step job-glob-payload "${job_a[@]}" 'DB_HEALTH_CMD=pg_isready-*'
+)
+rc=$?
+{ [ "$rc" -eq 0 ] \
+    && grep -qE '^exec [^ ]+ pg_isready-\*$' "$tmp/job-glob-payload/docker.log" \
+    && ! grep -qF -- 'pg_isready-extra' "$tmp/job-glob-payload/docker.log" \
+    && ! grep -qF -- 'pg_isready-other' "$tmp/job-glob-payload/docker.log"; } \
+  && pass "a glob-shaped db-health-cmd reaches docker exec literally, never pathname-expanded" \
+  || fail "db-health-cmd underwent pathname expansion: $(grep -E '^exec ' "$tmp/job-glob-payload/docker.log")"
 
 if [ "$fails" -eq 0 ]; then
   echo "All tests passed."

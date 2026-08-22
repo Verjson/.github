@@ -11,6 +11,7 @@ Reverse-chronological index of org-level decisions.
 <!-- BEGIN ADR INDEX -->
 | # | Date | Decision |
 |---|------|----------|
+| [0116](0116-node-ci-caller-supplied-health-check/README.md) | 2026-08-22 | node-ci accepts a caller-supplied health check and container port |
 | [0115](0115-configurable-package-retention-with-rename-deprecation/README.md) | 2026-08-22 | Configurable package retention with rename-deprecation stubs |
 | [0114](0114-generated-caller-capability-floor-audit/README.md) | 2026-08-22 | Detect consumer generated-caller pins that predate an assumed capability |
 | [0113](0113-refresh-rework-thresholds-repo-list/README.md) | 2026-08-21 | Refresh the rework-telemetry repo list to activity-ranked repos |
