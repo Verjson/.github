@@ -85,11 +85,40 @@ jobs:
           cd "$group_root"
           bash scripts/actions-ci-group.sh "${{ matrix.group }}"
 
+  # scripts/gen-adr-index.sh --check (run above, in the changelog-release
+  # group) only ever sees this PR's own tree, so it cannot catch two open PRs
+  # independently allocating the same docs/decisions/NNNN-<slug> number --
+  # git merges the two differently-named directories without a conflict and
+  # the collision lands on main silently (Verjson/.github#983). This reads
+  # live GitHub state instead, so it only runs where that state exists: a
+  # pull request.
+  adr-number-collision:
+    if: github.event_name == 'pull_request'
+    runs-on: ${{ fromJSON(vars.VERJSON_RUNNER_FASTLANE || vars.VERJSON_LANE_TRUSTED || vars.VERJSON_LANE_FALLBACK || '["ubuntu-24.04"]') }}
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 1
+          # Same isolated-path rationale as shell-test-groups above (#675).
+          path: .adr-number-collision-source-${{ github.run_id }}-${{ github.run_attempt }}
+      - name: Check this PR's ADR numbers against main and other open PRs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cd ".adr-number-collision-source-${{ github.run_id }}-${{ github.run_attempt }}"
+          python3 scripts/ci-gate/adr-number-collision.py \
+            --repo "${{ github.repository }}" \
+            --pr-number "${{ github.event.pull_request.number }}"
+
   # Required-check compatibility boundary. `shell-tests` is the context named
   # by the repository ruleset (ADR 0058), so it remains unmatrixed and reports
   # the aggregate result after every group reaches a terminal state.
   shell-tests:
-    needs: shell-test-groups
+    needs: [shell-test-groups, adr-number-collision]
     if: ${{ always() }}
     runs-on: ${{ fromJSON(vars.VERJSON_RUNNER_FASTLANE || vars.VERJSON_LANE_TRUSTED || vars.VERJSON_LANE_FALLBACK || '["ubuntu-24.04"]') }}
     timeout-minutes: 2
@@ -97,8 +126,15 @@ jobs:
       - name: Preserve the required shell-tests context
         env:
           GROUP_RESULT: ${{ needs.shell-test-groups.result }}
+          COLLISION_RESULT: ${{ needs.adr-number-collision.result }}
         run: |
           if [ "$GROUP_RESULT" != "success" ]; then
             echo "::error::one or more shell-test groups failed"
+            exit 1
+          fi
+          # adr-number-collision only runs on pull_request (needs live PR
+          # state), so 'skipped' -- e.g. on a push to main -- is not a failure.
+          if [ "$COLLISION_RESULT" != "success" ] && [ "$COLLISION_RESULT" != "skipped" ]; then
+            echo "::error::ADR number collision check failed"
             exit 1
           fi
