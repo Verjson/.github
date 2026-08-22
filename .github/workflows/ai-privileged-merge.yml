@@ -105,6 +105,35 @@ jobs:
       GH_TOKEN: ${{ secrets.ORG_ADMIN_TOKEN }}
       REQUIRED_CHECK_POLICY: ${{ github.repository == 'Verjson/.github' && '[{"name":"shell-tests","app_id":15368,"workflow_id":315894159,"workflow_path":".github/workflows/actions-ci.yml"}]' || inputs.required_checks }}
     steps:
+      - name: Validate caller-supplied privileged lane routing
+        env:
+          PRIVILEGED_LANE: ${{ inputs.privileged_lane }}
+          REPO_OWNER: ${{ github.repository_owner }}
+          REPO_VISIBILITY: ${{ github.event.repository.visibility }}
+        run: |
+          set -euo pipefail
+          # ADR 0089: privileged_lane is caller-supplied, untrusted routing
+          # data — a repository-level variable can shadow the organization
+          # one. Only the private-Verjson self-hosted route reads it: external
+          # orgs use runner_labels and the two public Verjson repos resolve to
+          # a fixed ubuntu-24.04 literal the input never touches. This step
+          # runs on whatever capacity `runs-on:` above already resolved to; it
+          # never changes that literal, so a runner-produced value can never
+          # select where this secret-bearing job lands. It is a step here
+          # rather than a preceding gating job so external self-hosted-only
+          # callers are never forced to also obtain GitHub-hosted capacity
+          # just to reach a check that is a no-op for their route.
+          if [ "$REPO_OWNER" != "Verjson" ] || [ "$REPO_VISIBILITY" != "private" ] ||
+             [ "$TARGET_REPO" = "Verjson/.github" ] || [ "$TARGET_REPO" = "Verjson/verjson-github-runner" ]; then
+            echo "privileged_lane validation does not apply to this route."
+            exit 0
+          fi
+          jq -e '. == ["self-hosted","general"]' >/dev/null 2>&1 <<<"${PRIVILEGED_LANE:-}" || {
+            echo "::error::privileged_lane is missing, malformed, or is not the exact admitted self-hosted/general lane (ADR 0089); got: ${PRIVILEGED_LANE:-<empty>}"
+            exit 1
+          }
+          echo "privileged_lane validated: exact match for the admitted self-hosted/general lane."
+
       - name: Resolve executing trusted workflow revision
         id: trusted-revision
         env:

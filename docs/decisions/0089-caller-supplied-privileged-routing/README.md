@@ -82,3 +82,49 @@ compares the caller with credentialless historical generation. The audit checkou
 event-SHA-bound, while an unrelated audit commit no longer makes every unchanged caller
 non-canonical. The audit itself is fixed to `ubuntu-24.04`; its privileged read token is
 never placed by a repository variable or persistent runner output.
+
+## 2026-08-21 amendment — the promised fail-closed check was never wired up
+
+[Verjson/.github#988](https://github.com/Verjson/.github/issues/988) found that
+`ai-privileged-merge.yml` declared `privileged_lane` as a `workflow_call` input,
+and every generated caller correctly supplied
+`vars.VERJSON_LANE_PRIVILEGED` for it (`scripts/gen-privileged-merge-caller.sh`),
+but the reusable workflow itself never read, validated, or otherwise referenced
+that input anywhere past its declaration. The private-Verjson branch of
+`privileged_merge`'s `runs-on:` hardcoded `fromJSON('["self-hosted","general"]')`
+unconditionally. Practical impact was limited — the literal selector cannot
+itself be widened by a malicious input it never reads — but the fail-closed
+validation this ADR's Decision section promises ("Missing, malformed, hosted,
+widened, or shadowed values fail closed") did not exist in code: a
+misconfigured, shadowed, or absent `VERJSON_LANE_PRIVILEGED` produced no
+diagnostic anywhere.
+
+The fix adds a validation step as the FIRST step of the existing
+`privileged_merge` job that exact-matches the effective
+`inputs.privileged_lane` against `["self-hosted","general"]` for the
+private-Verjson route and fails the run with a `::error::` diagnostic on any
+other value — missing, malformed, hosted, widened, or shadowed. `runs-on:` on
+`privileged_merge` is byte-identical to before this fix: the step never reads
+anything a runner produces and never changes where the job lands, so a
+compromised runner still cannot forge its way into selecting the terminal
+job's capacity — the same guarantee the rejected 2026-08-14 runner-executed
+resolver would have broken.
+
+The first attempt at this fix (PR #989, merged 2026-08-21 by this
+organization's own AI-merge authority before the review below was acted on)
+used a separate preceding job gated by `needs:`, run unconditionally on fixed
+`ubuntu-24.04` capacity. The automated review on that PR correctly flagged
+that this forced every caller — including an external self-hosted-only org
+using the `runner_labels` escape hatch, which never otherwise needs
+GitHub-hosted capacity for this workflow — to also obtain hosted capacity
+just to reach a check that is a no-op for their route. A same-day follow-up
+(#989's immediate successor) replaced the separate job with the in-job step
+described above: it runs on whatever capacity `runs-on:` already resolved to
+for that caller, so it adds no new capacity requirement for anyone. A
+preceding job was the ADR's naturally-read shape ("before the terminal merge
+job is scheduled"), but since `runs-on:` here is a fixed literal rather than
+a value derived from any prior resolution step, an early step in the same job
+delivers the identical fail-closed guarantee without that regression.
+
+This restores an invariant already decided above; it does not change the
+decision, so no new ADR number was minted for it.
