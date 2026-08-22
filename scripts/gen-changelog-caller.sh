@@ -1992,6 +1992,29 @@ while IFS= read -r release_workflow; do
       || fail "$release_workflow build job does not upload artifacts at the pinned actions/upload-artifact commit"
     grep -qF 'name: release-artifacts-${{ strategy.job-index }}' <<<"$build_job" \
       || fail "$release_workflow build job does not key each runner's upload uniquely by strategy.job-index"
+    # #975 (security). The build matrix runs adopter-owned scripts/release-build.sh
+    # — potentially third-party build tooling (e.g. Electron/native code-signing
+    # dependencies) — on caller-chosen runners. It must never be able to push, and
+    # it must never see the release App credential that mints main-protection-bypass
+    # tokens (that credential belongs only to snapshot's changelog-release.yml
+    # delegation, checked above). A denylist of secret names would need updating
+    # every time a new sensitive secret is added elsewhere in this contract, so this
+    # bans the whole secrets context instead: scripts/release-build.sh receives only
+    # RELEASE_VERSION as a plain input, never a secret.
+    build_permissions="$(awk '
+      /^    permissions:[[:space:]]*$/ { in_permissions = 1; next }
+      in_permissions && /^    [^[:space:]]/ { exit }
+      in_permissions { print }
+    ' <<<"$build_job")"
+    build_permissions_effective="$(sed 's/#.*//' <<<"$build_permissions" | sed '/^[[:space:]]*$/d')"
+    [ "$(grep -c . <<<"$build_permissions_effective")" -eq 1 ] \
+      && grep -qE '^[[:space:]]+contents:[[:space:]]+read[[:space:]]*$' <<<"$build_permissions_effective" \
+      || fail "$release_workflow build job grants more than contents-read; the build matrix runs adopter-owned scripts/release-build.sh on caller-chosen runners and must never receive write access (#975)"
+    # Match the bare word, not just the dot-accessor form: ${{ secrets['NAME'] }}
+    # and ${{ toJSON(secrets) }} both expose secret material without the literal
+    # substring "secrets." ever appearing, and both must be caught too.
+    ! sed 's/#.*//' <<<"$build_job" | grep -qE 'secrets\b' \
+      || fail "$release_workflow build job references a secrets context; the build matrix runs adopter-owned scripts/release-build.sh on caller-chosen runners and must never receive any secret, especially not the release App credential that mints main-protection-bypass tokens (#975)"
     grep -qF 'needs: [verify, snapshot, build]' <<<"$publish_job" \
       || fail "$release_workflow does not gate publication on verification, snapshot, and build state"
     grep -qF "if: always() && needs.verify.result == 'success' && (needs.snapshot.result == 'success' || needs.snapshot.result == 'skipped') && needs.build.result == 'success'" \
@@ -2010,6 +2033,14 @@ while IFS= read -r release_workflow; do
     grep -qF 'gh release upload "$VERSION" release-artifacts/* --clobber' <<<"$publish_job" \
       || fail "$release_workflow publish job does not idempotently attach every downloaded artifact to the release"
   fi
+  # #975 (security). A workflow-level env: block (0-indent, a sibling of jobs:)
+  # could smuggle a secret past the per-job secrets scan above: ${{ env.NAME }}
+  # inside the build job never contains the literal word "secrets", even though
+  # the workflow-level env: entry that defines NAME does. The generator's own
+  # template never emits a workflow-level env: block, so rejecting one outright
+  # is a zero-false-positive tightening rather than scanning and folding it in.
+  ! grep -qE '^env:[[:space:]]*$' "$release_workflow" \
+    || fail "$release_workflow declares a workflow-level env: block; a job could read a secret placed there via \${{ env.NAME }} without the literal secrets context ever appearing inside the job itself, bypassing the build job's secrets scan (#975)"
   grep -qF 'group: release-${{ github.repository }}' "$release_workflow" \
     && grep -qF 'cancel-in-progress: false' "$release_workflow" \
     || fail "$release_workflow does not serialize destructive package cleanup across release versions (#889)"

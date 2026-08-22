@@ -25,3 +25,19 @@ is still rejected — the provenance-based rejection this file exists to
 enforce is unchanged, just widened to a second known-good shape.
 
 `docs/changelog/README.md` documents the new mode alongside `release-node`.
+
+**2026-08-22 security follow-up:** an independent review found the generated
+`contract-test` checked the `build` job's `needs:`, `if:`, `ref:`, hook
+executability, and artifact-upload pin, but never its `permissions:` block or
+whether its steps reference a `secrets.*` context. A hand-edited consumer
+caller escalating that job's `permissions` from `contents: read` to
+`contents: write`, or adding `RELEASE_APP_PRIVATE_KEY` to a build step's
+`env:`, passed the generated `scripts/changelog-contract.test.sh` with exit 0
+— exactly the divergence this file exists to reject. `RELEASE_APP_PRIVATE_KEY`
+mints the App token with main-protection-bypass power (ADR 0099); leaking it
+into a job that runs adopter-owned, potentially third-party build tooling on
+caller-chosen runners would be a severe privilege escalation. The generator's
+own template already emitted the correct least-privilege shape; only the
+contract-test's verification of that shape was missing. `contract-test` mode
+now asserts the extracted `build_job`'s `permissions:` block is exactly
+`contents: read`, and that no `secrets.*` context appears anywhere in the job.

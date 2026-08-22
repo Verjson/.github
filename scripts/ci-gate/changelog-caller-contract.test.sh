@@ -1640,5 +1640,137 @@ else
     || fail "emitted suite rejected the broken build job, but for the wrong reason: $(tail -2 "$tmproot/run.out")"
 fi
 
+# Reproduces a real, empirically-verified exploit: the generated contract-test
+# must reject a build job hand-edited to escalate permissions or to smuggle in
+# the release App private key — the credential that mints main-protection-bypass
+# tokens — since scripts/release-build.sh runs adopter-owned (potentially
+# third-party) build tooling on caller-chosen runners (#975 review finding).
+escalated_permissions_adopter="$tmproot/adopter-artifact-escalated-permissions"
+cp -a "$artifact_adopter" "$escalated_permissions_adopter"
+awk '
+  /^  build:[[:space:]]*$/ { in_build = 1 }
+  in_build && /^  [A-Za-z0-9_.-]+:[[:space:]]*$/ && $0 !~ /^  build:/ { in_build = 0 }
+  in_build && /^    permissions:[[:space:]]*$/ { print; getline; sub(/contents: read/, "contents: write"); print; next }
+  { print }
+' "$escalated_permissions_adopter/.github/workflows/release.yml" \
+  >"$escalated_permissions_adopter/.github/workflows/release.yml.new"
+mv "$escalated_permissions_adopter/.github/workflows/release.yml.new" \
+  "$escalated_permissions_adopter/.github/workflows/release.yml"
+awk '
+  /^  build:[[:space:]]*$/ { in_build = 1 }
+  in_build && /^  [A-Za-z0-9_.-]+:[[:space:]]*$/ && $0 !~ /^  build:/ { in_build = 0 }
+  in_build { print }
+' "$escalated_permissions_adopter/.github/workflows/release.yml" \
+  | grep -qF 'contents: write' \
+  || fail "test setup did not actually escalate the build job's permissions to contents: write"
+git -C "$escalated_permissions_adopter" commit -aqm 'escalate the build job to contents: write'
+if run_adopter "$escalated_permissions_adopter"; then
+  fail "emitted suite accepted a release-artifact caller whose build job was escalated to contents: write"
+else
+  grep -qF 'build job grants more than contents-read' "$tmproot/run.out" \
+    && pass "emitted suite rejects a release-artifact caller with an escalated build-job permission" \
+    || fail "emitted suite rejected the escalated build job, but for the wrong reason: $(tail -2 "$tmproot/run.out")"
+fi
+
+leaked_secret_adopter="$tmproot/adopter-artifact-leaked-secret"
+cp -a "$artifact_adopter" "$leaked_secret_adopter"
+sed -i \
+  's/RELEASE_VERSION: \${{ inputs.version }}/RELEASE_VERSION: ${{ inputs.version }}\n          RELEASE_APP_PRIVATE_KEY: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}/' \
+  "$leaked_secret_adopter/.github/workflows/release.yml"
+grep -qF 'RELEASE_APP_PRIVATE_KEY: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}' \
+  "$leaked_secret_adopter/.github/workflows/release.yml" \
+  || fail "test setup did not actually inject RELEASE_APP_PRIVATE_KEY into the build step's env"
+git -C "$leaked_secret_adopter" commit -aqm 'leak the release App private key into the build step env'
+if run_adopter "$leaked_secret_adopter"; then
+  fail "emitted suite accepted a release-artifact caller whose build step env leaked RELEASE_APP_PRIVATE_KEY"
+else
+  grep -qF 'build job references a secrets context' "$tmproot/run.out" \
+    && pass "emitted suite rejects a release-artifact caller with a release-App secret leaked into the build job" \
+    || fail "emitted suite rejected the leaked secret, but for the wrong reason: $(tail -2 "$tmproot/run.out")"
+fi
+
+# A second independent review found the dot-accessor-only pattern above
+# (secrets\.) is itself bypassable three ways, all reproduced end-to-end
+# against a real generated caller before this fix: bracket-index access,
+# toJSON(secrets), and workflow-level env: indirection. Each must now be
+# rejected too (#975 review finding, round 2).
+
+bracket_secret_adopter="$tmproot/adopter-artifact-bracket-secret"
+cp -a "$artifact_adopter" "$bracket_secret_adopter"
+sed -i \
+  "s/RELEASE_VERSION: \${{ inputs.version }}/RELEASE_VERSION: \${{ inputs.version }}\n          RELEASE_APP_PRIVATE_KEY: \${{ secrets['RELEASE_APP_PRIVATE_KEY'] }}/" \
+  "$bracket_secret_adopter/.github/workflows/release.yml"
+grep -qF "RELEASE_APP_PRIVATE_KEY: \${{ secrets['RELEASE_APP_PRIVATE_KEY'] }}" \
+  "$bracket_secret_adopter/.github/workflows/release.yml" \
+  || fail "test setup did not actually inject a bracket-syntax secrets[...] reference into the build step's env"
+git -C "$bracket_secret_adopter" commit -aqm 'leak the release App private key via secrets[...] bracket syntax'
+if run_adopter "$bracket_secret_adopter"; then
+  fail "emitted suite accepted a release-artifact caller whose build step env leaked a secret via bracket syntax (secrets['NAME'])"
+else
+  grep -qF 'build job references a secrets context' "$tmproot/run.out" \
+    && pass "emitted suite rejects a release-artifact caller leaking a secret via bracket syntax" \
+    || fail "emitted suite rejected the bracket-syntax leak, but for the wrong reason: $(tail -2 "$tmproot/run.out")"
+fi
+
+tojson_secret_adopter="$tmproot/adopter-artifact-tojson-secret"
+cp -a "$artifact_adopter" "$tojson_secret_adopter"
+sed -i \
+  's/RELEASE_VERSION: \${{ inputs.version }}/RELEASE_VERSION: ${{ inputs.version }}\n          ALL_SECRETS: ${{ toJSON(secrets) }}/' \
+  "$tojson_secret_adopter/.github/workflows/release.yml"
+grep -qF 'ALL_SECRETS: ${{ toJSON(secrets) }}' \
+  "$tojson_secret_adopter/.github/workflows/release.yml" \
+  || fail "test setup did not actually inject a toJSON(secrets) dump into the build step's env"
+git -C "$tojson_secret_adopter" commit -aqm 'dump every secret into the build step env via toJSON(secrets)'
+if run_adopter "$tojson_secret_adopter"; then
+  fail "emitted suite accepted a release-artifact caller whose build step env dumped the entire secrets context via toJSON(secrets)"
+else
+  grep -qF 'build job references a secrets context' "$tmproot/run.out" \
+    && pass "emitted suite rejects a release-artifact caller dumping secrets via toJSON(secrets)" \
+    || fail "emitted suite rejected the toJSON(secrets) leak, but for the wrong reason: $(tail -2 "$tmproot/run.out")"
+fi
+
+toplevel_env_secret_adopter="$tmproot/adopter-artifact-toplevel-env-secret"
+cp -a "$artifact_adopter" "$toplevel_env_secret_adopter"
+awk '
+  /^jobs:[[:space:]]*$/ && !done {
+    print "env:"
+    print "  RELEASE_APP_PRIVATE_KEY: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}"
+    print ""
+    done = 1
+  }
+  { print }
+' "$toplevel_env_secret_adopter/.github/workflows/release.yml" \
+  >"$toplevel_env_secret_adopter/.github/workflows/release.yml.new"
+mv "$toplevel_env_secret_adopter/.github/workflows/release.yml.new" \
+  "$toplevel_env_secret_adopter/.github/workflows/release.yml"
+sed -i \
+  's/RELEASE_VERSION: \${{ inputs.version }}/RELEASE_VERSION: ${{ inputs.version }}\n          RELEASE_APP_PRIVATE_KEY: ${{ env.RELEASE_APP_PRIVATE_KEY }}/' \
+  "$toplevel_env_secret_adopter/.github/workflows/release.yml"
+grep -qE '^env:[[:space:]]*$' "$toplevel_env_secret_adopter/.github/workflows/release.yml" \
+  || fail "test setup did not actually add a workflow-level env: block"
+grep -qF 'RELEASE_APP_PRIVATE_KEY: ${{ env.RELEASE_APP_PRIVATE_KEY }}' \
+  "$toplevel_env_secret_adopter/.github/workflows/release.yml" \
+  || fail "test setup did not actually make the build step consume the workflow-level env indirection"
+# The literal word "secrets" never appears inside the build: job block itself
+# in this bypass — it only appears in the workflow-level env: block the build
+# job indirectly reads via ${{ env.RELEASE_APP_PRIVATE_KEY }} — so this proves
+# the per-job secrets scan alone cannot catch it; only the workflow-level env:
+# block rejection can.
+build_job_slice="$(awk '
+  /^  build:[[:space:]]*$/ { in_job = 1 }
+  in_job && /^  [A-Za-z0-9_.-]+:[[:space:]]*$/ && $0 !~ /^  build:/ { exit }
+  in_job { print }
+' "$toplevel_env_secret_adopter/.github/workflows/release.yml")"
+! grep -q 'secrets' <<<"$build_job_slice" \
+  || fail "test setup leaked the literal word secrets into the build job block, which would make this test pass for the wrong reason"
+git -C "$toplevel_env_secret_adopter" commit -aqm 'leak the release App private key via a workflow-level env: indirection'
+if run_adopter "$toplevel_env_secret_adopter"; then
+  fail "emitted suite accepted a release-artifact caller smuggling a secret through a workflow-level env: block"
+else
+  grep -qF 'declares a workflow-level env: block' "$tmproot/run.out" \
+    && pass "emitted suite rejects a release-artifact caller smuggling a secret through a workflow-level env: block" \
+    || fail "emitted suite rejected the workflow-level env indirection, but for the wrong reason: $(tail -2 "$tmproot/run.out")"
+fi
+
 [ "$fails" -eq 0 ] || exit 1
 echo "All tests passed."
