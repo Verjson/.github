@@ -73,13 +73,34 @@ def gh_json(path: str, *, paginate: bool):
     return items
 
 
-def added_adr_directories(files: list) -> dict[str, str]:
-    """number -> docs/decisions/NNNN-slug, from a pull request's changed files."""
-    numbers: dict[str, str] = {}
+def added_adr_directories(
+    files: list, *, detect_self_duplicates: bool = False
+) -> tuple[dict[str, dict[str, str | None]], list[str]]:
+    """number -> {"path": new path, "previous_path": renamed-from path or None},
+    plus any intra-PR duplicate-number problems, from a pull request's changed
+    files.
+
+    `previous_path` is set only when GitHub reports the entry as "renamed" and
+    its `previous_filename` parses to the *same* ADR number as the new
+    filename -- e.g. a PR fixing a typo in its own already-merged ADR's slug
+    while keeping the number (`0050-tpyo` -> `0050-fixed`). That is a
+    same-number self-edit, not a fresh allocation, so `find_collisions` can
+    compare it against main's existing path for that number instead of
+    requiring an exact match against the new path.
+
+    When `detect_self_duplicates` is True (only meaningful for the PR under
+    check, never for a peer open PR's own files -- that PR's own run catches
+    its own mistake), two different paths claiming the same number within
+    this one file list is reported immediately: it needs no GitHub API state
+    at all, it's visible from the PR's file list alone.
+    """
+    numbers: dict[str, dict[str, str | None]] = {}
+    problems: list[str] = []
     for entry in files:
         if not isinstance(entry, dict):
             raise CollisionCheckError("a pull request file entry is not an object")
-        if entry.get("status") not in NEW_PATH_STATUSES:
+        status = entry.get("status")
+        if status not in NEW_PATH_STATUSES:
             continue
         filename = entry.get("filename")
         if not isinstance(filename, str):
@@ -88,8 +109,25 @@ def added_adr_directories(files: list) -> dict[str, str]:
         if not match:
             continue
         number, slug = match.group(1), match.group(2)
-        numbers.setdefault(number, f"docs/decisions/{number}-{slug}")
-    return numbers
+        path = f"docs/decisions/{number}-{slug}"
+
+        previous_path = None
+        if status == "renamed":
+            previous_filename = entry.get("previous_filename")
+            if isinstance(previous_filename, str):
+                previous_match = ADR_PATH_RE.match(previous_filename)
+                if previous_match and previous_match.group(1) == number:
+                    previous_path = f"docs/decisions/{number}-{previous_match.group(2)}"
+
+        existing = numbers.get(number)
+        if existing is None:
+            numbers[number] = {"path": path, "previous_path": previous_path}
+        elif existing["path"] != path and detect_self_duplicates:
+            problems.append(
+                f"ADR number {number}: this PR adds both {existing['path']} and "
+                f"{path} under the same number. Pick distinct numbers."
+            )
+    return numbers, problems
 
 
 def main_adr_directories(entries: list) -> dict[str, str]:
@@ -115,16 +153,20 @@ def main_adr_directories(entries: list) -> dict[str, str]:
 
 
 def find_collisions(
-    pr_numbers: dict[str, str],
+    pr_numbers: dict[str, dict[str, str | None]],
     main_numbers: dict[str, str],
     other_open_pr_numbers: dict[str, list[tuple[int, str]]],
 ) -> list[str]:
     problems = []
-    for number, pr_path in sorted(pr_numbers.items()):
+    for number, record in sorted(pr_numbers.items()):
+        pr_path = record["path"]
+        previous_path = record.get("previous_path")
         main_path = main_numbers.get(number)
-        if main_path == pr_path:
-            # Not a new allocation: this PR is editing an ADR that already
-            # exists on main under this exact number and path.
+        if main_path == pr_path or (previous_path is not None and main_path == previous_path):
+            # Not a new allocation: either this PR is editing an ADR that
+            # already exists on main under this exact number and path, or it
+            # renamed its own already-merged ADR directory under the same
+            # number (previous_path is main's path pre-rename).
             continue
         if main_path is not None:
             problems.append(
@@ -145,9 +187,9 @@ def find_collisions(
 
 def fetch_state(repo: str, pr_number: int):
     pr_files = gh_json(f"repos/{repo}/pulls/{pr_number}/files?per_page=100", paginate=True)
-    pr_numbers = added_adr_directories(pr_files)
+    pr_numbers, duplicate_problems = added_adr_directories(pr_files, detect_self_duplicates=True)
     if not pr_numbers:
-        return pr_numbers, {}, {}
+        return pr_numbers, {}, {}, duplicate_problems
 
     main_entries = gh_json(f"repos/{repo}/contents/docs/decisions?ref=main", paginate=False)
     main_numbers = main_adr_directories(main_entries)
@@ -161,10 +203,11 @@ def fetch_state(repo: str, pr_number: int):
         if not isinstance(number, int) or number == pr_number:
             continue
         other_files = gh_json(f"repos/{repo}/pulls/{number}/files?per_page=100", paginate=True)
-        for adr_number, path in added_adr_directories(other_files).items():
-            other_open_pr_numbers.setdefault(adr_number, []).append((number, path))
+        other_numbers, _ = added_adr_directories(other_files)
+        for adr_number, record in other_numbers.items():
+            other_open_pr_numbers.setdefault(adr_number, []).append((number, record["path"]))
 
-    return pr_numbers, main_numbers, other_open_pr_numbers
+    return pr_numbers, main_numbers, other_open_pr_numbers, duplicate_problems
 
 
 def main() -> int:
@@ -179,7 +222,9 @@ def main() -> int:
         parser.error("--pr-number must be a positive integer")
 
     try:
-        pr_numbers, main_numbers, other_open_pr_numbers = fetch_state(args.repo, args.pr_number)
+        pr_numbers, main_numbers, other_open_pr_numbers, duplicate_problems = fetch_state(
+            args.repo, args.pr_number
+        )
     except CollisionCheckError as error:
         print(f"ERROR: ADR number collision check failed closed: {error}", file=sys.stderr)
         return 2
@@ -188,7 +233,7 @@ def main() -> int:
         print("ok - this PR adds no docs/decisions/NNNN-* directories")
         return 0
 
-    problems = find_collisions(pr_numbers, main_numbers, other_open_pr_numbers)
+    problems = duplicate_problems + find_collisions(pr_numbers, main_numbers, other_open_pr_numbers)
     if problems:
         for problem in problems:
             print(f"ERROR: {problem}", file=sys.stderr)

@@ -151,6 +151,71 @@ class AdrNumberCollisionTest(unittest.TestCase):
         self.assertIn("docs/decisions/0006-widget", result.stderr)
         self.assertIn("docs/decisions/0006-other", result.stderr)
 
+    # 6b. Renaming your own already-merged ADR to fix a slug typo, keeping the
+    #     same number, must not be flagged even though main still shows the
+    #     pre-rename path (main hasn't merged the rename yet).
+    def test_same_number_rename_of_own_merged_adr_is_not_flagged(self):
+        responses = {
+            self.pr_files_path(): [
+                [{"status": "renamed", "filename": "docs/decisions/0050-fixed/README.md",
+                  "previous_filename": "docs/decisions/0050-tpyo/README.md"}]
+            ],
+            self.main_contents_path(): [{"name": "0050-tpyo", "type": "dir"}],
+            self.open_pulls_path(): [[{"number": 983}]],
+        }
+        result, _ = self.run_check(responses)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("no ADR number collisions", result.stdout)
+
+    # 6c. A same-number rename against a *different* main path (a genuine
+    #     collision, not this PR's own prior allocation) still fails.
+    def test_same_number_rename_against_unrelated_main_path_still_fails(self):
+        responses = {
+            self.pr_files_path(): [
+                [{"status": "renamed", "filename": "docs/decisions/0050-fixed/README.md",
+                  "previous_filename": "docs/decisions/0050-tpyo/README.md"}]
+            ],
+            self.main_contents_path(): [{"name": "0050-someone-elses", "type": "dir"}],
+            self.open_pulls_path(): [[{"number": 983}]],
+        }
+        result, _ = self.run_check(responses)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("docs/decisions/0050-fixed", result.stderr)
+        self.assertIn("docs/decisions/0050-someone-elses", result.stderr)
+
+    # 6d. Two different directories added under the same number in one PR's
+    #     own file list is a collision visible without any GitHub API state,
+    #     and must not be silently dropped to only the first one seen.
+    def test_intra_pr_duplicate_number_is_flagged(self):
+        responses = {
+            self.pr_files_path(): [[
+                self.file_entry("docs/decisions/0050-alpha/README.md"),
+                self.file_entry("docs/decisions/0050-beta/README.md"),
+            ]],
+            self.main_contents_path(): [{"name": "0049-existing", "type": "dir"}],
+            self.open_pulls_path(): [[{"number": 983}]],
+        }
+        result, _ = self.run_check(responses)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("docs/decisions/0050-alpha", result.stderr)
+        self.assertIn("docs/decisions/0050-beta", result.stderr)
+        self.assertIn("same number", result.stderr)
+
+    # 6e. An intra-PR duplicate in *another* open PR's own files is that PR's
+    #     own problem, caught by its own run -- must not be flagged here.
+    def test_intra_pr_duplicate_in_another_open_pr_is_not_this_prs_problem(self):
+        responses = {
+            self.pr_files_path(): [[self.file_entry("docs/decisions/0114-widget/README.md")]],
+            self.main_contents_path(): [{"name": "0113-thing", "type": "dir"}],
+            self.open_pulls_path(): [[{"number": 983}, {"number": 993}]],
+            self.pr_files_path(993): [[
+                self.file_entry("docs/decisions/0060-alpha/README.md"),
+                self.file_entry("docs/decisions/0060-beta/README.md"),
+            ]],
+        }
+        result, _ = self.run_check(responses)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
     # 7. A GitHub API failure fails closed (does not pass the PR silently).
     def test_api_failure_fails_closed(self):
         responses = {self.pr_files_path(): [[self.file_entry("docs/decisions/0114-widget/README.md")]]}
@@ -169,6 +234,43 @@ class AdrNumberCollisionTest(unittest.TestCase):
         }
         result, _ = self.run_check(responses)
         self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+
+    # 8b. Genuine multi-page pagination is merged, not just a single-page list.
+    def test_multi_page_pagination_is_merged_across_pr_files_and_open_pulls(self):
+        responses = {
+            self.pr_files_path(): [
+                [self.file_entry("docs/decisions/0114-widget/README.md")],
+                [self.file_entry("docs/decisions/0115-gadget/README.md")],
+            ],
+            self.main_contents_path(): [{"name": "0113-thing", "type": "dir"}],
+            self.open_pulls_path(): [
+                [{"number": 983}],
+                [{"number": 990}],
+            ],
+            self.pr_files_path(990): [[self.file_entry("docs/decisions/0050-old/README.md")]],
+        }
+        result, _ = self.run_check(responses)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("0114", result.stdout)
+        self.assertIn("0115", result.stdout)
+
+    # 8c. Malformed pulls/.../files payload (this PR's own) fails closed.
+    def test_malformed_pr_files_listing_fails_closed(self):
+        responses = {self.pr_files_path(): {"not": "a list of pages"}}
+        result, _ = self.run_check(responses)
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        self.assertIn("failed closed", result.stderr)
+
+    # 8d. Malformed open-pulls-list payload fails closed.
+    def test_malformed_open_pulls_listing_fails_closed(self):
+        responses = {
+            self.pr_files_path(): [[self.file_entry("docs/decisions/0114-widget/README.md")]],
+            self.main_contents_path(): [{"name": "0113-thing", "type": "dir"}],
+            self.open_pulls_path(): {"not": "a list of pages"},
+        }
+        result, _ = self.run_check(responses)
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        self.assertIn("failed closed", result.stderr)
 
     # 9. Argument validation rejects a malformed --repo.
     def test_malformed_repo_argument_is_rejected(self):
