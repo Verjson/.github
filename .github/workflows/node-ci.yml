@@ -156,15 +156,45 @@ on:
         default: ''
       db-image:
         description: >-
-          Optional Postgres-style image (e.g. pgvector/pgvector:pg16) to run as a
-          database service for the test job. Empty string (the default) starts no
+          Optional database image (e.g. pgvector/pgvector:pg16) to run as a
+          service for the test job. Empty string (the default) starts no
           database — existing callers are unaffected. It is started as a
           conditional `docker run` step, not a `services:` block, because a
           `services:` container has no `if:` toggle and rejects an empty image, so
           it cannot be defaulted off without forcing a DB on every caller.
+          Postgres-shaped by default (`pg_isready` on port 5432); pair with
+          `db-port`/`db-health-cmd` to run a non-Postgres engine such as Neo4j
+          without changing that default for every other caller (#986).
         required: false
         type: string
         default: ''
+      db-port:
+        description: >-
+          TCP port inside the `db-image` container to publish and health-check.
+          Postgres's 5432 by default — existing callers are unaffected. Override
+          for a non-Postgres engine, e.g. 7687 for Neo4j's Bolt protocol. This is
+          the container-internal port only; the host-side port stays OS-assigned
+          exactly as today, and is still surfaced as `${DB_PORT}` (#986).
+        required: false
+        type: string
+        default: '5432'
+      db-health-cmd:
+        description: >-
+          Command run as `docker exec <container> <command>` to decide when the
+          `db-image` container is ready, retried for up to 60s. Defaults to
+          `pg_isready` — this workflow's existing (and only) Postgres check, so
+          every current caller is unaffected. Set this to adopt a non-Postgres
+          engine, e.g. `cypher-shell -u neo4j -p neo4j 'RETURN 1'` for Neo4j,
+          without changing db-image's Postgres-shaped default for anyone else
+          (#986). Space-separated tokens only — no quoting, no shell operators:
+          the value is split on whitespace and passed as literal `docker exec`
+          arguments, never through a shell or `eval`, so it cannot escape to the
+          runner regardless of its content. Success is exit code 0. A command
+          that never succeeds fails the step after 60s, naming db-image and the
+          command — it never hangs to the job timeout.
+        required: false
+        type: string
+        default: pg_isready
       db-host:
         description: >-
           Endpoint selection for db-image: auto (default) uses the published
@@ -233,6 +263,23 @@ on:
         required: false
         type: string
         default: ''
+      cache-health-cmd:
+        description: >-
+          Command run as `docker exec <container> <command>` to decide when the
+          `cache-image` container is ready, retried for up to 30s. Defaults to
+          `redis-cli ping` — this workflow's existing (and only) Redis check,
+          which also requires the container's reply to be exactly PONG, so every
+          current caller is unaffected. Set this to adopt a non-Redis cache
+          without changing cache-image's Redis-shaped default for anyone else
+          (#986). Space-separated tokens only — no quoting, no shell operators:
+          the value is split on whitespace and passed as literal `docker exec`
+          arguments, never through a shell or `eval`, so it cannot escape to the
+          runner regardless of its content. For any command other than the
+          default, success is exit code 0. A command that never succeeds fails
+          the step after 30s, naming cache-image and the command.
+        required: false
+        type: string
+        default: redis-cli ping
       cache-env:
         description: >-
           Newline-separated KEY=VALUE pairs passed to the cache container and
@@ -1347,9 +1394,15 @@ jobs:
           DB_IMAGE: ${{ inputs.db-image }}
           DB_HOST_MODE: ${{ inputs.db-host }}
           DB_ENV: ${{ inputs.db-env }}
+          DB_CONTAINER_PORT: ${{ inputs.db-port }}
+          DB_HEALTH_CMD: ${{ inputs.db-health-cmd }}
         run: |
           set -euo pipefail
           DB_HOST_MODE="${DB_HOST_MODE:-auto}"
+          # Defaults mirror the workflow_call `default:` above so the extracted
+          # run: block behaves identically when exercised directly (test harness).
+          DB_CONTAINER_PORT="${DB_CONTAINER_PORT:-5432}"
+          DB_HEALTH_CMD="${DB_HEALTH_CMD:-pg_isready}"
           # Name the container per JOB, not per run: run_id/run_attempt are shared
           # by every job of a run, so a name built from them alone collides as soon
           # as two DB-backed jobs are in flight on one persistent self-hosted host
@@ -1436,7 +1489,7 @@ jobs:
           # nothing to remove, and the label sweep above catches any such orphan.
           run_rc=0
           CONTAINER_ID="$(docker run -d --name "$CONTAINER_NAME" \
-            --label verjson-ci=1 -p 127.0.0.1::5432 \
+            --label verjson-ci=1 -p "127.0.0.1::${DB_CONTAINER_PORT}" \
             ${docker_env[@]+"${docker_env[@]}"} "$DB_IMAGE")" || run_rc=$?
           [ -z "$CONTAINER_ID" ] || echo "container-id=$CONTAINER_ID" >> "$GITHUB_OUTPUT"
           if [ "$run_rc" -ne 0 ]; then
@@ -1451,7 +1504,7 @@ jobs:
           # closed pipe — a SIGPIPE that `pipefail` turns into a failed step. The
           # port is taken from after the LAST colon, so a HOST:PORT of any shape
           # parses.
-          port_map="$(docker port "$CONTAINER_ID" 5432/tcp)"
+          port_map="$(docker port "$CONTAINER_ID" "${DB_CONTAINER_PORT}/tcp")"
           DB_PORT="${port_map%%$'\n'*}"
           DB_PORT="${DB_PORT##*:}"
           case "$DB_PORT" in
@@ -1465,12 +1518,19 @@ jobs:
           esac
           MAPPED_DB_PORT="$DB_PORT"
           for attempt in $(seq 1 30); do
-            if docker exec "$CONTAINER_ID" pg_isready >/dev/null 2>&1; then
+            # DB_HEALTH_CMD is caller-supplied data (default: pg_isready, this
+            # workflow's existing check — byte-identical for every caller that
+            # does not set db-health-cmd). It is split on whitespace and passed
+            # as literal `docker exec` arguments, never through a shell or
+            # `eval`, so it cannot escape to the runner regardless of its
+            # content (#986).
+            # shellcheck disable=SC2086
+            if docker exec "$CONTAINER_ID" $DB_HEALTH_CMD >/dev/null 2>&1; then
               echo "database is ready"
               break
             fi
             if [ "$attempt" -eq 30 ]; then
-              echo "database failed to become ready" >&2
+              echo "database image '$DB_IMAGE' failed health check '$DB_HEALTH_CMD' after 30 attempts" >&2
               docker logs "$CONTAINER_ID" >&2 || true
               exit 1
             fi
@@ -1507,7 +1567,7 @@ jobs:
               exit 1
             }
             DB_HOST="$candidate"
-            DB_PORT=5432
+            DB_PORT="$DB_CONTAINER_PORT"
           }
           case "$DB_HOST_MODE" in
             auto)
@@ -1663,8 +1723,12 @@ jobs:
         env:
           CACHE_IMAGE: ${{ inputs.cache-image }}
           CACHE_ENV: ${{ inputs.cache-env }}
+          CACHE_HEALTH_CMD: ${{ inputs.cache-health-cmd }}
         run: |
           set -euo pipefail
+          # Mirrors the workflow_call `default:` above so the extracted run:
+          # block behaves identically when exercised directly (test harness).
+          CACHE_HEALTH_CMD="${CACHE_HEALTH_CMD:-redis-cli ping}"
           container_scope="${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${GITHUB_JOB:-}-${RUNNER_NAME:-}-${RUNNER_WORKSPACE:-}"
           CONTAINER_NAME="ci-cache-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-$(
             printf '%s' "$container_scope" | sha256sum | cut -c1-12)"
@@ -1728,15 +1792,31 @@ jobs:
           echo "CACHE_PORT=$CACHE_PORT" >> "$GITHUB_ENV"
           ready=false
           for _attempt in {1..30}; do
-            if docker exec "$CONTAINER_ID" redis-cli ping 2>/dev/null | grep -qx PONG; then
-              ready=true
-              break
+            # The default `redis-cli ping` keeps today's exact check byte-for-byte
+            # (exit status AND a literal PONG reply — some failure paths still
+            # exit 0 while printing an error, which is why the default alone
+            # isn't just an exit-code check). A caller-supplied cache-health-cmd
+            # is treated like any other engine's health command: success is exit
+            # code 0. Either way the command runs ONLY as literal `docker exec`
+            # arguments (whitespace-split, never through a shell or `eval`), so
+            # it cannot escape to the runner regardless of its content (#986).
+            if [ "$CACHE_HEALTH_CMD" = "redis-cli ping" ]; then
+              if docker exec "$CONTAINER_ID" redis-cli ping 2>/dev/null | grep -qx PONG; then
+                ready=true
+                break
+              fi
+            else
+              # shellcheck disable=SC2086
+              if docker exec "$CONTAINER_ID" $CACHE_HEALTH_CMD >/dev/null 2>&1; then
+                ready=true
+                break
+              fi
             fi
             sleep 1
           done
           if [ "$ready" != true ]; then
             docker logs "$CONTAINER_ID" >&2 || true
-            echo "cache service did not become ready" >&2
+            echo "cache image '$CACHE_IMAGE' failed health check '$CACHE_HEALTH_CMD' after 30 attempts" >&2
             exit 1
           fi
       - name: Install schema submodule deps
