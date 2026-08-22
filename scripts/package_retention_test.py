@@ -129,6 +129,59 @@ class PackageRetentionTest(unittest.TestCase):
         retention.apply_plan(client, plan, "Verjson", inspector, keep=1)
         self.assertEqual([deletion.version_id for deletion in client.deleted], [1, 2])
 
+    def test_container_safety_rejects_a_non_positive_keep_directly(self):
+        target = retention.Target("container", "api", "1.0.0")
+        now = datetime.datetime(2026, 8, 18, tzinfo=datetime.timezone.utc)
+        versions = [
+            {"id": 1, "name": "sha256:" + "0" * 64, "created_at": "2026-07-01T00:00:00Z", "metadata": {"container": {"tags": ["1.0.0"]}}},
+        ]
+        inspector = mock.Mock()
+        for invalid in (0, -1, True):
+            with self.assertRaisesRegex(retention.RetentionError, "positive integer"):
+                retention._container_safety("Verjson", target, versions, inspector, now, keep=invalid)
+
+    def test_build_plan_and_apply_plan_fail_closed_on_a_non_positive_keep_for_a_container_target(self):
+        # Gap: `_container_safety` must reject an invalid `keep` on its own, not merely
+        # rely on `build_plan` calling `plan_target` (which also validates) for the same
+        # target first. Drive the invalid value through the real `build_plan`/`apply_plan`
+        # call chain — the path `apply_plan` actually uses — rather than only exercising
+        # `plan_target`'s or `_container_safety`'s boundary directly.
+        target = retention.Target("container", "api", "1.0.0")
+
+        def raw_manifest(marker):
+            return json.dumps(
+                {"schemaVersion": 2, "mediaType": "application/vnd.oci.image.manifest.v1+json", "annotations": {"marker": marker}},
+                separators=(",", ":"),
+            ).encode()
+
+        raw = raw_manifest("1.0.0")
+        digest = f"sha256:{hashlib.sha256(raw).hexdigest()}"
+        versions = [
+            {"id": 1, "name": digest, "created_at": "2020-01-01T00:00:00Z", "metadata": {"container": {"tags": ["1.0.0"]}}},
+        ]
+
+        class Client:
+            def __init__(self):
+                self.deleted = []
+
+            def versions(self, _target):
+                return versions
+
+            def delete(self, deletion):
+                self.deleted.append(deletion)
+
+        inspector = mock.Mock()
+        inspector.raw.side_effect = {f"ghcr.io/Verjson/api:1.0.0": raw}.__getitem__
+        client = Client()
+        now = datetime.datetime(2026, 8, 18, tzinfo=datetime.timezone.utc)
+
+        for invalid in (0, -1):
+            with self.assertRaisesRegex(retention.RetentionError, "positive integer"):
+                retention.build_plan(client, [target], owner="Verjson", inspector=inspector, now=now, keep=invalid)
+            with self.assertRaisesRegex(retention.RetentionError, "positive integer"):
+                retention.apply_plan(client, [retention.Deletion(target, 1, "numbered release older than newest 1", ("1.0.0",))], "Verjson", inspector, keep=invalid)
+        self.assertEqual(client.deleted, [])
+
     def test_container_deletes_old_numbered_and_only_prevalidated_untagged_versions(self):
         target = retention.Target("container", "api", "1.3.0")
         versions = [
@@ -143,7 +196,7 @@ class PackageRetentionTest(unittest.TestCase):
         plan = retention.plan_target(target, versions, deletable_untagged_ids={14})
 
         self.assertEqual([(item.version_id, item.reason) for item in plan], [
-            (10, "numbered release older than newest three"),
+            (10, "numbered release older than newest 3"),
             (14, "untagged container version"),
         ])
 

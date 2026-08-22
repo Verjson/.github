@@ -80,4 +80,11 @@ if run_deprecate 'not-json' 2>"$work/state/stderr"; then
 fi
 echo "ok - invalid JSON input fails closed"
 
+rm -rf "$work/state"; mkdir -p "$work/state"
+if run_deprecate '[{"name":"uploads","message":"--force renamed"}]' 2>"$work/state/stderr"; then
+  echo "FAIL - a message starting with '-' must fail closed"; exit 1
+fi
+[ ! -f "$work/state/npm-calls" ] || { echo "FAIL - npm was called despite a message starting with '-'"; exit 1; }
+echo "ok - a message starting with '-' fails closed before any npm deprecate call"
+
 echo "All tests passed."

@@ -375,6 +375,14 @@ jobs:
             ) {
               throw new Error("each deprecates entry needs a non-empty basename 'name' and 'message'");
             }
+            if (entry.message.startsWith("-")) {
+              // `message` is passed as a positional npm CLI argument (see below); a
+              // leading `-`/`--` risks npm's argument parser treating it as a flag
+              // instead of literal text. Same defense-in-depth posture as the `name`
+              // character-class guard above, scoped to the one character that matters
+              // for a free-text message.
+              throw new Error(`deprecates entry '${entry.name}' has a message starting with '-'`);
+            }
             if (seen.has(entry.name)) {
               throw new Error(`duplicate deprecates entry: ${entry.name}`);
             }

@@ -1,4 +1,4 @@
-# 0114 — Configurable package retention with rename-deprecation stubs
+# 0115 — Configurable package retention with rename-deprecation stubs
 
 - **Date:** 2026-08-22
 - **Status:** Accepted

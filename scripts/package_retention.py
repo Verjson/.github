@@ -237,10 +237,10 @@ def plan_target(
     retained = set(sorted(stable, key=_version_tuple, reverse=True)[:keep])
     if target.released_version not in retained:
         raise RetentionError(
-            f"released version {target.released_version} is not among the newest three; refusing historical cleanup"
+            f"released version {target.released_version} is not among the newest {keep}; refusing historical cleanup"
         )
     deletions = [
-        Deletion(target, version_id, "numbered release older than newest three", labels)
+        Deletion(target, version_id, f"numbered release older than newest {keep}", labels)
         for name, (version_id, labels) in stable.items()
         if name not in retained
         and version_id not in (protected_version_ids or set())
@@ -286,6 +286,8 @@ def _container_safety(
     now: datetime.datetime,
     keep: int = 3,
 ) -> ContainerSafety:
+    if not isinstance(keep, int) or isinstance(keep, bool) or keep < 1:
+        raise RetentionError("retention count must be a positive integer")
     repository = f"ghcr.io/{owner}/{target.name}"
     stable: list[tuple[str, str]] = []
     untagged: list[dict[str, Any]] = []
