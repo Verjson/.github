@@ -326,6 +326,38 @@ that adopter-owned hook to update compatibility dependencies or generate
 secondary manifests; the caller itself applies the dispatched version to every
 package and gives each artifact the same restart-safe integrity proof.
 
+### Adopters with nothing to publish to a registry (#975)
+
+`release-node` refuses a repository with no scope-owned package — an Electron
+desktop app shipping OS installers as GitHub Release assets, for example.
+`scripts/gen-changelog-caller.sh release-artifact` keeps the same immutable
+`verify` → `snapshot` boundary (byte-identical to `release-node`'s: the same
+default-branch, version, and restart-safety guarantees, the same npm-scoped
+`verify` job so private `@verjson` devDependencies still install) and replaces
+`publish`'s call to `node-release.yml` with a caller-declared `build` matrix
+plus an inlined `publish` job:
+
+```bash
+scripts/gen-changelog-caller.sh release-artifact "$PIN" \
+  --build-runner macos-14 --build-runner windows-2022 --build-runner ubuntu-24.04 \
+  > .github/workflows/release.yml
+scripts/gen-changelog-caller.sh contract-test "$PIN" > scripts/changelog-contract.test.sh
+```
+
+Repeat `--build-runner <label>` once per runner the release needs to build on
+— each becomes one matrix leg of `build`, gated on `verify` and `snapshot` the
+same way `publish` is. Every leg runs an adopter-owned, fail-closed
+`scripts/release-build.sh <version> <output-dir>`; it must leave every
+artifact for that runner inside the given directory or exit non-zero.
+`publish` downloads every runner's artifacts and attaches them to the tagged
+commit's GitHub Release, using the immutable `CHANGELOG/<version>.md` as the
+release notes — the same restart-safe release-notes logic `node-release.yml`
+uses, inlined here because there is no separate reusable publication workflow
+for artifact releases. The generated contract test recognizes either shape as
+a conformant release caller; a file that calls `changelog-release.yml` but
+matches neither generated provenance comment is rejected as a hand-rolled
+substitute, exactly as before.
+
 ### Release proposals are generated and explicitly autonomous
 
 `scripts/gen-changelog-caller.sh release-propose` emits a daily and
@@ -387,9 +419,12 @@ scripts/gen-changelog-caller.sh contract-test "$PIN" > scripts/changelog-contrac
 # Hosted Renovate repositories add this trusted pull_request_target caller. It
 # adds a fragment through the Git Data API when the bot did not provide one.
 scripts/gen-changelog-caller.sh renovate-attribution "$PIN" > .github/workflows/renovate-changelog.yml
-# Only if the repository publishes a Node package. Adopters with nothing to
-# publish keep having no release caller at all.
+# Only one release caller at a time. Use release-node if the repository
+# publishes a Node package to a registry, or release-artifact if it ships
+# GitHub Release assets instead (#975). Adopters with nothing to publish keep
+# having no release caller at all.
 scripts/gen-changelog-caller.sh release-node "$PIN" > .github/workflows/release.yml
+# scripts/gen-changelog-caller.sh release-artifact "$PIN" --build-runner ubuntu-24.04 > .github/workflows/release.yml
 chmod +x scripts/render-next.sh scripts/changelog-contract.test.sh
 ```
 
