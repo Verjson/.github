@@ -1,0 +1,31 @@
+{
+  "_comment": "Capability floors for scripts/capability-floor-audit.py (ADR 0114, issue #933). Each entry names the commit that first shipped a capability in this canonical contract that a consumer's generated caller must include for the org to treat the capability as universal. A consumer pin that is not a descendant of `introduced_at` is stale for that capability's generators.",
+  "schema_version": 1,
+  "capabilities": [
+    {
+      "id": "ai-review-deepseek-provider",
+      "description": "gate-rearm.yml, ai-review-merge.yml, and ai-privileged-merge.yml/ai-promotion-retry.yml accept \"deepseek\" as a review provider. A pin predating this commit fails closed with \"unsupported review provider\" once an org variable resolves to deepseek. AI_REVIEW_PRIMARY_PROVIDER moved to deepseek org-wide on 2026-08-16, which is what turned this into a live outage in toquorum and verjson-authn.",
+      "introduced_at": "23f641822d1fdf4787a46f0b55f24a755b8a73ae",
+      "issue": 933,
+      "generators": [
+        "scripts/gen-gate-rearm-caller.sh",
+        "scripts/gen-ai-review-caller.sh",
+        "scripts/gen-privileged-merge-caller.sh"
+      ],
+      "assumed_by_org_variable": {
+        "name": "AI_REVIEW_PRIMARY_PROVIDER",
+        "value": "deepseek"
+      }
+    },
+    {
+      "id": "changelog-renovate-default-source-link",
+      "description": "The changelog contract accepts Renovate's default source-link suffix in a fragment body (#927). A pin predating this commit rejects otherwise-valid Renovate-authored changelog rows as invalid; this is not driven by an org variable, just a contract-shape change every consumer needs. Observed live in Verjson/verjson-cli-cloud's renovate-changelog.yml (issue #977).",
+      "introduced_at": "ac37ae430157fc9345d430ec29a2c7d99ce1a9a4",
+      "issue": 933,
+      "generators": [
+        "scripts/gen-changelog-caller.sh"
+      ],
+      "assumed_by_org_variable": null
+    }
+  ]
+}

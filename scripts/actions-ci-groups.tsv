@@ -42,6 +42,7 @@ platform	python3 scripts/gate_coverage_audit_test.py
 platform	python3 scripts/org_secret_scope_audit_test.py
 platform	python3 scripts/org_ruleset_conformance_test.py
 platform	python3 scripts/ai_review_required_workflow_audit_test.py
+platform	python3 scripts/capability-floor-audit.test.py
 platform	bash scripts/classify-repo-stacks.test.sh
 platform	python3 scripts/ci-gate/privileged-scheduled-workflows.test.py
 platform	bash scripts/ci-telemetry/rework-reconcile-trigger.test.sh
@@ -97,6 +98,7 @@ merge-gate	bash scripts/ci-gate/budget-exceeded.test.sh
 changelog-release	bash scripts/tag-major.test.sh
 changelog-release	bash scripts/gen-adr-index.sh --check
 changelog-release	bash scripts/ci-gate/gen-adr-index.test.sh
+changelog-release	python3 scripts/ci-gate/adr-number-collision.test.py
 changelog-release	bash scripts/render-next.sh >/dev/null
 changelog-release	bash scripts/ci-gate/render-next.test.sh
 changelog-release	python3 scripts/changelog.test.py
@@ -114,6 +116,7 @@ changelog-release	bash scripts/ci-gate/changelog-caller-contract.test.sh
 changelog-release	bash scripts/ci-gate/release-node-restart.test.sh
 changelog-release	bash scripts/ci-gate/release-node-local-pack.test.sh
 changelog-release	bash scripts/ci-gate/release-node-notes.test.sh
+changelog-release	bash scripts/ci-gate/release-node-deprecate.test.sh
 changelog-release	bash scripts/ci-gate/changelog-release-caller.test.sh
 changelog-release	python3 scripts/ci-gate/changelog-release-propose.test.py
 changelog-release	bash scripts/ci-gate/changelog-contract-resolution.test.sh

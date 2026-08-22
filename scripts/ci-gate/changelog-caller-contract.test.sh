@@ -1544,5 +1544,101 @@ else
 fi
 rm -f "$gen_err"
 
+# --------------------------------------------------------------------------
+# release-artifact (#975): a non-npm release caller for adopters that ship
+# GitHub Release assets (e.g. Electron installers) instead of a package.
+# --------------------------------------------------------------------------
+
+if bash "$gen" release-artifact "$sha" >/dev/null 2>&1; then
+  fail "release-artifact accepted generation with no --build-runner"
+else
+  pass "release-artifact requires at least one --build-runner"
+fi
+
+if bash "$gen" release-artifact "$sha" --build-runner 'not a label' >/dev/null 2>&1; then
+  fail "release-artifact accepted a --build-runner value that is not a bare label"
+else
+  pass "release-artifact rejects a --build-runner value that is not a bare label"
+fi
+
+if bash "$gen" release-artifact "$sha" --build-runner ubuntu-24.04 --node-version 22 \
+    >/dev/null 2>&1; then
+  pass "release-artifact accepts the same --node-version/--scope knobs as release-node"
+else
+  fail "release-artifact rejected a validated --node-version"
+fi
+
+if bash "$gen" release-node "$sha" --build-runner ubuntu-24.04 >/dev/null 2>&1; then
+  fail "release-node accepted --build-runner, a release-artifact-only flag"
+else
+  pass "release-node rejects --build-runner"
+fi
+
+artifact_release="$(bash "$gen" release-artifact "$sha" \
+  --build-runner macos-14 --build-runner windows-2022)"
+
+grep -qF "gen-changelog-caller.sh release-artifact $sha --build-runner macos-14 --build-runner windows-2022" \
+  <<<"$artifact_release" \
+  && pass "release-artifact records its exact regeneration command, including build runners" \
+  || fail "release-artifact does not record a regenerable provenance comment"
+grep -qE '^  build:$' <<<"$artifact_release" \
+  && grep -qE '^  publish:$' <<<"$artifact_release" \
+  && ! grep -q 'uses:.*node-release\.yml' <<<"$artifact_release" \
+  && pass "release-artifact replaces node-release.yml with a build+publish pair" \
+  || fail "release-artifact did not emit the expected build/publish shape"
+grep -qF "build-runner: [\"macos-14\", \"windows-2022\"]" <<<"$artifact_release" \
+  && pass "release-artifact's build matrix carries exactly the declared runner labels" \
+  || fail "release-artifact's build matrix does not match --build-runner"
+
+build_artifact_adopter() {
+  # A non-npm adopter: same verify/snapshot shape as build_adopter's default,
+  # but release-artifact for publication and a release-build.sh hook per #975.
+  local dir="$1"
+  mkdir -p "$dir/NEXT" "$dir/scripts" "$dir/.github/workflows"
+  bash "$gen" renderer "$sha" >"$dir/scripts/render-next.sh"
+  bash "$gen" workflow "$sha" >"$dir/.github/workflows/changelog.yml"
+  bash "$gen" pr-gate "$sha" >"$dir/.github/workflows/changelog-contract.yml"
+  cp "$emitted" "$dir/scripts/changelog-contract.test.sh"
+  chmod +x "$dir/scripts/render-next.sh" "$dir/scripts/changelog-contract.test.sh"
+  bash "$gen" release-artifact "$sha" --build-runner macos-14 --build-runner windows-2022 \
+    >"$dir/.github/workflows/release.yml"
+  printf '%s\n' '#!/usr/bin/env bash' 'set -euo pipefail' 'mkdir -p "$2"' \
+    'echo built >"$2/artifact-$1.bin"' >"$dir/scripts/release-build.sh"
+  chmod +x "$dir/scripts/release-build.sh"
+  cat >"$dir/NEXT/2026-08-01-issue-975-first.md" <<'FRAGMENT'
+---
+date: 2026-08-01
+issue: 975
+title: 'fix(caller): first artifact entry'
+---
+
+Body.
+FRAGMENT
+  git -C "$dir" init -q
+  git -C "$dir" config user.name Test
+  git -C "$dir" config user.email test@example.com
+  git -C "$dir" add -A
+  git -C "$dir" commit -qm initial
+}
+
+artifact_adopter="$tmproot/adopter-artifact"
+build_artifact_adopter "$artifact_adopter"
+run_adopter "$artifact_adopter" \
+  && pass "emitted suite accepts a generated release-artifact caller" \
+  || fail "emitted suite rejects a generated release-artifact caller: $(tail -2 "$tmproot/run.out")"
+
+broken_artifact_adopter="$tmproot/adopter-artifact-broken-build-gate"
+cp -a "$artifact_adopter" "$broken_artifact_adopter"
+sed -i 's/needs: \[verify, snapshot\]$/needs: verify/' \
+  "$broken_artifact_adopter/.github/workflows/release.yml"
+git -C "$broken_artifact_adopter" commit -aqm 'drop the build job ordering gate'
+if run_adopter "$broken_artifact_adopter"; then
+  fail "emitted suite accepted a release-artifact caller whose build job dropped needs: [verify, snapshot]"
+else
+  grep -qF 'does not gate the build matrix on both verification and snapshot state' "$tmproot/run.out" \
+    && pass "emitted suite rejects a release-artifact caller with a broken build-job gate" \
+    || fail "emitted suite rejected the broken build job, but for the wrong reason: $(tail -2 "$tmproot/run.out")"
+fi
+
 [ "$fails" -eq 0 ] || exit 1
 echo "All tests passed."

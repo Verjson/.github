@@ -360,6 +360,9 @@ def step_mappings(entry: tuple[str, list[str]]) -> list[dict[str, str]]:
             for key, (item, nested) in direct_entries(body, body_indent).items():
                 if item in {"|", "|-", ">", ">-"}:
                     values[key] = "\n".join(line.strip() for line in nested if line.strip()).strip()
+                elif not item and nested:
+                    mapping = input_mapping((item, nested))
+                    values[key] = "&".join(f"{k}={v}" for k, v in sorted(mapping.items()))
                 else:
                     values[key] = scalar(item)
         steps.append(values)
@@ -391,12 +394,16 @@ def changelog_contract_state(parsed_jobs: dict[str, dict[str, tuple[str, list[st
     if not runners or not all(runners):
         return "invalid"
     steps = step_mappings(job["steps"])
-    if len(steps) != 2:
+    if len(steps) != 3:
         return "invalid"
-    checkout, command = steps
+    checkout, prepare_cache, command = steps
     valid = (
-        set(checkout).issubset({"uses", "name"})
+        set(checkout).issubset({"uses", "name", "with"})
         and re.fullmatch(r"actions/checkout@[0-9a-f]{40}", checkout.get("uses", "")) is not None
+        and checkout.get("with", "") == "persist-credentials=false"
+        and set(prepare_cache).issubset({"run", "name"})
+        and prepare_cache.get("run", "")
+        == 'echo "VERJSON_CHANGELOG_TOOL_CACHE=$RUNNER_TEMP/verjson-changelog-tools" >> "$GITHUB_ENV"'
         and set(command).issubset({"run", "name"})
         and command.get("run", "") == "bash scripts/changelog-contract.test.sh"
     )

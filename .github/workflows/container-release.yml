@@ -226,6 +226,14 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.release-token }}
           TARGETS: ${{ needs.promote.outputs.retention-targets }}
-        run: >-
-          python3 .package-retention-contract/scripts/package_retention.py
-          --owner "$GITHUB_REPOSITORY_OWNER" --targets "$TARGETS" --apply
+          # Org-wide retention window (verjson-agents#987). Defaults to the ADR
+          # 0108 policy of 3 and changes nothing until a human sets this
+          # variable — raising it is a storage-cost decision, not a code change.
+          RETENTION_KEEP: ${{ vars.VERJSON_PACKAGE_RETENTION_KEEP || '3' }}
+        run: |
+          if [[ ! "$RETENTION_KEEP" =~ ^[1-9][0-9]*$ ]]; then
+            echo "::error::VERJSON_PACKAGE_RETENTION_KEEP must be a positive integer, got '$RETENTION_KEEP'."
+            exit 1
+          fi
+          python3 .package-retention-contract/scripts/package_retention.py \
+            --owner "$GITHUB_REPOSITORY_OWNER" --targets "$TARGETS" --keep "$RETENTION_KEEP" --apply

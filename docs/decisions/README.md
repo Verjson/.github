@@ -12,6 +12,8 @@ Reverse-chronological index of org-level decisions.
 | # | Date | Decision |
 |---|------|----------|
 | [0116](0116-node-ci-caller-supplied-health-check/README.md) | 2026-08-22 | node-ci accepts a caller-supplied health check and container port |
+| [0115](0115-configurable-package-retention-with-rename-deprecation/README.md) | 2026-08-22 | Configurable package retention with rename-deprecation stubs |
+| [0114](0114-generated-caller-capability-floor-audit/README.md) | 2026-08-22 | Detect consumer generated-caller pins that predate an assumed capability |
 | [0113](0113-refresh-rework-thresholds-repo-list/README.md) | 2026-08-21 | Refresh the rework-telemetry repo list to activity-ranked repos |
 | [0112](0112-arm-authorization-checks-reach-a-terminal-state/README.md) | 2026-08-20 | An armed authorization check always reaches a terminal state |
 | [0111](0111-interim-pat-for-renovate-compatibility-control-plane/README.md) | 2026-08-20 | Interim human PAT for the Renovate compatibility control plane |
