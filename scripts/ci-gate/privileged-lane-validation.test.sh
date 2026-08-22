@@ -8,10 +8,20 @@
 # caller with a missing, malformed, or shadowed `VERJSON_LANE_PRIVILEGED`
 # produced zero signal.
 #
-# This extracts the `validate_privileged_lane` job's run script from the
-# shipped workflow (single source of truth, per house convention) and
-# exercises it directly against fixture PRIVILEGED_LANE/repo values — the same
-# extraction pattern as scripts/ci-gate/privileged-merge-pin.test.sh.
+# The fix runs the check as the FIRST step of the existing `privileged_merge`
+# job rather than as a separate preceding job: a separate job pinned to
+# `ubuntu-24.04` would run unconditionally for every caller, including
+# external self-hosted-only orgs whose `privileged_merge` already routes via
+# `runner_labels` and never otherwise needs GitHub-hosted capacity for this
+# workflow at all (flagged by the AI review on #989 before this follow-up).
+# A step inside the job that already resolved runs on whatever capacity that
+# resolution already produced, so it adds no new capacity requirement for any
+# caller.
+#
+# This extracts that step's run script from the shipped workflow (single
+# source of truth, per house convention) and exercises it directly against
+# fixture PRIVILEGED_LANE/repo values — the same extraction pattern as
+# scripts/ci-gate/privileged-merge-pin.test.sh.
 set -uo pipefail
 
 here="$(cd "$(dirname "$0")" && pwd)"
@@ -27,36 +37,34 @@ command -v jq >/dev/null 2>&1 || { echo "FAIL - jq is required by this test"; ex
 python3 -c 'import yaml' 2>/dev/null \
   || { echo "FAIL - PyYAML is required by this test but is not importable"; exit 1; }
 
+step_name="Validate caller-supplied privileged lane routing"
 extract_validation_script() {
   local source="$1" destination="$2"
-  python3 - "$source" >"$destination" <<'EXTRACT_PY'
+  python3 - "$source" "$step_name" >"$destination" <<'EXTRACT_PY'
 import sys
 
 import yaml
 
 workflow = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))
-jobs = workflow.get("jobs", {})
-job = jobs.get("validate_privileged_lane")
-if job is None:
-    raise SystemExit("no validate_privileged_lane job in the workflow")
-steps = job.get("steps", [])
-if len(steps) != 1:
-    raise SystemExit(f"expected exactly one step in validate_privileged_lane, found {len(steps)}")
-script = steps[0].get("run")
+steps = workflow.get("jobs", {}).get("privileged_merge", {}).get("steps", [])
+matches = [step for step in steps if step.get("name") == sys.argv[2]]
+if len(matches) != 1:
+    raise SystemExit(f"expected exactly one {sys.argv[2]!r} step, found {len(matches)}")
+script = matches[0].get("run")
 if not isinstance(script, str) or not script.strip():
-    raise SystemExit("validate_privileged_lane step has no non-empty run script")
+    raise SystemExit(f"{sys.argv[2]!r} has no non-empty run script")
 print(script, end="" if script.endswith("\n") else "\n")
 EXTRACT_PY
 }
 
 script="$tmp/validate.sh"
 if extract_validation_script "$wf" "$script" 2>"$tmp/extract.err"; then
-  pass "the validate_privileged_lane job is found and its script is extracted"
+  pass "the privileged-lane validation step is found and its script is extracted"
 else
-  # This IS the red state before the fix: no such job exists yet, so there is
+  # This IS the red state before the fix: no such step exists yet, so there is
   # nothing to extract and nothing to fail closed. Documented here rather than
   # asserted, since a fresh checkout of this file already carries the fix.
-  fail "could not extract validate_privileged_lane's script: $(cat "$tmp/extract.err")"
+  fail "could not extract the validation step's script: $(cat "$tmp/extract.err")"
   echo "$fails test(s) failed."
   exit 1
 fi
