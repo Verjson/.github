@@ -37,9 +37,10 @@ needed.
 
 ### What "staleness" means
 
-A consumer's generated-caller pin is **stale for capability X** when its pinned
-contract SHA is **not a git ancestor** of the commit that introduced capability X, and
-that pin's generator is one X's `generators` list names as needing X.
+A consumer's generated-caller pin is **stale for capability X** when the commit that
+introduced capability X is **not a git ancestor** of the pin's contract SHA (equivalently:
+the pinned SHA is not a descendant of the introducing commit), and that pin's generator is
+one X's `generators` list names as needing X.
 
 Concretely: `git merge-base --is-ancestor <introduced_at> <pinned_sha>` decided against
 **this repository's own history** — `Verjson/.github` is the canonical source every
