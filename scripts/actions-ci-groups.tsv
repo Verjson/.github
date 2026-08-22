@@ -116,6 +116,7 @@ changelog-release	bash scripts/ci-gate/changelog-caller-contract.test.sh
 changelog-release	bash scripts/ci-gate/release-node-restart.test.sh
 changelog-release	bash scripts/ci-gate/release-node-local-pack.test.sh
 changelog-release	bash scripts/ci-gate/release-node-notes.test.sh
+changelog-release	bash scripts/ci-gate/release-node-deprecate.test.sh
 changelog-release	bash scripts/ci-gate/changelog-release-caller.test.sh
 changelog-release	python3 scripts/ci-gate/changelog-release-propose.test.py
 changelog-release	bash scripts/ci-gate/changelog-contract-resolution.test.sh
