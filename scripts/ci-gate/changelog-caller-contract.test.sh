@@ -1640,5 +1640,54 @@ else
     || fail "emitted suite rejected the broken build job, but for the wrong reason: $(tail -2 "$tmproot/run.out")"
 fi
 
+# Reproduces a real, empirically-verified exploit: the generated contract-test
+# must reject a build job hand-edited to escalate permissions or to smuggle in
+# the release App private key — the credential that mints main-protection-bypass
+# tokens — since scripts/release-build.sh runs adopter-owned (potentially
+# third-party) build tooling on caller-chosen runners (#975 review finding).
+escalated_permissions_adopter="$tmproot/adopter-artifact-escalated-permissions"
+cp -a "$artifact_adopter" "$escalated_permissions_adopter"
+awk '
+  /^  build:[[:space:]]*$/ { in_build = 1 }
+  in_build && /^  [A-Za-z0-9_.-]+:[[:space:]]*$/ && $0 !~ /^  build:/ { in_build = 0 }
+  in_build && /^    permissions:[[:space:]]*$/ { print; getline; sub(/contents: read/, "contents: write"); print; next }
+  { print }
+' "$escalated_permissions_adopter/.github/workflows/release.yml" \
+  >"$escalated_permissions_adopter/.github/workflows/release.yml.new"
+mv "$escalated_permissions_adopter/.github/workflows/release.yml.new" \
+  "$escalated_permissions_adopter/.github/workflows/release.yml"
+awk '
+  /^  build:[[:space:]]*$/ { in_build = 1 }
+  in_build && /^  [A-Za-z0-9_.-]+:[[:space:]]*$/ && $0 !~ /^  build:/ { in_build = 0 }
+  in_build { print }
+' "$escalated_permissions_adopter/.github/workflows/release.yml" \
+  | grep -qF 'contents: write' \
+  || fail "test setup did not actually escalate the build job's permissions to contents: write"
+git -C "$escalated_permissions_adopter" commit -aqm 'escalate the build job to contents: write'
+if run_adopter "$escalated_permissions_adopter"; then
+  fail "emitted suite accepted a release-artifact caller whose build job was escalated to contents: write"
+else
+  grep -qF 'build job grants more than contents-read' "$tmproot/run.out" \
+    && pass "emitted suite rejects a release-artifact caller with an escalated build-job permission" \
+    || fail "emitted suite rejected the escalated build job, but for the wrong reason: $(tail -2 "$tmproot/run.out")"
+fi
+
+leaked_secret_adopter="$tmproot/adopter-artifact-leaked-secret"
+cp -a "$artifact_adopter" "$leaked_secret_adopter"
+sed -i \
+  's/RELEASE_VERSION: \${{ inputs.version }}/RELEASE_VERSION: ${{ inputs.version }}\n          RELEASE_APP_PRIVATE_KEY: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}/' \
+  "$leaked_secret_adopter/.github/workflows/release.yml"
+grep -qF 'RELEASE_APP_PRIVATE_KEY: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}' \
+  "$leaked_secret_adopter/.github/workflows/release.yml" \
+  || fail "test setup did not actually inject RELEASE_APP_PRIVATE_KEY into the build step's env"
+git -C "$leaked_secret_adopter" commit -aqm 'leak the release App private key into the build step env'
+if run_adopter "$leaked_secret_adopter"; then
+  fail "emitted suite accepted a release-artifact caller whose build step env leaked RELEASE_APP_PRIVATE_KEY"
+else
+  grep -qF 'build job references a secrets.* context' "$tmproot/run.out" \
+    && pass "emitted suite rejects a release-artifact caller with a release-App secret leaked into the build job" \
+    || fail "emitted suite rejected the leaked secret, but for the wrong reason: $(tail -2 "$tmproot/run.out")"
+fi
+
 [ "$fails" -eq 0 ] || exit 1
 echo "All tests passed."

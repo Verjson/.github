@@ -213,6 +213,34 @@ afterward.
 The operator-facing interpretation and local verification boundary are recorded
 in [`docs/ruleset-conformance.md`](../../ruleset-conformance.md).
 
+## Amendment (2026-08-22) — the release-artifact build job's isolation is now contract-tested (#975)
+
+The `release-artifact` caller mode (#975) added a `build` job that runs
+adopter-owned, potentially third-party `scripts/release-build.sh` on
+caller-chosen runners. The generator's own template already emitted that job
+with least privilege — `permissions: contents: read` and only `RELEASE_VERSION`
+as step `env:`, never a secret — matching this ADR's boundary that only the
+minted App installation token, scoped inside `snapshot`'s delegation to
+`changelog-release.yml`, may carry Contents write or see
+`RELEASE_APP_PRIVATE_KEY`.
+
+An independent review after #1004 merged found the generated `contract-test`
+never checked that shape: it verified the `build` job's `needs:`, `if:`, `ref:`,
+hook executability, and artifact-upload pin, but not its `permissions:` block or
+whether its steps referenced `secrets.*`. A hand-edited consumer caller that
+escalated `build`'s permissions to `contents: write`, or injected
+`RELEASE_APP_PRIVATE_KEY` into the build step's `env:`, passed the generated
+contract-test with exit 0 — the exact class of generated/actual divergence this
+suite exists to reject, and the same failure mode the #784 amendment above
+already covers for the snapshot job's `GITHUB_TOKEN` grant.
+
+`contract-test` mode now asserts the extracted `build_job`'s `permissions:`
+block is exactly `contents: read`, and that no `secrets.*` context appears
+anywhere in the job — a blanket ban rather than a per-secret denylist, since the
+build hook has no legitimate need for any secret today. This restores the
+invariant this ADR already establishes; it does not change the App's scope, the
+minting path, or which job may hold the credential.
+
 ## Rollback
 
 Reverting the #803 implementation removes the scheduled conformance signal but
