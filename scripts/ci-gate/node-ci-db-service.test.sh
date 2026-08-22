@@ -821,6 +821,20 @@ id_injection="$(published_handle_of job-health-injection)"
   && pass "db-health-cmd reaches docker exec as literal argv; shell metacharacters cannot escape to the runner" \
   || fail "a ';'-separated db-health-cmd token was not passed literally, or the runner executed it (marker exists: $( [ -e "$marker" ] && echo yes || echo no ))"
 
+# #1007: `read` without `-r` interprets a backslash rather than passing it
+# through literally, which would silently corrupt any db-health-cmd token
+# containing one (e.g. a Windows-style path or an escaped character some
+# health-check tool expects verbatim). Prove the backslash survives intact.
+run_db_step job-health-backslash "${job_a[@]}" \
+  'DB_HEALTH_CMD=pg_isready --host=C:\pgdata'
+rc=$?
+id_backslash="$(published_handle_of job-health-backslash)"
+{ [ "$rc" -eq 0 ] \
+    && grep -qF -- "exec $id_backslash pg_isready --host=C:\\pgdata" \
+      "$tmp/job-health-backslash/docker.log"; } \
+  && pass "a backslash in db-health-cmd reaches docker exec literally, not interpreted by read" \
+  || fail "the backslash in db-health-cmd was altered before reaching docker exec: $(grep -E '^exec ' "$tmp/job-health-backslash/docker.log")"
+
 # (k) #986: a health command that never succeeds fails the step after the same
 # bound pg_isready always had (30 attempts) — naming the image and the exact
 # command, so the operator does not have to guess which changed engine failed.
