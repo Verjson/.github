@@ -71,15 +71,18 @@ python3 - "$canonical" <<'PY' && pass "terminal routing has no runner-produced t
 import sys, yaml
 d = yaml.safe_load(open(sys.argv[1]))
 jobs = d["jobs"]
-if list(jobs) != ["invalid_verjson_route", "privileged_merge"]:
+if list(jobs) != ["invalid_verjson_route", "validate_privileged_lane", "privileged_merge"]:
     sys.exit(1)
 guard = jobs["invalid_verjson_route"]
+validation = jobs["validate_privileged_lane"]
 merge = jobs["privileged_merge"]
 serialized = str(d)
-for forbidden in ("needs.", "resolve_privileged_route", "steps.route.outputs"):
+for forbidden in ("needs.validate_privileged_lane.outputs", "resolve_privileged_route", "steps.route.outputs"):
     if forbidden in serialized:
         sys.exit(1)
-if any(key in job for job in (guard, merge) for key in ("needs", "outputs")):
+if any("outputs" in job for job in (guard, validation, merge)):
+    sys.exit(1)
+if merge.get("needs") != "validate_privileged_lane":
     sys.exit(1)
 sys.exit(0)
 PY
@@ -105,8 +108,9 @@ workflow = yaml.safe_load(open(sys.argv[1]))
 
 allowed = ("Verjson/.github", "Verjson/verjson-github-runner")
 want_guard_if = "${{ github.repository_owner == 'Verjson' && !(github.event.repository.visibility == 'public' && (github.repository == 'Verjson/.github' || github.repository == 'Verjson/verjson-github-runner') || github.event.repository.visibility == 'private' && github.repository != 'Verjson/.github' && github.repository != 'Verjson/verjson-github-runner') }}"
-want_if = "${{ github.repository_owner != 'Verjson' || github.event.repository.visibility == 'public' && (github.repository == 'Verjson/.github' || github.repository == 'Verjson/verjson-github-runner') || github.event.repository.visibility == 'private' && github.repository != 'Verjson/.github' && github.repository != 'Verjson/verjson-github-runner' }}"
-want_runs_on = "${{ github.repository_owner != 'Verjson' && inputs.runner_labels && fromJSON(inputs.runner_labels) || github.repository_owner != 'Verjson' && 'ubuntu-24.04' || github.event.repository.visibility == 'public' && 'ubuntu-24.04' || fromJSON('[\"self-hosted\",\"general\"]') }}"
+want_validation_if = "${{ github.repository_owner == 'Verjson' && github.event.repository.visibility == 'private' && github.repository != 'Verjson/.github' && github.repository != 'Verjson/verjson-github-runner' }}"
+want_if = "${{ always() && (github.repository_owner != 'Verjson' || github.event.repository.visibility == 'public' && (github.repository == 'Verjson/.github' || github.repository == 'Verjson/verjson-github-runner') || github.event.repository.visibility == 'private' && github.repository != 'Verjson/.github' && github.repository != 'Verjson/verjson-github-runner' && inputs.privileged_lane == '[\"self-hosted\",\"general\"]' && needs.validate_privileged_lane.result == 'success') }}"
+want_runs_on = "${{ github.repository_owner != 'Verjson' && inputs.runner_labels && fromJSON(inputs.runner_labels) || github.repository_owner != 'Verjson' && 'ubuntu-24.04' || github.event.repository.visibility == 'public' && 'ubuntu-24.04' || fromJSON(inputs.privileged_lane) }}"
 
 def valid(candidate):
     jobs = candidate.get("jobs", {})
@@ -114,7 +118,7 @@ def valid(candidate):
     merge = jobs.get("privileged_merge", {})
     guard_steps = guard.get("steps", [])
     return (
-        list(jobs) == ["invalid_verjson_route", "privileged_merge"]
+        list(jobs) == ["invalid_verjson_route", "validate_privileged_lane", "privileged_merge"]
         and guard.get("if") == want_guard_if
         and guard.get("runs-on") == "ubuntu-24.04"
         and guard.get("timeout-minutes") == 1
@@ -122,12 +126,19 @@ def valid(candidate):
         and len(guard_steps) == 1
         and "exit 1" in guard_steps[0].get("run", "")
         and "secrets." not in str(guard)
+        and jobs["validate_privileged_lane"].get("if") == want_validation_if
+        and jobs["validate_privileged_lane"].get("runs-on") == ["self-hosted", "general"]
+        and jobs["validate_privileged_lane"].get("permissions") == {}
+        and jobs["validate_privileged_lane"].get("timeout-minutes") == 1
+        and "secrets." not in str(jobs["validate_privileged_lane"])
         and merge.get("if") == want_if
         and merge.get("runs-on") == want_runs_on
-        and all(key not in job for job in (guard, merge) for key in ("needs", "outputs"))
+        and merge.get("needs") == "validate_privileged_lane"
+        and "outputs" not in jobs["validate_privileged_lane"]
+        and "outputs" not in merge
         and all(name in want_if for name in allowed)
         and "vars." not in want_runs_on
-        and "inputs.privileged_lane" not in want_runs_on
+        and want_runs_on.count("inputs.privileged_lane") == 1
     )
 
 if not valid(workflow):
@@ -159,10 +170,24 @@ forged["jobs"]["privileged_merge"]["needs"] = "attacker_controlled_route"
 forged["jobs"]["privileged_merge"]["runs-on"] = "${{ needs.attacker_controlled_route.outputs.selector }}"
 mutations.append(forged)
 
+runner_only_gate = copy.deepcopy(workflow)
+runner_only_gate["jobs"]["privileged_merge"]["if"] = runner_only_gate["jobs"]["privileged_merge"]["if"].replace(
+    "inputs.privileged_lane == '[\"self-hosted\",\"general\"]' && ", "")
+mutations.append(runner_only_gate)
+
+credentialed_validation = copy.deepcopy(workflow)
+credentialed_validation["jobs"]["validate_privileged_lane"]["env"]["GH_TOKEN"] = "${{ secrets.ORG_ADMIN_TOKEN }}"
+mutations.append(credentialed_validation)
+
 private_hosted = copy.deepcopy(workflow)
 private_hosted["jobs"]["privileged_merge"]["runs-on"] = want_runs_on.replace(
-    "fromJSON('[\"self-hosted\",\"general\"]')", "'ubuntu-24.04'")
+    "fromJSON(inputs.privileged_lane)", "'ubuntu-24.04'")
 mutations.append(private_hosted)
+
+literal_fallback = copy.deepcopy(workflow)
+literal_fallback["jobs"]["privileged_merge"]["runs-on"] = want_runs_on.replace(
+    "fromJSON(inputs.privileged_lane)", "fromJSON('[\"self-hosted\",\"general\"]')")
+mutations.append(literal_fallback)
 
 sys.exit(0 if all(not valid(candidate) for candidate in mutations) else 1)
 PY
