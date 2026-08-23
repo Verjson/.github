@@ -12,3 +12,5 @@ All authorization and post-merge verification remain on a read-only repository t
 The rollout is verified only when this controlled documentation-only canary reaches the
 terminal continuation at the immutable App-token contract SHA and GitHub records App ID
 4693283 as the actor that admin-squash merges its exact reviewed head.
+The retained evidence includes the authorization, token-mint, terminal-job, and merge
+receipts so the privileged identity and repository binding can be audited independently.
