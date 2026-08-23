@@ -22,3 +22,6 @@ caller routing remains unchanged.
 
 The rollout also makes the actionlint trigger contract deterministic under `pipefail`:
 its exact-path assertions no longer race `printf` against an early-exiting `grep -q`.
+
+The live rollout is verified by a controlled documentation-only pull request whose
+terminal continuation must execute on the admitted hosted lane before merging.
