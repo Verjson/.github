@@ -20,8 +20,11 @@ jobs:
       run:
         working-directory: .renovate-compatibility-source-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: .renovate-compatibility-source-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
+          persist-credentials: false
       - name: Require the compatibility App client ID
-        working-directory: ${{ github.workspace }}
         env:
           RENOVATE_COMPATIBILITY_CLIENT_ID: ${{ vars.RENOVATE_COMPATIBILITY_CLIENT_ID }}
         run: |
@@ -42,10 +45,6 @@ jobs:
           permission-contents: read
           permission-pull-requests: read
           permission-statuses: read
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          path: .renovate-compatibility-source-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
-          persist-credentials: false
       - name: Fetch the reviewed policy registry
         env:
           GH_TOKEN: ${{ steps.compatibility-app-token.outputs.token }}
