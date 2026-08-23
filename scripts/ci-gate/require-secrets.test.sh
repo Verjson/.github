@@ -32,15 +32,15 @@ step() {
 }
 
 contract_errors() {
-  local review="$1" privileged="$2" guard terminal checkout
+  local review="$1" privileged="$2" guard terminal checkout merge_step
   guard="$(job "$privileged" invalid_verjson_route)"
   terminal="$(job "$privileged" privileged_merge)"
   checkout="$(step "$privileged" privileged_merge 'Check out immutable arm verifier')"
 
   ! grep -qF '${{ secrets.ORG_ADMIN_TOKEN }}' "$review" \
     || printf '%s\n' 'review workflow receives ORG_ADMIN_TOKEN'
-  [ "$(grep -cF '${{ secrets.ORG_ADMIN_TOKEN }}' "$privileged")" -eq 1 ] \
-    || printf '%s\n' 'privileged workflow must consume ORG_ADMIN_TOKEN exactly once'
+  ! grep -qF 'ORG_ADMIN_TOKEN' "$privileged" \
+    || printf '%s\n' 'privileged workflow still consumes ORG_ADMIN_TOKEN'
   ! grep -qE 'needs\..*outputs|resolve_privileged_route' "$privileged" \
     || printf '%s\n' 'runner-produced data can select terminal credential placement'
   ! grep -qF 'ACTIONS_VARIABLES_TOKEN' "$privileged" \
@@ -49,8 +49,11 @@ contract_errors() {
     || printf '%s\n' 'invalid-route observability guard receives a terminal credential'
   grep -qF 'permissions: {}' <<<"$guard" \
     || printf '%s\n' 'invalid-route observability guard is not credentialless'
-  grep -qF 'GH_TOKEN: ${{ secrets.ORG_ADMIN_TOKEN }}' <<<"$terminal" \
-    || printf '%s\n' 'terminal merge job does not own the merge token'
+  merge_step="$(step "$privileged" privileged_merge 'Merge the authorized head')"
+  grep -qF 'GH_TOKEN: ${{ steps.merge-app-token.outputs.token }}' <<<"$merge_step" \
+    || printf '%s\n' 'terminal operation does not receive the merge App token'
+  [ "$(grep -c 'gh ' <<<"$merge_step")" -eq 1 ] && grep -q 'gh pr merge' <<<"$merge_step" \
+    || printf '%s\n' 'merge App token is bound beyond the terminal merge operation'
 
   grep -qF 'uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1' <<<"$checkout" \
     || printf '%s\n' 'immutable verifier checkout is not pinned'
@@ -62,8 +65,8 @@ contract_errors() {
     || printf '%s\n' 'verifier checkout persists credentials'
   grep -qF 'scripts/ci-gate/verify-arm-receipt.sh' <<<"$checkout" \
     || printf '%s\n' 'verifier checkout is not sparse-scoped to the arm verifier'
-  [ "$(grep -cE '^[[:space:]]+(- )?uses:' <<<"$terminal")" -eq 1 ] \
-    || printf '%s\n' 'terminal merge job executes an action besides the canonical verifier checkout'
+  [ "$(grep -cE '^[[:space:]]+(- )?uses:' <<<"$terminal")" -eq 2 ] \
+    || printf '%s\n' 'terminal merge job action boundary drifted'
   ! grep -qE 'github\.event\.pull_request|github\.head_ref|repository:.*TARGET_REPO|ref:.*EXPECTED_HEAD_SHA' <<<"$terminal" \
     || printf '%s\n' 'terminal merge job can check out PR-controlled material'
 }
@@ -86,7 +89,7 @@ reset_fixtures() {
 }
 
 assert_contract "$review_workflow" "$privileged_workflow" \
-  'current split keeps the broad merge token and immutable verifier inside trusted boundaries'
+  'current split confines the merge App token to the terminal operation'
 
 reset_fixtures
 sed -i '/^permissions:$/i\\  ORG_ADMIN_TOKEN: ${{ secrets.ORG_ADMIN_TOKEN }}' "$tmp/review.yml"
@@ -97,7 +100,7 @@ sed -i '/^  privileged_merge:$/a\\    needs: attacker_route\n    runs-on: ${{ ne
 assert_mutation_rejected 'mutation: runner-produced output cannot route the terminal credential'
 
 reset_fixtures
-sed -i '/^  invalid_verjson_route:$/a\\    env:\n      GH_TOKEN: ${{ secrets.ORG_ADMIN_TOKEN }}' "$tmp/privileged.yml"
+sed -i '/^  invalid_verjson_route:$/a\\    env:\n      GH_TOKEN: ${{ secrets.MERGE_APP_PRIVATE_KEY }}' "$tmp/privileged.yml"
 assert_mutation_rejected 'mutation: invalid-route observability cannot receive the terminal credential'
 
 reset_fixtures
@@ -113,7 +116,7 @@ sed -i '0,/ref: ${{ steps.trusted-revision.outputs.sha }}/s//ref: ${{ inputs.exp
 assert_mutation_rejected 'mutation: verifier cannot be checked out from the PR head'
 
 reset_fixtures
-sed -i '/^      - name: Attempt terminal merge from trusted metadata$/i\\      - uses: attacker/pr-controlled-action@main' "$tmp/privileged.yml"
+sed -i '/^      - name: Authorize terminal merge from trusted metadata$/i\\      - uses: attacker/pr-controlled-action@main' "$tmp/privileged.yml"
 assert_mutation_rejected 'mutation: terminal merge job cannot execute an additional action'
 
 if [ "$failures" -ne 0 ]; then

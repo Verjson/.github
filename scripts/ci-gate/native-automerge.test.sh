@@ -10,11 +10,23 @@ fails=0
 pass() { printf 'ok   - %s\n' "$1"; }
 fail() { printf 'FAIL - %s\n' "$1"; fails=$((fails + 1)); }
 
-awk '
-  $0 == "      - name: Attempt terminal merge from trusted metadata" { found=1; next }
-  found && $0 == "        run: |" { run=1; next }
-  run { sub(/^          /, ""); print }
-' "$workflow" >"$tmp/promote.sh"
+python3 - "$workflow" >"$tmp/promote.sh" <<'PY'
+import sys
+import yaml
+
+document = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))
+steps = document["jobs"]["privileged_merge"]["steps"]
+names = [
+    "Authorize terminal merge from trusted metadata",
+    "Merge the authorized head",
+    "Confirm merge and consume the arm receipt",
+]
+for name in names:
+    matches = [step for step in steps if step.get("name") == name]
+    if len(matches) != 1 or not matches[0].get("run"):
+        raise SystemExit(f"missing unique non-empty step: {name}")
+    print(matches[0]["run"])
+PY
 [ -s "$tmp/promote.sh" ] || { echo "FAIL - promotion block missing"; exit 1; }
 
 mkdir -p "$tmp/bin" "$tmp/run/.gate-trust/scripts/ci-gate"
@@ -62,6 +74,7 @@ export EXECUTING_WORKFLOW_REPOSITORY=Verjson/.github EXECUTING_WORKFLOW_SHA=aaaa
 export GITHUB_SERVER_URL=https://github.com GITHUB_API_URL=https://api.github.com WORKFLOW_BLOB_HEAD=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa WORKFLOW_BLOB_TRUSTED=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 mkdir -p "$tmp/runner-temp"
 export RUNNER_TEMP="$tmp/runner-temp"
+export GITHUB_OUTPUT="$tmp/github-output"
 export REQUIRED_CHECK_POLICY='[{"name":"shell-tests","app_id":15368,"workflow_id":315894159,"workflow_path":".github/workflows/actions-ci.yml"}]'
 encode_policy() { python3 "$root/scripts/ci-gate/review-policy-envelope.py" encode "$1"; }
 ai_merge_policy='{"actor":"trusted-arm","actor_permission":"automation","authority":"ai-merge","budget_usd":"5.00","fallback_budget_usd":"5.00","fallback_model":"deepseek-v4-flash","model":"deepseek-v4-pro","pricing_version":"deepseek-v4-2026-08-10","provider":"deepseek"}'

@@ -24,7 +24,7 @@ fails=0
 pass() { printf 'ok   - %s\n' "$1"; }
 fail() { printf 'FAIL - %s\n' "$1"; fails=$((fails + 1)); }
 
-step_name="Attempt terminal merge from trusted metadata"
+step_name="Authorize terminal merge from trusted metadata"
 extract_terminal_merge_script() {
   local source="$1" destination="$2"
   python3 - "$source" "$step_name" >"$destination" <<'EXTRACT_PY'
@@ -96,7 +96,7 @@ job = d["jobs"]["privileged_merge"]
 # Job-level env must NOT carry them: `job` is not an available context there.
 if any(k.startswith("EXECUTING_WORKFLOW_") for k in (job.get("env") or {})):
     sys.exit(1)
-matches = [step for step in job["steps"] if step.get("name") == "Attempt terminal merge from trusted metadata"]
+matches = [step for step in job["steps"] if step.get("name") == "Authorize terminal merge from trusted metadata"]
 if len(matches) != 1:
     sys.exit(1)
 step = matches[0]

@@ -1,0 +1,85 @@
+# 0120 — Bind terminal merge to a repository-scoped App token
+
+- **Date:** 2026-08-23
+- **Status:** Accepted
+- **Issue:** [#991](https://github.com/Verjson/.github/issues/991)
+- **Extends:** [ADR 0036](../0036-separate-pr-review-from-privileged-merge/README.md), [ADR 0042](../0042-privileged-merge-reusable-split/README.md), and [ADR 0118](../0118-route-private-terminal-merge-to-hosted-capacity/README.md)
+- **Follows:** [ADR 0099](../0099-release-app-replaces-admin-pat/README.md)
+
+## Context
+
+The terminal promotion workflow receives the long-lived human `ORG_ADMIN_TOKEN` for
+its entire authorization-and-merge shell step. Generated callers reproduce that secret
+contract across the fleet. Although the job is isolated from pull-request code and
+validates its canonical workflow revision, exact head, arm receipt, authorization App,
+required checks, source repository, and holds, every read and parser in the terminal
+step can still reach a broad human credential.
+
+The dedicated `verjson-merge-authorization` GitHub App is installed on all repositories
+with exactly contents-write, pull-requests-write, and metadata-read permissions. App ID
+4693283 is an Integration/always bypass actor on every active organization ruleset. The
+App deliberately has no Actions, checks, administration, secrets, packages,
+deployments, organization, or member permission.
+
+The reusable workflow must therefore finish every read-only authorization decision
+before minting merge authority. Repository identity is a particularly sensitive input:
+the token action accepts an owner and repository selector, so neither workflow inputs,
+pull-request metadata, nor shell-computed attacker-controlled text may widen it.
+
+## Decision
+
+Replace the terminal PAT with a short-lived installation token from the dedicated merge
+App. Reusable callers pass only `merge_app_client_id` and
+`MERGE_APP_PRIVATE_KEY`; generated callers bind those values to the organization
+variable and secret. Empty, malformed, or numeric legacy IDs fail closed before minting.
+
+The credentialless target preflight derives `TARGET_REPO` exclusively from
+`github.repository`, validates its owner/name grammar, requires byte-for-byte equality
+with `GITHUB_REPOSITORY`, and emits the owner and repository name used by the token
+action. The immutable action pin requests exactly `contents: write` and
+`pull-requests: write` for that one validated repository. A wrong installation,
+inaccessible repository, missing key, or mint failure fails the job with no fallback.
+
+Authorization is completed first under the repository `GITHUB_TOKEN`, with only
+Actions, checks, contents, and pull-request read permissions. The step emits an
+authorization output only after all existing exact-head, receipt, App-review, hold,
+workflow-provenance, and required-check checks succeed. The installation token is then
+minted and delivered only to a separate terminal step whose sole GitHub operation is:
+
+`gh pr merge --admin --squash --match-head-commit`
+
+GitHub's merged-state confirmation and best-effort receipt cleanup run afterward under
+the read-only repository token; they cannot reuse the merge token. Pending, stale,
+held, already-closed, or otherwise ineligible promotions do not mint a token.
+
+## Security analysis
+
+The App's installation-wide availability is narrowed twice: by a fixed trusted owner
+derived from the workflow repository context and by the exact validated repository
+name. The permission inputs are literal and non-widenable. The private key is consumed
+only by the pinned token action, and the output token is absent from checkout,
+authorization parsers, artifact processing, logs, and cleanup.
+
+The repository token cannot bypass rulesets or merge, while the merge token cannot read
+Actions/checks or organization state. This capability split prevents compromised read
+or parsing logic from obtaining terminal authority and prevents the terminal credential
+from becoming a general audit token. An attacker-controlled PR number, head SHA,
+repository metadata field, runner input, or required-check policy cannot select another
+installation repository.
+
+The active rulesets grant bypass only to App ID 4693283, not to a mutable slug or a
+human account. The canonical live slug remains `verjson-merge-authorization`; its
+shorter name is intentional and is not renamed by this decision.
+
+## Consequences
+
+- Generated privileged-merge and retry callers no longer require
+  `ORG_ADMIN_TOKEN`; they require the merge App client-ID/private-key contract.
+- `ORG_ADMIN_TOKEN` remains live for separately audited organization runner,
+  ruleset, secret-scope, watchdog, notification, and other legitimate consumers. This
+  decision does not authorize deleting it.
+- Rollout must use the canonical generator at the immutable merged contract SHA and
+  must prove the App-backed path with a disposable controlled canary before fleet
+  fan-out.
+- Rollback disables terminal promotion or reverts workflow and callers together. A PAT
+  fallback is not automatic and requires a new reviewed security decision.

@@ -21,7 +21,7 @@ def require_contract(review_doc, promote_doc, retry_doc):
     assert job["env"]["REVIEW_POLICY"] == "${{ inputs.review_policy }}"
     checkout = next(step for step in job["steps"] if step.get("name") == "Check out immutable arm verifier")
     assert "scripts/ci-gate/review-policy-envelope.py" in checkout["with"]["sparse-checkout"]
-    promotion_run = next(step for step in job["steps"] if step.get("name") == "Attempt terminal merge from trusted metadata")["run"]
+    promotion_run = next(step for step in job["steps"] if step.get("name") == "Authorize terminal merge from trusted metadata")["run"]
     assert 'review-policy-envelope.py decode "$REVIEW_POLICY"' in promotion_run
     assert '[ "$(jq -r \'.authority // "human"\' <<<"$policy_json")" = ai-merge ]' in promotion_run
 

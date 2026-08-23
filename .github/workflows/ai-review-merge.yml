@@ -815,8 +815,8 @@ jobs:
           #    fallback, qualifies — a blocking/inconclusive record that also
           #    carries the marker must NOT authorize a skip. Newest wins.
           # The marker is only trustworthy if the gate/bot itself posted it.
-          # ORG_ADMIN_TOKEN's own identity is the account that submits the
-          # deterministic review/approval, so restrict BOTH the approved-review
+          # The repository token's workflow identity is the account that submits
+          # the deterministic review/approval, so restrict BOTH the approved-review
           # and approved-comment selects to that login. Without this, any PR
           # author could post a comment carrying a forged marker plus the
           # (locally computable) patch-id and skip the paid review entirely

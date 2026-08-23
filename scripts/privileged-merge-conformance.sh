@@ -2,7 +2,7 @@
 set -euo pipefail
 
 readonly ORG="${PRIVILEGED_MERGE_ORG:-Verjson}"
-readonly SECRET_NAME="${PRIVILEGED_MERGE_SECRET_NAME:-ORG_ADMIN_TOKEN}"
+readonly SECRET_NAME="${PRIVILEGED_MERGE_SECRET_NAME:-MERGE_APP_PRIVATE_KEY}"
 readonly CALLER_PATH=".github/workflows/ai-privileged-merge.yml"
 readonly RETRY_PATH=".github/workflows/ai-promotion-retry.yml"
 readonly GENERATOR="scripts/gen-privileged-merge-caller.sh"
@@ -478,7 +478,7 @@ while IFS= read -r repository; do
       ;;
   esac
   if [ "$has_secret" != true ]; then
-    echo "::error title=Missing ORG_ADMIN_TOKEN access::repository=$repository secret=$SECRET_NAME remediation='grant repository access to the organization secret'"
+    echo "::error title=Missing privileged merge App key access::repository=$repository secret=$SECRET_NAME remediation='grant repository access to the organization secret'"
     failures=$((failures + 1))
   fi
 done <<<"$repositories"

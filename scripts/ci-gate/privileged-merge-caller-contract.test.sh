@@ -206,7 +206,7 @@ on = d.get(True, d.get("on"))
 wc = on.get("workflow_call")
 if not wc: sys.exit(1)
 i = wc.get("inputs", {})
-need = {"pr_number", "expected_head_sha", "authorization_check_id", "arm_run_id", "arm_run_attempt", "review_policy", "source_run_id", "required_checks", "runner_labels"}
+need = {"pr_number", "expected_head_sha", "authorization_check_id", "arm_run_id", "arm_run_attempt", "review_policy", "source_run_id", "required_checks", "runner_labels", "merge_app_client_id"}
 need.add("privileged_lane")
 if not need <= set(i): sys.exit(1)
 sys.exit(0 if i["runner_labels"].get("required") is False and
@@ -317,11 +317,13 @@ job = d.get("jobs", {}).get("retry", {})
 if set(on) != {"workflow_run"} or on["workflow_run"] != {
         "workflows": ["CI", "changelog"], "types": ["completed"]}:
     sys.exit(1)
-if job.get("uses") != want or set(job.get("secrets", {})) != {"ORG_ADMIN_TOKEN"}:
+if job.get("uses") != want or job.get("secrets") != {
+        "MERGE_APP_PRIVATE_KEY": "${{ secrets.MERGE_APP_PRIVATE_KEY }}"}:
     sys.exit(1)
 if job.get("with") != {
         "required_checks": '[{"name":"shell-tests","app_id":15368,"workflow_id":315894159,"workflow_path":".github/workflows/actions-ci.yml"}]',
-        "privileged_lane": "${{ vars.VERJSON_LANE_PRIVILEGED }}"}:
+        "privileged_lane": "${{ vars.VERJSON_LANE_PRIVILEGED }}",
+        "merge_app_client_id": "${{ vars.MERGE_APP_CLIENT_ID }}"}:
     sys.exit(1)
 sys.exit(0)
 RETRY_PY
@@ -349,12 +351,13 @@ python3 - "$tmp/caller.yml" <<'WITH_PY' && pass "generated caller forwards exact
 import sys, yaml
 d = yaml.safe_load(open(sys.argv[1]))
 w = d["jobs"]["privileged_merge"].get("with", {})
-if set(w) != {"pr_number", "expected_head_sha", "authorization_check_id", "arm_run_id", "arm_run_attempt", "review_policy", "source_run_id", "required_checks", "privileged_lane"}:
+if set(w) != {"pr_number", "expected_head_sha", "authorization_check_id", "arm_run_id", "arm_run_attempt", "review_policy", "source_run_id", "required_checks", "privileged_lane", "merge_app_client_id"}:
     sys.exit(1)
 sys.exit(0 if w["expected_head_sha"] == "${{ inputs.expected_head_sha }}" and
          w["review_policy"] == "${{ inputs.review_policy }}" and
          w["required_checks"] == '[{"name":"shell-tests","app_id":15368,"workflow_id":315894159,"workflow_path":".github/workflows/actions-ci.yml"}]' and
-         w["privileged_lane"] == "${{ vars.VERJSON_LANE_PRIVILEGED }}" else 1)
+         w["privileged_lane"] == "${{ vars.VERJSON_LANE_PRIVILEGED }}" and
+         w["merge_app_client_id"] == "${{ vars.MERGE_APP_CLIENT_ID }}" else 1)
 WITH_PY
 
 cp "$tmp/caller.yml" "$tmp/caller-substituted.yml"
@@ -409,15 +412,17 @@ w = d["jobs"]["privileged_merge"].get("with", {})
 sys.exit(0 if w.get("runner_labels") == '["ubuntu-24.04"]' else 1)
 LABELS_PY
 
-python3 - "$tmp/caller.yml" <<'SECRETS_PY' && pass "generated caller grants only the terminal merge token" \
+python3 - "$tmp/caller.yml" <<'SECRETS_PY' && pass "generated caller grants only the terminal merge App contract" \
   || fail "generated caller uses secrets: inherit or omits an explicit narrow grant"
 import sys, yaml
 d = yaml.safe_load(open(sys.argv[1]))
 got = d["jobs"]["privileged_merge"].get("secrets")
 want = {
-    "ORG_ADMIN_TOKEN": "${{ secrets.ORG_ADMIN_TOKEN }}",
+    "MERGE_APP_PRIVATE_KEY": "${{ secrets.MERGE_APP_PRIVATE_KEY }}",
 }
-sys.exit(0 if got == want else 1)
+inputs = d["jobs"]["privileged_merge"].get("with", {})
+sys.exit(0 if got == want and
+         inputs.get("merge_app_client_id") == "${{ vars.MERGE_APP_CLIENT_ID }}" else 1)
 SECRETS_PY
 
 python3 - "$tmp/caller.yml" <<'PERMS_PY' && pass "generated caller keeps least-privilege permissions and trusted dispatch only" \
