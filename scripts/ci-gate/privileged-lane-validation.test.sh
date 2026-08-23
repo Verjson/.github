@@ -137,6 +137,13 @@ assert merge["needs"] == "validate_privileged_lane"
 assert "inputs.privileged_lane == '[\"ubuntu-24.04\"]'" in merge["if"]
 assert "needs.validate_privileged_lane.result == 'success'" in merge["if"]
 assert "always()" in merge["if"]
+assert "self-hosted" not in merge["if"].casefold()
+assert merge["runs-on"] == (
+    "${{ github.repository_owner != 'Verjson' && inputs.runner_labels && "
+    "fromJSON(inputs.runner_labels) || github.repository_owner != 'Verjson' && "
+    "'ubuntu-24.04' || github.event.repository.visibility == 'public' && "
+    "'ubuntu-24.04' || fromJSON(inputs.privileged_lane) }}"
+)
 PY
 
 if [ "$fails" -eq 0 ]; then
