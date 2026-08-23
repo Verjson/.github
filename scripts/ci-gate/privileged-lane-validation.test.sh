@@ -137,6 +137,8 @@ assert merge["needs"] == "validate_privileged_lane"
 assert "inputs.privileged_lane == '[\"ubuntu-24.04\"]'" in merge["if"]
 assert "needs.validate_privileged_lane.result == 'success'" in merge["if"]
 assert "always()" in merge["if"]
+assert "self-hosted" not in merge["if"]
+assert "self-hosted" not in merge["runs-on"]
 PY
 
 if [ "$fails" -eq 0 ]; then

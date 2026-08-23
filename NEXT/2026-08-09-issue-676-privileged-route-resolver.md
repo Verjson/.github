@@ -25,3 +25,5 @@ its exact-path assertions no longer race `printf` against an early-exiting `grep
 
 The live rollout will count as verified only if this controlled documentation-only
 pull request's terminal continuation executes on the admitted hosted lane and merges.
+The routing contract also rejects any legacy self-hosted selector in the terminal
+job's scheduling predicate or runner expression.
