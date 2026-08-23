@@ -106,8 +106,9 @@ jobs:
     with:
       required_checks: '$required_checks_yaml'
       privileged_lane: \${{ vars.VERJSON_LANE_PRIVILEGED }}
+      merge_app_client_id: \${{ vars.MERGE_APP_CLIENT_ID }}
     secrets:
-      ORG_ADMIN_TOKEN: \${{ secrets.ORG_ADMIN_TOKEN }}
+      MERGE_APP_PRIVATE_KEY: \${{ secrets.MERGE_APP_PRIVATE_KEY }}
 YAML
   exit 0
 fi
@@ -192,9 +193,9 @@ jobs:
   privileged_merge:
     uses: ${TARGET}
     # Explicit rather than \`inherit\`: the caller grants only the terminal
-    # merge secret to the immutable canonical contract revision.
+    # merge App private key to the immutable canonical contract revision.
     secrets:
-      ORG_ADMIN_TOKEN: \${{ secrets.ORG_ADMIN_TOKEN }}
+      MERGE_APP_PRIVATE_KEY: \${{ secrets.MERGE_APP_PRIVATE_KEY }}
     with:
       pr_number: \${{ inputs.pr_number }}
       expected_head_sha: \${{ inputs.expected_head_sha }}
@@ -205,6 +206,7 @@ jobs:
       source_run_id: \${{ inputs.source_run_id }}
       required_checks: '$required_checks_yaml'
       privileged_lane: \${{ vars.VERJSON_LANE_PRIVILEGED }}${labels_input}
+      merge_app_client_id: \${{ vars.MERGE_APP_CLIENT_ID }}
 YAML
 }
 

@@ -18,7 +18,7 @@ fails=0
 pass() { printf 'ok   - %s\n' "$1"; }
 fail() { printf 'FAIL - %s\n' "$1"; fails=$((fails + 1)); }
 
-step_name="Attempt terminal merge from trusted metadata"
+step_name="Confirm merge and consume the arm receipt"
 anchor="# The receipt has now served its purpose:"
 
 extract_deletion_fragment() {

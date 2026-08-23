@@ -23,10 +23,10 @@ cat >"$tmp/bin/gh" <<'GH'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >>"$GH_CALLS"
 case "$*" in
-  "api orgs/Verjson/actions/secrets/ORG_ADMIN_TOKEN --jq .visibility")
+  "api orgs/Verjson/actions/secrets/MERGE_APP_PRIVATE_KEY --jq .visibility")
     printf '%s\n' "${SECRET_VISIBILITY:-selected}"
     ;;
-  "api --paginate orgs/Verjson/actions/secrets/ORG_ADMIN_TOKEN/repositories --jq .repositories[].full_name")
+  "api --paginate orgs/Verjson/actions/secrets/MERGE_APP_PRIVATE_KEY/repositories --jq .repositories[].full_name")
     printf '%s\n' "${SECRET_REPOSITORIES:-Verjson/alpha}"
     ;;
   "api --paginate orgs/Verjson/repos?type=all&per_page=100 --jq .[] | select((.archived or .fork or .is_template) | not) | .full_name")
@@ -411,7 +411,7 @@ ACTIVE_REPOSITORIES=Verjson/.github SECRET_REPOSITORIES=Verjson/.github \
 ACTIVE_REPOSITORIES=Verjson/.github SECRET_REPOSITORIES=Verjson/alpha run_audit \
   && fail "canonical direct consumer without selected-secret access reported green" \
   || {
-    grep -q 'Missing ORG_ADMIN_TOKEN access' "$tmp/out" \
+    grep -q 'Missing privileged merge App key access' "$tmp/out" \
       && grep -q 'repository=Verjson/.github' "$tmp/out" \
       && pass "canonical direct consumer requires selected-secret access evidence" \
       || fail "canonical direct consumer bypassed secret-scope validation"
@@ -460,7 +460,7 @@ ACTIVE_REPOSITORIES=$'Verjson/alpha\nVerjson/beta' \
   && fail "missing selected-secret access reported green" \
   || {
     grep -q 'repository=Verjson/beta' "$tmp/out" \
-      && grep -q 'ORG_ADMIN_TOKEN' "$tmp/out" \
+      && grep -q 'MERGE_APP_PRIVATE_KEY' "$tmp/out" \
       && pass "missing secret access fails with repository-scoped evidence" \
       || fail "missing secret access lacks actionable repository-scoped evidence"
   }

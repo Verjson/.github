@@ -16,8 +16,11 @@ on:
       privileged_lane:
         required: false
         type: string
+      merge_app_client_id:
+        required: true
+        type: string
     secrets:
-      ORG_ADMIN_TOKEN:
+      MERGE_APP_PRIVATE_KEY:
         required: true
 
 permissions:
@@ -149,7 +152,7 @@ jobs:
     if: needs.resolve.outputs.ready == 'true'
     uses: ./.github/workflows/ai-privileged-merge.yml
     secrets:
-      ORG_ADMIN_TOKEN: ${{ secrets.ORG_ADMIN_TOKEN }}
+      MERGE_APP_PRIVATE_KEY: ${{ secrets.MERGE_APP_PRIVATE_KEY }}
     with:
       pr_number: ${{ needs.resolve.outputs.pr_number }}
       expected_head_sha: ${{ needs.resolve.outputs.expected_head_sha }}
@@ -159,3 +162,4 @@ jobs:
       review_policy: ${{ needs.resolve.outputs.review_policy }}
       required_checks: ${{ github.repository == 'Verjson/.github' && '[{"name":"shell-tests","app_id":15368,"workflow_id":315894159,"workflow_path":".github/workflows/actions-ci.yml"}]' || inputs.required_checks }}
       privileged_lane: ${{ inputs.privileged_lane || vars.VERJSON_LANE_PRIVILEGED }}
+      merge_app_client_id: ${{ inputs.merge_app_client_id || vars.MERGE_APP_CLIENT_ID }}
