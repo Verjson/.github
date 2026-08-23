@@ -19,3 +19,6 @@ and scheduling-time comparison admit only `["ubuntu-24.04"]`. Private Verjson te
 jobs therefore fail closed until the organization variable is cut over, then place the
 merge credential only on fresh GitHub-hosted capacity. Public Verjson and external
 caller routing remains unchanged.
+
+The rollout also makes the actionlint trigger contract deterministic under `pipefail`:
+its exact-path assertions no longer race `printf` against an early-exiting `grep -q`.
