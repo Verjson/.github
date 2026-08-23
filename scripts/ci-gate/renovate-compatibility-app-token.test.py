@@ -71,6 +71,9 @@ def validate_reconciler(document: dict, raw: str) -> list[str]:
     }
     if document.get("permissions") != {"contents": "read"}:
         problems.append("reconciler GITHUB_TOKEN is not read-only")
+    guard = next(step for step in job["steps"] if step.get("name") == "Require the compatibility App client ID")
+    if guard.get("working-directory") != "${{ github.workspace }}":
+        problems.append("credential guard depends on the not-yet-created observer checkout")
     if token_step.get("uses") != ACTION or token_step.get("with") != expected:
         problems.append("reconciler mint scope or permissions widened")
     token_consumers = [

@@ -21,6 +21,7 @@ jobs:
         working-directory: .renovate-compatibility-source-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
     steps:
       - name: Require the compatibility App client ID
+        working-directory: ${{ github.workspace }}
         env:
           RENOVATE_COMPATIBILITY_CLIENT_ID: ${{ vars.RENOVATE_COMPATIBILITY_CLIENT_ID }}
         run: |

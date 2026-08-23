@@ -45,12 +45,13 @@ jobs:
           CANDIDATES: ${{ inputs.candidates }}
         run: |
           set -euo pipefail
-          jq -e 'type == "array" and all(.[];
+          jq -e 'if type == "array" and all(.[];
             (.ecosystem | type == "string") and
             (.package | type == "string") and
             (.stackProfile | type == "string") and
             (.targetMajor | type == "number") and
-            ((keys - ["ecosystem","package","securityAdvisory","stackProfile","targetMajor"]) | length == 0))' \
+            ((keys - ["ecosystem","package","securityAdvisory","stackProfile","targetMajor"]) | length == 0))
+            then . else error("invalid candidates") end' \
             <<<"$CANDIDATES" > candidates.json
           node scripts/plan-compatibility.mjs candidates.json > grouping-plan.json
           jq '{actionableGroups:(.actionable | length), held:(.held | length), plan:.}' \

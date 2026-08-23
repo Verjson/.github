@@ -22,3 +22,6 @@ interim PAT decision. The planner now mints a contents-read token for only
 `renovate-config`; the observer mints a read-only token for only the managed
 CI-infrastructure repositories. Missing or malformed credentials fail closed, and no
 workflow path references `RENOVATE_COMPATIBILITY_PAT` or `ORG_ADMIN_TOKEN`.
+The live canary also exposed and fixed the planner's boolean-only validated output and
+the observer's pre-check working-directory ordering before either workflow could report
+success incorrectly.

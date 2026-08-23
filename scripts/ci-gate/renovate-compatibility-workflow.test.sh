@@ -50,6 +50,7 @@ grep -qF "fromJSON(vars.VERJSON_LANE_TRUSTED || vars.VERJSON_LANE_FALLBACK || '[
   || fail "runner selector bypasses the canonical lane boundary"
 grep -q 'dd08f8471fdfabbdbbb32051e03387fcf5df63bd' "$planner" \
   && grep -q 'scripts/plan-compatibility.mjs' "$planner" \
+  && grep -q 'then \. else error("invalid candidates") end' "$planner" \
   && ! grep -Eq 'contents: write|pull-requests: write|issues: write' "$planner" \
   && pass "planner consumes the immutable prerequisite without mutation authority" \
   || fail "planner contract or authority drifted"
