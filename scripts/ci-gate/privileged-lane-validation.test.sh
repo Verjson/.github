@@ -8,15 +8,10 @@
 # caller with a missing, malformed, or shadowed `VERJSON_LANE_PRIVILEGED`
 # produced zero signal.
 #
-# The fix runs the check as the FIRST step of the existing `privileged_merge`
-# job rather than as a separate preceding job: a separate job pinned to
-# `ubuntu-24.04` would run unconditionally for every caller, including
-# external self-hosted-only orgs whose `privileged_merge` already routes via
-# `runner_labels` and never otherwise needs GitHub-hosted capacity for this
-# workflow at all (flagged by the AI review on #989 before this follow-up).
-# A step inside the job that already resolved runs on whatever capacity that
-# resolution already produced, so it adds no new capacity requirement for any
-# caller.
+# ADR 0117 moves validation into a credentialless fixed-lane admission job.
+# GitHub's job-level `if` independently exact-matches the input before the
+# secret-bearing job can schedule, so a compromised admission runner cannot
+# authorize attacker-selected labels merely by returning success.
 #
 # This extracts that step's run script from the shipped workflow (single
 # source of truth, per house convention) and exercises it directly against
@@ -46,7 +41,7 @@ import sys
 import yaml
 
 workflow = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))
-steps = workflow.get("jobs", {}).get("privileged_merge", {}).get("steps", [])
+steps = workflow.get("jobs", {}).get("validate_privileged_lane", {}).get("steps", [])
 matches = [step for step in steps if step.get("name") == sys.argv[2]]
 if len(matches) != 1:
     raise SystemExit(f"expected exactly one {sys.argv[2]!r} step, found {len(matches)}")
@@ -69,13 +64,7 @@ else
   exit 1
 fi
 
-run_case() {
-  PRIVILEGED_LANE="${PRIVILEGED_LANE-}" \
-  REPO_OWNER="${REPO_OWNER:-Verjson}" \
-  REPO_VISIBILITY="${REPO_VISIBILITY:-private}" \
-  TARGET_REPO="${TARGET_REPO:-Verjson/private-consumer}" \
-    bash "$script" 2>&1
-}
+run_case() { PRIVILEGED_LANE="${PRIVILEGED_LANE-}" bash "$script" 2>&1; }
 
 # --- the exact admitted lane passes -------------------------------------------
 out="$(PRIVILEGED_LANE='["self-hosted","general"]' run_case)"
@@ -133,25 +122,21 @@ else
   fail "a shadowed lane value was accepted: $out"
 fi
 
-# --- the check does not apply outside the private-Verjson self-hosted route ---
-# External orgs route through runner_labels and the two public Verjson repos
-# resolve to a fixed literal untouched by privileged_lane; this job must not
-# demand the input there.
-out="$(PRIVILEGED_LANE='' REPO_OWNER='Acme' REPO_VISIBILITY='private' TARGET_REPO='Acme/widgets' run_case)"
-rc=$?
-if [ "$rc" -eq 0 ] && ! grep -qF '::error::' <<<"$out"; then
-  pass "an external org caller with no privileged_lane is not gated by this check"
-else
-  fail "an external org caller was incorrectly gated: $out"
-fi
-
-out="$(PRIVILEGED_LANE='' REPO_OWNER='Verjson' REPO_VISIBILITY='public' TARGET_REPO='Verjson/.github' run_case)"
-rc=$?
-if [ "$rc" -eq 0 ] && ! grep -qF '::error::' <<<"$out"; then
-  pass "the canonical public repository is not gated by this check"
-else
-  fail "the canonical public repository was incorrectly gated: $out"
-fi
+python3 - "$wf" <<'PY' && pass "admission is credentialless and merge eligibility independently exact-matches the lane" \
+  || fail "admission or scheduling-time lane enforcement drifted"
+import sys, yaml
+w = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))
+jobs = w["jobs"]
+admission = jobs["validate_privileged_lane"]
+merge = jobs["privileged_merge"]
+assert admission["runs-on"] == ["self-hosted", "general"]
+assert admission["permissions"] == {}
+assert "secrets." not in str(admission)
+assert merge["needs"] == "validate_privileged_lane"
+assert "inputs.privileged_lane == '[\"self-hosted\",\"general\"]'" in merge["if"]
+assert "needs.validate_privileged_lane.result == 'success'" in merge["if"]
+assert "always()" in merge["if"]
+PY
 
 if [ "$fails" -eq 0 ]; then
   echo "All tests passed."

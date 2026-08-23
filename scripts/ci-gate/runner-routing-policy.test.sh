@@ -310,6 +310,7 @@ const github = {
 const inputs = {
   runner: runnerInput,
   runner_labels: runnerLabelsInput === undefined ? '' : runnerLabelsInput,
+  privileged_lane: varDefault,
   'github-hosted-runner': false,
   'secretless-pr': false,
 };
@@ -481,7 +482,7 @@ for privileged_workflow in ai-privileged-merge.yml; do
     "$privileged_workflow — exact public canonical consumer takes fixed hosted capacity"
 
   assert_route "$privileged_path" privileged_merge Verjson/private-consumer '' true \
-    '[]' '[]' \
+    '["self-hosted","general"]' '[]' \
     '["self-hosted","general"]' \
     "$privileged_workflow — private Verjson consumer stays on fixed persistent capacity"
 
@@ -499,6 +500,41 @@ for privileged_workflow in ai-privileged-merge.yml; do
     '["self-hosted","acme-fleet"]' \
     "$privileged_workflow — an off-Verjson fleet still wins via runner_labels" \
     '' '["self-hosted","acme-fleet"]'
+
+  # #676 part 2: compare the complete old and new expressions, not fragments.
+  # Every caller shape that exists today must resolve to identical runner data;
+  # only the private-Verjson source of today's literal changes.
+  legacy_workflow="$mutated_workflow"
+  mutate_job_expression "$privileged_path" privileged_merge \
+    'fromJSON(inputs.privileged_lane)' \
+    'fromJSON('\''["self-hosted","general"]'\'')' "$legacy_workflow"
+
+  assert_same_existing_route() {
+    local label="$1" repository="$2" private="$3" lane="$4" runner_labels="$5"
+    local before after
+    before="$(resolve_route "$legacy_workflow" privileged_merge "$repository" '' \
+      "$private" "$lane" '' '' "$runner_labels" '')" || {
+      fail "$label — legacy resolution failed: $before"
+      return
+    }
+    after="$(resolve_route "$privileged_path" privileged_merge "$repository" '' \
+      "$private" "$lane" '' '' "$runner_labels" '')" || {
+      fail "$label — input-backed resolution failed: $after"
+      return
+    }
+    [ "$after" = "$before" ] \
+      && pass "$label resolves byte-identically before and after" \
+      || fail "$label changed from '$before' to '$after'"
+  }
+
+  assert_same_existing_route "public Verjson caller without privileged_lane" \
+    Verjson/.github false '' ''
+  assert_same_existing_route "private Verjson generated caller with today's literal" \
+    Verjson/private-consumer true '["self-hosted","general"]' ''
+  assert_same_existing_route "external hosted caller without privileged_lane" \
+    Acme/widgets true '' ''
+  assert_same_existing_route "external self-hosted caller without privileged_lane" \
+    Acme/widgets true '' '["self-hosted","acme-fleet"]'
 done
 
 # #487 / ADR 0064. The requirement travels with the JOB, not with the file, so it
