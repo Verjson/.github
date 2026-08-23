@@ -8,7 +8,8 @@
 # caller with a missing, malformed, or shadowed `VERJSON_LANE_PRIVILEGED`
 # produced zero signal.
 #
-# ADR 0117 moves validation into a credentialless fixed-lane admission job.
+# ADR 0117 moves validation into a credentialless fixed-lane admission job;
+# ADR 0118 moves that job and the admitted selector to fixed hosted capacity.
 # GitHub's job-level `if` independently exact-matches the input before the
 # secret-bearing job can schedule, so a compromised admission runner cannot
 # authorize attacker-selected labels merely by returning success.
@@ -67,7 +68,7 @@ fi
 run_case() { PRIVILEGED_LANE="${PRIVILEGED_LANE-}" bash "$script" 2>&1; }
 
 # --- the exact admitted lane passes -------------------------------------------
-out="$(PRIVILEGED_LANE='["self-hosted","general"]' run_case)"
+out="$(PRIVILEGED_LANE='["ubuntu-24.04"]' run_case)"
 rc=$?
 if [ "$rc" -eq 0 ] && ! grep -qF '::error::' <<<"$out"; then
   pass "the exact admitted lane validates with no diagnostic"
@@ -104,13 +105,13 @@ else
   fail "a widened lane was accepted: $out"
 fi
 
-# --- hosted value instead of self-hosted --------------------------------------
-out="$(PRIVILEGED_LANE='["ubuntu-24.04"]' run_case)"
+# --- legacy persistent lane ---------------------------------------------------
+out="$(PRIVILEGED_LANE='["self-hosted","general"]' run_case)"
 rc=$?
 if [ "$rc" -ne 0 ] && grep -qF '::error::' <<<"$out"; then
-  pass "a hosted lane value fails closed"
+  pass "the legacy persistent lane fails closed"
 else
-  fail "a hosted lane value was accepted: $out"
+  fail "the legacy persistent lane was accepted: $out"
 fi
 
 # --- shadowed value: a differently-shaped but well-formed array ---------------
@@ -129,11 +130,11 @@ w = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))
 jobs = w["jobs"]
 admission = jobs["validate_privileged_lane"]
 merge = jobs["privileged_merge"]
-assert admission["runs-on"] == ["self-hosted", "general"]
+assert admission["runs-on"] == "ubuntu-24.04"
 assert admission["permissions"] == {}
 assert "secrets." not in str(admission)
 assert merge["needs"] == "validate_privileged_lane"
-assert "inputs.privileged_lane == '[\"self-hosted\",\"general\"]'" in merge["if"]
+assert "inputs.privileged_lane == '[\"ubuntu-24.04\"]'" in merge["if"]
 assert "needs.validate_privileged_lane.result == 'success'" in merge["if"]
 assert "always()" in merge["if"]
 PY

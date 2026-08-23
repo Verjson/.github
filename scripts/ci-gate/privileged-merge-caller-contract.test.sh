@@ -109,7 +109,7 @@ workflow = yaml.safe_load(open(sys.argv[1]))
 allowed = ("Verjson/.github", "Verjson/verjson-github-runner")
 want_guard_if = "${{ github.repository_owner == 'Verjson' && !(github.event.repository.visibility == 'public' && (github.repository == 'Verjson/.github' || github.repository == 'Verjson/verjson-github-runner') || github.event.repository.visibility == 'private' && github.repository != 'Verjson/.github' && github.repository != 'Verjson/verjson-github-runner') }}"
 want_validation_if = "${{ github.repository_owner == 'Verjson' && github.event.repository.visibility == 'private' && github.repository != 'Verjson/.github' && github.repository != 'Verjson/verjson-github-runner' }}"
-want_if = "${{ always() && (github.repository_owner != 'Verjson' || github.event.repository.visibility == 'public' && (github.repository == 'Verjson/.github' || github.repository == 'Verjson/verjson-github-runner') || github.event.repository.visibility == 'private' && github.repository != 'Verjson/.github' && github.repository != 'Verjson/verjson-github-runner' && inputs.privileged_lane == '[\"self-hosted\",\"general\"]' && needs.validate_privileged_lane.result == 'success') }}"
+want_if = "${{ always() && (github.repository_owner != 'Verjson' || github.event.repository.visibility == 'public' && (github.repository == 'Verjson/.github' || github.repository == 'Verjson/verjson-github-runner') || github.event.repository.visibility == 'private' && github.repository != 'Verjson/.github' && github.repository != 'Verjson/verjson-github-runner' && inputs.privileged_lane == '[\"ubuntu-24.04\"]' && needs.validate_privileged_lane.result == 'success') }}"
 want_runs_on = "${{ github.repository_owner != 'Verjson' && inputs.runner_labels && fromJSON(inputs.runner_labels) || github.repository_owner != 'Verjson' && 'ubuntu-24.04' || github.event.repository.visibility == 'public' && 'ubuntu-24.04' || fromJSON(inputs.privileged_lane) }}"
 
 def valid(candidate):
@@ -127,7 +127,7 @@ def valid(candidate):
         and "exit 1" in guard_steps[0].get("run", "")
         and "secrets." not in str(guard)
         and jobs["validate_privileged_lane"].get("if") == want_validation_if
-        and jobs["validate_privileged_lane"].get("runs-on") == ["self-hosted", "general"]
+        and jobs["validate_privileged_lane"].get("runs-on") == "ubuntu-24.04"
         and jobs["validate_privileged_lane"].get("permissions") == {}
         and jobs["validate_privileged_lane"].get("timeout-minutes") == 1
         and "secrets." not in str(jobs["validate_privileged_lane"])
@@ -172,17 +172,17 @@ mutations.append(forged)
 
 runner_only_gate = copy.deepcopy(workflow)
 runner_only_gate["jobs"]["privileged_merge"]["if"] = runner_only_gate["jobs"]["privileged_merge"]["if"].replace(
-    "inputs.privileged_lane == '[\"self-hosted\",\"general\"]' && ", "")
+    "inputs.privileged_lane == '[\"ubuntu-24.04\"]' && ", "")
 mutations.append(runner_only_gate)
 
 credentialed_validation = copy.deepcopy(workflow)
 credentialed_validation["jobs"]["validate_privileged_lane"]["env"]["GH_TOKEN"] = "${{ secrets.ORG_ADMIN_TOKEN }}"
 mutations.append(credentialed_validation)
 
-private_hosted = copy.deepcopy(workflow)
-private_hosted["jobs"]["privileged_merge"]["runs-on"] = want_runs_on.replace(
+private_literal = copy.deepcopy(workflow)
+private_literal["jobs"]["privileged_merge"]["runs-on"] = want_runs_on.replace(
     "fromJSON(inputs.privileged_lane)", "'ubuntu-24.04'")
-mutations.append(private_hosted)
+mutations.append(private_literal)
 
 literal_fallback = copy.deepcopy(workflow)
 literal_fallback["jobs"]["privileged_merge"]["runs-on"] = want_runs_on.replace(

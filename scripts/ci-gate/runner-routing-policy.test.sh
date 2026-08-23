@@ -27,7 +27,7 @@ literal_hosted_sites="$(
     | sed -E 's#^.*/([^/]+):[0-9]+:#\1:#' \
     | sort
 )"
-expected_literal_hosted_sites=$'ai-privileged-merge.yml:    runs-on: ubuntu-24.04\nprivileged-merge-conformance.yml:    runs-on: ubuntu-24.04'
+expected_literal_hosted_sites=$'ai-privileged-merge.yml:    runs-on: ubuntu-24.04\nai-privileged-merge.yml:    runs-on: ubuntu-24.04\nprivileged-merge-conformance.yml:    runs-on: ubuntu-24.04'
 [ "$literal_hosted_sites" = "$expected_literal_hosted_sites" ] \
   && pass "the two security-boundary jobs use exact fixed hosted selectors" \
   || fail "fixed hosted selector inventory drifted: $literal_hosted_sites"
@@ -482,9 +482,9 @@ for privileged_workflow in ai-privileged-merge.yml; do
     "$privileged_workflow — exact public canonical consumer takes fixed hosted capacity"
 
   assert_route "$privileged_path" privileged_merge Verjson/private-consumer '' true \
-    '["self-hosted","general"]' '[]' \
-    '["self-hosted","general"]' \
-    "$privileged_workflow — private Verjson consumer stays on fixed persistent capacity"
+    '["ubuntu-24.04"]' '[]' \
+    '["ubuntu-24.04"]' \
+    "$privileged_workflow — private Verjson consumer takes the exact hosted lane"
 
   assert_route "$privileged_path" privileged_merge Acme/widgets '' true \
     '["self-hosted","isolated-canary"]' '["self-hosted","untrusted-canary"]' \
@@ -501,13 +501,13 @@ for privileged_workflow in ai-privileged-merge.yml; do
     "$privileged_workflow — an off-Verjson fleet still wins via runner_labels" \
     '' '["self-hosted","acme-fleet"]'
 
-  # #676 part 2: compare the complete old and new expressions, not fragments.
-  # Every caller shape that exists today must resolve to identical runner data;
-  # only the private-Verjson source of today's literal changes.
+  # #676 cutover: compare the input-backed expression with its exact admitted
+  # hosted literal. This proves every current caller shape resolves as intended
+  # without allowing a fallback or runner-produced selector.
   legacy_workflow="$mutated_workflow"
   mutate_job_expression "$privileged_path" privileged_merge \
     'fromJSON(inputs.privileged_lane)' \
-    'fromJSON('\''["self-hosted","general"]'\'')' "$legacy_workflow"
+    'fromJSON('\''["ubuntu-24.04"]'\'')' "$legacy_workflow"
 
   assert_same_existing_route() {
     local label="$1" repository="$2" private="$3" lane="$4" runner_labels="$5"
@@ -529,8 +529,8 @@ for privileged_workflow in ai-privileged-merge.yml; do
 
   assert_same_existing_route "public Verjson caller without privileged_lane" \
     Verjson/.github false '' ''
-  assert_same_existing_route "private Verjson generated caller with today's literal" \
-    Verjson/private-consumer true '["self-hosted","general"]' ''
+  assert_same_existing_route "private Verjson generated caller with the admitted hosted literal" \
+    Verjson/private-consumer true '["ubuntu-24.04"]' ''
   assert_same_existing_route "external hosted caller without privileged_lane" \
     Acme/widgets true '' ''
   assert_same_existing_route "external self-hosted caller without privileged_lane" \

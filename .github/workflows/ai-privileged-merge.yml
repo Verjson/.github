@@ -90,7 +90,7 @@ jobs:
 
   validate_privileged_lane:
     if: ${{ github.repository_owner == 'Verjson' && github.event.repository.visibility == 'private' && github.repository != 'Verjson/.github' && github.repository != 'Verjson/verjson-github-runner' }}
-    runs-on: [self-hosted, general]
+    runs-on: ubuntu-24.04
     timeout-minutes: 1
     permissions: {}
     env:
@@ -99,15 +99,15 @@ jobs:
       - name: Validate caller-supplied privileged lane routing
         run: |
           set -euo pipefail
-          jq -e '. == ["self-hosted","general"]' >/dev/null 2>&1 <<<"${PRIVILEGED_LANE:-}" || {
-            echo "::error::privileged_lane is missing, malformed, or is not the exact admitted self-hosted/general lane (ADR 0117); got: ${PRIVILEGED_LANE:-<empty>}"
+          jq -e '. == ["ubuntu-24.04"]' >/dev/null 2>&1 <<<"${PRIVILEGED_LANE:-}" || {
+            echo "::error::privileged_lane is missing, malformed, or is not the exact admitted ubuntu-24.04 lane (ADR 0118); got: ${PRIVILEGED_LANE:-<empty>}"
             exit 1
           }
-          echo "privileged_lane validated: exact match for the admitted self-hosted/general lane."
+          echo "privileged_lane validated: exact match for the admitted ubuntu-24.04 lane."
 
   privileged_merge:
     needs: validate_privileged_lane
-    if: ${{ always() && (github.repository_owner != 'Verjson' || github.event.repository.visibility == 'public' && (github.repository == 'Verjson/.github' || github.repository == 'Verjson/verjson-github-runner') || github.event.repository.visibility == 'private' && github.repository != 'Verjson/.github' && github.repository != 'Verjson/verjson-github-runner' && inputs.privileged_lane == '["self-hosted","general"]' && needs.validate_privileged_lane.result == 'success') }}
+    if: ${{ always() && (github.repository_owner != 'Verjson' || github.event.repository.visibility == 'public' && (github.repository == 'Verjson/.github' || github.repository == 'Verjson/verjson-github-runner') || github.event.repository.visibility == 'private' && github.repository != 'Verjson/.github' && github.repository != 'Verjson/verjson-github-runner' && inputs.privileged_lane == '["ubuntu-24.04"]' && needs.validate_privileged_lane.result == 'success') }}
     runs-on: ${{ github.repository_owner != 'Verjson' && inputs.runner_labels && fromJSON(inputs.runner_labels) || github.repository_owner != 'Verjson' && 'ubuntu-24.04' || github.event.repository.visibility == 'public' && 'ubuntu-24.04' || fromJSON(inputs.privileged_lane) }}
     timeout-minutes: 5
     env:

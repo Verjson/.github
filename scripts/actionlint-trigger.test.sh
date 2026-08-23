@@ -31,10 +31,10 @@ event_paths() {
 
 for event in pull_request push; do
   paths="$(event_paths "$event")"
-  printf '%s\n' "$paths" | grep -qxF '.github/workflows/**' \
+  grep -qxF '.github/workflows/**' <<<"$paths" \
     && pass "$event lints workflow changes" \
     || fail "$event does not include workflow changes"
-  printf '%s\n' "$paths" | grep -qxF '.github/actionlint.yaml' \
+  grep -qxF '.github/actionlint.yaml' <<<"$paths" \
     && pass "$event lints runner-label config changes (#82)" \
     || fail "$event does not include .github/actionlint.yaml (#82)"
 done
@@ -50,7 +50,7 @@ on:
       - '.github/workflows/**'
 YAML
 mutated="$(event_paths push "$tmp/branches-only.yml")"
-printf '%s\n' "$mutated" | grep -qxF '.github/actionlint.yaml' \
+grep -qxF '.github/actionlint.yaml' <<<"$mutated" \
   && fail "branches entry was incorrectly read as a path filter" \
   || pass "only the paths mapping can satisfy the trigger guard"
 
