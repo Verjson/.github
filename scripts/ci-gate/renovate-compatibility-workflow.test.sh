@@ -15,13 +15,12 @@ grep -q 'mode:\"observe-only\"' "$reconcile" \
   && pass "reconciler cannot create holds" || fail "observe-only boundary missing"
 ! grep -Eq 'ORG_ADMIN_TOKEN|contents: write|pull-requests: write|issues: write' "$reconcile" \
   && pass "reconciler has no mutation grant" || fail "reconciler is overprivileged"
-# Interim per ADR 0111: a human-held PAT stands in for the dedicated App
-# until it's provisioned. No App-token mint, client ID, or private key
-# should be present on this path while that ADR is in effect.
-[ "$(grep -c 'GH_TOKEN: \${{ secrets.RENOVATE_COMPATIBILITY_PAT }}' "$reconcile")" -eq 2 ] \
-  && ! grep -q 'RENOVATE_COMPATIBILITY_CLIENT_ID\|RENOVATE_COMPATIBILITY_APP_PRIVATE_KEY\|create-github-app-token\|app-id:' "$reconcile" \
-  && pass "reconciler authenticates with the interim compatibility PAT (ADR 0111)" \
-  || fail "reconciler interim PAT authentication drifted"
+[ "$(grep -c 'GH_TOKEN: \${{ steps.compatibility-app-token.outputs.token }}' "$reconcile")" -eq 2 ] \
+  && grep -q 'RENOVATE_COMPATIBILITY_CLIENT_ID' "$reconcile" \
+  && grep -q 'RENOVATE_COMPATIBILITY_APP_PRIVATE_KEY' "$reconcile" \
+  && ! grep -q 'RENOVATE_COMPATIBILITY_PAT\|ORG_ADMIN_TOKEN' "$reconcile" \
+  && pass "reconciler uses only the dedicated compatibility App token" \
+  || fail "reconciler App authentication drifted"
 grep -q 'persist-credentials: false' "$canary" \
   && grep -q 'unset NODE_AUTH_TOKEN NPM_TOKEN GH_TOKEN GITHUB_TOKEN' "$canary" \
   && grep -q -- '--ignore-scripts' "$canary" \
@@ -51,15 +50,16 @@ grep -qF "fromJSON(vars.VERJSON_LANE_TRUSTED || vars.VERJSON_LANE_FALLBACK || '[
   || fail "runner selector bypasses the canonical lane boundary"
 grep -q 'dd08f8471fdfabbdbbb32051e03387fcf5df63bd' "$planner" \
   && grep -q 'scripts/plan-compatibility.mjs' "$planner" \
+  && grep -q 'then \. else error("invalid candidates") end' "$planner" \
   && ! grep -Eq 'contents: write|pull-requests: write|issues: write' "$planner" \
   && pass "planner consumes the immutable prerequisite without mutation authority" \
   || fail "planner contract or authority drifted"
-# Interim per ADR 0111: same human-held PAT stand-in as the reconciler, no
-# App-token mint on this path while that ADR is in effect.
-grep -q 'token: \${{ secrets.RENOVATE_COMPATIBILITY_PAT }}' "$planner" \
-  && ! grep -q 'RENOVATE_COMPATIBILITY_CLIENT_ID\|RENOVATE_COMPATIBILITY_APP_PRIVATE_KEY\|create-github-app-token\|app-id:' "$planner" \
-  && pass "planner authenticates private policy checkout with the interim compatibility PAT (ADR 0111)" \
-  || fail "planner interim PAT authentication drifted"
+grep -q 'token: \${{ steps.compatibility-app-token.outputs.token }}' "$planner" \
+  && grep -q 'RENOVATE_COMPATIBILITY_CLIENT_ID' "$planner" \
+  && grep -q 'RENOVATE_COMPATIBILITY_APP_PRIVATE_KEY' "$planner" \
+  && ! grep -q 'RENOVATE_COMPATIBILITY_PAT\|ORG_ADMIN_TOKEN' "$planner" \
+  && pass "planner uses only the dedicated compatibility App token" \
+  || fail "planner App authentication drifted"
 
 sha=0123456789abcdef0123456789abcdef01234567
 caller="$(bash "$generator" "$sha" typescript 7.1.0 node-jest-ts-jest)" || fail "caller generation failed"

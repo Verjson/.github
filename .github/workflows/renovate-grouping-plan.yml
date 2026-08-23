@@ -16,29 +16,42 @@ jobs:
     runs-on: ${{ fromJSON(vars.VERJSON_LANE_TRUSTED || vars.VERJSON_LANE_FALLBACK || '["ubuntu-24.04"]') }}
     timeout-minutes: 10
     steps:
+      - name: Require the compatibility App client ID
+        env:
+          RENOVATE_COMPATIBILITY_CLIENT_ID: ${{ vars.RENOVATE_COMPATIBILITY_CLIENT_ID }}
+        run: |
+          if [[ -z "$RENOVATE_COMPATIBILITY_CLIENT_ID" || "$RENOVATE_COMPATIBILITY_CLIENT_ID" =~ ^[0-9]+$ ]]; then
+            echo "::error::RENOVATE_COMPATIBILITY_CLIENT_ID must be the GitHub App client ID, not an empty or numeric legacy App ID."
+            exit 1
+          fi
+      - name: Mint policy-repository compatibility App token
+        id: compatibility-app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
+        with:
+          client-id: ${{ vars.RENOVATE_COMPATIBILITY_CLIENT_ID }}
+          private-key: ${{ secrets.RENOVATE_COMPATIBILITY_APP_PRIVATE_KEY }}
+          owner: Verjson
+          repositories: renovate-config
+          permission-contents: read
       - name: Check out immutable organization policy
-        # Interim auth per ADR 0111 (supersedes ADR 0109's App-token mint for
-        # this repository until the dedicated compatibility App is
-        # provisioned): the owner's own PAT, which carries their full org-wide
-        # read access -- broader than this job needs. See ADR 0111 for the
-        # accepted blast-radius tradeoff; this is not a least-privilege token.
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: Verjson/renovate-config
           ref: dd08f8471fdfabbdbbb32051e03387fcf5df63bd
-          token: ${{ secrets.RENOVATE_COMPATIBILITY_PAT }}
+          token: ${{ steps.compatibility-app-token.outputs.token }}
           persist-credentials: false
       - name: Validate candidates and render the dry-run plan
         env:
           CANDIDATES: ${{ inputs.candidates }}
         run: |
           set -euo pipefail
-          jq -e 'type == "array" and all(.[];
+          jq -e 'if type == "array" and all(.[];
             (.ecosystem | type == "string") and
             (.package | type == "string") and
             (.stackProfile | type == "string") and
             (.targetMajor | type == "number") and
-            ((keys - ["ecosystem","package","securityAdvisory","stackProfile","targetMajor"]) | length == 0))' \
+            ((keys - ["ecosystem","package","securityAdvisory","stackProfile","targetMajor"]) | length == 0))
+            then . else error("invalid candidates") end' \
             <<<"$CANDIDATES" > candidates.json
           node scripts/plan-compatibility.mjs candidates.json > grouping-plan.json
           jq '{actionableGroups:(.actionable | length), held:(.held | length), plan:.}' \
