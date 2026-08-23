@@ -11,6 +11,7 @@ Reverse-chronological index of org-level decisions.
 <!-- BEGIN ADR INDEX -->
 | # | Date | Decision |
 |---|------|----------|
+| [0119](0119-restore-dedicated-app-for-renovate-observation/README.md) | 2026-08-23 | Restore the dedicated App for Renovate observation |
 | [0118](0118-route-private-terminal-merge-to-hosted-capacity/README.md) | 2026-08-23 | Route private terminal merge to hosted capacity |
 | [0117](0117-route-private-terminal-merge-from-validated-lane-input/README.md) | 2026-08-23 | Route private terminal merge from the validated lane input |
 | [0116](0116-node-ci-caller-supplied-health-check/README.md) | 2026-08-22 | node-ci accepts a caller-supplied health check and container port |
