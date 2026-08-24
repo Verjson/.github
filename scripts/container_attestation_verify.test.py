@@ -10,7 +10,7 @@ from pathlib import Path
 import container_attestation_verify as verifier
 
 
-WORKFLOW = "Verjson/.github/.github/workflows/container-candidate.yml@" + "b" * 40
+WORKFLOW = "Verjson/.github/.github/workflows/container-candidate-publish.yml@" + "b" * 40
 INDEX_DIGEST = "sha256:" + "1" * 64
 AMD64_DIGEST = "sha256:" + "2" * 64
 ARM64_DIGEST = "sha256:" + "3" * 64
@@ -106,7 +106,7 @@ class ContainerAttestationVerifierTests(unittest.TestCase):
             calls.append(command)
             self.assertEqual("Verjson/example", command[command.index("--repo") + 1])
             self.assertEqual(
-                "Verjson/.github/.github/workflows/container-candidate.yml",
+                "Verjson/.github/.github/workflows/container-candidate-publish.yml",
                 command[command.index("--signer-workflow") + 1],
             )
             self.assertEqual("b" * 40, command[command.index("--signer-digest") + 1])

@@ -16,6 +16,17 @@ scripts/gen-container-candidate.sh contract-test <contract-sha> container-candid
 chmod +x scripts/container_release_manifest.py scripts/container-candidate-contract.test.sh
 ```
 
+The generated caller binds pull-request validation to
+`container-candidate.yml` and trusted publication to
+`container-candidate-publish.yml` at the same immutable SHA. Do not collapse
+the two calls or grant publication permissions to the validation job: GitHub
+validates each complete reusable graph before runtime conditions are evaluated.
+
+Each image's `provenance.builderIdentity` must name the publishing entrypoint,
+`Verjson/.github/.github/workflows/container-candidate-publish.yml@<contract-sha>`.
+Regenerate and review configuration together with the caller when changing the
+contract SHA.
+
 The workflow, validator, and generated contract test must share that exact pin.
 Run the generated test in CI. Pull requests execute only the credential-free build
 path. Default-branch pushes publish commit-addressed and

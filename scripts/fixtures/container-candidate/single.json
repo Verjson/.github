@@ -10,7 +10,7 @@
     "platforms": [{"os": "linux", "architecture": "amd64"}],
     "provenance": {
       "predicateType": "https://slsa.dev/provenance/v1",
-      "builderIdentity": "Verjson/.github/.github/workflows/container-candidate.yml@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      "builderIdentity": "Verjson/.github/.github/workflows/container-candidate-publish.yml@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
     }
   }]
 }
