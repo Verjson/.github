@@ -1248,11 +1248,13 @@ EOF
 }
 
 emit_release_propose() {
-  local write_permission
+  local write_permission reusable_workflow
   if [ "$release_autonomy" = propose ]; then
     write_permission="      issues: write"
+    reusable_workflow="release-propose.yml"
   else
     write_permission="      actions: write"
+    reusable_workflow="release-dispatch.yml"
   fi
   cat <<EOF
 name: Release proposal
@@ -1289,10 +1291,9 @@ jobs:
     permissions:
       contents: read
 ${write_permission}
-    uses: Verjson/.github/.github/workflows/release-propose.yml@${ref}
+    uses: Verjson/.github/.github/workflows/${reusable_workflow}@${ref}
     with:
       contract_ref: ${ref}
-      autonomy: ${release_autonomy}
       fragments: \${{ inputs.fragments }}
       component: \${{ inputs.component }}
       prefix: \${{ inputs.prefix || 'v' }}
@@ -1513,15 +1514,19 @@ if [ -e "$release_propose_workflow" ]; then
   [ "$(printf '%s\n' "$provenance" | grep -c .)" -eq 1 ] \
     || fail "$release_propose_workflow is not the generated release-propose caller at $CONTRACT_REF"
   autonomy="${provenance##*--autonomy }"
-  [ "$(grep -Ec '^ +uses: Verjson/\.github/\.github/workflows/release-propose\.yml@[0-9a-f]{40}$' "$release_propose_workflow")" -eq 1 ] \
-    && grep -qE "^ +uses: Verjson/\.github/\.github/workflows/release-propose\.yml@$CONTRACT_REF$" "$release_propose_workflow" \
-    || fail "$release_propose_workflow does not call release-propose.yml at the shared pin"
+  if [ "$autonomy" = propose ]; then
+    reusable_workflow="release-propose.yml"
+  else
+    reusable_workflow="release-dispatch.yml"
+  fi
+  [ "$(grep -Ec '^ +uses: Verjson/\.github/\.github/workflows/release-(propose|dispatch)\.yml@[0-9a-f]{40}$' "$release_propose_workflow")" -eq 1 ] \
+    && grep -qE "^ +uses: Verjson/\.github/\.github/workflows/$reusable_workflow@$CONTRACT_REF$" "$release_propose_workflow" \
+    || fail "$release_propose_workflow does not call $reusable_workflow at the shared pin"
   [ "$(grep -Ec '^ +contract_ref: [0-9a-f]{40}$' "$release_propose_workflow")" -eq 1 ] \
     && grep -qE "^ +contract_ref: $CONTRACT_REF$" "$release_propose_workflow" \
     || fail "$release_propose_workflow does not pass the shared pinned contract_ref"
-  [ "$(grep -Ec '^ +autonomy: (propose|dispatch)$' "$release_propose_workflow")" -eq 1 ] \
-    && grep -qE "^ +autonomy: $autonomy$" "$release_propose_workflow" \
-    || fail "$release_propose_workflow does not fix the generated autonomy in source"
+  ! grep -qE '^ +autonomy:' "$release_propose_workflow" \
+    || fail "$release_propose_workflow must select autonomy through its reusable workflow path"
   grep -qE '^  schedule:$' "$release_propose_workflow" \
     && grep -qE '^  workflow_dispatch:$' "$release_propose_workflow" \
     && ! grep -qE '^  (push|pull_request|pull_request_target):' "$release_propose_workflow" \

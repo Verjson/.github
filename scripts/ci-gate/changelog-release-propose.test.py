@@ -416,7 +416,10 @@ class GeneratedCallerTests(unittest.TestCase):
         return result.stdout, yaml.safe_load(result.stdout)
 
     def test_autonomy_is_fixed_in_source_with_mode_specific_permissions(self) -> None:
-        for mode, permission in (("propose", "issues"), ("dispatch", "actions")):
+        for mode, permission, workflow in (
+            ("propose", "issues", "release-propose.yml"),
+            ("dispatch", "actions", "release-dispatch.yml"),
+        ):
             with self.subTest(mode=mode):
                 raw, document = self.generate(mode)
                 triggers = document.get("on", document.get(True))
@@ -424,12 +427,19 @@ class GeneratedCallerTests(unittest.TestCase):
                 self.assertNotIn("autonomy", triggers["workflow_dispatch"]["inputs"])
                 job = document["jobs"]["release-propose"]
                 self.assertEqual(
-                    f"Verjson/.github/.github/workflows/release-propose.yml@{self.sha}",
+                    f"Verjson/.github/.github/workflows/{workflow}@{self.sha}",
                     job["uses"],
                 )
                 self.assertEqual(self.sha, job["with"]["contract_ref"])
-                self.assertEqual(mode, job["with"]["autonomy"])
+                self.assertNotIn("autonomy", job["with"])
                 self.assertEqual({"contents", permission}, set(job["permissions"]))
+                reusable = yaml.safe_load(
+                    (ROOT / ".github" / "workflows" / workflow).read_text(
+                        encoding="utf-8"
+                    )
+                )
+                called_job = next(iter(reusable["jobs"].values()))
+                self.assertEqual(job["permissions"], called_job["permissions"])
                 self.assertNotIn("issues: write", raw if mode == "dispatch" else "")
                 self.assertNotIn("actions: write", raw if mode == "propose" else "")
 
@@ -446,38 +456,49 @@ class GeneratedCallerTests(unittest.TestCase):
                 )
                 self.assertEqual(2, result.returncode)
 
-    def test_reusable_workflow_derives_and_previews_without_release_writes(self) -> None:
-        raw = (ROOT / ".github" / "workflows" / "release-propose.yml").read_text(
-            encoding="utf-8"
-        )
-        document = yaml.safe_load(raw)
-        triggers = document.get("on", document.get(True))
-        self.assertEqual({"workflow_call"}, set(triggers))
+    def test_reusable_workflows_have_exact_non_widenable_authority(self) -> None:
+        workflows = {}
+        for mode, permission, other_permission in (
+            ("propose", "issues", "actions"),
+            ("dispatch", "actions", "issues"),
+        ):
+            path = ROOT / ".github" / "workflows" / f"release-{mode}.yml"
+            raw = path.read_text(encoding="utf-8")
+            document = yaml.safe_load(raw)
+            triggers = document.get("on", document.get(True))
+            self.assertEqual({"workflow_call"}, set(triggers))
+            self.assertNotIn("autonomy", triggers["workflow_call"]["inputs"])
+            job = document["jobs"][f"release-{mode}"]
+            self.assertEqual(
+                {"contents": "read", permission: "write"}, job["permissions"]
+            )
+            self.assertNotIn(f"{other_permission}: write", raw)
+            self.assertEqual(
+                {
+                    "group": "release-propose-${{ github.repository }}",
+                    "cancel-in-progress": False,
+                },
+                document["concurrency"],
+            )
+            self.assertIn(f"--mode {mode}", raw)
+            self.assertIn("next-version", raw)
+            self.assertIn("selection-digest", raw)
+            self.assertIn('echo "selected=false"', raw)
+            self.assertIn("steps.release.outputs.selected == 'true'", raw)
+            self.assertIn("render-next", raw)
+            self.assertIn("--as-released", raw)
+            self.assertIn("scripts/release-propose.py", raw)
+            self.assertNotIn("changelog.py release", raw)
+            self.assertNotIn("git push", raw)
+            self.assertNotIn("git tag", raw)
+            workflows[mode] = job
+
+        proposal_steps = workflows["propose"]["steps"]
+        dispatch_steps = workflows["dispatch"]["steps"]
+        self.assertEqual(proposal_steps[1:4], dispatch_steps[1:4])
         self.assertEqual(
-            {
-                "contents": "read",
-                "issues": "write",
-                "actions": "write",
-            },
-            document["jobs"]["release-propose"]["permissions"],
+            set(proposal_steps[-1]["env"]), set(dispatch_steps[-1]["env"])
         )
-        self.assertEqual(
-            {
-                "group": "release-propose-${{ github.repository }}",
-                "cancel-in-progress": False,
-            },
-            document["concurrency"],
-        )
-        self.assertIn("next-version", raw)
-        self.assertIn("selection-digest", raw)
-        self.assertIn('echo "selected=false"', raw)
-        self.assertIn("steps.release.outputs.selected == 'true'", raw)
-        self.assertIn("render-next", raw)
-        self.assertIn("--as-released", raw)
-        self.assertIn("scripts/release-propose.py", raw)
-        self.assertNotIn("changelog.py release", raw)
-        self.assertNotIn("git push", raw)
-        self.assertNotIn("git tag", raw)
 
     def test_generated_release_run_title_is_the_dispatch_idempotency_key(self) -> None:
         result = subprocess.run(
