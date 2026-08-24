@@ -23,7 +23,7 @@ jobs:
       config-path: scripts/fixtures/container-candidate/canary.json
       contract-ref: ${{ github.sha }}
       acquisition-sha256: '0000000000000000000000000000000000000000000000000000000000000000'
-      runner: ${{ github.repository_owner == 'Verjson' && (vars.VERJSON_RUNNER_DEFAULT || '["self-hosted","general"]') || '["ubuntu-24.04"]' }}
+      runner: ${{ github.repository_owner == 'Verjson' && (vars.CI_RUNNER_DEFAULT || '["self-hosted","general"]') || '["ubuntu-24.04"]' }}
 
   publish:
     if: >-
@@ -40,4 +40,4 @@ jobs:
       config-path: scripts/fixtures/container-candidate/canary.json
       contract-ref: ${{ github.sha }}
       acquisition-sha256: '0000000000000000000000000000000000000000000000000000000000000000'
-      runner: ${{ github.repository_owner == 'Verjson' && (vars.VERJSON_RUNNER_DEFAULT || '["self-hosted","general"]') || '["ubuntu-24.04"]' }}
+      runner: ${{ github.repository_owner == 'Verjson' && (vars.CI_RUNNER_DEFAULT || '["self-hosted","general"]') || '["ubuntu-24.04"]' }}

@@ -9,7 +9,7 @@ jobs:
     strategy:
       matrix:
         include:
-          - lane: ${{ vars.VERJSON_LANE_TRUSTED_MACOS }}
+          - lane: ${{ vars.CI_LANE_TRUSTED_MACOS }}
     runs-on: ${{ fromJSON(matrix.lane) }}
     steps:
       - run: npm run dist

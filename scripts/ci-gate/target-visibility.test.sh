@@ -113,7 +113,7 @@ rc="$(run_step 'false' 0 "$dispatcher_lookup")"
 # repository, not the target (ADR 0048).
 { grep -q "target_private: \${{ steps.target_visibility.outputs.target_private }}" "$wf" \
     && grep -qF "needs.preflight.outputs.target_private == 'false'" "$wf" \
-    && grep -qF 'VERJSON_LANE_UNTRUSTED' "$wf"; } \
+    && grep -qF 'CI_LANE_UNTRUSTED' "$wf"; } \
   && pass "preflight is untrusted until gate resolves target visibility" \
   || fail "gate routing drifted from the resolved-visibility policy"
 

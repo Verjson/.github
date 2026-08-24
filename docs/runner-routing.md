@@ -14,7 +14,7 @@ Where verJSON CI jobs run, and how to choose a `runs-on` value. The model is dec
 - **Declare what the work *is*, not where it runs.** Use a lane variable:
 
   ```yaml
-  runs-on: ${{ fromJSON(vars.VERJSON_LANE_TRUSTED || vars.VERJSON_LANE_FALLBACK || '["ubuntu-24.04"]') }}
+  runs-on: ${{ fromJSON(vars.CI_LANE_TRUSTED || vars.CI_LANE_FALLBACK || '["ubuntu-24.04"]') }}
   ```
 
 - **Never hardcode a runner label or hosted selector for ordinary work** in a Verjson
@@ -24,7 +24,7 @@ Where verJSON CI jobs run, and how to choose a `runs-on` value. The model is dec
   Those selectors prevent runner-controlled output or mutable placement variables from
   choosing a security-boundary execution environment.
 - **Capacity and provider changes are variable changes.** New runners, more GitHub-hosted
-  compute, a new provider — all of it is a `VERJSON_LANE_*` edit. Never a `runs-on:` edit,
+  compute, a new provider — all of it is a `CI_LANE_*` edit. Never a `runs-on:` edit,
   never a hardcoded pool, label, or runner-group name
   ([ADR 0041](decisions/0041-shared-admission-hosted-and-self-hosted/README.md)).
 - **Both hosted and DO self-hosted serve both public and private repositories**, by
@@ -66,10 +66,10 @@ Where verJSON CI jobs run, and how to choose a `runs-on` value. The model is dec
 
 | Lane variable | Use for | Resolves to today |
 |---|---|---|
-| `VERJSON_LANE_TRUSTED` | ordinary organization CI; secrets available | self-hosted general pool |
-| `VERJSON_LANE_UNTRUSTED` | fork/PR content; must not see secrets | self-hosted general pool |
-| `VERJSON_LANE_PRIVILEGED` | the merge gate and its elevated token | staged terminal policy: canonical public consumer on `ubuntu-24.04` after merge; runner consumer after caller regeneration; private consumers on self-hosted general |
-| `VERJSON_LANE_FALLBACK` | **our** default when a lane is unset — switchable, not tied to GitHub-hosted | configurable |
+| `CI_LANE_TRUSTED` | ordinary organization CI; secrets available | self-hosted general pool |
+| `CI_LANE_UNTRUSTED` | fork/PR content; must not see secrets | self-hosted general pool |
+| `CI_LANE_PRIVILEGED` | the merge gate and its elevated token | staged terminal policy: canonical public consumer on `ubuntu-24.04` after merge; runner consumer after caller regeneration; private consumers on self-hosted general |
+| `CI_LANE_FALLBACK` | **our** default when a lane is unset — switchable, not tied to GitHub-hosted | configurable |
 
 Pick by what the job **is**, not by where it currently runs: gate preflight/review that
 touches PR content → `UNTRUSTED`; privileged merge → `PRIVILEGED`; everything else →
@@ -97,8 +97,8 @@ rule is inverted, so read this section as an exception rather than as two more r
 
 | Lane variable | Value | Scope |
 |---|---|---|
-| `VERJSON_LANE_TRUSTED_MACOS` | `["macos-15"]` | **repository variable on `Verjson/AiB` only** |
-| `VERJSON_LANE_TRUSTED_WINDOWS` | `["windows-2025"]` | **repository variable on `Verjson/AiB` only** |
+| `CI_LANE_TRUSTED_MACOS` | `["macos-15"]` | **repository variable on `Verjson/AiB` only** |
+| `CI_LANE_TRUSTED_WINDOWS` | `["windows-2025"]` | **repository variable on `Verjson/AiB` only** |
 
 **Repository-scoped, never organization-scoped**, and that scoping is the containment, not a
 tidiness preference. An organization variable is readable by every repository in its
@@ -114,8 +114,8 @@ chain that cannot degrade is a bug. Here it is the requirement: an unset macOS l
 falls through to `'["ubuntu-24.04"]'` produces a *non-installable artifact behind a green
 check*, which is worse than a failed release. So these lanes fail closed, and
 `runner-routing-policy.test.sh`'s "every lane selector falls through to
-`VERJSON_LANE_FALLBACK`" rule encodes the exception rather than letting the OS lane slip
-past it. An unset lane is caught by a preflight job on `VERJSON_LANE_TRUSTED` — the resolver
+`CI_LANE_FALLBACK`" rule encodes the exception rather than letting the OS lane slip
+past it. An unset lane is caught by a preflight job on `CI_LANE_TRUSTED` — the resolver
 tier in [Where each check belongs](#where-each-check-belongs) — so a repository that copied
 the workflow without the variables gets a legible failure on self-hosted Linux instead of
 free hosted minutes.
@@ -225,7 +225,7 @@ Group 4 (`GCP`) no longer exists; the general pool is group 8.
   ⚠️ **This is the *registration* default, not our routing default.** Two different things
   are called "default" and conflating them is a live hazard — see
   [ADR 0041](decisions/0041-shared-admission-hosted-and-self-hosted/README.md).
-  **Verjson's default is `VERJSON_LANE_FALLBACK`, a variable**, and it is not tied to
+  **Verjson's default is `CI_LANE_FALLBACK`, a variable**, and it is not tied to
   GitHub-hosted: it can point at the DO self-hosted pool, at hosted, or at a future
   provider, and switching it is a one-line org-variable edit.
 - Groups `6` and `7` were deleted and now 404. A reconciler that pinned group 6 by id broke
@@ -360,16 +360,16 @@ selector expressions still fail closed so a caller cannot assemble a hidden host
 
 Order matters. Each step is safe only after the previous one lands.
 
-1. ✅ **Create the lane variables** (`VERJSON_LANE_*`). Keep `VERJSON_RUNNER_*` in place —
+1. ✅ **Create the lane variables** (`CI_LANE_*`). Keep legacy runner variables in place —
    removing them mid-rollout breaks in-flight runs. All four exist org-wide and every one
    resolves to the general pool today.
 2. ✅ **Migrate workflows to the lane expression**, choosing the lane by what each job is.
    Done for every `runs-on:` in this repository on 2026-08-05: no workflow here names a
    fleet label any more, and `scripts/ci-gate/runner-routing-policy.test.sh` fails if one
-   reappears. **`VERJSON_RUNNER_*` stays set** — consumers pinned to an older reusable-
+   reappears. **Legacy runner variables stay set** — consumers pinned to an older reusable-
    workflow SHA still read those variables, and deleting them would strand exactly the
-   repositories that have not re-pinned. `VERJSON_RUNNER_FASTLANE` and
-   `VERJSON_RUNNER_OVERFLOW` are deliberately *not* folded into the lane names: they select
+   repositories that have not re-pinned. `CI_RUNNER_FASTLANE` and
+   `CI_RUNNER_OVERFLOW` are deliberately *not* folded into the lane names: they select
    hosted-versus-self-hosted, an orthogonal axis, and their `["ubuntu-24.04"]` value is a
    GitHub-provided identifier rather than a fleet label that can rot.
 3. **Rename groups onto the admission axis** (names describing admission, not hardware or a

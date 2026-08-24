@@ -14,7 +14,7 @@ concurrency:
 jobs:
   reconcile:
     if: github.event.pull_request.merged == true
-    runs-on: ${{ fromJSON(vars.VERJSON_LANE_TRUSTED || vars.VERJSON_LANE_FALLBACK || '["ubuntu-24.04"]') }}
+    runs-on: ${{ fromJSON(vars.CI_LANE_TRUSTED || vars.CI_LANE_FALLBACK || '["ubuntu-24.04"]') }}
     defaults:
       run:
         working-directory: .ai-post-merge-source-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}

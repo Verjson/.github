@@ -434,14 +434,14 @@ resolve_adr_index_generator() {
 # One runner expression, emitted verbatim into every position that routes a job
 # in the release caller. #465(2): a caller that omits the optional `runner:`
 # input lets changelog-release.yml route the snapshot through
-# VERJSON_RUNNER_OVERFLOW (hosted for a private Verjson repository) while the
-# caller's own jobs hardcode an expression resolving to VERJSON_RUNNER_DEFAULT
+# CI_RUNNER_OVERFLOW (hosted for a private Verjson repository) while the
+# caller's own jobs hardcode an expression resolving to CI_RUNNER_DEFAULT
 # (self-hosted). One release then runs its two halves on two pools, and on a
 # private repository without hosted minutes the snapshot half — the half that
 # mutates ruleset-protected `main` — queues silently: no check run, no error, no
 # signal. Substituted from a single variable so the three occurrences cannot
 # drift; the generated contract test asserts they are still identical.
-release_runner_expr="github.repository_owner == 'Verjson' && (vars.VERJSON_RUNNER_DEFAULT || '[\"self-hosted\",\"general\"]') || '[\"ubuntu-24.04\"]'"
+release_runner_expr="github.repository_owner == 'Verjson' && (vars.CI_RUNNER_DEFAULT || '[\"self-hosted\",\"general\"]') || '[\"ubuntu-24.04\"]'"
 
 # The audited action commits this repository pins everywhere else
 # (scripts/node-workflow-pins.test.sh).
@@ -1297,7 +1297,7 @@ ${write_permission}
       fragments: \${{ inputs.fragments }}
       component: \${{ inputs.component }}
       prefix: \${{ inputs.prefix || 'v' }}
-      runner: \${{ github.repository_owner == 'Verjson' && (vars.VERJSON_RUNNER_DEFAULT || '["self-hosted","general"]') || '["ubuntu-24.04"]' }}
+      runner: \${{ github.repository_owner == 'Verjson' && (vars.CI_RUNNER_DEFAULT || '["self-hosted","general"]') || '["ubuntu-24.04"]' }}
 EOF
 }
 

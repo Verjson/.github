@@ -26,7 +26,7 @@ jobs:
       config-path: $config
       contract-ref: $ref
     secrets:
-      release-token: \${{ secrets.VERJSON_RELEASE_TOKEN }}
+      release-token: \${{ secrets.RELEASE_TOKEN }}
 EOF
 ;;
 validator) git -C "$root" show "$ref:scripts/container_release_promotion.py" ;;
@@ -56,7 +56,7 @@ grep -Fq "container-release.yml@\$ref" .github/workflows/container-release.yml
 grep -Fq "contract-ref: \$ref" .github/workflows/container-release.yml
 grep -q "workflow_dispatch:" .github/workflows/container-release.yml
 ! grep -Eq '^  (push|pull_request):' .github/workflows/container-release.yml
-grep -q 'VERJSON_RELEASE_TOKEN' .github/workflows/container-release.yml
+grep -q 'RELEASE_TOKEN' .github/workflows/container-release.yml
 test -f scripts/container_release_promotion.py
 test -f scripts/container_release_manifest.py
 test -f scripts/container_artifact_extract.py

@@ -27,7 +27,7 @@ on:
 jobs:
   arm:
     continue-on-error: true
-    runs-on: ${{ fromJSON(vars.VERJSON_LANE_TRUSTED || vars.VERJSON_LANE_FALLBACK || '["ubuntu-24.04"]') }}
+    runs-on: ${{ fromJSON(vars.CI_LANE_TRUSTED || vars.CI_LANE_FALLBACK || '["ubuntu-24.04"]') }}
     steps: []
 """
         # The retired path stays selected until the retarget lands, so the audit
@@ -200,7 +200,7 @@ on:
 jobs:
   arm:
     continue-on-error: true
-    runs-on: ${{ fromJSON(vars.VERJSON_LANE_TRUSTED || vars.VERJSON_LANE_FALLBACK || '["ubuntu-24.04"]') }}
+    runs-on: ${{ fromJSON(vars.CI_LANE_TRUSTED || vars.CI_LANE_FALLBACK || '["ubuntu-24.04"]') }}
     steps: []
 """)
         self.assert_audit_error(r"gate-rearm\.yml.*declares only.*workflow_call")
@@ -410,7 +410,7 @@ jobs:
         self.workflow_source(self.workflow.replace("    continue-on-error: true\n", ""))
         self.assert_audit_error("can veto ADR 0090")
         self.fixture = self.make_fixture()
-        self.workflow_source(self.workflow.replace("VERJSON_LANE_TRUSTED", "VERJSON_LANE_PRIVILEGED"))
+        self.workflow_source(self.workflow.replace("CI_LANE_TRUSTED", "CI_LANE_PRIVILEGED"))
         self.assert_audit_error("not routed through the trusted lane")
 
     def assert_contract_rejected(self, mutate, diagnostic):

@@ -36,7 +36,7 @@ select another deployment CLI.
 
 Configure the consumer's `production` environment to admit protected branches only,
 require an independent reviewer, prevent self-review, and disable administrator bypass.
-Store the narrowly scoped `VERJSON_RUNNER_DEPLOY_TOKEN` only there. Review those settings
+Store the narrowly scoped `RUNNER_DEPLOY_TOKEN` only there. Review those settings
 and credential scope as sensitive changes; never print their values.
 
 ## Dry-run and deployment
@@ -108,7 +108,7 @@ tag as recovery authority.
 
 ## Credential rotation and incidents
 
-Rotate `VERJSON_RUNNER_DEPLOY_TOKEN` in the consumer environment without editing callers
+Rotate `RUNNER_DEPLOY_TOKEN` in the consumer environment without editing callers
 or generated files. Confirm the replacement retains only the named existing-fleet update,
 runner admission, and evidence permissions; it must not authorize capacity creation or
 unrelated environments. Revoke the old credential after a mutation-free dry-run and a

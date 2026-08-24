@@ -2,7 +2,7 @@ name: bracket Windows lane fallback
 on: workflow_dispatch
 jobs:
   installer:
-    runs-on: ${{ fromJSON(vars["VERJSON_LANE_TRUSTED_WINDOWS"] || vars['VERJSON_LANE_FALLBACK']) }}
+    runs-on: ${{ fromJSON(vars["CI_LANE_TRUSTED_WINDOWS"] || vars['CI_LANE_FALLBACK']) }}
     timeout-minutes: 45
     steps:
       - run: npm run dist

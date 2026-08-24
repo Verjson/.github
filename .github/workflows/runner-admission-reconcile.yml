@@ -39,7 +39,7 @@ jobs:
     # depend on reaching that lane, or it goes silent in exactly the outage it is
     # supposed to report. Hosted is also the safer host for ORG_ADMIN_TOKEN: this
     # is scheduled default-branch code with no fork input, on an ephemeral runner.
-    runs-on: ${{ fromJSON(vars.VERJSON_RUNNER_FASTLANE || '["ubuntu-24.04"]') }}
+    runs-on: ${{ fromJSON(vars.CI_RUNNER_FASTLANE || '["ubuntu-24.04"]') }}
     defaults:
       run:
         working-directory: .runner-admission-reconcile-source-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
@@ -67,11 +67,11 @@ jobs:
           # from under the reconciler and it resolved nothing — the #266 failure
           # by name instead of by id. The fallbacks keep this zero-config until a
           # rename actually happens.
-          GENERAL_GROUP_NAME: ${{ vars.VERJSON_RUNNER_GENERAL_GROUP || 'DigitalOcean' }}
+          GENERAL_GROUP_NAME: ${{ vars.CI_RUNNER_GENERAL_GROUP || 'DigitalOcean' }}
           # Deliberately no fallback: the untrusted lane resolves to the general
           # pool today, so nothing reads this, and the last name it carried
           # (`isolated`) names a group deleted on 2026-07-31.
-          UNTRUSTED_GROUP_NAME: ${{ vars.VERJSON_RUNNER_UNTRUSTED_GROUP }}
+          UNTRUSTED_GROUP_NAME: ${{ vars.CI_RUNNER_UNTRUSTED_GROUP }}
         run: |
           set -uo pipefail
           if [ -z "${GH_TOKEN:-}" ]; then

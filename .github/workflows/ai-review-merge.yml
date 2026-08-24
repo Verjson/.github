@@ -52,7 +52,7 @@ name: AI review + auto-merge
 # the CALLER, so `TARGET_REPO` and the PR number resolve to the consumer's own
 # repository. Consumers must
 # pass only the model credentials needed for review. A caller that runs on its
-# OWN self-hosted fleet and has no `VERJSON_LANE_*` variables may add
+# OWN self-hosted fleet and has no `CI_LANE_*` variables may add
 # `with.runner_labels`; a Verjson caller must omit it and let the lane variables
 # select the pool (#405, ADR 0041, ADR 0057). MIND THE REF: `runner_labels` is
 # optional from the first release cut AFTER #405. The `@v1` tag pinned in the
@@ -120,7 +120,7 @@ on:
     # Cross-org consumers pin this reusable and pass `secrets: inherit` (ADR
     # 0022). A pull_request-triggered caller leaves pr_number empty and the
     # inherited event supplies it. `runner_labels` is OPTIONAL (#405): every
-    # `runs-on` below ends at `VERJSON_LANE_FALLBACK || '["ubuntu-24.04"]'`, so a
+    # `runs-on` below ends at `CI_LANE_FALLBACK || '["ubuntu-24.04"]'`, so a
     # caller that omits it lands on a runner that exists rather than queueing
     # forever on the wrong labels (#130, the reason it used to be required).
     # Requiring it made every consumer hardcode a fleet label, which is the
@@ -157,7 +157,7 @@ on:
         type: string
         default: 'eyJhY3RvciI6InJldXNhYmxlLWNhbGxlciIsImFjdG9yX3Blcm1pc3Npb24iOiJtYWludGFpbiIsImF1dGhvcml0eSI6Imh1bWFuIiwiYnVkZ2V0X3VzZCI6ImF1dG8iLCJleHBsaWNpdF9yZXJldmlldyI6ZmFsc2UsImZhbGxiYWNrX2J1ZGdldF91c2QiOiIiLCJmYWxsYmFja19tb2RlbCI6IiIsIm1vZGVsIjoiYXV0byIsInByaWNpbmdfdmVyc2lvbiI6ImFudGhyb3BpYy1uYXRpdmUtdjEiLCJwcm92aWRlciI6ImFudGhyb3BpYyJ9'
       runner_labels:
-        description: 'Optional JSON array of runs-on labels for all three gate jobs, e.g. ["self-hosted","general"], for a self-hosted caller whose org has no VERJSON_LANE_* variables. Omit it (the default) to route by lane and degrade to a hosted runner.'
+        description: 'Optional JSON array of runs-on labels for all three gate jobs, e.g. ["self-hosted","general"], for a self-hosted caller whose org has no CI_LANE_* variables. Omit it (the default) to route by lane and degrade to a hosted runner.'
         required: false
         type: string
       allow_absent_checks:
@@ -249,7 +249,7 @@ jobs:
     # fall through to the lane chain rather than take the fast lane. With every
     # lane variable set — the live state — that is the self-hosted pool; the
     # hosted tail beneath it is reached only if a lane variable is deleted.
-    runs-on: ${{ inputs.runner_labels && fromJSON(inputs.runner_labels) || github.repository_owner != 'Verjson' && 'ubuntu-24.04' || github.event.repository.private == false && fromJSON(vars.VERJSON_RUNNER_FASTLANE || '["ubuntu-24.04"]') || fromJSON(vars.VERJSON_RUNNER_OVERFLOW || vars.VERJSON_LANE_UNTRUSTED || vars.VERJSON_LANE_FALLBACK || '["ubuntu-24.04"]') }}
+    runs-on: ${{ inputs.runner_labels && fromJSON(inputs.runner_labels) || github.repository_owner != 'Verjson' && 'ubuntu-24.04' || github.event.repository.private == false && fromJSON(vars.CI_RUNNER_FASTLANE || '["ubuntu-24.04"]') || fromJSON(vars.CI_RUNNER_OVERFLOW || vars.CI_LANE_UNTRUSTED || vars.CI_LANE_FALLBACK || '["ubuntu-24.04"]') }}
     # This job combines the former 10-minute freshness and classification jobs.
     timeout-minutes: 20
     permissions:
@@ -657,7 +657,7 @@ jobs:
     # 'true' both fall through to the lane chain, so visibility that fails to
     # resolve never takes the fast lane. The chain's hosted tail is an
     # operator-error landing (a deleted lane variable), not a routing choice.
-    runs-on: ${{ inputs.runner_labels && fromJSON(inputs.runner_labels) || github.repository_owner != 'Verjson' && 'ubuntu-24.04' || needs.preflight.outputs.target_private == 'false' && fromJSON(vars.VERJSON_RUNNER_FASTLANE || '["ubuntu-24.04"]') || fromJSON(vars.VERJSON_RUNNER_OVERFLOW || vars.VERJSON_LANE_TRUSTED || vars.VERJSON_LANE_FALLBACK || '["ubuntu-24.04"]') }}
+    runs-on: ${{ inputs.runner_labels && fromJSON(inputs.runner_labels) || github.repository_owner != 'Verjson' && 'ubuntu-24.04' || needs.preflight.outputs.target_private == 'false' && fromJSON(vars.CI_RUNNER_FASTLANE || '["ubuntu-24.04"]') || fromJSON(vars.CI_RUNNER_OVERFLOW || vars.CI_LANE_TRUSTED || vars.CI_LANE_FALLBACK || '["ubuntu-24.04"]') }}
     # Fast retains its former 45-minute ceiling. AI gets a bounded review
     # allowance plus checkout, input preparation, submission, and dispatch
     # buffer; none of this budget is an ordinary-CI wait.
@@ -1822,7 +1822,7 @@ jobs:
     if: always() && inputs.authorization_check_id != ''
     outputs:
       ai_authorized: ${{ steps.complete.outputs.ai_authorized }}
-    runs-on: ${{ fromJSON(vars.VERJSON_RUNNER_FASTLANE || '["ubuntu-24.04"]') }}
+    runs-on: ${{ fromJSON(vars.CI_RUNNER_FASTLANE || '["ubuntu-24.04"]') }}
     timeout-minutes: 5
     permissions:
       actions: write
@@ -2039,7 +2039,7 @@ jobs:
   dispatch-merge:
     needs: [preflight, gate, complete-authorization]
     if: needs.complete-authorization.result == 'success' && needs.complete-authorization.outputs.ai_authorized == 'true' && needs.preflight.outputs.authority == 'ai-merge'
-    runs-on: ${{ inputs.runner_labels && fromJSON(inputs.runner_labels) || github.repository_owner != 'Verjson' && 'ubuntu-24.04' || needs.preflight.outputs.target_private == 'false' && fromJSON(vars.VERJSON_RUNNER_FASTLANE || '["ubuntu-24.04"]') || fromJSON(vars.VERJSON_LANE_PRIVILEGED || vars.VERJSON_LANE_FALLBACK || '["ubuntu-24.04"]') }}
+    runs-on: ${{ inputs.runner_labels && fromJSON(inputs.runner_labels) || github.repository_owner != 'Verjson' && 'ubuntu-24.04' || needs.preflight.outputs.target_private == 'false' && fromJSON(vars.CI_RUNNER_FASTLANE || '["ubuntu-24.04"]') || fromJSON(vars.CI_LANE_PRIVILEGED || vars.CI_LANE_FALLBACK || '["ubuntu-24.04"]') }}
     timeout-minutes: 5
     permissions:
       actions: write

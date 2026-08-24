@@ -211,11 +211,11 @@ def validate_admission(document: object) -> None:
     # variables keeps a pool rename a variable flip (#401) while leaving the value
     # under the same org-admin control as the token itself.
     require(
-        env["GENERAL_GROUP_NAME"] == "${{ vars.VERJSON_RUNNER_GENERAL_GROUP || 'DigitalOcean' }}",
+        env["GENERAL_GROUP_NAME"] == "${{ vars.CI_RUNNER_GENERAL_GROUP || 'DigitalOcean' }}",
         "general runner group must come from the org variable with its fallback",
     )
     require(
-        env["UNTRUSTED_GROUP_NAME"] == "${{ vars.VERJSON_RUNNER_UNTRUSTED_GROUP }}",
+        env["UNTRUSTED_GROUP_NAME"] == "${{ vars.CI_RUNNER_UNTRUSTED_GROUP }}",
         "untrusted runner group must come from the org variable, with no fallback naming a deleted group",
     )
     require(isinstance(reconcile["run"], str), "admission reconcile command must be a string")
@@ -266,7 +266,7 @@ def validate_secret_scope(document: object) -> None:
     validate_isolation(job, SECRET_SCOPE_SOURCE, "jobs.audit")
     require(
         job["runs-on"]
-        == "${{ fromJSON(vars.VERJSON_LANE_PRIVILEGED || vars.VERJSON_LANE_FALLBACK || '[\"ubuntu-24.04\"]') }}",
+        == "${{ fromJSON(vars.CI_LANE_PRIVILEGED || vars.CI_LANE_FALLBACK || '[\"ubuntu-24.04\"]') }}",
         "secret-scope runner route changed",
     )
     require(job["timeout-minutes"] == 10, "secret-scope timeout changed")
@@ -302,7 +302,7 @@ def validate_ruleset_conformance(document: object) -> None:
     validate_isolation(job, RULESET_CONFORMANCE_SOURCE, "jobs.audit")
     require(
         job["runs-on"]
-        == "${{ fromJSON(vars.VERJSON_LANE_PRIVILEGED || vars.VERJSON_LANE_FALLBACK || '[\"ubuntu-24.04\"]') }}",
+        == "${{ fromJSON(vars.CI_LANE_PRIVILEGED || vars.CI_LANE_FALLBACK || '[\"ubuntu-24.04\"]') }}",
         "ruleset-conformance runner route changed",
     )
     require(job["timeout-minutes"] == 10, "ruleset-conformance timeout changed")
@@ -439,7 +439,7 @@ def main() -> int:
         "mutable checkout": secret_scope_text.replace(
             "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1", "actions/checkout@v7", 1
         ),
-        "unsafe runner route": secret_scope_text.replace("vars.VERJSON_LANE_PRIVILEGED", "vars.VERJSON_RUNNER_PRIVILEGED", 1),
+        "unsafe runner route": secret_scope_text.replace("vars.CI_LANE_PRIVILEGED", "vars.CI_RUNNER_PRIVILEGED", 1),
     }
     for label, mutation in secret_scope_mutations.items():
         require(mutation != secret_scope_text, f"secret-scope {label} mutation fixture marker not found")
@@ -469,7 +469,7 @@ def main() -> int:
             1,
         ),
         "unsafe runner route": ruleset_conformance_text.replace(
-            "vars.VERJSON_LANE_PRIVILEGED", "vars.VERJSON_RUNNER_PRIVILEGED", 1
+            "vars.CI_LANE_PRIVILEGED", "vars.CI_RUNNER_PRIVILEGED", 1
         ),
         "inherited policy path": ruleset_conformance_text.replace(
             "          GH_TOKEN: ${{ secrets.ORG_ADMIN_TOKEN }}\n",

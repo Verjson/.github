@@ -4,4 +4,4 @@ jobs:
   delegated:
     uses: Verjson/.github/.github/workflows/changelog-release.yml@0123456789abcdef0123456789abcdef01234567
     with:
-      runner: ${{ github.repository_owner == 'Verjson' && (vars.VERJSON_RUNNER_DEFAULT || '["self-hosted","general"]') || '["ubuntu-24.04"]' }}
+      runner: ${{ github.repository_owner == 'Verjson' && (vars.CI_RUNNER_DEFAULT || '["self-hosted","general"]') || '["ubuntu-24.04"]' }}

@@ -322,7 +322,7 @@ if job.get("uses") != want or job.get("secrets") != {
     sys.exit(1)
 if job.get("with") != {
         "required_checks": '[{"name":"shell-tests","app_id":15368,"workflow_id":315894159,"workflow_path":".github/workflows/actions-ci.yml"}]',
-        "privileged_lane": "${{ vars.VERJSON_LANE_PRIVILEGED }}",
+        "privileged_lane": "${{ vars.CI_LANE_PRIVILEGED }}",
         "merge_app_client_id": "${{ vars.MERGE_APP_CLIENT_ID }}"}:
     sys.exit(1)
 sys.exit(0)
@@ -356,7 +356,7 @@ if set(w) != {"pr_number", "expected_head_sha", "authorization_check_id", "arm_r
 sys.exit(0 if w["expected_head_sha"] == "${{ inputs.expected_head_sha }}" and
          w["review_policy"] == "${{ inputs.review_policy }}" and
          w["required_checks"] == '[{"name":"shell-tests","app_id":15368,"workflow_id":315894159,"workflow_path":".github/workflows/actions-ci.yml"}]' and
-         w["privileged_lane"] == "${{ vars.VERJSON_LANE_PRIVILEGED }}" and
+         w["privileged_lane"] == "${{ vars.CI_LANE_PRIVILEGED }}" and
          w["merge_app_client_id"] == "${{ vars.MERGE_APP_CLIENT_ID }}" else 1)
 WITH_PY
 
@@ -372,14 +372,14 @@ sys.exit(0 if actual == "${{ inputs.review_policy }}" else 1)
 SUBSTITUTION_PY
 
 cp "$tmp/caller.yml" "$tmp/caller-lane-substituted.yml"
-sed -i 's/vars.VERJSON_LANE_PRIVILEGED/vars.VERJSON_LANE_FALLBACK/' "$tmp/caller-lane-substituted.yml"
+sed -i 's/vars.CI_LANE_PRIVILEGED/vars.CI_LANE_FALLBACK/' "$tmp/caller-lane-substituted.yml"
 python3 - "$tmp/caller-lane-substituted.yml" <<'LANE_SUBSTITUTION_PY' \
   && fail "fallback-lane substitution escaped generated-caller validation" \
-  || pass "generated caller rejects a lane source other than VERJSON_LANE_PRIVILEGED"
+  || pass "generated caller rejects a lane source other than CI_LANE_PRIVILEGED"
 import sys, yaml
 d = yaml.safe_load(open(sys.argv[1]))
 actual = d["jobs"]["privileged_merge"]["with"].get("privileged_lane")
-sys.exit(0 if actual == "${{ vars.VERJSON_LANE_PRIVILEGED }}" else 1)
+sys.exit(0 if actual == "${{ vars.CI_LANE_PRIVILEGED }}" else 1)
 LANE_SUBSTITUTION_PY
 
 # --- no fleet label reaches a consumer (#405) --------------------------------

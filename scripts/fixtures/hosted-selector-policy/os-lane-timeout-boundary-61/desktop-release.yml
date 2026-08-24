@@ -3,7 +3,7 @@ name: desktop release
 on: workflow_dispatch
 jobs:
   macos-dist:
-    runs-on: ${{ fromJSON(vars.VERJSON_LANE_TRUSTED_MACOS) }}
+    runs-on: ${{ fromJSON(vars.CI_LANE_TRUSTED_MACOS) }}
     timeout-minutes: 61
     steps:
       - run: npm run dist

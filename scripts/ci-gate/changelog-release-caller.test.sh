@@ -421,7 +421,7 @@ install_with_github_token() {
 }
 drop_explicit_runner() { sed -i '/^      runner: /d' "$1"; }
 diverge_runner_pool() {
-  sed -i "/^  publish:/,\$ s@^      runner: .*@      runner: \${{ vars.VERJSON_RUNNER_OVERFLOW || '[\"ubuntu-24.04\"]' }}@" "$1"
+  sed -i "/^  publish:/,\$ s@^      runner: .*@      runner: \${{ vars.CI_RUNNER_OVERFLOW || '[\"ubuntu-24.04\"]' }}@" "$1"
 }
 add_push_trigger() { sed -i 's|^on:$|on:\n  push:\n    branches: [main]|' "$1"; }
 unpin_reusable_ref() {
@@ -553,7 +553,7 @@ jobs:
       push_token: \${{ secrets.ORG_ADMIN_TOKEN }}
   publish:
     needs: snapshot
-    runs-on: \${{ fromJSON(vars.VERJSON_RUNNER_DEFAULT || '["self-hosted","general"]') }}
+    runs-on: \${{ fromJSON(vars.CI_RUNNER_DEFAULT || '["self-hosted","general"]') }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:

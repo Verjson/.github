@@ -6,7 +6,7 @@ name: ci
 on: pull_request
 jobs:
   macos-dist:
-    runs-on: ${{ fromJSON(vars.VERJSON_LANE_TRUSTED_MACOS) }}
+    runs-on: ${{ fromJSON(vars.CI_LANE_TRUSTED_MACOS) }}
     timeout-minutes: 45
     steps:
       - run: npm run dist

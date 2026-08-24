@@ -28,10 +28,10 @@ acquire = jobs["acquire-secretless-dependencies"]
 build = jobs["build-test"]
 assert acquire["permissions"] == {"contents": "read", "packages": "read"}
 assert "inputs.secretless-pr" in acquire["if"]
-assert acquire["runs-on"] == "${{ fromJSON(vars.VERJSON_LANE_UNTRUSTED || '[\"ubuntu-24.04\"]') }}"
+assert acquire["runs-on"] == "${{ fromJSON(vars.CI_LANE_UNTRUSTED || '[\"ubuntu-24.04\"]') }}"
 assert "acquire-secretless-dependencies" in build["needs"]
 assert build["permissions"] == {"contents": "read"}
-assert build["runs-on"].startswith("${{ inputs.secretless-pr && fromJSON(vars.VERJSON_LANE_UNTRUSTED")
+assert build["runs-on"].startswith("${{ inputs.secretless-pr && fromJSON(vars.CI_LANE_UNTRUSTED")
 assert build["runs-on"].index("inputs.secretless-pr") < build["runs-on"].index("inputs.runner")
 
 acquire_steps = acquire["steps"]

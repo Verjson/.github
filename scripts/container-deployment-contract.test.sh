@@ -226,7 +226,7 @@ assert len(mutation_steps) == 3
 expected_mutation_env = {
     "CONFIG_PATH": "${{ inputs.config-path }}",
     "GH_TOKEN": "${{ github.token }}",
-    "VERJSON_RUNNER_DEPLOY_TOKEN": "${{ secrets.VERJSON_RUNNER_DEPLOY_TOKEN }}",
+    "RUNNER_DEPLOY_TOKEN": "${{ secrets.RUNNER_DEPLOY_TOKEN }}",
 }
 assert all(step["env"] == expected_mutation_env for step in mutation_steps)
 dry_uploads = [
@@ -237,7 +237,7 @@ assert len(dry_uploads) == 1
 assert dry_uploads[0]["with"]["path"] == "deployment-plan.json"
 for step in jobs["deploy"]["steps"]:
     if step not in mutation_steps:
-        assert "VERJSON_RUNNER_DEPLOY_TOKEN" not in str(step)
+        assert "RUNNER_DEPLOY_TOKEN" not in str(step)
 PY
 
 echo "container deployment generated contract and protected reusable workflow passed"

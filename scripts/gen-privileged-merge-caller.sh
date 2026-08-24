@@ -14,7 +14,7 @@
 # (#405). It used to be mandatory, which meant the generator hardcoded
 # `["self-hosted","general"]` into ~90 repositories: a fleet relabel then needed
 # a pull request in each of them, which is precisely the coupling the
-# `VERJSON_LANE_*` variables exist to remove (ADR 0041). The canonical
+# `CI_LANE_*` variables exist to remove (ADR 0041). The canonical
 # workflow's `runs-on` already resolves without it, ending at a hosted runner for
 # an org with no lane variables at all (ADR 0040).
 #
@@ -105,7 +105,7 @@ jobs:
     uses: $RETRY_TARGET
     with:
       required_checks: '$required_checks_yaml'
-      privileged_lane: \${{ vars.VERJSON_LANE_PRIVILEGED }}
+      privileged_lane: \${{ vars.CI_LANE_PRIVILEGED }}
       merge_app_client_id: \${{ vars.MERGE_APP_CLIENT_ID }}
     secrets:
       MERGE_APP_PRIVATE_KEY: \${{ secrets.MERGE_APP_PRIVATE_KEY }}
@@ -205,7 +205,7 @@ jobs:
       review_policy: \${{ inputs.review_policy }}
       source_run_id: \${{ inputs.source_run_id }}
       required_checks: '$required_checks_yaml'
-      privileged_lane: \${{ vars.VERJSON_LANE_PRIVILEGED }}${labels_input}
+      privileged_lane: \${{ vars.CI_LANE_PRIVILEGED }}${labels_input}
       merge_app_client_id: \${{ vars.MERGE_APP_CLIENT_ID }}
 YAML
 }
