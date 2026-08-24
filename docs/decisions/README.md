@@ -11,6 +11,7 @@ Reverse-chronological index of org-level decisions.
 <!-- BEGIN ADR INDEX -->
 | # | Date | Decision |
 |---|------|----------|
+| [0124](0124-split-container-candidate-authority-entrypoints/README.md) | 2026-08-24 | Split container candidate authority entrypoints |
 | [0122](0122-split-release-proposal-authority-entrypoints/README.md) | 2026-08-24 | Split release-proposal authority across reusable entrypoints |
 | [0121](0121-consume-persistent-ai-review-authorization/README.md) | 2026-08-24 | Consume persistent AI-review authorization on synchronized heads |
 | [0120](0120-bind-terminal-merge-to-repository-app-token/README.md) | 2026-08-23 | Bind terminal merge to a repository-scoped App token |

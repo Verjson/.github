@@ -1,0 +1,738 @@
+name: immutable container candidate publication
+
+on:
+  workflow_call:
+    inputs:
+      config-path:
+        description: Reviewed candidate configuration committed to the caller repository
+        required: true
+        type: string
+      contract-ref:
+        description: Immutable Verjson/.github contract commit used by the generated caller
+        required: true
+        type: string
+      acquisition-sha256:
+        description: SHA-256 of the canonical credential-bound acquisition implementation
+        required: true
+        type: string
+      runner:
+        description: Optional JSON runner labels for build-only jobs
+        required: false
+        default: ''
+        type: string
+    secrets:
+      NODE_AUTH_TOKEN:
+        description: Token used only by canonical lockfile-bound package acquisition
+        required: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: container-candidate-publish-${{ github.repository }}-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    runs-on: ${{ inputs.runner != '' && fromJSON(inputs.runner) || github.repository_owner != 'Verjson' && 'ubuntu-24.04' || github.event.repository.private == true && fromJSON(vars.VERJSON_LANE_TRUSTED || vars.VERJSON_LANE_FALLBACK || '["ubuntu-24.04"]') || fromJSON(vars.VERJSON_LANE_UNTRUSTED || vars.VERJSON_LANE_FALLBACK || '["ubuntu-24.04"]') }}
+    outputs:
+      matrix: ${{ steps.config.outputs.matrix }}
+      sbom-matrix: ${{ steps.config.outputs.sbom-matrix }}
+      candidate: ${{ steps.config.outputs.candidate }}
+      private-node-packages: ${{ steps.config.outputs.private-node-packages }}
+      has-private-node-packages: ${{ steps.config.outputs.has-private-node-packages }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          path: .container-candidate-source-${{ github.run_id }}-${{ github.run_attempt }}
+          persist-credentials: false
+      - id: config
+        env:
+          CONFIG_RELATIVE_PATH: ${{ inputs.config-path }}
+          CONTRACT_REF: ${{ inputs.contract-ref }}
+          # JSON preserves the documented called-job identity while actionlint 1.7.7's
+          # static schema predates job.workflow_sha.
+          JOB_WORKFLOW_SHA: ${{ fromJSON(toJSON(job)).workflow_sha }}
+          SOURCE_PATH: .container-candidate-source-${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          [[ "$CONTRACT_REF" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::contract-ref must be a 40-hex commit"; exit 1; }
+          [ "$CONTRACT_REF" = "$JOB_WORKFLOW_SHA" ] || { echo "::error::contract-ref must identify the executing reusable workflow"; exit 1; }
+          [[ "$CONFIG_RELATIVE_PATH" =~ ^([A-Za-z0-9][A-Za-z0-9._-]*/)*[A-Za-z0-9][A-Za-z0-9._-]*\.json$ ]] \
+            || { echo "::error::config-path must be a normalized repository-relative JSON path"; exit 1; }
+          source_root="$(realpath -e "$SOURCE_PATH")" \
+            || { echo "::error::isolated candidate source is missing"; exit 1; }
+          config_path="$(realpath -e "$source_root/$CONFIG_RELATIVE_PATH")" \
+            || { echo "::error::candidate config is missing"; exit 1; }
+          case "$config_path" in "$source_root"/*) ;; *) echo "::error::candidate config escapes isolated source"; exit 1;; esac
+          [ -f "$config_path" ] || { echo "::error::candidate config is not a regular file"; exit 1; }
+          CONFIG_PATH="$config_path"
+          expected_namespace="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}"
+          jq -e --arg repository "$GITHUB_REPOSITORY" --arg namespace "$expected_namespace" '
+            def safe_component:
+              type == "string" and length <= 64
+              and test("^[a-z0-9]+(?:[._-][a-z0-9]+)*$");
+            def safe_repository:
+              type == "string" and length <= 255
+              and startswith($namespace + "/")
+              and test("^ghcr\\.io/[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*(?:/[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*)*$");
+            def safe_relative_path:
+              type == "string" and length <= 255
+              and test("^[A-Za-z0-9][A-Za-z0-9._-]*(/[A-Za-z0-9][A-Za-z0-9._-]*)*$")
+              and (split("/") | all(.[]; . != "." and . != ".."));
+            .repository == $repository and .registryNamespace == $namespace
+            and ((.privateNodePackages // []) | type == "array")
+            and ((.privateNodePackages // []) | all(.[]; type == "string" and test("^@verjson/[a-z0-9][a-z0-9._-]*$")))
+            and ((.privateNodePackages // []) | length == (unique | length))
+            and (.nextStableVersion | test("^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$"))
+            and (.images | type == "array" and length > 0)
+            and (all(.images[];
+              (.variant | safe_component)
+              and (.repository | safe_repository)
+              and ((.context // ".") == "." or ((.context // ".") | safe_relative_path))
+              and ((.file // "Dockerfile") | safe_relative_path)
+              and (.platforms | type == "array" and length > 0)
+              and all(.platforms[];
+                type == "object"
+                and (.os | safe_component)
+                and (.architecture | safe_component)
+                and ((.variant // "") == "" or (.variant | safe_component)))))
+          ' "$CONFIG_PATH" >/dev/null || { echo "::error::invalid or unauthorized candidate configuration"; exit 1; }
+          jq -e '
+            ([.images[].variant] | length == (unique | length))
+            and (all(.images[]; ([.platforms[] | [.os,.architecture,(.variant // "")]] | length == (unique | length))))
+            and ([.images[] as $image | $image.platforms[] |
+              "candidate-sbom-\($image.variant)-\(.os)-\(.architecture)\(if (.variant // "") == "" then "" else "-\(.variant)" end)"] as $artifacts
+              | ($artifacts | length) == ($artifacts | unique | length)
+              and all($artifacts[]; length <= 255))
+            and (all(.images[] | select(.baseVariant != null); .baseVariant as $base | any($variants[]; . == $base)))
+          ' --argjson variants "$(jq -c '[.images[].variant]' "$CONFIG_PATH")" "$CONFIG_PATH" >/dev/null \
+            || { echo "::error::duplicate matrix or artifact identity, or unknown base variant"; exit 1; }
+          matrix="$(jq -c '[.images[] | {
+            variant, repository,
+            platforms: ([.platforms[] | ((.os + "/" + .architecture) + (if (.variant // "") == "" then "" else "/" + .variant end))] | join(",")),
+            context: (.context // "."), file: (.file // "Dockerfile"), target: (.target // ""),
+            baseVariant: (.baseVariant // ""),
+            artifact: ("candidate-image-" + (.variant | gsub("[^A-Za-z0-9._-]"; "-")))
+          }]' "$CONFIG_PATH")"
+          sbom_matrix="$(jq -c '[.images[] as $image | $image.platforms[] | {
+            imageVariant: $image.variant,
+            repository: $image.repository,
+            os,
+            architecture,
+            platformVariant: (.variant // ""),
+            imageArtifact: ("candidate-image-" + ($image.variant | gsub("[^A-Za-z0-9._-]"; "-"))),
+            sbomArtifact: ("candidate-sbom-" + ($image.variant | gsub("[^A-Za-z0-9._-]"; "-")) + "-" + .os + "-" + .architecture + (if (.variant // "") == "" then "" else "-" + .variant end))
+          }]' "$CONFIG_PATH")"
+          candidate="$(jq -r '.nextStableVersion' "$CONFIG_PATH")-rc.${GITHUB_RUN_ID}.${GITHUB_RUN_ATTEMPT}"
+          {
+            echo "matrix=$matrix"
+            echo "sbom-matrix=$sbom_matrix"
+            echo "candidate=$candidate"
+            echo "private-node-packages=$(jq -c '.privateNodePackages // []' "$CONFIG_PATH")"
+            echo "has-private-node-packages=$(jq -r '((.privateNodePackages // []) | length > 0)' "$CONFIG_PATH")"
+          } >> "$GITHUB_OUTPUT"
+      - name: Remove isolated candidate source
+        if: always()
+        env:
+          SOURCE_PATH: .container-candidate-source-${{ github.run_id }}-${{ github.run_attempt }}
+        run: rm -rf "$SOURCE_PATH"
+
+  acquire-private-node-dependencies:
+    if: needs.prepare.outputs.has-private-node-packages == 'true'
+    needs: prepare
+    runs-on: ${{ github.repository_owner == 'Verjson' && fromJSON(vars.VERJSON_LANE_TRUSTED || vars.VERJSON_LANE_FALLBACK || '["ubuntu-24.04"]') || 'ubuntu-24.04' }}
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    outputs:
+      transfer-cache-key: ${{ steps.create-node-modules-cache-key.outputs.cache-key }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - name: Acquire exact lockfile packages without lifecycle execution
+        env:
+          APPROVED_PRIVATE_PACKAGES: ${{ needs.prepare.outputs.private-node-packages }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          CONFIG_PATH: ${{ inputs.config-path }}
+          EVENT_NAME: ${{ github.event_name }}
+          HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
+          NODE_AUTH_TOKEN: ${{ secrets.NODE_AUTH_TOKEN }}
+          REPOSITORY: ${{ github.repository }}
+          TRANSFER_DIR: ${{ github.workspace }}/.verjson-container-node-modules-${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          [ -f package-lock.json ] || { echo "::error::package-lock.json is required"; exit 1; }
+          if find . -name .npmrc -print -quit | grep -q .; then
+            echo "::error::private container dependency acquisition rejects project-controlled .npmrc"
+            exit 1
+          fi
+          if [ "$EVENT_NAME" = pull_request ]; then
+            [ "$HEAD_REPOSITORY" = "$REPOSITORY" ] || {
+              [ "$APPROVED_PRIVATE_PACKAGES" = '[]' ] || { echo "::error::fork pull requests cannot acquire private container dependencies"; exit 1; }
+            }
+            [[ "$BASE_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::pull request base SHA is missing"; exit 1; }
+            base_config="$RUNNER_TEMP/container-candidate-base.json"
+            git show "$BASE_SHA:$CONFIG_PATH" > "$base_config" 2>/dev/null || { echo "::error::candidate config must exist at the reviewed base SHA"; exit 1; }
+            base_approved="$(jq -ce '.privateNodePackages // []' "$base_config")" || { echo "::error::reviewed base privateNodePackages is invalid"; exit 1; }
+            [ "$base_approved" = "$APPROVED_PRIVATE_PACKAGES" ] || { echo "::error::privateNodePackages differs from the reviewed base configuration"; exit 1; }
+          fi
+          if [ "$APPROVED_PRIVATE_PACKAGES" != '[]' ]; then
+            [ -n "$NODE_AUTH_TOKEN" ] || { echo "::error::private container dependency acquisition requires NODE_AUTH_TOKEN"; exit 1; }
+          fi
+          acquisition="$RUNNER_TEMP/container_private_dependencies.py"
+          curl -fsSL "https://raw.githubusercontent.com/Verjson/.github/${{ inputs.contract-ref }}/scripts/container_private_dependencies.py" -o "$acquisition"
+          printf '%s  %s\n' '${{ inputs.acquisition-sha256 }}' "$acquisition" | sha256sum --check --strict
+          python3 "$acquisition" --lock package-lock.json --approved "$APPROVED_PRIVATE_PACKAGES"
+          user_config="$RUNNER_TEMP/container-user.npmrc"
+          global_config="$RUNNER_TEMP/container-global.npmrc"
+          npm_cache="$RUNNER_TEMP/container-npm-cache"
+          npm_home="$RUNNER_TEMP/container-npm-home"
+          mkdir -p "$npm_home"
+          : > "$global_config"
+          cat > "$user_config" <<'NPMRC'
+          registry=https://registry.npmjs.org/
+          @verjson:registry=https://npm.pkg.github.com/
+          //npm.pkg.github.com/:_authToken=${NODE_AUTH_TOKEN}
+          NPMRC
+          env -i \
+            HOME="$npm_home" \
+            NODE_AUTH_TOKEN="$NODE_AUTH_TOKEN" \
+            NPM_CONFIG_CACHE="$npm_cache" \
+            NPM_CONFIG_GLOBALCONFIG="$global_config" \
+            NPM_CONFIG_USERCONFIG="$user_config" \
+            PATH="$PATH" \
+            npm ci --ignore-scripts --no-audit --no-fund
+          artifact="$RUNNER_TEMP/container-node-modules"
+          mkdir -p "$artifact"
+          mv node_modules "$artifact/node_modules"
+          lock_digest="$(sha256sum package-lock.json | cut -d' ' -f1)"
+          printf '%s\n' "$lock_digest" > "$artifact/.verjson-lock-sha256"
+          [ ! -e "$TRANSFER_DIR" ] && [ ! -L "$TRANSFER_DIR" ] || {
+            echo "::error::reserved container dependency transfer path exists"
+            exit 1
+          }
+          mkdir -p "$TRANSFER_DIR"
+          tar -czf "$TRANSFER_DIR/container-node-modules.tgz" -C "$artifact" .
+      - name: Create unguessable exact-attempt cache key
+        id: create-node-modules-cache-key
+        env:
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          [[ "$RUN_ID" =~ ^[1-9][0-9]*$ && "$RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]] || {
+            echo "::error::invalid container dependency cache run identity"
+            exit 1
+          }
+          nonce="$(openssl rand -hex 32)"
+          [[ "$nonce" =~ ^[0-9a-f]{64}$ ]] || {
+            echo "::error::could not generate container dependency cache nonce"
+            exit 1
+          }
+          cache_key="container-node-modules-${RUN_ID}-${RUN_ATTEMPT}-${nonce}"
+          printf 'cache-key=%s\n' "$cache_key" >> "$GITHUB_OUTPUT"
+      - id: save-node-modules-transfer
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .verjson-container-node-modules-${{ github.run_id }}-${{ github.run_attempt }}
+          key: ${{ steps.create-node-modules-cache-key.outputs.cache-key }}
+      - name: Remove local acquisition and transfer state
+        if: always()
+        env:
+          TRANSFER_DIR: ${{ github.workspace }}/.verjson-container-node-modules-${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          rm -rf "$TRANSFER_DIR" "$RUNNER_TEMP/container-node-modules" \
+            "$RUNNER_TEMP/container-npm-cache" "$RUNNER_TEMP/container-npm-home"
+          rm -f "$RUNNER_TEMP/container-user.npmrc" "$RUNNER_TEMP/container-global.npmrc" \
+            "$RUNNER_TEMP/container_private_dependencies.py"
+
+  publish-base:
+    if: >-
+      always()
+      && ((github.event_name == 'push'
+      && github.ref == 'refs/heads/main'
+      && github.event.repository.default_branch == 'main')
+      || (github.event_name == 'workflow_dispatch'
+      && github.repository == 'Verjson/.github'
+      && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)))
+      && needs.prepare.result == 'success'
+      && (needs.acquire-private-node-dependencies.result == 'success'
+      || needs.acquire-private-node-dependencies.result == 'skipped')
+    needs: [prepare, acquire-private-node-dependencies]
+    permissions:
+      attestations: write
+      contents: read
+      packages: write
+      id-token: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.prepare.outputs.matrix) }}
+    runs-on: ${{ github.repository_owner != 'Verjson' && 'ubuntu-24.04' || fromJSON(vars.VERJSON_LANE_TRUSTED || vars.VERJSON_LANE_FALLBACK || '["ubuntu-24.04"]') }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Prepare credential-free dependency build context
+        env:
+          ACTIONS_ID_TOKEN_REQUEST_TOKEN: ''
+          ACTIONS_ID_TOKEN_REQUEST_URL: ''
+          GITHUB_TOKEN: ''
+          NODE_AUTH_TOKEN: ''
+          NPM_TOKEN: ''
+        run: |
+          set -euo pipefail
+          context="$RUNNER_TEMP/container-node-modules-context"
+          [ ! -e "$context" ] && [ ! -L "$context" ] || {
+            echo "::error::reserved container dependency context exists"
+            exit 1
+          }
+          mkdir "$context"
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: needs.prepare.outputs.has-private-node-packages == 'true'
+        with:
+          path: .verjson-container-node-modules-${{ github.run_id }}-${{ github.run_attempt }}
+          key: ${{ needs.acquire-private-node-dependencies.outputs.transfer-cache-key }}
+          fail-on-cache-miss: true
+      - name: Restore and verify credential-free node_modules context
+        if: needs.prepare.outputs.has-private-node-packages == 'true'
+        env:
+          ACTIONS_ID_TOKEN_REQUEST_TOKEN: ''
+          ACTIONS_ID_TOKEN_REQUEST_URL: ''
+          AWS_ACCESS_KEY_ID: ''
+          AWS_SECRET_ACCESS_KEY: ''
+          AZURE_CLIENT_SECRET: ''
+          GH_TOKEN: ''
+          GITHUB_TOKEN: ''
+          GOOGLE_APPLICATION_CREDENTIALS: ''
+          NODE_AUTH_TOKEN: ''
+          NPM_TOKEN: ''
+          TRANSFER_DIR: ${{ github.workspace }}/.verjson-container-node-modules-${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          context="$RUNNER_TEMP/container-node-modules-context"
+          tar -xzf "$TRANSFER_DIR/container-node-modules.tgz" -C "$context"
+          expected="$(sha256sum package-lock.json | cut -d' ' -f1)"
+          [ "$(cat "$context/.verjson-lock-sha256")" = "$expected" ] || { echo "::error::node_modules artifact does not match package-lock.json"; exit 1; }
+      - name: Remove local node_modules transfer state
+        if: always() && needs.prepare.outputs.has-private-node-packages == 'true'
+        env:
+          TRANSFER_DIR: ${{ github.workspace }}/.verjson-container-node-modules-${{ github.run_id }}-${{ github.run_attempt }}
+        run: rm -rf "$TRANSFER_DIR"
+      - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - id: build
+        if: matrix.baseVariant == ''
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        env:
+          ACTIONS_ID_TOKEN_REQUEST_TOKEN: ''
+          ACTIONS_ID_TOKEN_REQUEST_URL: ''
+          NODE_AUTH_TOKEN: ''
+          NPM_TOKEN: ''
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.file }}
+          target: ${{ matrix.target }}
+          platforms: ${{ matrix.platforms }}
+          push: true
+          tags: |
+            ${{ matrix.repository }}:${{ needs.prepare.outputs.candidate }}
+          provenance: mode=max
+          sbom: true
+          build-contexts: verjson_node_modules=${{ runner.temp }}/container-node-modules-context
+      - id: provenance
+        if: matrix.baseVariant == ''
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ matrix.repository }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
+      - name: Record immutable image digest
+        if: matrix.baseVariant == ''
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+          REPOSITORY: ${{ matrix.repository }}
+          VARIANT: ${{ matrix.variant }}
+          ATTESTATION_ID: ${{ steps.provenance.outputs.attestation-id }}
+        run: |
+          set -euo pipefail
+          [[ "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || exit 1
+          [ -n "$ATTESTATION_ID" ] || { echo "::error::provenance action returned no attestation identity"; exit 1; }
+          commit_tag="$REPOSITORY:sha-$GITHUB_SHA"
+          error_file="$(mktemp)"
+          if existing="$(docker buildx imagetools inspect "$commit_tag" --format '{{json .Manifest.Digest}}' 2>"$error_file" | tr -d '"')"; then
+            [ "$existing" = "$DIGEST" ] || { echo "::error::commit identity already records a different digest"; exit 1; }
+          elif grep -Eqi 'manifest unknown|not found' "$error_file"; then
+            docker buildx imagetools create -t "$commit_tag" "$REPOSITORY@$DIGEST"
+            recorded="$(docker buildx imagetools inspect "$commit_tag" --format '{{json .Manifest.Digest}}' | tr -d '"')"
+            [ "$recorded" = "$DIGEST" ] || { echo "::error::commit identity reconciliation diverged"; exit 1; }
+          else
+            cat "$error_file" >&2
+            echo "::error::could not prove commit identity state" >&2
+            exit 1
+          fi
+          jq -n --arg variant "$VARIANT" --arg repository "$REPOSITORY" --arg digest "$DIGEST" \
+            --arg attestationId "$ATTESTATION_ID" \
+            '{variant:$variant,repository:$repository,indexDigest:$digest,provenanceAttestationId:$attestationId}' > image.json
+      - if: matrix.baseVariant == ''
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ matrix.artifact }}
+          path: image.json
+          retention-days: 90
+
+  publish-derived:
+    if: >-
+      always()
+      && ((github.event_name == 'push'
+      && github.ref == 'refs/heads/main'
+      && github.event.repository.default_branch == 'main')
+      || (github.event_name == 'workflow_dispatch'
+      && github.repository == 'Verjson/.github'
+      && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)))
+      && needs.prepare.result == 'success'
+      && (needs.acquire-private-node-dependencies.result == 'success'
+      || needs.acquire-private-node-dependencies.result == 'skipped')
+      && needs.publish-base.result == 'success'
+    needs: [prepare, acquire-private-node-dependencies, publish-base]
+    permissions:
+      attestations: write
+      contents: read
+      packages: write
+      id-token: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.prepare.outputs.matrix) }}
+    runs-on: ${{ github.repository_owner != 'Verjson' && 'ubuntu-24.04' || fromJSON(vars.VERJSON_LANE_TRUSTED || vars.VERJSON_LANE_FALLBACK || '["ubuntu-24.04"]') }}
+    steps:
+      - if: matrix.baseVariant != ''
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Prepare credential-free dependency build context
+        if: matrix.baseVariant != ''
+        env:
+          ACTIONS_ID_TOKEN_REQUEST_TOKEN: ''
+          ACTIONS_ID_TOKEN_REQUEST_URL: ''
+          GITHUB_TOKEN: ''
+          NODE_AUTH_TOKEN: ''
+          NPM_TOKEN: ''
+        run: |
+          set -euo pipefail
+          context="$RUNNER_TEMP/container-node-modules-context"
+          [ ! -e "$context" ] && [ ! -L "$context" ] || {
+            echo "::error::reserved container dependency context exists"
+            exit 1
+          }
+          mkdir "$context"
+      - if: matrix.baseVariant != '' && needs.prepare.outputs.has-private-node-packages == 'true'
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .verjson-container-node-modules-${{ github.run_id }}-${{ github.run_attempt }}
+          key: ${{ needs.acquire-private-node-dependencies.outputs.transfer-cache-key }}
+          fail-on-cache-miss: true
+      - if: matrix.baseVariant != '' && needs.prepare.outputs.has-private-node-packages == 'true'
+        name: Restore and verify credential-free node_modules context
+        env:
+          ACTIONS_ID_TOKEN_REQUEST_TOKEN: ''
+          ACTIONS_ID_TOKEN_REQUEST_URL: ''
+          AWS_ACCESS_KEY_ID: ''
+          AWS_SECRET_ACCESS_KEY: ''
+          AZURE_CLIENT_SECRET: ''
+          GH_TOKEN: ''
+          GITHUB_TOKEN: ''
+          GOOGLE_APPLICATION_CREDENTIALS: ''
+          NODE_AUTH_TOKEN: ''
+          NPM_TOKEN: ''
+          TRANSFER_DIR: ${{ github.workspace }}/.verjson-container-node-modules-${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          context="$RUNNER_TEMP/container-node-modules-context"
+          tar -xzf "$TRANSFER_DIR/container-node-modules.tgz" -C "$context"
+          expected="$(sha256sum package-lock.json | cut -d' ' -f1)"
+          [ "$(cat "$context/.verjson-lock-sha256")" = "$expected" ] || { echo "::error::node_modules artifact does not match package-lock.json"; exit 1; }
+      - if: always() && matrix.baseVariant != '' && needs.prepare.outputs.has-private-node-packages == 'true'
+        name: Remove local node_modules transfer state
+        env:
+          TRANSFER_DIR: ${{ github.workspace }}/.verjson-container-node-modules-${{ github.run_id }}-${{ github.run_attempt }}
+        run: rm -rf "$TRANSFER_DIR"
+      - if: matrix.baseVariant != ''
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+      - if: matrix.baseVariant != ''
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - id: base
+        if: matrix.baseVariant != ''
+        env:
+          CONFIG_PATH: ${{ inputs.config-path }}
+          BASE_VARIANT: ${{ matrix.baseVariant }}
+        run: |
+          base_repository="$(jq -r --arg variant "$BASE_VARIANT" '.images[] | select(.variant == $variant) | .repository' "$CONFIG_PATH")"
+          base_digest="$(docker buildx imagetools inspect "$base_repository:${{ needs.prepare.outputs.candidate }}" --format '{{json .Manifest.Digest}}' | tr -d '"')"
+          [[ "$base_digest" =~ ^sha256:[0-9a-f]{64}$ ]] || exit 1
+          echo "image=$base_repository@$base_digest" >> "$GITHUB_OUTPUT"
+          echo "digest=$base_digest" >> "$GITHUB_OUTPUT"
+      - id: build
+        if: matrix.baseVariant != ''
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        env:
+          ACTIONS_ID_TOKEN_REQUEST_TOKEN: ''
+          ACTIONS_ID_TOKEN_REQUEST_URL: ''
+          NODE_AUTH_TOKEN: ''
+          NPM_TOKEN: ''
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.file }}
+          target: ${{ matrix.target }}
+          platforms: ${{ matrix.platforms }}
+          build-args: VERJSON_BASE_IMAGE=${{ steps.base.outputs.image }}
+          push: true
+          tags: |
+            ${{ matrix.repository }}:${{ needs.prepare.outputs.candidate }}
+          provenance: mode=max
+          sbom: true
+          build-contexts: verjson_node_modules=${{ runner.temp }}/container-node-modules-context
+      - id: provenance
+        if: matrix.baseVariant != ''
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ matrix.repository }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
+      - if: matrix.baseVariant != ''
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+          BASE_DIGEST: ${{ steps.base.outputs.digest }}
+          ATTESTATION_ID: ${{ steps.provenance.outputs.attestation-id }}
+          BASE_VARIANT: ${{ matrix.baseVariant }}
+          IMAGE_VARIANT: ${{ matrix.variant }}
+          REPOSITORY: ${{ matrix.repository }}
+        run: |
+          set -euo pipefail
+          [ -n "$ATTESTATION_ID" ] || { echo "::error::provenance action returned no attestation identity"; exit 1; }
+          commit_tag="$REPOSITORY:sha-$GITHUB_SHA"
+          error_file="$(mktemp)"
+          if existing="$(docker buildx imagetools inspect "$commit_tag" --format '{{json .Manifest.Digest}}' 2>"$error_file" | tr -d '"')"; then
+            [ "$existing" = "$DIGEST" ] || { echo "::error::commit identity already records a different digest"; exit 1; }
+          elif grep -Eqi 'manifest unknown|not found' "$error_file"; then
+            docker buildx imagetools create -t "$commit_tag" "$REPOSITORY@$DIGEST"
+            recorded="$(docker buildx imagetools inspect "$commit_tag" --format '{{json .Manifest.Digest}}' | tr -d '"')"
+            [ "$recorded" = "$DIGEST" ] || { echo "::error::commit identity reconciliation diverged"; exit 1; }
+          else
+            cat "$error_file" >&2
+            echo "::error::could not prove commit identity state" >&2
+            exit 1
+          fi
+          jq -n --arg variant "$IMAGE_VARIANT" --arg repository "$REPOSITORY" \
+            --arg digest "$DIGEST" --arg baseVariant "$BASE_VARIANT" --arg baseDigest "$BASE_DIGEST" \
+            --arg attestationId "$ATTESTATION_ID" \
+            '{variant:$variant,repository:$repository,indexDigest:$digest,base:{variant:$baseVariant,digest:$baseDigest},provenanceAttestationId:$attestationId}' > image.json
+      - if: matrix.baseVariant != ''
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ matrix.artifact }}
+          path: image.json
+          retention-days: 90
+
+  attest-sbom:
+    if: >-
+      always()
+      && ((github.event_name == 'push'
+      && github.ref == 'refs/heads/main'
+      && github.event.repository.default_branch == 'main')
+      || (github.event_name == 'workflow_dispatch'
+      && github.repository == 'Verjson/.github'
+      && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)))
+      && needs.prepare.result == 'success'
+      && needs.publish-base.result == 'success'
+      && needs.publish-derived.result == 'success'
+    needs: [prepare, publish-base, publish-derived]
+    permissions:
+      actions: read
+      attestations: write
+      contents: read
+      id-token: write
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.prepare.outputs.sbom-matrix) }}
+    runs-on: ${{ github.repository_owner != 'Verjson' && 'ubuntu-24.04' || fromJSON(vars.VERJSON_LANE_TRUSTED || vars.VERJSON_LANE_FALLBACK || '["ubuntu-24.04"]') }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ${{ matrix.imageArtifact }}
+          path: candidate-image
+      - id: sbom-subject
+        name: Bind parent-index evidence and extract the exact platform SPDX document
+        env:
+          ARCHITECTURE: ${{ matrix.architecture }}
+          CONFIG_PATH: ${{ inputs.config-path }}
+          CONTRACT_REF: ${{ inputs.contract-ref }}
+          IMAGE_VARIANT: ${{ matrix.imageVariant }}
+          OS: ${{ matrix.os }}
+          PLATFORM_VARIANT: ${{ matrix.platformVariant }}
+          REPOSITORY: ${{ matrix.repository }}
+        run: |
+          set -euo pipefail
+          index_digest="$(jq -er .indexDigest candidate-image/image.json)"
+          helper="$RUNNER_TEMP/container_oci_index.py"
+          curl -fsSL "https://raw.githubusercontent.com/Verjson/.github/$CONTRACT_REF/scripts/container_oci_index.py" -o "$helper"
+          raw_index="$RUNNER_TEMP/parent-index.json"
+          reviewed_platforms="$RUNNER_TEMP/reviewed-platforms.json"
+          inventory="$RUNNER_TEMP/oci-inventory.json"
+          docker buildx imagetools inspect "$REPOSITORY@$index_digest" --raw > "$raw_index"
+          jq -ce --arg variant "$IMAGE_VARIANT" '.images[] | select(.variant == $variant) | .platforms' \
+            "$CONFIG_PATH" > "$reviewed_platforms"
+          python3 "$helper" index --index "$raw_index" --reviewed-platforms "$reviewed_platforms" > "$inventory"
+          binding="$(jq -ce --arg os "$OS" --arg architecture "$ARCHITECTURE" --arg variant "$PLATFORM_VARIANT" \
+            '[.evidence[] | select(.os == $os and .architecture == $architecture and (.variant // "") == $variant)]
+             | if length == 1 then .[0] else error("platform evidence is missing or ambiguous") end' "$inventory")"
+          platform_digest="$(jq -er .subjectDigest <<<"$binding")"
+          evidence_digest="$(jq -er .digest <<<"$binding")"
+          [[ "$platform_digest" =~ ^sha256:[0-9a-f]{64}$ ]] || exit 1
+          [[ "$evidence_digest" =~ ^sha256:[0-9a-f]{64}$ ]] || exit 1
+          evidence_manifest="$RUNNER_TEMP/evidence-manifest.json"
+          docker buildx imagetools inspect "$REPOSITORY@$evidence_digest" --raw > "$evidence_manifest"
+          python3 "$helper" spdx-evidence --manifest "$evidence_manifest" >/dev/null
+          platform_key="$OS/$ARCHITECTURE${PLATFORM_VARIANT:+/$PLATFORM_VARIANT}"
+          docker buildx imagetools inspect "$REPOSITORY@$index_digest" --format '{{json .SBOM}}' \
+            | jq -e --arg platform "$platform_key" '.[$platform].SPDX | select(.spdxVersion == "SPDX-2.3" and .SPDXID == "SPDXRef-DOCUMENT")' \
+            > sbom.spdx.json
+          echo "digest=$platform_digest" >> "$GITHUB_OUTPUT"
+      - id: sbom-attestation
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-name: ${{ matrix.repository }}
+          subject-digest: ${{ steps.sbom-subject.outputs.digest }}
+          sbom-path: sbom.spdx.json
+          push-to-registry: true
+      - name: Record signed platform SBOM identity
+        env:
+          ARCHITECTURE: ${{ matrix.architecture }}
+          ATTESTATION_ID: ${{ steps.sbom-attestation.outputs.attestation-id }}
+          DIGEST: ${{ steps.sbom-subject.outputs.digest }}
+          IMAGE_VARIANT: ${{ matrix.imageVariant }}
+          OS: ${{ matrix.os }}
+          PLATFORM_VARIANT: ${{ matrix.platformVariant }}
+        run: |
+          set -euo pipefail
+          [ -n "$ATTESTATION_ID" ] || { echo "::error::SBOM action returned no attestation identity"; exit 1; }
+          jq -n --arg imageVariant "$IMAGE_VARIANT" --arg os "$OS" --arg architecture "$ARCHITECTURE" \
+            --arg platformVariant "$PLATFORM_VARIANT" --arg digest "$DIGEST" --arg attestationId "$ATTESTATION_ID" \
+            '{imageVariant:$imageVariant,os:$os,architecture:$architecture,digest:$digest,attestationId:$attestationId}
+             + if $platformVariant == "" then {} else {variant:$platformVariant} end' > sbom.json
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ matrix.sbomArtifact }}
+          path: sbom.json
+          if-no-files-found: error
+          retention-days: 90
+
+  candidate-manifest:
+    if: >-
+      (github.event_name == 'push'
+      && github.ref == 'refs/heads/main'
+      && github.event.repository.default_branch == 'main')
+      || (github.event_name == 'workflow_dispatch'
+      && github.repository == 'Verjson/.github'
+      && github.ref == format('refs/heads/{0}', github.event.repository.default_branch))
+    needs: [prepare, publish-base, publish-derived, attest-sbom]
+    permissions:
+      actions: read
+      attestations: write
+      contents: read
+      id-token: write
+      packages: read
+    runs-on: ${{ github.repository_owner != 'Verjson' && 'ubuntu-24.04' || fromJSON(vars.VERJSON_LANE_TRUSTED || vars.VERJSON_LANE_FALLBACK || '["ubuntu-24.04"]') }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: candidate-image-*
+          path: candidate-images
+          merge-multiple: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: candidate-sbom-*
+          path: candidate-sboms
+          merge-multiple: false
+      - name: Assemble complete candidate manifest
+        env:
+          CANDIDATE: ${{ needs.prepare.outputs.candidate }}
+          CONFIG_PATH: ${{ inputs.config-path }}
+          CONTRACT_REF: ${{ inputs.contract-ref }}
+        run: |
+          set -euo pipefail
+          helper="$RUNNER_TEMP/container_oci_index.py"
+          curl -fsSL "https://raw.githubusercontent.com/Verjson/.github/$CONTRACT_REF/scripts/container_oci_index.py" -o "$helper"
+          for image in candidate-images/*/image.json; do
+            repository="$(jq -r '.repository' "$image")"
+            variant="$(jq -r '.variant' "$image")"
+            index_digest="$(jq -r '.indexDigest' "$image")"
+            raw="$(docker buildx imagetools inspect "$repository@$index_digest" --raw)"
+            reviewed="$(jq -c --arg variant "$variant" '.images[] | select(.variant == $variant)' "$CONFIG_PATH")"
+            raw_index="$RUNNER_TEMP/parent-index-$variant.json"
+            reviewed_platforms="$RUNNER_TEMP/reviewed-platforms-$variant.json"
+            inventory="$RUNNER_TEMP/oci-inventory-$variant.json"
+            printf '%s\n' "$raw" > "$raw_index"
+            jq -c '.platforms' <<<"$reviewed" > "$reviewed_platforms"
+            python3 "$helper" index --index "$raw_index" --reviewed-platforms "$reviewed_platforms" > "$inventory"
+            platforms="$(jq -c .platforms "$inventory")"
+            base="$(jq -c '.base // null' "$image")"
+            attestation_id="$(jq -r '.provenanceAttestationId' "$image")"
+            sbom_attestations="$(jq -sc --arg variant "$variant" \
+              '[.[] | select(.imageVariant == $variant) | del(.imageVariant)] | sort_by(.os,.architecture,(.variant // ""))' \
+              candidate-sboms/*/sbom.json)"
+            jq -n --arg variant "$variant" --arg repository "$repository" --arg index "$index_digest" \
+              --arg commit "sha-$GITHUB_SHA" --arg candidate "$CANDIDATE" --arg workflow "Verjson/.github/.github/workflows/container-candidate-publish.yml@$CONTRACT_REF" \
+              --arg attestationId "$attestation_id" --argjson platforms "$platforms" --argjson reviewed "$reviewed" \
+              --argjson base "$base" --argjson sbomAttestations "$sbom_attestations" '
+                {variant:$variant,repository:$repository,indexDigest:$index,
+                 identities:{commit:$commit,candidate:$candidate},
+                 platforms:$platforms,
+                 provenance:{predicateType:$reviewed.provenance.predicateType,builderIdentity:$workflow,subjectDigest:$index,attestationId:$attestationId},
+                 sbom:{predicateType:"https://spdx.dev/Document/v2.3",attestations:$sbomAttestations}}
+                + (if $base then {base:$base} else {} end)' \
+              > "image-$variant.json"
+          done
+          jq -s --arg candidate "$CANDIDATE" --arg commit "$GITHUB_SHA" --arg repository "$GITHUB_REPOSITORY" \
+            --arg ref "$GITHUB_REF" --arg workflow "Verjson/.github/.github/workflows/container-candidate-publish.yml@$CONTRACT_REF" \
+            --arg run "$GITHUB_RUN_ID" --arg attempt "$GITHUB_RUN_ATTEMPT" \
+            '{schemaVersion:2,kind:"container-candidate",candidateVersion:$candidate,
+              source:{repository:$repository,commit:$commit,ref:$ref,workflow:$workflow,runId:$run,runAttempt:$attempt},images:.}' \
+            image-*.json > candidate-manifest.json
+          python3 scripts/container_release_manifest.py --manifest candidate-manifest.json --config "$CONFIG_PATH"
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: candidate-manifest.json
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: container-candidate-${{ needs.prepare.outputs.candidate }}
+          path: candidate-manifest.json
+          if-no-files-found: error
+          retention-days: 90

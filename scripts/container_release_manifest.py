@@ -92,7 +92,7 @@ def validate_manifest(manifest: dict[str, Any], config: dict[str, Any]) -> None:
     if not re.fullmatch(r"[0-9a-f]{40}", source["commit"]):
         raise ManifestError("manifest.source.commit must be a 40-hex commit")
     if not source["workflow"].startswith(
-        "Verjson/.github/.github/workflows/container-candidate.yml@"
+        "Verjson/.github/.github/workflows/container-candidate-publish.yml@"
     ):
         raise ManifestError("candidate signer workflow differs from expected publisher")
 

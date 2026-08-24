@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - '.github/workflows/container-candidate.yml'
+      - '.github/workflows/container-candidate-publish.yml'
       - '.github/workflows/container-candidate-reusable-contract.yml'
       - 'scripts/container_oci_index.py'
       - 'scripts/gen-container-candidate.sh'
@@ -34,7 +35,7 @@ jobs:
       contents: read
       packages: write
       id-token: write
-    uses: ./.github/workflows/container-candidate.yml
+    uses: ./.github/workflows/container-candidate-publish.yml
     with:
       config-path: scripts/fixtures/container-candidate/canary.json
       contract-ref: ${{ github.sha }}

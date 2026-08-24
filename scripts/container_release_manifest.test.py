@@ -29,7 +29,7 @@ def config():
                 ],
                 "provenance": {
                     "predicateType": "https://slsa.dev/provenance/v1",
-                    "builderIdentity": "Verjson/.github/.github/workflows/container-candidate.yml@" + "b" * 40,
+                    "builderIdentity": "Verjson/.github/.github/workflows/container-candidate-publish.yml@" + "b" * 40,
                 },
             }
         ],
@@ -45,7 +45,7 @@ def manifest():
             "repository": "Verjson/verjson-github-runner",
             "commit": "a" * 40,
             "ref": "refs/heads/main",
-            "workflow": "Verjson/.github/.github/workflows/container-candidate.yml@" + "b" * 40,
+            "workflow": "Verjson/.github/.github/workflows/container-candidate-publish.yml@" + "b" * 40,
             "runId": "123",
             "runAttempt": "1",
         },
@@ -70,7 +70,7 @@ def manifest():
                 ],
                 "provenance": {
                     "predicateType": "https://slsa.dev/provenance/v1",
-                    "builderIdentity": "Verjson/.github/.github/workflows/container-candidate.yml@" + "b" * 40,
+                    "builderIdentity": "Verjson/.github/.github/workflows/container-candidate-publish.yml@" + "b" * 40,
                     "subjectDigest": "sha256:" + "1" * 64,
                     "attestationId": "https://github.com/Verjson/verjson-github-runner/attestations/42",
                 },
@@ -127,7 +127,7 @@ class ContainerReleaseManifestTests(unittest.TestCase):
 
     def test_rejects_candidate_contract_pin_different_from_reviewed_config(self):
         candidate = manifest()
-        candidate["source"]["workflow"] = "Verjson/.github/.github/workflows/container-candidate.yml@" + "c" * 40
+        candidate["source"]["workflow"] = "Verjson/.github/.github/workflows/container-candidate-publish.yml@" + "c" * 40
         candidate["images"][0]["provenance"]["builderIdentity"] = candidate["source"]["workflow"]
         self.assert_rejected(candidate, "provenance builder identity differs")
 

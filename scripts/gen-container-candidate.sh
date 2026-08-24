@@ -13,7 +13,7 @@ usage() {
 }
 
 [[ "$ref" =~ ^[0-9a-f]{40}$ ]] || usage
-[[ "$config_path" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]*\.json$ ]] || {
+[[ "$config_path" =~ ^([A-Za-z0-9][A-Za-z0-9._-]*/)*[A-Za-z0-9][A-Za-z0-9._-]*\.json$ ]] || {
   echo "config-path must be a repository-relative JSON path" >&2
   exit 2
 }
@@ -67,7 +67,7 @@ $(if [ "$private_packages" = true ]; then printf '%s\n' '    secrets:' '      NO
       contents: read
       packages: write
       id-token: write
-    uses: Verjson/.github/.github/workflows/container-candidate.yml@$ref
+    uses: Verjson/.github/.github/workflows/container-candidate-publish.yml@$ref
     with:
       config-path: $config_path
       contract-ref: $ref
@@ -104,7 +104,8 @@ fail() { echo "ERROR: \$*" >&2; exit 1; }
 [ -f "\$validator" ] || fail "generated validator is missing"
 grep -qx '# Contract: $ref' "\$caller" || fail "caller contract pin differs"
 grep -qx '# Contract: $ref' "\$validator" || fail "validator contract pin differs"
-[ "\$(grep -c 'uses: Verjson/.github/.github/workflows/container-candidate.yml@$ref' "\$caller")" -eq 2 ] || fail "caller does not use the pinned reusable workflow for both event paths"
+[ "\$(grep -c 'uses: Verjson/.github/.github/workflows/container-candidate.yml@$ref' "\$caller")" -eq 1 ] || fail "validation does not use the pinned read-only reusable workflow"
+[ "\$(grep -c 'uses: Verjson/.github/.github/workflows/container-candidate-publish.yml@$ref' "\$caller")" -eq 1 ] || fail "publication does not use the pinned publication reusable workflow"
 [ "\$(grep -c 'contract-ref: $ref' "\$caller")" -eq 2 ] || fail "caller does not pass the shared pin to both event paths"
 [ "\$(grep -c 'acquisition-sha256: $acquisition_sha256' "\$caller")" -eq 2 ] || fail "caller does not pin the acquisition implementation digest for both event paths"
 [ "\$(grep -c '^      actions: read$' "\$caller")" -eq 2 ] || fail "both event paths require Actions reads"

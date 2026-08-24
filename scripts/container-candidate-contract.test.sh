@@ -44,6 +44,20 @@ for fixture in single multi; do
     exit 1
   fi
   mv "$consumer/.github/workflows/container-candidate.yml.clean" "$consumer/.github/workflows/container-candidate.yml"
+  cp "$consumer/.github/workflows/container-candidate.yml" "$consumer/.github/workflows/container-candidate.yml.clean"
+  sed -i 's#container-candidate-publish.yml#container-candidate.yml#' "$consumer/.github/workflows/container-candidate.yml"
+  if bash "$consumer/scripts/container-candidate-contract.test.sh" >/dev/null 2>&1; then
+    echo "generated contract accepted publication through the read-only entrypoint" >&2
+    exit 1
+  fi
+  mv "$consumer/.github/workflows/container-candidate.yml.clean" "$consumer/.github/workflows/container-candidate.yml"
+  cp "$consumer/.github/workflows/container-candidate.yml" "$consumer/.github/workflows/container-candidate.yml.clean"
+  sed -i '/^  validate:/,/^  publish:/ s/^      contents: read$/      contents: write/' "$consumer/.github/workflows/container-candidate.yml"
+  if bash "$consumer/scripts/container-candidate-contract.test.sh" >/dev/null 2>&1; then
+    echo "generated contract accepted write authority in pull-request validation" >&2
+    exit 1
+  fi
+  mv "$consumer/.github/workflows/container-candidate.yml.clean" "$consumer/.github/workflows/container-candidate.yml"
 done
 
 private_consumer="$tmp/private-generated"
@@ -61,9 +75,12 @@ chmod +x "$private_consumer/scripts/"*.sh "$private_consumer/scripts/"*.py
 bash "$private_consumer/scripts/container-candidate-contract.test.sh"
 
 workflow="$root/.github/workflows/container-candidate.yml"
+publish_workflow="$root/.github/workflows/container-candidate-publish.yml"
 canary="$root/.github/workflows/container-candidate-reusable-contract.yml"
 CALLER_WORKFLOW="$tmp/single/.github/workflows/container-candidate.yml" \
-CALLEE_WORKFLOW="$workflow" CANARY_WORKFLOW="$canary" python3 - <<'PY'
+CALLEE_WORKFLOW="$workflow" PUBLISH_WORKFLOW="$publish_workflow" \
+CANARY_WORKFLOW="$canary" python3 - <<'PY'
+import copy
 import os
 
 import yaml
@@ -73,6 +90,8 @@ with open(os.environ["CALLER_WORKFLOW"], encoding="utf-8") as stream:
     caller = yaml.safe_load(stream)
 with open(os.environ["CALLEE_WORKFLOW"], encoding="utf-8") as stream:
     callee = yaml.safe_load(stream)
+with open(os.environ["PUBLISH_WORKFLOW"], encoding="utf-8") as stream:
+    publisher = yaml.safe_load(stream)
 with open(os.environ["CANARY_WORKFLOW"], encoding="utf-8") as stream:
     canary = yaml.safe_load(stream)
 
@@ -96,17 +115,137 @@ assert "secrets" not in caller["jobs"]["validate"], (
 assert "secrets" not in caller["jobs"]["publish"], (
     "public-only publication must not receive an unnecessary package token"
 )
-levels = {None: 0, "none": 0, "read": 1, "write": 2}
-default_permissions = callee.get("permissions", {})
-for job_name, job in callee["jobs"].items():
-    requested = job.get("permissions", default_permissions)
-    for permission, level in requested.items():
-        assert permission in publication_permissions, f"publication caller omits {job_name} permission {permission}"
-        assert levels[level] <= levels[publication_permissions[permission]], (
-            f"caller cannot satisfy {job_name} permission {permission}: {level}"
+authority_condition = (
+    "(github.event_name == 'push' && github.ref == 'refs/heads/main' "
+    "&& github.event.repository.default_branch == 'main') || "
+    "(github.event_name == 'workflow_dispatch' "
+    "&& github.repository == 'Verjson/.github' "
+    "&& github.ref == format('refs/heads/{0}', github.event.repository.default_branch))"
+)
+expected_conditions = {
+    "publish-base": (
+        "always() && (" + authority_condition + ") "
+        "&& needs.prepare.result == 'success' "
+        "&& (needs.acquire-private-node-dependencies.result == 'success' "
+        "|| needs.acquire-private-node-dependencies.result == 'skipped')"
+    ),
+    "publish-derived": (
+        "always() && (" + authority_condition + ") "
+        "&& needs.prepare.result == 'success' "
+        "&& (needs.acquire-private-node-dependencies.result == 'success' "
+        "|| needs.acquire-private-node-dependencies.result == 'skipped') "
+        "&& needs.publish-base.result == 'success'"
+    ),
+    "attest-sbom": (
+        "always() && (" + authority_condition + ") "
+        "&& needs.prepare.result == 'success' "
+        "&& needs.publish-base.result == 'success' "
+        "&& needs.publish-derived.result == 'success'"
+    ),
+    "candidate-manifest": authority_condition,
+}
+
+def validate_authority(read_only, publication):
+    assert set(read_only["jobs"]) == {
+        "prepare", "acquire-private-node-dependencies", "pull-request-build"
+    }, "read-only entrypoint contains publication authority"
+    assert set(publication["jobs"]) == {
+        "prepare", "acquire-private-node-dependencies", "publish-base",
+        "publish-derived", "attest-sbom", "candidate-manifest"
+    }, "publication entrypoint has an unexpected static graph"
+    assert read_only["permissions"] == {"contents": "read"}
+    assert publication["permissions"] == {"contents": "read"}
+    for job_name, job in read_only["jobs"].items():
+        requested = job.get("permissions", read_only["permissions"])
+        assert set(requested).issubset(validation_permissions), (
+            f"read-only entrypoint job {job_name} requests publication authority"
         )
+        assert all(level == "read" for level in requested.values()), (
+            f"read-only entrypoint job {job_name} requests write authority"
+        )
+    for job_name in ("prepare", "acquire-private-node-dependencies"):
+        requested = publication["jobs"][job_name].get(
+            "permissions", publication["permissions"]
+        )
+        assert requested == {"contents": "read"}, (
+            f"publication {job_name} must remain exact read-only preparation"
+        )
+        assert read_only["jobs"][job_name] == publication["jobs"][job_name], (
+            f"shared trusted-input job {job_name} drifted between entrypoints"
+        )
+    prepare_steps = read_only["jobs"]["prepare"]["steps"]
+    checkout = next(step for step in prepare_steps if step.get("uses", "").startswith("actions/checkout@"))
+    assert checkout["with"] == {
+        "path": ".container-candidate-source-${{ github.run_id }}-${{ github.run_attempt }}",
+        "persist-credentials": False,
+    }, "prepare checkout is not run-isolated and credentialless"
+    cleanup = next(step for step in prepare_steps if step.get("name") == "Remove isolated candidate source")
+    assert cleanup["if"] == "always()"
+    assert cleanup["run"] == 'rm -rf "$SOURCE_PATH"'
+    build_steps = read_only["jobs"]["pull-request-build"]["steps"]
+    build_checkout = next(step for step in build_steps if step.get("uses", "").startswith("actions/checkout@"))
+    assert build_checkout["with"] == {
+        "path": ".container-candidate-build-source-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.variant }}",
+        "persist-credentials": False,
+    }, "pull-request build checkout is not matrix-isolated and credentialless"
+    build_paths = next(step for step in build_steps if step.get("id") == "build-paths")
+    assert build_paths["name"] == "Validate isolated candidate build paths"
+    assert build_paths["env"] == {
+        "SOURCE_PATH": ".container-candidate-build-source-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.variant }}",
+        "CONTEXT_RELATIVE_PATH": "${{ matrix.context }}",
+        "FILE_RELATIVE_PATH": "${{ matrix.file }}",
+    }
+    assert 'realpath -e "$source_root/$CONTEXT_RELATIVE_PATH"' in build_paths["run"]
+    assert 'realpath -e "$source_root/$FILE_RELATIVE_PATH"' in build_paths["run"]
+    assert 'case "$context_path" in "$source_root"|"$source_root"/*)' in build_paths["run"]
+    assert 'case "$file_path" in "$source_root"/*)' in build_paths["run"]
+    docker_build = next(step for step in build_steps if step.get("uses", "").startswith("docker/build-push-action@"))
+    assert docker_build["with"]["context"] == "${{ steps.build-paths.outputs.context }}"
+    assert docker_build["with"]["file"] == "${{ steps.build-paths.outputs.file }}"
+    build_cleanup = next(step for step in build_steps if step.get("name") == "Remove isolated candidate build source")
+    assert build_cleanup["if"] == "always()"
+    assert build_cleanup["run"] == 'rm -rf "$SOURCE_PATH"'
+    levels = {None: 0, "none": 0, "read": 1, "write": 2}
+    for job_name, job in publication["jobs"].items():
+        requested = job.get("permissions", publication["permissions"])
+        for permission, level in requested.items():
+            assert permission in publication_permissions, (
+                f"publication caller omits {job_name} permission {permission}"
+            )
+            assert levels[level] <= levels[publication_permissions[permission]], (
+                f"caller cannot satisfy {job_name} permission {permission}: {level}"
+            )
+    for job_name, expected in expected_conditions.items():
+        assert publication["jobs"][job_name]["if"] == expected, (
+            f"{job_name} publication authority predicate drifted"
+        )
+
+validate_authority(callee, publisher)
+mutated = copy.deepcopy(publisher)
+mutated["jobs"]["prepare"]["env"] = {"DRIFT": "true"}
+try:
+    validate_authority(callee, mutated)
+    raise AssertionError("shared preparation drift was accepted")
+except AssertionError as error:
+    assert "shared trusted-input job prepare drifted" in str(error)
+mutated = copy.deepcopy(publisher)
+mutated["jobs"]["acquire-private-node-dependencies"]["permissions"] = {"contents": "write"}
+try:
+    validate_authority(callee, mutated)
+    raise AssertionError("unguarded acquisition write widening was accepted")
+except AssertionError as error:
+    assert "exact read-only preparation" in str(error)
+mutated = copy.deepcopy(publisher)
+mutated["jobs"]["publish-base"]["if"] += " || github.event_name == 'pull_request'"
+try:
+    validate_authority(callee, mutated)
+    raise AssertionError("pull-request publication disjunction was accepted")
+except AssertionError as error:
+    assert "authority predicate drifted" in str(error)
 assert canary["jobs"]["validate"]["permissions"] == validation_permissions
 assert canary["jobs"]["publish"]["permissions"] == publication_permissions
+assert canary["jobs"]["validate"]["uses"] == "./.github/workflows/container-candidate.yml"
+assert canary["jobs"]["publish"]["uses"] == "./.github/workflows/container-candidate-publish.yml"
 assert canary["jobs"]["publish"]["if"] == (
     "github.event_name == 'workflow_dispatch' "
     "&& github.ref == format('refs/heads/{0}', github.event.repository.default_branch)"
@@ -298,7 +437,7 @@ fi
 first_adoption_output="$tmp/first-adoption-output"
 (
   cd "$first_adoption"
-  CONFIG_PATH=container-candidate.json \
+  CONFIG_RELATIVE_PATH=container-candidate.json \
     CONTRACT_REF="$ref" \
     GITHUB_OUTPUT="$first_adoption_output" \
     GITHUB_REPOSITORY=Verjson/example \
@@ -306,6 +445,7 @@ first_adoption_output="$tmp/first-adoption-output"
     GITHUB_RUN_ATTEMPT=1 \
     GITHUB_RUN_ID=12345 \
     JOB_WORKFLOW_SHA="$ref" \
+    SOURCE_PATH=. \
     bash "$prepare_script"
 )
 grep -qx 'has-private-node-packages=false' "$first_adoption_output"
@@ -316,7 +456,7 @@ run_invalid_config() {
 
   if (
     cd "$first_adoption"
-    CONFIG_PATH="$config_path" \
+    CONFIG_RELATIVE_PATH="$config_path" \
       CONTRACT_REF="$ref" \
       GITHUB_OUTPUT="$output" \
       GITHUB_REPOSITORY=Verjson/example \
@@ -324,12 +464,66 @@ run_invalid_config() {
       GITHUB_RUN_ATTEMPT=1 \
       GITHUB_RUN_ID=12345 \
       JOB_WORKFLOW_SHA="$ref" \
+      SOURCE_PATH=. \
       bash "$prepare_script"
   ) >/dev/null 2>&1; then
     echo "candidate config unexpectedly passed: $config_path" >&2
     exit 1
   fi
 }
+
+cp "$root/scripts/fixtures/container-candidate/single.json" "$tmp/outside-candidate.json"
+run_invalid_config ../outside-candidate.json "$tmp/traversal-output"
+ln -s "$tmp/outside-candidate.json" "$first_adoption/escape.json"
+run_invalid_config escape.json "$tmp/symlink-output"
+for field in context file; do
+  jq --arg field "$field" '.images[0][$field] = "../../outside"' \
+    "$root/scripts/fixtures/container-candidate/single.json" \
+    > "$first_adoption/malicious-$field.json"
+  run_invalid_config "malicious-$field.json" "$tmp/malicious-$field-output"
+done
+if (cd "$first_adoption" && "$generator" workflow "$ref" 'a/../../outside.json') >/dev/null 2>&1; then
+  echo "generator accepted traversal-bearing config-path" >&2
+  exit 1
+fi
+
+build_paths_script="$tmp/validate-build-paths.sh"
+BUILD_PATHS_SCRIPT="$build_paths_script" WORKFLOW="$workflow" python3 - <<'PY'
+import os
+import yaml
+
+with open(os.environ["WORKFLOW"], encoding="utf-8") as stream:
+    workflow = yaml.safe_load(stream)
+step = next(
+    item for item in workflow["jobs"]["pull-request-build"]["steps"]
+    if item.get("id") == "build-paths"
+)
+with open(os.environ["BUILD_PATHS_SCRIPT"], "w", encoding="utf-8") as stream:
+    stream.write(step["run"])
+PY
+build_source="$tmp/build-source"
+outside_build="$tmp/outside-build"
+mkdir -p "$build_source/context" "$outside_build/context"
+touch "$build_source/Dockerfile" "$outside_build/Dockerfile"
+GITHUB_OUTPUT="$tmp/valid-build-paths-output" SOURCE_PATH="$build_source" \
+  CONTEXT_RELATIVE_PATH=context FILE_RELATIVE_PATH=Dockerfile \
+  bash "$build_paths_script"
+grep -qx "context=$(realpath -e "$build_source/context")" "$tmp/valid-build-paths-output"
+grep -qx "file=$(realpath -e "$build_source/Dockerfile")" "$tmp/valid-build-paths-output"
+ln -s "$outside_build/context" "$build_source/escaped-context"
+if GITHUB_OUTPUT="$tmp/escaped-context-output" SOURCE_PATH="$build_source" \
+  CONTEXT_RELATIVE_PATH=escaped-context FILE_RELATIVE_PATH=Dockerfile \
+  bash "$build_paths_script" >/dev/null 2>&1; then
+  echo "candidate context symlink escape unexpectedly passed" >&2
+  exit 1
+fi
+ln -s "$outside_build/Dockerfile" "$build_source/escaped-Dockerfile"
+if GITHUB_OUTPUT="$tmp/escaped-file-output" SOURCE_PATH="$build_source" \
+  CONTEXT_RELATIVE_PATH=context FILE_RELATIVE_PATH=escaped-Dockerfile \
+  bash "$build_paths_script" >/dev/null 2>&1; then
+  echo "candidate Dockerfile symlink escape unexpectedly passed" >&2
+  exit 1
+fi
 
 repository_marker="$tmp/repository-injection-executed"
 jq --arg repository "ghcr.io/verjson/x'; touch $repository_marker; #'" \
@@ -382,20 +576,21 @@ npm install --prefix "$lifecycle" --package-lock-only --ignore-scripts --no-audi
 npm ci --prefix "$lifecycle" --ignore-scripts --no-audit --no-fund >/dev/null
 [ ! -e "$tmp/lifecycle-exfiltrated" ] || { echo "npm lifecycle executed during credentialed acquisition" >&2; exit 1; }
 grep -q "github.event_name == 'pull_request'" "$workflow"
-grep -q "github.event_name == 'push'.*github.event.repository.default_branch" "$workflow"
-grep -q 'packages: write' "$workflow"
-grep -q 'id-token: write' "$workflow"
-grep -q 'attestations: write' "$workflow"
-grep -q 'actions/attest-build-provenance@[0-9a-f]\{40\}' "$workflow"
-grep -q 'actions/attest@[0-9a-f]\{40\}' "$workflow"
-grep -qF '.[$platform].SPDX | select(.spdxVersion == "SPDX-2.3"' "$workflow"
-grep -qF 'predicateType:"https://spdx.dev/Document/v2.3"' "$workflow"
-grep -qF 'python3 "$helper" index --index "$raw_index" --reviewed-platforms "$reviewed_platforms"' "$workflow"
-grep -qF 'python3 "$helper" spdx-evidence --manifest "$evidence_manifest"' "$workflow"
-grep -qF 'platforms:$platforms' "$workflow"
-grep -q 'commit identity already records a different digest' "$workflow"
-grep -q 'imagetools create -t "\$commit_tag"' "$workflow"
-if grep -Eq 'GITHUB_WORKFLOW_(REF|SHA)|github\.workflow_(ref|sha)' "$workflow"; then
+grep -q "github.event_name == 'push'" "$publish_workflow"
+grep -q 'github.event.repository.default_branch' "$publish_workflow"
+grep -q 'packages: write' "$publish_workflow"
+grep -q 'id-token: write' "$publish_workflow"
+grep -q 'attestations: write' "$publish_workflow"
+grep -q 'actions/attest-build-provenance@[0-9a-f]\{40\}' "$publish_workflow"
+grep -q 'actions/attest@[0-9a-f]\{40\}' "$publish_workflow"
+grep -qF '.[$platform].SPDX | select(.spdxVersion == "SPDX-2.3"' "$publish_workflow"
+grep -qF 'predicateType:"https://spdx.dev/Document/v2.3"' "$publish_workflow"
+grep -qF 'python3 "$helper" index --index "$raw_index" --reviewed-platforms "$reviewed_platforms"' "$publish_workflow"
+grep -qF 'python3 "$helper" spdx-evidence --manifest "$evidence_manifest"' "$publish_workflow"
+grep -qF 'platforms:$platforms' "$publish_workflow"
+grep -q 'commit identity already records a different digest' "$publish_workflow"
+grep -q 'imagetools create -t "\$commit_tag"' "$publish_workflow"
+if grep -Eq 'GITHUB_WORKFLOW_(REF|SHA)|github\.workflow_(ref|sha)' "$workflow" "$publish_workflow"; then
   echo "called workflows cannot prove their own pin through the caller-associated github workflow identity" >&2
   exit 1
 fi
@@ -403,7 +598,7 @@ if awk '/^  pull-request-build:/{seen=1} /^  publish-base:/{seen=0} seen' "$work
   echo "pull-request build exposes a publication capability" >&2
   exit 1
 fi
-attest_sbom_job="$(awk '/^  attest-sbom:/{seen=1} /^  candidate-manifest:/{seen=0} seen' "$workflow")"
+attest_sbom_job="$(awk '/^  attest-sbom:/{seen=1} /^  candidate-manifest:/{seen=0} seen' "$publish_workflow")"
 attest_sbom_permissions="$(awk '
   /^    permissions:$/ { seen=1; next }
   seen && /^    [A-Za-z0-9_.-]+:/ { exit }
@@ -429,7 +624,7 @@ grep -qF 'uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1' <<<"$
   echo "SBOM evidence binding cannot read the reviewed configuration" >&2
   exit 1
 }
-publish_derived_job="$(awk '/^  publish-derived:/{seen=1} /^  attest-sbom:/{seen=0} seen' "$workflow")"
+publish_derived_job="$(awk '/^  publish-derived:/{seen=1} /^  attest-sbom:/{seen=0} seen' "$publish_workflow")"
 grep -qF 'REPOSITORY: ${{ matrix.repository }}' <<<"$publish_derived_job"
 grep -qF 'IMAGE_VARIANT: ${{ matrix.variant }}' <<<"$publish_derived_job"
 grep -qF 'BASE_VARIANT: ${{ matrix.baseVariant }}' <<<"$publish_derived_job"
@@ -439,7 +634,8 @@ if grep -qF -- "repository='\${{ matrix.repository }}'" <<<"$publish_derived_job
   echo "publish-derived embeds candidate configuration into shell source" >&2
   exit 1
 fi
-[ "$(grep -cF 'uses: ./.github/workflows/container-candidate.yml' "$canary")" -eq 2 ] || {
+[ "$(grep -cF 'uses: ./.github/workflows/container-candidate.yml' "$canary")" -eq 1 ] \
+  && [ "$(grep -cF 'uses: ./.github/workflows/container-candidate-publish.yml' "$canary")" -eq 1 ] || {
   echo "reusable-call canary does not exercise both trust paths" >&2
   exit 1
 }
@@ -509,11 +705,13 @@ fi
 grep -qF 'name: Remove local acquisition and transfer state' <<<"$acquisition_job"
 grep -qF 'if: always()' <<<"$acquisition_job"
 for build_job in pull-request-build publish-base publish-derived; do
+  build_workflow="$workflow"
+  [ "$build_job" = pull-request-build ] || build_workflow="$publish_workflow"
   build_block="$(awk -v start="  $build_job:" '
     $0 == start { seen=1; next }
     seen && /^  [A-Za-z0-9_.-]+:/ { exit }
     seen { print }
-  ' "$workflow")"
+  ' "$build_workflow")"
   job_if="$(awk '
     /^    if:/ { seen=1; print; next }
     seen && /^      / { print; next }
@@ -548,16 +746,19 @@ for build_job in pull-request-build publish-base publish-derived; do
   fi
 done
 
-WORKFLOW="$workflow" python3 - <<'PY'
+WORKFLOW="$workflow" PUBLISH_WORKFLOW="$publish_workflow" python3 - <<'PY'
 import os
 import yaml
 
 with open(os.environ["WORKFLOW"], encoding="utf-8") as stream:
     workflow = yaml.safe_load(stream)
+with open(os.environ["PUBLISH_WORKFLOW"], encoding="utf-8") as stream:
+    publisher = yaml.safe_load(stream)
 
 private_gate = "needs.prepare.outputs.has-private-node-packages == 'true'"
 for job_name in ("pull-request-build", "publish-base", "publish-derived"):
-    steps = workflow["jobs"][job_name]["steps"]
+    source = workflow if job_name == "pull-request-build" else publisher
+    steps = source["jobs"][job_name]["steps"]
     context_steps = [
         step for step in steps
         if step.get("name") == "Prepare credential-free dependency build context"
@@ -631,7 +832,7 @@ if grep -Eqi 'package-lock\.json|setup-node|node_modules|npm|yarn|pnpm|BASE_SHA|
   echo "credential-free preparation imposes Node or reviewed-base requirements" >&2
   exit 1
 fi
-if grep -Eq 'uses: [^ ]+@(main|master|v[0-9]+)$' "$workflow"; then
+if grep -Eq 'uses: [^ ]+@(main|master|v[0-9]+)$' "$workflow" "$publish_workflow"; then
   echo "container workflow contains an unpinned action" >&2
   exit 1
 fi
