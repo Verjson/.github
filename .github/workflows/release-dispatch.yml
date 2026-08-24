@@ -1,4 +1,4 @@
-name: release proposal
+name: release dispatch proposal
 
 on:
   workflow_call:
@@ -36,14 +36,14 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  release-propose:
+  release-dispatch:
     runs-on: ${{ inputs.runner != '' && fromJSON(inputs.runner) || github.repository_owner != 'Verjson' && 'ubuntu-24.04' || github.event.repository.private == true && fromJSON(vars.VERJSON_RUNNER_OVERFLOW || vars.VERJSON_LANE_TRUSTED || vars.VERJSON_LANE_FALLBACK || '["ubuntu-24.04"]') || fromJSON(vars.VERJSON_RUNNER_OVERFLOW || vars.VERJSON_LANE_UNTRUSTED || vars.VERJSON_LANE_FALLBACK || '["ubuntu-24.04"]') }}
     timeout-minutes: 10
     permissions:
       contents: read
-      issues: write
+      actions: write
     steps:
-      - name: Admit release proposal on the default branch
+      - name: Admit release dispatch on the default branch
         env:
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
           DISPATCH_REF: ${{ github.ref }}
@@ -105,7 +105,7 @@ jobs:
           echo "selected=true" >&3
           printf 'selector-digest=%s\n' "$selector_digest" >&3
           printf 'version=%s\n' "$version" >&3
-      - name: Update the release proposal
+      - name: Dispatch the selected release
         if: steps.release.outputs.selected == 'true'
         env:
           COMPONENT: ${{ inputs.component }}
@@ -117,7 +117,7 @@ jobs:
           SELECTOR_DIGEST: ${{ steps.release.outputs.selector-digest }}
         run: |
           python3 .changelog-contract/scripts/release-propose.py \
-            --mode propose \
+            --mode dispatch \
             --repository "$GITHUB_REPOSITORY" \
             --workflow release.yml \
             --branch "$DEFAULT_BRANCH" \

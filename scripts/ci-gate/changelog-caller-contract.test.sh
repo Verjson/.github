@@ -660,7 +660,7 @@ run_adopter "$overprivileged_proposer" \
 
 event_selected_proposer="$tmproot/adopter-event-selected-proposer"
 cp -a "$adopter" "$event_selected_proposer"
-sed -i 's/^      autonomy: propose$/      autonomy: ${{ inputs.autonomy }}/' \
+sed -i '/^      contract_ref:/a\      autonomy: ${{ inputs.autonomy }}' \
   "$event_selected_proposer/.github/workflows/release-propose.yml"
 run_adopter "$event_selected_proposer" \
   && fail "emitted suite accepted event-selected release autonomy" \
