@@ -838,12 +838,12 @@ container-candidate.yml pull-request-build
 TARGETS
 
 for job in publish-base publish-derived candidate-manifest; do
-  assert_route "$workflows/container-candidate.yml" "$job" Verjson/.github '' false \
+  assert_route "$workflows/container-candidate-publish.yml" "$job" Verjson/.github '' false \
     '["self-hosted","trusted-canary"]' '["self-hosted","untrusted-canary"]' \
     '["self-hosted","trusted-canary"]' "container-candidate $job — publication stays on the trusted lane"
-  assert_route "$workflows/container-candidate.yml" "$job" Acme/widgets '' false '' '' \
+  assert_route "$workflows/container-candidate-publish.yml" "$job" Acme/widgets '' false '' '' \
     'ubuntu-24.04' "container-candidate $job — external callers retain hosted portability"
-  expression="$(extract_runs_on "$workflows/container-candidate.yml" "$job")"
+  expression="$(extract_runs_on "$workflows/container-candidate-publish.yml" "$job")"
   case "$expression" in
     *inputs.runner*) fail "container-candidate $job must not accept the build-only runner override" ;;
     *) pass "container-candidate $job rejects the build-only runner override" ;;
