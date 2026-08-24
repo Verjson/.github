@@ -517,3 +517,23 @@ remain forbidden. The canonical helper rejects malformed identities and any comp
 document still larger than 16 MiB before OIDC signing or registry publication. This is a
 bounded encoding correction to the existing evidence contract, not a reduction in SBOM
 scope or a new trust decision.
+
+## Amendment (2026-08-24) — release executes the pinned changelog engine (#1013)
+
+The container release workflow now validates its 40-lowercase-hex `contract-ref` and
+requires `job.workflow_ref` (the identity of the reusable workflow defining the current
+job, rather than the caller-associated `github.workflow_ref`) to equal the exact canonical
+`Verjson/.github/.github/workflows/container-release.yml@<contract-ref>` identity before
+any checkout. It then checks out only `scripts/changelog.py` from that exact
+`Verjson/.github` commit into a separate credentialless path. The terminal release step
+executes that pinned copy instead of assuming the consumer has independently vendored a
+root `scripts/changelog.py`.
+
+This restores ADR 0038's immutable engine boundary for documented container-release
+adopters. A clean generated adopter therefore has every release component it needs,
+while a branch, tag, malformed ref, valid-but-different SHA, wrong workflow source/path,
+consumer-local script, persisted checkout token, or contract checkout placed after
+App-token minting fails the semantic contract. The
+Release App remains confined to the terminal protected Git and GitHub Release operation;
+this correction neither widens its Contents-only permission nor changes the job token's
+separate package authority.

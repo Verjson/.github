@@ -2,7 +2,7 @@
 set -euo pipefail
 root="$(cd "$(dirname "$0")/.." && pwd)"; tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
 mkdir -p "$tmp/contract/scripts" "$tmp/consumer/.github/workflows" "$tmp/consumer/scripts"
-cp "$root/scripts/gen-container-release.sh" "$root/scripts/container_release_promotion.py" "$root/scripts/container_release_manifest.py" "$root/scripts/container_artifact_extract.py" "$root/scripts/container_attestation_verify.py" "$tmp/contract/scripts/"
+cp "$root/scripts/gen-container-release.sh" "$root/scripts/changelog.py" "$root/scripts/container_release_promotion.py" "$root/scripts/container_release_manifest.py" "$root/scripts/container_artifact_extract.py" "$root/scripts/container_attestation_verify.py" "$tmp/contract/scripts/"
 git -C "$tmp/contract" init -q; git -C "$tmp/contract" config user.name fixture; git -C "$tmp/contract" config user.email fixture@example.invalid
 git -C "$tmp/contract" add scripts; git -C "$tmp/contract" commit -qm fixture; ref="$(git -C "$tmp/contract" rev-parse HEAD)"
 generator="$tmp/contract/scripts/gen-container-release.sh"
@@ -13,6 +13,28 @@ generator="$tmp/contract/scripts/gen-container-release.sh"
 "$generator" attestation-verifier "$ref" >"$tmp/consumer/scripts/container_attestation_verify.py"
 "$generator" contract-test "$ref" >"$tmp/consumer/scripts/container-release-contract.test.sh"
 (cd "$tmp/consumer" && bash scripts/container-release-contract.test.sh)
+mkdir -p "$tmp/consumer/NEXT"
+cat >"$tmp/consumer/NEXT/2026-08-24-issue-1013-clean-adopter.md" <<'EOF'
+---
+date: 2026-08-24
+issue: 1013
+impact: major
+title: Exercise a clean generated container release adopter
+---
+
+Release-path fixture.
+EOF
+git -C "$tmp/consumer" init -q
+git -C "$tmp/consumer" config user.name fixture
+git -C "$tmp/consumer" config user.email fixture@example.invalid
+git -C "$tmp/consumer" add .
+git -C "$tmp/consumer" commit -qm fixture
+mkdir -p "$tmp/consumer/.container-release-contract/scripts"
+git -C "$tmp/contract" show "$ref:scripts/changelog.py" >"$tmp/consumer/.container-release-contract/scripts/changelog.py"
+(cd "$tmp/consumer" && python .container-release-contract/scripts/changelog.py release --version v1.0.0)
+test -f "$tmp/consumer/CHANGELOG/v1.0.0.md"
+test "$(git -C "$tmp/consumer" tag --list)" = v1.0.0
+test ! -e "$tmp/consumer/scripts/changelog.py"
 cp "$tmp/consumer/.github/workflows/container-release.yml" "$tmp/workflow.clean"
 reject_caller_mutation() {
   if (cd "$tmp/consumer" && bash scripts/container-release-contract.test.sh >/dev/null 2>&1); then
@@ -49,6 +71,10 @@ legacy_org_release_token='VERJSON_RELEASE_'"TOKEN"
 ! grep -Eq "$legacy_release_token|$legacy_org_release_token" "$workflow"
 grep -q 'gh attestation verify' "$workflow"
 grep -q 'container_attestation_verify.py' "$workflow"
+grep -q 'repository: Verjson/.github' "$workflow"
+grep -q 'ref: \${{ inputs.contract-ref }}' "$workflow"
+grep -q 'python .container-release-contract/scripts/changelog.py release' "$workflow"
+! grep -q 'python scripts/changelog.py release' "$workflow"
 grep -q 'actions/attest-build-provenance@' "$workflow"
 ! grep -q 'container-release-${{ github.repository }}-${{ inputs.version }}' "$workflow"
 grep -q 'group: container-release-${{ github.repository }}' "$workflow"

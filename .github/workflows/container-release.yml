@@ -33,6 +33,25 @@ jobs:
     outputs:
       retention-targets: ${{ steps.release-output.outputs.retention-targets }}
     steps:
+      - name: Bind the immutable changelog contract to this workflow
+        env:
+          CONTRACT_REF: ${{ inputs.contract-ref }}
+          JOB_CONTEXT: ${{ toJSON(job) }}
+        run: |
+          set -euo pipefail
+          [[ "$CONTRACT_REF" =~ ^[0-9a-f]{40}$ ]] || {
+            echo "::error::contract-ref must be a 40-character lowercase commit SHA"
+            exit 1
+          }
+          workflow_ref="$(jq -er '.workflow_ref | select(type == "string" and length > 0)' <<<"$JOB_CONTEXT")" || {
+            echo "::error::the called reusable workflow identity is unavailable or malformed"
+            exit 1
+          }
+          expected="Verjson/.github/.github/workflows/container-release.yml@$CONTRACT_REF"
+          [ "$workflow_ref" = "$expected" ] || {
+            echo "::error::contract-ref does not match the loaded canonical container-release workflow"
+            exit 1
+          }
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with: {fetch-depth: 0, persist-credentials: false}
       - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
@@ -146,6 +165,15 @@ jobs:
           else
             echo missing > github-state
           fi
+      - name: Check out the immutable changelog engine
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: Verjson/.github
+          ref: ${{ inputs.contract-ref }}
+          path: .container-release-contract
+          persist-credentials: false
+          sparse-checkout: scripts/changelog.py
+          sparse-checkout-cone-mode: false
       - name: Require the release App client ID
         env:
           RELEASE_APP_CLIENT_ID: ${{ inputs.release_app_client_id }}
@@ -198,7 +226,7 @@ jobs:
             git config user.email github-actions@github.com
             git add "RELEASES/containers/v$VERSION.json"
             git commit -m "chore(containers): record release v$VERSION"
-            python scripts/changelog.py release --version "v$VERSION"
+            python .container-release-contract/scripts/changelog.py release --version "v$VERSION"
             git push --atomic origin HEAD:main "refs/tags/v$VERSION"
           fi
           if [ "$(cat github-state)" = missing ]; then
