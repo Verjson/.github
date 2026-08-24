@@ -13,6 +13,22 @@ generator="$tmp/contract/scripts/gen-container-release.sh"
 "$generator" attestation-verifier "$ref" >"$tmp/consumer/scripts/container_attestation_verify.py"
 "$generator" contract-test "$ref" >"$tmp/consumer/scripts/container-release-contract.test.sh"
 (cd "$tmp/consumer" && bash scripts/container-release-contract.test.sh)
+cp "$tmp/consumer/.github/workflows/container-release.yml" "$tmp/workflow.clean"
+reject_caller_mutation() {
+  if (cd "$tmp/consumer" && bash scripts/container-release-contract.test.sh >/dev/null 2>&1); then
+    echo "generated contract accepted caller drift: $1" >&2
+    exit 1
+  fi
+  cp "$tmp/workflow.clean" "$tmp/consumer/.github/workflows/container-release.yml"
+}
+sed -i 's/^  packages: write$/  packages: read/' "$tmp/consumer/.github/workflows/container-release.yml"
+reject_caller_mutation 'package permission'
+sed -i 's/vars.RELEASE_APP_CLIENT_ID/vars.OTHER_CLIENT_ID/' "$tmp/consumer/.github/workflows/container-release.yml"
+reject_caller_mutation 'App client ID mapping'
+sed -i 's/secrets.RELEASE_APP_PRIVATE_KEY/secrets.OTHER_PRIVATE_KEY/' "$tmp/consumer/.github/workflows/container-release.yml"
+reject_caller_mutation 'App private-key mapping'
+sed -i '/^    secrets:/,$c\    secrets: inherit' "$tmp/consumer/.github/workflows/container-release.yml"
+reject_caller_mutation 'inherited secrets'
 if "$generator" validator "$(printf 'a%.0s' {1..40})" >/dev/null 2>&1; then
   echo "validator generation resolved a nonexistent pin from local files" >&2; exit 1
 fi
@@ -24,10 +40,13 @@ grep -q "github.event_name == 'workflow_dispatch'" "$workflow"
 ! grep -Eq '^  (push|pull_request):' "$workflow"
 grep -q 'imagetools create' "$workflow"
 ! grep -Eq 'build-push-action|docker build|deploy|verjson-cli-cloud' "$workflow"
-grep -q 'admin-scoped release credential required' "$workflow"
+grep -q 'Mint exact-repository release App token' "$workflow"
 grep -q 'git push --atomic' "$workflow"
 grep -q 'docker/login-action@' "$workflow"
-grep -A5 'docker/login-action@' "$workflow" | grep -q 'secrets.release-token'
+! grep -q 'secrets.release-token' "$workflow"
+legacy_release_token='RELEASE_'"TOKEN"
+legacy_org_release_token='VERJSON_RELEASE_'"TOKEN"
+! grep -Eq "$legacy_release_token|$legacy_org_release_token" "$workflow"
 grep -q 'gh attestation verify' "$workflow"
 grep -q 'container_attestation_verify.py' "$workflow"
 grep -q 'actions/attest-build-provenance@' "$workflow"

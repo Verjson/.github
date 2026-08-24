@@ -17,6 +17,7 @@ permissions:
   attestations: write
   contents: read
   id-token: write
+  packages: write
 jobs:
   release:
     uses: Verjson/.github/.github/workflows/container-release.yml@$ref
@@ -25,8 +26,9 @@ jobs:
       candidate-manifest: \${{ inputs.candidate-manifest }}
       config-path: $config
       contract-ref: $ref
+      release_app_client_id: \${{ vars.RELEASE_APP_CLIENT_ID }}
     secrets:
-      release-token: \${{ secrets.RELEASE_TOKEN }}
+      release_app_private_key: \${{ secrets.RELEASE_APP_PRIVATE_KEY }}
 EOF
 ;;
 validator) git -C "$root" show "$ref:scripts/container_release_promotion.py" ;;
@@ -43,6 +45,7 @@ git -C "$root" show "$ref:scripts/container_release_manifest.py" \
 artifact-extractor) git -C "$root" show "$ref:scripts/container_artifact_extract.py" ;;
 attestation-verifier) git -C "$root" show "$ref:scripts/container_attestation_verify.py" ;;
 contract-test)
+workflow_digest="$("$0" workflow "$ref" "$config" | sha256sum | cut -d' ' -f1)"
 promotion_digest="$(git -C "$root" show "$ref:scripts/container_release_promotion.py" | sha256sum | cut -d' ' -f1)"
 manifest_validator="$("$0" manifest-validator "$ref" "$config")"
 manifest_digest="$(printf '%s\n' "$manifest_validator" | sha256sum | cut -d' ' -f1)"
@@ -52,11 +55,16 @@ cat <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
 ref='$ref'
+printf '%s  %s\n' '$workflow_digest' .github/workflows/container-release.yml | sha256sum --check --strict
 grep -Fq "container-release.yml@\$ref" .github/workflows/container-release.yml
 grep -Fq "contract-ref: \$ref" .github/workflows/container-release.yml
 grep -q "workflow_dispatch:" .github/workflows/container-release.yml
 ! grep -Eq '^  (push|pull_request):' .github/workflows/container-release.yml
-grep -q 'RELEASE_TOKEN' .github/workflows/container-release.yml
+grep -q 'RELEASE_APP_CLIENT_ID' .github/workflows/container-release.yml
+grep -q 'RELEASE_APP_PRIVATE_KEY' .github/workflows/container-release.yml
+legacy_release_token='RELEASE_'"TOKEN"
+legacy_org_release_token='VERJSON_RELEASE_'"TOKEN"
+! grep -Eq "\$legacy_release_token|\$legacy_org_release_token" .github/workflows/container-release.yml
 test -f scripts/container_release_promotion.py
 test -f scripts/container_release_manifest.py
 test -f scripts/container_artifact_extract.py

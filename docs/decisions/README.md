@@ -11,6 +11,7 @@ Reverse-chronological index of org-level decisions.
 <!-- BEGIN ADR INDEX -->
 | # | Date | Decision |
 |---|------|----------|
+| [0126](0126-split-container-release-authority/README.md) | 2026-08-24 | Split container release Git and package authority |
 | [0125](0125-bootstrap-canonical-ci-adopters-fail-closed/README.md) | 2026-08-24 | Bootstrap canonical CI adopters through a fail-closed manifest |
 | [0124](0124-split-container-candidate-authority-entrypoints/README.md) | 2026-08-24 | Split container candidate authority entrypoints |
 | [0123](0123-use-organization-neutral-ci-variables/README.md) | 2026-08-24 | Use organization-neutral canonical CI variables |

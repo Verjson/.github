@@ -72,7 +72,7 @@ done
 
 grep -qF 'vars.CI_LANE_PRIVILEGED' scripts/gen-privileged-merge-caller.sh
 grep -qF 'vars.CI_RUNNER_DEFAULT' scripts/gen-changelog-caller.sh
-grep -qF 'secrets.RELEASE_TOKEN' scripts/gen-container-release.sh
+grep -qF 'secrets.RELEASE_APP_PRIVATE_KEY' scripts/gen-container-release.sh
 grep -qF 'secrets.RUNNER_DEPLOY_TOKEN' .github/workflows/container-deployment.yml
 
 printf 'organization-neutral canonical CI variable contract: PASS\n'
