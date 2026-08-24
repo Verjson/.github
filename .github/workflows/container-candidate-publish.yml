@@ -615,8 +615,9 @@ jobs:
           python3 "$helper" spdx-evidence --manifest "$evidence_manifest" >/dev/null
           platform_key="$OS/$ARCHITECTURE${PLATFORM_VARIANT:+/$PLATFORM_VARIANT}"
           docker buildx imagetools inspect "$REPOSITORY@$index_digest" --format '{{json .SBOM}}' \
-            | jq -e --arg platform "$platform_key" '.[$platform].SPDX | select(.spdxVersion == "SPDX-2.3" and .SPDXID == "SPDXRef-DOCUMENT")' \
-            > sbom.spdx.json
+            > "$RUNNER_TEMP/sbom-index.json"
+          python3 "$helper" spdx-document --sbom-index "$RUNNER_TEMP/sbom-index.json" \
+            --platform "$platform_key" > sbom.spdx.json
           echo "digest=$platform_digest" >> "$GITHUB_OUTPUT"
       - id: sbom-attestation
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2

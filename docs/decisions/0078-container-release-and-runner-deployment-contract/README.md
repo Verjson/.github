@@ -503,3 +503,17 @@ The repository's reusable-call canary applies the same trust split. Its privileg
 manual publication job runs only when the dispatch ref is the repository's current
 default branch, so a writer cannot select branch-local reusable workflow or candidate
 configuration code and grant it package, attestation, or OIDC authority.
+
+## Amendment (2026-08-24) — compact complete platform SBOM predicates (#1047)
+
+The candidate publisher serializes each exact platform's complete SPDX 2.3 document as
+compact JSON before handing it to GitHub's attestation action. JSON whitespace carries
+no package evidence, but the former pretty-printed serialization pushed otherwise valid
+Node and Python predicates over GitHub's 16 MiB input boundary.
+
+Compaction must preserve the entire parsed SPDX object and its exact platform binding;
+truncation, package filtering, fallback platform selection, and alternate SPDX identities
+remain forbidden. The canonical helper rejects malformed identities and any compact
+document still larger than 16 MiB before OIDC signing or registry publication. This is a
+bounded encoding correction to the existing evidence contract, not a reduction in SBOM
+scope or a new trust decision.

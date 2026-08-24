@@ -11,6 +11,7 @@ OCI_MANIFEST = "application/vnd.oci.image.manifest.v1+json"
 IN_TOTO = "application/vnd.in-toto+json"
 ATTESTATION_TYPE = "attestation-manifest"
 DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
+MAX_ATTESTATION_PREDICATE_BYTES = 16 * 1024 * 1024
 
 
 class OCIIndexError(ValueError):
@@ -164,6 +165,31 @@ def validate_spdx_evidence(manifest):
     return {"spdxLayerDigest": spdx_layers[0]}
 
 
+def compact_spdx_document(sbom_index, platform):
+    sbom_index = _object(sbom_index, "SBOM index")
+    if not isinstance(platform, str) or not platform:
+        raise OCIIndexError("platform must be a non-empty string")
+    if platform not in sbom_index:
+        raise OCIIndexError(f"SBOM index has no exact platform entry: {platform}")
+    entry = _object(sbom_index[platform], f"SBOM index[{platform!r}]")
+    document = _object(entry.get("SPDX"), f"SBOM index[{platform!r}].SPDX")
+    if document.get("spdxVersion") != "SPDX-2.3" or document.get("SPDXID") != "SPDXRef-DOCUMENT":
+        raise OCIIndexError("platform SBOM must be an SPDX 2.3 document")
+    try:
+        compact = json.dumps(
+            document, allow_nan=False, ensure_ascii=False, separators=(",", ":")
+        ) + "\n"
+    except ValueError as error:
+        raise OCIIndexError(f"platform SBOM is not strict JSON: {error}") from error
+    size = len(compact.encode("utf-8"))
+    if size > MAX_ATTESTATION_PREDICATE_BYTES:
+        raise OCIIndexError(
+            "compact platform SBOM exceeds GitHub's "
+            f"{MAX_ATTESTATION_PREDICATE_BYTES}-byte predicate limit: {size}"
+        )
+    return compact
+
+
 def _read_json(path):
     try:
         return json.loads(Path(path).read_text(encoding="utf-8"))
@@ -179,12 +205,18 @@ def main(argv=None):
     index_parser.add_argument("--reviewed-platforms", required=True)
     evidence_parser = subparsers.add_parser("spdx-evidence")
     evidence_parser.add_argument("--manifest", required=True)
+    document_parser = subparsers.add_parser("spdx-document")
+    document_parser.add_argument("--sbom-index", required=True)
+    document_parser.add_argument("--platform", required=True)
     args = parser.parse_args(argv)
     try:
         if args.command == "index":
             result = validate_index(_read_json(args.index), _read_json(args.reviewed_platforms))
-        else:
+        elif args.command == "spdx-evidence":
             result = validate_spdx_evidence(_read_json(args.manifest))
+        else:
+            sys.stdout.write(compact_spdx_document(_read_json(args.sbom_index), args.platform))
+            return 0
     except OCIIndexError as error:
         parser.error(str(error))
     json.dump(result, sys.stdout, separators=(",", ":"), sort_keys=True)
