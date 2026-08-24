@@ -3,7 +3,11 @@
 set -euo pipefail
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
-pin="20ce1c86880bbb2898aafb0df3b7693d643d8f64"
+# Keep the component integration fixture on the first canonical contract that
+# removed captured-value producer pipelines (#659). The four contract-test
+# executions below then exercise that SIGPIPE regression under this script's
+# pipefail setting before and after each component release.
+pin="36535b76374a3a3d8e8b73e3745e45f5b302cf05"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 contract="$tmp/contract"
