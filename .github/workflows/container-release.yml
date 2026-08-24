@@ -7,8 +7,9 @@ on:
       candidate-manifest: {required: true, type: string}
       config-path: {required: true, type: string}
       contract-ref: {required: true, type: string}
+      release_app_client_id: {required: true, type: string}
     secrets:
-      release-token: {required: true}
+      release_app_private_key: {required: true}
 
 permissions:
   contents: read
@@ -28,17 +29,18 @@ jobs:
       attestations: write
       contents: read
       id-token: write
+      packages: write
     outputs:
       retention-targets: ${{ steps.release-output.outputs.retention-targets }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with: {fetch-depth: 0, token: "${{ secrets.release-token }}"}
+        with: {fetch-depth: 0, persist-credentials: false}
       - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
       - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
-          password: ${{ secrets.release-token }}
+          password: ${{ github.token }}
       - name: Fetch candidate by immutable artifact identity
         env:
           CANDIDATE_IDENTITY: ${{ inputs.candidate-manifest }}
@@ -77,14 +79,12 @@ jobs:
           CANDIDATE_MANIFEST: ${{ inputs.candidate-manifest }}
           CONFIG_PATH: ${{ inputs.config-path }}
           CONTRACT_REF: ${{ inputs.contract-ref }}
-          GH_TOKEN: ${{ secrets.release-token }}
-          BUILTIN_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           [[ "$CONTRACT_REF" =~ ^[0-9a-f]{40}$ ]] || exit 1
           [[ "$CANDIDATE_MANIFEST" =~ ^[0-9]+@(sha256:[0-9a-f]{64})$ ]] || exit 1
           candidate_artifact_digest="${BASH_REMATCH[2]}"
-          [[ "$GH_TOKEN" != "$BUILTIN_TOKEN" ]] || { echo "::error::admin-scoped release credential required"; exit 1; }
           [[ "$CONFIG_PATH" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]*\.json$ && "/$CONFIG_PATH/" != *"/../"* ]] || { echo "::error::config path must be repository relative"; exit 1; }
           release_run="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID")"
           previous=null
@@ -146,6 +146,23 @@ jobs:
           else
             echo missing > github-state
           fi
+      - name: Require the release App client ID
+        env:
+          RELEASE_APP_CLIENT_ID: ${{ inputs.release_app_client_id }}
+        run: |
+          if [[ -z "$RELEASE_APP_CLIENT_ID" || "$RELEASE_APP_CLIENT_ID" =~ ^[0-9]+$ ]]; then
+            echo "::error::RELEASE_APP_CLIENT_ID must be a GitHub App client ID, not an empty or numeric legacy App ID."
+            exit 1
+          fi
+      - name: Mint exact-repository release App token
+        id: release-app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
+        with:
+          client-id: ${{ inputs.release_app_client_id }}
+          private-key: ${{ secrets.release_app_private_key }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          permission-contents: write
       - name: Promote exact digests without rebuilding
         env: {VERSION: "${{ inputs.version }}"}
         run: |
@@ -170,9 +187,10 @@ jobs:
           subject-path: release-manifest.json
       - id: release-output
         name: Canonical changelog, Git tag, release and machine output
-        env: {VERSION: "${{ inputs.version }}", GH_TOKEN: "${{ secrets.release-token }}"}
+        env: {VERSION: "${{ inputs.version }}", GH_TOKEN: "${{ steps.release-app-token.outputs.token }}"}
         run: |
           set -euo pipefail
+          gh auth setup-git
           if [ "$(cat git-state)" = new ]; then
             mkdir -p RELEASES/containers
             cp release-manifest.json "RELEASES/containers/v$VERSION.json"
@@ -221,10 +239,10 @@ jobs:
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
-          password: ${{ secrets.release-token }}
+          password: ${{ github.token }}
       - name: Delete image versions outside canonical retention
         env:
-          GH_TOKEN: ${{ secrets.release-token }}
+          GH_TOKEN: ${{ github.token }}
           TARGETS: ${{ needs.promote.outputs.retention-targets }}
           # Org-wide retention window (verjson-agents#987). Defaults to the ADR
           # 0108 policy of 3 and changes nothing until a human sets this
