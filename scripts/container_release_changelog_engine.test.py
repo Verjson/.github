@@ -56,10 +56,10 @@ def validate(workflow):
         errors.append("changelog acquisition occurs after App-token minting")
 
     run = output.get("run", "")
-    expected_command = "python .container-release-contract/scripts/changelog.py release --version \"v$VERSION\""
+    expected_command = "python3 .container-release-contract/scripts/changelog.py release --version \"v$VERSION\""
     if expected_command not in run:
         errors.append("terminal release does not execute the pinned changelog engine")
-    if "python scripts/changelog.py release" in run:
+    if "python scripts/changelog.py release" in run or "python3 scripts/changelog.py release" in run:
         errors.append("terminal release executes a consumer-local changelog engine")
     return errors
 

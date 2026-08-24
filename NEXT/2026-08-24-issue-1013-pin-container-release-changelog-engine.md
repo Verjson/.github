@@ -7,4 +7,5 @@ title: Pin the container release changelog engine
 
 Container releases now acquire and execute the changelog engine from the caller's exact
 immutable canonical contract SHA, so a clean generated adopter no longer needs a local
-copy of `scripts/changelog.py`.
+copy of `scripts/changelog.py`. The release path uses the runner's portable `python3`
+interpreter contract.

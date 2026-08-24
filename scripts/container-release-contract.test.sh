@@ -31,7 +31,7 @@ git -C "$tmp/consumer" add .
 git -C "$tmp/consumer" commit -qm fixture
 mkdir -p "$tmp/consumer/.container-release-contract/scripts"
 git -C "$tmp/contract" show "$ref:scripts/changelog.py" >"$tmp/consumer/.container-release-contract/scripts/changelog.py"
-(cd "$tmp/consumer" && python .container-release-contract/scripts/changelog.py release --version v1.0.0)
+(cd "$tmp/consumer" && python3 .container-release-contract/scripts/changelog.py release --version v1.0.0)
 test -f "$tmp/consumer/CHANGELOG/v1.0.0.md"
 test "$(git -C "$tmp/consumer" tag --list)" = v1.0.0
 test ! -e "$tmp/consumer/scripts/changelog.py"
@@ -73,8 +73,8 @@ grep -q 'gh attestation verify' "$workflow"
 grep -q 'container_attestation_verify.py' "$workflow"
 grep -q 'repository: Verjson/.github' "$workflow"
 grep -q 'ref: \${{ inputs.contract-ref }}' "$workflow"
-grep -q 'python .container-release-contract/scripts/changelog.py release' "$workflow"
-! grep -q 'python scripts/changelog.py release' "$workflow"
+grep -q 'python3 .container-release-contract/scripts/changelog.py release' "$workflow"
+! grep -Eq 'python3? scripts/changelog.py release' "$workflow"
 grep -q 'actions/attest-build-provenance@' "$workflow"
 ! grep -q 'container-release-${{ github.repository }}-${{ inputs.version }}' "$workflow"
 grep -q 'group: container-release-${{ github.repository }}' "$workflow"
