@@ -84,6 +84,7 @@ jobs:
           set -euo pipefail
           [[ "$TARGET_REPO" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] || exit 1
           [[ "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]] || exit 1
+          [[ "$DEFAULT_BRANCH" =~ ^[A-Za-z0-9._/-]+$ ]] || exit 1
           [[ "$APP_ID" =~ ^[1-9][0-9]*$ ]] || { echo "::error::AI_REVIEW_APP_ID is unavailable"; exit 1; }
           [[ "$APP_SLUG" =~ ^[a-z0-9][a-z0-9-]*$ ]] || { echo "::error::AI_REVIEW_APP_SLUG is unavailable"; exit 1; }
 
@@ -130,6 +131,34 @@ jobs:
           explicit_ai_review=false
           hold_removed=false
           operator_recovery=false
+          select_compatible_review_policy() {
+            local policy_json="$1" caller_file caller_sha256 selected_json
+            caller_file="$(mktemp "${RUNNER_TEMP:-/tmp}/ai-review-caller.XXXXXX")"
+            if ! GH_TOKEN="$ACTIONS_TOKEN" gh api \
+              "repos/$TARGET_REPO/contents/.github/workflows/ai-review-merge.yml?ref=$DEFAULT_BRANCH" \
+              -H 'Accept: application/vnd.github.raw+json' >"$caller_file"; then
+              rm -f "$caller_file"
+              echo "::error::could not read the protected default-branch review caller" >&2
+              return 1
+            fi
+            caller_sha256="$(sha256sum "$caller_file" | cut -d' ' -f1)"
+            rm -f "$caller_file"
+            selected_json="$policy_json"
+            if [ "$caller_sha256" = 39d9325e5a13b6f1cafb3237a920d1737f9e74b905e70e3ec0fcd5955a7679d6 ]; then
+              selected_json="$(jq -ce '
+                if .authority == "human"
+                   and .provider == "anthropic"
+                   and .pricing_version == "anthropic-native-v1"
+                   and .fallback_model == ""
+                   and .fallback_budget_usd == ""
+                   and .explicit_rereview == false
+                then {actor,actor_permission,budget_usd,model,pricing_version,provider}
+                else error("legacy bootstrap caller accepts only ordinary human-authority Anthropic policy")
+                end
+              ' <<<"$policy_json")" || return 1
+            fi
+            printf '%s' "$selected_json" | base64 -w0 | tr '+/' '-_' | tr -d '='
+          }
           [ "${GITHUB_RUN_ATTEMPT:-1}" -gt 1 ] && operator_recovery=true
           [ "$EVENT_ACTION" = labeled ] && [ "$EVENT_LABEL" = re-review ] && explicit_rereview=true
           if [ "$explicit_rereview" = true ] && [ "${GITHUB_RUN_ATTEMPT:-1}" -ne 1 ]; then
@@ -323,6 +352,9 @@ jobs:
             echo "Authorization already exists for $head_sha; duplicate event is a no-op."
             exit 0
           fi
+
+          review_policy="$(select_compatible_review_policy "$review_policy_json")" || exit 1
+          [[ "$review_policy" =~ ^[A-Za-z0-9_-]{1,2048}$ ]] || { echo "::error::compatible review policy envelope is invalid"; exit 1; }
 
           nonce="$(openssl rand -hex 32)"
           [[ "$nonce" =~ ^[0-9a-f]{64}$ ]] || exit 1
