@@ -210,7 +210,9 @@ jobs:
           printf 'registry=https://registry.npmjs.org/\n' > "$user_config"
           jq -r '.[] | split("/")[0]' <<<"$APPROVED_PRIVATE_PACKAGES" | sort -u \
             | sed 's|$|:registry=https://npm.pkg.github.com/|' >> "$user_config"
+          # shellcheck disable=SC2016 -- npm expands this placeholder from the isolated environment.
           printf '//npm.pkg.github.com/:_authToken=${NODE_AUTH_TOKEN}\n' >> "$user_config"
+          # shellcheck disable=SC2016 -- positional parameters expand inside the isolated child shell.
           env -i \
             HOME="$npm_home" \
             NODE_AUTH_TOKEN="$NODE_AUTH_TOKEN" \
