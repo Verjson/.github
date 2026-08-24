@@ -446,6 +446,7 @@ first_adoption_output="$tmp/first-adoption-output"
     GITHUB_RUN_ATTEMPT=1 \
     GITHUB_RUN_ID=12345 \
     JOB_WORKFLOW_SHA="$ref" \
+    RETRY_SHA256="$(printf 'c%.0s' {1..64})" \
     SOURCE_PATH=. \
     bash "$prepare_script"
 )
@@ -465,6 +466,7 @@ run_invalid_config() {
       GITHUB_RUN_ATTEMPT=1 \
       GITHUB_RUN_ID=12345 \
       JOB_WORKFLOW_SHA="$ref" \
+      RETRY_SHA256="$(printf 'c%.0s' {1..64})" \
       SOURCE_PATH=. \
       bash "$prepare_script"
   ) >/dev/null 2>&1; then

@@ -531,7 +531,9 @@ Verification binds the attestation to the caller repository, protected source re
 exact source commit, canonical publication workflow, and executing immutable contract
 commit. The repository and tag are derived from reviewed configuration and
 `GITHUB_SHA`; neither is a dispatch or caller-selected retry input. Derived variants
-also bind their receipt to the base variant's immutable exact-SHA digest. Missing,
+also require their verified BuildKit provenance to contain exactly one resolved base
+material whose repository and digest equal the base variant's immutable exact-SHA
+identity, and bind their receipt to that same digest. Missing,
 ambiguous, malformed, unprovenanced, partially indexed, platform-divergent, or
 unreadable state stops before a mutable alias is written.
 

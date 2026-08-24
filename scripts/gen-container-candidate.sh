@@ -59,6 +59,7 @@ $(if [ "$private_packages" = true ]; then printf '%s\n' '      packages: read'; 
       config-path: $config_path
       contract-ref: $ref
       acquisition-sha256: $acquisition_sha256
+      retry-sha256: $retry_sha256
 $(if [ "$private_packages" = true ]; then printf '%s\n' '    secrets:' '      NODE_AUTH_TOKEN: ${{ secrets.NODE_AUTH_TOKEN }}'; fi)
   publish:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
@@ -111,7 +112,7 @@ grep -qx '# Contract: $ref' "\$validator" || fail "validator contract pin differ
 [ "\$(grep -c 'uses: Verjson/.github/.github/workflows/container-candidate-publish.yml@$ref' "\$caller")" -eq 1 ] || fail "publication does not use the pinned publication reusable workflow"
 [ "\$(grep -c 'contract-ref: $ref' "\$caller")" -eq 2 ] || fail "caller does not pass the shared pin to both event paths"
 [ "\$(grep -c 'acquisition-sha256: $acquisition_sha256' "\$caller")" -eq 2 ] || fail "caller does not pin the acquisition implementation digest for both event paths"
-[ "\$(grep -c 'retry-sha256: $retry_sha256' "\$caller")" -eq 1 ] || fail "publication does not pin the retry verifier digest"
+[ "\$(grep -c 'retry-sha256: $retry_sha256' "\$caller")" -eq 2 ] || fail "both event paths do not pin the retry verifier digest"
 [ "\$(grep -c '^      actions: read$' "\$caller")" -eq 2 ] || fail "both event paths require Actions reads"
 [ "\$(grep -c '^      contents: read$' "\$caller")" -eq 2 ] || fail "both event paths require source reads"
 [ "\$(grep -c '^      attestations: write$' "\$caller")" -eq 1 ] || fail "only publication may write attestations"

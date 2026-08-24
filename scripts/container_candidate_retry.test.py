@@ -15,6 +15,8 @@ SPEC.loader.exec_module(MODULE)
 
 REPOSITORY = "ghcr.io/verjson/example"
 DIGEST = "sha256:" + "a" * 64
+BASE_REPOSITORY = "ghcr.io/verjson/base"
+BASE_DIGEST = "sha256:" + "b" * 64
 
 
 def evidence():
@@ -27,11 +29,60 @@ def evidence():
                     "subject": [
                         {"name": "verjson/example", "digest": {"sha256": "a" * 64}}
                     ],
-                    "predicate": {},
+                    "predicate": {
+                        "buildDefinition": {
+                            "resolvedDependencies": [
+                                {
+                                    "uri": f"pkg:docker/verjson/base@{BASE_DIGEST}",
+                                    "digest": {"sha256": "b" * 64},
+                                }
+                            ]
+                        }
+                    },
                 }
             },
         }
     ]
+
+
+def buildkit_provenance():
+    def entry(platform):
+        return {
+            "SLSA": {
+                "buildDefinition": {
+                    "buildType": "https://github.com/moby/buildkit/blob/master/docs/attestations/slsa-definitions.md",
+                    "externalParameters": {
+                        "request": {
+                            "root": {
+                                "configSource": {
+                                    "path": "Dockerfile"
+                                },
+                                "request": {
+                                    "args": {
+                                        "vcs:revision": "c" * 40,
+                                        "vcs:source": "https://github.com/Verjson/example",
+                                    }
+                                },
+                            }
+                        }
+                    },
+                    "resolvedDependencies": [
+                        {
+                            "uri": f"pkg:docker/{BASE_REPOSITORY}?digest={BASE_DIGEST}&platform={platform.replace('/', '%2F')}",
+                            "digest": {"sha256": "b" * 64},
+                        }
+                    ],
+                }
+            }
+        }
+
+    return {"linux/amd64": entry("linux/amd64"), "linux/arm64": entry("linux/arm64")}
+
+
+REVIEWED_PLATFORMS = [
+    {"os": "linux", "architecture": "amd64"},
+    {"os": "linux", "architecture": "arm64"},
+]
 
 
 class RetryEvidenceTests(unittest.TestCase):
@@ -92,6 +143,60 @@ class RetryEvidenceTests(unittest.TestCase):
             lambda value: value[0].update(attackerSelected=True),
             "unexpected fields",
         )
+
+    def test_accepts_one_exact_immutable_base_material_for_a_derived_image(self):
+        MODULE.validate_buildkit_provenance(
+            buildkit_provenance(),
+            REVIEWED_PLATFORMS,
+            source_repository="Verjson/example",
+            source_commit="c" * 40,
+            base_repository=BASE_REPOSITORY,
+            base_digest=BASE_DIGEST,
+        )
+
+    def test_rejects_missing_mismatched_or_duplicate_base_material(self):
+        cases = []
+        missing = buildkit_provenance()
+        missing["linux/amd64"]["SLSA"]["buildDefinition"]["resolvedDependencies"] = []
+        cases.append(missing)
+        mismatched = buildkit_provenance()
+        mismatched["linux/amd64"]["SLSA"]["buildDefinition"]["resolvedDependencies"][0]["digest"]["sha256"] = "c" * 64
+        cases.append(mismatched)
+        duplicate = buildkit_provenance()
+        duplicate["linux/amd64"]["SLSA"]["buildDefinition"]["resolvedDependencies"] *= 2
+        cases.append(duplicate)
+        for candidate in cases:
+            with self.subTest(candidate=candidate):
+                with self.assertRaisesRegex(
+                    MODULE.RetryEvidenceError, "exactly one immutable base dependency"
+                ):
+                    MODULE.validate_buildkit_provenance(
+                        candidate,
+                        REVIEWED_PLATFORMS,
+                        source_repository="Verjson/example",
+                        source_commit="c" * 40,
+                        base_repository=BASE_REPOSITORY,
+                        base_digest=BASE_DIGEST,
+                    )
+
+    def test_rejects_platform_or_source_substitution(self):
+        wrong_platform = buildkit_provenance()
+        wrong_platform["linux/s390x"] = wrong_platform.pop("linux/arm64")
+        wrong_source = buildkit_provenance()
+        wrong_source["linux/amd64"]["SLSA"]["buildDefinition"]["externalParameters"]["request"]["root"]["request"]["args"]["vcs:revision"] = "d" * 40
+        for candidate, message in (
+            (wrong_platform, "platforms differ"),
+            (wrong_source, "source identity differs"),
+        ):
+            with self.assertRaisesRegex(MODULE.RetryEvidenceError, message):
+                MODULE.validate_buildkit_provenance(
+                    candidate,
+                    REVIEWED_PLATFORMS,
+                    source_repository="Verjson/example",
+                    source_commit="c" * 40,
+                    base_repository=BASE_REPOSITORY,
+                    base_digest=BASE_DIGEST,
+                )
 
 
 if __name__ == "__main__":

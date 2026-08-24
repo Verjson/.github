@@ -53,9 +53,18 @@ class RetryWorkflowContractTests(unittest.TestCase):
             retry = next(step for step in steps if step.get("id") == "retry")
             build = next(step for step in steps if step.get("id") == "build")
             provenance = next(step for step in steps if step.get("id") == "provenance")
+            fresh_record = next(
+                step
+                for step in steps
+                if "commit identity already records a different digest"
+                in step.get("run", "")
+            )
             self.assertLess(steps.index(retry), steps.index(build))
             self.assertIn("steps.retry.outputs.reused != 'true'", build["if"])
             self.assertIn("steps.retry.outputs.reused != 'true'", provenance["if"])
+            self.assertIn(
+                "steps.retry.outputs.reused != 'true'", fresh_record["if"]
+            )
             command = retry["run"]
             for required in (
                 'commit_tag="$REPOSITORY:sha-$GITHUB_SHA"',
@@ -66,6 +75,9 @@ class RetryWorkflowContractTests(unittest.TestCase):
                 "--source-ref refs/heads/main",
                 "python3 \"$oci\" index",
                 "python3 \"$retry\" --verified-provenance",
+                '--buildkit-provenance "$buildkit"',
+                '--source-repository "$GITHUB_REPOSITORY"',
+                '--source-commit "$GITHUB_SHA"',
             ):
                 self.assertIn(required, command)
             self.assertNotIn("|| true", command)
@@ -88,6 +100,8 @@ class RetryWorkflowContractTests(unittest.TestCase):
         )
         self.assertIn('"$base_repository:sha-$GITHUB_SHA"', retry["run"])
         self.assertIn('echo "base-digest=$base_digest"', retry["run"])
+        self.assertIn('--base-repository "$base_repository"', retry["run"])
+        self.assertIn('--base-digest "$base_digest"', retry["run"])
 
 
 if __name__ == "__main__":
