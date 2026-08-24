@@ -204,6 +204,7 @@ jobs:
             exit 1
           fi
           rereview_actor="${REQUEST_ACTOR:-}"
+          rereview_label="$(jq -r '[.labels[].name | select((ascii_downcase | gsub("[ _-]+"; "-")) == "re-review")] | first // ""' <<<"$meta")"
           ai_review_label="$(jq -r '[.labels[].name | select((ascii_downcase | gsub("[ _-]+"; "-")) == "ai-review")] | first // ""' <<<"$meta")"
           authorize_ai_review_actor() {
             local actor="$1"
@@ -226,6 +227,7 @@ jobs:
           authority="${REVIEW_AUTHORITY:-human}"
           case "$authority" in human|ai-approve|ai-merge) ;; *) echo "::error::AI_REVIEW_AUTHORITY must be human, ai-approve, or ai-merge"; exit 1 ;; esac
           if [ "$explicit_rereview" = true ]; then
+            [ -n "$rereview_label" ] || { echo "::error::re-review event does not match current PR labels"; exit 1; }
             review_provider="${REREVIEW_PROVIDER:-}"; review_model="${REREVIEW_MODEL:-}"; review_budget_usd="${REREVIEW_BUDGET_USD:-}"
             fallback_model="${REREVIEW_FALLBACK_MODEL:-}"; fallback_budget_usd="${REREVIEW_FALLBACK_BUDGET_USD:-}"
             if [ -z "$review_provider" ] || [ -z "$review_model" ] || [ -z "$review_budget_usd" ]; then

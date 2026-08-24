@@ -124,6 +124,9 @@ if [ "$receipt_schema" = 1 ]; then
     echo "::error::label bridge requires a source-bound schema-2 receipt"; exit 1;
   }
 elif [ "$receipt_schema" = 2 ]; then
+  [ "$(jq -r '.event' <<<"$arm_run")" = issues ] || {
+    echo "::error::schema-2 receipt requires an issues label delivery"; exit 1;
+  }
   jq -e --arg event "$(jq -r '.event' <<<"$arm_run")" --arg actor "$(jq -r '.actor.login // ""' <<<"$arm_run")" \
     --arg repo "$TARGET_REPO" --arg branch "$(jq -r '.head_branch // ""' <<<"$arm_run")" \
     --arg sha "$(jq -r '.head_sha // ""' <<<"$arm_run")" '

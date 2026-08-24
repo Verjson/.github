@@ -230,6 +230,14 @@ export REREVIEW_PROVIDER=openai REREVIEW_MODEL=gpt-5.6-luna REREVIEW_BUDGET_USD=
 expect_fail "triage actor cannot authorize a paid re-review"
 ! grep -q 'check-runs' "$CALLS" && pass "unauthorized actor fails before receipt or paid dispatch" || fail "unauthorized actor reached authorization creation"
 
+: >"$CALLS"
+jq '.labels=[]' "$META_FILE" >"$tmp/x" && mv "$tmp/x" "$META_FILE"
+export ACTOR_PERMISSION=maintain
+expect_fail "withdrawn re-review label fails authoritative current-state validation"
+! grep -q -- '--method POST repos/Verjson/example/check-runs\|workflow run ai-review-merge.yml' "$CALLS" \
+  && pass "withdrawn re-review cannot create a receipt check or dispatch" \
+  || fail "withdrawn re-review reached authorization or paid dispatch"
+
 # An `ai-review` label may be added after the ordinary human-path authorization
 # already completed for this head. That explicit, maintainer-authorized opt-in
 # must create a fresh receipt instead of being mistaken for a duplicate event.
