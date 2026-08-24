@@ -264,6 +264,9 @@ jobs:
     runs-on: ${{ inputs.runner != '' && fromJSON(inputs.runner) || github.repository_owner != 'Verjson' && 'ubuntu-24.04' || github.event.repository.private == true && fromJSON(vars.VERJSON_LANE_TRUSTED || vars.VERJSON_LANE_FALLBACK || '["ubuntu-24.04"]') || fromJSON(vars.VERJSON_LANE_UNTRUSTED || vars.VERJSON_LANE_FALLBACK || '["ubuntu-24.04"]') }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          path: .container-candidate-build-source-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.variant }}
+          persist-credentials: false
       - name: Prepare credential-free dependency build context
         env:
           ACTIONS_ID_TOKEN_REQUEST_TOKEN: ''
@@ -298,12 +301,13 @@ jobs:
           GITHUB_TOKEN: ''
           NODE_AUTH_TOKEN: ''
           NPM_TOKEN: ''
+          SOURCE_PATH: .container-candidate-build-source-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.variant }}
           TRANSFER_DIR: ${{ github.workspace }}/.verjson-container-node-modules-${{ github.run_id }}-${{ github.run_attempt }}
         run: |
           set -euo pipefail
           context="$RUNNER_TEMP/container-node-modules-context"
           tar -xzf "$TRANSFER_DIR/container-node-modules.tgz" -C "$context"
-          expected="$(sha256sum package-lock.json | cut -d' ' -f1)"
+          expected="$(sha256sum "$SOURCE_PATH/package-lock.json" | cut -d' ' -f1)"
           [ "$(cat "$context/.verjson-lock-sha256")" = "$expected" ] || { echo "::error::node_modules artifact does not match package-lock.json"; exit 1; }
       - name: Remove local node_modules transfer state
         if: always() && needs.prepare.outputs.has-private-node-packages == 'true'
@@ -318,11 +322,16 @@ jobs:
           NODE_AUTH_TOKEN: ''
           NPM_TOKEN: ''
         with:
-          context: ${{ matrix.context }}
-          file: ${{ matrix.file }}
+          context: ${{ format('.container-candidate-build-source-{0}-{1}-{2}/{3}', github.run_id, github.run_attempt, matrix.variant, matrix.context) }}
+          file: ${{ format('.container-candidate-build-source-{0}-{1}-{2}/{3}', github.run_id, github.run_attempt, matrix.variant, matrix.file) }}
           target: ${{ matrix.target }}
           platforms: ${{ matrix.platforms }}
           push: false
           provenance: false
           sbom: false
           build-contexts: verjson_node_modules=${{ runner.temp }}/container-node-modules-context
+      - name: Remove isolated candidate build source
+        if: always()
+        env:
+          SOURCE_PATH: .container-candidate-build-source-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.variant }}
+        run: rm -rf "$SOURCE_PATH"

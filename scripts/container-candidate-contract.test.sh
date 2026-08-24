@@ -182,6 +182,18 @@ def validate_authority(read_only, publication):
     cleanup = next(step for step in prepare_steps if step.get("name") == "Remove isolated candidate source")
     assert cleanup["if"] == "always()"
     assert cleanup["run"] == 'rm -rf "$SOURCE_PATH"'
+    build_steps = read_only["jobs"]["pull-request-build"]["steps"]
+    build_checkout = next(step for step in build_steps if step.get("uses", "").startswith("actions/checkout@"))
+    assert build_checkout["with"] == {
+        "path": ".container-candidate-build-source-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.variant }}",
+        "persist-credentials": False,
+    }, "pull-request build checkout is not matrix-isolated and credentialless"
+    docker_build = next(step for step in build_steps if step.get("uses", "").startswith("docker/build-push-action@"))
+    assert docker_build["with"]["context"].startswith("${{ format('.container-candidate-build-source-")
+    assert docker_build["with"]["file"].startswith("${{ format('.container-candidate-build-source-")
+    build_cleanup = next(step for step in build_steps if step.get("name") == "Remove isolated candidate build source")
+    assert build_cleanup["if"] == "always()"
+    assert build_cleanup["run"] == 'rm -rf "$SOURCE_PATH"'
     levels = {None: 0, "none": 0, "read": 1, "write": 2}
     for job_name, job in publication["jobs"].items():
         requested = job.get("permissions", publication["permissions"])
