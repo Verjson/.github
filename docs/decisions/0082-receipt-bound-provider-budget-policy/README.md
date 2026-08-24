@@ -56,6 +56,24 @@ credentials and the trusted OpenAI client receives only `OPENAI_API_KEY`.
 Unknown providers, models, pricing versions, malformed budgets/responses, or
 usage evidence fail closed.
 
+### 2026-08-24 correction ([#1030](https://github.com/Verjson/.github/issues/1030))
+
+The immutable `a6b3ccc0590f4fcfdacd7818279ab3eea6b30155` generated caller and reusable
+review workflow accept only the original six-field envelope, but the arm at that same
+revision emitted the later authority/fallback envelope. That internally inconsistent
+pin cannot bootstrap its own generated-caller upgrade.
+
+The current trusted arm may project its policy back to the six-field schema only when
+the target default branch contains the byte-for-byte generated caller whose SHA-256 is
+`39d9325e5a13b6f1cafb3237a920d1737f9e74b905e70e3ec0fcd5955a7679d6`.
+The exception accepts only ordinary Anthropic policy with human merge authority, no
+fallback, and no explicit re-review. Any byte change, different policy, missing caller,
+or read failure keeps the current schema or fails before dispatch. The exact caller
+digest, protected default-branch contents, trusted arm revision, and App-owned
+exact-head receipt are jointly the compatibility boundary; PR-controlled bytes cannot
+select it. This is a recovery bridge for one immutable generated artifact, not schema
+negotiation and not a PAT or check-forging path.
+
 ### 2026-08-08 correction ([#657](https://github.com/Verjson/.github/issues/657))
 
 The canonical JSON object is serialized with sorted keys and no insignificant
