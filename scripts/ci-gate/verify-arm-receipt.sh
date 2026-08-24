@@ -132,6 +132,17 @@ elif [ "$receipt_schema" = 2 ]; then
   [ "$arm_run_path" = .github/workflows/ai-review-label-rearm.yml ] || {
     echo "::error::schema-2 receipt requires the separate label caller"; exit 1;
   }
+  receipt_workflow_sha="$(jq -r '.workflow_sha // ""' "$tmp/receipt.json")"
+  [[ "$receipt_workflow_sha" =~ ^[0-9a-f]{40}$ ]] || exit 1
+  workflow_api caller-at-protected-ref "$tmp/caller-protected-blob" \
+    "repos/$TARGET_REPO/contents/.github/workflows/ai-review-label-rearm.yml?ref=$default_branch" --jq '.sha // ""' || exit 1
+  workflow_api caller-at-receipt-sha "$tmp/caller-receipt-blob" \
+    "repos/$TARGET_REPO/contents/.github/workflows/ai-review-label-rearm.yml?ref=$receipt_workflow_sha" --jq '.sha // ""' || exit 1
+  protected_caller_blob="$(<"$tmp/caller-protected-blob")"
+  receipt_caller_blob="$(<"$tmp/caller-receipt-blob")"
+  [[ "$protected_caller_blob" =~ ^[0-9a-f]{40}$ ]] && [ "$receipt_caller_blob" = "$protected_caller_blob" ] || {
+    echo "::error::label caller workflow SHA does not resolve to the protected caller revision"; exit 1;
+  }
   jq -e --arg event "$(jq -r '.event' <<<"$arm_run")" --arg actor "$(jq -r '.actor.login // ""' <<<"$arm_run")" \
     --arg repo "$TARGET_REPO" --arg branch "$default_branch" '
       .delivery_event == $event and .delivery_actor == $actor and

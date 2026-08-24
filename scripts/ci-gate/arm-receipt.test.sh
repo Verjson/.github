@@ -34,6 +34,11 @@ case "$*" in
     [ "${LOCAL_WORKFLOW_MISSING:-false}" = false ] || exit 1
     printf '%s\n' 77 ;;
   *"actions/workflows/ai-review-label-rearm.yml"*"--jq"*) printf '%s\n' 77 ;;
+  *"contents/.github/workflows/ai-review-label-rearm.yml?ref="*"--jq"*)
+    case "$*" in
+      *"ref=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"*) printf '%s\n' cccccccccccccccccccccccccccccccccccccccc ;;
+      *) printf '%s\n' dddddddddddddddddddddddddddddddddddddddd ;;
+    esac ;;
   *"actions/runs/$ARM_RUN_ID/artifacts"*) cat "$ARTIFACTS_FILE" ;;
   *"actions/runs/$ARM_RUN_ID"*) cat "$RUN_FILE" ;;
   *"rules/branches/"*) cat "$RULES_FILE" ;;
@@ -134,6 +139,7 @@ for field in delivery_event delivery_actor workflow_ref workflow_sha; do
   jq --arg field "$field" '.[$field]="attacker-substitution"' "$tmp/archive/receipt.json" >"$tmp/x" && mv "$tmp/x" "$tmp/archive/receipt.json"
   repack; expect_fail "schema-2 receipt rejects substituted $field" verify
 done
+write_label_run; jq '.workflow_sha="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"' "$tmp/archive/receipt.json" >"$tmp/x" && mv "$tmp/x" "$tmp/archive/receipt.json"; repack; expect_fail "schema-2 receipt rejects a different valid 40-hex caller workflow SHA" verify
 write_label_run; jq '.workflow_ref="Verjson/example/.github/workflows/ai-review-label-rearm.yml@refs/heads/topic"' "$tmp/archive/receipt.json" >"$tmp/x" && mv "$tmp/x" "$tmp/archive/receipt.json"; repack; expect_fail "label caller rejects wrong protected source branch" verify
 write_label_run
 export ARM_RUN_ATTEMPT=2

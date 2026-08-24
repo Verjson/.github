@@ -16,45 +16,44 @@ liveness only after another head event and made a historical label carry authori
 a different delivery. It could not authorize an unchanged, already-reviewed head and
 made replay reasoning depend on successful label consumption.
 
-The post-merge canary disproved the premise that pull-request labels emit a usable
-`issues:labeled` workflow event: applying `ai-review` produced no run. GitHub does emit
-`pull_request_target:labeled`, but the workflow file registered as an organization-required
-workflow is not independently scheduled for that later label. Therefore the label trigger
-must live in a different protected caller while policy remains in the reusable arm.
+Pull-request labels independently emit an `issues:labeled` event to a repository's
+protected default-branch workflow. That event is not the organization-required run and
+must never impersonate it. It can, however, supply the explicit, attributable delivery
+that the existing reusable authorization arm needs before it creates its dedicated-App
+check and immutable receipt.
 
 ## Decision
 
-The ruleset-owned generated `gate-rearm.yml` caller retains only non-label head and hold
-transitions. A separate generated `ai-review-label-rearm.yml` caller listens only for
-`pull_request_target:labeled` and invokes the same immutable canonical `gate-rearm.yml`
-reusable workflow. It contains no policy, shell, checkout, or broad secret inheritance.
+The generated protected `gate-rearm.yml` caller listens for `issues:labeled` in addition
+to non-label `pull_request_target` head and hold transitions. `pull_request_target:labeled`
+is removed so one label cannot enter through two event families.
 
-The canonical reusable arm accepts a label delivery only when all of these facts agree:
+The canonical reusable arm accepts an issues delivery only when all of these facts agree:
 
 - the action is `labeled` and the normalized label is exactly `ai-review` or `re-review`;
 - the issue number is a positive decimal and authoritative PR metadata resolves an open
   pull request at a lowercase 40-hex head;
 - the workflow run is attempt one, has a positive run ID, and GitHub's run API reports
-  event `pull_request_target`, the exact separate `.github/workflows/ai-review-label-rearm.yml`
-  path, the target repository ID/name, exact PR head, and the same delivery actor;
+  event `issues`, the exact `.github/workflows/gate-rearm.yml` path, the target repository
+  ID/name, protected default branch and workflow SHA, and the same delivery actor;
 - `github.workflow_ref` names that workflow on `refs/heads/<default branch>`;
 - the current label exists, its actor login is well formed, and the actor currently has
   `maintain` or `admin` permission;
 - the PR head repository owner equals the target repository owner before any secret-backed
   model dispatch.
 
-For the separate label caller, the schema-2 arm receipt binds the event, actor, protected
+For an issues delivery, the schema-2 arm receipt binds the event, actor, protected
 workflow ref and workflow SHA alongside the existing repository, PR, immutable head,
 run/attempt, App, nonce, check and review-policy fields. Organization-required
 `pull_request_target` runs retain schema 1: their Actions `head_sha` is the PR head while
 `github.workflow_sha` is the separately protected required-workflow revision, so treating
 those values as one identity would reject legitimate fleet receipts. Receipt verification
-accepts schema-1 evidence only for the ruleset-owned `gate-rearm.yml` path. The label
-caller must use schema 2, attempt one, its distinct local workflow identity, and the protected default
+accepts schema-1 evidence only for a `pull_request_target` run. An issues bridge must use
+schema 2, attempt one, the local workflow identity, and the current protected default
 branch. Current PR head and actor permission are revalidated when the receipt is consumed.
 
 Persistent `ai-review` label state on synchronize is no longer authority. A workflow
-rerun cannot replay a label delivery. Unsupported event families, malformed or missing
+rerun cannot replay an issues delivery. Unsupported event families, malformed or missing
 identities, stale heads, forks, API failures, mismatched source metadata, and widened
 workflow permissions fail before receipt-backed review dispatch.
 
