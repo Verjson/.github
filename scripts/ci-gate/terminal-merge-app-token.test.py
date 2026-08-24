@@ -120,6 +120,9 @@ def main() -> None:
     named_step(mutant["jobs"]["privileged_merge"], "Authorize terminal merge from trusted metadata")["env"]["GH_TOKEN"] = APP_TOKEN
     mutations.append(("merge token in authorization", mutant, raw))
     mutant = copy.deepcopy(document)
+    named_step(mutant["jobs"]["privileged_merge"], "Confirm merge and consume the arm receipt")["env"]["GH_TOKEN"] = APP_TOKEN
+    mutations.append(("merge token in post-merge confirmation", mutant, raw))
+    mutant = copy.deepcopy(document)
     named_step(mutant["jobs"]["privileged_merge"], "Merge the authorized head")["run"] += '\ngh api orgs/Verjson\n'
     mutations.append(("second privileged operation", mutant, raw))
     mutant = copy.deepcopy(document)
