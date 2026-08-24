@@ -1,0 +1,24 @@
+name: canary release dispatch admission
+
+# Disposable transport for the exact job emitted by:
+# scripts/gen-changelog-caller.sh release-propose 10fede969a2fc416c10b5d863bdb74d21893cbab --autonomy dispatch
+on:
+  pull_request:
+    paths:
+      - .github/workflows/canary-release-dispatch-admission.yml
+
+permissions:
+  contents: read
+
+jobs:
+  release-propose:
+    permissions:
+      contents: read
+      actions: write
+    uses: Verjson/.github/.github/workflows/release-dispatch.yml@10fede969a2fc416c10b5d863bdb74d21893cbab
+    with:
+      contract_ref: 10fede969a2fc416c10b5d863bdb74d21893cbab
+      fragments: ${{ inputs.fragments }}
+      component: ${{ inputs.component }}
+      prefix: ${{ inputs.prefix || 'v' }}
+      runner: ${{ github.repository_owner == 'Verjson' && (vars.VERJSON_RUNNER_DEFAULT || '["self-hosted","general"]') || '["ubuntu-24.04"]' }}
