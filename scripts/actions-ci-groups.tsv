@@ -7,6 +7,7 @@ platform	python3 scripts/workflow-checkout-isolation.test.py
 platform	bash scripts/actions-ci-policy.test.sh
 platform	bash scripts/actions-ci-groups.test.sh
 platform	bash scripts/ci-gate/organization-neutral-ci-contract.test.sh
+platform	python3 scripts/bootstrap_canonical_ci_test.py
 platform	bash scripts/make-portability.test.sh
 platform	bash scripts/node-workflow-pins.test.sh
 platform	bash scripts/node-workflow-controls.test.sh
