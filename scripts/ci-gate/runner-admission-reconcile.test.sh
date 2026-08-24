@@ -54,8 +54,8 @@ case "$path" in
   */actions/variables/CI_LANE_UNTRUSTED) printf '%s\n' "$UNTRUSTED_VAR" ;;
   */actions/variables/CI_LANE_PRIVILEGED) printf '%s\n' "$PRIVILEGED_VAR" ;;
   */actions/variables/CI_LANE_FALLBACK) printf '%s\n' "$FALLBACK_VAR" ;;
-  */actions/variables/CI_RUNNER_DEFAULT) printf '%s\n' "$LEGACY_DEFAULT_VAR" ;;
-  */actions/variables/CI_RUNNER_UNTRUSTED) printf '%s\n' "$LEGACY_UNTRUSTED_VAR" ;;
+  */actions/variables/VERJSON_RUNNER_DEFAULT) printf '%s\n' "$LEGACY_DEFAULT_VAR" ;;
+  */actions/variables/VERJSON_RUNNER_UNTRUSTED) printf '%s\n' "$LEGACY_UNTRUSTED_VAR" ;;
   # Both ids serve the default group's runners, so a test can move the default
   # group off id 1 and prove resolution follows `.default`, not a pinned id.
   */runner-groups/1/runners*|*/runner-groups/9/runners*) printf '%s\n' "$G1_RUNNERS" ;;
@@ -324,7 +324,7 @@ out="$(run_case)"
   || fail "ungoverned lane did not return exit 2 without leaking its value: $out"
 
 UNTRUSTED_VAR='{"value":"[\"self-hosted\",\"general\"]","visibility":"all"}'
-FAIL_PATH='/actions/variables/CI_RUNNER_DEFAULT'
+FAIL_PATH='/actions/variables/VERJSON_RUNNER_DEFAULT'
 [ "$(code_of)" = "2" ] \
   && pass "org API failure is undetermined, never clean" \
   || fail "API failure did not return exit 2"
@@ -803,7 +803,7 @@ LEGACY_DEFAULT_VAR='{"value":"[\"self-hosted\",\"gone\"]","visibility":"all"}'
 LEGACY_UNTRUSTED_VAR='{"value":"[\"self-hosted\",\"general\"]","visibility":"all"}'
 out="$(run_case)"
 [ "$(code_of)" = "1" ] \
-  && grep -qF 'CI_RUNNER_DEFAULT' <<<"$out" \
+  && grep -qF 'VERJSON_RUNNER_DEFAULT' <<<"$out" \
   && ! grep -qF 'gone' <<<"$out" \
   && pass "a retired variable that has drifted from its lane is reported" \
   || fail "legacy/lane divergence was not safely reported: $out"

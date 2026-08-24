@@ -7,21 +7,30 @@ cd "$root"
 legacy_prefix="VERJSON_"
 contract_paths=(.github scripts docs)
 
-legacy_context_refs="$(
+find_legacy_context_refs() {
   rg -n --glob '!docs/decisions/**' --glob '!CHANGELOG/**' --glob '!NEXT/**' \
-    "(vars|secrets)\\.${legacy_prefix}[A-Z0-9_]+" "${contract_paths[@]}" || true
-)"
+    "(vars|secrets)\\.${legacy_prefix}[A-Z0-9_]+" "$@" || true
+  rg -n --glob '!docs/decisions/**' --glob '!CHANGELOG/**' --glob '!NEXT/**' \
+    "(vars|secrets)\\\\\\.${legacy_prefix}[A-Z0-9_]+" "$@" || true
+  rg -n --glob '!docs/decisions/**' --glob '!CHANGELOG/**' --glob '!NEXT/**' \
+    "(vars|secrets)\\[[[:space:]]*['\"]${legacy_prefix}[A-Z0-9_]+['\"][[:space:]]*\\]" "$@" || true
+}
+
+legacy_context_refs="$(find_legacy_context_refs "${contract_paths[@]}")"
 [ -z "$legacy_context_refs" ] || {
   printf 'organization-branded GitHub configuration remains:\n%s\n' "$legacy_context_refs" >&2
   exit 1
 }
 
-legacy_escaped_refs="$(
-  rg -n --glob '!docs/decisions/**' --glob '!CHANGELOG/**' --glob '!NEXT/**' \
-    "vars\\\\\\.${legacy_prefix}[A-Z0-9_]+" "${contract_paths[@]}" || true
-)"
-[ -z "$legacy_escaped_refs" ] || {
-  printf 'organization-branded escaped variable matcher remains:\n%s\n' "$legacy_escaped_refs" >&2
+fixture="$(mktemp)"
+trap 'rm -f "$fixture"' EXIT
+printf '%s\n' \
+  "vars['${legacy_prefix}LANE_TRUSTED']" \
+  "vars[\"${legacy_prefix}LANE_TRUSTED\"]" \
+  "secrets['${legacy_prefix}RELEASE_TOKEN']" \
+  "secrets[\"${legacy_prefix}RELEASE_TOKEN\"]" >"$fixture"
+[ "$(find_legacy_context_refs "$fixture" | wc -l)" -eq 4 ] || {
+  echo 'bracket-form neutrality mutations were not all rejected' >&2
   exit 1
 }
 

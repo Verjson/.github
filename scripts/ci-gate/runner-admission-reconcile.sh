@@ -179,8 +179,8 @@ privileged_var="$(lane_variable PRIVILEGED)" || exit 2
 # routing source any more, so it is not fatal here — but a legacy variable that
 # has drifted away from its lane means those consumers route somewhere this run
 # never checked, which is reported rather than assumed away.
-legacy_default_var="$(fetch_optional "/orgs/$ORG/actions/variables/CI_RUNNER_DEFAULT")" || exit 2
-legacy_untrusted_var="$(fetch_optional "/orgs/$ORG/actions/variables/CI_RUNNER_UNTRUSTED")" || exit 2
+legacy_default_var="$(fetch_optional "/orgs/$ORG/actions/variables/VERJSON_RUNNER_DEFAULT")" || exit 2
+legacy_untrusted_var="$(fetch_optional "/orgs/$ORG/actions/variables/VERJSON_RUNNER_UNTRUSTED")" || exit 2
 
 selector() {
   local name="$1" variable="$2" value visibility
@@ -444,8 +444,8 @@ legacy_drift() {
   value="$(jq -r '.value' <<<"$variable" 2>/dev/null)" || return 0
   [ "$value" = "$lane_value" ] || drift="$drift- \`$name\` differs from the lane that replaced it; values redacted because org-variable contents must not enter public logs or issues; consumers pinned to a pre-migration SHA route somewhere this run did not check"$'\n'
 }
-legacy_drift CI_RUNNER_DEFAULT "$legacy_default_var" "$default_selector"
-legacy_drift CI_RUNNER_UNTRUSTED "$legacy_untrusted_var" "$untrusted_selector"
+legacy_drift VERJSON_RUNNER_DEFAULT "$legacy_default_var" "$default_selector"
+legacy_drift VERJSON_RUNNER_UNTRUSTED "$legacy_untrusted_var" "$untrusted_selector"
 
 # Placement (#275). The two checks above ask whether repositories are admitted
 # and whether lanes have capacity. A runner registered WITHOUT `--runnergroup`
