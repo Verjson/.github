@@ -40,7 +40,7 @@ jq -e '
     apply_acknowledgement: "apply-issue-731-core-checks-node",
     rollback_acknowledgement: "rollback-issue-731-core-checks-node"
   } and
-  .universal_contexts == ["gate"] and
+  (has("universal_contexts") | not) and
   .stacks.node.contexts == ["ci / build-test", "ci / eligibility", "changelog-contract", "changelog / validate"] and
   .stacks.ui.contexts == ["ci / build-test", "changelog / validate"] and
   .stacks.helm.contexts == ["ci / lint-template", "changelog / validate"] and
@@ -50,8 +50,7 @@ jq -e '
   .stacks.actions.contexts == ["shell-tests"] and
   ([.ruleset_plan.rulesets[].name] | sort) == ([
     "changelog-contract-required", "core-checks-actions", "core-checks-helm",
-    "core-checks-node", "core-checks-pulumi", "core-checks-ui",
-    "core-checks-universal"
+    "core-checks-node", "core-checks-pulumi", "core-checks-ui"
   ] | sort) and
   (.ruleset_plan.rulesets[] | select(.name == "core-checks-node") | .contexts) ==
     ["ci / build-test", "ci / eligibility", "changelog-contract"] and
@@ -229,8 +228,8 @@ rc="$(run_audit)"
 # --- the happy path ----------------------------------------------------------
 stack node
 pulls s1 s2
-head_with s1 gate "ci / build-test" "ci / eligibility" changelog-contract "changelog / validate"
-head_with s2 gate "ci / build-test" "ci / eligibility" changelog-contract "changelog / validate"
+head_with s1 "ci / build-test" "ci / eligibility" changelog-contract "changelog / validate"
+head_with s2 "ci / build-test" "ci / eligibility" changelog-contract "changelog / validate"
 rc="$(run_audit)"
 { [ "$rc" = "rc=0" ] && grep -q 'result=conformant' "$tmp/out.txt"; } \
   && pass "a node repository emitting its full core set is conformant" \
@@ -387,25 +386,25 @@ rc="$(run_audit)"
   && pass "a non-package stack is not required to emit the changelog context" \
   || { fail "pulumi was wrongly required to emit changelog / validate ($rc)"; out | sed 's/^/diag - /'; }
 
-# --- `gate` is universal ------------------------------------------------------
+# --- authorization-arm contexts are independent -----------------------------
 stack actions
 pulls s1 s2
 head_with s1 "shell-tests"
 head_with s2 "shell-tests"
 rc="$(run_audit)"
-{ [ "$rc" != "rc=0" ] && grep -q 'missing=gate' "$tmp/out.txt"; } \
-  && pass "gate is required of every stack, including actions" \
-  || { fail "a repository missing gate was called conformant ($rc)"; out | sed 's/^/diag - /'; }
+{ [ "$rc" = "rc=0" ] && ! grep -q 'missing=gate' "$tmp/out.txt" && ! grep -q 'missing=arm' "$tmp/out.txt"; } \
+  && pass "authorization-arm contexts are not conflated with deterministic stack checks" \
+  || { fail "authorization-arm context leaked into the stack contract ($rc)"; out | sed 's/^/diag - /'; }
 
 # --- commit statuses count -----------------------------------------------------
-# The gate polls check-runs AND statuses; a context delivered as a commit status
+# The audit reads check-runs AND statuses; a context delivered as a commit status
 # must not be reported missing just because it is not a check run.
 stack actions
 pulls s1 s2
-head_with s1 "shell-tests"
-head_with s2 "shell-tests"
-printf '{"statuses":[{"context":"gate","state":"success"}]}\n' >"$CHECKDIR/s1.status.json"
-printf '{"statuses":[{"context":"gate","state":"success"}]}\n' >"$CHECKDIR/s2.status.json"
+head_with s1
+head_with s2
+printf '{"statuses":[{"context":"shell-tests","state":"success"}]}\n' >"$CHECKDIR/s1.status.json"
+printf '{"statuses":[{"context":"shell-tests","state":"success"}]}\n' >"$CHECKDIR/s2.status.json"
 rc="$(run_audit)"
 { [ "$rc" = "rc=0" ]; } \
   && pass "a context delivered as a commit status counts as present" \

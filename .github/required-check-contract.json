@@ -2,9 +2,6 @@
   "schema_version": 1,
   "mode": "staged",
   "mutation_authorized": true,
-  "universal_contexts": [
-    "gate"
-  ],
   "stacks": {
     "node": {
       "contexts": [
@@ -104,13 +101,6 @@
       "rollback_acknowledgement": "rollback-issue-731-core-checks-node"
     },
     "rulesets": [
-      {
-        "name": "core-checks-universal",
-        "repository_properties": [],
-        "contexts": [
-          "gate"
-        ]
-      },
       {
         "name": "core-checks-node",
         "repository_properties": [
