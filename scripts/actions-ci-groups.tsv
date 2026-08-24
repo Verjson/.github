@@ -118,6 +118,7 @@ changelog-release	python3 scripts/container_spdx_compaction.test.py
 changelog-release	bash scripts/container-candidate-contract.test.sh
 changelog-release	bash scripts/container-release-contract.test.sh
 changelog-release	python3 scripts/container-release-app-token.test.py
+changelog-release	python3 scripts/container_release_changelog_engine.test.py
 changelog-release	python3 scripts/container_deployment_preflight.test.py
 changelog-release	python3 scripts/container_deployment_controller.test.py
 changelog-release	bash scripts/container-deployment-contract.test.sh
