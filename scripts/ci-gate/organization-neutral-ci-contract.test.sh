@@ -7,13 +7,28 @@ cd "$root"
 legacy_prefix="VERJSON_"
 contract_paths=(.github scripts docs)
 
+scan_pattern() {
+  local pattern=$1
+  shift
+  local output status
+  output="$(mktemp)"
+  if grep -rInE "$pattern" "$@" >"$output"; then
+    status=0
+  else
+    status=$?
+  fi
+  if [ "$status" -gt 1 ]; then
+    rm -f "$output"
+    return "$status"
+  fi
+  grep -v '^docs/decisions/' "$output" || true
+  rm -f "$output"
+}
+
 find_legacy_context_refs() {
-  grep -RInE "(vars|secrets)\\.${legacy_prefix}[A-Z0-9_]+" "$@" \
-    | grep -v '^docs/decisions/' || true
-  grep -RInE "(vars|secrets)\\\\\\.${legacy_prefix}[A-Z0-9_]+" "$@" \
-    | grep -v '^docs/decisions/' || true
-  grep -RInE "(vars|secrets)\\[[[:space:]]*['\"]${legacy_prefix}[A-Z0-9_]+['\"][[:space:]]*\\]" "$@" \
-    | grep -v '^docs/decisions/' || true
+  scan_pattern "(vars|secrets)\\.${legacy_prefix}[A-Z0-9_]+" "$@" || return $?
+  scan_pattern "(vars|secrets)\\\\\\.${legacy_prefix}[A-Z0-9_]+" "$@" || return $?
+  scan_pattern "(vars|secrets)\\[[[:space:]]*['\"]${legacy_prefix}[A-Z0-9_]+['\"][[:space:]]*\\]" "$@" || return $?
 }
 
 legacy_context_refs="$(find_legacy_context_refs "${contract_paths[@]}")"
@@ -40,11 +55,14 @@ printf '%s\n' "vars.${legacy_prefix}LANE_TRUSTED" > "$fixture_dir/scripts/decisi
   echo 'an active nested decisions directory bypassed the neutrality guard' >&2
   exit 1
 }
+if find_legacy_context_refs "$fixture_dir/missing" >/dev/null 2>&1; then
+  echo 'a missing scan root was reported as clean' >&2
+  exit 1
+fi
 
 for legacy_secret in "${legacy_prefix}RUNNER_DEPLOY_TOKEN" "${legacy_prefix}RELEASE_TOKEN"; do
   refs="$(
-    grep -RIn "$legacy_secret" "${contract_paths[@]}" \
-      | grep -v '^docs/decisions/' || true
+    scan_pattern "$legacy_secret" "${contract_paths[@]}"
   )"
   [ -z "$refs" ] || {
     printf 'organization-branded secret contract remains:\n%s\n' "$refs" >&2
