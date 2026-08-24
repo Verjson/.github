@@ -27,13 +27,15 @@ and SHA-512 Corepack integrity. Pull requests bind that entire executable spec t
 reviewed base revision, so a head-only Corepack/version change cannot execute with the
 package credential. Its YAML is size bounded and rejects aliases, anchors,
 tags, duplicate keys, aliased identities, malformed peer contexts, missing integrity,
-and private entries without canonical GitHub Packages tarball URLs.
+and private entries without canonical GitHub Packages tarball URLs. The parsed lock is
+recursively rejected when it contains executable `configDependencies` or
+`packageManagerDependencies`, including beneath otherwise ignored records.
 
 Authenticated registry scopes are derived from the exact approved package names; there
 is no independently widenable scope input. Both managers run inside an empty
 environment with runner-owned npm configuration and lifecycle scripts disabled. The
 lane also rejects pnpm hook files, pnpmfile settings, global pnpmfile settings, and
-executable `configDependencies` from package/workspace configuration before install. The
+executable dependency configuration from package/workspace configuration before install. The
 credential stays in the acquisition step. Docker build jobs receive only `node_modules`
 and the selected lockfile digest, then bind that digest to their checked-out source.
 

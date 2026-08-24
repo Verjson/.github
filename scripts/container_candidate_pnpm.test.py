@@ -149,6 +149,30 @@ class PnpmCandidateTests(unittest.TestCase):
             }), encoding="utf-8")
             self.assertNotEqual(subprocess.run(command, check=False, capture_output=True).returncode, 0)
 
+    def test_cli_rejects_executable_dependencies_anywhere_in_lock(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            lock_path = root / "pnpm-lock.yaml"
+            manifest_path = root / "package.json"
+            manifest_path.write_text(json.dumps({
+                "packageManager": "pnpm@11.22.0+sha512." + "a" * 128
+            }), encoding="utf-8")
+            command = [sys.executable, str(MODULE), "--package-manager", "pnpm",
+                       "--lock", str(lock_path), "--manifest", str(manifest_path),
+                       "--project-root", str(root),
+                       "--approved", '["@tequityapp/schema","@verjson/authz"]']
+
+            for field in ("configDependencies", "packageManagerDependencies"):
+                with self.subTest(field=field):
+                    lock = pnpm_lock()
+                    lock["packages"]["zod@4.0.0"]["nested"] = {
+                        field: {"@attacker/config": "1.0.0"}
+                    }
+                    lock_path.write_text(yaml.safe_dump(lock), encoding="utf-8")
+                    result = subprocess.run(command, check=False, capture_output=True, text=True)
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn(field, result.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()

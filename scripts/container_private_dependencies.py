@@ -17,7 +17,13 @@ class DependencyError(ValueError):
 
 PACKAGE = re.compile(r"^@[a-z0-9][a-z0-9._-]*/[a-z0-9][a-z0-9._-]*$")
 REGISTRY_PACKAGE = re.compile(r"^(?:@[a-z0-9][a-z0-9._-]*/)?[a-z0-9][a-z0-9._-]*$")
-PNPM_HOOK_KEYS = {"pnpmfile", "globalPnpmfile", "global-pnpmfile", "configDependencies"}
+PNPM_HOOK_KEYS = {
+    "pnpmfile",
+    "globalPnpmfile",
+    "global-pnpmfile",
+    "configDependencies",
+    "packageManagerDependencies",
+}
 PNPM_HOOK_FILES = {".pnpmfile.cjs", ".pnpmfile.js", "pnpmfile.cjs", "pnpmfile.js"}
 
 
@@ -287,6 +293,7 @@ def main() -> int:
                 lock = yaml.load(text, Loader=ExactLoader)
             except yaml.YAMLError as error:
                 raise DependencyError(f"invalid pnpm lock: {error}") from None
+            reject_pnpm_hook_configuration(lock, "pnpm-lock.yaml")
         else:
             lock = json.loads(text)
         if not isinstance(lock, dict):
