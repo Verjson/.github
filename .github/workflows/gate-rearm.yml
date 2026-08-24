@@ -7,11 +7,6 @@ name: AI review authorization arm
 on:
   pull_request_target:
     types: [opened, reopened, synchronize, ready_for_review, converted_to_draft, edited, unlabeled]
-  # GitHub does not re-run organization-required workflows for a later PR
-  # label. PR labels also emit an issues:labeled delivery, so the protected
-  # default-branch caller uses that independent delivery as the explicit arm.
-  issues:
-    types: [labeled]
   workflow_call:
     secrets:
       AI_REVIEW_APP_PRIVATE_KEY:
@@ -21,7 +16,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: ai-review-arm-${{ github.event.pull_request.number || github.event.issue.number }}
+  group: ai-review-arm-${{ github.event.pull_request.number }}
   cancel-in-progress: false
 
 jobs:
@@ -49,9 +44,10 @@ jobs:
       DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
       EVENT_ACTION: ${{ github.event.action }}
       EVENT_LABEL: ${{ github.event.label.name || '' }}
+      EVENT_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
       EVENT_NAME: ${{ github.event_name }}
       EVENT_OLD_TITLE: ${{ github.event.changes.title.from || '' }}
-      PR_NUMBER: ${{ github.event.pull_request.number || github.event.issue.number }}
+      PR_NUMBER: ${{ github.event.pull_request.number }}
       REPOSITORY_ID: ${{ github.repository_id }}
       TARGET_REPO: ${{ github.repository }}
       REVIEW_AUTHORITY: ${{ vars.AI_REVIEW_AUTHORITY || 'human' }}
@@ -99,23 +95,23 @@ jobs:
           [[ "$APP_SLUG" =~ ^[a-z0-9][a-z0-9-]*$ ]] || { echo "::error::AI_REVIEW_APP_SLUG is unavailable"; exit 1; }
 
           explicit_label_delivery=false
-          if [ "$EVENT_NAME" = issues ]; then
-            [ "$EVENT_ACTION" = labeled ] || { echo "::error::label bridge accepts only issues:labeled"; exit 1; }
+          if [ "$EVENT_NAME" = pull_request_target ] && [ "$EVENT_ACTION" = labeled ]; then
             label_normalized="$(jq -nr --arg raw_label "$EVENT_LABEL" '$raw_label | ascii_downcase | gsub("[ _-]+";"-")')"
             case "$label_normalized" in ai-review|re-review) ;; *) exit 0 ;; esac
             [ "${GITHUB_RUN_ATTEMPT:-}" = 1 ] || { echo "::error::label deliveries cannot be replayed by rerunning a workflow"; exit 1; }
             [[ "${GITHUB_RUN_ID:-}" =~ ^[1-9][0-9]*$ ]] || { echo "::error::label delivery run ID is malformed"; exit 1; }
             [[ "$WORKFLOW_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::protected workflow SHA is malformed"; exit 1; }
-            [ "$WORKFLOW_REF" = "$TARGET_REPO/.github/workflows/gate-rearm.yml@refs/heads/$DEFAULT_BRANCH" ] || {
-              echo "::error::label delivery did not enter through the protected gate-rearm caller"; exit 1;
+            [[ "$EVENT_HEAD_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::label event head is malformed"; exit 1; }
+            [ "$WORKFLOW_REF" = "$TARGET_REPO/.github/workflows/ai-review-label-rearm.yml@refs/heads/$DEFAULT_BRANCH" ] || {
+              echo "::error::label delivery did not enter through the separate protected label caller"; exit 1;
             }
             source_run="$(GH_TOKEN="$ACTIONS_TOKEN" gh api "repos/$TARGET_REPO/actions/runs/$GITHUB_RUN_ID")" || {
               echo "::error::could not authenticate label delivery identity"; exit 1;
             }
             jq -e --arg repo "$TARGET_REPO" --argjson repo_id "$REPOSITORY_ID" \
-              --arg branch "$DEFAULT_BRANCH" --arg sha "$WORKFLOW_SHA" --arg actor "$REQUEST_ACTOR" '
-                .event == "issues" and .path == ".github/workflows/gate-rearm.yml" and
-                .run_attempt == 1 and .head_branch == $branch and .head_sha == $sha and
+              --arg head "$EVENT_HEAD_SHA" --arg actor "$REQUEST_ACTOR" '
+                .event == "pull_request_target" and .path == ".github/workflows/ai-review-label-rearm.yml" and
+                .run_attempt == 1 and .head_sha == $head and
                 .head_repository.full_name == $repo and .repository.id == $repo_id and
                 .actor.login == $actor
               ' <<<"$source_run" >/dev/null || {
@@ -124,8 +120,6 @@ jobs:
             explicit_label_delivery=true
           elif [ "$EVENT_NAME" != pull_request_target ]; then
             echo "::error::unsupported authorization-arm event"; exit 1
-          elif [ "$EVENT_ACTION" = labeled ]; then
-            echo "::error::explicit labels must enter through the issues delivery bridge"; exit 1
           fi
 
           meta="$(GH_TOKEN="$ACTIONS_TOKEN" gh pr view "$PR_NUMBER" --repo "$TARGET_REPO" \
@@ -134,6 +128,9 @@ jobs:
           head_sha="$(jq -r '.headRefOid // ""' <<<"$meta")"
           head_owner="$(jq -r '.headRepositoryOwner.login // ""' <<<"$meta")"
           [[ "$head_sha" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::current PR head is unavailable"; exit 1; }
+          if [ "$explicit_label_delivery" = true ] && [ "$head_sha" != "$EVENT_HEAD_SHA" ]; then
+            echo "::error::label delivery head is stale"; exit 1
+          fi
           [ "$state" = OPEN ] || exit 0
 
           held="$(jq -r '
@@ -400,10 +397,11 @@ jobs:
             --arg details_url "$details_url" --argjson app_id "$APP_ID" --arg app_slug "$APP_SLUG" \
             --arg review_policy "$review_policy" --arg delivery_event "$EVENT_NAME" --arg delivery_actor "$REQUEST_ACTOR" \
             --arg workflow_ref "$WORKFLOW_REF" --arg workflow_sha "$WORKFLOW_SHA" \
-            '{schema:(if $delivery_event == "issues" then 2 else 1 end),repository:$repository,pr_number:$pr_number,head_sha:$head_sha,check_run_id:$check_run_id,
+            --argjson source_bound "$explicit_label_delivery" \
+            '{schema:(if $source_bound then 2 else 1 end),repository:$repository,pr_number:$pr_number,head_sha:$head_sha,check_run_id:$check_run_id,
               arm_run_id:$arm_run_id,arm_run_attempt:$arm_run_attempt,nonce:$nonce,external_id:$external_id,
               details_url:$details_url,app_id:$app_id,app_slug:$app_slug,review_policy:$review_policy}
-             | if $delivery_event == "issues" then
+             | if $source_bound then
                  . + {delivery_event:$delivery_event,delivery_actor:$delivery_actor,
                       workflow_ref:$workflow_ref,workflow_sha:$workflow_sha}
                else . end' >"$receipt_dir/receipt.json"

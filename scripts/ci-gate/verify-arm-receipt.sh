@@ -46,11 +46,13 @@ arm_workflow_id="$(jq -r '.workflow_id // ""' <<<"$arm_run")"
 [[ "$arm_workflow_id" =~ ^[1-9][0-9]*$ ]] || exit 1
 jq -e --argjson run_id "$ARM_RUN_ID" --argjson attempt "$ARM_RUN_ATTEMPT" --arg repo "$TARGET_REPO" '
   .id == $run_id and .run_attempt == $attempt and
-  (.event == "pull_request_target" or .event == "issues") and
-  .path == ".github/workflows/gate-rearm.yml" and .head_repository.full_name == $repo
+  .event == "pull_request_target" and
+  (.path == ".github/workflows/gate-rearm.yml" or .path == ".github/workflows/ai-review-label-rearm.yml") and
+  .head_repository.full_name == $repo
 ' <<<"$arm_run" >/dev/null || { echo "::error::arm run provenance mismatch"; exit 1; }
+arm_run_path="$(jq -r '.path' <<<"$arm_run")"
 required_workflow_url="https://api.github.com/repos/$TARGET_REPO/actions/required_workflows/$arm_workflow_id"
-if [ "$(jq -r '.workflow_url // ""' <<<"$arm_run")" = "$required_workflow_url" ]; then
+if [ "$arm_run_path" = .github/workflows/gate-rearm.yml ] && [ "$(jq -r '.workflow_url // ""' <<<"$arm_run")" = "$required_workflow_url" ]; then
   workflow_api arm-base "$tmp/arm-base" \
     "repos/$TARGET_REPO/pulls/$PR_NUMBER" --jq '.base.ref // ""' || exit 1
   arm_base_branch="$(<"$tmp/arm-base")"
@@ -73,20 +75,23 @@ if [ "$(jq -r '.workflow_url // ""' <<<"$arm_run")" = "$required_workflow_url" ]
     echo "::error::arm run provenance mismatch"; exit 1;
   }
 else
+  case "$arm_run_path" in
+    .github/workflows/gate-rearm.yml) local_workflow=gate-rearm.yml ;;
+    .github/workflows/ai-review-label-rearm.yml) local_workflow=ai-review-label-rearm.yml ;;
+    *) exit 1 ;;
+  esac
   workflow_api arm-workflow "$tmp/arm-workflow-id" \
-    "repos/$TARGET_REPO/actions/workflows/gate-rearm.yml" --jq '.id // ""' || exit 1
+    "repos/$TARGET_REPO/actions/workflows/$local_workflow" --jq '.id // ""' || exit 1
   [ "$(<"$tmp/arm-workflow-id")" = "$arm_workflow_id" ] || {
     echo "::error::arm run provenance mismatch"; exit 1;
   }
-  if [ "$(jq -r '.event' <<<"$arm_run")" = issues ]; then
+  if [ "$arm_run_path" = .github/workflows/ai-review-label-rearm.yml ]; then
     [ "$ARM_RUN_ATTEMPT" = 1 ] || { echo "::error::label delivery replay rejected"; exit 1; }
+    jq -e '.head_sha | test("^[0-9a-f]{40}$")' <<<"$arm_run" >/dev/null || exit 1
     workflow_api repository-default "$tmp/default-branch" \
       "repos/$TARGET_REPO" --jq '.default_branch // ""' || exit 1
     default_branch="$(<"$tmp/default-branch")"
     [[ "$default_branch" =~ ^[A-Za-z0-9._/-]+$ ]] || exit 1
-    jq -e --arg branch "$default_branch" '
-      .head_branch == $branch and (.head_sha | test("^[0-9a-f]{40}$"))
-    ' <<<"$arm_run" >/dev/null || { echo "::error::label bridge did not execute from the protected default branch"; exit 1; }
   fi
 fi
 
@@ -120,19 +125,18 @@ check="$(<"$tmp/authorization-check.json")"
 details_url="$GITHUB_SERVER_URL/$TARGET_REPO/actions/runs/$ARM_RUN_ID"
 receipt_schema="$(jq -r '.schema // ""' "$tmp/receipt.json")"
 if [ "$receipt_schema" = 1 ]; then
-  [ "$(jq -r '.event' <<<"$arm_run")" = pull_request_target ] || {
+  [ "$arm_run_path" = .github/workflows/gate-rearm.yml ] || {
     echo "::error::label bridge requires a source-bound schema-2 receipt"; exit 1;
   }
 elif [ "$receipt_schema" = 2 ]; then
-  [ "$(jq -r '.event' <<<"$arm_run")" = issues ] || {
-    echo "::error::schema-2 receipt requires an issues label delivery"; exit 1;
+  [ "$arm_run_path" = .github/workflows/ai-review-label-rearm.yml ] || {
+    echo "::error::schema-2 receipt requires the separate label caller"; exit 1;
   }
   jq -e --arg event "$(jq -r '.event' <<<"$arm_run")" --arg actor "$(jq -r '.actor.login // ""' <<<"$arm_run")" \
-    --arg repo "$TARGET_REPO" --arg branch "$(jq -r '.head_branch // ""' <<<"$arm_run")" \
-    --arg sha "$(jq -r '.head_sha // ""' <<<"$arm_run")" '
+    --arg repo "$TARGET_REPO" --arg branch "$default_branch" '
       .delivery_event == $event and .delivery_actor == $actor and
-      .workflow_ref == ($repo + "/.github/workflows/gate-rearm.yml@refs/heads/" + $branch) and
-      .workflow_sha == $sha
+      .workflow_ref == ($repo + "/.github/workflows/ai-review-label-rearm.yml@refs/heads/" + $branch) and
+      (.workflow_sha | test("^[0-9a-f]{40}$"))
     ' "$tmp/receipt.json" >/dev/null || { echo "::error::arm receipt delivery identity mismatch"; exit 1; }
 else
   echo "::error::unsupported arm receipt schema"; exit 1

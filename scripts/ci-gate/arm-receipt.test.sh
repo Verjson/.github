@@ -33,6 +33,7 @@ case "$*" in
   *"actions/workflows/gate-rearm.yml"*"--jq"*)
     [ "${LOCAL_WORKFLOW_MISSING:-false}" = false ] || exit 1
     printf '%s\n' 77 ;;
+  *"actions/workflows/ai-review-label-rearm.yml"*"--jq"*) printf '%s\n' 77 ;;
   *"actions/runs/$ARM_RUN_ID/artifacts"*) cat "$ARTIFACTS_FILE" ;;
   *"actions/runs/$ARM_RUN_ID"*) cat "$RUN_FILE" ;;
   *"rules/branches/"*) cat "$RULES_FILE" ;;
@@ -108,17 +109,17 @@ repack() {
     '{artifacts:[{id:8001,name:$name,expired:false,size_in_bytes:$size,digest:$digest}]}' >"$ARTIFACTS_FILE"
 }
 
-write_issues_run() {
+write_label_run() {
   export ARM_RUN_ATTEMPT=1 REVIEW_POLICY="$(encode_policy "$openai_policy")"
   external_id="ai-review:v1:$TARGET_REPO:$PR_NUMBER:$EXPECTED_HEAD_SHA:$ARM_RUN_ID:$ARM_RUN_ATTEMPT:$nonce"
   write_base
   workflow_sha=fedcba9876543210fedcba9876543210fedcba98
   jq --arg sha "$workflow_sha" \
-    '.event="issues" | .run_attempt=1 | .head_branch="main" | .head_sha=$sha | .actor={login:"maintainer"}' \
+    '.event="pull_request_target" | .path=".github/workflows/ai-review-label-rearm.yml" | .run_attempt=1 | .head_sha=$sha | .actor={login:"maintainer"}' \
     "$RUN_FILE" >"$tmp/x" && mv "$tmp/x" "$RUN_FILE"
   jq --arg sha "$workflow_sha" \
-    '.schema=2 | .delivery_event="issues" | .delivery_actor="maintainer" |
-     .workflow_ref="Verjson/example/.github/workflows/gate-rearm.yml@refs/heads/main" |
+    '.schema=2 | .delivery_event="pull_request_target" | .delivery_actor="maintainer" |
+     .workflow_ref="Verjson/example/.github/workflows/ai-review-label-rearm.yml@refs/heads/main" |
      .workflow_sha=$sha' "$tmp/archive/receipt.json" >"$tmp/x" && mv "$tmp/x" "$tmp/archive/receipt.json"
   repack
 }
@@ -126,21 +127,21 @@ write_issues_run() {
 write_base; expect_pass "exact dedicated-App check and immutable receipt are accepted" verify
 write_ruleset_run
 LOCAL_WORKFLOW_MISSING=true expect_pass "ruleset-created arm accepts distinct protected workflow and PR-head identities" verify
-write_issues_run; expect_pass "local issues label delivery accepts an exact schema-2 receipt" verify
-write_issues_run; jq 'del(.delivery_event,.delivery_actor,.workflow_ref,.workflow_sha) | .schema=1' "$tmp/archive/receipt.json" >"$tmp/x" && mv "$tmp/x" "$tmp/archive/receipt.json"; repack; expect_fail "issues delivery rejects schema-1 receipt" verify
+write_label_run; expect_pass "separate pull_request_target label caller accepts an exact schema-2 receipt" verify
+write_label_run; jq 'del(.delivery_event,.delivery_actor,.workflow_ref,.workflow_sha) | .schema=1' "$tmp/archive/receipt.json" >"$tmp/x" && mv "$tmp/x" "$tmp/archive/receipt.json"; repack; expect_fail "label caller rejects schema-1 receipt" verify
 for field in delivery_event delivery_actor workflow_ref workflow_sha; do
-  write_issues_run
+  write_label_run
   jq --arg field "$field" '.[$field]="attacker-substitution"' "$tmp/archive/receipt.json" >"$tmp/x" && mv "$tmp/x" "$tmp/archive/receipt.json"
   repack; expect_fail "schema-2 receipt rejects substituted $field" verify
 done
-write_issues_run; jq '.head_branch="topic"' "$RUN_FILE" >"$tmp/x" && mv "$tmp/x" "$RUN_FILE"; expect_fail "issues delivery rejects wrong default branch" verify
-write_issues_run
+write_label_run; jq '.workflow_ref="Verjson/example/.github/workflows/ai-review-label-rearm.yml@refs/heads/topic"' "$tmp/archive/receipt.json" >"$tmp/x" && mv "$tmp/x" "$tmp/archive/receipt.json"; repack; expect_fail "label caller rejects wrong protected source branch" verify
+write_label_run
 export ARM_RUN_ATTEMPT=2
 jq '.run_attempt=2' "$RUN_FILE" >"$tmp/x" && mv "$tmp/x" "$RUN_FILE"
 jq '.arm_run_attempt=2 | .external_id=(.external_id | sub(":1:[0-9a-f]{64}$"; ":2:" + .nonce))' "$tmp/archive/receipt.json" >"$tmp/x" && mv "$tmp/x" "$tmp/archive/receipt.json"
 jq '.external_id=(.external_id | sub(":1:[0-9a-f]{64}$"; ":2:" + "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"))' "$CHECK_FILE" >"$tmp/x" && mv "$tmp/x" "$CHECK_FILE"
-repack; expect_fail "issues delivery rejects attempt greater than one" verify
-write_issues_run; jq '.event="pull_request_target"' "$RUN_FILE" >"$tmp/x" && mv "$tmp/x" "$RUN_FILE"; expect_fail "pull_request_target run rejects schema-2 cross-mode receipt" verify
+repack; expect_fail "label delivery rejects attempt greater than one" verify
+write_label_run; jq '.path=".github/workflows/gate-rearm.yml"' "$RUN_FILE" >"$tmp/x" && mv "$tmp/x" "$RUN_FILE"; expect_fail "required arm run rejects label-caller schema-2 cross-mode receipt" verify
 export ARM_RUN_ATTEMPT=2 REVIEW_POLICY="$(encode_policy "$anthropic_policy")"
 external_id="ai-review:v1:$TARGET_REPO:$PR_NUMBER:$EXPECTED_HEAD_SHA:$ARM_RUN_ID:$ARM_RUN_ATTEMPT:$nonce"
 write_ruleset_run
