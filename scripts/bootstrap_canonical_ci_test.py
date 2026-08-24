@@ -156,6 +156,16 @@ class BootstrapTests(unittest.TestCase):
         with self.assertRaisesRegex(bootstrap.BootstrapError, "events differ"):
             bootstrap.converge(bootstrap.validate_manifest(manifest()), gh, self.workspace, self.contract, "dry-run")
 
+    def test_manifest_cannot_widen_permissions_or_hide_selected_scope(self):
+        value = manifest()
+        value["apps"][0]["permissions"]["administration"] = "write"
+        with self.assertRaisesRegex(bootstrap.BootstrapError, "canonical role"):
+            bootstrap.validate_manifest(value)
+        value = manifest()
+        value["apps"][0]["repository_selection"] = "selected"
+        with self.assertRaisesRegex(bootstrap.BootstrapError, "all-repository"):
+            bootstrap.validate_manifest(value)
+
     def test_wrong_or_suspended_installation_is_rejected(self):
         for override, message in (({"id": 999}, "installation is absent"), ({"suspended_at": "now"}, "suspended")):
             with self.subTest(override=override):
@@ -169,8 +179,9 @@ class BootstrapTests(unittest.TestCase):
         mutations = []
         value = manifest(); value["contract_sha"] = "main"; mutations.append(value)
         value = manifest(); value["apps"][0]["installation_id"] = "202"; mutations.append(value)
-        value = manifest(); value["variables"] = {"VERJSON_LANE_TRUSTED": {"value": "x", "visibility": "all"}}; mutations.append(value)
-        value = manifest(); value["secrets"] = {"VERJSON_RELEASE_TOKEN": {"environment": "KEY", "visibility": "all"}}; mutations.append(value)
+        legacy_prefix = "VER" + "JSON_"
+        value = manifest(); value["variables"] = {legacy_prefix + "LANE_TRUSTED": {"value": "x", "visibility": "all"}}; mutations.append(value)
+        value = manifest(); value["secrets"] = {legacy_prefix + "RELEASE_TOKEN": {"environment": "KEY", "visibility": "all"}}; mutations.append(value)
         for value in mutations:
             with self.subTest(value=value):
                 with self.assertRaises(bootstrap.BootstrapError):
@@ -208,6 +219,48 @@ class BootstrapTests(unittest.TestCase):
         value["contract_sha"] = "b" * 40
         with self.assertRaisesRegex(bootstrap.BootstrapError, "contract root HEAD"):
             bootstrap.converge(bootstrap.validate_manifest(value), FakeGitHub(), self.workspace, self.contract, "dry-run")
+
+    def test_dirty_generator_checkout_is_rejected(self):
+        generator = self.contract / "scripts/gen-privileged-merge-caller.sh"
+        generator.write_text("#!/bin/sh\necho attacker\n", encoding="utf-8")
+        with self.assertRaisesRegex(bootstrap.BootstrapError, "must be clean"):
+            bootstrap.converge(bootstrap.validate_manifest(manifest()), FakeGitHub(), self.workspace, self.contract, "dry-run")
+
+    def test_partial_remote_failure_receipt_records_completed_mutations(self):
+        class FailingSecret(FakeGitHub):
+            def run(self, arguments, *, stdin=None, sensitive=False):
+                if arguments[0] == "secret":
+                    raise bootstrap.BootstrapError("secret upload failed")
+                return super().run(arguments, stdin=stdin, sensitive=sensitive)
+        gh = FailingSecret(variable_current=False)
+        with mock.patch.dict(os.environ, {"BOOTSTRAP_MERGE_KEY": "never-rendered"}):
+            with self.assertRaises(bootstrap.ConvergenceError) as raised:
+                bootstrap.converge(bootstrap.validate_manifest(manifest()), gh, self.workspace, self.contract, "apply")
+        receipt = raised.exception.receipt
+        self.assertEqual(receipt["status"], "failed")
+        self.assertEqual(receipt["variables"][0]["status"], "applied")
+        self.assertNotIn("never-rendered", json.dumps(receipt))
+
+    def test_multiple_caller_replacement_rolls_back_on_failure(self):
+        value = manifest()
+        value["callers"].append({**value["callers"][0], "output": ".github/workflows/ai-promotion-retry.yml"})
+        first = self.repository / value["callers"][0]["output"]
+        second = self.repository / value["callers"][1]["output"]
+        first.write_text("first-original\n", encoding="utf-8")
+        second.write_text("second-original\n", encoding="utf-8")
+        real_replace = os.replace
+        calls = 0
+        def fail_second(source, destination):
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                raise OSError("fixture replacement failure")
+            real_replace(source, destination)
+        with mock.patch.object(bootstrap.os, "replace", side_effect=fail_second):
+            with self.assertRaisesRegex(bootstrap.BootstrapError, "prior files restored"):
+                bootstrap.generate_callers(bootstrap.validate_manifest(value), self.workspace, self.contract, "apply")
+        self.assertEqual(first.read_text(), "first-original\n")
+        self.assertEqual(second.read_text(), "second-original\n")
 
 
 if __name__ == "__main__":

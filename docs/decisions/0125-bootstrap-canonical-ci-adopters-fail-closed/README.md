@@ -30,7 +30,7 @@ redacted receipt records only names and outcomes. Dry-run performs no mutation a
 never requires secret values; check requires secret names to exist but cannot claim
 their opaque values are current.
 
-App entries bind an exact slug, numeric App and installation IDs, repository selection,
+App entries bind an exact slug, numeric App and installation IDs, all-repository selection,
 permission map, and event list. The bootstrap reads the organization's installation
 inventory and fails on any mismatch, suspension, inaccessible inventory, or permission
 widening. It does not rename, recreate, install, or modify an App. Instead it emits the
@@ -54,6 +54,8 @@ an error.
 ## Consequences
 
 - Rerunning apply converges readable settings and safely re-uploads opaque secrets.
+- Selected-repository installations are rejected because exact membership requires a
+  separate repository allowlist and paginated inventory contract.
 - App creation, installation, ruleset bypass assignment, and private-key generation
   remain visible owner actions rather than simulated automation.
 - An App permission or event mismatch is a blocker; the script never broadens it.
@@ -68,4 +70,3 @@ Adversarial tests use a fake `gh` boundary and disposable repositories to prove
 idempotency, dry-run no-write behavior, exact organization/App scope, permission and
 event equality, secret redaction, malformed and missing inputs, mutation failure
 receipts, traversal rejection, generator allowlisting, and atomic same-SHA output.
-

@@ -65,17 +65,17 @@ top-level immutable `contract_sha`; mutable branches and mixed pins are rejected
 - Renovate compatibility: Actions, Checks, Contents, Pull requests, and Commit
   statuses read, plus Metadata read. It has no write permission.
 
-All canonical role Apps subscribe to no webhook events. If an installation reports a
-different event, permission, identity, suspension, or repository selection, bootstrap
-stops. A selected-repository installation must be reviewed separately when membership
-changes; the installation inventory does not prove every intended repository is
-selected.
+All canonical role Apps subscribe to no webhook events and this bootstrap supports
+only all-repository installations, whose scope is completely observable in the
+organization installation inventory. If an installation reports a different event,
+permission, identity, suspension, or repository selection, bootstrap stops. A future
+selected-repository mode requires a new manifest allowlist and paginated exact
+repository-membership validation; it must not reuse this mode's evidence.
 
 ## Rollback and legacy coexistence
 
 Reapply the prior reviewed manifest and immutable contract SHA. Keep legacy
-`VERJSON_*` variables while immutable historical callers still reference them; the
-bootstrap neither creates nor deletes those names. Secret rollback requires supplying
+organization-branded variables while immutable historical callers still reference
+them; the bootstrap neither creates nor deletes those names. Secret rollback requires supplying
 the previous secret value. App key revocation/rotation and ruleset bypass removal are
 manual owner actions and should be recorded with the run receipt.
-

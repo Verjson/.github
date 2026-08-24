@@ -27,10 +27,25 @@ GENERATORS = {
     "container-deployment": "gen-container-deployment.sh",
     "renovate-compatibility": "gen-renovate-compatibility-caller.sh",
 }
+APP_PERMISSIONS = {
+    "AI_REVIEW_APP": {"checks": "write", "contents": "read", "pull_requests": "write", "metadata": "read"},
+    "MERGE_APP": {"contents": "write", "pull_requests": "write", "metadata": "read"},
+    "RELEASE_APP": {"contents": "write", "metadata": "read"},
+    "RENOVATE_COMPATIBILITY_APP": {
+        "actions": "read", "checks": "read", "contents": "read",
+        "pull_requests": "read", "statuses": "read", "metadata": "read",
+    },
+}
 
 
 class BootstrapError(RuntimeError):
     pass
+
+
+class ConvergenceError(BootstrapError):
+    def __init__(self, message: str, receipt: dict[str, Any]) -> None:
+        super().__init__(message)
+        self.receipt = receipt
 
 
 def object_value(value: Any, label: str) -> dict[str, Any]:
@@ -114,8 +129,8 @@ def validate_manifest(raw: Any) -> dict[str, Any]:
         app = object_value(app_raw, f"apps[{index}]")
         exact_keys(app, {"role", "slug", "app_id", "client_id", "installation_id", "repository_selection", "permissions", "events"}, f"apps[{index}]")
         role = app["role"]
-        if not isinstance(role, str) or NAME.fullmatch(role) is None or role in seen_roles:
-            raise BootstrapError("App roles must be unique uppercase identifiers")
+        if role not in APP_PERMISSIONS or role in seen_roles:
+            raise BootstrapError("App roles must be unique canonical role identifiers")
         seen_roles.add(role)
         if not isinstance(app["slug"], str) or SLUG.fullmatch(app["slug"]) is None:
             raise BootstrapError(f"App {role} has an invalid slug")
@@ -123,14 +138,14 @@ def validate_manifest(raw: Any) -> dict[str, Any]:
             raise BootstrapError(f"App {role} IDs must be positive integers")
         if not isinstance(app["client_id"], str) or CLIENT_ID.fullmatch(app["client_id"]) is None:
             raise BootstrapError(f"App {role} has an invalid client ID")
-        if app["repository_selection"] not in {"all", "selected"}:
-            raise BootstrapError(f"App {role} has an invalid repository selection")
+        if app["repository_selection"] != "all":
+            raise BootstrapError(f"App {role} must use exact all-repository selection")
         permissions = object_value(app["permissions"], f"App {role} permissions")
-        if not permissions or any(level not in {"read", "write"} for level in permissions.values()):
-            raise BootstrapError(f"App {role} permissions must be a non-empty read/write map")
+        if permissions != APP_PERMISSIONS[role]:
+            raise BootstrapError(f"App {role} permissions differ from the canonical role")
         events = list_value(app["events"], f"App {role} events")
-        if any(not isinstance(event, str) or not event for event in events) or len(events) != len(set(events)):
-            raise BootstrapError(f"App {role} events must be unique strings")
+        if events:
+            raise BootstrapError(f"App {role} must subscribe to no events")
 
     seen_outputs: set[tuple[str, str]] = set()
     for index, caller_raw in enumerate(list_value(manifest["callers"], "callers")):
@@ -228,13 +243,32 @@ def generate_callers(manifest: dict[str, Any], workspace: Path, contract_root: P
     if mode == "check" and any(item["status"] == "drifted" for item in receipt):
         raise BootstrapError("one or more generated callers drift from the manifest")
     if mode == "apply":
+        staged: list[tuple[Path, Path]] = []
+        originals: dict[Path, tuple[bytes, int] | None] = {}
         for output, content in generated:
-            output.parent.mkdir(parents=True, exist_ok=True)
+            originals[output] = (output.read_bytes(), output.stat().st_mode & 0o777) if output.exists() else None
             with tempfile.NamedTemporaryFile(dir=output.parent, delete=False) as stream:
                 stream.write(content)
                 temporary = Path(stream.name)
             temporary.chmod(0o755 if output.suffix == ".sh" else 0o644)
-            os.replace(temporary, output)
+            staged.append((temporary, output))
+        applied: list[Path] = []
+        try:
+            for temporary, output in staged:
+                os.replace(temporary, output)
+                applied.append(output)
+        except OSError as error:
+            for output in reversed(applied):
+                original = originals[output]
+                if original is None:
+                    output.unlink(missing_ok=True)
+                else:
+                    output.write_bytes(original[0])
+                    output.chmod(original[1])
+            raise BootstrapError("generated caller replacement failed; prior files restored") from error
+        finally:
+            for temporary, _ in staged:
+                temporary.unlink(missing_ok=True)
     return receipt
 
 
@@ -245,6 +279,12 @@ def converge(manifest: dict[str, Any], gh: GitHub, workspace: Path, contract_roo
     )
     if contract_head.returncode or contract_head.stdout.strip() != manifest["contract_sha"]:
         raise BootstrapError("contract root HEAD does not equal the immutable manifest SHA")
+    contract_status = subprocess.run(
+        ["git", "-C", str(contract_root), "status", "--porcelain", "--untracked-files=all"],
+        text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+    )
+    if contract_status.returncode or contract_status.stdout:
+        raise BootstrapError("contract root must be clean before generator execution")
     if mode == "apply":
         missing = [spec["environment"] for spec in manifest["secrets"].values() if not os.environ.get(spec["environment"])]
         if missing:
@@ -275,26 +315,43 @@ def converge(manifest: dict[str, Any], gh: GitHub, workspace: Path, contract_roo
     for name, spec in manifest["variables"].items():
         live = live_variables.get(name)
         current = live is not None and live.get("value") == spec["value"] and live.get("visibility") == spec["visibility"]
-        receipt["variables"].append({"name": name, "status": "current" if current else "drifted"})
+        variable_receipt = {"name": name, "status": "current" if current else "drifted"}
+        receipt["variables"].append(variable_receipt)
         if mode == "check" and not current:
             raise BootstrapError(f"variable {name} differs")
         if mode == "apply" and not current:
             endpoint = f"/orgs/{manifest['organization']}/actions/variables" + (f"/{name}" if live else "")
             method = "PATCH" if live else "POST"
-            gh.run(["api", "--method", method, endpoint, "-f", f"name={name}", "-f", f"value={spec['value']}", "-f", f"visibility={spec['visibility']}"])
+            try:
+                gh.run(["api", "--method", method, endpoint, "-f", f"name={name}", "-f", f"value={spec['value']}", "-f", f"visibility={spec['visibility']}"])
+                variable_receipt["status"] = "applied"
+            except BootstrapError as error:
+                receipt["status"] = "failed"
+                raise ConvergenceError(str(error), receipt) from error
     for name, spec in manifest["secrets"].items():
         live = live_secrets.get(name)
         exists = live is not None and live.get("visibility") == spec["visibility"]
-        receipt["secrets"].append({"name": name, "status": "present" if exists else "missing", "value": "REDACTED"})
+        secret_receipt = {"name": name, "status": "present" if exists else "missing", "value": "REDACTED"}
+        receipt["secrets"].append(secret_receipt)
         if mode == "check" and not exists:
             raise BootstrapError(f"secret {name} is absent or has different visibility")
         if mode == "apply":
             value = os.environ[spec["environment"]]
-            gh.run(
-                ["secret", "set", name, "--org", manifest["organization"], "--visibility", spec["visibility"]],
-                stdin=value, sensitive=True,
-            )
-    receipt["callers"] = generate_callers(manifest, workspace, contract_root, "apply") if mode == "apply" else caller_plan
+            try:
+                gh.run(
+                    ["secret", "set", name, "--org", manifest["organization"], "--visibility", spec["visibility"]],
+                    stdin=value, sensitive=True,
+                )
+                secret_receipt["status"] = "applied"
+            except BootstrapError as error:
+                receipt["status"] = "failed"
+                raise ConvergenceError(str(error), receipt) from error
+    try:
+        receipt["callers"] = generate_callers(manifest, workspace, contract_root, "apply") if mode == "apply" else caller_plan
+    except BootstrapError as error:
+        receipt["callers"] = caller_plan
+        receipt["status"] = "failed"
+        raise ConvergenceError(str(error), receipt) from error
     receipt["status"] = "planned" if mode == "dry-run" else "converged"
     return receipt
 
@@ -314,7 +371,8 @@ def main() -> int:
         manifest = validate_manifest(json.loads(arguments.manifest.read_text(encoding="utf-8")))
         receipt = converge(manifest, GitHub(arguments.gh), arguments.workspace, arguments.contract_root, arguments.mode)
     except (BootstrapError, OSError, json.JSONDecodeError) as error:
-        receipt = {"mode": arguments.mode, "status": "failed", "error": str(error)}
+        receipt = error.receipt if isinstance(error, ConvergenceError) else {"mode": arguments.mode, "status": "failed"}
+        receipt["error"] = str(error)
         exit_code = 1
     rendered = json.dumps(receipt, sort_keys=True, indent=2) + "\n"
     if arguments.receipt:
