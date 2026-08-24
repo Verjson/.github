@@ -38,7 +38,7 @@ expected_uses = f"Verjson/.github/.github/workflows/gate-rearm.yml@{sha}"
 assert set(doc) == {"name", "on", "permissions", "jobs"}
 assert doc["on"] == {
     "pull_request_target": {
-        "types": ["opened", "reopened", "synchronize", "ready_for_review", "converted_to_draft", "edited", "unlabeled", "labeled"],
+        "types": ["opened", "reopened", "synchronize", "ready_for_review", "converted_to_draft", "edited", "unlabeled"],
     },
 }
 assert doc["permissions"] == {"contents": "read"}
@@ -91,10 +91,7 @@ with open(sys.argv[1], encoding="utf-8") as stream:
     doc = yaml.load(stream, Loader=yaml.BaseLoader)
 
 assert doc["permissions"] == {"contents": "read"}
-assert doc["concurrency"] == {
-    "group": "ai-review-arm-${{ github.event.pull_request.number }}-${{ github.event.pull_request.head.sha }}",
-    "cancel-in-progress": "false",
-}
+assert doc["concurrency"] == {"group": "ai-review-arm-${{ github.event.pull_request.number }}", "cancel-in-progress": "false"}
 arm = doc["jobs"]["arm"]
 assert arm["permissions"] == {
     "actions": "write",

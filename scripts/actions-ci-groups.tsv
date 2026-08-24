@@ -84,6 +84,7 @@ merge-gate	bash scripts/ci-gate/post-merge-reconcile.test.sh
 merge-gate	bash scripts/ci-gate/gate-dispatch.test.sh
 merge-gate	bash scripts/ci-gate/gate-hold-disable.test.sh
 merge-gate	bash scripts/ci-gate/gate-rearm-caller-contract.test.sh
+merge-gate	python3 scripts/ci-gate/label-delivery-bridge.test.py
 merge-gate	bash scripts/ci-gate/ai-review-caller-contract.test.sh
 merge-gate	bash scripts/ci-gate/privileged-merge-caller-contract.test.sh
 merge-gate	bash scripts/ci-gate/privileged-lane-validation.test.sh
