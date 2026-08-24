@@ -32,6 +32,7 @@ case "$*" in
     printf '{"review_policy":"%s"}\n' "$RECEIPT_POLICY" >"$destination/receipt.json" ;;
   *"collaborators/maintainer/permission"*) printf '%s\n' "${ACTOR_PERMISSION:-triage}" ;;
   *"issues/7/events?per_page=100"*) printf '[{"id":1,"event":"labeled","label":{"name":"ai-review"},"actor":{"login":"maintainer"}},{"id":2,"event":"labeled","label":{"name":"re-review"},"actor":{"login":"maintainer"}}]\n' ;;
+  *"contents/.github/workflows/ai-review-merge.yml?ref=main"*) cat "$CALLER_FILE" ;;
   *"--method POST repos/Verjson/example/check-runs --input -"*)
     jq '. + {id:9100,app:{id:4242,slug:"verjson-ai-review"}}' ;;
   "workflow run "*) printf 'DISPATCH %s\n' "$*" >>"$CALLS" ;;
@@ -49,6 +50,10 @@ export DEFAULT_BRANCH=main EVENT_LABEL=hold EVENT_OLD_TITLE='' GITHUB_REPOSITORY
 export ACTIONS_TOKEN=actions-token GH_TOKEN=app-token GITHUB_SERVER_URL=https://github.com
 export GITHUB_RUN_ID=8000 GITHUB_RUN_ATTEMPT=1 RUNNER_TEMP="$tmp"
 export GITHUB_OUTPUT="$tmp/github-output"
+CALLER_FILE="$tmp/current-caller.yml"
+cp "$root/scripts/ci-gate/fixtures/ai-review-caller-a6b3ccc.yml" "$CALLER_FILE"
+printf '# current schema caller\n' >>"$CALLER_FILE"
+export CALLER_FILE
 receipt_policy='eyJhY3RvciI6Im1haW50YWluZXIiLCJhY3Rvcl9wZXJtaXNzaW9uIjoibWFpbnRhaW4iLCJidWRnZXRfdXNkIjoiMS4wMCIsIm1vZGVsIjoiZ3B0LTUuNi1sdW5hIiwicHJpY2luZ192ZXJzaW9uIjoib3BlbmFpLWx1bmEtbG9uZy1jb250ZXh0LTIwMjYtMDgtMDgiLCJwcm92aWRlciI6Im9wZW5haSJ9'
 substitute_policy='eyJhY3RvciI6InRydXN0ZWQtYXJtIiwiYWN0b3JfcGVybWlzc2lvbiI6ImF1dG9tYXRpb24iLCJidWRnZXRfdXNkIjoiYXV0byIsIm1vZGVsIjoiYXV0byIsInByaWNpbmdfdmVyc2lvbiI6ImFudGhyb3BpYy1uYXRpdmUtdjEiLCJwcm92aWRlciI6ImFudGhyb3BpYyJ9'
 export RECEIPT_POLICY="$receipt_policy"
