@@ -76,6 +76,10 @@ jobs:
               type == "string" and length <= 255
               and startswith($namespace + "/")
               and test("^ghcr\\.io/[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*(?:/[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*)*$");
+            def safe_relative_path:
+              type == "string" and length <= 255
+              and test("^[A-Za-z0-9][A-Za-z0-9._-]*(/[A-Za-z0-9][A-Za-z0-9._-]*)*$")
+              and (split("/") | all(.[]; . != "." and . != ".."));
             .repository == $repository and .registryNamespace == $namespace
             and ((.privateNodePackages // []) | type == "array")
             and ((.privateNodePackages // []) | all(.[]; type == "string" and test("^@verjson/[a-z0-9][a-z0-9._-]*$")))
@@ -85,6 +89,8 @@ jobs:
             and (all(.images[];
               (.variant | safe_component)
               and (.repository | safe_repository)
+              and ((.context // ".") == "." or ((.context // ".") | safe_relative_path))
+              and ((.file // "Dockerfile") | safe_relative_path)
               and (.platforms | type == "array" and length > 0)
               and all(.platforms[];
                 type == "object"
@@ -267,6 +273,23 @@ jobs:
         with:
           path: .container-candidate-build-source-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.variant }}
           persist-credentials: false
+      - name: Validate isolated candidate build paths
+        id: build-paths
+        env:
+          SOURCE_PATH: .container-candidate-build-source-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.variant }}
+          CONTEXT_RELATIVE_PATH: ${{ matrix.context }}
+          FILE_RELATIVE_PATH: ${{ matrix.file }}
+        run: |
+          set -euo pipefail
+          source_root="$(realpath -e "$SOURCE_PATH")" || { echo "::error::isolated candidate source is missing"; exit 1; }
+          context_path="$(realpath -e "$source_root/$CONTEXT_RELATIVE_PATH")" || { echo "::error::candidate context is missing"; exit 1; }
+          file_path="$(realpath -e "$source_root/$FILE_RELATIVE_PATH")" || { echo "::error::candidate Dockerfile is missing"; exit 1; }
+          case "$context_path" in "$source_root"|"$source_root"/*) ;; *) echo "::error::candidate context escapes isolated source"; exit 1;; esac
+          case "$file_path" in "$source_root"/*) ;; *) echo "::error::candidate Dockerfile escapes isolated source"; exit 1;; esac
+          [ -d "$context_path" ] || { echo "::error::candidate context is not a directory"; exit 1; }
+          [ -f "$file_path" ] || { echo "::error::candidate Dockerfile is not a regular file"; exit 1; }
+          echo "context=$context_path" >> "$GITHUB_OUTPUT"
+          echo "file=$file_path" >> "$GITHUB_OUTPUT"
       - name: Prepare credential-free dependency build context
         env:
           ACTIONS_ID_TOKEN_REQUEST_TOKEN: ''
@@ -322,8 +345,8 @@ jobs:
           NODE_AUTH_TOKEN: ''
           NPM_TOKEN: ''
         with:
-          context: ${{ format('.container-candidate-build-source-{0}-{1}-{2}/{3}', github.run_id, github.run_attempt, matrix.variant, matrix.context) }}
-          file: ${{ format('.container-candidate-build-source-{0}-{1}-{2}/{3}', github.run_id, github.run_attempt, matrix.variant, matrix.file) }}
+          context: ${{ steps.build-paths.outputs.context }}
+          file: ${{ steps.build-paths.outputs.file }}
           target: ${{ matrix.target }}
           platforms: ${{ matrix.platforms }}
           push: false

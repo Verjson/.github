@@ -76,6 +76,10 @@ jobs:
               type == "string" and length <= 255
               and startswith($namespace + "/")
               and test("^ghcr\\.io/[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*(?:/[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*)*$");
+            def safe_relative_path:
+              type == "string" and length <= 255
+              and test("^[A-Za-z0-9][A-Za-z0-9._-]*(/[A-Za-z0-9][A-Za-z0-9._-]*)*$")
+              and (split("/") | all(.[]; . != "." and . != ".."));
             .repository == $repository and .registryNamespace == $namespace
             and ((.privateNodePackages // []) | type == "array")
             and ((.privateNodePackages // []) | all(.[]; type == "string" and test("^@verjson/[a-z0-9][a-z0-9._-]*$")))
@@ -85,6 +89,8 @@ jobs:
             and (all(.images[];
               (.variant | safe_component)
               and (.repository | safe_repository)
+              and ((.context // ".") == "." or ((.context // ".") | safe_relative_path))
+              and ((.file // "Dockerfile") | safe_relative_path)
               and (.platforms | type == "array" and length > 0)
               and all(.platforms[];
                 type == "object"

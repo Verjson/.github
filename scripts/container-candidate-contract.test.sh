@@ -188,9 +188,20 @@ def validate_authority(read_only, publication):
         "path": ".container-candidate-build-source-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.variant }}",
         "persist-credentials": False,
     }, "pull-request build checkout is not matrix-isolated and credentialless"
+    build_paths = next(step for step in build_steps if step.get("id") == "build-paths")
+    assert build_paths["name"] == "Validate isolated candidate build paths"
+    assert build_paths["env"] == {
+        "SOURCE_PATH": ".container-candidate-build-source-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.variant }}",
+        "CONTEXT_RELATIVE_PATH": "${{ matrix.context }}",
+        "FILE_RELATIVE_PATH": "${{ matrix.file }}",
+    }
+    assert 'realpath -e "$source_root/$CONTEXT_RELATIVE_PATH"' in build_paths["run"]
+    assert 'realpath -e "$source_root/$FILE_RELATIVE_PATH"' in build_paths["run"]
+    assert 'case "$context_path" in "$source_root"|"$source_root"/*)' in build_paths["run"]
+    assert 'case "$file_path" in "$source_root"/*)' in build_paths["run"]
     docker_build = next(step for step in build_steps if step.get("uses", "").startswith("docker/build-push-action@"))
-    assert docker_build["with"]["context"].startswith("${{ format('.container-candidate-build-source-")
-    assert docker_build["with"]["file"].startswith("${{ format('.container-candidate-build-source-")
+    assert docker_build["with"]["context"] == "${{ steps.build-paths.outputs.context }}"
+    assert docker_build["with"]["file"] == "${{ steps.build-paths.outputs.file }}"
     build_cleanup = next(step for step in build_steps if step.get("name") == "Remove isolated candidate build source")
     assert build_cleanup["if"] == "always()"
     assert build_cleanup["run"] == 'rm -rf "$SOURCE_PATH"'
@@ -465,8 +476,52 @@ cp "$root/scripts/fixtures/container-candidate/single.json" "$tmp/outside-candid
 run_invalid_config ../outside-candidate.json "$tmp/traversal-output"
 ln -s "$tmp/outside-candidate.json" "$first_adoption/escape.json"
 run_invalid_config escape.json "$tmp/symlink-output"
+for field in context file; do
+  jq --arg field "$field" '.images[0][$field] = "../../outside"' \
+    "$root/scripts/fixtures/container-candidate/single.json" \
+    > "$first_adoption/malicious-$field.json"
+  run_invalid_config "malicious-$field.json" "$tmp/malicious-$field-output"
+done
 if (cd "$first_adoption" && "$generator" workflow "$ref" 'a/../../outside.json') >/dev/null 2>&1; then
   echo "generator accepted traversal-bearing config-path" >&2
+  exit 1
+fi
+
+build_paths_script="$tmp/validate-build-paths.sh"
+BUILD_PATHS_SCRIPT="$build_paths_script" WORKFLOW="$workflow" python3 - <<'PY'
+import os
+import yaml
+
+with open(os.environ["WORKFLOW"], encoding="utf-8") as stream:
+    workflow = yaml.safe_load(stream)
+step = next(
+    item for item in workflow["jobs"]["pull-request-build"]["steps"]
+    if item.get("id") == "build-paths"
+)
+with open(os.environ["BUILD_PATHS_SCRIPT"], "w", encoding="utf-8") as stream:
+    stream.write(step["run"])
+PY
+build_source="$tmp/build-source"
+outside_build="$tmp/outside-build"
+mkdir -p "$build_source/context" "$outside_build/context"
+touch "$build_source/Dockerfile" "$outside_build/Dockerfile"
+GITHUB_OUTPUT="$tmp/valid-build-paths-output" SOURCE_PATH="$build_source" \
+  CONTEXT_RELATIVE_PATH=context FILE_RELATIVE_PATH=Dockerfile \
+  bash "$build_paths_script"
+grep -qx "context=$(realpath -e "$build_source/context")" "$tmp/valid-build-paths-output"
+grep -qx "file=$(realpath -e "$build_source/Dockerfile")" "$tmp/valid-build-paths-output"
+ln -s "$outside_build/context" "$build_source/escaped-context"
+if GITHUB_OUTPUT="$tmp/escaped-context-output" SOURCE_PATH="$build_source" \
+  CONTEXT_RELATIVE_PATH=escaped-context FILE_RELATIVE_PATH=Dockerfile \
+  bash "$build_paths_script" >/dev/null 2>&1; then
+  echo "candidate context symlink escape unexpectedly passed" >&2
+  exit 1
+fi
+ln -s "$outside_build/Dockerfile" "$build_source/escaped-Dockerfile"
+if GITHUB_OUTPUT="$tmp/escaped-file-output" SOURCE_PATH="$build_source" \
+  CONTEXT_RELATIVE_PATH=context FILE_RELATIVE_PATH=escaped-Dockerfile \
+  bash "$build_paths_script" >/dev/null 2>&1; then
+  echo "candidate Dockerfile symlink escape unexpectedly passed" >&2
   exit 1
 fi
 
