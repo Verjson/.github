@@ -79,7 +79,9 @@ class PnpmCandidateTests(unittest.TestCase):
             self.assertNotIn("pnpm run", script)
             self.assertNotIn("--dangerously-allow-all-builds", script)
             self.assertIn("env -i", script)
-            self.assertIn("validator_args+=(--manifest package.json)", script)
+            self.assertIn("validator_args+=(--manifest package.json --project-root .)", script)
+            self.assertIn('validator_args+=(--reviewed-manifest "$base_manifest")', script)
+            self.assertIn('[ "$base_package_manager_spec" = "$head_package_manager_spec" ]', script)
             scopes = "jq -r '.[] | split(\"/\")[0]' <<<\"$APPROVED_PRIVATE_PACKAGES\""
             self.assertIn(scopes, script)
             acquire_text = yaml.safe_dump(acquire)
@@ -100,6 +102,7 @@ class PnpmCandidateTests(unittest.TestCase):
             }), encoding="utf-8")
             command = [sys.executable, str(MODULE), "--package-manager", "pnpm",
                        "--lock", str(lock_path), "--manifest", str(manifest_path),
+                       "--project-root", str(root),
                        "--approved", '["@tequityapp/schema","@verjson/authz"]']
             self.assertEqual(subprocess.run(command, check=False).returncode, 0)
             manifest_path.write_text('{"packageManager":"pnpm@11.22.0"}', encoding="utf-8")
@@ -108,6 +111,42 @@ class PnpmCandidateTests(unittest.TestCase):
                 "packageManager": "pnpm@11.22.0+sha512." + "a" * 128
             }), encoding="utf-8")
             lock_path.write_text("x: &unsafe value\ny: *unsafe\n", encoding="utf-8")
+            self.assertNotEqual(subprocess.run(command, check=False, capture_output=True).returncode, 0)
+
+    def test_cli_rejects_hooks_config_dependencies_and_head_only_manager_drift(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            lock_path = root / "pnpm-lock.yaml"
+            manifest_path = root / "package.json"
+            reviewed_path = root / "reviewed-package.json"
+            exact_spec = "pnpm@11.22.0+sha512." + "a" * 128
+            lock_path.write_text(yaml.safe_dump(pnpm_lock()), encoding="utf-8")
+            manifest_path.write_text(json.dumps({"packageManager": exact_spec}), encoding="utf-8")
+            reviewed_path.write_text(json.dumps({"packageManager": exact_spec}), encoding="utf-8")
+            command = [sys.executable, str(MODULE), "--package-manager", "pnpm",
+                       "--lock", str(lock_path), "--manifest", str(manifest_path),
+                       "--reviewed-manifest", str(reviewed_path), "--project-root", str(root),
+                       "--approved", '["@tequityapp/schema","@verjson/authz"]']
+
+            hook = root / ".pnpmfile.cjs"
+            hook.write_text("throw new Error(process.env.NODE_AUTH_TOKEN)", encoding="utf-8")
+            self.assertNotEqual(subprocess.run(command, check=False, capture_output=True).returncode, 0)
+            hook.unlink()
+
+            workspace = root / "pnpm-workspace.yaml"
+            workspace.write_text("configDependencies:\n  '@attacker/config': 1.0.0\n", encoding="utf-8")
+            self.assertNotEqual(subprocess.run(command, check=False, capture_output=True).returncode, 0)
+            workspace.unlink()
+
+            manifest_path.write_text(json.dumps({
+                "packageManager": exact_spec,
+                "pnpm": {"pnpmfile": "attacker.cjs"},
+            }), encoding="utf-8")
+            self.assertNotEqual(subprocess.run(command, check=False, capture_output=True).returncode, 0)
+
+            manifest_path.write_text(json.dumps({
+                "packageManager": "pnpm@11.23.0+sha512." + "b" * 128
+            }), encoding="utf-8")
             self.assertNotEqual(subprocess.run(command, check=False, capture_output=True).returncode, 0)
 
 

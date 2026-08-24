@@ -174,6 +174,7 @@ jobs:
           TRANSFER_DIR: ${{ github.workspace }}/.verjson-container-node-modules-${{ github.run_id }}-${{ github.run_attempt }}
         run: |
           set -euo pipefail
+          base_manifest=''
           case "$PACKAGE_MANAGER" in npm) lock_file=package-lock.json ;; pnpm) lock_file=pnpm-lock.yaml ;; *) echo "::error::packageManager accepts only npm or pnpm"; exit 1 ;; esac
           [ -f "$lock_file" ] || { echo "::error::$lock_file is required"; exit 1; }
           if find . -name .npmrc -print -quit | grep -q .; then
@@ -191,6 +192,13 @@ jobs:
             [ "$base_approved" = "$APPROVED_PRIVATE_PACKAGES" ] || { echo "::error::privateNodePackages differs from the reviewed base configuration"; exit 1; }
             base_package_manager="$(jq -re '.packageManager // "npm"' "$base_config")" || { echo "::error::reviewed base packageManager is invalid"; exit 1; }
             [ "$base_package_manager" = "$PACKAGE_MANAGER" ] || { echo "::error::packageManager differs from the reviewed base configuration"; exit 1; }
+            if [ "$PACKAGE_MANAGER" = pnpm ]; then
+              head_package_manager_spec="$(jq -er '.packageManager' package.json)" || { echo "::error::pnpm packageManager spec is missing"; exit 1; }
+              base_manifest="$RUNNER_TEMP/container-candidate-base-package.json"
+              git show "$BASE_SHA:package.json" > "$base_manifest" 2>/dev/null || { echo "::error::package.json must exist at the reviewed base SHA"; exit 1; }
+              base_package_manager_spec="$(jq -er '.packageManager' "$base_manifest")" || { echo "::error::reviewed base pnpm packageManager spec is missing"; exit 1; }
+              [ "$base_package_manager_spec" = "$head_package_manager_spec" ] || { echo "::error::pnpm packageManager spec differs from the reviewed base"; exit 1; }
+            fi
           fi
           if [ "$APPROVED_PRIVATE_PACKAGES" != '[]' ]; then
             [ -n "$NODE_AUTH_TOKEN" ] || { echo "::error::private container dependency acquisition requires NODE_AUTH_TOKEN"; exit 1; }
@@ -199,7 +207,8 @@ jobs:
           curl -fsSL "https://raw.githubusercontent.com/Verjson/.github/${{ inputs.contract-ref }}/scripts/container_private_dependencies.py" -o "$acquisition"
           printf '%s  %s\n' '${{ inputs.acquisition-sha256 }}' "$acquisition" | sha256sum --check --strict
           validator_args=(--package-manager "$PACKAGE_MANAGER" --lock "$lock_file" --approved "$APPROVED_PRIVATE_PACKAGES")
-          [ "$PACKAGE_MANAGER" = npm ] || validator_args+=(--manifest package.json)
+          [ "$PACKAGE_MANAGER" = npm ] || validator_args+=(--manifest package.json --project-root .)
+          [ -z "$base_manifest" ] || validator_args+=(--reviewed-manifest "$base_manifest")
           python3 "$acquisition" "${validator_args[@]}"
           user_config="$RUNNER_TEMP/container-user.npmrc"
           global_config="$RUNNER_TEMP/container-global.npmrc"
@@ -263,7 +272,7 @@ jobs:
           rm -rf "$TRANSFER_DIR" "$RUNNER_TEMP/container-node-modules" \
             "$RUNNER_TEMP/container-npm-cache" "$RUNNER_TEMP/container-npm-home"
           rm -f "$RUNNER_TEMP/container-user.npmrc" "$RUNNER_TEMP/container-global.npmrc" \
-            "$RUNNER_TEMP/container_private_dependencies.py"
+            "$RUNNER_TEMP/container_private_dependencies.py" "$RUNNER_TEMP/container-candidate-base-package.json"
 
   pull-request-build:
     if: >-

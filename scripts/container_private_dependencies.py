@@ -17,6 +17,8 @@ class DependencyError(ValueError):
 
 PACKAGE = re.compile(r"^@[a-z0-9][a-z0-9._-]*/[a-z0-9][a-z0-9._-]*$")
 REGISTRY_PACKAGE = re.compile(r"^(?:@[a-z0-9][a-z0-9._-]*/)?[a-z0-9][a-z0-9._-]*$")
+PNPM_HOOK_KEYS = {"pnpmfile", "globalPnpmfile", "global-pnpmfile", "configDependencies"}
+PNPM_HOOK_FILES = {".pnpmfile.cjs", ".pnpmfile.js", "pnpmfile.cjs", "pnpmfile.js"}
 
 
 def validate_integrity(path: str, integrity: Any) -> None:
@@ -185,6 +187,33 @@ def build_pnpm_plan(lock: dict[str, Any], approved_names: list[str]) -> list[dic
             for (url, integrity), private in sorted(downloads.items())]
 
 
+def reject_pnpm_hook_configuration(value: Any, location: str) -> None:
+    if isinstance(value, dict):
+        forbidden = PNPM_HOOK_KEYS.intersection(value)
+        if forbidden:
+            raise DependencyError(
+                f"pnpm executable configuration is forbidden in {location}: {', '.join(sorted(forbidden))}"
+            )
+        for key, child in value.items():
+            reject_pnpm_hook_configuration(child, f"{location}.{key}")
+    elif isinstance(value, list):
+        for index, child in enumerate(value):
+            reject_pnpm_hook_configuration(child, f"{location}[{index}]")
+
+
+def reject_pnpm_hook_files(project_root: Path) -> None:
+    if not project_root.is_dir():
+        raise DependencyError("pnpm project root must be a directory")
+    for root, directories, files in os.walk(project_root, followlinks=False):
+        directories[:] = [name for name in directories if name != ".git"]
+        forbidden = sorted(PNPM_HOOK_FILES.intersection(files))
+        if forbidden:
+            relative = Path(root).relative_to(project_root)
+            raise DependencyError(
+                f"pnpm hook file is forbidden: {(relative / forbidden[0]).as_posix()}"
+            )
+
+
 build_plan = build_npm_plan
 
 
@@ -194,6 +223,8 @@ def main() -> int:
     parser.add_argument("--approved", required=True)
     parser.add_argument("--package-manager", choices=("npm", "pnpm"), required=True)
     parser.add_argument("--manifest", type=Path)
+    parser.add_argument("--reviewed-manifest", type=Path)
+    parser.add_argument("--project-root", type=Path)
     args = parser.parse_args()
     try:
         approved = json.loads(args.approved)
@@ -203,12 +234,20 @@ def main() -> int:
         if args.package_manager == "pnpm":
             if args.manifest is None:
                 raise DependencyError("pnpm validation requires package.json")
+            if args.project_root is None:
+                raise DependencyError("pnpm validation requires a project root")
             manifest = json.loads(args.manifest.read_text(encoding="utf-8"))
             if not isinstance(manifest, dict) or re.fullmatch(
                 r"pnpm@[1-9][0-9]*\.[0-9]+\.[0-9]+\+sha512\.[0-9a-f]{128}",
                 manifest.get("packageManager", ""),
             ) is None:
                 raise DependencyError("pnpm requires an integrity-pinned packageManager field")
+            if args.reviewed_manifest is not None:
+                reviewed_manifest = json.loads(args.reviewed_manifest.read_text(encoding="utf-8"))
+                if not isinstance(reviewed_manifest, dict) or reviewed_manifest.get("packageManager") != manifest["packageManager"]:
+                    raise DependencyError("pnpm packageManager spec differs from the reviewed base")
+            reject_pnpm_hook_configuration(manifest, "package.json")
+            reject_pnpm_hook_files(args.project_root)
             if len(text.encode("utf-8")) > 10 * 1024 * 1024:
                 raise DependencyError("pnpm lock exceeds the 10 MiB validation bound")
             try:
@@ -229,6 +268,21 @@ def main() -> int:
                     result[key] = loader.construct_object(value_node, deep=deep)
                 return result
             ExactLoader.add_constructor(yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, exact_mapping)
+            for workspace_name in ("pnpm-workspace.yaml", "pnpm-workspace.yml"):
+                workspace_path = args.project_root / workspace_name
+                if not workspace_path.exists():
+                    continue
+                workspace_text = workspace_path.read_text(encoding="utf-8")
+                if len(workspace_text.encode("utf-8")) > 1024 * 1024:
+                    raise DependencyError("pnpm workspace configuration exceeds the 1 MiB validation bound")
+                for token in yaml.scan(workspace_text):
+                    if isinstance(token, (yaml.AliasToken, yaml.AnchorToken, yaml.TagToken)):
+                        raise DependencyError("pnpm workspace configuration rejects YAML aliases, anchors, and tags")
+                try:
+                    workspace = yaml.load(workspace_text, Loader=ExactLoader)
+                except yaml.YAMLError as error:
+                    raise DependencyError(f"invalid pnpm workspace configuration: {error}") from None
+                reject_pnpm_hook_configuration(workspace, workspace_name)
             try:
                 lock = yaml.load(text, Loader=ExactLoader)
             except yaml.YAMLError as error:
