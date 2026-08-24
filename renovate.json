@@ -5,6 +5,22 @@
   ],
   "rebaseWhen": "conflicted",
   "prConcurrentLimit": 3,
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "Keep the independently audited Claude action SHA synchronized with the workflow pin",
+      "managerFilePatterns": [
+        "/^scripts\\/ci-gate\\/event-driven-authorization\\.test\\.py$/"
+      ],
+      "matchStrings": [
+        "MODEL_ACTION_SHA = \\\"(?<currentDigest>[0-9a-f]{40})\\\""
+      ],
+      "currentValueTemplate": "v1",
+      "depNameTemplate": "anthropics/claude-code-action",
+      "datasourceTemplate": "github-tags",
+      "versioningTemplate": "semver-coerced"
+    }
+  ],
   "packageRules": [
     {
       "description": "Maintain digest pins in Node workflow/setup surfaces",
@@ -19,7 +35,7 @@
     },
     {
       "description": "One PR for all action digests. Every Renovate PR here pays a full AI review pass through ai-review-merge.yml and holds a runner on the shared pool while the gate polls, so PR count is the cost — not diff size. These bump together, fail together, and are never reverted individually.",
-      "matchManagers": ["github-actions"],
+      "matchManagers": ["github-actions", "custom.regex"],
       "groupName": "github actions digests"
     }
   ]
