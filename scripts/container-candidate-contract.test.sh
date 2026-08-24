@@ -80,6 +80,7 @@ canary="$root/.github/workflows/container-candidate-reusable-contract.yml"
 CALLER_WORKFLOW="$tmp/single/.github/workflows/container-candidate.yml" \
 CALLEE_WORKFLOW="$workflow" PUBLISH_WORKFLOW="$publish_workflow" \
 CANARY_WORKFLOW="$canary" python3 - <<'PY'
+import copy
 import os
 
 import yaml
@@ -114,41 +115,101 @@ assert "secrets" not in caller["jobs"]["validate"], (
 assert "secrets" not in caller["jobs"]["publish"], (
     "public-only publication must not receive an unnecessary package token"
 )
-assert set(callee["jobs"]) == {
-    "prepare", "acquire-private-node-dependencies", "pull-request-build"
-}, "read-only entrypoint contains publication authority"
-assert set(publisher["jobs"]) == {
-    "prepare", "acquire-private-node-dependencies", "publish-base",
-    "publish-derived", "attest-sbom", "candidate-manifest"
-}, "publication entrypoint has an unexpected static graph"
-assert callee["permissions"] == {"contents": "read"}
-for job_name, job in callee["jobs"].items():
-    requested = job.get("permissions", callee["permissions"])
-    assert set(requested).issubset(validation_permissions), (
-        f"read-only entrypoint job {job_name} requests publication authority"
-    )
-    assert all(level == "read" for level in requested.values()), (
-        f"read-only entrypoint job {job_name} requests write authority"
-    )
-levels = {None: 0, "none": 0, "read": 1, "write": 2}
-default_permissions = publisher.get("permissions", {})
-for job_name, job in publisher["jobs"].items():
-    requested = job.get("permissions", default_permissions)
-    for permission, level in requested.items():
-        assert permission in publication_permissions, f"publication caller omits {job_name} permission {permission}"
-        assert levels[level] <= levels[publication_permissions[permission]], (
-            f"caller cannot satisfy {job_name} permission {permission}: {level}"
+authority_condition = (
+    "(github.event_name == 'push' && github.ref == 'refs/heads/main' "
+    "&& github.event.repository.default_branch == 'main') || "
+    "(github.event_name == 'workflow_dispatch' "
+    "&& github.repository == 'Verjson/.github' "
+    "&& github.ref == format('refs/heads/{0}', github.event.repository.default_branch))"
+)
+expected_conditions = {
+    "publish-base": (
+        "always() && (" + authority_condition + ") "
+        "&& needs.prepare.result == 'success' "
+        "&& (needs.acquire-private-node-dependencies.result == 'success' "
+        "|| needs.acquire-private-node-dependencies.result == 'skipped')"
+    ),
+    "publish-derived": (
+        "always() && (" + authority_condition + ") "
+        "&& needs.prepare.result == 'success' "
+        "&& (needs.acquire-private-node-dependencies.result == 'success' "
+        "|| needs.acquire-private-node-dependencies.result == 'skipped') "
+        "&& needs.publish-base.result == 'success'"
+    ),
+    "attest-sbom": (
+        "always() && (" + authority_condition + ") "
+        "&& needs.prepare.result == 'success' "
+        "&& needs.publish-base.result == 'success' "
+        "&& needs.publish-derived.result == 'success'"
+    ),
+    "candidate-manifest": authority_condition,
+}
+
+def validate_authority(read_only, publication):
+    assert set(read_only["jobs"]) == {
+        "prepare", "acquire-private-node-dependencies", "pull-request-build"
+    }, "read-only entrypoint contains publication authority"
+    assert set(publication["jobs"]) == {
+        "prepare", "acquire-private-node-dependencies", "publish-base",
+        "publish-derived", "attest-sbom", "candidate-manifest"
+    }, "publication entrypoint has an unexpected static graph"
+    assert read_only["permissions"] == {"contents": "read"}
+    assert publication["permissions"] == {"contents": "read"}
+    for job_name, job in read_only["jobs"].items():
+        requested = job.get("permissions", read_only["permissions"])
+        assert set(requested).issubset(validation_permissions), (
+            f"read-only entrypoint job {job_name} requests publication authority"
         )
-for job_name in ("publish-base", "publish-derived", "attest-sbom", "candidate-manifest"):
-    condition = publisher["jobs"][job_name]["if"]
-    assert "github.event_name == 'push'" in condition
-    assert "github.event_name == 'workflow_dispatch'" in condition
-    assert "github.repository == 'Verjson/.github'" in condition, (
-        f"{job_name} permits a foreign caller to dispatch publication"
-    )
-    assert "github.event.repository.default_branch" in condition, (
-        f"{job_name} dispatch is not bound to the canonical default branch"
-    )
+        assert all(level == "read" for level in requested.values()), (
+            f"read-only entrypoint job {job_name} requests write authority"
+        )
+    for job_name in ("prepare", "acquire-private-node-dependencies"):
+        requested = publication["jobs"][job_name].get(
+            "permissions", publication["permissions"]
+        )
+        assert requested == {"contents": "read"}, (
+            f"publication {job_name} must remain exact read-only preparation"
+        )
+        assert read_only["jobs"][job_name] == publication["jobs"][job_name], (
+            f"shared trusted-input job {job_name} drifted between entrypoints"
+        )
+    levels = {None: 0, "none": 0, "read": 1, "write": 2}
+    for job_name, job in publication["jobs"].items():
+        requested = job.get("permissions", publication["permissions"])
+        for permission, level in requested.items():
+            assert permission in publication_permissions, (
+                f"publication caller omits {job_name} permission {permission}"
+            )
+            assert levels[level] <= levels[publication_permissions[permission]], (
+                f"caller cannot satisfy {job_name} permission {permission}: {level}"
+            )
+    for job_name, expected in expected_conditions.items():
+        assert publication["jobs"][job_name]["if"] == expected, (
+            f"{job_name} publication authority predicate drifted"
+        )
+
+validate_authority(callee, publisher)
+mutated = copy.deepcopy(publisher)
+mutated["jobs"]["prepare"]["env"] = {"DRIFT": "true"}
+try:
+    validate_authority(callee, mutated)
+    raise AssertionError("shared preparation drift was accepted")
+except AssertionError as error:
+    assert "shared trusted-input job prepare drifted" in str(error)
+mutated = copy.deepcopy(publisher)
+mutated["jobs"]["acquire-private-node-dependencies"]["permissions"] = {"contents": "write"}
+try:
+    validate_authority(callee, mutated)
+    raise AssertionError("unguarded acquisition write widening was accepted")
+except AssertionError as error:
+    assert "exact read-only preparation" in str(error)
+mutated = copy.deepcopy(publisher)
+mutated["jobs"]["publish-base"]["if"] += " || github.event_name == 'pull_request'"
+try:
+    validate_authority(callee, mutated)
+    raise AssertionError("pull-request publication disjunction was accepted")
+except AssertionError as error:
+    assert "authority predicate drifted" in str(error)
 assert canary["jobs"]["validate"]["permissions"] == validation_permissions
 assert canary["jobs"]["publish"]["permissions"] == publication_permissions
 assert canary["jobs"]["validate"]["uses"] == "./.github/workflows/container-candidate.yml"
