@@ -39,6 +39,8 @@ def validate(document: dict, text: str) -> None:
         '[[ "$head_sha" =~ ^[0-9a-f]{40}$ ]]',
         '[ "$head_owner" != "$GITHUB_REPOSITORY_OWNER" ]',
         'elif [ "$EVENT_ACTION" = labeled ]',
+        'schema:(if $delivery_event == "issues" then 2 else 1 end)',
+        'if $delivery_event == "issues" then',
     )
     assert all(marker in script for marker in required)
     assert 'elif [ -n "$ai_review_label" ]' not in script

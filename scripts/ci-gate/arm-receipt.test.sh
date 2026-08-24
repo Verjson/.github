@@ -79,7 +79,10 @@ write_base() {
 
 write_ruleset_run() {
   write_base
-  jq '.workflow_id=88 | .workflow_url="https://api.github.com/repos/Verjson/example/actions/required_workflows/88"' \
+  # Required-workflow run head_sha is the PR head, while github.workflow_sha is
+  # the protected workflow source revision. Schema 1 deliberately does not
+  # collapse those distinct identities into one field.
+  jq '.workflow_id=88 | .workflow_url="https://api.github.com/repos/Verjson/example/actions/required_workflows/88" | .head_sha="fedcba9876543210fedcba9876543210fedcba98"' \
     "$RUN_FILE" >"$tmp/x" && mv "$tmp/x" "$RUN_FILE"
 }
 
@@ -106,7 +109,7 @@ repack() {
 
 write_base; expect_pass "exact dedicated-App check and immutable receipt are accepted" verify
 write_ruleset_run
-LOCAL_WORKFLOW_MISSING=true expect_pass "ruleset-created arm is accepted without a repository-local caller" verify
+LOCAL_WORKFLOW_MISSING=true expect_pass "ruleset-created arm accepts distinct protected workflow and PR-head identities" verify
 write_ruleset_run
 printf '%s\n' '[{"type":"workflows","ruleset_source_type":"Repository","ruleset_source":"Verjson/example","parameters":{"workflows":[{"path":".github/workflows/gate-rearm.yml","ref":"refs/heads/main","repository_id":1269388380}]}}]' >"$RULES_FILE"
 LOCAL_WORKFLOW_MISSING=true expect_provenance_fail "matching-path required workflow from an untrusted ruleset origin is rejected" verify

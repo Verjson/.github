@@ -42,12 +42,15 @@ The canonical reusable arm accepts an issues delivery only when all of these fac
 - the PR head repository owner equals the target repository owner before any secret-backed
   model dispatch.
 
-The schema-2 arm receipt binds the event, actor, protected workflow ref and workflow SHA
-alongside the existing repository, PR, immutable head, run/attempt, App, nonce, check and
-review-policy fields. Receipt verification accepts legacy schema-1 evidence only for a
-`pull_request_target` run. An issues bridge must use schema 2, attempt one, the local
-workflow identity, and the current protected default branch. Current PR head and actor
-permission are revalidated when the receipt is consumed.
+For an issues delivery, the schema-2 arm receipt binds the event, actor, protected
+workflow ref and workflow SHA alongside the existing repository, PR, immutable head,
+run/attempt, App, nonce, check and review-policy fields. Organization-required
+`pull_request_target` runs retain schema 1: their Actions `head_sha` is the PR head while
+`github.workflow_sha` is the separately protected required-workflow revision, so treating
+those values as one identity would reject legitimate fleet receipts. Receipt verification
+accepts schema-1 evidence only for a `pull_request_target` run. An issues bridge must use
+schema 2, attempt one, the local workflow identity, and the current protected default
+branch. Current PR head and actor permission are revalidated when the receipt is consumed.
 
 Persistent `ai-review` label state on synchronize is no longer authority. A workflow
 rerun cannot replay an issues delivery. Unsupported event families, malformed or missing

@@ -398,11 +398,13 @@ jobs:
             --arg details_url "$details_url" --argjson app_id "$APP_ID" --arg app_slug "$APP_SLUG" \
             --arg review_policy "$review_policy" --arg delivery_event "$EVENT_NAME" --arg delivery_actor "$REQUEST_ACTOR" \
             --arg workflow_ref "$WORKFLOW_REF" --arg workflow_sha "$WORKFLOW_SHA" \
-            '{schema:2,repository:$repository,pr_number:$pr_number,head_sha:$head_sha,check_run_id:$check_run_id,
+            '{schema:(if $delivery_event == "issues" then 2 else 1 end),repository:$repository,pr_number:$pr_number,head_sha:$head_sha,check_run_id:$check_run_id,
               arm_run_id:$arm_run_id,arm_run_attempt:$arm_run_attempt,nonce:$nonce,external_id:$external_id,
-              details_url:$details_url,app_id:$app_id,app_slug:$app_slug,review_policy:$review_policy,
-              delivery_event:$delivery_event,delivery_actor:$delivery_actor,workflow_ref:$workflow_ref,
-              workflow_sha:$workflow_sha}' >"$receipt_dir/receipt.json"
+              details_url:$details_url,app_id:$app_id,app_slug:$app_slug,review_policy:$review_policy}
+             | if $delivery_event == "issues" then
+                 . + {delivery_event:$delivery_event,delivery_actor:$delivery_actor,
+                      workflow_ref:$workflow_ref,workflow_sha:$workflow_sha}
+               else . end' >"$receipt_dir/receipt.json"
           {
             echo "check_id=$check_id"
             echo "head_sha=$head_sha"
