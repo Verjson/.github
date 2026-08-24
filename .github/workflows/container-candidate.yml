@@ -43,9 +43,12 @@ jobs:
       has-private-node-packages: ${{ steps.config.outputs.has-private-node-packages }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          path: .container-candidate-source-${{ github.run_id }}-${{ github.run_attempt }}
+          persist-credentials: false
       - id: config
         env:
-          CONFIG_PATH: ${{ inputs.config-path }}
+          CONFIG_PATH: ${{ format('.container-candidate-source-{0}-{1}/{2}', github.run_id, github.run_attempt, inputs.config-path) }}
           CONTRACT_REF: ${{ inputs.contract-ref }}
           # JSON preserves the documented called-job identity while actionlint 1.7.7's
           # static schema predates job.workflow_sha.
@@ -114,6 +117,11 @@ jobs:
             echo "private-node-packages=$(jq -c '.privateNodePackages // []' "$CONFIG_PATH")"
             echo "has-private-node-packages=$(jq -r '((.privateNodePackages // []) | length > 0)' "$CONFIG_PATH")"
           } >> "$GITHUB_OUTPUT"
+      - name: Remove isolated candidate source
+        if: always()
+        env:
+          SOURCE_PATH: .container-candidate-source-${{ github.run_id }}-${{ github.run_attempt }}
+        run: rm -rf "$SOURCE_PATH"
 
   acquire-private-node-dependencies:
     if: needs.prepare.outputs.has-private-node-packages == 'true'

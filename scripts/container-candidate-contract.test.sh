@@ -173,6 +173,15 @@ def validate_authority(read_only, publication):
         assert read_only["jobs"][job_name] == publication["jobs"][job_name], (
             f"shared trusted-input job {job_name} drifted between entrypoints"
         )
+    prepare_steps = read_only["jobs"]["prepare"]["steps"]
+    checkout = next(step for step in prepare_steps if step.get("uses", "").startswith("actions/checkout@"))
+    assert checkout["with"] == {
+        "path": ".container-candidate-source-${{ github.run_id }}-${{ github.run_attempt }}",
+        "persist-credentials": False,
+    }, "prepare checkout is not run-isolated and credentialless"
+    cleanup = next(step for step in prepare_steps if step.get("name") == "Remove isolated candidate source")
+    assert cleanup["if"] == "always()"
+    assert cleanup["run"] == 'rm -rf "$SOURCE_PATH"'
     levels = {None: 0, "none": 0, "read": 1, "write": 2}
     for job_name, job in publication["jobs"].items():
         requested = job.get("permissions", publication["permissions"])
