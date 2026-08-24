@@ -8,6 +8,7 @@ mkdir -p "$tmp/contract/scripts"
 cp "$root/scripts/gen-container-candidate.sh" \
   "$root/scripts/container_release_manifest.py" \
   "$root/scripts/container_private_dependencies.py" \
+  "$root/scripts/container_candidate_retry.py" \
   "$tmp/contract/scripts/"
 git -C "$tmp/contract" init -q
 git -C "$tmp/contract" config user.name fixture

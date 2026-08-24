@@ -33,6 +33,7 @@ private_package_mode() {
 case "$mode" in
 workflow)
   acquisition_sha256="$(git -C "$root" show "$ref:scripts/container_private_dependencies.py" | sha256sum | cut -d' ' -f1)"
+  retry_sha256="$(git -C "$root" show "$ref:scripts/container_candidate_retry.py" | sha256sum | cut -d' ' -f1)"
   private_packages="$(private_package_mode)"
   cat <<YAML
 # GENERATED FILE — do not edit by hand.
@@ -72,6 +73,7 @@ $(if [ "$private_packages" = true ]; then printf '%s\n' '    secrets:' '      NO
       config-path: $config_path
       contract-ref: $ref
       acquisition-sha256: $acquisition_sha256
+      retry-sha256: $retry_sha256
 $(if [ "$private_packages" = true ]; then printf '%s\n' '    secrets:' '      NODE_AUTH_TOKEN: ${{ secrets.NODE_AUTH_TOKEN }}'; fi)
 YAML
   ;;
@@ -87,6 +89,7 @@ HEADER
   ;;
 contract-test)
   acquisition_sha256="$(git -C "$root" show "$ref:scripts/container_private_dependencies.py" | sha256sum | cut -d' ' -f1)"
+  retry_sha256="$(git -C "$root" show "$ref:scripts/container_candidate_retry.py" | sha256sum | cut -d' ' -f1)"
   private_packages="$(private_package_mode)"
   workflow_digest="$("$0" workflow "$ref" "$config_path" | sha256sum | cut -d' ' -f1)"
   validator_digest="$("$0" validator "$ref" "$config_path" | sha256sum | cut -d' ' -f1)"
@@ -108,6 +111,7 @@ grep -qx '# Contract: $ref' "\$validator" || fail "validator contract pin differ
 [ "\$(grep -c 'uses: Verjson/.github/.github/workflows/container-candidate-publish.yml@$ref' "\$caller")" -eq 1 ] || fail "publication does not use the pinned publication reusable workflow"
 [ "\$(grep -c 'contract-ref: $ref' "\$caller")" -eq 2 ] || fail "caller does not pass the shared pin to both event paths"
 [ "\$(grep -c 'acquisition-sha256: $acquisition_sha256' "\$caller")" -eq 2 ] || fail "caller does not pin the acquisition implementation digest for both event paths"
+[ "\$(grep -c 'retry-sha256: $retry_sha256' "\$caller")" -eq 1 ] || fail "publication does not pin the retry verifier digest"
 [ "\$(grep -c '^      actions: read$' "\$caller")" -eq 2 ] || fail "both event paths require Actions reads"
 [ "\$(grep -c '^      contents: read$' "\$caller")" -eq 2 ] || fail "both event paths require source reads"
 [ "\$(grep -c '^      attestations: write$' "\$caller")" -eq 1 ] || fail "only publication may write attestations"

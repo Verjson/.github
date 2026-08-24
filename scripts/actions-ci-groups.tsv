@@ -114,6 +114,8 @@ changelog-release	python3 scripts/container_release_promotion.test.py
 changelog-release	python3 scripts/container_attestation_verify.test.py
 changelog-release	python3 scripts/container_oci_index.test.py
 changelog-release	python3 scripts/container_spdx_compaction.test.py
+changelog-release	python3 scripts/container_candidate_retry.test.py
+changelog-release	python3 scripts/container-candidate-retry-contract.test.py
 changelog-release	bash scripts/container-candidate-contract.test.sh
 changelog-release	bash scripts/container-release-contract.test.sh
 changelog-release	python3 scripts/container-release-app-token.test.py
