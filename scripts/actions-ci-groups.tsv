@@ -84,6 +84,7 @@ merge-gate	bash scripts/ci-gate/post-merge-reconcile.test.sh
 merge-gate	bash scripts/ci-gate/gate-dispatch.test.sh
 merge-gate	bash scripts/ci-gate/gate-hold-disable.test.sh
 merge-gate	bash scripts/ci-gate/gate-rearm-caller-contract.test.sh
+merge-gate	python3 scripts/ci-gate/label-delivery-bridge.test.py
 merge-gate	bash scripts/ci-gate/ai-review-caller-contract.test.sh
 merge-gate	bash scripts/ci-gate/privileged-merge-caller-contract.test.sh
 merge-gate	bash scripts/ci-gate/privileged-lane-validation.test.sh
@@ -119,6 +120,7 @@ changelog-release	python3 scripts/container-candidate-retry-contract.test.py
 changelog-release	bash scripts/container-candidate-contract.test.sh
 changelog-release	bash scripts/container-release-contract.test.sh
 changelog-release	python3 scripts/container-release-app-token.test.py
+changelog-release	python3 scripts/container_release_changelog_engine.test.py
 changelog-release	python3 scripts/container_deployment_preflight.test.py
 changelog-release	python3 scripts/container_deployment_controller.test.py
 changelog-release	bash scripts/container-deployment-contract.test.sh
