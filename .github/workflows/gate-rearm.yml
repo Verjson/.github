@@ -204,7 +204,6 @@ jobs:
             exit 1
           fi
           rereview_actor="${REQUEST_ACTOR:-}"
-          rereview_label="$(jq -r '[.labels[].name | select((ascii_downcase | gsub("[ _-]+"; "-")) == "re-review")] | first // ""' <<<"$meta")"
           ai_review_label="$(jq -r '[.labels[].name | select((ascii_downcase | gsub("[ _-]+"; "-")) == "ai-review")] | first // ""' <<<"$meta")"
           authorize_ai_review_actor() {
             local actor="$1"
