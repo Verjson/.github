@@ -67,12 +67,14 @@ def validate_manifest(manifest: dict[str, Any], config: dict[str, Any]) -> None:
     private_packages = config.get("privateNodePackages", [])
     if not isinstance(private_packages, list) or any(
         not isinstance(name, str)
-        or not re.fullmatch(r"@verjson/[a-z0-9][a-z0-9._-]*", name)
+        or not re.fullmatch(r"@[a-z0-9][a-z0-9._-]*/[a-z0-9][a-z0-9._-]*", name)
         for name in private_packages
     ):
-        raise ManifestError("config.privateNodePackages must contain exact @verjson package names")
+        raise ManifestError("config.privateNodePackages must contain exact lowercase scoped package names")
     if len(private_packages) != len(set(private_packages)):
         raise ManifestError("config.privateNodePackages contains duplicate package names")
+    if config.get("packageManager", "npm") not in ("npm", "pnpm"):
+        raise ManifestError("config.packageManager must be npm or pnpm")
 
     if manifest.get("schemaVersion") != 2:
         raise ManifestError("manifest.schemaVersion must be 2")

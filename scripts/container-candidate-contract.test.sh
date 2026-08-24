@@ -653,6 +653,7 @@ grep -qF "# static schema predates job.workflow_sha." "$workflow"
 grep -qF 'JOB_WORKFLOW_SHA: ${{ fromJSON(toJSON(job)).workflow_sha }}' "$workflow"
 grep -qF '[ "$CONTRACT_REF" = "$JOB_WORKFLOW_SHA" ]' "$workflow"
 grep -qF 'npm ci --ignore-scripts --no-audit --no-fund' <<<"$acquisition_job"
+grep -qF 'corepack pnpm install --frozen-lockfile --ignore-scripts' <<<"$acquisition_job"
 grep -qF 'NPM_CONFIG_USERCONFIG="$user_config"' <<<"$acquisition_job"
 grep -qF 'NPM_CONFIG_GLOBALCONFIG="$global_config"' <<<"$acquisition_job"
 grep -qF 'env -i \' <<<"$acquisition_job"
@@ -690,7 +691,7 @@ base_approved="$(git -C "$bootstrap" show "$base_sha:container-candidate.json" |
 }
 
 grep -qF 'npm ci --ignore-scripts' <<<"$acquisition_job"
-! grep -Eq 'npm (install|run|exec|rebuild)|yarn|pnpm' <<<"$acquisition_job"
+! grep -Eq 'npm (install|run|exec|rebuild)|pnpm (run|exec|rebuild)|yarn' <<<"$acquisition_job"
 ! grep -Eq 'subprocess|os\.system|extract(all)?\(' "$root/scripts/container_private_dependencies.py"
 grep -qF 'transfer-cache-key: ${{ steps.create-node-modules-cache-key.outputs.cache-key }}' <<<"$acquisition_job"
 grep -qF 'openssl rand -hex 32' <<<"$acquisition_job"
@@ -829,7 +830,7 @@ fi
 [ ! -e "$tmp/single/package.json" ]
 [ ! -e "$tmp/single/package-lock.json" ]
 [ ! -e "$tmp/single/node_modules" ]
-if grep -Eqi 'package-lock\.json|setup-node|node_modules|npm|yarn|pnpm|BASE_SHA|git (show|cat-file|ls-tree)' <<<"$prepare_job"; then
+if grep -Eqi 'setup-node|node_modules|BASE_SHA|git (show|cat-file|ls-tree)' <<<"$prepare_job"; then
   echo "credential-free preparation imposes Node or reviewed-base requirements" >&2
   exit 1
 fi

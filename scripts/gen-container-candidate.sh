@@ -24,6 +24,8 @@ private_package_mode() {
   jq -r '
     if ((.privateNodePackages // []) | type) != "array" then
       error("privateNodePackages must be an array")
+    elif ((.packageManager // "npm") | . != "npm" and . != "pnpm") then
+      error("packageManager must be npm or pnpm")
     else
       ((.privateNodePackages // []) | length > 0)
     end

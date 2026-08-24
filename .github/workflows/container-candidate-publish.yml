@@ -41,6 +41,8 @@ jobs:
       candidate: ${{ steps.config.outputs.candidate }}
       private-node-packages: ${{ steps.config.outputs.private-node-packages }}
       has-private-node-packages: ${{ steps.config.outputs.has-private-node-packages }}
+      package-manager: ${{ steps.config.outputs.package-manager }}
+      lock-file: ${{ steps.config.outputs.lock-file }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -82,8 +84,9 @@ jobs:
               and (split("/") | all(.[]; . != "." and . != ".."));
             .repository == $repository and .registryNamespace == $namespace
             and ((.privateNodePackages // []) | type == "array")
-            and ((.privateNodePackages // []) | all(.[]; type == "string" and test("^@verjson/[a-z0-9][a-z0-9._-]*$")))
+            and ((.privateNodePackages // []) | all(.[]; type == "string" and test("^@[a-z0-9][a-z0-9._-]*/[a-z0-9][a-z0-9._-]*$")))
             and ((.privateNodePackages // []) | length == (unique | length))
+            and ((.packageManager // "npm") | . == "npm" or . == "pnpm")
             and (.nextStableVersion | test("^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$"))
             and (.images | type == "array" and length > 0)
             and (all(.images[];
@@ -131,6 +134,8 @@ jobs:
             echo "candidate=$candidate"
             echo "private-node-packages=$(jq -c '.privateNodePackages // []' "$CONFIG_PATH")"
             echo "has-private-node-packages=$(jq -r '((.privateNodePackages // []) | length > 0)' "$CONFIG_PATH")"
+            echo "package-manager=$(jq -r '.packageManager // "npm"' "$CONFIG_PATH")"
+            echo "lock-file=$(jq -r 'if (.packageManager // "npm") == "pnpm" then "pnpm-lock.yaml" else "package-lock.json" end' "$CONFIG_PATH")"
           } >> "$GITHUB_OUTPUT"
       - name: Remove isolated candidate source
         if: always()
@@ -164,11 +169,13 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
           HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
           NODE_AUTH_TOKEN: ${{ secrets.NODE_AUTH_TOKEN }}
+          PACKAGE_MANAGER: ${{ needs.prepare.outputs.package-manager }}
           REPOSITORY: ${{ github.repository }}
           TRANSFER_DIR: ${{ github.workspace }}/.verjson-container-node-modules-${{ github.run_id }}-${{ github.run_attempt }}
         run: |
           set -euo pipefail
-          [ -f package-lock.json ] || { echo "::error::package-lock.json is required"; exit 1; }
+          case "$PACKAGE_MANAGER" in npm) lock_file=package-lock.json ;; pnpm) lock_file=pnpm-lock.yaml ;; *) echo "::error::packageManager accepts only npm or pnpm"; exit 1 ;; esac
+          [ -f "$lock_file" ] || { echo "::error::$lock_file is required"; exit 1; }
           if find . -name .npmrc -print -quit | grep -q .; then
             echo "::error::private container dependency acquisition rejects project-controlled .npmrc"
             exit 1
@@ -182,6 +189,8 @@ jobs:
             git show "$BASE_SHA:$CONFIG_PATH" > "$base_config" 2>/dev/null || { echo "::error::candidate config must exist at the reviewed base SHA"; exit 1; }
             base_approved="$(jq -ce '.privateNodePackages // []' "$base_config")" || { echo "::error::reviewed base privateNodePackages is invalid"; exit 1; }
             [ "$base_approved" = "$APPROVED_PRIVATE_PACKAGES" ] || { echo "::error::privateNodePackages differs from the reviewed base configuration"; exit 1; }
+            base_package_manager="$(jq -re '.packageManager // "npm"' "$base_config")" || { echo "::error::reviewed base packageManager is invalid"; exit 1; }
+            [ "$base_package_manager" = "$PACKAGE_MANAGER" ] || { echo "::error::packageManager differs from the reviewed base configuration"; exit 1; }
           fi
           if [ "$APPROVED_PRIVATE_PACKAGES" != '[]' ]; then
             [ -n "$NODE_AUTH_TOKEN" ] || { echo "::error::private container dependency acquisition requires NODE_AUTH_TOKEN"; exit 1; }
@@ -189,18 +198,19 @@ jobs:
           acquisition="$RUNNER_TEMP/container_private_dependencies.py"
           curl -fsSL "https://raw.githubusercontent.com/Verjson/.github/${{ inputs.contract-ref }}/scripts/container_private_dependencies.py" -o "$acquisition"
           printf '%s  %s\n' '${{ inputs.acquisition-sha256 }}' "$acquisition" | sha256sum --check --strict
-          python3 "$acquisition" --lock package-lock.json --approved "$APPROVED_PRIVATE_PACKAGES"
+          validator_args=(--package-manager "$PACKAGE_MANAGER" --lock "$lock_file" --approved "$APPROVED_PRIVATE_PACKAGES")
+          [ "$PACKAGE_MANAGER" = npm ] || validator_args+=(--manifest package.json)
+          python3 "$acquisition" "${validator_args[@]}"
           user_config="$RUNNER_TEMP/container-user.npmrc"
           global_config="$RUNNER_TEMP/container-global.npmrc"
           npm_cache="$RUNNER_TEMP/container-npm-cache"
           npm_home="$RUNNER_TEMP/container-npm-home"
           mkdir -p "$npm_home"
           : > "$global_config"
-          cat > "$user_config" <<'NPMRC'
-          registry=https://registry.npmjs.org/
-          @verjson:registry=https://npm.pkg.github.com/
-          //npm.pkg.github.com/:_authToken=${NODE_AUTH_TOKEN}
-          NPMRC
+          printf 'registry=https://registry.npmjs.org/\n' > "$user_config"
+          jq -r '.[] | split("/")[0]' <<<"$APPROVED_PRIVATE_PACKAGES" | sort -u \
+            | sed 's|$|:registry=https://npm.pkg.github.com/|' >> "$user_config"
+          printf '//npm.pkg.github.com/:_authToken=${NODE_AUTH_TOKEN}\n' >> "$user_config"
           env -i \
             HOME="$npm_home" \
             NODE_AUTH_TOKEN="$NODE_AUTH_TOKEN" \
@@ -208,11 +218,11 @@ jobs:
             NPM_CONFIG_GLOBALCONFIG="$global_config" \
             NPM_CONFIG_USERCONFIG="$user_config" \
             PATH="$PATH" \
-            npm ci --ignore-scripts --no-audit --no-fund
+            bash -c 'if [ "$1" = npm ]; then npm ci --ignore-scripts --no-audit --no-fund; else corepack pnpm install --frozen-lockfile --ignore-scripts; fi' _ "$PACKAGE_MANAGER"
           artifact="$RUNNER_TEMP/container-node-modules"
           mkdir -p "$artifact"
           mv node_modules "$artifact/node_modules"
-          lock_digest="$(sha256sum package-lock.json | cut -d' ' -f1)"
+          lock_digest="$(sha256sum "$lock_file" | cut -d' ' -f1)"
           printf '%s\n' "$lock_digest" > "$artifact/.verjson-lock-sha256"
           [ ! -e "$TRANSFER_DIR" ] && [ ! -L "$TRANSFER_DIR" ] || {
             echo "::error::reserved container dependency transfer path exists"
@@ -312,13 +322,15 @@ jobs:
           GOOGLE_APPLICATION_CREDENTIALS: ''
           NODE_AUTH_TOKEN: ''
           NPM_TOKEN: ''
+          LOCK_FILE: ${{ needs.prepare.outputs.lock-file }}
           TRANSFER_DIR: ${{ github.workspace }}/.verjson-container-node-modules-${{ github.run_id }}-${{ github.run_attempt }}
         run: |
           set -euo pipefail
           context="$RUNNER_TEMP/container-node-modules-context"
           tar -xzf "$TRANSFER_DIR/container-node-modules.tgz" -C "$context"
-          expected="$(sha256sum package-lock.json | cut -d' ' -f1)"
-          [ "$(cat "$context/.verjson-lock-sha256")" = "$expected" ] || { echo "::error::node_modules artifact does not match package-lock.json"; exit 1; }
+          case "$LOCK_FILE" in package-lock.json|pnpm-lock.yaml) ;; *) echo "::error::invalid lock-file output"; exit 1 ;; esac
+          expected="$(sha256sum "$LOCK_FILE" | cut -d' ' -f1)"
+          [ "$(cat "$context/.verjson-lock-sha256")" = "$expected" ] || { echo "::error::node_modules artifact does not match $LOCK_FILE"; exit 1; }
       - name: Remove local node_modules transfer state
         if: always() && needs.prepare.outputs.has-private-node-packages == 'true'
         env:
@@ -452,13 +464,15 @@ jobs:
           GOOGLE_APPLICATION_CREDENTIALS: ''
           NODE_AUTH_TOKEN: ''
           NPM_TOKEN: ''
+          LOCK_FILE: ${{ needs.prepare.outputs.lock-file }}
           TRANSFER_DIR: ${{ github.workspace }}/.verjson-container-node-modules-${{ github.run_id }}-${{ github.run_attempt }}
         run: |
           set -euo pipefail
           context="$RUNNER_TEMP/container-node-modules-context"
           tar -xzf "$TRANSFER_DIR/container-node-modules.tgz" -C "$context"
-          expected="$(sha256sum package-lock.json | cut -d' ' -f1)"
-          [ "$(cat "$context/.verjson-lock-sha256")" = "$expected" ] || { echo "::error::node_modules artifact does not match package-lock.json"; exit 1; }
+          case "$LOCK_FILE" in package-lock.json|pnpm-lock.yaml) ;; *) echo "::error::invalid lock-file output"; exit 1 ;; esac
+          expected="$(sha256sum "$LOCK_FILE" | cut -d' ' -f1)"
+          [ "$(cat "$context/.verjson-lock-sha256")" = "$expected" ] || { echo "::error::node_modules artifact does not match $LOCK_FILE"; exit 1; }
       - if: always() && matrix.baseVariant != '' && needs.prepare.outputs.has-private-node-packages == 'true'
         name: Remove local node_modules transfer state
         env:

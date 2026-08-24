@@ -33,7 +33,7 @@ path. Default-branch pushes publish commit-addressed and
 `<nextStableVersion>-rc.<run_id>.<run_attempt>` identities, then retain the complete
 candidate manifest. Downstream automation consumes its digests, never its tags.
 
-Consumers whose lockfile resolves private `@verjson/*` packages list every exact
+Consumers whose lockfile resolves private scoped packages list every exact
 package name in `privateNodePackages`. The canonical acquisition job validates the
 allowlist against `package-lock.json`, accepts only canonical registry URLs with exact
 SHA-512 integrity, and runs `npm ci --ignore-scripts` with isolated npm configuration.
@@ -42,6 +42,13 @@ digest. The trusted job saves it under an unguessable exact-attempt repository c
 key; build jobs use no restore prefix and fail on a miss. BuildKit receives only that
 credential-free tree as the named context `verjson_node_modules`; it never receives the
 acquisition token or npm configuration.
+
+The optional `packageManager` field accepts `npm` (the default, with
+`package-lock.json`) or `pnpm` (with `pnpm-lock.yaml` version 9.0 and an
+integrity-pinned `packageManager` field in `package.json`). Registry scope mappings are
+derived from the exact scoped names in `privateNodePackages`; do not add a repository
+`.npmrc` or a parallel npm lockfile for a pnpm project. Lifecycle scripts remain
+disabled during acquisition for both managers.
 Such a consumer uses the context explicitly, for example:
 
 ```Dockerfile

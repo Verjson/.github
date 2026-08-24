@@ -11,6 +11,7 @@ Reverse-chronological index of org-level decisions.
 <!-- BEGIN ADR INDEX -->
 | # | Date | Decision |
 |---|------|----------|
+| [0127](0127-bind-container-private-acquisition-to-reviewed-package-manager/README.md) | 2026-08-24 | Bind container private acquisition to the reviewed package manager |
 | [0126](0126-split-container-release-authority/README.md) | 2026-08-24 | Split container release Git and package authority |
 | [0125](0125-bootstrap-canonical-ci-adopters-fail-closed/README.md) | 2026-08-24 | Bootstrap canonical CI adopters through a fail-closed manifest |
 | [0124](0124-split-container-candidate-authority-entrypoints/README.md) | 2026-08-24 | Split container candidate authority entrypoints |
