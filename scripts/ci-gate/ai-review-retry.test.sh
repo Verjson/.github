@@ -129,7 +129,8 @@ case "$fallback_guard" in
 esac
 
 grep -q "event.label.name == 're-review'" "$workflow" \
-  && grep -q -- '--remove-label re-review' "$arm" \
+  && grep -qF 'authorization_label=re-review' "$arm" \
+  && grep -qF -- '--remove-label "$authorization_label"' "$arm" \
   && grep -qF 'explicit re-review requires a new authorized label event' "$arm" \
   && grep -qF 'explicit re-review dispatch cannot be rerun' "$workflow" \
   && grep -qF 'this explicit authorization check already reserved its one diagnostic pass' "$workflow" \

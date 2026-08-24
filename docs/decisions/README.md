@@ -11,6 +11,7 @@ Reverse-chronological index of org-level decisions.
 <!-- BEGIN ADR INDEX -->
 | # | Date | Decision |
 |---|------|----------|
+| [0121](0121-consume-persistent-ai-review-authorization/README.md) | 2026-08-24 | Consume persistent AI-review authorization on synchronized heads |
 | [0120](0120-bind-terminal-merge-to-repository-app-token/README.md) | 2026-08-23 | Bind terminal merge to a repository-scoped App token |
 | [0119](0119-restore-dedicated-app-for-renovate-observation/README.md) | 2026-08-23 | Restore the dedicated App for Renovate observation |
 | [0118](0118-route-private-terminal-merge-to-hosted-capacity/README.md) | 2026-08-23 | Route private terminal merge to hosted capacity |
