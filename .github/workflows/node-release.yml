@@ -243,11 +243,23 @@ jobs:
               --ignore-scripts --allow-same-version
             npm pack "$package_path" --json --ignore-scripts >"$pack_json"
             node - "$pack_json" "$expected_version" >"$package_meta" <<'NODE'
+          // NPM_PACK_JSON_BEGIN
           const fs = require("fs");
           const path = require("path");
           const [packPath, expectedVersion] = process.argv.slice(2);
-          const packed = JSON.parse(fs.readFileSync(packPath, "utf8"));
-          if (!Array.isArray(packed) || packed.length !== 1) {
+          const output = JSON.parse(fs.readFileSync(packPath, "utf8"));
+          let packed;
+          let objectKey;
+          if (Array.isArray(output)) {
+            packed = output;
+          } else if (output && typeof output === "object") {
+            const entries = Object.entries(output);
+            packed = entries.map(([, item]) => item);
+            objectKey = entries.length === 1 ? entries[0][0] : undefined;
+          } else {
+            packed = [];
+          }
+          if (packed.length !== 1) {
             throw new Error("npm pack did not describe exactly one package");
           }
           const item = packed[0];
@@ -255,6 +267,9 @@ jobs:
             if (typeof item[key] !== "string" || item[key] === "") {
               throw new Error(`npm pack omitted ${key}`);
             }
+          }
+          if (objectKey !== undefined && objectKey !== item.name) {
+            throw new Error(`npm pack object key ${objectKey} does not match package name ${item.name}`);
           }
           if (item.version !== expectedVersion) {
             throw new Error(`packed version ${item.version} does not match dispatched ${expectedVersion}`);
@@ -266,6 +281,7 @@ jobs:
             throw new Error("npm pack returned an unsafe filename");
           }
           process.stdout.write([item.name, item.version, item.integrity, item.filename].join("\t") + "\n");
+          // NPM_PACK_JSON_END
           NODE
             IFS=$'\t' read -r package_name published_version package_integrity package_file <"$package_meta"
 
