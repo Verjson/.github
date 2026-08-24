@@ -59,6 +59,7 @@ merge-gate	bash scripts/ci-gate/read-pr-files.test.sh
 merge-gate	bash scripts/ci-gate/ai-review-retry.test.sh
 merge-gate	bash scripts/ci-gate/semantic-verdict.test.sh
 merge-gate	python3 scripts/ci-gate/event-driven-authorization.test.py
+merge-gate	python3 scripts/ci-gate/renovate-model-action-pin.test.py
 merge-gate	python3 scripts/ci-gate/openai-review.test.py
 merge-gate	python3 scripts/ci-gate/deepseek-review.test.py
 merge-gate	python3 scripts/ci-gate/deepseek-replay.test.py
