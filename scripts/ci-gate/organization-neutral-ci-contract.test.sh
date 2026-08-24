@@ -8,11 +8,11 @@ legacy_prefix="VERJSON_"
 contract_paths=(.github scripts docs)
 
 find_legacy_context_refs() {
-  rg -n --glob '!docs/decisions/**' --glob '!CHANGELOG/**' --glob '!NEXT/**' \
+  grep -RInE --exclude-dir=decisions --exclude-dir=CHANGELOG --exclude-dir=NEXT \
     "(vars|secrets)\\.${legacy_prefix}[A-Z0-9_]+" "$@" || true
-  rg -n --glob '!docs/decisions/**' --glob '!CHANGELOG/**' --glob '!NEXT/**' \
+  grep -RInE --exclude-dir=decisions --exclude-dir=CHANGELOG --exclude-dir=NEXT \
     "(vars|secrets)\\\\\\.${legacy_prefix}[A-Z0-9_]+" "$@" || true
-  rg -n --glob '!docs/decisions/**' --glob '!CHANGELOG/**' --glob '!NEXT/**' \
+  grep -RInE --exclude-dir=decisions --exclude-dir=CHANGELOG --exclude-dir=NEXT \
     "(vars|secrets)\\[[[:space:]]*['\"]${legacy_prefix}[A-Z0-9_]+['\"][[:space:]]*\\]" "$@" || true
 }
 
@@ -36,7 +36,7 @@ printf '%s\n' \
 
 for legacy_secret in "${legacy_prefix}RUNNER_DEPLOY_TOKEN" "${legacy_prefix}RELEASE_TOKEN"; do
   refs="$(
-    rg -n --glob '!docs/decisions/**' --glob '!CHANGELOG/**' --glob '!NEXT/**' \
+    grep -RIn --exclude-dir=decisions --exclude-dir=CHANGELOG --exclude-dir=NEXT \
       "$legacy_secret" "${contract_paths[@]}" || true
   )"
   [ -z "$refs" ] || {
