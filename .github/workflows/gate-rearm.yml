@@ -6,7 +6,7 @@ name: AI review authorization arm
 # identity and the immutable receipt are the AI authorization trust boundary.
 on:
   pull_request_target:
-    types: [opened, reopened, synchronize, ready_for_review, converted_to_draft, edited, labeled, unlabeled]
+    types: [opened, reopened, synchronize, ready_for_review, converted_to_draft, edited, unlabeled]
   workflow_call:
     secrets:
       AI_REVIEW_APP_PRIVATE_KEY:
@@ -16,7 +16,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: ai-review-arm-${{ github.event.pull_request.number }}-${{ github.event.pull_request.head.sha }}
+  group: ai-review-arm-${{ github.event.pull_request.number }}
   cancel-in-progress: false
 
 jobs:
@@ -44,8 +44,11 @@ jobs:
       DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
       EVENT_ACTION: ${{ github.event.action }}
       EVENT_LABEL: ${{ github.event.label.name || '' }}
+      EVENT_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      EVENT_NAME: ${{ github.event_name }}
       EVENT_OLD_TITLE: ${{ github.event.changes.title.from || '' }}
       PR_NUMBER: ${{ github.event.pull_request.number }}
+      REPOSITORY_ID: ${{ github.repository_id }}
       TARGET_REPO: ${{ github.repository }}
       REVIEW_AUTHORITY: ${{ vars.AI_REVIEW_AUTHORITY || 'human' }}
       PRIMARY_PROVIDER: ${{ vars.AI_REVIEW_PRIMARY_PROVIDER || 'anthropic' }}
@@ -59,6 +62,8 @@ jobs:
       REREVIEW_FALLBACK_MODEL: ${{ vars.AI_REVIEW_REREVIEW_FALLBACK_MODEL }}
       REREVIEW_FALLBACK_BUDGET_USD: ${{ vars.AI_REVIEW_REREVIEW_FALLBACK_BUDGET_USD }}
       REQUEST_ACTOR: ${{ github.event.sender.login || github.actor }}
+      WORKFLOW_REF: ${{ github.workflow_ref }}
+      WORKFLOW_SHA: ${{ github.workflow_sha }}
     steps:
       - name: Validate authorization App client ID
         run: |
@@ -84,9 +89,38 @@ jobs:
           set -euo pipefail
           [[ "$TARGET_REPO" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] || exit 1
           [[ "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]] || exit 1
+          [[ "$REPOSITORY_ID" =~ ^[1-9][0-9]*$ ]] || exit 1
           [[ "$DEFAULT_BRANCH" =~ ^[A-Za-z0-9._/-]+$ ]] || exit 1
           [[ "$APP_ID" =~ ^[1-9][0-9]*$ ]] || { echo "::error::AI_REVIEW_APP_ID is unavailable"; exit 1; }
           [[ "$APP_SLUG" =~ ^[a-z0-9][a-z0-9-]*$ ]] || { echo "::error::AI_REVIEW_APP_SLUG is unavailable"; exit 1; }
+
+          explicit_label_delivery=false
+          if [ "$EVENT_NAME" = pull_request_target ] && [ "$EVENT_ACTION" = labeled ]; then
+            label_normalized="$(jq -nr --arg raw_label "$EVENT_LABEL" '$raw_label | ascii_downcase | gsub("[ _-]+";"-")')"
+            case "$label_normalized" in ai-review|re-review) ;; *) exit 0 ;; esac
+            [ "${GITHUB_RUN_ATTEMPT:-}" = 1 ] || { echo "::error::label deliveries cannot be replayed by rerunning a workflow"; exit 1; }
+            [[ "${GITHUB_RUN_ID:-}" =~ ^[1-9][0-9]*$ ]] || { echo "::error::label delivery run ID is malformed"; exit 1; }
+            [[ "$WORKFLOW_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::protected workflow SHA is malformed"; exit 1; }
+            [[ "$EVENT_HEAD_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::label event head is malformed"; exit 1; }
+            [ "$WORKFLOW_REF" = "$TARGET_REPO/.github/workflows/ai-review-label-rearm.yml@refs/heads/$DEFAULT_BRANCH" ] || {
+              echo "::error::label delivery did not enter through the separate protected label caller"; exit 1;
+            }
+            source_run="$(GH_TOKEN="$ACTIONS_TOKEN" gh api "repos/$TARGET_REPO/actions/runs/$GITHUB_RUN_ID")" || {
+              echo "::error::could not authenticate label delivery identity"; exit 1;
+            }
+            jq -e --arg repo "$TARGET_REPO" --argjson repo_id "$REPOSITORY_ID" \
+              --arg head "$EVENT_HEAD_SHA" --arg actor "$REQUEST_ACTOR" '
+                .event == "pull_request_target" and .path == ".github/workflows/ai-review-label-rearm.yml" and
+                .run_attempt == 1 and .head_sha == $head and
+                .head_repository.full_name == $repo and .repository.id == $repo_id and
+                .actor.login == $actor
+              ' <<<"$source_run" >/dev/null || {
+                echo "::error::label delivery source, ref, repository, or actor is not trusted"; exit 1;
+              }
+            explicit_label_delivery=true
+          elif [ "$EVENT_NAME" != pull_request_target ]; then
+            echo "::error::unsupported authorization-arm event"; exit 1
+          fi
 
           meta="$(GH_TOKEN="$ACTIONS_TOKEN" gh pr view "$PR_NUMBER" --repo "$TARGET_REPO" \
             --json id,state,isDraft,title,labels,headRefOid,headRepositoryOwner,autoMergeRequest)"
@@ -94,6 +128,9 @@ jobs:
           head_sha="$(jq -r '.headRefOid // ""' <<<"$meta")"
           head_owner="$(jq -r '.headRepositoryOwner.login // ""' <<<"$meta")"
           [[ "$head_sha" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::current PR head is unavailable"; exit 1; }
+          if [ "$explicit_label_delivery" = true ] && [ "$head_sha" != "$EVENT_HEAD_SHA" ]; then
+            echo "::error::label delivery head is stale"; exit 1
+          fi
           [ "$state" = OPEN ] || exit 0
 
           held="$(jq -r '
@@ -130,7 +167,6 @@ jobs:
           explicit_rereview=false
           explicit_ai_review=false
           hold_removed=false
-          operator_recovery=false
           select_compatible_review_policy() {
             local policy_json="$1" caller_file caller_sha256 selected_json
             caller_file="$(mktemp "${RUNNER_TEMP:-/tmp}/ai-review-caller.XXXXXX")"
@@ -159,22 +195,13 @@ jobs:
             fi
             printf '%s' "$selected_json" | base64 -w0 | tr '+/' '-_' | tr -d '='
           }
-          [ "${GITHUB_RUN_ATTEMPT:-1}" -gt 1 ] && operator_recovery=true
-          [ "$EVENT_ACTION" = labeled ] && [ "$EVENT_LABEL" = re-review ] && explicit_rereview=true
+          [ "$explicit_label_delivery" = true ] && [ "$label_normalized" = re-review ] && explicit_rereview=true
           if [ "$explicit_rereview" = true ] && [ "${GITHUB_RUN_ATTEMPT:-1}" -ne 1 ]; then
             echo "::error::an explicit re-review requires a new authorized label event; reruns cannot spend another diagnostic pass"
             exit 1
           fi
           rereview_actor="${REQUEST_ACTOR:-}"
           rereview_label="$(jq -r '[.labels[].name | select((ascii_downcase | gsub("[ _-]+"; "-")) == "re-review")] | first // ""' <<<"$meta")"
-          if [ "$operator_recovery" = true ] && [ "$explicit_rereview" = false ] && [ -n "$rereview_label" ]; then
-            rereview_actor="$(GH_TOKEN="$ACTIONS_TOKEN" gh api --paginate "repos/$TARGET_REPO/issues/$PR_NUMBER/events?per_page=100" \
-              | jq -sr '[.[][] | select(.event == "labeled" and ((.label.name // "" | ascii_downcase | gsub("[ _-]+"; "-")) == "re-review"))] | sort_by(.id) | last | .actor.login // ""')" || {
-              echo "::error::could not resolve the current re-review label actor during operator recovery"; exit 1;
-            }
-            [ -n "$rereview_actor" ] || { echo "::error::current re-review label has no attributable actor"; exit 1; }
-            explicit_rereview=true
-          fi
           ai_review_label="$(jq -r '[.labels[].name | select((ascii_downcase | gsub("[ _-]+"; "-")) == "ai-review")] | first // ""' <<<"$meta")"
           authorize_ai_review_actor() {
             local actor="$1"
@@ -197,6 +224,7 @@ jobs:
           authority="${REVIEW_AUTHORITY:-human}"
           case "$authority" in human|ai-approve|ai-merge) ;; *) echo "::error::AI_REVIEW_AUTHORITY must be human, ai-approve, or ai-merge"; exit 1 ;; esac
           if [ "$explicit_rereview" = true ]; then
+            [ -n "$rereview_label" ] || { echo "::error::re-review event does not match current PR labels"; exit 1; }
             review_provider="${REREVIEW_PROVIDER:-}"; review_model="${REREVIEW_MODEL:-}"; review_budget_usd="${REREVIEW_BUDGET_USD:-}"
             fallback_model="${REREVIEW_FALLBACK_MODEL:-}"; fallback_budget_usd="${REREVIEW_FALLBACK_BUDGET_USD:-}"
             if [ -z "$review_provider" ] || [ -z "$review_model" ] || [ -z "$review_budget_usd" ]; then
@@ -243,22 +271,11 @@ jobs:
           if [ -n "$fallback_budget_usd" ] && { ! [[ "$fallback_budget_usd" =~ ^(0|[1-9][0-9]*)(\.[0-9]{1,2})?$ ]] || ! awk -v b="$fallback_budget_usd" 'BEGIN { exit !(b > 0) }'; }; then
             echo "::error::invalid fallback review budget"; exit 1
           fi
-          if [ "$EVENT_ACTION" = labeled ] && [ "$explicit_rereview" = false ]; then
-            label_normalized="$(jq -nr --arg raw_label "$EVENT_LABEL" '$raw_label | ascii_downcase | gsub("[ _-]+";"-")')"
+          if [ "$explicit_label_delivery" = true ] && [ "$explicit_rereview" = false ]; then
             [ "$label_normalized" = ai-review ] || exit 0
             explicit_ai_review=true
             [ -n "$ai_review_label" ] || { echo "::error::ai-review event does not match current PR labels"; exit 1; }
             authorize_ai_review_actor "$REQUEST_ACTOR" || exit 1
-          elif [ -n "$ai_review_label" ]; then
-            ai_review_actor="$(GH_TOKEN="$ACTIONS_TOKEN" gh api --paginate "repos/$TARGET_REPO/issues/$PR_NUMBER/events?per_page=100" \
-              | jq -sr '[.[][] | select(.event == "labeled" and ((.label.name // "" | ascii_downcase | gsub("[ _-]+"; "-")) == "ai-review"))] | sort_by(.id) | last | .actor.login // ""')" || {
-              echo "::error::could not resolve the current ai-review label actor"; exit 1;
-            }
-            authorize_ai_review_actor "$ai_review_actor" || exit 1
-            # A required workflow may miss the label-only delivery. The
-            # current label and its still-authorized actor are the durable
-            # opt-in for this new exact head; dispatch consumes it below.
-            explicit_ai_review=true
           fi
           review_policy_json="$(jq -cSn --arg provider "$review_provider" --arg model "$review_model" --arg budget_usd "$review_budget_usd" \
             --arg fallback_model "$fallback_model" --arg fallback_budget_usd "$fallback_budget_usd" \
@@ -343,12 +360,7 @@ jobs:
               --body "$notice_body"
             exit 0
           fi
-          # A GitHub label delivery outage can leave no new arm run at all. An
-          # operator may rerun an existing exact-head arm: the incremented run
-          # attempt creates a fresh receipt and dispatch after revalidating the
-          # current PR/head/holds. This is not evidence that label delivery ran,
-          # and ordinary review accounting still denies automatic pass three.
-          if [ "$explicit_rereview" = false ] && [ "$explicit_ai_review" = false ] && [ "$operator_recovery" = false ] && [[ "$latest_id" =~ ^[1-9][0-9]*$ ]]; then
+          if [ "$explicit_rereview" = false ] && [ "$explicit_ai_review" = false ] && [[ "$latest_id" =~ ^[1-9][0-9]*$ ]]; then
             echo "Authorization already exists for $head_sha; duplicate event is a no-op."
             exit 0
           fi
@@ -383,10 +395,16 @@ jobs:
             --argjson check_run_id "$check_id" --argjson arm_run_id "$GITHUB_RUN_ID" \
             --argjson arm_run_attempt "$GITHUB_RUN_ATTEMPT" --arg nonce "$nonce" --arg external_id "$external_id" \
             --arg details_url "$details_url" --argjson app_id "$APP_ID" --arg app_slug "$APP_SLUG" \
-            --arg review_policy "$review_policy" \
-            '{schema:1,repository:$repository,pr_number:$pr_number,head_sha:$head_sha,check_run_id:$check_run_id,
+            --arg review_policy "$review_policy" --arg delivery_event "$EVENT_NAME" --arg delivery_actor "$REQUEST_ACTOR" \
+            --arg workflow_ref "$WORKFLOW_REF" --arg workflow_sha "$WORKFLOW_SHA" \
+            --argjson source_bound "$explicit_label_delivery" \
+            '{schema:(if $source_bound then 2 else 1 end),repository:$repository,pr_number:$pr_number,head_sha:$head_sha,check_run_id:$check_run_id,
               arm_run_id:$arm_run_id,arm_run_attempt:$arm_run_attempt,nonce:$nonce,external_id:$external_id,
-              details_url:$details_url,app_id:$app_id,app_slug:$app_slug,review_policy:$review_policy}' >"$receipt_dir/receipt.json"
+              details_url:$details_url,app_id:$app_id,app_slug:$app_slug,review_policy:$review_policy}
+             | if $source_bound then
+                 . + {delivery_event:$delivery_event,delivery_actor:$delivery_actor,
+                      workflow_ref:$workflow_ref,workflow_sha:$workflow_sha}
+               else . end' >"$receipt_dir/receipt.json"
           {
             echo "check_id=$check_id"
             echo "head_sha=$head_sha"
