@@ -43,6 +43,7 @@ case "$*" in
   *"check-runs/$AUTHORIZATION_CHECK_ID"*) cat "$CHECK_FILE" ;;
   *"collaborators/maintainer/permission"*) printf '%s\n' "${CURRENT_PERMISSION:-maintain}" ;;
   *"pulls/$PR_NUMBER"*".base.ref"*) printf '%s\n' main ;;
+  *"repos/$TARGET_REPO --jq .default_branch // \"\""*) printf '%s\n' main ;;
   *"pulls/$PR_NUMBER"*"--jq"*)
     [ "${CURRENT_STATE:-open}" = open ] && printf '%s\n' "${CURRENT_HEAD:-$EXPECTED_HEAD_SHA}" ;;
   *) echo "unexpected gh call: $*" >&2; exit 2 ;;
@@ -72,14 +73,17 @@ write_base() {
   (cd "$tmp/archive" && python3 -m zipfile -c "$ZIP_FILE" receipt.json)
   digest="$(sha256sum "$ZIP_FILE" | awk '{print $1}')"
   size="$(wc -c <"$ZIP_FILE")"
-  jq -nc --argjson size "$size" --arg digest "sha256:$digest" \
-    '{artifacts:[{id:8001,name:"ai-review-arm-7001-2",expired:false,size_in_bytes:$size,digest:$digest}]}' >"$ARTIFACTS_FILE"
+  jq -nc --argjson size "$size" --arg digest "sha256:$digest" --arg name "ai-review-arm-$ARM_RUN_ID-$ARM_RUN_ATTEMPT" \
+    '{artifacts:[{id:8001,name:$name,expired:false,size_in_bytes:$size,digest:$digest}]}' >"$ARTIFACTS_FILE"
   unset CURRENT_HEAD
 }
 
 write_ruleset_run() {
   write_base
-  jq '.workflow_id=88 | .workflow_url="https://api.github.com/repos/Verjson/example/actions/required_workflows/88"' \
+  # Required-workflow run head_sha is the PR head, while github.workflow_sha is
+  # the protected workflow source revision. Schema 1 deliberately does not
+  # collapse those distinct identities into one field.
+  jq '.workflow_id=88 | .workflow_url="https://api.github.com/repos/Verjson/example/actions/required_workflows/88" | .head_sha="fedcba9876543210fedcba9876543210fedcba98"' \
     "$RUN_FILE" >"$tmp/x" && mv "$tmp/x" "$RUN_FILE"
 }
 
@@ -100,13 +104,45 @@ repack() {
   rm -f "$ZIP_FILE"
   (cd "$tmp/archive" && python3 -m zipfile -c "$ZIP_FILE" receipt.json)
   digest="$(sha256sum "$ZIP_FILE" | awk '{print $1}')"; size="$(wc -c <"$ZIP_FILE")"
-  jq -nc --argjson size "$size" --arg digest "sha256:$digest" \
-    '{artifacts:[{id:8001,name:"ai-review-arm-7001-2",expired:false,size_in_bytes:$size,digest:$digest}]}' >"$ARTIFACTS_FILE"
+  jq -nc --argjson size "$size" --arg digest "sha256:$digest" --arg name "ai-review-arm-$ARM_RUN_ID-$ARM_RUN_ATTEMPT" \
+    '{artifacts:[{id:8001,name:$name,expired:false,size_in_bytes:$size,digest:$digest}]}' >"$ARTIFACTS_FILE"
+}
+
+write_issues_run() {
+  export ARM_RUN_ATTEMPT=1 REVIEW_POLICY="$(encode_policy "$openai_policy")"
+  external_id="ai-review:v1:$TARGET_REPO:$PR_NUMBER:$EXPECTED_HEAD_SHA:$ARM_RUN_ID:$ARM_RUN_ATTEMPT:$nonce"
+  write_base
+  workflow_sha=fedcba9876543210fedcba9876543210fedcba98
+  jq --arg sha "$workflow_sha" \
+    '.event="issues" | .run_attempt=1 | .head_branch="main" | .head_sha=$sha | .actor={login:"maintainer"}' \
+    "$RUN_FILE" >"$tmp/x" && mv "$tmp/x" "$RUN_FILE"
+  jq --arg sha "$workflow_sha" \
+    '.schema=2 | .delivery_event="issues" | .delivery_actor="maintainer" |
+     .workflow_ref="Verjson/example/.github/workflows/gate-rearm.yml@refs/heads/main" |
+     .workflow_sha=$sha' "$tmp/archive/receipt.json" >"$tmp/x" && mv "$tmp/x" "$tmp/archive/receipt.json"
+  repack
 }
 
 write_base; expect_pass "exact dedicated-App check and immutable receipt are accepted" verify
 write_ruleset_run
-LOCAL_WORKFLOW_MISSING=true expect_pass "ruleset-created arm is accepted without a repository-local caller" verify
+LOCAL_WORKFLOW_MISSING=true expect_pass "ruleset-created arm accepts distinct protected workflow and PR-head identities" verify
+write_issues_run; expect_pass "local issues label delivery accepts an exact schema-2 receipt" verify
+write_issues_run; jq 'del(.delivery_event,.delivery_actor,.workflow_ref,.workflow_sha) | .schema=1' "$tmp/archive/receipt.json" >"$tmp/x" && mv "$tmp/x" "$tmp/archive/receipt.json"; repack; expect_fail "issues delivery rejects schema-1 receipt" verify
+for field in delivery_event delivery_actor workflow_ref workflow_sha; do
+  write_issues_run
+  jq --arg field "$field" '.[$field]="attacker-substitution"' "$tmp/archive/receipt.json" >"$tmp/x" && mv "$tmp/x" "$tmp/archive/receipt.json"
+  repack; expect_fail "schema-2 receipt rejects substituted $field" verify
+done
+write_issues_run; jq '.head_branch="topic"' "$RUN_FILE" >"$tmp/x" && mv "$tmp/x" "$RUN_FILE"; expect_fail "issues delivery rejects wrong default branch" verify
+write_issues_run
+export ARM_RUN_ATTEMPT=2
+jq '.run_attempt=2' "$RUN_FILE" >"$tmp/x" && mv "$tmp/x" "$RUN_FILE"
+jq '.arm_run_attempt=2 | .external_id=(.external_id | sub(":1:[0-9a-f]{64}$"; ":2:" + .nonce))' "$tmp/archive/receipt.json" >"$tmp/x" && mv "$tmp/x" "$tmp/archive/receipt.json"
+jq '.external_id=(.external_id | sub(":1:[0-9a-f]{64}$"; ":2:" + "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"))' "$CHECK_FILE" >"$tmp/x" && mv "$tmp/x" "$CHECK_FILE"
+repack; expect_fail "issues delivery rejects attempt greater than one" verify
+write_issues_run; jq '.event="pull_request_target"' "$RUN_FILE" >"$tmp/x" && mv "$tmp/x" "$RUN_FILE"; expect_fail "pull_request_target run rejects schema-2 cross-mode receipt" verify
+export ARM_RUN_ATTEMPT=2 REVIEW_POLICY="$(encode_policy "$anthropic_policy")"
+external_id="ai-review:v1:$TARGET_REPO:$PR_NUMBER:$EXPECTED_HEAD_SHA:$ARM_RUN_ID:$ARM_RUN_ATTEMPT:$nonce"
 write_ruleset_run
 printf '%s\n' '[{"type":"workflows","ruleset_source_type":"Repository","ruleset_source":"Verjson/example","parameters":{"workflows":[{"path":".github/workflows/gate-rearm.yml","ref":"refs/heads/main","repository_id":1269388380}]}}]' >"$RULES_FILE"
 LOCAL_WORKFLOW_MISSING=true expect_provenance_fail "matching-path required workflow from an untrusted ruleset origin is rejected" verify

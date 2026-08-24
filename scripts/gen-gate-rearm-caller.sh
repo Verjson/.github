@@ -34,7 +34,9 @@ name: gate re-arm
 
 on:
   pull_request_target:
-    types: [opened, reopened, synchronize, ready_for_review, converted_to_draft, edited, unlabeled, labeled]
+    types: [opened, reopened, synchronize, ready_for_review, converted_to_draft, edited, unlabeled]
+  issues:
+    types: [labeled]
 
 permissions:
   contents: read

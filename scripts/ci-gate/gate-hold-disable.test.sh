@@ -25,6 +25,7 @@ case "$*" in
   *"commits/"*"/check-runs "*) cat "$LATEST_FILE" ;;
   *"actions/runs/7001 --jq"*) printf '2\n' ;;
   *"actions/runs/7001") printf '{"event":"pull_request_target","path":".github/workflows/gate-rearm.yml","head_repository":{"full_name":"Verjson/example"},"run_attempt":2}\n' ;;
+  *"actions/runs/8000") printf '{"event":"issues","path":".github/workflows/gate-rearm.yml","run_attempt":1,"head_branch":"main","head_sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","head_repository":{"full_name":"Verjson/example"},"repository":{"id":1234},"actor":{"login":"maintainer"}}\n' ;;
   *"actions/runs/7001/artifacts?per_page=100 --jq"*) printf '%s\n' "${RECEIPT_COUNT:-1}" ;;
   "run download 7001 "*)
     for arg in "$@"; do destination="$arg"; done
@@ -47,6 +48,9 @@ export PATH="$tmp/bin:$PATH" CALLS="$tmp/calls" META_FILE="$tmp/meta.json"
 export DISABLED_META_FILE="$tmp/disabled.json" GRAPHQL_FILE="$tmp/graphql.json" LATEST_FILE="$tmp/latest.json"
 export TARGET_REPO=Verjson/example PR_NUMBER=7 APP_ID=4242 APP_SLUG=verjson-ai-review
 export DEFAULT_BRANCH=main EVENT_LABEL=hold EVENT_OLD_TITLE='' GITHUB_REPOSITORY_OWNER=Verjson
+export EVENT_NAME=pull_request_target REPOSITORY_ID=1234
+export WORKFLOW_REF=Verjson/example/.github/workflows/gate-rearm.yml@refs/heads/main
+export WORKFLOW_SHA=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 export ACTIONS_TOKEN=actions-token GH_TOKEN=app-token GITHUB_SERVER_URL=https://github.com
 export GITHUB_RUN_ID=8000 GITHUB_RUN_ATTEMPT=1 RUNNER_TEMP="$tmp"
 export GITHUB_OUTPUT="$tmp/github-output"
@@ -64,7 +68,7 @@ write_hold() {
   jq -nc --arg head "$head_sha" '{id:"PR_id",state:"OPEN",isDraft:false,title:"change",labels:[{name:"hold"}],headRefOid:$head,headRepositoryOwner:{login:"Verjson"},autoMergeRequest:{enabledAt:"now"}}' >"$META_FILE"
   printf '{"data":{"disablePullRequestAutoMerge":{"pullRequest":{"id":"PR_id"}}}}\n' >"$GRAPHQL_FILE"
   printf '{"id":"PR_id","autoMergeRequest":null}\n' >"$DISABLED_META_FILE"
-  export EVENT_ACTION=labeled
+  export EVENT_NAME=pull_request_target EVENT_ACTION=synchronize
 }
 run_arm(){ bash "${ARM_SCRIPT:-$tmp/arm.sh}"; }
 expect_fail(){ label="$1"; if run_arm >"$tmp/out" 2>&1; then fail "$label"; else pass "$label"; fi; }
@@ -221,9 +225,18 @@ grep -q 'administrator must recover' "$CALLS" \
 : >"$CALLS"
 jq -nc --arg head "$head_sha" '{id:"PR_id",state:"OPEN",isDraft:false,title:"change",labels:[{name:"re-review"}],headRefOid:$head,headRepositoryOwner:{login:"Verjson"},autoMergeRequest:null}' >"$META_FILE"
 export EVENT_ACTION=labeled EVENT_LABEL=re-review REQUEST_ACTOR=maintainer ACTOR_PERMISSION=triage
+export EVENT_NAME=issues
 export REREVIEW_PROVIDER=openai REREVIEW_MODEL=gpt-5.6-luna REREVIEW_BUDGET_USD=1.00
 expect_fail "triage actor cannot authorize a paid re-review"
 ! grep -q 'check-runs' "$CALLS" && pass "unauthorized actor fails before receipt or paid dispatch" || fail "unauthorized actor reached authorization creation"
+
+: >"$CALLS"
+jq '.labels=[]' "$META_FILE" >"$tmp/x" && mv "$tmp/x" "$META_FILE"
+export ACTOR_PERMISSION=maintain
+expect_fail "withdrawn re-review label fails authoritative current-state validation"
+! grep -q -- '--method POST repos/Verjson/example/check-runs\|workflow run ai-review-merge.yml' "$CALLS" \
+  && pass "withdrawn re-review cannot create a receipt check or dispatch" \
+  || fail "withdrawn re-review reached authorization or paid dispatch"
 
 # An `ai-review` label may be added after the ordinary human-path authorization
 # already completed for this head. That explicit, maintainer-authorized opt-in
@@ -232,6 +245,7 @@ expect_fail "triage actor cannot authorize a paid re-review"
 jq -nc --arg head "$head_sha" '{id:"PR_id",state:"OPEN",isDraft:false,title:"change",labels:[{name:"ai-review"}],headRefOid:$head,headRepositoryOwner:{login:"Verjson"},autoMergeRequest:null}' >"$META_FILE"
 jq -nc --arg head "$head_sha" '{id:9001,status:"completed",conclusion:"success",details_url:"https://github.com/Verjson/example/actions/runs/7001",head_sha:$head}' >"$LATEST_FILE"
 export EVENT_ACTION=labeled EVENT_LABEL=ai-review REQUEST_ACTOR=maintainer ACTOR_PERMISSION=maintain
+export EVENT_NAME=issues
 export REVIEW_AUTHORITY=human PRIMARY_PROVIDER=deepseek PRIMARY_MODEL=deepseek-v4-pro PRIMARY_BUDGET_USD=5.00
 export PRIMARY_FALLBACK_MODEL=deepseek-v4-flash PRIMARY_FALLBACK_BUDGET_USD=5.00
 if run_arm >"$tmp/out" 2>&1 && grep -q -- '--method POST repos/Verjson/example/check-runs --input -' "$CALLS" \
@@ -244,20 +258,15 @@ else
   fail "post-open ai-review opt-in lost its verified actor permission or failed before receipt creation"
 fi
 
-# If GitHub omits the label-only required-workflow delivery, the next exact-head
-# synchronization must preserve the authenticated opt-in and mark it for
-# consumption before dispatch. It must not trust the pusher as the authorizer.
+# Persistent label state is not a delivery and must never be reusable authority.
 : >"$CALLS"; : >"$GITHUB_OUTPUT"
 sync_opt_in_temp="$tmp/sync-opt-in"; mkdir "$sync_opt_in_temp"; export RUNNER_TEMP="$sync_opt_in_temp"
-export EVENT_ACTION=synchronize EVENT_LABEL='' REQUEST_ACTOR=pusher ACTOR_PERMISSION=maintain
+export EVENT_NAME=pull_request_target EVENT_ACTION=synchronize EVENT_LABEL='' REQUEST_ACTOR=pusher ACTOR_PERMISSION=maintain
 if run_arm >"$tmp/out" 2>&1 \
-  && grep -q 'issues/7/events?per_page=100' "$CALLS" \
-  && grep -q 'collaborators/maintainer/permission' "$CALLS" \
-  && grep -q '^explicit_ai_review=true$' "$GITHUB_OUTPUT" \
-  && grep -q -- '--method POST repos/Verjson/example/check-runs --input -' "$CALLS"; then
-  pass "synchronize preserves an authorized ai-review opt-in for one consumed dispatch"
+  && ! grep -q 'collaborators/maintainer/permission\|--method POST repos/Verjson/example/check-runs' "$CALLS"; then
+  pass "synchronize cannot promote persistent ai-review label state into authority"
 else
-  fail "synchronize lost or misattributed the persistent ai-review authorization"
+  fail "synchronize reused persistent ai-review label state"
 fi
 export RUNNER_TEMP="$tmp"
 
@@ -266,6 +275,9 @@ export RUNNER_TEMP="$tmp"
 # Anthropic/OpenAI invalid or leak into their receipt policy.
 : >"$CALLS"; : >"$GITHUB_OUTPUT"
 provider_temp="$tmp/provider-anthropic"; mkdir "$provider_temp"; export RUNNER_TEMP="$provider_temp"
+export EVENT_NAME=pull_request_target EVENT_ACTION=synchronize EVENT_LABEL=''
+jq '.labels=[]' "$META_FILE" >"$tmp/x" && mv "$tmp/x" "$META_FILE"
+printf '{}\n' >"$LATEST_FILE"
 export PRIMARY_PROVIDER=anthropic PRIMARY_MODEL=auto PRIMARY_BUDGET_USD=auto
 export PRIMARY_FALLBACK_MODEL=deepseek-v4-flash PRIMARY_FALLBACK_BUDGET_USD=5.00
 if run_arm >"$tmp/out" 2>&1 \
@@ -281,6 +293,7 @@ fi
 provider_temp="$tmp/provider-openai"; mkdir "$provider_temp"; export RUNNER_TEMP="$provider_temp"
 jq '.labels=[{"name":"re-review"}]' "$META_FILE" >"$tmp/x" && mv "$tmp/x" "$META_FILE"
 export EVENT_ACTION=labeled EVENT_LABEL=re-review REQUEST_ACTOR=maintainer ACTOR_PERMISSION=maintain
+export EVENT_NAME=issues
 export REREVIEW_PROVIDER=openai REREVIEW_MODEL=gpt-5.6-luna REREVIEW_BUDGET_USD=1.00
 export REREVIEW_FALLBACK_MODEL=deepseek-v4-flash REREVIEW_FALLBACK_BUDGET_USD=5.00
 if run_arm >"$tmp/out" 2>&1 \
@@ -302,46 +315,36 @@ export RUNNER_TEMP="$tmp"
 jq -nc --arg head "$head_sha" '{id:"PR_id",state:"OPEN",isDraft:false,title:"change",labels:[{name:"re-review"}],headRefOid:$head,headRepositoryOwner:{login:"Verjson"},autoMergeRequest:null}' >"$META_FILE"
 recovery_temp="$tmp/recovery"
 mkdir "$recovery_temp"
-export EVENT_ACTION=synchronize EVENT_LABEL='' REQUEST_ACTOR=pusher ACTOR_PERMISSION=maintain GITHUB_RUN_ATTEMPT=2 RUNNER_TEMP="$recovery_temp"
-if run_arm >"$tmp/out" 2>&1 \
-  && grep -q -- '--method POST repos/Verjson/example/check-runs --input -' "$CALLS" \
-  && grep -q '^head_sha=0123456789abcdef0123456789abcdef01234567$' "$GITHUB_OUTPUT" \
-  && grep -q '^receipt_name=ai-review-arm-8000-2$' "$GITHUB_OUTPUT" \
-  && policy_envelope="$(sed -n 's/^review_policy=//p' "$GITHUB_OUTPUT")" \
-  && policy_json="$(python3 "$root/scripts/ci-gate/review-policy-envelope.py" decode "$policy_envelope")" \
-  && [ "$(jq -r '.explicit_rereview|tostring' <<<"$policy_json")" = true ] \
-  && [ "$(jq -r '.actor + ":" + .actor_permission' <<<"$policy_json")" = maintainer:maintain ]; then
-  pass "operator rerun authorizes the current re-review label and creates an exact-head attempt-bound receipt"
-else
-  fail "operator rerun did not preserve the exact-head receipt boundary: $(tail -1 "$tmp/out")"
-fi
+export EVENT_NAME=issues EVENT_ACTION=labeled EVENT_LABEL=re-review REQUEST_ACTOR=maintainer ACTOR_PERMISSION=maintain GITHUB_RUN_ATTEMPT=2 RUNNER_TEMP="$recovery_temp"
+expect_fail "rerun cannot replay an explicit re-review delivery"
+! grep -q -- '--method POST repos/Verjson/example/check-runs' "$CALLS" \
+  && pass "replayed delivery fails before authorization creation" \
+  || fail "replayed delivery created authorization"
 
 : >"$CALLS"; : >"$GITHUB_OUTPUT"
 jq '.labels=[]' "$META_FILE" >"$tmp/x" && mv "$tmp/x" "$META_FILE"
 repeated_recovery_temp="$tmp/repeated-recovery"
 mkdir "$repeated_recovery_temp"
 export GITHUB_RUN_ATTEMPT=3 RUNNER_TEMP="$repeated_recovery_temp"
-if run_arm >"$tmp/out" 2>&1 \
-  && repeated_policy_envelope="$(sed -n 's/^review_policy=//p' "$GITHUB_OUTPUT")" \
-  && repeated_policy_json="$(python3 "$root/scripts/ci-gate/review-policy-envelope.py" decode "$repeated_policy_envelope")" \
-  && [ "$(jq -r '.explicit_rereview|tostring' <<<"$repeated_policy_json")" = false ] \
-  && ! grep -q 'issues/7/events' "$CALLS"; then
-  pass "repeated operator recovery cannot reuse a consumed re-review label event"
-else
-  fail "repeated operator recovery retained explicit authority after label consumption"
-fi
+expect_fail "later rerun remains fail-closed after label consumption"
 export GITHUB_RUN_ATTEMPT=1 RUNNER_TEMP="$tmp"
 
-: >"$CALLS"
+: >"$CALLS"; : >"$GITHUB_OUTPUT"
 jq '.labels=[{"name":"ai-review"}]' "$META_FILE" >"$tmp/x" && mv "$tmp/x" "$META_FILE"
 export EVENT_ACTION=labeled EVENT_LABEL=ai-review ACTOR_PERMISSION=triage PR_EDIT_FAIL=true
+export EVENT_NAME=issues
 expect_fail "unauthorized ai-review label fails even when cleanup cannot remove it"
 : >"$CALLS"
-export EVENT_ACTION=synchronize EVENT_LABEL='' REQUEST_ACTOR=pusher
-expect_fail "a later synchronize rechecks the retained ai-review label actor"
-! grep -q -- '--method POST repos/Verjson/example/check-runs --input -' "$CALLS" \
-  && pass "retained unauthorized ai-review label cannot reach receipt creation" \
-  || fail "retained unauthorized ai-review label authorized paid review"
+export EVENT_NAME=pull_request_target EVENT_ACTION=synchronize EVENT_LABEL='' REQUEST_ACTOR=pusher
+sync_retained_temp="$tmp/sync-retained"; mkdir "$sync_retained_temp"; export RUNNER_TEMP="$sync_retained_temp"
+if run_arm >"$tmp/out" 2>&1 \
+  && ! grep -q 'collaborators/maintainer/permission' "$CALLS" \
+  && ! grep -q '^explicit_ai_review=true$' "$GITHUB_OUTPUT"; then
+  pass "retained unauthorized label cannot become explicit review authority"
+else
+  fail "retained unauthorized label influenced the synchronized authorization policy"
+fi
+export RUNNER_TEMP="$tmp"
 unset PR_EDIT_FAIL
 
 [ "$fails" -eq 0 ] && { echo "All tests passed."; exit 0; }
