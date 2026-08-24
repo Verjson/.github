@@ -27,7 +27,7 @@ checks = {
     ),
     "trusted consumers use the strict envelope decoder": gate.count("review-policy-envelope.py") >= 3 and "review-policy-envelope.py" in receipt,
     "workflow dispatch stays within GitHub input limit": len(dispatch_inputs) <= 10,
-    "paid re-review requires maintainer permission": "collaborators/$rereview_actor/permission" in arm and "current re-review label actor during operator recovery" in arm and "admin|maintain" in arm and "no longer has maintain/admin" in receipt,
+    "paid re-review requires maintainer permission": "collaborators/$rereview_actor/permission" in arm and 'rereview_actor="${REQUEST_ACTOR:-}"' in arm and '[ "$explicit_label_delivery" = true ]' in arm and "admin|maintain" in arm and "no longer has maintain/admin" in receipt,
     "provider secrets remain scoped": all(secret in gate for secret in (
         "OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}",
         "DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}",
