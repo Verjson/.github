@@ -226,6 +226,10 @@ jobs:
               echo "::error::could not resolve the current ai-review label actor"; exit 1;
             }
             authorize_ai_review_actor "$ai_review_actor" || exit 1
+            # A required workflow may miss the label-only delivery. The
+            # current label and its still-authorized actor are the durable
+            # opt-in for this new exact head; dispatch consumes it below.
+            explicit_ai_review=true
           fi
           review_policy_json="$(jq -cSn --arg provider "$review_provider" --arg model "$review_model" --arg budget_usd "$review_budget_usd" \
             --arg fallback_model "$fallback_model" --arg fallback_budget_usd "$fallback_budget_usd" \
@@ -355,6 +359,7 @@ jobs:
             echo "check_id=$check_id"
             echo "head_sha=$head_sha"
             echo "explicit_rereview=$explicit_rereview"
+            echo "explicit_ai_review=$explicit_ai_review"
             echo "receipt_name=ai-review-arm-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
             echo "review_policy=$review_policy"
           } >>"$GITHUB_OUTPUT"
@@ -388,20 +393,27 @@ jobs:
               -f status=completed -f conclusion=failure \
               -f "output[title]=$title" -f "output[summary]=$summary"
           }
+          authorization_label=''
           if [ "${{ steps.arm.outputs.explicit_rereview || false }}" = true ]; then
+            authorization_label=re-review
+          elif [ "${{ steps.arm.outputs.explicit_ai_review || false }}" = true ]; then
+            authorization_label=ai-review
+          fi
+          if [ -n "$authorization_label" ]; then
             # Consuming the authorization label is a precondition for spend.
             # A failed edit is acceptable only when an authoritative reread
             # proves the label is already absent (for example, a racing event).
-            gh pr edit "$PR_NUMBER" --repo "$TARGET_REPO" --remove-label re-review 2>/dev/null || true
+            gh pr edit "$PR_NUMBER" --repo "$TARGET_REPO" --remove-label "$authorization_label" 2>/dev/null || true
             if ! remaining_labels="$(gh pr view "$PR_NUMBER" --repo "$TARGET_REPO" --json labels)" ||
                ! jq -e '.labels | type == "array" and all(.[]; .name | type == "string")' <<<"$remaining_labels" >/dev/null; then
-              fail_authorization 'Re-review label consumption unverified' \
-                'The trusted arm could not verify that the explicit authorization label was consumed; no review was dispatched.'
+              fail_authorization 'Review label consumption unverified' \
+                'The trusted arm could not verify that the authorization label was consumed; no review was dispatched.'
               exit 1
             fi
-            if jq -e 'any(.labels[]; (.name | ascii_downcase | gsub("[ _-]+"; "-")) == "re-review")' <<<"$remaining_labels" >/dev/null; then
-              fail_authorization 'Re-review label consumption failed' \
-                'The explicit authorization label remains applied, so dispatch was refused before provider spend.'
+            if jq -e --arg expected "$authorization_label" \
+              'any(.labels[]; (.name | ascii_downcase | gsub("[ _-]+"; "-")) == $expected)' <<<"$remaining_labels" >/dev/null; then
+              fail_authorization 'Review label consumption failed' \
+                'The authorization label remains applied, so dispatch was refused before provider spend.'
               exit 1
             fi
           fi

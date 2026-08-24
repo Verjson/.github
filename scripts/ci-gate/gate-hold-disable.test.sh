@@ -239,6 +239,23 @@ else
   fail "post-open ai-review opt-in lost its verified actor permission or failed before receipt creation"
 fi
 
+# If GitHub omits the label-only required-workflow delivery, the next exact-head
+# synchronization must preserve the authenticated opt-in and mark it for
+# consumption before dispatch. It must not trust the pusher as the authorizer.
+: >"$CALLS"; : >"$GITHUB_OUTPUT"
+sync_opt_in_temp="$tmp/sync-opt-in"; mkdir "$sync_opt_in_temp"; export RUNNER_TEMP="$sync_opt_in_temp"
+export EVENT_ACTION=synchronize EVENT_LABEL='' REQUEST_ACTOR=pusher ACTOR_PERMISSION=maintain
+if run_arm >"$tmp/out" 2>&1 \
+  && grep -q 'issues/7/events?per_page=100' "$CALLS" \
+  && grep -q 'collaborators/maintainer/permission' "$CALLS" \
+  && grep -q '^explicit_ai_review=true$' "$GITHUB_OUTPUT" \
+  && grep -q -- '--method POST repos/Verjson/example/check-runs --input -' "$CALLS"; then
+  pass "synchronize preserves an authorized ai-review opt-in for one consumed dispatch"
+else
+  fail "synchronize lost or misattributed the persistent ai-review authorization"
+fi
+export RUNNER_TEMP="$tmp"
+
 # A repository-level provider choice overrides the inherited organization
 # DeepSeek policy as a unit. Stale Pro->Flash fallback variables must not make
 # Anthropic/OpenAI invalid or leak into their receipt policy.
