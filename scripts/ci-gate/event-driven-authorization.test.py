@@ -253,9 +253,12 @@ def main() -> int:
             "model workflow must not run in pull_request_target context")
     require("pull_request" not in review.get(True, {}),
             "model workflow must run only after the trusted arm deduplicates a head")
+    label_rearm = load(ROOT / ".github/workflows/ai-review-label-rearm.yml")
     require(set(rearm[True]["pull_request_target"]["types"]) >=
-            {"opened", "reopened", "synchronize", "ready_for_review", "labeled", "unlabeled"},
-            "trusted rearm must cover every head and control transition")
+            {"opened", "reopened", "synchronize", "ready_for_review", "unlabeled"} and
+            "labeled" not in rearm[True]["pull_request_target"]["types"] and
+            label_rearm[True] == {"pull_request_target": {"types": ["labeled"]}},
+            "trusted rearm must separate explicit label delivery from head transitions")
     app_token_uses = [
         authorization_app_token_uses(rearm, "arm"),
         authorization_app_token_uses(review, "complete-authorization"),
