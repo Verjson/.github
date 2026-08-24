@@ -40,7 +40,6 @@ assert doc["on"] == {
     "pull_request_target": {
         "types": ["opened", "reopened", "synchronize", "ready_for_review", "converted_to_draft", "edited", "unlabeled"],
     },
-    "issues": {"types": ["labeled"]},
 }
 assert doc["permissions"] == {"contents": "read"}
 assert set(doc["jobs"]) == {"rearm"}
@@ -92,7 +91,7 @@ with open(sys.argv[1], encoding="utf-8") as stream:
     doc = yaml.load(stream, Loader=yaml.BaseLoader)
 
 assert doc["permissions"] == {"contents": "read"}
-assert doc["concurrency"] == {"group": "ai-review-arm-${{ github.event.pull_request.number || github.event.issue.number }}", "cancel-in-progress": "false"}
+assert doc["concurrency"] == {"group": "ai-review-arm-${{ github.event.pull_request.number }}", "cancel-in-progress": "false"}
 arm = doc["jobs"]["arm"]
 assert arm["permissions"] == {
     "actions": "write",
@@ -100,7 +99,7 @@ assert arm["permissions"] == {
     "issues": "write",
     "pull-requests": "write",
 }
-assert arm["env"]["PR_NUMBER"] == "${{ github.event.pull_request.number || github.event.issue.number }}"
+assert arm["env"]["PR_NUMBER"] == "${{ github.event.pull_request.number }}"
 assert arm["env"]["TARGET_REPO"] == "${{ github.repository }}"
 uses = [step["uses"] for step in arm["steps"] if "uses" in step]
 assert uses and all(not value.startswith("actions/checkout@") for value in uses)

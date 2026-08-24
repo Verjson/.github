@@ -1,0 +1,19 @@
+name: AI review explicit label re-arm
+
+on:
+  pull_request_target:
+    types: [labeled]
+
+permissions:
+  contents: read
+
+jobs:
+  rearm:
+    permissions:
+      actions: write
+      contents: read
+      issues: write
+      pull-requests: write
+    uses: ./.github/workflows/gate-rearm.yml
+    secrets:
+      AI_REVIEW_APP_PRIVATE_KEY: ${{ secrets.AI_REVIEW_APP_PRIVATE_KEY }}

@@ -25,7 +25,7 @@ case "$*" in
   *"commits/"*"/check-runs "*) cat "$LATEST_FILE" ;;
   *"actions/runs/7001 --jq"*) printf '2\n' ;;
   *"actions/runs/7001") printf '{"event":"pull_request_target","path":".github/workflows/gate-rearm.yml","head_repository":{"full_name":"Verjson/example"},"run_attempt":2}\n' ;;
-  *"actions/runs/8000") printf '{"event":"issues","path":".github/workflows/gate-rearm.yml","run_attempt":1,"head_branch":"main","head_sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","head_repository":{"full_name":"Verjson/example"},"repository":{"id":1234},"actor":{"login":"maintainer"}}\n' ;;
+  *"actions/runs/8000") printf '{"event":"pull_request_target","path":".github/workflows/ai-review-label-rearm.yml","run_attempt":1,"head_sha":"0123456789abcdef0123456789abcdef01234567","head_repository":{"full_name":"Verjson/example"},"repository":{"id":1234},"actor":{"login":"maintainer"}}\n' ;;
   *"actions/runs/7001/artifacts?per_page=100 --jq"*) printf '%s\n' "${RECEIPT_COUNT:-1}" ;;
   "run download 7001 "*)
     for arg in "$@"; do destination="$arg"; done
@@ -49,8 +49,9 @@ export DISABLED_META_FILE="$tmp/disabled.json" GRAPHQL_FILE="$tmp/graphql.json" 
 export TARGET_REPO=Verjson/example PR_NUMBER=7 APP_ID=4242 APP_SLUG=verjson-ai-review
 export DEFAULT_BRANCH=main EVENT_LABEL=hold EVENT_OLD_TITLE='' GITHUB_REPOSITORY_OWNER=Verjson
 export EVENT_NAME=pull_request_target REPOSITORY_ID=1234
-export WORKFLOW_REF=Verjson/example/.github/workflows/gate-rearm.yml@refs/heads/main
+export WORKFLOW_REF=Verjson/example/.github/workflows/ai-review-label-rearm.yml@refs/heads/main
 export WORKFLOW_SHA=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+export EVENT_HEAD_SHA=0123456789abcdef0123456789abcdef01234567
 export ACTIONS_TOKEN=actions-token GH_TOKEN=app-token GITHUB_SERVER_URL=https://github.com
 export GITHUB_RUN_ID=8000 GITHUB_RUN_ATTEMPT=1 RUNNER_TEMP="$tmp"
 export GITHUB_OUTPUT="$tmp/github-output"
@@ -225,7 +226,7 @@ grep -q 'administrator must recover' "$CALLS" \
 : >"$CALLS"
 jq -nc --arg head "$head_sha" '{id:"PR_id",state:"OPEN",isDraft:false,title:"change",labels:[{name:"re-review"}],headRefOid:$head,headRepositoryOwner:{login:"Verjson"},autoMergeRequest:null}' >"$META_FILE"
 export EVENT_ACTION=labeled EVENT_LABEL=re-review REQUEST_ACTOR=maintainer ACTOR_PERMISSION=triage
-export EVENT_NAME=issues
+export EVENT_NAME=pull_request_target
 export REREVIEW_PROVIDER=openai REREVIEW_MODEL=gpt-5.6-luna REREVIEW_BUDGET_USD=1.00
 expect_fail "triage actor cannot authorize a paid re-review"
 ! grep -q 'check-runs' "$CALLS" && pass "unauthorized actor fails before receipt or paid dispatch" || fail "unauthorized actor reached authorization creation"
@@ -245,7 +246,7 @@ expect_fail "withdrawn re-review label fails authoritative current-state validat
 jq -nc --arg head "$head_sha" '{id:"PR_id",state:"OPEN",isDraft:false,title:"change",labels:[{name:"ai-review"}],headRefOid:$head,headRepositoryOwner:{login:"Verjson"},autoMergeRequest:null}' >"$META_FILE"
 jq -nc --arg head "$head_sha" '{id:9001,status:"completed",conclusion:"success",details_url:"https://github.com/Verjson/example/actions/runs/7001",head_sha:$head}' >"$LATEST_FILE"
 export EVENT_ACTION=labeled EVENT_LABEL=ai-review REQUEST_ACTOR=maintainer ACTOR_PERMISSION=maintain
-export EVENT_NAME=issues
+export EVENT_NAME=pull_request_target
 export REVIEW_AUTHORITY=human PRIMARY_PROVIDER=deepseek PRIMARY_MODEL=deepseek-v4-pro PRIMARY_BUDGET_USD=5.00
 export PRIMARY_FALLBACK_MODEL=deepseek-v4-flash PRIMARY_FALLBACK_BUDGET_USD=5.00
 if run_arm >"$tmp/out" 2>&1 && grep -q -- '--method POST repos/Verjson/example/check-runs --input -' "$CALLS" \
@@ -293,7 +294,7 @@ fi
 provider_temp="$tmp/provider-openai"; mkdir "$provider_temp"; export RUNNER_TEMP="$provider_temp"
 jq '.labels=[{"name":"re-review"}]' "$META_FILE" >"$tmp/x" && mv "$tmp/x" "$META_FILE"
 export EVENT_ACTION=labeled EVENT_LABEL=re-review REQUEST_ACTOR=maintainer ACTOR_PERMISSION=maintain
-export EVENT_NAME=issues
+export EVENT_NAME=pull_request_target
 export REREVIEW_PROVIDER=openai REREVIEW_MODEL=gpt-5.6-luna REREVIEW_BUDGET_USD=1.00
 export REREVIEW_FALLBACK_MODEL=deepseek-v4-flash REREVIEW_FALLBACK_BUDGET_USD=5.00
 if run_arm >"$tmp/out" 2>&1 \
@@ -315,7 +316,7 @@ export RUNNER_TEMP="$tmp"
 jq -nc --arg head "$head_sha" '{id:"PR_id",state:"OPEN",isDraft:false,title:"change",labels:[{name:"re-review"}],headRefOid:$head,headRepositoryOwner:{login:"Verjson"},autoMergeRequest:null}' >"$META_FILE"
 recovery_temp="$tmp/recovery"
 mkdir "$recovery_temp"
-export EVENT_NAME=issues EVENT_ACTION=labeled EVENT_LABEL=re-review REQUEST_ACTOR=maintainer ACTOR_PERMISSION=maintain GITHUB_RUN_ATTEMPT=2 RUNNER_TEMP="$recovery_temp"
+export EVENT_NAME=pull_request_target EVENT_ACTION=labeled EVENT_LABEL=re-review REQUEST_ACTOR=maintainer ACTOR_PERMISSION=maintain GITHUB_RUN_ATTEMPT=2 RUNNER_TEMP="$recovery_temp"
 expect_fail "rerun cannot replay an explicit re-review delivery"
 ! grep -q -- '--method POST repos/Verjson/example/check-runs' "$CALLS" \
   && pass "replayed delivery fails before authorization creation" \
@@ -332,7 +333,7 @@ export GITHUB_RUN_ATTEMPT=1 RUNNER_TEMP="$tmp"
 : >"$CALLS"; : >"$GITHUB_OUTPUT"
 jq '.labels=[{"name":"ai-review"}]' "$META_FILE" >"$tmp/x" && mv "$tmp/x" "$META_FILE"
 export EVENT_ACTION=labeled EVENT_LABEL=ai-review ACTOR_PERMISSION=triage PR_EDIT_FAIL=true
-export EVENT_NAME=issues
+export EVENT_NAME=pull_request_target
 expect_fail "unauthorized ai-review label fails even when cleanup cannot remove it"
 : >"$CALLS"
 export EVENT_NAME=pull_request_target EVENT_ACTION=synchronize EVENT_LABEL='' REQUEST_ACTOR=pusher
