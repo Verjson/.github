@@ -38,7 +38,7 @@ assert checkout["with"]["ref"] == "${{ steps.resolve-auxiliary-source.outputs.co
 assert checkout["with"]["token"] == "${{ secrets.NODE_AUTH_TOKEN }}"
 assert checkout["with"]["persist-credentials"] is False
 resolver = steps[resolve_index]
-assert resolver["env"]["TRUSTED_AUXILIARY_POLICY"] == "${{ vars.VERJSON_SECRETLESS_AUXILIARY_POLICY }}"
+assert resolver["env"]["TRUSTED_AUXILIARY_POLICY"] == "${{ vars.CI_SECRETLESS_AUXILIARY_POLICY }}"
 assert "source != policy" in resolver["run"]
 cleanup = next(step for step in steps if step.get("name") == "Remove local acquisition and transfer state")
 assert cleanup["env"]["AUXILIARY_CHECKOUT_PATH"] == "${{ steps.resolve-auxiliary-source.outputs.checkout-path }}"

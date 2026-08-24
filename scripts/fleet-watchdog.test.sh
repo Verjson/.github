@@ -249,7 +249,7 @@ cancelled \
   || fail "the age fallback stopped selecting AI privileged merge"
 
 # --- a candidate must occupy the pool the jam is on -------------------------
-# `gate` routes on `VERJSON_RUNNER_OVERFLOW` (or `_FASTLANE` for public targets)
+# `gate` routes on `CI_RUNNER_OVERFLOW` (or `_FASTLANE` for public targets)
 # and both are `["ubuntu-24.04"]` today, so every `gate` in the org is on hosted
 # capacity. Cancelling one frees ZERO self-hosted runners: the jam survives, and
 # the PR pays for a full re-run of a job that was never holding the resource.
@@ -360,10 +360,10 @@ default_workflows="$(grep -o 'WATCHDOG_POLL_WORKFLOWS:-[^}]*' "$script" | head -
 # poll-step rule widened by #343 reports only until it earns the same evidence.
 watchdog_wf="$workflows_dir/fleet-watchdog.yml"
 if [ -f "$watchdog_wf" ]; then
-  grep -qF "WATCHDOG_DRY_RUN: \${{ vars.VERJSON_WATCHDOG_DRY_RUN || 'false' }}" "$watchdog_wf" \
+  grep -qF "WATCHDOG_DRY_RUN: \${{ vars.CI_WATCHDOG_DRY_RUN || 'false' }}" "$watchdog_wf" \
     && pass "the proven age path is armed by default in fleet-watchdog.yml" \
     || fail "the WATCHDOG_DRY_RUN default in fleet-watchdog.yml is not the pinned 'false' — the arm/disarm decision has drifted with nothing else guarding it"
-  grep -qF "WATCHDOG_POLL_STEP_DRY_RUN: \${{ vars.VERJSON_WATCHDOG_POLL_STEP_DRY_RUN || 'true' }}" "$watchdog_wf" \
+  grep -qF "WATCHDOG_POLL_STEP_DRY_RUN: \${{ vars.CI_WATCHDOG_POLL_STEP_DRY_RUN || 'true' }}" "$watchdog_wf" \
     && pass "the widened poll-step path is report-only by default in fleet-watchdog.yml" \
     || fail "the WATCHDOG_POLL_STEP_DRY_RUN default in fleet-watchdog.yml is not the pinned 'true' — the rule with no production evidence would cancel"
 else

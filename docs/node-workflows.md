@@ -82,12 +82,12 @@ Use `secretless-trusted-ref: true` instead of `secretless-pr` in the trusted-ref
 job; all other package policy and script-plan inputs must remain identical.
 No install or lifecycle script runs in acquisition. The default approved scope is
 `@verjson`; callers that need another internal scope must name it exactly and set
-the protected repository variable `VERJSON_SECRETLESS_PACKAGE_POLICY` to a JSON
+the protected repository variable `CI_SECRETLESS_PACKAGE_POLICY` to a JSON
 object containing the exact `scopes` and `packages` arrays. An optional auxiliary
 source resolves one repository-controlled pin to a full commit SHA, performs one
 sparse private checkout, and adds only the exact sparse content path to the
 transfer. Its four input fields must exactly match protected repository variable
-`VERJSON_SECRETLESS_AUXILIARY_POLICY`, so a PR cannot redirect the acquisition
+`CI_SECRETLESS_AUXILIARY_POLICY`, so a PR cannot redirect the acquisition
 token to another repository or path. It transfers npm's verified content-addressed download
 cache, never `node_modules`, under an 80 MiB payload cap. Acquisition saves the
 two-file envelope under an exact run-attempt Actions cache key with no restore
@@ -231,8 +231,8 @@ For `tequityapp/tequity-api`, the canonical caller that replaces its handwritten
 acquisition/build split is:
 
 ```text
-VERJSON_SECRETLESS_PACKAGE_POLICY={"scopes":["@tequityapp","@verjson"],"packages":["@tequityapp/tequity-schema","@verjson/ai","@verjson/authn","@verjson/authz","@verjson/cloud-storage","@verjson/customer-lifecycle","@verjson/graphql-conventions","@verjson/identity-contracts","@verjson/object-storage","@verjson/observability","@verjson/oidc-claims-middleware","@verjson/payments","@verjson/pg"]}
-VERJSON_SECRETLESS_AUXILIARY_POLICY={"repository":"tequityapp/tequity-worker","pinFile":"config/worker-schema-pin.json","checkoutPath":".worker-schema","sparsePath":"migrations"}
+CI_SECRETLESS_PACKAGE_POLICY={"scopes":["@tequityapp","@verjson"],"packages":["@tequityapp/tequity-schema","@verjson/ai","@verjson/authn","@verjson/authz","@verjson/cloud-storage","@verjson/customer-lifecycle","@verjson/graphql-conventions","@verjson/identity-contracts","@verjson/object-storage","@verjson/observability","@verjson/oidc-claims-middleware","@verjson/payments","@verjson/pg"]}
+CI_SECRETLESS_AUXILIARY_POLICY={"repository":"tequityapp/tequity-worker","pinFile":"config/worker-schema-pin.json","checkoutPath":".worker-schema","sparsePath":"migrations"}
 ```
 
 Set both values as repository variables outside the PR branch, then use:

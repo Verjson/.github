@@ -4,7 +4,7 @@ on:
     branches: [main]
 jobs:
   installer:
-    runs-on: ${{ fromJSON(vars.VERJSON_LANE_TRUSTED_WINDOWS) }}
+    runs-on: ${{ fromJSON(vars.CI_LANE_TRUSTED_WINDOWS) }}
     timeout-minutes: 45
     steps:
       - run: npm run dist

@@ -17,7 +17,7 @@ GENERAL_GROUP_NAME="${GENERAL_GROUP_NAME:-DigitalOcean}"
 # No default. `isolated` was the old one, and that group has not existed since it
 # was deleted on 2026-07-31 — shipping a name that resolves to nothing is the
 # defect this file was already carrying twice over. Unreachable today, because
-# VERJSON_LANE_UNTRUSTED resolves to the general lane, but the moment the
+# CI_LANE_UNTRUSTED resolves to the general lane, but the moment the
 # untrusted lane is repointed the empty value fails closed through
 # lane_group_name saying no group is configured, rather than fails closed saying
 # a group nobody has heard of is missing.
@@ -148,22 +148,22 @@ fetch_optional() {
 }
 
 # Read the variables the WORKFLOWS ACTUALLY ROUTE ON, resolved the same way the
-# `runs-on` expression resolves them: the lane, then VERJSON_LANE_FALLBACK.
+# `runs-on` expression resolves them: the lane, then CI_LANE_FALLBACK.
 #
-# This used to read VERJSON_RUNNER_DEFAULT/_UNTRUSTED. Every `runs-on:` now
-# resolves `VERJSON_LANE_*`, and the retired pair is deliberately left set for
+# This used to read the retired runner-default pair. Every `runs-on:` now
+# resolves `CI_LANE_*`, and the retired pair is deliberately left set for
 # consumers pinned to a pre-migration SHA — so monitoring it would have this job
 # validate a variable nothing routes on and report "no drift" while the live lane
 # pointed at a group that admits nobody. That is #401's exact silence with one
 # variable name changed, inside the file that exists to prevent it (#403 review).
 lane_variable() {
   local lane="$1" resolved
-  resolved="$(fetch_optional "/orgs/$ORG/actions/variables/VERJSON_LANE_${lane}")" || return 2
+  resolved="$(fetch_optional "/orgs/$ORG/actions/variables/CI_LANE_${lane}")" || return 2
   if [ -z "$resolved" ]; then
-    resolved="$(fetch_optional "/orgs/$ORG/actions/variables/VERJSON_LANE_FALLBACK")" || return 2
+    resolved="$(fetch_optional "/orgs/$ORG/actions/variables/CI_LANE_FALLBACK")" || return 2
   fi
   [ -n "$resolved" ] || die_undetermined \
-    "neither VERJSON_LANE_${lane} nor VERJSON_LANE_FALLBACK is set in $ORG; every runs-on chain resolves to the portable hosted tail"
+    "neither CI_LANE_${lane} nor CI_LANE_FALLBACK is set in $ORG; every runs-on chain resolves to the portable hosted tail"
   printf '%s\n' "$resolved"
 }
 
@@ -179,8 +179,8 @@ privileged_var="$(lane_variable PRIVILEGED)" || exit 2
 # routing source any more, so it is not fatal here — but a legacy variable that
 # has drifted away from its lane means those consumers route somewhere this run
 # never checked, which is reported rather than assumed away.
-legacy_default_var="$(fetch_optional "/orgs/$ORG/actions/variables/VERJSON_RUNNER_DEFAULT")" || exit 2
-legacy_untrusted_var="$(fetch_optional "/orgs/$ORG/actions/variables/VERJSON_RUNNER_UNTRUSTED")" || exit 2
+legacy_default_var="$(fetch_optional "/orgs/$ORG/actions/variables/CI_RUNNER_DEFAULT")" || exit 2
+legacy_untrusted_var="$(fetch_optional "/orgs/$ORG/actions/variables/CI_RUNNER_UNTRUSTED")" || exit 2
 
 selector() {
   local name="$1" variable="$2" value visibility
@@ -191,7 +191,7 @@ selector() {
   [ "$visibility" = "all" ] \
     || die_undetermined "$name is not visible to all repositories"
   # `self-hosted` is no longer required. A lane may legitimately point at hosted
-  # capacity — that is what VERJSON_LANE_FALLBACK is for, and what the whole
+  # capacity — that is what CI_LANE_FALLBACK is for, and what the whole
   # fleet would be set to during a provider outage. Such a lane has no runner
   # group and therefore no admission to reconcile; it is skipped below rather
   # than treated as a malformed variable.
@@ -201,9 +201,9 @@ selector() {
   printf '%s\n' "$value"
 }
 
-default_selector="$(selector VERJSON_LANE_TRUSTED "$default_var")" || exit 2
-untrusted_selector="$(selector VERJSON_LANE_UNTRUSTED "$untrusted_var")" || exit 2
-privileged_selector="$(selector VERJSON_LANE_PRIVILEGED "$privileged_var")" || exit 2
+default_selector="$(selector CI_LANE_TRUSTED "$default_var")" || exit 2
+untrusted_selector="$(selector CI_LANE_UNTRUSTED "$untrusted_var")" || exit 2
+privileged_selector="$(selector CI_LANE_PRIVILEGED "$privileged_var")" || exit 2
 
 group_for_selector() {
   local name="$1" labels="$2"
@@ -250,9 +250,9 @@ has_capacity() {
   ' <<<"$runners" >/dev/null
 }
 
-default_lane="$(group_for_selector VERJSON_LANE_TRUSTED "$default_selector")" || exit 2
-untrusted_lane="$(group_for_selector VERJSON_LANE_UNTRUSTED "$untrusted_selector")" || exit 2
-privileged_lane="$(group_for_selector VERJSON_LANE_PRIVILEGED "$privileged_selector")" || exit 2
+default_lane="$(group_for_selector CI_LANE_TRUSTED "$default_selector")" || exit 2
+untrusted_lane="$(group_for_selector CI_LANE_UNTRUSTED "$untrusted_selector")" || exit 2
+privileged_lane="$(group_for_selector CI_LANE_PRIVILEGED "$privileged_selector")" || exit 2
 
 # One listing, slurped: `--paginate` emits one object per page, so streaming
 # `.runner_groups[]` and slurping is the pagination-safe shape (cf. #260).
@@ -268,7 +268,7 @@ lane_group_name() {
     general) printf '%s\n' "$GENERAL_GROUP_NAME" ;;
     untrusted)
       [ -n "$UNTRUSTED_GROUP_NAME" ] \
-        || die_undetermined "no runner group is configured for lane 'untrusted'; set VERJSON_RUNNER_UNTRUSTED_GROUP"
+        || die_undetermined "no runner group is configured for lane 'untrusted'; set CI_RUNNER_UNTRUSTED_GROUP"
       printf '%s\n' "$UNTRUSTED_GROUP_NAME"
       ;;
     *) die_undetermined "no runner group is configured for lane '$1'" ;;
@@ -429,11 +429,11 @@ esac
 # A hosted lane has no self-hosted capacity to have, so asking would report
 # permanent drift against a deliberately hosted configuration.
 [ "$default_lane" = hosted ] || has_capacity "$default_selector" "$default_runners" \
-  || drift="$drift- VERJSON_LANE_TRUSTED has no matching online runner"$'\n'
+  || drift="$drift- CI_LANE_TRUSTED has no matching online runner"$'\n'
 [ "$untrusted_lane" = hosted ] || has_capacity "$untrusted_selector" "$untrusted_runners_for_selector" \
-  || drift="$drift- VERJSON_LANE_UNTRUSTED has no matching online runner"$'\n'
+  || drift="$drift- CI_LANE_UNTRUSTED has no matching online runner"$'\n'
 [ "$privileged_lane" = hosted ] || has_capacity "$privileged_selector" "$privileged_runners" \
-  || drift="$drift- VERJSON_LANE_PRIVILEGED has no matching online runner"$'\n'
+  || drift="$drift- CI_LANE_PRIVILEGED has no matching online runner"$'\n'
 
 # The retired pair still routes every consumer pinned to a pre-migration SHA.
 # Silent divergence between it and the live lane is the state this migration
@@ -444,8 +444,8 @@ legacy_drift() {
   value="$(jq -r '.value' <<<"$variable" 2>/dev/null)" || return 0
   [ "$value" = "$lane_value" ] || drift="$drift- \`$name\` differs from the lane that replaced it; values redacted because org-variable contents must not enter public logs or issues; consumers pinned to a pre-migration SHA route somewhere this run did not check"$'\n'
 }
-legacy_drift VERJSON_RUNNER_DEFAULT "$legacy_default_var" "$default_selector"
-legacy_drift VERJSON_RUNNER_UNTRUSTED "$legacy_untrusted_var" "$untrusted_selector"
+legacy_drift CI_RUNNER_DEFAULT "$legacy_default_var" "$default_selector"
+legacy_drift CI_RUNNER_UNTRUSTED "$legacy_untrusted_var" "$untrusted_selector"
 
 # Placement (#275). The two checks above ask whether repositories are admitted
 # and whether lanes have capacity. A runner registered WITHOUT `--runnergroup`

@@ -42,10 +42,10 @@ if tail -n "+$receipt_line" "$canary" | grep -q 'npm run'; then
 else
   pass "receipt control job never executes candidate code"
 fi
-grep -qF "fromJSON(vars.VERJSON_LANE_TRUSTED || vars.VERJSON_LANE_FALLBACK || '[\"ubuntu-24.04\"]')" "$reconcile" \
-  && [ "$(grep -cF "fromJSON(vars.VERJSON_LANE_UNTRUSTED || '[\"ubuntu-24.04\"]')" "$canary")" -eq 1 ] \
-  && [ "$(grep -cF "fromJSON(vars.VERJSON_LANE_TRUSTED || vars.VERJSON_LANE_FALLBACK || '[\"ubuntu-24.04\"]')" "$canary")" -eq 1 ] \
-  && grep -qF "fromJSON(vars.VERJSON_LANE_TRUSTED || vars.VERJSON_LANE_FALLBACK || '[\"ubuntu-24.04\"]')" "$planner" \
+grep -qF "fromJSON(vars.CI_LANE_TRUSTED || vars.CI_LANE_FALLBACK || '[\"ubuntu-24.04\"]')" "$reconcile" \
+  && [ "$(grep -cF "fromJSON(vars.CI_LANE_UNTRUSTED || '[\"ubuntu-24.04\"]')" "$canary")" -eq 1 ] \
+  && [ "$(grep -cF "fromJSON(vars.CI_LANE_TRUSTED || vars.CI_LANE_FALLBACK || '[\"ubuntu-24.04\"]')" "$canary")" -eq 1 ] \
+  && grep -qF "fromJSON(vars.CI_LANE_TRUSTED || vars.CI_LANE_FALLBACK || '[\"ubuntu-24.04\"]')" "$planner" \
   && pass "new jobs use the canonical portable organization lane boundary" \
   || fail "runner selector bypasses the canonical lane boundary"
 grep -q 'dd08f8471fdfabbdbbb32051e03387fcf5df63bd' "$planner" \

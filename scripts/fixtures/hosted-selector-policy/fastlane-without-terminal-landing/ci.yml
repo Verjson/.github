@@ -6,6 +6,6 @@ name: ci
 on: pull_request
 jobs:
   build:
-    runs-on: ${{ fromJSON(vars.VERJSON_RUNNER_FASTLANE) }}
+    runs-on: ${{ fromJSON(vars.CI_RUNNER_FASTLANE) }}
     steps:
       - run: npm test

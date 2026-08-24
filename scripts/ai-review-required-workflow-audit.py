@@ -490,7 +490,7 @@ def verify_replacement_workflow(contract: dict, read) -> None:
     arm = workflow.get("jobs", {}).get("arm", {})
     require(arm.get("continue-on-error") == "true", "replacement can veto ADR 0090 human merges")
     expected_runner = (
-        "${{ fromJSON(vars.VERJSON_LANE_TRUSTED || vars.VERJSON_LANE_FALLBACK "
+        "${{ fromJSON(vars.CI_LANE_TRUSTED || vars.CI_LANE_FALLBACK "
         "|| '[\"ubuntu-24.04\"]') }}"
     )
     require(arm.get("runs-on") == expected_runner, "required arm is not routed through the trusted lane")

@@ -1070,7 +1070,7 @@ class DeploymentExecutionTests(unittest.TestCase):
                 {
                     "VERJSON_DEPLOYMENT_CLI": str(cli),
                     "VERJSON_DEPLOYMENT_CLI_ROOT": directory,
-                    "VERJSON_RUNNER_DEPLOY_TOKEN": "redacted-fixture",
+                    "RUNNER_DEPLOY_TOKEN": "redacted-fixture",
                 },
                 clear=False,
             ), mock.patch.object(
@@ -1103,7 +1103,7 @@ class DeploymentExecutionTests(unittest.TestCase):
                 {
                     "VERJSON_DEPLOYMENT_CLI": str(cli),
                     "VERJSON_DEPLOYMENT_CLI_ROOT": root,
-                    "VERJSON_RUNNER_DEPLOY_TOKEN": "redacted-fixture",
+                    "RUNNER_DEPLOY_TOKEN": "redacted-fixture",
                 },
                 clear=False,
             ):

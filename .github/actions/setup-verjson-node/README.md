@@ -32,7 +32,7 @@ jobs:
   build:
     # Route through the org variables rather than a hardcoded pool. There is no
     # `docker` lane — Docker/kind work needs no pin (ADR 0040, #271).
-    runs-on: ${{ fromJSON(vars.VERJSON_RUNNER_DEFAULT || '["self-hosted","general"]') }}
+    runs-on: ${{ fromJSON(vars.CI_RUNNER_DEFAULT || '["self-hosted","general"]') }}
     permissions:
       contents: read
       packages: read

@@ -36,9 +36,9 @@
 # re-run; the cost of a false negative is a frozen fleet.
 #
 # Disposition (ADR 0056, #341): retained rather than retired. ADR 0053's
-# `VERJSON_RUNNER_OVERFLOW` moves `gate`/`dispatch-merge` off the pool, but it
+# `CI_RUNNER_OVERFLOW` moves `gate`/`dispatch-merge` off the pool, but it
 # does NOT cover `ai-privileged-merge.yml` (which routes on
-# `VERJSON_LANE_PRIVILEGED`), and it is explicitly a budget that will be given
+# `CI_LANE_PRIVILEGED`), and it is explicitly a budget that will be given
 # back. `privileged_merge` is therefore the residual exposure, and 3 of the 4
 # runs this watchdog has ever preempted were `AI privileged merge`. The fourth
 # was a `gate` (verjson-infra run 30786453794, 2026-08-03), reachable only
@@ -189,7 +189,7 @@ while IFS= read -r repo; do
     jobs_json="$(gh api "repos/$ORG/$repo/actions/runs/$run_id/jobs" 2>/dev/null)" || continue
     # A candidate must PROVABLY hold a runner from the pool this is freeing.
     # Selecting on poll state alone selects jobs that are not on the pool at
-    # all: `gate` routes on `VERJSON_RUNNER_OVERFLOW`/`_FASTLANE`, both
+    # all: `gate` routes on `CI_RUNNER_OVERFLOW`/`_FASTLANE`, both
     # `["ubuntu-24.04"]` today, so every `gate` in the org is on hosted
     # capacity. Cancelling one frees no self-hosted runner — the jam survives
     # and the PR pays for a full re-run (and, per #292, a re-run of the model

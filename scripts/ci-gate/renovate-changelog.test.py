@@ -42,7 +42,7 @@ def validate(document: dict, helper_text: str) -> list[str]:
         problems.append("workflow must contain exactly one attribution job")
         return problems
     job = jobs["attribute"]
-    expected_runner = "${{ fromJSON(vars.VERJSON_LANE_TRUSTED || vars.VERJSON_LANE_FALLBACK || '[\"ubuntu-24.04\"]') }}"
+    expected_runner = "${{ fromJSON(vars.CI_LANE_TRUSTED || vars.CI_LANE_FALLBACK || '[\"ubuntu-24.04\"]') }}"
     if job.get("runs-on") != expected_runner:
         problems.append("attribution does not use the trusted lane")
     if job.get("permissions") != expected_permissions:

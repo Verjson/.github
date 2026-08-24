@@ -28,9 +28,9 @@ acquire = jobs["acquire-secretless-dependencies"]
 build = jobs["build-test"]
 assert acquire["if"] == "(inputs.secretless-pr || inputs.secretless-trusted-ref) && needs.eligibility.outputs.should-run != 'false'"
 assert acquire["permissions"] == {"contents": "read", "packages": "read"}
-assert acquire["runs-on"] == "${{ fromJSON(vars.VERJSON_LANE_UNTRUSTED || '[\"ubuntu-24.04\"]') }}"
+assert acquire["runs-on"] == "${{ fromJSON(vars.CI_LANE_UNTRUSTED || '[\"ubuntu-24.04\"]') }}"
 assert build["permissions"] == {"contents": "read"}
-assert build["runs-on"].startswith("${{ inputs.secretless-pr && fromJSON(vars.VERJSON_LANE_UNTRUSTED")
+assert build["runs-on"].startswith("${{ inputs.secretless-pr && fromJSON(vars.CI_LANE_UNTRUSTED")
 assert "secretless-trusted-ref" not in build["runs-on"]
 assert "cleanup-secretless-transfer" not in jobs
 assert docs.count("permissions:\n      contents: read\n      packages: read\n      statuses: read") == 4

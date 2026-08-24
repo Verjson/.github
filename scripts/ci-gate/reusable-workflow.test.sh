@@ -66,7 +66,7 @@ done
 # required because of #130: omitting it left the job queued forever on labels the
 # consumer's org has no runner for, so rejecting the call was the only fast-fail.
 # That premise is gone — every `runs-on` here ends at
-# `VERJSON_LANE_FALLBACK || '["ubuntu-24.04"]'` (ADR 0040), so an omitted input
+# `CI_LANE_FALLBACK || '["ubuntu-24.04"]'` (ADR 0040), so an omitted input
 # resolves to a runner that exists. Keeping it required had a cost the #130
 # analysis did not price: it forced every caller to spell out a fleet LABEL, and
 # the generator supplied a Verjson one, putting a label the org relabels at will
@@ -94,13 +94,13 @@ runs_on_parameterized="$(grep -cE "runs-on: \\\$\{\{ inputs\.runner_labels && fr
 # preflight's fallback only — gate reaches the fast lane for a public target and
 # DEFAULT for a private one. What must hold regardless: the cross-org hosted
 # route survives, every lane is still variable-selected rather than hardcoded,
-# and VERJSON_LANE_FALLBACK remains the terminal lane term everywhere.
+# and CI_LANE_FALLBACK remains the terminal lane term everywhere.
 grep -qE "github\.repository_owner != 'Verjson' && 'ubuntu-24\.04'" "$wf" \
-  && [ "$(grep -cF 'VERJSON_RUNNER_FASTLANE' "$wf")" -ge 3 ] \
-  && [ "$(grep -cF 'VERJSON_LANE_PRIVILEGED' "$wf")" -ge 1 ] \
-  && [ "$(grep -cF 'VERJSON_LANE_TRUSTED' "$wf")" -ge 1 ] \
-  && [ "$(grep -cF 'VERJSON_LANE_UNTRUSTED' "$wf")" -ge 1 ] \
-  && [ "$(grep -cF 'VERJSON_LANE_FALLBACK' "$wf")" -ge 3 ] \
+  && [ "$(grep -cF 'CI_RUNNER_FASTLANE' "$wf")" -ge 3 ] \
+  && [ "$(grep -cF 'CI_LANE_PRIVILEGED' "$wf")" -ge 1 ] \
+  && [ "$(grep -cF 'CI_LANE_TRUSTED' "$wf")" -ge 1 ] \
+  && [ "$(grep -cF 'CI_LANE_UNTRUSTED' "$wf")" -ge 1 ] \
+  && [ "$(grep -cF 'CI_LANE_FALLBACK' "$wf")" -ge 3 ] \
   && pass "Verjson gate jobs use variable lanes while cross-org routing stays portable" \
   || fail "variable gate routing or cross-org portability drifted"
 

@@ -53,7 +53,7 @@ jobs:
     # this suite after 3-92 seconds queued. Merge-gate contracts consumed
     # 102-142 seconds, changelog/release 83-115, and platform/fleet 18-25.
     # Three groups halve the critical path while adding only two checkouts.
-    runs-on: ${{ fromJSON(vars.VERJSON_RUNNER_FASTLANE || vars.VERJSON_LANE_TRUSTED || vars.VERJSON_LANE_FALLBACK || '["ubuntu-24.04"]') }}
+    runs-on: ${{ fromJSON(vars.CI_RUNNER_FASTLANE || vars.CI_LANE_TRUSTED || vars.CI_LANE_FALLBACK || '["ubuntu-24.04"]') }}
     timeout-minutes: 12
     strategy:
       fail-fast: false
@@ -94,7 +94,7 @@ jobs:
   # pull request.
   adr-number-collision:
     if: github.event_name == 'pull_request'
-    runs-on: ${{ fromJSON(vars.VERJSON_RUNNER_FASTLANE || vars.VERJSON_LANE_TRUSTED || vars.VERJSON_LANE_FALLBACK || '["ubuntu-24.04"]') }}
+    runs-on: ${{ fromJSON(vars.CI_RUNNER_FASTLANE || vars.CI_LANE_TRUSTED || vars.CI_LANE_FALLBACK || '["ubuntu-24.04"]') }}
     timeout-minutes: 5
     permissions:
       contents: read
@@ -120,7 +120,7 @@ jobs:
   shell-tests:
     needs: [shell-test-groups, adr-number-collision]
     if: ${{ always() }}
-    runs-on: ${{ fromJSON(vars.VERJSON_RUNNER_FASTLANE || vars.VERJSON_LANE_TRUSTED || vars.VERJSON_LANE_FALLBACK || '["ubuntu-24.04"]') }}
+    runs-on: ${{ fromJSON(vars.CI_RUNNER_FASTLANE || vars.CI_LANE_TRUSTED || vars.CI_LANE_FALLBACK || '["ubuntu-24.04"]') }}
     timeout-minutes: 2
     steps:
       - name: Preserve the required shell-tests context

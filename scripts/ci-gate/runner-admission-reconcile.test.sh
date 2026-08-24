@@ -50,12 +50,12 @@ case "$path" in
   # reconciler reads. The RUNNER pair is still served because it is still set
   # org-wide for consumers pinned to a pre-migration SHA, and divergence between
   # the two is itself reported as drift.
-  */actions/variables/VERJSON_LANE_TRUSTED) printf '%s\n' "$DEFAULT_VAR" ;;
-  */actions/variables/VERJSON_LANE_UNTRUSTED) printf '%s\n' "$UNTRUSTED_VAR" ;;
-  */actions/variables/VERJSON_LANE_PRIVILEGED) printf '%s\n' "$PRIVILEGED_VAR" ;;
-  */actions/variables/VERJSON_LANE_FALLBACK) printf '%s\n' "$FALLBACK_VAR" ;;
-  */actions/variables/VERJSON_RUNNER_DEFAULT) printf '%s\n' "$LEGACY_DEFAULT_VAR" ;;
-  */actions/variables/VERJSON_RUNNER_UNTRUSTED) printf '%s\n' "$LEGACY_UNTRUSTED_VAR" ;;
+  */actions/variables/CI_LANE_TRUSTED) printf '%s\n' "$DEFAULT_VAR" ;;
+  */actions/variables/CI_LANE_UNTRUSTED) printf '%s\n' "$UNTRUSTED_VAR" ;;
+  */actions/variables/CI_LANE_PRIVILEGED) printf '%s\n' "$PRIVILEGED_VAR" ;;
+  */actions/variables/CI_LANE_FALLBACK) printf '%s\n' "$FALLBACK_VAR" ;;
+  */actions/variables/CI_RUNNER_DEFAULT) printf '%s\n' "$LEGACY_DEFAULT_VAR" ;;
+  */actions/variables/CI_RUNNER_UNTRUSTED) printf '%s\n' "$LEGACY_UNTRUSTED_VAR" ;;
   # Both ids serve the default group's runners, so a test can move the default
   # group off id 1 and prove resolution follows `.default`, not a pinned id.
   */runner-groups/1/runners*|*/runner-groups/9/runners*) printf '%s\n' "$G1_RUNNERS" ;;
@@ -293,7 +293,7 @@ G4_GROUP='{"id":4,"name":"DigitalOcean","visibility":"all","allows_public_reposi
 PRIVILEGED_VAR='{"value":"[\"self-hosted\",\"privileged-only\"]","visibility":"all"}'
 out="$(run_case)"
 [ "$(code_of)" = "2" ] \
-  && grep -qF 'VERJSON_LANE_PRIVILEGED' <<<"$out" \
+  && grep -qF 'CI_LANE_PRIVILEGED' <<<"$out" \
   && pass "an ungoverned privileged selector is undetermined, never silently skipped" \
   || fail "privileged selector was not reconciled: $out"
 
@@ -301,7 +301,7 @@ PRIVILEGED_VAR='{"value":"[\"self-hosted\",\"general\"]","visibility":"all"}'
 G4_RUNNERS='{"name":"general-1","status":"offline","labels":["self-hosted","general"]}'
 out="$(run_case)"
 [ "$(code_of)" = "1" ] \
-  && grep -qF 'VERJSON_LANE_PRIVILEGED has no matching online runner' <<<"$out" \
+  && grep -qF 'CI_LANE_PRIVILEGED has no matching online runner' <<<"$out" \
   && pass "privileged selector with no online capacity is reported" \
   || fail "privileged capacity drift not reported: $out"
 
@@ -324,7 +324,7 @@ out="$(run_case)"
   || fail "ungoverned lane did not return exit 2 without leaking its value: $out"
 
 UNTRUSTED_VAR='{"value":"[\"self-hosted\",\"general\"]","visibility":"all"}'
-FAIL_PATH='/actions/variables/VERJSON_RUNNER_DEFAULT'
+FAIL_PATH='/actions/variables/CI_RUNNER_DEFAULT'
 [ "$(code_of)" = "2" ] \
   && pass "org API failure is undetermined, never clean" \
   || fail "API failure did not return exit 2"
@@ -401,7 +401,7 @@ out="$(run_case)"
 # labels moved by variable and this stayed in code (#401). So the workflow must
 # also be able to follow a rename without a pull request.
 reconcile_workflow="$(cd "$(dirname "$0")/../.." && pwd)/.github/workflows/runner-admission-reconcile.yml"
-grep -qF "GENERAL_GROUP_NAME: \${{ vars.VERJSON_RUNNER_GENERAL_GROUP || 'DigitalOcean' }}" "$reconcile_workflow" \
+grep -qF "GENERAL_GROUP_NAME: \${{ vars.CI_RUNNER_GENERAL_GROUP || 'DigitalOcean' }}" "$reconcile_workflow" \
   && pass "the general group name is repointable from org variables, with a fallback" \
   || fail "runner-admission-reconcile.yml does not source GENERAL_GROUP_NAME from a variable with a fallback"
 
@@ -803,7 +803,7 @@ LEGACY_DEFAULT_VAR='{"value":"[\"self-hosted\",\"gone\"]","visibility":"all"}'
 LEGACY_UNTRUSTED_VAR='{"value":"[\"self-hosted\",\"general\"]","visibility":"all"}'
 out="$(run_case)"
 [ "$(code_of)" = "1" ] \
-  && grep -qF 'VERJSON_RUNNER_DEFAULT' <<<"$out" \
+  && grep -qF 'CI_RUNNER_DEFAULT' <<<"$out" \
   && ! grep -qF 'gone' <<<"$out" \
   && pass "a retired variable that has drifted from its lane is reported" \
   || fail "legacy/lane divergence was not safely reported: $out"

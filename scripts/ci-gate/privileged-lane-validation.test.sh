@@ -5,7 +5,7 @@
 # branch hardcoded `fromJSON('["self-hosted","general"]')` regardless of what
 # the caller supplied. Practically benign today (the literal cannot be
 # widened), but it left ADR 0089's promised fail-closed diagnostic missing: a
-# caller with a missing, malformed, or shadowed `VERJSON_LANE_PRIVILEGED`
+# caller with a missing, malformed, or shadowed `CI_LANE_PRIVILEGED`
 # produced zero signal.
 #
 # ADR 0117 moves validation into a credentialless fixed-lane admission job;

@@ -50,7 +50,7 @@ import yaml
 # #203). A public repository flipped private turns a free `macos-latest` job into
 # a 10x metered one with no commit, no review, and no signal.
 #
-# Preceded by a non-word character so `VERJSON_LANE_TRUSTED_MACOS` — the lane
+# Preceded by a non-word character so `CI_LANE_TRUSTED_MACOS` — the lane
 # variable NAME, governed by R5 — is not read as a macOS selector.
 METERED_FAMILY = re.compile(r"(?:^|[^A-Za-z0-9_])(?:macos|windows)-[A-Za-z0-9]", re.I)
 METERED_LATEST = re.compile(
@@ -61,17 +61,17 @@ LINUX_HOSTED_LITERAL = re.compile(r"(?:^|[^A-Za-z0-9_])ubuntu-[A-Za-z0-9]", re.I
 # The OS-scoped lanes of ADR 0103. Repository variables on the one desktop
 # repository, never organization variables, so a workflow anywhere else resolves
 # them to empty.
-OS_LANE = re.compile(r"vars\.VERJSON_LANE_TRUSTED_(?:MACOS|WINDOWS)")
-OS_LANE_TEXT = re.compile(r"VERJSON_LANE_TRUSTED_(?:MACOS|WINDOWS)")
+OS_LANE = re.compile(r"vars\.CI_LANE_TRUSTED_(?:MACOS|WINDOWS)")
+OS_LANE_TEXT = re.compile(r"CI_LANE_TRUSTED_(?:MACOS|WINDOWS)")
 
 # Any Verjson placement variable EXCEPT the OS lanes, which are governed by the
 # inverted rule. Broadened from LANE_(TRUSTED|UNTRUSTED|PRIVILEGED) after review:
-# a chain on `vars.VERJSON_RUNNER_FASTLANE` or `VERJSON_RUNNER_OVERFLOW` with no
+# a chain on `vars.CI_RUNNER_FASTLANE` or `CI_RUNNER_OVERFLOW` with no
 # tail hits the #401 forever-queue mode just as squarely, and was unguarded.
 PLACEMENT_VARIABLE = re.compile(
-    r"vars\.VERJSON_(?:LANE|RUNNER)_(?!TRUSTED_MACOS|TRUSTED_WINDOWS)[A-Z_]+"
+    r"vars\.CI_(?:LANE|RUNNER)_(?!TRUSTED_MACOS|TRUSTED_WINDOWS)[A-Z_]+"
 )
-TERMINAL_LANDING = re.compile(r"vars\.VERJSON_LANE_FALLBACK|ubuntu-[A-Za-z0-9]", re.I)
+TERMINAL_LANDING = re.compile(r"vars\.CI_LANE_FALLBACK|ubuntu-[A-Za-z0-9]", re.I)
 
 # R3's ceiling. Not a presence check: `timeout-minutes: 360` satisfies "has a
 # timeout" while being exactly the runaway the requirement exists to prevent —
@@ -260,40 +260,40 @@ BRACKET_DEREFERENCE = re.compile(
 REVIEWED_SELECTOR_EXPRESSIONS = frozenset(
     " ".join(expression.split())
     for expression in (
-        "(github.repository_owner != 'Verjson' || inputs.github-hosted-runner) && 'ubuntu-24.04' || github.event.repository.private == true && fromJSON(vars.VERJSON_LANE_TRUSTED || vars.VERJSON_LANE_FALLBACK || '[\"ubuntu-24.04\"]') || github.event.repository.visibility == 'public' && fromJSON(vars.VERJSON_RUNNER_FASTLANE || vars.VERJSON_LANE_UNTRUSTED || vars.VERJSON_LANE_FALLBACK || '[\"ubuntu-24.04\"]') || fromJSON(vars.VERJSON_LANE_UNTRUSTED || vars.VERJSON_LANE_FALLBACK || '[\"ubuntu-24.04\"]')",
-        "fromJSON(vars.VERJSON_LANE_PRIVILEGED || vars.VERJSON_LANE_FALLBACK || '[\"ubuntu-24.04\"]')",
-        "fromJSON(vars.VERJSON_LANE_TRUSTED || vars.VERJSON_LANE_FALLBACK || '[\"ubuntu-24.04\"]')",
-        "fromJSON(vars.VERJSON_LANE_UNTRUSTED || '[\"ubuntu-24.04\"]')",
-        "fromJSON(vars.VERJSON_RUNNER_FASTLANE || '[\"ubuntu-24.04\"]')",
-        "fromJSON(vars.VERJSON_RUNNER_FASTLANE || vars.VERJSON_LANE_TRUSTED || vars.VERJSON_LANE_FALLBACK || '[\"ubuntu-24.04\"]')",
-        "github.repository_owner != 'Verjson' && 'ubuntu-24.04' || fromJSON(vars.VERJSON_LANE_TRUSTED || vars.VERJSON_LANE_FALLBACK || '[\"ubuntu-24.04\"]')",
-        "github.repository_owner != 'Verjson' && 'ubuntu-24.04' || github.event.repository.private == true && fromJSON(vars.VERJSON_LANE_TRUSTED || vars.VERJSON_LANE_FALLBACK || '[\"ubuntu-24.04\"]') || fromJSON(vars.VERJSON_LANE_UNTRUSTED || vars.VERJSON_LANE_FALLBACK || '[\"ubuntu-24.04\"]')",
+        "(github.repository_owner != 'Verjson' || inputs.github-hosted-runner) && 'ubuntu-24.04' || github.event.repository.private == true && fromJSON(vars.CI_LANE_TRUSTED || vars.CI_LANE_FALLBACK || '[\"ubuntu-24.04\"]') || github.event.repository.visibility == 'public' && fromJSON(vars.CI_RUNNER_FASTLANE || vars.CI_LANE_UNTRUSTED || vars.CI_LANE_FALLBACK || '[\"ubuntu-24.04\"]') || fromJSON(vars.CI_LANE_UNTRUSTED || vars.CI_LANE_FALLBACK || '[\"ubuntu-24.04\"]')",
+        "fromJSON(vars.CI_LANE_PRIVILEGED || vars.CI_LANE_FALLBACK || '[\"ubuntu-24.04\"]')",
+        "fromJSON(vars.CI_LANE_TRUSTED || vars.CI_LANE_FALLBACK || '[\"ubuntu-24.04\"]')",
+        "fromJSON(vars.CI_LANE_UNTRUSTED || '[\"ubuntu-24.04\"]')",
+        "fromJSON(vars.CI_RUNNER_FASTLANE || '[\"ubuntu-24.04\"]')",
+        "fromJSON(vars.CI_RUNNER_FASTLANE || vars.CI_LANE_TRUSTED || vars.CI_LANE_FALLBACK || '[\"ubuntu-24.04\"]')",
+        "github.repository_owner != 'Verjson' && 'ubuntu-24.04' || fromJSON(vars.CI_LANE_TRUSTED || vars.CI_LANE_FALLBACK || '[\"ubuntu-24.04\"]')",
+        "github.repository_owner != 'Verjson' && 'ubuntu-24.04' || github.event.repository.private == true && fromJSON(vars.CI_LANE_TRUSTED || vars.CI_LANE_FALLBACK || '[\"ubuntu-24.04\"]') || fromJSON(vars.CI_LANE_UNTRUSTED || vars.CI_LANE_FALLBACK || '[\"ubuntu-24.04\"]')",
         "github.repository_owner != 'Verjson' && inputs.runner_labels && fromJSON(inputs.runner_labels) || github.repository_owner != 'Verjson' && 'ubuntu-24.04' || github.event.repository.visibility == 'public' && 'ubuntu-24.04' || fromJSON(inputs.privileged_lane)",
-        "github.repository_owner == 'Verjson' && fromJSON(vars.VERJSON_LANE_TRUSTED || vars.VERJSON_LANE_FALLBACK || '[\"ubuntu-24.04\"]') || 'ubuntu-24.04'",
-        "github.repository_owner == 'Verjson' && fromJSON(vars.VERJSON_RUNNER_FASTLANE || vars.VERJSON_LANE_TRUSTED || vars.VERJSON_LANE_FALLBACK || '[\"ubuntu-24.04\"]') || 'ubuntu-24.04'",
-        "inputs.runner != '' && fromJSON(inputs.runner) || github.repository_owner != 'Verjson' && 'ubuntu-24.04' || github.event.repository.private == true && fromJSON(vars.VERJSON_LANE_TRUSTED || vars.VERJSON_LANE_FALLBACK || '[\"ubuntu-24.04\"]') || fromJSON(vars.VERJSON_LANE_UNTRUSTED || vars.VERJSON_LANE_FALLBACK || '[\"ubuntu-24.04\"]')",
-        "inputs.runner != '' && fromJSON(inputs.runner) || github.repository_owner != 'Verjson' && 'ubuntu-24.04' || github.event.repository.private == true && fromJSON(vars.VERJSON_RUNNER_OVERFLOW || vars.VERJSON_LANE_TRUSTED || vars.VERJSON_LANE_FALLBACK || '[\"ubuntu-24.04\"]') || fromJSON(vars.VERJSON_RUNNER_OVERFLOW || vars.VERJSON_LANE_UNTRUSTED || vars.VERJSON_LANE_FALLBACK || '[\"ubuntu-24.04\"]')",
-        "inputs.runner_labels && fromJSON(inputs.runner_labels) || github.repository_owner != 'Verjson' && 'ubuntu-24.04' || github.event.repository.private == false && fromJSON(vars.VERJSON_RUNNER_FASTLANE || '[\"ubuntu-24.04\"]') || fromJSON(vars.VERJSON_RUNNER_OVERFLOW || vars.VERJSON_LANE_UNTRUSTED || vars.VERJSON_LANE_FALLBACK || '[\"ubuntu-24.04\"]')",
-        "inputs.runner_labels && fromJSON(inputs.runner_labels) || github.repository_owner != 'Verjson' && 'ubuntu-24.04' || needs.preflight.outputs.target_private == 'false' && fromJSON(vars.VERJSON_RUNNER_FASTLANE || '[\"ubuntu-24.04\"]') || fromJSON(vars.VERJSON_LANE_PRIVILEGED || vars.VERJSON_LANE_FALLBACK || '[\"ubuntu-24.04\"]')",
-        "inputs.runner_labels && fromJSON(inputs.runner_labels) || github.repository_owner != 'Verjson' && 'ubuntu-24.04' || needs.preflight.outputs.target_private == 'false' && fromJSON(vars.VERJSON_RUNNER_FASTLANE || '[\"ubuntu-24.04\"]') || fromJSON(vars.VERJSON_RUNNER_OVERFLOW || vars.VERJSON_LANE_TRUSTED || vars.VERJSON_LANE_FALLBACK || '[\"ubuntu-24.04\"]')",
-        "inputs.secretless-pr && fromJSON(vars.VERJSON_LANE_UNTRUSTED || '[\"ubuntu-24.04\"]') || inputs.runner != '' && fromJSON(inputs.runner) || github.repository_owner != 'Verjson' && 'ubuntu-24.04' || github.event.repository.private == true && fromJSON(vars.VERJSON_LANE_TRUSTED || vars.VERJSON_LANE_FALLBACK || '[\"ubuntu-24.04\"]') || fromJSON(vars.VERJSON_LANE_UNTRUSTED || vars.VERJSON_LANE_FALLBACK || '[\"ubuntu-24.04\"]')",
+        "github.repository_owner == 'Verjson' && fromJSON(vars.CI_LANE_TRUSTED || vars.CI_LANE_FALLBACK || '[\"ubuntu-24.04\"]') || 'ubuntu-24.04'",
+        "github.repository_owner == 'Verjson' && fromJSON(vars.CI_RUNNER_FASTLANE || vars.CI_LANE_TRUSTED || vars.CI_LANE_FALLBACK || '[\"ubuntu-24.04\"]') || 'ubuntu-24.04'",
+        "inputs.runner != '' && fromJSON(inputs.runner) || github.repository_owner != 'Verjson' && 'ubuntu-24.04' || github.event.repository.private == true && fromJSON(vars.CI_LANE_TRUSTED || vars.CI_LANE_FALLBACK || '[\"ubuntu-24.04\"]') || fromJSON(vars.CI_LANE_UNTRUSTED || vars.CI_LANE_FALLBACK || '[\"ubuntu-24.04\"]')",
+        "inputs.runner != '' && fromJSON(inputs.runner) || github.repository_owner != 'Verjson' && 'ubuntu-24.04' || github.event.repository.private == true && fromJSON(vars.CI_RUNNER_OVERFLOW || vars.CI_LANE_TRUSTED || vars.CI_LANE_FALLBACK || '[\"ubuntu-24.04\"]') || fromJSON(vars.CI_RUNNER_OVERFLOW || vars.CI_LANE_UNTRUSTED || vars.CI_LANE_FALLBACK || '[\"ubuntu-24.04\"]')",
+        "inputs.runner_labels && fromJSON(inputs.runner_labels) || github.repository_owner != 'Verjson' && 'ubuntu-24.04' || github.event.repository.private == false && fromJSON(vars.CI_RUNNER_FASTLANE || '[\"ubuntu-24.04\"]') || fromJSON(vars.CI_RUNNER_OVERFLOW || vars.CI_LANE_UNTRUSTED || vars.CI_LANE_FALLBACK || '[\"ubuntu-24.04\"]')",
+        "inputs.runner_labels && fromJSON(inputs.runner_labels) || github.repository_owner != 'Verjson' && 'ubuntu-24.04' || needs.preflight.outputs.target_private == 'false' && fromJSON(vars.CI_RUNNER_FASTLANE || '[\"ubuntu-24.04\"]') || fromJSON(vars.CI_LANE_PRIVILEGED || vars.CI_LANE_FALLBACK || '[\"ubuntu-24.04\"]')",
+        "inputs.runner_labels && fromJSON(inputs.runner_labels) || github.repository_owner != 'Verjson' && 'ubuntu-24.04' || needs.preflight.outputs.target_private == 'false' && fromJSON(vars.CI_RUNNER_FASTLANE || '[\"ubuntu-24.04\"]') || fromJSON(vars.CI_RUNNER_OVERFLOW || vars.CI_LANE_TRUSTED || vars.CI_LANE_FALLBACK || '[\"ubuntu-24.04\"]')",
+        "inputs.secretless-pr && fromJSON(vars.CI_LANE_UNTRUSTED || '[\"ubuntu-24.04\"]') || inputs.runner != '' && fromJSON(inputs.runner) || github.repository_owner != 'Verjson' && 'ubuntu-24.04' || github.event.repository.private == true && fromJSON(vars.CI_LANE_TRUSTED || vars.CI_LANE_FALLBACK || '[\"ubuntu-24.04\"]') || fromJSON(vars.CI_LANE_UNTRUSTED || vars.CI_LANE_FALLBACK || '[\"ubuntu-24.04\"]')",
         # Known negative fixtures stay inside the grammar so R3/R4 can return a
         # definite policy violation instead of hiding behind undetermined.
-        "fromJSON(vars.VERJSON_LANE_TRUSTED)",
-        "fromJSON(vars.VERJSON_RUNNER_FASTLANE)",
-        "fromJSON(vars.VERJSON_RUNNER_OVERFLOW)",
-        "fromJSON(vars.VERJSON_LANE_TRUSTED_MACOS)",
-        "fromJSON(vars.VERJSON_LANE_TRUSTED_WINDOWS)",
-        "fromJSON(vars.VERJSON_LANE_TRUSTED_MACOS || vars.VERJSON_LANE_FALLBACK || '[\"ubuntu-24.04\"]')",
-        "fromJSON(vars.VERJSON_LANE_TRUSTED_WINDOWS || vars.VERJSON_LANE_FALLBACK)",
+        "fromJSON(vars.CI_LANE_TRUSTED)",
+        "fromJSON(vars.CI_RUNNER_FASTLANE)",
+        "fromJSON(vars.CI_RUNNER_OVERFLOW)",
+        "fromJSON(vars.CI_LANE_TRUSTED_MACOS)",
+        "fromJSON(vars.CI_LANE_TRUSTED_WINDOWS)",
+        "fromJSON(vars.CI_LANE_TRUSTED_MACOS || vars.CI_LANE_FALLBACK || '[\"ubuntu-24.04\"]')",
+        "fromJSON(vars.CI_LANE_TRUSTED_WINDOWS || vars.CI_LANE_FALLBACK)",
         "matrix.os",
         "fromJSON(matrix.lane)",
         # Static matrix source expressions are checked with the strategy block
         # whenever runs-on dereferences matrix.*.
-        "vars.VERJSON_LANE_TRUSTED",
-        "vars.VERJSON_LANE_TRUSTED_MACOS",
-        "vars.VERJSON_LANE_TRUSTED_WINDOWS",
-        "vars.VERJSON_LANE_TRUSTED_MACOS || vars.VERJSON_LANE_FALLBACK",
+        "vars.CI_LANE_TRUSTED",
+        "vars.CI_LANE_TRUSTED_MACOS",
+        "vars.CI_LANE_TRUSTED_WINDOWS",
+        "vars.CI_LANE_TRUSTED_MACOS || vars.CI_LANE_FALLBACK",
     )
 )
 
@@ -310,7 +310,7 @@ REUSABLE_RUNNER_INPUTS = ("runner", "runner_labels")
 REVIEWED_REUSABLE_INPUT_EXPRESSIONS = frozenset(
     " ".join(expression.split())
     for expression in (
-        "github.repository_owner == 'Verjson' && (vars.VERJSON_RUNNER_DEFAULT || '[\"self-hosted\",\"general\"]') || '[\"ubuntu-24.04\"]'",
+        "github.repository_owner == 'Verjson' && (vars.CI_RUNNER_DEFAULT || '[\"self-hosted\",\"general\"]') || '[\"ubuntu-24.04\"]'",
         "matrix.os",
         "matrix.runner",
         "matrix.runner_labels",
@@ -571,7 +571,7 @@ def check_job(report: Report, path: str, name: str, body: dict, line: int,
     # with `os: [ubuntu-24.04]` IS a hardcoded selector wearing an indirection,
     # and stripping the expression rather than skipping the job is what catches
     # it. The public-repository half of this rule — a literal should still use
-    # `vars.VERJSON_RUNNER_FASTLANE`, a variable, so capacity moves stay
+    # `vars.CI_RUNNER_FASTLANE`, a variable, so capacity moves stay
     # org-variable edits (ADR 0041) — is #816, deferred by decision.
     if visibility == "private" and LINUX_HOSTED_LITERAL.search(
         outside_expressions(selector)
@@ -579,12 +579,12 @@ def check_job(report: Report, path: str, name: str, body: dict, line: int,
         report.violation(
             path, runs_on_line,
             f"TierB literal Linux hosted selector on a private repository in job "
-            f"'{name}' — use vars.VERJSON_RUNNER_FASTLANE or a lane variable: {runs_on}",
+            f"'{name}' — use vars.CI_RUNNER_FASTLANE or a lane variable: {runs_on}",
         )
 
     if not OS_LANE.search(selector):
         # R4, the ordinary half. A placement chain must have a terminal landing —
-        # `VERJSON_LANE_FALLBACK`, or the portable `'["ubuntu-24.04"]'` tail ADR
+        # `CI_LANE_FALLBACK`, or the portable `'["ubuntu-24.04"]'` tail ADR
         # 0040 put there for an organization with no lane variables at all. A
         # chain that stops at its own variable leaves an org that set only the
         # fallback with an EMPTY `runs-on`, and GitHub does not fail an
@@ -592,7 +592,7 @@ def check_job(report: Report, path: str, name: str, body: dict, line: int,
         #
         # "Has a terminal landing" rather than "names FALLBACK", so node-ci.yml's
         # ADR 0086 secretless acquisition job — deliberately
-        # `VERJSON_LANE_UNTRUSTED || '["ubuntu-24.04"]'`, never the trusted
+        # `CI_LANE_UNTRUSTED || '["ubuntu-24.04"]'`, never the trusted
         # fallback — is covered by the rule instead of by a repository-specific
         # carve-out this script would have to carry into ~89 consumers.
         if PLACEMENT_VARIABLE.search(selector) and not TERMINAL_LANDING.search(selector):
@@ -604,7 +604,7 @@ def check_job(report: Report, path: str, name: str, body: dict, line: int,
         return
 
     # R4 — the OS lanes are the exception, and it runs the other way. They must
-    # NOT chain to VERJSON_LANE_FALLBACK, and must not carry the portable
+    # NOT chain to CI_LANE_FALLBACK, and must not carry the portable
     # `'["ubuntu-…"]'` tail either: both degrade a macOS or Windows leg onto
     # Linux, producing a non-installable artifact behind a green check. Failing
     # closed is louder and cheaper than shipping the wrong binary.
@@ -662,7 +662,7 @@ def check_os_lane_references(report: Report, path: str, sanctioned: set[str]) ->
                             path, number,
                             "R5 off-path reference to an OS lane variable — only the "
                             "sanctioned desktop-release path may name "
-                            "VERJSON_LANE_TRUSTED_MACOS or VERJSON_LANE_TRUSTED_WINDOWS",
+                            "CI_LANE_TRUSTED_MACOS or CI_LANE_TRUSTED_WINDOWS",
                         )
     except OSError as error:
         report.anomaly(f"{path}: cannot read: {error}")

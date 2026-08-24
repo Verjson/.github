@@ -30,7 +30,7 @@ jobs:
     # This trusted, secret-bearing control-plane job follows the organization
     # lane contract. Fleet placement changes through variables, never by
     # hardcoding a provider or runner label in this reusable workflow.
-    runs-on: ${{ fromJSON(vars.VERJSON_LANE_TRUSTED || vars.VERJSON_LANE_FALLBACK || '["ubuntu-24.04"]') }}
+    runs-on: ${{ fromJSON(vars.CI_LANE_TRUSTED || vars.CI_LANE_FALLBACK || '["ubuntu-24.04"]') }}
     timeout-minutes: 5
     permissions:
       actions: write

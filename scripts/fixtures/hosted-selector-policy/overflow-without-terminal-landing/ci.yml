@@ -3,6 +3,6 @@ name: ci
 on: pull_request
 jobs:
   gate:
-    runs-on: ${{ fromJSON(vars.VERJSON_RUNNER_OVERFLOW) }}
+    runs-on: ${{ fromJSON(vars.CI_RUNNER_OVERFLOW) }}
     steps:
       - run: sleep 5

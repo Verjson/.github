@@ -35,7 +35,7 @@ concurrency:
 
 jobs:
   resolve:
-    runs-on: ${{ github.repository_owner == 'Verjson' && fromJSON(vars.VERJSON_RUNNER_FASTLANE || vars.VERJSON_LANE_TRUSTED || vars.VERJSON_LANE_FALLBACK || '["ubuntu-24.04"]') || 'ubuntu-24.04' }}
+    runs-on: ${{ github.repository_owner == 'Verjson' && fromJSON(vars.CI_RUNNER_FASTLANE || vars.CI_LANE_TRUSTED || vars.CI_LANE_FALLBACK || '["ubuntu-24.04"]') || 'ubuntu-24.04' }}
     outputs:
       ready: ${{ steps.resolve.outputs.ready || steps.adoption.outputs.ready }}
       pr_number: ${{ steps.resolve.outputs.pr_number }}
@@ -161,5 +161,5 @@ jobs:
       arm_run_attempt: ${{ needs.resolve.outputs.arm_run_attempt }}
       review_policy: ${{ needs.resolve.outputs.review_policy }}
       required_checks: ${{ github.repository == 'Verjson/.github' && '[{"name":"shell-tests","app_id":15368,"workflow_id":315894159,"workflow_path":".github/workflows/actions-ci.yml"}]' || inputs.required_checks }}
-      privileged_lane: ${{ inputs.privileged_lane || vars.VERJSON_LANE_PRIVILEGED }}
+      privileged_lane: ${{ inputs.privileged_lane || vars.CI_LANE_PRIVILEGED }}
       merge_app_client_id: ${{ inputs.merge_app_client_id || vars.MERGE_APP_CLIENT_ID }}

@@ -34,7 +34,7 @@ code "$wf" | grep -Eq 'contents:\s*write' && fail "MUST NOT grant contents: writ
 # Was `runs-on: [self-hosted, ...]`. Lanes are selected by intent now, so a
 # literal here would fail the org routing policy — and this file was wired into
 # no workflow, so the contradiction sat red and unreported (#401 review).
-grep -qF 'vars.VERJSON_LANE_TRUSTED' "$wf" && pass "selects the trusted lane by name" || fail "not routed through a lane variable"
+grep -qF 'vars.CI_LANE_TRUSTED' "$wf" && pass "selects the trusted lane by name" || fail "not routed through a lane variable"
 
 # --- no gate/PR mutation anywhere in the workflow or the reconciler ---
 mutations='gh pr merge|gh pr close|gh pr edit|gh pr review|--merge|--squash|--rebase|merge_pull_request|-X (PUT|POST|PATCH|DELETE)|branch protection|rulesets?'

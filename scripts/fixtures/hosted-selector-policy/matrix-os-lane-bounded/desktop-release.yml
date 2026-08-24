@@ -8,8 +8,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - lane: ${{ vars.VERJSON_LANE_TRUSTED_MACOS }}
-          - lane: ${{ vars.VERJSON_LANE_TRUSTED_WINDOWS }}
+          - lane: ${{ vars.CI_LANE_TRUSTED_MACOS }}
+          - lane: ${{ vars.CI_LANE_TRUSTED_WINDOWS }}
     runs-on: ${{ fromJSON(matrix.lane) }}
     timeout-minutes: 45
     steps:

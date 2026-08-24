@@ -50,8 +50,8 @@ grep -qE '^      config-file:$' <<<"$workflow_call" \
 # It is keyed on `visibility == 'public'` rather than `private == false`
 # because Actions coerces an absent `private` to 0, making `== false` true for
 # an unreadable repository too — fail-open. The unresolved case must keep
-# falling through to VERJSON_LANE_UNTRUSTED, which is the final lane term.
-expected_runs_on='    runs-on: ${{ (github.repository_owner != '\''Verjson'\'' || inputs.github-hosted-runner) && '\''ubuntu-24.04'\'' || github.event.repository.private == true && fromJSON(vars.VERJSON_LANE_TRUSTED || vars.VERJSON_LANE_FALLBACK || '\''["ubuntu-24.04"]'\'') || github.event.repository.visibility == '\''public'\'' && fromJSON(vars.VERJSON_RUNNER_FASTLANE || vars.VERJSON_LANE_UNTRUSTED || vars.VERJSON_LANE_FALLBACK || '\''["ubuntu-24.04"]'\'') || fromJSON(vars.VERJSON_LANE_UNTRUSTED || vars.VERJSON_LANE_FALLBACK || '\''["ubuntu-24.04"]'\'') }}'
+# falling through to CI_LANE_UNTRUSTED, which is the final lane term.
+expected_runs_on='    runs-on: ${{ (github.repository_owner != '\''Verjson'\'' || inputs.github-hosted-runner) && '\''ubuntu-24.04'\'' || github.event.repository.private == true && fromJSON(vars.CI_LANE_TRUSTED || vars.CI_LANE_FALLBACK || '\''["ubuntu-24.04"]'\'') || github.event.repository.visibility == '\''public'\'' && fromJSON(vars.CI_RUNNER_FASTLANE || vars.CI_LANE_UNTRUSTED || vars.CI_LANE_FALLBACK || '\''["ubuntu-24.04"]'\'') || fromJSON(vars.CI_LANE_UNTRUSTED || vars.CI_LANE_FALLBACK || '\''["ubuntu-24.04"]'\'') }}'
 grep -qxF "$expected_runs_on" "$wf" \
   && pass "hosted stays opt-in while Verjson callers follow the visibility policy" \
   || fail "runs-on does not preserve the bounded runner mapping"

@@ -252,7 +252,7 @@ assert canary["jobs"]["publish"]["if"] == (
 ), "privileged canary dispatch must be bound to the repository default branch"
 expected_runner = (
     "${{ github.repository_owner == 'Verjson' && "
-    "(vars.VERJSON_RUNNER_DEFAULT || '[\"self-hosted\",\"general\"]') || "
+    "(vars.CI_RUNNER_DEFAULT || '[\"self-hosted\",\"general\"]') || "
     "'[\"ubuntu-24.04\"]' }}"
 )
 for job in ("validate", "publish"):

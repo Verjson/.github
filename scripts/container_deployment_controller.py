@@ -1168,9 +1168,9 @@ class ProcessAdapter:
     def update_runner(
         self, runner: str, manifest_identity: str, variant: str, timeout_seconds: int
     ) -> dict[str, Any]:
-        deploy_token = os.environ.get("VERJSON_RUNNER_DEPLOY_TOKEN")
+        deploy_token = os.environ.get("RUNNER_DEPLOY_TOKEN")
         if not deploy_token:
-            raise DeploymentError("VERJSON_RUNNER_DEPLOY_TOKEN is unavailable")
+            raise DeploymentError("RUNNER_DEPLOY_TOKEN is unavailable")
         environment = os.environ.copy()
         environment["DIGITALOCEAN_ACCESS_TOKEN"] = deploy_token
         command = [
@@ -1228,7 +1228,7 @@ class ProcessAdapter:
 
     def probe_runner(self, runner: str, timeout_seconds: int) -> dict[str, Any]:
         probe_environment = os.environ.copy()
-        probe_environment.pop("VERJSON_RUNNER_DEPLOY_TOKEN", None)
+        probe_environment.pop("RUNNER_DEPLOY_TOKEN", None)
         probe_environment.pop("DIGITALOCEAN_ACCESS_TOKEN", None)
         return self._run(
             [

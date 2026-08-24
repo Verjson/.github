@@ -110,7 +110,7 @@ while IFS= read -r adapter; do
 done < <(jq -r '.evidenceCommand[1], .probeCommand[1]' "$config")
 grep -qF 'container-deployment.yml@$ref' .github/workflows/container-deployment.yml
 grep -qF 'contract-ref: $ref' .github/workflows/container-deployment.yml
-! grep -Eq 'secrets:|environment:|VERJSON_RUNNER_DEPLOY_TOKEN|:latest|:stable' \
+! grep -Eq 'secrets:|environment:|RUNNER_DEPLOY_TOKEN|:latest|:stable' \
   .github/workflows/container-deployment.yml
 python3 -m py_compile scripts/container_deployment_controller.py scripts/container_deployment_preflight.py
 python3 -m json.tool scripts/deployment-receipt.schema.json >/dev/null

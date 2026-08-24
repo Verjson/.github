@@ -7,7 +7,7 @@ jobs:
     strategy:
       matrix:
         include:
-          - lane: ${{ vars.VERJSON_LANE_TRUSTED_MACOS || vars.VERJSON_LANE_FALLBACK }}
+          - lane: ${{ vars.CI_LANE_TRUSTED_MACOS || vars.CI_LANE_FALLBACK }}
     runs-on: ${{ fromJSON(matrix.lane) }}
     timeout-minutes: 360
     steps:

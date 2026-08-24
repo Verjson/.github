@@ -9,7 +9,7 @@ name: fleet watchdog
 # slowness — six gate jobs held all six runners on 2026-08-03 while waiting for
 # CI that could not start because it needed those runners.
 #
-# ADR 0053's `VERJSON_RUNNER_OVERFLOW` routes `preflight`/`gate`/`dispatch-merge`
+# ADR 0053's `CI_RUNNER_OVERFLOW` routes `preflight`/`gate`/`dispatch-merge`
 # off the pool while it is set, and ADR 0064 (#487) extends it to
 # `ai-privileged-merge.yml` — which ADR 0056 had already called "probably the
 # right permanent fix", deferred to #341's re-scope.
@@ -56,7 +56,7 @@ jobs:
   selector-health:
     # Independent from watchdog: a slow or failed org-wide inventory must never
     # consume the deadlock cancellation job's established 10-minute budget.
-    runs-on: ${{ fromJSON(vars.VERJSON_RUNNER_FASTLANE || '["ubuntu-24.04"]') }}
+    runs-on: ${{ fromJSON(vars.CI_RUNNER_FASTLANE || '["ubuntu-24.04"]') }}
     defaults:
       run:
         working-directory: .fleet-watchdog-source-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
@@ -86,7 +86,7 @@ jobs:
 
   watchdog:
     # Never gate this job on the fleet it is policing.
-    runs-on: ${{ fromJSON(vars.VERJSON_RUNNER_FASTLANE || '["ubuntu-24.04"]') }}
+    runs-on: ${{ fromJSON(vars.CI_RUNNER_FASTLANE || '["ubuntu-24.04"]') }}
     defaults:
       run:
         working-directory: .fleet-watchdog-source-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
@@ -116,15 +116,15 @@ jobs:
           # which is the rule with production evidence behind it (2026-08-03
           # 05:59Z, four preemptions, jam cleared). Disarming it would have
           # removed the only mitigation for a `privileged_merge` jam.
-          WATCHDOG_DRY_RUN: ${{ vars.VERJSON_WATCHDOG_DRY_RUN || 'false' }}
+          WATCHDOG_DRY_RUN: ${{ vars.CI_WATCHDOG_DRY_RUN || 'false' }}
           # The #343 poll-step rule is new and has no production evidence, so it
           # reports only until an operator sets
-          # `VERJSON_WATCHDOG_POLL_STEP_DRY_RUN=false` after reading a few
+          # `CI_WATCHDOG_POLL_STEP_DRY_RUN=false` after reading a few
           # `DRY RUN would cancel` lines. Separate switch, not a second default
           # for the same decision: the two rules carry different evidence, and a
           # default that can only SUPPRESS a cancel cannot ship armed by drift
           # the way #336 did.
-          WATCHDOG_POLL_STEP_DRY_RUN: ${{ vars.VERJSON_WATCHDOG_POLL_STEP_DRY_RUN || 'true' }}
+          WATCHDOG_POLL_STEP_DRY_RUN: ${{ vars.CI_WATCHDOG_POLL_STEP_DRY_RUN || 'true' }}
           # Fallback for a poll workflow with no separable poll step, i.e.
           # `AI privileged merge`, whose 45-minute ceiling this still fits under.
           WATCHDOG_MIN_AGE_MINUTES: '35'

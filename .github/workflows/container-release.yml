@@ -22,7 +22,7 @@ concurrency:
 jobs:
   promote:
     if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.event.repository.default_branch == 'main'
-    runs-on: ${{ github.repository_owner != 'Verjson' && 'ubuntu-24.04' || fromJSON(vars.VERJSON_LANE_TRUSTED || vars.VERJSON_LANE_FALLBACK || '["ubuntu-24.04"]') }}
+    runs-on: ${{ github.repository_owner != 'Verjson' && 'ubuntu-24.04' || fromJSON(vars.CI_LANE_TRUSTED || vars.CI_LANE_FALLBACK || '["ubuntu-24.04"]') }}
     permissions:
       actions: read
       attestations: write
@@ -200,7 +200,7 @@ jobs:
     needs: promote
     if: needs.promote.result == 'success'
     continue-on-error: true
-    runs-on: ${{ github.repository_owner != 'Verjson' && 'ubuntu-24.04' || fromJSON(vars.VERJSON_LANE_TRUSTED || vars.VERJSON_LANE_FALLBACK || '["ubuntu-24.04"]') }}
+    runs-on: ${{ github.repository_owner != 'Verjson' && 'ubuntu-24.04' || fromJSON(vars.CI_LANE_TRUSTED || vars.CI_LANE_FALLBACK || '["ubuntu-24.04"]') }}
     timeout-minutes: 10
     permissions:
       contents: read
@@ -229,10 +229,10 @@ jobs:
           # Org-wide retention window (verjson-agents#987). Defaults to the ADR
           # 0108 policy of 3 and changes nothing until a human sets this
           # variable — raising it is a storage-cost decision, not a code change.
-          RETENTION_KEEP: ${{ vars.VERJSON_PACKAGE_RETENTION_KEEP || '3' }}
+          RETENTION_KEEP: ${{ vars.CI_PACKAGE_RETENTION_KEEP || '3' }}
         run: |
           if [[ ! "$RETENTION_KEEP" =~ ^[1-9][0-9]*$ ]]; then
-            echo "::error::VERJSON_PACKAGE_RETENTION_KEEP must be a positive integer, got '$RETENTION_KEEP'."
+            echo "::error::CI_PACKAGE_RETENTION_KEEP must be a positive integer, got '$RETENTION_KEEP'."
             exit 1
           fi
           python3 .package-retention-contract/scripts/package_retention.py \
