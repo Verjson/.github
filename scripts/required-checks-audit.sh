@@ -52,7 +52,6 @@ jq -e '
   .schema_version == 1 and
   .mode == "staged" and
   .mutation_authorized == true and
-  (.universal_contexts | type == "array" and length > 0) and
   (.stacks | type == "object") and
   (.caller_job_names.stack | type == "string") and
   (.caller_job_names.changelog | type == "string")
@@ -69,12 +68,10 @@ SAMPLE="${RCA_SAMPLE_PRS:-5}"
   fault startup sample-too-small "RCA_SAMPLE_PRS=${SAMPLE} samples nothing."
 
 # --- the declared core contract ---------------------------------------------
-# Universal tier. `gate` is guaranteed everywhere by the existing `workflows`
-# ruleset rule, which pins ai-review-merge.yml@main as a required workflow.
 core_contract_for() { # $1 = stack
   jq -er --arg stack "$1" '
     if .stacks[$stack] == null then error("unknown stack")
-    else .universal_contexts[], .stacks[$stack].contexts[]
+    else .stacks[$stack].contexts[]
     end
   ' "$CONTRACT_FILE" 2>/dev/null ||
     fault contract unknown-stack "stack='$1' has no declared core contract; classify the repository or extend $CONTRACT_FILE."

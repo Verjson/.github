@@ -23,3 +23,9 @@ drift persists in several consumer repositories still pinned to a pre-#959 contr
 SHA; that is cross-repository work outside this repository's ownership boundary.
 The ruleset mutation itself stays behind the script's own explicit
 `human_gate_required` acknowledgement.
+
+**2026-08-24 update:** stop the staged generated-changelog ruleset audit from
+requiring the obsolete `gate` authorization context while preserving fail-closed
+`changelog-contract` validation. ADR 0128 aligns #731 with the dedicated
+authorization-arm ruleset introduced by ADR 0094. The live ruleset remains
+unchanged and activation remains blocked until all selected consumers conform.
