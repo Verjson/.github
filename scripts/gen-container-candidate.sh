@@ -13,7 +13,7 @@ usage() {
 }
 
 [[ "$ref" =~ ^[0-9a-f]{40}$ ]] || usage
-[[ "$config_path" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]*\.json$ ]] || {
+[[ "$config_path" =~ ^([A-Za-z0-9][A-Za-z0-9._-]*/)*[A-Za-z0-9][A-Za-z0-9._-]*\.json$ ]] || {
   echo "config-path must be a repository-relative JSON path" >&2
   exit 2
 }

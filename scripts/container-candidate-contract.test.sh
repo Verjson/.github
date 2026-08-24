@@ -414,7 +414,7 @@ fi
 first_adoption_output="$tmp/first-adoption-output"
 (
   cd "$first_adoption"
-  CONFIG_PATH=container-candidate.json \
+  CONFIG_RELATIVE_PATH=container-candidate.json \
     CONTRACT_REF="$ref" \
     GITHUB_OUTPUT="$first_adoption_output" \
     GITHUB_REPOSITORY=Verjson/example \
@@ -422,6 +422,7 @@ first_adoption_output="$tmp/first-adoption-output"
     GITHUB_RUN_ATTEMPT=1 \
     GITHUB_RUN_ID=12345 \
     JOB_WORKFLOW_SHA="$ref" \
+    SOURCE_PATH=. \
     bash "$prepare_script"
 )
 grep -qx 'has-private-node-packages=false' "$first_adoption_output"
@@ -432,7 +433,7 @@ run_invalid_config() {
 
   if (
     cd "$first_adoption"
-    CONFIG_PATH="$config_path" \
+    CONFIG_RELATIVE_PATH="$config_path" \
       CONTRACT_REF="$ref" \
       GITHUB_OUTPUT="$output" \
       GITHUB_REPOSITORY=Verjson/example \
@@ -440,12 +441,22 @@ run_invalid_config() {
       GITHUB_RUN_ATTEMPT=1 \
       GITHUB_RUN_ID=12345 \
       JOB_WORKFLOW_SHA="$ref" \
+      SOURCE_PATH=. \
       bash "$prepare_script"
   ) >/dev/null 2>&1; then
     echo "candidate config unexpectedly passed: $config_path" >&2
     exit 1
   fi
 }
+
+cp "$root/scripts/fixtures/container-candidate/single.json" "$tmp/outside-candidate.json"
+run_invalid_config ../outside-candidate.json "$tmp/traversal-output"
+ln -s "$tmp/outside-candidate.json" "$first_adoption/escape.json"
+run_invalid_config escape.json "$tmp/symlink-output"
+if (cd "$first_adoption" && "$generator" workflow "$ref" 'a/../../outside.json') >/dev/null 2>&1; then
+  echo "generator accepted traversal-bearing config-path" >&2
+  exit 1
+fi
 
 repository_marker="$tmp/repository-injection-executed"
 jq --arg repository "ghcr.io/verjson/x'; touch $repository_marker; #'" \

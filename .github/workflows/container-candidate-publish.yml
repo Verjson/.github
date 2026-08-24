@@ -48,16 +48,25 @@ jobs:
           persist-credentials: false
       - id: config
         env:
-          CONFIG_PATH: ${{ format('.container-candidate-source-{0}-{1}/{2}', github.run_id, github.run_attempt, inputs.config-path) }}
+          CONFIG_RELATIVE_PATH: ${{ inputs.config-path }}
           CONTRACT_REF: ${{ inputs.contract-ref }}
           # JSON preserves the documented called-job identity while actionlint 1.7.7's
           # static schema predates job.workflow_sha.
           JOB_WORKFLOW_SHA: ${{ fromJSON(toJSON(job)).workflow_sha }}
+          SOURCE_PATH: .container-candidate-source-${{ github.run_id }}-${{ github.run_attempt }}
         run: |
           set -euo pipefail
           [[ "$CONTRACT_REF" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::contract-ref must be a 40-hex commit"; exit 1; }
           [ "$CONTRACT_REF" = "$JOB_WORKFLOW_SHA" ] || { echo "::error::contract-ref must identify the executing reusable workflow"; exit 1; }
-          [ -f "$CONFIG_PATH" ] || { echo "::error::candidate config is missing"; exit 1; }
+          [[ "$CONFIG_RELATIVE_PATH" =~ ^([A-Za-z0-9][A-Za-z0-9._-]*/)*[A-Za-z0-9][A-Za-z0-9._-]*\.json$ ]] \
+            || { echo "::error::config-path must be a normalized repository-relative JSON path"; exit 1; }
+          source_root="$(realpath -e "$SOURCE_PATH")" \
+            || { echo "::error::isolated candidate source is missing"; exit 1; }
+          config_path="$(realpath -e "$source_root/$CONFIG_RELATIVE_PATH")" \
+            || { echo "::error::candidate config is missing"; exit 1; }
+          case "$config_path" in "$source_root"/*) ;; *) echo "::error::candidate config escapes isolated source"; exit 1;; esac
+          [ -f "$config_path" ] || { echo "::error::candidate config is not a regular file"; exit 1; }
+          CONFIG_PATH="$config_path"
           expected_namespace="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}"
           jq -e --arg repository "$GITHUB_REPOSITORY" --arg namespace "$expected_namespace" '
             def safe_component:
