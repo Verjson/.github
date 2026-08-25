@@ -65,6 +65,14 @@ content_root="$tmp/content"
 mkdir -p "$content_root/.github/workflows" "$content_root/scripts"
 contract_pin="$(git -C "$here/.." rev-parse HEAD)"
 generator="$here/gen-changelog-caller.sh"
+generated_pr_gate_state="$(
+  bash "$generator" pr-gate "$contract_pin" \
+    | python3 -I "$here/required-checks-workflow.py" changelog-contract
+)"
+jq -e '.changelog_contract == "valid" and .pull_request == true and .path_filter == false' \
+  <<<"$generated_pr_gate_state" >/dev/null \
+  && pass "the exact generated pr-gate satisfies the workflow classifier" \
+  || fail "the generated pr-gate and workflow classifier contract drifted"
 bash "$generator" generated-artifacts "$contract_pin" >"$content_root/.github/workflows/changelog.yml"
 bash "$generator" renderer "$contract_pin" >"$content_root/scripts/render-next.sh"
 bash "$generator" contract-test "$contract_pin" >"$content_root/scripts/changelog-contract.test.sh"
@@ -178,7 +186,7 @@ workflow_for() {
     actions|none) stack_workflow='' ;;
   esac
   {
-    printf 'name: ci\non:\n  pull_request:\njobs:\n'
+    printf 'name: ci\non:\n  pull_request:\npermissions:\n  contents: read\njobs:\n'
     if [ -n "$stack_workflow" ]; then
       printf '  ci:\n    uses: Verjson/.github/.github/workflows/%s@0123456789abcdef0123456789abcdef01234567\n' "$stack_workflow"
     fi
@@ -456,6 +464,37 @@ rc="$(run_audit)"
   && pass "malformed workflow YAML fails closed" \
   || { fail "malformed caller source was accepted ($rc)"; out | sed 's/^/diag - /'; }
 
+for duplicate_top_level in permissions jobs on true on-true true-on; do
+  stack node
+  case "$duplicate_top_level" in
+    permissions)
+      sed -i '/^jobs:$/i\permissions: {}' "$tmp/workflow.yml"
+      ;;
+    jobs)
+      printf '\njobs: {}\n' >>"$tmp/workflow.yml"
+      ;;
+    on)
+      sed -i '/^permissions:$/i\on: pull_request' "$tmp/workflow.yml"
+      ;;
+    true)
+      sed -i 's/^on:$/true:/' "$tmp/workflow.yml"
+      sed -i '/^permissions:$/i\true: pull_request' "$tmp/workflow.yml"
+      ;;
+    on-true)
+      sed -i '/^permissions:$/i\true: pull_request' "$tmp/workflow.yml"
+      ;;
+    true-on)
+      sed -i 's/^on:$/true:/' "$tmp/workflow.yml"
+      sed -i '/^permissions:$/i\on: pull_request' "$tmp/workflow.yml"
+      ;;
+  esac
+  encode_workflow
+  rc="$(run_audit)"
+  { [ "$rc" != "rc=0" ] && grep -q 'workflow-source-unreadable' "$tmp/out.txt"; } \
+    && pass "duplicate top-level YAML keys fail closed: $duplicate_top_level" \
+    || { fail "duplicate top-level YAML keys were accepted: $duplicate_top_level ($rc)"; out | sed 's/^/diag - /'; }
+done
+
 # --- a repository with no merged PRs is not conformant by default ------------
 stack node; printf '[]\n' >"$PULLS_FILE"
 rc="$(run_audit)"
@@ -660,6 +699,27 @@ rc="$(run_audit)"
   && pass "semantically equivalent command quoting and spacing remain conformant" \
   || { fail "equivalent shell formatting was rejected ($rc)"; out | sed 's/^/diag - /'; }
 
+for harmless_format in trailing-comment block-scalar; do
+  stack node
+  case "$harmless_format" in
+    trailing-comment)
+      sed -i 's|bash scripts/changelog-contract.test.sh|bash scripts/changelog-contract.test.sh # generated contract entrypoint|' "$tmp/workflow.yml"
+      ;;
+    block-scalar)
+      sed -i '/^      - run: bash scripts\/changelog-contract\.test\.sh$/c\      - run: |\
+          bash scripts/changelog-contract.test.sh' "$tmp/workflow.yml"
+      sed -i '/^      - run: |$/i\      - name: Run changelog contract' "$tmp/workflow.yml"
+      sed -i '/^      - run: |$/d' "$tmp/workflow.yml"
+      sed -i '/^          bash scripts\/changelog-contract\.test\.sh$/i\        run: |' "$tmp/workflow.yml"
+      ;;
+  esac
+  encode_workflow
+  rc="$(run_audit)"
+  { [ "$rc" = "rc=0" ] && grep -q 'result=conformant' "$tmp/out.txt"; } \
+    && pass "harmless command formatting remains conformant: $harmless_format" \
+    || { fail "harmless command formatting was rejected: $harmless_format ($rc)"; out | sed 's/^/diag - /'; }
+done
+
 for mutation in \
   's/${RUNNER_TEMP}/${HOME}/' \
   's/ >> / > /' \
@@ -722,6 +782,35 @@ for permission_shape in write unexpected duplicate malformed least-privilege; do
   { [ "$rc" != "rc=0" ] && ! grep -q 'result=conformant' "$tmp/out.txt"; } \
     && pass "job-level permissions outside the generated shape fail closed: $permission_shape" \
     || { fail "job-level permissions were accepted: $permission_shape ($rc)"; out | sed 's/^/diag - /'; }
+done
+
+for workflow_permission_shape in absent write unexpected empty scalar duplicate; do
+  stack node
+  case "$workflow_permission_shape" in
+    absent)
+      sed -i '/^permissions:$/,+1d' "$tmp/workflow.yml"
+      ;;
+    write)
+      sed -i 's/^  contents: read$/  contents: write/' "$tmp/workflow.yml"
+      ;;
+    unexpected)
+      sed -i '/^  contents: read$/a\  issues: read' "$tmp/workflow.yml"
+      ;;
+    empty)
+      sed -i '/^permissions:$/,+1c\permissions: {}' "$tmp/workflow.yml"
+      ;;
+    scalar)
+      sed -i '/^permissions:$/,+1c\permissions: read-all' "$tmp/workflow.yml"
+      ;;
+    duplicate)
+      sed -i '/^  contents: read$/a\  contents: read' "$tmp/workflow.yml"
+      ;;
+  esac
+  encode_workflow
+  rc="$(run_audit)"
+  { [ "$rc" != "rc=0" ] && grep -q 'changelog-contract-job-invalid' "$tmp/out.txt"; } \
+    && pass "workflow-level permissions cannot alter the generated job boundary: $workflow_permission_shape" \
+    || { fail "workflow-level permissions were accepted: $workflow_permission_shape ($rc)"; out | sed 's/^/diag - /'; }
 done
 
 stack node

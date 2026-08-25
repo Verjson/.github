@@ -182,6 +182,18 @@ def mapping_line(line: str) -> tuple[str, str]:
     return split_mapping_entry(line.strip())
 
 
+def reject_duplicate_top_level_keys(lines: list[str]) -> None:
+    seen: set[str] = set()
+    for line in lines:
+        if not line.strip() or indentation(line) != 0:
+            continue
+        key, _ = mapping_line(line)
+        canonical_key = "on" if key in {"on", "true"} else key
+        if canonical_key in seen:
+            raise WorkflowSyntaxError(f"duplicate top-level mapping key: {canonical_key}")
+        seen.add(canonical_key)
+
+
 def top_level(lines: list[str], wanted: str) -> tuple[str, list[str]] | None:
     aliases = {wanted, "true" if wanted == "on" else wanted}
     for index, line in enumerate(lines):
@@ -393,10 +405,24 @@ def is_contract_test_command(command: str) -> bool:
     return words == ["bash", "scripts/changelog-contract.test.sh"]
 
 
-def changelog_contract_state(parsed_jobs: dict[str, dict[str, tuple[str, list[str]]]]) -> str:
+def has_canonical_workflow_permissions(entry: tuple[str, list[str]] | None) -> bool:
+    if entry is None:
+        return False
+    try:
+        return input_mapping(entry) == {"contents": "read"}
+    except WorkflowSyntaxError:
+        return False
+
+
+def changelog_contract_state(
+    parsed_jobs: dict[str, dict[str, tuple[str, list[str]]]],
+    workflow_permissions: tuple[str, list[str]] | None,
+) -> str:
     job = parsed_jobs.get("changelog-contract")
     if job is None:
         return "absent"
+    if not has_canonical_workflow_permissions(workflow_permissions):
+        return "invalid"
     allowed = {"runs-on", "timeout-minutes", "steps"}
     if not set(job).issubset(allowed) or "runs-on" not in job or "steps" not in job:
         return "invalid"
@@ -439,11 +465,14 @@ def main() -> int:
     lines = [strip_comment(line) for line in sys.stdin.read().splitlines()]
     lines = [line for line in lines if line not in {"---", "..."}]
     reject_unsupported_yaml(lines)
+    reject_duplicate_top_level_keys(lines)
     path_filter, pull_request = trigger_state(lines)
     parsed_jobs = jobs(lines)
     json.dump(
         {
-            "changelog_contract": changelog_contract_state(parsed_jobs),
+            "changelog_contract": changelog_contract_state(
+                parsed_jobs, top_level(lines, "permissions")
+            ),
             "generated_changelog": generated_changelog_state(parsed_jobs, sys.argv[1]),
             "path_filter": path_filter,
             "pull_request": pull_request,
