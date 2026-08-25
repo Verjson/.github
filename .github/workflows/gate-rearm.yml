@@ -419,8 +419,8 @@ jobs:
                else . end' >"$receipt_dir/receipt.json"
 
           force_terminal_failure() {
-            local reason="$1" response attempt
-            for attempt in 1 2 3; do
+            local reason="$1" response
+            for _ in 1 2 3; do
               if response="$(gh api --method PATCH "repos/$TARGET_REPO/check-runs/$check_id" \
                 -f status=completed -f conclusion=failure \
                 -f 'output[title]=Authorization activation failed' \
