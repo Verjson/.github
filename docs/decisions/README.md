@@ -11,6 +11,7 @@ Reverse-chronological index of org-level decisions.
 <!-- BEGIN ADR INDEX -->
 | # | Date | Decision |
 |---|------|----------|
+| [0131](0131-bind-terminal-caller-read-ceiling-to-callee/README.md) | 2026-08-25 | Bind the terminal caller read ceiling to the callee |
 | [0130](0130-separate-explicit-label-caller/README.md) | 2026-08-24 | Separate explicit review labels from the required-workflow trigger |
 | [0129](0129-bridge-explicit-review-label-deliveries/README.md) | 2026-08-24 | Bridge explicit review-label deliveries into the authorization arm |
 | [0128](0128-separate-generated-contract-from-authorization-arm/README.md) | 2026-08-24 | Separate generated-contract enforcement from the authorization arm |
