@@ -61,3 +61,11 @@ reviewed design that once again publishes and requires a universal status
 context. Do not reintroduce an authorization context merely to make the #731
 audit green, and do not mutate the live ruleset while consumer conformance is
 red.
+
+## 2026-08-25 implementation clarification
+
+Issue [#1060](https://github.com/Verjson/.github/issues/1060) identified that the
+checked-in declaration test rejected `universal_contexts`, but the audit's own
+runtime schema accepted and ignored that retired key. The audit now rejects the
+key at its input boundary, so a substituted contract cannot silently restore a
+universal authorization context contrary to this decision.

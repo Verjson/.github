@@ -52,6 +52,7 @@ jq -e '
   .schema_version == 1 and
   .mode == "staged" and
   .mutation_authorized == true and
+  (has("universal_contexts") | not) and
   (.stacks | type == "object") and
   (.caller_job_names.stack | type == "string") and
   (.caller_job_names.changelog | type == "string")
