@@ -1,0 +1,132 @@
+name: Dependency supersession terminal reconciliation
+
+on:
+  workflow_dispatch:
+    inputs:
+      observation_run_id:
+        description: Successful canonical observation run ID
+        required: true
+        type: string
+      receipt:
+        description: Exact 64-character proposal receipt
+        required: true
+        type: string
+      repository:
+        description: Exact repository name from the proposal
+        required: true
+        type: string
+      enforce:
+        description: Request terminal comment and closure (also requires the organization write gate)
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  reconcile:
+    runs-on: ${{ fromJSON(vars.CI_LANE_TRUSTED || vars.CI_LANE_FALLBACK || '["ubuntu-24.04"]') }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Validate immutable proposal identity and provenance
+        id: target
+        env:
+          GH_TOKEN: ${{ github.token }}
+          OBSERVATION_RUN_ID: ${{ inputs.observation_run_id }}
+          RECEIPT: ${{ inputs.receipt }}
+          REPOSITORY_NAME: ${{ inputs.repository }}
+        run: |
+          set -euo pipefail
+          [[ "$OBSERVATION_RUN_ID" =~ ^[1-9][0-9]*$ ]] || { echo '::error::invalid run ID'; exit 1; }
+          [[ "$RECEIPT" =~ ^[0-9a-f]{64}$ ]] || { echo '::error::invalid receipt'; exit 1; }
+          [[ "$REPOSITORY_NAME" =~ ^[A-Za-z0-9_.-]+$ ]] || { echo '::error::invalid repository'; exit 1; }
+          run="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$OBSERVATION_RUN_ID")"
+          jq -e --arg repo "$GITHUB_REPOSITORY" '
+            .repository.full_name == $repo and
+            .path == ".github/workflows/dependency-supersession-observe.yml" and
+            .event == "workflow_dispatch" and .status == "completed" and .conclusion == "success" and
+            .head_repository.full_name == $repo
+          ' <<<"$run" >/dev/null
+          default_branch="$(gh api "repos/$GITHUB_REPOSITORY" --jq .default_branch)"
+          run_head="$(jq -er '.head_sha | select(test("^[0-9a-f]{40}$"))' <<<"$run")"
+          current_head="$(gh api "repos/$GITHUB_REPOSITORY/commits/$default_branch" --jq .sha)"
+          jq -e --arg branch "$default_branch" '.head_branch == $branch' <<<"$run" >/dev/null
+          comparison="$(gh api "repos/$GITHUB_REPOSITORY/compare/$run_head...$current_head")"
+          jq -e --arg run_head "$run_head" '
+            (.status == "ahead" or .status == "identical") and .merge_base_commit.sha == $run_head
+          ' <<<"$comparison" >/dev/null
+          attempt="$(jq -er '.run_attempt | select(type == "number" and . > 0)' <<<"$run")"
+          artifact="dependency-supersession-proposal-$OBSERVATION_RUN_ID-$attempt"
+          gh run download "$OBSERVATION_RUN_ID" --repo "$GITHUB_REPOSITORY" --name "$artifact" --dir proposal
+          test "$(find proposal -type f | wc -l)" -eq 1
+          test -f proposal/dependency-supersession-proposal.json
+          jq -e --arg repository "$GITHUB_REPOSITORY_OWNER/$REPOSITORY_NAME" --arg receipt "$RECEIPT" '
+            .schema == "canonical-dependency-supersession/v1" and .mode == "observe-only" and
+            .repository == $repository and
+            ([.proposals[] | select(.receipt == $receipt)] | length) == 1
+          ' proposal/dependency-supersession-proposal.json >/dev/null
+          printf 'repository=%s/%s\nname=%s\n' "$GITHUB_REPOSITORY_OWNER" "$REPOSITORY_NAME" "$REPOSITORY_NAME" >> "$GITHUB_OUTPUT"
+      - name: Enforce the rollout write gate
+        if: ${{ inputs.enforce }}
+        env:
+          WRITE_ENABLED: ${{ vars.DEPENDENCY_SUPERSESSION_WRITE_ENABLED }}
+        run: |
+          [[ "$WRITE_ENABLED" == 'true' ]] || {
+            echo '::error::terminal writes remain disabled pending the disposable canary'
+            exit 1
+          }
+      - name: Require the selected App client ID
+        env:
+          APP_CLIENT_ID: ${{ inputs.enforce && vars.DEPENDENCY_SUPERSESSION_APP_CLIENT_ID || vars.RENOVATE_COMPATIBILITY_CLIENT_ID }}
+        run: |
+          [[ -n "$APP_CLIENT_ID" && ! "$APP_CLIENT_ID" =~ ^[0-9]+$ ]] || {
+            echo '::error::the selected GitHub App client ID must be nonempty and nonnumeric'
+            exit 1
+          }
+      - name: Mint exact-repository terminal reconciliation token
+        if: ${{ inputs.enforce }}
+        id: supersession-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
+        with:
+          client-id: ${{ vars.DEPENDENCY_SUPERSESSION_APP_CLIENT_ID }}
+          private-key: ${{ secrets.DEPENDENCY_SUPERSESSION_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ steps.target.outputs.name }}
+          permission-contents: read
+          permission-pull-requests: write
+      - name: Mint exact-repository observe-only reconciliation token
+        if: ${{ !inputs.enforce }}
+        id: observer-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
+        with:
+          client-id: ${{ vars.RENOVATE_COMPATIBILITY_CLIENT_ID }}
+          private-key: ${{ secrets.RENOVATE_COMPATIBILITY_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ steps.target.outputs.name }}
+          permission-contents: read
+          permission-pull-requests: read
+      - name: Independently revalidate and reconcile terminally
+        env:
+          GH_TOKEN: ${{ inputs.enforce && steps.supersession-token.outputs.token || steps.observer-token.outputs.token }}
+          RECEIPT: ${{ inputs.receipt }}
+          ENFORCE: ${{ inputs.enforce }}
+        run: |
+          args=()
+          if [[ "$ENFORCE" == 'true' ]]; then args+=(--enforce); fi
+          python3 scripts/dependency-supersession.py reconcile \
+            --proposal proposal/dependency-supersession-proposal.json \
+            --receipt "$RECEIPT" --output dependency-supersession-receipt.json "${args[@]}"
+          jq . dependency-supersession-receipt.json >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload reconciliation receipt
+        if: ${{ always() && (steps.supersession-token.outcome == 'success' || steps.observer-token.outcome == 'success') }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: dependency-supersession-receipt-${{ github.run_id }}-${{ github.run_attempt }}
+          path: dependency-supersession-receipt.json
+          if-no-files-found: error
+          retention-days: 90

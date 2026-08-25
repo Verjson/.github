@@ -161,6 +161,20 @@ class BootstrapTests(unittest.TestCase):
         value["apps"][0]["permissions"]["administration"] = "write"
         with self.assertRaisesRegex(bootstrap.BootstrapError, "canonical role"):
             bootstrap.validate_manifest(value)
+
+    def test_dependency_supersession_role_has_one_exact_write_permission(self):
+        value = manifest()
+        value["apps"] = [{
+            "role": "DEPENDENCY_SUPERSESSION_APP", "slug": "canonical-dependency-supersession",
+            "app_id": 4717539, "client_id": "Iv23liIpLiCOgEGiDtB9", "installation_id": 156593170,
+            "repository_selection": "all",
+            "permissions": {"contents": "read", "pull_requests": "write", "metadata": "read"},
+            "events": [],
+        }]
+        self.assertEqual(bootstrap.validate_manifest(value)["apps"][0]["role"], "DEPENDENCY_SUPERSESSION_APP")
+        value["apps"][0]["permissions"]["issues"] = "write"
+        with self.assertRaisesRegex(bootstrap.BootstrapError, "permissions differ"):
+            bootstrap.validate_manifest(value)
         value = manifest()
         value["apps"][0]["repository_selection"] = "selected"
         with self.assertRaisesRegex(bootstrap.BootstrapError, "all-repository"):
