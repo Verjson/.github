@@ -145,18 +145,19 @@ jobs:
         run: |
           test "$(git describe --tags --exact-match HEAD)" = "$VERSION"
           test -f "CHANGELOG/$VERSION.md"
-      - name: Stage bounded immutable release assets
+      - name: Validate bounded immutable release assets
+        id: release-assets
         env:
           RELEASE_ASSETS: ${{ inputs.release-assets }}
+          ASSET_STATE_ROOT: ${{ runner.temp }}/verjson-release-asset-validation
         run: |
           # BOUNDED_RELEASE_ASSETS_BEGIN
           set -euo pipefail
-          asset_root="${RUNNER_TEMP:-/tmp}/verjson-release-assets"
-          rm -rf -- "$asset_root"
-          mkdir -p "$asset_root"
-          manifest="${asset_root}.paths"
-          rm -f -- "$manifest"
-          python3 - "$RELEASE_ASSETS" "$manifest" <<'PY'
+          rm -rf -- "$ASSET_STATE_ROOT"
+          mkdir -p "$ASSET_STATE_ROOT"
+          paths="$ASSET_STATE_ROOT/paths"
+          rows="$ASSET_STATE_ROOT/rows"
+          python3 - "$RELEASE_ASSETS" "$paths" <<'PY'
           import json
           import pathlib
           import re
@@ -187,6 +188,7 @@ jobs:
           PY
 
           total_bytes=0
+          : >"$rows"
           while IFS= read -r asset; do
             [ -n "$asset" ] || continue
             current=
@@ -209,10 +211,21 @@ jobs:
             total_bytes=$((total_bytes + size))
             [ "$total_bytes" -le 262144000 ] \
               || { echo "::error::Release assets exceed 250 MiB total."; exit 1; }
-            git show "HEAD:$asset" >"$asset_root/${asset##*/}"
-            [ "$(wc -c <"$asset_root/${asset##*/}")" -eq "$size" ] \
-              || { echo "::error::Could not reproduce '$asset' from the immutable tag."; exit 1; }
-          done <"$manifest"
+            digest="$(git cat-file blob "HEAD:$asset" | sha256sum | awk '{print $1}')"
+            printf '%s\t%s\t%s\t%s\n' "$asset" "${asset##*/}" "$size" "$digest" >>"$rows"
+          done <"$paths"
+          python3 - "$rows" "$GITHUB_OUTPUT" <<'PY'
+          import json
+          import pathlib
+          import sys
+
+          entries = []
+          for line in pathlib.Path(sys.argv[1]).read_text(encoding="utf-8").splitlines():
+              path, name, size, digest = line.split("\t")
+              entries.append({"path": path, "name": name, "size": int(size), "sha256": digest})
+          with pathlib.Path(sys.argv[2]).open("a", encoding="utf-8") as output:
+              output.write(f"manifest={json.dumps(entries, separators=(',', ':'))}\n")
+          PY
           # BOUNDED_RELEASE_ASSETS_END
       - name: Prepare job-scoped npm cache
         if: inputs.cache
@@ -400,8 +413,54 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           VERSION: ${{ inputs.version }}
+          RELEASE_ASSET_MANIFEST: ${{ steps.release-assets.outputs.manifest }}
+          ASSET_ROOT: ${{ runner.temp }}/verjson-release-assets
+          PATH: /usr/local/bin:/usr/bin:/bin
         run: |
           # RESTART_SAFE_GH_RELEASE_BEGIN
+          set -euo pipefail
+          state_root="${ASSET_ROOT}-state"
+          rm -rf -- "$ASSET_ROOT" "$state_root"
+          mkdir -p "$ASSET_ROOT" "$state_root"
+          expected="$state_root/expected"
+          python3 - "$RELEASE_ASSET_MANIFEST" "$expected" <<'PY'
+          import json
+          import pathlib
+          import re
+          import sys
+
+          try:
+              entries = json.loads(sys.argv[1])
+          except json.JSONDecodeError as error:
+              raise SystemExit(f"validated release-asset manifest is malformed: {error}")
+          if not isinstance(entries, list) or len(entries) > 16:
+              raise SystemExit("validated release-asset manifest has an invalid entry count")
+          lines = []
+          for entry in entries:
+              if (
+                  not isinstance(entry, dict)
+                  or set(entry) != {"path", "name", "size", "sha256"}
+                  or not isinstance(entry["path"], str)
+                  or not isinstance(entry["name"], str)
+                  or not isinstance(entry["size"], int)
+                  or not re.fullmatch(r"[0-9a-f]{64}", entry["sha256"] or "")
+              ):
+                  raise SystemExit("validated release-asset manifest has an invalid entry")
+              lines.append(f'{entry["path"]}\t{entry["name"]}\t{entry["size"]}\t{entry["sha256"]}')
+          pathlib.Path(sys.argv[2]).write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
+          PY
+          while IFS=$'\t' read -r asset name expected_size expected_digest; do
+            [ -n "$asset" ] || continue
+            mode="$(git ls-tree HEAD -- "$asset" | awk '{print $1}')"
+            [ "$mode" = 100644 ] || [ "$mode" = 100755 ] \
+              || { echo "::error::Release asset '$asset' changed to unsupported git mode '$mode' after validation."; exit 1; }
+            git show "HEAD:$asset" >"$ASSET_ROOT/$name"
+            actual_size="$(wc -c <"$ASSET_ROOT/$name")"
+            actual_digest="$(sha256sum "$ASSET_ROOT/$name" | awk '{print $1}')"
+            [ "$actual_size" = "$expected_size" ] && [ "$actual_digest" = "$expected_digest" ] \
+              || { echo "::error::Release asset '$asset' no longer matches its pre-build immutable-tag receipt."; exit 1; }
+          done <"$expected"
+
           snapshot="CHANGELOG/$VERSION.md"
           notes="$snapshot"
           notes_limit=125000
@@ -430,12 +489,44 @@ jobs:
           else
             gh release create "$VERSION" --verify-tag --notes-file "$notes"
           fi
-          asset_root="${RUNNER_TEMP:-/tmp}/verjson-release-assets"
-          if [ -s "${asset_root}.paths" ]; then
-            mapfile -t assets < <(find "$asset_root" -maxdepth 1 -type f -print | sort)
-            [ "${#assets[@]}" -gt 0 ] \
-              || { echo "::error::Validated release assets are missing from staging."; exit 1; }
-            gh release upload "$VERSION" "${assets[@]}" --clobber
+          if [ -s "$expected" ]; then
+            remote="$state_root/remote"
+            gh api "repos/$GITHUB_REPOSITORY/releases/tags/$VERSION" >"$remote"
+            remote_receipts="$state_root/remote-receipts"
+            python3 - "$remote" "$expected" "$remote_receipts" <<'PY'
+          import json
+          import pathlib
+          import sys
+
+          release = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+          expected_names = {line.split("\t")[1] for line in pathlib.Path(sys.argv[2]).read_text(encoding="utf-8").splitlines()}
+          found = {}
+          for asset in release.get("assets", []):
+              name = asset.get("name")
+              if name not in expected_names:
+                  continue
+              if name in found:
+                  raise SystemExit(f"GitHub Release returned duplicate asset name: {name}")
+              digest = asset.get("digest")
+              found[name] = digest if isinstance(digest, str) and digest else "UNVERIFIABLE"
+          lines = [f"{name}\t{digest}" for name, digest in sorted(found.items())]
+          pathlib.Path(sys.argv[3]).write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
+          PY
+            while IFS=$'\t' read -r asset name expected_size expected_digest; do
+              [ -n "$asset" ] || continue
+              remote_digest="$(awk -F '\t' -v name="$name" '$1 == name { print $2 }' "$remote_receipts")"
+              if [ -z "$remote_digest" ]; then
+                gh release upload "$VERSION" "$ASSET_ROOT/$name"
+              elif [ "$remote_digest" = "sha256:$expected_digest" ]; then
+                echo "Release asset '$name' already has the exact immutable-tag digest; keeping it."
+              elif [ "$remote_digest" = UNVERIFIABLE ]; then
+                echo "::error::Existing release asset '$name' has no verifiable SHA-256 digest; refusing to replace it."
+                exit 1
+              else
+                echo "::error::Existing release asset '$name' has digest '$remote_digest', not immutable-tag digest 'sha256:$expected_digest'; refusing to replace it."
+                exit 1
+              fi
+            done <"$expected"
           fi
           # RESTART_SAFE_GH_RELEASE_END
       - name: Deprecate renamed package names

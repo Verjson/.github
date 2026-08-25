@@ -49,10 +49,13 @@ assert install["env"]["NODE_AUTH_TOKEN"] == "${{ secrets.NODE_AUTH_TOKEN }}"
 release = next(step for step in steps if "gh release create" in (step.get("run") or ""))
 assert "--verify-tag" in release["run"]
 assert 'CHANGELOG/$VERSION.md' in release["run"]
-assert 'gh release upload "$VERSION" "${assets[@]}" --clobber' in release["run"]
+assert 'gh release upload "$VERSION" "$ASSET_ROOT/$name"' in release["run"]
+assert "--clobber" not in release["run"]
+assert 'asset.get("digest")' in release["run"]
+assert 'sha256:$expected_digest' in release["run"]
 assets = next(step for step in steps if "BOUNDED_RELEASE_ASSETS_BEGIN" in (step.get("run") or ""))
 assert steps.index(assets) < next(i for i, step in enumerate(steps) if (step.get("run") or "").strip() == "npm ci")
-for guard in ("at most 16 paths", "symlink", "100 MiB", "250 MiB", 'git show "HEAD:$asset"'):
+for guard in ("at most 16 paths", "symlink", "100 MiB", "250 MiB", 'git cat-file blob "HEAD:$asset"'):
     assert guard in assets["run"], "missing bounded release-asset guard: %s" % guard
 stamp_index = next(i for i, step in enumerate(steps) if "npm version" in (step.get("run") or ""))
 build_index = next(i for i, step in enumerate(steps) if "npm run build" in (step.get("run") or ""))
