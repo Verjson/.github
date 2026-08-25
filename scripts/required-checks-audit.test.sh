@@ -650,6 +650,38 @@ stack node
 pulls s1 s2
 head_with s1 gate "ci / build-test" "ci / eligibility" changelog-contract "changelog / validate"
 head_with s2 gate "ci / build-test" "ci / eligibility" changelog-contract "changelog / validate"
+sed -i \
+  -e 's#echo "VERJSON_CHANGELOG_TOOL_CACHE=$RUNNER_TEMP/verjson-changelog-tools" >> "$GITHUB_ENV"#echo   "VERJSON_CHANGELOG_TOOL_CACHE=${RUNNER_TEMP}/verjson-changelog-tools"  >>  "${GITHUB_ENV}"#' \
+  -e 's#bash scripts/changelog-contract.test.sh#bash "scripts/changelog-contract.test.sh"#' \
+  "$tmp/workflow.yml"
+encode_workflow
+rc="$(run_audit)"
+{ [ "$rc" = "rc=0" ] && grep -q 'result=conformant' "$tmp/out.txt"; } \
+  && pass "semantically equivalent command quoting and spacing remain conformant" \
+  || { fail "equivalent shell formatting was rejected ($rc)"; out | sed 's/^/diag - /'; }
+
+for mutation in \
+  's/${RUNNER_TEMP}/${HOME}/' \
+  's/ >> / > /' \
+  's/echo   /echo -n /' \
+  's#bash "scripts/changelog-contract.test.sh"#bash "scripts/changelog-contract.test.sh"; echo bypass#'; do
+  stack node
+  sed -i \
+    -e 's#echo "VERJSON_CHANGELOG_TOOL_CACHE=$RUNNER_TEMP/verjson-changelog-tools" >> "$GITHUB_ENV"#echo   "VERJSON_CHANGELOG_TOOL_CACHE=${RUNNER_TEMP}/verjson-changelog-tools"  >>  "${GITHUB_ENV}"#' \
+    -e 's#bash scripts/changelog-contract.test.sh#bash "scripts/changelog-contract.test.sh"#' \
+    -e "$mutation" \
+    "$tmp/workflow.yml"
+  encode_workflow
+  rc="$(run_audit)"
+  { [ "$rc" != "rc=0" ] && grep -q 'changelog-contract-job-invalid' "$tmp/out.txt"; } \
+    && pass "semantic command mutation fails workflow inspection closed: $mutation" \
+    || { fail "semantic command mutation was accepted: $mutation ($rc)"; out | sed 's/^/diag - /'; }
+done
+
+stack node
+pulls s1 s2
+head_with s1 gate "ci / build-test" "ci / eligibility" changelog-contract "changelog / validate"
+head_with s2 gate "ci / build-test" "ci / eligibility" changelog-contract "changelog / validate"
 sed -i 's/^    runs-on: ubuntu-24.04$/    runs-on:\n      - self-hosted\n      - linux/' "$tmp/workflow.yml"
 encode_workflow
 rc="$(run_audit)"
