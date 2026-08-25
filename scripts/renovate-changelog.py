@@ -31,6 +31,7 @@ PACKAGE = re.compile(
     r"\(https://[^()\s]+\)"
     r"(?:\s+\(\[[^\]]{1,64}\]\(https://[^()\s]+\)\))*$"
 )
+BARE_PACKAGE = re.compile(r"^([@A-Za-z0-9][@A-Za-z0-9._/+~:-]{0,213})$")
 CHANGE = re.compile(
     r"^(?:\[)?`([^`\r\n|]{1,256})` → `([^`\r\n|]{1,256})`"
     r"(?:\]\(https://[^()\s]+\))?$"
@@ -143,10 +144,14 @@ def table_cells(line: str) -> list[str]:
 
 
 def parse_update_row(package_cell: str, change_cell: str) -> Update:
-    package_match = PACKAGE.fullmatch(package_cell)
+    package_match = PACKAGE.fullmatch(package_cell) or BARE_PACKAGE.fullmatch(
+        package_cell
+    )
+    if package_match is None:
+        raise AutomationError("Renovate update table contains an unsupported package cell")
     change_match = CHANGE.fullmatch(change_cell)
-    if package_match is None or change_match is None:
-        raise AutomationError("Renovate update table contains an unsupported package or change cell")
+    if change_match is None:
+        raise AutomationError("Renovate update table contains an unsupported change cell")
     from_version, to_version = change_match.groups()
     if from_version != from_version.strip() or to_version != to_version.strip():
         raise AutomationError("Renovate versions must not contain surrounding whitespace")

@@ -49,6 +49,12 @@ LOCK_FILE_BODY = """This PR contains the following updates:
 |---|---|
 | lockFileMaintenance | All locks refreshed |
 """
+NEO4J_DIGEST_BODY = """This PR contains the following updates:
+
+| Package | Update | Change |
+|---|---|---|
+| neo4j | digest | `f79a46a` → `0ddfa71` |
+"""
 
 
 class FakeClient:
@@ -187,16 +193,57 @@ class RenovateTableTests(unittest.TestCase):
         with self.assertRaises(renovate_changelog.AutomationError):
             renovate_changelog.parse_updates(truncated)
 
-    def test_rejects_ambiguous_or_unlinked_package_tables(self) -> None:
-        duplicate = BODY + "\n" + BODY
-        unlinked = BODY.replace(
-            "[ip-address](https://redirect.github.com/ip-num/ip-num)", "ip-address"
+    def test_accepts_bare_docker_image_digest_row(self) -> None:
+        self.assertEqual(
+            (
+                renovate_changelog.Update(
+                    package="neo4j", from_version="f79a46a", to_version="0ddfa71"
+                ),
+            ),
+            renovate_changelog.parse_updates(NEO4J_DIGEST_BODY),
         )
+
+        longest_name = "n" * 214
+        body = NEO4J_DIGEST_BODY.replace("| neo4j |", f"| {longest_name} |")
+        self.assertEqual(longest_name, renovate_changelog.parse_updates(body)[0].package)
+
+    def test_rejects_ambiguous_or_malformed_package_tables(self) -> None:
+        duplicate = BODY + "\n" + BODY
         malformed_change = BODY.replace(" → ", " -> ")
-        for body in (duplicate, unlinked, malformed_change):
+        for body in (duplicate, malformed_change):
             with self.subTest(body=body):
                 with self.assertRaises(renovate_changelog.AutomationError):
                     renovate_changelog.parse_updates(body)
+
+    def test_bare_package_cells_fail_closed_on_unsafe_or_ambiguous_text(self) -> None:
+        fixtures = (
+            "neo4j enterprise",
+            "neo4j\tenterprise",
+            "**neo4j**",
+            "`neo4j`",
+            "[neo4j](https://example.invalid",
+            "neo4j](https://attacker.invalid)",
+            "neo4j<script>",
+            "neo4j|attacker",
+            "n" * 215,
+        )
+        for package_cell in fixtures:
+            with self.subTest(package_cell=package_cell):
+                body = NEO4J_DIGEST_BODY.replace("| neo4j |", f"| {package_cell} |")
+                with self.assertRaises(renovate_changelog.AutomationError):
+                    renovate_changelog.parse_updates(body)
+
+    def test_reports_the_invalid_update_cell(self) -> None:
+        invalid_package = NEO4J_DIGEST_BODY.replace("| neo4j |", "| **neo4j** |")
+        invalid_change = NEO4J_DIGEST_BODY.replace(" → ", " -> ")
+        with self.assertRaisesRegex(
+            renovate_changelog.AutomationError, "unsupported package cell"
+        ):
+            renovate_changelog.parse_updates(invalid_package)
+        with self.assertRaisesRegex(
+            renovate_changelog.AutomationError, "unsupported change cell"
+        ):
+            renovate_changelog.parse_updates(invalid_change)
 
     def test_rejects_duplicate_package_rows(self) -> None:
         row = BODY.splitlines()[-1]
