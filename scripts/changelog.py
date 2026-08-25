@@ -47,6 +47,14 @@ class Fragment:
         )
 
 
+@dataclass(frozen=True)
+class PreContractMigration:
+    source: str
+    version: str
+    sha256: str
+    destination: str
+
+
 def unquote_scalar(value: str) -> str:
     """Resolve a YAML-quoted scalar to the text it denotes.
 
@@ -899,6 +907,197 @@ DEPENDENCY_FILENAMES = {
     "yarn.lock",
 }
 
+PRE_CONTRACT_MIGRATIONS_PATH = ".github/changelog/pre-contract-migrations.json"
+PRE_CONTRACT_MIGRATION_KEYS = frozenset(
+    {"source", "version", "sha256", "destination"}
+)
+SHA256 = re.compile(r"^[0-9a-f]{64}$")
+
+
+def safe_repository_path(value: object, field: str) -> str:
+    if (
+        not isinstance(value, str)
+        or not value
+        or "\\" in value
+        or any(ord(character) < 32 for character in value)
+    ):
+        raise ChangelogError(f"pre-contract migration {field} is not a safe path")
+    path = PurePosixPath(value)
+    if (
+        path.is_absolute()
+        or any(part in ("", ".", "..") for part in path.parts)
+        or path.parts[0] == ".git"
+    ):
+        raise ChangelogError(f"pre-contract migration {field} is not a safe path")
+    return value
+
+
+def parse_pre_contract_migrations(content: bytes) -> tuple[PreContractMigration, ...]:
+    try:
+        document = json.loads(content.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ChangelogError("pre-contract migration permit is not valid UTF-8 JSON") from exc
+    if not isinstance(document, dict) or set(document) != {"schema_version", "migrations"}:
+        raise ChangelogError("pre-contract migration permit has unsupported fields")
+    if type(document["schema_version"]) is not int or document["schema_version"] != 1:
+        raise ChangelogError("pre-contract migration permit has unsupported schema")
+    if not isinstance(document["migrations"], list):
+        raise ChangelogError("pre-contract migration permit has unsupported schema")
+
+    migrations = []
+    sources = set()
+    destinations = set()
+    for item in document["migrations"]:
+        if not isinstance(item, dict) or set(item) != PRE_CONTRACT_MIGRATION_KEYS:
+            raise ChangelogError("pre-contract migration entry has unsupported fields")
+        source = safe_repository_path(item["source"], "source")
+        destination = safe_repository_path(item["destination"], "destination")
+        version = item["version"]
+        digest = item["sha256"]
+        if not isinstance(version, str) or source != f"CHANGELOG/{version}.md":
+            raise ChangelogError("pre-contract migration source does not match its version")
+        if not SNAPSHOT_NAME.fullmatch(f"{version}.md"):
+            raise ChangelogError("pre-contract migration version is invalid")
+        if not isinstance(digest, str) or not SHA256.fullmatch(digest):
+            raise ChangelogError("pre-contract migration sha256 is invalid")
+        if (
+            destination == "CHANGELOG.md"
+            or destination == PRE_CONTRACT_MIGRATIONS_PATH
+            or destination.startswith("CHANGELOG/")
+            or destination.startswith("NEXT/")
+        ):
+            raise ChangelogError("pre-contract migration destination is active changelog state")
+        if source in sources or destination in destinations:
+            raise ChangelogError("pre-contract migration permit contains duplicate identities")
+        sources.add(source)
+        destinations.add(destination)
+        migrations.append(PreContractMigration(source, version, digest, destination))
+    return tuple(migrations)
+
+
+def git_file(repo_root: Path, revision: str, path: str) -> bytes | None:
+    completed = subprocess.run(
+        ["git", "show", f"{revision}:{path}"],
+        cwd=repo_root,
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    if completed.returncode == 0:
+        return completed.stdout
+    if completed.returncode in (1, 128):
+        return None
+    raise ChangelogError(completed.stderr.decode(errors="replace").strip())
+
+
+def git_file_mode(repo_root: Path, revision: str, path: str) -> str | None:
+    completed = subprocess.run(
+        ["git", "ls-tree", revision, "--", path],
+        cwd=repo_root,
+        check=False,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    if completed.returncode:
+        raise ChangelogError(completed.stderr.strip() or "could not inspect migration path")
+    if not completed.stdout:
+        return None
+    return completed.stdout.split(None, 1)[0]
+
+
+def source_exists_in_any_tag(repo_root: Path, source: str) -> bool:
+    tags = git(repo_root, "for-each-ref", "--format=%(refname)", "refs/tags")
+    for tag in tags.splitlines():
+        completed = subprocess.run(
+            ["git", "cat-file", "-e", f"{tag}:{source}"],
+            cwd=repo_root,
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        if completed.returncode == 0:
+            return True
+        if completed.returncode not in (1, 128):
+            raise ChangelogError(f"could not inspect tag {tag} for {source}")
+    return False
+
+
+def require_complete_tag_visibility(repo_root: Path) -> None:
+    shallow = git(repo_root, "rev-parse", "--is-shallow-repository")
+    if shallow != "false":
+        raise ChangelogError(
+            "pre-contract migration requires a complete non-shallow tag checkout"
+        )
+
+
+def authorize_pre_contract_migration(
+    repo_root: Path,
+    base: str,
+    head: str,
+    changed: set[str],
+    status_by_path: dict[str, str],
+) -> set[str]:
+    base_document = git_file(repo_root, base, PRE_CONTRACT_MIGRATIONS_PATH)
+    if base_document is None:
+        return set()
+    permits = parse_pre_contract_migrations(base_document)
+    candidates = [
+        permit
+        for permit in permits
+        if permit.source in changed or permit.destination in changed
+    ]
+    if not candidates:
+        return set()
+    if len(candidates) != 1:
+        raise ChangelogError("a pull request can use only one pre-contract migration permit")
+    permit = candidates[0]
+    if PRE_CONTRACT_MIGRATIONS_PATH in changed:
+        raise ChangelogError("a pull request cannot widen its own pre-contract migration permit")
+    if (
+        status_by_path.get(permit.source) != "D"
+        or status_by_path.get(permit.destination) != "A"
+    ):
+        raise ChangelogError(
+            "pre-contract migration must delete its source and add its destination"
+        )
+    if {path for path in changed if path.startswith("CHANGELOG/")} != {permit.source}:
+        raise ChangelogError("a pre-contract migration cannot change other release snapshots")
+    source = git_file(repo_root, base, permit.source)
+    destination_before = git_file(repo_root, base, permit.destination)
+    destination_after = git_file(repo_root, head, permit.destination)
+    source_after = git_file(repo_root, head, permit.source)
+    if (
+        source is None
+        or destination_after is None
+        or destination_before is not None
+        or source_after is not None
+    ):
+        raise ChangelogError("pre-contract migration source or destination state is invalid")
+    source_mode = git_file_mode(repo_root, base, permit.source)
+    destination_mode = git_file_mode(repo_root, head, permit.destination)
+    if source_mode not in ("100644", "100755") or destination_mode != source_mode:
+        raise ChangelogError("pre-contract migration must preserve a regular file mode")
+    if hashlib.sha256(source).hexdigest() != permit.sha256:
+        raise ChangelogError("pre-contract migration source digest does not match its permit")
+    if source != destination_after:
+        raise ChangelogError("pre-contract migration destination is not byte-identical")
+    require_complete_tag_visibility(repo_root)
+    if source_exists_in_any_tag(repo_root, permit.source):
+        raise ChangelogError("pre-contract migration cannot move a snapshot present in a tag")
+    return {permit.source}
+
+
+def validate_permit_update(repo_root: Path, base: str, head: str) -> None:
+    base_document = git_file(repo_root, base, PRE_CONTRACT_MIGRATIONS_PATH)
+    head_document = git_file(repo_root, head, PRE_CONTRACT_MIGRATIONS_PATH)
+    if head_document is None:
+        raise ChangelogError("pre-contract migration permit is append-only")
+    head_permits = parse_pre_contract_migrations(head_document)
+    base_permits = () if base_document is None else parse_pre_contract_migrations(base_document)
+    if head_permits[: len(base_permits)] != base_permits:
+        raise ChangelogError("pre-contract migration permit is append-only")
+
 
 def is_dependency_file(path: str) -> bool:
     filename = Path(path).name
@@ -908,9 +1107,24 @@ def is_dependency_file(path: str) -> bool:
 
 
 def check_pr(repo_root: Path, base: str, head: str) -> None:
-    changed = changed_paths(repo_root, base, head)
+    status_by_path = {}
+    for line in git(
+        repo_root, "diff", "--no-renames", "--name-status", f"{base}...{head}"
+    ).splitlines():
+        status, path = line.split("\t", 1)
+        status_by_path[path] = status
+    # Policy evaluates both sides of a move. Rename-aware name-only output can
+    # collapse a delete/add pair to its destination and hide consumption of an
+    # immutable source from the authorization boundary.
+    changed = set(status_by_path)
+    if PRE_CONTRACT_MIGRATIONS_PATH in changed:
+        validate_permit_update(repo_root, base, head)
     forbidden = {"CHANGELOG.md"} & changed
     forbidden.update(path for path in changed if path.startswith("CHANGELOG/"))
+    permitted = authorize_pre_contract_migration(
+        repo_root, base, head, changed, status_by_path
+    )
+    forbidden.difference_update(permitted)
     if forbidden:
         raise ChangelogError(
             "ordinary pull requests cannot edit generated aggregates or released snapshots: "
