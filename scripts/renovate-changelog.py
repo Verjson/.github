@@ -158,13 +158,15 @@ def parse_update_row(package_cell: str, change_cell: str) -> Update:
     if from_version == to_version:
         raise AutomationError("Renovate update table contains an unchanged version")
     versions = (from_version, to_version)
+    package = package_match.group(1)
     if not all(
-        VERSION.fullmatch(version) is not None
-        or (package_match.group(1) == "pnpm" and PNPM_INTEGRITY_PIN.fullmatch(version) is not None)
+        PNPM_INTEGRITY_PIN.fullmatch(version) is not None
+        if package == "pnpm" and "+sha512." in version
+        else VERSION.fullmatch(version) is not None
         for version in versions
     ):
         raise AutomationError("Renovate update table contains an unsafe version value")
-    return Update(package_match.group(1), from_version, to_version)
+    return Update(package, from_version, to_version)
 
 
 def table_rows(headers: list[str], lines: list[str], index: int) -> list[list[str]]:
