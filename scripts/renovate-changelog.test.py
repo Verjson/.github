@@ -133,6 +133,23 @@ class RenovateTableTests(unittest.TestCase):
                 ):
                     renovate_changelog.parse_updates(body)
 
+    def test_rejects_short_malformed_pnpm_integrity_pins_in_either_version(self) -> None:
+        fixtures = (
+            PNPM_PACKAGE_MANAGER_BODY.replace(
+                "11.22.0+sha512.1ff870c4c6133dfd88fb2afc46dd13d47f09c9794b438c6fdb47ca98caf3bc16381ee0be93a091b8e3824cf01f889f46d7d9e20910fb0be1ab0fb5baa80dd621",
+                "11.22.0+sha512.deadbeef",
+            ),
+            PNPM_PACKAGE_MANAGER_BODY.replace(
+                "11.23.0`", "11.23.0+sha512.deadbeef`"
+            ),
+        )
+        for body in fixtures:
+            with self.subTest(body=body):
+                with self.assertRaisesRegex(
+                    renovate_changelog.AutomationError, "unsafe version"
+                ):
+                    renovate_changelog.parse_updates(body)
+
     def test_recognizes_the_lock_file_maintenance_table_shape(self) -> None:
         updates = renovate_changelog.parse_updates(LOCK_FILE_BODY)
         self.assertEqual(renovate_changelog.LOCK_FILE_MAINTENANCE, updates)
