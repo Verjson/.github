@@ -179,7 +179,10 @@ on:
         type: string
 
 permissions:
+  actions: read
+  checks: read
   contents: read
+  pull-requests: read
 
 # Deliberately distinct from the canonical workflow's concurrency group.
 concurrency:

@@ -425,16 +425,48 @@ sys.exit(0 if got == want and
          inputs.get("merge_app_client_id") == "${{ vars.MERGE_APP_CLIENT_ID }}" else 1)
 SECRETS_PY
 
-python3 - "$tmp/caller.yml" <<'PERMS_PY' && pass "generated caller keeps least-privilege permissions and trusted dispatch only" \
-  || fail "generated caller's permissions, triggers, or cancel-in-progress drifted"
-import sys, yaml
-d = yaml.safe_load(open(sys.argv[1]))
-on = d.get(True, d.get("on"))
-if d.get("permissions") != {"contents": "read"}:
+python3 - "$tmp/caller.yml" "$tmp/retry.yml" "$canonical" <<'PERMS_PY' \
+  && pass "generated callers grant exactly the canonical terminal verification reads" \
+  || fail "generated caller permissions cannot instantiate the canonical terminal job or were widened"
+import copy
+import sys
+import yaml
+
+caller = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))
+retry = yaml.safe_load(open(sys.argv[2], encoding="utf-8"))
+canonical = yaml.safe_load(open(sys.argv[3], encoding="utf-8"))
+expected = {
+    "actions": "read",
+    "checks": "read",
+    "contents": "read",
+    "pull-requests": "read",
+}
+
+def valid(candidate):
+    on = candidate.get(True, candidate.get("on"))
+    return (
+        candidate.get("permissions") == expected
+        and set(on) == {"workflow_dispatch"}
+        and candidate.get("concurrency", {}).get("cancel-in-progress") is False
+    )
+
+if canonical["jobs"]["privileged_merge"].get("permissions") != expected:
     sys.exit(1)
-if set(on) != {"workflow_dispatch"}:
+if not valid(caller) or retry.get("permissions") != expected:
     sys.exit(1)
-sys.exit(0 if d.get("concurrency", {}).get("cancel-in-progress") is False else 1)
+
+mutations = []
+missing = copy.deepcopy(caller)
+del missing["permissions"]["checks"]
+mutations.append(missing)
+widened = copy.deepcopy(caller)
+widened["permissions"]["contents"] = "write"
+mutations.append(widened)
+extra = copy.deepcopy(caller)
+extra["permissions"]["issues"] = "read"
+mutations.append(extra)
+if any(valid(candidate) for candidate in mutations):
+    sys.exit(1)
 PERMS_PY
 
 # --- the caller stays THIN ---------------------------------------------------
