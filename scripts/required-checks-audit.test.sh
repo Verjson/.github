@@ -209,6 +209,16 @@ workflow_for none
 run_audit() { ( bash "$script" >"$tmp/out.txt" 2>&1; echo "rc=$?" ); }
 out() { cat "$tmp/out.txt"; }
 
+# ADR 0128 removed universal authorization contexts from this deterministic
+# ruleset contract. A substituted declaration must not be able to restore that
+# retired key while the audit silently ignores it.
+hostile_contract="$tmp/contract-with-universal-contexts.json"
+jq '.universal_contexts = ["gate"]' "$contract" >"$hostile_contract"
+rc="$(RCA_CONTRACT_FILE="$hostile_contract" run_audit)"
+{ [ "$rc" = "rc=2" ] && grep -q 'phase=contract result=declaration-invalid' "$tmp/out.txt"; } \
+  && pass "a reintroduced universal context fails contract validation closed" \
+  || { fail "a universal context was silently ignored ($rc)"; out | sed 's/^/diag - /'; }
+
 # --- an unclassified repository is never called conformant -------------------
 no_stack; pulls s1 s2; head_with s1 gate; head_with s2 gate
 rc="$(run_audit)"
