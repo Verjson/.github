@@ -642,6 +642,40 @@ run_adopter "$wrong_event_renovate_caller" \
   && fail "emitted suite accepted an event that cannot write the bot head" \
   || pass "emitted suite rejects a Renovate attribution caller on the wrong event"
 
+missing_gate_renovate_caller="$tmproot/adopter-missing-renovate-gate"
+cp -a "$adopter" "$missing_gate_renovate_caller"
+sed -i '/^    if: >-$/,/^    uses:/ { /^    uses:/!d; }' \
+  "$missing_gate_renovate_caller/.github/workflows/renovate-changelog.yml"
+run_adopter "$missing_gate_renovate_caller" \
+  && fail "emitted suite accepted a Renovate caller with no admission gate" \
+  || pass "emitted suite rejects a Renovate caller with no admission gate (#1014)"
+
+for mutation in fork actor branch duplicate-if; do
+  mutated_renovate_caller="$tmproot/adopter-mutated-renovate-$mutation"
+  cp -a "$adopter" "$mutated_renovate_caller"
+  case "$mutation" in
+    fork)
+      sed -i 's/head.repo.full_name == github.repository/head.repo.full_name != github.repository/' \
+        "$mutated_renovate_caller/.github/workflows/renovate-changelog.yml"
+      ;;
+    actor)
+      sed -i "s/'renovate\[bot\]'/'dependabot[bot]'/" \
+        "$mutated_renovate_caller/.github/workflows/renovate-changelog.yml"
+      ;;
+    branch)
+      sed -i "s/head.ref, 'renovate\/'/head.ref, 'deps\/'/" \
+        "$mutated_renovate_caller/.github/workflows/renovate-changelog.yml"
+      ;;
+    duplicate-if)
+      sed -i '/^    uses:/a\    if: true' \
+        "$mutated_renovate_caller/.github/workflows/renovate-changelog.yml"
+      ;;
+  esac
+  run_adopter "$mutated_renovate_caller" \
+    && fail "emitted suite accepted a Renovate caller with a mutated $mutation predicate" \
+    || pass "emitted suite rejects a Renovate caller with a mutated $mutation predicate (#1014)"
+done
+
 stale_proposer="$tmproot/adopter-stale-proposer"
 cp -a "$adopter" "$stale_proposer"
 sed -i "s/release-propose.yml@$sha/release-propose.yml@0000000000000000000000000000000000000000/" \

@@ -1493,6 +1493,29 @@ if [ -e "$renovate_attribution_workflow" ]; then
     || fail "$renovate_attribution_workflow is not limited to the reviewed pull_request_target events"
   ! grep -qE '^  (pull_request|push|workflow_dispatch|workflow_run|schedule):' "$renovate_attribution_workflow" \
     || fail "$renovate_attribution_workflow exposes an unreviewed trigger"
+  [ "$(grep -Ec '^  renovate-changelog:[[:space:]]*$' "$renovate_attribution_workflow")" = 1 ] \
+    || fail "$renovate_attribution_workflow must contain exactly one Renovate attribution job"
+  renovate_attribution_job="$(awk '
+    /^  renovate-changelog:[[:space:]]*$/ { capture = 1; next }
+    capture && /^  [A-Za-z0-9_.-]+:[[:space:]]*$/ { exit }
+    capture { print }
+  ' "$renovate_attribution_workflow")"
+  renovate_admission="$(awk '
+    /^    if: >-[[:space:]]*$/ { capture = 1 }
+    capture && /^    uses:/ { exit }
+    capture { print }
+  ' <<<"$renovate_attribution_job")"
+  expected_renovate_admission="$(cat <<'RENOVATE_ADMISSION'
+    if: >-
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      (github.event.pull_request.user.login == 'app/renovate' ||
+       github.event.pull_request.user.login == 'renovate[bot]') &&
+      startsWith(github.event.pull_request.head.ref, 'renovate/')
+RENOVATE_ADMISSION
+  )"
+  [ "$(grep -Ec '^    if:' <<<"$renovate_attribution_job")" = 1 ] \
+    && [ "$renovate_admission" = "$expected_renovate_admission" ] \
+    || fail "$renovate_attribution_workflow does not preserve the exact same-repository Renovate admission gate"
   [ "$(grep -Ec '^ +uses: Verjson/\.github/\.github/workflows/renovate-changelog\.yml@[0-9a-f]{40}$' "$renovate_attribution_workflow")" = 1 ] \
     && grep -qE "^ +uses: Verjson/\\.github/\\.github/workflows/renovate-changelog\\.yml@$CONTRACT_REF$" "$renovate_attribution_workflow" \
     || fail "$renovate_attribution_workflow does not call the trusted attribution workflow at the shared pin"
