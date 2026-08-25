@@ -47,6 +47,7 @@ chmod +x "$tmp/bin/gh"
 export PATH="$tmp/bin:$PATH" CALLS="$tmp/calls" META_FILE="$tmp/meta.json"
 export DISABLED_META_FILE="$tmp/disabled.json" GRAPHQL_FILE="$tmp/graphql.json" LATEST_FILE="$tmp/latest.json"
 export TARGET_REPO=Verjson/example PR_NUMBER=7 APP_ID=4242 APP_SLUG=verjson-ai-review
+export MINTED_APP_SLUG="$APP_SLUG"
 export DEFAULT_BRANCH=main EVENT_LABEL=hold EVENT_OLD_TITLE='' GITHUB_REPOSITORY_OWNER=Verjson
 export EVENT_NAME=pull_request_target REPOSITORY_ID=1234
 export WORKFLOW_REF=Verjson/example/.github/workflows/ai-review-label-rearm.yml@refs/heads/main
@@ -74,6 +75,17 @@ write_hold() {
 run_arm(){ bash "${ARM_SCRIPT:-$tmp/arm.sh}"; }
 expect_fail(){ label="$1"; if run_arm >"$tmp/out" 2>&1; then fail "$label"; else pass "$label"; fi; }
 
+write_hold
+MINTED_APP_SLUG=renamed-app
+if run_arm >"$tmp/out" 2>&1; then
+  fail "minted App slug mismatch was accepted"
+elif grep -q "AI review authorization App slug mismatch: expected 'verjson-ai-review', minted 'renamed-app'" "$tmp/out" \
+  && ! grep -q -- '--method POST repos/Verjson/example/check-runs' "$CALLS"; then
+  pass "minted App slug mismatch fails exactly before authorization creation"
+else
+  fail "minted App slug mismatch did not fail exactly before authorization creation"
+fi
+MINTED_APP_SLUG="$APP_SLUG"
 write_hold
 if run_arm >"$tmp/out" 2>&1; then pass "hold disables auto-merge only after authoritative confirmation"; else fail "confirmed hold failed"; fi
 write_hold; printf '{"data":null,"errors":[{"message":"denied"}]}\n' >"$GRAPHQL_FILE"

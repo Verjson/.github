@@ -1,5 +1,9 @@
 # 0119 — Restore the dedicated App for Renovate observation
 
+> **2026-08-25 identity note:** ADR 0138 records the existing App's rename to the
+> organization-neutral `renovate-compatibility` slug. Historical names below remain
+> unchanged because they describe the configuration accepted at this decision date.
+
 - **Date:** 2026-08-23
 - **Status:** Accepted
 - **Issue:** [#699](https://github.com/Verjson/.github/issues/699)

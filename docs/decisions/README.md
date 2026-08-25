@@ -11,6 +11,7 @@ Reverse-chronological index of org-level decisions.
 <!-- BEGIN ADR INDEX -->
 | # | Date | Decision |
 |---|------|----------|
+| [0138](0138-keep-canonical-app-identities-organization-neutral/README.md) | 2026-08-25 | Keep canonical GitHub App identities organization-neutral |
 | [0137](0137-cut-v1-0-0-across-pre-1-0-packages/README.md) | 2026-08-25 | Cut `v1.0.0` across the pre-1.0 `@verjson/*` packages |
 | [0136](0136-separate-dependency-supersession-observation-from-mutation/README.md) | 2026-08-25 | Separate dependency-update supersession observation from mutation |
 | [0135](0135-observe-live-generated-caller-capability-floors/README.md) | 2026-08-25 | Observe live generated-caller capability floors with a repository-scoped App token |

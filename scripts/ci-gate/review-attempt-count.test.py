@@ -6,7 +6,7 @@ from pathlib import Path
 
 
 SCRIPT = Path(__file__).with_name("review-attempt-count.py")
-APP = "verjson-ai-review-authorization[bot]"
+APP = "ai-review-authorization[bot]"
 HEAD = "a" * 40
 
 

@@ -59,7 +59,7 @@ chmod +x "$tmp/bin/gh"
 
 export PATH="$tmp/bin:$PATH" CALLS="$tmp/calls" CHECK_FILE="$tmp/check.json"
 export GITHUB_REPOSITORY=Verjson/example GITHUB_OUTPUT="$tmp/github-output" RUNNER_TEMP="$tmp"
-export EXPECTED_APP_ID=4242 EXPECTED_APP_SLUG=verjson-ai-review-authorization
+export EXPECTED_APP_ID=4242 EXPECTED_APP_SLUG=ai-review-authorization
 export HEAD_SHA=0123456789abcdef0123456789abcdef01234567
 export PULL_REQUESTS='[{"number":7}]'
 
@@ -118,12 +118,12 @@ expect_identity_error \
   "partial App identity fails closed before event eligibility" \
   "AI_REVIEW_APP_SLUG is required when AI_REVIEW_APP_ID is configured"
 
-export EXPECTED_APP_ID= EXPECTED_APP_SLUG=verjson-ai-review-authorization PULL_REQUESTS='[{"number":7}]'
+export EXPECTED_APP_ID= EXPECTED_APP_SLUG=ai-review-authorization PULL_REQUESTS='[{"number":7}]'
 expect_identity_error \
   "partial App identity fails closed when the ID is absent" \
   "AI_REVIEW_APP_ID is required when AI_REVIEW_APP_SLUG is configured"
 
-export EXPECTED_APP_ID=not-an-id EXPECTED_APP_SLUG=verjson-ai-review-authorization
+export EXPECTED_APP_ID=not-an-id EXPECTED_APP_SLUG=ai-review-authorization
 expect_identity_error \
   "malformed App ID fails closed with a diagnostic" \
   "AI_REVIEW_APP_ID must be a positive decimal App ID"
@@ -133,7 +133,7 @@ expect_identity_error \
   "malformed App slug fails closed with a diagnostic" \
   "AI_REVIEW_APP_SLUG must be a lowercase GitHub App slug"
 
-export EXPECTED_APP_ID=4242 EXPECTED_APP_SLUG=verjson-ai-review-authorization
+export EXPECTED_APP_ID=4242 EXPECTED_APP_SLUG=ai-review-authorization
 if : >"$GITHUB_OUTPUT" \
    && (cd "$tmp/run" && bash "$tmp/adoption.sh") \
    && grep -qx 'adopted=true' "$GITHUB_OUTPUT" \

@@ -46,7 +46,7 @@ export JOBS_FILE="$tmp/jobs.json" ARTIFACTS_FILE="$tmp/artifacts.json"
 export ATTESTATION_SOURCE="$tmp/attestation-source.json"
 export TARGET_REPO=Verjson/example PR_NUMBER=7
 export MERGED_HEAD_SHA=1111111111111111111111111111111111111111
-export EXPECTED_APP_ID=4242 EXPECTED_APP_SLUG=verjson-ai-review-authorization
+export EXPECTED_APP_ID=4242 EXPECTED_APP_SLUG=ai-review-authorization
 export DEFAULT_BRANCH=main RUNNER_TEMP="$tmp" GITHUB_OUTPUT="$tmp/evidence-output"
 
 write_check() {
@@ -54,11 +54,11 @@ write_check() {
   jq -nc --arg head "$MERGED_HEAD_SHA" --arg summary "$summary" --arg status "$status" \
     --arg conclusion "$conclusion" \
     '{id:9001,name:"AI review authorization",head_sha:$head,status:$status,conclusion:$conclusion,
-      app:{id:4242,slug:"verjson-ai-review-authorization"},output:{summary:$summary}}' >"$CHECK_FILE"
+      app:{id:4242,slug:"ai-review-authorization"},output:{summary:$summary}}' >"$CHECK_FILE"
 }
 write_valid_ai_evidence() {
   jq -nc --arg head "$MERGED_HEAD_SHA" \
-    '{state:"APPROVED",commit_id:$head,user:{login:"verjson-ai-review-authorization[bot]"},
+    '{state:"APPROVED",commit_id:$head,user:{login:"ai-review-authorization[bot]"},
       body:"<!-- ai-review-authorization:9001 -->\n<!-- ai-review-run:8001 -->"}' \
     | jq -s '.' >"$REVIEWS_FILE"
   jq -nc --arg head "$MERGED_HEAD_SHA" \
