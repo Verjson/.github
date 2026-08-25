@@ -30,8 +30,8 @@ mechanism was mundane: the changelog engine defaults `impact:` to `patch` when t
 absent, so omitting it produces a patch release of a breaking change with no error
 anywhere.
 
-Cutting seventeen more packages to `1.0.0` without first installing detection would
-multiply that failure mode by seventeen.
+Cutting eighteen more packages to `1.0.0` without first installing detection would
+multiply that failure mode by eighteen.
 
 ## Decision
 
@@ -179,10 +179,10 @@ reddened two unrelated pull requests this way. Readiness item 4 requires majors 
 during the wave, that item is the difference between a scheduled release and an unrelated
 repository's CI going red.
 
-**The bar costs real work per repository.** Seventeen audits, each installing a type-surface
+**The bar costs real work per repository.** Eighteen audits, each installing a type-surface
 check, verifying an `exports` map by resolution, widening ranges, and rehearsing a release,
-is substantially more effort than seventeen version bumps. That cost is the decision: the
-alternative is seventeen packages in which a mislabelled patch now propagates silently.
+is substantially more effort than eighteen version bumps. That cost is the decision: the
+alternative is eighteen packages in which a mislabelled patch now propagates silently.
 
 **Some repositories will fail the bar and stay at `0.x` longer.** That is the correct
 outcome. A package that cannot detect its own breaking changes should not be making a
@@ -195,7 +195,7 @@ once its `1.0.0` is dispatched. What remains reversible is the **wave**: it can 
 between packages at any layer boundary, leaving already-cut packages at `1.0.0` and the
 remainder at `0.x`. A package cut in error is corrected by a further release under normal
 SemVer rules — `1.0.1` for a fix, `2.0.0` for a break — never by editing a released
-`CHANGELOG/<version>.md` snapshot, which is immutable.
+`CHANGELOG/v<x.y.z>.md` snapshot, which is immutable.
 
 Consumers not yet moved in phase two are unaffected by a halt, since their `^0.x` ranges
 never resolved the `1.0.0` in the first place — until retention removes their pinned

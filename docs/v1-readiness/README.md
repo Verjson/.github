@@ -33,7 +33,8 @@ itself. An auditor records the literal command output or URL that produced the v
 the repository's prep issue. Two auditors reading the same repository must reach the same
 verdict; where an item leaves room for judgement, the item says which way to fail.
 
-- A **blocker** must PASS before the `1.0.0` release is dispatched.
+- A **blocker** must PASS before the `1.0.0` release is dispatched. Every item below is a
+  blocker except item 10, which must be recorded but does not gate the cut.
 - **N/A** requires a stated reason, not a blank. "The package has no runtime dependents"
   is a reason; silence is a FAIL.
 - An item that cannot be evaluated is a FAIL, not a pass. A gate that cannot resolve its
@@ -69,16 +70,24 @@ by a downstream consumer, not caught by the repository.
 job in `Verjson/verjson-authn` `.github/workflows/ci.yml`, which already carries the three
 traps that make a naive version of this check silently useless:
 
+**Ordering — item 1 depends on item 5.** The canonical implementation resolves its baseline
+from the highest released `CHANGELOG/v<x.y.z>.md` snapshot and hard-fails when there is none
+(`scripts/type-surface-contract.test.sh:419-426`). A repository that has not yet landed the
+changelog contract, or has landed it but never cut a release under it, **cannot pass this item
+yet** — record it as FAIL blocked on item 5, never N/A, and re-audit after its first
+conforming release.
+
 **Status — read this before citing it.** The implementation is
 [`Verjson/verjson-authn#246`](https://github.com/Verjson/verjson-authn/pull/246), which was
 **open** when this contract was written (head `b160239a75d5ba2e325c9ef7e244f2d0ff948592`,
-all checks green). It is not on `verjson-authn` `main`. Landing #246 is therefore a
+its required checks green). It is not on `verjson-authn` `main`. Landing #246 is therefore a
 prerequisite of the wave, and an adopter should pin to its merge commit rather than to this
 branch SHA.
 
 Its two artefacts are the job `type-surface-contract` in `.github/workflows/ci.yml:39` and
 the script `scripts/type-surface-contract.test.sh`. Four properties are the reason to adopt
-it rather than re-derive it:
+it rather than re-derive it — the first is its baseline choice, the other three are the traps
+named above:
 
 1. **The baseline is the published tarball, not a git ref or a committed snapshot.** The
    script resolves the version from the highest `CHANGELOG/v<x.y.z>.md` snapshot and
@@ -132,7 +141,8 @@ it rather than re-derive it:
   The reusable `node-ci.yml` sets `NODE_AUTH_TOKEN` only on its `npm ci` step, so a registry
   read from inside `npm test` returns 401.
 - **Use `secrets.GITHUB_TOKEN`, not a publish-capable registry token**
-  (`.github/workflows/ci.yml:67-72`). The final step runs a script the pull request itself
+  (`.github/workflows/ci.yml:67-75` — rationale at `:67-72`, assignment at `:75`). The
+  final step runs a script the pull request itself
   can edit; a repo-scoped token can read the repository's own package, which is all the
   baseline needs.
 - **A caller can only narrow a reusable workflow's permissions.** Omitting a scope the
@@ -159,7 +169,9 @@ the consumer, at install or build time, with nothing in the version number to pr
 
 **Evidence.** [`Verjson/verjson-tsconfig#34`](https://github.com/Verjson/verjson-tsconfig/issues/34):
 `@verjson/tsconfig` was the organization's only package shipping **no** `exports` map, while
-19 dependents extend it by explicit subpath (`"extends": "@verjson/tsconfig/tsconfig.base.json"`).
+its dependents extend it by explicit subpath (`"extends": "@verjson/tsconfig/tsconfig.base.json"`).
+#34 counted 19 repositories at filing; the manifest derivation on 2026-08-25 counts **22**,
+all `devDependencies` (ADR 0137).
 Any future "modernize the manifest" chore that added a map without an explicit
 `"./tsconfig.base.json"` entry would have silently unreached all 19.
 
@@ -167,7 +179,11 @@ Any future "modernize the manifest" chore that added a map without an explicit
 
 - [ ] `package.json` declares an `exports` map.
 - [ ] The map lists **every** subpath any consumer currently imports, including
-      `"./package.json"` where tooling reads it.
+      `"./package.json"` where tooling reads it. Enumerate by the same method item 3 uses for
+      dependents: grep the organization's checkouts for `<pkg>/` subpath references and
+      cross-check with GitHub code search. **If the consumer set cannot be enumerated — an
+      external or unknown consumer — this item FAILs**, because an unlisted subpath cannot
+      then be ruled out.
 - [ ] The map is verified by **real resolution from a scratch consumer against a packed
       tarball** — `npm pack`, install the tarball into an empty project, then
       `require.resolve('<pkg>/<subpath>')` and/or `import.meta.resolve(...)` for each
@@ -181,11 +197,11 @@ does not call a resolver, it does not satisfy this item.
 
 ---
 
-## 3. No `^0.x` internal peer or dependency ranges — **blocker for the wave**
+## 3. No `^0.x` internal peer or dependency ranges — **blocker**
 
 **Why.** `^0.2.0` does not admit `0.3.0`, and it does not admit `1.0.0` either. A package
 whose peer range points at a `0.x` sibling becomes uninstallable the moment that sibling
-cuts `1.0.0`. Because the wave moves 17 packages, this is the single item most likely to
+cuts `1.0.0`. Because the wave moves 18 packages, this is the single item most likely to
 break consumers, and it must be resolved **before** the depended-on package releases, not
 after.
 
@@ -216,12 +232,13 @@ Two things this table makes visible that the per-repository view does not:
 - **`@verjson/ai-gguf` carries an explicit `<1` ceiling**, not just a caret. A range
   widening that only edits the lower bound leaves it excluding `1.0.0`. Read the whole
   range, not the caret.
-- **Packages already past `1.0.0` are in scope for this item.** `authn`, `observability`,
-  and `payments` each consume `@verjson/identity-contracts` at **runtime** on a `^0.2.x`
-  range. They are not being cut in this wave, but they will break when
-  `identity-contracts` does — and `authn` and `observability` already fail to resolve the
-  published `0.3.0` today. Audit the dependents of the package being cut, not only the
-  package itself.
+- **Packages already past `1.0.0` are in scope for this item.** `authn` (`^0.2.2`),
+  `observability` (`^0.2.1`), and `payments` (`^0.3.0`) each consume
+  `@verjson/identity-contracts` at **runtime**, and all three ranges exclude `1.0.0`. They
+  are not being cut in this wave, but they will break when `identity-contracts` does — and
+  `authn` and `observability`, being on `^0.2.x`, already fail to resolve the published
+  `0.3.0` today. Audit the dependents of the package being cut, not only the package
+  itself.
 
 This repository is itself such a consumer: `contracts/container-deployment-cli/package.json:6`
 pins `@verjson/cli-cloud@0.28.1` **exactly**.
@@ -255,12 +272,14 @@ open pull request in that repository goes red for reasons unrelated to any of th
 **Evidence.** [`Verjson/verjson-authz#124`](https://github.com/Verjson/verjson-authz/issues/124):
 publishing `@verjson/identity-contracts@0.3.0` on 2026-08-24 deleted `0.2.0`, which
 `.github/workflows/identity-contracts-compatibility.yml:33` named as an exact matrix leg.
+That line read `0.2.0` at the time of the incident and reads `0.2.1` today — the floor was
+moved, the shape was not fixed.
 Two unrelated pull requests went red at once. Moving the floor to `0.2.1` unblocked CI but
 reproduced the defect one publish later. The same repository's
 `.github/workflows/next-compatibility.yml:30` shows the correct shape: `next: ['14','15','16']`
 — **majors**, resolved at install time.
 
-**A 17-package wave accelerates this sharply.** Each package in the wave publishes at least
+**An 18-package wave accelerates this sharply.** Each package in the wave publishes at least
 once; several will publish twice (a range widening under item 3, then the `1.0.0` itself).
 Every exact-version matrix leg pointing at a `0.x` sibling has a short remaining life.
 
@@ -276,7 +295,7 @@ Every exact-version matrix leg pointing at a `0.x` sibling has a short remaining
 
 ## 5. Changelog contract conformance landed — **blocker**
 
-**Why.** The cut must produce a correct immutable `CHANGELOG/<version>.md` snapshot. A
+**Why.** The cut must produce a correct immutable `CHANGELOG/v<x.y.z>.md` snapshot. A
 repository that is not on the current changelog contract cannot dispatch a conforming
 release, and the release is the whole point of the wave.
 
@@ -284,7 +303,7 @@ release, and the release is the whole point of the wave.
 
 - [ ] The repository is on the canonical changelog contract
       ([ADR 0038](../decisions/0038-canonical-changelog-contract/README.md)):
-      `NEXT/` fragments as the sole unreleased store, immutable `CHANGELOG/<version>.md`
+      `NEXT/` fragments as the sole unreleased store, immutable `CHANGELOG/v<x.y.z>.md`
       snapshots, no hand-authored combined `CHANGELOG.md` in a feature pull request.
 - [ ] Its changelog caller is **generated** by `scripts/gen-changelog-caller.sh` at an
       immutable contract SHA — never hand-written, never partially updated.
@@ -320,7 +339,9 @@ the mechanism that shipped `verjson-authn` `1.0.2`.
 nearly cut a *restricting* `exports` addition as a patch, because the fragment declared no
 `impact:` and the contract defaulted it. Note also that `check-pr` does **not** enforce the
 field on fragments already present on the base — only `validate --base <ref>` rejects a
-*newly added* fragment that omits it, and a dated migration grace ran through 2026-08-29 UTC.
+*newly added* fragment that omits it. A dated migration grace **runs through 2026-08-29
+UTC and is still active** (`scripts/changelog.py:494`), so before that date a green
+`validate --base` proves nothing about `impact:` — check the field by reading it.
 
 **Bar.**
 
@@ -331,8 +352,11 @@ field on fragments already present on the base — only `validate --base <ref>` 
 - [ ] Each declared `impact:` has been checked against what the change actually did to the
       published surface, using item 1's audit — not against the commit message type.
 - [ ] `python3 scripts/changelog.py next-version --repo-root .` (at the pinned contract)
-      returns the version the repository intends to cut. If it does not return `1.0.0`,
-      an `impact:` is wrong.
+      returns the version the repository intends to cut. The command emits a **`v`-prefixed
+      tag**, so the expected output is `v1.0.0`, not `1.0.0` (`--prefix` defaults to `v`;
+      `scripts/changelog.py:691`, `:698`). If it returns anything else, an `impact:` is
+      wrong — or the stream has no previous snapshot, in which case the command exits
+      non-zero because a first release establishes its own baseline.
 
 ---
 
@@ -375,9 +399,13 @@ noticed them until an explicit sweep.
 
 **Bar.**
 
-- [ ] `npm audit` reports no high or critical advisory, or each remaining one has a
-      documented, evidence-backed dismissal.
-- [ ] The GitHub Dependabot alert list for the repository is empty or fully adjudicated.
+- [ ] `npm audit` reports no **high or critical** advisory, or each remaining one has a
+      documented, evidence-backed dismissal. High and critical must be *remediated or
+      dismissed with evidence*; moderate and low must be *adjudicated* — a recorded decision
+      — but need not be remediated to pass.
+- [ ] Every GitHub Dependabot alert is adjudicated on that same rule. An empty list passes
+      trivially; an open **moderate** alert with a recorded decision also passes, and one
+      with no recorded decision FAILs.
 - [ ] The sweep is **deliberate**, not incidental: record the command and its output. An
       advisory that disappeared because some unrelated lockfile refresh happened to move a
       transitive pin was never actually assessed.
@@ -394,8 +422,10 @@ correct.
 **Bar.**
 
 - [ ] Every exported symbol in the audited `.d.ts` surface (item 1) is either documented or
-      deliberately internal — and anything internal is genuinely unreachable through the
-      `exports` map (item 2), not merely undocumented.
+      deliberately internal. **"Documented" means a TSDoc comment on the declaration** —
+      README prose is not a substitute, because it is not carried in the published types.
+      Anything internal must be genuinely unreachable through the `exports` map (item 2),
+      not merely undocumented. A symbol that is neither TSDoc'd nor unreachable FAILs.
 - [ ] Every example in the README executes against the packed tarball. An example that has
       drifted from the API is a FAIL.
 - [ ] The stated peer/engine requirements match `package.json` — including the ranges
