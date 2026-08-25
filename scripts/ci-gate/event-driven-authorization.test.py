@@ -12,6 +12,7 @@ ROOT = Path(__file__).resolve().parents[2]
 REVIEW = ROOT / ".github/workflows/ai-review-merge.yml"
 REARM = ROOT / ".github/workflows/gate-rearm.yml"
 PROMOTE = ROOT / ".github/workflows/ai-privileged-merge.yml"
+TERMINAL_MERGE = ROOT / "scripts/ci-gate/terminal-merge.sh"
 RETRY = ROOT / ".github/workflows/ai-promotion-retry.yml"
 APP_TOKEN_ACTION = "actions/create-github-app-token"
 IMMUTABLE_ACTION = re.compile(rf"^{re.escape(APP_TOKEN_ACTION)}@[0-9a-f]{{40}}$")
@@ -312,8 +313,10 @@ def main() -> int:
             "numeric App ID must remain the receipt and check-run identity boundary")
     require("AI review authorization" in rearm_text and "AI review authorization" in promote_text,
             "arm and promotion must agree on the unambiguous required-check name")
-    require("gh pr merge" in promote_text and "--admin --squash" in promote_text and
-            '--match-head-commit "$EXPECTED_HEAD_SHA"' in promote_text,
+    terminal_merge_text = TERMINAL_MERGE.read_text(encoding="utf-8")
+    require("terminal-merge.sh" in promote_text and "gh pr merge" in terminal_merge_text and
+            "--admin --squash" in terminal_merge_text and
+            '--match-head-commit "$EXPECTED_HEAD_SHA"' in terminal_merge_text,
             "trusted continuation must terminally merge only the exact authorized head")
     require("retention-days: 90" in rearm_text,
             "arm receipts must survive the supported long-lived hold window")

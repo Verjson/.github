@@ -11,6 +11,7 @@ Reverse-chronological index of org-level decisions.
 <!-- BEGIN ADR INDEX -->
 | # | Date | Decision |
 |---|------|----------|
+| [0133](0133-bind-terminal-merge-to-live-default-branch/README.md) | 2026-08-25 | Bind terminal merge to the live default branch |
 | [0132](0132-base-authorized-pre-contract-snapshot-moves/README.md) | 2026-08-25 | Base-authorized pre-contract snapshot moves |
 | [0131](0131-bind-terminal-caller-read-ceiling-to-callee/README.md) | 2026-08-25 | Bind the terminal caller read ceiling to the callee |
 | [0130](0130-separate-explicit-label-caller/README.md) | 2026-08-24 | Separate explicit review labels from the required-workflow trigger |
