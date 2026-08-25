@@ -63,6 +63,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
+          fetch-tags: true
           # The contract engine is `python3` from a SEPARATE checkout running in
           # this same workspace, so a persisted credential in the consumer's
           # `.git/config` sits inside the blast radius of whatever that engine
