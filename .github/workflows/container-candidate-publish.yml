@@ -15,6 +15,10 @@ on:
         description: SHA-256 of the canonical credential-bound acquisition implementation
         required: true
         type: string
+      retry-sha256:
+        description: SHA-256 of the canonical exact-SHA retry verifier
+        required: true
+        type: string
       runner:
         description: Optional JSON runner labels for build-only jobs
         required: false
@@ -53,11 +57,13 @@ jobs:
           # JSON preserves the documented called-job identity while actionlint 1.7.7's
           # static schema predates job.workflow_sha.
           JOB_WORKFLOW_SHA: ${{ fromJSON(toJSON(job)).workflow_sha }}
+          RETRY_SHA256: ${{ inputs.retry-sha256 }}
           SOURCE_PATH: .container-candidate-source-${{ github.run_id }}-${{ github.run_attempt }}
         run: |
           set -euo pipefail
           [[ "$CONTRACT_REF" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::contract-ref must be a 40-hex commit"; exit 1; }
           [ "$CONTRACT_REF" = "$JOB_WORKFLOW_SHA" ] || { echo "::error::contract-ref must identify the executing reusable workflow"; exit 1; }
+          [[ "$RETRY_SHA256" =~ ^[0-9a-f]{64}$ ]] || { echo "::error::retry-sha256 must be a lowercase SHA-256 digest"; exit 1; }
           [[ "$CONFIG_RELATIVE_PATH" =~ ^([A-Za-z0-9][A-Za-z0-9._-]*/)*[A-Za-z0-9][A-Za-z0-9._-]*\.json$ ]] \
             || { echo "::error::config-path must be a normalized repository-relative JSON path"; exit 1; }
           source_root="$(realpath -e "$SOURCE_PATH")" \
@@ -330,8 +336,61 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ github.token }}
-      - id: build
+      - id: retry
+        name: Reuse only an exactly attested immutable image
         if: matrix.baseVariant == ''
+        env:
+          CANDIDATE: ${{ needs.prepare.outputs.candidate }}
+          CONFIG_PATH: ${{ inputs.config-path }}
+          CONTRACT_REF: ${{ inputs.contract-ref }}
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ matrix.repository }}
+          RETRY_SHA256: ${{ inputs.retry-sha256 }}
+          VARIANT: ${{ matrix.variant }}
+        run: |
+          set -euo pipefail
+          commit_tag="$REPOSITORY:sha-$GITHUB_SHA"
+          error_file="$(mktemp)"
+          if ! digest="$(docker buildx imagetools inspect "$commit_tag" --format '{{json .Manifest.Digest}}' 2>"$error_file" | tr -d '"')"; then
+            if grep -Eqi 'manifest unknown|not found' "$error_file"; then
+              echo 'reused=false' >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            cat "$error_file" >&2
+            echo '::error::could not prove immutable commit identity state' >&2
+            exit 1
+          fi
+          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo '::error::immutable commit identity returned a malformed digest'; exit 1; }
+          retry="$RUNNER_TEMP/container_candidate_retry.py"
+          oci="$RUNNER_TEMP/container_oci_index.py"
+          curl -fsSL "https://raw.githubusercontent.com/Verjson/.github/$CONTRACT_REF/scripts/container_candidate_retry.py" -o "$retry"
+          printf '%s  %s\n' "$RETRY_SHA256" "$retry" | sha256sum --check --strict
+          curl -fsSL "https://raw.githubusercontent.com/Verjson/.github/$CONTRACT_REF/scripts/container_oci_index.py" -o "$oci"
+          raw="$RUNNER_TEMP/retry-index.json"
+          buildkit="$RUNNER_TEMP/retry-buildkit-provenance.json"
+          reviewed="$RUNNER_TEMP/retry-platforms.json"
+          verified="$RUNNER_TEMP/retry-provenance.json"
+          docker buildx imagetools inspect "$REPOSITORY@$digest" --raw > "$raw"
+          docker buildx imagetools inspect "$REPOSITORY@$digest" --format '{{json .Provenance}}' > "$buildkit"
+          jq -ce --arg variant "$VARIANT" '.images[] | select(.variant == $variant) | .platforms' "$CONFIG_PATH" > "$reviewed"
+          python3 "$oci" index --index "$raw" --reviewed-platforms "$reviewed" >/dev/null
+          gh attestation verify "oci://$REPOSITORY@$digest" --repo "$GITHUB_REPOSITORY" \
+            --signer-workflow Verjson/.github/.github/workflows/container-candidate-publish.yml \
+            --signer-digest "$CONTRACT_REF" --source-digest "$GITHUB_SHA" --source-ref refs/heads/main \
+            --predicate-type https://slsa.dev/provenance/v1 --format json > "$verified"
+          attestation_id="$(python3 "$retry" --verified-provenance "$verified" --repository "$REPOSITORY" --digest "$digest" \
+            --buildkit-provenance "$buildkit" --reviewed-platforms "$reviewed" \
+            --source-repository "$GITHUB_REPOSITORY" --source-commit "$GITHUB_SHA")"
+          docker buildx imagetools create -t "$REPOSITORY:$CANDIDATE" "$REPOSITORY@$digest"
+          [ "$(docker buildx imagetools inspect "$REPOSITORY:$CANDIDATE" --format '{{json .Manifest.Digest}}' | tr -d '"')" = "$digest" ] \
+            || { echo '::error::candidate alias reconciliation diverged'; exit 1; }
+          {
+            echo 'reused=true'
+            echo "digest=$digest"
+            echo "attestation-id=$attestation_id"
+          } >> "$GITHUB_OUTPUT"
+      - id: build
+        if: matrix.baseVariant == '' && steps.retry.outputs.reused != 'true'
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         env:
           ACTIONS_ID_TOKEN_REQUEST_TOKEN: ''
@@ -350,14 +409,14 @@ jobs:
           sbom: true
           build-contexts: verjson_node_modules=${{ runner.temp }}/container-node-modules-context
       - id: provenance
-        if: matrix.baseVariant == ''
+        if: matrix.baseVariant == '' && steps.retry.outputs.reused != 'true'
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-name: ${{ matrix.repository }}
           subject-digest: ${{ steps.build.outputs.digest }}
           push-to-registry: true
       - name: Record immutable image digest
-        if: matrix.baseVariant == ''
+        if: matrix.baseVariant == '' && steps.retry.outputs.reused != 'true'
         env:
           DIGEST: ${{ steps.build.outputs.digest }}
           REPOSITORY: ${{ matrix.repository }}
@@ -380,6 +439,17 @@ jobs:
             echo "::error::could not prove commit identity state" >&2
             exit 1
           fi
+          jq -n --arg variant "$VARIANT" --arg repository "$REPOSITORY" --arg digest "$DIGEST" \
+            --arg attestationId "$ATTESTATION_ID" \
+            '{variant:$variant,repository:$repository,indexDigest:$digest,provenanceAttestationId:$attestationId}' > image.json
+      - name: Record verified reused image digest
+        if: matrix.baseVariant == '' && steps.retry.outputs.reused == 'true'
+        env:
+          ATTESTATION_ID: ${{ steps.retry.outputs.attestation-id }}
+          DIGEST: ${{ steps.retry.outputs.digest }}
+          REPOSITORY: ${{ matrix.repository }}
+          VARIANT: ${{ matrix.variant }}
+        run: |
           jq -n --arg variant "$VARIANT" --arg repository "$REPOSITORY" --arg digest "$DIGEST" \
             --arg attestationId "$ATTESTATION_ID" \
             '{variant:$variant,repository:$repository,indexDigest:$digest,provenanceAttestationId:$attestationId}' > image.json
@@ -472,6 +542,65 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ github.token }}
+      - id: retry
+        name: Reuse only an exactly attested immutable derived image
+        if: matrix.baseVariant != ''
+        env:
+          BASE_VARIANT: ${{ matrix.baseVariant }}
+          CANDIDATE: ${{ needs.prepare.outputs.candidate }}
+          CONFIG_PATH: ${{ inputs.config-path }}
+          CONTRACT_REF: ${{ inputs.contract-ref }}
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ matrix.repository }}
+          RETRY_SHA256: ${{ inputs.retry-sha256 }}
+          VARIANT: ${{ matrix.variant }}
+        run: |
+          set -euo pipefail
+          commit_tag="$REPOSITORY:sha-$GITHUB_SHA"
+          error_file="$(mktemp)"
+          if ! digest="$(docker buildx imagetools inspect "$commit_tag" --format '{{json .Manifest.Digest}}' 2>"$error_file" | tr -d '"')"; then
+            if grep -Eqi 'manifest unknown|not found' "$error_file"; then
+              echo 'reused=false' >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            cat "$error_file" >&2
+            echo '::error::could not prove immutable commit identity state' >&2
+            exit 1
+          fi
+          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo '::error::immutable commit identity returned a malformed digest'; exit 1; }
+          base_repository="$(jq -er --arg variant "$BASE_VARIANT" '.images[] | select(.variant == $variant) | .repository' "$CONFIG_PATH")"
+          base_digest="$(docker buildx imagetools inspect "$base_repository:sha-$GITHUB_SHA" --format '{{json .Manifest.Digest}}' | tr -d '"')"
+          [[ "$base_digest" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo '::error::immutable base identity is absent or malformed'; exit 1; }
+          retry="$RUNNER_TEMP/container_candidate_retry.py"
+          oci="$RUNNER_TEMP/container_oci_index.py"
+          curl -fsSL "https://raw.githubusercontent.com/Verjson/.github/$CONTRACT_REF/scripts/container_candidate_retry.py" -o "$retry"
+          printf '%s  %s\n' "$RETRY_SHA256" "$retry" | sha256sum --check --strict
+          curl -fsSL "https://raw.githubusercontent.com/Verjson/.github/$CONTRACT_REF/scripts/container_oci_index.py" -o "$oci"
+          raw="$RUNNER_TEMP/retry-index.json"
+          buildkit="$RUNNER_TEMP/retry-buildkit-provenance.json"
+          reviewed="$RUNNER_TEMP/retry-platforms.json"
+          verified="$RUNNER_TEMP/retry-provenance.json"
+          docker buildx imagetools inspect "$REPOSITORY@$digest" --raw > "$raw"
+          docker buildx imagetools inspect "$REPOSITORY@$digest" --format '{{json .Provenance}}' > "$buildkit"
+          jq -ce --arg variant "$VARIANT" '.images[] | select(.variant == $variant) | .platforms' "$CONFIG_PATH" > "$reviewed"
+          python3 "$oci" index --index "$raw" --reviewed-platforms "$reviewed" >/dev/null
+          gh attestation verify "oci://$REPOSITORY@$digest" --repo "$GITHUB_REPOSITORY" \
+            --signer-workflow Verjson/.github/.github/workflows/container-candidate-publish.yml \
+            --signer-digest "$CONTRACT_REF" --source-digest "$GITHUB_SHA" --source-ref refs/heads/main \
+            --predicate-type https://slsa.dev/provenance/v1 --format json > "$verified"
+          attestation_id="$(python3 "$retry" --verified-provenance "$verified" --repository "$REPOSITORY" --digest "$digest" \
+            --buildkit-provenance "$buildkit" --reviewed-platforms "$reviewed" \
+            --source-repository "$GITHUB_REPOSITORY" --source-commit "$GITHUB_SHA" \
+            --base-repository "$base_repository" --base-digest "$base_digest")"
+          docker buildx imagetools create -t "$REPOSITORY:$CANDIDATE" "$REPOSITORY@$digest"
+          [ "$(docker buildx imagetools inspect "$REPOSITORY:$CANDIDATE" --format '{{json .Manifest.Digest}}' | tr -d '"')" = "$digest" ] \
+            || { echo '::error::candidate alias reconciliation diverged'; exit 1; }
+          {
+            echo 'reused=true'
+            echo "digest=$digest"
+            echo "base-digest=$base_digest"
+            echo "attestation-id=$attestation_id"
+          } >> "$GITHUB_OUTPUT"
       - id: base
         if: matrix.baseVariant != ''
         env:
@@ -484,7 +613,7 @@ jobs:
           echo "image=$base_repository@$base_digest" >> "$GITHUB_OUTPUT"
           echo "digest=$base_digest" >> "$GITHUB_OUTPUT"
       - id: build
-        if: matrix.baseVariant != ''
+        if: matrix.baseVariant != '' && steps.retry.outputs.reused != 'true'
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         env:
           ACTIONS_ID_TOKEN_REQUEST_TOKEN: ''
@@ -504,13 +633,13 @@ jobs:
           sbom: true
           build-contexts: verjson_node_modules=${{ runner.temp }}/container-node-modules-context
       - id: provenance
-        if: matrix.baseVariant != ''
+        if: matrix.baseVariant != '' && steps.retry.outputs.reused != 'true'
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-name: ${{ matrix.repository }}
           subject-digest: ${{ steps.build.outputs.digest }}
           push-to-registry: true
-      - if: matrix.baseVariant != ''
+      - if: matrix.baseVariant != '' && steps.retry.outputs.reused != 'true'
         env:
           DIGEST: ${{ steps.build.outputs.digest }}
           BASE_DIGEST: ${{ steps.base.outputs.digest }}
@@ -534,6 +663,20 @@ jobs:
             echo "::error::could not prove commit identity state" >&2
             exit 1
           fi
+          jq -n --arg variant "$IMAGE_VARIANT" --arg repository "$REPOSITORY" \
+            --arg digest "$DIGEST" --arg baseVariant "$BASE_VARIANT" --arg baseDigest "$BASE_DIGEST" \
+            --arg attestationId "$ATTESTATION_ID" \
+            '{variant:$variant,repository:$repository,indexDigest:$digest,base:{variant:$baseVariant,digest:$baseDigest},provenanceAttestationId:$attestationId}' > image.json
+      - name: Record verified reused derived image digest
+        if: matrix.baseVariant != '' && steps.retry.outputs.reused == 'true'
+        env:
+          ATTESTATION_ID: ${{ steps.retry.outputs.attestation-id }}
+          BASE_DIGEST: ${{ steps.retry.outputs.base-digest }}
+          BASE_VARIANT: ${{ matrix.baseVariant }}
+          DIGEST: ${{ steps.retry.outputs.digest }}
+          IMAGE_VARIANT: ${{ matrix.variant }}
+          REPOSITORY: ${{ matrix.repository }}
+        run: |
           jq -n --arg variant "$IMAGE_VARIANT" --arg repository "$REPOSITORY" \
             --arg digest "$DIGEST" --arg baseVariant "$BASE_VARIANT" --arg baseDigest "$BASE_DIGEST" \
             --arg attestationId "$ATTESTATION_ID" \
