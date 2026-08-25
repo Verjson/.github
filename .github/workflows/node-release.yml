@@ -496,19 +496,29 @@ jobs:
             python3 - "$remote" "$expected" "$remote_receipts" <<'PY'
           import json
           import pathlib
+          import re
           import sys
 
           release = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+          if not isinstance(release, dict) or "assets" not in release or not isinstance(release["assets"], list):
+              raise SystemExit("GitHub Release inspection did not return an explicit assets list")
           expected_names = {line.split("\t")[1] for line in pathlib.Path(sys.argv[2]).read_text(encoding="utf-8").splitlines()}
           found = {}
-          for asset in release.get("assets", []):
-              name = asset.get("name")
+          for asset in release["assets"]:
+              if not isinstance(asset, dict) or not isinstance(asset.get("name"), str):
+                  raise SystemExit("GitHub Release inspection returned an asset without a string name")
+              name = asset["name"]
               if name not in expected_names:
                   continue
               if name in found:
                   raise SystemExit(f"GitHub Release returned duplicate asset name: {name}")
               digest = asset.get("digest")
-              found[name] = digest if isinstance(digest, str) and digest else "UNVERIFIABLE"
+              if digest is None:
+                  found[name] = "UNVERIFIABLE"
+              elif not isinstance(digest, str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", digest):
+                  raise SystemExit(f"GitHub Release returned malformed digest for selected asset: {name}")
+              else:
+                  found[name] = digest
           lines = [f"{name}\t{digest}" for name, digest in sorted(found.items())]
           pathlib.Path(sys.argv[3]).write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
           PY

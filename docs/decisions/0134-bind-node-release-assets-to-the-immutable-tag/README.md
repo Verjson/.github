@@ -57,6 +57,13 @@ fails closed. An absent basename is uploaded without `--clobber`, so an asset
 created between inspection and upload makes the job red rather than being
 replaced.
 
+A successful API command is not sufficient evidence of enumeration: its JSON
+must be a top-level object with an explicit `assets` list, and every member must
+be an object with a string `name`. Selected same-name members must carry either
+GitHub's exact lowercase SHA-256 receipt shape or an explicit null/missing value
+that fails as unverifiable. Missing, null, malformed, truncated, or command-failed
+inspection state authorizes zero uploads.
+
 The release job retains only its existing `contents: write` and `packages:
 write` permissions. No new credential, event, runner class, or publication
 authority is introduced.
@@ -83,6 +90,9 @@ size, and aggregate-size cases. It mutates both the checkout and predictable
 staging after admission, proves delivery still uses only receipt-bound tag
 bytes, and covers matching retries, mismatches, unverifiable digests, and an
 inspection/upload collision race.
+Malformed and incomplete successful API responses, non-object members, invalid
+names and digests, truncated JSON, and command failure are also mutation-tested
+to prove that none can be converted into evidence that an asset is absent.
 
 The existing generator and reusable-workflow contract tests pin the new input,
 the immutable contract ref, the unchanged job dependency order, and the exact

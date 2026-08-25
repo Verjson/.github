@@ -52,6 +52,14 @@ if [ "$1" = api ]; then
     matching) printf '{"assets":[{"name":"schema.graphql","digest":"sha256:%s"},{"name":"schema.sha256","digest":"sha256:%s"}]}\n' "$SCHEMA_DIGEST" "$SIDECAR_DIGEST" ;;
     mismatch) printf '%s\n' '{"assets":[{"name":"schema.graphql","digest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}]}' ;;
     unverifiable) printf '%s\n' '{"assets":[{"name":"schema.graphql","digest":null}]}' ;;
+    missing-assets) printf '%s\n' '{}' ;;
+    null-assets) printf '%s\n' '{"assets":null}' ;;
+    scalar-member) printf '%s\n' '{"assets":["schema.graphql"]}' ;;
+    missing-name) printf '%s\n' '{"assets":[{"digest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}]}' ;;
+    nonstring-name) printf '%s\n' '{"assets":[{"name":7,"digest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}]}' ;;
+    malformed-digest) printf '%s\n' '{"assets":[{"name":"schema.graphql","digest":"sha512:not-a-sha256"}]}' ;;
+    malformed-json) printf '%s\n' '{"assets":[' ;;
+    api-failure) printf '%s\n' '{"assets":['; exit 1 ;;
   esac
   exit 0
 fi
@@ -110,6 +118,15 @@ if REMOTE_MODE=race run_publish >"$work/race.out" 2>&1; then
 fi
 [ ! -s "$work/state/uploads" ]
 echo "ok - an asset created after inspection fails instead of being clobbered"
+for remote_mode in missing-assets null-assets scalar-member missing-name nonstring-name malformed-digest malformed-json api-failure; do
+  : >"$work/state/uploads"
+  if REMOTE_MODE="$remote_mode" run_publish >"$work/$remote_mode.out" 2>&1; then
+    echo "FAIL - accepted spoofed GitHub Release API state: $remote_mode" >&2
+    exit 1
+  fi
+  [ ! -s "$work/state/uploads" ]
+  echo "ok - spoofed GitHub Release API state '$remote_mode' fails with zero uploads"
+done
 
 git -C "$work/repo" restore contract/schema.graphql
 rejects 'malformed JSON' '["contract/schema.graphql"'

@@ -53,6 +53,9 @@ assert 'gh release upload "$VERSION" "$ASSET_ROOT/$name"' in release["run"]
 assert "--clobber" not in release["run"]
 assert 'asset.get("digest")' in release["run"]
 assert 'sha256:$expected_digest' in release["run"]
+assert '"assets" not in release' in release["run"]
+assert 'not isinstance(release["assets"], list)' in release["run"]
+assert 'not isinstance(asset, dict)' in release["run"]
 assets = next(step for step in steps if "BOUNDED_RELEASE_ASSETS_BEGIN" in (step.get("run") or ""))
 assert steps.index(assets) < next(i for i, step in enumerate(steps) if (step.get("run") or "").strip() == "npm ci")
 for guard in ("at most 16 paths", "symlink", "100 MiB", "250 MiB", 'git cat-file blob "HEAD:$asset"'):
