@@ -15,6 +15,10 @@ on:
         description: SHA-256 of the canonical credential-bound acquisition implementation
         required: true
         type: string
+      retry-sha256:
+        description: SHA-256 of the canonical exact-SHA retry verifier
+        required: true
+        type: string
       runner:
         description: Optional JSON runner labels for build-only jobs
         required: false
@@ -55,11 +59,13 @@ jobs:
           # JSON preserves the documented called-job identity while actionlint 1.7.7's
           # static schema predates job.workflow_sha.
           JOB_WORKFLOW_SHA: ${{ fromJSON(toJSON(job)).workflow_sha }}
+          RETRY_SHA256: ${{ inputs.retry-sha256 }}
           SOURCE_PATH: .container-candidate-source-${{ github.run_id }}-${{ github.run_attempt }}
         run: |
           set -euo pipefail
           [[ "$CONTRACT_REF" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::contract-ref must be a 40-hex commit"; exit 1; }
           [ "$CONTRACT_REF" = "$JOB_WORKFLOW_SHA" ] || { echo "::error::contract-ref must identify the executing reusable workflow"; exit 1; }
+          [[ "$RETRY_SHA256" =~ ^[0-9a-f]{64}$ ]] || { echo "::error::retry-sha256 must be a lowercase SHA-256 digest"; exit 1; }
           [[ "$CONFIG_RELATIVE_PATH" =~ ^([A-Za-z0-9][A-Za-z0-9._-]*/)*[A-Za-z0-9][A-Za-z0-9._-]*\.json$ ]] \
             || { echo "::error::config-path must be a normalized repository-relative JSON path"; exit 1; }
           source_root="$(realpath -e "$SOURCE_PATH")" \

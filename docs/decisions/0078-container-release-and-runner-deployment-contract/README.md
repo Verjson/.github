@@ -517,3 +517,49 @@ remain forbidden. The canonical helper rejects malformed identities and any comp
 document still larger than 16 MiB before OIDC signing or registry publication. This is a
 bounded encoding correction to the existing evidence contract, not a reduction in SBOM
 scope or a new trust decision.
+
+## Amendment (2026-08-24) — release executes the pinned changelog engine (#1013)
+
+The container release workflow now validates its 40-lowercase-hex `contract-ref` and
+requires `job.workflow_ref` (the identity of the reusable workflow defining the current
+job, rather than the caller-associated `github.workflow_ref`) to equal the exact canonical
+`Verjson/.github/.github/workflows/container-release.yml@<contract-ref>` identity before
+any checkout. It then checks out only `scripts/changelog.py` from that exact
+`Verjson/.github` commit into a separate credentialless path. The terminal release step
+executes that pinned copy instead of assuming the consumer has independently vendored a
+root `scripts/changelog.py`.
+
+This restores ADR 0038's immutable engine boundary for documented container-release
+adopters. A clean generated adopter therefore has every release component it needs,
+while a branch, tag, malformed ref, valid-but-different SHA, wrong workflow source/path,
+consumer-local script, persisted checkout token, or contract checkout placed after
+App-token minting fails the semantic contract. The
+Release App remains confined to the terminal protected Git and GitHub Release operation;
+this correction neither widens its Contents-only permission nor changes the job token's
+separate package authority.
+
+## Amendment (2026-08-24) — attested exact-SHA retry reuse (#1055)
+
+A rerun must inspect the immutable `sha-<source commit>` identity before invoking a
+builder. When it is absent, publication follows the normal build, attestation, and
+immutable-tag reconciliation path. When it exists, the publisher may skip rebuilding
+only after proving that the digest is a complete OCI index for the exact variant and
+reviewed platform matrix, including BuildKit's per-platform attestation evidence, and
+that GitHub verifies exactly one SLSA provenance attestation for that digest.
+
+Verification binds the attestation to the caller repository, protected source ref,
+exact source commit, canonical publication workflow, and executing immutable contract
+commit. The repository and tag are derived from reviewed configuration and
+`GITHUB_SHA`; neither is a dispatch or caller-selected retry input. Derived variants
+also require their verified BuildKit provenance to contain exactly one resolved base
+material whose repository and digest equal the base variant's immutable exact-SHA
+identity, and bind their receipt to that same digest. Missing, ambiguous, malformed,
+unprovenanced, partially indexed, platform-divergent, or unreadable state stops before
+a mutable alias is written.
+
+After successful verification, a retry may reconcile only its run-attempt candidate
+alias to the already immutable digest and emits a deterministic identity for the
+verified attestation bundle. The `sha-<source commit>` guard remains append-only: a
+fresh build whose digest differs from an existing commit identity is still rejected and
+never overwrites it. This makes retries restart-safe without treating reproducible
+rebuilding as an identity guarantee or weakening the immutable-tag quarantine signal.

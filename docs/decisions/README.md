@@ -13,6 +13,7 @@ Reverse-chronological index of org-level decisions.
 |---|------|----------|
 | [0130](0130-separate-explicit-label-caller/README.md) | 2026-08-24 | Separate explicit review labels from the required-workflow trigger |
 | [0129](0129-bridge-explicit-review-label-deliveries/README.md) | 2026-08-24 | Bridge explicit review-label deliveries into the authorization arm |
+| [0128](0128-separate-generated-contract-from-authorization-arm/README.md) | 2026-08-24 | Separate generated-contract enforcement from the authorization arm |
 | [0127](0127-bind-container-private-acquisition-to-reviewed-package-manager/README.md) | 2026-08-24 | Bind container private acquisition to the reviewed package manager |
 | [0126](0126-split-container-release-authority/README.md) | 2026-08-24 | Split container release Git and package authority |
 | [0125](0125-bootstrap-canonical-ci-adopters-fail-closed/README.md) | 2026-08-24 | Bootstrap canonical CI adopters through a fail-closed manifest |

@@ -8,6 +8,7 @@ mkdir -p "$tmp/contract/scripts"
 cp "$root/scripts/gen-container-candidate.sh" \
   "$root/scripts/container_release_manifest.py" \
   "$root/scripts/container_private_dependencies.py" \
+  "$root/scripts/container_candidate_retry.py" \
   "$tmp/contract/scripts/"
 git -C "$tmp/contract" init -q
 git -C "$tmp/contract" config user.name fixture
@@ -445,6 +446,7 @@ first_adoption_output="$tmp/first-adoption-output"
     GITHUB_RUN_ATTEMPT=1 \
     GITHUB_RUN_ID=12345 \
     JOB_WORKFLOW_SHA="$ref" \
+    RETRY_SHA256="$(printf 'c%.0s' {1..64})" \
     SOURCE_PATH=. \
     bash "$prepare_script"
 )
@@ -464,6 +466,7 @@ run_invalid_config() {
       GITHUB_RUN_ATTEMPT=1 \
       GITHUB_RUN_ID=12345 \
       JOB_WORKFLOW_SHA="$ref" \
+      RETRY_SHA256="$(printf 'c%.0s' {1..64})" \
       SOURCE_PATH=. \
       bash "$prepare_script"
   ) >/dev/null 2>&1; then
