@@ -94,8 +94,13 @@ jobs:
           [[ "$DEFAULT_BRANCH" =~ ^[A-Za-z0-9._/-]+$ ]] || exit 1
           [[ "$APP_ID" =~ ^[1-9][0-9]*$ ]] || { echo "::error::AI_REVIEW_APP_ID is unavailable"; exit 1; }
           [[ "$APP_SLUG" =~ ^[a-z0-9][a-z0-9-]*$ ]] || { echo "::error::AI_REVIEW_APP_SLUG is unavailable"; exit 1; }
-          if [ "$MINTED_APP_SLUG" != "$APP_SLUG" ]; then
-            echo "::error::AI review authorization App slug mismatch: expected '$APP_SLUG', minted '$MINTED_APP_SLUG'"
+          installation="$(gh api /installation)" || {
+            echo "::error::could not verify the minted AI review authorization App identity"; exit 1;
+          }
+          minted_app_id="$(jq -r '.app_id // ""' <<<"$installation")"
+          minted_app_slug="$(jq -r '.app_slug // ""' <<<"$installation")"
+          if [ "$MINTED_APP_SLUG" != "$APP_SLUG" ] || [ "$minted_app_id" != "$APP_ID" ] || [ "$minted_app_slug" != "$APP_SLUG" ]; then
+            echo "::error::AI review authorization App identity mismatch: expected '$APP_SLUG' ($APP_ID), token action reported '$MINTED_APP_SLUG', installation reported '$minted_app_slug' ($minted_app_id)"
             exit 1
           fi
 
@@ -379,32 +384,18 @@ jobs:
           details_url="$GITHUB_SERVER_URL/$TARGET_REPO/actions/runs/$GITHUB_RUN_ID"
           payload="$(jq -nc --arg name 'AI review authorization' --arg sha "$head_sha" \
             --arg external_id "$external_id" --arg url "$details_url" \
-            '{name:$name,head_sha:$sha,external_id:$external_id,status:"completed",conclusion:"failure",details_url:$url,
-              output:{title:"Authorization not armed",summary:"Identity and receipt validation have not completed; no review was dispatched."}}')"
-          if ! check="$(gh api --method POST "repos/$TARGET_REPO/check-runs" --input - <<<"$payload")"; then
-            echo "::error::AI review authorization check creation failed; the requested initial state was terminal failure"
-            exit 1
-          fi
+            '{name:$name,head_sha:$sha,external_id:$external_id,status:"in_progress",details_url:$url,
+              output:{title:"AI review pending",summary:"Trusted review is running for this exact head."}}')"
+          check="$(gh api --method POST "repos/$TARGET_REPO/check-runs" --input - <<<"$payload")"
           check_id="$(jq -r '.id // ""' <<<"$check")"
-          actual_app_slug="$(jq -r '.app.slug // ""' <<<"$check")"
-          if ! [[ "$check_id" =~ ^[1-9][0-9]*$ ]] ||
-             ! jq -e --argjson app_id "$APP_ID" --arg slug "$APP_SLUG" --arg external_id "$external_id" --arg id "$check_id" '
-               .id == ($id | tonumber) and .app.id == $app_id and .app.slug == $slug and
-               .external_id == $external_id and .status == "completed" and .conclusion == "failure"
-             ' <<<"$check" >/dev/null; then
-            echo "::error::AI review authorization terminal check identity mismatch: expected App '$APP_SLUG' ($APP_ID), GitHub reported '$actual_app_slug'; no review was dispatched"
-            exit 1
-          fi
-
-          {
-            echo "AUTHORIZATION_CHECK_CREATED_ID=$check_id"
-            echo "AUTHORIZATION_CHECK_CREATED_HEAD=$head_sha"
-            echo "AUTHORIZATION_CHECK_CREATED_EXTERNAL_ID=$external_id"
-            echo "AUTHORIZATION_CHECK_CREATED_DETAILS_URL=$details_url"
-          } >>"$GITHUB_ENV"
+          [[ "$check_id" =~ ^[1-9][0-9]*$ ]] || exit 1
+          jq -e --argjson app_id "$APP_ID" --arg slug "$APP_SLUG" --arg external_id "$external_id" \
+            '.app.id == $app_id and .app.slug == $slug and .external_id == $external_id' <<<"$check" >/dev/null || exit 1
 
           if [ "$head_owner" != "$GITHUB_REPOSITORY_OWNER" ]; then
-            echo "::error::fork review requires a maintainer; the authorization check remains terminal failure"
+            gh api --method PATCH "repos/$TARGET_REPO/check-runs/$check_id" -f status=completed -f conclusion=failure \
+              -f 'output[title]=Fork review requires a maintainer' \
+              -f 'output[summary]=Secret-backed autonomous review is disabled for fork repositories.'
             exit 1
           fi
 
@@ -424,46 +415,7 @@ jobs:
                  . + {delivery_event:$delivery_event,delivery_actor:$delivery_actor,
                       workflow_ref:$workflow_ref,workflow_sha:$workflow_sha}
                else . end' >"$receipt_dir/receipt.json"
-
-          force_terminal_failure() {
-            local reason="$1" response
-            for _ in 1 2 3; do
-              if response="$(gh api --method PATCH "repos/$TARGET_REPO/check-runs/$check_id" \
-                -f status=completed -f conclusion=failure \
-                -f 'output[title]=Authorization activation failed' \
-                -f "output[summary]=$reason No review was dispatched.")" &&
-                 jq -e --argjson id "$check_id" --argjson app_id "$APP_ID" --arg slug "$APP_SLUG" \
-                   --arg external_id "$external_id" '
-                     .id == $id and .app.id == $app_id and .app.slug == $slug and
-                     .external_id == $external_id and .status == "completed" and .conclusion == "failure"
-                   ' <<<"$response" >/dev/null; then
-                return 0
-              fi
-            done
-            echo "::error::could not confirm terminal failure for authorization check $check_id"
-            return 1
-          }
-
-          activation=''
-          if ! activation="$(gh api --method PATCH "repos/$TARGET_REPO/check-runs/$check_id" \
-            -f status=in_progress \
-            -f 'output[title]=AI review pending' \
-            -f 'output[summary]=Trusted review is running for this exact head.')"; then
-            force_terminal_failure 'GitHub rejected the transition to in_progress.' || exit 1
-            echo "::error::AI review authorization activation failed; terminal failure restoration was requested"
-            exit 1
-          fi
-          if ! jq -e --argjson id "$check_id" --argjson app_id "$APP_ID" --arg slug "$APP_SLUG" \
-            --arg external_id "$external_id" '
-              .id == $id and .app.id == $app_id and .app.slug == $slug and
-              .external_id == $external_id and .status == "in_progress" and .conclusion == null
-            ' <<<"$activation" >/dev/null; then
-            force_terminal_failure 'GitHub returned an invalid activation response.' || exit 1
-            echo "::error::AI review authorization activation response was malformed or identity-mismatched; terminal failure restoration was requested"
-            exit 1
-          fi
           {
-            echo "armed=true"
             echo "check_id=$check_id"
             echo "head_sha=$head_sha"
             echo "explicit_rereview=$explicit_rereview"
@@ -473,7 +425,7 @@ jobs:
           } >>"$GITHUB_OUTPUT"
 
       - name: Upload immutable arm receipt
-        if: steps.arm.outputs.armed == 'true'
+        if: steps.arm.outputs.check_id != ''
         id: receipt
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -486,7 +438,7 @@ jobs:
 
       - name: Dispatch trusted review after receipt publication
         id: dispatch
-        if: steps.arm.outputs.armed == 'true'
+        if: steps.arm.outputs.check_id != ''
         env:
           APP_TOKEN: ${{ steps.app-token.outputs.token }}
           CHECK_ID: ${{ steps.arm.outputs.check_id }}
@@ -535,48 +487,25 @@ jobs:
             exit 1
           fi
 
-      # Creation persists an exact terminal-check identity to GITHUB_ENV before
-      # activation. This guard therefore survives a lost PATCH response, shell
-      # exit, or absent step output and independently rebinds the live check
-      # before it can write only a terminal failure.
+      # The check-run is created before the receipt is published, so a failure
+      # between the two -- an artifact-quota rejection, for example -- leaves a
+      # required check pending forever: no review was dispatched, so nothing
+      # else ever completes it, and ADR 0081's promotion retry deliberately
+      # waits on a pending required check instead of resolving one. Give that
+      # check-run a terminal state here. This can only ever write a failure, so
+      # it cannot grant authorization, and it never touches a check-run that a
+      # dispatched review or an earlier failure path already owns.
       - name: Complete the authorization when no review was dispatched
-        if: always() && env.AUTHORIZATION_CHECK_CREATED_ID != '' && steps.dispatch.outcome != 'success'
+        if: always() && steps.arm.outputs.check_id != '' && steps.dispatch.outcome != 'success'
         env:
           APP_TOKEN: ${{ steps.app-token.outputs.token }}
-          CHECK_ID: ${{ env.AUTHORIZATION_CHECK_CREATED_ID }}
-          EXPECTED_EXTERNAL_ID: ${{ env.AUTHORIZATION_CHECK_CREATED_EXTERNAL_ID }}
-          EXPECTED_HEAD_SHA: ${{ env.AUTHORIZATION_CHECK_CREATED_HEAD }}
-          EXPECTED_DETAILS_URL: ${{ env.AUTHORIZATION_CHECK_CREATED_DETAILS_URL }}
+          CHECK_ID: ${{ steps.arm.outputs.check_id }}
         run: |
           set -euo pipefail
-          [[ "$TARGET_REPO" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] || exit 1
           [[ "$CHECK_ID" =~ ^[1-9][0-9]*$ ]] || exit 1
-          [[ "$EXPECTED_HEAD_SHA" =~ ^[0-9a-f]{40}$ ]] || exit 1
-          [[ "$EXPECTED_EXTERNAL_ID" =~ ^ai-review:v1:$TARGET_REPO:[1-9][0-9]*:$EXPECTED_HEAD_SHA:$GITHUB_RUN_ID:$GITHUB_RUN_ATTEMPT:[0-9a-f]{64}$ ]] || exit 1
-          [ "$EXPECTED_DETAILS_URL" = "$GITHUB_SERVER_URL/$TARGET_REPO/actions/runs/$GITHUB_RUN_ID" ] || exit 1
-          check="$(GH_TOKEN="$APP_TOKEN" gh api "repos/$TARGET_REPO/check-runs/$CHECK_ID")" || {
-            echo "::error::could not re-fetch the created authorization check for terminal cleanup"; exit 1;
-          }
-          jq -e --argjson id "$CHECK_ID" --argjson app_id "$APP_ID" --arg slug "$APP_SLUG" \
-            --arg head "$EXPECTED_HEAD_SHA" --arg external_id "$EXPECTED_EXTERNAL_ID" --arg url "$EXPECTED_DETAILS_URL" '
-              .id == $id and .app.id == $app_id and .app.slug == $slug and .head_sha == $head and
-              .external_id == $external_id and .details_url == $url and
-              (.status == "in_progress" or (.status == "completed" and .conclusion == "failure"))
-            ' <<<"$check" >/dev/null || {
-              echo "::error::created authorization check identity or state changed before terminal cleanup"; exit 1;
-            }
-          [ "$(jq -r '.status' <<<"$check")" = in_progress ] || exit 0
-          completion="$(GH_TOKEN="$APP_TOKEN" gh api --method PATCH "repos/$TARGET_REPO/check-runs/$CHECK_ID" \
+          status="$(GH_TOKEN="$APP_TOKEN" gh api "repos/$TARGET_REPO/check-runs/$CHECK_ID" --jq '.status // ""')"
+          [ "$status" = in_progress ] || exit 0
+          GH_TOKEN="$APP_TOKEN" gh api --method PATCH "repos/$TARGET_REPO/check-runs/$CHECK_ID" \
             -f status=completed -f conclusion=failure \
             -f 'output[title]=Authorization receipt unavailable' \
-            -f 'output[summary]=The immutable arm receipt was not published, so no trusted review was dispatched and no model charge was incurred. Rerun this arm run to recover the authorization; do not add the re-review label.')" || {
-              echo "::error::could not terminalize the created authorization check"; exit 1;
-            }
-          jq -e --argjson id "$CHECK_ID" --argjson app_id "$APP_ID" --arg slug "$APP_SLUG" \
-            --arg head "$EXPECTED_HEAD_SHA" --arg external_id "$EXPECTED_EXTERNAL_ID" --arg url "$EXPECTED_DETAILS_URL" '
-              .id == $id and .app.id == $app_id and .app.slug == $slug and .head_sha == $head and
-              .external_id == $external_id and .details_url == $url and
-              .status == "completed" and .conclusion == "failure"
-            ' <<<"$completion" >/dev/null || {
-              echo "::error::terminal cleanup response did not confirm the exact failed authorization check"; exit 1;
-            }
+            -f 'output[summary]=The immutable arm receipt was not published, so no trusted review was dispatched and no model charge was incurred. Rerun this arm run to recover the authorization; do not add the re-review label.'

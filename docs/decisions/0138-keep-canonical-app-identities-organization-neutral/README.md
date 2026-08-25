@@ -50,23 +50,18 @@ App ID 4583107 retains `always` bypass on all five active organization rulesets:
 `ai-authorization-arm-required` (20722935). No other bypass change is authorized.
 
 Before creating an authorization check, the arm compares the token-mint action's
-reported App slug with `AI_REVIEW_APP_SLUG`. A mismatch emits both expected and actual
-identities and fails before mutation. A new check is created as completed failure, then
-its ID, App ID, App slug, external ID, status, and conclusion are verified. Only after
-the receipt is constructed does a final PATCH promote it to `in_progress`. The PATCH
-response is verified against the same identity. A failed, malformed, or mismatched
-activation triggers a bounded restoration to verified terminal failure and never
-publishes the receipt or dispatches review.
+reported App slug with `AI_REVIEW_APP_SLUG` and queries the minted installation token's
+authenticated installation identity. Both the token action slug and installation App
+ID/slug must exactly match `AI_REVIEW_APP_ID` and `AI_REVIEW_APP_SLUG`. Missing,
+malformed, unavailable, or inconsistent identity emits one exact error and fails before
+the authorization-check POST, so the rename mismatch that caused #1086 cannot create a
+new pending check.
 
-Immediately after the terminal POST is verified, the arm persists the exact check ID,
-repository/head/run-bound external ID, and details URL through `GITHUB_ENV`. That
-job-scoped cleanup identity exists before activation and does not depend on the arm
-step reaching its output block. Receipt upload and review dispatch require the separate
-`armed=true` output. An unconditional `always()` cleanup uses the durable identity when
-dispatch did not succeed, re-fetches the check, independently rebinds its check/App IDs,
-slug, head, external ID, details URL, and allowed state, and terminalizes only that exact
-pending check. Malformed or unavailable cleanup state fails visibly without a blind
-write.
+Recovery of a check orphaned after this preflight—for example, a later process loss or
+an accepted API mutation whose response is lost—requires a cross-run reconciliation
+contract and is deliberately deferred to [#1094](https://github.com/Verjson/.github/issues/1094).
+This ADR does not claim that same-run cleanup proves recovery across runner or workflow
+termination boundaries.
 
 ## Trust boundaries
 
@@ -74,16 +69,12 @@ write.
   continuity across a rename.
 - A configured slug is still checked because downstream bot-login and check-attribution
   assertions bind to it; disagreement is a configuration or authentication failure.
-- The minted token output is trusted only as an early consistency signal. GitHub's
-  creation and activation responses are independently verified after each mutation.
+- The token action's slug is an early consistency signal. The App ID and slug returned
+  for the authenticated installation token are independently checked before mutation.
 - The App token remains repository-scoped and permission-scoped according to its
   controlling ADR. This decision grants no new capability.
-- Creation is terminal by construction. A check cannot become pending until every
-  fallible identity and receipt check has passed, and a failed activation is restored
-  to verified terminal failure before the arm exits.
-- The cleanup authority crosses steps only through non-secret exact identity fields in
-  the job environment. It carries no token, private key, repository-controlled value,
-  or permission and is independently checked against live App-authenticated state.
+- No authorization check is created when the minted App identity disagrees with the
+  configured identity. Later orphan recovery remains outside this decision and #1086.
 
 ## Consequences
 

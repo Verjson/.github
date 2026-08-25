@@ -17,6 +17,9 @@ cat >"$tmp/bin/gh" <<'GH'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >>"$CALLS"
 case "$*" in
+  "api /installation")
+    jq -nc --argjson id "${MINTED_APP_ID:-4242}" --arg slug "${MINTED_INSTALLATION_SLUG:-verjson-ai-review}" \
+      '{app_id:$id,app_slug:$slug}' ;;
   "pr view "*)
     [ "${GH_VIEW_FAIL:-false}" != true ] || exit 1
     count="$(grep -c '^pr view ' "$CALLS")"
@@ -35,11 +38,7 @@ case "$*" in
   *"issues/7/events?per_page=100"*) printf '[{"id":1,"event":"labeled","label":{"name":"ai-review"},"actor":{"login":"maintainer"}},{"id":2,"event":"labeled","label":{"name":"re-review"},"actor":{"login":"maintainer"}}]\n' ;;
   *"contents/.github/workflows/ai-review-merge.yml?ref=main"*) cat "$CALLER_FILE" ;;
   *"--method POST repos/Verjson/example/check-runs --input -"*)
-    payload="$(cat)"
-    jq '. + {id:9100,app:{id:4242,slug:"verjson-ai-review"}}' <<<"$payload" ;;
-  *"--method PATCH repos/Verjson/example/check-runs/9100"*"status=in_progress"*)
-    jq -nc --arg ext "$(cat "$EXTERNAL_ID_FILE")" \
-      '{id:9100,app:{id:4242,slug:"verjson-ai-review"},external_id:$ext,status:"in_progress",conclusion:null}' ;;
+    jq '. + {id:9100,app:{id:4242,slug:"verjson-ai-review"}}' ;;
   "workflow run "*) printf 'DISPATCH %s\n' "$*" >>"$CALLS" ;;
   "pr comment "*) printf 'COMMENT %s\n' "$*" >>"$CALLS" ;;
   "pr edit "*) [ "${PR_EDIT_FAIL:-false}" != true ] ;;
@@ -60,8 +59,6 @@ export EVENT_HEAD_SHA=0123456789abcdef0123456789abcdef01234567
 export ACTIONS_TOKEN=actions-token GH_TOKEN=app-token GITHUB_SERVER_URL=https://github.com
 export GITHUB_RUN_ID=8000 GITHUB_RUN_ATTEMPT=1 RUNNER_TEMP="$tmp"
 export GITHUB_OUTPUT="$tmp/github-output"
-export GITHUB_ENV="$tmp/github-env"
-export EXTERNAL_ID_FILE="$tmp/external-id"
 CALLER_FILE="$tmp/current-caller.yml"
 cp "$root/scripts/ci-gate/fixtures/ai-review-caller-a6b3ccc.yml" "$CALLER_FILE"
 printf '# current schema caller\n' >>"$CALLER_FILE"
@@ -78,24 +75,31 @@ write_hold() {
   printf '{"id":"PR_id","autoMergeRequest":null}\n' >"$DISABLED_META_FILE"
   export EVENT_NAME=pull_request_target EVENT_ACTION=synchronize
 }
-run_arm(){
-  sed '/^external_id=/a\printf "%s" "$external_id" >"$EXTERNAL_ID_FILE"' \
-    "${ARM_SCRIPT:-$tmp/arm.sh}" >"$tmp/arm-with-external-id.sh"
-  bash "$tmp/arm-with-external-id.sh"
-}
+run_arm(){ bash "${ARM_SCRIPT:-$tmp/arm.sh}"; }
 expect_fail(){ label="$1"; if run_arm >"$tmp/out" 2>&1; then fail "$label"; else pass "$label"; fi; }
 
 write_hold
 MINTED_APP_SLUG=renamed-app
 if run_arm >"$tmp/out" 2>&1; then
   fail "minted App slug mismatch was accepted"
-elif grep -q "AI review authorization App slug mismatch: expected 'verjson-ai-review', minted 'renamed-app'" "$tmp/out" \
+elif grep -q "AI review authorization App identity mismatch" "$tmp/out" \
   && ! grep -q -- '--method POST repos/Verjson/example/check-runs' "$CALLS"; then
-  pass "minted App slug mismatch fails exactly before authorization creation"
+  pass "minted App slug mismatch fails loudly before authorization creation"
 else
-  fail "minted App slug mismatch did not fail exactly before authorization creation"
+  fail "minted App slug mismatch did not fail before authorization creation"
 fi
 MINTED_APP_SLUG="$APP_SLUG"
+write_hold
+export MINTED_APP_ID=9999
+if run_arm >"$tmp/out" 2>&1; then
+  fail "minted App ID mismatch was accepted"
+elif grep -q "AI review authorization App identity mismatch" "$tmp/out" \
+  && ! grep -q -- '--method POST repos/Verjson/example/check-runs' "$CALLS"; then
+  pass "minted App ID mismatch fails loudly before authorization creation"
+else
+  fail "minted App ID mismatch did not fail before authorization creation"
+fi
+unset MINTED_APP_ID
 write_hold
 if run_arm >"$tmp/out" 2>&1; then pass "hold disables auto-merge only after authoritative confirmation"; else fail "confirmed hold failed"; fi
 write_hold; printf '{"data":null,"errors":[{"message":"denied"}]}\n' >"$GRAPHQL_FILE"
