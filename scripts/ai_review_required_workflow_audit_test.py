@@ -86,11 +86,11 @@ jobs:
             ]],
             "orgs/Verjson/actions/secrets/AI_REVIEW_APP_PRIVATE_KEY": [{"visibility": "all"}],
             "orgs/Verjson/actions/variables/AI_REVIEW_APP_ID": [{"visibility": "all", "value": "4528902"}],
-            "orgs/Verjson/actions/variables/AI_REVIEW_APP_SLUG": [{"visibility": "all", "value": "verjson-ai-review-authorization"}],
+            "orgs/Verjson/actions/variables/AI_REVIEW_APP_SLUG": [{"visibility": "all", "value": "ai-review-authorization"}],
             "orgs/Verjson/actions/variables/AI_REVIEW_CLIENT_ID": [{"visibility": "all", "value": "Iv23liObnM1yEH8j9pJu"}],
             "orgs/Verjson/installations": [{"installations": [{
                 "app_id": 4528902,
-                "app_slug": "verjson-ai-review-authorization",
+                "app_slug": "ai-review-authorization",
                 "repository_selection": "all",
                 "suspended_at": None,
                 "events": [],

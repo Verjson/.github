@@ -1,5 +1,9 @@
 # 0079 — Head-bound AI authorization and native auto-merge
 
+> **2026-08-25 identity note:** ADR 0138 records the existing App's rename to the
+> organization-neutral `ai-review-authorization` slug. Historical names below remain
+> unchanged because they describe the configuration accepted at this decision date.
+
 > **Partially superseded by [ADR 0081](../0081-event-driven-terminal-ai-promotion/README.md):**
 > native auto-merge and GitHub-owned CI waiting could not satisfy the organization
 > code-owner and last-push approval rules. The head-bound paid-review and App

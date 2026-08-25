@@ -1,5 +1,9 @@
 # 0099 — A dedicated release App replaces the admin PAT
 
+> **2026-08-25 identity note:** ADR 0138 records the existing App's organization-neutral
+> `release-authorization` slug, unchanged App/installation IDs and permission envelope,
+> and its live ruleset bypass bindings. Historical names below remain unchanged.
+
 - **Date:** 2026-08-13
 - **Issue:** [Verjson/.github#329](https://github.com/Verjson/.github/issues/329)
 - **Related:** [Verjson/.github#762](https://github.com/Verjson/.github/issues/762)

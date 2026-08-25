@@ -70,7 +70,7 @@ cp "$root/scripts/ci-gate/review-attempt-count.py" "$tmp/runner/review-attempt-c
 old_head=$(printf 'b%.0s' {1..40})
 current_head=$(printf 'a%.0s' {1..40})
 old_marker="<!-- ai-review-pass:v2:1/2 pr:7 check:8001 head:$old_head run:101 attempt:1 provider:deepseek model:deepseek-v4-pro -->"
-jq -nc --arg login 'verjson-ai-review-authorization[bot]' --arg head "$old_head" --arg body "$old_marker" \
+jq -nc --arg login 'ai-review-authorization[bot]' --arg head "$old_head" --arg body "$old_marker" \
   '[{user:{login:$login},state:"COMMENTED",commit_id:$head,body:$body}]' >"$tmp/reviews.json"
 cat >"$tmp/bin/gh" <<'GH'
 #!/usr/bin/env bash
@@ -89,7 +89,7 @@ case "$*" in
         commit_id=*) commit=${args[$((i + 1))]#commit_id=} ;;
       esac
     done
-    jq -nc --arg login 'verjson-ai-review-authorization[bot]' --arg head "$commit" --arg body "$body" \
+    jq -nc --arg login 'ai-review-authorization[bot]' --arg head "$commit" --arg body "$body" \
       '{user:{login:$login},state:"COMMENTED",commit_id:$head,body:$body,id:9002}'
     ;;
 esac
@@ -98,7 +98,7 @@ chmod +x "$tmp/bin/gh"
 : >"$tmp/calls"
 if PATH="$tmp/bin:$PATH" CALLS_FILE="$tmp/calls" REVIEWS_FILE="$tmp/reviews.json" CURRENT_HEAD="$current_head" \
   RUNNER_TEMP="$tmp/runner" GITHUB_OUTPUT="$tmp/reserve-output" TARGET_REPO=Verjson/example PR_NUMBER=7 \
-  EXPECTED_HEAD_SHA="$current_head" EXPECTED_APP_SLUG=verjson-ai-review-authorization EXPECTED_APP_ID=4528902 \
+  EXPECTED_HEAD_SHA="$current_head" EXPECTED_APP_SLUG=ai-review-authorization EXPECTED_APP_ID=4528902 \
   AUTHORIZATION_CHECK_ID=9001 ACTIONS_TOKEN=actions-token PROVIDER=deepseek MODEL=deepseek-v4-pro \
   EXPLICIT_REREVIEW=false GITHUB_RUN_ID=202 GITHUB_RUN_ATTEMPT=1 bash "$reserve_one_script" \
   && ! grep -q 'check-runs/8001' "$tmp/calls" \
