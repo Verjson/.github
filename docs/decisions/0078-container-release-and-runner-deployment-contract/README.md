@@ -563,3 +563,26 @@ verified attestation bundle. The `sha-<source commit>` guard remains append-only
 fresh build whose digest differs from an existing commit identity is still rejected and
 never overwrites it. This makes retries restart-safe without treating reproducible
 rebuilding as an identity guarantee or weakening the immutable-tag quarantine signal.
+
+## Amendment (2026-08-25) — live reusable-workflow identity canary (#1059)
+
+The `job.workflow_ref` contract must also be proven against GitHub's live reusable-call
+context, not only a simulated job object. A manual canonical canary therefore calls the
+exact reviewed container-release workflow revision with a fixed malformed candidate
+identity. The expected receipt is deliberately fail-closed: the reusable job starts,
+the workflow-identity guard succeeds, and the fixed malformed candidate fails the
+existing format check before artifact API access, App-token mint, package mutation, or
+release work. The reusable workflow's pinned checkout, Buildx setup, and registry-login
+actions precede that format check, so retained receipts must show those exact reviewed
+steps and must not claim the probe was credentialless. The registry credential remains
+the repository job token; the supplied Release App private key is not consumed because
+the token-mint step is unreachable.
+
+The canary exposes no dispatch inputs, pins the `uses` target and `contract-ref` to the
+same immutable SHA, passes only the role-based Release App credential contract, and has
+no steps of its own. Its semantic contract rejects a mutable or mismatched revision,
+caller-selected candidate data, a syntactically usable candidate identity, inherited
+secrets, and any additional job surface. A live run is accepted only with retained
+run/job logs showing the guard passed and the fixed next-step rejection; an overall
+successful run, artifact API request, App-token mint, registry mutation, or release
+mutation is a canary failure.

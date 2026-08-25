@@ -1,0 +1,23 @@
+name: container release workflow identity canary
+
+on:
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  attestations: write
+  contents: read
+  id-token: write
+  packages: write
+
+jobs:
+  probe:
+    uses: Verjson/.github/.github/workflows/container-release.yml@6462e0cc72f4d96baa4f8ff8a862db4af0f93db7
+    with:
+      version: 0.0.0-workflow-identity-canary
+      candidate-manifest: intentionally-invalid-after-workflow-ref-guard
+      config-path: container-candidate.json
+      contract-ref: 6462e0cc72f4d96baa4f8ff8a862db4af0f93db7
+      release_app_client_id: ${{ vars.RELEASE_APP_CLIENT_ID }}
+    secrets:
+      release_app_private_key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
