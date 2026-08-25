@@ -650,6 +650,84 @@ stack node
 pulls s1 s2
 head_with s1 gate "ci / build-test" "ci / eligibility" changelog-contract "changelog / validate"
 head_with s2 gate "ci / build-test" "ci / eligibility" changelog-contract "changelog / validate"
+sed -i \
+  -e 's#echo "VERJSON_CHANGELOG_TOOL_CACHE=$RUNNER_TEMP/verjson-changelog-tools" >> "$GITHUB_ENV"#echo   "VERJSON_CHANGELOG_TOOL_CACHE=${RUNNER_TEMP}/verjson-changelog-tools"  >>  "${GITHUB_ENV}"#' \
+  -e 's#bash scripts/changelog-contract.test.sh#bash "scripts/changelog-contract.test.sh"#' \
+  "$tmp/workflow.yml"
+encode_workflow
+rc="$(run_audit)"
+{ [ "$rc" = "rc=0" ] && grep -q 'result=conformant' "$tmp/out.txt"; } \
+  && pass "semantically equivalent command quoting and spacing remain conformant" \
+  || { fail "equivalent shell formatting was rejected ($rc)"; out | sed 's/^/diag - /'; }
+
+for mutation in \
+  's/${RUNNER_TEMP}/${HOME}/' \
+  's/ >> / > /' \
+  's/echo   /echo -n /' \
+  's#bash "scripts/changelog-contract.test.sh"#bash "scripts/changelog-contract.test.sh"; echo bypass#'; do
+  stack node
+  sed -i \
+    -e 's#echo "VERJSON_CHANGELOG_TOOL_CACHE=$RUNNER_TEMP/verjson-changelog-tools" >> "$GITHUB_ENV"#echo   "VERJSON_CHANGELOG_TOOL_CACHE=${RUNNER_TEMP}/verjson-changelog-tools"  >>  "${GITHUB_ENV}"#' \
+    -e 's#bash scripts/changelog-contract.test.sh#bash "scripts/changelog-contract.test.sh"#' \
+    -e "$mutation" \
+    "$tmp/workflow.yml"
+  encode_workflow
+  rc="$(run_audit)"
+  { [ "$rc" != "rc=0" ] && grep -q 'changelog-contract-job-invalid' "$tmp/out.txt"; } \
+    && pass "semantic command mutation fails workflow inspection closed: $mutation" \
+    || { fail "semantic command mutation was accepted: $mutation ($rc)"; out | sed 's/^/diag - /'; }
+done
+
+for command_boundary in cache-argument cache-redirection contract-argument; do
+  stack node
+  case "$command_boundary" in
+    cache-argument)
+      sed -i 's#      - run: echo "VERJSON_CHANGELOG_TOOL_CACHE=$RUNNER_TEMP/verjson-changelog-tools" >> "$GITHUB_ENV"#      - name: prepare cache\n        run: |\n          echo\n          "VERJSON_CHANGELOG_TOOL_CACHE=$RUNNER_TEMP/verjson-changelog-tools" >> "$GITHUB_ENV"#' "$tmp/workflow.yml"
+      ;;
+    cache-redirection)
+      sed -i 's#      - run: echo "VERJSON_CHANGELOG_TOOL_CACHE=$RUNNER_TEMP/verjson-changelog-tools" >> "$GITHUB_ENV"#      - name: prepare cache\n        run: |\n          echo "VERJSON_CHANGELOG_TOOL_CACHE=$RUNNER_TEMP/verjson-changelog-tools"\n          >> "$GITHUB_ENV"#' "$tmp/workflow.yml"
+      ;;
+    contract-argument)
+      sed -i 's#      - run: bash scripts/changelog-contract.test.sh#      - name: run contract test\n        run: |\n          bash\n          scripts/changelog-contract.test.sh#' "$tmp/workflow.yml"
+      ;;
+  esac
+  encode_workflow
+  rc="$(run_audit)"
+  { [ "$rc" != "rc=0" ] && grep -q 'changelog-contract-job-invalid' "$tmp/out.txt"; } \
+    && pass "a literal newline cannot become harmless command spacing: $command_boundary" \
+    || { fail "a command-boundary newline was accepted: $command_boundary ($rc)"; out | sed 's/^/diag - /'; }
+done
+
+for permission_shape in write unexpected duplicate malformed least-privilege; do
+  stack node
+  case "$permission_shape" in
+    write)
+      sed -i '/^    runs-on:/i\    permissions:\n      contents: write\n      pull-requests: write' "$tmp/workflow.yml"
+      ;;
+    unexpected)
+      sed -i '/^    runs-on:/i\    permissions:\n      issues: read' "$tmp/workflow.yml"
+      ;;
+    duplicate)
+      sed -i '/^    runs-on:/i\    permissions: {}\n    permissions: {}' "$tmp/workflow.yml"
+      ;;
+    malformed)
+      sed -i '/^    runs-on:/i\    permissions: contents' "$tmp/workflow.yml"
+      ;;
+    least-privilege)
+      sed -i '/^    runs-on:/i\    permissions:\n      contents: read' "$tmp/workflow.yml"
+      ;;
+  esac
+  encode_workflow
+  rc="$(run_audit)"
+  { [ "$rc" != "rc=0" ] && ! grep -q 'result=conformant' "$tmp/out.txt"; } \
+    && pass "job-level permissions outside the generated shape fail closed: $permission_shape" \
+    || { fail "job-level permissions were accepted: $permission_shape ($rc)"; out | sed 's/^/diag - /'; }
+done
+
+stack node
+pulls s1 s2
+head_with s1 gate "ci / build-test" "ci / eligibility" changelog-contract "changelog / validate"
+head_with s2 gate "ci / build-test" "ci / eligibility" changelog-contract "changelog / validate"
 sed -i 's/^    runs-on: ubuntu-24.04$/    runs-on:\n      - self-hosted\n      - linux/' "$tmp/workflow.yml"
 encode_workflow
 rc="$(run_audit)"

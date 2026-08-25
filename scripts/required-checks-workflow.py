@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import re
+import shlex
 import sys
 
 
@@ -369,11 +370,34 @@ def step_mappings(entry: tuple[str, list[str]]) -> list[dict[str, str]]:
     return steps
 
 
+def is_cache_environment_command(command: str) -> bool:
+    variable = r"\$(?:RUNNER_TEMP|\{RUNNER_TEMP\})"
+    destination = r'"\$(?:GITHUB_ENV|\{GITHUB_ENV\})"'
+    cache_word = rf'"VERJSON_CHANGELOG_TOOL_CACHE={variable}/verjson-changelog-tools"'
+    return (
+        re.fullmatch(
+            rf"[ \t]*echo[ \t]+{cache_word}[ \t]*>>[ \t]*{destination}[ \t]*",
+            command,
+        )
+        is not None
+    )
+
+
+def is_contract_test_command(command: str) -> bool:
+    if re.search(r"[\r\n;&|<>]", command):
+        return False
+    try:
+        words = shlex.split(command, posix=True)
+    except ValueError:
+        return False
+    return words == ["bash", "scripts/changelog-contract.test.sh"]
+
+
 def changelog_contract_state(parsed_jobs: dict[str, dict[str, tuple[str, list[str]]]]) -> str:
     job = parsed_jobs.get("changelog-contract")
     if job is None:
         return "absent"
-    allowed = {"permissions", "runs-on", "timeout-minutes", "steps"}
+    allowed = {"runs-on", "timeout-minutes", "steps"}
     if not set(job).issubset(allowed) or "runs-on" not in job or "steps" not in job:
         return "invalid"
     runner_value, runner_children = job["runs-on"]
@@ -402,10 +426,9 @@ def changelog_contract_state(parsed_jobs: dict[str, dict[str, tuple[str, list[st
         and re.fullmatch(r"actions/checkout@[0-9a-f]{40}", checkout.get("uses", "")) is not None
         and checkout.get("with", "") == "persist-credentials=false"
         and set(prepare_cache).issubset({"run", "name"})
-        and prepare_cache.get("run", "")
-        == 'echo "VERJSON_CHANGELOG_TOOL_CACHE=$RUNNER_TEMP/verjson-changelog-tools" >> "$GITHUB_ENV"'
+        and is_cache_environment_command(prepare_cache.get("run", ""))
         and set(command).issubset({"run", "name"})
-        and command.get("run", "") == "bash scripts/changelog-contract.test.sh"
+        and is_contract_test_command(command.get("run", ""))
     )
     return "valid" if valid else "invalid"
 
