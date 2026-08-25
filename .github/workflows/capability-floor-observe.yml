@@ -1,0 +1,89 @@
+name: Generated caller capability-floor observation
+
+on:
+  schedule:
+    - cron: '41 6 * * *'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: capability-floor-observe
+  cancel-in-progress: false
+
+jobs:
+  observe:
+    runs-on: ${{ fromJSON(vars.CI_LANE_PRIVILEGED || vars.CI_LANE_FALLBACK || '["ubuntu-24.04"]') }}
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: .capability-floor-source-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: .capability-floor-source-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Validate the observer App client ID
+        env:
+          RENOVATE_COMPATIBILITY_CLIENT_ID: ${{ vars.RENOVATE_COMPATIBILITY_CLIENT_ID }}
+        run: |
+          if [[ -z "$RENOVATE_COMPATIBILITY_CLIENT_ID" || "$RENOVATE_COMPATIBILITY_CLIENT_ID" =~ ^[0-9]+$ ]]; then
+            echo "::error::RENOVATE_COMPATIBILITY_CLIENT_ID must be the GitHub App client ID, not an empty or numeric legacy App ID."
+            exit 1
+          fi
+      - name: Derive exact reviewed repository scope
+        id: scope
+        run: |
+          set -euo pipefail
+          repositories="$(python3 scripts/capability-floor-discovery.py --print-repositories)"
+          if [[ -z "$repositories" || "$repositories" == *$'\n'* ]]; then
+            echo "::error::reviewed capability-floor repository scope is empty or multiline"
+            exit 1
+          fi
+          echo "repositories=$repositories" >> "$GITHUB_OUTPUT"
+      - name: Mint exact-scope compatibility observer token
+        id: observer-app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
+        with:
+          client-id: ${{ vars.RENOVATE_COMPATIBILITY_CLIENT_ID }}
+          private-key: ${{ secrets.RENOVATE_COMPATIBILITY_APP_PRIVATE_KEY }}
+          owner: Verjson
+          repositories: ${{ steps.scope.outputs.repositories }}
+          permission-contents: read
+      - name: Discover immutable caller pins
+        env:
+          GH_TOKEN: ${{ steps.observer-app-token.outputs.token }}
+        run: |
+          set -euo pipefail
+          python3 scripts/capability-floor-discovery.py \
+            --pins-output capability-floor-pins.json \
+            --receipts-output capability-floor-discovery-receipts.json
+      - name: Classify pins against reviewed capability floors
+        run: |
+          set -euo pipefail
+          python3 scripts/capability-floor-audit.py \
+            --pins capability-floor-pins.json \
+            > capability-floor-report.json
+          {
+            echo '## Generated caller capability-floor observation'
+            echo
+            echo '```json'
+            jq . capability-floor-report.json
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload immutable observation receipts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: capability-floor-observation-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            .capability-floor-source-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}/capability-floor-pins.json
+            .capability-floor-source-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}/capability-floor-discovery-receipts.json
+            .capability-floor-source-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}/capability-floor-report.json
+          if-no-files-found: error
+          retention-days: 14
+      - name: Remove the isolated observer checkout
+        if: ${{ always() }}
+        working-directory: ${{ github.workspace }}
+        run: rm -rf ".capability-floor-source-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}"
