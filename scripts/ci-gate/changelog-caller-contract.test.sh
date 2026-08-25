@@ -1270,6 +1270,47 @@ duplicate_dispatch_trigger() {
   sed -i 's|^  workflow_dispatch:$|  "workflow_dispatch":\n  workflow_dispatch:|' \
     "$1/.github/workflows/release.yml"
 }
+alias_dispatch_schema() {
+  sed -i 's|^  workflow_dispatch:$|  workflow_dispatch: *release_inputs|' \
+    "$1/.github/workflows/release.yml"
+}
+anchor_dispatch_schema() {
+  sed -i 's|^  workflow_dispatch:$|  workflow_dispatch: \&release_inputs|' \
+    "$1/.github/workflows/release.yml"
+}
+flow_dispatch_schema() {
+  sed -i 's|^  workflow_dispatch:$|  workflow_dispatch: {inputs: {}}|' \
+    "$1/.github/workflows/release.yml"
+}
+tag_dispatch_schema() {
+  sed -i 's|^  workflow_dispatch:$|  workflow_dispatch: !reviewed {}|' \
+    "$1/.github/workflows/release.yml"
+}
+duplicate_nested_input_key() {
+  sed -i '0,/^        required: true$/s//        required: true\n        required: false/' \
+    "$1/.github/workflows/release.yml"
+}
+add_unknown_dispatch_input() {
+  sed -i '0,/^      version:$/s//      attacker:\n        required: false\n        type: string\n      version:/' \
+    "$1/.github/workflows/release.yml"
+}
+change_dispatch_input_shape() {
+  sed -i '0,/^        required: true$/s//        required: false/' \
+    "$1/.github/workflows/release.yml"
+}
+add_yaml_directive() {
+  sed -i '1i%YAML 1.1' "$1/.github/workflows/release.yml"
+}
+add_second_yaml_document() {
+  printf '\n---\non: {push: {}}\n' >>"$1/.github/workflows/release.yml"
+}
+malform_nested_trigger_indent() {
+  sed -i 's|^    inputs:$|     inputs:|' "$1/.github/workflows/release.yml"
+}
+add_trigger_scalar_comment() {
+  sed -i '0,/^        required: true$/s//        required: true # false/' \
+    "$1/.github/workflows/release.yml"
+}
 malform_trigger_mapping() {
   sed -i 's|^on:$|on|' "$1/.github/workflows/release.yml"
 }
@@ -1352,6 +1393,17 @@ done
 expect_rejection "an aliased release trigger mapping (#1070)" add_trigger_alias
 expect_rejection "a merged release trigger mapping (#1070)" add_trigger_merge_key
 expect_rejection "duplicate quoted and plain workflow_dispatch keys (#1070)" duplicate_dispatch_trigger
+expect_rejection "a workflow_dispatch value alias (#1070)" alias_dispatch_schema
+expect_rejection "an anchored workflow_dispatch mapping (#1070)" anchor_dispatch_schema
+expect_rejection "a flow-style workflow_dispatch input mapping (#1070)" flow_dispatch_schema
+expect_rejection "an explicitly tagged workflow_dispatch mapping (#1070)" tag_dispatch_schema
+expect_rejection "a duplicate nested dispatch input key (#1070)" duplicate_nested_input_key
+expect_rejection "an unexpected dispatch input (#1070)" add_unknown_dispatch_input
+expect_rejection "a changed required dispatch-input shape (#1070)" change_dispatch_input_shape
+expect_rejection "a YAML directive (#1070)" add_yaml_directive
+expect_rejection "a second YAML document (#1070)" add_second_yaml_document
+expect_rejection "malformed nested trigger indentation (#1070)" malform_nested_trigger_indent
+expect_rejection "a scalar changed through a trailing comment (#1070)" add_trigger_scalar_comment
 expect_rejection "a malformed top-level release trigger mapping (#1070)" malform_trigger_mapping
 expect_rejection "a release caller exposed as a reusable workflow_call" add_workflow_call_trigger
 expect_rejection "a release caller fired by a release: event" add_release_trigger

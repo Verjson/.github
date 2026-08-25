@@ -1660,6 +1660,41 @@ def trigger_identity(key, quoted):
     return "on" if key.casefold() in {"y", "yes", "true", "on"} else None
 
 
+EXPECTED_TRIGGER_BLOCK = (
+    (2, "workflow_dispatch:"),
+    (4, "inputs:"),
+    (6, "version:"),
+    (8, "description: Exact next SemVer tag, including its v or stream-v prefix"),
+    (8, "required: true"),
+    (8, "type: string"),
+    (6, "prefix:"),
+    (8, "description: Exact version namespace prefix; independent from component"),
+    (8, "required: false"),
+    (8, "type: string"),
+    (8, "default: v"),
+    (6, "expected_head:"),
+    (8, "description: Optional exact default-branch head derived by release-propose"),
+    (8, "required: false"),
+    (8, "type: string"),
+    (8, "default: ''"),
+    (6, "selector_digest:"),
+    (8, "description: Optional canonical selection digest derived by release-propose"),
+    (8, "required: false"),
+    (8, "type: string"),
+    (8, "default: ''"),
+    (6, "fragments:"),
+    (8, "description: Newline-separated NEXT fragment filenames; empty selects the requested component stream"),
+    (8, "required: false"),
+    (8, "type: string"),
+    (8, "default: ''"),
+    (6, "component:"),
+    (8, "description: Optional component stream; empty selects only unscoped fragments"),
+    (8, "required: false"),
+    (8, "type: string"),
+    (8, "default: ''"),
+)
+
+
 def trigger_names():
     top_keys = set()
     trigger_entries = []
@@ -1685,25 +1720,17 @@ def trigger_names():
         index, inline = trigger_entries[0]
         if inline:
             raise ValueError("trigger mapping must use canonical block form")
-        names = []
-        child_keys = set()
-        for following in lines[index + 1:]:
+        block = []
+        for following in raw_lines[index + 1:]:
             if not following.strip():
                 continue
             indent = len(following) - len(following.lstrip())
             if indent == 0:
                 break
-            if indent != 2:
-                if not names:
-                    raise ValueError("malformed trigger indentation")
-                continue
-            key, quoted, _ = mapping_entry(following.strip())
-            identity = key
-            if identity in child_keys:
-                raise ValueError("duplicate trigger key")
-            child_keys.add(identity)
-            names.append(key)
-        return names or None
+            block.append((indent, following.strip()))
+        if tuple(block) != EXPECTED_TRIGGER_BLOCK:
+            raise ValueError("workflow_dispatch input schema differs from the generated contract")
+        return ["workflow_dispatch"]
     except ValueError as error:
         problems.append("has an ambiguous or malformed top-level trigger mapping: %s" % error)
         return None
