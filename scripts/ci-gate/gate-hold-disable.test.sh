@@ -60,6 +60,7 @@ export EVENT_HEAD_SHA=0123456789abcdef0123456789abcdef01234567
 export ACTIONS_TOKEN=actions-token GH_TOKEN=app-token GITHUB_SERVER_URL=https://github.com
 export GITHUB_RUN_ID=8000 GITHUB_RUN_ATTEMPT=1 RUNNER_TEMP="$tmp"
 export GITHUB_OUTPUT="$tmp/github-output"
+export GITHUB_ENV="$tmp/github-env"
 export EXTERNAL_ID_FILE="$tmp/external-id"
 CALLER_FILE="$tmp/current-caller.yml"
 cp "$root/scripts/ci-gate/fixtures/ai-review-caller-a6b3ccc.yml" "$CALLER_FILE"

@@ -396,6 +396,13 @@ jobs:
             exit 1
           fi
 
+          {
+            echo "AUTHORIZATION_CHECK_CREATED_ID=$check_id"
+            echo "AUTHORIZATION_CHECK_CREATED_HEAD=$head_sha"
+            echo "AUTHORIZATION_CHECK_CREATED_EXTERNAL_ID=$external_id"
+            echo "AUTHORIZATION_CHECK_CREATED_DETAILS_URL=$details_url"
+          } >>"$GITHUB_ENV"
+
           if [ "$head_owner" != "$GITHUB_REPOSITORY_OWNER" ]; then
             echo "::error::fork review requires a maintainer; the authorization check remains terminal failure"
             exit 1
@@ -456,6 +463,7 @@ jobs:
             exit 1
           fi
           {
+            echo "armed=true"
             echo "check_id=$check_id"
             echo "head_sha=$head_sha"
             echo "explicit_rereview=$explicit_rereview"
@@ -465,7 +473,7 @@ jobs:
           } >>"$GITHUB_OUTPUT"
 
       - name: Upload immutable arm receipt
-        if: steps.arm.outputs.check_id != ''
+        if: steps.arm.outputs.armed == 'true'
         id: receipt
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -478,7 +486,7 @@ jobs:
 
       - name: Dispatch trusted review after receipt publication
         id: dispatch
-        if: steps.arm.outputs.check_id != ''
+        if: steps.arm.outputs.armed == 'true'
         env:
           APP_TOKEN: ${{ steps.app-token.outputs.token }}
           CHECK_ID: ${{ steps.arm.outputs.check_id }}
@@ -527,25 +535,48 @@ jobs:
             exit 1
           fi
 
-      # The check-run is created before the receipt is published, so a failure
-      # between the two -- an artifact-quota rejection, for example -- leaves a
-      # required check pending forever: no review was dispatched, so nothing
-      # else ever completes it, and ADR 0081's promotion retry deliberately
-      # waits on a pending required check instead of resolving one. Give that
-      # check-run a terminal state here. This can only ever write a failure, so
-      # it cannot grant authorization, and it never touches a check-run that a
-      # dispatched review or an earlier failure path already owns.
+      # Creation persists an exact terminal-check identity to GITHUB_ENV before
+      # activation. This guard therefore survives a lost PATCH response, shell
+      # exit, or absent step output and independently rebinds the live check
+      # before it can write only a terminal failure.
       - name: Complete the authorization when no review was dispatched
-        if: always() && steps.arm.outputs.check_id != '' && steps.dispatch.outcome != 'success'
+        if: always() && env.AUTHORIZATION_CHECK_CREATED_ID != '' && steps.dispatch.outcome != 'success'
         env:
           APP_TOKEN: ${{ steps.app-token.outputs.token }}
-          CHECK_ID: ${{ steps.arm.outputs.check_id }}
+          CHECK_ID: ${{ env.AUTHORIZATION_CHECK_CREATED_ID }}
+          EXPECTED_EXTERNAL_ID: ${{ env.AUTHORIZATION_CHECK_CREATED_EXTERNAL_ID }}
+          EXPECTED_HEAD_SHA: ${{ env.AUTHORIZATION_CHECK_CREATED_HEAD }}
+          EXPECTED_DETAILS_URL: ${{ env.AUTHORIZATION_CHECK_CREATED_DETAILS_URL }}
         run: |
           set -euo pipefail
+          [[ "$TARGET_REPO" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] || exit 1
           [[ "$CHECK_ID" =~ ^[1-9][0-9]*$ ]] || exit 1
-          status="$(GH_TOKEN="$APP_TOKEN" gh api "repos/$TARGET_REPO/check-runs/$CHECK_ID" --jq '.status // ""')"
-          [ "$status" = in_progress ] || exit 0
-          GH_TOKEN="$APP_TOKEN" gh api --method PATCH "repos/$TARGET_REPO/check-runs/$CHECK_ID" \
+          [[ "$EXPECTED_HEAD_SHA" =~ ^[0-9a-f]{40}$ ]] || exit 1
+          [[ "$EXPECTED_EXTERNAL_ID" =~ ^ai-review:v1:$TARGET_REPO:[1-9][0-9]*:$EXPECTED_HEAD_SHA:$GITHUB_RUN_ID:$GITHUB_RUN_ATTEMPT:[0-9a-f]{64}$ ]] || exit 1
+          [ "$EXPECTED_DETAILS_URL" = "$GITHUB_SERVER_URL/$TARGET_REPO/actions/runs/$GITHUB_RUN_ID" ] || exit 1
+          check="$(GH_TOKEN="$APP_TOKEN" gh api "repos/$TARGET_REPO/check-runs/$CHECK_ID")" || {
+            echo "::error::could not re-fetch the created authorization check for terminal cleanup"; exit 1;
+          }
+          jq -e --argjson id "$CHECK_ID" --argjson app_id "$APP_ID" --arg slug "$APP_SLUG" \
+            --arg head "$EXPECTED_HEAD_SHA" --arg external_id "$EXPECTED_EXTERNAL_ID" --arg url "$EXPECTED_DETAILS_URL" '
+              .id == $id and .app.id == $app_id and .app.slug == $slug and .head_sha == $head and
+              .external_id == $external_id and .details_url == $url and
+              (.status == "in_progress" or (.status == "completed" and .conclusion == "failure"))
+            ' <<<"$check" >/dev/null || {
+              echo "::error::created authorization check identity or state changed before terminal cleanup"; exit 1;
+            }
+          [ "$(jq -r '.status' <<<"$check")" = in_progress ] || exit 0
+          completion="$(GH_TOKEN="$APP_TOKEN" gh api --method PATCH "repos/$TARGET_REPO/check-runs/$CHECK_ID" \
             -f status=completed -f conclusion=failure \
             -f 'output[title]=Authorization receipt unavailable' \
-            -f 'output[summary]=The immutable arm receipt was not published, so no trusted review was dispatched and no model charge was incurred. Rerun this arm run to recover the authorization; do not add the re-review label.'
+            -f 'output[summary]=The immutable arm receipt was not published, so no trusted review was dispatched and no model charge was incurred. Rerun this arm run to recover the authorization; do not add the re-review label.')" || {
+              echo "::error::could not terminalize the created authorization check"; exit 1;
+            }
+          jq -e --argjson id "$CHECK_ID" --argjson app_id "$APP_ID" --arg slug "$APP_SLUG" \
+            --arg head "$EXPECTED_HEAD_SHA" --arg external_id "$EXPECTED_EXTERNAL_ID" --arg url "$EXPECTED_DETAILS_URL" '
+              .id == $id and .app.id == $app_id and .app.slug == $slug and .head_sha == $head and
+              .external_id == $external_id and .details_url == $url and
+              .status == "completed" and .conclusion == "failure"
+            ' <<<"$completion" >/dev/null || {
+              echo "::error::terminal cleanup response did not confirm the exact failed authorization check"; exit 1;
+            }

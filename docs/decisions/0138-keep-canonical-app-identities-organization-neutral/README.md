@@ -58,6 +58,16 @@ response is verified against the same identity. A failed, malformed, or mismatch
 activation triggers a bounded restoration to verified terminal failure and never
 publishes the receipt or dispatches review.
 
+Immediately after the terminal POST is verified, the arm persists the exact check ID,
+repository/head/run-bound external ID, and details URL through `GITHUB_ENV`. That
+job-scoped cleanup identity exists before activation and does not depend on the arm
+step reaching its output block. Receipt upload and review dispatch require the separate
+`armed=true` output. An unconditional `always()` cleanup uses the durable identity when
+dispatch did not succeed, re-fetches the check, independently rebinds its check/App IDs,
+slug, head, external ID, details URL, and allowed state, and terminalizes only that exact
+pending check. Malformed or unavailable cleanup state fails visibly without a blind
+write.
+
 ## Trust boundaries
 
 - Numeric App and installation identities, not mutable display names, preserve
@@ -71,6 +81,9 @@ publishes the receipt or dispatches review.
 - Creation is terminal by construction. A check cannot become pending until every
   fallible identity and receipt check has passed, and a failed activation is restored
   to verified terminal failure before the arm exits.
+- The cleanup authority crosses steps only through non-secret exact identity fields in
+  the job environment. It carries no token, private key, repository-controlled value,
+  or permission and is independently checked against live App-authenticated state.
 
 ## Consequences
 

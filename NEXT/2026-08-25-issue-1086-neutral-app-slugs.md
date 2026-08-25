@@ -8,4 +8,6 @@ impact: patch
 Record the canonical CI Apps' organization-neutral live identities and make the AI
 authorization arm reject token/App slug drift before creating a check. If GitHub reports
 an inconsistent identity after creation, the arm completes that check as failure before
-exiting.
+exiting. A durable pre-activation identity lets the unconditional finalizer recover an
+accepted activation even when the activation response or arm process is lost before
+step outputs are published.
