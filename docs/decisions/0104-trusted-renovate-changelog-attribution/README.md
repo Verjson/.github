@@ -76,3 +76,12 @@ move the contract SHA.
 Regenerate adopters at the prior immutable contract SHA or remove only the
 generated attribution caller. Revert the canonical workflow and helper. Existing
 fragments and changelog history remain valid and are not deleted.
+
+## Amendment (2026-08-25) — generated contracts enforce admission (#1014)
+
+The generated adopter contract now binds the `renovate-changelog` job to the exact
+same-repository, Renovate-actor, and `renovate/` branch admission expression emitted by
+the canonical generator. Removing or weakening any conjunct fails locally before the
+trusted reusable workflow can receive the Release App credential. This closes an
+enforcement gap in the existing trust boundary; it does not change the admitted actors,
+events, permissions, or token scope.
