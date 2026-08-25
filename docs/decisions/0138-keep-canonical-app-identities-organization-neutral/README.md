@@ -33,8 +33,9 @@ The live organization-neutral App identities are:
 | Renovate compatibility observation | `renovate-compatibility` | 4693151 | 155974622 | Actions: read; Checks: read; Contents: read; Pull requests: read; Commit statuses: read; Metadata: read |
 | Terminal merge authorization | `merge-authorization` | 4693283 | 155977749 | Contents: write; Pull requests: write; Metadata: read |
 | Dependency supersession reconciliation | `canonical-dependency-supersession` | 4717539 | 156593170 | Contents: read; Pull requests: write; Metadata: read |
+| Release authorization | `release-authorization` | 4583107 | 153483031 | Contents: write; Metadata: read |
 
-All four installations select all repositories, are unsuspended, request no
+All five installations select all repositories, are unsuspended, request no
 organization permissions, and subscribe to no events or webhooks. Renaming must never
 be used as a reason to recreate an App, rotate its credentials, widen its permissions,
 change its installation scope, or alter its ruleset bypass authority.
@@ -43,12 +44,19 @@ Canonical executable fixtures use the current neutral slugs. Immutable historica
 and changelog statements retain the names that were true when recorded; this ADR is the
 dated superseding identity record.
 
+App ID 4583107 retains `always` bypass on all five active organization rulesets:
+`main-protection` (18098028), `changelog-contract-required` (20513599),
+`core-checks-node` (20515817), `core-checks-actions` (20515822), and
+`ai-authorization-arm-required` (20722935). No other bypass change is authorized.
+
 Before creating an authorization check, the arm compares the token-mint action's
 reported App slug with `AI_REVIEW_APP_SLUG`. A mismatch emits both expected and actual
-identities and fails before mutation. It also validates the App identity returned by
-GitHub after check creation. If that response is inconsistent, the arm completes the
-new check as `failure`, emits an exact error, and does not dispatch review. A slug
-mismatch must never leave an authorization check `in_progress`.
+identities and fails before mutation. A new check is created as completed failure, then
+its ID, App ID, App slug, external ID, status, and conclusion are verified. Only after
+the receipt is constructed does a final PATCH promote it to `in_progress`. The PATCH
+response is verified against the same identity. A failed, malformed, or mismatched
+activation triggers a bounded restoration to verified terminal failure and never
+publishes the receipt or dispatches review.
 
 ## Trust boundaries
 
@@ -57,11 +65,12 @@ mismatch must never leave an authorization check `in_progress`.
 - A configured slug is still checked because downstream bot-login and check-attribution
   assertions bind to it; disagreement is a configuration or authentication failure.
 - The minted token output is trusted only as an early consistency signal. GitHub's
-  check response is independently verified after mutation.
+  creation and activation responses are independently verified after each mutation.
 - The App token remains repository-scoped and permission-scoped according to its
   controlling ADR. This decision grants no new capability.
-- Any created check that cannot be attributed to the configured App reaches a terminal
-  failure state before the arm exits.
+- Creation is terminal by construction. A check cannot become pending until every
+  fallible identity and receipt check has passed, and a failed activation is restored
+  to verified terminal failure before the arm exits.
 
 ## Consequences
 

@@ -379,26 +379,25 @@ jobs:
           details_url="$GITHUB_SERVER_URL/$TARGET_REPO/actions/runs/$GITHUB_RUN_ID"
           payload="$(jq -nc --arg name 'AI review authorization' --arg sha "$head_sha" \
             --arg external_id "$external_id" --arg url "$details_url" \
-            '{name:$name,head_sha:$sha,external_id:$external_id,status:"in_progress",details_url:$url,
-              output:{title:"AI review pending",summary:"Trusted review is running for this exact head."}}')"
-          check="$(gh api --method POST "repos/$TARGET_REPO/check-runs" --input - <<<"$payload")"
+            '{name:$name,head_sha:$sha,external_id:$external_id,status:"completed",conclusion:"failure",details_url:$url,
+              output:{title:"Authorization not armed",summary:"Identity and receipt validation have not completed; no review was dispatched."}}')"
+          if ! check="$(gh api --method POST "repos/$TARGET_REPO/check-runs" --input - <<<"$payload")"; then
+            echo "::error::AI review authorization check creation failed; the requested initial state was terminal failure"
+            exit 1
+          fi
           check_id="$(jq -r '.id // ""' <<<"$check")"
-          [[ "$check_id" =~ ^[1-9][0-9]*$ ]] || exit 1
           actual_app_slug="$(jq -r '.app.slug // ""' <<<"$check")"
-          if ! jq -e --argjson app_id "$APP_ID" --arg slug "$APP_SLUG" --arg external_id "$external_id" \
-            '.app.id == $app_id and .app.slug == $slug and .external_id == $external_id' <<<"$check" >/dev/null; then
-            gh api --method PATCH "repos/$TARGET_REPO/check-runs/$check_id" \
-              -f status=completed -f conclusion=failure \
-              -f 'output[title]=Authorization App identity mismatch' \
-              -f "output[summary]=Expected App slug '$APP_SLUG'; GitHub reported '$actual_app_slug'. No review was dispatched."
-            echo "::error::AI review authorization App slug mismatch after check creation: expected '$APP_SLUG', GitHub reported '$actual_app_slug'"
+          if ! [[ "$check_id" =~ ^[1-9][0-9]*$ ]] ||
+             ! jq -e --argjson app_id "$APP_ID" --arg slug "$APP_SLUG" --arg external_id "$external_id" --arg id "$check_id" '
+               .id == ($id | tonumber) and .app.id == $app_id and .app.slug == $slug and
+               .external_id == $external_id and .status == "completed" and .conclusion == "failure"
+             ' <<<"$check" >/dev/null; then
+            echo "::error::AI review authorization terminal check identity mismatch: expected App '$APP_SLUG' ($APP_ID), GitHub reported '$actual_app_slug'; no review was dispatched"
             exit 1
           fi
 
           if [ "$head_owner" != "$GITHUB_REPOSITORY_OWNER" ]; then
-            gh api --method PATCH "repos/$TARGET_REPO/check-runs/$check_id" -f status=completed -f conclusion=failure \
-              -f 'output[title]=Fork review requires a maintainer' \
-              -f 'output[summary]=Secret-backed autonomous review is disabled for fork repositories.'
+            echo "::error::fork review requires a maintainer; the authorization check remains terminal failure"
             exit 1
           fi
 
@@ -418,6 +417,44 @@ jobs:
                  . + {delivery_event:$delivery_event,delivery_actor:$delivery_actor,
                       workflow_ref:$workflow_ref,workflow_sha:$workflow_sha}
                else . end' >"$receipt_dir/receipt.json"
+
+          force_terminal_failure() {
+            local reason="$1" response attempt
+            for attempt in 1 2 3; do
+              if response="$(gh api --method PATCH "repos/$TARGET_REPO/check-runs/$check_id" \
+                -f status=completed -f conclusion=failure \
+                -f 'output[title]=Authorization activation failed' \
+                -f "output[summary]=$reason No review was dispatched.")" &&
+                 jq -e --argjson id "$check_id" --argjson app_id "$APP_ID" --arg slug "$APP_SLUG" \
+                   --arg external_id "$external_id" '
+                     .id == $id and .app.id == $app_id and .app.slug == $slug and
+                     .external_id == $external_id and .status == "completed" and .conclusion == "failure"
+                   ' <<<"$response" >/dev/null; then
+                return 0
+              fi
+            done
+            echo "::error::could not confirm terminal failure for authorization check $check_id"
+            return 1
+          }
+
+          activation=''
+          if ! activation="$(gh api --method PATCH "repos/$TARGET_REPO/check-runs/$check_id" \
+            -f status=in_progress \
+            -f 'output[title]=AI review pending' \
+            -f 'output[summary]=Trusted review is running for this exact head.')"; then
+            force_terminal_failure 'GitHub rejected the transition to in_progress.' || exit 1
+            echo "::error::AI review authorization activation failed; terminal failure restoration was requested"
+            exit 1
+          fi
+          if ! jq -e --argjson id "$check_id" --argjson app_id "$APP_ID" --arg slug "$APP_SLUG" \
+            --arg external_id "$external_id" '
+              .id == $id and .app.id == $app_id and .app.slug == $slug and
+              .external_id == $external_id and .status == "in_progress" and .conclusion == null
+            ' <<<"$activation" >/dev/null; then
+            force_terminal_failure 'GitHub returned an invalid activation response.' || exit 1
+            echo "::error::AI review authorization activation response was malformed or identity-mismatched; terminal failure restoration was requested"
+            exit 1
+          fi
           {
             echo "check_id=$check_id"
             echo "head_sha=$head_sha"

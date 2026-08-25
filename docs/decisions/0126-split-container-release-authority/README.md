@@ -1,5 +1,9 @@
 # 0126 — Split container release Git and package authority
 
+> **2026-08-25 identity note:** ADR 0138 records the existing release App's
+> organization-neutral `release-authorization` slug and unchanged authority. Historical
+> names below remain unchanged because they describe this decision's accepted state.
+
 - **Date:** 2026-08-24
 - **Issue:** [Verjson/.github#1043](https://github.com/Verjson/.github/issues/1043)
 - **Extends:** ADR 0078 and ADR 0099

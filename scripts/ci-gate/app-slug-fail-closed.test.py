@@ -13,19 +13,20 @@ script = arm["run"]
 assert arm["env"]["MINTED_APP_SLUG"] == "${{ steps.app-token.outputs.app-slug }}"
 
 early_error = "AI review authorization App slug mismatch: expected '$APP_SLUG', minted '$MINTED_APP_SLUG'"
-post_error = "AI review authorization App slug mismatch after check creation: expected '$APP_SLUG', GitHub reported '$actual_app_slug'"
 create = 'gh api --method POST "repos/$TARGET_REPO/check-runs"'
-complete = 'gh api --method PATCH "repos/$TARGET_REPO/check-runs/$check_id"'
+activate = "-f status=in_progress"
 publish_output = 'echo "check_id=$check_id"'
 
 assert early_error in script
 assert script.index(early_error) < script.index(create)
 assert "if [ \"$MINTED_APP_SLUG\" != \"$APP_SLUG\" ]" in script
 
-assert post_error in script
-assert script.index(create) < script.index(complete) < script.index(post_error)
-assert "-f status=completed -f conclusion=failure" in script[script.index(complete):script.index(post_error)]
-assert "No review was dispatched." in script[script.index(complete):script.index(post_error)]
-assert script.index(post_error) < script.index(publish_output)
+assert 'status:"completed",conclusion:"failure"' in script
+assert script.index(create) < script.index("force_terminal_failure()") < script.index(activate)
+assert script.index(activate) < script.index(publish_output)
+assert script.count(".id == $id and .app.id == $app_id and .app.slug == $slug") >= 2
+assert script.count(".external_id == $external_id") >= 3
+assert 'status == "completed" and .conclusion == "failure"' in script
+assert 'status == "in_progress" and .conclusion == null' in script
 
-print("PASS - App slug drift fails before mutation or terminalizes the created check")
+print("PASS - App slug and authorization-check lifecycle are fail-closed by construction")

@@ -35,7 +35,11 @@ case "$*" in
   *"issues/7/events?per_page=100"*) printf '[{"id":1,"event":"labeled","label":{"name":"ai-review"},"actor":{"login":"maintainer"}},{"id":2,"event":"labeled","label":{"name":"re-review"},"actor":{"login":"maintainer"}}]\n' ;;
   *"contents/.github/workflows/ai-review-merge.yml?ref=main"*) cat "$CALLER_FILE" ;;
   *"--method POST repos/Verjson/example/check-runs --input -"*)
-    jq '. + {id:9100,app:{id:4242,slug:"verjson-ai-review"}}' ;;
+    payload="$(cat)"
+    jq '. + {id:9100,app:{id:4242,slug:"verjson-ai-review"}}' <<<"$payload" ;;
+  *"--method PATCH repos/Verjson/example/check-runs/9100"*"status=in_progress"*)
+    jq -nc --arg ext "$(cat "$EXTERNAL_ID_FILE")" \
+      '{id:9100,app:{id:4242,slug:"verjson-ai-review"},external_id:$ext,status:"in_progress",conclusion:null}' ;;
   "workflow run "*) printf 'DISPATCH %s\n' "$*" >>"$CALLS" ;;
   "pr comment "*) printf 'COMMENT %s\n' "$*" >>"$CALLS" ;;
   "pr edit "*) [ "${PR_EDIT_FAIL:-false}" != true ] ;;
@@ -56,6 +60,7 @@ export EVENT_HEAD_SHA=0123456789abcdef0123456789abcdef01234567
 export ACTIONS_TOKEN=actions-token GH_TOKEN=app-token GITHUB_SERVER_URL=https://github.com
 export GITHUB_RUN_ID=8000 GITHUB_RUN_ATTEMPT=1 RUNNER_TEMP="$tmp"
 export GITHUB_OUTPUT="$tmp/github-output"
+export EXTERNAL_ID_FILE="$tmp/external-id"
 CALLER_FILE="$tmp/current-caller.yml"
 cp "$root/scripts/ci-gate/fixtures/ai-review-caller-a6b3ccc.yml" "$CALLER_FILE"
 printf '# current schema caller\n' >>"$CALLER_FILE"
@@ -72,7 +77,11 @@ write_hold() {
   printf '{"id":"PR_id","autoMergeRequest":null}\n' >"$DISABLED_META_FILE"
   export EVENT_NAME=pull_request_target EVENT_ACTION=synchronize
 }
-run_arm(){ bash "${ARM_SCRIPT:-$tmp/arm.sh}"; }
+run_arm(){
+  sed '/^external_id=/a\printf "%s" "$external_id" >"$EXTERNAL_ID_FILE"' \
+    "${ARM_SCRIPT:-$tmp/arm.sh}" >"$tmp/arm-with-external-id.sh"
+  bash "$tmp/arm-with-external-id.sh"
+}
 expect_fail(){ label="$1"; if run_arm >"$tmp/out" 2>&1; then fail "$label"; else pass "$label"; fi; }
 
 write_hold

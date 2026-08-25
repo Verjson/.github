@@ -156,3 +156,4 @@ changelog-release	bash scripts/doc-tag-pins.test.sh
 changelog-release	bash scripts/doc-fragment-names.test.sh
 changelog-release	bash scripts/trigger-scope.test.sh
 merge-gate	python3 scripts/ci-gate/app-slug-fail-closed.test.py
+merge-gate	bash scripts/ci-gate/authorization-check-lifecycle.test.sh
