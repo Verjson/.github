@@ -15,7 +15,7 @@
 #   scripts/gen-changelog-caller.sh renderer <sha> > scripts/render-next.sh
 #   scripts/gen-changelog-caller.sh contract-test <sha> [--scope <scope>] [--node-version <version>] > scripts/changelog-contract.test.sh
 #   scripts/gen-changelog-caller.sh pr-gate <sha> [--untrusted-runner <label>[,<label>...]] > .github/workflows/changelog-contract.yml
-#   scripts/gen-changelog-caller.sh release-node <sha> [--scope <scope>] [--node-version <version>] > .github/workflows/release.yml
+#   scripts/gen-changelog-caller.sh release-node <sha> [--scope <scope>] [--node-version <version>] [--release-asset <path>]... > .github/workflows/release.yml
 #   scripts/gen-changelog-caller.sh release-artifact <sha> --build-runner <label>... [--scope <scope>] [--node-version <version>] > .github/workflows/release.yml
 #   scripts/gen-changelog-caller.sh release-propose <sha> --autonomy {propose|dispatch} > .github/workflows/release-propose.yml
 #
@@ -60,7 +60,7 @@
 set -euo pipefail
 
 usage() {
-  echo "usage: $(basename "$0") {workflow|generated-artifacts|generated-artifacts-with-adr-index|renovate-attribution|adr-index-generator|renderer|contract-test|pr-gate|release-node|release-artifact|release-propose} <40-hex-commit> [--scope <npm-scope>] [--node-version <version>] [--package-dir <relative-dir>]... [--build-runner <runner-label>]... [--autonomy {propose|dispatch}] [--untrusted-runner <label>[,<label>...]]" >&2
+  echo "usage: $(basename "$0") {workflow|generated-artifacts|generated-artifacts-with-adr-index|renovate-attribution|adr-index-generator|renderer|contract-test|pr-gate|release-node|release-artifact|release-propose} <40-hex-commit> [--scope <npm-scope>] [--node-version <version>] [--package-dir <relative-dir>]... [--release-asset <path>]... [--build-runner <runner-label>]... [--autonomy {propose|dispatch}] [--untrusted-runner <label>[,<label>...]]" >&2
   echo "required check: changelog / validate" >&2
   exit 2
 }
@@ -76,6 +76,7 @@ release_scope_set=false
 release_node_version_set=false
 release_package_dirs=(".")
 release_package_dirs_set=false
+release_assets=()
 release_build_runners=()
 release_autonomy=""
 pr_gate_untrusted_runner=""
@@ -98,6 +99,11 @@ while [ "$#" -gt 0 ]; do
       [ "$#" -ge 2 ] || usage
       release_package_dirs+=("$2")
       release_package_dirs_set=true
+      shift 2
+      ;;
+    --release-asset)
+      [ "$#" -ge 2 ] || usage
+      release_assets+=("$2")
       shift 2
       ;;
     --build-runner)
@@ -132,6 +138,38 @@ if [ "${#release_build_runners[@]}" -gt 0 ] && [ "$mode" != release-artifact ]; 
   echo "$(basename "$0"): --build-runner is accepted only by release-artifact" >&2
   exit 2
 fi
+if [ "${#release_assets[@]}" -gt 0 ] && [ "$mode" != release-node ] && [ "$mode" != contract-test ]; then
+  echo "$(basename "$0"): --release-asset is accepted only by release-node and contract-test" >&2
+  exit 2
+fi
+if [ "${#release_assets[@]}" -gt 16 ]; then
+  echo "$(basename "$0"): at most 16 --release-asset paths are accepted" >&2
+  exit 2
+fi
+release_asset_names=()
+release_assets_seen=()
+for release_asset in "${release_assets[@]}"; do
+  [[ "$release_asset" =~ ^[A-Za-z0-9._][A-Za-z0-9._-]*(/[A-Za-z0-9._][A-Za-z0-9._-]*)*$ ]] \
+    && [[ "/$release_asset/" != */./* ]] && [[ "/$release_asset/" != */../* ]] || {
+    echo "$(basename "$0"): --release-asset must be a normalized repository-relative path" >&2
+    exit 2
+  }
+  release_asset_name="${release_asset##*/}"
+  for existing_asset in "${release_assets_seen[@]}"; do
+    [ "$existing_asset" != "$release_asset" ] || {
+      echo "$(basename "$0"): release asset paths must be unique" >&2
+      exit 2
+    }
+  done
+  release_assets_seen+=("$release_asset")
+  for existing_name in "${release_asset_names[@]}"; do
+    [ "$existing_name" != "$release_asset_name" ] || {
+      echo "$(basename "$0"): release asset basenames must be unique" >&2
+      exit 2
+    }
+  done
+  release_asset_names+=("$release_asset_name")
+done
 if [ "$mode" = release-artifact ] && [ "${#release_build_runners[@]}" -eq 0 ]; then
   echo "$(basename "$0"): release-artifact requires at least one --build-runner" >&2
   exit 2
@@ -454,6 +492,7 @@ emit_release_node() {
   local generation_command="release-node ${ref}"
   local package_dirs_json='["."]'
   local package_dirs_shell=''
+  local release_assets_json='[' release_asset_sep=''
   [ "$release_scope" = "@verjson" ] \
     || generation_command="$generation_command --scope $release_scope"
   [ "$release_node_version" = "24" ] \
@@ -462,6 +501,12 @@ emit_release_node() {
     generation_command="$generation_command --package-dir $package_dir"
     package_dirs_json="${package_dirs_json%]},\"$package_dir\"]"
   done
+  for release_asset in "${release_assets[@]}"; do
+    generation_command="$generation_command --release-asset $release_asset"
+    release_assets_json="$release_assets_json$release_asset_sep\"$release_asset\""
+    release_asset_sep=,
+  done
+  release_assets_json="$release_assets_json]"
   printf -v package_dirs_shell '%q ' "${release_package_dirs[@]}"
   package_dirs_shell="${package_dirs_shell% }"
   cat <<EOF
@@ -798,6 +843,7 @@ jobs:
       node-version: \${{ '${release_node_version}' }}
       scope: '${release_scope}'
       package-dirs: '${package_dirs_json}'
+      release-assets: '${release_assets_json}'
     secrets:
       NODE_AUTH_TOKEN: \${{ secrets.NODE_AUTH_TOKEN }}
 EOF
@@ -1368,11 +1414,17 @@ emit_contract_test() {
   # variable into an adopter's test.
   local release_package_dirs_json='["."]'
   local release_package_dirs_shell=''
+  local release_assets_json='[' release_asset_sep=''
   for package_dir in "${release_package_dirs[@]:1}"; do
     release_package_dirs_json="${release_package_dirs_json%]},\"$package_dir\"]"
   done
   printf -v release_package_dirs_shell '%q ' "${release_package_dirs[@]}"
   release_package_dirs_shell="${release_package_dirs_shell% }"
+  for release_asset in "${release_assets[@]}"; do
+    release_assets_json="$release_assets_json$release_asset_sep\"$release_asset\""
+    release_asset_sep=,
+  done
+  release_assets_json="$release_assets_json]"
   cat <<EOF
 #!/usr/bin/env bash
 # Asserts that this repository still satisfies the canonical Verjson changelog
@@ -1397,6 +1449,7 @@ EXPECTED_RELEASE_SCOPE="${release_scope}"
 EXPECTED_RELEASE_NODE_VERSION="${release_node_version}"
 EXPECTED_RELEASE_PACKAGE_DIRS_JSON='${release_package_dirs_json}'
 EXPECTED_RELEASE_PACKAGE_DIRS_SHELL='${release_package_dirs_shell}'
+EXPECTED_RELEASE_ASSETS_JSON='${release_assets_json}'
 EXPECTED_RELEASE_UPLOAD_ARTIFACT='${release_upload_artifact}'
 EXPECTED_RELEASE_DOWNLOAD_ARTIFACT='${release_download_artifact}'
 EOF
@@ -2131,6 +2184,7 @@ while IFS= read -r release_workflow; do
       "$expected_node_version" \
       "scope: '$EXPECTED_RELEASE_SCOPE'" \
       "package-dirs: '$EXPECTED_RELEASE_PACKAGE_DIRS_JSON'" \
+      "release-assets: '$EXPECTED_RELEASE_ASSETS_JSON'" \
       'runner: ${{'; do
       grep -qF "$publish_input" <<<"$publish_job" \
         || fail "$release_workflow does not pass '$publish_input' to node-release.yml"

@@ -51,6 +51,11 @@ on:
         required: false
         type: string
         default: '["."]'
+      release-assets:
+        description: JSON array of committed repository-relative files to attach to the GitHub Release
+        required: false
+        type: string
+        default: '[]'
       deprecates:
         description: >-
           JSON array of {"name","message"} old npm package names (unscoped basenames, same
@@ -140,6 +145,88 @@ jobs:
         run: |
           test "$(git describe --tags --exact-match HEAD)" = "$VERSION"
           test -f "CHANGELOG/$VERSION.md"
+      - name: Validate bounded immutable release assets
+        id: release-assets
+        env:
+          RELEASE_ASSETS: ${{ inputs.release-assets }}
+          ASSET_STATE_ROOT: ${{ runner.temp }}/verjson-release-asset-validation
+        run: |
+          # BOUNDED_RELEASE_ASSETS_BEGIN
+          set -euo pipefail
+          rm -rf -- "$ASSET_STATE_ROOT"
+          mkdir -p "$ASSET_STATE_ROOT"
+          paths="$ASSET_STATE_ROOT/paths"
+          rows="$ASSET_STATE_ROOT/rows"
+          python3 - "$RELEASE_ASSETS" "$paths" <<'PY'
+          import json
+          import pathlib
+          import re
+          import sys
+
+          try:
+              assets = json.loads(sys.argv[1])
+          except json.JSONDecodeError as error:
+              raise SystemExit(f"release-assets is not valid JSON: {error}")
+          if not isinstance(assets, list) or len(assets) > 16:
+              raise SystemExit("release-assets must be a JSON array containing at most 16 paths")
+          paths = set()
+          names = set()
+          for asset in assets:
+              if (
+                  not isinstance(asset, str)
+                  or not re.fullmatch(r"[A-Za-z0-9._][A-Za-z0-9._-]*(/[A-Za-z0-9._][A-Za-z0-9._-]*)*", asset)
+                  or any(segment in {".", ".."} for segment in asset.split("/"))
+                  or asset in paths
+              ):
+                  raise SystemExit(f"invalid or duplicate release asset path: {asset}")
+              name = pathlib.PurePosixPath(asset).name
+              if name in names:
+                  raise SystemExit(f"release asset basename is duplicated: {name}")
+              paths.add(asset)
+              names.add(name)
+          pathlib.Path(sys.argv[2]).write_text("\n".join(assets) + ("\n" if assets else ""), encoding="utf-8")
+          PY
+
+          total_bytes=0
+          : >"$rows"
+          while IFS= read -r asset; do
+            [ -n "$asset" ] || continue
+            current=
+            IFS='/' read -ra parts <<<"$asset"
+            for part in "${parts[@]}"; do
+              current="${current:+$current/}$part"
+              [ ! -L "$current" ] \
+                || { echo "::error::Release asset path traverses symlink '$current'."; exit 1; }
+            done
+            [ -f "$asset" ] && [ ! -L "$asset" ] \
+              || { echo "::error::Release asset '$asset' must be a regular non-symlink file."; exit 1; }
+            git ls-files --error-unmatch -- "$asset" >/dev/null \
+              || { echo "::error::Release asset '$asset' is not tracked by the immutable tag."; exit 1; }
+            mode="$(git ls-tree HEAD -- "$asset" | awk '{print $1}')"
+            [ "$mode" = 100644 ] || [ "$mode" = 100755 ] \
+              || { echo "::error::Release asset '$asset' has unsupported git mode '$mode'."; exit 1; }
+            size="$(git cat-file -s "HEAD:$asset")"
+            [ "$size" -le 104857600 ] \
+              || { echo "::error::Release asset '$asset' exceeds 100 MiB."; exit 1; }
+            total_bytes=$((total_bytes + size))
+            [ "$total_bytes" -le 262144000 ] \
+              || { echo "::error::Release assets exceed 250 MiB total."; exit 1; }
+            digest="$(git cat-file blob "HEAD:$asset" | sha256sum | awk '{print $1}')"
+            printf '%s\t%s\t%s\t%s\n' "$asset" "${asset##*/}" "$size" "$digest" >>"$rows"
+          done <"$paths"
+          python3 - "$rows" "$GITHUB_OUTPUT" <<'PY'
+          import json
+          import pathlib
+          import sys
+
+          entries = []
+          for line in pathlib.Path(sys.argv[1]).read_text(encoding="utf-8").splitlines():
+              path, name, size, digest = line.split("\t")
+              entries.append({"path": path, "name": name, "size": int(size), "sha256": digest})
+          with pathlib.Path(sys.argv[2]).open("a", encoding="utf-8") as output:
+              output.write(f"manifest={json.dumps(entries, separators=(',', ':'))}\n")
+          PY
+          # BOUNDED_RELEASE_ASSETS_END
       - name: Prepare job-scoped npm cache
         if: inputs.cache
         run: echo "npm_config_cache=$RUNNER_TEMP/verjson-npm-cache" >> "$GITHUB_ENV"
@@ -326,8 +413,54 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           VERSION: ${{ inputs.version }}
+          RELEASE_ASSET_MANIFEST: ${{ steps.release-assets.outputs.manifest }}
+          ASSET_ROOT: ${{ runner.temp }}/verjson-release-assets
+          PATH: /usr/local/bin:/usr/bin:/bin
         run: |
           # RESTART_SAFE_GH_RELEASE_BEGIN
+          set -euo pipefail
+          state_root="${ASSET_ROOT}-state"
+          rm -rf -- "$ASSET_ROOT" "$state_root"
+          mkdir -p "$ASSET_ROOT" "$state_root"
+          expected="$state_root/expected"
+          python3 - "$RELEASE_ASSET_MANIFEST" "$expected" <<'PY'
+          import json
+          import pathlib
+          import re
+          import sys
+
+          try:
+              entries = json.loads(sys.argv[1])
+          except json.JSONDecodeError as error:
+              raise SystemExit(f"validated release-asset manifest is malformed: {error}")
+          if not isinstance(entries, list) or len(entries) > 16:
+              raise SystemExit("validated release-asset manifest has an invalid entry count")
+          lines = []
+          for entry in entries:
+              if (
+                  not isinstance(entry, dict)
+                  or set(entry) != {"path", "name", "size", "sha256"}
+                  or not isinstance(entry["path"], str)
+                  or not isinstance(entry["name"], str)
+                  or not isinstance(entry["size"], int)
+                  or not re.fullmatch(r"[0-9a-f]{64}", entry["sha256"] or "")
+              ):
+                  raise SystemExit("validated release-asset manifest has an invalid entry")
+              lines.append(f'{entry["path"]}\t{entry["name"]}\t{entry["size"]}\t{entry["sha256"]}')
+          pathlib.Path(sys.argv[2]).write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
+          PY
+          while IFS=$'\t' read -r asset name expected_size expected_digest; do
+            [ -n "$asset" ] || continue
+            mode="$(git ls-tree HEAD -- "$asset" | awk '{print $1}')"
+            [ "$mode" = 100644 ] || [ "$mode" = 100755 ] \
+              || { echo "::error::Release asset '$asset' changed to unsupported git mode '$mode' after validation."; exit 1; }
+            git show "HEAD:$asset" >"$ASSET_ROOT/$name"
+            actual_size="$(wc -c <"$ASSET_ROOT/$name")"
+            actual_digest="$(sha256sum "$ASSET_ROOT/$name" | awk '{print $1}')"
+            [ "$actual_size" = "$expected_size" ] && [ "$actual_digest" = "$expected_digest" ] \
+              || { echo "::error::Release asset '$asset' no longer matches its pre-build immutable-tag receipt."; exit 1; }
+          done <"$expected"
+
           snapshot="CHANGELOG/$VERSION.md"
           notes="$snapshot"
           notes_limit=125000
@@ -355,6 +488,55 @@ jobs:
             gh release edit "$VERSION" --notes-file "$notes"
           else
             gh release create "$VERSION" --verify-tag --notes-file "$notes"
+          fi
+          if [ -s "$expected" ]; then
+            remote="$state_root/remote"
+            gh api "repos/$GITHUB_REPOSITORY/releases/tags/$VERSION" >"$remote"
+            remote_receipts="$state_root/remote-receipts"
+            python3 - "$remote" "$expected" "$remote_receipts" <<'PY'
+          import json
+          import pathlib
+          import re
+          import sys
+
+          release = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+          if not isinstance(release, dict) or "assets" not in release or not isinstance(release["assets"], list):
+              raise SystemExit("GitHub Release inspection did not return an explicit assets list")
+          expected_names = {line.split("\t")[1] for line in pathlib.Path(sys.argv[2]).read_text(encoding="utf-8").splitlines()}
+          found = {}
+          for asset in release["assets"]:
+              if not isinstance(asset, dict) or not isinstance(asset.get("name"), str):
+                  raise SystemExit("GitHub Release inspection returned an asset without a string name")
+              name = asset["name"]
+              if name not in expected_names:
+                  continue
+              if name in found:
+                  raise SystemExit(f"GitHub Release returned duplicate asset name: {name}")
+              digest = asset.get("digest")
+              if digest is None:
+                  found[name] = "UNVERIFIABLE"
+              elif not isinstance(digest, str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", digest):
+                  raise SystemExit(f"GitHub Release returned malformed digest for selected asset: {name}")
+              else:
+                  found[name] = digest
+          lines = [f"{name}\t{digest}" for name, digest in sorted(found.items())]
+          pathlib.Path(sys.argv[3]).write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
+          PY
+            while IFS=$'\t' read -r asset name expected_size expected_digest; do
+              [ -n "$asset" ] || continue
+              remote_digest="$(awk -F '\t' -v name="$name" '$1 == name { print $2 }' "$remote_receipts")"
+              if [ -z "$remote_digest" ]; then
+                gh release upload "$VERSION" "$ASSET_ROOT/$name"
+              elif [ "$remote_digest" = "sha256:$expected_digest" ]; then
+                echo "Release asset '$name' already has the exact immutable-tag digest; keeping it."
+              elif [ "$remote_digest" = UNVERIFIABLE ]; then
+                echo "::error::Existing release asset '$name' has no verifiable SHA-256 digest; refusing to replace it."
+                exit 1
+              else
+                echo "::error::Existing release asset '$name' has digest '$remote_digest', not immutable-tag digest 'sha256:$expected_digest'; refusing to replace it."
+                exit 1
+              fi
+            done <"$expected"
           fi
           # RESTART_SAFE_GH_RELEASE_END
       - name: Deprecate renamed package names

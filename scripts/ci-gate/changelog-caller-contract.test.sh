@@ -28,8 +28,8 @@ fail() { printf 'FAIL - %s\n' "$1"; fails=$((fails + 1)); }
 workflow="$(bash "$gen" workflow "$sha")"
 renderer="$(bash "$gen" renderer "$sha")"
 default_release="$(bash "$gen" release-node "$sha")"
-custom_release="$(bash "$gen" release-node "$sha" --scope @acme --node-version 22.23.1 --package-dir compat)"
-custom_contract="$(bash "$gen" contract-test "$sha" --scope @acme --node-version 22.23.1 --package-dir compat)"
+custom_release="$(bash "$gen" release-node "$sha" --scope @acme --node-version 22.23.1 --package-dir compat --release-asset contract/schema.graphql --release-asset contract/schema.sha256)"
+custom_contract="$(bash "$gen" contract-test "$sha" --scope @acme --node-version 22.23.1 --package-dir compat --release-asset contract/schema.graphql --release-asset contract/schema.sha256)"
 generated_artifacts="$(bash "$gen" generated-artifacts "$sha")"
 generated_artifacts_with_adr="$(bash "$gen" generated-artifacts-with-adr-index "$sha")"
 renovate_attribution="$(bash "$gen" renovate-attribution "$sha")"
@@ -310,6 +310,7 @@ grep -qF 'PACKAGE_VERSION: ${{ steps.release-version.outputs.package-version }}'
   || fail "release-node omits the stamped-version verification diagnostic"
 grep -qF "node-version: \${{ '22.23.1' }}" <<<"$custom_release" \
   && grep -q "scope: '@acme'" <<<"$custom_release" \
+  && grep -qF "release-assets: '[\"contract/schema.graphql\",\"contract/schema.sha256\"]'" <<<"$custom_release" \
   && pass "release-node emits validated adopter parameters" \
   || fail "release-node ignored custom scope or Node version"
 
@@ -346,6 +347,7 @@ rm -rf "$stamp_root"
 grep -q 'EXPECTED_RELEASE_NODE_VERSION="22.23.1"' <<<"$custom_contract" \
   && grep -q 'EXPECTED_RELEASE_SCOPE="@acme"' <<<"$custom_contract" \
   && grep -qF "EXPECTED_RELEASE_PACKAGE_DIRS_JSON='[\".\",\"compat\"]'" <<<"$custom_contract" \
+  && grep -qF "EXPECTED_RELEASE_ASSETS_JSON='[\"contract/schema.graphql\",\"contract/schema.sha256\"]'" <<<"$custom_contract" \
   && grep -qF "package-dirs: '[\".\",\"compat\"]'" <<<"$custom_release" \
   && pass "contract-test carries the same release parameters" \
   || fail "contract-test does not bind the selected release parameters"
@@ -373,6 +375,21 @@ for bad_args in \
     pass "release-node rejects invalid or duplicate parameters: $bad_args"
   fi
 done
+for bad_assets in \
+  "--release-asset ../schema.graphql" \
+  "--release-asset /tmp/schema.graphql" \
+  "--release-asset contract/./schema.graphql" \
+  "--release-asset contract/schema.graphql --release-asset contract/schema.graphql" \
+  "--release-asset a/schema.graphql --release-asset b/schema.graphql"; do
+  # Intentional word splitting: fixtures contain no whitespace-bearing paths.
+  # shellcheck disable=SC2086
+  bash "$gen" release-node "$sha" $bad_assets >/dev/null 2>&1 \
+    && fail "release-node accepted invalid release assets: $bad_assets" \
+    || pass "release-node rejects invalid release assets: $bad_assets"
+done
+bash "$gen" workflow "$sha" --release-asset contract/schema.graphql >/dev/null 2>&1 \
+  && fail "workflow mode accepted release assets" \
+  || pass "non-release-node modes reject release assets"
 bash "$gen" workflow "$sha" --scope @acme >/dev/null 2>&1 \
   && fail "workflow mode accepted release-only parameters" \
   || pass "non-release generator modes reject release-only parameters"

@@ -50,6 +50,8 @@ run_notes() {
     env -u RUNNER_TEMP \
       PATH="$work/bin:$PATH" \
       TEST_STATE="$work/state" \
+      ASSET_ROOT="$work/assets" \
+      RELEASE_ASSET_MANIFEST='[]' \
       VERSION=v1.2.3 \
       GH_TOKEN=test \
       GITHUB_SERVER_URL=https://github.example \

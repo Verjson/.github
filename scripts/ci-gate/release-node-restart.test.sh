@@ -126,7 +126,8 @@ run_publish() {
 }
 run_notes() {
   ( cd "$work/repo" && PATH="$work/bin:$PATH" TEST_STATE="$work/state" \
-      VERSION=v1.2.3 GH_TOKEN=test "$@" bash -euo pipefail "$work/release-notes.sh" )
+      VERSION=v1.2.3 GH_TOKEN=test ASSET_ROOT="$work/assets" RELEASE_ASSET_MANIFEST='[]' \
+      "$@" bash -euo pipefail "$work/release-notes.sh" )
 }
 
 run_publish
