@@ -375,12 +375,17 @@ def is_cache_environment_command(command: str) -> bool:
     destination = r'"\$(?:GITHUB_ENV|\{GITHUB_ENV\})"'
     cache_word = rf'"VERJSON_CHANGELOG_TOOL_CACHE={variable}/verjson-changelog-tools"'
     return (
-        re.fullmatch(rf"\s*echo\s+{cache_word}\s*>>\s*{destination}\s*", command)
+        re.fullmatch(
+            rf"[ \t]*echo[ \t]+{cache_word}[ \t]*>>[ \t]*{destination}[ \t]*",
+            command,
+        )
         is not None
     )
 
 
 def is_contract_test_command(command: str) -> bool:
+    if re.search(r"[\r\n;&|<>]", command):
+        return False
     try:
         words = shlex.split(command, posix=True)
     except ValueError:
@@ -392,7 +397,7 @@ def changelog_contract_state(parsed_jobs: dict[str, dict[str, tuple[str, list[st
     job = parsed_jobs.get("changelog-contract")
     if job is None:
         return "absent"
-    allowed = {"permissions", "runs-on", "timeout-minutes", "steps"}
+    allowed = {"runs-on", "timeout-minutes", "steps"}
     if not set(job).issubset(allowed) or "runs-on" not in job or "steps" not in job:
         return "invalid"
     runner_value, runner_children = job["runs-on"]
