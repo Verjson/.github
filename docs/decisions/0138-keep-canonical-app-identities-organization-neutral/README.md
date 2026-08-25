@@ -50,12 +50,21 @@ App ID 4583107 retains `always` bypass on all five active organization rulesets:
 `ai-authorization-arm-required` (20722935). No other bypass change is authorized.
 
 Before creating an authorization check, the arm compares the token-mint action's
-reported App slug with `AI_REVIEW_APP_SLUG` and queries the minted installation token's
-authenticated installation identity. Both the token action slug and installation App
-ID/slug must exactly match `AI_REVIEW_APP_ID` and `AI_REVIEW_APP_SLUG`. Missing,
-malformed, unavailable, or inconsistent identity emits one exact error and fails before
-the authorization-check POST, so the rename mismatch that caused #1086 cannot create a
-new pending check.
+reported App slug with `AI_REVIEW_APP_SLUG`. A missing, malformed, or inconsistent slug
+emits one exact error and fails before the authorization-check POST, so the rename
+mismatch that caused #1086 cannot create a new pending check. The App identity is rooted
+in the reviewed private key and client ID passed only to the immutable
+`actions/create-github-app-token` action; its `app-slug` output is the independently
+compared runtime identity signal.
+
+> **2026-08-25 correction:** The first implementation additionally called
+> `GET /installation` with the minted installation token. Production
+> [run 32911395973, job 98006134512](https://github.com/Verjson/.github/actions/runs/32911395973/job/98006134512)
+> proved GitHub returns 404 for that authentication mode, blocking the legitimate App
+> before check creation. The inaccessible probe is removed. Installation/App-ID
+> continuity remains a live administrative audit assertion, not an installation-token
+> runtime capability. This correction narrows the executable preflight without changing
+> App permissions, credential delivery, or the exact action-reported slug comparison.
 
 Recovery of a check orphaned after this preflight—for example, a later process loss or
 an accepted API mutation whose response is lost—requires a cross-run reconciliation
@@ -69,8 +78,8 @@ termination boundaries.
   continuity across a rename.
 - A configured slug is still checked because downstream bot-login and check-attribution
   assertions bind to it; disagreement is a configuration or authentication failure.
-- The token action's slug is an early consistency signal. The App ID and slug returned
-  for the authenticated installation token are independently checked before mutation.
+- The pinned token action's slug output is checked before mutation. The installation
+  token is not assumed to authorize App-configuration discovery endpoints.
 - The App token remains repository-scoped and permission-scoped according to its
   controlling ADR. This decision grants no new capability.
 - No authorization check is created when the minted App identity disagrees with the
