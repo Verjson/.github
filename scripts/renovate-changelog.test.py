@@ -34,6 +34,12 @@ BODY = """This PR contains the following updates:
 |---|---|
 | [ip-address](https://redirect.github.com/ip-num/ip-num) | [`10.4.0` → `10.5.0`](https://renovatebot.com/diffs/npm/ip-address/10.4.0/10.5.0) |
 """
+PNPM_PACKAGE_MANAGER_BODY = """This PR contains the following updates:
+
+| Package | Change | [Age](https://docs.renovatebot.com/merge-confidence/) | [Adoption](https://docs.renovatebot.com/merge-confidence/) | [Passing](https://docs.renovatebot.com/merge-confidence/) | [Confidence](https://docs.renovatebot.com/merge-confidence/) |
+|---|---|---|---|---|---|
+| [pnpm](https://pnpm.io) ([source](https://redirect.github.com/pnpm/pnpm/tree/HEAD/pnpm11/pnpm)) | [`11.22.0+sha512.1ff870c4c6133dfd88fb2afc46dd13d47f09c9794b438c6fdb47ca98caf3bc16381ee0be93a091b8e3824cf01f889f46d7d9e20910fb0be1ab0fb5baa80dd621` → `11.23.0`](https://renovatebot.com/diffs/npm/pnpm/11.22.0/11.23.0) | ![age](https://developer.mend.io/api/mc/badges/age/npm/pnpm/11.23.0?slim=true) | ![adoption](https://developer.mend.io/api/mc/badges/adoption/npm/pnpm/11.23.0?slim=true) | ![passing](https://developer.mend.io/api/mc/badges/compatibility/npm/pnpm/11.22.0/11.23.0?slim=true) | ![confidence](https://developer.mend.io/api/mc/badges/confidence/npm/pnpm/11.22.0/11.23.0?slim=true) |
+"""
 # Verbatim body of Verjson/AiB#231 ("chore(deps): lock file maintenance"): the
 # weekly lockFileMaintenance class carries a two-column `Update`/`Change` table
 # with no `Package` column at all (Verjson/.github#958).
@@ -100,6 +106,26 @@ class RenovateTableTests(unittest.TestCase):
             ),
             renovate_changelog.parse_updates(BODY),
         )
+
+    def test_parses_integrity_qualified_package_manager_pnpm_row(self) -> None:
+        update = renovate_changelog.parse_updates(PNPM_PACKAGE_MANAGER_BODY)[0]
+        self.assertEqual("pnpm", update.package)
+        self.assertEqual("11.23.0", update.to_version)
+        self.assertTrue(update.from_version.startswith("11.22.0+sha512."))
+
+    def test_rejects_malformed_or_non_pnpm_integrity_qualified_versions(self) -> None:
+        fixtures = (
+            PNPM_PACKAGE_MANAGER_BODY.replace("+sha512.", "+sha256.", 1),
+            PNPM_PACKAGE_MANAGER_BODY.replace("dd621`", "dd62`", 1),
+            PNPM_PACKAGE_MANAGER_BODY.replace("dd621`", "dd62A`", 1),
+            PNPM_PACKAGE_MANAGER_BODY.replace("[pnpm]", "[npm]", 1),
+        )
+        for body in fixtures:
+            with self.subTest(body=body):
+                with self.assertRaisesRegex(
+                    renovate_changelog.AutomationError, "unsafe version"
+                ):
+                    renovate_changelog.parse_updates(body)
 
     def test_recognizes_the_lock_file_maintenance_table_shape(self) -> None:
         updates = renovate_changelog.parse_updates(LOCK_FILE_BODY)

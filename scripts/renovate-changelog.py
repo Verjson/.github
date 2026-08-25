@@ -32,10 +32,14 @@ PACKAGE = re.compile(
     r"(?:\s+\(\[[^\]]{1,64}\]\(https://[^()\s]+\)\))*$"
 )
 CHANGE = re.compile(
-    r"^(?:\[)?`([^`\r\n|]{1,128})` → `([^`\r\n|]{1,128})`"
+    r"^(?:\[)?`([^`\r\n|]{1,256})` → `([^`\r\n|]{1,256})`"
     r"(?:\]\(https://[^()\s]+\))?$"
 )
 VERSION = re.compile(r"^[0-9A-Za-z~^<>=*][0-9A-Za-z._+:/@~^<>=* -]{0,127}$")
+PNPM_INTEGRITY_PIN = re.compile(
+    r"^(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)"
+    r"(?:-[0-9A-Za-z.-]+)?\+sha512\.[0-9a-f]{128}$"
+)
 TABLE_SEPARATOR = re.compile(r"^:?-{3,}:?$")
 LOCK_FILE_HEADERS = ["Update", "Change"]
 LOCK_FILE_UPDATE_TYPE = "lockFileMaintenance"
@@ -148,7 +152,12 @@ def parse_update_row(package_cell: str, change_cell: str) -> Update:
         raise AutomationError("Renovate versions must not contain surrounding whitespace")
     if from_version == to_version:
         raise AutomationError("Renovate update table contains an unchanged version")
-    if VERSION.fullmatch(from_version) is None or VERSION.fullmatch(to_version) is None:
+    versions = (from_version, to_version)
+    if not all(
+        VERSION.fullmatch(version) is not None
+        or (package_match.group(1) == "pnpm" and PNPM_INTEGRITY_PIN.fullmatch(version) is not None)
+        for version in versions
+    ):
         raise AutomationError("Renovate update table contains an unsafe version value")
     return Update(package_match.group(1), from_version, to_version)
 
