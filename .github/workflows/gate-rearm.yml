@@ -105,8 +105,9 @@ jobs:
           }
           minted_app_id="$(jq -r '.app_id' <<<"$minted_identity")"
           minted_app_slug="$(jq -r '.app_slug' <<<"$minted_identity")"
-          if [ "$MINTED_APP_SLUG" != "$APP_SLUG" ] || [ "$minted_app_id" != "$APP_ID" ] || [ "$minted_app_slug" != "$APP_SLUG" ]; then
-            echo "::error::AI review authorization App identity mismatch: expected '$APP_SLUG' ($APP_ID), token action reported '$MINTED_APP_SLUG', installation reported '$minted_app_slug' ($minted_app_id)"
+          token_action_app_slug="$(printenv MINTED_APP_SLUG || true)"
+          if [ "$token_action_app_slug" != "$APP_SLUG" ] || [ "$minted_app_id" != "$APP_ID" ] || [ "$minted_app_slug" != "$APP_SLUG" ]; then
+            echo "::error::AI review authorization App identity mismatch: expected '$APP_SLUG' ($APP_ID), token action reported '$token_action_app_slug', installation reported '$minted_app_slug' ($minted_app_id)"
             exit 1
           fi
 
