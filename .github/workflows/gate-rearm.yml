@@ -97,8 +97,14 @@ jobs:
           installation="$(gh api /installation)" || {
             echo "::error::could not verify the minted AI review authorization App identity"; exit 1;
           }
-          minted_app_id="$(jq -r '.app_id // ""' <<<"$installation")"
-          minted_app_slug="$(jq -r '.app_slug // ""' <<<"$installation")"
+          minted_identity="$(jq -cer '
+            {app_id:(.app_id | select(type == "number" and . > 0)),
+             app_slug:(.app_slug | select(type == "string" and test("^[a-z0-9][a-z0-9-]*$")))}
+          ' <<<"$installation")" || {
+            echo "::error::minted AI review authorization App installation identity is malformed or incomplete"; exit 1;
+          }
+          minted_app_id="$(jq -r '.app_id' <<<"$minted_identity")"
+          minted_app_slug="$(jq -r '.app_slug' <<<"$minted_identity")"
           if [ "$MINTED_APP_SLUG" != "$APP_SLUG" ] || [ "$minted_app_id" != "$APP_ID" ] || [ "$minted_app_slug" != "$APP_SLUG" ]; then
             echo "::error::AI review authorization App identity mismatch: expected '$APP_SLUG' ($APP_ID), token action reported '$MINTED_APP_SLUG', installation reported '$minted_app_slug' ($minted_app_id)"
             exit 1

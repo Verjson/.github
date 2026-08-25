@@ -18,6 +18,9 @@ error = "AI review authorization App identity mismatch: expected '$APP_SLUG' ($A
 
 assert preflight in script and script.index(preflight) < script.index(create)
 assert "minted_app_id" in script and "minted_app_slug" in script
+assert "minted AI review authorization App installation identity is malformed or incomplete" in script
+assert 'type == "number" and . > 0' in script
+assert 'type == "string" and test("^[a-z0-9][a-z0-9-]*$")' in script
 assert '[ "$MINTED_APP_SLUG" != "$APP_SLUG" ]' in script
 assert '[ "$minted_app_id" != "$APP_ID" ]' in script
 assert '[ "$minted_app_slug" != "$APP_SLUG" ]' in script

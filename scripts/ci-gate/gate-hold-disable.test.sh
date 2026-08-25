@@ -18,6 +18,8 @@ cat >"$tmp/bin/gh" <<'GH'
 printf '%s\n' "$*" >>"$CALLS"
 case "$*" in
   "api /installation")
+    [ "${INSTALLATION_API_FAIL:-false}" != true ] || exit 1
+    if [ -n "${INSTALLATION_JSON_OVERRIDE+x}" ]; then printf '%s\n' "$INSTALLATION_JSON_OVERRIDE"; exit 0; fi
     jq -nc --argjson id "${MINTED_APP_ID:-4242}" --arg slug "${MINTED_INSTALLATION_SLUG:-verjson-ai-review}" \
       '{app_id:$id,app_slug:$slug}' ;;
   "pr view "*)
@@ -100,6 +102,41 @@ else
   fail "minted App ID mismatch did not fail before authorization creation"
 fi
 unset MINTED_APP_ID
+write_hold
+export MINTED_INSTALLATION_SLUG=renamed-installation
+if run_arm >"$tmp/out" 2>&1; then
+  fail "installation App slug mismatch was accepted"
+elif grep -q "AI review authorization App identity mismatch" "$tmp/out" \
+  && ! grep -q -- '--method POST repos/Verjson/example/check-runs' "$CALLS"; then
+  pass "installation App slug mismatch fails explicitly before authorization creation"
+else
+  fail "installation App slug mismatch did not fail before authorization creation"
+fi
+unset MINTED_INSTALLATION_SLUG
+write_hold
+export INSTALLATION_API_FAIL=true
+if run_arm >"$tmp/out" 2>&1; then
+  fail "installation API failure was accepted"
+elif grep -q "could not verify the minted AI review authorization App identity" "$tmp/out" \
+  && ! grep -q -- '--method POST repos/Verjson/example/check-runs' "$CALLS"; then
+  pass "installation API failure is explicit before authorization creation"
+else
+  fail "installation API failure was not explicit before authorization creation"
+fi
+unset INSTALLATION_API_FAIL
+for fixture in 'not-json' '{}' '{"app_id":4242}' '{"app_slug":"verjson-ai-review"}'; do
+  write_hold
+  export INSTALLATION_JSON_OVERRIDE="$fixture"
+  if run_arm >"$tmp/out" 2>&1; then
+    fail "malformed or incomplete installation identity was accepted: $fixture"
+  elif grep -q "minted AI review authorization App installation identity is malformed or incomplete" "$tmp/out" \
+    && ! grep -q -- '--method POST repos/Verjson/example/check-runs' "$CALLS"; then
+    pass "malformed or incomplete installation identity fails explicitly before authorization creation: $fixture"
+  else
+    fail "malformed or incomplete installation identity was not explicit: $fixture"
+  fi
+done
+unset INSTALLATION_JSON_OVERRIDE
 write_hold
 if run_arm >"$tmp/out" 2>&1; then pass "hold disables auto-merge only after authoritative confirmation"; else fail "confirmed hold failed"; fi
 write_hold; printf '{"data":null,"errors":[{"message":"denied"}]}\n' >"$GRAPHQL_FILE"
