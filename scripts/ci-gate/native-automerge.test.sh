@@ -37,6 +37,7 @@ exit "${VERIFY_RC:-0}"
 SH
 chmod 0644 "$tmp/run/.gate-trust/scripts/ci-gate/verify-arm-receipt.sh"
 cp "$root/scripts/ci-gate/review-policy-envelope.py" "$tmp/run/.gate-trust/scripts/ci-gate/review-policy-envelope.py"
+cp "$root/scripts/ci-gate/terminal-merge.sh" "$tmp/run/.gate-trust/scripts/ci-gate/terminal-merge.sh"
 cat >"$tmp/bin/gh" <<'GH'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >>"$CALLS"
@@ -55,6 +56,8 @@ case "$*" in
   *"repos/Verjson/.github/commits/main"*) printf '%s\n' "$EXECUTING_WORKFLOW_SHA" ;;
   *"check-runs/$AUTHORIZATION_CHECK_ID"*) cat "$CHECK_FILE" ;;
   *"pulls/$PR_NUMBER/reviews?per_page=100"*) cat "$REVIEWS_FILE" ;;
+  *"repos/$TARGET_REPO/pulls/$PR_NUMBER"*) cat "$BASE_META_FILE" ;;
+  *"repos/$TARGET_REPO/git/ref/heads/$DEFAULT_BRANCH"*) printf '%s\n' "$AUTHORIZED_BASE_SHA" ;;
   "pr merge "*)
     if [ "${MERGE_CONFIRMED:-true}" = true ]; then
       jq '.state="MERGED"' "$META_FILE" >"$META_FILE.next" && mv "$META_FILE.next" "$META_FILE"
@@ -65,9 +68,11 @@ GH
 chmod +x "$tmp/bin/gh"
 
 export PATH="$tmp/bin:$PATH" CALLS="$tmp/calls" META_FILE="$tmp/meta.json" CHECK_FILE="$tmp/check.json" REVIEWS_FILE="$tmp/reviews.json" CI_CHECKS_FILE="$tmp/ci-checks.json" CI_RUN_FILE="$tmp/ci-run.json" CI_JOBS_FILE="$tmp/ci-jobs.json"
+export BASE_META_FILE="$tmp/base-meta.json"
 export WORKFLOW_METADATA_FILE="$tmp/workflow-metadata.json" WORKFLOW_RUNS_FILE="$tmp/workflow-runs.json"
 export TARGET_REPO=Verjson/example PR_NUMBER=7 AUTHORIZATION_CHECK_ID=9001
 export EXPECTED_HEAD_SHA=0123456789abcdef0123456789abcdef01234567
+export AUTHORIZED_BASE_SHA=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb DEFAULT_BRANCH=main
 export ARM_RUN_ID=7001 ARM_RUN_ATTEMPT=2 EXPECTED_APP_ID=4242 EXPECTED_APP_SLUG=verjson-ai-review
 export GH_TOKEN=admin-token GITHUB_REPOSITORY_OWNER=Verjson GITHUB_REF=refs/heads/main CALLER_REF=refs/heads/main
 export EXECUTING_WORKFLOW_REPOSITORY=Verjson/.github EXECUTING_WORKFLOW_SHA=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
@@ -88,6 +93,8 @@ write_base() {
   unset WORKFLOW_METADATA_RC
   export WORKFLOW_BLOB_HEAD=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa WORKFLOW_BLOB_TRUSTED=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
   jq -nc --arg head "$EXPECTED_HEAD_SHA" '{state:"OPEN",isDraft:false,title:"change",labels:[],headRefOid:$head,headRepositoryOwner:{login:"Verjson"}}' >"$META_FILE"
+  jq -nc --arg head "$EXPECTED_HEAD_SHA" --arg base "$AUTHORIZED_BASE_SHA" \
+    '{state:"open",head:{sha:$head},base:{ref:"main",sha:$base}}' >"$BASE_META_FILE"
   jq -nc --arg head "$EXPECTED_HEAD_SHA" --argjson app "$EXPECTED_APP_ID" --arg slug "$EXPECTED_APP_SLUG" \
     '{id:9001,name:"AI review authorization",head_sha:$head,status:"completed",conclusion:"success",app:{id:$app,slug:$slug}}' >"$CHECK_FILE"
   jq -nc --arg head "$EXPECTED_HEAD_SHA" --arg login "${EXPECTED_APP_SLUG}[bot]" --arg check "$AUTHORIZATION_CHECK_ID" \

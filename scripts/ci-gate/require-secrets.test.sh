@@ -5,6 +5,7 @@ here="$(cd "$(dirname "$0")" && pwd)"
 repo_root="$(cd "$here/../.." && pwd)"
 review_workflow="$repo_root/.github/workflows/ai-review-merge.yml"
 privileged_workflow="$repo_root/.github/workflows/ai-privileged-merge.yml"
+terminal_helper="$repo_root/scripts/ci-gate/terminal-merge.sh"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 failures=0
@@ -52,8 +53,13 @@ contract_errors() {
   merge_step="$(step "$privileged" privileged_merge 'Merge the authorized head')"
   grep -qF 'GH_TOKEN: ${{ steps.merge-app-token.outputs.token }}' <<<"$merge_step" \
     || printf '%s\n' 'terminal operation does not receive the merge App token'
-  [ "$(grep -c 'gh ' <<<"$merge_step")" -eq 1 ] && grep -q 'gh pr merge' <<<"$merge_step" \
-    || printf '%s\n' 'merge App token is bound beyond the terminal merge operation'
+  grep -qF 'bash .gate-trust/scripts/ci-gate/terminal-merge.sh' <<<"$merge_step" \
+    && [ "$(grep -cE '^[[:space:]]+(bash |gh )' <<<"$merge_step")" -eq 1 ] \
+    && [ "$(grep -c 'gh ' "$terminal_helper")" -eq 3 ] \
+    && grep -qF 'repos/$TARGET_REPO/pulls/$PR_NUMBER' "$terminal_helper" \
+    && grep -qF 'repos/$TARGET_REPO/git/ref/heads/$DEFAULT_BRANCH' "$terminal_helper" \
+    && grep -qF 'gh pr merge "$PR_NUMBER"' "$terminal_helper" \
+    || printf '%s\n' 'merge App token is not confined to exact-target live-base reads and terminal merge'
 
   grep -qF 'uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1' <<<"$checkout" \
     || printf '%s\n' 'immutable verifier checkout is not pinned'

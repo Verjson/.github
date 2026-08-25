@@ -164,6 +164,7 @@ jobs:
           ref: ${{ steps.trusted-revision.outputs.sha }}
           path: .gate-trust
           sparse-checkout: |
+            scripts/ci-gate/terminal-merge.sh
             scripts/ci-gate/verify-arm-receipt.sh
             scripts/ci-gate/review-policy-envelope.py
           sparse-checkout-cone-mode: false
@@ -364,7 +365,28 @@ jobs:
             }
           done < <(jq -c '.[]' <<<"$required_checks")
 
-          echo 'authorized=true' >>"$GITHUB_OUTPUT"
+          base_meta="$(gh api "repos/$TARGET_REPO/pulls/$PR_NUMBER")"
+          jq -e --arg head "$EXPECTED_HEAD_SHA" '
+            .state == "open" and .head.sha == $head
+          ' <<<"$base_meta" >/dev/null || {
+            echo "::error::pull request moved or closed during base authorization"; exit 1;
+          }
+          base_ref="$(jq -r '.base.ref // ""' <<<"$base_meta")"
+          authorized_base_sha="$(jq -r '.base.sha // ""' <<<"$base_meta")"
+          [ "$base_ref" = "$default_branch" ] || {
+            echo "::error::terminal promotion only accepts the trusted default branch as its base"; exit 1;
+          }
+          [[ "$authorized_base_sha" =~ ^[0-9a-f]{40}$ ]] || {
+            echo "::error::pull request base OID is missing or malformed"; exit 1;
+          }
+          current_base_sha="$(gh api "repos/$TARGET_REPO/git/ref/heads/$default_branch" \
+            --jq 'select(.object.type == "commit") | .object.sha // ""')"
+          [[ "$current_base_sha" =~ ^[0-9a-f]{40}$ ]] && [ "$current_base_sha" = "$authorized_base_sha" ] || {
+            echo "::error::pull request base is stale or the trusted default-branch ref moved during authorization"; exit 1;
+          }
+
+          printf 'authorized=true\ndefault_branch=%s\nauthorized_base_sha=%s\n' \
+            "$default_branch" "$authorized_base_sha" >>"$GITHUB_OUTPUT"
 
       - name: Mint exact-repository terminal merge App token
         if: steps.authorize-merge.outputs.authorized == 'true'
@@ -382,10 +404,11 @@ jobs:
         if: steps.authorize-merge.outputs.authorized == 'true'
         env:
           GH_TOKEN: ${{ steps.merge-app-token.outputs.token }}
+          AUTHORIZED_BASE_SHA: ${{ steps.authorize-merge.outputs.authorized_base_sha }}
+          DEFAULT_BRANCH: ${{ steps.authorize-merge.outputs.default_branch }}
         run: |
           set -euo pipefail
-          gh pr merge "$PR_NUMBER" --repo "$TARGET_REPO" --admin --squash \
-            --match-head-commit "$EXPECTED_HEAD_SHA"
+          bash .gate-trust/scripts/ci-gate/terminal-merge.sh
 
       - name: Confirm merge and consume the arm receipt
         if: steps.authorize-merge.outputs.authorized == 'true'

@@ -10,6 +10,7 @@ import yaml
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 WORKFLOW = ROOT / ".github/workflows/ai-privileged-merge.yml"
+TERMINAL = ROOT / "scripts/ci-gate/terminal-merge.sh"
 ACTION = "actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1"
 APP_TOKEN = "${{ steps.merge-app-token.outputs.token }}"
 
@@ -68,13 +69,26 @@ def validate(document: dict, raw: str) -> list[str]:
         problems.append("authorization does not use the read-only repository token")
     if (confirm.get("env") or {}).get("GH_TOKEN") != "${{ github.token }}":
         problems.append("confirmation does not return to the read-only repository token")
-    if (merge.get("env") or {}) != {"GH_TOKEN": APP_TOKEN}:
+    if (merge.get("env") or {}) != {
+        "GH_TOKEN": APP_TOKEN,
+        "AUTHORIZED_BASE_SHA": "${{ steps.authorize-merge.outputs.authorized_base_sha }}",
+        "DEFAULT_BRANCH": "${{ steps.authorize-merge.outputs.default_branch }}",
+    }:
         problems.append("terminal token delivery is not isolated to merge")
     merge_run = merge.get("run", "")
-    if merge_run.count("gh ") != 1 or "gh pr merge" not in merge_run:
-        problems.append("terminal token step performs an operation besides one gh merge")
-    if "--admin" not in merge_run or "--squash" not in merge_run or "--match-head-commit" not in merge_run:
-        problems.append("terminal merge safety flags drifted")
+    if merge_run.strip().splitlines()[-1] != "bash .gate-trust/scripts/ci-gate/terminal-merge.sh":
+        problems.append("terminal token step does not delegate to the immutable live-base verifier")
+    terminal_run = TERMINAL.read_text(encoding="utf-8")
+    for required in (
+        'repos/$TARGET_REPO/pulls/$PR_NUMBER',
+        'repos/$TARGET_REPO/git/ref/heads/$DEFAULT_BRANCH',
+        '.base.ref == $branch and .base.sha == $base',
+        'current_base_sha" = "$AUTHORIZED_BASE_SHA',
+        'gh pr merge "$PR_NUMBER"',
+        "--admin", "--squash", "--match-head-commit",
+    ):
+        if required not in terminal_run:
+            problems.append(f"terminal live-base verifier lacks {required}")
     token_consumers = [step.get("name") for step in steps if APP_TOKEN in str(step)]
     if token_consumers != ["Merge the authorized head"]:
         problems.append("merge token escaped the terminal operation")
