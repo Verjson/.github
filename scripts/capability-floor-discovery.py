@@ -12,6 +12,8 @@ import sys
 from pathlib import Path
 from urllib.parse import quote
 
+import yaml
+
 
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_ALLOWLIST = ROOT / "config/capability-floor-consumers.json"
@@ -21,14 +23,36 @@ WORKFLOW_RE = re.compile(r"^[A-Za-z0-9._-]+\.ya?ml$")
 GENERATOR_RE = re.compile(r"^scripts/gen-[A-Za-z0-9._-]+-caller\.sh$")
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 CANONICAL_REFERENCE_RE = re.compile(
-    r"^\s*uses:\s*Verjson/\.github/\.github/workflows/"
-    r"(?P<workflow>[A-Za-z0-9._-]+\.ya?ml)@(?P<sha>[0-9a-f]{40})\s*(?:#.*)?$"
+    r"^Verjson/\.github/\.github/workflows/"
+    r"(?P<workflow>[A-Za-z0-9._-]+\.ya?ml)@(?P<sha>[0-9a-f]{40})$"
 )
+CANONICAL_PREFIX = "Verjson/.github/.github/workflows/"
 MAX_CALLER_BYTES = 512 * 1024
 
 
 class DiscoveryError(Exception):
     pass
+
+
+class ExactWorkflowLoader(yaml.SafeLoader):
+    pass
+
+
+def construct_exact_mapping(loader, node, deep=False):
+    mapping = {}
+    for key_node, value_node in node.value:
+        key = loader.construct_object(key_node, deep=deep)
+        try:
+            duplicate = key in mapping
+        except TypeError:
+            raise DiscoveryError("workflow mapping keys must be scalar") from None
+        if duplicate:
+            raise DiscoveryError(f"workflow contains duplicate YAML-equivalent key {key!r}")
+        mapping[key] = loader.construct_object(value_node, deep=deep)
+    return mapping
+
+
+ExactWorkflowLoader.add_constructor(yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, construct_exact_mapping)
 
 
 def require(condition: bool, message: str) -> None:
@@ -157,13 +181,57 @@ def read_caller(repository: str, path: str, source_sha: str) -> tuple[str, str]:
         raise DiscoveryError(f"caller is not UTF-8: {repository}:{path}") from None
 
 
+def load_workflow(repository: str, path: str, text: str):
+    try:
+        tokens = yaml.scan(text)
+        for token in tokens:
+            if isinstance(token, (yaml.AliasToken, yaml.AnchorToken, yaml.TagToken)):
+                raise DiscoveryError(f"workflow aliases, anchors, and tags are unsupported: {repository}:{path}")
+        documents = list(yaml.load_all(text, Loader=ExactWorkflowLoader))
+    except DiscoveryError:
+        raise
+    except yaml.YAMLError as error:
+        raise DiscoveryError(f"workflow YAML is malformed for {repository}:{path}: {error}") from None
+    require(len(documents) == 1, f"workflow must contain exactly one YAML document: {repository}:{path}")
+    workflow = documents[0]
+    require(isinstance(workflow, dict), f"workflow root is not a mapping: {repository}:{path}")
+    jobs = workflow.get("jobs")
+    require(isinstance(jobs, dict) and jobs, f"workflow jobs mapping is missing or empty: {repository}:{path}")
+    return workflow
+
+
+def canonical_scalars(value, path=()):
+    if isinstance(value, dict):
+        for key, child in value.items():
+            if isinstance(key, str) and CANONICAL_PREFIX in key:
+                yield path + ("<mapping-key>",), key
+            yield from canonical_scalars(child, path + (key,))
+    elif isinstance(value, list):
+        for index, child in enumerate(value):
+            yield from canonical_scalars(child, path + (index,))
+    elif isinstance(value, str) and CANONICAL_PREFIX in value:
+        yield path, value
+
+
 def extract_pin(repository: str, path: str, text: str, expected_workflows: list[str]) -> str:
-    canonical_lines = [line for line in text.splitlines() if "Verjson/.github/.github/workflows/" in line]
-    require(canonical_lines, f"caller has no canonical workflow reference: {repository}:{path}")
-    matches = [CANONICAL_REFERENCE_RE.fullmatch(line) for line in canonical_lines]
-    require(all(matches), f"caller has a malformed or mutable canonical reference: {repository}:{path}")
-    workflows = {match.group("workflow") for match in matches if match is not None}
-    pins = {match.group("sha") for match in matches if match is not None}
+    workflow = load_workflow(repository, path, text)
+    references = list(canonical_scalars(workflow))
+    require(references, f"caller has no canonical workflow reference: {repository}:{path}")
+    matches = []
+    for value_path, value in references:
+        require(
+            len(value_path) == 3 and value_path[0] == "jobs" and value_path[2] == "uses",
+            f"canonical reference is outside jobs.<job>.uses: {repository}:{path}",
+        )
+        require(
+            isinstance(value_path[1], str) and value_path[1],
+            f"canonical reusable job name is invalid: {repository}:{path}",
+        )
+        match = CANONICAL_REFERENCE_RE.fullmatch(value)
+        require(match is not None, f"caller has a malformed or mutable canonical reference: {repository}:{path}")
+        matches.append(match)
+    workflows = {match.group("workflow") for match in matches}
+    pins = {match.group("sha") for match in matches}
     require(
         workflows == set(expected_workflows),
         f"caller canonical target differs from allowlist for {repository}:{path}",

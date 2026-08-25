@@ -203,6 +203,43 @@ else:
             ("wrong canonical target", f"uses: Verjson/.github/.github/workflows/ai-review-merge.yml@{PIN}\n"),
             ("mixed duplicate references", valid + f"  retry:\n    uses: Verjson/.github/.github/workflows/gate-rearm.yml@{'d' * 40}\n"),
             ("missing reference", "jobs: {}\n"),
+            (
+                "block scalar decoy",
+                f"jobs:\n  decoy:\n    runs-on: ubuntu-24.04\n    steps:\n      - run: |\n          uses: Verjson/.github/.github/workflows/gate-rearm.yml@{PIN}\n",
+            ),
+            (
+                "step-level uses decoy",
+                f"jobs:\n  decoy:\n    runs-on: ubuntu-24.04\n    steps:\n      - uses: Verjson/.github/.github/workflows/gate-rearm.yml@{PIN}\n",
+            ),
+            (
+                "real target plus block scalar decoy",
+                valid
+                + f"  decoy:\n    runs-on: ubuntu-24.04\n    steps:\n      - run: |\n          Verjson/.github/.github/workflows/gate-rearm.yml@{PIN}\n",
+            ),
+            (
+                "real target plus mixed input decoy",
+                f"jobs:\n  arm:\n    uses: Verjson/.github/.github/workflows/gate-rearm.yml@{PIN}\n    with:\n      decoy: Verjson/.github/.github/workflows/gate-rearm.yml@{PIN}\n",
+            ),
+            (
+                "ambiguous duplicate real target",
+                valid + f"  retry:\n    uses: Verjson/.github/.github/workflows/gate-rearm.yml@{PIN}\n",
+            ),
+            (
+                "duplicate exact mapping key",
+                f"jobs:\n  arm:\n    uses: Verjson/.github/.github/workflows/gate-rearm.yml@{PIN}\njobs: {{}}\n",
+            ),
+            (
+                "duplicate quoted-equivalent mapping key",
+                f"jobs:\n  arm:\n    uses: Verjson/.github/.github/workflows/gate-rearm.yml@{PIN}\n\"jobs\": {{}}\n",
+            ),
+            (
+                "duplicate YAML-equivalent boolean key",
+                f"on: pull_request\ntrue: push\njobs:\n  arm:\n    uses: Verjson/.github/.github/workflows/gate-rearm.yml@{PIN}\n",
+            ),
+            (
+                "malformed YAML",
+                f"jobs:\n  arm: [\n    uses: Verjson/.github/.github/workflows/gate-rearm.yml@{PIN}\n",
+            ),
         ):
             rejected = run_discovery(tmp, caller)
             assert rejected.returncode == 2, f"{label} survived: {rejected.stderr}"

@@ -50,10 +50,14 @@ commit, pull request, or consumer mutation is authorized.
 For each allowlisted caller, discovery resolves the consumer's default branch to an
 immutable commit, reads the caller at that commit through the contents API, and records
 the source commit and blob identity. Extraction accepts only exact canonical
-`uses: Verjson/.github/.github/workflows/<expected>@<40-lowercase-hex>` entries. A
-missing file, inaccessible repository, malformed response, mutable or mixed pin,
-unexpected canonical target, duplicate entry, non-Verjson repository, or empty scope
-terminates discovery. Consumer content never becomes shell syntax or token scope.
+`jobs.<job>.uses: Verjson/.github/.github/workflows/<expected>@<40-lowercase-hex>`
+reusable-workflow targets from a duplicate-key-rejecting YAML parse. Canonical-looking
+text in steps, block scalars, inputs, mapping keys, or any other location is a decoy and
+terminates discovery; so do malformed or multi-document YAML, aliases, anchors, tags,
+ambiguous real targets, missing files, inaccessible repositories, malformed API
+responses, mutable or mixed pins, unexpected canonical targets, duplicate allowlist
+entries, non-Verjson repositories, and empty scope. Consumer content never becomes
+shell syntax or token scope.
 
 The resulting minimal `{repo, generator, pinned_sha}` snapshot feeds ADR 0114's Stage A
 unchanged. Stale and unresolvable pins remain report findings, not workflow failures;
@@ -71,8 +75,10 @@ in the workflow summary. Publication does not write to any consumer or tracker.
   permission is required or authorized by this decision.
 - Consumer default-branch names are untrusted data used only as encoded GitHub API path
   input. Discovery binds each read to the resolved immutable commit before parsing.
-- Consumer YAML is untrusted data. It is decoded under a size bound, never executed, and
-  must match the exact immutable canonical-call grammar and expected target.
+- Consumer YAML is untrusted data. It is decoded under a size bound, never executed,
+  parsed with safe constructors and duplicate-key rejection, and only real job-level
+  reusable-workflow `uses` values may match the exact immutable canonical-call grammar
+  and expected target. Canonical-looking scalar decoys fail closed.
 - Stage A owns ancestry classification. Stage B does not reinterpret dates, PR numbers,
   tags, branches, or mutable references as compatibility evidence.
 - Artifacts and summaries are observation receipts. They grant no mutation or merge

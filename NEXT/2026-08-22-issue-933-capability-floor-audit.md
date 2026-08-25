@@ -16,6 +16,7 @@ evidence.
 Stage A stores capability facts and classifies `{repo, generator, pinned_sha}`
 snapshots with `git merge-base --is-ancestor`. Stage B binds every consumer
 read to its resolved default-branch commit, retains source/blob receipts, and
-never enumerates or mutates organization repositories. The observer reuses
+accepts pins only from duplicate-key-safe parsed `jobs.<job>.uses` targets,
+rejecting scalar/step decoys. It never enumerates or mutates organization repositories. The observer reuses
 the existing read-only Renovate Compatibility App without broadening its live
 installation permissions.
