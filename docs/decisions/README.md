@@ -11,6 +11,7 @@ Reverse-chronological index of org-level decisions.
 <!-- BEGIN ADR INDEX -->
 | # | Date | Decision |
 |---|------|----------|
+| [0136](0136-separate-dependency-supersession-observation-from-mutation/README.md) | 2026-08-25 | Separate dependency-update supersession observation from mutation |
 | [0135](0135-observe-live-generated-caller-capability-floors/README.md) | 2026-08-25 | Observe live generated-caller capability floors with a repository-scoped App token |
 | [0134](0134-bind-node-release-assets-to-the-immutable-tag/README.md) | 2026-08-25 | Bind Node release assets to the immutable tag |
 | [0133](0133-bind-terminal-merge-to-live-default-branch/README.md) | 2026-08-25 | Bind terminal merge to the live default branch |
