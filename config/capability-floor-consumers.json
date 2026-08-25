@@ -1,0 +1,73 @@
+{
+  "_comment": "Reviewed live generated-caller discovery scope for ADR 0135 and issue #933. Each caller must contain exactly the named canonical reusable workflow at one immutable Verjson/.github commit. This list is token scope; do not populate it from live organization enumeration.",
+  "schema_version": 1,
+  "consumers": [
+    {
+      "repository": "Verjson/toquorum",
+      "callers": [
+        {"path": ".github/workflows/gate-rearm.yml", "generator": "scripts/gen-gate-rearm-caller.sh", "canonical_workflows": ["gate-rearm.yml"]},
+        {"path": ".github/workflows/ai-review-merge.yml", "generator": "scripts/gen-ai-review-caller.sh", "canonical_workflows": ["ai-review-merge.yml"]},
+        {"path": ".github/workflows/ai-privileged-merge.yml", "generator": "scripts/gen-privileged-merge-caller.sh", "canonical_workflows": ["ai-privileged-merge.yml"]},
+        {"path": ".github/workflows/ai-promotion-retry.yml", "generator": "scripts/gen-privileged-merge-caller.sh", "canonical_workflows": ["ai-promotion-retry.yml"]}
+      ]
+    },
+    {
+      "repository": "Verjson/verjson-cli-cloud",
+      "callers": [
+        {"path": ".github/workflows/ai-review-merge.yml", "generator": "scripts/gen-ai-review-caller.sh", "canonical_workflows": ["ai-review-merge.yml"]},
+        {"path": ".github/workflows/ai-privileged-merge.yml", "generator": "scripts/gen-privileged-merge-caller.sh", "canonical_workflows": ["ai-privileged-merge.yml"]},
+        {"path": ".github/workflows/ai-promotion-retry.yml", "generator": "scripts/gen-privileged-merge-caller.sh", "canonical_workflows": ["ai-promotion-retry.yml"]},
+        {"path": ".github/workflows/changelog.yml", "generator": "scripts/gen-changelog-caller.sh", "canonical_workflows": ["generated-artifacts.yml"]},
+        {"path": ".github/workflows/release.yml", "generator": "scripts/gen-changelog-caller.sh", "canonical_workflows": ["changelog-release.yml", "node-release.yml"]},
+        {"path": ".github/workflows/renovate-changelog.yml", "generator": "scripts/gen-changelog-caller.sh", "canonical_workflows": ["renovate-changelog.yml"]}
+      ]
+    },
+    {
+      "repository": "Verjson/verjson-ai",
+      "callers": [
+        {"path": ".github/workflows/ai-review-merge.yml", "generator": "scripts/gen-ai-review-caller.sh", "canonical_workflows": ["ai-review-merge.yml"]},
+        {"path": ".github/workflows/ai-privileged-merge.yml", "generator": "scripts/gen-privileged-merge-caller.sh", "canonical_workflows": ["ai-privileged-merge.yml"]},
+        {"path": ".github/workflows/ai-promotion-retry.yml", "generator": "scripts/gen-privileged-merge-caller.sh", "canonical_workflows": ["ai-promotion-retry.yml"]},
+        {"path": ".github/workflows/changelog.yml", "generator": "scripts/gen-changelog-caller.sh", "canonical_workflows": ["generated-artifacts.yml"]},
+        {"path": ".github/workflows/release.yml", "generator": "scripts/gen-changelog-caller.sh", "canonical_workflows": ["changelog-release.yml", "node-release.yml"]},
+        {"path": ".github/workflows/renovate-changelog.yml", "generator": "scripts/gen-changelog-caller.sh", "canonical_workflows": ["renovate-changelog.yml"]}
+      ]
+    },
+    {
+      "repository": "Verjson/AiB",
+      "callers": [
+        {"path": ".github/workflows/ai-privileged-merge.yml", "generator": "scripts/gen-privileged-merge-caller.sh", "canonical_workflows": ["ai-privileged-merge.yml"]},
+        {"path": ".github/workflows/changelog.yml", "generator": "scripts/gen-changelog-caller.sh", "canonical_workflows": ["generated-artifacts.yml"]},
+        {"path": ".github/workflows/renovate-changelog.yml", "generator": "scripts/gen-changelog-caller.sh", "canonical_workflows": ["renovate-changelog.yml"]}
+      ]
+    },
+    {
+      "repository": "Verjson/verjson-authn",
+      "callers": [
+        {"path": ".github/workflows/gate-rearm.yml", "generator": "scripts/gen-gate-rearm-caller.sh", "canonical_workflows": ["gate-rearm.yml"]},
+        {"path": ".github/workflows/ai-review-merge.yml", "generator": "scripts/gen-ai-review-caller.sh", "canonical_workflows": ["ai-review-merge.yml"]},
+        {"path": ".github/workflows/ai-privileged-merge.yml", "generator": "scripts/gen-privileged-merge-caller.sh", "canonical_workflows": ["ai-privileged-merge.yml"]},
+        {"path": ".github/workflows/ai-promotion-retry.yml", "generator": "scripts/gen-privileged-merge-caller.sh", "canonical_workflows": ["ai-promotion-retry.yml"]},
+        {"path": ".github/workflows/changelog.yml", "generator": "scripts/gen-changelog-caller.sh", "canonical_workflows": ["generated-artifacts.yml"]},
+        {"path": ".github/workflows/release.yml", "generator": "scripts/gen-changelog-caller.sh", "canonical_workflows": ["changelog-release.yml", "node-release.yml"]}
+      ]
+    },
+    {
+      "repository": "Verjson/verjson-observability",
+      "callers": [
+        {"path": ".github/workflows/ai-review-merge.yml", "generator": "scripts/gen-ai-review-caller.sh", "canonical_workflows": ["ai-review-merge.yml"]},
+        {"path": ".github/workflows/ai-privileged-merge.yml", "generator": "scripts/gen-privileged-merge-caller.sh", "canonical_workflows": ["ai-privileged-merge.yml"]},
+        {"path": ".github/workflows/ai-promotion-retry.yml", "generator": "scripts/gen-privileged-merge-caller.sh", "canonical_workflows": ["ai-promotion-retry.yml"]},
+        {"path": ".github/workflows/changelog.yml", "generator": "scripts/gen-changelog-caller.sh", "canonical_workflows": ["generated-artifacts.yml"]},
+        {"path": ".github/workflows/release.yml", "generator": "scripts/gen-changelog-caller.sh", "canonical_workflows": ["changelog-release.yml", "node-release.yml"]}
+      ]
+    },
+    {
+      "repository": "Verjson/viager-app",
+      "callers": [
+        {"path": ".github/workflows/gate-rearm.yml", "generator": "scripts/gen-gate-rearm-caller.sh", "canonical_workflows": ["gate-rearm.yml"]},
+        {"path": ".github/workflows/ai-privileged-merge.yml", "generator": "scripts/gen-privileged-merge-caller.sh", "canonical_workflows": ["ai-privileged-merge.yml"]}
+      ]
+    }
+  ]
+}

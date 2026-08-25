@@ -46,6 +46,7 @@ platform	python3 scripts/org_secret_scope_audit_test.py
 platform	python3 scripts/org_ruleset_conformance_test.py
 platform	python3 scripts/ai_review_required_workflow_audit_test.py
 platform	python3 scripts/capability-floor-audit.test.py
+platform	python3 scripts/ci-gate/capability-floor-discovery.test.py
 platform	bash scripts/classify-repo-stacks.test.sh
 platform	python3 scripts/ci-gate/privileged-scheduled-workflows.test.py
 platform	bash scripts/ci-telemetry/rework-reconcile-trigger.test.sh
