@@ -51,6 +51,11 @@ on:
         required: false
         type: string
         default: '["."]'
+      release-assets:
+        description: JSON array of committed repository-relative files to attach to the GitHub Release
+        required: false
+        type: string
+        default: '[]'
       deprecates:
         description: >-
           JSON array of {"name","message"} old npm package names (unscoped basenames, same
@@ -140,6 +145,75 @@ jobs:
         run: |
           test "$(git describe --tags --exact-match HEAD)" = "$VERSION"
           test -f "CHANGELOG/$VERSION.md"
+      - name: Stage bounded immutable release assets
+        env:
+          RELEASE_ASSETS: ${{ inputs.release-assets }}
+        run: |
+          # BOUNDED_RELEASE_ASSETS_BEGIN
+          set -euo pipefail
+          asset_root="${RUNNER_TEMP:-/tmp}/verjson-release-assets"
+          rm -rf -- "$asset_root"
+          mkdir -p "$asset_root"
+          manifest="${asset_root}.paths"
+          rm -f -- "$manifest"
+          python3 - "$RELEASE_ASSETS" "$manifest" <<'PY'
+          import json
+          import pathlib
+          import re
+          import sys
+
+          try:
+              assets = json.loads(sys.argv[1])
+          except json.JSONDecodeError as error:
+              raise SystemExit(f"release-assets is not valid JSON: {error}")
+          if not isinstance(assets, list) or len(assets) > 16:
+              raise SystemExit("release-assets must be a JSON array containing at most 16 paths")
+          paths = set()
+          names = set()
+          for asset in assets:
+              if (
+                  not isinstance(asset, str)
+                  or not re.fullmatch(r"[A-Za-z0-9._][A-Za-z0-9._-]*(/[A-Za-z0-9._][A-Za-z0-9._-]*)*", asset)
+                  or any(segment in {".", ".."} for segment in asset.split("/"))
+                  or asset in paths
+              ):
+                  raise SystemExit(f"invalid or duplicate release asset path: {asset}")
+              name = pathlib.PurePosixPath(asset).name
+              if name in names:
+                  raise SystemExit(f"release asset basename is duplicated: {name}")
+              paths.add(asset)
+              names.add(name)
+          pathlib.Path(sys.argv[2]).write_text("\n".join(assets) + ("\n" if assets else ""), encoding="utf-8")
+          PY
+
+          total_bytes=0
+          while IFS= read -r asset; do
+            [ -n "$asset" ] || continue
+            current=
+            IFS='/' read -ra parts <<<"$asset"
+            for part in "${parts[@]}"; do
+              current="${current:+$current/}$part"
+              [ ! -L "$current" ] \
+                || { echo "::error::Release asset path traverses symlink '$current'."; exit 1; }
+            done
+            [ -f "$asset" ] && [ ! -L "$asset" ] \
+              || { echo "::error::Release asset '$asset' must be a regular non-symlink file."; exit 1; }
+            git ls-files --error-unmatch -- "$asset" >/dev/null \
+              || { echo "::error::Release asset '$asset' is not tracked by the immutable tag."; exit 1; }
+            mode="$(git ls-tree HEAD -- "$asset" | awk '{print $1}')"
+            [ "$mode" = 100644 ] || [ "$mode" = 100755 ] \
+              || { echo "::error::Release asset '$asset' has unsupported git mode '$mode'."; exit 1; }
+            size="$(git cat-file -s "HEAD:$asset")"
+            [ "$size" -le 104857600 ] \
+              || { echo "::error::Release asset '$asset' exceeds 100 MiB."; exit 1; }
+            total_bytes=$((total_bytes + size))
+            [ "$total_bytes" -le 262144000 ] \
+              || { echo "::error::Release assets exceed 250 MiB total."; exit 1; }
+            git show "HEAD:$asset" >"$asset_root/${asset##*/}"
+            [ "$(wc -c <"$asset_root/${asset##*/}")" -eq "$size" ] \
+              || { echo "::error::Could not reproduce '$asset' from the immutable tag."; exit 1; }
+          done <"$manifest"
+          # BOUNDED_RELEASE_ASSETS_END
       - name: Prepare job-scoped npm cache
         if: inputs.cache
         run: echo "npm_config_cache=$RUNNER_TEMP/verjson-npm-cache" >> "$GITHUB_ENV"
@@ -355,6 +429,13 @@ jobs:
             gh release edit "$VERSION" --notes-file "$notes"
           else
             gh release create "$VERSION" --verify-tag --notes-file "$notes"
+          fi
+          asset_root="${RUNNER_TEMP:-/tmp}/verjson-release-assets"
+          if [ -s "${asset_root}.paths" ]; then
+            mapfile -t assets < <(find "$asset_root" -maxdepth 1 -type f -print | sort)
+            [ "${#assets[@]}" -gt 0 ] \
+              || { echo "::error::Validated release assets are missing from staging."; exit 1; }
+            gh release upload "$VERSION" "${assets[@]}" --clobber
           fi
           # RESTART_SAFE_GH_RELEASE_END
       - name: Deprecate renamed package names
