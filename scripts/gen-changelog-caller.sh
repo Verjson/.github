@@ -1621,83 +1621,92 @@ def strip_comment(line):
 lines = [strip_comment(line) for line in raw_lines]
 
 
-def split_top_level(text):
-    """Split a flow collection body on commas that are not nested or quoted."""
-    parts = []
-    current = []
-    depth = 0
+def mapping_entry(text):
+    """Return a strict scalar mapping key/value; reject YAML ambiguity."""
     quote = None
-    for char in text:
+    colon = None
+    for index, char in enumerate(text):
         if quote:
-            current.append(char)
             if char == quote:
                 quote = None
             continue
         if char in "'\"":
             quote = char
-            current.append(char)
-            continue
-        if char in "[{":
-            depth += 1
-        elif char in "]}":
-            depth -= 1
-        elif char == "," and depth == 0:
-            parts.append("".join(current))
-            current = []
-            continue
-        current.append(char)
-    if "".join(current).strip():
-        parts.append("".join(current))
-    return [part.strip() for part in parts if part.strip()]
+        elif char == ":":
+            colon = index
+            break
+        elif char in "{}[]&*!":
+            raise ValueError("flow collections, tags, and aliases are unsupported")
+    if quote or colon is None:
+        raise ValueError("malformed mapping entry")
+    raw_key = text[:colon].strip()
+    if not raw_key or raw_key == "<<":
+        raise ValueError("empty or merged mapping key")
+    quoted = len(raw_key) >= 2 and raw_key[0] == raw_key[-1] and raw_key[0] in "'\""
+    if quoted:
+        key = raw_key[1:-1]
+        if raw_key[0] in key or "\\" in key:
+            raise ValueError("escaped mapping keys are unsupported")
+    else:
+        if not re.fullmatch(r"[A-Za-z0-9_.-]+", raw_key):
+            raise ValueError("non-plain mapping key")
+        key = raw_key
+    return key, quoted, text[colon + 1:].strip()
 
 
-def keys_of_flow(text):
-    text = text.strip()
-    if text.startswith("{") and text.endswith("}"):
-        return [
-            part.split(":", 1)[0].strip().strip("'\"")
-            for part in split_top_level(text[1:-1])
-        ]
-    if text.startswith("[") and text.endswith("]"):
-        return [part.strip().strip("'\"") for part in split_top_level(text[1:-1])]
-    return [text.strip("'\"")]
-
-
-TRIGGER_KEY = re.compile(r"""^(?:on|'on'|"on"|true|True)\s*:(.*)$""")
+def trigger_identity(key, quoted):
+    if quoted:
+        return "on" if key == "on" else None
+    return "on" if key.casefold() in {"y", "yes", "true", "on"} else None
 
 
 def trigger_names():
-    for index, line in enumerate(lines):
-        match = TRIGGER_KEY.match(line)
-        if not match:
-            continue
-        inline = match.group(1).strip()
+    top_keys = set()
+    trigger_entries = []
+    try:
+        for index, line in enumerate(lines):
+            if not line.strip():
+                continue
+            if "\t" in line[: len(line) - len(line.lstrip())]:
+                raise ValueError("tab indentation")
+            if line[:1].isspace():
+                continue
+            if line.startswith(("---", "...", "%", "- ")):
+                raise ValueError("unsupported top-level YAML form")
+            key, quoted, value = mapping_entry(line)
+            identity = trigger_identity(key, quoted) or key
+            if identity in top_keys:
+                raise ValueError("duplicate YAML-equivalent top-level key")
+            top_keys.add(identity)
+            if trigger_identity(key, quoted):
+                trigger_entries.append((index, value))
+        if len(trigger_entries) != 1:
+            raise ValueError("missing or duplicate YAML-equivalent trigger key")
+        index, inline = trigger_entries[0]
         if inline:
-            return keys_of_flow(inline)
-        block = []
+            raise ValueError("trigger mapping must use canonical block form")
+        names = []
+        child_keys = set()
         for following in lines[index + 1:]:
             if not following.strip():
                 continue
-            if not following[:1].isspace():
+            indent = len(following) - len(following.lstrip())
+            if indent == 0:
                 break
-            block.append(following)
-        if not block:
-            return None
-        indent = min(len(line) - len(line.lstrip()) for line in block)
-        names = []
-        for entry in block:
-            if len(entry) - len(entry.lstrip()) != indent:
+            if indent != 2:
+                if not names:
+                    raise ValueError("malformed trigger indentation")
                 continue
-            text = entry.strip()
-            if text.startswith("- "):
-                text = text[2:].strip()
-            elif text == "-":
-                continue
-            name = text.split(":", 1)[0].strip().strip("'\"")
-            if name:
-                names.append(name)
+            key, quoted, _ = mapping_entry(following.strip())
+            identity = key
+            if identity in child_keys:
+                raise ValueError("duplicate trigger key")
+            child_keys.add(identity)
+            names.append(key)
         return names or None
-    return None
+    except ValueError as error:
+        problems.append("has an ambiguous or malformed top-level trigger mapping: %s" % error)
+        return None
 
 
 triggers = trigger_names()
