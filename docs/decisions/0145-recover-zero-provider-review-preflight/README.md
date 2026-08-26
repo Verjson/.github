@@ -30,14 +30,19 @@ valid but preflight failed or was held and the gate skipped, completion records 
 causal pre-provider state on the exact authorization check, grants no approval, and keeps
 the arm receipt available.
 
-An explicit review may be rerun only as a later attempt of the same GitHub Actions run.
-Before freshness or classification proceeds, a helper checked out at the executing
-workflow revision must prove all of the following:
+Every direct review dispatch must pass a helper checked out at the executing workflow
+revision before freshness or classification proceeds. The first attempt is admitted only
+when the run and triggering actors are `github-actions[bot]`, the App-owned authorization
+check remains in progress, and the current run is the sole direct workflow-dispatch run
+with the receipt-correlated title. This rejects a maintainer manually replaying retained
+receipt inputs as a new run, even if the maintainer changes the untrusted explicit-review
+input. A recovery may proceed only as a later attempt of that same
+GitHub Actions run and must prove all of the following:
 
 1. The arm receipt still verifies the exact repository, pull request, head, check, arm
    run and attempt, review-policy envelope, and configured App ID and slug.
 2. The current review run is the same receipt-correlated `workflow_dispatch` run on the
-   protected default branch, and the requested attempt is greater than one.
+   protected default branch, and a recovery attempt is greater than one.
 3. Every earlier attempt has exactly one completed preflight, a skipped gate with no
    steps, a failed completion, and a skipped terminal dispatch. All attempts are checked,
    not only the immediately preceding one.
@@ -55,8 +60,8 @@ completion or successful privileged merge. A pre-provider failure never consumes
 
 ## Trust boundaries
 
-- Recovery executes only from the protected review workflow and checks out its verifier
-  at `job.workflow_sha`; pull-request code and prose are never executed.
+- Initial admission and recovery execute only from the protected review workflow and check
+  out the verifier at `job.workflow_sha`; pull-request code and prose are never executed.
 - The workflow token gains Actions/read and Checks/read only for immutable run, job, and
   check evidence. The dedicated App remains the only identity that can mutate the
   authorization check or submit a review.

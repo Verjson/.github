@@ -17,10 +17,7 @@ done
 [[ "$EXPECTED_APP_SLUG" =~ ^[a-z0-9][a-z0-9-]*$ ]] || exit 1
 [[ "$REVIEW_POLICY" =~ ^[A-Za-z0-9_-]{1,2048}$ ]] || exit 1
 [[ "$REVIEW_RUN_ID" =~ ^[1-9][0-9]*$ ]] || exit 1
-[[ "$REVIEW_RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]] && (( REVIEW_RUN_ATTEMPT > 1 )) || {
-  echo "::error::zero-provider recovery requires a rerun of the same review workflow"
-  exit 1
-}
+[[ "$REVIEW_RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]] || exit 1
 [[ "$DEFAULT_BRANCH" =~ ^[A-Za-z0-9._/-]+$ ]] &&
   [[ "$DEFAULT_BRANCH" != /* && "$DEFAULT_BRANCH" != *..* && "$DEFAULT_BRANCH" != *//* ]] || exit 1
 for tool in gh jq; do command -v "$tool" >/dev/null || exit 1; done
@@ -56,30 +53,6 @@ jq -e --argjson run "$REVIEW_RUN_ID" --argjson attempt "$REVIEW_RUN_ATTEMPT" \
     exit 1
   }
 
-api prior-jobs "$tmp/prior-jobs.json" --paginate --slurp \
-  "repos/$TARGET_REPO/actions/runs/$REVIEW_RUN_ID/jobs?filter=all&per_page=100"
-jq -e --argjson attempt "$REVIEW_RUN_ATTEMPT" '
-  [.[].jobs[] | select(.run_attempt < $attempt)] as $prior |
-  ($attempt > 1) and
-  ([range(1; $attempt)] | all(.[]; . as $n |
-    ([$prior[] | select(.run_attempt == $n and (.name | endswith(" / preflight")))] | length) == 1 and
-    ([$prior[] | select(.run_attempt == $n and (.name | endswith(" / gate")))] | length) == 1 and
-    ([$prior[] | select(.run_attempt == $n and (.name | endswith(" / complete-authorization")))] | length) == 1 and
-    ([$prior[] | select(.run_attempt == $n and (.name | endswith(" / dispatch-merge")))] | length) == 1 and
-    all($prior[] | select(.run_attempt == $n and (.name | endswith(" / preflight")));
-      .status == "completed" and (.conclusion == "success" or .conclusion == "failure" or .conclusion == "skipped")) and
-    all($prior[] | select(.run_attempt == $n and (.name | endswith(" / gate")));
-      .status == "completed" and .conclusion == "skipped" and (.steps | length) == 0) and
-    all($prior[] | select(.run_attempt == $n and (.name | endswith(" / complete-authorization")));
-      .status == "completed" and .conclusion == "failure") and
-    all($prior[] | select(.run_attempt == $n and (.name | endswith(" / dispatch-merge")));
-      .status == "completed" and .conclusion == "skipped" and (.steps | length) == 0)
-  ))
-  ' "$tmp/prior-jobs.json" >/dev/null || {
-    echo "::error::prior review attempt reached or ambiguously approached the provider boundary"
-    exit 1
-  }
-
 api current-head "$tmp/pr.json" "repos/$TARGET_REPO/pulls/$PR_NUMBER"
 jq -e --arg head "$EXPECTED_HEAD_SHA" '
   .state == "open" and .head.sha == $head
@@ -92,10 +65,69 @@ api authorization-check "$tmp/check.json" "repos/$TARGET_REPO/check-runs/$AUTHOR
 jq -e --argjson id "$AUTHORIZATION_CHECK_ID" --arg head "$EXPECTED_HEAD_SHA" \
   --argjson app "$EXPECTED_APP_ID" --arg slug "$EXPECTED_APP_SLUG" '
     .id == $id and .name == "AI review authorization" and .head_sha == $head and
-    .app.id == $app and .app.slug == $slug and
-    .status == "completed" and .conclusion == "failure"
+    .app.id == $app and .app.slug == $slug
   ' "$tmp/check.json" >/dev/null || {
     echo "::error::zero-provider recovery check or App identity mismatch"
+    exit 1
+  }
+
+if [ "$REVIEW_RUN_ATTEMPT" -eq 1 ]; then
+  jq -e '.status == "in_progress" and .conclusion == null' "$tmp/check.json" >/dev/null || {
+    echo "::error::initial direct review cannot replay a retained authorization"
+    exit 1
+  }
+  jq -e '
+    .actor.login == "github-actions[bot]" and
+    .triggering_actor.login == "github-actions[bot]"
+    ' "$tmp/review-run.json" >/dev/null || {
+      echo "::error::initial direct review dispatch is not trusted-arm owned"
+      exit 1
+    }
+  api correlated-runs "$tmp/correlated-runs.json" --paginate --slurp \
+    "repos/$TARGET_REPO/actions/workflows/ai-review-merge.yml/runs?event=workflow_dispatch&per_page=100"
+  jq -e --argjson run "$REVIEW_RUN_ID" --arg title "$expected_title" \
+    --arg branch "$DEFAULT_BRANCH" --arg repo "$TARGET_REPO" '
+      [.[].workflow_runs[] | select(
+        .display_title == $title and .event == "workflow_dispatch" and
+        .path == ".github/workflows/ai-review-merge.yml" and .head_branch == $branch and
+        .head_repository.full_name == $repo and .repository.full_name == $repo
+      )] as $matching |
+      ($matching | length) == 1 and $matching[0].id == $run and
+      $matching[0].run_attempt == 1
+    ' "$tmp/correlated-runs.json" >/dev/null || {
+      echo "::error::initial direct review dispatch is missing or not unique"
+      exit 1
+    }
+  echo "Initial trusted-arm review dispatch verified for run $REVIEW_RUN_ID."
+  exit 0
+fi
+
+jq -e '.status == "completed" and .conclusion == "failure"' "$tmp/check.json" >/dev/null || {
+  echo "::error::zero-provider recovery authorization is not the failed prior attempt"
+  exit 1
+}
+
+api prior-jobs "$tmp/prior-jobs.json" --paginate --slurp \
+  "repos/$TARGET_REPO/actions/runs/$REVIEW_RUN_ID/jobs?filter=all&per_page=100"
+jq -e --argjson attempt "$REVIEW_RUN_ATTEMPT" '
+  [.[].jobs[] | select(.run_attempt < $attempt)] as $prior |
+  ($attempt > 1) and
+  ([range(1; $attempt)] | all(.[]; . as $n |
+    ([$prior[] | select(.run_attempt == $n and .name == "preflight")] | length) == 1 and
+    ([$prior[] | select(.run_attempt == $n and .name == "gate")] | length) == 1 and
+    ([$prior[] | select(.run_attempt == $n and .name == "complete-authorization")] | length) == 1 and
+    ([$prior[] | select(.run_attempt == $n and .name == "dispatch-merge")] | length) == 1 and
+    all($prior[] | select(.run_attempt == $n and .name == "preflight");
+      .status == "completed" and (.conclusion == "success" or .conclusion == "failure" or .conclusion == "skipped")) and
+    all($prior[] | select(.run_attempt == $n and .name == "gate");
+      .status == "completed" and .conclusion == "skipped" and (.steps | length) == 0) and
+    all($prior[] | select(.run_attempt == $n and .name == "complete-authorization");
+      .status == "completed" and .conclusion == "failure") and
+    all($prior[] | select(.run_attempt == $n and .name == "dispatch-merge");
+      .status == "completed" and .conclusion == "skipped" and (.steps | length) == 0)
+  ))
+  ' "$tmp/prior-jobs.json" >/dev/null || {
+    echo "::error::prior review attempt reached or ambiguously approached the provider boundary"
     exit 1
   }
 

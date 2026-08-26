@@ -326,13 +326,13 @@ jobs:
 
       - name: Resolve executing trusted workflow revision for recovery
         id: recovery-revision
-        if: inputs.explicit_rereview == true && github.run_attempt != 1
+        if: github.event_name == 'workflow_dispatch'
         env:
           EXECUTING_WORKFLOW_SHA: ${{ job.workflow_sha }}
         run: echo "sha=$EXECUTING_WORKFLOW_SHA" >>"$GITHUB_OUTPUT"
 
       - name: Check out immutable zero-provider recovery verifier
-        if: inputs.explicit_rereview == true && github.run_attempt != 1
+        if: github.event_name == 'workflow_dispatch'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           repository: Verjson/.github
@@ -345,9 +345,9 @@ jobs:
           sparse-checkout-cone-mode: false
           persist-credentials: false
 
-      - name: Verify receipt-bound zero-provider recovery
+      - name: Verify receipt-bound direct review admission
         id: zero-provider-recovery
-        if: inputs.explicit_rereview == true && github.run_attempt != 1
+        if: github.event_name == 'workflow_dispatch'
         env:
           GH_TOKEN: ${{ github.token }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
@@ -355,7 +355,11 @@ jobs:
           REVIEW_RUN_ATTEMPT: ${{ github.run_attempt }}
         run: |
           bash .gate-recovery/scripts/ci-gate/verify-zero-provider-recovery.sh
-          echo 'eligible=true' >>"$GITHUB_OUTPUT"
+          if [ "$REVIEW_RUN_ATTEMPT" -gt 1 ]; then
+            echo 'eligible=true' >>"$GITHUB_OUTPUT"
+          else
+            echo 'eligible=false' >>"$GITHUB_OUTPUT"
+          fi
 
       - name: Update branch if behind; hold on conflict
         id: freshness
