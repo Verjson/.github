@@ -275,13 +275,10 @@ def request_body(model: str, messages: list[dict], cap: int) -> dict:
         "messages": messages,
         "max_tokens": cap,
         "response_format": {"type": "json_object"},
-        "thinking": {"type": "enabled"},
+        "thinking": {"type": "disabled"},
         "stream": True,
         "stream_options": {"include_usage": True},
     }
-    if model == "deepseek-v4-pro":
-        body["reasoning_effort"] = "high"
-        body["temperature"] = 0.2
     return body
 
 
@@ -427,6 +424,8 @@ def streamed_response(raw: object, model: str, progress: StreamProgress | None =
                 raise ValueError("stream delta is malformed")
         content_delta = delta.get("content") or ""
         reasoning_delta = delta.get("reasoning_content") or ""
+        if reasoning_delta:
+            raise ValueError("stream emitted reasoning while thinking is disabled")
         content.append(content_delta)
         if progress is not None:
             progress.verdict_content_bytes += len(content_delta.encode("utf-8"))
