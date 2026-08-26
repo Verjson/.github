@@ -21,7 +21,7 @@ jobs = document["jobs"]
 assert set(jobs) == {"shell-test-groups", "adr-number-collision", "shell-tests"}
 
 groups = jobs["shell-test-groups"]
-assert groups["timeout-minutes"] == 12
+assert groups["timeout-minutes"] == 18
 assert groups["strategy"] == {
     "fail-fast": False,
     "max-parallel": 3,

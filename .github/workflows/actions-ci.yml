@@ -49,12 +49,11 @@ concurrency:
 
 jobs:
   shell-test-groups:
-    # Five representative main runs on 2026-08-07 spent 210-287 seconds in
-    # this suite after 3-92 seconds queued. Merge-gate contracts consumed
-    # 102-142 seconds, changelog/release 83-115, and platform/fleet 18-25.
-    # Three groups halve the critical path while adding only two checkouts.
+    # A complete changelog-release group reached 12m15s before the 12-minute job
+    # bound cancelled it after deterministic Python bootstrap on 2026-08-26.
+    # Eighteen minutes keeps the job bounded with margin for runner variance.
     runs-on: ${{ fromJSON(vars.CI_RUNNER_FASTLANE || vars.CI_LANE_TRUSTED || vars.CI_LANE_FALLBACK || '["ubuntu-24.04"]') }}
-    timeout-minutes: 12
+    timeout-minutes: 18
     strategy:
       fail-fast: false
       max-parallel: 3
