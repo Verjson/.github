@@ -39,6 +39,21 @@ name must resolve to the staged inode before consumer execution, and the same op
 must remain at that name after execution. Competing target, staging-name, parent, or
 post-execution identity changes fail without deleting the competing entry.
 
+Do not let `npm run` resolve the mutable installed pathname. Require the trusted,
+root-owned `/usr/bin/bwrap`; an absent or writable executable fails closed. For
+each lane, derive a private package projection directly from the verified archive
+bytes: every regular file is copied through a sealed anonymous `memfd`, the
+package is assembled on private tmpfs inside fresh user, PID, IPC, UTS, and
+cgroup namespaces, and the package mount is remounted read-only. The sandbox
+drops all capabilities and disables nested user namespaces before it runs the
+consumer script. The archive and provenance paths exposed to that script are
+separate sealed anonymous files in the same private mount. Its workspace and
+`node_modules` path topology are private, so
+an earlier PR-authored background process can rename, load, and restore the host
+target without changing which package bytes the consumer resolves. The external
+installed target remains only the state whose placement and restoration the lane
+audits; it is not the consumer's resolution source.
+
 When the target began absent, retain its installed directory identity and remove that
 exact directory after success, script failure, `SIGINT`, or `SIGTERM`. Cleanup first
 quarantines the identity under the held package parent and refuses to delete a different
@@ -51,7 +66,12 @@ No consumer self-dependency or package pin is introduced.
   their dependency graph.
 - Consumer code sees one fully verified staged package per lane; the initially absent
   target is absent again at job teardown.
+- Consumer resolution is bound to sealed archive bytes in a read-only private
+  mount, rather than inferred from equal path metadata before and after `npm`.
 - Parent and target races fail the job and preserve unexpected state for diagnosis rather
   than deleting or overwriting it.
 - Real-shaped tests cover success, script failure, signals, multiple lanes, parent and
-  target symlinks, missing parents, path escape, and target appearance during staging.
+  target symlinks, missing parents, path escape, and target appearance during
+  staging. A deterministic swap/load/restore control proves pathname execution
+  loads attacker bytes while the bound lane continues to load the verified
+  version.

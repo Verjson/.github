@@ -2599,6 +2599,7 @@ jobs:
           python3 - <<'PY'
           import ctypes
           import errno
+          import fcntl
           import gzip
           import hashlib
           import io
@@ -2834,6 +2835,8 @@ jobs:
               member_count = 0
               expanded_bytes = 0
               seen = set()
+              sandbox_directories = set()
+              sandbox_files = []
               try:
                   with tarfile.open(fileobj=io.BytesIO(tar_bytes), mode="r:") as archive:
                       for member in archive:
@@ -2869,6 +2872,7 @@ jobs:
                           try:
                               leaf = relative_parts[-1]
                               if member.isdir():
+                                  sandbox_directories.add(relative_parts)
                                   try:
                                       os.mkdir(leaf, mode=0o700, dir_fd=parent_descriptor)
                                   except FileExistsError:
@@ -2888,7 +2892,7 @@ jobs:
                                   0o755 if member.mode & 0o111 else 0o644,
                                   dir_fd=parent_descriptor,
                               )
-                              captured = bytearray() if relative_parts == ("package.json",) else None
+                              captured = bytearray()
                               try:
                                   remaining = member.size
                                   while remaining:
@@ -2896,16 +2900,21 @@ jobs:
                                       if not chunk:
                                           raise SystemExit("compatibility package archive file is truncated")
                                       write_all(file_descriptor, chunk)
-                                      if captured is not None:
-                                          captured.extend(chunk)
+                                      captured.extend(chunk)
                                       remaining -= len(chunk)
                                   if source.read(1):
                                       raise SystemExit("compatibility package archive file exceeds declared size")
                                   os.fsync(file_descriptor)
                               finally:
                                   os.close(file_descriptor)
-                              if captured is not None:
-                                  manifest_bytes = bytes(captured)
+                              file_content = bytes(captured)
+                              sandbox_files.append((
+                                  relative_parts,
+                                  0o755 if member.mode & 0o111 else 0o644,
+                                  file_content,
+                              ))
+                              if relative_parts == ("package.json",):
+                                  manifest_bytes = file_content
                           finally:
                               os.close(parent_descriptor)
               except BaseException:
@@ -2929,8 +2938,11 @@ jobs:
                   raise SystemExit("compatibility package manifest does not match resolved provenance")
               os.fsync(root_descriptor)
               staging_metadata = os.fstat(root_descriptor)
-              return staging, root_descriptor, (
-                  staging_metadata.st_dev, staging_metadata.st_ino,
+              return (
+                  staging,
+                  root_descriptor,
+                  (staging_metadata.st_dev, staging_metadata.st_ino),
+                  (tuple(sorted(sandbox_directories)), tuple(sandbox_files)),
               )
 
           def discard_staging(staging):
@@ -3160,6 +3172,178 @@ jobs:
                       f"installed compatibility package target changed {phase}"
                   )
 
+          def add_sandbox_binding(arguments, source, destination, *, writable):
+              metadata = source.lstat()
+              if stat.S_ISLNK(metadata.st_mode):
+                  arguments.extend(["--symlink", os.readlink(source), destination])
+              elif stat.S_ISDIR(metadata.st_mode) or stat.S_ISREG(metadata.st_mode):
+                  arguments.extend([
+                      "--bind" if writable else "--ro-bind",
+                      str(source),
+                      destination,
+                  ])
+              else:
+                  raise SystemExit(
+                      f"compatibility sandbox cannot mirror special entry {source}"
+                  )
+
+          def mirror_node_modules(arguments, source, destination, target_parts):
+              for entry in sorted(source.iterdir(), key=lambda path: path.name):
+                  child_destination = f"{destination}/{entry.name}"
+                  if entry.name != target_parts[0]:
+                      add_sandbox_binding(
+                          arguments, entry, child_destination, writable=False,
+                      )
+                      continue
+                  if len(target_parts) == 1:
+                      continue
+                  metadata = entry.lstat()
+                  if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
+                      raise SystemExit(
+                          "installed compatibility package parent is not a real directory"
+                      )
+                  arguments.extend(["--dir", child_destination])
+                  mirror_node_modules(
+                      arguments,
+                      entry,
+                      child_destination,
+                      target_parts[1:],
+                  )
+
+          def create_sealed_file(content):
+              descriptor = os.memfd_create(
+                  "verjson-compatibility-artifact",
+                  os.MFD_CLOEXEC | os.MFD_ALLOW_SEALING,
+              )
+              try:
+                  write_all(descriptor, content)
+                  os.lseek(descriptor, 0, os.SEEK_SET)
+                  fcntl.fcntl(
+                      descriptor,
+                      fcntl.F_ADD_SEALS,
+                      fcntl.F_SEAL_SEAL
+                      | fcntl.F_SEAL_SHRINK
+                      | fcntl.F_SEAL_GROW
+                      | fcntl.F_SEAL_WRITE,
+                  )
+                  return descriptor
+              except BaseException:
+                  os.close(descriptor)
+                  raise
+
+          def run_bound_consumer(
+                  sandbox_entries, artifact_content, provenance_content,
+                  script_environment):
+              bubblewrap = Path("/usr/bin/bwrap")
+              try:
+                  bubblewrap_metadata = bubblewrap.stat()
+              except FileNotFoundError:
+                  raise SystemExit("trusted bubblewrap compatibility sandbox is unavailable")
+              if (not stat.S_ISREG(bubblewrap_metadata.st_mode)
+                      or bubblewrap_metadata.st_uid != 0
+                      or bubblewrap_metadata.st_mode & 0o022):
+                  raise SystemExit("trusted bubblewrap compatibility sandbox is unsafe")
+
+              workspace = Path.cwd().resolve(strict=True)
+              sandbox_workspace = "/dev/shm/verjson-compatibility-workspace"
+              sandbox_node_modules = f"{sandbox_workspace}/node_modules"
+              sandbox_target = "/".join((sandbox_node_modules, *package_parts))
+              arguments = [
+                  str(bubblewrap),
+                  "--unshare-user",
+                  "--unshare-pid",
+                  "--unshare-ipc",
+                  "--unshare-uts",
+                  "--unshare-cgroup-try",
+                  "--disable-userns",
+                  "--die-with-parent",
+                  "--new-session",
+                  "--cap-drop", "ALL",
+                  "--ro-bind", "/", "/",
+                  "--dev", "/dev",
+                  "--proc", "/proc",
+                  "--tmpfs", "/dev/shm",
+                  "--dir", "/dev/shm/tmp",
+                  "--dir", sandbox_workspace,
+                  "--dir", f"{sandbox_workspace}/node_modules",
+                  "--dir", "/dev/shm/home",
+              ]
+              for entry in sorted(workspace.iterdir(), key=lambda path: path.name):
+                  if entry.name == "node_modules":
+                      continue
+                  add_sandbox_binding(
+                      arguments,
+                      entry,
+                      f"{sandbox_workspace}/{entry.name}",
+                      writable=True,
+                  )
+              mirror_node_modules(
+                  arguments,
+                  workspace / "node_modules",
+                  sandbox_node_modules,
+                  tuple(package_parts),
+              )
+
+              arguments.extend(["--tmpfs", sandbox_target])
+              sandbox_directories, sandbox_files = sandbox_entries
+              all_directories = set(sandbox_directories)
+              for parts, _mode, _content in sandbox_files:
+                  for length in range(1, len(parts)):
+                      all_directories.add(parts[:length])
+              for parts in sorted(all_directories, key=lambda item: (len(item), item)):
+                  arguments.extend(["--dir", "/".join((sandbox_target, *parts))])
+
+              sealed_descriptors = []
+              try:
+                  artifact_descriptor = create_sealed_file(artifact_content)
+                  sealed_descriptors.append(artifact_descriptor)
+                  provenance_descriptor = create_sealed_file(provenance_content)
+                  sealed_descriptors.append(provenance_descriptor)
+                  arguments.extend([
+                      "--perms", "0444",
+                      "--ro-bind-data", str(artifact_descriptor),
+                      "/dev/shm/verjson-compatibility-artifact.tgz",
+                      "--perms", "0444",
+                      "--ro-bind-data", str(provenance_descriptor),
+                      "/dev/shm/verjson-compatibility-provenance.json",
+                  ])
+                  for parts, mode, content in sandbox_files:
+                      descriptor = create_sealed_file(content)
+                      sealed_descriptors.append(descriptor)
+                      arguments.extend([
+                          "--perms", f"{mode:04o}",
+                          "--ro-bind-data", str(descriptor),
+                          "/".join((sandbox_target, *parts)),
+                      ])
+                  arguments.extend([
+                      "--remount-ro", sandbox_target,
+                      "--chdir", sandbox_workspace,
+                      "--",
+                      "npm", "run", request["script"],
+                  ])
+                  sandbox_environment = script_environment.copy()
+                  sandbox_environment.update({
+                      "VERJSON_COMPATIBILITY_ARTIFACT":
+                          "/dev/shm/verjson-compatibility-artifact.tgz",
+                      "VERJSON_SECRETLESS_COMPATIBILITY_PROVENANCE":
+                          "/dev/shm/verjson-compatibility-provenance.json",
+                      "GITHUB_WORKSPACE": sandbox_workspace,
+                      "HOME": "/dev/shm/home",
+                      "RUNNER_TEMP": "/dev/shm/tmp",
+                      "TEMP": "/dev/shm/tmp",
+                      "TMP": "/dev/shm/tmp",
+                      "TMPDIR": "/dev/shm/tmp",
+                  })
+                  subprocess.run(
+                      arguments,
+                      check=True,
+                      env=sandbox_environment,
+                      pass_fds=tuple(sealed_descriptors),
+                  )
+              finally:
+                  for descriptor in sealed_descriptors:
+                      os.close(descriptor)
+
           def restore_initial_absence(expected_owned_identity):
               if not target_initially_absent or expected_owned_identity is None:
                   return
@@ -3211,9 +3395,12 @@ jobs:
                   if not artifact.is_file() or artifact.is_symlink():
                       sys.exit("verified compatibility artifact is absent before consumer execution")
                   artifact_bytes = read_verified_artifact(artifact, lane["sha512"])
-                  staging, staging_descriptor, staging_identity = stage_verified_package(
-                      artifact_bytes, lane, package_parent_handle,
-                  )
+                  (
+                      staging,
+                      staging_descriptor,
+                      staging_identity,
+                      sandbox_entries,
+                  ) = stage_verified_package(artifact_bytes, lane, package_parent_handle)
                   owned_target_identity, owned_target_descriptor = swap_verified_package(
                       staging, staging_descriptor, staging_identity,
                       lane, index, owned_target_identity,
@@ -3233,10 +3420,11 @@ jobs:
                           "before consumer execution",
                       )
                       try:
-                          subprocess.run(
-                              ["npm", "run", request["script"]],
-                              check=True,
-                              env=script_env,
+                          run_bound_consumer(
+                              sandbox_entries,
+                              artifact_bytes,
+                              provenance_bytes,
+                              script_env,
                           )
                       finally:
                           verify_bound_installed_target(

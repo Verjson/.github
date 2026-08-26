@@ -134,16 +134,33 @@ class SecretlessAbsentCompatibilityTargetTests(unittest.TestCase):
             "version": "1.0.0",
             "scripts": {"test:compat": "node test-compat.cjs"},
         }) + "\n", encoding="utf-8")
+        (self.fixture / "results").mkdir()
         (self.fixture / "test-compat.cjs").write_text(
             """const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const target = './node_modules/@verjson/authn';
+function waitFor(path) {
+  const deadline = Date.now() + 5000;
+  while (!fs.existsSync(path)) {
+    if (Date.now() >= deadline) throw new Error(`timed out waiting for ${path}`);
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
+  }
+}
+if (process.env.TEST_SWAP_LOAD_RESTORE === 'true') {
+  fs.writeFileSync('results/swap-ready', 'yes');
+  waitFor('results/swap-complete');
+}
 const manifest = require(target + '/package.json');
+fs.writeFileSync('results/loaded-version', manifest.version + '\\n');
+if (process.env.TEST_SWAP_LOAD_RESTORE === 'true') {
+  fs.writeFileSync('results/load-complete', 'yes');
+  waitFor('results/restore-complete');
+}
 assert.equal(manifest.version, process.env.VERJSON_COMPATIBILITY_VERSION);
 assert.deepEqual(fs.readdirSync(target).sort(), ['index.js', 'package.json']);
-fs.appendFileSync('observed-versions', manifest.version + '\\n');
+fs.appendFileSync('results/observed-versions', manifest.version + '\\n');
 if (process.env.TEST_SIGNAL === 'true') {
-  fs.writeFileSync('consumer-started', 'yes');
+  fs.writeFileSync('results/consumer-started', 'yes');
   setInterval(() => {}, 1000);
 }
 if (process.env.TEST_REPLACE_TARGET === 'true') {
@@ -198,7 +215,10 @@ if (process.env.TEST_FAIL === 'true') process.exit(42);
         self.prepare()
         result = self.run_lane()
         self.assertEqual(0, result.returncode, result.stderr)
-        self.assertEqual("1.0.0\n", (self.fixture / "observed-versions").read_text())
+        self.assertEqual(
+            "1.0.0\n",
+            (self.fixture / "results/observed-versions").read_text(),
+        )
         self.assert_absence_restored()
 
     def test_initially_absent_target_is_removed_after_script_failure(self):
@@ -218,7 +238,7 @@ if (process.env.TEST_FAIL === 'true') process.exit(42);
             text=True,
             start_new_session=True,
         )
-        marker = self.fixture / "consumer-started"
+        marker = self.fixture / "results/consumer-started"
         for _ in range(200):
             if marker.exists() or process.poll() is not None:
                 break
@@ -236,7 +256,10 @@ if (process.env.TEST_FAIL === 'true') process.exit(42);
         self.prepare(versions=("1.0.0", "2.0.0"))
         result = self.run_lane()
         self.assertEqual(0, result.returncode, result.stderr)
-        self.assertEqual("1.0.0\n2.0.0\n", (self.fixture / "observed-versions").read_text())
+        self.assertEqual(
+            "1.0.0\n2.0.0\n",
+            (self.fixture / "results/observed-versions").read_text(),
+        )
         self.assert_absence_restored()
 
     def test_existing_target_behavior_remains_replaced(self):
@@ -296,7 +319,7 @@ if (process.env.TEST_FAIL === 'true') process.exit(42);
         self.assertTrue(appeared.is_set())
         self.assertNotEqual(0, result.returncode)
         self.assertIn("target appeared unexpectedly", result.stderr)
-        self.assertFalse((self.fixture / "observed-versions").exists())
+        self.assertFalse((self.fixture / "results/observed-versions").exists())
         self.assertEqual([], list(self.scope.glob(".authn.*")))
 
     def test_verified_staging_name_cannot_be_replaced_before_placement(self):
@@ -326,7 +349,7 @@ if (process.env.TEST_FAIL === 'true') process.exit(42);
         self.assertTrue(replaced.is_set())
         self.assertNotEqual(0, result.returncode)
         self.assertIn("verified compatibility staging path changed", result.stderr)
-        self.assertFalse((self.fixture / "observed-versions").exists())
+        self.assertFalse((self.fixture / "results/observed-versions").exists())
 
     def test_target_appearance_in_atomic_placement_window_fails_closed(self):
         self.prepare()
@@ -357,7 +380,7 @@ if (process.env.TEST_FAIL === 'true') process.exit(42);
         _stdout, stderr = process.communicate(timeout=10)
         self.assertNotEqual(0, process.returncode)
         self.assertIn("target appeared during placement", stderr)
-        self.assertFalse((self.fixture / "observed-versions").exists())
+        self.assertFalse((self.fixture / "results/observed-versions").exists())
 
     def test_parent_replacement_during_staging_fails_closed(self):
         self.prepare(padding_members=1024)
@@ -380,16 +403,107 @@ if (process.env.TEST_FAIL === 'true') process.exit(42);
         self.assertTrue(replaced.is_set())
         self.assertNotEqual(0, result.returncode)
         self.assertIn("parent is not a real directory", result.stderr)
-        self.assertFalse((self.fixture / "observed-versions").exists())
+        self.assertFalse((self.fixture / "results/observed-versions").exists())
+
+    def run_swap_load_restore(self, runner=None):
+        attack_completed = threading.Event()
+        attack_errors = []
+        verified = self.scope / "authn-verified-outside"
+
+        def swap_load_restore():
+            try:
+                ready = self.fixture / "results/swap-ready"
+                loaded = self.fixture / "results/load-complete"
+                for _ in range(500):
+                    if ready.exists():
+                        break
+                    time.sleep(0.01)
+                if not ready.exists():
+                    raise AssertionError("consumer never reached swap/load/restore window")
+                self.package_target.rename(verified)
+                self.package_target.mkdir()
+                (self.package_target / "package.json").write_text(
+                    json.dumps({"name": PACKAGE, "version": "9.9.9"}) + "\n",
+                    encoding="utf-8",
+                )
+                (self.package_target / "index.js").write_text(
+                    "throw new Error('malicious replacement loaded');\n",
+                    encoding="utf-8",
+                )
+                (self.fixture / "results/swap-complete").touch()
+                for _ in range(500):
+                    if loaded.exists():
+                        break
+                    time.sleep(0.01)
+                if not loaded.exists():
+                    raise AssertionError("consumer never loaded a package during attack")
+                shutil.rmtree(self.package_target)
+                verified.rename(self.package_target)
+                (self.fixture / "results/restore-complete").touch()
+                attack_completed.set()
+            except BaseException as error:
+                attack_errors.append(error)
+                if self.package_target.exists() and verified.exists():
+                    shutil.rmtree(self.package_target)
+                if verified.exists() and not self.package_target.exists():
+                    verified.rename(self.package_target)
+                (self.fixture / "results/restore-complete").touch()
+
+        attacker = threading.Thread(target=swap_load_restore)
+        attacker.start()
+        result = self.run_lane(runner=runner, TEST_SWAP_LOAD_RESTORE="true")
+        attacker.join(timeout=10)
+        self.assertFalse(attacker.is_alive())
+        self.assertEqual([], attack_errors)
+        self.assertTrue(attack_completed.is_set())
+        return result
+
+    def test_consumer_load_is_bound_during_external_swap_load_restore(self):
+        self.prepare()
+        result = self.run_swap_load_restore()
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual(
+            "1.0.0\n",
+            (self.fixture / "results/loaded-version").read_text(),
+        )
+        self.assert_absence_restored()
+
+    def test_removing_bound_execution_exposes_swap_load_restore_mutation(self):
+        self.prepare()
+        needle = (
+            "                run_bound_consumer(\n"
+            "                    sandbox_entries,\n"
+            "                    artifact_bytes,\n"
+            "                    provenance_bytes,\n"
+            "                    script_env,\n"
+            "                )"
+        )
+        replacement = (
+            "                subprocess.run(\n"
+            "                    ['npm', 'run', request['script']],\n"
+            "                    check=True, env=script_env,\n"
+            "                )"
+        )
+        runner = self.instrument_runner("unbound-consumer.sh", needle, replacement)
+        result = self.run_swap_load_restore(runner)
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn("9.9.9", result.stderr)
+        self.assertEqual(
+            "9.9.9\n",
+            (self.fixture / "results/loaded-version").read_text(),
+        )
+        self.assert_absence_restored()
 
     def test_target_replacement_after_use_cannot_produce_green_or_delete_entries(self):
         self.prepare()
         result = self.run_lane(TEST_REPLACE_TARGET="true")
         self.assertNotEqual(0, result.returncode)
-        self.assertIn("changed", result.stderr)
-        self.assertTrue(self.package_target.is_dir())
-        self.assertTrue((self.scope / "authn-verified").is_dir())
-        self.assertEqual("1.0.0\n", (self.fixture / "observed-versions").read_text())
+        self.assertIn("EBUSY", result.stderr)
+        self.assert_absence_restored()
+        self.assertEqual(
+            "1.0.0\n",
+            (self.fixture / "results/observed-versions").read_text(),
+        )
 
 
 if __name__ == "__main__":

@@ -213,13 +213,14 @@ PY
   run_install "$fixture" >/dev/null 2>&1 && fail "tampered compatibility $mutation passed verification" || pass "tampered compatibility $mutation fails before consumer code"
 done
 
-mkdir -p "$tmp/e2e/consumer/artifacts" "$tmp/e2e/consumer/node_modules/@verjson/identity-contracts"
+mkdir -p "$tmp/e2e/consumer/artifacts" "$tmp/e2e/consumer/compat-results" \
+  "$tmp/e2e/consumer/node_modules/@verjson/identity-contracts"
 cp "$tmp/e2e/build/artifacts/"* "$tmp/e2e/consumer/artifacts/"
 printf '%s\n' '{"name":"@verjson/identity-contracts","version":"0.1.0"}' \
   > "$tmp/e2e/consumer/node_modules/@verjson/identity-contracts/package.json"
 printf '%s\n' '{"name":"consumer","version":"1.0.0","scripts":{"test:compat":"node test-compat.js"}}' > "$tmp/e2e/consumer/package.json"
-printf '%s\n' "const fs=require('node:fs');const v=require('./node_modules/@verjson/identity-contracts/package.json').version;fs.writeFileSync('observed-version',v);if(process.env.REJECT_COMPATIBILITY==='true')process.exit(42);" > "$tmp/e2e/consumer/test-compat.js"
-if (cd "$tmp/e2e/consumer" && COMPATIBILITY_ARTIFACT_DIR="$tmp/e2e/consumer/artifacts" COMPATIBILITY_RANGES="$request" EXPECTED_COMPATIBILITY_PROVENANCE_SHA256="$provenance_sha" REJECT_COMPATIBILITY=false bash "$tmp/run-lanes.sh") >/dev/null 2>&1 && grep -qFx 0.2.2 "$tmp/e2e/consumer/observed-version"; then pass "the resolved in-range artifact reaches the declared consumer test"; else fail "the resolved artifact did not reach the declared consumer test"; fi
+printf '%s\n' "const fs=require('node:fs');const v=require('./node_modules/@verjson/identity-contracts/package.json').version;fs.writeFileSync('compat-results/observed-version',v);if(process.env.REJECT_COMPATIBILITY==='true')process.exit(42);" > "$tmp/e2e/consumer/test-compat.js"
+if (cd "$tmp/e2e/consumer" && COMPATIBILITY_ARTIFACT_DIR="$tmp/e2e/consumer/artifacts" COMPATIBILITY_RANGES="$request" EXPECTED_COMPATIBILITY_PROVENANCE_SHA256="$provenance_sha" REJECT_COMPATIBILITY=false bash "$tmp/run-lanes.sh") >/dev/null 2>&1 && grep -qFx 0.2.2 "$tmp/e2e/consumer/compat-results/observed-version"; then pass "the resolved in-range artifact reaches the declared consumer test"; else fail "the resolved artifact did not reach the declared consumer test"; fi
 (cd "$tmp/e2e/consumer" && COMPATIBILITY_ARTIFACT_DIR="$tmp/e2e/consumer/artifacts" COMPATIBILITY_RANGES="$request" EXPECTED_COMPATIBILITY_PROVENANCE_SHA256="$provenance_sha" REJECT_COMPATIBILITY=true bash "$tmp/run-lanes.sh") >/dev/null 2>&1 \
   && fail "an in-range incompatible artifact did not fail consumer tests" || pass "an in-range incompatible artifact fails at the consumer test layer"
 if (cd "$tmp/e2e/consumer" && COMPATIBILITY_ARTIFACT_DIR="$tmp/e2e/consumer/artifacts" COMPATIBILITY_RANGES="$request" EXPECTED_COMPATIBILITY_PROVENANCE_SHA256="$provenance_sha" NODE_AUTH_TOKEN=leaked bash "$tmp/run-lanes.sh") >"$tmp/e2e/token.log" 2>&1; then fail "a package credential reached compatibility consumer execution"; elif grep -qF 'credential reached compatibility consumer execution' "$tmp/e2e/token.log"; then pass "consumer execution fails closed on a credential leak"; else fail "token-leak mutation failed for the wrong reason"; fi
@@ -242,6 +243,7 @@ prepare_archive_case() {
   local fixture="$tmp/archive-cases/$mutation"
   rm -rf "$fixture"
   mkdir -p "$fixture/artifacts" \
+    "$fixture/compat-results" \
     "$fixture/node_modules/@verjson/identity-contracts" \
     "$fixture/node_modules/cold-cache-public" \
     "$fixture/cold-cache/_cacache/content-v2/sha512"
@@ -261,7 +263,7 @@ const fs = require('node:fs');
 
 assert.equal(require('./node_modules/@verjson/identity-contracts/package.json').version, '0.2.2');
 assert.equal(require('cold-cache-public'), 'cold-cache-public-1.4.0');
-fs.writeFileSync('consumer-ran', 'yes');
+fs.writeFileSync('compat-results/consumer-ran', 'yes');
 JS
   python3 - "$fixture" "$mutation" "$request" <<'PY'
 import base64
@@ -402,7 +404,7 @@ run_archive_case() {
 }
 
 if run_archive_case good \
-    && [ -f "$tmp/archive-cases/good/consumer-ran" ] \
+    && [ -f "$tmp/archive-cases/good/compat-results/consumer-ran" ] \
     && [ ! -e "$tmp/archive-cases/good/npm-graph-resolution" ] \
     && [ ! -e "$tmp/archive-cases/good/node_modules/@verjson/identity-contracts/old-sentinel" ] \
     && [ "$(find "$tmp/archive-cases/good/node_modules/@verjson" -maxdepth 1 -name '.identity-contracts.*' -print -quit)" = '' ]; then
@@ -414,7 +416,7 @@ fi
 for mutation in traversal absolute multi-root symlink hardlink special pax oversize count duplicate wrong-name wrong-version; do
   if run_archive_case "$mutation"; then
     fail "$mutation compatibility archive reached consumer execution"
-  elif [ -e "$tmp/archive-cases/$mutation/consumer-ran" ] \
+  elif [ -e "$tmp/archive-cases/$mutation/compat-results/consumer-ran" ] \
       || [ -e "$tmp/archive-cases/$mutation/npm-graph-resolution" ] \
       || [ -e "$tmp/archive-cases/$mutation/escape" ]; then
     fail "$mutation compatibility archive caused work before rejection"
