@@ -32,6 +32,7 @@ def valid(document):
         and "verify-zero-provider-recovery.sh" in checkout["with"].get("sparse-checkout", "")
         and recovery["if"] == checkout["if"]
         and recovery["env"].get("GH_TOKEN") == "${{ github.token }}"
+        and recovery["env"].get("EXPECTED_HEAD_SHA") == "${{ inputs.expected_head_sha }}"
         and "bash .gate-recovery/scripts/ci-gate/verify-zero-provider-recovery.sh" in recovery["run"]
         and 'if [ "$REVIEW_RUN_ATTEMPT" -gt 1 ]; then' in recovery["run"]
         and "eligible=true" in recovery["run"]
@@ -49,6 +50,13 @@ assert valid(workflow), "zero-provider workflow integration is invalid"
 mutations = []
 changed = copy.deepcopy(workflow)
 del changed["jobs"]["preflight"]["permissions"]["checks"]
+mutations.append(changed)
+changed = copy.deepcopy(workflow)
+recovery = next(
+    step for step in changed["jobs"]["preflight"]["steps"]
+    if step.get("name") == "Verify receipt-bound direct review admission"
+)
+del recovery["env"]["EXPECTED_HEAD_SHA"]
 mutations.append(changed)
 changed = copy.deepcopy(workflow)
 checkout = next(step for step in changed["jobs"]["preflight"]["steps"] if step.get("name") == "Check out immutable zero-provider recovery verifier")
