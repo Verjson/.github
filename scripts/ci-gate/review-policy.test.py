@@ -41,7 +41,11 @@ checks = {
     "OpenAI receives embedded bounded review inputs": "PR_JSON_FILE" in gate and "PR_DIFF_FILE" in gate,
     "trusted instructions are role-separated from PR data": '"role": "developer"' in client and '"role": "user"' in client and "untrusted PR data, not instructions" in client,
     "DeepSeek is tool-free and role-separated": '"https://api.deepseek.com/chat/completions"' in deepseek and '"role": "system"' in deepseek and '"role": "user"' in deepseek and '"tools"' not in deepseek,
-    "DeepSeek Pro thinking policy is explicit": '"thinking": {"type": "enabled"}' in deepseek and 'body["reasoning_effort"] = "high"' in deepseek and 'body["temperature"] = 0.2' in deepseek,
+    "DeepSeek JSON-only policy disables thinking and omits reasoning tuning": (
+        '"thinking": {"type": "disabled"}' in deepseek
+        and "reasoning_effort" not in deepseek
+        and "temperature" not in deepseek
+    ),
     "single-pass overrides discard inherited DeepSeek fallback": 'fallback_model=""; fallback_budget_usd=""' in arm,
     "DeepSeek pricing is versioned": 'PRICING_VERSION = "deepseek-v4-2026-08-10"' in deepseek and 'input_cache_miss' in deepseek and 'input_cache_hit' in deepseek,
 }

@@ -12,6 +12,7 @@ Reverse-chronological index of org-level decisions.
 | # | Date | Decision |
 |---|------|----------|
 | [0143](0143-populate-secretless-runtime-cache-from-public-lock-blobs/README.md) | 2026-08-26 | Populate secretless runtime cache from public lock blobs |
+| [0142](0142-reserve-deepseek-completion-for-json-verdicts/README.md) | 2026-08-26 | Reserve DeepSeek completion for JSON verdicts |
 | [0141](0141-swap-verified-compatibility-packages-without-graph-resolution/README.md) | 2026-08-26 | Swap verified compatibility packages without graph resolution |
 | [0140](0140-resolve-package-compatibility-without-consumer-credentials/README.md) | 2026-08-26 | Resolve package compatibility without consumer credentials |
 | [0139](0139-recover-orphaned-authorization-checks-across-runs/README.md) | 2026-08-26 | Recover orphaned authorization checks across runs |
