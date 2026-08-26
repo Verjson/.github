@@ -111,6 +111,20 @@ on:
         required: false
         type: string
         default: '@verjson'
+      secretless-compatibility-ranges:
+        description: >-
+          Optional JSON object with exactly package, ranges, and script. package
+          must be one exact approved-internal-packages entry and compatibility mode
+          requires a non-empty CI_SECRETLESS_PACKAGE_POLICY that exactly binds the
+          caller's scopes, packages, and allowed compatibility ranges. ranges contains
+          1-8 unique exact, caret,
+          tilde, or explicit inclusive-lower/exclusive-upper semver ranges resolved
+          from GitHub Packages at run time; script names one package.json script run
+          once per verified credentialless artifact. Empty disables compatibility
+          lanes.
+        required: false
+        type: string
+        default: ''
       secretless-auxiliary-source:
         description: >-
           Optional JSON object describing one immutable private sparse checkout:
@@ -382,6 +396,7 @@ jobs:
       auxiliary-content-path: ${{ steps.resolve-auxiliary-source.outputs.content-path }}
       auxiliary-repository: ${{ steps.resolve-auxiliary-source.outputs.repository }}
       transfer-cache-key: ${{ steps.create-secretless-cache-key.outputs.cache-key }}
+      compatibility-provenance-sha256: ${{ steps.package-secretless-transfer.outputs.compatibility-provenance-sha256 }}
       transfer-payload-bytes: ${{ steps.package-secretless-transfer.outputs.payload-bytes }}
       transfer-payload-sha256: ${{ steps.package-secretless-transfer.outputs.payload-sha256 }}
     steps:
@@ -444,6 +459,7 @@ jobs:
         env:
           APPROVED_INTERNAL_PACKAGES: ${{ inputs.approved-internal-packages }}
           APPROVED_INTERNAL_SCOPES: ${{ inputs.approved-internal-scopes }}
+          COMPATIBILITY_RANGES: ${{ inputs.secretless-compatibility-ranges }}
           PRIVATE_CACHE_ENTRIES: ${{ runner.temp }}/secretless-private-entries-${{ github.run_id }}-${{ github.run_attempt }}
           TRUSTED_PACKAGE_POLICY: ${{ vars.CI_SECRETLESS_PACKAGE_POLICY }}
           PACKAGE_MANAGER: ${{ inputs.package-manager }}
@@ -464,14 +480,55 @@ jobs:
           package_pattern = re.compile(r"@[a-z0-9][a-z0-9._-]*/[a-z0-9][a-z0-9._-]*")
           if any(package_pattern.fullmatch(name) is None or name.split("/", 1)[0] not in scopes for name in approved):
               sys.exit("approved-internal-packages accepts exact names under approved-internal-scopes only")
+          core_pattern = r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)"
+
+          def parse_core(value):
+              return tuple(int(part) for part in value.split("."))
+
+          def is_bounded_range(value):
+              if re.fullmatch(core_pattern, value):
+                  return True
+              if re.fullmatch(rf"[~^]{core_pattern}", value):
+                  return True
+              interval = re.fullmatch(rf">=({core_pattern}) <({core_pattern})", value)
+              return bool(interval and parse_core(interval.group(1)) < parse_core(interval.group(2)))
+
+          compatibility_package = None
+          compatibility_source = os.environ.get("COMPATIBILITY_RANGES", "")
+          if compatibility_source:
+              if os.environ.get("PACKAGE_MANAGER", "npm") != "npm":
+                  sys.exit("secretless compatibility ranges currently require package-manager npm")
+              try:
+                  compatibility = json.loads(compatibility_source)
+              except json.JSONDecodeError as error:
+                  sys.exit(f"secretless-compatibility-ranges must be valid JSON: {error}")
+              if not isinstance(compatibility, dict) or set(compatibility) != {"package", "ranges", "script"}:
+                  sys.exit("secretless-compatibility-ranges requires exactly package, ranges, and script")
+              compatibility_package = compatibility["package"]
+              ranges = compatibility["ranges"]
+              script = compatibility["script"]
+              script_pattern = re.compile(r"[A-Za-z0-9][A-Za-z0-9:._-]{0,127}")
+              if compatibility_package not in approved:
+                  sys.exit("secretless compatibility package must be an exact approved-internal-packages entry")
+              if (not isinstance(ranges, list) or not 1 <= len(ranges) <= 8
+                      or any(not isinstance(item, str) or len(item) > 128
+                             or not is_bounded_range(item) for item in ranges)
+                      or len(ranges) != len(set(ranges))):
+                  sys.exit("secretless compatibility ranges accepts 1-8 unique exact, caret, tilde, or >=lower <upper semver ranges")
+              if not isinstance(script, str) or script_pattern.fullmatch(script) is None:
+                  sys.exit("secretless compatibility script must be one exact package.json script name")
           trusted_policy = os.environ.get("TRUSTED_PACKAGE_POLICY", "")
+          if compatibility_source and not trusted_policy:
+              sys.exit("secretless compatibility ranges requires non-empty CI_SECRETLESS_PACKAGE_POLICY")
           if scopes != {"@verjson"} or trusted_policy:
               try:
                   policy = json.loads(trusted_policy)
               except json.JSONDecodeError as error:
                   sys.exit(f"CI_SECRETLESS_PACKAGE_POLICY must be valid JSON: {error}")
-              if not isinstance(policy, dict) or set(policy) != {"scopes", "packages"}:
-                  sys.exit("CI_SECRETLESS_PACKAGE_POLICY requires exactly scopes and packages")
+              if (not isinstance(policy, dict)
+                      or set(policy) not in ({"scopes", "packages"},
+                                             {"scopes", "packages", "compatibility"})):
+                  sys.exit("CI_SECRETLESS_PACKAGE_POLICY requires scopes and packages, with optional compatibility")
               policy_scopes = policy["scopes"]
               policy_packages = policy["packages"]
               if (not isinstance(policy_scopes, list) or not policy_scopes
@@ -482,6 +539,19 @@ jobs:
                       or any(not isinstance(name, str) for name in policy_packages)
                       or set(policy_scopes) != scopes or set(policy_packages) != approved):
                   sys.exit("approved internal scopes and packages must exactly match trusted repository policy")
+              policy_compatibility = policy.get("compatibility", {})
+              if (not isinstance(policy_compatibility, dict)
+                      or any(name not in approved for name in policy_compatibility)
+                      or any(not isinstance(policy_ranges, list) or not policy_ranges
+                             or len(policy_ranges) != len(set(policy_ranges))
+                             or any(not isinstance(item, str) or len(item) > 128
+                                    or not is_bounded_range(item) for item in policy_ranges)
+                             for policy_ranges in policy_compatibility.values())):
+                  sys.exit("CI_SECRETLESS_PACKAGE_POLICY compatibility requires approved packages and bounded ranges")
+              if compatibility_source:
+                  protected_ranges = policy_compatibility.get(compatibility_package, [])
+                  if not set(ranges).issubset(protected_ranges):
+                      sys.exit("secretless compatibility package and ranges must be authorized by trusted repository policy")
 
           found = set()
           private_downloads = {}
@@ -614,7 +684,8 @@ jobs:
               found.add(entry_name)
 
           unapproved = sorted(found - approved)
-          unused = sorted(approved - found)
+          compatibility_packages = {compatibility_package} if compatibility_package else set()
+          unused = sorted(approved - found - compatibility_packages)
           if unapproved:
               sys.exit("unapproved internal dependencies: " + ", ".join(unapproved))
           if unused:
@@ -627,6 +698,205 @@ jobs:
                       stream.write(f"{resolved}\t{digest_hex}\n")
           except FileExistsError:
               sys.exit("private cache entry file already exists")
+          PY
+      - name: Resolve approved compatibility ranges without lifecycle execution
+        if: inputs.secretless-compatibility-ranges != ''
+        env:
+          APPROVED_INTERNAL_SCOPES: ${{ inputs.approved-internal-scopes }}
+          COMPATIBILITY_PROVENANCE: ${{ runner.temp }}/secretless-compatibility-${{ github.run_id }}-${{ github.run_attempt }}/_compatibility/provenance.json
+          COMPATIBILITY_RANGES: ${{ inputs.secretless-compatibility-ranges }}
+          NODE_AUTH_TOKEN: ${{ secrets.NODE_AUTH_TOKEN }}
+          NPM_CONFIG_GLOBALCONFIG: ${{ runner.temp }}/secretless-empty-global.npmrc
+          NPM_CONFIG_USERCONFIG: ${{ runner.temp }}/secretless-acquisition.npmrc
+          PRIVATE_CACHE_ENTRIES: ${{ runner.temp }}/secretless-private-entries-${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          umask 077
+          : > "$NPM_CONFIG_GLOBALCONFIG"
+          {
+            printf '%s\n' 'registry=https://registry.npmjs.org/'
+            while IFS= read -r scope; do
+              scope="${scope#"${scope%%[![:space:]]*}"}"
+              scope="${scope%"${scope##*[![:space:]]}"}"
+              [ -z "$scope" ] || printf '%s:registry=https://npm.pkg.github.com/\n' "$scope"
+            done <<< "$APPROVED_INTERNAL_SCOPES"
+            # npm expands this placeholder only for the approved scoped host.
+            # shellcheck disable=SC2016
+            printf '%s\n' '//npm.pkg.github.com/:_authToken=${NODE_AUTH_TOKEN}'
+          } > "$NPM_CONFIG_USERCONFIG"
+          python3 - <<'PY'
+          import base64
+          import json
+          import os
+          import re
+          import subprocess
+          import sys
+          from pathlib import Path
+          from urllib.parse import unquote, urlparse
+
+          request = json.loads(os.environ["COMPATIBILITY_RANGES"])
+          package = request["package"]
+          token = os.environ["NODE_AUTH_TOKEN"]
+
+          def npm_json(arguments, range_value, purpose):
+              result = subprocess.run(
+                  ["npm", *arguments],
+                  check=False,
+                  stdout=subprocess.PIPE,
+                  stderr=subprocess.PIPE,
+                  text=True,
+              )
+              if result.returncode:
+                  diagnostic = result.stderr[-8192:].replace(token, "[REDACTED]").replace("\r", "")
+                  if "E401" in diagnostic:
+                      category = "authentication failed"
+                  elif "E403" in diagnostic:
+                      category = "package access denied"
+                  elif "ETARGET" in diagnostic:
+                      category = f"compatibility range has no readable version: {range_value}"
+                  elif "E404" in diagnostic:
+                      category = "package is absent or unreadable"
+                  else:
+                      category = f"registry query failed during {purpose}"
+                  print(f"::error::{category} (npm exit {result.returncode})", file=sys.stderr)
+                  for line in diagnostic.splitlines()[-20:]:
+                      print(f"npm: {line}", file=sys.stderr)
+                  raise SystemExit(1)
+              if len(result.stdout.encode("utf-8")) > 1024 * 1024:
+                  raise SystemExit("compatibility registry response exceeds the 1 MiB bound")
+              try:
+                  return json.loads(result.stdout)
+              except json.JSONDecodeError as error:
+                  raise SystemExit(f"registry returned invalid JSON during {purpose}: {error}")
+
+          entries_path = Path(os.environ["PRIVATE_CACHE_ENTRIES"])
+          if not entries_path.is_file() or entries_path.is_symlink():
+              raise SystemExit("compatibility resolution requires the validated private cache entry file")
+          known_downloads = {}
+          for line in entries_path.read_text(encoding="utf-8").splitlines():
+              resolved, digest_hex = line.split("\t")
+              known_downloads[resolved] = digest_hex
+
+          lanes = []
+          version_pattern = re.compile(
+              r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)"
+              r"(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?"
+          )
+
+          def parse_core(value):
+              match = re.fullmatch(
+                  r"((?:0|[1-9][0-9]*))\.((?:0|[1-9][0-9]*))\.((?:0|[1-9][0-9]*))",
+                  value,
+              )
+              return tuple(int(part) for part in match.groups()) if match else None
+
+          def satisfies_bounded_range(version, range_value):
+              selected = parse_core(version)
+              if selected is None:
+                  return False
+              exact = parse_core(range_value)
+              if exact is not None:
+                  return selected == exact
+              prefix = range_value[:1]
+              base = parse_core(range_value[1:])
+              if prefix in ("^", "~") and base is not None:
+                  if prefix == "~":
+                      upper = (base[0], base[1] + 1, 0)
+                  elif base[0] > 0:
+                      upper = (base[0] + 1, 0, 0)
+                  elif base[1] > 0:
+                      upper = (0, base[1] + 1, 0)
+                  else:
+                      upper = (0, 0, base[2] + 1)
+                  return base <= selected < upper
+              interval = re.fullmatch(
+                  r">=((?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*))"
+                  r" <((?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*))",
+                  range_value,
+              )
+              return bool(interval and parse_core(interval.group(1)) <= selected
+                          < parse_core(interval.group(2)))
+
+          for index, range_value in enumerate(request["ranges"]):
+              versions = npm_json(
+                  ["view", "--json", f"{package}@{range_value}", "version"],
+                  range_value,
+                  "range resolution",
+              )
+              if isinstance(versions, str):
+                  versions = [versions]
+              if (not isinstance(versions, list) or not versions
+                      or any(not isinstance(version, str) for version in versions)):
+                  raise SystemExit(f"compatibility range has no readable version: {range_value}")
+              version = versions[-1]
+              if version_pattern.fullmatch(version) is None:
+                  raise SystemExit("registry resolved an invalid package version")
+              if not satisfies_bounded_range(version, range_value):
+                  raise SystemExit("registry resolved a version outside the declared bounded range")
+              metadata = npm_json(
+                  ["view", "--json", f"{package}@{version}", "name", "version",
+                   "dist.integrity", "dist.tarball"],
+                  range_value,
+                  "exact-version provenance",
+              )
+              if not isinstance(metadata, dict) or set(metadata) != {
+                      "name", "version", "dist.integrity", "dist.tarball"}:
+                  raise SystemExit("registry returned incomplete exact-version provenance")
+              if metadata["name"] != package or metadata["version"] != version:
+                  raise SystemExit("registry exact-version provenance changed package identity")
+              integrity = metadata["dist.integrity"]
+              tarball = metadata["dist.tarball"]
+              if not isinstance(integrity, str) or re.fullmatch(
+                      r"sha512-[A-Za-z0-9+/]{86}==", integrity) is None:
+                  raise SystemExit("registry exact-version provenance has invalid sha512 integrity")
+              try:
+                  digest = base64.b64decode(integrity.removeprefix("sha512-"), validate=True)
+              except ValueError:
+                  raise SystemExit("registry exact-version provenance has invalid sha512 integrity")
+              if len(digest) != 64:
+                  raise SystemExit("registry exact-version provenance has invalid sha512 integrity")
+              if not isinstance(tarball, str):
+                  raise SystemExit("registry exact-version provenance has an invalid GitHub Packages URL")
+              parsed = urlparse(tarball)
+              path = unquote(parsed.path)
+              parts = path.split("/")
+              expected_name = f"{parts[2]}/{parts[3]}" if len(parts) == 6 else ""
+              if (parsed.scheme != "https"
+                      or parsed.netloc != "npm.pkg.github.com" or parsed.query or parsed.fragment
+                      or tarball != f"https://npm.pkg.github.com{path}" or "\\" in path
+                      or len(parts) != 6 or parts[1] != "download"
+                      or any(part in ("", ".", "..") for part in parts[1:])
+                      or expected_name != package or parts[4] != version):
+                  raise SystemExit("registry exact-version provenance has an invalid GitHub Packages URL")
+              digest_hex = digest.hex()
+              prior_digest = known_downloads.setdefault(tarball, digest_hex)
+              if prior_digest != digest_hex:
+                  raise SystemExit("one compatibility tarball URL has conflicting integrity provenance")
+              lanes.append({
+                  "index": index,
+                  "package": package,
+                  "range": range_value,
+                  "script": request["script"],
+                  "version": version,
+                  "integrity": integrity,
+                  "tarball": tarball,
+                  "sha512": digest_hex,
+              })
+
+          with entries_path.open("a", encoding="utf-8") as stream:
+              existing = set(entries_path.read_text(encoding="utf-8").splitlines())
+              for lane in lanes:
+                  entry = f"{lane['tarball']}\t{lane['sha512']}"
+                  if entry not in existing:
+                      stream.write(entry + "\n")
+                      existing.add(entry)
+          provenance = Path(os.environ["COMPATIBILITY_PROVENANCE"])
+          provenance.parent.mkdir(parents=True, exist_ok=False)
+          provenance.write_text(
+              json.dumps({"schemaVersion": 1, "request": request, "lanes": lanes},
+                         sort_keys=True, separators=(",", ":")) + "\n",
+              encoding="utf-8",
+          )
           PY
       - name: Resolve immutable auxiliary source
         id: resolve-auxiliary-source
@@ -833,6 +1103,8 @@ jobs:
           AUXILIARY_CONTENT_PATH: ${{ steps.resolve-auxiliary-source.outputs.content-path }}
           AUXILIARY_REPOSITORY: ${{ steps.resolve-auxiliary-source.outputs.repository }}
           CACHE_DIR: ${{ steps.populate-private-cache.outputs.cache-dir }}
+          COMPATIBILITY_ROOT: ${{ runner.temp }}/secretless-compatibility-${{ github.run_id }}-${{ github.run_attempt }}
+          COMPATIBILITY_RANGES: ${{ inputs.secretless-compatibility-ranges }}
           MAX_PAYLOAD_BYTES: '83886080'
           RUN_ATTEMPT: ${{ github.run_attempt }}
           RUN_ID: ${{ github.run_id }}
@@ -841,6 +1113,8 @@ jobs:
         run: |
           set -euo pipefail
           PACKAGE_MANAGER="${PACKAGE_MANAGER:-npm}"
+          COMPATIBILITY_RANGES="${COMPATIBILITY_RANGES:-}"
+          COMPATIBILITY_ROOT="${COMPATIBILITY_ROOT:-}"
           [ -d "$CACHE_DIR/_cacache/content-v2" ] || {
             echo "::error::npm produced no private content-addressed package blobs for transfer"
             exit 1
@@ -852,6 +1126,18 @@ jobs:
           }
           mkdir -p "$TRANSFER_DIR"
           tar_inputs=(-C "$CACHE_DIR" _cacache/content-v2)
+          compatibility_provenance_sha256=''
+          if [ -n "$COMPATIBILITY_RANGES" ]; then
+            provenance="$COMPATIBILITY_ROOT/_compatibility/provenance.json"
+            [ -f "$provenance" ] && [ ! -L "$provenance" ] \
+              && [ "$(find "$COMPATIBILITY_ROOT" -type f -print)" = "$provenance" ] \
+              && [ -z "$(find "$COMPATIBILITY_ROOT" \! -type f \! -type d -print -quit)" ] || {
+              echo "::error::compatibility provenance is missing or contains an unbounded entry"
+              exit 1
+            }
+            compatibility_provenance_sha256="$(sha256sum "$provenance" | cut -d' ' -f1)"
+            tar_inputs+=(-C "$COMPATIBILITY_ROOT" _compatibility)
+          fi
           if [ -n "$AUXILIARY_CONTENT_PATH" ]; then
             [ -e "$AUXILIARY_CONTENT_PATH" ] || {
               echo "::error::approved auxiliary sparse path was not acquired"
@@ -885,11 +1171,12 @@ jobs:
             "auxiliary_repository=$AUXILIARY_REPOSITORY" \
             "auxiliary_commit=$AUXILIARY_COMMIT" \
             "auxiliary_content_path=$AUXILIARY_CONTENT_PATH" \
+            "compatibility_provenance_sha256=$compatibility_provenance_sha256" \
             "payload_sha256=$payload_sha256" \
             "payload_bytes=$payload_bytes" \
             > "$TRANSFER_DIR/manifest"
-          printf 'payload-bytes=%s\npayload-sha256=%s\n' \
-            "$payload_bytes" "$payload_sha256" >> "$GITHUB_OUTPUT"
+          printf 'compatibility-provenance-sha256=%s\npayload-bytes=%s\npayload-sha256=%s\n' \
+            "$compatibility_provenance_sha256" "$payload_bytes" "$payload_sha256" >> "$GITHUB_OUTPUT"
       - name: Create unguessable exact-attempt cache key
         id: create-secretless-cache-key
         env:
@@ -918,10 +1205,11 @@ jobs:
         env:
           AUXILIARY_CHECKOUT_PATH: ${{ steps.resolve-auxiliary-source.outputs.checkout-path }}
           CACHE_DIR: ${{ steps.populate-private-cache.outputs.cache-dir }}
+          COMPATIBILITY_ROOT: ${{ runner.temp }}/secretless-compatibility-${{ github.run_id }}-${{ github.run_attempt }}
           PRIVATE_CACHE_ENTRIES: ${{ runner.temp }}/secretless-private-entries-${{ github.run_id }}-${{ github.run_attempt }}
           TRANSFER_DIR: ${{ github.workspace }}/.verjson-secretless-transfer-${{ github.run_id }}-${{ github.run_attempt }}
         run: |
-          rm -rf node_modules "$CACHE_DIR" "$TRANSFER_DIR"
+          rm -rf node_modules "$CACHE_DIR" "$COMPATIBILITY_ROOT" "$TRANSFER_DIR"
           [ -z "$AUXILIARY_CHECKOUT_PATH" ] || find "$AUXILIARY_CHECKOUT_PATH" -depth -delete
           rm -f "$RUNNER_TEMP/secretless-acquisition.npmrc" "$RUNNER_TEMP/secretless-empty-global.npmrc" \
             "$RUNNER_TEMP/secretless-empty-package.npmrc"
@@ -1002,6 +1290,8 @@ jobs:
           NPM_CONFIG_CACHE: ${{ runner.temp }}/secretless-runtime-cache-${{ github.run_id }}-${{ github.run_attempt }}
           NPM_CONFIG_GLOBALCONFIG: ${{ runner.temp }}/secretless-empty-global-build.npmrc
           NPM_CONFIG_USERCONFIG: ${{ runner.temp }}/secretless-empty.npmrc
+          COMPATIBILITY_ARTIFACT_DIR: ${{ runner.temp }}/secretless-compatibility-artifacts-${{ github.run_id }}-${{ github.run_attempt }}
+          COMPATIBILITY_RANGES: ${{ inputs.secretless-compatibility-ranges }}
           PACKAGE_MANAGER: ${{ inputs.package-manager }}
           APPROVED_INTERNAL_SCOPES: ${{ inputs.approved-internal-scopes }}
           AWS_ACCESS_KEY_ID: ''
@@ -1014,6 +1304,7 @@ jobs:
           EXPECTED_AUXILIARY_COMMIT: ${{ needs.acquire-secretless-dependencies.outputs.auxiliary-commit }}
           EXPECTED_AUXILIARY_CONTENT_PATH: ${{ needs.acquire-secretless-dependencies.outputs.auxiliary-content-path }}
           EXPECTED_AUXILIARY_REPOSITORY: ${{ needs.acquire-secretless-dependencies.outputs.auxiliary-repository }}
+          EXPECTED_COMPATIBILITY_PROVENANCE_SHA256: ${{ needs.acquire-secretless-dependencies.outputs.compatibility-provenance-sha256 }}
           EXPECTED_PAYLOAD_BYTES: ${{ needs.acquire-secretless-dependencies.outputs.transfer-payload-bytes }}
           EXPECTED_PAYLOAD_SHA256: ${{ needs.acquire-secretless-dependencies.outputs.transfer-payload-sha256 }}
           MAX_PAYLOAD_BYTES: '83886080'
@@ -1025,6 +1316,9 @@ jobs:
         run: |
           set -euo pipefail
           PACKAGE_MANAGER="${PACKAGE_MANAGER:-npm}"
+          COMPATIBILITY_ARTIFACT_DIR="${COMPATIBILITY_ARTIFACT_DIR:-}"
+          COMPATIBILITY_RANGES="${COMPATIBILITY_RANGES:-}"
+          EXPECTED_COMPATIBILITY_PROVENANCE_SHA256="${EXPECTED_COMPATIBILITY_PROVENANCE_SHA256:-}"
           PNPM_STORE_DIR="${PNPM_STORE_DIR:-}"
           cleanup() {
             if [ -n "$PNPM_STORE_DIR" ] && [ -f "$PNPM_STORE_DIR/pnpm-lock.original.yaml" ]; then
@@ -1044,7 +1338,7 @@ jobs:
             echo "::error::secretless cache transfer is incomplete"
             exit 1
           }
-          [ "$(wc -l < "$manifest")" -eq 9 ] || {
+          [ "$(wc -l < "$manifest")" -eq 10 ] || {
             echo "::error::secretless cache manifest has an unexpected shape"
             exit 1
           }
@@ -1062,6 +1356,7 @@ jobs:
           manifest_auxiliary_repository="$(manifest_value auxiliary_repository)"
           manifest_auxiliary_commit="$(manifest_value auxiliary_commit)"
           manifest_auxiliary_content_path="$(manifest_value auxiliary_content_path)"
+          manifest_compatibility_provenance_sha256="$(manifest_value compatibility_provenance_sha256)"
           manifest_payload_sha256="$(manifest_value payload_sha256)"
           manifest_payload_bytes="$(manifest_value payload_bytes)"
           [[ "$manifest_run_id" =~ ^[0-9]+$ && "$manifest_run_attempt" =~ ^[0-9]+$ ]]
@@ -1102,6 +1397,21 @@ jobs:
           else
             [ -z "$EXPECTED_AUXILIARY_REPOSITORY" ] && [ -z "$EXPECTED_AUXILIARY_COMMIT" ] || exit 1
           fi
+          [ "$manifest_compatibility_provenance_sha256" = "$EXPECTED_COMPATIBILITY_PROVENANCE_SHA256" ] || {
+            echo "::error::secretless cache compatibility provenance does not match trusted acquisition output"
+            exit 1
+          }
+          if [ -n "$COMPATIBILITY_RANGES" ]; then
+            [[ "$manifest_compatibility_provenance_sha256" =~ ^[0-9a-f]{64}$ ]] || {
+              echo "::error::secretless cache is missing compatibility provenance"
+              exit 1
+            }
+          else
+            [ -z "$manifest_compatibility_provenance_sha256" ] || {
+              echo "::error::secretless cache contains undeclared compatibility provenance"
+              exit 1
+            }
+          fi
           actual_payload_bytes="$(stat -c %s "$payload")"
           [ "$actual_payload_bytes" = "$manifest_payload_bytes" ] && [ "$actual_payload_bytes" -le "$MAX_PAYLOAD_BYTES" ] || {
             echo "::error::secretless cache size is invalid"
@@ -1125,7 +1435,9 @@ jobs:
                           or any(part in ("", ".", "..") for part in path.parts)):
                       raise SystemExit(f"unsafe secretless transfer path: {member.name}")
                   allowed = (path.parts == ("_cacache",)
-                             or path.parts[:2] == ("_cacache", "content-v2"))
+                             or path.parts[:2] == ("_cacache", "content-v2")
+                             or path.parts == ("_compatibility",)
+                             or path.parts == ("_compatibility", "provenance.json"))
                   if allowed_aux:
                       allowed = allowed or member.name == allowed_aux or member.name.startswith(allowed_aux + "/")
                   if not allowed or not (member.isfile() or member.isdir()):
@@ -1138,12 +1450,18 @@ jobs:
             echo "::error::secretless transfer must contain only private content-addressed package blobs"
             exit 1
           }
+          COMPATIBILITY_ARTIFACT_DIR="$COMPATIBILITY_ARTIFACT_DIR" \
+          COMPATIBILITY_RANGES="$COMPATIBILITY_RANGES" \
+          EXPECTED_COMPATIBILITY_PROVENANCE_SHA256="$EXPECTED_COMPATIBILITY_PROVENANCE_SHA256" \
           SECRETLESS_CACHE_DIR="$SECRETLESS_CACHE_DIR" PACKAGE_MANAGER="$PACKAGE_MANAGER" python3 - <<'PY'
           import base64
           import hashlib
+          import io
           import json
           import os
           import re
+          import shutil
+          import tarfile
           from pathlib import Path
           from urllib.parse import urlparse
 
@@ -1176,6 +1494,67 @@ jobs:
               with content.open("rb") as stream:
                   if hashlib.file_digest(stream, "sha512").digest() != digest:
                       raise SystemExit("locked private package content is missing or corrupt")
+          compatibility_source = os.environ.get("COMPATIBILITY_RANGES", "")
+          provenance_path = cache / "_compatibility" / "provenance.json"
+          if compatibility_source:
+              request = json.loads(compatibility_source)
+              provenance_bytes = provenance_path.read_bytes()
+              if hashlib.sha256(provenance_bytes).hexdigest() \
+                      != os.environ["EXPECTED_COMPATIBILITY_PROVENANCE_SHA256"]:
+                  raise SystemExit("compatibility provenance digest is missing or corrupt")
+              provenance = json.loads(provenance_bytes)
+              if (not isinstance(provenance, dict)
+                      or set(provenance) != {"schemaVersion", "request", "lanes"}
+                      or provenance["schemaVersion"] != 1 or provenance["request"] != request
+                      or not isinstance(provenance["lanes"], list)
+                      or len(provenance["lanes"]) != len(request["ranges"])):
+                  raise SystemExit("compatibility provenance does not match the declared request")
+              artifact_dir = Path(os.environ["COMPATIBILITY_ARTIFACT_DIR"])
+              if artifact_dir.exists() or artifact_dir.is_symlink():
+                  raise SystemExit("reserved compatibility artifact directory already exists")
+              artifact_dir.mkdir()
+              lane_keys = {"index", "package", "range", "script", "version",
+                           "integrity", "tarball", "sha512"}
+              for index, lane in enumerate(provenance["lanes"]):
+                  if (not isinstance(lane, dict) or set(lane) != lane_keys
+                          or lane["index"] != index or lane["package"] != request["package"]
+                          or lane["range"] != request["ranges"][index]
+                          or lane["script"] != request["script"]
+                          or not isinstance(lane["sha512"], str)
+                          or re.fullmatch(r"[0-9a-f]{128}", lane["sha512"]) is None):
+                      raise SystemExit("compatibility provenance lane identity is invalid")
+                  try:
+                      digest = base64.b64decode(
+                          lane["integrity"].removeprefix("sha512-"), validate=True)
+                  except (AttributeError, ValueError):
+                      raise SystemExit("compatibility provenance integrity is invalid")
+                  if digest.hex() != lane["sha512"]:
+                      raise SystemExit("compatibility provenance integrity is invalid")
+                  content = cache / "_cacache" / "content-v2" / "sha512" \
+                      / lane["sha512"][:2] / lane["sha512"][2:4] / lane["sha512"][4:]
+                  expected_content[content] = digest
+                  if not content.is_file() or content.is_symlink():
+                      raise SystemExit("compatibility artifact is missing from verified transfer")
+                  package_bytes = content.read_bytes()
+                  if hashlib.sha512(package_bytes).digest() != digest:
+                      raise SystemExit("compatibility artifact integrity is missing or corrupt")
+                  try:
+                      with tarfile.open(fileobj=io.BytesIO(package_bytes), mode="r:gz") as archive:
+                          member = archive.getmember("package/package.json")
+                          if not member.isfile() or member.size > 1024 * 1024:
+                              raise SystemExit("compatibility artifact package manifest is invalid")
+                          stream = archive.extractfile(member)
+                          package_manifest = json.load(stream) if stream is not None else None
+                  except (KeyError, tarfile.TarError, json.JSONDecodeError) as error:
+                      raise SystemExit(f"compatibility artifact package manifest is invalid: {error}")
+                  if (not isinstance(package_manifest, dict)
+                          or package_manifest.get("name") != lane["package"]
+                          or package_manifest.get("version") != lane["version"]):
+                      raise SystemExit("compatibility artifact does not match resolved package provenance")
+                  shutil.copyfile(content, artifact_dir / f"lane-{index}.tgz")
+              shutil.copyfile(provenance_path, artifact_dir / "provenance.json")
+          elif provenance_path.exists() or provenance_path.is_symlink():
+              raise SystemExit("verified transfer contains undeclared compatibility provenance")
           actual_content = {path for path in (cache / "_cacache" / "content-v2").rglob("*")
                             if path.is_file()}
           if actual_content != set(expected_content):
@@ -1201,6 +1580,10 @@ jobs:
             printf 'npm_config_cache=%s\n' "$NPM_CONFIG_CACHE"
             printf 'NPM_CONFIG_GLOBALCONFIG=%s\n' "$NPM_CONFIG_GLOBALCONFIG"
             printf 'NPM_CONFIG_USERCONFIG=%s\n' "$NPM_CONFIG_USERCONFIG"
+            if [ -n "$COMPATIBILITY_RANGES" ]; then
+              printf 'VERJSON_SECRETLESS_COMPATIBILITY_ARTIFACT_DIR=%s\n' "$COMPATIBILITY_ARTIFACT_DIR"
+              printf 'VERJSON_SECRETLESS_COMPATIBILITY_PROVENANCE=%s\n' "$COMPATIBILITY_ARTIFACT_DIR/provenance.json"
+            fi
           } >> "$GITHUB_ENV"
           if [ "$PACKAGE_MANAGER" = npm ]; then
             npm ci --ignore-scripts --prefer-offline --no-audit --no-fund --cache "$SECRETLESS_CACHE_DIR"
@@ -2017,11 +2400,88 @@ jobs:
         if: needs.eligibility.outputs.should-run != 'false' && (!(inputs.secretless-pr || inputs.secretless-trusted-ref) || inputs.secretless-ci-script-plan == '')
       - run: npm run lint --if-present
         if: needs.eligibility.outputs.should-run != 'false' && (!(inputs.secretless-pr || inputs.secretless-trusted-ref) || inputs.secretless-ci-script-plan == '')
+      - name: Run runtime-resolved compatibility lanes without credentials
+        if: needs.eligibility.outputs.should-run != 'false' && (inputs.secretless-pr || inputs.secretless-trusted-ref) && inputs.secretless-compatibility-ranges != ''
+        env:
+          ACTIONS_ID_TOKEN_REQUEST_TOKEN: ''
+          ACTIONS_ID_TOKEN_REQUEST_URL: ''
+          AWS_ACCESS_KEY_ID: ''
+          AWS_SECRET_ACCESS_KEY: ''
+          AWS_SESSION_TOKEN: ''
+          AZURE_CREDENTIALS: ''
+          COMPATIBILITY_ARTIFACT_DIR: ${{ runner.temp }}/secretless-compatibility-artifacts-${{ github.run_id }}-${{ github.run_attempt }}
+          COMPATIBILITY_RANGES: ${{ inputs.secretless-compatibility-ranges }}
+          EXPECTED_COMPATIBILITY_PROVENANCE_SHA256: ${{ needs.acquire-secretless-dependencies.outputs.compatibility-provenance-sha256 }}
+          GH_TOKEN: ''
+          GITHUB_TOKEN: ''
+          GOOGLE_APPLICATION_CREDENTIALS: ''
+          NODE_AUTH_TOKEN: ''
+          NPM_TOKEN: ''
+        run: |
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          import re
+          import subprocess
+          import sys
+          from pathlib import Path
+
+          protected = {
+              "ACTIONS_ID_TOKEN_REQUEST_TOKEN", "ACTIONS_ID_TOKEN_REQUEST_URL",
+              "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN",
+              "AZURE_CREDENTIALS", "GH_TOKEN", "GITHUB_TOKEN",
+              "GOOGLE_APPLICATION_CREDENTIALS", "NODE_AUTH_TOKEN", "NPM_TOKEN",
+          }
+          leaked = sorted(name for name in protected if os.environ.get(name))
+          if leaked:
+              sys.exit("credential reached compatibility consumer execution: " + ", ".join(leaked))
+          request = json.loads(os.environ["COMPATIBILITY_RANGES"])
+          artifact_dir = Path(os.environ["COMPATIBILITY_ARTIFACT_DIR"])
+          provenance_path = artifact_dir / "provenance.json"
+          provenance_bytes = provenance_path.read_bytes()
+          if hashlib.sha256(provenance_bytes).hexdigest() \
+                  != os.environ["EXPECTED_COMPATIBILITY_PROVENANCE_SHA256"]:
+              sys.exit("compatibility provenance changed before consumer execution")
+          provenance = json.loads(provenance_bytes)
+          if provenance.get("request") != request:
+              sys.exit("compatibility consumer provenance does not match the declared request")
+          package_json = json.loads(Path("package.json").read_text(encoding="utf-8"))
+          scripts = package_json.get("scripts")
+          if not isinstance(scripts, dict) or request["script"] not in scripts:
+              sys.exit("compatibility script is absent from package.json")
+          package_parts = request["package"].split("/")
+          installed_manifest = Path("node_modules").joinpath(*package_parts) / "package.json"
+          for index, lane in enumerate(provenance["lanes"]):
+              artifact = artifact_dir / f"lane-{index}.tgz"
+              if not artifact.is_file() or artifact.is_symlink():
+                  sys.exit("verified compatibility artifact is absent before consumer execution")
+              if hashlib.sha512(artifact.read_bytes()).hexdigest() != lane["sha512"]:
+                  sys.exit("compatibility artifact changed before consumer execution")
+              subprocess.run([
+                  "npm", "install", "--offline", "--ignore-scripts", "--no-save",
+                  "--package-lock=false", "--no-audit", "--no-fund", str(artifact),
+              ], check=True)
+              installed = json.loads(installed_manifest.read_text(encoding="utf-8"))
+              if (installed.get("name") != lane["package"]
+                      or installed.get("version") != lane["version"]):
+                  sys.exit("resolved compatibility artifact did not reach the consumer install")
+              script_env = os.environ.copy()
+              script_env.update({
+                  "VERJSON_COMPATIBILITY_ARTIFACT": str(artifact),
+                  "VERJSON_COMPATIBILITY_PACKAGE": lane["package"],
+                  "VERJSON_COMPATIBILITY_RANGE": lane["range"],
+                  "VERJSON_COMPATIBILITY_VERSION": lane["version"],
+                  "VERJSON_SECRETLESS_COMPATIBILITY_PROVENANCE": str(provenance_path),
+              })
+              subprocess.run(["npm", "run", request["script"]], check=True, env=script_env)
+          PY
       - name: Remove job-scoped secretless runtime cache
         if: always() && needs.eligibility.outputs.should-run != 'false' && (inputs.secretless-pr || inputs.secretless-trusted-ref)
         env:
           RUNTIME_CACHE_DIR: ${{ runner.temp }}/secretless-runtime-cache-${{ github.run_id }}-${{ github.run_attempt }}
-        run: rm -rf "$RUNTIME_CACHE_DIR"
+          COMPATIBILITY_ARTIFACT_DIR: ${{ runner.temp }}/secretless-compatibility-artifacts-${{ github.run_id }}-${{ github.run_attempt }}
+        run: rm -rf "$RUNTIME_CACHE_DIR" "$COMPATIBILITY_ARTIFACT_DIR"
       - name: Remove restored secretless auxiliary content
         if: always() && needs.eligibility.outputs.should-run != 'false' && (inputs.secretless-pr || inputs.secretless-trusted-ref) && needs.acquire-secretless-dependencies.outputs.auxiliary-content-path != ''
         env:
