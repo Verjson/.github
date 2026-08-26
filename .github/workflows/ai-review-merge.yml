@@ -1,4 +1,5 @@
 name: AI review + auto-merge
+run-name: AI review authorization ${{ inputs.authorization_check_id }} from arm ${{ inputs.arm_run_id }}.${{ inputs.arm_run_attempt }}
 
 # Receipt-bound review workflow dispatched by the trusted authorization arm.
 # The main-protection ruleset requires gate-rearm.yml, not this dispatch-only
