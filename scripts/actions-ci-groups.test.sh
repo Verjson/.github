@@ -32,6 +32,17 @@ assert checkout["with"]["path"] == (
     ".actions-ci-source-${{ github.run_id }}-"
     "${{ github.run_attempt }}-${{ matrix.group }}"
 )
+setup_python = next(
+    step
+    for step in groups["steps"]
+    if step.get("name") == "Provision Python packaging for schema validation"
+)
+assert setup_python == {
+    "name": "Provision Python packaging for schema validation",
+    "if": "matrix.group == 'changelog-release'",
+    "uses": "actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97",
+    "with": {"python-version": "3.12.14"},
+}
 group_step = next(
     step for step in groups["steps"]
     if step.get("name") == "Run ${{ matrix.group }} shell contracts without hiding sibling failures"
@@ -77,6 +88,26 @@ then
   pass "three bounded groups fan out while unmatrixed shell-tests preserves the required context"
 else
   fail "bounded fan-out or required-context aggregation is missing"
+fi
+
+cat >"$tmp/python-without-pip" <<'SH'
+#!/usr/bin/env bash
+if [ "${1-}" = -m ] && [ "${2-}" = pip ]; then
+  exit 1
+fi
+exec python3 "$@"
+SH
+chmod +x "$tmp/python-without-pip"
+
+if CHANGELOG_SCHEMA_TEST_PYTHON="$tmp/python-without-pip" \
+  bash "$root/scripts/changelog-fragment-schema.test.sh" \
+  >"$tmp/schema-without-pip.out" 2>&1; then
+  fail "schema validator runner accepted an interpreter without pip"
+elif grep -qF 'pip is required; actions-ci must provision it with setup-python' \
+  "$tmp/schema-without-pip.out"; then
+  pass "schema validator runner fails clearly when setup-python acquisition is absent"
+else
+  fail "schema validator runner failed without actionable missing-pip evidence"
 fi
 
 mkdir -p "$tmp/workspace/.actions-ci-source-42-1-platform/scripts" \

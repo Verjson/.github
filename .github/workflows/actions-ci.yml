@@ -71,6 +71,11 @@ jobs:
           # every matrix job its own checkout so another checkout's cleanup
           # cannot remove files while this job snapshots its source (#675).
           path: .actions-ci-source-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.group }}
+      - name: Provision Python packaging for schema validation
+        if: matrix.group == 'changelog-release'
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12.14'
       - name: Clear the runner changelog cache override
         run: echo "VERJSON_CHANGELOG_TOOL_CACHE=" >> "$GITHUB_ENV"
       - name: Run ${{ matrix.group }} shell contracts without hiding sibling failures
