@@ -32,6 +32,43 @@ assert checkout["with"]["path"] == (
     ".actions-ci-source-${{ github.run_id }}-"
     "${{ github.run_attempt }}-${{ matrix.group }}"
 )
+setup_python = next(
+    step
+    for step in groups["steps"]
+    if step.get("name") == "Provision changelog-release Python"
+)
+assert setup_python == {
+    "name": "Provision changelog-release Python",
+    "if": "matrix.group == 'changelog-release'",
+    "uses": "actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97",
+    "with": {"python-version": "3.12.14"},
+}
+install_python_dependencies = next(
+    step
+    for step in groups["steps"]
+    if step.get("name") == "Install changelog-release Python dependencies"
+)
+assert install_python_dependencies == {
+    "name": "Install changelog-release Python dependencies",
+    "if": "matrix.group == 'changelog-release'",
+    "working-directory": (
+        ".actions-ci-source-${{ github.run_id }}-"
+        "${{ github.run_attempt }}-${{ matrix.group }}"
+    ),
+    "run": (
+        "python3 -m pip install \\\n"
+        "  --disable-pip-version-check \\\n"
+        "  --no-input \\\n"
+        "  --quiet \\\n"
+        "  --no-deps \\\n"
+        "  --only-binary=:all: \\\n"
+        "  --require-hashes \\\n"
+        "  --requirement scripts/actions-ci-changelog-release.requirements.txt\n"
+    ),
+}
+assert groups["steps"].index(install_python_dependencies) == (
+    groups["steps"].index(setup_python) + 1
+)
 group_step = next(
     step for step in groups["steps"]
     if step.get("name") == "Run ${{ matrix.group }} shell contracts without hiding sibling failures"
@@ -77,6 +114,26 @@ then
   pass "three bounded groups fan out while unmatrixed shell-tests preserves the required context"
 else
   fail "bounded fan-out or required-context aggregation is missing"
+fi
+
+cat >"$tmp/python-without-pip" <<'SH'
+#!/usr/bin/env bash
+if [ "${1-}" = -m ] && [ "${2-}" = pip ]; then
+  exit 1
+fi
+exec python3 "$@"
+SH
+chmod +x "$tmp/python-without-pip"
+
+if CHANGELOG_SCHEMA_TEST_PYTHON="$tmp/python-without-pip" \
+  bash "$root/scripts/changelog-fragment-schema.test.sh" \
+  >"$tmp/schema-without-pip.out" 2>&1; then
+  fail "schema validator runner accepted an interpreter without pip"
+elif grep -qF 'pip is required; actions-ci must provision it with setup-python' \
+  "$tmp/schema-without-pip.out"; then
+  pass "schema validator runner fails clearly when setup-python acquisition is absent"
+else
+  fail "schema validator runner failed without actionable missing-pip evidence"
 fi
 
 mkdir -p "$tmp/workspace/.actions-ci-source-42-1-platform/scripts" \
@@ -144,38 +201,84 @@ else
   fail "matrix groups can lose their runner during setup, collide, retain stale files, or mutate siblings"
 fi
 
-if awk -F '\t' '
-  /^[[:space:]]*#/ || /^[[:space:]]*$/ { next }
-  NF != 2 { exit 1 }
-  $1 !~ /^(platform|merge-gate|changelog-release)$/ { exit 1 }
-  seen[$2]++ { exit 1 }
-  { groups[$1]++; total++ }
-  END {
-    exit !(total >= 60 &&
-      groups["platform"] > 0 &&
-      groups["merge-gate"] > 0 &&
-      groups["changelog-release"] > 0)
-  }
-' "$manifest"; then
+validate_manifest() {
+  local candidate="$1"
+
+  awk -F '\t' '
+    BEGIN { valid = 1 }
+    /^[[:space:]]*#/ || /^[[:space:]]*$/ { next }
+    NF != 2 { valid = 0; next }
+    $1 !~ /^(platform|merge-gate|changelog-release)$/ { valid = 0; next }
+    seen[$2]++ { valid = 0 }
+    { groups[$1]++; total++ }
+    END {
+      if (!(total >= 60 &&
+        groups["platform"] > 0 &&
+        groups["merge-gate"] > 0 &&
+        groups["changelog-release"] > 0)) {
+        valid = 0
+      }
+      exit valid ? 0 : 1
+    }
+  ' "$candidate" || return 1
+
+  while IFS=$'\t' read -r expected_group command; do
+    [ "$(awk -F '\t' -v expected_group="$expected_group" -v command="$command" '
+      $1 == expected_group && $2 == command { count++ }
+      END { print count + 0 }
+    ' "$candidate")" -eq 1 ] || return 1
+  done <<'LOAD_BEARING_COMMANDS'
+merge-gate	python3 scripts/ci-gate/event-driven-authorization.test.py
+merge-gate	bash scripts/ci-gate/arm-receipt.test.sh
+merge-gate	bash scripts/ci-gate/gate-hold-disable.test.sh
+merge-gate	bash scripts/ci-gate/native-automerge.test.sh
+merge-gate	bash scripts/ci-gate/privileged-merge-pin.test.sh
+changelog-release	bash scripts/ci-gate/changelog-caller-contract.test.sh
+platform	bash scripts/runner-selector-health.test.sh
+changelog-release	python3 scripts/changelog.py validate --repo-root .
+changelog-release	bash scripts/changelog-fragment-schema.test.sh
+changelog-release	python3 scripts/v1-readiness-contract.test.py
+changelog-release	bash scripts/actions-ci-python-dependencies.test.sh
+LOAD_BEARING_COMMANDS
+}
+
+if validate_manifest "$manifest"; then
   pass "manifest assigns every command once across three non-empty cohesive groups"
 else
   fail "manifest is missing, malformed, duplicated, or incompletely grouped"
 fi
 
-for command in \
-  "python3 scripts/ci-gate/event-driven-authorization.test.py" \
-  "bash scripts/ci-gate/arm-receipt.test.sh" \
-  "bash scripts/ci-gate/gate-hold-disable.test.sh" \
-  "bash scripts/ci-gate/native-automerge.test.sh" \
-  "bash scripts/ci-gate/privileged-merge-pin.test.sh" \
-  "bash scripts/ci-gate/changelog-caller-contract.test.sh" \
-  "bash scripts/runner-selector-health.test.sh" \
-  "python3 scripts/changelog.py validate --repo-root ."; do
-  if [ "$(awk -F '\t' -v command="$command" '$2 == command { count++ } END { print count + 0 }' "$manifest")" -eq 1 ]; then
-    pass "load-bearing command remains assigned: $command"
+for command_id in schema readiness; do
+  if [ "$command_id" = schema ]; then
+    command='bash scripts/changelog-fragment-schema.test.sh'
   else
-    fail "load-bearing command is missing or duplicated: $command"
+    command='python3 scripts/v1-readiness-contract.test.py'
   fi
+
+  for mutation in deletion duplication reassignment; do
+    mutant="$tmp/manifest-$command_id-$mutation.tsv"
+    case "$mutation" in
+      deletion)
+        awk -F '\t' -v command="$command" '$2 != command' "$manifest" >"$mutant"
+        ;;
+      duplication)
+        cp "$manifest" "$mutant"
+        printf 'changelog-release\t%s\n' "$command" >>"$mutant"
+        ;;
+      reassignment)
+        awk -F '\t' -v command="$command" '
+          BEGIN { OFS = "\t" }
+          { $1 = ($2 == command ? "platform" : $1); print }
+        ' "$manifest" >"$mutant"
+        ;;
+    esac
+
+    if validate_manifest "$mutant"; then
+      fail "$command_id manifest $mutation mutation passed"
+    else
+      pass "$command_id manifest $mutation mutation fails closed"
+    fi
+  done
 done
 
 cat >"$tmp/manifest.tsv" <<EOF
