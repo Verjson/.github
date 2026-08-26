@@ -2,7 +2,7 @@
 set -euo pipefail
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
-requirements="$root/scripts/actions-ci-changelog-release.requirements.txt"
+requirements="$root/scripts/actions-ci-python.requirements.txt"
 dependency_dir="$(mktemp -d "${TMPDIR:-/tmp}/verjson-changelog-schema-test.XXXXXX")"
 python="${CHANGELOG_SCHEMA_TEST_PYTHON:-python3}"
 trap 'rm -rf -- "$dependency_dir"' EXIT

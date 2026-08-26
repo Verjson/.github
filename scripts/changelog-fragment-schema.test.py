@@ -53,6 +53,8 @@ class FragmentSchemaContractTest(unittest.TestCase):
         cases = {
             "impact": {"impact": "minor"},
             "summary": {"summary": "Describe the user-visible change"},
+            "plain title": {"title": "Describe the user-visible change"},
+            "title with interior quotes": {"title": "Describe the 'visible' change"},
             "correctly escaped double-quoted summary": {
                 "summary": '"Describe \\"visible\\" change"'
             },
@@ -77,6 +79,7 @@ class FragmentSchemaContractTest(unittest.TestCase):
 
     def test_schema_rejects_values_the_engine_rejects(self) -> None:
         engine_boundary_cases = {
+            "whitespace-only title": {"title": " \t\n"},
             "whitespace-only summary": {"summary": " \t\n"},
             "ambiguous double-quoted summary": {"summary": '"a" "b"'},
             "ambiguous single-quoted summary": {"summary": "'a' 'b'"},

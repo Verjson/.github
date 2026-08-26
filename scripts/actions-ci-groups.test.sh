@@ -35,22 +35,20 @@ assert checkout["with"]["path"] == (
 setup_python = next(
     step
     for step in groups["steps"]
-    if step.get("name") == "Provision changelog-release Python"
+    if step.get("name") == "Provision actions CI Python"
 )
 assert setup_python == {
-    "name": "Provision changelog-release Python",
-    "if": "matrix.group == 'changelog-release'",
+    "name": "Provision actions CI Python",
     "uses": "actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97",
     "with": {"python-version": "3.12.14"},
 }
 install_python_dependencies = next(
     step
     for step in groups["steps"]
-    if step.get("name") == "Install changelog-release Python dependencies"
+    if step.get("name") == "Install actions CI Python dependencies"
 )
 assert install_python_dependencies == {
-    "name": "Install changelog-release Python dependencies",
-    "if": "matrix.group == 'changelog-release'",
+    "name": "Install actions CI Python dependencies",
     "working-directory": (
         ".actions-ci-source-${{ github.run_id }}-"
         "${{ github.run_attempt }}-${{ matrix.group }}"
@@ -63,7 +61,7 @@ assert install_python_dependencies == {
         "  --no-deps \\\n"
         "  --only-binary=:all: \\\n"
         "  --require-hashes \\\n"
-        "  --requirement scripts/actions-ci-changelog-release.requirements.txt\n"
+        "  --requirement scripts/actions-ci-python.requirements.txt\n"
     ),
 }
 assert groups["steps"].index(install_python_dependencies) == (
@@ -238,7 +236,7 @@ platform	bash scripts/runner-selector-health.test.sh
 changelog-release	python3 scripts/changelog.py validate --repo-root .
 changelog-release	bash scripts/changelog-fragment-schema.test.sh
 changelog-release	python3 scripts/v1-readiness-contract.test.py
-changelog-release	bash scripts/actions-ci-python-dependencies.test.sh
+platform	bash scripts/actions-ci-python-dependencies.test.sh
 LOAD_BEARING_COMMANDS
 }
 
