@@ -1,0 +1,70 @@
+name: Dependency supersession observation
+
+on:
+  workflow_dispatch:
+    inputs:
+      repository:
+        description: Repository name in this organization to observe
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  observe:
+    runs-on: ${{ fromJSON(vars.CI_LANE_TRUSTED || vars.CI_LANE_FALLBACK || '["ubuntu-24.04"]') }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Validate exact target repository
+        id: target
+        env:
+          REPOSITORY_NAME: ${{ inputs.repository }}
+        run: |
+          set -euo pipefail
+          [[ "$REPOSITORY_NAME" =~ ^[A-Za-z0-9_.-]+$ ]] || {
+            echo '::error::repository must be one unqualified repository name'
+            exit 1
+          }
+          printf 'repository=%s/%s\n' "$GITHUB_REPOSITORY_OWNER" "$REPOSITORY_NAME" >> "$GITHUB_OUTPUT"
+      - name: Require the read-only compatibility App client ID
+        env:
+          APP_CLIENT_ID: ${{ vars.RENOVATE_COMPATIBILITY_CLIENT_ID }}
+        run: |
+          [[ -n "$APP_CLIENT_ID" && ! "$APP_CLIENT_ID" =~ ^[0-9]+$ ]] || {
+            echo '::error::RENOVATE_COMPATIBILITY_CLIENT_ID must be a nonnumeric GitHub App client ID'
+            exit 1
+          }
+      - name: Mint exact-repository read-only observation token
+        id: observer-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
+        with:
+          client-id: ${{ vars.RENOVATE_COMPATIBILITY_CLIENT_ID }}
+          private-key: ${{ secrets.RENOVATE_COMPATIBILITY_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ inputs.repository }}
+          permission-contents: read
+          permission-pull-requests: read
+      - name: Produce immutable observe-only proposal
+        env:
+          GH_TOKEN: ${{ steps.observer-token.outputs.token }}
+          TARGET_REPOSITORY: ${{ steps.target.outputs.repository }}
+        run: |
+          python3 scripts/dependency-supersession.py observe \
+            --repository "$TARGET_REPOSITORY" \
+            --output dependency-supersession-proposal.json
+          jq -e '.schema == "canonical-dependency-supersession/v1" and .mode == "observe-only" and .repository == env.TARGET_REPOSITORY' \
+            dependency-supersession-proposal.json >/dev/null
+          jq '{mode,repository,proposals:(.proposals | length),refused:(.refused | length)}' \
+            dependency-supersession-proposal.json >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload immutable proposal
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: dependency-supersession-proposal-${{ github.run_id }}-${{ github.run_attempt }}
+          path: dependency-supersession-proposal.json
+          if-no-files-found: error
+          retention-days: 30
+

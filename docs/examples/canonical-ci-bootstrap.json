@@ -5,13 +5,15 @@
     "CI_LANE_FALLBACK": {"value": "[\"ubuntu-24.04\"]", "visibility": "all"},
     "CI_LANE_PRIVILEGED": {"value": "[\"ubuntu-24.04\"]", "visibility": "all"},
     "CI_LANE_TRUSTED": {"value": "[\"ubuntu-24.04\"]", "visibility": "all"},
-    "CI_LANE_UNTRUSTED": {"value": "[\"ubuntu-24.04\"]", "visibility": "all"}
+    "CI_LANE_UNTRUSTED": {"value": "[\"ubuntu-24.04\"]", "visibility": "all"},
+    "DEPENDENCY_SUPERSESSION_APP_CLIENT_ID": {"value": "IvExampleSupersession", "visibility": "all"}
   },
   "secrets": {
     "AI_REVIEW_APP_PRIVATE_KEY": {"environment": "BOOTSTRAP_AI_REVIEW_APP_PRIVATE_KEY", "visibility": "all"},
     "MERGE_APP_PRIVATE_KEY": {"environment": "BOOTSTRAP_MERGE_APP_PRIVATE_KEY", "visibility": "all"},
     "RELEASE_APP_PRIVATE_KEY": {"environment": "BOOTSTRAP_RELEASE_APP_PRIVATE_KEY", "visibility": "all"},
-    "RENOVATE_COMPATIBILITY_APP_PRIVATE_KEY": {"environment": "BOOTSTRAP_RENOVATE_APP_PRIVATE_KEY", "visibility": "all"}
+    "RENOVATE_COMPATIBILITY_APP_PRIVATE_KEY": {"environment": "BOOTSTRAP_RENOVATE_APP_PRIVATE_KEY", "visibility": "all"},
+    "DEPENDENCY_SUPERSESSION_APP_PRIVATE_KEY": {"environment": "BOOTSTRAP_DEPENDENCY_SUPERSESSION_APP_PRIVATE_KEY", "visibility": "all"}
   },
   "apps": [
     {
@@ -33,6 +35,11 @@
       "role": "RENOVATE_COMPATIBILITY_APP", "slug": "example-renovate-compatibility", "app_id": 1004,
       "client_id": "IvExampleRenovate", "installation_id": 2004, "repository_selection": "all",
       "permissions": {"actions": "read", "checks": "read", "contents": "read", "pull_requests": "read", "statuses": "read", "metadata": "read"}, "events": []
+    },
+    {
+      "role": "DEPENDENCY_SUPERSESSION_APP", "slug": "example-dependency-supersession", "app_id": 1005,
+      "client_id": "IvExampleSupersession", "installation_id": 2005, "repository_selection": "all",
+      "permissions": {"contents": "read", "pull_requests": "write", "metadata": "read"}, "events": []
     }
   ],
   "callers": []

@@ -64,6 +64,16 @@ top-level immutable `contract_sha`; mutable branches and mixed pins are rejected
 - Release: Contents write and Metadata read. Its ruleset bypass is likewise separate.
 - Renovate compatibility: Actions, Checks, Contents, Pull requests, and Commit
   statuses read, plus Metadata read. It has no write permission.
+- Dependency supersession: Contents read, Pull requests write, and Metadata read. Its
+  private key is delivered only to the exact-repository terminal reconciliation token
+  mint; observation continues to use the read-only Renovate compatibility role.
+
+Dependency supersession adopters provide organization variable
+`DEPENDENCY_SUPERSESSION_APP_CLIENT_ID` and secret
+`DEPENDENCY_SUPERSESSION_APP_PRIVATE_KEY`. Do not create
+`DEPENDENCY_SUPERSESSION_WRITE_ENABLED` during initial bootstrap: its absence keeps the
+terminal reconciler observe-only until a reviewed disposable canary explicitly enables
+the rollout gate.
 
 All canonical role Apps subscribe to no webhook events and this bootstrap supports
 only all-repository installations, whose scope is completely observable in the

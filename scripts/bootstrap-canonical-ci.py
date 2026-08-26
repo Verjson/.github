@@ -35,6 +35,9 @@ APP_PERMISSIONS = {
         "actions": "read", "checks": "read", "contents": "read",
         "pull_requests": "read", "statuses": "read", "metadata": "read",
     },
+    "DEPENDENCY_SUPERSESSION_APP": {
+        "contents": "read", "pull_requests": "write", "metadata": "read",
+    },
 }
 
 
