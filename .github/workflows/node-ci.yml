@@ -114,10 +114,14 @@ on:
       secretless-compatibility-ranges:
         description: >-
           Optional JSON object with exactly package, ranges, and script. package
-          must be one exact approved-internal-packages entry; ranges contains
-          1-8 unique bounded semver ranges resolved from GitHub Packages at run
-          time; script names one package.json script run once per verified
-          credentialless artifact. Empty disables compatibility lanes.
+          must be one exact approved-internal-packages entry and compatibility mode
+          requires a non-empty CI_SECRETLESS_PACKAGE_POLICY that exactly binds the
+          caller's scopes, packages, and allowed compatibility ranges. ranges contains
+          1-8 unique exact, caret,
+          tilde, or explicit inclusive-lower/exclusive-upper semver ranges resolved
+          from GitHub Packages at run time; script names one package.json script run
+          once per verified credentialless artifact. Empty disables compatibility
+          lanes.
         required: false
         type: string
         default: ''
@@ -476,6 +480,19 @@ jobs:
           package_pattern = re.compile(r"@[a-z0-9][a-z0-9._-]*/[a-z0-9][a-z0-9._-]*")
           if any(package_pattern.fullmatch(name) is None or name.split("/", 1)[0] not in scopes for name in approved):
               sys.exit("approved-internal-packages accepts exact names under approved-internal-scopes only")
+          core_pattern = r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)"
+
+          def parse_core(value):
+              return tuple(int(part) for part in value.split("."))
+
+          def is_bounded_range(value):
+              if re.fullmatch(core_pattern, value):
+                  return True
+              if re.fullmatch(rf"[~^]{core_pattern}", value):
+                  return True
+              interval = re.fullmatch(rf">=({core_pattern}) <({core_pattern})", value)
+              return bool(interval and parse_core(interval.group(1)) < parse_core(interval.group(2)))
+
           compatibility_package = None
           compatibility_source = os.environ.get("COMPATIBILITY_RANGES", "")
           if compatibility_source:
@@ -490,25 +507,28 @@ jobs:
               compatibility_package = compatibility["package"]
               ranges = compatibility["ranges"]
               script = compatibility["script"]
-              range_pattern = re.compile(r"[0-9A-Za-z.*+<>=~^| -]{1,128}")
               script_pattern = re.compile(r"[A-Za-z0-9][A-Za-z0-9:._-]{0,127}")
               if compatibility_package not in approved:
                   sys.exit("secretless compatibility package must be an exact approved-internal-packages entry")
               if (not isinstance(ranges, list) or not 1 <= len(ranges) <= 8
-                      or any(not isinstance(item, str) or range_pattern.fullmatch(item) is None
-                             or not any(char.isdigit() for char in item) for item in ranges)
+                      or any(not isinstance(item, str) or len(item) > 128
+                             or not is_bounded_range(item) for item in ranges)
                       or len(ranges) != len(set(ranges))):
-                  sys.exit("secretless compatibility ranges accepts 1-8 unique bounded semver ranges")
+                  sys.exit("secretless compatibility ranges accepts 1-8 unique exact, caret, tilde, or >=lower <upper semver ranges")
               if not isinstance(script, str) or script_pattern.fullmatch(script) is None:
                   sys.exit("secretless compatibility script must be one exact package.json script name")
           trusted_policy = os.environ.get("TRUSTED_PACKAGE_POLICY", "")
+          if compatibility_source and not trusted_policy:
+              sys.exit("secretless compatibility ranges requires non-empty CI_SECRETLESS_PACKAGE_POLICY")
           if scopes != {"@verjson"} or trusted_policy:
               try:
                   policy = json.loads(trusted_policy)
               except json.JSONDecodeError as error:
                   sys.exit(f"CI_SECRETLESS_PACKAGE_POLICY must be valid JSON: {error}")
-              if not isinstance(policy, dict) or set(policy) != {"scopes", "packages"}:
-                  sys.exit("CI_SECRETLESS_PACKAGE_POLICY requires exactly scopes and packages")
+              if (not isinstance(policy, dict)
+                      or set(policy) not in ({"scopes", "packages"},
+                                             {"scopes", "packages", "compatibility"})):
+                  sys.exit("CI_SECRETLESS_PACKAGE_POLICY requires scopes and packages, with optional compatibility")
               policy_scopes = policy["scopes"]
               policy_packages = policy["packages"]
               if (not isinstance(policy_scopes, list) or not policy_scopes
@@ -519,6 +539,19 @@ jobs:
                       or any(not isinstance(name, str) for name in policy_packages)
                       or set(policy_scopes) != scopes or set(policy_packages) != approved):
                   sys.exit("approved internal scopes and packages must exactly match trusted repository policy")
+              policy_compatibility = policy.get("compatibility", {})
+              if (not isinstance(policy_compatibility, dict)
+                      or any(name not in approved for name in policy_compatibility)
+                      or any(not isinstance(policy_ranges, list) or not policy_ranges
+                             or len(policy_ranges) != len(set(policy_ranges))
+                             or any(not isinstance(item, str) or len(item) > 128
+                                    or not is_bounded_range(item) for item in policy_ranges)
+                             for policy_ranges in policy_compatibility.values())):
+                  sys.exit("CI_SECRETLESS_PACKAGE_POLICY compatibility requires approved packages and bounded ranges")
+              if compatibility_source:
+                  protected_ranges = policy_compatibility.get(compatibility_package, [])
+                  if not set(ranges).issubset(protected_ranges):
+                      sys.exit("secretless compatibility package and ranges must be authorized by trusted repository policy")
 
           found = set()
           private_downloads = {}
@@ -749,6 +782,41 @@ jobs:
               r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)"
               r"(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?"
           )
+
+          def parse_core(value):
+              match = re.fullmatch(
+                  r"((?:0|[1-9][0-9]*))\.((?:0|[1-9][0-9]*))\.((?:0|[1-9][0-9]*))",
+                  value,
+              )
+              return tuple(int(part) for part in match.groups()) if match else None
+
+          def satisfies_bounded_range(version, range_value):
+              selected = parse_core(version)
+              if selected is None:
+                  return False
+              exact = parse_core(range_value)
+              if exact is not None:
+                  return selected == exact
+              prefix = range_value[:1]
+              base = parse_core(range_value[1:])
+              if prefix in ("^", "~") and base is not None:
+                  if prefix == "~":
+                      upper = (base[0], base[1] + 1, 0)
+                  elif base[0] > 0:
+                      upper = (base[0] + 1, 0, 0)
+                  elif base[1] > 0:
+                      upper = (0, base[1] + 1, 0)
+                  else:
+                      upper = (0, 0, base[2] + 1)
+                  return base <= selected < upper
+              interval = re.fullmatch(
+                  r">=((?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*))"
+                  r" <((?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*))",
+                  range_value,
+              )
+              return bool(interval and parse_core(interval.group(1)) <= selected
+                          < parse_core(interval.group(2)))
+
           for index, range_value in enumerate(request["ranges"]):
               versions = npm_json(
                   ["view", "--json", f"{package}@{range_value}", "version"],
@@ -763,6 +831,8 @@ jobs:
               version = versions[-1]
               if version_pattern.fullmatch(version) is None:
                   raise SystemExit("registry resolved an invalid package version")
+              if not satisfies_bounded_range(version, range_value):
+                  raise SystemExit("registry resolved a version outside the declared bounded range")
               metadata = npm_json(
                   ["view", "--json", f"{package}@{version}", "name", "version",
                    "dist.integrity", "dist.tarball"],

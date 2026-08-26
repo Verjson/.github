@@ -39,31 +39,61 @@ PY
   || fail "compatibility lanes do not retain the canonical two-job credential boundary"
 
 request='{"package":"@verjson/identity-contracts","ranges":["^0.2.0"],"script":"test:compat"}'
+policy='{"scopes":["@verjson"],"packages":["@verjson/identity-contracts"],"compatibility":{"@verjson/identity-contracts":["0.2.2","^0.2.0","~0.2.0",">=0.2.2 <0.4.0"]}}'
 mkdir -p "$tmp/validate"
 printf '%s\n' '{"name":"consumer","version":"1.0.0","lockfileVersion":3,"packages":{"":{"name":"consumer","version":"1.0.0"}}}' > "$tmp/validate/package-lock.json"
 run_validator() {
   rm -f "$tmp/validate/private-entries"
   (cd "$tmp/validate" && APPROVED_INTERNAL_PACKAGES="$1" APPROVED_INTERNAL_SCOPES=@verjson \
     COMPATIBILITY_RANGES="$2" PACKAGE_MANAGER=npm PRIVATE_CACHE_ENTRIES="$tmp/validate/private-entries" \
-    TRUSTED_PACKAGE_POLICY='' bash "$tmp/validate.sh")
+    TRUSTED_PACKAGE_POLICY="${3-}" bash "$tmp/validate.sh")
 }
-if run_validator '@verjson/identity-contracts' "$request" >/dev/null 2>&1; then
+if run_validator '@verjson/identity-contracts' "$request" "$policy" >/dev/null 2>&1; then
   pass "an exact approved compatibility package may be absent from the pinned lock"
 else
   fail "an exact approved compatibility package was rejected"
 fi
 unapproved='{"package":"@verjson/other","ranges":["^0.2.0"],"script":"test:compat"}'
-if run_validator '@verjson/identity-contracts' "$unapproved" >/dev/null 2>&1; then
+if run_validator '@verjson/identity-contracts' "$unapproved" "$policy" >/dev/null 2>&1; then
   fail "an unapproved compatibility package was accepted"
 else
   pass "an unapproved compatibility package fails before registry access"
 fi
-bad_range='{"package":"@verjson/identity-contracts","ranges":["file:../payload"],"script":"test:compat"}'
-if run_validator '@verjson/identity-contracts' "$bad_range" >/dev/null 2>&1; then
-  fail "a non-semver compatibility range was accepted"
+caller_bypass='{"package":"@verjson/private-target","ranges":["^1.0.0"],"script":"test:compat"}'
+if run_validator '@verjson/private-target' "$caller_bypass" '' >/dev/null 2>&1; then
+  fail "caller-controlled package and absent-lock exemption bypassed protected policy"
 else
-  pass "a non-semver compatibility range fails before registry access"
+  pass "combined caller-controlled package and absent-lock exemption fails without protected policy"
 fi
+package_only_policy='{"scopes":["@verjson"],"packages":["@verjson/identity-contracts"]}'
+if run_validator '@verjson/identity-contracts' "$request" "$package_only_policy" >/dev/null 2>&1; then
+  fail "package-only protected policy authorized caller-controlled compatibility ranges"
+else
+  pass "compatibility ranges require explicit protected-policy authorization"
+fi
+range_expansion='{"package":"@verjson/identity-contracts","ranges":["^1.0.0"],"script":"test:compat"}'
+if run_validator '@verjson/identity-contracts' "$range_expansion" "$policy" >/dev/null 2>&1; then
+  fail "caller-controlled range expanded beyond protected policy"
+else
+  pass "caller-controlled range cannot expand protected policy"
+fi
+for range_value in 'file:../payload' '>=0' '>=0.0.0' '*' '1.2' '>=2.0.0 <1.0.0' '>=1.0.0'; do
+  bad_range="{\"package\":\"@verjson/identity-contracts\",\"ranges\":[\"$range_value\"],\"script\":\"test:compat\"}"
+  bad_policy="{\"scopes\":[\"@verjson\"],\"packages\":[\"@verjson/identity-contracts\"],\"compatibility\":{\"@verjson/identity-contracts\":[\"$range_value\"]}}"
+  if run_validator '@verjson/identity-contracts' "$bad_range" "$bad_policy" >/dev/null 2>&1; then
+    fail "unbounded or unsupported compatibility range $range_value was accepted"
+  else
+    pass "unbounded or unsupported compatibility range $range_value fails before registry access"
+  fi
+done
+for range_value in '0.2.2' '^0.2.0' '~0.2.0' '>=0.2.2 <0.4.0'; do
+  bounded="{\"package\":\"@verjson/identity-contracts\",\"ranges\":[\"$range_value\"],\"script\":\"test:compat\"}"
+  if run_validator '@verjson/identity-contracts' "$bounded" "$policy" >/dev/null 2>&1; then
+    pass "bounded compatibility range $range_value is accepted"
+  else
+    fail "bounded compatibility range $range_value was rejected"
+  fi
+done
 
 mkdir -p "$tmp/resolve/bin" "$tmp/resolve/runner"
 printf 'compatibility fixture\n' > "$tmp/resolve/package.tgz"
@@ -103,6 +133,12 @@ import json,sys
 p=json.load(open(sys.argv[1],encoding="utf-8"));assert p["lanes"][0]["version"]=="0.2.2"
 PY
 then pass "trusted acquisition records runtime-resolved version, integrity, and provenance"; else fail "trusted acquisition did not record runtime-resolved provenance"; fi
+outside_range='{"package":"@verjson/identity-contracts","ranges":["^9.0.0"],"script":"test:compat"}'
+if run_resolver "$outside_range" "$tmp/resolve/outside-range.log"; then
+  fail "registry-selected version outside the declared bounded range was accepted"
+else
+  pass "registry-selected version is rechecked against the declared bounded range"
+fi
 grep -Eq 'install|pack|run|exec' "$tmp/resolve/npm.log" \
   && fail "compatibility resolution invoked a lifecycle-capable npm command" \
   || pass "compatibility resolution uses metadata reads only"

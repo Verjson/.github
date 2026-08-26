@@ -27,13 +27,21 @@ credential scrub that make the canonical boundary safe.
 Add one opt-in `secretless-compatibility-ranges` input to the canonical `node-ci`
 workflow. It is an exact JSON object containing one `package`, one `script`, and 1–8
 unique bounded semver `ranges`. The package must already be an exact entry in
-`approved-internal-packages`; the new input never expands package or scope authority.
+`approved-internal-packages`. Compatibility mode also requires the protected repository
+variable `CI_SECRETLESS_PACKAGE_POLICY` to be non-empty, exactly match the caller's
+approved scopes and packages, and explicitly map each compatibility package to its allowed
+ranges. A request may select only a subset of those protected ranges; PR-authored inputs
+therefore cannot expand package, scope, or version authority. The supported range grammar is
+deliberately narrow: exact `X.Y.Z`, caret
+`^X.Y.Z`, tilde `~X.Y.Z`, or explicit `>=X.Y.Z <A.B.C` intervals whose upper bound exceeds
+the lower bound. Wildcards, unions, partial versions, and one-sided comparators fail closed.
 The initial contract supports npm callers and rejects the option under another package
 manager rather than approximating an offline install.
 
 In the existing trusted acquisition job, validate the object before network access.
 Resolve every range through GitHub Packages metadata reads, select the highest returned
-readable version, then read that exact version's package name, version, SHA-512 integrity,
+readable version, independently re-check it belongs to the declared bounded range, then
+read that exact version's package name, version, SHA-512 integrity,
 and download URL. Accept only the approved package's canonical GitHub Packages URL.
 Classify authentication, authorization, missing/unreadable package, and empty-range
 failures separately while scrubbing the acquisition token from bounded diagnostics.
@@ -63,8 +71,9 @@ is observed at the consumer-test layer without making PR-controlled code credent
   a previously green consumer red; this is the intended compatibility guardrail.
 - The acquisition job performs bounded registry metadata reads in addition to exact
   tarball reads, but still runs no package or repository lifecycle code.
-- The range input is evidence, not authority: every requested package remains subject to
-  the existing exact allowlist and protected-policy rules.
+- The range input is evidence, not authority: compatibility requests fail closed without
+  protected package and range authorization, and every request remains a subset of the
+  protected policy.
 - pnpm compatibility lanes require a separate reviewed offline-install design; callers
   using pnpm fail closed if they set this input.
 
