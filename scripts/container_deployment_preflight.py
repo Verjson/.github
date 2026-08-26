@@ -31,41 +31,88 @@ def _text(evidence: dict[str, Any], field: str) -> str:
 
 
 def validate_authorization(evidence: dict[str, Any]) -> None:
-    default_branch = _text(evidence, "defaultBranch")
-    if evidence.get("ref") != f"refs/heads/{default_branch}":
+    authority = evidence.get("authorization", evidence)
+    if not isinstance(authority, dict) or authority.get("source") != "github-api":
+        raise PreflightError("review authority must come from GitHub API evidence")
+    default_branch = _text(authority, "defaultBranch")
+    if authority.get("ref") != f"refs/heads/{default_branch}":
         raise PreflightError("deployment ref is not the exact default branch")
-    if evidence.get("environment") != "production":
+    if re.fullmatch(r"[0-9a-f]{40}", str(authority.get("deployedCommit"))) is None or re.fullmatch(r"[0-9a-f]{40}", str(authority.get("deployedTree"))) is None:
+        raise PreflightError("deployed default-branch commit/tree is malformed")
+    if authority.get("reviewedTree") != authority.get("deployedTree"):
+        raise PreflightError("deployed default-branch tree differs reviewed pull-request tree")
+    if authority.get("environment") != "production":
         raise PreflightError("deployment environment must be production")
 
-    branch_policy = evidence.get("deploymentBranchPolicy")
+    branch_policy = authority.get("deploymentBranchPolicy")
     if not isinstance(branch_policy, dict):
         raise PreflightError("deploymentBranchPolicy must be an object")
     if branch_policy.get("protectedBranches") is not True:
         raise PreflightError("production must admit protected branches only")
     if branch_policy.get("customBranchPolicies") is not False:
         raise PreflightError("production must not admit custom branch policies")
-    if evidence.get("preventSelfReview") is not True:
-        raise PreflightError("production must prevent self review")
-    if evidence.get("canAdminsBypass") is not False:
-        raise PreflightError("production must disable administrator bypass")
+    if authority.get("requiredReviewers") != []:
+        raise PreflightError("production must not require an environment reviewer")
+    if authority.get("preventSelfReview") is not False:
+        raise PreflightError("production self-review setting must be disabled")
+    if authority.get("canAdminsBypass") is not True:
+        raise PreflightError("production must permit administrator bypass")
+    if not isinstance(authority.get("environmentBypassed"), bool):
+        raise PreflightError("environment bypass state must be authoritative")
+    if authority.get("environmentBypassed") is not False or authority.get("bypassBasis") != "branch-policy-only":
+        raise PreflightError("environment bypass cannot be proven safe")
 
-    required_reviewers = evidence.get("requiredReviewers")
-    if not isinstance(required_reviewers, list) or not required_reviewers:
-        raise PreflightError("production must have a required reviewer")
-    if any(
-        not isinstance(reviewer, dict)
-        or reviewer.get("type") not in ("User", "Team")
-        or not isinstance(reviewer.get("id"), int)
-        or reviewer["id"] < 1
-        for reviewer in required_reviewers
+    dispatcher = _text(authority, "dispatcher")
+    triggering_actor = _text(authority, "triggeringActor")
+    head = _text(authority, "reviewedHead")
+    tree = _text(authority, "reviewedTree")
+    repository = _text(authority, "repository")
+    if (
+        re.fullmatch(r"[0-9a-f]{40}", head) is None
+        or re.fullmatch(r"[0-9a-f]{40}", tree) is None
     ):
-        raise PreflightError("required reviewer evidence is malformed")
-    dispatcher = _text(evidence, "dispatcher")
-    reviewer = _text(evidence, "reviewer")
-    if reviewer == dispatcher:
-        raise PreflightError("deployment reviewer must differ from dispatcher")
-    if evidence.get("reviewerSatisfiedRequiredRule") is not True:
-        raise PreflightError("deployment review did not satisfy a required reviewer rule")
+        raise PreflightError("reviewed head and tree must be immutable Git identities")
+    pull_request = authority.get("pullRequest")
+    if not isinstance(pull_request, int) or pull_request < 1:
+        raise PreflightError("review authority must identify the published pull request")
+    gates = authority.get("reviewGates")
+    if not isinstance(gates, list) or len(gates) != 3:
+        raise PreflightError("exactly three review gates are required")
+    by_kind = {gate.get("kind"): gate for gate in gates if isinstance(gate, dict)}
+    if set(by_kind) != {"code", "security", "ai"}:
+        raise PreflightError("code, security, and AI review gates are required")
+    identities: list[int] = []
+    app_ids: list[int] = []
+    for kind, gate in by_kind.items():
+        for field in ("issuer", "workflowPath", "workflowRef", "artifactDigest", "evidenceDigest", "patchDigest", "completedAt"):
+            _text(gate, field)
+        for field in ("principalId", "appId", "checkRunId", "workflowRunId", "workflowRunAttempt", "artifactId", "repositoryId"):
+            if not isinstance(gate.get(field), int) or gate[field] < 1:
+                raise PreflightError(f"{kind} review {field} is malformed")
+        if gate.get("repository") != repository or gate.get("pullRequest") != pull_request:
+            raise PreflightError(f"{kind} review source differs from deployment source")
+        if gate.get("headCommit") != head or gate.get("headTree") != tree:
+            raise PreflightError(f"{kind} review is stale for the exact head/tree")
+        if gate.get("conclusion") != "success":
+            raise PreflightError(f"{kind} review is not terminal immutable success")
+        if DIGEST_PATTERN.fullmatch(gate["artifactDigest"]) is None:
+            raise PreflightError(f"{kind} review artifact digest is malformed")
+        if DIGEST_PATTERN.fullmatch(gate["evidenceDigest"]) is None:
+            raise PreflightError(f"{kind} review evidenceDigest is malformed")
+        if gate.get("patchDigest") != authority.get("patchDigest"):
+            raise PreflightError(f"{kind} review patch differs exact pull request")
+        identities.append(gate["principalId"])
+        app_ids.append(gate["appId"])
+    dispatcher_id = authority.get("dispatcherId")
+    triggering_id = authority.get("triggeringActorId")
+    if (
+        len(set(identities)) != 3
+        or len(set(app_ids)) != 3
+        or dispatcher_id in identities
+        or triggering_id in identities
+        or dispatcher == triggering_actor and dispatcher_id != triggering_id
+    ):
+        raise PreflightError("review principals must be independent from each other and dispatcher")
 
 
 def receipt_digest(receipt: dict[str, Any]) -> str:
@@ -233,8 +280,19 @@ def validate_receipt(receipt: dict[str, Any]) -> None:
     ):
         raise PreflightError("deployment receipt failure does not match outcome")
     authorization = receipt["authorization"]
-    if authorization["dispatcher"] == authorization["reviewer"]:
-        raise PreflightError("deployment receipt authority permits self review")
+    if (
+        authorization["deployedCommit"] != receipt["headCommit"]
+        or authorization["deployedTree"] != receipt["headTree"]
+        or authorization["reviewedTree"] != receipt["headTree"]
+    ):
+        raise PreflightError("deployment receipt authority differs exact deployed/reviewed tree")
+    identities = [gate["principalId"] for gate in authorization["reviewGates"]]
+    if (
+        len(set(identities)) != 3
+        or authorization["dispatcherId"] in identities
+        or authorization["triggeringActorId"] in identities
+    ):
+        raise PreflightError("deployment receipt authority lacks independent review")
 
     runners = receipt.get("runners")
     final_fleet = receipt.get("finalFleet")

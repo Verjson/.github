@@ -5,6 +5,7 @@
 - **Follow-ups:** [#628](https://github.com/Verjson/.github/issues/628), [#627](https://github.com/Verjson/.github/issues/627), [#629](https://github.com/Verjson/.github/issues/629)
 - **Category:** release authority, production credentials, and runner deployment — **sensitive class**
 - **Status:** Accepted
+- **Superseded in part by:** [ADR 0144](../0144-exact-head-runner-deployment-review/README.md) for deployment review authorization and credential separation
 
 ## Context
 

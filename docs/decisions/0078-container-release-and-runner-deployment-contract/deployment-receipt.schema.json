@@ -11,6 +11,7 @@
     "action",
     "deploymentContractCommit",
     "headCommit",
+    "headTree",
     "planDigest",
     "outcome",
     "environment",
@@ -30,12 +31,13 @@
     "completedAt"
   ],
   "properties": {
-    "schemaVersion": {"const": 3},
+    "schemaVersion": {"const": 4},
     "revision": {"type": "integer", "minimum": 0},
     "attemptId": {"type": "string", "pattern": "^[1-9][0-9]*\\.[1-9][0-9]*$"},
     "action": {"enum": ["deploy", "rollback"]},
     "deploymentContractCommit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
     "headCommit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "headTree": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
     "planDigest": {"$ref": "#/$defs/digest"},
     "outcome": {"enum": ["admitted", "in_progress", "succeeded", "failed", "interrupted"]},
     "environment": {"const": "production"},
@@ -72,12 +74,46 @@
     "authorization": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["dispatcher", "reviewer", "workflowRunId", "environmentProtectionRuleId"],
+      "required": ["source", "repositoryId", "defaultBranch", "ref", "deployedCommit", "deployedTree", "environment", "deploymentBranchPolicy", "requiredReviewers", "preventSelfReview", "canAdminsBypass", "dispatcher", "dispatcherId", "triggeringActor", "triggeringActorId", "environmentBypassed", "bypassBasis", "workflowRunId", "workflowRunAttempt", "repository", "pullRequest", "reviewedHead", "reviewedTree", "patchDigest", "reviewGates"],
       "properties": {
+        "source": {"const": "github-api"},
+        "repositoryId": {"type": "integer", "minimum": 1},
+        "defaultBranch": {"type": "string", "minLength": 1},
+        "ref": {"type": "string", "minLength": 1},
+        "deployedCommit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+        "deployedTree": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+        "environment": {"const": "production"},
+        "deploymentBranchPolicy": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["protectedBranches", "customBranchPolicies"],
+          "properties": {
+            "protectedBranches": {"const": true},
+            "customBranchPolicies": {"const": false}
+          }
+        },
+        "requiredReviewers": {"type": "array", "maxItems": 0},
+        "preventSelfReview": {"const": false},
+        "canAdminsBypass": {"const": true},
         "dispatcher": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$"},
-        "reviewer": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$"},
+        "dispatcherId": {"type": "integer", "minimum": 1},
+        "triggeringActor": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$"},
+        "triggeringActorId": {"type": "integer", "minimum": 1},
+        "environmentBypassed": {"type": "boolean"},
+        "bypassBasis": {"const": "branch-policy-only"},
         "workflowRunId": {"type": "integer", "minimum": 1},
-        "environmentProtectionRuleId": {"type": "integer", "minimum": 1}
+        "workflowRunAttempt": {"type": "integer", "minimum": 1},
+        "repository": {"type": "string", "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"},
+        "pullRequest": {"type": "integer", "minimum": 1},
+        "reviewedHead": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+        "reviewedTree": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+        "patchDigest": {"$ref": "#/$defs/digest"},
+        "reviewGates": {
+          "type": "array",
+          "minItems": 3,
+          "maxItems": 3,
+          "items": {"$ref": "#/$defs/reviewGate"}
+        }
       }
     },
     "runners": {
@@ -138,6 +174,33 @@
   ],
   "$defs": {
     "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "reviewGate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "principalId", "appId", "issuer", "checkRunId", "workflowRunId", "workflowRunAttempt", "workflowPath", "workflowRef", "artifactId", "artifactDigest", "evidenceDigest", "repositoryId", "repository", "pullRequest", "headCommit", "headTree", "patchDigest", "conclusion", "completedAt"],
+      "properties": {
+        "kind": {"enum": ["code", "security", "ai"]},
+        "principalId": {"type": "integer", "minimum": 1},
+        "appId": {"type": "integer", "minimum": 1},
+        "issuer": {"type": "string", "minLength": 1},
+        "checkRunId": {"type": "integer", "minimum": 1},
+        "workflowRunId": {"type": "integer", "minimum": 1},
+        "workflowRunAttempt": {"type": "integer", "minimum": 1},
+        "workflowPath": {"type": "string", "pattern": "^\\.github/workflows/[A-Za-z0-9_.-]+\\.ya?ml$"},
+        "workflowRef": {"type": "string", "minLength": 1},
+        "artifactId": {"type": "integer", "minimum": 1},
+        "artifactDigest": {"$ref": "#/$defs/digest"},
+        "evidenceDigest": {"$ref": "#/$defs/digest"},
+        "repositoryId": {"type": "integer", "minimum": 1},
+        "repository": {"type": "string", "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"},
+        "pullRequest": {"type": "integer", "minimum": 1},
+        "headCommit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+        "headTree": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+        "patchDigest": {"$ref": "#/$defs/digest"},
+        "conclusion": {"const": "success"},
+        "completedAt": {"type": "string", "format": "date-time"}
+      }
+    },
     "release": {
       "type": "object",
       "additionalProperties": false,
