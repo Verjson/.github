@@ -51,9 +51,10 @@ class SecretlessAbsentCompatibilityTargetTests(unittest.TestCase):
             item for item in steps
             if item.get("name") == "Run runtime-resolved compatibility lanes without credentials"
         )
+        cls.runner_text = step["run"]
         cls.temp_root = Path(tempfile.mkdtemp(prefix="node-ci-absent-compat-"))
         cls.runner = cls.temp_root / "run-lanes.sh"
-        cls.runner.write_text(step["run"], encoding="utf-8")
+        cls.runner.write_text(cls.runner_text, encoding="utf-8")
 
     @classmethod
     def tearDownClass(cls):
@@ -145,6 +146,12 @@ if (process.env.TEST_SIGNAL === 'true') {
   fs.writeFileSync('consumer-started', 'yes');
   setInterval(() => {}, 1000);
 }
+if (process.env.TEST_REPLACE_TARGET === 'true') {
+  fs.renameSync(target, target + '-verified');
+  fs.mkdirSync(target);
+  fs.copyFileSync(target + '-verified/package.json', target + '/package.json');
+  fs.copyFileSync(target + '-verified/index.js', target + '/index.js');
+}
 if (process.env.TEST_FAIL === 'true') process.exit(42);
 """,
             encoding="utf-8",
@@ -167,9 +174,15 @@ if (process.env.TEST_FAIL === 'true') process.exit(42);
         env.update(updates)
         return env
 
-    def run_lane(self, **updates):
+    def instrument_runner(self, name, needle, replacement):
+        self.assertEqual(1, self.runner_text.count(needle))
+        runner = self.fixture / name
+        runner.write_text(self.runner_text.replace(needle, replacement), encoding="utf-8")
+        return runner
+
+    def run_lane(self, runner=None, **updates):
         return subprocess.run(
-            ["bash", str(self.runner)],
+            ["bash", str(runner or self.runner)],
             cwd=self.fixture,
             env=self.environment(**updates),
             capture_output=True,
@@ -285,6 +298,98 @@ if (process.env.TEST_FAIL === 'true') process.exit(42);
         self.assertIn("target appeared unexpectedly", result.stderr)
         self.assertFalse((self.fixture / "observed-versions").exists())
         self.assertEqual([], list(self.scope.glob(".authn.*")))
+
+    def test_verified_staging_name_cannot_be_replaced_before_placement(self):
+        self.prepare(padding_members=1024)
+        replaced = threading.Event()
+
+        def replace_staging():
+            for _ in range(5000):
+                candidates = list(self.scope.glob(".authn.compat-*"))
+                if (candidates
+                        and (candidates[0] / "package.json").exists()
+                        and (candidates[0] / "index.js").exists()):
+                    staging = candidates[0]
+                    stolen = self.scope / ".authn.stolen"
+                    staging.rename(stolen)
+                    staging.mkdir()
+                    shutil.copy(stolen / "package.json", staging / "package.json")
+                    shutil.copy(stolen / "index.js", staging / "index.js")
+                    replaced.set()
+                    return
+                time.sleep(0.001)
+
+        watcher = threading.Thread(target=replace_staging)
+        watcher.start()
+        result = self.run_lane()
+        watcher.join(timeout=6)
+        self.assertTrue(replaced.is_set())
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn("verified compatibility staging path changed", result.stderr)
+        self.assertFalse((self.fixture / "observed-versions").exists())
+
+    def test_target_appearance_in_atomic_placement_window_fails_closed(self):
+        self.prepare()
+        marker = self.fixture / "placement-ready"
+        needle = "        try:\n            try:\n                place_without_replacement(staging.name, installed_leaf)"
+        replacement = (
+            "        try:\n"
+            "            try:\n"
+            "                Path(os.environ['TEST_PLACEMENT_READY']).touch()\n"
+            "                __import__('time').sleep(0.2)\n"
+            "                place_without_replacement(staging.name, installed_leaf)"
+        )
+        runner = self.instrument_runner("placement-window.sh", needle, replacement)
+        process = subprocess.Popen(
+            ["bash", str(runner)],
+            cwd=self.fixture,
+            env=self.environment(TEST_PLACEMENT_READY=str(marker)),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        for _ in range(200):
+            if marker.exists() or process.poll() is not None:
+                break
+            time.sleep(0.01)
+        self.assertTrue(marker.exists())
+        self.package_target.mkdir()
+        _stdout, stderr = process.communicate(timeout=10)
+        self.assertNotEqual(0, process.returncode)
+        self.assertIn("target appeared during placement", stderr)
+        self.assertFalse((self.fixture / "observed-versions").exists())
+
+    def test_parent_replacement_during_staging_fails_closed(self):
+        self.prepare(padding_members=1024)
+        replaced = threading.Event()
+
+        def replace_parent():
+            for _ in range(5000):
+                candidates = list(self.scope.glob(".authn.compat-*"))
+                if candidates and (candidates[0] / "package.json").exists():
+                    self.scope.rename(self.fixture / "verified-scope")
+                    self.scope.mkdir()
+                    replaced.set()
+                    return
+                time.sleep(0.001)
+
+        watcher = threading.Thread(target=replace_parent)
+        watcher.start()
+        result = self.run_lane()
+        watcher.join(timeout=6)
+        self.assertTrue(replaced.is_set())
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn("parent is not a real directory", result.stderr)
+        self.assertFalse((self.fixture / "observed-versions").exists())
+
+    def test_target_replacement_after_use_cannot_produce_green_or_delete_entries(self):
+        self.prepare()
+        result = self.run_lane(TEST_REPLACE_TARGET="true")
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn("changed", result.stderr)
+        self.assertTrue(self.package_target.is_dir())
+        self.assertTrue((self.scope / "authn-verified").is_dir())
+        self.assertEqual("1.0.0\n", (self.fixture / "observed-versions").read_text())
 
 
 if __name__ == "__main__":

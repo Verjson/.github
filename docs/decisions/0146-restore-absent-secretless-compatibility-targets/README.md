@@ -33,6 +33,12 @@ directory identity installed by the preceding verified lane. A symlink, non-dire
 missing or replaced parent, changed staged target, or independently appearing target
 fails closed before consumer execution.
 
+Keep the verified staging directory descriptor open through placement and use Linux
+`renameat2(RENAME_NOREPLACE)` for the transition into the held package parent. The placed
+name must resolve to the staged inode before consumer execution, and the same open inode
+must remain at that name after execution. Competing target, staging-name, parent, or
+post-execution identity changes fail without deleting the competing entry.
+
 When the target began absent, retain its installed directory identity and remove that
 exact directory after success, script failure, `SIGINT`, or `SIGTERM`. Cleanup first
 quarantines the identity under the held package parent and refuses to delete a different
