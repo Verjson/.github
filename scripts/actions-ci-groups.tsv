@@ -113,7 +113,9 @@ changelog-release	python3 scripts/ci-gate/adr-number-collision.test.py
 changelog-release	bash scripts/render-next.sh >/dev/null
 changelog-release	bash scripts/ci-gate/render-next.test.sh
 changelog-release	python3 scripts/changelog.test.py
+changelog-release	bash scripts/changelog-fragment-schema.test.sh
 changelog-release	python3 scripts/v1-readiness-contract.test.py
+changelog-release	bash scripts/actions-ci-python-dependencies.test.sh
 changelog-release	python3 scripts/changelog-pre-contract-migration.test.py
 changelog-release	python3 scripts/ci-gate/changelog-tag-visibility.test.py
 changelog-release	python3 scripts/container_release_manifest.test.py
