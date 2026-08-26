@@ -143,6 +143,7 @@ changelog-release	bash scripts/ci-gate/changelog-contract-resolution.test.sh
 changelog-release	bash scripts/ci-gate/changelog-validate-preview.test.sh
 changelog-release	bash scripts/ci-gate/changelog-validate-pin.test.sh
 changelog-release	bash scripts/contract-pin.test.sh
+changelog-release	python3 scripts/render_changelog_adoption_issue_test.py
 changelog-release	bash scripts/component-changelog-contract.test.sh
 changelog-release	bash scripts/changelog-pr-gate-generator.test.sh
 changelog-release	bash scripts/changelog-migration.test.sh
