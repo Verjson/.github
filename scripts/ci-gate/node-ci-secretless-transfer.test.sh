@@ -20,6 +20,10 @@ doc = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))
 jobs = doc["jobs"]
 acquire = jobs["acquire-secretless-dependencies"]
 build = jobs["build-test"]
+inputs = doc[True]["workflow_call"]["inputs"]
+
+assert inputs["secretless-runtime-public-cache"]["type"] == "boolean"
+assert inputs["secretless-runtime-public-cache"]["default"] is False
 
 assert acquire["outputs"]["transfer-cache-key"] == "${{ steps.create-secretless-cache-key.outputs.cache-key }}"
 assert acquire["outputs"]["transfer-payload-bytes"] == "${{ steps.package-secretless-transfer.outputs.payload-bytes }}"
@@ -91,9 +95,13 @@ assert package["env"]["TRANSFER_DIR"] == stable_workspace_transfer
 assert acquire_cleanup["env"]["TRANSFER_DIR"] == stable_workspace_transfer
 assert install["env"]["TRANSFER_DIR"] == stable_workspace_transfer
 assert install["env"]["NPM_CONFIG_CACHE"].startswith("${{ runner.temp }}/secretless-runtime-cache-")
+assert install["env"]["SECRETLESS_RUNTIME_PUBLIC_CACHE"] == "${{ inputs.secretless-runtime-public-cache }}"
+assert install["env"]["MAX_PUBLIC_RUNTIME_CACHE_BLOBS"] == "4096"
+assert install["env"]["MAX_PUBLIC_RUNTIME_CACHE_BYTES"] == "268435456"
 assert install["env"]["NPM_CONFIG_GLOBALCONFIG"].startswith("${{ runner.temp }}/")
 assert install["env"]["NPM_CONFIG_USERCONFIG"].startswith("${{ runner.temp }}/")
 assert "npm ci --ignore-scripts --prefer-offline --no-audit --no-fund" in install["run"]
+assert "PUBLIC_RUNTIME_CACHE_REQUIRES_NPM" in install["run"]
 assert "manifest_run_attempt" in install["run"]
 assert "manifest_lock_sha256" in install["run"]
 assert "manifest_payload_sha256" in install["run"]
@@ -168,6 +176,24 @@ printf '%s\n' \
   '  content_path="$cache_dir/_cacache/content-v2/sha512/${NPM_STUB_DIGEST:0:2}/${NPM_STUB_DIGEST:2:2}/${NPM_STUB_DIGEST:4}"' \
   '  mkdir -p "$(dirname "$content_path")"' \
   '  cp "$NPM_STUB_CONTENT" "$content_path"' \
+  'fi' \
+  'if [ "${1:-}" = ci ] && [ -n "${NPM_STUB_PUBLIC_CONTENT:-}" ]; then' \
+  '  while [ "$#" -gt 0 ]; do' \
+  '    if [ "$1" = --cache ]; then cache_dir="$2"; break; fi' \
+  '    shift' \
+  '  done' \
+  '  content_path="$cache_dir/_cacache/content-v2/sha512/${NPM_STUB_PUBLIC_DIGEST:0:2}/${NPM_STUB_PUBLIC_DIGEST:2:2}/${NPM_STUB_PUBLIC_DIGEST:4}"' \
+  '  mkdir -p "$(dirname "$content_path")"' \
+  '  if [ "${NPM_STUB_PUBLIC_SYMLINK:-false}" = true ]; then' \
+  '    ln -s "$NPM_STUB_PUBLIC_CONTENT" "$content_path"' \
+  '  else' \
+  '    cp "$NPM_STUB_PUBLIC_CONTENT" "$content_path"' \
+  '  fi' \
+  '  mkdir -p "$cache_dir/_cacache/index-v5/fixture"' \
+  '  printf '\''registry-request-metadata\n'\'' > "$cache_dir/_cacache/index-v5/fixture/entry"' \
+  '  package_name="${NPM_STUB_PUBLIC_PACKAGE_NAME:-public-fixture}"' \
+  '  mkdir -p "node_modules/$package_name"' \
+  '  printf '\''{"name":"%s","version":"1.0.0"}\n'\'' "$package_name" > "node_modules/$package_name/package.json"' \
   'fi' \
   > "$tmp/bin/npm"
 chmod +x "$tmp/bin/npm"
@@ -275,21 +301,36 @@ fi
 run_install() {
   local fixture="$1" run_id="${2:-7001}" run_attempt="${3:-3}"
   local auxiliary_repository="${4:-}" auxiliary_commit="${5:-}" auxiliary_content_path="${6:-}"
+  local public_runtime_cache="${7:-false}" runtime_cache="$fixture/runtime-cache"
+  local package_manager="${8:-npm}" install_script="${INSTALL_SCRIPT:-$tmp/install.sh}"
   local expected_payload_sha256 expected_payload_bytes
+  if [ "$public_runtime_cache" = true ]; then
+    mkdir -p "$fixture/runner-temp"
+    runtime_cache="$fixture/runner-temp/secretless-runtime-cache-$run_id-$run_attempt"
+  fi
   expected_payload_sha256="$(sed -n 's/^payload_sha256=//p' "$fixture/transfer/manifest")"
   expected_payload_bytes="$(sed -n 's/^payload_bytes=//p' "$fixture/transfer/manifest")"
   (cd "$fixture" && PATH="$tmp/bin:$PATH" NPM_STUB_LOG="$fixture/npm.log" \
+    NPM_STUB_PUBLIC_CONTENT="${NPM_STUB_PUBLIC_CONTENT:-}" \
+    NPM_STUB_PUBLIC_DIGEST="${NPM_STUB_PUBLIC_DIGEST:-}" \
+    NPM_STUB_PUBLIC_PACKAGE_NAME="${NPM_STUB_PUBLIC_PACKAGE_NAME:-}" \
+    NPM_STUB_PUBLIC_SYMLINK="${NPM_STUB_PUBLIC_SYMLINK:-false}" \
     GITHUB_ENV="$fixture/github.env" NPM_CONFIG_USERCONFIG="$fixture/empty.npmrc" \
-    NPM_CONFIG_CACHE="$fixture/runtime-cache" \
+    NPM_CONFIG_CACHE="$runtime_cache" \
     NPM_CONFIG_GLOBALCONFIG="$fixture/empty-global.npmrc" \
+    APPROVED_INTERNAL_SCOPES=@verjson \
     EXPECTED_AUXILIARY_COMMIT="$auxiliary_commit" \
     EXPECTED_AUXILIARY_CONTENT_PATH="$auxiliary_content_path" \
     EXPECTED_AUXILIARY_REPOSITORY="$auxiliary_repository" GITHUB_WORKSPACE="$fixture" \
     EXPECTED_PAYLOAD_BYTES="$expected_payload_bytes" \
     EXPECTED_PAYLOAD_SHA256="$expected_payload_sha256" \
+    MAX_PUBLIC_RUNTIME_CACHE_BLOBS="${MAX_PUBLIC_RUNTIME_CACHE_BLOBS:-4096}" \
+    MAX_PUBLIC_RUNTIME_CACHE_BYTES="${MAX_PUBLIC_RUNTIME_CACHE_BYTES:-268435456}" \
+    SECRETLESS_RUNTIME_PUBLIC_CACHE="$public_runtime_cache" RUNNER_TEMP="$fixture/runner-temp" \
+    PACKAGE_MANAGER="$package_manager" \
     SECRETLESS_CACHE_DIR="$fixture/build-cache" TRANSFER_DIR="$fixture/transfer" \
     MAX_PAYLOAD_BYTES=83886080 RUN_ID="$run_id" RUN_ATTEMPT="$run_attempt" \
-    bash "$tmp/install.sh")
+    bash "$install_script")
 }
 
 rebind_payload_manifest() {
@@ -337,6 +378,288 @@ if run_install "$tmp/build" \
   pass "a matching private-only transfer installs credentiallessly and scrubs local state"
 else
   fail "the credentialless install did not consume and clean a valid private-only transfer"
+fi
+
+printf 'cached public package bytes\n' > "$tmp/public-package.tgz"
+public_digest="$(sha512sum "$tmp/public-package.tgz" | cut -d' ' -f1)"
+public_integrity="sha512-$(openssl dgst -sha512 -binary "$tmp/public-package.tgz" | base64 -w0)"
+public_url='https://registry.npmjs.org/public-fixture/-/public-fixture-1.0.0.tgz'
+
+prepare_public_fixture() {
+  local fixture="$1" package_name="${2:-public-fixture}"
+  mkdir -p "$fixture"
+  cp -R "$tmp/acquire/transfer" "$fixture/transfer"
+  node - "$tmp/acquire/package-lock.json" "$fixture/package-lock.json" \
+    "$package_name" "$public_url" "$public_integrity" <<'NODE'
+const fs = require('node:fs');
+const [source, target, packageName, resolved, integrity] = process.argv.slice(2);
+const lock = JSON.parse(fs.readFileSync(source, 'utf8'));
+lock.packages[`node_modules/${packageName}`] = {
+  name: packageName,
+  version: '1.0.0',
+  resolved,
+  integrity,
+};
+fs.writeFileSync(target, `${JSON.stringify(lock)}\n`);
+NODE
+  local lock_digest
+  lock_digest="$(sha256sum "$fixture/package-lock.json" | cut -d' ' -f1)"
+  sed -i "s/^lock_sha256=.*/lock_sha256=$lock_digest/" "$fixture/transfer/manifest"
+}
+
+rebind_lock_manifest() {
+  local fixture="$1" lock_file="${2:-package-lock.json}" lock_digest
+  lock_digest="$(sha256sum "$fixture/$lock_file" | cut -d' ' -f1)"
+  sed -i "s/^lock_sha256=.*/lock_sha256=$lock_digest/" "$fixture/transfer/manifest"
+}
+
+prepare_public_fixture "$tmp/public-runtime"
+public_runtime_content="$tmp/public-runtime/runner-temp/secretless-runtime-cache-7001-3/_cacache/content-v2/sha512/${public_digest:0:2}/${public_digest:2:2}/${public_digest:4}"
+private_runtime_content="$tmp/public-runtime/runner-temp/secretless-runtime-cache-7001-3/_cacache/content-v2/sha512/${private_digest:0:2}/${private_digest:2:2}/${private_digest:4}"
+if NPM_STUB_PUBLIC_CONTENT="$tmp/public-package.tgz" NPM_STUB_PUBLIC_DIGEST="$public_digest" \
+    run_install "$tmp/public-runtime" 7001 3 '' '' '' true \
+    && cmp -s "$tmp/public-package.tgz" "$public_runtime_content" \
+    && [ ! -e "$private_runtime_content" ] \
+    && [ ! -e "$tmp/public-runtime/runner-temp/secretless-runtime-cache-7001-3/_cacache/index-v5" ] \
+    && [ "$(find "$tmp/public-runtime/runner-temp/secretless-runtime-cache-7001-3" -type f | wc -l)" -eq 1 ]; then
+  pass "opt-in runtime cache copies only complete lock-verified public content blobs"
+else
+  fail "opt-in runtime cache did not preserve the public-only content boundary"
+fi
+
+prepare_public_fixture "$tmp/absent-platform-public"
+if run_install "$tmp/absent-platform-public" 7001 3 '' '' '' true \
+    && [ "$(find "$tmp/absent-platform-public/runner-temp/secretless-runtime-cache-7001-3" -type f | wc -l)" -eq 0 ]; then
+  pass "lock-only platform package absent from the installed tree is not required"
+else
+  fail "runtime cache treated an uninstalled platform package as installed content"
+fi
+
+for destination_mutation in occupied symlinked; do
+  prepare_public_fixture "$tmp/destination-$destination_mutation"
+  destination_root="$tmp/destination-$destination_mutation/runner-temp"
+  destination_cache="$destination_root/secretless-runtime-cache-7001-3"
+  mkdir -p "$destination_root"
+  if [ "$destination_mutation" = occupied ]; then
+    mkdir -p "$destination_cache"
+  else
+    mkdir -p "$tmp/destination-symlink-target"
+    ln -s "$tmp/destination-symlink-target" "$destination_cache"
+  fi
+  if destination_output="$(run_install "$tmp/destination-$destination_mutation" \
+      7001 3 '' '' '' true 2>&1)" \
+      || ! grep -qF 'PUBLIC_RUNTIME_CACHE_PATH' <<< "$destination_output"; then
+    fail "$destination_mutation runtime-cache destination did not fail for its path reason"
+  else
+    pass "$destination_mutation runtime-cache destination fails for its path reason"
+  fi
+done
+
+prepare_public_fixture "$tmp/noncanonical-public-url"
+noncanonical_public_url='https://registry.npmjs.org:443/public-fixture/-/public-fixture-1.0.0.tgz'
+node - "$tmp/noncanonical-public-url/package-lock.json" "$noncanonical_public_url" <<'NODE'
+const fs = require('node:fs');
+const [target, resolved] = process.argv.slice(2);
+const lock = JSON.parse(fs.readFileSync(target, 'utf8'));
+lock.packages['node_modules/public-fixture'].resolved = resolved;
+fs.writeFileSync(target, `${JSON.stringify(lock)}\n`);
+NODE
+rebind_lock_manifest "$tmp/noncanonical-public-url"
+if noncanonical_url_output="$(run_install "$tmp/noncanonical-public-url" \
+    7001 3 '' '' '' true 2>&1)" \
+    || ! grep -qF "PUBLIC_RUNTIME_CACHE_URL:$noncanonical_public_url" \
+      <<< "$noncanonical_url_output"; then
+  fail "a noncanonical public registry URL did not fail for the exact URL and reason"
+else
+  pass "a noncanonical public registry URL fails for the exact URL and reason"
+fi
+
+prepare_public_fixture "$tmp/installed-symlink-public"
+mkdir -p "$tmp/installed-symlink-target" "$tmp/installed-symlink-public/node_modules"
+printf '%s\n' '{"name":"public-fixture","version":"1.0.0"}' \
+  > "$tmp/installed-symlink-target/package.json"
+ln -s "$tmp/installed-symlink-target" \
+  "$tmp/installed-symlink-public/node_modules/public-fixture"
+if installed_symlink_output="$(run_install "$tmp/installed-symlink-public" \
+    7001 3 '' '' '' true 2>&1)" \
+    || ! grep -qF 'PUBLIC_RUNTIME_CACHE_INSTALLED_TYPE:node_modules/public-fixture' \
+      <<< "$installed_symlink_output"; then
+  fail "a symlinked installed package did not fail for the exact path and reason"
+else
+  pass "a symlinked installed package fails for the exact path and reason"
+fi
+
+prepare_public_fixture "$tmp/installed-identity-public"
+mkdir -p "$tmp/installed-identity-public/node_modules/public-fixture"
+printf '%s\n' '{"name":"public-fixture","version":"2.0.0"}' \
+  > "$tmp/installed-identity-public/node_modules/public-fixture/package.json"
+if installed_identity_output="$(run_install "$tmp/installed-identity-public" \
+    7001 3 '' '' '' true 2>&1)" \
+    || ! grep -qF 'PUBLIC_RUNTIME_CACHE_INSTALLED_IDENTITY:node_modules/public-fixture' \
+      <<< "$installed_identity_output"; then
+  fail "installed package identity drift did not fail for the exact path and reason"
+else
+  pass "installed package identity drift fails for the exact path and reason"
+fi
+
+prepare_public_fixture "$tmp/missing-public"
+mkdir -p "$tmp/missing-public/node_modules/public-fixture"
+printf '%s\n' '{"name":"public-fixture","version":"1.0.0"}' \
+  > "$tmp/missing-public/node_modules/public-fixture/package.json"
+if missing_public_output="$(run_install "$tmp/missing-public" 7001 3 '' '' '' true 2>&1)" \
+    || ! grep -qF "PUBLIC_RUNTIME_CACHE_MISSING:$public_url" <<< "$missing_public_output"; then
+  fail "missing locked public content did not fail for the exact URL and reason"
+else
+  pass "missing locked public content fails for the exact URL and reason"
+fi
+
+printf 'corrupt public package bytes\n' > "$tmp/corrupt-public-package.tgz"
+prepare_public_fixture "$tmp/corrupt-public"
+if corrupt_public_output="$(NPM_STUB_PUBLIC_CONTENT="$tmp/corrupt-public-package.tgz" \
+    NPM_STUB_PUBLIC_DIGEST="$public_digest" \
+    run_install "$tmp/corrupt-public" 7001 3 '' '' '' true 2>&1)" \
+    || ! grep -qF "PUBLIC_RUNTIME_CACHE_CORRUPT:$public_url" <<< "$corrupt_public_output"; then
+  fail "corrupt locked public content did not fail for the exact URL and reason"
+else
+  pass "corrupt locked public content fails for the exact URL and reason"
+fi
+
+prepare_public_fixture "$tmp/symlink-public"
+if symlink_public_output="$(NPM_STUB_PUBLIC_CONTENT="$tmp/public-package.tgz" \
+    NPM_STUB_PUBLIC_DIGEST="$public_digest" NPM_STUB_PUBLIC_SYMLINK=true \
+    run_install "$tmp/symlink-public" 7001 3 '' '' '' true 2>&1)" \
+    || ! grep -qF "PUBLIC_RUNTIME_CACHE_SOURCE_TYPE:$public_url" <<< "$symlink_public_output"; then
+  fail "symlinked locked public content did not fail for the exact URL and reason"
+else
+  pass "symlinked locked public content fails for the exact URL and reason"
+fi
+
+prepare_public_fixture "$tmp/oversize-public"
+if oversize_public_output="$(MAX_PUBLIC_RUNTIME_CACHE_BYTES=1 \
+    NPM_STUB_PUBLIC_CONTENT="$tmp/public-package.tgz" NPM_STUB_PUBLIC_DIGEST="$public_digest" \
+    run_install "$tmp/oversize-public" 7001 3 '' '' '' true 2>&1)" \
+    || ! grep -qF 'PUBLIC_RUNTIME_CACHE_SIZE_BOUND' <<< "$oversize_public_output"; then
+  fail "public runtime content over the byte bound did not fail closed"
+else
+  pass "public runtime content over the byte bound fails closed"
+fi
+
+printf 'second cached public package bytes\n' > "$tmp/second-public-package.tgz"
+second_public_integrity="sha512-$(openssl dgst -sha512 -binary "$tmp/second-public-package.tgz" | base64 -w0)"
+prepare_public_fixture "$tmp/overcount-public"
+node - "$tmp/overcount-public/package-lock.json" "$second_public_integrity" <<'NODE'
+const fs = require('node:fs');
+const [target, integrity] = process.argv.slice(2);
+const lock = JSON.parse(fs.readFileSync(target, 'utf8'));
+lock.packages['node_modules/second-public-fixture'] = {
+  name: 'second-public-fixture',
+  version: '1.0.0',
+  resolved: 'https://registry.npmjs.org/second-public-fixture/-/second-public-fixture-1.0.0.tgz',
+  integrity,
+};
+fs.writeFileSync(target, `${JSON.stringify(lock)}\n`);
+NODE
+overcount_lock_digest="$(sha256sum "$tmp/overcount-public/package-lock.json" | cut -d' ' -f1)"
+sed -i "s/^lock_sha256=.*/lock_sha256=$overcount_lock_digest/" \
+  "$tmp/overcount-public/transfer/manifest"
+mkdir -p "$tmp/overcount-public/node_modules/second-public-fixture"
+printf '%s\n' '{"name":"second-public-fixture","version":"1.0.0"}' \
+  > "$tmp/overcount-public/node_modules/second-public-fixture/package.json"
+if overcount_public_output="$(MAX_PUBLIC_RUNTIME_CACHE_BLOBS=1 \
+    NPM_STUB_PUBLIC_CONTENT="$tmp/public-package.tgz" NPM_STUB_PUBLIC_DIGEST="$public_digest" \
+    run_install "$tmp/overcount-public" 7001 3 '' '' '' true 2>&1)" \
+    || ! grep -qF 'PUBLIC_RUNTIME_CACHE_COUNT_BOUND' <<< "$overcount_public_output"; then
+  fail "public runtime content over the blob-count bound did not fail closed"
+else
+  pass "public runtime content over the blob-count bound fails closed"
+fi
+
+prepare_public_fixture "$tmp/private-masquerade" '@verjson/private-masquerade'
+if private_masquerade_output="$(NPM_STUB_PUBLIC_CONTENT="$tmp/public-package.tgz" \
+    NPM_STUB_PUBLIC_DIGEST="$public_digest" \
+    run_install "$tmp/private-masquerade" 7001 3 '' '' '' true 2>&1)" \
+    || ! grep -qF 'PUBLIC_RUNTIME_CACHE_PRIVATE_PACKAGE:@verjson/private-masquerade' \
+      <<< "$private_masquerade_output"; then
+  fail "an internal package on the public host did not fail before runtime-cache transfer"
+else
+  pass "an internal package cannot cross through the public runtime-cache opt-in"
+fi
+
+mkdir -p "$tmp/private-digest-collision/cache/_cacache/content-v2/sha512/${public_digest:0:2}/${public_digest:2:2}"
+cp "$tmp/public-package.tgz" \
+  "$tmp/private-digest-collision/cache/_cacache/content-v2/sha512/${public_digest:0:2}/${public_digest:2:2}/${public_digest:4}"
+node - "$tmp/acquire/package-lock.json" "$tmp/private-digest-collision/package-lock.json" \
+  "$public_url" "$public_integrity" <<'NODE'
+const fs = require('node:fs');
+const [source, target, resolved, integrity] = process.argv.slice(2);
+const lock = JSON.parse(fs.readFileSync(source, 'utf8'));
+lock.packages['node_modules/@verjson/private-fixture'].integrity = integrity;
+lock.packages['node_modules/public-fixture'] = {
+  name: 'public-fixture', version: '1.0.0', resolved, integrity,
+};
+fs.writeFileSync(target, `${JSON.stringify(lock)}\n`);
+NODE
+(cd "$tmp/private-digest-collision" && \
+  CACHE_DIR="$tmp/private-digest-collision/cache" \
+  TRANSFER_DIR="$tmp/private-digest-collision/transfer" \
+  AUXILIARY_COMMIT='' AUXILIARY_CONTENT_PATH='' AUXILIARY_REPOSITORY='' \
+  GITHUB_WORKSPACE="$tmp/private-digest-collision" \
+  GITHUB_OUTPUT="$tmp/private-digest-collision/package.outputs" \
+  NPM_CONFIG_GLOBALCONFIG="$tmp/private-digest-collision/empty-global.npmrc" \
+  NPM_CONFIG_USERCONFIG="$tmp/private-digest-collision/empty-user.npmrc" \
+  MAX_PAYLOAD_BYTES=83886080 RUN_ID=7001 RUN_ATTEMPT=3 bash "$tmp/package.sh")
+if private_collision_output="$(NPM_STUB_PUBLIC_CONTENT="$tmp/public-package.tgz" \
+    NPM_STUB_PUBLIC_DIGEST="$public_digest" \
+    run_install "$tmp/private-digest-collision" 7001 3 '' '' '' true 2>&1)" \
+    || ! grep -qF 'PUBLIC_RUNTIME_CACHE_PRIVATE_COLLISION' <<< "$private_collision_output"; then
+  fail "one digest carrying public and private identities did not fail closed"
+else
+  pass "one digest carrying public and private identities fails closed"
+fi
+
+python3 - "$tmp/install.sh" "$tmp/install-unexpected-content.sh" <<'PY'
+import sys
+from pathlib import Path
+
+source = Path(sys.argv[1]).read_text(encoding="utf-8")
+needle = "actual_files = set()\n"
+if source.count(needle) != 1:
+    raise SystemExit("unexpected-content mutation target drift")
+mutated = source.replace(
+    needle,
+    '(runtime_cache / "unexpected-content").write_bytes(b"unexpected\\n")\n' + needle,
+)
+Path(sys.argv[2]).write_text(mutated, encoding="utf-8")
+PY
+prepare_public_fixture "$tmp/unexpected-runtime-content"
+if unexpected_content_output="$(INSTALL_SCRIPT="$tmp/install-unexpected-content.sh" \
+    NPM_STUB_PUBLIC_CONTENT="$tmp/public-package.tgz" NPM_STUB_PUBLIC_DIGEST="$public_digest" \
+    run_install "$tmp/unexpected-runtime-content" 7001 3 '' '' '' true 2>&1)" \
+    || ! grep -qF 'PUBLIC_RUNTIME_CACHE_UNEXPECTED_CONTENT' <<< "$unexpected_content_output"; then
+  fail "unexpected runtime-cache content did not fail its final completeness check"
+else
+  pass "unexpected runtime-cache content fails its final completeness check"
+fi
+
+mkdir -p "$tmp/pnpm-public-opt-in"
+cp -R "$tmp/acquire/transfer" "$tmp/pnpm-public-opt-in/transfer"
+cat > "$tmp/pnpm-public-opt-in/pnpm-lock.yaml" <<EOF
+lockfileVersion: '9.0'
+packages:
+  '@verjson/private-fixture@1.0.0':
+    resolution:
+      tarball: https://npm.pkg.github.com/download/@verjson/private-fixture/1.0.0/abc
+      integrity: $private_integrity
+EOF
+sed -i 's/^package_manager=.*/package_manager=pnpm/' \
+  "$tmp/pnpm-public-opt-in/transfer/manifest"
+rebind_lock_manifest "$tmp/pnpm-public-opt-in" pnpm-lock.yaml
+if pnpm_opt_in_output="$(run_install "$tmp/pnpm-public-opt-in" \
+    7001 3 '' '' '' true pnpm 2>&1)" \
+    || ! grep -qF 'PUBLIC_RUNTIME_CACHE_REQUIRES_NPM' <<< "$pnpm_opt_in_output"; then
+  fail "pnpm runtime-cache opt-in did not fail for its package-manager reason"
+else
+  pass "pnpm runtime-cache opt-in fails for its package-manager reason"
 fi
 
 mkdir -p "$tmp/missing-private"

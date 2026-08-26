@@ -94,6 +94,16 @@ on:
         required: false
         type: boolean
         default: false
+      secretless-runtime-public-cache:
+        description: >-
+          After the credentialless npm install, copy only exact public
+          registry.npmjs.org content blobs from the verified install cache into
+          the separate job-scoped runtime cache. Intended for repository-authored
+          offline reinstall rehearsals; rejected for pnpm. Empty cache indexes,
+          request metadata, private package blobs, and credentials never cross.
+        required: false
+        type: boolean
+        default: false
       approved-internal-packages:
         description: >-
           Newline-separated exact package names allowed during secretless
@@ -1308,8 +1318,11 @@ jobs:
           EXPECTED_PAYLOAD_BYTES: ${{ needs.acquire-secretless-dependencies.outputs.transfer-payload-bytes }}
           EXPECTED_PAYLOAD_SHA256: ${{ needs.acquire-secretless-dependencies.outputs.transfer-payload-sha256 }}
           MAX_PAYLOAD_BYTES: '83886080'
+          MAX_PUBLIC_RUNTIME_CACHE_BLOBS: '4096'
+          MAX_PUBLIC_RUNTIME_CACHE_BYTES: '268435456'
           RUN_ATTEMPT: ${{ github.run_attempt }}
           RUN_ID: ${{ github.run_id }}
+          SECRETLESS_RUNTIME_PUBLIC_CACHE: ${{ inputs.secretless-runtime-public-cache }}
           SECRETLESS_CACHE_DIR: ${{ runner.temp }}/secretless-build-cache-${{ github.run_id }}-${{ github.run_attempt }}
           PNPM_STORE_DIR: ${{ runner.temp }}/secretless-pnpm-store-${{ github.run_id }}-${{ github.run_attempt }}
           TRANSFER_DIR: ${{ github.workspace }}/.verjson-secretless-transfer-${{ github.run_id }}-${{ github.run_attempt }}
@@ -1320,6 +1333,11 @@ jobs:
           COMPATIBILITY_RANGES="${COMPATIBILITY_RANGES:-}"
           EXPECTED_COMPATIBILITY_PROVENANCE_SHA256="${EXPECTED_COMPATIBILITY_PROVENANCE_SHA256:-}"
           PNPM_STORE_DIR="${PNPM_STORE_DIR:-}"
+          SECRETLESS_RUNTIME_PUBLIC_CACHE="${SECRETLESS_RUNTIME_PUBLIC_CACHE:-false}"
+          case "$SECRETLESS_RUNTIME_PUBLIC_CACHE" in
+            true|false) ;;
+            *) echo "PUBLIC_RUNTIME_CACHE_INPUT" >&2; exit 1 ;;
+          esac
           cleanup() {
             if [ -n "$PNPM_STORE_DIR" ] && [ -f "$PNPM_STORE_DIR/pnpm-lock.original.yaml" ]; then
               cp -- "$PNPM_STORE_DIR/pnpm-lock.original.yaml" pnpm-lock.yaml
@@ -1587,7 +1605,167 @@ jobs:
           } >> "$GITHUB_ENV"
           if [ "$PACKAGE_MANAGER" = npm ]; then
             npm ci --ignore-scripts --prefer-offline --no-audit --no-fund --cache "$SECRETLESS_CACHE_DIR"
+            if [ "$SECRETLESS_RUNTIME_PUBLIC_CACHE" = true ]; then
+              python3 - <<'PY'
+          import base64
+          import hashlib
+          import json
+          import os
+          import re
+          import stat
+          import sys
+          from pathlib import Path, PurePosixPath
+          from urllib.parse import urlsplit
+
+          max_blobs = int(os.environ["MAX_PUBLIC_RUNTIME_CACHE_BLOBS"])
+          max_bytes = int(os.environ["MAX_PUBLIC_RUNTIME_CACHE_BYTES"])
+          if not 1 <= max_blobs <= 4096 or not 1 <= max_bytes <= 268435456:
+              raise SystemExit("PUBLIC_RUNTIME_CACHE_BOUNDS")
+
+          runner_temp = Path(os.environ["RUNNER_TEMP"])
+          runtime_cache = Path(os.environ["NPM_CONFIG_CACHE"])
+          expected_runtime = runner_temp / (
+              f"secretless-runtime-cache-{os.environ['RUN_ID']}-{os.environ['RUN_ATTEMPT']}")
+          if (not runner_temp.is_absolute() or runner_temp.is_symlink()
+                  or not runner_temp.is_dir() or runtime_cache != expected_runtime
+                  or runtime_cache.exists() or runtime_cache.is_symlink()):
+              raise SystemExit("PUBLIC_RUNTIME_CACHE_PATH")
+
+          source_cache = Path(os.environ["SECRETLESS_CACHE_DIR"])
+          if (not source_cache.is_absolute() or source_cache.is_symlink()
+                  or not source_cache.is_dir() or source_cache == runtime_cache):
+              raise SystemExit("PUBLIC_RUNTIME_CACHE_SOURCE")
+
+          lock = json.loads(Path("package-lock.json").read_text(encoding="utf-8"))
+          if lock.get("lockfileVersion") not in (2, 3) or not isinstance(lock.get("packages"), dict):
+              raise SystemExit("PUBLIC_RUNTIME_CACHE_LOCK")
+
+          internal_scopes = {"@verjson"}
+          internal_scopes.update(
+              line.strip() for line in os.environ["APPROVED_INTERNAL_SCOPES"].splitlines()
+              if line.strip()
+          )
+          integrity_pattern = re.compile(r"sha512-[A-Za-z0-9+/]{86}==")
+          public = {}
+          private_digests = set()
+
+          for package_path, package in lock["packages"].items():
+              if not package_path or not isinstance(package, dict):
+                  continue
+              resolved = package.get("resolved")
+              integrity = package.get("integrity")
+              if not isinstance(resolved, str) or not isinstance(integrity, str):
+                  continue
+              try:
+                  parsed = urlsplit(resolved)
+              except ValueError:
+                  continue
+              package_name = package.get("name")
+              if not isinstance(package_name, str) and "node_modules/" in package_path:
+                  package_name = package_path.rsplit("node_modules/", 1)[1]
+              is_internal = isinstance(package_name, str) and any(
+                  package_name.startswith(scope + "/") for scope in internal_scopes)
+              if integrity_pattern.fullmatch(integrity) is None:
+                  if parsed.hostname in ("registry.npmjs.org", "npm.pkg.github.com"):
+                      raise SystemExit(f"PUBLIC_RUNTIME_CACHE_INTEGRITY:{resolved}")
+                  continue
+              digest = base64.b64decode(integrity.removeprefix("sha512-"), validate=True)
+              if parsed.hostname == "npm.pkg.github.com" or is_internal:
+                  private_digests.add(digest)
+              if parsed.hostname != "registry.npmjs.org":
+                  continue
+              if (parsed.scheme != "https" or parsed.netloc != "registry.npmjs.org"
+                      or parsed.query or parsed.fragment or not parsed.path.endswith(".tgz")):
+                  raise SystemExit(f"PUBLIC_RUNTIME_CACHE_URL:{resolved}")
+              if is_internal:
+                  raise SystemExit(f"PUBLIC_RUNTIME_CACHE_PRIVATE_PACKAGE:{package_name}")
+              relative = PurePosixPath(package_path)
+              if (relative.is_absolute() or not relative.parts
+                      or relative.parts[0] != "node_modules"
+                      or "\\" in package_path
+                      or any(part in ("", ".", "..") for part in relative.parts)):
+                  raise SystemExit(f"PUBLIC_RUNTIME_CACHE_LOCK_PATH:{package_path}")
+              installed = Path(*relative.parts)
+              if not installed.exists() and not installed.is_symlink():
+                  continue
+              current = Path()
+              for part in relative.parts:
+                  current /= part
+                  if current.is_symlink():
+                      raise SystemExit(f"PUBLIC_RUNTIME_CACHE_INSTALLED_TYPE:{package_path}")
+              if not installed.is_dir():
+                  raise SystemExit(f"PUBLIC_RUNTIME_CACHE_INSTALLED_TYPE:{package_path}")
+              manifest_path = installed / "package.json"
+              if (not manifest_path.is_file() or manifest_path.is_symlink()
+                      or manifest_path.stat().st_size > 1024 * 1024):
+                  raise SystemExit(f"PUBLIC_RUNTIME_CACHE_INSTALLED_MANIFEST:{package_path}")
+              try:
+                  installed_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+              except (UnicodeDecodeError, json.JSONDecodeError) as error:
+                  raise SystemExit(
+                      f"PUBLIC_RUNTIME_CACHE_INSTALLED_MANIFEST:{package_path}:{error}")
+              if (installed_manifest.get("name") != package_name
+                      or installed_manifest.get("version") != package.get("version")):
+                  raise SystemExit(f"PUBLIC_RUNTIME_CACHE_INSTALLED_IDENTITY:{package_path}")
+              public.setdefault(digest, resolved)
+
+          if set(public).intersection(private_digests):
+              raise SystemExit("PUBLIC_RUNTIME_CACHE_PRIVATE_COLLISION")
+          if len(public) > max_blobs:
+              raise SystemExit("PUBLIC_RUNTIME_CACHE_COUNT_BOUND")
+
+          verified = []
+          total_bytes = 0
+          for digest, resolved in public.items():
+              digest_hex = digest.hex()
+              source = source_cache / "_cacache" / "content-v2" / "sha512" \
+                  / digest_hex[:2] / digest_hex[2:4] / digest_hex[4:]
+              try:
+                  metadata = source.lstat()
+              except FileNotFoundError:
+                  raise SystemExit(f"PUBLIC_RUNTIME_CACHE_MISSING:{resolved}")
+              if not stat.S_ISREG(metadata.st_mode) or source.is_symlink():
+                  raise SystemExit(f"PUBLIC_RUNTIME_CACHE_SOURCE_TYPE:{resolved}")
+              with source.open("rb") as stream:
+                  if hashlib.file_digest(stream, "sha512").digest() != digest:
+                      raise SystemExit(f"PUBLIC_RUNTIME_CACHE_CORRUPT:{resolved}")
+              total_bytes += metadata.st_size
+              if total_bytes > max_bytes:
+                  raise SystemExit("PUBLIC_RUNTIME_CACHE_SIZE_BOUND")
+              verified.append((digest, source))
+
+          content_root = runtime_cache / "_cacache" / "content-v2" / "sha512"
+          content_root.mkdir(parents=True)
+          expected_files = set()
+          for digest, source in verified:
+              digest_hex = digest.hex()
+              target = content_root / digest_hex[:2] / digest_hex[2:4] / digest_hex[4:]
+              target.parent.mkdir(parents=True, exist_ok=True)
+              with source.open("rb") as source_stream, target.open("xb") as target_stream:
+                  while chunk := source_stream.read(1024 * 1024):
+                      target_stream.write(chunk)
+              with target.open("rb") as stream:
+                  if hashlib.file_digest(stream, "sha512").digest() != digest:
+                      raise SystemExit("PUBLIC_RUNTIME_CACHE_COPY_CORRUPT")
+              expected_files.add(target)
+
+          actual_files = set()
+          for path in runtime_cache.rglob("*"):
+              if path.is_symlink():
+                  raise SystemExit("PUBLIC_RUNTIME_CACHE_SYMLINK")
+              if path.is_file():
+                  actual_files.add(path)
+              elif not path.is_dir():
+                  raise SystemExit("PUBLIC_RUNTIME_CACHE_ENTRY_TYPE")
+          if actual_files != expected_files:
+              raise SystemExit("PUBLIC_RUNTIME_CACHE_UNEXPECTED_CONTENT")
+          PY
+            fi
           else
+            [ "$SECRETLESS_RUNTIME_PUBLIC_CACHE" != true ] || {
+              echo "PUBLIC_RUNTIME_CACHE_REQUIRES_NPM" >&2
+              exit 1
+            }
             PNPM_IMPORT_MAP="$PNPM_STORE_DIR/import-map.tsv"
             MOCK_REGISTRY_DIR="$PNPM_STORE_DIR/mock-registry"
             MOCK_REGISTRY_PORT_FILE="$PNPM_STORE_DIR/mock-registry.port"
