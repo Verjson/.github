@@ -38,8 +38,9 @@ exists as of 2026-08-07, so do not infer current metadata support from
 `v2.2.0`.
 
 The migration guide recommends immutable commit
-`3495f24c2cd81be7cc94b90c1c4650ca272102b1`. Its engine accepts every key below:
-<!-- recommended-contract-pin: 3495f24c2cd81be7cc94b90c1c4650ca272102b1 -->
+`413bf03b179ff3028e6c7da5551aaa44562ddd8d`. Its engine accepts every key below and
+its generator emits the standalone `pr-gate` caller required by the current rollout:
+<!-- recommended-contract-pin: 413bf03b179ff3028e6c7da5551aaa44562ddd8d -->
 
 <!-- contract-pin-metadata:start -->
 | Metadata key | Required | Supported by `v2.2.0` | Supported by recommended pin |
@@ -409,13 +410,14 @@ caller as a sixth file. Generate all of them rather than writing them; the
 reasoning is in the generator's header.
 
 ```bash
-PIN=3495f24c2cd81be7cc94b90c1c4650ca272102b1
+PIN=413bf03b179ff3028e6c7da5551aaa44562ddd8d
 # `workflow` remains an alias for automation using the original command name:
 scripts/gen-changelog-caller.sh workflow "$PIN" > .github/workflows/changelog.yml
 # New adopters use the explicit generated-artifacts mode:
 scripts/gen-changelog-caller.sh generated-artifacts "$PIN" > .github/workflows/changelog.yml
 scripts/gen-changelog-caller.sh renderer "$PIN" > scripts/render-next.sh
 scripts/gen-changelog-caller.sh contract-test "$PIN" > scripts/changelog-contract.test.sh
+scripts/gen-changelog-caller.sh pr-gate "$PIN" > .github/workflows/changelog-contract.yml
 # Hosted Renovate repositories add this trusted pull_request_target caller. It
 # adds a fragment through the Git Data API when the bot did not provide one.
 scripts/gen-changelog-caller.sh renovate-attribution "$PIN" > .github/workflows/renovate-changelog.yml

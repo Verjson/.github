@@ -51,6 +51,11 @@ mapfile -t readme_pins < <(
   sed -nE 's/^<!-- recommended-contract-pin: ([0-9a-f]{40}) -->$/\1/p' "$readme" |
     sort -u
 )
+registry_pin="$(
+  jq -r --arg generator 'scripts/gen-changelog-caller.sh' \
+    '.recommended_pins[$generator] // empty' \
+    "$root/config/capability-floors.json"
+)"
 
 if [ "${#pins[@]}" -eq 0 ]; then
   fail "the guide names no pin to generate against — either the check or the guide is wrong"
@@ -58,12 +63,16 @@ else
   pass "the guide names ${#pins[@]} pin(s) to generate against"
 fi
 
-if [ "${#readme_pins[@]}" -ne 1 ]; then
+if [[ ! "$registry_pin" =~ ^[0-9a-f]{40}$ ]]; then
+  fail "the capability registry must name one full changelog-generator recommendation"
+elif [ "${#readme_pins[@]}" -ne 1 ]; then
   fail "the README must name exactly one machine-checkable recommended pin"
 elif [ "${#pins[@]}" -ne 1 ] || [ "${readme_pins[0]}" != "${pins[0]}" ]; then
   fail "the README capability pin and migration guide PIN disagree"
+elif [ "$registry_pin" != "${pins[0]}" ]; then
+  fail "the README and migration guide disagree with the capability registry recommendation"
 else
-  pass "the README capability table and migration guide share one immutable pin"
+  pass "the capability registry, README, and migration guide share one immutable pin"
 fi
 
 # actions-ci checks out with fetch-depth: 1 (#234, ADR 0045), so the pinned
@@ -102,12 +111,42 @@ for pin in "${pins[@]}"; do
   # the pin could not run it, and nothing caught the contradiction (#463).
   for mode in \
     workflow generated-artifacts renderer contract-test release-node \
-    adr-index-generator generated-artifacts-with-adr-index; do
+    adr-index-generator generated-artifacts-with-adr-index pr-gate; do
     if git -C "$root" show "$pin:scripts/gen-changelog-caller.sh" 2>/dev/null \
       | grep -qE "^  $mode\)"; then
       pass "the generator at ${pin:0:8} supports '$mode'"
     else
       fail "the generator at ${pin:0:8} has no '$mode' mode, so the documented command fails"
+    fi
+  done
+
+  mapfile -t changelog_floors < <(
+    jq -r '.capabilities[] | select(.generators | index("scripts/gen-changelog-caller.sh")) | .introduced_at' \
+      "$root/config/capability-floors.json"
+  )
+  if [ "${#changelog_floors[@]}" -eq 0 ]; then
+    fail "capability registry names no changelog-generator floor"
+  fi
+  for floor in "${changelog_floors[@]}"; do
+    if ! fetch_pinned_commit "$floor"; then
+      fail "changelog capability floor $floor is not a commit this repository can obtain"
+      continue
+    fi
+    # Depth-one fetches can leave two valid commits as disconnected shallow roots.
+    # Deepen only the recommended pin, geometrically and with a hard bound, rather
+    # than downloading the repository's unrelated full history in every CI run.
+    ancestry=false
+    for depth in 64 256 1024 4096; do
+      if git -C "$root" merge-base --is-ancestor "$floor" "$pin" 2>/dev/null; then
+        ancestry=true
+        break
+      fi
+      git -C "$root" fetch --quiet --no-tags --depth "$depth" origin "$pin" || break
+    done
+    if [ "$ancestry" = true ] || git -C "$root" merge-base --is-ancestor "$floor" "$pin" 2>/dev/null; then
+      pass "recommended pin descends changelog capability floor ${floor:0:8}"
+    else
+      fail "recommended pin predates changelog capability floor $floor"
     fi
   done
 
