@@ -66,6 +66,35 @@ compared runtime identity signal.
 > runtime capability. This correction narrows the executable preflight without changing
 > App permissions, credential delivery, or the exact action-reported slug comparison.
 
+The authorization-check POST is the next identity boundary. Once its response supplies
+a positive numeric check ID, the arm publishes that ID as a step output before checking
+the response App ID, slug, and receipt external ID. A mismatch still fails the arm, but
+the always-run no-dispatch terminalizer can then read the created check and PATCH an
+`in_progress` result to `completed`/`failure`. This ordering preserves the immutable
+token-action, private-key, and client-ID trust boundary while ensuring response
+attribution failures cannot strand a required check.
+
+The one-time #1086 recovery bootstrap is deliberately narrower than the cross-run
+reconciler tracked in #1094. An authorized administrator must:
+
+1. Record PR #1096's independently reviewed head SHA, create a temporary bootstrap branch
+   whose ref resolves to exactly that SHA, and reject the procedure if either ref moves.
+2. Temporarily change only organization ruleset 20722935's required workflow tuple
+   `{path: .github/workflows/gate-rearm.yml, repository_id: 1269388380, ref:
+   refs/heads/main}` so its `ref` names that bootstrap branch; no bypass, actor,
+   enforcement, path, repository ID, or other required-workflow setting may change.
+3. Trigger fresh checks for PR #1096 and merge only after
+   `[.statusCheckRollup[].conclusion] | all(. == "SUCCESS" or . == "NEUTRAL" or . == "SKIPPED")`
+   prints the literal value `true` for that exact head.
+4. Restore the required workflow ref to `refs/heads/main`, read the ruleset back to prove
+   the restoration, then trigger a fresh canary and require the same literal all-green
+   assertion with the gate sourced from `main`.
+5. Delete the bootstrap branch only after both restoration and canary evidence are
+   durable. Any failure stops the sequence without merging, widening bypass, or deleting
+   the branch needed for diagnosis.
+
+This PR records but does not perform that live ruleset mutation or bootstrap.
+
 Recovery of a check orphaned after this preflight—for example, a later process loss or
 an accepted API mutation whose response is lost—requires a cross-run reconciliation
 contract and is deliberately deferred to [#1094](https://github.com/Verjson/.github/issues/1094).
@@ -83,7 +112,8 @@ termination boundaries.
 - The App token remains repository-scoped and permission-scoped according to its
   controlling ADR. This decision grants no new capability.
 - No authorization check is created when the minted App identity disagrees with the
-  configured identity. Later orphan recovery remains outside this decision and #1086.
+  configured identity. Any App-attribution mismatch returned by the creation API is
+  terminalized as failure. Later cross-run orphan recovery remains outside #1086.
 
 ## Consequences
 

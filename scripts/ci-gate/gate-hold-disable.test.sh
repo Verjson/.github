@@ -11,6 +11,9 @@ fail(){ printf 'FAIL - %s\n' "$1"; fails=$((fails+1)); }
 awk '$0=="        id: arm"{f=1} f&&$0=="        run: |"{r=1;next} r{if($0~/^      - name:/)exit;sub(/^          /,"");print}' \
   "$workflow" >"$tmp/arm.sh"
 [ -s "$tmp/arm.sh" ] || { echo "FAIL - arm block missing"; exit 1; }
+awk '$0=="      - name: Complete the authorization when no review was dispatched"{f=1} f&&$0=="        run: |"{r=1;next} r{if($0~/^      - name:/)exit;sub(/^          /,"");print}' \
+  "$workflow" >"$tmp/terminalize.sh"
+[ -s "$tmp/terminalize.sh" ] || { echo "FAIL - authorization terminalizer missing"; exit 1; }
 
 mkdir "$tmp/bin"
 cat >"$tmp/bin/gh" <<'GH'
@@ -38,7 +41,10 @@ case "$*" in
   *"issues/7/events?per_page=100"*) printf '[{"id":1,"event":"labeled","label":{"name":"ai-review"},"actor":{"login":"maintainer"}},{"id":2,"event":"labeled","label":{"name":"re-review"},"actor":{"login":"maintainer"}}]\n' ;;
   *"contents/.github/workflows/ai-review-merge.yml?ref=main"*) cat "$CALLER_FILE" ;;
   *"--method POST repos/Verjson/example/check-runs --input -"*)
-    jq '. + {id:9100,app:{id:4242,slug:"verjson-ai-review"}}' ;;
+    jq --argjson app_id "${CREATED_CHECK_APP_ID:-4242}" \
+      '. + {id:9100,app:{id:$app_id,slug:"verjson-ai-review"}}' ;;
+  *"repos/Verjson/example/check-runs/9100 --jq"*) printf 'in_progress\n' ;;
+  *"--method PATCH repos/Verjson/example/check-runs/9100 "*) printf '{}\n' ;;
   "workflow run "*) printf 'DISPATCH %s\n' "$*" >>"$CALLS" ;;
   "pr comment "*) printf 'COMMENT %s\n' "$*" >>"$CALLS" ;;
   "pr edit "*) [ "${PR_EDIT_FAIL:-false}" != true ] ;;
@@ -130,6 +136,37 @@ write_terminal_hold() {
     >"$META_FILE"
   export EVENT_ACTION=synchronize EVENT_LABEL='' EVENT_OLD_TITLE=''
 }
+
+app_id_mismatch_is_terminalized() {
+  local arm_script="$1" check_id
+  write_terminal_hold
+  : >"$GITHUB_OUTPUT"
+  printf '{}\n' >"$LATEST_FILE"
+  if CREATED_CHECK_APP_ID=9999 ARM_SCRIPT="$arm_script" run_arm >"$tmp/out" 2>&1; then
+    return 1
+  fi
+  check_id="$(sed -n 's/^check_id=//p' "$GITHUB_OUTPUT")"
+  [ "$check_id" = 9100 ] || return 1
+  CHECK_ID="$check_id" APP_TOKEN=app-token bash "$tmp/terminalize.sh" >"$tmp/terminalize.out" 2>&1 || return 1
+  grep -q -- '--method PATCH repos/Verjson/example/check-runs/9100' "$CALLS" \
+    && grep -q 'status=completed' "$CALLS" \
+    && grep -q 'conclusion=failure' "$CALLS" \
+    && ! grep -q 'workflow run ai-review-merge.yml' "$CALLS" \
+    && [ ! -e "$RUNNER_TEMP/ai-review-arm-receipt/receipt.json" ]
+}
+
+if app_id_mismatch_is_terminalized "$tmp/arm.sh"; then
+  pass "a post-creation App-ID mismatch is completed as failure"
+else
+  fail "a post-creation App-ID mismatch stranded its authorization check"
+fi
+
+sed '/echo "check_id=\$check_id" >>"\$GITHUB_OUTPUT"/d' "$tmp/arm.sh" >"$tmp/arm-no-early-check-id.sh"
+if app_id_mismatch_is_terminalized "$tmp/arm-no-early-check-id.sh"; then
+  fail "removing the early check-ID export escaped the terminal-state mutation test"
+else
+  pass "the terminal-state mutation test detects removal of the early check-ID export"
+fi
 
 for signal in do-not-merge-label do_not_merge-label title draft; do
   write_terminal_hold
