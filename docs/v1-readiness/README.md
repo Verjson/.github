@@ -289,8 +289,10 @@ Every exact-version matrix leg pointing at a `0.x` sibling has a very short rema
 
 - [ ] If the package has no relevant in-wave sibling dependency or range to exercise, this
       item passes vacuously: record that reason and do not add an artificial exact-version
-      leg. A package that widens a relevant range under item 3 cannot claim this case; item 3
-      requires a compatibility leg that exercises the widened range.
+      leg.
+- [ ] If a package declares any relevant in-wave sibling dependency or peer range, at least
+      one compatibility leg must exercise it. This remains true whether the range already
+      admits `1.0.0` or still FAILs item 3; zero legs is FAIL, not vacuous.
 - [ ] Every applicable compatibility matrix leg avoids an exact `x.y.z` version of an
       `@verjson/*` package.
 - [ ] Legs express **majors** (or a range resolved at install time), then are derived at run

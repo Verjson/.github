@@ -19,7 +19,11 @@ REQUIREMENTS: dict[int, tuple[tuple[str, str], ...]] = {
     4: (
         ("vacuous case is explicit", r"no relevant in-wave sibling.*passes vacuously"),
         ("vacuous case forbids an artificial leg", r"do not add an artificial exact-version leg"),
-        ("an applicable range still requires a matrix", r"item 3 requires a compatibility leg"),
+        (
+            "every relevant range requires a compatibility leg",
+            r"declares any relevant in-wave sibling.*at least one compatibility leg must exercise it",
+        ),
+        ("zero applicable legs fail", r"zero legs is fail, not vacuous"),
     ),
     5: (
         ("all generated artifacts share one SHA", r"all .*generated.*at one immutable contract sha"),
@@ -92,6 +96,13 @@ class V1ReadinessContractTest(unittest.TestCase):
                 "passes vacuously: record that reason and do not add an artificial exact-version\n"
                 "      leg.",
                 "requires an artificial exact-version compatibility leg.",
+                1,
+            ),
+            "relevant range with zero legs": self.text.replace(
+                "If a package declares any relevant in-wave sibling dependency or peer range, at least\n"
+                "      one compatibility leg must exercise it. This remains true whether the range already\n"
+                "      admits `1.0.0` or still FAILs item 3; zero legs is FAIL, not vacuous.",
+                "Only a range already widened under item 3 needs a compatibility leg.",
                 1,
             ),
             "magic changelog pin": self.text.replace(
