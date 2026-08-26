@@ -29,9 +29,10 @@
    `verjson-identity-contracts` both kept theirs through migration because this
    step was implicit. The generated contract test now asserts its absence.
 
-5. From the normalized consumer repository, generate all three consumer files —
+5. From the normalized consumer repository, generate all four consumer files —
    `changelog.yml`, `render-next.sh`, and
-   `changelog-contract.test.sh` — with `scripts/gen-changelog-caller.sh`, and
+   `changelog-contract.test.sh`, plus the standalone `changelog-contract.yml` PR gate —
+   with `scripts/gen-changelog-caller.sh`, and
    never hand-write or hand-edit them. Adopters that copied a contract test by
    hand all asserted a pre-release tree that the first release destroys (#309).
 
@@ -74,7 +75,7 @@
    <!-- executable-migration:start -->
    ```bash
    set -euo pipefail
-   PIN=3495f24c2cd81be7cc94b90c1c4650ca272102b1
+   PIN=413bf03b179ff3028e6c7da5551aaa44562ddd8d
    CONTRACT_SOURCE_URL="${CONTRACT_SOURCE_URL:-https://github.com/Verjson/.github.git}"
    PUBLISH_NODE="${PUBLISH_NODE:-false}"
    CONSUMER_ROOT="$(git rev-parse --show-toplevel)"
@@ -95,6 +96,8 @@
      > scripts/render-next.sh
    "$CONTRACT_ROOT/scripts/gen-changelog-caller.sh" contract-test "$PIN" \
      > scripts/changelog-contract.test.sh
+   "$CONTRACT_ROOT/scripts/gen-changelog-caller.sh" pr-gate "$PIN" \
+     > .github/workflows/changelog-contract.yml
    chmod +x scripts/render-next.sh scripts/changelog-contract.test.sh
 
    if [ "$PUBLISH_NODE" = true ]; then

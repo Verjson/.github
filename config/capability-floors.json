@@ -18,6 +18,16 @@
       }
     },
     {
+      "id": "changelog-generated-pr-gate",
+      "description": "The changelog generator can emit the standalone pr-gate caller that publishes the literal changelog-contract check required by the canonical Node ruleset rollout (#731). A pin predating this commit makes generated-only adoption impossible.",
+      "introduced_at": "488039e04893f8141ff2e854a4eef9c737baf4f4",
+      "issue": 1087,
+      "generators": [
+        "scripts/gen-changelog-caller.sh"
+      ],
+      "assumed_by_org_variable": null
+    },
+    {
       "id": "changelog-renovate-default-source-link",
       "description": "The changelog contract accepts Renovate's default source-link suffix in a fragment body (#927). A pin predating this commit rejects otherwise-valid Renovate-authored changelog rows as invalid; this is not driven by an org variable, just a contract-shape change every consumer needs. Observed live in Verjson/verjson-cli-cloud's renovate-changelog.yml (issue #977).",
       "introduced_at": "ac37ae430157fc9345d430ec29a2c7d99ce1a9a4",

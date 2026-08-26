@@ -102,12 +102,42 @@ for pin in "${pins[@]}"; do
   # the pin could not run it, and nothing caught the contradiction (#463).
   for mode in \
     workflow generated-artifacts renderer contract-test release-node \
-    adr-index-generator generated-artifacts-with-adr-index; do
+    adr-index-generator generated-artifacts-with-adr-index pr-gate; do
     if git -C "$root" show "$pin:scripts/gen-changelog-caller.sh" 2>/dev/null \
       | grep -qE "^  $mode\)"; then
       pass "the generator at ${pin:0:8} supports '$mode'"
     else
       fail "the generator at ${pin:0:8} has no '$mode' mode, so the documented command fails"
+    fi
+  done
+
+  mapfile -t changelog_floors < <(
+    jq -r '.capabilities[] | select(.generators | index("scripts/gen-changelog-caller.sh")) | .introduced_at' \
+      "$root/config/capability-floors.json"
+  )
+  if [ "${#changelog_floors[@]}" -eq 0 ]; then
+    fail "capability registry names no changelog-generator floor"
+  fi
+  for floor in "${changelog_floors[@]}"; do
+    if ! fetch_pinned_commit "$floor"; then
+      fail "changelog capability floor $floor is not a commit this repository can obtain"
+      continue
+    fi
+    # Depth-one fetches can leave two valid commits as disconnected shallow roots.
+    # Deepen only the recommended pin, geometrically and with a hard bound, rather
+    # than downloading the repository's unrelated full history in every CI run.
+    ancestry=false
+    for depth in 64 256 1024 4096; do
+      if git -C "$root" merge-base --is-ancestor "$floor" "$pin" 2>/dev/null; then
+        ancestry=true
+        break
+      fi
+      git -C "$root" fetch --quiet --no-tags --depth "$depth" origin "$pin" || break
+    done
+    if [ "$ancestry" = true ] || git -C "$root" merge-base --is-ancestor "$floor" "$pin" 2>/dev/null; then
+      pass "recommended pin descends changelog capability floor ${floor:0:8}"
+    else
+      fail "recommended pin predates changelog capability floor $floor"
     fi
   done
 
