@@ -254,6 +254,8 @@ jobs:
     # This job combines the former 10-minute freshness and classification jobs.
     timeout-minutes: 20
     permissions:
+      actions: read
+      checks: read
       contents: read
       pull-requests: write
       statuses: read
@@ -273,7 +275,9 @@ jobs:
       changed_lines: ${{ steps.classify.outputs.changed_lines }}
       sensitive: ${{ steps.classify.outputs.sensitive }}
       dependency_major: ${{ steps.classify.outputs.dependency_major }}
-      head_sha: ${{ steps.classify.outputs.head_sha }}
+      # Preserve immutable dispatch identity even when classification never ran.
+      head_sha: ${{ steps.classify.outputs.head_sha || inputs.expected_head_sha }}
+      zero_provider_recovery: ${{ steps.zero-provider-recovery.outputs.eligible || 'false' }}
       completed_at: ${{ steps.preflight_complete.outputs.completed_at }}
       # 'false' → public target → hosted runner; 'true' or '' (unresolved,
       # fail closed) → self-hosted `gate`. See the gate job's `runs-on` (#170).
@@ -320,15 +324,54 @@ jobs:
           echo "target_private=$target_private" >> "$GITHUB_OUTPUT"
           echo "::notice::phase=preflight target_repo=$TARGET_REPO target_private=${target_private:-unknown}"
 
+      - name: Resolve executing trusted workflow revision for recovery
+        id: recovery-revision
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          EXECUTING_WORKFLOW_SHA: ${{ job.workflow_sha }}
+        run: echo "sha=$EXECUTING_WORKFLOW_SHA" >>"$GITHUB_OUTPUT"
+
+      - name: Check out immutable zero-provider recovery verifier
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: Verjson/.github
+          ref: ${{ steps.recovery-revision.outputs.sha }}
+          path: .gate-recovery
+          sparse-checkout: |
+            scripts/ci-gate/verify-zero-provider-recovery.sh
+            scripts/ci-gate/verify-arm-receipt.sh
+            scripts/ci-gate/review-policy-envelope.py
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
+      - name: Verify receipt-bound direct review admission
+        id: zero-provider-recovery
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          REVIEW_RUN_ID: ${{ github.run_id }}
+          REVIEW_RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          bash .gate-recovery/scripts/ci-gate/verify-zero-provider-recovery.sh
+          if [ "$REVIEW_RUN_ATTEMPT" -gt 1 ]; then
+            echo 'eligible=true' >>"$GITHUB_OUTPUT"
+          else
+            echo 'eligible=false' >>"$GITHUB_OUTPUT"
+          fi
+
       - name: Update branch if behind; hold on conflict
         id: freshness
         env:
           # Event token: updates/comments only in the repository owning this run.
           GH_TOKEN: ${{ github.token }}
+          ZERO_PROVIDER_RECOVERY: ${{ steps.zero-provider-recovery.outputs.eligible || 'false' }}
         run: |
           set -euo pipefail
           REPO="$TARGET_REPO"
-          if [ "${EXPLICIT_REREVIEW:-false}" = true ] && [ "${GITHUB_RUN_ATTEMPT:-1}" -ne 1 ]; then
+          if [ "${EXPLICIT_REREVIEW:-false}" = true ] && [ "${GITHUB_RUN_ATTEMPT:-1}" -ne 1 ] &&
+             [ "${ZERO_PROVIDER_RECOVERY:-false}" != true ]; then
             echo "::error::an explicit re-review dispatch cannot be rerun; apply a new authorized re-review label"
             exit 1
           fi
@@ -1837,12 +1880,16 @@ jobs:
       EXPECTED_APP_ID: ${{ vars.AI_REVIEW_APP_ID }}
       APP_CLIENT_ID: ${{ vars.AI_REVIEW_CLIENT_ID }}
       EXPECTED_APP_SLUG: ${{ vars.AI_REVIEW_APP_SLUG }}
-      EXPECTED_HEAD_SHA: ${{ needs.preflight.outputs.head_sha }}
+      # Completion retains the immutable dispatch identity even if preflight
+      # failed or was skipped before producing any outputs.
+      EXPECTED_HEAD_SHA: ${{ inputs.expected_head_sha }}
       EXPECTED_AUTHORIZED_HEAD_SHA: ${{ inputs.expected_head_sha }}
-      EXPECTED_REVIEWED_HEAD_SHA: ${{ needs.preflight.outputs.head_sha }}
+      EXPECTED_REVIEWED_HEAD_SHA: ${{ inputs.expected_head_sha }}
+      PREFLIGHT_STATUS: ${{ needs.preflight.result }}
+      PREFLIGHT_LANE: ${{ needs.preflight.outputs.lane }}
       GATE_STATUS: ${{ needs.gate.result }}
       REVIEW_AUTHORITY: ${{ needs.preflight.outputs.authority }}
-      REVIEW_OUTCOME: ${{ needs.gate.outputs.review_outcome }}
+      REVIEW_OUTCOME: ${{ needs.gate.outputs.review_outcome || 'skipped' }}
       PR_NUMBER: ${{ inputs.pr_number }}
       TARGET_REPO: ${{ github.repository }}
       REVIEW_RUN_ID: ${{ github.run_id }}
@@ -1891,12 +1938,6 @@ jobs:
           MINTED_APP_SLUG: ${{ steps.app-token.outputs.app-slug }}
           INSTALLATION_ID: ${{ steps.app-token.outputs.installation-id }}
           REVERIFY_ACTOR_PERMISSION: 'false'
-          # ai-merge authority hands the receipt on to ai-privileged-merge.yml's
-          # terminal merge job, which is the receipt's actual last read; this
-          # job stays its last read, and therefore its consumer, for every
-          # other authority (human review completes the merge without a
-          # further receipt-bound job).
-          CONSUME_AT_TERMINAL_SUCCESS: ${{ env.REVIEW_AUTHORITY != 'ai-merge' && 'true' || 'false' }}
         run: |
           set -euo pipefail
           [[ "$AUTHORIZATION_CHECK_ID" =~ ^[1-9][0-9]*$ ]] || exit 1
@@ -1920,7 +1961,11 @@ jobs:
             fi
           }
           receipt_ok=true
-          if [ "${CONSUME_AT_TERMINAL_SUCCESS:-false}" = true ]; then
+          # A failed/skipped preflight has not crossed the provider boundary.
+          # Retain its single-use receipt for the guarded same-run recovery.
+          # Successful non-merging gates consume here; ai-merge consumes only
+          # after the terminal merge continuation succeeds.
+          if [ "$GATE_STATUS" = success ] && [ "${REVIEW_AUTHORITY:-}" != ai-merge ]; then
             export ARM_RECEIPT_ARTIFACT_ID_FILE="$RUNNER_TEMP/arm-receipt-artifact-id"
           fi
           GH_TOKEN="$ACTIONS_TOKEN" bash .gate-trust/scripts/ci-gate/verify-arm-receipt.sh || receipt_ok=false
@@ -1938,6 +1983,22 @@ jobs:
             echo "::error::arm receipt verification failed for this exact head"
             title='Arm receipt verification failed'
             summary='The arm receipt could not be verified for this exact head; no approval was requested.'
+          fi
+          if [ "$receipt_ok" = true ] && [ "$GATE_STATUS" != success ]; then
+            case "$PREFLIGHT_STATUS:${PREFLIGHT_LANE:-none}:$GATE_STATUS" in
+              failure:*:skipped)
+                title='AI review preflight failed before provider execution'
+                summary="Preflight failed for exact head $EXPECTED_AUTHORIZED_HEAD_SHA and the review gate was skipped. No provider reservation, submission, or review occurred; the immutable receipt remains available only for receipt-bound zero-provider recovery."
+                ;;
+              skipped:*:skipped|success:held:skipped)
+                title='AI review preflight held before provider execution'
+                summary="Preflight was held or skipped for exact head $EXPECTED_AUTHORIZED_HEAD_SHA and the review gate was skipped. No provider reservation, submission, or review occurred; the immutable receipt remains available only for receipt-bound zero-provider recovery."
+                ;;
+              *)
+                title='AI review stopped before authorization'
+                summary="Preflight status ${PREFLIGHT_STATUS:-unknown}, lane ${PREFLIGHT_LANE:-none}, gate status ${GATE_STATUS:-unknown}. No authorization was granted for exact head $EXPECTED_AUTHORIZED_HEAD_SHA."
+                ;;
+            esac
           fi
           if [ "$receipt_ok" = true ] && [ "$GATE_STATUS" = success ] &&
              [ "$current_head" = "$EXPECTED_AUTHORIZED_HEAD_SHA" ] &&
@@ -2014,14 +2075,11 @@ jobs:
             -f "output[title]=$title" -f "output[summary]=$summary"
           echo "ai_authorized=$ai_authorized" >> "$GITHUB_OUTPUT"
 
-          # The authorization check just completed above, successfully,
-          # regardless of its conclusion -- a failure conclusion is still a
-          # settled outcome, not an intermediate step a retry could still
-          # repeat. That's this job's true terminal point for every authority
-          # but ai-merge (see CONSUME_AT_TERMINAL_SUCCESS above), so deleting
-          # the receipt now, rather than only at its 90-day retention limit,
-          # is a storage-cost cleanup, not a trust boundary: a delete failure
-          # is logged and does not fail an already-completed check.
+          # ARM_RECEIPT_ARTIFACT_ID_FILE is populated only when a successful
+          # non-ai-merge gate made this job the receipt's terminal consumer.
+          # Pre-provider failures deliberately leave it absent for guarded
+          # recovery, while ai-merge consumes after terminal merge. Deletion
+          # remains best-effort storage cleanup after that terminal boundary.
           if [ -s "$RUNNER_TEMP/arm-receipt-artifact-id" ]; then
             receipt_artifact_id="$(<"$RUNNER_TEMP/arm-receipt-artifact-id")"
             if [[ "$receipt_artifact_id" =~ ^[1-9][0-9]*$ ]]; then

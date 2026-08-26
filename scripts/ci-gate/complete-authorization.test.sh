@@ -21,12 +21,14 @@ def valid(document):
     run = complete["run"]
     workflow_head = "current_head=\"$(GH_TOKEN=\"$ACTIONS_TOKEN\" gh api \"repos/$TARGET_REPO/pulls/$PR_NUMBER\" --jq '.head.sha // \"\"')\""
     return (
-        env.get("EXPECTED_HEAD_SHA") == "${{ needs.preflight.outputs.head_sha }}"
+        env.get("EXPECTED_HEAD_SHA") == "${{ inputs.expected_head_sha }}"
         and env.get("EXPECTED_APP_ID") == "${{ vars.AI_REVIEW_APP_ID }}"
         and env.get("EXPECTED_REVIEWED_HEAD_SHA") == env.get("EXPECTED_HEAD_SHA")
         and env.get("EXPECTED_AUTHORIZED_HEAD_SHA") == "${{ inputs.expected_head_sha }}"
         and env.get("REVIEW_AUTHORITY") == "${{ needs.preflight.outputs.authority }}"
-        and env.get("REVIEW_OUTCOME") == "${{ needs.gate.outputs.review_outcome }}"
+        and env.get("REVIEW_OUTCOME") == "${{ needs.gate.outputs.review_outcome || 'skipped' }}"
+        and env.get("PREFLIGHT_STATUS") == "${{ needs.preflight.result }}"
+        and env.get("PREFLIGHT_LANE") == "${{ needs.preflight.outputs.lane }}"
         and env.get("APP_CLIENT_ID") == "${{ vars.AI_REVIEW_CLIENT_ID }}"
         and token["with"].get("client-id") == "${{ vars.AI_REVIEW_CLIENT_ID }}"
         and "app-id" not in token["with"]
@@ -54,7 +56,12 @@ def valid(document):
         and run.index("-f event=APPROVE") < run.index("-f status=completed")
         and ('GH_TOKEN="$ACTIONS_TOKEN" bash .gate-trust/scripts/ci-gate/verify-arm-receipt.sh'
              ' || receipt_ok=false') in run
+        and '[ "$GATE_STATUS" = success ] && [ "${REVIEW_AUTHORITY:-}" != ai-merge ]' in run
+        and "CONSUME_AT_TERMINAL_SUCCESS" not in run
         and '[ "$receipt_ok" = true ] && [ "$GATE_STATUS" = success ]' in run
+        and "AI review preflight failed before provider execution" in run
+        and "AI review preflight held before provider execution" in run
+        and "No provider reservation, submission, or review occurred" in run
         and "reviews/$approval_id" in run
         and '[ "$REVIEW_OUTCOME" = approved ]' in run
         and '[ "$REVIEW_AUTHORITY" = ai-approve ]' in run
@@ -78,8 +85,18 @@ missing = copy.deepcopy(workflow)
 del missing["jobs"]["complete-authorization"]["env"]["EXPECTED_HEAD_SHA"]
 assert not valid(missing), "missing EXPECTED_HEAD_SHA mutation escaped"
 mismatch = copy.deepcopy(workflow)
-mismatch["jobs"]["complete-authorization"]["env"]["EXPECTED_HEAD_SHA"] = "${{ inputs.expected_head_sha }}"
+mismatch["jobs"]["complete-authorization"]["env"]["EXPECTED_HEAD_SHA"] = "${{ needs.preflight.outputs.head_sha }}"
 assert not valid(mismatch), "mismatched EXPECTED_HEAD_SHA mutation escaped"
+reviewed_from_preflight = copy.deepcopy(workflow)
+reviewed_from_preflight["jobs"]["complete-authorization"]["env"]["EXPECTED_REVIEWED_HEAD_SHA"] = "${{ needs.preflight.outputs.head_sha }}"
+assert not valid(reviewed_from_preflight), "preflight-derived reviewed head mutation escaped"
+consume_failed_preflight = copy.deepcopy(workflow)
+complete = next(step for step in consume_failed_preflight["jobs"]["complete-authorization"]["steps"]
+                if step.get("name") == "Complete exact head authorization")
+complete["run"] = complete["run"].replace(
+    '[ "$GATE_STATUS" = success ] && [ "${REVIEW_AUTHORITY:-}" != ai-merge ]',
+    '[ "${REVIEW_AUTHORITY:-}" != ai-merge ]')
+assert not valid(consume_failed_preflight), "failed-preflight receipt-consumption mutation escaped"
 client_id_as_identity = copy.deepcopy(workflow)
 client_id_as_identity["jobs"]["complete-authorization"]["env"]["EXPECTED_APP_ID"] = "${{ vars.AI_REVIEW_CLIENT_ID }}"
 assert not valid(client_id_as_identity), "client ID substitution escaped numeric App identity contract"
@@ -183,6 +200,7 @@ export EXPECTED_REVIEWED_HEAD_SHA="$EXPECTED_AUTHORIZED_HEAD_SHA" EXPECTED_HEAD_
 export GATE_STATUS=success ACTIONS_TOKEN=actions-token APP_TOKEN=app-token
 export MINTED_APP_SLUG="$EXPECTED_APP_SLUG" INSTALLATION_ID=1234 RUNNER_TEMP="$tmp"
 export REVIEW_AUTHORITY=ai-merge REVIEW_OUTCOME=approved GITHUB_OUTPUT="$tmp/github-output"
+export PREFLIGHT_STATUS=success PREFLIGHT_LANE=ai
 
 run_complete(){ (cd "$tmp/run" && bash "$tmp/complete.sh"); }
 if (cd "$tmp/run" && .gate-trust/scripts/ci-gate/verify-arm-receipt.sh) >"$tmp/out" 2>&1; then
@@ -292,6 +310,28 @@ if [ "$?" -eq 0 ] && grep -q 'conclusion=neutral' "$CALLS" \
    && grep -q 'ai_authorized=false' "$GITHUB_OUTPUT"; then
   pass "non-authorizing approval verdict stays neutral on the human path"
 else fail "non-authorizing approval verdict appeared as App approval"; fi
+
+: >"$CALLS"; : >"$GITHUB_OUTPUT"
+PREFLIGHT_STATUS=failure PREFLIGHT_LANE='' GATE_STATUS=skipped REVIEW_AUTHORITY='' REVIEW_OUTCOME=skipped \
+  run_complete >"$tmp/out" 2>&1
+if [ "$?" -ne 0 ] \
+   && grep -Fq 'output[title]=AI review preflight failed before provider execution' "$CALLS" \
+   && grep -Fq 'No provider reservation, submission, or review occurred' "$CALLS" \
+   && grep -Fq 'conclusion=failure' "$CALLS" \
+   && ! grep -Fq 'api --method POST' "$CALLS"; then
+  pass "failed preflight reports causal zero-provider state without approval"
+else fail "failed preflight lost its causal zero-provider state"; fi
+
+: >"$CALLS"; : >"$GITHUB_OUTPUT"
+PREFLIGHT_STATUS=success PREFLIGHT_LANE=held GATE_STATUS=skipped REVIEW_AUTHORITY='' REVIEW_OUTCOME=skipped \
+  run_complete >"$tmp/out" 2>&1
+if [ "$?" -ne 0 ] \
+   && grep -Fq 'output[title]=AI review preflight held before provider execution' "$CALLS" \
+   && grep -Fq 'No provider reservation, submission, or review occurred' "$CALLS" \
+   && grep -Fq 'conclusion=failure' "$CALLS" \
+   && ! grep -Fq 'api --method POST' "$CALLS"; then
+  pass "held preflight reports causal zero-provider state without approval"
+else fail "held preflight lost its causal zero-provider state"; fi
 
 # A failed receipt must still complete the check run. The job carries `if: always()`
 # so it can report that failure; aborting before the PATCH leaves the check run

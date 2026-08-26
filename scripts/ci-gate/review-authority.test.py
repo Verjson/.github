@@ -22,7 +22,7 @@ def contract(candidate_gate=gate, candidate_arm=arm, candidate_policy=policy):
         "cumulative review cap is enforced before model spend": "Reserve cumulative AI review pass 1" in candidate_gate and 'if [ "${EXPLICIT_REREVIEW:-false}" != true ] && [ "$consumed" -ge 2 ]' in candidate_gate,
         "explicit review has a distinct App reservation": "ai-review-explicit:v1 pr:${PR_NUMBER} check:${AUTHORIZATION_CHECK_ID}" in candidate_gate,
         "explicit review is exactly one pass": "inputs.explicit_rereview != true && needs.preflight.outputs.provider == 'deepseek'" in candidate_gate,
-        "explicit review cannot be replayed by rerun": 'if [ "$explicit_rereview" = true ] && [ "${GITHUB_RUN_ATTEMPT:-1}" -ne 1 ]; then' in candidate_arm and 'if [ "${EXPLICIT_REREVIEW:-false}" = true ] && [ "${GITHUB_RUN_ATTEMPT:-1}" -ne 1 ]; then' in candidate_gate,
+        "explicit review rerun requires zero-provider proof": 'if [ "$explicit_rereview" = true ] && [ "${GITHUB_RUN_ATTEMPT:-1}" -ne 1 ]; then' in candidate_arm and 'if [ "${EXPLICIT_REREVIEW:-false}" = true ] && [ "${GITHUB_RUN_ATTEMPT:-1}" -ne 1 ] &&' in candidate_gate and '[ "${ZERO_PROVIDER_RECOVERY:-false}" != true ]; then' in candidate_gate,
         "explicit review cannot replay the same authorization check": 'if [ "${EXPLICIT_REREVIEW:-false}" = true ] && [ "$explicit_receipt_consumed" = true ]; then' in candidate_gate and '[ "$marker_check" = "$AUTHORIZATION_CHECK_ID" ]' in candidate_gate,
         "blocking verdict is advisory": "AI review advisory: blocking verdict" in candidate_gate and "outcome=blocking" in candidate_gate,
         "inconclusive verdict is advisory": "outcome=inconclusive" in candidate_gate and "Human approval remains available" in candidate_gate,
@@ -52,7 +52,7 @@ mutations = {
     "explicit review reuses automatic marker": (gate.replace("ai-review-explicit:v1 pr:${PR_NUMBER} check:${AUTHORIZATION_CHECK_ID}", "ai-review-pass:v2:1/2 pr:${PR_NUMBER} check:${AUTHORIZATION_CHECK_ID}"), arm, policy),
     "explicit review permits fallback": (gate.replace("inputs.explicit_rereview != true && needs.preflight.outputs.provider == 'deepseek'", "needs.preflight.outputs.provider == 'deepseek'"), arm, policy),
     "explicit arm rerun spends again": (gate, arm.replace('if [ "$explicit_rereview" = true ] && [ "${GITHUB_RUN_ATTEMPT:-1}" -ne 1 ]; then', 'if false; then'), policy),
-    "explicit dispatch rerun spends again": (gate.replace('if [ "${EXPLICIT_REREVIEW:-false}" = true ] && [ "${GITHUB_RUN_ATTEMPT:-1}" -ne 1 ]; then', 'if false; then'), arm, policy),
+    "explicit dispatch rerun without proof spends again": (gate.replace('[ "${ZERO_PROVIDER_RECOVERY:-false}" != true ]; then', 'false; then'), arm, policy),
     "fresh dispatch replays explicit receipt": (gate.replace('if [ "${EXPLICIT_REREVIEW:-false}" = true ] && [ "$explicit_receipt_consumed" = true ]; then', 'if false; then'), arm, policy),
     "blocking review state": (gate.replace("gh pr comment \"$PR_NUMBER\"", "gh pr review \"$PR_NUMBER\" --request-changes", 1), arm, policy),
 }
