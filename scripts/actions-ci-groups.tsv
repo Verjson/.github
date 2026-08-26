@@ -6,6 +6,7 @@ platform	python3 scripts/action-pin-conformance.test.py
 platform	python3 scripts/workflow-checkout-isolation.test.py
 platform	bash scripts/actions-ci-policy.test.sh
 platform	bash scripts/actions-ci-groups.test.sh
+platform	bash scripts/actions-ci-python-dependencies.test.sh
 platform	bash scripts/ci-gate/organization-neutral-ci-contract.test.sh
 platform	python3 scripts/bootstrap_canonical_ci_test.py
 platform	bash scripts/make-portability.test.sh
@@ -113,7 +114,6 @@ changelog-release	bash scripts/ci-gate/render-next.test.sh
 changelog-release	python3 scripts/changelog.test.py
 changelog-release	bash scripts/changelog-fragment-schema.test.sh
 changelog-release	python3 scripts/v1-readiness-contract.test.py
-changelog-release	bash scripts/actions-ci-python-dependencies.test.sh
 changelog-release	python3 scripts/changelog-pre-contract-migration.test.py
 changelog-release	python3 scripts/ci-gate/changelog-tag-visibility.test.py
 changelog-release	python3 scripts/container_release_manifest.test.py

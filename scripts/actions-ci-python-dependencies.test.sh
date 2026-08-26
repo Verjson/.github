@@ -2,7 +2,7 @@
 set -euo pipefail
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
-requirements="$root/scripts/actions-ci-changelog-release.requirements.txt"
+requirements="$root/scripts/actions-ci-python.requirements.txt"
 dependency_root="$(mktemp -d "${TMPDIR:-/tmp}/verjson-actions-ci-python.XXXXXX")"
 python="${ACTIONS_CI_TEST_PYTHON:-python3}"
 trap 'rm -rf -- "$dependency_root"' EXIT
@@ -11,7 +11,7 @@ trap 'rm -rf -- "$dependency_root"' EXIT
 isolated_python="$dependency_root/venv/bin/python"
 
 if "$isolated_python" -I -c 'import jsonschema, yaml' >/dev/null 2>&1; then
-  printf 'fresh Python unexpectedly inherited changelog-release dependencies\n' >&2
+  printf 'fresh Python unexpectedly inherited actions-ci dependencies\n' >&2
   exit 1
 fi
 
@@ -33,4 +33,4 @@ if actual != expected:
     raise SystemExit(f"installed dependency versions differ: {actual!r}")
 PY
 
-printf 'fresh Python acquires the hash-verified changelog-release dependencies\n'
+printf 'fresh Python acquires the hash-verified actions-ci dependencies\n'
