@@ -9,6 +9,8 @@ from pathlib import Path
 import sys
 import unittest
 
+from jsonschema import Draft202012Validator, FormatChecker, ValidationError
+
 
 ROOT = Path(__file__).resolve().parents[1]
 ENGINE_PATH = ROOT / "scripts" / "changelog.py"
@@ -27,6 +29,9 @@ class FragmentSchemaContractTest(unittest.TestCase):
     def setUpClass(cls) -> None:
         cls.schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
         cls.properties = cls.schema["properties"]
+        cls.validator = Draft202012Validator(
+            cls.schema, format_checker=FormatChecker()
+        )
 
     def test_schema_accepts_exactly_the_engine_metadata_keys(self) -> None:
         self.assertEqual(set(CHANGELOG.KNOWN_KEYS), set(self.properties))
@@ -44,15 +49,66 @@ class FragmentSchemaContractTest(unittest.TestCase):
         self.assertEqual({"date", "title"}, set(self.schema["required"]))
         self.assertNotIn("impact", self.schema["required"])
 
-    def test_component_pattern_matches_the_engine(self) -> None:
-        self.assertEqual(
-            CHANGELOG.COMPONENT_NAME.pattern, self.properties["component"]["pattern"]
-        )
+    def test_schema_accepts_valid_engine_metadata(self) -> None:
+        cases = {
+            "impact": {"impact": "minor"},
+            "summary": {"summary": "Describe the user-visible change"},
+            "component": {"component": "release.node_1"},
+            "all optional engine fields": {
+                "impact": "major",
+                "summary": "Describe the user-visible change",
+                "component": "release.node_1",
+            },
+        }
 
-    def test_summary_requires_a_nonempty_string(self) -> None:
-        self.assertEqual(
-            {"type": "string", "minLength": 1}, self.properties["summary"]
-        )
+        for name, mutation in cases.items():
+            with self.subTest(name=name):
+                self.validator.validate(self._fragment(**mutation))
+                CHANGELOG.validate_metadata(
+                    Path("NEXT/2026-08-26-issue-1091-schema-test.md"),
+                    self._engine_fragment(**mutation),
+                )
+
+    def test_schema_rejects_values_the_engine_rejects(self) -> None:
+        engine_boundary_cases = {
+            "whitespace-only summary": {"summary": " \t\n"},
+            "newline-terminated component": {"component": "release.node\n"},
+        }
+        schema_cases = {
+            **engine_boundary_cases,
+            "unknown metadata key": {"audience": "operators"},
+        }
+
+        for name, mutation in schema_cases.items():
+            with self.subTest(name=name):
+                with self.assertRaises(ValidationError):
+                    self.validator.validate(self._fragment(**mutation))
+
+        for name, mutation in engine_boundary_cases.items():
+            with self.subTest(engine_boundary=name):
+                with self.assertRaises(CHANGELOG.ChangelogError):
+                    CHANGELOG.validate_metadata(
+                        Path("NEXT/2026-08-26-issue-1091-schema-test.md"),
+                        self._engine_fragment(**mutation),
+                    )
+
+    @staticmethod
+    def _fragment(**metadata: object) -> dict[str, object]:
+        return {
+            "date": "2026-08-26",
+            "issue": 1091,
+            "title": "Align the published schema",
+            **metadata,
+        }
+
+    @staticmethod
+    def _engine_fragment(**metadata: str) -> dict[str, str]:
+        return {
+            "date": "2026-08-26",
+            "issue": "1091",
+            "title": "Align the published schema",
+            **metadata,
+        }
 
 
 if __name__ == "__main__":
