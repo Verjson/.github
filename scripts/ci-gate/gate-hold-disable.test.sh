@@ -11,6 +11,9 @@ fail(){ printf 'FAIL - %s\n' "$1"; fails=$((fails+1)); }
 awk '$0=="        id: arm"{f=1} f&&$0=="        run: |"{r=1;next} r{if($0~/^      - name:/)exit;sub(/^          /,"");print}' \
   "$workflow" >"$tmp/arm.sh"
 [ -s "$tmp/arm.sh" ] || { echo "FAIL - arm block missing"; exit 1; }
+awk '$0=="      - name: Complete the authorization when no review was dispatched"{f=1} f&&$0=="        run: |"{r=1;next} r{if($0~/^      - name:/)exit;sub(/^          /,"");print}' \
+  "$workflow" >"$tmp/terminalize.sh"
+[ -s "$tmp/terminalize.sh" ] || { echo "FAIL - authorization terminalizer missing"; exit 1; }
 
 mkdir "$tmp/bin"
 cat >"$tmp/bin/gh" <<'GH'
@@ -18,10 +21,8 @@ cat >"$tmp/bin/gh" <<'GH'
 printf '%s\n' "$*" >>"$CALLS"
 case "$*" in
   "api /installation")
-    [ "${INSTALLATION_API_FAIL:-false}" != true ] || exit 1
-    if [ -n "${INSTALLATION_JSON_OVERRIDE+x}" ]; then printf '%s\n' "$INSTALLATION_JSON_OVERRIDE"; exit 0; fi
-    jq -nc --argjson id "${MINTED_APP_ID:-4242}" --arg slug "${MINTED_INSTALLATION_SLUG:-verjson-ai-review}" \
-      '{app_id:$id,app_slug:$slug}' ;;
+    # Installation tokens receive 404 from this endpoint in production.
+    exit 22 ;;
   "pr view "*)
     [ "${GH_VIEW_FAIL:-false}" != true ] || exit 1
     count="$(grep -c '^pr view ' "$CALLS")"
@@ -40,7 +41,10 @@ case "$*" in
   *"issues/7/events?per_page=100"*) printf '[{"id":1,"event":"labeled","label":{"name":"ai-review"},"actor":{"login":"maintainer"}},{"id":2,"event":"labeled","label":{"name":"re-review"},"actor":{"login":"maintainer"}}]\n' ;;
   *"contents/.github/workflows/ai-review-merge.yml?ref=main"*) cat "$CALLER_FILE" ;;
   *"--method POST repos/Verjson/example/check-runs --input -"*)
-    jq '. + {id:9100,app:{id:4242,slug:"verjson-ai-review"}}' ;;
+    jq --argjson app_id "${CREATED_CHECK_APP_ID:-4242}" \
+      '. + {id:9100,app:{id:$app_id,slug:"verjson-ai-review"}}' ;;
+  *"repos/Verjson/example/check-runs/9100 --jq"*) printf 'in_progress\n' ;;
+  *"--method PATCH repos/Verjson/example/check-runs/9100 "*) printf '{}\n' ;;
   "workflow run "*) printf 'DISPATCH %s\n' "$*" >>"$CALLS" ;;
   "pr comment "*) printf 'COMMENT %s\n' "$*" >>"$CALLS" ;;
   "pr edit "*) [ "${PR_EDIT_FAIL:-false}" != true ] ;;
@@ -84,7 +88,7 @@ write_hold
 MINTED_APP_SLUG=renamed-app
 if run_arm >"$tmp/out" 2>&1; then
   fail "minted App slug mismatch was accepted"
-elif grep -q "AI review authorization App identity mismatch" "$tmp/out" \
+elif grep -q "AI review authorization App slug mismatch" "$tmp/out" \
   && ! grep -q -- '--method POST repos/Verjson/example/check-runs' "$CALLS"; then
   pass "minted App slug mismatch fails loudly before authorization creation"
 else
@@ -92,53 +96,32 @@ else
 fi
 MINTED_APP_SLUG="$APP_SLUG"
 write_hold
-export MINTED_APP_ID=9999
+MINTED_APP_SLUG=''
 if run_arm >"$tmp/out" 2>&1; then
-  fail "minted App ID mismatch was accepted"
-elif grep -q "AI review authorization App identity mismatch" "$tmp/out" \
+  fail "missing token-action App slug was accepted"
+elif grep -q "AI review authorization App slug mismatch" "$tmp/out" \
   && ! grep -q -- '--method POST repos/Verjson/example/check-runs' "$CALLS"; then
-  pass "minted App ID mismatch fails loudly before authorization creation"
+  pass "missing token-action App slug fails before authorization creation"
 else
-  fail "minted App ID mismatch did not fail before authorization creation"
+  fail "missing token-action App slug did not fail before authorization creation"
 fi
-unset MINTED_APP_ID
 write_hold
-export MINTED_INSTALLATION_SLUG=renamed-installation
+MINTED_APP_SLUG='Invalid_Slug'
 if run_arm >"$tmp/out" 2>&1; then
-  fail "installation App slug mismatch was accepted"
-elif grep -q "AI review authorization App identity mismatch" "$tmp/out" \
+  fail "malformed token-action App slug was accepted"
+elif grep -q "AI review authorization App slug mismatch" "$tmp/out" \
   && ! grep -q -- '--method POST repos/Verjson/example/check-runs' "$CALLS"; then
-  pass "installation App slug mismatch fails explicitly before authorization creation"
+  pass "malformed token-action App slug fails before authorization creation"
 else
-  fail "installation App slug mismatch did not fail before authorization creation"
+  fail "malformed token-action App slug did not fail before authorization creation"
 fi
-unset MINTED_INSTALLATION_SLUG
+MINTED_APP_SLUG="$APP_SLUG"
 write_hold
-export INSTALLATION_API_FAIL=true
-if run_arm >"$tmp/out" 2>&1; then
-  fail "installation API failure was accepted"
-elif grep -q "could not verify the minted AI review authorization App identity" "$tmp/out" \
-  && ! grep -q -- '--method POST repos/Verjson/example/check-runs' "$CALLS"; then
-  pass "installation API failure is explicit before authorization creation"
+if run_arm >"$tmp/out" 2>&1 && ! grep -q '^api /installation$' "$CALLS"; then
+  pass "legitimate token-action slug proceeds without the inaccessible installation endpoint"
 else
-  fail "installation API failure was not explicit before authorization creation"
+  fail "legitimate token-action slug attempted the production-404 installation endpoint"
 fi
-unset INSTALLATION_API_FAIL
-for fixture in 'not-json' '{}' '{"app_id":4242}' '{"app_slug":"verjson-ai-review"}'; do
-  write_hold
-  export INSTALLATION_JSON_OVERRIDE="$fixture"
-  if run_arm >"$tmp/out" 2>&1; then
-    fail "malformed or incomplete installation identity was accepted: $fixture"
-  elif grep -q "minted AI review authorization App installation identity is malformed or incomplete" "$tmp/out" \
-    && ! grep -q -- '--method POST repos/Verjson/example/check-runs' "$CALLS"; then
-    pass "malformed or incomplete installation identity fails explicitly before authorization creation: $fixture"
-  else
-    fail "malformed or incomplete installation identity was not explicit: $fixture"
-  fi
-done
-unset INSTALLATION_JSON_OVERRIDE
-write_hold
-if run_arm >"$tmp/out" 2>&1; then pass "hold disables auto-merge only after authoritative confirmation"; else fail "confirmed hold failed"; fi
 write_hold; printf '{"data":null,"errors":[{"message":"denied"}]}\n' >"$GRAPHQL_FILE"
 expect_fail "HTTP-200 GraphQL errors fail the hold closed"
 write_hold; printf '{"data":{"disablePullRequestAutoMerge":{"pullRequest":{"id":"wrong"}}}}\n' >"$GRAPHQL_FILE"
@@ -153,6 +136,37 @@ write_terminal_hold() {
     >"$META_FILE"
   export EVENT_ACTION=synchronize EVENT_LABEL='' EVENT_OLD_TITLE=''
 }
+
+app_id_mismatch_is_terminalized() {
+  local arm_script="$1" check_id
+  write_terminal_hold
+  : >"$GITHUB_OUTPUT"
+  printf '{}\n' >"$LATEST_FILE"
+  if CREATED_CHECK_APP_ID=9999 ARM_SCRIPT="$arm_script" run_arm >"$tmp/out" 2>&1; then
+    return 1
+  fi
+  check_id="$(sed -n 's/^check_id=//p' "$GITHUB_OUTPUT")"
+  [ "$check_id" = 9100 ] || return 1
+  CHECK_ID="$check_id" APP_TOKEN=app-token bash "$tmp/terminalize.sh" >"$tmp/terminalize.out" 2>&1 || return 1
+  grep -q -- '--method PATCH repos/Verjson/example/check-runs/9100' "$CALLS" \
+    && grep -q 'status=completed' "$CALLS" \
+    && grep -q 'conclusion=failure' "$CALLS" \
+    && ! grep -q 'workflow run ai-review-merge.yml' "$CALLS" \
+    && [ ! -e "$RUNNER_TEMP/ai-review-arm-receipt/receipt.json" ]
+}
+
+if app_id_mismatch_is_terminalized "$tmp/arm.sh"; then
+  pass "a post-creation App-ID mismatch is completed as failure"
+else
+  fail "a post-creation App-ID mismatch stranded its authorization check"
+fi
+
+sed '/echo "check_id=\$check_id" >>"\$GITHUB_OUTPUT"/d' "$tmp/arm.sh" >"$tmp/arm-no-early-check-id.sh"
+if app_id_mismatch_is_terminalized "$tmp/arm-no-early-check-id.sh"; then
+  fail "removing the early check-ID export escaped the terminal-state mutation test"
+else
+  pass "the terminal-state mutation test detects removal of the early check-ID export"
+fi
 
 for signal in do-not-merge-label do_not_merge-label title draft; do
   write_terminal_hold

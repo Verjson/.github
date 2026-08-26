@@ -94,20 +94,9 @@ jobs:
           [[ "$DEFAULT_BRANCH" =~ ^[A-Za-z0-9._/-]+$ ]] || exit 1
           [[ "$APP_ID" =~ ^[1-9][0-9]*$ ]] || { echo "::error::AI_REVIEW_APP_ID is unavailable"; exit 1; }
           [[ "$APP_SLUG" =~ ^[a-z0-9][a-z0-9-]*$ ]] || { echo "::error::AI_REVIEW_APP_SLUG is unavailable"; exit 1; }
-          installation="$(gh api /installation)" || {
-            echo "::error::could not verify the minted AI review authorization App identity"; exit 1;
-          }
-          minted_identity="$(jq -cer '
-            {app_id:(.app_id | select(type == "number" and . > 0)),
-             app_slug:(.app_slug | select(type == "string" and test("^[a-z0-9][a-z0-9-]*$")))}
-          ' <<<"$installation")" || {
-            echo "::error::minted AI review authorization App installation identity is malformed or incomplete"; exit 1;
-          }
-          minted_app_id="$(jq -r '.app_id' <<<"$minted_identity")"
-          minted_app_slug="$(jq -r '.app_slug' <<<"$minted_identity")"
           token_action_app_slug="$(printenv MINTED_APP_SLUG || true)"
-          if [ "$token_action_app_slug" != "$APP_SLUG" ] || [ "$minted_app_id" != "$APP_ID" ] || [ "$minted_app_slug" != "$APP_SLUG" ]; then
-            echo "::error::AI review authorization App identity mismatch: expected '$APP_SLUG' ($APP_ID), token action reported '$token_action_app_slug', installation reported '$minted_app_slug' ($minted_app_id)"
+          if ! [[ "$token_action_app_slug" =~ ^[a-z0-9][a-z0-9-]*$ ]] || [ "$token_action_app_slug" != "$APP_SLUG" ]; then
+            echo "::error::AI review authorization App slug mismatch: expected '$APP_SLUG', token action reported '$token_action_app_slug'"
             exit 1
           fi
 
@@ -396,8 +385,15 @@ jobs:
           check="$(gh api --method POST "repos/$TARGET_REPO/check-runs" --input - <<<"$payload")"
           check_id="$(jq -r '.id // ""' <<<"$check")"
           [[ "$check_id" =~ ^[1-9][0-9]*$ ]] || exit 1
+          # Publish the accepted identifier before validating response
+          # attribution. If attribution fails, the always-run terminalizer can
+          # still complete the check instead of leaving it pending forever.
+          echo "check_id=$check_id" >>"$GITHUB_OUTPUT"
           jq -e --argjson app_id "$APP_ID" --arg slug "$APP_SLUG" --arg external_id "$external_id" \
-            '.app.id == $app_id and .app.slug == $slug and .external_id == $external_id' <<<"$check" >/dev/null || exit 1
+            '.app.id == $app_id and .app.slug == $slug and .external_id == $external_id' <<<"$check" >/dev/null || {
+              echo "::error::created authorization check identity does not match the configured App and receipt"
+              exit 1
+            }
 
           if [ "$head_owner" != "$GITHUB_REPOSITORY_OWNER" ]; then
             gh api --method PATCH "repos/$TARGET_REPO/check-runs/$check_id" -f status=completed -f conclusion=failure \
@@ -423,7 +419,6 @@ jobs:
                       workflow_ref:$workflow_ref,workflow_sha:$workflow_sha}
                else . end' >"$receipt_dir/receipt.json"
           {
-            echo "check_id=$check_id"
             echo "head_sha=$head_sha"
             echo "explicit_rereview=$explicit_rereview"
             echo "explicit_ai_review=$explicit_ai_review"
