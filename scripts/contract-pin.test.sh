@@ -51,6 +51,11 @@ mapfile -t readme_pins < <(
   sed -nE 's/^<!-- recommended-contract-pin: ([0-9a-f]{40}) -->$/\1/p' "$readme" |
     sort -u
 )
+registry_pin="$(
+  jq -r --arg generator 'scripts/gen-changelog-caller.sh' \
+    '.recommended_pins[$generator] // empty' \
+    "$root/config/capability-floors.json"
+)"
 
 if [ "${#pins[@]}" -eq 0 ]; then
   fail "the guide names no pin to generate against — either the check or the guide is wrong"
@@ -58,12 +63,16 @@ else
   pass "the guide names ${#pins[@]} pin(s) to generate against"
 fi
 
-if [ "${#readme_pins[@]}" -ne 1 ]; then
+if [[ ! "$registry_pin" =~ ^[0-9a-f]{40}$ ]]; then
+  fail "the capability registry must name one full changelog-generator recommendation"
+elif [ "${#readme_pins[@]}" -ne 1 ]; then
   fail "the README must name exactly one machine-checkable recommended pin"
 elif [ "${#pins[@]}" -ne 1 ] || [ "${readme_pins[0]}" != "${pins[0]}" ]; then
   fail "the README capability pin and migration guide PIN disagree"
+elif [ "$registry_pin" != "${pins[0]}" ]; then
+  fail "the README and migration guide disagree with the capability registry recommendation"
 else
-  pass "the README capability table and migration guide share one immutable pin"
+  pass "the capability registry, README, and migration guide share one immutable pin"
 fi
 
 # actions-ci checks out with fetch-depth: 1 (#234, ADR 0045), so the pinned

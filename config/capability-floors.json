@@ -1,6 +1,9 @@
 {
   "_comment": "Capability floors for scripts/capability-floor-audit.py (ADR 0114, issue #933). Each entry names the commit that first shipped a capability in this canonical contract that a consumer's generated caller must include for the org to treat the capability as universal. A consumer pin that is not a descendant of `introduced_at` is stale for that capability's generators.",
   "schema_version": 1,
+  "recommended_pins": {
+    "scripts/gen-changelog-caller.sh": "413bf03b179ff3028e6c7da5551aaa44562ddd8d"
+  },
   "capabilities": [
     {
       "id": "ai-review-deepseek-provider",
