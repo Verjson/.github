@@ -37,6 +37,13 @@ class FragmentSchemaContractTest(unittest.TestCase):
             set(CHANGELOG.RELEASE_IMPACTS), set(self.properties["impact"]["enum"])
         )
 
+    def test_only_universal_fields_are_schema_required(self) -> None:
+        # `impact` is required only for fragments added relative to a PR base. Keeping
+        # that check in validate_new_fragment_impacts preserves pre-contract archives;
+        # a context-free JSON Schema must not reject those immutable fragments.
+        self.assertEqual({"date", "title"}, set(self.schema["required"]))
+        self.assertNotIn("impact", self.schema["required"])
+
     def test_component_pattern_matches_the_engine(self) -> None:
         self.assertEqual(
             CHANGELOG.COMPONENT_NAME.pattern, self.properties["component"]["pattern"]
