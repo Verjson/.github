@@ -2419,12 +2419,18 @@ jobs:
           NPM_TOKEN: ''
         run: |
           python3 - <<'PY'
+          import gzip
           import hashlib
+          import io
           import json
           import os
           import re
+          import shutil
+          import stat
           import subprocess
           import sys
+          import tarfile
+          import tempfile
           from pathlib import Path
 
           protected = {
@@ -2451,21 +2457,274 @@ jobs:
           if not isinstance(scripts, dict) or request["script"] not in scripts:
               sys.exit("compatibility script is absent from package.json")
           package_parts = request["package"].split("/")
-          installed_manifest = Path("node_modules").joinpath(*package_parts) / "package.json"
+          installed_root = Path("node_modules").joinpath(*package_parts)
+          installed_manifest = installed_root / "package.json"
+          max_archive_bytes = 32 * 1024 * 1024
+          max_expanded_bytes = 64 * 1024 * 1024
+          max_members = 4096
+          max_tar_bytes = max_expanded_bytes + max_members * 1024 + 1024
+
+          def read_verified_artifact(path, expected_sha512):
+              flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+              descriptor = os.open(path, flags)
+              try:
+                  metadata = os.fstat(descriptor)
+                  if not stat.S_ISREG(metadata.st_mode):
+                      raise SystemExit("verified compatibility artifact is not a regular file")
+                  if metadata.st_size > max_archive_bytes:
+                      raise SystemExit("compatibility package archive exceeds compressed-size bound")
+                  with os.fdopen(descriptor, "rb", closefd=False) as stream:
+                      content = stream.read(max_archive_bytes + 1)
+              finally:
+                  os.close(descriptor)
+              if len(content) > max_archive_bytes:
+                  raise SystemExit("compatibility package archive exceeds compressed-size bound")
+              if hashlib.sha512(content).hexdigest() != expected_sha512:
+                  raise SystemExit("compatibility artifact changed before consumer execution")
+              return content
+
+          def write_all(descriptor, content):
+              view = memoryview(content)
+              while view:
+                  written = os.write(descriptor, view)
+                  if written <= 0:
+                      raise SystemExit("compatibility package extraction made no progress")
+                  view = view[written:]
+
+          def open_directory_chain(root_descriptor, parts):
+              descriptor = os.dup(root_descriptor)
+              try:
+                  for part in parts:
+                      try:
+                          os.mkdir(part, mode=0o700, dir_fd=descriptor)
+                      except FileExistsError:
+                          pass
+                      child = os.open(
+                          part,
+                          os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0),
+                          dir_fd=descriptor,
+                      )
+                      os.close(descriptor)
+                      descriptor = child
+                  return descriptor
+              except BaseException:
+                  os.close(descriptor)
+                  raise
+
+          def read_bounded_tar_stream(content):
+              try:
+                  with gzip.GzipFile(fileobj=io.BytesIO(content), mode="rb") as stream:
+                      tar_bytes = stream.read(max_tar_bytes + 1)
+              except (OSError, EOFError) as error:
+                  raise SystemExit(f"compatibility package archive is invalid gzip: {error}")
+              if len(tar_bytes) > max_tar_bytes:
+                  raise SystemExit("compatibility package archive exceeds tar-stream bound")
+
+              offset = 0
+              raw_members = 0
+              zero_blocks = 0
+              while offset + 512 <= len(tar_bytes):
+                  header = tar_bytes[offset:offset + 512]
+                  offset += 512
+                  if header == bytes(512):
+                      zero_blocks += 1
+                      if zero_blocks == 2:
+                          if any(tar_bytes[offset:]):
+                              raise SystemExit("compatibility package archive has trailing content")
+                          return tar_bytes
+                      continue
+                  if zero_blocks:
+                      raise SystemExit("compatibility package archive has content after end marker")
+                  raw_members += 1
+                  if raw_members > max_members:
+                      raise SystemExit("compatibility package archive exceeds member-count bound")
+                  entry_type = header[156:157]
+                  if entry_type not in (b"\0", b"0", b"5"):
+                      raise SystemExit("compatibility package archive contains links or special entries")
+                  size_field = header[124:136]
+                  if size_field[:1] and size_field[0] & 0x80:
+                      raise SystemExit("compatibility package archive member size encoding is unsupported")
+                  stripped_size = size_field.rstrip(b"\0 ").lstrip(b" ")
+                  if any(byte not in b"01234567" for byte in stripped_size):
+                      raise SystemExit("compatibility package archive member size is invalid")
+                  declared_size = int(stripped_size or b"0", 8)
+                  if entry_type == b"5" and declared_size:
+                      raise SystemExit("compatibility package archive directory has content")
+                  padded_size = (declared_size + 511) // 512 * 512
+                  if offset + padded_size > len(tar_bytes):
+                      raise SystemExit("compatibility package archive member is truncated")
+                  offset += padded_size
+              raise SystemExit("compatibility package archive has no complete end marker")
+
+          def stage_verified_package(content, lane, package_parent):
+              tar_bytes = read_bounded_tar_stream(content)
+              staging = Path(tempfile.mkdtemp(
+                  prefix=f".{installed_root.name}.compat-", dir=package_parent,
+              ))
+              root_descriptor = os.open(
+                  staging,
+                  os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0),
+              )
+              manifest_bytes = None
+              member_count = 0
+              expanded_bytes = 0
+              seen = set()
+              try:
+                  with tarfile.open(fileobj=io.BytesIO(tar_bytes), mode="r:") as archive:
+                      for member in archive:
+                          member_count += 1
+                          if member_count > max_members:
+                              raise SystemExit("compatibility package archive exceeds member-count bound")
+                          raw_name = member.name
+                          if (not raw_name or "\\" in raw_name or "\x00" in raw_name
+                                  or raw_name.startswith("/")):
+                              raise SystemExit("compatibility package archive member path is invalid")
+                          normalized = raw_name[:-1] if member.isdir() and raw_name.endswith("/") else raw_name
+                          parts = normalized.split("/")
+                          if (not parts or parts[0] != "package"
+                                  or any(part in ("", ".", "..") for part in parts)):
+                              raise SystemExit("compatibility package archive must have one package root")
+                          relative_parts = tuple(parts[1:])
+                          if not relative_parts:
+                              if not member.isdir():
+                                  raise SystemExit("compatibility package root must be a directory")
+                              continue
+                          if relative_parts in seen:
+                              raise SystemExit("compatibility package archive contains duplicate members")
+                          seen.add(relative_parts)
+                          if not (member.isdir() or member.isreg()):
+                              raise SystemExit("compatibility package archive contains links or special entries")
+                          if member.size < 0:
+                              raise SystemExit("compatibility package archive member size is invalid")
+                          expanded_bytes += member.size
+                          if expanded_bytes > max_expanded_bytes:
+                              raise SystemExit("compatibility package archive exceeds expanded-size bound")
+
+                          parent_descriptor = open_directory_chain(root_descriptor, relative_parts[:-1])
+                          try:
+                              leaf = relative_parts[-1]
+                              if member.isdir():
+                                  try:
+                                      os.mkdir(leaf, mode=0o700, dir_fd=parent_descriptor)
+                                  except FileExistsError:
+                                      child = os.open(
+                                          leaf,
+                                          os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0),
+                                          dir_fd=parent_descriptor,
+                                      )
+                                      os.close(child)
+                                  continue
+                              source = archive.extractfile(member)
+                              if source is None:
+                                  raise SystemExit("compatibility package archive file is unreadable")
+                              file_descriptor = os.open(
+                                  leaf,
+                                  os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
+                                  0o755 if member.mode & 0o111 else 0o644,
+                                  dir_fd=parent_descriptor,
+                              )
+                              captured = bytearray() if relative_parts == ("package.json",) else None
+                              try:
+                                  remaining = member.size
+                                  while remaining:
+                                      chunk = source.read(min(1024 * 1024, remaining))
+                                      if not chunk:
+                                          raise SystemExit("compatibility package archive file is truncated")
+                                      write_all(file_descriptor, chunk)
+                                      if captured is not None:
+                                          captured.extend(chunk)
+                                      remaining -= len(chunk)
+                                  if source.read(1):
+                                      raise SystemExit("compatibility package archive file exceeds declared size")
+                                  os.fsync(file_descriptor)
+                              finally:
+                                  os.close(file_descriptor)
+                              if captured is not None:
+                                  manifest_bytes = bytes(captured)
+                          finally:
+                              os.close(parent_descriptor)
+              except BaseException:
+                  os.close(root_descriptor)
+                  shutil.rmtree(staging)
+                  raise
+              os.close(root_descriptor)
+              if manifest_bytes is None:
+                  shutil.rmtree(staging)
+                  raise SystemExit("compatibility package archive has no package manifest")
+              try:
+                  staged_manifest = json.loads(manifest_bytes.decode("utf-8"))
+              except (UnicodeDecodeError, json.JSONDecodeError) as error:
+                  shutil.rmtree(staging)
+                  raise SystemExit(f"compatibility package manifest is invalid: {error}")
+              if (staged_manifest.get("name") != lane["package"]
+                      or staged_manifest.get("version") != lane["version"]):
+                  shutil.rmtree(staging)
+                  raise SystemExit("compatibility package manifest does not match resolved provenance")
+              return staging
+
+          def swap_verified_package(staging, lane, index):
+              package_parent = installed_root.parent
+              for directory in (Path("node_modules"), package_parent, installed_root):
+                  try:
+                      metadata = directory.lstat()
+                  except FileNotFoundError:
+                      raise SystemExit("installed compatibility package target is absent")
+                  if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
+                      raise SystemExit("installed compatibility package target is not a real directory")
+              backup_container = Path(tempfile.mkdtemp(
+                  prefix=f".{installed_root.name}.previous-{index}-", dir=package_parent,
+              ))
+              backup = backup_container / "package"
+              swapped = False
+              committed = False
+              try:
+                  os.rename(installed_root, backup)
+                  try:
+                      os.rename(staging, installed_root)
+                      swapped = True
+                  except BaseException:
+                      if not installed_root.exists() and not installed_root.is_symlink():
+                          os.rename(backup, installed_root)
+                      raise
+                  descriptor = os.open(
+                      installed_manifest,
+                      os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
+                  )
+                  try:
+                      with os.fdopen(descriptor, "r", encoding="utf-8", closefd=False) as stream:
+                          installed = json.load(stream)
+                  finally:
+                      os.close(descriptor)
+                  if (installed.get("name") != lane["package"]
+                          or installed.get("version") != lane["version"]):
+                      raise SystemExit("resolved compatibility artifact did not reach package swap")
+                  committed = True
+              finally:
+                  if committed:
+                      shutil.rmtree(backup_container)
+                  elif swapped:
+                      rejected = backup_container / "rejected"
+                      try:
+                          os.rename(installed_root, rejected)
+                      finally:
+                          if (backup.exists() and not installed_root.exists()
+                                  and not installed_root.is_symlink()):
+                              os.rename(backup, installed_root)
+                      if installed_root.exists() and not backup.exists():
+                          shutil.rmtree(backup_container)
+                  elif staging.exists() and not staging.is_symlink():
+                      shutil.rmtree(staging)
+                      if backup_container.exists() and not backup.exists():
+                          backup_container.rmdir()
+
           for index, lane in enumerate(provenance["lanes"]):
               artifact = artifact_dir / f"lane-{index}.tgz"
               if not artifact.is_file() or artifact.is_symlink():
                   sys.exit("verified compatibility artifact is absent before consumer execution")
-              if hashlib.sha512(artifact.read_bytes()).hexdigest() != lane["sha512"]:
-                  sys.exit("compatibility artifact changed before consumer execution")
-              subprocess.run([
-                  "npm", "install", "--offline", "--ignore-scripts", "--no-save",
-                  "--package-lock=false", "--no-audit", "--no-fund", str(artifact),
-              ], check=True)
-              installed = json.loads(installed_manifest.read_text(encoding="utf-8"))
-              if (installed.get("name") != lane["package"]
-                      or installed.get("version") != lane["version"]):
-                  sys.exit("resolved compatibility artifact did not reach the consumer install")
+              artifact_bytes = read_verified_artifact(artifact, lane["sha512"])
+              package_parent = installed_root.parent
+              staging = stage_verified_package(artifact_bytes, lane, package_parent)
+              swap_verified_package(staging, lane, index)
               script_env = os.environ.copy()
               script_env.update({
                   "VERJSON_COMPATIBILITY_ARTIFACT": str(artifact),
