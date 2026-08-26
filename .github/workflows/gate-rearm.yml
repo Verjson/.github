@@ -322,7 +322,7 @@ jobs:
           recover_orphaned_authorization() {
             local check_json="$1" check_id external_id details_url
             local scheme version receipt_repo receipt_pr receipt_head source_run_id source_attempt nonce extra
-            local source_run completed_epoch now_epoch receipt_name artifacts receipt_count receipt_dir
+            local source_run completed_epoch now_epoch receipt_name artifacts receipt_count receipt_dir receipt_present
             local expected_review_title review_pages owned_reviews owned_count owned_status current patch
 
             check_id="$(jq -er '.id | select(type == "number" and . > 0)' <<<"$check_json")" || return 1
@@ -357,7 +357,9 @@ jobs:
             receipt_count="$(jq -er --arg name "$receipt_name" '
               [.[].artifacts[] | select(.name == $name and .expired == false)] | length
             ' <<<"$artifacts")" || return 1
+            receipt_present=false
             case "$receipt_count" in 0) ;; 1)
+              receipt_present=true
               receipt_dir="$(mktemp -d "${RUNNER_TEMP:-/tmp}/ai-orphan-receipt.XXXXXX")" || return 1
               if ! GH_TOKEN="$ACTIONS_TOKEN" gh run download "$source_run_id" --repo "$TARGET_REPO" \
                 --name "$receipt_name" --dir "$receipt_dir"; then
@@ -389,6 +391,12 @@ jobs:
             if [ "$owned_count" = 1 ]; then
               owned_status="$(jq -r '.[0].status // ""' <<<"$owned_reviews")"
               case "$owned_status" in queued|in_progress|waiting|pending|requested) return 10 ;; completed) ;; *) return 1 ;; esac
+            elif [ "$receipt_present" = true ]; then
+              # workflow_dispatch has no documented visibility deadline. A
+              # published receipt means an accepted but not-yet-listable review
+              # could still verify authority and later own this check. Absence
+              # from the run listing is therefore never proof of abandonment.
+              return 10
             fi
 
             current="$(GH_TOKEN="$GH_TOKEN" gh api "repos/$TARGET_REPO/check-runs/$check_id")" || return 1

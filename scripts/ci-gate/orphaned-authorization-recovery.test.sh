@@ -84,9 +84,15 @@ if output="$(run_case 2>&1)" && grep -q 'latest_id= recovered=true' <<<"$output"
 else fail 'accepted-but-lost activation was not recovered'; fi
 
 export RECEIPT_COUNT=1
+export REVIEW_RUNS_JSON='[{"display_title":"AI review authorization 9001 from arm 7001.1","event":"workflow_dispatch","path":".github/workflows/ai-review-merge.yml","head_branch":"main","status":"completed","conclusion":"failure","head_repository":{"full_name":"Verjson/example"},"repository":{"full_name":"Verjson/example"}}]'
 if output="$(run_case 2>&1)" && grep -q 'latest_id= recovered=true' <<<"$output"; then
-  pass 'an exhausted same-job cleanup is recovered through its exact durable receipt'
-else fail 'receipt-bound exhausted cleanup was not recovered'; fi
+  pass 'exhausted cleanup is recovered only after its exact receipt-bound review is terminal'
+else fail 'terminal receipt-bound cleanup was not recovered'; fi
+
+export REVIEW_RUNS_JSON='[]'
+if run_case >/dev/null 2>&1 && ! grep -q 'method PATCH' "$CALLS"; then
+  pass 'a published receipt with a hidden or late accepted dispatch remains ambiguous'
+else fail 'run-list absence was treated as proof despite a published receipt'; fi
 
 export REVIEW_RUNS_JSON='[{"display_title":"AI review authorization 9001 from arm 7001.1","event":"workflow_dispatch","path":".github/workflows/ai-review-merge.yml","head_branch":"main","status":"in_progress","head_repository":{"full_name":"Verjson/example"},"repository":{"full_name":"Verjson/example"}}]'
 if run_case >/dev/null 2>&1 && ! grep -q 'method PATCH' "$CALLS"; then

@@ -41,19 +41,24 @@ all of these conditions hold:
    details URL exactly bind the current repository, PR, head, source run, and attempt.
 2. The source is a terminal `pull_request_target` run of the canonical arm workflow in
    the same numeric repository, and it is not the recovery run itself.
-3. At least five minutes have elapsed since source completion, bounding GitHub's
-   workflow-run listing consistency window.
+3. At least five minutes have elapsed since source completion, providing a minimum
+   observation delay. This delay is never treated as a listing-consistency guarantee.
 4. Immutable arm artifacts are either absent or exactly one. If present, its receipt
    must reproduce every repository, head, check, source-run, App, and external-ID field.
    More than one receipt is ambiguous and fails closed. Absence proves that a downstream
    review could not pass its mandatory receipt verification; it does not weaken that
    verification.
-5. Across every page of live workflow runs, there is no queued, waiting, pending,
-   requested, or in-progress canonical review with the exact deterministic correlation
-   title, workflow path, default branch, event, and repository identity. Duplicate
-   correlated runs are ambiguous and fail closed. A terminal review no longer owns a
-   still-pending check and may be recovered as failure.
-6. Immediately before mutation, the App re-reads the check and revalidates its exact
+5. Every page of canonical review workflow runs is searched for the exact deterministic
+   correlation title, workflow path, default branch, event, and repository identity. A
+   queued, waiting, pending, requested, or in-progress review owns the check and prevents
+   recovery. Duplicate correlated runs are ambiguous and fail closed.
+6. When a receipt exists, exactly one correlated review must exist and be terminal before
+   recovery. GitHub documents no deadline after which an accepted dispatch must appear in
+   the run listing, so a receipt with zero listed runs remains ambiguous forever; elapsed
+   time and list absence are not proof. With no receipt, a hidden review cannot pass its
+   mandatory receipt verification, so zero listed runs is recoverable as failure. A
+   terminal correlated review no longer owns a still-pending check.
+7. Immediately before mutation, the App re-reads the check and revalidates its exact
    identity and `in_progress` state. The PATCH response must prove the same App,
    external ID, terminal failure, and recovery marker.
 
@@ -74,8 +79,8 @@ untouched or fails the arm visibly.
   to orphan classification. The arm continues to execute no PR-controlled code.
 - A receipt is evidence of arm activation, not evidence of dispatch. Active downstream
   ownership is independently established from canonical workflow-run identity.
-- The five-minute floor is only an eventual-consistency safeguard. Time alone never
-  authorizes recovery.
+- The five-minute floor bounds ordinary API convergence but supplies no proof. Time and
+  an absent run listing never authorize recovery when a receipt was published.
 - Repository identity, numeric repository ID, PR number, exact head, App ID/slug, source
   run/attempt, external ID, details URL, receipt, and downstream run identity must agree.
 - Races fail closed. Repository-level arm concurrency serializes ordinary recovery; an
@@ -85,8 +90,8 @@ untouched or fails the arm visibly.
 
 - A lost activation response or exhausted same-job cleanup can be repaired by a later
   synchronized run without a PAT, manual check mutation, or CI-policy exception.
-- A legitimate queued or running review remains authoritative and cannot be terminated
-  by recovery.
+- A legitimate queued, running, hidden, or late-listable receipt-bound review remains
+  authoritative and cannot be terminated by recovery.
 - Review run titles become a security-relevant correlation surface and are covered by
   adversarial contract tests.
 - Recovery performs bounded paginated Actions reads and may fail rather than guess during
