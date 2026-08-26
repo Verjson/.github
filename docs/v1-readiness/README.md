@@ -264,30 +264,37 @@ pins `@verjson/cli-cloud@0.28.1` **exactly**.
 
 ## 4. CI compatibility matrices pin majors, not exact versions — **blocker**
 
-**Why.** GitHub Packages retention keeps only the **3 most recent stable versions** of every
-organization npm package ([ADR 0108](../decisions/0108-bound-package-retention-to-three-stable-releases/README.md)).
+**Why.** GitHub Packages retention keeps only the **3 most recent stable versions** of
+each organization npm package
+([ADR 0108](../decisions/0108-bound-package-retention-to-three-stable-releases/README.md)).
 An exact old version named in a matrix is deleted by the third publish after it, and every
-open pull request in that repository goes red for reasons unrelated to any of them.
+open pull request in the repository goes red for reasons unrelated to any of them.
 
 **Evidence.** [`Verjson/verjson-authz#124`](https://github.com/Verjson/verjson-authz/issues/124):
 publishing `@verjson/identity-contracts@0.3.0` on 2026-08-24 deleted `0.2.0`, which
 `.github/workflows/identity-contracts-compatibility.yml:33` named as an exact matrix leg.
 That line read `0.2.0` at the time of the incident and reads `0.2.1` today — the floor was
-moved, the shape was not fixed.
+moved, but the shape was not fixed.
+
 Two unrelated pull requests went red at once. Moving the floor to `0.2.1` unblocked CI but
-reproduced the defect one publish later. The same repository's
-`.github/workflows/next-compatibility.yml:30` shows the correct shape: `next: ['14','15','16']`
-— **majors**, resolved at install time.
+reproduces the defect one publish later. The same repository's
+`.github/workflows/next-compatibility.yml:30` shows the correct shape:
+`next: ['14','15','16']` — **majors**, resolved at install time.
 
 **An 18-package wave accelerates this sharply.** Each package in the wave publishes at least
-once; several will publish twice (a range widening under item 3, then the `1.0.0` itself).
-Every exact-version matrix leg pointing at a `0.x` sibling has a short remaining life.
+once; several will publish twice (a range widening under item 3, then `1.0.0` itself).
+Every exact-version matrix leg pointing at a `0.x` sibling has a very short remaining life.
 
 **Bar.**
 
-- [ ] No compatibility matrix leg names an exact `x.y.z` version of an `@verjson/*` package.
-- [ ] Legs express **majors** (or a range resolved at install time), or are derived at run
-      time from what is actually published
+- [ ] If the package has no relevant in-wave sibling dependency or range to exercise, this
+      item passes vacuously: record that reason and do not add an artificial exact-version
+      leg. A package that widens a relevant range under item 3 cannot claim this case; item 3
+      requires a compatibility leg that exercises the widened range.
+- [ ] Every applicable compatibility matrix leg avoids an exact `x.y.z` version of an
+      `@verjson/*` package.
+- [ ] Legs express **majors** (or a range resolved at install time), then are derived at run
+      time from versions actually published
       (`gh api /orgs/Verjson/packages/npm/<name>/versions`).
 - [ ] The matrix includes a leg for the sibling's `1.0.0` once that sibling has cut it.
 
@@ -295,121 +302,161 @@ Every exact-version matrix leg pointing at a `0.x` sibling has a short remaining
 
 ## 5. Changelog contract conformance landed — **blocker**
 
-**Why.** The cut must produce a correct immutable `CHANGELOG/v<x.y.z>.md` snapshot. A
+**Why.** The cut must produce the correct immutable `CHANGELOG/v<x.y.z>.md` snapshot. A
 repository that is not on the current changelog contract cannot dispatch a conforming
-release, and the release is the whole point of the wave.
+release, and the release is the whole point of this wave.
 
 **Bar.**
 
 - [ ] The repository is on the canonical changelog contract
       ([ADR 0038](../decisions/0038-canonical-changelog-contract/README.md)):
-      `NEXT/` fragments as the sole unreleased store, immutable `CHANGELOG/v<x.y.z>.md`
-      snapshots, no hand-authored combined `CHANGELOG.md` in a feature pull request.
-- [ ] Its changelog caller is **generated** by `scripts/gen-changelog-caller.sh` at an
-      immutable contract SHA — never hand-written, never partially updated.
-- [ ] The required status check is present and named correctly.
+      `NEXT/` fragments are the sole unreleased store, immutable `CHANGELOG/v<x.y.z>.md`
+      snapshots, and no hand-authored combined `CHANGELOG.md` appears in a feature pull
+      request.
+- [ ] The workflow caller, renderer, contract test, pull-request gate, and release caller
+      (when present) are all **generated** by the canonical `scripts/gen-changelog-caller.sh`
+      at **one** immutable contract SHA — never hand-written or partially updated.
+- [ ] The chosen SHA is a capability-bearing floor, not one magic pin copied from prose.
+      Resolve every capability in `config/capability-floors.json` that names
+      `scripts/gen-changelog-caller.sh`, then prove each `introduced_at` commit is an
+      ancestor of the chosen SHA. `scripts/capability-floor-audit.py` implements that
+      ancestry check; any newer immutable descendant that carries every applicable
+      capability is conformant.
+- [ ] The generated pull-request gate emits the canonical context (`changelog / validate`
+      at the current floor), and an active ruleset that actually applies to the default
+      branch requires that literal context. A green or merely present check is not
+      enforcement; record the live ruleset evidence.
 
 **Correction — do not follow the generated adoption issues literally.** The per-consumer
 adoption issues generated under [`#731`](https://github.com/Verjson/.github/issues/731)
 carry two wrong instructions, filed as
 [`#1087`](https://github.com/Verjson/.github/issues/1087):
 
-| The adoption issue says | The correct value |
+| adoption issue says | readiness requirement |
 |---|---|
-| regenerate at contract SHA `23f641822d1fdf4787a46f0b55f24a755b8a73ae` | `413bf03b179ff3028e6c7da5551aaa44562ddd8d` — the pin current adopter `Verjson/verjson-ai` runs |
-| preserve required context `generated-artifacts / validate` | `changelog / validate` — the literal context the live ruleset `changelog-contract-required` requires |
+| regenerate at contract SHA `23f641822d1fdf4787a46f0b55f24a755b8a73ae` | select one immutable SHA that descends every applicable machine-readable capability floor, then generate every changelog artifact from it |
+| preserve required context `generated-artifacts / validate` | require the context emitted by the generated gate (`changelog / validate` at the current floor) in an active, applicable ruleset |
 
-The stale SHA is unadoptable, not merely old: it is recorded as the `introduced_at` floor
-for a *different* capability, it predates the `pr-gate` generator mode the same issue
-mandates (so the required job cannot be generated at it), and it is below the live changelog
-floor `ac37ae43`. `Verjson/verjson-temporal-kit#110` and `Verjson/verjson-video-forge#16`
-each rejected it independently. Audit against the corrected pin.
+The stale SHA is unadoptable, not merely old: it is the recorded `introduced_at` floor for a
+*different* capability, predates the `pr-gate` generator mode the same issue also mandates
+(so the required job cannot be generated from it), and is below an applicable changelog
+capability floor. `Verjson/verjson-temporal-kit#110` and
+`Verjson/verjson-video-forge#16` each rejected it independently. Audit the chosen SHA
+against the registry instead of treating any README literal as the only conformant pin.
 
 ---
 
 ## 6. Explicit `impact:` on every unreleased fragment — **blocker**
 
 **Why.** The changelog engine at `scripts/changelog.py` computes the release version from
-the highest `impact:` among the selected fragments. When the field is **absent** it falls
-back to `patch` (`scripts/changelog.py:247`, `:653`). So an omitted `impact:` does not
-produce an error — it produces a **patch release of a breaking change**. That is precisely
-the mechanism that shipped `verjson-authn` `1.0.2`.
+the highest `impact:` among the selected fragments. When the field is **absent**, it falls
+back to `patch` (`scripts/changelog.py:247`, `:653`). An omitted `impact:` therefore
+does not produce an error — it produces a **patch release for a breaking change**. That is
+the precise mechanism that shipped `verjson-authn` `1.0.2`.
+
+A second fail-open path exists when a package has published versions but no immutable
+`CHANGELOG/v<x.y.z>.md` snapshots: the engine has no release baseline, so next-version
+cannot derive a version and the release-time bump check returns early. A non-zero
+`next-version` result in that state is evidence of a disabled guard, not an acceptable
+first-release outcome.
 
 **Evidence.** [`Verjson/verjson-tsconfig#34`](https://github.com/Verjson/verjson-tsconfig/issues/34)
-nearly cut a *restricting* `exports` addition as a patch, because the fragment declared no
-`impact:` and the contract defaulted it. Note also that `check-pr` does **not** enforce the
-field on fragments already present on the base — only `validate --base <ref>` rejects a
-*newly added* fragment that omits it. A dated migration grace **runs through 2026-08-29
-UTC and is still active** (`scripts/changelog.py:494`), so before that date a green
-`validate --base` proves nothing about `impact:` — check the field by reading it.
+nearly cut a *restricting* `exports` addition as a patch because its fragment declared no
+`impact:` and the contract defaulted it.
+
+Note also that `check-pr` does **not** enforce the field on fragments already present on
+the base — only `validate --base <ref>` rejects a *newly added* fragment that omits it.
+The dated migration grace period **runs through 2026-08-29 UTC and is still active**
+(`scripts/changelog.py:494`), so before that date a green `validate --base` proves nothing
+about `impact:` — inspect the fragments directly.
 
 **Bar.**
 
 - [ ] Every fragment currently in `NEXT/` declares an explicit `impact:` of `major`,
-      `minor`, or `patch`. **Absence is a defect to fix, not a default to rely on** — go
-      back and add the field to pre-existing fragments before the cut, since they are the
-      ones the release will consume.
+      `minor`, or `patch`. **Absence is a defect to fix, not a default to rely on** —
+      inspect the files directly during the grace period and add the field to all
+      pre-existing fragments the release will consume.
 - [ ] Each declared `impact:` has been checked against what the change actually did to the
-      published surface, using item 1's audit — not against the commit message type.
-- [ ] `python3 scripts/changelog.py next-version --repo-root .` (at the pinned contract)
-      returns the version the repository intends to cut. The command emits a **`v`-prefixed
-      tag**, so the expected output is `v1.0.0`, not `1.0.0` (`--prefix` defaults to `v`;
-      `scripts/changelog.py:691`, `:698`). If it returns anything else, an `impact:` is
-      wrong — or the stream has no previous snapshot, in which case the command exits
-      non-zero because a first release establishes its own baseline.
+      published surface, using item 1's audit — not against the commit-message type.
+- [ ] A package with any published version has at least one immutable
+      `CHANGELOG/v<x.y.z>.md` snapshot. Published versions with no snapshot are **FAIL**;
+      repair the baseline through the canonical migration path before claiming readiness.
+- [ ] The selected `v1.0.0` release set includes a fragment that explicitly declares
+      `impact: major` and describes the v1 transition.
+- [ ] `python3 scripts/changelog.py next-version --repo-root .` at the chosen contract SHA
+      returns **`v1.0.0`**. The command emits a v-prefixed tag, not `1.0.0`
+      (`--prefix` defaults to `v`; `scripts/changelog.py:691`, `:698`). Any other
+      output or non-zero result is FAIL.
+- [ ] In a disposable clean checkout, the exact pinned release command is control-tested
+      against the selected fragments: a wrong requested version is rejected without a
+      release commit, tag, or tree mutation, while exactly `v1.0.0` is accepted. Nothing
+      from this rehearsal is pushed.
 
 ---
 
 ## 7. Release path rehearsed — **blocker**
 
-**Why.** A release is a `workflow_dispatch` that states the version to cut. Nothing is
-inferred from a merge. Discovering at dispatch time that the path is broken is the one
-failure that cannot be rolled back cheaply, because the version and tag are immutable.
+**Why.** The npm/package release path is a `workflow_dispatch` that states the version to
+cut. Nothing is inferred from a merge or branch push. Discovering at dispatch time that the
+path is broken is a failure that cannot be rolled back cheaply, because the version and tag
+are immutable.
 
 **Bar.**
 
-- [ ] The release is **dispatch-only**. No release workflow is reachable by `push`.
+- [ ] The `@verjson/*` npm publication path starts only from `workflow_dispatch` with a
+      required, explicit version. No merge, branch-push, or other `push` event can publish
+      the npm package or derive its version from commit subjects.
+- [ ] An independent non-npm language lane does not fail this item solely because it
+      consumes a tag-push event. Its tag must use an explicit, disjoint namespace that
+      states the exact version; the lane must be unable to publish the `@verjson/*` npm
+      package and must have its own rehearsed guard that rejects malformed, wrong-version,
+      or conflicting tags.
 - [ ] `semantic-release` is retired: no `.releaserc.json`, no `semantic-release`
-      dependency, no commit-subject-derived version. A survivor is a defect to remediate,
-      not a local convention.
-- [ ] The release caller is generated by `scripts/gen-changelog-caller.sh` at the corrected
-      contract pin (item 5), with the workflow, renderer, contract test, and release caller
-      all pinned to **one** immutable SHA.
+      dependency, and no commit-subject-derived npm version. A survivor is a defect to
+      remediate, not a local convention.
+- [ ] The release caller is generated by `scripts/gen-changelog-caller.sh` at the
+      capability-bearing SHA proven in item 5; workflow, renderer, contract test, and
+      release caller all pin the same immutable SHA.
 - [ ] The generated contract test has been run and passes.
 - [ ] **A rehearsal has been performed in a disposable clean checkout**: run the exact
-      pinned `scripts/changelog.py release` command with a **throwaway version** and the
-      fragments the real release will select, then verify the resulting **commit, tag, and
-      changed tree** are what the real cut will produce. Discard the checkout without
-      pushing. A local render or a green pull-request validation is *not* release-path
+      pinned `scripts/changelog.py release` command with a throwaway version and the
+      fragments the real release will select, then verify that the resulting **commit, tag,
+      and changed tree** are what the real cut will produce. Discard the checkout without
+      pushing. A local render or green pull-request validation is *not* release-path
       evidence.
 
 ---
 
-## 8. Open vulnerability sweep — **blocker**
+## 8. Open vulnerability and support sweep — **blocker**
 
 **Why.** `1.0.0` is a stability claim. Cutting it over an unremediated high-severity
 advisory publishes that advisory to every consumer whose caret range now accepts the
-release.
+release. A green vulnerability audit also says nothing about a dependency whose published
+metadata marks the installed line deprecated, end-of-support, or maintenance-only.
 
 **Evidence.** [`Verjson/verjson-temporal-kit#79`](https://github.com/Verjson/verjson-temporal-kit/issues/79):
 13 open Dependabot alerts on `main` — 11 high — from transitive `brace-expansion` and
 `fast-uri`, plus `protobufjs` and `esbuild`. The high-severity ones were reachable only
-through the lockfile and were cleared by a lockfile refresh, which is exactly why nobody
+through the lockfile and cleared with a lockfile refresh, which is exactly why nobody
 noticed them until an explicit sweep.
 
 **Bar.**
 
 - [ ] `npm audit` reports no **high or critical** advisory, or each remaining one has a
-      documented, evidence-backed dismissal. High and critical must be *remediated or
-      dismissed with evidence*; moderate and low must be *adjudicated* — a recorded decision
-      — but need not be remediated to pass.
-- [ ] Every GitHub Dependabot alert is adjudicated on that same rule. An empty list passes
-      trivially; an open **moderate** alert with a recorded decision also passes, and one
+      documented, evidence-backed dismissal. High and critical findings must be
+      *remediated or dismissed with evidence*; moderate and low findings must be
+      *adjudicated* — a recorded decision — but need not be remediated to pass.
+- [ ] Every GitHub Dependabot alert is adjudicated under the same rule. An empty list passes
+      trivially; an open **moderate** alert with a recorded decision also passes, while one
       with no recorded decision FAILs.
-- [ ] The sweep is **deliberate**, not incidental: record the command and its output. An
-      advisory that disappeared because some unrelated lockfile refresh happened to move a
-      transitive pin was never actually assessed.
-- [ ] The lockfile committed at the cut is the one the sweep was run against.
+- [ ] Every known deprecation, end-of-support, or maintenance-only marker in a published
+      dependency's registry metadata is either addressed before the cut or carries an
+      explicit, evidence-backed compatibility and risk justification. A green `npm audit`
+      or empty Dependabot list does not satisfy this check.
+- [ ] The sweep is **deliberate**, not incidental: record the command output. An advisory
+      that disappeared because an unrelated lockfile refresh happened to move a transitive
+      pin was never actually assessed.
+- [ ] The lockfile committed at the cut is the one the sweep ran against.
 
 ---
 
