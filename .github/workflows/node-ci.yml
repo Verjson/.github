@@ -2604,6 +2604,7 @@ jobs:
           import os
           import re
           import shutil
+          import signal
           import stat
           import subprocess
           import sys
@@ -2635,12 +2636,73 @@ jobs:
           if not isinstance(scripts, dict) or request["script"] not in scripts:
               sys.exit("compatibility script is absent from package.json")
           package_parts = request["package"].split("/")
+          if (not package_parts
+                  or any(not part or part in (".", "..") or "/" in part or "\\" in part
+                         for part in package_parts)):
+              sys.exit("compatibility package path is invalid")
           installed_root = Path("node_modules").joinpath(*package_parts)
-          installed_manifest = installed_root / "package.json"
+          package_parent = installed_root.parent
+          installed_leaf = installed_root.name
           max_archive_bytes = 32 * 1024 * 1024
           max_expanded_bytes = 64 * 1024 * 1024
           max_members = 4096
           max_tar_bytes = max_expanded_bytes + max_members * 1024 + 1024
+
+          directory_flags = os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0)
+
+          def open_installed_package_parent():
+              descriptor = None
+              try:
+                  for component in ("node_modules", *package_parts[:-1]):
+                      try:
+                          child = os.open(component, directory_flags, dir_fd=descriptor)
+                      except FileNotFoundError:
+                          raise SystemExit("installed compatibility package parent is absent")
+                      except OSError:
+                          raise SystemExit(
+                              "installed compatibility package parent is not a real directory"
+                          )
+                      if descriptor is not None:
+                          os.close(descriptor)
+                      descriptor = child
+                  return descriptor
+              except BaseException:
+                  if descriptor is not None:
+                      os.close(descriptor)
+                  raise
+
+          package_parent_descriptor = open_installed_package_parent()
+          package_parent_metadata = os.fstat(package_parent_descriptor)
+          package_parent_handle = Path(f"/proc/self/fd/{package_parent_descriptor}")
+
+          def verify_installed_package_parent():
+              try:
+                  metadata = package_parent.lstat()
+              except FileNotFoundError:
+                  raise SystemExit("installed compatibility package parent is absent")
+              if (stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode)
+                      or (metadata.st_dev, metadata.st_ino)
+                      != (package_parent_metadata.st_dev, package_parent_metadata.st_ino)):
+                  raise SystemExit(
+                      "installed compatibility package parent is not a real directory"
+                  )
+
+          verify_installed_package_parent()
+          try:
+              initial_target_metadata = os.stat(
+                  installed_leaf,
+                  dir_fd=package_parent_descriptor,
+                  follow_symlinks=False,
+              )
+          except FileNotFoundError:
+              target_initially_absent = True
+          else:
+              target_initially_absent = False
+              if (stat.S_ISLNK(initial_target_metadata.st_mode)
+                      or not stat.S_ISDIR(initial_target_metadata.st_mode)):
+                  raise SystemExit(
+                      "installed compatibility package target is not a real directory"
+                  )
 
           def read_verified_artifact(path, expected_sha512):
               flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
@@ -2734,10 +2796,11 @@ jobs:
                   offset += padded_size
               raise SystemExit("compatibility package archive has no complete end marker")
 
-          def stage_verified_package(content, lane, package_parent):
+          def stage_verified_package(content, lane, package_parent_handle):
               tar_bytes = read_bounded_tar_stream(content)
+              verify_installed_package_parent()
               staging = Path(tempfile.mkdtemp(
-                  prefix=f".{installed_root.name}.compat-", dir=package_parent,
+                  prefix=f".{installed_root.name}.compat-", dir=package_parent_handle,
               ))
               root_descriptor = os.open(
                   staging,
@@ -2840,78 +2903,214 @@ jobs:
                   raise SystemExit("compatibility package manifest does not match resolved provenance")
               return staging
 
-          def swap_verified_package(staging, lane, index):
-              package_parent = installed_root.parent
-              for directory in (Path("node_modules"), package_parent, installed_root):
-                  try:
-                      metadata = directory.lstat()
-                  except FileNotFoundError:
-                      raise SystemExit("installed compatibility package target is absent")
-                  if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
-                      raise SystemExit("installed compatibility package target is not a real directory")
+          def discard_staging(staging):
+              if staging.exists() and not staging.is_symlink():
+                  shutil.rmtree(staging)
+
+          def installed_target_is_absent():
+              try:
+                  os.stat(
+                      installed_leaf,
+                      dir_fd=package_parent_descriptor,
+                      follow_symlinks=False,
+                  )
+              except FileNotFoundError:
+                  return True
+              return False
+
+          def swap_verified_package(staging, lane, index, expected_owned_identity):
+              verify_installed_package_parent()
+              try:
+                  target_metadata = os.stat(
+                      installed_leaf,
+                      dir_fd=package_parent_descriptor,
+                      follow_symlinks=False,
+                  )
+              except FileNotFoundError:
+                  if not target_initially_absent or index != 0:
+                      discard_staging(staging)
+                      raise SystemExit("installed compatibility package target disappeared unexpectedly")
+                  target_exists = False
+              else:
+                  target_exists = True
+                  if (stat.S_ISLNK(target_metadata.st_mode)
+                          or not stat.S_ISDIR(target_metadata.st_mode)):
+                      discard_staging(staging)
+                      raise SystemExit(
+                          "installed compatibility package target is not a real directory"
+                      )
+                  target_identity = (target_metadata.st_dev, target_metadata.st_ino)
+                  if target_initially_absent and expected_owned_identity is None:
+                      discard_staging(staging)
+                      raise SystemExit(
+                          "installed compatibility package target appeared unexpectedly"
+                      )
+                  if index > 0 and target_identity != expected_owned_identity:
+                      discard_staging(staging)
+                      raise SystemExit(
+                          "installed compatibility package target changed unexpectedly"
+                      )
               backup_container = Path(tempfile.mkdtemp(
-                  prefix=f".{installed_root.name}.previous-{index}-", dir=package_parent,
+                  prefix=f".{installed_root.name}.previous-{index}-", dir=package_parent_handle,
               ))
               backup = backup_container / "package"
+              backup_relative = f"{backup_container.name}/package"
               swapped = False
               committed = False
+              installed_identity = None
               try:
-                  os.rename(installed_root, backup)
+                  if target_exists:
+                      os.rename(
+                          installed_leaf,
+                          backup_relative,
+                          src_dir_fd=package_parent_descriptor,
+                          dst_dir_fd=package_parent_descriptor,
+                      )
                   try:
-                      os.rename(staging, installed_root)
+                      os.rename(
+                          staging.name,
+                          installed_leaf,
+                          src_dir_fd=package_parent_descriptor,
+                          dst_dir_fd=package_parent_descriptor,
+                      )
                       swapped = True
                   except BaseException:
-                      if not installed_root.exists() and not installed_root.is_symlink():
-                          os.rename(backup, installed_root)
+                      if target_exists and installed_target_is_absent():
+                          os.rename(
+                              backup_relative,
+                              installed_leaf,
+                              src_dir_fd=package_parent_descriptor,
+                              dst_dir_fd=package_parent_descriptor,
+                          )
                       raise
-                  descriptor = os.open(
-                      installed_manifest,
-                      os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
+                  target_descriptor = os.open(
+                      installed_leaf,
+                      directory_flags,
+                      dir_fd=package_parent_descriptor,
                   )
                   try:
-                      with os.fdopen(descriptor, "r", encoding="utf-8", closefd=False) as stream:
-                          installed = json.load(stream)
+                      descriptor = os.open(
+                          "package.json",
+                          os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
+                          dir_fd=target_descriptor,
+                      )
+                      try:
+                          with os.fdopen(
+                              descriptor, "r", encoding="utf-8", closefd=False,
+                          ) as stream:
+                              installed = json.load(stream)
+                      finally:
+                          os.close(descriptor)
+                      installed_metadata = os.fstat(target_descriptor)
                   finally:
-                      os.close(descriptor)
+                      os.close(target_descriptor)
                   if (installed.get("name") != lane["package"]
                           or installed.get("version") != lane["version"]):
                       raise SystemExit("resolved compatibility artifact did not reach package swap")
+                  installed_identity = (installed_metadata.st_dev, installed_metadata.st_ino)
                   committed = True
               finally:
                   if committed:
-                      shutil.rmtree(backup_container)
-                  elif swapped:
-                      rejected = backup_container / "rejected"
-                      try:
-                          os.rename(installed_root, rejected)
-                      finally:
-                          if (backup.exists() and not installed_root.exists()
-                                  and not installed_root.is_symlink()):
-                              os.rename(backup, installed_root)
-                      if installed_root.exists() and not backup.exists():
+                      if target_exists:
                           shutil.rmtree(backup_container)
-                  elif staging.exists() and not staging.is_symlink():
-                      shutil.rmtree(staging)
+                      else:
+                          backup_container.rmdir()
+                  elif swapped:
+                      rejected_relative = f"{backup_container.name}/rejected"
+                      try:
+                          os.rename(
+                              installed_leaf,
+                              rejected_relative,
+                              src_dir_fd=package_parent_descriptor,
+                              dst_dir_fd=package_parent_descriptor,
+                          )
+                      finally:
+                          if target_exists and backup.exists() and installed_target_is_absent():
+                              os.rename(
+                                  backup_relative,
+                                  installed_leaf,
+                                  src_dir_fd=package_parent_descriptor,
+                                  dst_dir_fd=package_parent_descriptor,
+                              )
+                      shutil.rmtree(backup_container)
+                  else:
+                      discard_staging(staging)
                       if backup_container.exists() and not backup.exists():
                           backup_container.rmdir()
+              return installed_identity
 
-          for index, lane in enumerate(provenance["lanes"]):
-              artifact = artifact_dir / f"lane-{index}.tgz"
-              if not artifact.is_file() or artifact.is_symlink():
-                  sys.exit("verified compatibility artifact is absent before consumer execution")
-              artifact_bytes = read_verified_artifact(artifact, lane["sha512"])
-              package_parent = installed_root.parent
-              staging = stage_verified_package(artifact_bytes, lane, package_parent)
-              swap_verified_package(staging, lane, index)
-              script_env = os.environ.copy()
-              script_env.update({
-                  "VERJSON_COMPATIBILITY_ARTIFACT": str(artifact),
-                  "VERJSON_COMPATIBILITY_PACKAGE": lane["package"],
-                  "VERJSON_COMPATIBILITY_RANGE": lane["range"],
-                  "VERJSON_COMPATIBILITY_VERSION": lane["version"],
-                  "VERJSON_SECRETLESS_COMPATIBILITY_PROVENANCE": str(provenance_path),
-              })
-              subprocess.run(["npm", "run", request["script"]], check=True, env=script_env)
+          def restore_initial_absence(expected_owned_identity):
+              if not target_initially_absent or expected_owned_identity is None:
+                  return
+              verify_installed_package_parent()
+              try:
+                  metadata = os.stat(
+                      installed_leaf,
+                      dir_fd=package_parent_descriptor,
+                      follow_symlinks=False,
+                  )
+              except FileNotFoundError:
+                  return
+              if (stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode)
+                      or (metadata.st_dev, metadata.st_ino) != expected_owned_identity):
+                  raise SystemExit(
+                      "installed compatibility package target changed before absence restoration"
+                  )
+              cleanup_container = Path(tempfile.mkdtemp(
+                  prefix=f".{installed_root.name}.absent-restore-",
+                  dir=package_parent_handle,
+              ))
+              removed = cleanup_container / "package"
+              os.rename(
+                  installed_leaf,
+                  f"{cleanup_container.name}/package",
+                  src_dir_fd=package_parent_descriptor,
+                  dst_dir_fd=package_parent_descriptor,
+              )
+              removed_metadata = removed.lstat()
+              if ((removed_metadata.st_dev, removed_metadata.st_ino)
+                      != expected_owned_identity):
+                  raise SystemExit(
+                      "installed compatibility package target changed during absence restoration"
+                  )
+              shutil.rmtree(cleanup_container)
+
+          def interrupt_compatibility_lane(signum, _frame):
+              raise SystemExit(f"compatibility lane interrupted by signal {signum}")
+
+          previous_signal_handlers = {
+              signum: signal.signal(signum, interrupt_compatibility_lane)
+              for signum in (signal.SIGINT, signal.SIGTERM)
+          }
+          owned_target_identity = None
+          try:
+              for index, lane in enumerate(provenance["lanes"]):
+                  artifact = artifact_dir / f"lane-{index}.tgz"
+                  if not artifact.is_file() or artifact.is_symlink():
+                      sys.exit("verified compatibility artifact is absent before consumer execution")
+                  artifact_bytes = read_verified_artifact(artifact, lane["sha512"])
+                  staging = stage_verified_package(artifact_bytes, lane, package_parent_handle)
+                  owned_target_identity = swap_verified_package(
+                      staging, lane, index, owned_target_identity,
+                  )
+                  script_env = os.environ.copy()
+                  script_env.update({
+                      "VERJSON_COMPATIBILITY_ARTIFACT": str(artifact),
+                      "VERJSON_COMPATIBILITY_PACKAGE": lane["package"],
+                      "VERJSON_COMPATIBILITY_RANGE": lane["range"],
+                      "VERJSON_COMPATIBILITY_VERSION": lane["version"],
+                      "VERJSON_SECRETLESS_COMPATIBILITY_PROVENANCE": str(provenance_path),
+                  })
+                  subprocess.run(
+                      ["npm", "run", request["script"]], check=True, env=script_env,
+                  )
+          finally:
+              try:
+                  restore_initial_absence(owned_target_identity)
+              finally:
+                  for signum, previous_handler in previous_signal_handlers.items():
+                      signal.signal(signum, previous_handler)
+                  os.close(package_parent_descriptor)
           PY
       - name: Remove job-scoped secretless runtime cache
         if: always() && needs.eligibility.outputs.should-run != 'false' && (inputs.secretless-pr || inputs.secretless-trusted-ref)
