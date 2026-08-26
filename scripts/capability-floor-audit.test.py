@@ -184,9 +184,15 @@ with tempfile.TemporaryDirectory() as tmp:
     empty_pins = write_json(tmp_path, "empty-pins.json", [])
     shipped_result = run(["--pins", str(empty_pins), "--capabilities", str(DEFAULT_CAPABILITIES)])
     check("shipped config/capability-floors.json loads with zero pins", shipped_result.returncode == 0)
+    shipped_capabilities = json.loads(DEFAULT_CAPABILITIES.read_text(encoding="utf-8"))["capabilities"]
     check(
-        "shipped config reports both seeded capabilities",
-        shipped_result.returncode == 0 and json.loads(shipped_result.stdout)["capabilities_checked"] == 2,
+        "shipped config reports every registered capability",
+        shipped_result.returncode == 0 and
+        json.loads(shipped_result.stdout)["capabilities_checked"] == len(shipped_capabilities),
+    )
+    check(
+        "shipped config registers the generated changelog PR-gate floor",
+        any(item["id"] == "changelog-generated-pr-gate" for item in shipped_capabilities),
     )
 
 if failures:
