@@ -1,0 +1,198 @@
+name: trusted runner deployment review producer
+on:
+  workflow_call:
+    inputs:
+      kind: {required: true, type: string}
+      pull-request: {required: true, type: number}
+      review-id: {required: false, type: number}
+      source-check-run-id: {required: false, type: number}
+      config-path: {required: true, type: string}
+permissions: {}
+jobs:
+  environment-preflight:
+    permissions: {actions: read, contents: read}
+    runs-on: ${{ github.repository_owner != 'Verjson' && 'ubuntu-24.04' || fromJSON(vars.CI_LANE_TRUSTED || vars.CI_LANE_FALLBACK || '["ubuntu-24.04"]') }}
+    outputs:
+      policy-digest: ${{ steps.policy.outputs.digest }}
+      environment-name: ${{ steps.policy.outputs.environment }}
+      caller-repository-id: ${{ steps.policy.outputs.repository-id }}
+      workflow-repository: ${{ steps.policy.outputs.workflow-repository }}
+      workflow-ref: ${{ steps.policy.outputs.workflow-ref }}
+      workflow-sha: ${{ steps.policy.outputs.workflow-sha }}
+    steps:
+      - id: policy
+        env: {GH_TOKEN: '${{ github.token }}', REVIEW_KIND: '${{ inputs.kind }}', JOB_CONTEXT: '${{ toJSON(job) }}'}
+        run: |
+          set -euo pipefail
+          [[ "$REVIEW_KIND" =~ ^(code|security|ai)$ ]]
+          repository="$(gh api "repos/$GITHUB_REPOSITORY")"
+          default_branch="$(jq -er .default_branch <<<"$repository")"
+          [[ "$GITHUB_REF" == "refs/heads/$default_branch" ]]
+          workflow_repository="$(jq -er '.workflow_repository | select(. == "Verjson/.github")' <<<"$JOB_CONTEXT")"
+          workflow_ref="$(jq -er '.workflow_ref | select(type == "string")' <<<"$JOB_CONTEXT")"
+          workflow_sha="$(jq -er '.workflow_sha | select(test("^[0-9a-f]{40}$"))' <<<"$JOB_CONTEXT")"
+          [[ "$workflow_ref" == "$workflow_repository/.github/workflows/container-deployment-review-producer.yml@$workflow_sha" ]]
+          environment="runner-deploy-$REVIEW_KIND-review-publisher"
+          gh api "repos/$GITHUB_REPOSITORY/environments/$environment" > "$RUNNER_TEMP/environment.json"
+          jq -e '.deployment_branch_policy.protected_branches == true and .deployment_branch_policy.custom_branch_policies == false and (.protection_rules | length) == 1 and .protection_rules[0].type == "branch_policy"' "$RUNNER_TEMP/environment.json" >/dev/null
+          digest="$(jq -j -cS '{id,name,deployment_branch_policy,protection_rules}' "$RUNNER_TEMP/environment.json" | sha256sum | cut -d' ' -f1)"
+          {
+            echo "digest=sha256:$digest"
+            echo "environment=$environment"
+            echo "repository-id=$(jq -er .id <<<"$repository")"
+            echo "workflow-repository=$workflow_repository"
+            echo "workflow-ref=$workflow_ref"
+            echo "workflow-sha=$workflow_sha"
+          } >> "$GITHUB_OUTPUT"
+  analyze:
+    needs: environment-preflight
+    permissions: {actions: write, contents: read, pull-requests: read, checks: read}
+    runs-on: ${{ github.repository_owner != 'Verjson' && 'ubuntu-24.04' || fromJSON(vars.CI_LANE_TRUSTED || vars.CI_LANE_FALLBACK || '["ubuntu-24.04"]') }}
+    outputs:
+      expected-installation-id: ${{ steps.authority.outputs.installation-id }}
+      artifact-id: ${{ steps.artifact.outputs.artifact-id }}
+      artifact-digest: ${{ steps.artifact.outputs.artifact-digest }}
+      source-check-name: ${{ steps.authority.outputs.source-check-name }}
+      source-app-id: ${{ steps.authority.outputs.source-app-id }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: {repository: '${{ needs.environment-preflight.outputs.workflow-repository }}', ref: '${{ needs.environment-preflight.outputs.workflow-sha }}', persist-credentials: false}
+      - id: authority
+        env: {CONFIG_PATH: '${{ inputs.config-path }}', REVIEW_KIND: '${{ inputs.kind }}', GH_TOKEN: '${{ github.token }}', TARGET_PULL: '${{ inputs.pull-request }}'}
+        run: |
+          set -euo pipefail
+          [[ "$REVIEW_KIND" =~ ^(code|security|ai)$ ]]
+          [[ "$CONFIG_PATH" =~ ^[A-Za-z0-9_./-]+\.json$ && "$CONFIG_PATH" != /* && "$CONFIG_PATH" != *..* ]]
+          head="$(gh api "repos/$GITHUB_REPOSITORY/pulls/$TARGET_PULL" --jq .head.sha)"
+          gh api "repos/$GITHUB_REPOSITORY/contents/$CONFIG_PATH?ref=$head" --jq .content | tr -d '\n' | base64 -d > "$RUNNER_TEMP/review-config.json"
+          value="$(jq -er --arg kind "$REVIEW_KIND" '.reviewAuthority[$kind].installationId | select(type == "number" and . > 0)' "$RUNNER_TEMP/review-config.json")"
+          echo "installation-id=$value" >> "$GITHUB_OUTPUT"
+          if [[ "$REVIEW_KIND" == ai ]]; then
+            jq -er '.reviewAuthority.ai.sourceAppId | select(type == "number" and . > 0) | "source-app-id=\(.)"' "$RUNNER_TEMP/review-config.json" >> "$GITHUB_OUTPUT"
+            jq -er '.reviewAuthority.ai.sourceCheckName | select(type == "string" and length > 0) | "source-check-name=\(.)"' "$RUNNER_TEMP/review-config.json" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Build exact-head receipt without publisher credentials
+        env: {GH_TOKEN: '${{ github.token }}'}
+        run: |
+          set -euo pipefail
+          args=(prepare --kind '${{ inputs.kind }}' --repository "$GITHUB_REPOSITORY" --pull-request '${{ inputs.pull-request }}' \
+            --producer-commit '${{ needs.environment-preflight.outputs.workflow-sha }}' --producer-workflow-ref '${{ needs.environment-preflight.outputs.workflow-ref }}' --workflow-run-id "$GITHUB_RUN_ID" --workflow-run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --deployment-commit "$GITHUB_SHA" --deployment-ref "$GITHUB_REF" \
+            --caller-repository-id '${{ needs.environment-preflight.outputs.caller-repository-id }}' \
+            --publisher-environment '${{ needs.environment-preflight.outputs.environment-name }}' \
+            --environment-policy-digest '${{ needs.environment-preflight.outputs.policy-digest }}' \
+            --actor "$GITHUB_ACTOR" --triggering-actor "$GITHUB_TRIGGERING_ACTOR" --output review-receipt.json)
+          if [[ '${{ inputs.kind }}' == ai ]]; then
+            args+=(--source-check-run-id '${{ inputs.source-check-run-id }}' --source-check-name '${{ steps.authority.outputs.source-check-name }}' --source-app-id '${{ steps.authority.outputs.source-app-id }}')
+          else
+            args+=(--review-id '${{ inputs.review-id }}')
+          fi
+          python3 scripts/container_deployment_review_producer.py "${args[@]}"
+      - id: artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with: {name: 'runner-deploy-${{ inputs.kind }}-review-${{ github.run_id }}-${{ github.run_attempt }}', path: review-receipt.json, if-no-files-found: error, retention-days: 90}
+  publish-code:
+    if: inputs.kind == 'code'
+    needs: [analyze, environment-preflight]
+    environment: runner-deploy-code-review-publisher
+    permissions: {actions: read, contents: read}
+    runs-on: ${{ github.repository_owner != 'Verjson' && 'ubuntu-24.04' || fromJSON(vars.CI_LANE_TRUSTED || vars.CI_LANE_FALLBACK || '["ubuntu-24.04"]') }}
+    steps:
+      - name: Reconcile immutable code and caller environment authority
+        env: {WORKFLOW_REPOSITORY: '${{ needs.environment-preflight.outputs.workflow-repository }}', WORKFLOW_REF: '${{ needs.environment-preflight.outputs.workflow-ref }}', WORKFLOW_SHA: '${{ needs.environment-preflight.outputs.workflow-sha }}', EXPECTED_POLICY_DIGEST: '${{ needs.environment-preflight.outputs.policy-digest }}', GH_TOKEN: '${{ github.token }}'}
+        run: |
+          set -euo pipefail
+          [[ "$WORKFLOW_REPOSITORY" == Verjson/.github && "$WORKFLOW_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$WORKFLOW_REF" == "$WORKFLOW_REPOSITORY/.github/workflows/container-deployment-review-producer.yml@$WORKFLOW_SHA" ]]
+          gh api "repos/$GITHUB_REPOSITORY/environments/runner-deploy-code-review-publisher" > "$RUNNER_TEMP/environment.json"
+          jq -e '.deployment_branch_policy.protected_branches == true and .deployment_branch_policy.custom_branch_policies == false and (.protection_rules | length) == 1 and .protection_rules[0].type == "branch_policy"' "$RUNNER_TEMP/environment.json" >/dev/null
+          actual="sha256:$(jq -j -cS '{id,name,deployment_branch_policy,protection_rules}' "$RUNNER_TEMP/environment.json" | sha256sum | cut -d' ' -f1)"
+          [[ "$actual" == "$EXPECTED_POLICY_DIGEST" ]]
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: {repository: '${{ needs.environment-preflight.outputs.workflow-repository }}', ref: '${{ needs.environment-preflight.outputs.workflow-sha }}', persist-credentials: false}
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with: {name: 'runner-deploy-${{ inputs.kind }}-review-${{ github.run_id }}-${{ github.run_attempt }}'}
+      - id: publisher
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
+        with:
+          client-id: ${{ vars.RUNNER_DEPLOY_CODE_REVIEW_APP_CLIENT_ID }}
+          private-key: ${{ secrets.RUNNER_DEPLOY_CODE_REVIEW_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          permission-checks: write
+      - env: {GH_TOKEN: '${{ steps.publisher.outputs.token }}'}
+        run: |
+          python3 scripts/container_deployment_review_producer.py publish --repository "$GITHUB_REPOSITORY" --check-name runner-deploy-code-review \
+            --receipt review-receipt.json --artifact-id '${{ needs.analyze.outputs.artifact-id }}' \
+            --artifact-digest '${{ needs.analyze.outputs.artifact-digest }}' --installation-id '${{ steps.publisher.outputs.installation-id }}' \
+            --expected-installation-id '${{ needs.analyze.outputs.expected-installation-id }}'
+  publish-security:
+    if: inputs.kind == 'security'
+    needs: [analyze, environment-preflight]
+    environment: runner-deploy-security-review-publisher
+    permissions: {actions: read, contents: read}
+    runs-on: ${{ github.repository_owner != 'Verjson' && 'ubuntu-24.04' || fromJSON(vars.CI_LANE_TRUSTED || vars.CI_LANE_FALLBACK || '["ubuntu-24.04"]') }}
+    steps:
+      - name: Reconcile immutable security and caller environment authority
+        env: {WORKFLOW_REPOSITORY: '${{ needs.environment-preflight.outputs.workflow-repository }}', WORKFLOW_REF: '${{ needs.environment-preflight.outputs.workflow-ref }}', WORKFLOW_SHA: '${{ needs.environment-preflight.outputs.workflow-sha }}', EXPECTED_POLICY_DIGEST: '${{ needs.environment-preflight.outputs.policy-digest }}', GH_TOKEN: '${{ github.token }}'}
+        run: |
+          set -euo pipefail
+          [[ "$WORKFLOW_REPOSITORY" == Verjson/.github && "$WORKFLOW_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$WORKFLOW_REF" == "$WORKFLOW_REPOSITORY/.github/workflows/container-deployment-review-producer.yml@$WORKFLOW_SHA" ]]
+          gh api "repos/$GITHUB_REPOSITORY/environments/runner-deploy-security-review-publisher" > "$RUNNER_TEMP/environment.json"
+          jq -e '.deployment_branch_policy.protected_branches == true and .deployment_branch_policy.custom_branch_policies == false and (.protection_rules | length) == 1 and .protection_rules[0].type == "branch_policy"' "$RUNNER_TEMP/environment.json" >/dev/null
+          actual="sha256:$(jq -j -cS '{id,name,deployment_branch_policy,protection_rules}' "$RUNNER_TEMP/environment.json" | sha256sum | cut -d' ' -f1)"
+          [[ "$actual" == "$EXPECTED_POLICY_DIGEST" ]]
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: {repository: '${{ needs.environment-preflight.outputs.workflow-repository }}', ref: '${{ needs.environment-preflight.outputs.workflow-sha }}', persist-credentials: false}
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with: {name: 'runner-deploy-${{ inputs.kind }}-review-${{ github.run_id }}-${{ github.run_attempt }}'}
+      - id: publisher
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
+        with:
+          client-id: ${{ vars.RUNNER_DEPLOY_SECURITY_REVIEW_APP_CLIENT_ID }}
+          private-key: ${{ secrets.RUNNER_DEPLOY_SECURITY_REVIEW_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          permission-checks: write
+      - env: {GH_TOKEN: '${{ steps.publisher.outputs.token }}'}
+        run: |
+          python3 scripts/container_deployment_review_producer.py publish --repository "$GITHUB_REPOSITORY" --check-name runner-deploy-security-review \
+            --receipt review-receipt.json --artifact-id '${{ needs.analyze.outputs.artifact-id }}' \
+            --artifact-digest '${{ needs.analyze.outputs.artifact-digest }}' --installation-id '${{ steps.publisher.outputs.installation-id }}' \
+            --expected-installation-id '${{ needs.analyze.outputs.expected-installation-id }}'
+  publish-ai:
+    if: inputs.kind == 'ai'
+    needs: [analyze, environment-preflight]
+    environment: runner-deploy-ai-review-publisher
+    permissions: {actions: read, contents: read}
+    runs-on: ${{ github.repository_owner != 'Verjson' && 'ubuntu-24.04' || fromJSON(vars.CI_LANE_TRUSTED || vars.CI_LANE_FALLBACK || '["ubuntu-24.04"]') }}
+    steps:
+      - name: Reconcile immutable AI and caller environment authority
+        env: {WORKFLOW_REPOSITORY: '${{ needs.environment-preflight.outputs.workflow-repository }}', WORKFLOW_REF: '${{ needs.environment-preflight.outputs.workflow-ref }}', WORKFLOW_SHA: '${{ needs.environment-preflight.outputs.workflow-sha }}', EXPECTED_POLICY_DIGEST: '${{ needs.environment-preflight.outputs.policy-digest }}', GH_TOKEN: '${{ github.token }}'}
+        run: |
+          set -euo pipefail
+          [[ "$WORKFLOW_REPOSITORY" == Verjson/.github && "$WORKFLOW_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$WORKFLOW_REF" == "$WORKFLOW_REPOSITORY/.github/workflows/container-deployment-review-producer.yml@$WORKFLOW_SHA" ]]
+          gh api "repos/$GITHUB_REPOSITORY/environments/runner-deploy-ai-review-publisher" > "$RUNNER_TEMP/environment.json"
+          jq -e '.deployment_branch_policy.protected_branches == true and .deployment_branch_policy.custom_branch_policies == false and (.protection_rules | length) == 1 and .protection_rules[0].type == "branch_policy"' "$RUNNER_TEMP/environment.json" >/dev/null
+          actual="sha256:$(jq -j -cS '{id,name,deployment_branch_policy,protection_rules}' "$RUNNER_TEMP/environment.json" | sha256sum | cut -d' ' -f1)"
+          [[ "$actual" == "$EXPECTED_POLICY_DIGEST" ]]
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: {repository: '${{ needs.environment-preflight.outputs.workflow-repository }}', ref: '${{ needs.environment-preflight.outputs.workflow-sha }}', persist-credentials: false}
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with: {name: 'runner-deploy-${{ inputs.kind }}-review-${{ github.run_id }}-${{ github.run_attempt }}'}
+      - id: publisher
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
+        with:
+          client-id: ${{ vars.RUNNER_DEPLOY_AI_REVIEW_APP_CLIENT_ID }}
+          private-key: ${{ secrets.RUNNER_DEPLOY_AI_REVIEW_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          permission-checks: write
+      - env: {GH_TOKEN: '${{ steps.publisher.outputs.token }}'}
+        run: |
+          python3 scripts/container_deployment_review_producer.py publish --repository "$GITHUB_REPOSITORY" --check-name runner-deploy-ai-review \
+            --receipt review-receipt.json --artifact-id '${{ needs.analyze.outputs.artifact-id }}' \
+            --artifact-digest '${{ needs.analyze.outputs.artifact-digest }}' --installation-id '${{ steps.publisher.outputs.installation-id }}' \
+            --expected-installation-id '${{ needs.analyze.outputs.expected-installation-id }}'

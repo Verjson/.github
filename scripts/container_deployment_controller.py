@@ -47,6 +47,27 @@ class DeploymentInterrupted(DeploymentError):
     pass
 
 
+def validate_environment_policy(environment: dict[str, Any]) -> None:
+    branch_policy = environment.get("deployment_branch_policy")
+    if not isinstance(branch_policy, dict):
+        raise DeploymentError("production deployment branch policy is unavailable")
+    if (
+        branch_policy.get("protected_branches") is not True
+        or branch_policy.get("custom_branch_policies") is not False
+    ):
+        raise DeploymentError("production environment branch policy differs")
+    rules = environment.get("protection_rules")
+    if (
+        not isinstance(rules, list)
+        or len(rules) != 1
+        or not isinstance(rules[0], dict)
+        or rules[0].get("type") != "branch_policy"
+    ):
+        raise DeploymentError("production must have only the branch-policy rule")
+    if environment.get("can_admins_bypass") is not True:
+        raise DeploymentError("production must permit administrator bypass")
+
+
 def _object(value: Any, field: str) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise DeploymentError(f"{field} must be an object")
@@ -412,6 +433,13 @@ def build_plan(
     head_commit = evidence.get("headCommit")
     if not isinstance(head_commit, str) or re.fullmatch(r"[0-9a-f]{40}", head_commit) is None:
         raise DeploymentError("checked-out head commit evidence is invalid")
+    head_tree = evidence.get("headTree")
+    if not isinstance(head_tree, str) or re.fullmatch(r"[0-9a-f]{40}", head_tree) is None:
+        raise DeploymentError("checked-out head tree evidence is invalid")
+    if authorization.get("deployedCommit") != head_commit or authorization.get("deployedTree") != head_tree:
+        raise DeploymentError("deployment authority differs checked-out default-branch commit/tree")
+    if authorization.get("reviewedTree") != head_tree:
+        raise DeploymentError("reviewed pull-request tree differs deployed default-branch tree")
     run_id = authorization.get("workflowRunId")
     run_attempt = evidence.get("workflowRunAttempt", 1)
     if (
@@ -426,6 +454,10 @@ def build_plan(
     if action == "rollback":
         if rollback_source is None:
             raise DeploymentError("rollback requires a failed or interrupted source attempt")
+        if rollback_source.get("schemaVersion") != 4:
+            raise DeploymentError(
+                "schema-v3 deployment attempts must finish or roll back before v4 cutover"
+            )
         candidate = {
             "action": "rollback",
             "selectedRelease": selected_release,
@@ -450,6 +482,8 @@ def build_plan(
         "attemptId": f"{run_id}.{run_attempt}",
         "deploymentContractCommit": deployment_contract_ref,
         "headCommit": head_commit,
+        "headTree": head_tree,
+        "authorizationDigest": canonical_digest(authorization),
         "manifestIdentity": identity,
         "selectedRelease": selected_release,
         "targetDigest": target_digest,
@@ -477,16 +511,37 @@ def admitted_receipt(
 ) -> dict[str, Any]:
     authorization = _object(evidence.get("authorization"), "authorization")
     required_authorization = {
-        field: authorization.get(field)
+        field: copy.deepcopy(authorization.get(field))
         for field in (
+            "source",
+            "repositoryId",
+            "defaultBranch",
+            "ref",
+            "deployedCommit",
+            "deployedTree",
+            "environment",
+            "deploymentBranchPolicy",
+            "requiredReviewers",
+            "preventSelfReview",
+            "canAdminsBypass",
             "dispatcher",
-            "reviewer",
+            "dispatcherId",
+            "triggeringActor",
+            "triggeringActorId",
+            "environmentBypassed",
+            "bypassBasis",
             "workflowRunId",
-            "environmentProtectionRuleId",
+            "workflowRunAttempt",
+            "repository",
+            "pullRequest",
+            "reviewedHead",
+            "reviewedTree",
+            "patchDigest",
+            "reviewGates",
         )
     }
     return {
-        "schemaVersion": 3,
+        "schemaVersion": 4,
         "revision": 0,
         "attemptId": plan["attemptId"],
         "action": plan["action"],
@@ -498,6 +553,7 @@ def admitted_receipt(
         "rollbackOfAttempt": copy.deepcopy(plan["rollbackOfAttempt"]),
         "deploymentContractCommit": plan["deploymentContractCommit"],
         "headCommit": plan["headCommit"],
+        "headTree": plan["headTree"],
         "planDigest": canonical_digest(plan),
         "manifestIdentity": plan["manifestIdentity"],
         "fleetSelector": plan["fleetSelector"],
@@ -667,6 +723,7 @@ def reconcile_unknown_state(
         "action",
         "deploymentContractCommit",
         "headCommit",
+        "headTree",
         "manifestIdentity",
         "fleetSelector",
         "selectedRelease",
@@ -802,6 +859,9 @@ def execute_plan(
 ) -> dict[str, Any]:
     if dry_run:
         return plan
+    authorization = _object(evidence.get("authorization"), "authorization")
+    if canonical_digest(authorization) != plan.get("authorizationDigest"):
+        raise DeploymentError("GitHub authorization changed after plan admission")
     if clock is None:
         clock = type("SystemClock", (), {"now": staticmethod(lambda: datetime.now(timezone.utc))})()
 
@@ -1116,6 +1176,18 @@ def _validate_probe(result: Any, runner: str) -> str:
     return outcome
 
 
+def _child_environment(extra: dict[str, str] | None = None) -> dict[str, str]:
+    allowed = (
+        "PATH", "HOME", "LANG", "LC_ALL", "TMPDIR", "SSL_CERT_FILE",
+        "SSL_CERT_DIR", "SSH_AUTH_SOCK", "VERJSON_DEPLOYMENT_CLI",
+        "VERJSON_DEPLOYMENT_CLI_ROOT",
+    )
+    environment = {key: os.environ[key] for key in allowed if key in os.environ}
+    if extra:
+        environment.update(extra)
+    return environment
+
+
 class ProcessAdapter:
     def __init__(self, config: dict[str, Any], fleet: dict[str, Any]):
         self.config = config
@@ -1133,7 +1205,7 @@ class ProcessAdapter:
             check=True,
             capture_output=True,
             text=True,
-            env=env,
+            env=_child_environment(env),
             timeout=timeout_seconds,
         )
 
@@ -1168,11 +1240,16 @@ class ProcessAdapter:
     def update_runner(
         self, runner: str, manifest_identity: str, variant: str, timeout_seconds: int
     ) -> dict[str, Any]:
-        deploy_token = os.environ.get("RUNNER_DEPLOY_TOKEN")
+        deploy_token = os.environ.get("DIGITALOCEAN_RUNNER_FLEET_TOKEN")
+        github_token = os.environ.get("GH_RUNNER_CONTROL_TOKEN")
         if not deploy_token:
-            raise DeploymentError("RUNNER_DEPLOY_TOKEN is unavailable")
-        environment = os.environ.copy()
-        environment["DIGITALOCEAN_ACCESS_TOKEN"] = deploy_token
+            raise DeploymentError("DIGITALOCEAN_RUNNER_FLEET_TOKEN is unavailable")
+        if not github_token:
+            raise DeploymentError("GH_RUNNER_CONTROL_TOKEN is unavailable")
+        environment = {
+            "DIGITALOCEAN_ACCESS_TOKEN": deploy_token,
+            "GH_TOKEN": github_token,
+        }
         command = [
             _deployment_cli(),
             "runner",
@@ -1227,9 +1304,6 @@ class ProcessAdapter:
         return capacity
 
     def probe_runner(self, runner: str, timeout_seconds: int) -> dict[str, Any]:
-        probe_environment = os.environ.copy()
-        probe_environment.pop("RUNNER_DEPLOY_TOKEN", None)
-        probe_environment.pop("DIGITALOCEAN_ACCESS_TOKEN", None)
         return self._run(
             [
                 *_command(self.config, "probeCommand"),
@@ -1238,7 +1312,7 @@ class ProcessAdapter:
                 "--timeout-seconds",
                 str(timeout_seconds),
             ],
-            probe_environment,
+            {},
             timeout_seconds=timeout_seconds + 30,
         )
 
@@ -1307,6 +1381,7 @@ def _collect_evidence(
     manifest_identity: str,
     fleet_selector: str,
     rollback_receipt: str = "",
+    authorization_path: Path | None = None,
 ) -> dict[str, Any]:
     if MANIFEST_IDENTITY.fullmatch(manifest_identity) is None:
         raise DeploymentError("manifest identity must be an immutable digest reference")
@@ -1325,9 +1400,14 @@ def _collect_evidence(
     evidence = ProcessAdapter._run(
         command, timeout_seconds=ADMISSION_EVIDENCE_SECONDS
     )
+    if authorization_path is not None:
+        evidence["authorization"] = _load(authorization_path)
     github_sha = os.environ.get("GITHUB_SHA")
     if github_sha and evidence.get("headCommit") != github_sha:
         raise DeploymentError("evidence checked-out head differs from workflow authority")
+    github_tree = os.environ.get("GITHUB_HEAD_TREE")
+    if github_tree and evidence.get("headTree") != github_tree:
+        raise DeploymentError("evidence checked-out tree differs from workflow authority")
     authorization = evidence.get("authorization")
     github_run_id = os.environ.get("GITHUB_RUN_ID")
     github_run_attempt = os.environ.get("GITHUB_RUN_ATTEMPT")
@@ -1360,6 +1440,7 @@ def main() -> int:
     collect.add_argument("--manifest-identity", required=True)
     collect.add_argument("--fleet", required=True)
     collect.add_argument("--rollback-receipt", default="")
+    collect.add_argument("--authorization", type=Path)
     collect.add_argument("--output", required=True, type=Path)
 
     plan_parser = subparsers.add_parser("plan")
@@ -1396,7 +1477,8 @@ def main() -> int:
                     config,
                     args.manifest_identity,
                     args.fleet,
-                    args.rollback_receipt,
+            args.rollback_receipt,
+            args.authorization,
                 ),
             )
         elif args.command == "plan":

@@ -34,10 +34,56 @@ cache under `RUNNER_TEMP`; an always-run final step removes that cache, the cont
 archive, and the extracted dependency tree. The consumer must not install, cache, or
 select another deployment CLI.
 
-Configure the consumer's `production` environment to admit protected branches only,
-require an independent reviewer, prevent self-review, and disable administrator bypass.
-Store the narrowly scoped `RUNNER_DEPLOY_TOKEN` only there. Review those settings
+Configure the consumer's `production` environment to admit protected branches only.
+It is a credential and audit boundary, not a human approval gate: no environment
+reviewer is required and administrator bypass may remain enabled. Store the
+project-scoped `DIGITALOCEAN_RUNNER_FLEET_TOKEN` and
+`GH_RUNNER_REGISTRATION_APP_PRIVATE_KEY` only there. Configure
+`GH_RUNNER_REGISTRATION_APP_CLIENT_ID` and
+`GH_RUNNER_REGISTRATION_APP_INSTALLATION_ID` as repository or environment variables.
+Install `org-gh-runner-registration` on selected repositories only, with organization
+self-hosted runners read/write. Review those settings
 and credential scope as sensitive changes; never print their values.
+
+Commit stable numeric App and installation IDs, check names, and workflow paths under consumer
+`container-deployment.json` `reviewAuthority` object. These reviewed-tree values are the
+only trust roots; Actions variables cannot redirect them. Generate code, security, AI
+adapter, shared trusted publisher, and helper with `gen-container-deployment.sh` modes
+`code-review-workflow`, `security-review-workflow`, `ai-review-workflow`,
+`review-producer-workflow`, and `review-producer` at the same immutable contract SHA.
+The three App IDs and installation targets must differ. In every caller repository,
+store each private key only in its matching
+`runner-deploy-{code,security,ai}-review-publisher` protected environment. Reusable
+workflow environments and secrets belong to `github.repository` (the caller), while the
+serialized `job.workflow_repository/ref/sha` fields identify the called reusable workflow.
+Generated adapters pin the reusable producer to the exact contract SHA. Analysis has no
+publisher credential. An uncredentialed prerequisite verifies the live caller-owned
+environment and exact default ref before the environment job can start. GitHub releases
+environment secrets when that job starts; an in-job check cannot gate initial release.
+The credentialed job therefore relies on GitHub's native protected-branch environment
+admission, then rechecks the content-addressed policy for TOCTOU/audit and validates
+the parsed `job.workflow_repository/ref/sha` before loading code or minting a token.
+Because actionlint 1.7.7's static `job` schema predates those GitHub fields, the workflow
+passes only `toJSON(job)` to a nonsecret step, validates the three fields with `jq`, and
+exposes bounded outputs. It checks out the validated canonical repository at the
+validated called-workflow SHA. Caller `github.workflow_*` and inputs cannot select
+producer code. The PR and consumer config remain API data. The
+environment-policy digest is SHA-256 over the sorted compact JSON projection
+`{id,name,deployment_branch_policy,protection_rules}` with no trailing newline; shell
+producers use `jq -j -cS` and deployment uses the same canonical-byte helper. The
+machine-readable claim binds repository ID, PR exact
+head/tree/diff, immutable producer commit/tree, installation ID, workflow run/attempt.
+The AI adapter references a pinned App-owned terminal-green source check on that head.
+Dispatch producers from the merged default-branch commit, never a PR ref. They reconcile
+the prior unprivileged exact-PR-head reviews into App checks on that deployed commit.
+Deployment resolves exactly one associated PR and requires its reviewed
+tree to equal the checked-out default-branch tree byte-for-byte. Merge, squash, and
+rebase commit IDs may differ; conflict-resolution or unrelated-tree drift fails closed.
+The canonical workflow re-fetches the checks, workflow runs, artifacts, actors,
+environment policy, and bypass basis through GitHub before admitting mutation.
+The environment has exactly GitHub's `branch_policy` protection rule, including its live
+ID/node metadata, and no reviewer, timer, or custom rule. This makes
+`environmentBypassed: false` observable while administrator bypass remains available.
 
 ## Dry-run and deployment
 
@@ -108,7 +154,8 @@ tag as recovery authority.
 
 ## Credential rotation and incidents
 
-Rotate `RUNNER_DEPLOY_TOKEN` in the consumer environment without editing callers
+Rotate `DIGITALOCEAN_RUNNER_FLEET_TOKEN` and the `org-gh-runner-registration` App
+private key in the consumer environment without editing callers
 or generated files. Confirm the replacement retains only the named existing-fleet update,
 runner admission, and evidence permissions; it must not authorize capacity creation or
 unrelated environments. Revoke the old credential after a mutation-free dry-run and a

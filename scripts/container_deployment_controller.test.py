@@ -60,6 +60,11 @@ def manifest_release(manifest: dict) -> dict:
 def configuration() -> dict:
     return {
         "schemaVersion": 1,
+        "reviewAuthority": {
+            "code": {"appId": 201, "installationId": 301, "checkName": "runner-deploy-code-review", "workflowPath": ".github/workflows/container-deployment-code-review.yml"},
+            "security": {"appId": 202, "installationId": 302, "checkName": "runner-deploy-security-review", "workflowPath": ".github/workflows/container-deployment-security-review.yml"},
+            "ai": {"appId": 203, "installationId": 303, "sourceAppId": 403, "sourceCheckName": "canonical-ai-review", "checkName": "runner-deploy-ai-review", "workflowPath": ".github/workflows/container-deployment-ai-review.yml"},
+        },
         "cliCommand": ["verjson-cloud"],
         "evidenceCommand": ["python3", "scripts/runner-deployment-evidence.py"],
         "probeCommand": ["python3", "scripts/runner-deployment-probe.py"],
@@ -109,11 +114,61 @@ def evidence() -> dict:
         "requestedAt": now.isoformat().replace("+00:00", "Z"),
         "activeDeploymentCount": 0,
         "headCommit": "c" * 40,
+        "headTree": "d" * 40,
         "authorization": {
+            "source": "github-api",
+            "repositoryId": 42,
+            "defaultBranch": "main",
+        "ref": "refs/heads/main",
+        "deployedCommit": "c" * 40,
+        "deployedTree": "d" * 40,
+            "environment": "production",
+            "deploymentBranchPolicy": {"protectedBranches": True, "customBranchPolicies": False},
+            "requiredReviewers": [],
+            "preventSelfReview": False,
+            "canAdminsBypass": True,
             "dispatcher": "release-operator",
-            "reviewer": "release-approver",
+            "dispatcherId": 104,
+            "triggeringActor": "release-trigger",
+            "triggeringActorId": 105,
+            "environmentBypassed": False,
+            "bypassBasis": "branch-policy-only",
             "workflowRunId": 9001,
-            "environmentProtectionRuleId": 44,
+            "workflowRunAttempt": 1,
+            "repository": "Verjson/verjson-github-runner",
+            "pullRequest": 174,
+            "reviewedHead": "c" * 40,
+            "reviewedTree": "d" * 40,
+            "patchDigest": "sha256:" + "9" * 64,
+            "reviewGates": [
+                {
+                    "kind": kind,
+                    "principalId": principal,
+                    "appId": app_id,
+                    "issuer": f"org-{kind}-review",
+                    "checkRunId": 1000 + app_id,
+                    "workflowRunId": 2000 + app_id,
+                    "workflowRunAttempt": 1,
+                    "workflowPath": f".github/workflows/{kind}-review.yml",
+                    "workflowRef": f"Verjson/verjson-github-runner/.github/workflows/{kind}-review.yml@refs/heads/main",
+                    "artifactId": 3000 + app_id,
+                    "artifactDigest": "sha256:" + digit * 64,
+                    "evidenceDigest": "sha256:" + "7" * 64,
+                    "repositoryId": 42,
+                    "repository": "Verjson/verjson-github-runner",
+                    "pullRequest": 174,
+                    "headCommit": "c" * 40,
+                    "headTree": "d" * 40,
+                    "patchDigest": "sha256:" + "9" * 64,
+                    "conclusion": "success",
+                    "completedAt": "2026-08-26T12:00:00Z",
+                }
+                for kind, principal, digit, app_id in (
+                    ("code", 101, "4", 201),
+                    ("security", 102, "5", 202),
+                    ("ai", 103, "6", 203),
+                )
+            ],
         },
         "fleet": {
             "runners": [
@@ -332,6 +387,39 @@ class DeploymentPlannerTests(unittest.TestCase):
 
 
 class DeploymentExecutionTests(unittest.TestCase):
+    def test_accepts_realistic_protected_branch_environment_payload(self):
+        controller.validate_environment_policy(
+            {
+                "deployment_branch_policy": {
+                    "protected_branches": True,
+                    "custom_branch_policies": False,
+                },
+                "protection_rules": [
+                    {"id": 901, "node_id": "EPR_kwDO", "type": "branch_policy"}
+                ],
+                "can_admins_bypass": True,
+            }
+        )
+
+    def test_rejects_bypassable_environment_protection_rule(self):
+        for extra in (
+            {"type": "required_reviewers", "reviewers": []},
+            {"type": "wait_timer", "wait_timer": 5},
+            {"type": "custom_protection_rule", "app": {"id": 44}},
+        ):
+            with self.subTest(extra=extra), self.assertRaisesRegex(
+                controller.DeploymentError, "branch-policy rule"
+            ):
+                controller.validate_environment_policy(
+                    {
+                        "deployment_branch_policy": {
+                            "protected_branches": True,
+                            "custom_branch_policies": False,
+                        },
+                        "protection_rules": [{"type": "branch_policy"}, extra],
+                        "can_admins_bypass": True,
+                    }
+                )
     def test_persists_admission_before_any_mutation_and_rolls_out_sequentially(self):
         adapter = FakeAdapter()
         persisted = []
@@ -889,8 +977,8 @@ class DeploymentExecutionTests(unittest.TestCase):
         receipt = controller.admitted_receipt(
             plan, configuration(), evidence(), FakeClock().now()
         )
-        receipt["authorization"]["reviewer"] = receipt["authorization"]["dispatcher"]
-        with self.assertRaisesRegex(ValueError, "self review"):
+        receipt["authorization"]["reviewGates"][0]["principalId"] = receipt["authorization"]["dispatcherId"]
+        with self.assertRaisesRegex(ValueError, "independent review"):
             controller.validate_receipt(receipt)
 
     def test_unknown_update_state_is_reconciled_from_live_evidence_then_probed(self):
@@ -1070,7 +1158,8 @@ class DeploymentExecutionTests(unittest.TestCase):
                 {
                     "VERJSON_DEPLOYMENT_CLI": str(cli),
                     "VERJSON_DEPLOYMENT_CLI_ROOT": directory,
-                    "RUNNER_DEPLOY_TOKEN": "redacted-fixture",
+                    "DIGITALOCEAN_RUNNER_FLEET_TOKEN": "provider-fixture",
+                    "GH_RUNNER_CONTROL_TOKEN": "github-fixture",
                 },
                 clear=False,
             ), mock.patch.object(
@@ -1085,13 +1174,64 @@ class DeploymentExecutionTests(unittest.TestCase):
 
         command = run.call_args.args[0]
         self.assertIn("--only", command)
-        self.assertNotIn("redacted-fixture", command)
+        self.assertNotIn("provider-fixture", command)
+        self.assertNotIn("github-fixture", command)
         self.assertTrue({"--replicas", "--standard", "create", "resize"}.isdisjoint(command))
         self.assertEqual(
-            "redacted-fixture",
+            "provider-fixture",
             run.call_args.kwargs["env"]["DIGITALOCEAN_ACCESS_TOKEN"],
         )
+        self.assertEqual("github-fixture", run.call_args.kwargs["env"]["GH_TOKEN"])
         self.assertEqual(720, run.call_args.kwargs["timeout"])
+
+    def test_child_process_environment_drops_unreviewed_secrets(self):
+        with mock.patch.dict(
+            controller.os.environ,
+            {
+                "PATH": "/usr/bin",
+                "UNRELATED_SECRET": "must-not-cross-boundary",
+                "DIGITALOCEAN_RUNNER_FLEET_TOKEN": "provider-parent",
+                "GH_RUNNER_CONTROL_TOKEN": "github-parent",
+            },
+            clear=True,
+        ):
+            child = controller._child_environment({"SAFE_EXPLICIT": "included"})
+        self.assertEqual(
+            {"PATH": "/usr/bin", "SAFE_EXPLICIT": "included"}, child
+        )
+
+    def test_refresh_rejects_changed_github_authorization(self):
+        admitted = evidence()
+        plan = controller.build_plan(configuration(), admitted, "production")
+        refreshed = evidence()
+        refreshed["authorization"]["reviewGates"][0]["checkRunId"] += 1
+        with self.assertRaisesRegex(controller.DeploymentError, "authorization changed"):
+            controller.execute_plan(
+                plan,
+                configuration(),
+                refreshed,
+                FakeAdapter(),
+                lambda _receipt: None,
+            )
+
+    def test_v4_controller_rejects_schema_v3_rollback_authority(self):
+        source = controller.admitted_receipt(
+            controller.build_plan(configuration(), evidence(), "production"),
+            configuration(),
+            evidence(),
+            FakeClock().now(),
+        )
+        source["outcome"] = "failed"
+        source["schemaVersion"] = 3
+        with self.assertRaisesRegex(controller.DeploymentError, "schema-v3"):
+            controller.build_plan(
+                configuration(),
+                evidence(),
+                "production",
+                action="rollback",
+                deployment_contract_ref="a" * 40,
+                rollback_source=source,
+            )
 
     def test_process_adapter_rejects_cli_outside_immutable_acquisition_root(self):
         with tempfile.TemporaryDirectory() as root, tempfile.TemporaryDirectory() as outside:
@@ -1103,7 +1243,8 @@ class DeploymentExecutionTests(unittest.TestCase):
                 {
                     "VERJSON_DEPLOYMENT_CLI": str(cli),
                     "VERJSON_DEPLOYMENT_CLI_ROOT": root,
-                    "RUNNER_DEPLOY_TOKEN": "redacted-fixture",
+                    "DIGITALOCEAN_RUNNER_FLEET_TOKEN": "provider-fixture",
+                    "GH_RUNNER_CONTROL_TOKEN": "github-fixture",
                 },
                 clear=False,
             ):

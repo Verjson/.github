@@ -30,8 +30,10 @@ on:
 permissions:
   actions: read
   attestations: read
+  checks: read
   contents: read
   packages: read
+  pull-requests: read
 
 concurrency:
   group: runner-deployment-${{ github.repository }}-${{ inputs.fleet-selector }}
@@ -209,15 +211,248 @@ jobs:
       - name: Collect normalized manifest, fleet, and approval evidence
         env:
           CONFIG_PATH: ${{ inputs.config-path }}
+          CONTRACT_REF: ${{ inputs.contract-ref }}
           FLEET_SELECTOR: ${{ inputs.fleet-selector }}
           GH_TOKEN: ${{ github.token }}
           MANIFEST_IDENTITY: ${{ inputs.manifest-identity }}
           ROLLBACK_RECEIPT: ${{ inputs.rollback-receipt }}
+          TRIGGERING_ACTOR: ${{ github.triggering_actor }}
         run: |
           set -euo pipefail
+          GITHUB_HEAD_TREE="$(git rev-parse 'HEAD^{tree}')"
+          export GITHUB_HEAD_TREE
+          python3 - <<'PY'
+          import hashlib, io, json, os, re, subprocess, sys, zipfile
+          from datetime import datetime, timezone
+          sys.path.insert(0, "scripts")
+          from container_deployment_controller import validate_environment_policy
+          from container_deployment_review_producer import environment_policy_digest, verify_bundle, verify_gate_authority
+
+          def api(path, *, accept=None):
+              command = ["gh", "api", path]
+              if accept:
+                  command += ["-H", f"Accept: {accept}"]
+              result = subprocess.run(command, check=True, capture_output=True)
+              return result.stdout
+
+          repo = os.environ["GITHUB_REPOSITORY"]
+          deployment_sha = os.environ["GITHUB_SHA"]
+          run_id = int(os.environ["GITHUB_RUN_ID"])
+          run_attempt = int(os.environ["GITHUB_RUN_ATTEMPT"])
+          repository = json.loads(api(f"repos/{repo}"))
+          with open(os.environ["CONFIG_PATH"], encoding="utf-8") as stream:
+              reviewed_config = json.load(stream)
+          reviewed_authority = reviewed_config.get("reviewAuthority")
+          contract_ref = os.environ["CONTRACT_REF"]
+          if not isinstance(reviewed_authority, dict) or set(reviewed_authority) != {"code", "security", "ai"}:
+              raise SystemExit("reviewed deployment review authority is missing")
+          expected_ref = f"refs/heads/{repository['default_branch']}"
+          if os.environ["GITHUB_REF"] != expected_ref:
+              raise SystemExit("deployment must execute from the authoritative default-branch ref")
+          pulls = json.loads(api(f"repos/{repo}/commits/{deployment_sha}/pulls"))
+          pulls = [item for item in pulls if item.get("merged_at") and item["base"]["ref"] == repository["default_branch"]]
+          if len(pulls) != 1:
+              raise SystemExit("published head must resolve to exactly one pull request")
+          pull = pulls[0]
+          sha = pull["head"]["sha"]
+          commit = json.loads(api(f"repos/{repo}/git/commits/{sha}"))
+          tree = commit["tree"]["sha"]
+          deployed_commit = json.loads(api(f"repos/{repo}/git/commits/{deployment_sha}"))
+          deployed_tree = deployed_commit["tree"]["sha"]
+          if deployed_tree != os.environ["GITHUB_HEAD_TREE"]:
+              raise SystemExit("GitHub tree differs checked-out exact tree")
+          if deployed_tree != tree:
+              raise SystemExit("deployed default-branch tree differs reviewed pull-request tree")
+          patch = api(
+              f"repos/{repo}/pulls/{pull['number']}",
+              accept="application/vnd.github.v3.diff",
+          )
+          patch_digest = "sha256:" + hashlib.sha256(patch).hexdigest()
+          checks = json.loads(api(f"repos/{repo}/commits/{deployment_sha}/check-runs?per_page=100"))["check_runs"]
+          expected = {
+              kind: reviewed_authority[kind].get("appId") for kind in ("code", "security", "ai")
+          }
+          expected_workflows = {
+              kind: reviewed_authority[kind].get("workflowPath") for kind in ("code", "security", "ai")
+          }
+          expected_checks = {
+              kind: reviewed_authority[kind].get("checkName") for kind in ("code", "security", "ai")
+          }
+          ai_source_app = reviewed_authority["ai"].get("sourceAppId")
+          ai_source_check = reviewed_authority["ai"].get("sourceCheckName")
+          if not isinstance(ai_source_app, int) or ai_source_app < 1 or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_. -]{0,99}", str(ai_source_check)) is None:
+              raise SystemExit("reviewed AI source authority is malformed")
+          expected_installations = {
+              kind: reviewed_authority[kind].get("installationId") for kind in ("code", "security", "ai")
+          }
+          if any(not isinstance(value, int) or value < 1 for value in expected.values()):
+              raise SystemExit("reviewed review App ID is malformed")
+          if any(not isinstance(value, int) or value < 1 for value in expected_installations.values()):
+              raise SystemExit("reviewed publisher installation ID is malformed")
+          if any(re.fullmatch(r"\.github/workflows/[A-Za-z0-9_.-]+\.ya?ml", value) is None for value in expected_workflows.values()):
+              raise SystemExit("trusted review workflow path is malformed")
+          if any(re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_. -]{0,99}", value) is None for value in expected_checks.values()):
+              raise SystemExit("trusted review check name is malformed")
+          if len(set(expected.values())) != 3:
+              raise SystemExit("review App IDs must be distinct")
+          gates = []
+          now = datetime.now(timezone.utc)
+          for kind, app_id in expected.items():
+              publisher_environment = f"runner-deploy-{kind}-review-publisher"
+              publisher_policy = json.loads(api(f"repos/{repo}/environments/{publisher_environment}"))
+              validate_environment_policy(publisher_policy)
+              publisher_policy_digest = environment_policy_digest(publisher_policy)
+              named = [c for c in checks if c["name"] == expected_checks[kind] and c["app"]["id"] == app_id]
+              if len(named) != 1:
+                  raise SystemExit(f"{kind} review must have exactly one trusted check")
+              check = named[0]
+              integration_expected = {
+                  "checkName": expected_checks[kind], "appId": app_id, "installationId": expected_installations[kind],
+                  "repositoryId": repository["id"], "repository": repo, "pullRequest": pull["number"],
+                  "headCommit": deployment_sha, "headTree": deployed_tree, "reviewedHead": sha, "reviewedTree": tree,
+                  "patchDigest": patch_digest, "kind": kind, "callerRepositoryId": repository["id"],
+                  "publisherEnvironment": publisher_environment, "environmentPolicyDigest": publisher_policy_digest,
+                  "contractRef": contract_ref, "producerWorkflowRef": f"Verjson/.github/.github/workflows/container-deployment-review-producer.yml@{contract_ref}",
+                  "workflowPath": expected_workflows[kind], "sourceCheckName": ai_source_check, "sourceAppId": ai_source_app,
+              }
+              try:
+                  verify_gate_authority(kind, check, integration_expected, lambda path: api(path))
+              except ValueError as error:
+                  raise SystemExit(f"{kind} complete review authority differs") from error
+              if check["status"] != "completed" or check["conclusion"] != "success":
+                  raise SystemExit(f"{kind} review is not terminal green")
+              completed = datetime.fromisoformat(check["completed_at"].replace("Z", "+00:00"))
+              age = (now - completed).total_seconds()
+              if age < 0 or age > 86400:
+                  raise SystemExit(f"{kind} review is stale")
+              try:
+                  claim = json.loads(check["output"]["summary"])
+              except (KeyError, TypeError, json.JSONDecodeError) as error:
+                  raise SystemExit(f"{kind} trusted check has no review claim") from error
+              required = {
+                  "repositoryId": repository["id"], "repository": repo,
+                  "pullRequest": pull["number"], "headCommit": deployment_sha,
+                  "headTree": deployed_tree, "reviewedHead": sha, "reviewedTree": tree,
+                  "patchDigest": patch_digest, "kind": kind, "callerRepositoryId": repository["id"],
+                  "publisherEnvironment": publisher_environment, "environmentPolicyDigest": publisher_policy_digest,
+              }
+              if any(claim.get(key) != value for key, value in required.items()):
+                  raise SystemExit(f"{kind} trusted check claim differs exact source")
+              if claim.get("publisherInstallationId") != expected_installations[kind]:
+                  raise SystemExit(f"{kind} publisher installation differs reviewed authority")
+              expected_producer_ref = f"Verjson/.github/.github/workflows/container-deployment-review-producer.yml@{contract_ref}"
+              if claim.get("producerCommit") != contract_ref or claim.get("producerWorkflowRef") != expected_producer_ref:
+                  raise SystemExit(f"{kind} producer contract authority differs")
+              producer_commit = json.loads(api(f"repos/Verjson/.github/git/commits/{claim.get('producerCommit')}"))
+              if claim.get("producerTree") != producer_commit["tree"]["sha"]:
+                  raise SystemExit(f"{kind} producer commit/tree authority differs")
+              workflow = json.loads(api(f"repos/{repo}/actions/runs/{claim['workflowRunId']}"))
+              if (
+                  workflow["head_sha"] != deployment_sha
+                  or workflow["path"] != expected_workflows[kind]
+                  or workflow["status"] != "completed"
+                  or workflow["conclusion"] != "success"
+                  or workflow["run_attempt"] != claim["workflowRunAttempt"]
+                  or workflow["event"] != "workflow_dispatch"
+              ):
+                  raise SystemExit(f"{kind} review workflow authority differs")
+              artifacts = json.loads(api(f"repos/{repo}/actions/runs/{claim['workflowRunId']}/artifacts"))["artifacts"]
+              artifact = next((a for a in artifacts if a["id"] == claim["artifactId"]), None)
+              if not artifact or artifact.get("expired") or artifact.get("digest") != claim["artifactDigest"]:
+                  raise SystemExit(f"{kind} review artifact authority differs")
+              archive = api(f"repos/{repo}/actions/artifacts/{artifact['id']}/zip")
+              if "sha256:" + hashlib.sha256(archive).hexdigest() != artifact["digest"]:
+                  raise SystemExit(f"{kind} downloaded artifact digest differs")
+              try:
+                  with zipfile.ZipFile(io.BytesIO(archive)) as bundle:
+                      members = [item for item in bundle.infolist() if not item.is_dir()]
+                      if len(members) != 1 or members[0].filename != "review-receipt.json" or members[0].file_size > 65536:
+                          raise SystemExit(f"{kind} artifact has ambiguous review evidence")
+                      receipt_bytes = bundle.read(members[0])
+                  receipt = json.loads(receipt_bytes)
+              except (zipfile.BadZipFile, KeyError, json.JSONDecodeError) as error:
+                  raise SystemExit(f"{kind} review artifact is malformed") from error
+              receipt_digest = "sha256:" + hashlib.sha256(
+                  json.dumps(receipt, sort_keys=True, separators=(",", ":")).encode()
+              ).hexdigest()
+              canonical_receipt = json.dumps(receipt, sort_keys=True, separators=(",", ":")).encode() + b"\n"
+              if receipt_bytes != canonical_receipt:
+                  raise SystemExit(f"{kind} review receipt bytes are not canonical")
+              try:
+                  if verify_bundle(archive, artifact["digest"], claim) != receipt:
+                      raise ValueError("review bundle parser differs")
+              except ValueError as error:
+                  raise SystemExit(f"{kind} review bundle protocol differs") from error
+              receipt_required = {
+                  "schemaVersion": 2, "kind": kind, "repositoryId": repository["id"],
+                  "repository": repo, "pullRequest": pull["number"], "headCommit": deployment_sha,
+                  "headTree": deployed_tree, "reviewedHead": sha, "reviewedTree": tree,
+                  "patchDigest": patch_digest, "callerRepositoryId": repository["id"],
+                  "publisherEnvironment": publisher_environment, "environmentPolicyDigest": publisher_policy_digest,
+                  "workflowRunId": workflow["id"], "workflowRunAttempt": workflow["run_attempt"],
+              }
+              if set(receipt) != set(receipt_required) | {"principalId", "reviewId", "sourceCheckRunId", "producerCommit", "producerTree", "producerWorkflowRef"}:
+                  raise SystemExit(f"{kind} review receipt schema differs")
+              if any(receipt.get(key) != value for key, value in receipt_required.items()):
+                  raise SystemExit(f"{kind} review receipt differs exact authority")
+              if receipt.get("producerCommit") != claim.get("producerCommit") or receipt.get("producerTree") != claim.get("producerTree") or receipt.get("producerWorkflowRef") != expected_producer_ref:
+                  raise SystemExit(f"{kind} producer authority differs artifact")
+              if claim.get("receiptDigest") != receipt_digest:
+                  raise SystemExit(f"{kind} review receipt digest differs trusted check")
+              if kind in ("code", "security"):
+                  reviews = json.loads(api(f"repos/{repo}/pulls/{pull['number']}/reviews?per_page=100"))
+                  review = next((item for item in reviews if item["id"] == receipt["reviewId"]), None)
+                  if not review or review["state"] != "APPROVED" or review["commit_id"] != receipt["reviewedHead"] or review["user"]["id"] != receipt["principalId"]:
+                      raise SystemExit(f"{kind} reviewer identity is not an exact-head GitHub approval")
+                  principal_id = review["user"]["id"]
+              else:
+                  source = json.loads(api(f"repos/{repo}/check-runs/{receipt['sourceCheckRunId']}"))
+                  if receipt["reviewId"] is not None or source["app"]["id"] != receipt["principalId"] or source["app"]["id"] != ai_source_app or source["name"] != ai_source_check or source["head_sha"] != receipt["reviewedHead"] or source["status"] != "completed" or source["conclusion"] != "success":
+                      raise SystemExit("AI review source is not exact-head terminal green")
+                  principal_id = receipt["principalId"]
+              gates.append({
+                  "kind": kind, "principalId": principal_id,
+                  "appId": app_id, "issuer": check["app"]["slug"],
+                  "checkRunId": check["id"], "workflowRunId": claim["workflowRunId"],
+                  "workflowRunAttempt": claim["workflowRunAttempt"],
+                  "workflowPath": workflow["path"], "workflowRef": f"{repo}/{workflow['path']}@{claim['producerCommit']}",
+                  "artifactId": artifact["id"], "artifactDigest": artifact["digest"],
+                  "evidenceDigest": receipt_digest,
+                  "repositoryId": repository["id"], **required,
+                  "conclusion": "success", "completedAt": check["completed_at"],
+              })
+          actor = os.environ["GITHUB_ACTOR"]
+          triggering_actor = os.environ["TRIGGERING_ACTOR"]
+          actor_data = json.loads(api(f"users/{actor}"))
+          triggering_data = json.loads(api(f"users/{triggering_actor}"))
+          principals = [gate["principalId"] for gate in gates]
+          if len(set(principals)) != 3 or actor_data["id"] in principals or triggering_data["id"] in principals:
+              raise SystemExit("review principals are not independent")
+          environment = json.loads(api(f"repos/{repo}/environments/production"))
+          validate_environment_policy(environment)
+          authorization = {
+              "source": "github-api", "repositoryId": repository["id"],
+              "repository": repo, "pullRequest": pull["number"],
+              "defaultBranch": repository["default_branch"],
+              "ref": expected_ref, "deployedCommit": deployment_sha, "deployedTree": deployed_tree,
+              "environment": "production",
+              "deploymentBranchPolicy": {"protectedBranches": True, "customBranchPolicies": False},
+              "requiredReviewers": [], "preventSelfReview": False,
+              "canAdminsBypass": environment["can_admins_bypass"],
+              "dispatcher": actor, "dispatcherId": actor_data["id"],
+              "triggeringActor": triggering_actor, "triggeringActorId": triggering_data["id"],
+              "environmentBypassed": False, "bypassBasis": "branch-policy-only",
+              "workflowRunId": run_id, "workflowRunAttempt": run_attempt,
+              "reviewedHead": sha, "reviewedTree": tree, "patchDigest": patch_digest,
+              "reviewGates": gates,
+          }
+          with open("github-authorization.json", "x", encoding="utf-8") as stream:
+              json.dump(authorization, stream, sort_keys=True, separators=(",", ":"))
+          PY
           python3 scripts/container_deployment_controller.py collect-evidence \
             --config "$CONFIG_PATH" --manifest-identity "$MANIFEST_IDENTITY" \
             --fleet "$FLEET_SELECTOR" --rollback-receipt "$ROLLBACK_RECEIPT" \
+            --authorization github-authorization.json \
             --output deployment-evidence.json
           python3 scripts/container_deployment_preflight.py --evidence deployment-evidence.json
       - name: Admit immutable sequential plan
@@ -246,12 +481,29 @@ jobs:
           path: deployment-receipts/
           if-no-files-found: error
           retention-days: 90
+      - name: Mint runner control-plane token
+        id: runner-app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
+        with:
+          client-id: ${{ vars.GH_RUNNER_REGISTRATION_APP_CLIENT_ID }}
+          private-key: ${{ secrets.GH_RUNNER_REGISTRATION_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          permission-organization-self-hosted-runners: write
+      - name: Verify runner App installation identity
+        env:
+          ACTUAL_INSTALLATION_ID: ${{ steps.runner-app-token.outputs.installation-id }}
+          EXPECTED_INSTALLATION_ID: ${{ vars.GH_RUNNER_REGISTRATION_APP_INSTALLATION_ID }}
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_INSTALLATION_ID" =~ ^[1-9][0-9]*$ ]]
+          test "$ACTUAL_INSTALLATION_ID" = "$EXPECTED_INSTALLATION_ID"
       - name: Advance one bounded runner transition
         id: advance_1
         env:
           CONFIG_PATH: ${{ inputs.config-path }}
-          GH_TOKEN: ${{ github.token }}
-          RUNNER_DEPLOY_TOKEN: ${{ secrets.RUNNER_DEPLOY_TOKEN }}
+          GH_RUNNER_CONTROL_TOKEN: ${{ steps.runner-app-token.outputs.token }}
+          DIGITALOCEAN_RUNNER_FLEET_TOKEN: ${{ secrets.DIGITALOCEAN_RUNNER_FLEET_TOKEN }}
         run: |
           set -euo pipefail
           python3 scripts/container_deployment_controller.py execute \
@@ -279,6 +531,7 @@ jobs:
           python3 scripts/container_deployment_controller.py collect-evidence \
             --config "$CONFIG_PATH" --manifest-identity "$MANIFEST_IDENTITY" \
             --fleet "$FLEET_SELECTOR" --rollback-receipt "$ROLLBACK_RECEIPT" \
+            --authorization github-authorization.json \
             --output deployment-evidence.json
           python3 scripts/container_deployment_preflight.py --evidence deployment-evidence.json
       - name: Advance second bounded runner transition
@@ -286,8 +539,8 @@ jobs:
         id: advance_2
         env:
           CONFIG_PATH: ${{ inputs.config-path }}
-          GH_TOKEN: ${{ github.token }}
-          RUNNER_DEPLOY_TOKEN: ${{ secrets.RUNNER_DEPLOY_TOKEN }}
+          GH_RUNNER_CONTROL_TOKEN: ${{ steps.runner-app-token.outputs.token }}
+          DIGITALOCEAN_RUNNER_FLEET_TOKEN: ${{ secrets.DIGITALOCEAN_RUNNER_FLEET_TOKEN }}
         run: |
           set -euo pipefail
           python3 scripts/container_deployment_controller.py execute \
@@ -315,6 +568,7 @@ jobs:
           python3 scripts/container_deployment_controller.py collect-evidence \
             --config "$CONFIG_PATH" --manifest-identity "$MANIFEST_IDENTITY" \
             --fleet "$FLEET_SELECTOR" --rollback-receipt "$ROLLBACK_RECEIPT" \
+            --authorization github-authorization.json \
             --output deployment-evidence.json
           python3 scripts/container_deployment_preflight.py --evidence deployment-evidence.json
       - name: Advance third bounded runner transition
@@ -322,8 +576,8 @@ jobs:
         id: advance_3
         env:
           CONFIG_PATH: ${{ inputs.config-path }}
-          GH_TOKEN: ${{ github.token }}
-          RUNNER_DEPLOY_TOKEN: ${{ secrets.RUNNER_DEPLOY_TOKEN }}
+          GH_RUNNER_CONTROL_TOKEN: ${{ steps.runner-app-token.outputs.token }}
+          DIGITALOCEAN_RUNNER_FLEET_TOKEN: ${{ secrets.DIGITALOCEAN_RUNNER_FLEET_TOKEN }}
         run: |
           set -euo pipefail
           python3 scripts/container_deployment_controller.py execute \

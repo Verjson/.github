@@ -7,6 +7,7 @@ trap 'rm -rf "$tmp"' EXIT
 contract="$tmp/contract"
 consumer="$tmp/consumer"
 mkdir -p \
+  "$contract/.github/workflows" \
   "$contract/contracts/container-deployment-cli" \
   "$contract/scripts" \
   "$contract/docs/decisions/0078-container-release-and-runner-deployment-contract" \
@@ -16,8 +17,12 @@ cp \
   "$root/scripts/gen-container-deployment.sh" \
   "$root/scripts/container_deployment_controller.py" \
   "$root/scripts/container_deployment_preflight.py" \
+  "$root/scripts/container_deployment_review_producer.py" \
   "$root/scripts/validate-container-deployment-cli-lock.py" \
   "$contract/scripts/"
+cp \
+  "$root/.github/workflows/container-deployment-review-producer.yml" \
+  "$contract/.github/workflows/"
 cp \
   "$root/docs/decisions/0078-container-release-and-runner-deployment-contract/deployment-receipt.schema.json" \
   "$contract/docs/decisions/0078-container-release-and-runner-deployment-contract/"
@@ -30,11 +35,17 @@ git -C "$contract" init -q
 git -C "$contract" config user.name fixture
 git -C "$contract" config user.email fixture@example.invalid
 git -C "$contract" add scripts docs
+git -C "$contract" add .github
 git -C "$contract" commit -qm fixture
 ref="$(git -C "$contract" rev-parse HEAD)"
 generator="$contract/scripts/gen-container-deployment.sh"
 
 "$generator" workflow "$ref" >"$consumer/.github/workflows/container-deployment.yml"
+"$generator" code-review-workflow "$ref" >"$consumer/.github/workflows/container-deployment-code-review.yml"
+"$generator" security-review-workflow "$ref" >"$consumer/.github/workflows/container-deployment-security-review.yml"
+"$generator" ai-review-workflow "$ref" >"$consumer/.github/workflows/container-deployment-ai-review.yml"
+"$generator" review-producer-workflow "$ref" >"$consumer/.github/workflows/container-deployment-review-producer.yml"
+"$generator" review-producer "$ref" >"$consumer/scripts/container_deployment_review_producer.py"
 "$generator" controller "$ref" >"$consumer/scripts/container_deployment_controller.py"
 "$generator" preflight "$ref" >"$consumer/scripts/container_deployment_preflight.py"
 "$generator" receipt-schema "$ref" >"$consumer/scripts/deployment-receipt.schema.json"
@@ -42,6 +53,11 @@ generator="$contract/scripts/gen-container-deployment.sh"
 cat >"$consumer/container-deployment.json" <<JSON
 {
   "schemaVersion": 1,
+  "reviewAuthority": {
+    "code": {"appId": 201, "installationId": 301, "checkName": "runner-deploy-code-review", "workflowPath": ".github/workflows/container-deployment-code-review.yml"},
+    "security": {"appId": 202, "installationId": 302, "checkName": "runner-deploy-security-review", "workflowPath": ".github/workflows/container-deployment-security-review.yml"},
+    "ai": {"appId": 203, "installationId": 303, "sourceAppId": 403, "sourceCheckName": "canonical-ai-review", "checkName": "runner-deploy-ai-review", "workflowPath": ".github/workflows/container-deployment-ai-review.yml"}
+  },
   "cliCommand": ["verjson-cloud"],
   "evidenceCommand": ["python3", "scripts/runner-deployment-evidence.py"],
   "probeCommand": ["python3", "scripts/runner-deployment-probe.py"],
@@ -144,6 +160,19 @@ grep -q 'test -x "\$cli_bin/verjson-cloud"' "$workflow"
 grep -q 'VERJSON_DEPLOYMENT_CLI_ROOT=' "$workflow"
 grep -q 'Retain admitted or reconciled authority' "$workflow"
 grep -q 'container_deployment_controller.py reconcile' "$workflow"
+test "$(grep -c -- '--authorization github-authorization.json' "$workflow")" = 3
+for authority_variable in \
+  RUNNER_DEPLOY_CODE_REVIEW_APP_ID RUNNER_DEPLOY_CODE_REVIEW_CHECK RUNNER_DEPLOY_CODE_REVIEW_WORKFLOW \
+  RUNNER_DEPLOY_SECURITY_REVIEW_APP_ID RUNNER_DEPLOY_SECURITY_REVIEW_CHECK RUNNER_DEPLOY_SECURITY_REVIEW_WORKFLOW \
+  RUNNER_DEPLOY_AI_REVIEW_APP_ID RUNNER_DEPLOY_AI_REVIEW_CHECK RUNNER_DEPLOY_AI_REVIEW_WORKFLOW; do
+  ! grep -q "$authority_variable" "$workflow"
+done
+grep -q 'actions/artifacts/{artifact' "$workflow"
+grep -q 'review-receipt.json' "$workflow"
+! grep -qF '.github/workflows/adversarial-code-review.yml' "$workflow"
+! grep -qF '.github/workflows/adversarial-security-review.yml' "$workflow"
+grep -qF '"sha256:" + hashlib.sha256(archive).hexdigest()' "$workflow"
+grep -qF 'pulls/{pull[' "$workflow"
 # The literal shell variable must never become a path argument.
 # shellcheck disable=SC2016
 if grep -q -- '--rollback-source "\$ROLLBACK_RECEIPT"' "$workflow"; then
@@ -152,7 +181,8 @@ if grep -q -- '--rollback-source "\$ROLLBACK_RECEIPT"' "$workflow"; then
 fi
 grep -q 'verjson-cloud' "$root/scripts/container_deployment_controller.py"
 grep -q '"--only"' "$root/scripts/container_deployment_controller.py"
-if grep -Eq 'doctl|ssh |droplet|--replicas|--standard|resize|create' "$workflow"; then
+if grep -vF 'actions/create-github-app-token@' "$workflow" \
+  | grep -Eq 'doctl|ssh |droplet|--replicas|--standard|resize|create'; then
   echo "reusable workflow contains fleet mechanics or a spend-increasing operation" >&2
   exit 1
 fi
@@ -177,7 +207,9 @@ jobs = workflow["jobs"]
 assert jobs["deploy"]["environment"] == "production"
 assert "environment" not in jobs["dry-run"]
 assert workflow["concurrency"]["cancel-in-progress"] is False
-assert set(workflow["permissions"]) == {"actions", "attestations", "contents", "packages"}
+assert set(workflow["permissions"]) == {
+    "actions", "attestations", "checks", "contents", "packages", "pull-requests"
+}
 for job_name in ("dry-run", "deploy"):
     steps = jobs[job_name]["steps"]
     setup = [step for step in steps if step.get("uses", "").startswith("actions/setup-node@")]
@@ -225,10 +257,25 @@ mutation_steps = [
 assert len(mutation_steps) == 3
 expected_mutation_env = {
     "CONFIG_PATH": "${{ inputs.config-path }}",
-    "GH_TOKEN": "${{ github.token }}",
-    "RUNNER_DEPLOY_TOKEN": "${{ secrets.RUNNER_DEPLOY_TOKEN }}",
+        "GH_RUNNER_CONTROL_TOKEN": "${{ steps.runner-app-token.outputs.token }}",
+        "DIGITALOCEAN_RUNNER_FLEET_TOKEN": "${{ secrets.DIGITALOCEAN_RUNNER_FLEET_TOKEN }}",
 }
 assert all(step["env"] == expected_mutation_env for step in mutation_steps)
+mint = next(step for step in jobs["deploy"]["steps"] if step.get("id") == "runner-app-token")
+assert mint["uses"] == "actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1"
+assert mint["with"] == {
+    "client-id": "${{ vars.GH_RUNNER_REGISTRATION_APP_CLIENT_ID }}",
+    "private-key": "${{ secrets.GH_RUNNER_REGISTRATION_APP_PRIVATE_KEY }}",
+    "owner": "${{ github.repository_owner }}",
+    "repositories": "${{ github.event.repository.name }}",
+    "permission-organization-self-hosted-runners": "write",
+}
+verify_installation = next(
+    step for step in jobs["deploy"]["steps"]
+    if step.get("name") == "Verify runner App installation identity"
+)
+assert "outputs.installation-id" in str(verify_installation)
+assert "GH_RUNNER_REGISTRATION_APP_INSTALLATION_ID" in str(verify_installation)
 dry_uploads = [
     step for step in jobs["dry-run"]["steps"]
     if step.get("uses", "").startswith("actions/upload-artifact@")
@@ -237,7 +284,8 @@ assert len(dry_uploads) == 1
 assert dry_uploads[0]["with"]["path"] == "deployment-plan.json"
 for step in jobs["deploy"]["steps"]:
     if step not in mutation_steps:
-        assert "RUNNER_DEPLOY_TOKEN" not in str(step)
+        assert "DIGITALOCEAN_RUNNER_FLEET_TOKEN" not in str(step)
+        assert "GH_RUNNER_CONTROL_TOKEN" not in str(step)
 PY
 
 echo "container deployment generated contract and protected reusable workflow passed"
