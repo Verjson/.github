@@ -75,23 +75,70 @@ token-action, private-key, and client-ID trust boundary while ensuring response
 attribution failures cannot strand a required check.
 
 The one-time #1086 recovery bootstrap is deliberately narrower than the cross-run
-reconciler tracked in #1094. An authorized administrator must:
+reconciler tracked in #1094. GitHub's
+[required-workflow rule schema](https://docs.github.com/en/rest/repos/rules#update-a-repository-ruleset)
+supports an exact `sha` in addition to its branch or tag `ref`; the `sha` is the immutable
+execution binding. The reviewed workflow revision is
+`f7854f161dab66f00d600adbc0aaa2fb5e874b65`. A later PR-head commit that changes only this
+ADR does not replace that workflow identity: before bootstrap, require
+`git diff --exit-code f7854f161dab66f00d600adbc0aaa2fb5e874b65..<reviewed-pr-head> --
+.github/workflows/gate-rearm.yml` to prove the workflow is byte-identical.
 
-1. Record PR #1096's independently reviewed head SHA, create a temporary bootstrap branch
-   whose ref resolves to exactly that SHA, and reject the procedure if either ref moves.
-2. Temporarily change only organization ruleset 20722935's required workflow tuple
-   `{path: .github/workflows/gate-rearm.yml, repository_id: 1269388380, ref:
-   refs/heads/main}` so its `ref` names that bootstrap branch; no bypass, actor,
-   enforcement, path, repository ID, or other required-workflow setting may change.
-3. Trigger fresh checks for PR #1096 and merge only after
+An authorized administrator must execute this exact fail-closed sequence:
+
+1. Save the complete JSON preimage of organization ruleset 20722935. Assert it contains
+   exactly one canonical tuple `{path: .github/workflows/gate-rearm.yml, repository_id:
+   1269388380, ref: refs/heads/main}` and record its conditions, rules, enforcement, and
+   bypass actors for later exact restoration.
+2. Before creating `refs/heads/bootstrap/1096-gate-rearm-f7854f1`, create an active,
+   repository-scoped temporary ruleset whose only condition is that exact ref, whose rules
+   are `creation`, `update` with `update_allows_fetch_and_merge: false`, and `deletion`,
+   and whose only bypass actor is `OrganizationAdmin` in `always` mode. Do not copy
+   integration, user, or team bypasses into it and do not add any actor to ruleset
+   20722935. Read the temporary ruleset back and require exact equality before an
+   administrator creates the branch at `f7854f161dab66f00d600adbc0aaa2fb5e874b65`.
+3. Read the Git ref back and require that exact SHA. Then update only ruleset 20722935's
+   canonical workflow tuple to `{path: .github/workflows/gate-rearm.yml, repository_id:
+   1269388380, ref: refs/heads/bootstrap/1096-gate-rearm-f7854f1, sha:
+   f7854f161dab66f00d600adbc0aaa2fb5e874b65}`. Read back both rulesets and reject any
+   difference from the saved preimage other than this tuple's `ref` and added `sha`.
+4. Immediately before every fresh-check trigger, re-read and assert all three anchors:
+   the bootstrap Git ref still equals `f7854f...`, its temporary ruleset remains active
+   with the exact condition/rules/single admin bypass, and the organization workflow tuple
+   still carries both the exact bootstrap `ref` and `sha: f7854f...`. Record the ruleset
+   history version, read-back timestamp, trigger timestamp, and pre-trigger run IDs.
+5. For every green run accepted as satisfying the required workflow, bind the run to that
+   tuple programmatically. The run must be `completed/success`, have event
+   `pull_request_target`, exact PR head SHA, path `.github/workflows/gate-rearm.yml`, and a
+   consumer-scoped `workflow_url` under `actions/required_workflows/`. At the same time,
+   `GET /repos/Verjson/.github/rules/branches/main` must expose exactly one matching
+   organization workflow selector with canonical repository ID, bootstrap `ref`, and
+   `sha: f7854f...`. Each accepted run ID must be absent from the pre-trigger set and its
+   `created_at` must follow the recorded rule read-back and trigger. GitHub's run REST
+   object reports the PR commit as `head_sha`; never misread that as
+   `github.workflow_sha`. The rule selector's read-back `sha` is the platform-enforced
+   workflow SHA. An absent or different `sha`, stale run ID or timestamp, ambiguous
+   matching rule, mutable ref, unprotected ref, or unmatched run rejects the run
+   regardless of green.
+6. Merge only if step 5 accepts every required-workflow run and
    `[.statusCheckRollup[].conclusion] | all(. == "SUCCESS" or . == "NEUTRAL" or . == "SKIPPED")`
-   prints the literal value `true` for that exact head.
-4. Restore the required workflow ref to `refs/heads/main`, read the ruleset back to prove
-   the restoration, then trigger a fresh canary and require the same literal all-green
-   assertion with the gate sourced from `main`.
-5. Delete the bootstrap branch only after both restoration and canary evidence are
-   durable. Any failure stops the sequence without merging, widening bypass, or deleting
-   the branch needed for diagnosis.
+   prints the literal value `true` for the exact reviewed PR head.
+7. After merge, keep the temporary protection active. Resolve the new `main` tip, require
+   `git diff --exit-code f7854f161dab66f00d600adbc0aaa2fb5e874b65..<new-main-tip> --
+   .github/workflows/gate-rearm.yml`, and
+   change the canonical tuple to `ref: refs/heads/main` plus `sha: <new-main-tip>`. Read
+   that tuple back, trigger a fresh canary PR, and apply the provenance, freshness, and
+   literal-green assertions from steps 4–6 with the main ref and exact main SHA
+   substituted. Do not merge the canary. This proves a fresh main-sourced arm rather than
+   accepting a stale bootstrap run.
+8. Only after the main-sourced canary is terminal green, restore ruleset 20722935 byte for
+   byte from its saved preimage and read it back. With the temporary ruleset still active,
+   delete the bootstrap branch through the existing `OrganizationAdmin` bypass and prove
+   the ref is absent. Delete the temporary ruleset last and prove it is absent. This order
+   prevents non-admin update, deletion, or recreation throughout the recovery window.
+
+Any failed assertion stops the sequence without merging, weakening a ruleset, widening a
+bypass list, removing temporary protection, or deleting evidence needed for diagnosis.
 
 This PR records but does not perform that live ruleset mutation or bootstrap.
 
