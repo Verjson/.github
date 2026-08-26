@@ -74,18 +74,18 @@ write_latest(){
 }
 run_case(){
   : >"$CALLS"; write_latest
-  bash -c 'set -euo pipefail; source "$1"; printf "latest_id=%s recovered=%s\n" "$latest_id" "$recovered_orphan"' _ "$tmp/recover.sh"
+  bash -c 'set -euo pipefail; source "$1"; printf "latest_id=%s\n" "$latest_id"' _ "$tmp/recover.sh"
 }
 
 export RECEIPT_COUNT=0 REVIEW_RUNS_JSON='[]'
-if output="$(run_case 2>&1)" && grep -q 'latest_id= recovered=true' <<<"$output" \
+if output="$(run_case 2>&1)" && grep -q '^latest_id=$' <<<"$output" \
    && grep -q 'method PATCH.*check-runs/9001' "$CALLS"; then
   pass 'a terminal source with accepted-but-lost activation and no dispatch owner is recovered'
 else fail 'accepted-but-lost activation was not recovered'; fi
 
 export RECEIPT_COUNT=1
 export REVIEW_RUNS_JSON='[{"display_title":"AI review authorization 9001 from arm 7001.1","event":"workflow_dispatch","path":".github/workflows/ai-review-merge.yml","head_branch":"main","status":"completed","conclusion":"failure","head_repository":{"full_name":"Verjson/example"},"repository":{"full_name":"Verjson/example"}}]'
-if output="$(run_case 2>&1)" && grep -q 'latest_id= recovered=true' <<<"$output"; then
+if output="$(run_case 2>&1)" && grep -q '^latest_id=$' <<<"$output"; then
   pass 'exhausted cleanup is recovered only after its exact receipt-bound review is terminal'
 else fail 'terminal receipt-bound cleanup was not recovered'; fi
 
@@ -120,7 +120,7 @@ SOURCE_RUN_JSON="${SOURCE_RUN_JSON/\"status\":\"in_progress\"/\"status\":\"compl
 
 if latest="$PATCH_JSON" latest_id=9001 latest_status=completed latest_conclusion=failure \
    latest_title='Orphaned authorization recovered' bash -c \
-   'set -euo pipefail; hold_removed=false; explicit_rereview=false; explicit_ai_review=false; source "$1"; [ -z "$latest_id" ] && [ "$recovered_orphan" = true ]' _ "$tmp/recover.sh"; then
+   'set -euo pipefail; hold_removed=false; explicit_rereview=false; explicit_ai_review=false; source "$1"; [ -z "$latest_id" ]' _ "$tmp/recover.sh"; then
   pass 'a rerun resumes after a prior exact recovery marker without another patch'
 else fail 'idempotent recovery rerun did not resume'; fi
 

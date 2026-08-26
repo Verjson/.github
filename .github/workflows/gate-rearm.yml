@@ -416,11 +416,9 @@ jobs:
               ' <<<"$patch" >/dev/null || return 1
           }
 
-          recovered_orphan=false
           if [ "$hold_removed" = false ] && [ "$explicit_rereview" = false ] && [ "$explicit_ai_review" = false ] \
              && [ "$latest_status" = in_progress ] && [[ "$latest_id" =~ ^[1-9][0-9]*$ ]]; then
             if recover_orphaned_authorization "$latest"; then
-              recovered_orphan=true
               latest_id=''; latest_status=''; latest_conclusion=''; latest_title=''
             else
               recovery_status=$?
@@ -449,7 +447,6 @@ jobs:
                 echo "::error::authorization recovery marker is malformed or not bound to the exact head"
                 exit 1
               }
-            recovered_orphan=true
             latest_id=''; latest_status=''; latest_conclusion=''; latest_title=''
           fi
           # END CROSS-RUN ORPHAN RECOVERY
