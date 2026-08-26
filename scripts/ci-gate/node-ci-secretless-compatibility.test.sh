@@ -33,7 +33,11 @@ runner = steps["Run runtime-resolved compatibility lanes without credentials"]
 for name in ("GH_TOKEN", "GITHUB_TOKEN", "NODE_AUTH_TOKEN", "NPM_TOKEN",
              "ACTIONS_ID_TOKEN_REQUEST_TOKEN", "ACTIONS_ID_TOKEN_REQUEST_URL"):
     assert runner["env"][name] == ""
-assert "--offline" in runner["run"] and "--ignore-scripts" in runner["run"]
+assert "tarfile.open" in runner["run"] and "O_NOFOLLOW" in runner["run"]
+assert 'subprocess.run(["npm", "install"' not in runner["run"]
+assert "artifact.read_bytes" not in runner["run"]
+assert "os.fstat(descriptor)" in runner["run"] and "io.BytesIO(content)" in runner["run"]
+assert "extractall" not in runner["run"]
 PY
 [ "$?" -eq 0 ] && pass "compatibility lanes retain the canonical two-job credential boundary" \
   || fail "compatibility lanes do not retain the canonical two-job credential boundary"
@@ -209,12 +213,219 @@ PY
   run_install "$fixture" >/dev/null 2>&1 && fail "tampered compatibility $mutation passed verification" || pass "tampered compatibility $mutation fails before consumer code"
 done
 
-mkdir -p "$tmp/e2e/consumer/artifacts" && cp "$tmp/e2e/build/artifacts/"* "$tmp/e2e/consumer/artifacts/"
+mkdir -p "$tmp/e2e/consumer/artifacts" "$tmp/e2e/consumer/node_modules/@verjson/identity-contracts"
+cp "$tmp/e2e/build/artifacts/"* "$tmp/e2e/consumer/artifacts/"
+printf '%s\n' '{"name":"@verjson/identity-contracts","version":"0.1.0"}' \
+  > "$tmp/e2e/consumer/node_modules/@verjson/identity-contracts/package.json"
 printf '%s\n' '{"name":"consumer","version":"1.0.0","scripts":{"test:compat":"node test-compat.js"}}' > "$tmp/e2e/consumer/package.json"
 printf '%s\n' "const fs=require('node:fs');const v=require('./node_modules/@verjson/identity-contracts/package.json').version;fs.writeFileSync('observed-version',v);if(process.env.REJECT_COMPATIBILITY==='true')process.exit(42);" > "$tmp/e2e/consumer/test-compat.js"
 if (cd "$tmp/e2e/consumer" && COMPATIBILITY_ARTIFACT_DIR="$tmp/e2e/consumer/artifacts" COMPATIBILITY_RANGES="$request" EXPECTED_COMPATIBILITY_PROVENANCE_SHA256="$provenance_sha" REJECT_COMPATIBILITY=false bash "$tmp/run-lanes.sh") >/dev/null 2>&1 && grep -qFx 0.2.2 "$tmp/e2e/consumer/observed-version"; then pass "the resolved in-range artifact reaches the declared consumer test"; else fail "the resolved artifact did not reach the declared consumer test"; fi
 (cd "$tmp/e2e/consumer" && COMPATIBILITY_ARTIFACT_DIR="$tmp/e2e/consumer/artifacts" COMPATIBILITY_RANGES="$request" EXPECTED_COMPATIBILITY_PROVENANCE_SHA256="$provenance_sha" REJECT_COMPATIBILITY=true bash "$tmp/run-lanes.sh") >/dev/null 2>&1 \
   && fail "an in-range incompatible artifact did not fail consumer tests" || pass "an in-range incompatible artifact fails at the consumer test layer"
 if (cd "$tmp/e2e/consumer" && COMPATIBILITY_ARTIFACT_DIR="$tmp/e2e/consumer/artifacts" COMPATIBILITY_RANGES="$request" EXPECTED_COMPATIBILITY_PROVENANCE_SHA256="$provenance_sha" NODE_AUTH_TOKEN=leaked bash "$tmp/run-lanes.sh") >"$tmp/e2e/token.log" 2>&1; then fail "a package credential reached compatibility consumer execution"; elif grep -qF 'credential reached compatibility consumer execution' "$tmp/e2e/token.log"; then pass "consumer execution fails closed on a credential leak"; else fail "token-leak mutation failed for the wrong reason"; fi
+
+real_npm="$(command -v npm)"
+mkdir -p "$tmp/archive-cases/bin"
+cat > "$tmp/archive-cases/bin/npm" <<'SH'
+#!/usr/bin/env bash
+set -eu
+if [ "${1:-}" = run ]; then
+  exec "$REAL_NPM" "$@"
+fi
+printf 'unexpected graph resolution: %s\n' "$*" > "$NPM_GRAPH_RESOLUTION_MARKER"
+exit 97
+SH
+chmod +x "$tmp/archive-cases/bin/npm"
+
+prepare_archive_case() {
+  local mutation="$1"
+  local fixture="$tmp/archive-cases/$mutation"
+  rm -rf "$fixture"
+  mkdir -p "$fixture/artifacts" \
+    "$fixture/node_modules/@verjson/identity-contracts" \
+    "$fixture/node_modules/cold-cache-public" \
+    "$fixture/cold-cache/_cacache/content-v2/sha512"
+  printf '%s\n' '{"name":"@verjson/identity-contracts","version":"0.1.0"}' \
+    > "$fixture/node_modules/@verjson/identity-contracts/package.json"
+  printf '%s\n' old > "$fixture/node_modules/@verjson/identity-contracts/old-sentinel"
+  printf '%s\n' '{"name":"cold-cache-public","version":"1.4.0","main":"index.js"}' \
+    > "$fixture/node_modules/cold-cache-public/package.json"
+  printf '%s\n' 'module.exports = "cold-cache-public-1.4.0";' \
+    > "$fixture/node_modules/cold-cache-public/index.js"
+  printf '%s\n' \
+    '{"name":"consumer","version":"1.0.0","dependencies":{"cold-cache-public":"^1.0.0"},"scripts":{"test:compat":"node test-compat.cjs"}}' \
+    > "$fixture/package.json"
+  cat > "$fixture/test-compat.cjs" <<'JS'
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+
+assert.equal(require('./node_modules/@verjson/identity-contracts/package.json').version, '0.2.2');
+assert.equal(require('cold-cache-public'), 'cold-cache-public-1.4.0');
+fs.writeFileSync('consumer-ran', 'yes');
+JS
+  python3 - "$fixture" "$mutation" "$request" <<'PY'
+import base64
+import gzip
+import hashlib
+import io
+import json
+import pathlib
+import sys
+import tarfile
+
+fixture = pathlib.Path(sys.argv[1])
+mutation = sys.argv[2]
+request = json.loads(sys.argv[3])
+artifact = fixture / "artifacts" / "lane-0.tgz"
+manifest = {
+    "name": "@verjson/identity-contracts",
+    "version": "0.2.2",
+    "scripts": {"postinstall": "node -e process.exit(99)"},
+}
+if mutation == "wrong-name":
+    manifest["name"] = "@verjson/other"
+if mutation == "wrong-version":
+    manifest["version"] = "9.9.9"
+
+def add_bytes(archive, name, content, mode=0o644):
+    info = tarfile.TarInfo(name)
+    info.mode = mode
+    info.size = len(content)
+    archive.addfile(info, io.BytesIO(content))
+
+if mutation == "oversize":
+    with gzip.open(artifact, "wb") as stream:
+        info = tarfile.TarInfo("package/oversize.bin")
+        info.size = 64 * 1024 * 1024 + 1
+        stream.write(info.tobuf())
+        stream.write(b"\0" * 1024)
+else:
+    with tarfile.open(artifact, "w:gz") as archive:
+        add_bytes(archive, "package/package.json", json.dumps(manifest).encode())
+        add_bytes(archive, "package/index.js", b"export const compatible = true;\n")
+        if mutation == "traversal":
+            add_bytes(archive, "package/../../escape", b"escaped")
+        elif mutation == "absolute":
+            add_bytes(archive, "/package/escape", b"escaped")
+        elif mutation == "multi-root":
+            add_bytes(archive, "other/escape", b"escaped")
+        elif mutation in {"symlink", "hardlink", "special", "pax"}:
+            info = tarfile.TarInfo("package/unsafe")
+            if mutation == "symlink":
+                info.type = tarfile.SYMTYPE
+                info.linkname = "../../escape"
+            elif mutation == "hardlink":
+                info.type = tarfile.LNKTYPE
+                info.linkname = "package/package.json"
+            elif mutation == "special":
+                info.type = tarfile.CHRTYPE
+                info.devmajor = 1
+                info.devminor = 3
+            else:
+                info.type = tarfile.XHDTYPE
+                content = b"path=package/unsafe\n"
+                info.size = len(content)
+                archive.addfile(info, io.BytesIO(content))
+                info = None
+            if info is not None:
+                archive.addfile(info)
+        elif mutation == "count":
+            for index in range(4096):
+                info = tarfile.TarInfo(f"package/members/{index}")
+                info.type = tarfile.DIRTYPE
+                archive.addfile(info)
+        elif mutation == "duplicate":
+            add_bytes(archive, "package/package.json", json.dumps(manifest).encode())
+
+artifact_bytes = artifact.read_bytes()
+digest = hashlib.sha512(artifact_bytes).digest()
+lane = {
+    "index": 0,
+    "package": request["package"],
+    "range": request["ranges"][0],
+    "script": request["script"],
+    "version": "0.2.2",
+    "integrity": "sha512-" + base64.b64encode(digest).decode(),
+    "tarball": "https://npm.pkg.github.com/download/@verjson/identity-contracts/0.2.2/archive",
+    "sha512": digest.hex(),
+}
+provenance = json.dumps(
+    {"schemaVersion": 1, "request": request, "lanes": [lane]},
+    sort_keys=True,
+    separators=(",", ":"),
+) + "\n"
+(fixture / "artifacts" / "provenance.json").write_text(provenance)
+(fixture / "provenance.sha256").write_text(hashlib.sha256(provenance.encode()).hexdigest())
+
+public_tarball = io.BytesIO()
+with tarfile.open(fileobj=public_tarball, mode="w:gz") as archive:
+    add_bytes(archive, "package/package.json", b'{"name":"cold-cache-public","version":"1.4.0"}')
+public_bytes = public_tarball.getvalue()
+public_digest = hashlib.sha512(public_bytes).digest()
+public_hex = public_digest.hex()
+cache_entry = fixture / "cold-cache" / "_cacache" / "content-v2" / "sha512" / public_hex[:2] / public_hex[2:4] / public_hex[4:]
+cache_entry.parent.mkdir(parents=True)
+cache_entry.write_bytes(public_bytes)
+lock = {
+    "name": "consumer",
+    "version": "1.0.0",
+    "lockfileVersion": 3,
+    "packages": {
+        "": {"name": "consumer", "version": "1.0.0", "dependencies": {"cold-cache-public": "^1.0.0"}},
+        "node_modules/cold-cache-public": {
+            "version": "1.4.0",
+            "resolved": "https://registry.npmjs.org/cold-cache-public/-/cold-cache-public-1.4.0.tgz",
+            "integrity": "sha512-" + base64.b64encode(public_digest).decode(),
+        },
+    },
+}
+(fixture / "package-lock.json").write_text(json.dumps(lock) + "\n")
+PY
+}
+
+run_archive_case() {
+  local mutation="$1"
+  local fixture="$tmp/archive-cases/$mutation"
+  prepare_archive_case "$mutation"
+  (
+    cd "$fixture"
+    PATH="$tmp/archive-cases/bin:$PATH" \
+    REAL_NPM="$real_npm" \
+    NPM_GRAPH_RESOLUTION_MARKER="$fixture/npm-graph-resolution" \
+    npm_config_cache="$fixture/cold-cache" \
+    npm_config_offline=true \
+    COMPATIBILITY_ARTIFACT_DIR="$fixture/artifacts" \
+    COMPATIBILITY_RANGES="$request" \
+    EXPECTED_COMPATIBILITY_PROVENANCE_SHA256="$(<"$fixture/provenance.sha256")" \
+    bash "$tmp/run-lanes.sh"
+  ) >"$fixture/run.log" 2>&1
+}
+
+if run_archive_case good \
+    && [ -f "$tmp/archive-cases/good/consumer-ran" ] \
+    && [ ! -e "$tmp/archive-cases/good/npm-graph-resolution" ] \
+    && [ ! -e "$tmp/archive-cases/good/node_modules/@verjson/identity-contracts/old-sentinel" ] \
+    && [ "$(find "$tmp/archive-cases/good/node_modules/@verjson" -maxdepth 1 -name '.identity-contracts.*' -print -quit)" = '' ]; then
+  pass "cold-cache caret consumer swaps one verified package without resolving its graph"
+else
+  fail "cold-cache caret consumer did not preserve its installed dependency graph"
+fi
+
+for mutation in traversal absolute multi-root symlink hardlink special pax oversize count duplicate wrong-name wrong-version; do
+  if run_archive_case "$mutation"; then
+    fail "$mutation compatibility archive reached consumer execution"
+  elif [ -e "$tmp/archive-cases/$mutation/consumer-ran" ] \
+      || [ -e "$tmp/archive-cases/$mutation/npm-graph-resolution" ] \
+      || [ -e "$tmp/archive-cases/$mutation/escape" ]; then
+    fail "$mutation compatibility archive caused work before rejection"
+  elif [ "$(node -p "require('$tmp/archive-cases/$mutation/node_modules/@verjson/identity-contracts/package.json').version")" != 0.1.0 ] \
+    || [ ! -f "$tmp/archive-cases/$mutation/node_modules/@verjson/identity-contracts/old-sentinel" ]; then
+    fail "$mutation compatibility archive disturbed the pre-existing package target"
+  elif [ -n "$(find "$tmp/archive-cases/$mutation/node_modules/@verjson" -maxdepth 1 -name '.identity-contracts.*' -print -quit)" ]; then
+    fail "$mutation compatibility archive left a staging or backup directory"
+  else
+    pass "$mutation compatibility archive fails before target swap or consumer code"
+  fi
+done
 
 exit "$failures"
