@@ -2,6 +2,25 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/Verjson/.github/blob/main/docs/changelog/fragment.schema.json",
   "title": "Verjson changelog fragment metadata",
+  "$defs": {
+    "immutableReleaseText": {
+      "type": "string",
+      "minLength": 1,
+      "not": {
+        "anyOf": [
+          {
+            "pattern": "^\"(?:[^\"\\\\]|\\\\[\\s\\S])*\"[\\s\\S]*\"$"
+          },
+          {
+            "pattern": "^'(?:[^']|'')*'(?!')[\\s\\S]*'$"
+          },
+          {
+            "pattern": "^'(?:[^']|'')*''$"
+          }
+        ]
+      }
+    }
+  },
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -22,8 +41,7 @@
       "pattern": "^(?:[0-9]{8}T[0-9]{6}Z|[0-9a-fA-F]{6,12})$"
     },
     "title": {
-      "type": "string",
-      "minLength": 1
+      "$ref": "#/$defs/immutableReleaseText"
     },
     "refs": {
       "type": "string",
@@ -31,9 +49,14 @@
       "description": "Comma-separated issue numbers this entry links but does not own. Identity must stay unique, so only one entry per issue carries `issue:`; `refs` lets the other entries for that issue keep their release back-link."
     },
     "summary": {
-      "type": "string",
-      "minLength": 1,
-      "pattern": "\\S"
+      "allOf": [
+        {
+          "$ref": "#/$defs/immutableReleaseText"
+        },
+        {
+          "pattern": "\\S"
+        }
+      ]
     },
     "component": {
       "type": "string",
