@@ -49,12 +49,11 @@ concurrency:
 
 jobs:
   shell-test-groups:
-    # Five representative main runs on 2026-08-07 spent 210-287 seconds in
-    # this suite after 3-92 seconds queued. Merge-gate contracts consumed
-    # 102-142 seconds, changelog/release 83-115, and platform/fleet 18-25.
-    # Three groups halve the critical path while adding only two checkouts.
+    # A complete changelog-release group reached 12m15s before the 12-minute job
+    # bound cancelled it after deterministic Python bootstrap on 2026-08-26.
+    # Eighteen minutes keeps the job bounded with margin for runner variance.
     runs-on: ${{ fromJSON(vars.CI_RUNNER_FASTLANE || vars.CI_LANE_TRUSTED || vars.CI_LANE_FALLBACK || '["ubuntu-24.04"]') }}
-    timeout-minutes: 12
+    timeout-minutes: 18
     strategy:
       fail-fast: false
       max-parallel: 3
@@ -71,13 +70,11 @@ jobs:
           # every matrix job its own checkout so another checkout's cleanup
           # cannot remove files while this job snapshots its source (#675).
           path: .actions-ci-source-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.group }}
-      - name: Provision changelog-release Python
-        if: matrix.group == 'changelog-release'
+      - name: Provision actions CI Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: '3.12.14'
-      - name: Install changelog-release Python dependencies
-        if: matrix.group == 'changelog-release'
+      - name: Install actions CI Python dependencies
         working-directory: .actions-ci-source-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.group }}
         run: |
           python3 -m pip install \
@@ -87,7 +84,7 @@ jobs:
             --no-deps \
             --only-binary=:all: \
             --require-hashes \
-            --requirement scripts/actions-ci-changelog-release.requirements.txt
+            --requirement scripts/actions-ci-python.requirements.txt
       - name: Clear the runner changelog cache override
         run: echo "VERJSON_CHANGELOG_TOOL_CACHE=" >> "$GITHUB_ENV"
       - name: Run ${{ matrix.group }} shell contracts without hiding sibling failures

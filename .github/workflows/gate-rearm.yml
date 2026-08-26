@@ -305,6 +305,140 @@ jobs:
           latest_id="$(jq -r '.id // ""' <<<"$latest")"
           latest_status="$(jq -r '.status // ""' <<<"$latest")"
           latest_conclusion="$(jq -r '.conclusion // ""' <<<"$latest")"
+          latest_title="$(jq -r '.output.title // ""' <<<"$latest")"
+
+          # BEGIN CROSS-RUN ORPHAN RECOVERY
+          recover_orphaned_authorization() {
+            local check_json="$1" check_id external_id details_url
+            local scheme version receipt_repo receipt_pr receipt_head source_run_id source_attempt nonce extra
+            local source_run completed_epoch now_epoch receipt_name artifacts receipt_count receipt_dir receipt_present
+            local expected_review_title review_pages owned_reviews owned_count owned_status current patch
+
+            check_id="$(jq -er '.id | select(type == "number" and . > 0)' <<<"$check_json")" || return 1
+            external_id="$(jq -er '.external_id | select(type == "string")' <<<"$check_json")" || return 1
+            details_url="$(jq -er '.details_url | select(type == "string")' <<<"$check_json")" || return 1
+            IFS=: read -r scheme version receipt_repo receipt_pr receipt_head source_run_id source_attempt nonce extra <<<"$external_id"
+            [ "$scheme" = ai-review ] && [ "$version" = v1 ] && [ -z "${extra:-}" ] || return 1
+            [ "$receipt_repo" = "$TARGET_REPO" ] && [ "$receipt_pr" = "$PR_NUMBER" ] && [ "$receipt_head" = "$head_sha" ] || return 1
+            [[ "$source_run_id" =~ ^[1-9][0-9]*$ ]] && [[ "$source_attempt" =~ ^[1-9][0-9]*$ ]] \
+              && [[ "$nonce" =~ ^[0-9a-f]{64}$ ]] || return 1
+            [ "$source_run_id" != "$GITHUB_RUN_ID" ] || return 10
+            [ "$details_url" = "$GITHUB_SERVER_URL/$TARGET_REPO/actions/runs/$source_run_id" ] || return 1
+
+            source_run="$(GH_TOKEN="$ACTIONS_TOKEN" gh api "repos/$TARGET_REPO/actions/runs/$source_run_id")" || return 1
+            jq -e --arg repo "$TARGET_REPO" --argjson repo_id "$REPOSITORY_ID" \
+              --argjson run_id "$source_run_id" --argjson attempt "$source_attempt" '
+                .id == $run_id and .run_attempt == $attempt and .status == "completed" and
+                .event == "pull_request_target" and .path == ".github/workflows/gate-rearm.yml" and
+                .head_repository.full_name == $repo and .repository.id == $repo_id and
+                (.completed_at | type == "string" and test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"))
+              ' <<<"$source_run" >/dev/null || return 10
+            completed_epoch="$(date -u -d "$(jq -r '.completed_at' <<<"$source_run")" +%s)" || return 1
+            now_epoch="$(date -u +%s)"
+            [ "$now_epoch" -ge "$completed_epoch" ] || return 1
+            # Bound API eventual consistency: a just-accepted workflow dispatch
+            # may not be listable immediately after its source arm terminates.
+            [ $((now_epoch - completed_epoch)) -ge 300 ] || return 10
+
+            receipt_name="ai-review-arm-$source_run_id-$source_attempt"
+            artifacts="$(GH_TOKEN="$ACTIONS_TOKEN" gh api --paginate --slurp \
+              "repos/$TARGET_REPO/actions/runs/$source_run_id/artifacts?per_page=100")" || return 1
+            receipt_count="$(jq -er --arg name "$receipt_name" '
+              [.[].artifacts[] | select(.name == $name and .expired == false)] | length
+            ' <<<"$artifacts")" || return 1
+            receipt_present=false
+            case "$receipt_count" in 0) ;; 1)
+              receipt_present=true
+              receipt_dir="$(mktemp -d "${RUNNER_TEMP:-/tmp}/ai-orphan-receipt.XXXXXX")" || return 1
+              if ! GH_TOKEN="$ACTIONS_TOKEN" gh run download "$source_run_id" --repo "$TARGET_REPO" \
+                --name "$receipt_name" --dir "$receipt_dir"; then
+                rm -rf "$receipt_dir"; return 1
+              fi
+              jq -e --arg repo "$TARGET_REPO" --argjson pr "$PR_NUMBER" --arg head "$head_sha" \
+                --argjson check "$check_id" --argjson run "$source_run_id" --argjson attempt "$source_attempt" \
+                --arg external "$external_id" --arg url "$details_url" --argjson app "$APP_ID" --arg slug "$APP_SLUG" '
+                  .repository == $repo and .pr_number == $pr and .head_sha == $head and
+                  .check_run_id == $check and .arm_run_id == $run and .arm_run_attempt == $attempt and
+                  .external_id == $external and .details_url == $url and .app_id == $app and .app_slug == $slug
+                ' "$receipt_dir/receipt.json" >/dev/null || { rm -rf "$receipt_dir"; return 1; }
+              rm -rf "$receipt_dir" ;;
+              *) return 1 ;;
+            esac
+
+            expected_review_title="AI review authorization $check_id from arm $source_run_id.$source_attempt"
+            review_pages="$(GH_TOKEN="$ACTIONS_TOKEN" gh api --paginate --slurp \
+              "repos/$TARGET_REPO/actions/workflows/ai-review-merge.yml/runs?event=workflow_dispatch&per_page=100")" || return 1
+            owned_reviews="$(jq -ce --arg title "$expected_review_title" --arg branch "$DEFAULT_BRANCH" --arg repo "$TARGET_REPO" '
+              [.[].workflow_runs[] | select(
+                .display_title == $title and .event == "workflow_dispatch" and
+                .path == ".github/workflows/ai-review-merge.yml" and .head_branch == $branch and
+                .head_repository.full_name == $repo and .repository.full_name == $repo
+              )]
+            ' <<<"$review_pages")" || return 1
+            owned_count="$(jq -r 'length' <<<"$owned_reviews")"
+            [ "$owned_count" -le 1 ] || return 1
+            if [ "$owned_count" = 1 ]; then
+              owned_status="$(jq -r '.[0].status // ""' <<<"$owned_reviews")"
+              case "$owned_status" in queued|in_progress|waiting|pending|requested) return 10 ;; completed) ;; *) return 1 ;; esac
+            elif [ "$receipt_present" = true ]; then
+              # workflow_dispatch has no documented visibility deadline. A
+              # published receipt means an accepted but not-yet-listable review
+              # could still verify authority and later own this check. Absence
+              # from the run listing is therefore never proof of abandonment.
+              return 10
+            fi
+
+            current="$(GH_TOKEN="$GH_TOKEN" gh api "repos/$TARGET_REPO/check-runs/$check_id")" || return 1
+            jq -e --argjson id "$check_id" --argjson app "$APP_ID" --arg slug "$APP_SLUG" \
+              --arg external "$external_id" --arg head "$head_sha" '
+                .id == $id and .app.id == $app and .app.slug == $slug and .external_id == $external and
+                .head_sha == $head and .status == "in_progress" and .conclusion == null
+              ' <<<"$current" >/dev/null || return 1
+            patch="$(GH_TOKEN="$GH_TOKEN" gh api --method PATCH "repos/$TARGET_REPO/check-runs/$check_id" \
+              -f status=completed -f conclusion=failure \
+              -f 'output[title]=Orphaned authorization recovered' \
+              -f "output[summary]=The source arm is terminal and no active receipt-bound review owns this exact check. Recovery run $GITHUB_RUN_ID closed it without granting authorization.")" || return 1
+            jq -e --argjson id "$check_id" --argjson app "$APP_ID" --arg slug "$APP_SLUG" \
+              --arg external "$external_id" '
+                .id == $id and .app.id == $app and .app.slug == $slug and .external_id == $external and
+                .status == "completed" and .conclusion == "failure" and .output.title == "Orphaned authorization recovered"
+              ' <<<"$patch" >/dev/null || return 1
+          }
+
+          if [ "$hold_removed" = false ] && [ "$explicit_rereview" = false ] && [ "$explicit_ai_review" = false ] \
+             && [ "$latest_status" = in_progress ] && [[ "$latest_id" =~ ^[1-9][0-9]*$ ]]; then
+            if recover_orphaned_authorization "$latest"; then
+              latest_id=''; latest_status=''; latest_conclusion=''; latest_title=''
+            else
+              recovery_status=$?
+              if [ "$recovery_status" = 10 ]; then
+                echo "Existing authorization is not provably orphaned; duplicate event is a no-op."
+                exit 0
+              fi
+              echo "::error::pending authorization recovery state is malformed, ambiguous, or unverifiable"
+              exit 1
+            fi
+          elif [ "$hold_removed" = false ] && [ "$explicit_rereview" = false ] && [ "$explicit_ai_review" = false ] \
+               && [ "$latest_status" = completed ] && [ "$latest_conclusion" = failure ] \
+               && [ "$latest_title" = 'Orphaned authorization recovered' ]; then
+            # A prior recovery may have terminated after closing the orphan but
+            # before creating its replacement. The exact recovery marker makes
+            # a later synchronized rerun idempotently continue that lifecycle.
+            jq -e --arg repo "$TARGET_REPO" --arg pr "$PR_NUMBER" --arg head "$head_sha" \
+              --arg server "$GITHUB_SERVER_URL" '
+                (.external_id | select(type == "string") | split(":")) as $parts |
+                ($parts | length == 8) and $parts[0] == "ai-review" and $parts[1] == "v1" and
+                $parts[2] == $repo and $parts[3] == $pr and $parts[4] == $head and
+                ($parts[5] | test("^[1-9][0-9]*$")) and ($parts[6] | test("^[1-9][0-9]*$")) and
+                ($parts[7] | test("^[0-9a-f]{64}$")) and
+                .details_url == ($server + "/" + $repo + "/actions/runs/" + $parts[5])
+              ' <<<"$latest" >/dev/null || {
+                echo "::error::authorization recovery marker is malformed or not bound to the exact head"
+                exit 1
+              }
+            latest_id=''; latest_status=''; latest_conclusion=''; latest_title=''
+          fi
+          # END CROSS-RUN ORPHAN RECOVERY
           if [ "$hold_removed" = true ] && [[ "$latest_id" =~ ^[1-9][0-9]*$ ]] && [ "$latest_conclusion" = success ]; then
             details_url="$(jq -r '.details_url // ""' <<<"$latest")"
             [[ "$details_url" =~ /actions/runs/([1-9][0-9]*)$ ]] || exit 1

@@ -6,6 +6,7 @@
     "immutableReleaseText": {
       "type": "string",
       "minLength": 1,
+      "pattern": "\\S",
       "not": {
         "anyOf": [
           {

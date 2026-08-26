@@ -6,12 +6,14 @@ platform	python3 scripts/action-pin-conformance.test.py
 platform	python3 scripts/workflow-checkout-isolation.test.py
 platform	bash scripts/actions-ci-policy.test.sh
 platform	bash scripts/actions-ci-groups.test.sh
+platform	bash scripts/actions-ci-python-dependencies.test.sh
 platform	bash scripts/ci-gate/organization-neutral-ci-contract.test.sh
 platform	python3 scripts/bootstrap_canonical_ci_test.py
 platform	bash scripts/make-portability.test.sh
 platform	bash scripts/node-workflow-pins.test.sh
 platform	bash scripts/node-workflow-controls.test.sh
 platform	bash scripts/ci-gate/node-ci-secretless.test.sh
+platform	bash scripts/ci-gate/node-ci-secretless-compatibility.test.sh
 platform	bash scripts/ci-gate/node-ci-secretless-pnpm.test.sh
 platform	bash scripts/ci-gate/node-ci-secretless-pnpm-install.test.sh
 platform	bash scripts/ci-gate/node-ci-secretless-trusted-ref.test.sh
@@ -115,7 +117,6 @@ changelog-release	bash scripts/ci-gate/render-next.test.sh
 changelog-release	python3 scripts/changelog.test.py
 changelog-release	bash scripts/changelog-fragment-schema.test.sh
 changelog-release	python3 scripts/v1-readiness-contract.test.py
-changelog-release	bash scripts/actions-ci-python-dependencies.test.sh
 changelog-release	python3 scripts/changelog-pre-contract-migration.test.py
 changelog-release	python3 scripts/ci-gate/changelog-tag-visibility.test.py
 changelog-release	python3 scripts/container_release_manifest.test.py
@@ -162,3 +163,4 @@ changelog-release	bash scripts/doc-tag-pins.test.sh
 changelog-release	bash scripts/doc-fragment-names.test.sh
 changelog-release	bash scripts/trigger-scope.test.sh
 merge-gate	python3 scripts/ci-gate/app-slug-fail-closed.test.py
+merge-gate	bash scripts/ci-gate/orphaned-authorization-recovery.test.sh

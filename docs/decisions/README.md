@@ -11,6 +11,9 @@ Reverse-chronological index of org-level decisions.
 <!-- BEGIN ADR INDEX -->
 | # | Date | Decision |
 |---|------|----------|
+| [0141](0141-swap-verified-compatibility-packages-without-graph-resolution/README.md) | 2026-08-26 | Swap verified compatibility packages without graph resolution |
+| [0140](0140-resolve-package-compatibility-without-consumer-credentials/README.md) | 2026-08-26 | Resolve package compatibility without consumer credentials |
+| [0139](0139-recover-orphaned-authorization-checks-across-runs/README.md) | 2026-08-26 | Recover orphaned authorization checks across runs |
 | [0138](0138-keep-canonical-app-identities-organization-neutral/README.md) | 2026-08-25 | Keep canonical GitHub App identities organization-neutral |
 | [0137](0137-cut-v1-0-0-across-pre-1-0-packages/README.md) | 2026-08-25 | Cut `v1.0.0` across the pre-1.0 `@verjson/*` packages |
 | [0136](0136-separate-dependency-supersession-observation-from-mutation/README.md) | 2026-08-25 | Separate dependency-update supersession observation from mutation |
