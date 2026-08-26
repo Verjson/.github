@@ -11,7 +11,7 @@ Reverse-chronological index of org-level decisions.
 <!-- BEGIN ADR INDEX -->
 | # | Date | Decision |
 |---|------|----------|
-| [0144](0144-recover-zero-provider-review-preflight/README.md) | 2026-08-26 | Recover receipt-bound reviews that stop before provider execution |
+| [0145](0145-recover-zero-provider-review-preflight/README.md) | 2026-08-26 | Recover receipt-bound reviews that stop before provider execution |
 | [0142](0142-reserve-deepseek-completion-for-json-verdicts/README.md) | 2026-08-26 | Reserve DeepSeek completion for JSON verdicts |
 | [0141](0141-swap-verified-compatibility-packages-without-graph-resolution/README.md) | 2026-08-26 | Swap verified compatibility packages without graph resolution |
 | [0140](0140-resolve-package-compatibility-without-consumer-credentials/README.md) | 2026-08-26 | Resolve package compatibility without consumer credentials |
