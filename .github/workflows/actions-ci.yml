@@ -99,6 +99,37 @@ jobs:
           cd "$group_root"
           bash scripts/actions-ci-group.sh "${{ matrix.group }}"
 
+  hosted-compatibility-tests:
+    # The compatibility consumer is intentionally isolated with bubblewrap.
+    # Persistent fleet images are not required to carry that host dependency;
+    # keep this security contract on the explicit hosted Ubuntu image instead.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 1
+      - name: Provision actions CI Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12.14'
+      - name: Install actions CI Python dependencies
+        run: |
+          python3 -m pip install \
+            --disable-pip-version-check \
+            --no-input \
+            --quiet \
+            --no-deps \
+            --only-binary=:all: \
+            --require-hashes \
+            --requirement scripts/actions-ci-python.requirements.txt
+      - name: Run namespace-bound compatibility contracts
+        env:
+          RUNNER_LABELS: ''
+        run: |
+          bash scripts/ci-gate/node-ci-secretless-compatibility.test.sh
+          scripts/ci-gate/node-ci-secretless-compatibility-absent.test.py
+
   # scripts/gen-adr-index.sh --check (run above, in the changelog-release
   # group) only ever sees this PR's own tree, so it cannot catch two open PRs
   # independently allocating the same docs/decisions/NNNN-<slug> number --
@@ -132,7 +163,7 @@ jobs:
   # by the repository ruleset (ADR 0058), so it remains unmatrixed and reports
   # the aggregate result after every group reaches a terminal state.
   shell-tests:
-    needs: [shell-test-groups, adr-number-collision]
+    needs: [shell-test-groups, hosted-compatibility-tests, adr-number-collision]
     if: ${{ always() }}
     runs-on: ${{ fromJSON(vars.CI_RUNNER_FASTLANE || vars.CI_LANE_TRUSTED || vars.CI_LANE_FALLBACK || '["ubuntu-24.04"]') }}
     timeout-minutes: 2
@@ -140,10 +171,15 @@ jobs:
       - name: Preserve the required shell-tests context
         env:
           GROUP_RESULT: ${{ needs.shell-test-groups.result }}
+          COMPATIBILITY_RESULT: ${{ needs.hosted-compatibility-tests.result }}
           COLLISION_RESULT: ${{ needs.adr-number-collision.result }}
         run: |
           if [ "$GROUP_RESULT" != "success" ]; then
             echo "::error::one or more shell-test groups failed"
+            exit 1
+          fi
+          if [ "$COMPATIBILITY_RESULT" != "success" ]; then
+            echo "::error::hosted compatibility contracts failed"
             exit 1
           fi
           # adr-number-collision only runs on pull_request (needs live PR

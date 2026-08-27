@@ -54,6 +54,13 @@ target without changing which package bytes the consumer resolves. The external
 installed target remains only the state whose placement and restoration the lane
 audits; it is not the consumer's resolution source.
 
+Run the two executable compatibility contract suites in a dedicated
+`ubuntu-24.04` actions-ci job. The persistent platform-test fleet does not carry
+the required bubblewrap executable, so it must not register either suite. Keep
+the hosted job as a required input to the unmatrixed `shell-tests` aggregate;
+missing, skipped, or failed hosted execution therefore fails the existing
+required context instead of silently reducing coverage.
+
 When the target began absent, retain its installed directory identity and remove that
 exact directory after success, script failure, `SIGINT`, or `SIGTERM`. Cleanup first
 quarantines the identity under the held package parent and refuses to delete a different
@@ -68,6 +75,9 @@ No consumer self-dependency or package pin is introduced.
   target is absent again at job teardown.
 - Consumer resolution is bound to sealed archive bytes in a read-only private
   mount, rather than inferred from equal path metadata before and after `npm`.
+- Actions CI exercises that namespace boundary on an explicit hosted image and
+  aggregates its result into `shell-tests`; registration mutations reject suite
+  removal or reassignment to the incompatible persistent platform lane.
 - Parent and target races fail the job and preserve unexpected state for diagnosis rather
   than deleting or overwriting it.
 - Real-shaped tests cover success, script failure, signals, multiple lanes, parent and
