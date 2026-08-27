@@ -27,15 +27,69 @@ literal_hosted_sites="$(
     | sed -E 's#^.*/([^/]+):[0-9]+:#\1:#' \
     | sort
 )"
-expected_literal_hosted_sites=$'ai-privileged-merge.yml:    runs-on: ubuntu-24.04\nai-privileged-merge.yml:    runs-on: ubuntu-24.04\nprivileged-merge-conformance.yml:    runs-on: ubuntu-24.04'
+expected_literal_hosted_sites=$'actions-ci.yml:    runs-on: ubuntu-24.04\nai-privileged-merge.yml:    runs-on: ubuntu-24.04\nai-privileged-merge.yml:    runs-on: ubuntu-24.04\nprivileged-merge-conformance.yml:    runs-on: ubuntu-24.04'
 [ "$literal_hosted_sites" = "$expected_literal_hosted_sites" ] \
-  && pass "the two security-boundary jobs use exact fixed hosted selectors" \
+  && pass "reviewed security contracts use exact fixed hosted selectors" \
   || fail "fixed hosted selector inventory drifted: $literal_hosted_sites"
+
+if python3 - "$root/.github/workflows/actions-ci.yml" <<'PY'
+import copy
+import sys
+
+import yaml
+
+with open(sys.argv[1], encoding="utf-8") as stream:
+    document = yaml.safe_load(stream)
+
+def validate_hosted_compatibility_job(candidate):
+    jobs = candidate["jobs"]
+    target = "hosted-compatibility-tests"
+    unexpected = sorted(
+        job_id for job_id, job in jobs.items()
+        if job_id != target
+        and isinstance(job, dict)
+        and job.get("runs-on") == "ubuntu-24.04"
+    )
+    if unexpected:
+        raise AssertionError(
+            "literal hosted selector escaped compatibility job: "
+            + ",".join(unexpected)
+        )
+    if jobs.get(target, {}).get("runs-on") != "ubuntu-24.04":
+        raise AssertionError(f"{target} must own the literal hosted selector")
+
+validate_hosted_compatibility_job(document)
+
+mutant = copy.deepcopy(document)
+mutant["jobs"]["hosted-compatibility-tests"]["runs-on"] = (
+    document["jobs"]["shell-tests"]["runs-on"]
+)
+mutant["jobs"]["shell-tests"]["runs-on"] = "ubuntu-24.04"
+assert sum(
+    isinstance(job, dict) and job.get("runs-on") == "ubuntu-24.04"
+    for job in mutant["jobs"].values()
+) == 1
+try:
+    validate_hosted_compatibility_job(mutant)
+except AssertionError as error:
+    assert str(error) == (
+        "literal hosted selector escaped compatibility job: shell-tests"
+    )
+    print("ok - another actions-ci job cannot occupy hosted exception")
+else:
+    raise AssertionError("another actions-ci job occupied hosted exception")
+PY
+then
+  pass "actions-ci hosted exception is bound to compatibility job identity"
+else
+  fail "actions-ci hosted exception escaped compatibility job identity"
+fi
 
 literal_hosted="$(
   grep -HnE '^    runs-on:[[:space:]]+(\[)?ubuntu-(24\.04|latest)([][:space:],]|$)' \
     "${workflow_files[@]}" \
     | grep -vE '/ai-privileged-merge\.yml:[0-9]+:[[:space:]]+runs-on: ubuntu-24\.04$' \
+    | grep -vE '/actions-ci\.yml:[0-9]+:[[:space:]]+runs-on: ubuntu-24\.04$' \
     | grep -vE '/privileged-merge-conformance\.yml:[0-9]+:[[:space:]]+runs-on: ubuntu-24\.04$' \
     || true
 )"
@@ -70,6 +124,10 @@ literal_hosted="$(
 #    credential and uses fixed hosted capacity so unavailable visibility or an
 #    unregistered route produces an observable failure without trusting a
 #    persistent worker or mutable placement variable (ADR 0089).
+#  * `actions-ci.yml`'s compatibility-contract job — the contract requires
+#    bubblewrap, which the persistent platform image does not provide. Its
+#    literal hosted image is pinned by ADR 0146 and aggregated into the existing
+#    required context rather than falling back or passing conditionally.
 #  * the tail of a lane chain, `vars.CI_LANE_FALLBACK || '["ubuntu-24.04"]'`
 #    — ADR 0040's portability contract. It is only reached when an organization
 #    has no lane variable set at all, and hosted is the one landing that works
@@ -85,6 +143,7 @@ unsafe_portable="$(
     | grep -v "github.repository_owner == 'Verjson'.*|| 'ubuntu-24.04'" \
     | grep -vE '/ai-privileged-merge\.yml:[0-9]+:.*github\.event\.repository\.visibility == '\''public'\'' && '\''ubuntu-24\.04'\''.*self-hosted.*general' \
     | grep -vE '/ai-privileged-merge\.yml:[0-9]+:[[:space:]]+runs-on: ubuntu-24\.04$' \
+    | grep -vE '/actions-ci\.yml:[0-9]+:[[:space:]]+runs-on: ubuntu-24\.04$' \
     | grep -vE '/privileged-merge-conformance\.yml:[0-9]+:[[:space:]]+runs-on: ubuntu-24\.04$' \
     | grep -v "inputs.github-hosted-runner" \
     | grep -v "vars.CI_RUNNER_FASTLANE" \

@@ -99,6 +99,1653 @@ jobs:
           cd "$group_root"
           bash scripts/actions-ci-group.sh "${{ matrix.group }}"
 
+  hosted-compatibility-tests:
+    # The compatibility consumer is intentionally isolated with bubblewrap.
+    # Persistent fleet images are not required to carry that host dependency;
+    # keep this security contract on the explicit hosted Ubuntu image instead.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 1
+      - name: Provision actions CI Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12.14'
+      - name: Install actions CI Python dependencies
+        run: |
+          python3 -m pip install \
+            --disable-pip-version-check \
+            --no-input \
+            --quiet \
+            --no-deps \
+            --only-binary=:all: \
+            --require-hashes \
+            --requirement scripts/actions-ci-python.requirements.txt
+      - name: Provision trusted compatibility sandbox
+        env:
+          ACTIONS_ID_TOKEN_REQUEST_TOKEN: ''
+          ACTIONS_ID_TOKEN_REQUEST_URL: ''
+          AWS_ACCESS_KEY_ID: ''
+          AWS_SECRET_ACCESS_KEY: ''
+          AWS_SESSION_TOKEN: ''
+          AZURE_CREDENTIALS: ''
+          GH_TOKEN: ''
+          GITHUB_TOKEN: ''
+          GOOGLE_APPLICATION_CREDENTIALS: ''
+          NODE_AUTH_TOKEN: ''
+          NPM_TOKEN: ''
+        run: |
+          set -euo pipefail
+          sandbox_acquirer_source() {
+            /usr/bin/cat <<'PY'
+          import errno
+          import hashlib
+          import os
+          import posixpath
+          import pwd
+          import re
+          import shutil
+          import signal
+          import stat
+          import subprocess
+          import sys
+
+          ACQUISITION_PHASES = (
+              "package-acquisition-key",
+              "package-acquisition-apt-update",
+              "package-acquisition-plan",
+              "package-acquisition-install",
+              "package-acquisition-status",
+              "package-acquisition-metadata",
+              "package-acquisition-download",
+              "package-acquisition-archive",
+              "package-acquisition-member",
+              "package-acquisition-staging",
+          )
+          ACQUISITION_DIAGNOSTICS = {
+              phase: (
+                  "::error::trusted compatibility sandbox filesystem boundary unsafe "
+                  f"phase={phase}\n"
+              ).encode("ascii")
+              for phase in ACQUISITION_PHASES
+          }
+          UNKNOWN_DIAGNOSTIC = (
+              b"::error::trusted compatibility sandbox filesystem boundary unsafe "
+              b"phase=unknown\n"
+          )
+          CURRENT_PHASE = ACQUISITION_PHASES[0]
+          SESSION_ROOT = "/var/lib/verjson-compatibility-apt"
+          STAGE_ROOT = "/run/verjson-compatibility-sandbox"
+          PROFILE_PATH = f"{STAGE_ROOT}/bwrap-userns-restrict"
+          PACKAGE_MEMBER = "usr/share/apparmor/extra-profiles/bwrap-userns-restrict"
+          SAFE_KEY = "/etc/apt/trusted.gpg.d/ubuntu-keyring-2018-archive.gpg"
+          SAFE_ENV = {
+              "PATH": "/usr/sbin:/usr/bin:/sbin:/bin",
+              "HOME": "/nonexistent",
+              "DEBIAN_FRONTEND": "noninteractive",
+              "LC_ALL": "C",
+              "APT_CONFIG": "/dev/null",
+          }
+          OWNED_ROOTS = {}
+
+
+          class AcquisitionError(RuntimeError):
+              pass
+
+
+          def record_owned_root(path):
+              metadata = os.lstat(path)
+              validate_directory(path)
+              OWNED_ROOTS[path] = (metadata.st_dev, metadata.st_ino)
+
+
+          def cleanup_owned_root(path):
+              identity = OWNED_ROOTS.get(path)
+              if identity is None:
+                  return
+              try:
+                  metadata = os.lstat(path)
+              except FileNotFoundError:
+                  OWNED_ROOTS.pop(path, None)
+                  return
+              if (
+                  not stat.S_ISDIR(metadata.st_mode)
+                  or metadata.st_uid != 0
+                  or metadata.st_gid != 0
+                  or metadata.st_mode & 0o022
+                  or (metadata.st_dev, metadata.st_ino) != identity
+              ):
+                  raise AcquisitionError
+              shutil.rmtree(path)
+              try:
+                  os.lstat(path)
+              except FileNotFoundError:
+                  OWNED_ROOTS.pop(path, None)
+              else:
+                  raise AcquisitionError
+
+
+          def interrupted(_signum, _frame):
+              raise AcquisitionError
+
+
+          def require_absent(path):
+              try:
+                  os.lstat(path)
+              except FileNotFoundError:
+                  return
+              raise AcquisitionError
+
+
+          def capability_present(descriptor):
+              try:
+                  os.getxattr(descriptor, "security.capability")
+              except OSError as error:
+                  absent = {errno.ENODATA}
+                  if hasattr(errno, "ENOATTR"):
+                      absent.add(errno.ENOATTR)
+                  if error.errno in absent:
+                      return False
+                  raise AcquisitionError from None
+              return True
+
+
+          def validate_directory(path, *, uid=0, gid=0, mask=0o022):
+              metadata = os.lstat(path)
+              if (
+                  not stat.S_ISDIR(metadata.st_mode)
+                  or metadata.st_uid != uid
+                  or metadata.st_gid != gid
+                  or metadata.st_mode & mask
+                  or metadata.st_mode & (stat.S_ISUID | stat.S_ISGID)
+              ):
+                  raise AcquisitionError
+              return metadata
+
+
+          def open_regular(path, *, executable, maximum):
+              flags = os.O_RDONLY | os.O_CLOEXEC
+              if hasattr(os, "O_NOFOLLOW"):
+                  flags |= os.O_NOFOLLOW
+              descriptor = os.open(path, flags)
+              try:
+                  before = os.fstat(descriptor)
+                  if (
+                      not stat.S_ISREG(before.st_mode)
+                      or before.st_uid != 0
+                      or before.st_gid != 0
+                      or before.st_nlink != 1
+                      or before.st_mode & 0o022
+                      or before.st_mode & (stat.S_ISUID | stat.S_ISGID)
+                      or executable != bool(before.st_mode & 0o111)
+                      or capability_present(descriptor)
+                      or before.st_size <= 0
+                      or before.st_size > maximum
+                  ):
+                      raise AcquisitionError
+                  content = bytearray()
+                  while len(content) <= maximum:
+                      chunk = os.read(descriptor, min(1024 * 1024, maximum + 1 - len(content)))
+                      if not chunk:
+                          break
+                      content.extend(chunk)
+                  after = os.fstat(descriptor)
+                  identity = (
+                      before.st_dev,
+                      before.st_ino,
+                      before.st_mode,
+                      before.st_uid,
+                      before.st_gid,
+                      before.st_nlink,
+                      before.st_size,
+                      before.st_mtime_ns,
+                      before.st_ctime_ns,
+                  )
+                  if identity != (
+                      after.st_dev,
+                      after.st_ino,
+                      after.st_mode,
+                      after.st_uid,
+                      after.st_gid,
+                      after.st_nlink,
+                      after.st_size,
+                      after.st_mtime_ns,
+                      after.st_ctime_ns,
+                  ) or len(content) != before.st_size:
+                      raise AcquisitionError
+                  return bytes(content), identity
+              finally:
+                  os.close(descriptor)
+
+
+          def validate_regular_path(path, *, executable, maximum, allow_empty=False):
+              flags = os.O_RDONLY | os.O_CLOEXEC
+              if hasattr(os, "O_NOFOLLOW"):
+                  flags |= os.O_NOFOLLOW
+              descriptor = os.open(path, flags)
+              try:
+                  metadata = os.fstat(descriptor)
+                  if (
+                      not stat.S_ISREG(metadata.st_mode)
+                      or metadata.st_uid != 0
+                      or metadata.st_gid != 0
+                      or metadata.st_nlink != 1
+                      or metadata.st_mode & 0o022
+                      or metadata.st_mode & (stat.S_ISUID | stat.S_ISGID)
+                      or executable != bool(metadata.st_mode & 0o111)
+                      or capability_present(descriptor)
+                      or (not allow_empty and metadata.st_size <= 0)
+                      or metadata.st_size > maximum
+                  ):
+                      raise AcquisitionError
+                  return (
+                      metadata.st_dev, metadata.st_ino, metadata.st_mode,
+                      metadata.st_uid, metadata.st_gid, metadata.st_nlink,
+                      metadata.st_size, metadata.st_mtime_ns, metadata.st_ctime_ns,
+                  )
+              finally:
+                  os.close(descriptor)
+
+
+          def run(args, *, capture=False, timeout=180):
+              return subprocess.run(
+                  tuple(args),
+                  check=False,
+                  stdin=subprocess.DEVNULL,
+                  stdout=subprocess.PIPE if capture else subprocess.DEVNULL,
+                  stderr=subprocess.DEVNULL,
+                  cwd="/",
+                  env=SAFE_ENV,
+                  timeout=timeout,
+                  close_fds=True,
+                  start_new_session=True,
+              )
+
+
+          def exact_output(args, maximum=65536):
+              result = run(args, capture=True)
+              if result.returncode != 0 or len(result.stdout) > maximum:
+                  raise AcquisitionError
+              return result.stdout
+
+
+          def write_root_file(path, content, mode):
+              flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC
+              if hasattr(os, "O_NOFOLLOW"):
+                  flags |= os.O_NOFOLLOW
+              descriptor = os.open(path, flags, mode)
+              try:
+                  view = memoryview(content)
+                  while view:
+                      written = os.write(descriptor, view)
+                      if written <= 0:
+                          raise AcquisitionError
+                      view = view[written:]
+                  os.fsync(descriptor)
+                  os.fchown(descriptor, 0, 0)
+                  os.fchmod(descriptor, mode)
+                  metadata = os.fstat(descriptor)
+                  if (
+                      metadata.st_uid != 0
+                      or metadata.st_gid != 0
+                      or metadata.st_nlink != 1
+                      or metadata.st_mode & 0o022
+                      or metadata.st_mode & (stat.S_ISUID | stat.S_ISGID)
+                      or capability_present(descriptor)
+                  ):
+                      raise AcquisitionError
+              finally:
+                  os.close(descriptor)
+
+
+          def apt_options(cache_root, lists_root, source_parts):
+              return (
+                  "-o", f"Dir::Etc::sourcelist=/dev/null",
+                  "-o", f"Dir::Etc::sourceparts={source_parts}",
+                  "-o", "Dir::Etc::main=/dev/null",
+                  "-o", f"Dir::Etc::parts={SESSION_ROOT}/empty-config",
+                  "-o", f"Dir::Etc::trusted=/dev/null",
+                  "-o", f"Dir::Etc::trustedparts={SESSION_ROOT}/empty-trusted",
+                  "-o", "Dir::Etc::netrc=/dev/null",
+                  "-o", f"Dir::Etc::netrcparts={SESSION_ROOT}/empty-auth",
+                  "-o", "Dir::Etc::preferences=/dev/null",
+                  "-o", f"Dir::Etc::preferencesparts={SESSION_ROOT}/empty-preferences",
+                  "-o", f"Dir::State::lists={lists_root}",
+                  "-o", "Dir::State::status=/var/lib/dpkg/status",
+                  "-o", f"Dir::Cache={cache_root}",
+                  "-o", f"Dir::Cache::archives={cache_root}/archives",
+                  "-o", "APT::Architecture=amd64",
+                  "-o", "APT::Get::AllowUnauthenticated=false",
+                  "-o", "Acquire::AllowInsecureRepositories=false",
+                  "-o", "Acquire::AllowDowngradeToInsecureRepositories=false",
+                  "-o", "Acquire::AllowWeakRepositories=false",
+                  "-o", "Acquire::Check-Valid-Until=true",
+                  "-o", "Acquire::Check-Date=true",
+                  "-o", "Acquire::https::Verify-Peer=true",
+                  "-o", "Acquire::https::Verify-Host=true",
+              )
+
+
+          def create_apt_partial(path, apt_uid):
+              os.mkdir(path, 0o700)
+              os.chown(path, apt_uid, 0)
+              validate_directory(path, uid=apt_uid, gid=0, mask=0o077)
+
+
+          def validate_profile(profile_bytes):
+              profile = profile_bytes.decode("utf-8", "strict")
+              lines = profile.splitlines()
+              if "abi <abi/4.0>," not in {line.strip() for line in lines}:
+                  raise AcquisitionError
+              if re.search(r"flags=\([^)]*\bunconfined\b", profile) is not None:
+                  raise AcquisitionError
+
+              def block(pattern):
+                  starts = [
+                      index for index, line in enumerate(lines)
+                      if re.fullmatch(pattern, line.strip())
+                  ]
+                  if len(starts) != 1:
+                      raise AcquisitionError
+                  for end in range(starts[0] + 1, len(lines)):
+                      if lines[end].strip() == "}":
+                          return [
+                              rule for line in lines[starts[0] + 1:end]
+                              if (rule := line.split("#", 1)[0].strip())
+                          ]
+                  raise AcquisitionError
+
+              parent = block(r"profile bwrap /usr/bin/bwrap flags=\([^)]*\) \{")
+              child = block(r"profile unpriv_bwrap flags=\([^)]*\) \{")
+              if "allow px /** -> bwrap//&unpriv_bwrap," not in parent:
+                  raise AcquisitionError
+              if "allow pix /** -> &unpriv_bwrap," not in child:
+                  raise AcquisitionError
+              capabilities = [
+                  rule for rule in child
+                  if re.search(r"(?:^|\s)capability(?:\s|,|$)", rule)
+              ]
+              if capabilities != ["audit deny capability,"]:
+                  raise AcquisitionError
+
+
+          def parse_packages(list_paths, apt_helper, package, version):
+              matches = []
+              for path in list_paths:
+                  process = subprocess.Popen(
+                      (apt_helper, "cat-file", path),
+                      stdin=subprocess.DEVNULL,
+                      stdout=subprocess.PIPE,
+                      stderr=subprocess.DEVNULL,
+                      cwd="/",
+                      env=SAFE_ENV,
+                      close_fds=True,
+                      start_new_session=True,
+                  )
+                  fields = {}
+                  total = 0
+                  try:
+                      for line in process.stdout:
+                          total += len(line)
+                          if total > 512 * 1024 * 1024 or len(line) > 65536:
+                              raise AcquisitionError
+                          if line in (b"\n", b"\r\n"):
+                              if (
+                                  fields.get(b"Package") == package.encode()
+                                  and fields.get(b"Version") == version.encode()
+                                  and fields.get(b"Architecture") == b"all"
+                              ):
+                                  required = (b"Size", b"SHA256", b"Filename")
+                                  if any(name not in fields for name in required):
+                                      raise AcquisitionError
+                                  matches.append(tuple(fields[name] for name in required))
+                              fields = {}
+                              continue
+                          if line[:1] in (b" ", b"\t"):
+                              continue
+                          name, separator, value = line.rstrip(b"\r\n").partition(b": ")
+                          if separator and name in (
+                              b"Package", b"Version", b"Architecture",
+                              b"Size", b"SHA256", b"Filename",
+                          ):
+                              if name in fields:
+                                  raise AcquisitionError
+                              fields[name] = value
+                  except BaseException:
+                      process.kill()
+                      process.wait(timeout=10)
+                      raise
+                  finally:
+                      process.stdout.close()
+                  if process.wait(timeout=60) != 0:
+                      raise AcquisitionError
+              if not matches or len(set(matches)) != 1:
+                  raise AcquisitionError
+              size_raw, digest_raw, filename_raw = matches[0]
+              if (
+                  re.fullmatch(rb"[1-9][0-9]{0,8}", size_raw) is None
+                  or re.fullmatch(rb"[0-9a-f]{64}", digest_raw) is None
+                  or not filename_raw.startswith(b"pool/")
+                  or b".." in filename_raw.split(b"/")
+              ):
+                  raise AcquisitionError
+              size = int(size_raw)
+              if size > 32 * 1024 * 1024:
+                  raise AcquisitionError
+              try:
+                  filename = filename_raw.decode("ascii", "strict")
+              except UnicodeDecodeError:
+                  raise AcquisitionError from None
+              if (
+                  filename.startswith("/")
+                  or "\\" in filename
+                  or "%" in filename
+                  or "//" in filename
+                  or posixpath.normpath(filename) != filename
+                  or re.fullmatch(
+                      r"pool/(?:[A-Za-z0-9][A-Za-z0-9+.-]*/)+"
+                      r"[A-Za-z0-9][A-Za-z0-9+._~-]*_all\.deb",
+                      filename,
+                  ) is None
+              ):
+                  raise AcquisitionError
+              archive_name = posixpath.basename(filename)
+              return size, digest_raw.decode("ascii"), filename, archive_name
+
+
+          def tar_command(archive_path, arguments, *, maximum):
+              producer = subprocess.Popen(
+                  ("/usr/bin/dpkg-deb", "--fsys-tarfile", archive_path),
+                  stdin=subprocess.DEVNULL,
+                  stdout=subprocess.PIPE,
+                  stderr=subprocess.DEVNULL,
+                  cwd="/",
+                  env=SAFE_ENV,
+                  close_fds=True,
+                  start_new_session=True,
+              )
+              try:
+                  consumer = subprocess.run(
+                      ("/usr/bin/tar", *arguments, "--file=-"),
+                      check=False,
+                      stdin=producer.stdout,
+                      stdout=subprocess.PIPE,
+                      stderr=subprocess.DEVNULL,
+                      cwd="/",
+                      env=SAFE_ENV,
+                      timeout=60,
+                      close_fds=True,
+                      start_new_session=True,
+                  )
+              except BaseException:
+                  producer.kill()
+                  producer.wait(timeout=10)
+                  raise
+              finally:
+                  producer.stdout.close()
+              producer_status = producer.wait(timeout=60)
+              if (
+                  producer_status != 0
+                  or consumer.returncode != 0
+                  or len(consumer.stdout) > maximum
+              ):
+                  raise AcquisitionError
+              return consumer.stdout
+
+
+          def validate_install_plan(plan):
+              try:
+                  plan_lines = plan.decode("utf-8", "strict").splitlines()
+              except UnicodeDecodeError:
+                  raise AcquisitionError from None
+              if (
+                  any(line.startswith(("Remv ", "Purg ")) for line in plan_lines)
+                  or sum(line.startswith("Inst ") for line in plan_lines) > 32
+              ):
+                  raise AcquisitionError
+
+
+          def require_success(result):
+              if result.returncode != 0:
+                  raise AcquisitionError
+
+
+          def select_archive(archive_entries, expected_archive_name):
+              archives = [
+                  entry for entry in archive_entries
+                  if entry.name == expected_archive_name
+              ]
+              locks = [entry for entry in archive_entries if entry.name == "lock"]
+              unexpected = [
+                  entry.name for entry in archive_entries
+                  if entry.name not in ("lock", "partial", expected_archive_name)
+              ]
+              if len(archives) != 1 or len(locks) > 1 or unexpected:
+                  raise AcquisitionError
+              return archives[0], locks
+
+
+          def extract_profile(archive_path):
+              target = f"./{PACKAGE_MEMBER}"
+              listing = tar_command(archive_path, ("--list",), maximum=1024 * 1024)
+              names = listing.decode("utf-8", "strict").splitlines()
+              aliases = []
+              for name in names:
+                  if name.startswith("/") or posixpath.normpath(name).startswith("../"):
+                      raise AcquisitionError
+                  if posixpath.normpath(name) == PACKAGE_MEMBER:
+                      aliases.append(name)
+              if aliases != [target]:
+                  raise AcquisitionError
+              verbose = tar_command(
+                  archive_path,
+                  ("--list", "--verbose", "--numeric-owner", "--xattrs"),
+                  maximum=4 * 1024 * 1024,
+              )
+              member_lines = [
+                  line for line in verbose.splitlines()
+                  if line.endswith(b" " + target.encode())
+              ]
+              if len(member_lines) != 1:
+                  raise AcquisitionError
+              header = member_lines[0].split(None, 3)
+              if (
+                  len(header) != 4
+                  or header[0] != b"-rw-r--r--"
+                  or header[1] != b"0/0"
+                  or re.fullmatch(rb"[1-9][0-9]{0,6}", header[2]) is None
+              ):
+                  raise AcquisitionError
+              declared_profile_size = int(header[2])
+              profile_bytes = tar_command(
+                  archive_path,
+                  ("--extract", "--to-stdout", "--no-wildcards", target),
+                  maximum=1024 * 1024,
+              )
+              if not profile_bytes or len(profile_bytes) != declared_profile_size:
+                  raise AcquisitionError
+              validate_profile(profile_bytes)
+              return profile_bytes
+
+
+          def stage_profile(profile_bytes, archive_identity):
+              temporary = f"{STAGE_ROOT}/.bwrap-userns-restrict.new"
+              write_root_file(temporary, profile_bytes, 0o400)
+              os.rename(temporary, PROFILE_PATH)
+              stage_descriptor = os.open(
+                  STAGE_ROOT,
+                  os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW,
+              )
+              try:
+                  os.fsync(stage_descriptor)
+              finally:
+                  os.close(stage_descriptor)
+              os.chmod(STAGE_ROOT, 0o500)
+              validate_directory(STAGE_ROOT)
+              staged_bytes, staged_identity = open_regular(
+                  PROFILE_PATH,
+                  executable=False,
+                  maximum=1024 * 1024,
+              )
+              if (
+                  staged_bytes != profile_bytes
+                  or staged_identity[5] != 1
+                  or staged_identity[:2] == archive_identity[:2]
+                  or os.listdir(STAGE_ROOT) != ["bwrap-userns-restrict"]
+              ):
+                  raise AcquisitionError
+
+
+          def acquire():
+              global CURRENT_PHASE
+              CURRENT_PHASE = ACQUISITION_PHASES[0]
+              if os.geteuid() != 0 or sys.version_info < (3, 9):
+                  raise AcquisitionError
+              for directory in (
+                  "/", "/etc", "/etc/apt", "/etc/apt/trusted.gpg.d",
+                  "/usr", "/usr/bin", "/usr/lib", "/usr/lib/apt",
+                  "/var", "/var/lib", "/var/lib/dpkg", "/run",
+              ):
+                  validate_directory(directory)
+              for executable in (
+                  "/usr/bin/apt-get", "/usr/bin/dpkg", "/usr/bin/dpkg-deb",
+                  "/usr/bin/dpkg-query", "/usr/bin/tar", "/usr/lib/apt/apt-helper",
+              ):
+                  open_regular(executable, executable=True, maximum=64 * 1024 * 1024)
+              key_bytes, _key_identity = open_regular(
+                  SAFE_KEY,
+                  executable=False,
+                  maximum=1024 * 1024,
+              )
+              if len(key_bytes) < 1024:
+                  raise AcquisitionError
+              status_bytes, status_identity = open_regular(
+                  "/var/lib/dpkg/status",
+                  executable=False,
+                  maximum=64 * 1024 * 1024,
+              )
+              if len(status_bytes) < 1024:
+                  raise AcquisitionError
+              ownership = exact_output(("/usr/bin/dpkg-query", "-S", SAFE_KEY))
+              if ownership != f"ubuntu-keyring: {SAFE_KEY}\n".encode("ascii"):
+                  raise AcquisitionError
+              architecture = exact_output(("/usr/bin/dpkg", "--print-architecture"))
+              if architecture != b"amd64\n":
+                  raise AcquisitionError
+              require_absent(SESSION_ROOT)
+              require_absent(STAGE_ROOT)
+              os.mkdir(SESSION_ROOT, 0o755)
+              record_owned_root(SESSION_ROOT)
+              os.mkdir(STAGE_ROOT, 0o700)
+              record_owned_root(STAGE_ROOT)
+              source_parts = f"{SESSION_ROOT}/sources.list.d"
+              empty_trusted = f"{SESSION_ROOT}/empty-trusted"
+              empty_config = f"{SESSION_ROOT}/empty-config"
+              empty_auth = f"{SESSION_ROOT}/empty-auth"
+              empty_preferences = f"{SESSION_ROOT}/empty-preferences"
+              lists_root = f"{SESSION_ROOT}/lists"
+              install_cache = f"{SESSION_ROOT}/install-cache"
+              download_cache = f"{SESSION_ROOT}/download-cache"
+              for path in (
+                  source_parts, empty_trusted, empty_config, empty_auth,
+                  empty_preferences, lists_root,
+                  install_cache, download_cache,
+              ):
+                  os.mkdir(path, 0o755)
+              apt_uid = pwd.getpwnam("_apt").pw_uid
+              if apt_uid in (0, os.getuid()):
+                  raise AcquisitionError
+              create_apt_partial(f"{lists_root}/partial", apt_uid)
+              for cache in (install_cache, download_cache):
+                  archives = f"{cache}/archives"
+                  os.mkdir(archives, 0o755)
+                  create_apt_partial(f"{archives}/partial", apt_uid)
+              source = (
+                  "Types: deb\n"
+                  "URIs: https://archive.ubuntu.com/ubuntu\n"
+                  "Suites: noble noble-updates\n"
+                  "Components: main universe\n"
+                  "Architectures: amd64\n"
+                  f"Signed-By: {SAFE_KEY}\n\n"
+                  "Types: deb\n"
+                  "URIs: https://security.ubuntu.com/ubuntu\n"
+                  "Suites: noble-security\n"
+                  "Components: main universe\n"
+                  "Architectures: amd64\n"
+                  f"Signed-By: {SAFE_KEY}\n"
+              ).encode("ascii")
+              source_path = f"{source_parts}/ubuntu.sources"
+              write_root_file(source_path, source, 0o400)
+              for directory in (
+                  SESSION_ROOT, STAGE_ROOT, source_parts, empty_trusted, empty_config,
+                  empty_auth, empty_preferences,
+                  lists_root, install_cache, f"{install_cache}/archives",
+                  download_cache, f"{download_cache}/archives",
+              ):
+                  validate_directory(directory)
+
+              CURRENT_PHASE = "package-acquisition-apt-update"
+              update_options = apt_options(install_cache, lists_root, source_parts)
+              require_success(run(
+                  ("/usr/bin/apt-get", *update_options, "update"),
+                  timeout=300,
+              ))
+              validate_directory(f"{lists_root}/partial", uid=apt_uid, gid=0, mask=0o077)
+              CURRENT_PHASE = "package-acquisition-plan"
+              if status_identity != open_regular(
+                  "/var/lib/dpkg/status",
+                  executable=False,
+                  maximum=64 * 1024 * 1024,
+              )[1]:
+                  raise AcquisitionError
+              install_args = (
+                  "/usr/bin/apt-get", *update_options,
+                  "--no-install-recommends", "--no-remove", "--yes",
+                  "install", "apparmor", "apparmor-profiles", "bubblewrap",
+              )
+              plan = exact_output((
+                  "/usr/bin/apt-get", *update_options,
+                  "--simulate", "--no-install-recommends", "--no-remove",
+                  "install", "apparmor", "apparmor-profiles", "bubblewrap",
+              ), maximum=1024 * 1024)
+              validate_install_plan(plan)
+              CURRENT_PHASE = "package-acquisition-install"
+              require_success(run(install_args, timeout=600))
+              validate_directory(
+                  f"{install_cache}/archives/partial",
+                  uid=apt_uid,
+                  gid=0,
+                  mask=0o077,
+              )
+
+              CURRENT_PHASE = "package-acquisition-status"
+              package_record = exact_output((
+                  "/usr/bin/dpkg-query", "-W",
+                  "-f=${db:Status-Abbrev}\\t${binary:Package}\\t${Version}\\t${Architecture}\\n",
+                  "apparmor-profiles",
+              )).decode("utf-8", "strict")
+              fields = package_record.rstrip("\n").split("\t")
+              if (
+                  len(fields) != 4 or fields[0] != "ii "
+                  or fields[1] != "apparmor-profiles" or fields[3] != "all"
+              ):
+                  raise AcquisitionError
+              version = fields[2]
+              if run((
+                  "/usr/bin/dpkg", "--compare-versions", version, "ge",
+                  "4.0.1really4.0.1-0ubuntu0.24.04.3",
+              )).returncode != 0:
+                  raise AcquisitionError
+
+              CURRENT_PHASE = "package-acquisition-metadata"
+              index_paths_raw = exact_output((
+                  "/usr/bin/apt-get", *update_options, "indextargets",
+                  "--format", "$(FILENAME)",
+                  "Created-By: Packages", "Component: main",
+              ), maximum=1024 * 1024)
+              index_paths = sorted(set(index_paths_raw.decode("utf-8", "strict").splitlines()))
+              if not index_paths or len(index_paths) > 32:
+                  raise AcquisitionError
+              for index_path in index_paths:
+                  if not index_path.startswith(f"{lists_root}/"):
+                      raise AcquisitionError
+                  validate_regular_path(
+                      index_path,
+                      executable=False,
+                      maximum=256 * 1024 * 1024,
+                  )
+              expected_size, expected_digest, expected_filename, expected_archive_name = parse_packages(
+                  index_paths,
+                  "/usr/lib/apt/apt-helper",
+                  "apparmor-profiles",
+                  version,
+              )
+              if not expected_filename.endswith("_all.deb"):
+                  raise AcquisitionError
+
+              CURRENT_PHASE = "package-acquisition-download"
+              download_options = apt_options(download_cache, lists_root, source_parts)
+              require_success(run((
+                  "/usr/bin/apt-get", *download_options,
+                  "--download-only", "--reinstall", "--no-install-recommends",
+                  "--no-remove", "--yes", "install",
+                  f"apparmor-profiles:all={version}",
+              ), timeout=300))
+              CURRENT_PHASE = "package-acquisition-archive"
+              archive_root = f"{download_cache}/archives"
+              validate_directory(
+                  f"{archive_root}/partial",
+                  uid=apt_uid,
+                  gid=0,
+                  mask=0o077,
+              )
+              archive_entries = list(os.scandir(archive_root))
+              archive, lock_entries = select_archive(
+                  archive_entries,
+                  expected_archive_name,
+              )
+              if lock_entries:
+                  validate_regular_path(
+                      lock_entries[0].path,
+                      executable=False,
+                      maximum=4096,
+                      allow_empty=True,
+                  )
+              archive_bytes, archive_identity = open_regular(
+                  archive.path,
+                  executable=False,
+                  maximum=32 * 1024 * 1024,
+              )
+              if (
+                  len(archive_bytes) != expected_size
+                  or hashlib.sha256(archive_bytes).hexdigest() != expected_digest
+              ):
+                  raise AcquisitionError
+              for field, expected in (
+                  ("Package", "apparmor-profiles"),
+                  ("Version", version),
+                  ("Architecture", "all"),
+              ):
+                  value = exact_output((
+                      "/usr/bin/dpkg-deb", "--field", archive.path, field,
+                  ))
+                  if value != f"{expected}\n".encode("utf-8"):
+                      raise AcquisitionError
+
+              CURRENT_PHASE = "package-acquisition-member"
+              profile_bytes = extract_profile(archive.path)
+              CURRENT_PHASE = "package-acquisition-staging"
+              stage_profile(profile_bytes, archive_identity)
+          def main():
+              failure = None
+              committed = False
+              for handled_signal in (signal.SIGHUP, signal.SIGINT, signal.SIGTERM):
+                  signal.signal(handled_signal, interrupted)
+              try:
+                  acquire()
+                  committed = True
+              except BaseException:
+                  failure = ACQUISITION_DIAGNOSTICS.get(
+                      CURRENT_PHASE,
+                      UNKNOWN_DIAGNOSTIC,
+                  )
+              finally:
+                  cleanup_failed = False
+                  try:
+                      cleanup_owned_root(SESSION_ROOT)
+                  except BaseException:
+                      cleanup_failed = True
+                  if not committed or cleanup_failed:
+                      try:
+                          cleanup_owned_root(STAGE_ROOT)
+                      except BaseException:
+                          cleanup_failed = True
+                  if cleanup_failed:
+                      failure = (
+                          b"::error::trusted compatibility sandbox filesystem boundary unsafe "
+                          b"phase=package-profile-cleanup\n"
+                      )
+                      committed = False
+              if failure is not None:
+                  try:
+                      sys.stderr.buffer.write(failure)
+                      sys.stderr.buffer.flush()
+                  except BaseException:
+                      pass
+                  raise SystemExit(1)
+
+
+          if __name__ == "__main__":
+              main()
+          PY
+          }
+          sandbox_acquirer_supervisor_source() {
+            /usr/bin/cat <<'PY'
+          import hashlib
+          import os
+          import re
+          import subprocess
+          import sys
+
+          acquisition_phases = (
+              "package-acquisition-key",
+              "package-acquisition-apt-update",
+              "package-acquisition-plan",
+              "package-acquisition-install",
+              "package-acquisition-status",
+              "package-acquisition-metadata",
+              "package-acquisition-download",
+              "package-acquisition-archive",
+              "package-acquisition-member",
+              "package-acquisition-staging",
+          )
+          diagnostics = {
+              (
+                  b"::error::trusted compatibility sandbox filesystem boundary unsafe "
+                  + f"phase={phase}\n".encode("ascii")
+              ): status
+              for status, phase in enumerate(acquisition_phases, start=83)
+          }
+          cleanup_diagnostic = (
+              b"::error::trusted compatibility sandbox filesystem boundary unsafe "
+              b"phase=package-profile-cleanup\n"
+          )
+          unknown = (
+              b"::error::trusted compatibility sandbox filesystem boundary unsafe "
+              b"phase=unknown\n"
+          )
+          def supervise(source, expected_digest, runner=subprocess.run):
+              try:
+                  if (
+                      sys.version_info < (3, 9)
+                      or os.geteuid() != 0
+                      or re.fullmatch(r"[0-9a-f]{64}", expected_digest) is None
+                      or len(source) > 1048576
+                      or hashlib.sha256(source).hexdigest() != expected_digest
+                  ):
+                      raise ValueError
+                  source_text = source.decode("utf-8", "strict")
+                  completed = runner(
+                      ("/usr/bin/python3", "-I", "-c", source_text),
+                      check=False,
+                      stdin=subprocess.DEVNULL,
+                      stdout=subprocess.PIPE,
+                      stderr=subprocess.STDOUT,
+                      cwd="/",
+                      env={"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "HOME": "/nonexistent"},
+                      timeout=900,
+                      close_fds=True,
+                      start_new_session=True,
+                  )
+                  if completed.returncode == 0 and completed.stdout == b"":
+                      return b"", 0
+                  if completed.returncode == 1 and completed.stdout in diagnostics:
+                      return completed.stdout, diagnostics[completed.stdout]
+                  if completed.returncode == 1 and completed.stdout == cleanup_diagnostic:
+                      return cleanup_diagnostic, 82
+              except BaseException:
+                  pass
+              return unknown, 81
+
+
+          def main():
+              try:
+                  expected_digest, = sys.argv[1:]
+                  source = sys.stdin.buffer.read(1048577)
+                  output, status = supervise(source, expected_digest)
+                  sys.stdout.buffer.write(output)
+                  sys.stdout.buffer.flush()
+              except BaseException:
+                  raise SystemExit(81)
+              raise SystemExit(status)
+
+
+          if __name__ == "__main__":
+              main()
+          PY
+          }
+          acquirer_supervisor_source="$(sandbox_acquirer_supervisor_source)" || {
+            echo '::error::trusted compatibility sandbox filesystem boundary unsafe phase=unknown' >&2
+            exit 1
+          }
+          acquirer_output=''
+          acquirer_status=0
+          acquirer_output="$(
+            {
+              sandbox_acquirer_source 2>&1 |
+                /usr/bin/sudo --non-interactive /usr/bin/env -i \
+                  PATH=/usr/sbin:/usr/bin:/sbin:/bin \
+                  HOME=/nonexistent \
+                  /usr/bin/python3 -I -c "$acquirer_supervisor_source" \
+              '51c8f32854629adee4ecd09beabe18ec300ef68eeab1eb80d379b4d48f54bc5a'
+            } 2>/dev/null
+          )" || acquirer_status=$?
+          if [ "$acquirer_status" -ne 0 ] || [ -n "$acquirer_output" ]; then
+            case "$acquirer_status:$acquirer_output" in
+              '83:::error::trusted compatibility sandbox filesystem boundary unsafe phase=package-acquisition-key'|\
+              '84:::error::trusted compatibility sandbox filesystem boundary unsafe phase=package-acquisition-apt-update'|\
+              '85:::error::trusted compatibility sandbox filesystem boundary unsafe phase=package-acquisition-plan'|\
+              '86:::error::trusted compatibility sandbox filesystem boundary unsafe phase=package-acquisition-install'|\
+              '87:::error::trusted compatibility sandbox filesystem boundary unsafe phase=package-acquisition-status'|\
+              '88:::error::trusted compatibility sandbox filesystem boundary unsafe phase=package-acquisition-metadata'|\
+              '89:::error::trusted compatibility sandbox filesystem boundary unsafe phase=package-acquisition-download'|\
+              '90:::error::trusted compatibility sandbox filesystem boundary unsafe phase=package-acquisition-archive'|\
+              '91:::error::trusted compatibility sandbox filesystem boundary unsafe phase=package-acquisition-member'|\
+              '92:::error::trusted compatibility sandbox filesystem boundary unsafe phase=package-acquisition-staging'|\
+              '82:::error::trusted compatibility sandbox filesystem boundary unsafe phase=package-profile-cleanup')
+                printf '%s\n' "$acquirer_output" >&2
+                ;;
+              *)
+                echo '::error::trusted compatibility sandbox filesystem boundary unsafe phase=unknown' >&2
+                ;;
+            esac
+            exit 1
+          fi
+          unset acquirer_output acquirer_status acquirer_supervisor_source
+
+          verify_package_floor() {
+            local package_name="$1"
+            local package_floor="$2"
+            local package_record package_status package_version
+            if ! package_record="$(/usr/bin/dpkg-query -W -f='${db:Status-Abbrev} ${Version}\n' "$package_name" 2>/dev/null)"; then
+              echo "::error::trusted compatibility sandbox package verification failed"
+              exit 1
+            fi
+            read -r package_status package_version <<<"$package_record"
+            if [ "$package_status" != "ii" ] \
+              || ! /usr/bin/dpkg --compare-versions "$package_version" ge "$package_floor"; then
+              echo "::error::trusted compatibility sandbox package version is below the required floor"
+              exit 1
+            fi
+          }
+          verify_package_floor bubblewrap '0.9.0-1build1'
+          verify_package_floor apparmor '4.0.1really4.0.1-0ubuntu0.24.04.3'
+          verify_package_floor apparmor-profiles '4.0.1really4.0.1-0ubuntu0.24.04.3'
+
+          if [ "$(/usr/bin/dpkg-query -S /usr/bin/bwrap 2>/dev/null)" != 'bubblewrap: /usr/bin/bwrap' ]; then
+            echo "::error::trusted bubblewrap binary is not owned by the verified package"
+            exit 1
+          fi
+          if [ "$(/usr/bin/dpkg-query -S /sbin/apparmor_parser 2>/dev/null)" != 'apparmor: /sbin/apparmor_parser' ]; then
+            echo "::error::trusted AppArmor parser is not owned by the verified package"
+            exit 1
+          fi
+          package_profile_member='/usr/share/apparmor/extra-profiles/bwrap-userns-restrict'
+          profile_path='/run/verjson-compatibility-sandbox/bwrap-userns-restrict'
+          if [ "$(/usr/bin/dpkg-query -S "$package_profile_member" 2>/dev/null)" != "apparmor-profiles: $package_profile_member" ]; then
+            echo "::error::trusted bubblewrap AppArmor profile is not owned by the verified package"
+            exit 1
+          fi
+          sandbox_verifier_source() {
+            /usr/bin/cat <<'PY'
+          import errno
+          import hashlib
+          import os
+          import re
+          import stat
+          import subprocess
+          import sys
+          from pathlib import Path
+
+          BOUNDARY_PHASES = (
+              "ancestor-directories",
+              "usrmerge-parser-link",
+              "local-overrides",
+              "abi-tree",
+              "tunables-tree",
+              "bwrap-binary",
+              "parser-binary",
+              "package-profile",
+              "profile-semantics",
+              "receipt-recomputation",
+              "profile-load",
+              "unknown",
+              "package-profile-cleanup",
+          )
+          BOUNDARY_STATUS = {
+              phase: 70 + index for index, phase in enumerate(BOUNDARY_PHASES)
+          }
+
+
+          class VerificationError(RuntimeError):
+              def __init__(self, phase):
+                  self.phase = phase
+
+
+          def boundary_phase(error):
+              if isinstance(error, VerificationError) and error.phase in BOUNDARY_PHASES:
+                  return error.phase
+              return "unknown"
+
+
+          def boundary_diagnostic(error):
+              return (
+                  "::error::trusted compatibility sandbox filesystem boundary unsafe "
+                  f"phase={boundary_phase(error)}"
+              )
+
+
+          def boundary_status(error):
+              return BOUNDARY_STATUS[boundary_phase(error)]
+
+
+          def validate_metadata(metadata, *, executable, capability_present=False):
+              if (
+                  not stat.S_ISREG(metadata.st_mode)
+                  or metadata.st_uid != 0
+                  or metadata.st_gid != 0
+                  or metadata.st_mode & 0o022
+                  or metadata.st_mode & (stat.S_ISUID | stat.S_ISGID)
+                  or capability_present
+              ):
+                  raise VerificationError("unsafe regular file metadata")
+              if executable and not metadata.st_mode & 0o111:
+                  raise VerificationError("unsafe executable mode")
+              if not executable and metadata.st_mode & 0o111:
+                  raise VerificationError("unsafe data file mode")
+
+
+          def validate_directory(metadata):
+              if (
+                  not stat.S_ISDIR(metadata.st_mode)
+                  or metadata.st_uid != 0
+                  or metadata.st_gid != 0
+                  or metadata.st_mode & 0o022
+                  or metadata.st_mode & (stat.S_ISUID | stat.S_ISGID)
+              ):
+                  raise VerificationError("unsafe directory metadata")
+
+
+          def has_security_capability(file_descriptor):
+              try:
+                  os.getxattr(file_descriptor, "security.capability")
+              except OSError as error:
+                  absent = {errno.ENODATA}
+                  if hasattr(errno, "ENOATTR"):
+                      absent.add(errno.ENOATTR)
+                  if error.errno in absent:
+                      return False
+                  raise VerificationError("unreadable security capability") from None
+              return True
+
+
+          def fingerprint(metadata):
+              return (
+                  metadata.st_dev,
+                  metadata.st_ino,
+                  metadata.st_mode,
+                  metadata.st_uid,
+                  metadata.st_gid,
+                  metadata.st_size,
+                  metadata.st_mtime_ns,
+                  metadata.st_ctime_ns,
+              )
+
+
+          def open_verified_file(path, *, executable):
+              flags = os.O_RDONLY | os.O_CLOEXEC
+              if hasattr(os, "O_NOFOLLOW"):
+                  flags |= os.O_NOFOLLOW
+              try:
+                  descriptor = os.open(path, flags)
+                  before = os.fstat(descriptor)
+                  validate_metadata(
+                      before,
+                      executable=executable,
+                      capability_present=has_security_capability(descriptor),
+                  )
+                  chunks = []
+                  while True:
+                      chunk = os.read(descriptor, 1024 * 1024)
+                      if not chunk:
+                          break
+                      chunks.append(chunk)
+                  after = os.fstat(descriptor)
+              except (OSError, VerificationError):
+                  if "descriptor" in locals():
+                      os.close(descriptor)
+                  raise VerificationError("unsafe verified file") from None
+              if fingerprint(before) != fingerprint(after):
+                  os.close(descriptor)
+                  raise VerificationError("verified file changed while read")
+              return descriptor, b"".join(chunks), fingerprint(after)
+
+
+          def read_verified_file(path, *, executable):
+              descriptor, content, metadata_fingerprint = open_verified_file(
+                  path,
+                  executable=executable,
+              )
+              os.close(descriptor)
+              return content, metadata_fingerprint
+
+
+          def profile_block(profile_lines, header_pattern):
+              starts = [
+                  index
+                  for index, line in enumerate(profile_lines)
+                  if re.fullmatch(header_pattern, line.strip())
+              ]
+              if len(starts) != 1:
+                  raise VerificationError("profile block missing or repeated")
+              start = starts[0]
+              for end in range(start + 1, len(profile_lines)):
+                  if profile_lines[end].strip() == "}":
+                      return [
+                          rule
+                          for line in profile_lines[start + 1:end]
+                          if (rule := line.split("#", 1)[0].strip())
+                      ]
+              raise VerificationError("profile block unterminated")
+
+
+          def validate_profile_text(profile):
+              lines = profile.splitlines()
+              if "abi <abi/4.0>," not in {line.strip() for line in lines}:
+                  raise VerificationError("AppArmor ABI missing")
+              if re.search(r"flags=\([^)]*\bunconfined\b", profile) is not None:
+                  raise VerificationError("unconfined profile forbidden")
+              parent = profile_block(
+                  lines,
+                  r"profile bwrap /usr/bin/bwrap flags=\([^)]*\) \{",
+              )
+              child = profile_block(
+                  lines,
+                  r"profile unpriv_bwrap flags=\([^)]*\) \{",
+              )
+              if "allow px /** -> bwrap//&unpriv_bwrap," not in parent:
+                  raise VerificationError("parent transition missing")
+              if "allow pix /** -> &unpriv_bwrap," not in child:
+                  raise VerificationError("recursive child transition missing")
+              capability_rules = [
+                  line
+                  for line in child
+                  if re.search(r"(?:^|\s)capability(?:\s|,|$)", line)
+              ]
+              if capability_rules != ["audit deny capability,"]:
+                  raise VerificationError("child capability denial missing")
+
+
+          def checked_directory(path):
+              try:
+                  metadata = os.lstat(path)
+              except OSError:
+                  raise VerificationError("required directory unavailable") from None
+              validate_directory(metadata)
+              return fingerprint(metadata)
+
+
+          def reject_walk_error(_error):
+              raise VerificationError("unsafe tunables traversal")
+
+
+          def verify_include_tree(include_root, phase):
+              receipts = []
+              try:
+                  for root, directories, files in os.walk(
+                      include_root,
+                      topdown=True,
+                      onerror=reject_walk_error,
+                      followlinks=False,
+                  ):
+                      directories.sort()
+                      files.sort()
+                      root_metadata = os.lstat(root)
+                      validate_directory(root_metadata)
+                      receipts.append((root, fingerprint(root_metadata)))
+                      for name in directories:
+                          path = os.path.join(root, name)
+                          metadata = os.lstat(path)
+                          validate_directory(metadata)
+                          receipts.append((path, fingerprint(metadata)))
+                      for name in files:
+                          path = os.path.join(root, name)
+                          content, metadata_fingerprint = read_verified_file(
+                              path,
+                              executable=False,
+                          )
+                          receipts.append((
+                              path,
+                              metadata_fingerprint,
+                              hashlib.sha256(content).hexdigest(),
+                          ))
+              except (OSError, VerificationError):
+                  raise VerificationError(phase) from None
+              return receipts
+
+
+          def verify_system(profile_path, *, bind_parser=False):
+              receipts = []
+              try:
+                  for directory in (
+                      "/",
+                      "/usr",
+                      "/usr/bin",
+                      "/usr/sbin",
+                      "/run",
+                      "/run/verjson-compatibility-sandbox",
+                      "/etc",
+                      "/etc/apparmor.d",
+                      "/etc/apparmor.d/local",
+                      "/etc/apparmor.d/abi",
+                      "/etc/apparmor.d/tunables",
+                  ):
+                      receipts.append((directory, checked_directory(directory)))
+              except (OSError, VerificationError):
+                  raise VerificationError("ancestor-directories") from None
+
+              try:
+                  sbin_metadata = os.lstat("/sbin")
+                  sbin_target = os.readlink("/sbin")
+                  if (
+                      not stat.S_ISLNK(sbin_metadata.st_mode)
+                      or sbin_metadata.st_uid != 0
+                      or sbin_metadata.st_gid != 0
+                      or sbin_target not in ("usr/sbin", "/usr/sbin")
+                  ):
+                      raise VerificationError("unsafe usrmerge parser path")
+                  receipts.append(("/sbin", fingerprint(sbin_metadata), sbin_target))
+              except (OSError, VerificationError):
+                  raise VerificationError("usrmerge-parser-link") from None
+
+              try:
+                  for override in (
+                      "/etc/apparmor.d/local/bwrap-userns-restrict",
+                      "/etc/apparmor.d/local/unpriv_bwrap",
+                  ):
+                      try:
+                          os.lstat(override)
+                      except FileNotFoundError:
+                          receipts.append((override, "absent"))
+                      except OSError:
+                          raise VerificationError("unsafe local override state") from None
+                      else:
+                          raise VerificationError("local override forbidden")
+              except (OSError, VerificationError):
+                  raise VerificationError("local-overrides") from None
+
+              receipts.extend(verify_include_tree("/etc/apparmor.d/abi", "abi-tree"))
+              receipts.extend(verify_include_tree("/etc/apparmor.d/tunables", "tunables-tree"))
+
+              try:
+                  bwrap, bwrap_fingerprint = read_verified_file(
+                      "/usr/bin/bwrap",
+                      executable=True,
+                  )
+              except (OSError, VerificationError):
+                  raise VerificationError("bwrap-binary") from None
+              try:
+                  parser_descriptor, parser, parser_fingerprint = open_verified_file(
+                      "/sbin/apparmor_parser",
+                      executable=True,
+                  )
+              except (OSError, VerificationError):
+                  raise VerificationError("parser-binary") from None
+              try:
+                  profile_descriptor, profile_bytes, profile_fingerprint = open_verified_file(
+                      profile_path,
+                      executable=False,
+                  )
+              except (OSError, VerificationError):
+                  raise VerificationError("package-profile") from None
+              try:
+                  profile = profile_bytes.decode("utf-8")
+                  validate_profile_text(profile)
+              except (UnicodeError, VerificationError):
+                  raise VerificationError("profile-semantics") from None
+              try:
+                  receipts.extend((
+                      ("/usr/bin/bwrap", bwrap_fingerprint, hashlib.sha256(bwrap).hexdigest()),
+                      ("/sbin/apparmor_parser", parser_fingerprint, hashlib.sha256(parser).hexdigest()),
+                      (profile_path, profile_fingerprint, hashlib.sha256(profile_bytes).hexdigest()),
+                  ))
+                  receipt = hashlib.sha256(repr(receipts).encode("utf-8")).hexdigest()
+              except (OSError, VerificationError):
+                  raise VerificationError("receipt-recomputation") from None
+              if bind_parser:
+                  return receipt, parser_descriptor, profile_descriptor
+              os.close(parser_descriptor)
+              os.close(profile_descriptor)
+              return receipt
+
+
+          mode = sys.argv[1] if len(sys.argv) == 3 else ""
+          if mode not in ("verify", "load") \
+                  or sys.argv[2] != "/run/verjson-compatibility-sandbox/bwrap-userns-restrict":
+              raise SystemExit("::error::trusted compatibility sandbox verifier invocation is unsafe")
+
+
+          def run_verifier():
+              if mode == "verify":
+                  receipt = verify_system(sys.argv[2])
+                  path = "/usr/bin/bwrap"
+                  try:
+                      version = subprocess.run(
+                          [path, "--version"],
+                          check=False,
+                          stdout=subprocess.PIPE,
+                          stderr=subprocess.DEVNULL,
+                          text=True,
+                          timeout=5,
+                          env={"PATH": "/usr/sbin:/usr/bin:/sbin:/bin"},
+                      )
+                  except (OSError, subprocess.SubprocessError):
+                      raise VerificationError("bwrap-binary") from None
+                  match = re.fullmatch(r"bubblewrap (\d+)\.(\d+)\.(\d+)\n?", version.stdout)
+                  if version.returncode != 0 or match is None:
+                      raise VerificationError("bwrap-binary")
+                  if tuple(map(int, match.groups())) < (0, 9, 0):
+                      raise VerificationError("bwrap-binary")
+                  print(receipt)
+                  return
+
+              expected_receipt = os.environ.get("EXPECTED_SANDBOX_RECEIPT", "")
+              if re.fullmatch(r"[0-9a-f]{64}", expected_receipt) is None:
+                  raise VerificationError("receipt-recomputation")
+              receipt, parser_descriptor, profile_descriptor = verify_system(
+                  sys.argv[2],
+                  bind_parser=True,
+              )
+              if receipt != expected_receipt or os.execve not in os.supports_fd:
+                  raise VerificationError("receipt-recomputation")
+              try:
+                  os.set_inheritable(parser_descriptor, True)
+                  os.set_inheritable(profile_descriptor, True)
+                  os.execve(
+                      parser_descriptor,
+                      (
+                          "apparmor_parser",
+                          "--replace",
+                          f"/proc/self/fd/{profile_descriptor}",
+                      ),
+                      {"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "HOME": "/nonexistent"},
+                  )
+              except OSError:
+                  raise VerificationError("profile-load") from None
+
+
+          try:
+              run_verifier()
+          except BaseException as error:
+              if mode == "load":
+                  raise SystemExit(boundary_status(error)) from None
+              raise SystemExit(boundary_diagnostic(error)) from None
+          PY
+          }
+          emit_verifier_diagnostic() {
+            case "$1" in
+              '::error::trusted compatibility sandbox filesystem boundary unsafe phase=ancestor-directories'|\
+              '::error::trusted compatibility sandbox filesystem boundary unsafe phase=usrmerge-parser-link'|\
+              '::error::trusted compatibility sandbox filesystem boundary unsafe phase=local-overrides'|\
+              '::error::trusted compatibility sandbox filesystem boundary unsafe phase=abi-tree'|\
+              '::error::trusted compatibility sandbox filesystem boundary unsafe phase=tunables-tree'|\
+              '::error::trusted compatibility sandbox filesystem boundary unsafe phase=bwrap-binary'|\
+              '::error::trusted compatibility sandbox filesystem boundary unsafe phase=parser-binary'|\
+              '::error::trusted compatibility sandbox filesystem boundary unsafe phase=package-profile'|\
+              '::error::trusted compatibility sandbox filesystem boundary unsafe phase=profile-semantics'|\
+              '::error::trusted compatibility sandbox filesystem boundary unsafe phase=receipt-recomputation'|\
+              '::error::trusted compatibility sandbox filesystem boundary unsafe phase=profile-load'|\
+              '::error::trusted compatibility sandbox filesystem boundary unsafe phase=unknown'|\
+              '::error::trusted compatibility sandbox filesystem boundary unsafe phase=package-profile-cleanup')
+                printf '%s\n' "$1" >&2
+                ;;
+              *)
+                echo '::error::trusted compatibility sandbox filesystem boundary unsafe phase=unknown' >&2
+                ;;
+            esac
+          }
+          sandbox_supervisor_source() {
+            /usr/bin/cat <<'PY'
+          import hashlib
+          import os
+          import re
+          import subprocess
+          import sys
+
+          phases = (
+              "ancestor-directories",
+              "usrmerge-parser-link",
+              "local-overrides",
+              "abi-tree",
+              "tunables-tree",
+              "bwrap-binary",
+              "parser-binary",
+              "package-profile",
+              "profile-semantics",
+              "receipt-recomputation",
+              "profile-load",
+              "unknown",
+              "package-profile-cleanup",
+          )
+          diagnostics = {
+              70 + index: (
+                  "::error::trusted compatibility sandbox filesystem boundary unsafe "
+                  f"phase={phase}\n"
+              ).encode("ascii")
+              for index, phase in enumerate(phases)
+          }
+          diagnostic_status = {value: status for status, value in diagnostics.items()}
+          unknown = diagnostics[81]
+
+          try:
+              profile_path, expected_digest = sys.argv[1:]
+              if (
+                  sys.version_info < (3, 9)
+                  or os.geteuid() != 0
+                  or profile_path
+                  != "/run/verjson-compatibility-sandbox/bwrap-userns-restrict"
+                  or re.fullmatch(r"[0-9a-f]{64}", expected_digest) is None
+              ):
+                  raise ValueError
+              verifier_source = sys.stdin.buffer.read(1048577)
+              if (
+                  len(verifier_source) > 1048576
+                  or hashlib.sha256(verifier_source).hexdigest() != expected_digest
+              ):
+                  raise ValueError
+              verifier_text = verifier_source.decode("utf-8", "strict")
+              completed = subprocess.run(
+                  (
+                      "/usr/bin/python3",
+                      "-I",
+                      "-c",
+                      verifier_text,
+                      "verify",
+                      profile_path,
+                  ),
+                  stdin=subprocess.DEVNULL,
+                  stdout=subprocess.PIPE,
+                  stderr=subprocess.STDOUT,
+                  env={
+                      "PATH": "/usr/sbin:/usr/bin:/sbin:/bin",
+                      "HOME": "/nonexistent",
+                  },
+                  cwd="/",
+                  timeout=60,
+                  check=False,
+                  close_fds=True,
+                  start_new_session=True,
+              )
+              output = completed.stdout
+              status = completed.returncode
+              if status == 0 and re.fullmatch(rb"[0-9a-f]{64}\n", output):
+                  sanitized = output
+              elif status == 1 and output in diagnostic_status:
+                  sanitized = output
+                  status = diagnostic_status[output]
+              else:
+                  sanitized = unknown
+                  status = 81
+          except BaseException:
+              sanitized = unknown
+              status = 81
+
+          try:
+              sys.stdout.buffer.write(sanitized)
+              sys.stdout.buffer.flush()
+          except BaseException:
+              raise SystemExit(81)
+          raise SystemExit(status)
+          PY
+          }
+          verify_sandbox_files() (
+            supervisor_source=''
+            supervisor_output=''
+            supervisor_status=0
+            supervisor_source="$(sandbox_supervisor_source)" || {
+              emit_verifier_diagnostic ''
+              return 1
+            }
+            supervisor_output="$(
+              { sandbox_verifier_source 2>&1 |
+                /usr/bin/sudo --non-interactive /usr/bin/env -i \
+                  PATH=/usr/sbin:/usr/bin:/sbin:/bin \
+                HOME=/nonexistent \
+                /usr/bin/python3 -I -c "$supervisor_source" \
+                "$profile_path" \
+                '1b44cb275c09e93c472c178cac0bd2173268d7daee6646c48ca606f2d8a40549'; } \
+                2>/dev/null
+            )" || supervisor_status=$?
+            case "$supervisor_status" in
+              0)
+                if [[ "$supervisor_output" =~ ^[0-9a-f]{64}$ ]]; then
+                  printf '%s\n' "$supervisor_output"
+                  return 0
+                fi
+                ;;
+              70) supervisor_phase='ancestor-directories' ;;
+              71) supervisor_phase='usrmerge-parser-link' ;;
+              72) supervisor_phase='local-overrides' ;;
+              73) supervisor_phase='abi-tree' ;;
+              74) supervisor_phase='tunables-tree' ;;
+              75) supervisor_phase='bwrap-binary' ;;
+              76) supervisor_phase='parser-binary' ;;
+              77) supervisor_phase='package-profile' ;;
+              78) supervisor_phase='profile-semantics' ;;
+              79) supervisor_phase='receipt-recomputation' ;;
+              80) supervisor_phase='profile-load' ;;
+              81) supervisor_phase='unknown' ;;
+              82) supervisor_phase='package-profile-cleanup' ;;
+              *) supervisor_phase='unknown' ;;
+            esac
+            if [ "$supervisor_status" -ge 70 ] 2>/dev/null \
+              && [ "$supervisor_status" -le 82 ] 2>/dev/null \
+              && [ "$supervisor_output" = "::error::trusted compatibility sandbox filesystem boundary unsafe phase=$supervisor_phase" ]; then
+              emit_verifier_diagnostic "$supervisor_output"
+            else
+              emit_verifier_diagnostic ''
+            fi
+            return 1
+          )
+          initial_sandbox_receipt="$(verify_sandbox_files)" || exit 1
+
+          probe_bubblewrap() {
+            /usr/bin/env -i \
+              PATH=/usr/sbin:/usr/bin:/sbin:/bin \
+              HOME=/nonexistent \
+              /usr/bin/bwrap \
+              --unshare-user \
+              --unshare-pid \
+              --unshare-ipc \
+              --unshare-uts \
+              --unshare-cgroup-try \
+              --disable-userns \
+              --die-with-parent \
+              --new-session \
+              --cap-drop ALL \
+              --ro-bind / / \
+              --dev /dev \
+              --proc /proc \
+              --tmpfs /dev/shm \
+              -- /usr/bin/true >/dev/null 2>&1
+          }
+          if ! probe_bubblewrap; then
+            current_sandbox_receipt="$(verify_sandbox_files)" || exit 1
+            if [ "$current_sandbox_receipt" != "$initial_sandbox_receipt" ]; then
+              echo "::error::trusted compatibility sandbox filesystem boundary unsafe phase=receipt-recomputation" >&2
+              exit 1
+            fi
+            loader_status=0
+            sandbox_verifier_source | /usr/bin/sudo --non-interactive /usr/bin/env -i \
+              PATH=/usr/sbin:/usr/bin:/sbin:/bin \
+              HOME=/nonexistent \
+              EXPECTED_SANDBOX_RECEIPT="$initial_sandbox_receipt" \
+              /usr/bin/python3 -I - load "$profile_path" >/dev/null 2>&1 || loader_status=$?
+            if [ "$loader_status" -ne 0 ]; then
+              case "$loader_status" in
+                70) loader_phase='ancestor-directories' ;;
+                71) loader_phase='usrmerge-parser-link' ;;
+                72) loader_phase='local-overrides' ;;
+                73) loader_phase='abi-tree' ;;
+                74) loader_phase='tunables-tree' ;;
+                75) loader_phase='bwrap-binary' ;;
+                76) loader_phase='parser-binary' ;;
+                77) loader_phase='package-profile' ;;
+                78) loader_phase='profile-semantics' ;;
+                79) loader_phase='receipt-recomputation' ;;
+                1|80) loader_phase='profile-load' ;;
+                81) loader_phase='unknown' ;;
+                82) loader_phase='package-profile-cleanup' ;;
+                *) loader_phase='unknown' ;;
+              esac
+              echo "::error::trusted compatibility sandbox filesystem boundary unsafe phase=$loader_phase"
+              exit 1
+            fi
+          fi
+          if ! probe_bubblewrap; then
+            echo "::error::trusted unprivileged bubblewrap namespace probe failed"
+            exit 1
+          fi
+
+      - name: Run namespace-bound compatibility contracts
+        env:
+          RUNNER_LABELS: ''
+        run: |
+          bash scripts/ci-gate/node-ci-secretless-compatibility.test.sh
+          scripts/ci-gate/node-ci-secretless-compatibility-absent.test.py
+
   # scripts/gen-adr-index.sh --check (run above, in the changelog-release
   # group) only ever sees this PR's own tree, so it cannot catch two open PRs
   # independently allocating the same docs/decisions/NNNN-<slug> number --
@@ -132,7 +1779,7 @@ jobs:
   # by the repository ruleset (ADR 0058), so it remains unmatrixed and reports
   # the aggregate result after every group reaches a terminal state.
   shell-tests:
-    needs: [shell-test-groups, adr-number-collision]
+    needs: [shell-test-groups, hosted-compatibility-tests, adr-number-collision]
     if: ${{ always() }}
     runs-on: ${{ fromJSON(vars.CI_RUNNER_FASTLANE || vars.CI_LANE_TRUSTED || vars.CI_LANE_FALLBACK || '["ubuntu-24.04"]') }}
     timeout-minutes: 2
@@ -140,10 +1787,15 @@ jobs:
       - name: Preserve the required shell-tests context
         env:
           GROUP_RESULT: ${{ needs.shell-test-groups.result }}
+          COMPATIBILITY_RESULT: ${{ needs.hosted-compatibility-tests.result }}
           COLLISION_RESULT: ${{ needs.adr-number-collision.result }}
         run: |
           if [ "$GROUP_RESULT" != "success" ]; then
             echo "::error::one or more shell-test groups failed"
+            exit 1
+          fi
+          if [ "$COMPATIBILITY_RESULT" != "success" ]; then
+            echo "::error::hosted compatibility contracts failed"
             exit 1
           fi
           # adr-number-collision only runs on pull_request (needs live PR

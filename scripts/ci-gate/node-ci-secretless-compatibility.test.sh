@@ -8,6 +8,106 @@ trap 'rm -rf "$tmp"' EXIT
 failures=0
 pass() { printf 'ok - %s\n' "$1"; }
 fail() { printf 'not ok - %s\n' "$1" >&2; failures=$((failures + 1)); }
+emit_failure_diagnostic() {
+  local label="$1" status="$2" stderr_path="$3"
+  python3 - "$label" "$status" "$stderr_path" <<'PY' >&2
+import sys
+from pathlib import Path
+
+label, status, stderr_path = sys.argv[1:]
+labels = {
+    "resolved compatibility consumer",
+    "cold-cache compatibility consumer",
+    "probe",
+}
+if label not in labels:
+    label = "compatibility consumer"
+if (
+    not status.isascii()
+    or not status.isdecimal()
+    or len(status) > 3
+    or int(status) > 255
+):
+    status = "unknown"
+path = Path(stderr_path)
+lines = []
+if path.is_file():
+    with path.open("rb") as stream:
+        stream.seek(0, 2)
+        stream.seek(max(0, stream.tell() - 16384))
+        text = stream.read(16384).decode("utf-8", errors="replace")
+    lines = text.splitlines()[-40:]
+
+unavailable = "trusted bubblewrap compatibility sandbox is unavailable"
+unsafe = "trusted bubblewrap compatibility sandbox is unsafe"
+namespace_denials = {
+    "bwrap: Creating new namespace failed: Operation not permitted",
+    "bwrap: Creating new namespace failed: Permission denied",
+    "bwrap: setting up uid map: Operation not permitted",
+    "bwrap: setting up uid map: Permission denied",
+    "bwrap: setting up gid map: Operation not permitted",
+    "bwrap: setting up gid map: Permission denied",
+    (
+        "bwrap: No permissions to create new namespace, likely because the kernel "
+        "does not allow non-privileged user namespaces. See <https://deb.li/bubblewrap> "
+        "or <file:///usr/share/doc/bubblewrap/README.Debian.gz>."
+    ),
+}
+runtime_denials = {
+    "bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted",
+    "bwrap: Can't mount proc on /newroot/proc: Operation not permitted",
+    "bwrap: Can't mount proc on /newroot/proc: Permission denied",
+}
+if unavailable in lines:
+    category = "bubblewrap-unavailable"
+elif unsafe in lines:
+    category = "bubblewrap-unsafe"
+elif any(line in namespace_denials for line in lines):
+    category = "bubblewrap-namespace-denied"
+elif any(line in runtime_denials for line in lines):
+    category = "bubblewrap-runtime-denied"
+else:
+    category = "stderr-suppressed"
+print(f"diagnostic - {label} return-code={status} stderr-category={category}")
+PY
+}
+
+printf '%s\n' \
+  'DEPLOY_KEY=deploy-secret-value' \
+  'OPENAI_API_KEY=openai-secret-value' \
+  '{"token":"json-secret-value"}' \
+  'bare-secret-value' \
+  'consumer-controlled-sentinel' \
+  >"$tmp/diagnostic-unknown.log"
+unknown_probe="$(emit_failure_diagnostic probe 23 "$tmp/diagnostic-unknown.log" 2>&1)"
+printf '%s\n' 'trusted bubblewrap compatibility sandbox is unavailable' \
+  >"$tmp/diagnostic-unavailable.log"
+unavailable_probe="$(emit_failure_diagnostic probe 1 "$tmp/diagnostic-unavailable.log" 2>&1)"
+printf '%s\n' 'trusted bubblewrap compatibility sandbox is unsafe' \
+  >"$tmp/diagnostic-unsafe.log"
+unsafe_probe="$(emit_failure_diagnostic probe 1 "$tmp/diagnostic-unsafe.log" 2>&1)"
+{
+  cat "$tmp/diagnostic-unknown.log"
+  printf '%s\n' 'bwrap: Creating new namespace failed: Operation not permitted'
+} >"$tmp/diagnostic-namespace.log"
+namespace_probe="$(emit_failure_diagnostic probe 1 "$tmp/diagnostic-namespace.log" 2>&1)"
+printf '%s\n' 'bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted' \
+  >"$tmp/diagnostic-runtime.log"
+runtime_probe="$(emit_failure_diagnostic probe 1 "$tmp/diagnostic-runtime.log" 2>&1)"
+if [ "$unknown_probe" = 'diagnostic - probe return-code=23 stderr-category=stderr-suppressed' ] \
+  && [ "$unavailable_probe" = 'diagnostic - probe return-code=1 stderr-category=bubblewrap-unavailable' ] \
+  && [ "$unsafe_probe" = 'diagnostic - probe return-code=1 stderr-category=bubblewrap-unsafe' ] \
+  && [ "$namespace_probe" = 'diagnostic - probe return-code=1 stderr-category=bubblewrap-namespace-denied' ] \
+  && [ "$runtime_probe" = 'diagnostic - probe return-code=1 stderr-category=bubblewrap-runtime-denied' ] \
+  && [[ "$unknown_probe" != *'deploy-secret-value'* ]] \
+  && [[ "$unknown_probe" != *'openai-secret-value'* ]] \
+  && [[ "$unknown_probe" != *'json-secret-value'* ]] \
+  && [[ "$unknown_probe" != *'bare-secret-value'* ]] \
+  && [[ "$unknown_probe" != *'consumer-controlled-sentinel'* ]]; then
+  pass "positive-failure diagnostics expose only exact allowlisted cause categories"
+else
+  fail "positive-failure diagnostics expose unknown stderr or lose exact cause categories"
+fi
 
 python3 - "$workflow" "$tmp" <<'PY'
 import sys
@@ -213,13 +313,26 @@ PY
   run_install "$fixture" >/dev/null 2>&1 && fail "tampered compatibility $mutation passed verification" || pass "tampered compatibility $mutation fails before consumer code"
 done
 
-mkdir -p "$tmp/e2e/consumer/artifacts" "$tmp/e2e/consumer/node_modules/@verjson/identity-contracts"
+mkdir -p "$tmp/e2e/consumer/artifacts" "$tmp/e2e/consumer/compat-results" \
+  "$tmp/e2e/consumer/node_modules/@verjson/identity-contracts"
 cp "$tmp/e2e/build/artifacts/"* "$tmp/e2e/consumer/artifacts/"
 printf '%s\n' '{"name":"@verjson/identity-contracts","version":"0.1.0"}' \
   > "$tmp/e2e/consumer/node_modules/@verjson/identity-contracts/package.json"
 printf '%s\n' '{"name":"consumer","version":"1.0.0","scripts":{"test:compat":"node test-compat.js"}}' > "$tmp/e2e/consumer/package.json"
-printf '%s\n' "const fs=require('node:fs');const v=require('./node_modules/@verjson/identity-contracts/package.json').version;fs.writeFileSync('observed-version',v);if(process.env.REJECT_COMPATIBILITY==='true')process.exit(42);" > "$tmp/e2e/consumer/test-compat.js"
-if (cd "$tmp/e2e/consumer" && COMPATIBILITY_ARTIFACT_DIR="$tmp/e2e/consumer/artifacts" COMPATIBILITY_RANGES="$request" EXPECTED_COMPATIBILITY_PROVENANCE_SHA256="$provenance_sha" REJECT_COMPATIBILITY=false bash "$tmp/run-lanes.sh") >/dev/null 2>&1 && grep -qFx 0.2.2 "$tmp/e2e/consumer/observed-version"; then pass "the resolved in-range artifact reaches the declared consumer test"; else fail "the resolved artifact did not reach the declared consumer test"; fi
+printf '%s\n' "const fs=require('node:fs');const v=require('./node_modules/@verjson/identity-contracts/package.json').version;fs.writeFileSync('compat-results/observed-version',v);if(process.env.REJECT_COMPATIBILITY==='true')process.exit(42);" > "$tmp/e2e/consumer/test-compat.js"
+consumer_stderr="$tmp/e2e/consumer/run.stderr"
+if (cd "$tmp/e2e/consumer" && COMPATIBILITY_ARTIFACT_DIR="$tmp/e2e/consumer/artifacts" COMPATIBILITY_RANGES="$request" EXPECTED_COMPATIBILITY_PROVENANCE_SHA256="$provenance_sha" REJECT_COMPATIBILITY=false bash "$tmp/run-lanes.sh") >"$tmp/e2e/consumer/run.stdout" 2>"$consumer_stderr"; then
+  consumer_status=0
+else
+  consumer_status=$?
+fi
+if [ "$consumer_status" -eq 0 ] \
+  && grep -qFx 0.2.2 "$tmp/e2e/consumer/compat-results/observed-version"; then
+  pass "the resolved in-range artifact reaches the declared consumer test"
+else
+  fail "the resolved artifact did not reach the declared consumer test"
+  emit_failure_diagnostic "resolved compatibility consumer" "$consumer_status" "$consumer_stderr"
+fi
 (cd "$tmp/e2e/consumer" && COMPATIBILITY_ARTIFACT_DIR="$tmp/e2e/consumer/artifacts" COMPATIBILITY_RANGES="$request" EXPECTED_COMPATIBILITY_PROVENANCE_SHA256="$provenance_sha" REJECT_COMPATIBILITY=true bash "$tmp/run-lanes.sh") >/dev/null 2>&1 \
   && fail "an in-range incompatible artifact did not fail consumer tests" || pass "an in-range incompatible artifact fails at the consumer test layer"
 if (cd "$tmp/e2e/consumer" && COMPATIBILITY_ARTIFACT_DIR="$tmp/e2e/consumer/artifacts" COMPATIBILITY_RANGES="$request" EXPECTED_COMPATIBILITY_PROVENANCE_SHA256="$provenance_sha" NODE_AUTH_TOKEN=leaked bash "$tmp/run-lanes.sh") >"$tmp/e2e/token.log" 2>&1; then fail "a package credential reached compatibility consumer execution"; elif grep -qF 'credential reached compatibility consumer execution' "$tmp/e2e/token.log"; then pass "consumer execution fails closed on a credential leak"; else fail "token-leak mutation failed for the wrong reason"; fi
@@ -242,6 +355,7 @@ prepare_archive_case() {
   local fixture="$tmp/archive-cases/$mutation"
   rm -rf "$fixture"
   mkdir -p "$fixture/artifacts" \
+    "$fixture/compat-results" \
     "$fixture/node_modules/@verjson/identity-contracts" \
     "$fixture/node_modules/cold-cache-public" \
     "$fixture/cold-cache/_cacache/content-v2/sha512"
@@ -261,7 +375,7 @@ const fs = require('node:fs');
 
 assert.equal(require('./node_modules/@verjson/identity-contracts/package.json').version, '0.2.2');
 assert.equal(require('cold-cache-public'), 'cold-cache-public-1.4.0');
-fs.writeFileSync('consumer-ran', 'yes');
+fs.writeFileSync('compat-results/consumer-ran', 'yes');
 JS
   python3 - "$fixture" "$mutation" "$request" <<'PY'
 import base64
@@ -398,23 +512,32 @@ run_archive_case() {
     COMPATIBILITY_RANGES="$request" \
     EXPECTED_COMPATIBILITY_PROVENANCE_SHA256="$(<"$fixture/provenance.sha256")" \
     bash "$tmp/run-lanes.sh"
-  ) >"$fixture/run.log" 2>&1
+  ) >"$fixture/run.stdout" 2>"$fixture/run.stderr"
 }
 
-if run_archive_case good \
-    && [ -f "$tmp/archive-cases/good/consumer-ran" ] \
-    && [ ! -e "$tmp/archive-cases/good/npm-graph-resolution" ] \
-    && [ ! -e "$tmp/archive-cases/good/node_modules/@verjson/identity-contracts/old-sentinel" ] \
-    && [ "$(find "$tmp/archive-cases/good/node_modules/@verjson" -maxdepth 1 -name '.identity-contracts.*' -print -quit)" = '' ]; then
+if run_archive_case good; then
+  archive_status=0
+else
+  archive_status=$?
+fi
+if [ "$archive_status" -eq 0 ] \
+  && [ -f "$tmp/archive-cases/good/compat-results/consumer-ran" ] \
+  && [ ! -e "$tmp/archive-cases/good/npm-graph-resolution" ] \
+  && [ ! -e "$tmp/archive-cases/good/node_modules/@verjson/identity-contracts/old-sentinel" ] \
+  && [ "$(find "$tmp/archive-cases/good/node_modules/@verjson" -maxdepth 1 -name '.identity-contracts.*' -print -quit)" = '' ]; then
   pass "cold-cache caret consumer swaps one verified package without resolving its graph"
 else
   fail "cold-cache caret consumer did not preserve its installed dependency graph"
+  emit_failure_diagnostic \
+    "cold-cache compatibility consumer" \
+    "$archive_status" \
+    "$tmp/archive-cases/good/run.stderr"
 fi
 
 for mutation in traversal absolute multi-root symlink hardlink special pax oversize count duplicate wrong-name wrong-version; do
   if run_archive_case "$mutation"; then
     fail "$mutation compatibility archive reached consumer execution"
-  elif [ -e "$tmp/archive-cases/$mutation/consumer-ran" ] \
+  elif [ -e "$tmp/archive-cases/$mutation/compat-results/consumer-ran" ] \
       || [ -e "$tmp/archive-cases/$mutation/npm-graph-resolution" ] \
       || [ -e "$tmp/archive-cases/$mutation/escape" ]; then
     fail "$mutation compatibility archive caused work before rejection"
@@ -427,5 +550,39 @@ for mutation in traversal absolute multi-root symlink hardlink special pax overs
     pass "$mutation compatibility archive fails before target swap or consumer code"
   fi
 done
+
+if [ "${VERJSON_DIAGNOSTIC_MUTATION_CHILD:-false}" != true ]; then
+  mutation_root="$tmp/missing-bwrap-mutation"
+  mkdir -p "$mutation_root/.github/workflows" "$mutation_root/scripts/ci-gate"
+  cp "$0" "$mutation_root/scripts/ci-gate/node-ci-secretless-compatibility.test.sh"
+  python3 - "$workflow" "$mutation_root/.github/workflows/node-ci.yml" <<'PY'
+import sys
+from pathlib import Path
+
+source = Path(sys.argv[1]).read_text(encoding="utf-8")
+needle = 'bubblewrap = Path("/usr/bin/bwrap")'
+assert source.count(needle) == 1
+Path(sys.argv[2]).write_text(
+    source.replace(needle, 'bubblewrap = Path("/definitely-missing/bwrap")'),
+    encoding="utf-8",
+)
+PY
+  if VERJSON_DIAGNOSTIC_MUTATION_CHILD=true \
+    bash "$mutation_root/scripts/ci-gate/node-ci-secretless-compatibility.test.sh" \
+    >"$mutation_root/run.log" 2>&1; then
+    mutation_status=0
+  else
+    mutation_status=$?
+  fi
+  if [ "$mutation_status" -eq 2 ] \
+    && grep -qFx 'diagnostic - resolved compatibility consumer return-code=1 stderr-category=bubblewrap-unavailable' "$mutation_root/run.log" \
+    && grep -qFx 'diagnostic - cold-cache compatibility consumer return-code=1 stderr-category=bubblewrap-unavailable' "$mutation_root/run.log" \
+    && ! grep -qF 'trusted bubblewrap compatibility sandbox is unavailable' "$mutation_root/run.log" \
+    && ! grep -qF 'consumer-controlled-sentinel' "$mutation_root/run.log"; then
+    pass "missing-bwrap mutation reports both positive failures with exact allowlisted categories"
+  else
+    fail "missing-bwrap mutation did not preserve exact allowlisted positive-failure categories"
+  fi
+fi
 
 exit "$failures"
