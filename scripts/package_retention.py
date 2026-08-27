@@ -288,7 +288,9 @@ def _container_safety(
 ) -> ContainerSafety:
     if not isinstance(keep, int) or isinstance(keep, bool) or keep < 1:
         raise RetentionError("retention count must be a positive integer")
-    repository = f"ghcr.io/{owner}/{target.name}"
+    # GitHub owner logins preserve display casing, while OCI registry
+    # namespaces are canonical lowercase references.
+    repository = f"ghcr.io/{owner.lower()}/{target.name}"
     stable: list[tuple[str, str]] = []
     untagged: list[dict[str, Any]] = []
     for version in versions:
