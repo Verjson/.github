@@ -155,7 +155,7 @@ class RetryWorkflowContractTests(unittest.TestCase):
                 "printf '%s' \"$count\" > \"$ATTEMPT_FILE\"\n"
                 "if [ \"$MODE\" = hung ]; then\n"
                 "  trap '' TERM\n"
-                "  while :; do /bin/sleep 1; done\n"
+                "  while :; do :; done\n"
                 "fi\n"
                 "if [ \"$MODE\" = transient ] && [ \"$count\" -ge 3 ]; then\n"
                 "  printf '\"%s\"\\n' \"$DIGEST\"\n"
