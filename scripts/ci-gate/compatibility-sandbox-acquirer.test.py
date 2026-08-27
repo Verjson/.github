@@ -285,12 +285,36 @@ class AcquirerBehavior(unittest.TestCase):
         self.assertTrue(any(" install apparmor apparmor-profiles bubblewrap" in command for command in rendered))
         self.assertTrue(any("--download-only --reinstall" in command for command in rendered))
         self.assertTrue(any(" indextargets " in f" {command} " for command in rendered))
+        metadata_commands = [
+            call[1]
+            for call in calls
+            if call[0] == "exact_output" and "indextargets" in call[1]
+        ]
+        self.assertEqual(len(metadata_commands), 1)
+        self.assertEqual(
+            metadata_commands[0][-5:],
+            (
+                "indextargets",
+                "--format",
+                "$(FILENAME)",
+                "Created-By: Packages",
+                "Component: main",
+            ),
+        )
         for command in (command for command in rendered if command.startswith("/usr/bin/apt-get")):
             self.assertIn("Dir::Etc::netrc=/dev/null", command)
             self.assertIn("Dir::Etc::netrcparts=/var/lib/verjson-compatibility-apt/empty-auth", command)
             self.assertIn("Dir::Etc::preferences=/dev/null", command)
             self.assertIn("Dir::Etc::preferencesparts=/var/lib/verjson-compatibility-apt/empty-preferences", command)
         self.assertEqual(sum(call[0] == "parse_packages" for call in calls), 1)
+        self.assertIn(
+            (
+                "validate_regular_path",
+                f"{self.acquirer['SESSION_ROOT']}/lists/packages",
+                {"executable": False, "maximum": 256 * 1024 * 1024},
+            ),
+            calls,
+        )
         self.assertEqual(sum(call[0] == "extract_profile" for call in calls), 1)
         self.assertEqual(sum(call[0] == "stage_profile" for call in calls), 1)
         created = [call[1] for call in calls if call[0] == "mkdir"]
@@ -339,6 +363,32 @@ class AcquirerBehavior(unittest.TestCase):
         self.assertEqual(digest, "a" * 64)
         self.assertEqual(filename, f"pool/main/a/apparmor/{ARCHIVE_NAME}")
         self.assertEqual(basename, ARCHIVE_NAME)
+
+    def test_main_component_selection_excludes_oversized_unrelated_universe_record(self):
+        oversized_line = (
+            b"Provides: " + b"x" * (70_841 - len(b"Provides: ") - 1) + b"\n"
+        )
+        universe_record = (
+            b"Package: librust-winapi-dev\n"
+            b"Version: 0\n"
+            b"Architecture: all\n"
+            + oversized_line
+            + b"\n"
+        )
+        self.assertEqual(len(oversized_line), 70_841)
+
+        size, digest, filename, basename = self.parse([self.packages()])
+        self.assertEqual(
+            (size, digest, filename, basename),
+            (
+                4096,
+                "a" * 64,
+                f"pool/main/a/apparmor/{ARCHIVE_NAME}",
+                ARCHIVE_NAME,
+            ),
+        )
+        with self.assertRaises(self.error):
+            self.parse([universe_record, self.packages()])
 
     def test_packages_reject_malformed_missing_duplicate_conflict_and_paths(self):
         valid = self.packages()

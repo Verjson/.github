@@ -1005,7 +1005,30 @@ def validate_acquirer_contract(source):
     require(acquirer, '"%" in filename', "encoded signed package filename rejection missing")
     require(acquirer, "entry.name == expected_archive_name", "downloaded archive filename binding missing")
     require(acquirer, '"indextargets"', "signed Packages index enumeration missing")
+    require(
+        acquirer,
+        '"indextargets",\n        "--format", "$(FILENAME)",\n        "Created-By: Packages", "Component: main",',
+        "signed Packages main component selector missing",
+    )
+    require(
+        acquirer,
+        "index_paths = sorted(set(index_paths_raw.decode",
+        "signed Packages path uniqueness missing",
+    )
+    require(
+        acquirer,
+        'index_path.startswith(f"{lists_root}/")',
+        "signed Packages path prefix binding missing",
+    )
+    require(
+        acquirer,
+        "maximum=256 * 1024 * 1024",
+        "signed Packages regular metadata verification missing",
+    )
+    require(acquirer, "len(line) > 65536", "signed Packages line bound drifted")
+    require(acquirer, "total > 512 * 1024 * 1024", "signed Packages total bound drifted")
     require(acquirer, '(b"Size", b"SHA256", b"Filename")', "signed package metadata fields missing")
+    require(acquirer, 'expected_filename.endswith("_all.deb")', "signed package filename suffix binding missing")
     require(acquirer, "if len(archives) != 1 or len(locks) > 1 or unexpected:", "exact archive set validation missing")
     require(acquirer, "hashlib.sha256(archive_bytes).hexdigest() != expected_digest", "archive digest binding missing")
     require(acquirer, "len(archive_bytes) != expected_size", "archive size binding missing")
@@ -1816,7 +1839,28 @@ acquirer_mutations = [
     ("encoded signed package filename rejection missing", '"%" in filename', 'False'),
     ("downloaded archive filename binding missing", 'entry.name == expected_archive_name', 'True'),
     ("signed Packages index enumeration missing", '"indextargets"', '"policy"'),
+    (
+        "signed Packages main component selector missing",
+        '"Created-By: Packages", "Component: main"',
+        '"Created-By: Packages"',
+    ),
+    ("signed Packages main component selector missing", '"Component: main"', '"Component: universe"'),
+    (
+        "signed Packages main component selector missing",
+        '"Created-By: Packages", "Component: main"',
+        '"Component: main", "Created-By: Packages"',
+    ),
+    (
+        "signed Packages path uniqueness missing",
+        "index_paths = sorted(set(index_paths_raw.decode",
+        "index_paths = sorted(list(index_paths_raw.decode",
+    ),
+    ("signed Packages path prefix binding missing", 'index_path.startswith(f"{lists_root}/")', "True"),
+    ("signed Packages regular metadata verification missing", "maximum=256 * 1024 * 1024", "maximum=0"),
+    ("signed Packages line bound drifted", "len(line) > 65536", "len(line) > 131072"),
+    ("signed Packages total bound drifted", "total > 512 * 1024 * 1024", "False"),
     ("signed package metadata fields missing", '(b"Size", b"SHA256", b"Filename")', '(b"Filename",)'),
+    ("signed package filename suffix binding missing", 'expected_filename.endswith("_all.deb")', "True"),
     ("exact archive set validation missing", 'if len(archives) != 1 or len(locks) > 1 or unexpected:', 'if not archives:'),
     ("archive digest binding missing", 'hashlib.sha256(archive_bytes).hexdigest() != expected_digest', 'False'),
     ("archive size binding missing", 'len(archive_bytes) != expected_size', 'False'),

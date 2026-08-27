@@ -215,6 +215,15 @@ become `unknown`. Staged/archive distinctness compares `(st_dev, st_ino)`:
 equal inode numbers on different filesystems are valid, while an equal pair
 fails closed.
 
+Enumerate signed Packages metadata with the exact `Created-By: Packages` and
+`Component: main` selectors. `apparmor-profiles` is published in Main, while
+unrelated Universe records can contain lines larger than the deliberately
+bounded parser accepts. Keep Universe in the fixed apt source components for
+package resolution, but do not broaden the metadata parser or its 65,536-byte
+per-line bound or its existing total-input bound. Bind the selected metadata
+paths by uniqueness, safe list-root prefix, regular-file validation, exact
+package tuple, normalized signed filename, and `_all.deb` suffix.
+
 When the target began absent, retain its installed directory identity and remove that
 exact directory after success, script failure, `SIGINT`, or `SIGTERM`. Cleanup first
 quarantines the identity under the held package parent and refuses to delete a different

@@ -3298,7 +3298,8 @@ jobs:
               CURRENT_PHASE = "package-acquisition-metadata"
               index_paths_raw = exact_output((
                   "/usr/bin/apt-get", *update_options, "indextargets",
-                  "--format", "$(FILENAME)", "Created-By: Packages",
+                  "--format", "$(FILENAME)",
+                  "Created-By: Packages", "Component: main",
               ), maximum=1024 * 1024)
               index_paths = sorted(set(index_paths_raw.decode("utf-8", "strict").splitlines()))
               if not index_paths or len(index_paths) > 32:
@@ -3514,7 +3515,7 @@ jobs:
                   PATH=/usr/sbin:/usr/bin:/sbin:/bin \
                   HOME=/nonexistent \
                   /usr/bin/python3 -I -c "$acquirer_supervisor_source" \
-              '59391a6eb4a356bb015e39b4bfb71deb27a6a8c983512707dcc42ad10f7b132c'
+              '51c8f32854629adee4ecd09beabe18ec300ef68eeab1eb80d379b4d48f54bc5a'
             } 2>/dev/null
           )" || acquirer_status=$?
           if [ "$acquirer_status" -ne 0 ] || [ -n "$acquirer_output" ]; then

@@ -106,3 +106,11 @@ cross-paired, trailing, NUL, raw, timeout, or interpreter result becomes fixed
 `unknown` status 81. Staging compares archive and staged files by the full
 device/inode pair, allowing equal inode numbers on different devices but
 rejecting the same underlying file.
+
+The hosted `package-acquisition-metadata` receipt was traced to an unrelated
+Universe `Provides` record whose 70,841-byte line correctly exceeded the
+65,536-byte Packages parser bound. Signed metadata enumeration now selects
+exactly `Component: main`, where `apparmor-profiles` is published, while the
+fixed apt sources still include Universe for package resolution. Exact
+selector ordering, unique prefixed regular index paths, metadata fields,
+`_all.deb` naming, and the existing per-line and total bounds remain enforced.
