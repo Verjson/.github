@@ -3044,11 +3044,40 @@ jobs:
               raise SystemExit(boundary_diagnostic(error)) from None
           PY
           }
+          emit_verifier_diagnostic() {
+            case "$1" in
+              '::error::trusted compatibility sandbox filesystem boundary unsafe phase=ancestor-directories'|\
+              '::error::trusted compatibility sandbox filesystem boundary unsafe phase=usrmerge-parser-link'|\
+              '::error::trusted compatibility sandbox filesystem boundary unsafe phase=local-overrides'|\
+              '::error::trusted compatibility sandbox filesystem boundary unsafe phase=abi-tree'|\
+              '::error::trusted compatibility sandbox filesystem boundary unsafe phase=tunables-tree'|\
+              '::error::trusted compatibility sandbox filesystem boundary unsafe phase=bwrap-binary'|\
+              '::error::trusted compatibility sandbox filesystem boundary unsafe phase=parser-binary'|\
+              '::error::trusted compatibility sandbox filesystem boundary unsafe phase=package-profile'|\
+              '::error::trusted compatibility sandbox filesystem boundary unsafe phase=profile-semantics'|\
+              '::error::trusted compatibility sandbox filesystem boundary unsafe phase=receipt-recomputation'|\
+              '::error::trusted compatibility sandbox filesystem boundary unsafe phase=profile-load'|\
+              '::error::trusted compatibility sandbox filesystem boundary unsafe phase=unknown')
+                printf '%s\n' "$1" >&2
+                ;;
+              *)
+                echo '::error::trusted compatibility sandbox filesystem boundary unsafe phase=unknown' >&2
+                ;;
+            esac
+          }
           verify_sandbox_files() {
-            sandbox_verifier_source | /usr/bin/env -i \
+            verifier_output=''
+            verifier_status=0
+            verifier_output="$({ sandbox_verifier_source | /usr/bin/env -i \
               PATH=/usr/sbin:/usr/bin:/sbin:/bin \
               HOME=/nonexistent \
-              /usr/bin/python3 -I - verify "$profile_path"
+              /usr/bin/python3 -I - verify "$profile_path"; } 2>&1)" || verifier_status=$?
+            if [ "$verifier_status" -eq 0 ] && [[ "$verifier_output" =~ ^[0-9a-f]{64}$ ]]; then
+              printf '%s\n' "$verifier_output"
+              return 0
+            fi
+            emit_verifier_diagnostic "$verifier_output"
+            return 1
           }
           initial_sandbox_receipt="$(verify_sandbox_files)" || exit 1
 
@@ -3075,7 +3104,7 @@ jobs:
           if ! probe_bubblewrap; then
             current_sandbox_receipt="$(verify_sandbox_files)" || exit 1
             if [ "$current_sandbox_receipt" != "$initial_sandbox_receipt" ]; then
-              echo "::error::trusted compatibility sandbox filesystem boundary changed"
+              echo "::error::trusted compatibility sandbox filesystem boundary unsafe phase=receipt-recomputation" >&2
               exit 1
             fi
             loader_status=0

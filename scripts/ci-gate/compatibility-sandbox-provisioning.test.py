@@ -88,6 +88,26 @@ def extract_probe(source):
     return match.group("body")
 
 
+def extract_shell_function(source, name):
+    match = re.search(
+        rf"(?ms)^{re.escape(name)}\(\) \{{\n.*?^\}}$",
+        source,
+    )
+    if match is None:
+        raise ContractError(f"{name} shell function missing")
+    return match.group(0)
+
+
+def extract_receipt_mismatch_guard(source):
+    start = source.find('if [ "$current_sandbox_receipt" != "$initial_sandbox_receipt" ]; then')
+    if start < 0:
+        raise ContractError("pre-load receipt mismatch guard missing")
+    end = source.find("\n  fi", start)
+    if end < 0:
+        raise ContractError("pre-load receipt mismatch guard malformed")
+    return source[start : end + len("\n  fi")]
+
+
 def embedded_verifier(source):
     marker = "/usr/bin/cat <<'PY'\n"
     if source.count(marker) != 1:
@@ -443,6 +463,140 @@ def validate_isolated_python(source):
             raise ContractError("embedded loader leaked raw secret")
 
 
+def validate_shell_diagnostic_filter(source):
+    if source != ISOLATION_REFERENCE:
+        return
+
+    emit_function = extract_shell_function(source, "emit_verifier_diagnostic")
+    verify_function = extract_shell_function(source, "verify_sandbox_files")
+    receipt = "a" * 64
+    fixture_function = f'''sandbox_verifier_source() {{
+  case "$DIAG_FIXTURE" in
+    receipt)
+      printf '%s\n' 'print("{receipt}")'
+      ;;
+    allowlisted)
+      printf '%s\n' 'import sys' 'sys.stderr.write("::error::trusted compatibility sandbox filesystem boundary unsafe phase=abi-tree\\n")' 'raise SystemExit(1)'
+      ;;
+    syntax-secret)
+      printf '%s\n' 'this is not python OPENAI_API_KEY_SYNTAX_SECRET'
+      ;;
+    secret-stderr)
+      printf '%s\n' 'import sys' 'sys.stderr.write("{{\\"token\\":\\"JSON_TOKEN_SECRET\\"}}\\n")' 'raise SystemExit(1)'
+      ;;
+    secret-stdout)
+      printf '%s\n' 'import sys' 'print("BARE_STDOUT_SECRET")' 'raise SystemExit(1)'
+      ;;
+    success-with-stderr)
+      printf '%s\n' 'import sys' 'print("{receipt}")' 'sys.stderr.write("SUCCESS_STDERR_SECRET\\n")'
+      ;;
+    producer-secret)
+      printf '%s\n' "$DEPLOY_KEY" >&2
+      return 1
+      ;;
+  esac
+}}'''
+
+    def run_fixture(fixture, function=verify_function):
+        script = "\n".join((
+            "set -uo pipefail",
+            f"profile_path='{PROFILE_PATH}'",
+            emit_function,
+            function,
+            fixture_function,
+            "verify_sandbox_files",
+        ))
+        return subprocess.run(
+            ["/usr/bin/bash", "-c", script],
+            env={
+                **os.environ,
+                "DIAG_FIXTURE": fixture,
+                "DEPLOY_KEY": "DEPLOY_KEY_PRODUCER_SECRET",
+                "OPENAI_API_KEY": "OPENAI_API_KEY_ENV_SECRET",
+            },
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+
+    success = run_fixture("receipt")
+    if success.returncode != 0 or success.stdout != f"{receipt}\n" or success.stderr:
+        raise ContractError("verifier receipt filter control failed")
+
+    allowlisted = run_fixture("allowlisted")
+    expected_abi = (
+        "::error::trusted compatibility sandbox filesystem boundary unsafe "
+        "phase=abi-tree\n"
+    )
+    if allowlisted.returncode == 0 or allowlisted.stdout or allowlisted.stderr != expected_abi:
+        raise ContractError("verifier allowlisted diagnostic replay failed")
+
+    secrets = (
+        "OPENAI_API_KEY_SYNTAX_SECRET",
+        "JSON_TOKEN_SECRET",
+        "BARE_STDOUT_SECRET",
+        "SUCCESS_STDERR_SECRET",
+        "DEPLOY_KEY_PRODUCER_SECRET",
+        "OPENAI_API_KEY_ENV_SECRET",
+        "/missing/python3",
+    )
+    expected_unknown = (
+        "::error::trusted compatibility sandbox filesystem boundary unsafe "
+        "phase=unknown\n"
+    )
+    for fixture in (
+        "syntax-secret",
+        "secret-stderr",
+        "secret-stdout",
+        "success-with-stderr",
+        "producer-secret",
+    ):
+        result = run_fixture(fixture)
+        if result.returncode == 0 or result.stdout or result.stderr != expected_unknown:
+            raise ContractError(f"verifier shell filter failed for {fixture}")
+        if any(secret in result.stdout or secret in result.stderr for secret in secrets):
+            raise ContractError(f"verifier shell filter leaked {fixture}")
+
+    missing_interpreter = run_fixture(
+        "receipt",
+        verify_function.replace("/usr/bin/python3", "/missing/python3", 1),
+    )
+    if (
+        missing_interpreter.returncode == 0
+        or missing_interpreter.stdout
+        or missing_interpreter.stderr != expected_unknown
+        or any(
+            secret in missing_interpreter.stdout or secret in missing_interpreter.stderr
+            for secret in secrets
+        )
+    ):
+        raise ContractError("verifier interpreter failure escaped fixed filter")
+
+    mismatch_guard = extract_receipt_mismatch_guard(source)
+    mismatch = subprocess.run(
+        [
+            "/usr/bin/bash",
+            "-c",
+            "\n".join((
+                "current_sandbox_receipt=current",
+                "initial_sandbox_receipt=initial",
+                mismatch_guard,
+            )),
+        ],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    expected_receipt = (
+        "::error::trusted compatibility sandbox filesystem boundary unsafe "
+        "phase=receipt-recomputation\n"
+    )
+    if mismatch.returncode == 0 or mismatch.stdout or mismatch.stderr != expected_receipt:
+        raise ContractError("pre-load receipt mismatch diagnostic drifted")
+
+
 def validate_source(source):
     normalized_source = "\n".join(line.strip() for line in source.splitlines())
     forbidden = {
@@ -483,6 +637,39 @@ def validate_source(source):
     )
     require(source, "/usr/bin/python3 -I - load \"$profile_path\"", "absolute Python loader path drifted")
     validate_isolated_python(source)
+    validate_shell_diagnostic_filter(source)
+    require(
+        source,
+        'verifier_output="$({ sandbox_verifier_source | /usr/bin/env -i',
+        "verifier combined-output capture missing",
+    )
+    require(
+        source,
+        '; } 2>&1)" || verifier_status=$?',
+        "verifier raw stderr suppression missing",
+    )
+    require(
+        source,
+        '[[ "$verifier_output" =~ ^[0-9a-f]{64}$ ]]',
+        "verifier exact receipt filter missing",
+    )
+    require(
+        source,
+        'emit_verifier_diagnostic "$verifier_output"',
+        "verifier fixed diagnostic replay missing",
+    )
+    require(
+        source,
+        "echo '::error::trusted compatibility sandbox filesystem boundary unsafe phase=unknown' >&2",
+        "verifier unknown diagnostic fallback missing",
+    )
+    require(
+        source,
+        'echo "::error::trusted compatibility sandbox filesystem boundary unsafe phase=receipt-recomputation" >&2',
+        "pre-load receipt mismatch diagnostic drifted",
+    )
+    if "trusted compatibility sandbox filesystem boundary changed" in source:
+        raise ContractError("legacy receipt mismatch diagnostic remains")
     require(
         source,
         "/usr/bin/python3 -I - load \"$profile_path\" >/dev/null 2>&1 || loader_status=$?",
@@ -890,6 +1077,12 @@ mutations = [
     ("profile descriptor execution path missing", 'f"/proc/self/fd/{profile_descriptor}"', 'sys.argv[2]'),
     ("credentialless verifier Python boundary drifted", "/usr/bin/env -i \\\n    PATH=", "env -i \\\n    PATH="),
     ("probe capability drop missing", "--cap-drop ALL", "--cap-add ALL"),
+    ("verifier combined-output capture missing", 'verifier_output="$({ sandbox_verifier_source', 'verifier_output="$(sandbox_verifier_source'),
+    ("verifier raw stderr suppression missing", '; } 2>&1)" || verifier_status=$?', ')" || verifier_status=$?'),
+    ("verifier exact receipt filter missing", '[[ "$verifier_output" =~ ^[0-9a-f]{64}$ ]]', '[[ -n "$verifier_output" ]]'),
+    ("verifier fixed diagnostic replay missing", 'emit_verifier_diagnostic "$verifier_output"', 'printf "%s\\n" "$verifier_output" >&2'),
+    ("verifier unknown diagnostic fallback missing", "echo '::error::trusted compatibility sandbox filesystem boundary unsafe phase=unknown' >&2", 'printf "%s\\n" "$1" >&2'),
+    ("pre-load receipt mismatch diagnostic drifted", 'echo "::error::trusted compatibility sandbox filesystem boundary unsafe phase=receipt-recomputation" >&2', 'echo "::error::trusted compatibility sandbox filesystem boundary changed" >&2'),
     ("fixed diagnostic suppression drifted", "update >/dev/null 2>&1", "update >/dev/null"),
     ("loader raw stderr suppression missing", '/usr/bin/python3 -I - load "$profile_path" >/dev/null 2>&1 || loader_status=$?', '/usr/bin/python3 -I - load "$profile_path" >/dev/null || loader_status=$?'),
 ]

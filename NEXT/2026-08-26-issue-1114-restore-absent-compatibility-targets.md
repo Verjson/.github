@@ -51,5 +51,7 @@ Filesystem failures now identify only a closed fixed phase:
 `tunables-tree`, `bwrap-binary`, `parser-binary`, `package-profile`,
 `profile-semantics`, `receipt-recomputation`, `profile-load`, or `unknown`.
 The privileged loader maps fixed exit codes to those phases with all raw output
-suppressed; exception text, dynamic paths, environment values, secrets, and
+suppressed. The verifier shell accepts only an exact receipt or an exact
+allowlisted diagnostic and maps all other producer/interpreter output to
+`unknown`; exception text, dynamic paths, environment values, secrets, and
 non-allowlisted sentinels cannot enter the diagnostic.

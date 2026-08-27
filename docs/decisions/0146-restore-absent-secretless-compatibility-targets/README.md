@@ -122,9 +122,12 @@ allowlist: ancestor directories, the usrmerge parser link, local overrides,
 the ABI or tunables tree, the bwrap or parser binary, the package profile,
 profile semantics, receipt recomputation, profile load, or unknown. The
 privileged loader communicates the same phases through fixed exit codes while
-its stdout and stderr remain suppressed. Exception text, paths, environment
-values, parser output, and any non-allowlisted value never cross the diagnostic
-boundary; an unexpected failure becomes the fixed `unknown` phase.
+its stdout and stderr remain suppressed. The unprivileged verifier's shell
+boundary captures all producer and interpreter output, accepts only an exact
+receipt on success, and replays only an exact allowlisted diagnostic on
+failure. Exception text, paths, environment values, parser output, and any
+non-allowlisted value never cross the diagnostic boundary; an unexpected
+failure becomes the fixed `unknown` phase.
 
 First attempt the production namespace and capability-drop probe as the
 unprivileged runner under an empty credential environment. Only if it fails,
