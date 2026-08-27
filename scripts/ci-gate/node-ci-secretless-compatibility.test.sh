@@ -8,6 +8,55 @@ trap 'rm -rf "$tmp"' EXIT
 failures=0
 pass() { printf 'ok - %s\n' "$1"; }
 fail() { printf 'not ok - %s\n' "$1" >&2; failures=$((failures + 1)); }
+emit_failure_diagnostic() {
+  local label="$1" status="$2" stderr_path="$3"
+  python3 - "$label" "$status" "$stderr_path" <<'PY' >&2
+import re
+import sys
+from pathlib import Path
+
+label, status, stderr_path = sys.argv[1:]
+print(f"diagnostic - {label} return-code={status}")
+path = Path(stderr_path)
+if not path.is_file():
+    print(f"diagnostic - {label} stderr=[missing]")
+    raise SystemExit
+with path.open("rb") as stream:
+    stream.seek(0, 2)
+    stream.seek(max(0, stream.tell() - 16384))
+    text = stream.read(16384).decode("utf-8", errors="replace")
+text = re.sub(
+    r"(?i)\b([A-Z0-9_]*(?:TOKEN|PASSWORD|SECRET|CREDENTIAL|AUTH)[A-Z0-9_]*)"
+    r"(\s*[:=]\s*)([^\s]+)",
+    r"\1\2[REDACTED]",
+    text,
+)
+text = re.sub(r"(?i)\bBearer\s+[^\s]+", "Bearer [REDACTED]", text)
+text = re.sub(
+    r"\b(?:github_pat_|gh[pousr]_)[A-Za-z0-9_]+",
+    "[REDACTED]",
+    text,
+)
+text = re.sub(r"(https?://)[^/@\s]+:[^/@\s]+@", r"\1[REDACTED]@", text)
+lines = text.splitlines()[-40:]
+if not lines:
+    print(f"diagnostic - {label} stderr=[empty]")
+for line in lines:
+    printable = "".join(character if character.isprintable() else "?" for character in line)
+    print(f"diagnostic - {label} stderr: {printable[:512]}")
+PY
+}
+
+printf '%s\n' 'bwrap: permission denied' 'NODE_AUTH_TOKEN=diagnostic-secret' >"$tmp/diagnostic-probe.log"
+diagnostic_probe="$(emit_failure_diagnostic probe 23 "$tmp/diagnostic-probe.log" 2>&1)"
+if [[ "$diagnostic_probe" == *'probe return-code=23'* ]] \
+  && [[ "$diagnostic_probe" == *'bwrap: permission denied'* ]] \
+  && [[ "$diagnostic_probe" == *'NODE_AUTH_TOKEN=[REDACTED]'* ]] \
+  && [[ "$diagnostic_probe" != *'diagnostic-secret'* ]]; then
+  pass "positive-failure diagnostics retain cause and return code while scrubbing credentials"
+else
+  fail "positive-failure diagnostics are missing or disclose credentials"
+fi
 
 python3 - "$workflow" "$tmp" <<'PY'
 import sys
@@ -220,7 +269,19 @@ printf '%s\n' '{"name":"@verjson/identity-contracts","version":"0.1.0"}' \
   > "$tmp/e2e/consumer/node_modules/@verjson/identity-contracts/package.json"
 printf '%s\n' '{"name":"consumer","version":"1.0.0","scripts":{"test:compat":"node test-compat.js"}}' > "$tmp/e2e/consumer/package.json"
 printf '%s\n' "const fs=require('node:fs');const v=require('./node_modules/@verjson/identity-contracts/package.json').version;fs.writeFileSync('compat-results/observed-version',v);if(process.env.REJECT_COMPATIBILITY==='true')process.exit(42);" > "$tmp/e2e/consumer/test-compat.js"
-if (cd "$tmp/e2e/consumer" && COMPATIBILITY_ARTIFACT_DIR="$tmp/e2e/consumer/artifacts" COMPATIBILITY_RANGES="$request" EXPECTED_COMPATIBILITY_PROVENANCE_SHA256="$provenance_sha" REJECT_COMPATIBILITY=false bash "$tmp/run-lanes.sh") >/dev/null 2>&1 && grep -qFx 0.2.2 "$tmp/e2e/consumer/compat-results/observed-version"; then pass "the resolved in-range artifact reaches the declared consumer test"; else fail "the resolved artifact did not reach the declared consumer test"; fi
+consumer_stderr="$tmp/e2e/consumer/run.stderr"
+if (cd "$tmp/e2e/consumer" && COMPATIBILITY_ARTIFACT_DIR="$tmp/e2e/consumer/artifacts" COMPATIBILITY_RANGES="$request" EXPECTED_COMPATIBILITY_PROVENANCE_SHA256="$provenance_sha" REJECT_COMPATIBILITY=false bash "$tmp/run-lanes.sh") >"$tmp/e2e/consumer/run.stdout" 2>"$consumer_stderr"; then
+  consumer_status=0
+else
+  consumer_status=$?
+fi
+if [ "$consumer_status" -eq 0 ] \
+  && grep -qFx 0.2.2 "$tmp/e2e/consumer/compat-results/observed-version"; then
+  pass "the resolved in-range artifact reaches the declared consumer test"
+else
+  fail "the resolved artifact did not reach the declared consumer test"
+  emit_failure_diagnostic "resolved compatibility consumer" "$consumer_status" "$consumer_stderr"
+fi
 (cd "$tmp/e2e/consumer" && COMPATIBILITY_ARTIFACT_DIR="$tmp/e2e/consumer/artifacts" COMPATIBILITY_RANGES="$request" EXPECTED_COMPATIBILITY_PROVENANCE_SHA256="$provenance_sha" REJECT_COMPATIBILITY=true bash "$tmp/run-lanes.sh") >/dev/null 2>&1 \
   && fail "an in-range incompatible artifact did not fail consumer tests" || pass "an in-range incompatible artifact fails at the consumer test layer"
 if (cd "$tmp/e2e/consumer" && COMPATIBILITY_ARTIFACT_DIR="$tmp/e2e/consumer/artifacts" COMPATIBILITY_RANGES="$request" EXPECTED_COMPATIBILITY_PROVENANCE_SHA256="$provenance_sha" NODE_AUTH_TOKEN=leaked bash "$tmp/run-lanes.sh") >"$tmp/e2e/token.log" 2>&1; then fail "a package credential reached compatibility consumer execution"; elif grep -qF 'credential reached compatibility consumer execution' "$tmp/e2e/token.log"; then pass "consumer execution fails closed on a credential leak"; else fail "token-leak mutation failed for the wrong reason"; fi
@@ -400,17 +461,26 @@ run_archive_case() {
     COMPATIBILITY_RANGES="$request" \
     EXPECTED_COMPATIBILITY_PROVENANCE_SHA256="$(<"$fixture/provenance.sha256")" \
     bash "$tmp/run-lanes.sh"
-  ) >"$fixture/run.log" 2>&1
+  ) >"$fixture/run.stdout" 2>"$fixture/run.stderr"
 }
 
-if run_archive_case good \
-    && [ -f "$tmp/archive-cases/good/compat-results/consumer-ran" ] \
-    && [ ! -e "$tmp/archive-cases/good/npm-graph-resolution" ] \
-    && [ ! -e "$tmp/archive-cases/good/node_modules/@verjson/identity-contracts/old-sentinel" ] \
-    && [ "$(find "$tmp/archive-cases/good/node_modules/@verjson" -maxdepth 1 -name '.identity-contracts.*' -print -quit)" = '' ]; then
+if run_archive_case good; then
+  archive_status=0
+else
+  archive_status=$?
+fi
+if [ "$archive_status" -eq 0 ] \
+  && [ -f "$tmp/archive-cases/good/compat-results/consumer-ran" ] \
+  && [ ! -e "$tmp/archive-cases/good/npm-graph-resolution" ] \
+  && [ ! -e "$tmp/archive-cases/good/node_modules/@verjson/identity-contracts/old-sentinel" ] \
+  && [ "$(find "$tmp/archive-cases/good/node_modules/@verjson" -maxdepth 1 -name '.identity-contracts.*' -print -quit)" = '' ]; then
   pass "cold-cache caret consumer swaps one verified package without resolving its graph"
 else
   fail "cold-cache caret consumer did not preserve its installed dependency graph"
+  emit_failure_diagnostic \
+    "cold-cache compatibility consumer" \
+    "$archive_status" \
+    "$tmp/archive-cases/good/run.stderr"
 fi
 
 for mutation in traversal absolute multi-root symlink hardlink special pax oversize count duplicate wrong-name wrong-version; do
@@ -429,5 +499,39 @@ for mutation in traversal absolute multi-root symlink hardlink special pax overs
     pass "$mutation compatibility archive fails before target swap or consumer code"
   fi
 done
+
+if [ "${VERJSON_DIAGNOSTIC_MUTATION_CHILD:-false}" != true ]; then
+  mutation_root="$tmp/missing-bwrap-mutation"
+  mkdir -p "$mutation_root/.github/workflows" "$mutation_root/scripts/ci-gate"
+  cp "$0" "$mutation_root/scripts/ci-gate/node-ci-secretless-compatibility.test.sh"
+  python3 - "$workflow" "$mutation_root/.github/workflows/node-ci.yml" <<'PY'
+import sys
+from pathlib import Path
+
+source = Path(sys.argv[1]).read_text(encoding="utf-8")
+needle = 'bubblewrap = Path("/usr/bin/bwrap")'
+assert source.count(needle) == 1
+Path(sys.argv[2]).write_text(
+    source.replace(needle, 'bubblewrap = Path("/definitely-missing/bwrap")'),
+    encoding="utf-8",
+)
+PY
+  if VERJSON_DIAGNOSTIC_MUTATION_CHILD=true \
+    bash "$mutation_root/scripts/ci-gate/node-ci-secretless-compatibility.test.sh" \
+    >"$mutation_root/run.log" 2>&1; then
+    mutation_status=0
+  else
+    mutation_status=$?
+  fi
+  if [ "$mutation_status" -eq 2 ] \
+    && grep -qF 'diagnostic - resolved compatibility consumer return-code=1' "$mutation_root/run.log" \
+    && grep -qF 'diagnostic - cold-cache compatibility consumer return-code=1' "$mutation_root/run.log" \
+    && [ "$(grep -cF 'trusted bubblewrap compatibility sandbox is unavailable' "$mutation_root/run.log")" -eq 2 ] \
+    && ! grep -qF 'diagnostic-secret' "$mutation_root/run.log"; then
+    pass "missing-bwrap mutation reports both positive failures with scrubbed exact diagnostics"
+  else
+    fail "missing-bwrap mutation did not preserve exact scrubbed positive-failure diagnostics"
+  fi
+fi
 
 exit "$failures"

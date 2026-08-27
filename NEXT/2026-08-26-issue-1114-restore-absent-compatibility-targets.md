@@ -13,4 +13,6 @@ verified-archive bytes. Deterministic swap/load/restore races cannot substitute
 attacker content, multi-lane swaps remain provenance-bound, and existing-target
 behavior is unchanged under ADR 0146. The bubblewrap-dependent contracts run on
 an explicit hosted Ubuntu 24.04 job whose result remains fail-closed under the
-required `shell-tests` aggregate.
+required `shell-tests` aggregate. Positive consumer-fixture failures now report
+their exact return code and bounded, credential-scrubbed stderr so a missing or
+unusable sandbox dependency is distinguishable without exposing runner secrets.
