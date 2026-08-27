@@ -83,21 +83,53 @@ profile. The hosted-only acquisition therefore also installs `apparmor` and
 contains `bwrap-userns-restrict`,
 `4.0.1really4.0.1-0ubuntu0.24.04.3`.
 
-Bind `/sbin/apparmor_parser` and
-`/usr/share/apparmor/extra-profiles/bwrap-userns-restrict` to those installed
-packages just as bubblewrap is bound to its package. Require every file to be
-regular, root-owned and root-grouped, and not group- or world-writable;
-executables must be executable and the profile must not be. Before loading,
-require the package profile's ABI 4.0, absolute bwrap attachment, transition
-from bwrap to the restricted child profile, recursive child transition,
-audited capability denial, and absence of any unconfined flag.
+The next hosted receipt failed at `ancestor-directories`. The exact
+`ubuntu-24.04` image build intentionally makes `/usr/share` recursively
+world-writable ([runner-images `ubuntu24/20260823.283`, lines 12–13](https://github.com/actions/runner-images/blob/ubuntu24/20260823.283/images/ubuntu/scripts/build/configure-system.sh#L12-L13)),
+so neither the installed profile nor the image's `/usr/share/keyrings` archive
+key can cross the privileged load boundary. Do not relax ancestor validation,
+copy from that installed pathname, or use the image's global apt source, list,
+cache, or key configuration.
+
+Instead, validate the package-owned Ubuntu archive key rooted under
+`/etc/apt/trusted.gpg.d`, then create an exclusive root-owned acquisition
+session. Configure fixed Noble archive and security HTTPS sources, fresh
+source/list/cache state, the verified system dpkg status, and the safe key only.
+Disable the global apt netrc and preferences files and route their directory
+forms to validated empty root-owned directories alongside the already isolated
+source, trusted-key, and configuration parts.
+Keep apt authentication, weak-repository, downgrade, date, validity, and TLS
+checks enabled; simulate and bound the no-remove install plan before installing
+`bubblewrap`, `apparmor`, and `apparmor-profiles`. The `_apt` account owns only
+the isolated partial directories. Raw apt, package, archive, and helper output
+never crosses the fixed diagnostic boundary.
+
+Bind the exact `apparmor-profiles` version, `Architecture: all`, normalized
+repository filename, size, and SHA-256 to the signed Packages metadata, then
+download exactly that archive into a second empty
+isolated cache. Independently require its signed size and SHA-256, control
+fields, exact normalized basename, and one canonical regular root-owned,
+non-executable profile member. Reject absolute, traversing, encoded, duplicated,
+or otherwise ambiguous signed filenames and any downloaded-name mismatch.
+Stream that member from the archive, validate its ABI 4.0, absolute bwrap
+attachment, transition from bwrap to the restricted child profile, recursive
+child transition, audited capability denial, and absence of any unconfined
+flag. Stage those verified bytes atomically under the root-owned, non-writable
+`/run/verjson-compatibility-sandbox` hierarchy. The installed `/usr/share`
+pathname remains package-database evidence only and never authenticates or
+supplies the staged bytes.
+
+Bind `/sbin/apparmor_parser` and `/usr/bin/bwrap` to their installed packages.
+Require every executable and the safely staged profile to be regular,
+root-owned and root-grouped, hardlink-free, capability-free, and not group- or
+world-writable; executables must be executable and the profile must not be.
 Reject either optional local bwrap profile override, including a broken
 symlink, so the parser cannot compose unverified host policy into the signed
 package profile.
 
 The filesystem verifier additionally rejects set-id or file-capability-bearing
 executables. It verifies the lexical usrmerge `/sbin` link, resolved parser and
-profile ancestry, `/etc/apparmor.d[/local]`, and the complete existing ABI and
+safe staged-profile ancestry, `/etc/apparmor.d[/local]`, and the complete existing ABI and
 tunables include trees as root-owned, root-grouped, and not group- or
 world-writable;
 symlinks and special include entries fail closed. Executables, the profile, and
@@ -120,7 +152,7 @@ boundary.
 When this filesystem boundary fails, report only a fixed phase from a closed
 allowlist: ancestor directories, the usrmerge parser link, local overrides,
 the ABI or tunables tree, the bwrap or parser binary, the package profile,
-profile semantics, receipt recomputation, profile load, or unknown. The
+profile semantics, receipt recomputation, profile load, acquisition cleanup, or unknown. The
 privileged loader communicates the same phases through fixed exit codes while
 its stdout and stderr remain suppressed. The unprivileged verifier's shell
 boundary captures all producer and interpreter output, accepts only an exact
@@ -155,6 +187,22 @@ and mount processing into a privileged process. The exact hosted actions-ci
 mirror runs this same prerequisite before its compatibility contracts;
 self-hosted execution remains excluded from every install and policy mutation.
 
+The acquisition supervisor is digest-bound trusted static code executed as
+root with a fixed empty environment, closed stdin, in-memory output, and a
+bounded runtime. It records the exclusive session and staging directory
+identities, removes the session on every terminal path, removes an uncommitted
+stage after failure or handled signal, and never reuses residue. Cleanup refuses
+identity drift and emits only the fixed acquisition-cleanup phase. A successful
+run preserves only the immutable staged profile needed by the descriptor-bound
+verifier and loader.
+
+Keep the exact embedded acquirer behind a conventional `main()` guard so its
+production functions can be imported without running privileged acquisition.
+The registered behavioral contract extracts the byte-identical node-ci and
+actions-ci source and executes its real orchestration and guards with
+deterministic OS and subprocess fixtures. Compilation treats `SyntaxWarning` as
+fatal for production and every mutation.
+
 When the target began absent, retain its installed directory identity and remove that
 exact directory after success, script failure, `SIGINT`, or `SIGTERM`. Cleanup first
 quarantines the identity under the held package parent and refuses to delete a different
@@ -175,6 +223,9 @@ No consumer self-dependency or package pin is introduced.
 - Hosted package acquisition is narrowly gated, signed, credentialless, and
   fail-closed. Parity and ordering mutations prevent the contract job from
   exercising a different prerequisite than canonical node-ci consumers.
+- The privileged parser never trusts the hosted image's world-writable
+  `/usr/share` tree; its profile bytes come from an independently authenticated
+  package archive and an identity-bound root-only staging hierarchy.
 - Parent and target races fail the job and preserve unexpected state for diagnosis rather
   than deleting or overwriting it.
 - Real-shaped tests cover success, script failure, signals, multiple lanes, parent and

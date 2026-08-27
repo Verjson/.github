@@ -11,6 +11,7 @@ import subprocess
 import tempfile
 import threading
 import types
+import warnings
 
 import yaml
 
@@ -38,7 +39,7 @@ SECRETLESS_ENV = {
     "NODE_AUTH_TOKEN": "",
     "NPM_TOKEN": "",
 }
-PROFILE_PATH = "/usr/share/apparmor/extra-profiles/bwrap-userns-restrict"
+PROFILE_PATH = "/run/verjson-compatibility-sandbox/bwrap-userns-restrict"
 APPARMOR_FLOOR = "4.0.1really4.0.1-0ubuntu0.24.04.3"
 BOUNDARY_PHASES = (
     "ancestor-directories",
@@ -53,6 +54,7 @@ BOUNDARY_PHASES = (
     "receipt-recomputation",
     "profile-load",
     "unknown",
+    "package-profile-cleanup",
 )
 BOUNDARY_STATUS = {phase: 70 + index for index, phase in enumerate(BOUNDARY_PHASES)}
 ISOLATION_REFERENCE = None
@@ -111,6 +113,16 @@ def extract_shell_function(source, name):
     return function
 
 
+def embedded_source_text(source, name):
+    start = source.find(f"{name}() {{\n")
+    marker = "/usr/bin/cat <<'PY'\n"
+    marker_start = source.find(marker, start)
+    end = source.find("\nPY\n}", marker_start)
+    if start < 0 or marker_start < 0 or end < 0:
+        raise ContractError(f"{name} embedded source missing")
+    return source[marker_start + len(marker) : end] + "\n"
+
+
 def extract_receipt_mismatch_guard(source):
     start = source.find('if [ "$current_sandbox_receipt" != "$initial_sandbox_receipt" ]; then')
     if start < 0:
@@ -122,11 +134,7 @@ def extract_receipt_mismatch_guard(source):
 
 
 def embedded_verifier(source):
-    source = extract_shell_function(source, "sandbox_verifier_source")
-    marker = "/usr/bin/cat <<'PY'\n"
-    if source.count(marker) != 1:
-        raise ContractError("embedded filesystem verifier missing")
-    verifier = source.split(marker, 1)[1].split("\nPY\n", 1)[0]
+    verifier = embedded_source_text(source, "sandbox_verifier_source")
     try:
         tree = ast.parse(verifier)
     except SyntaxError as error:
@@ -361,7 +369,7 @@ profile unpriv_bwrap flags=(attach_disconnected) {
 def validate_isolated_python(source):
     global ISOLATION_REFERENCE
 
-    require_count(source, "/usr/bin/python3 -I -", 2, "isolated Python boundary drifted")
+    require_count(source, "/usr/bin/python3 -I -", 3, "isolated Python boundary drifted")
     require(
         source,
         '/usr/bin/python3 -I -c "$supervisor_source"',
@@ -420,7 +428,7 @@ def validate_isolated_python(source):
 
         verifier_result = subprocess.run(
             command + ("verify", "/unexpected-profile"),
-            input=source.split("/usr/bin/cat <<'PY'\n", 1)[1].split("\nPY\n", 1)[0],
+            input=embedded_source_text(source, "sandbox_verifier_source"),
             cwd=fixture,
             env={
                 **os.environ,
@@ -457,7 +465,7 @@ def validate_isolated_python(source):
                 "load",
                 PROFILE_PATH,
             ),
-            input=source.split("/usr/bin/cat <<'PY'\n", 1)[1].split("\nPY\n", 1)[0],
+            input=embedded_source_text(source, "sandbox_verifier_source"),
             cwd=fixture,
             env={
                 **os.environ,
@@ -619,7 +627,7 @@ def validate_root_supervisor_boundary(source):
     production_digest = re.search(r"'([0-9a-f]{64})'", verify_function)
     if production_digest is None:
         raise ContractError("verifier source digest binding missing")
-    verifier = source.split("/usr/bin/cat <<'PY'\n", 1)[1].split("\nPY\n}", 1)[0] + "\n"
+    verifier = embedded_source_text(source, "sandbox_verifier_source")
     if hashlib.sha256(verifier.encode("utf-8")).hexdigest() != production_digest.group(1):
         raise ContractError("verifier source digest binding drifted")
 
@@ -853,6 +861,122 @@ def validate_root_supervisor_boundary(source):
         if any(secret in result.stdout or secret in result.stderr for secret in secrets):
             raise ContractError(f"{reason} failure leaked raw output")
 
+def validate_acquirer_contract(source):
+    acquirer = embedded_source_text(source, "sandbox_acquirer_source")
+    supervisor = embedded_source_text(source, "sandbox_acquirer_supervisor_source")
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", SyntaxWarning)
+            compile(acquirer, "<sandbox-acquirer>", "exec")
+            compile(supervisor, "<sandbox-acquirer-supervisor>", "exec")
+    except SyntaxError as error:
+        raise ContractError("isolated apt helper Python invalid") from error
+
+    digest = hashlib.sha256(acquirer.encode("utf-8")).hexdigest()
+    require(source, f"'{digest}'", "isolated apt helper digest binding drifted")
+    require(supervisor, "hashlib.sha256(source).hexdigest() != expected_digest", "isolated apt helper digest verification missing")
+    require(supervisor, "sys.stdin.buffer.read(1048577)", "isolated apt helper source bound missing")
+    require(supervisor, "os.geteuid() != 0", "isolated apt helper root boundary missing")
+    require(supervisor, '("/usr/bin/python3", "-I", "-c", source_text)', "isolated apt helper immutable execution missing")
+    require(supervisor, "stdin=subprocess.DEVNULL", "isolated apt helper stdin isolation missing")
+    require(supervisor, "stderr=subprocess.STDOUT", "isolated apt helper raw stderr capture missing")
+    require(supervisor, "close_fds=True", "isolated apt helper descriptor isolation missing")
+    require(supervisor, "start_new_session=True", "isolated apt helper process isolation missing")
+    require(supervisor, "timeout=900", "isolated apt helper execution bound missing")
+    require(supervisor, 'completed.returncode == 0 and completed.stdout == b""', "isolated apt helper success bytes not exact")
+    require(supervisor, "completed.returncode == 1 and completed.stdout == diagnostic", "isolated apt helper failure bytes not exact")
+    require(source, "sandbox_acquirer_source 2>&1 |", "isolated apt helper source pipe missing")
+    require(source, "} 2>/dev/null", "isolated apt helper outer stderr suppression missing")
+
+    require(acquirer, 'SAFE_KEY = "/etc/apt/trusted.gpg.d/ubuntu-keyring-2018-archive.gpg"', "safe Ubuntu archive key path drifted")
+    if "/usr/share/keyrings" in acquirer:
+        raise ContractError("world-writable Ubuntu archive key path trusted")
+    require(acquirer, '"/etc", "/etc/apt", "/etc/apt/trusted.gpg.d"', "safe key ancestry verification missing")
+    require(acquirer, 'ownership != f"ubuntu-keyring: {SAFE_KEY}\\n"', "safe key package ownership missing")
+    require(acquirer, "or capability_present(descriptor)", "safe file capability rejection missing")
+    require(acquirer, "before.st_nlink != 1", "safe file hardlink rejection missing")
+    require(acquirer, "metadata.st_mode & 0o022", "safe path writable-mode rejection missing")
+    require(acquirer, "stat.S_ISUID | stat.S_ISGID", "safe path set-id rejection missing")
+    require(acquirer, 'SESSION_ROOT = "/var/lib/verjson-compatibility-apt"', "isolated apt root drifted")
+    require(acquirer, 'STAGE_ROOT = "/run/verjson-compatibility-sandbox"', "safe profile staging root drifted")
+    require(acquirer, '"/var", "/var/lib", "/var/lib/dpkg", "/run"', "apt and staging ancestry verification missing")
+    require(acquirer, '"Dir::State::status=/var/lib/dpkg/status"', "verified system package status binding missing")
+    require(acquirer, '"Dir::Etc::sourcelist=/dev/null"', "global apt source list not disabled")
+    require(acquirer, '"Dir::Etc::trusted=/dev/null"', "global apt trusted keyring not disabled")
+    require(acquirer, '"Dir::Etc::main=/dev/null"', "global apt config not disabled")
+    require(acquirer, '"Dir::Etc::netrc=/dev/null"', "global apt netrc not disabled")
+    require(acquirer, 'f"Dir::Etc::netrcparts={SESSION_ROOT}/empty-auth"', "global apt auth parts not isolated")
+    require(acquirer, '"Dir::Etc::preferences=/dev/null"', "global apt preferences not disabled")
+    require(acquirer, 'f"Dir::Etc::preferencesparts={SESSION_ROOT}/empty-preferences"', "global apt preference parts not isolated")
+    require(acquirer, '"APT_CONFIG": "/dev/null"', "apt environment config isolation missing")
+    require(acquirer, 'f"Dir::Etc::sourceparts={source_parts}"', "isolated apt sourceparts missing")
+    require(acquirer, 'f"Dir::State::lists={lists_root}"', "isolated apt lists missing")
+    require(acquirer, 'f"Dir::Cache::archives={cache_root}/archives"', "isolated apt archive cache missing")
+    require(acquirer, 'pwd.getpwnam("_apt").pw_uid', "apt sandbox identity missing")
+    require_count(acquirer, "create_apt_partial(", 3, "apt sandbox partial directory missing")
+    require(acquirer, "https://archive.ubuntu.com/ubuntu", "fixed Noble archive URI missing")
+    require(acquirer, "https://security.ubuntu.com/ubuntu", "fixed Noble security URI missing")
+    require(acquirer, "Suites: noble noble-updates", "fixed Noble archive suites missing")
+    require(acquirer, "Suites: noble-security", "fixed Noble security suite missing")
+    require_count(acquirer, "Signed-By: {SAFE_KEY}", 2, "fixed source key binding drifted")
+    for option in (
+        "APT::Get::AllowUnauthenticated=false",
+        "Acquire::AllowInsecureRepositories=false",
+        "Acquire::AllowDowngradeToInsecureRepositories=false",
+        "Acquire::AllowWeakRepositories=false",
+        "Acquire::Check-Valid-Until=true",
+        "Acquire::Check-Date=true",
+        "Acquire::https::Verify-Peer=true",
+        "Acquire::https::Verify-Host=true",
+    ):
+        require(acquirer, option, f"isolated apt option drifted: {option}")
+    require(acquirer, '("/usr/bin/apt-get", *update_options, "update")', "fresh isolated apt update missing")
+    require(acquirer, '"--simulate", "--no-install-recommends", "--no-remove"', "bounded no-remove install plan missing")
+    require(acquirer, 'sum(line.startswith("Inst ") for line in plan_lines) > 32', "install plan bound missing")
+    require(acquirer, 'line.startswith(("Remv ", "Purg "))', "install removal rejection missing")
+    require_count(acquirer, '"install", "apparmor", "apparmor-profiles", "bubblewrap"', 2, "isolated initial package install missing")
+    require(acquirer, '"--download-only", "--reinstall", "--no-install-recommends"', "exact profile archive download missing")
+    require(acquirer, '"--no-remove", "--yes", "install"', "profile archive no-remove download missing")
+    require(acquirer, 'f"apparmor-profiles:all={version}"', "profile archive version and architecture binding missing")
+    require(acquirer, "posixpath.normpath(filename) != filename", "signed package filename normalization missing")
+    require(acquirer, '"%" in filename', "encoded signed package filename rejection missing")
+    require(acquirer, "entry.name == expected_archive_name", "downloaded archive filename binding missing")
+    require(acquirer, '"indextargets"', "signed Packages index enumeration missing")
+    require(acquirer, '(b"Size", b"SHA256", b"Filename")', "signed package metadata fields missing")
+    require(acquirer, "if len(archives) != 1 or len(locks) > 1 or unexpected:", "exact archive set validation missing")
+    require(acquirer, "hashlib.sha256(archive_bytes).hexdigest() != expected_digest", "archive digest binding missing")
+    require(acquirer, "len(archive_bytes) != expected_size", "archive size binding missing")
+    require(acquirer, '("Package", "apparmor-profiles")', "archive package control binding missing")
+    require(acquirer, '("Version", version)', "archive version control binding missing")
+    require(acquirer, '("Architecture", "all")', "archive architecture control binding missing")
+    require(acquirer, "aliases != [target]", "canonical package member uniqueness missing")
+    require(acquirer, "if len(member_lines) != 1:", "canonical package member header uniqueness missing")
+    require(acquirer, 'header[0] != b"-rw-r--r--"', "regular package member mode verification missing")
+    require(acquirer, 'header[1] != b"0/0"', "package member ownership verification missing")
+    require(acquirer, "len(profile_bytes) != declared_profile_size", "package member size binding missing")
+    require(acquirer, '("--extract", "--to-stdout", "--no-wildcards", target)', "exact package member stream missing")
+    require(acquirer, "    validate_profile(profile_bytes)\n    return profile_bytes", "archive profile semantics verification missing")
+    require(acquirer, "os.O_EXCL", "staged profile exclusive creation missing")
+    require(
+        acquirer,
+        'def write_root_file(path, content, mode):\n    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC\n    if hasattr(os, "O_NOFOLLOW"):\n        flags |= os.O_NOFOLLOW',
+        "staged profile symlink rejection missing",
+    )
+    require(acquirer, "os.rename(temporary, PROFILE_PATH)", "atomic staged profile rename missing")
+    require(acquirer, "os.fsync(stage_descriptor)", "staging directory fsync missing")
+    require(acquirer, "os.chmod(STAGE_ROOT, 0o500)", "staging root immutability missing")
+    require(acquirer, 'os.listdir(STAGE_ROOT) != ["bwrap-userns-restrict"]', "unexpected staged content rejection missing")
+    require(acquirer, "staged_identity[1] == archive_identity[1]", "staged archive hardlink rejection missing")
+    require(acquirer, "shutil.rmtree(path)", "isolated apt session cleanup missing")
+    require(acquirer, "record_owned_root(SESSION_ROOT)", "isolated apt session identity receipt missing")
+    require(acquirer, "record_owned_root(STAGE_ROOT)", "profile staging identity receipt missing")
+    require(acquirer, "signal.SIGHUP, signal.SIGINT, signal.SIGTERM", "acquisition signal cleanup missing")
+    require(acquirer, "phase=package-profile-cleanup", "fixed acquisition cleanup phase missing")
+    require(acquirer, 'if __name__ == "__main__":\n    main()', "acquisition helper main guard missing")
+    if 'open_regular("/usr/share' in acquirer or 'open("/usr/share' in acquirer:
+        raise ContractError("installed world-writable profile path read")
+
+
 def validate_source(source):
     normalized_source = "\n".join(line.strip() for line in source.splitlines())
     forbidden = {
@@ -877,10 +1001,10 @@ def validate_source(source):
     require_count(
         source,
         "/usr/bin/sudo --non-interactive /usr/bin/env -i",
-        4,
+        3,
         "absolute sudo or environment scrubber drifted",
     )
-    require_count(source, "/usr/bin/apt-get", 2, "absolute apt path drifted")
+    require_count(source, "/usr/bin/apt-get", 6, "absolute apt path drifted")
     require(
         source,
         "/usr/bin/cat <<'PY'",
@@ -897,11 +1021,10 @@ def validate_source(source):
         "hashlib.sha256(verifier_source).hexdigest() != expected_digest",
         "verifier source digest binding missing",
     )
-    require(
-        source,
-        "ba649728453d0971df08421476a724ac56dcfc21a95aaa34f1a582da484265ec",
-        "verifier source digest binding drifted",
-    )
+    verifier_digest = hashlib.sha256(
+        embedded_source_text(source, "sandbox_verifier_source").encode("utf-8")
+    ).hexdigest()
+    require(source, f"'{verifier_digest}'", "verifier source digest binding drifted")
     require(
         source,
         "os.geteuid() != 0",
@@ -1004,6 +1127,7 @@ def validate_source(source):
             raise ContractError("runner-owned verifier capture path remains")
     validate_isolated_python(source)
     validate_root_supervisor_boundary(source)
+    validate_acquirer_contract(source)
     require(
         source,
         "echo '::error::trusted compatibility sandbox filesystem boundary unsafe phase=unknown' >&2",
@@ -1021,37 +1145,11 @@ def validate_source(source):
         "/usr/bin/python3 -I - load \"$profile_path\" >/dev/null 2>&1 || loader_status=$?",
         "loader raw stderr suppression missing",
     )
-    require_count(
-        source,
-        "APT::Get::AllowUnauthenticated=false",
-        2,
-        "unauthenticated apt rejection drifted",
-    )
-    require_count(
-        source,
-        "Acquire::AllowInsecureRepositories=false",
-        2,
-        "insecure apt repository rejection drifted",
-    )
-    require(
-        source,
-        "::error::trusted compatibility sandbox package index acquisition failed",
-        "fixed package-index diagnostic missing",
-    )
-    require(
-        source,
-        "::error::trusted compatibility sandbox package acquisition failed",
-        "fixed package-acquisition diagnostic missing",
-    )
-    require(source, "update >/dev/null 2>&1", "signed apt index update command drifted")
+    require_count(source, "APT::Get::AllowUnauthenticated=false", 1, "unauthenticated apt rejection drifted")
+    require_count(source, "Acquire::AllowInsecureRepositories=false", 1, "insecure apt repository rejection drifted")
     for command in ("full-upgrade", "dist-upgrade", " upgrade"):
         if command in source:
             raise ContractError("broad apt upgrade forbidden")
-    require(
-        source,
-        "install --yes --no-install-recommends \\\n  apparmor apparmor-profiles bubblewrap >/dev/null 2>&1",
-        "signed compatibility sandbox package acquisition missing",
-    )
 
     require(
         source,
@@ -1090,7 +1188,7 @@ def validate_source(source):
     )
     require(
         source,
-        '/usr/bin/dpkg-query -S "$profile_path"',
+        '/usr/bin/dpkg-query -S "$package_profile_member"',
         "AppArmor profile package ownership verification missing",
     )
     require(
@@ -1156,7 +1254,7 @@ def validate_source(source):
     require(source, 're.fullmatch(r"[0-9a-f]{64}", expected_receipt)', "loader receipt format guard missing")
     require(source, "receipt != expected_receipt", "loader receipt comparison missing")
     require(source, 'EXPECTED_SANDBOX_RECEIPT="$initial_sandbox_receipt"', "loader expected receipt binding missing")
-    require(source, 'sys.argv[2] != "/usr/share/apparmor/extra-profiles/bwrap-userns-restrict"', "loader static profile path binding missing")
+    require(source, f'sys.argv[2] != "{PROFILE_PATH}"', "loader static profile path binding missing")
     require(source, "os.set_inheritable(profile_descriptor, True)", "profile descriptor inheritance missing")
     require(source, "os.set_inheritable(parser_descriptor, True)", "parser descriptor inheritance missing")
     require(normalized_source, "os.execve(\nparser_descriptor,", "parser descriptor execution missing")
@@ -1334,12 +1432,101 @@ def replace_source(document, owner, old, new):
     step = provision_step(document, owner)
     if old not in step["run"]:
         raise AssertionError(f"mutation source absent: {old}")
-    step["run"] = step["run"].replace(old, new, 1)
+    step["run"] = step["run"].replace(old, new)
+
+
+def refresh_acquirer_digest(document, owner):
+    step = provision_step(document, owner)
+    source = step["run"]
+    digest = hashlib.sha256(
+        embedded_source_text(source, "sandbox_acquirer_source").encode("utf-8")
+    ).hexdigest()
+    invocation = re.search(
+        r"(?ms)sandbox_acquirer_source 2>&1 \|.*?'(?P<digest>[0-9a-f]{64})'",
+        source,
+    )
+    if invocation is None:
+        raise AssertionError("acquirer digest invocation missing")
+    old_digest = invocation.group("digest")
+    if old_digest != digest:
+        start, end = invocation.span("digest")
+        step["run"] = source[:start] + digest + source[end:]
+
+
+def refresh_verifier_digest(document, owner):
+    step = provision_step(document, owner)
+    source = step["run"]
+    digest = hashlib.sha256(
+        embedded_source_text(source, "sandbox_verifier_source").encode("utf-8")
+    ).hexdigest()
+    invocation = re.search(
+        r"(?ms)sandbox_verifier_source 2>&1 \|.*?'(?P<digest>[0-9a-f]{64})'",
+        source,
+    )
+    if invocation is None:
+        raise AssertionError("verifier digest invocation missing")
+    old_digest = invocation.group("digest")
+    if old_digest != digest:
+        start, end = invocation.span("digest")
+        step["run"] = source[:start] + digest + source[end:]
+
+
+def replace_embedded_source(document, owner, name, old, new):
+    step = provision_step(document, owner)
+    embedded = embedded_source_text(step["run"], name)
+    if old not in embedded:
+        raise AssertionError(f"embedded mutation source absent: {name}: {old}")
+    mutated = embedded.replace(old, new, 1)
+    step["run"] = step["run"].replace(embedded, mutated, 1)
+    if name == "sandbox_acquirer_source":
+        refresh_acquirer_digest(document, owner)
+    elif name == "sandbox_verifier_source":
+        refresh_verifier_digest(document, owner)
+
+
+def replace_mirrored_embedded(node, actions, name, old, new):
+    replace_embedded_source(node, "node", name, old, new)
+    replace_embedded_source(actions, "actions", name, old, new)
+
+
+def replace_embedded_source_nth(document, owner, name, old, new, occurrence):
+    step = provision_step(document, owner)
+    embedded = embedded_source_text(step["run"], name)
+    parts = embedded.split(old)
+    if len(parts) <= occurrence:
+        raise AssertionError(f"embedded mutation occurrence absent: {name}: {old}")
+    mutated = old.join(parts[:occurrence]) + new + old.join(parts[occurrence:])
+    step["run"] = step["run"].replace(embedded, mutated, 1)
+    if name == "sandbox_acquirer_source":
+        refresh_acquirer_digest(document, owner)
+    elif name == "sandbox_verifier_source":
+        refresh_verifier_digest(document, owner)
+
+
+def replace_mirrored_embedded_nth(node, actions, name, old, new, occurrence):
+    replace_embedded_source_nth(node, "node", name, old, new, occurrence)
+    replace_embedded_source_nth(actions, "actions", name, old, new, occurrence)
 
 
 def replace_mirrored(node, actions, old, new):
+    node_before = {
+        name: embedded_source_text(provision_step(node, "node")["run"], name)
+        for name in ("sandbox_acquirer_source", "sandbox_verifier_source")
+    }
+    actions_before = {
+        name: embedded_source_text(provision_step(actions, "actions")["run"], name)
+        for name in ("sandbox_acquirer_source", "sandbox_verifier_source")
+    }
     replace_source(node, "node", old, new)
     replace_source(actions, "actions", old, new)
+    if embedded_source_text(provision_step(node, "node")["run"], "sandbox_acquirer_source") != node_before["sandbox_acquirer_source"]:
+        refresh_acquirer_digest(node, "node")
+    if embedded_source_text(provision_step(actions, "actions")["run"], "sandbox_acquirer_source") != actions_before["sandbox_acquirer_source"]:
+        refresh_acquirer_digest(actions, "actions")
+    if embedded_source_text(provision_step(node, "node")["run"], "sandbox_verifier_source") != node_before["sandbox_verifier_source"]:
+        refresh_verifier_digest(node, "node")
+    if embedded_source_text(provision_step(actions, "actions")["run"], "sandbox_verifier_source") != actions_before["sandbox_verifier_source"]:
+        refresh_verifier_digest(actions, "actions")
 
 
 def replace_source_nth(document, owner, old, new, occurrence):
@@ -1353,6 +1540,8 @@ def replace_source_nth(document, owner, old, new, occurrence):
 def replace_mirrored_nth(node, actions, old, new, occurrence):
     replace_source_nth(node, "node", old, new, occurrence)
     replace_source_nth(actions, "actions", old, new, occurrence)
+    refresh_acquirer_digest(node, "node")
+    refresh_acquirer_digest(actions, "actions")
 
 
 node_document = load(ROOT / ".github/workflows/node-ci.yml")
@@ -1361,9 +1550,11 @@ validate(node_document, actions_document)
 
 
 mutations = [
-    ("signed compatibility sandbox package acquisition missing", "apparmor apparmor-profiles bubblewrap", "bubblewrap"),
-    ("fixed package-index diagnostic missing", "::error::trusted compatibility sandbox package index acquisition failed", "::error::package index failed for $package_name"),
-    ("fixed package-acquisition diagnostic missing", "::error::trusted compatibility sandbox package acquisition failed", "::error::package acquisition failed for $package_name"),
+    (
+        "isolated initial package install missing",
+        '"install", "apparmor", "apparmor-profiles", "bubblewrap"',
+        '"install", "bubblewrap"',
+    ),
     ("AppArmor package version floor drifted", f"verify_package_floor apparmor '{APPARMOR_FLOOR}'", "verify_package_floor apparmor '0.1.0'"),
     ("AppArmor profiles package version floor drifted", f"verify_package_floor apparmor-profiles '{APPARMOR_FLOOR}'", "verify_package_floor apparmor-profiles '0.1.0'"),
     ("bubblewrap package version floor drifted", "verify_package_floor bubblewrap '0.9.0-1build1'", "verify_package_floor bubblewrap '0.1.0'"),
@@ -1378,12 +1569,12 @@ mutations = [
     ("absolute Python loader path drifted", '/usr/bin/python3 -I - load "$profile_path"', '/usr/bin/python3 - load "$profile_path"'),
     ("bubblewrap package ownership verification missing", "/usr/bin/dpkg-query -S /usr/bin/bwrap", "/usr/bin/dpkg-query -S /tmp/bwrap"),
     ("AppArmor parser package ownership verification missing", "/usr/bin/dpkg-query -S /sbin/apparmor_parser", "/usr/bin/dpkg-query -S /tmp/apparmor_parser"),
-    ("AppArmor profile package ownership verification missing", '/usr/bin/dpkg-query -S "$profile_path"', '/usr/bin/dpkg-query -L "$profile_path"'),
+    ("AppArmor profile package ownership verification missing", '/usr/bin/dpkg-query -S "$package_profile_member"', '/usr/bin/dpkg-query -L "$package_profile_member"'),
     ("restrictive AppArmor profile path drifted", f"profile_path='{PROFILE_PATH}'", "profile_path='/tmp/bwrap-profile'"),
     ("profile verifier is not bound to package-owned path", "verify_system(sys.argv[2])", f'verify_system("{PROFILE_PATH}")'),
     ("absolute AppArmor parser verifier drifted", 'open_verified_file(\n            "/sbin/apparmor_parser",', 'open_verified_file(\n            "apparmor_parser",'),
     ("absolute bubblewrap verifier drifted", 'read_verified_file(\n            "/usr/bin/bwrap",', 'read_verified_file(\n            "bwrap",'),
-    ("symlink rejection missing", "flags |= os.O_NOFOLLOW", "flags |= 0"),
+    ("staged profile symlink rejection missing", "flags |= os.O_NOFOLLOW", "flags |= 0"),
     (
         "regular-file verification missing",
         "not stat.S_ISREG(metadata.st_mode)",
@@ -1391,11 +1582,12 @@ mutations = [
     ),
     ("root ownership verification missing", "metadata.st_uid != 0", "False"),
     ("root group verification missing", "metadata.st_gid != 0", "False"),
-    ("writable-mode rejection missing", "metadata.st_mode & 0o022", "False"),
+    ("safe path writable-mode rejection missing", "metadata.st_mode & 0o022", "False"),
     ("executable-mode verification missing", "executable and not metadata.st_mode & 0o111", "executable and False"),
     ("profile executable-mode rejection missing", "not executable and metadata.st_mode & 0o111", "not executable and False"),
     ("set-id mode rejection missing", "or metadata.st_mode & (stat.S_ISUID | stat.S_ISGID)", "or False"),
-    ("file capability rejection missing", "or capability_present", "or False"),
+    ("safe file capability rejection missing", "or capability_present(descriptor)", "or False"),
+    ("file capability rejection missing", "or capability_present\n", "or False\n"),
     ("capability xattr probe behavior drifted", 'os.getxattr(file_descriptor, "security.capability")', 'b""'),
     ("include-tree symlink rejection missing", "not stat.S_ISDIR(metadata.st_mode)", "False"),
     ("bwrap local profile override rejection missing", '"/etc/apparmor.d/local/bwrap-userns-restrict"', '"/tmp/bwrap-userns-restrict"'),
@@ -1422,7 +1614,7 @@ mutations = [
     ("loader receipt format guard missing", 're.fullmatch(r"[0-9a-f]{64}", expected_receipt)', "expected_receipt"),
     ("loader receipt comparison missing", "receipt != expected_receipt", "False"),
     ("loader expected receipt binding missing", 'EXPECTED_SANDBOX_RECEIPT="$initial_sandbox_receipt"', 'EXPECTED_SANDBOX_RECEIPT="0"'),
-    ("loader static profile path binding missing", 'sys.argv[2] != "/usr/share/apparmor/extra-profiles/bwrap-userns-restrict"', "False"),
+    ("loader static profile path binding missing", f'sys.argv[2] != "{PROFILE_PATH}"', "False"),
     ("profile descriptor inheritance missing", "os.set_inheritable(profile_descriptor, True)", "os.close(profile_descriptor)"),
     ("parser descriptor inheritance missing", "os.set_inheritable(parser_descriptor, True)", "os.close(parser_descriptor)"),
     ("parser descriptor execution missing", "os.execve(\n            parser_descriptor,", "os.execve(\n            '/sbin/apparmor_parser',"),
@@ -1447,11 +1639,6 @@ mutations = [
             "verifier source digest binding missing",
             "hashlib.sha256(verifier_source).hexdigest() != expected_digest",
             "False",
-        ),
-        (
-            "verifier source digest binding drifted",
-            "ba649728453d0971df08421476a724ac56dcfc21a95aaa34f1a582da484265ec",
-            "0" * 64,
         ),
         ("root supervisor privilege boundary missing", "os.geteuid() != 0", "False"),
     (
@@ -1516,9 +1703,9 @@ mutations = [
     ("verifier unknown diagnostic fallback missing", "echo '::error::trusted compatibility sandbox filesystem boundary unsafe phase=unknown' >&2", 'printf "%s\\n" "$1" >&2'),
     ("pre-load receipt mismatch diagnostic drifted", 'echo "::error::trusted compatibility sandbox filesystem boundary unsafe phase=receipt-recomputation" >&2', 'echo "::error::trusted compatibility sandbox filesystem boundary changed" >&2'),
     (
-        "signed apt index update command drifted",
-        "update >/dev/null 2>&1",
-        "update >/dev/null",
+        "fresh isolated apt update missing",
+        '("/usr/bin/apt-get", *update_options, "update")',
+        '("/usr/bin/apt-get", *update_options, "full-upgrade")',
     ),
     ("loader raw stderr suppression missing", '/usr/bin/python3 -I - load "$profile_path" >/dev/null 2>&1 || loader_status=$?', '/usr/bin/python3 -I - load "$profile_path" >/dev/null || loader_status=$?'),
 ]
@@ -1530,14 +1717,126 @@ for reason, old, new in mutations:
         lambda node, actions, old=old, new=new: replace_mirrored(node, actions, old, new),
     )
 
+acquirer_mutations = [
+    ("safe Ubuntu archive key path drifted", 'SAFE_KEY = "/etc/apt/trusted.gpg.d/ubuntu-keyring-2018-archive.gpg"', 'SAFE_KEY = "/usr/share/keyrings/ubuntu-archive-keyring.gpg"'),
+    ("safe key ancestry verification missing", '"/", "/etc", "/etc/apt", "/etc/apt/trusted.gpg.d",', '"/", "/etc", "/etc/apt",'),
+    ("safe key package ownership missing", 'f"ubuntu-keyring: {SAFE_KEY}\\n"', 'f"unknown: {SAFE_KEY}\\n"'),
+    ("safe file hardlink rejection missing", 'or before.st_nlink != 1', 'or False'),
+    ("isolated apt root drifted", 'SESSION_ROOT = "/var/lib/verjson-compatibility-apt"', 'SESSION_ROOT = "/tmp/verjson-compatibility-apt"'),
+    ("safe profile staging root drifted", 'STAGE_ROOT = "/run/verjson-compatibility-sandbox"', 'STAGE_ROOT = "/tmp/verjson-compatibility-sandbox"'),
+    ("apt and staging ancestry verification missing", '"/var", "/var/lib", "/var/lib/dpkg", "/run",', '"/var", "/var/lib", "/run",'),
+    ("verified system package status binding missing", '"Dir::State::status=/var/lib/dpkg/status"', '"Dir::State::status=/dev/null"'),
+    ("global apt source list not disabled", '"Dir::Etc::sourcelist=/dev/null"', '"Dir::Etc::sourcelist=/etc/apt/sources.list"'),
+    ("global apt trusted keyring not disabled", '"Dir::Etc::trusted=/dev/null"', '"Dir::Etc::trusted=/etc/apt/trusted.gpg"'),
+    ("global apt config not disabled", '"Dir::Etc::main=/dev/null"', '"Dir::Etc::main=/etc/apt/apt.conf"'),
+    ("global apt netrc not disabled", '"Dir::Etc::netrc=/dev/null"', '"Dir::Etc::netrc=/etc/apt/auth.conf"'),
+    ("global apt auth parts not isolated", 'f"Dir::Etc::netrcparts={SESSION_ROOT}/empty-auth"', '"Dir::Etc::netrcparts=/etc/apt/auth.conf.d"'),
+    ("global apt preferences not disabled", '"Dir::Etc::preferences=/dev/null"', '"Dir::Etc::preferences=/etc/apt/preferences"'),
+    ("global apt preference parts not isolated", 'f"Dir::Etc::preferencesparts={SESSION_ROOT}/empty-preferences"', '"Dir::Etc::preferencesparts=/etc/apt/preferences.d"'),
+    ("apt environment config isolation missing", '"APT_CONFIG": "/dev/null"', '"APT_CONFIG": "/etc/apt/apt.conf"'),
+    ("isolated apt sourceparts missing", 'f"Dir::Etc::sourceparts={source_parts}"', '"Dir::Etc::sourceparts=/etc/apt/sources.list.d"'),
+    ("isolated apt lists missing", 'f"Dir::State::lists={lists_root}"', '"Dir::State::lists=/var/lib/apt/lists"'),
+    ("isolated apt archive cache missing", 'f"Dir::Cache::archives={cache_root}/archives"', '"Dir::Cache::archives=/var/cache/apt/archives"'),
+    ("apt sandbox identity missing", 'pwd.getpwnam("_apt").pw_uid', '0'),
+    ("apt sandbox partial directory missing", 'create_apt_partial(f"{lists_root}/partial", apt_uid)', 'os.mkdir(f"{lists_root}/partial", 0o777)'),
+    ("fixed Noble archive URI missing", 'https://archive.ubuntu.com/ubuntu', 'https://mirror.invalid/ubuntu'),
+    ("fixed Noble security URI missing", 'https://security.ubuntu.com/ubuntu', 'https://mirror.invalid/security'),
+    ("fixed Noble archive suites missing", 'Suites: noble noble-updates', 'Suites: devel'),
+    ("fixed Noble security suite missing", 'Suites: noble-security', 'Suites: devel-security'),
+    ("fixed source key binding drifted", 'Signed-By: {SAFE_KEY}', 'Signed-By: /etc/apt/trusted.gpg.d/other.gpg'),
+    ("bounded no-remove install plan missing", '"--simulate", "--no-install-recommends", "--no-remove"', '"--simulate", "--no-install-recommends"'),
+    ("install plan bound missing", 'sum(line.startswith("Inst ") for line in plan_lines) > 32', 'False'),
+    ("install removal rejection missing", 'line.startswith(("Remv ", "Purg "))', 'False'),
+    ("exact profile archive download missing", '"--download-only", "--reinstall", "--no-install-recommends"', '"--download-only", "--no-install-recommends"'),
+    ("profile archive no-remove download missing", '"--no-remove", "--yes", "install"', '"--yes", "install"'),
+    ("profile archive version and architecture binding missing", 'f"apparmor-profiles:all={version}"', '"apparmor-profiles"'),
+    ("signed package filename normalization missing", 'posixpath.normpath(filename) != filename', 'False'),
+    ("encoded signed package filename rejection missing", '"%" in filename', 'False'),
+    ("downloaded archive filename binding missing", 'entry.name == expected_archive_name', 'True'),
+    ("signed Packages index enumeration missing", '"indextargets"', '"policy"'),
+    ("signed package metadata fields missing", '(b"Size", b"SHA256", b"Filename")', '(b"Filename",)'),
+    ("exact archive set validation missing", 'if len(archives) != 1 or len(locks) > 1 or unexpected:', 'if not archives:'),
+    ("archive digest binding missing", 'hashlib.sha256(archive_bytes).hexdigest() != expected_digest', 'False'),
+    ("archive size binding missing", 'len(archive_bytes) != expected_size', 'False'),
+    ("archive package control binding missing", '("Package", "apparmor-profiles")', '("Package", "bubblewrap")'),
+    ("archive version control binding missing", '("Version", version)', '("Version", "0")'),
+    ("archive architecture control binding missing", '("Architecture", "all")', '("Architecture", "amd64")'),
+    ("canonical package member uniqueness missing", 'aliases != [target]', 'False'),
+    ("canonical package member header uniqueness missing", 'if len(member_lines) != 1:', 'if not member_lines:'),
+    ("regular package member mode verification missing", 'header[0] != b"-rw-r--r--"', 'False'),
+    ("package member ownership verification missing", 'header[1] != b"0/0"', 'False'),
+    ("package member size binding missing", 'len(profile_bytes) != declared_profile_size', 'False'),
+    ("exact package member stream missing", '("--extract", "--to-stdout", "--no-wildcards", target)', '("--extract", "--to-stdout", "--wildcards", target)'),
+    ("archive profile semantics verification missing", '    validate_profile(profile_bytes)\n    return profile_bytes', '    return profile_bytes'),
+    ("staged profile exclusive creation missing", 'os.O_EXCL', '0'),
+    ("atomic staged profile rename missing", 'os.rename(temporary, PROFILE_PATH)', 'shutil.copyfile(temporary, PROFILE_PATH)'),
+    ("staging directory fsync missing", 'os.fsync(stage_descriptor)', 'pass'),
+    ("staging root immutability missing", 'os.chmod(STAGE_ROOT, 0o500)', 'os.chmod(STAGE_ROOT, 0o777)'),
+    ("unexpected staged content rejection missing", 'os.listdir(STAGE_ROOT) != ["bwrap-userns-restrict"]', 'False'),
+    ("staged archive hardlink rejection missing", 'staged_identity[1] == archive_identity[1]', 'False'),
+    ("isolated apt session cleanup missing", 'shutil.rmtree(path)', 'pass'),
+    ("isolated apt session identity receipt missing", 'record_owned_root(SESSION_ROOT)', 'validate_directory(SESSION_ROOT)'),
+    ("profile staging identity receipt missing", 'record_owned_root(STAGE_ROOT)', 'validate_directory(STAGE_ROOT)'),
+    ("acquisition signal cleanup missing", 'signal.SIGHUP, signal.SIGINT, signal.SIGTERM', 'signal.SIGTERM,'),
+    ("fixed acquisition cleanup phase missing", 'phase=package-profile-cleanup', 'phase=unknown-cleanup'),
+    ("acquisition helper main guard missing", 'if __name__ == "__main__":\n    main()', 'if False:\n    main()'),
+]
+for reason, old, new in acquirer_mutations:
+    expect_mutation(
+        node_document,
+        actions_document,
+        reason,
+        lambda node, actions, old=old, new=new: replace_mirrored_embedded(
+            node,
+            actions,
+            "sandbox_acquirer_source",
+            old,
+            new,
+        ),
+    )
+
+expect_mutation(
+    node_document,
+    actions_document,
+    "installed world-writable profile path read",
+    lambda node, actions: replace_mirrored_embedded(
+        node,
+        actions,
+        "sandbox_acquirer_source",
+        "def acquire():",
+        'def acquire():\n    open("/usr/share/apparmor/extra-profiles/bwrap-userns-restrict")',
+    ),
+)
+
+expect_mutation(
+    node_document,
+    actions_document,
+    "verifier source digest binding drifted",
+    lambda node, actions: (
+        replace_source(
+            node,
+            "node",
+            "1b44cb275c09e93c472c178cac0bd2173268d7daee6646c48ca606f2d8a40549",
+            "0" * 64,
+        ),
+        replace_source(
+            actions,
+            "actions",
+            "1b44cb275c09e93c472c178cac0bd2173268d7daee6646c48ca606f2d8a40549",
+            "0" * 64,
+        ),
+    ),
+)
+
 for phase in BOUNDARY_PHASES:
     expect_mutation(
         node_document,
         actions_document,
         f"boundary phase allowlist drifted: {phase}",
-        lambda node, actions, phase=phase: replace_mirrored(
+        lambda node, actions, phase=phase: replace_mirrored_embedded(
             node,
             actions,
+            "sandbox_verifier_source",
             f'"{phase}"',
             f'"mutated-{phase}"',
         ),
@@ -1613,7 +1912,14 @@ for reason, old in (
         node_document,
         actions_document,
         reason,
-        lambda node, actions, old=old: replace_mirrored_nth(node, actions, old, "False", 2),
+        lambda node, actions, old=old: replace_mirrored_embedded_nth(
+            node,
+            actions,
+            "sandbox_verifier_source",
+            old,
+            "False",
+            2,
+        ),
     )
 
 expect_mutation(
@@ -1740,3 +2046,20 @@ def move_hosted_provisioner(_node, actions):
 expect_mutation(actions=actions_document, node=node_document, reason="actions-ci provisioning must precede compatibility contracts", mutate=move_hosted_provisioner)
 
 print("ok - hosted restrictive AppArmor and unprivileged bubblewrap provisioning")
+
+behavior_registration = "platform\tpython3 scripts/ci-gate/compatibility-sandbox-acquirer.test.py\n"
+group_manifest = (ROOT / "scripts/actions-ci-groups.tsv").read_text(encoding="utf-8")
+if group_manifest.count(behavior_registration) != 1:
+    raise AssertionError("acquirer behavior suite registration missing or duplicated")
+print("ok - acquirer behavior suite registered exactly once")
+
+registration_mutant = group_manifest.replace(behavior_registration, "", 1)
+try:
+    if registration_mutant.count(behavior_registration) != 1:
+        raise ContractError("acquirer behavior suite registration missing or duplicated")
+except ContractError as error:
+    if str(error) != "acquirer behavior suite registration missing or duplicated":
+        raise
+    print("ok - removing acquirer behavior suite registration fails exact reason")
+else:
+    raise AssertionError("removing acquirer behavior suite registration passed")

@@ -65,3 +65,34 @@ diagnostic is emitted; trailing records, NUL bytes, status/content mismatches,
 outer failures, and every other value become fixed `unknown`. Concurrent
 same-UID directory, raw-file, receipt-file, symlink, hardlink, and rewrite
 attempts therefore have no artifact to substitute or leak through.
+
+The exact hosted image then exposed a distinct boundary failure: its build
+deliberately makes `/usr/share` recursively world-writable, covering both the
+installed AppArmor profile and the image's default Ubuntu archive key path.
+Eligible hosted execution no longer trusts either pathname or any global apt
+source, list, cache, or configuration. A digest-bound root helper validates the
+package-owned Ubuntu archive key under safe `/etc` ancestry, uses fixed Noble
+archive/security sources with fresh isolated apt state and the verified system
+dpkg status, disables global apt netrc and preference files and isolates their
+parts directories, preserves `_apt` download sandboxing, and rejects unauthenticated,
+weak, downgraded, stale, or TLS-invalid metadata.
+
+The helper binds the exact `apparmor-profiles` version, architecture,
+normalized repository filename, size, and SHA-256 to signed Packages metadata,
+downloads exactly one matching basename into
+an empty isolated cache, verifies its control fields, and streams one canonical
+regular root-owned non-executable profile member. Structurally verified bytes
+are atomically staged under a root-only non-writable `/run` hierarchy; the
+world-writable installed profile is package-database evidence only and is never
+read as trusted content. Archive/member ambiguity, links, unsafe metadata,
+content or receipt drift, unexpected staged entries, and identity changes fail
+closed. The acquisition session is identity-bound and removed on success,
+failure, or handled signal; an uncommitted stage is also removed, and cleanup
+failure emits only the fixed `package-profile-cleanup` phase.
+
+The exact embedded helper now has an import-safe `main()` guard and a registered
+behavioral contract that runs its byte-identical node/actions functions through
+golden and failing OS/subprocess fixtures, including full acquisition
+orchestration, metadata and filename rejection, archive/member validation,
+staging, signals, cleanup, and supervisor output suppression. `SyntaxWarning`
+is fatal for both production source and every coordinated mutation.
