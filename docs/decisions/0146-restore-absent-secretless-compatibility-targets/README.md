@@ -73,6 +73,61 @@ the suites. Self-hosted runners are never installed or mutated by the workflow;
 the runtime boundary continues to reject a missing or unsafe preprovisioned
 binary there.
 
+The first hosted receipt failed with the fixed `bubblewrap-unavailable`
+category. Signed bubblewrap acquisition reached the next boundary, where the
+unprivileged production-shaped probe failed with
+`bubblewrap-namespace-denied`: Ubuntu Noble's AppArmor policy restricts
+unprivileged user namespaces unless the invoking application has an explicit
+profile. The hosted-only acquisition therefore also installs `apparmor` and
+`apparmor-profiles`, with both packages at or above Noble's first SRU that
+contains `bwrap-userns-restrict`,
+`4.0.1really4.0.1-0ubuntu0.24.04.3`.
+
+Bind `/sbin/apparmor_parser` and
+`/usr/share/apparmor/extra-profiles/bwrap-userns-restrict` to those installed
+packages just as bubblewrap is bound to its package. Require every file to be
+regular, root-owned and root-grouped, and not group- or world-writable;
+executables must be executable and the profile must not be. Before loading,
+require the package profile's ABI 4.0, absolute bwrap attachment, transition
+from bwrap to the restricted child profile, recursive child transition,
+audited capability denial, and absence of any unconfined flag.
+Reject either optional local bwrap profile override, including a broken
+symlink, so the parser cannot compose unverified host policy into the signed
+package profile.
+
+The filesystem verifier additionally rejects set-id or file-capability-bearing
+executables. It verifies the lexical usrmerge `/sbin` link, resolved parser and
+profile ancestry, `/etc/apparmor.d[/local]`, and the complete existing ABI and
+tunables include trees as root-owned, root-grouped, and not group- or
+world-writable;
+symlinks and special include entries fail closed. Executables, the profile, and
+include files are read through no-follow descriptors and bound by metadata and
+content to a deterministically ordered receipt. Both the verifier and the
+privileged loader run isolated Python under a fixed empty environment, so
+working-directory modules and ambient credentials cannot influence the check.
+The loader recreates the expected receipt, retains the no-follow parser and
+profile descriptors, and directly executes the verified parser descriptor with
+the verified profile descriptor; it never returns to a pathname-based shell
+load after verification.
+Profile validation is block-structural: the parent transition must occur in the
+bwrap block, the recursive transition and audited capability denial must occur
+in the restricted child, and that exact denial is the only child rule that may
+mention capabilities. This
+closes the reachable non-root background-process race without claiming
+protection from a pre-existing privileged process outside the workflow threat
+boundary.
+
+First attempt the production namespace and capability-drop probe as the
+unprivileged runner under an empty credential environment. Only if it fails,
+load that verified package-owned restrictive profile with the absolute parser
+under credential-scrubbed `sudo`, then require the same unprivileged probe to
+pass. Never disable the AppArmor sysctl, make bubblewrap setuid, invoke
+bubblewrap as root, download a profile, or fall back to weaker isolation. Those
+alternatives either weaken the host policy globally or move PR-influenced path
+and mount processing into a privileged process. The exact hosted actions-ci
+mirror runs this same prerequisite before its compatibility contracts;
+self-hosted execution remains excluded from every install and policy mutation.
+
 When the target began absent, retain its installed directory identity and remove that
 exact directory after success, script failure, `SIGINT`, or `SIGTERM`. Cleanup first
 quarantines the identity under the held package parent and refuses to delete a different

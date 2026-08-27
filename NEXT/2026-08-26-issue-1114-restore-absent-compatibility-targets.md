@@ -23,3 +23,25 @@ without credentials or broad upgrades. Package and executable version floors,
 package ownership, root ownership, mode, and execution are verified before use;
 self-hosted runners are left untouched. The hosted actions-ci contract mirrors
 the production provisioner byte-for-byte and must run it first.
+
+A subsequent hosted receipt reached verified bubblewrap but was denied an
+unprivileged namespace by Ubuntu Noble's AppArmor policy. Eligible hosted
+execution now also acquires signed `apparmor` and `apparmor-profiles`, verifies
+their package floors, the absolute parser and restrictive package-profile
+provenance, root identity and modes, plus capability-stripping profile
+semantics. Local profile overrides are rejected before any policy load. A
+credentialless unprivileged production-shaped probe is preferred; only its
+failure permits that verified profile to load, after which the same
+probe must pass. Sysctl relaxation, setuid, root bubblewrap, downloaded
+profiles, and weaker fallbacks are forbidden; self-hosted runners stay
+untouched.
+
+The isolated, credentialless privileged loader recreates the exact receipt over
+no-follow reads of package binaries, the structurally validated profile,
+root-owned ancestors, and the complete AppArmor ABI and tunables include trees,
+then executes the held parser descriptor against the held profile descriptor.
+Set-id or
+capability-bearing executables, unsafe include entries, local overrides,
+misplaced profile transitions or denial, any other child capability rule,
+working-directory Python import hijacks, and pathname reopenings fail closed
+before the profile can load.

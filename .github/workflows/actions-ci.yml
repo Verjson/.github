@@ -145,7 +145,7 @@ jobs:
             -o APT::Get::AllowUnauthenticated=false \
             -o Acquire::AllowInsecureRepositories=false \
             update >/dev/null 2>&1; then
-            echo "::error::trusted bubblewrap package index acquisition failed"
+            echo "::error::trusted compatibility sandbox package index acquisition failed"
             exit 1
           fi
           if ! /usr/bin/sudo --non-interactive /usr/bin/env -i \
@@ -154,62 +154,403 @@ jobs:
             /usr/bin/apt-get \
             -o APT::Get::AllowUnauthenticated=false \
             -o Acquire::AllowInsecureRepositories=false \
-            install --yes --no-install-recommends bubblewrap >/dev/null 2>&1; then
-            echo "::error::trusted bubblewrap package acquisition failed"
+            install --yes --no-install-recommends \
+            apparmor apparmor-profiles bubblewrap >/dev/null 2>&1; then
+            echo "::error::trusted compatibility sandbox package acquisition failed"
             exit 1
           fi
 
-          if ! package_record="$(/usr/bin/dpkg-query -W -f='${db:Status-Abbrev} ${Version}\n' bubblewrap 2>/dev/null)"; then
-            echo "::error::trusted bubblewrap package verification failed"
-            exit 1
-          fi
-          read -r package_status package_version <<<"$package_record"
-          if [ "$package_status" != "ii" ] \
-            || ! /usr/bin/dpkg --compare-versions "$package_version" ge '0.9.0-1build1'; then
-            echo "::error::trusted bubblewrap package version is below the required floor"
-            exit 1
-          fi
+          verify_package_floor() {
+            local package_name="$1"
+            local package_floor="$2"
+            local package_record package_status package_version
+            if ! package_record="$(/usr/bin/dpkg-query -W -f='${db:Status-Abbrev} ${Version}\n' "$package_name" 2>/dev/null)"; then
+              echo "::error::trusted compatibility sandbox package verification failed"
+              exit 1
+            fi
+            read -r package_status package_version <<<"$package_record"
+            if [ "$package_status" != "ii" ] \
+              || ! /usr/bin/dpkg --compare-versions "$package_version" ge "$package_floor"; then
+              echo "::error::trusted compatibility sandbox package version is below the required floor"
+              exit 1
+            fi
+          }
+          verify_package_floor bubblewrap '0.9.0-1build1'
+          verify_package_floor apparmor '4.0.1really4.0.1-0ubuntu0.24.04.3'
+          verify_package_floor apparmor-profiles '4.0.1really4.0.1-0ubuntu0.24.04.3'
+
           if [ "$(/usr/bin/dpkg-query -S /usr/bin/bwrap 2>/dev/null)" != 'bubblewrap: /usr/bin/bwrap' ]; then
             echo "::error::trusted bubblewrap binary is not owned by the verified package"
             exit 1
           fi
-          /usr/bin/python3 - <<'PY'
+          if [ "$(/usr/bin/dpkg-query -S /sbin/apparmor_parser 2>/dev/null)" != 'apparmor: /sbin/apparmor_parser' ]; then
+            echo "::error::trusted AppArmor parser is not owned by the verified package"
+            exit 1
+          fi
+          profile_path='/usr/share/apparmor/extra-profiles/bwrap-userns-restrict'
+          if [ "$(/usr/bin/dpkg-query -S "$profile_path" 2>/dev/null)" != "apparmor-profiles: $profile_path" ]; then
+            echo "::error::trusted bubblewrap AppArmor profile is not owned by the verified package"
+            exit 1
+          fi
+          sandbox_verifier_source() {
+            /usr/bin/cat <<'PY'
+          import errno
+          import hashlib
           import os
           import re
           import stat
           import subprocess
+          import sys
+          from pathlib import Path
 
-          path = "/usr/bin/bwrap"
-          try:
-              metadata = os.lstat(path)
-          except OSError:
-              raise SystemExit("::error::trusted bubblewrap binary is unavailable")
-          if (
-              not stat.S_ISREG(metadata.st_mode)
-              or metadata.st_uid != 0
-              or metadata.st_gid != 0
-              or metadata.st_mode & 0o022
-              or not metadata.st_mode & 0o111
-          ):
-              raise SystemExit("::error::trusted bubblewrap binary identity or mode is unsafe")
-          try:
-              version = subprocess.run(
-                  [path, "--version"],
-                  check=False,
-                  stdout=subprocess.PIPE,
-                  stderr=subprocess.DEVNULL,
-                  text=True,
-                  timeout=5,
-                  env={"PATH": "/usr/sbin:/usr/bin:/sbin:/bin"},
+          class VerificationError(RuntimeError):
+              pass
+
+
+          def validate_metadata(metadata, *, executable, capability_present=False):
+              if (
+                  not stat.S_ISREG(metadata.st_mode)
+                  or metadata.st_uid != 0
+                  or metadata.st_gid != 0
+                  or metadata.st_mode & 0o022
+                  or metadata.st_mode & (stat.S_ISUID | stat.S_ISGID)
+                  or capability_present
+              ):
+                  raise VerificationError("unsafe regular file metadata")
+              if executable and not metadata.st_mode & 0o111:
+                  raise VerificationError("unsafe executable mode")
+              if not executable and metadata.st_mode & 0o111:
+                  raise VerificationError("unsafe data file mode")
+
+
+          def validate_directory(metadata):
+              if (
+                  not stat.S_ISDIR(metadata.st_mode)
+                  or metadata.st_uid != 0
+                  or metadata.st_gid != 0
+                  or metadata.st_mode & 0o022
+                  or metadata.st_mode & (stat.S_ISUID | stat.S_ISGID)
+              ):
+                  raise VerificationError("unsafe directory metadata")
+
+
+          def has_security_capability(file_descriptor):
+              try:
+                  os.getxattr(file_descriptor, "security.capability")
+              except OSError as error:
+                  absent = {errno.ENODATA}
+                  if hasattr(errno, "ENOATTR"):
+                      absent.add(errno.ENOATTR)
+                  if error.errno in absent:
+                      return False
+                  raise VerificationError("unreadable security capability") from None
+              return True
+
+
+          def fingerprint(metadata):
+              return (
+                  metadata.st_dev,
+                  metadata.st_ino,
+                  metadata.st_mode,
+                  metadata.st_uid,
+                  metadata.st_gid,
+                  metadata.st_size,
+                  metadata.st_mtime_ns,
+                  metadata.st_ctime_ns,
               )
-          except (OSError, subprocess.SubprocessError):
-              raise SystemExit("::error::trusted bubblewrap executable check failed")
-          match = re.fullmatch(r"bubblewrap (\d+)\.(\d+)\.(\d+)\n?", version.stdout)
-          if version.returncode != 0 or match is None:
-              raise SystemExit("::error::trusted bubblewrap executable check failed")
-          if tuple(map(int, match.groups())) < (0, 9, 0):
-              raise SystemExit("::error::trusted bubblewrap binary version is below the required floor")
+
+
+          def open_verified_file(path, *, executable):
+              flags = os.O_RDONLY | os.O_CLOEXEC
+              if hasattr(os, "O_NOFOLLOW"):
+                  flags |= os.O_NOFOLLOW
+              try:
+                  descriptor = os.open(path, flags)
+                  before = os.fstat(descriptor)
+                  validate_metadata(
+                      before,
+                      executable=executable,
+                      capability_present=has_security_capability(descriptor),
+                  )
+                  chunks = []
+                  while True:
+                      chunk = os.read(descriptor, 1024 * 1024)
+                      if not chunk:
+                          break
+                      chunks.append(chunk)
+                  after = os.fstat(descriptor)
+              except (OSError, VerificationError):
+                  if "descriptor" in locals():
+                      os.close(descriptor)
+                  raise VerificationError("unsafe verified file") from None
+              if fingerprint(before) != fingerprint(after):
+                  os.close(descriptor)
+                  raise VerificationError("verified file changed while read")
+              return descriptor, b"".join(chunks), fingerprint(after)
+
+
+          def read_verified_file(path, *, executable):
+              descriptor, content, metadata_fingerprint = open_verified_file(
+                  path,
+                  executable=executable,
+              )
+              os.close(descriptor)
+              return content, metadata_fingerprint
+
+
+          def profile_block(profile_lines, header_pattern):
+              starts = [
+                  index
+                  for index, line in enumerate(profile_lines)
+                  if re.fullmatch(header_pattern, line.strip())
+              ]
+              if len(starts) != 1:
+                  raise VerificationError("profile block missing or repeated")
+              start = starts[0]
+              for end in range(start + 1, len(profile_lines)):
+                  if profile_lines[end].strip() == "}":
+                      return [
+                          rule
+                          for line in profile_lines[start + 1:end]
+                          if (rule := line.split("#", 1)[0].strip())
+                      ]
+              raise VerificationError("profile block unterminated")
+
+
+          def validate_profile_text(profile):
+              lines = profile.splitlines()
+              if "abi <abi/4.0>," not in {line.strip() for line in lines}:
+                  raise VerificationError("AppArmor ABI missing")
+              if re.search(r"flags=\([^)]*\bunconfined\b", profile) is not None:
+                  raise VerificationError("unconfined profile forbidden")
+              parent = profile_block(
+                  lines,
+                  r"profile bwrap /usr/bin/bwrap flags=\([^)]*\) \{",
+              )
+              child = profile_block(
+                  lines,
+                  r"profile unpriv_bwrap flags=\([^)]*\) \{",
+              )
+              if "allow px /** -> bwrap//&unpriv_bwrap," not in parent:
+                  raise VerificationError("parent transition missing")
+              if "allow pix /** -> &unpriv_bwrap," not in child:
+                  raise VerificationError("recursive child transition missing")
+              capability_rules = [
+                  line
+                  for line in child
+                  if re.search(r"(?:^|\s)capability(?:\s|,|$)", line)
+              ]
+              if capability_rules != ["audit deny capability,"]:
+                  raise VerificationError("child capability denial missing")
+
+
+          def checked_directory(path):
+              try:
+                  metadata = os.lstat(path)
+              except OSError:
+                  raise VerificationError("required directory unavailable") from None
+              validate_directory(metadata)
+              return fingerprint(metadata)
+
+
+          def reject_walk_error(_error):
+              raise VerificationError("unsafe tunables traversal")
+
+
+          def verify_system(profile_path, *, bind_parser=False):
+              receipts = []
+              for directory in (
+                  "/",
+                  "/usr",
+                  "/usr/bin",
+                  "/usr/sbin",
+                  "/usr/share",
+                  "/usr/share/apparmor",
+                  "/usr/share/apparmor/extra-profiles",
+                  "/etc",
+                  "/etc/apparmor.d",
+                  "/etc/apparmor.d/local",
+                  "/etc/apparmor.d/abi",
+                  "/etc/apparmor.d/tunables",
+              ):
+                  receipts.append((directory, checked_directory(directory)))
+              try:
+                  sbin_metadata = os.lstat("/sbin")
+                  sbin_target = os.readlink("/sbin")
+              except OSError:
+                  raise VerificationError("unsafe usrmerge parser path") from None
+              if (
+                  not stat.S_ISLNK(sbin_metadata.st_mode)
+                  or sbin_metadata.st_uid != 0
+                  or sbin_metadata.st_gid != 0
+                  or sbin_target not in ("usr/sbin", "/usr/sbin")
+              ):
+                  raise VerificationError("unsafe usrmerge parser path")
+              receipts.append(("/sbin", fingerprint(sbin_metadata), sbin_target))
+
+              for override in (
+                  "/etc/apparmor.d/local/bwrap-userns-restrict",
+                  "/etc/apparmor.d/local/unpriv_bwrap",
+              ):
+                  try:
+                      os.lstat(override)
+                  except FileNotFoundError:
+                      receipts.append((override, "absent"))
+                  except OSError:
+                      raise VerificationError("unsafe local override state") from None
+                  else:
+                      raise VerificationError("local override forbidden")
+
+              for include_root in ("/etc/apparmor.d/abi", "/etc/apparmor.d/tunables"):
+                  for root, directories, files in os.walk(
+                      include_root,
+                      topdown=True,
+                      onerror=reject_walk_error,
+                      followlinks=False,
+                  ):
+                      directories.sort()
+                      files.sort()
+                      root_metadata = os.lstat(root)
+                      validate_directory(root_metadata)
+                      receipts.append((root, fingerprint(root_metadata)))
+                      for name in directories:
+                          path = os.path.join(root, name)
+                          metadata = os.lstat(path)
+                          validate_directory(metadata)
+                          receipts.append((path, fingerprint(metadata)))
+                      for name in files:
+                          path = os.path.join(root, name)
+                          content, metadata_fingerprint = read_verified_file(path, executable=False)
+                          receipts.append((path, metadata_fingerprint, hashlib.sha256(content).hexdigest()))
+
+              bwrap, bwrap_fingerprint = read_verified_file("/usr/bin/bwrap", executable=True)
+              parser_descriptor, parser, parser_fingerprint = open_verified_file(
+                  "/sbin/apparmor_parser",
+                  executable=True,
+              )
+              profile_descriptor, profile_bytes, profile_fingerprint = open_verified_file(
+                  profile_path,
+                  executable=False,
+              )
+              try:
+                  profile = profile_bytes.decode("utf-8")
+              except UnicodeError:
+                  raise VerificationError("profile encoding unsafe") from None
+              validate_profile_text(profile)
+              receipts.extend((
+                  ("/usr/bin/bwrap", bwrap_fingerprint, hashlib.sha256(bwrap).hexdigest()),
+                  ("/sbin/apparmor_parser", parser_fingerprint, hashlib.sha256(parser).hexdigest()),
+                  (profile_path, profile_fingerprint, hashlib.sha256(profile_bytes).hexdigest()),
+              ))
+              receipt = hashlib.sha256(repr(receipts).encode("utf-8")).hexdigest()
+              if bind_parser:
+                  return receipt, parser_descriptor, profile_descriptor
+              os.close(parser_descriptor)
+              os.close(profile_descriptor)
+              return receipt
+
+
+          mode = sys.argv[1] if len(sys.argv) == 3 else ""
+          if mode not in ("verify", "load") \
+                  or sys.argv[2] != "/usr/share/apparmor/extra-profiles/bwrap-userns-restrict":
+              raise SystemExit("::error::trusted compatibility sandbox verifier invocation is unsafe")
+          if mode == "verify":
+              try:
+                  receipt = verify_system(sys.argv[2])
+              except (OSError, VerificationError):
+                  raise SystemExit("::error::trusted compatibility sandbox filesystem boundary is unsafe") from None
+              path = "/usr/bin/bwrap"
+              try:
+                  version = subprocess.run(
+                      [path, "--version"],
+                      check=False,
+                      stdout=subprocess.PIPE,
+                      stderr=subprocess.DEVNULL,
+                      text=True,
+                      timeout=5,
+                      env={"PATH": "/usr/sbin:/usr/bin:/sbin:/bin"},
+                  )
+              except (OSError, subprocess.SubprocessError):
+                  raise SystemExit("::error::trusted bubblewrap executable check failed")
+              match = re.fullmatch(r"bubblewrap (\d+)\.(\d+)\.(\d+)\n?", version.stdout)
+              if version.returncode != 0 or match is None:
+                  raise SystemExit("::error::trusted bubblewrap executable check failed")
+              if tuple(map(int, match.groups())) < (0, 9, 0):
+                  raise SystemExit("::error::trusted bubblewrap binary version is below the required floor")
+              print(receipt)
+          else:
+              expected_receipt = os.environ.get("EXPECTED_SANDBOX_RECEIPT", "")
+              if re.fullmatch(r"[0-9a-f]{64}", expected_receipt) is None:
+                  raise SystemExit("::error::trusted compatibility sandbox receipt is unsafe")
+              try:
+                  receipt, parser_descriptor, profile_descriptor = verify_system(
+                      sys.argv[2],
+                      bind_parser=True,
+                  )
+              except (OSError, VerificationError):
+                  raise SystemExit("::error::trusted compatibility sandbox filesystem boundary is unsafe") from None
+              if receipt != expected_receipt or os.execve not in os.supports_fd:
+                  raise SystemExit("::error::trusted compatibility sandbox receipt changed")
+              os.set_inheritable(parser_descriptor, True)
+              os.set_inheritable(profile_descriptor, True)
+              os.execve(
+                  parser_descriptor,
+                  (
+                      "apparmor_parser",
+                      "--replace",
+                      f"/proc/self/fd/{profile_descriptor}",
+                  ),
+                  {"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "HOME": "/nonexistent"},
+              )
           PY
+          }
+          verify_sandbox_files() {
+            sandbox_verifier_source | /usr/bin/env -i \
+              PATH=/usr/sbin:/usr/bin:/sbin:/bin \
+              HOME=/nonexistent \
+              /usr/bin/python3 -I - verify "$profile_path"
+          }
+          initial_sandbox_receipt="$(verify_sandbox_files)" || exit 1
+
+          probe_bubblewrap() {
+            /usr/bin/env -i \
+              PATH=/usr/sbin:/usr/bin:/sbin:/bin \
+              HOME=/nonexistent \
+              /usr/bin/bwrap \
+              --unshare-user \
+              --unshare-pid \
+              --unshare-ipc \
+              --unshare-uts \
+              --unshare-cgroup-try \
+              --disable-userns \
+              --die-with-parent \
+              --new-session \
+              --cap-drop ALL \
+              --ro-bind / / \
+              --dev /dev \
+              --proc /proc \
+              --tmpfs /dev/shm \
+              -- /usr/bin/true >/dev/null 2>&1
+          }
+          if ! probe_bubblewrap; then
+            current_sandbox_receipt="$(verify_sandbox_files)" || exit 1
+            if [ "$current_sandbox_receipt" != "$initial_sandbox_receipt" ]; then
+              echo "::error::trusted compatibility sandbox filesystem boundary changed"
+              exit 1
+            fi
+            if ! sandbox_verifier_source | /usr/bin/sudo --non-interactive /usr/bin/env -i \
+              PATH=/usr/sbin:/usr/bin:/sbin:/bin \
+              HOME=/nonexistent \
+              EXPECTED_SANDBOX_RECEIPT="$initial_sandbox_receipt" \
+              /usr/bin/python3 -I - load "$profile_path" >/dev/null 2>&1; then
+              echo "::error::trusted restrictive bubblewrap AppArmor profile load failed"
+              exit 1
+            fi
+          fi
+          if ! probe_bubblewrap; then
+            echo "::error::trusted unprivileged bubblewrap namespace probe failed"
+            exit 1
+          fi
 
       - name: Run namespace-bound compatibility contracts
         env:
