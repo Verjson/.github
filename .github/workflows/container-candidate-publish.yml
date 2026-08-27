@@ -433,6 +433,26 @@ jobs:
           provenance: mode=max
           sbom: true
           build-contexts: verjson_node_modules=${{ runner.temp }}/container-node-modules-context
+      - name: Wait for pushed manifest registry visibility
+        if: matrix.baseVariant == '' && steps.retry.outputs.reused != 'true'
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+          REPOSITORY: ${{ matrix.repository }}
+        run: |
+          set -euo pipefail
+          [[ "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::error::build returned an invalid image digest"; exit 1; }
+          reference="$REPOSITORY@$DIGEST"
+          for attempt in 1 2 3 4 5 6; do
+            if observed="$(timeout --kill-after=2s 5s docker buildx imagetools inspect "$reference" --format '{{json .Manifest.Digest}}' 2>/dev/null | tr -d '"')" \
+              && [ "$observed" = "$DIGEST" ]; then
+              exit 0
+            fi
+            if [ "$attempt" -eq 6 ]; then
+              echo "::error::pushed image digest did not become registry-visible before provenance attestation"
+              exit 1
+            fi
+            sleep "$((attempt * 2))"
+          done
       - id: provenance
         if: matrix.baseVariant == '' && steps.retry.outputs.reused != 'true'
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
@@ -659,6 +679,26 @@ jobs:
           provenance: mode=max
           sbom: true
           build-contexts: verjson_node_modules=${{ runner.temp }}/container-node-modules-context
+      - name: Wait for pushed manifest registry visibility
+        if: matrix.baseVariant != '' && steps.retry.outputs.reused != 'true'
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+          REPOSITORY: ${{ matrix.repository }}
+        run: |
+          set -euo pipefail
+          [[ "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::error::build returned an invalid image digest"; exit 1; }
+          reference="$REPOSITORY@$DIGEST"
+          for attempt in 1 2 3 4 5 6; do
+            if observed="$(timeout --kill-after=2s 5s docker buildx imagetools inspect "$reference" --format '{{json .Manifest.Digest}}' 2>/dev/null | tr -d '"')" \
+              && [ "$observed" = "$DIGEST" ]; then
+              exit 0
+            fi
+            if [ "$attempt" -eq 6 ]; then
+              echo "::error::pushed image digest did not become registry-visible before provenance attestation"
+              exit 1
+            fi
+            sleep "$((attempt * 2))"
+          done
       - id: provenance
         if: matrix.baseVariant != '' && steps.retry.outputs.reused != 'true'
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
