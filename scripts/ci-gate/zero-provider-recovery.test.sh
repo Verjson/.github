@@ -107,7 +107,7 @@ cat >"$tmp/bin/gh" <<'SH'
 case "$*" in
   "api repos/$TARGET_REPO/actions/runs/$REVIEW_RUN_ID")
     jq -nc --argjson id "$REVIEW_RUN_ID" --argjson attempt "$REVIEW_RUN_ATTEMPT" \
-      --arg title "AI review authorization $AUTHORIZATION_CHECK_ID from arm $ARM_RUN_ID.$ARM_RUN_ATTEMPT" \
+      --arg title "${RUN_TITLE:-AI review authorization $AUTHORIZATION_CHECK_ID from arm $ARM_RUN_ID.$ARM_RUN_ATTEMPT}" \
       --arg repo "$TARGET_REPO" --arg branch "$DEFAULT_BRANCH" \
       --arg actor "${RUN_ACTOR:-github-actions[bot]}" \
       '{id:$id,run_attempt:$attempt,event:"workflow_dispatch",path:".github/workflows/ai-review-merge.yml",
@@ -115,7 +115,7 @@ case "$*" in
         actor:{login:$actor},triggering_actor:{login:$actor},status:"in_progress"}' ;;
   "api --paginate --slurp repos/$TARGET_REPO/actions/workflows/ai-review-merge.yml/runs?event=workflow_dispatch&per_page=100")
     jq -nc --argjson id "$REVIEW_RUN_ID" \
-      --arg title "AI review authorization $AUTHORIZATION_CHECK_ID from arm $ARM_RUN_ID.$ARM_RUN_ATTEMPT" \
+      --arg title "${RUN_TITLE:-AI review authorization $AUTHORIZATION_CHECK_ID from arm $ARM_RUN_ID.$ARM_RUN_ATTEMPT}" \
       --arg repo "$TARGET_REPO" --arg branch "$DEFAULT_BRANCH" \
       --argjson duplicate "${DUPLICATE_CORRELATED_RUN:-false}" '
       [{workflow_runs: ([{
@@ -173,6 +173,15 @@ expect_pass "failed preflight with skipped gate is eligible for same-receipt rec
 PREFLIGHT_CONCLUSION=success expect_pass "held preflight with skipped gate is eligible for same-receipt recovery" verify
 PREFLIGHT_CONCLUSION=skipped expect_pass "skipped preflight is eligible for same-receipt recovery" verify
 REVIEW_RUN_ATTEMPT=10 expect_pass "later same-run retry remains eligible with complete prior evidence" verify
+RUN_TITLE='AI review' \
+  expect_fail "generic run name cannot correlate recovery" "run identity mismatch" verify
+RUN_TITLE="AI review authorization 9002 from arm $ARM_RUN_ID.$ARM_RUN_ATTEMPT" \
+  expect_fail "substituted authorization check id cannot correlate recovery" "run identity mismatch" verify
+RUN_TITLE="AI review authorization $AUTHORIZATION_CHECK_ID from arm 7002.$ARM_RUN_ATTEMPT" \
+  expect_fail "substituted arm run id cannot correlate recovery" "run identity mismatch" verify
+RUN_TITLE="AI review authorization $AUTHORIZATION_CHECK_ID from arm $ARM_RUN_ID.2" \
+  expect_fail "substituted arm attempt cannot correlate recovery" "run identity mismatch" verify
+unset RUN_TITLE
 JOB_NAME_PREFIX='review / ' \
   expect_fail "synthetic reusable-job names cannot stand in for real direct-run history" "approached the provider boundary" verify
 CURRENT_HEAD=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \

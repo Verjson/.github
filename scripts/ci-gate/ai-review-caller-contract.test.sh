@@ -13,6 +13,30 @@ import sys, yaml
 with open(sys.argv[1], encoding="utf-8") as stream:
     workflow = yaml.load(stream, Loader=yaml.BaseLoader)
 sha = sys.argv[2]
+expected_run_name = "AI review authorization ${{ inputs.authorization_check_id }} from arm ${{ inputs.arm_run_id }}.${{ inputs.arm_run_attempt }}"
+def validate_run_name(candidate):
+    assert candidate.get("run-name") == expected_run_name
+
+validate_run_name(workflow)
+for invalid in (
+    None,
+    "AI review",
+    "AI review authorization ${{ inputs.pr_number }} from arm ${{ inputs.arm_run_id }}.${{ inputs.arm_run_attempt }}",
+    "AI review authorization ${{ inputs.authorization_check_id }} from arm ${{ inputs.pr_number }}.${{ inputs.arm_run_attempt }}",
+    "AI review authorization ${{ inputs.authorization_check_id }} from arm ${{ inputs.arm_run_id }}.${{ inputs.authorization_check_id }}",
+    expected_run_name + " " + expected_run_name,
+):
+    mutation = dict(workflow)
+    if invalid is None:
+        mutation.pop("run-name")
+    else:
+        mutation["run-name"] = invalid
+    try:
+        validate_run_name(mutation)
+    except AssertionError:
+        pass
+    else:
+        raise AssertionError(f"invalid run-name mutation was accepted: {invalid!r}")
 assert workflow["on"] == {"workflow_dispatch": {"inputs": {
     "pr_number": {"required": "true", "type": "string"},
     "expected_head_sha": {"required": "true", "type": "string"},
