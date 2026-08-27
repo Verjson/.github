@@ -45,3 +45,11 @@ capability-bearing executables, unsafe include entries, local overrides,
 misplaced profile transitions or denial, any other child capability rule,
 working-directory Python import hijacks, and pathname reopenings fail closed
 before the profile can load.
+
+Filesystem failures now identify only a closed fixed phase:
+`ancestor-directories`, `usrmerge-parser-link`, `local-overrides`, `abi-tree`,
+`tunables-tree`, `bwrap-binary`, `parser-binary`, `package-profile`,
+`profile-semantics`, `receipt-recomputation`, `profile-load`, or `unknown`.
+The privileged loader maps fixed exit codes to those phases with all raw output
+suppressed; exception text, dynamic paths, environment values, secrets, and
+non-allowlisted sentinels cannot enter the diagnostic.

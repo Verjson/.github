@@ -203,8 +203,45 @@ jobs:
           import sys
           from pathlib import Path
 
+          BOUNDARY_PHASES = (
+              "ancestor-directories",
+              "usrmerge-parser-link",
+              "local-overrides",
+              "abi-tree",
+              "tunables-tree",
+              "bwrap-binary",
+              "parser-binary",
+              "package-profile",
+              "profile-semantics",
+              "receipt-recomputation",
+              "profile-load",
+              "unknown",
+          )
+          BOUNDARY_STATUS = {
+              phase: 70 + index for index, phase in enumerate(BOUNDARY_PHASES)
+          }
+
+
           class VerificationError(RuntimeError):
-              pass
+              def __init__(self, phase):
+                  self.phase = phase
+
+
+          def boundary_phase(error):
+              if isinstance(error, VerificationError) and error.phase in BOUNDARY_PHASES:
+                  return error.phase
+              return "unknown"
+
+
+          def boundary_diagnostic(error):
+              return (
+                  "::error::trusted compatibility sandbox filesystem boundary unsafe "
+                  f"phase={boundary_phase(error)}"
+              )
+
+
+          def boundary_status(error):
+              return BOUNDARY_STATUS[boundary_phase(error)]
 
 
           def validate_metadata(metadata, *, executable, capability_present=False):
@@ -357,51 +394,9 @@ jobs:
               raise VerificationError("unsafe tunables traversal")
 
 
-          def verify_system(profile_path, *, bind_parser=False):
+          def verify_include_tree(include_root, phase):
               receipts = []
-              for directory in (
-                  "/",
-                  "/usr",
-                  "/usr/bin",
-                  "/usr/sbin",
-                  "/usr/share",
-                  "/usr/share/apparmor",
-                  "/usr/share/apparmor/extra-profiles",
-                  "/etc",
-                  "/etc/apparmor.d",
-                  "/etc/apparmor.d/local",
-                  "/etc/apparmor.d/abi",
-                  "/etc/apparmor.d/tunables",
-              ):
-                  receipts.append((directory, checked_directory(directory)))
               try:
-                  sbin_metadata = os.lstat("/sbin")
-                  sbin_target = os.readlink("/sbin")
-              except OSError:
-                  raise VerificationError("unsafe usrmerge parser path") from None
-              if (
-                  not stat.S_ISLNK(sbin_metadata.st_mode)
-                  or sbin_metadata.st_uid != 0
-                  or sbin_metadata.st_gid != 0
-                  or sbin_target not in ("usr/sbin", "/usr/sbin")
-              ):
-                  raise VerificationError("unsafe usrmerge parser path")
-              receipts.append(("/sbin", fingerprint(sbin_metadata), sbin_target))
-
-              for override in (
-                  "/etc/apparmor.d/local/bwrap-userns-restrict",
-                  "/etc/apparmor.d/local/unpriv_bwrap",
-              ):
-                  try:
-                      os.lstat(override)
-                  except FileNotFoundError:
-                      receipts.append((override, "absent"))
-                  except OSError:
-                      raise VerificationError("unsafe local override state") from None
-                  else:
-                      raise VerificationError("local override forbidden")
-
-              for include_root in ("/etc/apparmor.d/abi", "/etc/apparmor.d/tunables"):
                   for root, directories, files in os.walk(
                       include_root,
                       topdown=True,
@@ -420,29 +415,109 @@ jobs:
                           receipts.append((path, fingerprint(metadata)))
                       for name in files:
                           path = os.path.join(root, name)
-                          content, metadata_fingerprint = read_verified_file(path, executable=False)
-                          receipts.append((path, metadata_fingerprint, hashlib.sha256(content).hexdigest()))
+                          content, metadata_fingerprint = read_verified_file(
+                              path,
+                              executable=False,
+                          )
+                          receipts.append((
+                              path,
+                              metadata_fingerprint,
+                              hashlib.sha256(content).hexdigest(),
+                          ))
+              except (OSError, VerificationError):
+                  raise VerificationError(phase) from None
+              return receipts
 
-              bwrap, bwrap_fingerprint = read_verified_file("/usr/bin/bwrap", executable=True)
-              parser_descriptor, parser, parser_fingerprint = open_verified_file(
-                  "/sbin/apparmor_parser",
-                  executable=True,
-              )
-              profile_descriptor, profile_bytes, profile_fingerprint = open_verified_file(
-                  profile_path,
-                  executable=False,
-              )
+
+          def verify_system(profile_path, *, bind_parser=False):
+              receipts = []
+              try:
+                  for directory in (
+                      "/",
+                      "/usr",
+                      "/usr/bin",
+                      "/usr/sbin",
+                      "/usr/share",
+                      "/usr/share/apparmor",
+                      "/usr/share/apparmor/extra-profiles",
+                      "/etc",
+                      "/etc/apparmor.d",
+                      "/etc/apparmor.d/local",
+                      "/etc/apparmor.d/abi",
+                      "/etc/apparmor.d/tunables",
+                  ):
+                      receipts.append((directory, checked_directory(directory)))
+              except (OSError, VerificationError):
+                  raise VerificationError("ancestor-directories") from None
+
+              try:
+                  sbin_metadata = os.lstat("/sbin")
+                  sbin_target = os.readlink("/sbin")
+                  if (
+                      not stat.S_ISLNK(sbin_metadata.st_mode)
+                      or sbin_metadata.st_uid != 0
+                      or sbin_metadata.st_gid != 0
+                      or sbin_target not in ("usr/sbin", "/usr/sbin")
+                  ):
+                      raise VerificationError("unsafe usrmerge parser path")
+                  receipts.append(("/sbin", fingerprint(sbin_metadata), sbin_target))
+              except (OSError, VerificationError):
+                  raise VerificationError("usrmerge-parser-link") from None
+
+              try:
+                  for override in (
+                      "/etc/apparmor.d/local/bwrap-userns-restrict",
+                      "/etc/apparmor.d/local/unpriv_bwrap",
+                  ):
+                      try:
+                          os.lstat(override)
+                      except FileNotFoundError:
+                          receipts.append((override, "absent"))
+                      except OSError:
+                          raise VerificationError("unsafe local override state") from None
+                      else:
+                          raise VerificationError("local override forbidden")
+              except (OSError, VerificationError):
+                  raise VerificationError("local-overrides") from None
+
+              receipts.extend(verify_include_tree("/etc/apparmor.d/abi", "abi-tree"))
+              receipts.extend(verify_include_tree("/etc/apparmor.d/tunables", "tunables-tree"))
+
+              try:
+                  bwrap, bwrap_fingerprint = read_verified_file(
+                      "/usr/bin/bwrap",
+                      executable=True,
+                  )
+              except (OSError, VerificationError):
+                  raise VerificationError("bwrap-binary") from None
+              try:
+                  parser_descriptor, parser, parser_fingerprint = open_verified_file(
+                      "/sbin/apparmor_parser",
+                      executable=True,
+                  )
+              except (OSError, VerificationError):
+                  raise VerificationError("parser-binary") from None
+              try:
+                  profile_descriptor, profile_bytes, profile_fingerprint = open_verified_file(
+                      profile_path,
+                      executable=False,
+                  )
+              except (OSError, VerificationError):
+                  raise VerificationError("package-profile") from None
               try:
                   profile = profile_bytes.decode("utf-8")
-              except UnicodeError:
-                  raise VerificationError("profile encoding unsafe") from None
-              validate_profile_text(profile)
-              receipts.extend((
-                  ("/usr/bin/bwrap", bwrap_fingerprint, hashlib.sha256(bwrap).hexdigest()),
-                  ("/sbin/apparmor_parser", parser_fingerprint, hashlib.sha256(parser).hexdigest()),
-                  (profile_path, profile_fingerprint, hashlib.sha256(profile_bytes).hexdigest()),
-              ))
-              receipt = hashlib.sha256(repr(receipts).encode("utf-8")).hexdigest()
+                  validate_profile_text(profile)
+              except (UnicodeError, VerificationError):
+                  raise VerificationError("profile-semantics") from None
+              try:
+                  receipts.extend((
+                      ("/usr/bin/bwrap", bwrap_fingerprint, hashlib.sha256(bwrap).hexdigest()),
+                      ("/sbin/apparmor_parser", parser_fingerprint, hashlib.sha256(parser).hexdigest()),
+                      (profile_path, profile_fingerprint, hashlib.sha256(profile_bytes).hexdigest()),
+                  ))
+                  receipt = hashlib.sha256(repr(receipts).encode("utf-8")).hexdigest()
+              except (OSError, VerificationError):
+                  raise VerificationError("receipt-recomputation") from None
               if bind_parser:
                   return receipt, parser_descriptor, profile_descriptor
               os.close(parser_descriptor)
@@ -454,54 +529,63 @@ jobs:
           if mode not in ("verify", "load") \
                   or sys.argv[2] != "/usr/share/apparmor/extra-profiles/bwrap-userns-restrict":
               raise SystemExit("::error::trusted compatibility sandbox verifier invocation is unsafe")
-          if mode == "verify":
-              try:
+
+
+          def run_verifier():
+              if mode == "verify":
                   receipt = verify_system(sys.argv[2])
-              except (OSError, VerificationError):
-                  raise SystemExit("::error::trusted compatibility sandbox filesystem boundary is unsafe") from None
-              path = "/usr/bin/bwrap"
-              try:
-                  version = subprocess.run(
-                      [path, "--version"],
-                      check=False,
-                      stdout=subprocess.PIPE,
-                      stderr=subprocess.DEVNULL,
-                      text=True,
-                      timeout=5,
-                      env={"PATH": "/usr/sbin:/usr/bin:/sbin:/bin"},
-                  )
-              except (OSError, subprocess.SubprocessError):
-                  raise SystemExit("::error::trusted bubblewrap executable check failed")
-              match = re.fullmatch(r"bubblewrap (\d+)\.(\d+)\.(\d+)\n?", version.stdout)
-              if version.returncode != 0 or match is None:
-                  raise SystemExit("::error::trusted bubblewrap executable check failed")
-              if tuple(map(int, match.groups())) < (0, 9, 0):
-                  raise SystemExit("::error::trusted bubblewrap binary version is below the required floor")
-              print(receipt)
-          else:
+                  path = "/usr/bin/bwrap"
+                  try:
+                      version = subprocess.run(
+                          [path, "--version"],
+                          check=False,
+                          stdout=subprocess.PIPE,
+                          stderr=subprocess.DEVNULL,
+                          text=True,
+                          timeout=5,
+                          env={"PATH": "/usr/sbin:/usr/bin:/sbin:/bin"},
+                      )
+                  except (OSError, subprocess.SubprocessError):
+                      raise VerificationError("bwrap-binary") from None
+                  match = re.fullmatch(r"bubblewrap (\d+)\.(\d+)\.(\d+)\n?", version.stdout)
+                  if version.returncode != 0 or match is None:
+                      raise VerificationError("bwrap-binary")
+                  if tuple(map(int, match.groups())) < (0, 9, 0):
+                      raise VerificationError("bwrap-binary")
+                  print(receipt)
+                  return
+
               expected_receipt = os.environ.get("EXPECTED_SANDBOX_RECEIPT", "")
               if re.fullmatch(r"[0-9a-f]{64}", expected_receipt) is None:
-                  raise SystemExit("::error::trusted compatibility sandbox receipt is unsafe")
-              try:
-                  receipt, parser_descriptor, profile_descriptor = verify_system(
-                      sys.argv[2],
-                      bind_parser=True,
-                  )
-              except (OSError, VerificationError):
-                  raise SystemExit("::error::trusted compatibility sandbox filesystem boundary is unsafe") from None
-              if receipt != expected_receipt or os.execve not in os.supports_fd:
-                  raise SystemExit("::error::trusted compatibility sandbox receipt changed")
-              os.set_inheritable(parser_descriptor, True)
-              os.set_inheritable(profile_descriptor, True)
-              os.execve(
-                  parser_descriptor,
-                  (
-                      "apparmor_parser",
-                      "--replace",
-                      f"/proc/self/fd/{profile_descriptor}",
-                  ),
-                  {"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "HOME": "/nonexistent"},
+                  raise VerificationError("receipt-recomputation")
+              receipt, parser_descriptor, profile_descriptor = verify_system(
+                  sys.argv[2],
+                  bind_parser=True,
               )
+              if receipt != expected_receipt or os.execve not in os.supports_fd:
+                  raise VerificationError("receipt-recomputation")
+              try:
+                  os.set_inheritable(parser_descriptor, True)
+                  os.set_inheritable(profile_descriptor, True)
+                  os.execve(
+                      parser_descriptor,
+                      (
+                          "apparmor_parser",
+                          "--replace",
+                          f"/proc/self/fd/{profile_descriptor}",
+                      ),
+                      {"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "HOME": "/nonexistent"},
+                  )
+              except OSError:
+                  raise VerificationError("profile-load") from None
+
+
+          try:
+              run_verifier()
+          except BaseException as error:
+              if mode == "load":
+                  raise SystemExit(boundary_status(error)) from None
+              raise SystemExit(boundary_diagnostic(error)) from None
           PY
           }
           verify_sandbox_files() {
@@ -538,12 +622,29 @@ jobs:
               echo "::error::trusted compatibility sandbox filesystem boundary changed"
               exit 1
             fi
-            if ! sandbox_verifier_source | /usr/bin/sudo --non-interactive /usr/bin/env -i \
+            loader_status=0
+            sandbox_verifier_source | /usr/bin/sudo --non-interactive /usr/bin/env -i \
               PATH=/usr/sbin:/usr/bin:/sbin:/bin \
               HOME=/nonexistent \
               EXPECTED_SANDBOX_RECEIPT="$initial_sandbox_receipt" \
-              /usr/bin/python3 -I - load "$profile_path" >/dev/null 2>&1; then
-              echo "::error::trusted restrictive bubblewrap AppArmor profile load failed"
+              /usr/bin/python3 -I - load "$profile_path" >/dev/null 2>&1 || loader_status=$?
+            if [ "$loader_status" -ne 0 ]; then
+              case "$loader_status" in
+                70) loader_phase='ancestor-directories' ;;
+                71) loader_phase='usrmerge-parser-link' ;;
+                72) loader_phase='local-overrides' ;;
+                73) loader_phase='abi-tree' ;;
+                74) loader_phase='tunables-tree' ;;
+                75) loader_phase='bwrap-binary' ;;
+                76) loader_phase='parser-binary' ;;
+                77) loader_phase='package-profile' ;;
+                78) loader_phase='profile-semantics' ;;
+                79) loader_phase='receipt-recomputation' ;;
+                1|80) loader_phase='profile-load' ;;
+                81) loader_phase='unknown' ;;
+                *) loader_phase='unknown' ;;
+              esac
+              echo "::error::trusted compatibility sandbox filesystem boundary unsafe phase=$loader_phase"
               exit 1
             fi
           fi

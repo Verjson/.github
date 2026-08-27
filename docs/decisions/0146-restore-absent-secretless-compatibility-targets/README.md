@@ -117,6 +117,15 @@ closes the reachable non-root background-process race without claiming
 protection from a pre-existing privileged process outside the workflow threat
 boundary.
 
+When this filesystem boundary fails, report only a fixed phase from a closed
+allowlist: ancestor directories, the usrmerge parser link, local overrides,
+the ABI or tunables tree, the bwrap or parser binary, the package profile,
+profile semantics, receipt recomputation, profile load, or unknown. The
+privileged loader communicates the same phases through fixed exit codes while
+its stdout and stderr remain suppressed. Exception text, paths, environment
+values, parser output, and any non-allowlisted value never cross the diagnostic
+boundary; an unexpected failure becomes the fixed `unknown` phase.
+
 First attempt the production namespace and capability-drop probe as the
 unprivileged runner under an empty credential environment. Only if it fails,
 load that verified package-owned restrictive profile with the absolute parser

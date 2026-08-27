@@ -38,6 +38,21 @@ SECRETLESS_ENV = {
 }
 PROFILE_PATH = "/usr/share/apparmor/extra-profiles/bwrap-userns-restrict"
 APPARMOR_FLOOR = "4.0.1really4.0.1-0ubuntu0.24.04.3"
+BOUNDARY_PHASES = (
+    "ancestor-directories",
+    "usrmerge-parser-link",
+    "local-overrides",
+    "abi-tree",
+    "tunables-tree",
+    "bwrap-binary",
+    "parser-binary",
+    "package-profile",
+    "profile-semantics",
+    "receipt-recomputation",
+    "profile-load",
+    "unknown",
+)
+BOUNDARY_STATUS = {phase: 70 + index for index, phase in enumerate(BOUNDARY_PHASES)}
 ISOLATION_REFERENCE = None
 
 
@@ -82,20 +97,44 @@ def embedded_verifier(source):
         tree = ast.parse(verifier)
     except SyntaxError as error:
         raise ContractError("embedded filesystem verifier is invalid") from error
-    names = {
+    definition_names = {
         "VerificationError",
+        "boundary_phase",
+        "boundary_diagnostic",
+        "boundary_status",
         "validate_metadata",
         "validate_directory",
         "has_security_capability",
         "profile_block",
         "validate_profile_text",
     }
+    assignment_names = {"BOUNDARY_PHASES", "BOUNDARY_STATUS"}
     definitions = [
         node
         for node in tree.body
-        if isinstance(node, (ast.ClassDef, ast.FunctionDef)) and node.name in names
+        if (
+            isinstance(node, (ast.ClassDef, ast.FunctionDef))
+            and node.name in definition_names
+        )
+        or (
+            isinstance(node, ast.Assign)
+            and any(
+                isinstance(target, ast.Name) and target.id in assignment_names
+                for target in node.targets
+            )
+        )
     ]
-    if {node.name for node in definitions} != names:
+    found_definitions = {
+        node.name for node in definitions if isinstance(node, (ast.ClassDef, ast.FunctionDef))
+    }
+    found_assignments = {
+        target.id
+        for node in definitions
+        if isinstance(node, ast.Assign)
+        for target in node.targets
+        if isinstance(target, ast.Name)
+    }
+    if found_definitions != definition_names or found_assignments != assignment_names:
         raise ContractError("embedded filesystem verifier behavior missing")
     namespace = {"errno": errno, "re": re, "stat": stat}
     exec(compile(ast.Module(definitions, type_ignores=[]), "<verifier>", "exec"), namespace)
@@ -116,6 +155,47 @@ def validate_embedded_behavior(source):
     validate_directory = verifier["validate_directory"]
     has_security_capability = verifier["has_security_capability"]
     validate_profile = verifier["validate_profile_text"]
+    verification_error = verifier["VerificationError"]
+    boundary_phase = verifier["boundary_phase"]
+    boundary_diagnostic = verifier["boundary_diagnostic"]
+    boundary_status = verifier["boundary_status"]
+
+    if tuple(verifier["BOUNDARY_PHASES"]) != BOUNDARY_PHASES:
+        missing = next(
+            phase for phase in BOUNDARY_PHASES if phase not in verifier["BOUNDARY_PHASES"]
+        )
+        raise ContractError(f"boundary phase allowlist drifted: {missing}")
+    if verifier["BOUNDARY_STATUS"] != BOUNDARY_STATUS:
+        raise ContractError("boundary phase status mapping drifted")
+    for phase in BOUNDARY_PHASES:
+        error = verification_error(phase)
+        if boundary_phase(error) != phase:
+            raise ContractError(f"boundary phase classifier rejected {phase}")
+        expected = (
+            "::error::trusted compatibility sandbox filesystem boundary unsafe "
+            f"phase={phase}"
+        )
+        if boundary_diagnostic(error) != expected:
+            raise ContractError(f"boundary diagnostic drifted for {phase}")
+        if boundary_status(error) != BOUNDARY_STATUS[phase]:
+            raise ContractError(f"boundary status drifted for {phase}")
+
+    raw_values = (
+        "DEPLOY_KEY=bare-deploy-secret",
+        "OPENAI_API_KEY=bare-openai-secret",
+        '{"token":"json-secret"}',
+        "non-allowlisted-exception-sentinel",
+    )
+    for raw_value in raw_values:
+        for error in (RuntimeError(raw_value), verification_error(raw_value)):
+            diagnostic = boundary_diagnostic(error)
+            if diagnostic != (
+                "::error::trusted compatibility sandbox filesystem boundary unsafe "
+                "phase=unknown"
+            ):
+                raise ContractError("unknown boundary fallback drifted")
+            if raw_value in diagnostic or boundary_phase(error) != "unknown":
+                raise ContractError("boundary diagnostic leaked non-allowlisted exception")
 
     regular = stat.S_IFREG | 0o755
     metadata = lambda mode, uid=0, gid=0: types.SimpleNamespace(
@@ -330,8 +410,41 @@ def validate_isolated_python(source):
         ):
             raise ContractError("embedded verifier import hijack crossed isolated boundary")
 
+        loader_result = subprocess.run(
+            (
+                "/usr/bin/env",
+                "-i",
+                "PATH=/usr/sbin:/usr/bin:/sbin:/bin",
+                "HOME=/nonexistent",
+                f"EXPECTED_SANDBOX_RECEIPT={raw_secret}",
+                "/usr/bin/python3",
+                "-I",
+                "-",
+                "load",
+                PROFILE_PATH,
+            ),
+            input=source.split("/usr/bin/cat <<'PY'\n", 1)[1].split("\nPY\n", 1)[0],
+            cwd=fixture,
+            env={
+                **os.environ,
+                "DEPLOY_KEY": raw_secret,
+                "OPENAI_API_KEY": raw_secret,
+                "PYTHONPATH": fixture,
+            },
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        if loader_result.returncode != BOUNDARY_STATUS["receipt-recomputation"]:
+            raise ContractError("embedded loader fixed status control failed")
+        if loader_result.stdout or loader_result.stderr or sentinel.exists():
+            raise ContractError("embedded loader emitted raw output")
+        if raw_secret in loader_result.stdout or raw_secret in loader_result.stderr:
+            raise ContractError("embedded loader leaked raw secret")
+
 
 def validate_source(source):
+    normalized_source = "\n".join(line.strip() for line in source.splitlines())
     forbidden = {
         "apparmor_restrict_unprivileged_userns": "system-wide userns override forbidden",
         "unprivileged_userns_clone": "system-wide userns override forbidden",
@@ -370,6 +483,11 @@ def validate_source(source):
     )
     require(source, "/usr/bin/python3 -I - load \"$profile_path\"", "absolute Python loader path drifted")
     validate_isolated_python(source)
+    require(
+        source,
+        "/usr/bin/python3 -I - load \"$profile_path\" >/dev/null 2>&1 || loader_status=$?",
+        "loader raw stderr suppression missing",
+    )
     require_count(
         source,
         "APT::Get::AllowUnauthenticated=false",
@@ -456,13 +574,13 @@ def validate_source(source):
     require(source, "verify_system(sys.argv[2])", "profile verifier is not bound to package-owned path")
 
     require(
-        source,
-        'open_verified_file(\n        "/sbin/apparmor_parser",',
+        normalized_source,
+        'open_verified_file(\n"/sbin/apparmor_parser",\nexecutable=True,',
         "absolute AppArmor parser verifier drifted",
     )
     require(
-        source,
-        'read_verified_file("/usr/bin/bwrap", executable=True)',
+        normalized_source,
+        'read_verified_file(\n"/usr/bin/bwrap",\nexecutable=True,',
         "absolute bubblewrap verifier drifted",
     )
     require(source, "flags |= os.O_NOFOLLOW", "symlink rejection missing")
@@ -490,7 +608,7 @@ def validate_source(source):
     )
     require(
         source,
-        'for include_root in ("/etc/apparmor.d/abi", "/etc/apparmor.d/tunables")',
+        'verify_include_tree("/etc/apparmor.d/tunables", "tunables-tree")',
         "AppArmor tunables tree verification missing",
     )
     require_count(source, '"/etc/apparmor.d/abi"', 2, "AppArmor ABI include tree verification missing")
@@ -510,7 +628,7 @@ def validate_source(source):
     require(source, 'sys.argv[2] != "/usr/share/apparmor/extra-profiles/bwrap-userns-restrict"', "loader static profile path binding missing")
     require(source, "os.set_inheritable(profile_descriptor, True)", "profile descriptor inheritance missing")
     require(source, "os.set_inheritable(parser_descriptor, True)", "parser descriptor inheritance missing")
-    require(source, "os.execve(\n        parser_descriptor,", "parser descriptor execution missing")
+    require(normalized_source, "os.execve(\nparser_descriptor,", "parser descriptor execution missing")
     require(source, 'f"/proc/self/fd/{profile_descriptor}"', "profile descriptor execution path missing")
     if '/sbin/apparmor_parser --replace "$profile_path"' in source:
         raise ContractError("parser pathname reopen forbidden")
@@ -521,6 +639,51 @@ def validate_source(source):
         "bubblewrap verifier stderr suppression missing",
     )
     require(source, "< (0, 9, 0)", "bubblewrap executable version floor drifted")
+    phase_wiring = {
+        "ancestor-directories": 'raise VerificationError("ancestor-directories") from None',
+        "usrmerge-parser-link": 'raise VerificationError("usrmerge-parser-link") from None',
+        "local-overrides": 'raise VerificationError("local-overrides") from None',
+        "abi-tree": 'verify_include_tree("/etc/apparmor.d/abi", "abi-tree")',
+        "tunables-tree": 'verify_include_tree("/etc/apparmor.d/tunables", "tunables-tree")',
+        "bwrap-binary": 'raise VerificationError("bwrap-binary")',
+        "parser-binary": 'raise VerificationError("parser-binary") from None',
+        "package-profile": 'raise VerificationError("package-profile") from None',
+        "profile-semantics": 'raise VerificationError("profile-semantics") from None',
+        "receipt-recomputation": 'raise VerificationError("receipt-recomputation")',
+        "profile-load": 'raise VerificationError("profile-load") from None',
+    }
+    for phase, marker in phase_wiring.items():
+        require(source, marker, f"boundary phase wiring missing for {phase}")
+    for phase in BOUNDARY_PHASES:
+        require(source, f'"{phase}"', f"boundary phase allowlist missing {phase}")
+
+    loader_phase_mappings = {
+        "ancestor-directories": "70) loader_phase='ancestor-directories' ;;",
+        "usrmerge-parser-link": "71) loader_phase='usrmerge-parser-link' ;;",
+        "local-overrides": "72) loader_phase='local-overrides' ;;",
+        "abi-tree": "73) loader_phase='abi-tree' ;;",
+        "tunables-tree": "74) loader_phase='tunables-tree' ;;",
+        "bwrap-binary": "75) loader_phase='bwrap-binary' ;;",
+        "parser-binary": "76) loader_phase='parser-binary' ;;",
+        "package-profile": "77) loader_phase='package-profile' ;;",
+        "profile-semantics": "78) loader_phase='profile-semantics' ;;",
+        "receipt-recomputation": "79) loader_phase='receipt-recomputation' ;;",
+        "profile-load": "1|80) loader_phase='profile-load' ;;",
+        "unknown": "81) loader_phase='unknown' ;;",
+    }
+    for phase, marker in loader_phase_mappings.items():
+        require(source, marker, f"loader phase mapping missing for {phase}")
+    require(source, "*) loader_phase='unknown' ;;", "loader unknown status fallback missing")
+    require(
+        source,
+        "/usr/bin/python3 -I - load \"$profile_path\" >/dev/null 2>&1 || loader_status=$?",
+        "loader raw stderr suppression missing",
+    )
+    require(
+        source,
+        "::error::trusted compatibility sandbox filesystem boundary unsafe phase=$loader_phase",
+        "fixed loader boundary diagnostic missing",
+    )
     semantic_guards = {
         '"abi <abi/4.0>,"': "AppArmor ABI semantic guard missing",
         "profile unpriv_bwrap flags=": "restricted child profile guard missing",
@@ -562,11 +725,7 @@ def validate_source(source):
         raise ContractError("probe and profile-load sequence incomplete")
     if not initial_receipt < first_probe < current_receipt < profile_load < second_probe:
         raise ContractError("probe and profile-load ordering drifted")
-    require(
-        source,
-        "::error::trusted restrictive bubblewrap AppArmor profile load failed",
-        "fixed profile-load diagnostic missing",
-    )
+    require(source, "loader_status=0", "fixed profile-load status capture missing")
     require(
         source,
         "::error::trusted unprivileged bubblewrap namespace probe failed",
@@ -687,7 +846,8 @@ mutations = [
     ("AppArmor profile package ownership verification missing", '/usr/bin/dpkg-query -S "$profile_path"', '/usr/bin/dpkg-query -L "$profile_path"'),
     ("restrictive AppArmor profile path drifted", f"profile_path='{PROFILE_PATH}'", "profile_path='/tmp/bwrap-profile'"),
     ("profile verifier is not bound to package-owned path", "verify_system(sys.argv[2])", f'verify_system("{PROFILE_PATH}")'),
-    ("absolute AppArmor parser verifier drifted", 'open_verified_file(\n        "/sbin/apparmor_parser",', 'open_verified_file(\n        "apparmor_parser",'),
+    ("absolute AppArmor parser verifier drifted", 'open_verified_file(\n            "/sbin/apparmor_parser",', 'open_verified_file(\n            "apparmor_parser",'),
+    ("absolute bubblewrap verifier drifted", 'read_verified_file(\n            "/usr/bin/bwrap",', 'read_verified_file(\n            "bwrap",'),
     ("symlink rejection missing", "flags |= os.O_NOFOLLOW", "flags |= 0"),
     ("regular-file verification missing", "not stat.S_ISREG", "False"),
     ("root ownership verification missing", "metadata.st_uid != 0", "False"),
@@ -702,7 +862,7 @@ mutations = [
     ("bwrap local profile override rejection missing", '"/etc/apparmor.d/local/bwrap-userns-restrict"', '"/tmp/bwrap-userns-restrict"'),
     ("child local profile override rejection missing", '"/etc/apparmor.d/local/unpriv_bwrap"', '"/tmp/unpriv_bwrap"'),
     ("local profile override symlink rejection missing", "os.lstat(override)", "os.stat(override)"),
-    ("AppArmor tunables tree verification missing", 'for include_root in ("/etc/apparmor.d/abi", "/etc/apparmor.d/tunables")', 'for include_root in ("/tmp/abi", "/tmp/tunables")'),
+    ("AppArmor tunables tree verification missing", 'verify_include_tree("/etc/apparmor.d/tunables", "tunables-tree")', 'verify_include_tree("/tmp/tunables", "tunables-tree")'),
     ("AppArmor ABI include tree verification missing", '"/etc/apparmor.d/abi"', '"/tmp/apparmor-abi"'),
     ("AppArmor include directory ordering missing", "directories.sort()", "pass"),
     ("AppArmor include file ordering missing", "files.sort()", "pass"),
@@ -726,11 +886,12 @@ mutations = [
     ("loader static profile path binding missing", 'sys.argv[2] != "/usr/share/apparmor/extra-profiles/bwrap-userns-restrict"', "False"),
     ("profile descriptor inheritance missing", "os.set_inheritable(profile_descriptor, True)", "os.close(profile_descriptor)"),
     ("parser descriptor inheritance missing", "os.set_inheritable(parser_descriptor, True)", "os.close(parser_descriptor)"),
-    ("parser descriptor execution missing", "os.execve(\n        parser_descriptor,", "os.execve(\n        '/sbin/apparmor_parser',"),
+    ("parser descriptor execution missing", "os.execve(\n            parser_descriptor,", "os.execve(\n            '/sbin/apparmor_parser',"),
     ("profile descriptor execution path missing", 'f"/proc/self/fd/{profile_descriptor}"', 'sys.argv[2]'),
     ("credentialless verifier Python boundary drifted", "/usr/bin/env -i \\\n    PATH=", "env -i \\\n    PATH="),
     ("probe capability drop missing", "--cap-drop ALL", "--cap-add ALL"),
     ("fixed diagnostic suppression drifted", "update >/dev/null 2>&1", "update >/dev/null"),
+    ("loader raw stderr suppression missing", '/usr/bin/python3 -I - load "$profile_path" >/dev/null 2>&1 || loader_status=$?', '/usr/bin/python3 -I - load "$profile_path" >/dev/null || loader_status=$?'),
 ]
 for reason, old, new in mutations:
     expect_mutation(
@@ -739,6 +900,81 @@ for reason, old, new in mutations:
         reason,
         lambda node, actions, old=old, new=new: replace_mirrored(node, actions, old, new),
     )
+
+for phase in BOUNDARY_PHASES:
+    expect_mutation(
+        node_document,
+        actions_document,
+        f"boundary phase allowlist drifted: {phase}",
+        lambda node, actions, phase=phase: replace_mirrored(
+            node,
+            actions,
+            f'"{phase}"',
+            f'"mutated-{phase}"',
+        ),
+    )
+
+loader_phase_markers = {
+    "ancestor-directories": "70) loader_phase='ancestor-directories' ;;",
+    "usrmerge-parser-link": "71) loader_phase='usrmerge-parser-link' ;;",
+    "local-overrides": "72) loader_phase='local-overrides' ;;",
+    "abi-tree": "73) loader_phase='abi-tree' ;;",
+    "tunables-tree": "74) loader_phase='tunables-tree' ;;",
+    "bwrap-binary": "75) loader_phase='bwrap-binary' ;;",
+    "parser-binary": "76) loader_phase='parser-binary' ;;",
+    "package-profile": "77) loader_phase='package-profile' ;;",
+    "profile-semantics": "78) loader_phase='profile-semantics' ;;",
+    "receipt-recomputation": "79) loader_phase='receipt-recomputation' ;;",
+    "profile-load": "1|80) loader_phase='profile-load' ;;",
+    "unknown": "81) loader_phase='unknown' ;;",
+}
+for phase, marker in loader_phase_markers.items():
+    expect_mutation(
+        node_document,
+        actions_document,
+        f"loader phase mapping missing for {phase}",
+        lambda node, actions, marker=marker: replace_mirrored(
+            node,
+            actions,
+            marker,
+            marker.replace(f"'{phase}'", "'mutated-phase'"),
+        ),
+    )
+
+expect_mutation(
+    node_document,
+    actions_document,
+    "loader unknown status fallback missing",
+    lambda node, actions: replace_mirrored(
+        node,
+        actions,
+        "*) loader_phase='unknown' ;;",
+        "82) loader_phase='unknown' ;;",
+    ),
+)
+
+expect_mutation(
+    node_document,
+    actions_document,
+    "unknown boundary fallback drifted",
+    lambda node, actions: replace_mirrored(
+        node,
+        actions,
+        'return "unknown"',
+        "return str(error)",
+    ),
+)
+expect_mutation(
+    node_document,
+    actions_document,
+    "boundary diagnostic drifted for ancestor-directories",
+    lambda node, actions: replace_mirrored(
+        node,
+        actions,
+        'f"phase={boundary_phase(error)}"',
+        'f"phase={boundary_phase(error)} detail={error}"',
+    ),
+)
 
 for reason, old in (
     ("include-tree root ownership verification missing", "metadata.st_uid != 0"),
@@ -783,7 +1019,9 @@ expect_mutation(
 
 
 def move_load_before_probe(node, actions):
-    load_command = '/usr/bin/python3 -I - load "$profile_path" >/dev/null 2>&1; then'
+    load_command = (
+        '/usr/bin/python3 -I - load "$profile_path" >/dev/null 2>&1 || loader_status=$?'
+    )
     recheck = 'current_sandbox_receipt="$(verify_sandbox_files)" || exit 1'
     for document, owner in ((node, "node"), (actions, "actions")):
         step = provision_step(document, owner)
