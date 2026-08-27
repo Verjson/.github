@@ -166,6 +166,36 @@ def main() -> int:
     require(receipt_inputs <= dispatch_inputs.keys() and
             all(dispatch_inputs[name].get("required") is True for name in receipt_inputs),
             "workflow_dispatch must require the exact head, App check, and arm-receipt identity")
+    expected_run_name = (
+        "AI review authorization ${{ inputs.authorization_check_id }} "
+        "from arm ${{ inputs.arm_run_id }}.${{ inputs.arm_run_attempt }}"
+    )
+
+    def validate_run_name(document: dict) -> None:
+        require(
+            document.get("run-name") == expected_run_name,
+            "review run name must bind authorization check and exact arm receipt",
+        )
+
+    validate_run_name(review)
+    for invalid in (
+        None,
+        "AI review",
+        "AI review authorization ${{ inputs.pr_number }} from arm ${{ inputs.arm_run_id }}.${{ inputs.arm_run_attempt }}",
+        "AI review authorization ${{ inputs.authorization_check_id }} from arm ${{ inputs.pr_number }}.${{ inputs.arm_run_attempt }}",
+        expected_run_name + " " + expected_run_name,
+    ):
+        mutation = dict(review)
+        if invalid is None:
+            mutation.pop("run-name")
+        else:
+            mutation["run-name"] = invalid
+        try:
+            validate_run_name(mutation)
+        except AssertionError:
+            pass
+        else:
+            raise AssertionError(f"invalid review run name was accepted: {invalid!r}")
     gate_steps = review["jobs"]["gate"]["steps"]
     validate_runner_free_external_ci_wait(review, "gate")
     validate_runner_free_external_ci_wait(promote, "privileged_merge")
