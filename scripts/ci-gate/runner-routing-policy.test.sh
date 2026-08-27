@@ -32,6 +32,59 @@ expected_literal_hosted_sites=$'actions-ci.yml:    runs-on: ubuntu-24.04\nai-pri
   && pass "reviewed security contracts use exact fixed hosted selectors" \
   || fail "fixed hosted selector inventory drifted: $literal_hosted_sites"
 
+if python3 - "$root/.github/workflows/actions-ci.yml" <<'PY'
+import copy
+import sys
+
+import yaml
+
+with open(sys.argv[1], encoding="utf-8") as stream:
+    document = yaml.safe_load(stream)
+
+def validate_hosted_compatibility_job(candidate):
+    jobs = candidate["jobs"]
+    target = "hosted-compatibility-tests"
+    unexpected = sorted(
+        job_id for job_id, job in jobs.items()
+        if job_id != target
+        and isinstance(job, dict)
+        and job.get("runs-on") == "ubuntu-24.04"
+    )
+    if unexpected:
+        raise AssertionError(
+            "literal hosted selector escaped compatibility job: "
+            + ",".join(unexpected)
+        )
+    if jobs.get(target, {}).get("runs-on") != "ubuntu-24.04":
+        raise AssertionError(f"{target} must own the literal hosted selector")
+
+validate_hosted_compatibility_job(document)
+
+mutant = copy.deepcopy(document)
+mutant["jobs"]["hosted-compatibility-tests"]["runs-on"] = (
+    document["jobs"]["shell-tests"]["runs-on"]
+)
+mutant["jobs"]["shell-tests"]["runs-on"] = "ubuntu-24.04"
+assert sum(
+    isinstance(job, dict) and job.get("runs-on") == "ubuntu-24.04"
+    for job in mutant["jobs"].values()
+) == 1
+try:
+    validate_hosted_compatibility_job(mutant)
+except AssertionError as error:
+    assert str(error) == (
+        "literal hosted selector escaped compatibility job: shell-tests"
+    )
+    print("ok - another actions-ci job cannot occupy hosted exception")
+else:
+    raise AssertionError("another actions-ci job occupied hosted exception")
+PY
+then
+  pass "actions-ci hosted exception is bound to compatibility job identity"
+else
+  fail "actions-ci hosted exception escaped compatibility job identity"
+fi
+
 literal_hosted="$(
   grep -HnE '^    runs-on:[[:space:]]+(\[)?ubuntu-(24\.04|latest)([][:space:],]|$)' \
     "${workflow_files[@]}" \

@@ -96,6 +96,8 @@ compatibility_commands = (
 
 def validate_hosted_compatibility(candidate, candidate_manifest):
     candidate_jobs = candidate["jobs"]
+    if "hosted-compatibility-tests" not in candidate_jobs:
+        raise AssertionError("missing hosted-compatibility-tests job")
     hosted = candidate_jobs["hosted-compatibility-tests"]
     assert hosted["runs-on"] == "ubuntu-24.04"
     assert hosted["timeout-minutes"] == 8
@@ -129,6 +131,16 @@ def validate_hosted_compatibility(candidate, candidate_manifest):
     )
 
 validate_hosted_compatibility(document, manifest_text)
+
+missing_job_mutant = copy.deepcopy(document)
+del missing_job_mutant["jobs"]["hosted-compatibility-tests"]
+try:
+    validate_hosted_compatibility(missing_job_mutant, manifest_text)
+except AssertionError as error:
+    assert str(error) == "missing hosted-compatibility-tests job"
+    print("ok - entire hosted compatibility job removal fails for missing job")
+else:
+    raise AssertionError("missing hosted compatibility job passed")
 
 for command in compatibility_commands:
     mutant = copy.deepcopy(document)
