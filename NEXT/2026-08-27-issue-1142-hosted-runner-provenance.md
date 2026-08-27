@@ -1,6 +1,7 @@
 ---
 date: 2026-08-27
 issue: 1142
+impact: patch
 title: Build deployable runner provenance on hosted infrastructure
 ---
 

@@ -11,7 +11,7 @@ Reverse-chronological index of org-level decisions.
 <!-- BEGIN ADR INDEX -->
 | # | Date | Decision |
 |---|------|----------|
-| [0146](0146-hosted-runner-provenance/README.md) | 2026-08-27 | Produce deployable runner provenance on hosted infrastructure |
+| [0148](0148-hosted-runner-provenance/README.md) | 2026-08-27 | Produce deployable runner provenance on hosted infrastructure |
 | [0145](0145-recover-zero-provider-review-preflight/README.md) | 2026-08-26 | Recover receipt-bound reviews that stop before provider execution |
 | [0144](0144-exact-head-runner-deployment-review/README.md) | 2026-08-26 | Bind runner deployment to exact-head independent review |
 | [0143](0143-populate-secretless-runtime-cache-from-public-lock-blobs/README.md) | 2026-08-26 | Populate secretless runtime cache from public lock blobs |
