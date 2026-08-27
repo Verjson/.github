@@ -17,3 +17,9 @@ required `shell-tests` aggregate. Positive consumer-fixture failures now report
 their exact return code and a fixed allowlisted sandbox-cause category. Raw and
 unrecognized consumer stderr is always suppressed, so a missing or unusable
 sandbox dependency remains distinguishable without exposing runner secrets.
+Confirmed GitHub-hosted compatibility runs acquire bubblewrap only for an
+eligible hosted compatibility execution, from signed Ubuntu apt metadata and
+without credentials or broad upgrades. Package and executable version floors,
+package ownership, root ownership, mode, and execution are verified before use;
+self-hosted runners are left untouched. The hosted actions-ci contract mirrors
+the production provisioner byte-for-byte and must run it first.

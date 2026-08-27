@@ -2578,6 +2578,95 @@ jobs:
         if: needs.eligibility.outputs.should-run != 'false' && (!(inputs.secretless-pr || inputs.secretless-trusted-ref) || inputs.secretless-ci-script-plan == '')
       - run: npm run lint --if-present
         if: needs.eligibility.outputs.should-run != 'false' && (!(inputs.secretless-pr || inputs.secretless-trusted-ref) || inputs.secretless-ci-script-plan == '')
+      - name: Provision trusted compatibility sandbox
+        if: needs.eligibility.outputs.should-run != 'false' && (inputs.secretless-pr || inputs.secretless-trusted-ref) && inputs.secretless-compatibility-ranges != '' && runner.environment == 'github-hosted'
+        env:
+          ACTIONS_ID_TOKEN_REQUEST_TOKEN: ''
+          ACTIONS_ID_TOKEN_REQUEST_URL: ''
+          AWS_ACCESS_KEY_ID: ''
+          AWS_SECRET_ACCESS_KEY: ''
+          AWS_SESSION_TOKEN: ''
+          AZURE_CREDENTIALS: ''
+          GH_TOKEN: ''
+          GITHUB_TOKEN: ''
+          GOOGLE_APPLICATION_CREDENTIALS: ''
+          NODE_AUTH_TOKEN: ''
+          NPM_TOKEN: ''
+        run: |
+          set -euo pipefail
+          if ! /usr/bin/sudo --non-interactive /usr/bin/env -i \
+            PATH=/usr/sbin:/usr/bin:/sbin:/bin \
+            DEBIAN_FRONTEND=noninteractive \
+            /usr/bin/apt-get \
+            -o APT::Get::AllowUnauthenticated=false \
+            -o Acquire::AllowInsecureRepositories=false \
+            update >/dev/null 2>&1; then
+            echo "::error::trusted bubblewrap package index acquisition failed"
+            exit 1
+          fi
+          if ! /usr/bin/sudo --non-interactive /usr/bin/env -i \
+            PATH=/usr/sbin:/usr/bin:/sbin:/bin \
+            DEBIAN_FRONTEND=noninteractive \
+            /usr/bin/apt-get \
+            -o APT::Get::AllowUnauthenticated=false \
+            -o Acquire::AllowInsecureRepositories=false \
+            install --yes --no-install-recommends bubblewrap >/dev/null 2>&1; then
+            echo "::error::trusted bubblewrap package acquisition failed"
+            exit 1
+          fi
+
+          if ! package_record="$(/usr/bin/dpkg-query -W -f='${db:Status-Abbrev} ${Version}\n' bubblewrap 2>/dev/null)"; then
+            echo "::error::trusted bubblewrap package verification failed"
+            exit 1
+          fi
+          read -r package_status package_version <<<"$package_record"
+          if [ "$package_status" != "ii" ] \
+            || ! /usr/bin/dpkg --compare-versions "$package_version" ge '0.9.0-1build1'; then
+            echo "::error::trusted bubblewrap package version is below the required floor"
+            exit 1
+          fi
+          if [ "$(/usr/bin/dpkg-query -S /usr/bin/bwrap 2>/dev/null)" != 'bubblewrap: /usr/bin/bwrap' ]; then
+            echo "::error::trusted bubblewrap binary is not owned by the verified package"
+            exit 1
+          fi
+          /usr/bin/python3 - <<'PY'
+          import os
+          import re
+          import stat
+          import subprocess
+
+          path = "/usr/bin/bwrap"
+          try:
+              metadata = os.lstat(path)
+          except OSError:
+              raise SystemExit("::error::trusted bubblewrap binary is unavailable")
+          if (
+              not stat.S_ISREG(metadata.st_mode)
+              or metadata.st_uid != 0
+              or metadata.st_gid != 0
+              or metadata.st_mode & 0o022
+              or not metadata.st_mode & 0o111
+          ):
+              raise SystemExit("::error::trusted bubblewrap binary identity or mode is unsafe")
+          try:
+              version = subprocess.run(
+                  [path, "--version"],
+                  check=False,
+                  stdout=subprocess.PIPE,
+                  stderr=subprocess.DEVNULL,
+                  text=True,
+                  timeout=5,
+                  env={"PATH": "/usr/sbin:/usr/bin:/sbin:/bin"},
+              )
+          except (OSError, subprocess.SubprocessError):
+              raise SystemExit("::error::trusted bubblewrap executable check failed")
+          match = re.fullmatch(r"bubblewrap (\d+)\.(\d+)\.(\d+)\n?", version.stdout)
+          if version.returncode != 0 or match is None:
+              raise SystemExit("::error::trusted bubblewrap executable check failed")
+          if tuple(map(int, match.groups())) < (0, 9, 0):
+              raise SystemExit("::error::trusted bubblewrap binary version is below the required floor")
+          PY
+
       - name: Run runtime-resolved compatibility lanes without credentials
         if: needs.eligibility.outputs.should-run != 'false' && (inputs.secretless-pr || inputs.secretless-trusted-ref) && inputs.secretless-compatibility-ranges != ''
         env:

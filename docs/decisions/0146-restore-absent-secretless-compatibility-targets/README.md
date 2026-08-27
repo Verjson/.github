@@ -61,6 +61,18 @@ the hosted job as a required input to the unmatrixed `shell-tests` aggregate;
 missing, skipped, or failed hosted execution therefore fails the existing
 required context instead of silently reducing coverage.
 
+The hosted Ubuntu image also does not preinstall bubblewrap. Only when a
+secretless PR or trusted-ref compatibility lane will execute on a GitHub-hosted
+runner, acquire `bubblewrap` from the image's signed Ubuntu apt repositories.
+Use no credentials and perform no broad upgrade. Require the Ubuntu package
+version and executable version to meet the 0.9.0 floor used by the namespace
+flags, bind `/usr/bin/bwrap` to the installed package, and require a regular,
+executable, root-owned binary that is not group- or world-writable. The
+actions-ci hosted contract uses the byte-identical provisioner before executing
+the suites. Self-hosted runners are never installed or mutated by the workflow;
+the runtime boundary continues to reject a missing or unsafe preprovisioned
+binary there.
+
 When the target began absent, retain its installed directory identity and remove that
 exact directory after success, script failure, `SIGINT`, or `SIGTERM`. Cleanup first
 quarantines the identity under the held package parent and refuses to delete a different
@@ -78,6 +90,9 @@ No consumer self-dependency or package pin is introduced.
 - Actions CI exercises that namespace boundary on an explicit hosted image and
   aggregates its result into `shell-tests`; registration mutations reject suite
   removal or reassignment to the incompatible persistent platform lane.
+- Hosted package acquisition is narrowly gated, signed, credentialless, and
+  fail-closed. Parity and ordering mutations prevent the contract job from
+  exercising a different prerequisite than canonical node-ci consumers.
 - Parent and target races fail the job and preserve unexpected state for diagnosis rather
   than deleting or overwriting it.
 - Real-shaped tests cover success, script failure, signals, multiple lanes, parent and
