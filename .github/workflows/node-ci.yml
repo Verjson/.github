@@ -106,9 +106,11 @@ on:
         default: false
       approved-internal-packages:
         description: >-
-          Newline-separated exact package names allowed during secretless
-          dependency acquisition. Every package under approved-internal-scopes
+          Newline-separated exact package names allowed for this secretless
+          dependency-acquisition call. Every package under approved-internal-scopes
           in the lock file must be listed; empty is valid only when none exist.
+          When CI_SECRETLESS_PACKAGE_POLICY is set, this exact per-call set must
+          be a subset of its protected repository-wide package authorization.
         required: false
         type: string
         default: ''
@@ -116,8 +118,9 @@ on:
         description: >-
           Newline-separated exact npm scopes whose packages may be authorized by
           approved-internal-packages. Each scope is routed only to GitHub
-          Packages. Defaults to @verjson. Any other scope requires an exact match
-          with the caller repository variable CI_SECRETLESS_PACKAGE_POLICY.
+          Packages. Defaults to @verjson. When CI_SECRETLESS_PACKAGE_POLICY is
+          set, this exact per-call set must be a subset of its protected
+          repository-wide scope authorization.
         required: false
         type: string
         default: '@verjson'
@@ -125,8 +128,9 @@ on:
         description: >-
           Optional JSON object with exactly package, ranges, and script. package
           must be one exact approved-internal-packages entry and compatibility mode
-          requires a non-empty CI_SECRETLESS_PACKAGE_POLICY that exactly binds the
-          caller's scopes, packages, and allowed compatibility ranges. ranges contains
+          requires a non-empty CI_SECRETLESS_PACKAGE_POLICY that authorizes a
+          repository-wide superset of the caller's exact scopes and packages and
+          binds its allowed compatibility ranges. ranges contains
           1-8 unique exact, caret,
           tilde, or explicit inclusive-lower/exclusive-upper semver ranges resolved
           from GitHub Packages at run time; script names one package.json script run
@@ -542,16 +546,25 @@ jobs:
               policy_scopes = policy["scopes"]
               policy_packages = policy["packages"]
               if (not isinstance(policy_scopes, list) or not policy_scopes
-                      or len(policy_scopes) != len(set(policy_scopes))
                       or any(not isinstance(scope, str) for scope in policy_scopes)
+                      or len(policy_scopes) != len(set(policy_scopes))
                       or not isinstance(policy_packages, list)
-                      or len(policy_packages) != len(set(policy_packages))
                       or any(not isinstance(name, str) for name in policy_packages)
-                      or set(policy_scopes) != scopes or set(policy_packages) != approved):
-                  sys.exit("approved internal scopes and packages must exactly match trusted repository policy")
+                      or len(policy_packages) != len(set(policy_packages))):
+                  sys.exit("CI_SECRETLESS_PACKAGE_POLICY requires unique string scopes and packages")
+              policy_scopes = set(policy_scopes)
+              policy_packages = set(policy_packages)
+              if (any(re.fullmatch(r"@[a-z0-9][a-z0-9._-]*", scope) is None
+                      for scope in policy_scopes)
+                      or any(package_pattern.fullmatch(name) is None
+                             or name.split("/", 1)[0] not in policy_scopes
+                             for name in policy_packages)):
+                  sys.exit("CI_SECRETLESS_PACKAGE_POLICY accepts exact package names under exact lowercase npm scopes only")
+              if not scopes.issubset(policy_scopes) or not approved.issubset(policy_packages):
+                  sys.exit("approved internal scopes and packages must be subsets of trusted repository policy")
               policy_compatibility = policy.get("compatibility", {})
               if (not isinstance(policy_compatibility, dict)
-                      or any(name not in approved for name in policy_compatibility)
+                      or any(name not in policy_packages for name in policy_compatibility)
                       or any(not isinstance(policy_ranges, list) or not policy_ranges
                              or len(policy_ranges) != len(set(policy_ranges))
                              or any(not isinstance(item, str) or len(item) > 128

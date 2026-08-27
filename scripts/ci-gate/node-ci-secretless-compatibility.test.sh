@@ -157,6 +157,120 @@ if run_validator '@verjson/identity-contracts' "$request" "$policy" >/dev/null 2
 else
   fail "an exact approved compatibility package was rejected"
 fi
+
+two_call_root="$tmp/two-call-policy"
+mkdir -p "$two_call_root/general" "$two_call_root/type-surface" "$two_call_root/package-expansion"
+two_call_integrity="sha512-$(printf 'two-call policy fixture\n' | openssl dgst -sha512 -binary | base64 -w0)"
+two_call_lock="{\"name\":\"authn-consumer\",\"version\":\"1.0.0\",\"lockfileVersion\":3,\"packages\":{\"\":{\"name\":\"authn-consumer\",\"version\":\"1.0.0\"},\"node_modules/@verjson/identity-contracts\":{\"name\":\"@verjson/identity-contracts\",\"resolved\":\"https://npm.pkg.github.com/download/@verjson/identity-contracts/0.3.0/archive\",\"integrity\":\"$two_call_integrity\"},\"node_modules/@verjson/tsconfig\":{\"name\":\"@verjson/tsconfig\",\"resolved\":\"https://npm.pkg.github.com/download/@verjson/tsconfig/0.1.3/archive\",\"integrity\":\"$two_call_integrity\"}}}"
+printf '%s\n' "$two_call_lock" > "$two_call_root/general/package-lock.json"
+printf '%s\n' "$two_call_lock" > "$two_call_root/type-surface/package-lock.json"
+printf '%s\n' "{\"name\":\"authn-consumer\",\"version\":\"1.0.0\",\"lockfileVersion\":3,\"packages\":{\"\":{\"name\":\"authn-consumer\",\"version\":\"1.0.0\"},\"node_modules/@verjson/identity-contracts\":{\"name\":\"@verjson/identity-contracts\",\"resolved\":\"https://npm.pkg.github.com/download/@verjson/identity-contracts/0.3.0/archive\",\"integrity\":\"$two_call_integrity\"},\"node_modules/@verjson/private-target\":{\"name\":\"@verjson/private-target\",\"resolved\":\"https://npm.pkg.github.com/download/@verjson/private-target/1.0.0/archive\",\"integrity\":\"$two_call_integrity\"},\"node_modules/@verjson/tsconfig\":{\"name\":\"@verjson/tsconfig\",\"resolved\":\"https://npm.pkg.github.com/download/@verjson/tsconfig/0.1.3/archive\",\"integrity\":\"$two_call_integrity\"}}}" > "$two_call_root/package-expansion/package-lock.json"
+two_call_policy='{"scopes":["@verjson"],"packages":["@verjson/authn","@verjson/identity-contracts","@verjson/tsconfig"],"compatibility":{"@verjson/authn":["1.0.3"],"@verjson/identity-contracts":[">=0.2.2 <0.3.0",">=0.3.0 <0.4.0"]}}'
+general_request='{"package":"@verjson/identity-contracts","ranges":[">=0.2.2 <0.3.0",">=0.3.0 <0.4.0"],"script":"test:identity-contracts-compatibility"}'
+type_surface_request='{"package":"@verjson/authn","ranges":["1.0.3"],"script":"test:type-surface-compatibility"}'
+
+run_policy_validator() {
+  local fixture="$1" approved="$2" compatibility="$3" trusted_policy="$4"
+  local scopes="${5:-@verjson}" validator_script="${6:-$tmp/validate.sh}"
+  rm -f "$fixture/private-entries"
+  (cd "$fixture" && APPROVED_INTERNAL_PACKAGES="$approved" APPROVED_INTERNAL_SCOPES="$scopes" \
+    COMPATIBILITY_RANGES="$compatibility" PACKAGE_MANAGER=npm \
+    PRIVATE_CACHE_ENTRIES="$fixture/private-entries" TRUSTED_PACKAGE_POLICY="$trusted_policy" \
+    bash "$validator_script")
+}
+
+if run_policy_validator "$two_call_root/general" \
+    $'@verjson/identity-contracts\n@verjson/tsconfig' "$general_request" "$two_call_policy" >/dev/null 2>&1 \
+    && run_policy_validator "$two_call_root/type-surface" \
+      $'@verjson/authn\n@verjson/identity-contracts\n@verjson/tsconfig' \
+      "$type_surface_request" "$two_call_policy" >/dev/null 2>&1; then
+  pass "one protected repository policy authorizes two exact per-call package subsets"
+else
+  fail "the authn two-call policy shape cannot authorize both exact dependency graphs"
+fi
+
+if run_policy_validator "$two_call_root/package-expansion" \
+    $'@verjson/identity-contracts\n@verjson/private-target\n@verjson/tsconfig' \
+    "$general_request" "$two_call_policy" >/dev/null 2>&1; then
+  fail "a per-call package subset expanded beyond protected repository policy"
+else
+  pass "a per-call package subset cannot expand protected repository policy"
+fi
+
+if run_policy_validator "$two_call_root/general" \
+    $'@verjson/authn\n@verjson/identity-contracts\n@verjson/tsconfig' \
+    '' "$two_call_policy" >/dev/null 2>&1; then
+  fail "a protected but unused per-call package approval was accepted"
+else
+  pass "protected policy membership does not exempt unused per-call approvals"
+fi
+
+if run_policy_validator "$two_call_root/general" \
+    $'@verjson/identity-contracts\n@verjson/tsconfig' "$general_request" "$two_call_policy" \
+    $'@tequityapp\n@verjson' >/dev/null 2>&1; then
+  fail "a per-call scope subset expanded beyond protected repository policy"
+else
+  pass "a per-call scope subset cannot expand protected repository policy"
+fi
+
+for malformed_policy in \
+    '{"scopes":["@Bad","@verjson"],"packages":["@verjson/identity-contracts","@verjson/tsconfig"]}' \
+    '{"scopes":["@verjson"],"packages":["@verjson/Bad","@verjson/identity-contracts","@verjson/tsconfig"]}' \
+    '{"scopes":["@verjson"],"packages":["@tequityapp/schema","@verjson/identity-contracts","@verjson/tsconfig"]}' \
+    '{"scopes":[["@verjson"]],"packages":["@verjson/identity-contracts","@verjson/tsconfig"]}'; do
+  if run_policy_validator "$two_call_root/general" \
+      $'@verjson/identity-contracts\n@verjson/tsconfig' '' "$malformed_policy" >/dev/null 2>&1; then
+    fail "a malformed protected policy superset entry was accepted"
+  else
+    pass "malformed protected policy superset entries fail closed"
+  fi
+done
+
+python3 - "$tmp/validate.sh" "$two_call_root/equality-mutant.sh" \
+    "$two_call_root/subset-disabled-mutant.sh" "$two_call_root/unused-disabled-mutant.sh" <<'PY'
+from pathlib import Path
+import sys
+
+source = Path(sys.argv[1]).read_text(encoding="utf-8")
+subset_guard = "if not scopes.issubset(policy_scopes) or not approved.issubset(policy_packages):"
+unused_guard = 'if unused:\n    sys.exit("approved internal dependencies absent from lock: " + ", ".join(unused))'
+if source.count(subset_guard) != 1 or source.count(unused_guard) != 1:
+    raise SystemExit("expected exact secretless policy guard source once")
+Path(sys.argv[2]).write_text(
+    source.replace(subset_guard, "if policy_scopes != scopes or policy_packages != approved:"),
+    encoding="utf-8",
+)
+Path(sys.argv[3]).write_text(source.replace(subset_guard, "if False:"), encoding="utf-8")
+Path(sys.argv[4]).write_text(source.replace(unused_guard, 'if False:\n    pass'), encoding="utf-8")
+PY
+
+if run_policy_validator "$two_call_root/general" \
+    $'@verjson/identity-contracts\n@verjson/tsconfig' "$general_request" "$two_call_policy" \
+    '@verjson' "$two_call_root/equality-mutant.sh" >/dev/null 2>&1; then
+  fail "the exact-policy equality mutation did not recreate the two-call contradiction"
+else
+  pass "the exact-policy equality mutation recreates the two-call contradiction"
+fi
+
+if run_policy_validator "$two_call_root/package-expansion" \
+    $'@verjson/identity-contracts\n@verjson/private-target\n@verjson/tsconfig' \
+    "$general_request" "$two_call_policy" '@verjson' \
+    "$two_call_root/subset-disabled-mutant.sh" >/dev/null 2>&1 \
+    && run_policy_validator "$two_call_root/general" \
+      $'@verjson/identity-contracts\n@verjson/tsconfig' "$general_request" "$two_call_policy" \
+      $'@tequityapp\n@verjson' "$two_call_root/subset-disabled-mutant.sh" >/dev/null 2>&1; then
+  pass "disabling the subset guard admits both package and scope expansion mutations"
+else
+  fail "package or scope mutation fixture did not isolate the subset guard"
+fi
+
+if run_policy_validator "$two_call_root/general" \
+    $'@verjson/authn\n@verjson/identity-contracts\n@verjson/tsconfig' \
+    '' "$two_call_policy" '@verjson' "$two_call_root/unused-disabled-mutant.sh" >/dev/null 2>&1; then
+  pass "disabling the unused-approval guard admits the protected but absent package mutation"
+else
+  fail "unused-approval mutation fixture did not isolate the lock-exactness guard"
+fi
 unapproved='{"package":"@verjson/other","ranges":["^0.2.0"],"script":"test:compat"}'
 if run_validator '@verjson/identity-contracts' "$unapproved" "$policy" >/dev/null 2>&1; then
   fail "an unapproved compatibility package was accepted"
