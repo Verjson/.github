@@ -826,10 +826,11 @@ out="$(run_case)"
   && pass "a hosted lane reconciles clean instead of demanding a runner group" \
   || fail "hosted lane did not reconcile: $out"
 
-# #1115 cuts every historical untrusted selector together.  Current workflows
-# read CI_LANE_UNTRUSTED first; immutable older pins still read the other five
-# names, so a partial update is a security boundary failure rather than a
-# harmless migration delay.
+# #1115 cuts every historical untrusted selector together. Current workflows
+# give CI_LANE_UNTRUSTED resolver precedence; immutable older pins still read
+# the other five names, so a partial update is a security boundary failure
+# rather than a harmless migration delay. ADR 0147's attended update order is
+# deliberately legacy-first and canonical-last.
 hosted_record='{"value":"[\"ubuntu-24.04\"]","visibility":"all"}'
 persistent_record='{"value":"[\"self-hosted\",\"general\"]","visibility":"all"}'
 malformed_record='{"value":"not-json","visibility":"all"}'

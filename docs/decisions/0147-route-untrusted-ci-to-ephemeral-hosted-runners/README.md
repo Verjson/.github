@@ -73,9 +73,21 @@ source decision merges:
 2. Require the six untrusted variables to equal the prior persistent selector
    and require all preserved selectors to match the snapshot. Stop on an absent,
    malformed, repository-scoped, or already-divergent value.
-3. Patch the six untrusted values in one attended operation, beginning with
-   `CI_LANE_UNTRUSTED`, without changing visibility. If any request fails,
-   restore every value changed in that operation before starting a canary.
+3. Patch the six untrusted values in one attended operation, updating the five
+   historical aliases first and canonical `CI_LANE_UNTRUSTED` last, in this
+   exact order without changing visibility:
+
+   ```text
+   CI_RUNNER_UNTRUSTED
+   VERJSON_LANE_UNTRUSTED
+   VERJSON_RUNNER_UNTRUSTED
+   CI_RUNNER_ISOLATED
+   VERJSON_RUNNER_ISOLATED
+   CI_LANE_UNTRUSTED
+   ```
+
+   If any request fails, restore every value changed in that operation before
+   starting a canary.
 4. Re-read all six through the organization API and require exact
    `["ubuntu-24.04"]` values with `all` visibility. Re-read the preserved
    selectors and require byte-for-byte equality with the preflight snapshot.

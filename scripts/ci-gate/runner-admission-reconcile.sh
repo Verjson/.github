@@ -174,6 +174,8 @@ default_var="$(lane_variable TRUSTED)" || exit 2
 # different capacity.  Require every alias until inventory-backed retirement
 # removes it from this reviewed list.
 untrusted_alias_names=(
+  # Index zero is the reconciliation anchor, not rollout order. ADR 0147
+  # updates the five historical aliases before this canonical value.
   CI_LANE_UNTRUSTED
   CI_RUNNER_UNTRUSTED
   VERJSON_LANE_UNTRUSTED
