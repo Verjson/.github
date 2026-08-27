@@ -12,6 +12,7 @@ cat <<YAML
 # Regenerate with:
 #   scripts/gen-ai-review-caller.sh $contract_sha > .github/workflows/ai-review-merge.yml
 name: AI review
+run-name: AI review authorization \${{ inputs.authorization_check_id }} from arm \${{ inputs.arm_run_id }}.\${{ inputs.arm_run_attempt }}
 
 on:
   workflow_dispatch:
