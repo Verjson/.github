@@ -1,7 +1,11 @@
 #!/usr/bin/env python3
 
 import hashlib
+import os
 import re
+import subprocess
+import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -102,6 +106,101 @@ class RetryWorkflowContractTests(unittest.TestCase):
         self.assertIn('echo "base-digest=$base_digest"', retry["run"])
         self.assertIn('--base-repository "$base_repository"', retry["run"])
         self.assertIn('--base-digest "$base_digest"', retry["run"])
+
+
+    def test_fresh_publication_waits_boundedly_for_exact_digest_visibility(self):
+        for job_name in ("publish-base", "publish-derived"):
+            steps = self.workflow["jobs"][job_name]["steps"]
+            readiness = next(
+                step
+                for step in steps
+                if step.get("name") == "Wait for pushed manifest registry visibility"
+            )
+            provenance = next(step for step in steps if step.get("id") == "provenance")
+            command = readiness["run"]
+
+            self.assertLess(steps.index(readiness), steps.index(provenance))
+            self.assertEqual(readiness["if"], provenance["if"])
+            self.assertEqual(readiness["env"]["DIGEST"], "${{ steps.build.outputs.digest }}")
+            self.assertEqual(readiness["env"]["REPOSITORY"], "${{ matrix.repository }}")
+            self.assertIn('^sha256:[0-9a-f]{64}$', command)
+            self.assertIn('reference="$REPOSITORY@$DIGEST"', command)
+            self.assertIn("for attempt in 1 2 3 4 5 6", command)
+            self.assertIn(
+                'timeout --kill-after=2s 5s docker buildx imagetools inspect "$reference"',
+                command,
+            )
+            self.assertIn('[ "$observed" = "$DIGEST" ]', command)
+            self.assertIn('if [ "$attempt" -eq 6 ]', command)
+            self.assertNotIn("${{ secrets.", command)
+
+    def test_registry_visibility_gate_handles_transient_persistent_and_hung_inspection(self):
+        steps = self.workflow["jobs"]["publish-base"]["steps"]
+        command = next(
+            step["run"]
+            for step in steps
+            if step.get("name") == "Wait for pushed manifest registry visibility"
+        )
+        digest = "sha256:" + "a" * 64
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            bin_dir = root / "bin"
+            bin_dir.mkdir()
+            (bin_dir / "sleep").write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            (bin_dir / "docker").write_text(
+                "#!/bin/sh\n"
+                "count=$(cat \"$ATTEMPT_FILE\" 2>/dev/null || echo 0)\n"
+                "count=$((count + 1))\n"
+                "printf '%s' \"$count\" > \"$ATTEMPT_FILE\"\n"
+                "if [ \"$MODE\" = hung ]; then\n"
+                "  trap '' TERM\n"
+                "  while :; do /bin/sleep 1; done\n"
+                "fi\n"
+                "if [ \"$MODE\" = transient ] && [ \"$count\" -ge 3 ]; then\n"
+                "  printf '\"%s\"\\n' \"$DIGEST\"\n"
+                "elif [ \"$MODE\" = mismatch ]; then\n"
+                "  printf '\"sha256:%064d\"\\n' 0\n"
+                "else\n"
+                "  exit 1\n"
+                "fi\n",
+                encoding="utf-8",
+            )
+            for executable in bin_dir.iterdir():
+                executable.chmod(0o755)
+
+            for mode, expected_status, expected_attempts in (
+                ("transient", 0, "3"),
+                ("mismatch", 1, "6"),
+                ("hung", 1, "6"),
+            ):
+                attempt_file = root / f"attempts-{mode}"
+                environment = os.environ | {
+                    "ATTEMPT_FILE": str(attempt_file),
+                    "DIGEST": digest,
+                    "MODE": mode,
+                    "PATH": f"{bin_dir}:{os.environ['PATH']}",
+                    "REPOSITORY": "ghcr.io/verjson/example",
+                }
+                executable_command = command
+                if mode == "hung":
+                    executable_command = command.replace(
+                        "timeout --kill-after=2s 5s",
+                        "timeout --kill-after=0.1s 0.1s",
+                    )
+                started = time.monotonic()
+                result = subprocess.run(
+                    ["bash", "-c", executable_command],
+                    check=False,
+                    capture_output=True,
+                    env=environment,
+                    text=True,
+                )
+                elapsed = time.monotonic() - started
+                self.assertEqual(expected_status, result.returncode, result.stderr)
+                self.assertEqual(expected_attempts, attempt_file.read_text(encoding="utf-8"))
+                if mode == "hung":
+                    self.assertLess(elapsed, 5)
 
 
 if __name__ == "__main__":
