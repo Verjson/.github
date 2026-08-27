@@ -58,6 +58,7 @@ if "$generator" workflow "$ref" ../hostile.json >/dev/null 2>&1; then
   echo "generator accepted a config path outside the source commit" >&2; exit 1
 fi
 workflow="$root/.github/workflows/container-release.yml"
+grep -A8 '^  retention:$' "$workflow" | grep -qx '    timeout-minutes: 30'
 assert_python3_extractor() {
   local candidate=$1
   [ "$(grep -cE '^          python3 scripts/container_artifact_extract\.py candidate\.zip candidate\.json$' "$candidate")" -eq 1 ] &&
