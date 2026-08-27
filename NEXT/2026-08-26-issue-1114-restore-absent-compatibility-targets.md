@@ -56,8 +56,12 @@ allowlisted diagnostic and maps all other producer/interpreter output to
 `unknown`; exception text, dynamic paths, environment values, secrets, and
 non-allowlisted sentinels cannot enter the diagnostic.
 
-That shell boundary is byte-preserving: producer and interpreter output lands
-in a private mode-0600 capture, and an isolated no-output validator requires
-matching process status plus exactly one final newline. Trailing records, NUL
-bytes, and status/content mismatches become `unknown`; raw and sanitized
-captures are removed before emission and on failure or signal.
+The verifier now crosses no runner-owned pathname. A static root supervisor
+hash-binds the trusted verifier source received on stdin, then executes those
+immutable bytes from an isolated `-c` argument with stdin closed and classifies
+the child's in-memory combined output. Only an exact status-and-byte receipt or
+allowlisted
+diagnostic is emitted; trailing records, NUL bytes, status/content mismatches,
+outer failures, and every other value become fixed `unknown`. Concurrent
+same-UID directory, raw-file, receipt-file, symlink, hardlink, and rewrite
+attempts therefore have no artifact to substitute or leak through.

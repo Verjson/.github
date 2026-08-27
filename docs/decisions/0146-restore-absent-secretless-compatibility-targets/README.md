@@ -129,12 +129,20 @@ failure. Exception text, paths, environment values, parser output, and any
 non-allowlisted value never cross the diagnostic boundary; an unexpected
 failure becomes the fixed `unknown` phase.
 
-The capture is byte-preserving rather than shell command substitution. Producer
-and interpreter output is written to a private mode-0600 file, then a separate
-isolated no-output validator requires matching process status and exactly one
-final newline. Trailing records, embedded or trailing NULs, status/content
-mismatches, and validator failures become `unknown`. Raw and sanitized captures
-are removed before emission and on failure or signal.
+No verifier output crosses a runner-owned pathname. A static isolated root
+supervisor receives the hash-bound trusted verifier source on stdin and starts
+the verifier child from those immutable bytes in an isolated `-c` argument,
+with stdin closed, a fixed empty environment, and in-memory byte pipes. The
+trusted verifier is read-only; it accepts only the fixed package-profile path,
+and the loader remains the sole privileged state-changing path. The supervisor
+emits only an exact receipt or
+allowlisted diagnostic whose bytes and exit status agree. Trailing records,
+embedded or trailing NULs, status/content mismatches, child or supervisor
+failures, exception text, and every other value become fixed `unknown`; outer
+stderr is suppressed. Concurrent same-UID directory, raw-file, receipt-file,
+symlink, hardlink, and rewrite attempts have no artifact to substitute. The
+separate privileged loader retains its descriptor-bound recomputation and
+parser execution.
 
 First attempt the production namespace and capability-drop probe as the
 unprivileged runner under an empty credential environment. Only if it fails,

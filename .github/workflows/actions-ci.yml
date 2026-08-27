@@ -609,14 +609,12 @@ jobs:
                 ;;
             esac
           }
-          validate_verifier_capture() {
-            /usr/bin/env -i \
-              PATH=/usr/sbin:/usr/bin:/sbin:/bin \
-              HOME=/nonexistent \
-              /usr/bin/python3 -I - "$1" "$2" "$3" >/dev/null 2>&1 <<'PY'
+          sandbox_supervisor_source() {
+            /usr/bin/cat <<'PY'
+          import hashlib
           import os
           import re
-          import stat
+          import subprocess
           import sys
 
           phases = (
@@ -634,148 +632,122 @@ jobs:
               "unknown",
           )
           diagnostics = {
-              (
+              70 + index: (
                   "::error::trusted compatibility sandbox filesystem boundary unsafe "
                   f"phase={phase}\n"
-              ).encode("ascii"): 70 + index
+              ).encode("ascii")
               for index, phase in enumerate(phases)
           }
+          diagnostic_status = {value: status for status, value in diagnostics.items()}
+          unknown = diagnostics[81]
 
           try:
-              capture_path, receipt_path, raw_status = sys.argv[1:]
-              if re.fullmatch(r"(?:0|[1-9][0-9]{0,2})", raw_status) is None:
-                  raise ValueError
-              producer_status = int(raw_status)
-              descriptor = os.open(capture_path, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW)
-              before = os.fstat(descriptor)
+              profile_path, expected_digest = sys.argv[1:]
               if (
-                  not stat.S_ISREG(before.st_mode)
-                  or before.st_uid != os.getuid()
-                  or stat.S_IMODE(before.st_mode) != 0o600
-                  or before.st_nlink != 1
-                  or before.st_size > 16384
+                  sys.version_info < (3, 9)
+                  or os.geteuid() != 0
+                  or profile_path
+                  != "/usr/share/apparmor/extra-profiles/bwrap-userns-restrict"
+                  or re.fullmatch(r"[0-9a-f]{64}", expected_digest) is None
               ):
                   raise ValueError
-              data = b""
-              while len(data) <= 16384:
-                  chunk = os.read(descriptor, min(4096, 16385 - len(data)))
-                  if not chunk:
-                      break
-                  data += chunk
-              after = os.fstat(descriptor)
-              os.close(descriptor)
+              verifier_source = sys.stdin.buffer.read(1048577)
               if (
-                  len(data) > 16384
-                  or before.st_dev != after.st_dev
-                  or before.st_ino != after.st_ino
-                  or before.st_mode != after.st_mode
-                  or before.st_uid != after.st_uid
-                  or before.st_gid != after.st_gid
-                  or before.st_size != after.st_size
-                  or before.st_mtime_ns != after.st_mtime_ns
-                  or before.st_ctime_ns != after.st_ctime_ns
+                  len(verifier_source) > 1048576
+                  or hashlib.sha256(verifier_source).hexdigest() != expected_digest
               ):
                   raise ValueError
-              if producer_status == 0 and re.fullmatch(rb"[0-9a-f]{64}\n", data):
-                  receipt_descriptor = os.open(
-                      receipt_path,
-                      os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC | os.O_NOFOLLOW,
-                      0o600,
-                  )
-                  written = 0
-                  while written < len(data):
-                      written += os.write(receipt_descriptor, data[written:])
-                  os.close(receipt_descriptor)
-                  raise SystemExit(0)
-              if producer_status != 0 and data in diagnostics:
-                  raise SystemExit(diagnostics[data])
-          except SystemExit:
-              raise
+              verifier_text = verifier_source.decode("utf-8", "strict")
+              completed = subprocess.run(
+                  (
+                      "/usr/bin/python3",
+                      "-I",
+                      "-c",
+                      verifier_text,
+                      "verify",
+                      profile_path,
+                  ),
+                  stdin=subprocess.DEVNULL,
+                  stdout=subprocess.PIPE,
+                  stderr=subprocess.STDOUT,
+                  env={
+                      "PATH": "/usr/sbin:/usr/bin:/sbin:/bin",
+                      "HOME": "/nonexistent",
+                  },
+                  cwd="/",
+                  timeout=60,
+                  check=False,
+                  close_fds=True,
+                  start_new_session=True,
+              )
+              output = completed.stdout
+              status = completed.returncode
+              if status == 0 and re.fullmatch(rb"[0-9a-f]{64}\n", output):
+                  sanitized = output
+              elif status == 1 and output in diagnostic_status:
+                  sanitized = output
+                  status = diagnostic_status[output]
+              else:
+                  sanitized = unknown
+                  status = 81
           except BaseException:
-              pass
-          raise SystemExit(81)
+              sanitized = unknown
+              status = 81
+
+          try:
+              sys.stdout.buffer.write(sanitized)
+              sys.stdout.buffer.flush()
+          except BaseException:
+              raise SystemExit(81)
+          raise SystemExit(status)
           PY
           }
           verify_sandbox_files() (
-            capture_dir=''
-            capture_file=''
-            receipt_file=''
-            cleanup_verifier_capture() {
-              if [ -n "$receipt_file" ]; then
-                /usr/bin/unlink "$receipt_file" >/dev/null 2>&1 || true
-              fi
-              if [ -n "$capture_file" ]; then
-                /usr/bin/unlink "$capture_file" >/dev/null 2>&1 || true
-              fi
-              if [ -n "$capture_dir" ]; then
-                /usr/bin/rmdir "$capture_dir" >/dev/null 2>&1 || true
-              fi
-            }
-            trap cleanup_verifier_capture EXIT
-            trap 'exit 1' HUP INT TERM
-            if [ -z "${RUNNER_TEMP:-}" ]; then
-              emit_verifier_diagnostic ''
-              return 1
-            fi
-            capture_dir="$(umask 077; /usr/bin/mktemp -d "$RUNNER_TEMP/verjson-sandbox-verifier.XXXXXX" 2>/dev/null)" || {
+            supervisor_source=''
+            supervisor_output=''
+            supervisor_status=0
+            supervisor_source="$(sandbox_supervisor_source)" || {
               emit_verifier_diagnostic ''
               return 1
             }
-            /usr/bin/chmod 700 "$capture_dir" >/dev/null 2>&1 || {
-              emit_verifier_diagnostic ''
-              return 1
-            }
-            capture_file="$capture_dir/raw"
-            receipt_file="$capture_dir/receipt"
-            (umask 077; : >"$capture_file") 2>/dev/null || {
-              emit_verifier_diagnostic ''
-              return 1
-            }
-            /usr/bin/chmod 600 "$capture_file" >/dev/null 2>&1 || {
-              emit_verifier_diagnostic ''
-              return 1
-            }
-            verifier_status=0
-            if { sandbox_verifier_source | /usr/bin/env -i \
-              PATH=/usr/sbin:/usr/bin:/sbin:/bin \
-              HOME=/nonexistent \
-              /usr/bin/python3 -I - verify "$profile_path"; } >"$capture_file" 2>&1; then
-              verifier_status=0
-            else
-              verifier_status=$?
-            fi
-            validator_status=0
-            validate_verifier_capture "$capture_file" "$receipt_file" "$verifier_status" || validator_status=$?
-            if [ "$validator_status" -eq 0 ]; then
-              sanitized_receipt=''
-              IFS= read -r sanitized_receipt <"$receipt_file" || validator_status=81
-              if [[ ! "$sanitized_receipt" =~ ^[0-9a-f]{64}$ ]]; then
-                validator_status=81
-              fi
-            fi
-            if [ "$validator_status" -eq 0 ]; then
-              cleanup_verifier_capture
-              trap - EXIT HUP INT TERM
-              printf '%s\n' "$sanitized_receipt"
-              return 0
-            fi
-            case "$validator_status" in
-              70) verifier_phase='ancestor-directories' ;;
-              71) verifier_phase='usrmerge-parser-link' ;;
-              72) verifier_phase='local-overrides' ;;
-              73) verifier_phase='abi-tree' ;;
-              74) verifier_phase='tunables-tree' ;;
-              75) verifier_phase='bwrap-binary' ;;
-              76) verifier_phase='parser-binary' ;;
-              77) verifier_phase='package-profile' ;;
-              78) verifier_phase='profile-semantics' ;;
-              79) verifier_phase='receipt-recomputation' ;;
-              80) verifier_phase='profile-load' ;;
-              81|*) verifier_phase='unknown' ;;
+            supervisor_output="$(
+              { sandbox_verifier_source 2>&1 |
+                /usr/bin/sudo --non-interactive /usr/bin/env -i \
+                  PATH=/usr/sbin:/usr/bin:/sbin:/bin \
+                  HOME=/nonexistent \
+                  /usr/bin/python3 -I -c "$supervisor_source" \
+                    "$profile_path" \
+                    'ba649728453d0971df08421476a724ac56dcfc21a95aaa34f1a582da484265ec'; } \
+                2>/dev/null
+            )" || supervisor_status=$?
+            case "$supervisor_status" in
+              0)
+                if [[ "$supervisor_output" =~ ^[0-9a-f]{64}$ ]]; then
+                  printf '%s\n' "$supervisor_output"
+                  return 0
+                fi
+                ;;
+              70) supervisor_phase='ancestor-directories' ;;
+              71) supervisor_phase='usrmerge-parser-link' ;;
+              72) supervisor_phase='local-overrides' ;;
+              73) supervisor_phase='abi-tree' ;;
+              74) supervisor_phase='tunables-tree' ;;
+              75) supervisor_phase='bwrap-binary' ;;
+              76) supervisor_phase='parser-binary' ;;
+              77) supervisor_phase='package-profile' ;;
+              78) supervisor_phase='profile-semantics' ;;
+              79) supervisor_phase='receipt-recomputation' ;;
+              80) supervisor_phase='profile-load' ;;
+              81) supervisor_phase='unknown' ;;
+              *) supervisor_phase='unknown' ;;
             esac
-            cleanup_verifier_capture
-            trap - EXIT HUP INT TERM
-            emit_verifier_diagnostic "::error::trusted compatibility sandbox filesystem boundary unsafe phase=$verifier_phase"
+            if [ "$supervisor_status" -ge 70 ] 2>/dev/null \
+              && [ "$supervisor_status" -le 81 ] 2>/dev/null \
+              && [ "$supervisor_output" = "::error::trusted compatibility sandbox filesystem boundary unsafe phase=$supervisor_phase" ]; then
+              emit_verifier_diagnostic "$supervisor_output"
+            else
+              emit_verifier_diagnostic ''
+            fi
             return 1
           )
           initial_sandbox_receipt="$(verify_sandbox_files)" || exit 1
