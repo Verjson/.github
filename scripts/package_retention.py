@@ -273,13 +273,10 @@ def _oci_document(raw: bytes, reference: str) -> dict[str, Any]:
         raise RetentionError(f"OCI reference {reference} returned invalid JSON") from error
     if not isinstance(manifest, dict) or manifest.get("mediaType") not in OCI_IMAGE_TYPES:
         raise RetentionError(f"OCI reference {reference} is not an image manifest or index")
-    return manifest
-
-
-def _manifest(raw: bytes, reference: str) -> dict[str, Any]:
-    manifest = _oci_document(raw, reference)
-    if "artifactType" in manifest:
-        raise RetentionError(f"OCI reference {reference} is an artifact, not a deletable image")
+    if "artifactType" in manifest and (
+        not isinstance(manifest["artifactType"], str) or not manifest["artifactType"].strip()
+    ):
+        raise RetentionError(f"OCI reference {reference} has an invalid artifactType")
     return manifest
 
 
@@ -325,7 +322,7 @@ def _container_safety(
         actual_digest = f"sha256:{hashlib.sha256(raw).hexdigest()}"
         if actual_digest != expected_digest:
             raise RetentionError(f"OCI reference {reference} does not match GitHub package digest")
-        manifest = _manifest(raw, reference)
+        manifest = _oci_document(raw, reference)
         visited.add(expected_digest)
         children = manifest.get("manifests", [])
         if not isinstance(children, list):
