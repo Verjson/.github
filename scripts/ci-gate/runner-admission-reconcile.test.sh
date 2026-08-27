@@ -52,10 +52,14 @@ case "$path" in
   # the two is itself reported as drift.
   */actions/variables/CI_LANE_TRUSTED) printf '%s\n' "$DEFAULT_VAR" ;;
   */actions/variables/CI_LANE_UNTRUSTED) printf '%s\n' "$UNTRUSTED_VAR" ;;
+  */actions/variables/CI_RUNNER_UNTRUSTED) printf '%s\n' "${CI_RUNNER_UNTRUSTED_VAR-$UNTRUSTED_VAR}" ;;
+  */actions/variables/VERJSON_LANE_UNTRUSTED) printf '%s\n' "${VERJSON_LANE_UNTRUSTED_VAR-$UNTRUSTED_VAR}" ;;
   */actions/variables/CI_LANE_PRIVILEGED) printf '%s\n' "$PRIVILEGED_VAR" ;;
   */actions/variables/CI_LANE_FALLBACK) printf '%s\n' "$FALLBACK_VAR" ;;
   */actions/variables/VERJSON_RUNNER_DEFAULT) printf '%s\n' "$LEGACY_DEFAULT_VAR" ;;
-  */actions/variables/VERJSON_RUNNER_UNTRUSTED) printf '%s\n' "$LEGACY_UNTRUSTED_VAR" ;;
+  */actions/variables/VERJSON_RUNNER_UNTRUSTED) printf '%s\n' "${VERJSON_RUNNER_UNTRUSTED_VAR-$UNTRUSTED_VAR}" ;;
+  */actions/variables/CI_RUNNER_ISOLATED) printf '%s\n' "${CI_RUNNER_ISOLATED_VAR-$UNTRUSTED_VAR}" ;;
+  */actions/variables/VERJSON_RUNNER_ISOLATED) printf '%s\n' "${VERJSON_RUNNER_ISOLATED_VAR-$UNTRUSTED_VAR}" ;;
   # Both ids serve the default group's runners, so a test can move the default
   # group off id 1 and prove resolution follows `.default`, not a pinned id.
   */runner-groups/1/runners*|*/runner-groups/9/runners*) printf '%s\n' "$G1_RUNNERS" ;;
@@ -90,7 +94,6 @@ export FALLBACK_VAR=''
 # The retired pair, still set org-wide during the migration. Kept equal to the
 # lanes here so the divergence case below is the only one that reports it.
 export LEGACY_DEFAULT_VAR='{"value":"[\"self-hosted\",\"general\"]","visibility":"all"}'
-export LEGACY_UNTRUSTED_VAR='{"value":"[\"self-hosted\",\"general\"]","visibility":"all"}'
 export UNTRUSTED_VAR='{"value":"[\"self-hosted\",\"general\"]","visibility":"all"}'
 export PRIVILEGED_VAR='{"value":"[\"self-hosted\",\"general\"]","visibility":"all"}'
 # GitHub's own default group. A custom group cannot be made default (ADR 0003),
@@ -822,6 +825,128 @@ out="$(run_case)"
   && grep -qF 'No drift' <<<"$out" \
   && pass "a hosted lane reconciles clean instead of demanding a runner group" \
   || fail "hosted lane did not reconcile: $out"
+
+# #1115 cuts every historical untrusted selector together. Current workflows
+# give CI_LANE_UNTRUSTED resolver precedence; immutable older pins still read
+# the other five names, so a partial update is a security boundary failure
+# rather than a harmless migration delay. ADR 0147's attended update order is
+# deliberately legacy-first and canonical-last.
+hosted_record='{"value":"[\"ubuntu-24.04\"]","visibility":"all"}'
+persistent_record='{"value":"[\"self-hosted\",\"general\"]","visibility":"all"}'
+malformed_record='{"value":"not-json","visibility":"all"}'
+wrong_hosted_record='{"value":"[\"ubuntu-latest\"]","visibility":"all"}'
+widened_hosted_record='{"value":"[\"ubuntu-24.04\",\"extra\"]","visibility":"all"}'
+noncanonical_hosted_record='{"value":"[ \"ubuntu-24.04\" ]","visibility":"all"}'
+
+untrusted_alias_names=(
+  CI_LANE_UNTRUSTED
+  CI_RUNNER_UNTRUSTED
+  VERJSON_LANE_UNTRUSTED
+  VERJSON_RUNNER_UNTRUSTED
+  CI_RUNNER_ISOLATED
+  VERJSON_RUNNER_ISOLATED
+)
+untrusted_alias_envs=(
+  UNTRUSTED_VAR
+  CI_RUNNER_UNTRUSTED_VAR
+  VERJSON_LANE_UNTRUSTED_VAR
+  VERJSON_RUNNER_UNTRUSTED_VAR
+  CI_RUNNER_ISOLATED_VAR
+  VERJSON_RUNNER_ISOLATED_VAR
+)
+
+set_all_untrusted_aliases() {
+  local record="$1" name
+  for name in "${untrusted_alias_envs[@]}"; do
+    printf -v "$name" '%s' "$record"
+    export "$name"
+  done
+}
+
+DEFAULT_VAR="$persistent_record"
+FALLBACK_VAR="$persistent_record"
+PRIVILEGED_VAR="$persistent_record"
+LEGACY_DEFAULT_VAR="$persistent_record"
+G4_GROUP='{"id":4,"name":"DigitalOcean","visibility":"all","allows_public_repositories":true,"default":false}'
+G4_RUNNERS='{"name":"general-1","status":"online","labels":["self-hosted","general"]}'
+set_all_untrusted_aliases "$hosted_record"
+out="$(run_case)"
+[ "$(code_of)" = "0" ] \
+  && grep -qF 'No drift' <<<"$out" \
+  && pass "the hosted cut preserves trusted, fallback, privileged, and default selectors" \
+  || fail "hosted cut changed a preserved lane: $out"
+
+for index in "${!untrusted_alias_names[@]}"; do
+  set_all_untrusted_aliases "$hosted_record"
+  printf -v "${untrusted_alias_envs[$index]}" '%s' "$persistent_record"
+  export "${untrusted_alias_envs[$index]}"
+  out="$(run_case)"
+  [ "$(code_of)" = "1" ] \
+    && grep -qF 'differs from CI_LANE_UNTRUSTED' <<<"$out" \
+    && grep -qF 'CI_LANE_UNTRUSTED' <<<"$out" \
+    && pass "partial cut at ${untrusted_alias_names[$index]} is reported as alias divergence" \
+    || fail "partial cut at ${untrusted_alias_names[$index]} survived or failed for the wrong reason: $out"
+done
+
+for index in "${!untrusted_alias_names[@]}"; do
+  set_all_untrusted_aliases "$hosted_record"
+  printf -v "${untrusted_alias_envs[$index]}" '%s' "$malformed_record"
+  export "${untrusted_alias_envs[$index]}"
+  out="$(run_case)"
+  [ "$(code_of)" = "2" ] \
+    && grep -qF "${untrusted_alias_names[$index]}" <<<"$out" \
+    && grep -qF 'not a non-empty JSON array of label strings' <<<"$out" \
+    && pass "malformed ${untrusted_alias_names[$index]} fails closed at selector validation" \
+    || fail "malformed ${untrusted_alias_names[$index]} survived or failed for the wrong reason: $out"
+done
+
+for index in "${!untrusted_alias_names[@]}"; do
+  set_all_untrusted_aliases "$hosted_record"
+  printf -v "${untrusted_alias_envs[$index]}" '%s' ''
+  export "${untrusted_alias_envs[$index]}"
+  out="$(run_case)"
+  [ "$(code_of)" = "2" ] \
+    && grep -qF "${untrusted_alias_names[$index]} is unset" <<<"$out" \
+    && pass "missing ${untrusted_alias_names[$index]} fails closed as a partial configuration" \
+    || fail "missing ${untrusted_alias_names[$index]} survived or failed for the wrong reason: $out"
+done
+
+set_all_untrusted_aliases "$wrong_hosted_record"
+out="$(run_case)"
+[ "$(code_of)" = "2" ] \
+  && grep -qF 'hosted selector must be exactly ["ubuntu-24.04"]' <<<"$out" \
+  && pass "a different hosted label cannot satisfy the cutover contract" \
+  || fail "a different hosted label survived or failed for the wrong reason: $out"
+
+set_all_untrusted_aliases "$widened_hosted_record"
+out="$(run_case)"
+[ "$(code_of)" = "2" ] \
+  && grep -qF 'hosted selector must be exactly ["ubuntu-24.04"]' <<<"$out" \
+  && pass "a widened hosted selector cannot satisfy the exact-label contract" \
+  || fail "a widened hosted selector survived or failed for the wrong reason: $out"
+
+set_all_untrusted_aliases "$noncanonical_hosted_record"
+out="$(run_case)"
+[ "$(code_of)" = "2" ] \
+  && grep -qF 'hosted selector must be exactly ["ubuntu-24.04"]' <<<"$out" \
+  && pass "JSON-equivalent hosted bytes cannot widen the canonical output" \
+  || fail "noncanonical hosted bytes survived or failed for the wrong reason: $out"
+
+set_all_untrusted_aliases "$hosted_record"
+FALLBACK_VAR="$persistent_record"
+out="$(run_case)"
+[ "$(code_of)" = "0" ] \
+  && grep -qF 'No drift' <<<"$out" \
+  && pass "canonical untrusted selector takes precedence over persistent fallback" \
+  || fail "persistent fallback overrode canonical hosted selector: $out"
+
+UNTRUSTED_VAR=''
+FALLBACK_VAR="$hosted_record"
+out="$(run_case)"
+[ "$(code_of)" = "2" ] \
+  && grep -qF 'CI_LANE_UNTRUSTED is unset' <<<"$out" \
+  && pass "hosted fallback cannot conceal a missing canonical untrusted alias" \
+  || fail "fallback concealed missing CI_LANE_UNTRUSTED: $out"
 
 if [ "$fails" -eq 0 ]; then
   echo "All tests passed."

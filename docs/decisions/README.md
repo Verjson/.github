@@ -12,6 +12,7 @@ Reverse-chronological index of org-level decisions.
 | # | Date | Decision |
 |---|------|----------|
 | [0148](0148-hosted-runner-provenance/README.md) | 2026-08-27 | Produce deployable runner provenance on hosted infrastructure |
+| [0147](0147-route-untrusted-ci-to-ephemeral-hosted-runners/README.md) | 2026-08-27 | Route untrusted CI to ephemeral hosted runners |
 | [0146](0146-restore-absent-secretless-compatibility-targets/README.md) | 2026-08-26 | Restore absent secretless compatibility targets |
 | [0145](0145-recover-zero-provider-review-preflight/README.md) | 2026-08-26 | Recover receipt-bound reviews that stop before provider execution |
 | [0144](0144-exact-head-runner-deployment-review/README.md) | 2026-08-26 | Bind runner deployment to exact-head independent review |
