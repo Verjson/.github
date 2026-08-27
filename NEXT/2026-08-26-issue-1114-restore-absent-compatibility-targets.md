@@ -96,3 +96,13 @@ golden and failing OS/subprocess fixtures, including full acquisition
 orchestration, metadata and filename rejection, archive/member validation,
 staging, signals, cleanup, and supervisor output suppression. `SyntaxWarning`
 is fatal for both production source and every coordinated mutation.
+
+Acquisition failures now report one of ten fixed, secretless
+`package-acquisition-*` phases covering key validation, apt update, bounded
+plan, install, installed status, signed metadata, download, archive, member,
+and staging. Child, digest-bound supervisor, and outer shell require exact
+diagnostic/status pairs (83–92); cleanup remains 82 and every unknown,
+cross-paired, trailing, NUL, raw, timeout, or interpreter result becomes fixed
+`unknown` status 81. Staging compares archive and staged files by the full
+device/inode pair, allowing equal inode numbers on different devices but
+rejecting the same underlying file.

@@ -203,6 +203,18 @@ actions-ci source and executes its real orchestration and guards with
 deterministic OS and subprocess fixtures. Compilation treats `SyntaxWarning` as
 fatal for production and every mutation.
 
+Acquisition failures use a closed, secretless taxonomy. The child resets its
+phase before each run and advances before key validation, apt update, bounded
+plan, install, installed status, signed metadata, download, archive, member,
+and staging. It emits only that fixed `package-acquisition-*` diagnostic. The
+digest-bound supervisor accepts only child status 1 plus one exact diagnostic
+and maps the ten phases uniquely to statuses 83 through 92; cleanup remains 82
+and unknown remains 81. The outer shell accepts only exact status-and-diagnostic
+pairs, so cross-paired, trailing, NUL, raw, timeout, and interpreter results
+become `unknown`. Staged/archive distinctness compares `(st_dev, st_ino)`:
+equal inode numbers on different filesystems are valid, while an equal pair
+fails closed.
+
 When the target began absent, retain its installed directory identity and remove that
 exact directory after success, script failure, `SIGINT`, or `SIGTERM`. Cleanup first
 quarantines the identity under the held package parent and refuses to delete a different

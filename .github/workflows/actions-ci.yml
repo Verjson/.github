@@ -152,10 +152,30 @@ jobs:
           import subprocess
           import sys
 
-          DIAGNOSTIC = (
-              "::error::trusted compatibility sandbox filesystem boundary unsafe "
-              "phase=package-profile\n"
-          ).encode("ascii")
+          ACQUISITION_PHASES = (
+              "package-acquisition-key",
+              "package-acquisition-apt-update",
+              "package-acquisition-plan",
+              "package-acquisition-install",
+              "package-acquisition-status",
+              "package-acquisition-metadata",
+              "package-acquisition-download",
+              "package-acquisition-archive",
+              "package-acquisition-member",
+              "package-acquisition-staging",
+          )
+          ACQUISITION_DIAGNOSTICS = {
+              phase: (
+                  "::error::trusted compatibility sandbox filesystem boundary unsafe "
+                  f"phase={phase}\n"
+              ).encode("ascii")
+              for phase in ACQUISITION_PHASES
+          }
+          UNKNOWN_DIAGNOSTIC = (
+              b"::error::trusted compatibility sandbox filesystem boundary unsafe "
+              b"phase=unknown\n"
+          )
+          CURRENT_PHASE = ACQUISITION_PHASES[0]
           SESSION_ROOT = "/var/lib/verjson-compatibility-apt"
           STAGE_ROOT = "/run/verjson-compatibility-sandbox"
           PROFILE_PATH = f"{STAGE_ROOT}/bwrap-userns-restrict"
@@ -672,13 +692,15 @@ jobs:
               if (
                   staged_bytes != profile_bytes
                   or staged_identity[5] != 1
-                  or staged_identity[1] == archive_identity[1]
+                  or staged_identity[:2] == archive_identity[:2]
                   or os.listdir(STAGE_ROOT) != ["bwrap-userns-restrict"]
               ):
                   raise AcquisitionError
 
 
           def acquire():
+              global CURRENT_PHASE
+              CURRENT_PHASE = ACQUISITION_PHASES[0]
               if os.geteuid() != 0 or sys.version_info < (3, 9):
                   raise AcquisitionError
               for directory in (
@@ -764,12 +786,14 @@ jobs:
               ):
                   validate_directory(directory)
 
+              CURRENT_PHASE = "package-acquisition-apt-update"
               update_options = apt_options(install_cache, lists_root, source_parts)
               require_success(run(
                   ("/usr/bin/apt-get", *update_options, "update"),
                   timeout=300,
               ))
               validate_directory(f"{lists_root}/partial", uid=apt_uid, gid=0, mask=0o077)
+              CURRENT_PHASE = "package-acquisition-plan"
               if status_identity != open_regular(
                   "/var/lib/dpkg/status",
                   executable=False,
@@ -787,6 +811,7 @@ jobs:
                   "install", "apparmor", "apparmor-profiles", "bubblewrap",
               ), maximum=1024 * 1024)
               validate_install_plan(plan)
+              CURRENT_PHASE = "package-acquisition-install"
               require_success(run(install_args, timeout=600))
               validate_directory(
                   f"{install_cache}/archives/partial",
@@ -795,6 +820,7 @@ jobs:
                   mask=0o077,
               )
 
+              CURRENT_PHASE = "package-acquisition-status"
               package_record = exact_output((
                   "/usr/bin/dpkg-query", "-W",
                   "-f=${db:Status-Abbrev}\\t${binary:Package}\\t${Version}\\t${Architecture}\\n",
@@ -813,6 +839,7 @@ jobs:
               )).returncode != 0:
                   raise AcquisitionError
 
+              CURRENT_PHASE = "package-acquisition-metadata"
               index_paths_raw = exact_output((
                   "/usr/bin/apt-get", *update_options, "indextargets",
                   "--format", "$(FILENAME)", "Created-By: Packages",
@@ -837,6 +864,7 @@ jobs:
               if not expected_filename.endswith("_all.deb"):
                   raise AcquisitionError
 
+              CURRENT_PHASE = "package-acquisition-download"
               download_options = apt_options(download_cache, lists_root, source_parts)
               require_success(run((
                   "/usr/bin/apt-get", *download_options,
@@ -844,6 +872,7 @@ jobs:
                   "--no-remove", "--yes", "install",
                   f"apparmor-profiles:all={version}",
               ), timeout=300))
+              CURRENT_PHASE = "package-acquisition-archive"
               archive_root = f"{download_cache}/archives"
               validate_directory(
                   f"{archive_root}/partial",
@@ -884,7 +913,9 @@ jobs:
                   if value != f"{expected}\n".encode("utf-8"):
                       raise AcquisitionError
 
+              CURRENT_PHASE = "package-acquisition-member"
               profile_bytes = extract_profile(archive.path)
+              CURRENT_PHASE = "package-acquisition-staging"
               stage_profile(profile_bytes, archive_identity)
           def main():
               failure = None
@@ -895,7 +926,10 @@ jobs:
                   acquire()
                   committed = True
               except BaseException:
-                  failure = DIAGNOSTIC
+                  failure = ACQUISITION_DIAGNOSTICS.get(
+                      CURRENT_PHASE,
+                      UNKNOWN_DIAGNOSTIC,
+                  )
               finally:
                   cleanup_failed = False
                   try:
@@ -934,10 +968,25 @@ jobs:
           import subprocess
           import sys
 
-          diagnostic = (
-              b"::error::trusted compatibility sandbox filesystem boundary unsafe "
-              b"phase=package-profile\n"
+          acquisition_phases = (
+              "package-acquisition-key",
+              "package-acquisition-apt-update",
+              "package-acquisition-plan",
+              "package-acquisition-install",
+              "package-acquisition-status",
+              "package-acquisition-metadata",
+              "package-acquisition-download",
+              "package-acquisition-archive",
+              "package-acquisition-member",
+              "package-acquisition-staging",
           )
+          diagnostics = {
+              (
+                  b"::error::trusted compatibility sandbox filesystem boundary unsafe "
+                  + f"phase={phase}\n".encode("ascii")
+              ): status
+              for status, phase in enumerate(acquisition_phases, start=83)
+          }
           cleanup_diagnostic = (
               b"::error::trusted compatibility sandbox filesystem boundary unsafe "
               b"phase=package-profile-cleanup\n"
@@ -971,8 +1020,8 @@ jobs:
                   )
                   if completed.returncode == 0 and completed.stdout == b"":
                       return b"", 0
-                  if completed.returncode == 1 and completed.stdout == diagnostic:
-                      return diagnostic, 77
+                  if completed.returncode == 1 and completed.stdout in diagnostics:
+                      return completed.stdout, diagnostics[completed.stdout]
                   if completed.returncode == 1 and completed.stdout == cleanup_diagnostic:
                       return cleanup_diagnostic, 82
               except BaseException:
@@ -1009,13 +1058,22 @@ jobs:
                   PATH=/usr/sbin:/usr/bin:/sbin:/bin \
                   HOME=/nonexistent \
                   /usr/bin/python3 -I -c "$acquirer_supervisor_source" \
-                  '9189a2654acaefc2e54553c8aebd547acda2d8dd7b7f010f1a1339d6421bdbe7'
+              '59391a6eb4a356bb015e39b4bfb71deb27a6a8c983512707dcc42ad10f7b132c'
             } 2>/dev/null
           )" || acquirer_status=$?
           if [ "$acquirer_status" -ne 0 ] || [ -n "$acquirer_output" ]; then
-            case "$acquirer_output" in
-              '::error::trusted compatibility sandbox filesystem boundary unsafe phase=package-profile'|\
-              '::error::trusted compatibility sandbox filesystem boundary unsafe phase=package-profile-cleanup')
+            case "$acquirer_status:$acquirer_output" in
+              '83:::error::trusted compatibility sandbox filesystem boundary unsafe phase=package-acquisition-key'|\
+              '84:::error::trusted compatibility sandbox filesystem boundary unsafe phase=package-acquisition-apt-update'|\
+              '85:::error::trusted compatibility sandbox filesystem boundary unsafe phase=package-acquisition-plan'|\
+              '86:::error::trusted compatibility sandbox filesystem boundary unsafe phase=package-acquisition-install'|\
+              '87:::error::trusted compatibility sandbox filesystem boundary unsafe phase=package-acquisition-status'|\
+              '88:::error::trusted compatibility sandbox filesystem boundary unsafe phase=package-acquisition-metadata'|\
+              '89:::error::trusted compatibility sandbox filesystem boundary unsafe phase=package-acquisition-download'|\
+              '90:::error::trusted compatibility sandbox filesystem boundary unsafe phase=package-acquisition-archive'|\
+              '91:::error::trusted compatibility sandbox filesystem boundary unsafe phase=package-acquisition-member'|\
+              '92:::error::trusted compatibility sandbox filesystem boundary unsafe phase=package-acquisition-staging'|\
+              '82:::error::trusted compatibility sandbox filesystem boundary unsafe phase=package-profile-cleanup')
                 printf '%s\n' "$acquirer_output" >&2
                 ;;
               *)

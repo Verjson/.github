@@ -57,6 +57,21 @@ BOUNDARY_PHASES = (
     "package-profile-cleanup",
 )
 BOUNDARY_STATUS = {phase: 70 + index for index, phase in enumerate(BOUNDARY_PHASES)}
+ACQUISITION_PHASES = (
+    "package-acquisition-key",
+    "package-acquisition-apt-update",
+    "package-acquisition-plan",
+    "package-acquisition-install",
+    "package-acquisition-status",
+    "package-acquisition-metadata",
+    "package-acquisition-download",
+    "package-acquisition-archive",
+    "package-acquisition-member",
+    "package-acquisition-staging",
+)
+ACQUISITION_STATUS = {
+    phase: 83 + index for index, phase in enumerate(ACQUISITION_PHASES)
+}
 ISOLATION_REFERENCE = None
 
 
@@ -867,10 +882,40 @@ def validate_acquirer_contract(source):
     try:
         with warnings.catch_warnings():
             warnings.simplefilter("error", SyntaxWarning)
-            compile(acquirer, "<sandbox-acquirer>", "exec")
-            compile(supervisor, "<sandbox-acquirer-supervisor>", "exec")
+            acquirer_code = compile(acquirer, "<sandbox-acquirer>", "exec")
+            supervisor_code = compile(supervisor, "<sandbox-acquirer-supervisor>", "exec")
     except SyntaxError as error:
         raise ContractError("isolated apt helper Python invalid") from error
+    acquirer_namespace = {"__name__": "sandbox_acquirer_contract"}
+    supervisor_namespace = {"__name__": "sandbox_acquirer_supervisor_contract"}
+    exec(acquirer_code, acquirer_namespace)
+    exec(supervisor_code, supervisor_namespace)
+    if tuple(acquirer_namespace.get("ACQUISITION_PHASES", ())) != ACQUISITION_PHASES:
+        missing = next(
+            (
+                phase
+                for phase in ACQUISITION_PHASES
+                if phase not in acquirer_namespace.get("ACQUISITION_PHASES", ())
+            ),
+            "mapping",
+        )
+        raise ContractError(f"acquisition phase allowlist drifted: {missing}")
+    expected_diagnostics = {
+        (
+            "::error::trusted compatibility sandbox filesystem boundary unsafe "
+            f"phase={phase}\n"
+        ).encode("ascii"): status
+        for phase, status in ACQUISITION_STATUS.items()
+    }
+    if acquirer_namespace.get("ACQUISITION_DIAGNOSTICS") != {
+        phase: diagnostic
+        for diagnostic, status in expected_diagnostics.items()
+        for phase, expected_status in ACQUISITION_STATUS.items()
+        if status == expected_status
+    }:
+        raise ContractError("acquisition child diagnostic mapping drifted")
+    if supervisor_namespace.get("diagnostics") != expected_diagnostics:
+        raise ContractError("acquisition supervisor status mapping drifted")
 
     digest = hashlib.sha256(acquirer.encode("utf-8")).hexdigest()
     require(source, f"'{digest}'", "isolated apt helper digest binding drifted")
@@ -884,7 +929,25 @@ def validate_acquirer_contract(source):
     require(supervisor, "start_new_session=True", "isolated apt helper process isolation missing")
     require(supervisor, "timeout=900", "isolated apt helper execution bound missing")
     require(supervisor, 'completed.returncode == 0 and completed.stdout == b""', "isolated apt helper success bytes not exact")
-    require(supervisor, "completed.returncode == 1 and completed.stdout == diagnostic", "isolated apt helper failure bytes not exact")
+    require(supervisor, "completed.returncode == 1 and completed.stdout in diagnostics", "isolated apt helper failure bytes not exact")
+    require(acquirer, "CURRENT_PHASE = ACQUISITION_PHASES[0]", "acquisition phase reset missing")
+    for phase, status in ACQUISITION_STATUS.items():
+        if phase != ACQUISITION_PHASES[0]:
+            require(
+                acquirer,
+                f'CURRENT_PHASE = "{phase}"',
+                f"acquisition phase assignment missing: {phase}",
+            )
+        pair = (
+            f"'{status}:::error::trusted compatibility sandbox filesystem boundary unsafe "
+            f"phase={phase}'"
+        )
+        require(source, pair, f"acquisition outer status mapping missing: {phase}")
+    require(
+        acquirer,
+        "staged_identity[:2] == archive_identity[:2]",
+        "staged archive device-inode identity binding missing",
+    )
     require(source, "sandbox_acquirer_source 2>&1 |", "isolated apt helper source pipe missing")
     require(source, "} 2>/dev/null", "isolated apt helper outer stderr suppression missing")
 
@@ -966,7 +1029,6 @@ def validate_acquirer_contract(source):
     require(acquirer, "os.fsync(stage_descriptor)", "staging directory fsync missing")
     require(acquirer, "os.chmod(STAGE_ROOT, 0o500)", "staging root immutability missing")
     require(acquirer, 'os.listdir(STAGE_ROOT) != ["bwrap-userns-restrict"]', "unexpected staged content rejection missing")
-    require(acquirer, "staged_identity[1] == archive_identity[1]", "staged archive hardlink rejection missing")
     require(acquirer, "shutil.rmtree(path)", "isolated apt session cleanup missing")
     require(acquirer, "record_owned_root(SESSION_ROOT)", "isolated apt session identity receipt missing")
     require(acquirer, "record_owned_root(STAGE_ROOT)", "profile staging identity receipt missing")
@@ -1773,7 +1835,11 @@ acquirer_mutations = [
     ("staging directory fsync missing", 'os.fsync(stage_descriptor)', 'pass'),
     ("staging root immutability missing", 'os.chmod(STAGE_ROOT, 0o500)', 'os.chmod(STAGE_ROOT, 0o777)'),
     ("unexpected staged content rejection missing", 'os.listdir(STAGE_ROOT) != ["bwrap-userns-restrict"]', 'False'),
-    ("staged archive hardlink rejection missing", 'staged_identity[1] == archive_identity[1]', 'False'),
+    (
+        "staged archive device-inode identity binding missing",
+        "staged_identity[:2] == archive_identity[:2]",
+        "False",
+    ),
     ("isolated apt session cleanup missing", 'shutil.rmtree(path)', 'pass'),
     ("isolated apt session identity receipt missing", 'record_owned_root(SESSION_ROOT)', 'validate_directory(SESSION_ROOT)'),
     ("profile staging identity receipt missing", 'record_owned_root(STAGE_ROOT)', 'validate_directory(STAGE_ROOT)'),
@@ -1792,6 +1858,59 @@ for reason, old, new in acquirer_mutations:
             "sandbox_acquirer_source",
             old,
             new,
+        ),
+    )
+
+for phase, status in ACQUISITION_STATUS.items():
+    expect_mutation(
+        node_document,
+        actions_document,
+        f"acquisition phase allowlist drifted: {phase}",
+        lambda node, actions, phase=phase: replace_mirrored_embedded(
+            node,
+            actions,
+            "sandbox_acquirer_source",
+            f'    "{phase}",\n',
+            "",
+        ),
+    )
+    expect_mutation(
+        node_document,
+        actions_document,
+        "acquisition supervisor status mapping drifted",
+        lambda node, actions, phase=phase: replace_mirrored_embedded(
+            node,
+            actions,
+            "sandbox_acquirer_supervisor_source",
+            f'    "{phase}",\n',
+            "",
+        ),
+    )
+    exact_pair = (
+        f"'{status}:::error::trusted compatibility sandbox filesystem boundary unsafe "
+        f"phase={phase}'"
+    )
+    wrong_status = 83 if status != 83 else 92
+    expect_mutation(
+        node_document,
+        actions_document,
+        f"acquisition outer status mapping missing: {phase}",
+        lambda node, actions, exact_pair=exact_pair, wrong_status=wrong_status, status=status: replace_mirrored(
+            node,
+            actions,
+            exact_pair,
+            exact_pair.replace(f"'{status}:", f"'{wrong_status}:", 1),
+        ),
+    )
+    expect_mutation(
+        node_document,
+        actions_document,
+        f"acquisition outer status mapping missing: {phase}",
+        lambda node, actions, exact_pair=exact_pair, phase=phase: replace_mirrored(
+            node,
+            actions,
+            exact_pair,
+            exact_pair.replace(f"phase={phase}'", f"phase=cross-{phase}'", 1),
         ),
     )
 

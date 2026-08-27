@@ -5,6 +5,7 @@ import hashlib
 import io
 import os
 from pathlib import Path
+import shlex
 import stat
 import subprocess
 import types
@@ -547,6 +548,11 @@ class AcquirerBehavior(unittest.TestCase):
             )
             with self.assertRaises(self.error):
                 self.acquirer["stage_profile"](PROFILE, (1, 10))
+            self.acquirer["open_regular"] = lambda *args, **kwargs: (
+                PROFILE,
+                (2, 10, stat.S_IFREG | 0o400, 0, 0, 1, len(PROFILE), 1, 1),
+            )
+            self.acquirer["stage_profile"](PROFILE, (1, 10))
             fake_os.fsync = lambda descriptor: (_ for _ in ()).throw(OSError("fsync"))
             with self.assertRaises(OSError):
                 self.acquirer["stage_profile"](PROFILE, (1, 10))
@@ -554,7 +560,10 @@ class AcquirerBehavior(unittest.TestCase):
             self.acquirer.update(originals)
 
     def test_main_restores_failure_and_cleanup_postconditions(self):
-        original = {name: self.acquirer[name] for name in ("acquire", "cleanup_owned_root", "signal", "sys")}
+        original = {
+            name: self.acquirer[name]
+            for name in ("acquire", "cleanup_owned_root", "signal", "sys", "CURRENT_PHASE")
+        }
 
         class Sink:
             def __init__(self):
@@ -575,6 +584,7 @@ class AcquirerBehavior(unittest.TestCase):
             self.assertEqual([event for event in events if event[0] == "cleanup"], [("cleanup", self.acquirer["SESSION_ROOT"])])
 
             events.clear()
+            self.acquirer["CURRENT_PHASE"] = "package-acquisition-key"
             self.acquirer["acquire"] = lambda: (_ for _ in ()).throw(self.error())
             with self.assertRaises(SystemExit):
                 self.acquirer["main"]()
@@ -582,7 +592,10 @@ class AcquirerBehavior(unittest.TestCase):
                 [event for event in events if event[0] == "cleanup"],
                 [("cleanup", self.acquirer["SESSION_ROOT"]), ("cleanup", self.acquirer["STAGE_ROOT"])],
             )
-            self.assertEqual(self.acquirer["sys"].stderr.buffer.getvalue(), self.acquirer["DIAGNOSTIC"])
+            self.assertEqual(
+                self.acquirer["sys"].stderr.buffer.getvalue(),
+                self.acquirer["ACQUISITION_DIAGNOSTICS"]["package-acquisition-key"],
+            )
 
             self.acquirer["sys"] = types.SimpleNamespace(stderr=Sink())
             self.acquirer["acquire"] = lambda: None
@@ -590,6 +603,57 @@ class AcquirerBehavior(unittest.TestCase):
             with self.assertRaises(SystemExit):
                 self.acquirer["main"]()
             self.assertIn(b"phase=package-profile-cleanup", self.acquirer["sys"].stderr.buffer.getvalue())
+        finally:
+            self.acquirer.update(original)
+
+    def test_main_emits_only_the_fixed_current_acquisition_phase(self):
+        original = {
+            name: self.acquirer[name]
+            for name in ("acquire", "cleanup_owned_root", "signal", "sys", "CURRENT_PHASE")
+        }
+
+        class Sink:
+            def __init__(self):
+                self.buffer = io.BytesIO()
+
+        try:
+            self.acquirer["signal"] = types.SimpleNamespace(
+                SIGHUP=1,
+                SIGINT=2,
+                SIGTERM=15,
+                signal=lambda *_args: None,
+            )
+            self.acquirer["cleanup_owned_root"] = lambda _path: None
+            for phase in self.acquirer["ACQUISITION_PHASES"]:
+                with self.subTest(phase=phase):
+                    sink = Sink()
+                    self.acquirer["sys"] = types.SimpleNamespace(stderr=sink)
+
+                    def fail_in_phase(selected=phase):
+                        self.acquirer["CURRENT_PHASE"] = selected
+                        raise RuntimeError("BARE_CLASSIFICATION_SECRET")
+
+                    self.acquirer["acquire"] = fail_in_phase
+                    with self.assertRaises(SystemExit):
+                        self.acquirer["main"]()
+                    self.assertEqual(
+                        sink.buffer.getvalue(),
+                        self.acquirer["ACQUISITION_DIAGNOSTICS"][phase],
+                    )
+                    self.assertNotIn(b"BARE_CLASSIFICATION_SECRET", sink.buffer.getvalue())
+
+            sink = Sink()
+            self.acquirer["sys"] = types.SimpleNamespace(stderr=sink)
+
+            def fail_unknown_phase():
+                self.acquirer["CURRENT_PHASE"] = "non-allowlisted-secret-phase"
+                raise RuntimeError("BARE_UNKNOWN_SECRET")
+
+            self.acquirer["acquire"] = fail_unknown_phase
+            with self.assertRaises(SystemExit):
+                self.acquirer["main"]()
+            self.assertEqual(sink.buffer.getvalue(), self.acquirer["UNKNOWN_DIAGNOSTIC"])
+            self.assertNotIn(b"BARE_UNKNOWN_SECRET", sink.buffer.getvalue())
         finally:
             self.acquirer.update(original)
 
@@ -635,7 +699,10 @@ class AcquirerBehavior(unittest.TestCase):
         subprocess.run = forbidden_runner
         supervise.__defaults__ = (forbidden_runner,)
         unknown = self.supervisor["unknown"]
-        diagnostic = self.supervisor["diagnostic"]
+        diagnostics = dict(self.supervisor["diagnostics"])
+        diagnostic = next(
+            output for output, status in diagnostics.items() if status == 83
+        )
         cleanup = self.supervisor["cleanup_diagnostic"]
         try:
             calls = []
@@ -693,7 +760,10 @@ class AcquirerBehavior(unittest.TestCase):
                 (unknown, 81),
             )
             for output, status, expected in (
-                (diagnostic, 1, (diagnostic, 77)),
+                *(
+                    (output, 1, (output, expected_status))
+                    for output, expected_status in diagnostics.items()
+                ),
                 (cleanup, 1, (cleanup, 82)),
             ):
                 self.assertEqual(
@@ -707,10 +777,91 @@ class AcquirerBehavior(unittest.TestCase):
                     ),
                     expected,
                 )
+            for output, expected_status in diagnostics.items():
+                for bad_status in (0, 2, expected_status):
+                    with self.subTest(expected_status=expected_status, bad_status=bad_status):
+                        self.assertEqual(
+                            supervise(
+                                source,
+                                digest,
+                                lambda *args, output=output, bad_status=bad_status, **kwargs: types.SimpleNamespace(
+                                    returncode=bad_status,
+                                    stdout=output,
+                                ),
+                            ),
+                            (unknown, 81),
+                        )
+                for malformed in (
+                    output + b"\n",
+                    output + b"\x00",
+                    b"\x00" + output,
+                    output[:-1],
+                ):
+                    with self.subTest(expected_status=expected_status, malformed=malformed[-4:]):
+                        self.assertEqual(
+                            supervise(
+                                source,
+                                digest,
+                                lambda *args, malformed=malformed, **kwargs: types.SimpleNamespace(
+                                    returncode=1,
+                                    stdout=malformed,
+                                ),
+                            ),
+                            (unknown, 81),
+                        )
         finally:
             self.supervisor["os"] = original_os
             subprocess.run = original_run
             supervise.__defaults__ = original_defaults
+
+    def test_exact_outer_mapping_rejects_every_cross_pair_and_extra_output(self):
+        source = provisioner(
+            ".github/workflows/actions-ci.yml",
+            "hosted-compatibility-tests",
+        )
+        start = source.index('if [ "$acquirer_status" -ne 0 ] || [ -n "$acquirer_output" ]; then')
+        unset = source.index("unset acquirer_output", start)
+        end = source.rfind("\n", start, unset)
+        mapping = source[start:end]
+        unknown = (
+            b"::error::trusted compatibility sandbox filesystem boundary unsafe "
+            b"phase=unknown\n"
+        )
+        diagnostics = dict(self.supervisor["diagnostics"])
+        diagnostics[self.supervisor["cleanup_diagnostic"]] = 82
+
+        def run(status, output):
+            fixture = (
+                f"acquirer_status={status}\n"
+                f"acquirer_output={shlex.quote(output.decode('ascii'))}\n"
+                f"{mapping}\n"
+            )
+            return subprocess.run(
+                ("/bin/bash", "-eu", "-o", "pipefail", "-c", fixture),
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env={},
+                check=False,
+                timeout=10,
+            )
+
+        success = run(0, b"")
+        self.assertEqual((success.returncode, success.stdout, success.stderr), (0, b"", b""))
+        for output, status in diagnostics.items():
+            with self.subTest(status=status, exact=True):
+                result = run(status, output.rstrip(b"\n"))
+                self.assertEqual((result.returncode, result.stdout, result.stderr), (1, b"", output))
+            wrong_status = 83 if status != 83 else 92
+            for malformed_status, malformed_output in (
+                (wrong_status, output.rstrip(b"\n")),
+                (status, output.rstrip(b"\n") + b"-trailing"),
+                (status, b"BARE_OUTER_SECRET"),
+            ):
+                with self.subTest(status=status, malformed_status=malformed_status):
+                    result = run(malformed_status, malformed_output)
+                    self.assertEqual((result.returncode, result.stdout, result.stderr), (1, b"", unknown))
+                    self.assertNotIn(b"BARE_OUTER_SECRET", result.stderr)
 
     def test_behavior_suite_source_contains_no_privileged_invocation(self):
         source = Path(__file__).read_text(encoding="utf-8")
