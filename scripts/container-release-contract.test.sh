@@ -58,6 +58,19 @@ if "$generator" workflow "$ref" ../hostile.json >/dev/null 2>&1; then
   echo "generator accepted a config path outside the source commit" >&2; exit 1
 fi
 workflow="$root/.github/workflows/container-release.yml"
+assert_python3_extractor() {
+  local candidate=$1
+  [ "$(grep -cE '^          python3 scripts/container_artifact_extract\.py candidate\.zip candidate\.json$' "$candidate")" -eq 1 ] &&
+    ! grep -Eq '^ +python scripts/container_artifact_extract\.py candidate\.zip candidate\.json$' "$candidate"
+}
+assert_python3_extractor "$workflow"
+cp "$workflow" "$tmp/container-release-python-mutation.yml"
+sed -i 's/^          python3 scripts\/container_artifact_extract\.py candidate\.zip candidate\.json$/          python scripts\/container_artifact_extract.py candidate.zip candidate.json/' \
+  "$tmp/container-release-python-mutation.yml"
+if assert_python3_extractor "$tmp/container-release-python-mutation.yml"; then
+  echo "container release contract accepted a python extractor mutation" >&2
+  exit 1
+fi
 grep -q "github.event_name == 'workflow_dispatch'" "$workflow"
 ! grep -Eq '^  (push|pull_request):' "$workflow"
 grep -q 'imagetools create' "$workflow"
@@ -89,7 +102,7 @@ grep -q '\^\[0-9a-f\]{40}\$' "$workflow"
 guard_line="$(grep -n 'Validate the immutable retention contract ref' "$workflow" | tail -1 | cut -d: -f1)"
 checkout_line="$(grep -n 'path: .package-retention-contract' "$workflow" | cut -d: -f1)"
 [ "$guard_line" -lt "$checkout_line" ]
-grep -q 'container_artifact_extract.py candidate.zip candidate.json' "$workflow"
+grep -qx '          python3 scripts/container_artifact_extract.py candidate.zip candidate.json' "$workflow"
 grep -Fq 'candidate_artifact_digest="${BASH_REMATCH[2]}"' "$workflow"
 ! grep -Fq 'candidate_artifact_digest="${BASH_REMATCH[1]}"' "$workflow"
 grep -q 'existing tag records a divergent release manifest' "$workflow"

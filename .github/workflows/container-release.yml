@@ -76,7 +76,7 @@ jobs:
           [ "$(jq -r .workflow_run.repository_id <<<"$metadata")" = "$GITHUB_REPOSITORY_ID" ]
           gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$artifact_id/zip" > candidate.zip
           [ "sha256:$(sha256sum candidate.zip | cut -d' ' -f1)" = "$expected_digest" ]
-          python scripts/container_artifact_extract.py candidate.zip candidate.json
+          python3 scripts/container_artifact_extract.py candidate.zip candidate.json
           run_id="$(jq -r .source.runId candidate.json)"; source_sha="$(jq -r .source.commit candidate.json)"
           [ "$(jq -r .workflow_run.id <<<"$metadata")" = "$run_id" ]
           [ "$(jq -r .workflow_run.head_branch <<<"$metadata")" = main ]
