@@ -37,7 +37,7 @@ literal_hosted_job_sites() {
 }
 
 literal_hosted_sites="$(literal_hosted_job_sites "${workflow_files[@]}")"
-expected_literal_hosted_sites=$'ai-privileged-merge.yml:invalid_verjson_route:    runs-on: ubuntu-24.04\nai-privileged-merge.yml:validate_privileged_lane:    runs-on: ubuntu-24.04\ncontainer-candidate-publish.yml:acquire-private-node-dependencies:    runs-on: ubuntu-24.04\ncontainer-candidate-publish.yml:attest-sbom:    runs-on: ubuntu-24.04\ncontainer-candidate-publish.yml:candidate-manifest:    runs-on: ubuntu-24.04\ncontainer-candidate-publish.yml:prepare:    runs-on: ubuntu-24.04\ncontainer-candidate-publish.yml:publish-base:    runs-on: ubuntu-24.04\ncontainer-candidate-publish.yml:publish-derived:    runs-on: ubuntu-24.04\ncontainer-release.yml:promote:    runs-on: ubuntu-24.04\nprivileged-merge-conformance.yml:audit:    runs-on: ubuntu-24.04'
+expected_literal_hosted_sites=$'actions-ci.yml:hosted-compatibility-tests:    runs-on: ubuntu-24.04\nai-privileged-merge.yml:invalid_verjson_route:    runs-on: ubuntu-24.04\nai-privileged-merge.yml:validate_privileged_lane:    runs-on: ubuntu-24.04\ncontainer-candidate-publish.yml:acquire-private-node-dependencies:    runs-on: ubuntu-24.04\ncontainer-candidate-publish.yml:attest-sbom:    runs-on: ubuntu-24.04\ncontainer-candidate-publish.yml:candidate-manifest:    runs-on: ubuntu-24.04\ncontainer-candidate-publish.yml:prepare:    runs-on: ubuntu-24.04\ncontainer-candidate-publish.yml:publish-base:    runs-on: ubuntu-24.04\ncontainer-candidate-publish.yml:publish-derived:    runs-on: ubuntu-24.04\ncontainer-release.yml:promote:    runs-on: ubuntu-24.04\nprivileged-merge-conformance.yml:audit:    runs-on: ubuntu-24.04'
 validate_literal_hosted_inventory() {
   local sites="$1"
   [ "$sites" = "$expected_literal_hosted_sites" ] || {
@@ -49,6 +49,61 @@ if inventory_error="$(validate_literal_hosted_inventory "$literal_hosted_sites" 
   pass "reviewed security-boundary jobs use exact fixed hosted selectors"
 else
   fail "$inventory_error"
+fi
+
+if python3 - "$root/.github/workflows/actions-ci.yml" <<'PY'
+import copy
+import sys
+
+import yaml
+
+with open(sys.argv[1], encoding="utf-8") as stream:
+    document = yaml.safe_load(stream)
+
+
+def validate_hosted_compatibility_job(candidate):
+    jobs = candidate["jobs"]
+    target = "hosted-compatibility-tests"
+    unexpected = sorted(
+        job_id
+        for job_id, job in jobs.items()
+        if job_id != target
+        and isinstance(job, dict)
+        and job.get("runs-on") == "ubuntu-24.04"
+    )
+    if unexpected:
+        raise AssertionError(
+            "literal hosted selector escaped compatibility job: "
+            + ",".join(unexpected)
+        )
+    if jobs.get(target, {}).get("runs-on") != "ubuntu-24.04":
+        raise AssertionError(f"{target} must own literal hosted selector")
+
+
+validate_hosted_compatibility_job(document)
+mutant = copy.deepcopy(document)
+mutant["jobs"]["hosted-compatibility-tests"]["runs-on"] = (
+    document["jobs"]["shell-tests"]["runs-on"]
+)
+mutant["jobs"]["shell-tests"]["runs-on"] = "ubuntu-24.04"
+assert sum(
+    isinstance(job, dict) and job.get("runs-on") == "ubuntu-24.04"
+    for job in mutant["jobs"].values()
+) == 1
+try:
+    validate_hosted_compatibility_job(mutant)
+except AssertionError as error:
+    assert str(error) == (
+        "literal hosted selector escaped compatibility job: shell-tests"
+    )
+    print("ok   - another actions-ci job cannot occupy the hosted exception")
+else:
+    raise AssertionError("another actions-ci job occupied the hosted exception")
+PY
+then
+  pass "actions-ci hosted exception is bound to the compatibility job identity"
+else
+  fail "actions-ci hosted exception escaped the compatibility job identity"
 fi
 
 literal_hosted="$(
@@ -90,6 +145,10 @@ literal_hosted="$(
 #  * container candidate publication and release promotion — every job that
 #    contributes deployable bytes or attestations uses fixed hosted capacity so
 #    the managed fleet cannot act as its own provenance root (ADR 0148).
+#  * `actions-ci.yml`'s compatibility-contract job — the contract requires
+#    bubblewrap, which the persistent platform image does not provide. Its
+#    literal hosted image is pinned by ADR 0146 and aggregated into the existing
+#    required context rather than falling back or passing conditionally.
 #  * the tail of a lane chain, `vars.CI_LANE_FALLBACK || '["ubuntu-24.04"]'`
 #    — ADR 0040's portability contract. It is only reached when an organization
 #    has no lane variable set at all, and hosted is the one landing that works
