@@ -129,6 +129,13 @@ failure. Exception text, paths, environment values, parser output, and any
 non-allowlisted value never cross the diagnostic boundary; an unexpected
 failure becomes the fixed `unknown` phase.
 
+The capture is byte-preserving rather than shell command substitution. Producer
+and interpreter output is written to a private mode-0600 file, then a separate
+isolated no-output validator requires matching process status and exactly one
+final newline. Trailing records, embedded or trailing NULs, status/content
+mismatches, and validator failures become `unknown`. Raw and sanitized captures
+are removed before emission and on failure or signal.
+
 First attempt the production namespace and capability-drop probe as the
 unprivileged runner under an empty credential environment. Only if it fails,
 load that verified package-owned restrictive profile with the absolute parser

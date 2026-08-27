@@ -5,9 +5,11 @@ import errno
 import os
 import pathlib
 import re
+import signal
 import stat
 import subprocess
 import tempfile
+import time
 import types
 
 import yaml
@@ -89,13 +91,24 @@ def extract_probe(source):
 
 
 def extract_shell_function(source, name):
-    match = re.search(
-        rf"(?ms)^{re.escape(name)}\(\) \{{\n.*?^\}}$",
-        source,
-    )
+    match = re.search(rf"(?m)^{re.escape(name)}\(\) (?P<open>[{{(])$", source)
     if match is None:
         raise ContractError(f"{name} shell function missing")
-    return match.group(0)
+    next_function = re.search(
+        r"(?m)^[a-z_][a-z0-9_]*\(\) [({]$", source[match.end() + 1 :]
+    )
+    candidates = []
+    if next_function is not None:
+        candidates.append(match.end() + 1 + next_function.start())
+    tail = source.find("\ninitial_sandbox_receipt=", match.end())
+    if tail >= 0:
+        candidates.append(tail)
+    if not candidates:
+        raise ContractError(f"{name} shell function end missing")
+    function = source[match.start() : min(candidates)].rstrip()
+    if (match.group("open"), function[-1]) not in (("{", "}"), ("(", ")")):
+        raise ContractError(f"{name} shell function delimiter drifted")
+    return function
 
 
 def extract_receipt_mismatch_guard(source):
@@ -347,7 +360,7 @@ profile unpriv_bwrap flags=(attach_disconnected) {
 def validate_isolated_python(source):
     global ISOLATION_REFERENCE
 
-    require_count(source, "/usr/bin/python3 -I -", 2, "isolated Python boundary drifted")
+    require_count(source, "/usr/bin/python3 -I -", 3, "isolated Python boundary drifted")
     require(
         source,
         "sandbox_verifier_source | /usr/bin/env -i \\\n    PATH=/usr/sbin:/usr/bin:/sbin:/bin \\\n    HOME=/nonexistent \\\n    /usr/bin/python3 -I - verify",
@@ -357,6 +370,11 @@ def validate_isolated_python(source):
         source,
         "sandbox_verifier_source | /usr/bin/sudo --non-interactive /usr/bin/env -i",
         "credentialless privileged loader boundary drifted",
+    )
+    require(
+        source,
+        '/usr/bin/python3 -I - "$1" "$2" "$3" >/dev/null 2>&1',
+        "credentialless capture validator boundary drifted",
     )
 
     with tempfile.TemporaryDirectory(prefix="verjson-python-isolation-") as fixture:
@@ -597,6 +615,191 @@ def validate_shell_diagnostic_filter(source):
         raise ContractError("pre-load receipt mismatch diagnostic drifted")
 
 
+def validate_capture_file_boundary(source):
+    if source != ISOLATION_REFERENCE:
+        return
+
+    emit_function = extract_shell_function(source, "emit_verifier_diagnostic")
+    validator_function = extract_shell_function(source, "validate_verifier_capture")
+    verify_function = extract_shell_function(source, "verify_sandbox_files")
+    receipt = b"a" * 64
+    expected_unknown = (
+        b"::error::trusted compatibility sandbox filesystem boundary unsafe "
+        b"phase=unknown\n"
+    )
+    expected_abi = (
+        b"::error::trusted compatibility sandbox filesystem boundary unsafe "
+        b"phase=abi-tree\n"
+    )
+    secrets = (
+        b"DEPLOY_KEY_PRODUCER_SECRET",
+        b"OPENAI_API_KEY_ENV_SECRET",
+        b"JSON_TOKEN_SECRET",
+        b"BARE_SENTINEL_TEXT",
+        b"/missing/python3",
+        b"/missing/validator",
+        b"ignored null byte",
+    )
+
+    fixture_function = r'''sandbox_verifier_source() {
+      if [ -n "${FIXTURE_PRODUCER_STDERR:-}" ]; then
+        printf '%s\n' "$FIXTURE_PRODUCER_STDERR" >&2
+      fi
+      printf '%s\n' "$FIXTURE_SOURCE"
+      return "${FIXTURE_PRODUCER_STATUS:-0}"
+    }'''
+
+    def python_source(data, status):
+        return (
+            "import sys\n"
+            f"sys.stdout.buffer.write({data!r})\n"
+            "sys.stdout.buffer.flush()\n"
+            f"raise SystemExit({status})"
+        )
+
+    def run_fixture(
+        data,
+        status,
+        *,
+        producer_status=0,
+        producer_stderr="",
+        selected_validator=validator_function,
+        selected_verify=verify_function,
+    ):
+        with tempfile.TemporaryDirectory(prefix="verjson-capture-boundary-") as fixture:
+            runner_temp = pathlib.Path(fixture) / "runner-temp"
+            runner_temp.mkdir(mode=0o700)
+            script = "\n".join(
+                (
+                    "set -uo pipefail",
+                    f"profile_path='{PROFILE_PATH}'",
+                    emit_function,
+                    selected_validator,
+                    selected_verify,
+                    fixture_function,
+                    "verify_sandbox_files",
+                )
+            )
+            result = subprocess.run(
+                ["/usr/bin/bash", "-c", script],
+                env={
+                    **os.environ,
+                    "RUNNER_TEMP": str(runner_temp),
+                    "FIXTURE_SOURCE": python_source(data, status),
+                    "FIXTURE_PRODUCER_STATUS": str(producer_status),
+                    "FIXTURE_PRODUCER_STDERR": producer_stderr,
+                    "DEPLOY_KEY": "DEPLOY_KEY_PRODUCER_SECRET",
+                    "OPENAI_API_KEY": "OPENAI_API_KEY_ENV_SECRET",
+                },
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+            if tuple(runner_temp.iterdir()):
+                raise ContractError("verifier private capture cleanup failed")
+            return result
+
+    success = run_fixture(receipt + b"\n", 0)
+    if success.returncode != 0 or success.stdout != receipt + b"\n" or success.stderr:
+        raise ContractError("verifier exact receipt capture failed")
+
+    allowlisted = run_fixture(expected_abi, 1)
+    if allowlisted.returncode == 0 or allowlisted.stdout or allowlisted.stderr != expected_abi:
+        raise ContractError("verifier exact diagnostic capture failed")
+
+    malformed = {
+        "receipt without newline": (receipt, 0, 0, ""),
+        "receipt with trailing blank record": (receipt + b"\n\n", 0, 0, ""),
+        "receipt with extra byte": (receipt + b"x\n", 0, 0, ""),
+        "receipt with nul prefix": (b"\0" + receipt + b"\n", 0, 0, ""),
+        "receipt with nul suffix": (receipt + b"\n\0", 0, 0, ""),
+        "receipt with interleaved nul": (receipt[:32] + b"\0" + receipt[32:] + b"\n", 0, 0, ""),
+        "diagnostic without newline": (expected_abi[:-1], 1, 0, ""),
+        "diagnostic with trailing blank record": (expected_abi + b"\n", 1, 0, ""),
+        "diagnostic with nul prefix": (b"\0" + expected_abi, 1, 0, ""),
+        "diagnostic with nul suffix": (expected_abi + b"\0", 1, 0, ""),
+        "receipt with failing status": (receipt + b"\n", 1, 0, ""),
+        "diagnostic with success status": (expected_abi, 0, 0, ""),
+        "secret stdout": (b"JSON_TOKEN_SECRET\n", 1, 0, ""),
+        "producer stderr": (b"", 1, 1, "DEPLOY_KEY_PRODUCER_SECRET"),
+        "success with secret stderr": (receipt + b"\n", 0, 0, "BARE_SENTINEL_TEXT"),
+    }
+    for reason, (data, status, producer_status, producer_stderr) in malformed.items():
+        result = run_fixture(
+            data,
+            status,
+            producer_status=producer_status,
+            producer_stderr=producer_stderr,
+        )
+        if result.returncode == 0 or result.stdout or result.stderr != expected_unknown:
+            raise ContractError(f"verifier raw capture accepted {reason}")
+        if any(secret in result.stdout or secret in result.stderr for secret in secrets):
+            raise ContractError(f"verifier raw capture leaked {reason}")
+
+    missing_interpreter = run_fixture(
+        receipt + b"\n",
+        0,
+        selected_verify=verify_function.replace("/usr/bin/python3", "/missing/python3", 1),
+    )
+    missing_validator = run_fixture(
+        receipt + b"\n",
+        0,
+        selected_validator=validator_function.replace(
+            "/usr/bin/python3", "/missing/validator", 1
+        ),
+    )
+    for reason, result in (
+        ("producer interpreter", missing_interpreter),
+        ("capture validator", missing_validator),
+    ):
+        if result.returncode == 0 or result.stdout or result.stderr != expected_unknown:
+            raise ContractError(f"{reason} failure escaped fixed diagnostic")
+        if any(secret in result.stdout or secret in result.stderr for secret in secrets):
+            raise ContractError(f"{reason} failure leaked raw output")
+
+    with tempfile.TemporaryDirectory(prefix="verjson-capture-signal-") as fixture:
+        runner_temp = pathlib.Path(fixture) / "runner-temp"
+        runner_temp.mkdir(mode=0o700)
+        signal_script = "\n".join(
+            (
+                "set -uo pipefail",
+                f"profile_path='{PROFILE_PATH}'",
+                emit_function,
+                validator_function,
+                verify_function,
+                fixture_function,
+                "verify_sandbox_files",
+            )
+        )
+        process = subprocess.Popen(
+            ["/usr/bin/bash", "-c", signal_script],
+            env={
+                **os.environ,
+                "RUNNER_TEMP": str(runner_temp),
+                "FIXTURE_SOURCE": "import time\ntime.sleep(30)",
+                "FIXTURE_PRODUCER_STATUS": "0",
+                "FIXTURE_PRODUCER_STDERR": "",
+            },
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            start_new_session=True,
+        )
+        for _ in range(200):
+            if tuple(runner_temp.iterdir()):
+                break
+            if process.poll() is not None:
+                raise ContractError("verifier signal cleanup fixture exited before capture")
+            time.sleep(0.01)
+        else:
+            process.kill()
+            process.communicate()
+            raise ContractError("verifier signal cleanup fixture did not create capture")
+        os.killpg(process.pid, signal.SIGTERM)
+        process.communicate(timeout=5)
+        if tuple(runner_temp.iterdir()):
+            raise ContractError("verifier signal cleanup left private capture artifacts")
+
+
 def validate_source(source):
     normalized_source = "\n".join(line.strip() for line in source.splitlines())
     forbidden = {
@@ -636,28 +839,75 @@ def validate_source(source):
         "absolute Python verifier path drifted",
     )
     require(source, "/usr/bin/python3 -I - load \"$profile_path\"", "absolute Python loader path drifted")
-    validate_isolated_python(source)
-    validate_shell_diagnostic_filter(source)
     require(
         source,
-        'verifier_output="$({ sandbox_verifier_source | /usr/bin/env -i',
+        'verify_sandbox_files() (',
+        "verifier capture subshell boundary missing",
+    )
+    require(
+        source,
+        "{ sandbox_verifier_source |",
         "verifier combined-output capture missing",
     )
     require(
         source,
-        '; } 2>&1)" || verifier_status=$?',
-        "verifier raw stderr suppression missing",
+        '} >"$capture_file" 2>&1; then',
+        "verifier byte-preserving capture missing",
     )
     require(
         source,
-        '[[ "$verifier_output" =~ ^[0-9a-f]{64}$ ]]',
-        "verifier exact receipt filter missing",
+        're.fullmatch(rb"[0-9a-f]{64}\\n", data)',
+        "verifier exact receipt byte filter missing",
     )
     require(
         source,
-        'emit_verifier_diagnostic "$verifier_output"',
-        "verifier fixed diagnostic replay missing",
+        "producer_status == 0",
+        "verifier success status binding missing",
     )
+    require(
+        source,
+        "producer_status != 0 and data in diagnostics",
+        "verifier failure status binding missing",
+    )
+    require(
+        source,
+        '/usr/bin/python3 -I - "$1" "$2" "$3" >/dev/null 2>&1',
+        "capture validator output suppression missing",
+    )
+    require(
+        source,
+        'os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW',
+        "capture no-follow boundary missing",
+    )
+    require(source, "stat.S_IMODE(before.st_mode) != 0o600", "capture mode guard missing")
+    require(source, "before.st_nlink != 1", "capture link-count guard missing")
+    require(source, "before.st_ino != after.st_ino", "capture identity guard missing")
+    require(source, "before.st_size > 16384", "capture size bound missing")
+    require(source, "os.O_EXCL", "sanitized receipt exclusive creation missing")
+    require(source, "trap cleanup_verifier_capture EXIT", "capture exit cleanup missing")
+    require(source, "trap 'exit 1' HUP INT TERM", "capture signal cleanup missing")
+    require(source, '/usr/bin/unlink "$receipt_file"', "sanitized receipt cleanup missing")
+    require(source, '/usr/bin/unlink "$capture_file"', "raw verifier capture cleanup missing")
+    require(source, '/usr/bin/rmdir "$capture_dir"', "private capture directory cleanup missing")
+    if "verifier_output=" in source:
+        raise ContractError("raw verifier command substitution remains")
+    if re.search(
+        r"cleanup_verifier_capture\s+trap - EXIT HUP INT TERM\s+printf",
+        source,
+    ) is None:
+        raise ContractError("success output precedes private capture cleanup")
+    if re.search(
+        r"cleanup_verifier_capture\s+trap - EXIT HUP INT TERM\s+emit_verifier_diagnostic",
+        source,
+    ) is None:
+        raise ContractError("diagnostic output precedes private capture cleanup")
+    require(
+        source,
+        "81|*) verifier_phase='unknown' ;;",
+        "capture validator unknown fallback missing",
+    )
+    validate_isolated_python(source)
+    validate_capture_file_boundary(source)
     require(
         source,
         "echo '::error::trusted compatibility sandbox filesystem boundary unsafe phase=unknown' >&2",
@@ -687,12 +937,8 @@ def validate_source(source):
         2,
         "insecure apt repository rejection drifted",
     )
-    require_count(
-        source,
-        ">/dev/null 2>&1",
-        4,
-        "fixed diagnostic suppression drifted",
-    )
+    if source.count(">/dev/null 2>&1") < 4:
+        raise ContractError("fixed diagnostic suppression drifted")
     require(
         source,
         "::error::trusted compatibility sandbox package index acquisition failed",
@@ -771,7 +1017,11 @@ def validate_source(source):
         "absolute bubblewrap verifier drifted",
     )
     require(source, "flags |= os.O_NOFOLLOW", "symlink rejection missing")
-    require(source, "not stat.S_ISREG", "regular-file verification missing")
+    require(
+        source,
+        "not stat.S_ISREG(metadata.st_mode)",
+        "regular-file verification missing",
+    )
     require(source, "metadata.st_uid != 0", "root ownership verification missing")
     require(source, "metadata.st_gid != 0", "root group verification missing")
     require(source, "metadata.st_mode & 0o022", "writable-mode rejection missing")
@@ -1036,7 +1286,11 @@ mutations = [
     ("absolute AppArmor parser verifier drifted", 'open_verified_file(\n            "/sbin/apparmor_parser",', 'open_verified_file(\n            "apparmor_parser",'),
     ("absolute bubblewrap verifier drifted", 'read_verified_file(\n            "/usr/bin/bwrap",', 'read_verified_file(\n            "bwrap",'),
     ("symlink rejection missing", "flags |= os.O_NOFOLLOW", "flags |= 0"),
-    ("regular-file verification missing", "not stat.S_ISREG", "False"),
+    (
+        "regular-file verification missing",
+        "not stat.S_ISREG(metadata.st_mode)",
+        "False",
+    ),
     ("root ownership verification missing", "metadata.st_uid != 0", "False"),
     ("root group verification missing", "metadata.st_gid != 0", "False"),
     ("writable-mode rejection missing", "metadata.st_mode & 0o022", "False"),
@@ -1075,15 +1329,102 @@ mutations = [
     ("parser descriptor inheritance missing", "os.set_inheritable(parser_descriptor, True)", "os.close(parser_descriptor)"),
     ("parser descriptor execution missing", "os.execve(\n            parser_descriptor,", "os.execve(\n            '/sbin/apparmor_parser',"),
     ("profile descriptor execution path missing", 'f"/proc/self/fd/{profile_descriptor}"', 'sys.argv[2]'),
-    ("credentialless verifier Python boundary drifted", "/usr/bin/env -i \\\n    PATH=", "env -i \\\n    PATH="),
+    (
+        "credentialless verifier Python boundary drifted",
+        "sandbox_verifier_source | /usr/bin/env -i \\\n    PATH=",
+        "sandbox_verifier_source | env -i \\\n    PATH=",
+    ),
     ("probe capability drop missing", "--cap-drop ALL", "--cap-add ALL"),
-    ("verifier combined-output capture missing", 'verifier_output="$({ sandbox_verifier_source', 'verifier_output="$(sandbox_verifier_source'),
-    ("verifier raw stderr suppression missing", '; } 2>&1)" || verifier_status=$?', ')" || verifier_status=$?'),
-    ("verifier exact receipt filter missing", '[[ "$verifier_output" =~ ^[0-9a-f]{64}$ ]]', '[[ -n "$verifier_output" ]]'),
-    ("verifier fixed diagnostic replay missing", 'emit_verifier_diagnostic "$verifier_output"', 'printf "%s\\n" "$verifier_output" >&2'),
+    (
+        "verifier combined-output capture missing",
+        "{ sandbox_verifier_source |",
+        "{ sandbox_verifier_source;",
+    ),
+    (
+        "verifier byte-preserving capture missing",
+        '} >"$capture_file" 2>&1; then',
+        '} 2>&1; then',
+    ),
+    (
+        "verifier exact receipt byte filter missing",
+        're.fullmatch(rb"[0-9a-f]{64}\\n", data)',
+        're.fullmatch(rb"[0-9a-f]{64}\\n*", data)',
+    ),
+    (
+        "verifier success status binding missing",
+        "producer_status == 0 and re.fullmatch",
+        "re.fullmatch",
+    ),
+    (
+        "verifier failure status binding missing",
+        "producer_status != 0 and data in diagnostics",
+        "data in diagnostics",
+    ),
+    (
+        "verifier capture subshell boundary missing",
+        "verify_sandbox_files() (",
+        "verify_sandbox_files() {",
+    ),
+    (
+        "capture validator output suppression missing",
+        '/usr/bin/python3 -I - "$1" "$2" "$3" >/dev/null 2>&1',
+        '/usr/bin/python3 -I - "$1" "$2" "$3"',
+    ),
+    (
+        "capture no-follow boundary missing",
+        "os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW",
+        "os.O_RDONLY | os.O_CLOEXEC",
+    ),
+    (
+        "capture mode guard missing",
+        "stat.S_IMODE(before.st_mode) != 0o600",
+        "False",
+    ),
+    ("capture link-count guard missing", "before.st_nlink != 1", "False"),
+    ("capture identity guard missing", "before.st_ino != after.st_ino", "False"),
+    ("capture size bound missing", "before.st_size > 16384", "False"),
+    (
+        "sanitized receipt exclusive creation missing",
+        "os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC | os.O_NOFOLLOW",
+        "os.O_WRONLY | os.O_CREAT | os.O_CLOEXEC | os.O_NOFOLLOW",
+    ),
+    (
+        "capture exit cleanup missing",
+        "trap cleanup_verifier_capture EXIT",
+        "trap - EXIT",
+    ),
+    (
+        "capture signal cleanup missing",
+        "trap 'exit 1' HUP INT TERM",
+        "trap - HUP INT TERM",
+    ),
+    (
+        "sanitized receipt cleanup missing",
+        '/usr/bin/unlink "$receipt_file"',
+        '/usr/bin/true "$receipt_file"',
+    ),
+    (
+        "raw verifier capture cleanup missing",
+        '/usr/bin/unlink "$capture_file"',
+        '/usr/bin/true "$capture_file"',
+    ),
+    (
+        "private capture directory cleanup missing",
+        '/usr/bin/rmdir "$capture_dir"',
+        '/usr/bin/true "$capture_dir"',
+    ),
+    (
+        "capture validator unknown fallback missing",
+        "81|*) verifier_phase='unknown' ;;",
+        "81) verifier_phase='unknown' ;;",
+    ),
     ("verifier unknown diagnostic fallback missing", "echo '::error::trusted compatibility sandbox filesystem boundary unsafe phase=unknown' >&2", 'printf "%s\\n" "$1" >&2'),
     ("pre-load receipt mismatch diagnostic drifted", 'echo "::error::trusted compatibility sandbox filesystem boundary unsafe phase=receipt-recomputation" >&2', 'echo "::error::trusted compatibility sandbox filesystem boundary changed" >&2'),
-    ("fixed diagnostic suppression drifted", "update >/dev/null 2>&1", "update >/dev/null"),
+    (
+        "signed apt index update command drifted",
+        "update >/dev/null 2>&1",
+        "update >/dev/null",
+    ),
     ("loader raw stderr suppression missing", '/usr/bin/python3 -I - load "$profile_path" >/dev/null 2>&1 || loader_status=$?', '/usr/bin/python3 -I - load "$profile_path" >/dev/null || loader_status=$?'),
 ]
 for reason, old, new in mutations:
@@ -1187,10 +1528,10 @@ expect_mutation(
     lambda node, actions: replace_mirrored_nth(
         node,
         actions,
-        "/usr/bin/env -i \\\n    PATH=",
-        "/usr/bin/sudo --non-interactive /usr/bin/env -i \\\n    PATH=",
-        2,
-    ),
+            "/usr/bin/env -i \\\n    PATH=",
+            "/usr/bin/sudo --non-interactive /usr/bin/env -i \\\n    PATH=",
+            3,
+        ),
 )
 expect_mutation(
     node_document,

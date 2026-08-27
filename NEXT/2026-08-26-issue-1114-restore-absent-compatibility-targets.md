@@ -55,3 +55,9 @@ suppressed. The verifier shell accepts only an exact receipt or an exact
 allowlisted diagnostic and maps all other producer/interpreter output to
 `unknown`; exception text, dynamic paths, environment values, secrets, and
 non-allowlisted sentinels cannot enter the diagnostic.
+
+That shell boundary is byte-preserving: producer and interpreter output lands
+in a private mode-0600 capture, and an isolated no-output validator requires
+matching process status plus exactly one final newline. Trailing records, NUL
+bytes, and status/content mismatches become `unknown`; raw and sanitized
+captures are removed before emission and on failure or signal.
