@@ -34,6 +34,11 @@ must be subsets of their protected counterparts. Every protected scope and packa
 validated with the same exact lowercase npm identity grammar before the subset comparison,
 including protected entries that the current call does not use.
 
+Decode both the per-call compatibility request and protected policy with duplicate-object-
+key rejection at every nesting level. JSON's usual last-value-wins behavior must not choose
+between two authorization-bearing values. Existing array uniqueness checks remain separate
+and mandatory for scope, package, compatibility-range, and requested-range lists.
+
 Validate the protected compatibility map against the repository-wide protected package
 set, not the current call's smaller set. A compatibility request still must name one exact
 package approved by that call, and every requested range must remain a subset of that
@@ -51,7 +56,9 @@ The behavioral contract uses the exact authn two-call policy shape. Its mutation
 the former equality check, disable the subset guard, and disable the unused-approval guard.
 They prove respectively that equality recreates the contradiction, that missing subset
 validation admits package and scope expansion, and that protected membership must not
-weaken per-call lock exactness.
+weaken per-call lock exactness. A fourth mutation restores permissive JSON decoding and
+proves duplicate keys would otherwise be accepted in the request, protected policy, and
+nested compatibility map.
 
 ## Consequences
 

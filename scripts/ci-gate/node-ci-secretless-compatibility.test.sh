@@ -226,15 +226,41 @@ for malformed_policy in \
   fi
 done
 
+duplicate_request='{"package":"@verjson/identity-contracts","package":"@verjson/identity-contracts","ranges":[">=0.2.2 <0.3.0",">=0.3.0 <0.4.0"],"script":"test:identity-contracts-compatibility"}'
+duplicate_outer_policy='{"scopes":["@verjson"],"scopes":["@verjson"],"packages":["@verjson/authn","@verjson/identity-contracts","@verjson/tsconfig"],"compatibility":{"@verjson/authn":["1.0.3"],"@verjson/identity-contracts":[">=0.2.2 <0.3.0",">=0.3.0 <0.4.0"]}}'
+duplicate_nested_policy='{"scopes":["@verjson"],"packages":["@verjson/authn","@verjson/identity-contracts","@verjson/tsconfig"],"compatibility":{"@verjson/authn":["1.0.3"],"@verjson/identity-contracts":[">=0.2.2 <0.3.0",">=0.3.0 <0.4.0"],"@verjson/identity-contracts":[">=0.2.2 <0.3.0",">=0.3.0 <0.4.0"]}}'
+
+if duplicate_output=$(run_policy_validator "$two_call_root/general" \
+    $'@verjson/identity-contracts\n@verjson/tsconfig' "$duplicate_request" "$two_call_policy" 2>&1); then
+  fail "duplicate per-call compatibility object keys were accepted"
+elif [ "$duplicate_output" = "secretless-compatibility-ranges rejects duplicate JSON object keys" ]; then
+  pass "duplicate per-call compatibility object keys fail with a stable reason"
+else
+  fail "duplicate per-call compatibility object keys failed without the stable reason"
+fi
+for duplicate_policy in "$duplicate_outer_policy" "$duplicate_nested_policy"; do
+  if duplicate_output=$(run_policy_validator "$two_call_root/general" \
+      $'@verjson/identity-contracts\n@verjson/tsconfig' "$general_request" "$duplicate_policy" 2>&1); then
+    fail "duplicate protected policy object keys were accepted"
+  elif [ "$duplicate_output" = "CI_SECRETLESS_PACKAGE_POLICY rejects duplicate JSON object keys" ]; then
+    pass "duplicate protected policy object keys fail with a stable reason at every level"
+  else
+    fail "duplicate protected policy object keys failed without the stable reason"
+  fi
+done
+
 python3 - "$tmp/validate.sh" "$two_call_root/equality-mutant.sh" \
-    "$two_call_root/subset-disabled-mutant.sh" "$two_call_root/unused-disabled-mutant.sh" <<'PY'
+    "$two_call_root/subset-disabled-mutant.sh" "$two_call_root/unused-disabled-mutant.sh" \
+    "$two_call_root/duplicate-enabled-mutant.sh" <<'PY'
 from pathlib import Path
 import sys
 
 source = Path(sys.argv[1]).read_text(encoding="utf-8")
 subset_guard = "if not scopes.issubset(policy_scopes) or not approved.issubset(policy_packages):"
 unused_guard = 'if unused:\n    sys.exit("approved internal dependencies absent from lock: " + ", ".join(unused))'
-if source.count(subset_guard) != 1 or source.count(unused_guard) != 1:
+duplicate_hook = "object_pairs_hook=reject_duplicate_object_keys,"
+if (source.count(subset_guard) != 1 or source.count(unused_guard) != 1
+        or source.count(duplicate_hook) != 2):
     raise SystemExit("expected exact secretless policy guard source once")
 Path(sys.argv[2]).write_text(
     source.replace(subset_guard, "if policy_scopes != scopes or policy_packages != approved:"),
@@ -242,6 +268,7 @@ Path(sys.argv[2]).write_text(
 )
 Path(sys.argv[3]).write_text(source.replace(subset_guard, "if False:"), encoding="utf-8")
 Path(sys.argv[4]).write_text(source.replace(unused_guard, 'if False:\n    pass'), encoding="utf-8")
+Path(sys.argv[5]).write_text(source.replace(duplicate_hook, ""), encoding="utf-8")
 PY
 
 if run_policy_validator "$two_call_root/general" \
@@ -270,6 +297,20 @@ if run_policy_validator "$two_call_root/general" \
   pass "disabling the unused-approval guard admits the protected but absent package mutation"
 else
   fail "unused-approval mutation fixture did not isolate the lock-exactness guard"
+fi
+
+if run_policy_validator "$two_call_root/general" \
+    $'@verjson/identity-contracts\n@verjson/tsconfig' "$duplicate_request" "$two_call_policy" \
+    '@verjson' "$two_call_root/duplicate-enabled-mutant.sh" >/dev/null 2>&1 \
+    && run_policy_validator "$two_call_root/general" \
+      $'@verjson/identity-contracts\n@verjson/tsconfig' "$general_request" "$duplicate_outer_policy" \
+      '@verjson' "$two_call_root/duplicate-enabled-mutant.sh" >/dev/null 2>&1 \
+    && run_policy_validator "$two_call_root/general" \
+      $'@verjson/identity-contracts\n@verjson/tsconfig' "$general_request" "$duplicate_nested_policy" \
+      '@verjson' "$two_call_root/duplicate-enabled-mutant.sh" >/dev/null 2>&1; then
+  pass "removing unique-object decoding admits duplicate request, policy, and nested authorization keys"
+else
+  fail "duplicate-key mutation fixtures did not isolate every authorization-bearing object level"
 fi
 unapproved='{"package":"@verjson/other","ranges":["^0.2.0"],"script":"test:compat"}'
 if run_validator '@verjson/identity-contracts' "$unapproved" "$policy" >/dev/null 2>&1; then

@@ -507,13 +507,29 @@ jobs:
               interval = re.fullmatch(rf">=({core_pattern}) <({core_pattern})", value)
               return bool(interval and parse_core(interval.group(1)) < parse_core(interval.group(2)))
 
+          class DuplicateObjectKeyError(ValueError):
+              pass
+
+          def reject_duplicate_object_keys(pairs):
+              value = {}
+              for key, item in pairs:
+                  if key in value:
+                      raise DuplicateObjectKeyError
+                  value[key] = item
+              return value
+
           compatibility_package = None
           compatibility_source = os.environ.get("COMPATIBILITY_RANGES", "")
           if compatibility_source:
               if os.environ.get("PACKAGE_MANAGER", "npm") != "npm":
                   sys.exit("secretless compatibility ranges currently require package-manager npm")
               try:
-                  compatibility = json.loads(compatibility_source)
+                  compatibility = json.loads(
+                      compatibility_source,
+                      object_pairs_hook=reject_duplicate_object_keys,
+                  )
+              except DuplicateObjectKeyError:
+                  sys.exit("secretless-compatibility-ranges rejects duplicate JSON object keys")
               except json.JSONDecodeError as error:
                   sys.exit(f"secretless-compatibility-ranges must be valid JSON: {error}")
               if not isinstance(compatibility, dict) or set(compatibility) != {"package", "ranges", "script"}:
@@ -536,7 +552,12 @@ jobs:
               sys.exit("secretless compatibility ranges requires non-empty CI_SECRETLESS_PACKAGE_POLICY")
           if scopes != {"@verjson"} or trusted_policy:
               try:
-                  policy = json.loads(trusted_policy)
+                  policy = json.loads(
+                      trusted_policy,
+                      object_pairs_hook=reject_duplicate_object_keys,
+                  )
+              except DuplicateObjectKeyError:
+                  sys.exit("CI_SECRETLESS_PACKAGE_POLICY rejects duplicate JSON object keys")
               except json.JSONDecodeError as error:
                   sys.exit(f"CI_SECRETLESS_PACKAGE_POLICY must be valid JSON: {error}")
               if (not isinstance(policy, dict)
