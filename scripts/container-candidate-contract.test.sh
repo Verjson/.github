@@ -123,6 +123,13 @@ authority_condition = (
     "&& github.repository == 'Verjson/.github' "
     "&& github.ref == format('refs/heads/{0}', github.event.repository.default_branch))"
 )
+candidate_condition = (
+    "always() && (" + authority_condition + ") "
+    "&& needs.prepare.result == 'success' "
+    "&& needs.publish-base.result == 'success' "
+    "&& needs.publish-derived.result == 'success' "
+    "&& needs.attest-sbom.result == 'success'"
+)
 expected_conditions = {
     "publish-base": (
         "always() && (" + authority_condition + ") "
@@ -143,7 +150,7 @@ expected_conditions = {
         "&& needs.publish-base.result == 'success' "
         "&& needs.publish-derived.result == 'success'"
     ),
-    "candidate-manifest": authority_condition,
+    "candidate-manifest": candidate_condition,
 }
 
 def validate_authority(read_only, publication):
@@ -220,6 +227,49 @@ def validate_authority(read_only, publication):
         assert publication["jobs"][job_name]["if"] == expected, (
             f"{job_name} publication authority predicate drifted"
         )
+
+assert publisher["jobs"]["candidate-manifest"]["if"] == candidate_condition
+
+# GitHub skips a job with any skipped dependency unless always() opts the job into
+# evaluation. All direct producers must then be terminal-success: an unrelated
+# optional dependency may skip without suppressing a complete manifest, while a
+# skipped direct producer remains fail closed.
+def candidate_manifest_runs(results):
+    return publisher["jobs"]["candidate-manifest"]["if"].startswith("always()") and all(
+        results[name] == "success"
+        for name in ("prepare", "publish-base", "publish-derived", "attest-sbom")
+    )
+
+assert candidate_manifest_runs({
+    "prepare": "success",
+    "publish-base": "success",
+    "publish-derived": "success",
+    "attest-sbom": "success",
+    "acquire-private-node-dependencies": "skipped",
+}), "optional skipped dependency suppressed complete candidate manifest"
+for producer in ("prepare", "publish-base", "publish-derived", "attest-sbom"):
+    results = {
+        "prepare": "success",
+        "publish-base": "success",
+        "publish-derived": "success",
+        "attest-sbom": "success",
+    }
+    results[producer] = "skipped"
+    assert not candidate_manifest_runs(results), f"skipped {producer} admitted candidate manifest"
+
+unsafe_conditions = [candidate_condition.removeprefix("always() && ")]
+unsafe_conditions.extend(
+    candidate_condition.replace(f" && needs.{producer}.result == 'success'", "")
+    for producer in ("prepare", "publish-base", "publish-derived", "attest-sbom")
+)
+for unsafe in unsafe_conditions:
+    mutated = copy.deepcopy(publisher)
+    mutated["jobs"]["candidate-manifest"]["if"] = unsafe
+    try:
+        validate_authority(callee, mutated)
+        raise AssertionError("candidate manifest skip/partial-success mutation escaped")
+    except AssertionError as error:
+        assert "authority predicate drifted" in str(error)
 
 validate_authority(callee, publisher)
 mutated = copy.deepcopy(publisher)

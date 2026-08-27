@@ -820,12 +820,17 @@ jobs:
 
   candidate-manifest:
     if: >-
-      (github.event_name == 'push'
+      always()
+      && ((github.event_name == 'push'
       && github.ref == 'refs/heads/main'
       && github.event.repository.default_branch == 'main')
       || (github.event_name == 'workflow_dispatch'
       && github.repository == 'Verjson/.github'
-      && github.ref == format('refs/heads/{0}', github.event.repository.default_branch))
+      && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)))
+      && needs.prepare.result == 'success'
+      && needs.publish-base.result == 'success'
+      && needs.publish-derived.result == 'success'
+      && needs.attest-sbom.result == 'success'
     needs: [prepare, publish-base, publish-derived, attest-sbom]
     permissions:
       actions: read
