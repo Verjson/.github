@@ -168,7 +168,27 @@ lane_variable() {
 }
 
 default_var="$(lane_variable TRUSTED)" || exit 2
-untrusted_var="$(lane_variable UNTRUSTED)" || exit 2
+# Six names remain live while immutable historical callers cross the two
+# runner-variable migrations.  CI_LANE_UNTRUSTED is the only selector used by
+# current workflows, but a partial edit would leave an older pin executing on
+# different capacity.  Require every alias until inventory-backed retirement
+# removes it from this reviewed list.
+untrusted_alias_names=(
+  CI_LANE_UNTRUSTED
+  CI_RUNNER_UNTRUSTED
+  VERJSON_LANE_UNTRUSTED
+  VERJSON_RUNNER_UNTRUSTED
+  CI_RUNNER_ISOLATED
+  VERJSON_RUNNER_ISOLATED
+)
+untrusted_alias_vars=()
+for untrusted_alias_name in "${untrusted_alias_names[@]}"; do
+  untrusted_alias_var="$(fetch_optional "/orgs/$ORG/actions/variables/$untrusted_alias_name")" || exit 2
+  [ -n "$untrusted_alias_var" ] || die_undetermined \
+    "$untrusted_alias_name is unset; cannot prove all immutable untrusted caller aliases resolve one lane"
+  untrusted_alias_vars+=("$untrusted_alias_var")
+done
+untrusted_var="${untrusted_alias_vars[0]}"
 # This is the #204 cutover seam, not necessarily the selector of every live
 # privileged job. `runner_labels`, FASTLANE, and OVERFLOW can currently win
 # before the lane. Validating the seam independently makes the eventual removal
@@ -180,7 +200,6 @@ privileged_var="$(lane_variable PRIVILEGED)" || exit 2
 # has drifted away from its lane means those consumers route somewhere this run
 # never checked, which is reported rather than assumed away.
 legacy_default_var="$(fetch_optional "/orgs/$ORG/actions/variables/VERJSON_RUNNER_DEFAULT")" || exit 2
-legacy_untrusted_var="$(fetch_optional "/orgs/$ORG/actions/variables/VERJSON_RUNNER_UNTRUSTED")" || exit 2
 
 selector() {
   local name="$1" variable="$2" value visibility
@@ -204,6 +223,22 @@ selector() {
 default_selector="$(selector CI_LANE_TRUSTED "$default_var")" || exit 2
 untrusted_selector="$(selector CI_LANE_UNTRUSTED "$untrusted_var")" || exit 2
 privileged_selector="$(selector CI_LANE_PRIVILEGED "$privileged_var")" || exit 2
+
+# A self-hosted selector remains valid before the live cut and for rollback.
+# Once the lane is hosted, however, only the standard ephemeral image is the
+# reviewed destination.  Accepting another hosted label could silently admit a
+# larger or differently governed runner class.
+if jq -e 'index("self-hosted") == null' <<<"$untrusted_selector" >/dev/null \
+  && [ "$untrusted_selector" != '["ubuntu-24.04"]' ]; then
+  die_undetermined \
+    'CI_LANE_UNTRUSTED hosted selector must be exactly ["ubuntu-24.04"]; value redacted'
+fi
+
+untrusted_alias_selectors=()
+for index in "${!untrusted_alias_names[@]}"; do
+  untrusted_alias_selectors+=("$(selector "${untrusted_alias_names[$index]}" "${untrusted_alias_vars[$index]}")") \
+    || exit 2
+done
 
 group_for_selector() {
   local name="$1" labels="$2"
@@ -445,7 +480,11 @@ legacy_drift() {
   [ "$value" = "$lane_value" ] || drift="$drift- \`$name\` differs from the lane that replaced it; values redacted because org-variable contents must not enter public logs or issues; consumers pinned to a pre-migration SHA route somewhere this run did not check"$'\n'
 }
 legacy_drift VERJSON_RUNNER_DEFAULT "$legacy_default_var" "$default_selector"
-legacy_drift VERJSON_RUNNER_UNTRUSTED "$legacy_untrusted_var" "$untrusted_selector"
+for index in "${!untrusted_alias_names[@]}"; do
+  [ "$index" = 0 ] && continue
+  [ "${untrusted_alias_selectors[$index]}" = "$untrusted_selector" ] \
+    || drift="$drift- \`${untrusted_alias_names[$index]}\` differs from CI_LANE_UNTRUSTED; values redacted because org-variable contents must not enter public logs or issues; an immutable caller can still route to the divergent lane"$'\n'
+done
 
 # Placement (#275). The two checks above ask whether repositories are admitted
 # and whether lanes have capacity. A runner registered WITHOUT `--runnergroup`
