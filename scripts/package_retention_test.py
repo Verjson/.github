@@ -75,7 +75,7 @@ class PackageRetentionTest(unittest.TestCase):
             for index, (version, _, digest) in enumerate(indexes, 1)
         ]
         inspector = mock.Mock()
-        inspector.raw.side_effect = {f"ghcr.io/Verjson/api:{version}": raw for version, raw, _ in indexes}.__getitem__
+        inspector.raw.side_effect = {f"ghcr.io/verjson/api:{version}": raw for version, raw, _ in indexes}.__getitem__
 
         default_safety = retention._container_safety("Verjson", target, versions, inspector, now)
         self.assertEqual(len(default_safety.protected_version_ids), 3)
@@ -112,7 +112,7 @@ class PackageRetentionTest(unittest.TestCase):
                 self.deleted.append(deletion)
 
         inspector = mock.Mock()
-        inspector.raw.side_effect = {f"ghcr.io/Verjson/api:{version}": raw for version, raw, _ in indexes}.__getitem__
+        inspector.raw.side_effect = {f"ghcr.io/verjson/api:{version}": raw for version, raw, _ in indexes}.__getitem__
         client = Client()
 
         plan = retention.build_plan(
@@ -171,7 +171,7 @@ class PackageRetentionTest(unittest.TestCase):
                 self.deleted.append(deletion)
 
         inspector = mock.Mock()
-        inspector.raw.side_effect = {f"ghcr.io/Verjson/api:1.0.0": raw}.__getitem__
+        inspector.raw.side_effect = {f"ghcr.io/verjson/api:1.0.0": raw}.__getitem__
         client = Client()
         now = datetime.datetime(2026, 8, 18, tzinfo=datetime.timezone.utc)
 
@@ -329,6 +329,11 @@ class PackageRetentionTest(unittest.TestCase):
             indexes.append((version, raw, f"sha256:{hashlib.sha256(raw).hexdigest()}"))
         orphan_raw = raw_manifest("application/vnd.oci.image.manifest.v1+json", annotations={"orphan": "true"})
         orphan_digest = f"sha256:{hashlib.sha256(orphan_raw).hexdigest()}"
+        artifact_raw = raw_manifest(
+            "application/vnd.oci.image.manifest.v1+json",
+            artifactType="application/vnd.in-toto+json",
+        )
+        artifact_digest = f"sha256:{hashlib.sha256(artifact_raw).hexdigest()}"
         fresh_raw = raw_manifest("application/vnd.oci.image.manifest.v1+json", annotations={"fresh": "true"})
         fresh_digest = f"sha256:{hashlib.sha256(fresh_raw).hexdigest()}"
         versions = [
@@ -339,13 +344,15 @@ class PackageRetentionTest(unittest.TestCase):
             {"id": 13, "name": provenance_digest, "created_at": "2026-07-01T00:00:00Z", "metadata": {"container": {"tags": []}}},
             {"id": 11, "name": orphan_digest, "created_at": "2026-07-01T00:00:00Z", "metadata": {"container": {"tags": []}}},
             {"id": 12, "name": fresh_digest, "created_at": "2026-08-17T12:00:00Z", "metadata": {"container": {"tags": []}}},
+            {"id": 14, "name": artifact_digest, "created_at": "2026-07-01T00:00:00Z", "metadata": {"container": {"tags": []}}},
         ]
         raw_by_reference = {
-            **{f"ghcr.io/Verjson/api:{version}": raw for version, raw, _ in indexes},
-            f"ghcr.io/Verjson/api@{child_digest}": child_raw,
-            f"ghcr.io/Verjson/api@{provenance_digest}": provenance_raw,
-            f"ghcr.io/Verjson/api@{orphan_digest}": orphan_raw,
-            f"ghcr.io/Verjson/api@{fresh_digest}": fresh_raw,
+            **{f"ghcr.io/verjson/api:{version}": raw for version, raw, _ in indexes},
+            f"ghcr.io/verjson/api@{child_digest}": child_raw,
+            f"ghcr.io/verjson/api@{provenance_digest}": provenance_raw,
+            f"ghcr.io/verjson/api@{orphan_digest}": orphan_raw,
+            f"ghcr.io/verjson/api@{artifact_digest}": artifact_raw,
+            f"ghcr.io/verjson/api@{fresh_digest}": fresh_raw,
         }
         inspector = mock.Mock()
         inspector.raw.side_effect = raw_by_reference.__getitem__
@@ -356,7 +363,34 @@ class PackageRetentionTest(unittest.TestCase):
         self.assertNotIn(13, safety.deletable_untagged_ids)
         self.assertIn(10, safety.protected_version_ids)
         self.assertIn(13, safety.protected_version_ids)
-        self.assertNotIn(f"ghcr.io/Verjson/api@{fresh_digest}", [call.args[0] for call in inspector.raw.call_args_list])
+        self.assertIn(14, safety.protected_version_ids)
+        self.assertNotIn(14, safety.deletable_untagged_ids)
+        self.assertNotIn(f"ghcr.io/verjson/api@{fresh_digest}", [call.args[0] for call in inspector.raw.call_args_list])
+
+    def test_untagged_manifest_bytes_must_match_the_package_digest(self):
+        target = retention.Target("container", "api", "3.0.0")
+        raw = json.dumps(
+            {"schemaVersion": 2, "mediaType": "application/vnd.oci.image.manifest.v1+json"},
+            separators=(",", ":"),
+        ).encode()
+        stable_digest = f"sha256:{hashlib.sha256(raw).hexdigest()}"
+        claimed_digest = "sha256:" + "a" * 64
+        versions = [
+            {"id": 1, "name": stable_digest, "created_at": "2026-07-01T00:00:00Z", "metadata": {"container": {"tags": ["3.0.0"]}}},
+            {"id": 2, "name": claimed_digest, "created_at": "2026-07-01T00:00:00Z", "metadata": {"container": {"tags": []}}},
+        ]
+        inspector = mock.Mock()
+        inspector.raw.return_value = raw
+
+        with self.assertRaisesRegex(retention.RetentionError, "does not match GitHub package digest"):
+            retention._container_safety(
+                "Verjson",
+                target,
+                versions,
+                inspector,
+                datetime.datetime(2026, 8, 18, tzinfo=datetime.timezone.utc),
+                keep=1,
+            )
 
     def test_retained_alias_tagged_index_protects_its_untagged_children(self):
         target = retention.Target("container", "api", "3.0.0")
@@ -389,8 +423,8 @@ class PackageRetentionTest(unittest.TestCase):
         ]
         inspector = mock.Mock()
         inspector.raw.side_effect = {
-            "ghcr.io/Verjson/api:3.0.0": index_raw,
-            f"ghcr.io/Verjson/api@{child_digest}": child_raw,
+            "ghcr.io/verjson/api:3.0.0": index_raw,
+            f"ghcr.io/verjson/api@{child_digest}": child_raw,
         }.__getitem__
 
         safety = retention._container_safety("Verjson", target, versions, inspector, now)
@@ -429,9 +463,9 @@ class PackageRetentionTest(unittest.TestCase):
             ],
         ]
         raw_by_reference = {
-            **{f"ghcr.io/Verjson/api:{version}": raw for version, raw, _ in indexes},
-            f"ghcr.io/Verjson/api@{nested_digest}": nested_raw,
-            f"ghcr.io/Verjson/api@{old_digest}": old_raw,
+            **{f"ghcr.io/verjson/api:{version}": raw for version, raw, _ in indexes},
+            f"ghcr.io/verjson/api@{nested_digest}": nested_raw,
+            f"ghcr.io/verjson/api@{old_digest}": old_raw,
         }
         inspector = mock.Mock()
         inspector.raw.side_effect = raw_by_reference.__getitem__

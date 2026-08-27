@@ -266,13 +266,18 @@ def _parse_time(value: Any, context: str) -> datetime.datetime:
     return parsed
 
 
-def _manifest(raw: bytes, reference: str) -> dict[str, Any]:
+def _oci_document(raw: bytes, reference: str) -> dict[str, Any]:
     try:
         manifest = json.loads(raw)
     except json.JSONDecodeError as error:
         raise RetentionError(f"OCI reference {reference} returned invalid JSON") from error
     if not isinstance(manifest, dict) or manifest.get("mediaType") not in OCI_IMAGE_TYPES:
         raise RetentionError(f"OCI reference {reference} is not an image manifest or index")
+    return manifest
+
+
+def _manifest(raw: bytes, reference: str) -> dict[str, Any]:
+    manifest = _oci_document(raw, reference)
     if "artifactType" in manifest:
         raise RetentionError(f"OCI reference {reference} is an artifact, not a deletable image")
     return manifest
@@ -288,7 +293,9 @@ def _container_safety(
 ) -> ContainerSafety:
     if not isinstance(keep, int) or isinstance(keep, bool) or keep < 1:
         raise RetentionError("retention count must be a positive integer")
-    repository = f"ghcr.io/{owner}/{target.name}"
+    # GitHub owner logins preserve display casing, while OCI registry
+    # namespaces are canonical lowercase references.
+    repository = f"ghcr.io/{owner.lower()}/{target.name}"
     stable: list[tuple[str, str]] = []
     untagged: list[dict[str, Any]] = []
     for version in versions:
@@ -339,7 +346,15 @@ def _container_safety(
             continue
         if digest in protected:
             continue
-        _manifest(inspector.raw(f"{repository}@{digest}"), f"{repository}@{digest}")
+        reference = f"{repository}@{digest}"
+        raw = inspector.raw(reference)
+        actual_digest = f"sha256:{hashlib.sha256(raw).hexdigest()}"
+        if actual_digest != digest:
+            raise RetentionError(f"OCI reference {reference} does not match GitHub package digest")
+        document = _oci_document(raw, reference)
+        if "artifactType" in document:
+            protected.add(digest)
+            continue
         safe.add(version_id)
     protected_version_ids = {
         version["id"]
