@@ -14,5 +14,6 @@ attacker content, multi-lane swaps remain provenance-bound, and existing-target
 behavior is unchanged under ADR 0146. The bubblewrap-dependent contracts run on
 an explicit hosted Ubuntu 24.04 job whose result remains fail-closed under the
 required `shell-tests` aggregate. Positive consumer-fixture failures now report
-their exact return code and bounded, credential-scrubbed stderr so a missing or
-unusable sandbox dependency is distinguishable without exposing runner secrets.
+their exact return code and a fixed allowlisted sandbox-cause category. Raw and
+unrecognized consumer stderr is always suppressed, so a missing or unusable
+sandbox dependency remains distinguishable without exposing runner secrets.

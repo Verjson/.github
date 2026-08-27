@@ -11,51 +11,102 @@ fail() { printf 'not ok - %s\n' "$1" >&2; failures=$((failures + 1)); }
 emit_failure_diagnostic() {
   local label="$1" status="$2" stderr_path="$3"
   python3 - "$label" "$status" "$stderr_path" <<'PY' >&2
-import re
 import sys
 from pathlib import Path
 
 label, status, stderr_path = sys.argv[1:]
-print(f"diagnostic - {label} return-code={status}")
+labels = {
+    "resolved compatibility consumer",
+    "cold-cache compatibility consumer",
+    "probe",
+}
+if label not in labels:
+    label = "compatibility consumer"
+if (
+    not status.isascii()
+    or not status.isdecimal()
+    or len(status) > 3
+    or int(status) > 255
+):
+    status = "unknown"
 path = Path(stderr_path)
-if not path.is_file():
-    print(f"diagnostic - {label} stderr=[missing]")
-    raise SystemExit
-with path.open("rb") as stream:
-    stream.seek(0, 2)
-    stream.seek(max(0, stream.tell() - 16384))
-    text = stream.read(16384).decode("utf-8", errors="replace")
-text = re.sub(
-    r"(?i)\b([A-Z0-9_]*(?:TOKEN|PASSWORD|SECRET|CREDENTIAL|AUTH)[A-Z0-9_]*)"
-    r"(\s*[:=]\s*)([^\s]+)",
-    r"\1\2[REDACTED]",
-    text,
-)
-text = re.sub(r"(?i)\bBearer\s+[^\s]+", "Bearer [REDACTED]", text)
-text = re.sub(
-    r"\b(?:github_pat_|gh[pousr]_)[A-Za-z0-9_]+",
-    "[REDACTED]",
-    text,
-)
-text = re.sub(r"(https?://)[^/@\s]+:[^/@\s]+@", r"\1[REDACTED]@", text)
-lines = text.splitlines()[-40:]
-if not lines:
-    print(f"diagnostic - {label} stderr=[empty]")
-for line in lines:
-    printable = "".join(character if character.isprintable() else "?" for character in line)
-    print(f"diagnostic - {label} stderr: {printable[:512]}")
+lines = []
+if path.is_file():
+    with path.open("rb") as stream:
+        stream.seek(0, 2)
+        stream.seek(max(0, stream.tell() - 16384))
+        text = stream.read(16384).decode("utf-8", errors="replace")
+    lines = text.splitlines()[-40:]
+
+unavailable = "trusted bubblewrap compatibility sandbox is unavailable"
+unsafe = "trusted bubblewrap compatibility sandbox is unsafe"
+namespace_denials = {
+    "bwrap: Creating new namespace failed: Operation not permitted",
+    "bwrap: Creating new namespace failed: Permission denied",
+    "bwrap: setting up uid map: Operation not permitted",
+    "bwrap: setting up uid map: Permission denied",
+    "bwrap: setting up gid map: Operation not permitted",
+    "bwrap: setting up gid map: Permission denied",
+    (
+        "bwrap: No permissions to create new namespace, likely because the kernel "
+        "does not allow non-privileged user namespaces. See <https://deb.li/bubblewrap> "
+        "or <file:///usr/share/doc/bubblewrap/README.Debian.gz>."
+    ),
+}
+runtime_denials = {
+    "bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted",
+    "bwrap: Can't mount proc on /newroot/proc: Operation not permitted",
+    "bwrap: Can't mount proc on /newroot/proc: Permission denied",
+}
+if unavailable in lines:
+    category = "bubblewrap-unavailable"
+elif unsafe in lines:
+    category = "bubblewrap-unsafe"
+elif any(line in namespace_denials for line in lines):
+    category = "bubblewrap-namespace-denied"
+elif any(line in runtime_denials for line in lines):
+    category = "bubblewrap-runtime-denied"
+else:
+    category = "stderr-suppressed"
+print(f"diagnostic - {label} return-code={status} stderr-category={category}")
 PY
 }
 
-printf '%s\n' 'bwrap: permission denied' 'NODE_AUTH_TOKEN=diagnostic-secret' >"$tmp/diagnostic-probe.log"
-diagnostic_probe="$(emit_failure_diagnostic probe 23 "$tmp/diagnostic-probe.log" 2>&1)"
-if [[ "$diagnostic_probe" == *'probe return-code=23'* ]] \
-  && [[ "$diagnostic_probe" == *'bwrap: permission denied'* ]] \
-  && [[ "$diagnostic_probe" == *'NODE_AUTH_TOKEN=[REDACTED]'* ]] \
-  && [[ "$diagnostic_probe" != *'diagnostic-secret'* ]]; then
-  pass "positive-failure diagnostics retain cause and return code while scrubbing credentials"
+printf '%s\n' \
+  'DEPLOY_KEY=deploy-secret-value' \
+  'OPENAI_API_KEY=openai-secret-value' \
+  '{"token":"json-secret-value"}' \
+  'bare-secret-value' \
+  'consumer-controlled-sentinel' \
+  >"$tmp/diagnostic-unknown.log"
+unknown_probe="$(emit_failure_diagnostic probe 23 "$tmp/diagnostic-unknown.log" 2>&1)"
+printf '%s\n' 'trusted bubblewrap compatibility sandbox is unavailable' \
+  >"$tmp/diagnostic-unavailable.log"
+unavailable_probe="$(emit_failure_diagnostic probe 1 "$tmp/diagnostic-unavailable.log" 2>&1)"
+printf '%s\n' 'trusted bubblewrap compatibility sandbox is unsafe' \
+  >"$tmp/diagnostic-unsafe.log"
+unsafe_probe="$(emit_failure_diagnostic probe 1 "$tmp/diagnostic-unsafe.log" 2>&1)"
+{
+  cat "$tmp/diagnostic-unknown.log"
+  printf '%s\n' 'bwrap: Creating new namespace failed: Operation not permitted'
+} >"$tmp/diagnostic-namespace.log"
+namespace_probe="$(emit_failure_diagnostic probe 1 "$tmp/diagnostic-namespace.log" 2>&1)"
+printf '%s\n' 'bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted' \
+  >"$tmp/diagnostic-runtime.log"
+runtime_probe="$(emit_failure_diagnostic probe 1 "$tmp/diagnostic-runtime.log" 2>&1)"
+if [ "$unknown_probe" = 'diagnostic - probe return-code=23 stderr-category=stderr-suppressed' ] \
+  && [ "$unavailable_probe" = 'diagnostic - probe return-code=1 stderr-category=bubblewrap-unavailable' ] \
+  && [ "$unsafe_probe" = 'diagnostic - probe return-code=1 stderr-category=bubblewrap-unsafe' ] \
+  && [ "$namespace_probe" = 'diagnostic - probe return-code=1 stderr-category=bubblewrap-namespace-denied' ] \
+  && [ "$runtime_probe" = 'diagnostic - probe return-code=1 stderr-category=bubblewrap-runtime-denied' ] \
+  && [[ "$unknown_probe" != *'deploy-secret-value'* ]] \
+  && [[ "$unknown_probe" != *'openai-secret-value'* ]] \
+  && [[ "$unknown_probe" != *'json-secret-value'* ]] \
+  && [[ "$unknown_probe" != *'bare-secret-value'* ]] \
+  && [[ "$unknown_probe" != *'consumer-controlled-sentinel'* ]]; then
+  pass "positive-failure diagnostics expose only exact allowlisted cause categories"
 else
-  fail "positive-failure diagnostics are missing or disclose credentials"
+  fail "positive-failure diagnostics expose unknown stderr or lose exact cause categories"
 fi
 
 python3 - "$workflow" "$tmp" <<'PY'
@@ -524,13 +575,13 @@ PY
     mutation_status=$?
   fi
   if [ "$mutation_status" -eq 2 ] \
-    && grep -qF 'diagnostic - resolved compatibility consumer return-code=1' "$mutation_root/run.log" \
-    && grep -qF 'diagnostic - cold-cache compatibility consumer return-code=1' "$mutation_root/run.log" \
-    && [ "$(grep -cF 'trusted bubblewrap compatibility sandbox is unavailable' "$mutation_root/run.log")" -eq 2 ] \
-    && ! grep -qF 'diagnostic-secret' "$mutation_root/run.log"; then
-    pass "missing-bwrap mutation reports both positive failures with scrubbed exact diagnostics"
+    && grep -qFx 'diagnostic - resolved compatibility consumer return-code=1 stderr-category=bubblewrap-unavailable' "$mutation_root/run.log" \
+    && grep -qFx 'diagnostic - cold-cache compatibility consumer return-code=1 stderr-category=bubblewrap-unavailable' "$mutation_root/run.log" \
+    && ! grep -qF 'trusted bubblewrap compatibility sandbox is unavailable' "$mutation_root/run.log" \
+    && ! grep -qF 'consumer-controlled-sentinel' "$mutation_root/run.log"; then
+    pass "missing-bwrap mutation reports both positive failures with exact allowlisted categories"
   else
-    fail "missing-bwrap mutation did not preserve exact scrubbed positive-failure diagnostics"
+    fail "missing-bwrap mutation did not preserve exact allowlisted positive-failure categories"
   fi
 fi
 
