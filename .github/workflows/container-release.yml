@@ -102,7 +102,7 @@ jobs:
         run: |
           set -euo pipefail
           [[ "$CONTRACT_REF" =~ ^[0-9a-f]{40}$ ]] || exit 1
-          [[ "$CANDIDATE_MANIFEST" =~ ^[0-9]+@(sha256:[0-9a-f]{64})$ ]] || exit 1
+          [[ "$CANDIDATE_MANIFEST" =~ ^([0-9]+)@(sha256:[0-9a-f]{64})$ ]] || exit 1
           candidate_artifact_digest="${BASH_REMATCH[2]}"
           [[ "$CONFIG_PATH" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]*\.json$ && "/$CONFIG_PATH/" != *"/../"* ]] || { echo "::error::config path must be repository relative"; exit 1; }
           release_run="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID")"
@@ -137,9 +137,9 @@ jobs:
             fi
           done < <(jq -r '.images | sort_by(.variant)[] | .repository' candidate-config.json)
           mkdir receipts
-          python scripts/container_attestation_verify.py --candidate candidate.json \
+          python3 scripts/container_attestation_verify.py --candidate candidate.json \
             --config candidate-config.json --state state.json --receipts receipts
-          python scripts/container_release_promotion.py --candidate candidate.json \
+          python3 scripts/container_release_promotion.py --candidate candidate.json \
             --config candidate-config.json --state state.json --version "$VERSION" --output release-manifest.json
           release_path="RELEASES/containers/v$VERSION.json"
           if git show-ref --verify --quiet "refs/tags/v$VERSION"; then
