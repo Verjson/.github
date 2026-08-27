@@ -161,6 +161,10 @@ def validate_authority(read_only, publication):
         "prepare", "acquire-private-node-dependencies", "publish-base",
         "publish-derived", "attest-sbom", "candidate-manifest"
     }, "publication entrypoint has an unexpected static graph"
+    for job_name in publication["jobs"]:
+        assert publication["jobs"][job_name]["runs-on"] == "ubuntu-24.04", (
+            f"deployable publication job {job_name} must use an independently trusted hosted runner"
+        )
     assert read_only["permissions"] == {"contents": "read"}
     assert publication["permissions"] == {"contents": "read"}
     for job_name, job in read_only["jobs"].items():
@@ -178,8 +182,12 @@ def validate_authority(read_only, publication):
         assert requested == {"contents": "read"}, (
             f"publication {job_name} must remain exact read-only preparation"
         )
-        assert read_only["jobs"][job_name] == publication["jobs"][job_name], (
-            f"shared trusted-input job {job_name} drifted between entrypoints"
+        read_only_job = dict(read_only["jobs"][job_name])
+        publication_job = dict(publication["jobs"][job_name])
+        read_only_job.pop("runs-on")
+        publication_job.pop("runs-on")
+        assert read_only_job == publication_job, (
+            f"shared trusted-input job {job_name} drifted beyond its trust-isolated runner assignment"
         )
     prepare_steps = read_only["jobs"]["prepare"]["steps"]
     checkout = next(step for step in prepare_steps if step.get("uses", "").startswith("actions/checkout@"))

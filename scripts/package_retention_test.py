@@ -311,8 +311,15 @@ class PackageRetentionTest(unittest.TestCase):
 
         child_raw = raw_manifest("application/vnd.oci.image.manifest.v1+json")
         child_digest = f"sha256:{hashlib.sha256(child_raw).hexdigest()}"
+        artifact_child_raw = raw_manifest(
+            "application/vnd.oci.image.manifest.v1+json",
+            annotations={"artifact-child": "true"},
+        )
+        artifact_child_digest = f"sha256:{hashlib.sha256(artifact_child_raw).hexdigest()}"
         provenance_raw = raw_manifest(
             "application/vnd.oci.image.manifest.v1+json",
+            artifactType="application/vnd.in-toto+json",
+            manifests=[{"digest": artifact_child_digest}],
             annotations={"vnd.docker.reference.type": "attestation-manifest"},
         )
         provenance_digest = f"sha256:{hashlib.sha256(provenance_raw).hexdigest()}"
@@ -329,6 +336,11 @@ class PackageRetentionTest(unittest.TestCase):
             indexes.append((version, raw, f"sha256:{hashlib.sha256(raw).hexdigest()}"))
         orphan_raw = raw_manifest("application/vnd.oci.image.manifest.v1+json", annotations={"orphan": "true"})
         orphan_digest = f"sha256:{hashlib.sha256(orphan_raw).hexdigest()}"
+        artifact_raw = raw_manifest(
+            "application/vnd.oci.image.manifest.v1+json",
+            artifactType="application/vnd.in-toto+json",
+        )
+        artifact_digest = f"sha256:{hashlib.sha256(artifact_raw).hexdigest()}"
         fresh_raw = raw_manifest("application/vnd.oci.image.manifest.v1+json", annotations={"fresh": "true"})
         fresh_digest = f"sha256:{hashlib.sha256(fresh_raw).hexdigest()}"
         versions = [
@@ -337,14 +349,18 @@ class PackageRetentionTest(unittest.TestCase):
         ] + [
             {"id": 10, "name": child_digest, "created_at": "2026-07-01T00:00:00Z", "metadata": {"container": {"tags": []}}},
             {"id": 13, "name": provenance_digest, "created_at": "2026-07-01T00:00:00Z", "metadata": {"container": {"tags": []}}},
+            {"id": 15, "name": artifact_child_digest, "created_at": "2026-07-01T00:00:00Z", "metadata": {"container": {"tags": []}}},
             {"id": 11, "name": orphan_digest, "created_at": "2026-07-01T00:00:00Z", "metadata": {"container": {"tags": []}}},
             {"id": 12, "name": fresh_digest, "created_at": "2026-08-17T12:00:00Z", "metadata": {"container": {"tags": []}}},
+            {"id": 14, "name": artifact_digest, "created_at": "2026-07-01T00:00:00Z", "metadata": {"container": {"tags": []}}},
         ]
         raw_by_reference = {
             **{f"ghcr.io/verjson/api:{version}": raw for version, raw, _ in indexes},
             f"ghcr.io/verjson/api@{child_digest}": child_raw,
             f"ghcr.io/verjson/api@{provenance_digest}": provenance_raw,
+            f"ghcr.io/verjson/api@{artifact_child_digest}": artifact_child_raw,
             f"ghcr.io/verjson/api@{orphan_digest}": orphan_raw,
+            f"ghcr.io/verjson/api@{artifact_digest}": artifact_raw,
             f"ghcr.io/verjson/api@{fresh_digest}": fresh_raw,
         }
         inspector = mock.Mock()
@@ -356,7 +372,76 @@ class PackageRetentionTest(unittest.TestCase):
         self.assertNotIn(13, safety.deletable_untagged_ids)
         self.assertIn(10, safety.protected_version_ids)
         self.assertIn(13, safety.protected_version_ids)
+        self.assertIn(15, safety.protected_version_ids)
+        self.assertNotIn(15, safety.deletable_untagged_ids)
+        self.assertIn(14, safety.protected_version_ids)
+        self.assertNotIn(14, safety.deletable_untagged_ids)
         self.assertNotIn(f"ghcr.io/verjson/api@{fresh_digest}", [call.args[0] for call in inspector.raw.call_args_list])
+
+    def test_untagged_manifest_bytes_must_match_the_package_digest(self):
+        target = retention.Target("container", "api", "3.0.0")
+        raw = json.dumps(
+            {"schemaVersion": 2, "mediaType": "application/vnd.oci.image.manifest.v1+json"},
+            separators=(",", ":"),
+        ).encode()
+        stable_digest = f"sha256:{hashlib.sha256(raw).hexdigest()}"
+        claimed_digest = "sha256:" + "a" * 64
+        versions = [
+            {"id": 1, "name": stable_digest, "created_at": "2026-07-01T00:00:00Z", "metadata": {"container": {"tags": ["3.0.0"]}}},
+            {"id": 2, "name": claimed_digest, "created_at": "2026-07-01T00:00:00Z", "metadata": {"container": {"tags": []}}},
+        ]
+        inspector = mock.Mock()
+        inspector.raw.return_value = raw
+
+        with self.assertRaisesRegex(retention.RetentionError, "does not match GitHub package digest"):
+            retention._container_safety(
+                "Verjson",
+                target,
+                versions,
+                inspector,
+                datetime.datetime(2026, 8, 18, tzinfo=datetime.timezone.utc),
+                keep=1,
+            )
+
+    def test_invalid_artifact_type_fails_closed(self):
+        raw_document = {
+            "schemaVersion": 2,
+            "mediaType": "application/vnd.oci.image.manifest.v1+json",
+        }
+        for artifact_type in (None, "", "   ", {"malformed": True}):
+            with self.subTest(artifact_type=artifact_type):
+                raw_document["artifactType"] = artifact_type
+                raw = json.dumps(raw_document, separators=(",", ":")).encode()
+                with self.assertRaisesRegex(retention.RetentionError, "invalid artifactType"):
+                    retention._oci_document(raw, "ghcr.io/verjson/api@sha256:" + "a" * 64)
+
+    def test_retained_artifact_with_malformed_children_fails_closed(self):
+        target = retention.Target("container", "api", "3.0.0")
+        raw = json.dumps(
+            {
+                "schemaVersion": 2,
+                "mediaType": "application/vnd.oci.image.manifest.v1+json",
+                "artifactType": "application/vnd.in-toto+json",
+                "manifests": "malformed",
+            },
+            separators=(",", ":"),
+        ).encode()
+        digest = f"sha256:{hashlib.sha256(raw).hexdigest()}"
+        versions = [
+            {"id": 1, "name": digest, "created_at": "2026-07-01T00:00:00Z", "metadata": {"container": {"tags": ["3.0.0"]}}},
+        ]
+        inspector = mock.Mock()
+        inspector.raw.return_value = raw
+
+        with self.assertRaisesRegex(retention.RetentionError, "ambiguous child descriptors"):
+            retention._container_safety(
+                "Verjson",
+                target,
+                versions,
+                inspector,
+                datetime.datetime(2026, 8, 18, tzinfo=datetime.timezone.utc),
+                keep=1,
+            )
 
     def test_retained_alias_tagged_index_protects_its_untagged_children(self):
         target = retention.Target("container", "api", "3.0.0")

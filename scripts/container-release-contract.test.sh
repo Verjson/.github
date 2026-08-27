@@ -58,6 +58,51 @@ if "$generator" workflow "$ref" ../hostile.json >/dev/null 2>&1; then
   echo "generator accepted a config path outside the source commit" >&2; exit 1
 fi
 workflow="$root/.github/workflows/container-release.yml"
+WORKFLOW="$workflow" python3 - <<'PY'
+import copy
+import os
+import yaml
+
+with open(os.environ["WORKFLOW"], encoding="utf-8") as stream:
+    workflow = yaml.safe_load(stream)
+
+def assert_provenance_boundary(document):
+    jobs = document["jobs"]
+    assert set(jobs) == {"promote", "retention"}, "release job graph is not exact"
+    assert jobs["promote"]["runs-on"] == "ubuntu-24.04", (
+        "release promotion and manifest attestation must use an independently trusted hosted runner"
+    )
+    retention = jobs["retention"]
+    assert retention["timeout-minutes"] == 30
+    assert retention["continue-on-error"] is True
+    assert retention["permissions"] == {"contents": "read", "packages": "write"}, (
+        "retention must remain the sole non-provenance runner exception"
+    )
+
+assert_provenance_boundary(workflow)
+
+extra_job = copy.deepcopy(workflow)
+extra_job["jobs"]["resign"] = {
+    "runs-on": '${{ fromJSON(vars.CI_LANE_TRUSTED) }}',
+    "permissions": {"id-token": "write", "attestations": "write"},
+    "steps": [],
+}
+try:
+    assert_provenance_boundary(extra_job)
+    raise AssertionError("release contract accepted an extra self-hosted attestation job")
+except AssertionError as error:
+    assert "job graph is not exact" in str(error)
+
+elevated_retention = copy.deepcopy(workflow)
+elevated_retention["jobs"]["retention"]["permissions"]["id-token"] = "write"
+elevated_retention["jobs"]["retention"]["permissions"]["attestations"] = "write"
+try:
+    assert_provenance_boundary(elevated_retention)
+    raise AssertionError("release contract accepted provenance authority in retention")
+except AssertionError as error:
+    assert "sole non-provenance" in str(error)
+PY
+grep -A8 '^  retention:$' "$workflow" | grep -qx '    timeout-minutes: 30'
 assert_python3_extractor() {
   local candidate=$1
   [ "$(grep -cE '^          python3 scripts/container_artifact_extract\.py candidate\.zip candidate\.json$' "$candidate")" -eq 1 ] &&

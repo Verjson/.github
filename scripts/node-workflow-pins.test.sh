@@ -28,8 +28,9 @@ for wf in "$ci" "$release" "$actions_ci"; do
     expected_checkouts=2
   elif [ "$wf" = "$actions_ci" ]; then
     # shell-test-groups' own checkout, plus adr-number-collision's isolated
-    # checkout of live PR state (Verjson/.github#983).
-    expected_checkouts=2
+    # checkout of live PR state (Verjson/.github#983), plus the hosted
+    # compatibility contract's isolated checkout (Verjson/.github#1114).
+    expected_checkouts=3
   fi
   if [ "$wf" != "$actions_ci" ]; then
     [ "$wf" = "$ci" ] || expected_setups=1

@@ -11,14 +11,21 @@ fails=0
 pass() { printf 'ok   - %s\n' "$1"; }
 fail() { printf 'FAIL - %s\n' "$1"; fails=$((fails + 1)); }
 
-if python3 - "$workflow" <<'PY'
+if python3 - "$workflow" "$manifest" <<'PY'
+import copy
 import sys
 import yaml
 
 with open(sys.argv[1], encoding="utf-8") as stream:
     document = yaml.safe_load(stream)
+manifest_text = open(sys.argv[2], encoding="utf-8").read()
 jobs = document["jobs"]
-assert set(jobs) == {"shell-test-groups", "adr-number-collision", "shell-tests"}
+assert set(jobs) == {
+    "shell-test-groups",
+    "hosted-compatibility-tests",
+    "adr-number-collision",
+    "shell-tests",
+}
 
 groups = jobs["shell-test-groups"]
 assert groups["timeout-minutes"] == 18
@@ -82,18 +89,126 @@ assert group_step["run"] == (
     'bash scripts/actions-ci-group.sh "${{ matrix.group }}"\n'
 )
 
+compatibility_commands = (
+    "bash scripts/ci-gate/node-ci-secretless-compatibility.test.sh",
+    "scripts/ci-gate/node-ci-secretless-compatibility-absent.test.py",
+)
+
+def validate_hosted_compatibility(candidate, candidate_manifest):
+    candidate_jobs = candidate["jobs"]
+    if "hosted-compatibility-tests" not in candidate_jobs:
+        raise AssertionError("missing hosted-compatibility-tests job")
+    hosted = candidate_jobs["hosted-compatibility-tests"]
+    assert hosted["runs-on"] == "ubuntu-24.04"
+    assert hosted["timeout-minutes"] == 8
+    assert hosted["steps"][0]["uses"] == (
+        "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1"
+    )
+    assert hosted["steps"][1] == {
+        "name": "Provision actions CI Python",
+        "uses": "actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97",
+        "with": {"python-version": "3.12.14"},
+    }
+    execution = next(
+        step for step in hosted["steps"]
+        if step.get("name") == "Run namespace-bound compatibility contracts"
+    )
+    assert execution["env"] == {"RUNNER_LABELS": ""}
+    assert execution["run"] == "\n".join((*compatibility_commands, ""))
+    for command in compatibility_commands:
+        assert execution["run"].splitlines().count(command) == 1
+        assert not any(
+            line.endswith("\t" + command)
+            for line in candidate_manifest.splitlines()
+        )
+    aggregate = candidate_jobs["shell-tests"]
+    assert "hosted-compatibility-tests" in aggregate["needs"]
+    assert aggregate["steps"][0]["env"]["COMPATIBILITY_RESULT"] == (
+        "${{ needs.hosted-compatibility-tests.result }}"
+    )
+    assert 'if [ "$COMPATIBILITY_RESULT" != "success" ]; then' in (
+        aggregate["steps"][0]["run"]
+    )
+
+validate_hosted_compatibility(document, manifest_text)
+
+missing_job_mutant = copy.deepcopy(document)
+del missing_job_mutant["jobs"]["hosted-compatibility-tests"]
+try:
+    validate_hosted_compatibility(missing_job_mutant, manifest_text)
+except AssertionError as error:
+    assert str(error) == "missing hosted-compatibility-tests job"
+    print("ok - entire hosted compatibility job removal fails for missing job")
+else:
+    raise AssertionError("missing hosted compatibility job passed")
+
+for command in compatibility_commands:
+    mutant = copy.deepcopy(document)
+    execution = next(
+        step for step in mutant["jobs"]["hosted-compatibility-tests"]["steps"]
+        if step.get("name") == "Run namespace-bound compatibility contracts"
+    )
+    execution["run"] = execution["run"].replace(command + "\n", "", 1)
+    try:
+        validate_hosted_compatibility(mutant, manifest_text)
+    except (AssertionError, KeyError, StopIteration):
+        print(f"ok - hosted compatibility removal fails closed: {command}")
+    else:
+        raise AssertionError(f"hosted compatibility removal passed: {command}")
+
+    try:
+        validate_hosted_compatibility(
+            document,
+            manifest_text + f"platform\t{command}\n",
+        )
+    except (AssertionError, KeyError, StopIteration):
+        print(f"ok - persistent platform reassignment fails closed: {command}")
+    else:
+        raise AssertionError(f"persistent platform reassignment passed: {command}")
+
+runner_mutant = copy.deepcopy(document)
+runner_mutant["jobs"]["hosted-compatibility-tests"]["runs-on"] = (
+    document["jobs"]["shell-test-groups"]["runs-on"]
+)
+try:
+    validate_hosted_compatibility(runner_mutant, manifest_text)
+except (AssertionError, KeyError, StopIteration):
+    print("ok - hosted compatibility runner drift fails closed")
+else:
+    raise AssertionError("hosted compatibility runner drift passed")
+
+aggregate_mutant = copy.deepcopy(document)
+aggregate_mutant["jobs"]["shell-tests"]["needs"].remove(
+    "hosted-compatibility-tests"
+)
+try:
+    validate_hosted_compatibility(aggregate_mutant, manifest_text)
+except (AssertionError, KeyError, StopIteration):
+    print("ok - hosted compatibility aggregate removal fails closed")
+else:
+    raise AssertionError("hosted compatibility aggregate removal passed")
+
 required = jobs["shell-tests"]
-assert required["needs"] == ["shell-test-groups", "adr-number-collision"]
+assert required["needs"] == [
+    "shell-test-groups",
+    "hosted-compatibility-tests",
+    "adr-number-collision",
+]
 assert required["if"] == "${{ always() }}"
 assert required["timeout-minutes"] == 2
 assert "strategy" not in required
 assert required["steps"][0]["env"] == {
     "GROUP_RESULT": "${{ needs.shell-test-groups.result }}",
+    "COMPATIBILITY_RESULT": "${{ needs.hosted-compatibility-tests.result }}",
     "COLLISION_RESULT": "${{ needs.adr-number-collision.result }}",
 }
 assert required["steps"][0]["run"] == (
     'if [ "$GROUP_RESULT" != "success" ]; then\n'
     '  echo "::error::one or more shell-test groups failed"\n'
+    "  exit 1\n"
+    "fi\n"
+    'if [ "$COMPATIBILITY_RESULT" != "success" ]; then\n'
+    '  echo "::error::hosted compatibility contracts failed"\n'
     "  exit 1\n"
     "fi\n"
     '# adr-number-collision only runs on pull_request (needs live PR\n'
@@ -109,9 +224,9 @@ assert adr_collision["if"] == "github.event_name == 'pull_request'"
 assert groups["runs-on"] == required["runs-on"]
 PY
 then
-  pass "three bounded groups fan out while unmatrixed shell-tests preserves the required context"
+  pass "bounded groups, hosted compatibility, and required shell-tests aggregation stay bound"
 else
-  fail "bounded fan-out or required-context aggregation is missing"
+  fail "bounded fan-out, hosted compatibility, or required aggregation is missing"
 fi
 
 cat >"$tmp/python-without-pip" <<'SH'
