@@ -19,29 +19,46 @@ pass() { printf 'ok   - %s\n' "$1"; }
 fail() { printf 'FAIL - %s\n' "$1"; fails=$((fails + 1)); }
 
 # A literal hosted selector is allowed only where fixed hosted placement is a
-# security boundary: the credentialless invalid-route guard and the privileged
-# fleet audit. Portable fallbacks otherwise belong only in organization-aware
-# expressions in reusable definitions.
-literal_hosted_sites="$(
-  grep -HnE '^    runs-on:[[:space:]]+ubuntu-24\.04$' "${workflow_files[@]}" \
-    | sed -E 's#^.*/([^/]+):[0-9]+:#\1:#' \
-    | sort
-)"
-expected_literal_hosted_sites=$'ai-privileged-merge.yml:    runs-on: ubuntu-24.04\nai-privileged-merge.yml:    runs-on: ubuntu-24.04\nprivileged-merge-conformance.yml:    runs-on: ubuntu-24.04'
-[ "$literal_hosted_sites" = "$expected_literal_hosted_sites" ] \
-  && pass "the two security-boundary jobs use exact fixed hosted selectors" \
-  || fail "fixed hosted selector inventory drifted: $literal_hosted_sites"
+# reviewed security boundary. Inventory file AND job identity so another job in
+# an allowed workflow cannot inherit the exception by proximity.
+literal_hosted_job_sites() {
+  local workflow
+  for workflow in "$@"; do
+    awk -v file="$(basename "$workflow")" '
+      /^  [A-Za-z0-9_-]+:$/ {
+        job = $1
+        sub(/:$/, "", job)
+      }
+      /^    runs-on:[[:space:]]+(\[)?ubuntu-(24\.04|latest)([][:space:],]|$)/ {
+        print file ":" job ":" $0
+      }
+    ' "$workflow"
+  done | sort
+}
+
+literal_hosted_sites="$(literal_hosted_job_sites "${workflow_files[@]}")"
+expected_literal_hosted_sites=$'ai-privileged-merge.yml:invalid_verjson_route:    runs-on: ubuntu-24.04\nai-privileged-merge.yml:validate_privileged_lane:    runs-on: ubuntu-24.04\ncontainer-candidate-publish.yml:acquire-private-node-dependencies:    runs-on: ubuntu-24.04\ncontainer-candidate-publish.yml:attest-sbom:    runs-on: ubuntu-24.04\ncontainer-candidate-publish.yml:candidate-manifest:    runs-on: ubuntu-24.04\ncontainer-candidate-publish.yml:prepare:    runs-on: ubuntu-24.04\ncontainer-candidate-publish.yml:publish-base:    runs-on: ubuntu-24.04\ncontainer-candidate-publish.yml:publish-derived:    runs-on: ubuntu-24.04\ncontainer-release.yml:promote:    runs-on: ubuntu-24.04\nprivileged-merge-conformance.yml:audit:    runs-on: ubuntu-24.04'
+validate_literal_hosted_inventory() {
+  local sites="$1"
+  [ "$sites" = "$expected_literal_hosted_sites" ] || {
+    printf 'fixed hosted selector inventory drifted: %s\n' "$sites" >&2
+    return 1
+  }
+}
+if inventory_error="$(validate_literal_hosted_inventory "$literal_hosted_sites" 2>&1)"; then
+  pass "reviewed security-boundary jobs use exact fixed hosted selectors"
+else
+  fail "$inventory_error"
+fi
 
 literal_hosted="$(
-  grep -HnE '^    runs-on:[[:space:]]+(\[)?ubuntu-(24\.04|latest)([][:space:],]|$)' \
-    "${workflow_files[@]}" \
-    | grep -vE '/ai-privileged-merge\.yml:[0-9]+:[[:space:]]+runs-on: ubuntu-24\.04$' \
-    | grep -vE '/privileged-merge-conformance\.yml:[0-9]+:[[:space:]]+runs-on: ubuntu-24\.04$' \
-    || true
+  awk 'NR == FNR { reviewed[$0] = 1; next } !($0 in reviewed)' \
+    <(printf '%s\n' "$expected_literal_hosted_sites") \
+    <(printf '%s\n' "$literal_hosted_sites")
 )"
 [ -z "$literal_hosted" ] \
-  && pass "Verjson-local jobs contain no literal GitHub-hosted runs-on selector" \
-  || fail "literal GitHub-hosted selectors found: $literal_hosted"
+  && pass "Verjson-local jobs contain no unreviewed literal GitHub-hosted runs-on selector" \
+  || fail "unreviewed literal GitHub-hosted selectors found: $literal_hosted"
 
 # A hosted fallback may only ever be reached by a caller OUTSIDE Verjson. A
 # Verjson-owned job that resolves to `ubuntu-24.04` is not a soft fallback — it
@@ -70,6 +87,9 @@ literal_hosted="$(
 #    credential and uses fixed hosted capacity so unavailable visibility or an
 #    unregistered route produces an observable failure without trusting a
 #    persistent worker or mutable placement variable (ADR 0089).
+#  * container candidate publication and release promotion — every job that
+#    contributes deployable bytes or attestations uses fixed hosted capacity so
+#    the managed fleet cannot act as its own provenance root (ADR 0148).
 #  * the tail of a lane chain, `vars.CI_LANE_FALLBACK || '["ubuntu-24.04"]'`
 #    — ADR 0040's portability contract. It is only reached when an organization
 #    has no lane variable set at all, and hosted is the one landing that works
@@ -79,13 +99,14 @@ literal_hosted="$(
 #  * node-ci's secretless acquisition job (ADR 0086) — it carries a package
 #    credential while reading a PR-controlled lockfile, so it may use only the
 #    isolated untrusted lane or a fresh hosted runner, never the trusted fallback.
+# Exact raw hosted selectors are governed by the file/job inventory above;
+# this expression sweep handles portable fallbacks and other embedded routes.
 unsafe_portable="$(
   grep -HnE "^    runs-on:.*ubuntu-(24\\.04|latest)" "${workflow_files[@]}" \
     | grep -v "github.repository_owner != 'Verjson' && 'ubuntu-24.04'" \
     | grep -v "github.repository_owner == 'Verjson'.*|| 'ubuntu-24.04'" \
     | grep -vE '/ai-privileged-merge\.yml:[0-9]+:.*github\.event\.repository\.visibility == '\''public'\'' && '\''ubuntu-24\.04'\''.*self-hosted.*general' \
-    | grep -vE '/ai-privileged-merge\.yml:[0-9]+:[[:space:]]+runs-on: ubuntu-24\.04$' \
-    | grep -vE '/privileged-merge-conformance\.yml:[0-9]+:[[:space:]]+runs-on: ubuntu-24\.04$' \
+    | grep -vE ':[0-9]+:[[:space:]]+runs-on: ubuntu-24\.04$' \
     | grep -v "inputs.github-hosted-runner" \
     | grep -v "vars.CI_RUNNER_FASTLANE" \
     | grep -v "vars.CI_LANE_UNTRUSTED || '\[\"ubuntu-24.04\"\]'" \
@@ -446,6 +467,10 @@ resolve_route() {
     echo "could not extract runs-on for job '$job' from $(basename "$workflow")"
     return 1
   fi
+  if [ "$expression" = "ubuntu-24.04" ]; then
+    printf '%s' "$expression"
+    return 0
+  fi
   node "$evaluator" "$expression" "$repository" "$runner_input" \
     "$priv" "$var_default" "$var_untrusted" "$var_fastlane" "$runner_labels" \
     "$var_overflow" 2>&1
@@ -465,6 +490,94 @@ mutate_job_expression() {
     { print }
   ' "$source" >"$destination"
 }
+
+fixed_hosted_provenance_targets() {
+  cat <<'TARGETS'
+container-candidate-publish.yml prepare
+container-candidate-publish.yml acquire-private-node-dependencies
+container-candidate-publish.yml publish-base
+container-candidate-publish.yml publish-derived
+container-candidate-publish.yml attest-sbom
+container-candidate-publish.yml candidate-manifest
+container-release.yml promote
+TARGETS
+}
+
+validate_fixed_hosted_provenance_job() {
+  local workflow="$1" job="$2" expression
+  expression="$(extract_runs_on "$workflow" "$job")"
+  [ "$expression" = "ubuntu-24.04" ] || {
+    printf "hosted-provenance job %s/%s must use exact hosted selector 'ubuntu-24.04' (got '%s')\n" \
+      "$(basename "$workflow")" "$job" "$expression" >&2
+    return 1
+  }
+}
+
+while read -r provenance_workflow provenance_job; do
+  provenance_path="$workflows/$provenance_workflow"
+  if provenance_error="$(validate_fixed_hosted_provenance_job \
+    "$provenance_path" "$provenance_job" 2>&1)"; then
+    pass "$provenance_workflow/$provenance_job uses exact hosted provenance"
+  else
+    fail "$provenance_error"
+  fi
+
+  for provenance_mutation in trusted-lane ubuntu-latest wrong-version; do
+    case "$provenance_mutation" in
+      trusted-lane)
+        provenance_replacement='${{ fromJSON(vars.CI_LANE_TRUSTED || vars.CI_LANE_FALLBACK) }}'
+        ;;
+      ubuntu-latest)
+        provenance_replacement='ubuntu-latest'
+        ;;
+      wrong-version)
+        provenance_replacement='ubuntu-22.04'
+        ;;
+    esac
+    mutate_job_expression "$provenance_path" "$provenance_job" \
+      'ubuntu-24.04' "$provenance_replacement" "$mutated_workflow"
+    if provenance_error="$(validate_fixed_hosted_provenance_job \
+      "$mutated_workflow" "$provenance_job" 2>&1)"; then
+      fail "$provenance_workflow/$provenance_job $provenance_mutation mutation survived"
+    else
+      case "$provenance_error" in
+        *"must use exact hosted selector 'ubuntu-24.04'"*)
+          pass "$provenance_workflow/$provenance_job rejects $provenance_mutation for exact hosted-provenance reason"
+          ;;
+        *)
+          fail "$provenance_workflow/$provenance_job $provenance_mutation failed for wrong reason: $provenance_error"
+          ;;
+      esac
+    fi
+  done
+done < <(fixed_hosted_provenance_targets)
+
+retention_expression="$(extract_runs_on "$workflows/container-release.yml" retention)"
+mutate_job_expression "$workflows/container-release.yml" retention \
+  "$retention_expression" 'ubuntu-24.04' "$mutated_workflow"
+mutated_release_sites="$(
+  literal_hosted_job_sites "$mutated_workflow" \
+    | sed "s#^$(basename "$mutated_workflow"):#container-release.yml:#"
+)"
+mutated_literal_hosted_sites="$(
+  {
+    printf '%s\n' "$literal_hosted_sites" | grep -v '^container-release\.yml:'
+    printf '%s\n' "$mutated_release_sites"
+  } | sort
+)"
+if inventory_error="$(validate_literal_hosted_inventory \
+  "$mutated_literal_hosted_sites" 2>&1)"; then
+  fail "unallowlisted container-release retention literal-hosted mutation survived"
+else
+  case "$inventory_error" in
+    *"fixed hosted selector inventory drifted:"*)
+      pass "unallowlisted literal-hosted job fails the exact inventory"
+      ;;
+    *)
+      fail "unallowlisted literal-hosted mutation failed for wrong reason: $inventory_error"
+      ;;
+  esac
+fi
 
 # GitHub context selects terminal capacity directly; no runner-produced output
 # is trusted to place the secret-bearing job. The exact admission guard is
@@ -840,9 +953,9 @@ TARGETS
 for job in publish-base publish-derived candidate-manifest; do
   assert_route "$workflows/container-candidate-publish.yml" "$job" Verjson/.github '' false \
     '["self-hosted","trusted-canary"]' '["self-hosted","untrusted-canary"]' \
-    '["self-hosted","trusted-canary"]' "container-candidate $job — publication stays on the trusted lane"
+    'ubuntu-24.04' "container-candidate $job — Verjson publication uses fixed hosted provenance"
   assert_route "$workflows/container-candidate-publish.yml" "$job" Acme/widgets '' false '' '' \
-    'ubuntu-24.04' "container-candidate $job — external callers retain hosted portability"
+    'ubuntu-24.04' "container-candidate $job — external publication uses fixed hosted provenance"
   expression="$(extract_runs_on "$workflows/container-candidate-publish.yml" "$job")"
   case "$expression" in
     *inputs.runner*) fail "container-candidate $job must not accept the build-only runner override" ;;
@@ -852,9 +965,9 @@ done
 
 assert_route "$workflows/container-release.yml" promote Verjson/.github '' false \
   '["self-hosted","trusted-canary"]' '["self-hosted","untrusted-canary"]' \
-  '["self-hosted","trusted-canary"]' "container-release promote — release stays on the trusted lane"
+  'ubuntu-24.04' "container-release promote — Verjson release uses fixed hosted provenance"
 assert_route "$workflows/container-release.yml" promote Acme/widgets '' false '' '' \
-  'ubuntu-24.04' "container-release promote — external callers retain hosted portability"
+  'ubuntu-24.04' "container-release promote — external release uses fixed hosted provenance"
 
 for job in dry-run deploy; do
   assert_route "$workflows/container-deployment.yml" "$job" Verjson/.github '' false \
