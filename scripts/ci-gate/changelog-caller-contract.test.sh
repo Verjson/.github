@@ -1763,6 +1763,7 @@ private_artifact_release="$(bash "$gen" release-artifact "$sha" \
 grep -qF 'acquire-private-dependencies:' <<<"$private_artifact_release" \
   && grep -qF 'permissions:' <<<"$private_artifact_release" \
   && grep -qF 'packages: read' <<<"$private_artifact_release" \
+  && grep -qF 'timeout-minutes: 45' <<<"$private_artifact_release" \
   && grep -qF 'npm ci --ignore-scripts --audit=false --fund=false' <<<"$private_artifact_release" \
   && grep -qF 'fail-on-cache-miss: true' <<<"$private_artifact_release" \
   && grep -qF "APPROVED_INTERNAL_PACKAGES: '@verjson/ai,@verjson/ai-gguf'" <<<"$private_artifact_release" \
@@ -1940,6 +1941,19 @@ else
   grep -qF "exceeds ADR 0103's 45-minute bound" "$tmproot/run.out" \
     && pass "emitted suite rejects build timeouts above ADR 0103" \
     || fail "emitted suite rejected timeout mutation for the wrong reason: $(tail -2 "$tmproot/run.out")"
+fi
+
+private_acquisition_timeout_adopter="$tmproot/adopter-artifact-private-acquisition-timeout"
+cp -a "$private_artifact_adopter" "$private_acquisition_timeout_adopter"
+sed -i '/^  acquire-private-dependencies:/,/^  build:/ s/timeout-minutes: 45/timeout-minutes: 60/' \
+  "$private_acquisition_timeout_adopter/.github/workflows/release.yml"
+git -C "$private_acquisition_timeout_adopter" commit -aqm 'widen metered acquisition timeout'
+if run_adopter "$private_acquisition_timeout_adopter"; then
+  fail "emitted suite accepted an acquisition timeout above ADR 0103"
+else
+  grep -qF "acquisition matrix exceeds ADR 0103's 45-minute bound" "$tmproot/run.out" \
+    && pass "emitted suite rejects acquisition timeouts above ADR 0103" \
+    || fail "emitted suite rejected acquisition timeout mutation for the wrong reason: $(tail -2 "$tmproot/run.out")"
 fi
 
 private_lifecycle_adopter="$tmproot/adopter-artifact-private-lifecycle"
