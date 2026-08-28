@@ -33,6 +33,7 @@ from __future__ import annotations
 import argparse
 import os
 import re
+import stat
 import sys
 
 import yaml
@@ -316,6 +317,80 @@ REVIEWED_REUSABLE_INPUT_EXPRESSIONS = frozenset(
         "matrix.runner_labels",
     )
 )
+CANONICAL_RUNNER_CANARY = "runner-canary.yml"
+CANONICAL_RUNNER_CANARY_SELECTOR = [
+    "self-hosted",
+    "${{ inputs.runner_label }}",
+]
+
+
+def canonical_runner_canary_jobs(
+    report: Report,
+    path: str,
+    document: dict,
+    jobs: list[tuple[str, dict, int]],
+    consumer_policy: bool,
+    canonical_path: str | None,
+) -> frozenset[str]:
+    """Return the one narrowly reviewed direct-input selector job, if exact."""
+    if (
+        consumer_policy
+        or canonical_path is None
+        or os.path.abspath(path) != canonical_path
+    ):
+        return frozenset()
+
+    has_text_key = "on" in document
+    has_yaml11_key = True in document
+    trigger = document.get("on") if has_text_key else document.get(True)
+    trigger_keys = set(trigger) if isinstance(trigger, dict) else set()
+    valid_trigger = (
+        has_text_key != has_yaml11_key
+        and trigger_keys == {"workflow_dispatch"}
+        and isinstance(trigger["workflow_dispatch"], (dict, type(None)))
+    )
+    if not valid_trigger:
+        report.violation(
+            path,
+            getattr(document, "lines", {}).get("on", 0),
+            "canonical runner canary must be workflow_dispatch-only",
+        )
+
+    if len(jobs) != 1 or jobs[0][0] != "canary":
+        report.violation(path, 0, "canonical runner canary must contain only the canary job")
+        return frozenset()
+    name, body, line = jobs[0]
+    if body.get("runs-on") != CANONICAL_RUNNER_CANARY_SELECTOR:
+        report.violation(
+            path,
+            getattr(body, "lines", {}).get("runs-on", line),
+            "canonical runner canary runs-on must exactly equal "
+            "[self-hosted, ${{ inputs.runner_label }}]",
+        )
+        return frozenset()
+    return frozenset({name}) if valid_trigger else frozenset()
+
+
+def canonical_runner_canary_path(workflow_dir: str, consumer_policy: bool) -> str | None:
+    """Resolve authority from the process repository root, never the scan argument."""
+    if consumer_policy:
+        return None
+    repository_root = os.path.realpath(os.getcwd())
+    expected_dir = os.path.join(repository_root, ".github", "workflows")
+    supplied_dir = os.path.abspath(workflow_dir)
+    if supplied_dir != expected_dir or os.path.realpath(supplied_dir) != expected_dir:
+        return None
+    candidate = os.path.join(expected_dir, CANONICAL_RUNNER_CANARY)
+    if os.path.lexists(candidate):
+        try:
+            mode = os.lstat(candidate).st_mode
+        except OSError as error:
+            raise Undetermined(f"{candidate}: cannot lstat canonical runner canary: {error}") from error
+        if not stat.S_ISREG(mode):
+            raise Undetermined(
+                f"{candidate}: canonical runner canary must be a regular non-symlink file"
+            )
+    return candidate
 
 
 def normalize_dereferences(text: str) -> str:
@@ -481,7 +556,8 @@ def check_reusable_runner_inputs(
 
 
 def check_job(report: Report, path: str, name: str, body: dict, line: int,
-              visibility: str, consumer_policy: bool = False) -> None:
+              visibility: str, consumer_policy: bool = False,
+              canonical_canary: bool = False) -> None:
     if consumer_policy:
         check_reusable_runner_inputs(report, path, name, body, line)
     if "runs-on" not in body:
@@ -498,8 +574,13 @@ def check_job(report: Report, path: str, name: str, body: dict, line: int,
     if "matrix." in normalize_dereferences(raw_runs_on):
         selector_values.append(body.get("strategy"))
     try:
+        reviewed_expressions = (
+            frozenset({"inputs.runner_label"})
+            if canonical_canary
+            else REVIEWED_SELECTOR_EXPRESSIONS
+        )
         for value in selector_values:
-            validate_selector_expressions(value)
+            validate_selector_expressions(value, reviewed_expressions)
     except Undetermined as error:
         report.anomaly(f"{path}:{runs_on_line}: job '{name}': {error}")
         return
@@ -789,6 +870,9 @@ def collect_workflow_files(workflow_dir: str) -> list[str]:
 def main(argv: list[str]) -> int:
     try:
         arguments = parse_arguments(argv)
+        canonical_canary_path = canonical_runner_canary_path(
+            arguments.workflow_dir, arguments.consumer_policy
+        )
         workflow_files = collect_workflow_files(arguments.workflow_dir)
     except Undetermined as error:
         print(f"UNDETERMINED: {error}", file=sys.stderr)
@@ -809,6 +893,14 @@ def main(argv: list[str]) -> int:
             continue
         if references_os_lane:
             check_os_lane_trigger(report, path, document)
+        canonical_jobs = canonical_runner_canary_jobs(
+            report,
+            path,
+            document,
+            jobs,
+            arguments.consumer_policy,
+            canonical_canary_path,
+        )
         for name, body, line in jobs:
             check_job(
                 report,
@@ -818,6 +910,7 @@ def main(argv: list[str]) -> int:
                 line,
                 arguments.visibility,
                 arguments.consumer_policy,
+                name in canonical_jobs,
             )
 
     for message in report.anomalies:

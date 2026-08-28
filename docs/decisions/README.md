@@ -11,6 +11,7 @@ Reverse-chronological index of org-level decisions.
 <!-- BEGIN ADR INDEX -->
 | # | Date | Decision |
 |---|------|----------|
+| [0150](0150-immutable-exact-runner-canary/README.md) | 2026-08-28 | Publish the exact-runner canary at an immutable ref |
 | [0149](0149-authorize-exact-secretless-call-subsets/README.md) | 2026-08-27 | Authorize exact secretless call subsets |
 | [0148](0148-hosted-runner-provenance/README.md) | 2026-08-27 | Produce deployable runner provenance on hosted infrastructure |
 | [0147](0147-route-untrusted-ci-to-ephemeral-hosted-runners/README.md) | 2026-08-27 | Route untrusted CI to ephemeral hosted runners |

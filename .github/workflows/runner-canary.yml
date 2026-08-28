@@ -1,0 +1,135 @@
+name: Canonical database-backed runner canary
+run-name: runner-canary-${{ inputs.transaction_nonce }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      runner_name: { required: true, type: string }
+      runner_id: { required: true, type: string }
+      runner_label: { required: true, type: string }
+      transaction_nonce: { required: true, type: string }
+      release_manifest: { required: true, type: string }
+      release_variant: { required: true, type: string }
+      image_digest: { required: true, type: string }
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  canary:
+    environment: runner-fleet-production
+    timeout-minutes: 30
+    runs-on: [self-hosted, '${{ inputs.runner_label }}']
+    services:
+      postgres:
+        image: postgres@sha256:18cfe3ef5e6815560c98237d6216d1e5119702fb0f3894c8785dd58b8bbe5d73 # 17-alpine
+        env:
+          POSTGRES_PASSWORD: canary
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s --health-timeout 3s --health-retries 12
+    steps:
+      - name: Exact runner and database/Docker/PowerShell admission
+        env:
+          EXPECTED_RUNNER: ${{ inputs.runner_name }}
+          RUNNER_ID: ${{ inputs.runner_id }}
+          TRANSACTION_NONCE: ${{ inputs.transaction_nonce }}
+          RELEASE_MANIFEST: ${{ inputs.release_manifest }}
+          RELEASE_VARIANT: ${{ inputs.release_variant }}
+          IMAGE_DIGEST: ${{ inputs.image_digest }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -Eeuo pipefail
+          test "$RUNNER_NAME" = "$EXPECTED_RUNNER"
+          pwsh --version >/dev/null
+          docker run --rm --network host postgres@sha256:18cfe3ef5e6815560c98237d6216d1e5119702fb0f3894c8785dd58b8bbe5d73 pg_isready -h 127.0.0.1 -U postgres
+          network="runner-canary-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          sibling="runner-canary-sibling-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          build_image="runner-canary:${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          cleanup_signal_status=0
+          record_cleanup_signal() {
+            if [ "$cleanup_signal_status" -eq 0 ]; then cleanup_signal_status=$1; fi
+          }
+          cleanup() {
+            status=$?
+            trap - EXIT
+            trap 'record_cleanup_signal 130' INT
+            trap 'record_cleanup_signal 143' TERM
+            cleanup_failed=0
+            docker rm -f "$sibling" >/dev/null 2>&1 || true
+            if ! remaining=$(docker container ls -a --filter "name=^/${sibling}$" --format '{{.Names}}'); then
+              cleanup_failed=1
+            elif [ -n "$remaining" ]; then cleanup_failed=1; fi
+            docker network rm "$network" >/dev/null 2>&1 || true
+            if ! remaining=$(docker network ls --filter "name=^${network}$" --format '{{.Name}}'); then
+              cleanup_failed=1
+            elif [ -n "$remaining" ]; then cleanup_failed=1; fi
+            docker image rm "$build_image" >/dev/null 2>&1 || true
+            if ! remaining=$(docker image ls --filter "reference=${build_image}" --format '{{.Repository}}:{{.Tag}}'); then
+              cleanup_failed=1
+            elif [ -n "$remaining" ]; then cleanup_failed=1; fi
+            # Bash runs pending traps between commands. This boundary lets a signal queued by
+            # the final proof latch before finalization disables further signal delivery.
+            :
+            trap '' INT TERM
+            final_signal_status=$cleanup_signal_status
+            final_status=0
+            if [ "$final_signal_status" -ne 0 ]; then
+              final_status=$final_signal_status
+            elif [ "$status" -ne 0 ]; then
+              final_status=$status
+            elif [ "$cleanup_failed" -ne 0 ]; then
+              final_status=1
+            fi
+            if [ "$final_status" -ne 0 ]; then
+              rm -f runner-promotion-receipt.json receipt.tmp
+            fi
+            exit "$final_status"
+          }
+          interrupted() { trap '' INT TERM; exit "$1"; }
+          trap cleanup EXIT
+          trap 'interrupted 130' INT
+          trap 'interrupted 143' TERM
+          docker network create "$network" >/dev/null
+          docker run -d --name "$sibling" --network "$network" nginx@sha256:db35bfc6b2951e7f8a72db5db120288c127ffaeeb4a6d4b95a26fead017d5913 >/dev/null
+          docker run --rm --network "$network" curlimages/curl@sha256:9a1ed35addb45476afa911696297f8e115993df459278ed036182dd2cd22b67b --fail "http://$sibling" >/dev/null
+          docker build --pull -t "$build_image" - <<'DOCKERFILE'
+          FROM alpine@sha256:14358309a308569c32bdc37e2e0e9694be33a9d99e68afb0f5ff33cc1f695dce
+          RUN printf canary >/canary
+          DOCKERFILE
+          free_bytes=$(df -PB1 /var/lib/docker | awk 'NR==2 {print $4}')
+          free_inodes=$(df -Pi /var/lib/docker | awk 'NR==2 {print 100-$5}')
+          test "$free_bytes" -ge 10737418240
+          test "$free_inodes" -ge 10
+          job_id=$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/jobs?filter=latest" --jq '.jobs | map(select(.name == "canary")) | if length == 1 then .[0].id else error("ambiguous job") end')
+          observed_at=$(date -u +%FT%TZ)
+          jq -nSc \
+            --arg transactionNonce "$TRANSACTION_NONCE" --argjson runnerId "$RUNNER_ID" --arg runnerName "$RUNNER_NAME" \
+            --arg manifest "$RELEASE_MANIFEST" --arg variant "$RELEASE_VARIANT" --arg imageDigest "$IMAGE_DIGEST" \
+            --argjson runId "$GITHUB_RUN_ID" --argjson jobId "$job_id" --argjson runAttempt "$GITHUB_RUN_ATTEMPT" \
+              --arg headSha "$GITHUB_SHA" --arg workflowRef "$GITHUB_REF_NAME" --arg observedAt "$observed_at" --argjson freeBytes "$free_bytes" \
+            --argjson freeInodePercent "$free_inodes" \
+            '{schemaVersion:2,contract:"verjson-runner-promotion/2",transactionNonce:$transactionNonce,
+              runner:{id:$runnerId,name:$runnerName},release:{manifest:$manifest,variant:$variant,imageDigest:$imageDigest},
+              canary:{repository:"Verjson/.github",workflow:"canonical-db-backed-runner-canary",
+                runUrl:("https://github.com/Verjson/.github/actions/runs/"+($runId|tostring)),
+                jobUrl:("https://github.com/Verjson/.github/actions/runs/"+($runId|tostring)+"/job/"+($jobId|tostring)),
+                conclusion:"success",runId:$runId,jobId:$jobId,runAttempt:$runAttempt,event:"workflow_dispatch",
+                headBranch:$workflowRef,headSha:$headSha,workflowPath:".github/workflows/runner-canary.yml",workflowSha:$headSha,
+                databaseServiceReachable:true,dockerServiceReachable:true,pwshExecuted:true},
+              imageBuild:{conclusion:"success",imageDigest:$imageDigest,diskBytesConsumed:0},
+              postCanary:{freeBytes:$freeBytes,freeInodePercent:$freeInodePercent,observedAt:$observedAt},
+              dependencies:{uploadArtifactCommit:"ea165f8d65b6e75b540449e92b4886f43607fa02",postgresImage:"postgres@sha256:18cfe3ef5e6815560c98237d6216d1e5119702fb0f3894c8785dd58b8bbe5d73",nginxImage:"nginx@sha256:db35bfc6b2951e7f8a72db5db120288c127ffaeeb4a6d4b95a26fead017d5913",curlImage:"curlimages/curl@sha256:9a1ed35addb45476afa911696297f8e115993df459278ed036182dd2cd22b67b",buildBaseImage:"alpine@sha256:14358309a308569c32bdc37e2e0e9694be33a9d99e68afb0f5ff33cc1f695dce"},
+              artifact:{name:"runner-promotion-receipt",contentDigest:""}}' >runner-promotion-receipt.json
+          digest=$(jq -cS . runner-promotion-receipt.json | tr -d '\n' | sha256sum | awk '{print $1}')
+          jq --arg digest "sha256:$digest" '.artifact.contentDigest=$digest' runner-promotion-receipt.json >receipt.tmp
+          mv receipt.tmp runner-promotion-receipt.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: runner-promotion-receipt
+          path: runner-promotion-receipt.json
+          if-no-files-found: error
+          retention-days: 7

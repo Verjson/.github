@@ -15,6 +15,7 @@ quietly loses coverage is how the TAB/IFS false negative would come back.
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -119,6 +120,40 @@ def assert_metered_only(fixture: str, expected_code: int, label: str) -> None:
             f"{label} (expected exit {expected_code}, got {code}: "
             f"{output.strip()})"
         )
+
+
+def run_canonical_fixture(fixture: str) -> tuple[int, str]:
+    exercised_fixtures.add(fixture)
+    with tempfile.TemporaryDirectory() as repository:
+        workflows = os.path.join(repository, ".github", "workflows")
+        os.makedirs(workflows)
+        for entry in os.listdir(os.path.join(FIXTURES, fixture)):
+            shutil.copy2(os.path.join(FIXTURES, fixture, entry), workflows)
+        completed = subprocess.run(
+            [sys.executable, SCRIPT, "--visibility", "public", ".github/workflows"],
+            cwd=repository,
+            capture_output=True,
+            text=True,
+        )
+        return completed.returncode, completed.stdout + completed.stderr
+
+
+def assert_canonical_clean(fixture: str, label: str) -> None:
+    code, output = run_canonical_fixture(fixture)
+    if code == 0:
+        ok(label)
+    else:
+        fail(f"{label} (expected exit 0, got {code}: {output.strip()})")
+
+
+def assert_canonical_violation(fixture: str, expected: str, label: str) -> None:
+    code, output = run_canonical_fixture(fixture)
+    if code != 1:
+        fail(f"{label} (expected exit 1, got {code}: {output.strip()})")
+    elif expected not in output:
+        fail(f"{label} (exit 1 but no {expected!r} in: {output.strip()})")
+    else:
+        ok(label)
 
 
 # ---------------------------------------------------------------------------
@@ -253,6 +288,78 @@ assert_clean("private", "lane-with-fallback",
 assert_clean("private", "os-lane-bounded",
              "an OS-lane release workflow on a private repository is Tier A's business, "
              "not Tier B's", "desktop-release.yml")
+
+# #1156: one path-bound direct input routes the transaction-unique canary. It
+# must not become a generally reviewed expression or a filename-shaped escape.
+assert_canonical_clean(
+    "runner-canary-exact",
+    "the dispatch-only canonical canary accepts only its exact two-label selector",
+)
+assert_undetermined_fixture(
+    "runner-canary-exact",
+    "a caller-chosen alternate scan directory cannot rebase canonical path authority",
+)
+assert_undetermined_fixture(
+    "runner-canary-wrong-path",
+    "the direct runner-label input remains unreviewed under another filename",
+)
+assert_canonical_violation(
+    "runner-canary-wrong-trigger", "workflow_dispatch-only",
+    "the canonical canary is refused when reachable from a non-dispatch trigger",
+)
+assert_canonical_violation(
+    "runner-canary-extra-label", "runs-on must exactly equal",
+    "the canonical canary cannot add another self-hosted capability label",
+)
+assert_canonical_violation(
+    "runner-canary-hosted-label", "runs-on must exactly equal",
+    "the canonical canary cannot add a hosted selector",
+)
+assert_canonical_violation(
+    "runner-canary-expression-drift", "runs-on must exactly equal",
+    "the canonical canary cannot select a different direct input",
+)
+assert_metered_only(
+    "runner-canary-exact", 2,
+    "consumer policy does not inherit the canonical repository's direct-input exception",
+)
+with tempfile.TemporaryDirectory() as repository:
+    workflows = os.path.join(repository, ".github", "workflows")
+    os.makedirs(workflows)
+    os.symlink(
+        os.path.join(FIXTURES, "runner-canary-exact", "runner-canary.yml"),
+        os.path.join(workflows, "runner-canary.yml"),
+    )
+    completed = subprocess.run(
+        [sys.executable, SCRIPT, "--visibility", "public", ".github/workflows"],
+        cwd=repository,
+        capture_output=True,
+        text=True,
+    )
+    if completed.returncode == 2 and "regular non-symlink" in (completed.stdout + completed.stderr):
+        ok("the exact canonical workflow path cannot be a symlink")
+    else:
+        fail(
+            "the exact canonical workflow symlink was not refused "
+            f"({completed.returncode}: {(completed.stdout + completed.stderr).strip()})"
+        )
+with tempfile.TemporaryDirectory() as repository:
+    workflows = os.path.join(repository, ".github", "workflows")
+    os.makedirs(workflows)
+    os.mkfifo(os.path.join(workflows, "runner-canary.yml"))
+    completed = subprocess.run(
+        [sys.executable, SCRIPT, "--visibility", "public", ".github/workflows"],
+        cwd=repository,
+        capture_output=True,
+        text=True,
+    )
+    if completed.returncode == 2 and "regular non-symlink" in (completed.stdout + completed.stderr):
+        ok("the exact canonical workflow path cannot be a non-regular file")
+    else:
+        fail(
+            "the exact canonical workflow non-regular file was not refused "
+            f"({completed.returncode}: {(completed.stdout + completed.stderr).strip()})"
+        )
 
 # ---------------------------------------------------------------------------
 # R5 — no off-path reference to the OS lane variables.
