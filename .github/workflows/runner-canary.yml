@@ -152,6 +152,8 @@ jobs:
           trap 'record_cleanup_signal 130' INT
           trap 'record_cleanup_signal 143' TERM
           set +e
+          # The single-quoted program must expand only inside the isolated probe container.
+          # shellcheck disable=SC2016
           candidate_capacity_id=$(timeout --signal=KILL 30s \
             docker create --cidfile "$capacity_cidfile" --name "$capacity" \
               --label "verjson.runner-canary-owner=${capacity_owner}" --network none \
