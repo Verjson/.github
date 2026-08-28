@@ -72,6 +72,7 @@ class OrgRulesetConformanceTest(unittest.TestCase):
                             "actor_id": 4583107,
                             "bypass_mode": "always",
                         },
+                        "bypassless_required_workflows": [],
                     }
                 ),
                 encoding="utf-8",
@@ -162,6 +163,15 @@ class OrgRulesetConformanceTest(unittest.TestCase):
                     "actor_id": 4583107,
                     "bypass_mode": "always",
                 },
+                "bypassless_required_workflows": [
+                    {
+                        "name": "authn-type-surface-required-workflow",
+                        "repository_id": 1302124584,
+                        "workflow_repository_id": 1269388380,
+                        "workflow_path": ".github/workflows/authn-type-surface-required.yml",
+                        "workflow_ref": "refs/heads/main",
+                    }
+                ],
             },
         )
 
@@ -178,6 +188,7 @@ class OrgRulesetConformanceTest(unittest.TestCase):
                     "actor_id": 1,
                     "bypass_mode": "always",
                 },
+                "bypassless_required_workflows": [],
             },
         )
 
@@ -214,6 +225,55 @@ class OrgRulesetConformanceTest(unittest.TestCase):
         self.assertEqual(result.returncode, 1)
         self.assertIn("core-checks-actions (20515822)", result.stderr)
         self.assertIn("required release authorization bypass is absent", result.stderr)
+
+    def test_exact_authn_required_workflow_is_the_only_bypassless_exception(self):
+        detail = ruleset(
+            99,
+            name="authn-type-surface-required-workflow",
+            bypass_actors=[],
+            rules=[{
+                "type": "workflows",
+                "parameters": {
+                    "do_not_enforce_on_create": False,
+                    "workflows": [{
+                        "path": ".github/workflows/authn-type-surface-required.yml",
+                        "repository_id": 1269388380,
+                        "ref": "refs/heads/main",
+                        "sha": "a" * 40,
+                    }],
+                },
+            }],
+        )
+        detail["conditions"] = {
+            "ref_name": {"include": ["~DEFAULT_BRANCH"], "exclude": []},
+            "repository_id": {"repository_ids": [1302124584]},
+        }
+        policy = POLICY.read_text(encoding="utf-8")
+        result, _ = self.run_audit(
+            [[{"id": 99}]], {99: detail}, raw_policy=policy
+        )
+        self.assertEqual(0, result.returncode, result.stderr)
+
+        for mutation in ("repository", "path", "sha", "bypass"):
+            with self.subTest(mutation=mutation):
+                changed = copy.deepcopy(detail)
+                if mutation == "repository":
+                    changed["conditions"]["repository_id"]["repository_ids"] = [1]
+                elif mutation == "path":
+                    changed["rules"][0]["parameters"]["workflows"][0]["path"] = ".github/workflows/ci.yml"
+                elif mutation == "sha":
+                    changed["rules"][0]["parameters"]["workflows"][0]["sha"] = "main"
+                else:
+                    changed["bypass_actors"] = [{
+                        "actor_type": "OrganizationAdmin",
+                        "actor_id": None,
+                        "bypass_mode": "always",
+                    }]
+                result, _ = self.run_audit(
+                    [[{"id": 99}]], {99: changed}, raw_policy=policy
+                )
+                self.assertEqual(1, result.returncode)
+                self.assertIn("required release authorization bypass is absent", result.stderr)
 
     def test_wrong_actor_type_id_or_mode_does_not_satisfy_policy(self):
         wrong_actors = [
