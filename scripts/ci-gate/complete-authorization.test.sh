@@ -61,6 +61,7 @@ def valid(document):
         and '[ "$receipt_ok" = true ] && [ "$GATE_STATUS" = success ]' in run
         and "AI review preflight failed before provider execution" in run
         and "AI review preflight held before provider execution" in run
+        and "AI review gate did not complete after reaching the provider boundary" in run
         and "No provider reservation, submission, or review occurred" in run
         and "reviews/$approval_id" in run
         and '[ "$REVIEW_OUTCOME" = approved ]' in run
@@ -332,6 +333,20 @@ if [ "$?" -ne 0 ] \
    && ! grep -Fq 'api --method POST' "$CALLS"; then
   pass "held preflight reports causal zero-provider state without approval"
 else fail "held preflight lost its causal zero-provider state"; fi
+
+for gate_status in failure cancelled; do
+  : >"$CALLS"; : >"$GITHUB_OUTPUT"
+  PREFLIGHT_STATUS=success PREFLIGHT_LANE=ai GATE_STATUS="$gate_status" REVIEW_AUTHORITY=human REVIEW_OUTCOME=skipped \
+    run_complete >"$tmp/out" 2>&1
+  if [ "$?" -ne 0 ] \
+     && grep -Fq 'output[title]=AI review gate did not complete after reaching the provider boundary' "$CALLS" \
+     && grep -Fq 'after reaching or ambiguously approaching the provider boundary' "$CALLS" \
+     && grep -Fq 'the retained receipt is ineligible for zero-provider recovery' "$CALLS" \
+     && grep -Fq 'conclusion=failure' "$CALLS" \
+     && ! grep -Fq 'api --method POST' "$CALLS"; then
+    pass "$gate_status provider gate reports that zero-provider recovery is unavailable"
+  else fail "$gate_status provider gate reported an ambiguous recovery state"; fi
+done
 
 # A failed receipt must still complete the check run. The job carries `if: always()`
 # so it can report that failure; aborting before the PATCH leaves the check run
