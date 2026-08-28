@@ -955,7 +955,7 @@ EOF
         include:
 ${build_runners_yaml%$'\n'}
     runs-on: \${{ matrix.build-runner }}
-    timeout-minutes: 30
+    timeout-minutes: 45
     permissions:
       contents: read
       packages: read
@@ -2423,6 +2423,8 @@ PY
         || fail "$release_workflow OS lane preflight logic differs from the provenance-authorized contract"
     fi
     if [ -n "$acquisition_job" ]; then
+      grep -qF 'timeout-minutes: 45' <<<"$acquisition_job" \
+        || fail "$release_workflow acquisition matrix exceeds ADR 0103's 45-minute bound"
       grep -qF 'needs: [verify, snapshot, acquire-private-dependencies]' <<<"$build_job" \
         || fail "$release_workflow private build matrix is not gated on credentialed acquisition"
       grep -qF "if: always() && needs.verify.result == 'success' && (needs.snapshot.result == 'success' || needs.snapshot.result == 'skipped') && needs.acquire-private-dependencies.result == 'success'" \
