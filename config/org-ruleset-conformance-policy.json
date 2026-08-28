@@ -4,5 +4,14 @@
     "actor_type": "Integration",
     "actor_id": 4583107,
     "bypass_mode": "always"
-  }
+  },
+  "bypassless_required_workflows": [
+    {
+      "name": "authn-type-surface-required-workflow",
+      "repository_id": 1302124584,
+      "workflow_repository_id": 1269388380,
+      "workflow_path": ".github/workflows/authn-type-surface-required.yml",
+      "workflow_ref": "refs/heads/main"
+    }
+  ]
 }
