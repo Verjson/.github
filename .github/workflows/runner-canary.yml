@@ -174,7 +174,7 @@ jobs:
           if [ "$capacity_owned" -eq 0 ] && [ ! -e "$capacity_cidfile" ] && [ ! -L "$capacity_cidfile" ] &&
             { [ "$create_status" -eq 124 ] || [ "$create_status" -eq 137 ] || [ "$cleanup_signal_status" -ne 0 ]; }; then
             stable_empty=0
-            for reconciliation_attempt in 1 2 3 4 5 6; do
+            for _ in 1 2 3 4 5 6; do
               if ! observed_ids=$(docker container ls -a --no-trunc --filter "name=^/${capacity}$" \
                 --filter "label=verjson.runner-canary-owner=${capacity_owner}" --format '{{.ID}}'); then
                 create_status=1
