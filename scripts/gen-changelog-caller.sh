@@ -190,8 +190,8 @@ for release_build_runner in "${release_build_runners[@]}"; do
   [[ "$release_build_runner" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] \
     && [[ ! "$release_build_runner" =~ ^(vars|inputs|matrix|needs|github|env|secrets)\. ]] \
     && [[ ! "$release_build_runner" =~ ^(macos|windows)- ]] \
-    || [[ "$release_build_runner" =~ ^\$\{\{[[:space:]]fromJSON\(vars\.VERJSON_LANE_TRUSTED_(MACOS|WINDOWS)\)[[:space:]]\}\}$ ]] || {
-    echo "$(basename "$0"): --build-runner must be a literal label or an exact ADR 0103 fromJSON(vars.VERJSON_LANE_TRUSTED_MACOS|WINDOWS) expression" >&2
+    || [[ "$release_build_runner" =~ ^\$\{\{[[:space:]]fromJSON\(vars\.CI_LANE_TRUSTED_(MACOS|WINDOWS)\)[[:space:]]\}\}$ ]] || {
+    echo "$(basename "$0"): --build-runner must be a literal label or an exact ADR 0103 fromJSON(vars.CI_LANE_TRUSTED_MACOS|WINDOWS) expression" >&2
     exit 2
   }
 done
@@ -1622,7 +1622,7 @@ emit_contract_test() {
     release_approved_packages_csv="${release_approved_packages_csv:+$release_approved_packages_csv,}$release_approved_package"
   done
   for release_build_runner in "${release_build_runners[@]}"; do
-    if [[ "$release_build_runner" =~ vars\.(VERJSON_LANE_TRUSTED_(MACOS|WINDOWS)) ]]; then
+    if [[ "$release_build_runner" =~ vars\.(CI_LANE_TRUSTED_(MACOS|WINDOWS)) ]]; then
       release_lane_name="${BASH_REMATCH[1]}"
       if [[ ",$release_lane_names," != *",$release_lane_name,"* ]]; then
         release_lane_names="${release_lane_names:+$release_lane_names,}$release_lane_name"
@@ -2392,13 +2392,13 @@ PY
       runner_selector="${runner_selector#*: }"
       [[ "$runner_selector" =~ ^\'[A-Za-z0-9][A-Za-z0-9._-]*\'$ ]] \
         && [[ ! "${runner_selector:1:${#runner_selector}-2}" =~ ^(vars|inputs|matrix|needs|github|env|secrets)\. ]] \
-        || [[ "$runner_selector" =~ ^\$\{\{[[:space:]]fromJSON\(vars\.VERJSON_LANE_TRUSTED_(MACOS|WINDOWS)\)[[:space:]]\}\}$ ]] \
+        || [[ "$runner_selector" =~ ^\$\{\{[[:space:]]fromJSON\(vars\.CI_LANE_TRUSTED_(MACOS|WINDOWS)\)[[:space:]]\}\}$ ]] \
         || fail "$release_workflow build matrix contains an unreviewed runner selector: $runner_selector (ADR 0103)"
       if [[ "$runner_selector" =~ ^\'.*\'$ ]] \
         && [[ "${runner_selector:1:${#runner_selector}-2}" =~ ^(macos|windows)- ]]; then
         fail "$release_workflow uses a literal metered OS selector forbidden by ADR 0103: $runner_selector"
       fi
-      if [[ "$runner_selector" =~ vars\.(VERJSON_LANE_TRUSTED_(MACOS|WINDOWS)) ]]; then
+      if [[ "$runner_selector" =~ vars\.(CI_LANE_TRUSTED_(MACOS|WINDOWS)) ]]; then
         lane_name="${BASH_REMATCH[1]}"
         grep -qF "$lane_name: \${{ vars.$lane_name }}" <<<"$verify_job" \
           && grep -qF 'Validate required OS-scoped build lanes' <<<"$verify_job" \
@@ -2466,7 +2466,7 @@ PY
         runner_selector="${runner_selector#*: }"
         [[ "$runner_selector" =~ ^\'[A-Za-z0-9][A-Za-z0-9._-]*\'$ ]] \
           && [[ ! "${runner_selector:1:${#runner_selector}-2}" =~ ^(vars|inputs|matrix|needs|github|env|secrets)\. ]] \
-          || [[ "$runner_selector" =~ ^\$\{\{[[:space:]]fromJSON\(vars\.VERJSON_LANE_TRUSTED_(MACOS|WINDOWS)\)[[:space:]]\}\}$ ]] \
+          || [[ "$runner_selector" =~ ^\$\{\{[[:space:]]fromJSON\(vars\.CI_LANE_TRUSTED_(MACOS|WINDOWS)\)[[:space:]]\}\}$ ]] \
           || fail "$release_workflow acquisition matrix contains an unreviewed runner selector: $runner_selector (ADR 0103)"
         if [[ "$runner_selector" =~ ^\'.*\'$ ]] \
           && [[ "${runner_selector:1:${#runner_selector}-2}" =~ ^(macos|windows)- ]]; then

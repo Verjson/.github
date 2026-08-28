@@ -1692,14 +1692,14 @@ else
   pass "release-artifact rejects a --build-runner value that is not a bare label"
 fi
 
-if bash "$gen" release-artifact "$sha" --build-runner 'vars.VERJSON_LANE_TRUSTED_MACOS' >/dev/null 2>&1; then
+if bash "$gen" release-artifact "$sha" --build-runner 'vars.CI_LANE_TRUSTED_MACOS' >/dev/null 2>&1; then
   fail "release-artifact accepted a silent variable-name runner literal"
 else
   pass "release-artifact rejects variable names that omit the required expression"
 fi
 
-lane_expression='${{ fromJSON(vars.VERJSON_LANE_TRUSTED_MACOS) }}'
-windows_lane_expression='${{ fromJSON(vars.VERJSON_LANE_TRUSTED_WINDOWS) }}'
+lane_expression='${{ fromJSON(vars.CI_LANE_TRUSTED_MACOS) }}'
+windows_lane_expression='${{ fromJSON(vars.CI_LANE_TRUSTED_WINDOWS) }}'
 if bash "$gen" release-artifact "$sha" --build-runner "$lane_expression" >/dev/null 2>&1; then
   pass "release-artifact accepts the exact ADR 0103 macOS lane expression"
 else
@@ -1814,12 +1814,12 @@ run_adopter "$artifact_adopter" \
 private_artifact_adopter="$tmproot/adopter-artifact-private"
 cp -a "$artifact_adopter" "$private_artifact_adopter"
 bash "$gen" release-artifact "$sha" \
-  --build-runner '${{ fromJSON(vars.VERJSON_LANE_TRUSTED_MACOS) }}' \
-  --build-runner '${{ fromJSON(vars.VERJSON_LANE_TRUSTED_WINDOWS) }}' --approved-internal-package @verjson/ai \
+  --build-runner '${{ fromJSON(vars.CI_LANE_TRUSTED_MACOS) }}' \
+  --build-runner '${{ fromJSON(vars.CI_LANE_TRUSTED_WINDOWS) }}' --approved-internal-package @verjson/ai \
   >"$private_artifact_adopter/.github/workflows/release.yml"
 bash "$gen" contract-test "$sha" \
-  --build-runner '${{ fromJSON(vars.VERJSON_LANE_TRUSTED_MACOS) }}' \
-  --build-runner '${{ fromJSON(vars.VERJSON_LANE_TRUSTED_WINDOWS) }}' --approved-internal-package @verjson/ai \
+  --build-runner '${{ fromJSON(vars.CI_LANE_TRUSTED_MACOS) }}' \
+  --build-runner '${{ fromJSON(vars.CI_LANE_TRUSTED_WINDOWS) }}' --approved-internal-package @verjson/ai \
   >"$private_artifact_adopter/scripts/changelog-contract.test.sh"
 chmod +x "$private_artifact_adopter/scripts/changelog-contract.test.sh"
 cat >"$private_artifact_adopter/package-lock.json" <<'LOCK'
@@ -1970,7 +1970,7 @@ fi
 
 private_selector_adopter="$tmproot/adopter-artifact-private-selector"
 cp -a "$private_artifact_adopter" "$private_selector_adopter"
-sed -i "s/- build-runner: \${{ fromJSON(vars.VERJSON_LANE_TRUSTED_WINDOWS) }}/- build-runner: 'vars.VERJSON_LANE_TRUSTED_WINDOWS'/g" \
+sed -i "s/- build-runner: \${{ fromJSON(vars.CI_LANE_TRUSTED_WINDOWS) }}/- build-runner: 'vars.CI_LANE_TRUSTED_WINDOWS'/g" \
   "$private_selector_adopter/.github/workflows/release.yml"
 git -C "$private_selector_adopter" commit -aqm 'replace runner expression with silent literal typo'
 if run_adopter "$private_selector_adopter"; then

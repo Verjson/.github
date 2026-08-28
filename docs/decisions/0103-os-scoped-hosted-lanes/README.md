@@ -43,8 +43,8 @@ precisely the two it could not see.
 
 | Variable | Value | Scope |
 | --- | --- | --- |
-| `VERJSON_LANE_TRUSTED_MACOS` | `["macos-15"]` | **repository variable on `Verjson/AiB` only** |
-| `VERJSON_LANE_TRUSTED_WINDOWS` | `["windows-2025"]` | **repository variable on `Verjson/AiB` only** |
+| `CI_LANE_TRUSTED_MACOS` | `["macos-15"]` | **repository variable on `Verjson/AiB` only** |
+| `CI_LANE_TRUSTED_WINDOWS` | `["windows-2025"]` | **repository variable on `Verjson/AiB` only** |
 
 JSON arrays, so `fromJSON()` matches every existing lane usage. The names keep the
 `VERJSON_LANE_*` prefix so the routing conformance check and the actionlint policy see a
@@ -312,9 +312,9 @@ The generated contract independently records the approved package set, rejects a
 indices, and cache keys. Metered build legs keep this decision's 45-minute timeout.
 
 `--build-runner` also accepts the exact no-fallback ADR 0103 expressions
-`fromJSON(vars.VERJSON_LANE_TRUSTED_MACOS)` and
-`fromJSON(vars.VERJSON_LANE_TRUSTED_WINDOWS)`. Other expressions remain generation errors,
-and context-looking literals such as `vars.VERJSON_LANE_TRUSTED_MACOS` are rejected rather
+`fromJSON(vars.CI_LANE_TRUSTED_MACOS)` and
+`fromJSON(vars.CI_LANE_TRUSTED_WINDOWS)`. Other expressions remain generation errors,
+and context-looking literals such as `vars.CI_LANE_TRUSTED_MACOS` are rejected rather
 than silently becoming nonexistent runner labels. The generated contract independently
 checks both matrices, their equality, the credential boundary, and hostile lifecycle and
 selector mutations. Evidence is the registered
@@ -329,7 +329,7 @@ selector mutations. Evidence is the registered
 - A hung hosted step costs at most 45 minutes of wall time rather than six hours of billing.
 - A sanctioned OS-lane workflow is accepted only when its trigger set is exactly
   `workflow_dispatch`; `pull_request`, `push`, and `schedule` cannot reach metered legs.
-- One grep — for `VERJSON_LANE_TRUSTED_MACOS` or `VERJSON_LANE_TRUSTED_WINDOWS` — answers
+- One grep — for `CI_LANE_TRUSTED_MACOS` or `CI_LANE_TRUSTED_WINDOWS` — answers
   which workflows can spend hosted minutes.
 - **The guarantee is split across the only two authoritative surfaces.** The parser refuses
   rather than guesses, so an unreadable workflow is undetermined and not clean; larger
