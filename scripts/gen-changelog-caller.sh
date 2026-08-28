@@ -1652,7 +1652,7 @@ ${release_lane_env%$'\n'}
           done
 EOF
 )"
-    release_lane_preflight_sha256="$(printf '%s' "$release_lane_preflight" | sha256sum | awk '{print $1}')"
+    release_lane_preflight_sha256="$(printf '%s' "$release_lane_preflight" | digest_of)"
   fi
   cat <<EOF
 #!/usr/bin/env bash
@@ -2412,7 +2412,13 @@ PY
         found && /^      - name:/ && !/Validate required OS-scoped build lanes$/ { exit }
         found { print }
       ' <<<"$verify_job")"
-      lane_preflight_sha256="$(printf '%s' "$lane_preflight" | sha256sum | awk '{print $1}')"
+      if command -v sha256sum >/dev/null 2>&1; then
+        lane_preflight_sha256="$(printf '%s' "$lane_preflight" | sha256sum | cut -d' ' -f1)"
+      elif command -v shasum >/dev/null 2>&1; then
+        lane_preflight_sha256="$(printf '%s' "$lane_preflight" | shasum -a 256 | cut -d' ' -f1)"
+      else
+        fail "cannot verify the provenance-authorized OS lane preflight without a SHA-256 tool"
+      fi
       [ "$lane_preflight_sha256" = "$EXPECTED_RELEASE_LANE_PREFLIGHT_SHA256" ] \
         || fail "$release_workflow OS lane preflight logic differs from the provenance-authorized contract"
     fi
