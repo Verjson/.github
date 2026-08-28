@@ -1106,6 +1106,10 @@ def is_dependency_file(path: str) -> bool:
     )
 
 
+def is_fragment_path(path: str) -> bool:
+    return path.startswith(f"{UNRELEASED_DIR}/") and path != f"{UNRELEASED_DIR}/README.md"
+
+
 def check_pr(repo_root: Path, base: str, head: str) -> None:
     status_by_path = {}
     for line in git(
@@ -1141,22 +1145,22 @@ def check_pr(repo_root: Path, base: str, head: str) -> None:
     ).splitlines():
         fields = line.split("\t")
         status = fields[0]
-        if status == "D" and len(fields) == 2 and fields[1].startswith("NEXT/"):
+        if status == "D" and len(fields) == 2 and is_fragment_path(fields[1]):
             consumed.add(fields[1])
-        if status == "A" and len(fields) == 2 and fields[1].startswith("NEXT/"):
+        if status == "A" and len(fields) == 2 and is_fragment_path(fields[1]):
             added_fragments.add(fields[1])
         if (
             status.startswith("R")
             and len(fields) == 3
-            and fields[1].startswith("NEXT/")
-            and not fields[2].startswith("NEXT/")
+            and is_fragment_path(fields[1])
+            and not is_fragment_path(fields[2])
         ):
             consumed.add(fields[1])
         if (
             status.startswith("R")
             and len(fields) == 3
-            and not fields[1].startswith("NEXT/")
-            and fields[2].startswith("NEXT/")
+            and not is_fragment_path(fields[1])
+            and is_fragment_path(fields[2])
         ):
             added_fragments.add(fields[2])
     if consumed:
