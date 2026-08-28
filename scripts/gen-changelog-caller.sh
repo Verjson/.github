@@ -140,8 +140,9 @@ if { [ "$release_scope_set" = true ] || [ "$release_node_version_set" = true ] \
   echo "$(basename "$0"): release parameters are accepted only by release-node, release-artifact and contract-test" >&2
   exit 2
 fi
-if [ "${#release_build_runners[@]}" -gt 0 ] && [ "$mode" != release-artifact ]; then
-  echo "$(basename "$0"): --build-runner is accepted only by release-artifact" >&2
+if [ "${#release_build_runners[@]}" -gt 0 ] \
+  && [ "$mode" != release-artifact ] && [ "$mode" != contract-test ]; then
+  echo "$(basename "$0"): --build-runner is accepted only by release-artifact and contract-test" >&2
   exit 2
 fi
 if [ "${#release_approved_internal_packages[@]}" -gt 0 ] \
@@ -1606,6 +1607,7 @@ emit_contract_test() {
   local release_package_dirs_shell=''
   local release_assets_json='[' release_asset_sep=''
   local release_approved_packages_csv='' release_approved_package=''
+  local release_lane_names='' release_lane_env='' release_lane_preflight='' release_lane_preflight_sha256=''
   for package_dir in "${release_package_dirs[@]:1}"; do
     release_package_dirs_json="${release_package_dirs_json%]},\"$package_dir\"]"
   done
@@ -1619,6 +1621,39 @@ emit_contract_test() {
   for release_approved_package in "${release_approved_internal_packages[@]}"; do
     release_approved_packages_csv="${release_approved_packages_csv:+$release_approved_packages_csv,}$release_approved_package"
   done
+  for release_build_runner in "${release_build_runners[@]}"; do
+    if [[ "$release_build_runner" =~ vars\.(VERJSON_LANE_TRUSTED_(MACOS|WINDOWS)) ]]; then
+      release_lane_name="${BASH_REMATCH[1]}"
+      if [[ ",$release_lane_names," != *",$release_lane_name,"* ]]; then
+        release_lane_names="${release_lane_names:+$release_lane_names,}$release_lane_name"
+        release_lane_env="${release_lane_env}          $release_lane_name: \${{ vars.$release_lane_name }}
+"
+      fi
+    fi
+  done
+  if [ -n "$release_lane_names" ]; then
+    release_lane_preflight="$(cat <<EOF
+      - name: Validate required OS-scoped build lanes
+        shell: bash
+        env:
+          REQUIRED_BUILD_LANES: '${release_lane_names}'
+${release_lane_env%$'\n'}
+        run: |
+          set -euo pipefail
+          IFS=',' read -ra lane_names <<<"\$REQUIRED_BUILD_LANES"
+          for lane_name in "\${lane_names[@]}"; do
+            lane_value="\${!lane_name:-}"
+            LANE_NAME="\$lane_name" LANE_VALUE="\$lane_value" node <<'NODE'
+          const name = process.env.LANE_NAME;
+          let value;
+          try { value = JSON.parse(process.env.LANE_VALUE); } catch { throw new Error(name + ' must be a non-empty JSON runner-label array'); }
+          if (!Array.isArray(value) || value.length === 0 || value.some(label => typeof label !== 'string' || !label)) throw new Error(name + ' must be a non-empty JSON runner-label array');
+          NODE
+          done
+EOF
+)"
+    release_lane_preflight_sha256="$(printf '%s' "$release_lane_preflight" | sha256sum | awk '{print $1}')"
+  fi
   cat <<EOF
 #!/usr/bin/env bash
 # Asserts that this repository still satisfies the canonical Verjson changelog
@@ -1645,6 +1680,7 @@ EXPECTED_RELEASE_PACKAGE_DIRS_JSON='${release_package_dirs_json}'
 EXPECTED_RELEASE_PACKAGE_DIRS_SHELL='${release_package_dirs_shell}'
 EXPECTED_RELEASE_ASSETS_JSON='${release_assets_json}'
 EXPECTED_RELEASE_APPROVED_INTERNAL_PACKAGES='${release_approved_packages_csv}'
+EXPECTED_RELEASE_LANE_PREFLIGHT_SHA256='${release_lane_preflight_sha256}'
 EXPECTED_RELEASE_UPLOAD_ARTIFACT='${release_upload_artifact}'
 EXPECTED_RELEASE_DOWNLOAD_ARTIFACT='${release_download_artifact}'
 EXPECTED_RELEASE_CACHE_SAVE='${release_cache_save}'
@@ -2370,6 +2406,16 @@ PY
           || fail "$release_workflow does not fail loudly before snapshot when $lane_name is unset or malformed"
       fi
     done < <(grep -E '^[[:space:]]+- build-runner:' <<<"$build_job")
+    if [ -n "$EXPECTED_RELEASE_LANE_PREFLIGHT_SHA256" ]; then
+      lane_preflight="$(awk '
+        /^      - name: Validate required OS-scoped build lanes$/ { found = 1 }
+        found && /^      - name:/ && !/Validate required OS-scoped build lanes$/ { exit }
+        found { print }
+      ' <<<"$verify_job")"
+      lane_preflight_sha256="$(printf '%s' "$lane_preflight" | sha256sum | awk '{print $1}')"
+      [ "$lane_preflight_sha256" = "$EXPECTED_RELEASE_LANE_PREFLIGHT_SHA256" ] \
+        || fail "$release_workflow OS lane preflight logic differs from the provenance-authorized contract"
+    fi
     if [ -n "$acquisition_job" ]; then
       grep -qF 'needs: [verify, snapshot, acquire-private-dependencies]' <<<"$build_job" \
         || fail "$release_workflow private build matrix is not gated on credentialed acquisition"

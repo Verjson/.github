@@ -1817,7 +1817,9 @@ bash "$gen" release-artifact "$sha" \
   --build-runner '${{ fromJSON(vars.VERJSON_LANE_TRUSTED_MACOS) }}' \
   --build-runner '${{ fromJSON(vars.VERJSON_LANE_TRUSTED_WINDOWS) }}' --approved-internal-package @verjson/ai \
   >"$private_artifact_adopter/.github/workflows/release.yml"
-bash "$gen" contract-test "$sha" --approved-internal-package @verjson/ai \
+bash "$gen" contract-test "$sha" \
+  --build-runner '${{ fromJSON(vars.VERJSON_LANE_TRUSTED_MACOS) }}' \
+  --build-runner '${{ fromJSON(vars.VERJSON_LANE_TRUSTED_WINDOWS) }}' --approved-internal-package @verjson/ai \
   >"$private_artifact_adopter/scripts/changelog-contract.test.sh"
 chmod +x "$private_artifact_adopter/scripts/changelog-contract.test.sh"
 cat >"$private_artifact_adopter/package-lock.json" <<'LOCK'
@@ -1912,6 +1914,19 @@ else
   grep -qF 'does not fail loudly before snapshot' "$tmproot/run.out" \
     && pass "emitted suite rejects weakened OS lane preflight" \
     || fail "emitted suite rejected lane preflight mutation for the wrong reason: $(tail -2 "$tmproot/run.out")"
+fi
+
+private_noop_lane_preflight_adopter="$tmproot/adopter-artifact-private-noop-lane-preflight"
+cp -a "$private_artifact_adopter" "$private_noop_lane_preflight_adopter"
+sed -i '/for lane_name in /c\          for lane_name in; do' \
+  "$private_noop_lane_preflight_adopter/.github/workflows/release.yml"
+git -C "$private_noop_lane_preflight_adopter" commit -aqm 'make lane preflight a no-op'
+if run_adopter "$private_noop_lane_preflight_adopter"; then
+  fail "emitted suite accepted a no-op OS lane preflight"
+else
+  grep -qF 'OS lane preflight logic differs from the provenance-authorized contract' "$tmproot/run.out" \
+    && pass "emitted suite rejects a no-op OS lane preflight" \
+    || fail "emitted suite rejected no-op lane preflight for the wrong reason: $(tail -2 "$tmproot/run.out")"
 fi
 
 private_timeout_adopter="$tmproot/adopter-artifact-private-timeout"
