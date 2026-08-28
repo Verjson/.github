@@ -86,6 +86,19 @@ fetch_pinned_commit() {
   git -C "$root" cat-file -e "$ref^{commit}" 2>/dev/null
 }
 
+read_pinned_generator() {
+  local ref="$1" destination="$2"
+  git -C "$root" show "$ref:scripts/gen-changelog-caller.sh" >"$destination"
+}
+
+generator_supports_mode() {
+  local generator="$1" mode="$2"
+  grep -qE "^  $mode\)" "$generator"
+}
+
+generator_tmp="$(mktemp -d)"
+trap 'rm -rf "$generator_tmp"' EXIT
+
 for pin in "${pins[@]}"; do
   if ! fetch_pinned_commit "$pin"; then
     fail "documented pin $pin is not a commit this repository can obtain"
@@ -101,6 +114,17 @@ for pin in "${pins[@]}"; do
     fail "documented pin ${pin:0:8} predates gen-changelog-caller.sh — a consumer fetching it there gets a 404 (#308)"
   fi
 
+  # Read the generator once before checking its modes. Keeping `git show` out of
+  # the grep avoids grep's early successful exit closing the producer pipe under
+  # pipefail, and preserves an unreadable object as a distinct failure.
+  generator="$generator_tmp/generator-$pin.sh"
+  if read_pinned_generator "$pin" "$generator" 2>/dev/null; then
+    pass "the generator at ${pin:0:8} is readable"
+  else
+    fail "the generator at ${pin:0:8} cannot be read from the documented pin"
+    continue
+  fi
+
   # A pin that cannot generate is a pin that cannot be adopted. Cheap to prove,
   # and it catches a generator whose interface moved after the pin was written.
   #
@@ -112,13 +136,27 @@ for pin in "${pins[@]}"; do
   for mode in \
     workflow generated-artifacts renderer contract-test release-node \
     adr-index-generator generated-artifacts-with-adr-index pr-gate; do
-    if git -C "$root" show "$pin:scripts/gen-changelog-caller.sh" 2>/dev/null \
-      | grep -qE "^  $mode\)"; then
+    if generator_supports_mode "$generator" "$mode"; then
       pass "the generator at ${pin:0:8} supports '$mode'"
     else
       fail "the generator at ${pin:0:8} has no '$mode' mode, so the documented command fails"
     fi
   done
+
+  missing_mode="$generator_tmp/generator-$pin-missing-workflow.sh"
+  awk '$0 != "  workflow)"' "$generator" >"$missing_mode"
+  if generator_supports_mode "$missing_mode" workflow; then
+    fail "a generator missing the 'workflow' case was accepted"
+  else
+    pass "a missing generator mode remains a semantic mode failure"
+  fi
+
+  if read_pinned_generator 0000000000000000000000000000000000000000 \
+      "$generator_tmp/unreadable.sh" 2>/dev/null; then
+    fail "an unreadable pinned generator was accepted"
+  else
+    pass "an unreadable pinned generator remains a source-read failure"
+  fi
 
   mapfile -t changelog_floors < <(
     jq -r '.capabilities[] | select(.generators | index("scripts/gen-changelog-caller.sh")) | .introduced_at' \
