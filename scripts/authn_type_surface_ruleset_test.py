@@ -150,6 +150,58 @@ class AuthnTypeSurfaceRulesetTest(unittest.TestCase):
                 {"source_type": "Organization", "source": "Verjson"}, expected
             )
 
+    def test_retiring_repository_ruleset_must_match_the_exact_preimage(self):
+        expected = self.contract["consumer"]["retired_repository_ruleset"]
+        live = expected | {
+            "source_type": "Repository",
+            "source": "Verjson/verjson-authn",
+        }
+        MODULE.validate_retired_ruleset(live, expected)
+        mutations = []
+        for key, value in (
+            ("enforcement", "disabled"),
+            ("bypass_actors", [{
+                "actor_id": None,
+                "actor_type": "OrganizationAdmin",
+                "bypass_mode": "always",
+            }]),
+            ("target", "tag"),
+        ):
+            mutation = copy.deepcopy(live)
+            mutation[key] = value
+            mutations.append(mutation)
+        scope = copy.deepcopy(live)
+        scope["conditions"]["ref_name"]["include"] = ["~ALL"]
+        mutations.append(scope)
+        check = copy.deepcopy(live)
+        check["rules"][0]["parameters"]["required_status_checks"][0]["context"] = "spoof"
+        mutations.append(check)
+        integration = copy.deepcopy(live)
+        integration["rules"][0]["parameters"]["required_status_checks"][0]["integration_id"] = 1
+        mutations.append(integration)
+        for mutation in mutations:
+            with self.subTest(mutation=mutation):
+                with self.assertRaisesRegex(MODULE.ContractError, "preimage drifted"):
+                    MODULE.validate_retired_ruleset(mutation, expected)
+
+    def test_activation_rollback_failures_report_only_a_bounded_outcome(self):
+        staged = {"enforcement": "disabled"}
+        cases = (
+            (MODULE.ContractError("secret mutation response"), None, "mutation failed"),
+            ({"id": 99}, OSError("secret read response"), "could not be verified"),
+        )
+        for mutation_result, read_result, outcome in cases:
+            with (
+                self.subTest(outcome=outcome),
+                mock.patch.object(
+                    MODULE, "gh_json_input", side_effect=[mutation_result]
+                ),
+                mock.patch.object(MODULE, "gh_json", side_effect=[read_result]),
+            ):
+                with self.assertRaisesRegex(MODULE.ContractError, outcome) as raised:
+                    MODULE.restore_disabled_after_activation_failure(99, staged)
+                self.assertNotIn("secret", str(raised.exception))
+
     def test_apply_requires_acknowledgement_before_any_mutation(self):
         with (
             mock.patch.object(MODULE, "discover_state", side_effect=[[], []]),
@@ -211,13 +263,50 @@ class AuthnTypeSurfaceRulesetTest(unittest.TestCase):
             ),
         ):
             with self.assertRaisesRegex(
-                MODULE.ContractError, "restored disabled"
+                MODULE.ContractError, "restored and verified disabled"
             ):
                 MODULE.main([
                     "apply",
                     "--workflow-sha", SHA,
                     "--ack", "APPLY-AUTHN-TYPE-SURFACE-1154",
                 ])
+        self.assertEqual("disabled", mutate.call_args_list[2].args[2]["enforcement"])
+
+    def test_post_activation_api_outage_attempts_and_verifies_disabled_rollback(self):
+        expected = MODULE.render_payload(self.contract, SHA)
+        live = expected | {
+            "id": 99,
+            "source_type": "Organization",
+            "source": "Verjson",
+        }
+        staged = copy.deepcopy(live)
+        staged["enforcement"] = "disabled"
+        with (
+            mock.patch.object(MODULE, "discover_state", side_effect=[[], []]),
+            mock.patch.object(
+                MODULE,
+                "gh_json_input",
+                side_effect=[{"id": 99}, {"id": 99}, {"id": 99}],
+            ) as mutate,
+            mock.patch.object(
+                MODULE,
+                "gh_json",
+                side_effect=[
+                    staged,
+                    MODULE.ContractError("simulated post-activation API outage"),
+                    staged,
+                ],
+            ),
+        ):
+            with self.assertRaisesRegex(
+                MODULE.ContractError, "restored and verified disabled"
+            ) as raised:
+                MODULE.main([
+                    "apply",
+                    "--workflow-sha", SHA,
+                    "--ack", "APPLY-AUTHN-TYPE-SURFACE-1154",
+                ])
+        self.assertNotIn("simulated", str(raised.exception))
         self.assertEqual("disabled", mutate.call_args_list[2].args[2]["enforcement"])
 
     def test_duplicate_contract_key_is_rejected(self):

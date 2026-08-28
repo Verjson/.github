@@ -4,7 +4,34 @@
   "consumer": {
     "repository": "Verjson/verjson-authn",
     "repository_id": 1302124584,
-    "retired_repository_ruleset_id": 21522093
+    "retired_repository_ruleset": {
+      "id": 21522093,
+      "name": "authn-type-surface-required",
+      "target": "branch",
+      "enforcement": "active",
+      "bypass_actors": [],
+      "conditions": {
+        "ref_name": {
+          "include": ["~DEFAULT_BRANCH"],
+          "exclude": []
+        }
+      },
+      "rules": [
+        {
+          "type": "required_status_checks",
+          "parameters": {
+            "do_not_enforce_on_create": true,
+            "required_status_checks": [
+              {
+                "context": "type-surface-contract",
+                "integration_id": 15368
+              }
+            ],
+            "strict_required_status_checks_policy": false
+          }
+        }
+      ]
+    }
   },
   "canonical_workflow": {
     "repository": "Verjson/.github",

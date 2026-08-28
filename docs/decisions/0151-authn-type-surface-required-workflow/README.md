@@ -44,10 +44,15 @@ conformance failure. This is an explicit no-bypass decision, not a generic exemp
 
 The checked-in rollout tool is read-only by default. Apply is allowed only after its
 workflow, contract, and tool bytes are present at a SHA reachable from protected `main`,
-the consumer identity and repository-ruleset preimage still match, and the explicit
+the consumer identity and repository-ruleset preimage still match exactly — numeric ID,
+repository source, default-branch scope, active branch target, empty bypass list, and the
+sole GitHub-Actions-bound `type-surface-contract` required check — and the explicit
 human acknowledgement is supplied. It first creates the organization rule disabled,
 reads back its exact scope, path, SHA, and empty bypass set, then activates it and requires
-exact equality again. It does not remove repository ruleset `21522093`.
+exact equality again. An unreadable or mismatched active postimage always attempts to
+restore the new rule to disabled and verifies that rollback; diagnostics expose only the
+fixed rollback outcome, never API response detail. It does not remove repository ruleset
+`21522093`.
 
 After creation, use the tool's `snapshot` mode immediately before triggering a fresh
 authn pull-request run, then verify it with the checked-in tool. The accepted receipt must

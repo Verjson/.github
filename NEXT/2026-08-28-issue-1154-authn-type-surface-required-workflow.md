@@ -9,4 +9,6 @@ Add an organization-owned authn type-surface required workflow that acquires app
 private inputs in protected canonical code and runs pull-request-authored build and
 contract code credentiallessly on ephemeral hosted capacity. A reviewed, SHA-bound,
 repository-ID-scoped organization ruleset plan has no bypass actors and includes
-fail-closed dry-run, apply, and exact-head required-run verification tooling.
+fail-closed dry-run, apply, and exact-head required-run verification tooling. Rollout
+also binds the retiring repository rule to its exact reviewed preimage and verifies a
+disabled rollback whenever the activated organization rule cannot be read or validated.

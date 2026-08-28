@@ -51,7 +51,27 @@ def read_contract(path=CONTRACT):
     require(contract["consumer"] == {
         "repository": "Verjson/verjson-authn",
         "repository_id": 1302124584,
-        "retired_repository_ruleset_id": 21522093,
+        "retired_repository_ruleset": {
+            "id": 21522093,
+            "name": "authn-type-surface-required",
+            "target": "branch",
+            "enforcement": "active",
+            "bypass_actors": [],
+            "conditions": {
+                "ref_name": {"include": ["~DEFAULT_BRANCH"], "exclude": []},
+            },
+            "rules": [{
+                "type": "required_status_checks",
+                "parameters": {
+                    "do_not_enforce_on_create": True,
+                    "required_status_checks": [{
+                        "context": "type-surface-contract",
+                        "integration_id": 15368,
+                    }],
+                    "strict_required_status_checks_policy": False,
+                },
+            }],
+        },
     }, "consumer identity drifted")
     require(contract["canonical_workflow"] == {
         "repository": "Verjson/.github",
@@ -168,6 +188,20 @@ def validate_live_ruleset(value, expected):
     require(mutable_ruleset(value) == expected, "live ruleset differs from the reviewed image")
 
 
+def validate_retired_ruleset(value, expected):
+    require(value.get("source_type") == "Repository",
+            "repository ruleset source type drifted")
+    require(value.get("source") == "Verjson/verjson-authn",
+            "repository ruleset source drifted")
+    require(isinstance(value.get("id"), int) and value["id"] == expected["id"],
+            "repository ruleset identity drifted")
+    require(mutable_ruleset(value) == {
+        key: expected[key] for key in (
+            "name", "target", "enforcement", "bypass_actors", "conditions", "rules",
+        )
+    }, "repository ruleset preimage drifted")
+
+
 def parse_timestamp(value, location):
     require(isinstance(value, str) and value.endswith("Z"), f"{location} is invalid")
     try:
@@ -252,9 +286,11 @@ def discover_state(contract, workflow_sha):
     consumer = gh_json("repos/Verjson/verjson-authn")
     require(consumer.get("id") == contract["consumer"]["repository_id"],
             "consumer repository identity drifted")
-    retired = gh_json("repos/Verjson/verjson-authn/rulesets/21522093")
-    require(retired.get("name") == "authn-type-surface-required",
-            "repository name-only ruleset preimage drifted")
+    retired_expected = contract["consumer"]["retired_repository_ruleset"]
+    retired = gh_json(
+        f"repos/Verjson/verjson-authn/rulesets/{retired_expected['id']}"
+    )
+    validate_retired_ruleset(retired, retired_expected)
     named = list_named_rulesets(contract)
     require(len(named) <= 1, "multiple organization rulesets use the canonical name")
     return named
@@ -271,6 +307,25 @@ def parse_arguments(arguments):
     parser.add_argument("--head-sha")
     parser.add_argument("--pre-trigger-max-run-id", type=int)
     return parser.parse_args(arguments)
+
+
+def restore_disabled_after_activation_failure(ruleset_id, staged):
+    try:
+        gh_json_input("PUT", f"orgs/Verjson/rulesets/{ruleset_id}", staged)
+    except (ContractError, OSError):
+        raise ContractError(
+            "active verification failed; disable rollback mutation failed"
+        ) from None
+    try:
+        restored = gh_json(f"orgs/Verjson/rulesets/{ruleset_id}")
+        validate_live_ruleset(restored, staged)
+    except (ContractError, OSError):
+        raise ContractError(
+            "active verification failed; disable rollback could not be verified"
+        ) from None
+    raise ContractError(
+        "active verification failed; ruleset restored and verified disabled"
+    )
 
 
 def main(arguments=None):
@@ -346,16 +401,11 @@ def main(arguments=None):
     staged_live = gh_json(f"orgs/Verjson/rulesets/{ruleset_id}")
     validate_live_ruleset(staged_live, staged)
     gh_json_input("PUT", f"orgs/Verjson/rulesets/{ruleset_id}", expected)
-    live = gh_json(f"orgs/Verjson/rulesets/{ruleset_id}")
     try:
+        live = gh_json(f"orgs/Verjson/rulesets/{ruleset_id}")
         validate_live_ruleset(live, expected)
-    except ContractError as active_error:
-        gh_json_input("PUT", f"orgs/Verjson/rulesets/{ruleset_id}", staged)
-        restored = gh_json(f"orgs/Verjson/rulesets/{ruleset_id}")
-        validate_live_ruleset(restored, staged)
-        raise ContractError(
-            f"active postimage mismatch; ruleset restored disabled: {active_error}"
-        ) from None
+    except (ContractError, OSError):
+        restore_disabled_after_activation_failure(ruleset_id, staged)
     print(f"created disabled, activated, and verified organization ruleset {ruleset_id}")
     return 0
 
