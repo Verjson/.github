@@ -295,6 +295,27 @@ neither changes the decision, the containment primitive, or any control. Evidenc
    asserting the token cannot survive into any lifecycle-script step. Artifact *upload*
    itself still needs no secret; dependency *acquisition* does.
 
+### Amendment (2026-08-28) — generate the credential boundary for artifact releases (#1100)
+
+The canonical `release-artifact` generator now implements the already-sanctioned private
+dependency and OS-lane shape instead of forcing AiB to hand-edit generated output. Each
+approved `@verjson/*` package is named at generation time. A per-runner acquisition matrix
+validates the tagged lockfile's exact GitHub Packages URLs and integrity, installs with
+lifecycle scripts disabled under only `contents: read` and `packages: read`, and saves the
+result under an exact-run-attempt cache key. The matching build matrix restores that tree
+with package, GitHub, cloud, and OIDC credential variables blank before any adopter-owned
+hook runs. This applies ADRs 0086 and 0095 to dispatched release builds; it does not grant
+repository code a registry credential.
+
+`--build-runner` also accepts the exact no-fallback ADR 0103 expressions
+`fromJSON(vars.VERJSON_LANE_TRUSTED_MACOS)` and
+`fromJSON(vars.VERJSON_LANE_TRUSTED_WINDOWS)`. Other expressions remain generation errors,
+and context-looking literals such as `vars.VERJSON_LANE_TRUSTED_MACOS` are rejected rather
+than silently becoming nonexistent runner labels. The generated contract independently
+checks both matrices, their equality, the credential boundary, and hostile lifecycle and
+selector mutations. Evidence is the registered
+`scripts/ci-gate/changelog-caller-contract.test.sh` suite.
+
 ## Consequences
 
 - The metered SKUs are refused by a check rather than by a spending limit, which is what

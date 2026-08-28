@@ -1692,6 +1692,19 @@ else
   pass "release-artifact rejects a --build-runner value that is not a bare label"
 fi
 
+if bash "$gen" release-artifact "$sha" --build-runner 'vars.VERJSON_LANE_TRUSTED_MACOS' >/dev/null 2>&1; then
+  fail "release-artifact accepted a silent variable-name runner literal"
+else
+  pass "release-artifact rejects variable names that omit the required expression"
+fi
+
+lane_expression='${{ fromJSON(vars.VERJSON_LANE_TRUSTED_MACOS) }}'
+if bash "$gen" release-artifact "$sha" --build-runner "$lane_expression" >/dev/null 2>&1; then
+  pass "release-artifact accepts the exact ADR 0103 macOS lane expression"
+else
+  fail "release-artifact rejected the exact ADR 0103 macOS lane expression"
+fi
+
 if bash "$gen" release-artifact "$sha" --build-runner ubuntu-24.04 --node-version 22 \
     >/dev/null 2>&1; then
   pass "release-artifact accepts the same --node-version/--scope knobs as release-node"
@@ -1705,6 +1718,20 @@ else
   pass "release-node rejects --build-runner"
 fi
 
+if bash "$gen" release-node "$sha" --approved-internal-package @verjson/ai >/dev/null 2>&1; then
+  fail "release-node accepted release-artifact private acquisition policy"
+else
+  pass "private acquisition policy is release-artifact-only"
+fi
+for invalid_package in '@Verjson/ai' '@verjson/AI' '@other/ai' '@verjson/ai@latest'; do
+  if bash "$gen" release-artifact "$sha" --build-runner ubuntu-24.04 \
+      --approved-internal-package "$invalid_package" >/dev/null 2>&1; then
+    fail "release-artifact accepted invalid approved package: $invalid_package"
+  else
+    pass "release-artifact rejects invalid approved package: $invalid_package"
+  fi
+done
+
 artifact_release="$(bash "$gen" release-artifact "$sha" \
   --build-runner macos-14 --build-runner windows-2022)"
 
@@ -1717,9 +1744,27 @@ grep -qE '^  build:$' <<<"$artifact_release" \
   && ! grep -q 'uses:.*node-release\.yml' <<<"$artifact_release" \
   && pass "release-artifact replaces node-release.yml with a build+publish pair" \
   || fail "release-artifact did not emit the expected build/publish shape"
-grep -qF "build-runner: [\"macos-14\", \"windows-2022\"]" <<<"$artifact_release" \
+grep -qF -- "- build-runner: 'macos-14'" <<<"$artifact_release" \
+  && grep -qF -- "- build-runner: 'windows-2022'" <<<"$artifact_release" \
   && pass "release-artifact's build matrix carries exactly the declared runner labels" \
   || fail "release-artifact's build matrix does not match --build-runner"
+
+private_artifact_release="$(bash "$gen" release-artifact "$sha" \
+  --build-runner "$lane_expression" --build-runner windows-2022 \
+  --approved-internal-package @verjson/ai --approved-internal-package @verjson/ai-gguf)"
+grep -qF 'acquire-private-dependencies:' <<<"$private_artifact_release" \
+  && grep -qF 'permissions:' <<<"$private_artifact_release" \
+  && grep -qF 'packages: read' <<<"$private_artifact_release" \
+  && grep -qF 'npm ci --ignore-scripts --audit=false --fund=false' <<<"$private_artifact_release" \
+  && grep -qF 'fail-on-cache-miss: true' <<<"$private_artifact_release" \
+  && grep -qF "APPROVED_INTERNAL_PACKAGES: '@verjson/ai,@verjson/ai-gguf'" <<<"$private_artifact_release" \
+  && pass "release-artifact separates approved private acquisition from credentialless build hooks" \
+  || fail "release-artifact omitted the bounded private dependency handoff"
+build_slice="$(awk '/^  build:/{seen=1} /^  publish:/{seen=0} seen' <<<"$private_artifact_release")"
+! grep -qE 'secrets\b' <<<"$build_slice" \
+  && grep -qF "NODE_AUTH_TOKEN: ''" <<<"$build_slice" \
+  && pass "private release build hooks receive restored dependencies without secret context" \
+  || fail "private release build hook can observe credential context"
 
 build_artifact_adopter() {
   # A non-npm adopter: same verify/snapshot shape as build_adopter's default,
@@ -1757,6 +1802,57 @@ build_artifact_adopter "$artifact_adopter"
 run_adopter "$artifact_adopter" \
   && pass "emitted suite accepts a generated release-artifact caller" \
   || fail "emitted suite rejects a generated release-artifact caller: $(tail -2 "$tmproot/run.out")"
+
+private_artifact_adopter="$tmproot/adopter-artifact-private"
+cp -a "$artifact_adopter" "$private_artifact_adopter"
+bash "$gen" release-artifact "$sha" \
+  --build-runner '${{ fromJSON(vars.VERJSON_LANE_TRUSTED_MACOS) }}' \
+  --build-runner windows-2022 --approved-internal-package @verjson/ai \
+  >"$private_artifact_adopter/.github/workflows/release.yml"
+git -C "$private_artifact_adopter" add .github/workflows/release.yml
+git -C "$private_artifact_adopter" commit -qm 'enable private release dependency acquisition'
+run_adopter "$private_artifact_adopter" \
+  && pass "emitted suite accepts credential-separated private release acquisition" \
+  || fail "emitted suite rejects canonical private release acquisition: $(tail -2 "$tmproot/run.out")"
+
+private_lifecycle_adopter="$tmproot/adopter-artifact-private-lifecycle"
+cp -a "$private_artifact_adopter" "$private_lifecycle_adopter"
+sed -i 's/npm ci --ignore-scripts --audit=false --fund=false/npm ci --audit=false --fund=false/' \
+  "$private_lifecycle_adopter/.github/workflows/release.yml"
+git -C "$private_lifecycle_adopter" commit -aqm 'execute lifecycle scripts beside package credential'
+if run_adopter "$private_lifecycle_adopter"; then
+  fail "emitted suite accepted lifecycle execution inside credentialed acquisition"
+else
+  grep -qF 'private acquisition weakened its credentialless handoff' "$tmproot/run.out" \
+    && pass "emitted suite rejects lifecycle execution inside credentialed acquisition" \
+    || fail "emitted suite rejected private lifecycle mutation for the wrong reason: $(tail -2 "$tmproot/run.out")"
+fi
+
+private_extra_secret_adopter="$tmproot/adopter-artifact-private-extra-secret"
+cp -a "$private_artifact_adopter" "$private_extra_secret_adopter"
+sed -i '/^  acquire-private-dependencies:/,/^  build:/ s/NODE_AUTH_TOKEN: \${{ secrets.NODE_AUTH_TOKEN }}/NODE_AUTH_TOKEN: ${{ secrets.NODE_AUTH_TOKEN }}\n          RELEASE_APP_PRIVATE_KEY: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}/' \
+  "$private_extra_secret_adopter/.github/workflows/release.yml"
+git -C "$private_extra_secret_adopter" commit -aqm 'expose another secret during acquisition'
+if run_adopter "$private_extra_secret_adopter"; then
+  fail "emitted suite accepted a second acquisition secret"
+else
+  grep -qF 'another secret' "$tmproot/run.out" \
+    && pass "emitted suite rejects additional acquisition secrets" \
+    || fail "emitted suite rejected acquisition secret widening for the wrong reason: $(tail -2 "$tmproot/run.out")"
+fi
+
+private_selector_adopter="$tmproot/adopter-artifact-private-selector"
+cp -a "$private_artifact_adopter" "$private_selector_adopter"
+sed -i "s/- build-runner: 'windows-2022'/- build-runner: 'vars.VERJSON_LANE_TRUSTED_WINDOWS'/g" \
+  "$private_selector_adopter/.github/workflows/release.yml"
+git -C "$private_selector_adopter" commit -aqm 'replace runner expression with silent literal typo'
+if run_adopter "$private_selector_adopter"; then
+  fail "emitted suite accepted a silent variable-name runner literal"
+else
+  grep -qF 'unreviewed runner selector' "$tmproot/run.out" \
+    && pass "emitted suite rejects silent variable-name runner literals" \
+    || fail "emitted suite rejected runner typo for the wrong reason: $(tail -2 "$tmproot/run.out")"
+fi
 
 broken_artifact_adopter="$tmproot/adopter-artifact-broken-build-gate"
 cp -a "$artifact_adopter" "$broken_artifact_adopter"
