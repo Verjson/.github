@@ -1,0 +1,13 @@
+name: exact runner canary
+on:
+  workflow_dispatch:
+    inputs:
+      runner_label:
+        required: true
+        type: string
+jobs:
+  canary:
+    timeout-minutes: 30
+    runs-on: [self-hosted, '${{ inputs.runner_label }}']
+    steps:
+      - run: true

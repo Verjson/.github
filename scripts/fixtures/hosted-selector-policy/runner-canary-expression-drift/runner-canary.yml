@@ -1,0 +1,8 @@
+name: drifted runner canary
+on: workflow_dispatch
+jobs:
+  canary:
+    timeout-minutes: 30
+    runs-on: [self-hosted, '${{ inputs.other_label }}']
+    steps:
+      - run: true
