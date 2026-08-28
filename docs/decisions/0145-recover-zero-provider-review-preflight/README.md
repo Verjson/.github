@@ -84,6 +84,13 @@ completion or successful privileged merge. A pre-provider failure never consumes
 - Recovery adds bounded Actions and review-list reads before an exceptional rerun; ordinary
   first attempts perform none of those reads.
 
+## 2026-08-28 clarification
+
+A failed or cancelled provider gate is outside the zero-provider recovery boundary even
+when its retained receipt was not consumed. Completion must report that the gate reached
+or ambiguously approached the provider boundary and that recovery is unavailable. Only a
+skipped gate with no steps proves provider absence; receipt retention alone never does.
+
 ## Alternatives rejected
 
 - **Always allow explicit workflow reruns:** a prior provider reservation could be charged

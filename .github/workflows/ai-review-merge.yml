@@ -1995,6 +1995,10 @@ jobs:
                 title='AI review preflight held before provider execution'
                 summary="Preflight was held or skipped for exact head $EXPECTED_AUTHORIZED_HEAD_SHA and the review gate was skipped. No provider reservation, submission, or review occurred; the immutable receipt remains available only for receipt-bound zero-provider recovery."
                 ;;
+              *:*:failure|*:*:cancelled)
+                title='AI review gate did not complete after reaching the provider boundary'
+                summary="The review gate failed or was cancelled for exact head $EXPECTED_AUTHORIZED_HEAD_SHA after reaching or ambiguously approaching the provider boundary. No authorization was granted, and the retained receipt is ineligible for zero-provider recovery."
+                ;;
               *)
                 title='AI review stopped before authorization'
                 summary="Preflight status ${PREFLIGHT_STATUS:-unknown}, lane ${PREFLIGHT_LANE:-none}, gate status ${GATE_STATUS:-unknown}. No authorization was granted for exact head $EXPECTED_AUTHORIZED_HEAD_SHA."
