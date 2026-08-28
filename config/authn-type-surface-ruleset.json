@@ -1,0 +1,41 @@
+{
+  "schema_version": 1,
+  "organization": "Verjson",
+  "consumer": {
+    "repository": "Verjson/verjson-authn",
+    "repository_id": 1302124584,
+    "retired_repository_ruleset_id": 21522093
+  },
+  "canonical_workflow": {
+    "repository": "Verjson/.github",
+    "repository_id": 1269388380,
+    "path": ".github/workflows/authn-type-surface-required.yml",
+    "ref": "refs/heads/main"
+  },
+  "ruleset": {
+    "name": "authn-type-surface-required-workflow",
+    "target": "branch",
+    "enforcement": "active",
+    "bypass_actors": [],
+    "conditions": {
+      "ref_name": {
+        "include": ["~DEFAULT_BRANCH"],
+        "exclude": []
+      },
+      "repository_id": {
+        "repository_ids": [1302124584]
+      }
+    }
+  },
+  "rollout": {
+    "issue": 1154,
+    "human_gate_required": true,
+    "apply_acknowledgement": "APPLY-AUTHN-TYPE-SURFACE-1154",
+    "required_run": {
+      "event": "pull_request",
+      "conclusion": "success",
+      "path": ".github/workflows/authn-type-surface-required.yml",
+      "workflow_url_prefix": "https://api.github.com/repos/Verjson/verjson-authn/actions/required_workflows/"
+    }
+  }
+}

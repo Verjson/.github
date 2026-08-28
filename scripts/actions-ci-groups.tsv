@@ -51,6 +51,7 @@ platform	bash scripts/required-checks-rollback.test.sh
 platform	python3 scripts/gate_coverage_audit_test.py
 platform	python3 scripts/org_secret_scope_audit_test.py
 platform	python3 scripts/org_ruleset_conformance_test.py
+platform	python3 scripts/authn_type_surface_ruleset_test.py
 platform	python3 scripts/ai_review_required_workflow_audit_test.py
 platform	python3 scripts/capability-floor-audit.test.py
 platform	python3 scripts/ci-gate/capability-floor-discovery.test.py
