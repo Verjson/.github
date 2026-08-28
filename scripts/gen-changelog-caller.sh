@@ -2655,6 +2655,37 @@ echo "ok - a dependency change with a new valid fragment is accepted"
 
 new_fixture
 init_fixture_repo
+printf 'base\n' >"$fixture_root/case/README.md"
+git -C "$fixture_root/case" add .
+git -C "$fixture_root/case" commit -qm base
+base="$(git -C "$fixture_root/case" rev-parse HEAD)"
+printf '{"version":"1.0.0"}\n' >"$fixture_root/case/package.json"
+printf '# NEXT fragments\n' >"$fixture_root/case/NEXT/README.md"
+write_fragment NEXT/2026-08-26-issue-1116-adoption.md \
+  2026-08-26 "issue: 1116" "Adopt changelog contract"
+git -C "$fixture_root/case" add .
+git -C "$fixture_root/case" commit -qm "adopt contract with dependency manifest"
+python3 "$contract" check-pr --repo-root "$fixture_root/case" --base "$base" --head HEAD
+echo "ok - NEXT README is not mistaken for an invalid fragment during adoption (#1116)"
+
+base="$(git -C "$fixture_root/case" rev-parse HEAD)"
+git -C "$fixture_root/case" rm -q NEXT/README.md
+git -C "$fixture_root/case" commit -qm "remove changelog documentation"
+python3 "$contract" check-pr --repo-root "$fixture_root/case" --base "$base" --head HEAD
+echo "ok - removing NEXT README does not consume a fragment (#1116)"
+
+printf '# NEXT fragments\n' >"$fixture_root/case/NEXT/README.md"
+git -C "$fixture_root/case" add NEXT/README.md
+git -C "$fixture_root/case" commit -qm "restore changelog documentation"
+base="$(git -C "$fixture_root/case" rev-parse HEAD)"
+mkdir -p "$fixture_root/case/docs"
+git -C "$fixture_root/case" mv NEXT/README.md docs/changelog-fragments.md
+git -C "$fixture_root/case" commit -qm "move changelog documentation"
+python3 "$contract" check-pr --repo-root "$fixture_root/case" --base "$base" --head HEAD
+echo "ok - moving NEXT README does not consume a fragment (#1116)"
+
+new_fixture
+init_fixture_repo
 printf '{"version":"1.0.0"}\n' >"$fixture_root/case/package.json"
 write_fragment NEXT/2026-08-01-issue-524-existing.md \
   2026-08-01 "issue: 524" "Existing entry"
