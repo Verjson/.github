@@ -48,6 +48,14 @@ jobs:
           docker run --rm --network host postgres@sha256:18cfe3ef5e6815560c98237d6216d1e5119702fb0f3894c8785dd58b8bbe5d73 pg_isready -h 127.0.0.1 -U postgres
           network="runner-canary-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           sibling="runner-canary-sibling-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          capacity="runner-canary-capacity-${TRANSACTION_NONCE}"
+          capacity_id=""
+          capacity_owned=0
+          capacity_owner=$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')
+          [[ "$capacity_owner" =~ ^[a-f0-9]{32}$ ]]
+          umask 077
+          capacity_state=""
+          capacity_cidfile=""
           build_image="runner-canary:${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           cleanup_signal_status=0
           record_cleanup_signal() {
@@ -59,7 +67,40 @@ jobs:
             trap 'record_cleanup_signal 130' INT
             trap 'record_cleanup_signal 143' TERM
             cleanup_failed=0
+            if [ -z "$capacity_id" ] && [ -f "$capacity_cidfile" ] && [ ! -L "$capacity_cidfile" ]; then
+              recovered_capacity_id=$(cat "$capacity_cidfile") || cleanup_failed=1
+              if [[ "$recovered_capacity_id" =~ ^[a-f0-9]{64}$ ]] &&
+                [ "$(docker container inspect --format '{{index .Config.Labels "verjson.runner-canary-owner"}}' "$recovered_capacity_id")" = "$capacity_owner" ]; then
+                capacity_id=$recovered_capacity_id
+                capacity_owned=1
+              else
+                cleanup_failed=1
+              fi
+            fi
             docker rm -f "$sibling" >/dev/null 2>&1 || true
+            if [ "$capacity_owned" -eq 1 ]; then
+              docker rm -f "$capacity_id" >/dev/null 2>&1 || true
+              if ! remaining=$(docker container ls -a --no-trunc --filter "id=${capacity_id}" --format '{{.ID}}'); then
+                cleanup_failed=1
+              elif [ -n "$remaining" ]; then
+                cleanup_failed=1
+              fi
+            fi
+            if [ -n "$capacity_state" ]; then
+            if [ -e "$capacity_cidfile" ] || [ -L "$capacity_cidfile" ]; then
+              if [ -f "$capacity_cidfile" ] && [ ! -L "$capacity_cidfile" ]; then rm -f "$capacity_cidfile" || cleanup_failed=1
+              else rm -f "$capacity_cidfile" || true; cleanup_failed=1; fi
+            fi
+            if [ -e "$capacity_cidfile" ] || [ -L "$capacity_cidfile" ]; then cleanup_failed=1; fi
+            if [ -d "$capacity_state" ] && [ ! -L "$capacity_state" ] &&
+              [ "$(stat -c '%u:%a' "$capacity_state")" = "$(id -u):700" ]; then
+              rmdir "$capacity_state" || cleanup_failed=1
+            else
+              if [ -L "$capacity_state" ]; then rm -f "$capacity_state" || true; fi
+              cleanup_failed=1
+            fi
+            if [ -e "$capacity_state" ] || [ -L "$capacity_state" ]; then cleanup_failed=1; fi
+            fi
             if ! remaining=$(docker container ls -a --filter "name=^/${sibling}$" --format '{{.Names}}'); then
               cleanup_failed=1
             elif [ -n "$remaining" ]; then cleanup_failed=1; fi
@@ -93,6 +134,13 @@ jobs:
           trap cleanup EXIT
           trap 'interrupted 130' INT
           trap 'interrupted 143' TERM
+          [ -d "$RUNNER_TEMP" ] && [ ! -L "$RUNNER_TEMP" ]
+          [ "$(stat -c '%u' "$RUNNER_TEMP")" = "$(id -u)" ]
+          capacity_state=$(mktemp -d -p "$RUNNER_TEMP" runner-canary-capacity.XXXXXXXXXX)
+          capacity_cidfile="${capacity_state}/container.cid"
+          [ -d "$capacity_state" ] && [ ! -L "$capacity_state" ]
+          [ "$(stat -c '%u:%a' "$capacity_state")" = "$(id -u):700" ]
+          [[ "$(realpath "$capacity_state")" == "$(realpath "$RUNNER_TEMP")"/* ]]
           docker network create "$network" >/dev/null
           docker run -d --name "$sibling" --network "$network" nginx@sha256:db35bfc6b2951e7f8a72db5db120288c127ffaeeb4a6d4b95a26fead017d5913 >/dev/null
           docker run --rm --network "$network" curlimages/curl@sha256:9a1ed35addb45476afa911696297f8e115993df459278ed036182dd2cd22b67b --fail "http://$sibling" >/dev/null
@@ -100,8 +148,65 @@ jobs:
           FROM alpine@sha256:14358309a308569c32bdc37e2e0e9694be33a9d99e68afb0f5ff33cc1f695dce
           RUN printf canary >/canary
           DOCKERFILE
-          free_bytes=$(df -PB1 /var/lib/docker | awk 'NR==2 {print $4}')
-          free_inodes=$(df -Pi /var/lib/docker | awk 'NR==2 {print 100-$5}')
+          test ! -e "$capacity_cidfile" && test ! -L "$capacity_cidfile"
+          trap 'record_cleanup_signal 130' INT
+          trap 'record_cleanup_signal 143' TERM
+          set +e
+          candidate_capacity_id=$(timeout --signal=KILL 30s \
+            docker create --cidfile "$capacity_cidfile" --name "$capacity" \
+              --label "verjson.runner-canary-owner=${capacity_owner}" --network none \
+              --read-only --cap-drop ALL --security-opt no-new-privileges --pids-limit 64 --memory 64m --cpus 0.25 \
+              alpine@sha256:14358309a308569c32bdc37e2e0e9694be33a9d99e68afb0f5ff33cc1f695dce \
+              sh -ceu 'free_bytes=$(df -PB1 / | awk '\''NR==2 {print $4}'\''); free_inodes=$(df -Pi / | awk '\''NR==2 {print 100-$5}'\''); printf "%s %s\n" "$free_bytes" "$free_inodes"')
+          create_status=$?
+          set -e
+          if [ -f "$capacity_cidfile" ] && [ ! -L "$capacity_cidfile" ] &&
+            [ "$(stat -c '%u:%a' "$capacity_cidfile")" = "$(id -u):600" ]; then
+            recovered_capacity_id=$(cat "$capacity_cidfile")
+            if [[ "$recovered_capacity_id" =~ ^[a-f0-9]{64}$ ]] &&
+              [ "$(docker container inspect --format '{{index .Config.Labels "verjson.runner-canary-owner"}}' "$recovered_capacity_id")" = "$capacity_owner" ]; then
+              capacity_id=$recovered_capacity_id
+              capacity_owned=1
+            fi
+          elif [ -e "$capacity_cidfile" ] || [ -L "$capacity_cidfile" ]; then
+            create_status=1
+          fi
+          if [ "$capacity_owned" -eq 0 ] && [ ! -e "$capacity_cidfile" ] && [ ! -L "$capacity_cidfile" ] &&
+            { [ "$create_status" -eq 124 ] || [ "$create_status" -eq 137 ] || [ "$cleanup_signal_status" -ne 0 ]; }; then
+            stable_empty=0
+            for reconciliation_attempt in 1 2 3 4 5 6; do
+              if ! observed_ids=$(docker container ls -a --no-trunc --filter "name=^/${capacity}$" \
+                --filter "label=verjson.runner-canary-owner=${capacity_owner}" --format '{{.ID}}'); then
+                create_status=1
+                break
+              elif [ -z "$observed_ids" ]; then
+                stable_empty=$((stable_empty + 1))
+                if [ "$stable_empty" -ge 3 ]; then break; fi
+              elif [[ "$observed_ids" =~ ^[a-f0-9]{64}$ ]] &&
+                [ "$(docker container inspect --format '{{index .Config.Labels "verjson.runner-canary-owner"}}' "$observed_ids")" = "$capacity_owner" ]; then
+                capacity_id=$observed_ids
+                capacity_owned=1
+                break
+              else
+                create_status=1
+                break
+              fi
+              sleep 1
+            done
+            if [ "$capacity_owned" -eq 0 ] && [ "$stable_empty" -lt 3 ]; then create_status=1; fi
+          fi
+          trap 'interrupted 130' INT
+          trap 'interrupted 143' TERM
+          if [ "$cleanup_signal_status" -ne 0 ]; then exit "$cleanup_signal_status"; fi
+          [ "$create_status" -eq 0 ]
+          [ "$capacity_owned" -eq 1 ]
+          [[ "$candidate_capacity_id" =~ ^[a-f0-9]{64}$ ]]
+          [ "$candidate_capacity_id" = "$capacity_id" ]
+          capacity_stats=$(docker start --attach "$capacity_id")
+          [[ "$capacity_stats" =~ ^([0-9]{1,18})\ ([0-9]{1,3})$ ]]
+          free_bytes=${BASH_REMATCH[1]}
+          free_inodes=${BASH_REMATCH[2]}
+          test "$free_inodes" -le 100
           test "$free_bytes" -ge 10737418240
           test "$free_inodes" -ge 10
           job_id=$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/jobs?filter=latest" --jq '.jobs | map(select(.name == "canary")) | if length == 1 then .[0].id else error("ambiguous job") end')

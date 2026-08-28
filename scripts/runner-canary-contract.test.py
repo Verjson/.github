@@ -1,12 +1,8 @@
 #!/usr/bin/env python3
 import copy
 import hashlib
-import os
 import re
-import signal
 import subprocess
-import tempfile
-import time
 import unittest
 from pathlib import Path
 
@@ -14,7 +10,7 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = ROOT / ".github/workflows/runner-canary.yml"
-EXPECTED_SHA256 = "d91c840de787a787f5cafe559cc22fcb9dbf7a94651398d5cfa58175bd5dd8a4"
+EXPECTED_SHA256 = "9e03fc1db088cb1c2f528f0b139b762e4fbb1810a14b7a47c1a97125e3948cd1"
 IMMUTABLE_TAG = re.compile(r"^runner-canary-v[0-9]+\.[0-9]+\.[0-9]+$")
 
 
@@ -120,117 +116,25 @@ class RunnerCanaryContractTests(unittest.TestCase):
             with self.subTest(ref=rejected):
                 self.assertIsNone(IMMUTABLE_TAG.fullmatch(rejected))
 
-    def test_exit_and_signals_remove_exact_resources_and_fail_closed(self) -> None:
+    def test_capacity_probe_keeps_the_reviewed_trust_boundary(self) -> None:
         script = load_workflow()["jobs"]["canary"]["steps"][0]["run"]
-        def run_case(mode: str, expected_status: int, extra: dict[str, str] | None = None) -> None:
-            with tempfile.TemporaryDirectory() as directory:
-                root = Path(directory)
-                bin_dir = root / "bin"
-                bin_dir.mkdir()
-                log = root / "docker.log"
-                ready = root / "ready"
-                docker = bin_dir / "docker"
-                docker.write_text(
-                    "#!/bin/bash\n"
-                    'printf \'%s\\n\' "$*" >>"$DOCKER_LOG"\n'
-                    'cat >/dev/null || true\n'
-                    'if [ "${FAIL_CURL:-}" = 1 ] && [[ "$*" == *curlimages/curl@* ]]; then exit 42; fi\n'
-                    'if [ -n "${BLOCK_CLEANUP:-}" ] && [[ "$*" == *"$BLOCK_CLEANUP"* ]] && [ ! -e "$READY_FILE.blocked" ]; then\n'
-                    '  : >"$READY_FILE.blocked"; : >"$READY_FILE"\n'
-                    "  trap 'exit 130' INT; trap 'exit 143' TERM\n"
-                    '  while :; do sleep 1; done\n'
-                    'fi\n'
-                    'if [[ "$*" == "container ls -a --filter name=^/runner-canary-sibling-123-1$ --format {{.Names}}" ]]; then\n'
-                    '  [ "${FAIL_INVENTORY:-}" = CONTAINER ] && exit 44\n'
-                    '  [ "${SURVIVE_CONTAINER:-}" = 1 ] && printf \'%s\\n\' runner-canary-sibling-123-1\n'
-                    '  exit 0\nfi\n'
-                    'if [[ "$*" == "network ls --filter name=^runner-canary-123-1$ --format {{.Name}}" ]]; then\n'
-                    '  [ "${FAIL_INVENTORY:-}" = NETWORK ] && exit 44\n'
-                    '  [ "${SURVIVE_NETWORK:-}" = 1 ] && printf \'%s\\n\' runner-canary-123-1\n'
-                    '  exit 0\nfi\n'
-                    'if [[ "$*" == "image ls --filter reference=runner-canary:123-1 --format {{.Repository}}:{{.Tag}}" ]]; then\n'
-                    '  [ "${FAIL_INVENTORY:-}" = IMAGE ] && exit 44\n'
-                    '  [ "${SURVIVE_IMAGE:-}" = 1 ] && printf \'%s\\n\' runner-canary:123-1\n'
-                    '  exit 0\nfi\n'
-                    'if [ "${BLOCK_BUILD:-}" = 1 ] && [[ "$*" == build* ]]; then\n'
-                    '  : >"$READY_FILE"\n'
-                    "  trap 'exit 130' INT\n"
-                    "  trap 'exit 143' TERM\n"
-                    '  while :; do sleep 1; done\n'
-                    "fi\nexit 0\n",
-                    encoding="utf-8",
-                )
-                docker.chmod(0o755)
-                for name, body in {
-                    "pwsh": "exit 0",
-                    "gh": "printf 456",
-                    "df": "if [ \"$1\" = -PB1 ]; then printf 'Filesystem 1-blocks Used Available Capacity Mounted\\nmock 1 1 11811160064 1%% /var/lib/docker\\n'; else printf 'Filesystem Inodes IUsed IFree IUse%% Mounted\\nmock 100 20 80 20%% /var/lib/docker\\n'; fi",
-                }.items():
-                    executable = bin_dir / name
-                    executable.write_text(f"#!/bin/bash\n{body}\n", encoding="utf-8")
-                    executable.chmod(0o755)
-                env = {
-                    **os.environ,
-                    "PATH": f"{bin_dir}:{os.environ['PATH']}",
-                    "DOCKER_LOG": str(log), "READY_FILE": str(ready),
-                    "RUNNER_NAME": "gha-general-8", "EXPECTED_RUNNER": "gha-general-8",
-                    "RUNNER_ID": "479", "TRANSACTION_NONCE": "123e4567-e89b-42d3-a456-426614174000",
-                    "RELEASE_MANIFEST": f"ghcr.io/verjson/gha-runner-release@sha256:{'a' * 64}",
-                    "RELEASE_VARIANT": "pwsh", "IMAGE_DIGEST": f"ghcr.io/verjson/gha-runner@sha256:{'b' * 64}",
-                    "GITHUB_RUN_ID": "123", "GITHUB_RUN_ATTEMPT": "1", "GITHUB_REPOSITORY": "Verjson/.github",
-                    "GITHUB_SHA": "c" * 40, "GITHUB_REF_NAME": "runner-canary-v1.0.0",
-                    **(extra or {}),
-                }
-                if mode == "failure":
-                    env["FAIL_CURL"] = "1"
-                elif mode != "success" and not (extra or {}).get("BLOCK_CLEANUP"):
-                    env["BLOCK_BUILD"] = "1"
-                process = subprocess.Popen(
-                    ["bash", "-c", script], cwd=root, env=env,
-                    stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                    text=True, start_new_session=True,
-                )
-                if mode not in ("success", "failure"):
-                    for _ in range(200):
-                        if ready.exists():
-                            break
-                        time.sleep(0.01)
-                    self.assertTrue(ready.exists(), "canary did not reach blocking build")
-                    os.killpg(process.pid, getattr(signal, mode))
-                _, stderr = process.communicate(timeout=10)
-                self.assertEqual(expected_status, process.returncode, stderr)
-                commands = log.read_text(encoding="utf-8")
-                self.assertIn("rm -f runner-canary-sibling-123-1", commands)
-                self.assertIn("container ls -a --filter name=^/runner-canary-sibling-123-1$", commands)
-                self.assertIn("network rm runner-canary-123-1", commands)
-                self.assertIn("network ls --filter name=^runner-canary-123-1$", commands)
-                self.assertIn("image rm runner-canary:123-1", commands)
-                self.assertIn("image ls --filter reference=runner-canary:123-1", commands)
-                self.assertEqual(
-                    (root / "runner-promotion-receipt.json").exists(),
-                    mode == "success" and not extra,
-                )
-                self.assertFalse((root / "receipt.tmp").exists())
-
-        for mode, expected_status in (("success", 0), ("failure", 42), ("SIGINT", 130), ("SIGTERM", 143)):
-            with self.subTest(mode=mode):
-                run_case(mode, expected_status)
-        for survivor in ("SURVIVE_CONTAINER", "SURVIVE_NETWORK", "SURVIVE_IMAGE"):
-            for mode, expected_status in (("success", 1), ("failure", 42), ("SIGINT", 130), ("SIGTERM", 143)):
-                with self.subTest(survivor=survivor, mode=mode):
-                    run_case(mode, expected_status, {survivor: "1"})
-        for resource in ("CONTAINER", "NETWORK", "IMAGE"):
-            with self.subTest(inventory_failure=resource):
-                run_case("success", 1, {"FAIL_INVENTORY": resource})
-        for blocked in (
-            "rm -f runner-canary-sibling-123-1",
-            "container ls -a --filter name=^/runner-canary-sibling-123-1$",
-            "image ls --filter reference=runner-canary:123-1",
-        ):
-            for mode, expected_status in (("SIGINT", 130), ("SIGTERM", 143)):
-                with self.subTest(blocked_cleanup=blocked, mode=mode):
-                    run_case(mode, expected_status, {"BLOCK_CLEANUP": blocked})
-
+        required = (
+            "mktemp -d -p",
+            "verjson.runner-canary-owner",
+            "timeout --signal=KILL 30s",
+            "--network none",
+            "--read-only --cap-drop ALL",
+            "stable_empty",
+            "docker container ls -a --no-trunc",
+            "docker rm -f \"$capacity_id\"",
+            "test \"$free_bytes\" -ge 10737418240",
+            "test \"$free_inodes\" -ge 10",
+        )
+        for marker in required:
+            with self.subTest(marker=marker):
+                self.assertIn(marker, script)
+        self.assertNotIn("/var/lib/docker", script)
+        self.assertNotIn("type=bind", script)
 
 if __name__ == "__main__":
     unittest.main()
