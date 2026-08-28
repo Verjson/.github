@@ -145,6 +145,10 @@ class AuthnTypeSurfaceRulesetTest(unittest.TestCase):
         }]
         with self.assertRaisesRegex(MODULE.ContractError, "differs"):
             MODULE.validate_live_ruleset(widened, expected)
+        with self.assertRaisesRegex(MODULE.ContractError, "missing required fields"):
+            MODULE.validate_live_ruleset(
+                {"source_type": "Organization", "source": "Verjson"}, expected
+            )
 
     def test_apply_requires_acknowledgement_before_any_mutation(self):
         with (

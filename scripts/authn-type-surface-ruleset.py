@@ -71,10 +71,22 @@ def read_contract(path=CONTRACT):
         },
     }, "ruleset base image drifted")
     rollout = contract["rollout"]
+    require(set(rollout) == {
+        "issue", "human_gate_required", "apply_acknowledgement", "required_run",
+    }, "rollout keys drifted")
     require(rollout["issue"] == 1154, "rollout issue drifted")
     require(rollout["human_gate_required"] is True, "rollout must retain its human gate")
     require(rollout["apply_acknowledgement"] == "APPLY-AUTHN-TYPE-SURFACE-1154",
             "apply acknowledgement drifted")
+    require(rollout["required_run"] == {
+        "event": "pull_request",
+        "conclusion": "success",
+        "path": ".github/workflows/authn-type-surface-required.yml",
+        "workflow_url_prefix": (
+            "https://api.github.com/repos/Verjson/verjson-authn/"
+            "actions/required_workflows/"
+        ),
+    }, "required run receipt contract drifted")
     return contract
 
 
@@ -140,6 +152,11 @@ def render_payload(contract, workflow_sha):
 
 
 def mutable_ruleset(value):
+    required = {
+        "name", "target", "enforcement", "bypass_actors", "conditions", "rules",
+    }
+    require(isinstance(value, dict) and required <= set(value),
+            "live ruleset is missing required fields")
     return {key: value[key] for key in (
         "name", "target", "enforcement", "bypass_actors", "conditions", "rules",
     )}
