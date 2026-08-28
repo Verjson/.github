@@ -218,6 +218,7 @@ grep -qE "$lane_selector_pattern" \
 fleet_label="$(
   grep -HnE "^    runs-on:[[:space:]]*\[" "${workflow_files[@]}" \
     | grep -vE '/ai-privileged-merge\.yml:[0-9]+:[[:space:]]+runs-on: \[self-hosted, general\]$' \
+    | grep -vE "/runner-canary\\.yml:[0-9]+:[[:space:]]+runs-on: \\[self-hosted, '\\\$\\{\\{ inputs\\.runner_label \\}\\}'\\]$" \
     || true
 )"
 [ -z "$fleet_label" ] \
@@ -1156,6 +1157,13 @@ for f in "${workflow_files[@]}" "$root"/.github/actions/*/README.md "$root"/.git
   # anywhere else — the exact "exemption hides a real label" hole.
   exempt="self-hosted"
   [ "$(basename "$f")" = "actionlint.yml" ] && exempt="self-hosted|$control_label"
+  # The dispatch-only canonical canary's exact dynamic selector is validated by
+  # hosted-selector-policy.test.py. Keep this duplicate inventory scan from
+  # treating that expression as a literal fleet label without widening policy
+  # for another workflow or symlink.
+  if [ "$f" = "$root/.github/workflows/runner-canary.yml" ] && [ ! -L "$f" ]; then
+    exempt='self-hosted|\$\{\{ inputs\.runner_label \}\}'
+  fi
   # `tr -d "\"'"` strips BOTH quote styles: `['self-hosted', 'general']` is legal
   # YAML, and stripping only double quotes made it fail as the bogus label
   # `'general'`. Blank lines are dropped with a second grep rather than an empty
@@ -1223,7 +1231,7 @@ hosted_selector_policy="$root/scripts/ci-gate/hosted-selector-policy.py"
 if ! command -v python3 >/dev/null 2>&1; then
   fail "python3 is required to run the hosted-selector policy"
 else
-  hosted_selector_out="$(python3 "$hosted_selector_policy" --visibility public "$workflows" 2>&1)"
+  hosted_selector_out="$(cd -- "$root" && python3 "$hosted_selector_policy" --visibility public "$workflows" 2>&1)"
   hosted_selector_rc=$?
   case "$hosted_selector_rc" in
     0) pass "no workflow names a metered hosted runner family or an unbounded OS lane" ;;
