@@ -5,4 +5,4 @@ impact: major
 title: Select subscriber-aware package distribution
 ---
 
-Select Cloudsmith entitlement tokens for paid package distribution, define the initial public adoption package set, and retain GitHub Packages only as a bounded migration bridge.
+Select Cloudsmith entitlement tokens for paid package distribution, designate an audit-gated public adoption package set, and retain GitHub Packages only as a verified bounded migration bridge.
