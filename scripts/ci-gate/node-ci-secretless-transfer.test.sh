@@ -22,6 +22,21 @@ acquire = jobs["acquire-secretless-dependencies"]
 build = jobs["build-test"]
 inputs = doc[True]["workflow_call"]["inputs"]
 
+acquisition_guard = next(
+    step for step in build["steps"]
+    if step.get("name") == "Require completed secretless dependency acquisition"
+)
+assert "needs.eligibility.outputs.should-run != 'false'" in acquisition_guard["if"]
+assert "inputs.secretless-pr || inputs.secretless-trusted-ref" in acquisition_guard["if"]
+assert "needs.acquire-secretless-dependencies.result != 'success'" in acquisition_guard["if"]
+assert acquisition_guard["env"]["ACQUISITION_RESULT"] == "${{ needs.acquire-secretless-dependencies.result }}"
+assert "eligibility likely did not complete" in acquisition_guard["run"]
+assert "Re-run the workflow" in acquisition_guard["run"]
+assert build["steps"].index(acquisition_guard) < next(
+    index for index, step in enumerate(build["steps"])
+    if str(step.get("uses", "")).startswith("actions/checkout@")
+)
+
 assert inputs["secretless-runtime-public-cache"]["type"] == "boolean"
 assert inputs["secretless-runtime-public-cache"]["default"] is False
 

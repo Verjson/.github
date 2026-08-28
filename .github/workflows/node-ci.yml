@@ -1282,6 +1282,13 @@ jobs:
       - name: Report deferred CI
         if: needs.eligibility.outputs.should-run == 'false'
         run: echo "::notice::CI is deferred until renovate/stability-days clears and Renovate rebases."
+      - name: Require completed secretless dependency acquisition
+        if: needs.eligibility.outputs.should-run != 'false' && (inputs.secretless-pr || inputs.secretless-trusted-ref) && needs.acquire-secretless-dependencies.result != 'success'
+        env:
+          ACQUISITION_RESULT: ${{ needs.acquire-secretless-dependencies.result }}
+        run: |
+          echo "::error::secretless dependency acquisition did not succeed (result=${ACQUISITION_RESULT}); eligibility likely did not complete. Re-run the workflow." >&2
+          exit 1
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         if: needs.eligibility.outputs.should-run != 'false'
         with:
@@ -4756,7 +4763,15 @@ jobs:
                       if target_exists:
                           shutil.rmtree(backup_container)
                       else:
-                          backup_container.rmdir()
+                          try:
+                              backup_container.rmdir()
+                          except OSError as error:
+                              if error.errno in (errno.EEXIST, errno.ENOTEMPTY):
+                                  restore_initial_absence(installed_identity)
+                                  raise SystemExit(
+                                      "empty compatibility backup acquired unexpected entries"
+                                  )
+                              raise
                   elif swapped:
                       rejected_relative = f"{backup_container.name}/rejected"
                       rejected_is_verified = False
@@ -4862,10 +4877,13 @@ jobs:
                   )
 
           def create_sealed_file(content):
-              descriptor = os.memfd_create(
-                  "verjson-compatibility-artifact",
-                  os.MFD_CLOEXEC | os.MFD_ALLOW_SEALING,
-              )
+              try:
+                  descriptor = os.memfd_create(
+                      "verjson-compatibility-artifact",
+                      os.MFD_CLOEXEC | os.MFD_ALLOW_SEALING,
+                  )
+              except (AttributeError, OSError):
+                  raise SystemExit("sealed compatibility inputs are unavailable")
               try:
                   write_all(descriptor, content)
                   os.lseek(descriptor, 0, os.SEEK_SET)

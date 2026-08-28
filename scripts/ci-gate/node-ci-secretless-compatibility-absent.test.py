@@ -150,6 +150,18 @@ if (process.env.TEST_SWAP_LOAD_RESTORE === 'true') {
   fs.writeFileSync('results/swap-ready', 'yes');
   waitFor('results/swap-complete');
 }
+if (process.env.TEST_ASSERT_NO_SEALED_DESCRIPTORS === 'true') {
+  const leaked = fs.readdirSync('/proc/self/fd').filter((descriptor) => {
+    try {
+      return fs.readlinkSync('/proc/self/fd/' + descriptor)
+        .includes('memfd:verjson-compatibility-artifact');
+    } catch (error) {
+      if (error.code === 'ENOENT') return false;
+      throw error;
+    }
+  });
+  assert.deepEqual(leaked, []);
+}
 const manifest = require(target + '/package.json');
 fs.writeFileSync('results/loaded-version', manifest.version + '\\n');
 if (process.env.TEST_SWAP_LOAD_RESTORE === 'true') {
@@ -211,6 +223,15 @@ if (process.env.TEST_FAIL === 'true') process.exit(42);
         self.assertFalse(self.package_target.is_symlink())
         self.assertEqual([], list(self.scope.glob(".authn.*")))
 
+    def wait_for_path(self, path, *, timeout=10):
+        deadline = time.monotonic() + timeout
+        while not path.exists():
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return False
+            time.sleep(min(0.05, remaining))
+        return True
+
     def test_initially_absent_target_is_removed_after_success(self):
         self.prepare()
         result = self.run_lane()
@@ -220,6 +241,44 @@ if (process.env.TEST_FAIL === 'true') process.exit(42);
             (self.fixture / "results/observed-versions").read_text(),
         )
         self.assert_absence_restored()
+
+    def test_memfd_unavailability_has_a_fixed_fail_closed_diagnostic(self):
+        self.prepare()
+        needle = "        descriptor = os.memfd_create(\n"
+        replacement = (
+            "        raise OSError(errno.EPERM, 'injected seccomp denial')\n"
+            "        descriptor = os.memfd_create(\n"
+        )
+        runner = self.instrument_runner("memfd-unavailable.sh", needle, replacement)
+        result = self.run_lane(runner=runner)
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn("sealed compatibility inputs are unavailable", result.stderr)
+        self.assertNotIn("injected seccomp denial", result.stderr)
+        self.assert_absence_restored()
+
+    def test_sealed_descriptors_do_not_reach_the_consumer(self):
+        self.prepare()
+        result = self.run_lane(TEST_ASSERT_NO_SEALED_DESCRIPTORS="true")
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assert_absence_restored()
+
+    def test_nonempty_empty_target_backup_fails_with_fixed_diagnostic(self):
+        self.prepare()
+        needle = "    backup = backup_container / \"package\"\n"
+        replacement = (
+            needle
+            + "    (backup_container / 'unexpected').touch()\n"
+        )
+        runner = self.instrument_runner("nonempty-backup.sh", needle, replacement)
+        result = self.run_lane(runner=runner)
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn(
+            "empty compatibility backup acquired unexpected entries",
+            result.stderr,
+        )
+        self.assertFalse(self.package_target.exists())
+        unexpected = list(self.scope.glob(".authn.previous-*-*/unexpected"))
+        self.assertEqual(1, len(unexpected))
 
     def test_initially_absent_target_is_removed_after_script_failure(self):
         self.prepare()
@@ -414,11 +473,7 @@ if (process.env.TEST_FAIL === 'true') process.exit(42);
             try:
                 ready = self.fixture / "results/swap-ready"
                 loaded = self.fixture / "results/load-complete"
-                for _ in range(500):
-                    if ready.exists():
-                        break
-                    time.sleep(0.01)
-                if not ready.exists():
+                if not self.wait_for_path(ready):
                     raise AssertionError("consumer never reached swap/load/restore window")
                 self.package_target.rename(verified)
                 self.package_target.mkdir()
@@ -431,11 +486,7 @@ if (process.env.TEST_FAIL === 'true') process.exit(42);
                     encoding="utf-8",
                 )
                 (self.fixture / "results/swap-complete").touch()
-                for _ in range(500):
-                    if loaded.exists():
-                        break
-                    time.sleep(0.01)
-                if not loaded.exists():
+                if not self.wait_for_path(loaded):
                     raise AssertionError("consumer never loaded a package during attack")
                 shutil.rmtree(self.package_target)
                 verified.rename(self.package_target)
