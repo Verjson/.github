@@ -113,6 +113,41 @@ class RenovateTableTests(unittest.TestCase):
             renovate_changelog.parse_updates(BODY),
         )
 
+    def test_parses_escaped_union_ranges_without_creating_table_cells(self) -> None:
+        body = BODY.replace(
+            "`10.4.0` → `10.5.0`",
+            r"`^0.1.3 \|\| ^1.0.0` → `^0.2.0 \|\| ^1.1.0`",
+        )
+
+        self.assertEqual(
+            renovate_changelog.Update(
+                package="ip-address",
+                from_version="^0.1.3 || ^1.0.0",
+                to_version="^0.2.0 || ^1.1.0",
+            ),
+            renovate_changelog.parse_updates(body)[0],
+        )
+
+    def test_rejects_unescaped_union_pipes_as_table_delimiters(self) -> None:
+        body = BODY.replace("`10.4.0` → `10.5.0`", "`^0.1.3 || ^1.0.0` → `^0.2.0`")
+
+        with self.assertRaises(renovate_changelog.AutomationError):
+            renovate_changelog.parse_updates(body)
+
+    def test_rejects_malformed_escapes_and_non_union_pipe_values(self) -> None:
+        fixtures = (
+            r"`^0.1.3 \q ^1.0.0` → `^0.2.0`",
+            "`^0.1.3 \\` → `^0.2.0`",
+            r"`^0.1.3 \| ^1.0.0` → `^0.2.0`",
+            r"`^0.1.3 \|\|^1.0.0` → `^0.2.0`",
+            r"`^0.1.3 \|\| ${{ secrets.TOKEN }}` → `^0.2.0`",
+        )
+        for change in fixtures:
+            with self.subTest(change=change):
+                body = BODY.replace("`10.4.0` → `10.5.0`", change)
+                with self.assertRaises(renovate_changelog.AutomationError):
+                    renovate_changelog.parse_updates(body)
+
     def test_parses_integrity_qualified_package_manager_pnpm_row(self) -> None:
         update = renovate_changelog.parse_updates(PNPM_PACKAGE_MANAGER_BODY)[0]
         self.assertEqual("pnpm", update.package)
