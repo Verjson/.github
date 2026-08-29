@@ -1,0 +1,56 @@
+{
+  "schema_version": 1,
+  "organization": "Verjson",
+  "consumer": {
+    "repository": "Verjson/verjson-cli-projects",
+    "repository_id": 1277452690,
+    "repository_ruleset": {
+      "id": 21567958,
+      "name": "cli-projects-v1-required",
+      "target": "branch",
+      "enforcement": "evaluate",
+      "bypass_actors": [],
+      "conditions": {
+        "ref_name": {"include": ["~DEFAULT_BRANCH"], "exclude": []}
+      },
+      "rules": [{
+        "type": "required_status_checks",
+        "parameters": {
+          "do_not_enforce_on_create": true,
+          "required_status_checks": [{
+            "context": "package-surface-contract",
+            "integration_id": 15368
+          }],
+          "strict_required_status_checks_policy": false
+        }
+      }]
+    }
+  },
+  "canonical_workflow": {
+    "repository": "Verjson/.github",
+    "repository_id": 1269388380,
+    "path": ".github/workflows/cli-projects-package-surface-required.yml",
+    "ref": "refs/heads/main"
+  },
+  "ruleset": {
+    "name": "cli-projects-package-surface-required-workflow",
+    "target": "branch",
+    "enforcement": "active",
+    "bypass_actors": [],
+    "conditions": {
+      "ref_name": {"include": ["~DEFAULT_BRANCH"], "exclude": []},
+      "repository_id": {"repository_ids": [1277452690]}
+    }
+  },
+  "rollout": {
+    "issue": 1177,
+    "human_gate_required": true,
+    "apply_acknowledgement": "APPLY-CLI-PROJECTS-PACKAGE-SURFACE-1177",
+    "required_run": {
+      "event": "pull_request",
+      "conclusion": "success",
+      "path": ".github/workflows/cli-projects-package-surface-required.yml",
+      "workflow_url_prefix": "https://api.github.com/repos/Verjson/verjson-cli-projects/actions/required_workflows/"
+    }
+  }
+}
