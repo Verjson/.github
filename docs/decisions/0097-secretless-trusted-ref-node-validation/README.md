@@ -83,3 +83,54 @@ Disable `secretless-trusted-ref` to return trusted refs to the existing
 credentialed install route, or remove the trusted-ref caller job while retaining
 secretless PR validation. Neither rollback changes callers that omit the new
 input.
+
+## Amendment — 2026-08-30: isolate candidate runtime caches (#1201)
+
+The protected required-workflow variant treats the verified runtime npm cache as a
+read-only baseline, not as a shared working directory. Same-UID digest checks alone do
+not make files immutable, so every exact candidate script runs inside a verified
+root-owned Bubblewrap namespace. The namespace starts from a synthetic root and mounts
+only the system runtime, narrow non-secret host configuration, the exact checked-out
+workspace, and that script's fresh cache, home, and temporary directories. Host homes,
+runner installation state, sibling workspaces and temporary trees, `/run`, Unix control
+sockets, and host devices are absent; `/dev` is synthetic. Tool discovery ignores PATH entries
+outside the canonical `RUNNER_TOOL_CACHE` populated by `actions/setup-node`. Every lexical and
+resolved ancestor through every selected executable, package-content tree, and mount prefix must be
+root-owned with no group/world-writable mode. Runner-owned setup-node caches fail closed: descriptor
+pinning prevents prefix replacement but cannot prevent same-UID in-place content mutation. This is
+an immutable standard-runner-image admission requirement, not a staging promise from a writable
+source. Directory file descriptors bind the validated device/inode identities into the
+namespace, closing a rename/swap race between validation and mount. Read-only tool mounts must not
+equal or overlap any candidate-writable workspace, runner temporary, cache, home, or temporary path.
+The lexical workspace must itself equal its canonical path. Missing or ambiguous tools fail closed,
+so a repository-controlled PATH prefix cannot shadow `npm` or `node`. PowerShell is admitted only
+through the root-owned, non-writable `/usr/bin/pwsh` link to a versioned
+`/opt/microsoft/powershell/<version>` runtime, which is descriptor-bound read-only. Before
+entry, the workflow
+validates a bounded regular-file
+inventory and digests, copies that inventory into the fresh cache, and validates source
+and copy again. It redirects both uppercase and lowercase npm cache variables to that
+copy. Symlinks, special files, path escape, inventory drift, excess files or bytes, copy
+failure, missing or unsafe Bubblewrap, and cleanup failure all fail closed.
+
+Protected candidate scripts are offline. Their Bubblewrap namespace has a fresh network
+namespace and the workflow rejects database or cache-service environment state instead
+of silently sharing the host network. This is intentionally narrower than the general
+`node-ci` service-container contract: database-backed runner canaries and other networked
+validation run through separately admitted workflows, not through this untrusted
+required-workflow script plan. Tests prove that loopback and link-local metadata are
+unreachable. Adding a service endpoint here requires a separately reviewed explicit
+proxy/allowlist; shared host networking is not an accepted fallback.
+
+The Bubblewrap PID namespace, shell supervisor, and Python supervisor remove per-script
+and root directories on normal completion, script failure, `INT`, and `TERM`. After
+every candidate leader exit, the Python supervisor requires its outer process group to
+disappear, escalating to bounded `SIGKILL` and failing closed if `ESRCH` is not observed.
+The PID namespace also terminates descendants that create a new session; the contract
+does not claim that process-group polling alone covers those descendants. The exact
+cleanup step sweeps the deterministic root even if in-step cleanup is interrupted, and
+the namespace's read-only parent prevents candidate code from renaming that root.
+Credential variables remain absent from every candidate process. This prevents one
+ordered script from deleting or poisoning cache evidence consumed by a later script
+while retaining the exact verified acquisition as the sole source for every isolated
+copy.
