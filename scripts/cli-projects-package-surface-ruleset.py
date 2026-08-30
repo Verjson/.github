@@ -305,6 +305,7 @@ def verify_canonical_bytes(contract, workflow_sha):
         "config/cli-projects-required-node-ci.json",
         "scripts/cli-projects-package-surface.py",
         "scripts/cli-projects-package-surface-ruleset.py",
+        "scripts/cli_projects_required_node_config.py",
         "scripts/gen-node-required-workflow.py",
     )
     for path in paths:
