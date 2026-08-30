@@ -1,0 +1,21 @@
+{
+  "blocking": false,
+  "summary": "No blocking findings; two follow-ups remain.",
+  "review_first": [
+    {
+      "location": ".github/workflows/cli-projects-package-surface-required.yml:14",
+      "why": "Credential admission boundary."
+    }
+  ],
+  "findings": [],
+  "followups": [
+    {
+      "location": "scripts/cli-projects-package-surface-ruleset.py:82",
+      "recommendation": "Keep the accepted alias set explicit."
+    },
+    {
+      "location": "scripts/gen-node-required-workflow.py:174",
+      "recommendation": "Retain generator coverage for the caller."
+    }
+  ]
+}

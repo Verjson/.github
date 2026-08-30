@@ -1,0 +1,21 @@
+{
+  "blocking": false,
+  "summary": "No blocking findings; one follow-up remains.",
+  "review_first": [
+    {
+      "location": "scripts/cli-projects-package-surface-ruleset.py:124",
+      "why": "Mutation and rollback boundary."
+    }
+  ],
+  "findings": [],
+  "followups": [
+    {
+      "location": ".github/workflows/cli-projects-package-surface-required.yml:42",
+      "suggestion": "Keep the admission failure diagnostic actionable."
+    },
+    {
+      "location": "scripts/cli-projects-package-surface-ruleset.py:293",
+      "note": "Improve idempotency logging."
+    }
+  ]
+}

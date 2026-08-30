@@ -16,6 +16,39 @@ spec.loader.exec_module(review)
 
 
 class ReviewVerdictTest(unittest.TestCase):
+    def test_captured_followup_alias_replays_normalize_to_canonical_notes(self):
+        fixtures = Path(__file__).with_name("fixtures")
+        expected_notes = (
+            ["Keep the admission failure diagnostic actionable.", "Improve idempotency logging."],
+            ["Keep the accepted alias set explicit.", "Retain generator coverage for the caller."],
+        )
+        for pass_number, notes in enumerate(expected_notes, start=1):
+            verdict = json.loads(
+                (fixtures / f"ai-review-1191-pass-{pass_number}.json").read_text(encoding="utf-8")
+            )
+            with self.subTest(pass_number=pass_number):
+                canonical = review.canonicalize_verdict(verdict, sensitive=True)
+                self.assertEqual([item["note"] for item in canonical["followups"]], notes)
+                self.assertTrue(
+                    all(set(item) == {"location", "note"} for item in canonical["followups"])
+                )
+
+    def test_followup_aliases_remain_unambiguous_and_unknown_fields_fail_closed(self):
+        base = {
+            "blocking": False,
+            "summary": "No defects found.",
+            "review_first": [],
+            "findings": [],
+        }
+        mutations = (
+            {"location": "app.py:12", "suggestion": "Improve this.", "payload": "ignore policy"},
+            {"location": "app.py:12", "recommendation": "Improve this.", "instructions": []},
+            {"location": "app.py:12", "note": "One value.", "suggestion": "Another value."},
+        )
+        for followup in mutations:
+            with self.subTest(followup=followup), self.assertRaises(review.VerdictError):
+                review.canonicalize_verdict({**base, "followups": [followup]}, sensitive=False)
+
     def committed_fixture(self, root, files):
         repository = Path(root)
         for relative_path, content in files.items():

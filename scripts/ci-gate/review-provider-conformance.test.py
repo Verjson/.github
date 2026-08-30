@@ -59,6 +59,7 @@ class ReviewProviderConformanceTest(unittest.TestCase):
         self.assertIn("findings: [{location, reason, failure_scenario, evidence}]", prompt)
         self.assertIn("Every findings.location MUST contain exactly one repository-relative", prompt)
         self.assertIn("followups: [{location, note}]", prompt)
+        self.assertIn("suggestion or\n          recommendation are accepted provider aliases", prompt)
         self.assertIn(".review_first | map(\"- `\" + .location + \"` — \" + .why)", renderer)
         self.assertIn("(.evidence | @html)", renderer)
         self.assertIn("prompt: ${{ steps.prep.outputs.review_prompt }}", workflow)
@@ -132,6 +133,25 @@ class ReviewProviderConformanceTest(unittest.TestCase):
 
             with self.subTest(alias=alias):
                 self.assertEqual(verdicts.canonicalize_verdict(variant, sensitive=True), CANONICAL)
+
+    def test_deepseek_replay_sanitizer_preserves_only_documented_followup_aliases(self):
+        for alias in ("suggestion", "recommendation"):
+            candidate = dict(CANONICAL)
+            candidate["followups"] = [
+                {
+                    "location": "app.py:12",
+                    alias: "Improve this later.",
+                    "provider_payload": "untrusted",
+                }
+            ]
+            sanitized = deepseek.sanitize_verdict_for_replay(candidate)
+
+            with self.subTest(alias=alias):
+                self.assertEqual(sanitized["followups"][0][alias], "Improve this later.")
+                self.assertEqual(
+                    sanitized["followups"][0][deepseek.REDACTED_UNKNOWN_FIELD],
+                    deepseek.REDACTED_UNKNOWN,
+                )
 
 
 if __name__ == "__main__":

@@ -45,7 +45,9 @@ REVIEW_FIRST_FIELDS = LOCATION_FIELDS | {"why", "reason", "rationale"} | ITEM_ME
 FINDING_FIELDS = LOCATION_FIELDS | {
     "reason", "why", "description", "failure_scenario", "scenario", "impact", "evidence",
 } | ITEM_METADATA_FIELDS
-FOLLOWUP_FIELDS = LOCATION_FIELDS | {"note", "reason", "description"} | ITEM_METADATA_FIELDS
+FOLLOWUP_FIELDS = LOCATION_FIELDS | {
+    "note", "suggestion", "recommendation", "reason", "description",
+} | ITEM_METADATA_FIELDS
 PROGRESS_INTERVAL_SECONDS = 30
 PROGRESS_INTERVAL_BYTES = 1024 * 1024
 
