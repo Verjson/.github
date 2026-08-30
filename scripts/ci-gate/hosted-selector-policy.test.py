@@ -131,11 +131,15 @@ def run_canonical_fixture(fixture: str) -> tuple[int, str]:
         os.makedirs(workflows)
         policy_dir = os.path.join(repository, "scripts", "ci-gate")
         os.makedirs(policy_dir)
-        os.mkdir(os.path.join(repository, ".git"))
         canonical_script = os.path.join(policy_dir, "hosted-selector-policy.py")
         shutil.copy2(SCRIPT, canonical_script)
         for entry in os.listdir(os.path.join(FIXTURES, fixture)):
             shutil.copy2(os.path.join(FIXTURES, fixture, entry), workflows)
+        subprocess.run(["git", "init", "--quiet", repository], check=True)
+        subprocess.run(
+            ["git", "-C", repository, "add", "scripts", ".github/workflows"],
+            check=True,
+        )
         completed = subprocess.run(
             [sys.executable, canonical_script, "--visibility", "public", workflows],
             cwd=REPOSITORY_ROOT,
@@ -169,11 +173,41 @@ with tempfile.TemporaryDirectory() as unexpected:
         capture_output=True,
         text=True,
     )
-    if completed.returncode == 2 and "checked-in" in (completed.stdout + completed.stderr):
+    if completed.returncode == 2 and "verified Git worktree" in (
+        completed.stdout + completed.stderr
+    ):
         ok("a moved policy script cannot inherit canonical path authority")
     else:
         fail(
             "a moved policy script did not fail closed "
+            f"({completed.returncode}: {(completed.stdout + completed.stderr).strip()})"
+        )
+
+with tempfile.TemporaryDirectory() as fake_repository:
+    workflows = os.path.join(fake_repository, ".github", "workflows")
+    policy_dir = os.path.join(fake_repository, "scripts", "ci-gate")
+    os.makedirs(workflows)
+    os.makedirs(policy_dir)
+    os.mkdir(os.path.join(fake_repository, ".git"))
+    fake_script = os.path.join(policy_dir, "hosted-selector-policy.py")
+    shutil.copy2(SCRIPT, fake_script)
+    shutil.copy2(
+        os.path.join(FIXTURES, "runner-canary-exact", "runner-canary.yml"),
+        os.path.join(workflows, "runner-canary.yml"),
+    )
+    completed = subprocess.run(
+        [sys.executable, fake_script, "--visibility", "public", workflows],
+        cwd=REPOSITORY_ROOT,
+        capture_output=True,
+        text=True,
+    )
+    if completed.returncode == 2 and "verified Git worktree" in (
+        completed.stdout + completed.stderr
+    ):
+        ok("an empty .git marker cannot fabricate canonical path authority")
+    else:
+        fail(
+            "an empty .git marker fabricated canonical path authority "
             f"({completed.returncode}: {(completed.stdout + completed.stderr).strip()})"
         )
 
@@ -184,13 +218,21 @@ with tempfile.TemporaryDirectory() as repository, tempfile.TemporaryDirectory() 
     )
     os.makedirs(workflows)
     os.makedirs(policy_dir)
-    os.mkdir(os.path.join(repository, ".git"))
-    os.mkdir(os.path.join(repository, ".verjson-actionlint-policy", ".git"))
     nested_script = os.path.join(policy_dir, "hosted-selector-policy.py")
     shutil.copy2(SCRIPT, nested_script)
     shutil.copy2(
         os.path.join(FIXTURES, "runner-canary-exact", "runner-canary.yml"),
         os.path.join(workflows, "runner-canary.yml"),
+    )
+    subprocess.run(["git", "init", "--quiet", repository], check=True)
+    subprocess.run(
+        ["git", "-C", repository, "add", ".github/workflows"], check=True
+    )
+    policy_root = os.path.join(repository, ".verjson-actionlint-policy")
+    subprocess.run(["git", "init", "--quiet", policy_root], check=True)
+    subprocess.run(
+        ["git", "-C", policy_root, "add", "scripts/ci-gate/hosted-selector-policy.py"],
+        check=True,
     )
     completed = subprocess.run(
         [sys.executable, nested_script, "--visibility", "public", workflows],
@@ -414,12 +456,16 @@ with tempfile.TemporaryDirectory() as repository:
     os.makedirs(workflows)
     policy_dir = os.path.join(repository, "scripts", "ci-gate")
     os.makedirs(policy_dir)
-    os.mkdir(os.path.join(repository, ".git"))
     canonical_script = os.path.join(policy_dir, "hosted-selector-policy.py")
     shutil.copy2(SCRIPT, canonical_script)
     os.symlink(
         os.path.join(FIXTURES, "runner-canary-exact", "runner-canary.yml"),
         os.path.join(workflows, "runner-canary.yml"),
+    )
+    subprocess.run(["git", "init", "--quiet", repository], check=True)
+    subprocess.run(
+        ["git", "-C", repository, "add", "scripts", ".github/workflows"],
+        check=True,
     )
     completed = subprocess.run(
         [sys.executable, canonical_script, "--visibility", "public", workflows],
@@ -439,10 +485,11 @@ with tempfile.TemporaryDirectory() as repository:
     os.makedirs(workflows)
     policy_dir = os.path.join(repository, "scripts", "ci-gate")
     os.makedirs(policy_dir)
-    os.mkdir(os.path.join(repository, ".git"))
     canonical_script = os.path.join(policy_dir, "hosted-selector-policy.py")
     shutil.copy2(SCRIPT, canonical_script)
     os.mkfifo(os.path.join(workflows, "runner-canary.yml"))
+    subprocess.run(["git", "init", "--quiet", repository], check=True)
+    subprocess.run(["git", "-C", repository, "add", "scripts"], check=True)
     completed = subprocess.run(
         [sys.executable, canonical_script, "--visibility", "public", workflows],
         cwd=REPOSITORY_ROOT,

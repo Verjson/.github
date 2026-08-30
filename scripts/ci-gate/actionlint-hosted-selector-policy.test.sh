@@ -177,11 +177,12 @@ fi
 source_dir="$GOOD_WORKSPACE"
 mkdir -p "$source_dir/.verjson-actionlint-policy/scripts/ci-gate" \
   "$source_dir/.github/workflows"
-# A real Actions workspace is a checkout. Preserve that repository marker so
-# the copied central policy can derive authority from its own nested location.
-mkdir "$source_dir/.git"
 cp "$root/scripts/ci-gate/hosted-selector-policy.py" \
   "$source_dir/.verjson-actionlint-policy/scripts/ci-gate/hosted-selector-policy.py"
+git init --quiet "$source_dir"
+git init --quiet "$source_dir/.verjson-actionlint-policy"
+git -C "$source_dir/.verjson-actionlint-policy" add \
+  scripts/ci-gate/hosted-selector-policy.py
 
 (cd "$source_dir" && env -u VERJSON_HOSTED_SELECTOR_POLICY_DIR \
   RUNNER_TEMP="$GOOD_RUNNER_TEMP" GITHUB_WORKSPACE="$GOOD_WORKSPACE" \

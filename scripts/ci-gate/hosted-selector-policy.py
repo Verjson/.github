@@ -34,6 +34,7 @@ import argparse
 import os
 import re
 import stat
+import subprocess
 import sys
 
 import yaml
@@ -385,44 +386,56 @@ def canonical_runner_canary_path(workflow_dir: str, consumer_policy: bool) -> st
             f"{script_path}: policy script must be a regular non-symlink file at its checked-in location"
         )
 
-    repository_roots = []
-    ancestor = os.path.dirname(script_path)
-    while True:
-        repository_marker = os.path.join(ancestor, ".git")
-        if os.path.lexists(repository_marker):
-            try:
-                marker_mode = os.lstat(repository_marker).st_mode
-            except OSError as error:
-                raise Undetermined(
-                    f"{repository_marker}: cannot lstat repository marker: {error}"
-                ) from error
-            if not (stat.S_ISREG(marker_mode) or stat.S_ISDIR(marker_mode)):
-                raise Undetermined(
-                    f"{repository_marker}: repository marker must be a regular file or directory"
-                )
-            repository_roots.append(ancestor)
-        parent = os.path.dirname(ancestor)
-        if parent == ancestor:
-            break
-        ancestor = parent
-    if not repository_roots:
-        raise Undetermined(
-            f"{script_path}: policy script is not under a checked-in repository location"
-        )
-    repository_root = repository_roots[-1]
-    relative_script = os.path.relpath(script_path, repository_root)
-    if relative_script not in (
-        os.path.join("scripts", "ci-gate", "hosted-selector-policy.py"),
-        os.path.join(
-            ".verjson-actionlint-policy",
-            "scripts",
-            "ci-gate",
-            "hosted-selector-policy.py",
-        ),
-    ):
+    git_environment = {
+        "GIT_CONFIG_GLOBAL": os.devnull,
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_TERMINAL_PROMPT": "0",
+        "LC_ALL": "C",
+        "PATH": os.environ.get("PATH", ""),
+    }
+
+    def git(command: list[str], directory: str) -> subprocess.CompletedProcess[str]:
+        try:
+            return subprocess.run(
+                ["git", "-C", directory, *command],
+                capture_output=True,
+                check=False,
+                env=git_environment,
+                text=True,
+                timeout=5,
+            )
+        except (OSError, subprocess.TimeoutExpired) as error:
+            raise Undetermined(f"{directory}: cannot verify Git worktree identity: {error}") from error
+
+    policy_root_result = git(["rev-parse", "--show-toplevel"], os.path.dirname(script_path))
+    if policy_root_result.returncode != 0:
+        raise Undetermined(f"{script_path}: policy script is not in a verified Git worktree")
+    policy_root = os.path.realpath(policy_root_result.stdout.strip())
+    direct_script = os.path.join("scripts", "ci-gate", "hosted-selector-policy.py")
+    relative_policy_script = os.path.relpath(script_path, policy_root)
+    if relative_policy_script != direct_script:
         raise Undetermined(
             f"{script_path}: policy script is not at an allowed checked-in location"
         )
+    tracked_result = git(
+        ["--literal-pathspecs", "ls-files", "--error-unmatch", "--", direct_script],
+        policy_root,
+    )
+    if tracked_result.returncode != 0:
+        raise Undetermined(f"{script_path}: policy script is not tracked by its Git worktree")
+
+    if os.path.basename(policy_root) == ".verjson-actionlint-policy":
+        repository_root = os.path.dirname(policy_root)
+        repository_root_result = git(["rev-parse", "--show-toplevel"], repository_root)
+        if (
+            repository_root_result.returncode != 0
+            or os.path.realpath(repository_root_result.stdout.strip()) != repository_root
+        ):
+            raise Undetermined(
+                f"{script_path}: nested policy checkout has no verified outer Git worktree"
+            )
+    else:
+        repository_root = policy_root
     expected_dir = os.path.join(repository_root, ".github", "workflows")
     supplied_dir = os.path.abspath(workflow_dir)
     if supplied_dir != expected_dir or os.path.realpath(supplied_dir) != expected_dir:
@@ -436,6 +449,20 @@ def canonical_runner_canary_path(workflow_dir: str, consumer_policy: bool) -> st
         if not stat.S_ISREG(mode):
             raise Undetermined(
                 f"{candidate}: canonical runner canary must be a regular non-symlink file"
+            )
+        tracked_candidate = git(
+            [
+                "--literal-pathspecs",
+                "ls-files",
+                "--error-unmatch",
+                "--",
+                os.path.join(".github", "workflows", CANONICAL_RUNNER_CANARY),
+            ],
+            repository_root,
+        )
+        if tracked_candidate.returncode != 0:
+            raise Undetermined(
+                f"{candidate}: canonical runner canary is not tracked by its Git worktree"
             )
     return candidate
 
