@@ -146,33 +146,41 @@ def validate_workflow(path=WORKFLOW):
             "identity admission must use an ephemeral hosted runner")
     require(
         admission.get("permissions")
-        == {"contents": "read", "pull-requests": "read"},
+        == {"actions": "read", "contents": "read", "pull-requests": "read"},
             "identity admission permissions drifted")
+    require(admission.get("outputs") == {
+        "event-name": "${{ steps.identity.outputs.event-name }}",
+        "head-repository": "${{ steps.identity.outputs.head-repository }}",
+        "head-sha": "${{ steps.identity.outputs.head-sha }}",
+    }, "identity admission outputs drifted")
     require(len(admission.get("steps", [])) == 1,
             "identity admission step count drifted")
     admission_step = admission["steps"][0]
+    require(admission_step.get("id") == "identity",
+            "identity admission output producer drifted")
     require(set(admission_step.get("env", {})) == {
-        "EVENT_NAME", "HEAD_REPOSITORY", "HEAD_SHA", "MERGE_SHA", "PR_NUMBER",
-        "REF", "REPOSITORY", "CONSUMER_WORKFLOW_SHA256", "GH_TOKEN",
+        "REPOSITORY", "RUN_ID", "CONSUMER_WORKFLOW_SHA256", "GH_TOKEN",
     }, "identity admission inputs drifted")
     admission_run = admission_step.get("run", "")
     for assertion in (
-        'EVENT_NAME" = pull_request', 'HEAD_REPOSITORY" = \'Verjson/verjson-cli-projects\'',
-        'REF" = "refs/pull/$PR_NUMBER/merge"', "merge_commit_sha", 'live_head" = "$HEAD_SHA',
-        'live_merge" = "$MERGE_SHA',
-        "contents/.github/workflows/ci.yml?ref=$HEAD_SHA",
+        "actions/runs/$RUN_ID", 'event_name" = pull_request', 'pr_count" = 1',
+        'live_state" = open', 'live_repository" = \'Verjson/verjson-cli-projects\'',
+        'live_head_sha" = "$run_head_sha',
+        "contents/.github/workflows/ci.yml?ref=$live_head_sha",
         '"$CONSUMER_WORKFLOW_SHA256"',
+        '} >>"$GITHUB_OUTPUT"',
     ):
         require(assertion in admission_run, f"identity admission omits {assertion}")
     for name, version in (("ci", "26"), ("ci-node-floor", "24.19.0")):
         job = document["jobs"][name]
         require(job.get("needs") == "admission", f"{name} bypasses identity admission")
         require(job.get("permissions") == {
-            "contents": "read", "packages": "read", "statuses": "read",
+            "actions": "read", "contents": "read", "packages": "read",
+            "pull-requests": "read", "statuses": "read",
         }, f"{name} permissions drifted")
         require(job.get("uses") == (
-            "Verjson/.github/.github/workflows/node-ci.yml@"
-            "d91d6a73128323bf9f1aec72b565d8aac8805aaa"
+            "Verjson/.github/.github/workflows/node-ci-protected.yml@"
+            "29e28aa5d4606678dbee93d46dd0663fa55c749b"
         ), f"{name} reusable workflow identity drifted")
         require(job.get("secrets") == {
             "NODE_AUTH_TOKEN": "${{ secrets.GITHUB_TOKEN }}",
@@ -181,6 +189,15 @@ def validate_workflow(path=WORKFLOW):
                 f"{name} Node version drifted")
         require(job.get("with", {}).get("secretless-pr") is True,
                 f"{name} secretless boundary disabled")
+        require(job.get("with", {}).get("event-name") ==
+                "${{ needs.admission.outputs.event-name }}",
+                f"{name} event admission output drifted")
+        require(job.get("with", {}).get("head-repository") ==
+                "${{ needs.admission.outputs.head-repository }}",
+                f"{name} repository admission output drifted")
+        require(job.get("with", {}).get("head-sha") ==
+                "${{ needs.admission.outputs.head-sha }}",
+                f"{name} SHA admission output drifted")
         require(job.get("with", {}).get("approved-internal-packages") ==
                 "@verjson/eslint-config\n@verjson/tsconfig",
                 f"{name} package acquisition allowlist drifted")
@@ -204,7 +221,7 @@ def validate_workflow(path=WORKFLOW):
     checkout = "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1"
     require(steps[0].get("uses") == checkout, "candidate checkout action drifted")
     require(steps[0].get("with") == {
-        "ref": "${{ github.event.pull_request.head.sha }}",
+        "ref": "${{ needs.admission.outputs.head-sha }}",
         "persist-credentials": False,
         "path": "consumer",
     }, "candidate checkout boundary drifted")

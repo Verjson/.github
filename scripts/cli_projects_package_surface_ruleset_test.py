@@ -33,7 +33,7 @@ class CliProjectsPackageSurfaceRulesetTest(unittest.TestCase):
     def test_caller_ref_input_and_credential_mutations_are_rejected(self):
         source = MODULE.WORKFLOW.read_text(encoding="utf-8")
         mutations = (
-            source.replace("node-ci.yml@d91d6a7", "node-ci.yml@aaaaaaaa"),
+            source.replace("node-ci-protected.yml@29e28aa", "node-ci-protected.yml@aaaaaaaa"),
             source.replace("secretless-pr: true", "secretless-pr: false", 1),
             source.replace("NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}", "NODE_AUTH_TOKEN: mutation", 1),
             source.replace("needs: admission", "needs: []", 1),
@@ -50,14 +50,15 @@ class CliProjectsPackageSurfaceRulesetTest(unittest.TestCase):
     def test_identity_admission_rejects_every_untrusted_identity_mutation(self):
         workflow = yaml.safe_load(MODULE.WORKFLOW.read_text(encoding="utf-8"))
         script = workflow["jobs"]["admission"]["steps"][0]["run"]
+        self.assertEqual(
+            1,
+            script.count('>>"$GITHUB_OUTPUT"'),
+            "admission outputs must use one grouped append",
+        )
+        head = "b" * 40
         base = {
-            "EVENT_NAME": "pull_request",
-            "HEAD_REPOSITORY": "Verjson/verjson-cli-projects",
-            "HEAD_SHA": "b" * 40,
-            "MERGE_SHA": "c" * 40,
-            "PR_NUMBER": "114",
-            "REF": "refs/pull/114/merge",
             "REPOSITORY": "Verjson/verjson-cli-projects",
+            "RUN_ID": "33306897795",
         }
         with tempfile.TemporaryDirectory() as directory:
             consumer = subprocess.run(
@@ -66,35 +67,43 @@ class CliProjectsPackageSurfaceRulesetTest(unittest.TestCase):
                 cwd=MODULE.ROOT, capture_output=True, check=True,
             ).stdout
             consumer_path = Path(directory) / "consumer.yml"
+            output_path = Path(directory) / "output"
             consumer_path.write_bytes(consumer)
             base["CONSUMER_WORKFLOW_SHA256"] = hashlib.sha256(consumer).hexdigest()
             fake_gh = Path(directory) / "gh"
             fake_gh.write_text(
                 "#!/bin/sh\n"
+                "[ \"${GH_TOKEN:-}\" = bounded-test-token ] || exit 70\n"
+                "[ \"${API_FAILURE:-}\" != 1 ] || exit 71\n"
                 "case \"$*\" in\n"
+                "  *actions/runs/*) printf '%s\\n' \"$RUN_RECORD\" ;;\n"
+                "  *pulls/*) printf '%s\\n' \"$PR_RECORD\" ;;\n"
                 "  *contents/.github/workflows/ci.yml*) cat \"$CONSUMER_FILE\" ;;\n"
-                "  *) printf '114\\tVerjson/verjson-cli-projects\\t%s\\t%s\\n' "
-                '"$LIVE_HEAD" "$LIVE_MERGE" ;;\n'
+                "  *) exit 72 ;;\n"
                 "esac\n",
                 encoding="utf-8",
             )
             fake_gh.chmod(0o755)
 
-            def execute(values, live_head=None, live_merge=None):
+            def execute(values, **changes):
                 environment = {
                     **os.environ,
                     **values,
                     "PATH": f"{directory}:{os.environ['PATH']}",
                     "GH_TOKEN": "bounded-test-token",
-                    "LIVE_HEAD": live_head or base["HEAD_SHA"],
-                    "LIVE_MERGE": live_merge or base["MERGE_SHA"],
+                    "RUN_RECORD": f"pull_request\t{head}\t1\t114",
+                    "PR_RECORD": f"114\topen\tVerjson/verjson-cli-projects\t{head}",
                     "CONSUMER_FILE": str(consumer_path),
+                    "GITHUB_OUTPUT": str(output_path),
+                    **changes,
                 }
                 return subprocess.run(
                     ["bash", "-c", script], env=environment,
                     capture_output=True, text=True, check=False,
                 ).returncode
 
+            self.assertEqual(0, execute(base))
+            output_path.unlink(missing_ok=True)
             self.assertEqual(0, execute(base))
             mutated = consumer.replace(b"  push:\n", b"  pull_request:\n", 1)
             consumer_path.write_bytes(mutated)
@@ -103,19 +112,21 @@ class CliProjectsPackageSurfaceRulesetTest(unittest.TestCase):
             self.assertNotEqual(0, execute(base))
             consumer_path.write_bytes(consumer)
             mutations = (
-                ({**base, "EVENT_NAME": "pull_request_target"}, None, None),
-                ({**base, "REPOSITORY": "Verjson/other"}, None, None),
-                ({**base, "HEAD_REPOSITORY": "attacker/fork"}, None, None),
-                ({**base, "PR_NUMBER": "114;true"}, None, None),
-                ({**base, "HEAD_SHA": "not-a-sha"}, None, None),
-                ({**base, "MERGE_SHA": "not-a-sha"}, None, None),
-                ({**base, "REF": "refs/heads/main"}, None, None),
-                (base, "d" * 40, None),
-                (base, None, "e" * 40),
+                ({**base, "REPOSITORY": "Verjson/other"}, {}),
+                (base, {"RUN_RECORD": f"push\t{head}\t1\t114"}),
+                (base, {"RUN_RECORD": f"pull_request\t{head}\t0\t"}),
+                (base, {"RUN_RECORD": f"pull_request\t{head}\t2\t114"}),
+                (base, {"RUN_RECORD": "pull_request\tnot-a-sha\t1\t114"}),
+                (base, {"RUN_RECORD": f"pull_request\t{head}\t1\tbad"}),
+                (base, {"PR_RECORD": f"114\tclosed\tVerjson/verjson-cli-projects\t{head}"}),
+                (base, {"PR_RECORD": f"114\topen\tattacker/fork\t{head}"}),
+                (base, {"PR_RECORD": f"114\topen\tVerjson/verjson-cli-projects\t{'e' * 40}"}),
+                (base, {"API_FAILURE": "1"}),
+                (base, {"GH_TOKEN": "ambient-token"}),
             )
-            for values, live_head, live_merge in mutations:
-                with self.subTest(values=values, live_head=live_head, live_merge=live_merge):
-                    self.assertNotEqual(0, execute(values, live_head, live_merge))
+            for values, changes in mutations:
+                with self.subTest(values=values, changes=changes):
+                    self.assertNotEqual(0, execute(values, **changes))
 
     def test_consumer_caller_is_push_only_and_exactly_generated(self):
         result = subprocess.run(
