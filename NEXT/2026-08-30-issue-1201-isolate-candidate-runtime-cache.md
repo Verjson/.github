@@ -20,3 +20,10 @@ mounts, rejects runner-owned mutable tool caches and in-place content mutation, 
 the versioned root-owned Microsoft PowerShell runtime, and rejects PATH shadowing, tool-prefix swaps,
 lexical workspace aliases, and unsafe or oversized cache inventories,
 and leaves the legacy reusable Node workflow byte-identical.
+
+`node-ci-required-identity.test.py`'s namespace-execution tests moved from the shared
+`platform` script group to the `hosted-compatibility-tests` job: the persistent fleet
+runner that backs `platform` does not carry a Bubblewrap host dependency by design (see
+`.github/workflows/actions-ci.yml`'s `hosted-compatibility-tests` comment), so the tests
+failed there with "verified bubblewrap namespace boundary is unavailable" while passing
+against the job that actually provisions a verified sandbox.

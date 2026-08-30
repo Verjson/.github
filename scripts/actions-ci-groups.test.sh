@@ -92,6 +92,7 @@ assert group_step["run"] == (
 compatibility_commands = (
     "bash scripts/ci-gate/node-ci-secretless-compatibility.test.sh",
     "scripts/ci-gate/node-ci-secretless-compatibility-absent.test.py",
+    "python3 scripts/ci-gate/node-ci-required-identity.test.py",
 )
 
 def validate_hosted_compatibility(candidate, candidate_manifest):
