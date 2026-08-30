@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import hashlib
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -16,6 +17,20 @@ LEGACY_SHA256 = "3901b24fee45e2dc839ebd13b2e461fcde961355cbb512b7b18c5687a5764fc
 
 
 class RequiredWorkflowIdentityTest(unittest.TestCase):
+    credential_keys = (
+        "GH_TOKEN",
+        "GITHUB_TOKEN",
+        "NODE_AUTH_TOKEN",
+        "NPM_TOKEN",
+        "AWS_ACCESS_KEY_ID",
+        "AWS_SECRET_ACCESS_KEY",
+        "AWS_SESSION_TOKEN",
+        "GOOGLE_APPLICATION_CREDENTIALS",
+        "AZURE_CREDENTIALS",
+        "ACTIONS_ID_TOKEN_REQUEST_TOKEN",
+        "ACTIONS_ID_TOKEN_REQUEST_URL",
+    )
+
     @classmethod
     def setUpClass(cls):
         cls.legacy_bytes = subprocess.check_output(
@@ -80,6 +95,25 @@ class RequiredWorkflowIdentityTest(unittest.TestCase):
                 env={**base, "SECRETLESS_PR": secretless_pr,
                      "SECRETLESS_TRUSTED_REF": trusted_ref}, capture_output=True)
             self.assertEqual(expected, int(result.returncode != 0))
+
+        nonempty_schema = subprocess.run(
+            ["/usr/bin/bash", "-c", boundary["run"]],
+            env={
+                **base,
+                "SCHEMA_DIR": "candidate-schema",
+                "SECRETLESS_PR": "true",
+                "SECRETLESS_TRUSTED_REF": "false",
+            },
+            capture_output=True,
+        )
+        self.assertNotEqual(0, nonempty_schema.returncode)
+        self.assertNotIn(
+            "Install schema submodule deps",
+            {
+                step.get("name")
+                for step in self.workflow["jobs"]["build-test"]["steps"]
+            },
+        )
 
     def test_malformed_ambiguous_foreign_stale_and_partial_records_fail_closed(self):
         cases = ((f"pull_request\t{HEAD}\t0\t", None),
@@ -155,7 +189,7 @@ class RequiredWorkflowIdentityTest(unittest.TestCase):
         self.assertEqual(build[verifier_indexes[2]]["if"], grouped["if"])
         self.assertEqual(
             ["npm run build", "npm run typecheck --if-present", "npm test",
-             "npm run lint --if-present"], grouped["run"].splitlines())
+             "npm run lint --if-present"], grouped["run"].splitlines()[1:])
         self.assertEqual("Run runtime-resolved compatibility lanes without credentials",
                          build[verifier_indexes[3] + 1]["name"])
         self.assertEqual(build[verifier_indexes[3]]["if"],
@@ -164,6 +198,48 @@ class RequiredWorkflowIdentityTest(unittest.TestCase):
             checkout = next(step for step in steps
                             if str(step.get("uses", "")).startswith("actions/checkout@"))
             self.assertEqual("${{ inputs.head-sha }}", checkout["with"]["ref"])
+
+    def test_candidate_routes_remove_credential_keys_instead_of_emptying_them(self):
+        routes = {
+            "Rebuild exact approved lifecycle packages without credentials",
+            "Run exact credentialless consumer script plan",
+            "Run default build, typecheck, test, and lint plan",
+            "Run runtime-resolved compatibility lanes without credentials",
+        }
+        steps = {
+            step.get("name"): step
+            for step in self.workflow["jobs"]["build-test"]["steps"]
+            if step.get("name") in routes
+        }
+        self.assertEqual(routes, set(steps))
+        expected_scrub = "unset -v " + " ".join(self.credential_keys)
+        probe = (
+            "node -e 'const keys="
+            + json.dumps(self.credential_keys)
+            + "; if (keys.some((key) => Object.hasOwn(process.env, key))) process.exit(1)'"
+        )
+        populated = {**os.environ, **dict.fromkeys(self.credential_keys, "sensitive")}
+        empty_string_mutation = "export " + " ".join(
+            f"{key}=''" for key in self.credential_keys
+        )
+
+        for route, step in steps.items():
+            with self.subTest(route=route):
+                self.assertEqual(expected_scrub, step["run"].splitlines()[0])
+                self.assertEqual(
+                    0,
+                    subprocess.run(
+                        ["/usr/bin/bash", "-c", f"{expected_scrub}\n{probe}"],
+                        env=populated,
+                    ).returncode,
+                )
+                self.assertNotEqual(
+                    0,
+                    subprocess.run(
+                        ["/usr/bin/bash", "-c", f"{empty_string_mutation}\n{probe}"],
+                        env=populated,
+                    ).returncode,
+                )
 
 
 if __name__ == "__main__":
