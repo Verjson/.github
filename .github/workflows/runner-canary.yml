@@ -229,7 +229,7 @@ jobs:
                 databaseServiceReachable:true,dockerServiceReachable:true,pwshExecuted:true},
               imageBuild:{conclusion:"success",imageDigest:$imageDigest,diskBytesConsumed:0},
               postCanary:{freeBytes:$freeBytes,freeInodePercent:$freeInodePercent,observedAt:$observedAt},
-              dependencies:{uploadArtifactCommit:"ea165f8d65b6e75b540449e92b4886f43607fa02",postgresImage:"postgres@sha256:18cfe3ef5e6815560c98237d6216d1e5119702fb0f3894c8785dd58b8bbe5d73",nginxImage:"nginx@sha256:db35bfc6b2951e7f8a72db5db120288c127ffaeeb4a6d4b95a26fead017d5913",curlImage:"curlimages/curl@sha256:9a1ed35addb45476afa911696297f8e115993df459278ed036182dd2cd22b67b",buildBaseImage:"alpine@sha256:14358309a308569c32bdc37e2e0e9694be33a9d99e68afb0f5ff33cc1f695dce"},
+              dependencies:{uploadArtifactCommit:"043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",postgresImage:"postgres@sha256:18cfe3ef5e6815560c98237d6216d1e5119702fb0f3894c8785dd58b8bbe5d73",nginxImage:"nginx@sha256:db35bfc6b2951e7f8a72db5db120288c127ffaeeb4a6d4b95a26fead017d5913",curlImage:"curlimages/curl@sha256:9a1ed35addb45476afa911696297f8e115993df459278ed036182dd2cd22b67b",buildBaseImage:"alpine@sha256:14358309a308569c32bdc37e2e0e9694be33a9d99e68afb0f5ff33cc1f695dce"},
               artifact:{name:"runner-promotion-receipt",contentDigest:""}}' >runner-promotion-receipt.json
           digest=$(jq -cS . runner-promotion-receipt.json | tr -d '\n' | sha256sum | awk '{print $1}')
           jq --arg digest "sha256:$digest" '.artifact.contentDigest=$digest' runner-promotion-receipt.json >receipt.tmp
