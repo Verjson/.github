@@ -1739,6 +1739,12 @@ jobs:
             exit 1
           fi
 
+      - name: DEBUG pwsh ancestry
+        run: |
+          real=$(readlink -f /usr/bin/pwsh)
+          echo "resolved: $real"
+          stat -c '%U %a %n' /opt "$(dirname "$real")" "$real" /usr/bin/pwsh || true
+
       - name: Run namespace-bound compatibility contracts
         env:
           RUNNER_LABELS: ''
