@@ -372,10 +372,57 @@ def canonical_runner_canary_jobs(
 
 
 def canonical_runner_canary_path(workflow_dir: str, consumer_policy: bool) -> str | None:
-    """Resolve authority from the process repository root, never the scan argument."""
+    """Resolve authority from the policy checkout, never the process cwd."""
     if consumer_policy:
         return None
-    repository_root = os.path.realpath(os.getcwd())
+    script_path = os.path.abspath(__file__)
+    try:
+        script_mode = os.lstat(script_path).st_mode
+    except OSError as error:
+        raise Undetermined(f"{script_path}: cannot lstat policy script: {error}") from error
+    if not stat.S_ISREG(script_mode) or os.path.realpath(script_path) != script_path:
+        raise Undetermined(
+            f"{script_path}: policy script must be a regular non-symlink file at its checked-in location"
+        )
+
+    repository_roots = []
+    ancestor = os.path.dirname(script_path)
+    while True:
+        repository_marker = os.path.join(ancestor, ".git")
+        if os.path.lexists(repository_marker):
+            try:
+                marker_mode = os.lstat(repository_marker).st_mode
+            except OSError as error:
+                raise Undetermined(
+                    f"{repository_marker}: cannot lstat repository marker: {error}"
+                ) from error
+            if not (stat.S_ISREG(marker_mode) or stat.S_ISDIR(marker_mode)):
+                raise Undetermined(
+                    f"{repository_marker}: repository marker must be a regular file or directory"
+                )
+            repository_roots.append(ancestor)
+        parent = os.path.dirname(ancestor)
+        if parent == ancestor:
+            break
+        ancestor = parent
+    if not repository_roots:
+        raise Undetermined(
+            f"{script_path}: policy script is not under a checked-in repository location"
+        )
+    repository_root = repository_roots[-1]
+    relative_script = os.path.relpath(script_path, repository_root)
+    if relative_script not in (
+        os.path.join("scripts", "ci-gate", "hosted-selector-policy.py"),
+        os.path.join(
+            ".verjson-actionlint-policy",
+            "scripts",
+            "ci-gate",
+            "hosted-selector-policy.py",
+        ),
+    ):
+        raise Undetermined(
+            f"{script_path}: policy script is not at an allowed checked-in location"
+        )
     expected_dir = os.path.join(repository_root, ".github", "workflows")
     supplied_dir = os.path.abspath(workflow_dir)
     if supplied_dir != expected_dir or os.path.realpath(supplied_dir) != expected_dir:
