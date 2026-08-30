@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "repository": "Verjson/verjson-cli-projects",
-  "node_ci_sha": "29e28aa5d4606678dbee93d46dd0663fa55c749b",
+  "node_ci_sha": "e4d911fd4197e0a4a0d500cd43c49a2170234b7a",
   "node_versions": ["26", "24.19.0"],
   "approved_internal_packages": [
     "@verjson/eslint-config",

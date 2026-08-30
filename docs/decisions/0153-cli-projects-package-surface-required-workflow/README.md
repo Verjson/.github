@@ -126,3 +126,13 @@ Both Node lanes call `node-ci-protected.yml` at immutable organization contract 
 legacy `node-ci.yml` contract. Missing, ambiguous, stale, closed, malformed, or partially
 unavailable identity evidence fails closed before candidate bytes or package authority
 are consumed.
+
+### 2026-08-30 — Remove credential variables before candidate execution
+
+Issue [#1198](https://github.com/Verjson/.github/issues/1198) found that protected
+candidate processes inherited credential variable names with empty values. The protected
+contract now removes those variables from the process environment before candidate code
+runs and rejects schema-directory execution that would bypass the installed-package
+boundary. Both required Node lanes are repinned to immutable organization contract commit
+`e4d911fd4197e0a4a0d500cd43c49a2170234b7a`; the admission and fail-closed identity
+contract otherwise remains unchanged.

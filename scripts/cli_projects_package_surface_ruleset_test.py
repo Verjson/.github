@@ -33,7 +33,7 @@ class CliProjectsPackageSurfaceRulesetTest(unittest.TestCase):
     def test_caller_ref_input_and_credential_mutations_are_rejected(self):
         source = MODULE.WORKFLOW.read_text(encoding="utf-8")
         mutations = (
-            source.replace("node-ci-protected.yml@29e28aa", "node-ci-protected.yml@aaaaaaaa"),
+            source.replace("node-ci-protected.yml@e4d911f", "node-ci-protected.yml@aaaaaaaa"),
             source.replace("secretless-pr: true", "secretless-pr: false", 1),
             source.replace("NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}", "NODE_AUTH_TOKEN: mutation", 1),
             source.replace("needs: admission", "needs: []", 1),
