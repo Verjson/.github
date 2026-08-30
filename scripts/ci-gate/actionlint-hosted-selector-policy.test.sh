@@ -179,6 +179,10 @@ mkdir -p "$source_dir/.verjson-actionlint-policy/scripts/ci-gate" \
   "$source_dir/.github/workflows"
 cp "$root/scripts/ci-gate/hosted-selector-policy.py" \
   "$source_dir/.verjson-actionlint-policy/scripts/ci-gate/hosted-selector-policy.py"
+git init --quiet "$source_dir"
+git init --quiet "$source_dir/.verjson-actionlint-policy"
+git -C "$source_dir/.verjson-actionlint-policy" add \
+  scripts/ci-gate/hosted-selector-policy.py
 
 (cd "$source_dir" && env -u VERJSON_HOSTED_SELECTOR_POLICY_DIR \
   RUNNER_TEMP="$GOOD_RUNNER_TEMP" GITHUB_WORKSPACE="$GOOD_WORKSPACE" \
