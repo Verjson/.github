@@ -659,6 +659,7 @@ def isolate_candidate_runtime_cache(document: str) -> str:
     if step.count(python_start) != 1 or step.count(python_end) != 1:
         raise SystemExit("protected candidate script Python boundary changed")
     supervised_start = """          candidate_cache_supervisor_pid=''
+          # shellcheck disable=SC2329 # invoked indirectly by the INT/TERM traps below.
           forward_candidate_signal() {
             signal="$1"
             trap - INT TERM

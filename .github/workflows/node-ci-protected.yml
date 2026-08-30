@@ -2703,6 +2703,7 @@ jobs:
         run: |
           unset -v GH_TOKEN GITHUB_TOKEN NODE_AUTH_TOKEN NPM_TOKEN AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN GOOGLE_APPLICATION_CREDENTIALS AZURE_CREDENTIALS ACTIONS_ID_TOKEN_REQUEST_TOKEN ACTIONS_ID_TOKEN_REQUEST_URL
           candidate_cache_supervisor_pid=''
+          # shellcheck disable=SC2329 # invoked indirectly by the INT/TERM traps below.
           forward_candidate_signal() {
             signal="$1"
             trap - INT TERM
