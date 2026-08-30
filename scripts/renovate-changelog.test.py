@@ -342,6 +342,48 @@ class RenovateTableTests(unittest.TestCase):
                 update = renovate_changelog.parse_updates(body)[0]
                 self.assertEqual(expected_name, update.package)
 
+    def test_accepts_renovates_decorative_package_link_lists(self) -> None:
+        package_cells = (
+            "[ruff](https://docs.astral.sh/ruff) "
+            "([source](https://redirect.github.com/astral-sh/ruff), "
+            "[changelog](https://redirect.github.com/astral-sh/ruff/blob/main/CHANGELOG.md))",
+            "[ruff](https://docs.astral.sh/ruff) "
+            "([source](https://redirect.github.com/astral-sh/ruff)) "
+            "([changelog](https://redirect.github.com/astral-sh/ruff/blob/main/CHANGELOG.md))",
+        )
+        for package_cell in package_cells:
+            with self.subTest(package_cell=package_cell):
+                body = BODY.replace(
+                    "[ip-address](https://redirect.github.com/ip-num/ip-num)",
+                    package_cell,
+                )
+                self.assertEqual("ruff", renovate_changelog.parse_updates(body)[0].package)
+
+    def test_rejects_malformed_decorative_package_link_lists(self) -> None:
+        package_cells = (
+            "[ruff](https://docs.astral.sh/ruff) "
+            "([source](https://redirect.github.com/astral-sh/ruff), attacker)",
+            "[ruff](https://docs.astral.sh/ruff) "
+            "([source](https://redirect.github.com/astral-sh/ruff); "
+            "[changelog](https://redirect.github.com/astral-sh/ruff/blob/main/CHANGELOG.md))",
+            "[ruff](https://docs.astral.sh/ruff) "
+            "([source](https://redirect.github.com/astral-sh/ruff), "
+            "[changelog](http://attacker.invalid/changelog))",
+            "[ruff](https://docs.astral.sh/ruff) "
+            "([source](https://redirect.github.com/astral-sh/ruff), "
+            "[changelog](https://redirect.github.com/astral-sh/ruff)) trailing",
+        )
+        for package_cell in package_cells:
+            with self.subTest(package_cell=package_cell):
+                body = BODY.replace(
+                    "[ip-address](https://redirect.github.com/ip-num/ip-num)",
+                    package_cell,
+                )
+                with self.assertRaisesRegex(
+                    renovate_changelog.AutomationError, "unsupported package cell"
+                ):
+                    renovate_changelog.parse_updates(body)
+
 
 class AdmissionAndPlanningTests(unittest.TestCase):
     def test_accepts_only_same_repository_renovate_branches_and_authors(self) -> None:
