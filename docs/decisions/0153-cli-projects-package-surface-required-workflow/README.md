@@ -68,10 +68,41 @@ policy contains one narrow bypassless exception for this exact ruleset name, con
 ID, workflow repository/path/ref, active enforcement, immutable SHA, and empty bypass
 set. Any widened variant remains a conformance failure.
 
+### 2026-08-30 — Credentialed acquisition also belongs to the required workflow
+
+Issue [#1187](https://github.com/Verjson/.github/issues/1187) found that the
+repository-local Node CI caller still granted `packages: read` and mapped its
+`GITHUB_TOKEN` from pull-request-controlled YAML. Protecting only the final
+package-surface verifier did not protect the earlier credential-bearing call.
+
+Generate this required workflow from a strict repository configuration and move both
+secretless Node lanes behind it. A no-checkout admission job validates the exact
+pull-request event, repository, numeric pull-request identity, same-repository head,
+head SHA, synthetic merge SHA, and merge ref against GitHub's live numeric record. Only
+after admission may the workflow call the immutable canonical `node-ci` revision. Its
+acquisition job receives package-read authority but never executes candidate code; its
+build job restores only the bounded package cache and runs candidate scripts after
+credential removal. The second lane proves the Node floor. The original protected
+package verifier remains credentialless and now also requires both Node lanes.
+
+The organization required-workflow rule, rather than a repository-owned caller name,
+is the pull-request entry-point provenance boundary. The generated repository caller is
+push-only, and admission hashes the candidate caller against that exact image before
+package acquisition. The rollout tool also requires protected `main` to contain those
+byte-exact push-only caller bytes before rotating the organization rule or activating
+the repository rule. The transaction binds that read to the exact protected-main commit
+and re-projects the branch immediately before and after each write. A moved branch or
+ambiguous write response restores and verifies the prior organization workflow or the
+repository rule's `evaluate` image. Updating either surface requires a fresh exact-head
+canary.
+
 ## Consequences
 
 - Pull-request-authored workflows, verifier files, and spoofed check names cannot satisfy
   the organization required-workflow rule.
+- The repository-owned caller grants package authority only for pushes to protected
+  `main`; it has no pull-request trigger. Candidate caller mutation fails required-
+  workflow admission before credentialed acquisition.
 - Untrusted package and scaffold behavior has no persistent host, inherited secret, or
   retained checkout credential.
 - The package policy affects only `Verjson/verjson-cli-projects`.
