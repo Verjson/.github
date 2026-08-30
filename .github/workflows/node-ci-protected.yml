@@ -467,7 +467,7 @@ jobs:
             esac
           fi
           [ -z "$SCHEMA_DIR" ] || {
-            echo "::error::secretless modes do not permit credentialed submodule acquisition"
+            echo "::error::protected node-ci does not support schema-dir"
             exit 1
           }
           [ -n "$NODE_AUTH_TOKEN" ] || {
@@ -2531,12 +2531,6 @@ jobs:
             echo "cache image '$CACHE_IMAGE' failed health check '$CACHE_HEALTH_CMD' after 30 attempts" >&2
             exit 1
           fi
-      - name: Install schema submodule deps
-        if: needs.eligibility.outputs.should-run != 'false' && inputs.schema-dir != ''
-        working-directory: ${{ inputs.schema-dir }}
-        run: npm ci
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NODE_AUTH_TOKEN }}
       - run: npm ci
         if: needs.eligibility.outputs.should-run != 'false' && !(inputs.secretless-pr || inputs.secretless-trusted-ref)
         env:
@@ -2573,6 +2567,7 @@ jobs:
           PACKAGE_MANAGER: ${{ inputs.package-manager }}
           REBUILD_PACKAGES: ${{ inputs.secretless-rebuild-packages }}
         run: |
+          unset -v GH_TOKEN GITHUB_TOKEN NODE_AUTH_TOKEN NPM_TOKEN AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN GOOGLE_APPLICATION_CREDENTIALS AZURE_CREDENTIALS ACTIONS_ID_TOKEN_REQUEST_TOKEN ACTIONS_ID_TOKEN_REQUEST_URL
           python3 - <<'PY'
           import json
           import os
@@ -2705,6 +2700,7 @@ jobs:
         env:
           CI_SCRIPT_PLAN: ${{ inputs.secretless-ci-script-plan }}
         run: |
+          unset -v GH_TOKEN GITHUB_TOKEN NODE_AUTH_TOKEN NPM_TOKEN AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN GOOGLE_APPLICATION_CREDENTIALS AZURE_CREDENTIALS ACTIONS_ID_TOKEN_REQUEST_TOKEN ACTIONS_ID_TOKEN_REQUEST_URL
           python3 - <<'PY'
           import json
           import os
@@ -2791,6 +2787,7 @@ jobs:
       - name: Run default build, typecheck, test, and lint plan
         if: needs.eligibility.outputs.should-run != 'false' && (!(inputs.secretless-pr || inputs.secretless-trusted-ref) || inputs.secretless-ci-script-plan == '')
         run: |
+          unset -v GH_TOKEN GITHUB_TOKEN NODE_AUTH_TOKEN NPM_TOKEN AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN GOOGLE_APPLICATION_CREDENTIALS AZURE_CREDENTIALS ACTIONS_ID_TOKEN_REQUEST_TOKEN ACTIONS_ID_TOKEN_REQUEST_URL
           npm run build
           npm run typecheck --if-present
           npm test
@@ -4456,6 +4453,7 @@ jobs:
           NODE_AUTH_TOKEN: ''
           NPM_TOKEN: ''
         run: |
+          unset -v GH_TOKEN GITHUB_TOKEN NODE_AUTH_TOKEN NPM_TOKEN AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN GOOGLE_APPLICATION_CREDENTIALS AZURE_CREDENTIALS ACTIONS_ID_TOKEN_REQUEST_TOKEN ACTIONS_ID_TOKEN_REQUEST_URL
           python3 - <<'PY'
           import ctypes
           import errno
