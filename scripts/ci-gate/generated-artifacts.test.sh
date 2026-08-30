@@ -460,6 +460,7 @@ cat >"$ws/NEXT/2026-08-05-issue-405-added.md" <<'FRAGMENT'
 ---
 date: 2026-08-05
 issue: 405
+impact: patch
 title: Added by this pull request
 ---
 
