@@ -26,10 +26,12 @@ SHA = re.compile(r"^[0-9a-f]{40}$")
 RENOVATE_REF = re.compile(
     r"^renovate/[A-Za-z0-9._+-]+(?:/[A-Za-z0-9._+-]+)*$"
 )
+AUXILIARY_LINK = r"\[[^\]\r\n]{1,64}\]\(https://[^()\s]+\)"
+AUXILIARY_LINK_GROUP = rf"\({AUXILIARY_LINK}(?:,\s+{AUXILIARY_LINK})*\)"
 PACKAGE = re.compile(
     r"^\[([@A-Za-z0-9][@A-Za-z0-9._/+~:-]{0,213})\]"
     r"\(https://[^()\s]+\)"
-    r"(?:\s+\(\[[^\]]{1,64}\]\(https://[^()\s]+\)\))*$"
+    rf"(?:\s+{AUXILIARY_LINK_GROUP})*$"
 )
 BARE_PACKAGE = re.compile(r"^([@A-Za-z0-9][@A-Za-z0-9._/+~:-]{0,213})$")
 CHANGE = re.compile(
