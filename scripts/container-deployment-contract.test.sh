@@ -112,10 +112,10 @@ grep -q 'if: \${{ !inputs.dry-run }}' "$workflow"
 grep -q 'cancel-in-progress: false' "$workflow"
 grep -q 'container_deployment_preflight.py' "$workflow"
 test "$(jq -r '.packages["node_modules/@verjson/cli-cloud"].version' \
-  "$root/contracts/container-deployment-cli/package-lock.json")" = '0.28.1'
+  "$root/contracts/container-deployment-cli/package-lock.json")" = '0.29.0'
 test "$(jq -r '.packages["node_modules/@verjson/cli-cloud"].integrity' \
   "$root/contracts/container-deployment-cli/package-lock.json")" = \
-  'sha512-CQAcOuV2lFccmhE8iNMrcms57GMCI4zudFGm0brYx4/S/0pHeuRuBBD8bsh9rEh05uzqXnmQfTQecyo8UVje4Q=='
+  'sha512-hS4jMPzfYHNYDmNP7yDrnvTg8Z6W/NY4CDOZXZvadtDaFALkRtPceWVaI1ggG1lrlDcDpaWQJRUfqrV9vjI82g=='
 python3 "$root/scripts/validate-container-deployment-cli-lock.py" \
   "$root/contracts/container-deployment-cli/package-lock.json"
 python3 - "$root/contracts/container-deployment-cli/package-lock.json" "$tmp" <<'PY'
