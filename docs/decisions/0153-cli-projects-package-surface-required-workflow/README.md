@@ -110,3 +110,19 @@ canary.
   required-workflow canary succeeds; no live ruleset mutation is part of this change.
 - Rollback preserves the repository rule in `evaluate` and restores a newly created
   organization rule to disabled rather than accepting ambiguous enforcement.
+
+### 2026-08-30 — Bind empty-context delivery to authenticated run identity
+
+Issue [#1195](https://github.com/Verjson/.github/issues/1195) established that an
+organization-required workflow delivery can omit pull-request event fields. Admission
+therefore reads only the current `github.run_id` through the authenticated Actions API,
+requires exactly one pull-request binding, and matches its head SHA to one live, open,
+same-repository numeric pull request. The admitted event, repository, and immutable head
+SHA are outputs consumed by both protected Node lanes and candidate checkout.
+
+Both Node lanes call `node-ci-protected.yml` at immutable organization contract commit
+`29e28aa5d4606678dbee93d46dd0663fa55c749b`. Their callers explicitly grant
+`actions: read` and `pull-requests: read`; the ordinary push-only consumer remains on the
+legacy `node-ci.yml` contract. Missing, ambiguous, stale, closed, malformed, or partially
+unavailable identity evidence fails closed before candidate bytes or package authority
+are consumed.
