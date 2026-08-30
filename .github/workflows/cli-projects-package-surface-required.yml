@@ -1,0 +1,33 @@
+name: CLI projects required package surface
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  package-surface:
+    if: github.repository == 'Verjson/verjson-cli-projects'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - name: Check out the untrusted candidate tree
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+          path: consumer
+      - name: Check out the protected verifier at the required-workflow revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: Verjson/.github
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+          path: policy
+      - name: Verify and exercise the package surface
+        env:
+          HOME: ${{ runner.temp }}/credentialless-home
+          NPM_CONFIG_USERCONFIG: ${{ runner.temp }}/credentialless-npmrc
+        run: python3 policy/scripts/cli-projects-package-surface.py verify consumer

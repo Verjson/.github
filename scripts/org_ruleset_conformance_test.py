@@ -164,13 +164,20 @@ class OrgRulesetConformanceTest(unittest.TestCase):
                     "bypass_mode": "always",
                 },
                 "bypassless_required_workflows": [
-                    {
-                        "name": "authn-type-surface-required-workflow",
-                        "repository_id": 1302124584,
-                        "workflow_repository_id": 1269388380,
-                        "workflow_path": ".github/workflows/authn-type-surface-required.yml",
-                        "workflow_ref": "refs/heads/main",
-                    }
+                {
+                    "name": "authn-type-surface-required-workflow",
+                    "repository_id": 1302124584,
+                    "workflow_repository_id": 1269388380,
+                    "workflow_path": ".github/workflows/authn-type-surface-required.yml",
+                    "workflow_ref": "refs/heads/main",
+                },
+                {
+                    "name": "cli-projects-package-surface-required-workflow",
+                    "repository_id": 1277452690,
+                    "workflow_repository_id": 1269388380,
+                    "workflow_path": ".github/workflows/cli-projects-package-surface-required.yml",
+                    "workflow_ref": "refs/heads/main",
+                },
                 ],
             },
         )

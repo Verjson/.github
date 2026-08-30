@@ -11,6 +11,7 @@ Reverse-chronological index of org-level decisions.
 <!-- BEGIN ADR INDEX -->
 | # | Date | Decision |
 |---|------|----------|
+| [0153](0153-cli-projects-package-surface-required-workflow/README.md) | 2026-08-29 | Bind cli-projects package-surface enforcement to a required workflow |
 | [0152](0152-distribute-paid-packages-through-cloudsmith/README.md) | 2026-08-28 | Distribute paid packages through Cloudsmith entitlements |
 | [0151](0151-authn-type-surface-required-workflow/README.md) | 2026-08-28 | Bind authn type-surface enforcement to a required workflow |
 | [0150](0150-immutable-exact-runner-canary/README.md) | 2026-08-28 | Publish the exact-runner canary at an immutable ref |
