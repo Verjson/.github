@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 import copy
 import hashlib
+import os
 import re
 import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -84,6 +86,81 @@ def validate(workflow: dict) -> None:
         raise AssertionError("receipt artifact identity or retention widened")
 
 
+def run_cleanup_harness(
+    terminal_command: str, *, fail_cleanup_query: bool = False
+) -> tuple[int, list[str], list[str]]:
+    admission = load_workflow()["jobs"]["canary"]["steps"][0]["run"]
+    start = admission.index("cleanup_signal_status=0")
+    trap_line = "trap 'interrupted 143' TERM"
+    end = admission.index(trap_line, start) + len(trap_line)
+    cleanup_contract = admission[start:end]
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        bin_dir = root / "bin"
+        resources = root / "resources"
+        capacity_state = root / "capacity-state"
+        bin_dir.mkdir()
+        resources.mkdir()
+        capacity_state.mkdir(mode=0o700)
+        capacity_id = "a" * 64
+        capacity_cidfile = capacity_state / "container.cid"
+        capacity_cidfile.write_text(capacity_id, encoding="utf-8")
+        for resource in ("sibling", "capacity", "network", "image"):
+            (resources / resource).touch()
+        docker = bin_dir / "docker"
+        docker.write_text(
+            """#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >>"$MOCK_DOCKER_LOG"
+case "$1 $2" in
+  'rm -f')
+    [ "$3" = "$MOCK_CAPACITY_ID" ] && rm -f "$MOCK_RESOURCES/capacity" || rm -f "$MOCK_RESOURCES/sibling"
+    ;;
+  'container ls')
+    if [ "${MOCK_FAIL_CLEANUP_QUERY:-0}" = 1 ] && [[ "$*" == *"id=${MOCK_CAPACITY_ID}"* ]]; then exit 2; fi
+    [ -e "$MOCK_RESOURCES/capacity" ] && printf '%s\n' "$MOCK_CAPACITY_ID"
+    [ -e "$MOCK_RESOURCES/sibling" ] && printf '%s\n' sibling
+    ;;
+  'network rm') rm -f "$MOCK_RESOURCES/network" ;;
+  'network ls') [ -e "$MOCK_RESOURCES/network" ] && printf '%s\n' network ;;
+  'image rm') rm -f "$MOCK_RESOURCES/image" ;;
+  'image ls') [ -e "$MOCK_RESOURCES/image" ] && printf '%s\n' image ;;
+  *) exit 64 ;;
+esac
+""",
+            encoding="utf-8",
+        )
+        docker.chmod(0o755)
+        harness = f"""set -Eeuo pipefail
+network=network
+sibling=sibling
+capacity_id={capacity_id}
+capacity_owned=1
+capacity_owner={'b' * 32}
+capacity_state={capacity_state}
+capacity_cidfile={capacity_cidfile}
+build_image=image
+{cleanup_contract}
+{terminal_command}
+"""
+        log = root / "docker.log"
+        environment = os.environ | {
+            "PATH": f"{bin_dir}:{os.environ['PATH']}",
+            "MOCK_CAPACITY_ID": capacity_id,
+            "MOCK_DOCKER_LOG": str(log),
+            "MOCK_FAIL_CLEANUP_QUERY": "1" if fail_cleanup_query else "0",
+            "MOCK_RESOURCES": str(resources),
+        }
+        result = subprocess.run(
+            ["bash"], input=harness, text=True, env=environment, cwd=root, check=False
+        )
+        survivors = sorted(path.name for path in resources.iterdir())
+        if capacity_state.exists():
+            survivors.append(capacity_state.name)
+        calls = log.read_text(encoding="utf-8").splitlines()
+        return result.returncode, survivors, calls
+
+
 class RunnerCanaryContractTests(unittest.TestCase):
     def test_published_workflow_is_exact_reviewed_cli_contract(self) -> None:
         self.assertEqual(EXPECTED_SHA256, hashlib.sha256(WORKFLOW.read_bytes()).hexdigest())
@@ -135,6 +212,28 @@ class RunnerCanaryContractTests(unittest.TestCase):
                 self.assertIn(marker, script)
         self.assertNotIn("/var/lib/docker", script)
         self.assertNotIn("type=bind", script)
+
+    def test_int_and_term_preserve_status_and_cleanup_owned_resources(self) -> None:
+        for signal, expected in (("INT", 130), ("TERM", 143)):
+            with self.subTest(signal=signal):
+                status, survivors, calls = run_cleanup_harness(f"kill -{signal} $$")
+                self.assertEqual(expected, status)
+                self.assertEqual([], survivors)
+                self.assertTrue(any(call.startswith("rm -f") for call in calls))
+                self.assertTrue(any(call.startswith("network rm") for call in calls))
+                self.assertTrue(any(call.startswith("image rm") for call in calls))
+
+    def test_cleanup_query_failure_does_not_mask_the_terminal_status(self) -> None:
+        status, survivors, _ = run_cleanup_harness("exit 42", fail_cleanup_query=True)
+
+        self.assertEqual(42, status)
+        self.assertEqual([], survivors)
+
+    def test_cleanup_failure_is_terminal_after_an_otherwise_successful_run(self) -> None:
+        status, survivors, _ = run_cleanup_harness("exit 0", fail_cleanup_query=True)
+
+        self.assertEqual(1, status)
+        self.assertEqual([], survivors)
 
 if __name__ == "__main__":
     unittest.main()
