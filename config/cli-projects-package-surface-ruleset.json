@@ -4,6 +4,10 @@
   "consumer": {
     "repository": "Verjson/verjson-cli-projects",
     "repository_id": 1277452690,
+    "workflow": {
+      "path": ".github/workflows/ci.yml",
+      "ref": "refs/heads/main"
+    },
     "repository_ruleset": {
       "id": 21567958,
       "name": "cli-projects-v1-required",
@@ -43,9 +47,10 @@
     }
   },
   "rollout": {
-    "issue": 1177,
+    "issue": 1187,
     "human_gate_required": true,
-    "apply_acknowledgement": "APPLY-CLI-PROJECTS-PACKAGE-SURFACE-1177",
+    "apply_acknowledgement": "ROTATE-CLI-PROJECTS-REQUIRED-WORKFLOW-1187",
+    "previous_workflow_sha": "483afa0995f0df51cb9dfa001ded1b48c73ae8f5",
     "required_run": {
       "event": "pull_request",
       "conclusion": "success",

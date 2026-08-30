@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "repository": "Verjson/verjson-cli-projects",
+  "node_ci_sha": "d91d6a73128323bf9f1aec72b565d8aac8805aaa",
+  "node_versions": ["26", "24.19.0"],
+  "approved_internal_packages": [
+    "@verjson/eslint-config",
+    "@verjson/tsconfig"
+  ],
+  "scripts": [
+    "build",
+    "lint",
+    "test",
+    "test:contract",
+    "test:npm-config",
+    "test:package-surface",
+    "test:public-docs",
+    "test:release-v1"
+  ]
+}

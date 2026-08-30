@@ -40,7 +40,7 @@ literal_hosted_sites="$(literal_hosted_job_sites "${workflow_files[@]}")"
 expected_literal_hosted_sites=$'actions-ci.yml:hosted-compatibility-tests:    runs-on: ubuntu-24.04\nai-privileged-merge.yml:invalid_verjson_route:    runs-on: ubuntu-24.04\nai-privileged-merge.yml:validate_privileged_lane:    runs-on: ubuntu-24.04\ncontainer-candidate-publish.yml:acquire-private-node-dependencies:    runs-on: ubuntu-24.04\ncontainer-candidate-publish.yml:attest-sbom:    runs-on: ubuntu-24.04\ncontainer-candidate-publish.yml:candidate-manifest:    runs-on: ubuntu-24.04\ncontainer-candidate-publish.yml:prepare:    runs-on: ubuntu-24.04\ncontainer-candidate-publish.yml:publish-base:    runs-on: ubuntu-24.04\ncontainer-candidate-publish.yml:publish-derived:    runs-on: ubuntu-24.04\ncontainer-release.yml:promote:    runs-on: ubuntu-24.04\nprivileged-merge-conformance.yml:audit:    runs-on: ubuntu-24.04'
 expected_literal_hosted_sites="$(printf '%s\n%s\n' \
   "$expected_literal_hosted_sites" \
-  'cli-projects-package-surface-required.yml:package-surface:    runs-on: ubuntu-24.04' \
+  $'cli-projects-package-surface-required.yml:admission:    runs-on: ubuntu-24.04\ncli-projects-package-surface-required.yml:package-surface:    runs-on: ubuntu-24.04' \
   | sort)"
 
 validate_literal_hosted_inventory() {
