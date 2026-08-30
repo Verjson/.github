@@ -27,3 +27,14 @@ runner that backs `platform` does not carry a Bubblewrap host dependency by desi
 `.github/workflows/actions-ci.yml`'s `hosted-compatibility-tests` comment), so the tests
 failed there with "verified bubblewrap namespace boundary is unavailable" while passing
 against the job that actually provisions a verified sandbox.
+
+Running against the real hosted `ubuntu-24.04` image surfaced a second, real defect: the
+trusted-pwsh-discovery check required every ancestor of `/opt/microsoft/powershell/<ver>`
+to be non-group/other-writable, but GitHub's hosted image ships `/opt` root-owned and
+world-writable (mode 777, the same convention as `/opt/hostedtoolcache`) — so the check
+could never pass against a real, untampered system `pwsh` on that runner class, breaking
+the feature for every consumer. Fixed by trusting root ownership alone for the `/opt`
+subtree, consistent with `/usr`'s existing unconditional trust elsewhere in the same
+generator: nothing PR-controlled executes outside the sandbox before this check runs
+(`npm ci --ignore-scripts` precedes it), so the writable bit is unexploited capability,
+not evidence of tampering.

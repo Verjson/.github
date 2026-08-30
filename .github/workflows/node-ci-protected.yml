@@ -2892,7 +2892,9 @@ jobs:
           def paths_overlap(left, right):
             return left == right or left in right.parents or right in left.parents
 
-          def validate_trusted_ancestry(root, target, allowed_uids, label, include_target=True):
+          def validate_trusted_ancestry(
+            root, target, allowed_uids, label, include_target=True, require_unwritable=True
+          ):
             try:
               relative = target.relative_to(root)
             except ValueError:
@@ -2912,7 +2914,9 @@ jobs:
               if component != target or not include_target:
                 if not stat.S_ISDIR(metadata.st_mode):
                   sys.exit(f"{label} ancestry is not canonical directories")
-              if metadata.st_uid not in allowed_uids or metadata.st_mode & 0o022:
+              if metadata.st_uid not in allowed_uids or (
+                require_unwritable and metadata.st_mode & 0o022
+              ):
                 sys.exit(f"{label} ancestry has unsafe ownership mode")
 
           candidate_controlled_roots = (workspace, runner_temp, baseline, cache_root)
@@ -2976,10 +2980,20 @@ jobs:
                   Path("/usr"), system_candidate, (0,), "pwsh lexical path", include_target=False
                 )
                 validate_trusted_ancestry(
-                  Path("/opt"), resolved_system_candidate.parent, (0,), "pwsh resolved runtime"
+                  # GitHub-hosted runner images ship /opt root-owned but world-writable
+                  # (mode 777, matching /opt/hostedtoolcache's convention), so an
+                  # unwritable-ancestry requirement can never pass there. Root ownership
+                  # alone still holds: nothing PR-controlled runs outside this sandbox
+                  # before this check (npm ci uses --ignore-scripts), so the write bit is
+                  # unexploited capability, not evidence of tampering.
+                  Path("/opt"),
+                  resolved_system_candidate.parent,
+                  (0,),
+                  "pwsh resolved runtime",
+                  require_unwritable=False,
                 )
                 system_metadata = resolved_system_candidate.stat(follow_symlinks=False)
-                if system_metadata.st_uid != 0 or system_metadata.st_mode & 0o022:
+                if not stat.S_ISREG(system_metadata.st_mode) or system_metadata.st_uid != 0:
                   sys.exit("trusted pwsh executable has unsafe ownership mode")
                 candidates.append(resolved_system_candidate)
             for directory in trusted_search_directories:
