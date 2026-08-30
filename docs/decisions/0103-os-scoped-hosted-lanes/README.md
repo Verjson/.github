@@ -43,8 +43,8 @@ precisely the two it could not see.
 
 | Variable | Value | Scope |
 | --- | --- | --- |
-| `VERJSON_LANE_TRUSTED_MACOS` | `["macos-15"]` | **repository variable on `Verjson/AiB` only** |
-| `VERJSON_LANE_TRUSTED_WINDOWS` | `["windows-2025"]` | **repository variable on `Verjson/AiB` only** |
+| `CI_LANE_TRUSTED_MACOS` | `["macos-15"]` | **repository variable on `Verjson/AiB` only** |
+| `CI_LANE_TRUSTED_WINDOWS` | `["windows-2025"]` | **repository variable on `Verjson/AiB` only** |
 
 JSON arrays, so `fromJSON()` matches every existing lane usage. The names keep the
 `VERJSON_LANE_*` prefix so the routing conformance check and the actionlint policy see a
@@ -295,6 +295,31 @@ neither changes the decision, the containment primitive, or any control. Evidenc
    asserting the token cannot survive into any lifecycle-script step. Artifact *upload*
    itself still needs no secret; dependency *acquisition* does.
 
+### Amendment (2026-08-28) — generate the credential boundary for artifact releases (#1100)
+
+The canonical `release-artifact` generator now implements the already-sanctioned private
+dependency and OS-lane shape instead of forcing AiB to hand-edit generated output. Each
+approved `@verjson/*` package is named at generation time. A per-runner acquisition matrix
+validates the tagged lockfile's exact GitHub Packages URLs and integrity, installs with
+lifecycle scripts disabled under only `contents: read` and `packages: read`, and saves the
+result under a run-, attempt-, and canonical OS-matrix-index-bound cache key. The matching build matrix restores that tree
+with package, GitHub, cloud, and OIDC credential variables blank before any adopter-owned
+hook runs. This applies ADRs 0086 and 0095 to dispatched release builds; it does not grant
+repository code a registry credential.
+
+The generated contract independently records the approved package set, rejects additional
+`@verjson/*` lock entries, and requires identical acquisition/build selectors, dependency
+indices, and cache keys. Metered build legs keep this decision's 45-minute timeout.
+
+`--build-runner` also accepts the exact no-fallback ADR 0103 expressions
+`fromJSON(vars.CI_LANE_TRUSTED_MACOS)` and
+`fromJSON(vars.CI_LANE_TRUSTED_WINDOWS)`. Other expressions remain generation errors,
+and context-looking literals such as `vars.CI_LANE_TRUSTED_MACOS` are rejected rather
+than silently becoming nonexistent runner labels. The generated contract independently
+checks both matrices, their equality, the credential boundary, and hostile lifecycle and
+selector mutations. Evidence is the registered
+`scripts/ci-gate/changelog-caller-contract.test.sh` suite.
+
 ## Consequences
 
 - The metered SKUs are refused by a check rather than by a spending limit, which is what
@@ -304,7 +329,7 @@ neither changes the decision, the containment primitive, or any control. Evidenc
 - A hung hosted step costs at most 45 minutes of wall time rather than six hours of billing.
 - A sanctioned OS-lane workflow is accepted only when its trigger set is exactly
   `workflow_dispatch`; `pull_request`, `push`, and `schedule` cannot reach metered legs.
-- One grep — for `VERJSON_LANE_TRUSTED_MACOS` or `VERJSON_LANE_TRUSTED_WINDOWS` — answers
+- One grep — for `CI_LANE_TRUSTED_MACOS` or `CI_LANE_TRUSTED_WINDOWS` — answers
   which workflows can spend hosted minutes.
 - **The guarantee is split across the only two authoritative surfaces.** The parser refuses
   rather than guesses, so an unreadable workflow is undetermined and not clean; larger

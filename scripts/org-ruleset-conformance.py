@@ -107,7 +107,11 @@ def read_policy(policy: Path):
     )
     require_exact_keys(
         document,
-        {"organization", "release_authorization_bypass"},
+        {
+            "organization",
+            "release_authorization_bypass",
+            "bypassless_required_workflows",
+        },
         "ruleset policy",
     )
     organization = require_string(document["organization"], "ruleset policy.organization")
@@ -138,7 +142,49 @@ def read_policy(policy: Path):
         raise AuditDataError(
             "release authorization policy must require an always-bypass Integration"
         )
-    return organization, expected
+    exceptions = require_array(
+        document["bypassless_required_workflows"],
+        "ruleset policy.bypassless_required_workflows",
+    )
+    parsed_exceptions = []
+    names = set()
+    for index, value in enumerate(exceptions):
+        location = f"ruleset policy.bypassless_required_workflows[{index}]"
+        item = require_mapping(value, location)
+        require_exact_keys(
+            item,
+            {
+                "name",
+                "repository_id",
+                "workflow_repository_id",
+                "workflow_path",
+                "workflow_ref",
+            },
+            location,
+        )
+        parsed = {
+            "name": require_string(item["name"], f"{location}.name"),
+            "repository_id": require_positive_integer(
+                item["repository_id"], f"{location}.repository_id"
+            ),
+            "workflow_repository_id": require_positive_integer(
+                item["workflow_repository_id"],
+                f"{location}.workflow_repository_id",
+            ),
+            "workflow_path": require_string(
+                item["workflow_path"], f"{location}.workflow_path"
+            ),
+            "workflow_ref": require_string(
+                item["workflow_ref"], f"{location}.workflow_ref"
+            ),
+        }
+        if parsed["name"] in names:
+            raise AuditDataError(
+                f"ruleset policy contains duplicate bypassless ruleset {parsed['name']}"
+            )
+        names.add(parsed["name"])
+        parsed_exceptions.append(parsed)
+    return organization, expected, parsed_exceptions
 
 
 def list_ruleset_ids(organization: str):
@@ -256,10 +302,46 @@ def has_expected_actor(ruleset: dict, expected: dict):
     )
 
 
+def is_exact_bypassless_required_workflow(ruleset: dict, exceptions: list[dict]):
+    matching = [item for item in exceptions if item["name"] == ruleset["name"]]
+    if len(matching) != 1 or ruleset["bypass_actors"] != []:
+        return False
+    expected = matching[0]
+    conditions = ruleset["conditions"]
+    if conditions != {
+        "ref_name": {"include": ["~DEFAULT_BRANCH"], "exclude": []},
+        "repository_id": {"repository_ids": [expected["repository_id"]]},
+    }:
+        return False
+    if ruleset["target"] != "branch" or ruleset["enforcement"] != "active":
+        return False
+    if len(ruleset["rules"]) != 1 or ruleset["rules"][0].get("type") != "workflows":
+        return False
+    parameters = ruleset["rules"][0].get("parameters")
+    if not isinstance(parameters, dict) or set(parameters) != {
+        "do_not_enforce_on_create", "workflows",
+    } or parameters["do_not_enforce_on_create"] is not False:
+        return False
+    workflows = parameters["workflows"]
+    if not isinstance(workflows, list) or len(workflows) != 1:
+        return False
+    workflow = workflows[0]
+    return (
+        isinstance(workflow, dict)
+        and set(workflow) == {"path", "repository_id", "ref", "sha"}
+        and workflow["path"] == expected["workflow_path"]
+        and workflow["repository_id"] == expected["workflow_repository_id"]
+        and workflow["ref"] == expected["workflow_ref"]
+        and isinstance(workflow["sha"], str)
+        and len(workflow["sha"]) == 40
+        and all(character in "0123456789abcdef" for character in workflow["sha"])
+    )
+
+
 def main(arguments: list[str] | None = None) -> int:
     try:
         policy = select_policy(sys.argv[1:] if arguments is None else arguments)
-        organization, expected_actor = read_policy(policy)
+        organization, expected_actor, bypassless_exceptions = read_policy(policy)
         ruleset_ids = list_ruleset_ids(organization)
         rulesets = [read_ruleset(organization, ruleset_id) for ruleset_id in ruleset_ids]
     except (OSError, AuditDataError, RuntimeError) as error:
@@ -273,6 +355,9 @@ def main(arguments: list[str] | None = None) -> int:
         ruleset
         for ruleset in default_branch_token_rulesets
         if not has_expected_actor(ruleset, expected_actor)
+        and not is_exact_bypassless_required_workflow(
+            ruleset, bypassless_exceptions
+        )
     ]
     if failures:
         for ruleset in failures:

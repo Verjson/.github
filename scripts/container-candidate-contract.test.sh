@@ -235,17 +235,22 @@ def validate_authority(read_only, publication):
         assert publication["jobs"][job_name]["if"] == expected, (
             f"{job_name} publication authority predicate drifted"
         )
+    assert set(publication["jobs"]["candidate-manifest"]["needs"]) == candidate_producers, (
+        "candidate manifest direct producers drifted"
+    )
 
-assert publisher["jobs"]["candidate-manifest"]["if"] == candidate_condition
+candidate_producers = {"prepare", "publish-base", "publish-derived", "attest-sbom"}
+candidate_job = publisher["jobs"]["candidate-manifest"]
+assert candidate_job["if"] == candidate_condition
 
 # GitHub skips a job with any skipped dependency unless always() opts the job into
 # evaluation. All direct producers must then be terminal-success: an unrelated
 # optional dependency may skip without suppressing a complete manifest, while a
 # skipped direct producer remains fail closed.
 def candidate_manifest_runs(results):
-    return publisher["jobs"]["candidate-manifest"]["if"].startswith("always()") and all(
+    return candidate_job["if"].startswith("always()") and all(
         results[name] == "success"
-        for name in ("prepare", "publish-base", "publish-derived", "attest-sbom")
+        for name in candidate_producers
     )
 
 assert candidate_manifest_runs({
@@ -255,20 +260,30 @@ assert candidate_manifest_runs({
     "attest-sbom": "success",
     "acquire-private-node-dependencies": "skipped",
 }), "optional skipped dependency suppressed complete candidate manifest"
-for producer in ("prepare", "publish-base", "publish-derived", "attest-sbom"):
-    results = {
-        "prepare": "success",
-        "publish-base": "success",
-        "publish-derived": "success",
-        "attest-sbom": "success",
-    }
-    results[producer] = "skipped"
-    assert not candidate_manifest_runs(results), f"skipped {producer} admitted candidate manifest"
+for terminal_status in ("skipped", "cancelled", "failure"):
+    for producer in candidate_producers:
+        results = {name: "success" for name in candidate_producers}
+        results[producer] = terminal_status
+        assert not candidate_manifest_runs(results), (
+            f"{terminal_status} {producer} admitted candidate manifest"
+        )
+
+for unsafe_needs in (
+    candidate_producers - {"attest-sbom"},
+    candidate_producers | {"acquire-private-node-dependencies"},
+):
+    mutated = copy.deepcopy(publisher)
+    mutated["jobs"]["candidate-manifest"]["needs"] = sorted(unsafe_needs)
+    try:
+        validate_authority(callee, mutated)
+        raise AssertionError("candidate manifest producer graph mutation escaped")
+    except AssertionError as error:
+        assert "direct producers drifted" in str(error)
 
 unsafe_conditions = [candidate_condition.removeprefix("always() && ")]
 unsafe_conditions.extend(
     candidate_condition.replace(f" && needs.{producer}.result == 'success'", "")
-    for producer in ("prepare", "publish-base", "publish-derived", "attest-sbom")
+    for producer in candidate_producers
 )
 for unsafe in unsafe_conditions:
     mutated = copy.deepcopy(publisher)

@@ -230,6 +230,14 @@ quarantines the identity under the held package parent and refuses to delete a d
 entry. Existing-target swap and post-success replacement semantics remain unchanged.
 No consumer self-dependency or package pin is introduced.
 
+On 2026-08-28, follow-up hardening made three existing fail-closed boundaries explicit.
+An unavailable sealed-memory primitive now emits one fixed diagnostic instead of raw
+platform detail. Execution-level coverage proves the descriptors used to populate the
+private mounts are closed before the npm consumer starts. A supposedly empty backup
+container that gains an unexpected entry restores the owned initially-absent target,
+preserves the unexpected entry for diagnosis, and exits with a fixed diagnostic rather
+than deleting unowned state.
+
 ## Consequences
 
 - Self-packages can exercise multiple published compatibility lanes without changing

@@ -11,6 +11,8 @@ Reverse-chronological index of org-level decisions.
 <!-- BEGIN ADR INDEX -->
 | # | Date | Decision |
 |---|------|----------|
+| [0152](0152-distribute-paid-packages-through-cloudsmith/README.md) | 2026-08-28 | Distribute paid packages through Cloudsmith entitlements |
+| [0151](0151-authn-type-surface-required-workflow/README.md) | 2026-08-28 | Bind authn type-surface enforcement to a required workflow |
 | [0150](0150-immutable-exact-runner-canary/README.md) | 2026-08-28 | Publish the exact-runner canary at an immutable ref |
 | [0149](0149-authorize-exact-secretless-call-subsets/README.md) | 2026-08-27 | Authorize exact secretless call subsets |
 | [0148](0148-hosted-runner-provenance/README.md) | 2026-08-27 | Produce deployable runner provenance on hosted infrastructure |

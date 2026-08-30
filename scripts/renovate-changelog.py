@@ -33,10 +33,11 @@ PACKAGE = re.compile(
 )
 BARE_PACKAGE = re.compile(r"^([@A-Za-z0-9][@A-Za-z0-9._/+~:-]{0,213})$")
 CHANGE = re.compile(
-    r"^(?:\[)?`([^`\r\n|]{1,256})` → `([^`\r\n|]{1,256})`"
+    r"^(?:\[)?`([^`\r\n]{1,256})` → `([^`\r\n]{1,256})`"
     r"(?:\]\(https://[^()\s]+\))?$"
 )
-VERSION = re.compile(r"^[0-9A-Za-z~^<>=*][0-9A-Za-z._+:/@~^<>=* -]{0,127}$")
+VERSION_PART = r"[0-9A-Za-z~^<>=*][0-9A-Za-z._+:/@~^<>=* -]{0,127}"
+VERSION = re.compile(rf"^(?=.{{1,128}}$){VERSION_PART}(?: \|\| {VERSION_PART})*$")
 PNPM_INTEGRITY_PIN = re.compile(
     r"^(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)"
     r"(?:-[0-9A-Za-z.-]+)?\+sha512\.[0-9a-f]{128}$"
@@ -138,9 +139,28 @@ def require_sha(value: Any, location: str) -> str:
 
 
 def table_cells(line: str) -> list[str]:
-    if not line.startswith("|") or not line.endswith("|") or "\\|" in line:
+    if not line.startswith("|") or not line.endswith("|"):
         raise AutomationError("Renovate update table uses an unsupported row shape")
-    return [cell.strip() for cell in line[1:-1].split("|")]
+    cells: list[str] = []
+    cell: list[str] = []
+    content = line[1:-1]
+    index = 0
+    while index < len(content):
+        character = content[index]
+        if character == "\\":
+            if index + 1 >= len(content) or content[index + 1] != "|":
+                raise AutomationError("Renovate update table uses an unsupported row escape")
+            cell.append("\\|")
+            index += 2
+            continue
+        if character == "|":
+            cells.append("".join(cell))
+            cell = []
+        else:
+            cell.append(character)
+        index += 1
+    cells.append("".join(cell))
+    return [cell.replace("\\|", "|").strip() for cell in cells]
 
 
 def parse_update_row(package_cell: str, change_cell: str) -> Update:

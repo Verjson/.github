@@ -16,7 +16,7 @@
 #   scripts/gen-changelog-caller.sh contract-test <sha> [--scope <scope>] [--node-version <version>] > scripts/changelog-contract.test.sh
 #   scripts/gen-changelog-caller.sh pr-gate <sha> [--untrusted-runner <label>[,<label>...]] > .github/workflows/changelog-contract.yml
 #   scripts/gen-changelog-caller.sh release-node <sha> [--scope <scope>] [--node-version <version>] [--release-asset <path>]... > .github/workflows/release.yml
-#   scripts/gen-changelog-caller.sh release-artifact <sha> --build-runner <label>... [--scope <scope>] [--node-version <version>] > .github/workflows/release.yml
+#   scripts/gen-changelog-caller.sh release-artifact <sha> --build-runner <selector>... [--approved-internal-package <@verjson/name>]... [--scope <scope>] [--node-version <version>] > .github/workflows/release.yml
 #   scripts/gen-changelog-caller.sh release-propose <sha> --autonomy {propose|dispatch} > .github/workflows/release-propose.yml
 #
 # Every changelog-enabled workflow mode publishes the organization ruleset's
@@ -60,7 +60,7 @@
 set -euo pipefail
 
 usage() {
-  echo "usage: $(basename "$0") {workflow|generated-artifacts|generated-artifacts-with-adr-index|renovate-attribution|adr-index-generator|renderer|contract-test|pr-gate|release-node|release-artifact|release-propose} <40-hex-commit> [--scope <npm-scope>] [--node-version <version>] [--package-dir <relative-dir>]... [--release-asset <path>]... [--build-runner <runner-label>]... [--autonomy {propose|dispatch}] [--untrusted-runner <label>[,<label>...]]" >&2
+  echo "usage: $(basename "$0") {workflow|generated-artifacts|generated-artifacts-with-adr-index|renovate-attribution|adr-index-generator|renderer|contract-test|pr-gate|release-node|release-artifact|release-propose} <40-hex-commit> [--scope <npm-scope>] [--node-version <version>] [--package-dir <relative-dir>]... [--release-asset <path>]... [--build-runner <selector>]... [--approved-internal-package <@verjson/name>]... [--autonomy {propose|dispatch}] [--untrusted-runner <label>[,<label>...]]" >&2
   echo "required check: changelog / validate" >&2
   exit 2
 }
@@ -78,6 +78,7 @@ release_package_dirs=(".")
 release_package_dirs_set=false
 release_assets=()
 release_build_runners=()
+release_approved_internal_packages=()
 release_autonomy=""
 pr_gate_untrusted_runner=""
 pr_gate_untrusted_runner_set=false
@@ -111,6 +112,11 @@ while [ "$#" -gt 0 ]; do
       release_build_runners+=("$2")
       shift 2
       ;;
+    --approved-internal-package)
+      [ "$#" -ge 2 ] || usage
+      release_approved_internal_packages+=("$2")
+      shift 2
+      ;;
     --autonomy)
       [ "$#" -ge 2 ] && [ -z "$release_autonomy" ] || usage
       release_autonomy="$2"
@@ -134,8 +140,14 @@ if { [ "$release_scope_set" = true ] || [ "$release_node_version_set" = true ] \
   echo "$(basename "$0"): release parameters are accepted only by release-node, release-artifact and contract-test" >&2
   exit 2
 fi
-if [ "${#release_build_runners[@]}" -gt 0 ] && [ "$mode" != release-artifact ]; then
-  echo "$(basename "$0"): --build-runner is accepted only by release-artifact" >&2
+if [ "${#release_build_runners[@]}" -gt 0 ] \
+  && [ "$mode" != release-artifact ] && [ "$mode" != contract-test ]; then
+  echo "$(basename "$0"): --build-runner is accepted only by release-artifact and contract-test" >&2
+  exit 2
+fi
+if [ "${#release_approved_internal_packages[@]}" -gt 0 ] \
+  && [ "$mode" != release-artifact ] && [ "$mode" != contract-test ]; then
+  echo "$(basename "$0"): --approved-internal-package is accepted only by release-artifact and contract-test" >&2
   exit 2
 fi
 if [ "${#release_assets[@]}" -gt 0 ] && [ "$mode" != release-node ] && [ "$mode" != contract-test ]; then
@@ -175,10 +187,27 @@ if [ "$mode" = release-artifact ] && [ "${#release_build_runners[@]}" -eq 0 ]; t
   exit 2
 fi
 for release_build_runner in "${release_build_runners[@]}"; do
-  [[ "$release_build_runner" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || {
-    echo "$(basename "$0"): --build-runner must be a bare runner label such as macos-14" >&2
+  [[ "$release_build_runner" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] \
+    && [[ ! "$release_build_runner" =~ ^(vars|inputs|matrix|needs|github|env|secrets)\. ]] \
+    && [[ ! "$release_build_runner" =~ ^(macos|windows)- ]] \
+    || [[ "$release_build_runner" =~ ^\$\{\{[[:space:]]fromJSON\(vars\.CI_LANE_TRUSTED_(MACOS|WINDOWS)\)[[:space:]]\}\}$ ]] || {
+    echo "$(basename "$0"): --build-runner must be a literal label or an exact ADR 0103 fromJSON(vars.CI_LANE_TRUSTED_MACOS|WINDOWS) expression" >&2
     exit 2
   }
+done
+release_approved_packages_seen=()
+for release_approved_package in "${release_approved_internal_packages[@]}"; do
+  [[ "$release_approved_package" =~ ^@verjson/[a-z0-9][a-z0-9._-]*$ ]] || {
+    echo "$(basename "$0"): --approved-internal-package must be an exact lowercase @verjson package name" >&2
+    exit 2
+  }
+  for existing_package in "${release_approved_packages_seen[@]}"; do
+    [ "$existing_package" != "$release_approved_package" ] || {
+      echo "$(basename "$0"): approved internal packages must be unique" >&2
+      exit 2
+    }
+  done
+  release_approved_packages_seen+=("$release_approved_package")
 done
 if [ -n "$release_autonomy" ] && [ "$mode" != release-propose ]; then
   echo "$(basename "$0"): --autonomy is accepted only by release-propose" >&2
@@ -487,6 +516,8 @@ release_checkout='actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 release_setup_node='actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7'
 release_upload_artifact='actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1'
 release_download_artifact='actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1'
+release_cache_save='actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0'
+release_cache_restore='actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0'
 
 emit_release_node() {
   local generation_command="release-node ${ref}"
@@ -852,6 +883,9 @@ EOF
 emit_release_artifact() {
   local generation_command="release-artifact ${ref}"
   local package_dirs_shell=''
+  local build_runners_yaml='' approved_packages_csv='' private_acquisition_job='' restore_dependency_step=''
+  local required_lane_names='' required_lane_env='' required_lane_validation_step='' runner_index=0
+  local build_needs='[verify, snapshot]' build_condition="always() && needs.verify.result == 'success' && (needs.snapshot.result == 'success' || needs.snapshot.result == 'skipped')"
   [ "$release_scope" = "@verjson" ] \
     || generation_command="$generation_command --scope $release_scope"
   [ "$release_node_version" = "24" ] \
@@ -860,16 +894,148 @@ emit_release_artifact() {
     generation_command="$generation_command --package-dir $package_dir"
   done
   for build_runner in "${release_build_runners[@]}"; do
-    generation_command="$generation_command --build-runner $build_runner"
+    printf -v quoted_build_runner '%q' "$build_runner"
+    generation_command="$generation_command --build-runner $quoted_build_runner"
+    if [[ "$build_runner" == \$\{\{* ]]; then
+      yaml_build_runner="$build_runner"
+      lane_name="${build_runner#*vars.}"
+      lane_name="${lane_name%%)*}"
+      if [[ ",$required_lane_names," != *",$lane_name,"* ]]; then
+        required_lane_names="${required_lane_names:+$required_lane_names,}$lane_name"
+        required_lane_env="${required_lane_env}          $lane_name: \${{ vars.$lane_name }}
+"
+      fi
+    else
+      yaml_build_runner="'$build_runner'"
+    fi
+    build_runners_yaml="${build_runners_yaml}          - build-runner: ${yaml_build_runner}
+            dependency-index: ${runner_index}
+"
+    runner_index=$((runner_index + 1))
+  done
+  for approved_package in "${release_approved_internal_packages[@]}"; do
+    generation_command="$generation_command --approved-internal-package $approved_package"
+    approved_packages_csv="${approved_packages_csv:+$approved_packages_csv,}$approved_package"
   done
   printf -v package_dirs_shell '%q ' "${release_package_dirs[@]}"
   package_dirs_shell="${package_dirs_shell% }"
-  local build_runners_json='[' build_runner sep=''
-  for build_runner in "${release_build_runners[@]}"; do
-    build_runners_json="${build_runners_json}${sep}\"${build_runner}\""
-    sep=', '
-  done
-  build_runners_json="${build_runners_json}]"
+  if [ -n "$required_lane_names" ]; then
+    required_lane_validation_step="$(cat <<EOF
+      - name: Validate required OS-scoped build lanes
+        shell: bash
+        env:
+          REQUIRED_BUILD_LANES: '${required_lane_names}'
+${required_lane_env%$'\n'}
+        run: |
+          set -euo pipefail
+          IFS=',' read -ra lane_names <<<"\$REQUIRED_BUILD_LANES"
+          for lane_name in "\${lane_names[@]}"; do
+            lane_value="\${!lane_name:-}"
+            LANE_NAME="\$lane_name" LANE_VALUE="\$lane_value" node <<'NODE'
+          const name = process.env.LANE_NAME;
+          let value;
+          try { value = JSON.parse(process.env.LANE_VALUE); } catch { throw new Error(name + ' must be a non-empty JSON runner-label array'); }
+          if (!Array.isArray(value) || value.length === 0 || value.some(label => typeof label !== 'string' || !label)) throw new Error(name + ' must be a non-empty JSON runner-label array');
+          NODE
+          done
+EOF
+)"
+  fi
+  if [ "${#release_approved_internal_packages[@]}" -gt 0 ]; then
+    build_needs='[verify, snapshot, acquire-private-dependencies]'
+    build_condition="$build_condition && needs.acquire-private-dependencies.result == 'success'"
+    private_acquisition_job="$(cat <<EOF
+  acquire-private-dependencies:
+    name: Acquire approved private dependencies (\${{ matrix.build-runner }})
+    needs: [verify, snapshot]
+    if: always() && needs.verify.result == 'success' && (needs.snapshot.result == 'success' || needs.snapshot.result == 'skipped')
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+${build_runners_yaml%$'\n'}
+    runs-on: \${{ matrix.build-runner }}
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - name: Check out the tagged release tree without credentials
+        uses: ${release_checkout}
+        with:
+          ref: \${{ inputs.version }}
+          persist-credentials: false
+      - uses: ${release_setup_node}
+        with:
+          node-version: '${release_node_version}'
+          package-manager-cache: false
+      - name: Validate the approved private dependency lock
+        shell: bash
+        env:
+          APPROVED_INTERNAL_PACKAGES: '${approved_packages_csv}'
+        run: |
+          set -euo pipefail
+          [ -f package-lock.json ] || { echo "::error::private release acquisition requires package-lock.json"; exit 1; }
+          [ -z "\$(find . -name .npmrc -print -quit)" ] || { echo "::error::private release acquisition rejects repository-controlled npm configuration"; exit 1; }
+          node <<'NODE'
+          const fs = require('fs');
+          const approved = new Set(process.env.APPROVED_INTERNAL_PACKAGES.split(',').filter(Boolean));
+          const lock = JSON.parse(fs.readFileSync('package-lock.json', 'utf8'));
+          if (![2, 3].includes(lock.lockfileVersion) || !lock.packages || Array.isArray(lock.packages)) throw new Error('private release acquisition requires package-lock lockfileVersion 2 or 3');
+          const found = new Set();
+          for (const [path, entry] of Object.entries(lock.packages)) {
+            if (!path || !path.includes('node_modules/')) continue;
+            const name = path.slice(path.lastIndexOf('node_modules/') + 13);
+            if (!name.startsWith('@verjson/')) continue;
+            if (!approved.has(name)) throw new Error('unapproved internal dependency: ' + name);
+            if (entry.name && entry.name !== name) throw new Error('internal dependency aliases unexpected package: ' + name);
+            const url = new URL(entry.resolved);
+            const parts = url.pathname.split('/');
+            if (url.protocol !== 'https:' || url.host !== 'npm.pkg.github.com' || url.username || url.password || url.search || url.hash || url.pathname.includes('\\') || decodeURIComponent(url.pathname) !== url.pathname || parts.length !== 6 || parts[1] !== 'download' || parts[2] + '/' + parts[3] !== name || !parts[4] || !parts[5]) throw new Error('internal dependency is not pinned to its exact GitHub Packages download URL: ' + name);
+            if (typeof entry.integrity !== 'string' || !/^sha512-[A-Za-z0-9+/]{86}==$/.test(entry.integrity)) throw new Error('internal dependency requires exact sha512 integrity: ' + name);
+            found.add(name);
+          }
+          for (const name of approved) if (!found.has(name)) throw new Error('approved internal dependency absent from lock: ' + name);
+          NODE
+      - name: Acquire dependencies without lifecycle execution
+        shell: bash
+        env:
+          NODE_AUTH_TOKEN: \${{ secrets.NODE_AUTH_TOKEN }}
+          NPM_CONFIG_GLOBALCONFIG: \${{ runner.temp }}/release-empty-global.npmrc
+          NPM_CONFIG_USERCONFIG: \${{ runner.temp }}/release-acquisition.npmrc
+        run: |
+          set -euo pipefail
+          umask 077
+          [ -n "\$NODE_AUTH_TOKEN" ] || { echo "::error::private release acquisition requires NODE_AUTH_TOKEN"; exit 1; }
+          : > "\$NPM_CONFIG_GLOBALCONFIG"
+          printf '%s\n' 'registry=https://registry.npmjs.org/' '@verjson:registry=https://npm.pkg.github.com/' '//npm.pkg.github.com/:_authToken=\${NODE_AUTH_TOKEN}' > "\$NPM_CONFIG_USERCONFIG"
+          npm ci --ignore-scripts --audit=false --fund=false
+          [ -d node_modules ] || { echo "::error::npm produced no dependency tree"; exit 1; }
+          if grep -R -a -F -q -- "\$NODE_AUTH_TOKEN" node_modules; then echo "::error::dependency tree contains the acquisition credential"; exit 1; fi
+          [ "\$(du -sk node_modules | awk '{print \$1}')" -le 2097152 ] || { echo "::error::dependency transfer exceeds 2 GiB"; exit 1; }
+          rm -f "\$NPM_CONFIG_USERCONFIG" "\$NPM_CONFIG_GLOBALCONFIG"
+      - name: Save exact-attempt credentialless dependencies
+        uses: ${release_cache_save}
+        with:
+          path: node_modules
+          key: release-dependencies-\${{ github.run_id }}-\${{ github.run_attempt }}-\${{ matrix.dependency-index }}
+      - name: Remove acquisition state
+        if: always()
+        shell: bash
+        run: rm -rf node_modules "\$RUNNER_TEMP/release-acquisition.npmrc" "\$RUNNER_TEMP/release-empty-global.npmrc"
+
+EOF
+)"
+    restore_dependency_step="$(cat <<EOF
+      - name: Restore exact-attempt credentialless dependencies
+        uses: ${release_cache_restore}
+        with:
+          path: node_modules
+          key: release-dependencies-\${{ github.run_id }}-\${{ github.run_attempt }}-\${{ matrix.dependency-index }}
+          fail-on-cache-miss: true
+EOF
+)"
+  fi
   cat <<EOF
 name: Release
 run-name: Release \${{ inputs.version }} \${{ inputs.selector_digest || 'manual' }}
@@ -894,7 +1060,7 @@ concurrency:
 # This mode exists for adopters with nothing to publish to a package registry —
 # concretely, an Electron desktop app that ships OS installers as GitHub Release
 # assets (#975). \`build\` replaces \`publish\`'s call to node-release.yml: it is a
-# caller-declared matrix of runner labels (one per --build-runner passed at
+# caller-declared matrix of runner selectors (one per --build-runner passed at
 # generation time), each running an adopter-owned, fail-closed
 # \`scripts/release-build.sh <version> <output-dir>\` hook that must leave every
 # artifact for that runner inside the given directory. \`publish\` downloads every
@@ -912,6 +1078,10 @@ concurrency:
 # not a compromise it makes. Each build leg requires its own executable
 # \`scripts/release-build.sh\`; it receives the exact dispatched version and an
 # empty output directory and must exit non-zero on failure.
+# Callers with private @verjson dependencies name each package through
+# --approved-internal-package. A lifecycle-disabled acquisition matrix receives
+# the package credential and hands an exact-attempt dependency tree to the
+# credentialless build matrix; the build hook never receives that credential.
 #
 # The verification suite runs after package.json has been stamped to the
 # dispatched version. Its expected version must be read dynamically from
@@ -1058,6 +1228,7 @@ jobs:
             echo "::error::Selected fragments resolve to \$actual, not proposer receipt \$EXPECTED_SELECTOR_DIGEST."
             exit 1
           fi
+${required_lane_validation_step}
       - name: Resolve restart-safe release state
         id: release-state
         env:
@@ -1177,16 +1348,18 @@ jobs:
       # the named main-protection bypass actor (ADR 0099, #329).
       release_app_private_key: \${{ secrets.RELEASE_APP_PRIVATE_KEY }}
 
+${private_acquisition_job}
   build:
     name: Build release artifacts (\${{ matrix.build-runner }})
-    needs: [verify, snapshot]
-    if: always() && needs.verify.result == 'success' && (needs.snapshot.result == 'success' || needs.snapshot.result == 'skipped')
+    needs: ${build_needs}
+    if: ${build_condition}
     strategy:
       fail-fast: false
       matrix:
-        build-runner: ${build_runners_json}
+        include:
+${build_runners_yaml%$'\n'}
     runs-on: \${{ matrix.build-runner }}
-    timeout-minutes: 60
+    timeout-minutes: 45
     permissions:
       contents: read
     steps:
@@ -1196,7 +1369,9 @@ jobs:
           ref: \${{ inputs.version }}
           fetch-depth: 0
           persist-credentials: false
+${restore_dependency_step}
       - name: Require the release build hook
+        shell: bash
         run: |
           if [ -e scripts/release-build.sh ] && [ ! -x scripts/release-build.sh ]; then
             echo "::error::scripts/release-build.sh exists but is not executable. Run: chmod +x scripts/release-build.sh && git update-index --chmod=+x scripts/release-build.sh"
@@ -1207,7 +1382,19 @@ jobs:
             exit 1
           fi
       - name: Build this runner's release artifacts
+        shell: bash
         env:
+          ACTIONS_ID_TOKEN_REQUEST_TOKEN: ''
+          ACTIONS_ID_TOKEN_REQUEST_URL: ''
+          AWS_ACCESS_KEY_ID: ''
+          AWS_SECRET_ACCESS_KEY: ''
+          AWS_SESSION_TOKEN: ''
+          AZURE_CREDENTIALS: ''
+          GH_TOKEN: ''
+          GITHUB_TOKEN: ''
+          GOOGLE_APPLICATION_CREDENTIALS: ''
+          NODE_AUTH_TOKEN: ''
+          NPM_TOKEN: ''
           RELEASE_VERSION: \${{ inputs.version }}
         run: |
           mkdir -p release-artifacts
@@ -1223,6 +1410,10 @@ jobs:
           path: release-artifacts/*
           if-no-files-found: error
           retention-days: 1
+      - name: Remove restored dependencies and build outputs
+        if: always()
+        shell: bash
+        run: rm -rf node_modules release-artifacts
 
   publish:
     name: Publish the released snapshot
@@ -1415,6 +1606,8 @@ emit_contract_test() {
   local release_package_dirs_json='["."]'
   local release_package_dirs_shell=''
   local release_assets_json='[' release_asset_sep=''
+  local release_approved_packages_csv='' release_approved_package=''
+  local release_lane_names='' release_lane_env='' release_lane_preflight='' release_lane_preflight_sha256=''
   for package_dir in "${release_package_dirs[@]:1}"; do
     release_package_dirs_json="${release_package_dirs_json%]},\"$package_dir\"]"
   done
@@ -1425,6 +1618,42 @@ emit_contract_test() {
     release_asset_sep=,
   done
   release_assets_json="$release_assets_json]"
+  for release_approved_package in "${release_approved_internal_packages[@]}"; do
+    release_approved_packages_csv="${release_approved_packages_csv:+$release_approved_packages_csv,}$release_approved_package"
+  done
+  for release_build_runner in "${release_build_runners[@]}"; do
+    if [[ "$release_build_runner" =~ vars\.(CI_LANE_TRUSTED_(MACOS|WINDOWS)) ]]; then
+      release_lane_name="${BASH_REMATCH[1]}"
+      if [[ ",$release_lane_names," != *",$release_lane_name,"* ]]; then
+        release_lane_names="${release_lane_names:+$release_lane_names,}$release_lane_name"
+        release_lane_env="${release_lane_env}          $release_lane_name: \${{ vars.$release_lane_name }}
+"
+      fi
+    fi
+  done
+  if [ -n "$release_lane_names" ]; then
+    release_lane_preflight="$(cat <<EOF
+      - name: Validate required OS-scoped build lanes
+        shell: bash
+        env:
+          REQUIRED_BUILD_LANES: '${release_lane_names}'
+${release_lane_env%$'\n'}
+        run: |
+          set -euo pipefail
+          IFS=',' read -ra lane_names <<<"\$REQUIRED_BUILD_LANES"
+          for lane_name in "\${lane_names[@]}"; do
+            lane_value="\${!lane_name:-}"
+            LANE_NAME="\$lane_name" LANE_VALUE="\$lane_value" node <<'NODE'
+          const name = process.env.LANE_NAME;
+          let value;
+          try { value = JSON.parse(process.env.LANE_VALUE); } catch { throw new Error(name + ' must be a non-empty JSON runner-label array'); }
+          if (!Array.isArray(value) || value.length === 0 || value.some(label => typeof label !== 'string' || !label)) throw new Error(name + ' must be a non-empty JSON runner-label array');
+          NODE
+          done
+EOF
+)"
+    release_lane_preflight_sha256="$(printf '%s' "$release_lane_preflight" | digest_of)"
+  fi
   cat <<EOF
 #!/usr/bin/env bash
 # Asserts that this repository still satisfies the canonical Verjson changelog
@@ -1450,8 +1679,12 @@ EXPECTED_RELEASE_NODE_VERSION="${release_node_version}"
 EXPECTED_RELEASE_PACKAGE_DIRS_JSON='${release_package_dirs_json}'
 EXPECTED_RELEASE_PACKAGE_DIRS_SHELL='${release_package_dirs_shell}'
 EXPECTED_RELEASE_ASSETS_JSON='${release_assets_json}'
+EXPECTED_RELEASE_APPROVED_INTERNAL_PACKAGES='${release_approved_packages_csv}'
+EXPECTED_RELEASE_LANE_PREFLIGHT_SHA256='${release_lane_preflight_sha256}'
 EXPECTED_RELEASE_UPLOAD_ARTIFACT='${release_upload_artifact}'
 EXPECTED_RELEASE_DOWNLOAD_ARTIFACT='${release_download_artifact}'
+EXPECTED_RELEASE_CACHE_SAVE='${release_cache_save}'
+EXPECTED_RELEASE_CACHE_RESTORE='${release_cache_restore}'
 EOF
   cat <<'EOF'
 
@@ -2058,6 +2291,11 @@ while IFS= read -r release_workflow; do
     in_job && /^  [A-Za-z0-9_.-]+:[[:space:]]*$/ && $0 !~ /^  build:/ { exit }
     in_job { print }
   ' "$release_workflow")"
+  acquisition_job="$(awk '
+    /^  acquire-private-dependencies:[[:space:]]*$/ { in_job = 1 }
+    in_job && /^  [A-Za-z0-9_.-]+:[[:space:]]*$/ && $0 !~ /^  acquire-private-dependencies:/ { exit }
+    in_job { print }
+  ' "$release_workflow")"
   stamp_before() {
     local job="$1" consumer_pattern="$2" stamp_line consumer_line
     stamp_line="$(grep -n -m1 \
@@ -2093,16 +2331,164 @@ while IFS= read -r release_workflow; do
     # restart-safe GitHub Release logic itself (#975).
     [ -n "$build_job" ] \
       || fail "$release_workflow has no build job; release-artifact requires a caller-declared build matrix (#975)"
+    if [ -n "$EXPECTED_RELEASE_APPROVED_INTERNAL_PACKAGES" ]; then
+      [ -n "$acquisition_job" ] \
+        || fail "$release_workflow omits the independently authorized private dependency acquisition"
+      [ "$(grep -cF "APPROVED_INTERNAL_PACKAGES: '$EXPECTED_RELEASE_APPROVED_INTERNAL_PACKAGES'" <<<"$acquisition_job")" -eq 1 ] \
+        || fail "$release_workflow private package allowlist differs from the generated contract"
+      python3 - "$root/package-lock.json" "$EXPECTED_RELEASE_APPROVED_INTERNAL_PACKAGES" <<'PY' \
+        || fail "$release_workflow repository lock differs from the generated private package authorization"
+import base64
+import json
+import re
+import sys
+from pathlib import Path
+from urllib.parse import unquote, urlparse
+
+lock = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+approved = set(filter(None, sys.argv[2].split(",")))
+if lock.get("lockfileVersion") not in (2, 3) or not isinstance(lock.get("packages"), dict):
+    raise SystemExit(1)
+found = set()
+for path, entry in lock["packages"].items():
+    if not path or "node_modules/" not in path:
+        continue
+    name = path.rsplit("node_modules/", 1)[1]
+    if not name.startswith("@verjson/"):
+        continue
+    if name not in approved or (entry.get("name") not in (None, name)):
+        raise SystemExit(1)
+    resolved = entry.get("resolved", "")
+    parsed = urlparse(resolved)
+    resolved_path = unquote(parsed.path)
+    parts = resolved_path.split("/")
+    integrity = entry.get("integrity")
+    if (parsed.scheme != "https" or parsed.netloc != "npm.pkg.github.com"
+            or parsed.query or parsed.fragment or resolved != f"https://npm.pkg.github.com{resolved_path}"
+            or "\\" in resolved_path or len(parts) != 6 or parts[1] != "download"
+            or f"{parts[2]}/{parts[3]}" != name or not parts[4] or not parts[5]
+            or not isinstance(integrity, str)
+            or re.fullmatch(r"sha512-[A-Za-z0-9+/]{86}==", integrity) is None):
+        raise SystemExit(1)
+    try:
+        digest = base64.b64decode(integrity.removeprefix("sha512-"), validate=True)
+    except ValueError:
+        raise SystemExit(1)
+    if len(digest) != 64:
+        raise SystemExit(1)
+    found.add(name)
+if found != approved:
+    raise SystemExit(1)
+PY
+    else
+      [ -z "$acquisition_job" ] \
+        || fail "$release_workflow adds private dependency acquisition absent from the generated contract"
+    fi
     grep -qE '^[[:space:]]+strategy:[[:space:]]*$' <<<"$build_job" \
-      && grep -qE '^[[:space:]]+build-runner:[[:space:]]*\[.+\][[:space:]]*$' <<<"$build_job" \
+      && grep -qE '^[[:space:]]+include:[[:space:]]*$' <<<"$build_job" \
+      && grep -qE '^[[:space:]]+- build-runner:[[:space:]]*[^[:space:]].*$' <<<"$build_job" \
       || fail "$release_workflow build job has no non-empty build-runner matrix"
-    grep -qF 'needs: [verify, snapshot]' <<<"$build_job" \
-      || fail "$release_workflow does not gate the build matrix on both verification and snapshot state"
-    grep -qF "if: always() && needs.verify.result == 'success' && (needs.snapshot.result == 'success' || needs.snapshot.result == 'skipped')" \
-      <<<"$build_job" \
-      || fail "$release_workflow cannot safely resume the build matrix after reusing an immutable snapshot"
+    while IFS= read -r runner_selector; do
+      runner_selector="${runner_selector#*: }"
+      [[ "$runner_selector" =~ ^\'[A-Za-z0-9][A-Za-z0-9._-]*\'$ ]] \
+        && [[ ! "${runner_selector:1:${#runner_selector}-2}" =~ ^(vars|inputs|matrix|needs|github|env|secrets)\. ]] \
+        || [[ "$runner_selector" =~ ^\$\{\{[[:space:]]fromJSON\(vars\.CI_LANE_TRUSTED_(MACOS|WINDOWS)\)[[:space:]]\}\}$ ]] \
+        || fail "$release_workflow build matrix contains an unreviewed runner selector: $runner_selector (ADR 0103)"
+      if [[ "$runner_selector" =~ ^\'.*\'$ ]] \
+        && [[ "${runner_selector:1:${#runner_selector}-2}" =~ ^(macos|windows)- ]]; then
+        fail "$release_workflow uses a literal metered OS selector forbidden by ADR 0103: $runner_selector"
+      fi
+      if [[ "$runner_selector" =~ vars\.(CI_LANE_TRUSTED_(MACOS|WINDOWS)) ]]; then
+        lane_name="${BASH_REMATCH[1]}"
+        grep -qF "$lane_name: \${{ vars.$lane_name }}" <<<"$verify_job" \
+          && grep -qF 'Validate required OS-scoped build lanes' <<<"$verify_job" \
+          && grep -qF 'must be a non-empty JSON runner-label array' <<<"$verify_job" \
+          || fail "$release_workflow does not fail loudly before snapshot when $lane_name is unset or malformed"
+      fi
+    done < <(grep -E '^[[:space:]]+- build-runner:' <<<"$build_job")
+    if [ -n "$EXPECTED_RELEASE_LANE_PREFLIGHT_SHA256" ]; then
+      lane_preflight="$(awk '
+        /^      - name: Validate required OS-scoped build lanes$/ { found = 1 }
+        found && /^      - name:/ && !/Validate required OS-scoped build lanes$/ { exit }
+        found { print }
+      ' <<<"$verify_job")"
+      if command -v sha256sum >/dev/null 2>&1; then
+        lane_preflight_sha256="$(printf '%s' "$lane_preflight" | sha256sum | cut -d' ' -f1)"
+      elif command -v shasum >/dev/null 2>&1; then
+        lane_preflight_sha256="$(printf '%s' "$lane_preflight" | shasum -a 256 | cut -d' ' -f1)"
+      else
+        fail "cannot verify the provenance-authorized OS lane preflight without a SHA-256 tool"
+      fi
+      [ "$lane_preflight_sha256" = "$EXPECTED_RELEASE_LANE_PREFLIGHT_SHA256" ] \
+        || fail "$release_workflow OS lane preflight logic differs from the provenance-authorized contract"
+    fi
+    if [ -n "$acquisition_job" ]; then
+      grep -qF 'timeout-minutes: 45' <<<"$acquisition_job" \
+        || fail "$release_workflow acquisition matrix exceeds ADR 0103's 45-minute bound"
+      grep -qF 'needs: [verify, snapshot, acquire-private-dependencies]' <<<"$build_job" \
+        || fail "$release_workflow private build matrix is not gated on credentialed acquisition"
+      grep -qF "if: always() && needs.verify.result == 'success' && (needs.snapshot.result == 'success' || needs.snapshot.result == 'skipped') && needs.acquire-private-dependencies.result == 'success'" \
+        <<<"$build_job" \
+        || fail "$release_workflow private build matrix can run without successful acquisition"
+      acquisition_permissions="$(awk '/^    permissions:/{seen=1;next} seen && /^    [^ ]/{exit} seen{print}' <<<"$acquisition_job" | sed 's/#.*//' | sed '/^[[:space:]]*$/d')"
+      [ "$(grep -c . <<<"$acquisition_permissions")" -eq 2 ] \
+        && grep -qE '^[[:space:]]+contents:[[:space:]]+read[[:space:]]*$' <<<"$acquisition_permissions" \
+        && grep -qE '^[[:space:]]+packages:[[:space:]]+read[[:space:]]*$' <<<"$acquisition_permissions" \
+        || fail "$release_workflow private acquisition must have exactly contents-read and packages-read"
+      grep -qF 'ref: ${{ inputs.version }}' <<<"$acquisition_job" \
+        && grep -qF 'persist-credentials: false' <<<"$acquisition_job" \
+        && grep -qF 'npm ci --ignore-scripts --audit=false --fund=false' <<<"$acquisition_job" \
+        && grep -qF 'NODE_AUTH_TOKEN: ${{ secrets.NODE_AUTH_TOKEN }}' <<<"$acquisition_job" \
+        && grep -qF "uses: $EXPECTED_RELEASE_CACHE_SAVE" <<<"$acquisition_job" \
+        || fail "$release_workflow private acquisition weakened its credentialless handoff"
+      [ "$(sed 's/#.*//' <<<"$acquisition_job" | grep -Ec 'secrets\b')" -eq 1 ] \
+        && ! grep -qE 'scripts/release-|npm (run|test|exec)' <<<"$acquisition_job" \
+        || fail "$release_workflow private acquisition exposes credentials to repository execution or another secret"
+      grep -qF "uses: $EXPECTED_RELEASE_CACHE_RESTORE" <<<"$build_job" \
+        && grep -qF 'fail-on-cache-miss: true' <<<"$build_job" \
+        && grep -qF "NODE_AUTH_TOKEN: ''" <<<"$build_job" \
+        || fail "$release_workflow private build does not restore dependencies with credentials blanked"
+      acquisition_selectors="$(grep -E '^[[:space:]]+- build-runner:' <<<"$acquisition_job" | sed 's/^[[:space:]]*//')"
+      build_selectors="$(grep -E '^[[:space:]]+- build-runner:' <<<"$build_job" | sed 's/^[[:space:]]*//')"
+      [ "$acquisition_selectors" = "$build_selectors" ] \
+        || fail "$release_workflow private acquisition and credentialless build runner matrices differ"
+      acquisition_indices="$(grep -E '^[[:space:]]+dependency-index:' <<<"$acquisition_job" | sed 's/^[[:space:]]*//')"
+      build_indices="$(grep -E '^[[:space:]]+dependency-index:' <<<"$build_job" | sed 's/^[[:space:]]*//')"
+      [ "$acquisition_indices" = "$build_indices" ] \
+        || fail "$release_workflow private acquisition and credentialless build dependency indices differ"
+      expected_index=0
+      while IFS= read -r dependency_index; do
+        [ "$dependency_index" = "dependency-index: $expected_index" ] \
+          || fail "$release_workflow dependency indices must be unique canonical matrix positions"
+        expected_index=$((expected_index + 1))
+      done <<<"$build_indices"
+      [ "$expected_index" -gt 0 ] \
+        || fail "$release_workflow private dependency matrix has no bound index"
+      while IFS= read -r runner_selector; do
+        runner_selector="${runner_selector#*: }"
+        [[ "$runner_selector" =~ ^\'[A-Za-z0-9][A-Za-z0-9._-]*\'$ ]] \
+          && [[ ! "${runner_selector:1:${#runner_selector}-2}" =~ ^(vars|inputs|matrix|needs|github|env|secrets)\. ]] \
+          || [[ "$runner_selector" =~ ^\$\{\{[[:space:]]fromJSON\(vars\.CI_LANE_TRUSTED_(MACOS|WINDOWS)\)[[:space:]]\}\}$ ]] \
+          || fail "$release_workflow acquisition matrix contains an unreviewed runner selector: $runner_selector (ADR 0103)"
+        if [[ "$runner_selector" =~ ^\'.*\'$ ]] \
+          && [[ "${runner_selector:1:${#runner_selector}-2}" =~ ^(macos|windows)- ]]; then
+          fail "$release_workflow acquisition uses a literal metered OS selector forbidden by ADR 0103: $runner_selector"
+        fi
+      done < <(grep -E '^[[:space:]]+- build-runner:' <<<"$acquisition_job")
+      [ "$(grep -cF 'key: release-dependencies-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.dependency-index }}' <<<"$acquisition_job")" -eq 1 ] \
+        && [ "$(grep -cF 'key: release-dependencies-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.dependency-index }}' <<<"$build_job")" -eq 1 ] \
+        || fail "$release_workflow dependency cache keys are not bound identically to run, attempt, and matrix OS index"
+    else
+      grep -qF 'needs: [verify, snapshot]' <<<"$build_job" \
+        || fail "$release_workflow does not gate the build matrix on both verification and snapshot state"
+      grep -qF "if: always() && needs.verify.result == 'success' && (needs.snapshot.result == 'success' || needs.snapshot.result == 'skipped')" \
+        <<<"$build_job" \
+        || fail "$release_workflow cannot safely resume the build matrix after reusing an immutable snapshot"
+    fi
     grep -qF 'ref: ${{ inputs.version }}' <<<"$build_job" \
       || fail "$release_workflow builds artifacts from a ref other than the tagged snapshot"
+    grep -qF 'timeout-minutes: 45' <<<"$build_job" \
+      || fail "$release_workflow build matrix exceeds ADR 0103's 45-minute bound"
     grep -qF -- '-x scripts/release-build.sh' <<<"$build_job" \
       || fail "$release_workflow does not require an executable scripts/release-build.sh build hook"
     grep -qF "uses: $EXPECTED_RELEASE_UPLOAD_ARTIFACT" <<<"$build_job" \
@@ -2652,6 +3038,37 @@ git -C "$fixture_root/case" add .
 git -C "$fixture_root/case" commit -qm "dependency update with fragment"
 python3 "$contract" check-pr --repo-root "$fixture_root/case" --base "$base" --head HEAD
 echo "ok - a dependency change with a new valid fragment is accepted"
+
+new_fixture
+init_fixture_repo
+printf 'base\n' >"$fixture_root/case/README.md"
+git -C "$fixture_root/case" add .
+git -C "$fixture_root/case" commit -qm base
+base="$(git -C "$fixture_root/case" rev-parse HEAD)"
+printf '{"version":"1.0.0"}\n' >"$fixture_root/case/package.json"
+printf '# NEXT fragments\n' >"$fixture_root/case/NEXT/README.md"
+write_fragment NEXT/2026-08-26-issue-1116-adoption.md \
+  2026-08-26 "issue: 1116" "Adopt changelog contract"
+git -C "$fixture_root/case" add .
+git -C "$fixture_root/case" commit -qm "adopt contract with dependency manifest"
+python3 "$contract" check-pr --repo-root "$fixture_root/case" --base "$base" --head HEAD
+echo "ok - NEXT README is not mistaken for an invalid fragment during adoption (#1116)"
+
+base="$(git -C "$fixture_root/case" rev-parse HEAD)"
+git -C "$fixture_root/case" rm -q NEXT/README.md
+git -C "$fixture_root/case" commit -qm "remove changelog documentation"
+python3 "$contract" check-pr --repo-root "$fixture_root/case" --base "$base" --head HEAD
+echo "ok - removing NEXT README does not consume a fragment (#1116)"
+
+printf '# NEXT fragments\n' >"$fixture_root/case/NEXT/README.md"
+git -C "$fixture_root/case" add NEXT/README.md
+git -C "$fixture_root/case" commit -qm "restore changelog documentation"
+base="$(git -C "$fixture_root/case" rev-parse HEAD)"
+mkdir -p "$fixture_root/case/docs"
+git -C "$fixture_root/case" mv NEXT/README.md docs/changelog-fragments.md
+git -C "$fixture_root/case" commit -qm "move changelog documentation"
+python3 "$contract" check-pr --repo-root "$fixture_root/case" --base "$base" --head HEAD
+echo "ok - moving NEXT README does not consume a fragment (#1116)"
 
 new_fixture
 init_fixture_repo
