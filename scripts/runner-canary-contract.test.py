@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 import copy
 import hashlib
+import os
 import re
 import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -84,6 +86,116 @@ def validate(workflow: dict) -> None:
         raise AssertionError("receipt artifact identity or retention widened")
 
 
+def run_cleanup_harness(
+    terminal_command: str,
+    *,
+    fail_cleanup_query: bool = False,
+    wrong_cleanup_target: str | None = None,
+) -> tuple[int, list[str], list[str]]:
+    admission = load_workflow()["jobs"]["canary"]["steps"][0]["run"]
+    start = admission.index("cleanup_signal_status=0")
+    trap_line = "trap 'interrupted 143' TERM"
+    end = admission.index(trap_line, start) + len(trap_line)
+    cleanup_contract = admission[start:end]
+    if wrong_cleanup_target is not None:
+        commands = {
+            "sibling": ('docker rm -f "$sibling"', 'docker rm -f "wrong-sibling"'),
+            "network": (
+                'docker network rm "$network"',
+                'docker network rm "wrong-network"',
+            ),
+            "image": (
+                'docker image rm "$build_image"',
+                'docker image rm "wrong-image"',
+            ),
+        }
+        original, mutation = commands[wrong_cleanup_target]
+        mutated_contract = cleanup_contract.replace(original, mutation, 1)
+        if mutated_contract == cleanup_contract:
+            raise AssertionError(f"cleanup command not found for {wrong_cleanup_target}")
+        cleanup_contract = mutated_contract
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        bin_dir = root / "bin"
+        resources = root / "resources"
+        capacity_state = root / "capacity-state"
+        bin_dir.mkdir()
+        resources.mkdir()
+        capacity_state.mkdir(mode=0o700)
+        capacity_id = "a" * 64
+        capacity_cidfile = capacity_state / "container.cid"
+        capacity_cidfile.write_text(capacity_id, encoding="utf-8")
+        for resource in ("sibling", "capacity", "network", "image"):
+            (resources / resource).touch()
+        docker = bin_dir / "docker"
+        docker.write_text(
+            """#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >>"$MOCK_DOCKER_LOG"
+if [ "$#" -eq 3 ] && [ "$1" = rm ] && [ "$2" = -f ] && [ "$3" = "$MOCK_SIBLING" ]; then
+  rm -f "$MOCK_RESOURCES/sibling"
+elif [ "$#" -eq 3 ] && [ "$1" = rm ] && [ "$2" = -f ] && [ "$3" = "$MOCK_CAPACITY_ID" ]; then
+  rm -f "$MOCK_RESOURCES/capacity"
+elif [ "$#" -eq 8 ] && [ "$1" = container ] && [ "$2" = ls ] && [ "$3" = -a ] &&
+  [ "$4" = --no-trunc ] && [ "$5" = --filter ] && [ "$6" = "id=$MOCK_CAPACITY_ID" ] &&
+  [ "$7" = --format ] && [ "$8" = '{{.ID}}' ]; then
+  [ "${MOCK_FAIL_CLEANUP_QUERY:-0}" != 1 ] || exit 2
+  if [ -e "$MOCK_RESOURCES/capacity" ]; then printf '%s\n' "$MOCK_CAPACITY_ID"; fi
+elif [ "$#" -eq 7 ] && [ "$1" = container ] && [ "$2" = ls ] && [ "$3" = -a ] &&
+  [ "$4" = --filter ] && [ "$5" = "name=^/$MOCK_SIBLING$" ] && [ "$6" = --format ] &&
+  [ "$7" = '{{.Names}}' ]; then
+  if [ -e "$MOCK_RESOURCES/sibling" ]; then printf '%s\n' "$MOCK_SIBLING"; fi
+elif [ "$#" -eq 3 ] && [ "$1" = network ] && [ "$2" = rm ] && [ "$3" = "$MOCK_NETWORK" ]; then
+  rm -f "$MOCK_RESOURCES/network"
+elif [ "$#" -eq 6 ] && [ "$1" = network ] && [ "$2" = ls ] && [ "$3" = --filter ] &&
+  [ "$4" = "name=^$MOCK_NETWORK$" ] && [ "$5" = --format ] && [ "$6" = '{{.Name}}' ]; then
+  if [ -e "$MOCK_RESOURCES/network" ]; then printf '%s\n' "$MOCK_NETWORK"; fi
+elif [ "$#" -eq 3 ] && [ "$1" = image ] && [ "$2" = rm ] && [ "$3" = "$MOCK_IMAGE" ]; then
+  rm -f "$MOCK_RESOURCES/image"
+elif [ "$#" -eq 6 ] && [ "$1" = image ] && [ "$2" = ls ] && [ "$3" = --filter ] &&
+  [ "$4" = "reference=$MOCK_IMAGE" ] && [ "$5" = --format ] &&
+  [ "$6" = '{{.Repository}}:{{.Tag}}' ]; then
+  if [ -e "$MOCK_RESOURCES/image" ]; then printf '%s\n' "$MOCK_IMAGE"; fi
+else
+  exit 64
+fi
+""",
+            encoding="utf-8",
+        )
+        docker.chmod(0o755)
+        harness = f"""set -Eeuo pipefail
+network=network
+sibling=sibling
+capacity_id={capacity_id}
+capacity_owned=1
+capacity_owner={'b' * 32}
+capacity_state={capacity_state}
+capacity_cidfile={capacity_cidfile}
+build_image=image
+{cleanup_contract}
+{terminal_command}
+"""
+        log = root / "docker.log"
+        environment = os.environ | {
+            "PATH": f"{bin_dir}:{os.environ['PATH']}",
+            "MOCK_CAPACITY_ID": capacity_id,
+            "MOCK_DOCKER_LOG": str(log),
+            "MOCK_FAIL_CLEANUP_QUERY": "1" if fail_cleanup_query else "0",
+            "MOCK_IMAGE": "image",
+            "MOCK_NETWORK": "network",
+            "MOCK_RESOURCES": str(resources),
+            "MOCK_SIBLING": "sibling",
+        }
+        result = subprocess.run(
+            ["bash"], input=harness, text=True, env=environment, cwd=root, check=False
+        )
+        survivors = sorted(path.name for path in resources.iterdir())
+        if capacity_state.exists():
+            survivors.append(capacity_state.name)
+        calls = log.read_text(encoding="utf-8").splitlines()
+        return result.returncode, survivors, calls
+
+
 class RunnerCanaryContractTests(unittest.TestCase):
     def test_published_workflow_is_exact_reviewed_cli_contract(self) -> None:
         self.assertEqual(EXPECTED_SHA256, hashlib.sha256(WORKFLOW.read_bytes()).hexdigest())
@@ -135,6 +247,38 @@ class RunnerCanaryContractTests(unittest.TestCase):
                 self.assertIn(marker, script)
         self.assertNotIn("/var/lib/docker", script)
         self.assertNotIn("type=bind", script)
+
+    def test_int_and_term_preserve_status_and_cleanup_owned_resources(self) -> None:
+        for signal, expected in (("INT", 130), ("TERM", 143)):
+            with self.subTest(signal=signal):
+                status, survivors, calls = run_cleanup_harness(f"kill -{signal} $$")
+                self.assertEqual(expected, status)
+                self.assertEqual([], survivors)
+                self.assertTrue(any(call.startswith("rm -f") for call in calls))
+                self.assertTrue(any(call.startswith("network rm") for call in calls))
+                self.assertTrue(any(call.startswith("image rm") for call in calls))
+
+    def test_cleanup_query_failure_does_not_mask_the_terminal_status(self) -> None:
+        status, survivors, _ = run_cleanup_harness("exit 42", fail_cleanup_query=True)
+
+        self.assertEqual(42, status)
+        self.assertEqual([], survivors)
+
+    def test_cleanup_failure_is_terminal_after_an_otherwise_successful_run(self) -> None:
+        status, survivors, _ = run_cleanup_harness("exit 0", fail_cleanup_query=True)
+
+        self.assertEqual(1, status)
+        self.assertEqual([], survivors)
+
+    def test_wrong_cleanup_targets_leave_owned_resources_and_fail(self) -> None:
+        for resource in ("sibling", "network", "image"):
+            with self.subTest(resource=resource):
+                status, survivors, calls = run_cleanup_harness(
+                    "exit 0", wrong_cleanup_target=resource
+                )
+                self.assertEqual(1, status)
+                self.assertEqual([resource], survivors)
+                self.assertIn(f"wrong-{resource}", "\n".join(calls))
 
 if __name__ == "__main__":
     unittest.main()
