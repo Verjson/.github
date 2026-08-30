@@ -1229,8 +1229,10 @@ jobs:
 
           Also return "followups": substantive but non-blocking findings — real
           bugs or improvements that do not justify blocking this merge, each as
-          {location, note}. These are filed as tracking issues when the PR
-          merges, so nothing worth doing is lost. Do NOT put pure style /
+          {location, note}. Use note for the follow-up text; suggestion or
+          recommendation are accepted provider aliases. These are filed as
+          tracking issues when the PR merges, so nothing worth doing is lost.
+          Do NOT put pure style /
           formatting / naming nitpicks here; mention those (at most briefly) in
           the summary only. Empty when there is nothing substantive to follow up.
 

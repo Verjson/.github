@@ -10,8 +10,13 @@ import tempfile
 
 import yaml
 
+from cli_projects_required_node_config import load_required_node_config
+
 
 SHA = re.compile(r"[0-9a-f]{40}")
+REQUIRED_NODE_CONFIG = (
+    Path(__file__).resolve().parents[1] / "config/cli-projects-required-node-ci.json"
+)
 EXPECTED_BINS = {
     "create-verjson-platform": "src/cli.js",
     "verjson-project-init": "src/cli.js",
@@ -28,6 +33,10 @@ class ContractError(Exception):
 def require(condition, message):
     if not condition:
         raise ContractError(message)
+
+
+def required_node_engine(path=REQUIRED_NODE_CONFIG):
+    return f">={load_required_node_config(path, require)['node_versions'][1]}"
 
 
 class UniqueKeyLoader(yaml.SafeLoader):
@@ -118,7 +127,7 @@ def validate_manifest(root):
             "publish registry drifted")
     require(package.get("scripts", {}).get("build") == "bash scripts/check-sources.sh",
             "build contract drifted")
-    require(package.get("engines", {}).get("node") == ">=20.20.2",
+    require(package.get("engines", {}).get("node") == required_node_engine(),
             "supported Node engine floor drifted")
 
 

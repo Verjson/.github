@@ -20,6 +20,7 @@ FIELD_ALIASES = {
 }
 TOP_LEVEL_METADATA_FIELDS = {"confidence"}
 ITEM_METADATA_FIELDS = {"confidence", "priority", "severity"}
+FOLLOWUP_TEXT_FIELDS = ("note", "suggestion", "recommendation", "reason", "description")
 MAX_EVIDENCE_CHARS = 240
 MIN_EVIDENCE_CHARS = 8
 MAX_SOURCE_BLOB_BYTES = 2 * 1024 * 1024
@@ -166,10 +167,10 @@ def normalize_followup(item: object, index: int) -> dict:
     if not isinstance(item, dict):
         raise VerdictError(f"followups[{index}]", "object", observed_shape(item))
     location = normalize_location(item, f"followups[{index}].location")
-    note = required_text(item, ("note", "reason", "description"), f"followups[{index}].note")
+    note = required_text(item, FOLLOWUP_TEXT_FIELDS, f"followups[{index}].note")
     reject_unknown_fields(
         item,
-        {"location", "file", "path", "line", "line_number", "note", "reason", "description"}
+        {"location", "file", "path", "line", "line_number", *FOLLOWUP_TEXT_FIELDS}
         | ITEM_METADATA_FIELDS,
         f"followups[{index}]",
     )

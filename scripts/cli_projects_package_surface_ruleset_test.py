@@ -1,12 +1,17 @@
 #!/usr/bin/env python3
 import copy
 from datetime import datetime, timezone
+import hashlib
 import importlib.util
 import json
+import os
 from pathlib import Path
+import subprocess
 import tempfile
 import unittest
 from unittest import mock
+
+import yaml
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -24,6 +29,176 @@ class CliProjectsPackageSurfaceRulesetTest(unittest.TestCase):
 
     def test_workflow_is_exact_repository_hosted_credentialless_boundary(self):
         MODULE.validate_workflow()
+
+    def test_caller_ref_input_and_credential_mutations_are_rejected(self):
+        source = MODULE.WORKFLOW.read_text(encoding="utf-8")
+        mutations = (
+            source.replace("node-ci-protected.yml@e4d911f", "node-ci-protected.yml@aaaaaaaa"),
+            source.replace("secretless-pr: true", "secretless-pr: false", 1),
+            source.replace("NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}", "NODE_AUTH_TOKEN: mutation", 1),
+            source.replace("needs: admission", "needs: []", 1),
+        )
+        for candidate in mutations:
+            with tempfile.NamedTemporaryFile("w", encoding="utf-8") as stream:
+                stream.write(candidate)
+                stream.flush()
+                with self.subTest(candidate=candidate[:80]), self.assertRaisesRegex(
+                    MODULE.ContractError, "differs from canonical generator output"
+                ):
+                    MODULE.validate_workflow(Path(stream.name))
+
+    def test_identity_admission_rejects_every_untrusted_identity_mutation(self):
+        workflow = yaml.safe_load(MODULE.WORKFLOW.read_text(encoding="utf-8"))
+        script = workflow["jobs"]["admission"]["steps"][0]["run"]
+        self.assertEqual(
+            1,
+            script.count('>>"$GITHUB_OUTPUT"'),
+            "admission outputs must use one grouped append",
+        )
+        head = "b" * 40
+        base = {
+            "REPOSITORY": "Verjson/verjson-cli-projects",
+            "RUN_ID": "33306897795",
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            consumer = subprocess.run(
+                [str(MODULE.GENERATOR), "--consumer",
+                 "config/cli-projects-required-node-ci.json"],
+                cwd=MODULE.ROOT, capture_output=True, check=True,
+            ).stdout
+            consumer_path = Path(directory) / "consumer.yml"
+            output_path = Path(directory) / "output"
+            consumer_path.write_bytes(consumer)
+            base["CONSUMER_WORKFLOW_SHA256"] = hashlib.sha256(consumer).hexdigest()
+            fake_gh = Path(directory) / "gh"
+            fake_gh.write_text(
+                "#!/bin/sh\n"
+                "[ \"${GH_TOKEN:-}\" = bounded-test-token ] || exit 70\n"
+                "[ \"${API_FAILURE:-}\" != 1 ] || exit 71\n"
+                "case \"$*\" in\n"
+                "  *actions/runs/*) printf '%s\\n' \"$RUN_RECORD\" ;;\n"
+                "  *pulls/*) printf '%s\\n' \"$PR_RECORD\" ;;\n"
+                "  *contents/.github/workflows/ci.yml*) cat \"$CONSUMER_FILE\" ;;\n"
+                "  *) exit 72 ;;\n"
+                "esac\n",
+                encoding="utf-8",
+            )
+            fake_gh.chmod(0o755)
+
+            def execute(values, **changes):
+                environment = {
+                    **os.environ,
+                    **values,
+                    "PATH": f"{directory}:{os.environ['PATH']}",
+                    "GH_TOKEN": "bounded-test-token",
+                    "RUN_RECORD": f"pull_request\t{head}\t1\t114",
+                    "PR_RECORD": f"114\topen\tVerjson/verjson-cli-projects\t{head}",
+                    "CONSUMER_FILE": str(consumer_path),
+                    "GITHUB_OUTPUT": str(output_path),
+                    **changes,
+                }
+                return subprocess.run(
+                    ["bash", "-c", script], env=environment,
+                    capture_output=True, text=True, check=False,
+                ).returncode
+
+            self.assertEqual(0, execute(base))
+            output_path.unlink(missing_ok=True)
+            self.assertEqual(0, execute(base))
+            mutated = consumer.replace(b"  push:\n", b"  pull_request:\n", 1)
+            consumer_path.write_bytes(mutated)
+            self.assertNotEqual(0, execute(base))
+            consumer_path.write_bytes(consumer + b"\n")
+            self.assertNotEqual(0, execute(base))
+            consumer_path.write_bytes(consumer)
+            mutations = (
+                ({**base, "REPOSITORY": "Verjson/other"}, {}),
+                (base, {"RUN_RECORD": f"push\t{head}\t1\t114"}),
+                (base, {"RUN_RECORD": f"pull_request\t{head}\t0\t"}),
+                (base, {"RUN_RECORD": f"pull_request\t{head}\t2\t114"}),
+                (base, {"RUN_RECORD": "pull_request\tnot-a-sha\t1\t114"}),
+                (base, {"RUN_RECORD": f"pull_request\t{head}\t1\tbad"}),
+                (base, {"PR_RECORD": f"114\tclosed\tVerjson/verjson-cli-projects\t{head}"}),
+                (base, {"PR_RECORD": f"114\topen\tattacker/fork\t{head}"}),
+                (base, {"PR_RECORD": f"114\topen\tVerjson/verjson-cli-projects\t{'e' * 40}"}),
+                (base, {"API_FAILURE": "1"}),
+                (base, {"GH_TOKEN": "ambient-token"}),
+            )
+            for values, changes in mutations:
+                with self.subTest(values=values, changes=changes):
+                    self.assertNotEqual(0, execute(values, **changes))
+
+    def test_consumer_caller_is_push_only_and_exactly_generated(self):
+        result = subprocess.run(
+            [str(MODULE.GENERATOR), "--consumer",
+             "config/cli-projects-required-node-ci.json"],
+            cwd=MODULE.ROOT, capture_output=True, text=True, check=True,
+        )
+        consumer = yaml.safe_load(result.stdout)
+        self.assertEqual({"push": {"branches": ["main"]}}, consumer[True])
+        self.assertNotIn("pull_request", result.stdout)
+        self.assertNotIn("pull_request_target", result.stdout)
+
+    def test_rollout_rejects_default_branch_consumer_caller_drift(self):
+        generated = subprocess.run(
+            [str(MODULE.GENERATOR), "--consumer",
+             "config/cli-projects-required-node-ci.json"],
+            cwd=MODULE.ROOT, capture_output=True, check=True,
+        ).stdout
+        with mock.patch.object(
+            MODULE.subprocess, "run",
+            side_effect=[
+                subprocess.CompletedProcess([], 0, stdout=generated),
+                subprocess.CompletedProcess([], 0, stdout=generated + b"# mutation\n"),
+            ],
+        ), mock.patch.object(
+            MODULE, "gh_json", return_value={"object": {"sha": HEAD}}
+        ), self.assertRaisesRegex(
+            MODULE.ContractError, "not the reviewed push-only generated image"
+        ):
+            MODULE.verify_consumer_workflow(self.contract)
+
+    def test_consumer_workflow_read_is_bound_to_unchanged_branch_commit(self):
+        generated = subprocess.run(
+            [str(MODULE.GENERATOR), "--consumer",
+             "config/cli-projects-required-node-ci.json"],
+            cwd=MODULE.ROOT, capture_output=True, check=True,
+        ).stdout
+        with (
+            mock.patch.object(
+                MODULE.subprocess, "run",
+                side_effect=[
+                    subprocess.CompletedProcess([], 0, stdout=generated),
+                    subprocess.CompletedProcess([], 0, stdout=generated),
+                ],
+            ),
+            mock.patch.object(
+                MODULE, "gh_json",
+                side_effect=[{"object": {"sha": HEAD}}, {"object": {"sha": "c" * 40}}],
+            ),
+            self.assertRaisesRegex(MODULE.ContractError, "moved during transaction"),
+        ):
+            MODULE.verify_consumer_workflow(self.contract)
+
+    def test_generator_rejects_mutable_or_injectable_configuration(self):
+        config = json.loads(MODULE.GENERATOR_CONFIG.read_text(encoding="utf-8"))
+        mutations = (
+            {**config, "node_ci_sha": "main"},
+            {**config, "repository": "Verjson/other"},
+            {**config, "repository": "Verjson/verjson-cli-projects\npermissions: write"},
+            {**config, "approved_internal_packages": ["@verjson/eslint-config\nrun: id"]},
+            {**config, "scripts": ["test\nrun: id"]},
+        )
+        for mutation in mutations:
+            with tempfile.NamedTemporaryFile("w", encoding="utf-8") as stream:
+                json.dump(mutation, stream)
+                stream.flush()
+                result = subprocess.run(
+                    [str(MODULE.GENERATOR), stream.name], cwd=MODULE.ROOT,
+                    capture_output=True, text=True, check=False,
+                )
+                with self.subTest(mutation=mutation):
+                    self.assertEqual(2, result.returncode)
 
     def test_payload_binds_numeric_consumer_and_immutable_protected_workflow(self):
         payload = MODULE.render_payload(self.contract, SHA)
@@ -136,9 +311,30 @@ class CliProjectsPackageSurfaceRulesetTest(unittest.TestCase):
         self.assertEqual("active", put.call_args_list[0].args[2]["enforcement"])
         self.assertEqual("evaluate", put.call_args_list[1].args[2]["enforcement"])
 
+    def test_repository_activation_branch_drift_restores_evaluate_after_ambiguous_put(self):
+        before = self.contract["consumer"]["repository_ruleset"] | {
+            "source_type": "Repository", "source": "Verjson/verjson-cli-projects",
+        }
+        active = copy.deepcopy(before)
+        active["enforcement"] = "active"
+        for response in ({}, MODULE.ContractError("client lost response")):
+            with (
+                mock.patch.object(
+                    MODULE, "assert_consumer_branch_sha",
+                    side_effect=[None, MODULE.ContractError("branch moved")],
+                ),
+                mock.patch.object(MODULE, "gh_json", side_effect=[before, active, before]),
+                mock.patch.object(
+                    MODULE, "gh_json_input", side_effect=[response, {}],
+                ) as put,
+                self.assertRaisesRegex(MODULE.ContractError, "restored and verified evaluate"),
+            ):
+                MODULE.activate_repository_rule(self.contract, HEAD)
+            self.assertEqual("evaluate", put.call_args_list[1].args[2]["enforcement"])
+
     def test_apply_requires_acknowledgement_before_mutation(self):
         with (
-            mock.patch.object(MODULE, "discover_state", return_value=[]),
+            mock.patch.object(MODULE, "discover_state", return_value=([], HEAD)),
             mock.patch.object(MODULE, "gh_json_input") as mutate,
             self.assertRaisesRegex(MODULE.ContractError, "acknowledgement"),
         ):
@@ -154,7 +350,8 @@ class CliProjectsPackageSurfaceRulesetTest(unittest.TestCase):
         widened = copy.deepcopy(widened)
         widened["conditions"]["repository_id"]["repository_ids"] = [1]
         with (
-            mock.patch.object(MODULE, "discover_state", side_effect=[[], []]),
+            mock.patch.object(MODULE, "discover_state", side_effect=[([], HEAD), ([], HEAD)]),
+            mock.patch.object(MODULE, "assert_consumer_branch_sha"),
             mock.patch.object(MODULE, "gh_json_input", side_effect=[{"id": 9}, {}, {}]) as mutate,
             mock.patch.object(
                 MODULE, "gh_json",
@@ -164,9 +361,106 @@ class CliProjectsPackageSurfaceRulesetTest(unittest.TestCase):
         ):
             MODULE.main([
                 "apply", "--workflow-sha", SHA,
-                "--ack", "APPLY-CLI-PROJECTS-PACKAGE-SURFACE-1177",
+                "--ack", "ROTATE-CLI-PROJECTS-REQUIRED-WORKFLOW-1187",
             ])
         self.assertEqual("disabled", mutate.call_args_list[2].args[2]["enforcement"])
+
+    def test_apply_rotates_only_the_exact_reviewed_prior_workflow(self):
+        expected = MODULE.render_payload(self.contract, SHA)
+        previous = MODULE.render_payload(
+            self.contract, self.contract["rollout"]["previous_workflow_sha"]
+        )
+        live_previous = previous | {
+            "id": 9, "source_type": "Organization", "source": "Verjson",
+        }
+        live_expected = expected | {
+            "id": 9, "source_type": "Organization", "source": "Verjson",
+        }
+        with (
+            mock.patch.object(MODULE, "discover_state", return_value=([{"id": 9}], HEAD)),
+            mock.patch.object(MODULE, "assert_consumer_branch_sha"),
+            mock.patch.object(MODULE, "gh_json", side_effect=[live_previous, live_previous, live_expected]),
+            mock.patch.object(MODULE, "gh_json_input", return_value={}) as mutate,
+        ):
+            MODULE.main([
+                "apply", "--workflow-sha", SHA,
+                "--ack", "ROTATE-CLI-PROJECTS-REQUIRED-WORKFLOW-1187",
+            ])
+        self.assertEqual(expected, mutate.call_args.args[2])
+
+    def test_apply_rotates_reviewed_prior_workflow_that_appears_during_discovery(self):
+        expected = MODULE.render_payload(self.contract, SHA)
+        previous = MODULE.render_payload(
+            self.contract, self.contract["rollout"]["previous_workflow_sha"]
+        )
+        live_previous = previous | {
+            "id": 9, "source_type": "Organization", "source": "Verjson",
+        }
+        live_expected = expected | {
+            "id": 9, "source_type": "Organization", "source": "Verjson",
+        }
+        with (
+            mock.patch.object(
+                MODULE, "discover_state",
+                side_effect=[([], HEAD), ([{"id": 9}], HEAD)],
+            ),
+            mock.patch.object(MODULE, "assert_consumer_branch_sha"),
+            mock.patch.object(MODULE, "gh_json", side_effect=[live_previous, live_previous, live_expected]),
+            mock.patch.object(MODULE, "gh_json_input", return_value={}) as mutate,
+        ):
+            MODULE.main([
+                "apply", "--workflow-sha", SHA,
+                "--ack", "ROTATE-CLI-PROJECTS-REQUIRED-WORKFLOW-1187",
+            ])
+        self.assertEqual(expected, mutate.call_args.args[2])
+
+    def test_partial_rotation_restores_and_verifies_the_prior_active_workflow(self):
+        expected = MODULE.render_payload(self.contract, SHA)
+        previous = MODULE.render_payload(
+            self.contract, self.contract["rollout"]["previous_workflow_sha"]
+        )
+        live_previous = previous | {
+            "id": 9, "source_type": "Organization", "source": "Verjson",
+        }
+        partial = copy.deepcopy(expected) | {
+            "id": 9, "source_type": "Organization", "source": "Verjson",
+        }
+        partial["bypass_actors"] = [{"actor_type": "OrganizationAdmin"}]
+        with (
+            mock.patch.object(MODULE, "gh_json", side_effect=[live_previous, partial, partial, live_previous]),
+            mock.patch.object(MODULE, "gh_json_input", return_value={}) as mutate,
+            self.assertRaisesRegex(MODULE.ContractError, "prior active workflow restored"),
+        ):
+            MODULE.rotate_existing_org_rule(9, previous, expected)
+        self.assertEqual(expected, mutate.call_args_list[0].args[2])
+        self.assertEqual(previous, mutate.call_args_list[1].args[2])
+
+    def test_org_rotation_branch_drift_restores_prior_after_ambiguous_put(self):
+        expected = MODULE.render_payload(self.contract, SHA)
+        previous = MODULE.render_payload(
+            self.contract, self.contract["rollout"]["previous_workflow_sha"]
+        )
+        live_previous = previous | {
+            "id": 9, "source_type": "Organization", "source": "Verjson",
+        }
+        for response in ({}, MODULE.ContractError("client lost response")):
+            with (
+                mock.patch.object(
+                    MODULE, "assert_consumer_branch_sha",
+                    side_effect=[None, MODULE.ContractError("branch moved"),
+                                 MODULE.ContractError("branch moved")],
+                ),
+                mock.patch.object(
+                    MODULE, "gh_json",
+                    side_effect=[live_previous, live_previous],
+                ),
+                mock.patch.object(
+                    MODULE, "gh_json_input", side_effect=[response, {}],
+                ) as mutate,
+                self.assertRaisesRegex(MODULE.ContractError, "prior active workflow restored"),
+            ):
+                MODULE.rotate_existing_org_rule(9, previous, expected, HEAD)
+            self.assertEqual(previous, mutate.call_args_list[1].args[2])
 
     def test_applied_organization_put_with_client_failure_rolls_back_disabled(self):
         expected = MODULE.render_payload(self.contract, SHA)
@@ -175,7 +469,8 @@ class CliProjectsPackageSurfaceRulesetTest(unittest.TestCase):
         live_staged = staged | {"id": 9, "source_type": "Organization", "source": "Verjson"}
         live_active = expected | {"id": 9, "source_type": "Organization", "source": "Verjson"}
         with (
-            mock.patch.object(MODULE, "discover_state", side_effect=[[], []]),
+            mock.patch.object(MODULE, "discover_state", side_effect=[([], HEAD), ([], HEAD)]),
+            mock.patch.object(MODULE, "assert_consumer_branch_sha"),
             mock.patch.object(
                 MODULE, "gh_json_input",
                 side_effect=[{"id": 9}, MODULE.ContractError("client lost response"), {}],
@@ -188,7 +483,7 @@ class CliProjectsPackageSurfaceRulesetTest(unittest.TestCase):
         ):
             MODULE.main([
                 "apply", "--workflow-sha", SHA,
-                "--ack", "APPLY-CLI-PROJECTS-PACKAGE-SURFACE-1177",
+                "--ack", "ROTATE-CLI-PROJECTS-REQUIRED-WORKFLOW-1187",
             ])
         self.assertEqual("active", mutate.call_args_list[1].args[2]["enforcement"])
         self.assertEqual("disabled", mutate.call_args_list[2].args[2]["enforcement"])
@@ -200,13 +495,14 @@ class CliProjectsPackageSurfaceRulesetTest(unittest.TestCase):
         live_staged = staged | {"id": 9, "source_type": "Organization", "source": "Verjson"}
         live_active = expected | {"id": 9, "source_type": "Organization", "source": "Verjson"}
         with (
-            mock.patch.object(MODULE, "discover_state", return_value=[{"id": 9}]),
+            mock.patch.object(MODULE, "discover_state", return_value=([{"id": 9}], HEAD)),
+            mock.patch.object(MODULE, "assert_consumer_branch_sha"),
             mock.patch.object(MODULE, "gh_json", side_effect=[live_staged, live_active]),
             mock.patch.object(MODULE, "gh_json_input", return_value={}) as mutate,
         ):
             result = MODULE.main([
                 "apply", "--workflow-sha", SHA,
-                "--ack", "APPLY-CLI-PROJECTS-PACKAGE-SURFACE-1177",
+                "--ack", "ROTATE-CLI-PROJECTS-REQUIRED-WORKFLOW-1187",
             ])
         self.assertEqual(0, result)
         self.assertEqual(1, mutate.call_count)

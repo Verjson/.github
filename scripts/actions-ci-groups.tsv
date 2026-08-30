@@ -13,6 +13,7 @@ platform	bash scripts/make-portability.test.sh
 platform	bash scripts/node-workflow-pins.test.sh
 platform	bash scripts/node-workflow-controls.test.sh
 platform	bash scripts/ci-gate/node-ci-secretless.test.sh
+platform	python3 scripts/ci-gate/node-ci-required-identity.test.py
 platform	python3 scripts/ci-gate/compatibility-sandbox-provisioning.test.py
 platform	python3 scripts/ci-gate/compatibility-sandbox-acquirer.test.py
 platform	bash scripts/ci-gate/node-ci-secretless-pnpm.test.sh
