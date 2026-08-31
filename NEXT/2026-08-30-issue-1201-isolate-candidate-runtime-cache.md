@@ -48,3 +48,11 @@ by temporarily surfacing the failing path/uid/mode in CI before diagnosing. Fixe
 same way, scoped narrowly to a resolved `pwsh` executable under
 `/opt/microsoft/powershell`; `npm`/`node` keep the strict write-bit requirement since
 their trusted tool root (the setup-node cache) is not expected to be world-writable.
+
+A third occurrence of the same requirement remained: `validate_root_owned_tool_tree`
+recursively walks the whole mounted tool prefix and separately re-enforces the write-bit
+on every directory and file entry underneath it, which still failed once the walk reached
+the (also world-writable) contents of `/opt/microsoft/powershell/<ver>`. Gave that
+function the same `require_unwritable` escape hatch, applied only when the tool prefix
+being walked is the Microsoft PowerShell tree; every other trusted tool tree (including
+npm/node's setup-node cache) keeps the original strict, unconditional check.

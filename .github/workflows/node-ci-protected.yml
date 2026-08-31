@@ -3054,14 +3054,14 @@ jobs:
           tool_prefixes = []
           tool_prefix_identities = {}
 
-          def validate_root_owned_tool_tree(root):
+          def validate_root_owned_tool_tree(root, require_unwritable=True):
             for directory, directory_names, file_names in os.walk(root, followlinks=False):
               directory_path = Path(directory)
               directory_metadata = directory_path.stat(follow_symlinks=False)
               if (
                 not stat.S_ISDIR(directory_metadata.st_mode)
                 or directory_metadata.st_uid != 0
-                or directory_metadata.st_mode & 0o022
+                or (require_unwritable and directory_metadata.st_mode & 0o022)
               ):
                 sys.exit("trusted tool tree directory has unsafe ownership mode")
               for name in (*directory_names, *file_names):
@@ -3074,7 +3074,7 @@ jobs:
                   if not resolved_entry.is_relative_to(root):
                     sys.exit("trusted tool tree symlink escapes mounted prefix")
                   continue
-                if entry_metadata.st_mode & 0o022:
+                if require_unwritable and entry_metadata.st_mode & 0o022:
                   sys.exit("trusted tool tree entry has unsafe writable mode")
                 if not (stat.S_ISDIR(entry_metadata.st_mode) or stat.S_ISREG(entry_metadata.st_mode)):
                   sys.exit("trusted tool tree contains special file")
@@ -3092,7 +3092,13 @@ jobs:
             prefix_metadata = tool_prefix.stat(follow_symlinks=False)
             if not stat.S_ISDIR(prefix_metadata.st_mode):
               sys.exit("trusted tool prefix is not a directory")
-            validate_root_owned_tool_tree(tool_prefix)
+            # See the pwsh discovery comment above: the Microsoft-shipped runtime tree
+            # under GitHub-hosted /opt is root-owned but world-writable throughout, so
+            # only that prefix relaxes the write-bit requirement; npm/node stay strict.
+            validate_root_owned_tool_tree(
+              tool_prefix,
+              require_unwritable=not tool_prefix.is_relative_to("/opt/microsoft/powershell"),
+            )
             tool_prefix_identities[tool_prefix] = (
               prefix_metadata.st_dev,
               prefix_metadata.st_ino,
