@@ -1739,6 +1739,15 @@ jobs:
             exit 1
           fi
 
+      - name: DEBUG pwsh tree symlinks
+        run: |
+          real=$(readlink -f /usr/bin/pwsh)
+          root=$(dirname "$real")
+          echo "root: $root"
+          find "$root" -type l -exec sh -c 'printf "%s -> %s\n" "$1" "$(readlink -f "$1")"' _ {} \; || true
+          echo "--- full listing ---"
+          find "$root" -exec stat -c '%U %a %F %n' {} \; || true
+
       - name: Run namespace-bound compatibility contracts
         env:
           RUNNER_LABELS: ''
