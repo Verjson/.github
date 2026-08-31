@@ -69,13 +69,15 @@ SAMPLE="${RCA_SAMPLE_PRS:-5}"
   fault startup sample-too-small "RCA_SAMPLE_PRS=${SAMPLE} samples nothing."
 
 # --- the declared core contract ---------------------------------------------
+# A stack the declaration does not mention is a fault; a stack it declares with
+# an empty context list is a deliberate "require nothing here" and prints
+# nothing. Keeping those two apart is why the declaration is consulted before
+# the contexts are read: `.contexts[]` alone cannot tell them apart, and jq's
+# `-e` reports "no output" for both.
 core_contract_for() { # $1 = stack
-  jq -er --arg stack "$1" '
-    if .stacks[$stack] == null then error("unknown stack")
-    else .stacks[$stack].contexts[]
-    end
-  ' "$CONTRACT_FILE" 2>/dev/null ||
+  jq -e --arg stack "$1" '.stacks | has($stack)' "$CONTRACT_FILE" >/dev/null 2>&1 ||
     fault contract unknown-stack "stack='$1' has no declared core contract; classify the repository or extend $CONTRACT_FILE."
+  jq -r --arg stack "$1" '.stacks[$stack].contexts[]' "$CONTRACT_FILE"
 }
 
 # `dispatch-merge` and `privileged_merge` PERFORM the merge, so a merge that
@@ -412,6 +414,7 @@ conformant=0
 nonconformant=0
 unclassified=0
 unaudited=0
+skipped=0
 
 audit_repo() {
   local repo="$1" stack heads sha seen='' n=0 missing=() contract
@@ -434,6 +437,16 @@ audit_repo() {
   # missing, and a repository nobody has classified would be called CONFORMANT —
   # the one wrong answer this audit exists to prevent.
   contract="$(core_contract_for "$stack")" || exit 2
+
+  # A declared stack with no required contexts has nothing for this audit to
+  # check. That is a selection outcome, not a fault: aborting here would end an
+  # unscoped run at whichever such repository sorts first and leave every other
+  # repository unreported (#1213).
+  if [ -z "$contract" ]; then
+    echo "::notice::phase=audit repo=$repo stack=$stack result=skipped — the declared contract requires no contexts."
+    skipped=$((skipped + 1))
+    return 0
+  fi
 
   local source_rc=0
   source_contract_for_repo "$repo" "$stack" || source_rc=$?
@@ -499,7 +512,7 @@ while read -r repo; do
   audit_repo "$repo"
 done <<<"$repo_list"
 
-echo "::notice::phase=done conformant=$conformant nonconformant=$nonconformant unclassified=$unclassified unaudited=$unaudited"
+echo "::notice::phase=done conformant=$conformant nonconformant=$nonconformant unclassified=$unclassified unaudited=$unaudited skipped=$skipped"
 # Non-zero while any repository would be wedged, so this can gate step 3 in CI
 # rather than being a report somebody remembers to read.
 [ "$nonconformant" -eq 0 ] && [ "$unclassified" -eq 0 ] && [ "$unaudited" -eq 0 ]

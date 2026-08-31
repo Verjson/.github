@@ -243,6 +243,19 @@ rc="$(run_audit)"
   && pass "an unknown stack is a fault, not an empty core contract" \
   || { fail "an unknown stack did not fault ($rc)"; out | sed 's/^/diag - /'; }
 
+# --- a declared stack with no required contexts is skipped, not a fault ------
+# `none` is a real classification: it says the audit has nothing to require of
+# this repository. Faulting on it aborts the whole unscoped run at whichever
+# such repository happens to sort first, so an operator asking "is the
+# organization conformant?" gets no per-repository results at all (#1213).
+stack none; pulls s1 s2; head_with s1 gate; head_with s2 gate
+rc="$(run_audit)"
+{ [ "$rc" = "rc=0" ] \
+  && grep -q 'result=skipped' "$tmp/out.txt" \
+  && grep -q 'phase=done .*skipped=1' "$tmp/out.txt"; } \
+  && pass "a stack declaring no required contexts is skipped and tallied" \
+  || { fail "a contextless stack did not skip cleanly ($rc)"; out | sed 's/^/diag - /'; }
+
 # --- the happy path ----------------------------------------------------------
 stack node
 pulls s1 s2
