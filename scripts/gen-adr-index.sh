@@ -51,14 +51,17 @@ validate_unique_numbers() {
     fi
     first_path[$num]="$d"
   done < <(find "$dec_dir" -mindepth 1 -maxdepth 1 -type d \
-    -name '[0-9][0-9][0-9][0-9]-*' | sort)
+    -name '[0-9][0-9][0-9][0-9]-*' | LC_ALL=C sort)
 }
 
 gen_table() {
   printf '| # | Date | Decision |\n'
   printf '|---|------|----------|\n'
   local d slug num readme title date
-  # Reverse sort by directory name → highest ADR number first.
+  # Reverse sort by directory name → highest ADR number first. The collation is
+  # pinned to C because a locale-aware sort weights punctuation differently, and
+  # an index that orders one way on a contributor's machine and another way in
+  # CI fails `--check` for a reason no diff explains.
   while IFS= read -r d; do
     slug="$(basename "$d")"
     num="${slug%%-*}"
@@ -88,7 +91,7 @@ gen_table() {
       exit 1
     fi
     printf '| [%s](%s/README.md) | %s | %s |\n' "$num" "$slug" "$date" "$title"
-  done < <(find "$dec_dir" -mindepth 1 -maxdepth 1 -type d -name '[0-9][0-9][0-9][0-9]-*' | sort -r)
+  done < <(find "$dec_dir" -mindepth 1 -maxdepth 1 -type d -name '[0-9][0-9][0-9][0-9]-*' | LC_ALL=C sort -r)
 }
 
 render() {
