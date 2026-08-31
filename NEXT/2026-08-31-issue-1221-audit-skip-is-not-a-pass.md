@@ -52,3 +52,7 @@ them and exited 0. That stays a fair answer for the org-wide report, but under
 conformant, so an applying caller cannot read an empty run as verification.
 `RCA_REQUIRE_VERIFIED=` set to the empty string now faults rather than taking the
 permissive default: an empty value is a caller mistake, not a request to relax.
+
+The controlling decision record, ADR 0058, carries a dated amendment for this:
+the audit is the only conformance gate in front of a branch-protection write, so
+"nothing complained" was never verification.

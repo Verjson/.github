@@ -577,3 +577,46 @@ conditions are external organization state. Applying property values or
 creating/promoting rulesets remains a human-gated sensitive action, and #416
 stays open until the audit reports zero nonconformant, zero unclassified, and
 zero unaudited repositories and the post-apply measurement is reviewed.
+
+## Amendment (2026-08-31, #1221) — a skip is not a pass for a caller about to apply a rule
+
+The audit above is the only conformance gate in front of the ruleset mutation in
+`scripts/required-checks-rollout.sh`, so its exit status is load-bearing for a
+branch-protection write. Two defects made it fail open.
+
+A repository whose stack declares no required contexts is skipped and still
+counts toward exit 0 (#1213). That is right for the org-wide report, whose
+question is "which repositories would be wedged?" — a stack that requires nothing
+cannot be. It is wrong for the rollout, which selects repositories by the
+ruleset's own `repository_properties` rather than by `verjson-stack`, so a
+contextless stack can sit inside the set it is about to gate. `verjson-agents`
+does today: `changelog-contract=adopted` with `verjson-stack=none`. The rollout
+would have required `changelog / validate` on a repository the audit never
+confirmed emits it — the permanent-pending wedge this audit exists to prevent.
+
+The decision recorded here is unchanged: the audit stays read-only, and applying
+property values or promoting rulesets stays human-gated. What changes is that the
+audit now distinguishes its two callers. `RCA_REQUIRE_VERIFIED` defaults to
+`false` and leaves the report as decided; the rollout sets it to `true`, which
+turns a skip into an annotated `result=unverifiable` error and a non-zero exit.
+
+The second defect is the same shape one level down. Every clause of the exit gate
+counts what went wrong, so an audit that verified nothing satisfied all of them.
+Under `RCA_REQUIRE_VERIFIED` at least one repository must now be confirmed
+conformant. Contexts are likewise validated at the declaration boundary as
+literal check names rather than merely non-empty strings: the consumer is a shell
+`read`, for which `"   "` is empty, so a `length > 0` schema admitted a
+declaration that resolved non-empty, checked nothing, and reported conformant.
+
+The generalization worth carrying forward: **absence of a complaint is not
+verification.** A control that gates a mutation must assert that something was
+positively checked, not merely that nothing objected — and every predicate in
+such a control has to hold for the consumer that actually reads the value, not
+just for the parser that validated it.
+
+Evidence: reverting each clause fails exactly its own test
+(`scripts/required-checks-audit.test.sh`, `scripts/required-checks-rollout.test.sh`,
+both registered in `scripts/actions-ci-groups.tsv`); the unscoped live org audit
+at this change reports `conformant=25 nonconformant=3 unclassified=6 unaudited=0
+skipped=63` and exits 1 on the pre-existing findings alone. No ruleset was
+mutated. #416 remains open on its own terms.
