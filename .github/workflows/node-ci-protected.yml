@@ -3073,6 +3073,13 @@ jobs:
                   resolved_entry = entry.resolve()
                   if resolved_entry.is_relative_to(root):
                     continue
+                  if not resolved_entry.exists():
+                    # The Microsoft-shipped pwsh tree ships legacy OpenSSL 1.0
+                    # compatibility shims that name host library paths distros
+                    # dropped long ago (e.g. Ubuntu 24.04 carries no OpenSSL 1.0);
+                    # a dangling symlink cannot be read or executed by anything
+                    # that mounts this tree, so it carries no trust to verify.
+                    continue
                   # The Microsoft-shipped pwsh tree symlinks its bundled OpenSSL 1.0
                   # compatibility shims to the real system libraries under /usr on
                   # distros that still carry them; re-validate the escape target

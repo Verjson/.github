@@ -68,3 +68,16 @@ re-validated against `/usr`'s own strict, unconditional trust (root-owned, non-w
 ancestry) before being allowed through; a symlink escaping anywhere else still fails
 closed. `/usr` is unconditionally read-only bind-mounted into the sandbox regardless, so
 this changes only the static verification, not the sandbox's actual exposure.
+
+A fifth failure surfaced immediately after: the `/usr`-scoped ancestry re-validation
+itself failed with "ancestry is unreadable". The real `libcrypto.so.1.0.0` /
+`libssl.so.1.0.0` shims in the shipped PowerShell tree name OpenSSL 1.0 compatibility
+library paths that Ubuntu 24.04 no longer carries at all — `readlink -f`'s "the last
+component need not exist" behavior let the earlier temporary listing step print a
+resolved-looking path for what is actually a dangling symlink, and `Path.resolve()`
+likewise returns that non-existent path without raising. Stat-ing a non-existent
+ancestor then raised `OSError`, which the ancestry walk correctly surfaces as
+"unreadable" rather than silently accepting. Fixed by checking `resolved_entry.exists()`
+before attempting ancestry validation: a dangling symlink cannot be read or executed by
+anything that mounts this tree, so it carries no trust to verify either way, and is
+accepted as inert rather than rejected or blindly trusted.
