@@ -102,7 +102,16 @@ case "$*" in
     emit "$REPOS_FILE"; exit 0 ;;
   *"/properties/values"*)
     [ "${PROPS_FAIL:-false}" = true ] && exit 1
-    emit "$PROPS_FILE"; exit 0 ;;
+    # Properties are fetched per repository, so a mixed-stack run needs a
+    # per-repository answer. A test that only calls `stack` gets the single
+    # shared file, exactly as before.
+    endpoint="${args[1]}"; repo="${endpoint#repos/*/}"; repo="${repo%%/*}"
+    if [ -f "$STUB_TMP/props-$repo.json" ]; then
+      emit "$STUB_TMP/props-$repo.json"
+    else
+      emit "$PROPS_FILE"
+    fi
+    exit 0 ;;
   *"repos/Verjson/.github/contents/scripts/gen-changelog-caller.sh"*)
     printf 'fetch\n' >>"$GENERATOR_FETCHES"
     git -C "$REPO_ROOT" show "$CONTRACT_PIN:scripts/gen-changelog-caller.sh"; exit 0 ;;
@@ -203,10 +212,17 @@ encode_workflow() {
 }
 
 stack() {
+  rm -f "$tmp"/props-*.json
   jq -n --arg v "$1" '[{property_name:"verjson-stack", value:$v}]' >"$PROPS_FILE"
   workflow_for "$1"
 }
-no_stack() { printf '[]\n' >"$PROPS_FILE"; }
+# Per-repository classification, for a run that spans more than one stack. The
+# shared content root still answers every workflow lookup, which is sound
+# precisely because a skipped repository returns before it makes one.
+stack_for() { # $1 = repo, $2 = stack
+  jq -n --arg v "$2" '[{property_name:"verjson-stack", value:$v}]' >"$tmp/props-$1.json"
+}
+no_stack() { rm -f "$tmp"/props-*.json; printf '[]\n' >"$PROPS_FILE"; }
 pulls() { jq -n --args '$ARGS.positional | map({merged_at:"2026-08-05T00:00:00Z", head:{sha:.}})' "$@" >"$PULLS_FILE"; }
 # Named check runs, all concluded `success` unless a test overrides the file.
 head_with() { local sha="$1"; shift; jq -n --args '{check_runs: ($ARGS.positional | map({name:., conclusion:"success"}))}' "$@" >"$CHECKDIR/$sha.json"; }
@@ -255,6 +271,57 @@ rc="$(run_audit)"
   && grep -q 'phase=done .*skipped=1' "$tmp/out.txt"; } \
   && pass "a stack declaring no required contexts is skipped and tallied" \
   || { fail "a contextless stack did not skip cleanly ($rc)"; out | sed 's/^/diag - /'; }
+
+# --- a skip does not stop the run at the skipped repository ------------------
+# The #1213 symptom was that the whole unscoped run aborted, so the assertion
+# that matters is that a repository sequenced *after* a skipped one is still
+# audited. A single-repository run can only show that `phase=done` was reached.
+stack node
+stack_for none-repo none
+stack_for beta-node node
+pulls s1 s2
+head_with s1 "ci / build-test" "ci / eligibility" changelog-contract "changelog / validate"
+head_with s2 "ci / build-test" "ci / eligibility" changelog-contract "changelog / validate"
+rc="$(RCA_REPOS="none-repo beta-node" run_audit)"
+{ [ "$rc" = "rc=0" ] \
+  && grep -q 'repo=none-repo .*result=skipped' "$tmp/out.txt" \
+  && grep -q 'repo=beta-node .*result=conformant' "$tmp/out.txt" \
+  && grep -q 'phase=done conformant=1 nonconformant=0 unclassified=0 unaudited=0 skipped=1' "$tmp/out.txt"; } \
+  && pass "a skipped repository does not stop the repositories after it" \
+  || { fail "a skip did not leave the rest of the run intact ($rc)"; out | sed 's/^/diag - /'; }
+
+# --- a skip is not a pass for a caller that is about to apply a rule ---------
+# `required-checks-rollout.sh` selects repositories by the ruleset's own
+# properties, not by `verjson-stack`, so a contextless stack can sit inside the
+# set it is about to gate. "Nothing was verified" must not read to that caller as
+# "verified fine", or the rollout requires a context nobody confirmed the
+# repository emits — the permanent-pending wedge this audit exists to prevent.
+stack none; pulls s1 s2; head_with s1 gate; head_with s2 gate
+rc="$(RCA_REQUIRE_VERIFIED=true run_audit)"
+{ [ "$rc" != "rc=0" ] \
+  && grep -q 'result=unverifiable' "$tmp/out.txt" \
+  && grep -q '::error::' "$tmp/out.txt"; } \
+  && pass "a skip fails closed for a caller that requires positive verification" \
+  || { fail "a skip passed a caller that is about to apply a rule ($rc)"; out | sed 's/^/diag - /'; }
+
+rc="$(RCA_REQUIRE_VERIFIED=sometimes run_audit)"
+{ [ "$rc" = "rc=2" ] && grep -q 'require-verified-unparseable' "$tmp/out.txt"; } \
+  && pass "an unparseable RCA_REQUIRE_VERIFIED fails closed rather than defaulting to lax" \
+  || { fail "RCA_REQUIRE_VERIFIED accepted a non-boolean ($rc)"; out | sed 's/^/diag - /'; }
+
+# --- a malformed context list is a contract fault, with an annotation --------
+# Fail-closed is not enough on its own: an unannotated `jq: error ... Cannot
+# iterate over null` gives Actions nothing to surface and makes the rollout
+# report a contract defect as repository nonconformance.
+stack none; pulls s1 s2; head_with s1 gate; head_with s2 gate
+for shape in 'null' '{}' '[""]' '["", ""]' '["ok", 3]'; do
+  malformed="$tmp/contract-contexts-$(printf '%s' "$shape" | md5sum | cut -c1-8).json"
+  jq --argjson v "$shape" '.stacks.none.contexts = $v' "$contract" >"$malformed"
+  rc="$(RCA_CONTRACT_FILE="$malformed" run_audit)"
+  { [ "$rc" = "rc=2" ] && grep -q '::error::phase=contract' "$tmp/out.txt"; } \
+    && pass "a contexts list of $shape is an annotated contract fault" \
+    || { fail "contexts=$shape was not rejected at the declaration boundary ($rc)"; out | sed 's/^/diag - /'; }
+done
 
 # --- the happy path ----------------------------------------------------------
 stack node

@@ -54,6 +54,16 @@ jq -e '
   .mutation_authorized == true and
   (has("universal_contexts") | not) and
   (.stacks | type == "object") and
+  # Every stack must declare a context list of non-empty strings. Without this
+  # the ambiguous shapes reach the audit and read as "requires nothing": a
+  # `contexts` of {} or [""] survives command substitution as no output at all,
+  # which is indistinguishable from a deliberate empty list. Rejecting them here
+  # is what lets `core_contract_for` stay a two-way decision.
+  (.stacks | to_entries | all(
+    (.value | type == "object") and
+    (.value.contexts | type == "array") and
+    (.value.contexts | all(type == "string" and length > 0))
+  )) and
   (.caller_job_names.stack | type == "string") and
   (.caller_job_names.changelog | type == "string")
 ' "$CONTRACT_FILE" >/dev/null 2>&1 ||
@@ -68,6 +78,20 @@ SAMPLE="${RCA_SAMPLE_PRS:-5}"
 [ "$SAMPLE" -ge 1 ] ||
   fault startup sample-too-small "RCA_SAMPLE_PRS=${SAMPLE} samples nothing."
 
+# Whether "nothing was verified here" may count as a pass. It may for the
+# org-wide report, whose question is "which repositories would be wedged?" — a
+# stack that requires nothing cannot be. It may not for a caller that is about
+# to *apply* a rule: `required-checks-rollout.sh` selects repositories by the
+# ruleset's own properties rather than by `verjson-stack`, so a contextless
+# stack can sit inside the set being gated, and a skip there means the audit
+# never confirmed the repository emits the context it is about to be required
+# to emit. Such a caller sets this and gets a skip as a failure.
+REQUIRE_VERIFIED="${RCA_REQUIRE_VERIFIED:-false}"
+case "$REQUIRE_VERIFIED" in
+  true | false) ;;
+  *) fault startup require-verified-unparseable "RCA_REQUIRE_VERIFIED='${REQUIRE_VERIFIED}' must be true or false." ;;
+esac
+
 # --- the declared core contract ---------------------------------------------
 # A stack the declaration does not mention is a fault; a stack it declares with
 # an empty context list is a deliberate "require nothing here" and prints
@@ -77,7 +101,8 @@ SAMPLE="${RCA_SAMPLE_PRS:-5}"
 core_contract_for() { # $1 = stack
   jq -e --arg stack "$1" '.stacks | has($stack)' "$CONTRACT_FILE" >/dev/null 2>&1 ||
     fault contract unknown-stack "stack='$1' has no declared core contract; classify the repository or extend $CONTRACT_FILE."
-  jq -r --arg stack "$1" '.stacks[$stack].contexts[]' "$CONTRACT_FILE"
+  jq -r --arg stack "$1" '.stacks[$stack].contexts[]' "$CONTRACT_FILE" ||
+    fault contract contract-unreadable "stack='$1' — $CONTRACT_FILE did not yield a context list."
 }
 
 # `dispatch-merge` and `privileged_merge` PERFORM the merge, so a merge that
@@ -443,7 +468,11 @@ audit_repo() {
   # unscoped run at whichever such repository sorts first and leave every other
   # repository unreported (#1213).
   if [ -z "$contract" ]; then
-    echo "::notice::phase=audit repo=$repo stack=$stack result=skipped — the declared contract requires no contexts."
+    if [ "$REQUIRE_VERIFIED" = true ]; then
+      echo "::error::phase=audit repo=$repo stack=$stack result=unverifiable — the declared contract requires no contexts, so nothing about $repo was verified; a caller about to require a context here cannot read that as a pass."
+    else
+      echo "::notice::phase=audit repo=$repo stack=$stack result=skipped — the declared contract requires no contexts."
+    fi
     skipped=$((skipped + 1))
     return 0
   fi
@@ -515,4 +544,5 @@ done <<<"$repo_list"
 echo "::notice::phase=done conformant=$conformant nonconformant=$nonconformant unclassified=$unclassified unaudited=$unaudited skipped=$skipped"
 # Non-zero while any repository would be wedged, so this can gate step 3 in CI
 # rather than being a report somebody remembers to read.
-[ "$nonconformant" -eq 0 ] && [ "$unclassified" -eq 0 ] && [ "$unaudited" -eq 0 ]
+[ "$nonconformant" -eq 0 ] && [ "$unclassified" -eq 0 ] && [ "$unaudited" -eq 0 ] &&
+  { [ "$REQUIRE_VERIFIED" = false ] || [ "$skipped" -eq 0 ]; }
