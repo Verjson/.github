@@ -230,7 +230,7 @@ head_with() { local sha="$1"; shift; jq -n --args '{check_runs: ($ARGS.positiona
 printf '[{"name":"alpha","archived":false}]\n' >"$REPOS_FILE"
 workflow_for none
 
-run_audit() { ( bash "$script" >"$tmp/out.txt" 2>&1; echo "rc=$?" ); }
+run_audit() { ( bash "$script" "$@" >"$tmp/out.txt" 2>&1; echo "rc=$?" ); }
 out() { cat "$tmp/out.txt"; }
 
 # ADR 0128 removed universal authorization contexts from this deterministic
@@ -297,7 +297,7 @@ rc="$(RCA_REPOS="none-repo beta-node" run_audit)"
 # "verified fine", or the rollout requires a context nobody confirmed the
 # repository emits — the permanent-pending wedge this audit exists to prevent.
 stack none; pulls s1 s2; head_with s1 gate; head_with s2 gate
-rc="$(RCA_REQUIRE_VERIFIED=true run_audit)"
+rc="$(run_audit --require-verified)"
 { [ "$rc" != "rc=0" ] \
   && grep -q 'result=unverifiable' "$tmp/out.txt" \
   && grep -q '::error::' "$tmp/out.txt"; } \
@@ -308,7 +308,7 @@ rc="$(RCA_REQUIRE_VERIFIED=true run_audit)"
 # examined nothing satisfies all of them. For the org-wide report that is a fair
 # answer; for a caller about to write a required check it is the same fail-open
 # in its purest form — nothing was verified, and nothing complained.
-rc="$(RCA_REPOS=" " RCA_REQUIRE_VERIFIED=true run_audit)"
+rc="$(RCA_REPOS=" " run_audit --require-verified)"
 { [ "$rc" != "rc=0" ] && grep -q 'conformant=0' "$tmp/out.txt"; } \
   && pass "an audit that verified no repository is not a pass for an applying caller" \
   || { fail "an empty audit passed a caller that is about to apply a rule ($rc)"; out | sed 's/^/diag - /'; }
@@ -318,10 +318,10 @@ rc="$(RCA_REPOS=" " run_audit)"
   && pass "the read-only report still tolerates an empty repository set" \
   || { fail "the read-only report regressed on an empty set ($rc)"; out | sed 's/^/diag - /'; }
 
-rc="$(RCA_REQUIRE_VERIFIED=sometimes run_audit)"
-{ [ "$rc" = "rc=2" ] && grep -q 'require-verified-unparseable' "$tmp/out.txt"; } \
-  && pass "an unparseable RCA_REQUIRE_VERIFIED fails closed rather than defaulting to lax" \
-  || { fail "RCA_REQUIRE_VERIFIED accepted a non-boolean ($rc)"; out | sed 's/^/diag - /'; }
+rc="$(run_audit --require-verified=sometimes)"
+{ [ "$rc" = "rc=2" ] && grep -q 'unrecognized-argument' "$tmp/out.txt"; } \
+  && pass "a malformed --require-verified argument fails closed rather than defaulting to lax" \
+  || { fail "a malformed --require-verified argument was accepted ($rc)"; out | sed 's/^/diag - /'; }
 
 # --- a malformed context list is a contract fault, with an annotation --------
 # Fail-closed is not enough on its own: an unannotated `jq: error ... Cannot
@@ -357,11 +357,21 @@ for shape in 'null' '[]' '"node"' '{"other": []}'; do
     || { fail "stack=$shape was not rejected at the declaration boundary ($rc)"; out | sed 's/^/diag - /'; }
 done
 
-# --- an empty value is a caller mistake, not the permissive default ----------
-rc="$(RCA_REQUIRE_VERIFIED= run_audit)"
-{ [ "$rc" = "rc=2" ] && grep -q 'require-verified-unparseable' "$tmp/out.txt"; } \
-  && pass "an empty RCA_REQUIRE_VERIFIED faults rather than defaulting to lax" \
-  || { fail "RCA_REQUIRE_VERIFIED= silently took the permissive default ($rc)"; out | sed 's/^/diag - /'; }
+# --- an ambient environment variable of the same name has no effect ---------
+# #1223: RCA_REQUIRE_VERIFIED used to be read as a plain env var, so a value
+# exported by an unrelated parent process (or inherited across a CI step
+# boundary) could silently flip the read-only org-wide report to fail-closed
+# with no caller ever asking for that. It is now a positional flag only.
+stack none; pulls s1 s2; head_with s1 gate; head_with s2 gate
+rc="$(RCA_REQUIRE_VERIFIED=true run_audit)"
+[ "$rc" = "rc=0" ] \
+  && pass "an ambient RCA_REQUIRE_VERIFIED env var does not affect the read-only report" \
+  || { fail "an ambient env var still flips require-verified ($rc)"; out | sed 's/^/diag - /'; }
+
+rc="$(run_audit --bogus-flag)"
+{ [ "$rc" = "rc=2" ] && grep -q 'unrecognized-argument' "$tmp/out.txt"; } \
+  && pass "an unrecognized argument faults rather than being silently ignored" \
+  || { fail "an unrecognized argument was silently accepted ($rc)"; out | sed 's/^/diag - /'; }
 
 # --- the happy path ----------------------------------------------------------
 stack node

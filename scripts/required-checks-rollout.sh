@@ -140,13 +140,14 @@ repo_count="$(wc -l <"$tmp/selected-before.tsv" | tr -d ' ')"
 echo "::notice::phase=discovery result=selected ruleset=$ruleset_name repositories=$repo_count"
 
 repos="$(tr '\n' ' ' <<<"$selected" | sed 's/[[:space:]]*$//')"
-# `RCA_REQUIRE_VERIFIED=true` because this caller is about to *apply* a rule.
-# The selected set comes from the ruleset's own `repository_properties`, not from
+# `--require-verified` because this caller is about to *apply* a rule. The
+# selected set comes from the ruleset's own `repository_properties`, not from
 # `verjson-stack`, so it can contain a repository whose stack declares no
 # required contexts. The audit skips those and still exits 0 — right for the
 # org-wide report, wrong here, where a skip means nothing was ever confirmed
-# about a repository that is one API call away from being gated.
-if ! RCA_ORG="$ORG" RCA_CONTRACT_FILE="$CONTRACT_FILE" RCA_REPOS="$repos" RCA_HEADS_FILE="$tmp/selected-before.tsv" RCA_REQUIRE_VERIFIED=true bash "$AUDIT_SCRIPT"; then
+# about a repository that is one API call away from being gated. Passed as a
+# positional flag, not an env var, so nothing ambient can turn it on or off.
+if ! RCA_ORG="$ORG" RCA_CONTRACT_FILE="$CONTRACT_FILE" RCA_REPOS="$repos" RCA_HEADS_FILE="$tmp/selected-before.tsv" bash "$AUDIT_SCRIPT" --require-verified; then
   fault conformance selected-repositories-nonconformant "ruleset=$ruleset_name repositories=$repo_count"
 fi
 echo "::notice::phase=conformance result=ready ruleset=$ruleset_name repositories=$repo_count"

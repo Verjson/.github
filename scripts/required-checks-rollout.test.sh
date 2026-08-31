@@ -24,7 +24,9 @@ cp "$bundle/scripts/required-checks-workflow.py" "$remote_bundle/scripts/require
 cat >"$bundle/scripts/required-checks-audit.sh" <<'AUDIT'
 #!/usr/bin/env bash
 printf '%s\n' "$RCA_REPOS" >"$AUDITED_REPOS"
-printf '%s\n' "${RCA_REQUIRE_VERIFIED:-unset}" >"$AUDITED_REQUIRE_VERIFIED"
+require_verified=unset
+for arg in "$@"; do [ "$arg" = "--require-verified" ] && require_verified=true; done
+printf '%s\n' "$require_verified" >"$AUDITED_REQUIRE_VERIFIED"
 cp "$RCA_HEADS_FILE" "$AUDITED_HEADS"
 [ "${AUDIT_FAIL:-false}" != true ]
 AUDIT
