@@ -529,6 +529,42 @@ rc="$(run_audit)"
   && pass "a thin stack caller with the wrong job name is nonconformant" \
   || { fail "a noncanonical stack caller name was accepted ($rc)"; out | sed 's/^/diag - /'; }
 
+# A repository may call the same reusable workflow again under another name —
+# a Node floor matrix, a downstream compatibility lane. Those publish their own
+# prefixes, satisfy no rule, and are outside this contract. Reading them as a
+# naming violation reported five conformant repositories as nonconformant.
+stack node
+pulls s1 s2
+head_with s1 "ci / build-test" "ci / eligibility" changelog-contract "changelog / validate"
+head_with s2 "ci / build-test" "ci / eligibility" changelog-contract "changelog / validate"
+sed -i '/^  changelog-contract:$/i\  ci-node-floor:\n    uses: Verjson/.github/.github/workflows/node-ci.yml@0123456789abcdef0123456789abcdef01234567' "$tmp/workflow.yml"
+encode_workflow
+rc="$(run_audit)"
+{ [ "$rc" = "rc=0" ] && grep -q 'result=conformant' "$tmp/out.txt" \
+  && ! grep -q 'caller-job-name' "$tmp/out.txt"; } \
+  && pass "an extra stack caller under another job name does not fail the canonical one" \
+  || { fail "a second reusable-workflow caller was read as a naming violation ($rc)"; out | sed 's/^/diag - /'; }
+
+# The name being right twice is still wrong: two check runs would publish one
+# required context, and which of them satisfies the rule is undefined.
+stack node
+cat >"$content_root/.github/workflows/ci-extra.yml" <<'EXTRA'
+name: extra
+on:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  ci:
+    uses: Verjson/.github/.github/workflows/node-ci.yml@0123456789abcdef0123456789abcdef01234567
+EXTRA
+printf '[{"type":"file","path":".github/workflows/ci.yml"},{"type":"file","path":".github/workflows/ci-extra.yml"},{"type":"file","path":".github/workflows/changelog.yml"},{"type":"file","path":".github/workflows/release.yml"}]\n' >"$WORKFLOW_LIST_FILE"
+rc="$(run_audit)"
+{ [ "$rc" != "rc=0" ] && grep -q 'stack-caller-duplicate expected=1 actual=2' "$tmp/out.txt"; } \
+  && pass "two jobs named ci publishing one required context is nonconformant" \
+  || { fail "a duplicated canonical stack caller was accepted ($rc)"; out | sed 's/^/diag - /'; }
+rm -f "$content_root/.github/workflows/ci-extra.yml"
+
 stack node
 sed -i 's/^  changelog:$/  generated-docs:/' "$content_root/.github/workflows/changelog.yml"
 rc="$(run_audit)"
