@@ -32,6 +32,23 @@ all — fail-closed, but invisible in Actions and mislabelled by the rollout as
 repository nonconformance. And the startup schema validated `.stacks` as an
 object without validating any stack's `contexts`, so `{}`, `[""]` and `["", ""]`
 all reached the audit and read as "requires nothing", because command
-substitution strips empty lines. Every stack's `contexts` is now validated as an
-array of non-empty strings at the declaration boundary, which is what lets
-`core_contract_for` remain a two-way decision.
+substitution strips empty lines. Every stack's `contexts` is now validated at the
+declaration boundary as an array of literal check names.
+
+"Non-empty" is not the right predicate there, because the consumer is a shell
+`read`. A context of `"   "` is non-empty to jq and empty to `read`, so it would
+resolve to a non-empty contract that then checks nothing and reports the
+repository conformant — the same "verified nothing, called it a pass" outcome
+one level down, at per-context granularity. Surrounding whitespace is rejected
+for the same reason, since `read` would otherwise compare a different string than
+the one declared, and tabs and newlines because a context carrying one splits in
+two. The reader itself now uses `IFS= read` as well; that is defence in depth
+behind the schema rather than a separately reachable path.
+
+The exit gate gains the matching positive requirement. Every other clause counts
+what went wrong, so an audit that examined no repository at all satisfied all of
+them and exited 0. That stays a fair answer for the org-wide report, but under
+`RCA_REQUIRE_VERIFIED` at least one repository must have been confirmed
+conformant, so an applying caller cannot read an empty run as verification.
+`RCA_REQUIRE_VERIFIED=` set to the empty string now faults rather than taking the
+permissive default: an empty value is a caller mistake, not a request to relax.

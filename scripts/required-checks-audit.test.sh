@@ -304,6 +304,20 @@ rc="$(RCA_REQUIRE_VERIFIED=true run_audit)"
   && pass "a skip fails closed for a caller that requires positive verification" \
   || { fail "a skip passed a caller that is about to apply a rule ($rc)"; out | sed 's/^/diag - /'; }
 
+# Every other clause of the exit gate counts what went wrong, so an audit that
+# examined nothing satisfies all of them. For the org-wide report that is a fair
+# answer; for a caller about to write a required check it is the same fail-open
+# in its purest form — nothing was verified, and nothing complained.
+rc="$(RCA_REPOS=" " RCA_REQUIRE_VERIFIED=true run_audit)"
+{ [ "$rc" != "rc=0" ] && grep -q 'conformant=0' "$tmp/out.txt"; } \
+  && pass "an audit that verified no repository is not a pass for an applying caller" \
+  || { fail "an empty audit passed a caller that is about to apply a rule ($rc)"; out | sed 's/^/diag - /'; }
+
+rc="$(RCA_REPOS=" " run_audit)"
+[ "$rc" = "rc=0" ] \
+  && pass "the read-only report still tolerates an empty repository set" \
+  || { fail "the read-only report regressed on an empty set ($rc)"; out | sed 's/^/diag - /'; }
+
 rc="$(RCA_REQUIRE_VERIFIED=sometimes run_audit)"
 { [ "$rc" = "rc=2" ] && grep -q 'require-verified-unparseable' "$tmp/out.txt"; } \
   && pass "an unparseable RCA_REQUIRE_VERIFIED fails closed rather than defaulting to lax" \
@@ -313,15 +327,41 @@ rc="$(RCA_REQUIRE_VERIFIED=sometimes run_audit)"
 # Fail-closed is not enough on its own: an unannotated `jq: error ... Cannot
 # iterate over null` gives Actions nothing to surface and makes the rollout
 # report a contract defect as repository nonconformance.
+#
+# The whitespace shapes are the sharp ones. A context of "   " is non-empty to
+# jq and empty to the shell `read` that consumes it, so a `length > 0` schema
+# admits it, the contract resolves NON-empty, every context is skipped, and the
+# repository is reported conformant having been checked against nothing — the
+# fail-open of #1221 reappearing one level down. " ci / build-test " is the
+# quieter form: it passes, but against a different string than the one declared.
 stack none; pulls s1 s2; head_with s1 gate; head_with s2 gate
-for shape in 'null' '{}' '[""]' '["", ""]' '["ok", 3]'; do
+for shape in 'null' '{}' '[""]' '["", ""]' '["ok", 3]' '["   "]' '["\t"]' \
+  '[" gate "]' '["gate\ngate"]' '{"contexts": ["gate"]}'; do
   malformed="$tmp/contract-contexts-$(printf '%s' "$shape" | md5sum | cut -c1-8).json"
   jq --argjson v "$shape" '.stacks.none.contexts = $v' "$contract" >"$malformed"
   rc="$(RCA_CONTRACT_FILE="$malformed" run_audit)"
-  { [ "$rc" = "rc=2" ] && grep -q '::error::phase=contract' "$tmp/out.txt"; } \
-    && pass "a contexts list of $shape is an annotated contract fault" \
+  { [ "$rc" = "rc=2" ] && grep -q 'phase=contract result=declaration-invalid' "$tmp/out.txt"; } \
+    && pass "a contexts list of $shape is an annotated declaration fault" \
     || { fail "contexts=$shape was not rejected at the declaration boundary ($rc)"; out | sed 's/^/diag - /'; }
 done
+
+# The other arms of the same schema: a stack that is not an object, and one with
+# no contexts key at all. Both previously reached the audit as "requires
+# nothing".
+for shape in 'null' '[]' '"node"' '{"other": []}'; do
+  malformed="$tmp/contract-stack-$(printf '%s' "$shape" | md5sum | cut -c1-8).json"
+  jq --argjson v "$shape" '.stacks.none = $v' "$contract" >"$malformed"
+  rc="$(RCA_CONTRACT_FILE="$malformed" run_audit)"
+  { [ "$rc" = "rc=2" ] && grep -q 'phase=contract result=declaration-invalid' "$tmp/out.txt"; } \
+    && pass "a stack declared as $shape is an annotated declaration fault" \
+    || { fail "stack=$shape was not rejected at the declaration boundary ($rc)"; out | sed 's/^/diag - /'; }
+done
+
+# --- an empty value is a caller mistake, not the permissive default ----------
+rc="$(RCA_REQUIRE_VERIFIED= run_audit)"
+{ [ "$rc" = "rc=2" ] && grep -q 'require-verified-unparseable' "$tmp/out.txt"; } \
+  && pass "an empty RCA_REQUIRE_VERIFIED faults rather than defaulting to lax" \
+  || { fail "RCA_REQUIRE_VERIFIED= silently took the permissive default ($rc)"; out | sed 's/^/diag - /'; }
 
 # --- the happy path ----------------------------------------------------------
 stack node

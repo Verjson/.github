@@ -54,15 +54,26 @@ jq -e '
   .mutation_authorized == true and
   (has("universal_contexts") | not) and
   (.stacks | type == "object") and
-  # Every stack must declare a context list of non-empty strings. Without this
+  # Every stack must declare a context list of literal check names. Without this
   # the ambiguous shapes reach the audit and read as "requires nothing": a
   # `contexts` of {} or [""] survives command substitution as no output at all,
   # which is indistinguishable from a deliberate empty list. Rejecting them here
   # is what lets `core_contract_for` stay a two-way decision.
+  #
+  # `length > 0` alone is not enough, because the reader below is a shell `read`.
+  # A context of "   " is non-empty to jq and empty to `read`, so it would resolve
+  # to a NON-empty contract that then checks nothing and reports conformant —
+  # the same "verified nothing, called it a pass" outcome at per-context
+  # granularity. Surrounding whitespace is rejected for the same reason: `read`
+  # would silently compare a different string than the one declared. Tabs and
+  # newlines are rejected because a context carrying one splits into two.
   (.stacks | to_entries | all(
     (.value | type == "object") and
     (.value.contexts | type == "array") and
-    (.value.contexts | all(type == "string" and length > 0))
+    (.value.contexts | all(
+      type == "string" and length > 0 and
+      (test("^\\s") | not) and (test("\\s$") | not) and (test("[\\n\\t]") | not)
+    ))
   )) and
   (.caller_job_names.stack | type == "string") and
   (.caller_job_names.changelog | type == "string")
@@ -86,7 +97,9 @@ SAMPLE="${RCA_SAMPLE_PRS:-5}"
 # stack can sit inside the set being gated, and a skip there means the audit
 # never confirmed the repository emits the context it is about to be required
 # to emit. Such a caller sets this and gets a skip as a failure.
-REQUIRE_VERIFIED="${RCA_REQUIRE_VERIFIED:-false}"
+# `-` and not `:-`: an explicitly empty value is a caller mistake, not a
+# request for the permissive default, so it must reach the case below.
+REQUIRE_VERIFIED="${RCA_REQUIRE_VERIFIED-false}"
 case "$REQUIRE_VERIFIED" in
   true | false) ;;
   *) fault startup require-verified-unparseable "RCA_REQUIRE_VERIFIED='${REQUIRE_VERIFIED}' must be true or false." ;;
@@ -101,6 +114,9 @@ esac
 core_contract_for() { # $1 = stack
   jq -e --arg stack "$1" '.stacks | has($stack)' "$CONTRACT_FILE" >/dev/null 2>&1 ||
     fault contract unknown-stack "stack='$1' has no declared core contract; classify the repository or extend $CONTRACT_FILE."
+  # Unreachable given the schema validated at startup, and deliberately kept:
+  # the file is re-read here, so this covers it being replaced between the two
+  # reads. A `contexts` that stops being a list must never resolve to silence.
   jq -r --arg stack "$1" '.stacks[$stack].contexts[]' "$CONTRACT_FILE" ||
     fault contract contract-unreadable "stack='$1' — $CONTRACT_FILE did not yield a context list."
 }
@@ -514,7 +530,10 @@ audit_repo() {
   fi
 
   local ctx
-  while read -r ctx; do
+  # `IFS=` so a context is compared exactly as declared. The schema already
+  # rejects surrounding whitespace; this makes the reader incapable of
+  # hiding one that ever got past it.
+  while IFS= read -r ctx; do
     [ -n "$ctx" ] || continue
     if is_merge_machinery "$ctx"; then
       fault contract merge-machinery-in-contract "stack='$stack' lists '$ctx'; requiring a merge job deadlocks the merge."
@@ -544,5 +563,13 @@ done <<<"$repo_list"
 echo "::notice::phase=done conformant=$conformant nonconformant=$nonconformant unclassified=$unclassified unaudited=$unaudited skipped=$skipped"
 # Non-zero while any repository would be wedged, so this can gate step 3 in CI
 # rather than being a report somebody remembers to read.
+#
+# Every clause above is negative — they count what went wrong — so an audit that
+# examined nothing at all satisfies all of them. That is an acceptable answer for
+# the org-wide report, whose question is "which repositories would be wedged?".
+# It is not an acceptable answer for a caller about to apply a rule, which needs
+# the audit to have positively verified something, so REQUIRE_VERIFIED also
+# demands at least one conformant repository.
 [ "$nonconformant" -eq 0 ] && [ "$unclassified" -eq 0 ] && [ "$unaudited" -eq 0 ] &&
-  { [ "$REQUIRE_VERIFIED" = false ] || [ "$skipped" -eq 0 ]; }
+  { [ "$REQUIRE_VERIFIED" = false ] ||
+    { [ "$skipped" -eq 0 ] && [ "$conformant" -gt 0 ]; }; }
