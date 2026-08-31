@@ -24,6 +24,7 @@ cp "$bundle/scripts/required-checks-workflow.py" "$remote_bundle/scripts/require
 cat >"$bundle/scripts/required-checks-audit.sh" <<'AUDIT'
 #!/usr/bin/env bash
 printf '%s\n' "$RCA_REPOS" >"$AUDITED_REPOS"
+printf '%s\n' "${RCA_REQUIRE_VERIFIED:-unset}" >"$AUDITED_REQUIRE_VERIFIED"
 cp "$RCA_HEADS_FILE" "$AUDITED_HEADS"
 [ "${AUDIT_FAIL:-false}" != true ]
 AUDIT
@@ -130,7 +131,7 @@ export LIVE_RULESET="$tmp/live.json" UPDATED_RULESET="$tmp/updated.json" RULESET
 export PROPERTY_VALUES="$tmp/properties.json" PROPERTY_DRIFT="$tmp/properties-drift.json"
 export EFFECTIVE_RULES="$tmp/effective.json" EFFECTIVE_MISMATCH_FILE="$tmp/effective-mismatch.json"
 export MUTATIONS="$tmp/mutations.log" PUT_PAYLOAD="$tmp/put-payload.json"
-export AUDITED_REPOS="$tmp/audited-repos.txt" AUDITED_HEADS="$tmp/audited-heads.tsv"
+export AUDITED_REPOS="$tmp/audited-repos.txt" AUDITED_HEADS="$tmp/audited-heads.tsv" AUDITED_REQUIRE_VERIFIED="$tmp/audited-require-verified.txt"
 export RULESET_READS="$tmp/ruleset-reads" PROPERTY_READS="$tmp/property-reads" BRANCH_READS="$tmp/branch-reads"
 export REMOTE_BUNDLE="$remote_bundle"
 
@@ -155,6 +156,16 @@ rc="$(run_readonly)"
   grep -q $'alpha\tmain\taaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' "$AUDITED_HEADS" && [ ! -s "$MUTATIONS" ]; } \
   && pass "read-only staging audits the exact live property-selected heads" \
   || fail "read-only staging did not preserve selected state ($rc)"
+
+# The rollout selects repositories by the ruleset's own `repository_properties`,
+# not by `verjson-stack`, so a stack that declares no required contexts can sit
+# inside the set it is about to gate. The audit skips such a repository and exits
+# 0 — correct for the org-wide report, fail-open here, because the rollout's only
+# conformance gate is that exit status. It must ask for positive verification
+# rather than settle for the absence of a complaint.
+{ [ "$(cat "$AUDITED_REQUIRE_VERIFIED")" = true ]; } \
+  && pass "the rollout requires positive verification of every selected repository" \
+  || fail "the rollout accepted an unverified repository ($(cat "$AUDITED_REQUIRE_VERIFIED"))"
 
 reset_fixture
 rc="$(RCA_APPLY=true RCA_ACK=apply-issue-731-core-checks-node RCA_ORG=Verjson RCA_CONTRACT_FILE="$contract" RCA_AUDIT_SCRIPT="$bundle/scripts/required-checks-audit.sh" "$script" 2>&1; echo "rc=$?")"
