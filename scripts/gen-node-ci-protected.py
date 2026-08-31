@@ -352,7 +352,11 @@ def isolate_candidate_runtime_cache(document: str) -> str:
                 )
                 system_metadata = resolved_system_candidate.stat(follow_symlinks=False)
                 if not stat.S_ISREG(system_metadata.st_mode) or system_metadata.st_uid != 0:
-                  sys.exit("trusted pwsh executable has unsafe ownership mode")
+                  sys.exit(
+                    "trusted pwsh executable has unsafe ownership mode "
+                    f"(path={{resolved_system_candidate}}, uid={{system_metadata.st_uid}}, "
+                    f"mode={{oct(system_metadata.st_mode)}})"
+                  )
                 candidates.append(resolved_system_candidate)
             for directory in trusted_search_directories:
               lexical_candidate = directory / tool_name
