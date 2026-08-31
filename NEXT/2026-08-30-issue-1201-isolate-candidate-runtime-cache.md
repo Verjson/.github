@@ -56,3 +56,15 @@ the (also world-writable) contents of `/opt/microsoft/powershell/<ver>`. Gave th
 function the same `require_unwritable` escape hatch, applied only when the tool prefix
 being walked is the Microsoft PowerShell tree; every other trusted tool tree (including
 npm/node's setup-node cache) keeps the original strict, unconditional check.
+
+A fourth, structural (not permission-bit) issue surfaced once the write-bit relaxations
+above cleared the walk: the real PowerShell 7 tree ships `libcrypto.so.1.0.0` and
+`libssl.so.1.0.0` as symlinks to the host's system OpenSSL 1.0 compatibility libraries
+under `/usr/lib64`, for distros that still carry them. The tool-tree walker rejected any
+symlink whose target left the tool's own mounted prefix, so these legitimate compatibility
+shims tripped the same "escapes mounted prefix" failure. Confirmed via a temporary listing
+step in CI. Rather than loosen containment blanket-wide, an escaping symlink is now
+re-validated against `/usr`'s own strict, unconditional trust (root-owned, non-writable
+ancestry) before being allowed through; a symlink escaping anywhere else still fails
+closed. `/usr` is unconditionally read-only bind-mounted into the sandbox regardless, so
+this changes only the static verification, not the sandbox's actual exposure.

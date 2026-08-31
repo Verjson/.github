@@ -3071,9 +3071,22 @@ jobs:
                   sys.exit("trusted tool tree entry is not root owned")
                 if stat.S_ISLNK(entry_metadata.st_mode):
                   resolved_entry = entry.resolve()
-                  if not resolved_entry.is_relative_to(root):
-                    sys.exit("trusted tool tree symlink escapes mounted prefix")
-                  continue
+                  if resolved_entry.is_relative_to(root):
+                    continue
+                  # The Microsoft-shipped pwsh tree symlinks its bundled OpenSSL 1.0
+                  # compatibility shims to the real system libraries under /usr on
+                  # distros that still carry them; re-validate the escape target
+                  # against /usr's own strict, unconditional trust instead of
+                  # blanket-rejecting every symlink that leaves the tool prefix.
+                  if resolved_entry.is_relative_to("/usr"):
+                    validate_trusted_ancestry(
+                      Path("/usr"),
+                      resolved_entry,
+                      (0,),
+                      "trusted tool tree external symlink target",
+                    )
+                    continue
+                  sys.exit("trusted tool tree symlink escapes mounted prefix")
                 if require_unwritable and entry_metadata.st_mode & 0o022:
                   sys.exit("trusted tool tree entry has unsafe writable mode")
                 if not (stat.S_ISDIR(entry_metadata.st_mode) or stat.S_ISREG(entry_metadata.st_mode)):
