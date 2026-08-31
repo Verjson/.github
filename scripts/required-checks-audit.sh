@@ -258,7 +258,7 @@ PY
 
 source_contract_for_repo() { # $1 = repo, $2 = stack
   local repo="$1" stack="$2" listing paths path source stack_workflow head='' ref_query='' changelog_state
-  local stack_job='' changelog_callers=0 changelog_caller_path='' changelog_contract_jobs=0 source_fault=0
+  local stack_callers='' canonical_callers=0 changelog_callers=0 changelog_caller_path='' changelog_contract_jobs=0 source_fault=0
   local expected_stack_job expected_changelog_job inspection path_filter
 
   case "$stack" in
@@ -296,10 +296,21 @@ source_contract_for_repo() { # $1 = repo, $2 = stack
     }
     found="$(caller_job_for "$stack_workflow" <<<"$source")"
     if [ -n "$found" ]; then
-      stack_job="$found"
-      if [ "$path_filter" = true ]; then
-        echo "::error::phase=audit repo=$repo stack=$stack result=workflow-path-filter path=$path — a required context can be absent permanently."
-        return 1
+      stack_callers="$stack_callers$found"$'\n'
+      # Only the CANONICALLY NAMED caller publishes the required contexts, so
+      # only it is in this contract. A repository may legitimately call the
+      # same reusable workflow again under another job name — a Node floor
+      # matrix, a downstream-package compatibility lane — and those callers
+      # publish their own differently-prefixed contexts that no rule requires.
+      # Reading them as a naming violation reported five conformant
+      # repositories as nonconformant and would have held the rollout on work
+      # that does not exist.
+      if grep -Fxq "$expected_stack_job" <<<"$found"; then
+        canonical_callers=$((canonical_callers + 1))
+        if [ "$path_filter" = true ]; then
+          echo "::error::phase=audit repo=$repo stack=$stack result=workflow-path-filter path=$path — a required context can be absent permanently."
+          return 1
+        fi
       fi
     fi
 
@@ -349,12 +360,21 @@ source_contract_for_repo() { # $1 = repo, $2 = stack
   done <<<"$paths"
 
   [ "$source_fault" -eq 0 ] || return 2
-  if [ -z "$stack_job" ]; then
+  if [ -z "$stack_callers" ]; then
     echo "::error::phase=audit repo=$repo stack=$stack result=stack-caller-missing expected='ci / ${stack_workflow%.yml}'"
     return 1
   fi
-  if [ "$stack_job" != "$expected_stack_job" ]; then
-    echo "::error::phase=audit repo=$repo stack=$stack result=caller-job-name expected=$expected_stack_job actual=$stack_job"
+  if [ "$canonical_callers" -eq 0 ]; then
+    local observed_callers
+    observed_callers="$(printf '%s' "$stack_callers" | tr '\n' ',')"
+    echo "::error::phase=audit repo=$repo stack=$stack result=caller-job-name expected=$expected_stack_job actual=${observed_callers%,}"
+    return 1
+  fi
+  if [ "$canonical_callers" -gt 1 ]; then
+    # Two jobs named `ci` in two workflow files publish two check runs under
+    # one context name. Which one satisfies the rule is not defined, so this
+    # is nonconformant even though the name itself is right.
+    echo "::error::phase=audit repo=$repo stack=$stack result=stack-caller-duplicate expected=1 actual=$canonical_callers — one required context cannot be published by two jobs."
     return 1
   fi
   if { [ "$stack" = node ] || [ "$stack" = ui ] || [ "$stack" = helm ]; } &&
