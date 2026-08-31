@@ -97,13 +97,18 @@ SAMPLE="${RCA_SAMPLE_PRS:-5}"
 # stack can sit inside the set being gated, and a skip there means the audit
 # never confirmed the repository emits the context it is about to be required
 # to emit. Such a caller sets this and gets a skip as a failure.
-# `-` and not `:-`: an explicitly empty value is a caller mistake, not a
-# request for the permissive default, so it must reach the case below.
-REQUIRE_VERIFIED="${RCA_REQUIRE_VERIFIED-false}"
-case "$REQUIRE_VERIFIED" in
-  true | false) ;;
-  *) fault startup require-verified-unparseable "RCA_REQUIRE_VERIFIED='${REQUIRE_VERIFIED}' must be true or false." ;;
-esac
+# A positional flag, not an environment variable: an env var of this name can
+# be exported by a parent shell or inherited across a CI step boundary without
+# either side intending it, which would flip the org-wide read-only report to
+# fail-closed with no caller ever having asked for that. A flag only takes
+# effect when the invoking command line spells it out.
+REQUIRE_VERIFIED=false
+for arg in "$@"; do
+  case "$arg" in
+    --require-verified) REQUIRE_VERIFIED=true ;;
+    *) fault startup unrecognized-argument "arg='$arg'" ;;
+  esac
+done
 
 # --- the declared core contract ---------------------------------------------
 # A stack the declaration does not mention is a fault; a stack it declares with

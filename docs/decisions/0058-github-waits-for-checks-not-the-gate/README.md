@@ -620,3 +620,27 @@ both registered in `scripts/actions-ci-groups.tsv`); the unscoped live org audit
 at this change reports `conformant=25 nonconformant=3 unclassified=6 unaudited=0
 skipped=63` and exits 1 on the pre-existing findings alone. No ruleset was
 mutated. #416 remains open on its own terms.
+
+### Amendment (2026-08-31, #1223) — `RCA_REQUIRE_VERIFIED` is a flag, not an env var
+
+The invariant above — the rollout must positively assert verification before
+applying a rule — was implemented as a plain environment variable,
+`RCA_REQUIRE_VERIFIED`. That transport is itself a hole in the same invariant:
+an environment variable is inheritable, so a value exported by an unrelated
+parent shell or carried across a CI step boundary could silently flip either
+caller's behavior with no caller having asked for it — turning the read-only
+report fail-closed unexpectedly, or, in the other direction, masking the
+rollout's own explicit intent to require verification.
+
+The decision is unchanged; only the transport is corrected. The audit now
+takes `--require-verified` as a positional command-line argument. It has an
+effect only when the invoking command line spells it out, so nothing ambient
+can set or unset it, and an unrecognized argument faults closed
+(`phase=startup result=unrecognized-argument`) rather than being ignored.
+`required-checks-rollout.sh` passes the flag on its own invocation in place of
+the env-var prefix.
+
+Evidence: `scripts/required-checks-audit.test.sh` asserts an ambient
+`RCA_REQUIRE_VERIFIED=true` no longer affects the read-only report's exit
+status, and that an unrecognized argument faults; both fail against the
+pre-fix script and pass against the fix.
