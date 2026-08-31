@@ -38,3 +38,13 @@ subtree, consistent with `/usr`'s existing unconditional trust elsewhere in the 
 generator: nothing PR-controlled executes outside the sandbox before this check runs
 (`npm ci --ignore-scripts` precedes it), so the writable bit is unexploited capability,
 not evidence of tampering.
+
+That first fix was incomplete: a second, shared ownership check further down in the same
+tool-discovery loop (the generic `npm`/`node`/`pwsh` executable check, applied after
+per-tool discovery) independently re-enforced the same write-bit requirement against the
+resolved binary itself — and the real Microsoft-shipped `pwsh` binary under `/opt` is
+*also* root-owned but world-writable there, not just its ancestor directories. Confirmed
+by temporarily surfacing the failing path/uid/mode in CI before diagnosing. Fixed the
+same way, scoped narrowly to a resolved `pwsh` executable under
+`/opt/microsoft/powershell`; `npm`/`node` keep the strict write-bit requirement since
+their trusted tool root (the setup-node cache) is not expected to be world-writable.

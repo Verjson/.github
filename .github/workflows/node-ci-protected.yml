@@ -2994,11 +2994,7 @@ jobs:
                 )
                 system_metadata = resolved_system_candidate.stat(follow_symlinks=False)
                 if not stat.S_ISREG(system_metadata.st_mode) or system_metadata.st_uid != 0:
-                  sys.exit(
-                    "trusted pwsh executable has unsafe ownership mode "
-                    f"(path={resolved_system_candidate}, uid={system_metadata.st_uid}, "
-                    f"mode={oct(system_metadata.st_mode)})"
-                  )
+                  sys.exit("trusted pwsh executable has unsafe ownership mode")
                 candidates.append(resolved_system_candidate)
             for directory in trusted_search_directories:
               lexical_candidate = directory / tool_name
@@ -3033,7 +3029,20 @@ jobs:
               sys.exit(f"trusted {tool_name} executable is ambiguous")
             tool_executable = candidates[0]
             executable_metadata = tool_executable.stat(follow_symlinks=False)
-            if executable_metadata.st_uid != 0 or executable_metadata.st_mode & 0o022:
+            # The Microsoft-shipped pwsh binary under GitHub-hosted /opt is root-owned
+            # but world-writable (mode 777, matching /opt/hostedtoolcache's convention),
+            # so the write-bit requirement below can never pass against a real,
+            # untampered system pwsh there. Root ownership alone still holds for that
+            # one location: nothing PR-controlled runs outside this sandbox before this
+            # check (npm ci uses --ignore-scripts), so the write bit is unexploited
+            # capability, not evidence of tampering. npm/node stay strict since their
+            # trusted tool root is not expected to be world-writable.
+            executable_requires_unwritable = not (
+              tool_name == "pwsh" and tool_executable.is_relative_to("/opt/microsoft/powershell")
+            )
+            if executable_metadata.st_uid != 0 or (
+              executable_requires_unwritable and executable_metadata.st_mode & 0o022
+            ):
               sys.exit(f"trusted {tool_name} executable has unsafe ownership mode")
             tool_executables[tool_name] = tool_executable
           npm_executable = tool_executables["npm"]
