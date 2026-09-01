@@ -151,18 +151,25 @@ awk '
   && pass "node-ci preserves eligibility output/env wiring without a remote self-dependency" \
   || fail "node-ci eligibility output/env wiring or no-self-dependency invariant regressed"
 
-# (h) build-test itself must always report the required context (#191). Only its
-# execution steps may skip on an active defer; an eligibility error still fails
-# open by running the suite.
+# (h) Callers must receive the exact eligibility decision while build-test
+# itself continues to report success on a defer (#191, #1235). This lets a
+# caller distinguish that intentional no-op from an executed suite without
+# changing the long-standing required-context behavior.
 python3 - "$nodeci" <<'PY' \
-  && pass "build-test always reports while every executable step honors eligibility" \
-  || fail "build-test can still disappear or execute held Renovate code"
+  && pass "workflow_call maps both eligibility decisions while deferred build-test still reports" \
+  || fail "workflow_call hides eligibility or deferred build-test can disappear or execute held Renovate code"
 import sys
 from pathlib import Path
 
 import yaml
 
 workflow = yaml.safe_load(Path(sys.argv[1]).read_text(encoding="utf-8"))
+workflow_call = workflow.get("on", workflow.get(True))["workflow_call"]
+should_run = workflow_call["outputs"]["should-run"]
+assert should_run["value"] == "${{ jobs.eligibility.outputs.should-run }}"
+assert "executed" in should_run["description"]
+assert "deferred" in should_run["description"]
+
 job = workflow["jobs"]["build-test"]
 assert job["if"] == "always()"
 steps = job["steps"]
