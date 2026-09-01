@@ -660,6 +660,67 @@ jobs:
           private_downloads = {}
           package_manager = os.environ.get("PACKAGE_MANAGER", "npm")
 
+          workspace = Path.cwd().resolve()
+          nested_source = os.environ.get("NESTED_MANIFESTS", "").strip()
+          nested_specs = []
+          if nested_source:
+              if package_manager != "npm":
+                  sys.exit("secretless-nested-manifests currently requires package-manager npm")
+              try:
+                  nested_manifests = json.loads(
+                      nested_source,
+                      object_pairs_hook=reject_duplicate_object_keys,
+                  )
+              except DuplicateObjectKeyError:
+                  sys.exit("secretless-nested-manifests rejects duplicate JSON object keys")
+              except json.JSONDecodeError as error:
+                  sys.exit(f"secretless-nested-manifests must be valid JSON: {error}")
+              if not isinstance(nested_manifests, list) or not 1 <= len(nested_manifests) <= 8:
+                  sys.exit("secretless-nested-manifests accepts 1-8 nested manifest objects")
+              segment_pattern = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
+              declared_paths = []
+              for nested in nested_manifests:
+                  if (not isinstance(nested, dict)
+                          or set(nested) != {"path", "approvedPackages", "scriptPlan"}):
+                      sys.exit("each nested manifest requires exactly path, approvedPackages, and scriptPlan")
+                  nested_path = nested["path"]
+                  if not isinstance(nested_path, str) or not 1 <= len(nested_path) <= 128:
+                      sys.exit("nested manifest path must be one bounded repository-relative directory")
+                  segments = nested_path.split("/")
+                  if (not 1 <= len(segments) <= 8
+                          or any(segment_pattern.fullmatch(segment) is None for segment in segments)):
+                      sys.exit("nested manifest path accepts 1-8 plain directory segments below the repository root")
+                  if nested_path in declared_paths:
+                      sys.exit(f"nested manifest path repeats: {nested_path}")
+                  declared_paths.append(nested_path)
+                  nested_approved = nested["approvedPackages"]
+                  if (not isinstance(nested_approved, list) or not nested_approved
+                          or len(nested_approved) != len(set(nested_approved))
+                          or any(not isinstance(name, str)
+                                 or package_pattern.fullmatch(name) is None
+                                 or name.split("/", 1)[0] not in scopes
+                                 for name in nested_approved)):
+                      sys.exit(f"{nested_path} approvedPackages accepts unique exact names under approved-internal-scopes only")
+                  if trusted_policy and not set(nested_approved).issubset(policy_packages):
+                      sys.exit(f"{nested_path} approvedPackages must be a subset of trusted repository policy")
+                  nested_plan = nested["scriptPlan"]
+                  if not isinstance(nested_plan, list) or len(nested_plan) > 8:
+                      sys.exit(f"{nested_path} scriptPlan accepts at most 8 entries")
+                  # Every segment is a plain name, but a PR-authored symlink still
+                  # satisfies that, so containment is proved against the resolved
+                  # path before any file below it is read.
+                  nested_directory = Path(nested_path)
+                  resolved_directory = nested_directory.resolve()
+                  if not resolved_directory.is_dir() or workspace not in resolved_directory.parents:
+                      sys.exit(f"{nested_path} must resolve to a directory inside the checkout")
+                  nested_manifest_file = nested_directory / "package.json"
+                  nested_lock_file = nested_directory / "package-lock.json"
+                  if (not nested_manifest_file.is_file() or not nested_lock_file.is_file()
+                          or workspace not in nested_manifest_file.resolve().parents
+                          or workspace not in nested_lock_file.resolve().parents):
+                      sys.exit(f"{nested_path} requires its own package.json and package-lock.json inside the checkout")
+                  nested_specs.append((nested_path, set(nested_approved), nested_lock_file))
+
           def npm_lock_candidates(lock_path):
               lock = json.loads(lock_path.read_text(encoding="utf-8"))
               if lock.get("lockfileVersion") not in (2, 3):
@@ -803,69 +864,21 @@ jobs:
           if unused:
               sys.exit("approved internal dependencies absent from lock: " + ", ".join(unused))
 
-          nested_source = os.environ.get("NESTED_MANIFESTS", "").strip()
-          if nested_source:
-              if package_manager != "npm":
-                  sys.exit("secretless-nested-manifests currently requires package-manager npm")
-              try:
-                  nested_manifests = json.loads(
-                      nested_source,
-                      object_pairs_hook=reject_duplicate_object_keys,
-                  )
-              except DuplicateObjectKeyError:
-                  sys.exit("secretless-nested-manifests rejects duplicate JSON object keys")
-              except json.JSONDecodeError as error:
-                  sys.exit(f"secretless-nested-manifests must be valid JSON: {error}")
-              if not isinstance(nested_manifests, list) or not 1 <= len(nested_manifests) <= 8:
-                  sys.exit("secretless-nested-manifests accepts 1-8 nested manifest objects")
-              segment_pattern = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
-              declared_paths = []
-              for nested in nested_manifests:
-                  if (not isinstance(nested, dict)
-                          or set(nested) != {"path", "approvedPackages", "scriptPlan"}):
-                      sys.exit("each nested manifest requires exactly path, approvedPackages, and scriptPlan")
-                  nested_path = nested["path"]
-                  if not isinstance(nested_path, str) or not 1 <= len(nested_path) <= 128:
-                      sys.exit("nested manifest path must be one bounded repository-relative directory")
-                  segments = nested_path.split("/")
-                  if (not 1 <= len(segments) <= 8
-                          or any(segment_pattern.fullmatch(segment) is None for segment in segments)):
-                      sys.exit("nested manifest path accepts 1-8 plain directory segments below the repository root")
-                  if nested_path in declared_paths:
-                      sys.exit(f"nested manifest path repeats: {nested_path}")
-                  declared_paths.append(nested_path)
-                  nested_approved = nested["approvedPackages"]
-                  if (not isinstance(nested_approved, list) or not nested_approved
-                          or len(nested_approved) != len(set(nested_approved))
-                          or any(not isinstance(name, str)
-                                 or package_pattern.fullmatch(name) is None
-                                 or name.split("/", 1)[0] not in scopes
-                                 for name in nested_approved)):
-                      sys.exit(f"{nested_path} approvedPackages accepts unique exact names under approved-internal-scopes only")
-                  nested_approved = set(nested_approved)
-                  if trusted_policy and not nested_approved.issubset(policy_packages):
-                      sys.exit(f"{nested_path} approvedPackages must be a subset of trusted repository policy")
-                  nested_plan = nested["scriptPlan"]
-                  if not isinstance(nested_plan, list) or len(nested_plan) > 8:
-                      sys.exit(f"{nested_path} scriptPlan accepts at most 8 entries")
-                  nested_directory = Path(nested_path)
-                  if (not (nested_directory / "package.json").is_file()
-                          or not (nested_directory / "package-lock.json").is_file()):
-                      sys.exit(f"{nested_path} requires its own package.json and package-lock.json")
-                  # Approval is scoped to the manifest that declared it: a nested
-                  # manifest is verified against its own approvedPackages alone and
-                  # never inherits the root's or another manifest's approvals.
-                  nested_found = verify_candidates(
-                      npm_lock_candidates(nested_directory / "package-lock.json"),
-                      nested_approved,
-                      f" in {nested_path}",
-                  )
-                  nested_unapproved = sorted(nested_found - nested_approved)
-                  nested_unused = sorted(nested_approved - nested_found)
-                  if nested_unapproved:
-                      sys.exit(f"unapproved internal dependencies in {nested_path}: " + ", ".join(nested_unapproved))
-                  if nested_unused:
-                      sys.exit(f"approved internal dependencies absent from lock in {nested_path}: " + ", ".join(nested_unused))
+          # Approval is scoped to the manifest that declared it: a nested manifest
+          # is verified against its own approvedPackages alone and never inherits
+          # the root's or another manifest's approvals.
+          for nested_path, nested_approved, nested_lock_file in nested_specs:
+              nested_found = verify_candidates(
+                  npm_lock_candidates(nested_lock_file),
+                  nested_approved,
+                  f" in {nested_path}",
+              )
+              nested_unapproved = sorted(nested_found - nested_approved)
+              nested_unused = sorted(nested_approved - nested_found)
+              if nested_unapproved:
+                  sys.exit(f"unapproved internal dependencies in {nested_path}: " + ", ".join(nested_unapproved))
+              if nested_unused:
+                  sys.exit(f"approved internal dependencies absent from lock in {nested_path}: " + ", ".join(nested_unused))
 
           entries = Path(os.environ["PRIVATE_CACHE_ENTRIES"])
           try:

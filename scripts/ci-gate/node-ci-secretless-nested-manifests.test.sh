@@ -157,4 +157,51 @@ else
   pass "a package approved only for a nested manifest is rejected inside the root manifest"
 fi
 
+# A nested manifest path names a directory inside the checkout. A PR-authored
+# symlink passes every syntactic segment check, so containment has to be proved
+# against the resolved path or the credentialed job reads a lock from outside
+# the workspace entirely.
+escape="$tmp/escape"
+outside="$tmp/outside-checkout"
+write_lock "$escape/package-lock.json" '@verjson/root-lib' "$root_url" "$root_integrity"
+write_lock "$outside/package-lock.json" '@verjson/nested-lib' "$nested_url" "$nested_integrity"
+mkdir -p "$escape/examples"
+ln -s "$outside" "$escape/examples/nested"
+
+if run_validator "$escape" '@verjson/root-lib' "$nested_plan" >/dev/null 2>&1; then
+  fail "a nested manifest symlinked outside the checkout was accepted"
+else
+  pass "a nested manifest path resolving outside the checkout is rejected"
+fi
+
+reject_nested() {
+  local label="$1" nested="$2" package_manager="${3:-npm}"
+  if run_validator "$paired" '@verjson/root-lib' "$nested" \
+      '@verjson' '' "$package_manager" >/dev/null 2>&1; then
+    fail "$label"
+  else
+    pass "$label"
+  fi
+}
+
+reject_nested "a parent-traversal nested manifest path is rejected" \
+  '[{"path":"../elsewhere","approvedPackages":["@verjson/nested-lib"],"scriptPlan":[]}]'
+reject_nested "an absolute nested manifest path is rejected" \
+  '[{"path":"/etc/nested","approvedPackages":["@verjson/nested-lib"],"scriptPlan":[]}]'
+reject_nested "a repeated nested manifest path is rejected" \
+  '[{"path":"examples/nested","approvedPackages":["@verjson/nested-lib"],"scriptPlan":[]},{"path":"examples/nested","approvedPackages":["@verjson/nested-lib"],"scriptPlan":[]}]'
+reject_nested "an unknown nested manifest key is rejected" \
+  '[{"path":"examples/nested","approvedPackages":["@verjson/nested-lib"],"scriptPlan":[],"registry":"https://evil.example"}]'
+reject_nested "a nested approvedPackages entry outside the approved scopes is rejected" \
+  '[{"path":"examples/nested","approvedPackages":["@attacker/nested-lib"],"scriptPlan":[]}]'
+
+# pnpm has to be refused for the declaration itself, before any lock is read —
+# otherwise the guard is indistinguishable from an unrelated parse failure.
+pnpm_output="$(run_validator "$paired" '@verjson/root-lib' "$nested_plan" '@verjson' '' pnpm 2>&1)"
+if [ "$pnpm_output" = "secretless-nested-manifests currently requires package-manager npm" ]; then
+  pass "nested manifests under pnpm are rejected before any lock is parsed"
+else
+  fail "nested manifests under pnpm failed without the stable declaration reason"
+fi
+
 exit $((failures > 0))
