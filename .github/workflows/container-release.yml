@@ -8,6 +8,11 @@ on:
       config-path: {required: true, type: string}
       contract-ref: {required: true, type: string}
       release_app_client_id: {required: true, type: string}
+      # Opt-in, generator-declared JSON array of reviewed repository-relative paths
+      # the pinned reconciliation hook may rewrite (ADR 0158). Empty disables the
+      # hook entirely. This is never a workflow_dispatch input: the generated caller
+      # bakes the reviewed list in, so no dispatcher can widen it at release time.
+      reconcile-allowlist: {required: false, type: string, default: ''}
     secrets:
       release_app_private_key: {required: true}
 
@@ -172,8 +177,23 @@ jobs:
           ref: ${{ inputs.contract-ref }}
           path: .container-release-contract
           persist-credentials: false
-          sparse-checkout: scripts/changelog.py
+          sparse-checkout: |
+            scripts/changelog.py
+            scripts/container_release_reconcile.py
           sparse-checkout-cone-mode: false
+      - name: Reconcile derived release inputs before credential minting
+        if: ${{ inputs.reconcile-allowlist != '' }}
+        env:
+          VERSION: ${{ inputs.version }}
+          CONTRACT_REF: ${{ inputs.contract-ref }}
+          RECONCILE_ALLOWLIST: ${{ inputs.reconcile-allowlist }}
+        run: |
+          set -euo pipefail
+          python3 .container-release-contract/scripts/container_release_reconcile.py \
+            --repo-root . --allowlist "$RECONCILE_ALLOWLIST" --version "$VERSION" \
+            --manifest release-manifest.json \
+            --contract-root .container-release-contract --contract-ref "$CONTRACT_REF" \
+            --timeout 300 --staged-list reconciled-paths.txt
       - name: Require the release App client ID
         env:
           RELEASE_APP_CLIENT_ID: ${{ inputs.release_app_client_id }}
@@ -215,9 +235,20 @@ jobs:
           subject-path: release-manifest.json
       - id: release-output
         name: Canonical changelog, Git tag, release and machine output
-        env: {VERSION: "${{ inputs.version }}", GH_TOKEN: "${{ steps.release-app-token.outputs.token }}"}
+        env:
+          VERSION: "${{ inputs.version }}"
+          CONTRACT_REF: "${{ inputs.contract-ref }}"
+          RECONCILE_ALLOWLIST: "${{ inputs.reconcile-allowlist }}"
+          GH_TOKEN: "${{ steps.release-app-token.outputs.token }}"
         run: |
           set -euo pipefail
+          # Rebind the pinned engine immediately before it runs with the release App
+          # token: the reconciliation hook executes earlier in this job, so the only
+          # safe moment to prove the engine is unmodified is here (ADR 0158).
+          [ "$(git -C .container-release-contract rev-parse HEAD)" = "$CONTRACT_REF" ] \
+            || { echo "::error::pinned changelog engine is not at the bound contract ref"; exit 1; }
+          [ -z "$(git -C .container-release-contract status --porcelain -- scripts/changelog.py)" ] \
+            || { echo "::error::pinned changelog engine was modified after checkout"; exit 1; }
           gh auth setup-git
           if [ "$(cat git-state)" = new ]; then
             mkdir -p RELEASES/containers
@@ -225,9 +256,22 @@ jobs:
             git config user.name github-actions
             git config user.email github-actions@github.com
             git add "RELEASES/containers/v$VERSION.json"
-            git commit -m "chore(containers): record release v$VERSION"
+            expected="$(
+              { printf '%s\n' "RELEASES/containers/v$VERSION.json"
+                # Only a configured release has a recorded reconciliation set; an
+                # unconfigured consumer that happens to track this filename must
+                # not have it read back as an allowance.
+                [ -n "$RECONCILE_ALLOWLIST" ] && [ -f reconciled-paths.txt ] && cat reconciled-paths.txt
+                true
+              } | sed '/^$/d' | LC_ALL=C sort -u
+            )"
+            [ "$(git diff --cached --name-only | LC_ALL=C sort -u)" = "$expected" ] \
+              || { echo "::error::release commit stages paths outside the reviewed reconciliation allowlist"; exit 1; }
+            # Repository hooks never run with the release App token: `.git/hooks` is
+            # not tracked, so nothing here could have reviewed what it contains.
+            git -c core.hooksPath=/dev/null commit -m "chore(containers): record release v$VERSION"
             python3 .container-release-contract/scripts/changelog.py release --version "v$VERSION"
-            git push --atomic origin HEAD:main "refs/tags/v$VERSION"
+            git -c core.hooksPath=/dev/null push --atomic origin HEAD:main "refs/tags/v$VERSION"
           fi
           if [ "$(cat github-state)" = missing ]; then
             gh release create "v$VERSION" --verify-tag --title "v$VERSION" --notes-file "CHANGELOG/v$VERSION.md" release-manifest.json receipts/*.json

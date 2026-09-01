@@ -57,6 +57,92 @@ fi
 if "$generator" workflow "$ref" ../hostile.json >/dev/null 2>&1; then
   echo "generator accepted a config path outside the source commit" >&2; exit 1
 fi
+
+# --- opt-in pre-credential reconciliation hook (#1203, ADR 0158) ------------------
+# A consumer that does not configure reconciliation must see byte-identical output.
+"$generator" workflow "$ref" >"$tmp/workflow.unconfigured"
+cmp -s "$tmp/workflow.clean" "$tmp/workflow.unconfigured" \
+  || { echo "unconfigured reconciliation changed the generated caller" >&2; exit 1; }
+if grep -q 'reconcile-allowlist' "$tmp/workflow.unconfigured"; then
+  echo "unconfigured caller declares a reconciliation allowlist" >&2; exit 1
+fi
+
+reject_generation() {
+  if "$generator" workflow "$ref" container-candidate.json --reconcile-allow "$1" >/dev/null 2>&1; then
+    echo "generator accepted an unsafe reconciliation path: $1" >&2; exit 1
+  fi
+}
+reject_generation '../hostile'
+reject_generation '/etc/passwd'
+reject_generation './Dockerfile'
+reject_generation '.github/workflows/container-release.yml'
+reject_generation '.gitattributes'
+reject_generation 'RELEASES/containers/v1.0.0.json'
+reject_generation 'CHANGELOG/v1.0.0.md'
+reject_generation 'NEXT/entry.md'
+reject_generation 'scripts/release-reconcile.sh'
+reject_generation 'scripts/container_release_promotion.py'
+reject_generation 'Docker file'
+reject_generation '$(id)'
+if "$generator" workflow "$ref" container-candidate.json \
+  --reconcile-allow Dockerfile --reconcile-allow Dockerfile >/dev/null 2>&1; then
+  echo "generator accepted a duplicate reconciliation path" >&2; exit 1
+fi
+if "$generator" validator "$ref" --reconcile-allow Dockerfile >/dev/null 2>&1; then
+  echo "generator accepted reconciliation flags on a non-caller artifact" >&2; exit 1
+fi
+
+mkdir -p "$tmp/adopter/.github/workflows" "$tmp/adopter/scripts" "$tmp/adopter/deploy"
+"$generator" workflow "$ref" container-candidate.json \
+  --reconcile-allow Dockerfile --reconcile-allow deploy/values.yaml \
+  >"$tmp/adopter/.github/workflows/container-release.yml"
+grep -Fqx "      reconcile-allowlist: '[\"Dockerfile\",\"deploy/values.yaml\"]'" \
+  "$tmp/adopter/.github/workflows/container-release.yml" \
+  || { echo "configured caller does not bake in the reviewed allowlist" >&2; exit 1; }
+grep -q 'workflow_dispatch' "$tmp/adopter/.github/workflows/container-release.yml"
+if grep -A6 '^    inputs:$' "$tmp/adopter/.github/workflows/container-release.yml" | grep -q 'reconcile'; then
+  echo "reconciliation allowlist is dispatch-controlled" >&2; exit 1
+fi
+"$generator" validator "$ref" >"$tmp/adopter/scripts/container_release_promotion.py"
+"$generator" manifest-validator "$ref" >"$tmp/adopter/scripts/container_release_manifest.py"
+"$generator" artifact-extractor "$ref" >"$tmp/adopter/scripts/container_artifact_extract.py"
+"$generator" attestation-verifier "$ref" >"$tmp/adopter/scripts/container_attestation_verify.py"
+"$generator" contract-test "$ref" container-candidate.json \
+  --reconcile-allow Dockerfile --reconcile-allow deploy/values.yaml \
+  >"$tmp/adopter/scripts/container-release-contract.test.sh"
+printf 'FROM ghcr.io/verjson/base:v1.0.0\n' >"$tmp/adopter/Dockerfile"
+printf 'tag: v1.0.0\n' >"$tmp/adopter/deploy/values.yaml"
+if (cd "$tmp/adopter" && bash scripts/container-release-contract.test.sh >/dev/null 2>&1); then
+  echo "configured contract test passed without the reviewed hook present" >&2; exit 1
+fi
+printf '#!/usr/bin/env bash\nexit 0\n' >"$tmp/adopter/scripts/release-reconcile.sh"
+chmod +x "$tmp/adopter/scripts/release-reconcile.sh"
+(cd "$tmp/adopter" && bash scripts/container-release-contract.test.sh >/dev/null)
+chmod -x "$tmp/adopter/scripts/release-reconcile.sh"
+if (cd "$tmp/adopter" && bash scripts/container-release-contract.test.sh >/dev/null 2>&1); then
+  echo "configured contract test accepted a non-executable hook" >&2; exit 1
+fi
+chmod +x "$tmp/adopter/scripts/release-reconcile.sh"
+rm "$tmp/adopter/deploy/values.yaml"
+ln -s /etc/passwd "$tmp/adopter/deploy/values.yaml"
+if (cd "$tmp/adopter" && bash scripts/container-release-contract.test.sh >/dev/null 2>&1); then
+  echo "configured contract test accepted a symlinked allowlist target" >&2; exit 1
+fi
+rm "$tmp/adopter/deploy/values.yaml"
+printf 'tag: v1.0.0\n' >"$tmp/adopter/deploy/values.yaml"
+sed -i "s/reconcile-allowlist: '\\[\"Dockerfile\",\"deploy\\/values.yaml\"\\]'/reconcile-allowlist: '[\"Dockerfile\",\"docs.md\"]'/" \
+  "$tmp/adopter/.github/workflows/container-release.yml"
+if (cd "$tmp/adopter" && bash scripts/container-release-contract.test.sh >/dev/null 2>&1); then
+  echo "configured contract test accepted a widened allowlist" >&2; exit 1
+fi
+printf '#!/usr/bin/env bash\nexit 0\n' >"$tmp/consumer/scripts/release-reconcile.sh"
+chmod +x "$tmp/consumer/scripts/release-reconcile.sh"
+if (cd "$tmp/consumer" && bash scripts/container-release-contract.test.sh >/dev/null 2>&1); then
+  echo "unconfigured contract test accepted an undeclared reconciliation hook" >&2; exit 1
+fi
+rm "$tmp/consumer/scripts/release-reconcile.sh"
+(cd "$tmp/consumer" && bash scripts/container-release-contract.test.sh >/dev/null)
+# --- end reconciliation hook ------------------------------------------------------
 workflow="$root/.github/workflows/container-release.yml"
 WORKFLOW="$workflow" python3 - <<'PY'
 import copy
@@ -121,7 +207,9 @@ grep -q "github.event_name == 'workflow_dispatch'" "$workflow"
 grep -q 'imagetools create' "$workflow"
 ! grep -Eq 'build-push-action|docker build|deploy|verjson-cli-cloud' "$workflow"
 grep -q 'Mint exact-repository release App token' "$workflow"
-grep -q 'git push --atomic' "$workflow"
+# Atomic, and with repository hooks disabled: `.git/hooks` is untracked, so nothing
+# in it was reviewed, and this command holds the release App token (ADR 0158).
+grep -q 'git -c core.hooksPath=/dev/null push --atomic' "$workflow"
 grep -q 'docker/login-action@' "$workflow"
 ! grep -q 'secrets.release-token' "$workflow"
 legacy_release_token='RELEASE_'"TOKEN"
