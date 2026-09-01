@@ -9,7 +9,7 @@ on:
       contract-ref: {required: true, type: string}
       release_app_client_id: {required: true, type: string}
       # Opt-in, generator-declared JSON array of reviewed repository-relative paths
-      # the pinned reconciliation hook may rewrite (ADR 0157). Empty disables the
+      # the pinned reconciliation hook may rewrite (ADR 0158). Empty disables the
       # hook entirely. This is never a workflow_dispatch input: the generated caller
       # bakes the reviewed list in, so no dispatcher can widen it at release time.
       reconcile-allowlist: {required: false, type: string, default: ''}
@@ -244,7 +244,7 @@ jobs:
           set -euo pipefail
           # Rebind the pinned engine immediately before it runs with the release App
           # token: the reconciliation hook executes earlier in this job, so the only
-          # safe moment to prove the engine is unmodified is here (ADR 0157).
+          # safe moment to prove the engine is unmodified is here (ADR 0158).
           [ "$(git -C .container-release-contract rev-parse HEAD)" = "$CONTRACT_REF" ] \
             || { echo "::error::pinned changelog engine is not at the bound contract ref"; exit 1; }
           [ -z "$(git -C .container-release-contract status --porcelain -- scripts/changelog.py)" ] \

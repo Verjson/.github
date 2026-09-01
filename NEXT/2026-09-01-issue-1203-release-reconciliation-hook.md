@@ -41,4 +41,4 @@ generated contract test asserts that negative, so a hook cannot appear without r
 Closes [#1203](https://github.com/Verjson/.github/issues/1203) and unblocks
 [Verjson/verjson-github-runner#195](https://github.com/Verjson/verjson-github-runner/issues/195).
 Rationale and the full threat model are in
-[ADR 0157](../docs/decisions/0157-pre-credential-release-reconciliation-hook/README.md).
+[ADR 0158](../docs/decisions/0158-pre-credential-release-reconciliation-hook/README.md).

@@ -47,7 +47,7 @@ def validate(workflow):
         "ref": "${{ inputs.contract-ref }}",
         "path": ".container-release-contract",
         "persist-credentials": False,
-        # The same pinned checkout carries the reconciliation enforcer (ADR 0157), so
+        # The same pinned checkout carries the reconciliation enforcer (ADR 0158), so
         # the hook's allowlist is enforced by immutable contract code rather than by a
         # consumer-local copy. Widening beyond these two files is drift.
         "sparse-checkout": "scripts/changelog.py\nscripts/container_release_reconcile.py\n",

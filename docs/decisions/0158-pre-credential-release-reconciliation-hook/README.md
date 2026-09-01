@@ -1,4 +1,4 @@
-# 0157 — Container releases reconcile derived inputs before minting the release credential
+# 0158 — Container releases reconcile derived inputs before minting the release credential
 
 - **Date:** 2026-09-01
 - **Issue:** [#1203](https://github.com/Verjson/.github/issues/1203)

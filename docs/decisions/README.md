@@ -11,7 +11,7 @@ Reverse-chronological index of org-level decisions.
 <!-- BEGIN ADR INDEX -->
 | # | Date | Decision |
 |---|------|----------|
-| [0157](0157-pre-credential-release-reconciliation-hook/README.md) | 2026-09-01 | Container releases reconcile derived inputs before minting the release credential |
+| [0158](0158-pre-credential-release-reconciliation-hook/README.md) | 2026-09-01 | Container releases reconcile derived inputs before minting the release credential |
 | [0156](0156-deferred-ci-legible-to-merge-gate/README.md) | 2026-09-01 | Make Renovate-deferred CI legible to the pre-merge assertion |
 | [0155](0155-de-escalate-the-authn-type-surface-required-workflow/README.md) | 2026-08-31 | De-escalate the authn type-surface required workflow until its consumer prerequisites land |
 | [0154](0154-authenticate-required-workflow-identity-overrides/README.md) | 2026-08-30 | Authenticate required-workflow identity overrides |

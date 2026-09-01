@@ -15,7 +15,7 @@ config="${config:-container-candidate.json}"
 
 # The reconciliation hook runs one step before the release App token is minted, so
 # its file allowlist is declared here at generation time and pinned by the contract
-# test — never read from a workflow_dispatch input a releaser could widen (ADR 0157).
+# test — never read from a workflow_dispatch input a releaser could widen (ADR 0158).
 if [ "${#reconcile_paths[@]}" -gt 0 ] && [ "$kind" != workflow ] && [ "$kind" != contract-test ]; then
   echo "--reconcile-allow is accepted only by workflow and contract-test" >&2; exit 2
 fi

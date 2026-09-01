@@ -58,7 +58,7 @@ if "$generator" workflow "$ref" ../hostile.json >/dev/null 2>&1; then
   echo "generator accepted a config path outside the source commit" >&2; exit 1
 fi
 
-# --- opt-in pre-credential reconciliation hook (#1203, ADR 0157) ------------------
+# --- opt-in pre-credential reconciliation hook (#1203, ADR 0158) ------------------
 # A consumer that does not configure reconciliation must see byte-identical output.
 "$generator" workflow "$ref" >"$tmp/workflow.unconfigured"
 cmp -s "$tmp/workflow.clean" "$tmp/workflow.unconfigured" \
@@ -208,7 +208,7 @@ grep -q 'imagetools create' "$workflow"
 ! grep -Eq 'build-push-action|docker build|deploy|verjson-cli-cloud' "$workflow"
 grep -q 'Mint exact-repository release App token' "$workflow"
 # Atomic, and with repository hooks disabled: `.git/hooks` is untracked, so nothing
-# in it was reviewed, and this command holds the release App token (ADR 0157).
+# in it was reviewed, and this command holds the release App token (ADR 0158).
 grep -q 'git -c core.hooksPath=/dev/null push --atomic' "$workflow"
 grep -q 'docker/login-action@' "$workflow"
 ! grep -q 'secrets.release-token' "$workflow"
