@@ -159,7 +159,8 @@ else
 fi
 
 two_call_root="$tmp/two-call-policy"
-mkdir -p "$two_call_root/general" "$two_call_root/type-surface" "$two_call_root/package-expansion"
+mkdir -p "$two_call_root/general" "$two_call_root/type-surface" "$two_call_root/package-expansion" \
+  "$two_call_root/scope-omission"
 two_call_integrity="sha512-$(printf 'two-call policy fixture\n' | openssl dgst -sha512 -binary | base64 -w0)"
 two_call_lock="{\"name\":\"authn-consumer\",\"version\":\"1.0.0\",\"lockfileVersion\":3,\"packages\":{\"\":{\"name\":\"authn-consumer\",\"version\":\"1.0.0\"},\"node_modules/@verjson/identity-contracts\":{\"name\":\"@verjson/identity-contracts\",\"resolved\":\"https://npm.pkg.github.com/download/@verjson/identity-contracts/0.3.0/archive\",\"integrity\":\"$two_call_integrity\"},\"node_modules/@verjson/tsconfig\":{\"name\":\"@verjson/tsconfig\",\"resolved\":\"https://npm.pkg.github.com/download/@verjson/tsconfig/0.1.3/archive\",\"integrity\":\"$two_call_integrity\"}}}"
 printf '%s\n' "$two_call_lock" > "$two_call_root/general/package-lock.json"
@@ -167,6 +168,11 @@ printf '%s\n' "$two_call_lock" > "$two_call_root/type-surface/package-lock.json"
 printf '%s\n' "{\"name\":\"authn-consumer\",\"version\":\"1.0.0\",\"lockfileVersion\":3,\"packages\":{\"\":{\"name\":\"authn-consumer\",\"version\":\"1.0.0\"},\"node_modules/@verjson/identity-contracts\":{\"name\":\"@verjson/identity-contracts\",\"resolved\":\"https://npm.pkg.github.com/download/@verjson/identity-contracts/0.3.0/archive\",\"integrity\":\"$two_call_integrity\"},\"node_modules/@verjson/private-target\":{\"name\":\"@verjson/private-target\",\"resolved\":\"https://npm.pkg.github.com/download/@verjson/private-target/1.0.0/archive\",\"integrity\":\"$two_call_integrity\"},\"node_modules/@verjson/tsconfig\":{\"name\":\"@verjson/tsconfig\",\"resolved\":\"https://npm.pkg.github.com/download/@verjson/tsconfig/0.1.3/archive\",\"integrity\":\"$two_call_integrity\"}}}" > "$two_call_root/package-expansion/package-lock.json"
 two_call_policy='{"scopes":["@verjson"],"packages":["@verjson/authn","@verjson/identity-contracts","@verjson/tsconfig"],"compatibility":{"@verjson/authn":["1.0.3"],"@verjson/identity-contracts":[">=0.2.2 <0.3.0",">=0.3.0 <0.4.0"]}}'
 general_request='{"package":"@verjson/identity-contracts","ranges":[">=0.2.2 <0.3.0",">=0.3.0 <0.4.0"],"script":"test:identity-contracts-compatibility"}'
+
+confusion_integrity="sha512-$(printf 'scope omission confusion fixture\n' | openssl dgst -sha512 -binary | base64 -w0)"
+multi_scope_policy='{"scopes":["@verjson","@tequityapp"],"packages":["@verjson/identity-contracts","@tequityapp/other"]}'
+printf '%s\n' "{\"name\":\"authn-consumer\",\"version\":\"1.0.0\",\"lockfileVersion\":3,\"packages\":{\"\":{\"name\":\"authn-consumer\",\"version\":\"1.0.0\"},\"node_modules/@verjson/identity-contracts\":{\"name\":\"@verjson/identity-contracts\",\"resolved\":\"https://npm.pkg.github.com/download/@verjson/identity-contracts/0.3.0/archive\",\"integrity\":\"$two_call_integrity\"},\"node_modules/@tequityapp/other\":{\"name\":\"@tequityapp/other\",\"resolved\":\"https://registry.npmjs.org/@tequityapp/other/-/other-1.0.0.tgz\",\"integrity\":\"$confusion_integrity\"}}}" \
+  > "$two_call_root/scope-omission/package-lock.json"
 type_surface_request='{"package":"@verjson/authn","ranges":["1.0.3"],"script":"test:type-surface-compatibility"}'
 
 run_policy_validator() {
@@ -211,6 +217,13 @@ if run_policy_validator "$two_call_root/general" \
   fail "a per-call scope subset expanded beyond protected repository policy"
 else
   pass "a per-call scope subset cannot expand protected repository policy"
+fi
+
+if run_policy_validator "$two_call_root/scope-omission" \
+    '@verjson/identity-contracts' '' "$multi_scope_policy" >/dev/null 2>&1; then
+  fail "a per-call scope omission let a protected-policy scope's package resolve unrouted from the public registry"
+else
+  pass "a per-call scope omission cannot exempt a protected-policy scope from internal routing"
 fi
 
 for malformed_policy in \

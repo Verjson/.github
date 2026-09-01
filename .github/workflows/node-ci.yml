@@ -581,8 +581,8 @@ jobs:
                              or name.split("/", 1)[0] not in policy_scopes
                              for name in policy_packages)):
                   sys.exit("CI_SECRETLESS_PACKAGE_POLICY accepts exact package names under exact lowercase npm scopes only")
-              if not scopes.issubset(policy_scopes) or not approved.issubset(policy_packages):
-                  sys.exit("approved internal scopes and packages must be subsets of trusted repository policy")
+              if scopes != policy_scopes or not approved.issubset(policy_packages):
+                  sys.exit("approved internal scopes must exactly match, and approved internal packages must be a subset of, trusted repository policy")
               policy_compatibility = policy.get("compatibility", {})
               if (not isinstance(policy_compatibility, dict)
                       or any(name not in policy_packages for name in policy_compatibility)
