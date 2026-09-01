@@ -195,6 +195,58 @@ reject_nested "an unknown nested manifest key is rejected" \
 reject_nested "a nested approvedPackages entry outside the approved scopes is rejected" \
   '[{"path":"examples/nested","approvedPackages":["@attacker/nested-lib"],"scriptPlan":[]}]'
 
+# Bounds and shapes. Each of these would otherwise widen either the fan-out the
+# credentialed job performs or the set of packages one manifest can authorize.
+reject_nested "an empty nested manifest list is rejected" '[]'
+reject_nested "a nested manifest list is not an object" \
+  '{"path":"examples/nested","approvedPackages":[],"scriptPlan":[]}'
+reject_nested "more than eight nested manifests are rejected" \
+  "$(python3 -c 'import json;print(json.dumps([{"path":f"examples/n{i}","approvedPackages":[],"scriptPlan":[]} for i in range(9)]))')"
+reject_nested "malformed nested manifest JSON is rejected" \
+  '[{"path":"examples/nested",'
+reject_nested "a duplicate key inside a nested manifest object is rejected" \
+  '[{"path":"examples/nested","approvedPackages":["@verjson/nested-lib"],"scriptPlan":[],"approvedPackages":["@attacker/x"]}]'
+reject_nested "a non-list nested approvedPackages is rejected" \
+  '[{"path":"examples/nested","approvedPackages":"@verjson/nested-lib","scriptPlan":[]}]'
+reject_nested "a repeated package within one nested approvedPackages is rejected" \
+  '[{"path":"examples/nested","approvedPackages":["@verjson/nested-lib","@verjson/nested-lib"],"scriptPlan":[]}]'
+reject_nested "more than eight nested script plan entries are rejected" \
+  '[{"path":"examples/nested","approvedPackages":["@verjson/nested-lib"],"scriptPlan":["a","b","c","d","e","f","g","h","i"]}]'
+
+# A declared directory that carries no lockfile of its own has nothing the
+# credentialed job could verify, so it must be refused rather than silently
+# resolved against the root lock.
+mkdir -p "$paired/examples/bare"
+printf '%s\n' '{"name":"bare","version":"1.0.0","scripts":{"verify":"true"}}' \
+  > "$paired/examples/bare/package.json"
+reject_nested "a nested manifest without its own package-lock.json is rejected" \
+  '[{"path":"examples/bare","approvedPackages":["@verjson/nested-lib"],"scriptPlan":[]}]'
+
+reject_nested "a non-ASCII nested path segment is rejected" \
+  '[{"path":"examples/nestеd","approvedPackages":["@verjson/nested-lib"],"scriptPlan":[]}]'
+reject_nested "an over-long nested path segment is rejected" \
+  "$(python3 -c 'print("[{\"path\":\"examples/" + "n" * 65 + "\",\"approvedPackages\":[],\"scriptPlan\":[]}]")')"
+
+# Two declarations can name the same physical directory through a symlink. Each
+# is still verified against its own approvedPackages, so the union of the two
+# approvals never becomes usable: exact-set equality rejects the shared lock.
+alias_fixture="$tmp/alias"
+write_lock "$alias_fixture/package-lock.json" '@verjson/root-lib' "$root_url" "$root_integrity"
+other_integrity="sha512-$(integrity_of other-lib)"
+other_url='https://npm.pkg.github.com/download/@verjson/other-lib/3.0.0/ccc'
+write_lock "$alias_fixture/examples/nested/package-lock.json" \
+  '@verjson/nested-lib' "$nested_url" "$nested_integrity" \
+  '@verjson/other-lib' "$other_url" "$other_integrity"
+ln -s nested "$alias_fixture/examples/aliased"
+
+if run_validator "$alias_fixture" '@verjson/root-lib' \
+    '[{"path":"examples/nested","approvedPackages":["@verjson/nested-lib"],"scriptPlan":[]},{"path":"examples/aliased","approvedPackages":["@verjson/other-lib"],"scriptPlan":[]}]' \
+    >/dev/null 2>&1; then
+  fail "two aliased declarations combined their approvals over one shared lock"
+else
+  pass "aliased nested declarations cannot union their approvals over one lock"
+fi
+
 # pnpm has to be refused for the declaration itself, before any lock is read —
 # otherwise the guard is indistinguishable from an unrelated parse failure.
 pnpm_output="$(run_validator "$paired" '@verjson/root-lib' "$nested_plan" '@verjson' '' pnpm 2>&1)"
@@ -358,6 +410,42 @@ elif [ ! -s "$plan_fixture/npm.log" ]; then
   pass "a nested plan naming a script absent from its own package.json fails before npm"
 else
   fail "a nested plan naming a foreign script reached npm before failing"
+fi
+
+reject_plan() {
+  local label="$1" root_plan="$2" nested="$3"
+  if run_plan "$root_plan" "$nested" >/dev/null 2>&1; then
+    fail "$label"
+  else
+    pass "$label"
+  fi
+}
+
+# unsetEnv can strip environment from a script, but never the variables the
+# credentialless job relies on to stay credential-free and cache-bound.
+reject_plan "a nested plan unsetting a credential variable is rejected" '' \
+  '[{"path":"examples/nested","approvedPackages":[],"scriptPlan":[{"script":"verify","unsetEnv":["NODE_AUTH_TOKEN"]}]}]'
+reject_plan "a nested plan unsetting the npm cache override is rejected" '' \
+  '[{"path":"examples/nested","approvedPackages":[],"scriptPlan":[{"script":"verify","unsetEnv":["NPM_CONFIG_CACHE"]}]}]'
+reject_plan "a nested plan repeating a script name is rejected" '' \
+  '[{"path":"examples/nested","approvedPackages":[],"scriptPlan":["verify","verify"]}]'
+reject_plan "a nested plan with an invalid script name is rejected" '' \
+  '[{"path":"examples/nested","approvedPackages":[],"scriptPlan":["verify; rm -rf /"]}]'
+reject_plan "a parent-traversal nested path is rejected before any script runs" '' \
+  '[{"path":"../elsewhere","approvedPackages":[],"scriptPlan":["verify"]}]'
+
+# The execution job runs on a PR-authored checkout, so it re-proves containment
+# itself rather than trusting the credentialed job's earlier check.
+mkdir -p "$plan_fixture/examples" "$tmp/outside-plan"
+printf '%s\n' '{"name":"outside","version":"1.0.0","scripts":{"verify":"true"}}' \
+  > "$tmp/outside-plan/package.json"
+ln -s "$tmp/outside-plan" "$plan_fixture/examples/linked"
+reject_plan "a symlinked nested path escaping the checkout is rejected before any script runs" '' \
+  '[{"path":"examples/linked","approvedPackages":[],"scriptPlan":["verify"]}]'
+if [ ! -s "$plan_fixture/npm.log" ]; then
+  pass "no script ran for any rejected nested plan"
+else
+  fail "a rejected nested plan still reached npm"
 fi
 
 # The protected candidate variant re-implements the same loop inside a
