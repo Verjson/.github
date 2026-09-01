@@ -18,6 +18,15 @@ test('accepts the npm 12 package-keyed object receipt', () => {
   );
 });
 
+for (const missingName of [undefined, '']) {
+  test(`rejects omitted expected package identity ${JSON.stringify(missingName)}`, () => {
+    assert.throws(
+      () => resolvePackedTarball(JSON.stringify([receipt]), missingName),
+      /expected npm package name is required/,
+    );
+  });
+}
+
 for (const [behavior, value, message] of [
   ['invalid JSON', '{', /not valid JSON/],
   ['a scalar receipt', 'null', /expected an array or object/],
@@ -34,3 +43,20 @@ for (const [behavior, value, message] of [
     assert.throws(() => resolvePackedTarball(value, expectedName), message);
   });
 }
+
+test('rejects an npm 12 receipt whose object key is not the expected package', () => {
+  assert.throws(
+    () => resolvePackedTarball(JSON.stringify({ '@verjson/other': receipt }), expectedName),
+    /receipt is keyed by @verjson\/other/,
+  );
+});
+
+test('rejects an npm 12 receipt whose entry name disagrees with its package key', () => {
+  assert.throws(
+    () => resolvePackedTarball(
+      JSON.stringify({ [expectedName]: { ...receipt, name: '@verjson/other' } }),
+      expectedName,
+    ),
+    /tarball for @verjson\/other/,
+  );
+});

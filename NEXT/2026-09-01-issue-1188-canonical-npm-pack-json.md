@@ -9,4 +9,5 @@ Own the type-surface contract's `npm pack --json` parser centrally and generate 
 consumer helper and byte-identity test from an immutable contract revision. The parser
 accepts npm 11 array receipts and npm 12 package-keyed object receipts, while rejecting
 missing or unsafe filenames, non-tarballs, multiple entries, and wrong-package tarballs
-before a consumer joins or installs the reported path.
+before a consumer joins or installs the reported path. npm 12 object receipts must also
+carry the expected package as their sole own key and agree with the entry's package name.

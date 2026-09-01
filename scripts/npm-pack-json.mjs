@@ -7,6 +7,10 @@
  * specifier, so every unexpected shape fails closed here instead.
  */
 export function resolvePackedTarball(stdout, expectedName) {
+  if (typeof expectedName !== 'string' || expectedName === '') {
+    throw new Error('expected npm package name is required');
+  }
+
   let parsed;
   try {
     parsed = JSON.parse(stdout);
@@ -14,11 +18,10 @@ export function resolvePackedTarball(stdout, expectedName) {
     throw new Error(`npm pack output is not valid JSON: ${stdout}`, { cause });
   }
 
-  const entries = Array.isArray(parsed)
-    ? parsed
-    : parsed !== null && typeof parsed === 'object'
-      ? Object.values(parsed)
-      : null;
+  const objectReceipt =
+    !Array.isArray(parsed) && parsed !== null && typeof parsed === 'object';
+  const objectKeys = objectReceipt ? Object.keys(parsed) : null;
+  const entries = Array.isArray(parsed) ? parsed : objectReceipt ? Object.values(parsed) : null;
   if (entries === null) {
     throw new Error(`npm pack returned ${typeof parsed}, expected an array or object`);
   }
@@ -30,6 +33,11 @@ export function resolvePackedTarball(stdout, expectedName) {
     throw new Error(
       `npm pack packed ${entries.length} tarballs, expected exactly one: ` +
         entries.map((entry) => entry?.filename ?? '<unnamed>').join(', '),
+    );
+  }
+  if (objectReceipt && objectKeys[0] !== expectedName) {
+    throw new Error(
+      `npm pack receipt is keyed by ${objectKeys[0]}, expected ${expectedName}`,
     );
   }
 
@@ -45,7 +53,7 @@ export function resolvePackedTarball(stdout, expectedName) {
   if (filename !== basenameOf(filename)) {
     throw new Error(`npm pack filename is not a bare file name: ${filename}`);
   }
-  if (expectedName !== undefined && name !== expectedName) {
+  if (name !== expectedName) {
     throw new Error(`npm pack produced a tarball for ${name}, expected ${expectedName}`);
   }
 
