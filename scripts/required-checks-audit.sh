@@ -197,6 +197,7 @@ generated_contract_identity_for_repo() ( # $1 = repo, $2 = audited head or empty
   for path in \
     .github/workflows/changelog.yml \
     .github/workflows/release.yml \
+    .github/workflows/changelog-contract.yml \
     scripts/render-next.sh \
     scripts/changelog-contract.test.sh; do
     name="${path##*/}"
@@ -287,16 +288,46 @@ PY
     args+=(--package-dir "$package_dir")
   done < <(jq -r '.package_dirs[]' <<<"$params")
 
+  # `pr-gate` takes the pin plus an optional `--untrusted-runner` label list —
+  # the one knob that changes its output. That knob is not recorded anywhere
+  # the audit already reads (unlike scope/node/package-dirs, which live in the
+  # contract test), so it has to be recovered from the artifact's own `runs-on:`
+  # line. `emit_pr_gate` renders it as a bare (unquoted) `[label, label]` flow
+  # sequence, not JSON — so the shape check below matches that exact rendering,
+  # byte for byte, rather than a best-effort parse that would let a hand-edited
+  # `runs-on:` regenerate to match itself.
+  local pr_gate_args=() runner
+  runner="$(sed -n 's/^ *runs-on: //p' "$tmp/actual/changelog-contract.yml" | head -1)"
+  case "$runner" in
+    ubuntu-24.04) ;;
+    '['*']')
+      local inner labels
+      inner="${runner#\[}"; inner="${inner%\]}"
+      if [[ "$inner" =~ ^[a-z0-9][a-z0-9_-]*(,\ [a-z0-9][a-z0-9_-]*)*$ ]]; then
+        labels="${inner//, /,}"
+        pr_gate_args=(--untrusted-runner "$labels")
+      else
+        echo "::error::phase=audit repo=$repo result=generated-contract-runner-shape-invalid path=.github/workflows/changelog-contract.yml"
+        return 1
+      fi
+      ;;
+    *)
+      echo "::error::phase=audit repo=$repo result=generated-contract-runner-shape-invalid path=.github/workflows/changelog-contract.yml"
+      return 1
+      ;;
+  esac
+
   local generator_env=(env -i "PATH=$PATH" "HOME=$tmp/home" "LC_ALL=C" "REPO_ROOT=$repo_root")
   if ! "${generator_env[@]}" "$tmp/gen-changelog-caller.sh" "$mode" "$pin" >"$tmp/expected/changelog.yml" 2>/dev/null ||
     ! "${generator_env[@]}" "$tmp/gen-changelog-caller.sh" renderer "$pin" >"$tmp/expected/render-next.sh" 2>/dev/null ||
     ! "${generator_env[@]}" "$tmp/gen-changelog-caller.sh" contract-test "$pin" "${args[@]}" >"$tmp/expected/changelog-contract.test.sh" 2>/dev/null ||
-    ! "${generator_env[@]}" "$tmp/gen-changelog-caller.sh" release-node "$pin" "${args[@]}" >"$tmp/expected/release.yml" 2>/dev/null; then
+    ! "${generator_env[@]}" "$tmp/gen-changelog-caller.sh" release-node "$pin" "${args[@]}" >"$tmp/expected/release.yml" 2>/dev/null ||
+    ! "${generator_env[@]}" "$tmp/gen-changelog-caller.sh" pr-gate "$pin" "${pr_gate_args[@]}" >"$tmp/expected/changelog-contract.yml" 2>/dev/null; then
     echo "::error::phase=audit repo=$repo result=canonical-generation-failed pin=$pin"
     return 1
   fi
 
-  for name in changelog.yml render-next.sh changelog-contract.test.sh release.yml; do
+  for name in changelog.yml render-next.sh changelog-contract.test.sh release.yml changelog-contract.yml; do
     cmp -s "$tmp/actual/$name" "$tmp/expected/$name" || {
       echo "::error::phase=audit repo=$repo result=generated-contract-byte-drift artifact=$name pin=$pin"
       return 1
