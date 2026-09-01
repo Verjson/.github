@@ -105,7 +105,20 @@ case "$*" in
     # Properties are fetched per repository, so a mixed-stack run needs a
     # per-repository answer. A test that only calls `stack` gets the single
     # shared file, exactly as before.
-    endpoint="${args[1]}"; repo="${endpoint#repos/*/}"; repo="${repo%%/*}"
+    #
+    # #1225: the repo name used to fall out of `${args[1]}` unconditionally,
+    # trusting that position to hold this exact endpoint shape. A caller (or a
+    # future stub change) that put anything else there would still parse to
+    # *some* string and silently answer with the wrong repository's (or the
+    # shared) properties file instead of failing — the real script would then
+    # see one repository's classification for another's. Assert the shape
+    # before trusting it.
+    endpoint="${args[1]}"
+    case "$endpoint" in
+      repos/*/*/properties/values) : ;;
+      *) printf 'unexpected properties endpoint: %s\n' "$endpoint" >&2; exit 65 ;;
+    esac
+    repo="${endpoint#repos/*/}"; repo="${repo%%/*}"
     if [ -f "$STUB_TMP/props-$repo.json" ]; then
       emit "$STUB_TMP/props-$repo.json"
     else
@@ -580,6 +593,17 @@ rc="$(PROPS_FAIL=true run_audit)"
 { [ "$rc" != "rc=0" ] && grep -q 'properties-unreadable' "$tmp/out.txt"; } \
   && pass "an unreadable custom-property value fails closed" \
   || { fail "a property API failure was treated as classification ($rc)"; out | sed 's/^/diag - /'; }
+
+# --- the stub's own endpoint-shape assumption is enforced, not implicit ------
+# #1225: the repo name used to fall out of `${args[1]}` unconditionally. The
+# production script only ever emits `repos/<org>/<repo>/properties/values`, so
+# this is a self-test of the fixture rather than of the script: it asserts
+# that a shape the script does not currently send would be caught loudly, not
+# silently misparsed into the wrong (or shared) properties file.
+gh_out=$("$tmp/bin/gh" api "repos/properties/values" --jq '.' 2>&1); gh_rc=$?
+{ [ "$gh_rc" -eq 65 ] && grep -q 'unexpected properties endpoint' <<<"$gh_out"; } \
+  && pass "the gh stub refuses a properties endpoint missing a path segment" \
+  || { fail "the gh stub silently accepted a malformed properties endpoint (rc=$gh_rc)"; printf 'diag - %s\n' "$gh_out"; }
 
 rc="$(WORKFLOWS_FAIL=true run_audit)"
 { [ "$rc" != "rc=0" ] && grep -q 'workflow-source-unreadable' "$tmp/out.txt"; } \
