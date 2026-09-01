@@ -37,6 +37,10 @@ name: node-ci (reusable)
 
 on:
   workflow_call:
+    outputs:
+      should-run:
+        description: Whether the lane executed or deferred on the release-age gate.
+        value: ${{ jobs.eligibility.outputs.should-run }}
     inputs:
       node-version:
         description: Node.js version for actions/setup-node
