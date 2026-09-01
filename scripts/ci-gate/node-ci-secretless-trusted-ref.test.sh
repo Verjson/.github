@@ -55,7 +55,9 @@ assert "npm ci --ignore-scripts" in install["run"]
 assert "printf '%s=\\n' \"$name\"" in install["run"]
 assert 'command = ["npm", "rebuild"] if package_manager == "npm" else ["corepack", "pnpm", "rebuild"]' in rebuild["run"]
 assert 'subprocess.run([*command, *requested], check=True)' in rebuild["run"]
-assert 'subprocess.run(["npm", "run", name], check=True, env=script_env)' in plan["run"]
+# Each planned script runs in the manifest that declared it (#1229), so the
+# pinned execution call carries that directory rather than assuming the root.
+assert 'subprocess.run(["npm", "run", name], check=True, env=script_env, cwd=directory)' in plan["run"]
 
 for command in ("npm run build", "npm run typecheck --if-present", "npm test", "npm run lint --if-present"):
     step = next(step for step in steps if step.get("run") == command)

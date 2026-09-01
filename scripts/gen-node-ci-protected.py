@@ -75,7 +75,8 @@ def isolate_candidate_runtime_cache(document: str) -> str:
     plan_if = (
         "needs.eligibility.outputs.should-run != 'false' && "
         "(inputs.secretless-pr || inputs.secretless-trusted-ref) && "
-        "inputs.secretless-ci-script-plan != ''"
+        "(inputs.secretless-ci-script-plan != '' || "
+        "inputs.secretless-nested-manifests != '')"
     )
     step_marker = f"      - name: {step_name}\n"
     step_start = document.index(step_marker)
@@ -121,11 +122,11 @@ def isolate_candidate_runtime_cache(document: str) -> str:
     if step.count(imports) != 1:
         raise SystemExit("protected candidate script plan imports changed")
     step = step.replace(imports, protected_imports, 1)
-    execution = """          for name, unset_env in normalized:
+    execution = """          for directory, name, unset_env in normalized:
               script_env = os.environ.copy()
               for env_name in unset_env:
                   script_env.pop(env_name, None)
-              subprocess.run(["npm", "run", name], check=True, env=script_env)
+              subprocess.run(["npm", "run", name], check=True, env=script_env, cwd=directory)
 """
     isolated_execution = f"""          max_cache_files = {CANDIDATE_CACHE_MAX_FILES}
           max_cache_bytes = {CANDIDATE_CACHE_MAX_BYTES}
@@ -536,7 +537,7 @@ def isolate_candidate_runtime_cache(document: str) -> str:
               previous_handlers[caught_signal] = signal.getsignal(caught_signal)
               signal.signal(caught_signal, handle_signal)
           try:
-              for index, (name, unset_env) in enumerate(normalized):
+              for index, (script_directory, name, unset_env) in enumerate(normalized):
                   if inventory(baseline) != baseline_inventory:
                       sys.exit("verified runtime cache changed before candidate script")
                   script_cache = cache_root / str(index)
@@ -662,7 +663,7 @@ def isolate_candidate_runtime_cache(document: str) -> str:
                               "--bind", str(script_tmp), str(script_tmp),
                               "--proc", "/proc",
                               "--dev", "/dev",
-                              "--chdir", str(workspace),
+                              "--chdir", str(script_directory),
                               "--",
                               str(npm_executable), "run", name,
                           ],
@@ -789,7 +790,7 @@ def render() -> str:
     checkout = "        with:\n          submodules: ${{ (inputs.secretless-pr || inputs.secretless-trusted-ref) && 'false' || 'recursive' }}\n"
     document = replace_once(document, checkout, "        with:\n          ref: ${{ inputs.head-sha }}\n          submodules: ${{ (inputs.secretless-pr || inputs.secretless-trusted-ref) && 'false' || 'recursive' }}\n")
     rebuild_if = "needs.eligibility.outputs.should-run != 'false' && (inputs.secretless-pr || inputs.secretless-trusted-ref) && inputs.secretless-rebuild-packages != ''"
-    plan_if = "needs.eligibility.outputs.should-run != 'false' && (inputs.secretless-pr || inputs.secretless-trusted-ref) && inputs.secretless-ci-script-plan != ''"
+    plan_if = "needs.eligibility.outputs.should-run != 'false' && (inputs.secretless-pr || inputs.secretless-trusted-ref) && (inputs.secretless-ci-script-plan != '' || inputs.secretless-nested-manifests != '')"
     default_if = "needs.eligibility.outputs.should-run != 'false' && (!(inputs.secretless-pr || inputs.secretless-trusted-ref) || inputs.secretless-ci-script-plan == '')"
     document = replace_once(document, "      - name: Rebuild exact approved lifecycle packages without credentials\n", verifier_step(rebuild_if) + "      - name: Rebuild exact approved lifecycle packages without credentials\n")
     document = replace_once(document, "      - name: Run exact credentialless consumer script plan\n", verifier_step(plan_if) + "      - name: Run exact credentialless consumer script plan\n")

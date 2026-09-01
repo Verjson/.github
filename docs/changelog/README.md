@@ -356,8 +356,47 @@ release notes — the same restart-safe release-notes logic `node-release.yml`
 uses, inlined here because there is no separate reusable publication workflow
 for artifact releases. The generated contract test recognizes either shape as
 a conformant release caller; a file that calls `changelog-release.yml` but
-matches neither generated provenance comment is rejected as a hand-rolled
+matches no generated provenance comment is rejected as a hand-rolled
 substitute, exactly as before.
+
+### Adopters that publish nothing from the release workflow (#1206)
+
+A repository can publish nothing from its release run and still cut versioned
+releases — container images shipped by a separate, independently triggered
+workflow are the concrete case. `release-node` fails at `npm publish` on a
+`private` or unscoped package, and `release-artifact` requires a
+`--build-runner` matrix and an executable `scripts/release-build.sh` that
+produces at least one file. Neither is satisfiable, and "no release caller at
+all" means the repository's `NEXT/` fragments are never consumed into
+`CHANGELOG/<version>.md`.
+
+`scripts/gen-changelog-caller.sh release-snapshot` is that shape:
+
+```bash
+scripts/gen-changelog-caller.sh release-snapshot "$PIN" > .github/workflows/release.yml
+scripts/gen-changelog-caller.sh contract-test "$PIN" > scripts/changelog-contract.test.sh
+```
+
+It keeps the same immutable `verify` → `snapshot` boundary as the other two
+callers, byte-for-byte in intent, and stops there: `publish` creates or updates
+the tag's GitHub Release from the immutable `CHANGELOG/<version>.md` with the
+same restart-safe notes logic, and attaches nothing. There is no `build` job,
+no `scripts/release-build.sh` requirement, and no `--build-runner`,
+`--approved-internal-package` or `--release-asset` flag — a caller generated in
+this mode that grows any of them has been hand-edited, and the generated
+contract test rejects it. An adopter that later gains something to publish
+regenerates as `release-node` or `release-artifact` rather than editing this
+file.
+
+Reaching for `release-node` with a `"private": true` package is now refused
+before anything irreversible happens. node-release.yml only ever runs as
+`publish`, so a failure there lands on top of a tag and an immutable
+`CHANGELOG/<version>.md` that are already pushed and cannot be re-cut. A
+generated `release-node` caller therefore refuses an unpublishable package in
+`verify` — the last stage that still precedes the snapshot push — and names
+`release-snapshot` as the fix. node-release.yml repeats the refusal in
+`Validate release package directories` for adopters still pinned to an older
+caller, so the failure at least states its cause.
 
 ### Release proposals are generated and explicitly autonomous
 
@@ -422,11 +461,13 @@ scripts/gen-changelog-caller.sh pr-gate "$PIN" > .github/workflows/changelog-con
 # adds a fragment through the Git Data API when the bot did not provide one.
 scripts/gen-changelog-caller.sh renovate-attribution "$PIN" > .github/workflows/renovate-changelog.yml
 # Only one release caller at a time. Use release-node if the repository
-# publishes a Node package to a registry, or release-artifact if it ships
-# GitHub Release assets instead (#975). Adopters with nothing to publish keep
-# having no release caller at all.
+# publishes a Node package to a registry, release-artifact if it ships GitHub
+# Release assets instead (#975), or release-snapshot if it publishes nothing
+# from the release workflow but still cuts versioned releases (#1206). Only a
+# repository that cuts no releases at all keeps having no release caller.
 scripts/gen-changelog-caller.sh release-node "$PIN" > .github/workflows/release.yml
 # scripts/gen-changelog-caller.sh release-artifact "$PIN" --build-runner ubuntu-24.04 > .github/workflows/release.yml
+# scripts/gen-changelog-caller.sh release-snapshot "$PIN" > .github/workflows/release.yml
 chmod +x scripts/render-next.sh scripts/changelog-contract.test.sh
 ```
 

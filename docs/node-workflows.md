@@ -204,6 +204,32 @@ OIDC credential controls cannot be removed. Both features execute only after
 credential scrub and the offline install. When a script plan is supplied it
 replaces the default build/typecheck/test/lint sequence.
 
+A repository whose private dependencies are not all reachable from the root
+lockfile — an example directory with its own `package.json` and
+`package-lock.json`, say — declares those manifests with
+`secretless-nested-manifests`, a JSON array of 1–8 objects carrying exactly
+`path`, `approvedPackages`, and `scriptPlan`:
+
+```yaml
+      secretless-nested-manifests: |
+        [{"path": "examples/catalog-google-login",
+          "approvedPackages": ["@verjson/oidc-claims-middleware"],
+          "scriptPlan": ["verify"]}]
+```
+
+`path` is a relative checkout directory whose resolved location must stay inside
+the workspace, and it must hold its own `package.json` and `package-lock.json`.
+Authorization is **per manifest**: each lockfile's private package set must equal
+that manifest's own `approvedPackages` exactly, so no manifest can install a
+package another manifest approved, in either direction. Each `scriptPlan` is
+validated against — and executed in — its own manifest directory, so a nested
+plan cannot name a script that only the root `package.json` declares. Nested
+manifests require `package-manager: npm`, and their acquired blobs join the same
+bounded, digest-verified transfer the root manifest uses; the execution job
+installs every manifest from that one verified cache with no network credential
+and `--ignore-scripts`. Pass the same value to every job that invokes the
+reusable workflow, exactly as with `approved-internal-packages`.
+
 The handoff uses the repository cache service rather than organization artifact
 storage. Acquisition generates an unguessable nonce and binds it with
 `github.run_id` and `github.run_attempt`; restore uses the internally passed key

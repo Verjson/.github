@@ -20,6 +20,7 @@ platform	bash scripts/ci-gate/node-ci-secretless-pnpm-install.test.sh
 platform	bash scripts/ci-gate/node-ci-secretless-trusted-ref.test.sh
 platform	bash scripts/ci-gate/node-ci-secretless-consumer.test.sh
 platform	bash scripts/ci-gate/node-ci-secretless-transfer.test.sh
+platform	bash scripts/ci-gate/node-ci-secretless-nested-manifests.test.sh
 platform	bash scripts/immutable-release-docs.test.sh
 platform	bash scripts/ci-gate/node-ci-db-service.test.sh
 platform	bash scripts/ci-gate/node-ci-cache-service.test.sh
@@ -153,6 +154,7 @@ changelog-release	bash scripts/ci-gate/release-node-assets.test.sh
 changelog-release	bash scripts/ci-gate/release-node-local-pack.test.sh
 changelog-release	bash scripts/ci-gate/release-node-notes.test.sh
 changelog-release	bash scripts/ci-gate/release-node-deprecate.test.sh
+changelog-release	bash scripts/ci-gate/release-node-private-package.test.sh
 changelog-release	bash scripts/ci-gate/changelog-release-caller.test.sh
 changelog-release	python3 scripts/ci-gate/changelog-release-propose.test.py
 changelog-release	bash scripts/ci-gate/changelog-contract-resolution.test.sh
