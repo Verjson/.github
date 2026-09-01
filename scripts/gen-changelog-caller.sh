@@ -797,8 +797,8 @@ jobs:
         run: |
           package_dirs=(${package_dirs_shell})
           for package_dir in "\${package_dirs[@]}"; do
-            # A directory with no package.json publishes nothing, and this same
-            # job fails on it at npm ci or npm version regardless.
+            # A directory with no package.json publishes nothing, and the
+            # install and version-stamping steps below fail on it regardless.
             [ -f "\$package_dir/package.json" ] || continue
             is_private="\$(node -p 'JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).private === true' "\$package_dir/package.json")"
             if [ "\$is_private" = true ]; then
