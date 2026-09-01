@@ -11,6 +11,7 @@ Reverse-chronological index of org-level decisions.
 <!-- BEGIN ADR INDEX -->
 | # | Date | Decision |
 |---|------|----------|
+| [0159](0159-graduate-packages-to-v1-by-evidence/README.md) | 2026-09-01 | Graduate packages to `v1` by evidence, not by organization-wide wave |
 | [0158](0158-pre-credential-release-reconciliation-hook/README.md) | 2026-09-01 | Container releases reconcile derived inputs before minting the release credential |
 | [0157](0157-per-manifest-secretless-acquisition/README.md) | 2026-09-01 | Scope secretless acquisition and authorization per declared manifest |
 | [0156](0156-deferred-ci-legible-to-merge-gate/README.md) | 2026-09-01 | Make Renovate-deferred CI legible to the pre-merge assertion |

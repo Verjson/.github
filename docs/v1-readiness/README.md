@@ -1,8 +1,8 @@
 # Organization `v1.0.0` readiness contract
 
 This contract is the canonical readiness bar a `@verjson/*` package must clear before
-its version is cut to `v1.0.0`. It is the authoritative checklist referenced by every
-per-repository `v1.0.0` prep issue.
+its version is cut to `v1.0.0`. It is applied to one candidate package at a time; clearing
+the bar makes a package eligible to graduate but does not require a release.
 
 Link it **at an immutable commit**, never at `main`, so the bar a repository was audited
 against stays readable after the bar moves:
@@ -11,8 +11,9 @@ against stays readable after the bar moves:
 https://github.com/Verjson/.github/blob/<40-hex-sha>/docs/v1-readiness/README.md
 ```
 
-The decision to run the wave, the release ordering, and the two-phase rollout are recorded
-in [ADR 0137](../decisions/0137-cut-v1-0-0-across-pre-1-0-packages/README.md).
+The package-scoped graduation policy is recorded in
+[ADR 0159](../decisions/0159-graduate-packages-to-v1-by-evidence/README.md), which
+supersedes the organization-wide release wave in ADR 0137.
 
 ## Why `1.0.0` at all
 
