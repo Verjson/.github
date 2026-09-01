@@ -657,15 +657,14 @@ jobs:
                   if not set(ranges).issubset(protected_ranges):
                       sys.exit("secretless compatibility package and ranges must be authorized by trusted repository policy")
 
-          found = set()
           private_downloads = {}
           package_manager = os.environ.get("PACKAGE_MANAGER", "npm")
-          if package_manager == "npm":
-              lock_path = Path("package-lock.json")
+
+          def npm_lock_candidates(lock_path):
               lock = json.loads(lock_path.read_text(encoding="utf-8"))
               if lock.get("lockfileVersion") not in (2, 3):
                   sys.exit("secretless npm mode requires package-lock lockfileVersion 2 or 3")
-              candidates = []
+              collected = []
               for path, package in lock.get("packages", {}).items():
                   if path == "":
                       continue
@@ -675,7 +674,11 @@ jobs:
                   path_is_internal = (isinstance(path_name, str)
                                       and any(path_name.startswith(scope + "/") for scope in scopes))
                   entry_name = path_name if path_is_internal else locked_name
-                  candidates.append((entry_name, locked_name, package.get("resolved", ""), package.get("integrity")))
+                  collected.append((entry_name, locked_name, package.get("resolved", ""), package.get("integrity")))
+              return collected
+
+          if package_manager == "npm":
+              candidates = npm_lock_candidates(Path("package-lock.json"))
           elif package_manager == "pnpm":
               lock_path = Path("pnpm-lock.yaml")
               if lock_path.stat().st_size > 10 * 1024 * 1024:
@@ -749,43 +752,48 @@ jobs:
           else:
               sys.exit("package-manager accepts only npm or pnpm")
 
-          for entry_name, locked_name, resolved, integrity in candidates:
-              parsed = urlparse(resolved)
-              resolved_path = unquote(parsed.path)
-              registry_name = None
-              if parsed.hostname == "npm.pkg.github.com":
-                  parts = resolved_path.split("/")
-                  if (parsed.scheme != "https" or parsed.netloc != "npm.pkg.github.com"
-                          or parsed.query or parsed.fragment or len(parts) != 6
-                          or resolved != f"https://npm.pkg.github.com{resolved_path}"
-                          or "\\" in resolved_path
-                          or parts[1] != "download" or not parts[2].startswith("@")
-                          or any(part in ("", ".", "..") for part in parts[1:])):
-                      sys.exit(f"invalid GitHub Packages download URL: {resolved}")
-                  registry_name = f"{parts[2]}/{parts[3]}"
-                  if parts[2] not in scopes or registry_name not in approved:
-                      sys.exit(f"unapproved GitHub Packages download: {registry_name}")
-                  if not isinstance(integrity, str) or re.fullmatch(
-                          r"sha512-[A-Za-z0-9+/]{86}==", integrity) is None:
-                      sys.exit(f"{registry_name} requires one exact sha512 lock integrity")
-                  try:
-                      digest = base64.b64decode(integrity.removeprefix("sha512-"), validate=True)
-                  except ValueError:
-                      sys.exit(f"{registry_name} has invalid sha512 lock integrity")
-                  if len(digest) != 64:
-                      sys.exit(f"{registry_name} has invalid sha512 lock integrity")
-                  digest_hex = digest.hex()
-                  prior_digest = private_downloads.setdefault(resolved, digest_hex)
-                  if prior_digest != digest_hex:
-                      sys.exit(f"{registry_name} repeats one download URL with different integrity")
-              if (not isinstance(entry_name, str)
-                      or not any(entry_name.startswith(scope + "/") for scope in scopes)):
-                  continue
-              if locked_name and locked_name != entry_name:
-                  sys.exit(f"{entry_name} lock entry aliases unexpected package {locked_name}")
-              if registry_name != entry_name:
-                  sys.exit(f"{entry_name} is not pinned to its GitHub Packages download URL")
-              found.add(entry_name)
+          def verify_candidates(candidates, manifest_approved, where):
+              found = set()
+              for entry_name, locked_name, resolved, integrity in candidates:
+                  parsed = urlparse(resolved)
+                  resolved_path = unquote(parsed.path)
+                  registry_name = None
+                  if parsed.hostname == "npm.pkg.github.com":
+                      parts = resolved_path.split("/")
+                      if (parsed.scheme != "https" or parsed.netloc != "npm.pkg.github.com"
+                              or parsed.query or parsed.fragment or len(parts) != 6
+                              or resolved != f"https://npm.pkg.github.com{resolved_path}"
+                              or "\\" in resolved_path
+                              or parts[1] != "download" or not parts[2].startswith("@")
+                              or any(part in ("", ".", "..") for part in parts[1:])):
+                          sys.exit(f"invalid GitHub Packages download URL{where}: {resolved}")
+                      registry_name = f"{parts[2]}/{parts[3]}"
+                      if parts[2] not in scopes or registry_name not in manifest_approved:
+                          sys.exit(f"unapproved GitHub Packages download{where}: {registry_name}")
+                      if not isinstance(integrity, str) or re.fullmatch(
+                              r"sha512-[A-Za-z0-9+/]{86}==", integrity) is None:
+                          sys.exit(f"{registry_name} requires one exact sha512 lock integrity{where}")
+                      try:
+                          digest = base64.b64decode(integrity.removeprefix("sha512-"), validate=True)
+                      except ValueError:
+                          sys.exit(f"{registry_name} has invalid sha512 lock integrity{where}")
+                      if len(digest) != 64:
+                          sys.exit(f"{registry_name} has invalid sha512 lock integrity{where}")
+                      digest_hex = digest.hex()
+                      prior_digest = private_downloads.setdefault(resolved, digest_hex)
+                      if prior_digest != digest_hex:
+                          sys.exit(f"{registry_name} repeats one download URL with different integrity{where}")
+                  if (not isinstance(entry_name, str)
+                          or not any(entry_name.startswith(scope + "/") for scope in scopes)):
+                      continue
+                  if locked_name and locked_name != entry_name:
+                      sys.exit(f"{entry_name} lock entry aliases unexpected package {locked_name}{where}")
+                  if registry_name != entry_name:
+                      sys.exit(f"{entry_name} is not pinned to its GitHub Packages download URL{where}")
+                  found.add(entry_name)
+              return found
+
+          found = verify_candidates(candidates, approved, "")
 
           unapproved = sorted(found - approved)
           compatibility_packages = {compatibility_package} if compatibility_package else set()
@@ -794,6 +802,70 @@ jobs:
               sys.exit("unapproved internal dependencies: " + ", ".join(unapproved))
           if unused:
               sys.exit("approved internal dependencies absent from lock: " + ", ".join(unused))
+
+          nested_source = os.environ.get("NESTED_MANIFESTS", "").strip()
+          if nested_source:
+              if package_manager != "npm":
+                  sys.exit("secretless-nested-manifests currently requires package-manager npm")
+              try:
+                  nested_manifests = json.loads(
+                      nested_source,
+                      object_pairs_hook=reject_duplicate_object_keys,
+                  )
+              except DuplicateObjectKeyError:
+                  sys.exit("secretless-nested-manifests rejects duplicate JSON object keys")
+              except json.JSONDecodeError as error:
+                  sys.exit(f"secretless-nested-manifests must be valid JSON: {error}")
+              if not isinstance(nested_manifests, list) or not 1 <= len(nested_manifests) <= 8:
+                  sys.exit("secretless-nested-manifests accepts 1-8 nested manifest objects")
+              segment_pattern = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
+              declared_paths = []
+              for nested in nested_manifests:
+                  if (not isinstance(nested, dict)
+                          or set(nested) != {"path", "approvedPackages", "scriptPlan"}):
+                      sys.exit("each nested manifest requires exactly path, approvedPackages, and scriptPlan")
+                  nested_path = nested["path"]
+                  if not isinstance(nested_path, str) or not 1 <= len(nested_path) <= 128:
+                      sys.exit("nested manifest path must be one bounded repository-relative directory")
+                  segments = nested_path.split("/")
+                  if (not 1 <= len(segments) <= 8
+                          or any(segment_pattern.fullmatch(segment) is None for segment in segments)):
+                      sys.exit("nested manifest path accepts 1-8 plain directory segments below the repository root")
+                  if nested_path in declared_paths:
+                      sys.exit(f"nested manifest path repeats: {nested_path}")
+                  declared_paths.append(nested_path)
+                  nested_approved = nested["approvedPackages"]
+                  if (not isinstance(nested_approved, list) or not nested_approved
+                          or len(nested_approved) != len(set(nested_approved))
+                          or any(not isinstance(name, str)
+                                 or package_pattern.fullmatch(name) is None
+                                 or name.split("/", 1)[0] not in scopes
+                                 for name in nested_approved)):
+                      sys.exit(f"{nested_path} approvedPackages accepts unique exact names under approved-internal-scopes only")
+                  nested_approved = set(nested_approved)
+                  if trusted_policy and not nested_approved.issubset(policy_packages):
+                      sys.exit(f"{nested_path} approvedPackages must be a subset of trusted repository policy")
+                  nested_plan = nested["scriptPlan"]
+                  if not isinstance(nested_plan, list) or len(nested_plan) > 8:
+                      sys.exit(f"{nested_path} scriptPlan accepts at most 8 entries")
+                  nested_directory = Path(nested_path)
+                  if (not (nested_directory / "package.json").is_file()
+                          or not (nested_directory / "package-lock.json").is_file()):
+                      sys.exit(f"{nested_path} requires its own package.json and package-lock.json")
+                  # Approval is scoped to the manifest that declared it: a nested
+                  # manifest is verified against its own approvedPackages alone and
+                  # never inherits the root's or another manifest's approvals.
+                  nested_found = verify_candidates(
+                      npm_lock_candidates(nested_directory / "package-lock.json"),
+                      nested_approved,
+                      f" in {nested_path}",
+                  )
+                  nested_unapproved = sorted(nested_found - nested_approved)
+                  nested_unused = sorted(nested_approved - nested_found)
+                  if nested_unapproved:
+                      sys.exit(f"unapproved internal dependencies in {nested_path}: " + ", ".join(nested_unapproved))
+                  if nested_unused:
+                      sys.exit(f"approved internal dependencies absent from lock in {nested_path}: " + ", ".join(nested_unused))
 
           entries = Path(os.environ["PRIVATE_CACHE_ENTRIES"])
           try:

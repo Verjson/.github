@@ -69,4 +69,92 @@ assert "secrets." not in str(install.get("env", {}))
 assert "secrets." not in str(plan.get("env", {}))
 PY
 
+validator="$tmp/validate.sh"
+awk '
+  /- name: Validate approved internal dependency lock/ { found = 1; next }
+  found && /python3 - <<'"'"'PY'"'"'/ { copying = 1; next }
+  copying && /^          PY$/ { exit }
+  copying { sub(/^          /, ""); print }
+' "$workflow" > "$validator"
+
+run_validator() {
+  local fixture="$1" approved="$2" nested="$3"
+  local scopes="${4:-@verjson}" policy="${5:-}" package_manager="${6:-npm}"
+  rm -f "$fixture/private-cache-entries"
+  (cd "$fixture" && APPROVED_INTERNAL_PACKAGES="$approved" \
+    APPROVED_INTERNAL_SCOPES="$scopes" NESTED_MANIFESTS="$nested" \
+    PACKAGE_MANAGER="$package_manager" \
+    PRIVATE_CACHE_ENTRIES="$fixture/private-cache-entries" \
+    TRUSTED_PACKAGE_POLICY="$policy" python3 "$validator")
+}
+
+blob() { printf 'content of %s\n' "$1"; }
+integrity_of() { blob "$1" | openssl dgst -sha512 -binary | base64 -w0; }
+digest_of() { blob "$1" | sha512sum | cut -d' ' -f1; }
+
+root_integrity="sha512-$(integrity_of root-lib)"
+nested_integrity="sha512-$(integrity_of nested-lib)"
+root_url='https://npm.pkg.github.com/download/@verjson/root-lib/1.0.0/aaa'
+nested_url='https://npm.pkg.github.com/download/@verjson/nested-lib/2.0.0/bbb'
+
+write_lock() {
+  # write_lock <path> [<name> <url> <integrity>]...
+  local target="$1"; shift
+  local dir; dir="$(dirname "$target")"
+  mkdir -p "$dir"
+  printf '%s\n' '{"name":"fixture","version":"1.0.0","scripts":{"verify":"true"}}' \
+    > "$dir/package.json"
+  local body='{"lockfileVersion":3,"packages":{"":{}'
+  while [ "$#" -gt 0 ]; do
+    body="$body,\"node_modules/$1\":{\"name\":\"$1\",\"resolved\":\"$2\",\"integrity\":\"$3\"}"
+    shift 3
+  done
+  printf '%s\n' "$body}}" > "$target"
+}
+
+nested_plan='[{"path":"examples/nested","approvedPackages":["@verjson/nested-lib"],"scriptPlan":["verify"]}]'
+
+paired="$tmp/paired"
+write_lock "$paired/package-lock.json" '@verjson/root-lib' "$root_url" "$root_integrity"
+write_lock "$paired/examples/nested/package-lock.json" \
+  '@verjson/nested-lib' "$nested_url" "$nested_integrity"
+
+if run_validator "$paired" '@verjson/root-lib' "$nested_plan" >/dev/null 2>&1 \
+    && [ "$(wc -l < "$paired/private-cache-entries")" -eq 2 ] \
+    && grep -qF "$root_url	$(digest_of root-lib)" "$paired/private-cache-entries" \
+    && grep -qF "$nested_url	$(digest_of nested-lib)" "$paired/private-cache-entries"; then
+  pass "a nested manifest's private downloads join the root manifest's verified acquisition set"
+else
+  fail "a nested manifest's private downloads were not acquired alongside the root manifest's"
+fi
+
+# The adversarial control: the root manifest approves @verjson/root-lib, so a
+# nested manifest that pulls it must still be rejected — approval is scoped to
+# the manifest that declared it, never to the workflow call as a whole.
+smuggle="$tmp/smuggle"
+write_lock "$smuggle/package-lock.json" '@verjson/root-lib' "$root_url" "$root_integrity"
+write_lock "$smuggle/examples/nested/package-lock.json" \
+  '@verjson/nested-lib' "$nested_url" "$nested_integrity" \
+  '@verjson/root-lib' "$root_url" "$root_integrity"
+
+if run_validator "$smuggle" '@verjson/root-lib' "$nested_plan" >/dev/null 2>&1; then
+  fail "a nested manifest inherited another manifest's approved package"
+else
+  pass "a package approved only for the root manifest is rejected inside a nested manifest"
+fi
+
+# The mirror control: the root manifest must not inherit a nested approval.
+reverse="$tmp/reverse"
+write_lock "$reverse/package-lock.json" \
+  '@verjson/root-lib' "$root_url" "$root_integrity" \
+  '@verjson/nested-lib' "$nested_url" "$nested_integrity"
+write_lock "$reverse/examples/nested/package-lock.json" \
+  '@verjson/nested-lib' "$nested_url" "$nested_integrity"
+
+if run_validator "$reverse" '@verjson/root-lib' "$nested_plan" >/dev/null 2>&1; then
+  fail "the root manifest inherited a nested manifest's approved package"
+else
+  pass "a package approved only for a nested manifest is rejected inside the root manifest"
+fi
+
 exit $((failures > 0))

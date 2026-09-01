@@ -272,8 +272,11 @@ source = Path(sys.argv[1]).read_text(encoding="utf-8")
 subset_guard = "if scopes != policy_scopes or not approved.issubset(policy_packages):"
 unused_guard = 'if unused:\n    sys.exit("approved internal dependencies absent from lock: " + ", ".join(unused))'
 duplicate_hook = "object_pairs_hook=reject_duplicate_object_keys,"
+# Three authorization-bearing object levels reject duplicate keys: the per-call
+# compatibility request, the trusted repository policy, and the nested-manifest
+# declaration that authorizes packages per manifest (#1229).
 if (source.count(subset_guard) != 1 or source.count(unused_guard) != 1
-        or source.count(duplicate_hook) != 2):
+        or source.count(duplicate_hook) != 3):
     raise SystemExit("expected exact secretless policy guard source once")
 Path(sys.argv[2]).write_text(
     source.replace(subset_guard, "if policy_scopes != scopes or policy_packages != approved:"),
