@@ -208,7 +208,7 @@ grep -q 'imagetools create' "$workflow"
 ! grep -Eq 'build-push-action|docker build|deploy|verjson-cli-cloud' "$workflow"
 grep -q 'Mint exact-repository release App token' "$workflow"
 # Atomic, and with repository hooks disabled: `.git/hooks` is untracked, so nothing
-# in it was reviewed, and this command holds the release App token (ADR 0156).
+# in it was reviewed, and this command holds the release App token (ADR 0157).
 grep -q 'git -c core.hooksPath=/dev/null push --atomic' "$workflow"
 grep -q 'docker/login-action@' "$workflow"
 ! grep -q 'secrets.release-token' "$workflow"
