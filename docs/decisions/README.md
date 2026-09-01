@@ -11,6 +11,7 @@ Reverse-chronological index of org-level decisions.
 <!-- BEGIN ADR INDEX -->
 | # | Date | Decision |
 |---|------|----------|
+| [0161](0161-migrate-ci-to-gitlab-with-measured-parity/README.md) | 2026-09-01 | Migrate CI to GitLab with measured parity and reversible cutovers |
 | [0160](0160-self-host-paid-package-distribution-on-nexus/README.md) | 2026-09-01 | Self-host paid package distribution on Sonatype Nexus Repository |
 | [0159](0159-graduate-packages-to-v1-by-evidence/README.md) | 2026-09-01 | Graduate packages to `v1` by evidence, not by organization-wide wave |
 | [0158](0158-pre-credential-release-reconciliation-hook/README.md) | 2026-09-01 | Container releases reconcile derived inputs before minting the release credential |
