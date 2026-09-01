@@ -78,3 +78,28 @@ Reverting the subset relation to equality restores the authn two-call contradict
 not an acceptable security rollback. A caller can temporarily split its protected policy
 across separate repositories, but must not introduce self-dependencies or expose package
 credentials to consumer-controlled execution.
+
+## Amendment (2026-09-01)
+
+**Issue:** [Verjson/.github#1217](https://github.com/Verjson/.github/issues/1217)
+
+Treating caller `scopes` as merely a subset of `policy_scopes` — this ADR's original
+decision — was itself the defect. Scopes and packages do not carry the same security
+property: the lock-scan loop's internal-vs-public routing (`path_is_internal`, and the
+`found`-set membership filter) is keyed off the caller-supplied `scopes` value directly,
+not off `policy_scopes`. A caller that validly narrowed its own `scopes` to a subset of
+the protected policy silently stopped routing packages under the omitted scope through
+internal-package validation at all — such a package would resolve from the public
+registry unrouted and unchecked, a dependency-confusion shape. It was inert only because
+every consumer policy declared exactly one scope, so subset and equality coincided.
+
+The scope check now requires `scopes == policy_scopes` (exact match), while `approved`
+against `policy_packages` remains a subset check — the package-narrowing behavior this
+ADR exists to authorize is unaffected, since the authn two-call shape (ADR 0149's own
+motivating case) uses a single-scope policy where subset and equality still coincide.
+Only a future multi-scope protected policy would need every call against it to declare
+every protected scope; no such policy exists yet.
+
+Evidence: `scripts/ci-gate/node-ci-secretless-compatibility.test.sh`'s `scope-omission`
+fixture plants a public-registry package under a protected-but-undeclared second scope
+and asserts the validator now fails closed instead of silently ignoring it.
