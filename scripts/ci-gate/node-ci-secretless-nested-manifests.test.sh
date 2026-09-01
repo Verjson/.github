@@ -204,4 +204,107 @@ else
   fail "nested manifests under pnpm failed without the stable declaration reason"
 fi
 
+python3 - "$workflow" "$tmp" <<'PY'
+import sys
+import yaml
+
+doc = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))
+root = sys.argv[2]
+names = {
+    "Package bounded credential-free npm cache": "package.sh",
+    "Install from verified secretless npm cache": "install.sh",
+}
+for job in doc["jobs"].values():
+    for step in job.get("steps", []):
+        if step.get("name") in names:
+            with open(f"{root}/{names[step['name']]}", "w", encoding="utf-8") as stream:
+                stream.write(step["run"])
+PY
+
+mkdir -p "$tmp/bin"
+printf '%s\n' \
+  '#!/usr/bin/env bash' \
+  'printf "%s\t%s\n" "$PWD" "$*" >> "$NPM_STUB_LOG"' \
+  > "$tmp/bin/npm"
+chmod +x "$tmp/bin/npm"
+
+# One end-to-end fixture: a root manifest and a nested manifest, each with a
+# private package only it is authorized for, packaged into the single bounded
+# transfer the credentialless job installs from.
+e2e="$tmp/e2e"
+write_lock "$e2e/package-lock.json" '@verjson/root-lib' "$root_url" "$root_integrity"
+write_lock "$e2e/examples/nested/package-lock.json" \
+  '@verjson/nested-lib' "$nested_url" "$nested_integrity"
+for name in root-lib nested-lib; do
+  digest="$(digest_of "$name")"
+  content="$e2e/package-cache/_cacache/content-v2/sha512/${digest:0:2}/${digest:2:2}/${digest:4}"
+  mkdir -p "$(dirname "$content")"
+  blob "$name" > "$content"
+done
+
+run_package() {
+  local fixture="$1" nested="$2"
+  (cd "$fixture" && PATH="$tmp/bin:$PATH" NPM_STUB_LOG="$fixture/npm.log" \
+    CACHE_DIR="$fixture/package-cache" TRANSFER_DIR="$fixture/transfer" \
+    AUXILIARY_COMMIT='' AUXILIARY_CONTENT_PATH='' AUXILIARY_REPOSITORY='' \
+    NESTED_MANIFESTS="$nested" GITHUB_WORKSPACE="$fixture" \
+    GITHUB_OUTPUT="$fixture/package.outputs" \
+    NPM_CONFIG_GLOBALCONFIG="$fixture/empty-global.npmrc" \
+    NPM_CONFIG_USERCONFIG="$fixture/empty-user.npmrc" \
+    MAX_PAYLOAD_BYTES=83886080 RUN_ID=7001 RUN_ATTEMPT=3 bash "$tmp/package.sh")
+}
+
+run_nested_install() {
+  local fixture="$1" nested="$2"
+  local expected_payload_sha256 expected_payload_bytes
+  expected_payload_sha256="$(sed -n 's/^payload_sha256=//p' "$fixture/transfer/manifest")"
+  expected_payload_bytes="$(sed -n 's/^payload_bytes=//p' "$fixture/transfer/manifest")"
+  mkdir -p "$fixture/runner-temp"
+  (cd "$fixture" && PATH="$tmp/bin:$PATH" NPM_STUB_LOG="$fixture/npm.log" \
+    GITHUB_ENV="$fixture/github.env" NPM_CONFIG_USERCONFIG="$fixture/empty.npmrc" \
+    NPM_CONFIG_CACHE="$fixture/runtime-cache" \
+    NPM_CONFIG_GLOBALCONFIG="$fixture/empty-global.npmrc" \
+    APPROVED_INTERNAL_SCOPES=@verjson NESTED_MANIFESTS="$nested" \
+    EXPECTED_AUXILIARY_COMMIT='' EXPECTED_AUXILIARY_CONTENT_PATH='' \
+    EXPECTED_AUXILIARY_REPOSITORY='' GITHUB_WORKSPACE="$fixture" \
+    EXPECTED_PAYLOAD_BYTES="$expected_payload_bytes" \
+    EXPECTED_PAYLOAD_SHA256="$expected_payload_sha256" \
+    MAX_PUBLIC_RUNTIME_CACHE_BLOBS=4096 MAX_PUBLIC_RUNTIME_CACHE_BYTES=268435456 \
+    SECRETLESS_RUNTIME_PUBLIC_CACHE=false RUNNER_TEMP="$fixture/runner-temp" \
+    PACKAGE_MANAGER=npm NESTED_PATHS_FILE="$fixture/runner-temp/nested-paths" \
+    SECRETLESS_CACHE_DIR="$fixture/build-cache" TRANSFER_DIR="$fixture/transfer" \
+    MAX_PAYLOAD_BYTES=83886080 RUN_ID=7001 RUN_ATTEMPT=3 bash "$tmp/install.sh")
+}
+
+install_flags='ci --ignore-scripts --prefer-offline --no-audit --no-fund --cache '
+if run_package "$e2e" "$nested_plan" >/dev/null 2>&1 \
+    && [ "$(wc -l < "$e2e/transfer/manifest")" -eq 11 ] \
+    && grep -qE '^nested_manifests_sha256=[0-9a-f]{64}$' "$e2e/transfer/manifest" \
+    && run_nested_install "$e2e" "$nested_plan" >/dev/null 2>&1 \
+    && grep -qF "$e2e	$install_flags" "$e2e/npm.log" \
+    && grep -qF "$e2e/examples/nested	$install_flags" "$e2e/npm.log"; then
+  pass "two manifests share one bounded transfer and each installs credentiallessly from it"
+else
+  fail "the packaged cache or credentialless install did not cover both manifests"
+fi
+
+# A nested lockfile is PR-authored, so the acquisition-time digest binding has
+# to cover it: swapping it after acquisition must fail before npm runs.
+tamper="$tmp/tamper"
+cp -a "$e2e" "$tamper"
+rm -rf "$tamper/build-cache" "$tamper/runner-temp" "$tamper/npm.log" "$tamper/transfer"
+if run_package "$tamper" "$nested_plan" >/dev/null 2>&1; then
+  write_lock "$tamper/examples/nested/package-lock.json" \
+    '@verjson/nested-lib' "$nested_url" "$root_integrity"
+  if run_nested_install "$tamper" "$nested_plan" >/dev/null 2>&1; then
+    fail "a nested lockfile mutated after acquisition was installed anyway"
+  elif [ ! -s "$tamper/npm.log" ]; then
+    pass "a nested lockfile mutated after acquisition fails before npm"
+  else
+    fail "a mutated nested lockfile reached npm before failing"
+  fi
+else
+  fail "the tamper fixture could not be packaged"
+fi
+
 exit $((failures > 0))

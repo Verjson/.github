@@ -1356,6 +1356,7 @@ jobs:
           PACKAGE_MANAGER="${PACKAGE_MANAGER:-npm}"
           COMPATIBILITY_RANGES="${COMPATIBILITY_RANGES:-}"
           COMPATIBILITY_ROOT="${COMPATIBILITY_ROOT:-}"
+          NESTED_MANIFESTS="${NESTED_MANIFESTS:-}"
           [ -d "$CACHE_DIR/_cacache/content-v2" ] || {
             echo "::error::npm produced no private content-addressed package blobs for transfer"
             exit 1
@@ -1404,11 +1405,35 @@ jobs:
             *) echo "::error::package-manager accepts only npm or pnpm"; exit 1 ;;
           esac
           lock_sha256="$(sha256sum "$lock_file" | cut -d' ' -f1)"
+          nested_manifests_sha256=''
+          if [ -n "$NESTED_MANIFESTS" ]; then
+            nested_binding="$(mktemp)"
+            python3 - > "$nested_binding" <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+
+          binding = "".join(
+              "{}\t{}\n".format(
+                  nested["path"],
+                  hashlib.sha256(
+                      (Path(nested["path"]) / "package-lock.json").read_bytes()
+                  ).hexdigest(),
+              )
+              for nested in json.loads(os.environ["NESTED_MANIFESTS"])
+          )
+          print(hashlib.sha256(binding.encode("utf-8")).hexdigest())
+          PY
+            nested_manifests_sha256="$(cat "$nested_binding")"
+            rm -f "$nested_binding"
+          fi
           printf '%s\n' \
             "run_id=$RUN_ID" \
             "run_attempt=$RUN_ATTEMPT" \
             "package_manager=$PACKAGE_MANAGER" \
             "lock_sha256=$lock_sha256" \
+            "nested_manifests_sha256=$nested_manifests_sha256" \
             "auxiliary_repository=$AUXILIARY_REPOSITORY" \
             "auxiliary_commit=$AUXILIARY_COMMIT" \
             "auxiliary_content_path=$AUXILIARY_CONTENT_PATH" \
@@ -1565,6 +1590,7 @@ jobs:
           MAX_PAYLOAD_BYTES: '83886080'
           MAX_PUBLIC_RUNTIME_CACHE_BLOBS: '4096'
           MAX_PUBLIC_RUNTIME_CACHE_BYTES: '268435456'
+          NESTED_PATHS_FILE: ${{ runner.temp }}/secretless-nested-paths-${{ github.run_id }}-${{ github.run_attempt }}
           RUN_ATTEMPT: ${{ github.run_attempt }}
           RUN_ID: ${{ github.run_id }}
           SECRETLESS_RUNTIME_PUBLIC_CACHE: ${{ inputs.secretless-runtime-public-cache }}
@@ -1577,6 +1603,8 @@ jobs:
           COMPATIBILITY_ARTIFACT_DIR="${COMPATIBILITY_ARTIFACT_DIR:-}"
           COMPATIBILITY_RANGES="${COMPATIBILITY_RANGES:-}"
           EXPECTED_COMPATIBILITY_PROVENANCE_SHA256="${EXPECTED_COMPATIBILITY_PROVENANCE_SHA256:-}"
+          NESTED_MANIFESTS="${NESTED_MANIFESTS:-}"
+          NESTED_PATHS_FILE="${NESTED_PATHS_FILE:-${SECRETLESS_CACHE_DIR}-nested-paths}"
           PNPM_STORE_DIR="${PNPM_STORE_DIR:-}"
           SECRETLESS_RUNTIME_PUBLIC_CACHE="${SECRETLESS_RUNTIME_PUBLIC_CACHE:-false}"
           case "$SECRETLESS_RUNTIME_PUBLIC_CACHE" in
@@ -1590,7 +1618,7 @@ jobs:
             if [ -n "${MOCK_REGISTRY_PID:-}" ]; then
               kill "$MOCK_REGISTRY_PID" 2>/dev/null || true
             fi
-            rm -rf "$SECRETLESS_CACHE_DIR" "$PNPM_STORE_DIR" "$TRANSFER_DIR"
+            rm -rf "$SECRETLESS_CACHE_DIR" "$PNPM_STORE_DIR" "$TRANSFER_DIR" "$NESTED_PATHS_FILE"
           }
           trap cleanup EXIT
           : > "$NPM_CONFIG_GLOBALCONFIG"
@@ -1601,7 +1629,7 @@ jobs:
             echo "::error::secretless cache transfer is incomplete"
             exit 1
           }
-          [ "$(wc -l < "$manifest")" -eq 10 ] || {
+          [ "$(wc -l < "$manifest")" -eq 11 ] || {
             echo "::error::secretless cache manifest has an unexpected shape"
             exit 1
           }
@@ -1616,6 +1644,7 @@ jobs:
           manifest_run_attempt="$(manifest_value run_attempt)"
           manifest_package_manager="$(manifest_value package_manager)"
           manifest_lock_sha256="$(manifest_value lock_sha256)"
+          manifest_nested_manifests_sha256="$(manifest_value nested_manifests_sha256)"
           manifest_auxiliary_repository="$(manifest_value auxiliary_repository)"
           manifest_auxiliary_commit="$(manifest_value auxiliary_commit)"
           manifest_auxiliary_content_path="$(manifest_value auxiliary_content_path)"
@@ -1648,6 +1677,58 @@ jobs:
             echo "::error::secretless cache does not match this package lock"
             exit 1
           }
+          if [ "$PACKAGE_MANAGER" != npm ] && [ -n "$NESTED_MANIFESTS" ]; then
+            echo "::error::secretless nested manifests require package-manager npm"
+            exit 1
+          fi
+          mkdir -p "$(dirname "$NESTED_PATHS_FILE")"
+          EXPECTED_NESTED_MANIFESTS_SHA256="$manifest_nested_manifests_sha256" \
+          NESTED_MANIFESTS="$NESTED_MANIFESTS" NESTED_PATHS_FILE="$NESTED_PATHS_FILE" \
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          import re
+          from pathlib import Path
+
+          source = os.environ.get("NESTED_MANIFESTS", "").strip()
+          expected = os.environ["EXPECTED_NESTED_MANIFESTS_SHA256"]
+          paths_file = Path(os.environ["NESTED_PATHS_FILE"])
+          if not source:
+              if expected:
+                  raise SystemExit("secretless cache carries undeclared nested manifests")
+              paths_file.write_text("", encoding="utf-8")
+              raise SystemExit(0)
+          if re.fullmatch(r"[0-9a-f]{64}", expected) is None:
+              raise SystemExit("secretless cache is missing its nested manifest binding")
+          workspace = Path.cwd().resolve()
+          segment_pattern = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
+          declared = json.loads(source)
+          if not isinstance(declared, list) or not 1 <= len(declared) <= 8:
+              raise SystemExit("secretless nested manifests are not a bounded declaration")
+          paths = []
+          binding = []
+          for nested in declared:
+              path = nested.get("path") if isinstance(nested, dict) else None
+              if not isinstance(path, str) or path in paths:
+                  raise SystemExit("secretless nested manifest paths must be unique strings")
+              segments = path.split("/")
+              if (not 1 <= len(segments) <= 8
+                      or any(segment_pattern.fullmatch(part) is None for part in segments)):
+                  raise SystemExit(f"invalid nested manifest path: {path}")
+              directory = Path(path)
+              lock = directory / "package-lock.json"
+              if (not directory.is_dir() or workspace not in directory.resolve().parents
+                      or not lock.is_file() or workspace not in lock.resolve().parents):
+                  raise SystemExit(f"nested manifest is not a contained checkout directory: {path}")
+              paths.append(path)
+              binding.append(f"{path}\t{hashlib.sha256(lock.read_bytes()).hexdigest()}\n")
+          # Every nested lock was digest-bound by the credentialed job, so a lock
+          # swapped afterwards fails here rather than reaching npm.
+          if hashlib.sha256("".join(binding).encode("utf-8")).hexdigest() != expected:
+              raise SystemExit("secretless cache does not match these nested package locks")
+          paths_file.write_text("".join(f"{path}\n" for path in paths), encoding="utf-8")
+          PY
           [ "$manifest_auxiliary_repository" = "$EXPECTED_AUXILIARY_REPOSITORY" ] \
             && [ "$manifest_auxiliary_commit" = "$EXPECTED_AUXILIARY_COMMIT" ] \
             && [ "$manifest_auxiliary_content_path" = "$EXPECTED_AUXILIARY_CONTENT_PATH" ] || {
@@ -1716,6 +1797,7 @@ jobs:
           COMPATIBILITY_ARTIFACT_DIR="$COMPATIBILITY_ARTIFACT_DIR" \
           COMPATIBILITY_RANGES="$COMPATIBILITY_RANGES" \
           EXPECTED_COMPATIBILITY_PROVENANCE_SHA256="$EXPECTED_COMPATIBILITY_PROVENANCE_SHA256" \
+          NESTED_PATHS_FILE="$NESTED_PATHS_FILE" \
           SECRETLESS_CACHE_DIR="$SECRETLESS_CACHE_DIR" PACKAGE_MANAGER="$PACKAGE_MANAGER" python3 - <<'PY'
           import base64
           import hashlib
@@ -1741,6 +1823,18 @@ jobs:
               resolutions = [(package.get("resolution", {}).get("tarball", ""),
                               package.get("resolution", {}).get("integrity"))
                              for package in lock.get("packages", {}).values()]
+          # Nested locks were verified against their own approvals during
+          # acquisition, so their blobs belong to the same exact transfer set.
+          nested_paths_file = Path(os.environ.get("NESTED_PATHS_FILE", ""))
+          if package_manager == "npm" and nested_paths_file.is_file():
+              for nested_path in nested_paths_file.read_text(encoding="utf-8").splitlines():
+                  if not nested_path:
+                      continue
+                  nested_lock = json.loads(
+                      (Path(nested_path) / "package-lock.json").read_text(encoding="utf-8"))
+                  resolutions.extend(
+                      (package.get("resolved", ""), package.get("integrity"))
+                      for package in nested_lock.get("packages", {}).values())
           for resolved, integrity in resolutions:
               if urlparse(resolved).hostname != "npm.pkg.github.com":
                   continue
@@ -2006,6 +2100,15 @@ jobs:
               raise SystemExit("PUBLIC_RUNTIME_CACHE_UNEXPECTED_CONTENT")
           PY
             fi
+            # Each nested manifest installs from the same verified cache with no
+            # package-read credential and no lifecycle scripts.
+            while IFS= read -r nested_path; do
+              [ -n "$nested_path" ] || continue
+              (
+                cd "$nested_path"
+                npm ci --ignore-scripts --prefer-offline --no-audit --no-fund --cache "$SECRETLESS_CACHE_DIR"
+              )
+            done < "$NESTED_PATHS_FILE"
           else
             [ "$SECRETLESS_RUNTIME_PUBLIC_CACHE" != true ] || {
               echo "PUBLIC_RUNTIME_CACHE_REQUIRES_NPM" >&2
