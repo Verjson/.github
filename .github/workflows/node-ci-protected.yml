@@ -160,6 +160,20 @@ on:
         required: false
         type: string
         default: ''
+      secretless-nested-manifests:
+        description: >-
+          Optional JSON array of 1-8 nested manifest objects with exactly path,
+          approvedPackages, and scriptPlan. path is a repository-relative
+          directory below the root holding its own package.json and
+          package-lock.json. approvedPackages authorizes internal packages for
+          that manifest alone — a manifest never inherits the root's approved
+          set or another manifest's, so a package approved for one manifest is
+          rejected in any other. scriptPlan uses the secretless-ci-script-plan
+          grammar and runs in that manifest's directory. Requires
+          package-manager npm. Empty acquires only the root manifest.
+        required: false
+        type: string
+        default: ''
       secretless-ci-script-plan:
         description: >-
           Optional JSON array of exact package.json script names or objects with
@@ -519,6 +533,7 @@ jobs:
           APPROVED_INTERNAL_PACKAGES: ${{ inputs.approved-internal-packages }}
           APPROVED_INTERNAL_SCOPES: ${{ inputs.approved-internal-scopes }}
           COMPATIBILITY_RANGES: ${{ inputs.secretless-compatibility-ranges }}
+          NESTED_MANIFESTS: ${{ inputs.secretless-nested-manifests }}
           PRIVATE_CACHE_ENTRIES: ${{ runner.temp }}/secretless-private-entries-${{ github.run_id }}-${{ github.run_attempt }}
           TRUSTED_PACKAGE_POLICY: ${{ vars.CI_SECRETLESS_PACKAGE_POLICY }}
           PACKAGE_MANAGER: ${{ inputs.package-manager }}
@@ -642,15 +657,75 @@ jobs:
                   if not set(ranges).issubset(protected_ranges):
                       sys.exit("secretless compatibility package and ranges must be authorized by trusted repository policy")
 
-          found = set()
           private_downloads = {}
           package_manager = os.environ.get("PACKAGE_MANAGER", "npm")
-          if package_manager == "npm":
-              lock_path = Path("package-lock.json")
+
+          workspace = Path.cwd().resolve()
+          nested_source = os.environ.get("NESTED_MANIFESTS", "").strip()
+          nested_specs = []
+          if nested_source:
+              if package_manager != "npm":
+                  sys.exit("secretless-nested-manifests currently requires package-manager npm")
+              try:
+                  nested_manifests = json.loads(
+                      nested_source,
+                      object_pairs_hook=reject_duplicate_object_keys,
+                  )
+              except DuplicateObjectKeyError:
+                  sys.exit("secretless-nested-manifests rejects duplicate JSON object keys")
+              except json.JSONDecodeError as error:
+                  sys.exit(f"secretless-nested-manifests must be valid JSON: {error}")
+              if not isinstance(nested_manifests, list) or not 1 <= len(nested_manifests) <= 8:
+                  sys.exit("secretless-nested-manifests accepts 1-8 nested manifest objects")
+              segment_pattern = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
+              declared_paths = []
+              for nested in nested_manifests:
+                  if (not isinstance(nested, dict)
+                          or set(nested) != {"path", "approvedPackages", "scriptPlan"}):
+                      sys.exit("each nested manifest requires exactly path, approvedPackages, and scriptPlan")
+                  nested_path = nested["path"]
+                  if not isinstance(nested_path, str) or not 1 <= len(nested_path) <= 128:
+                      sys.exit("nested manifest path must be one bounded repository-relative directory")
+                  segments = nested_path.split("/")
+                  if (not 1 <= len(segments) <= 8
+                          or any(segment_pattern.fullmatch(segment) is None for segment in segments)):
+                      sys.exit("nested manifest path accepts 1-8 plain directory segments below the repository root")
+                  if nested_path in declared_paths:
+                      sys.exit(f"nested manifest path repeats: {nested_path}")
+                  declared_paths.append(nested_path)
+                  nested_approved = nested["approvedPackages"]
+                  if (not isinstance(nested_approved, list) or not nested_approved
+                          or len(nested_approved) != len(set(nested_approved))
+                          or any(not isinstance(name, str)
+                                 or package_pattern.fullmatch(name) is None
+                                 or name.split("/", 1)[0] not in scopes
+                                 for name in nested_approved)):
+                      sys.exit(f"{nested_path} approvedPackages accepts unique exact names under approved-internal-scopes only")
+                  if trusted_policy and not set(nested_approved).issubset(policy_packages):
+                      sys.exit(f"{nested_path} approvedPackages must be a subset of trusted repository policy")
+                  nested_plan = nested["scriptPlan"]
+                  if not isinstance(nested_plan, list) or len(nested_plan) > 8:
+                      sys.exit(f"{nested_path} scriptPlan accepts at most 8 entries")
+                  # Every segment is a plain name, but a PR-authored symlink still
+                  # satisfies that, so containment is proved against the resolved
+                  # path before any file below it is read.
+                  nested_directory = Path(nested_path)
+                  resolved_directory = nested_directory.resolve()
+                  if not resolved_directory.is_dir() or workspace not in resolved_directory.parents:
+                      sys.exit(f"{nested_path} must resolve to a directory inside the checkout")
+                  nested_manifest_file = nested_directory / "package.json"
+                  nested_lock_file = nested_directory / "package-lock.json"
+                  if (not nested_manifest_file.is_file() or not nested_lock_file.is_file()
+                          or workspace not in nested_manifest_file.resolve().parents
+                          or workspace not in nested_lock_file.resolve().parents):
+                      sys.exit(f"{nested_path} requires its own package.json and package-lock.json inside the checkout")
+                  nested_specs.append((nested_path, set(nested_approved), nested_lock_file))
+
+          def npm_lock_candidates(lock_path):
               lock = json.loads(lock_path.read_text(encoding="utf-8"))
               if lock.get("lockfileVersion") not in (2, 3):
                   sys.exit("secretless npm mode requires package-lock lockfileVersion 2 or 3")
-              candidates = []
+              collected = []
               for path, package in lock.get("packages", {}).items():
                   if path == "":
                       continue
@@ -660,7 +735,11 @@ jobs:
                   path_is_internal = (isinstance(path_name, str)
                                       and any(path_name.startswith(scope + "/") for scope in scopes))
                   entry_name = path_name if path_is_internal else locked_name
-                  candidates.append((entry_name, locked_name, package.get("resolved", ""), package.get("integrity")))
+                  collected.append((entry_name, locked_name, package.get("resolved", ""), package.get("integrity")))
+              return collected
+
+          if package_manager == "npm":
+              candidates = npm_lock_candidates(Path("package-lock.json"))
           elif package_manager == "pnpm":
               lock_path = Path("pnpm-lock.yaml")
               if lock_path.stat().st_size > 10 * 1024 * 1024:
@@ -734,43 +813,48 @@ jobs:
           else:
               sys.exit("package-manager accepts only npm or pnpm")
 
-          for entry_name, locked_name, resolved, integrity in candidates:
-              parsed = urlparse(resolved)
-              resolved_path = unquote(parsed.path)
-              registry_name = None
-              if parsed.hostname == "npm.pkg.github.com":
-                  parts = resolved_path.split("/")
-                  if (parsed.scheme != "https" or parsed.netloc != "npm.pkg.github.com"
-                          or parsed.query or parsed.fragment or len(parts) != 6
-                          or resolved != f"https://npm.pkg.github.com{resolved_path}"
-                          or "\\" in resolved_path
-                          or parts[1] != "download" or not parts[2].startswith("@")
-                          or any(part in ("", ".", "..") for part in parts[1:])):
-                      sys.exit(f"invalid GitHub Packages download URL: {resolved}")
-                  registry_name = f"{parts[2]}/{parts[3]}"
-                  if parts[2] not in scopes or registry_name not in approved:
-                      sys.exit(f"unapproved GitHub Packages download: {registry_name}")
-                  if not isinstance(integrity, str) or re.fullmatch(
-                          r"sha512-[A-Za-z0-9+/]{86}==", integrity) is None:
-                      sys.exit(f"{registry_name} requires one exact sha512 lock integrity")
-                  try:
-                      digest = base64.b64decode(integrity.removeprefix("sha512-"), validate=True)
-                  except ValueError:
-                      sys.exit(f"{registry_name} has invalid sha512 lock integrity")
-                  if len(digest) != 64:
-                      sys.exit(f"{registry_name} has invalid sha512 lock integrity")
-                  digest_hex = digest.hex()
-                  prior_digest = private_downloads.setdefault(resolved, digest_hex)
-                  if prior_digest != digest_hex:
-                      sys.exit(f"{registry_name} repeats one download URL with different integrity")
-              if (not isinstance(entry_name, str)
-                      or not any(entry_name.startswith(scope + "/") for scope in scopes)):
-                  continue
-              if locked_name and locked_name != entry_name:
-                  sys.exit(f"{entry_name} lock entry aliases unexpected package {locked_name}")
-              if registry_name != entry_name:
-                  sys.exit(f"{entry_name} is not pinned to its GitHub Packages download URL")
-              found.add(entry_name)
+          def verify_candidates(candidates, manifest_approved, where):
+              found = set()
+              for entry_name, locked_name, resolved, integrity in candidates:
+                  parsed = urlparse(resolved)
+                  resolved_path = unquote(parsed.path)
+                  registry_name = None
+                  if parsed.hostname == "npm.pkg.github.com":
+                      parts = resolved_path.split("/")
+                      if (parsed.scheme != "https" or parsed.netloc != "npm.pkg.github.com"
+                              or parsed.query or parsed.fragment or len(parts) != 6
+                              or resolved != f"https://npm.pkg.github.com{resolved_path}"
+                              or "\\" in resolved_path
+                              or parts[1] != "download" or not parts[2].startswith("@")
+                              or any(part in ("", ".", "..") for part in parts[1:])):
+                          sys.exit(f"invalid GitHub Packages download URL{where}: {resolved}")
+                      registry_name = f"{parts[2]}/{parts[3]}"
+                      if parts[2] not in scopes or registry_name not in manifest_approved:
+                          sys.exit(f"unapproved GitHub Packages download{where}: {registry_name}")
+                      if not isinstance(integrity, str) or re.fullmatch(
+                              r"sha512-[A-Za-z0-9+/]{86}==", integrity) is None:
+                          sys.exit(f"{registry_name} requires one exact sha512 lock integrity{where}")
+                      try:
+                          digest = base64.b64decode(integrity.removeprefix("sha512-"), validate=True)
+                      except ValueError:
+                          sys.exit(f"{registry_name} has invalid sha512 lock integrity{where}")
+                      if len(digest) != 64:
+                          sys.exit(f"{registry_name} has invalid sha512 lock integrity{where}")
+                      digest_hex = digest.hex()
+                      prior_digest = private_downloads.setdefault(resolved, digest_hex)
+                      if prior_digest != digest_hex:
+                          sys.exit(f"{registry_name} repeats one download URL with different integrity{where}")
+                  if (not isinstance(entry_name, str)
+                          or not any(entry_name.startswith(scope + "/") for scope in scopes)):
+                      continue
+                  if locked_name and locked_name != entry_name:
+                      sys.exit(f"{entry_name} lock entry aliases unexpected package {locked_name}{where}")
+                  if registry_name != entry_name:
+                      sys.exit(f"{entry_name} is not pinned to its GitHub Packages download URL{where}")
+                  found.add(entry_name)
+              return found
+
+          found = verify_candidates(candidates, approved, "")
 
           unapproved = sorted(found - approved)
           compatibility_packages = {compatibility_package} if compatibility_package else set()
@@ -779,6 +863,22 @@ jobs:
               sys.exit("unapproved internal dependencies: " + ", ".join(unapproved))
           if unused:
               sys.exit("approved internal dependencies absent from lock: " + ", ".join(unused))
+
+          # Approval is scoped to the manifest that declared it: a nested manifest
+          # is verified against its own approvedPackages alone and never inherits
+          # the root's or another manifest's approvals.
+          for nested_path, nested_approved, nested_lock_file in nested_specs:
+              nested_found = verify_candidates(
+                  npm_lock_candidates(nested_lock_file),
+                  nested_approved,
+                  f" in {nested_path}",
+              )
+              nested_unapproved = sorted(nested_found - nested_approved)
+              nested_unused = sorted(nested_approved - nested_found)
+              if nested_unapproved:
+                  sys.exit(f"unapproved internal dependencies in {nested_path}: " + ", ".join(nested_unapproved))
+              if nested_unused:
+                  sys.exit(f"approved internal dependencies absent from lock in {nested_path}: " + ", ".join(nested_unused))
 
           entries = Path(os.environ["PRIVATE_CACHE_ENTRIES"])
           try:
@@ -1245,6 +1345,7 @@ jobs:
           CACHE_DIR: ${{ steps.populate-private-cache.outputs.cache-dir }}
           COMPATIBILITY_ROOT: ${{ runner.temp }}/secretless-compatibility-${{ github.run_id }}-${{ github.run_attempt }}
           COMPATIBILITY_RANGES: ${{ inputs.secretless-compatibility-ranges }}
+          NESTED_MANIFESTS: ${{ inputs.secretless-nested-manifests }}
           MAX_PAYLOAD_BYTES: '83886080'
           RUN_ATTEMPT: ${{ github.run_attempt }}
           RUN_ID: ${{ github.run_id }}
@@ -1255,6 +1356,7 @@ jobs:
           PACKAGE_MANAGER="${PACKAGE_MANAGER:-npm}"
           COMPATIBILITY_RANGES="${COMPATIBILITY_RANGES:-}"
           COMPATIBILITY_ROOT="${COMPATIBILITY_ROOT:-}"
+          NESTED_MANIFESTS="${NESTED_MANIFESTS:-}"
           [ -d "$CACHE_DIR/_cacache/content-v2" ] || {
             echo "::error::npm produced no private content-addressed package blobs for transfer"
             exit 1
@@ -1303,11 +1405,35 @@ jobs:
             *) echo "::error::package-manager accepts only npm or pnpm"; exit 1 ;;
           esac
           lock_sha256="$(sha256sum "$lock_file" | cut -d' ' -f1)"
+          nested_manifests_sha256=''
+          if [ -n "$NESTED_MANIFESTS" ]; then
+            nested_binding="$(mktemp)"
+            python3 - > "$nested_binding" <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+
+          binding = "".join(
+              "{}\t{}\n".format(
+                  nested["path"],
+                  hashlib.sha256(
+                      (Path(nested["path"]) / "package-lock.json").read_bytes()
+                  ).hexdigest(),
+              )
+              for nested in json.loads(os.environ["NESTED_MANIFESTS"])
+          )
+          print(hashlib.sha256(binding.encode("utf-8")).hexdigest())
+          PY
+            nested_manifests_sha256="$(cat "$nested_binding")"
+            rm -f "$nested_binding"
+          fi
           printf '%s\n' \
             "run_id=$RUN_ID" \
             "run_attempt=$RUN_ATTEMPT" \
             "package_manager=$PACKAGE_MANAGER" \
             "lock_sha256=$lock_sha256" \
+            "nested_manifests_sha256=$nested_manifests_sha256" \
             "auxiliary_repository=$AUXILIARY_REPOSITORY" \
             "auxiliary_commit=$AUXILIARY_COMMIT" \
             "auxiliary_content_path=$AUXILIARY_CONTENT_PATH" \
@@ -1445,6 +1571,7 @@ jobs:
           NPM_CONFIG_USERCONFIG: ${{ runner.temp }}/secretless-empty.npmrc
           COMPATIBILITY_ARTIFACT_DIR: ${{ runner.temp }}/secretless-compatibility-artifacts-${{ github.run_id }}-${{ github.run_attempt }}
           COMPATIBILITY_RANGES: ${{ inputs.secretless-compatibility-ranges }}
+          NESTED_MANIFESTS: ${{ inputs.secretless-nested-manifests }}
           PACKAGE_MANAGER: ${{ inputs.package-manager }}
           APPROVED_INTERNAL_SCOPES: ${{ inputs.approved-internal-scopes }}
           AWS_ACCESS_KEY_ID: ''
@@ -1463,6 +1590,7 @@ jobs:
           MAX_PAYLOAD_BYTES: '83886080'
           MAX_PUBLIC_RUNTIME_CACHE_BLOBS: '4096'
           MAX_PUBLIC_RUNTIME_CACHE_BYTES: '268435456'
+          NESTED_PATHS_FILE: ${{ runner.temp }}/secretless-nested-paths-${{ github.run_id }}-${{ github.run_attempt }}
           RUN_ATTEMPT: ${{ github.run_attempt }}
           RUN_ID: ${{ github.run_id }}
           SECRETLESS_RUNTIME_PUBLIC_CACHE: ${{ inputs.secretless-runtime-public-cache }}
@@ -1475,6 +1603,8 @@ jobs:
           COMPATIBILITY_ARTIFACT_DIR="${COMPATIBILITY_ARTIFACT_DIR:-}"
           COMPATIBILITY_RANGES="${COMPATIBILITY_RANGES:-}"
           EXPECTED_COMPATIBILITY_PROVENANCE_SHA256="${EXPECTED_COMPATIBILITY_PROVENANCE_SHA256:-}"
+          NESTED_MANIFESTS="${NESTED_MANIFESTS:-}"
+          NESTED_PATHS_FILE="${NESTED_PATHS_FILE:-${SECRETLESS_CACHE_DIR}-nested-paths}"
           PNPM_STORE_DIR="${PNPM_STORE_DIR:-}"
           SECRETLESS_RUNTIME_PUBLIC_CACHE="${SECRETLESS_RUNTIME_PUBLIC_CACHE:-false}"
           case "$SECRETLESS_RUNTIME_PUBLIC_CACHE" in
@@ -1488,7 +1618,7 @@ jobs:
             if [ -n "${MOCK_REGISTRY_PID:-}" ]; then
               kill "$MOCK_REGISTRY_PID" 2>/dev/null || true
             fi
-            rm -rf "$SECRETLESS_CACHE_DIR" "$PNPM_STORE_DIR" "$TRANSFER_DIR"
+            rm -rf "$SECRETLESS_CACHE_DIR" "$PNPM_STORE_DIR" "$TRANSFER_DIR" "$NESTED_PATHS_FILE"
           }
           trap cleanup EXIT
           : > "$NPM_CONFIG_GLOBALCONFIG"
@@ -1499,7 +1629,7 @@ jobs:
             echo "::error::secretless cache transfer is incomplete"
             exit 1
           }
-          [ "$(wc -l < "$manifest")" -eq 10 ] || {
+          [ "$(wc -l < "$manifest")" -eq 11 ] || {
             echo "::error::secretless cache manifest has an unexpected shape"
             exit 1
           }
@@ -1514,6 +1644,7 @@ jobs:
           manifest_run_attempt="$(manifest_value run_attempt)"
           manifest_package_manager="$(manifest_value package_manager)"
           manifest_lock_sha256="$(manifest_value lock_sha256)"
+          manifest_nested_manifests_sha256="$(manifest_value nested_manifests_sha256)"
           manifest_auxiliary_repository="$(manifest_value auxiliary_repository)"
           manifest_auxiliary_commit="$(manifest_value auxiliary_commit)"
           manifest_auxiliary_content_path="$(manifest_value auxiliary_content_path)"
@@ -1546,6 +1677,58 @@ jobs:
             echo "::error::secretless cache does not match this package lock"
             exit 1
           }
+          if [ "$PACKAGE_MANAGER" != npm ] && [ -n "$NESTED_MANIFESTS" ]; then
+            echo "::error::secretless nested manifests require package-manager npm"
+            exit 1
+          fi
+          mkdir -p "$(dirname "$NESTED_PATHS_FILE")"
+          EXPECTED_NESTED_MANIFESTS_SHA256="$manifest_nested_manifests_sha256" \
+          NESTED_MANIFESTS="$NESTED_MANIFESTS" NESTED_PATHS_FILE="$NESTED_PATHS_FILE" \
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          import re
+          from pathlib import Path
+
+          source = os.environ.get("NESTED_MANIFESTS", "").strip()
+          expected = os.environ["EXPECTED_NESTED_MANIFESTS_SHA256"]
+          paths_file = Path(os.environ["NESTED_PATHS_FILE"])
+          if not source:
+              if expected:
+                  raise SystemExit("secretless cache carries undeclared nested manifests")
+              paths_file.write_text("", encoding="utf-8")
+              raise SystemExit(0)
+          if re.fullmatch(r"[0-9a-f]{64}", expected) is None:
+              raise SystemExit("secretless cache is missing its nested manifest binding")
+          workspace = Path.cwd().resolve()
+          segment_pattern = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
+          declared = json.loads(source)
+          if not isinstance(declared, list) or not 1 <= len(declared) <= 8:
+              raise SystemExit("secretless nested manifests are not a bounded declaration")
+          paths = []
+          binding = []
+          for nested in declared:
+              path = nested.get("path") if isinstance(nested, dict) else None
+              if not isinstance(path, str) or path in paths:
+                  raise SystemExit("secretless nested manifest paths must be unique strings")
+              segments = path.split("/")
+              if (not 1 <= len(segments) <= 8
+                      or any(segment_pattern.fullmatch(part) is None for part in segments)):
+                  raise SystemExit(f"invalid nested manifest path: {path}")
+              directory = Path(path)
+              lock = directory / "package-lock.json"
+              if (not directory.is_dir() or workspace not in directory.resolve().parents
+                      or not lock.is_file() or workspace not in lock.resolve().parents):
+                  raise SystemExit(f"nested manifest is not a contained checkout directory: {path}")
+              paths.append(path)
+              binding.append(f"{path}\t{hashlib.sha256(lock.read_bytes()).hexdigest()}\n")
+          # Every nested lock was digest-bound by the credentialed job, so a lock
+          # swapped afterwards fails here rather than reaching npm.
+          if hashlib.sha256("".join(binding).encode("utf-8")).hexdigest() != expected:
+              raise SystemExit("secretless cache does not match these nested package locks")
+          paths_file.write_text("".join(f"{path}\n" for path in paths), encoding="utf-8")
+          PY
           [ "$manifest_auxiliary_repository" = "$EXPECTED_AUXILIARY_REPOSITORY" ] \
             && [ "$manifest_auxiliary_commit" = "$EXPECTED_AUXILIARY_COMMIT" ] \
             && [ "$manifest_auxiliary_content_path" = "$EXPECTED_AUXILIARY_CONTENT_PATH" ] || {
@@ -1614,6 +1797,7 @@ jobs:
           COMPATIBILITY_ARTIFACT_DIR="$COMPATIBILITY_ARTIFACT_DIR" \
           COMPATIBILITY_RANGES="$COMPATIBILITY_RANGES" \
           EXPECTED_COMPATIBILITY_PROVENANCE_SHA256="$EXPECTED_COMPATIBILITY_PROVENANCE_SHA256" \
+          NESTED_PATHS_FILE="$NESTED_PATHS_FILE" \
           SECRETLESS_CACHE_DIR="$SECRETLESS_CACHE_DIR" PACKAGE_MANAGER="$PACKAGE_MANAGER" python3 - <<'PY'
           import base64
           import hashlib
@@ -1639,6 +1823,18 @@ jobs:
               resolutions = [(package.get("resolution", {}).get("tarball", ""),
                               package.get("resolution", {}).get("integrity"))
                              for package in lock.get("packages", {}).values()]
+          # Nested locks were verified against their own approvals during
+          # acquisition, so their blobs belong to the same exact transfer set.
+          nested_paths_file = Path(os.environ.get("NESTED_PATHS_FILE", ""))
+          if package_manager == "npm" and nested_paths_file.is_file():
+              for nested_path in nested_paths_file.read_text(encoding="utf-8").splitlines():
+                  if not nested_path:
+                      continue
+                  nested_lock = json.loads(
+                      (Path(nested_path) / "package-lock.json").read_text(encoding="utf-8"))
+                  resolutions.extend(
+                      (package.get("resolved", ""), package.get("integrity"))
+                      for package in nested_lock.get("packages", {}).values())
           for resolved, integrity in resolutions:
               if urlparse(resolved).hostname != "npm.pkg.github.com":
                   continue
@@ -1904,6 +2100,15 @@ jobs:
               raise SystemExit("PUBLIC_RUNTIME_CACHE_UNEXPECTED_CONTENT")
           PY
             fi
+            # Each nested manifest installs from the same verified cache with no
+            # package-read credential and no lifecycle scripts.
+            while IFS= read -r nested_path; do
+              [ -n "$nested_path" ] || continue
+              (
+                cd "$nested_path"
+                npm ci --ignore-scripts --prefer-offline --no-audit --no-fund --cache "$SECRETLESS_CACHE_DIR"
+              )
+            done < "$NESTED_PATHS_FILE"
           else
             [ "$SECRETLESS_RUNTIME_PUBLIC_CACHE" != true ] || {
               echo "PUBLIC_RUNTIME_CACHE_REQUIRES_NPM" >&2
@@ -2673,7 +2878,7 @@ jobs:
           subprocess.run([*command, *requested], check=True)
           PY
       - name: Revalidate protected pull-request identity
-        if: needs.eligibility.outputs.should-run != 'false' && (inputs.secretless-pr || inputs.secretless-trusted-ref) && inputs.secretless-ci-script-plan != ''
+        if: needs.eligibility.outputs.should-run != 'false' && (inputs.secretless-pr || inputs.secretless-trusted-ref) && (inputs.secretless-ci-script-plan != '' || inputs.secretless-nested-manifests != '')
         env:
           ADMITTED_EVENT: ${{ inputs.event-name }}
           ADMITTED_HEAD_REPOSITORY: ${{ inputs.head-repository }}
@@ -2699,10 +2904,11 @@ jobs:
           [ "$pr_head_repository" = "$ADMITTED_HEAD_REPOSITORY" ]
           [ "$pr_head_sha" = "$ADMITTED_HEAD_SHA" ]
       - name: Run exact credentialless consumer script plan
-        if: needs.eligibility.outputs.should-run != 'false' && (inputs.secretless-pr || inputs.secretless-trusted-ref) && inputs.secretless-ci-script-plan != ''
+        if: needs.eligibility.outputs.should-run != 'false' && (inputs.secretless-pr || inputs.secretless-trusted-ref) && (inputs.secretless-ci-script-plan != '' || inputs.secretless-nested-manifests != '')
         env:
           CI_SCRIPT_PLAN: ${{ inputs.secretless-ci-script-plan }}
           CANDIDATE_CACHE_ROOT: ${{ runner.temp }}/verjson-candidate-caches-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
+          NESTED_MANIFESTS: ${{ inputs.secretless-nested-manifests }}
         run: |
           unset -v GH_TOKEN GITHUB_TOKEN NODE_AUTH_TOKEN NPM_TOKEN AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN GOOGLE_APPLICATION_CREDENTIALS AZURE_CREDENTIALS ACTIONS_ID_TOKEN_REQUEST_TOKEN ACTIONS_ID_TOKEN_REQUEST_URL
           candidate_cache_supervisor_pid=''
@@ -2729,10 +2935,6 @@ jobs:
           import time
           from pathlib import Path
 
-          try:
-              plan = json.loads(os.environ["CI_SCRIPT_PLAN"])
-          except json.JSONDecodeError as error:
-              sys.exit(f"secretless-ci-script-plan must be valid JSON: {error}")
           script_pattern = re.compile(r"[A-Za-z0-9][A-Za-z0-9:._-]*")
           env_pattern = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
           protected_env = {
@@ -2742,36 +2944,81 @@ jobs:
               "GOOGLE_APPLICATION_CREDENTIALS", "AZURE_CREDENTIALS",
               "ACTIONS_ID_TOKEN_REQUEST_TOKEN", "ACTIONS_ID_TOKEN_REQUEST_URL",
           }
-          if not isinstance(plan, list) or not plan or len(plan) > 32:
-              sys.exit("secretless-ci-script-plan accepts 1-32 unique exact npm script entries")
+          def normalize_plan(plan, directory, label, manifest_label):
+              if not isinstance(plan, list) or not plan or len(plan) > 32:
+                  sys.exit(f"{label} accepts 1-32 unique exact npm script entries")
+              entries = []
+              for entry in plan:
+                  if isinstance(entry, str):
+                      script = entry
+                      unset_env = []
+                  elif isinstance(entry, dict) and set(entry) == {"script", "unsetEnv"}:
+                      script = entry["script"]
+                      unset_env = entry["unsetEnv"]
+                  else:
+                      sys.exit(f"{label} entries must be script names or exact script/unsetEnv objects")
+                  if not isinstance(script, str) or script_pattern.fullmatch(script) is None:
+                      sys.exit(f"{label} contains an invalid script name")
+                  if (not isinstance(unset_env, list) or len(unset_env) > 16
+                          or len(unset_env) != len(set(unset_env))
+                          or any(not isinstance(name, str) or env_pattern.fullmatch(name) is None
+                                 or name in protected_env for name in unset_env)):
+                      sys.exit(f"{label} unsetEnv accepts up to 16 unique non-credential environment names")
+                  entries.append((directory, script, unset_env))
+              scripts_in_plan = [script for _, script, _ in entries]
+              if len(scripts_in_plan) != len(set(scripts_in_plan)):
+                  sys.exit(f"{label} accepts unique script names")
+              # Script existence is proved against the manifest that will run the
+              # script, so a nested plan can never reach a root-only script.
+              package = json.loads((directory / "package.json").read_text(encoding="utf-8"))
+              scripts = package.get("scripts")
+              if not isinstance(scripts, dict):
+                  sys.exit(f"{manifest_label} has no scripts object")
+              missing = [name for name in scripts_in_plan if name not in scripts]
+              if missing:
+                  sys.exit(f"planned npm scripts absent from {manifest_label}: " + ", ".join(missing))
+              return entries
+
+          checkout_root = Path.cwd().resolve()
           normalized = []
-          for entry in plan:
-              if isinstance(entry, str):
-                  script = entry
-                  unset_env = []
-              elif isinstance(entry, dict) and set(entry) == {"script", "unsetEnv"}:
-                  script = entry["script"]
-                  unset_env = entry["unsetEnv"]
-              else:
-                  sys.exit("secretless-ci-script-plan entries must be script names or exact script/unsetEnv objects")
-              if not isinstance(script, str) or script_pattern.fullmatch(script) is None:
-                  sys.exit("secretless-ci-script-plan contains an invalid script name")
-              if (not isinstance(unset_env, list) or len(unset_env) > 16
-                      or len(unset_env) != len(set(unset_env))
-                      or any(not isinstance(name, str) or env_pattern.fullmatch(name) is None
-                             or name in protected_env for name in unset_env)):
-                  sys.exit("secretless-ci-script-plan unsetEnv accepts up to 16 unique non-credential environment names")
-              normalized.append((script, unset_env))
-          scripts_in_plan = [script for script, _ in normalized]
-          if len(scripts_in_plan) != len(set(scripts_in_plan)):
-              sys.exit("secretless-ci-script-plan accepts unique script names")
-          package = json.loads(Path("package.json").read_text(encoding="utf-8"))
-          scripts = package.get("scripts")
-          if not isinstance(scripts, dict):
-              sys.exit("package.json has no scripts object")
-          missing = [name for name in scripts_in_plan if name not in scripts]
-          if missing:
-              sys.exit("planned npm scripts absent from package.json: " + ", ".join(missing))
+          plan_source = os.environ.get("CI_SCRIPT_PLAN", "").strip()
+          if plan_source:
+              try:
+                  plan = json.loads(plan_source)
+              except json.JSONDecodeError as error:
+                  sys.exit(f"secretless-ci-script-plan must be valid JSON: {error}")
+              normalized.extend(normalize_plan(
+                  plan, checkout_root, "secretless-ci-script-plan", "package.json"))
+          nested_source = os.environ.get("NESTED_MANIFESTS", "").strip()
+          if nested_source:
+              try:
+                  nested_manifests = json.loads(nested_source)
+              except json.JSONDecodeError as error:
+                  sys.exit(f"secretless-nested-manifests must be valid JSON: {error}")
+              if not isinstance(nested_manifests, list) or not 1 <= len(nested_manifests) <= 8:
+                  sys.exit("secretless-nested-manifests accepts 1-8 nested manifest objects")
+              segment_pattern = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
+              for nested in nested_manifests:
+                  if (not isinstance(nested, dict)
+                          or set(nested) != {"path", "approvedPackages", "scriptPlan"}):
+                      sys.exit("each nested manifest requires exactly path, approvedPackages, and scriptPlan")
+                  nested_path = nested["path"]
+                  if (not isinstance(nested_path, str) or not nested_path
+                          or any(segment_pattern.fullmatch(segment) is None
+                                 for segment in nested_path.split("/"))):
+                      sys.exit("each nested manifest path must be a relative checkout directory")
+                  # The checkout is PR-authored here, so containment is proved
+                  # again before this job reads anything below the declared path.
+                  nested_directory = Path(nested_path).resolve()
+                  if not nested_directory.is_dir() or checkout_root not in nested_directory.parents:
+                      sys.exit(f"{nested_path} must resolve to a directory inside the checkout")
+                  nested_plan = nested["scriptPlan"]
+                  if not isinstance(nested_plan, list) or len(nested_plan) > 8:
+                      sys.exit(f"{nested_path} scriptPlan accepts at most 8 entries")
+                  if nested_plan:
+                      normalized.extend(normalize_plan(
+                          nested_plan, nested_directory, f"{nested_path} scriptPlan",
+                          f"{nested_path}/package.json"))
           max_cache_files = 4096
           max_cache_bytes = 268435456
           runner_temp_input = Path(os.environ["RUNNER_TEMP"])
@@ -3181,7 +3428,7 @@ jobs:
               previous_handlers[caught_signal] = signal.getsignal(caught_signal)
               signal.signal(caught_signal, handle_signal)
           try:
-              for index, (name, unset_env) in enumerate(normalized):
+              for index, (script_directory, name, unset_env) in enumerate(normalized):
                   if inventory(baseline) != baseline_inventory:
                       sys.exit("verified runtime cache changed before candidate script")
                   script_cache = cache_root / str(index)
@@ -3307,7 +3554,7 @@ jobs:
                               "--bind", str(script_tmp), str(script_tmp),
                               "--proc", "/proc",
                               "--dev", "/dev",
-                              "--chdir", str(workspace),
+                              "--chdir", str(script_directory),
                               "--",
                               str(npm_executable), "run", name,
                           ],
@@ -3356,7 +3603,7 @@ jobs:
           exit "$candidate_cache_status"
 
       - name: Remove isolated candidate runtime caches
-        if: always() && needs.eligibility.outputs.should-run != 'false' && (inputs.secretless-pr || inputs.secretless-trusted-ref) && inputs.secretless-ci-script-plan != ''
+        if: always() && needs.eligibility.outputs.should-run != 'false' && (inputs.secretless-pr || inputs.secretless-trusted-ref) && (inputs.secretless-ci-script-plan != '' || inputs.secretless-nested-manifests != '')
         env:
           CANDIDATE_CACHE_ROOT: ${{ runner.temp }}/verjson-candidate-caches-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
         run: |
