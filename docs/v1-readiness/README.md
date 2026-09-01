@@ -71,6 +71,20 @@ by a downstream consumer, not caught by the repository.
 job in `Verjson/verjson-authn` `.github/workflows/ci.yml`, which already carries the three
 traps that make a naive version of this check silently useless:
 
+Generate the npm pack receipt parser and its byte-identity contract from the same immutable
+`Verjson/.github` revision used for the adoption. The parser accepts both the npm 11 array
+receipt and npm 12 package-keyed object receipt, then fails closed unless exactly one safe
+tarball for the expected package was produced:
+
+```sh
+scripts/gen-type-surface-contract.sh pack-helper <contract-sha> > scripts/npm-pack-json.mjs
+scripts/gen-type-surface-contract.sh contract-test <contract-sha> > scripts/type-surface-contract-contract.test.sh
+```
+
+The type-surface script must call `resolvePackedTarball(packed, packageName)` instead of
+reading `[0].filename`. Run the generated contract test in CI alongside the type-surface
+test; it binds the copied helper byte-for-byte to the pinned organization contract.
+
 **Ordering — item 1 depends on item 5.** The canonical implementation resolves its baseline
 from the highest released `CHANGELOG/v<x.y.z>.md` snapshot and hard-fails when there is none
 (`scripts/type-surface-contract.test.sh:419-426`). A repository that has not yet landed the
