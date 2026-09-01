@@ -388,6 +388,16 @@ contract test rejects it. An adopter that later gains something to publish
 regenerates as `release-node` or `release-artifact` rather than editing this
 file.
 
+Reaching for `release-node` with a `"private": true` package is now refused
+before anything irreversible happens. node-release.yml only ever runs as
+`publish`, so a failure there lands on top of a tag and an immutable
+`CHANGELOG/<version>.md` that are already pushed and cannot be re-cut. A
+generated `release-node` caller therefore refuses an unpublishable package in
+`verify` — the last stage that still precedes the snapshot push — and names
+`release-snapshot` as the fix. node-release.yml repeats the refusal in
+`Validate release package directories` for adopters still pinned to an older
+caller, so the failure at least states its cause.
+
 ### Release proposals are generated and explicitly autonomous
 
 `scripts/gen-changelog-caller.sh release-propose` emits a daily and

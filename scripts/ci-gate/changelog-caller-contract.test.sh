@@ -2192,5 +2192,76 @@ run_adopter "$snapshot_adopter" \
   && pass "emitted suite accepts a generated release-snapshot caller" \
   || fail "emitted suite rejects a generated release-snapshot caller: $(tail -2 "$tmproot/run.out")"
 
+# --------------------------------------------------------------------------
+# release-node refuses an unpublishable package BEFORE the snapshot (#1206).
+#
+# node-release.yml only ever runs as `publish`, so by the time it can read
+# package.json, changelog-release.yml has already consumed NEXT/, written the
+# immutable CHANGELOG/<version>.md, committed, tagged and pushed. Failing there
+# leaves a permanently red run over a release that completed and cannot be
+# re-cut. The refusal therefore also lives in `verify`, which `snapshot`
+# declares in `needs:` — the only place in the caller that still precedes the
+# irreversible push. The step is executed here rather than grepped for: a
+# diagnostic present as text but unreachable as code is the failure this
+# assertion exists to catch.
+# --------------------------------------------------------------------------
+
+node_release="$(bash "$gen" release-node "$sha")"
+private_guard="$tmproot/private-guard.sh"
+awk '
+  /^  snapshot:$/ { exit }
+  /^      - name: Refuse a package this release can never publish$/ { found = 1; next }
+  found && /^        run: \|$/ { body = 1; next }
+  body && /^      - / { exit }
+  body { sub(/^          /, ""); print }
+' <<<"$node_release" >"$private_guard"
+
+run_private_guard() {
+  ( cd "$1" && bash -euo pipefail "$private_guard" ) >"$tmproot/guard.out" 2>&1
+}
+
+if [ -s "$private_guard" ] && bash -n "$private_guard" 2>"$tmproot/guard.syntax"; then
+  guard_ok="$tmproot/guard-publishable"
+  mkdir -p "$guard_ok"
+  printf '%s\n' '{"name":"@verjson/thing","version":"0.0.0"}' >"$guard_ok/package.json"
+  guard_private="$tmproot/guard-private"
+  mkdir -p "$guard_private"
+  printf '%s\n' '{"name":"@verjson/thing","version":"0.0.0","private":true}' \
+    >"$guard_private/package.json"
+  run_private_guard "$guard_ok" \
+    && pass "release-node's pre-snapshot guard passes a publishable package" \
+    || fail "release-node's pre-snapshot guard rejected a publishable package: $(cat "$tmproot/guard.out")"
+  if run_private_guard "$guard_private"; then
+    fail "release-node's pre-snapshot guard accepted a private:true package"
+  else
+    grep -qi 'private' "$tmproot/guard.out" \
+      && pass "release-node refuses a private:true package before the snapshot, naming the cause" \
+      || fail "release-node's pre-snapshot refusal does not name private: $(cat "$tmproot/guard.out")"
+  fi
+else
+  fail "release-node emits no executable pre-snapshot guard against an unpublishable package"
+fi
+
+stripped_guard_adopter="$tmproot/adopter-stripped-private-guard"
+build_adopter "$stripped_guard_adopter"
+WORKFLOW="$stripped_guard_adopter/.github/workflows/release.yml" python3 - <<'PY'
+import os
+
+path = os.environ["WORKFLOW"]
+lines = open(path, encoding="utf-8").read().splitlines(keepends=True)
+start = next(
+    i
+    for i, line in enumerate(lines)
+    if line.strip() == "- name: Refuse a package this release can never publish"
+)
+end = next(
+    i for i in range(start + 1, len(lines)) if lines[i].startswith("      - ")
+)
+open(path, "w", encoding="utf-8").writelines(lines[:start] + lines[end:])
+PY
+run_adopter "$stripped_guard_adopter" \
+  && fail "emitted suite accepted a release-node caller with its pre-snapshot refusal deleted" \
+  || pass "emitted suite rejects a release-node caller whose pre-snapshot refusal was deleted (#1206)"
+
 [ "$fails" -eq 0 ] || exit 1
 echo "All tests passed."

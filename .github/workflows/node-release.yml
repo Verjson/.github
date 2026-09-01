@@ -266,6 +266,13 @@ jobs:
           }
           const targets = packageDirs.map((packageDir) => {
             const packageJson = require(require("path").resolve(packageDir, "package.json"));
+            if (packageJson.private === true) {
+              // JSON.stringify, not raw interpolation: a directory carrying a
+              // newline would otherwise close this annotation and let the
+              // remainder be parsed as a further workflow command.
+              console.log(`::error::package in ${JSON.stringify(packageDir)} is marked "private": true and can never be published, so this release workflow cannot complete. Use a release-snapshot caller (scripts/gen-changelog-caller.sh release-snapshot <sha>) for a repository that publishes nothing from its release workflow.`);
+              throw new Error(`package in ${packageDir} is marked private and cannot be published`);
+            }
             const prefix = `${scope}/`;
             if (typeof packageJson.name !== "string" || !packageJson.name.startsWith(prefix)) {
               throw new Error(`package in ${packageDir} is not owned by configured scope ${scope}`);

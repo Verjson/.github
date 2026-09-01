@@ -32,3 +32,15 @@ job, a `node-release.yml` delegation, an artifact upload or download, a
 publish job's own `GITHUB_TOKEN` is a hand edit and is rejected. `--build-runner`,
 `--approved-internal-package` and `--release-asset` remain unaccepted by this
 mode, so a caller cannot be generated into a half-publishing shape.
+
+An adopter that reached `release-node` with a `"private": true` package used to
+discover it at `npm publish`. That is the worst possible moment: node-release.yml
+only ever runs as `publish`, so the immutable `CHANGELOG/<version>.md` has
+already been committed, tagged and pushed, and the run stays permanently red over
+a release that cannot be re-cut. A generated `release-node` caller now refuses an
+unpublishable package in `verify` — the last stage that still precedes that push —
+naming `release-snapshot` as the fix, and the generated contract test rejects a
+caller with that refusal deleted. node-release.yml carries the same refusal in
+`Validate release package directories`, its first step to read `package.json`, so
+an adopter still pinned to an older caller gets a stated cause instead of a raw
+npm failure.

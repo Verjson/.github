@@ -787,6 +787,25 @@ jobs:
           registry-url: https://npm.pkg.github.com
           scope: '${release_scope}'
           package-manager-cache: false
+      # \`publish\` delegates to node-release.yml, which runs npm publish — but it
+      # only ever runs AFTER \`snapshot\` has consumed NEXT/, written the immutable
+      # CHANGELOG/<version>.md, committed, tagged and pushed. A package npm can
+      # never publish therefore fails over a release that already completed and
+      # cannot be re-cut, so the refusal is asserted here, while it is still a
+      # no-op (#1206).
+      - name: Refuse a package this release can never publish
+        run: |
+          package_dirs=(${package_dirs_shell})
+          for package_dir in "\${package_dirs[@]}"; do
+            # A directory with no package.json publishes nothing, and this same
+            # job fails on it at npm ci or npm version regardless.
+            [ -f "\$package_dir/package.json" ] || continue
+            is_private="\$(node -p 'JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).private === true' "\$package_dir/package.json")"
+            if [ "\$is_private" = true ]; then
+              echo "::error::package.json in '\$package_dir' is marked \"private\": true, so npm publish can never succeed and this release would fail after its snapshot is already tagged. To publish nothing from the release workflow, regenerate this caller as scripts/gen-changelog-caller.sh release-snapshot ${ref} > .github/workflows/release.yml"
+              exit 1
+            fi
+          done
       - name: Install dependencies
         run: npm ci
         env:
@@ -2718,6 +2737,17 @@ while IFS= read -r release_workflow; do
     grep -qF "if: always() && needs.verify.result == 'success' && (needs.snapshot.result == 'success' || needs.snapshot.result == 'skipped')" \
       <<<"$publish_job" \
       || fail "$release_workflow cannot safely resume publication after reusing an immutable snapshot"
+    # node-release.yml cannot refuse an unpublishable package in time: it only
+    # ever runs as `publish`, after `snapshot` has already pushed the immutable
+    # tag. `verify` is the last stage that still precedes that push (#1206).
+    private_guard_step="$(awk '
+      /^      - name: Refuse a package this release can never publish$/ { found = 1; next }
+      found && /^      - / { exit }
+      found { print }
+    ' <<<"$verify_job")"
+    grep -qF 'private === true' <<<"$private_guard_step" \
+      && grep -qF 'exit 1' <<<"$private_guard_step" \
+      || fail "$release_workflow does not refuse a private, unpublishable package before the snapshot is tagged (#1206)"
   elif [ "$release_mode" = release-snapshot ]; then
     # release-snapshot: the adopter publishes NOTHING from the release workflow
     # (#1206). Its whole reason to exist is reaching changelog-release.yml, so
