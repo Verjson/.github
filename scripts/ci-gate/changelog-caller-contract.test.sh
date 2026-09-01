@@ -2140,5 +2140,57 @@ else
     || fail "emitted suite rejected the workflow-level env indirection, but for the wrong reason: $(tail -2 "$tmproot/run.out")"
 fi
 
+# --------------------------------------------------------------------------
+# release-snapshot (#1206): a snapshot-only release caller for adopters that
+# publish nothing from the release workflow — concretely, a repository whose
+# container images are published by a separate, independently triggered
+# workflow, but which still cuts versioned releases and therefore accumulates
+# NEXT/ fragments that must be consumed into CHANGELOG/<version>.md. Before this
+# mode, "no release caller at all" was their only option, which left NEXT/
+# permanently unconsumed.
+# --------------------------------------------------------------------------
+
+snapshot_release="$(bash "$gen" release-snapshot "$sha")"
+grep -qE '^  verify:$' <<<"$snapshot_release" \
+  && grep -qE '^  snapshot:$' <<<"$snapshot_release" \
+  && grep -qE '^  publish:$' <<<"$snapshot_release" \
+  && ! grep -qE '^  build:$' <<<"$snapshot_release" \
+  && ! grep -q 'uses:.*node-release\.yml' <<<"$snapshot_release" \
+  && pass "release-snapshot emits verify/snapshot/publish with no build or publication stage" \
+  || fail "release-snapshot did not emit the snapshot-only release shape"
+
+build_snapshot_adopter() {
+  # An adopter that consumes NEXT/ but publishes nothing from the release
+  # workflow: no package, no GitHub Release assets, no release-build.sh hook.
+  local dir="$1"
+  mkdir -p "$dir/NEXT" "$dir/scripts" "$dir/.github/workflows"
+  bash "$gen" renderer "$sha" >"$dir/scripts/render-next.sh"
+  bash "$gen" workflow "$sha" >"$dir/.github/workflows/changelog.yml"
+  bash "$gen" pr-gate "$sha" >"$dir/.github/workflows/changelog-contract.yml"
+  cp "$emitted" "$dir/scripts/changelog-contract.test.sh"
+  chmod +x "$dir/scripts/render-next.sh" "$dir/scripts/changelog-contract.test.sh"
+  bash "$gen" release-snapshot "$sha" >"$dir/.github/workflows/release.yml"
+  cat >"$dir/NEXT/2026-09-01-issue-1206-first.md" <<'FRAGMENT'
+---
+date: 2026-09-01
+issue: 1206
+title: 'fix(caller): first snapshot-only entry'
+---
+
+Body.
+FRAGMENT
+  git -C "$dir" init -q
+  git -C "$dir" config user.name Test
+  git -C "$dir" config user.email test@example.com
+  git -C "$dir" add -A
+  git -C "$dir" commit -qm initial
+}
+
+snapshot_adopter="$tmproot/adopter-snapshot"
+build_snapshot_adopter "$snapshot_adopter"
+run_adopter "$snapshot_adopter" \
+  && pass "emitted suite accepts a generated release-snapshot caller" \
+  || fail "emitted suite rejects a generated release-snapshot caller: $(tail -2 "$tmproot/run.out")"
+
 [ "$fails" -eq 0 ] || exit 1
 echo "All tests passed."
