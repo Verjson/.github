@@ -307,4 +307,74 @@ else
   fail "the tamper fixture could not be packaged"
 fi
 
+python3 - "$workflow" "$tmp/plan.sh" <<'PY'
+import sys
+import yaml
+
+doc = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))
+step = next(step for job in doc["jobs"].values() for step in job.get("steps", [])
+            if step.get("name") == "Run exact credentialless consumer script plan")
+open(sys.argv[2], "w", encoding="utf-8").write(step["run"])
+PY
+
+plan_fixture="$tmp/plan-fixture"
+mkdir -p "$plan_fixture/examples/nested"
+printf '%s\n' '{"name":"root","version":"1.0.0","scripts":{"root-verify":"true"}}' \
+  > "$plan_fixture/package.json"
+printf '%s\n' '{"name":"nested","version":"1.0.0","scripts":{"verify":"true"}}' \
+  > "$plan_fixture/examples/nested/package.json"
+
+run_plan() {
+  local root_plan="$1" nested="$2"
+  rm -f "$plan_fixture/npm.log"
+  (cd "$plan_fixture" && PATH="$tmp/bin:$PATH" NPM_STUB_LOG="$plan_fixture/npm.log" \
+    CI_SCRIPT_PLAN="$root_plan" NESTED_MANIFESTS="$nested" bash "$tmp/plan.sh")
+}
+
+both_plan='[{"path":"examples/nested","approvedPackages":["@verjson/nested-lib"],"scriptPlan":["verify"]}]'
+if run_plan '["root-verify"]' "$both_plan" >/dev/null 2>&1 \
+    && grep -qFx "$plan_fixture	run root-verify" "$plan_fixture/npm.log" \
+    && grep -qFx "$plan_fixture/examples/nested	run verify" "$plan_fixture/npm.log"; then
+  pass "each manifest's script plan runs in that manifest's own directory"
+else
+  fail "the nested script plan did not run in its own manifest directory"
+fi
+
+if run_plan '' "$both_plan" >/dev/null 2>&1 \
+    && [ "$(wc -l < "$plan_fixture/npm.log")" -eq 1 ] \
+    && grep -qFx "$plan_fixture/examples/nested	run verify" "$plan_fixture/npm.log"; then
+  pass "a nested script plan runs without any root script plan"
+else
+  fail "a nested-only script plan did not run on its own"
+fi
+
+# The root package.json declares root-verify; the nested one does not. Script
+# existence is checked against the manifest that will run it.
+if run_plan '["root-verify"]' \
+    '[{"path":"examples/nested","approvedPackages":["@verjson/nested-lib"],"scriptPlan":["root-verify"]}]' \
+    >/dev/null 2>&1; then
+  fail "a nested plan ran a script declared only by the root package.json"
+elif [ ! -s "$plan_fixture/npm.log" ]; then
+  pass "a nested plan naming a script absent from its own package.json fails before npm"
+else
+  fail "a nested plan naming a foreign script reached npm before failing"
+fi
+
+# The protected candidate variant re-implements the same loop inside a
+# bubblewrap namespace, so its chdir must track the per-manifest directory too.
+python3 - "$root/.github/workflows/node-ci-protected.yml" <<'PY' \
+  && pass "the protected candidate loop chdirs into each script's own manifest directory" \
+  || fail "the protected candidate loop does not chdir per manifest"
+import sys
+import yaml
+
+doc = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))
+step = next(step for job in doc["jobs"].values() for step in job.get("steps", [])
+            if step.get("name") == "Run exact credentialless consumer script plan")
+body = step["run"]
+assert "for index, (script_directory, name, unset_env) in enumerate(normalized):" in body
+assert '"--chdir", str(script_directory),' in body
+assert '"--chdir", str(workspace),' not in body
+PY
+
 exit $((failures > 0))

@@ -2771,10 +2771,6 @@ jobs:
           import sys
           from pathlib import Path
 
-          try:
-              plan = json.loads(os.environ["CI_SCRIPT_PLAN"])
-          except json.JSONDecodeError as error:
-              sys.exit(f"secretless-ci-script-plan must be valid JSON: {error}")
           script_pattern = re.compile(r"[A-Za-z0-9][A-Za-z0-9:._-]*")
           env_pattern = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
           protected_env = {
@@ -2784,41 +2780,86 @@ jobs:
               "GOOGLE_APPLICATION_CREDENTIALS", "AZURE_CREDENTIALS",
               "ACTIONS_ID_TOKEN_REQUEST_TOKEN", "ACTIONS_ID_TOKEN_REQUEST_URL",
           }
-          if not isinstance(plan, list) or not plan or len(plan) > 32:
-              sys.exit("secretless-ci-script-plan accepts 1-32 unique exact npm script entries")
+          def normalize_plan(plan, directory, label, manifest_label):
+              if not isinstance(plan, list) or not plan or len(plan) > 32:
+                  sys.exit(f"{label} accepts 1-32 unique exact npm script entries")
+              entries = []
+              for entry in plan:
+                  if isinstance(entry, str):
+                      script = entry
+                      unset_env = []
+                  elif isinstance(entry, dict) and set(entry) == {"script", "unsetEnv"}:
+                      script = entry["script"]
+                      unset_env = entry["unsetEnv"]
+                  else:
+                      sys.exit(f"{label} entries must be script names or exact script/unsetEnv objects")
+                  if not isinstance(script, str) or script_pattern.fullmatch(script) is None:
+                      sys.exit(f"{label} contains an invalid script name")
+                  if (not isinstance(unset_env, list) or len(unset_env) > 16
+                          or len(unset_env) != len(set(unset_env))
+                          or any(not isinstance(name, str) or env_pattern.fullmatch(name) is None
+                                 or name in protected_env for name in unset_env)):
+                      sys.exit(f"{label} unsetEnv accepts up to 16 unique non-credential environment names")
+                  entries.append((directory, script, unset_env))
+              scripts_in_plan = [script for _, script, _ in entries]
+              if len(scripts_in_plan) != len(set(scripts_in_plan)):
+                  sys.exit(f"{label} accepts unique script names")
+              # Script existence is proved against the manifest that will run the
+              # script, so a nested plan can never reach a root-only script.
+              package = json.loads((directory / "package.json").read_text(encoding="utf-8"))
+              scripts = package.get("scripts")
+              if not isinstance(scripts, dict):
+                  sys.exit(f"{manifest_label} has no scripts object")
+              missing = [name for name in scripts_in_plan if name not in scripts]
+              if missing:
+                  sys.exit(f"planned npm scripts absent from {manifest_label}: " + ", ".join(missing))
+              return entries
+
+          checkout_root = Path.cwd().resolve()
           normalized = []
-          for entry in plan:
-              if isinstance(entry, str):
-                  script = entry
-                  unset_env = []
-              elif isinstance(entry, dict) and set(entry) == {"script", "unsetEnv"}:
-                  script = entry["script"]
-                  unset_env = entry["unsetEnv"]
-              else:
-                  sys.exit("secretless-ci-script-plan entries must be script names or exact script/unsetEnv objects")
-              if not isinstance(script, str) or script_pattern.fullmatch(script) is None:
-                  sys.exit("secretless-ci-script-plan contains an invalid script name")
-              if (not isinstance(unset_env, list) or len(unset_env) > 16
-                      or len(unset_env) != len(set(unset_env))
-                      or any(not isinstance(name, str) or env_pattern.fullmatch(name) is None
-                             or name in protected_env for name in unset_env)):
-                  sys.exit("secretless-ci-script-plan unsetEnv accepts up to 16 unique non-credential environment names")
-              normalized.append((script, unset_env))
-          scripts_in_plan = [script for script, _ in normalized]
-          if len(scripts_in_plan) != len(set(scripts_in_plan)):
-              sys.exit("secretless-ci-script-plan accepts unique script names")
-          package = json.loads(Path("package.json").read_text(encoding="utf-8"))
-          scripts = package.get("scripts")
-          if not isinstance(scripts, dict):
-              sys.exit("package.json has no scripts object")
-          missing = [name for name in scripts_in_plan if name not in scripts]
-          if missing:
-              sys.exit("planned npm scripts absent from package.json: " + ", ".join(missing))
-          for name, unset_env in normalized:
+          plan_source = os.environ.get("CI_SCRIPT_PLAN", "").strip()
+          if plan_source:
+              try:
+                  plan = json.loads(plan_source)
+              except json.JSONDecodeError as error:
+                  sys.exit(f"secretless-ci-script-plan must be valid JSON: {error}")
+              normalized.extend(normalize_plan(
+                  plan, checkout_root, "secretless-ci-script-plan", "package.json"))
+          nested_source = os.environ.get("NESTED_MANIFESTS", "").strip()
+          if nested_source:
+              try:
+                  nested_manifests = json.loads(nested_source)
+              except json.JSONDecodeError as error:
+                  sys.exit(f"secretless-nested-manifests must be valid JSON: {error}")
+              if not isinstance(nested_manifests, list) or not 1 <= len(nested_manifests) <= 8:
+                  sys.exit("secretless-nested-manifests accepts 1-8 nested manifest objects")
+              segment_pattern = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
+              for nested in nested_manifests:
+                  if (not isinstance(nested, dict)
+                          or set(nested) != {"path", "approvedPackages", "scriptPlan"}):
+                      sys.exit("each nested manifest requires exactly path, approvedPackages, and scriptPlan")
+                  nested_path = nested["path"]
+                  if (not isinstance(nested_path, str) or not nested_path
+                          or any(segment_pattern.fullmatch(segment) is None
+                                 for segment in nested_path.split("/"))):
+                      sys.exit("each nested manifest path must be a relative checkout directory")
+                  # The checkout is PR-authored here, so containment is proved
+                  # again before this job reads anything below the declared path.
+                  nested_directory = Path(nested_path).resolve()
+                  if not nested_directory.is_dir() or checkout_root not in nested_directory.parents:
+                      sys.exit(f"{nested_path} must resolve to a directory inside the checkout")
+                  nested_plan = nested["scriptPlan"]
+                  if not isinstance(nested_plan, list) or len(nested_plan) > 8:
+                      sys.exit(f"{nested_path} scriptPlan accepts at most 8 entries")
+                  if nested_plan:
+                      normalized.extend(normalize_plan(
+                          nested_plan, nested_directory, f"{nested_path} scriptPlan",
+                          f"{nested_path}/package.json"))
+          for directory, name, unset_env in normalized:
               script_env = os.environ.copy()
               for env_name in unset_env:
                   script_env.pop(env_name, None)
-              subprocess.run(["npm", "run", name], check=True, env=script_env)
+              subprocess.run(["npm", "run", name], check=True, env=script_env, cwd=directory)
           PY
       - run: npm run build
         if: needs.eligibility.outputs.should-run != 'false' && (!(inputs.secretless-pr || inputs.secretless-trusted-ref) || inputs.secretless-ci-script-plan == '')
