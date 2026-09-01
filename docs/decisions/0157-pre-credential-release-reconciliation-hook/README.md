@@ -44,6 +44,19 @@ An under-constrained hook in that position could:
    `git diff --name-only` check accepts.
 5. **Be widened at release time** — if the allowlist or command were a `workflow_dispatch`
    input, anyone who can dispatch a release could choose what code runs pre-credential.
+6. **Write to `.git/` instead of the worktree.** `git status` never reports `.git/`, so a
+   worktree-diff validator is blind to it — and `.git/` is precisely where the answer to
+   "what code does the next `git` command run" lives: `hooks/pre-commit`,
+   `core.hooksPath`, `core.fsmonitor`, `credential.helper`, content filters and aliases in
+   `config`, and `info/exclude` to hide the hook's own output. The equivalent write to
+   `$HOME/.gitconfig` reaches the same switches from outside the repository. The adversarial
+   review found this class live: a hook that dropped an executable `.git/hooks/pre-commit`
+   passed validation with exit 0, and the `git commit` two steps later would have executed
+   it with the App token in its environment.
+
+Ignored paths are the same blind spot one level down: `git status` omits them, so a
+consumer `.gitignore` entry would let a hook write output the validator never saw —
+including under `NEXT/`, which the pinned engine consumes after the token is minted.
 
 ## Decision
 
@@ -80,15 +93,30 @@ existing pinned checkout is widened by exactly one file to carry it.
 `PATH`, `HOME`, `LANG`, `RELEASE_VERSION`, `RELEASE_MANIFEST` — rather than filtering a copy
 of the runner environment. An allowlist is used instead of the denylist pattern used by
 `release-build.sh` because a denylist cannot keep up with newly introduced credential
-variables, and the blast radius here is the release App token.
+variables, and the blast radius here is the release App token. `HOME` is a throwaway
+directory, not the runner's: a writable home is a `~/.gitconfig` away from `core.hooksPath`,
+and git reads `$HOME/.config/git/config` too.
+
+**The Git control surface is compared directly, not through `git`.** Before the hook, the
+validator fingerprints `config`, `config.worktree`, `info/exclude`, every file under
+`hooks/` (content *and* executable bit), and `HEAD` — for both the release checkout and the
+pinned contract checkout, resolving each `--absolute-git-dir` from the trusted pre-hook
+state. After each hook run that fingerprint must be unchanged, and it is checked *first*,
+before any other validation, because `.git/config` is exactly what would make later `git`
+output lie. Defence in depth in the release step itself: `git commit` and `git push` run
+with `-c core.hooksPath=/dev/null`, since `.git/hooks` is untracked and therefore was never
+reviewed by anyone.
 
 **Fail-closed validation.** Before the hook: the allowlist is structurally validated
 (normalized repository-relative paths, no `..`/`.`/`.git*` segments, no `RELEASES/`,
 `CHANGELOG/`, `NEXT/` or release-engine script, unique, ≤ 32 entries, each already a tracked
-regular file); the manifest path is bounded; the pinned checkout is confirmed to be at the
-contract ref and unmodified; the tracked tree is confirmed clean. After the hook: every
+regular file — compared against the name `git ls-files` actually lists, so a directory
+cannot pass as a file); the manifest path and the staged-list path are bounded, and the
+staged-list path must not be tracked; the pinned checkout is confirmed to be at the contract
+ref and unmodified; the tracked tree is confirmed clean. After the hook: every
 `git status --porcelain=v1 -z -uall` record must be either untracked output that already
-existed before the hook, or an unstaged content modification (` M`) of an allowlisted path.
+existed before the hook, or an unstaged content modification (` M`) of an allowlisted path,
+and `--ignored=matching` must yield no new ignored path either.
 Deletions, renames, type changes, index staging, and any new untracked path are rejected.
 `git diff --raw` then requires the source and destination modes to be equal and to be a
 regular blob, which rejects mode flips and symlink substitution, and the filesystem is
@@ -136,7 +164,16 @@ undeclared `scripts/release-reconcile.sh` — so a hook cannot appear without re
   asserts it exactly.
 - Adopters must regenerate the whole artifact set at one contract SHA to pick this up; the
   contract test's negative assertions are new bytes even for unconfigured adopters.
+- The adversarial review that preceded merge found the `.git/`-write class (threat 6) live
+  and exploitable in the first implementation, which is the strongest argument for the
+  position taken here: a worktree diff is not a sufficient model of "what did the hook
+  change" when the next step mints a credential. Eight regression tests hold that line
+  (`scripts/container_release_reconcile.test.py`, classes `GitControlSurfaceTest` and
+  `AllowlistShapeTest`).
 - **Residual risk, stated plainly:** a malicious hook can still consume runner CPU and read
-  the repository tree, and validation is `git`-state-based, so it does not model a hook that
-  attacks the runner itself. The mitigation is that the hook, its allowlist, and the pinned
-  contract SHA are all reviewed in the consumer's own PR before any release can use them.
+  the repository tree. Validation covers the worktree, the index, ignored paths and the Git
+  control surface, but it is still filesystem-state-based: it does not model a hook that
+  attacks the runner itself (`/etc/gitconfig` needs root, so it is out of reach, but the
+  general class is not disproven). The mitigation is that the hook, its allowlist, and the
+  pinned contract SHA are all reviewed in the consumer's own PR before any release can use
+  them.

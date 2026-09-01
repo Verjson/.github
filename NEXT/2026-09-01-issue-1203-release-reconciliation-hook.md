@@ -19,12 +19,18 @@ surface at all. Enforcement is `scripts/container_release_reconcile.py`, run fro
 `.container-release-contract/` checkout rather than a consumer-side copy.
 
 Everything about it is fail-closed. It requires a clean tracked tree, builds the hook's
-environment from scratch rather than filtering the runner's, runs it in its own process
-group with `stdin` closed and a 300s timeout, then `SIGKILL`s that group so nothing survives
-to observe the token minted next. Only unstaged content modifications of allowlisted tracked
-paths are accepted: untracked output, deletions, renames, type changes, file-mode flips,
-symlink substitution, index staging, and any path outside the allowlist are rejected, and
-any rejection restores the tree and fails the job before the mint step. The hook is re-run
+environment from scratch rather than filtering the runner's, gives it a throwaway `HOME`,
+runs it in its own process group with `stdin` closed and a 300s timeout, then `SIGKILL`s
+that group so nothing survives to observe the token minted next. Only unstaged content
+modifications of allowlisted tracked paths are accepted: untracked output, ignored output,
+deletions, renames, type changes, file-mode flips, symlink substitution, index staging, and
+any path outside the allowlist are rejected, and any rejection restores the tree and fails
+the job before the mint step. Because `git status` reports nothing under `.git/`, the
+validator also fingerprints the Git control surface of both checkouts — `config`,
+`info/exclude`, every hook file with its executable bit, and `HEAD` — and requires it
+byte-identical afterwards, so a hook cannot install a `pre-commit` or set `core.hooksPath`
+and have it fire during the `git commit` that holds the token. That commit and push
+additionally run with `core.hooksPath=/dev/null`. The hook is re-run
 against its own output and must reach a fixed point, because releases get retried. The
 release step then asserts the staged set is exactly the manifest plus the recorded
 reconciled paths, and re-binds the pinned changelog engine to the contract SHA immediately

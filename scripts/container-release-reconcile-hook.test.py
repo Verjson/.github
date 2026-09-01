@@ -69,6 +69,15 @@ def validate(workflow):
         errors.append("the release commit does not assert its exact staged path set")
     if output.get("env", {}).get("CONTRACT_REF") != "${{ inputs.contract-ref }}":
         errors.append("the release step cannot rebind the pinned engine without the contract ref")
+    if output.get("env", {}).get("RECONCILE_ALLOWLIST") != "${{ inputs.reconcile-allowlist }}":
+        errors.append("the release step cannot tell a configured release from an unconfigured one")
+    if '[ -n "$RECONCILE_ALLOWLIST" ] && [ -f reconciled-paths.txt ]' not in release_run:
+        errors.append("an unconfigured release reads back a tracked reconciled-paths.txt")
+    # `.git/hooks` is untracked, so nothing in it was ever reviewed; it must not run
+    # in the two commands that hold the release App token.
+    for command in ("commit", "push"):
+        if f"git -c core.hooksPath=/dev/null {command}" not in release_run:
+            errors.append(f"git {command} runs repository hooks with the release App token")
 
     sparse = contract.get("with", {}).get("sparse-checkout", "")
     if "scripts/container_release_reconcile.py" not in sparse or "scripts/changelog.py" not in sparse:
@@ -153,6 +162,29 @@ class ReconcileHookWorkflowTest(unittest.TestCase):
         )
         self.assertIn(
             "the release step does not rebind the pinned engine before executing it", validate(mutant)
+        )
+
+    def test_rejects_running_repository_hooks_with_the_release_token(self):
+        mutant = copy.deepcopy(self.workflow)
+        output = named_step(
+            mutant["jobs"]["promote"], "Canonical changelog, Git tag, release and machine output"
+        )
+        output["run"] = output["run"].replace("git -c core.hooksPath=/dev/null commit", "git commit")
+        self.assertIn(
+            "git commit runs repository hooks with the release App token", validate(mutant)
+        )
+
+    def test_rejects_reading_the_reconciled_path_list_without_a_configured_allowlist(self):
+        mutant = copy.deepcopy(self.workflow)
+        output = named_step(
+            mutant["jobs"]["promote"], "Canonical changelog, Git tag, release and machine output"
+        )
+        output["run"] = output["run"].replace(
+            '[ -n "$RECONCILE_ALLOWLIST" ] && [ -f reconciled-paths.txt ]',
+            "[ -f reconciled-paths.txt ]",
+        )
+        self.assertIn(
+            "an unconfigured release reads back a tracked reconciled-paths.txt", validate(mutant)
         )
 
 
