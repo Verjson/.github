@@ -3,6 +3,7 @@
 import contextlib
 import importlib.util
 import io
+import os
 import subprocess
 import sys
 import tempfile
@@ -685,6 +686,28 @@ class ChangelogContractTests(unittest.TestCase):
         self.assertIn("The lead paragraph,\nwhich is what a release note needs.", snapshot)
         self.assertNotIn("## Why", snapshot)
         self.assertIn("_Date: 2026-07-30; issue #249_", snapshot)
+
+    def test_release_commit_never_executes_a_repository_pre_commit_hook(self) -> None:
+        # release() runs with a short-lived, credential-minting App token in its
+        # environment (container-release.yml). A pre-commit hook is an untracked,
+        # unreviewed side channel that must never observe it (#1203). HOME is
+        # pinned to this test's own temp dir so an ambient global core.hooksPath
+        # (or any other global git config) can't mask a real local-hook escape —
+        # a stray global override on the host once did exactly that, silently.
+        with mock.patch.dict(os.environ, {"HOME": str(self.root)}):
+            self.init_git()
+            fragment(self.root, "2026-07-30-issue-249-default.md")
+            self.commit_all("initial")
+            hooks_dir = self.root / ".git" / "hooks"
+            hooks_dir.mkdir(exist_ok=True)
+            marker = self.root / "pre-commit-ran"
+            hook = hooks_dir / "pre-commit"
+            hook.write_text(f"#!/bin/sh\ntouch {marker}\n", encoding="utf-8")
+            hook.chmod(0o755)
+
+            changelog.release(self.root, "v1.0.0", [])
+
+            self.assertFalse(marker.exists(), "release() executed a repository pre-commit hook")
 
     def test_default_render_selects_only_unscoped_fragments(self) -> None:
         fragment(self.root, "2026-07-30-issue-249-default.md", title="Default")

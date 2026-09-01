@@ -716,8 +716,14 @@ def validate_release_bump(repo_root: Path, version: str, selected: list[Fragment
 
 
 def git(repo_root: Path, *args: str) -> str:
+    # core.hooksPath=/dev/null: this helper's `commit` call must never execute a
+    # repository hook (pre-commit, commit-msg) — release() runs it with a freshly
+    # minted, short-lived release credential in its environment (container-release.yml),
+    # and a hook is exactly the kind of side channel that credential must never reach.
+    # Applied to every invocation, not just `commit`, so no future call site has to
+    # remember it.
     completed = subprocess.run(
-        ["git", *args],
+        ["git", "-c", "core.hooksPath=/dev/null", *args],
         cwd=repo_root,
         check=False,
         text=True,

@@ -103,9 +103,16 @@ validator fingerprints `config`, `config.worktree`, `info/exclude`, every file u
 pinned contract checkout, resolving each `--absolute-git-dir` from the trusted pre-hook
 state. After each hook run that fingerprint must be unchanged, and it is checked *first*,
 before any other validation, because `.git/config` is exactly what would make later `git`
-output lie. Defence in depth in the release step itself: `git commit` and `git push` run
-with `-c core.hooksPath=/dev/null`, since `.git/hooks` is untracked and therefore was never
-reviewed by anyone.
+output lie. Defence in depth in the release step itself: every `git` invocation that runs
+after the hook — the workflow-authored `commit` and `push`, and `scripts/changelog.py`'s own
+internal `commit`/`tag` during `release()` — passes `-c core.hooksPath=/dev/null`, enforced
+once in `changelog.py`'s shared `git()` helper rather than per call site, since `.git/hooks`
+is untracked and therefore was never reviewed by anyone. An initial version of this defence
+covered only the two workflow-authored commands and missed `changelog.py`'s own commit,
+which still ran with the release token in its environment and no hooks guard — closed before
+merge; `scripts/changelog.test.py`'s
+`test_release_commit_never_executes_a_repository_pre_commit_hook` plants a real
+`.git/hooks/pre-commit` and asserts it never runs during `release()`.
 
 **Fail-closed validation.** Before the hook: the allowlist is structurally validated
 (normalized repository-relative paths, no `..`/`.`/`.git*` segments, no `RELEASES/`,
@@ -131,10 +138,16 @@ hash, so `--raw` cannot distinguish two different reconciliations of the same pa
 defect found by the idempotence test itself.)
 
 **Containment after the hook.** The hook runs in its own process group with `stdin` closed
-and a 300-second timeout; the group is `SIGKILL`ed on completion, so nothing it backgrounds
-can observe the token minted in the next step. The validator re-verifies the pinned checkout
-afterwards, and the release step re-binds it (`rev-parse HEAD` equals `contract-ref`,
-`scripts/changelog.py` unmodified) immediately before executing it with the token.
+and a 300-second timeout; the group is `SIGKILL`ed on completion, which reaches anything it
+backgrounds in the ordinary case. This is not airtight: a child that calls `setsid()` a
+second time detaches from the group entirely and survives the `killpg`, giving it a window
+before the token is minted. The control-surface fingerprint (above) and the universal
+`core.hooksPath=/dev/null` are the actual backstops against what such a survivor could do —
+plant a hook or rewrite `.git/config` — not the process-group kill by itself; this is a
+residual risk to keep in mind rather than a closed one. The validator re-verifies the pinned
+checkout afterwards, and the release step re-binds it (`rev-parse HEAD` equals
+`contract-ref`, `scripts/changelog.py` unmodified) immediately before executing it with the
+token.
 
 **Exactly one commit.** The validator stages only the validated paths. The release step then
 asserts that the staged set is exactly the release manifest plus the reconciled paths it
