@@ -1,8 +1,8 @@
 # Organization `v1.0.0` readiness contract
 
 This contract is the canonical readiness bar a `@verjson/*` package must clear before
-its version is cut to `v1.0.0`. It is the authoritative checklist referenced by every
-per-repository `v1.0.0` prep issue.
+its version is cut to `v1.0.0`. It is applied to one candidate package at a time; clearing
+the bar makes a package eligible to graduate but does not require a release.
 
 Link it **at an immutable commit**, never at `main`, so the bar a repository was audited
 against stays readable after the bar moves:
@@ -11,8 +11,9 @@ against stays readable after the bar moves:
 https://github.com/Verjson/.github/blob/<40-hex-sha>/docs/v1-readiness/README.md
 ```
 
-The decision to run the wave, the release ordering, and the two-phase rollout are recorded
-in [ADR 0137](../decisions/0137-cut-v1-0-0-across-pre-1-0-packages/README.md).
+The package-scoped graduation policy is recorded in
+[ADR 0159](../decisions/0159-graduate-packages-to-v1-by-evidence/README.md), which
+supersedes the organization-wide release wave in ADR 0137.
 
 ## Why `1.0.0` at all
 
@@ -70,6 +71,20 @@ by a downstream consumer, not caught by the repository.
 job in `Verjson/verjson-authn` `.github/workflows/ci.yml`, which already carries the three
 traps that make a naive version of this check silently useless:
 
+Generate the npm pack receipt parser and its byte-identity contract from the same immutable
+`Verjson/.github` revision used for the adoption. The parser accepts both the npm 11 array
+receipt and npm 12 package-keyed object receipt, then fails closed unless exactly one safe
+tarball for the expected package was produced:
+
+```sh
+scripts/gen-type-surface-contract.sh pack-helper <contract-sha> > scripts/npm-pack-json.mjs
+scripts/gen-type-surface-contract.sh contract-test <contract-sha> > scripts/type-surface-contract-contract.test.sh
+```
+
+The type-surface script must call `resolvePackedTarball(packed, packageName)` instead of
+reading `[0].filename`. Run the generated contract test in CI alongside the type-surface
+test; it binds the copied helper byte-for-byte to the pinned organization contract.
+
 **Ordering — item 1 depends on item 5.** The canonical implementation resolves its baseline
 from the highest released `CHANGELOG/v<x.y.z>.md` snapshot and hard-fails when there is none
 (`scripts/type-surface-contract.test.sh:419-426`). A repository that has not yet landed the
@@ -80,8 +95,8 @@ conforming release.
 **Status — read this before citing it.** The implementation is
 [`Verjson/verjson-authn#246`](https://github.com/Verjson/verjson-authn/pull/246), which was
 **open** when this contract was written (head `b160239a75d5ba2e325c9ef7e244f2d0ff948592`,
-its required checks green). It is not on `verjson-authn` `main`. Landing #246 is therefore a
-prerequisite of the wave, and an adopter should pin to its merge commit rather than to this
+its required checks green). It is not on `verjson-authn` `main`. A candidate package must use a
+landed canonical implementation before graduating, and should pin to its merge commit rather than to this
 branch SHA.
 
 Its two artefacts are the job `type-surface-contract` in `.github/workflows/ci.yml:39` and
@@ -201,7 +216,7 @@ does not call a resolver, it does not satisfy this item.
 
 **Why.** `^0.2.0` does not admit `0.3.0`, and it does not admit `1.0.0` either. A package
 whose peer range points at a `0.x` sibling becomes uninstallable the moment that sibling
-cuts `1.0.0`. Because the wave moves 18 packages, this is the single item most likely to
+cuts `1.0.0`. This is the single item most likely to
 break consumers, and it must be resolved **before** the depended-on package releases, not
 after.
 
@@ -211,10 +226,11 @@ after.
 code is compatible and typechecks against it. The peer range, not the code, is the
 incompatibility.
 
-The same shape is present across the organization. Derived from the manifests on
-2026-08-25 — **every one of these refuses its target's `1.0.0`**:
+The same shape was present across the organization when the original wave was evaluated.
+Derived from the manifests on 2026-08-25, these are historical examples that a candidate
+package's fresh dependent inventory must replace:
 
-| Consumer | Range on an in-wave package | Kind | Location |
+| Consumer | Historical range on a candidate dependency | Kind | Location |
 |---|---|---|---|
 | `@verjson/ai-gguf` | `@verjson/ai@>=0.12.0 <1` | peer | `package.json:48` |
 | `@verjson/authz` | `@verjson/identity-contracts@^0.2.0` | peer | `package.json:60` |
@@ -235,7 +251,7 @@ Two things this table makes visible that the per-repository view does not:
 - **Packages already past `1.0.0` are in scope for this item.** `authn` (`^0.2.2`),
   `observability` (`^0.2.1`), and `payments` (`^0.3.0`) each consume
   `@verjson/identity-contracts` at **runtime**, and all three ranges exclude `1.0.0`. They
-  are not being cut in this wave, but they will break when `identity-contracts` does — and
+  need not graduate themselves, but they will break if `identity-contracts` does — and
   `authn` and `observability`, being on `^0.2.x`, already fail to resolve the published
   `0.3.0` today. Audit the dependents of the package being cut, not only the package
   itself.
@@ -254,7 +270,7 @@ pins `@verjson/cli-cloud@0.28.1` **exactly**.
       the new version alongside the packed tarball and runs the real tests. Widening a peer
       range without a matrix leg proves only that the string changed.
 - [ ] The audit covers **dependents as well as dependencies** — including dependents
-      already past `1.0.0`, which this wave does not otherwise touch.
+      already past `1.0.0`, which the candidate package's release does not otherwise touch.
 - [ ] `devDependencies` on `@verjson/*` are recorded but do **not** block a consumer's
       install: a devDependency never reaches a consumer's install graph. They still break
       the *depending repository's own CI* the moment their target cuts `1.0.0`, so they are
@@ -281,16 +297,16 @@ reproduces the defect one publish later. The same repository's
 `.github/workflows/next-compatibility.yml:30` shows the correct shape:
 `next: ['14','15','16']` — **majors**, resolved at install time.
 
-**An 18-package wave accelerates this sharply.** Each package in the wave publishes at least
-once; several will publish twice (a range widening under item 3, then `1.0.0` itself).
-Every exact-version matrix leg pointing at a `0.x` sibling has a very short remaining life.
+Graduation can accelerate this sharply when it requires a range-widening release before
+`1.0.0`. Every exact-version matrix leg pointing at a `0.x` sibling has a bounded remaining
+life that must be checked in the candidate's migration plan.
 
 **Bar.**
 
-- [ ] If the package has no relevant in-wave sibling dependency or range to exercise, this
+- [ ] If the package has no relevant sibling dependency or range in the candidate migration to exercise, this
       item passes vacuously: record that reason and do not add an artificial exact-version
       leg.
-- [ ] If a package declares any relevant in-wave sibling dependency or peer range, at least
+- [ ] If a package declares any relevant sibling dependency or peer range in that migration, at least
       one compatibility leg must exercise it. This remains true whether the range already
       admits `1.0.0` or still FAILs item 3; zero legs is FAIL, not vacuous.
 - [ ] Every applicable compatibility matrix leg avoids an exact `x.y.z` version of an
@@ -306,7 +322,7 @@ Every exact-version matrix leg pointing at a `0.x` sibling has a very short rema
 
 **Why.** The cut must produce the correct immutable `CHANGELOG/v<x.y.z>.md` snapshot. A
 repository that is not on the current changelog contract cannot dispatch a conforming
-release, and the release is the whole point of this wave.
+release, so it cannot make the candidate package's `1.0.0` stability promise.
 
 **Bar.**
 
@@ -488,12 +504,12 @@ correct.
 
 GitHub Packages retention keeps the **3 most recent stable versions**
 ([ADR 0108](../decisions/0108-bound-package-retention-to-three-stable-releases/README.md)).
-The wave publishes at an unusually high rate, so `0.x` versions age out of the registry
-faster than normal. Any consumer still pinned to a `0.x` range will begin hitting `E404` on
-fresh installs.
+A candidate may need both a range-widening release and its `1.0.0` release, so relevant `0.x`
+versions can age out of the registry quickly. Any consumer left on a range whose satisfiable
+versions are removed will begin hitting `E404` on fresh installs.
 
-**That is an intended forcing function, not a defect.** The correct response is to bump the
-consumer to `^1.0.0`. Do **not** re-pin a vanished version, ask for it to be restored, or
+**That is an intended forcing function, not a defect.** The correct response is to move the
+consumer to the planned supported range. Do **not** re-pin a vanished version, ask for it to be restored, or
 propose widening retention for a stale consumer.
 
 Diagnose before acting: a 404 is equally consistent with a stale lockfile pin, an
@@ -507,14 +523,15 @@ while current versions are readable.
 
 ---
 
-## Publishing `1.0.0` does not reach consumers
+## Publishing `1.0.0` does not migrate consumers
 
-Cutting `1.0.0` is **phase one of two**. `^0.x` ranges do not accept `1.0.0`, so no consumer
-receives the release until someone deliberately bumps its dependency range. A package that
-publishes `1.0.0` and stops has changed nothing for anybody.
+`^0.x` ranges do not accept `1.0.0`, so no consumer receives a candidate package's release
+until its dependency range is deliberately migrated. Publishing without completing the
+bounded consumer plan has not delivered the intended stable propagation.
 
-Phase two — bumping each consumer to `^1.0.0` — is tracked per consumer and is where the
-retention consequence above lands. See ADR 0137.
+Each affected consumer moves to the supported range recorded by the candidate package's
+migration plan, which may be `^1.0.0` or a deliberately tested dual-major range. Track those
+migrations per consumer and account for the retention consequence above. See ADR 0159.
 
 ---
 
