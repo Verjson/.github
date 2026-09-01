@@ -77,9 +77,11 @@ bash "$generator" generated-artifacts "$contract_pin" >"$content_root/.github/wo
 bash "$generator" renderer "$contract_pin" >"$content_root/scripts/render-next.sh"
 bash "$generator" contract-test "$contract_pin" >"$content_root/scripts/changelog-contract.test.sh"
 bash "$generator" release-node "$contract_pin" >"$content_root/.github/workflows/release.yml"
+bash "$generator" pr-gate "$contract_pin" >"$content_root/.github/workflows/changelog-contract.yml"
 mkdir -p "$tmp/artifact-baseline/.github/workflows" "$tmp/artifact-baseline/scripts"
 cp "$content_root/.github/workflows/changelog.yml" "$tmp/artifact-baseline/.github/workflows/changelog.yml"
 cp "$content_root/.github/workflows/release.yml" "$tmp/artifact-baseline/.github/workflows/release.yml"
+cp "$content_root/.github/workflows/changelog-contract.yml" "$tmp/artifact-baseline/.github/workflows/changelog-contract.yml"
 cp "$content_root/scripts/render-next.sh" "$tmp/artifact-baseline/scripts/render-next.sh"
 cp "$content_root/scripts/changelog-contract.test.sh" "$tmp/artifact-baseline/scripts/changelog-contract.test.sh"
 # Stub `gh`. The real one applies `--jq` client-side; a stub that ignored it
@@ -198,6 +200,7 @@ workflow_for() {
   local stack="$1" stack_workflow=''
   cp "$tmp/artifact-baseline/.github/workflows/changelog.yml" "$content_root/.github/workflows/changelog.yml"
   cp "$tmp/artifact-baseline/.github/workflows/release.yml" "$content_root/.github/workflows/release.yml"
+  cp "$tmp/artifact-baseline/.github/workflows/changelog-contract.yml" "$content_root/.github/workflows/changelog-contract.yml"
   cp "$tmp/artifact-baseline/scripts/render-next.sh" "$content_root/scripts/render-next.sh"
   cp "$tmp/artifact-baseline/scripts/changelog-contract.test.sh" "$content_root/scripts/changelog-contract.test.sh"
   case "$stack" in
@@ -874,6 +877,65 @@ rc="$(run_audit)"
 { [ "$rc" != "rc=0" ] && grep -qE 'generated-contract-(parameters-invalid|byte-drift)' "$tmp/out.txt"; } \
   && pass "a trivial replacement contract test cannot satisfy generated provenance" \
   || { fail "a trivial generated-test escape was accepted ($rc)"; out | sed 's/^/diag - /'; }
+
+# --- #1212: changelog-contract.yml (the pr-gate artifact) is byte-compared ---
+# The shape checker only asks whether SOME unconditional job runs the contract
+# test; a hand-written job satisfying that shape used to pass even though the
+# canonical generated file is what carries the runner pin and the
+# persist-credentials:false hardening from #959.
+stack node
+printf '\n# handwritten drift\n' >>"$content_root/.github/workflows/changelog-contract.yml"
+rc="$(run_audit)"
+{ [ "$rc" != "rc=0" ] && grep -q 'generated-contract-byte-drift artifact=changelog-contract.yml' "$tmp/out.txt"; } \
+  && pass "a handwritten changelog-contract.yml lookalike cannot satisfy generated provenance" \
+  || { fail "changelog-contract.yml byte drift was accepted ($rc)"; out | sed 's/^/diag - /'; }
+
+# `--untrusted-runner` is the one argument that changes pr-gate's output, and
+# it is not recorded anywhere else the audit reads — it must be recovered from
+# the artifact's own `runs-on:` line. An unrecognised shape there must fault,
+# not fall back to a best-effort parse that would let a hand-edited `runs-on:`
+# regenerate to match itself.
+stack node
+sed -i 's/^\( *\)runs-on: .*/\1runs-on: something-unparseable/' "$content_root/.github/workflows/changelog-contract.yml"
+rc="$(run_audit)"
+{ [ "$rc" != "rc=0" ] && grep -q 'generated-contract-runner-shape-invalid' "$tmp/out.txt"; } \
+  && pass "an unrecognised pr-gate runs-on shape faults rather than guessing" \
+  || { fail "a malformed pr-gate runs-on shape was accepted ($rc)"; out | sed 's/^/diag - /'; }
+
+# The forward case: a repository that legitimately opted into
+# `--untrusted-runner` still regenerates byte-identical and is conformant.
+stack node
+bash "$generator" pr-gate "$contract_pin" --untrusted-runner self-hosted,general \
+  >"$content_root/.github/workflows/changelog-contract.yml"
+pulls s1 s2
+head_with s1 "ci / build-test" "ci / eligibility" changelog-contract "changelog / validate"
+head_with s2 "ci / build-test" "ci / eligibility" changelog-contract "changelog / validate"
+rc="$(run_audit)"
+{ [ "$rc" = "rc=0" ] && grep -q 'result=conformant' "$tmp/out.txt"; } \
+  && pass "a legitimate --untrusted-runner pr-gate artifact regenerates byte-identical" \
+  || { fail "a legitimate --untrusted-runner pr-gate artifact was rejected ($rc)"; out | sed 's/^/diag - /'; }
+
+# A repository that hasn't adopted `pr-gate` mode at all has no
+# changelog-contract.yml file — the fetch itself must fault rather than treat
+# a 404 as anything else.
+stack node
+rm -f "$content_root/.github/workflows/changelog-contract.yml"
+rc="$(run_audit)"
+{ [ "$rc" != "rc=0" ] && grep -q 'generated-contract-artifact-unreadable path=.github/workflows/changelog-contract.yml' "$tmp/out.txt"; } \
+  && pass "a missing changelog-contract.yml faults rather than skipping byte identity" \
+  || { fail "a missing changelog-contract.yml was not detected ($rc)"; out | sed 's/^/diag - /'; }
+
+# Bracket-shaped-but-invalid inner content — the one bash regex a future edit
+# is most likely to loosen by accident — must also fault closed rather than
+# best-effort-parse into a false match.
+for bad_runner in '[SELF-HOSTED]' '[self-hosted,general]' '[self-hosted, general, ]'; do
+  stack node
+  sed -i "s/^\( *\)runs-on: .*/\1runs-on: ${bad_runner//\//\\/}/" "$content_root/.github/workflows/changelog-contract.yml"
+  rc="$(run_audit)"
+  { [ "$rc" != "rc=0" ] && grep -q 'generated-contract-runner-shape-invalid' "$tmp/out.txt"; } \
+    && pass "a bracket-shaped but invalid pr-gate runs-on faults: $bad_runner" \
+    || { fail "a bracket-shaped but invalid pr-gate runs-on was accepted: $bad_runner ($rc)"; out | sed 's/^/diag - /'; }
+done
 
 stack node
 pulls s1 s2
