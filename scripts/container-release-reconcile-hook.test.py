@@ -74,7 +74,10 @@ def validate(workflow):
     if '[ -n "$RECONCILE_ALLOWLIST" ] && [ -f reconciled-paths.txt ]' not in release_run:
         errors.append("an unconfigured release reads back a tracked reconciled-paths.txt")
     # `.git/hooks` is untracked, so nothing in it was ever reviewed; it must not run
-    # in the two commands that hold the release App token.
+    # in the two workflow-authored commands that hold the release App token.
+    # scripts/changelog.py's own internal git commit/tag calls during release() are a
+    # separate path, covered instead by scripts/changelog.test.py (see its shared git()
+    # helper, which applies the same core.hooksPath=/dev/null guard universally).
     for command in ("commit", "push"):
         if f"git -c core.hooksPath=/dev/null {command}" not in release_run:
             errors.append(f"git {command} runs repository hooks with the release App token")
