@@ -616,10 +616,15 @@ just for the parser that validated it.
 
 Evidence: reverting each clause fails exactly its own test
 (`scripts/required-checks-audit.test.sh`, `scripts/required-checks-rollout.test.sh`,
-both registered in `scripts/actions-ci-groups.tsv`); the unscoped live org audit
-at this change reports `conformant=25 nonconformant=3 unclassified=6 unaudited=0
-skipped=63` and exits 1 on the pre-existing findings alone. No ruleset was
-mutated. #416 remains open on its own terms.
+both registered in `scripts/actions-ci-groups.tsv`); the unscoped live org audit,
+run 2026-08-31 as of this change, reports `conformant=25 nonconformant=3
+unclassified=6 unaudited=0 skipped=63` and exits 1 on the pre-existing findings
+alone. That count is a one-time snapshot, not a tracked cadence — it drifts as
+repositories are added, reclassified, or brought into conformance, and this
+amendment is not refreshed to match. Treat it as historical evidence that the
+gate worked as designed on that date, not as the current state of the org; get
+a fresh reading by re-running the audit rather than trusting this line. No
+ruleset was mutated. #416 remains open on its own terms.
 
 ### Amendment (2026-08-31, #1223) — `RCA_REQUIRE_VERIFIED` is a flag, not an env var
 
