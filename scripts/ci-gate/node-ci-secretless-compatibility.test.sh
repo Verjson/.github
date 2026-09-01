@@ -269,7 +269,7 @@ from pathlib import Path
 import sys
 
 source = Path(sys.argv[1]).read_text(encoding="utf-8")
-subset_guard = "if not scopes.issubset(policy_scopes) or not approved.issubset(policy_packages):"
+subset_guard = "if scopes != policy_scopes or not approved.issubset(policy_packages):"
 unused_guard = 'if unused:\n    sys.exit("approved internal dependencies absent from lock: " + ", ".join(unused))'
 duplicate_hook = "object_pairs_hook=reject_duplicate_object_keys,"
 if (source.count(subset_guard) != 1 or source.count(unused_guard) != 1
