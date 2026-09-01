@@ -1280,8 +1280,11 @@ jobs:
       contents: read
     steps:
       - name: Report deferred CI
+        # ADR 0156: the title makes the deferral legible to
+        # scripts/assert-no-deferred-checks.sh via the check run's own
+        # annotations, distinguishing this from a real pass.
         if: needs.eligibility.outputs.should-run == 'false'
-        run: echo "::notice::CI is deferred until renovate/stability-days clears and Renovate rebases."
+        run: echo "::notice title=CI deferred::CI is deferred until renovate/stability-days clears and Renovate rebases."
       - name: Require completed secretless dependency acquisition
         if: needs.eligibility.outputs.should-run != 'false' && (inputs.secretless-pr || inputs.secretless-trusted-ref) && needs.acquire-secretless-dependencies.result != 'success'
         env:
