@@ -1,0 +1,390 @@
+#!/usr/bin/env python3
+"""Behavioural and adversarial coverage for the pre-credential reconciliation hook."""
+
+import json
+import os
+import pathlib
+import subprocess
+import sys
+import tempfile
+import unittest
+
+
+ROOT = pathlib.Path(__file__).resolve().parents[1]
+RECONCILER = ROOT / "scripts/container_release_reconcile.py"
+HOOK = "scripts/release-reconcile.sh"
+
+
+def git(repo, *args):
+    return subprocess.run(
+        ["git", "-C", str(repo), *args],
+        check=True, capture_output=True, text=True,
+    ).stdout
+
+
+class Fixture:
+    """A disposable consumer checkout plus a pinned contract checkout."""
+
+    def __init__(self, stack):
+        self.root = pathlib.Path(stack.enter_context(tempfile.TemporaryDirectory()))
+        self.repo = self.root / "consumer"
+        self.contract = self.repo / ".container-release-contract"
+        (self.repo / "scripts").mkdir(parents=True)
+        (self.repo / "deploy").mkdir()
+        (self.repo / "Dockerfile").write_text("FROM ghcr.io/verjson/base:v0.2.0\n", encoding="utf-8")
+        (self.repo / "deploy/values.yaml").write_text("tag: v0.2.0\n", encoding="utf-8")
+        (self.repo / "docs.md").write_text("unrelated\n", encoding="utf-8")
+        self.write_hook("#!/usr/bin/env bash\nexit 0\n")
+        git(self.repo.parent, "init", "-q", str(self.repo))
+        git(self.repo, "config", "user.name", "fixture")
+        git(self.repo, "config", "user.email", "fixture@example.invalid")
+        git(self.repo, "add", ".")
+        git(self.repo, "commit", "-qm", "fixture")
+        # The promote job leaves untracked release state in the workspace before
+        # the hook runs; reconciliation must tolerate exactly that pre-existing set.
+        self.manifest = self.repo / "release-manifest.json"
+        self.manifest.write_text(json.dumps({"releaseVersion": "0.2.1"}) + "\n", encoding="utf-8")
+        (self.repo / "state.json").write_text("{}\n", encoding="utf-8")
+        self.contract_ref = self._make_contract()
+
+    def _make_contract(self):
+        (self.contract / "scripts").mkdir(parents=True)
+        (self.contract / "scripts/changelog.py").write_text("# pinned engine\n", encoding="utf-8")
+        git(self.contract.parent, "init", "-q", str(self.contract))
+        git(self.contract, "config", "user.name", "fixture")
+        git(self.contract, "config", "user.email", "fixture@example.invalid")
+        git(self.contract, "add", ".")
+        git(self.contract, "commit", "-qm", "contract")
+        return git(self.contract, "rev-parse", "HEAD").strip()
+
+    def write_hook(self, body, mode=0o755):
+        path = self.repo / HOOK
+        path.write_text(body, encoding="utf-8")
+        path.chmod(mode)
+        if (self.repo / ".git").exists():
+            git(self.repo, "add", "--", HOOK)
+            git(self.repo, "commit", "-qm", "hook")
+
+    def run(self, allowlist=("Dockerfile", "deploy/values.yaml"), timeout="60", extra=()):
+        return subprocess.run(
+            [
+                sys.executable, str(RECONCILER),
+                "--repo-root", str(self.repo),
+                "--allowlist", allowlist if isinstance(allowlist, str) else json.dumps(list(allowlist)),
+                "--version", "0.2.1",
+                "--manifest", "release-manifest.json",
+                "--contract-root", ".container-release-contract",
+                "--contract-ref", self.contract_ref,
+                "--timeout", timeout,
+                "--staged-list", "reconciled-paths.txt",
+                *extra,
+            ],
+            capture_output=True, text=True,
+        )
+
+    def staged(self):
+        out = git(self.repo, "diff", "--cached", "--name-only")
+        return sorted(line for line in out.splitlines() if line)
+
+
+class ReconcileTest(unittest.TestCase):
+    def setUp(self):
+        import contextlib
+        self.stack = contextlib.ExitStack()
+        self.addCleanup(self.stack.close)
+        self.fixture = Fixture(self.stack)
+
+    def test_accepts_and_stages_an_allowlisted_reconciliation(self):
+        self.fixture.write_hook(
+            "#!/usr/bin/env bash\n"
+            "set -euo pipefail\n"
+            'printf "FROM ghcr.io/verjson/base:v%s\\n" "$RELEASE_VERSION" > Dockerfile\n'
+        )
+        result = self.fixture.run()
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual(["Dockerfile"], self.fixture.staged())
+        self.assertEqual(
+            "FROM ghcr.io/verjson/base:v0.2.1\n",
+            (self.fixture.repo / "Dockerfile").read_text(encoding="utf-8"),
+        )
+        self.assertEqual(
+            "Dockerfile\n",
+            (self.fixture.repo / "reconciled-paths.txt").read_text(encoding="utf-8"),
+        )
+
+    def test_rejects_and_rolls_back_a_modification_outside_the_allowlist(self):
+        self.fixture.write_hook(
+            "#!/usr/bin/env bash\n"
+            "set -euo pipefail\n"
+            'printf "FROM ghcr.io/verjson/base:v%s\\n" "$RELEASE_VERSION" > Dockerfile\n'
+            'printf "smuggled\\n" > docs.md\n'
+        )
+        result = self.fixture.run()
+        self.assertEqual(1, result.returncode, result.stdout)
+        self.assertIn("docs.md", result.stderr)
+        self.assertEqual([], self.fixture.staged())
+        self.assertEqual("unrelated\n", (self.fixture.repo / "docs.md").read_text(encoding="utf-8"))
+        self.assertEqual(
+            "FROM ghcr.io/verjson/base:v0.2.0\n",
+            (self.fixture.repo / "Dockerfile").read_text(encoding="utf-8"),
+        )
+
+    def test_rejects_untracked_output_produced_by_the_hook(self):
+        self.fixture.write_hook(
+            "#!/usr/bin/env bash\nset -euo pipefail\nprintf 'x\\n' > deploy/extra.yaml\n"
+        )
+        result = self.fixture.run()
+        self.assertEqual(1, result.returncode, result.stdout)
+        self.assertIn("untracked", result.stderr)
+        self.assertIn("deploy/extra.yaml", result.stderr)
+
+    def test_tolerates_the_untracked_release_state_present_before_the_hook(self):
+        self.fixture.write_hook(
+            "#!/usr/bin/env bash\nset -euo pipefail\nprintf 'tag: v0.2.1\\n' > deploy/values.yaml\n"
+        )
+        result = self.fixture.run()
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual(["deploy/values.yaml"], self.fixture.staged())
+
+    def test_rejects_deletion_of_an_allowlisted_path(self):
+        self.fixture.write_hook("#!/usr/bin/env bash\nset -euo pipefail\nrm Dockerfile\n")
+        result = self.fixture.run()
+        self.assertEqual(1, result.returncode, result.stdout)
+        self.assertIn("Dockerfile", result.stderr)
+        self.assertEqual([], self.fixture.staged())
+        self.assertTrue((self.fixture.repo / "Dockerfile").is_file())
+
+    def test_rejects_replacing_an_allowlisted_path_with_a_symlink(self):
+        self.fixture.write_hook(
+            "#!/usr/bin/env bash\nset -euo pipefail\n"
+            "rm Dockerfile\nln -s /etc/passwd Dockerfile\n"
+        )
+        result = self.fixture.run()
+        self.assertEqual(1, result.returncode, result.stdout)
+        self.assertIn("Dockerfile", result.stderr)
+        self.assertEqual([], self.fixture.staged())
+        self.assertFalse((self.fixture.repo / "Dockerfile").is_symlink())
+
+    def test_rejects_a_file_mode_change_on_an_allowlisted_path(self):
+        self.fixture.write_hook(
+            "#!/usr/bin/env bash\nset -euo pipefail\n"
+            'printf "FROM ghcr.io/verjson/base:v%s\\n" "$RELEASE_VERSION" > Dockerfile\n'
+            "chmod +x Dockerfile\n"
+        )
+        result = self.fixture.run()
+        self.assertEqual(1, result.returncode, result.stdout)
+        self.assertIn("mode", result.stderr)
+        self.assertEqual([], self.fixture.staged())
+
+    def test_refuses_to_run_the_hook_when_the_tracked_tree_is_dirty(self):
+        self.fixture.write_hook(
+            "#!/usr/bin/env bash\nset -euo pipefail\nprintf 'ran\\n' > hook-ran\n"
+        )
+        (self.fixture.repo / "docs.md").write_text("locally dirty\n", encoding="utf-8")
+        result = self.fixture.run()
+        self.assertEqual(1, result.returncode, result.stdout)
+        self.assertIn("clean", result.stderr)
+        self.assertFalse((self.fixture.repo / "hook-ran").exists())
+        self.assertEqual(
+            "locally dirty\n", (self.fixture.repo / "docs.md").read_text(encoding="utf-8")
+        )
+
+    def test_fails_closed_when_the_hook_exits_non_zero(self):
+        self.fixture.write_hook(
+            "#!/usr/bin/env bash\nprintf 'half\\n' > Dockerfile\nexit 3\n"
+        )
+        result = self.fixture.run()
+        self.assertEqual(1, result.returncode, result.stdout)
+        self.assertIn("exited 3", result.stderr)
+        self.assertEqual([], self.fixture.staged())
+        self.assertEqual(
+            "FROM ghcr.io/verjson/base:v0.2.0\n",
+            (self.fixture.repo / "Dockerfile").read_text(encoding="utf-8"),
+        )
+
+    def test_fails_closed_when_the_hook_dies_from_a_signal(self):
+        self.fixture.write_hook(
+            "#!/usr/bin/env bash\nprintf 'half\\n' > Dockerfile\nkill -9 $$\n"
+        )
+        result = self.fixture.run()
+        self.assertEqual(1, result.returncode, result.stdout)
+        self.assertEqual([], self.fixture.staged())
+        self.assertEqual(
+            "FROM ghcr.io/verjson/base:v0.2.0\n",
+            (self.fixture.repo / "Dockerfile").read_text(encoding="utf-8"),
+        )
+
+    def test_fails_closed_when_the_hook_exceeds_its_timeout(self):
+        self.fixture.write_hook(
+            "#!/usr/bin/env bash\nprintf 'half\\n' > Dockerfile\nsleep 30\n"
+        )
+        result = self.fixture.run(timeout="1")
+        self.assertEqual(1, result.returncode, result.stdout)
+        self.assertIn("timed out", result.stderr)
+        self.assertEqual([], self.fixture.staged())
+
+    def test_kills_processes_the_hook_leaves_behind(self):
+        self.fixture.write_hook(
+            "#!/usr/bin/env bash\nset -euo pipefail\n"
+            "(sleep 3; printf 'survived\\n' > survivor) &\n"
+            'printf "FROM ghcr.io/verjson/base:v%s\\n" "$RELEASE_VERSION" > Dockerfile\n'
+            "exit 0\n"
+        )
+        result = self.fixture.run()
+        self.assertEqual(0, result.returncode, result.stderr)
+        import time
+        time.sleep(4)
+        self.assertFalse(
+            (self.fixture.repo / "survivor").exists(),
+            "a process the hook backgrounded outlived the bounded reconciliation step",
+        )
+
+    def test_rejects_a_missing_or_non_executable_hook(self):
+        (self.fixture.repo / HOOK).chmod(0o644)
+        git(self.fixture.repo, "update-index", "--chmod=-x", HOOK)
+        git(self.fixture.repo, "commit", "-qm", "drop the executable bit")
+        result = self.fixture.run()
+        self.assertEqual(1, result.returncode, result.stdout)
+        self.assertIn(HOOK, result.stderr)
+
+    def test_rejects_a_hook_that_is_a_symlink(self):
+        path = self.fixture.repo / HOOK
+        path.unlink()
+        path.symlink_to("/bin/true")
+        git(self.fixture.repo, "add", "--", HOOK)
+        git(self.fixture.repo, "commit", "-qm", "symlink the hook")
+        result = self.fixture.run()
+        self.assertEqual(1, result.returncode, result.stdout)
+        self.assertIn("symlink", result.stderr)
+
+    def test_rejects_an_untracked_hook(self):
+        git(self.fixture.repo, "rm", "-q", "--cached", HOOK)
+        git(self.fixture.repo, "commit", "-qm", "untrack the hook")
+        result = self.fixture.run()
+        self.assertEqual(1, result.returncode, result.stdout)
+        self.assertIn("tracked", result.stderr)
+
+    def test_rejects_structurally_unsafe_allowlists(self):
+        cases = {
+            "empty": [],
+            "not a list": '{"Dockerfile": true}',
+            "not json": "Dockerfile",
+            "parent escape": ["../hostile"],
+            "absolute": ["/etc/passwd"],
+            "current directory segment": ["./Dockerfile"],
+            "duplicate": ["Dockerfile", "Dockerfile"],
+            "wildcard": ["*"],
+            "empty entry": [""],
+            "non string": [17],
+            "oversized": [f"file{index}" for index in range(33)],
+        }
+        for label, allowlist in cases.items():
+            with self.subTest(case=label):
+                result = self.fixture.run(allowlist=allowlist)
+                self.assertEqual(1, result.returncode, result.stdout)
+                self.assertIn("allowlist", result.stderr)
+
+    def test_rejects_allowlisting_release_engine_and_workflow_surfaces(self):
+        protected = [
+            ".github/workflows/container-release.yml",
+            ".git/config",
+            ".gitattributes",
+            ".container-release-contract/scripts/changelog.py",
+            "RELEASES/containers/v0.2.1.json",
+            "CHANGELOG/v0.2.1.md",
+            "NEXT/2026-09-01-issue-1203-x.md",
+            "scripts/release-reconcile.sh",
+            "scripts/container_release_promotion.py",
+            "scripts/container_release_manifest.py",
+            "scripts/container_artifact_extract.py",
+            "scripts/container_attestation_verify.py",
+            "scripts/container-release-contract.test.sh",
+        ]
+        for path in protected:
+            with self.subTest(path=path):
+                result = self.fixture.run(allowlist=[path])
+                self.assertEqual(1, result.returncode, result.stdout)
+                self.assertIn("allowlist", result.stderr)
+
+    def test_rejects_an_allowlist_entry_that_is_not_a_reviewed_tracked_file(self):
+        result = self.fixture.run(allowlist=["deploy/absent.yaml"])
+        self.assertEqual(1, result.returncode, result.stdout)
+        self.assertIn("deploy/absent.yaml", result.stderr)
+
+    def test_rejects_an_allowlist_entry_that_is_a_symlink(self):
+        link = self.fixture.repo / "deploy/link.yaml"
+        link.symlink_to("../Dockerfile")
+        git(self.fixture.repo, "add", "--", "deploy/link.yaml")
+        git(self.fixture.repo, "commit", "-qm", "add a symlink")
+        result = self.fixture.run(allowlist=["deploy/link.yaml"])
+        self.assertEqual(1, result.returncode, result.stdout)
+        self.assertIn("symlink", result.stderr)
+
+    def test_rejects_a_hook_whose_output_is_not_idempotent(self):
+        self.fixture.write_hook(
+            "#!/usr/bin/env bash\nset -euo pipefail\nprintf 'x\\n' >> Dockerfile\n"
+        )
+        result = self.fixture.run()
+        self.assertEqual(1, result.returncode, result.stdout)
+        self.assertIn("idempotent", result.stderr)
+        self.assertEqual([], self.fixture.staged())
+        self.assertEqual(
+            "FROM ghcr.io/verjson/base:v0.2.0\n",
+            (self.fixture.repo / "Dockerfile").read_text(encoding="utf-8"),
+        )
+
+    def test_rejects_a_hook_that_tampers_with_the_pinned_contract_checkout(self):
+        self.fixture.write_hook(
+            "#!/usr/bin/env bash\nset -euo pipefail\n"
+            'printf "FROM ghcr.io/verjson/base:v%s\\n" "$RELEASE_VERSION" > Dockerfile\n'
+            "printf 'import os\\n' > .container-release-contract/scripts/changelog.py\n"
+        )
+        result = self.fixture.run()
+        self.assertEqual(1, result.returncode, result.stdout)
+        self.assertIn("contract", result.stderr)
+        self.assertEqual([], self.fixture.staged())
+
+    def test_rejects_a_contract_checkout_at_a_different_revision(self):
+        result = self.fixture.run(extra=("--contract-ref", "b" * 40))
+        self.assertEqual(1, result.returncode, result.stdout)
+        self.assertIn("contract", result.stderr)
+
+    def test_rejects_a_manifest_that_is_absent_or_a_symlink(self):
+        self.fixture.manifest.unlink()
+        self.fixture.manifest.symlink_to("/etc/passwd")
+        result = self.fixture.run()
+        self.assertEqual(1, result.returncode, result.stdout)
+        self.assertIn("manifest", result.stderr)
+
+    def test_hides_the_ambient_credential_environment_from_the_hook(self):
+        self.fixture.write_hook(
+            "#!/usr/bin/env bash\nset -euo pipefail\n"
+            'printf "%s\\n" "${GH_TOKEN-unset} ${GITHUB_TOKEN-unset} '
+            '${ACTIONS_ID_TOKEN_REQUEST_TOKEN-unset} ${AWS_SECRET_ACCESS_KEY-unset}" '
+            '> /tmp/reconcile-env-probe\n'
+            'printf "FROM ghcr.io/verjson/base:v%s\\n" "$RELEASE_VERSION" > Dockerfile\n'
+        )
+        environment = dict(os.environ)
+        environment.update({
+            "GH_TOKEN": "ghs_secret", "GITHUB_TOKEN": "ghs_secret",
+            "ACTIONS_ID_TOKEN_REQUEST_TOKEN": "oidc", "AWS_SECRET_ACCESS_KEY": "aws",
+        })
+        probe = pathlib.Path("/tmp/reconcile-env-probe")
+        probe.unlink(missing_ok=True)
+        self.addCleanup(probe.unlink, True)
+        result = subprocess.run(
+            [sys.executable, str(RECONCILER),
+             "--repo-root", str(self.fixture.repo),
+             "--allowlist", json.dumps(["Dockerfile"]),
+             "--version", "0.2.1", "--manifest", "release-manifest.json",
+             "--contract-root", ".container-release-contract",
+             "--contract-ref", self.fixture.contract_ref,
+             "--timeout", "60", "--staged-list", "reconciled-paths.txt"],
+            capture_output=True, text=True, env=environment,
+        )
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual("unset unset unset unset\n", probe.read_text(encoding="utf-8"))
+
+
+if __name__ == "__main__":
+    unittest.main()
