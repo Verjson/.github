@@ -509,14 +509,15 @@ while current versions are readable.
 
 ---
 
-## Publishing `1.0.0` does not reach consumers
+## Publishing `1.0.0` does not migrate consumers
 
-Cutting `1.0.0` is **phase one of two**. `^0.x` ranges do not accept `1.0.0`, so no consumer
-receives the release until someone deliberately bumps its dependency range. A package that
-publishes `1.0.0` and stops has changed nothing for anybody.
+`^0.x` ranges do not accept `1.0.0`, so no consumer receives a candidate package's release
+until its dependency range is deliberately migrated. Publishing without completing the
+bounded consumer plan has not delivered the intended stable propagation.
 
-Phase two — bumping each consumer to `^1.0.0` — is tracked per consumer and is where the
-retention consequence above lands. See ADR 0137.
+Each affected consumer moves to the supported range recorded by the candidate package's
+migration plan, which may be `^1.0.0` or a deliberately tested dual-major range. Track those
+migrations per consumer and account for the retention consequence above. See ADR 0159.
 
 ---
 
