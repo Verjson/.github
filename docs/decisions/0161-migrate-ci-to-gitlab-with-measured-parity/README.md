@@ -57,9 +57,15 @@ runners must not be available to untrusted merge-request pipelines. Fork and
 merge-request jobs receive no package, deployment, mirror-write, or GitHub status-write
 credential.
 
-The status bridge is a narrow privileged adapter. It accepts only a completed GitLab
-pipeline receipt bound to repository identity and immutable commit SHA, maps a reviewed
-job name to one GitHub check, and cannot execute repository content with its GitHub
+The status bridge is a narrow privileged adapter. It does not trust a receipt, job name,
+status, or CI metadata produced by repository code. Before mapping one reviewed GitLab
+job to one GitHub check, the bridge uses its own read-only GitLab API credential to verify
+the immutable project ID, pipeline and job IDs, exact commit SHA and ref, terminal job
+status, and the digest of the CI configuration and included templates actually executed.
+That digest must equal the reviewed digest resolved from a trusted configuration revision;
+a pipeline sourced from change-authored `.gitlab-ci.yml` cannot authorize a check merely
+because it emits the expected job name or a green receipt. Repository-produced receipts
+remain comparison data only. The bridge cannot execute repository content with its GitHub
 credential. Provider-native job tokens stay provider-local. Cross-provider tokens have
 one purpose, minimal repository scope, short lifetime where supported, and independent
 rotation and revocation procedures. OIDC trust must bind issuer, audience, project,
@@ -85,8 +91,10 @@ Parity means more than both providers returning green. Before a class can cut ov
 3. deliberately injected failures are rejected by both providers;
 4. deterministic artifacts have equal digests, or reviewed nondeterministic fields are
    normalized and the remaining payload is equal;
-5. branch protection still binds the result to the exact GitHub head; and
-6. the observation window meets the documented reliability and cost thresholds in the
+5. negative tests prove a same-named job and a change-authored or modified
+   `.gitlab-ci.yml` cannot forge an authoritative green check;
+6. branch protection still binds the result to the exact GitHub head; and
+7. the observation window meets the documented reliability and cost thresholds in the
    migration plan.
 
 GitLab results are advisory during shadow mode. They become required only in a canary

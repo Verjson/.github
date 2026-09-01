@@ -69,19 +69,28 @@ result and the fallback remains exercised.
 
 Do not expose protected variables to merge-request or fork pipelines. Do not introduce a
 GitHub status-write token into a job that executes repository code. If a status bridge is
-needed for observation, isolate it after the pipeline and constrain it to reviewed job
-identities and exact SHAs.
+needed for observation, isolate it after the pipeline. With a separate read-only GitLab
+API credential, the bridge must fetch and verify the immutable project ID, pipeline and
+job IDs, exact commit SHA and ref, terminal status, and executed CI configuration/template
+digest against the digest pinned to a trusted revision. Repository-produced receipts,
+names, and metadata are comparison inputs only and never authority for the GitHub check.
+
+Negative fixtures must show that repository code cannot forge green by emitting the
+reviewed job name or changing `.gitlab-ci.yml` or an included template. The bridge rejects
+missing or ambiguous provider metadata and any project, pipeline, job, SHA, ref, status,
+or configuration-digest mismatch.
 
 Exit: the predetermined sample window passes all parity gates with no silent skips,
-credential exposure, stale mirrors, or material total-cost regression.
+credential exposure, stale mirrors, forged status, or material total-cost regression.
 
 ### 3. Canary authority
 
-Publish the GitLab-backed result under a new check name on a bounded repository/workload.
-Keep the existing GitHub check required for the first observation interval. After readback
-proves both checks bind the exact head and failures block as intended, make the GitLab
-check required in a separate reviewed change. Retain the GitHub route as a non-required
-fallback; do not delete it.
+Publish the bridge-verified GitLab result under a new check name on a bounded
+repository/workload. Keep the existing GitHub check required for the first observation
+interval. After readback proves both checks bind the exact head, the bridge independently
+verified the trusted CI configuration, and same-named-job and modified-configuration
+forgeries are rejected, make the GitLab check required in a separate reviewed change.
+Retain the GitHub route as a non-required fallback; do not delete it.
 
 Rollback immediately on incorrect SHA binding, missing terminal results, parity drift,
 queue/duration breach, elevated retries, secret-boundary failure, or cost breach. Restore
@@ -136,6 +145,10 @@ dual-run. Report cost per successful workload and per merged change.
 - workload-contract and provider-adapter revisions;
 - terminal result and normalized output/artifact comparison;
 - injected-failure and deferred/no-op results;
+- bridge-side GitLab API readback of immutable project, pipeline, job, SHA, ref, terminal
+  status, and executed configuration/template digest pinned to a trusted revision;
+- rejection evidence for a forged same-named job and modified `.gitlab-ci.yml` or included
+  template;
 - mirror lag, queue time, duration, retry rate, and sample window;
 - before/after projected total cost and billing source;
 - current required-check readback and exact-head proof;
