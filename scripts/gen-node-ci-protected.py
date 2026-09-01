@@ -75,7 +75,8 @@ def isolate_candidate_runtime_cache(document: str) -> str:
     plan_if = (
         "needs.eligibility.outputs.should-run != 'false' && "
         "(inputs.secretless-pr || inputs.secretless-trusted-ref) && "
-        "inputs.secretless-ci-script-plan != ''"
+        "(inputs.secretless-ci-script-plan != '' || "
+        "inputs.secretless-nested-manifests != '')"
     )
     step_marker = f"      - name: {step_name}\n"
     step_start = document.index(step_marker)
@@ -789,7 +790,7 @@ def render() -> str:
     checkout = "        with:\n          submodules: ${{ (inputs.secretless-pr || inputs.secretless-trusted-ref) && 'false' || 'recursive' }}\n"
     document = replace_once(document, checkout, "        with:\n          ref: ${{ inputs.head-sha }}\n          submodules: ${{ (inputs.secretless-pr || inputs.secretless-trusted-ref) && 'false' || 'recursive' }}\n")
     rebuild_if = "needs.eligibility.outputs.should-run != 'false' && (inputs.secretless-pr || inputs.secretless-trusted-ref) && inputs.secretless-rebuild-packages != ''"
-    plan_if = "needs.eligibility.outputs.should-run != 'false' && (inputs.secretless-pr || inputs.secretless-trusted-ref) && inputs.secretless-ci-script-plan != ''"
+    plan_if = "needs.eligibility.outputs.should-run != 'false' && (inputs.secretless-pr || inputs.secretless-trusted-ref) && (inputs.secretless-ci-script-plan != '' || inputs.secretless-nested-manifests != '')"
     default_if = "needs.eligibility.outputs.should-run != 'false' && (!(inputs.secretless-pr || inputs.secretless-trusted-ref) || inputs.secretless-ci-script-plan == '')"
     document = replace_once(document, "      - name: Rebuild exact approved lifecycle packages without credentials\n", verifier_step(rebuild_if) + "      - name: Rebuild exact approved lifecycle packages without credentials\n")
     document = replace_once(document, "      - name: Run exact credentialless consumer script plan\n", verifier_step(plan_if) + "      - name: Run exact credentialless consumer script plan\n")

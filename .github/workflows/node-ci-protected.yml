@@ -160,6 +160,20 @@ on:
         required: false
         type: string
         default: ''
+      secretless-nested-manifests:
+        description: >-
+          Optional JSON array of 1-8 nested manifest objects with exactly path,
+          approvedPackages, and scriptPlan. path is a repository-relative
+          directory below the root holding its own package.json and
+          package-lock.json. approvedPackages authorizes internal packages for
+          that manifest alone — a manifest never inherits the root's approved
+          set or another manifest's, so a package approved for one manifest is
+          rejected in any other. scriptPlan uses the secretless-ci-script-plan
+          grammar and runs in that manifest's directory. Requires
+          package-manager npm. Empty acquires only the root manifest.
+        required: false
+        type: string
+        default: ''
       secretless-ci-script-plan:
         description: >-
           Optional JSON array of exact package.json script names or objects with
@@ -519,6 +533,7 @@ jobs:
           APPROVED_INTERNAL_PACKAGES: ${{ inputs.approved-internal-packages }}
           APPROVED_INTERNAL_SCOPES: ${{ inputs.approved-internal-scopes }}
           COMPATIBILITY_RANGES: ${{ inputs.secretless-compatibility-ranges }}
+          NESTED_MANIFESTS: ${{ inputs.secretless-nested-manifests }}
           PRIVATE_CACHE_ENTRIES: ${{ runner.temp }}/secretless-private-entries-${{ github.run_id }}-${{ github.run_attempt }}
           TRUSTED_PACKAGE_POLICY: ${{ vars.CI_SECRETLESS_PACKAGE_POLICY }}
           PACKAGE_MANAGER: ${{ inputs.package-manager }}
@@ -1245,6 +1260,7 @@ jobs:
           CACHE_DIR: ${{ steps.populate-private-cache.outputs.cache-dir }}
           COMPATIBILITY_ROOT: ${{ runner.temp }}/secretless-compatibility-${{ github.run_id }}-${{ github.run_attempt }}
           COMPATIBILITY_RANGES: ${{ inputs.secretless-compatibility-ranges }}
+          NESTED_MANIFESTS: ${{ inputs.secretless-nested-manifests }}
           MAX_PAYLOAD_BYTES: '83886080'
           RUN_ATTEMPT: ${{ github.run_attempt }}
           RUN_ID: ${{ github.run_id }}
@@ -1445,6 +1461,7 @@ jobs:
           NPM_CONFIG_USERCONFIG: ${{ runner.temp }}/secretless-empty.npmrc
           COMPATIBILITY_ARTIFACT_DIR: ${{ runner.temp }}/secretless-compatibility-artifacts-${{ github.run_id }}-${{ github.run_attempt }}
           COMPATIBILITY_RANGES: ${{ inputs.secretless-compatibility-ranges }}
+          NESTED_MANIFESTS: ${{ inputs.secretless-nested-manifests }}
           PACKAGE_MANAGER: ${{ inputs.package-manager }}
           APPROVED_INTERNAL_SCOPES: ${{ inputs.approved-internal-scopes }}
           AWS_ACCESS_KEY_ID: ''
@@ -2673,7 +2690,7 @@ jobs:
           subprocess.run([*command, *requested], check=True)
           PY
       - name: Revalidate protected pull-request identity
-        if: needs.eligibility.outputs.should-run != 'false' && (inputs.secretless-pr || inputs.secretless-trusted-ref) && inputs.secretless-ci-script-plan != ''
+        if: needs.eligibility.outputs.should-run != 'false' && (inputs.secretless-pr || inputs.secretless-trusted-ref) && (inputs.secretless-ci-script-plan != '' || inputs.secretless-nested-manifests != '')
         env:
           ADMITTED_EVENT: ${{ inputs.event-name }}
           ADMITTED_HEAD_REPOSITORY: ${{ inputs.head-repository }}
@@ -2699,10 +2716,11 @@ jobs:
           [ "$pr_head_repository" = "$ADMITTED_HEAD_REPOSITORY" ]
           [ "$pr_head_sha" = "$ADMITTED_HEAD_SHA" ]
       - name: Run exact credentialless consumer script plan
-        if: needs.eligibility.outputs.should-run != 'false' && (inputs.secretless-pr || inputs.secretless-trusted-ref) && inputs.secretless-ci-script-plan != ''
+        if: needs.eligibility.outputs.should-run != 'false' && (inputs.secretless-pr || inputs.secretless-trusted-ref) && (inputs.secretless-ci-script-plan != '' || inputs.secretless-nested-manifests != '')
         env:
           CI_SCRIPT_PLAN: ${{ inputs.secretless-ci-script-plan }}
           CANDIDATE_CACHE_ROOT: ${{ runner.temp }}/verjson-candidate-caches-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
+          NESTED_MANIFESTS: ${{ inputs.secretless-nested-manifests }}
         run: |
           unset -v GH_TOKEN GITHUB_TOKEN NODE_AUTH_TOKEN NPM_TOKEN AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN GOOGLE_APPLICATION_CREDENTIALS AZURE_CREDENTIALS ACTIONS_ID_TOKEN_REQUEST_TOKEN ACTIONS_ID_TOKEN_REQUEST_URL
           candidate_cache_supervisor_pid=''
@@ -3356,7 +3374,7 @@ jobs:
           exit "$candidate_cache_status"
 
       - name: Remove isolated candidate runtime caches
-        if: always() && needs.eligibility.outputs.should-run != 'false' && (inputs.secretless-pr || inputs.secretless-trusted-ref) && inputs.secretless-ci-script-plan != ''
+        if: always() && needs.eligibility.outputs.should-run != 'false' && (inputs.secretless-pr || inputs.secretless-trusted-ref) && (inputs.secretless-ci-script-plan != '' || inputs.secretless-nested-manifests != '')
         env:
           CANDIDATE_CACHE_ROOT: ${{ runner.temp }}/verjson-candidate-caches-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
         run: |
