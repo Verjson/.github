@@ -3,6 +3,7 @@
 - **Date:** 2026-09-01
 - **Status:** Accepted
 - **Issue:** [#1209](https://github.com/Verjson/.github/issues/1209)
+- **Superseded by:** [ADR 0162](../0162-unify-portable-ci-engine-and-forge-adapters/README.md)
 - **Related:** [#629](https://github.com/Verjson/.github/issues/629),
   [ADR 0040](../0040-runner-lanes-and-admission-axes/README.md),
   [ADR 0123](../0123-use-organization-neutral-ci-variables/README.md)
