@@ -6179,13 +6179,92 @@ jobs:
                   "--proc", "/proc",
                   "--tmpfs", "/dev/shm",
                   "--dir", "/dev/shm/tmp",
+                  "--dir", "/dev/shm/npm-cache",
                   "--dir", sandbox_workspace,
                   "--dir", f"{sandbox_workspace}/node_modules",
                   "--dir", "/dev/shm/home",
               ]
+              ambient_masks = {
+                  script_environment.get("NPM_CONFIG_CACHE", ""),
+                  script_environment.get("NPM_CONFIG_GLOBALCONFIG", ""),
+                  script_environment.get("NPM_CONFIG_USERCONFIG", ""),
+                  script_environment.get("npm_config_cache", ""),
+              }
+              ambient_home = Path(script_environment.get("HOME", ""))
+              if ambient_home.is_absolute():
+                  ambient_masks.update((
+                      str(ambient_home / ".npm"),
+                      str(ambient_home / ".npmrc"),
+                  ))
+              ambient_masks.update(("/etc/npmrc", "/usr/local/etc/npmrc"))
+              masked_targets = set()
+              masked_directories = []
+              for candidate in sorted(
+                  ambient_masks,
+                  key=lambda value: (len(Path(value).parts), value),
+              ):
+                  if not candidate:
+                      continue
+                  candidate_path = Path(candidate)
+                  if (
+                      not candidate_path.is_absolute()
+                      or Path(os.path.abspath(candidate_path)) != candidate_path
+                  ):
+                      raise SystemExit("ambient npm path is not canonical absolute")
+                  try:
+                      candidate_path.relative_to(workspace)
+                  except ValueError:
+                      pass
+                  else:
+                      raise SystemExit("ambient npm path overlaps compatibility workspace")
+                  try:
+                      candidate_metadata = candidate_path.lstat()
+                  except FileNotFoundError:
+                      continue
+                  if stat.S_ISLNK(candidate_metadata.st_mode):
+                      try:
+                          candidate_path = candidate_path.resolve(strict=True)
+                      except (OSError, RuntimeError):
+                          raise SystemExit("ambient npm path symlink is unresolved")
+                  try:
+                      candidate_path.relative_to(workspace)
+                  except ValueError:
+                      pass
+                  else:
+                      raise SystemExit("ambient npm path resolves into compatibility workspace")
+                  if str(candidate_path) in masked_targets:
+                      continue
+                  if any(
+                      candidate_path == directory
+                      or candidate_path.is_relative_to(directory)
+                      for directory in masked_directories
+                  ):
+                      continue
+                  masked_targets.add(str(candidate_path))
+                  candidate_metadata = candidate_path.stat()
+                  if stat.S_ISDIR(candidate_metadata.st_mode):
+                      arguments.extend(("--tmpfs", str(candidate_path)))
+                      masked_directories.append(candidate_path)
+                  elif stat.S_ISREG(candidate_metadata.st_mode):
+                      arguments.extend(("--ro-bind", "/dev/null", str(candidate_path)))
+                  else:
+                      raise SystemExit("ambient npm path has unsupported file type")
               for entry in sorted(workspace.iterdir(), key=lambda path: path.name):
                   if entry.name == "node_modules":
                       continue
+                  if entry.is_symlink():
+                      link_target = Path(os.readlink(entry))
+                      if link_target.is_absolute():
+                          raise SystemExit(
+                              "compatibility workspace top-level symlink is absolute"
+                          )
+                      try:
+                          resolved_entry = entry.resolve(strict=True)
+                          resolved_entry.relative_to(workspace)
+                      except (FileNotFoundError, OSError, RuntimeError, ValueError):
+                          raise SystemExit(
+                              "compatibility workspace top-level symlink escapes workspace"
+                          )
                   add_sandbox_binding(
                       arguments,
                       entry,
@@ -6244,17 +6323,46 @@ jobs:
                           "/dev/shm/verjson-compatibility-provenance.json",
                       "GITHUB_WORKSPACE": sandbox_workspace,
                       "HOME": "/dev/shm/home",
+                      "NPM_CONFIG_CACHE": "/dev/shm/npm-cache",
                       "RUNNER_TEMP": "/dev/shm/tmp",
                       "TEMP": "/dev/shm/tmp",
                       "TMP": "/dev/shm/tmp",
                       "TMPDIR": "/dev/shm/tmp",
+                      "npm_config_cache": "/dev/shm/npm-cache",
                   })
-                  subprocess.run(
-                      arguments,
-                      check=True,
-                      env=sandbox_environment,
-                      pass_fds=tuple(sealed_descriptors),
-                  )
+                  output_read, output_write = os.pipe()
+                  try:
+                      process = subprocess.Popen(
+                          arguments,
+                          env=sandbox_environment,
+                          pass_fds=tuple(sealed_descriptors),
+                          stdout=output_write,
+                          stderr=subprocess.STDOUT,
+                      )
+                  finally:
+                      os.close(output_write)
+                  output_tail = bytearray()
+                  try:
+                      while chunk := os.read(output_read, 8192):
+                          sys.stdout.buffer.write(chunk)
+                          sys.stdout.buffer.flush()
+                          output_tail.extend(chunk)
+                          del output_tail[:-16384]
+                  finally:
+                      os.close(output_read)
+                  status = process.wait()
+                  if status != 0:
+                      failure = subprocess.CalledProcessError(
+                          status,
+                          ["npm", "run", request["script"]],
+                          output=bytes(output_tail),
+                      )
+                      output = failure.output.decode("utf-8", errors="replace")
+                      raise SystemExit(
+                          "compatibility consumer command failed: "
+                          f"command={failure.cmd!r} exit={failure.returncode} "
+                          f"output-tail={output!r}"
+                      )
               finally:
                   for descriptor in sealed_descriptors:
                       os.close(descriptor)

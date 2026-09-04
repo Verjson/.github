@@ -440,3 +440,20 @@ Two properties to respect:
   `NODE_AUTH_TOKEN` for private cross-repository dependencies. The reusable
   workflow uses its repository-scoped `GITHUB_TOKEN` only to publish that
   repository's package and GitHub release.
+
+## Compatibility sandbox filesystem contract
+
+Compatibility scripts run inside a credentialless bubblewrap namespace. Both npm cache
+variables point to a writable, sandbox-created cache. Existing paths named by the ambient
+npm cache and config variables, the ambient home `.npm` and `.npmrc`, and the standard
+system npmrc locations are overlaid with empty mounts inside the namespace. Consumer code
+therefore cannot read or reuse those host cache and configuration contents by absolute
+path.
+
+Each top-level checkout entry other than `node_modules` is a bind mountpoint inside the
+sandbox. A build may freely change an entry's contents, but it must not remove or replace
+the top-level entry's inode: Linux reports that operation as `EBUSY`. Empty a top-level
+scratch directory in place, or create and remove scratch directories beneath it, instead
+of deleting the mountpoint itself. Top-level checkout symlinks must be relative and resolve
+inside the checkout; absolute, dangling, cyclic, and workspace-escaping links fail before
+consumer execution.
