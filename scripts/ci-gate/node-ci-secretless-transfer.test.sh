@@ -105,14 +105,45 @@ assert public_restore["with"]["path"].startswith("${{ runner.temp }}/secretless-
 assert public_save["with"] == public_restore["with"]
 assert "steps.restore-secretless-public-cache.outputs.cache-hit != 'true'" in public_save["if"]
 
-browser = next(step for step in build["steps"] if step.get("id") == "playwright-browser-cache")
-assert browser["uses"] == "actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9"
-assert "inputs.browser-cache" in browser["if"]
-assert "inputs.secretless-pr || inputs.secretless-trusted-ref" in browser["if"]
-assert "hashFiles(inputs.cache-dependency-path) != ''" in browser["if"]
-assert browser["with"]["path"] == "~/.cache/ms-playwright"
-assert browser["with"]["key"] == "playwright-${{ runner.os }}-${{ hashFiles(inputs.cache-dependency-path) }}"
-assert "restore-keys" not in browser["with"]
+browser_prepare = next(step for step in build["steps"] if step.get("id") == "prepare-playwright-browser-cache")
+browser_restore = next(step for step in build["steps"] if step.get("id") == "restore-playwright-browser-cache")
+browser_validate = next(step for step in build["steps"] if step.get("name") == "Validate restored Playwright browser cache")
+browser_bound = next(step for step in build["steps"] if step.get("id") == "bound-playwright-browser-cache")
+browser_save = next(step for step in build["steps"] if step.get("id") == "save-playwright-browser-cache")
+browser_cleanup = next(step for step in build["steps"] if step.get("name") == "Remove job-scoped Playwright browser cache")
+browser_path = "${{ runner.temp }}/verjson-playwright-browsers-${{ github.run_id }}-${{ github.run_attempt }}"
+browser_key = "playwright-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles(inputs.cache-dependency-path) }}"
+assert browser_prepare["env"]["BROWSER_CACHE_DIR"] == browser_path
+assert "PLAYWRIGHT_BROWSERS_PATH=%s" in browser_prepare["run"]
+assert '"$BROWSER_CACHE_DIR" >> "$GITHUB_ENV"' in browser_prepare["run"]
+assert '[ ! -e "$BROWSER_CACHE_DIR" ] && [ ! -L "$BROWSER_CACHE_DIR" ]' in browser_prepare["run"]
+assert browser_restore["uses"] == "actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9"
+assert browser_restore["with"]["path"] == browser_path
+assert browser_restore["with"]["key"] == browser_key
+assert "restore-keys" not in browser_restore["with"]
+assert browser_validate["env"]["BROWSER_CACHE_DIR"] == browser_path
+assert browser_validate["env"]["MAX_BROWSER_CACHE_FILES"] == "10000"
+assert browser_validate["env"]["MAX_BROWSER_CACHE_BYTES"] == "1073741824"
+for marker in ("BROWSER_CACHE_SYMLINK", "BROWSER_CACHE_FILE_BOUND", "BROWSER_CACHE_BYTE_BOUND"):
+    assert marker in browser_validate["run"]
+assert browser_bound["env"]["MAX_BROWSER_CACHE_FILES"] == "10000"
+assert browser_bound["env"]["MAX_BROWSER_CACHE_BYTES"] == "1073741824"
+assert "BROWSER_CACHE_SYMLINK" in browser_bound["run"]
+assert "BROWSER_CACHE_FILE_BOUND" in browser_bound["run"]
+assert "BROWSER_CACHE_BYTE_BOUND" in browser_bound["run"]
+assert browser_save["uses"] == "actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9"
+assert browser_save["with"] == browser_restore["with"]
+assert "steps.restore-playwright-browser-cache.outputs.cache-hit != 'true'" in browser_save["if"]
+assert "steps.bound-playwright-browser-cache.outputs.should-save == 'true'" in browser_save["if"]
+assert browser_cleanup["if"].startswith("always()")
+assert browser_cleanup["env"]["BROWSER_CACHE_DIR"] == browser_path
+assert 'rm -rf -- "$BROWSER_CACHE_DIR"' in browser_cleanup["run"]
+assert build["steps"].index(browser_prepare) < build["steps"].index(browser_restore)
+assert build["steps"].index(browser_restore) < build["steps"].index(browser_validate)
+assert build["steps"].index(browser_validate) < build["steps"].index(browser_bound)
+assert build["steps"].index(browser_bound) < build["steps"].index(browser_save)
+assert build["steps"].index(browser_save) < build["steps"].index(browser_cleanup)
+assert "~/.cache/ms-playwright" not in str(build)
 install = next(step for step in build["steps"] if step.get("name") == "Install from verified secretless npm cache")
 setup_index = next(index for index, step in enumerate(build["steps"]) if str(step.get("uses", "")).startswith("actions/setup-node@"))
 setup = build["steps"][setup_index]
@@ -181,6 +212,9 @@ names = {
     "Populate verified private dependency cache": "populate.sh",
     "Package bounded credential-free npm cache": "package.sh",
     "Install from verified secretless npm cache": "install.sh",
+    "Prepare job-scoped Playwright browser cache": "prepare-browser.sh",
+    "Bound Playwright browser cache before save": "bound-browser.sh",
+    "Remove job-scoped Playwright browser cache": "cleanup-browser.sh",
 }
 for job in doc["jobs"].values():
     for step in job.get("steps", []):
@@ -197,6 +231,103 @@ assert 'Possible causes include package authorization' in populate["run"]
 assert '${diagnostic_line//$NODE_AUTH_TOKEN/[REDACTED]}' in populate["run"]
 assert 'tail -c 8192 "$npm_diagnostic" | tail -n 20' in populate["run"]
 PY
+
+browser_env="$tmp/browser.env"
+browser_output="$tmp/browser.output"
+browser_dir="$tmp/browser-cache"
+if BROWSER_CACHE_DIR="$browser_dir" GITHUB_ENV="$browser_env" GITHUB_OUTPUT="$browser_output" \
+    bash "$tmp/prepare-browser.sh" \
+    && [ "$(stat -c %a "$browser_dir")" = 700 ] \
+    && grep -qFx "PLAYWRIGHT_BROWSERS_PATH=$browser_dir" "$browser_env" \
+    && grep -qFx 'owned=true' "$browser_output"; then
+  pass "Playwright uses a fresh mode-0700 job-scoped path exported to consumer scripts"
+else
+  fail "Playwright did not prepare and export its isolated cache path"
+fi
+
+mkdir -p "$tmp/browser-occupied"
+printf 'preserve\n' > "$tmp/browser-occupied/sentinel"
+if occupied_output="$(BROWSER_CACHE_DIR="$tmp/browser-occupied" \
+      GITHUB_ENV="$tmp/occupied.env" GITHUB_OUTPUT="$tmp/occupied.output" \
+      bash "$tmp/prepare-browser.sh" 2>&1)" \
+    || ! grep -qF 'BROWSER_CACHE_DESTINATION_OCCUPIED' <<< "$occupied_output" \
+    || ! grep -qFx 'preserve' "$tmp/browser-occupied/sentinel"; then
+  fail "an occupied Playwright cache destination was modified or accepted"
+else
+  pass "an occupied Playwright cache destination fails closed without modification"
+fi
+
+mkdir -p "$tmp/browser-symlink-target"
+ln -s "$tmp/browser-symlink-target" "$tmp/browser-symlink"
+if symlink_destination_output="$(BROWSER_CACHE_DIR="$tmp/browser-symlink" \
+      GITHUB_ENV="$tmp/symlink.env" GITHUB_OUTPUT="$tmp/symlink.output" \
+      bash "$tmp/prepare-browser.sh" 2>&1)" \
+    || ! grep -qF 'BROWSER_CACHE_DESTINATION_OCCUPIED' <<< "$symlink_destination_output" \
+    || [ ! -d "$tmp/browser-symlink-target" ]; then
+  fail "a symlinked Playwright cache destination was followed or accepted"
+else
+  pass "a symlinked Playwright cache destination fails closed without following it"
+fi
+
+printf 'browser\n' > "$browser_dir/chromium"
+: > "$tmp/browser-bound.output"
+if BROWSER_CACHE_DIR="$browser_dir" MAX_BROWSER_CACHE_FILES=1 \
+    MAX_BROWSER_CACHE_BYTES=8 GITHUB_OUTPUT="$tmp/browser-bound.output" \
+    bash "$tmp/bound-browser.sh" \
+    && grep -qFx 'should-save=true' "$tmp/browser-bound.output"; then
+  pass "a bounded regular-file Playwright cache is admitted for save"
+else
+  fail "a bounded Playwright cache was not admitted for save"
+fi
+
+printf 'second\n' > "$browser_dir/firefox"
+if file_bound_output="$(BROWSER_CACHE_DIR="$browser_dir" MAX_BROWSER_CACHE_FILES=1 \
+      MAX_BROWSER_CACHE_BYTES=1024 GITHUB_OUTPUT="$tmp/file-bound.output" \
+      bash "$tmp/bound-browser.sh" 2>&1)" \
+    || ! grep -qF 'BROWSER_CACHE_FILE_BOUND:2' <<< "$file_bound_output"; then
+  fail "an over-count Playwright cache did not fail before save"
+else
+  pass "an over-count Playwright cache fails before save"
+fi
+rm "$browser_dir/firefox"
+
+if byte_bound_output="$(BROWSER_CACHE_DIR="$browser_dir" MAX_BROWSER_CACHE_FILES=1 \
+      MAX_BROWSER_CACHE_BYTES=1 GITHUB_OUTPUT="$tmp/byte-bound.output" \
+      bash "$tmp/bound-browser.sh" 2>&1)" \
+    || ! grep -qF 'BROWSER_CACHE_BYTE_BOUND:8' <<< "$byte_bound_output"; then
+  fail "an oversized Playwright cache did not fail before save"
+else
+  pass "an oversized Playwright cache fails before save"
+fi
+
+ln -s "$tmp/browser-symlink-target" "$browser_dir/link"
+if browser_entry_output="$(BROWSER_CACHE_DIR="$browser_dir" MAX_BROWSER_CACHE_FILES=10 \
+      MAX_BROWSER_CACHE_BYTES=1024 GITHUB_OUTPUT="$tmp/browser-entry.output" \
+      bash "$tmp/bound-browser.sh" 2>&1)" \
+    || ! grep -qF 'BROWSER_CACHE_SYMLINK:' <<< "$browser_entry_output"; then
+  fail "a symlink inside the Playwright cache did not fail before save"
+else
+  pass "a symlink inside the Playwright cache fails before save"
+fi
+
+rm "$browser_dir/link"
+if BROWSER_CACHE_DIR="$browser_dir" bash "$tmp/cleanup-browser.sh" \
+    && [ ! -e "$browser_dir" ] && [ ! -L "$browser_dir" ]; then
+  pass "Playwright browser cache cleanup removes the exact job-scoped directory"
+else
+  fail "Playwright browser cache cleanup left job-scoped state"
+fi
+
+mkdir -p "$tmp/cleanup-browser-target"
+printf 'preserve\n' > "$tmp/cleanup-browser-target/sentinel"
+ln -s "$tmp/cleanup-browser-target" "$tmp/cleanup-browser-link"
+if BROWSER_CACHE_DIR="$tmp/cleanup-browser-link" bash "$tmp/cleanup-browser.sh" \
+    && [ ! -e "$tmp/cleanup-browser-link" ] && [ ! -L "$tmp/cleanup-browser-link" ] \
+    && grep -qFx 'preserve' "$tmp/cleanup-browser-target/sentinel"; then
+  pass "Playwright cleanup removes a substituted link without following it"
+else
+  fail "Playwright cleanup followed a substituted link or left it behind"
+fi
 
 mkdir -p "$tmp/bin" "$tmp/package-cache/_cacache/content-v2/sha512" "$tmp/acquire/node_modules"
 printf 'cached private package bytes\n' > "$tmp/private-package.tgz"

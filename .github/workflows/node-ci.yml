@@ -2320,12 +2320,53 @@ jobs:
         with:
           path: ${{ runner.temp }}/secretless-public-npm-${{ hashFiles(inputs.cache-dependency-path) }}
           key: secretless-public-npm-${{ runner.os }}-${{ hashFiles(inputs.cache-dependency-path) }}
-      - id: playwright-browser-cache
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      - name: Prepare job-scoped Playwright browser cache
+        id: prepare-playwright-browser-cache
+        if: needs.eligibility.outputs.should-run != 'false' && (inputs.secretless-pr || inputs.secretless-trusted-ref) && inputs.browser-cache && hashFiles(inputs.cache-dependency-path) != ''
+        env:
+          BROWSER_CACHE_DIR: ${{ runner.temp }}/verjson-playwright-browsers-${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          [ ! -e "$BROWSER_CACHE_DIR" ] && [ ! -L "$BROWSER_CACHE_DIR" ] || {
+            echo "BROWSER_CACHE_DESTINATION_OCCUPIED" >&2
+            exit 1
+          }
+          install -d -m 0700 "$BROWSER_CACHE_DIR"
+          printf 'PLAYWRIGHT_BROWSERS_PATH=%s\n' "$BROWSER_CACHE_DIR" >> "$GITHUB_ENV"
+          printf 'owned=true\n' >> "$GITHUB_OUTPUT"
+      - id: restore-playwright-browser-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         if: needs.eligibility.outputs.should-run != 'false' && (inputs.secretless-pr || inputs.secretless-trusted-ref) && inputs.browser-cache && hashFiles(inputs.cache-dependency-path) != ''
         with:
-          path: ~/.cache/ms-playwright
-          key: playwright-${{ runner.os }}-${{ hashFiles(inputs.cache-dependency-path) }}
+          path: ${{ runner.temp }}/verjson-playwright-browsers-${{ github.run_id }}-${{ github.run_attempt }}
+          key: playwright-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles(inputs.cache-dependency-path) }}
+      - name: Validate restored Playwright browser cache
+        if: needs.eligibility.outputs.should-run != 'false' && (inputs.secretless-pr || inputs.secretless-trusted-ref) && inputs.browser-cache && hashFiles(inputs.cache-dependency-path) != '' && steps.restore-playwright-browser-cache.outputs.cache-hit == 'true'
+        env:
+          BROWSER_CACHE_DIR: ${{ runner.temp }}/verjson-playwright-browsers-${{ github.run_id }}-${{ github.run_attempt }}
+          MAX_BROWSER_CACHE_FILES: '10000'
+          MAX_BROWSER_CACHE_BYTES: '1073741824'
+        run: |
+          set -euo pipefail
+          [ -d "$BROWSER_CACHE_DIR" ] && [ ! -L "$BROWSER_CACHE_DIR" ] || {
+            echo "BROWSER_CACHE_PATH" >&2
+            exit 1
+          }
+          unsafe_entry="$(find "$BROWSER_CACHE_DIR" -xdev \! -type f \! -type d -print -quit)"
+          [ -z "$unsafe_entry" ] || {
+            echo "BROWSER_CACHE_SYMLINK:$unsafe_entry" >&2
+            exit 1
+          }
+          file_count="$(find "$BROWSER_CACHE_DIR" -xdev -type f -printf '.' | wc -c)"
+          [ "$file_count" -le "$MAX_BROWSER_CACHE_FILES" ] || {
+            echo "BROWSER_CACHE_FILE_BOUND:$file_count" >&2
+            exit 1
+          }
+          byte_count="$(find "$BROWSER_CACHE_DIR" -xdev -type f -printf '%s\n' | awk '{ total += $1 } END { print total + 0 }')"
+          [ "$byte_count" -le "$MAX_BROWSER_CACHE_BYTES" ] || {
+            echo "BROWSER_CACHE_BYTE_BOUND:$byte_count" >&2
+            exit 1
+          }
       - name: Remove local secretless transfer state
         if: always() && needs.eligibility.outputs.should-run != 'false' && (inputs.secretless-pr || inputs.secretless-trusted-ref)
         env:
@@ -5510,6 +5551,51 @@ jobs:
                       signal.signal(signum, previous_handler)
                   os.close(package_parent_descriptor)
           PY
+      - name: Bound Playwright browser cache before save
+        id: bound-playwright-browser-cache
+        if: needs.eligibility.outputs.should-run != 'false' && (inputs.secretless-pr || inputs.secretless-trusted-ref) && inputs.browser-cache && hashFiles(inputs.cache-dependency-path) != '' && steps.restore-playwright-browser-cache.outputs.cache-hit != 'true'
+        env:
+          BROWSER_CACHE_DIR: ${{ runner.temp }}/verjson-playwright-browsers-${{ github.run_id }}-${{ github.run_attempt }}
+          MAX_BROWSER_CACHE_FILES: '10000'
+          MAX_BROWSER_CACHE_BYTES: '1073741824'
+        run: |
+          set -euo pipefail
+          [ -d "$BROWSER_CACHE_DIR" ] && [ ! -L "$BROWSER_CACHE_DIR" ] || {
+            echo "BROWSER_CACHE_PATH" >&2
+            exit 1
+          }
+          unsafe_entry="$(find "$BROWSER_CACHE_DIR" -xdev \! -type f \! -type d -print -quit)"
+          [ -z "$unsafe_entry" ] || {
+            echo "BROWSER_CACHE_SYMLINK:$unsafe_entry" >&2
+            exit 1
+          }
+          file_count="$(find "$BROWSER_CACHE_DIR" -xdev -type f -printf '.' | wc -c)"
+          [ "$file_count" -le "$MAX_BROWSER_CACHE_FILES" ] || {
+            echo "BROWSER_CACHE_FILE_BOUND:$file_count" >&2
+            exit 1
+          }
+          byte_count="$(find "$BROWSER_CACHE_DIR" -xdev -type f -printf '%s\n' | awk '{ total += $1 } END { print total + 0 }')"
+          [ "$byte_count" -le "$MAX_BROWSER_CACHE_BYTES" ] || {
+            echo "BROWSER_CACHE_BYTE_BOUND:$byte_count" >&2
+            exit 1
+          }
+          if [ "$file_count" -eq 0 ]; then
+            echo "::notice::Playwright browser cache is empty; skipping cache save"
+            printf 'should-save=false\n' >> "$GITHUB_OUTPUT"
+          else
+            printf 'should-save=true\n' >> "$GITHUB_OUTPUT"
+          fi
+      - id: save-playwright-browser-cache
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: needs.eligibility.outputs.should-run != 'false' && (inputs.secretless-pr || inputs.secretless-trusted-ref) && inputs.browser-cache && hashFiles(inputs.cache-dependency-path) != '' && steps.restore-playwright-browser-cache.outputs.cache-hit != 'true' && steps.bound-playwright-browser-cache.outputs.should-save == 'true'
+        with:
+          path: ${{ runner.temp }}/verjson-playwright-browsers-${{ github.run_id }}-${{ github.run_attempt }}
+          key: playwright-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles(inputs.cache-dependency-path) }}
+      - name: Remove job-scoped Playwright browser cache
+        if: always() && needs.eligibility.outputs.should-run != 'false' && (inputs.secretless-pr || inputs.secretless-trusted-ref) && inputs.browser-cache && steps.prepare-playwright-browser-cache.outputs.owned == 'true'
+        env:
+          BROWSER_CACHE_DIR: ${{ runner.temp }}/verjson-playwright-browsers-${{ github.run_id }}-${{ github.run_attempt }}
+        run: rm -rf -- "$BROWSER_CACHE_DIR"
       - name: Remove job-scoped secretless runtime cache
         if: always() && needs.eligibility.outputs.should-run != 'false' && (inputs.secretless-pr || inputs.secretless-trusted-ref)
         env:

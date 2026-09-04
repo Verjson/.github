@@ -51,10 +51,15 @@ acquisition job requests it, although the build job itself requests no package
 permission.
 
 Playwright consumers may additionally set `browser-cache: true`. It is default-off
-and active only in the credentialless secretless build job, where it caches
-`~/.cache/ms-playwright` under an exact OS-and-lockfile key with no prefix restore.
-It never includes npm state or runs in credentialed acquisition. System packages
-installed by `playwright install --with-deps` remain outside this cache.
+and active only in the credentialless secretless build job. The workflow creates
+a fresh mode-`0700` directory below `runner.temp`, exports it as
+`PLAYWRIGHT_BROWSERS_PATH`, and caches it under an exact
+OS/architecture/lockfile key with no prefix restore. Restored and newly populated
+trees reject symlinks and special entries and are capped at 10,000 files and 1
+GiB; the directory is always scrubbed. The runner account's global home cache is
+never read or saved. It never includes npm state or runs in credentialed
+acquisition. System packages installed by `playwright install --with-deps` remain
+outside this cache.
 
 For validation of repositories with approved private dependencies, the
 `secretless-pr` and `secretless-trusted-ref` modes split acquisition from
@@ -249,13 +254,15 @@ and `--ignore-scripts`. Pass the same value to every job that invokes the
 reusable workflow, exactly as with `approved-internal-packages`.
 
 The handoff uses the repository cache service rather than organization artifact
-storage. Acquisition generates an unguessable nonce and binds it with
-`github.run_id` and `github.run_attempt`; restore uses the internally passed key
+storage. Acquisition generates an unguessable nonce and binds it to
+`github.run_id` and its producer `github.run_attempt`; restore uses the internally
+passed key
 with no prefix and fails on a missing exact match. Save and restore use the same
 stable relative workspace path, so cache version identity does not depend on a
-runner's work root. Use **Re-run all jobs** for a new
-attempt. Re-running only a failed build job cannot create its missing acquisition
-cache and fails closed by design.
+runner's work root. **Re-run failed jobs** reuses the immutable transfer from the
+completed earlier acquisition attempt within that same workflow run. Transfers
+from another run or a future producer attempt fail closed. A full rerun creates a
+fresh nonce-bound transfer for its newly executed acquisition job.
 
 To adopt the #750 contract, pin the reusable path to the 40-hex commit that
 contains this change—never a branch or moving tag:
