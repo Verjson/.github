@@ -66,6 +66,14 @@ on:
         required: false
         type: string
         default: package-lock.json
+      browser-cache:
+        description: >-
+          Cache Playwright browser downloads by cache-dependency-path in the
+          credentialless secretless build job. Default-off and ignored outside
+          secretless modes; never shares npm caches or credentialed state.
+        required: false
+        type: boolean
+        default: false
       package-manager:
         description: >-
           Package manager used by secretless dependency validation and install.
@@ -1258,7 +1266,7 @@ jobs:
           RUN_ATTEMPT: ${{ github.run_attempt }}
           RUN_ID: ${{ github.run_id }}
           PACKAGE_MANAGER: ${{ inputs.package-manager }}
-          TRANSFER_DIR: ${{ github.workspace }}/.verjson-secretless-transfer-${{ github.run_id }}-${{ github.run_attempt }}
+          TRANSFER_DIR: ${{ github.workspace }}/.verjson-secretless-transfer-${{ github.run_id }}
         run: |
           set -euo pipefail
           PACKAGE_MANAGER="${PACKAGE_MANAGER:-npm}"
@@ -1351,7 +1359,7 @@ jobs:
             > "$TRANSFER_DIR/manifest"
           printf 'compatibility-provenance-sha256=%s\npayload-bytes=%s\npayload-sha256=%s\n' \
             "$compatibility_provenance_sha256" "$payload_bytes" "$payload_sha256" >> "$GITHUB_OUTPUT"
-      - name: Create unguessable exact-attempt cache key
+      - name: Create unguessable run-bound transfer cache key
         id: create-secretless-cache-key
         env:
           RUN_ATTEMPT: ${{ github.run_attempt }}
@@ -1367,12 +1375,12 @@ jobs:
             echo "::error::could not generate secretless cache nonce"
             exit 1
           }
-          cache_key="secretless-npm-cache-${RUN_ID}-${RUN_ATTEMPT}-${nonce}"
+          cache_key="secretless-npm-transfer-${RUN_ID}-${RUN_ATTEMPT}-${nonce}"
           printf 'cache-key=%s\n' "$cache_key" >> "$GITHUB_OUTPUT"
       - id: save-secretless-transfer
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          path: .verjson-secretless-transfer-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .verjson-secretless-transfer-${{ github.run_id }}
           key: ${{ steps.create-secretless-cache-key.outputs.cache-key }}
       - name: Remove local acquisition and transfer state
         if: always()
@@ -1381,7 +1389,7 @@ jobs:
           CACHE_DIR: ${{ steps.populate-private-cache.outputs.cache-dir }}
           COMPATIBILITY_ROOT: ${{ runner.temp }}/secretless-compatibility-${{ github.run_id }}-${{ github.run_attempt }}
           PRIVATE_CACHE_ENTRIES: ${{ runner.temp }}/secretless-private-entries-${{ github.run_id }}-${{ github.run_attempt }}
-          TRANSFER_DIR: ${{ github.workspace }}/.verjson-secretless-transfer-${{ github.run_id }}-${{ github.run_attempt }}
+          TRANSFER_DIR: ${{ github.workspace }}/.verjson-secretless-transfer-${{ github.run_id }}
         run: |
           rm -rf node_modules "$CACHE_DIR" "$COMPATIBILITY_ROOT" "$TRANSFER_DIR"
           [ -z "$AUXILIARY_CHECKOUT_PATH" ] || find "$AUXILIARY_CHECKOUT_PATH" -depth -delete
@@ -1451,7 +1459,7 @@ jobs:
       - name: Require an unused secretless restore path
         if: needs.eligibility.outputs.should-run != 'false' && (inputs.secretless-pr || inputs.secretless-trusted-ref)
         env:
-          TRANSFER_DIR: ${{ github.workspace }}/.verjson-secretless-transfer-${{ github.run_id }}-${{ github.run_attempt }}
+          TRANSFER_DIR: ${{ github.workspace }}/.verjson-secretless-transfer-${{ github.run_id }}
         run: |
           [ ! -e "$TRANSFER_DIR" ] && [ ! -L "$TRANSFER_DIR" ] || {
             echo "::error::reserved secretless transfer path exists before restore"
@@ -1461,9 +1469,15 @@ jobs:
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         if: needs.eligibility.outputs.should-run != 'false' && (inputs.secretless-pr || inputs.secretless-trusted-ref)
         with:
-          path: .verjson-secretless-transfer-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .verjson-secretless-transfer-${{ github.run_id }}
           key: ${{ needs.acquire-secretless-dependencies.outputs.transfer-cache-key }}
           fail-on-cache-miss: true
+      - id: restore-secretless-public-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: needs.eligibility.outputs.should-run != 'false' && (inputs.secretless-pr || inputs.secretless-trusted-ref) && inputs.cache && inputs.package-manager == 'npm' && hashFiles(inputs.cache-dependency-path) != ''
+        with:
+          path: ${{ runner.temp }}/secretless-public-npm-${{ hashFiles(inputs.cache-dependency-path) }}
+          key: secretless-public-npm-${{ runner.os }}-${{ hashFiles(inputs.cache-dependency-path) }}
       - name: Install from verified secretless npm cache
         if: needs.eligibility.outputs.should-run != 'false' && (inputs.secretless-pr || inputs.secretless-trusted-ref)
         env:
@@ -1495,13 +1509,15 @@ jobs:
           MAX_PAYLOAD_BYTES: '83886080'
           MAX_PUBLIC_RUNTIME_CACHE_BLOBS: '4096'
           MAX_PUBLIC_RUNTIME_CACHE_BYTES: '268435456'
+          PERSISTED_PUBLIC_CACHE_DIR: ${{ runner.temp }}/secretless-public-npm-${{ hashFiles(inputs.cache-dependency-path) }}
+          RESTORE_PERSISTED_PUBLIC_CACHE: ${{ inputs.cache && inputs.package-manager == 'npm' }}
           NESTED_PATHS_FILE: ${{ runner.temp }}/secretless-nested-paths-${{ github.run_id }}-${{ github.run_attempt }}
           RUN_ATTEMPT: ${{ github.run_attempt }}
           RUN_ID: ${{ github.run_id }}
           SECRETLESS_RUNTIME_PUBLIC_CACHE: ${{ inputs.secretless-runtime-public-cache }}
           SECRETLESS_CACHE_DIR: ${{ runner.temp }}/secretless-build-cache-${{ github.run_id }}-${{ github.run_attempt }}
           PNPM_STORE_DIR: ${{ runner.temp }}/secretless-pnpm-store-${{ github.run_id }}-${{ github.run_attempt }}
-          TRANSFER_DIR: ${{ github.workspace }}/.verjson-secretless-transfer-${{ github.run_id }}-${{ github.run_attempt }}
+          TRANSFER_DIR: ${{ github.workspace }}/.verjson-secretless-transfer-${{ github.run_id }}
         run: |
           set -euo pipefail
           PACKAGE_MANAGER="${PACKAGE_MANAGER:-npm}"
@@ -1512,6 +1528,7 @@ jobs:
           NESTED_PATHS_FILE="${NESTED_PATHS_FILE:-${SECRETLESS_CACHE_DIR}-nested-paths}"
           PNPM_STORE_DIR="${PNPM_STORE_DIR:-}"
           SECRETLESS_RUNTIME_PUBLIC_CACHE="${SECRETLESS_RUNTIME_PUBLIC_CACHE:-false}"
+          RESTORE_PERSISTED_PUBLIC_CACHE="${RESTORE_PERSISTED_PUBLIC_CACHE:-false}"
           case "$SECRETLESS_RUNTIME_PUBLIC_CACHE" in
             true|false) ;;
             *) echo "PUBLIC_RUNTIME_CACHE_INPUT" >&2; exit 1 ;;
@@ -1565,8 +1582,10 @@ jobs:
               echo "::error::secretless cache does not match the trusted acquisition output"
               exit 1
             }
-          [ "$manifest_run_id" = "$RUN_ID" ] && [ "$manifest_run_attempt" = "$RUN_ATTEMPT" ] || {
-            echo "::error::secretless cache belongs to another run attempt"
+          [ "$manifest_run_id" = "$RUN_ID" ] \
+            && [ "$manifest_run_attempt" -ge 1 ] \
+            && [ "$manifest_run_attempt" -le "$RUN_ATTEMPT" ] || {
+            echo "::error::secretless cache does not belong to this run or a completed earlier attempt"
             exit 1
           }
           [ "$manifest_package_manager" = "$PACKAGE_MANAGER" ] || {
@@ -1848,8 +1867,106 @@ jobs:
             fi
           } >> "$GITHUB_ENV"
           if [ "$PACKAGE_MANAGER" = npm ]; then
+            if [ "$RESTORE_PERSISTED_PUBLIC_CACHE" = true ] && [ -d "$PERSISTED_PUBLIC_CACHE_DIR" ]; then
+              python3 - <<'PY'
+          import base64
+          import hashlib
+          import json
+          import os
+          import re
+          import shutil
+          import stat
+          from pathlib import Path
+          from urllib.parse import urlsplit
+
+          persisted = Path(os.environ["PERSISTED_PUBLIC_CACHE_DIR"])
+          destination = Path(os.environ["SECRETLESS_CACHE_DIR"])
+          lock = json.loads(Path("package-lock.json").read_text(encoding="utf-8"))
+          packages = lock.get("packages")
+          if lock.get("lockfileVersion") not in (2, 3) or not isinstance(packages, dict):
+              raise SystemExit("PERSISTED_PUBLIC_CACHE_LOCK")
+
+          internal_scopes = {"@verjson"}
+          internal_scopes.update(line.strip() for line in
+                                 os.environ["APPROVED_INTERNAL_SCOPES"].splitlines()
+                                 if line.strip())
+          integrity_pattern = re.compile(r"sha512-[A-Za-z0-9+/]{86}==")
+          allowed = set()
+          private = set()
+          for package_path, package in packages.items():
+              if not package_path or not isinstance(package, dict):
+                  continue
+              resolved = package.get("resolved")
+              integrity = package.get("integrity")
+              if not isinstance(resolved, str) or not isinstance(integrity, str):
+                  continue
+              try:
+                  parsed = urlsplit(resolved)
+              except ValueError:
+                  continue
+              if integrity_pattern.fullmatch(integrity) is None:
+                  if parsed.hostname in ("registry.npmjs.org", "npm.pkg.github.com"):
+                      raise SystemExit("PERSISTED_PUBLIC_CACHE_INTEGRITY")
+                  continue
+              digest = base64.b64decode(integrity.removeprefix("sha512-"), validate=True)
+              package_name = package.get("name")
+              if not isinstance(package_name, str) and "node_modules/" in package_path:
+                  package_name = package_path.rsplit("node_modules/", 1)[1]
+              is_internal = isinstance(package_name, str) and any(
+                  package_name.startswith(scope + "/") for scope in internal_scopes)
+              if parsed.hostname == "npm.pkg.github.com" or is_internal:
+                  private.add(digest)
+              if (parsed.scheme == "https" and parsed.netloc == "registry.npmjs.org"
+                      and not parsed.query and not parsed.fragment
+                      and parsed.path.endswith(".tgz") and not is_internal):
+                  allowed.add(digest)
+
+          if allowed.intersection(private):
+              raise SystemExit("PERSISTED_PUBLIC_CACHE_PRIVATE_COLLISION")
+          content_root = persisted / "_cacache" / "content-v2" / "sha512"
+          if persisted.is_symlink() or not content_root.is_dir() or content_root.is_symlink():
+              raise SystemExit("PERSISTED_PUBLIC_CACHE_PATH")
+          files = []
+          total_bytes = 0
+          for entry in persisted.rglob("*"):
+              metadata = entry.lstat()
+              if stat.S_ISLNK(metadata.st_mode) or (not entry.is_file() and not entry.is_dir()):
+                  raise SystemExit("PERSISTED_PUBLIC_CACHE_ENTRY_TYPE")
+              if not entry.is_file():
+                  continue
+              try:
+                  relative = entry.relative_to(content_root)
+              except ValueError:
+                  raise SystemExit("PERSISTED_PUBLIC_CACHE_UNEXPECTED_CONTENT")
+              if len(relative.parts) != 3 or len(relative.parts[0]) != 2 or len(relative.parts[1]) != 2:
+                  raise SystemExit("PERSISTED_PUBLIC_CACHE_PATH_SHAPE")
+              digest_hex = "".join(relative.parts)
+              if re.fullmatch(r"[0-9a-f]{128}", digest_hex) is None:
+                  raise SystemExit("PERSISTED_PUBLIC_CACHE_PATH_SHAPE")
+              digest = bytes.fromhex(digest_hex)
+              if digest in private:
+                  raise SystemExit("PERSISTED_PUBLIC_CACHE_PRIVATE_COLLISION")
+              if digest not in allowed:
+                  raise SystemExit("PERSISTED_PUBLIC_CACHE_UNSELECTED")
+              with entry.open("rb") as stream:
+                  if hashlib.file_digest(stream, "sha512").digest() != digest:
+                      raise SystemExit("PERSISTED_PUBLIC_CACHE_CORRUPT")
+              total_bytes += metadata.st_size
+              if len(files) >= 4096 or total_bytes > 268435456:
+                  raise SystemExit("PERSISTED_PUBLIC_CACHE_BOUNDS")
+              files.append((digest_hex, entry))
+
+          for digest_hex, source in files:
+              target = destination / "_cacache" / "content-v2" / "sha512" \
+                  / digest_hex[:2] / digest_hex[2:4] / digest_hex[4:]
+              target.parent.mkdir(parents=True, exist_ok=True)
+              if target.exists() or target.is_symlink():
+                  raise SystemExit("PERSISTED_PUBLIC_CACHE_PRIVATE_COLLISION")
+              shutil.copyfile(source, target)
+          PY
+            fi
             npm ci --ignore-scripts --prefer-offline --no-audit --no-fund --cache "$SECRETLESS_CACHE_DIR"
-            if [ "$SECRETLESS_RUNTIME_PUBLIC_CACHE" = true ]; then
+            if [ "$SECRETLESS_RUNTIME_PUBLIC_CACHE" = true ] || [ "$RESTORE_PERSISTED_PUBLIC_CACHE" = true ]; then
               python3 - <<'PY'
           import base64
           import hashlib
@@ -2015,7 +2132,7 @@ jobs:
               )
             done < "$NESTED_PATHS_FILE"
           else
-            [ "$SECRETLESS_RUNTIME_PUBLIC_CACHE" != true ] || {
+            [ "$SECRETLESS_RUNTIME_PUBLIC_CACHE" != true ] && [ "$RESTORE_PERSISTED_PUBLIC_CACHE" != true ] || {
               echo "PUBLIC_RUNTIME_CACHE_REQUIRES_NPM" >&2
               exit 1
             }
@@ -2184,12 +2301,37 @@ jobs:
             NPM_CONFIG_USERCONFIG="$MOCK_REGISTRY_NPMRC" corepack pnpm install --frozen-lockfile --ignore-scripts --prefer-offline \
               --store-dir "$PNPM_STORE_DIR"
           fi
+      - name: Stage verified public npm blobs for cross-run reuse
+        if: needs.eligibility.outputs.should-run != 'false' && (inputs.secretless-pr || inputs.secretless-trusted-ref) && inputs.cache && inputs.package-manager == 'npm' && hashFiles(inputs.cache-dependency-path) != '' && steps.restore-secretless-public-cache.outputs.cache-hit != 'true'
+        env:
+          PERSISTED_PUBLIC_CACHE_DIR: ${{ runner.temp }}/secretless-public-npm-${{ hashFiles(inputs.cache-dependency-path) }}
+          RUNTIME_CACHE_DIR: ${{ runner.temp }}/secretless-runtime-cache-${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          [ ! -e "$PERSISTED_PUBLIC_CACHE_DIR" ] && [ ! -L "$PERSISTED_PUBLIC_CACHE_DIR" ] || {
+            echo "::error::persistent public cache destination was not empty after a cache miss"
+            exit 1
+          }
+          mkdir -p "$PERSISTED_PUBLIC_CACHE_DIR"
+          cp -a "$RUNTIME_CACHE_DIR/_cacache" "$PERSISTED_PUBLIC_CACHE_DIR/"
+      - id: save-secretless-public-cache
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: needs.eligibility.outputs.should-run != 'false' && (inputs.secretless-pr || inputs.secretless-trusted-ref) && inputs.cache && inputs.package-manager == 'npm' && hashFiles(inputs.cache-dependency-path) != '' && steps.restore-secretless-public-cache.outputs.cache-hit != 'true'
+        with:
+          path: ${{ runner.temp }}/secretless-public-npm-${{ hashFiles(inputs.cache-dependency-path) }}
+          key: secretless-public-npm-${{ runner.os }}-${{ hashFiles(inputs.cache-dependency-path) }}
+      - id: playwright-browser-cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: needs.eligibility.outputs.should-run != 'false' && (inputs.secretless-pr || inputs.secretless-trusted-ref) && inputs.browser-cache && hashFiles(inputs.cache-dependency-path) != ''
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles(inputs.cache-dependency-path) }}
       - name: Remove local secretless transfer state
         if: always() && needs.eligibility.outputs.should-run != 'false' && (inputs.secretless-pr || inputs.secretless-trusted-ref)
         env:
           SECRETLESS_CACHE_DIR: ${{ runner.temp }}/secretless-build-cache-${{ github.run_id }}-${{ github.run_attempt }}
           PNPM_STORE_DIR: ${{ runner.temp }}/secretless-pnpm-store-${{ github.run_id }}-${{ github.run_attempt }}
-          TRANSFER_DIR: ${{ github.workspace }}/.verjson-secretless-transfer-${{ github.run_id }}-${{ github.run_attempt }}
+          TRANSFER_DIR: ${{ github.workspace }}/.verjson-secretless-transfer-${{ github.run_id }}
         run: rm -rf "$SECRETLESS_CACHE_DIR" "$PNPM_STORE_DIR" "$TRANSFER_DIR"
       - name: Start database service
         # Optional Postgres service for DB-backed test suites (e.g. Jest against
@@ -5373,7 +5515,8 @@ jobs:
         env:
           RUNTIME_CACHE_DIR: ${{ runner.temp }}/secretless-runtime-cache-${{ github.run_id }}-${{ github.run_attempt }}
           COMPATIBILITY_ARTIFACT_DIR: ${{ runner.temp }}/secretless-compatibility-artifacts-${{ github.run_id }}-${{ github.run_attempt }}
-        run: rm -rf "$RUNTIME_CACHE_DIR" "$COMPATIBILITY_ARTIFACT_DIR"
+          PERSISTED_PUBLIC_CACHE_DIR: ${{ runner.temp }}/secretless-public-npm-${{ hashFiles(inputs.cache-dependency-path) }}
+        run: rm -rf "$RUNTIME_CACHE_DIR" "$COMPATIBILITY_ARTIFACT_DIR" "$PERSISTED_PUBLIC_CACHE_DIR"
       - name: Remove restored secretless auxiliary content
         if: always() && needs.eligibility.outputs.should-run != 'false' && (inputs.secretless-pr || inputs.secretless-trusted-ref) && needs.acquire-secretless-dependencies.outputs.auxiliary-content-path != ''
         env:

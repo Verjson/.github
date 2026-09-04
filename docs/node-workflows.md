@@ -37,11 +37,24 @@ jobs:
 
 `cache-dependency-path` may also be a glob understood by `hashFiles` and
 `actions/setup-node`. If it matches no lockfile, caching is skipped and the job
-continues normally. Registry authentication is independent of the job token and
-caching: callers that install private `@verjson` packages pass
+continues normally. In secretless npm mode, `cache: true` instead uses that hash
+for an exact-key cross-run cache containing only SHA-512-verified
+`registry.npmjs.org` content blobs selected by the current lockfile. The workflow
+rejects metadata, symlinks, unexpected paths, corrupt content, internal package
+identities, and private/public digest collisions before npm runs. Credentialed
+acquisition state, private blobs, npm configuration, and credentials never enter
+the persistent cache. Secretless pnpm keeps its existing uncached behavior.
+Registry authentication is independent of the job token and caching: callers
+that install private `@verjson` packages pass
 `NODE_AUTH_TOKEN`. Every caller also grants `packages: read` because the reusable
 acquisition job requests it, although the build job itself requests no package
 permission.
+
+Playwright consumers may additionally set `browser-cache: true`. It is default-off
+and active only in the credentialless secretless build job, where it caches
+`~/.cache/ms-playwright` under an exact OS-and-lockfile key with no prefix restore.
+It never includes npm state or runs in credentialed acquisition. System packages
+installed by `playwright install --with-deps` remain outside this cache.
 
 For validation of repositories with approved private dependencies, the
 `secretless-pr` and `secretless-trusted-ref` modes split acquisition from
@@ -90,16 +103,19 @@ transfer. Its four input fields must exactly match protected repository variable
 `CI_SECRETLESS_AUXILIARY_POLICY`, so a PR cannot redirect the acquisition
 token to another repository or path. It transfers npm's verified content-addressed download
 cache, never `node_modules`, under an 80 MiB payload cap. Acquisition saves the
-two-file envelope under an exact run-attempt Actions cache key with no restore
-prefix. The build job requires that exact cache hit and verifies the exact run,
+two-file envelope under an unguessable run-bound Actions cache key with no restore
+prefix. A failed-job rerun may reuse an immutable envelope produced by an earlier
+attempt of that same workflow run; a future attempt or another run is rejected.
+The build job requires that exact cache hit and verifies the run, producer
 attempt, package-lock digest, auxiliary repository/commit/path identity, payload
 digest, and size before running
 `npm ci --prefer-offline --ignore-scripts` with package, Git, cloud, and OIDC credential
 paths empty. Job-local `always()` cleanup removes acquisition and restored state
 on success, failure, and cancellation. No Actions artifact is created. Secretless
-mode ignores the caller's `cache: true`; its handoff cache has one exact-attempt
-key and no cross-run restore, and consumer npm commands use a job-scoped runtime
-cache that is removed at teardown:
+mode never passes `cache: true` to `setup-node`; its private handoff remains one
+unguessable run-bound key with no prefix restore. When explicitly enabled, the
+separate cross-run cache contains only the verified public blobs described above.
+Consumer npm commands still use a job-scoped runtime cache removed at teardown:
 
 ```yaml
 jobs:
@@ -111,6 +127,8 @@ jobs:
     uses: Verjson/.github/.github/workflows/node-ci.yml@<immutable-sha>
     with:
       secretless-pr: true
+      cache: true
+      browser-cache: true
       approved-internal-packages: |
         @verjson/identity-contracts
         @verjson/tsconfig

@@ -11,7 +11,7 @@ pass() { printf 'ok - %s\n' "$1"; }
 fail() { printf 'not ok - %s\n' "$1" >&2; failures=$((failures + 1)); }
 
 python3 - "$workflow" <<'PY' \
-  && pass "secretless transfer uses an exact-attempt cache without artifact permissions" \
+  && pass "secretless caches preserve run binding and isolate persistent public content" \
   || fail "secretless transfer workflow structure violates its storage or trust contract"
 import sys
 import yaml
@@ -39,6 +39,8 @@ assert build["steps"].index(acquisition_guard) < next(
 
 assert inputs["secretless-runtime-public-cache"]["type"] == "boolean"
 assert inputs["secretless-runtime-public-cache"]["default"] is False
+assert inputs["browser-cache"]["type"] == "boolean"
+assert inputs["browser-cache"]["default"] is False
 
 assert acquire["outputs"]["transfer-cache-key"] == "${{ steps.create-secretless-cache-key.outputs.cache-key }}"
 assert acquire["outputs"]["transfer-payload-bytes"] == "${{ steps.package-secretless-transfer.outputs.payload-bytes }}"
@@ -47,11 +49,11 @@ assert "transfer-artifact-id" not in acquire["outputs"]
 assert acquire["outputs"]["auxiliary-content-path"] == "${{ steps.resolve-auxiliary-source.outputs.content-path }}"
 create_key = next(step for step in acquire["steps"] if step.get("id") == "create-secretless-cache-key")
 assert "openssl rand -hex 32" in create_key["run"]
-assert "secretless-npm-cache-${RUN_ID}-${RUN_ATTEMPT}-${nonce}" in create_key["run"]
+assert "secretless-npm-transfer-${RUN_ID}-${RUN_ATTEMPT}-${nonce}" in create_key["run"]
 save = next(step for step in acquire["steps"] if step.get("id") == "save-secretless-transfer")
 assert save["uses"] == "actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9"
 assert save["with"]["key"] == "${{ steps.create-secretless-cache-key.outputs.cache-key }}"
-stable_transfer_path = ".verjson-secretless-transfer-${{ github.run_id }}-${{ github.run_attempt }}"
+stable_transfer_path = ".verjson-secretless-transfer-${{ github.run_id }}"
 assert save["with"]["path"] == stable_transfer_path
 assert "runner.temp" not in save["with"]["path"]
 assert "node_modules" not in save["with"]["path"]
@@ -90,6 +92,27 @@ assert restore["with"]["path"] == stable_transfer_path
 assert restore["with"]["fail-on-cache-miss"] is True
 assert "restore-keys" not in restore["with"]
 assert save["with"]["path"] == restore["with"]["path"]
+
+public_restore = next(step for step in build["steps"] if step.get("id") == "restore-secretless-public-cache")
+public_save = next(step for step in build["steps"] if step.get("id") == "save-secretless-public-cache")
+assert "inputs.cache" in public_restore["if"]
+assert "inputs.secretless-pr || inputs.secretless-trusted-ref" in public_restore["if"]
+assert "inputs.package-manager == 'npm'" in public_restore["if"]
+assert "hashFiles(inputs.cache-dependency-path) != ''" in public_restore["if"]
+assert public_restore["with"]["key"] == "secretless-public-npm-${{ runner.os }}-${{ hashFiles(inputs.cache-dependency-path) }}"
+assert "restore-keys" not in public_restore["with"]
+assert public_restore["with"]["path"].startswith("${{ runner.temp }}/secretless-public-npm-")
+assert public_save["with"] == public_restore["with"]
+assert "steps.restore-secretless-public-cache.outputs.cache-hit != 'true'" in public_save["if"]
+
+browser = next(step for step in build["steps"] if step.get("id") == "playwright-browser-cache")
+assert browser["uses"] == "actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9"
+assert "inputs.browser-cache" in browser["if"]
+assert "inputs.secretless-pr || inputs.secretless-trusted-ref" in browser["if"]
+assert "hashFiles(inputs.cache-dependency-path) != ''" in browser["if"]
+assert browser["with"]["path"] == "~/.cache/ms-playwright"
+assert browser["with"]["key"] == "playwright-${{ runner.os }}-${{ hashFiles(inputs.cache-dependency-path) }}"
+assert "restore-keys" not in browser["with"]
 install = next(step for step in build["steps"] if step.get("name") == "Install from verified secretless npm cache")
 setup_index = next(index for index, step in enumerate(build["steps"]) if str(step.get("uses", "")).startswith("actions/setup-node@"))
 setup = build["steps"][setup_index]
@@ -111,6 +134,8 @@ assert acquire_cleanup["env"]["TRANSFER_DIR"] == stable_workspace_transfer
 assert install["env"]["TRANSFER_DIR"] == stable_workspace_transfer
 assert install["env"]["NPM_CONFIG_CACHE"].startswith("${{ runner.temp }}/secretless-runtime-cache-")
 assert install["env"]["SECRETLESS_RUNTIME_PUBLIC_CACHE"] == "${{ inputs.secretless-runtime-public-cache }}"
+assert install["env"]["PERSISTED_PUBLIC_CACHE_DIR"].startswith("${{ runner.temp }}/secretless-public-npm-")
+assert install["env"]["RESTORE_PERSISTED_PUBLIC_CACHE"] == "${{ inputs.cache && inputs.package-manager == 'npm' }}"
 assert install["env"]["MAX_PUBLIC_RUNTIME_CACHE_BLOBS"] == "4096"
 assert install["env"]["MAX_PUBLIC_RUNTIME_CACHE_BYTES"] == "268435456"
 assert install["env"]["NPM_CONFIG_GLOBALCONFIG"].startswith("${{ runner.temp }}/")
@@ -118,6 +143,9 @@ assert install["env"]["NPM_CONFIG_USERCONFIG"].startswith("${{ runner.temp }}/")
 assert "npm ci --ignore-scripts --prefer-offline --no-audit --no-fund" in install["run"]
 assert "PUBLIC_RUNTIME_CACHE_REQUIRES_NPM" in install["run"]
 assert "manifest_run_attempt" in install["run"]
+assert 'manifest_run_attempt" -le "$RUN_ATTEMPT"' in install["run"]
+assert "PERSISTED_PUBLIC_CACHE_CORRUPT" in install["run"]
+assert "PERSISTED_PUBLIC_CACHE_PRIVATE_COLLISION" in install["run"]
 assert "manifest_lock_sha256" in install["run"]
 assert "manifest_payload_sha256" in install["run"]
 assert '"$manifest_payload_sha256" = "$EXPECTED_PAYLOAD_SHA256"' in install["run"]
@@ -209,6 +237,14 @@ printf '%s\n' \
   '  package_name="${NPM_STUB_PUBLIC_PACKAGE_NAME:-public-fixture}"' \
   '  mkdir -p "node_modules/$package_name"' \
   '  printf '\''{"name":"%s","version":"1.0.0"}\n'\'' "$package_name" > "node_modules/$package_name/package.json"' \
+  'fi' \
+  'if [ "${1:-}" = ci ] && [ -n "${NPM_STUB_REQUIRE_DIGEST:-}" ]; then' \
+  '  while [ "$#" -gt 0 ]; do' \
+  '    if [ "$1" = --cache ]; then cache_dir="$2"; break; fi' \
+  '    shift' \
+  '  done' \
+  '  required="$cache_dir/_cacache/content-v2/sha512/${NPM_STUB_REQUIRE_DIGEST:0:2}/${NPM_STUB_REQUIRE_DIGEST:2:2}/${NPM_STUB_REQUIRE_DIGEST:4}"' \
+  '  [ -f "$required" ] || { echo "required persisted blob was not imported" >&2; exit 43; }' \
   'fi' \
   > "$tmp/bin/npm"
 chmod +x "$tmp/bin/npm"
@@ -318,8 +354,10 @@ run_install() {
   local auxiliary_repository="${4:-}" auxiliary_commit="${5:-}" auxiliary_content_path="${6:-}"
   local public_runtime_cache="${7:-false}" runtime_cache="$fixture/runtime-cache"
   local package_manager="${8:-npm}" install_script="${INSTALL_SCRIPT:-$tmp/install.sh}"
+  local persisted_public_cache="${9:-$fixture/persisted-public-cache}"
+  local restore_persisted_public_cache="${10:-false}"
   local expected_payload_sha256 expected_payload_bytes
-  if [ "$public_runtime_cache" = true ]; then
+  if [ "$public_runtime_cache" = true ] || [ "$restore_persisted_public_cache" = true ]; then
     mkdir -p "$fixture/runner-temp"
     runtime_cache="$fixture/runner-temp/secretless-runtime-cache-$run_id-$run_attempt"
   fi
@@ -330,6 +368,7 @@ run_install() {
     NPM_STUB_PUBLIC_DIGEST="${NPM_STUB_PUBLIC_DIGEST:-}" \
     NPM_STUB_PUBLIC_PACKAGE_NAME="${NPM_STUB_PUBLIC_PACKAGE_NAME:-}" \
     NPM_STUB_PUBLIC_SYMLINK="${NPM_STUB_PUBLIC_SYMLINK:-false}" \
+    NPM_STUB_REQUIRE_DIGEST="${NPM_STUB_REQUIRE_DIGEST:-}" \
     GITHUB_ENV="$fixture/github.env" NPM_CONFIG_USERCONFIG="$fixture/empty.npmrc" \
     NPM_CONFIG_CACHE="$runtime_cache" \
     NPM_CONFIG_GLOBALCONFIG="$fixture/empty-global.npmrc" \
@@ -341,6 +380,8 @@ run_install() {
     EXPECTED_PAYLOAD_SHA256="$expected_payload_sha256" \
     MAX_PUBLIC_RUNTIME_CACHE_BLOBS="${MAX_PUBLIC_RUNTIME_CACHE_BLOBS:-4096}" \
     MAX_PUBLIC_RUNTIME_CACHE_BYTES="${MAX_PUBLIC_RUNTIME_CACHE_BYTES:-268435456}" \
+    PERSISTED_PUBLIC_CACHE_DIR="$persisted_public_cache" \
+    RESTORE_PERSISTED_PUBLIC_CACHE="$restore_persisted_public_cache" \
     SECRETLESS_RUNTIME_PUBLIC_CACHE="$public_runtime_cache" RUNNER_TEMP="$fixture/runner-temp" \
     PACKAGE_MANAGER="$package_manager" \
     SECRETLESS_CACHE_DIR="$fixture/build-cache" TRANSFER_DIR="$fixture/transfer" \
@@ -427,6 +468,57 @@ rebind_lock_manifest() {
   lock_digest="$(sha256sum "$fixture/$lock_file" | cut -d' ' -f1)"
   sed -i "s/^lock_sha256=.*/lock_sha256=$lock_digest/" "$fixture/transfer/manifest"
 }
+
+prepare_persisted_public_fixture() {
+  local fixture="$1"
+  prepare_public_fixture "$fixture"
+  local cache="$fixture/persisted-public-cache"
+  local content="$cache/_cacache/content-v2/sha512/${public_digest:0:2}/${public_digest:2:2}/${public_digest:4}"
+  mkdir -p "$(dirname "$content")"
+  cp "$tmp/public-package.tgz" "$content"
+}
+
+prepare_persisted_public_fixture "$tmp/persisted-public"
+if NPM_STUB_REQUIRE_DIGEST="$public_digest" \
+    run_install "$tmp/persisted-public" 7001 3 '' '' '' false npm \
+      "$tmp/persisted-public/persisted-public-cache" true; then
+  pass "a lock-matched verified public blob is imported before credentialless npm install"
+else
+  fail "a valid persisted public blob was not reusable by the credentialless install"
+fi
+
+prepare_persisted_public_fixture "$tmp/corrupt-persisted-public"
+printf 'corrupt\n' >> "$tmp/corrupt-persisted-public/persisted-public-cache/_cacache/content-v2/sha512/${public_digest:0:2}/${public_digest:2:2}/${public_digest:4}"
+if corrupt_persisted_output="$(run_install "$tmp/corrupt-persisted-public" 7001 3 '' '' '' false npm \
+      "$tmp/corrupt-persisted-public/persisted-public-cache" true 2>&1)" \
+    || ! grep -qF 'PERSISTED_PUBLIC_CACHE_CORRUPT' <<< "$corrupt_persisted_output"; then
+  fail "a corrupt persisted public blob did not fail closed before npm"
+else
+  pass "a corrupt persisted public blob fails closed before npm"
+fi
+
+prepare_persisted_public_fixture "$tmp/private-persisted-public"
+private_persisted="$tmp/private-persisted-public/persisted-public-cache/_cacache/content-v2/sha512/${private_digest:0:2}/${private_digest:2:2}/${private_digest:4}"
+mkdir -p "$(dirname "$private_persisted")"
+cp "$tmp/private-package.tgz" "$private_persisted"
+if private_persisted_output="$(run_install "$tmp/private-persisted-public" 7001 3 '' '' '' false npm \
+      "$tmp/private-persisted-public/persisted-public-cache" true 2>&1)" \
+    || ! grep -qF 'PERSISTED_PUBLIC_CACHE_PRIVATE_COLLISION' <<< "$private_persisted_output"; then
+  fail "a private-package blob crossed the persistent public-cache boundary"
+else
+  pass "a private-package blob is rejected from the persistent public cache"
+fi
+
+prepare_persisted_public_fixture "$tmp/metadata-persisted-public"
+mkdir -p "$tmp/metadata-persisted-public/persisted-public-cache/_cacache/index-v5"
+printf 'metadata\n' > "$tmp/metadata-persisted-public/persisted-public-cache/_cacache/index-v5/entry"
+if metadata_persisted_output="$(run_install "$tmp/metadata-persisted-public" 7001 3 '' '' '' false npm \
+      "$tmp/metadata-persisted-public/persisted-public-cache" true 2>&1)" \
+    || ! grep -qF 'PERSISTED_PUBLIC_CACHE_UNEXPECTED_CONTENT' <<< "$metadata_persisted_output"; then
+  fail "npm request metadata crossed the persistent public-cache boundary"
+else
+  pass "npm request metadata is rejected from the persistent public cache"
+fi
 
 prepare_public_fixture "$tmp/public-runtime"
 public_runtime_content="$tmp/public-runtime/runner-temp/secretless-runtime-cache-7001-3/_cacache/content-v2/sha512/${public_digest:0:2}/${public_digest:2:2}/${public_digest:4}"
@@ -792,13 +884,24 @@ else
   pass "a mismatched auxiliary repository fails before npm"
 fi
 
-for mutation in attempt lock digest; do
+mkdir -p "$tmp/earlier-attempt"
+cp "$tmp/acquire/package-lock.json" "$tmp/earlier-attempt/package-lock.json"
+cp -R "$tmp/acquire/transfer" "$tmp/earlier-attempt/transfer"
+if run_install "$tmp/earlier-attempt" 7001 4 >/dev/null 2>&1 \
+    && [ -e "$tmp/earlier-attempt/npm.log" ]; then
+  pass "an immutable transfer from an earlier attempt remains consumable in the same run"
+else
+  fail "an earlier-attempt transfer could not be reused within its bound run"
+fi
+
+for mutation in run future-attempt lock digest; do
   fixture="$tmp/reject-$mutation"
   mkdir -p "$fixture"
   cp "$tmp/acquire/package-lock.json" "$fixture/package-lock.json"
   cp -R "$tmp/acquire/transfer" "$fixture/transfer"
   case "$mutation" in
-    attempt) run_id=7001; run_attempt=4 ;;
+    run) run_id=7002; run_attempt=3 ;;
+    future-attempt) run_id=7001; run_attempt=2 ;;
     lock) printf '\n' >> "$fixture/package-lock.json"; run_id=7001; run_attempt=3 ;;
     digest) printf 'tamper\n' >> "$fixture/transfer/npm-private-cache.tar"; run_id=7001; run_attempt=3 ;;
   esac
