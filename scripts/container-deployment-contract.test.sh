@@ -111,11 +111,35 @@ grep -q 'if: inputs.dry-run' "$workflow"
 grep -q 'if: \${{ !inputs.dry-run }}' "$workflow"
 grep -q 'cancel-in-progress: false' "$workflow"
 grep -q 'container_deployment_preflight.py' "$workflow"
-test "$(jq -r '.packages["node_modules/@verjson/cli-cloud"].version' \
-  "$root/contracts/container-deployment-cli/package-lock.json")" = '0.29.0'
-test "$(jq -r '.packages["node_modules/@verjson/cli-cloud"].integrity' \
-  "$root/contracts/container-deployment-cli/package-lock.json")" = \
-  'sha512-hS4jMPzfYHNYDmNP7yDrnvTg8Z6W/NY4CDOZXZvadtDaFALkRtPceWVaI1ggG1lrlDcDpaWQJRUfqrV9vjI82g=='
+assert_cli_cloud_lock_matches_manifest() {
+  local manifest="$1" lock="$2" cli_cloud_version
+  cli_cloud_version="$(jq -er '.dependencies["@verjson/cli-cloud"]' "$manifest")" || return 1
+  [[ "$cli_cloud_version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || return 1
+  test "$(jq -er '.packages[""].dependencies["@verjson/cli-cloud"]' "$lock")" = \
+    "$cli_cloud_version" || return 1
+  test "$(jq -er '.packages["node_modules/@verjson/cli-cloud"].version' "$lock")" = \
+    "$cli_cloud_version" || return 1
+}
+
+cli_manifest="$root/contracts/container-deployment-cli/package.json"
+cli_lock="$root/contracts/container-deployment-cli/package-lock.json"
+assert_cli_cloud_lock_matches_manifest "$cli_manifest" "$cli_lock"
+
+for mutation in root-pin package-version; do
+  mutated_lock="$tmp/cli-cloud-$mutation-lock.json"
+  case "$mutation" in
+    root-pin)
+      jq '.packages[""].dependencies["@verjson/cli-cloud"] = "9.9.9"' \
+        "$cli_lock" > "$mutated_lock" ;;
+    package-version)
+      jq '.packages["node_modules/@verjson/cli-cloud"].version = "9.9.9"' \
+        "$cli_lock" > "$mutated_lock" ;;
+  esac
+  if assert_cli_cloud_lock_matches_manifest "$cli_manifest" "$mutated_lock"; then
+    echo "container deployment contract accepted cli-cloud $mutation drift" >&2
+    exit 1
+  fi
+done
 python3 "$root/scripts/validate-container-deployment-cli-lock.py" \
   "$root/contracts/container-deployment-cli/package-lock.json"
 python3 - "$root/contracts/container-deployment-cli/package-lock.json" "$tmp" <<'PY'
