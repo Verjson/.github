@@ -3,11 +3,20 @@ set -uo pipefail
 
 root="$(cd "$(dirname "$0")/../.." && pwd)"
 workflow="$root/.github/workflows/node-ci.yml"
+protected_workflow="$root/.github/workflows/node-ci-protected.yml"
+documentation="$root/docs/node-workflows.md"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 failures=0
 pass() { printf 'ok - %s\n' "$1"; }
 fail() { printf 'not ok - %s\n' "$1" >&2; failures=$((failures + 1)); }
+
+if grep -qF 'Each top-level checkout entry other than `node_modules` is a bind mountpoint' "$documentation" \
+    && grep -qF 'Linux reports that operation as `EBUSY`' "$documentation"; then
+  pass "adopter guidance explains the top-level bind mountpoint EBUSY constraint"
+else
+  fail "adopter guidance omits the top-level bind mountpoint EBUSY constraint"
+fi
 emit_failure_diagnostic() {
   local label="$1" status="$2" stderr_path="$3"
   python3 - "$label" "$status" "$stderr_path" <<'PY' >&2
@@ -109,8 +118,9 @@ else
   fail "positive-failure diagnostics expose unknown stderr or lose exact cause categories"
 fi
 
-python3 - "$workflow" "$tmp" <<'PY'
+python3 - "$workflow" "$tmp" "$protected_workflow" <<'PY'
 import sys
+import os
 from pathlib import Path
 import yaml
 doc = yaml.safe_load(Path(sys.argv[1]).read_text(encoding="utf-8"))
@@ -130,6 +140,19 @@ for name, filename in {
 assert jobs["acquire-secretless-dependencies"]["permissions"] == {"contents": "read", "packages": "read"}
 assert jobs["build-test"]["permissions"] == {"contents": "read"}
 runner = steps["Run runtime-resolved compatibility lanes without credentials"]
+protected_doc = yaml.safe_load(Path(sys.argv[3]).read_text(encoding="utf-8"))
+protected_steps = {
+    step.get("name"): step
+    for job in protected_doc["jobs"].values()
+    for step in job.get("steps", [])
+    if step.get("name")
+}
+protected_runner = protected_steps[
+    "Run runtime-resolved compatibility lanes without credentials"
+]
+Path(sys.argv[2], "protected-run-lanes.sh").write_text(
+    protected_runner["run"], encoding="utf-8"
+)
 for name in ("GH_TOKEN", "GITHUB_TOKEN", "NODE_AUTH_TOKEN", "NPM_TOKEN",
              "ACTIONS_ID_TOKEN_REQUEST_TOKEN", "ACTIONS_ID_TOKEN_REQUEST_URL"):
     assert runner["env"][name] == ""
@@ -138,6 +161,21 @@ assert 'subprocess.run(["npm", "install"' not in runner["run"]
 assert "artifact.read_bytes" not in runner["run"]
 assert "os.fstat(descriptor)" in runner["run"] and "io.BytesIO(content)" in runner["run"]
 assert "extractall" not in runner["run"]
+for current_runner in (runner, protected_runner):
+    if os.environ.get("VERJSON_CACHE_MUTATION_CHILD") != "true":
+        assert '"--dir", "/dev/shm/npm-cache"' in current_runner["run"]
+        assert '"NPM_CONFIG_CACHE": "/dev/shm/npm-cache"' in current_runner["run"]
+        assert '"npm_config_cache": "/dev/shm/npm-cache"' in current_runner["run"]
+    assert "del output_tail[:-16384]" in current_runner["run"]
+    assert "subprocess.CalledProcessError(" in current_runner["run"]
+    assert "command={failure.cmd!r}" in current_runner["run"]
+    assert "exit={failure.returncode}" in current_runner["run"]
+    if os.environ.get("VERJSON_AMBIENT_MASK_MUTATION_CHILD") != "true":
+        assert "ambient_masks = {" in current_runner["run"]
+        assert 'arguments.extend(("--tmpfs", str(candidate_path)))' in current_runner["run"]
+        assert 'arguments.extend(("--ro-bind", "/dev/null", str(candidate_path)))' in current_runner["run"]
+        if os.environ.get("VERJSON_SYMLINK_GUARD_MUTATION_CHILD") != "true":
+            assert "compatibility workspace top-level symlink escapes workspace" in current_runner["run"]
 PY
 [ "$?" -eq 0 ] && pass "compatibility lanes retain the canonical two-job credential boundary" \
   || fail "compatibility lanes do not retain the canonical two-job credential boundary"
@@ -490,7 +528,7 @@ cp "$tmp/e2e/build/artifacts/"* "$tmp/e2e/consumer/artifacts/"
 printf '%s\n' '{"name":"@verjson/identity-contracts","version":"0.1.0"}' \
   > "$tmp/e2e/consumer/node_modules/@verjson/identity-contracts/package.json"
 printf '%s\n' '{"name":"consumer","version":"1.0.0","scripts":{"test:compat":"node test-compat.js"}}' > "$tmp/e2e/consumer/package.json"
-printf '%s\n' "const fs=require('node:fs');const v=require('./node_modules/@verjson/identity-contracts/package.json').version;fs.writeFileSync('compat-results/observed-version',v);if(process.env.REJECT_COMPATIBILITY==='true')process.exit(42);" > "$tmp/e2e/consumer/test-compat.js"
+printf '%s\n' "const fs=require('node:fs');const v=require('./node_modules/@verjson/identity-contracts/package.json').version;fs.writeFileSync('compat-results/observed-version',v);if(process.env.REJECT_COMPATIBILITY==='true'){console.error('bounded-consumer-failure');process.exit(42);}" > "$tmp/e2e/consumer/test-compat.js"
 consumer_stderr="$tmp/e2e/consumer/run.stderr"
 if (cd "$tmp/e2e/consumer" && COMPATIBILITY_ARTIFACT_DIR="$tmp/e2e/consumer/artifacts" COMPATIBILITY_RANGES="$request" EXPECTED_COMPATIBILITY_PROVENANCE_SHA256="$provenance_sha" REJECT_COMPATIBILITY=false bash "$tmp/run-lanes.sh") >"$tmp/e2e/consumer/run.stdout" 2>"$consumer_stderr"; then
   consumer_status=0
@@ -504,16 +542,34 @@ else
   fail "the resolved artifact did not reach the declared consumer test"
   emit_failure_diagnostic "resolved compatibility consumer" "$consumer_status" "$consumer_stderr"
 fi
-(cd "$tmp/e2e/consumer" && COMPATIBILITY_ARTIFACT_DIR="$tmp/e2e/consumer/artifacts" COMPATIBILITY_RANGES="$request" EXPECTED_COMPATIBILITY_PROVENANCE_SHA256="$provenance_sha" REJECT_COMPATIBILITY=true bash "$tmp/run-lanes.sh") >/dev/null 2>&1 \
-  && fail "an in-range incompatible artifact did not fail consumer tests" || pass "an in-range incompatible artifact fails at the consumer test layer"
+if (cd "$tmp/e2e/consumer" && COMPATIBILITY_ARTIFACT_DIR="$tmp/e2e/consumer/artifacts" COMPATIBILITY_RANGES="$request" EXPECTED_COMPATIBILITY_PROVENANCE_SHA256="$provenance_sha" REJECT_COMPATIBILITY=true bash "$tmp/run-lanes.sh") >"$tmp/e2e/rejected.log" 2>&1; then
+  fail "an in-range incompatible artifact did not fail consumer tests"
+elif grep -qF "command=['npm', 'run', 'test:compat'] exit=42" "$tmp/e2e/rejected.log" \
+    && grep -qF "bounded-consumer-failure" "$tmp/e2e/rejected.log" \
+    && [ "$(wc -c < "$tmp/e2e/rejected.log")" -lt 18000 ]; then
+  pass "consumer failure reports command, exit status, and bounded output"
+else
+  fail "consumer failure omitted its bounded command context"
+fi
 if (cd "$tmp/e2e/consumer" && COMPATIBILITY_ARTIFACT_DIR="$tmp/e2e/consumer/artifacts" COMPATIBILITY_RANGES="$request" EXPECTED_COMPATIBILITY_PROVENANCE_SHA256="$provenance_sha" NODE_AUTH_TOKEN=leaked bash "$tmp/run-lanes.sh") >"$tmp/e2e/token.log" 2>&1; then fail "a package credential reached compatibility consumer execution"; elif grep -qF 'credential reached compatibility consumer execution' "$tmp/e2e/token.log"; then pass "consumer execution fails closed on a credential leak"; else fail "token-leak mutation failed for the wrong reason"; fi
 
 real_npm="$(command -v npm)"
 mkdir -p "$tmp/archive-cases/bin"
+ambient_root="$tmp/archive-cases/ambient"
+mkdir -p "$ambient_root/uppercase-cache" "$ambient_root/lowercase-cache" \
+  "$ambient_root/unlisted-cache" \
+  "$ambient_root/home/.npm"
+printf '%s\n' ambient-uppercase-secret > "$ambient_root/uppercase-cache/secret"
+printf '%s\n' ambient-lowercase-secret > "$ambient_root/lowercase-cache/secret"
+printf '%s\n' ambient-default-cache-secret > "$ambient_root/home/.npm/secret"
+printf '%s\n' ambient-unlisted-secret > "$ambient_root/unlisted-cache/secret"
+printf '%s\n' '//registry.example/:_authToken=ambient-home-token' > "$ambient_root/home/.npmrc"
+printf '%s\n' '//registry.example/:_authToken=ambient-global-token' > "$ambient_root/global.npmrc"
+printf '%s\n' '//registry.example/:_authToken=ambient-user-token' > "$ambient_root/user.npmrc"
 cat > "$tmp/archive-cases/bin/npm" <<'SH'
 #!/usr/bin/env bash
 set -eu
-if [ "${1:-}" = run ]; then
+if [ "${1:-}" = run ] || [ "${1:-}" = pack ]; then
   exec "$REAL_NPM" "$@"
 fi
 printf 'unexpected graph resolution: %s\n' "$*" > "$NPM_GRAPH_RESOLUTION_MARKER"
@@ -540,12 +596,35 @@ prepare_archive_case() {
   printf '%s\n' \
     '{"name":"consumer","version":"1.0.0","dependencies":{"cold-cache-public":"^1.0.0"},"scripts":{"test:compat":"node test-compat.cjs"}}' \
     > "$fixture/package.json"
+  mkdir -p "$fixture/.cjs-build"
   cat > "$fixture/test-compat.cjs" <<'JS'
 const assert = require('node:assert/strict');
+const childProcess = require('node:child_process');
 const fs = require('node:fs');
 
 assert.equal(require('./node_modules/@verjson/identity-contracts/package.json').version, '0.2.2');
 assert.equal(require('cold-cache-public'), 'cold-cache-public-1.4.0');
+assert.equal(process.env.NPM_CONFIG_CACHE, '/dev/shm/npm-cache');
+assert.equal(process.env.npm_config_cache, '/dev/shm/npm-cache');
+fs.mkdirSync(`${process.env.npm_config_cache}/consumer`, {recursive: true});
+fs.writeFileSync(`${process.env.npm_config_cache}/consumer/write-proof`, 'writable');
+childProcess.execFileSync('npm', ['pack', '--silent', '--dry-run'], {stdio: 'pipe'});
+for (const path of process.env.AMBIENT_DIRECTORY_PROBES.split(':')) {
+  assert.throws(() => fs.readFileSync(`${path}/secret`, 'utf8'));
+}
+for (const path of process.env.AMBIENT_FILE_PROBES.split(':')) {
+  try {
+    assert.equal(fs.readFileSync(path, 'utf8'), '');
+  } catch (error) {
+    assert.ok(error && ['EACCES', 'ENOENT'].includes(error.code));
+  }
+}
+if (fs.existsSync('ambient-cache-link')) {
+  assert.throws(() => fs.readFileSync('ambient-cache-link/secret', 'utf8'));
+}
+const mountRemoval = childProcess.spawnSync('rmdir', ['.cjs-build'], {encoding: 'utf8'});
+assert.notEqual(mountRemoval.status, 0);
+assert.match(mountRemoval.stderr, /busy/i);
 fs.writeFileSync('compat-results/consumer-ran', 'yes');
 JS
   python3 - "$fixture" "$mutation" "$request" <<'PY'
@@ -666,23 +745,38 @@ lock = {
 }
 (fixture / "package-lock.json").write_text(json.dumps(lock) + "\n")
 PY
+  case "$mutation" in
+    relative-workspace-link)
+      ln -s ../ambient/unlisted-cache "$fixture/ambient-cache-link"
+      ;;
+    absolute-workspace-link)
+      ln -s "$ambient_root/unlisted-cache" "$fixture/ambient-cache-link"
+      ;;
+  esac
 }
 
 run_archive_case() {
   local mutation="$1"
   local fixture="$tmp/archive-cases/$mutation"
+  local runner="${2:-$tmp/run-lanes.sh}"
   prepare_archive_case "$mutation"
   (
     cd "$fixture"
     PATH="$tmp/archive-cases/bin:$PATH" \
     REAL_NPM="$real_npm" \
     NPM_GRAPH_RESOLUTION_MARKER="$fixture/npm-graph-resolution" \
-    npm_config_cache="$fixture/cold-cache" \
+    HOME="$ambient_root/home" \
+    NPM_CONFIG_CACHE="$ambient_root/uppercase-cache" \
+    npm_config_cache="$ambient_root/lowercase-cache" \
+    NPM_CONFIG_GLOBALCONFIG="$ambient_root/global.npmrc" \
+    NPM_CONFIG_USERCONFIG="$ambient_root/user.npmrc" \
+    AMBIENT_DIRECTORY_PROBES="$ambient_root/uppercase-cache:$ambient_root/lowercase-cache:$ambient_root/home/.npm" \
+    AMBIENT_FILE_PROBES="$ambient_root/global.npmrc:$ambient_root/user.npmrc:$ambient_root/home/.npmrc" \
     npm_config_offline=true \
     COMPATIBILITY_ARTIFACT_DIR="$fixture/artifacts" \
     COMPATIBILITY_RANGES="$request" \
     EXPECTED_COMPATIBILITY_PROVENANCE_SHA256="$(<"$fixture/provenance.sha256")" \
-    bash "$tmp/run-lanes.sh"
+    bash "$runner"
   ) >"$fixture/run.stdout" 2>"$fixture/run.stderr"
 }
 
@@ -705,6 +799,26 @@ else
     "$tmp/archive-cases/good/run.stderr"
 fi
 
+if run_archive_case protected-good "$tmp/protected-run-lanes.sh" \
+  && [ -f "$tmp/archive-cases/protected-good/compat-results/consumer-ran" ]; then
+  pass "protected compatibility workflow masks ambient npm cache and config paths"
+else
+  fail "protected compatibility workflow exposed an ambient npm cache or config path"
+fi
+
+for link_kind in relative absolute; do
+  fixture="$tmp/archive-cases/${link_kind}-workspace-link"
+  if run_archive_case "${link_kind}-workspace-link"; then
+    fail "$link_kind top-level workspace symlink reached consumer execution"
+  elif [ -e "$fixture/compat-results/consumer-ran" ]; then
+    fail "$link_kind top-level workspace symlink ran consumer code before rejection"
+  elif grep -qF "compatibility workspace top-level symlink" "$fixture/run.stderr"; then
+    pass "$link_kind top-level workspace symlink cannot reach ambient npm data"
+  else
+    fail "$link_kind top-level workspace symlink failed without confinement reason"
+  fi
+done
+
 for mutation in traversal absolute multi-root symlink hardlink special pax oversize count duplicate wrong-name wrong-version; do
   if run_archive_case "$mutation"; then
     fail "$mutation compatibility archive reached consumer execution"
@@ -724,8 +838,11 @@ done
 
 if [ "${VERJSON_DIAGNOSTIC_MUTATION_CHILD:-false}" != true ]; then
   mutation_root="$tmp/missing-bwrap-mutation"
-  mkdir -p "$mutation_root/.github/workflows" "$mutation_root/scripts/ci-gate"
+  mkdir -p "$mutation_root/.github/workflows" "$mutation_root/scripts/ci-gate" \
+    "$mutation_root/docs"
   cp "$0" "$mutation_root/scripts/ci-gate/node-ci-secretless-compatibility.test.sh"
+  cp "$protected_workflow" "$mutation_root/.github/workflows/node-ci-protected.yml"
+  cp "$documentation" "$mutation_root/docs/node-workflows.md"
   python3 - "$workflow" "$mutation_root/.github/workflows/node-ci.yml" <<'PY'
 import sys
 from pathlib import Path
@@ -745,7 +862,7 @@ PY
   else
     mutation_status=$?
   fi
-  if [ "$mutation_status" -eq 2 ] \
+  if [ "$mutation_status" -eq 5 ] \
     && grep -qFx 'diagnostic - resolved compatibility consumer return-code=1 stderr-category=bubblewrap-unavailable' "$mutation_root/run.log" \
     && grep -qFx 'diagnostic - cold-cache compatibility consumer return-code=1 stderr-category=bubblewrap-unavailable' "$mutation_root/run.log" \
     && ! grep -qF 'trusted bubblewrap compatibility sandbox is unavailable' "$mutation_root/run.log" \
@@ -753,6 +870,106 @@ PY
     pass "missing-bwrap mutation reports both positive failures with exact allowlisted categories"
   else
     fail "missing-bwrap mutation did not preserve exact allowlisted positive-failure categories"
+  fi
+
+  cache_mutation_root="$tmp/ambient-cache-mutation"
+  mkdir -p "$cache_mutation_root/.github/workflows" "$cache_mutation_root/scripts/ci-gate" \
+    "$cache_mutation_root/docs"
+  cp "$0" "$cache_mutation_root/scripts/ci-gate/node-ci-secretless-compatibility.test.sh"
+  cp "$protected_workflow" "$cache_mutation_root/.github/workflows/node-ci-protected.yml"
+  cp "$documentation" "$cache_mutation_root/docs/node-workflows.md"
+  python3 - "$workflow" "$cache_mutation_root/.github/workflows/node-ci.yml" <<'PY'
+import sys
+from pathlib import Path
+
+source = Path(sys.argv[1]).read_text(encoding="utf-8")
+for needle in (
+    '                  "--dir", "/dev/shm/npm-cache",\n',
+    '                      "NPM_CONFIG_CACHE": "/dev/shm/npm-cache",\n',
+    '                      "npm_config_cache": "/dev/shm/npm-cache",\n',
+):
+    assert source.count(needle) == 1
+    source = source.replace(needle, "")
+Path(sys.argv[2]).write_text(source, encoding="utf-8")
+PY
+  if VERJSON_DIAGNOSTIC_MUTATION_CHILD=true VERJSON_CACHE_MUTATION_CHILD=true \
+    bash "$cache_mutation_root/scripts/ci-gate/node-ci-secretless-compatibility.test.sh" \
+    >"$cache_mutation_root/run.log" 2>&1; then
+    cache_mutation_status=0
+  else
+    cache_mutation_status=$?
+  fi
+  if [ "$cache_mutation_status" -eq 1 ] \
+    && grep -qFx 'not ok - cold-cache caret consumer did not preserve its installed dependency graph' "$cache_mutation_root/run.log" \
+    && grep -qFx 'diagnostic - cold-cache compatibility consumer return-code=1 stderr-category=stderr-suppressed' "$cache_mutation_root/run.log"; then
+    pass "ambient read-only npm cache mutation reproduces the silent npm failure"
+  else
+    fail "ambient read-only npm cache mutation did not reproduce the silent npm failure"
+  fi
+
+  mask_mutation_root="$tmp/ambient-mask-mutation"
+  mkdir -p "$mask_mutation_root/.github/workflows" "$mask_mutation_root/scripts/ci-gate" \
+    "$mask_mutation_root/docs"
+  cp "$0" "$mask_mutation_root/scripts/ci-gate/node-ci-secretless-compatibility.test.sh"
+  cp "$protected_workflow" "$mask_mutation_root/.github/workflows/node-ci-protected.yml"
+  cp "$documentation" "$mask_mutation_root/docs/node-workflows.md"
+  python3 - "$workflow" "$mask_mutation_root/.github/workflows/node-ci.yml" <<'PY'
+import sys
+from pathlib import Path
+
+source = Path(sys.argv[1]).read_text(encoding="utf-8")
+start = source.index("              ambient_masks = {\n")
+end = source.index(
+    "              for entry in sorted(workspace.iterdir(), key=lambda path: path.name):\n",
+    start,
+)
+Path(sys.argv[2]).write_text(source[:start] + source[end:], encoding="utf-8")
+PY
+  if VERJSON_DIAGNOSTIC_MUTATION_CHILD=true \
+    VERJSON_AMBIENT_MASK_MUTATION_CHILD=true \
+    bash "$mask_mutation_root/scripts/ci-gate/node-ci-secretless-compatibility.test.sh" \
+    >"$mask_mutation_root/run.log" 2>&1; then
+    mask_mutation_status=0
+  else
+    mask_mutation_status=$?
+  fi
+  if [ "$mask_mutation_status" -eq 1 ] \
+    && grep -qFx 'not ok - cold-cache caret consumer did not preserve its installed dependency graph' "$mask_mutation_root/run.log" \
+    && grep -qFx 'diagnostic - cold-cache compatibility consumer return-code=1 stderr-category=stderr-suppressed' "$mask_mutation_root/run.log"; then
+    pass "removing ambient npm masks exposes the real absolute-path escape probe"
+  else
+    fail "ambient npm mask mutation did not expose the absolute-path escape probe"
+  fi
+
+  symlink_mutation_root="$tmp/workspace-symlink-mutation"
+  mkdir -p "$symlink_mutation_root/.github/workflows" \
+    "$symlink_mutation_root/scripts/ci-gate" "$symlink_mutation_root/docs"
+  cp "$0" "$symlink_mutation_root/scripts/ci-gate/node-ci-secretless-compatibility.test.sh"
+  cp "$protected_workflow" "$symlink_mutation_root/.github/workflows/node-ci-protected.yml"
+  cp "$documentation" "$symlink_mutation_root/docs/node-workflows.md"
+  python3 - "$workflow" "$symlink_mutation_root/.github/workflows/node-ci.yml" <<'PY'
+import sys
+from pathlib import Path
+
+source = Path(sys.argv[1]).read_text(encoding="utf-8")
+start = source.index("                  if entry.is_symlink():\n")
+end = source.index("                  add_sandbox_binding(\n", start)
+Path(sys.argv[2]).write_text(source[:start] + source[end:], encoding="utf-8")
+PY
+  if VERJSON_DIAGNOSTIC_MUTATION_CHILD=true \
+    VERJSON_SYMLINK_GUARD_MUTATION_CHILD=true \
+    bash "$symlink_mutation_root/scripts/ci-gate/node-ci-secretless-compatibility.test.sh" \
+    >"$symlink_mutation_root/run.log" 2>&1; then
+    symlink_mutation_status=0
+  else
+    symlink_mutation_status=$?
+  fi
+  if [ "$symlink_mutation_status" -eq 2 ] \
+    && grep -qFx 'not ok - relative top-level workspace symlink reached consumer execution' "$symlink_mutation_root/run.log" \
+    && grep -qFx 'not ok - absolute top-level workspace symlink failed without confinement reason' "$symlink_mutation_root/run.log"; then
+    pass "removing workspace symlink confinement admits a link and exposes the absolute escape probe"
+  else
+    fail "workspace symlink confinement mutation did not expose its link escape probes"
   fi
 fi
 
