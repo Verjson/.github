@@ -6178,6 +6178,8 @@ jobs:
                   "--dev", "/dev",
                   "--proc", "/proc",
                   "--tmpfs", "/dev/shm",
+                  "--ro-bind", "/dev/null", "/dev/shm/npm-globalconfig",
+                  "--ro-bind", "/dev/null", "/dev/shm/npm-userconfig",
                   "--dir", "/dev/shm/tmp",
                   "--dir", "/dev/shm/npm-cache",
                   "--dir", sandbox_workspace,
@@ -6189,6 +6191,8 @@ jobs:
                   script_environment.get("NPM_CONFIG_GLOBALCONFIG", ""),
                   script_environment.get("NPM_CONFIG_USERCONFIG", ""),
                   script_environment.get("npm_config_cache", ""),
+                  script_environment.get("npm_config_globalconfig", ""),
+                  script_environment.get("npm_config_userconfig", ""),
               }
               ambient_home = Path(script_environment.get("HOME", ""))
               if ambient_home.is_absolute():
@@ -6324,11 +6328,15 @@ jobs:
                       "GITHUB_WORKSPACE": sandbox_workspace,
                       "HOME": "/dev/shm/home",
                       "NPM_CONFIG_CACHE": "/dev/shm/npm-cache",
+                      "NPM_CONFIG_GLOBALCONFIG": "/dev/shm/npm-globalconfig",
+                      "NPM_CONFIG_USERCONFIG": "/dev/shm/npm-userconfig",
                       "RUNNER_TEMP": "/dev/shm/tmp",
                       "TEMP": "/dev/shm/tmp",
                       "TMP": "/dev/shm/tmp",
                       "TMPDIR": "/dev/shm/tmp",
                       "npm_config_cache": "/dev/shm/npm-cache",
+                      "npm_config_globalconfig": "/dev/shm/npm-globalconfig",
+                      "npm_config_userconfig": "/dev/shm/npm-userconfig",
                   })
                   output_read, output_write = os.pipe()
                   try:

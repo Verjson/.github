@@ -444,11 +444,12 @@ Two properties to respect:
 ## Compatibility sandbox filesystem contract
 
 Compatibility scripts run inside a credentialless bubblewrap namespace. Both npm cache
-variables point to a writable, sandbox-created cache. Existing paths named by the ambient
-npm cache and config variables, the ambient home `.npm` and `.npmrc`, and the standard
-system npmrc locations are overlaid with empty mounts inside the namespace. Consumer code
-therefore cannot read or reuse those host cache and configuration contents by absolute
-path.
+variables point to a writable, sandbox-created cache. Uppercase and lowercase npm user and
+global config variables are redirected to sandbox-owned empty npmrc paths. Existing paths
+named by every ambient cache and config case variant, the ambient home `.npm` and `.npmrc`,
+and the standard system npmrc locations are overlaid with empty mounts inside the
+namespace. Consumer code therefore cannot read or reuse those host cache and configuration
+contents by absolute path.
 
 Each top-level checkout entry other than `node_modules` is a bind mountpoint inside the
 sandbox. A build may freely change an entry's contents, but it must not remove or replace

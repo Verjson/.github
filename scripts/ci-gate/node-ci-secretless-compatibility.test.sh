@@ -165,7 +165,11 @@ for current_runner in (runner, protected_runner):
     if os.environ.get("VERJSON_CACHE_MUTATION_CHILD") != "true":
         assert '"--dir", "/dev/shm/npm-cache"' in current_runner["run"]
         assert '"NPM_CONFIG_CACHE": "/dev/shm/npm-cache"' in current_runner["run"]
+        assert '"NPM_CONFIG_GLOBALCONFIG": "/dev/shm/npm-globalconfig"' in current_runner["run"]
+        assert '"NPM_CONFIG_USERCONFIG": "/dev/shm/npm-userconfig"' in current_runner["run"]
         assert '"npm_config_cache": "/dev/shm/npm-cache"' in current_runner["run"]
+        assert '"npm_config_globalconfig": "/dev/shm/npm-globalconfig"' in current_runner["run"]
+        assert '"npm_config_userconfig": "/dev/shm/npm-userconfig"' in current_runner["run"]
     assert "del output_tail[:-16384]" in current_runner["run"]
     assert "subprocess.CalledProcessError(" in current_runner["run"]
     assert "command={failure.cmd!r}" in current_runner["run"]
@@ -566,6 +570,8 @@ printf '%s\n' ambient-unlisted-secret > "$ambient_root/unlisted-cache/secret"
 printf '%s\n' '//registry.example/:_authToken=ambient-home-token' > "$ambient_root/home/.npmrc"
 printf '%s\n' '//registry.example/:_authToken=ambient-global-token' > "$ambient_root/global.npmrc"
 printf '%s\n' '//registry.example/:_authToken=ambient-user-token' > "$ambient_root/user.npmrc"
+printf '%s\n' '//registry.example/:_authToken=ambient-lower-global-token' > "$ambient_root/lower-global.npmrc"
+printf '%s\n' '//registry.example/:_authToken=ambient-lower-user-token' > "$ambient_root/lower-user.npmrc"
 cat > "$tmp/archive-cases/bin/npm" <<'SH'
 #!/usr/bin/env bash
 set -eu
@@ -606,6 +612,10 @@ assert.equal(require('./node_modules/@verjson/identity-contracts/package.json').
 assert.equal(require('cold-cache-public'), 'cold-cache-public-1.4.0');
 assert.equal(process.env.NPM_CONFIG_CACHE, '/dev/shm/npm-cache');
 assert.equal(process.env.npm_config_cache, '/dev/shm/npm-cache');
+assert.equal(process.env.NPM_CONFIG_GLOBALCONFIG, '/dev/shm/npm-globalconfig');
+assert.equal(process.env.NPM_CONFIG_USERCONFIG, '/dev/shm/npm-userconfig');
+assert.equal(process.env.npm_config_globalconfig, '/dev/shm/npm-globalconfig');
+assert.equal(process.env.npm_config_userconfig, '/dev/shm/npm-userconfig');
 fs.mkdirSync(`${process.env.npm_config_cache}/consumer`, {recursive: true});
 fs.writeFileSync(`${process.env.npm_config_cache}/consumer/write-proof`, 'writable');
 childProcess.execFileSync('npm', ['pack', '--silent', '--dry-run'], {stdio: 'pipe'});
@@ -770,8 +780,10 @@ run_archive_case() {
     npm_config_cache="$ambient_root/lowercase-cache" \
     NPM_CONFIG_GLOBALCONFIG="$ambient_root/global.npmrc" \
     NPM_CONFIG_USERCONFIG="$ambient_root/user.npmrc" \
+    npm_config_globalconfig="$ambient_root/lower-global.npmrc" \
+    npm_config_userconfig="$ambient_root/lower-user.npmrc" \
     AMBIENT_DIRECTORY_PROBES="$ambient_root/uppercase-cache:$ambient_root/lowercase-cache:$ambient_root/home/.npm" \
-    AMBIENT_FILE_PROBES="$ambient_root/global.npmrc:$ambient_root/user.npmrc:$ambient_root/home/.npmrc" \
+    AMBIENT_FILE_PROBES="$ambient_root/global.npmrc:$ambient_root/user.npmrc:$ambient_root/lower-global.npmrc:$ambient_root/lower-user.npmrc:$ambient_root/home/.npmrc" \
     npm_config_offline=true \
     COMPATIBILITY_ARTIFACT_DIR="$fixture/artifacts" \
     COMPATIBILITY_RANGES="$request" \
