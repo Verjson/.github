@@ -37,11 +37,29 @@ jobs:
 
 `cache-dependency-path` may also be a glob understood by `hashFiles` and
 `actions/setup-node`. If it matches no lockfile, caching is skipped and the job
-continues normally. Registry authentication is independent of the job token and
-caching: callers that install private `@verjson` packages pass
+continues normally. In secretless npm mode, `cache: true` instead uses that hash
+for an exact-key cross-run cache containing only SHA-512-verified
+`registry.npmjs.org` content blobs selected by the current lockfile. The workflow
+rejects metadata, symlinks, unexpected paths, corrupt content, internal package
+identities, and private/public digest collisions before npm runs. Credentialed
+acquisition state, private blobs, npm configuration, and credentials never enter
+the persistent cache. Secretless pnpm keeps its existing uncached behavior.
+Registry authentication is independent of the job token and caching: callers
+that install private `@verjson` packages pass
 `NODE_AUTH_TOKEN`. Every caller also grants `packages: read` because the reusable
 acquisition job requests it, although the build job itself requests no package
 permission.
+
+Playwright consumers may additionally set `browser-cache: true`. It is default-off
+and active only in the credentialless secretless build job. The workflow creates
+a fresh mode-`0700` directory below `runner.temp`, exports it as
+`PLAYWRIGHT_BROWSERS_PATH`, and caches it under an exact
+OS/architecture/lockfile key with no prefix restore. Restored and newly populated
+trees reject symlinks and special entries and are capped at 10,000 files and 1
+GiB; the directory is always scrubbed. The runner account's global home cache is
+never read or saved. It never includes npm state or runs in credentialed
+acquisition. System packages installed by `playwright install --with-deps` remain
+outside this cache.
 
 For validation of repositories with approved private dependencies, the
 `secretless-pr` and `secretless-trusted-ref` modes split acquisition from
@@ -90,16 +108,19 @@ transfer. Its four input fields must exactly match protected repository variable
 `CI_SECRETLESS_AUXILIARY_POLICY`, so a PR cannot redirect the acquisition
 token to another repository or path. It transfers npm's verified content-addressed download
 cache, never `node_modules`, under an 80 MiB payload cap. Acquisition saves the
-two-file envelope under an exact run-attempt Actions cache key with no restore
-prefix. The build job requires that exact cache hit and verifies the exact run,
+two-file envelope under an unguessable run-bound Actions cache key with no restore
+prefix. A failed-job rerun may reuse an immutable envelope produced by an earlier
+attempt of that same workflow run; a future attempt or another run is rejected.
+The build job requires that exact cache hit and verifies the run, producer
 attempt, package-lock digest, auxiliary repository/commit/path identity, payload
 digest, and size before running
 `npm ci --prefer-offline --ignore-scripts` with package, Git, cloud, and OIDC credential
 paths empty. Job-local `always()` cleanup removes acquisition and restored state
 on success, failure, and cancellation. No Actions artifact is created. Secretless
-mode ignores the caller's `cache: true`; its handoff cache has one exact-attempt
-key and no cross-run restore, and consumer npm commands use a job-scoped runtime
-cache that is removed at teardown:
+mode never passes `cache: true` to `setup-node`; its private handoff remains one
+unguessable run-bound key with no prefix restore. When explicitly enabled, the
+separate cross-run cache contains only the verified public blobs described above.
+Consumer npm commands still use a job-scoped runtime cache removed at teardown:
 
 ```yaml
 jobs:
@@ -111,6 +132,8 @@ jobs:
     uses: Verjson/.github/.github/workflows/node-ci.yml@<immutable-sha>
     with:
       secretless-pr: true
+      cache: true
+      browser-cache: true
       approved-internal-packages: |
         @verjson/identity-contracts
         @verjson/tsconfig
@@ -231,13 +254,15 @@ and `--ignore-scripts`. Pass the same value to every job that invokes the
 reusable workflow, exactly as with `approved-internal-packages`.
 
 The handoff uses the repository cache service rather than organization artifact
-storage. Acquisition generates an unguessable nonce and binds it with
-`github.run_id` and `github.run_attempt`; restore uses the internally passed key
+storage. Acquisition generates an unguessable nonce and binds it to
+`github.run_id` and its producer `github.run_attempt`; restore uses the internally
+passed key
 with no prefix and fails on a missing exact match. Save and restore use the same
 stable relative workspace path, so cache version identity does not depend on a
-runner's work root. Use **Re-run all jobs** for a new
-attempt. Re-running only a failed build job cannot create its missing acquisition
-cache and fails closed by design.
+runner's work root. **Re-run failed jobs** reuses the immutable transfer from the
+completed earlier acquisition attempt within that same workflow run. Transfers
+from another run or a future producer attempt fail closed. A full rerun creates a
+fresh nonce-bound transfer for its newly executed acquisition job.
 
 To adopt the #750 contract, pin the reusable path to the 40-hex commit that
 contains this change—never a branch or moving tag:
