@@ -6,7 +6,7 @@ name: AI review authorization arm
 # identity and the immutable receipt are the AI authorization trust boundary.
 on:
   pull_request_target:
-    types: [opened, reopened, synchronize, ready_for_review, converted_to_draft, edited, unlabeled]
+    types: [opened, reopened, synchronize]
   workflow_call:
     secrets:
       AI_REVIEW_APP_PRIVATE_KEY:
@@ -100,10 +100,17 @@ jobs:
             exit 1
           fi
 
+          source_bound_delivery=false
           explicit_label_delivery=false
           if [ "$EVENT_NAME" = pull_request_target ] && [ "$EVENT_ACTION" = labeled ]; then
             label_normalized="$(jq -nr --arg raw_label "$EVENT_LABEL" '$raw_label | ascii_downcase | gsub("[ _-]+";"-")')"
             case "$label_normalized" in ai-review|re-review) ;; *) exit 0 ;; esac
+            explicit_label_delivery=true
+          fi
+          if [ "$explicit_label_delivery" = true ] || { [ "$EVENT_NAME" = pull_request_target ] &&
+            [ "$WORKFLOW_REF" = "$TARGET_REPO/.github/workflows/ai-review-label-rearm.yml@refs/heads/$DEFAULT_BRANCH" ]; }; then
+            case "$EVENT_ACTION" in labeled|ready_for_review|converted_to_draft|edited|unlabeled) ;;
+              *) echo "::error::unsupported local arm delivery"; exit 1 ;; esac
             [ "${GITHUB_RUN_ATTEMPT:-}" = 1 ] || { echo "::error::label deliveries cannot be replayed by rerunning a workflow"; exit 1; }
             [[ "${GITHUB_RUN_ID:-}" =~ ^[1-9][0-9]*$ ]] || { echo "::error::label delivery run ID is malformed"; exit 1; }
             [[ "$WORKFLOW_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::protected workflow SHA is malformed"; exit 1; }
@@ -123,7 +130,7 @@ jobs:
               ' <<<"$source_run" >/dev/null || {
                 echo "::error::label delivery source, ref, repository, or actor is not trusted"; exit 1;
               }
-            explicit_label_delivery=true
+            source_bound_delivery=true
           elif [ "$EVENT_NAME" != pull_request_target ]; then
             echo "::error::unsupported authorization-arm event"; exit 1
           fi
@@ -134,7 +141,7 @@ jobs:
           head_sha="$(jq -r '.headRefOid // ""' <<<"$meta")"
           head_owner="$(jq -r '.headRepositoryOwner.login // ""' <<<"$meta")"
           [[ "$head_sha" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::current PR head is unavailable"; exit 1; }
-          if [ "$explicit_label_delivery" = true ] && [ "$head_sha" != "$EVENT_HEAD_SHA" ]; then
+          if [ "$source_bound_delivery" = true ] && [ "$head_sha" != "$EVENT_HEAD_SHA" ]; then
             echo "::error::label delivery head is stale"; exit 1
           fi
           [ "$state" = OPEN ] || exit 0
@@ -166,7 +173,7 @@ jobs:
                 echo "::error::authoritative PR state still reports auto-merge enabled"; exit 1;
               }
             fi
-            echo "PR is held or draft; native auto-merge is disabled."
+            echo "PR is held or draft; native auto-merge is disabled. Clearing draft or hold requires the generated ai-review-label-rearm.yml lifecycle caller; without it, push a reviewed head to re-arm."
             exit 0
           fi
 
@@ -329,10 +336,17 @@ jobs:
             jq -e --arg repo "$TARGET_REPO" --argjson repo_id "$REPOSITORY_ID" \
               --argjson run_id "$source_run_id" --argjson attempt "$source_attempt" '
                 .id == $run_id and .run_attempt == $attempt and .status == "completed" and
-                .event == "pull_request_target" and .path == ".github/workflows/gate-rearm.yml" and
+                .event == "pull_request_target" and (.path == ".github/workflows/gate-rearm.yml" or .path == ".github/workflows/ai-review-label-rearm.yml") and
                 .head_repository.full_name == $repo and .repository.id == $repo_id and
                 (.completed_at | type == "string" and test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"))
               ' <<<"$source_run" >/dev/null || return 10
+            if [ "$(jq -r .path <<<"$source_run")" = .github/workflows/ai-review-label-rearm.yml ]; then
+              jq -e --arg head "$head_sha" '.run_attempt == 1 and .head_sha == $head' <<<"$source_run" >/dev/null || return 1
+              local source_workflow_id
+              source_workflow_id="$(GH_TOKEN="$ACTIONS_TOKEN" gh api "repos/$TARGET_REPO/actions/workflows/ai-review-label-rearm.yml" --jq '.id')" || return 1
+              [[ "$source_workflow_id" =~ ^[1-9][0-9]*$ ]] || return 1
+              jq -e --argjson workflow "$source_workflow_id" '.workflow_id == $workflow' <<<"$source_run" >/dev/null || return 1
+            fi
             completed_epoch="$(date -u -d "$(jq -r '.completed_at' <<<"$source_run")" +%s)" || return 1
             now_epoch="$(date -u +%s)"
             [ "$now_epoch" -ge "$completed_epoch" ] || return 1
@@ -356,11 +370,31 @@ jobs:
               fi
               jq -e --arg repo "$TARGET_REPO" --argjson pr "$PR_NUMBER" --arg head "$head_sha" \
                 --argjson check "$check_id" --argjson run "$source_run_id" --argjson attempt "$source_attempt" \
-                --arg external "$external_id" --arg url "$details_url" --argjson app "$APP_ID" --arg slug "$APP_SLUG" '
+                --arg external "$external_id" --arg url "$details_url" --argjson app "$APP_ID" --arg slug "$APP_SLUG" \
+                --arg source_path "$(jq -r .path <<<"$source_run")" '
+                .schema == (if $source_path == ".github/workflows/ai-review-label-rearm.yml" then 2 else 1 end) and
                   .repository == $repo and .pr_number == $pr and .head_sha == $head and
                   .check_run_id == $check and .arm_run_id == $run and .arm_run_attempt == $attempt and
                   .external_id == $external and .details_url == $url and .app_id == $app and .app_slug == $slug
                 ' "$receipt_dir/receipt.json" >/dev/null || { rm -rf "$receipt_dir"; return 1; }
+              if [ "$(jq -r .path <<<"$source_run")" = .github/workflows/ai-review-label-rearm.yml ]; then
+                local receipt_workflow_sha protected_blob receipt_blob
+                receipt_workflow_sha="$(jq -er '.workflow_sha' "$receipt_dir/receipt.json")" || { rm -rf "$receipt_dir"; return 1; }
+                [[ "$receipt_workflow_sha" =~ ^[0-9a-f]{40}$ ]] || { rm -rf "$receipt_dir"; return 1; }
+                protected_blob="$(GH_TOKEN="$ACTIONS_TOKEN" gh api "repos/$TARGET_REPO/contents/.github/workflows/ai-review-label-rearm.yml?ref=$DEFAULT_BRANCH" --jq '.sha')" || { rm -rf "$receipt_dir"; return 1; }
+                receipt_blob="$(GH_TOKEN="$ACTIONS_TOKEN" gh api "repos/$TARGET_REPO/contents/.github/workflows/ai-review-label-rearm.yml?ref=$receipt_workflow_sha" --jq '.sha')" || { rm -rf "$receipt_dir"; return 1; }
+                if ! [[ "$protected_blob" =~ ^[0-9a-f]{40}$ ]] || [ "$protected_blob" != "$receipt_blob" ]; then
+                  rm -rf "$receipt_dir"
+                  return 1
+                fi
+                if ! jq -e --arg ref "$TARGET_REPO/.github/workflows/ai-review-label-rearm.yml@refs/heads/$DEFAULT_BRANCH" \
+                    --arg actor "$(jq -r '.actor.login' <<<"$source_run")" \
+                    '.schema == 2 and .delivery_event == "pull_request_target" and .delivery_actor == $actor and .workflow_ref == $ref' \
+                    "$receipt_dir/receipt.json" >/dev/null; then
+                  rm -rf "$receipt_dir"
+                  return 1
+                fi
+              fi
               rm -rf "$receipt_dir" ;;
               *) return 1 ;;
             esac
@@ -478,7 +512,7 @@ jobs:
                   --jq "[.artifacts[] | select(.name == \"$receipt_name\" and .expired == false)] | length")"
                 if jq -e --arg repo "$TARGET_REPO" '
                     .event == "pull_request_target" and
-                    .path == ".github/workflows/gate-rearm.yml" and
+                    (.path == ".github/workflows/gate-rearm.yml" or .path == ".github/workflows/ai-review-label-rearm.yml") and
                     .head_repository.full_name == $repo and
                     (.run_attempt | type == "number")
                   ' <<<"$arm_run" >/dev/null && [ "$receipt_count" = 1 ]; then
@@ -544,7 +578,7 @@ jobs:
             --arg details_url "$details_url" --argjson app_id "$APP_ID" --arg app_slug "$APP_SLUG" \
             --arg review_policy "$review_policy" --arg delivery_event "$EVENT_NAME" --arg delivery_actor "$REQUEST_ACTOR" \
             --arg workflow_ref "$WORKFLOW_REF" --arg workflow_sha "$WORKFLOW_SHA" \
-            --argjson source_bound "$explicit_label_delivery" \
+            --argjson source_bound "$source_bound_delivery" \
             '{schema:(if $source_bound then 2 else 1 end),repository:$repository,pr_number:$pr_number,head_sha:$head_sha,check_run_id:$check_run_id,
               arm_run_id:$arm_run_id,arm_run_attempt:$arm_run_attempt,nonce:$nonce,external_id:$external_id,
               details_url:$details_url,app_id:$app_id,app_slug:$app_slug,review_policy:$review_policy}

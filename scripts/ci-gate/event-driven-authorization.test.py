@@ -285,10 +285,10 @@ def main() -> int:
     require("pull_request" not in review.get(True, {}),
             "model workflow must run only after the trusted arm deduplicates a head")
     label_rearm = load(ROOT / ".github/workflows/ai-review-label-rearm.yml")
-    require(set(rearm[True]["pull_request_target"]["types"]) >=
-            {"opened", "reopened", "synchronize", "ready_for_review", "unlabeled"} and
+    require(set(rearm[True]["pull_request_target"]["types"]) ==
+            {"opened", "reopened", "synchronize"} and
             "labeled" not in rearm[True]["pull_request_target"]["types"] and
-            label_rearm[True] == {"pull_request_target": {"types": ["labeled"]}},
+            label_rearm[True] == {"pull_request_target": {"types": ["labeled", "ready_for_review", "converted_to_draft", "edited", "unlabeled"]}},
             "trusted rearm must separate explicit label delivery from head transitions")
     app_token_uses = [
         authorization_app_token_uses(rearm, "arm"),

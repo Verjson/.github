@@ -9,11 +9,11 @@ cat <<YAML
 # GENERATED FILE — do not edit by hand.
 # Regenerate with:
 #   scripts/gen-ai-review-label-rearm-caller.sh $contract_sha > .github/workflows/ai-review-label-rearm.yml
-name: AI review explicit label re-arm
+name: AI review lifecycle re-arm
 
 on:
   pull_request_target:
-    types: [labeled]
+    types: [labeled, ready_for_review, converted_to_draft, edited, unlabeled]
 
 permissions:
   contents: read
