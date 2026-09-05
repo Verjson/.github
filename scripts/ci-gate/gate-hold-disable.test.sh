@@ -59,6 +59,7 @@ export TARGET_REPO=Verjson/example PR_NUMBER=7 APP_ID=4242 APP_SLUG=verjson-ai-r
 export MINTED_APP_SLUG="$APP_SLUG"
 export DEFAULT_BRANCH=main EVENT_LABEL=hold EVENT_OLD_TITLE='' GITHUB_REPOSITORY_OWNER=Verjson
 export EVENT_NAME=pull_request_target REPOSITORY_ID=1234
+export REQUEST_ACTOR=maintainer
 export WORKFLOW_REF=Verjson/example/.github/workflows/ai-review-label-rearm.yml@refs/heads/main
 export WORKFLOW_SHA=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 export EVENT_HEAD_SHA=0123456789abcdef0123456789abcdef01234567
@@ -81,7 +82,11 @@ write_hold() {
   printf '{"id":"PR_id","autoMergeRequest":null}\n' >"$DISABLED_META_FILE"
   export EVENT_NAME=pull_request_target EVENT_ACTION=synchronize
 }
-run_arm(){ bash "${ARM_SCRIPT:-$tmp/arm.sh}"; }
+run_arm(){
+  local caller=ai-review-label-rearm.yml
+  case "$EVENT_ACTION" in opened|reopened|synchronize) caller=gate-rearm.yml ;; esac
+  WORKFLOW_REF="Verjson/example/.github/workflows/$caller@refs/heads/main" bash "${ARM_SCRIPT:-$tmp/arm.sh}"
+}
 expect_fail(){ label="$1"; if run_arm >"$tmp/out" 2>&1; then fail "$label"; else pass "$label"; fi; }
 
 write_hold
@@ -258,6 +263,29 @@ for release_case in normalized-label ready-for-review edited-title; do
 done
 
 write_repromotion
+for rejected in replay stale-head actor-mismatch; do
+  write_repromotion
+  export EVENT_ACTION=ready_for_review EVENT_LABEL=''
+  case "$rejected" in
+    replay) export GITHUB_RUN_ATTEMPT=2 ;;
+    stale-head) export EVENT_HEAD_SHA=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb ;;
+    actor-mismatch) export REQUEST_ACTOR=other ;;
+  esac
+  expect_fail "lifecycle delivery rejects $rejected"
+  if grep -q 'workflow run\|--method POST repos/Verjson/example/check-runs' "$CALLS"; then
+    fail "rejected lifecycle delivery reached authorization or dispatch"
+  else pass "rejected lifecycle delivery stops before authority"; fi
+  export GITHUB_RUN_ATTEMPT=1 EVENT_HEAD_SHA="$head_sha" REQUEST_ACTOR=maintainer
+done
+write_repromotion
+export EVENT_ACTION=converted_to_draft EVENT_LABEL=''
+printf '{"data":{"disablePullRequestAutoMerge":{"pullRequest":{"id":"PR_id"}}}}\n' >"$GRAPHQL_FILE"
+printf '{"id":"PR_id","autoMergeRequest":null}\n' >"$DISABLED_META_FILE"
+jq '.isDraft=true | .autoMergeRequest={enabledAt:"now"}' "$META_FILE" >"$tmp/x" && mv "$tmp/x" "$META_FILE"
+if run_arm >"$tmp/out" 2>&1 && grep -q 'disablePullRequestAutoMerge' "$CALLS" && ! grep -q 'workflow run' "$CALLS"; then
+  pass "local converted-to-draft delivery disables auto-merge without dispatch"
+else fail "local draft transition did not disable auto-merge"; fi
+write_repromotion
 export EVENT_ACTION=unlabeled EVENT_LABEL=documentation EVENT_OLD_TITLE=''
 if run_arm >"$tmp/out" 2>&1 && ! grep -q 'commits/.*/check-runs\|workflow run' "$CALLS"; then
   pass "unrelated label removal exits before authorization lookup or dispatch"
@@ -424,6 +452,16 @@ else
 fi
 export RUNNER_TEMP="$tmp"
 unset PR_EDIT_FAIL
+
+write_repromotion
+: >"$GITHUB_OUTPUT"
+printf '{}\n' >"$LATEST_FILE"
+export EVENT_ACTION=ready_for_review EVENT_LABEL='' REQUEST_ACTOR=maintainer REVIEW_AUTHORITY=human
+export PRIMARY_PROVIDER=anthropic PRIMARY_MODEL=auto PRIMARY_BUDGET_USD=auto
+export PRIMARY_FALLBACK_MODEL='' PRIMARY_FALLBACK_BUDGET_USD=''
+if run_arm >"$tmp/out" 2>&1 && jq -e '.schema == 2 and .delivery_actor == "maintainer" and .delivery_event == "pull_request_target"' "$RUNNER_TEMP/ai-review-arm-receipt/receipt.json" >/dev/null; then
+  pass "ready-for-review creates a source-bound schema-2 receipt"
+else fail "ready-for-review did not create a source-bound receipt: $(tail -1 "$tmp/out")"; fi
 
 [ "$fails" -eq 0 ] && { echo "All tests passed."; exit 0; }
 echo "$fails test(s) failed."; exit 1
