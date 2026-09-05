@@ -383,11 +383,17 @@ jobs:
                 [[ "$receipt_workflow_sha" =~ ^[0-9a-f]{40}$ ]] || { rm -rf "$receipt_dir"; return 1; }
                 protected_blob="$(GH_TOKEN="$ACTIONS_TOKEN" gh api "repos/$TARGET_REPO/contents/.github/workflows/ai-review-label-rearm.yml?ref=$DEFAULT_BRANCH" --jq '.sha')" || { rm -rf "$receipt_dir"; return 1; }
                 receipt_blob="$(GH_TOKEN="$ACTIONS_TOKEN" gh api "repos/$TARGET_REPO/contents/.github/workflows/ai-review-label-rearm.yml?ref=$receipt_workflow_sha" --jq '.sha')" || { rm -rf "$receipt_dir"; return 1; }
-                [[ "$protected_blob" =~ ^[0-9a-f]{40}$ ]] && [ "$protected_blob" = "$receipt_blob" ] &&
-                  jq -e --arg ref "$TARGET_REPO/.github/workflows/ai-review-label-rearm.yml@refs/heads/$DEFAULT_BRANCH" \
+                if ! [[ "$protected_blob" =~ ^[0-9a-f]{40}$ ]] || [ "$protected_blob" != "$receipt_blob" ]; then
+                  rm -rf "$receipt_dir"
+                  return 1
+                fi
+                if ! jq -e --arg ref "$TARGET_REPO/.github/workflows/ai-review-label-rearm.yml@refs/heads/$DEFAULT_BRANCH" \
                     --arg actor "$(jq -r '.actor.login' <<<"$source_run")" \
                     '.schema == 2 and .delivery_event == "pull_request_target" and .delivery_actor == $actor and .workflow_ref == $ref' \
-                    "$receipt_dir/receipt.json" >/dev/null || { rm -rf "$receipt_dir"; return 1; }
+                    "$receipt_dir/receipt.json" >/dev/null; then
+                  rm -rf "$receipt_dir"
+                  return 1
+                fi
               fi
               rm -rf "$receipt_dir" ;;
               *) return 1 ;;
