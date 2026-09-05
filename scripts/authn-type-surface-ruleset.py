@@ -15,6 +15,11 @@ ROOT = Path(__file__).resolve().parents[1]
 CONTRACT = ROOT / "config/authn-type-surface-ruleset.json"
 WORKFLOW = ROOT / ".github/workflows/authn-type-surface-required.yml"
 SHA_PATTERN = re.compile(r"[0-9a-f]{40}")
+RELEASE_BYPASS = [{
+    "actor_id": 4583107, "actor_type": "Integration", "bypass_mode": "always",
+}]
+STAGED_RULESET_ID = 21750617
+PREVIOUS_WORKFLOW_SHA = "f2f425e93af60417f7193abd686007d463171d1d"
 
 
 class ContractError(Exception):
@@ -56,7 +61,7 @@ def read_contract(path=CONTRACT):
             "name": "authn-type-surface-required",
             "target": "branch",
             "enforcement": "active",
-            "bypass_actors": [],
+            "bypass_actors": RELEASE_BYPASS,
             "conditions": {
                 "ref_name": {"include": ["~DEFAULT_BRANCH"], "exclude": []},
             },
@@ -84,7 +89,7 @@ def read_contract(path=CONTRACT):
         "name": "authn-type-surface-required-workflow",
         "target": "branch",
         "enforcement": "active",
-        "bypass_actors": [],
+        "bypass_actors": RELEASE_BYPASS,
         "conditions": {
             "ref_name": {"include": ["~DEFAULT_BRANCH"], "exclude": []},
             "repository_id": {"repository_ids": [1302124584]},
@@ -299,10 +304,12 @@ def discover_state(contract, workflow_sha):
 def parse_arguments(arguments):
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "mode", choices=("render", "dry-run", "apply", "snapshot", "verify-run")
+        "mode", choices=("render", "dry-run", "apply", "snapshot", "verify-run",
+                         "stage-release-bypass")
     )
     parser.add_argument("--workflow-sha", required=True)
     parser.add_argument("--ack", default="")
+    parser.add_argument("--evaluate", action="store_true")
     parser.add_argument("--run-id", type=int)
     parser.add_argument("--head-sha")
     parser.add_argument("--pre-trigger-max-run-id", type=int)
@@ -328,11 +335,42 @@ def restore_disabled_after_activation_failure(ruleset_id, staged):
     )
 
 
+def validate_staged_ruleset(live, expected):
+    require(live is not None and live.get("id") == STAGED_RULESET_ID,
+            "staged organization ruleset identity drifted")
+    validate_live_ruleset(live, expected)
+
+
+def stage_release_bypass(contract, expected, live, acknowledgement):
+    require(acknowledgement == contract["rollout"]["apply_acknowledgement"],
+            "explicit apply acknowledgement is required")
+    require(live is not None, "staged organization ruleset is missing")
+    require(expected["enforcement"] == "evaluate", "staging must remain evaluate")
+    if mutable_ruleset(live) == expected:
+        validate_staged_ruleset(live, expected)
+        print("already staged: release-only bypass verified in evaluate")
+        return 0
+    previous = render_payload(contract, PREVIOUS_WORKFLOW_SHA)
+    previous["enforcement"] = "evaluate"
+    previous["bypass_actors"] = []
+    validate_staged_ruleset(live, previous)
+    endpoint = f"orgs/Verjson/rulesets/{STAGED_RULESET_ID}"
+    validate_staged_ruleset(gh_json(endpoint), previous)
+    gh_json_input("PUT", endpoint, expected)
+    validate_staged_ruleset(gh_json(endpoint), expected)
+    print("staged and verified: release-only bypass; enforcement remains evaluate")
+    return 0
+
+
 def main(arguments=None):
     args = parse_arguments(arguments or sys.argv[1:])
     contract = read_contract()
     validate_workflow()
     expected = render_payload(contract, args.workflow_sha)
+    require(not args.evaluate or args.mode in ("render", "dry-run", "snapshot", "verify-run"),
+            "--evaluate is only valid for read-only modes")
+    if args.evaluate or args.mode == "stage-release-bypass":
+        expected["enforcement"] = "evaluate"
     if args.mode == "render":
         print(json.dumps(expected, sort_keys=True, indent=2))
         return 0
@@ -340,12 +378,15 @@ def main(arguments=None):
     live = None
     if named:
         live = gh_json(f"orgs/Verjson/rulesets/{named[0]['id']}")
-        validate_live_ruleset(live, expected)
+        if args.mode != "stage-release-bypass":
+            validate_live_ruleset(live, expected)
+    if args.mode == "stage-release-bypass":
+        return stage_release_bypass(contract, expected, live, args.ack)
     if args.mode == "dry-run":
         print("ready: merged canonical bytes and live preconditions match")
         return 0
     if args.mode == "snapshot":
-        require(live is not None, "canonical organization ruleset is not active")
+        require(live is not None, "canonical organization ruleset is not configured")
         runs = gh_json(
             "repos/Verjson/verjson-authn/actions/runs?event=pull_request&per_page=100"
         )
@@ -368,7 +409,7 @@ def main(arguments=None):
         }, sort_keys=True))
         return 0
     if args.mode == "verify-run":
-        require(live is not None, "canonical organization ruleset is not active")
+        require(live is not None, "canonical organization ruleset is not configured")
         require(args.run_id is not None and args.run_id > 0, "--run-id is required")
         require(args.head_sha is not None, "--head-sha is required")
         require(args.pre_trigger_max_run_id is not None

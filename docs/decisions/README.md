@@ -11,6 +11,7 @@ Reverse-chronological index of org-level decisions.
 <!-- BEGIN ADR INDEX -->
 | # | Date | Decision |
 |---|------|----------|
+| [0163](0163-preserve-release-authorization-in-authn-required-workflow/README.md) | 2026-09-05 | Preserve release authorization in the authn required workflow |
 | [0162](0162-unify-portable-ci-engine-and-forge-adapters/README.md) | 2026-09-03 | Unify the portable CI engine and forge adapters |
 | [0161](0161-migrate-ci-to-gitlab-with-measured-parity/README.md) | 2026-09-01 | Migrate CI to GitLab with measured parity and reversible cutovers |
 | [0160](0160-self-host-paid-package-distribution-on-nexus/README.md) | 2026-09-01 | Self-host paid package distribution on Sonatype Nexus Repository |
