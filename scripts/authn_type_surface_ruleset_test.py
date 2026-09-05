@@ -39,9 +39,11 @@ class AuthnTypeSurfaceRulesetTest(unittest.TestCase):
             job["secrets"],
         )
 
-    def test_payload_uses_exact_repository_workflow_sha_and_no_bypass(self):
+    def test_payload_uses_exact_repository_workflow_sha_and_only_release_bypass(self):
         payload = MODULE.render_payload(self.contract, SHA)
-        self.assertEqual([], payload["bypass_actors"])
+        self.assertEqual([{
+            "actor_id": 4583107, "actor_type": "Integration", "bypass_mode": "always",
+        }], payload["bypass_actors"])
         self.assertEqual(
             {"repository_ids": [1302124584]},
             payload["conditions"]["repository_id"],
@@ -308,6 +310,115 @@ class AuthnTypeSurfaceRulesetTest(unittest.TestCase):
                 ])
         self.assertNotIn("simulated", str(raised.exception))
         self.assertEqual("disabled", mutate.call_args_list[2].args[2]["enforcement"])
+
+    def test_contract_rejects_missing_or_widened_release_bypass_on_both_rulesets(self):
+        release = {"actor_id": 4583107, "actor_type": "Integration", "bypass_mode": "always"}
+        invalid = [
+            [],
+            [release, release],
+            [release, release | {"actor_id": 4693283}],
+            [release | {"actor_id": 4693283}],
+            [release | {"bypass_mode": "pull_request"}],
+            [release | {"actor_type": "OrganizationAdmin"}],
+        ]
+        for target in ("consumer", "ruleset"):
+            for actors in invalid:
+                with self.subTest(target=target, actors=actors), tempfile.TemporaryDirectory() as directory:
+                    contract = copy.deepcopy(self.contract)
+                    ruleset = (contract["consumer"]["retired_repository_ruleset"]
+                               if target == "consumer" else contract["ruleset"])
+                    ruleset["bypass_actors"] = actors
+                    path = Path(directory) / "contract.json"
+                    path.write_text(json.dumps(contract), encoding="utf-8")
+                    with self.assertRaises(MODULE.ContractError):
+                        MODULE.read_contract(path)
+
+    def staged_images(self):
+        expected = MODULE.render_payload(self.contract, SHA) | {"enforcement": "evaluate"}
+        previous = MODULE.render_payload(self.contract, MODULE.PREVIOUS_WORKFLOW_SHA) | {
+            "enforcement": "evaluate", "bypass_actors": [],
+        }
+        metadata = {"id": 21750617, "source_type": "Organization", "source": "Verjson"}
+        return previous | metadata, expected, expected | metadata
+
+    def test_stage_adds_only_release_bypass_and_repins_without_activating(self):
+        previous, expected, staged = self.staged_images()
+        with (
+            mock.patch.object(MODULE, "discover_state", return_value=[{"id": 21750617}]),
+            mock.patch.object(MODULE, "gh_json", side_effect=[previous, previous, staged]),
+            mock.patch.object(MODULE, "gh_json_input") as mutate,
+        ):
+            self.assertEqual(0, MODULE.main([
+                "stage-release-bypass", "--workflow-sha", SHA,
+                "--ack", "APPLY-AUTHN-TYPE-SURFACE-1154",
+            ]))
+        mutate.assert_called_once_with("PUT", "orgs/Verjson/rulesets/21750617", expected)
+        self.assertEqual("evaluate", expected["enforcement"])
+
+    def test_stage_rejects_unreviewed_preimages_before_mutation(self):
+        previous, expected, _ = self.staged_images()
+        cases = [
+            None,
+            previous | {"id": 1},
+            previous | {"enforcement": "active"},
+            previous | {"bypass_actors": MODULE.RELEASE_BYPASS},
+            previous | {"conditions": {"ref_name": {"include": ["~ALL"]}}},
+            previous | {"source": "another-org"},
+        ]
+        wrong_pin = copy.deepcopy(previous)
+        wrong_pin["rules"][0]["parameters"]["workflows"][0]["sha"] = "c" * 40
+        cases.append(wrong_pin)
+        for live in cases:
+            with self.subTest(live=live), mock.patch.object(MODULE, "gh_json_input") as mutate:
+                with self.assertRaises(MODULE.ContractError):
+                    MODULE.stage_release_bypass(
+                        self.contract, expected, live, "APPLY-AUTHN-TYPE-SURFACE-1154"
+                    )
+                mutate.assert_not_called()
+
+    def test_stage_requires_ack_and_rechecks_for_concurrent_drift(self):
+        previous, expected, _ = self.staged_images()
+        with mock.patch.object(MODULE, "gh_json_input") as mutate:
+            with self.assertRaisesRegex(MODULE.ContractError, "acknowledgement"):
+                MODULE.stage_release_bypass(self.contract, expected, previous, "")
+            mutate.assert_not_called()
+        with (
+            mock.patch.object(MODULE, "gh_json", return_value=previous | {"enforcement": "active"}),
+            mock.patch.object(MODULE, "gh_json_input") as mutate,
+        ):
+            with self.assertRaises(MODULE.ContractError):
+                MODULE.stage_release_bypass(
+                    self.contract, expected, previous, "APPLY-AUTHN-TYPE-SURFACE-1154"
+                )
+            mutate.assert_not_called()
+
+    def test_stage_rejects_postimage_drift_and_is_idempotent_after_success(self):
+        previous, expected, staged = self.staged_images()
+        with (
+            mock.patch.object(MODULE, "gh_json", side_effect=[previous, staged | {"bypass_actors": []}]),
+            mock.patch.object(MODULE, "gh_json_input"),
+        ):
+            with self.assertRaises(MODULE.ContractError):
+                MODULE.stage_release_bypass(
+                    self.contract, expected, previous, "APPLY-AUTHN-TYPE-SURFACE-1154"
+                )
+        with mock.patch.object(MODULE, "gh_json_input") as mutate:
+            self.assertEqual(0, MODULE.stage_release_bypass(
+                self.contract, expected, staged, "APPLY-AUTHN-TYPE-SURFACE-1154"
+            ))
+            mutate.assert_not_called()
+
+    def test_evaluate_dry_run_accepts_staged_rule_without_mutation(self):
+        _, _, staged = self.staged_images()
+        with (
+            mock.patch.object(MODULE, "discover_state", return_value=[{"id": 21750617}]),
+            mock.patch.object(MODULE, "gh_json", return_value=staged),
+            mock.patch.object(MODULE, "gh_json_input") as mutate,
+        ):
+            self.assertEqual(0, MODULE.main(["dry-run", "--workflow-sha", SHA, "--evaluate"]))
+            mutate.assert_not_called()
+        with self.assertRaisesRegex(MODULE.ContractError, "read-only modes"):
+            MODULE.main(["apply", "--workflow-sha", SHA, "--evaluate"])
 
     def test_duplicate_contract_key_is_rejected(self):
         with tempfile.TemporaryDirectory() as directory:

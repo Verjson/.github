@@ -9,7 +9,11 @@
       "name": "authn-type-surface-required",
       "target": "branch",
       "enforcement": "active",
-      "bypass_actors": [],
+      "bypass_actors": [{
+        "actor_id": 4583107,
+        "actor_type": "Integration",
+        "bypass_mode": "always"
+      }],
       "conditions": {
         "ref_name": {
           "include": ["~DEFAULT_BRANCH"],
@@ -43,7 +47,11 @@
     "name": "authn-type-surface-required-workflow",
     "target": "branch",
     "enforcement": "active",
-    "bypass_actors": [],
+    "bypass_actors": [{
+      "actor_id": 4583107,
+      "actor_type": "Integration",
+      "bypass_mode": "always"
+    }],
     "conditions": {
       "ref_name": {
         "include": ["~DEFAULT_BRANCH"],
