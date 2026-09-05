@@ -262,6 +262,7 @@ BRACKET_DEREFERENCE = re.compile(
 REVIEWED_SELECTOR_EXPRESSIONS = frozenset(
     " ".join(expression.split())
     for expression in (
+        'fromJSON(github.repository_owner == \'Verjson\' && (vars.CI_RUNNER_DEFAULT || \'["self-hosted","general"]\') || \'["ubuntu-24.04"]\')',
         "(github.repository_owner != 'Verjson' || inputs.github-hosted-runner) && 'ubuntu-24.04' || github.event.repository.private == true && fromJSON(vars.CI_LANE_TRUSTED || vars.CI_LANE_FALLBACK || '[\"ubuntu-24.04\"]') || github.event.repository.visibility == 'public' && fromJSON(vars.CI_RUNNER_FASTLANE || vars.CI_LANE_UNTRUSTED || vars.CI_LANE_FALLBACK || '[\"ubuntu-24.04\"]') || fromJSON(vars.CI_LANE_UNTRUSTED || vars.CI_LANE_FALLBACK || '[\"ubuntu-24.04\"]')",
         "fromJSON(vars.CI_LANE_PRIVILEGED || vars.CI_LANE_FALLBACK || '[\"ubuntu-24.04\"]')",
         "fromJSON(vars.CI_LANE_TRUSTED || vars.CI_LANE_FALLBACK || '[\"ubuntu-24.04\"]')",
@@ -323,6 +324,44 @@ CANONICAL_RUNNER_CANARY_SELECTOR = [
     "self-hosted",
     "${{ inputs.runner_label }}",
 ]
+
+
+def is_canonical_changelog_pr_gate(document: dict) -> bool:
+    # This PR-authored test must stay on a disposable hosted runner. Match every
+    # executable field, not a filename or a forgeable generated-file comment.
+    expected = {
+        "name": "changelog contract",
+        True: {"pull_request": None},
+        "permissions": {"contents": "read"},
+        "jobs": {
+            "changelog-contract": {
+                "runs-on": "ubuntu-24.04",
+                "timeout-minutes": 10,
+                "steps": [
+                    {
+                        "name": "Check out the pull request under validation",
+                        "uses": "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+                        "with": {"persist-credentials": False},
+                    },
+                    {
+                        "name": "Prepare job-scoped changelog tool cache",
+                        "run": 'echo "VERJSON_CHANGELOG_TOOL_CACHE=$RUNNER_TEMP/verjson-changelog-tools" >> "$GITHUB_ENV"',
+                    },
+                    {
+                        "name": "Validate the changelog contract",
+                        "run": "bash scripts/changelog-contract.test.sh",
+                    },
+                ],
+            },
+        },
+    }
+
+    return (
+        document == expected
+        and any(key is True for key in document)
+        and type(document["jobs"]["changelog-contract"]["timeout-minutes"]) is int
+        and type(document["jobs"]["changelog-contract"]["steps"][0]["with"]["persist-credentials"]) is bool
+    )
 
 
 def canonical_runner_canary_jobs(
@@ -631,7 +670,8 @@ def check_reusable_runner_inputs(
 
 def check_job(report: Report, path: str, name: str, body: dict, line: int,
               visibility: str, consumer_policy: bool = False,
-              canonical_canary: bool = False) -> None:
+              canonical_canary: bool = False,
+              canonical_changelog_pr_gate: bool = False) -> None:
     if consumer_policy:
         check_reusable_runner_inputs(report, path, name, body, line)
     if "runs-on" not in body:
@@ -691,7 +731,7 @@ def check_job(report: Report, path: str, name: str, body: dict, line: int,
     # Parsing and job extraction still fail closed, expression construction
     # stays inside the reviewed grammar, and matrix sources are still folded in.
     if consumer_policy:
-        if LINUX_HOSTED_LITERAL.search(outside_expressions(selector)):
+        if not canonical_changelog_pr_gate and LINUX_HOSTED_LITERAL.search(outside_expressions(selector)):
             report.violation(
                 path,
                 runs_on_line,
@@ -985,6 +1025,7 @@ def main(argv: list[str]) -> int:
                 arguments.visibility,
                 arguments.consumer_policy,
                 name in canonical_jobs,
+                arguments.consumer_policy and is_canonical_changelog_pr_gate(document),
             )
 
     for message in report.anomalies:

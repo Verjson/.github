@@ -11,6 +11,7 @@ Reverse-chronological index of org-level decisions.
 <!-- BEGIN ADR INDEX -->
 | # | Date | Decision |
 |---|------|----------|
+| [0165](0165-preserve-generated-changelog-runner-boundaries/README.md) | 2026-09-05 | Preserve generated changelog runner boundaries in consumer policy |
 | [0164](0164-bridge-review-lifecycle-deliveries/README.md) | 2026-09-05 | Bridge review lifecycle deliveries independently of required workflows |
 | [0163](0163-preserve-release-authorization-in-authn-required-workflow/README.md) | 2026-09-05 | Preserve release authorization in the authn required workflow |
 | [0162](0162-unify-portable-ci-engine-and-forge-adapters/README.md) | 2026-09-03 | Unify the portable CI engine and forge adapters |
