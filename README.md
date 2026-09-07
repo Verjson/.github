@@ -1,4 +1,8 @@
 # .github
+
+For shared development service URLs and client settings, see the
+[infrastructure service directory](docs/infrastructure/README.md).
+
 Public organization profile, visible to anyone
 
 ## Purpose
