@@ -12,10 +12,10 @@ Last verified: **2026-09-07**. Provisioning implementation:
 | GitLab SSH clone | `ssh://git@git.159-195-78-163.nip.io:30022/<group>/<repository>.git` | Configured port; clone not tested |
 | Nexus UI | <https://nexus.159-195-78-163.nip.io> | HTTP 200 |
 | Nexus REST API | `https://nexus.159-195-78-163.nip.io/service/rest/v1` | Authenticated repository inventory queried successfully |
-| npm hosted registry | `https://nexus.159-195-78-163.nip.io/repository/npm-hosted/` | Awaiting provisioning; HTTP 404 |
-| Docker registry | `docker.nexus.159-195-78-163.nip.io` | Awaiting provisioning; `/v2/` returns HTTP 502 |
-| PyPI publishing | `https://nexus.159-195-78-163.nip.io/repository/pypi-hosted/` | Awaiting provisioning |
-| PyPI package index | `https://nexus.159-195-78-163.nip.io/repository/pypi-hosted/simple/` | Awaiting provisioning |
+| npm hosted registry | `https://nexus.159-195-78-163.nip.io/repository/npm-hosted/` | Authenticated npm publish/download verified; anonymous reads denied |
+| Docker registry | `docker.nexus.159-195-78-163.nip.io` | Docker login/push/pull verified; anonymous pulls denied |
+| PyPI publishing | `https://nexus.159-195-78-163.nip.io/repository/pypi-hosted/` | Authenticated Twine upload verified |
+| PyPI package index | `https://nexus.159-195-78-163.nip.io/repository/pypi-hosted/simple/` | Authenticated pip download verified; anonymous reads denied |
 | S3 API | <https://s3.159-195-78-163.nip.io> | `/minio/health/live` returns HTTP 200 |
 
 HTTPS checks use normal certificate validation. Health checks establish
@@ -23,16 +23,24 @@ reachability only; they do not verify authentication, persistence, or backups.
 
 ## Registry setup status
 
-The Nexus API reports that its Community Edition EULA has not been accepted.
-The bootstrap job stopped at that prerequisite, and `npm-hosted`,
-`docker-hosted`, and `pypi-hosted` do not yet exist. The client examples below
-describe the intended endpoints and should be used after provisioning is
-verified. PyPI publishing and its package index are two interfaces to the same
+The owner authorized acceptance of the Nexus Community Edition EULA on
+2026-09-07. Acceptance is confirmed, and `npm-hosted`, `docker-hosted`, and
+`pypi-hosted` are online on Nexus Community Edition 3.83.0-08 with S3-backed
+storage. PyPI publishing and its package index are two interfaces to the same
 `pypi-hosted` repository.
+
+All three hosted registries require authentication for reads and writes and
+use the `ALLOW_ONCE` write policy. Publish a new version instead of replacing
+an existing one. Docker and npm authentication realms are enabled. Existing
+default Maven and NuGet repositories retain their previous anonymous read
+access; that access does not extend to these hosted registries.
 
 Registry readiness and consumer integration are coordinated in
 [#1264](https://github.com/Verjson/.github/issues/1264). Documentation updates
-are tracked in [#1266](https://github.com/Verjson/.github/issues/1266).
+started in [#1266](https://github.com/Verjson/.github/issues/1266). The deployed
+authentication configuration still needs to be incorporated into the generated
+bootstrap in [verjson-cli#214](https://github.com/Verjson/verjson-cli/issues/214)
+so future deployments reproduce it.
 
 ## Client settings
 
@@ -55,8 +63,14 @@ npm publish --registry=https://nexus.159-195-78-163.nip.io/repository/npm-hosted
 ```
 
 This is a hosted repository, not an npmjs proxy or group. It does not provide
-arbitrary public npm dependencies. Authentication configuration must match the
-Nexus authentication methods enabled by the platform team.
+arbitrary public npm dependencies. Nexus supports npm's legacy login flow with
+the enabled npm authentication realm; use an account supplied by the platform
+team and keep the resulting credentials in your user configuration.
+
+```sh
+npm login --auth-type=legacy \
+  --registry=https://nexus.159-195-78-163.nip.io/repository/npm-hosted/
+```
 
 ### Docker
 
@@ -95,6 +109,26 @@ that combines public and private sources requires a separately configured and
 reviewed proxy/group strategy.
 
 ## Verification and updates
+
+The 2026-09-07 proof used a temporary account restricted to browse, read, add,
+and edit in these three repositories. Its attempt to list users was denied.
+
+| Check | Result |
+| --- | --- |
+| `npm publish` followed by `npm pack` from the hosted registry | Downloaded tarball matched the published bytes |
+| Twine upload followed by `pip download --no-deps` through the simple index | Downloaded wheel matched the published bytes |
+| Docker login, build, push, local image removal, and pull | Pulled image ID matched the original |
+| npm and PyPI duplicate-version publication | Rejected |
+| Anonymous package metadata/index reads and Docker manifest pull | Denied |
+| Test cleanup | Component inventory empty in all three hosted repositories; temporary account and role removed |
+
+Nexus search indexing briefly lagged component deletion; a follow-up component
+inventory confirmed cleanup. The test did not prove Docker overwrite rejection,
+cross-repository dependency resolution, backup/restore, availability, subscriber
+isolation, token expiry, or the CI credential-broker integration. No persistent
+publisher account was created by this proof. These results are a development
+registry check, not completion of the broader
+[Nexus distribution proof](../decisions/0160-self-host-paid-package-distribution-on-nexus/README.md).
 
 Check HTTPS reachability without bypassing certificate validation. Registry
 verification should include an authenticated upload and download of a uniquely

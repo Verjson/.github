@@ -183,6 +183,35 @@ license, secrets, provenance, and a complete runtime dependency closure containi
 package. Publishing any package to npmjs.org requires a package-specific human
 acknowledgement that released bytes cannot be made private again.
 
+## Development registry evidence — 2026-09-07
+
+Under the owner's explicit authorization to provision the existing development
+stack and accept its Community Edition EULA, the npm, Docker, and PyPI hosted
+repositories were provisioned on Nexus CE 3.83.0-08. This is a bounded development
+check, not production provisioning or subscriber migration. Coordination remains
+in [#1264](https://github.com/Verjson/.github/issues/1264).
+
+The new hosted repositories require authentication for reads and writes. The
+default anonymous access to existing Maven and NuGet repositories was preserved
+without granting access to the new registries. The supported npm and Docker
+authentication realms were enabled. A temporary publisher had repository-scoped
+browse/read/add/edit privileges and was denied user administration. This applies
+the existing publication/access separation; it does not select a new identity
+provider or create production publishing credentials.
+
+Real npm, Twine/pip, and Docker clients successfully published and downloaded
+synthetic artifacts with byte or image-identity equality. Anonymous reads were
+denied, and npm/PyPI duplicate-version writes failed. Test artifacts and the
+temporary account/role were removed; component inventory confirmed cleanup after
+an initial search-index delay. The configured immutable write policy was verified
+for Docker, but Docker overwrite rejection was not exercised.
+
+The [service reference](../../infrastructure/netcup-nuremberg.md) records the
+endpoints and evidence boundaries. Generator coverage is tracked separately in
+[verjson-cli#214](https://github.com/Verjson/verjson-cli/issues/214). This check
+does not complete the subscriber, expiry/revocation, audit attribution,
+backup/recovery, or short-lived CI identity proofs above; their gates remain.
+
 ## Human gates
 
 The following actions remain stopped until a human approves the exact target, evidence,
