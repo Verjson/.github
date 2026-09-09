@@ -21,6 +21,10 @@ concurrency:
 
 jobs:
   arm:
+    # Body/base-only edits cannot re-arm review or change a title hold. Skip
+    # them before runner placement and credential minting; title edits still
+    # reach the live hold checks, including adding DO NOT MERGE.
+    if: github.event.action != 'edited' || github.event.changes.title.from
     # AI remains advisory under ADR 0090. A missing credential, App outage, or
     # authorization defect must fail this job visibly without turning the
     # ruleset workflow into a veto on an otherwise-authorized human merge.

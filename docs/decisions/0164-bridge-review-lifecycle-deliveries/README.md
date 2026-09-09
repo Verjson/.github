@@ -45,3 +45,31 @@ mismatch. Generator tests pin the event set and thin, explicitly permissioned sh
 The held-path message explains the caller requirement and reviewed-head push fallback.
 Adopters must install the generated caller on their protected default branch, then
 retain a real ready-for-review/hold-removal run receipt before claiming live recovery.
+
+## Correction (2026-09-09) — reject body-only edits before admission (#1275)
+
+The lifecycle caller delivers every PR `edited` event. Previously, the reusable arm
+allocated its trusted runner and minted the dedicated App token before learning that
+a body/base-only edit could not re-arm review. Restore the intended event boundary
+with a job-level condition in the canonical callee: an edited event is eligible only
+when `changes.title.from` is nonempty. Missing, null, and empty previous titles skip
+the job before runner assignment or credential use. All other subscribed activities
+retain their existing admission checks.
+
+Keep title edits eligible in both directions. Adding `DO NOT MERGE` must still reach
+the live hold check that disables native auto-merge; removing it must still reach the
+existing source-bound re-arm path. The condition is scheduling policy, not review
+authorization, so exact-head, actor, replay, hold, and App checks remain unchanged.
+Keeping it in the callee applies the same policy to required, local, and generated
+callers without duplicating expressions or changing byte-exact caller contracts.
+
+The registered lifecycle bridge test evaluates the configured condition over body,
+base, missing/null/empty-title, title-add/remove, and other lifecycle events. Existing
+workflow concurrency remains PR-scoped with `cancel-in-progress: false`; it is not
+duplicated in the caller. GitHub documents job conditions as running before runner
+assignment and supports concurrency in called workflows. A live concurrency receipt
+remains separate rollout evidence, not something the local condition test proves.
+
+References: [#1275](https://github.com/Verjson/.github/issues/1275),
+[job conditions and runner assignment](https://docs.github.com/en/actions/reference/workflows-and-actions/contexts),
+[reusable workflow concurrency](https://docs.github.com/en/actions/reference/workflows-and-actions/reusing-workflow-configurations).

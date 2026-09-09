@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 from pathlib import Path
+import copy
+import json
 import subprocess
 import tempfile
 import yaml
@@ -21,8 +23,38 @@ def validate_caller(doc, target):
         "secrets": {"AI_REVIEW_APP_PRIVATE_KEY": "${{ secrets.AI_REVIEW_APP_PRIVATE_KEY }}"},
     }}
 
+def validate_event_admission(job):
+    condition = job.get("if", "true")
+    cases = [
+        ("body-only edit", {"action": "edited", "changes": {"body": {"from": "old body"}}}, False),
+        ("base-only edit", {"action": "edited", "changes": {"base": {"ref": {"from": "main"}}}}, False),
+        ("missing changes", {"action": "edited"}, False),
+        ("null previous title", {"action": "edited", "changes": {"title": {"from": None}}}, False),
+        ("empty previous title", {"action": "edited", "changes": {"title": {"from": ""}}}, False),
+        ("ordinary title edit", {"action": "edited", "changes": {"title": {"from": "Old title"}}}, True),
+        ("title removal", {"action": "edited", "changes": {"title": {"from": "Old title"}}, "pull_request": {"title": ""}}, True),
+        ("add title hold", {"action": "edited", "changes": {"title": {"from": "Old title"}}, "pull_request": {"title": "DO NOT MERGE: Old title"}}, True),
+        ("remove title hold", {"action": "edited", "changes": {"title": {"from": "do not merge: Old title"}}, "pull_request": {"title": "Old title"}}, True),
+    ]
+    cases.extend((action, {"action": action}, True) for action in (
+        "opened", "reopened", "synchronize", "labeled", "unlabeled",
+        "ready_for_review", "converted_to_draft",
+    ))
+    for name, event, expected in cases:
+        context = copy.deepcopy(event)
+        context.setdefault("changes", {}).setdefault("title", {}).setdefault("from", "")
+        # The configured guard uses string inequality and truthiness, which have
+        # the same semantics in JavaScript for these GitHub event values.
+        completed = subprocess.run([
+            "node", "-e",
+            'const vm = require("node:vm"); process.stdout.write(JSON.stringify(Boolean(vm.runInNewContext(process.argv[1], {github: {event: JSON.parse(process.argv[2])}}))));',
+            condition, json.dumps(context),
+        ], check=True, capture_output=True, text=True)
+        assert json.loads(completed.stdout) is expected, name
+
 def main():
     arm = load(ARM)
+    validate_event_admission(arm["jobs"]["arm"])
     assert "issues" not in arm[True]
     assert "labeled" not in arm[True]["pull_request_target"]["types"]
     validate_caller(load(CALLER), "./.github/workflows/gate-rearm.yml")
