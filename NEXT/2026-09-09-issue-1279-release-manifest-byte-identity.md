@@ -1,6 +1,6 @@
 ---
 date: 2026-09-09
-issue: 629
+issue: 1279
 impact: patch
 title: Bind runner deployments to the exact attested release asset bytes
 ---

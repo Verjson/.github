@@ -408,7 +408,7 @@ image's provenance and SBOM before cloud inventory or runner mutation. Keeping t
 orchestrator and mutation authority on the same identity prevents a reviewed plan from
 being reinterpreted as a raw image digest at execution time.
 
-### Clarification (2026-09-09) — preserve the attested release asset bytes (#629)
+### Clarification (2026-09-09) — preserve the attested release asset bytes (#1279, #629)
 
 The canonical release writer publishes sorted, indented JSON with a final newline;
 `actions/attest-build-provenance` attests that exact file. The controller previously
@@ -434,7 +434,8 @@ already hashes to the recorded asset digest. This compatible extension avoids ch
 historical releases or substituting a normalized digest for a verified attestation.
 Adapters must preserve downloaded bytes rather than reconstructing them. The byte
 contract is reusable for future GitLab-hosted workers; no provider-specific controller
-generalization is needed for this correction. Delivery remains tracked by
+generalization is needed for this correction. The defect is tracked by
+[#1279](https://github.com/Verjson/.github/issues/1279); delivery remains tracked by
 [#629](https://github.com/Verjson/.github/issues/629) and the runner adopter
 [#197](https://github.com/Verjson/verjson-git-runners/issues/197).
 
