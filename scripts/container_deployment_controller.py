@@ -4,6 +4,7 @@ import argparse
 import copy
 import hashlib
 import json
+import math
 import os
 import re
 import subprocess
@@ -29,6 +30,8 @@ MAX_PROBE_SECONDS = 900
 MAX_OBSERVATION_SECONDS = 900
 MAX_REQUEST_AGE_SECONDS = 3_600
 MAX_FLEET_SIZE = 3
+MAX_MANIFEST_BYTES = 1_048_576
+MISSING_MANIFEST_BYTES = object()
 JOB_SECONDS = 5_400
 SAFETY_MARGIN_SECONDS = 900
 UPDATE_COMMAND_OVERHEAD_SECONDS = 120
@@ -139,6 +142,56 @@ def _release(version: Any, manifest_digest: Any, field: str) -> dict[str, str]:
     return {"releaseVersion": version, "manifestDigest": manifest_digest}
 
 
+def _manifest_with_identity(
+    manifest_value: Any,
+    digest: str,
+    field: str,
+    manifest_bytes: Any = MISSING_MANIFEST_BYTES,
+) -> dict[str, Any]:
+    manifest = _object(manifest_value, field)
+    if manifest_bytes is MISSING_MANIFEST_BYTES:
+        if canonical_digest(manifest) != digest:
+            raise DeploymentError(f"{field} canonical bytes differ from release identity")
+        return manifest
+
+    def unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for key, value in pairs:
+            if key in result:
+                raise DeploymentError(f"{field} bytes contain duplicate JSON keys")
+            result[key] = value
+        return result
+
+    def reject_constant(value: str) -> None:
+        raise DeploymentError(f"{field} bytes contain non-finite JSON number {value}")
+
+    def finite_float(value: str) -> float:
+        parsed = float(value)
+        if not math.isfinite(parsed):
+            reject_constant(value)
+        return parsed
+
+    if not isinstance(manifest_bytes, str) or len(manifest_bytes) > MAX_MANIFEST_BYTES:
+        raise DeploymentError(f"{field} bytes must be UTF-8 text of at most {MAX_MANIFEST_BYTES} bytes")
+    try:
+        encoded = manifest_bytes.encode("utf-8")
+        if len(encoded) > MAX_MANIFEST_BYTES:
+            raise DeploymentError(f"{field} bytes exceed {MAX_MANIFEST_BYTES} bytes")
+        if "sha256:" + hashlib.sha256(encoded).hexdigest() != digest:
+            raise DeploymentError(f"{field} bytes differ from release identity")
+        parsed = _object(json.loads(
+            manifest_bytes, object_pairs_hook=unique_object,
+            parse_constant=reject_constant, parse_float=finite_float,
+        ), field)
+        if canonical_digest(parsed) != canonical_digest(manifest):
+            raise DeploymentError(f"{field} bytes differ from structured manifest")
+    except DeploymentError:
+        raise
+    except (ValueError, RecursionError) as error:
+        raise DeploymentError(f"{field} bytes are not valid UTF-8 JSON") from error
+    return parsed
+
+
 def _validate_release_evidence(
     expected: dict[str, Any],
     evidence: dict[str, Any],
@@ -162,9 +215,10 @@ def _validate_release_evidence(
     if expires_at <= now:
         raise DeploymentError("release attestation is expired")
 
-    manifest = _object(evidence.get("manifest"), "manifest")
-    if canonical_digest(manifest) != identity_match.group("digest"):
-        raise DeploymentError("canonical manifest bytes differ from manifest identity")
+    manifest = _manifest_with_identity(
+        evidence.get("manifest"), identity_match.group("digest"),
+        "release manifest", evidence.get("manifestBytes", MISSING_MANIFEST_BYTES),
+    )
     source = _object(manifest.get("source"), "manifest.source")
     if source.get("repository") != expected.get("sourceRepository"):
         raise DeploymentError("manifest source repository differs")
@@ -209,10 +263,11 @@ def _release_variant_digest(
     release: dict[str, Any],
     variant: str,
     field: str,
+    manifest_bytes: Any = MISSING_MANIFEST_BYTES,
 ) -> str:
-    manifest = _object(manifest_value, field)
-    if canonical_digest(manifest) != release.get("manifestDigest"):
-        raise DeploymentError(f"{field} canonical bytes differ from release identity")
+    manifest = _manifest_with_identity(
+        manifest_value, release.get("manifestDigest"), field, manifest_bytes
+    )
     if manifest.get("releaseVersion") != release.get("releaseVersion"):
         raise DeploymentError(f"{field} version differs from release identity")
     images = manifest.get("images")
@@ -742,6 +797,7 @@ def reconcile_unknown_state(
         _object(plan.get("selectedRelease"), "selectedRelease"),
         variant,
         "selected release manifest",
+        evidence.get("manifestBytes", MISSING_MANIFEST_BYTES),
     )
     if selected_digest != plan.get("targetDigest"):
         raise DeploymentError("selected release manifest differs from plan image digest")
@@ -817,6 +873,7 @@ def reconcile_unknown_state(
                 _object(plan.get("observedDeployedRelease"), "observedDeployedRelease"),
                 variant,
                 f"baseline release manifest for {name}",
+                live.get("releaseManifestBytes", MISSING_MANIFEST_BYTES),
             )
             if deployed_digest != baseline_digest:
                 raise DeploymentError("baseline live release has the wrong image digest")

@@ -97,6 +97,17 @@ The manifest identity is the bare `sha256:<64 lowercase hex>` digest of the cano
 `release-manifest.json` GitHub Release asset. A registry-qualified reference, image
 digest, or tag is not a release identity and is rejected before evidence collection.
 
+The evidence adapter supplies `manifestBytes` as the exact UTF-8 release asset text,
+including its original whitespace, escapes, and final newline, alongside the parsed
+`manifest` object. Read bytes and decode UTF-8 without newline translation; do not
+serialize the object again. The controller hashes these bytes against both the selected
+identity and the verified attestation subject, then checks that the parsed document
+matches `manifest`. Text is limited to 1 MiB; duplicate keys, non-finite numbers,
+invalid UTF-8/JSON, and mismatched objects fail closed. Existing evidence may omit
+`manifestBytes` only when compact sorted UTF-8 serialization of `manifest` actually
+hashes to the selected asset identity. Plan and receipt digests remain canonical JSON
+digests, separate from the released asset's byte digest.
+
 Dispatch the same manifest digest and fleet selector with `dry-run: false`. The job waits
 at `production`, re-collects current evidence, restores and validates any retained
 append-only chain for the exact run attempt, head, manifest, and plan, or retains a new
@@ -134,7 +145,8 @@ retained chain. For each unknown host, the evidence adapter must report its immu
 manifest identity, release, and deployed image digest. Exact selected-release evidence
 seals a `reconciled` transition and resumes at probe/observation without another drain;
 exact attempt-baseline evidence removes the uncertain transition and permits a new
-bounded update only when `releaseManifest` canonical bytes match the recorded baseline
+bounded update only when `releaseManifestBytes` contains the exact UTF-8 asset text,
+matches the parsed `releaseManifest` object and the recorded baseline
 manifest identity and its reviewed variant index digest exactly matches the live deployed
 digest. A missing baseline manifest, any other release, inconsistent manifest, or absent
 or unrelated digest stops with an operator-safe error. Preserve the chain and quarantine

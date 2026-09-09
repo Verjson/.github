@@ -57,6 +57,26 @@ def manifest_release(manifest: dict) -> dict:
     return {"releaseVersion": manifest["releaseVersion"], "manifestDigest": digest}
 
 
+def bind_manifest_bytes(candidate: dict, raw: str) -> None:
+    candidate["manifestBytes"] = raw
+    candidate["manifestIdentity"] = "sha256:" + hashlib.sha256(raw.encode("utf-8")).hexdigest()
+    candidate["attestation"]["subjectDigest"] = candidate["manifestIdentity"]
+
+
+def published_format_evidence() -> dict:
+    candidate = evidence()
+    bind_manifest_bytes(candidate, json.dumps(candidate["manifest"], indent=2, sort_keys=True) + "\n")
+    baseline = release_manifest("1.0.0", "1")
+    raw = json.dumps(baseline, indent=2, sort_keys=True) + "\n"
+    digest = "sha256:" + hashlib.sha256(raw.encode("utf-8")).hexdigest()
+    for runner in candidate["fleet"]["runners"]:
+        runner["release"]["manifestDigest"] = digest
+        runner["manifestIdentity"] = digest
+        runner["releaseManifest"] = copy.deepcopy(baseline)
+        runner["releaseManifestBytes"] = raw
+    return candidate
+
+
 def configuration() -> dict:
     return {
         "schemaVersion": 1,
@@ -249,6 +269,97 @@ class FakeClock:
 
 
 class DeploymentPlannerTests(unittest.TestCase):
+    def test_admits_exact_published_release_asset_with_mocked_verified_attestation(self):
+        path = MODULE_PATH.parent / "fixtures/container-deployment/release-manifest-v0.2.1.json"
+        raw = path.read_bytes().decode("utf-8")
+        candidate = evidence()
+        candidate["manifest"] = json.loads(raw)
+        bind_manifest_bytes(candidate, raw)
+        self.assertEqual(
+            "sha256:4f5bb96e1fe07f7b56cfe124206ed85c4e59b9715b3b4e18b3054d890dd1ad32",
+            candidate["manifestIdentity"],
+        )
+        self.assertNotEqual(controller.canonical_digest(candidate["manifest"]), candidate["manifestIdentity"])
+        config = configuration()
+        contract = candidate["manifest"]["release"]["workflow"]["contractCommit"]
+        config["expectedRelease"]["contractCommit"] = contract
+        config["expectedRelease"]["variant"] = "base"
+        candidate["attestation"]["contractCommit"] = contract
+
+        plan = controller.build_plan(config, candidate, "production")
+
+        self.assertEqual(candidate["manifestIdentity"], plan["selectedRelease"]["manifestDigest"])
+        self.assertEqual("0.2.1", plan["selectedRelease"]["releaseVersion"])
+        self.assertEqual(candidate["manifest"]["images"][0]["indexDigest"], plan["targetDigest"])
+
+    def test_exact_unicode_and_line_endings_are_part_of_release_identity(self):
+        candidate = evidence()
+        candidate["manifest"]["description"] = "déploiement"
+        raw = json.dumps(candidate["manifest"], indent=2, ensure_ascii=False) + "\n"
+        for serialized in (raw, raw.replace("\n", "\r\n"), raw.rstrip("\n")):
+            with self.subTest(serialized=repr(serialized[-4:])):
+                bind_manifest_bytes(candidate, serialized)
+                plan = controller.build_plan(configuration(), candidate, "production")
+                self.assertEqual(candidate["manifestIdentity"], plan["selectedRelease"]["manifestDigest"])
+                candidate["manifestBytes"] = serialized + " "
+                with self.assertRaisesRegex(controller.DeploymentError, "bytes differ from release identity"):
+                    controller.build_plan(configuration(), candidate, "production")
+        bind_manifest_bytes(candidate, raw)
+        candidate["manifestBytes"] = raw.replace("é", "e")
+        with self.assertRaisesRegex(controller.DeploymentError, "bytes differ from release identity"):
+            controller.build_plan(configuration(), candidate, "production")
+
+    def test_raw_manifest_cannot_be_substituted_by_a_different_structured_object(self):
+        for replacement in (True, 1.0, 2):
+            with self.subTest(replacement=replacement):
+                candidate = published_format_evidence()
+                candidate["manifest"]["schemaVersion"] = replacement
+                with self.assertRaisesRegex(controller.DeploymentError, "bytes differ from structured manifest"):
+                    controller.build_plan(configuration(), candidate, "production")
+
+    def test_rejects_ambiguous_or_malformed_attested_json(self):
+        for raw, expected in (
+            ('{"schemaVersion": 1, "schemaVersion": 1}', "duplicate JSON keys"),
+            ('{"value": NaN}', "non-finite"),
+            ('{"value": Infinity}', "non-finite"),
+            ('{"value": -Infinity}', "non-finite"),
+            ('{"value": 1e999}', "non-finite"),
+            ('{', "not valid UTF-8 JSON"),
+            ('{"value":' + '9' * 5000 + '}', "not valid UTF-8 JSON"),
+            ('[]', "must be an object"),
+            ('{"value": "\\ud800"}', "not valid UTF-8 JSON"),
+        ):
+            with self.subTest(raw=raw[:80]):
+                candidate = evidence()
+                bind_manifest_bytes(candidate, raw)
+                with self.assertRaisesRegex(controller.DeploymentError, expected):
+                    controller.build_plan(configuration(), candidate, "production")
+
+    def test_rejects_invalid_or_oversized_raw_text_before_admission(self):
+        for raw in (None, 42, {}, "\ud800", "x" * (controller.MAX_MANIFEST_BYTES + 1),
+                    "é" * (controller.MAX_MANIFEST_BYTES // 2 + 1)):
+            with self.subTest(raw_type=type(raw).__name__):
+                candidate = evidence()
+                candidate["manifestBytes"] = raw
+                with self.assertRaises(controller.DeploymentError):
+                    controller.build_plan(configuration(), candidate, "production")
+
+    def test_pretty_asset_requires_exact_bytes_and_matching_attestation(self):
+        for mutation, expected in (
+            (lambda value: value.pop("manifestBytes"), "canonical bytes differ"),
+            (lambda value: value["attestation"].update(subjectDigest=controller.canonical_digest(value["manifest"])), "subject digest"),
+            (lambda value: value["attestation"].update(verified=False), "not verified"),
+            (lambda value: value["attestation"].update(repository="Attacker/repo"), "source repository"),
+            (lambda value: value["attestation"].update(sourceRef="refs/heads/feature"), "source ref"),
+            (lambda value: value["attestation"].update(signerWorkflow="Attacker/release.yml"), "signer"),
+            (lambda value: value["attestation"].update(contractCommit="b" * 40), "contract pin"),
+        ):
+            with self.subTest(expected=expected):
+                candidate = published_format_evidence()
+                mutation(candidate)
+                with self.assertRaisesRegex(controller.DeploymentError, expected):
+                    controller.build_plan(configuration(), candidate, "production")
+
     def test_builds_immutable_canary_first_sequential_plan(self):
         candidate = evidence()
         candidate["requestedAt"] = "2026-08-14T00:00:00Z"
@@ -313,7 +424,7 @@ class DeploymentPlannerTests(unittest.TestCase):
         candidate = evidence()
         candidate["manifest"]["images"][0]["indexDigest"] = "sha256:" + "4" * 64
 
-        with self.assertRaisesRegex(controller.DeploymentError, "canonical manifest"):
+        with self.assertRaisesRegex(controller.DeploymentError, "canonical bytes differ"):
             controller.build_plan(configuration(), candidate, "production")
 
     def test_rejects_option_shaped_dynamic_cli_tokens(self):
@@ -387,6 +498,54 @@ class DeploymentPlannerTests(unittest.TestCase):
 
 
 class DeploymentExecutionTests(unittest.TestCase):
+    def test_pretty_asset_reconciliation_preserves_exact_selected_and_baseline_identity(self):
+        for selected in (False, True):
+            with self.subTest(selected=selected):
+                candidate = published_format_evidence()
+                plan = controller.build_plan(configuration(), candidate, "production")
+                interrupted = controller.execute_plan(
+                    plan, configuration(), candidate,
+                    FakeAdapter(interrupt_update="gha-gate-1"), lambda _receipt: None,
+                    clock=FakeClock(),
+                )
+                live = copy.deepcopy(candidate)
+                runner = live["fleet"]["runners"][0]
+                runner["deployedDigest"] = "sha256:" + "1" * 64
+                if selected:
+                    runner["release"] = plan["selectedRelease"]
+                    runner["manifestIdentity"] = plan["manifestIdentity"]
+                    runner["deployedDigest"] = plan["targetDigest"]
+                reconciled = controller.reconcile_unknown_state(plan, interrupted, live, configuration())
+                self.assertEqual(runner["release"], reconciled["finalFleet"][0]["release"])
+                if selected:
+                    live["manifestBytes"] += " "
+                else:
+                    runner["releaseManifestBytes"] += " "
+                with self.assertRaisesRegex(controller.DeploymentError, "bytes differ from release identity"):
+                    controller.reconcile_unknown_state(plan, interrupted, live, configuration())
+
+    def test_rollback_uses_exact_published_baseline_bytes(self):
+        candidate = published_format_evidence()
+        plan = controller.build_plan(configuration(), candidate, "production")
+        source = controller.admitted_receipt(plan, configuration(), candidate, FakeClock().now())
+        source["outcome"] = "failed"
+        source["completedAt"] = "2026-08-14T00:01:00Z"
+        rollback = copy.deepcopy(candidate)
+        baseline = rollback["fleet"]["runners"][0]
+        rollback["manifest"] = baseline["releaseManifest"]
+        bind_manifest_bytes(rollback, baseline["releaseManifestBytes"])
+
+        rollback_plan = controller.build_plan(
+            configuration(), rollback, "production", action="rollback", rollback_source=source
+        )
+
+        self.assertEqual(source["observedDeployedRelease"], rollback_plan["selectedRelease"])
+        adapter = FakeAdapter()
+        controller.execute_plan(rollback_plan, configuration(), rollback, adapter,
+                                lambda _receipt: None, clock=FakeClock())
+        self.assertTrue(all(call[2] == baseline["manifestIdentity"]
+                            for call in adapter.calls if call[0] == "update"))
+
     def test_accepts_realistic_protected_branch_environment_payload(self):
         controller.validate_environment_policy(
             {
@@ -911,10 +1070,11 @@ class DeploymentExecutionTests(unittest.TestCase):
         self.assertNotIn("gha-gate-1", [call[1] for call in adapter.calls if call[0] == "update"])
         self.assertEqual(["probe", "observe"], [call[0] for call in adapter.calls])
 
-    def test_resume_uses_exact_retained_plan_for_a_valid_mixed_fleet(self):
-        plan = controller.build_plan(configuration(), evidence(), "production")
+    def test_resume_uses_exact_published_asset_and_retained_plan_for_a_valid_mixed_fleet(self):
+        candidate = published_format_evidence()
+        plan = controller.build_plan(configuration(), candidate, "production")
         admitted = controller.admitted_receipt(
-            plan, configuration(), evidence(), FakeClock().now()
+            plan, configuration(), candidate, FakeClock().now()
         )
         pending = controller._next_revision(
             admitted,
@@ -933,7 +1093,7 @@ class DeploymentExecutionTests(unittest.TestCase):
             ],
             completed_at=None,
         )
-        resume_evidence = evidence()
+        resume_evidence = copy.deepcopy(candidate)
         resume_evidence["fleet"]["runners"][0]["release"] = copy.deepcopy(
             plan["selectedRelease"]
         )

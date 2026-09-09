@@ -131,7 +131,7 @@ evidence records the runner state as unknown rather than claiming the predecesso
 An unknown state becomes runnable only through an append-only reconciliation revision
 bound to live manifest, release, and image-digest evidence. Selected-release evidence is
 bound to the admitted target manifest and variant digest; baseline evidence must provide
-canonical release-manifest bytes whose recorded identity and reviewed variant index digest
+exact released manifest bytes whose recorded identity and reviewed variant index digest
 match the live host exactly. A passing canary remains observation-pending in retained
 state until the complete window is durably recorded; resume repeats a pending window and
 cannot advance to the next host.
@@ -407,6 +407,36 @@ canonical release signer, protected source ref and commit, and verifies each sel
 image's provenance and SBOM before cloud inventory or runner mutation. Keeping the
 orchestrator and mutation authority on the same identity prevents a reviewed plan from
 being reinterpreted as a raw image digest at execution time.
+
+### Clarification (2026-09-09) — preserve the attested release asset bytes (#629)
+
+The canonical release writer publishes sorted, indented JSON with a final newline;
+`actions/attest-build-provenance` attests that exact file. The controller previously
+compared a compact serialization's digest with the asset identity, violating the
+existing exact-byte boundary. Authenticated release-asset and attestation inspection
+for `Verjson/verjson-github-runner` v0.2.1 (asset 532627568) confirmed subject digest
+`sha256:4f5bb96e1fe07f7b56cfe124206ed85c4e59b9715b3b4e18b3054d890dd1ad32`;
+compact reserialization instead produces
+`sha256:cb3d413b928468fee715a7545567854455ab1b5fde88f701d0454ede2dae7532`.
+The checked-in regression fixture preserves that published asset unchanged.
+
+Restore the invariant by accepting `manifestBytes`, the original UTF-8 asset text,
+alongside `manifest` in trusted evidence. Bound text to 1 MiB, hash the original bytes,
+reject ambiguous or malformed JSON, and compare canonical representations of the
+decoded object and `manifest` (not language-level object equality). Keep source
+repository, protected ref, signer workflow, contract pin, expiry, and attestation
+subject checks. Baseline reconciliation uses the equivalent `releaseManifestBytes`
+and `releaseManifest` pair. Selected-release reconciliation, resume, and rollback
+retain the same raw asset identity; canonical plan and receipt hashing is unchanged.
+
+Existing compact-byte evidence remains valid only if its exact canonical serialization
+already hashes to the recorded asset digest. This compatible extension avoids changing
+historical releases or substituting a normalized digest for a verified attestation.
+Adapters must preserve downloaded bytes rather than reconstructing them. The byte
+contract is reusable for future GitLab-hosted workers; no provider-specific controller
+generalization is needed for this correction. Delivery remains tracked by
+[#629](https://github.com/Verjson/.github/issues/629) and the runner adopter
+[#197](https://github.com/Verjson/verjson-git-runners/issues/197).
 
 ### Clarification (2026-08-18) — immutable deployment CLI acquisition
 
