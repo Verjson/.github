@@ -126,7 +126,7 @@ eligible.
 ## Pause, resume, and interruption
 
 Do not cancel a healthy update merely because the observation window is quiet. To pause
-before dispatch, retain the dry-run plan and do not approve `production`. Once mutation
+before deployment, retain the dry-run plan and withhold the mutating dispatch. Once mutation
 has started, a failed drain, admission check, probe, timeout, or operator cancellation
 stops the state machine; it never skips to another host.
 
