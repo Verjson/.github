@@ -180,7 +180,10 @@ on:
           package-lock.json. approvedPackages authorizes internal packages for
           that manifest alone — a manifest never inherits the root's approved
           set or another manifest's, so a package approved for one manifest is
-          rejected in any other. scriptPlan uses the secretless-ci-script-plan
+          rejected in any other. An empty approvedPackages is valid when no
+          private registry downloads exist; verified checkout-local npm links
+          are source dependencies, not private downloads.
+          scriptPlan uses the secretless-ci-script-plan
           grammar and runs in that manifest's directory. Requires
           package-manager npm. Empty acquires only the root manifest.
         required: false
@@ -706,12 +709,12 @@ jobs:
                       sys.exit(f"nested manifest path repeats: {nested_path}")
                   declared_paths.append(nested_path)
                   nested_approved = nested["approvedPackages"]
-                  if (not isinstance(nested_approved, list) or not nested_approved
-                          or len(nested_approved) != len(set(nested_approved))
+                  if (not isinstance(nested_approved, list)
                           or any(not isinstance(name, str)
                                  or package_pattern.fullmatch(name) is None
                                  or name.split("/", 1)[0] not in scopes
-                                 for name in nested_approved)):
+                                 for name in nested_approved)
+                          or len(nested_approved) != len(set(nested_approved))):
                       sys.exit(f"{nested_path} approvedPackages accepts unique exact names under approved-internal-scopes only")
                   if trusted_policy and not set(nested_approved).issubset(policy_packages):
                       sys.exit(f"{nested_path} approvedPackages must be a subset of trusted repository policy")
@@ -734,12 +737,53 @@ jobs:
                   nested_specs.append((nested_path, set(nested_approved), nested_lock_file))
 
           def npm_lock_candidates(lock_path):
-              lock = json.loads(lock_path.read_text(encoding="utf-8"))
+              lock = json.loads(lock_path.read_text(encoding="utf-8"),
+                                object_pairs_hook=reject_duplicate_object_keys)
               if lock.get("lockfileVersion") not in (2, 3):
                   sys.exit("secretless npm mode requires package-lock lockfileVersion 2 or 3")
+              packages = lock.get("packages", {})
+              local_records = set()
+              for path, package in packages.items():
+                  if "link" not in package:
+                      continue
+                  marker = "node_modules/"
+                  name = path.rsplit(marker, 1)[1] if marker in path else ""
+                  resolved = package.get("resolved")
+                  if (package["link"] is not True
+                          or path.startswith("/")
+                          or re.fullmatch(r"[A-Za-z0-9@._/-]+", path) is None
+                          or any(segment in ("", ".", "..") for segment in path.split("/"))
+                          or re.fullmatch(r"(?:@[a-z0-9][a-z0-9._-]*/)?[a-z0-9][a-z0-9._-]*", name) is None
+                          or not isinstance(resolved, str)):
+                      sys.exit("npm workspace link requires an exact package identity and relative target")
+                  target_key = resolved.removeprefix("file:")
+                  if (re.fullmatch(r"[A-Za-z0-9@._/-]+", target_key) is None
+                          or target_key.startswith("/")
+                          or "node_modules" in target_key.split("/")):
+                      sys.exit("npm workspace link target must be a plain relative source directory")
+                  target = packages.get(target_key)
+                  if (not isinstance(target, dict) or target.get("link")
+                          or target.get("resolved") not in (None, "")):
+                      sys.exit("npm workspace link requires a source record, not a registry or link target")
+                  directory = (lock_path.parent / target_key).resolve()
+                  manifest_file = (directory / "package.json").resolve()
+                  if (not directory.is_dir()
+                          or (directory != workspace and workspace not in directory.parents)
+                          or not manifest_file.is_file()
+                          or workspace not in manifest_file.parents):
+                      sys.exit("npm workspace link and package manifest must remain inside the checkout")
+                  manifest = json.loads(manifest_file.read_text(encoding="utf-8"),
+                                        object_pairs_hook=reject_duplicate_object_keys)
+                  if (manifest.get("name") != name
+                          or package.get("name", name) != name
+                          or target.get("name", name) != name):
+                      sys.exit("npm workspace link, source record and package manifest identities must match")
+                  # Only a proved filesystem link and its source metadata are
+                  # excluded; registry entries still require exact authorization.
+                  local_records.update((path, target_key))
               collected = []
-              for path, package in lock.get("packages", {}).items():
-                  if path == "":
+              for path, package in packages.items():
+                  if path == "" or path in local_records:
                       continue
                   marker = "node_modules/"
                   locked_name = package.get("name")
