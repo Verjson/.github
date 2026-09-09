@@ -465,4 +465,97 @@ assert '"--chdir", str(script_directory),' in body
 assert '"--chdir", str(workspace),' not in body
 PY
 
+python3 - "$validator" "$tmp" <<'PYTEST' \
+  && pass "contained npm workspace links and empty approvals preserve the registry boundary" \
+  || fail "npm workspace link admission or empty-approval boundary regressed"
+import json
+import os
+from pathlib import Path
+import subprocess
+import sys
+import tempfile
+
+validator, temporary = sys.argv[1:]
+checks = 0
+
+def check(change=lambda root, packages: None, *, approved=(), success=True, version=3, downloads=0):
+    global checks
+    with tempfile.TemporaryDirectory(dir=temporary) as directory:
+        root = Path(directory)
+        nested = root / "examples/login"
+        nested.mkdir(parents=True)
+        (root / "package.json").write_text(json.dumps({"name": "@verjson/authn"}))
+        (root / "package-lock.json").write_text(json.dumps({"lockfileVersion": version, "packages": {"": {}}}))
+        (nested / "package.json").write_text(json.dumps({"name": "example"}))
+        packages = {
+            "": {},
+            "../..": {"name": "@verjson/authn", "version": "1.0.0"},
+            "node_modules/@verjson/authn": {"resolved": "../..", "link": True},
+        }
+        change(root, packages)
+        (nested / "package-lock.json").write_text(json.dumps({"lockfileVersion": version, "packages": packages}))
+        spec = [{"path": "examples/login", "approvedPackages": list(approved), "scriptPlan": []}]
+        result = subprocess.run([sys.executable, validator], cwd=root, text=True, capture_output=True,
+            env={**os.environ, "PACKAGE_MANAGER": "npm", "APPROVED_INTERNAL_SCOPES": "@verjson",
+                 "APPROVED_INTERNAL_PACKAGES": "", "NESTED_MANIFESTS": json.dumps(spec),
+                 "TRUSTED_PACKAGE_POLICY": "", "PRIVATE_CACHE_ENTRIES": str(root / "entries")})
+        assert (result.returncode == 0) == success, result.stderr
+        if success:
+            assert len((root / "entries").read_text().splitlines()) == downloads, "only authorized registry downloads may enter acquisition"
+        checks += 1
+
+for version in (2, 3):
+    check(version=version)
+    check(lambda root, packages: packages["node_modules/@verjson/authn"].update(resolved="file:../.."), version=version)
+check(lambda root, packages: packages.clear())
+check(approved=("@verjson/authn",), success=False)
+check(lambda root, packages: packages["node_modules/@verjson/authn"].update(name="@verjson/other"), success=False)
+check(lambda root, packages: packages["../.."].update(name="@verjson/other"), success=False)
+check(lambda root, packages: (root / "package.json").write_text('{"name":"@verjson/other"}'), success=False)
+check(lambda root, packages: packages.pop("../.."), success=False)
+check(lambda root, packages: packages["../.."].update(resolved="https://npm.pkg.github.com/download/@verjson/authn/1.0.0/aaa"), success=False)
+check(lambda root, packages: packages["node_modules/@verjson/authn"].update(link="true"), success=False)
+check(lambda root, packages: (root / "package.json").write_text('{"name":"@verjson/other","name":"@verjson/authn"}'), success=False)
+for path in ("../node_modules/@verjson/authn", "/node_modules/@verjson/authn", "node_modules/../node_modules/@verjson/authn"):
+    check(lambda root, packages, path=path: packages.update({path: packages.pop("node_modules/@verjson/authn")}), success=False)
+for target in ("../../../", "/tmp", "file:/tmp", "https://evil.invalid/source", "..\\..", "%2e%2e/%2e%2e", "../..?query", "../..#fragment"):
+    def mutate(root, packages, target=target):
+        packages[target.removeprefix("file:")] = {"name": "@verjson/authn"}
+        packages["node_modules/@verjson/authn"]["resolved"] = target
+    check(mutate, success=False)
+
+with tempfile.TemporaryDirectory(dir=temporary) as outside:
+    external = Path(outside)
+    (external / "package.json").write_text('{"name":"@verjson/authn"}')
+    def directory_escape(root, packages):
+        (root / "escaped").symlink_to(external, target_is_directory=True)
+        packages["../../escaped"] = packages.pop("../..")
+        packages["node_modules/@verjson/authn"]["resolved"] = "../../escaped"
+    check(directory_escape, success=False)
+    def manifest_escape(root, packages):
+        (root / "package.json").unlink()
+        (root / "package.json").symlink_to(external / "package.json")
+    check(manifest_escape, success=False)
+
+def registry_substitution(root, packages):
+    packages.clear()
+    packages["node_modules/@verjson/authn"] = {"name": "@verjson/authn", "resolved": "https://registry.npmjs.org/@verjson/authn/-/authn-1.0.0.tgz"}
+check(registry_substitution, approved=("@verjson/authn",), success=False)
+def unapproved_private(root, packages):
+    packages.clear()
+    packages["node_modules/@verjson/authn"] = {"resolved": "https://npm.pkg.github.com/download/@verjson/authn/1.0.0/aaa", "integrity": "sha512-" + "A" * 86 + "=="}
+check(unapproved_private, success=False)
+def contained_symlink(root, packages):
+    (root / "source-alias").symlink_to(root, target_is_directory=True)
+    packages["../../source-alias"] = packages.pop("../..")
+    packages["node_modules/@verjson/authn"]["resolved"] = "../../source-alias"
+check(contained_symlink)
+check(lambda root, packages: packages["../.."].pop("name"))
+def mixed_source_and_registry(root, packages):
+    packages["node_modules/@verjson/private-lib"] = {"resolved": "https://npm.pkg.github.com/download/@verjson/private-lib/1.0.0/aaa", "integrity": "sha512-" + "A" * 86 + "=="}
+check(mixed_source_and_registry, success=False)
+check(mixed_source_and_registry, approved=("@verjson/private-lib",), downloads=1)
+print(f"{checks} workspace/registry boundary cases passed")
+PYTEST
+
 exit $((failures > 0))

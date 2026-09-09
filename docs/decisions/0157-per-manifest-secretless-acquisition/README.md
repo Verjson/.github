@@ -105,3 +105,28 @@ cross-manifest smuggling controls in both directions, the aliased-declaration
 case where two paths resolve to one directory, symlink escapes on both the
 credentialed and credentialless sides, the post-acquisition lockfile tamper, and
 an end-to-end two-manifest transfer and install.
+
+## 2026-09-09 — Restore checkout-local npm link admission
+
+[Issue #1276](https://github.com/Verjson/.github/issues/1276) exposed two violations
+of this decision in the motivating `verjson-authn` adopter: example locks link
+`@verjson/authn` to `file:../..`, and some examples download no private package.
+Neither shape warrants acquiring an additional credential-authorized package.
+
+The npm validator now excludes a link and its source metadata only after proving
+the relative target resolves inside the checkout, its source record is neither a
+registry record nor another link, and the link, source record and real contained
+`package.json` agree on the package name. Parent segments are allowed only in the
+target, because nested examples legitimately reference the repository root;
+escaping directory or manifest symlinks, URL/absolute/encoded targets, missing
+source records and mismatched identities fail closed. Contained symlinks remain
+valid because the authority boundary is the resolved checkout. Private registry
+records still require their exact GitHub Packages URL, integrity and per-manifest
+approval; approving a local-only package remains an unused-approval error.
+
+An empty `approvedPackages` is valid only when that manifest has no private registry
+downloads. This restores the existing authorization model rather than broadening
+trusted package policy. The registered nested-manifest behavioral suite exercises
+lockfile versions 2 and 3, the real root-link shape, empty approval, filesystem
+escapes, identity substitution and private-registry denial. The protected workflow
+is regenerated from the canonical source and its source-integrity test is repinned.
