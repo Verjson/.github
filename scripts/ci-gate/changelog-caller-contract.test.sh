@@ -269,7 +269,8 @@ grep -qF "github.event.pull_request.head.repo.full_name == github.repository" <<
 grep -qF 'release_app_client_id: ${{ vars.RELEASE_APP_CLIENT_ID }}' <<<"$renovate_attribution" \
   && grep -qF 'release_environment: release-app' <<<"$renovate_attribution" \
   && grep -qE '^  pull-requests: read$' <<<"$renovate_attribution" \
-  && ! grep -qE 'secrets: inherit|ORG_ADMIN_TOKEN|contents: write' <<<"$renovate_attribution" \
+  && grep -qE '^    secrets: inherit$' <<<"$renovate_attribution" \
+  && ! grep -qE 'ORG_ADMIN_TOKEN|contents: write' <<<"$renovate_attribution" \
   && pass "Renovate attribution caller selects the dedicated App environment and exact read scopes" \
   || fail "Renovate attribution caller broadens credentials or lacks PR-read permission"
 

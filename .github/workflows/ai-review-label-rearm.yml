@@ -16,5 +16,6 @@ jobs:
       issues: write
       pull-requests: write
     uses: ./.github/workflows/gate-rearm.yml
+    secrets: inherit
     with:
       ai_review_environment: ai-review-app

@@ -61,6 +61,7 @@ permissions:
 jobs:
   release:
     uses: Verjson/.github/.github/workflows/container-release.yml@$ref
+    secrets: inherit
     with:
       version: \${{ inputs.version }}
       candidate-manifest: \${{ inputs.candidate-manifest }}
@@ -120,7 +121,8 @@ grep -q "workflow_dispatch:" .github/workflows/container-release.yml
 ! grep -Eq '^  (push|pull_request):' .github/workflows/container-release.yml
 grep -q 'RELEASE_APP_CLIENT_ID' .github/workflows/container-release.yml
 grep -q 'release_environment: release-app' .github/workflows/container-release.yml
-! grep -Eq 'PRIVATE_KEY|secrets: inherit' .github/workflows/container-release.yml
+grep -q '^    secrets: inherit$' .github/workflows/container-release.yml
+! grep -Eq 'PRIVATE_KEY' .github/workflows/container-release.yml
 legacy_release_token='RELEASE_'"TOKEN"
 legacy_org_release_token='VERJSON_RELEASE_'"TOKEN"
 ! grep -Eq "\$legacy_release_token|\$legacy_org_release_token" .github/workflows/container-release.yml

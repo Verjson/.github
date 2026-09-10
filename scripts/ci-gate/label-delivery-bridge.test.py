@@ -20,6 +20,7 @@ def validate_caller(doc, target):
     assert doc["jobs"] == {"rearm": {
         "permissions": {"actions": "write", "contents": "read", "issues": "write", "pull-requests": "write"},
         "uses": target,
+        "secrets": "inherit",
         "with": {"ai_review_environment": "ai-review-app"},
     }}
 
@@ -80,7 +81,7 @@ def main():
         'schema:(if $source_bound then 2 else 1 end)',
     ):
         assert marker in script
-    assert "ORG_ADMIN_TOKEN" not in ARM.read_text() and "secrets: inherit" not in CALLER.read_text()
+    assert "ORG_ADMIN_TOKEN" not in ARM.read_text() and "secrets: inherit" in CALLER.read_text()
     print("PASS: separate protected PR-label caller is exact-source, exact-head, actor-bound and fail-closed")
 
 if __name__ == "__main__":

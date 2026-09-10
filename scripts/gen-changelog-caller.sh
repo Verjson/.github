@@ -465,6 +465,7 @@ jobs:
        github.event.pull_request.user.login == 'renovate[bot]') &&
       startsWith(github.event.pull_request.head.ref, 'renovate/')
     uses: Verjson/.github/.github/workflows/renovate-changelog.yml@${ref}
+    secrets: inherit
     with:
       contract_ref: ${ref}
       release_app_client_id: \${{ vars.RELEASE_APP_CLIENT_ID }}
@@ -868,6 +869,7 @@ jobs:
     needs: verify
     if: needs.verify.outputs.snapshot-exists != 'true'
     uses: Verjson/.github/.github/workflows/changelog-release.yml@${ref}
+    secrets: inherit
     permissions:
       actions: read
       # The reusable workflow pushes with its separately minted release App
@@ -1357,6 +1359,7 @@ ${required_lane_validation_step}
     needs: verify
     if: needs.verify.outputs.snapshot-exists != 'true'
     uses: Verjson/.github/.github/workflows/changelog-release.yml@${ref}
+    secrets: inherit
     permissions:
       actions: read
       # The reusable workflow pushes with its separately minted release App
@@ -1811,6 +1814,7 @@ jobs:
     needs: verify
     if: needs.verify.outputs.snapshot-exists != 'true'
     uses: Verjson/.github/.github/workflows/changelog-release.yml@${ref}
+    secrets: inherit
     permissions:
       actions: read
       # The reusable workflow pushes with its separately minted release App
@@ -2203,6 +2207,8 @@ RENOVATE_ADMISSION
   [ "$(grep -Ec '^    if:' <<<"$renovate_attribution_job")" = 1 ] \
     && [ "$renovate_admission" = "$expected_renovate_admission" ] \
     || fail "$renovate_attribution_workflow does not preserve the exact same-repository Renovate admission gate"
+  grep -qE '^    secrets: inherit$' "$renovate_attribution_workflow" \
+    || fail "$renovate_attribution_workflow lacks inherited environment context"
   [ "$(grep -Ec '^ +uses: Verjson/\.github/\.github/workflows/renovate-changelog\.yml@[0-9a-f]{40}$' "$renovate_attribution_workflow")" = 1 ] \
     && grep -qE "^ +uses: Verjson/\\.github/\\.github/workflows/renovate-changelog\\.yml@$CONTRACT_REF$" "$renovate_attribution_workflow" \
     || fail "$renovate_attribution_workflow does not call the trusted attribution workflow at the shared pin"
@@ -2214,7 +2220,7 @@ RENOVATE_ADMISSION
     || fail "$renovate_attribution_workflow does not select the dedicated release App environment"
   grep -qE '^  contents: read$' "$renovate_attribution_workflow" \
     && grep -qE '^  pull-requests: read$' "$renovate_attribution_workflow" \
-    && ! grep -qE 'contents: write|secrets: inherit|ORG_ADMIN_TOKEN|GITHUB_TOKEN|github\.token|^[[:space:]]+(steps|runs-on):' "$renovate_attribution_workflow" \
+    && ! grep -qE 'contents: write|ORG_ADMIN_TOKEN|GITHUB_TOKEN|github\.token|^[[:space:]]+(steps|runs-on):' "$renovate_attribution_workflow" \
     || fail "$renovate_attribution_workflow is not a thin read-only caller"
 fi
 if [ -e "$release_propose_workflow" ]; then
@@ -2641,8 +2647,10 @@ while IFS= read -r release_workflow; do
   grep -qE '^[[:space:]]+release_environment:[[:space:]]+release-app[[:space:]]*$' \
     <<<"$snapshot_job" \
     || fail "$release_workflow does not select the release-app environment"
+  grep -qE '^    secrets: inherit$' <<<"$snapshot_job" \
+    || fail "$release_workflow snapshot lacks inherited environment context"
   ! sed 's/#.*//' <<<"$snapshot_job" \
-    | grep -qE 'secrets:|PRIVATE_KEY|ORG_ADMIN_TOKEN|push_token|github\.token' \
+    | grep -qE 'PRIVATE_KEY|ORG_ADMIN_TOKEN|push_token|github\.token' \
     || fail "$release_workflow snapshot forwards credentials instead of selecting its environment"
   snapshot_permissions="$(awk '
     /^    permissions:[[:space:]]*$/ { in_permissions = 1; next }

@@ -103,6 +103,7 @@ permissions:
 jobs:
   retry:
     uses: $RETRY_TARGET
+    secrets: inherit
     with:
       merge_environment: merge-app
       required_checks: '$required_checks_yaml'
@@ -194,6 +195,7 @@ jobs:
   # Renaming it makes the gate wait on its own continuation.
   privileged_merge:
     uses: ${TARGET}
+    secrets: inherit
     # The callee reads its caller-owned environment secret directly.
     with:
       merge_environment: merge-app

@@ -318,7 +318,7 @@ job = d.get("jobs", {}).get("retry", {})
 if set(on) != {"workflow_run"} or on["workflow_run"] != {
         "workflows": ["CI", "changelog"], "types": ["completed"]}:
     sys.exit(1)
-if job.get("uses") != want or job.get("secrets") is not None:
+if job.get("uses") != want or job.get("secrets") != "inherit":
     sys.exit(1)
 if job.get("with") != {
         "merge_environment": "merge-app",
@@ -414,11 +414,11 @@ sys.exit(0 if w.get("runner_labels") == '["ubuntu-24.04"]' else 1)
 LABELS_PY
 
 python3 - "$tmp/caller.yml" <<'SECRETS_PY' && pass "generated caller selects only the terminal merge App environment" \
-  || fail "generated caller forwards secrets or omits its role environment"
+  || fail "generated caller omits inherited context or its role environment"
 import sys, yaml
 d = yaml.safe_load(open(sys.argv[1]))
 got = d["jobs"]["privileged_merge"].get("secrets")
-want = None
+want = "inherit"
 inputs = d["jobs"]["privileged_merge"].get("with", {})
 sys.exit(0 if got == want and
          inputs.get("merge_app_client_id") == "${{ vars.MERGE_APP_CLIENT_ID }}" else 1)

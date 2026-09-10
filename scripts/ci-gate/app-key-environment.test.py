@@ -127,12 +127,46 @@ class WorkflowBoundaryTests(unittest.TestCase):
                     if "always()" in value.get("if", ""):
                         self.assertIn("needs.app-key-policy.result == 'success'", value["if"])
 
-    def test_retry_forwards_only_environment_and_model_keys_remain_explicit(self):
+    def test_retry_inherits_context_and_retains_fixed_environment(self):
         retry = workflow("ai-promotion-retry")
         self.assertTrue(retry[True]["workflow_call"]["inputs"]["merge_environment"]["required"])
-        self.assertNotIn("secrets", retry["jobs"]["promote"])
+        self.assertEqual(retry["jobs"]["promote"]["secrets"], "inherit")
         self.assertIn("merge_environment", retry["jobs"]["promote"]["with"])
         self.assertNotIn("release_app_private_key", workflow("node-release")[True]["workflow_call"].get("secrets", {}))
+
+    def test_retry_chain_and_native_callers_preserve_inheritance_at_every_edge(self):
+        sha = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
+        generated = subprocess.check_output(["bash", str(ROOT / "scripts/gen-privileged-merge-caller.sh"), sha,
+            "--retry", '["CI"]', '[{"name":"CI","app_id":1,"workflow_id":2,"workflow_path":".github/workflows/ci.yml"}]'], text=True)
+        retry = yaml.safe_load(generated)["jobs"]["retry"]
+        self.assertEqual(retry["uses"], f"Verjson/.github/.github/workflows/ai-promotion-retry.yml@{sha}")
+        self.assertEqual(retry["secrets"], "inherit")
+        self.assertEqual(retry["with"]["merge_environment"], "merge-app")
+        for name, job, target, field in [
+                ("ai-promotion-retry", "promote", "ai-privileged-merge", "merge_environment"),
+                ("ai-review-label-rearm", "rearm", "gate-rearm", "ai_review_environment"),
+                ("container-release-workflow-ref-canary", "probe", "container-release", "release_environment")]:
+            with self.subTest(name=name):
+                edge = workflow(name)["jobs"][job]
+                self.assertEqual(edge["uses"], f"./.github/workflows/{target}.yml")
+                self.assertEqual(edge["secrets"], "inherit")
+                self.assertIn(field, edge["with"])
+
+    def test_inheritance_preserves_actual_model_names_and_narrow_node_publication(self):
+        review = workflow("ai-review-merge")
+        names = {"ANTHROPIC_API_KEY", "OPENAI_API_KEY", "DEEPSEEK_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"}
+        self.assertEqual(set(review[True]["workflow_call"]["secrets"]), names)
+        source = (ROOT / ".github/workflows/ai-review-merge.yml").read_text()
+        for name in names:
+            self.assertIn("${{ secrets." + name + " }}", source)
+            self.assertNotIn("${{ secrets." + name.lower() + " }}", source)
+        sha = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
+        generated = subprocess.check_output(["bash", str(ROOT / "scripts/gen-changelog-caller.sh"), "release-node", sha], text=True)
+        jobs = yaml.safe_load(generated)["jobs"]
+        publishing = next(job for job in jobs.values() if "node-release.yml@" in job.get("uses", ""))
+        self.assertEqual(publishing["secrets"], {"NODE_AUTH_TOKEN": "${{ secrets.NODE_AUTH_TOKEN }}"})
+        snapshot = next(job for job in jobs.values() if "changelog-release.yml@" in job.get("uses", ""))
+        self.assertEqual(snapshot["secrets"], "inherit")
 
     def test_body_only_edits_allocate_neither_policy_nor_key_job(self):
         jobs = workflow("gate-rearm")["jobs"]
@@ -148,7 +182,7 @@ class WorkflowBoundaryTests(unittest.TestCase):
         self.assertEqual(workflow("ai-promotion-retry")["jobs"]["promote"]["with"]["merge_environment"],
                          "${{ inputs.merge_environment || 'merge-app' }}")
 
-    def test_generators_emit_environment_names_without_any_app_key_grant(self):
+    def test_generators_emit_environment_names_with_inherited_context_without_key_values(self):
         sha = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
         cases = [(["gen-ai-review-caller.sh", sha], "ai_review_environment"),
                  (["gen-gate-rearm-caller.sh", sha], "ai_review_environment"),
@@ -163,11 +197,11 @@ class WorkflowBoundaryTests(unittest.TestCase):
                 text = subprocess.check_output(["bash", str(ROOT / "scripts" / command[0]), *command[1:]], cwd=ROOT, text=True)
                 doc = yaml.safe_load(text)
                 self.assertNotIn("PRIVATE_KEY", text)
-                self.assertNotIn("secrets: inherit", text)
+                self.assertIn("secrets: inherit", text)
                 consumers = [j for j in doc["jobs"].values() if field in j.get("with", {})]
                 self.assertTrue(consumers)
                 self.assertTrue(all("environment" not in j for j in consumers))
-                self.assertTrue(all(not (set(j.get("secrets", {})) & set(audit.ROLES.values())) for j in consumers))
+                self.assertTrue(all(j.get("secrets") == "inherit" for j in consumers))
 
     def test_lint_exception_is_exact_to_the_environment_secret_schema_gap(self):
         config = yaml.safe_load((ROOT / ".github/actionlint.yaml").read_text())

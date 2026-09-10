@@ -1,4 +1,4 @@
-# Reusable environment secret context probe
+# Reusable environment secret context probe — retired
 
 After #1289 merged at `1664d518c13f207916f793b3218bee545209b8ee`, [rearm run 34431240566](https://github.com/Verjson/.github/actions/runs/34431240566) passed the main-only policy prerequisite but the App mint received an empty key. The environment key metadata and earlier direct-job expected-App proof were valid. [Upstream runner issue 4453](https://github.com/actions/runner/issues/4453) reports the same reusable environment resolution failure; [GitHub's reusable workflow documentation](https://docs.github.com/en/actions/how-tos/reuse-automations/reuse-workflows#using-inputs-and-secrets-in-a-reusable-workflow) describes environment precedence but does not prove that an undeclared, ungranted secret resolves at runtime.
 
@@ -20,3 +20,9 @@ After independent review and green CI, the operator merges this probe, dispatche
 For the non-main control, use only an exact reviewed source copy on a temporary operator-owned branch and verify its SHA before dispatch. Existing main-only native policy must deny all four callee jobs before a runner/step starts. Record explicit denial evidence, not merely workflow failure. Do not relax the policy or add a bypass. Remove the temporary branch after checking its SHA.
 
 Use the observations to select the narrowest supported production fix in a separately reviewed change. Retire these three workflows, two exact hosted-inventory sites, test registration and probe-only test after the result is recorded; the operator then removes the noncredential environment probe. Preserve this record and run URLs. Broad App copies and the protective shared-workflow pin remain unchanged.
+
+## Recorded result and retirement
+
+At immutable source [`a5b55fbfb07d433b0ed7e07b36424ba710ee9062`](https://github.com/Verjson/.github/tree/a5b55fbfb07d433b0ed7e07b36424ba710ee9062), [main run 34433194313](https://github.com/Verjson/.github/actions/runs/34433194313) returned false for undeclared, declared and explicit-empty, and true only for inherited. [Non-main run 34433211907](https://github.com/Verjson/.github/actions/runs/34433211907) denied all four jobs natively, with zero runners/steps. The [receipt](https://github.com/Verjson/.github/issues/1285#issuecomment-5612184570) records the metadata controls.
+
+ADR 0171 selects the proven inherited transport. The three workflows, probe-only test/CI registration and two hosted routing sites are removed in that correction. Earlier instructions above document the historical protocol, not an available dispatch surface. The operator removes the noncredential sentinel after the operational proof; no broader App copy or environment policy is changed by probe retirement.
