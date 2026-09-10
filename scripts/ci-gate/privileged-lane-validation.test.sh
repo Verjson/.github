@@ -133,7 +133,7 @@ merge = jobs["privileged_merge"]
 assert admission["runs-on"] == "ubuntu-24.04"
 assert admission["permissions"] == {}
 assert "secrets." not in str(admission)
-assert merge["needs"] == "validate_privileged_lane"
+assert merge["needs"] == ["validate_privileged_lane", "app-key-policy"]
 assert "inputs.privileged_lane == '[\"ubuntu-24.04\"]'" in merge["if"]
 assert "needs.validate_privileged_lane.result == 'success'" in merge["if"]
 assert "always()" in merge["if"]

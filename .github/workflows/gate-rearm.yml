@@ -8,11 +8,14 @@ on:
   pull_request_target:
     types: [opened, reopened, synchronize]
   workflow_call:
-    secrets:
-      AI_REVIEW_APP_PRIVATE_KEY:
+    inputs:
+      ai_review_environment:
+        description: Main-only environment containing the ai-review App private key
         required: true
+        type: string
 
 permissions:
+  actions: read
   contents: read
 
 concurrency:
@@ -20,11 +23,23 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  app-key-policy:
+    if: github.event.action != 'edited' || github.event.changes.title.from
+    uses: ./.github/workflows/app-key-environment.yml
+    permissions:
+      actions: read
+      contents: read
+    with:
+      role: ai-review
+      environment: ${{ inputs.ai_review_environment || 'ai-review-app' }}
+
   arm:
+    environment: ${{ inputs.ai_review_environment || 'ai-review-app' }}
+    needs: app-key-policy
     # Body/base-only edits cannot re-arm review or change a title hold. Skip
     # them before runner placement and credential minting; title edits still
     # reach the live hold checks, including adding DO NOT MERGE.
-    if: github.event.action != 'edited' || github.event.changes.title.from
+    if: ${{ needs.app-key-policy.result == 'success' && (github.event.action != 'edited' || github.event.changes.title.from) }}
     # AI remains advisory under ADR 0090. A missing credential, App outage, or
     # authorization defect must fail this job visibly without turning the
     # ruleset workflow into a veto on an otherwise-authorized human merge.

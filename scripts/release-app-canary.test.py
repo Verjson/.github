@@ -31,9 +31,9 @@ def validate(document: dict, raw: str) -> list[str]:
     trigger = triggers(document)
     if not isinstance(trigger, dict) or set(trigger) != {"workflow_dispatch"}:
         problems.append("canary is not manual-only")
-    elif trigger["workflow_dispatch"] not in (None, {}):
+    elif (trigger["workflow_dispatch"] or {}).get("inputs", {}) != {"release_environment": {"description": "Main-only environment containing the release App private key", "required": True, "type": "string", "default": "release-app"}}:
         problems.append("workflow_dispatch exposes user-controlled inputs")
-    if document.get("permissions") != {"contents": "read"}:
+    if document.get("permissions") != {"actions": "read", "contents": "read"}:
         problems.append("workflow GITHUB_TOKEN is not contents-read-only")
 
     job = (document.get("jobs") or {}).get("canary") or {}
@@ -154,7 +154,7 @@ def validate(document: dict, raw: str) -> list[str]:
     ):
         if fragment not in cleanup_run:
             problems.append(f"ownership-checked atomic cleanup lacks {fragment}")
-    if "${{ inputs." in raw or "repository:" in raw or "CANARY_BRANCH_REF: ${{" in raw:
+    if "${{ inputs." in raw.replace("${{ inputs.release_environment }}", "") or "repository:" in raw or "CANARY_BRANCH_REF: ${{" in raw:
         problems.append("canary exposes a user-controlled target")
     return problems
 

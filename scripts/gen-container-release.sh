@@ -67,8 +67,7 @@ jobs:
       config-path: $config
       contract-ref: $ref$reconcile_with
       release_app_client_id: \${{ vars.RELEASE_APP_CLIENT_ID }}
-    secrets:
-      release_app_private_key: \${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+      release_environment: release-app
 EOF
 ;;
 validator) git -C "$root" show "$ref:scripts/container_release_promotion.py" ;;
@@ -120,7 +119,8 @@ grep -Fq "contract-ref: \$ref" .github/workflows/container-release.yml
 grep -q "workflow_dispatch:" .github/workflows/container-release.yml
 ! grep -Eq '^  (push|pull_request):' .github/workflows/container-release.yml
 grep -q 'RELEASE_APP_CLIENT_ID' .github/workflows/container-release.yml
-grep -q 'RELEASE_APP_PRIVATE_KEY' .github/workflows/container-release.yml
+grep -q 'release_environment: release-app' .github/workflows/container-release.yml
+! grep -Eq 'PRIVATE_KEY|secrets: inherit' .github/workflows/container-release.yml
 legacy_release_token='RELEASE_'"TOKEN"
 legacy_org_release_token='VERJSON_RELEASE_'"TOKEN"
 ! grep -Eq "\$legacy_release_token|\$legacy_org_release_token" .github/workflows/container-release.yml

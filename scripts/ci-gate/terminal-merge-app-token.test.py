@@ -38,8 +38,8 @@ def validate(document: dict, raw: str) -> list[str]:
 
     if not (inputs.get("merge_app_client_id") or {}).get("required"):
         problems.append("merge App client-ID input is not required")
-    if secrets != {"MERGE_APP_PRIVATE_KEY": {"required": True}}:
-        problems.append("reusable secret contract is not the single merge App key")
+    if secrets or not (inputs.get("merge_environment") or {}).get("required"):
+        problems.append("reusable contract must require the merge environment without forwarded keys")
     if job.get("permissions") != {
         "actions": "read", "checks": "read", "contents": "read", "pull-requests": "read"
     }:
@@ -143,7 +143,7 @@ def main() -> None:
     named_step(mutant["jobs"]["privileged_merge"], "Mint exact-repository terminal merge App token").pop("if")
     mutations.append(("mint before authorization", mutant, raw))
     mutant = copy.deepcopy(document)
-    workflow_call(mutant)["secrets"]["ORG_ADMIN_TOKEN"] = {"required": True}
+    workflow_call(mutant).setdefault("secrets", {})["ORG_ADMIN_TOKEN"] = {"required": True}
     mutations.append(("PAT fallback secret", mutant, raw + "\nORG_ADMIN_TOKEN"))
     for mutation in mutations:
         require_rejected(*mutation)

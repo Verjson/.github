@@ -3,6 +3,10 @@ name: immutable container release promotion
 on:
   workflow_call:
     inputs:
+      release_environment:
+        description: Main-only environment containing the release App private key
+        required: true
+        type: string
       version: {required: true, type: string}
       candidate-manifest: {required: true, type: string}
       config-path: {required: true, type: string}
@@ -13,10 +17,9 @@ on:
       # hook entirely. This is never a workflow_dispatch input: the generated caller
       # bakes the reviewed list in, so no dispatcher can widen it at release time.
       reconcile-allowlist: {required: false, type: string, default: ''}
-    secrets:
-      release_app_private_key: {required: true}
 
 permissions:
+  actions: read
   contents: read
 
 concurrency:
@@ -26,8 +29,19 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  app-key-policy:
+    uses: ./.github/workflows/app-key-environment.yml
+    permissions:
+      actions: read
+      contents: read
+    with:
+      role: release
+      environment: ${{ inputs.release_environment }}
+
   promote:
-    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.event.repository.default_branch == 'main'
+    environment: ${{ inputs.release_environment }}
+    needs: app-key-policy
+    if: ${{ needs.app-key-policy.result == 'success' && (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.event.repository.default_branch == 'main') }}
     runs-on: ubuntu-24.04
     permissions:
       actions: read
@@ -207,7 +221,7 @@ jobs:
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
         with:
           client-id: ${{ inputs.release_app_client_id }}
-          private-key: ${{ secrets.release_app_private_key }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
           owner: ${{ github.repository_owner }}
           repositories: ${{ github.event.repository.name }}
           permission-contents: write

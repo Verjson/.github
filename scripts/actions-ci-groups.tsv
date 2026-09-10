@@ -1,4 +1,5 @@
 # group<TAB>repository-controlled command
+platform	python3 scripts/ci-gate/app-key-environment.test.py
 platform	bash scripts/actionlint-trigger.test.sh
 platform	bash scripts/actionlint-install.test.sh
 platform	bash scripts/actionlint-reusable.test.sh
@@ -181,4 +182,3 @@ changelog-release	bash scripts/trigger-scope.test.sh
 merge-gate	python3 scripts/ci-gate/app-slug-fail-closed.test.py
 merge-gate	bash scripts/ci-gate/orphaned-authorization-recovery.test.sh
 merge-gate	bash scripts/assert-no-deferred-checks.test.sh
-platform	python3 scripts/app-key-bootstrap.test.py

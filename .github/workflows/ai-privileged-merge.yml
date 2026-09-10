@@ -11,6 +11,11 @@ name: AI terminal merge promotion
 on:
   workflow_dispatch:
     inputs:
+      merge_environment:
+        description: Main-only environment containing the merge App private key
+        required: true
+        type: string
+        default: merge-app
       pr_number:
         required: true
         type: string
@@ -35,6 +40,10 @@ on:
         type: string
   workflow_call:
     inputs:
+      merge_environment:
+        description: Main-only environment containing the merge App private key
+        required: true
+        type: string
       pr_number:
         required: true
         type: string
@@ -68,11 +77,9 @@ on:
       merge_app_client_id:
         required: true
         type: string
-    secrets:
-      MERGE_APP_PRIVATE_KEY:
-        required: true
 
 permissions:
+  actions: read
   contents: read
 
 concurrency:
@@ -80,6 +87,15 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  app-key-policy:
+    uses: ./.github/workflows/app-key-environment.yml
+    permissions:
+      actions: read
+      contents: read
+    with:
+      role: merge
+      environment: ${{ inputs.merge_environment }}
+
   invalid_verjson_route:
     if: ${{ github.repository_owner == 'Verjson' && !(github.event.repository.visibility == 'public' && (github.repository == 'Verjson/.github' || github.repository == 'Verjson/verjson-github-runner') || github.event.repository.visibility == 'private' && github.repository != 'Verjson/.github' && github.repository != 'Verjson/verjson-github-runner') }}
     runs-on: ubuntu-24.04
@@ -109,8 +125,9 @@ jobs:
           echo "privileged_lane validated: exact match for the admitted ubuntu-24.04 lane."
 
   privileged_merge:
-    needs: validate_privileged_lane
-    if: ${{ always() && (github.repository_owner != 'Verjson' || github.event.repository.visibility == 'public' && (github.repository == 'Verjson/.github' || github.repository == 'Verjson/verjson-github-runner') || github.event.repository.visibility == 'private' && github.repository != 'Verjson/.github' && github.repository != 'Verjson/verjson-github-runner' && inputs.privileged_lane == '["ubuntu-24.04"]' && needs.validate_privileged_lane.result == 'success') }}
+    environment: ${{ inputs.merge_environment }}
+    needs: [validate_privileged_lane, app-key-policy]
+    if: ${{ needs.app-key-policy.result == 'success' && (always() && (github.repository_owner != 'Verjson' || github.event.repository.visibility == 'public' && (github.repository == 'Verjson/.github' || github.repository == 'Verjson/verjson-github-runner') || github.event.repository.visibility == 'private' && github.repository != 'Verjson/.github' && github.repository != 'Verjson/verjson-github-runner' && inputs.privileged_lane == '["ubuntu-24.04"]' && needs.validate_privileged_lane.result == 'success')) }}
     runs-on: ${{ github.repository_owner != 'Verjson' && inputs.runner_labels && fromJSON(inputs.runner_labels) || github.repository_owner != 'Verjson' && 'ubuntu-24.04' || github.event.repository.visibility == 'public' && 'ubuntu-24.04' || fromJSON(inputs.privileged_lane) }}
     timeout-minutes: 5
     permissions:

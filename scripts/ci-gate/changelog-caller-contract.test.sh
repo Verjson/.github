@@ -267,10 +267,10 @@ grep -qF "github.event.pull_request.head.repo.full_name == github.repository" <<
   && pass "Renovate attribution caller rejects forks, other authors, and other branches" \
   || fail "Renovate attribution caller lacks an admission predicate"
 grep -qF 'release_app_client_id: ${{ vars.RELEASE_APP_CLIENT_ID }}' <<<"$renovate_attribution" \
-  && grep -qF 'release_app_private_key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}' <<<"$renovate_attribution" \
+  && grep -qF 'release_environment: release-app' <<<"$renovate_attribution" \
   && grep -qE '^  pull-requests: read$' <<<"$renovate_attribution" \
   && ! grep -qE 'secrets: inherit|ORG_ADMIN_TOKEN|contents: write' <<<"$renovate_attribution" \
-  && pass "Renovate attribution caller passes the dedicated App credential and exact read scopes" \
+  && pass "Renovate attribution caller selects the dedicated App environment and exact read scopes" \
   || fail "Renovate attribution caller broadens credentials or lacks PR-read permission"
 
 # 5. A ref that is not a bare commit is rejected, not quoted and passed through.
@@ -1098,15 +1098,15 @@ strip_executable() { chmod -x "$1/scripts/render-next.sh"; }
 drop_release_app_client_id() {
   sed -i '/^      release_app_client_id: /d' "$1/.github/workflows/release.yml"
 }
-drop_release_app_private_key() {
-  sed -i '/^      release_app_private_key: /d' "$1/.github/workflows/release.yml"
+drop_release_environment() {
+  sed -i '/^      release_environment: /d' "$1/.github/workflows/release.yml"
 }
 restore_org_admin_token() {
-  sed -i '/^      release_app_private_key: /c\      push_token: ${{ secrets.ORG_ADMIN_TOKEN }}' \
+  sed -i '/^      release_environment: /c\      push_token: ${{ secrets.ORG_ADMIN_TOKEN }}' \
     "$1/.github/workflows/release.yml"
 }
 wire_github_token() {
-  sed -i '/^      release_app_private_key: /c\      push_token: ${{ secrets.GITHUB_TOKEN }}' \
+  sed -i '/^      release_environment: /c\      push_token: ${{ secrets.GITHUB_TOKEN }}' \
     "$1/.github/workflows/release.yml"
 }
 grant_snapshot_github_token_write() {
@@ -1367,14 +1367,14 @@ expect_rejection "a second authored running log in NEXT.md" add_authored_log
 expect_rejection "a fragment whose filename is not canonical" uncanonical_fragment
 expect_rejection "a non-executable renderer" strip_executable
 expect_rejection "a release caller without RELEASE_APP_CLIENT_ID" drop_release_app_client_id
-expect_rejection "a release caller without RELEASE_APP_PRIVATE_KEY" drop_release_app_private_key
+expect_rejection "a release caller without its release environment" drop_release_environment
 expect_rejection "a release caller restoring ORG_ADMIN_TOKEN" restore_org_admin_token
 expect_rejection "a release caller wiring GITHUB_TOKEN" wire_github_token
 
 # Rejected for the stated reason, not incidentally. expect_rejection only asserts
 # a non-zero exit, so without this the guard could rot while its case stays green.
 # It reads the LAST run, so it has to sit immediately after the credential cases.
-grep -qE 'dedicated release App credential|RELEASE_APP_PRIVATE_KEY' "$tmproot/run.out" \
+grep -qE 'snapshot forwards credentials|release-app environment' "$tmproot/run.out" \
   && pass "the broad-token rejection names the dedicated release App remedy" \
   || fail "the last credential case failed for some other reason: $(tail -2 "$tmproot/run.out")"
 
@@ -1450,7 +1450,7 @@ grep -q 'gen-changelog-caller.sh release-node' "$tmproot/run.out" \
 # the build of everyone who followed the documentation.
 commented="$tmproot/adopter-commented"
 build_adopter "$commented"
-sed -i 's|^      release_app_private_key:|      # ORG_ADMIN_TOKEN and push_token are retired by ADR 0099.\n      release_app_private_key:|' \
+sed -i 's|^      release_environment:|      # ORG_ADMIN_TOKEN and push_token are retired by ADR 0099.\n      release_environment:|' \
   "$commented/.github/workflows/release.yml"
 run_adopter "$commented" \
   && pass "emitted suite ignores retired-token names in comments" \

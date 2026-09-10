@@ -27,19 +27,19 @@ def validate(document: dict, helper_text: str) -> list[str]:
         problems.append("workflow is not reusable-only")
         return problems
     call = workflow_call["workflow_call"] or {}
-    expected_inputs = {"contract_ref", "release_app_client_id"}
-    expected_secrets = {"release_app_private_key"}
+    expected_inputs = {"contract_ref", "release_app_client_id", "release_environment"}
+    expected_secrets = set()
     if set((call.get("inputs") or {})) != expected_inputs:
         problems.append("workflow_call inputs drifted")
     if set((call.get("secrets") or {})) != expected_secrets:
         problems.append("workflow_call secrets drifted")
     expected_permissions = {"contents": "read", "pull-requests": "read"}
-    if document.get("permissions") != expected_permissions:
+    if document.get("permissions") != {**expected_permissions, "actions": "read"}:
         problems.append("workflow GITHUB_TOKEN lacks its exact read-only scopes")
 
     jobs = document.get("jobs") or {}
-    if set(jobs) != {"attribute"}:
-        problems.append("workflow must contain exactly one attribution job")
+    if set(jobs) != {"app-key-policy", "attribute"}:
+        problems.append("workflow must contain exactly the policy and attribution jobs")
         return problems
     job = jobs["attribute"]
     expected_runner = "${{ fromJSON(vars.CI_LANE_TRUSTED || vars.CI_LANE_FALLBACK || '[\"ubuntu-24.04\"]') }}"
@@ -91,7 +91,7 @@ def validate(document: dict, helper_text: str) -> list[str]:
         problems.append("release App token is minted for no-op runs")
     if mint.get("with") != {
         "client-id": "${{ inputs.release_app_client_id }}",
-        "private-key": "${{ secrets.release_app_private_key }}",
+        "private-key": "${{ secrets.RELEASE_APP_PRIVATE_KEY }}",
         "owner": "${{ github.repository_owner }}",
         "repositories": "${{ github.event.repository.name }}",
         "permission-contents": "write",

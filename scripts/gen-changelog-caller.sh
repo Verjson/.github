@@ -453,6 +453,7 @@ on:
     types: [opened, reopened, synchronize]
 
 permissions:
+  actions: read
   contents: read
   pull-requests: read
 
@@ -467,8 +468,7 @@ jobs:
     with:
       contract_ref: ${ref}
       release_app_client_id: \${{ vars.RELEASE_APP_CLIENT_ID }}
-    secrets:
-      release_app_private_key: \${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+      release_environment: release-app
 EOF
 }
 
@@ -869,6 +869,7 @@ jobs:
     if: needs.verify.outputs.snapshot-exists != 'true'
     uses: Verjson/.github/.github/workflows/changelog-release.yml@${ref}
     permissions:
+      actions: read
       # The reusable workflow pushes with its separately minted release App
       # token. This caller grant caps only its read-only GITHUB_TOKEN (#784).
       contents: read
@@ -879,13 +880,9 @@ jobs:
       component: \${{ inputs.component }}
       # v3 recommends the App client ID and deprecates its legacy numeric ID.
       release_app_client_id: \${{ vars.RELEASE_APP_CLIENT_ID }}
+      release_environment: release-app
       # Explicit, so both halves of one release share one pool (#465).
       runner: \${{ ${release_runner_expr} }}
-    secrets:
-      # The reusable workflow mints a short-lived installation token constrained
-      # to this owner, this repository, and contents-write. The dedicated App is
-      # the named main-protection bypass actor (ADR 0099, #329).
-      release_app_private_key: \${{ secrets.RELEASE_APP_PRIVATE_KEY }}
 
   publish:
     name: Publish the released snapshot
@@ -1361,6 +1358,7 @@ ${required_lane_validation_step}
     if: needs.verify.outputs.snapshot-exists != 'true'
     uses: Verjson/.github/.github/workflows/changelog-release.yml@${ref}
     permissions:
+      actions: read
       # The reusable workflow pushes with its separately minted release App
       # token. This caller grant caps only its read-only GITHUB_TOKEN (#784).
       contents: read
@@ -1371,13 +1369,9 @@ ${required_lane_validation_step}
       component: \${{ inputs.component }}
       # v3 recommends the App client ID and deprecates its legacy numeric ID.
       release_app_client_id: \${{ vars.RELEASE_APP_CLIENT_ID }}
+      release_environment: release-app
       # Explicit, so both halves of one release share one pool (#465).
       runner: \${{ ${release_runner_expr} }}
-    secrets:
-      # The reusable workflow mints a short-lived installation token constrained
-      # to this owner, this repository, and contents-write. The dedicated App is
-      # the named main-protection bypass actor (ADR 0099, #329).
-      release_app_private_key: \${{ secrets.RELEASE_APP_PRIVATE_KEY }}
 
 ${private_acquisition_job}
   build:
@@ -1818,6 +1812,7 @@ jobs:
     if: needs.verify.outputs.snapshot-exists != 'true'
     uses: Verjson/.github/.github/workflows/changelog-release.yml@${ref}
     permissions:
+      actions: read
       # The reusable workflow pushes with its separately minted release App
       # token. This caller grant caps only its read-only GITHUB_TOKEN (#784).
       contents: read
@@ -1828,13 +1823,9 @@ jobs:
       component: \${{ inputs.component }}
       # v3 recommends the App client ID and deprecates its legacy numeric ID.
       release_app_client_id: \${{ vars.RELEASE_APP_CLIENT_ID }}
+      release_environment: release-app
       # Explicit, so both halves of one release share one pool (#465).
       runner: \${{ ${release_runner_expr} }}
-    secrets:
-      # The reusable workflow mints a short-lived installation token constrained
-      # to this owner, this repository, and contents-write. The dedicated App is
-      # the named main-protection bypass actor (ADR 0099, #329).
-      release_app_private_key: \${{ secrets.RELEASE_APP_PRIVATE_KEY }}
 
   publish:
     name: Publish the released snapshot
@@ -2219,8 +2210,8 @@ RENOVATE_ADMISSION
     && grep -qE "^ +contract_ref: $CONTRACT_REF$" "$renovate_attribution_workflow" \
     || fail "$renovate_attribution_workflow does not pass the shared pinned contract_ref"
   grep -qE '^ +release_app_client_id: \$\{\{ vars\.RELEASE_APP_CLIENT_ID \}\}$' "$renovate_attribution_workflow" \
-    && grep -qE '^ +release_app_private_key: \$\{\{ secrets\.RELEASE_APP_PRIVATE_KEY \}\}$' "$renovate_attribution_workflow" \
-    || fail "$renovate_attribution_workflow does not pass only the dedicated release App credential"
+    && grep -qE '^ +release_environment: release-app$' "$renovate_attribution_workflow" \
+    || fail "$renovate_attribution_workflow does not select the dedicated release App environment"
   grep -qE '^  contents: read$' "$renovate_attribution_workflow" \
     && grep -qE '^  pull-requests: read$' "$renovate_attribution_workflow" \
     && ! grep -qE 'contents: write|secrets: inherit|ORG_ADMIN_TOKEN|GITHUB_TOKEN|github\.token|^[[:space:]]+(steps|runs-on):' "$renovate_attribution_workflow" \
@@ -2647,21 +2638,22 @@ while IFS= read -r release_workflow; do
   grep -qE '^[[:space:]]+release_app_client_id:[[:space:]]*\$\{\{[[:space:]]*vars\.RELEASE_APP_CLIENT_ID[[:space:]]*\}\}[[:space:]]*$' \
     <<<"$snapshot_job" \
     || fail "$release_workflow does not pass the organization RELEASE_APP_CLIENT_ID variable to the release workflow"
-  grep -qE '^[[:space:]]+release_app_private_key:[[:space:]]*\$\{\{[[:space:]]*secrets\.RELEASE_APP_PRIVATE_KEY[[:space:]]*\}\}[[:space:]]*$' \
+  grep -qE '^[[:space:]]+release_environment:[[:space:]]+release-app[[:space:]]*$' \
     <<<"$snapshot_job" \
-    || fail "$release_workflow does not pass only RELEASE_APP_PRIVATE_KEY to the release workflow"
+    || fail "$release_workflow does not select the release-app environment"
   ! sed 's/#.*//' <<<"$snapshot_job" \
-    | grep -qE 'ORG_ADMIN_TOKEN|push_token|secrets\.(GITHUB_TOKEN|github_token)|github\.token' \
-    || fail "$release_workflow snapshot still passes a broad or repository Actions push token instead of the dedicated release App credential"
+    | grep -qE 'secrets:|PRIVATE_KEY|ORG_ADMIN_TOKEN|push_token|github\.token' \
+    || fail "$release_workflow snapshot forwards credentials instead of selecting its environment"
   snapshot_permissions="$(awk '
     /^    permissions:[[:space:]]*$/ { in_permissions = 1; next }
     in_permissions && /^    [^[:space:]]/ { exit }
     in_permissions { print }
   ' <<<"$snapshot_job")"
   snapshot_permissions_effective="$(sed 's/#.*//' <<<"$snapshot_permissions" | sed '/^[[:space:]]*$/d')"
-  [ "$(grep -c . <<<"$snapshot_permissions_effective")" -eq 1 ] \
+  [ "$(grep -c . <<<"$snapshot_permissions_effective")" -eq 2 ] \
     && grep -qE '^[[:space:]]+contents:[[:space:]]+read[[:space:]]*$' <<<"$snapshot_permissions_effective" \
-    || fail "$release_workflow snapshot grants GITHUB_TOKEN more than contents-read; only the dedicated release App token may push (#784)"
+    && grep -qE '^[[:space:]]+actions:[[:space:]]+read[[:space:]]*$' <<<"$snapshot_permissions_effective" \
+    || fail "$release_workflow snapshot must grant only contents-read and environment-policy actions-read"
 
   # The reusable workflow and its engine are one contract. Checking only the
   # uses: ref lets a caller execute workflow A with contract_ref B (#349).

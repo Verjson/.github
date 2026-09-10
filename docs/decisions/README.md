@@ -14,6 +14,7 @@ Reverse-chronological index of org-level decisions.
 | [0169](0169-sealed-environment-app-bootstrap/README.md) | 2026-09-10 | Sealed environment App bootstrap |
 | [0168](0168-correct-authn-required-workflow-baseline/README.md) | 2026-09-10 | Correct the Authn required workflow baseline after the activation trial |
 | [0167](0167-controlled-authn-required-workflow-activation/README.md) | 2026-09-10 | Activate the staged Authn required workflow under explicit owner authority |
+| [0166](0166-environment-only-app-private-keys/README.md) | 2026-09-10 | Confine App private keys to main-only environment secrets |
 | [0165](0165-preserve-generated-changelog-runner-boundaries/README.md) | 2026-09-05 | Preserve generated changelog runner boundaries in consumer policy |
 | [0164](0164-bridge-review-lifecycle-deliveries/README.md) | 2026-09-05 | Bridge review lifecycle deliveries independently of required workflows |
 | [0163](0163-preserve-release-authorization-in-authn-required-workflow/README.md) | 2026-09-05 | Preserve release authorization in the authn required workflow |

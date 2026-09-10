@@ -16,15 +16,15 @@ def load(path):
 
 def validate_caller(doc, target):
     assert doc[True] == {"pull_request_target": {"types": ["labeled", "ready_for_review", "converted_to_draft", "edited", "unlabeled"]}}
-    assert doc["permissions"] == {"contents": "read"}
+    assert doc["permissions"] == {"actions": "read", "contents": "read"}
     assert doc["jobs"] == {"rearm": {
         "permissions": {"actions": "write", "contents": "read", "issues": "write", "pull-requests": "write"},
         "uses": target,
-        "secrets": {"AI_REVIEW_APP_PRIVATE_KEY": "${{ secrets.AI_REVIEW_APP_PRIVATE_KEY }}"},
+        "with": {"ai_review_environment": "ai-review-app"},
     }}
 
 def validate_event_admission(job):
-    condition = job.get("if", "true")
+    condition = job.get("if", "true").removeprefix("${{").removesuffix("}}").strip()
     cases = [
         ("body-only edit", {"action": "edited", "changes": {"body": {"from": "old body"}}}, False),
         ("base-only edit", {"action": "edited", "changes": {"base": {"ref": {"from": "main"}}}}, False),
@@ -47,8 +47,8 @@ def validate_event_admission(job):
         # the same semantics in JavaScript for these GitHub event values.
         completed = subprocess.run([
             "node", "-e",
-            'const vm = require("node:vm"); process.stdout.write(JSON.stringify(Boolean(vm.runInNewContext(process.argv[1], {github: {event: JSON.parse(process.argv[2])}}))));',
-            condition, json.dumps(context),
+            'const vm = require("node:vm"); process.stdout.write(JSON.stringify(Boolean(vm.runInNewContext(process.argv[1], {github: {event: JSON.parse(process.argv[2])}, needs: {"app-key-policy": {result: "success"}}}))));',
+            condition.replace("needs.app-key-policy", "needs[\"app-key-policy\"]"), json.dumps(context),
         ], check=True, capture_output=True, text=True)
         assert json.loads(completed.stdout) is expected, name
 

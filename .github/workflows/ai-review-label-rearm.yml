@@ -5,6 +5,7 @@ on:
     types: [labeled, ready_for_review, converted_to_draft, edited, unlabeled]
 
 permissions:
+  actions: read
   contents: read
 
 jobs:
@@ -15,5 +16,5 @@ jobs:
       issues: write
       pull-requests: write
     uses: ./.github/workflows/gate-rearm.yml
-    secrets:
-      AI_REVIEW_APP_PRIVATE_KEY: ${{ secrets.AI_REVIEW_APP_PRIVATE_KEY }}
+    with:
+      ai_review_environment: ai-review-app

@@ -52,7 +52,7 @@ assert job == {
         "pull-requests": "write",
     },
     "uses": expected_uses,
-    "secrets": {"AI_REVIEW_APP_PRIVATE_KEY": "${{ secrets.AI_REVIEW_APP_PRIVATE_KEY }}"},
+    "with": {"ai_review_environment": "ai-review-app"},
 }
 PY
 
@@ -90,7 +90,7 @@ import yaml
 with open(sys.argv[1], encoding="utf-8") as stream:
     doc = yaml.load(stream, Loader=yaml.BaseLoader)
 
-assert doc["permissions"] == {"contents": "read"}
+assert doc["permissions"] == {"actions": "read", "contents": "read"}
 assert doc["concurrency"] == {"group": "ai-review-arm-${{ github.event.pull_request.number }}", "cancel-in-progress": "false"}
 arm = doc["jobs"]["arm"]
 assert arm["permissions"] == {

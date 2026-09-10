@@ -52,11 +52,11 @@ jobs:
   review:
     uses: Verjson/.github/.github/workflows/ai-review-merge.yml@$contract_sha
     secrets:
-      AI_REVIEW_APP_PRIVATE_KEY: \${{ secrets.AI_REVIEW_APP_PRIVATE_KEY }}
       ANTHROPIC_API_KEY: \${{ secrets.ANTHROPIC_API_KEY }}
       OPENAI_API_KEY: \${{ secrets.OPENAI_API_KEY }}
       DEEPSEEK_API_KEY: \${{ secrets.DEEPSEEK_API_KEY }}
     with:
+      ai_review_environment: ai-review-app
       pr_number: \${{ inputs.pr_number }}
       expected_head_sha: \${{ inputs.expected_head_sha }}
       authorization_check_id: \${{ inputs.authorization_check_id }}

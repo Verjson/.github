@@ -35,21 +35,19 @@ def validate(document: dict, raw: str) -> list[str]:
         {},
     )
 
-    if document.get("permissions") != {"contents": "read"}:
+    if document.get("permissions") != {"actions": "read", "contents": "read"}:
         problems.append("workflow GITHUB_TOKEN is not contents-read-only")
     if release.get("permissions") != {"contents": "read"}:
         problems.append("release-job GITHUB_TOKEN is not contents-read-only")
     if not (inputs.get("release_app_client_id") or {}).get("required"):
         problems.append("release_app_client_id is not required")
-    if set(secrets) != {"release_app_private_key"}:
-        problems.append("workflow accepts secrets beyond the release App private key")
-    elif not secrets["release_app_private_key"].get("required"):
-        problems.append("release App private key is optional")
+    if secrets or not (inputs.get("release_environment") or {}).get("required"):
+        problems.append("release must require an environment instead of forwarded App keys")
     if mint.get("uses") != TOKEN_ACTION:
         problems.append("token action pin changed")
     expected_inputs = {
         "client-id": "${{ inputs.release_app_client_id }}",
-        "private-key": "${{ secrets.release_app_private_key }}",
+        "private-key": "${{ secrets.RELEASE_APP_PRIVATE_KEY }}",
         "owner": "${{ github.repository_owner }}",
         "repositories": "${{ github.event.repository.name }}",
         "permission-contents": "write",
@@ -123,7 +121,7 @@ def main() -> int:
     mutations.append(("checkout with GITHUB_TOKEN", mutant, raw))
 
     mutant = copy.deepcopy(document)
-    workflow_call(mutant)["secrets"]["push_token"] = {"required": True}
+    workflow_call(mutant).setdefault("secrets", {})["push_token"] = {"required": True}
     mutations.append(("the temporary push_token secret", mutant, raw + "\nsecrets.push_token"))
 
     guardless = raw.replace(

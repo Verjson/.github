@@ -71,7 +71,7 @@ python3 - "$canonical" <<'PY' && pass "terminal routing has no runner-produced t
 import sys, yaml
 d = yaml.safe_load(open(sys.argv[1]))
 jobs = d["jobs"]
-if list(jobs) != ["invalid_verjson_route", "validate_privileged_lane", "privileged_merge"]:
+if list(jobs) != ["app-key-policy", "invalid_verjson_route", "validate_privileged_lane", "privileged_merge"]:
     sys.exit(1)
 guard = jobs["invalid_verjson_route"]
 validation = jobs["validate_privileged_lane"]
@@ -82,7 +82,7 @@ for forbidden in ("needs.validate_privileged_lane.outputs", "resolve_privileged_
         sys.exit(1)
 if any("outputs" in job for job in (guard, validation, merge)):
     sys.exit(1)
-if merge.get("needs") != "validate_privileged_lane":
+if merge.get("needs") != ["validate_privileged_lane", "app-key-policy"]:
     sys.exit(1)
 sys.exit(0)
 PY
@@ -110,6 +110,7 @@ allowed = ("Verjson/.github", "Verjson/verjson-github-runner")
 want_guard_if = "${{ github.repository_owner == 'Verjson' && !(github.event.repository.visibility == 'public' && (github.repository == 'Verjson/.github' || github.repository == 'Verjson/verjson-github-runner') || github.event.repository.visibility == 'private' && github.repository != 'Verjson/.github' && github.repository != 'Verjson/verjson-github-runner') }}"
 want_validation_if = "${{ github.repository_owner == 'Verjson' && github.event.repository.visibility == 'private' && github.repository != 'Verjson/.github' && github.repository != 'Verjson/verjson-github-runner' }}"
 want_if = "${{ always() && (github.repository_owner != 'Verjson' || github.event.repository.visibility == 'public' && (github.repository == 'Verjson/.github' || github.repository == 'Verjson/verjson-github-runner') || github.event.repository.visibility == 'private' && github.repository != 'Verjson/.github' && github.repository != 'Verjson/verjson-github-runner' && inputs.privileged_lane == '[\"ubuntu-24.04\"]' && needs.validate_privileged_lane.result == 'success') }}"
+want_if = "${{ needs.app-key-policy.result == 'success' && (" + want_if.removeprefix("${{").removesuffix("}}").strip() + ") }}"
 want_runs_on = "${{ github.repository_owner != 'Verjson' && inputs.runner_labels && fromJSON(inputs.runner_labels) || github.repository_owner != 'Verjson' && 'ubuntu-24.04' || github.event.repository.visibility == 'public' && 'ubuntu-24.04' || fromJSON(inputs.privileged_lane) }}"
 
 def valid(candidate):
@@ -118,7 +119,7 @@ def valid(candidate):
     merge = jobs.get("privileged_merge", {})
     guard_steps = guard.get("steps", [])
     return (
-        list(jobs) == ["invalid_verjson_route", "validate_privileged_lane", "privileged_merge"]
+        list(jobs) == ["app-key-policy", "invalid_verjson_route", "validate_privileged_lane", "privileged_merge"]
         and guard.get("if") == want_guard_if
         and guard.get("runs-on") == "ubuntu-24.04"
         and guard.get("timeout-minutes") == 1
@@ -133,7 +134,7 @@ def valid(candidate):
         and "secrets." not in str(jobs["validate_privileged_lane"])
         and merge.get("if") == want_if
         and merge.get("runs-on") == want_runs_on
-        and merge.get("needs") == "validate_privileged_lane"
+        and merge.get("needs") == ["validate_privileged_lane", "app-key-policy"]
         and "outputs" not in jobs["validate_privileged_lane"]
         and "outputs" not in merge
         and all(name in want_if for name in allowed)
@@ -317,10 +318,10 @@ job = d.get("jobs", {}).get("retry", {})
 if set(on) != {"workflow_run"} or on["workflow_run"] != {
         "workflows": ["CI", "changelog"], "types": ["completed"]}:
     sys.exit(1)
-if job.get("uses") != want or job.get("secrets") != {
-        "MERGE_APP_PRIVATE_KEY": "${{ secrets.MERGE_APP_PRIVATE_KEY }}"}:
+if job.get("uses") != want or job.get("secrets") is not None:
     sys.exit(1)
 if job.get("with") != {
+        "merge_environment": "merge-app",
         "required_checks": '[{"name":"shell-tests","app_id":15368,"workflow_id":315894159,"workflow_path":".github/workflows/actions-ci.yml"}]',
         "privileged_lane": "${{ vars.CI_LANE_PRIVILEGED }}",
         "merge_app_client_id": "${{ vars.MERGE_APP_CLIENT_ID }}"}:
@@ -351,7 +352,7 @@ python3 - "$tmp/caller.yml" <<'WITH_PY' && pass "generated caller forwards exact
 import sys, yaml
 d = yaml.safe_load(open(sys.argv[1]))
 w = d["jobs"]["privileged_merge"].get("with", {})
-if set(w) != {"pr_number", "expected_head_sha", "authorization_check_id", "arm_run_id", "arm_run_attempt", "review_policy", "source_run_id", "required_checks", "privileged_lane", "merge_app_client_id"}:
+if set(w) != {"pr_number", "expected_head_sha", "authorization_check_id", "arm_run_id", "arm_run_attempt", "review_policy", "source_run_id", "required_checks", "privileged_lane", "merge_app_client_id", "merge_environment"}:
     sys.exit(1)
 sys.exit(0 if w["expected_head_sha"] == "${{ inputs.expected_head_sha }}" and
          w["review_policy"] == "${{ inputs.review_policy }}" and
@@ -412,14 +413,12 @@ w = d["jobs"]["privileged_merge"].get("with", {})
 sys.exit(0 if w.get("runner_labels") == '["ubuntu-24.04"]' else 1)
 LABELS_PY
 
-python3 - "$tmp/caller.yml" <<'SECRETS_PY' && pass "generated caller grants only the terminal merge App contract" \
-  || fail "generated caller uses secrets: inherit or omits an explicit narrow grant"
+python3 - "$tmp/caller.yml" <<'SECRETS_PY' && pass "generated caller selects only the terminal merge App environment" \
+  || fail "generated caller forwards secrets or omits its role environment"
 import sys, yaml
 d = yaml.safe_load(open(sys.argv[1]))
 got = d["jobs"]["privileged_merge"].get("secrets")
-want = {
-    "MERGE_APP_PRIVATE_KEY": "${{ secrets.MERGE_APP_PRIVATE_KEY }}",
-}
+want = None
 inputs = d["jobs"]["privileged_merge"].get("with", {})
 sys.exit(0 if got == want and
          inputs.get("merge_app_client_id") == "${{ vars.MERGE_APP_CLIENT_ID }}" else 1)

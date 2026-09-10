@@ -37,10 +37,9 @@ literal_hosted_job_sites() {
 }
 
 literal_hosted_sites="$(literal_hosted_job_sites "${workflow_files[@]}")"
-expected_literal_hosted_sites=$'actions-ci.yml:hosted-compatibility-tests:    runs-on: ubuntu-24.04\nai-privileged-merge.yml:invalid_verjson_route:    runs-on: ubuntu-24.04\nai-privileged-merge.yml:validate_privileged_lane:    runs-on: ubuntu-24.04\ncontainer-candidate-publish.yml:acquire-private-node-dependencies:    runs-on: ubuntu-24.04\ncontainer-candidate-publish.yml:attest-sbom:    runs-on: ubuntu-24.04\ncontainer-candidate-publish.yml:candidate-manifest:    runs-on: ubuntu-24.04\ncontainer-candidate-publish.yml:prepare:    runs-on: ubuntu-24.04\ncontainer-candidate-publish.yml:publish-base:    runs-on: ubuntu-24.04\ncontainer-candidate-publish.yml:publish-derived:    runs-on: ubuntu-24.04\ncontainer-release.yml:promote:    runs-on: ubuntu-24.04\nprivileged-merge-conformance.yml:audit:    runs-on: ubuntu-24.04'
+expected_literal_hosted_sites=$'actions-ci.yml:hosted-compatibility-tests:    runs-on: ubuntu-24.04\nai-privileged-merge.yml:invalid_verjson_route:    runs-on: ubuntu-24.04\nai-privileged-merge.yml:validate_privileged_lane:    runs-on: ubuntu-24.04\napp-key-environment.yml:validate:    runs-on: ubuntu-24.04\ncontainer-candidate-publish.yml:acquire-private-node-dependencies:    runs-on: ubuntu-24.04\ncontainer-candidate-publish.yml:attest-sbom:    runs-on: ubuntu-24.04\ncontainer-candidate-publish.yml:candidate-manifest:    runs-on: ubuntu-24.04\ncontainer-candidate-publish.yml:prepare:    runs-on: ubuntu-24.04\ncontainer-candidate-publish.yml:publish-base:    runs-on: ubuntu-24.04\ncontainer-candidate-publish.yml:publish-derived:    runs-on: ubuntu-24.04\ncontainer-release.yml:promote:    runs-on: ubuntu-24.04\nprivileged-merge-conformance.yml:audit:    runs-on: ubuntu-24.04'
 expected_literal_hosted_sites="$(printf '%s\n' \
   "$expected_literal_hosted_sites" \
-  $'app-key-bootstrap-verify.yml:verify-merge:    runs-on: ubuntu-24.04\napp-key-bootstrap-verify.yml:verify-release:    runs-on: ubuntu-24.04\napp-key-bootstrap-verify.yml:verify-review:    runs-on: ubuntu-24.04\napp-key-bootstrap.yml:seal:    runs-on: ubuntu-24.04' \
   $'cli-projects-package-surface-required.yml:admission:    runs-on: ubuntu-24.04\ncli-projects-package-surface-required.yml:package-surface:    runs-on: ubuntu-24.04' \
   | sort)"
 
@@ -56,21 +55,6 @@ if inventory_error="$(validate_literal_hosted_inventory "$literal_hosted_sites" 
 else
   fail "$inventory_error"
 fi
-
-# ADR 0169 sanctions only these temporary job identities, never whole files.
-for bootstrap_mutation in missing-seal extra-proof-job; do
-  if [ "$bootstrap_mutation" = missing-seal ]; then
-    mutated_bootstrap_sites="$(printf '%s\n' "$literal_hosted_sites" | grep -v '^app-key-bootstrap.yml:seal:')"
-  else
-    mutated_bootstrap_sites="$(printf '%s\n%s\n' "$literal_hosted_sites" \
-      'app-key-bootstrap-verify.yml:unreviewed:    runs-on: ubuntu-24.04' | sort)"
-  fi
-  if validate_literal_hosted_inventory "$mutated_bootstrap_sites" >/dev/null 2>&1; then
-    fail "bootstrap hosted inventory accepted $bootstrap_mutation"
-  else
-    pass "bootstrap hosted inventory rejects $bootstrap_mutation"
-  fi
-done
 
 if python3 - "$root/.github/workflows/actions-ci.yml" <<'PY'
 import copy
