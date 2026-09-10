@@ -145,7 +145,7 @@ def validate_workflow(path=WORKFLOW):
             "PR-authored execution plan drifted")
     require(json.loads(inputs.get("secretless-compatibility-ranges", "")) == {
         "package": "@verjson/authn",
-        "ranges": ["1.0.3"],
+        "ranges": ["2.0.0"],
         "script": "test:type-surface-compatibility",
     }, "type-surface compatibility request drifted")
     require(json.loads(inputs.get("secretless-auxiliary-source", "")) == {
