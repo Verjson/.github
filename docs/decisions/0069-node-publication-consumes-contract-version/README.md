@@ -125,3 +125,21 @@ for the private dependency credential.
 Revert the implementing pull request. That restores ADR 0060's unconditional
 refusal. It does not restore release-on-merge, because callers remain explicitly
 dispatched and no `.releaserc.json` is reintroduced.
+
+## 2026-09-10 — Exact package selection
+
+[Issue #1286](https://github.com/Verjson/.github/issues/1286) showed that always
+inserting the root package prevented a component-only Node release. The generator
+now accepts repeated `--only-package-dir` arguments as an exact ordered selection,
+including nested-only packages. Existing root-default and additive `--package-dir`
+semantics remain intact; mixing the two modes is rejected. Both modes retain the
+same normalized relative-path and duplicate validation.
+
+One selection supplies verification stamping, publication directories, reproducible
+headers and generated contract expectations. The component and prefix still choose
+only the changelog/version stream. This extends package selection without changing
+verify → snapshot → publish ordering, credentials, or release authority. Generated
+adopter tests reject extra root stamping/publication; the focused selection suite
+executes the actual stamping shell against a stubbed npm boundary. A disposable
+exact-pin rehearsal checks component/prefix snapshot and tag isolation, then stamps
+and packs the selected nested package without changing the root version.

@@ -17,7 +17,7 @@
 #   scripts/gen-changelog-caller.sh pr-gate <sha> [--untrusted-runner <label>[,<label>...]] > .github/workflows/changelog-contract.yml
 #   scripts/gen-changelog-caller.sh release-node <sha> [--scope <scope>] [--node-version <version>] [--release-asset <path>]... > .github/workflows/release.yml
 #   scripts/gen-changelog-caller.sh release-artifact <sha> --build-runner <selector>... [--approved-internal-package <@verjson/name>]... [--scope <scope>] [--node-version <version>] > .github/workflows/release.yml
-#   scripts/gen-changelog-caller.sh release-snapshot <sha> [--scope <scope>] [--node-version <version>] [--package-dir <relative-dir>]... > .github/workflows/release.yml
+#   scripts/gen-changelog-caller.sh release-snapshot <sha> [--scope <scope>] [--node-version <version>] [--package-dir <relative-dir>]... [--only-package-dir <relative-dir>]... > .github/workflows/release.yml
 #   scripts/gen-changelog-caller.sh release-propose <sha> --autonomy {propose|dispatch} > .github/workflows/release-propose.yml
 #
 # Every changelog-enabled workflow mode publishes the organization ruleset's
@@ -71,7 +71,7 @@
 set -euo pipefail
 
 usage() {
-  echo "usage: $(basename "$0") {workflow|generated-artifacts|generated-artifacts-with-adr-index|renovate-attribution|adr-index-generator|renderer|contract-test|pr-gate|release-node|release-artifact|release-snapshot|release-propose} <40-hex-commit> [--scope <npm-scope>] [--node-version <version>] [--package-dir <relative-dir>]... [--release-asset <path>]... [--build-runner <selector>]... [--approved-internal-package <@verjson/name>]... [--autonomy {propose|dispatch}] [--untrusted-runner <label>[,<label>...]]" >&2
+  echo "usage: $(basename "$0") {workflow|generated-artifacts|generated-artifacts-with-adr-index|renovate-attribution|adr-index-generator|renderer|contract-test|pr-gate|release-node|release-artifact|release-snapshot|release-propose} <40-hex-commit> [--scope <npm-scope>] [--node-version <version>] [--package-dir <relative-dir>]... [--only-package-dir <relative-dir>]... [--release-asset <path>]... [--build-runner <selector>]... [--approved-internal-package <@verjson/name>]... [--autonomy {propose|dispatch}] [--untrusted-runner <label>[,<label>...]]" >&2
   echo "required check: changelog / validate" >&2
   exit 2
 }
@@ -87,6 +87,7 @@ release_scope_set=false
 release_node_version_set=false
 release_package_dirs=(".")
 release_package_dirs_set=false
+release_package_dirs_exact=false
 release_assets=()
 release_build_runners=()
 release_approved_internal_packages=()
@@ -108,7 +109,18 @@ while [ "$#" -gt 0 ]; do
       shift 2
       ;;
     --package-dir)
+      [ "$#" -ge 2 ] && [ "$release_package_dirs_exact" = false ] || usage
+      release_package_dirs+=("$2")
+      release_package_dirs_set=true
+      shift 2
+      ;;
+    --only-package-dir)
       [ "$#" -ge 2 ] || usage
+      if [ "$release_package_dirs_exact" = false ]; then
+        [ "$release_package_dirs_set" = false ] || usage
+        release_package_dirs=()
+        release_package_dirs_exact=true
+      fi
       release_package_dirs+=("$2")
       release_package_dirs_set=true
       shift 2
@@ -281,6 +293,21 @@ for package_dir in "${release_package_dirs[@]}"; do
     }
   done
 done
+
+# One validated selection drives stamping, publication and contract expectations.
+selected_package_dirs_json='['
+selected_package_dir_args=''
+package_dir_separator=''
+for package_dir in "${release_package_dirs[@]}"; do
+  selected_package_dirs_json="$selected_package_dirs_json$package_dir_separator\"$package_dir\""
+  package_dir_separator=,
+  if [ "$release_package_dirs_exact" = true ]; then
+    selected_package_dir_args="$selected_package_dir_args --only-package-dir $package_dir"
+  elif [ "$package_dir" != . ]; then
+    selected_package_dir_args="$selected_package_dir_args --package-dir $package_dir"
+  fi
+done
+selected_package_dirs_json="$selected_package_dirs_json]"
 
 # Strictly validated, not merely quoted. Both outputs interpolate this value —
 # one into YAML, one into a shell assignment — so anything other than a bare
@@ -534,17 +561,14 @@ release_cache_restore='actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1
 
 emit_release_node() {
   local generation_command="release-node ${ref}"
-  local package_dirs_json='["."]'
+  local package_dirs_json="$selected_package_dirs_json"
   local package_dirs_shell=''
   local release_assets_json='[' release_asset_sep=''
   [ "$release_scope" = "@verjson" ] \
     || generation_command="$generation_command --scope $release_scope"
   [ "$release_node_version" = "24" ] \
     || generation_command="$generation_command --node-version $release_node_version"
-  for package_dir in "${release_package_dirs[@]:1}"; do
-    generation_command="$generation_command --package-dir $package_dir"
-    package_dirs_json="${package_dirs_json%]},\"$package_dir\"]"
-  done
+  generation_command="$generation_command$selected_package_dir_args"
   for release_asset in "${release_assets[@]}"; do
     generation_command="$generation_command --release-asset $release_asset"
     release_assets_json="$release_assets_json$release_asset_sep\"$release_asset\""
@@ -920,9 +944,7 @@ emit_release_artifact() {
     || generation_command="$generation_command --scope $release_scope"
   [ "$release_node_version" = "24" ] \
     || generation_command="$generation_command --node-version $release_node_version"
-  for package_dir in "${release_package_dirs[@]:1}"; do
-    generation_command="$generation_command --package-dir $package_dir"
-  done
+  generation_command="$generation_command$selected_package_dir_args"
   for build_runner in "${release_build_runners[@]}"; do
     printf -v quoted_build_runner '%q' "$build_runner"
     generation_command="$generation_command --build-runner $quoted_build_runner"
@@ -1519,9 +1541,7 @@ emit_release_snapshot() {
     || generation_command="$generation_command --scope $release_scope"
   [ "$release_node_version" = "24" ] \
     || generation_command="$generation_command --node-version $release_node_version"
-  for package_dir in "${release_package_dirs[@]:1}"; do
-    generation_command="$generation_command --package-dir $package_dir"
-  done
+  generation_command="$generation_command$selected_package_dir_args"
   printf -v package_dirs_shell '%q ' "${release_package_dirs[@]}"
   package_dirs_shell="${package_dirs_shell% }"
   cat <<EOF
@@ -2008,14 +2028,11 @@ emit_contract_test() {
   # The interpolated preamble is kept deliberately small: everything below it is
   # a quoted heredoc, so the body cannot accidentally expand a generator-side
   # variable into an adopter's test.
-  local release_package_dirs_json='["."]'
+  local release_package_dirs_json="$selected_package_dirs_json"
   local release_package_dirs_shell=''
   local release_assets_json='[' release_asset_sep=''
   local release_approved_packages_csv='' release_approved_package=''
   local release_lane_names='' release_lane_env='' release_lane_preflight='' release_lane_preflight_sha256=''
-  for package_dir in "${release_package_dirs[@]:1}"; do
-    release_package_dirs_json="${release_package_dirs_json%]},\"$package_dir\"]"
-  done
   printf -v release_package_dirs_shell '%q ' "${release_package_dirs[@]}"
   release_package_dirs_shell="${release_package_dirs_shell% }"
   for release_asset in "${release_assets[@]}"; do
