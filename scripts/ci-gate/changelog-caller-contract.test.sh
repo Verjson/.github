@@ -723,6 +723,23 @@ run_adopter "$event_selected_proposer" \
   && fail "emitted suite accepted event-selected release autonomy" \
   || pass "emitted suite rejects event-selected release autonomy"
 
+nested_adopter="$tmproot/adopter-nested-only-release"
+build_adopter "$nested_adopter"
+bash "$gen" release-node "$sha" --only-package-dir packages/cli-schema >"$nested_adopter/.github/workflows/release.yml"
+bash "$gen" contract-test "$sha" --only-package-dir packages/cli-schema >"$nested_adopter/scripts/changelog-contract.test.sh"
+run_adopter "$nested_adopter" \
+  && pass "nested-only release and contract agree without selecting root (#1286)" \
+  || fail "nested-only generated contract failed: $(tail -2 "$tmproot/run.out")"
+sed -i 's/package_dirs=(packages\/cli-schema)/package_dirs=(. packages\/cli-schema)/' "$nested_adopter/.github/workflows/release.yml"
+run_adopter "$nested_adopter" \
+  && fail "nested-only contract accepted an extra root verification stamp" \
+  || pass "nested-only contract rejects extra root verification stamp (#1286)"
+bash "$gen" release-node "$sha" --only-package-dir packages/cli-schema >"$nested_adopter/.github/workflows/release.yml"
+sed -i 's/\["packages\/cli-schema"\]/[".","packages\/cli-schema"]/' "$nested_adopter/.github/workflows/release.yml"
+run_adopter "$nested_adopter" \
+  && fail "nested-only contract accepted root publication" \
+  || pass "nested-only contract rejects extra root publication (#1286)"
+
 custom_adopter="$tmproot/adopter-custom-release"
 build_adopter "$custom_adopter"
 printf '%s\n' "$custom_release" >"$custom_adopter/.github/workflows/release.yml"

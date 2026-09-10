@@ -316,7 +316,7 @@ scripts/gen-changelog-caller.sh pr-gate "$PIN" > .github/workflows/changelog-con
 The generated contract test then rejects drift in either release job. Do not
 generate only one side or edit the workflow after generation.
 
-The root package is always the first artifact. Repeat `--package-dir` for
+By default, the root package is the first artifact. Repeat `--package-dir` for
 explicit repository-relative secondary packages, passing the same ordered list
 to both outputs:
 
@@ -324,6 +324,23 @@ to both outputs:
 scripts/gen-changelog-caller.sh release-node "$PIN" --package-dir compat > .github/workflows/release.yml
 scripts/gen-changelog-caller.sh contract-test "$PIN" --package-dir compat > scripts/changelog-contract.test.sh
 ```
+
+For an exact selection that excludes the root package, repeat `--only-package-dir`
+instead. It replaces the implicit root on its first occurrence; it cannot be mixed
+with `--package-dir`. Empty, duplicate, non-normalized and escaping paths are rejected.
+Use the same ordered selection for the caller and contract test:
+
+```bash
+scripts/gen-changelog-caller.sh release-node "$PIN" --only-package-dir packages/cli-schema > .github/workflows/release.yml
+scripts/gen-changelog-caller.sh contract-test "$PIN" --only-package-dir packages/cli-schema > scripts/changelog-contract.test.sh
+```
+
+Only selected manifests are stamped and passed to Node publication. Verification
+still runs the repository suite; an adopter-owned preparation hook remains
+responsible for its own changes. Dispatch `component: schema` and, for example,
+`prefix: schema-v` to select the independent changelog/version stream: those inputs
+do not select publication directories. Exact selection also applies to the package
+stamping performed by `release-artifact` and `release-snapshot`.
 
 Before stamping and packing the configured directories, the caller runs an
 executable `scripts/release-prepare-packages.sh <version>` when present. Use
