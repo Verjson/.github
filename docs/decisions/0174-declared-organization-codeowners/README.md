@@ -77,3 +77,16 @@ changelog contract and release path. No test grants permissions or weakens revie
 [GitHub CODEOWNERS requirements](https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners)
 provide the platform eligibility and base-branch semantics; live effectiveness
 requires the separate receipts above.
+
+## 2026-09-10 — Check canonical entry spelling on every filesystem
+
+[Issue #1312](https://github.com/Verjson/.github/issues/1312) reproduced a local
+conformance false positive: case-insensitive lookup accepted generated content at
+`.Github/CodeOwners` without the canonical `.github/CODEOWNERS` spelling. Inspect
+the exact entry names in the repository root and `.github` directory as well as
+the existing byte and symlink checks. No recursive search is needed: arbitrary
+other directories are outside GitHub's supported ownership locations. Existing
+fallback lookups already reject mixed-case aliases on case-insensitive filesystems.
+A bounded case-insensitive adapter reproduces the old false positive and verifies
+canonical success, capitalization refusal and unchanged fallback behavior. This
+restores portable local conformance; no live enforcement bypass is claimed.
