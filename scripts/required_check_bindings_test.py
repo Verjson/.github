@@ -147,6 +147,32 @@ class RequiredCheckBindingTests(unittest.TestCase):
             with mock.patch.object(policy, 'gh_get', side_effect=altered):
                 with self.assertRaises(policy.BindingError): policy.dry_run(self.private)
 
+    def test_dot_segment_repositories_are_rejected_before_any_subprocess(self):
+        for name in ('.', '..'):
+            with mock.patch.object(policy.subprocess, 'run') as execute:
+                with self.assertRaisesRegex(policy.BindingError, 'unsupported read path'):
+                    policy.gh_get(f'repos/Verjson/{name}/check-runs/1')
+                self.cohort[0]['repository'] = f'Verjson/{name}'
+                self.save_evidence()
+                with self.assertRaisesRegex(policy.BindingError, 'invalid cohort repository'):
+                    policy.prepare(self.private)
+            execute.assert_not_called()
+
+    def test_normal_dot_and_hyphen_names_keep_the_same_cohort_and_api_boundary(self):
+        for name in ('.github', 'repo.with-dots', 'normal-repo'):
+            old = self.cohort[0]['repository']
+            current = f'Verjson/{name}'
+            self.cohort[0]['repository'] = current
+            for row in self.rows:
+                if row['repository'] == old:
+                    row['repository'] = current
+                    row['detailsUrl'] = row['detailsUrl'].replace(old, current)
+            self.save_evidence()
+            self.assertTrue(policy.prepare(self.private)['producerEvidenceValidated'])
+            with mock.patch.object(policy.subprocess, 'run', return_value=mock.Mock(stdout=b'{}')) as execute:
+                self.assertEqual(policy.gh_get(f'repos/{current}/check-runs/1'), {})
+            execute.assert_called_once()
+
     def test_json_and_cli_fail_closed_without_mutation_or_missing_private_evidence(self):
         for raw in (b'{"a":1,"a":2}', b'{"a":NaN}', b'{"a":1e999}'):
             with self.assertRaises(policy.BindingError): policy.decode(raw)

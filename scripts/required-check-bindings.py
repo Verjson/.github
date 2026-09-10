@@ -15,7 +15,7 @@ CONTEXTS = {20513599: ['changelog / validate'],
             20515817: ['ci / build-test', 'ci / eligibility', 'changelog-contract']}
 PAYLOAD_KEYS = ('name', 'target', 'enforcement', 'bypass_actors', 'conditions', 'rules')
 PROPERTY_KEYS = ('changelog-contract', 'verjson-stack', 'verjson-core-checks')
-REPOSITORY = re.compile(r'Verjson/[A-Za-z0-9._-]+')
+REPOSITORY = re.compile(r'Verjson/(?!\.{1,2}(?:/|$))[A-Za-z0-9._-]+')
 
 
 class BindingError(Exception):
@@ -135,7 +135,7 @@ def prepare(evidence_dir=None):
 def gh_get(path, paginate=False):
     require(path in ('orgs/Verjson/properties/values?per_page=100',
                     *[f'orgs/Verjson/rulesets/{identity}' for identity in CONTEXTS])
-            or re.fullmatch(r'repos/Verjson/[A-Za-z0-9._-]+/check-runs/[1-9][0-9]*', path), 'unsupported read path')
+            or re.fullmatch(rf'repos/{REPOSITORY.pattern}/check-runs/[1-9][0-9]*', path), 'unsupported read path')
     arguments = ['gh', 'api', '--hostname', 'github.com', '--method', 'GET', path]
     if paginate:
         arguments += ['--paginate', '--slurp']

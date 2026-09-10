@@ -59,6 +59,12 @@ python3 scripts/required-check-bindings.py dry-run --evidence-dir "$PRIVATE_RECE
 python3 scripts/required_check_bindings_test.py
 ```
 
+The 2026-09-10 path-boundary review found that literal `.` and `..` repository
+names could pass the original lexical checks. One shared repository pattern now
+rejects both in cohort admission and API paths before any subprocess invocation;
+negative controls verify that boundary while preserving `.github` and ordinary
+dotted/hyphenated names. This restores the fixed-endpoint decision above.
+
 The private directory must contain the reviewed `cohort.json` and
 `producer-checks.jsonl` files matching the public hashes. Offline synthetic fixtures
 exercise complete/missing/duplicate coverage, wrong Apps, exact four-field deltas,
