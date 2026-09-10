@@ -1921,6 +1921,16 @@ class ChangelogContractTests(unittest.TestCase):
             "crates/core/Cargo.toml",
             "Cargo.lock",
             "infra/.terraform.lock.hcl",
+            "Dockerfile",
+            "images/Dockerfile.pwsh",
+            "images/worker.Dockerfile",
+            "Containerfile",
+            "images/Containerfile.build.ci",
+            "images/worker.Containerfile",
+            "docker-compose.yml",
+            "docker-compose.override.yaml",
+            "infra/compose.yaml",
+            "infra/compose.prod.yml",
         )
         for dependency_path in dependency_paths:
             with self.subTest(path=dependency_path):
@@ -1956,6 +1966,30 @@ class ChangelogContractTests(unittest.TestCase):
 
         changelog.check_pr(self.root, base, "HEAD")
 
+    def test_image_digest_update_requires_and_accepts_a_new_fragment(self) -> None:
+        for filename, original, updated in (
+            ("Dockerfile", "FROM node@sha256:" + "a" * 64 + "\n", "FROM node@sha256:" + "b" * 64 + "\n"),
+            ("docker-compose.yml", "services:\n  api:\n    image: node@sha256:" + "a" * 64 + "\n",
+             "services:\n  api:\n    image: node@sha256:" + "b" * 64 + "\n"),
+        ):
+            with self.subTest(filename=filename), tempfile.TemporaryDirectory() as temporary:
+                original_root = self.root
+                try:
+                    self.root = Path(temporary)
+                    self.root.joinpath(filename).write_text(original, encoding="utf-8")
+                    self.init_git()
+                    self.commit_all("base image")
+                    base = run(self.root, "git", "rev-parse", "HEAD")
+                    self.root.joinpath(filename).write_text(updated, encoding="utf-8")
+                    self.commit_all("image digest update")
+                    with self.assertRaisesRegex(changelog.ChangelogError, "require a new NEXT fragment"):
+                        changelog.check_pr(self.root, base, "HEAD")
+                    fragment(self.root, "2026-07-30-issue-249-contract.md")
+                    self.commit_all("record verified image change")
+                    changelog.check_pr(self.root, base, "HEAD")
+                finally:
+                    self.root = original_root
+
     def test_dependency_change_cannot_reuse_an_existing_fragment(self) -> None:
         self.root.joinpath("package.json").write_text('{"version":"1.0.0"}\n', encoding="utf-8")
         existing = fragment(self.root, "2026-07-30-issue-249-contract.md")
@@ -1977,6 +2011,18 @@ class ChangelogContractTests(unittest.TestCase):
             "Cargo.lock.backup",
             "terraform.lock.hcl",
             "docs/go.mod.md",
+            "docs/Dockerfile.md",
+            "docs/Dockerfile.MD",
+            "Dockerfile.prod.markdown",
+            "Dockerfile.backup",
+            "Containerfile.dev.bak",
+            "Dockerfile-guide",
+            "notDockerfile",
+            "docker-compose.yml.md",
+            "docker-compose.production.yaml.backup",
+            "docker-compose-guide.yaml",
+            "compose-notes.yml",
+            "deployment.yaml",
         )
         self.root.joinpath("README.md").write_text("base\n", encoding="utf-8")
         self.init_git()

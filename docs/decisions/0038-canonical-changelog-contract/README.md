@@ -334,3 +334,20 @@ Revert the reusable workflow and tooling adoption in consumers, then revert the
 implementing pull request. Do not restore shared authored aggregates or overwrite
 released snapshots; supersede this ADR if the organization selects a different
 durable model.
+
+## Amendment (2026-09-10) — conventional image dependency files (#1270)
+
+The dependency-fragment boundary includes `Dockerfile` and `Containerfile`,
+suffix variants such as `Dockerfile.pwsh`, prefix variants such as
+`worker.Dockerfile`, and `compose`/`docker-compose` YAML manifests with optional
+dot-separated override names. Known documentation and backup suffixes do not
+turn a Dockerfile lookalike into a dependency manifest. Ordinary YAML files and
+nonconventional custom build filenames are not inferred to contain dependencies.
+
+This remains a file-level policy, like package manifests and locks: changing a
+recognized file requires a new valid fragment, even for changes beyond an image
+reference. It does not parse arbitrary YAML, execute a build, or guess custom
+Docker `-f` paths. Agent-authored release context is still required for custom
+surfaces even where automated filename coverage cannot prove it. Adopters gain
+the enforcement by regenerating their complete pinned canonical artifacts;
+consumer-local renderer patches are not an adoption mechanism.

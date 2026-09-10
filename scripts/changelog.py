@@ -1107,6 +1107,17 @@ def validate_permit_update(repo_root: Path, base: str, head: str) -> None:
 
 def is_dependency_file(path: str) -> bool:
     filename = Path(path).name
+    if re.fullmatch(r"(?:docker-compose|compose)(?:\.[A-Za-z0-9_-]+)*\.ya?ml", filename):
+        return True
+    if Path(filename).suffix.lower() not in {
+        ".md", ".markdown", ".rst", ".adoc", ".txt", ".bak", ".backup",
+        ".old", ".orig", ".save", ".swp", ".tmp",
+    } and re.fullmatch(
+        r"(?:(?:Dockerfile|Containerfile)(?:\.[A-Za-z0-9_-]+)*|"
+        r"[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*\.(?:Dockerfile|Containerfile))",
+        filename,
+    ):
+        return True
     return filename in DEPENDENCY_FILENAMES or bool(
         re.fullmatch(r"requirements(?:-[A-Za-z0-9_.-]+)?\.txt", filename)
     )
