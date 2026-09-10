@@ -48,4 +48,12 @@ args = json.load(open(sys.argv[1], encoding="utf-8"))
 assert args[args.index("--diagnostic") + 1] == "{}"
 PY
 
+# A missing helper after successful admission must remain a real preparation error.
+rm "$tmp/prepare-deepseek-replay.py"
+if bash "$tmp/handoff.sh" >"$tmp/missing-helper.log" 2>&1; then
+  echo "missing replay helper unexpectedly succeeded" >&2
+  exit 1
+fi
+grep -q 'prepare-deepseek-replay.py' "$tmp/missing-helper.log"
+
 echo "DeepSeek replay shell handoff: ok"

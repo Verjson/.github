@@ -104,6 +104,7 @@ export ZERO_PROVIDER_RECEIPT_VERIFIER="$tmp/receipt-verifier"
 
 cat >"$tmp/bin/gh" <<'SH'
 #!/usr/bin/env bash
+[ -z "${API_CAPTURE:-}" ] || printf "%s\n" "$*" >>"$API_CAPTURE"
 case "$*" in
   "api repos/$TARGET_REPO/actions/runs/$REVIEW_RUN_ID")
     jq -nc --argjson id "$REVIEW_RUN_ID" --argjson attempt "$REVIEW_RUN_ATTEMPT" \
@@ -204,6 +205,66 @@ REVIEW_RUN_ATTEMPT=1 AUTHORIZATION_STATE=retained \
   expect_fail "attempt-one dispatch cannot replay a completed retained authorization" "cannot replay a retained authorization" verify
 REVIEW_RUN_ATTEMPT=1 DUPLICATE_CORRELATED_RUN=true \
   expect_fail "duplicate attempt-one dispatch cannot replay retained receipt" "missing or not unique" verify
+
+
+# Execute the actual preflight and gate programs against the same failed check.
+python3 - "$here/../../.github/workflows/ai-review-merge.yml" "$tmp" <<'PYTHON'
+import pathlib
+import sys
+import yaml
+workflow = yaml.safe_load(pathlib.Path(sys.argv[1]).read_text())
+root = pathlib.Path(sys.argv[2])
+preflight = next(s for s in workflow['jobs']['preflight']['steps'] if s.get('id') == 'zero-provider-recovery')
+gate = next(s for s in workflow['jobs']['gate']['steps'] if s.get('id') == 'trusted-authorization')
+assert gate['env']['ZERO_PROVIDER_RECOVERY'] == '${{ needs.preflight.outputs.zero_provider_recovery }}'
+for name, expression in [('REVIEW_EVENT', '${{ github.event_name }}'),
+                         ('REVIEW_RUN_ID', '${{ github.run_id }}'),
+                         ('REVIEW_RUN_ATTEMPT', '${{ github.run_attempt }}'),
+                         ('DEFAULT_BRANCH', '${{ github.event.repository.default_branch }}')]:
+    assert gate['env'][name] == expression
+checkout = next(s for s in workflow['jobs']['gate']['steps'] if s.get('name') == 'Check out immutable arm verifier')
+assert checkout['with']['ref'] == '${{ steps.trusted-revision.outputs.sha }}'
+assert 'scripts/ci-gate/verify-zero-provider-recovery.sh' in checkout['with']['sparse-checkout']
+for step in workflow['jobs']['gate']['steps']:
+    if step.get('id') in ('replay_primary', 'replay_fallback'):
+        assert "steps.trusted-authorization.outcome == 'success'" in step['if']
+(root / 'preflight.sh').write_text(preflight['run'])
+(root / 'gate.sh').write_text(gate['run'])
+PYTHON
+[ "$?" -eq 0 ] || fail 'gate/recovery context or replay setup boundary drifted'
+mkdir -p "$tmp/.gate-trust/scripts/ci-gate" "$tmp/.gate-recovery/scripts/ci-gate"
+for tree in .gate-trust .gate-recovery; do
+  cp "$verifier" "$tmp/$tree/scripts/ci-gate/verify-zero-provider-recovery.sh"
+  cp "$tmp/receipt-verifier" "$tmp/$tree/scripts/ci-gate/verify-arm-receipt.sh"
+done
+for helper in openai-review deepseek-review prepare-deepseek-replay review-verdict review-attempt-count; do
+  printf '# trusted fixture\n' >"$tmp/.gate-trust/scripts/ci-gate/$helper.py"
+done
+export REVIEW_EVENT=workflow_dispatch GITHUB_OUTPUT="$tmp/gate-output"
+gate_admission() { (cd "$tmp" && bash gate.sh); }
+preflight_to_gate() {
+  : >"$GITHUB_OUTPUT"
+  (cd "$tmp" && bash preflight.sh) || return
+  ZERO_PROVIDER_RECOVERY="$(sed -n 's/^eligible=//p' "$GITHUB_OUTPUT")" gate_admission
+}
+export API_CAPTURE="$tmp/recovery-api-calls"
+: >"$API_CAPTURE"
+expect_pass 'verified failed exact authorization passes actual preflight then gate' preflight_to_gate
+[ "$(grep -c 'jobs?filter=all' "$API_CAPTURE")" -eq 2 ] \
+  && pass 'gate independently repeats prior-provider proof' \
+  || fail 'gate did not repeat prior-provider proof'
+unset API_CAPTURE
+ZERO_PROVIDER_RECOVERY=false expect_fail 'failed authorization without recovery proof remains refused' 'not pending review' gate_admission
+ZERO_PROVIDER_RECOVERY=garbage expect_fail 'malformed recovery proof flag is refused' 'invalid zero-provider recovery flag' gate_admission
+ZERO_PROVIDER_RECOVERY=true REVIEW_EVENT=workflow_call expect_fail 'reusable delivery cannot claim direct recovery' 'invalid zero-provider gate recovery context' gate_admission
+ZERO_PROVIDER_RECOVERY=true REVIEW_RUN_ATTEMPT=1 expect_fail 'first attempt cannot claim recovery' 'invalid zero-provider gate recovery context' gate_admission
+ZERO_PROVIDER_RECOVERY=true CURRENT_HEAD=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa expect_fail 'gate rejects stale recovery head' 'recovery head is stale' gate_admission
+ZERO_PROVIDER_RECOVERY=true RETURNED_CHECK_ID=9002 expect_fail 'gate rejects substituted recovery check' 'check or App identity mismatch' gate_admission
+ZERO_PROVIDER_RECOVERY=true RETURNED_APP_ID=9999 expect_fail 'gate rejects substituted recovery App' 'check or App identity mismatch' gate_admission
+ZERO_PROVIDER_RECOVERY=true GATE_CONCLUSION=success expect_fail 'preflight flag cannot bypass prior provider boundary' 'approached the provider boundary' gate_admission
+ZERO_PROVIDER_RECOVERY=true PROVIDER_REVIEW=true expect_fail 'gate refuses existing provider reservation' 'provider reservation, submission, or review evidence' gate_admission
+REVIEW_POLICY=different-policy expect_fail 'invalid receipt cannot reach recovered gate' 'receipt identity mismatch' preflight_to_gate
+REVIEW_RUN_ATTEMPT=1 expect_pass 'normal pending authorization still passes preflight and gate' preflight_to_gate
 
 [ "$fails" -eq 0 ] && { echo "All tests passed."; exit 0; }
 echo "$fails test(s) failed."; exit 1

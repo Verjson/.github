@@ -746,6 +746,7 @@ jobs:
           ref: ${{ steps.trusted-revision.outputs.sha }}
           path: .gate-trust
           sparse-checkout: |
+            scripts/ci-gate/verify-zero-provider-recovery.sh
             scripts/ci-gate/verify-arm-receipt.sh
             scripts/ci-gate/review-policy-envelope.py
             scripts/ci-gate/review-verdict.py
@@ -757,15 +758,35 @@ jobs:
           persist-credentials: false
 
       - name: Validate trusted head authorization
+        id: trusted-authorization
         env:
           GH_TOKEN: ${{ github.token }}
+          ZERO_PROVIDER_RECOVERY: ${{ needs.preflight.outputs.zero_provider_recovery }}
+          REVIEW_EVENT: ${{ github.event_name }}
+          REVIEW_RUN_ID: ${{ github.run_id }}
+          REVIEW_RUN_ATTEMPT: ${{ github.run_attempt }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
           set -euo pipefail
           bash .gate-trust/scripts/ci-gate/verify-arm-receipt.sh
-          authorization="$(gh api "repos/$TARGET_REPO/check-runs/$AUTHORIZATION_CHECK_ID")"
-          [ "$(jq -r '.status + ":" + (.conclusion // "")' <<<"$authorization")" = "in_progress:" ] || {
-            echo "::error::authorization is not pending review"; exit 1;
-          }
+          case "${ZERO_PROVIDER_RECOVERY:-false}" in
+            true)
+              [ "$REVIEW_EVENT" = workflow_dispatch ] &&
+                [[ "$REVIEW_RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]] &&
+                [ "$REVIEW_RUN_ATTEMPT" -gt 1 ] || {
+                  echo "::error::invalid zero-provider gate recovery context"; exit 1;
+                }
+              # The preflight output requests recovery; fresh receipt/run/job evidence authorizes it.
+              bash .gate-trust/scripts/ci-gate/verify-zero-provider-recovery.sh
+              ;;
+            false)
+              authorization="$(gh api "repos/$TARGET_REPO/check-runs/$AUTHORIZATION_CHECK_ID")"
+              [ "$(jq -r '.status + ":" + (.conclusion // "")' <<<"$authorization")" = "in_progress:" ] || {
+                echo "::error::authorization is not pending review"; exit 1;
+              }
+              ;;
+            *) echo "::error::invalid zero-provider recovery flag"; exit 1 ;;
+          esac
           install -m 0555 .gate-trust/scripts/ci-gate/openai-review.py "$RUNNER_TEMP/openai-review.py"
           install -m 0555 .gate-trust/scripts/ci-gate/deepseek-review.py "$RUNNER_TEMP/deepseek-review.py"
           install -m 0555 .gate-trust/scripts/ci-gate/prepare-deepseek-replay.py "$RUNNER_TEMP/prepare-deepseek-replay.py"
@@ -1688,7 +1709,7 @@ jobs:
 
       - name: Prepare failed DeepSeek pass 1 replay
         id: replay_primary
-        if: always() && needs.preflight.outputs.lane == 'ai' && needs.preflight.outputs.provider == 'deepseek'
+        if: always() && needs.preflight.outputs.lane == 'ai' && needs.preflight.outputs.provider == 'deepseek' && steps.trusted-authorization.outcome == 'success'
         continue-on-error: true
         env:
           TRANSPORT: ${{ steps.deepseek_primary.outcome }}
@@ -1725,7 +1746,7 @@ jobs:
 
       - name: Prepare failed DeepSeek pass 2 replay
         id: replay_fallback
-        if: always() && needs.preflight.outputs.lane == 'ai' && needs.preflight.outputs.provider == 'deepseek'
+        if: always() && needs.preflight.outputs.lane == 'ai' && needs.preflight.outputs.provider == 'deepseek' && steps.trusted-authorization.outcome == 'success'
         continue-on-error: true
         env:
           TRANSPORT: ${{ steps.deepseek_fallback.outcome }}
