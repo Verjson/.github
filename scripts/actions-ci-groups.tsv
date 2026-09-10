@@ -187,3 +187,6 @@ merge-gate	bash scripts/assert-no-deferred-checks.test.sh
 changelog-release	python3 scripts/ci-gate/exact-release-packages.test.py
 platform	python3 scripts/node_floor_ruleset_test.py
 platform	python3 scripts/required_check_bindings_test.py
+
+merge-gate	python3 scripts/codeowners_test.py
+merge-gate	python3 scripts/codeowners.py check
