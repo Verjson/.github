@@ -1310,7 +1310,9 @@ jobs:
         id: deepseek_primary
         if: needs.preflight.outputs.lane == 'ai' && needs.preflight.outputs.provider == 'deepseek' && steps.rereview.outputs.skip_model != 'true' && steps.reserve_1.outputs.allowed == 'true'
         continue-on-error: true
+        timeout-minutes: 5
         env:
+          GH_TOKEN: ${{ github.token }}
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
           MODEL: ${{ needs.preflight.outputs.model }}
           BUDGET_USD: ${{ needs.preflight.outputs.budget_usd }}
@@ -1324,9 +1326,15 @@ jobs:
           SENSITIVE: ${{ needs.preflight.outputs.sensitive }}
           TRUSTED_REVIEW_SHA: ${{ steps.trusted-revision.outputs.sha }}
         run: |
+          set -euo pipefail
+          current_head="$(gh api "repos/$TARGET_REPO/pulls/$PR_NUMBER" --jq '.head.sha // ""')"
+          if [ "$current_head" != "$EXPECTED_HEAD_SHA" ]; then
+            echo "::notice::phase=model result=superseded — refusing provider invocation for a stale head"
+            exit 0
+          fi
           umask 077
           printf '%s' "$REVIEW_PROMPT" >"$PROMPT_FILE"
-          python3 "$RUNNER_TEMP/deepseek-review.py"
+          env -u GH_TOKEN python3 "$RUNNER_TEMP/deepseek-review.py"
 
       - name: Validate pass 1 verdict semantics
         id: verdict_1
@@ -1342,7 +1350,7 @@ jobs:
 
       - name: Reserve cumulative AI review pass 2
         id: reserve_2
-        if: always() && inputs.explicit_rereview != true && needs.preflight.outputs.provider == 'deepseek' && steps.reserve_1.outputs.allowed == 'true' && steps.verdict_1.outputs.usable != 'true'
+        if: ${{ !cancelled() && inputs.explicit_rereview != true && needs.preflight.outputs.provider == 'deepseek' && steps.reserve_1.outputs.allowed == 'true' && steps.verdict_1.outputs.usable != 'true' }}
         env:
           GH_TOKEN: ${{ steps.reservation-app-token.outputs.token }}
           PROVIDER: deepseek
@@ -1398,9 +1406,11 @@ jobs:
 
       - name: DeepSeek review pass 2
         id: deepseek_fallback
-        if: always() && inputs.explicit_rereview != true && needs.preflight.outputs.lane == 'ai' && needs.preflight.outputs.provider == 'deepseek' && steps.rereview.outputs.skip_model != 'true' && steps.verdict_1.outputs.usable != 'true' && steps.reserve_2.outputs.allowed == 'true'
+        if: ${{ !cancelled() && inputs.explicit_rereview != true && needs.preflight.outputs.lane == 'ai' && needs.preflight.outputs.provider == 'deepseek' && steps.rereview.outputs.skip_model != 'true' && steps.verdict_1.outputs.usable != 'true' && steps.reserve_2.outputs.allowed == 'true' }}
         continue-on-error: true
+        timeout-minutes: 5
         env:
+          GH_TOKEN: ${{ github.token }}
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
           MODEL: ${{ needs.preflight.outputs.fallback_model }}
           BUDGET_USD: ${{ needs.preflight.outputs.fallback_budget_usd }}
@@ -1414,9 +1424,15 @@ jobs:
           SENSITIVE: ${{ needs.preflight.outputs.sensitive }}
           TRUSTED_REVIEW_SHA: ${{ steps.trusted-revision.outputs.sha }}
         run: |
+          set -euo pipefail
+          current_head="$(gh api "repos/$TARGET_REPO/pulls/$PR_NUMBER" --jq '.head.sha // ""')"
+          if [ "$current_head" != "$EXPECTED_HEAD_SHA" ]; then
+            echo "::notice::phase=model result=superseded — refusing provider invocation for a stale head"
+            exit 0
+          fi
           umask 077
           printf '%s' "$REVIEW_PROMPT" >"$PROMPT_FILE"
-          python3 "$RUNNER_TEMP/deepseek-review.py"
+          env -u GH_TOKEN python3 "$RUNNER_TEMP/deepseek-review.py"
 
       - name: Validate pass 2 verdict semantics
         id: verdict_2

@@ -51,3 +51,30 @@ unchanged.
 Disable DeepSeek selection while investigating provider compatibility. Do not restore
 thinking mode without a new ADR that preserves bounded verdict production and the
 existing exact-head and cost controls.
+
+## 2026-09-09 — Stop cancelled and superseded provider work
+
+[Issue #1278](https://github.com/Verjson/.github/issues/1278) reproduced a cancelled
+Pro request in `verjson-ai#470` starting Flash against the previous commit. The
+fallback returned a verdict, but exact-head authorization correctly rejected it.
+
+Both fallback reservation and invocation require `!cancelled()`. This still admits
+fallback after a failed or inconclusive primary in an active run, while cancellation
+cannot create another paid attempt. Both DeepSeek steps re-read the current PR head
+immediately before invoking the provider; stale heads skip and failed lookups stop.
+The lookup uses the workflow token, which is removed from the provider child's
+environment. Existing reservation accounting and exact-head authorization remain
+controlling; a head change after the last read can still invalidate an in-flight
+request, and neither a consumed reservation nor a stale verdict is recycled.
+
+Each provider step has a five-minute wall-clock ceiling. This bounds even a stream
+that keeps delivering bytes without finishing, independently of socket idle timeout
+and the existing cost/output limits. A timed-out primary may use the already-bounded
+fallback only while the run remains active and its head remains current. Cancellation
+never implies a successful review or permission for a third automatic pass.
+
+`scripts/ci-gate/deepseek-cancellation.test.py` checks cancellation/failure conditions
+and executes the actual provider step scripts against stubbed GitHub and provider
+boundaries, including head changes between reservation and invocation and failed
+lookups. This corrects orchestration around the existing bounded-review decision;
+it does not restore thinking mode or relax verdict verification.
