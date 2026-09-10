@@ -2665,7 +2665,7 @@ while IFS= read -r release_workflow; do
 
   # The reusable workflow and its engine are one contract. Checking only the
   # uses: ref lets a caller execute workflow A with contract_ref B (#349).
-  grep -qE "^[[:space:]]+contract_ref:[[:space:]]*$CONTRACT_REF[[:space:]]*$" \
+  grep -qE "^[[:space:]]+contract_ref:[[:space:]]*${CONTRACT_REF}[[:space:]]*$" \
     <<<"$snapshot_job" \
     || fail "$release_workflow passes a contract_ref that differs from its changelog-release.yml pin"
 
