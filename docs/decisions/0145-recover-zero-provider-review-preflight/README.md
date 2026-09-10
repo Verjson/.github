@@ -103,3 +103,29 @@ skipped gate with no steps proves provider absence; receipt retention alone neve
   that was never attempted and hides the causal preflight failure.
 - **Delete the receipt when completion records preflight failure:** makes safe recovery
   impossible and turns a transient pre-provider defect into permanent authorization loss.
+
+## 2026-09-10 — Carry verified recovery through gate admission
+
+[Issue #1309](https://github.com/Verjson/.github/issues/1309) exposed a contradiction
+in executable admission: attempt 2 of review run `34507773426` passed recovery
+preflight, then the gate rejected its still-failed authorization as not pending.
+Attempt 1 had failed a run-identity check before the gate; the underlying cause of
+that initial mismatch remains unknown. Do not replace that uncertainty with a
+claim of provider execution or a fabricated root cause.
+
+The gate treats preflight's recovery flag as a request, never sufficient evidence.
+Only a later attempt of the direct workflow-dispatch path can use it, and the gate
+re-executes the immutable receipt/run/head/App/prior-job/review verifier from the
+executing trusted workflow revision. That fresh proof admits the exact retained
+failed check to review; it does not reset its status, create another authorization,
+or grant approval. Ordinary admission still requires pending authorization. Invalid
+flags and unverifiable or provider-reached predecessors remain refused. Once the
+gate runs, a later retry remains outside the all-prior-gates-skipped boundary.
+
+Replay cleanup runs only after trusted gate admission and helper installation have
+succeeded. An early refusal therefore cannot invoke a helper that was never
+installed; a missing/broken helper after successful setup still fails preparation.
+Tests execute the actual preflight and gate scripts with the same failed-check API
+fixtures, prove the gate repeats historical checks, and reject wrong head/check/App,
+invalid receipt/flag, wrong delivery/attempt and prior provider evidence. No manual
+check reset or duplicate paid replay is introduced.
