@@ -1,0 +1,1 @@
+{"scopes":["@verjson"],"packages":["@verjson/authn","@verjson/identity-contracts","@verjson/tsconfig"],"compatibility":{"@verjson/authn":["2.0.0"],"@verjson/identity-contracts":[">=0.3.0 <0.4.0",">=0.4.0 <0.5.0"]}}

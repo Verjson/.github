@@ -39,6 +39,26 @@ class AuthnTypeSurfaceRulesetTest(unittest.TestCase):
             job["secrets"],
         )
 
+    def test_required_baseline_is_allowed_by_the_current_consumer_package_policy(self):
+        policy = json.loads((ROOT / "scripts/fixtures/authn-type-surface/package-policy.json").read_text())
+        workflow = yaml.safe_load(MODULE.WORKFLOW.read_text(encoding="utf-8"))
+        request = json.loads(workflow["jobs"]["type-surface"]["with"]["secretless-compatibility-ranges"])
+
+        self.assertEqual(["2.0.0"], request["ranges"])
+        self.assertTrue(set(request["ranges"]).issubset(policy["compatibility"][request["package"]]))
+        self.assertNotIn("1.0.3", policy["compatibility"]["@verjson/authn"])
+
+    def test_required_workflow_rejects_the_failed_trial_baseline(self):
+        workflow = yaml.safe_load(MODULE.WORKFLOW.read_text(encoding="utf-8"))
+        workflow["jobs"]["type-surface"]["with"]["secretless-compatibility-ranges"] = json.dumps({
+            "package": "@verjson/authn", "ranges": ["1.0.3"], "script": "test:type-surface-compatibility",
+        })
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "required.yml"
+            path.write_text(yaml.safe_dump(workflow), encoding="utf-8")
+            with self.assertRaisesRegex(MODULE.ContractError, "compatibility request drifted"):
+                MODULE.validate_workflow(path)
+
     def test_payload_uses_exact_repository_workflow_sha_and_only_release_bypass(self):
         payload = MODULE.render_payload(self.contract, SHA)
         self.assertEqual([{

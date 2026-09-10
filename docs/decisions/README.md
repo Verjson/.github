@@ -11,6 +11,7 @@ Reverse-chronological index of org-level decisions.
 <!-- BEGIN ADR INDEX -->
 | # | Date | Decision |
 |---|------|----------|
+| [0168](0168-correct-authn-required-workflow-baseline/README.md) | 2026-09-10 | Correct the Authn required workflow baseline after the activation trial |
 | [0167](0167-controlled-authn-required-workflow-activation/README.md) | 2026-09-10 | Activate the staged Authn required workflow under explicit owner authority |
 | [0165](0165-preserve-generated-changelog-runner-boundaries/README.md) | 2026-09-05 | Preserve generated changelog runner boundaries in consumer policy |
 | [0164](0164-bridge-review-lifecycle-deliveries/README.md) | 2026-09-05 | Bridge review lifecycle deliveries independently of required workflows |
