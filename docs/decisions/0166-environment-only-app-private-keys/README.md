@@ -78,3 +78,9 @@ References: [reusable environment secrets](https://docs.github.com/en/actions/ho
 [branch-policy API](https://docs.github.com/en/rest/deployments/branch-policies#list-deployment-branch-policies).
 
 The credentialless admission runs on fixed `ubuntu-24.04` with a two-minute limit, without checkout, so policy validation cannot depend on mutable fleet routing. Canonical native entrypoints self-adopt on merge; provision this repository before merge as well as every consumer before the shared required-workflow pin changes. Missing environments fail the arm workflow even though its subsequent operational arm job remains advisory.
+
+The 2026-09-10 CI run caught ShellCheck SC2153 where the policy response variable
+`environment` resembled the external `ENVIRONMENT` selector. Naming the response
+`environment_record` preserves the checks without suppressing the diagnostic.
+Validation includes actionlint with ShellCheck enabled; a workflow parse or the
+mocked policy suite alone does not exercise that CI boundary.

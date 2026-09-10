@@ -33,12 +33,12 @@ jobs:
           [ "$ENVIRONMENT" = "$ROLE-app" ]
           [ "$REF" = refs/heads/main ]
           [ "$DEFAULT_BRANCH" = main ]
-          environment=$(gh api "repos/$REPOSITORY/environments/$ENVIRONMENT")
+          environment_record=$(gh api "repos/$REPOSITORY/environments/$ENVIRONMENT")
           jq -e --arg name "$ENVIRONMENT" '
             .name == $name and (.id | type == "number" and . > 0) and
             .deployment_branch_policy.protected_branches == false and
             .deployment_branch_policy.custom_branch_policies == true
-          ' <<<"$environment" >/dev/null
+          ' <<<"$environment_record" >/dev/null
           policies=$(gh api "repos/$REPOSITORY/environments/$ENVIRONMENT/deployment-branch-policies?per_page=100")
           jq -e '
             .total_count == 1 and (.branch_policies | length) == 1 and
