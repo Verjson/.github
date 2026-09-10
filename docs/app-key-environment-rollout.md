@@ -24,12 +24,31 @@ privileged merge/retry, review/rearm, Renovate attribution and canary callers.
 Use authenticated metadata queries; a forbidden or incomplete inventory is unknown,
 never proof of absence. Do not print or hash key values.
 
-The `ai-authorization-arm-required` organization ruleset (ID `20722935`) selects a
-shared `gate-rearm.yml` contract revision. It is a rollout dependency, not a local
-consumer setting: the old pinned revision expects the broad/forwarded review key.
-Record its complete current repository cohort and immutable workflow pin before
-changing anything. Do not repin globally for one prepared repository or remove the
-broad AI key while any inherited required workflow still depends on it.
+Authenticated inspection on 2026-09-10 found that the
+`ai-authorization-arm-required` organization ruleset (ID `20722935`) selects
+`.github/workflows/gate-rearm.yml` from repository `1269388380` at
+`refs/heads/main` **without a `sha` field**. Its observed `updated_at` was
+`2026-08-26T02:04:11.250Z`. This is a live branch binding, not an existing immutable
+pin: merging this contract would otherwise change every selected consumer at once.
+
+Before merging this contract, freeze that workflow entry to merged commit
+`c597d6908e3aa38d9a041c2150afadcbff32cf6d`. That protected revision retains the
+existing broad/forwarded review-key contract and the #1275 body-edit admission
+guard. Verify that the live protected-main workflow still has those same bytes,
+then add only the workflow entry's `sha`. Preserve its path/ref/repository identity,
+active enforcement, bypass actors, creation policy and all selectors, including
+the default-branch/develop targets and repository-property cohort.
+
+Retain the complete preimage, reviewed candidate and verified postimage, their
+timestamps, the selected cohort, and the exact one-field diff on #1285. Immediately
+re-read the full preimage before PUT and reject drift. An uncertain response or
+unexpected postimage requires inspection, not automatic overwrite or rollback.
+The protective freeze is complete only when its live receipt is recorded; these
+instructions do not claim it has been applied. It preserves current behavior and
+does not activate the environment-key contract or remove any broad key.
+
+Do not move this protective pin to the new contract for one prepared repository,
+or remove the broad AI key while any inherited required workflow still needs it.
 
 For every affected repository, prepare the three role environments with:
 
@@ -64,7 +83,8 @@ changelog caller/renderer/test/release artifacts together and exercise the pinne
 release command in a disposable checkout. Confirm each generated caller selects
 the role name, has no App-key secret mapping and has no `secrets: inherit` grant.
 
-Coordinate the shared `gate-rearm.yml` ruleset pin update with those consumer PRs.
+Coordinate advancement of the protective `gate-rearm.yml` pin to the new reviewed
+contract with those consumer PRs, after the entire selected cohort is provisioned.
 Verify exact-main execution and the native environment deployment records for every
 key role. An uncredentialed policy prerequisite must fail if environment metadata
 cannot be read with the job token. Do not add a broad App/token just to make that

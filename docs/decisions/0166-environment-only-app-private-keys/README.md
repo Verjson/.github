@@ -58,14 +58,25 @@ It does not read secret values or provision/delete anything.
 
 ## Rollout and consequences
 
-Follow the [staged rollout](../../app-key-environment-rollout.md), including the
-shared `ai-authorization-arm-required` ruleset workflow pin. Consumers cannot retire
-broad AI keys while that inherited workflow still requires them; changing the
-shared pin before every affected consumer is provisioned could stop authorization.
-Prepare all affected repositories first, then coordinate the shared-pin change and
-consumer regeneration, verify environment consumption, remove broad copies and
-perform a non-main denial proof. Merging this contract does not complete exposure
-removal. There is no compatibility fallback to a broad App-key grant.
+Follow the [staged rollout](../../app-key-environment-rollout.md). Authenticated
+inspection on 2026-09-10 found that shared ruleset `20722935` binds `gate-rearm.yml`
+to `refs/heads/main` without an immutable `sha`; the earlier description of an
+existing shared pin was incorrect. Merging this contract would change the entire
+selected cohort immediately unless that binding is frozen first.
+
+Before this contract merges, add only the workflow entry's `sha`, selecting merged
+`c597d6908e3aa38d9a041c2150afadcbff32cf6d`. Verify that its workflow bytes still match
+protected main and retain the #1275 admission guard. Preserve all other ruleset
+fields, including enforcement, bypasses and the complete repository/ref selectors.
+Retain exact preimage/candidate/postimage evidence and reject concurrent drift;
+the live receipt, not this decision, proves the protective freeze is installed.
+
+Consumers cannot retire broad AI keys while the frozen inherited workflow needs
+them. Prepare all affected repositories before advancing that pin and regenerating
+consumers, verify environment consumption, remove broad copies and perform a
+non-main denial proof. Freezing the old behavior does not activate this contract;
+merging this contract does not complete exposure removal. There is no compatibility
+fallback to a broad App-key grant.
 
 The validation and additional policy API call add a small job cost to privileged
 operations. This buys visible admission failure before key delivery and avoids a
@@ -77,7 +88,7 @@ References: [reusable environment secrets](https://docs.github.com/en/actions/ho
 [environment API permissions](https://docs.github.com/en/rest/deployments/environments#get-an-environment),
 [branch-policy API](https://docs.github.com/en/rest/deployments/branch-policies#list-deployment-branch-policies).
 
-The credentialless admission runs on fixed `ubuntu-24.04` with a two-minute limit, without checkout, so policy validation cannot depend on mutable fleet routing. Canonical native entrypoints self-adopt on merge; provision this repository before merge as well as every consumer before the shared required-workflow pin changes. Missing environments fail the arm workflow even though its subsequent operational arm job remains advisory.
+The credentialless admission runs on fixed `ubuntu-24.04` with a two-minute limit, without checkout, so policy validation cannot depend on mutable fleet routing. Canonical native entrypoints self-adopt on merge; provision this repository before merge as well as every consumer before the protective pin advances to the environment-key contract. Missing environments fail the arm workflow even though its subsequent operational arm job remains advisory.
 
 The 2026-09-10 CI run caught ShellCheck SC2153 where the policy response variable
 `environment` resembled the external `ENVIRONMENT` selector. Naming the response
