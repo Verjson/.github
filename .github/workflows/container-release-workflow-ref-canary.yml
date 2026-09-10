@@ -13,6 +13,7 @@ permissions:
 jobs:
   probe:
     uses: ./.github/workflows/container-release.yml
+    secrets: inherit
     with:
       release_environment: release-app
       version: 0.0.0-workflow-identity-canary

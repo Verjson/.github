@@ -51,10 +51,7 @@ permissions:
 jobs:
   review:
     uses: Verjson/.github/.github/workflows/ai-review-merge.yml@$contract_sha
-    secrets:
-      ANTHROPIC_API_KEY: \${{ secrets.ANTHROPIC_API_KEY }}
-      OPENAI_API_KEY: \${{ secrets.OPENAI_API_KEY }}
-      DEEPSEEK_API_KEY: \${{ secrets.DEEPSEEK_API_KEY }}
+    secrets: inherit
     with:
       ai_review_environment: ai-review-app
       pr_number: \${{ inputs.pr_number }}

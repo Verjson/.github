@@ -151,6 +151,7 @@ jobs:
     needs: resolve
     if: needs.resolve.outputs.ready == 'true'
     uses: ./.github/workflows/ai-privileged-merge.yml
+    secrets: inherit
     with:
       merge_environment: ${{ inputs.merge_environment || 'merge-app' }}
       pr_number: ${{ needs.resolve.outputs.pr_number }}

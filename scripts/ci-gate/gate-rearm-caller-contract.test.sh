@@ -52,6 +52,7 @@ assert job == {
         "pull-requests": "write",
     },
     "uses": expected_uses,
+    "secrets": "inherit",
     "with": {"ai_review_environment": "ai-review-app"},
 }
 PY
@@ -59,10 +60,11 @@ PY
   grep -qF "scripts/gen-gate-rearm-caller.sh $contract_sha" "$caller" \
     && pass "generated caller records an exact reproducible command" \
     || fail "generated caller lacks exact regeneration provenance"
-  if grep -qE 'actions/checkout|github\.event\.pull_request\.(head|body|title)|^[[:space:]]+run:|secrets: inherit' "$caller"; then
+  grep -qE '^    secrets: inherit$' "$caller" || fail "caller lacks inherited environment context"
+  if grep -qE 'actions/checkout|github\.event\.pull_request\.(head|body|title)|^[[:space:]]+run:' "$caller"; then
     fail "generated pull_request_target caller can execute or expose PR-controlled content"
   else
-    pass "generated caller delegates without checkout, shell, PR prose, or secrets"
+    pass "generated caller delegates without checkout, shell, or PR prose"
   fi
 fi
 

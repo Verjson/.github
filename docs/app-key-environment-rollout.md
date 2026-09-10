@@ -1,7 +1,7 @@
 # Main-only App key rollout
 
 This is the operational completion record for [#1285](https://github.com/Verjson/.github/issues/1285)
-and [ADR 0166](decisions/0166-environment-only-app-private-keys/README.md).
+and [ADR 0166](decisions/0166-environment-only-app-private-keys/README.md), with its transport decision superseded by [ADR 0171](decisions/0171-inherited-reusable-environment-context/README.md).
 Contract delivery and exposure removal are separate milestones. This source change
 does not create environments, copy/delete keys, edit rulesets or dispatch consumers.
 
@@ -12,7 +12,7 @@ does not create environments, copy/delete keys, edit rulesets or dispatch consum
 | AI review | `ai_review_environment` | `ai-review-app` | `AI_REVIEW_APP_PRIVATE_KEY` |
 
 Keep public App client IDs in their existing variables. Model API credentials and
-`NODE_AUTH_TOKEN` are outside this App-key migration; their explicit grants remain.
+`NODE_AUTH_TOKEN` retain their existing roles. App-key reusable calls now inherit the caller secret context, including these unrelated secrets; non-App workflows retain narrow grants.
 `node-release.yml` does not consume the release App key. Snapshot publication and
 container release do, as does Renovate attribution.
 
@@ -69,7 +69,7 @@ After all repositories in the shared required-workflow cohort are provisioned,
 regenerate each caller from the same reviewed immutable contract SHA. Keep complete
 changelog caller/renderer/test/release artifacts together and exercise the pinned
 release command in a disposable checkout. Confirm each generated caller selects
-the role name, has no App-key secret mapping and has no `secrets: inherit` grant.
+the fixed role name, inherits the secret context, and targets the exact reviewed immutable workflow SHA. Every nested App-key reusable edge must inherit as well; policy-only edges receive no secrets.
 
 Coordinate advancement of the protective `gate-rearm.yml` pin to the new reviewed
 contract with those consumer PRs, after the entire selected cohort is provisioned.
@@ -113,3 +113,9 @@ The canonical repository runs native main entrypoints, so merging this contract 
 Self-adoption retires both temporary bootstrap workflows and all migration-only executable/configuration/dependency files, test and routing registrations. [ADR 0169](decisions/0169-sealed-environment-app-bootstrap/README.md), the retired runbook and externally retained ciphertext/metadata receipts preserve the history. No broad copy is withdrawn and the shared protective pin is not advanced by this change. Prepare and verify the entire shared-pin cohort before that cutover; #1285 remains open until exposure-removal and denial receipts cover the cohort.
 
 The [native environment-denial receipt](https://github.com/Verjson/.github/issues/1285#issuecomment-5611832146) records run `34430152626` at keyless non-main proof commit `49779d3`. GitHub denied all three explicitly requested role environments before any runner or step started (`runner_id: 0`, empty steps). The proof branch was removed after checking its SHA. Together with main proof `34429989792`, this demonstrates the three native environment boundaries; it does not prove absence of broader secret copies, which remain pending cohort migration.
+
+## Reusable transport correction
+
+Do not adopt `1664d518c13f207916f793b3218bee545209b8ee`: its no-grant reusable secret transport failed after merge. The [controlled runtime receipt](https://github.com/Verjson/.github/issues/1285#issuecomment-5612184570) proves only inheritance populated the environment-only sentinel; all four same-source non-main calls were denied before execution. Follow ADR 0171 and regenerate the complete affected callers at the replacement immutable revision after its operational proof is recorded.
+
+Inheritance exposes all accessible caller secrets to reviewed called code, including broader copies that still exist. Do not serialize or dynamically inspect that context, and do not interpret a successful real App mint as exclusive-storage proof. The metadata audit remains the storage check; whole-cohort migration and broad-copy withdrawal are still outstanding. The temporary probe is retired; its operator-owned noncredential sentinel is removed after operational verification.

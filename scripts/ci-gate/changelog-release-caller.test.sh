@@ -272,9 +272,9 @@ if not publish_expr or publish_expr.group(1).strip() != snapshot_pool:
 snapshot_with = snapshot.get("with") or {}
 if snapshot_with.get("release_app_client_id") != "${{ vars.RELEASE_APP_CLIENT_ID }}":
     bad("`snapshot` does not pass vars.RELEASE_APP_CLIENT_ID")
-snapshot_secrets = snapshot.get("secrets") or {}
-if snapshot_secrets or snapshot_with.get("release_environment") != "release-app":
-    bad("`snapshot` must select release-app without forwarding keys")
+snapshot_secrets = snapshot.get("secrets")
+if snapshot_secrets != "inherit" or snapshot_with.get("release_environment") != "release-app":
+    bad("`snapshot` must inherit context and select release-app")
 if "ORG_ADMIN_TOKEN" in raw or "push_token:" in raw:
     bad("release caller retains the temporary broad push credential")
 
@@ -433,6 +433,7 @@ drop_component_selection() {
 }
 drop_release_app_client_id() { sed -i '/^      release_app_client_id: /d' "$1"; }
 drop_release_environment() { sed -i '/^      release_environment: /d' "$1"; }
+drop_snapshot_context() { sed -i '/^    secrets: inherit$/d' "$1"; }
 restore_org_admin_token() {
   sed -i '/^      release_environment: /c\      push_token: ${{ secrets.ORG_ADMIN_TOKEN }}' "$1"
 }
@@ -505,6 +506,7 @@ expect_shape_rejection "a contract_ref that disagrees with the uses: pin" skew_c
 expect_shape_rejection "a snapshot that drops the selected component" drop_component_selection
 expect_shape_rejection "snapshot without RELEASE_APP_CLIENT_ID (ADR 0099)" drop_release_app_client_id
 expect_shape_rejection "snapshot without release environment (ADR 0166)" drop_release_environment
+expect_shape_rejection "snapshot without inherited environment context (ADR 0171)" drop_snapshot_context
 expect_shape_rejection "the temporary ORG_ADMIN_TOKEN release credential" restore_org_admin_token
 expect_shape_rejection "verifying a ref other than github.sha" verify_a_different_ref
 expect_shape_rejection "a verify job that runs no suite" hollow_out_the_suite

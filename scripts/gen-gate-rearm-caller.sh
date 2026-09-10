@@ -46,6 +46,7 @@ jobs:
       issues: write
       pull-requests: write
     uses: $TARGET
+    secrets: inherit
     with:
       ai_review_environment: ai-review-app
 YAML

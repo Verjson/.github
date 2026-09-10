@@ -36,14 +36,14 @@ def valid(document: dict, source: str) -> bool:
         "contract-ref": CONTRACT,
         "release_app_client_id": "${{ vars.RELEASE_APP_CLIENT_ID }}",
     }
-    expected_secrets = None
+    expected_secrets = "inherit"
     return (
-        set(probe) == {"uses", "with"}
+        set(probe) == {"uses", "with", "secrets"}
         and probe.get("uses") == expected_target
         and probe.get("with") == expected_inputs
         and probe.get("secrets") == expected_secrets
         and "ORG_ADMIN_TOKEN" not in source
-        and "secrets: inherit" not in source
+        and "secrets: inherit" in source
     )
 
 
@@ -71,9 +71,12 @@ mutants.append(candidate)
 mismatched = copy.deepcopy(workflow)
 mismatched["jobs"]["probe"]["with"]["contract-ref"] = "0" * 40
 mutants.append(mismatched)
-inherited = copy.deepcopy(workflow)
-inherited["jobs"]["probe"]["secrets"] = "inherit"
-mutants.append(inherited)
+missing_context = copy.deepcopy(workflow)
+missing_context["jobs"]["probe"].pop("secrets")
+mutants.append(missing_context)
+forwarded = copy.deepcopy(workflow)
+forwarded["jobs"]["probe"]["secrets"] = {"RELEASE_APP_PRIVATE_KEY": "${{ secrets.RELEASE_APP_PRIVATE_KEY }}"}
+mutants.append(forwarded)
 
 assert all(not valid(mutant, yaml.safe_dump(mutant)) for mutant in mutants)
 print("container release workflow-ref canary contract passed")

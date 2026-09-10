@@ -52,7 +52,8 @@ run-name: AI review authorization ${{ inputs.authorization_check_id }} from arm 
 # `github.repository`/`github.event`/`github.repository_owner` are inherited from
 # the CALLER, so `TARGET_REPO` and the PR number resolve to the consumer's own
 # repository. Consumers must
-# pass only the model credentials needed for review. A caller that runs on its
+# inherit secret context for environment resolution (ADR 0171). This transport
+# requires the same organization or enterprise. A caller that runs on its
 # OWN self-hosted fleet and has no `CI_LANE_*` variables may add
 # `with.runner_labels`; a Verjson caller must omit it and let the lane variables
 # select the pool (#405, ADR 0041, ADR 0057). MIND THE REF: `runner_labels` is
@@ -66,15 +67,15 @@ run-name: AI review authorization ${{ inputs.authorization_check_id }} from arm 
 # `ai-privileged-merge.yml` deliberately refuses reusable-caller runs (#279).
 # Consumers must merge an approved verdict manually. Example caller:
 #
-#   # consumer repo (any org): .github/workflows/ai-review-merge.yml
+#   # consumer repo in the same org/enterprise: .github/workflows/ai-review-merge.yml
 #   # The caller filename no longer grants merge authority; reusable runs review
 #   # correctly but are always refused by privileged merge (#279, ADR 0044).
 #   on: { pull_request: { types: [opened, reopened, ready_for_review, synchronize, labeled, unlabeled] }, workflow_dispatch: {} }
 #   jobs:
 #     gate:
-#       uses: Verjson/.github/.github/workflows/ai-review-merge.yml@v1
+#       uses: Verjson/.github/.github/workflows/ai-review-merge.yml@<reviewed-40-hex-commit>
 #       with: {ai_review_environment: ai-review-app}
-#       # Pass only the required model credentials explicitly.
+#       secrets: inherit
 #       # The environment selector is required; add runner_labels
 #       # ONLY for an off-Verjson self-hosted fleet, or on a `v1` older than the
 #       # first release after #405, where it is still required:
@@ -124,8 +125,8 @@ on:
         type: boolean
         default: false
   workflow_call:
-    # Callers explicitly pass model credentials only. The App key is read
-    # directly from the caller-owned main-only environment (ADR 0166).
+    # Inherited context enables caller-owned main-only environment secrets.
+    # This also grants accessible caller secrets to reviewed code (ADR 0171).
     inputs:
       ai_review_environment:
         description: Main-only environment containing the ai-review App private key
