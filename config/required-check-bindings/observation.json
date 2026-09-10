@@ -1,0 +1,22 @@
+{
+  "conclusionCounts": {
+    "failure": 6,
+    "success": 88
+  },
+  "contextCounts": {
+    "changelog / validate": 25,
+    "changelog-contract": 23,
+    "ci / build-test": 23,
+    "ci / eligibility": 23
+  },
+  "evidenceDigests": {
+    "cohort.json": "sha256:a51312de0d9ea64d07f610ea3f95e04be35ca2d47cb4a4d438fffe26c9aae556",
+    "producer-checks.jsonl": "sha256:d8f0a17877a4da77fb62d1419774c3ea03809c896cab47675e7d177e5884c9eb"
+  },
+  "liveActivationVerified": false,
+  "observedAt": "2026-09-10T05:02:38.866233+00:00",
+  "oldestCompletedAt": "2026-08-29T17:06:47Z",
+  "producerReceiptCount": 94,
+  "repositoryCount": 25,
+  "scope": "producer identity only"
+}

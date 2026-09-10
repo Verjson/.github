@@ -1,0 +1,83 @@
+{
+  "_links": {
+    "html": {
+      "href": "http://github.com/organizations/Verjson/settings/rules/20515817"
+    },
+    "self": {
+      "href": "https://api.github.com/orgs/Verjson/rulesets/20515817"
+    }
+  },
+  "bypass_actors": [
+    {
+      "actor_id": null,
+      "actor_type": "OrganizationAdmin",
+      "bypass_mode": "always"
+    },
+    {
+      "actor_id": 4583107,
+      "actor_type": "Integration",
+      "bypass_mode": "always"
+    },
+    {
+      "actor_id": 4693283,
+      "actor_type": "Integration",
+      "bypass_mode": "always"
+    }
+  ],
+  "conditions": {
+    "ref_name": {
+      "exclude": [],
+      "include": [
+        "~DEFAULT_BRANCH"
+      ]
+    },
+    "repository_property": {
+      "exclude": [],
+      "include": [
+        {
+          "name": "verjson-stack",
+          "property_values": [
+            "node"
+          ],
+          "source": "custom"
+        },
+        {
+          "name": "verjson-core-checks",
+          "property_values": [
+            "enforced"
+          ],
+          "source": "custom"
+        }
+      ]
+    }
+  },
+  "created_at": "2026-08-06T15:04:44.623Z",
+  "enforcement": "active",
+  "id": 20515817,
+  "name": "core-checks-node",
+  "node_id": "RRS_lACkVXNlcs4QpsWJzgE5C-k",
+  "rules": [
+    {
+      "parameters": {
+        "do_not_enforce_on_create": true,
+        "required_status_checks": [
+          {
+            "context": "ci / build-test"
+          },
+          {
+            "context": "ci / eligibility"
+          },
+          {
+            "context": "changelog-contract"
+          }
+        ],
+        "strict_required_status_checks_policy": false
+      },
+      "type": "required_status_checks"
+    }
+  ],
+  "source": "Verjson",
+  "source_type": "Organization",
+  "target": "branch",
+  "updated_at": "2026-09-02T00:10:47.768Z"
+}
