@@ -1,0 +1,72 @@
+{
+  "bypass_actors": [
+    {
+      "actor_id": null,
+      "actor_type": "OrganizationAdmin",
+      "bypass_mode": "always"
+    },
+    {
+      "actor_id": 4583107,
+      "actor_type": "Integration",
+      "bypass_mode": "always"
+    },
+    {
+      "actor_id": 4693283,
+      "actor_type": "Integration",
+      "bypass_mode": "always"
+    }
+  ],
+  "conditions": {
+    "ref_name": {
+      "exclude": [],
+      "include": [
+        "~DEFAULT_BRANCH"
+      ]
+    },
+    "repository_property": {
+      "exclude": [],
+      "include": [
+        {
+          "name": "verjson-stack",
+          "property_values": [
+            "node"
+          ],
+          "source": "custom"
+        },
+        {
+          "name": "verjson-core-checks",
+          "property_values": [
+            "enforced"
+          ],
+          "source": "custom"
+        }
+      ]
+    }
+  },
+  "enforcement": "active",
+  "name": "core-checks-node",
+  "rules": [
+    {
+      "parameters": {
+        "do_not_enforce_on_create": true,
+        "required_status_checks": [
+          {
+            "context": "ci / build-test",
+            "integration_id": 15368
+          },
+          {
+            "context": "ci / eligibility",
+            "integration_id": 15368
+          },
+          {
+            "context": "changelog-contract",
+            "integration_id": 15368
+          }
+        ],
+        "strict_required_status_checks_policy": false
+      },
+      "type": "required_status_checks"
+    }
+  ],
+  "target": "branch"
+}

@@ -1,0 +1,56 @@
+{
+  "bypass_actors": [
+    {
+      "actor_id": null,
+      "actor_type": "OrganizationAdmin",
+      "bypass_mode": "always"
+    },
+    {
+      "actor_id": 4583107,
+      "actor_type": "Integration",
+      "bypass_mode": "always"
+    },
+    {
+      "actor_id": 4693283,
+      "actor_type": "Integration",
+      "bypass_mode": "always"
+    }
+  ],
+  "conditions": {
+    "ref_name": {
+      "exclude": [],
+      "include": [
+        "~DEFAULT_BRANCH"
+      ]
+    },
+    "repository_property": {
+      "exclude": [],
+      "include": [
+        {
+          "name": "changelog-contract",
+          "property_values": [
+            "adopted"
+          ],
+          "source": "custom"
+        }
+      ]
+    }
+  },
+  "enforcement": "active",
+  "name": "changelog-contract-required",
+  "rules": [
+    {
+      "parameters": {
+        "do_not_enforce_on_create": true,
+        "required_status_checks": [
+          {
+            "context": "changelog / validate"
+          }
+        ],
+        "strict_required_status_checks_policy": false
+      },
+      "type": "required_status_checks"
+    }
+  ],
+  "target": "branch"
+}
