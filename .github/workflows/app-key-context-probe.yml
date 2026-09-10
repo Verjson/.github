@@ -1,0 +1,16 @@
+name: Probe reusable environment secret context
+on:
+  workflow_dispatch:
+permissions: {}
+jobs:
+  undeclared:
+    uses: ./.github/workflows/app-key-context-probe-undeclared.yml
+  declared:
+    uses: ./.github/workflows/app-key-context-probe-declared.yml
+  explicit-empty:
+    uses: ./.github/workflows/app-key-context-probe-declared.yml
+    secrets:
+      APP_KEY_CONTEXT_PROBE: ''
+  inherited:
+    uses: ./.github/workflows/app-key-context-probe-undeclared.yml
+    secrets: inherit

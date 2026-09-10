@@ -1,0 +1,23 @@
+name: Probe environment context declared
+on:
+  workflow_call:
+    secrets:
+      APP_KEY_CONTEXT_PROBE:
+        required: false
+permissions: {}
+jobs:
+  probe:
+    if: github.repository == 'Verjson/.github'
+    environment: ai-review-app
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    steps:
+      - name: Report only whether the environment probe resolved
+        env:
+          PROBE: ${{ secrets.APP_KEY_CONTEXT_PROBE }}
+        run: |
+          if [ -n "$PROBE" ]; then
+            echo 'populated=true'
+          else
+            echo 'populated=false'
+          fi
