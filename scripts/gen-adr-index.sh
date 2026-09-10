@@ -11,6 +11,11 @@
 # from the ADR. Pure bash + awk — runs on the bare self-hosted pool.
 set -euo pipefail
 
+case "$#:${1:-}" in
+  0:|1:--check) ;;
+  *) echo "gen-adr-index: expected no argument (regenerate) or exactly --check (verify)" >&2; exit 2 ;;
+esac
+
 root="$(cd "$(dirname "$0")/.." && pwd)"
 dec_dir="$root/docs/decisions"
 index="$dec_dir/README.md"
@@ -18,7 +23,8 @@ begin='<!-- BEGIN ADR INDEX -->'
 end='<!-- END ADR INDEX -->'
 
 tmp_table=""
-trap 'rm -f "$tmp_table"' EXIT
+tmp_rendered=""
+trap 'rm -f "$tmp_table" "$tmp_rendered"' EXIT
 
 valid_date() {
   local value="$1" year month day max_day
@@ -111,12 +117,20 @@ grep -qF "$begin" "$index" && grep -qF "$end" "$index" || {
 validate_unique_numbers
 
 if [ "${1:-}" = "--check" ]; then
-  if ! diff -u "$index" <(render); then
+  tmp_rendered="$(mktemp)"
+else
+  tmp_rendered="$(mktemp "$dec_dir/.adr-index.XXXXXX")"
+fi
+render >"$tmp_rendered"
+
+if [ "${1:-}" = "--check" ]; then
+  if ! diff -u "$index" "$tmp_rendered"; then
     echo "gen-adr-index: docs/decisions/README.md is stale — run scripts/gen-adr-index.sh and commit." >&2
     exit 1
   fi
   echo "ADR index is up to date."
 else
-  render >"$index.tmp" && mv "$index.tmp" "$index"
+  chmod --reference="$index" "$tmp_rendered"
+  mv "$tmp_rendered" "$index"
   echo "Regenerated ADR index in $index"
 fi

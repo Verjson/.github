@@ -29,7 +29,7 @@ new_fixture() {
 }
 # adr <root> <slug> <h1> <date>
 adr() { mkdir -p "$1/docs/decisions/$2"; printf '# %s\n\n- **Date:** %s\n' "$3" "$4" > "$1/docs/decisions/$2/README.md"; }
-gen() { bash "$1/scripts/gen-adr-index.sh" "${2:-}" >/dev/null 2>&1; }
+gen() { local fixture="$1"; shift; bash "$fixture/scripts/gen-adr-index.sh" "$@" >/dev/null 2>&1; }
 
 # 1. Happy path: valid ADRs generate a reverse-sorted table; --check then passes.
 d="$(new_fixture)"
@@ -128,5 +128,80 @@ gen "$d" \
   && grep -qF '[0043](0043-replacement/README.md)' "$d/docs/decisions/README.md" \
   && pass "distinct superseding ADRs remain valid" \
   || fail "duplicate guard rejected valid supersession"
+
+# Invalid modes must fail before touching the index or allocating temporary files.
+d="$(new_fixture)"; adr "$d" "0001-x" "0001 — X" "2026-07-01"
+mkdir "$d/tmp"
+cp "$d/docs/decisions/README.md" "$d/index-before"
+for argument in '' --chek check --verify --help; do
+  TMPDIR="$d/tmp" bash "$d/scripts/gen-adr-index.sh" "$argument" >"$d/output" 2>&1
+  status=$?
+  if [ "$status" -eq 2 ] && grep -q 'expected no argument' "$d/output" \
+    && cmp -s "$d/index-before" "$d/docs/decisions/README.md" \
+    && [ -z "$(find "$d/tmp" -mindepth 1 -print)" ]; then
+    pass "invalid argument '$argument' exits 2 without modifying the index"
+  else
+    fail "invalid argument '$argument' was accepted or changed state"
+  fi
+done
+for extra in extra --check ''; do
+  TMPDIR="$d/tmp" bash "$d/scripts/gen-adr-index.sh" --check "$extra" >"$d/output" 2>&1
+  status=$?
+  [ "$status" -eq 2 ] && cmp -s "$d/index-before" "$d/docs/decisions/README.md" \
+    && pass "--check rejects extra argument '$extra'" \
+    || fail "--check accepted extra argument '$extra' or changed the index"
+done
+
+# Both the table and rendered output belong to the parent shell's EXIT trap.
+for scenario in regenerate current stale malformed-regenerate malformed-check; do
+  d="$(new_fixture)"; adr "$d" "0001-x" "0001 — X" "2026-07-01"
+  mkdir "$d/tmp"
+  mode=(--check); expected=0
+  case "$scenario" in
+    regenerate) mode=() ;;
+    current) gen "$d" ;;
+    stale) expected=1 ;;
+    malformed-*)
+      gen "$d"
+      mkdir "$d/docs/decisions/0002-missing-readme"
+      expected=1
+      [ "$scenario" = malformed-regenerate ] && mode=()
+      ;;
+  esac
+  cp "$d/docs/decisions/README.md" "$d/index-before"
+  TMPDIR="$d/tmp" bash "$d/scripts/gen-adr-index.sh" "${mode[@]}" >"$d/output" 2>&1
+  status=$?
+  if [ "$status" -eq "$expected" ] \
+    && [ -z "$(find "$d/tmp" -mindepth 1 -print)" ] \
+    && [ -z "$(find "$d/docs/decisions" -maxdepth 1 \
+      \( -name '.adr-index.*' -o -name 'README.md.tmp' \) -print)" ]; then
+    pass "$scenario cleans every owned temporary file"
+  else
+    fail "$scenario returned $status or leaked a temporary file"
+  fi
+  if [ "$scenario" != regenerate ]; then
+    cmp -s "$d/index-before" "$d/docs/decisions/README.md" \
+      && pass "$scenario leaves the original index unchanged" \
+      || fail "$scenario changed the original index"
+  fi
+done
+
+# Observe both real sort calls, independent of which locales CI installed.
+d="$(new_fixture)"; adr "$d" "0001-x" "0001 — X" "2026-07-01"
+mkdir "$d/bin"
+real_sort="$(command -v sort)"
+cat >"$d/bin/sort" <<'SH'
+#!/usr/bin/env bash
+printf '%s:%s\n' "${LC_ALL:-unset}" "$*" >>"$SORT_CALLS"
+exec "$REAL_SORT" "$@"
+SH
+chmod +x "$d/bin/sort"
+SORT_CALLS="$d/sort-calls" REAL_SORT="$real_sort" PATH="$d/bin:$PATH" LC_ALL=C.UTF-8 \
+  bash "$d/scripts/gen-adr-index.sh" >"$d/output" 2>&1
+status=$?
+printf 'C:\nC:-r\n' >"$d/expected-calls"
+[ "$status" -eq 0 ] && cmp -s "$d/expected-calls" "$d/sort-calls" \
+  && pass "duplicate validation and reverse rendering both pin LC_ALL=C" \
+  || fail "an ADR sort inherited ambient collation"
 
 if [ "$fails" -eq 0 ]; then echo "All tests passed."; exit 0; else echo "$fails test(s) failed."; exit 1; fi
