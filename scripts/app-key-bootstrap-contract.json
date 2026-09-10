@@ -1,0 +1,54 @@
+{
+  "schema": 1,
+  "repository": {
+    "name": "Verjson/.github",
+    "id": 1269388380
+  },
+  "roles": {
+    "release": {
+      "environment": "release-app",
+      "environment_id": 21611791883,
+      "branch_policy_id": 59568382,
+      "protection_rule_id": 65109248,
+      "secret": "RELEASE_APP_PRIVATE_KEY",
+      "client_id": "Iv23liIrniWY27YJKYDP",
+      "app_id": 4583107,
+      "app_slug": "release-authorization",
+      "installation_id": 153483031,
+      "public_key": {
+        "key_id": "3380204578043523366",
+        "key": "glSS3D5uMCfHA2Ryx9jCBcXB67O78d9JrXza2LyqvBg="
+      }
+    },
+    "merge": {
+      "environment": "merge-app",
+      "environment_id": 21611793391,
+      "branch_policy_id": 59568383,
+      "protection_rule_id": 65109250,
+      "secret": "MERGE_APP_PRIVATE_KEY",
+      "client_id": "Iv23li18TKEWZbxcRgJD",
+      "app_id": 4693283,
+      "app_slug": "merge-authorization",
+      "installation_id": 155977749,
+      "public_key": {
+        "key_id": "3380204578043523366",
+        "key": "lPJQJbExDaEYCrQEe4rPZTeB9Fp0DuglokPdtYucpjQ="
+      }
+    },
+    "review": {
+      "environment": "ai-review-app",
+      "environment_id": 21611794961,
+      "branch_policy_id": 59568388,
+      "protection_rule_id": 65109252,
+      "secret": "AI_REVIEW_APP_PRIVATE_KEY",
+      "client_id": "Iv23liObnM1yEH8j9pJu",
+      "app_id": 4528902,
+      "app_slug": "ai-review-authorization",
+      "installation_id": 152248101,
+      "public_key": {
+        "key_id": "3380204578043523366",
+        "key": "lwuxSWDnXhTUVNPmOdZFVzQHCwH2KqNr2JGTPf+xPQc="
+      }
+    }
+  }
+}
