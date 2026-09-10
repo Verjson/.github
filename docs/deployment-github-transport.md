@@ -24,7 +24,7 @@ fields fail closed. `validate_request` is the authoritative schema:
 | `fleetSelector`, `lane` | Separate fleet and lane identifiers, never interchangeable |
 | `issuedAt`, `expiresAt` | Whole-second UTC timestamps; at most 30 minutes and not expired |
 | `github` | Exact repository name/ID and dedicated role App/installation IDs |
-| `release` | Repository, asset ID, raw manifest digest, variant/image digest, source commit/main ref, canonical signer workflow and immutable signer commit |
+| `release` | Immutable historical signed-source repository, asset ID, raw manifest digest, variant/image digest, source commit/main ref, canonical signer workflow and immutable signer commit |
 | `probe` | Exact runner ID/name/label, unique transaction UUID, workflow ID, reviewed canary tag and commit |
 
 Every operation carries the complete transaction request, including manifest
@@ -33,7 +33,12 @@ reads. Preplan evidence reads bind the admitted configuration with a null
 `manifestBytes` verbatim, verify its selected raw digest and parsed release
 identity, and invoke `gh attestation verify` with exact repository, source and
 reusable signer constraints. The verifier receives only a read token and a fresh
-temporary HOME. This result is evidence to validate, not an authorization to
+temporary HOME. `github.repository` is the current canonical API repository,
+verified through `/repositories/{repositoryId}` against the reviewed stable ID.
+`release.repository` is the historical name in the signed source and remains
+unchanged in parsed-manifest validation and `gh attestation verify --repo`.
+A repository rename must not rewrite historical provenance or rely on a name
+alias alone; both identities and the stable ID remain bound in the request. This result is evidence to validate, not an authorization to
 mutate a host.
 
 Probe dispatch uses the existing canonical `runner-canary.yml` seven-input
@@ -46,7 +51,9 @@ successful representative job, runner ID/name/label, and authenticated artifact.
 The ZIP must contain only the fixed receipt filename. Both archive and receipt
 digests are verified; the receipt must agree with independent run/job metadata,
 the requested release, nonce, timestamps, representative checks and capacity
-floors. Failed, rerun, replayed, ambiguous, expired or misrouted evidence fails.
+floors. Receipt equality is type-sensitive: numeric health flags, Boolean run
+attempts and floating-point IDs are rejected even when Python would compare
+them equal to the expected Boolean or integer. Failed, rerun, replayed, ambiguous, expired or misrouted evidence fails.
 
 An uncertain dispatch or timeout requires parent reconciliation using the saved
 intent and authenticated run inventory. There is no automatic redispatch or

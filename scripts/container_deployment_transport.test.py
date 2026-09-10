@@ -105,7 +105,7 @@ class RequestTests(unittest.TestCase):
         mutations = [lambda v: v.pop('attemptId'), lambda v: v.update(schemaVersion=2),
                      lambda v: v.update(expiresAt=stamp(NOW)), lambda v: v.update(issuedAt=stamp(NOW + 1)),
                      lambda v: v.update(expiresAt=stamp(NOW + 1801)), lambda v: v.update(extra='secret'),
-                     lambda v: v['probe'].update(runnerId=True), lambda v: v['probe'].update(workflowCommit='main'),
+                     lambda v: v.update(schemaVersion=True), lambda v: v['github'].update(repositoryId=11.0), lambda v: v['probe'].update(runnerId=True), lambda v: v['probe'].update(workflowCommit='main'),
                      lambda v: v['probe'].update(transactionNonce=''), lambda v: v['github'].update(repository='attacker/repo')]
         for mutate in mutations:
             value = request(); mutate(value)
@@ -174,11 +174,11 @@ class AuthTests(unittest.TestCase):
 
     def test_broad_app_wrong_installation_expiry_and_repository_are_rejected(self):
         mutations = [(0, lambda v: v['permissions'].update(organization_self_hosted_runners='write')),
-                     (0, lambda v: v.update(id=9)), (1, lambda v: v.update(repository_selection='all')),
+                     (0, lambda v: v.update(id=22.0)), (0, lambda v: v.update(id=9)), (1, lambda v: v.update(repository_selection='all')),
                      (1, lambda v: v.update(app_id=9)), (1, lambda v: v.update(suspended_at=stamp(NOW))),
                      (2, lambda v: v.update(expires_at=stamp(NOW))),
                      (2, lambda v: v.update(permissions={'administration': 'write'})),
-                     (3, lambda v: v.update(total_count=2)),
+                     (3, lambda v: v.update(total_count=True)), (3, lambda v: v.update(total_count=2)),
                      (3, lambda v: v['repositories'][0].update(id=9))]
         for index, mutate in mutations:
             value = request(); api = self.api(value)
@@ -197,7 +197,7 @@ class ManifestTests(unittest.TestCase):
         return value, raw, metadata
 
     def test_exact_asset_bytes_and_strict_attestation_are_bound(self):
-        value, raw, metadata = self.fixture(); api = mock.Mock(call=mock.Mock(side_effect=[metadata, raw]))
+        value, raw, metadata = self.fixture(); api = mock.Mock(call=mock.Mock(side_effect=[{'id': value['github']['repositoryId'], 'full_name': value['github']['repository']}, metadata, raw]))
         verifier = mock.Mock(return_value=mock.Mock(stdout=b'[{}]'))
         with mock.patch.dict(os.environ, {'HOME': '/untrusted', 'SSH_AUTH_SOCK': 'agent', 'DIGITALOCEAN_RUNNER_FLEET_TOKEN': 'mutation'}):
             result = t.fetch_manifest(api, value, 'read-only-token', run=verifier, clock=lambda: NOW)
@@ -208,12 +208,45 @@ class ManifestTests(unittest.TestCase):
         self.assertNotEqual(kwargs['env']['HOME'], '/untrusted')
         self.assertEqual(kwargs['env']['GH_TOKEN'], 'read-only-token')
 
+    def test_renamed_repository_uses_stable_api_identity_and_historical_signed_source(self):
+        raw = (Path(__file__).parent / 'fixtures/container-deployment/transport/runner-v0.2.1-manifest.json').read_bytes()
+        self.assertEqual(t.digest(raw), 'sha256:4f5bb96e1fe07f7b56cfe124206ed85c4e59b9715b3b4e18b3054d890dd1ad32')
+        manifest = json.loads(raw)
+        value = request('manifest')
+        value['github'].update(repository='Verjson/verjson-git-runners', repositoryId=1301436066)
+        value['release'].update(repository='Verjson/verjson-github-runner', assetId=532627568,
+                                manifestDigest=t.digest(raw), sourceCommit=manifest['source']['commit'],
+                                signerCommit=manifest['release']['workflow']['contractCommit'],
+                                imageDigest=next(image['indexDigest'] for image in manifest['images'] if image['variant'] == 'pwsh'))
+        repository = {'id': 1301436066, 'full_name': 'Verjson/verjson-git-runners'}
+        metadata = {'id': 532627568, 'name': 'release-manifest.json', 'state': 'uploaded', 'size': len(raw)}
+        verifier = mock.Mock(return_value=mock.Mock(stdout=b'[{}]'))
+        api = mock.Mock(call=mock.Mock(side_effect=[repository, metadata, raw]))
+        result = t.fetch_manifest(api, value, 'read', run=verifier, clock=lambda: NOW)
+        self.assertEqual(result['manifestBytes'].encode(), raw)
+        self.assertEqual(api.call.call_args_list[0].args[1], '/repositories/1301436066')
+        self.assertEqual(api.call.call_args_list[1].args[1], '/repos/Verjson/verjson-git-runners/releases/assets/532627568')
+        args = verifier.call_args.args[0]
+        self.assertEqual(args[args.index('--repo') + 1], 'Verjson/verjson-github-runner')
+        self.assertEqual(args[args.index('--source-digest') + 1], manifest['source']['commit'])
+        self.assertEqual(args[args.index('--signer-digest') + 1], manifest['release']['workflow']['contractCommit'])
+        for changed in ({'id': 99, 'full_name': repository['full_name']},
+                        {'id': 1301436066, 'full_name': 'Verjson/unreviewed-renamed-repository'}):
+            verifier.reset_mock()
+            with self.assertRaises(t.TransportError):
+                t.fetch_manifest(mock.Mock(call=mock.Mock(return_value=changed)), value, 'read', run=verifier, clock=lambda: NOW)
+            verifier.assert_not_called()
+        wrong_source = copy.deepcopy(value); wrong_source['release']['repository'] = 'Verjson/verjson-git-runners'
+        with self.assertRaises(t.TransportError):
+            t.fetch_manifest(mock.Mock(call=mock.Mock(side_effect=[repository, metadata, raw])), wrong_source, 'read', run=verifier, clock=lambda: NOW)
+        verifier.assert_not_called()
+
     def test_altered_asset_and_failed_attestation_never_return_evidence(self):
         value, raw, metadata = self.fixture()
-        with self.assertRaises(t.TransportError): t.fetch_manifest(mock.Mock(call=mock.Mock(side_effect=[metadata, raw + b' '])), value, 'read', clock=lambda: NOW)
+        with self.assertRaises(t.TransportError): t.fetch_manifest(mock.Mock(call=mock.Mock(side_effect=[{'id': value['github']['repositoryId'], 'full_name': value['github']['repository']}, metadata, raw + b' '])), value, 'read', clock=lambda: NOW)
         verifier = mock.Mock(side_effect=subprocess.CalledProcessError(1, 'gh', stderr='Authorization: secret'))
         with self.assertRaisesRegex(t.TransportError, '^release attestation verification failed$'):
-            t.fetch_manifest(mock.Mock(call=mock.Mock(side_effect=[metadata, raw])), value, 'read', run=verifier, clock=lambda: NOW)
+            t.fetch_manifest(mock.Mock(call=mock.Mock(side_effect=[{'id': value['github']['repositoryId'], 'full_name': value['github']['repository']}, metadata, raw])), value, 'read', run=verifier, clock=lambda: NOW)
 
 
 class ProbeTests(unittest.TestCase):
@@ -234,10 +267,11 @@ class ProbeTests(unittest.TestCase):
         self.assertEqual(set(posts[0][3]['inputs']), {'runner_name', 'runner_id', 'runner_label', 'transaction_nonce', 'release_manifest', 'release_variant', 'image_digest'})
 
     def test_wrong_runner_nonce_manifest_image_workflow_or_stale_receipt_fails(self):
-        mutations = [lambda r: r['runner'].update(id=9), lambda r: r.update(transactionNonce='replayed'),
+        mutations = [lambda r: r.update(schemaVersion=2.0), lambda r: r['runner'].update(id=55.0), lambda r: r['runner'].update(id=9), lambda r: r.update(transactionNonce='replayed'),
                      lambda r: r['release'].update(manifest='sha256:' + '9' * 64), lambda r: r['release'].update(imageDigest='sha256:' + '9' * 64),
                      lambda r: r['canary'].update(workflowSha='9' * 40), lambda r: r['canary'].update(runAttempt=2),
-                     lambda r: r['canary'].update(pwshExecuted=False), lambda r: r['postCanary'].update(observedAt=stamp(NOW - 1900)),
+                     lambda r: r['canary'].update(pwshExecuted=False), lambda r: r['canary'].update(databaseServiceReachable=1),
+                     lambda r: r['canary'].update(runAttempt=True), lambda r: r['canary'].update(runId=101.0), lambda r: r['postCanary'].update(observedAt=stamp(NOW - 1900)),
                      lambda r: r['postCanary'].update(freeBytes=0), lambda r: r['imageBuild'].update(diskBytesConsumed=True),
                      lambda r: r['dependencies'].update(postgresImage='postgres:latest')]
         for mutate in mutations:
@@ -245,7 +279,7 @@ class ProbeTests(unittest.TestCase):
             with self.subTest(mutate=mutate), self.assertRaises(t.TransportError): self.run_probe(api)
 
     def test_run_job_artifact_and_tag_independent_evidence_mismatch_fails(self):
-        mutations = [lambda a: a.record.update(id=99), lambda a: a.record.update(run_attempt=2),
+        mutations = [lambda a: a.record.update(id=99), lambda a: a.record.update(run_attempt=2), lambda a: a.record.update(run_attempt=True),
                      lambda a: a.record.update(head_sha='9' * 40), lambda a: a.record.update(conclusion='failure'),
                      lambda a: a.job.update(runner_id=9), lambda a: a.job.update(labels=['other']),
                      lambda a: a.artifact.update(expired=True), lambda a: a.artifact.update(digest='sha256:' + '9' * 64),

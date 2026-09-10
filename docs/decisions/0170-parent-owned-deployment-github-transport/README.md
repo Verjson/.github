@@ -43,3 +43,14 @@ integrity detects consumer drift. This separation avoids coupling deployment to
 unsupported private lifecycle paths at the cost of a staged delivery. ADR 0162's
 portable core and forge adapters remain the future GitLab boundary; no speculative
 universal fleet controller is introduced.
+
+## Review correction — 2026-09-10
+
+Current API repository identity is verified against its stable numeric ID and
+kept separate from the immutable repository name in historical signed source.
+Renaming the runner repository must not rewrite v0.2.1 provenance or weaken
+attestation verification. The exact published raw manifest is a regression
+fixture; external API and verifier boundaries remain mocked. Receipt comparison
+uses type-sensitive canonical JSON and integer admission at API boundaries, so
+Boolean/integer coercion cannot turn malformed representative evidence into a
+passing receipt.

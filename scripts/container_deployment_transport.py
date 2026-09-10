@@ -133,9 +133,7 @@ def validate_request(value, now):
     require(isinstance(probe['transactionNonce'], str) and re.fullmatch(r'[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}', probe['transactionNonce']), 'transaction nonce must be an exact UUID')
     require(isinstance(probe['workflowCommit'], str) and SHA.fullmatch(probe['workflowCommit']), 'canary workflow commit must be immutable')
     require(isinstance(probe['workflowRef'], str) and re.fullmatch(r'refs/tags/runner-canary-v[0-9]+\.[0-9]+\.[0-9]+', probe['workflowRef']), 'reviewed canary tag is required')
-    if operation == 'manifest':
-        require(github['repository'] == release['repository'], 'manifest authority targets another repository')
-    elif operation == 'probe':
+    if operation == 'probe':
         require(github['repository'] == CANARY_REPOSITORY, 'canary dispatch targets another repository')
     return value
 
@@ -191,10 +189,10 @@ def installation_token(api, value, jwt, now):
     expected = PERMISSIONS[operation]
     authority = value['github']
     app = api.call('GET', '/app', jwt)
-    require(app.get('id') == authority['appId'] and app.get('permissions') == expected,
+    require(positive(app.get('id')) and app['id'] == authority['appId'] and app.get('permissions') == expected,
             'App identity or permissions differ from the dedicated transport role')
     installation = api.call('GET', f"/app/installations/{authority['installationId']}", jwt)
-    require(installation.get('id') == authority['installationId'] and installation.get('app_id') == authority['appId']
+    require(positive(installation.get('id')) and positive(installation.get('app_id')) and installation['id'] == authority['installationId'] and installation.get('app_id') == authority['appId']
             and installation.get('account', {}).get('login') == authority['repository'].split('/')[0]
             and installation.get('repository_selection') == 'selected' and installation.get('suspended_at') is None
             and installation.get('permissions') == expected, 'installation identity or scope differs')
@@ -204,19 +202,23 @@ def installation_token(api, value, jwt, now):
     require(now < timestamp(minted.get('expires_at')) <= now + 3660, 'installation token expiry is invalid')
     token = minted['token']
     repositories = api.call('GET', '/installation/repositories?per_page=100', token)
-    require(repositories.get('total_count') == 1 and len(repositories.get('repositories', [])) == 1,
+    require(type(repositories.get('total_count')) is int and repositories['total_count'] == 1 and len(repositories.get('repositories', [])) == 1,
             'installation token is not scoped to one repository')
     repository = repositories['repositories'][0]
-    require(repository.get('id') == authority['repositoryId'] and repository.get('full_name') == authority['repository'], 'installation token repository differs')
+    require(positive(repository.get('id')) and repository['id'] == authority['repositoryId'] and repository.get('full_name') == authority['repository'], 'installation token repository differs')
     return token
 
 
 def fetch_manifest(api, value, token, run=subprocess.run, clock=time.time):
     validate_request(value, clock())
     release = value['release']
-    path = f"/repos/{release['repository']}/releases/assets/{release['assetId']}"
+    authority = value['github']
+    repository = api.call('GET', f"/repositories/{authority['repositoryId']}", token)
+    require(positive(repository.get('id')) and repository['id'] == authority['repositoryId']
+            and repository.get('full_name') == authority['repository'], 'release API repository identity differs')
+    path = f"/repos/{authority['repository']}/releases/assets/{release['assetId']}"
     metadata = api.call('GET', path, token)
-    require(metadata.get('id') == release['assetId'] and metadata.get('name') == 'release-manifest.json'
+    require(positive(metadata.get('id')) and metadata['id'] == release['assetId'] and metadata.get('name') == 'release-manifest.json'
             and metadata.get('state') == 'uploaded' and positive(metadata.get('size')) and metadata['size'] <= MAX_BYTES,
             'release asset metadata differs')
     raw = api.call('GET', path, token, binary=True)
@@ -256,6 +258,8 @@ def fetch_manifest(api, value, token, run=subprocess.run, clock=time.time):
 def validate_probe_receipt(value, receipt, run_record, job, artifact, now):
     validate_request(value, now)
     probe, release = value['probe'], value['release']
+    require(positive(run_record.get('id')) and type(run_record.get('run_attempt')) is int
+            and run_record['run_attempt'] == 1 and positive(job.get('id')), 'independent run/job scalar types differ')
     object_keys(receipt, ('schemaVersion', 'contract', 'transactionNonce', 'runner', 'release', 'canary',
                           'imageBuild', 'postCanary', 'dependencies', 'artifact'), 'canary receipt')
     object_keys(receipt['imageBuild'], ('conclusion', 'imageDigest', 'diskBytesConsumed'), 'image build')
@@ -266,9 +270,9 @@ def validate_probe_receipt(value, receipt, run_record, job, artifact, now):
     require(isinstance(dependencies['uploadArtifactCommit'], str) and SHA.fullmatch(dependencies['uploadArtifactCommit']), 'artifact uploader must be immutable')
     for name in ('postgresImage', 'nginxImage', 'curlImage', 'buildBaseImage'):
         require(isinstance(dependencies[name], str) and re.fullmatch(r'[a-z0-9/._-]+@sha256:[a-f0-9]{64}', dependencies[name]), 'canary image dependency must be immutable')
-    require(receipt.get('schemaVersion') == 2 and receipt.get('contract') == 'verjson-runner-promotion/2', 'unsupported canary receipt')
+    require(type(receipt.get('schemaVersion')) is int and receipt['schemaVersion'] == 2 and receipt.get('contract') == 'verjson-runner-promotion/2', 'unsupported canary receipt')
     require(receipt.get('transactionNonce') == probe['transactionNonce'], 'receipt nonce differs')
-    require(receipt.get('runner') == {'id': probe['runnerId'], 'name': probe['runnerName']}, 'receipt runner differs')
+    require(canonical(receipt.get('runner')) == canonical({'id': probe['runnerId'], 'name': probe['runnerName']}), 'receipt runner differs')
     require(receipt.get('release') == {'manifest': release['manifestDigest'], 'variant': release['variant'], 'imageDigest': release['imageDigest']}, 'receipt release differs')
     canary = receipt.get('canary', {})
     expected = {'repository': CANARY_REPOSITORY, 'workflow': 'canonical-db-backed-runner-canary',
@@ -278,8 +282,8 @@ def validate_probe_receipt(value, receipt, run_record, job, artifact, now):
                 'conclusion': 'success', 'databaseServiceReachable': True, 'dockerServiceReachable': True, 'pwshExecuted': True,
                 'runUrl': f"https://github.com/{CANARY_REPOSITORY}/actions/runs/{run_record['id']}",
                 'jobUrl': f"https://github.com/{CANARY_REPOSITORY}/actions/runs/{run_record['id']}/job/{job['id']}"}
-    require(canary == expected, 'receipt workflow/job or representative checks differ')
-    require(job.get('runner_id') == probe['runnerId'] and job.get('runner_name') == probe['runnerName']
+    require(canonical(canary) == canonical(expected), 'receipt workflow/job or representative checks differ')
+    require(positive(job.get('runner_id')) and job['runner_id'] == probe['runnerId'] and job.get('runner_name') == probe['runnerName']
             and probe['runnerLabel'] in job.get('labels', []) and job.get('status') == 'completed'
             and job.get('conclusion') == 'success', 'independent job routing/outcome differs')
     observed = receipt.get('postCanary', {})
@@ -295,7 +299,7 @@ def validate_probe_receipt(value, receipt, run_record, job, artifact, now):
     self_digest = receipt.get('artifact', {}).get('contentDigest')
     unsigned = dict(receipt) | {'artifact': {'name': 'runner-promotion-receipt', 'contentDigest': ''}}
     require(receipt.get('artifact', {}).get('name') == 'runner-promotion-receipt' and digest(canonical(unsigned)) == self_digest, 'receipt content digest differs')
-    require(artifact.get('expired') is False and artifact.get('workflow_run', {}).get('id') == run_record['id'], 'artifact run provenance differs')
+    require(artifact.get('expired') is False and positive(artifact.get('workflow_run', {}).get('id')) and artifact['workflow_run']['id'] == run_record['id'], 'artifact run provenance differs')
 
 
 def probe_runner(api, value, token, *, record_intent, clock=time.time, sleep=time.sleep):
@@ -303,7 +307,7 @@ def probe_runner(api, value, token, *, record_intent, clock=time.time, sleep=tim
     probe = value['probe']
     repo = f'/repos/{CANARY_REPOSITORY}'
     workflow = api.call('GET', f"{repo}/actions/workflows/{probe['workflowId']}", token)
-    require(workflow.get('id') == probe['workflowId'] and workflow.get('path') == CANARY_PATH and workflow.get('state') == 'active', 'dispatch workflow identity differs')
+    require(positive(workflow.get('id')) and workflow['id'] == probe['workflowId'] and workflow.get('path') == CANARY_PATH and workflow.get('state') == 'active', 'dispatch workflow identity differs')
     ref = probe['workflowRef'].removeprefix('refs/')
     tag = api.call('GET', f'{repo}/git/ref/{ref}', token)
     target = tag.get('object', {})
@@ -337,10 +341,10 @@ def probe_runner(api, value, token, *, record_intent, clock=time.time, sleep=tim
         require(len(matching) <= 1, 'ambiguous transaction nonce runs')
         if matching:
             found = matching[0]
-            require(positive(found.get('id')) and found['id'] > maximum and found.get('workflow_id') == probe['workflowId']
+            require(positive(found.get('id')) and found['id'] > maximum and positive(found.get('workflow_id')) and found['workflow_id'] == probe['workflowId']
                     and found.get('event') == 'workflow_dispatch' and found.get('head_sha') == probe['workflowCommit']
                     and found.get('head_branch') == probe['workflowRef'].removeprefix('refs/tags/')
-                    and found.get('path') == CANARY_PATH and found.get('run_attempt') == 1
+                    and found.get('path') == CANARY_PATH and type(found.get('run_attempt')) is int and found['run_attempt'] == 1
                     and timestamp(value['issuedAt']) <= timestamp(found.get('created_at')) <= clock(), 'run identity is stale or differs')
             if found.get('status') == 'completed':
                 require(found.get('conclusion') == 'success', 'representative run failed')
@@ -348,11 +352,11 @@ def probe_runner(api, value, token, *, record_intent, clock=time.time, sleep=tim
         sleep(min(5, max(0, timestamp(value['expiresAt']) - clock())))
     require(found is not None and found.get('status') == 'completed', 'representative run timed out')
     jobs = api.call('GET', f"{repo}/actions/runs/{found['id']}/attempts/1/jobs?per_page=100", token)
-    require(jobs.get('total_count') == 1 and len(jobs.get('jobs', [])) == 1 and jobs['jobs'][0].get('name') == 'canary', 'canary job identity is ambiguous')
+    require(type(jobs.get('total_count')) is int and jobs['total_count'] == 1 and len(jobs.get('jobs', [])) == 1 and jobs['jobs'][0].get('name') == 'canary', 'canary job identity is ambiguous')
     job = jobs['jobs'][0]
     require(positive(job.get('id')), 'canary job ID is invalid')
     artifacts = api.call('GET', f"{repo}/actions/runs/{found['id']}/artifacts?per_page=100", token)
-    require(artifacts.get('total_count') == 1 and len(artifacts.get('artifacts', [])) == 1, 'canary artifact identity is ambiguous')
+    require(type(artifacts.get('total_count')) is int and artifacts['total_count'] == 1 and len(artifacts.get('artifacts', [])) == 1, 'canary artifact identity is ambiguous')
     artifact = artifacts['artifacts'][0]
     require(positive(artifact.get('id')) and artifact.get('name') == 'runner-promotion-receipt', 'canary artifact differs')
     archive = api.call('GET', f"{repo}/actions/artifacts/{artifact['id']}/zip", token, binary=True)
