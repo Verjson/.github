@@ -68,6 +68,14 @@ workflow implementations, package floors or PR runs; it cannot establish readine
 
 ## Live acceptance and retirement gates
 
+Adoption is blocked by [#1303](https://github.com/Verjson/.github/issues/1303)
+(exact App bindings for effective organization checks) and
+[`verjson-object-storage#137`](https://github.com/Verjson/verjson-object-storage/issues/137)
+(consumer check-list completeness and repository floor App binding). Resolve and
+re-verify those prerequisites, then refresh the reviewed baseline snapshot before
+rollout. These are identified adoption blockers, not a claimed live failure of this
+prepared Node-floor policy.
+
 A separately reviewed rollout must first snapshot the baseline and any existing
 floor rule, verify property compatibility and absence of a conflicting organization
 floor rule, and identify the exact intended repository cohort. Inspect each actual
