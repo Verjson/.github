@@ -1,6 +1,6 @@
 ---
 date: 2026-09-10
-issue: 1285
+id: 20260910T020817Z
 impact: patch
 title: Require a protective pin before shared App-key contract adoption
 ---
