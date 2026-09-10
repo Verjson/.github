@@ -272,9 +272,8 @@ def parse_updates(body: str) -> tuple[Update, ...]:
     updates = tables[0]
     if len(updates) > MAX_UPDATES:
         raise AutomationError(f"Renovate update table exceeds {MAX_UPDATES} rows")
-    packages = [update.package for update in updates]
-    if len(packages) != len(set(packages)):
-        raise AutomationError("Renovate update table repeats a package")
+    if len(updates) != len(set(updates)):
+        raise AutomationError("Renovate update table repeats a package transition")
     return updates
 
 

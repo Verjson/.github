@@ -85,3 +85,12 @@ the canonical generator. Removing or weakening any conjunct fails locally before
 trusted reusable workflow can receive the Release App credential. This closes an
 enforcement gap in the existing trust boundary; it does not change the admitted actors,
 events, permissions, or token scope.
+
+## Amendment (2026-09-10) — distinct Docker variant transitions (#1271)
+
+Duplicate attribution rows are identified by the complete parsed package/from/to
+transition, not the package name alone. Grouped Alpine and Bookworm updates for
+one Docker image remain distinct and both appear in the generated fragment.
+Exact duplicate transitions still fail, including equivalent linked and bare
+package spellings. This restores grouped-update attribution without changing
+author admission, table ambiguity checks or fragment publication authority.

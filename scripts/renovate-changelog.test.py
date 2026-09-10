@@ -297,6 +297,28 @@ class RenovateTableTests(unittest.TestCase):
         ):
             renovate_changelog.parse_updates(invalid_change)
 
+    def test_grouped_docker_variants_preserve_both_transitions_in_the_fragment(self) -> None:
+        body = """| Package | Type | Update | Change |
+|---|---|---|---|
+| [node](https://hub.docker.com/_/node) ([source](https://redirect.github.com/nodejs/node)) | final | minor | `24.19.0-alpine` → `24.20.0-alpine` |
+| [node](https://hub.docker.com/_/node) ([source](https://redirect.github.com/nodejs/node)) |  | minor | `24.19.0-bookworm` → `24.20.0-bookworm` |
+"""
+        updates = renovate_changelog.parse_updates(body)
+        self.assertEqual(updates, (
+            renovate_changelog.Update("node", "24.19.0-alpine", "24.20.0-alpine"),
+            renovate_changelog.Update("node", "24.19.0-bookworm", "24.20.0-bookworm"),
+        ))
+        _, fragment = renovate_changelog.fragment_for(229, updates, dt.date(2026, 9, 10))
+        self.assertIn("`node` from `24.19.0-alpine` to `24.20.0-alpine`", fragment)
+        self.assertIn("`node` from `24.19.0-bookworm` to `24.20.0-bookworm`", fragment)
+        for duplicate in (body.splitlines()[-1], body.splitlines()[-1].replace(
+            "[node](https://hub.docker.com/_/node) ([source](https://redirect.github.com/nodejs/node))", "node"
+        )):
+            with self.subTest(duplicate=duplicate), self.assertRaisesRegex(
+                renovate_changelog.AutomationError, "repeats a package transition"
+            ):
+                renovate_changelog.parse_updates(body + duplicate + "\n")
+
     def test_rejects_duplicate_package_rows(self) -> None:
         row = BODY.splitlines()[-1]
         with self.assertRaisesRegex(
