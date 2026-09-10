@@ -24,6 +24,7 @@ cp \
   "$root/scripts/container_artifact_extract.py" \
   "$root/scripts/container_attestation_verify.py" \
   "$root/scripts/container_deployment_controller.py" \
+  "$root/scripts/container_deployment_transport.py" \
   "$root/scripts/container_deployment_preflight.py" \
   "$root/scripts/container_deployment_review_producer.py" \
   "$root/scripts/validate-container-deployment-cli-lock.py" \
@@ -69,6 +70,7 @@ release_validator_digest="$(sha256sum "$consumer/scripts/container_release_manif
 "$deployment" review-producer-workflow "$ref" >"$consumer/.github/workflows/container-deployment-review-producer.yml"
 "$deployment" review-producer "$ref" >"$consumer/scripts/container_deployment_review_producer.py"
 "$deployment" controller "$ref" >"$consumer/scripts/container_deployment_controller.py"
+"$deployment" transport "$ref" >"$consumer/scripts/container_deployment_transport.py"
 "$deployment" preflight "$ref" >"$consumer/scripts/container_deployment_preflight.py"
 "$deployment" receipt-schema "$ref" >"$consumer/scripts/deployment-receipt.schema.json"
 "$deployment" contract-test "$ref" container-deployment.json >"$consumer/scripts/container-deployment-contract.test.sh"

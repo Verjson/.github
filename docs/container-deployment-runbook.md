@@ -13,6 +13,7 @@ Acquire `scripts/gen-container-deployment.sh` from one reviewed 40-character
 ```sh
 scripts/gen-container-deployment.sh workflow <contract-sha> container-deployment.json > .github/workflows/container-deployment.yml
 scripts/gen-container-deployment.sh controller <contract-sha> > scripts/container_deployment_controller.py
+scripts/gen-container-deployment.sh transport <contract-sha> > scripts/container_deployment_transport.py
 scripts/gen-container-deployment.sh preflight <contract-sha> > scripts/container_deployment_preflight.py
 scripts/gen-container-deployment.sh receipt-schema <contract-sha> > scripts/deployment-receipt.schema.json
 scripts/gen-container-deployment.sh contract-test <contract-sha> container-deployment.json > scripts/container-deployment-contract.test.sh
@@ -178,3 +179,21 @@ failures, preserve all receipt artifacts and the workflow URL, quarantine the af
 runner from scheduling, and escalate to the runner-fleet owner and security owner. Do not
 retry until the retained receipt and live state explain every host. Never include secret
 or organization-variable values in an incident record.
+
+## Transport delivery and the remaining host-export prerequisite
+
+[The GitHub transport broker](deployment-github-transport.md) supplies independently
+authenticated release and canary operations. Generate its `transport` artifact at
+the same immutable pin as the other deployment artifacts; the generated contract
+checks its exact bytes. It is a parent-owned operation, not an arbitrary child
+adapter or a replacement for complete fleet evidence.
+
+Full controller integration remains blocked by
+[verjson-cli-cloud#504](https://github.com/Verjson/verjson-cli-cloud/issues/504):
+the pinned CLI inventory command mutates host transaction locks, and neither it
+nor the current attester supplies the complete read-only evidence contract. The
+broker explicitly rejects `host-export` before acquiring any credential. Do not
+call mutating inventory in dry-run or fabricate missing health, drain, release
+identity or capacity facts. Once the export is released, adopt its exact dependency,
+wire the parent broker into the controller's full requests and retained state, and
+regenerate the consumer. Until then #1281, runner#197 and #629 remain open.
