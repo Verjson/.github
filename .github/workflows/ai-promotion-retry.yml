@@ -10,6 +10,9 @@ on:
     types: [completed]
   workflow_call:
     inputs:
+      merge_environment:
+        required: true
+        type: string
       required_checks:
         required: true
         type: string
@@ -19,9 +22,6 @@ on:
       merge_app_client_id:
         required: true
         type: string
-    secrets:
-      MERGE_APP_PRIVATE_KEY:
-        required: true
 
 permissions:
   actions: read
@@ -151,9 +151,8 @@ jobs:
     needs: resolve
     if: needs.resolve.outputs.ready == 'true'
     uses: ./.github/workflows/ai-privileged-merge.yml
-    secrets:
-      MERGE_APP_PRIVATE_KEY: ${{ secrets.MERGE_APP_PRIVATE_KEY }}
     with:
+      merge_environment: ${{ inputs.merge_environment || 'merge-app' }}
       pr_number: ${{ needs.resolve.outputs.pr_number }}
       expected_head_sha: ${{ needs.resolve.outputs.expected_head_sha }}
       authorization_check_id: ${{ needs.resolve.outputs.authorization_check_id }}

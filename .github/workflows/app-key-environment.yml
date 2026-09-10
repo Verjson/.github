@@ -1,0 +1,47 @@
+name: Main-only App key environment admission
+
+on:
+  workflow_call:
+    inputs:
+      role:
+        required: true
+        type: string
+      environment:
+        required: true
+        type: string
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    steps:
+      - name: Verify the caller's main-only role environment before key-job admission
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          REF: ${{ github.ref }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          ROLE: ${{ inputs.role }}
+          ENVIRONMENT: ${{ inputs.environment }}
+        run: |
+          set -euo pipefail
+          case "$ROLE" in release|merge|ai-review) ;; *) exit 1 ;; esac
+          [ "$ENVIRONMENT" = "$ROLE-app" ]
+          [ "$REF" = refs/heads/main ]
+          [ "$DEFAULT_BRANCH" = main ]
+          environment=$(gh api "repos/$REPOSITORY/environments/$ENVIRONMENT")
+          jq -e --arg name "$ENVIRONMENT" '
+            .name == $name and (.id | type == "number" and . > 0) and
+            .deployment_branch_policy.protected_branches == false and
+            .deployment_branch_policy.custom_branch_policies == true
+          ' <<<"$environment" >/dev/null
+          policies=$(gh api "repos/$REPOSITORY/environments/$ENVIRONMENT/deployment-branch-policies?per_page=100")
+          jq -e '
+            .total_count == 1 and (.branch_policies | length) == 1 and
+            .branch_policies[0].name == "main" and
+            .branch_policies[0].type == "branch"
+          ' <<<"$policies" >/dev/null

@@ -2,8 +2,15 @@ name: Release App ruleset canary
 
 on:
   workflow_dispatch:
+    inputs:
+      release_environment:
+        description: Main-only environment containing the release App private key
+        required: true
+        type: string
+        default: release-app
 
 permissions:
+  actions: read
   contents: read
 
 concurrency:
@@ -11,7 +18,18 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  app-key-policy:
+    uses: ./.github/workflows/app-key-environment.yml
+    permissions:
+      actions: read
+      contents: read
+    with:
+      role: release
+      environment: ${{ inputs.release_environment }}
+
   canary:
+    environment: ${{ inputs.release_environment }}
+    needs: app-key-policy
     runs-on: ${{ fromJSON(vars.CI_LANE_TRUSTED || vars.CI_LANE_FALLBACK || '["ubuntu-24.04"]') }}
     timeout-minutes: 10
     permissions:

@@ -73,8 +73,9 @@ run-name: AI review authorization ${{ inputs.authorization_check_id }} from arm 
 #   jobs:
 #     gate:
 #       uses: Verjson/.github/.github/workflows/ai-review-merge.yml@v1
-#       secrets: inherit # model credentials only; never ORG_ADMIN_TOKEN
-#       # `with:` is optional on a ref that contains #405 — add runner_labels
+#       with: {ai_review_environment: ai-review-app}
+#       # Pass only the required model credentials explicitly.
+#       # The environment selector is required; add runner_labels
 #       # ONLY for an off-Verjson self-hosted fleet, or on a `v1` older than the
 #       # first release after #405, where it is still required:
 #       # with: { runner_labels: '["self-hosted","general"]' }
@@ -85,6 +86,11 @@ run-name: AI review authorization ${{ inputs.authorization_check_id }} from arm 
 on:
   workflow_dispatch:
     inputs:
+      ai_review_environment:
+        description: Main-only environment containing the ai-review App private key
+        required: true
+        type: string
+        default: ai-review-app
       pr_number:
         description: PR number to review
         required: true
@@ -118,16 +124,13 @@ on:
         type: boolean
         default: false
   workflow_call:
-    # Cross-org consumers pin this reusable and pass `secrets: inherit` (ADR
-    # 0022). A pull_request-triggered caller leaves pr_number empty and the
-    # inherited event supplies it. `runner_labels` is OPTIONAL (#405): every
-    # `runs-on` below ends at `CI_LANE_FALLBACK || '["ubuntu-24.04"]'`, so a
-    # caller that omits it lands on a runner that exists rather than queueing
-    # forever on the wrong labels (#130, the reason it used to be required).
-    # Requiring it made every consumer hardcode a fleet label, which is the
-    # coupling ADR 0041 removes. Missing `secrets: inherit` is caught by the
-    # `require_secrets` preflight step (#131).
+    # Callers explicitly pass model credentials only. The App key is read
+    # directly from the caller-owned main-only environment (ADR 0166).
     inputs:
+      ai_review_environment:
+        description: Main-only environment containing the ai-review App private key
+        required: true
+        type: string
       pr_number:
         description: PR number to review; defaults to the caller's pull_request event
         required: false
@@ -171,8 +174,6 @@ on:
         type: boolean
         default: false
     secrets:
-      AI_REVIEW_APP_PRIVATE_KEY:
-        required: true
       ANTHROPIC_API_KEY:
         required: false
       CLAUDE_CODE_OAUTH_TOKEN:
@@ -199,6 +200,7 @@ concurrency:
     }}
 
 permissions:
+  actions: read
   contents: read
 
 env:
@@ -213,6 +215,15 @@ env:
   REVIEW_POLICY: ${{ inputs.review_policy || 'eyJhY3RvciI6InJldXNhYmxlLWNhbGxlciIsImFjdG9yX3Blcm1pc3Npb24iOiJtYWludGFpbiIsImF1dGhvcml0eSI6Imh1bWFuIiwiYnVkZ2V0X3VzZCI6ImF1dG8iLCJleHBsaWNpdF9yZXJldmlldyI6ZmFsc2UsImZhbGxiYWNrX2J1ZGdldF91c2QiOiIiLCJmYWxsYmFja19tb2RlbCI6IiIsIm1vZGVsIjoiYXV0byIsInByaWNpbmdfdmVyc2lvbiI6ImFudGhyb3BpYy1uYXRpdmUtdjEiLCJwcm92aWRlciI6ImFudGhyb3BpYyJ9' }}
 
 jobs:
+  app-key-policy:
+    uses: ./.github/workflows/app-key-environment.yml
+    permissions:
+      actions: read
+      contents: read
+    with:
+      role: ai-review
+      environment: ${{ inputs.ai_review_environment }}
+
   preflight:
     # Keep the branch current with its base BEFORE we review/merge, so a green
     # gate always means green against the *current* base — a behind-but-clean
@@ -685,8 +696,9 @@ jobs:
           echo "::notice::phase=preflight completed_at=$completed_at lane=${{ steps.classify.outputs.lane || 'none' }} proceed=${{ steps.freshness.outputs.proceed || 'unknown' }}"
 
   gate:
-    needs: preflight
-    if: needs.preflight.outputs.lane == 'fast' || needs.preflight.outputs.lane == 'ai'
+    environment: ${{ inputs.ai_review_environment }}
+    needs: [preflight, app-key-policy]
+    if: ${{ needs.app-key-policy.result == 'success' && (needs.preflight.outputs.lane == 'fast' || needs.preflight.outputs.lane == 'ai') }}
     outputs:
       review_outcome: ${{ steps.submit.outputs.outcome || 'skipped' }}
     # A workflow_call consumer sets its own fleet via `with.runner_labels`; the
@@ -1865,8 +1877,9 @@ jobs:
 
 
   complete-authorization:
-    needs: [preflight, gate]
-    if: always() && inputs.authorization_check_id != ''
+    environment: ${{ inputs.ai_review_environment }}
+    needs: [preflight, gate, app-key-policy]
+    if: ${{ needs.app-key-policy.result == 'success' && (always() && inputs.authorization_check_id != '') }}
     outputs:
       ai_authorized: ${{ steps.complete.outputs.ai_authorized }}
     runs-on: ${{ fromJSON(vars.CI_RUNNER_FASTLANE || '["ubuntu-24.04"]') }}

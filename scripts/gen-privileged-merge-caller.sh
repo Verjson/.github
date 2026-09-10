@@ -104,11 +104,10 @@ jobs:
   retry:
     uses: $RETRY_TARGET
     with:
+      merge_environment: merge-app
       required_checks: '$required_checks_yaml'
       privileged_lane: \${{ vars.CI_LANE_PRIVILEGED }}
       merge_app_client_id: \${{ vars.MERGE_APP_CLIENT_ID }}
-    secrets:
-      MERGE_APP_PRIVATE_KEY: \${{ secrets.MERGE_APP_PRIVATE_KEY }}
 YAML
   exit 0
 fi
@@ -195,11 +194,9 @@ jobs:
   # Renaming it makes the gate wait on its own continuation.
   privileged_merge:
     uses: ${TARGET}
-    # Explicit rather than \`inherit\`: the caller grants only the terminal
-    # merge App private key to the immutable canonical contract revision.
-    secrets:
-      MERGE_APP_PRIVATE_KEY: \${{ secrets.MERGE_APP_PRIVATE_KEY }}
+    # The callee reads its caller-owned environment secret directly.
     with:
+      merge_environment: merge-app
       pr_number: \${{ inputs.pr_number }}
       expected_head_sha: \${{ inputs.expected_head_sha }}
       authorization_check_id: \${{ inputs.authorization_check_id }}

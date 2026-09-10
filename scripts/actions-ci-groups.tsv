@@ -1,4 +1,5 @@
 # group<TAB>repository-controlled command
+platform	python3 scripts/ci-gate/app-key-environment.test.py
 platform	bash scripts/actionlint-trigger.test.sh
 platform	bash scripts/actionlint-install.test.sh
 platform	bash scripts/actionlint-reusable.test.sh

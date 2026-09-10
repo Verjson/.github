@@ -47,9 +47,9 @@ sed -i 's/^  packages: write$/  packages: read/' "$tmp/consumer/.github/workflow
 reject_caller_mutation 'package permission'
 sed -i 's/vars.RELEASE_APP_CLIENT_ID/vars.OTHER_CLIENT_ID/' "$tmp/consumer/.github/workflows/container-release.yml"
 reject_caller_mutation 'App client ID mapping'
-sed -i 's/secrets.RELEASE_APP_PRIVATE_KEY/secrets.OTHER_PRIVATE_KEY/' "$tmp/consumer/.github/workflows/container-release.yml"
-reject_caller_mutation 'App private-key mapping'
-sed -i '/^    secrets:/,$c\    secrets: inherit' "$tmp/consumer/.github/workflows/container-release.yml"
+sed -i 's/release_environment: release-app/release_environment: unguarded/' "$tmp/consumer/.github/workflows/container-release.yml"
+reject_caller_mutation 'App environment selection'
+printf '\n    secrets: inherit\n' >> "$tmp/consumer/.github/workflows/container-release.yml"
 reject_caller_mutation 'inherited secrets'
 if "$generator" validator "$(printf 'a%.0s' {1..40})" >/dev/null 2>&1; then
   echo "validator generation resolved a nonexistent pin from local files" >&2; exit 1
@@ -154,7 +154,7 @@ with open(os.environ["WORKFLOW"], encoding="utf-8") as stream:
 
 def assert_provenance_boundary(document):
     jobs = document["jobs"]
-    assert set(jobs) == {"promote", "retention"}, "release job graph is not exact"
+    assert set(jobs) == {"app-key-policy", "promote", "retention"}, "release job graph is not exact"
     assert jobs["promote"]["runs-on"] == "ubuntu-24.04", (
         "release promotion and manifest attestation must use an independently trusted hosted runner"
     )

@@ -232,9 +232,13 @@ The generated caller passes only the App identity material:
 ```yaml
     with:
       release_app_client_id: ${{ vars.RELEASE_APP_CLIENT_ID }}
-    secrets:
-      release_app_private_key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+      release_environment: release-app
 ```
+
+Store `RELEASE_APP_PRIVATE_KEY` only in the caller-owned `release-app` environment,
+with exact main-branch-only admission. Do not forward it through `secrets` or
+retain organization/repository copies. Follow the staged
+[App-key rollout](../app-key-environment-rollout.md) before activating this contract.
 
 The reusable workflow rejects an empty or all-numeric legacy
 `RELEASE_APP_CLIENT_ID`, then delegates full client-ID validation to the

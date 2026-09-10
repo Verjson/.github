@@ -46,8 +46,8 @@ jobs:
       issues: write
       pull-requests: write
     uses: $TARGET
-    secrets:
-      AI_REVIEW_APP_PRIVATE_KEY: \${{ secrets.AI_REVIEW_APP_PRIVATE_KEY }}
+    with:
+      ai_review_environment: ai-review-app
 YAML
 }
 

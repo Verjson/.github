@@ -273,10 +273,8 @@ snapshot_with = snapshot.get("with") or {}
 if snapshot_with.get("release_app_client_id") != "${{ vars.RELEASE_APP_CLIENT_ID }}":
     bad("`snapshot` does not pass vars.RELEASE_APP_CLIENT_ID")
 snapshot_secrets = snapshot.get("secrets") or {}
-if snapshot_secrets != {
-    "release_app_private_key": "${{ secrets.RELEASE_APP_PRIVATE_KEY }}"
-}:
-    bad("`snapshot` does not pass only RELEASE_APP_PRIVATE_KEY")
+if snapshot_secrets or snapshot_with.get("release_environment") != "release-app":
+    bad("`snapshot` must select release-app without forwarding keys")
 if "ORG_ADMIN_TOKEN" in raw or "push_token:" in raw:
     bad("release caller retains the temporary broad push credential")
 
@@ -434,9 +432,9 @@ drop_component_selection() {
   sed -i '/^      component: /d' "$1"
 }
 drop_release_app_client_id() { sed -i '/^      release_app_client_id: /d' "$1"; }
-drop_release_app_private_key() { sed -i '/^      release_app_private_key: /d' "$1"; }
+drop_release_environment() { sed -i '/^      release_environment: /d' "$1"; }
 restore_org_admin_token() {
-  sed -i '/^      release_app_private_key: /c\      push_token: ${{ secrets.ORG_ADMIN_TOKEN }}' "$1"
+  sed -i '/^      release_environment: /c\      push_token: ${{ secrets.ORG_ADMIN_TOKEN }}' "$1"
 }
 verify_a_different_ref() {
   sed -i 's|          ref: ${{ github.sha }}|          ref: ${{ github.ref }}|' "$1"
@@ -506,7 +504,7 @@ expect_shape_rejection "an unpinned reusable ref" unpin_reusable_ref
 expect_shape_rejection "a contract_ref that disagrees with the uses: pin" skew_contract_ref
 expect_shape_rejection "a snapshot that drops the selected component" drop_component_selection
 expect_shape_rejection "snapshot without RELEASE_APP_CLIENT_ID (ADR 0099)" drop_release_app_client_id
-expect_shape_rejection "snapshot without RELEASE_APP_PRIVATE_KEY (ADR 0099)" drop_release_app_private_key
+expect_shape_rejection "snapshot without release environment (ADR 0166)" drop_release_environment
 expect_shape_rejection "the temporary ORG_ADMIN_TOKEN release credential" restore_org_admin_token
 expect_shape_rejection "verifying a ref other than github.sha" verify_a_different_ref
 expect_shape_rejection "a verify job that runs no suite" hollow_out_the_suite

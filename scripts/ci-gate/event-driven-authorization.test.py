@@ -389,7 +389,7 @@ def main() -> int:
             "review dispatch must carry trusted head/check identities")
     require('--allowedTools "Read,Grep,Glob"' in review_text,
             "secret-backed model review must not execute pull-request code")
-    require("AI_REVIEW_APP_PRIVATE_KEY" in rearm_generator and "checks: write" not in rearm_generator and
+    require("ai_review_environment: ai-review-app" in rearm_generator and "PRIVATE_KEY" not in rearm_generator and "checks: write" not in rearm_generator and
             all(event in rearm_generator for event in ("opened", "synchronize", "reopened")),
             "generated arm callers must preserve head events and dedicated-App credential boundary")
     require("authorization_check_id" in promote_generator and

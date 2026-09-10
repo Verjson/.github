@@ -43,9 +43,9 @@ workflow_default="$(awk '
   inside { print }
 ' "$workflow")"
 
-[ "$(grep -c . <<<"$workflow_default")" -eq 1 ] && grep -qE '^  contents: read$' <<<"$workflow_default" \
-  && pass "the workflow-level default stays contents: read" \
-  || fail "the workflow-level default is no longer a bare contents: read"
+[ "$(grep -c . <<<"$workflow_default")" -eq 2 ] && grep -qE '^  contents: read$' <<<"$workflow_default" && grep -qE '^  actions: read$' <<<"$workflow_default" \
+  && pass "the workflow-level default grants only contents and environment-policy reads" \
+  || fail "the workflow-level default differs from contents/actions read"
 
 # The read-only boundary is safe because the push uses an independent App token.
 # If this wiring changes, the token grants need re-justifying rather than
@@ -70,13 +70,13 @@ checkout = next(
 problems = []
 if not (inputs.get("release_app_client_id") or {}).get("required"):
     problems.append("workflow_call does not require release_app_client_id")
-if set(secrets) != {"release_app_private_key"} or not secrets["release_app_private_key"].get("required"):
-    problems.append("workflow_call accepts a secret other than the required release App private key")
+if secrets or not (inputs.get("release_environment") or {}).get("required"):
+    problems.append("release must require an environment instead of forwarded App keys")
 if mint.get("uses") != "actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1":
     problems.append("release token action is not at the audited immutable pin")
 expected = {
     "client-id": "${{ inputs.release_app_client_id }}",
-    "private-key": "${{ secrets.release_app_private_key }}",
+    "private-key": "${{ secrets.RELEASE_APP_PRIVATE_KEY }}",
     "owner": "${{ github.repository_owner }}",
     "repositories": "${{ github.event.repository.name }}",
     "permission-contents": "write",

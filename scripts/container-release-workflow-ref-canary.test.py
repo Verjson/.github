@@ -7,7 +7,7 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = ROOT / ".github/workflows/container-release-workflow-ref-canary.yml"
-CONTRACT = "6462e0cc72f4d96baa4f8ff8a862db4af0f93db7"
+CONTRACT = "${{ github.workflow_sha }}"
 PERMISSIONS = {
     "actions": "read",
     "attestations": "write",
@@ -26,20 +26,19 @@ def valid(document: dict, source: str) -> bool:
         return False
     probe = jobs["probe"]
     expected_target = (
-        "Verjson/.github/.github/workflows/container-release.yml@" + CONTRACT
+        "./.github/workflows/container-release.yml"
     )
     expected_inputs = {
+        "release_environment": "release-app",
         "version": "0.0.0-workflow-identity-canary",
         "candidate-manifest": "intentionally-invalid-after-workflow-ref-guard",
         "config-path": "container-candidate.json",
         "contract-ref": CONTRACT,
         "release_app_client_id": "${{ vars.RELEASE_APP_CLIENT_ID }}",
     }
-    expected_secrets = {
-        "release_app_private_key": "${{ secrets.RELEASE_APP_PRIVATE_KEY }}"
-    }
+    expected_secrets = None
     return (
-        set(probe) == {"uses", "with", "secrets"}
+        set(probe) == {"uses", "with"}
         and probe.get("uses") == expected_target
         and probe.get("with") == expected_inputs
         and probe.get("secrets") == expected_secrets

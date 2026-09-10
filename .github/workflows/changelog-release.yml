@@ -3,6 +3,10 @@ name: changelog release
 on:
   workflow_call:
     inputs:
+      release_environment:
+        description: Main-only environment containing the release App private key
+        required: true
+        type: string
       contract_ref:
         description: Immutable Verjson/.github commit containing this workflow
         required: true
@@ -29,14 +33,9 @@ on:
         description: Client ID for the dedicated release authorization App
         required: true
         type: string
-    secrets:
-      release_app_private_key:
-        # Used only to mint a short-lived installation token constrained to the
-        # current repository and contents-write. The App itself is the named
-        # main-protection bypass actor (ADR 0099, #329).
-        required: true
 
 permissions:
+  actions: read
   contents: read
 
 concurrency:
@@ -44,7 +43,18 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  app-key-policy:
+    uses: ./.github/workflows/app-key-environment.yml
+    permissions:
+      actions: read
+      contents: read
+    with:
+      role: release
+      environment: ${{ inputs.release_environment }}
+
   release:
+    environment: ${{ inputs.release_environment }}
+    needs: app-key-policy
     # The job token reads only the canonical contract checkout. The final atomic
     # push uses the repository-scoped contents-write token minted below, so the
     # job's GITHUB_TOKEN needs no write authority (#784). The App must also be a
@@ -84,7 +94,7 @@ jobs:
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
         with:
           client-id: ${{ inputs.release_app_client_id }}
-          private-key: ${{ secrets.release_app_private_key }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
           owner: ${{ github.repository_owner }}
           repositories: ${{ github.event.repository.name }}
           permission-contents: write

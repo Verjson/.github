@@ -26,8 +26,8 @@ def validate(workflow):
     secrets = call.get("secrets", {})
     if set(inputs) < {"release_app_client_id"}:
         errors.append("missing release App client ID input")
-    if set(secrets) != {"release_app_private_key"}:
-        errors.append("release secret contract is not exact")
+    if secrets or not inputs.get("release_environment", {}).get("required"):
+        errors.append("release must select an environment without forwarded keys")
 
     promote = workflow["jobs"]["promote"]
     permissions = promote.get("permissions", {})
@@ -46,7 +46,7 @@ def validate(workflow):
         errors.append("mint action is not immutable")
     expected_with = {
         "client-id": "${{ inputs.release_app_client_id }}",
-        "private-key": "${{ secrets.release_app_private_key }}",
+        "private-key": "${{ secrets.RELEASE_APP_PRIVATE_KEY }}",
         "owner": "${{ github.repository_owner }}",
         "repositories": "${{ github.event.repository.name }}",
         "permission-contents": "write",
@@ -156,9 +156,9 @@ class ContainerReleaseAppTokenContractTest(unittest.TestCase):
 
     def test_rejects_legacy_pat_contract(self):
         mutant = copy.deepcopy(self.workflow)
-        mutant[True]["workflow_call"]["secrets"]["release-token"] = {"required": True}
+        mutant[True]["workflow_call"].setdefault("secrets", {})["release-token"] = {"required": True}
         errors = validate(mutant)
-        self.assertIn("release secret contract is not exact", errors)
+        self.assertIn("release must select an environment without forwarded keys", errors)
         self.assertIn("legacy release token remains", errors)
 
 
