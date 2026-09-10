@@ -1,24 +1,9 @@
-# Environment App key bootstrap
+# Environment App key bootstrap — retired
 
-This temporary procedure implements [ADR 0169](decisions/0169-sealed-environment-app-bootstrap/README.md) and [#1291](https://github.com/Verjson/.github/issues/1291). It provisions only `.github`'s `release-app`, `merge-app` and `ai-review-app` environments. No org or repository secret is removed.
+The temporary bootstrap completed its three-environment migration and is retired by the `.github` self-adoption change for [#1285](https://github.com/Verjson/.github/issues/1285). Both dispatch workflows, migration executable/configuration/dependency files, tests and their routing/CI registrations have been removed.
 
-1. Complete independent review, merge with green CI, and use an isolated checkout of that exact main commit. Confirm no concurrent environment administrator or importer is active. Retain the reviewed immutable SHA.
-2. Dispatch `app-key-bootstrap.yml` on `main` with no inputs. Require its first attempt to succeed. Do not rerun a failed attempt: diagnose and dispatch a new run if appropriate. Artifact lifetime is one day.
-3. From the exact reviewed checkout, use the operator's existing authenticated `gh` session. The script validates its local source against the supplied commit, verifies origin and the ciphertext archive digest, and checks fresh destination identities/policies/keys before importing:
+[ADR 0169](decisions/0169-sealed-environment-app-bootstrap/README.md) remains the immutable decision record. The [live provisioning and proof receipt](https://github.com/Verjson/.github/issues/1291#issuecomment-5611815789) records sealing run `34429861784`, ciphertext artifact `10134051852`, successful environment metadata readbacks and proof run `34429989792`. All three expected Apps minted tokens restricted to `.github`; the local verifier exited 0.
 
-   ```sh
-   python3 scripts/app-key-bootstrap.py apply --source-sha "$reviewed_sha" --run-id "$seal_run_id" --receipt "$receipt_path"
-   ```
+The exact migration source and original procedure remain available at immutable commit [`0169a10ca6b96b58f1a23ce724461edee1e724bb`](https://github.com/Verjson/.github/tree/0169a10ca6b96b58f1a23ce724461edee1e724bb). Historical inspection uses an isolated checkout of that commit and the retained ciphertext/metadata receipts. Its live verifier deliberately requires fresh runs and current environment metadata, so an old receipt is historical evidence, not a newly executable verification claim. Do not redispatch the retired bootstrap or reapply old ciphertext.
 
-   Choose a new local receipt path in an operator-owned directory. The receipt contains only metadata. Never overwrite it or blindly repeat a failed invocation. An `uncertain` role means a PUT may have succeeded: inspect public destination secret metadata before recovery. `--role release`, `--role merge`, or `--role review` can select untouched roles with a new receipt; existing secrets are always refused. The importer is not a concurrent administration lock, and GitHub's endpoint has no conditional create.
-4. Only after all three imports/readbacks succeed, dispatch `app-key-bootstrap-verify.yml` on the same reviewed main SHA (the dispatcher ref is `main`; verify that its head is the reviewed SHA). Its three jobs explicitly bind their environment and expected App client ID. Each token is revoked by the pinned token action's post step.
-5. Validate the successful proof run against every successful provisioning receipt:
-
-   ```sh
-   python3 scripts/app-key-bootstrap.py verify --source-sha "$reviewed_sha" --run-id "$verify_run_id" --receipt "$receipt_path"
-   ```
-
-   Repeat `--receipt` only for distinct partial provisioning receipts covering all three roles. The proof must have started after every imported secret update; unchanged secret metadata and successful expected-App/repository-scope jobs are mandatory. A green run alone is insufficient.
-6. Retain ciphertext and metadata receipts, complete `.github` self-adoption, and remove the temporary bootstrap surface through a reviewed follow-up PR. Keep broader copies for the separately prepared consumer cohort.
-
-No command should print a private key or token. API failures intentionally emit a generic safe error. Diagnose from public workflow/artifact/environment metadata and the local partial receipt, never by enabling shell tracing or secret diagnostics.
+The operator retained ciphertext and metadata outside the one-day Actions artifact lifetime. No plaintext key or token belongs in these records. Broader secret copies and the protective shared-workflow pin remain until the separately prepared cohort rollout in [the environment-key runbook](app-key-environment-rollout.md).

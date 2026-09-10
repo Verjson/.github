@@ -24,28 +24,16 @@ privileged merge/retry, review/rearm, Renovate attribution and canary callers.
 Use authenticated metadata queries; a forbidden or incomplete inventory is unknown,
 never proof of absence. Do not print or hash key values.
 
-Authenticated inspection on 2026-09-10 found that the
-`ai-authorization-arm-required` organization ruleset (ID `20722935`) selects
+Authenticated inspection initially found ruleset `20722935` following
 `.github/workflows/gate-rearm.yml` from repository `1269388380` at
-`refs/heads/main` **without a `sha` field**. Its observed `updated_at` was
-`2026-08-26T02:04:11.250Z`. This is a live branch binding, not an existing immutable
-pin: merging this contract would otherwise change every selected consumer at once.
-
-Before merging this contract, freeze that workflow entry to merged commit
-`c597d6908e3aa38d9a041c2150afadcbff32cf6d`. That protected revision retains the
-existing broad/forwarded review-key contract and the #1275 body-edit admission
-guard. Verify that the live protected-main workflow still has those same bytes,
-then add only the workflow entry's `sha`. Preserve its path/ref/repository identity,
-active enforcement, bypass actors, creation policy and all selectors, including
-the default-branch/develop targets and repository-property cohort.
-
-Retain the complete preimage, reviewed candidate and verified postimage, their
-timestamps, the selected cohort, and the exact one-field diff on #1285. Immediately
-re-read the full preimage before PUT and reject drift. An uncertain response or
-unexpected postimage requires inspection, not automatic overwrite or rollback.
-The protective freeze is complete only when its live receipt is recorded; these
-instructions do not claim it has been applied. It preserves current behavior and
-does not activate the environment-key contract or remove any broad key.
+`refs/heads/main` without an immutable SHA. The operator installed and verified
+its behavior-preserving protective freeze at `2026-09-10T02:10:43.462Z`, selecting
+`c597d6908e3aa38d9a041c2150afadcbff32cf6d`. Only the workflow entry's SHA changed;
+its path/ref/repository identity, enforcement, bypass actors and repository/ref
+selectors remain intact. The retained preimage/candidate/postimage receipt belongs
+to #1285. This freeze preserves the broad/forwarded review-key contract and #1275
+body-edit admission guard while consumers are prepared. It does not activate the
+environment-key contract or remove any broad key.
 
 Do not move this protective pin to the new contract for one prepared repository,
 or remove the broad AI key while any inherited required workflow still needs it.
@@ -120,4 +108,8 @@ repository App private key to regain compatibility.
 
 ## Canonical repository self-adoption gate
 
-The canonical repository itself runs native main entrypoints. Before merging this contract, provision and verify its three role environments and their keys; a consumer repin is not required to trigger this self-adoption. Initial read-only GitHub API inventory on 2026-09-10 found only `runner-fleet-production`. The operator subsequently prepared all three exact main-only policies, but had not provisioned their environment keys; key provisioning remains a merge prerequisite. The new admission deliberately fails when an environment is missing or incorrectly configured, including the historically advisory arm workflow. Prepare and verify the complete shared-pin cohort before cutover.
+The canonical repository runs native main entrypoints, so merging this contract activates its own environment-bound jobs without a consumer repin. Its three role environments and exact main-only policies are now provisioned and verified. The [2026-09-10 live receipt](https://github.com/Verjson/.github/issues/1291#issuecomment-5611815789) records sealing run `34429861784`, three successful environment-secret metadata readbacks and proof run `34429989792`; every expected App minted a token restricted to `.github`, and the local receipt verifier exited 0.
+
+Self-adoption retires both temporary bootstrap workflows and all migration-only executable/configuration/dependency files, test and routing registrations. [ADR 0169](decisions/0169-sealed-environment-app-bootstrap/README.md), the retired runbook and externally retained ciphertext/metadata receipts preserve the history. No broad copy is withdrawn and the shared protective pin is not advanced by this change. Prepare and verify the entire shared-pin cohort before that cutover; #1285 remains open until exposure-removal and denial receipts cover the cohort.
+
+The [native environment-denial receipt](https://github.com/Verjson/.github/issues/1285#issuecomment-5611832146) records run `34430152626` at keyless non-main proof commit `49779d3`. GitHub denied all three explicitly requested role environments before any runner or step started (`runner_id: 0`, empty steps). The proof branch was removed after checking its SHA. Together with main proof `34429989792`, this demonstrates the three native environment boundaries; it does not prove absence of broader secret copies, which remain pending cohort migration.

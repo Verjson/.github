@@ -95,3 +95,13 @@ The 2026-09-10 CI run caught ShellCheck SC2153 where the policy response variabl
 `environment_record` preserves the checks without suppressing the diagnostic.
 Validation includes actionlint with ShellCheck enabled; a workflow parse or the
 mocked policy suite alone does not exercise that CI boundary.
+
+## 2026-09-10 — Verified self-adoption prerequisites and bootstrap retirement
+
+The protective ruleset `20722935` freeze was installed and read back at `2026-09-10T02:10:43.462Z`, pinning the existing contract at `c597d6908e3aa38d9a041c2150afadcbff32cf6d` without changing other ruleset fields. The preceding rollout requirements describe the sequence; this dated receipt records their execution.
+
+The [#1291 provisioning/proof receipt](https://github.com/Verjson/.github/issues/1291#issuecomment-5611815789) confirms all three `.github` main-only environment keys are present, unchanged since their successful import readbacks, and usable by the exact expected Apps with `.github`-only token scope (proof run `34429989792`, local verifier exit 0). Key provisioning is fulfilled for canonical self-adoption. Retire the complete temporary bootstrap executable surface in the same self-adoption change so a broad-key sealing entrypoint cannot remain under this contract. Preserve ADR 0169 and ciphertext/metadata history at its immutable source commit.
+
+This completes neither the wider cohort migration nor #1285 exposure removal. Broad copies remain for unprepared consumers and the inherited frozen workflow; advancement of that pin and broad-copy removal require the separately prepared cohort and receipts.
+
+The [native environment-denial receipt](https://github.com/Verjson/.github/issues/1285#issuecomment-5611832146) records run `34430152626` at keyless non-main proof commit `49779d3`. GitHub denied all three explicitly requested role environments before any runner or step started (`runner_id: 0`, empty steps). The proof branch was removed after checking its SHA. Together with main proof `34429989792`, this demonstrates the three native environment boundaries; it does not prove absence of broader secret copies, which remain pending cohort migration.
