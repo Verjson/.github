@@ -3,12 +3,38 @@ import importlib.util
 from pathlib import Path
 import subprocess
 import tempfile
+from types import SimpleNamespace
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 SPEC = importlib.util.spec_from_file_location('owners', ROOT / 'scripts/codeowners.py')
 owners = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(owners)
+
+
+class CaseInsensitivePath:
+    def __init__(self, files, path=''):
+        self.files, self.path = files, path
+
+    def __truediv__(self, name):
+        return CaseInsensitivePath(self.files, '/'.join(filter(None, (self.path, name))))
+
+    def is_symlink(self):
+        return False
+
+    def is_file(self):
+        return self.path.casefold() in {name.casefold() for name in self.files}
+
+    def exists(self):
+        return self.is_file()
+
+    def read_bytes(self):
+        return next(value for name, value in self.files.items() if name.casefold() == self.path.casefold())
+
+    def iterdir(self):
+        prefix = self.path + '/' if self.path else ''
+        return [SimpleNamespace(name=name[len(prefix):].split('/')[0])
+                for name in self.files if name.casefold().startswith(prefix.casefold())]
 
 
 class CodeownersTests(unittest.TestCase):
@@ -59,6 +85,20 @@ class CodeownersTests(unittest.TestCase):
         (self.root / '.github').symlink_to(self.root, target_is_directory=True)
         with self.assertRaises(owners.OwnershipError):
             owners.check(self.root)
+
+    def test_case_insensitive_lookup_requires_exact_directory_and_filename_spelling(self):
+        owners.check(CaseInsensitivePath({'.github/CODEOWNERS': owners.CONTENT.encode()}))
+        for path in ('.Github/CODEOWNERS', '.github/CodeOwners', '.Github/CodeOwners'):
+            with self.subTest(path=path), self.assertRaises(owners.OwnershipError):
+                owners.check(CaseInsensitivePath({path: owners.CONTENT.encode()}))
+
+    def test_case_insensitive_fallbacks_remain_rejected_without_scanning_other_locations(self):
+        for fallback in ('CodeOwners', 'Docs/codeowners'):
+            files = {'.github/CODEOWNERS': owners.CONTENT.encode(), fallback: b'* @Verjson/other\n'}
+            with self.subTest(fallback=fallback), self.assertRaises(owners.OwnershipError):
+                owners.check(CaseInsensitivePath(files))
+        owners.check(CaseInsensitivePath({'.github/CODEOWNERS': owners.CONTENT.encode(),
+                                          'examples/CODEOWNERS': b'example only\n'}))
 
     def test_canonical_generator_and_self_adoption_match_exactly(self):
         ref = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=ROOT, text=True).strip()

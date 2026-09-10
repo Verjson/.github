@@ -21,6 +21,9 @@ def check(repo_root):
         raise OwnershipError('CODEOWNERS must be a regular repository file')
     if not target.is_file() or target.read_bytes() != CONTENT.encode():
         raise OwnershipError('missing or drifted .github/CODEOWNERS; regenerate the canonical artifact')
+    if '.github' not in {entry.name for entry in repo_root.iterdir()} or \
+            'CODEOWNERS' not in {entry.name for entry in (repo_root / '.github').iterdir()}:
+        raise OwnershipError('canonical .github/CODEOWNERS spelling is required')
     for fallback in ('CODEOWNERS', 'docs/CODEOWNERS'):
         candidate = repo_root / fallback
         if candidate.exists() or candidate.is_symlink():
