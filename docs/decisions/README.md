@@ -11,6 +11,7 @@ Reverse-chronological index of org-level decisions.
 <!-- BEGIN ADR INDEX -->
 | # | Date | Decision |
 |---|------|----------|
+| [0172](0172-opt-in-node-floor-preparation/README.md) | 2026-09-10 | Prepare an opt-in Node22 required-check lane |
 | [0171](0171-inherited-reusable-environment-context/README.md) | 2026-09-10 | Inherit reusable environment secret context |
 | [0170](0170-parent-owned-deployment-github-transport/README.md) | 2026-09-10 | Parent-owned deployment GitHub transport |
 | [0169](0169-sealed-environment-app-bootstrap/README.md) | 2026-09-10 | Sealed environment App bootstrap |
