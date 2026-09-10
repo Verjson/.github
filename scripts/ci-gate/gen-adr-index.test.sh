@@ -86,6 +86,20 @@ d="$(new_fixture)"; printf '# Decisions\n(no markers)\n' > "$d/docs/decisions/RE
 adr "$d" "0001-x" "0001 — X" "2026-07-01"
 gen "$d" && fail "missing index markers must fail" || pass "missing index markers fails fast"
 
+for missing_marker in BEGIN END; do
+  d="$(new_fixture)"
+  adr "$d" "0001-x" "0001 — X" "2026-07-01"
+  sed -i "/<!-- $missing_marker ADR INDEX -->/d" "$d/docs/decisions/README.md"
+  before="$(cat "$d/docs/decisions/README.md")"
+  if gen "$d"; then
+    fail "missing $missing_marker marker must fail"
+  elif [ "$(cat "$d/docs/decisions/README.md")" != "$before" ]; then
+    fail "missing $missing_marker marker modified the index"
+  else
+    pass "missing $missing_marker marker fails without changing the index"
+  fi
+done
+
 # 7. --check detects a stale table (new ADR added without regenerating).
 d="$(new_fixture)"; adr "$d" "0001-x" "0001 — X" "2026-07-01"; gen "$d"
 adr "$d" "0002-y" "0002 — Y" "2026-07-02"
