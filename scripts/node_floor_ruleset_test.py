@@ -3,6 +3,7 @@ import copy
 import importlib.util
 import io
 import json
+import os
 from pathlib import Path
 import subprocess
 import unittest
@@ -91,13 +92,18 @@ class NodeFloorPreparationTests(unittest.TestCase):
 
     def test_dry_run_only_reads_fixed_baseline_and_property_schema(self):
         outputs = [mock.Mock(stdout=json.dumps(value).encode()) for value in (self.baseline, [])]
-        with mock.patch.object(policy.subprocess, 'run', side_effect=outputs) as execute:
+        with mock.patch.dict(os.environ, {'GH_HOST': 'untrusted.example'}), \
+                mock.patch.object(policy.subprocess, 'run', side_effect=outputs) as execute:
             result = policy.dry_run()
         self.assertEqual(result['propertyState'], 'absent')
         self.assertFalse(result['liveAcceptanceVerified'])
+        for call in execute.call_args_list:
+            self.assertNotIn('env', call.kwargs)
+            self.assertFalse(call.kwargs.get('shell', False))
+            self.assertEqual(call.kwargs['timeout'], 30)
         self.assertEqual([call.args[0] for call in execute.call_args_list], [
-            ['gh', 'api', '--method', 'GET', policy.BASELINE_PATH],
-            ['gh', 'api', '--method', 'GET', policy.PROPERTY_PATH]])
+            ['gh', 'api', '--hostname', 'github.com', '--method', 'GET', policy.BASELINE_PATH],
+            ['gh', 'api', '--hostname', 'github.com', '--method', 'GET', policy.PROPERTY_PATH]])
 
     def test_existing_property_must_match_reviewed_definition(self):
         existing = dict(policy.PROPERTY, property_name=policy.PROPERTY_NAME, source_type='organization')

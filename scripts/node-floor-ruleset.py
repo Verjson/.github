@@ -81,7 +81,7 @@ def read_github(path):
     if path not in (BASELINE_PATH, PROPERTY_PATH):
         raise PreparationError('unsupported preparation read')
     try:
-        result = subprocess.run(['gh', 'api', '--method', 'GET', path],
+        result = subprocess.run(['gh', 'api', '--hostname', 'github.com', '--method', 'GET', path],
                                 check=True, capture_output=True, timeout=30)
     except (OSError, subprocess.SubprocessError) as error:
         raise PreparationError('GitHub preparation read failed') from error

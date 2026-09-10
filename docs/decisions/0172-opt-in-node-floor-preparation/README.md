@@ -97,3 +97,13 @@ snapshots and an explicitly approved restore path. Record activation time, scope
 check/run identities and final ruleset state. Any unverified targeting, bypass drift
 or conformance failure pauses rollout. This preparation does not close #1274 or
 `verjson-object-storage#124` and does not authorize live enforcement.
+
+## 2026-09-10 — Bind preparation reads to GitHub.com
+
+[Issue #1305](https://github.com/Verjson/.github/issues/1305) tightens the existing
+fixed organization target: both GETs explicitly select `--hostname github.com`,
+so ambient `GH_HOST` cannot redirect policy reads. Fixed argv already avoided
+shell interpolation; this is destination binding, not a shell-injection fix or
+evidence of secret disclosure. Tests supply a conflicting ambient host and
+assert the explicit host, GET-only paths, timeout and unchanged environment/PATH
+handling. Preparation remains read-only and emits disabled candidates.
