@@ -1,0 +1,84 @@
+name: Verify environment App bootstrap keys
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  verify-release:
+    name: verify-release
+    if: ${{ github.repository == 'Verjson/.github' && github.repository_id == '1269388380' && github.ref == 'refs/heads/main' && github.run_attempt == 1 }}
+    environment: release-app
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Mint the expected App for this repository only
+        id: app
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
+        with:
+          client-id: Iv23liIrniWY27YJKYDP
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          owner: Verjson
+          repositories: .github
+          permission-contents: read
+      - name: Verify App identity and selected repository scope
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          MINTED_APP_SLUG: ${{ steps.app.outputs.app-slug }}
+          MINTED_INSTALLATION_ID: ${{ steps.app.outputs.installation-id }}
+        run: python3 scripts/app-key-bootstrap.py verify-scope --role release
+  verify-merge:
+    name: verify-merge
+    if: ${{ github.repository == 'Verjson/.github' && github.repository_id == '1269388380' && github.ref == 'refs/heads/main' && github.run_attempt == 1 }}
+    environment: merge-app
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Mint the expected App for this repository only
+        id: app
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
+        with:
+          client-id: Iv23li18TKEWZbxcRgJD
+          private-key: ${{ secrets.MERGE_APP_PRIVATE_KEY }}
+          owner: Verjson
+          repositories: .github
+          permission-contents: read
+      - name: Verify App identity and selected repository scope
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          MINTED_APP_SLUG: ${{ steps.app.outputs.app-slug }}
+          MINTED_INSTALLATION_ID: ${{ steps.app.outputs.installation-id }}
+        run: python3 scripts/app-key-bootstrap.py verify-scope --role merge
+  verify-review:
+    name: verify-review
+    if: ${{ github.repository == 'Verjson/.github' && github.repository_id == '1269388380' && github.ref == 'refs/heads/main' && github.run_attempt == 1 }}
+    environment: ai-review-app
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Mint the expected App for this repository only
+        id: app
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
+        with:
+          client-id: Iv23liObnM1yEH8j9pJu
+          private-key: ${{ secrets.AI_REVIEW_APP_PRIVATE_KEY }}
+          owner: Verjson
+          repositories: .github
+          permission-contents: read
+      - name: Verify App identity and selected repository scope
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          MINTED_APP_SLUG: ${{ steps.app.outputs.app-slug }}
+          MINTED_INSTALLATION_ID: ${{ steps.app.outputs.installation-id }}
+        run: python3 scripts/app-key-bootstrap.py verify-scope --role review
