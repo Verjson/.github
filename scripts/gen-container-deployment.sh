@@ -116,6 +116,9 @@ EOF
   review-producer)
     emit_python scripts/container_deployment_review_producer.py
     ;;
+  transport)
+    emit_python scripts/container_deployment_transport.py
+    ;;
   controller)
     emit_python scripts/container_deployment_controller.py
     ;;
@@ -128,6 +131,7 @@ EOF
     ;;
   contract-test)
     workflow_digest="$("$0" workflow "$ref" "$config" | sha256sum | cut -d' ' -f1)"
+    transport_digest="$("$0" transport "$ref" "$config" | sha256sum | cut -d' ' -f1)"
     controller_digest="$("$0" controller "$ref" "$config" | sha256sum | cut -d' ' -f1)"
     preflight_digest="$("$0" preflight "$ref" "$config" | sha256sum | cut -d' ' -f1)"
     schema_digest="$("$0" receipt-schema "$ref" "$config" | sha256sum | cut -d' ' -f1)"
@@ -144,6 +148,7 @@ set -euo pipefail
 
 test "\$(sha256sum .github/workflows/container-deployment.yml | cut -d' ' -f1)" = "$workflow_digest"
 test "\$(sha256sum scripts/container_deployment_controller.py | cut -d' ' -f1)" = "$controller_digest"
+test "\$(sha256sum scripts/container_deployment_transport.py | cut -d' ' -f1)" = "$transport_digest"
 test "\$(sha256sum scripts/container_deployment_preflight.py | cut -d' ' -f1)" = "$preflight_digest"
 test "\$(sha256sum scripts/deployment-receipt.schema.json | cut -d' ' -f1)" = "$schema_digest"
 test "\$(sha256sum .github/workflows/container-deployment-code-review.yml | cut -d' ' -f1)" = "$code_review_digest"
@@ -171,7 +176,7 @@ grep -qF 'container-deployment.yml@$ref' .github/workflows/container-deployment.
 grep -qF 'contract-ref: $ref' .github/workflows/container-deployment.yml
 ! grep -Eq 'secrets:|environment:|RUNNER_DEPLOY_TOKEN|DIGITALOCEAN_RUNNER_FLEET_TOKEN|GH_RUNNER_REGISTRATION_APP_PRIVATE_KEY|:latest|:stable' \
   .github/workflows/container-deployment.yml
-python3 -m py_compile scripts/container_deployment_controller.py scripts/container_deployment_preflight.py
+python3 -m py_compile scripts/container_deployment_controller.py scripts/container_deployment_preflight.py scripts/container_deployment_transport.py
 python3 -m json.tool scripts/deployment-receipt.schema.json >/dev/null
 python3 - .github/workflows/container-deployment.yml <<'PY'
 import sys

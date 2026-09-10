@@ -12,6 +12,7 @@ Reverse-chronological index of org-level decisions.
 | # | Date | Decision |
 |---|------|----------|
 | [0171](0171-inherited-reusable-environment-context/README.md) | 2026-09-10 | Inherit reusable environment secret context |
+| [0170](0170-parent-owned-deployment-github-transport/README.md) | 2026-09-10 | Parent-owned deployment GitHub transport |
 | [0169](0169-sealed-environment-app-bootstrap/README.md) | 2026-09-10 | Sealed environment App bootstrap |
 | [0168](0168-correct-authn-required-workflow-baseline/README.md) | 2026-09-10 | Correct the Authn required workflow baseline after the activation trial |
 | [0167](0167-controlled-authn-required-workflow-activation/README.md) | 2026-09-10 | Activate the staged Authn required workflow under explicit owner authority |

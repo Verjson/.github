@@ -15,6 +15,7 @@ mkdir -p \
   "$consumer/scripts"
 cp \
   "$root/scripts/gen-container-deployment.sh" \
+  "$root/scripts/container_deployment_transport.py" \
   "$root/scripts/container_deployment_controller.py" \
   "$root/scripts/container_deployment_preflight.py" \
   "$root/scripts/container_deployment_review_producer.py" \
@@ -46,6 +47,7 @@ generator="$contract/scripts/gen-container-deployment.sh"
 "$generator" ai-review-workflow "$ref" >"$consumer/.github/workflows/container-deployment-ai-review.yml"
 "$generator" review-producer-workflow "$ref" >"$consumer/.github/workflows/container-deployment-review-producer.yml"
 "$generator" review-producer "$ref" >"$consumer/scripts/container_deployment_review_producer.py"
+"$generator" transport "$ref" >"$consumer/scripts/container_deployment_transport.py"
 "$generator" controller "$ref" >"$consumer/scripts/container_deployment_controller.py"
 "$generator" preflight "$ref" >"$consumer/scripts/container_deployment_preflight.py"
 "$generator" receipt-schema "$ref" >"$consumer/scripts/deployment-receipt.schema.json"
@@ -93,6 +95,14 @@ cat >"$consumer/scripts/runner-deployment-probe.py" <<'PY'
 PY
 chmod +x "$consumer/scripts/"*.py "$consumer/scripts/"*.sh
 (cd "$consumer" && bash scripts/container-deployment-contract.test.sh)
+cp "$consumer/scripts/container_deployment_transport.py" "$tmp/transport.clean"
+printf '\n# drift\n' >> "$consumer/scripts/container_deployment_transport.py"
+if (cd "$consumer" && bash scripts/container-deployment-contract.test.sh >/dev/null 2>&1); then
+  echo 'generated deployment contract accepted transport byte drift' >&2
+  exit 1
+fi
+cp "$tmp/transport.clean" "$consumer/scripts/container_deployment_transport.py"
+
 
 cp "$consumer/.github/workflows/container-deployment.yml" "$tmp/caller.clean"
 sed -i "s/container-deployment.yml@$ref/container-deployment.yml@main/" \
