@@ -26,3 +26,37 @@ Retire the temporary three-workflow probe and its test/routing registrations in 
 Regenerate each affected caller and its exact contract test at the replacement immutable SHA. Do not adopt broken revision `1664d51`. Complete code and security review, green CI, exact pinned release-path verification and a live operational rearm/App proof before publishing the replacement adoption receipt. The controlled sentinel proves inheritance semantics separately from App identity; a real App mint while broad copies remain cannot establish exclusive storage provenance.
 
 Prepare the entire selected consumer/shared-required-workflow cohort before coordinated pin advancement and broad-copy withdrawal. Keep #1285 open and preserve the interim acceptance until organization/repository App copies are absent and full cohort main-consumption/non-main-denial receipts exist. The metadata audit must continue to fail during partial migration. Pause dispatch on failure; do not restore broad forwarding or weaken branch protection.
+
+## 2026-09-11 — Required-workflow invocation cannot resolve a relative policy call (#1285 canary)
+
+An isolated canary (disposable private repository, dedicated organization ruleset
+scoped to it alone, sentinel non-credential environment secret) exercised revision
+`b050d745` as a ruleset required workflow. Both selectors — default branch and
+`refs/heads/develop` — ended in `startup_failure` with zero jobs, while the
+byte-identical workflow pair committed to the canary repository itself ran to
+success at the same head SHA. The mechanism is the relative
+`uses: ./.github/workflows/app-key-environment.yml` call: it does not resolve when
+the workflow executes as an organization required workflow, so this section
+corrects the "canonical relative calls resolve to the same trusted source
+revision" statement above — that holds for same-repository `workflow_call` and
+`pull_request_target` execution, not for the required-workflow path. Advancing
+shared rule `20722935` to `b050d745` would therefore have hard-failed every
+targeted pull request; the freeze on `c597d690` was correct.
+
+The same canary resolved the develop-selector admission question for
+`pull_request_target` execution: the main-only role environment admitted both a
+main-targeted and a develop-targeted run (policy validation succeeded, the arm job
+was admitted, and only the sentinel token mint failed, tolerated as designed),
+because admission follows the trusted default-branch run context rather than the
+pull request's base. Environment admission under *required-workflow* invocation
+remains unverified for any revision — `b050d745` cannot start there and
+`c597d690` binds no environment — so the fixed revision must repeat the canary
+under required invocation before any pin advance.
+
+The correction replaces the relative call with an absolutely pinned reference to
+`app-key-environment.yml@b050d745`, the reviewed immutable revision whose copy is
+byte-identical to this branch's. Trade-off: the policy check's trusted revision is
+now named twice (the ruleset pin and the in-file pin) and both move only through
+reviewed revision bumps; the alternative — inlining the policy job — was rejected
+to keep one source of policy logic for the `workflow_call` consumers. All cohort
+migration, broad-copy withdrawal and receipt gates above stand unchanged.
