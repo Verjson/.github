@@ -38,3 +38,45 @@ or App token use against repositories outside the installation's expected set �
 treat any such observation as an incident, pausing dispatch as above rather than
 waiting for the next static review. This adds an operational control; it changes no
 transport, policy or pin decision recorded here.
+
+## 2026-09-11 — Required-workflow invocation cannot resolve a relative policy call (#1285 canary)
+
+An isolated canary (disposable private repository, dedicated organization ruleset
+scoped to it alone, sentinel non-credential environment secret) exercised revision
+`b050d745` as a ruleset required workflow. Both selectors — default branch and
+`refs/heads/develop` — ended in `startup_failure` with zero jobs, while the
+byte-identical workflow pair committed to the canary repository itself ran to
+success at the same head SHA. The mechanism is the relative
+`uses: ./.github/workflows/app-key-environment.yml` call: it does not resolve when
+the workflow executes as an organization required workflow, so this section
+corrects the "canonical relative calls resolve to the same trusted source
+revision" statement above — that holds for same-repository `workflow_call` and
+`pull_request_target` execution, not for the required-workflow path. Advancing
+shared rule `20722935` to `b050d745` would therefore have hard-failed every
+targeted pull request; the freeze on `c597d690` was correct.
+
+The same canary resolved the develop-selector admission question for
+`pull_request_target` execution: the main-only role environment admitted both a
+main-targeted and a develop-targeted run (policy validation succeeded, the arm job
+was admitted, and only the sentinel token mint failed, tolerated as designed),
+because admission follows the trusted default-branch run context rather than the
+pull request's base. Environment admission under *required-workflow* invocation
+remains unverified for any revision — `b050d745` cannot start there and
+`c597d690` binds no environment — so the fixed revision must repeat the canary
+under required invocation before any pin advance.
+
+The correction replaces the relative call with an absolutely pinned reference to
+`app-key-environment.yml@b050d745`, the reviewed immutable revision whose copy is
+byte-identical to this branch's. Trade-off: the policy check's trusted revision is
+now named twice (the ruleset pin and the in-file pin) and both move only through
+reviewed revision bumps; the alternative — inlining the policy job — was rejected
+to keep one source of policy logic for the `workflow_call` consumers. All cohort
+migration, broad-copy withdrawal and receipt gates above stand unchanged.
+
+Durable receipts for every empirical claim in this section: the
+[canary record on #1285](https://github.com/Verjson/.github/issues/1285#issuecomment-5640555699)
+(rig, per-selector startup failures, local-copy discriminator, fixed-revision
+required-invocation acceptance at exact head, and verified teardown), with full
+run and job projections retained privately at
+`.git/pm-runs/ready-queue-20260911-receipts/1285-canary/` in the owning checkout,
+following ADR 0173's private-receipt convention for this public repository.
