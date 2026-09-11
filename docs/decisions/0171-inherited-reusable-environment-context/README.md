@@ -60,3 +60,11 @@ now named twice (the ruleset pin and the in-file pin) and both move only through
 reviewed revision bumps; the alternative — inlining the policy job — was rejected
 to keep one source of policy logic for the `workflow_call` consumers. All cohort
 migration, broad-copy withdrawal and receipt gates above stand unchanged.
+
+Durable receipts for every empirical claim in this section: the
+[canary record on #1285](https://github.com/Verjson/.github/issues/1285#issuecomment-5640555699)
+(rig, per-selector startup failures, local-copy discriminator, fixed-revision
+required-invocation acceptance at exact head, and verified teardown), with full
+run and job projections retained privately at
+`.git/pm-runs/ready-queue-20260911-receipts/1285-canary/` in the owning checkout,
+following ADR 0173's private-receipt convention for this public repository.
