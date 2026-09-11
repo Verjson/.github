@@ -27,6 +27,18 @@ Regenerate each affected caller and its exact contract test at the replacement i
 
 Prepare the entire selected consumer/shared-required-workflow cohort before coordinated pin advancement and broad-copy withdrawal. Keep #1285 open and preserve the interim acceptance until organization/repository App copies are absent and full cohort main-consumption/non-main-denial receipts exist. The metadata audit must continue to fail during partial migration. Pause dispatch on failure; do not restore broad forwarding or weaken branch protection.
 
+## 2026-09-11 — Operational alerting on inherited access (#1297)
+
+Static review bounds what the fixed reviewed workflows may reference, but inheritance
+delivers every accessible caller secret to them at runtime, so detection must not end
+at review time. Operators monitor App and token activity for access patterns the
+reviewed workflows cannot legitimately produce — mints outside a recorded rearm,
+release or review invocation, audit-log secret access from unexpected workflow paths,
+or App token use against repositories outside the installation's expected set — and
+treat any such observation as an incident, pausing dispatch as above rather than
+waiting for the next static review. This adds an operational control; it changes no
+transport, policy or pin decision recorded here.
+
 ## 2026-09-11 — Required-workflow invocation cannot resolve a relative policy call (#1285 canary)
 
 An isolated canary (disposable private repository, dedicated organization ruleset
