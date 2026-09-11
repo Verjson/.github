@@ -13,6 +13,8 @@
 .claude/settings.local.json
 .claude/.headroom_wrap_marker.json
 .claude/.headroom_wrap_settings.lock
+.claude/.headroom_wrap_owners.json
+.claude/scheduled_tasks.lock
 
 # The other half of the same residue: Claude Code writes its scratch checkouts to
 # .claude/worktrees/, while the Codex and plain `git worktree` flows write here.
