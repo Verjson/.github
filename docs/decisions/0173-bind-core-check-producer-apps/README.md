@@ -102,3 +102,32 @@ After verified activation, coordinate consumer adoption and refresh ADR0172's
 reviewed Node-floor baseline snapshot before #1274 can proceed. Consumer-specific
 floor bindings remain owner work. This PR references #1303; merging preparation
 closes neither #1303 nor the disabled Node-floor rollout and grants no live authority.
+
+## 2026-09-11 — Activation and post-activation controls record
+
+Both PUTs were applied under the separately authorized live rollout on 2026-09-10:
+ruleset `20513599` at 2026-09-10T15:24:14.976Z and ruleset `20515817` at
+2026-09-10T15:24:16.455Z, from merged preparation head `fed530af`. Immediately before
+each single PUT the complete live preimage matched the reviewed snapshot; each full
+writable postimage matched its reviewed candidate exactly; effective default-branch
+policies showed the expected 94 binding additions across the 25/23 cohorts; the
+non-selected `.github` effective policy was unchanged. Intent, preimage, candidate,
+write and readback receipts remain in private PM storage because this repository is
+public.
+
+Post-activation PR-head controls were collected on 2026-09-11 from the six most
+recently updated pull requests in every cohort repository, restricted to check runs
+completed after activation. Every observed run for all four contexts was produced by
+App `15368` (`github-actions`); zero wrong-app observations. All four contexts show
+fresh successes on merged pull requests (13/13/15/23 total, of which 8/5/5/10 on
+merged heads). Fresh failures left their pull requests merge-blocked for
+`changelog / validate` (8, all blocked) and `ci / build-test` (2, both blocked),
+proving both rule objects enforce. Residual, recorded rather than manufactured: no
+natural post-activation failure has yet occurred for `ci / eligibility` or
+`changelog-contract` — both are enforced by the same proven-blocking `20515817`
+rule — and no adversarial wrong-app control was staged, since either would require
+consumer-owner action. Aggregate evidence:
+`.git/pm-runs/ready-queue-20260911-receipts/1303-controls/` (private).
+
+Rollback remains the preserved original projection under the recovery plan above and
+is not affected by this record.
