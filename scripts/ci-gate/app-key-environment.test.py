@@ -118,7 +118,17 @@ class WorkflowBoundaryTests(unittest.TestCase):
                 self.assertTrue(trigger["workflow_call"]["inputs"][field]["required"])
                 self.assertFalse(set(trigger["workflow_call"].get("secrets", {})) & (set(audit.ROLES.values()) | {"release_app_private_key"}))
                 policy = doc["jobs"]["app-key-policy"]
-                self.assertEqual(policy["uses"], "./.github/workflows/app-key-environment.yml")
+                if name == "gate-rearm":
+                    # gate-rearm is the organization required-workflow entrypoint,
+                    # where a relative reusable call fails at startup (ADR 0171,
+                    # 2026-09-11 canary), so it must pin the policy workflow to a
+                    # full immutable SHA in this repository.
+                    self.assertRegex(
+                        policy["uses"],
+                        r"^Verjson/\.github/\.github/workflows/app-key-environment\.yml@[0-9a-f]{40}$",
+                    )
+                else:
+                    self.assertEqual(policy["uses"], "./.github/workflows/app-key-environment.yml")
                 self.assertNotIn("secrets", policy)
                 for job in jobs:
                     value = doc["jobs"][job]
