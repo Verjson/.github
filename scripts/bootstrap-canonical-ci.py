@@ -39,9 +39,18 @@ APP_PERMISSIONS = {
         "contents": "read", "pull_requests": "write", "metadata": "read",
     },
 }
+ENVIRONMENT_ONLY_APP_PRIVATE_KEYS = frozenset({
+    "AI_REVIEW_APP_PRIVATE_KEY",
+    "MERGE_APP_PRIVATE_KEY",
+    "RELEASE_APP_PRIVATE_KEY",
+})
 
 
 class BootstrapError(RuntimeError):
+    pass
+
+
+class ProvisioningRequiredError(BootstrapError):
     pass
 
 
@@ -75,6 +84,16 @@ def safe_relative(value: Any, label: str) -> Path:
     if path.is_absolute() or any(part in {"", ".", ".."} for part in path.parts):
         raise BootstrapError(f"{label} must be a normalized relative path")
     return path
+
+
+def reject_environment_only_app_keys(secrets: dict[str, Any]) -> None:
+    rejected = sorted(set(secrets).intersection(ENVIRONMENT_ONLY_APP_PRIVATE_KEYS))
+    if rejected:
+        names = ", ".join(rejected)
+        raise ProvisioningRequiredError(
+            "environment-only App-key provisioning is required; the legacy "
+            f"organization-secret bootstrap cannot handle {names}"
+        )
 
 
 class GitHub:
@@ -126,6 +145,7 @@ def validate_manifest(raw: Any) -> dict[str, Any]:
         exact_keys(spec, {"environment", "visibility"}, f"secret {name}")
         if NAME.fullmatch(str(spec["environment"])) is None or spec["visibility"] not in {"all", "private"}:
             raise BootstrapError(f"secret {name} has an invalid environment source or visibility")
+    reject_environment_only_app_keys(secrets)
 
     seen_roles: set[str] = set()
     for index, app_raw in enumerate(list_value(manifest["apps"], "apps")):
@@ -276,6 +296,7 @@ def generate_callers(manifest: dict[str, Any], workspace: Path, contract_root: P
 
 
 def converge(manifest: dict[str, Any], gh: GitHub, workspace: Path, contract_root: Path, mode: str) -> dict[str, Any]:
+    reject_environment_only_app_keys(manifest["secrets"])
     contract_head = subprocess.run(
         ["git", "-C", str(contract_root), "rev-parse", "HEAD"], text=True,
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
@@ -374,7 +395,8 @@ def main() -> int:
         manifest = validate_manifest(json.loads(arguments.manifest.read_text(encoding="utf-8")))
         receipt = converge(manifest, GitHub(arguments.gh), arguments.workspace, arguments.contract_root, arguments.mode)
     except (BootstrapError, OSError, json.JSONDecodeError) as error:
-        receipt = error.receipt if isinstance(error, ConvergenceError) else {"mode": arguments.mode, "status": "failed"}
+        status = "provisioning_required" if isinstance(error, ProvisioningRequiredError) else "failed"
+        receipt = error.receipt if isinstance(error, ConvergenceError) else {"mode": arguments.mode, "status": status}
         receipt["error"] = str(error)
         exit_code = 1
     rendered = json.dumps(receipt, sort_keys=True, indent=2) + "\n"

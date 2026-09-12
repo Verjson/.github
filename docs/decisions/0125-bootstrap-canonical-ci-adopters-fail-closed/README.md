@@ -70,3 +70,33 @@ Adversarial tests use a fake `gh` boundary and disposable repositories to prove
 idempotency, dry-run no-write behavior, exact organization/App scope, permission and
 event equality, secret redaction, malformed and missing inputs, mutation failure
 receipts, traversal rejection, generator allowlisting, and atomic same-SHA output.
+
+## 2026-09-12 — Refuse legacy broad App-key bootstrap (#1326)
+
+The environment-only custody decision in [ADR 0166](../0166-environment-only-app-private-keys/README.md),
+with reusable transport clarified by [ADR 0171](../0171-inherited-reusable-environment-context/README.md),
+supersedes the old bootstrap's treatment of the review, merge, and release private
+keys as ordinary organization secrets. The old manifest example could therefore
+guide an adopter to create a broad copy even though runtime expressions cannot prove
+where an inherited key came from.
+
+The `secrets` map remains the legacy organization-secret contract for non-App values,
+`RENOVATE_COMPATIBILITY_APP_PRIVATE_KEY`, and
+`DEPENDENCY_SUPERSESSION_APP_PRIVATE_KEY`. It rejects exactly
+`AI_REVIEW_APP_PRIVATE_KEY`, `MERGE_APP_PRIVATE_KEY`, and
+`RELEASE_APP_PRIVATE_KEY` in all modes, regardless of organization visibility. The
+CLI returns `status: provisioning_required` before GitHub metadata reads, secret
+writes, variable writes, or generated-output writes. The receipt names the rejected
+secret and points the owner to the environment-only provisioning path; it never
+accepts organization metadata or an inherited value as exclusive-storage evidence.
+
+This is a correction to the bootstrap boundary, not a new provisioning implementation.
+The approved environment path remains the owner-mediated, main-only repository
+environment rollout with complete selected-repository inventory where that mode is
+supported. Existing broad copies are migration state and remain untouched: this
+change performs no deletion, rotation, scope change, or environment access expansion.
+The narrow exact-name classification preserves the current contract for roles whose
+custody decision has not changed.
+
+Boundary tests cover each rejected App-key name, both mutation-free direct convergence
+and the explicit CLI receipt, plus successful non-App secret convergence and redaction.

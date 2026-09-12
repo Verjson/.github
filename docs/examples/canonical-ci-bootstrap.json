@@ -9,9 +9,7 @@
     "DEPENDENCY_SUPERSESSION_APP_CLIENT_ID": {"value": "IvExampleSupersession", "visibility": "all"}
   },
   "secrets": {
-    "AI_REVIEW_APP_PRIVATE_KEY": {"environment": "BOOTSTRAP_AI_REVIEW_APP_PRIVATE_KEY", "visibility": "all"},
-    "MERGE_APP_PRIVATE_KEY": {"environment": "BOOTSTRAP_MERGE_APP_PRIVATE_KEY", "visibility": "all"},
-    "RELEASE_APP_PRIVATE_KEY": {"environment": "BOOTSTRAP_RELEASE_APP_PRIVATE_KEY", "visibility": "all"},
+    "NODE_AUTH_TOKEN": {"environment": "BOOTSTRAP_NODE_AUTH_TOKEN", "visibility": "all"},
     "RENOVATE_COMPATIBILITY_APP_PRIVATE_KEY": {"environment": "BOOTSTRAP_RENOVATE_APP_PRIVATE_KEY", "visibility": "all"},
     "DEPENDENCY_SUPERSESSION_APP_PRIVATE_KEY": {"environment": "BOOTSTRAP_DEPENDENCY_SUPERSESSION_APP_PRIVATE_KEY", "visibility": "all"}
   },
