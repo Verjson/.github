@@ -196,6 +196,8 @@ def evidence() -> dict:
                     "name": name,
                     "release": copy.deepcopy(baseline),
                     "manifestIdentity": baseline["manifestDigest"],
+                    "deployedDigest": "sha256:" + "1" * 64,
+                    "releaseManifest": copy.deepcopy(baseline_manifest),
                     "online": True,
                     "admitted": True,
                     "busy": False,
@@ -676,6 +678,8 @@ class DeploymentExecutionTests(unittest.TestCase):
         self.assertIsNone(retained["runners"][0]["completedAt"])
         live = evidence()
         live["fleet"]["runners"][0]["release"] = copy.deepcopy(plan["selectedRelease"])
+        live["fleet"]["runners"][0]["manifestIdentity"] = plan["manifestIdentity"]
+        live["fleet"]["runners"][0]["deployedDigest"] = plan["targetDigest"]
         resumed = FakeAdapter()
         final = controller.execute_plan(
             plan,
@@ -845,6 +849,88 @@ class DeploymentExecutionTests(unittest.TestCase):
                 )
             self.assertEqual([], adapter.calls)
 
+    def test_second_host_refresh_rejects_stale_manifest_identity_before_mutation(self):
+        candidate = published_format_evidence()
+        plan = controller.build_plan(configuration(), candidate, "production")
+        persisted = []
+        controller.execute_plan(
+            plan,
+            configuration(),
+            candidate,
+            FakeAdapter(),
+            lambda receipt: persisted.append(copy.deepcopy(receipt)),
+            max_hosts=1,
+            clock=FakeClock(),
+        )
+        refreshed = copy.deepcopy(candidate)
+        refreshed["fleet"]["runners"][0]["release"] = copy.deepcopy(
+            plan["selectedRelease"]
+        )
+        refreshed["fleet"]["runners"][0]["manifestIdentity"] = plan[
+            "manifestIdentity"
+        ]
+        refreshed["fleet"]["runners"][0]["deployedDigest"] = plan["targetDigest"]
+        refreshed["fleet"]["runners"][1]["manifestIdentity"] = plan[
+            "manifestIdentity"
+        ]
+        adapter = FakeAdapter()
+
+        with self.assertRaisesRegex(
+            controller.DeploymentError, "refreshed manifest identity for gha-gate-2"
+        ):
+            controller.execute_plan(
+                plan,
+                configuration(),
+                refreshed,
+                adapter,
+                lambda _receipt: self.fail("invalid refresh was persisted"),
+                previous_receipt=persisted[-1],
+                max_hosts=1,
+                clock=FakeClock(),
+            )
+
+        self.assertEqual([], adapter.calls)
+
+    def test_second_host_refresh_rejects_dishonest_deployed_digest_before_mutation(self):
+        candidate = published_format_evidence()
+        plan = controller.build_plan(configuration(), candidate, "production")
+        persisted = []
+        controller.execute_plan(
+            plan,
+            configuration(),
+            candidate,
+            FakeAdapter(),
+            lambda receipt: persisted.append(copy.deepcopy(receipt)),
+            max_hosts=1,
+            clock=FakeClock(),
+        )
+        refreshed = copy.deepcopy(candidate)
+        refreshed["fleet"]["runners"][0]["release"] = copy.deepcopy(
+            plan["selectedRelease"]
+        )
+        refreshed["fleet"]["runners"][0]["manifestIdentity"] = plan[
+            "manifestIdentity"
+        ]
+        refreshed["fleet"]["runners"][0]["deployedDigest"] = plan["targetDigest"]
+        refreshed["fleet"]["runners"][1]["deployedDigest"] = plan["targetDigest"]
+        adapter = FakeAdapter()
+
+        with self.assertRaisesRegex(
+            controller.DeploymentError, "refreshed deployed digest for gha-gate-2"
+        ):
+            controller.execute_plan(
+                plan,
+                configuration(),
+                refreshed,
+                adapter,
+                lambda _receipt: self.fail("invalid refresh was persisted"),
+                previous_receipt=persisted[-1],
+                max_hosts=1,
+                clock=FakeClock(),
+            )
+
+        self.assertEqual([], adapter.calls)
+
     def test_rollback_must_bind_failed_attempt_baseline(self):
         source = controller.admitted_receipt(
             controller.build_plan(configuration(), evidence(), "production"),
@@ -1001,6 +1087,12 @@ class DeploymentExecutionTests(unittest.TestCase):
         resumed_evidence["fleet"]["runners"][0]["release"] = copy.deepcopy(
             previous["selectedRelease"]
         )
+        resumed_evidence["fleet"]["runners"][0]["manifestIdentity"] = plan[
+            "manifestIdentity"
+        ]
+        resumed_evidence["fleet"]["runners"][0]["deployedDigest"] = plan[
+            "targetDigest"
+        ]
         final = controller.execute_plan(
             plan,
             configuration(),
@@ -1082,6 +1174,8 @@ class DeploymentExecutionTests(unittest.TestCase):
         )
         live = evidence()
         live["fleet"]["runners"][0]["release"] = copy.deepcopy(plan["selectedRelease"])
+        live["fleet"]["runners"][0]["manifestIdentity"] = plan["manifestIdentity"]
+        live["fleet"]["runners"][0]["deployedDigest"] = plan["targetDigest"]
         adapter = FakeAdapter()
 
         final = controller.execute_plan(
@@ -1302,6 +1396,7 @@ class DeploymentExecutionTests(unittest.TestCase):
         )
         live = evidence()
         live["fleet"]["runners"][0]["deployedDigest"] = "sha256:" + "1" * 64
+        live["fleet"]["runners"][0].pop("releaseManifest")
 
         with self.assertRaisesRegex(
             controller.DeploymentError, "baseline release manifest.*must be an object"
