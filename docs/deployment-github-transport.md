@@ -44,7 +44,11 @@ mutate a host.
 Probe dispatch uses the existing canonical `runner-canary.yml` seven-input
 contract and resolves the reviewed tag to the expected commit before dispatch.
 It records an exclusive, fsynced adjacent `.dispatch-intent.json` before the
-single dispatch POST. The intent binds the full request, nonce, workflow commit,
+single dispatch POST. The replay baseline and each post-dispatch lookup use a
+paginated workflow-run query whose trusted `total_count` must match every
+retrieved record, with a fixed maximum inventory size. An incomplete or
+over-sized query fails closed; the first 100 records are never treated as the
+complete baseline. The intent binds the full request, nonce, workflow commit,
 and pre-dispatch maximum run ID. Existing output or intent refuses retry.
 Polling accepts exactly one matching new run, attempt 1, exact workflow/ref/SHA,
 successful representative job, runner ID/name/label, and authenticated artifact.
@@ -93,6 +97,16 @@ host readers, mutation subprocesses, or manifest-verification children. Manifest
 verification receives only the dedicated read token. HTTP redirects never carry
 Authorization to artifact storage, and failures suppress credential-bearing
 bodies, signed URLs and subprocess stderr.
+
+The controller rechecks every configured runner immediately before retaining the
+admitted receipt or invoking a mutating update. Each runner must be online, idle,
+admitted to the reviewed group, and carry every configured label and tool. Workload
+owned evidence and probe children receive only the adapter environment allowlist
+(`PATH`, locale, temporary-directory, and TLS certificate settings). They receive
+no `HOME`, SSH agent socket, deployment CLI locator, provider credential, or GitHub
+runner-control credential. The deployment CLI child receives its provider and
+runner-control credentials explicitly in its separate control environment, and
+those values are never forwarded to workload adapters.
 
 ## Remaining integration work
 

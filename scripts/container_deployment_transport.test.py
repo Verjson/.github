@@ -13,6 +13,7 @@ import tempfile
 import unittest
 from unittest import mock
 from urllib.error import HTTPError
+from urllib.parse import parse_qs, urlsplit
 import zipfile
 
 ROOT = Path(__file__).resolve().parent
@@ -86,13 +87,55 @@ class ProbeAPI:
             self.dispatched = True
             return None
         if '/runs?' in path:
-            return {'workflow_runs': [self.record]} if self.dispatched else self.baseline
+            runs = [self.record] if self.dispatched else self.baseline['workflow_runs']
+            return {'total_count': len(runs), 'workflow_runs': runs}
         if path.endswith('/actions/workflows/66'): return self.workflow
         if '/git/ref/' in path: return self.tag
         if '/jobs?' in path: return {'total_count': 1, 'jobs': [self.job]}
         if path.endswith('/artifacts?per_page=100'): return {'total_count': 1, 'artifacts': [self.artifact]}
         if path.endswith('/zip'): return self.archive
         raise AssertionError((method, path))
+
+
+class PagedProbeAPI(ProbeAPI):
+    def __init__(self, value):
+        super().__init__(value)
+        self.baseline_runs = [
+            {'id': 1000 + index, 'display_title': f'prior-{index}'}
+            for index in range(100)
+        ]
+        self.baseline_runs.append(copy.deepcopy(self.record))
+
+    def call(self, method, path, token, body=None, binary=False):
+        if '/runs?' in path:
+            self.calls.append((method, path, token, body))
+            page = int(parse_qs(urlsplit(path).query)['page'][0])
+            runs = [self.record] if self.dispatched else self.baseline_runs
+            start = (page - 1) * t.RUNS_PAGE_SIZE
+            return {
+                'total_count': len(runs),
+                'workflow_runs': runs[start:start + t.RUNS_PAGE_SIZE],
+            }
+        return super().call(method, path, token, body, binary)
+
+
+class IncompleteProbeAPI(ProbeAPI):
+    def call(self, method, path, token, body=None, binary=False):
+        if '/runs?' in path and not self.dispatched:
+            self.calls.append((method, path, token, body))
+            return {'total_count': 101, 'workflow_runs': self.baseline['workflow_runs']}
+        return super().call(method, path, token, body, binary)
+
+
+class OversizedProbeAPI(ProbeAPI):
+    def call(self, method, path, token, body=None, binary=False):
+        if '/runs?' in path and not self.dispatched:
+            self.calls.append((method, path, token, body))
+            return {
+                'total_count': t.MAX_RUN_RECORDS + 1,
+                'workflow_runs': self.baseline['workflow_runs'],
+            }
+        return super().call(method, path, token, body, binary)
 
 
 class RequestTests(unittest.TestCase):
@@ -295,6 +338,27 @@ class ProbeTests(unittest.TestCase):
         api = ProbeAPI(request())
         with self.assertRaises(FileExistsError):
             t.probe_runner(api, api.value, 'token', record_intent=mock.Mock(side_effect=FileExistsError()), clock=lambda: NOW)
+        self.assertFalse(api.dispatched)
+
+    def test_replay_detection_searches_beyond_the_first_hundred_runs(self):
+        api = PagedProbeAPI(request())
+        with self.assertRaisesRegex(t.TransportError, 'already dispatched'):
+            self.run_probe(api)
+        self.assertFalse(api.dispatched)
+        run_queries = [call[1] for call in api.calls if '/runs?' in call[1]]
+        self.assertEqual(2, len(run_queries))
+        self.assertIn('page=2', run_queries[1])
+
+    def test_incomplete_run_inventory_is_rejected_before_dispatch(self):
+        api = IncompleteProbeAPI(request())
+        with self.assertRaisesRegex(t.TransportError, 'incomplete'):
+            self.run_probe(api)
+        self.assertFalse(api.dispatched)
+
+    def test_over_sized_run_inventory_is_rejected_before_dispatch(self):
+        api = OversizedProbeAPI(request())
+        with self.assertRaisesRegex(t.TransportError, 'bounded complete query'):
+            self.run_probe(api)
         self.assertFalse(api.dispatched)
 
     def test_uncertain_dispatch_is_never_retried(self):

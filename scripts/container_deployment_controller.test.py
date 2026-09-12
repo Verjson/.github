@@ -199,6 +199,9 @@ def evidence() -> dict:
                     "online": True,
                     "admitted": True,
                     "busy": False,
+                    "runnerGroup": "trusted-production",
+                    "labels": ["gate", "pwsh"],
+                    "tools": ["pwsh"],
                 }
                 for name in ("gha-gate-1", "gha-gate-2", "gha-gate-3")
             ]
@@ -815,6 +818,33 @@ class DeploymentExecutionTests(unittest.TestCase):
 
         self.assertEqual([], adapter.calls)
 
+    def test_execution_rechecks_runner_admission_before_capacity_or_update(self):
+        plan = controller.build_plan(configuration(), evidence(), "production")
+        mutations = (
+            ("online", False, "online"),
+            ("busy", True, "idle"),
+            ("admitted", False, "admitted"),
+            ("runnerGroup", "untrusted", "group"),
+            ("labels", ["gate"], "labels"),
+            ("tools", [], "tools"),
+        )
+        for field, value, expected in mutations:
+            candidate = evidence()
+            candidate["fleet"]["runners"][0][field] = value
+            adapter = FakeAdapter()
+            with self.subTest(field=field), self.assertRaisesRegex(
+                controller.DeploymentError, expected
+            ):
+                controller.execute_plan(
+                    plan,
+                    configuration(),
+                    candidate,
+                    adapter,
+                    lambda _receipt: self.fail("admission receipt was persisted"),
+                    clock=FakeClock(),
+                )
+            self.assertEqual([], adapter.calls)
+
     def test_rollback_must_bind_failed_attempt_baseline(self):
         source = controller.admitted_receipt(
             controller.build_plan(configuration(), evidence(), "production"),
@@ -1318,6 +1348,8 @@ class DeploymentExecutionTests(unittest.TestCase):
                 {
                     "VERJSON_DEPLOYMENT_CLI": str(cli),
                     "VERJSON_DEPLOYMENT_CLI_ROOT": directory,
+                    "HOME": "/runner-home",
+                    "SSH_AUTH_SOCK": "/tmp/agent.sock",
                     "DIGITALOCEAN_RUNNER_FLEET_TOKEN": "provider-fixture",
                     "GH_RUNNER_CONTROL_TOKEN": "github-fixture",
                 },
@@ -1342,6 +1374,8 @@ class DeploymentExecutionTests(unittest.TestCase):
             run.call_args.kwargs["env"]["DIGITALOCEAN_ACCESS_TOKEN"],
         )
         self.assertEqual("github-fixture", run.call_args.kwargs["env"]["GH_TOKEN"])
+        self.assertNotIn("SSH_AUTH_SOCK", run.call_args.kwargs["env"])
+        self.assertNotIn("HOME", run.call_args.kwargs["env"])
         self.assertEqual(720, run.call_args.kwargs["timeout"])
 
     def test_child_process_environment_drops_unreviewed_secrets(self):
@@ -1349,16 +1383,43 @@ class DeploymentExecutionTests(unittest.TestCase):
             controller.os.environ,
             {
                 "PATH": "/usr/bin",
+                "HOME": "/runner-home",
+                "SSH_AUTH_SOCK": "/tmp/agent.sock",
+                "VERJSON_DEPLOYMENT_CLI": "/runner/bin/verjson-cloud",
+                "VERJSON_DEPLOYMENT_CLI_ROOT": "/runner",
                 "UNRELATED_SECRET": "must-not-cross-boundary",
                 "DIGITALOCEAN_RUNNER_FLEET_TOKEN": "provider-parent",
                 "GH_RUNNER_CONTROL_TOKEN": "github-parent",
             },
             clear=True,
         ):
-            child = controller._child_environment({"SAFE_EXPLICIT": "included"})
-        self.assertEqual(
-            {"PATH": "/usr/bin", "SAFE_EXPLICIT": "included"}, child
+            child = controller._child_environment()
+        self.assertEqual({"PATH": "/usr/bin"}, child)
+
+    def test_probe_child_process_receives_no_ssh_agent_or_control_capability(self):
+        completed = mock.Mock(
+            stdout=json.dumps({"outcome": "passed", "routedRunner": "gha-gate-1"})
         )
+        config = configuration()
+        with mock.patch.dict(
+            controller.os.environ,
+            {
+                "PATH": "/usr/bin",
+                "HOME": "/runner-home",
+                "SSH_AUTH_SOCK": "/tmp/agent.sock",
+                "VERJSON_DEPLOYMENT_CLI": "/runner/bin/verjson-cloud",
+                "VERJSON_DEPLOYMENT_CLI_ROOT": "/runner",
+                "DIGITALOCEAN_RUNNER_FLEET_TOKEN": "provider-parent",
+                "GH_RUNNER_CONTROL_TOKEN": "github-parent",
+            },
+            clear=True,
+        ), mock.patch.object(
+            controller.subprocess, "run", return_value=completed
+        ) as run:
+            controller.ProcessAdapter(
+                config, config["fleets"]["production"]
+            ).probe_runner("gha-gate-1", 300)
+        self.assertEqual({"PATH": "/usr/bin"}, run.call_args.kwargs["env"])
 
     def test_refresh_rejects_changed_github_authorization(self):
         admitted = evidence()

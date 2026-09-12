@@ -362,6 +362,41 @@ def _deployment_cli() -> str:
     return str(path)
 
 
+def _validate_runner_admission(fleet: dict[str, Any], inventory: Any) -> None:
+    expected_names = fleet.get("runners")
+    if not isinstance(inventory, list) or not isinstance(expected_names, list):
+        raise DeploymentError("fleet inventory must be an array")
+    actual_names = [runner.get("name") for runner in inventory if isinstance(runner, dict)]
+    if (
+        len(actual_names) != len(inventory)
+        or any(not isinstance(name, str) for name in actual_names + expected_names)
+        or len(set(actual_names)) != len(actual_names)
+        or set(actual_names) != set(expected_names)
+    ):
+        raise DeploymentError("observed fleet inventory differs from reviewed configuration")
+    for runner in inventory:
+        if runner.get("online") is not True:
+            raise DeploymentError(f"runner {runner.get('name')} is not online")
+        if runner.get("busy") is not False:
+            raise DeploymentError(f"runner {runner.get('name')} is not idle")
+        if runner.get("admitted") is not True:
+            raise DeploymentError(f"runner {runner.get('name')} is not admitted")
+        if runner.get("runnerGroup") != fleet.get("runnerGroup"):
+            raise DeploymentError(
+                f"runner {runner.get('name')} group differs from reviewed configuration"
+            )
+        labels = runner.get("labels")
+        if not isinstance(labels, list) or any(
+            not isinstance(label, str) for label in labels
+        ) or not set(fleet.get("requiredLabels", [])).issubset(labels):
+            raise DeploymentError(f"runner {runner.get('name')} labels are incomplete")
+        tools = runner.get("tools")
+        if not isinstance(tools, list) or any(
+            not isinstance(tool, str) for tool in tools
+        ) or not set(fleet.get("requiredTools", [])).issubset(tools):
+            raise DeploymentError(f"runner {runner.get('name')} tools are incomplete")
+
+
 def _validate_inventory(
     fleet: dict[str, Any],
     evidence: dict[str, Any],
@@ -371,14 +406,7 @@ def _validate_inventory(
     expected_names = fleet.get("runners")
     if not isinstance(inventory, list) or not isinstance(expected_names, list):
         raise DeploymentError("fleet inventory must be an array")
-    actual_names = [runner.get("name") for runner in inventory if isinstance(runner, dict)]
-    if len(actual_names) != len(inventory) or set(actual_names) != set(expected_names):
-        raise DeploymentError("observed fleet inventory differs from reviewed configuration")
-    if any(
-        runner.get("online") is not True or runner.get("admitted") is not True
-        for runner in inventory
-    ):
-        raise DeploymentError("every runner must be online and admitted before rollout")
+    _validate_runner_admission(fleet, inventory)
 
     baseline_values = [runner.get("release") for runner in inventory]
     if rollback_source is None:
@@ -564,6 +592,10 @@ def admitted_receipt(
     evidence: dict[str, Any],
     now: datetime,
 ) -> dict[str, Any]:
+    fleet = _object(config.get("fleets"), "fleets")[plan["fleetSelector"]]
+    _validate_runner_admission(
+        fleet, _object(evidence.get("fleet"), "fleet evidence").get("runners")
+    )
     authorization = _object(evidence.get("authorization"), "authorization")
     required_authorization = {
         field: copy.deepcopy(authorization.get(field))
@@ -921,6 +953,10 @@ def execute_plan(
         raise DeploymentError("GitHub authorization changed after plan admission")
     if clock is None:
         clock = type("SystemClock", (), {"now": staticmethod(lambda: datetime.now(timezone.utc))})()
+    fleet = config["fleets"][plan["fleetSelector"]]
+    _validate_runner_admission(
+        fleet, _object(evidence.get("fleet"), "fleet evidence").get("runners")
+    )
 
     if previous_receipt is None:
         current = admitted_receipt(plan, config, evidence, clock.now())
@@ -960,7 +996,6 @@ def execute_plan(
             ):
                 raise DeploymentError("live fleet differs from retained resume state")
 
-    fleet = config["fleets"][plan["fleetSelector"]]
     completed = copy.deepcopy(current.get("runners", []))
     completed_names = {
         runner.get("name")
@@ -1233,14 +1268,16 @@ def _validate_probe(result: Any, runner: str) -> str:
     return outcome
 
 
-def _child_environment(extra: dict[str, str] | None = None) -> dict[str, str]:
+def _child_environment(
+    extra: dict[str, str] | None = None, *, control: bool = False
+) -> dict[str, str]:
     allowed = (
-        "PATH", "HOME", "LANG", "LC_ALL", "TMPDIR", "SSL_CERT_FILE",
-        "SSL_CERT_DIR", "SSH_AUTH_SOCK", "VERJSON_DEPLOYMENT_CLI",
-        "VERJSON_DEPLOYMENT_CLI_ROOT",
+        "PATH", "LANG", "LC_ALL", "TMPDIR", "SSL_CERT_FILE", "SSL_CERT_DIR",
     )
+    if control:
+        allowed += ("VERJSON_DEPLOYMENT_CLI", "VERJSON_DEPLOYMENT_CLI_ROOT")
     environment = {key: os.environ[key] for key in allowed if key in os.environ}
-    if extra:
+    if control and extra:
         environment.update(extra)
     return environment
 
@@ -1255,6 +1292,7 @@ class ProcessAdapter:
         command: list[str],
         env: dict[str, str] | None = None,
         *,
+        control: bool = False,
         timeout_seconds: int = 2_000,
     ) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
@@ -1262,7 +1300,7 @@ class ProcessAdapter:
             check=True,
             capture_output=True,
             text=True,
-            env=_child_environment(env),
+            env=_child_environment(env, control=control),
             timeout=timeout_seconds,
         )
 
@@ -1270,7 +1308,6 @@ class ProcessAdapter:
     def _run(
         cls,
         command: list[str],
-        env: dict[str, str] | None = None,
         *,
         timeout_seconds: int = POST_UPDATE_EVIDENCE_SECONDS,
     ) -> dict[str, Any]:
@@ -1283,11 +1320,7 @@ class ProcessAdapter:
             raise DeploymentError(
                 f"adapter timeout must be between 1 and {MAX_ADAPTER_JSON_SECONDS} seconds"
             )
-        completed = cls._invoke(
-            command,
-            env,
-            timeout_seconds=timeout_seconds,
-        )
+        completed = cls._invoke(command, timeout_seconds=timeout_seconds)
         try:
             value = json.loads(completed.stdout)
         except json.JSONDecodeError as error:
@@ -1326,7 +1359,12 @@ class ProcessAdapter:
             runner,
         ]
         try:
-            self._invoke(command, environment, timeout_seconds=timeout_seconds + 120)
+            self._invoke(
+                command,
+                environment,
+                control=True,
+                timeout_seconds=timeout_seconds + 120,
+            )
         except subprocess.SubprocessError as error:
             raise DeploymentInterrupted(
                 f"runner update did not return verified terminal evidence for {runner}"
@@ -1369,7 +1407,6 @@ class ProcessAdapter:
                 "--timeout-seconds",
                 str(timeout_seconds),
             ],
-            {},
             timeout_seconds=timeout_seconds + 30,
         )
 
