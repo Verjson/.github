@@ -361,6 +361,29 @@ class ProbeTests(unittest.TestCase):
             self.run_probe(api)
         self.assertFalse(api.dispatched)
 
+    def test_run_inventory_request_budget_fails_closed_before_dispatch(self):
+        api = PagedProbeAPI(request())
+        intent = mock.Mock()
+        with mock.patch.object(t, 'MAX_RUN_REQUESTS', 1):
+            with self.assertRaisesRegex(t.TransportError, 'remaining request budget'):
+                t.probe_runner(api, api.value, 'token', record_intent=intent,
+                               clock=lambda: NOW, sleep=lambda _: self.fail('unexpected wait'))
+        intent.assert_not_called()
+        self.assertFalse(api.dispatched)
+        run_queries = [call[1] for call in api.calls if '/runs?' in call[1]]
+        self.assertEqual(1, len(run_queries))
+
+    def test_run_inventory_request_budget_is_shared_with_polling(self):
+        api = ProbeAPI(request())
+        api.record['status'] = 'in_progress'
+        with mock.patch.object(t, 'MAX_RUN_REQUESTS', 2):
+            with self.assertRaisesRegex(t.TransportError, 'request budget'):
+                t.probe_runner(api, api.value, 'token', record_intent=lambda _: None,
+                               clock=lambda: NOW, sleep=lambda _: None)
+        self.assertTrue(api.dispatched)
+        run_queries = [call[1] for call in api.calls if '/runs?' in call[1]]
+        self.assertEqual(2, len(run_queries))
+
     def test_uncertain_dispatch_is_never_retried(self):
         api = ProbeAPI(request()); original = api.call
         def fail(method, path, token, body=None, binary=False):
