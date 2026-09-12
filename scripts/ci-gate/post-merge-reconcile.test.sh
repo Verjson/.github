@@ -173,7 +173,7 @@ case "$1 $2" in
   "issue list") printf '%s\n' "${EXISTING:-0}" ;;
   "issue create") printf 'create %s\n' "$*" >>"$GH_LOG" ;;
   "api repos/"*) printf '%s\n' "${LIVE_SHA:-}" ;;
-  "api --method") printf 'delete %s\n' "$*" >>"$GH_LOG" ;;
+  "api --method") printf 'delete %s\n' "$*" >>"$GH_LOG"; exit "${DELETE_RC:-0}" ;;
   *) exit 2 ;;
 esac
 STUB
@@ -202,4 +202,15 @@ EXISTING=1 HEAD_REF=main LIVE_SHA="$MERGED_HEAD_SHA" bash "$script"
 : >"$GH_LOG"
 EXISTING=1 HEAD_REF=release BASE_REF=release DEFAULT_BRANCH=main LIVE_SHA="$MERGED_HEAD_SHA" bash "$script"
 [ ! -s "$GH_LOG" ]
+
+# Branch cleanup is housekeeping, never a verdict (#458, carried onto the ADR 0081
+# post-merge topology by #1320). A repository with auto-delete-branch-on-merge has
+# already removed the ref, so the DELETE 404s; if that status reached the job the
+# PR would be merged and the reconcile red, which is what #458 reported. The
+# notice must be emitted and the exit status must stay 0.
+: >"$GH_LOG"
+DELETE_RC=1 EXISTING=1 bash "$script" >"$tmp/cleanup.out" 2>&1
+grep -q '^delete ' "$GH_LOG"
+grep -q '::notice::merged head ref already absent or protected' "$tmp/cleanup.out"
+
 echo "All tests passed."

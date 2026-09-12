@@ -362,6 +362,90 @@ else
   fail "manifest is missing, malformed, duplicated, or incompletely grouped"
 fi
 
+# A behavioral gate test that is registered nowhere does not run in Actions, and
+# nothing says so: it keeps passing locally, keeps looking like coverage in the
+# tree, and silently rots. Nine did (#1320) — the topology they extracted was
+# removed by ADR 0079/0081, and the deregistration that removed them from this
+# manifest left the files behind for a month before anyone ran them.
+#
+# The exemption list is not new policy: the hosted-compatibility job above is
+# already the authoritative second execution path, and this file already asserts
+# that its three commands are absent from the manifest. This check reads the same
+# two sources, so every ci-gate test is provably reachable by exactly one of them.
+if python3 - "$root" "$manifest" "$workflow" <<'PY'
+import pathlib
+import shlex
+import sys
+
+import yaml
+
+root = pathlib.Path(sys.argv[1])
+manifest_text = pathlib.Path(sys.argv[2]).read_text(encoding="utf-8")
+document = yaml.safe_load(pathlib.Path(sys.argv[3]).read_text(encoding="utf-8"))
+hosted_run = next(
+    (
+        step["run"]
+        for step in document["jobs"]["hosted-compatibility-tests"]["steps"]
+        if step.get("name") == "Run namespace-bound compatibility contracts"
+    ),
+    None,
+)
+if hosted_run is None:
+    raise SystemExit(
+        "the hosted-compatibility execution step is missing, so the exempt second "
+        "execution path cannot be read"
+    )
+
+discovered = sorted(
+    path.relative_to(root).as_posix()
+    for pattern in ("scripts/ci-gate/*.test.sh", "scripts/ci-gate/*.test.py")
+    for path in root.glob(pattern)
+)
+if not discovered:
+    raise SystemExit("discovered no ci-gate tests; the glob or repository root is wrong")
+
+
+def referenced(text):
+    """Paths named as real command arguments, not as substrings of a longer path."""
+    seen = set()
+    for line in text.splitlines():
+        line = line.split("\t")[-1].strip()
+        if not line or line.startswith("#"):
+            continue
+        try:
+            seen.update(shlex.split(line))
+        except ValueError:
+            continue
+    return seen
+
+
+reachable = referenced(manifest_text) | referenced(hosted_run)
+
+
+def orphans(candidate_paths):
+    return [path for path in candidate_paths if path not in reachable]
+
+
+orphaned = orphans(discovered)
+if orphaned:
+    raise SystemExit(
+        "ci-gate tests are registered in neither the actions-ci manifest nor the "
+        "hosted-compatibility job, so they never run in Actions:\n  "
+        + "\n  ".join(orphaned)
+    )
+
+# Negative control: an empty result must mean "nothing is orphaned", never "the
+# detector cannot see an orphan". Feed it one and require exactly that answer.
+probe = "scripts/ci-gate/never-registered-probe.test.sh"
+if orphans([*discovered, probe]) != [probe]:
+    raise SystemExit("the orphan detector does not flag a known-unregistered test")
+PY
+then
+  pass "every ci-gate test runs in the actions-ci manifest or the hosted compatibility job"
+else
+  fail "a ci-gate test is registered nowhere and therefore never runs in Actions"
+fi
+
 for command_id in schema readiness; do
   if [ "$command_id" = schema ]; then
     command='bash scripts/changelog-fragment-schema.test.sh'
