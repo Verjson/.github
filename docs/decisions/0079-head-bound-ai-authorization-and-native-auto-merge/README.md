@@ -322,3 +322,50 @@ this ADR governs (reproduced live 2026-08-19, `toquorum` run 32208257958 on
 PR #524). That is a consumer caller-pin-staleness gap, not a recurrence of
 this ADR's permission envelope, and is tracked separately
 ([#933](https://github.com/Verjson/.github/issues/933)).
+
+### 2026-09-12 clarification — retire the remaining unregistered extractors (#1320)
+
+The 2026-08-11 sweep removed two of the retired harnesses; the rest stayed on disk.
+`429d441` deregistered them from `scripts/actions-ci-groups.tsv` when it deleted the
+`ci_wait` step, so for a month they were files that asserted a topology no longer
+shipped and that no CI job ever executed. A stale test that cannot run is worse than
+no test: it reads as coverage in review while proving nothing. Eight are now removed,
+each because the *step it extracts* is gone rather than renamed:
+
+| Removed | Why the assertion is no longer meaningful |
+| --- | --- |
+| `ci-wait-fail-closed.test.sh` | Drove the `ci_wait` polling step deleted by `429d441`. The #143 property (an ABSENT required check is not green) is now a promotion property, covered by `native-automerge.test.sh` |
+| `required-checks-skip-poll.test.sh` | Pinned ADR 0058 step 6's conditional polling; there is no poll to skip |
+| `toolchain-missing.test.sh` | Pinned the 30-minute poll window's toolchain preconditions; the only surviving loop is a bounded four-attempt fetch |
+| `self-job-exclusion.test.sh` | Pinned the rollup-subtraction filter over `runs/<id>/jobs`. The #276 invariant survives in a different form and is re-covered below |
+| `required-workflow-provenance.test.sh` | ADR 0039's run-attestation matcher was replaced by the arm receipt plus an explicit Checks API authorization |
+| `entry-workflow-provenance.test.sh` | ADR 0044's `referenced_workflows` matcher is absent from every production workflow |
+| `merge-branch-cleanup.test.sh` | Extracted `gh pr merge --delete-branch`; cleanup moved to `post-merge-reconcile.sh`. The #458 invariant is re-covered below |
+| `followup-issues.test.sh` | Behavior moved to `post-merge-reconcile.sh` and is covered by the registered `post-merge-reconcile.test.sh` |
+
+Two live invariants were genuinely uncovered once those files are discounted, so
+registered coverage was added **before** deletion rather than after:
+
+- **#276 self-exclusion.** ADR 0081's promotion rejects a `REQUIRED_CHECK_POLICY`
+  entry naming a gate check or a gate workflow path, so the gate can never satisfy
+  its own readiness. `native-automerge.test.sh` now drives all three check names and
+  all three workflow paths; stripping either clause from `ai-privileged-merge.yml`
+  turns six cases red.
+- **#458 non-fatal cleanup.** A failing head-ref delete must not fail an
+  already-merged reconcile. `post-merge-reconcile.test.sh` now forces the delete to
+  exit non-zero and requires the documented notice and a zero exit; removing the
+  guard turns it red.
+
+`dispatch-permission.test.sh` is the one file kept, because its subject — the
+least-privilege split across the gate's jobs and the hardening of the single job
+holding `actions: write` — is still live. It is rewritten against the five-job shape
+this ADR introduced and registered in `merge-gate`. Its permission assertion is an
+exact per-job map rather than the original global `grep -c` counts: a count says one
+job holds `actions: write` without saying which, so relocating the grant kept the old
+assertion green. The map makes any new job or widened scope a stated change.
+
+`scripts/actions-ci-groups.test.sh` now fails when a `scripts/ci-gate/*.test.sh`
+exists but is reachable from neither the manifest nor the hosted-compatibility job.
+This is a hard fail rather than a warning because the exemption list it needs already
+existed and was already asserted there, so no new infrastructure was introduced to
+enable it. That guard is the durable fix; this sweep is the one-time backlog.

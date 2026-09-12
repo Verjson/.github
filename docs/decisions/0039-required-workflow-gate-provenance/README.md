@@ -182,3 +182,29 @@ narrow:
   `trusted gate/checks did not become green` failure remains;
 - an explicitly dispatched `source_run_id` is still validated directly and never
   falls back to other history.
+
+## Amendment — 2026-09-12: the provenance harnesses are retired (#1320)
+
+Two test references in this ADR are now dangling and are recorded here rather than
+edited out of the decision text above:
+
+- The `## Consequences` bullet naming
+  `scripts/ci-gate/required-workflow-provenance.test.sh` described the run-attestation
+  matcher's rejection cases. ADR 0079 replaced that matcher with an immutable arm
+  receipt plus an explicit Checks API authorization, and `429d441` deregistered the
+  file from `scripts/actions-ci-groups.tsv`. The file is deleted; the anchor clauses
+  it pinned no longer exist to pin. The registered `arm-receipt` suite executes the
+  current run/artifact/digest/check binding mutations in its place.
+- The 2026-08-02 amendment's two load-bearing properties were pinned by
+  `scripts/ci-gate/self-job-exclusion.test.sh`, which extracted the rollup-subtraction
+  filter over `runs/<id>/jobs`. That filter went with the polling gate. The invariant
+  itself — the gate must never count its own checks toward the readiness it is
+  deciding — survives as ADR 0081's `REQUIRED_CHECK_POLICY` rejection of any entry
+  naming a gate check or a gate workflow path, and is now pinned by the registered
+  `native-automerge.test.sh` over all three check names and all three workflow paths.
+  The file is deleted.
+
+Neither deletion relaxes an assertion: the surviving invariant moved to a registered
+suite first, and a conformance guard in `scripts/actions-ci-groups.test.sh` now fails
+CI on any unregistered `scripts/ci-gate/*.test.sh` so this drift cannot silently
+recur. See ADR 0079's 2026-09-12 clarification.

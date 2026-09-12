@@ -156,3 +156,16 @@ configuration risk in required-workflow provenance.
   a payload the API never emits; carrying it is fixture fidelity, and those cases
   assert the *trusted* merge path, so an unrealistic fixture would have made them
   vacuous rather than strict.
+
+## Amendment (2026-09-12, #1320) — the entry-provenance harness is retired
+
+The `referenced_workflows` matcher this ADR introduced was replaced wholesale by
+ADR 0079's arm receipt plus an explicit Checks API authorization, and no production
+workflow reads `referenced_workflows` any more. `429d441` deregistered
+`scripts/ci-gate/entry-workflow-provenance.test.sh` from
+`scripts/actions-ci-groups.tsv` at that point, so the bullet above describing it as
+"wired into `actions-ci`" has been untrue since. The file is now deleted; the
+mutation evidence recorded above stands as the historical record of the matcher it
+tested, not as a claim about a live suite. Entry provenance is today asserted by the
+registered `arm-receipt` and `event-driven-authorization` suites, per ADR 0079's
+contract-test migration table. See ADR 0079's 2026-09-12 clarification.
