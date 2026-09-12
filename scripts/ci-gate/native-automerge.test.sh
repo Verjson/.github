@@ -177,6 +177,38 @@ elif grep -q 'missing or renamed' "$tmp/out" && ! grep -q 'pr merge' "$CALLS"; t
 else
   fail "renamed check did not produce permanent-misconfiguration evidence"
 fi
+# The gate must never satisfy its own readiness (#276, ADR 0039; carried onto the
+# ADR 0081 topology by #1320). Under the retired poll design the gate enumerated the
+# commit rollup and had to FILTER its own jobs out. The declaration is now an
+# allowlist, so the same fail-open is reached by DECLARING a promotion surface as a
+# required check: the gate's own successful authorization check would then satisfy
+# the readiness it is supposed to gate, and a PR would merge on nothing but itself.
+# Both halves of the schema clause are pinned separately because either alone
+# leaves a usable spelling of the same declaration.
+for self_name in "AI review authorization" "AI terminal merge promotion" "AI terminal promotion retry"; do
+  write_base
+  policy="$(jq -nc --arg name "$self_name" \
+    '[{name:$name,app_id:15368,workflow_id:315894159,workflow_path:".github/workflows/actions-ci.yml"}]')"
+  if (export REQUIRED_CHECK_POLICY="$policy"; run_promote) >"$tmp/out" 2>&1; then
+    fail "gate check name satisfied its own readiness: $self_name"
+  elif grep -q 'must declare trusted non-promotion Actions checks' "$tmp/out" && ! grep -q 'pr merge' "$CALLS"; then
+    pass "gate check name cannot be declared a required check: $self_name"
+  else
+    fail "gate check name rejected without the non-promotion contract: $self_name"
+  fi
+done
+for self_path in ai-review-merge ai-privileged-merge ai-promotion-retry; do
+  write_base
+  policy="$(jq -nc --arg path ".github/workflows/$self_path.yml" \
+    '[{name:"shell-tests",app_id:15368,workflow_id:315894159,workflow_path:$path}]')"
+  if (export REQUIRED_CHECK_POLICY="$policy"; run_promote) >"$tmp/out" 2>&1; then
+    fail "promotion workflow satisfied its own readiness: $self_path"
+  elif grep -q 'must declare trusted non-promotion Actions checks' "$tmp/out" && ! grep -q 'pr merge' "$CALLS"; then
+    pass "promotion workflow cannot be declared a required check: $self_path"
+  else
+    fail "promotion workflow rejected without the non-promotion contract: $self_path"
+  fi
+done
 write_base
 if (export MERGE_CONFIRMED=false; run_promote) >"$tmp/out" 2>&1; then
   fail "unconfirmed merge postcondition did not fail closed"
