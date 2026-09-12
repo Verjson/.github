@@ -1,6 +1,7 @@
 import importlib.util
 import json
 import os
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -22,7 +23,9 @@ def manifest():
         "organization": "acme",
         "contract_sha": SHA,
         "variables": {"CI_LANE_TRUSTED": {"value": '["ubuntu-24.04"]', "visibility": "all"}},
-        "secrets": {"MERGE_APP_PRIVATE_KEY": {"environment": "BOOTSTRAP_MERGE_KEY", "visibility": "all"}},
+        "secrets": {"NODE_AUTH_TOKEN": {
+            "environment": "BOOTSTRAP_NODE_AUTH_TOKEN", "visibility": "all", "kind": "organization"
+        }},
         "apps": [{
             "role": "MERGE_APP", "slug": "acme-merge-authorization", "app_id": 101,
             "client_id": "Iv123abc", "installation_id": 202, "repository_selection": "all",
@@ -58,7 +61,7 @@ class FakeGitHub:
         if endpoint.startswith("/orgs/acme/actions/secrets"):
             values = []
             if self.secret_present:
-                values = [{"name": "MERGE_APP_PRIVATE_KEY", "visibility": "all"}]
+                values = [{"name": "NODE_AUTH_TOKEN", "visibility": "all"}]
             return {"total_count": len(values), "secrets": values}
         if endpoint.startswith("/orgs/acme/installations"):
             installation = {
@@ -103,7 +106,7 @@ class BootstrapTests(unittest.TestCase):
 
     def test_dry_run_is_read_only_and_redacted(self):
         gh = FakeGitHub(variable_current=False, secret_present=False)
-        with mock.patch.dict(os.environ, {"BOOTSTRAP_MERGE_KEY": "top-secret"}):
+        with mock.patch.dict(os.environ, {"BOOTSTRAP_NODE_AUTH_TOKEN": "top-secret"}):
             receipt = bootstrap.converge(
                 bootstrap.validate_manifest(manifest()), gh, self.workspace, self.contract, "dry-run"
             )
@@ -115,7 +118,7 @@ class BootstrapTests(unittest.TestCase):
 
     def test_apply_converges_variable_secret_and_immutable_caller(self):
         gh = FakeGitHub(variable_current=False, secret_present=False)
-        with mock.patch.dict(os.environ, {"BOOTSTRAP_MERGE_KEY": "top-secret"}):
+        with mock.patch.dict(os.environ, {"BOOTSTRAP_NODE_AUTH_TOKEN": "top-secret"}):
             receipt = bootstrap.converge(
                 bootstrap.validate_manifest(manifest()), gh, self.workspace, self.contract, "apply"
             )
@@ -131,7 +134,7 @@ class BootstrapTests(unittest.TestCase):
         output = self.repository / ".github/workflows/ai-privileged-merge.yml"
         output.write_text(f"pin={SHA}\n", encoding="utf-8")
         gh = FakeGitHub()
-        with mock.patch.dict(os.environ, {"BOOTSTRAP_MERGE_KEY": "rotated"}):
+        with mock.patch.dict(os.environ, {"BOOTSTRAP_NODE_AUTH_TOKEN": "rotated"}):
             receipt = bootstrap.converge(
                 bootstrap.validate_manifest(manifest()), gh, self.workspace, self.contract, "apply"
             )
@@ -201,6 +204,163 @@ class BootstrapTests(unittest.TestCase):
                 with self.assertRaises(bootstrap.BootstrapError):
                     bootstrap.validate_manifest(value)
 
+    def test_environment_only_app_keys_require_provisioning_before_any_boundary_call(self):
+        for name in sorted(bootstrap.ENVIRONMENT_ONLY_APP_PRIVATE_KEYS):
+            for mode in ("check", "dry-run", "apply"):
+                value = manifest()
+                role = name.removesuffix("_PRIVATE_KEY")
+                value["secrets"] = {name: {
+                    "environment": "BOOTSTRAP_APP_KEY", "visibility": "private",
+                    "kind": "app_private_key", "role": role,
+                }}
+                gh = FakeGitHub()
+                with self.subTest(name=name, mode=mode):
+                    with self.assertRaisesRegex(bootstrap.ProvisioningRequiredError, "environment-only App-key provisioning"):
+                        bootstrap.validate_manifest(value)
+                    with self.assertRaisesRegex(bootstrap.ProvisioningRequiredError, "environment-only App-key provisioning"):
+                        bootstrap.converge(value, gh, self.workspace, self.contract, mode)
+                    self.assertEqual(gh.calls, [])
+
+    def test_app_key_aliases_are_rejected_before_any_boundary_call(self):
+        aliases = (
+            ("AI_REVIEW_PRIVATE_KEY", "AI_REVIEW_APP"),
+            ("MERGE_APP_PRIVATE_KEY_ALIAS", "MERGE_APP"),
+            ("MERGE_TOKEN", "MERGE_APP"),
+            ("RELEASE_KEY", "RELEASE_APP"),
+        )
+        for name, role in aliases:
+            for mode in ("check", "dry-run", "apply"):
+                value = manifest()
+                value["apps"] = [{
+                    "role": role, "slug": f"acme-{role.lower().replace('_', '-')}", "app_id": 303,
+                    "client_id": "Iv123alias", "installation_id": 404, "repository_selection": "all",
+                    "permissions": bootstrap.APP_PERMISSIONS[role], "events": [],
+                }]
+                value["secrets"] = {name: {
+                    "environment": "BOOTSTRAP_APP_KEY", "visibility": "all",
+                    "kind": "app_private_key", "role": role,
+                }}
+                gh = FakeGitHub()
+                with self.subTest(name=name, mode=mode):
+                    with self.assertRaisesRegex(
+                        bootstrap.ProvisioningRequiredError,
+                        "environment-only App-key provisioning",
+                    ):
+                        bootstrap.converge(value, gh, self.workspace, self.contract, mode)
+                    self.assertEqual(gh.calls, [])
+
+                value["secrets"] = {name: {
+                    "environment": "BOOTSTRAP_APP_KEY", "visibility": "all",
+                }}
+                gh = FakeGitHub()
+                with self.subTest(name=name, mode="legacy-shape"):
+                    with self.assertRaisesRegex(bootstrap.BootstrapError, "must declare kind"):
+                        bootstrap.converge(value, gh, self.workspace, self.contract, "apply")
+                    self.assertEqual(gh.calls, [])
+
+                value["secrets"] = {name: {
+                    "environment": "BOOTSTRAP_APP_KEY", "visibility": "all", "kind": "organization"
+                }}
+                gh = FakeGitHub()
+                with self.subTest(name=name, mode="misclassified-organization"):
+                    with self.assertRaisesRegex(bootstrap.BootstrapError, "explicitly supported organization credential"):
+                        bootstrap.converge(value, gh, self.workspace, self.contract, "apply")
+                    self.assertEqual(gh.calls, [])
+
+    def test_mixed_app_alias_and_organization_credentials_fail_before_any_boundary_call(self):
+        for name in ("MERGE_TOKEN", "MERGE_PRIVATE_KEY", "RENAMED_MERGE_PRIVATE_KEY", "UNKNOWN_TOKEN"):
+            value = manifest()
+            value["secrets"] = {
+                "NODE_AUTH_TOKEN": value["secrets"]["NODE_AUTH_TOKEN"],
+                name: {"environment": "BOOTSTRAP_ALIAS", "visibility": "all", "kind": "organization"},
+            }
+            for mode in ("check", "dry-run", "apply"):
+                gh = FakeGitHub()
+                with self.subTest(name=name, mode=mode):
+                    with self.assertRaisesRegex(bootstrap.BootstrapError, "explicitly supported organization credential"):
+                        bootstrap.converge(value, gh, self.workspace, self.contract, mode)
+                    self.assertEqual(gh.calls, [])
+                    self.assertFalse((self.repository / ".github/workflows/ai-privileged-merge.yml").exists())
+
+    def test_unrecognized_app_role_is_rejected_before_any_boundary_call(self):
+        value = manifest()
+        value["secrets"] = {"UNRECOGNIZED_APP_PRIVATE_KEY": {
+            "environment": "BOOTSTRAP_APP_KEY", "visibility": "all",
+            "kind": "app_private_key", "role": "UNKNOWN_APP",
+        }}
+        gh = FakeGitHub()
+        with self.assertRaisesRegex(bootstrap.BootstrapError, "undeclared App role"):
+            bootstrap.converge(value, gh, self.workspace, self.contract, "apply")
+        self.assertEqual(gh.calls, [])
+
+        value["secrets"]["UNRECOGNIZED_APP_PRIVATE_KEY"]["kind"] = "organization"
+        value["secrets"]["UNRECOGNIZED_APP_PRIVATE_KEY"].pop("role")
+        with self.assertRaisesRegex(bootstrap.BootstrapError, "explicitly supported organization credential"):
+            bootstrap.converge(value, gh, self.workspace, self.contract, "apply")
+        self.assertEqual(gh.calls, [])
+
+        value = manifest()
+        value["secrets"]["NODE_AUTH_TOKEN"]["kind"] = []
+        gh = FakeGitHub()
+        with self.assertRaisesRegex(bootstrap.BootstrapError, "must declare kind"):
+            bootstrap.converge(value, gh, self.workspace, self.contract, "apply")
+        self.assertEqual(gh.calls, [])
+
+    def test_cli_writes_explicit_provisioning_required_receipt_without_mutation(self):
+        value = manifest()
+        value["secrets"] = {
+            "AI_REVIEW_APP_PRIVATE_KEY": {
+                "environment": "BOOTSTRAP_APP_KEY", "visibility": "all"
+            }
+        }
+        manifest_path = self.root / "rejected.json"
+        receipt_path = self.root / "receipt.json"
+        manifest_path.write_text(json.dumps(value), encoding="utf-8")
+        with mock.patch.object(
+            sys, "argv", ["bootstrap-canonical-ci.py", "apply", str(manifest_path), "--receipt", str(receipt_path)]
+        ):
+            self.assertEqual(bootstrap.main(), 1)
+        receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+        self.assertEqual(receipt["status"], "provisioning_required")
+        self.assertEqual(receipt["provisioning_path"], "docs/app-key-environment-rollout.md")
+        self.assertIn("AI_REVIEW_APP_PRIVATE_KEY", receipt["error"])
+        self.assertNotIn("BOOTSTRAP_APP_KEY", json.dumps(receipt))
+
+    def test_cli_receipt_names_rejected_alias_without_secret_value(self):
+        for name in ("MERGE_TOKEN", "RENAMED_MERGE_PRIVATE_KEY"):
+            value = manifest()
+            value["secrets"] = {
+                name: {
+                    "environment": "BOOTSTRAP_MERGE_ALIAS",
+                    "visibility": "all",
+                    "kind": "app_private_key",
+                    "role": "MERGE_APP",
+                }
+            }
+            manifest_path = self.root / f"{name}.json"
+            receipt_path = self.root / f"{name}-receipt.json"
+            manifest_path.write_text(json.dumps(value), encoding="utf-8")
+            with self.subTest(name=name), mock.patch.dict(
+                os.environ, {"BOOTSTRAP_MERGE_ALIAS": "top-secret"}
+            ), mock.patch.object(bootstrap, "GitHub") as github:
+                with mock.patch.object(
+                    sys,
+                    "argv",
+                    [
+                        "bootstrap-canonical-ci.py",
+                        "apply",
+                        str(manifest_path),
+                        "--receipt",
+                        str(receipt_path),
+                    ],
+                ):
+                    self.assertEqual(bootstrap.main(), 1)
+                github.assert_not_called()
+            receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+            self.assertEqual(receipt["status"], "provisioning_required")
+            self.assertIn(f"secret {name}", receipt["error"])
+            self.assertNotIn("top-secret", json.dumps(receipt))
+
     def test_traversal_duplicate_output_and_unknown_generator_are_rejected(self):
         for mutation in ("repository", "output", "generator", "duplicate"):
             value = manifest()
@@ -247,7 +407,7 @@ class BootstrapTests(unittest.TestCase):
                     raise bootstrap.BootstrapError("secret upload failed")
                 return super().run(arguments, stdin=stdin, sensitive=sensitive)
         gh = FailingSecret(variable_current=False)
-        with mock.patch.dict(os.environ, {"BOOTSTRAP_MERGE_KEY": "never-rendered"}):
+        with mock.patch.dict(os.environ, {"BOOTSTRAP_NODE_AUTH_TOKEN": "never-rendered"}):
             with self.assertRaises(bootstrap.ConvergenceError) as raised:
                 bootstrap.converge(bootstrap.validate_manifest(manifest()), gh, self.workspace, self.contract, "apply")
         receipt = raised.exception.receipt

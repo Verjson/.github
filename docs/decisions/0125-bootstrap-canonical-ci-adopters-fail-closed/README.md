@@ -70,3 +70,45 @@ Adversarial tests use a fake `gh` boundary and disposable repositories to prove
 idempotency, dry-run no-write behavior, exact organization/App scope, permission and
 event equality, secret redaction, malformed and missing inputs, mutation failure
 receipts, traversal rejection, generator allowlisting, and atomic same-SHA output.
+
+## 2026-09-12 — Refuse legacy broad App-key bootstrap (#1326)
+
+The environment-only custody decision in [ADR 0166](../0166-environment-only-app-private-keys/README.md),
+with reusable transport clarified by [ADR 0171](../0171-inherited-reusable-environment-context/README.md),
+supersedes the old bootstrap's treatment of the review, merge, and release private
+keys as ordinary organization secrets. The old manifest example could therefore
+guide an adopter to create a broad copy even though runtime expressions cannot prove
+where an inherited key came from.
+
+Every `secrets` entry uses an exact supported credential mapping: `kind: organization`
+is limited to `NODE_AUTH_TOKEN`, while `kind: app_private_key` requires a declared
+canonical `apps[].role` and its exact role-derived `<role>_PRIVATE_KEY` name. Missing,
+undeclared, renamed, or otherwise unrecognized App-key entries therefore fail before
+`gh secret set --org`; the environment-only roles `AI_REVIEW_APP`, `MERGE_APP`, and
+`RELEASE_APP` return `status: provisioning_required` for their canonical credentials
+in all modes, regardless of organization visibility. The classifier uses only the
+exact credential map and manifest role contract; it never reads or hashes a secret
+value.
+The legacy organization-secret contract remains available for `NODE_AUTH_TOKEN` and
+the exact `app_private_key` entries for
+`RENOVATE_COMPATIBILITY_APP_PRIVATE_KEY` and
+`DEPENDENCY_SUPERSESSION_APP_PRIVATE_KEY`. The CLI returns the provisioning status
+before GitHub metadata reads, secret writes, variable writes, or generated-output
+writes. Its redacted receipt names the rejected secret and includes the safe,
+repository-relative `provisioning_path` `docs/app-key-environment-rollout.md`; it
+never accepts organization metadata or an inherited value as exclusive-storage
+evidence.
+
+This is a correction to the bootstrap boundary, not a new provisioning implementation.
+The approved environment path remains the owner-mediated, main-only repository
+environment rollout with complete selected-repository inventory where that mode is
+supported. Existing broad copies are migration state and remain untouched: this
+change performs no deletion, rotation, scope change, or environment access expansion.
+The exact role-derived classification preserves the current organization secret path
+for roles whose custody decision has not changed; their manifests now declare the
+legacy App-key role explicitly. It does not accept an alias or an unrecognized name as
+a non-App organization credential.
+
+Boundary tests cover each rejected App-key name, renamed and undeclared App-key
+entries, mutation-free direct convergence, the explicit CLI receipt and provisioning
+path, plus successful non-App secret convergence and redaction.
