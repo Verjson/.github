@@ -87,3 +87,36 @@ shorter name is intentional and is not renamed by this decision.
   fan-out.
 - Rollback disables terminal promotion or reverts workflow and callers together. A PAT
   fallback is not automatic and requires a new reviewed security decision.
+
+## 2026-09-12 — Confirmed as the settled terminal-merge credential shape (#1323)
+
+[#1323](https://github.com/Verjson/.github/issues/1323) asked for a design pass on the
+terminal merge credential after Verjson/verjson-observability observed an automation
+merge (PR #232, run `34645021831`) attributed to a human PAT owner (`mergedBy:
+pyousefi`) instead of a self-identifying actor. Re-reading the current
+`ai-privileged-merge.yml` on `main` (881f782) confirms this decision is unchanged and
+remains the sole mechanism: the terminal `Merge the authorized head` step runs only
+after `authorize-merge` succeeds, and its `GH_TOKEN` is exclusively
+`steps.merge-app-token.outputs.token` (an installation token minted from
+`MERGE_APP_PRIVATE_KEY`, hardened to the caller-owned `merge-app` main-only environment
+by [ADR 0166](../0166-environment-only-app-private-keys/README.md)). No `ORG_ADMIN_TOKEN`
+or other PAT path exists in the canonical workflow's merge step, matching the "no
+fallback" consequence recorded above.
+
+Root cause of the observed defect is consumer-side, not a canonical-contract gap: the
+reporting adopter's caller pins a workflow revision from 2026-08-18 — five days before
+this ADR's own merge (commit `c4250f4`, 2026-08-23) introduced the App-token step at
+all — and separately still supplies `ORG_ADMIN_TOKEN` as a caller secret, which that
+pre-App-token revision consumes directly as the merge credential. This repository is
+public; the affected adopter is private and its remediation is not yet landed, so the
+adopter's identity, exact pinned SHA, and specific still-open secret wiring are kept in
+that private repository's own tracking issue rather than named here. No
+consumer-repository change is proposed or made by this record: regenerating that caller
+from the current canonical SHA and provisioning the `merge-app` environment (per
+[the rollout doc](../../app-key-environment-rollout.md)) is that repository's own
+remediation, owned by that repository's PM under the cross-repository ownership
+boundary (this repository's PM may only leave a tracking issue there, never implement
+or merge on its behalf).
+
+This closes #1323's design pass with no change to this decision: the terminal-merge
+credential shape it asks about was already decided here and is not superseded.
