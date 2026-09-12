@@ -15,13 +15,13 @@ contract without adopting Verjson-branded configuration names.
 3. Enter each App's exact slug, App ID, client ID, installation ID, permissions,
    events, and repository selection in the manifest. The bootstrap validates these
    fields and never modifies or widens an App.
-4. Declare every secret's purpose in the manifest. Use `kind: organization` for a
-   non-App organization value. Use `kind: app_private_key` with the canonical
-   `role` from `apps` for an App key; its secret name must be exactly
-   `<role>_PRIVATE_KEY`. Names that match a declared or recognizable App-key shape
-   are rejected unless they use that exact typed binding, so an alias cannot be
-   reclassified as an organization value. Export each legacy-compatible value under the
-   environment-variable name declared by the manifest. Values are consumed only by
+4. Declare every secret's purpose in the manifest. The legacy bootstrap supports the
+   explicitly allowlisted organization credential `NODE_AUTH_TOKEN`. Use
+   `kind: app_private_key` with the canonical `role` from `apps` for an App key; its
+   secret name must be exactly `<role>_PRIVATE_KEY`. Every other name, including an
+   alias or renamed private-key-like credential, is rejected before it can be
+   reclassified as an organization value. Export each legacy-compatible value under
+   the environment-variable name declared by the manifest. Values are consumed only by
    `apply`, through standard input to `gh`, and never appear in the receipt. Do not put
    `AI_REVIEW_APP_PRIVATE_KEY`, `MERGE_APP_PRIVATE_KEY`, or
    `RELEASE_APP_PRIVATE_KEY` in this manifest or export their private keys for this
@@ -65,10 +65,11 @@ mutation, including in `dry-run` and `check`.
 
 ## Environment-only App-key roles
 
-The legacy `secrets` map writes organization Actions secrets. Each App-key entry must
-bind its secret name to a declared canonical App role; a missing, undeclared, or
-renamed App-key binding is rejected before any GitHub call. The classifier uses only
-secret names and the role contract, never secret values. The legacy path cannot
+The legacy `secrets` map writes organization Actions secrets. `NODE_AUTH_TOKEN` is the
+only non-App organization credential supported by this manifest contract. Each App-key
+entry must bind its secret name to a declared canonical App role; a missing, undeclared,
+or renamed App-key binding is rejected before any GitHub call. The classifier uses only
+the exact credential map and role contract, never secret values. The legacy path cannot
 provision or validate the storage provenance of `AI_REVIEW_APP_PRIVATE_KEY`,
 `MERGE_APP_PRIVATE_KEY`, or `RELEASE_APP_PRIVATE_KEY`, so the script rejects those
 canonical role names in every mode. A populated organization secret, inherited key, or

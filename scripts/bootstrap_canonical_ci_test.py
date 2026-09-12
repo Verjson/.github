@@ -225,6 +225,7 @@ class BootstrapTests(unittest.TestCase):
         aliases = (
             ("AI_REVIEW_PRIVATE_KEY", "AI_REVIEW_APP"),
             ("MERGE_APP_PRIVATE_KEY_ALIAS", "MERGE_APP"),
+            ("MERGE_TOKEN", "MERGE_APP"),
             ("RELEASE_KEY", "RELEASE_APP"),
         )
         for name, role in aliases:
@@ -262,12 +263,24 @@ class BootstrapTests(unittest.TestCase):
                 }}
                 gh = FakeGitHub()
                 with self.subTest(name=name, mode="misclassified-organization"):
-                    with self.assertRaisesRegex(
-                        bootstrap.ProvisioningRequiredError,
-                        "environment-only App-key provisioning",
-                    ):
+                    with self.assertRaisesRegex(bootstrap.BootstrapError, "explicitly supported organization credential"):
                         bootstrap.converge(value, gh, self.workspace, self.contract, "apply")
                     self.assertEqual(gh.calls, [])
+
+    def test_mixed_app_alias_and_organization_credentials_fail_before_any_boundary_call(self):
+        for name in ("MERGE_TOKEN", "MERGE_PRIVATE_KEY", "RENAMED_MERGE_PRIVATE_KEY", "UNKNOWN_TOKEN"):
+            value = manifest()
+            value["secrets"] = {
+                "NODE_AUTH_TOKEN": value["secrets"]["NODE_AUTH_TOKEN"],
+                name: {"environment": "BOOTSTRAP_ALIAS", "visibility": "all", "kind": "organization"},
+            }
+            for mode in ("check", "dry-run", "apply"):
+                gh = FakeGitHub()
+                with self.subTest(name=name, mode=mode):
+                    with self.assertRaisesRegex(bootstrap.BootstrapError, "explicitly supported organization credential"):
+                        bootstrap.converge(value, gh, self.workspace, self.contract, mode)
+                    self.assertEqual(gh.calls, [])
+                    self.assertFalse((self.repository / ".github/workflows/ai-privileged-merge.yml").exists())
 
     def test_unrecognized_app_role_is_rejected_before_any_boundary_call(self):
         value = manifest()
@@ -282,7 +295,7 @@ class BootstrapTests(unittest.TestCase):
 
         value["secrets"]["UNRECOGNIZED_APP_PRIVATE_KEY"]["kind"] = "organization"
         value["secrets"]["UNRECOGNIZED_APP_PRIVATE_KEY"].pop("role")
-        with self.assertRaisesRegex(bootstrap.BootstrapError, "unrecognized App-private-key entry"):
+        with self.assertRaisesRegex(bootstrap.BootstrapError, "explicitly supported organization credential"):
             bootstrap.converge(value, gh, self.workspace, self.contract, "apply")
         self.assertEqual(gh.calls, [])
 

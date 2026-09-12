@@ -40,10 +40,16 @@ APP_PERMISSIONS = {
     },
 }
 ENVIRONMENT_ONLY_APP_ROLES = frozenset({"AI_REVIEW_APP", "MERGE_APP", "RELEASE_APP"})
+APP_PRIVATE_KEY_CREDENTIALS = {
+    role: f"{role}_PRIVATE_KEY" for role in APP_PERMISSIONS
+}
+APP_PRIVATE_KEY_ROLES = {
+    credential: role for role, credential in APP_PRIVATE_KEY_CREDENTIALS.items()
+}
 ENVIRONMENT_ONLY_APP_PRIVATE_KEYS = frozenset(
-    f"{role}_PRIVATE_KEY" for role in ENVIRONMENT_ONLY_APP_ROLES
+    APP_PRIVATE_KEY_CREDENTIALS[role] for role in ENVIRONMENT_ONLY_APP_ROLES
 )
-SECRET_KINDS = {"organization", "app_private_key"}
+ORGANIZATION_CREDENTIALS = frozenset({"NODE_AUTH_TOKEN"})
 PROVISIONING_PATH = "docs/app-key-environment-rollout.md"
 
 
@@ -85,25 +91,6 @@ def safe_relative(value: Any, label: str) -> Path:
     if path.is_absolute() or any(part in {"", ".", ".."} for part in path.parts):
         raise BootstrapError(f"{label} must be a normalized relative path")
     return path
-
-
-def app_private_key_name(role: str) -> str:
-    return f"{role}_PRIVATE_KEY"
-
-
-def app_private_key_role_hint(name: str) -> str | None:
-    parts = set(name.split("_"))
-    if "KEY" not in parts:
-        return None
-    candidates = [
-        role for role in APP_PERMISSIONS
-        if set(role.removesuffix("_APP").split("_")) & parts
-    ]
-    if len(candidates) == 1:
-        return candidates[0]
-    if not ({"APP", "PRIVATE"} & parts):
-        return None
-    return "<unrecognized>"
 
 
 def reject_environment_only_app_keys(secrets: dict[str, Any]) -> None:
@@ -191,30 +178,24 @@ def validate_manifest(raw: Any) -> dict[str, Any]:
             )
         spec = object_value(spec_raw, f"secret {name}")
         kind = spec.get("kind")
-        role_hint = app_private_key_role_hint(name)
-        if not isinstance(kind, str) or kind not in SECRET_KINDS:
-            if role_hint is not None:
-                raise BootstrapError(
-                    f"secret {name} must declare kind before App-key classification"
-                )
-            raise BootstrapError(
-                f"secret {name} must declare kind 'organization' or 'app_private_key'"
-            )
+        app_role = APP_PRIVATE_KEY_ROLES.get(name)
         if kind == "organization":
             exact_keys(spec, {"environment", "visibility", "kind"}, f"secret {name}")
-            if role_hint is not None:
-                if role_hint in ENVIRONMENT_ONLY_APP_ROLES:
-                    raise ProvisioningRequiredError(
-                        "environment-only App-key provisioning is required; "
-                        f"role {role_hint} cannot use the legacy organization-secret bootstrap"
-                    )
-                raise BootstrapError(f"secret {name} is an unrecognized App-private-key entry")
+            if app_role is not None:
+                raise BootstrapError(
+                    f"secret {name} is an App-private-key credential and must declare "
+                    "kind 'app_private_key'"
+                )
+            if name not in ORGANIZATION_CREDENTIALS:
+                raise BootstrapError(
+                    f"secret {name} is not an explicitly supported organization credential"
+                )
         elif kind == "app_private_key":
             exact_keys(spec, {"environment", "visibility", "kind", "role"}, f"secret {name}")
             role = spec["role"]
-            if role not in seen_roles:
+            if not isinstance(role, str) or role not in seen_roles:
                 raise BootstrapError(f"secret {name} names an undeclared App role")
-            expected_name = app_private_key_name(role)
+            expected_name = APP_PRIVATE_KEY_CREDENTIALS[role]
             if name != expected_name:
                 if role in ENVIRONMENT_ONLY_APP_ROLES:
                     raise ProvisioningRequiredError(
