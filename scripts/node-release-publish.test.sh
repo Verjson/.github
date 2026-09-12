@@ -63,6 +63,12 @@ for guard in ("at most 16 paths", "symlink", "100 MiB", "250 MiB", 'git cat-file
 stamp_index = next(i for i, step in enumerate(steps) if "npm version" in (step.get("run") or ""))
 build_index = next(i for i, step in enumerate(steps) if "npm run build" in (step.get("run") or ""))
 assert stamp_index < build_index, "the dispatched version must be stamped before the publish build"
+assert "PACKAGE_DIRS_JSON" in (steps[stamp_index].get("env") or {}), \
+    "the version stamp must cover every selected package directory"
+assert 'mapfile -t package_dirs < <(jq -r \'.[]\' <<<"$PACKAGE_DIRS_JSON")' in steps[stamp_index]["run"], \
+    "the version stamp must iterate selected package directories"
+assert 'npm version "$PACKAGE_VERSION" --prefix "$package_path"' in steps[stamp_index]["run"], \
+    "the version stamp must update each selected package before its build"
 assert "--allow-same-version" in steps[stamp_index]["run"], \
     "publisher stamp must accept a scaffold already at the dispatched first version"
 for guard in (
@@ -88,6 +94,8 @@ selected_package_build_index = steps.index(selected_package_build)
 publish_index = next(i for i, step in enumerate(steps) if "npm publish" in (step.get("run") or ""))
 assert build_index < selected_package_build_index < publish_index, \
     "every selected package must build before script-disabled npm pack/publish"
+assert stamp_index < selected_package_build_index, \
+    "every selected package must be stamped before its build"
 assert 'mapfile -t package_dirs < <(jq -r \'.[]\' <<<"$PACKAGE_DIRS_JSON")' in selected_package_build["run"]
 outputs = on["workflow_call"]["outputs"]
 assert outputs["new-release-published"]["value"] == "${{ jobs.release.outputs.new-release-published }}"
