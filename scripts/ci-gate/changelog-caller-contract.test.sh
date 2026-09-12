@@ -740,6 +740,17 @@ run_adopter "$nested_adopter" \
   && fail "nested-only contract accepted root publication" \
   || pass "nested-only contract rejects extra root publication (#1286)"
 
+multi_release_adopter="$tmproot/adopter-multi-release"
+build_adopter "$multi_release_adopter"
+bash "$gen" release-node "$sha" >"$multi_release_adopter/.github/workflows/release.yml"
+bash "$gen" release-node "$sha" --only-package-dir packages/cli-schema \
+  >"$multi_release_adopter/.github/workflows/release-cli-schema.yml"
+bash "$gen" contract-test "$sha" >"$multi_release_adopter/scripts/changelog-contract.test.sh"
+chmod +x "$multi_release_adopter/scripts/changelog-contract.test.sh"
+run_adopter "$multi_release_adopter" \
+  && pass "generated contract validates multiple release callers with distinct package selections" \
+  || fail "generated contract rejects multiple release callers with distinct package selections"
+
 custom_adopter="$tmproot/adopter-custom-release"
 build_adopter "$custom_adopter"
 printf '%s\n' "$custom_release" >"$custom_adopter/.github/workflows/release.yml"

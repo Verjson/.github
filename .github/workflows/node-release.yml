@@ -307,6 +307,15 @@ jobs:
           PACKAGE_VERSION: ${{ steps.release-tag.outputs.package-version }}
         run: npm version "$PACKAGE_VERSION" --no-git-tag-version --ignore-scripts --allow-same-version
       - run: npm run build --if-present
+      - name: Build every selected release package
+        env:
+          PACKAGE_DIRS_JSON: ${{ inputs.package-dirs }}
+        run: |
+          mapfile -t package_dirs < <(jq -r '.[]' <<<"$PACKAGE_DIRS_JSON")
+          for package_dir in "${package_dirs[@]}"; do
+            [ "$package_dir" = "." ] && continue
+            npm --prefix "$package_dir" run build --if-present
+          done
       - name: Publish the exact snapshot version
         env:
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

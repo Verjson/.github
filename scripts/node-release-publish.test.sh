@@ -67,6 +67,7 @@ assert "--allow-same-version" in steps[stamp_index]["run"], \
     "publisher stamp must accept a scaffold already at the dispatched first version"
 for guard in (
     'scripts/release-prepare-packages.sh "$PACKAGE_VERSION"',
+    'npm --prefix "$package_dir" run build --if-present',
     'for package_dir in "${package_dirs[@]}"',
     'package_path="./$package_dir"',
     'npm pack "$package_path" --json --ignore-scripts',
@@ -82,6 +83,12 @@ for guard in (
     'gh release edit "$VERSION" --notes-file',
 ):
     assert guard in raw, "missing restart-safety guard: %s" % guard
+selected_package_build = next(step for step in steps if "Build every selected release package" in (step.get("name") or ""))
+selected_package_build_index = steps.index(selected_package_build)
+publish_index = next(i for i, step in enumerate(steps) if "npm publish" in (step.get("run") or ""))
+assert build_index < selected_package_build_index < publish_index, \
+    "every selected package must build before script-disabled npm pack/publish"
+assert 'mapfile -t package_dirs < <(jq -r \'.[]\' <<<"$PACKAGE_DIRS_JSON")' in selected_package_build["run"]
 outputs = on["workflow_call"]["outputs"]
 assert outputs["new-release-published"]["value"] == "${{ jobs.release.outputs.new-release-published }}"
 assert outputs["new-release-version"]["value"] == "${{ jobs.release.outputs.new-release-version }}"
