@@ -117,6 +117,7 @@ merge-gate	bash scripts/ci-gate/dispatch-target-guard.test.sh
 merge-gate	bash scripts/ci-gate/target-visibility.test.sh
 merge-gate	bash scripts/ci-gate/privileged-merge-conformance.test.sh
 merge-gate	bash scripts/ci-gate/require-secrets.test.sh
+merge-gate	bash scripts/ci-gate/dispatch-permission.test.sh
 merge-gate	python3 scripts/ci-gate/terminal-merge-app-token.test.py
 merge-gate	bash scripts/ci-gate/terminal-live-base.test.sh
 merge-gate	bash scripts/ci-gate/privileged-merge-pin.test.sh
