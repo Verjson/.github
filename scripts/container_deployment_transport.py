@@ -25,6 +25,7 @@ PERMISSIONS = {
 }
 RUNS_PAGE_SIZE = 100
 MAX_RUN_RECORDS = 1_000
+MAX_RUN_REQUESTS = 40
 
 
 class TransportError(ValueError):
@@ -304,7 +305,9 @@ def validate_probe_receipt(value, receipt, run_record, job, artifact, now):
     require(artifact.get('expired') is False and positive(artifact.get('workflow_run', {}).get('id')) and artifact['workflow_run']['id'] == run_record['id'], 'artifact run provenance differs')
 
 
-def complete_workflow_runs(api, path, token):
+def complete_workflow_runs(api, path, token, request_budget):
+    require(type(request_budget) is int and request_budget > 0,
+            'run inventory request budget is exhausted')
     separator = '&' if '?' in path else '?'
     first_page_path = f'{path}{separator}per_page={RUNS_PAGE_SIZE}&page=1'
     first_page = api.call('GET', first_page_path, token)
@@ -313,6 +316,8 @@ def complete_workflow_runs(api, path, token):
     require(type(total_count) is int and 0 <= total_count <= MAX_RUN_RECORDS,
             'run inventory total is not a bounded complete query')
     page_count = max(1, (total_count + RUNS_PAGE_SIZE - 1) // RUNS_PAGE_SIZE)
+    require(page_count <= request_budget,
+            'run inventory exceeds the remaining request budget')
     runs = []
     for page_number in range(1, page_count + 1):
         page = first_page if page_number == 1 else api.call(
@@ -329,7 +334,7 @@ def complete_workflow_runs(api, path, token):
     ids = [run.get('id') for run in runs]
     require(all(positive(run_id) for run_id in ids), 'run inventory has invalid identity')
     require(len(set(ids)) == len(ids), 'run inventory has duplicate identity')
-    return runs
+    return runs, request_budget - page_count
 
 
 def probe_runner(api, value, token, *, record_intent, clock=time.time, sleep=time.sleep):
@@ -347,7 +352,8 @@ def probe_runner(api, value, token, *, record_intent, clock=time.time, sleep=tim
         target = annotated.get('object', {})
     require(target == {'type': 'commit', 'sha': probe['workflowCommit'], 'url': f"https://api.github.com/repos/{CANARY_REPOSITORY}/git/commits/{probe['workflowCommit']}"}, 'canary tag does not resolve to reviewed commit')
     runs_path = f"{repo}/actions/workflows/{probe['workflowId']}/runs?event=workflow_dispatch"
-    prior_runs = complete_workflow_runs(api, runs_path, token)
+    run_request_budget = MAX_RUN_REQUESTS
+    prior_runs, run_request_budget = complete_workflow_runs(api, runs_path, token, run_request_budget)
     title = 'runner-canary-' + probe['transactionNonce']
     require(not any(run.get('display_title') == title for run in prior_runs), 'transaction nonce was already dispatched; reconcile before retry')
     ids = [run['id'] for run in prior_runs]
@@ -355,6 +361,7 @@ def probe_runner(api, value, token, *, record_intent, clock=time.time, sleep=tim
     inputs = {'runner_name': probe['runnerName'], 'runner_id': str(probe['runnerId']), 'runner_label': probe['runnerLabel'],
               'transaction_nonce': probe['transactionNonce'], 'release_manifest': value['release']['manifestDigest'],
               'release_variant': value['release']['variant'], 'image_digest': value['release']['imageDigest']}
+    require(run_request_budget > 0, 'run inventory request budget exhausted before dispatch')
     validate_request(value, clock())
     record_intent({'requestDigest': digest(canonical(value)), 'transactionNonce': probe['transactionNonce'],
                    'preDispatchMaxRunId': maximum, 'workflowCommit': probe['workflowCommit']})
@@ -363,7 +370,7 @@ def probe_runner(api, value, token, *, record_intent, clock=time.time, sleep=tim
              {'ref': probe['workflowRef'].removeprefix('refs/tags/'), 'inputs': inputs})
     found = None
     while clock() < timestamp(value['expiresAt']):
-        runs = complete_workflow_runs(api, runs_path, token)
+        runs, run_request_budget = complete_workflow_runs(api, runs_path, token, run_request_budget)
         matching = [run for run in runs if run.get('display_title') == title]
         require(len(matching) <= 1, 'ambiguous transaction nonce runs')
         if matching:

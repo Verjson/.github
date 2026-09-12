@@ -46,10 +46,13 @@ contract and resolves the reviewed tag to the expected commit before dispatch.
 It records an exclusive, fsynced adjacent `.dispatch-intent.json` before the
 single dispatch POST. The replay baseline and each post-dispatch lookup use a
 paginated workflow-run query whose trusted `total_count` must match every
-retrieved record, with a fixed maximum inventory size. An incomplete or
-over-sized query fails closed; the first 100 records are never treated as the
-complete baseline. The intent binds the full request, nonce, workflow commit,
-and pre-dispatch maximum run ID. Existing output or intent refuses retry.
+retrieved record, with a maximum of 1,000 records and 40 workflow-run list
+requests shared across the baseline and post-dispatch lookups. An incomplete,
+over-sized, or over-budget query fails closed; the first 100 records are never
+treated as the complete baseline. The transport reserves a lookup before
+dispatch and stops polling when the shared request budget is exhausted. The
+intent binds the full request, nonce, workflow commit, and pre-dispatch maximum
+run ID. Existing output or intent refuses retry.
 Polling accepts exactly one matching new run, attempt 1, exact workflow/ref/SHA,
 successful representative job, runner ID/name/label, and authenticated artifact.
 The ZIP must contain only the fixed receipt filename. Both archive and receipt
