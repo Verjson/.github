@@ -39,11 +39,12 @@ APP_PERMISSIONS = {
         "contents": "read", "pull_requests": "write", "metadata": "read",
     },
 }
-ENVIRONMENT_ONLY_APP_PRIVATE_KEYS = frozenset({
-    "AI_REVIEW_APP_PRIVATE_KEY",
-    "MERGE_APP_PRIVATE_KEY",
-    "RELEASE_APP_PRIVATE_KEY",
-})
+ENVIRONMENT_ONLY_APP_ROLES = frozenset({"AI_REVIEW_APP", "MERGE_APP", "RELEASE_APP"})
+ENVIRONMENT_ONLY_APP_PRIVATE_KEYS = frozenset(
+    f"{role}_PRIVATE_KEY" for role in ENVIRONMENT_ONLY_APP_ROLES
+)
+SECRET_KINDS = {"organization", "app_private_key"}
+PROVISIONING_PATH = "docs/app-key-environment-rollout.md"
 
 
 class BootstrapError(RuntimeError):
@@ -84,6 +85,25 @@ def safe_relative(value: Any, label: str) -> Path:
     if path.is_absolute() or any(part in {"", ".", ".."} for part in path.parts):
         raise BootstrapError(f"{label} must be a normalized relative path")
     return path
+
+
+def app_private_key_name(role: str) -> str:
+    return f"{role}_PRIVATE_KEY"
+
+
+def app_private_key_role_hint(name: str) -> str | None:
+    parts = set(name.split("_"))
+    if "KEY" not in parts:
+        return None
+    candidates = [
+        role for role in APP_PERMISSIONS
+        if set(role.removesuffix("_APP").split("_")) & parts
+    ]
+    if len(candidates) == 1:
+        return candidates[0]
+    if not ({"APP", "PRIVATE"} & parts):
+        return None
+    return "<unrecognized>"
 
 
 def reject_environment_only_app_keys(secrets: dict[str, Any]) -> None:
@@ -137,16 +157,6 @@ def validate_manifest(raw: Any) -> dict[str, Any]:
         if not isinstance(spec["value"], str) or spec["visibility"] not in {"all", "private"}:
             raise BootstrapError(f"variable {name} has an invalid value or visibility")
 
-    secrets = object_value(manifest["secrets"], "secrets")
-    for name, spec_raw in secrets.items():
-        if NAME.fullmatch(name) is None or name.startswith("VERJSON_"):
-            raise BootstrapError(f"secret {name!r} is not organization-neutral")
-        spec = object_value(spec_raw, f"secret {name}")
-        exact_keys(spec, {"environment", "visibility"}, f"secret {name}")
-        if NAME.fullmatch(str(spec["environment"])) is None or spec["visibility"] not in {"all", "private"}:
-            raise BootstrapError(f"secret {name} has an invalid environment source or visibility")
-    reject_environment_only_app_keys(secrets)
-
     seen_roles: set[str] = set()
     for index, app_raw in enumerate(list_value(manifest["apps"], "apps")):
         app = object_value(app_raw, f"apps[{index}]")
@@ -169,6 +179,56 @@ def validate_manifest(raw: Any) -> dict[str, Any]:
         events = list_value(app["events"], f"App {role} events")
         if events:
             raise BootstrapError(f"App {role} must subscribe to no events")
+
+    secrets = object_value(manifest["secrets"], "secrets")
+    for name, spec_raw in secrets.items():
+        if NAME.fullmatch(name) is None or name.startswith("VERJSON_"):
+            raise BootstrapError(f"secret {name!r} is not organization-neutral")
+        if name in ENVIRONMENT_ONLY_APP_PRIVATE_KEYS:
+            raise ProvisioningRequiredError(
+                "environment-only App-key provisioning is required; the legacy "
+                f"organization-secret bootstrap cannot handle {name}"
+            )
+        spec = object_value(spec_raw, f"secret {name}")
+        kind = spec.get("kind")
+        role_hint = app_private_key_role_hint(name)
+        if not isinstance(kind, str) or kind not in SECRET_KINDS:
+            if role_hint is not None:
+                raise BootstrapError(
+                    f"secret {name} must declare kind before App-key classification"
+                )
+            raise BootstrapError(
+                f"secret {name} must declare kind 'organization' or 'app_private_key'"
+            )
+        if kind == "organization":
+            exact_keys(spec, {"environment", "visibility", "kind"}, f"secret {name}")
+            if role_hint is not None:
+                if role_hint in ENVIRONMENT_ONLY_APP_ROLES:
+                    raise ProvisioningRequiredError(
+                        "environment-only App-key provisioning is required; "
+                        f"role {role_hint} cannot use the legacy organization-secret bootstrap"
+                    )
+                raise BootstrapError(f"secret {name} is an unrecognized App-private-key entry")
+        elif kind == "app_private_key":
+            exact_keys(spec, {"environment", "visibility", "kind", "role"}, f"secret {name}")
+            role = spec["role"]
+            if role not in seen_roles:
+                raise BootstrapError(f"secret {name} names an undeclared App role")
+            expected_name = app_private_key_name(role)
+            if name != expected_name:
+                if role in ENVIRONMENT_ONLY_APP_ROLES:
+                    raise ProvisioningRequiredError(
+                        "environment-only App-key provisioning is required; "
+                        f"role {role} must use its canonical environment secret name"
+                    )
+                raise BootstrapError(f"secret {name} must use canonical App-key name {expected_name}")
+        else:
+            raise BootstrapError(
+                f"secret {name} must declare kind 'organization' or 'app_private_key'"
+            )
+        if NAME.fullmatch(str(spec["environment"])) is None or spec["visibility"] not in {"all", "private"}:
+            raise BootstrapError(f"secret {name} has an invalid environment source or visibility")
+    reject_environment_only_app_keys(secrets)
 
     seen_outputs: set[tuple[str, str]] = set()
     for index, caller_raw in enumerate(list_value(manifest["callers"], "callers")):
@@ -296,6 +356,7 @@ def generate_callers(manifest: dict[str, Any], workspace: Path, contract_root: P
 
 
 def converge(manifest: dict[str, Any], gh: GitHub, workspace: Path, contract_root: Path, mode: str) -> dict[str, Any]:
+    manifest = validate_manifest(manifest)
     reject_environment_only_app_keys(manifest["secrets"])
     contract_head = subprocess.run(
         ["git", "-C", str(contract_root), "rev-parse", "HEAD"], text=True,
@@ -397,6 +458,8 @@ def main() -> int:
     except (BootstrapError, OSError, json.JSONDecodeError) as error:
         status = "provisioning_required" if isinstance(error, ProvisioningRequiredError) else "failed"
         receipt = error.receipt if isinstance(error, ConvergenceError) else {"mode": arguments.mode, "status": status}
+        if isinstance(error, ProvisioningRequiredError):
+            receipt["provisioning_path"] = PROVISIONING_PATH
         receipt["error"] = str(error)
         exit_code = 1
     rendered = json.dumps(receipt, sort_keys=True, indent=2) + "\n"

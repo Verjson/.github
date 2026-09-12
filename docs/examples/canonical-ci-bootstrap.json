@@ -9,9 +9,9 @@
     "DEPENDENCY_SUPERSESSION_APP_CLIENT_ID": {"value": "IvExampleSupersession", "visibility": "all"}
   },
   "secrets": {
-    "NODE_AUTH_TOKEN": {"environment": "BOOTSTRAP_NODE_AUTH_TOKEN", "visibility": "all"},
-    "RENOVATE_COMPATIBILITY_APP_PRIVATE_KEY": {"environment": "BOOTSTRAP_RENOVATE_APP_PRIVATE_KEY", "visibility": "all"},
-    "DEPENDENCY_SUPERSESSION_APP_PRIVATE_KEY": {"environment": "BOOTSTRAP_DEPENDENCY_SUPERSESSION_APP_PRIVATE_KEY", "visibility": "all"}
+    "NODE_AUTH_TOKEN": {"environment": "BOOTSTRAP_NODE_AUTH_TOKEN", "visibility": "all", "kind": "organization"},
+    "RENOVATE_COMPATIBILITY_APP_PRIVATE_KEY": {"environment": "BOOTSTRAP_RENOVATE_APP_PRIVATE_KEY", "visibility": "all", "kind": "app_private_key", "role": "RENOVATE_COMPATIBILITY_APP"},
+    "DEPENDENCY_SUPERSESSION_APP_PRIVATE_KEY": {"environment": "BOOTSTRAP_DEPENDENCY_SUPERSESSION_APP_PRIVATE_KEY", "visibility": "all", "kind": "app_private_key", "role": "DEPENDENCY_SUPERSESSION_APP"}
   },
   "apps": [
     {

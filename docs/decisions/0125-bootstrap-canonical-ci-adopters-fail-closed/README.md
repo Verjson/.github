@@ -80,23 +80,32 @@ keys as ordinary organization secrets. The old manifest example could therefore
 guide an adopter to create a broad copy even though runtime expressions cannot prove
 where an inherited key came from.
 
-The `secrets` map remains the legacy organization-secret contract for non-App values,
+Every `secrets` entry declares either `kind: organization` for a non-App value or
+`kind: app_private_key` with a declared canonical `apps[].role`. App-key entries must
+use the exact role-derived `<role>_PRIVATE_KEY` name. Missing, undeclared, or renamed
+App-key entries therefore fail before `gh secret set --org`; the environment-only
+roles `AI_REVIEW_APP`, `MERGE_APP`, and `RELEASE_APP` return
+`status: provisioning_required` in all modes, regardless of organization visibility.
+The classifier uses only secret names and the manifest role contract; it never reads
+or hashes a secret value.
+The legacy organization-secret contract remains available for non-App values,
 `RENOVATE_COMPATIBILITY_APP_PRIVATE_KEY`, and
-`DEPENDENCY_SUPERSESSION_APP_PRIVATE_KEY`. It rejects exactly
-`AI_REVIEW_APP_PRIVATE_KEY`, `MERGE_APP_PRIVATE_KEY`, and
-`RELEASE_APP_PRIVATE_KEY` in all modes, regardless of organization visibility. The
-CLI returns `status: provisioning_required` before GitHub metadata reads, secret
-writes, variable writes, or generated-output writes. The receipt names the rejected
-secret and points the owner to the environment-only provisioning path; it never
-accepts organization metadata or an inherited value as exclusive-storage evidence.
+`DEPENDENCY_SUPERSESSION_APP_PRIVATE_KEY`. The CLI returns the provisioning status
+before GitHub metadata reads, secret writes, variable writes, or generated-output
+writes. Its redacted receipt names the rejected secret and includes the safe,
+repository-relative `provisioning_path` `docs/app-key-environment-rollout.md`; it
+never accepts organization metadata or an inherited value as exclusive-storage
+evidence.
 
 This is a correction to the bootstrap boundary, not a new provisioning implementation.
 The approved environment path remains the owner-mediated, main-only repository
 environment rollout with complete selected-repository inventory where that mode is
 supported. Existing broad copies are migration state and remain untouched: this
 change performs no deletion, rotation, scope change, or environment access expansion.
-The narrow exact-name classification preserves the current contract for roles whose
-custody decision has not changed.
+The role-derived classification preserves the exact names and current organization
+secret path for roles whose custody decision has not changed; their manifests now
+declare the legacy App-key role explicitly.
 
-Boundary tests cover each rejected App-key name, both mutation-free direct convergence
-and the explicit CLI receipt, plus successful non-App secret convergence and redaction.
+Boundary tests cover each rejected App-key name, renamed and undeclared App-key
+entries, mutation-free direct convergence, the explicit CLI receipt and provisioning
+path, plus successful non-App secret convergence and redaction.

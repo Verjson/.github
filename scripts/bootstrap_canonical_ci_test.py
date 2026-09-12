@@ -23,7 +23,9 @@ def manifest():
         "organization": "acme",
         "contract_sha": SHA,
         "variables": {"CI_LANE_TRUSTED": {"value": '["ubuntu-24.04"]', "visibility": "all"}},
-        "secrets": {"NODE_AUTH_TOKEN": {"environment": "BOOTSTRAP_NODE_AUTH_TOKEN", "visibility": "all"}},
+        "secrets": {"NODE_AUTH_TOKEN": {
+            "environment": "BOOTSTRAP_NODE_AUTH_TOKEN", "visibility": "all", "kind": "organization"
+        }},
         "apps": [{
             "role": "MERGE_APP", "slug": "acme-merge-authorization", "app_id": 101,
             "client_id": "Iv123abc", "installation_id": 202, "repository_selection": "all",
@@ -206,7 +208,11 @@ class BootstrapTests(unittest.TestCase):
         for name in sorted(bootstrap.ENVIRONMENT_ONLY_APP_PRIVATE_KEYS):
             for mode in ("check", "dry-run", "apply"):
                 value = manifest()
-                value["secrets"] = {name: {"environment": "BOOTSTRAP_APP_KEY", "visibility": "private"}}
+                role = name.removesuffix("_PRIVATE_KEY")
+                value["secrets"] = {name: {
+                    "environment": "BOOTSTRAP_APP_KEY", "visibility": "private",
+                    "kind": "app_private_key", "role": role,
+                }}
                 gh = FakeGitHub()
                 with self.subTest(name=name, mode=mode):
                     with self.assertRaisesRegex(bootstrap.ProvisioningRequiredError, "environment-only App-key provisioning"):
@@ -214,6 +220,78 @@ class BootstrapTests(unittest.TestCase):
                     with self.assertRaisesRegex(bootstrap.ProvisioningRequiredError, "environment-only App-key provisioning"):
                         bootstrap.converge(value, gh, self.workspace, self.contract, mode)
                     self.assertEqual(gh.calls, [])
+
+    def test_app_key_aliases_are_rejected_before_any_boundary_call(self):
+        aliases = (
+            ("AI_REVIEW_PRIVATE_KEY", "AI_REVIEW_APP"),
+            ("MERGE_APP_PRIVATE_KEY_ALIAS", "MERGE_APP"),
+            ("RELEASE_KEY", "RELEASE_APP"),
+        )
+        for name, role in aliases:
+            for mode in ("check", "dry-run", "apply"):
+                value = manifest()
+                value["apps"] = [{
+                    "role": role, "slug": f"acme-{role.lower().replace('_', '-')}", "app_id": 303,
+                    "client_id": "Iv123alias", "installation_id": 404, "repository_selection": "all",
+                    "permissions": bootstrap.APP_PERMISSIONS[role], "events": [],
+                }]
+                value["secrets"] = {name: {
+                    "environment": "BOOTSTRAP_APP_KEY", "visibility": "all",
+                    "kind": "app_private_key", "role": role,
+                }}
+                gh = FakeGitHub()
+                with self.subTest(name=name, mode=mode):
+                    with self.assertRaisesRegex(
+                        bootstrap.ProvisioningRequiredError,
+                        "environment-only App-key provisioning",
+                    ):
+                        bootstrap.converge(value, gh, self.workspace, self.contract, mode)
+                    self.assertEqual(gh.calls, [])
+
+                value["secrets"] = {name: {
+                    "environment": "BOOTSTRAP_APP_KEY", "visibility": "all",
+                }}
+                gh = FakeGitHub()
+                with self.subTest(name=name, mode="legacy-shape"):
+                    with self.assertRaisesRegex(bootstrap.BootstrapError, "must declare kind"):
+                        bootstrap.converge(value, gh, self.workspace, self.contract, "apply")
+                    self.assertEqual(gh.calls, [])
+
+                value["secrets"] = {name: {
+                    "environment": "BOOTSTRAP_APP_KEY", "visibility": "all", "kind": "organization"
+                }}
+                gh = FakeGitHub()
+                with self.subTest(name=name, mode="misclassified-organization"):
+                    with self.assertRaisesRegex(
+                        bootstrap.ProvisioningRequiredError,
+                        "environment-only App-key provisioning",
+                    ):
+                        bootstrap.converge(value, gh, self.workspace, self.contract, "apply")
+                    self.assertEqual(gh.calls, [])
+
+    def test_unrecognized_app_role_is_rejected_before_any_boundary_call(self):
+        value = manifest()
+        value["secrets"] = {"UNRECOGNIZED_APP_PRIVATE_KEY": {
+            "environment": "BOOTSTRAP_APP_KEY", "visibility": "all",
+            "kind": "app_private_key", "role": "UNKNOWN_APP",
+        }}
+        gh = FakeGitHub()
+        with self.assertRaisesRegex(bootstrap.BootstrapError, "undeclared App role"):
+            bootstrap.converge(value, gh, self.workspace, self.contract, "apply")
+        self.assertEqual(gh.calls, [])
+
+        value["secrets"]["UNRECOGNIZED_APP_PRIVATE_KEY"]["kind"] = "organization"
+        value["secrets"]["UNRECOGNIZED_APP_PRIVATE_KEY"].pop("role")
+        with self.assertRaisesRegex(bootstrap.BootstrapError, "unrecognized App-private-key entry"):
+            bootstrap.converge(value, gh, self.workspace, self.contract, "apply")
+        self.assertEqual(gh.calls, [])
+
+        value = manifest()
+        value["secrets"]["NODE_AUTH_TOKEN"]["kind"] = []
+        gh = FakeGitHub()
+        with self.assertRaisesRegex(bootstrap.BootstrapError, "must declare kind"):
+            bootstrap.converge(value, gh, self.workspace, self.contract, "apply")
+        self.assertEqual(gh.calls, [])
 
     def test_cli_writes_explicit_provisioning_required_receipt_without_mutation(self):
         value = manifest()
@@ -231,6 +309,7 @@ class BootstrapTests(unittest.TestCase):
             self.assertEqual(bootstrap.main(), 1)
         receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
         self.assertEqual(receipt["status"], "provisioning_required")
+        self.assertEqual(receipt["provisioning_path"], "docs/app-key-environment-rollout.md")
         self.assertIn("AI_REVIEW_APP_PRIVATE_KEY", receipt["error"])
         self.assertNotIn("BOOTSTRAP_APP_KEY", json.dumps(receipt))
 
