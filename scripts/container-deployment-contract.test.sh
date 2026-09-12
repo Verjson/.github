@@ -215,6 +215,11 @@ if grep -q -- '--rollback-source "\$ROLLBACK_RECEIPT"' "$workflow"; then
 fi
 grep -q 'verjson-cloud' "$root/scripts/container_deployment_controller.py"
 grep -q '"--only"' "$root/scripts/container_deployment_controller.py"
+grep -q 'def _validate_runner_admission' "$root/scripts/container_deployment_controller.py"
+grep -q 'control=True' "$root/scripts/container_deployment_controller.py"
+! grep -q 'SSH_AUTH_SOCK' "$root/scripts/container_deployment_controller.py"
+grep -q 'def complete_workflow_runs' "$root/scripts/container_deployment_transport.py"
+grep -q 'MAX_RUN_RECORDS' "$root/scripts/container_deployment_transport.py"
 if grep -vF 'actions/create-github-app-token@' "$workflow" \
   | grep -Eq 'doctl|ssh |droplet|--replicas|--standard|resize|create'; then
   echo "reusable workflow contains fleet mechanics or a spend-increasing operation" >&2

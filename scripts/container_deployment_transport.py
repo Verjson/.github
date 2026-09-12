@@ -23,6 +23,8 @@ PERMISSIONS = {
     'manifest': {'metadata': 'read', 'contents': 'read', 'attestations': 'read'},
     'probe': {'metadata': 'read', 'contents': 'read', 'actions': 'write'},
 }
+RUNS_PAGE_SIZE = 100
+MAX_RUN_RECORDS = 1_000
 
 
 class TransportError(ValueError):
@@ -302,6 +304,34 @@ def validate_probe_receipt(value, receipt, run_record, job, artifact, now):
     require(artifact.get('expired') is False and positive(artifact.get('workflow_run', {}).get('id')) and artifact['workflow_run']['id'] == run_record['id'], 'artifact run provenance differs')
 
 
+def complete_workflow_runs(api, path, token):
+    separator = '&' if '?' in path else '?'
+    first_page_path = f'{path}{separator}per_page={RUNS_PAGE_SIZE}&page=1'
+    first_page = api.call('GET', first_page_path, token)
+    require(isinstance(first_page, dict), 'run inventory baseline is unavailable')
+    total_count = first_page.get('total_count')
+    require(type(total_count) is int and 0 <= total_count <= MAX_RUN_RECORDS,
+            'run inventory total is not a bounded complete query')
+    page_count = max(1, (total_count + RUNS_PAGE_SIZE - 1) // RUNS_PAGE_SIZE)
+    runs = []
+    for page_number in range(1, page_count + 1):
+        page = first_page if page_number == 1 else api.call(
+            'GET', f'{path}{separator}per_page={RUNS_PAGE_SIZE}&page={page_number}', token
+        )
+        require(isinstance(page, dict)
+                and type(page.get('total_count')) is int and page['total_count'] == total_count
+                and isinstance(page.get('workflow_runs'), list)
+                and len(page['workflow_runs']) <= RUNS_PAGE_SIZE,
+                'run inventory page is not a trusted complete query')
+        runs.extend(page['workflow_runs'])
+    require(len(runs) == total_count and all(isinstance(run, dict) for run in runs),
+            'run inventory is incomplete')
+    ids = [run.get('id') for run in runs]
+    require(all(positive(run_id) for run_id in ids), 'run inventory has invalid identity')
+    require(len(set(ids)) == len(ids), 'run inventory has duplicate identity')
+    return runs
+
+
 def probe_runner(api, value, token, *, record_intent, clock=time.time, sleep=time.sleep):
     validate_request(value, clock())
     probe = value['probe']
@@ -316,13 +346,11 @@ def probe_runner(api, value, token, *, record_intent, clock=time.time, sleep=tim
         annotated = api.call('GET', f"{repo}/git/tags/{target.get('sha')}", token)
         target = annotated.get('object', {})
     require(target == {'type': 'commit', 'sha': probe['workflowCommit'], 'url': f"https://api.github.com/repos/{CANARY_REPOSITORY}/git/commits/{probe['workflowCommit']}"}, 'canary tag does not resolve to reviewed commit')
-    runs_path = f"{repo}/actions/workflows/{probe['workflowId']}/runs?event=workflow_dispatch&per_page=100"
-    prior = api.call('GET', runs_path, token)
-    require(isinstance(prior.get('workflow_runs'), list), 'run baseline is unavailable')
+    runs_path = f"{repo}/actions/workflows/{probe['workflowId']}/runs?event=workflow_dispatch"
+    prior_runs = complete_workflow_runs(api, runs_path, token)
     title = 'runner-canary-' + probe['transactionNonce']
-    require(not any(run.get('display_title') == title for run in prior['workflow_runs']), 'transaction nonce was already dispatched; reconcile before retry')
-    ids = [run.get('id') for run in prior['workflow_runs']]
-    require(all(positive(run_id) for run_id in ids), 'run baseline has invalid identity')
+    require(not any(run.get('display_title') == title for run in prior_runs), 'transaction nonce was already dispatched; reconcile before retry')
+    ids = [run['id'] for run in prior_runs]
     maximum = max(ids, default=0)
     inputs = {'runner_name': probe['runnerName'], 'runner_id': str(probe['runnerId']), 'runner_label': probe['runnerLabel'],
               'transaction_nonce': probe['transactionNonce'], 'release_manifest': value['release']['manifestDigest'],
@@ -335,9 +363,8 @@ def probe_runner(api, value, token, *, record_intent, clock=time.time, sleep=tim
              {'ref': probe['workflowRef'].removeprefix('refs/tags/'), 'inputs': inputs})
     found = None
     while clock() < timestamp(value['expiresAt']):
-        page = api.call('GET', runs_path, token)
-        require(isinstance(page.get('workflow_runs'), list), 'run inventory is unavailable')
-        matching = [run for run in page['workflow_runs'] if run.get('display_title') == title]
+        runs = complete_workflow_runs(api, runs_path, token)
+        matching = [run for run in runs if run.get('display_title') == title]
         require(len(matching) <= 1, 'ambiguous transaction nonce runs')
         if matching:
             found = matching[0]
