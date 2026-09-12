@@ -87,3 +87,34 @@ shorter name is intentional and is not renamed by this decision.
   fan-out.
 - Rollback disables terminal promotion or reverts workflow and callers together. A PAT
   fallback is not automatic and requires a new reviewed security decision.
+
+## 2026-09-12 — Confirmed as the settled terminal-merge credential shape (#1323)
+
+[#1323](https://github.com/Verjson/.github/issues/1323) asked for a design pass on the
+terminal merge credential after Verjson/verjson-observability observed an automation
+merge (PR #232, run `34645021831`) attributed to a human PAT owner (`mergedBy:
+pyousefi`) instead of a self-identifying actor. Re-reading the current
+`ai-privileged-merge.yml` on `main` (881f782) confirms this decision is unchanged and
+remains the sole mechanism: the terminal `Merge the authorized head` step runs only
+after `authorize-merge` succeeds, and its `GH_TOKEN` is exclusively
+`steps.merge-app-token.outputs.token` (an installation token minted from
+`MERGE_APP_PRIVATE_KEY`, hardened to the caller-owned `merge-app` main-only environment
+by [ADR 0166](../0166-environment-only-app-private-keys/README.md)). No `ORG_ADMIN_TOKEN`
+or other PAT path exists in the canonical workflow's merge step, matching the "no
+fallback" consequence recorded above.
+
+Root cause of the observed defect is consumer-side, not a canonical-contract gap:
+`Verjson/verjson-observability`'s caller pins
+`Verjson/.github/.github/workflows/ai-privileged-merge.yml@7a310a1c7f71f8fc49ba71864384c3c8bac2d0ff`,
+a revision dated 2026-08-18 — five days before this ADR's own merge (commit `c4250f4`,
+2026-08-23) introduced the App-token step at all — and separately still supplies
+`ORG_ADMIN_TOKEN` as a caller secret, which the pinned pre-App-token revision consumes
+directly as the merge credential. No consumer-repository change is proposed or made by
+this record: regenerating that caller from the current canonical SHA and provisioning
+the `merge-app` environment (per [the rollout doc](../../app-key-environment-rollout.md))
+is that repository's own remediation, tracked at
+[verjson-observability#241](https://github.com/Verjson/verjson-observability/issues/241)
+and owned by that repository's PM under the hard ownership boundary.
+
+This closes #1323's design pass with no change to this decision: the terminal-merge
+credential shape it asks about was already decided here and is not superseded.
