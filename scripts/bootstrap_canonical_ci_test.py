@@ -326,6 +326,41 @@ class BootstrapTests(unittest.TestCase):
         self.assertIn("AI_REVIEW_APP_PRIVATE_KEY", receipt["error"])
         self.assertNotIn("BOOTSTRAP_APP_KEY", json.dumps(receipt))
 
+    def test_cli_receipt_names_rejected_alias_without_secret_value(self):
+        for name in ("MERGE_TOKEN", "RENAMED_MERGE_PRIVATE_KEY"):
+            value = manifest()
+            value["secrets"] = {
+                name: {
+                    "environment": "BOOTSTRAP_MERGE_ALIAS",
+                    "visibility": "all",
+                    "kind": "app_private_key",
+                    "role": "MERGE_APP",
+                }
+            }
+            manifest_path = self.root / f"{name}.json"
+            receipt_path = self.root / f"{name}-receipt.json"
+            manifest_path.write_text(json.dumps(value), encoding="utf-8")
+            with self.subTest(name=name), mock.patch.dict(
+                os.environ, {"BOOTSTRAP_MERGE_ALIAS": "top-secret"}
+            ), mock.patch.object(bootstrap, "GitHub") as github:
+                with mock.patch.object(
+                    sys,
+                    "argv",
+                    [
+                        "bootstrap-canonical-ci.py",
+                        "apply",
+                        str(manifest_path),
+                        "--receipt",
+                        str(receipt_path),
+                    ],
+                ):
+                    self.assertEqual(bootstrap.main(), 1)
+                github.assert_not_called()
+            receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+            self.assertEqual(receipt["status"], "provisioning_required")
+            self.assertIn(f"secret {name}", receipt["error"])
+            self.assertNotIn("top-secret", json.dumps(receipt))
+
     def test_traversal_duplicate_output_and_unknown_generator_are_rejected(self):
         for mutation in ("repository", "output", "generator", "duplicate"):
             value = manifest()

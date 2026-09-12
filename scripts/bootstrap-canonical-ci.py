@@ -200,7 +200,8 @@ def validate_manifest(raw: Any) -> dict[str, Any]:
                 if role in ENVIRONMENT_ONLY_APP_ROLES:
                     raise ProvisioningRequiredError(
                         "environment-only App-key provisioning is required; "
-                        f"role {role} must use its canonical environment secret name"
+                        f"secret {name} for role {role} must use its canonical "
+                        "environment secret name"
                     )
                 raise BootstrapError(f"secret {name} must use canonical App-key name {expected_name}")
         else:
