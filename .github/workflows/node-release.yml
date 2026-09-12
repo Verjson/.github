@@ -305,8 +305,29 @@ jobs:
       - name: Stamp the dispatched package version
         env:
           PACKAGE_VERSION: ${{ steps.release-tag.outputs.package-version }}
-        run: npm version "$PACKAGE_VERSION" --no-git-tag-version --ignore-scripts --allow-same-version
+          PACKAGE_DIRS_JSON: ${{ inputs.package-dirs }}
+        run: |
+          mapfile -t package_dirs < <(jq -r '.[]' <<<"$PACKAGE_DIRS_JSON")
+          for package_dir in "${package_dirs[@]}"; do
+            if [ "$package_dir" = "." ]; then
+              package_path=.
+            else
+              package_path="./$package_dir"
+            fi
+            [ -d "$package_path" ] \
+              || { echo "::error::Configured release package directory '$package_dir' does not exist." >&2; exit 1; }
+            npm version "$PACKAGE_VERSION" --prefix "$package_path" --no-git-tag-version --ignore-scripts --allow-same-version
+          done
       - run: npm run build --if-present
+      - name: Build every selected release package
+        env:
+          PACKAGE_DIRS_JSON: ${{ inputs.package-dirs }}
+        run: |
+          mapfile -t package_dirs < <(jq -r '.[]' <<<"$PACKAGE_DIRS_JSON")
+          for package_dir in "${package_dirs[@]}"; do
+            [ "$package_dir" = "." ] && continue
+            npm --prefix "$package_dir" run build --if-present
+          done
       - name: Publish the exact snapshot version
         env:
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -333,8 +354,6 @@ jobs:
             # LOCAL_PACKAGE_PATH_END
             [ -d "$package_path" ] \
               || { echo "::error::Configured release package directory '$package_dir' does not exist."; exit 1; }
-            npm version "$expected_version" --prefix "$package_path" --no-git-tag-version \
-              --ignore-scripts --allow-same-version
             npm pack "$package_path" --json --ignore-scripts >"$pack_json"
             node - "$pack_json" "$expected_version" >"$package_meta" <<'NODE'
           // NPM_PACK_JSON_BEGIN

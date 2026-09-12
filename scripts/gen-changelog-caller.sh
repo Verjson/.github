@@ -2613,6 +2613,33 @@ while IFS= read -r release_workflow; do
   else
     fail "$release_workflow is not a generated release caller at $CONTRACT_REF. Regenerate it: scripts/gen-changelog-caller.sh release-node $CONTRACT_REF > .github/workflows/release.yml (or release-artifact for GitHub Release assets, or release-snapshot when the repository publishes nothing from the release workflow)"
   fi
+  workflow_package_dirs_json=""
+  workflow_package_dirs_shell=""
+  if [ "$release_mode" = release-node ]; then
+    workflow_package_dirs_json="$(sed -n -E "s/^[[:space:]]+package-dirs: '([^']+)'$/\1/p" "$release_workflow" | head -n 1)"
+    [ -n "$workflow_package_dirs_json" ] \
+      || fail "$release_workflow does not declare package-dirs in its node release caller"
+    workflow_package_dirs_shell="$(python3 - "$workflow_package_dirs_json" <<'PY'
+import json
+import shlex
+import sys
+
+directories = json.loads(sys.argv[1])
+if (
+    not isinstance(directories, list)
+    or not directories
+    or any(not isinstance(directory, str) or not directory for directory in directories)
+):
+    raise SystemExit("package-dirs must be a non-empty JSON array of non-empty strings")
+print(" ".join(shlex.quote(directory) for directory in directories))
+PY
+    )" \
+      || fail "$release_workflow has invalid package-dirs JSON"
+  else
+    workflow_package_dirs_shell="$(sed -n -E 's/^[[:space:]]+package_dirs=\((.*)\)$/\1/p' "$release_workflow" | head -n 1)"
+    [ -n "$workflow_package_dirs_shell" ] \
+      || fail "$release_workflow does not declare package_dirs for version stamping"
+  fi
   grep -qF "run-name: Release \${{ inputs.version }} \${{ inputs.selector_digest || 'manual' }}" "$release_workflow" \
     || fail "$release_workflow lacks the exact-version run title required for idempotent dispatch"
 
@@ -2737,7 +2764,7 @@ while IFS= read -r release_workflow; do
   }
   stamp_before "$verify_job" 'scripts/release-verify\.sh|npm run build|npm run typecheck|npm run lint|npm test' \
     || fail "$release_workflow does not stamp the dispatched package version before the verification build or suite (#519)"
-  grep -qF "package_dirs=($EXPECTED_RELEASE_PACKAGE_DIRS_SHELL)" <<<"$verify_job" \
+  grep -qF "package_dirs=($workflow_package_dirs_shell)" <<<"$verify_job" \
     || fail "$release_workflow does not stamp every package directory selected for publication (#557)"
   prepare_line="$(grep -n -m1 'scripts/release-prepare-packages\.sh "\$PACKAGE_VERSION"' \
     <<<"$verify_job" | cut -d: -f1)"
@@ -3053,7 +3080,7 @@ PY
       "contract-ref: $CONTRACT_REF" \
       "$expected_node_version" \
       "scope: '$EXPECTED_RELEASE_SCOPE'" \
-      "package-dirs: '$EXPECTED_RELEASE_PACKAGE_DIRS_JSON'" \
+      "package-dirs: '$workflow_package_dirs_json'" \
       "release-assets: '$EXPECTED_RELEASE_ASSETS_JSON'" \
       'runner: ${{'; do
       grep -qF "$publish_input" <<<"$publish_job" \
