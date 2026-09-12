@@ -455,6 +455,85 @@ def _validate_inventory(
     return inventory, observed, baseline_identity
 
 
+def _validate_refreshed_fleet(
+    plan: dict[str, Any],
+    receipt: dict[str, Any],
+    evidence: dict[str, Any],
+    config: dict[str, Any],
+    now: datetime,
+) -> None:
+    identity = _text(evidence.get("manifestIdentity"), "refreshed manifestIdentity")
+    if identity != plan.get("manifestIdentity"):
+        raise DeploymentError("refreshed manifest identity differs from plan")
+    identity_match = MANIFEST_IDENTITY.fullmatch(identity)
+    if identity_match is None:
+        raise DeploymentError("refreshed manifest identity is not immutable")
+    expected_release, expected_digest = _validate_release_evidence(
+        _object(config.get("expectedRelease"), "expectedRelease"),
+        evidence,
+        identity_match,
+        now,
+    )
+    if (
+        expected_release != plan.get("selectedRelease")
+        or expected_digest != plan.get("targetDigest")
+    ):
+        raise DeploymentError("refreshed manifest differs from selected release")
+
+    fleet = _object(config.get("fleets"), "fleets")[plan["fleetSelector"]]
+    inventory = _object(evidence.get("fleet"), "fleet evidence").get("runners")
+    _validate_runner_admission(fleet, inventory)
+    live_by_name = {
+        runner.get("name"): runner
+        for runner in inventory
+        if isinstance(runner, dict)
+    }
+    final_by_name = {
+        runner.get("name"): runner
+        for runner in receipt.get("finalFleet", [])
+        if isinstance(runner, dict)
+    }
+    if set(live_by_name) != set(final_by_name):
+        raise DeploymentError("refreshed fleet inventory differs from receipt")
+
+    variant = _text(config["expectedRelease"].get("variant"), "expectedRelease.variant")
+    for name, final in final_by_name.items():
+        live = live_by_name[name]
+        expected_live_release = _object(final.get("release"), f"expected release for {name}")
+        if live.get("release") != expected_live_release:
+            raise DeploymentError(f"live release for {name} differs from receipt")
+        normalized_release = _release(
+            expected_live_release.get("releaseVersion"),
+            expected_live_release.get("manifestDigest"),
+            f"live release for {name}",
+        )
+        if expected_live_release != normalized_release:
+            raise DeploymentError(f"live release for {name} has unrecognized fields")
+
+        if expected_live_release == plan.get("selectedRelease"):
+            expected_identity = plan.get("manifestIdentity")
+            live_digest = plan.get("targetDigest")
+        elif expected_live_release == plan.get("observedDeployedRelease"):
+            expected_identity = plan.get("observedManifestIdentity")
+            live_digest = _release_variant_digest(
+                live.get("releaseManifest"),
+                expected_live_release,
+                variant,
+                f"baseline release manifest for {name}",
+                live.get("releaseManifestBytes", MISSING_MANIFEST_BYTES),
+            )
+        else:
+            raise DeploymentError(f"live release for {name} is outside the immutable plan")
+
+        if live.get("manifestIdentity") != expected_identity:
+            raise DeploymentError(f"refreshed manifest identity for {name} differs from release")
+        deployed_digest = live.get("deployedDigest")
+        if not isinstance(deployed_digest, str) or DIGEST.fullmatch(deployed_digest) is None:
+            raise DeploymentError(f"refreshed deployed digest for {name} is not immutable")
+        if deployed_digest != live_digest:
+            raise DeploymentError(f"refreshed deployed digest for {name} differs from release")
+
+
 def build_plan(
     config: dict[str, Any],
     evidence: dict[str, Any],
@@ -995,6 +1074,7 @@ def execute_plan(
                 or live_by_name.get(runner["name"]) != runner["release"]
             ):
                 raise DeploymentError("live fleet differs from retained resume state")
+        _validate_refreshed_fleet(plan, current, evidence, config, clock.now())
 
     completed = copy.deepcopy(current.get("runners", []))
     completed_names = {
@@ -1559,6 +1639,11 @@ def main() -> int:
     execute.add_argument("--config", required=True, type=Path)
     execute.add_argument("--evidence", required=True, type=Path)
     execute.add_argument("--receipt-dir", required=True, type=Path)
+    validate_refresh = subparsers.add_parser("validate-refresh")
+    validate_refresh.add_argument("--plan", required=True, type=Path)
+    validate_refresh.add_argument("--config", required=True, type=Path)
+    validate_refresh.add_argument("--evidence", required=True, type=Path)
+    validate_refresh.add_argument("--receipt-dir", required=True, type=Path)
 
     args = parser.parse_args()
     try:
@@ -1631,6 +1716,30 @@ def main() -> int:
                 raise DeploymentError(
                     "terminal receipt has no unknown state to reconcile; use protected rollback"
                 )
+        elif args.command == "validate-refresh":
+            plan = _load(args.plan)
+            config = _load(args.config)
+            evidence = _load(args.evidence)
+            existing = sorted(args.receipt_dir.glob("revision-*.json"))
+            receipts = [_load(path) for path in existing]
+            if not receipts:
+                raise DeploymentError("refresh validation requires a retained receipt")
+            if any(
+                path.name != f"revision-{receipt.get('revision', -1):04d}.json"
+                for path, receipt in zip(existing, receipts)
+            ):
+                raise DeploymentError("local receipt filename differs from its revision")
+            try:
+                validate_receipt_chain(receipts)
+            except ValueError as error:
+                raise DeploymentError(f"local receipt chain is invalid: {error}") from error
+            _validate_refreshed_fleet(
+                plan,
+                receipts[-1],
+                evidence,
+                config,
+                datetime.now(timezone.utc),
+            )
         else:
             plan = _load(args.plan)
             config = _load(args.config)

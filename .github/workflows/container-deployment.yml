@@ -534,8 +534,18 @@ jobs:
             --authorization github-authorization.json \
             --output deployment-evidence.json
           python3 scripts/container_deployment_preflight.py --evidence deployment-evidence.json
-      - name: Advance second bounded runner transition
+      - name: Revalidate refreshed live release before transition 2
         if: ${{ steps.refresh_1.outcome == 'success' }}
+        id: revalidate_1
+        env:
+          CONFIG_PATH: ${{ inputs.config-path }}
+        run: |
+          set -euo pipefail
+          python3 scripts/container_deployment_controller.py validate-refresh \
+            --plan deployment-plan.json --config "$CONFIG_PATH" \
+            --evidence deployment-evidence.json --receipt-dir deployment-receipts
+      - name: Advance second bounded runner transition
+        if: ${{ steps.revalidate_1.outcome == 'success' }}
         id: advance_2
         env:
           CONFIG_PATH: ${{ inputs.config-path }}
@@ -571,8 +581,18 @@ jobs:
             --authorization github-authorization.json \
             --output deployment-evidence.json
           python3 scripts/container_deployment_preflight.py --evidence deployment-evidence.json
-      - name: Advance third bounded runner transition
+      - name: Revalidate refreshed live release before transition 3
         if: ${{ steps.refresh_2.outcome == 'success' }}
+        id: revalidate_2
+        env:
+          CONFIG_PATH: ${{ inputs.config-path }}
+        run: |
+          set -euo pipefail
+          python3 scripts/container_deployment_controller.py validate-refresh \
+            --plan deployment-plan.json --config "$CONFIG_PATH" \
+            --evidence deployment-evidence.json --receipt-dir deployment-receipts
+      - name: Advance third bounded runner transition
+        if: ${{ steps.revalidate_2.outcome == 'success' }}
         id: advance_3
         env:
           CONFIG_PATH: ${{ inputs.config-path }}
