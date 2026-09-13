@@ -37,6 +37,12 @@
       "description": "One PR for all action digests. Every Renovate PR here pays a full AI review pass through ai-review-merge.yml and holds a runner on the shared pool while the gate polls, so PR count is the cost — not diff size. These bump together, fail together, and are never reverted individually.",
       "matchManagers": ["github-actions", "custom.regex"],
       "groupName": "github actions digests"
+    },
+    {
+      "description": "pydantic-core is pydantic's compiled backend and the two are version-coupled upstream; a consumer repo bumping pydantic-core alone (verjson-editor#123) risks an incompatible pairing pydantic's own compatibility table would have caught.",
+      "matchManagers": ["pip_requirements", "pep621", "poetry"],
+      "matchPackageNames": ["pydantic", "pydantic-core"],
+      "groupName": "pydantic"
     }
   ]
 }
