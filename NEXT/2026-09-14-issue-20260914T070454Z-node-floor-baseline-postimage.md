@@ -1,7 +1,8 @@
 ---
 date: 2026-09-14
-issue: 1274
+id: 20260914T070454Z
 impact: patch
+refs: 1274
 title: Refresh the reviewed Node-floor baseline to the activated producer bindings
 ---
 
@@ -14,3 +15,5 @@ to GitHub Actions App `15368` at 2026-09-10T15:24:16.455Z, so every `render` and
 the verified postimage; the delta is exactly those three `integration_id` additions, with
 identity, selectors, enforcement, branch conditions and bypass actors byte-for-byte
 unchanged. Preparation stays read-only and still emits a disabled candidate.
+
+Part of #1274.

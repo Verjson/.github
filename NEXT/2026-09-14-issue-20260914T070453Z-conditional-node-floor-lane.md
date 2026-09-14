@@ -1,7 +1,8 @@
 ---
 date: 2026-09-14
-issue: 1274
+id: 20260914T070453Z
 impact: minor
+refs: 1274
 title: Declare the conditional Node-floor required-check lane
 ---
 
@@ -22,3 +23,4 @@ contexts to differing Apps, or drifts in context names. The rendered candidate p
 the derived `baselineProducerAppId`, and tests hold the declared contract entry and the
 prepared payload equal. Preparation is still read-only, still emits a disabled candidate,
 and ADR 0172's live acceptance gates remain unsatisfied. See ADR 0176.
+
