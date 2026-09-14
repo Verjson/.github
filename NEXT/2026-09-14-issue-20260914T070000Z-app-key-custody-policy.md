@@ -1,6 +1,7 @@
 ---
 date: 2026-09-14
-issue: 1326
+id: 20260914T070000Z
+refs: 1326
 impact: patch
 title: Refuse approved organization custody for environment-only App keys
 ---
