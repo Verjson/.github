@@ -1164,10 +1164,22 @@ PRODUCTION_SOURCE_SUFFIXES = frozenset(
 # one: the unreleased store and released snapshots themselves, documentation
 # trees, and tests, whose own change is described by the source change it covers.
 EXEMPT_SOURCE_PREFIXES = ("CHANGELOG/", "docs/", f"{UNRELEASED_DIR}/")
-TEST_SOURCE = re.compile(
-    r"(?:^|/)(?:tests?|__tests__|spec|__mocks__)/"
-    r"|(?:^|/)test_[^/]+$"
-    r"|(?:^|/)[^/]*[._-]test\.[A-Za-z0-9]+$"
+# A test root is anchored rather than matched at any depth. `tests`, `test`, and
+# `spec` are ordinary words: `packages/api/spec/` is a package's own tree far
+# more often than a test tree, and exempting it at any depth hid whole source
+# subtrees from the running log. `__tests__/` and `__mocks__/` carry no such
+# ambiguity, so they stay depth-free.
+TEST_ROOT = re.compile(
+    r"^(?:[^/]+/){0,2}tests?/"
+    r"|^spec/"
+    r"|(?:^|/)(?:__tests__|__mocks__)/"
+)
+# Self-identifying filenames: the marker sits against the extension, so
+# `adapter.test.ts` cannot plausibly be production code wherever it lives. A
+# bare `test_` prefix is not self-identifying — `tools/test_runner.py` is
+# production tooling — so it exempts only by sitting under a test root above.
+TEST_FILENAME = re.compile(
+    r"(?:^|/)[^/]*[._-]test\.[A-Za-z0-9]+$"
     r"|(?:^|/)[^/]*[._-]spec\.[A-Za-z0-9]+$"
 )
 
@@ -1182,7 +1194,7 @@ WORKFLOW_DEFINITION = re.compile(
 
 
 def is_test_source(path: str) -> bool:
-    return bool(TEST_SOURCE.search(path))
+    return bool(TEST_ROOT.search(path) or TEST_FILENAME.search(path))
 
 
 def is_production_source(path: str) -> bool:

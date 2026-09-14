@@ -2087,6 +2087,45 @@ class ChangelogContractTests(unittest.TestCase):
             with self.subTest(path=path):
                 self.assertFalse(changelog.is_production_source(path))
 
+    def test_test_exemption_is_anchored_to_a_test_root(self) -> None:
+        """#1324 review: `tests`/`spec` at any depth exempted whole production subtrees."""
+        for path in (
+            "tests/guidance.py",
+            "test/guidance.py",
+            "spec/guidance.rb",
+            "packages/api/tests/handler.ts",
+            "apps/web/test/handler.ts",
+            "src/__tests__/adapter.js",
+            "src/deep/nested/__mocks__/client.ts",
+        ):
+            with self.subTest(exempt=path):
+                self.assertFalse(changelog.is_production_source(path))
+        for path in (
+            "tools/test_runner.py",
+            "packages/api/spec/handler.ts",
+            "services/gateway/spec/handler.rb",
+            "a/b/c/tests/helper.py",
+            "src/testing/harness.ts",
+        ):
+            with self.subTest(production=path):
+                self.assertTrue(changelog.is_production_source(path))
+
+    def test_production_tooling_named_test_requires_a_fragment(self) -> None:
+        self.root.joinpath("README.md").write_text("base\n", encoding="utf-8")
+        self.init_git()
+        self.commit_all("base")
+        base = run(self.root, "git", "rev-parse", "HEAD")
+        source = self.root / "tools" / "test_runner.py"
+        source.parent.mkdir(parents=True, exist_ok=True)
+        source.write_text("RUNNER = True\n", encoding="utf-8")
+        self.commit_all("change production tooling whose name begins with test_")
+
+        with self.assertRaisesRegex(
+            changelog.ChangelogError,
+            "production source changes require a new NEXT fragment",
+        ):
+            changelog.check_pr(self.root, base, "HEAD")
+
     def test_workflow_definition_change_is_reported_not_rejected(self) -> None:
         """Renovate auto-merges action-pin bumps under a preset this repo cannot change."""
         self.root.joinpath("README.md").write_text("base\n", encoding="utf-8")

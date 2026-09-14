@@ -17,9 +17,14 @@ explicitly named exemption. The suffix set spans every language the
 organization names — including `.mts` and `.cts`, the exact TypeScript stack
 the `@verjson/*` packages ship, alongside `.cs .sql .tf .kt .swift .php .c
 .cpp .h .vue .svelte .psm1` — so no org stack escapes the running log: `NEXT/`, `CHANGELOG/`, `docs/`, and tests
-(`tests/`, `spec/`, `__tests__/`, `__mocks__/`, `test_*`, `*.test.*`,
-`*_test.*`, `*.spec.*`). Exemptions are enumerated rather than inferred, so
-widening one is a visible change.
+(`*.test.*`, `*_test.*`, `*.spec.*`, `__tests__/` and `__mocks__/` at any
+depth, and an anchored test root: repo-root `tests/`, `test/`, `spec/`, or a
+package-local `<pkg>/tests/`). The test root is anchored on purpose —
+matching `tests`/`spec` at any depth exempted whole production subtrees such
+as `packages/api/spec/`, and a bare `test_` prefix no longer exempts by
+itself, so production tooling named `tools/test_runner.py` is classified as
+what it is. Exemptions are enumerated rather than inferred, so widening one is
+a visible change.
 
 Workflow definitions under `.github/workflows/` and `.github/actions/`, and
 a repo-root `action.yml` — the published entrypoint of a composite or JS
