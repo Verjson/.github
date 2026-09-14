@@ -101,9 +101,28 @@ def custody_failures(name: str, rule) -> list[str]:
         return [f"{name}: incomplete policy justification"]
     declared = rule.get("custody")
     withdrawal = rule.get("withdrawal")
+    target = rule.get("target_visibility")
     is_app_key = name.endswith(APP_KEY_SUFFIX)
     if is_app_key and name not in ENVIRONMENT_ONLY_APP_KEYS | ORGANIZATION_CUSTODY_APP_KEYS:
         return [f"{name}: unrecognized App private-key name has no custody contract"]
+    if target == "withdrawn" and is_app_key:
+        if name in ENVIRONMENT_ONLY_APP_KEYS:
+            if declared != RESIDUE_CUSTODY:
+                return [
+                    f"{name}: environment-only App private key cannot declare "
+                    f"organization custody; declare custody {RESIDUE_CUSTODY!r}"
+                ]
+        elif declared != ORGANIZATION_CUSTODY:
+            return [f"{name}: App private key must declare explicit {ORGANIZATION_CUSTODY!r} custody"]
+        if not isinstance(withdrawal, dict) or any(
+            not isinstance(withdrawal.get(field), str) or not withdrawal.get(field, "").strip()
+            for field in WITHDRAWAL_FIELDS
+        ):
+            return [
+                f"{name}: withdrawn App private key must record withdrawal "
+                f"{', '.join(WITHDRAWAL_FIELDS)}"
+            ]
+        return []
     if name in ENVIRONMENT_ONLY_APP_KEYS:
         if declared != RESIDUE_CUSTODY:
             return [
@@ -160,21 +179,29 @@ def main() -> int:
         name for name in expected
         if isinstance(expected[name], dict) and expected[name].get("custody") == RESIDUE_CUSTODY
     )
-    if set(actual) != set(expected):
+    withdrawn = {
+        name for name, rule in expected.items()
+        if isinstance(rule, dict) and rule.get("target_visibility") == "withdrawn"
+    }
+    if set(actual) != ((set(expected) - withdrawn) | (set(actual) & withdrawn)):
         failures.append(
             f"manifest mismatch: unmanifested={sorted(set(actual) - set(expected))} "
-            f"absent_live={sorted(set(expected) - set(actual))}"
+            f"absent_live={sorted(set(expected) - withdrawn - set(actual))}"
         )
 
-    for name in sorted(set(actual) & set(expected)):
+    for name in sorted(expected):
         rule = expected[name]
-        visibility = actual[name].get("visibility")
+        # Validate the reviewed shape for every manifested secret. A withdrawn entry is
+        # normally absent from the live listing, and an unvalidated entry is how a
+        # malformed withdrawal rule would silently never be checked.
+        live = actual.get(name)
+        visibility = live.get("visibility") if isinstance(live, dict) else None
         target = rule.get("target_visibility")
         consumers = rule.get("consumers")
         reason = rule.get("reason")
         repositories = rule.get("selected_repositories")
         if (
-            target not in {"all", "private", "selected"}
+            target not in {"all", "private", "selected", "withdrawn"}
             or not isinstance(consumers, list)
             or not consumers
             or not all(isinstance(consumer, str) and consumer.strip() for consumer in consumers)
@@ -195,6 +222,14 @@ def main() -> int:
             failures.append(f"{name}: non-selected policy must not name repositories")
         if target == "selected" and not repositories:
             failures.append(f"{name}: selected policy has no repositories")
+        if live is None:
+            continue
+        if target == "withdrawn":
+            failures.append(
+                f"{name}: organization copy must be withdrawn; it is still present "
+                f"with visibility {visibility!r}"
+            )
+            continue
         if visibility != target:
             failures.append(f"{name}: visibility is {visibility!r}, policy requires {target!r}")
             continue

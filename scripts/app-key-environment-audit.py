@@ -3,15 +3,78 @@
 
 import argparse
 import json
+from pathlib import Path
 import re
 import subprocess
 
 
-ROLES = {
-    "release": "RELEASE_APP_PRIVATE_KEY",
-    "merge": "MERGE_APP_PRIVATE_KEY",
-    "ai-review": "AI_REVIEW_APP_PRIVATE_KEY",
-}
+ROOT = Path(__file__).resolve().parent.parent
+MANIFEST = ROOT / "config/app-key-roles.json"
+SECRET_REFERENCE = re.compile(
+    r"\bsecrets\s*(?:\.\s*([A-Za-z0-9_-]+)"
+    r"|\[\s*(?:'([^']*)'|\"([^\"]*)\")\s*\])",
+    re.IGNORECASE,
+)
+SECRET_TOKEN = re.compile(r"\bsecrets\b", re.IGNORECASE)
+EXPRESSION = re.compile(r"\$\{\{(.*?)\}\}", re.DOTALL)
+SECRET_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+
+
+def is_app_key(name):
+    """Whether a secret name carries a GitHub App private key.
+
+    Keyed on the words rather than one canonical suffix: RELEASE_APP_KEY_PEM and a
+    lowercase x_app_private_key hold the same credential as RELEASE_APP_PRIVATE_KEY,
+    and a scan that cannot see them proves nothing about them (#1285).
+    """
+    upper = name.upper()
+    return "APP" in upper and "KEY" in upper
+
+
+def app_keys(text):
+    """Every App private key name a GitHub Actions expression in text reads.
+
+    Both `secrets.NAME` and the equivalent `secrets['NAME']` index syntax count; a
+    binding spelled the second way is not a weaker binding.
+    """
+    found = set()
+    for expression in EXPRESSION.finditer(text):
+        body = expression.group(1)
+        references = list(SECRET_REFERENCE.finditer(body))
+        covered = {index for reference in references for index in range(reference.start(), reference.end())}
+        for token in SECRET_TOKEN.finditer(body):
+            if token.start() not in covered:
+                raise ValueError(f"unresolved secrets expression: {body.strip()}")
+        for match in references:
+            name = next(group for group in match.groups() if group is not None)
+            if is_app_key(name):
+                found.add(name)
+    return found
+CONFINEMENTS = ("canonical", "caller-owned", "unconfined")
+
+
+def load_roles(path=MANIFEST):
+    """Declared App private keys, in manifest order."""
+    roles = json.loads(Path(path).read_text(encoding="utf-8"))["roles"]
+    if not isinstance(roles, list) or not roles:
+        raise ValueError("App key role manifest is empty")
+    for entry in roles:
+        if (entry.get("confinement") not in CONFINEMENTS
+                or not isinstance(entry.get("secret"), str)
+                or not SECRET_NAME.fullmatch(entry["secret"]) or not is_app_key(entry["secret"])
+                or not isinstance(entry.get("role"), str) or not entry["role"]
+                or not isinstance(entry.get("environment"), str) or not entry["environment"]
+                or entry.get("organization_copy") not in ("withdraw", "absent")
+                or (entry["confinement"] == "canonical"
+                    and entry["environment"] != f"{entry['role']}-app")):
+            raise ValueError(f"App key role entry is malformed: {entry.get('secret')!r}")
+    if len({entry["secret"] for entry in roles}) != len(roles):
+        raise ValueError("App key role manifest declares a secret twice")
+    return roles
+
+
+ROLES = {entry["role"]: entry["secret"]
+         for entry in load_roles() if entry["confinement"] == "canonical"}
 
 
 def github(path):
@@ -50,15 +113,18 @@ def audit(repository, api=github):
     owner_type = metadata.get("owner", {}).get("type")
     if owner_type not in ("User", "Organization"):
         raise ValueError("repository owner identity is unavailable")
-    keys = set(ROLES.values())
+    roles = load_roles()
+    keys = {entry["secret"] for entry in roles}
     broad_repo = names(api(f"repos/{repository}/actions/secrets?per_page=100"), "secrets") & keys
     broad_org = set()
     if owner_type == "Organization":
         owner = repository.split("/", 1)[0]
         broad_org = names(api(f"orgs/{owner}/actions/secrets?per_page=100"), "secrets") & keys
     missing = []
-    for role, key in ROLES.items():
-        name = f"{role}-app"
+    for entry in roles:
+        if entry["confinement"] != "canonical":
+            continue
+        name, key = entry["environment"], entry["secret"]
         path = f"repos/{repository}/environments/{name}"
         environment = api(path)[0]
         policy = environment.get("deployment_branch_policy")
@@ -90,8 +156,9 @@ def main():
     args = parser.parse_args()
     try:
         result = audit(args.repo)
-    except (ValueError, KeyError, TypeError, subprocess.SubprocessError):
-        print("App key isolation could not be verified; check metadata access and environment policy")
+    except (ValueError, KeyError, TypeError, subprocess.SubprocessError) as error:
+        print("App key isolation could not be verified; check metadata access and "
+              f"environment policy: {type(error).__name__}: {error}")
         return 1
     print(json.dumps(result, sort_keys=True))
     return 0 if result["compliant"] else 1
