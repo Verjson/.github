@@ -3,15 +3,37 @@
 
 import argparse
 import json
+from pathlib import Path
 import re
 import subprocess
 
 
-ROLES = {
-    "release": "RELEASE_APP_PRIVATE_KEY",
-    "merge": "MERGE_APP_PRIVATE_KEY",
-    "ai-review": "AI_REVIEW_APP_PRIVATE_KEY",
-}
+ROOT = Path(__file__).resolve().parent.parent
+MANIFEST = ROOT / "config/app-key-roles.json"
+APP_KEY = re.compile(r"secrets\.([A-Z0-9_]*APP_PRIVATE_KEY)")
+CONFINEMENTS = ("canonical", "caller-owned", "unconfined")
+
+
+def load_roles(path=MANIFEST):
+    """Declared App private keys, in manifest order."""
+    roles = json.loads(Path(path).read_text(encoding="utf-8"))["roles"]
+    if not isinstance(roles, list) or not roles:
+        raise ValueError("App key role manifest is empty")
+    for entry in roles:
+        if (entry.get("confinement") not in CONFINEMENTS
+                or not isinstance(entry.get("secret"), str)
+                or not APP_KEY.fullmatch("secrets." + entry["secret"])
+                or not isinstance(entry.get("role"), str) or not entry["role"]
+                or not isinstance(entry.get("environment"), str) or not entry["environment"]
+                or entry.get("organization_copy") not in ("withdraw", "absent")):
+            raise ValueError(f"App key role entry is malformed: {entry.get('secret')!r}")
+    if len({entry["secret"] for entry in roles}) != len(roles):
+        raise ValueError("App key role manifest declares a secret twice")
+    return roles
+
+
+ROLES = {entry["role"]: entry["secret"]
+         for entry in load_roles() if entry["confinement"] == "canonical"}
 
 
 def github(path):
@@ -50,7 +72,7 @@ def audit(repository, api=github):
     owner_type = metadata.get("owner", {}).get("type")
     if owner_type not in ("User", "Organization"):
         raise ValueError("repository owner identity is unavailable")
-    keys = set(ROLES.values())
+    keys = {entry["secret"] for entry in load_roles()}
     broad_repo = names(api(f"repos/{repository}/actions/secrets?per_page=100"), "secrets") & keys
     broad_org = set()
     if owner_type == "Organization":

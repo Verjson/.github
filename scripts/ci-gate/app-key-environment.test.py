@@ -17,6 +17,30 @@ audit = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(audit)
 
 
+def workflow_bindings(directory):
+    """Every workflow job that reads an App private key, with its confinement evidence."""
+    bindings = []
+    for path in sorted(Path(directory).glob("*.yml")):
+        text = path.read_text(encoding="utf-8")
+        if not audit.APP_KEY.search(text):
+            continue
+        document = yaml.safe_load(text)
+        for name, job in (document.get("jobs") or {}).items():
+            rendered = yaml.safe_dump(job)
+            needs = job.get("needs") or []
+            for secret in sorted(set(audit.APP_KEY.findall(rendered))):
+                bindings.append({
+                    "workflow": path.stem,
+                    "job": name,
+                    "secret": secret,
+                    "environment": job.get("environment"),
+                    "needs": [needs] if isinstance(needs, str) else list(needs),
+                })
+    if not bindings:
+        raise ValueError("no App key binding was found; the workflow scan is unreliable")
+    return bindings
+
+
 def workflow(name):
     return yaml.safe_load((ROOT / f".github/workflows/{name}.yml").read_text())
 
@@ -250,6 +274,107 @@ class WorkflowBoundaryTests(unittest.TestCase):
                        {"policy": {"total_count": 1, "branch_policies": [{"name": "main", "type": "tag"}]}}):
             with self.subTest(kwargs=kwargs):
                 self.assertNotEqual(self.run_policy(**kwargs), 0)
+
+
+
+class AppKeyRoleManifestTests(unittest.TestCase):
+    """Every App private key a canonical workflow binds is accounted for.
+
+    The consumer list in WorkflowBoundaryTests is hand-written, so it proved the
+    three ADR 0171 roles and silently ignored every other App key in the same
+    workflow directory. This enumerates the directory instead, so a new binding
+    cannot be added without declaring its confinement (#1285).
+    """
+
+    def setUp(self):
+        self.manifest = audit.load_roles()
+        self.bindings = workflow_bindings(ROOT / ".github/workflows")
+
+    def test_manifest_and_workflows_declare_exactly_the_same_app_keys(self):
+        self.assertEqual({entry["secret"] for entry in self.manifest},
+                         {binding["secret"] for binding in self.bindings})
+
+    def test_every_confined_binding_declares_its_declared_environment(self):
+        declared = {entry["secret"]: entry for entry in self.manifest}
+        for binding in self.bindings:
+            entry = declared[binding["secret"]]
+            with self.subTest(workflow=binding["workflow"], job=binding["job"]):
+                if entry["confinement"] == "unconfined":
+                    self.assertIsNone(binding["environment"])
+                elif entry["confinement"] == "caller-owned":
+                    self.assertEqual(binding["environment"], entry["environment"])
+                else:
+                    self.assertIn(entry["input"], binding["environment"])
+
+    def test_canonical_bindings_depend_on_the_keyless_policy_preflight(self):
+        canonical = {e["secret"] for e in self.manifest if e["confinement"] == "canonical"}
+        for binding in self.bindings:
+            if binding["secret"] not in canonical:
+                continue
+            with self.subTest(workflow=binding["workflow"], job=binding["job"]):
+                self.assertIn("app-key-policy", binding["needs"])
+
+    def test_policy_workflow_accepts_exactly_the_canonical_roles(self):
+        roles = {e["role"] for e in self.manifest if e["confinement"] == "canonical"}
+        step = workflow("app-key-environment")["jobs"]["validate"]["steps"][0]
+        accepted = re.search(r'case "\$ROLE" in ([a-z|-]+)\)', step["run"]).group(1)
+        self.assertEqual(set(accepted.split("|")), roles)
+
+    def test_unconfined_keys_name_their_exposure_and_tracking_issue(self):
+        pending = [entry for entry in self.manifest if entry["confinement"] == "unconfined"]
+        self.assertTrue(pending, "remove this test once every App key is confined")
+        for entry in pending:
+            with self.subTest(secret=entry["secret"]):
+                self.assertEqual(entry["tracking"], 1285)
+                self.assertTrue(entry["reason"].strip())
+
+    def test_audit_reports_every_declared_app_key_as_a_broad_copy(self):
+        data = metadata()
+        data["orgs/Verjson/actions/secrets?per_page=100"] = [{
+            "total_count": len(self.manifest),
+            "secrets": [{"name": entry["secret"]} for entry in self.manifest]}]
+        result = audit.audit("Verjson/example", data.__getitem__)
+        self.assertFalse(result["compliant"])
+        self.assertEqual(result["broadOrganizationKeys"],
+                         sorted(entry["secret"] for entry in self.manifest))
+
+
+
+class AppKeyRoleManifestValidationTests(unittest.TestCase):
+    def manifest(self, **overrides):
+        entry = {"role": "release", "secret": "RELEASE_APP_PRIVATE_KEY", "environment": "release-app",
+                 "confinement": "canonical", "organization_copy": "withdraw"} | overrides
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "roles.json"
+            path.write_text(json.dumps({"roles": [entry]}), encoding="utf-8")
+            return audit.load_roles(path)
+
+    def test_a_well_formed_entry_loads(self):
+        self.assertEqual(self.manifest()[0]["role"], "release")
+
+    def test_malformed_entries_are_rejected_rather_than_silently_skipped(self):
+        for overrides in ({"confinement": "none"}, {"confinement": None}, {"secret": "RELEASE_KEY"},
+                          {"secret": ""}, {"secret": None}, {"role": ""}, {"role": None},
+                          {"environment": ""}, {"environment": None},
+                          {"organization_copy": "keep"}, {"organization_copy": None}):
+            with self.subTest(overrides=overrides), self.assertRaises(ValueError):
+                self.manifest(**overrides)
+
+    def test_an_empty_or_duplicated_manifest_never_reads_as_full_coverage(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "roles.json"
+            entry = {"role": "release", "secret": "RELEASE_APP_PRIVATE_KEY", "environment": "release-app",
+                     "confinement": "canonical", "organization_copy": "withdraw"}
+            for roles in ([], {}, [entry, dict(entry, role="other")]):
+                with self.subTest(roles=roles):
+                    path.write_text(json.dumps({"roles": roles}), encoding="utf-8")
+                    with self.assertRaises(ValueError):
+                        audit.load_roles(path)
+
+    def test_a_directory_with_no_binding_is_an_error_not_an_empty_result(self):
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaises(ValueError):
+                workflow_bindings(directory)
 
 
 if __name__ == "__main__":
