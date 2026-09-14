@@ -1105,14 +1105,39 @@ def validate_permit_update(repo_root: Path, base: str, head: str) -> None:
         raise ChangelogError("pre-contract migration permit is append-only")
 
 
+# `Dockerfile.<x>` is a Dockerfile variant only when `<x>` names a variant.
+# These suffixes name a different kind of file that merely sits beside one:
+# prose and editor droppings, and the build-context exclusion lists — a
+# `Dockerfile.dockerignore` pins no dependency version and must not force a
+# fragment on its own. Reproduced in `Verjson/verjson-ci` on a real file.
+NON_DEPENDENCY_SIBLING_SUFFIXES = frozenset(
+    {
+        ".adoc",
+        ".backup",
+        ".bak",
+        ".containerignore",
+        ".dockerignore",
+        ".gitignore",
+        ".ignore",
+        ".markdown",
+        ".md",
+        ".npmignore",
+        ".old",
+        ".orig",
+        ".rst",
+        ".save",
+        ".swp",
+        ".tmp",
+        ".txt",
+    }
+)
+
+
 def is_dependency_file(path: str) -> bool:
     filename = Path(path).name
     if re.fullmatch(r"(?:docker-compose|compose)(?:\.[A-Za-z0-9_-]+)*\.ya?ml", filename):
         return True
-    if Path(filename).suffix.lower() not in {
-        ".md", ".markdown", ".rst", ".adoc", ".txt", ".bak", ".backup",
-        ".old", ".orig", ".save", ".swp", ".tmp",
-    } and re.fullmatch(
+    if Path(filename).suffix.lower() not in NON_DEPENDENCY_SIBLING_SUFFIXES and re.fullmatch(
         r"(?:(?:Dockerfile|Containerfile)(?:\.[A-Za-z0-9_-]+)*|"
         r"[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*\.(?:Dockerfile|Containerfile))",
         filename,
@@ -1123,8 +1148,130 @@ def is_dependency_file(path: str) -> bool:
     )
 
 
+# Everything the running log is meant to describe, minus an explicit exemption
+# list. An allow-list of "production" directories cannot be kept current across
+# every adopter shape, so the rule is keyed on the file being source code and
+# each exemption is named here rather than inferred.
+PRODUCTION_SOURCE_SUFFIXES = frozenset(
+    {
+        ".bash",
+        ".c",
+        ".cjs",
+        ".cpp",
+        ".cs",
+        ".cts",
+        ".go",
+        ".h",
+        ".java",
+        ".js",
+        ".jsx",
+        ".kt",
+        ".mjs",
+        ".mts",
+        ".php",
+        ".ps1",
+        ".psm1",
+        ".py",
+        ".rb",
+        ".rs",
+        ".sh",
+        ".sql",
+        ".svelte",
+        ".swift",
+        ".tf",
+        ".ts",
+        ".tsx",
+        ".vue",
+    }
+)
+
+# Exempt because the fragment describes a behavior change and these do not ship
+# one: the unreleased store and released snapshots themselves, documentation
+# trees, and tests, whose own change is described by the source change it covers.
+EXEMPT_SOURCE_PREFIXES = ("CHANGELOG/", "docs/", f"{UNRELEASED_DIR}/")
+# A test root is anchored rather than matched at any depth. `tests`, `test`, and
+# `spec` are ordinary words: `packages/api/spec/` is a package's own tree far
+# more often than a test tree, and exempting it at any depth hid whole source
+# subtrees from the running log. `__tests__/` and `__mocks__/` carry no such
+# ambiguity, so they stay depth-free.
+TEST_ROOT = re.compile(
+    r"^(?:[^/]+/){0,2}tests?/"
+    r"|^spec/"
+    r"|(?:^|/)(?:__tests__|__mocks__)/"
+)
+# Self-identifying filenames: the marker sits against the extension, so
+# `adapter.test.ts` cannot plausibly be production code wherever it lives. A
+# bare `test_` prefix is not self-identifying — `tools/test_runner.py` is
+# production tooling — so it exempts only by sitting under a test root above.
+TEST_FILENAME = re.compile(
+    r"(?:^|/)[^/]*[._-]test\.[A-Za-z0-9]+$"
+    r"|(?:^|/)[^/]*[._-]spec\.[A-Za-z0-9]+$"
+)
+
+# Renovate edits these and nothing else in a bot-automerged upgrade, so they are
+# reported rather than rejected until the organization's Renovate preset stops
+# auto-merging (Verjson/renovate-config). See the #1324 pull request.
+# A repo-root `action.yml` is the published entrypoint of a composite or JS
+# action and belongs to the same class, even though it lives outside `.github/`.
+WORKFLOW_DEFINITION = re.compile(
+    r"^\.github/(?:workflows|actions)/.+\.ya?ml$|^action\.ya?ml$"
+)
+
+
+def is_test_source(path: str) -> bool:
+    return bool(TEST_ROOT.search(path) or TEST_FILENAME.search(path))
+
+
+def is_production_source(path: str) -> bool:
+    if path.startswith(EXEMPT_SOURCE_PREFIXES) or is_test_source(path):
+        return False
+    return Path(path).suffix.lower() in PRODUCTION_SOURCE_SUFFIXES
+
+
 def is_fragment_path(path: str) -> bool:
     return path.startswith(f"{UNRELEASED_DIR}/") and path != f"{UNRELEASED_DIR}/README.md"
+
+
+def report_warning(title: str, message: str) -> None:
+    """Surface a non-fatal finding where a human will actually see it.
+
+    A bare stderr line from a step that exits 0 is folded away in the Actions
+    log and never reaches the run summary, so the class this report exists to
+    keep visible was effectively invisible. Under Actions it becomes a warning
+    annotation and a run-summary entry; everywhere else stderr is still right.
+    """
+    if os.environ.get("GITHUB_ACTIONS") != "true":
+        print(f"warning: {message}", file=sys.stderr)
+        return
+    # Workflow commands are newline-delimited, so the payload must be escaped
+    # rather than trusted to be single-line.
+    encoded = (
+        message.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+    )
+    print(f"::warning title={title}::{encoded}")
+    summary = os.environ.get("GITHUB_STEP_SUMMARY")
+    if summary:
+        with open(summary, "a", encoding="utf-8") as handle:
+            handle.write(f"> [!WARNING]\n> **{title}** — {message}\n\n")
+
+
+def valid_added_fragments(repo_root: Path, added_fragments: set[str]) -> set[str]:
+    canonical = {
+        str(entry.path.relative_to(repo_root))
+        for entry in fragments(repo_root)
+        if entry.canonical
+    }
+    return added_fragments & canonical
+
+
+def require_valid_added_fragments(
+    repo_root: Path, added_fragments: set[str], message: str
+) -> None:
+    invalid_added = added_fragments - valid_added_fragments(repo_root, added_fragments)
+    if invalid_added:
+        raise ChangelogError(
+            f"{message}; invalid additions: " + ", ".join(sorted(invalid_added))
+        )
 
 
 def check_pr(repo_root: Path, base: str, head: str) -> None:
@@ -1192,18 +1339,39 @@ def check_pr(repo_root: Path, base: str, head: str) -> None:
             + ", ".join(dependencies)
         )
     if dependencies:
-        valid_fragments = {
-            str(entry.path.relative_to(repo_root))
-            for entry in fragments(repo_root)
-            if entry.canonical
-        }
-        invalid_added = added_fragments - valid_fragments
-        if invalid_added:
-            raise ChangelogError(
-                "dependency manifests or lockfiles require a new valid NEXT fragment; "
-                "invalid additions: "
-                + ", ".join(sorted(invalid_added))
-            )
+        require_valid_added_fragments(
+            repo_root,
+            added_fragments,
+            "dependency manifests or lockfiles require a new valid NEXT fragment",
+        )
+    production = sorted(path for path in changed if is_production_source(path))
+    if production and not added_fragments:
+        raise ChangelogError(
+            "production source changes require a new NEXT fragment: "
+            + ", ".join(production)
+        )
+    if production:
+        require_valid_added_fragments(
+            repo_root,
+            added_fragments,
+            "production source changes require a new valid NEXT fragment",
+        )
+    undocumented_workflows = sorted(
+        path for path in changed if WORKFLOW_DEFINITION.match(path)
+    )
+    # Gated on the *valid* fragments, not merely added ones. A workflow-only
+    # pull request validates nothing, so an unparseable addition would otherwise
+    # silence the report while documenting nothing.
+    if undocumented_workflows and not valid_added_fragments(repo_root, added_fragments):
+        # Reported, not rejected: the organization Renovate preset that
+        # auto-merges action-pin bumps lives in Verjson/renovate-config and
+        # cannot be changed from here, so failing this now would stall every
+        # bot upgrade instead of documenting it.
+        report_warning(
+            "undocumented workflow definitions",
+            "workflow definitions changed with no new valid NEXT fragment: "
+            + ", ".join(undocumented_workflows),
+        )
 
 
 def parser() -> argparse.ArgumentParser:

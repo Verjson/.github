@@ -1955,6 +1955,354 @@ class ChangelogContractTests(unittest.TestCase):
                     finally:
                         self.root = original_root
 
+    def test_production_source_change_requires_a_new_fragment(self) -> None:
+        """#1324: a tools-only source change landed undocumented in the running log."""
+        self.root.joinpath("README.md").write_text("base\n", encoding="utf-8")
+        self.init_git()
+        self.commit_all("base")
+        base = run(self.root, "git", "rev-parse", "HEAD")
+        source = self.root / "tools" / "subscriber-gateway" / "gateway.mjs"
+        source.parent.mkdir(parents=True, exist_ok=True)
+        source.write_text("export const control = true;\n", encoding="utf-8")
+        self.commit_all("change production source")
+
+        with self.assertRaisesRegex(
+            changelog.ChangelogError,
+            "production source changes require a new NEXT fragment",
+        ):
+            changelog.check_pr(self.root, base, "HEAD")
+
+    def test_production_source_change_with_a_new_valid_fragment_is_accepted(self) -> None:
+        self.root.joinpath("README.md").write_text("base\n", encoding="utf-8")
+        self.init_git()
+        self.commit_all("base")
+        base = run(self.root, "git", "rev-parse", "HEAD")
+        source = self.root / "tools" / "subscriber-gateway" / "gateway.mjs"
+        source.parent.mkdir(parents=True, exist_ok=True)
+        source.write_text("export const control = true;\n", encoding="utf-8")
+        fragment(self.root, "2026-07-30-issue-249-contract.md")
+        self.commit_all("change production source with a fragment")
+
+        changelog.check_pr(self.root, base, "HEAD")
+
+    def test_production_source_change_rejects_an_invalid_added_fragment(self) -> None:
+        self.root.joinpath("README.md").write_text("base\n", encoding="utf-8")
+        self.init_git()
+        self.commit_all("base")
+        base = run(self.root, "git", "rev-parse", "HEAD")
+        source = self.root / "tools" / "gateway.mjs"
+        source.parent.mkdir(parents=True, exist_ok=True)
+        source.write_text("export const control = true;\n", encoding="utf-8")
+        # The only added path that is a fragment by policy yet never a valid
+        # one: the archive is deliberately skipped by the enumerator.
+        invalid = self.root / "NEXT" / "0000-archive.md"
+        invalid.parent.mkdir(parents=True, exist_ok=True)
+        invalid.write_text("no front matter\n", encoding="utf-8")
+        self.commit_all("change production source with an invalid fragment")
+
+        with self.assertRaisesRegex(
+            changelog.ChangelogError,
+            "production source changes require a new valid NEXT fragment",
+        ):
+            changelog.check_pr(self.root, base, "HEAD")
+
+    def test_production_source_classification_covers_every_supported_stack(self) -> None:
+        for path in (
+            "tools/subscriber-gateway/gateway.mjs",
+            "src/index.ts",
+            "src/component.tsx",
+            "lib/adapter.js",
+            "lib/legacy.cjs",
+            "scripts/deploy.sh",
+            "scripts/deploy.bash",
+            "scripts/deploy.ps1",
+            "scripts/changelog.py",
+            "cmd/server/main.go",
+            "crates/core/src/lib.rs",
+            "app/models/user.rb",
+            "src/main/java/App.java",
+        ):
+            with self.subTest(path=path):
+                self.assertTrue(changelog.is_production_source(path))
+
+    def test_production_source_classification_covers_the_remaining_org_stacks(self) -> None:
+        """#1324 review: `.mts`/`.cts` are the exact stack the @verjson/* packages ship."""
+        for path in (
+            "packages/core/src/index.mts",
+            "packages/core/src/legacy.cts",
+            "src/Verjson.Cloud/Program.cs",
+            "db/migrations/0007_add_subscriptions.sql",
+            "infra/network.tf",
+            "android/app/src/main/Gateway.kt",
+            "ios/Gateway/Client.swift",
+            "web/public/index.php",
+            "native/src/bridge.c",
+            "native/src/bridge.cpp",
+            "native/include/bridge.h",
+            "web/src/Panel.vue",
+            "web/src/Panel.svelte",
+            "tools/Verjson.Deploy.psm1",
+        ):
+            with self.subTest(path=path):
+                self.assertTrue(changelog.is_production_source(path))
+
+    def test_every_supported_suffix_requires_a_fragment(self) -> None:
+        """The classifier and check-pr cannot drift: every suffix is exercised end to end."""
+        self.root.joinpath("README.md").write_text("base\n", encoding="utf-8")
+        self.init_git()
+        self.commit_all("base")
+        base = run(self.root, "git", "rev-parse", "HEAD")
+        sources = sorted(
+            f"src/module{suffix}" for suffix in changelog.PRODUCTION_SOURCE_SUFFIXES
+        )
+        for relative in sources:
+            path = self.root / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("production\n", encoding="utf-8")
+        self.commit_all("change every supported production stack")
+
+        with self.assertRaises(changelog.ChangelogError) as raised:
+            changelog.check_pr(self.root, base, "HEAD")
+        for relative in sources:
+            with self.subTest(path=relative):
+                self.assertIn(relative, str(raised.exception))
+
+    def test_production_source_exemptions_are_explicit(self) -> None:
+        for path in (
+            "README.md",
+            "docs/decisions/0038-canonical-changelog-contract/README.md",
+            "docs/examples/bootstrap.sh",
+            "NEXT/2026-07-30-issue-249-contract.md",
+            "CHANGELOG/v1.0.0.md",
+            "scripts/changelog.test.py",
+            "scripts/ci-gate/native-automerge.test.sh",
+            "scripts/render_changelog_adoption_issue_test.py",
+            "tests/test_guidance_size.py",
+            "src/__tests__/adapter.js",
+            "src/adapter.spec.ts",
+            "package.json",
+            "Dockerfile",
+            ".github/workflows/ai-review-merge.yml",
+        ):
+            with self.subTest(path=path):
+                self.assertFalse(changelog.is_production_source(path))
+
+    def test_test_exemption_is_anchored_to_a_test_root(self) -> None:
+        """#1324 review: `tests`/`spec` at any depth exempted whole production subtrees."""
+        for path in (
+            "tests/guidance.py",
+            "test/guidance.py",
+            "spec/guidance.rb",
+            "packages/api/tests/handler.ts",
+            "apps/web/test/handler.ts",
+            "src/__tests__/adapter.js",
+            "src/deep/nested/__mocks__/client.ts",
+        ):
+            with self.subTest(exempt=path):
+                self.assertFalse(changelog.is_production_source(path))
+        for path in (
+            "tools/test_runner.py",
+            "packages/api/spec/handler.ts",
+            "services/gateway/spec/handler.rb",
+            "a/b/c/tests/helper.py",
+            "src/testing/harness.ts",
+        ):
+            with self.subTest(production=path):
+                self.assertTrue(changelog.is_production_source(path))
+
+    def test_production_tooling_named_test_requires_a_fragment(self) -> None:
+        self.root.joinpath("README.md").write_text("base\n", encoding="utf-8")
+        self.init_git()
+        self.commit_all("base")
+        base = run(self.root, "git", "rev-parse", "HEAD")
+        source = self.root / "tools" / "test_runner.py"
+        source.parent.mkdir(parents=True, exist_ok=True)
+        source.write_text("RUNNER = True\n", encoding="utf-8")
+        self.commit_all("change production tooling whose name begins with test_")
+
+        with self.assertRaisesRegex(
+            changelog.ChangelogError,
+            "production source changes require a new NEXT fragment",
+        ):
+            changelog.check_pr(self.root, base, "HEAD")
+
+    def test_workflow_definition_change_is_reported_not_rejected(self) -> None:
+        """Renovate auto-merges action-pin bumps under a preset this repo cannot change."""
+        self.root.joinpath("README.md").write_text("base\n", encoding="utf-8")
+        self.init_git()
+        self.commit_all("base")
+        base = run(self.root, "git", "rev-parse", "HEAD")
+        workflow = self.root / ".github" / "workflows" / "container-candidate.yml"
+        workflow.parent.mkdir(parents=True, exist_ok=True)
+        workflow.write_text("name: candidate\n", encoding="utf-8")
+        self.commit_all("renovate action pin bump")
+
+        captured = io.StringIO()
+        with mock.patch.dict(
+            os.environ, {"GITHUB_ACTIONS": "false"}
+        ), contextlib.redirect_stderr(captured):
+            changelog.check_pr(self.root, base, "HEAD")
+        self.assertIn(
+            ".github/workflows/container-candidate.yml", captured.getvalue()
+        )
+        self.assertIn("no new valid NEXT fragment", captured.getvalue())
+
+    def test_root_action_definition_is_reported_not_ignored(self) -> None:
+        """#1324 review: a published action's entrypoint lives outside `.github/`."""
+        for filename in ("action.yml", "action.yaml"):
+            with self.subTest(filename=filename), tempfile.TemporaryDirectory() as temporary:
+                original_root = self.root
+                try:
+                    self.root = Path(temporary)
+                    self.root.joinpath("README.md").write_text("base\n", encoding="utf-8")
+                    self.init_git()
+                    self.commit_all("base")
+                    base = run(self.root, "git", "rev-parse", "HEAD")
+                    self.root.joinpath(filename).write_text(
+                        "runs:\n  using: composite\n", encoding="utf-8"
+                    )
+                    self.commit_all("change the published action entrypoint")
+
+                    captured = io.StringIO()
+                    with mock.patch.dict(
+                        os.environ, {"GITHUB_ACTIONS": "false"}
+                    ), contextlib.redirect_stderr(captured):
+                        changelog.check_pr(self.root, base, "HEAD")
+                    self.assertIn(filename, captured.getvalue())
+                finally:
+                    self.root = original_root
+
+    def test_nested_action_definition_outside_github_is_not_a_workflow(self) -> None:
+        self.assertIsNone(changelog.WORKFLOW_DEFINITION.match("vendor/action.yml"))
+
+    def test_invalid_fragment_does_not_silence_the_workflow_report(self) -> None:
+        """#1324 review: gating on added fragments let an unparseable one buy silence."""
+        self.root.joinpath("README.md").write_text("base\n", encoding="utf-8")
+        self.init_git()
+        self.commit_all("base")
+        base = run(self.root, "git", "rev-parse", "HEAD")
+        workflow = self.root / ".github" / "workflows" / "container-candidate.yml"
+        workflow.parent.mkdir(parents=True, exist_ok=True)
+        workflow.write_text("name: candidate\n", encoding="utf-8")
+        invalid = self.root / "NEXT" / "0000-archive.md"
+        invalid.parent.mkdir(parents=True, exist_ok=True)
+        invalid.write_text("no front matter\n", encoding="utf-8")
+        self.commit_all("workflow change with an invalid fragment")
+
+        captured = io.StringIO()
+        with mock.patch.dict(
+            os.environ, {"GITHUB_ACTIONS": "false"}
+        ), contextlib.redirect_stderr(captured):
+            changelog.check_pr(self.root, base, "HEAD")
+        self.assertIn(
+            ".github/workflows/container-candidate.yml", captured.getvalue()
+        )
+        self.assertIn("no new valid NEXT fragment", captured.getvalue())
+
+    def test_workflow_report_annotates_under_actions(self) -> None:
+        """#1324 review: a bare stderr line from a step that exits 0 is invisible."""
+        self.root.joinpath("README.md").write_text("base\n", encoding="utf-8")
+        self.init_git()
+        self.commit_all("base")
+        base = run(self.root, "git", "rev-parse", "HEAD")
+        workflow = self.root / ".github" / "workflows" / "container-candidate.yml"
+        workflow.parent.mkdir(parents=True, exist_ok=True)
+        workflow.write_text("name: candidate\n", encoding="utf-8")
+        self.commit_all("renovate action pin bump")
+        step_summary = self.root / "step-summary.md"
+        step_summary.write_text("", encoding="utf-8")
+
+        out = io.StringIO()
+        err = io.StringIO()
+        with mock.patch.dict(
+            os.environ,
+            {
+                "GITHUB_ACTIONS": "true",
+                "GITHUB_STEP_SUMMARY": str(step_summary),
+            },
+        ), contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            changelog.check_pr(self.root, base, "HEAD")
+
+        self.assertIn("::warning title=undocumented workflow definitions::", out.getvalue())
+        self.assertIn(".github/workflows/container-candidate.yml", out.getvalue())
+        self.assertEqual("", err.getvalue())
+        summary_text = step_summary.read_text(encoding="utf-8")
+        self.assertIn("[!WARNING]", summary_text)
+        self.assertIn(".github/workflows/container-candidate.yml", summary_text)
+
+    def test_workflow_report_escapes_workflow_command_delimiters(self) -> None:
+        out = io.StringIO()
+        with mock.patch.dict(
+            os.environ, {"GITHUB_ACTIONS": "true"}, clear=True
+        ), contextlib.redirect_stdout(out):
+            changelog.report_warning("title", "first 100% done\nsecond")
+        self.assertIn("first 100%25 done%0Asecond", out.getvalue())
+        self.assertEqual(1, out.getvalue().count("\n"))
+
+    def test_workflow_report_falls_back_to_stderr_outside_actions(self) -> None:
+        err = io.StringIO()
+        out = io.StringIO()
+        with mock.patch.dict(
+            os.environ, {"GITHUB_ACTIONS": "false"}
+        ), contextlib.redirect_stderr(err), contextlib.redirect_stdout(out):
+            changelog.report_warning("title", "a plain finding")
+        self.assertEqual("warning: a plain finding\n", err.getvalue())
+        self.assertEqual("", out.getvalue())
+
+    def test_workflow_definition_change_with_a_fragment_reports_nothing(self) -> None:
+        self.root.joinpath("README.md").write_text("base\n", encoding="utf-8")
+        self.init_git()
+        self.commit_all("base")
+        base = run(self.root, "git", "rev-parse", "HEAD")
+        workflow = self.root / ".github" / "workflows" / "container-candidate.yml"
+        workflow.parent.mkdir(parents=True, exist_ok=True)
+        workflow.write_text("name: candidate\n", encoding="utf-8")
+        fragment(self.root, "2026-07-30-issue-249-contract.md")
+        self.commit_all("documented workflow change")
+
+        captured = io.StringIO()
+        with mock.patch.dict(
+            os.environ, {"GITHUB_ACTIONS": "false"}
+        ), contextlib.redirect_stderr(captured):
+            changelog.check_pr(self.root, base, "HEAD")
+        self.assertEqual("", captured.getvalue())
+
+    def test_ignore_lists_beside_a_dockerfile_are_not_dependency_manifests(self) -> None:
+        """Reproduced in Verjson/verjson-ci: a build-context exclusion list pins nothing."""
+        for path in (
+            ".dockerignore",
+            "deploy/.dockerignore",
+            "deploy/subscriber-gateway/Dockerfile.dockerignore",
+            "deploy/Containerfile.containerignore",
+            "deploy/Dockerfile.gitignore",
+        ):
+            with self.subTest(path=path):
+                self.assertFalse(changelog.is_dependency_file(path))
+
+    def test_dockerfile_variants_remain_dependency_manifests(self) -> None:
+        for path in (
+            "Dockerfile",
+            "Containerfile",
+            "images/Dockerfile.pwsh",
+            "images/worker.Dockerfile",
+            "images/Containerfile.build.ci",
+        ):
+            with self.subTest(path=path):
+                self.assertTrue(changelog.is_dependency_file(path))
+
+    def test_dockerignore_only_change_needs_no_fragment(self) -> None:
+        self.root.joinpath("Dockerfile").write_text("FROM node:22\n", encoding="utf-8")
+        self.init_git()
+        self.commit_all("base")
+        base = run(self.root, "git", "rev-parse", "HEAD")
+        ignore = self.root / "deploy" / "subscriber-gateway" / "Dockerfile.dockerignore"
+        ignore.parent.mkdir(parents=True, exist_ok=True)
+        ignore.write_text("node_modules\n", encoding="utf-8")
+        self.root.joinpath(".dockerignore").write_text(".git\n", encoding="utf-8")
+        self.commit_all("exclude build context noise")
+
+        changelog.check_pr(self.root, base, "HEAD")
+
     def test_dependency_change_with_a_new_valid_fragment_is_accepted(self) -> None:
         self.root.joinpath("package.json").write_text('{"version":"1.0.0"}\n', encoding="utf-8")
         self.init_git()
