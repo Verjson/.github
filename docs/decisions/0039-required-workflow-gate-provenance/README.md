@@ -208,3 +208,17 @@ Neither deletion relaxes an assertion: the surviving invariant moved to a regist
 suite first, and a conformance guard in `scripts/actions-ci-groups.test.sh` now fails
 CI on any unregistered `scripts/ci-gate/*.test.sh` so this drift cannot silently
 recur. See ADR 0079's 2026-09-12 clarification.
+
+## Amendment (2026-09-14, #1331) — the body's two harness claims are retired as well
+
+The 2026-09-12 amendment recorded that this ADR's harnesses were retired, but described
+them without stating the retirement in the sentences that name them, and the `## Decision`
+and `## Consequences` text above still reads as live. Stating it plainly: both
+`scripts/ci-gate/required-workflow-provenance.test.sh` and
+`scripts/ci-gate/self-job-exclusion.test.sh` are deleted (#1329).
+
+The run-attestation matcher the first extracted is dead code no production workflow
+reaches. The #276 self-exclusion property the second asserted is *not* dead — it survives
+in ADR 0081's form, where the promotion rejects any `REQUIRED_CHECK_POLICY` entry naming a
+gate check or a gate workflow path, and it is driven over all three check names and all
+three workflow paths in the registered `scripts/ci-gate/native-automerge.test.sh`. See [ADR 0179](../0179-adr-coverage-claims-follow-their-tests/README.md).

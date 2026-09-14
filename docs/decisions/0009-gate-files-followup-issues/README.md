@@ -58,3 +58,12 @@ opening a tracking issue is observe-and-report, not enforcement.
 - The filing logic is committed (`ai-review-merge.yml`) and unit-tested by
   extraction (`scripts/ci-gate/followup-issues.test.sh`) — merged-only gating,
   per-PR dedup, one-issue-per-finding, empty/absent no-op.
+
+## Amendment (2026-09-14, #1331) — the follow-up-issue harness is retired
+
+The `## Consequences` bullet above reads as a claim about current coverage. It is not:
+`scripts/ci-gate/followup-issues.test.sh` is now deleted (#1329), because the behavior it
+extracted moved into `scripts/ci-gate/post-merge-reconcile.sh` and is driven there by the
+registered `scripts/ci-gate/post-merge-reconcile.test.sh`. The decision recorded above is
+unchanged — the gate still files follow-up issues rather than blocking on non-blocking
+findings — only the sentence about which file proves it was stale. See [ADR 0179](../0179-adr-coverage-claims-follow-their-tests/README.md).
