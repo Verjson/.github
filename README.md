@@ -97,6 +97,21 @@ RCA_ACK=rollback-issue-731-core-checks-node \
 scripts/required-checks-rollback.sh
 ```
 
+## Package-backed portable CI
+
+The canonical portable CI entrypoint is the thin
+`.github/workflows/verjson-ci.yml` facade, which pins the
+`Verjson/verjson-ci` reusable workflow to an immutable commit and requires the
+caller to provide the digest of the complete release image. It keeps GitHub
+organization governance in this repository while allowing the package engine
+and its GitHub/GitLab adapters to remain provider-neutral. See the
+[adoption guide](docs/verjson-ci-adoption.md) for multi-organization rollout,
+identity boundaries, and rollback.
+
+The existing `node-ci.yml` workflow remains the tested GitHub compatibility
+fallback during shadow and canary adoption; it is not the portable canonical
+implementation.
+
 ## Versioned actions and reusable workflows
 
 The repository ships all `.github/actions/*` actions and

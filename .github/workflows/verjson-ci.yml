@@ -1,0 +1,38 @@
+name: verjson-ci (package-backed)
+
+on:
+  workflow_call:
+    inputs:
+      profile:
+        description: Execution profile accepted by the pinned verjson-ci release.
+        required: false
+        default: public-v1
+        type: string
+      image:
+        description: OCI image reference from the selected complete release manifest.
+        required: true
+        type: string
+      config:
+        description: Repository-relative verjson-ci contract path.
+        required: false
+        default: verjson-ci.yml
+        type: string
+      scenario:
+        description: Provider-neutral scenario identity for conformance runs.
+        required: false
+        default: default
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    permissions:
+      contents: read
+    uses: Verjson/verjson-ci/.github/workflows/reusable-ci.yml@c9084daca387849c09f1d97bccf8ac311ff11615
+    with:
+      profile: ${{ inputs.profile }}
+      image: ${{ inputs.image }}
+      config: ${{ inputs.config }}
+      scenario: ${{ inputs.scenario }}
