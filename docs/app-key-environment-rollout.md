@@ -27,7 +27,7 @@ rejects an unrecognized `_APP_PRIVATE_KEY` name outright, and reports
 `secret-scope-policy=withdrawal-pending` for as long as any residue entry exists.
 Readable secret metadata proves a name and a visibility only; it never proves that a
 key is confined to its main-only environment. See
-[ADR 0176](decisions/0176-no-approved-organization-custody-for-environment-only-app-keys/README.md).
+[ADR 0180](decisions/0180-no-approved-organization-custody-for-environment-only-app-keys/README.md).
 
 ## Stage the entire shared-pin cohort
 

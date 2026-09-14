@@ -1,4 +1,4 @@
-# 0176 — No approved organization custody for environment-only App keys
+# 0180 — No approved organization custody for environment-only App keys
 
 - **Date:** 2026-09-14
 - **Issue:** [#1326](https://github.com/Verjson/.github/issues/1326)
