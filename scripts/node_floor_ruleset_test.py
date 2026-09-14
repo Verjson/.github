@@ -118,6 +118,12 @@ class NodeFloorPreparationTests(unittest.TestCase):
             with self.assertRaises(policy.PreparationError):
                 policy.render(copy.deepcopy(baseline), 'saved-snapshot')
 
+    def test_producer_app_refuses_a_sole_rule_that_is_not_the_required_checks_rule(self):
+        baseline = copy.deepcopy(self.baseline)
+        baseline['rules'][0]['type'] = 'required_signatures'
+        with self.assertRaises(policy.PreparationError):
+            policy.producer_app(baseline)
+
     def test_canonical_contract_declares_the_conditional_floor_lane_it_prepares(self):
         contract = json.loads((ROOT / '.github/required-check-contract.json').read_text())
         self.assertEqual(contract['property_schemas']['verjson-node-floor'],

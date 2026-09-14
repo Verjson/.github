@@ -57,7 +57,8 @@ def decode(raw):
 def producer_app(baseline):
     """The single App the reviewed core-check baseline binds every required context to."""
     rules = baseline.get('rules') if isinstance(baseline, dict) else None
-    if not isinstance(rules, list) or len(rules) != 1 or not isinstance(rules[0], dict):
+    if (not isinstance(rules, list) or len(rules) != 1 or not isinstance(rules[0], dict)
+            or rules[0].get('type') != 'required_status_checks'):
         raise PreparationError('reviewed baseline does not carry exactly one required-checks rule')
     checks = rules[0].get('parameters', {}).get('required_status_checks') if isinstance(rules[0].get('parameters'), dict) else None
     if not isinstance(checks, list) or not checks or any(not isinstance(check, dict) for check in checks):
