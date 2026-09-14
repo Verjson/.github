@@ -215,7 +215,22 @@ if (export MERGE_CONFIRMED=false; run_promote) >"$tmp/out" 2>&1; then
 else
   pass "unconfirmed merge postcondition fails closed"
 fi
+# A promotion that arrives after the PR left OPEN is a no-op either way, but the
+# two ways are not the same event and must not read the same in the log. MERGED is
+# the ordinary race: a duplicate dispatch for work already landed. CLOSED-unmerged
+# means the gate authorized a head that a human then closed — nothing to merge, so
+# still a no-op, but an upstream anomaly worth seeing. #1329 deleted the only test
+# that distinguished them and left both on one silent `exit 0` (#1331).
 write_base; jq '.state="MERGED"' "$META_FILE" >"$tmp/x" && mv "$tmp/x" "$META_FILE"; expect_pass "duplicate promotion after merge is idempotent" run_promote; ! grep -q 'pr merge' "$CALLS" || fail "merged PR repeated mutation"
+grep -q 'already merged' "$tmp/out" \
+  && pass "an already-merged no-op says so" || fail "merged no-op is silent and unattributable"
+write_base; jq '.state="CLOSED"' "$META_FILE" >"$tmp/x" && mv "$tmp/x" "$META_FILE"
+expect_pass "promotion of a closed-unmerged PR is a terminal no-op" run_promote
+! grep -q 'pr merge' "$CALLS" || fail "closed-unmerged PR reached a terminal merge"
+! grep -q 'verify-arm-receipt' "$CALLS" || fail "closed-unmerged promotion verified a receipt it can never use"
+grep -q 'closed without merging' "$tmp/out" \
+  && pass "a closed-unmerged no-op is distinguishable from a completed merge" \
+  || fail "closed-unmerged and merged promotions are indistinguishable silent no-ops"
 write_base; jq '.headRefOid="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"' "$META_FILE" >"$tmp/x" && mv "$tmp/x" "$META_FILE"; expect_pass "superseded promotion is a terminal no-op" run_promote
 ! grep -q 'verify-arm-receipt' "$CALLS" || fail "stale promotion verified an obsolete receipt"
 ! grep -q 'pr merge' "$CALLS" || fail "stale promotion attempted a merge"
