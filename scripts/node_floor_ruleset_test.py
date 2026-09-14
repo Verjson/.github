@@ -141,6 +141,20 @@ class NodeFloorPreparationTests(unittest.TestCase):
                           for item in candidate['conditions']['repository_property']['include']],
                          declared[0]['repository_properties'])
 
+    def test_canonical_contract_declares_the_reviewed_baseline_lane_it_derives_from(self):
+        contract = json.loads((ROOT / '.github/required-check-contract.json').read_text())
+        declared = [entry for entry in contract['ruleset_plan']['rulesets']
+                    if entry['name'] == self.baseline['name']]
+        self.assertEqual(len(declared), 1)
+        self.assertEqual(declared[0]['contexts'],
+                         [check['context'] for check in
+                          self.baseline['rules'][0]['parameters']['required_status_checks']])
+        self.assertEqual(declared[0]['repository_properties'],
+                         [{'name': item['name'], 'values': item['property_values']}
+                          for item in self.baseline['conditions']['repository_property']['include']])
+        self.assertEqual(contract['ruleset_plan']['rollout']['ruleset_id'], self.baseline['id'])
+        self.assertEqual(contract['ruleset_plan']['rollout']['ruleset_name'], self.baseline['name'])
+
     def test_baseline_drift_fails_closed_including_boolean_integer_equivalence(self):
         changes = [lambda b: b.update(id=20515817.0), lambda b: b.update(name='other'),
                    lambda b: b.update(source='other'), lambda b: b.update(enforcement='disabled'),
