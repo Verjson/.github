@@ -11,9 +11,12 @@ import subprocess
 ROOT = Path(__file__).resolve().parent.parent
 MANIFEST = ROOT / "config/app-key-roles.json"
 SECRET_REFERENCE = re.compile(
-    r"secrets\.([A-Za-z0-9_-]+)"
-    r"|secrets\[\s*(?:'([^']*)'|\"([^\"]*)\")\s*\]"
+    r"\bsecrets\s*(?:\.\s*([A-Za-z0-9_-]+)"
+    r"|\[\s*(?:'([^']*)'|\"([^\"]*)\")\s*\])",
+    re.IGNORECASE,
 )
+SECRET_TOKEN = re.compile(r"\bsecrets\b", re.IGNORECASE)
+EXPRESSION = re.compile(r"\$\{\{(.*?)\}\}", re.DOTALL)
 SECRET_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 
 
@@ -35,10 +38,17 @@ def app_keys(text):
     binding spelled the second way is not a weaker binding.
     """
     found = set()
-    for match in SECRET_REFERENCE.finditer(text):
-        name = next(group for group in match.groups() if group is not None)
-        if is_app_key(name):
-            found.add(name)
+    for expression in EXPRESSION.finditer(text):
+        body = expression.group(1)
+        references = list(SECRET_REFERENCE.finditer(body))
+        covered = {index for reference in references for index in range(reference.start(), reference.end())}
+        for token in SECRET_TOKEN.finditer(body):
+            if token.start() not in covered:
+                raise ValueError(f"unresolved secrets expression: {body.strip()}")
+        for match in references:
+            name = next(group for group in match.groups() if group is not None)
+            if is_app_key(name):
+                found.add(name)
     return found
 CONFINEMENTS = ("canonical", "caller-owned", "unconfined")
 

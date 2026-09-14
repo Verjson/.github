@@ -25,15 +25,23 @@ def workflow_bindings(directory):
     bindings = []
     for path in sorted(p for p in Path(directory).glob("*") if p.suffix in (".yml", ".yaml")):
         text = path.read_text(encoding="utf-8")
-        mentioned = audit.app_keys(text)
-        if not mentioned:
-            continue
         document = yaml.safe_load(text)
+        workflow_scope = {key: value for key, value in document.items() if key != "jobs"}
+        mentioned = audit.app_keys(yaml.safe_dump(workflow_scope))
+        if mentioned:
+            raise ValueError(
+                f"{path.name} reads {sorted(mentioned)} at workflow scope, "
+                "where no environment confines it"
+            )
         captured = set()
         for name, job in (document.get("jobs") or {}).items():
             rendered = yaml.safe_dump(job)
             needs = job.get("needs") or []
-            for secret in sorted(audit.app_keys(rendered)):
+            try:
+                job_keys = audit.app_keys(rendered)
+            except ValueError as error:
+                raise ValueError(f"{path.name} job {name} cannot be confined: {error}") from None
+            for secret in sorted(job_keys):
                 captured.add(secret)
                 bindings.append({
                     "workflow": path.stem,
@@ -361,6 +369,52 @@ class WorkflowScanTests(unittest.TestCase):
             # "no binding at all" guard cannot be what rejects these.
             with self.subTest(jobs=body is not preamble), self.assertRaises(ValueError):
                 self.scan({"leak.yml": body, "mint.yml": other})
+
+    def test_a_key_read_outside_a_job_is_seen_even_when_a_job_reads_the_same_key(self):
+        # Reconciling file-level mentions against the union of every job's captures
+        # lets a workflow-level read hide behind any job that reads the same key.
+        body = ("on: workflow_dispatch\n"
+                "env:\n"
+                "  APP_KEY: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}\n"
+                "jobs:\n"
+                "  mint:\n"
+                "    runs-on: ubuntu-latest\n"
+                "    environment: release-app\n"
+                "    steps:\n"
+                "      - run: echo \"${{ secrets.RELEASE_APP_PRIVATE_KEY }}\"\n")
+        with self.assertRaises(ValueError):
+            self.scan({"leak.yml": body})
+
+    def test_case_folded_and_space_separated_secrets_references_are_the_same_binding(self):
+        for expression in ("SECRETS.RELEASE_APP_PRIVATE_KEY",
+                           "Secrets.RELEASE_APP_PRIVATE_KEY",
+                           "secrets . RELEASE_APP_PRIVATE_KEY",
+                           "SECRETS[ 'RELEASE_APP_PRIVATE_KEY' ]"):
+            with self.subTest(expression=expression):
+                bindings = self.scan({"mint.yml": WORKFLOW % expression})
+                self.assertEqual([binding["secret"] for binding in bindings],
+                                 ["RELEASE_APP_PRIVATE_KEY"])
+
+    def test_a_wholesale_or_dynamically_indexed_secrets_read_is_rejected_not_ignored(self):
+        """A read the scan cannot resolve to a name is rejected, never passed over.
+
+        Each of these reads a real App private key while naming none, so ignoring
+        it leaves the gate green on a binding nothing confines (#1285).
+        """
+        for expression in ("toJSON(secrets)",
+                           "toJson(secrets)",
+                           "fromJSON(toJSON(secrets))",
+                           "secrets[format('{0}_APP_PRIVATE_KEY', inputs.role)]",
+                           "secrets[env.KEYNAME]",
+                           "secrets[matrix.key]"):
+            with self.subTest(expression=expression):
+                with self.assertRaises(ValueError) as raised:
+                    self.scan({"mint.yml": WORKFLOW % expression})
+                message = str(raised.exception)
+                self.assertIn("mint.yml", message)
+                self.assertIn("job mint", message)
+                self.assertIn(expression, message)
+                self.assertIn("cannot be confined", message)
 
 
 class AppKeyRoleManifestTests(unittest.TestCase):
