@@ -1130,19 +1130,33 @@ def is_dependency_file(path: str) -> bool:
 PRODUCTION_SOURCE_SUFFIXES = frozenset(
     {
         ".bash",
+        ".c",
         ".cjs",
+        ".cpp",
+        ".cs",
+        ".cts",
         ".go",
+        ".h",
         ".java",
         ".js",
         ".jsx",
+        ".kt",
         ".mjs",
+        ".mts",
+        ".php",
         ".ps1",
+        ".psm1",
         ".py",
         ".rb",
         ".rs",
         ".sh",
+        ".sql",
+        ".svelte",
+        ".swift",
+        ".tf",
         ".ts",
         ".tsx",
+        ".vue",
     }
 )
 

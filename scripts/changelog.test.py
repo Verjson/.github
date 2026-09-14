@@ -2025,6 +2025,48 @@ class ChangelogContractTests(unittest.TestCase):
             with self.subTest(path=path):
                 self.assertTrue(changelog.is_production_source(path))
 
+    def test_production_source_classification_covers_the_remaining_org_stacks(self) -> None:
+        """#1324 review: `.mts`/`.cts` are the exact stack the @verjson/* packages ship."""
+        for path in (
+            "packages/core/src/index.mts",
+            "packages/core/src/legacy.cts",
+            "src/Verjson.Cloud/Program.cs",
+            "db/migrations/0007_add_subscriptions.sql",
+            "infra/network.tf",
+            "android/app/src/main/Gateway.kt",
+            "ios/Gateway/Client.swift",
+            "web/public/index.php",
+            "native/src/bridge.c",
+            "native/src/bridge.cpp",
+            "native/include/bridge.h",
+            "web/src/Panel.vue",
+            "web/src/Panel.svelte",
+            "tools/Verjson.Deploy.psm1",
+        ):
+            with self.subTest(path=path):
+                self.assertTrue(changelog.is_production_source(path))
+
+    def test_every_supported_suffix_requires_a_fragment(self) -> None:
+        """The classifier and check-pr cannot drift: every suffix is exercised end to end."""
+        self.root.joinpath("README.md").write_text("base\n", encoding="utf-8")
+        self.init_git()
+        self.commit_all("base")
+        base = run(self.root, "git", "rev-parse", "HEAD")
+        sources = sorted(
+            f"src/module{suffix}" for suffix in changelog.PRODUCTION_SOURCE_SUFFIXES
+        )
+        for relative in sources:
+            path = self.root / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("production\n", encoding="utf-8")
+        self.commit_all("change every supported production stack")
+
+        with self.assertRaises(changelog.ChangelogError) as raised:
+            changelog.check_pr(self.root, base, "HEAD")
+        for relative in sources:
+            with self.subTest(path=relative):
+                self.assertIn(relative, str(raised.exception))
+
     def test_production_source_exemptions_are_explicit(self) -> None:
         for path in (
             "README.md",

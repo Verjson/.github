@@ -12,9 +12,11 @@ reproduction in #1324 is `tools/subscriber-gateway/gateway.mjs` in
 exit 0.
 
 `check-pr` now also requires a new valid fragment when the diff changes
-production source. "Production source" is a source-code suffix
-(`.py .sh .bash .ps1 .mjs .cjs .js .jsx .ts .tsx .go .rs .rb .java`) outside
-an explicitly named exemption: `NEXT/`, `CHANGELOG/`, `docs/`, and tests
+production source. "Production source" is a source-code suffix outside an
+explicitly named exemption. The suffix set spans every language the
+organization names — including `.mts` and `.cts`, the exact TypeScript stack
+the `@verjson/*` packages ship, alongside `.cs .sql .tf .kt .swift .php .c
+.cpp .h .vue .svelte .psm1` — so no org stack escapes the running log: `NEXT/`, `CHANGELOG/`, `docs/`, and tests
 (`tests/`, `spec/`, `__tests__/`, `__mocks__/`, `test_*`, `*.test.*`,
 `*_test.*`, `*.spec.*`). Exemptions are enumerated rather than inferred, so
 widening one is a visible change.
