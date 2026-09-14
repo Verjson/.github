@@ -41,21 +41,7 @@
       "commercial-terms",
       "resource-destruction"
     ],
-    "ownerConsentRequired": [
-      "app-registration",
-      "app-installation",
-      "app-uninstallation",
-      "installation-approval",
-      "permission-expansion",
-      "environment-configuration",
-      "secret-write",
-      "secret-withdrawal",
-      "supersession-enablement",
-      "runner-registration",
-      "governance-change",
-      "commercial-terms",
-      "resource-destruction"
-    ]
+    "ownerConsentRequired": "all"
   },
   "cohort": {
     "requiredCompleteness": "exact",

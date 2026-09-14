@@ -301,6 +301,28 @@ class ProvisioningDelegationValidateTest(unittest.TestCase):
                           roles[role_id]["proof"]["insufficient"])
 
 
+    def test_owner_consent_is_derived_from_the_whole_effect_vocabulary(self):
+        contract = json.loads(CONTRACT.read_text(encoding="utf-8"))
+        self.assertEqual(contract["effects"]["ownerConsentRequired"], "all")
+
+        document = grant()
+        document["owner_consent"] = []
+        result = self.run_validator(document)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("owner-consent-required:secret-write", self.receipt(result)["reasons"])
+
+    def test_unrecognized_owner_consent_scope_is_an_input_error(self):
+        contract = json.loads(CONTRACT.read_text(encoding="utf-8"))
+        contract["activation"]["status"] = "active"
+        contract["effects"]["ownerConsentRequired"] = "none"
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "contract.json"
+            path.write_text(json.dumps(contract), encoding="utf-8")
+            result = self.run_validator(grant(), contract=path)
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        self.assertIn("ownerConsentRequired", result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
+
     def test_consent_may_not_exceed_the_reviewed_plan(self):
         document = grant()
         document["owner_consent"].append({

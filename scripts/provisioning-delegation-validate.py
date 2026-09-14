@@ -197,11 +197,25 @@ def check_cohort(grant: dict[str, Any], contract: dict[str, Any], inventory: dic
     return reasons, named, sorted(effects)
 
 
+def gated_effects(contract: dict[str, Any]) -> set[str]:
+    """Resolve which effects need owner consent, deriving the common whole-vocabulary case.
+
+    A verbatim copy of the vocabulary drifts silently; `"all"` cannot. A bare string is
+    never treated as a collection, because iterating one gates single characters instead.
+    """
+    required = contract["effects"]["ownerConsentRequired"]
+    if required == "all":
+        return set(contract["effects"]["vocabulary"])
+    if isinstance(required, list) and all(isinstance(effect, str) for effect in required):
+        return set(required)
+    raise InputError('effects.ownerConsentRequired must be "all" or a list of effect names')
+
+
 def check_consent(grant: dict[str, Any], contract: dict[str, Any], effects: list[str]) -> list[str]:
     declared = grant.get("effects")
     consent = grant.get("owner_consent")
     hosts = contract["evidence"]["requiredReviewHosts"]
-    gated = set(contract["effects"]["ownerConsentRequired"])
+    gated = gated_effects(contract)
     reasons = []
     if not isinstance(declared, list) or sorted({str(effect) for effect in declared}) != effects:
         reasons.append("declared-effects-differ-from-plan")

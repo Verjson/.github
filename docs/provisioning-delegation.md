@@ -58,12 +58,15 @@ reconfirmation inside that scope.
 Model output, an unattended-mode flag, and an executor-authored approval field are all
 rejected. A grant carrying an `approved`, `unattended`, `auto_approve`, or
 `model_approval` field fails, as does an unrecognized field: the fixed field set is the
-contract. Owner gates stay owner gates — every effect in the contract's
-`ownerConsentRequired` list needs its own consent record naming the effect, a
-GitHub-hosted reference, and its approvers. Installation and permission changes,
+contract. Owner gates stay owner gates — every gated effect needs its own consent
+record naming the effect, a GitHub-hosted reference, and its approvers. The gated set
+is `effects.ownerConsentRequired`, which the shipped contract states as `"all"`: the
+validator derives it from `effects.vocabulary`, so no effect can be added to the
+vocabulary and silently escape its owner gate. Installation and permission changes,
 environment configuration, secret write and withdrawal, supersession enablement,
-runner registration, governance changes, and new commercial terms are all in that
-list. Consent may not exceed the plan either: a consent record for an effect the plan
+runner registration, governance changes, and new commercial terms are therefore all
+gated. Another organization may still supply an explicit list instead; any other value
+is an input error rather than a permissive default. Consent may not exceed the plan either: a consent record for an effect the plan
 does not request is rejected rather than banked for later.
 
 ## Activation and other organizations
