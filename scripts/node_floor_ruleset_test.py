@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 import copy
+import hashlib
 import importlib.util
 import io
 import json
 import os
 from pathlib import Path
 import subprocess
+import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from unittest import mock
@@ -63,6 +65,96 @@ class NodeFloorPreparationTests(unittest.TestCase):
             'required_status_checks': [{'context': name, 'integration_id': 15368}
                                        for name in ['ci-node22 / build-test', 'ci-node22 / eligibility']]}}])
 
+    def test_reviewed_baseline_records_the_bound_core_check_producer(self):
+        checks = self.baseline['rules'][0]['parameters']['required_status_checks']
+        self.assertEqual([check['context'] for check in checks],
+                         ['ci / build-test', 'ci / eligibility', 'changelog-contract'])
+        self.assertEqual([check.get('integration_id') for check in checks], [15368, 15368, 15368])
+
+    def reviewed_as(self, baseline):
+        path = Path(self.enterContext(tempfile.TemporaryDirectory())) / 'baseline.json'
+        path.write_bytes(json.dumps(baseline).encode())
+        self.enterContext(mock.patch.object(policy, 'BASELINE', path))
+        return baseline
+
+    def test_floor_contexts_bind_the_producer_recorded_in_the_reviewed_baseline(self):
+        baseline = copy.deepcopy(self.baseline)
+        for check in baseline['rules'][0]['parameters']['required_status_checks']:
+            check['integration_id'] = 4583107
+        self.reviewed_as(baseline)
+        rule = policy.render(copy.deepcopy(baseline), 'saved-snapshot')['ruleset']
+        self.assertEqual(rule['rules'][0]['parameters']['required_status_checks'],
+                         [{'context': 'ci-node22 / build-test', 'integration_id': 4583107},
+                          {'context': 'ci-node22 / eligibility', 'integration_id': 4583107}])
+
+    def test_unbound_or_inconsistent_producer_bindings_fail_closed(self):
+        def unbind(checks):
+            checks[2].pop('integration_id')
+
+        def mix(checks):
+            checks[1]['integration_id'] = 4583107
+
+        def boolean(checks):
+            for check in checks:
+                check['integration_id'] = True
+
+        def zero(checks):
+            for check in checks:
+                check['integration_id'] = 0
+
+        def floating(checks):
+            for check in checks:
+                check['integration_id'] = 15368.0
+
+        def rename(checks):
+            checks[2]['context'] = 'changelog / validate'
+
+        def empty(checks):
+            del checks[:]
+
+        for change in (unbind, mix, boolean, zero, floating, rename, empty):
+            baseline = copy.deepcopy(self.baseline)
+            change(baseline['rules'][0]['parameters']['required_status_checks'])
+            self.reviewed_as(baseline)
+            with self.assertRaises(policy.PreparationError):
+                policy.render(copy.deepcopy(baseline), 'saved-snapshot')
+
+    def test_producer_app_refuses_a_sole_rule_that_is_not_the_required_checks_rule(self):
+        baseline = copy.deepcopy(self.baseline)
+        baseline['rules'][0]['type'] = 'required_signatures'
+        with self.assertRaises(policy.PreparationError):
+            policy.producer_app(baseline)
+
+    def test_canonical_contract_declares_the_conditional_floor_lane_it_prepares(self):
+        contract = json.loads((ROOT / '.github/required-check-contract.json').read_text())
+        self.assertEqual(contract['property_schemas']['verjson-node-floor'],
+                         policy.PROPERTY['allowed_values'])
+        self.assertNotIn('ci-node22 / build-test', contract['stacks']['node']['contexts'])
+        declared = [entry for entry in contract['ruleset_plan']['rulesets']
+                    if entry['name'] == 'core-checks-node-floor']
+        self.assertEqual(len(declared), 1)
+        candidate = policy.render(self.baseline, 'reviewed-policy')['ruleset']
+        self.assertEqual(declared[0]['contexts'],
+                         [check['context'] for check in
+                          candidate['rules'][0]['parameters']['required_status_checks']])
+        self.assertEqual([{'name': item['name'], 'values': item['property_values']}
+                          for item in candidate['conditions']['repository_property']['include']],
+                         declared[0]['repository_properties'])
+
+    def test_canonical_contract_declares_the_reviewed_baseline_lane_it_derives_from(self):
+        contract = json.loads((ROOT / '.github/required-check-contract.json').read_text())
+        declared = [entry for entry in contract['ruleset_plan']['rulesets']
+                    if entry['name'] == self.baseline['name']]
+        self.assertEqual(len(declared), 1)
+        self.assertEqual(declared[0]['contexts'],
+                         [check['context'] for check in
+                          self.baseline['rules'][0]['parameters']['required_status_checks']])
+        self.assertEqual(declared[0]['repository_properties'],
+                         [{'name': item['name'], 'values': item['property_values']}
+                          for item in self.baseline['conditions']['repository_property']['include']])
+        self.assertEqual(contract['ruleset_plan']['rollout']['ruleset_id'], self.baseline['id'])
+        self.assertEqual(contract['ruleset_plan']['rollout']['ruleset_name'], self.baseline['name'])
+
     def test_baseline_drift_fails_closed_including_boolean_integer_equivalence(self):
         changes = [lambda b: b.update(id=20515817.0), lambda b: b.update(name='other'),
                    lambda b: b.update(source='other'), lambda b: b.update(enforcement='disabled'),
@@ -78,12 +170,23 @@ class NodeFloorPreparationTests(unittest.TestCase):
             with self.assertRaises(policy.PreparationError):
                 policy.render(value, 'saved-snapshot')
 
-    def test_full_observation_digest_changes_with_metadata_but_policy_does_not(self):
-        observed = dict(self.baseline, updated_at='2026-09-10T00:00:00Z')
+    def test_digest_identifies_reviewed_policy_and_ignores_observation_metadata(self):
+        observed = dict(self.baseline, updated_at='2026-09-10T00:00:00Z', _links={'self': 'x'})
         a = policy.render(self.baseline, 'saved-snapshot')
         b = policy.render(observed, 'saved-snapshot')
-        self.assertNotEqual(a['baselineDigest'], b['baselineDigest'])
+        self.assertEqual(a['baselineDigest'], b['baselineDigest'])
         self.assertEqual(a['ruleset'], b['ruleset'])
+        self.assertEqual(a['baselineDigest'], 'sha256:' + hashlib.sha256(
+            policy.canonical(policy.decode(policy.BASELINE.read_bytes())).encode()).hexdigest())
+
+    def test_render_and_dry_run_agree_on_the_digest_of_one_underlying_ruleset(self):
+        observed = dict(self.baseline, updated_at='2026-09-10T00:00:00Z', _links={'self': 'x'})
+        with mock.patch.object(policy, 'read_github', side_effect=[observed, []]):
+            live = policy.dry_run()
+        offline = policy.render(copy.deepcopy(self.baseline), 'reviewed-policy')
+        self.assertEqual(live['baselineDigest'], offline['baselineDigest'])
+        self.assertEqual(live['baselineProducerAppId'], offline['baselineProducerAppId'])
+        self.assertEqual(live['ruleset'], offline['ruleset'])
 
     def test_invalid_json_is_rejected(self):
         for raw in (b'{"id":1,"id":2}', b'{"id":NaN}', b'{"id":1e999}', b'\xff', b'{}' * policy.MAX_BYTES):

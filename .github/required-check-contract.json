@@ -70,6 +70,10 @@
     "changelog-contract": [
       "adopted",
       "none"
+    ],
+    "verjson-node-floor": [
+      "disabled",
+      "node22"
     ]
   },
   "ruleset_plan": {
@@ -216,6 +220,33 @@
         ],
         "contexts": [
           "changelog / validate"
+        ]
+      },
+      {
+        "name": "core-checks-node-floor",
+        "repository_properties": [
+          {
+            "name": "verjson-stack",
+            "values": [
+              "node"
+            ]
+          },
+          {
+            "name": "verjson-core-checks",
+            "values": [
+              "enforced"
+            ]
+          },
+          {
+            "name": "verjson-node-floor",
+            "values": [
+              "node22"
+            ]
+          }
+        ],
+        "contexts": [
+          "ci-node22 / build-test",
+          "ci-node22 / eligibility"
         ]
       }
     ]
