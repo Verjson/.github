@@ -11,6 +11,7 @@ Reverse-chronological index of org-level decisions.
 <!-- BEGIN ADR INDEX -->
 | # | Date | Decision |
 |---|------|----------|
+| [0178](0178-publish-deferred-ci-as-its-own-check/README.md) | 2026-09-14 | Publish a deferred CI run as its own non-success check |
 | [0175](0175-enforce-nexus-ce-subscriber-access-at-gateway/README.md) | 2026-09-11 | Enforce Nexus CE subscriber access at the gateway |
 | [0174](0174-declared-organization-codeowners/README.md) | 2026-09-10 | Declare the organization development team as code owner |
 | [0173](0173-bind-core-check-producer-apps/README.md) | 2026-09-10 | Prepare exact App bindings for organization core checks |

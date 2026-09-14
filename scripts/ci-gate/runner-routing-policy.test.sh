@@ -41,6 +41,7 @@ expected_literal_hosted_sites=$'actions-ci.yml:hosted-compatibility-tests:    ru
 expected_literal_hosted_sites="$(printf '%s\n' \
   "$expected_literal_hosted_sites" \
   $'cli-projects-package-surface-required.yml:admission:    runs-on: ubuntu-24.04\ncli-projects-package-surface-required.yml:package-surface:    runs-on: ubuntu-24.04' \
+  $'node-ci.yml:deferred-ci:    runs-on: ubuntu-24.04\nnode-ci-protected.yml:deferred-ci:    runs-on: ubuntu-24.04' \
   | sort)"
 
 validate_literal_hosted_inventory() {
@@ -163,6 +164,13 @@ literal_hosted="$(
 #  * node-ci's secretless acquisition job (ADR 0086) — it carries a package
 #    credential while reading a PR-controlled lockfile, so it may use only the
 #    isolated untrusted lane or a fresh hosted runner, never the trusted fallback.
+#  * node-ci's `deferred-ci` job (ADR 0178) — it exists only on a defer, checks
+#    nothing out, declares `permissions: {}`, and runs one `echo` plus `exit 1`.
+#    Its entire purpose is to CONCLUDE non-SUCCESS, and a saturated or offline
+#    self-hosted lane would leave it PENDING instead — indistinguishable from a
+#    queued run to the rollup assertion that reads it. It consumes none of the
+#    compute or credential reach this policy protects, so fixed hosted placement
+#    is the reviewed route. Job identity is bound by the exact inventory above.
 # Exact raw hosted selectors are governed by the file/job inventory above;
 # this expression sweep handles portable fallbacks and other embedded routes.
 unsafe_portable="$(
@@ -1082,6 +1090,13 @@ for name in $policy_files; do
     value="${value# }"
     if [ "$name" = node-ci.yml ] \
         && [ "$value" = '${{ fromJSON(vars.CI_LANE_UNTRUSTED || '\''["ubuntu-24.04"]'\'') }}' ]; then
+      continue
+    fi
+    # ADR 0178's deferral check. Keyed on the exact literal value, which alone
+    # would excuse any node-ci job that adopted it — the exact-site inventory at
+    # the top of this file is what binds it to `deferred-ci` specifically, so
+    # moving the literal to another job fails there instead of passing silently.
+    if [ "$name" = node-ci.yml ] && [ "$value" = 'ubuntu-24.04' ]; then
       continue
     fi
     if ! grep -qF 'CI_LANE_TRUSTED' <<<"$value" \
