@@ -97,10 +97,26 @@ chmod +x "$consumer/scripts/"*.py "$consumer/scripts/"*.sh
 (cd "$consumer" && bash scripts/container-deployment-contract.test.sh)
 cp "$consumer/scripts/container_deployment_transport.py" "$tmp/transport.clean"
 printf '\n# drift\n' >> "$consumer/scripts/container_deployment_transport.py"
-if (cd "$consumer" && bash scripts/container-deployment-contract.test.sh >/dev/null 2>&1); then
+drift_report="$tmp/transport-drift.log"
+if (cd "$consumer" && bash scripts/container-deployment-contract.test.sh >"$drift_report" 2>&1); then
   echo 'generated deployment contract accepted transport byte drift' >&2
   exit 1
 fi
+# A required contract test that exits 1 saying nothing forces an adopter to
+# bisect the generated script by hand (Verjson/verjson-git-runners#207). The
+# generated script must name the failing assertion and both sides of it.
+observed_transport_digest="$(sha256sum "$consumer/scripts/container_deployment_transport.py" | cut -d' ' -f1)"
+expected_transport_digest="$(sha256sum "$tmp/transport.clean" | cut -d' ' -f1)"
+for required_fragment in \
+  scripts/container_deployment_transport.py \
+  "$expected_transport_digest" \
+  "$observed_transport_digest"; do
+  grep -qF -- "$required_fragment" "$drift_report" || {
+    echo "generated contract test failed without reporting $required_fragment" >&2
+    cat "$drift_report" >&2
+    exit 1
+  }
+done
 cp "$tmp/transport.clean" "$consumer/scripts/container_deployment_transport.py"
 
 
@@ -112,6 +128,27 @@ if (cd "$consumer" && bash scripts/container-deployment-contract.test.sh >/dev/n
   exit 1
 fi
 mv "$tmp/caller.clean" "$consumer/.github/workflows/container-deployment.yml"
+
+# The deployment-config preconditions are what #207 had to bisect by hand, so
+# the generated script must name the offending field, its expectation, and the
+# observed value rather than exiting 1 silently.
+cp "$consumer/container-deployment.json" "$tmp/config.clean"
+jq '.schemaVersion = 2 | .cliCommand = ["wrong-cli"]' "$tmp/config.clean" \
+  >"$consumer/container-deployment.json"
+config_report="$tmp/config-drift.log"
+if (cd "$consumer" && bash scripts/container-deployment-contract.test.sh >"$config_report" 2>&1); then
+  echo 'generated deployment contract accepted an invalid deployment config' >&2
+  exit 1
+fi
+for required_fragment in schemaVersion 'observed 2' cliCommand wrong-cli; do
+  grep -qF -- "$required_fragment" "$config_report" || {
+    echo "generated contract test failed without reporting $required_fragment" >&2
+    cat "$config_report" >&2
+    exit 1
+  }
+done
+mv "$tmp/config.clean" "$consumer/container-deployment.json"
+(cd "$consumer" && bash scripts/container-deployment-contract.test.sh >/dev/null)
 
 workflow="$root/.github/workflows/container-deployment.yml"
 grep -q '^    environment: production$' "$workflow"
