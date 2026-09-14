@@ -391,6 +391,44 @@ class ProvisioningDelegationValidateTest(unittest.TestCase):
         self.assertIn("release", result.stderr)
         self.assertNotIn("Traceback", result.stderr)
 
+    def test_a_role_without_a_stated_custody_cannot_satisfy_the_comparison(self):
+        inventory = json.loads(INVENTORY.read_text(encoding="utf-8"))
+        role = inventory["roles"]["release"]
+        del role["custodyDecision"]
+        role["migrationStatus"]["achievedCustody"] = None
+        result = self.run_validator(grant(), inventory=inventory)
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        self.assertIn("release", result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
+
+    def test_a_pending_role_must_name_its_copies_and_a_hosted_tracking_reference(self):
+        cases = {
+            "unnamed copies": ("survivingBroadCopies", [None]),
+            "unhosted tracking reference": ("trackingIssue", "x"),
+        }
+        for label, (field, value) in cases.items():
+            with self.subTest(case=label):
+                inventory = json.loads(INVENTORY.read_text(encoding="utf-8"))
+                inventory["roles"]["merge"]["migrationStatus"][field] = value
+                result = self.run_validator(grant(), inventory=inventory)
+                self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+                self.assertIn("merge", result.stderr)
+                self.assertNotIn("Traceback", result.stderr)
+
+    def test_the_inventory_must_cover_every_role_the_contract_requires(self):
+        contract = json.loads(CONTRACT.read_text(encoding="utf-8"))
+        self.assertEqual(sorted(contract["cohort"]["requiredRoles"]), [
+            "ai-review", "dependency-supersession", "merge", "release",
+            "renovate-observation", "ruleset-audit", "runner-registration",
+        ])
+
+        inventory = json.loads(INVENTORY.read_text(encoding="utf-8"))
+        del inventory["roles"]["ruleset-audit"]
+        result = self.run_validator(grant(), inventory=inventory)
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        self.assertIn("ruleset-audit", result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
+
     def test_surviving_broad_copies_match_the_declared_org_secret_policy(self):
         roles = json.loads(INVENTORY.read_text(encoding="utf-8"))["roles"]
         declared = json.loads(POLICY.read_text(encoding="utf-8"))["secrets"]

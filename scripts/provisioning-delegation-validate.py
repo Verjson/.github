@@ -68,17 +68,26 @@ def hosted_reference(value: Any, hosts: list[str]) -> bool:
 MIGRATION_FIELDS = {"achievedCustody", "broadCopiesPending", "survivingBroadCopies", "trackingIssue"}
 
 
-def check_inventory(inventory: dict[str, Any]) -> dict[str, Any]:
+def check_inventory(inventory: dict[str, Any], contract: dict[str, Any]) -> dict[str, Any]:
     """Read the inventory as a role inventory, refusing a decided-as-achieved custody claim.
 
     `custodyDecision` is what the organization decided; `migrationStatus.achievedCustody`
     is what is actually in place. While a broad copy of a role's key survives the two are
     not the same fact, and an inventory that states them as one is a misreport rather than
-    a policy the validator may act on.
+    a policy the validator may act on. Every field the comparison rests on is required to
+    be stated: two absent values compare equal, so an unstated custody would otherwise
+    satisfy the check it exists to fail.
     """
     roles = inventory.get("roles")
     if inventory.get("schema") != INVENTORY_SCHEMA or not isinstance(roles, dict):
         raise InputError("custody inventory is not a recognized role inventory")
+    required = set(contract["cohort"]["requiredRoles"])
+    if set(roles) != required:
+        raise InputError(
+            "custody inventory does not cover exactly the roles the contract requires; "
+            f"missing {sorted(required - set(roles))}, unexpected {sorted(set(roles) - required)}"
+        )
+    hosts = contract["evidence"]["requiredReviewHosts"]
     for role_id, role in roles.items():
         if not isinstance(role, dict):
             raise InputError(f"custody inventory role {role_id} is not an object")
@@ -88,24 +97,32 @@ def check_inventory(inventory: dict[str, Any]) -> dict[str, Any]:
                 f"custody inventory role {role_id} must record migrationStatus with "
                 f"{sorted(MIGRATION_FIELDS)}"
             )
+        decided = text(role.get("custodyDecision"))
+        achieved = text(status["achievedCustody"])
         pending = status["broadCopiesPending"]
         copies = status["survivingBroadCopies"]
-        if not isinstance(pending, bool) or not isinstance(copies, list):
+        if decided is None or achieved is None or not isinstance(pending, bool) or not isinstance(copies, list):
             raise InputError(
-                f"custody inventory role {role_id} migrationStatus is malformed"
+                f"custody inventory role {role_id} must state custodyDecision, "
+                "achievedCustody, broadCopiesPending and survivingBroadCopies"
             )
         if pending:
-            if status["achievedCustody"] == role.get("custodyDecision"):
+            if achieved == decided:
                 raise InputError(
                     f"custody inventory role {role_id} claims achieved custody "
-                    f"{status['achievedCustody']!r} while broad copies are still pending"
+                    f"{achieved!r} while broad copies are still pending"
                 )
-            if not copies or text(status["trackingIssue"]) is None:
+            if not copies or not all(isinstance(copy, dict) for copy in copies):
                 raise InputError(
                     f"custody inventory role {role_id} reports pending broad copies "
-                    "without naming them and the issue tracking their withdrawal"
+                    "without naming each one"
                 )
-        elif copies or status["achievedCustody"] != role.get("custodyDecision"):
+            if not hosted_reference(status["trackingIssue"], hosts):
+                raise InputError(
+                    f"custody inventory role {role_id} reports pending broad copies "
+                    "without a hosted reference to the issue tracking their withdrawal"
+                )
+        elif copies or achieved != decided:
             raise InputError(
                 f"custody inventory role {role_id} reports no pending broad copies but "
                 "does not record the decided custody as achieved"
@@ -316,7 +333,7 @@ def validate(grant: dict[str, Any], contract: dict[str, Any], inventory: dict[st
         raise InputError("delegation contract activation must be a JSON object")
     if activation.get("status") != "active":
         reasons.append("contract-not-activated")
-    check_inventory(inventory)
+    check_inventory(inventory, contract)
     reasons += check_parties(grant, contract)
     reasons += check_pin(grant, contract)
     reasons += check_evidence(grant, contract)

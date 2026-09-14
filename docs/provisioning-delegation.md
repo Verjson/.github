@@ -103,4 +103,8 @@ survive for unprepared consumers, tracked by
 [#1285](https://github.com/Verjson/.github/issues/1285) — while `release` has. The
 validator exits 2 on an inventory whose role claims `achievedCustody` equal to its
 `custodyDecision` while pending copies are recorded, so the record cannot overstate
-what custody migration has actually achieved.
+what custody migration has actually achieved. Every field that comparison rests on
+must be stated, because two absent values compare equal and an unstated custody would
+otherwise pass the check. `cohort.requiredRoles` in the contract names the roles the
+inventory must cover exactly, so dropping a role is an input error rather than a
+silently smaller cohort; another organization states its own set there.

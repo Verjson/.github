@@ -45,6 +45,15 @@
   },
   "cohort": {
     "requiredCompleteness": "exact",
+    "requiredRoles": [
+      "ai-review",
+      "merge",
+      "release",
+      "renovate-observation",
+      "dependency-supersession",
+      "ruleset-audit",
+      "runner-registration"
+    ],
     "reason": "Whole-cohort staging is required. An incomplete or unknown inventory is never proof that a target is out of scope."
   },
   "contractPin": {

@@ -48,7 +48,9 @@ Authority is structural, so it cannot be asserted:
   catalog permission ceiling. That is the mechanical form of review/merge/release
   separation, read-only ruleset audit, isolated runner control, and the dependency
   supersession enablement gate.
-- The cohort must be exact. An incomplete inventory is unknown, never proof of scope.
+- The cohort must be exact. An incomplete inventory is unknown, never proof of scope,
+  so `cohort.requiredRoles` names the roles the inventory must cover and a missing
+  role is an input error rather than a smaller cohort.
 - The pin must be one 40-hex commit; a branch or tag is rejected.
 
 The custody inventory is extended from three role environments to all seven owned
