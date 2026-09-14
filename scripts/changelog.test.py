@@ -2267,6 +2267,42 @@ class ChangelogContractTests(unittest.TestCase):
             changelog.check_pr(self.root, base, "HEAD")
         self.assertEqual("", captured.getvalue())
 
+    def test_ignore_lists_beside_a_dockerfile_are_not_dependency_manifests(self) -> None:
+        """Reproduced in Verjson/verjson-ci: a build-context exclusion list pins nothing."""
+        for path in (
+            ".dockerignore",
+            "deploy/.dockerignore",
+            "deploy/subscriber-gateway/Dockerfile.dockerignore",
+            "deploy/Containerfile.containerignore",
+            "deploy/Dockerfile.gitignore",
+        ):
+            with self.subTest(path=path):
+                self.assertFalse(changelog.is_dependency_file(path))
+
+    def test_dockerfile_variants_remain_dependency_manifests(self) -> None:
+        for path in (
+            "Dockerfile",
+            "Containerfile",
+            "images/Dockerfile.pwsh",
+            "images/worker.Dockerfile",
+            "images/Containerfile.build.ci",
+        ):
+            with self.subTest(path=path):
+                self.assertTrue(changelog.is_dependency_file(path))
+
+    def test_dockerignore_only_change_needs_no_fragment(self) -> None:
+        self.root.joinpath("Dockerfile").write_text("FROM node:22\n", encoding="utf-8")
+        self.init_git()
+        self.commit_all("base")
+        base = run(self.root, "git", "rev-parse", "HEAD")
+        ignore = self.root / "deploy" / "subscriber-gateway" / "Dockerfile.dockerignore"
+        ignore.parent.mkdir(parents=True, exist_ok=True)
+        ignore.write_text("node_modules\n", encoding="utf-8")
+        self.root.joinpath(".dockerignore").write_text(".git\n", encoding="utf-8")
+        self.commit_all("exclude build context noise")
+
+        changelog.check_pr(self.root, base, "HEAD")
+
     def test_dependency_change_with_a_new_valid_fragment_is_accepted(self) -> None:
         self.root.joinpath("package.json").write_text('{"version":"1.0.0"}\n', encoding="utf-8")
         self.init_git()

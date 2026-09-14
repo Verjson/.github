@@ -1105,14 +1105,39 @@ def validate_permit_update(repo_root: Path, base: str, head: str) -> None:
         raise ChangelogError("pre-contract migration permit is append-only")
 
 
+# `Dockerfile.<x>` is a Dockerfile variant only when `<x>` names a variant.
+# These suffixes name a different kind of file that merely sits beside one:
+# prose and editor droppings, and the build-context exclusion lists — a
+# `Dockerfile.dockerignore` pins no dependency version and must not force a
+# fragment on its own. Reproduced in `Verjson/verjson-ci` on a real file.
+NON_DEPENDENCY_SIBLING_SUFFIXES = frozenset(
+    {
+        ".adoc",
+        ".backup",
+        ".bak",
+        ".containerignore",
+        ".dockerignore",
+        ".gitignore",
+        ".ignore",
+        ".markdown",
+        ".md",
+        ".npmignore",
+        ".old",
+        ".orig",
+        ".rst",
+        ".save",
+        ".swp",
+        ".tmp",
+        ".txt",
+    }
+)
+
+
 def is_dependency_file(path: str) -> bool:
     filename = Path(path).name
     if re.fullmatch(r"(?:docker-compose|compose)(?:\.[A-Za-z0-9_-]+)*\.ya?ml", filename):
         return True
-    if Path(filename).suffix.lower() not in {
-        ".md", ".markdown", ".rst", ".adoc", ".txt", ".bak", ".backup",
-        ".old", ".orig", ".save", ".swp", ".tmp",
-    } and re.fullmatch(
+    if Path(filename).suffix.lower() not in NON_DEPENDENCY_SIBLING_SUFFIXES and re.fullmatch(
         r"(?:(?:Dockerfile|Containerfile)(?:\.[A-Za-z0-9_-]+)*|"
         r"[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*\.(?:Dockerfile|Containerfile))",
         filename,

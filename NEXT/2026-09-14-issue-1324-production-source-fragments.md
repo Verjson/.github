@@ -43,4 +43,12 @@ Under Actions the report is a `::warning` annotation and a run-summary
 entry rather than a bare stderr line, which a step that exits 0 folds away
 unseen; outside Actions it stays on stderr.
 
+A sibling exclusion list is no longer mistaken for a dependency manifest:
+`Dockerfile.dockerignore` matched the `Dockerfile.*` variant shape and
+failed a build-context-only change with "dependency manifests or lockfiles
+require a new NEXT fragment", reproduced downstream in `Verjson/verjson-ci`
+on a real file. The suffixes that name some other kind of file beside a
+Dockerfile are now enumerated in one place; genuine variants such as
+`Dockerfile.pwsh` and `worker.Dockerfile` still require a fragment.
+
 Adopters pinned to an older contract SHA are unaffected until they re-pin.
