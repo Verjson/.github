@@ -52,13 +52,16 @@
                 "do_not_enforce_on_create": true,
                 "required_status_checks": [
                     {
-                        "context": "ci / build-test"
+                        "context": "ci / build-test",
+                        "integration_id": 15368
                     },
                     {
-                        "context": "ci / eligibility"
+                        "context": "ci / eligibility",
+                        "integration_id": 15368
                     },
                     {
-                        "context": "changelog-contract"
+                        "context": "changelog-contract",
+                        "integration_id": 15368
                     }
                 ],
                 "strict_required_status_checks_policy": false

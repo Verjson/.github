@@ -50,8 +50,14 @@ jq -e '
   .stacks.actions.contexts == ["shell-tests"] and
   ([.ruleset_plan.rulesets[].name] | sort) == ([
     "changelog-contract-required", "core-checks-actions", "core-checks-helm",
-    "core-checks-node", "core-checks-pulumi", "core-checks-ui"
+    "core-checks-node", "core-checks-node-floor", "core-checks-pulumi", "core-checks-ui"
   ] | sort) and
+  (.ruleset_plan.rulesets[] | select(.name == "core-checks-node-floor") | .contexts) ==
+    ["ci-node22 / build-test", "ci-node22 / eligibility"] and
+  (.ruleset_plan.rulesets[] | select(.name == "core-checks-node-floor")
+    | [.repository_properties[].name]) ==
+    ["verjson-stack", "verjson-core-checks", "verjson-node-floor"] and
+  .property_schemas["verjson-node-floor"] == ["disabled", "node22"] and
   (.ruleset_plan.rulesets[] | select(.name == "core-checks-node") | .contexts) ==
     ["ci / build-test", "ci / eligibility", "changelog-contract"] and
   (.ruleset_plan.rulesets[] | select(.name == "changelog-contract-required") | .contexts) ==

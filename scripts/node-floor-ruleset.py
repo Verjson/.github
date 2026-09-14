@@ -22,6 +22,7 @@ PROPERTY = {
     'description': 'Opt in to the canonical ci-node22 required checks; disabled does not select the lane.',
 }
 CONTEXTS = ['ci-node22 / build-test', 'ci-node22 / eligibility']
+BASELINE_CONTEXTS = ['ci / build-test', 'ci / eligibility', 'changelog-contract']
 MAX_BYTES = 1_048_576
 
 
@@ -53,6 +54,26 @@ def decode(raw):
         raise PreparationError('invalid finite JSON input') from error
 
 
+def producer_app(baseline):
+    """The single App the reviewed core-check baseline binds every required context to."""
+    rules = baseline.get('rules') if isinstance(baseline, dict) else None
+    if (not isinstance(rules, list) or len(rules) != 1 or not isinstance(rules[0], dict)
+            or rules[0].get('type') != 'required_status_checks'):
+        raise PreparationError('reviewed baseline does not carry exactly one required-checks rule')
+    checks = rules[0].get('parameters', {}).get('required_status_checks') if isinstance(rules[0].get('parameters'), dict) else None
+    if not isinstance(checks, list) or not checks or any(not isinstance(check, dict) for check in checks):
+        raise PreparationError('reviewed baseline does not carry required status checks')
+    if [check.get('context') for check in checks] != BASELINE_CONTEXTS:
+        raise PreparationError('reviewed baseline required contexts drifted; review before preparing')
+    producers = {canonical(check.get('integration_id')) for check in checks}
+    if len(producers) != 1:
+        raise PreparationError('reviewed baseline binds its required contexts to differing producer Apps')
+    producer = checks[0].get('integration_id')
+    if isinstance(producer, bool) or not isinstance(producer, int) or producer <= 0:
+        raise PreparationError('reviewed baseline omits an exact producer App binding; repair organization policy before preparing')
+    return producer
+
+
 def render(baseline, source):
     expected = decode(BASELINE.read_bytes())
     if not isinstance(baseline, dict) or canonical({key: baseline.get(key) for key in expected}) != canonical(expected):
@@ -63,15 +84,17 @@ def render(baseline, source):
     candidate['enforcement'] = 'disabled'
     candidate['conditions']['repository_property']['include'].append({
         'name': PROPERTY_NAME, 'property_values': ['node22'], 'source': 'custom'})
+    producer = producer_app(expected)
     candidate['rules'][0]['parameters']['required_status_checks'] = [
-        {'context': context, 'integration_id': 15368} for context in CONTEXTS]
+        {'context': context, 'integration_id': producer} for context in CONTEXTS]
     return {
         'schemaVersion': 1,
         'preparationOnly': True,
         'liveAcceptanceVerified': False,
         'baselineSource': source,
         'baselineId': expected['id'],
-        'baselineDigest': 'sha256:' + hashlib.sha256(canonical(baseline).encode()).hexdigest(),
+        'baselineProducerAppId': producer,
+        'baselineDigest': 'sha256:' + hashlib.sha256(canonical(expected).encode()).hexdigest(),
         'property': {'name': PROPERTY_NAME, 'definition': copy.deepcopy(PROPERTY)},
         'ruleset': candidate,
     }
