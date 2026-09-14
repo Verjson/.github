@@ -1,0 +1,319 @@
+{
+  "schema": "verjson-app-role-custody-inventory/v1",
+  "organization": "Verjson",
+  "catalogPin": {
+    "repository": "Verjson/verjson-ci",
+    "package": "packages/provisioning/catalog/provisioning-contract-v1.json",
+    "contractVersion": "1.0.0",
+    "issue": "https://github.com/Verjson/verjson-ci/issues/144"
+  },
+  "roles": {
+    "review": {
+      "portableName": "ai-review-authorization",
+      "custodyDecision": "environment-only",
+      "custodyRecord": "docs/decisions/0166-environment-only-app-private-keys/README.md",
+      "storage": {
+        "kind": "repository-environment",
+        "environment": "ai-review-app",
+        "secret": "AI_REVIEW_APP_PRIVATE_KEY",
+        "admission": "custom-branch-policy-main-only"
+      },
+      "trust": {
+        "executionMode": "review",
+        "terminalMutation": "not-applicable",
+        "prohibitedConsumers": [
+          "untrusted-workload-jobs",
+          "credential-custody",
+          "terminal-merge"
+        ]
+      },
+      "rotation": {
+        "owner": "organization-owner",
+        "mechanism": "owner-mediated-key-regeneration",
+        "automationAllowed": false
+      },
+      "proof": {
+        "positive": "environment secret metadata present for the exact environment identity",
+        "negative": "no organization or repository copy of the key name is readable",
+        "insufficient": [
+          "organization secret metadata presence",
+          "inherited secret populated at runtime"
+        ]
+      },
+      "permissionCeiling": {
+        "checks": "write",
+        "contents": "read",
+        "metadata": "read",
+        "pull_requests": "write"
+      },
+      "permittedEffects": [
+        "secret-write",
+        "secret-withdrawal"
+      ],
+      "ownerGatedEffects": [
+        "secret-write",
+        "secret-withdrawal"
+      ]
+    },
+    "merge": {
+      "portableName": "merge-authorization",
+      "custodyDecision": "environment-only",
+      "custodyRecord": "docs/decisions/0166-environment-only-app-private-keys/README.md",
+      "storage": {
+        "kind": "repository-environment",
+        "environment": "merge-app",
+        "secret": "MERGE_APP_PRIVATE_KEY",
+        "admission": "custom-branch-policy-main-only"
+      },
+      "trust": {
+        "executionMode": "merge",
+        "terminalMutation": "terminal",
+        "prohibitedConsumers": [
+          "untrusted-workload-jobs",
+          "credential-custody",
+          "review-authorization"
+        ]
+      },
+      "rotation": {
+        "owner": "organization-owner",
+        "mechanism": "owner-mediated-key-regeneration",
+        "automationAllowed": false
+      },
+      "proof": {
+        "positive": "environment secret metadata present for the exact environment identity",
+        "negative": "no organization or repository copy of the key name is readable",
+        "insufficient": [
+          "organization secret metadata presence",
+          "inherited secret populated at runtime"
+        ]
+      },
+      "permissionCeiling": {
+        "contents": "write",
+        "metadata": "read",
+        "pull_requests": "write"
+      },
+      "permittedEffects": [
+        "secret-write",
+        "secret-withdrawal"
+      ],
+      "ownerGatedEffects": [
+        "secret-write",
+        "secret-withdrawal"
+      ]
+    },
+    "release": {
+      "portableName": "release-authorization",
+      "custodyDecision": "environment-only",
+      "custodyRecord": "docs/decisions/0166-environment-only-app-private-keys/README.md",
+      "storage": {
+        "kind": "repository-environment",
+        "environment": "release-app",
+        "secret": "RELEASE_APP_PRIVATE_KEY",
+        "admission": "custom-branch-policy-main-only"
+      },
+      "trust": {
+        "executionMode": "release",
+        "terminalMutation": "terminal",
+        "prohibitedConsumers": [
+          "untrusted-workload-jobs",
+          "credential-custody",
+          "review-authorization"
+        ]
+      },
+      "rotation": {
+        "owner": "organization-owner",
+        "mechanism": "owner-mediated-key-regeneration",
+        "automationAllowed": false
+      },
+      "proof": {
+        "positive": "environment secret metadata present for the exact environment identity",
+        "negative": "no organization or repository copy of the key name is readable",
+        "insufficient": [
+          "organization secret metadata presence",
+          "inherited secret populated at runtime"
+        ]
+      },
+      "permissionCeiling": {
+        "contents": "write",
+        "metadata": "read"
+      },
+      "permittedEffects": [
+        "secret-write",
+        "secret-withdrawal"
+      ],
+      "ownerGatedEffects": [
+        "secret-write",
+        "secret-withdrawal"
+      ]
+    },
+    "renovate-observation": {
+      "portableName": "renovate-compatibility",
+      "custodyDecision": "organization-secret-pending-decision",
+      "custodyRecord": "docs/decisions/0111-interim-pat-for-renovate-compatibility-control-plane/README.md",
+      "storage": {
+        "kind": "organization-secret",
+        "environment": null,
+        "secret": "RENOVATE_COMPATIBILITY_APP_PRIVATE_KEY",
+        "admission": "organization-visibility"
+      },
+      "trust": {
+        "executionMode": "observe-only",
+        "terminalMutation": "not-applicable",
+        "prohibitedConsumers": [
+          "untrusted-workload-jobs",
+          "terminal-merge"
+        ]
+      },
+      "rotation": {
+        "owner": "organization-owner",
+        "mechanism": "owner-mediated-key-regeneration",
+        "automationAllowed": false
+      },
+      "proof": {
+        "positive": "installation metadata reports the read-only permission ceiling",
+        "negative": "no write permission appears in the installation ceiling",
+        "insufficient": [
+          "organization secret metadata presence"
+        ]
+      },
+      "permissionCeiling": {
+        "actions": "read",
+        "checks": "read",
+        "contents": "read",
+        "metadata": "read",
+        "pull_requests": "read",
+        "statuses": "read"
+      },
+      "permittedEffects": [
+        "secret-write"
+      ],
+      "ownerGatedEffects": [
+        "secret-write"
+      ]
+    },
+    "dependency-supersession": {
+      "portableName": "canonical-dependency-supersession",
+      "custodyDecision": "organization-secret-pending-decision",
+      "custodyRecord": "docs/decisions/0136-separate-dependency-supersession-observation-from-mutation/README.md",
+      "storage": {
+        "kind": "organization-secret",
+        "environment": null,
+        "secret": "DEPENDENCY_SUPERSESSION_APP_PRIVATE_KEY",
+        "admission": "organization-visibility"
+      },
+      "trust": {
+        "executionMode": "observe-only",
+        "terminalMutation": "separately-enabled",
+        "prohibitedConsumers": [
+          "untrusted-workload-jobs",
+          "observation-jobs"
+        ]
+      },
+      "rotation": {
+        "owner": "organization-owner",
+        "mechanism": "owner-mediated-key-regeneration",
+        "automationAllowed": false
+      },
+      "proof": {
+        "positive": "exact-repository token mint observed for the terminal reconciler only",
+        "negative": "DEPENDENCY_SUPERSESSION_WRITE_ENABLED is absent until a reviewed canary enables it",
+        "insufficient": [
+          "organization secret metadata presence",
+          "observation job success"
+        ]
+      },
+      "permissionCeiling": {
+        "contents": "read",
+        "metadata": "read",
+        "pull_requests": "write"
+      },
+      "permittedEffects": [
+        "secret-write",
+        "supersession-enablement"
+      ],
+      "ownerGatedEffects": [
+        "secret-write",
+        "supersession-enablement"
+      ]
+    },
+    "ruleset-audit": {
+      "portableName": "ruleset-audit",
+      "custodyDecision": "read-only-authority",
+      "custodyRecord": "docs/decisions/0094-arm-required-by-its-own-property-scoped-ruleset/README.md",
+      "storage": {
+        "kind": "organization-secret",
+        "environment": null,
+        "secret": null,
+        "admission": "organization-visibility"
+      },
+      "trust": {
+        "executionMode": "audit-only",
+        "terminalMutation": "not-applicable",
+        "prohibitedConsumers": [
+          "untrusted-workload-jobs",
+          "governance-mutation"
+        ]
+      },
+      "rotation": {
+        "owner": "organization-owner",
+        "mechanism": "owner-mediated-key-regeneration",
+        "automationAllowed": false
+      },
+      "proof": {
+        "positive": "ruleset reads succeed with no mutation capability in the ceiling",
+        "negative": "no administration or write permission appears in the installation ceiling",
+        "insufficient": [
+          "successful audit run"
+        ]
+      },
+      "permissionCeiling": {
+        "administration": "read",
+        "metadata": "read"
+      },
+      "permittedEffects": [],
+      "ownerGatedEffects": []
+    },
+    "runner-registration": {
+      "portableName": "org-gh-runner-registration",
+      "custodyDecision": "isolated-runner-control",
+      "custodyRecord": "docs/decisions/0144-exact-head-runner-deployment-review/README.md",
+      "storage": {
+        "kind": "isolated-runner-control-plane",
+        "environment": null,
+        "secret": null,
+        "admission": "runner-control-plane"
+      },
+      "trust": {
+        "executionMode": "registration-only",
+        "terminalMutation": "not-applicable",
+        "prohibitedConsumers": [
+          "untrusted-workload-jobs",
+          "application-workflows",
+          "credential-custody"
+        ]
+      },
+      "rotation": {
+        "owner": "runner-control-plane-owner",
+        "mechanism": "owner-mediated-key-regeneration",
+        "automationAllowed": false
+      },
+      "proof": {
+        "positive": "registration tokens are minted only by the isolated control plane",
+        "negative": "no application workflow can read a runner registration credential",
+        "insufficient": [
+          "successful runner job"
+        ]
+      },
+      "permissionCeiling": {
+        "metadata": "read",
+        "organization_self_hosted_runners": "write"
+      },
+      "permittedEffects": [
+        "runner-registration"
+      ],
+      "ownerGatedEffects": [
+        "runner-registration"
+      ]
+    }
+  }
+}
