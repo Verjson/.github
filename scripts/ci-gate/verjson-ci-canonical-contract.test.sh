@@ -40,7 +40,7 @@ print("ok - package-backed adapter is immutable and credentialless")
 mutants = {
     "mutable package ref": (
         workflow_text.replace(
-            "@0a10ddb756d7874ed338edb53bb7e2fcb9865a19", "@main", 1
+            "@c9084daca387849c09f1d97bccf8ac311ff11615", "@main", 1
         ),
         adoption_text,
     ),

@@ -7,7 +7,7 @@ manifest. `Verjson/.github` owns organization governance and publishes the thin
 GitHub adapter in `.github/workflows/verjson-ci.yml`.
 
 The adapter is pinned to the complete `verjson-ci` source commit
-`0a10ddb756d7874ed338edb53bb7e2fcb9865a19`. The image remains a required input
+`c9084daca387849c09f1d97bccf8ac311ff11615`. The image remains a required input
 because it must be selected from the same signed complete release manifest as
 the schema and adapters; this repository does not invent or float an image tag.
 
