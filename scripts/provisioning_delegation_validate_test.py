@@ -93,6 +93,17 @@ class ProvisioningDelegationValidateTest(unittest.TestCase):
         self.assertEqual(receipt["authorization"], "withheld")
         self.assertIn("contract-not-activated", receipt["reasons"])
 
+    def test_non_object_activation_is_an_input_error(self):
+        document = json.loads(CONTRACT.read_text(encoding="utf-8"))
+        document["activation"] = "active"
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "contract.json"
+            path.write_text(json.dumps(document), encoding="utf-8")
+            result = self.run_validator(grant(), contract=path)
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        self.assertIn("activation", result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
+
 
     def test_agent_cannot_manufacture_its_own_authority(self):
         executor = {"kind": "agent", "identity": "verjson-cli/provisioning-executor"}

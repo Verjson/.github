@@ -231,7 +231,10 @@ def check_consent(grant: dict[str, Any], contract: dict[str, Any], effects: list
 
 def validate(grant: dict[str, Any], contract: dict[str, Any], inventory: dict[str, Any], now: dt.datetime) -> dict[str, Any]:
     reasons = check_shape(grant)
-    if contract.get("activation", {}).get("status") != "active":
+    activation = contract.get("activation")
+    if not isinstance(activation, dict):
+        raise InputError("delegation contract activation must be a JSON object")
+    if activation.get("status") != "active":
         reasons.append("contract-not-activated")
     if inventory.get("schema") != "verjson-app-role-custody-inventory/v1" or not isinstance(inventory.get("roles"), dict):
         raise InputError("custody inventory is not a recognized role inventory")
