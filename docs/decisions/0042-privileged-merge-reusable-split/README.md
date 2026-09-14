@@ -253,3 +253,16 @@ each default-branch caller byte-for-byte with that output. Missing, unreadable, 
 and non-canonical callers remain distinct failures, and remediation always names the
 generator rather than inviting a hand-authored repair. The audit is still read-only and
 does not grant secret access or modify consumer repositories.
+
+## Amendment (2026-09-14, #1331) — the branch-cleanup harness is retired
+
+`scripts/ci-gate/merge-branch-cleanup.test.sh` is deleted (#1329); the "Enforced by"
+sentence above no longer describes a file that exists. The behavior it extracted moved into
+`scripts/ci-gate/post-merge-reconcile.sh`, and the invariant this ADR restores — the step's
+exit status answers "did the PR merge?" and nothing else — is driven today by the registered
+`scripts/ci-gate/post-merge-reconcile.test.sh`, including the #458 case where an
+already-deleted head ref makes the `DELETE` 404 without failing the reconcile.
+
+This ADR is also why [ADR 0181](../0181-adr-coverage-claims-follow-their-tests/README.md)'s retirement vocabulary is phrasal rather than stemmed: the
+paragraph above is *about* branch deletion, so a matcher looking for the stem `delet`
+found "merge and delete outcomes" in the stale claim itself and exempted it.

@@ -112,6 +112,7 @@ merge-gate	bash scripts/ci-gate/privileged-lane-validation.test.sh
 merge-gate	bash scripts/ci-gate/reusable-workflow.test.sh
 merge-gate	bash scripts/ci-gate/preflight-timing.test.sh
 merge-gate	bash scripts/ci-gate/classify-fast-lane.test.sh
+merge-gate	bash scripts/ci-gate/classify-release-age-defer.test.sh
 merge-gate	python3 scripts/ci-gate/classify-review-policy.test.py
 merge-gate	python3 scripts/ci-gate/review-attempt-count.test.py
 merge-gate	bash scripts/ci-gate/elide-lockfiles.test.sh
@@ -128,6 +129,7 @@ merge-gate	bash scripts/ci-gate/budget-exceeded.test.sh
 changelog-release	bash scripts/tag-major.test.sh
 changelog-release	bash scripts/gen-adr-index.sh --check
 changelog-release	bash scripts/ci-gate/gen-adr-index.test.sh
+changelog-release	python3 scripts/ci-gate/adr-live-coverage-claims.test.py
 changelog-release	python3 scripts/ci-gate/adr-number-collision.test.py
 changelog-release	bash scripts/render-next.sh >/dev/null
 changelog-release	bash scripts/ci-gate/render-next.test.sh

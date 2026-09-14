@@ -254,3 +254,18 @@ Both were already registered in `scripts/actions-ci-groups.tsv`; #733 extends th
 close the cases that existed only in the retired files. Caller, authority-envelope,
 receipt, App-identity, exact-head, and required-CI invariants remain on their existing
 registered contract suites. No production workflow or authorization behavior changes.
+
+## Amendment (2026-09-14, #1331) — the provenance harness named above is retired
+
+The 2026-08-07 amendment points at `scripts/ci-gate/entry-workflow-provenance.test.sh` for
+coverage of the hold/no-op disposition. That file is now deleted (#1329): ADR 0079 replaced
+the `referenced_workflows` matcher it extracted with an arm receipt plus an explicit Checks
+API authorization, and no production workflow reads `referenced_workflows` any more.
+
+This is the case that shaped [ADR 0181](../0181-adr-coverage-claims-follow-their-tests/README.md)'s rule. The stale claim sits *inside a dated
+amendment*, written a month before the deletion that invalidated it, so an exemption keyed
+on "is this an amendment?" would have passed it. Being dated does not make a claim current.
+
+The hold disposition itself is unchanged and is driven today by
+`scripts/ci-gate/native-automerge.test.sh`, which exercises the label, normalized-label,
+title, and draft forms against the shipped promotion step.

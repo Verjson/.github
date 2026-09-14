@@ -230,3 +230,14 @@ receive no new secret. Publication continues to use the repository-scoped
   grep for it; `release-node` adds a separate file with its own assertions and changes
   neither the emitted `changelog.yml` nor the string #437 is about. The adopter
   instruction for #437 is unchanged: stay on `changelog-validate.yml`.
+
+## Amendment (2026-09-14, #1331) — the contract test named here is an adopter artifact
+
+Nothing in this ADR's decision changes, and the sentence above is correct as written.
+
+It is recorded here only so the next reader does not re-derive the question from a path
+that resolves nowhere in this repository. `scripts/changelog-contract.test.sh` is
+generated into adopter repositories by `scripts/gen-changelog-caller.sh`; it is not a file
+this repository hosts, and an ADR naming it describes a contract this repository exports
+rather than coverage it has lost. The generator-side proof lives in
+`scripts/ci-gate/changelog-caller-contract.test.sh`.

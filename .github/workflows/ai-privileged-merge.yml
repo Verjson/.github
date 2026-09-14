@@ -223,7 +223,18 @@ jobs:
           meta="$(gh pr view "$PR_NUMBER" --repo "$TARGET_REPO" \
             --json state,isDraft,title,labels,headRefOid,headRepositoryOwner)"
           actual_head="$(jq -r '.headRefOid // ""' <<<"$meta")"
-          [ "$(jq -r .state <<<"$meta")" = OPEN ] || exit 0
+          # Every non-OPEN state is a no-op — no merge fires on any branch here —
+          # but they are different events and must not share one silent `exit 0`.
+          # MERGED is the ordinary duplicate-dispatch race. CLOSED means the gate
+          # authorized a head a human then closed, and an unreadable state means
+          # the metadata read did not resolve; both are upstream anomalies, and a
+          # run that reports nothing makes them indistinguishable from the race.
+          case "$(jq -r '.state // ""' <<<"$meta")" in
+            OPEN) ;;
+            MERGED) echo "Promotion is a no-op: PR #$PR_NUMBER is already merged."; exit 0 ;;
+            CLOSED) echo "Promotion is a no-op: PR #$PR_NUMBER was closed without merging."; exit 0 ;;
+            *) echo "Promotion is a no-op: PR #$PR_NUMBER has no readable state."; exit 0 ;;
+          esac
           [ "$actual_head" = "$EXPECTED_HEAD_SHA" ] || {
             echo "Superseded promotion is a no-op: expected $EXPECTED_HEAD_SHA, current head is $actual_head."
             exit 0

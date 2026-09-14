@@ -117,3 +117,15 @@ fail-closed or best-effort behavior.
 -    runs-on: [self-hosted, GCP]
 +    runs-on: ${{ inputs.github-hosted-runner && 'ubuntu-24.04' || fromJSON('["self-hosted","GCP"]') }}
 ```
+
+## Amendment (2026-09-14, #1331) — the caller-executed behavior script no longer exists
+
+The 2026-07-27 hardening above stands unchanged, and this amendment does not reopen it.
+
+`scripts/actionlint-behavior.test.sh` is deleted. That is the hardening's own outcome
+stated as a fact about the tree: the section describes a first draft that invoked the
+script after checking out the caller, and records that the fixtures were moved inline into
+the provider-owned workflow so no caller file is executed. The file naming the rejected
+design was removed with it. The structural test that extracts the inline block, mutation-
+tests both failure branches, and rejects script and source references is
+`scripts/actionlint-reusable.test.sh`.
