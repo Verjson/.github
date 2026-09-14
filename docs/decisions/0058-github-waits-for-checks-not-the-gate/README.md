@@ -649,3 +649,15 @@ Evidence: `scripts/required-checks-audit.test.sh` asserts an ambient
 `RCA_REQUIRE_VERIFIED=true` no longer affects the read-only report's exit
 status, and that an unrecognized argument faults; both fail against the
 pre-fix script and pass against the fix.
+
+## Amendment (2026-09-14, #1331) — the mutation pin named above is retired
+
+"Fail-closed is the load-bearing property, and it is pinned by mutation" still holds; the
+file it credits does not. `scripts/ci-gate/required-checks-skip-poll.test.sh` is deleted
+(#1329) together with the poll loop it extracted, which ADR 0079/0081 replaced with
+event-driven authorization. The ten mutation kills recorded above are the historical record
+of that step, not of a suite that runs today.
+
+Fail-closed is asserted now by the registered `event-driven-authorization` suite and by
+`scripts/ci-gate/native-automerge.test.sh`, which drives the shipped promotion step against
+absent, pending, and failing required checks. See [ADR 0181](../0181-adr-coverage-claims-follow-their-tests/README.md).

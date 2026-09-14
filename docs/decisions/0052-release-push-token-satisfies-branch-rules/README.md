@@ -123,3 +123,15 @@ App named under Consequences.
 Opening the ruleset is **not** an available rollback. It was considered and
 declined above; taking it later requires a superseding ADR that argues the case
 on its own merits.
+
+## Amendment (2026-09-14, #1331) — `changelog-contract.test.sh` is an adopter artifact
+
+This ADR's decision is unchanged: the release push still has to satisfy the branch rules
+on its own, and a fixture repository with no remote still cannot prove that it does.
+
+Only the reading of the file name is corrected. `changelog-contract.test.sh` is not a
+harness in this repository and never was: it is generated into adopter repositories by
+`scripts/gen-changelog-caller.sh`, which is why the `## Context` sentence above describes
+behavior no run of this repository's own suite exercises — that is the point it is making.
+The proof that lives here is `scripts/ci-gate/changelog-caller-contract.test.sh`, which
+pins what the generator emits.

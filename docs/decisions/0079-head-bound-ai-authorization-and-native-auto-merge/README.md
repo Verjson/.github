@@ -369,3 +369,20 @@ exists but is reachable from neither the manifest nor the hosted-compatibility j
 This is a hard fail rather than a warning because the exemption list it needs already
 existed and was already asserted there, so no new infrastructure was introduced to
 enable it. That guard is the durable fix; this sweep is the one-time backlog.
+
+## Amendment (2026-09-14, #1331) — the disposition table names deleted files
+
+This ADR's decision is unchanged, and so is every disposition recorded above. The table
+is a historical record of a completed sweep, and the eight harnesses it lists —
+`ci-wait-fail-closed.test.sh`, `required-checks-skip-poll.test.sh`,
+`toolchain-missing.test.sh`, `self-job-exclusion.test.sh`,
+`required-workflow-provenance.test.sh`, `entry-workflow-provenance.test.sh`,
+`merge-branch-cleanup.test.sh` and `followup-issues.test.sh` — are deleted, as that
+section says in prose.
+
+This amendment exists so the statement is machine-readable. [ADR
+0181](../0181-adr-coverage-claims-follow-their-tests/README.md)'s check resolves bare
+basenames as well as full paths, and a table column header ("Why the assertion is no
+longer meaningful") is not a sentence that retires a file. Where a property survived the
+deletion, the table and the two bullets below it already name the registered suite that
+carries it now; none of that changes.

@@ -385,3 +385,28 @@ The opt-out is an input on both public surfaces, default strict:
 ```
 
 Full change: https://github.com/Verjson/.github/pull/145
+
+## Amendment (2026-09-14, #1331) — the three harnesses in `## Consequences` are retired
+
+`scripts/ci-gate/ci-wait-fail-closed.test.sh` is deleted, as are the two files the same
+section names without a directory, `toolchain-missing.test.sh` and
+`required-workflow-provenance.test.sh` (#1329). All three extracted the `ci_wait` polling
+loop, which ADR 0079/0081 removed wholesale in favor of event-driven authorization; the
+bullets above describing them as "wired into `actions-ci.yml`" have been untrue since
+`429d441` deregistered them, and the mutation evidence recorded there is the historical
+record of the matcher they tested, not a claim about a live suite.
+
+This ADR's decision stands: absent checks still fail closed. Under the event-driven shape
+that property is asserted by the registered `event-driven-authorization` and `arm-receipt`
+suites, and by `scripts/ci-gate/native-automerge.test.sh`'s required-check policy cases.
+
+Two further harnesses this ADR names without a directory, `hold.test.sh` and
+`gate-queue.test.sh`, are deleted for the same reason (#1329): both extracted the same
+`run:`-block of the `ci_wait` step, and the empty-rollup and `EXPECTED_HEAD_SHA` cases
+recorded above are the historical record of that step, not of a suite that still runs.
+The `no-checks` and absent-check properties they asserted are carried by the registered
+`native-automerge` and `event-driven-authorization` suites named above.
+
+[ADR 0181](../0181-adr-coverage-claims-follow-their-tests/README.md)'s automated check
+resolves bare basenames as well as full paths, so this amendment is what the check reads;
+nothing here is recorded by hand.
