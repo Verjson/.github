@@ -26,3 +26,11 @@ the exact failure mode the enumeration replaced a hand-written list to avoid.
   now reconciled against what its jobs captured, and a key no job accounts for is an
   error. That also closes the path where a file with no `jobs:` key at all scanned as
   empty rather than as a failure.
+
+What the gate asserts about a canonical binding is now exact too. It checked that the
+role input appeared *somewhere* in the job's `environment:`, which
+`${{ inputs.release_environment || 'unprotected' }}` satisfies — a caller-omitted input
+away from an implicitly created, unprotected environment. The expression must now match
+`${{ inputs.<role input> }}`, optionally defaulting to that role's own environment and
+to nothing else. ADR 0179 records the recognized surface so the decision and the gate
+state the same scope.

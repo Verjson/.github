@@ -53,6 +53,17 @@ def workflow_bindings(directory):
     return bindings
 
 
+def confinement_pattern(entry):
+    """The only expressions that bind a canonical entry's own role environment.
+
+    A substring test admits `${{ inputs.release_environment || 'unprotected' }}`,
+    which resolves to an unprotected environment whenever the caller omits the
+    input -- the exact absence of confinement the contract exists to reject.
+    """
+    return (r"\$\{\{ inputs\." + re.escape(entry["input"])
+            + r"( \|\| '" + re.escape(entry["environment"]) + r"')? \}\}")
+
+
 def workflow(name):
     return yaml.safe_load((ROOT / f".github/workflows/{name}.yml").read_text())
 
@@ -379,7 +390,24 @@ class AppKeyRoleManifestTests(unittest.TestCase):
                 elif entry["confinement"] == "caller-owned":
                     self.assertEqual(binding["environment"], entry["environment"])
                 else:
-                    self.assertIn(entry["input"], binding["environment"])
+                    self.assertIsNotNone(
+                        re.fullmatch(confinement_pattern(entry), binding["environment"] or ""),
+                        f"{binding['environment']!r} does not bind {entry['environment']}")
+
+    def test_a_canonical_expression_defaulting_elsewhere_is_not_confinement(self):
+        pattern = confinement_pattern({"input": "release_environment", "environment": "release-app"})
+        for accepted in ("${{ inputs.release_environment }}",
+                         "${{ inputs.release_environment || 'release-app' }}"):
+            with self.subTest(accepted=accepted):
+                self.assertIsNotNone(re.fullmatch(pattern, accepted))
+        for rejected in ("${{ inputs.release_environment || 'unprotected' }}",
+                         "${{ inputs.release_environment || '' }}",
+                         "${{ inputs.release_environment_override }}",
+                         "prefix-${{ inputs.release_environment }}",
+                         "${{ inputs.merge_environment }}",
+                         "release-app"):
+            with self.subTest(rejected=rejected):
+                self.assertIsNone(re.fullmatch(pattern, rejected))
 
     def test_canonical_bindings_depend_on_the_keyless_policy_preflight(self):
         canonical = {e["secret"] for e in self.manifest if e["confinement"] == "canonical"}

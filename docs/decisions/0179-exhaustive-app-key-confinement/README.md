@@ -66,6 +66,23 @@ copy. Three confinement kinds are recognized, and no fourth is admitted silently
 without declaring its confinement fails CI, and declaring a key no workflow binds
 fails too. This is the control whose absence let the four keys above accumulate.
 
+An enumeration is only as exhaustive as what it recognizes, so the scan is defined
+against GitHub's surface rather than against the shapes this repository happens to use
+today. It reads `*.yml` and `*.yaml`, treats `secrets['NAME']` index syntax as the same
+binding as `secrets.NAME`, and calls any secret name containing `APP` and `KEY` an App
+key rather than keying on the `APP_PRIVATE_KEY` suffix — `RELEASE_APP_KEY_PEM` and a
+lowercase reference name the same credential. The name test is deliberately
+over-inclusive: a false positive costs one manifest declaration, a false negative is an
+unconfined credential nobody is looking at. A key read from a workflow-level `env:`
+block, outside every job, is an error and not a zero-binding file: that is the one
+position where no `environment:` can confine it.
+
+What the gate asserts about a canonical binding is correspondingly exact. The job's
+`environment:` must be `${{ inputs.<role input> }}`, optionally defaulting to that role's
+own environment and to nothing else. A substring test admits
+`${{ inputs.release_environment || 'unprotected' }}`, which is a caller-omitted input
+away from an implicitly created, unprotected environment.
+
 **3. The operator audit reports broad copies of every declared key.** Previously
 `scripts/app-key-environment-audit.py` intersected live secret metadata with the
 three canonical keys, so it could return `compliant` for a repository still holding
