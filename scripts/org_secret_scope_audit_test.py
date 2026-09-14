@@ -147,5 +147,64 @@ class OrgSecretScopeAuditTest(unittest.TestCase):
         self.assertIn("duplicate repositories", result.stderr)
         self.assertNotIn("Traceback", result.stderr)
 
+    def withdrawn_policy(self):
+        return {"organization": "Verjson", "secrets": {"OLD_APP_PRIVATE_KEY": {
+            "target_visibility": "withdrawn", "selected_repositories": [],
+            "consumers": ["environment secrets of the main-only role environment"],
+            "reason": "Broad copy must be deleted once every consumer reads the environment secret.",
+        }}}
+
+    def test_a_withdrawn_secret_conforms_only_while_the_broad_copy_is_absent(self):
+        result = self.run_audit(self.withdrawn_policy(), {"secrets": []})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("secrets=1", result.stdout)
+
+    def test_a_withdrawn_secret_that_still_exists_names_the_broad_copy(self):
+        listing = {"secrets": [{"name": "OLD_APP_PRIVATE_KEY", "visibility": "all"}]}
+        result = self.run_audit(self.withdrawn_policy(), listing)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("OLD_APP_PRIVATE_KEY: organization copy must be withdrawn", result.stderr)
+        self.assertNotIn("absent_live", result.stderr)
+
+    def test_a_withdrawn_secret_may_not_name_repositories(self):
+        policy = self.withdrawn_policy()
+        policy["secrets"]["OLD_APP_PRIVATE_KEY"]["selected_repositories"] = ["Verjson/.github"]
+        result = self.run_audit(policy, {"secrets": []})
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("non-selected policy must not name repositories", result.stderr)
+
+    def test_a_missing_non_withdrawn_secret_is_still_reported_absent(self):
+        policy = {"organization": "Verjson", "secrets": {"FLEET": {
+            "target_visibility": "all", "selected_repositories": [],
+            "consumers": ["fleet"], "reason": "required"}}}
+        result = self.run_audit(policy, {"secrets": []})
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("absent_live=['FLEET']", result.stderr)
+
+
+class OrgSecretPolicyManifestTest(unittest.TestCase):
+    """The reviewed policy must account for every App key #1285 tracks."""
+
+    def setUp(self):
+        self.policy = json.loads((ROOT / "config/org-actions-secret-policy.json").read_text(encoding="utf-8"))
+        self.roles = json.loads((ROOT / "config/app-key-roles.json").read_text(encoding="utf-8"))["roles"]
+
+    def test_every_app_key_marked_for_withdrawal_is_declared_withdrawn(self):
+        for entry in self.roles:
+            if entry["organization_copy"] != "withdraw":
+                continue
+            with self.subTest(secret=entry["secret"]):
+                rule = self.policy["secrets"].get(entry["secret"])
+                self.assertIsNotNone(rule, f"{entry['secret']} is not in the reviewed org secret policy")
+                self.assertEqual(rule["target_visibility"], "withdrawn")
+
+    def test_no_app_key_is_declared_a_permanent_broad_organization_secret(self):
+        for entry in self.roles:
+            rule = self.policy["secrets"].get(entry["secret"])
+            if rule is not None:
+                with self.subTest(secret=entry["secret"]):
+                    self.assertNotEqual(rule["target_visibility"], "all")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -11,6 +11,21 @@ does not create environments, copy/delete keys, edit rulesets or dispatch consum
 | Merge | `merge_environment` | `merge-app` | `MERGE_APP_PRIVATE_KEY` |
 | AI review | `ai_review_environment` | `ai-review-app` | `AI_REVIEW_APP_PRIVATE_KEY` |
 
+These three roles are not the whole surface. `config/app-key-roles.json` declares
+every App private key a canonical workflow binds, and
+`scripts/ci-gate/app-key-environment.test.py` enumerates `.github/workflows` against
+it in both directions, so a new binding must state its confinement. Two keys are
+declared `unconfined` and are still readable from any non-fork ref:
+`RENOVATE_COMPATIBILITY_APP_PRIVATE_KEY` and `DEPENDENCY_SUPERSESSION_APP_PRIVATE_KEY`.
+[ADR 0176](decisions/0176-exhaustive-app-key-confinement/README.md) records their
+provisioning prerequisite and why the environment binding waits for it.
+
+`scripts/org-secret-scope-audit.py` declares an App key marked for withdrawal with
+`target_visibility: "withdrawn"`, meaning the organization copy must not exist. Its
+nightly run is the standing tracker for the remaining broad copies: it names each
+surviving one rather than reporting a generic manifest mismatch, and turns green for
+a key only when that copy is deleted.
+
 Keep public App client IDs in their existing variables. Model API credentials and
 `NODE_AUTH_TOKEN` retain their existing roles. App-key reusable calls now inherit the caller secret context, including these unrelated secrets; non-App workflows retain narrow grants.
 `node-release.yml` does not consume the release App key. Snapshot publication and
