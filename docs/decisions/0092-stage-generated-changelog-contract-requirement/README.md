@@ -122,3 +122,14 @@ The rollback proceeds only when its implementation and contract match merged
 default-branch bytes and the live mutable ruleset exactly matches the artifact's
 intended postimage; it then restores and verifies the exact preimage. Do not
 bypass this recovery path by patching individual consumer rulesets.
+
+## Amendment (2026-09-14, #1331) — the contract test named here is an adopter artifact
+
+Nothing in this ADR's decision changes. The two enforcement surfaces described above, and
+the gap between them that this ADR closes, are unaffected.
+
+`scripts/changelog-contract.test.sh` is generated into adopter repositories by
+`scripts/gen-changelog-caller.sh` and is not a file this repository hosts, which is why
+the path resolves nowhere here. Recording that is what keeps the claim checkable instead
+of merely plausible; the generator-side proof is
+`scripts/ci-gate/changelog-caller-contract.test.sh`.
