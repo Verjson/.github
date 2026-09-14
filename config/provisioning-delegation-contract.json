@@ -1,0 +1,82 @@
+{
+  "schema": "verjson-provisioning-delegation-contract/v1",
+  "organization": "Verjson",
+  "activation": {
+    "status": "defined-not-activated",
+    "reason": "Merging this contract defines the delegation vocabulary. Activation is a separate owner decision recorded by changing this status in a reviewed pull request.",
+    "record": "docs/decisions/0177-owner-approved-provisioning-delegation/README.md"
+  },
+  "grantSchema": "verjson-provisioning-delegation-grant/v1",
+  "issuer": {
+    "permittedKinds": [
+      "organization-owner"
+    ],
+    "prohibitedEvidence": [
+      "model-response",
+      "agent-authored-approval-flag",
+      "unattended-mode",
+      "self-issued-grant"
+    ]
+  },
+  "executor": {
+    "permittedKinds": [
+      "agent",
+      "operator"
+    ],
+    "accountability": "The grant names the accountable authority. A named executor may run every action the reviewed plan lists without per-call reconfirmation inside that scope."
+  },
+  "effects": {
+    "vocabulary": [
+      "app-registration",
+      "app-installation",
+      "app-uninstallation",
+      "installation-approval",
+      "permission-expansion",
+      "environment-configuration",
+      "secret-write",
+      "secret-withdrawal",
+      "supersession-enablement",
+      "runner-registration",
+      "governance-change",
+      "commercial-terms",
+      "resource-destruction"
+    ],
+    "ownerConsentRequired": "all"
+  },
+  "cohort": {
+    "requiredCompleteness": "exact",
+    "requiredRoles": [
+      "ai-review",
+      "merge",
+      "release",
+      "renovate-observation",
+      "dependency-supersession",
+      "ruleset-audit",
+      "runner-registration"
+    ],
+    "reason": "Whole-cohort staging is required. An incomplete or unknown inventory is never proof that a target is out of scope."
+  },
+  "contractPin": {
+    "repository": "Verjson/verjson-ci",
+    "package": "packages/provisioning",
+    "immutable": true,
+    "reason": "A plan is bound to one immutable 40-hex contract SHA; a branch or tag reference is rejected."
+  },
+  "evidence": {
+    "requiredReviewHosts": [
+      "github.com"
+    ],
+    "requiredPlanDigestAlgorithm": "sha256"
+  },
+  "expiry": {
+    "maximumDurationDays": 30
+  },
+  "revocation": {
+    "requiredSurfaces": [
+      "github-issue",
+      "github-pull-request"
+    ],
+    "effect": "A revoked or expired grant authorizes nothing; a resumed run needs a new reviewed grant."
+  },
+  "custodyInventory": "config/app-role-custody-inventory.json"
+}

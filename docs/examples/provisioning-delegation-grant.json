@@ -1,0 +1,98 @@
+{
+  "schema": "verjson-provisioning-delegation-grant/v1",
+  "grant_id": "verjson-2026-09-14-environment-key-cohort",
+  "issuer": {
+    "kind": "organization-owner",
+    "identity": "pyousefi",
+    "organization": "Verjson"
+  },
+  "executor": {
+    "kind": "agent",
+    "identity": "verjson-cli/provisioning-executor"
+  },
+  "contract_pin": {
+    "repository": "Verjson/verjson-ci",
+    "sha": "f1a183dc6ba1f3b6ffdd05c30eb62d9622bb5dda",
+    "contract_version": "1.0.0"
+  },
+  "cohort": {
+    "completeness": "exact",
+    "targets": [
+      {
+        "role_id": "ai-review",
+        "repository_selection": "selected",
+        "repositories": [
+          "Verjson/.github"
+        ],
+        "permission_ceiling": {
+          "checks": "write",
+          "contents": "read",
+          "metadata": "read",
+          "pull_requests": "write"
+        },
+        "effects": [
+          "secret-write"
+        ]
+      },
+      {
+        "role_id": "merge",
+        "repository_selection": "selected",
+        "repositories": [
+          "Verjson/.github"
+        ],
+        "permission_ceiling": {
+          "contents": "write",
+          "metadata": "read",
+          "pull_requests": "write"
+        },
+        "effects": [
+          "secret-write"
+        ]
+      },
+      {
+        "role_id": "release",
+        "repository_selection": "selected",
+        "repositories": [
+          "Verjson/.github"
+        ],
+        "permission_ceiling": {
+          "contents": "write",
+          "metadata": "read"
+        },
+        "effects": [
+          "secret-write"
+        ]
+      }
+    ]
+  },
+  "effects": [
+    "secret-write"
+  ],
+  "owner_consent": [
+    {
+      "effect": "secret-write",
+      "reference": "https://github.com/Verjson/.github/issues/1325",
+      "approved_by": [
+        "pyousefi"
+      ]
+    }
+  ],
+  "evidence": {
+    "plan_digest": "sha256:df0f98641ffc90fca02f13adab4b3e269eb57eb75fd2a4ba5c8e9fd56bd0d158",
+    "review": {
+      "kind": "github-issue",
+      "reference": "https://github.com/Verjson/.github/issues/1325",
+      "approved_by": [
+        "pyousefi"
+      ]
+    }
+  },
+  "expiry": {
+    "not_before": "2026-09-14T00:00:00Z",
+    "not_after": "2026-09-28T00:00:00Z"
+  },
+  "revocation": {
+    "surface": "github-issue",
+    "reference": "https://github.com/Verjson/.github/issues/1325"
+  }
+}
