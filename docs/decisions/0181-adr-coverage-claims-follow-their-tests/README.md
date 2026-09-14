@@ -34,11 +34,14 @@ read fails open when it cannot read the status. Neither had any other coverage.
 **1. Coverage claims about `scripts/ci-gate` tests are machine-checked.**
 `scripts/ci-gate/adr-live-coverage-claims.test.py` (registered in `changelog-release`)
 fails CI when any `docs/decisions/**/README.md` names a test file that no longer
-resolves, unless the same ADR states why it is absent. Both spellings count: a full
-`scripts/ci-gate/` path, and a bare basename such as `native-automerge.test.sh`, which is how
-these ADRs routinely refer to a harness and which makes exactly the same present-tense
-promise. Exemption is keyed on the file, so retiring a full path also settles the
-document's shorthand for it.
+resolves, unless the same ADR states why it is absent. Every spelling counts: a full path
+anywhere in the tree, and the bare basename such as `native-automerge.test.sh` these
+documents use interchangeably with it. Exemption is keyed on the file, so retiring a path
+also settles the same document's shorthand for it.
+
+There are exactly two things an ADR may say to excuse a name that resolves nowhere: the
+file **was retired**, or it is **generated into adopter repositories** and was never
+hosted here. Nothing else passes, and neither does silence.
 
 The rule is deliberately *not* keyed on the enclosing heading. A dated amendment
 written **before** a deletion is exactly as stale as the body — ADR 0012's stale claim
@@ -81,21 +84,24 @@ the diagnostic is what changed.
 - Six ADRs carry a 2026-09-14 amendment pointing here. None of their decisions is
   reversed; only their claims about which files currently assert those decisions are
   corrected.
-- Bare basenames are in scope. Widening the matcher to them surfaced eleven further
-  dangling live claims — two in ADR 0024, eight in ADR 0079's historical disposition
-  table, one in ADR 0052 — and each is now settled by an appended dated amendment
-  rather than recorded as accepted residue. A historical disposition table is not
-  exempt for being historical: "Why the assertion is no longer meaningful" as a column
-  header is not a sentence that retires a file, and a reader scanning the table sees
-  eight present-tense file names.
-- A **full path outside `scripts/ci-gate/` stays out of scope**, and that boundary is
-  now a substantive rule rather than a convenience. `scripts/changelog-contract.test.sh`
-  is generated into adopter repositories by `gen-changelog-caller.sh`; an ADR naming it
-  is describing a contract this repository exports, not coverage it has lost, so
-  resolving it against this tree would be the wrong question. A bare basename carries no
-  such ambiguity. Where an ADR does name such a file without a directory — ADR 0052
-  does — the exemption is the same shape as a retirement: the document has to say, in
-  prose, that the file is generated into adopter repositories.
+- **Every spelling is in scope, and no path is exempt by shape.** The check first
+  matched only full `scripts/ci-gate/` paths, on the argument that a narrower matcher was
+  the bounded rule. It was not: a matcher exclusion is an exemption nobody wrote down and
+  nobody can review, which is the same defect as the stale claim itself one level up.
+  Widening it surfaced fifteen further dangling live claims, each now settled by an
+  appended dated amendment rather than carried as accepted residue — eight in ADR 0079,
+  two in ADR 0024, and one each in ADRs 0025, 0026, 0052, 0062, 0092.
+- A historical disposition table is not exempt for being historical. ADR 0079's column
+  header, "Why the assertion is no longer meaningful", describes eight deleted harnesses
+  without retiring one, and a reader scanning that table sees eight present-tense file
+  names.
+- **Precision lives in the stated exemption, not in the matcher.** The one case that
+  genuinely is not this repository's to resolve — `scripts/changelog-contract.test.sh`,
+  which is generated into adopter repositories by `gen-changelog-caller.sh` rather than
+  hosted here — is expressed as the second stated reason a name may be absent, alongside
+  retirement. That turns three would-be false positives into three explicit entries in
+  ADRs 0052, 0062 and 0092. They are not files the check got wrong; they are files this
+  repository deliberately does not host, and now say so.
 - The trade-off accepted in decision 1 is stated plainly: a retirement note anywhere
   in a long ADR will launder a live claim elsewhere in the same ADR for the same file.
   The failure this closes is "nothing in this ADR says the file is gone", which is the

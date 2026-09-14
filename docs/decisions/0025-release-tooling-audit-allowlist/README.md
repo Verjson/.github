@@ -260,3 +260,15 @@ high brace-expansion GHSA-mh99-v99m-4gvg`) and with the clock moved past `review
 (`allowlist entr(ies) are past their review-by (2026-08-26)`).
 
 See [#146](https://github.com/Verjson/.github/issues/146) for the full diagnosis.
+
+## Amendment (2026-09-14, #1331) — the audit harness is retired with its subject
+
+This ADR's decision stands as the record of how the allowlist worked while the audit ran:
+a dated, reasoned entry with a review-by, never an open-ended suppression.
+
+`scripts/release-tooling-audit.test.sh` is deleted, along with the
+`scripts/release-tooling-audit.sh` it drove, when #509 retired `semantic-release` and the
+release tooling it audited. The 42 stubbed cases described above, and the `run:` line in
+the diff below, are the historical record of that harness rather than a suite that still
+executes. The absence is itself asserted now — `scripts/retired-release-tooling.test.sh`
+fails if either file reappears or a live CI surface references it.

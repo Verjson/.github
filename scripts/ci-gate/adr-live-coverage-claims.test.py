@@ -15,10 +15,11 @@ exactly as stale as the body, so exempting a section for being an amendment woul
 have passed the worst case here (ADR 0012's 2026-08-07 amendment).
 
 So the rule is keyed on what the document actually says. A test file an ADR names --
-as a full `scripts/ci-gate/` path or as a bare basename, because both spellings make
+in any spelling, since a full path and the bare basename these documents use for it make
 the same present-tense promise -- and which no longer resolves must be named, somewhere
 in the same ADR, in a sentence that says why it is absent: it was retired, or it is
-generated into adopter repositories and was never a file here.
+generated into adopter repositories and was never a file here. Nothing is excused by the
+shape of its path; an exemption the matcher grants silently is one no reviewer ever sees.
 
 Scope is the whole document rather than the enclosing section, deliberately. A stale
 claim usually sits in `## Consequences`, which is decided text an amendment may never
@@ -36,18 +37,17 @@ from pathlib import Path, PurePosixPath
 
 ROOT = Path(__file__).resolve().parents[2]
 DECISIONS = ROOT / "docs" / "decisions"
-# Two arms, because an ADR spells a harness both ways and both spellings make the same
-# present-tense promise to a reader. The full-path arm is scoped to `scripts/ci-gate/`:
-# a full path elsewhere routinely names a file that is *generated into adopter
-# repositories* and correctly does not exist here, so it is not this repository's
-# coverage claim to check. A bare basename carries no such ambiguity -- in these ADRs it
-# is always shorthand for a harness in this tree -- so it is resolved against every test
-# file in the repository and flagged when it resolves nowhere.
-TEST_PATH = re.compile(r"scripts/ci-gate/[A-Za-z0-9._-]+\.test\.(?:sh|py)")
-# A basename only: the lookbehind rejects anything with a directory in front of it, so a
-# full path is never double-counted, and the leading class rejects the `.test.sh` tail of
-# a `*.test.sh` glob written in prose.
-BARE_NAME = re.compile(r"(?<![A-Za-z0-9._/-])[A-Za-z0-9_-][A-Za-z0-9._-]*\.test\.(?:sh|py)")
+# One rule, not a scoped one. Every test file an ADR names is a claim, however it is
+# spelled: a full path, a path outside `scripts/ci-gate/`, or the bare basename these
+# documents use interchangeably with it. Narrowing the *matcher* to buy precision was the
+# earlier design and it was wrong -- it silently exempted whole classes of claim, and an
+# exemption nothing states is indistinguishable from one nobody noticed. Precision belongs
+# in `exempts()`, where a reason has to be written down in the document.
+# The lookbehind keeps a full path from also matching as a basename, and the leading class
+# on the final component rejects the `.test.sh` tail of a `*.test.sh` glob written in prose.
+REFERENCE = re.compile(
+    r"(?<![A-Za-z0-9._/-])(?:[A-Za-z0-9._-]+/)*[A-Za-z0-9_-][A-Za-z0-9._-]*\.test\.(?:sh|py)"
+)
 # The vocabulary an ADR uses to record that a harness is gone. Deliberately phrasal
 # rather than stemmed: ADR 0042 is *about* branch deletion, so a bare `delet` stem
 # matched "merge and delete outcomes" in its live claim and exempted it. A retirement
@@ -61,11 +61,12 @@ RETIRED = re.compile(
     """,
     re.IGNORECASE | re.VERBOSE,
 )
-# The second stated reason a named harness is absent from this tree: it was never meant
-# to be here. `scripts/changelog-contract.test.sh` is emitted into adopter repositories
-# by `gen-changelog-caller.sh`, so an ADR naming it is describing a contract it exports,
-# not coverage it has lost. That has to be said in the document, exactly as a retirement
-# does -- an unexplained missing name stays a failure.
+# The second stated reason a named harness is absent from this tree: it was never meant to
+# be here. `scripts/changelog-contract.test.sh` is emitted into adopter repositories by
+# `gen-changelog-caller.sh`, so an ADR naming it is describing a contract this repository
+# exports, not coverage it has lost. Treating that as a matcher exclusion would have been
+# the cheap fix and the wrong one: the file is not special, the *statement about it* is,
+# and a statement has to be made. An unexplained missing name stays a failure.
 GENERATED_ELSEWHERE = re.compile(
     r"""
       \b(?:is|are|was|were)\s+generated\s+into\b
@@ -123,9 +124,7 @@ def claims(text):
     """
     for paragraph in re.split(r"\n\s*\n", text):
         flat = " ".join(paragraph.split())
-        matches = [m.group(0) for m in TEST_PATH.finditer(flat)]
-        matches += [m.group(0) for m in BARE_NAME.finditer(flat)]
-        for path in dict.fromkeys(matches):
+        for path in dict.fromkeys(m.group(0) for m in REFERENCE.finditer(flat)):
             yield flat, path
 
 
@@ -231,6 +230,19 @@ class AdrLiveCoverageClaimsTest(unittest.TestCase):
             found = list(dangling_live_claims([readme]))
         self.assertEqual(1, len(found), found)
         self.assertEqual("absent-harness.test.sh", found[0][1])
+
+    def test_a_full_path_outside_ci_gate_is_read_as_a_claim(self):
+        """A directory in front of the name does not make the promise weaker."""
+        with tempfile.TemporaryDirectory() as tmp:
+            readme = Path(tmp) / "0999-injected" / "README.md"
+            readme.parent.mkdir()
+            readme.write_text(
+                "Covered by `scripts/absent-harness.test.sh`, run in CI.\n",
+                encoding="utf-8",
+            )
+            found = list(dangling_live_claims([readme]))
+        self.assertEqual(1, len(found), found)
+        self.assertEqual("scripts/absent-harness.test.sh", found[0][1])
 
     def test_a_bare_basename_that_resolves_is_not_flagged(self):
         """The arm must not flag the shorthand every disposition table legitimately uses."""
