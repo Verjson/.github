@@ -21,7 +21,9 @@ the `@verjson/*` packages ship, alongside `.cs .sql .tf .kt .swift .php .c
 `*_test.*`, `*.spec.*`). Exemptions are enumerated rather than inferred, so
 widening one is a visible change.
 
-Workflow definitions under `.github/workflows/` and `.github/actions/` are
+Workflow definitions under `.github/workflows/` and `.github/actions/`, and
+a repo-root `action.yml` — the published entrypoint of a composite or JS
+action, which previously escaped the class entirely — are
 **reported on stderr, not rejected**, when they change with no fragment. The
 organization Renovate preset that auto-merges action-pin bumps lives in
 `Verjson/renovate-config` and cannot be changed from here; rejecting them now

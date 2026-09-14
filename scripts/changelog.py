@@ -1174,7 +1174,11 @@ TEST_SOURCE = re.compile(
 # Renovate edits these and nothing else in a bot-automerged upgrade, so they are
 # reported rather than rejected until the organization's Renovate preset stops
 # auto-merging (Verjson/renovate-config). See the #1324 pull request.
-WORKFLOW_DEFINITION = re.compile(r"^\.github/(?:workflows|actions)/.+\.ya?ml$")
+# A repo-root `action.yml` is the published entrypoint of a composite or JS
+# action and belongs to the same class, even though it lives outside `.github/`.
+WORKFLOW_DEFINITION = re.compile(
+    r"^\.github/(?:workflows|actions)/.+\.ya?ml$|^action\.ya?ml$"
+)
 
 
 def is_test_source(path: str) -> bool:

@@ -2106,6 +2106,32 @@ class ChangelogContractTests(unittest.TestCase):
         )
         self.assertIn("no new NEXT fragment", captured.getvalue())
 
+    def test_root_action_definition_is_reported_not_ignored(self) -> None:
+        """#1324 review: a published action's entrypoint lives outside `.github/`."""
+        for filename in ("action.yml", "action.yaml"):
+            with self.subTest(filename=filename), tempfile.TemporaryDirectory() as temporary:
+                original_root = self.root
+                try:
+                    self.root = Path(temporary)
+                    self.root.joinpath("README.md").write_text("base\n", encoding="utf-8")
+                    self.init_git()
+                    self.commit_all("base")
+                    base = run(self.root, "git", "rev-parse", "HEAD")
+                    self.root.joinpath(filename).write_text(
+                        "runs:\n  using: composite\n", encoding="utf-8"
+                    )
+                    self.commit_all("change the published action entrypoint")
+
+                    captured = io.StringIO()
+                    with contextlib.redirect_stderr(captured):
+                        changelog.check_pr(self.root, base, "HEAD")
+                    self.assertIn(filename, captured.getvalue())
+                finally:
+                    self.root = original_root
+
+    def test_nested_action_definition_outside_github_is_not_a_workflow(self) -> None:
+        self.assertIsNone(changelog.WORKFLOW_DEFINITION.match("vendor/action.yml"))
+
     def test_workflow_definition_change_with_a_fragment_reports_nothing(self) -> None:
         self.root.joinpath("README.md").write_text("base\n", encoding="utf-8")
         self.init_git()
