@@ -12,6 +12,7 @@ Reverse-chronological index of org-level decisions.
 | # | Date | Decision |
 |---|------|----------|
 | [0182](0182-package-backed-portable-ci-adapter/README.md) | 2026-09-14 | Package-backed portable CI adapter |
+| [0181](0181-adr-coverage-claims-follow-their-tests/README.md) | 2026-09-14 | An ADR's coverage claims are checked against the tests that exist |
 | [0180](0180-no-approved-organization-custody-for-environment-only-app-keys/README.md) | 2026-09-14 | No approved organization custody for environment-only App keys |
 | [0178](0178-publish-deferred-ci-as-its-own-check/README.md) | 2026-09-14 | Publish a deferred CI run as its own non-success check |
 | [0177](0177-owner-approved-provisioning-delegation/README.md) | 2026-09-14 | Owner-approved delegation for agent-operated provisioning |
