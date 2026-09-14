@@ -290,5 +290,42 @@ class ProvisioningDelegationValidateTest(unittest.TestCase):
                           roles[role_id]["proof"]["insufficient"])
 
 
+    def test_consent_may_not_exceed_the_reviewed_plan(self):
+        document = grant()
+        document["owner_consent"].append({
+            "effect": "governance-change",
+            "reference": "https://github.com/Verjson/.github/issues/1325#issuecomment-3",
+            "approved_by": ["pyousefi"],
+        })
+        result = self.run_validator(document)
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("owner-consent-exceeds-plan:governance-change", self.receipt(result)["reasons"])
+
+    def test_environment_configuration_is_a_permitted_gated_effect(self):
+        document = grant()
+        document["cohort"]["targets"][0]["effects"] = ["environment-configuration", "secret-write"]
+        document["effects"] = ["environment-configuration", "secret-write"]
+        result = self.run_validator(document)
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("owner-consent-required:environment-configuration", self.receipt(result)["reasons"])
+
+        document["owner_consent"].append({
+            "effect": "environment-configuration",
+            "reference": "https://github.com/Verjson/.github/issues/1325#issuecomment-4",
+            "approved_by": ["pyousefi"],
+        })
+        result = self.run_validator(document)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+        document["cohort"]["targets"][0]["role_id"] = "ruleset-audit"
+        document["cohort"]["targets"][0]["permission_ceiling"] = {"administration": "read", "metadata": "read"}
+        result = self.run_validator(document)
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn(
+            "effect-not-permitted-for-role:ruleset-audit:environment-configuration",
+            self.receipt(result)["reasons"],
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

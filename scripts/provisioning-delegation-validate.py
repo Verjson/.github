@@ -224,6 +224,8 @@ def check_consent(grant: dict[str, Any], contract: dict[str, Any], effects: list
     for effect in effects:
         if effect in gated and effect not in consented:
             reasons.append(f"owner-consent-required:{effect}")
+    for effect in sorted(consented - set(effects)):
+        reasons.append(f"owner-consent-exceeds-plan:{effect}")
     return reasons
 
 

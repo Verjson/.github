@@ -47,10 +47,12 @@
         "pull_requests": "write"
       },
       "permittedEffects": [
+        "environment-configuration",
         "secret-write",
         "secret-withdrawal"
       ],
       "ownerGatedEffects": [
+        "environment-configuration",
         "secret-write",
         "secret-withdrawal"
       ]
@@ -93,10 +95,12 @@
         "pull_requests": "write"
       },
       "permittedEffects": [
+        "environment-configuration",
         "secret-write",
         "secret-withdrawal"
       ],
       "ownerGatedEffects": [
+        "environment-configuration",
         "secret-write",
         "secret-withdrawal"
       ]
@@ -138,10 +142,12 @@
         "metadata": "read"
       },
       "permittedEffects": [
+        "environment-configuration",
         "secret-write",
         "secret-withdrawal"
       ],
       "ownerGatedEffects": [
+        "environment-configuration",
         "secret-write",
         "secret-withdrawal"
       ]

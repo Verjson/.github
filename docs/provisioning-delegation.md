@@ -60,9 +60,11 @@ rejected. A grant carrying an `approved`, `unattended`, `auto_approve`, or
 `model_approval` field fails, as does an unrecognized field: the fixed field set is the
 contract. Owner gates stay owner gates — every effect in the contract's
 `ownerConsentRequired` list needs its own consent record naming the effect, a
-GitHub-hosted reference, and its approvers. Installation and permission changes, key
-withdrawal, supersession enablement, governance changes, and new commercial terms are
-all in that list.
+GitHub-hosted reference, and its approvers. Installation and permission changes,
+environment configuration, secret write and withdrawal, supersession enablement,
+runner registration, governance changes, and new commercial terms are all in that
+list. Consent may not exceed the plan either: a consent record for an effect the plan
+does not request is rejected rather than banked for later.
 
 ## Activation and other organizations
 
