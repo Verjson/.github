@@ -660,4 +660,4 @@ of that step, not of a suite that runs today.
 
 Fail-closed is asserted now by the registered `event-driven-authorization` suite and by
 `scripts/ci-gate/native-automerge.test.sh`, which drives the shipped promotion step against
-absent, pending, and failing required checks. See [ADR 0179](../0179-adr-coverage-claims-follow-their-tests/README.md).
+absent, pending, and failing required checks. See [ADR 0181](../0181-adr-coverage-claims-follow-their-tests/README.md).

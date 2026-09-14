@@ -400,6 +400,6 @@ This ADR's decision stands: absent checks still fail closed. Under the event-dri
 that property is asserted by the registered `event-driven-authorization` and `arm-receipt`
 suites, and by `scripts/ci-gate/native-automerge.test.sh`'s required-check policy cases.
 
-Note for future readers: [ADR 0179](../0179-adr-coverage-claims-follow-their-tests/README.md)'s automated check matches full `scripts/ci-gate/` paths, so
+Note for future readers: [ADR 0181](../0181-adr-coverage-claims-follow-their-tests/README.md)'s automated check matches full `scripts/ci-gate/` paths, so
 it caught the first of these three and not the two bare basenames. They are recorded here
 by hand for that reason.

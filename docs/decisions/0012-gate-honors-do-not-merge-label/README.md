@@ -262,7 +262,7 @@ coverage of the hold/no-op disposition. That file is now deleted (#1329): ADR 00
 the `referenced_workflows` matcher it extracted with an arm receipt plus an explicit Checks
 API authorization, and no production workflow reads `referenced_workflows` any more.
 
-This is the case that shaped [ADR 0179](../0179-adr-coverage-claims-follow-their-tests/README.md)'s rule. The stale claim sits *inside a dated
+This is the case that shaped [ADR 0181](../0181-adr-coverage-claims-follow-their-tests/README.md)'s rule. The stale claim sits *inside a dated
 amendment*, written a month before the deletion that invalidated it, so an exemption keyed
 on "is this an amendment?" would have passed it. Being dated does not make a claim current.
 

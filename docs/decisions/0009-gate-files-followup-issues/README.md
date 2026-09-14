@@ -66,4 +66,4 @@ The `## Consequences` bullet above reads as a claim about current coverage. It i
 extracted moved into `scripts/ci-gate/post-merge-reconcile.sh` and is driven there by the
 registered `scripts/ci-gate/post-merge-reconcile.test.sh`. The decision recorded above is
 unchanged — the gate still files follow-up issues rather than blocking on non-blocking
-findings — only the sentence about which file proves it was stale. See [ADR 0179](../0179-adr-coverage-claims-follow-their-tests/README.md).
+findings — only the sentence about which file proves it was stale. See [ADR 0181](../0181-adr-coverage-claims-follow-their-tests/README.md).

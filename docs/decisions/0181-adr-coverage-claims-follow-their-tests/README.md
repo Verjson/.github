@@ -1,4 +1,4 @@
-# 0176 — An ADR's coverage claims are checked against the tests that exist
+# 0181 — An ADR's coverage claims are checked against the tests that exist
 
 - **Date:** 2026-09-14
 - **Status:** Accepted

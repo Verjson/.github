@@ -22,7 +22,7 @@ would be satisfiable only by rewriting the record that must not be rewritten.
 ADRs 0009, 0012, 0024, 0042, and 0058 carry dated amendments; 0039's was extended,
 since its 2026-09-12 amendment recorded the retirement without stating it in the
 sentences naming the files. No decision is reversed — only the claims about which files
-currently assert them. ADR 0179 records the rule and its accepted trade-off.
+currently assert them. ADR 0181 records the rule and its accepted trade-off.
 
 `required-workflow-provenance.test.sh` was retired for the dead ADR 0039 attestation
 matcher, but also asserted two properties of live code that had no other coverage.

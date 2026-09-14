@@ -263,6 +263,6 @@ exit status answers "did the PR merge?" and nothing else — is driven today by 
 `scripts/ci-gate/post-merge-reconcile.test.sh`, including the #458 case where an
 already-deleted head ref makes the `DELETE` 404 without failing the reconcile.
 
-This ADR is also why [ADR 0179](../0179-adr-coverage-claims-follow-their-tests/README.md)'s retirement vocabulary is phrasal rather than stemmed: the
+This ADR is also why [ADR 0181](../0181-adr-coverage-claims-follow-their-tests/README.md)'s retirement vocabulary is phrasal rather than stemmed: the
 paragraph above is *about* branch deletion, so a matcher looking for the stem `delet`
 found "merge and delete outcomes" in the stale claim itself and exempted it.

@@ -221,4 +221,4 @@ The run-attestation matcher the first extracted is dead code no production workf
 reaches. The #276 self-exclusion property the second asserted is *not* dead — it survives
 in ADR 0081's form, where the promotion rejects any `REQUIRED_CHECK_POLICY` entry naming a
 gate check or a gate workflow path, and it is driven over all three check names and all
-three workflow paths in the registered `scripts/ci-gate/native-automerge.test.sh`. See [ADR 0179](../0179-adr-coverage-claims-follow-their-tests/README.md).
+three workflow paths in the registered `scripts/ci-gate/native-automerge.test.sh`. See [ADR 0181](../0181-adr-coverage-claims-follow-their-tests/README.md).
