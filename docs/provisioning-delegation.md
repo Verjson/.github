@@ -92,3 +92,15 @@ rather than leaving two hand-maintained namespaces for one role. Organization se
 proof for every environment-only role, and a successful run is insufficient proof for
 the audit and runner roles. Rotation is owner-mediated for every role; no role permits
 automated key regeneration.
+
+Each role also records `migrationStatus`, which keeps the decided custody apart from
+the achieved one. `broadCopiesPending` is true only while an organization-wide or
+selected-repository copy of that role's key still exists; `survivingBroadCopies` names
+each such copy and the visibility `config/org-actions-secret-policy.json` declares for
+it, and `trackingIssue` points at the withdrawal work. Today `merge` and `ai-review`
+are decided environment-only but have not achieved it — their organization secrets
+survive for unprepared consumers, tracked by
+[#1285](https://github.com/Verjson/.github/issues/1285) — while `release` has. The
+validator exits 2 on an inventory whose role claims `achievedCustody` equal to its
+`custodyDecision` while pending copies are recorded, so the record cannot overstate
+what custody migration has actually achieved.

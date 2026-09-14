@@ -11,6 +11,22 @@
     "ai-review": {
       "portableName": "ai-review-authorization",
       "custodyDecision": "environment-only",
+      "migrationStatus": {
+        "achievedCustody": "environment-only-pending-broad-copy-withdrawal",
+        "broadCopiesPending": true,
+        "survivingBroadCopies": [
+          {
+            "kind": "organization-secret",
+            "secret": "AI_REVIEW_APP_PRIVATE_KEY",
+            "visibility": "selected",
+            "selectedRepositories": [
+              "Verjson/.github"
+            ],
+            "policy": "config/org-actions-secret-policy.json"
+          }
+        ],
+        "trackingIssue": "https://github.com/Verjson/.github/issues/1285"
+      },
       "custodyRecord": "docs/decisions/0166-environment-only-app-private-keys/README.md",
       "storage": {
         "kind": "repository-environment",
@@ -60,6 +76,20 @@
     "merge": {
       "portableName": "merge-authorization",
       "custodyDecision": "environment-only",
+      "migrationStatus": {
+        "achievedCustody": "environment-only-pending-broad-copy-withdrawal",
+        "broadCopiesPending": true,
+        "survivingBroadCopies": [
+          {
+            "kind": "organization-secret",
+            "secret": "MERGE_APP_PRIVATE_KEY",
+            "visibility": "all",
+            "selectedRepositories": [],
+            "policy": "config/org-actions-secret-policy.json"
+          }
+        ],
+        "trackingIssue": "https://github.com/Verjson/.github/issues/1285"
+      },
       "custodyRecord": "docs/decisions/0166-environment-only-app-private-keys/README.md",
       "storage": {
         "kind": "repository-environment",
@@ -108,6 +138,12 @@
     "release": {
       "portableName": "release-authorization",
       "custodyDecision": "environment-only",
+      "migrationStatus": {
+        "achievedCustody": "environment-only",
+        "broadCopiesPending": false,
+        "survivingBroadCopies": [],
+        "trackingIssue": null
+      },
       "custodyRecord": "docs/decisions/0166-environment-only-app-private-keys/README.md",
       "storage": {
         "kind": "repository-environment",
@@ -155,6 +191,12 @@
     "renovate-observation": {
       "portableName": "renovate-compatibility",
       "custodyDecision": "organization-secret-pending-decision",
+      "migrationStatus": {
+        "achievedCustody": "organization-secret-pending-decision",
+        "broadCopiesPending": false,
+        "survivingBroadCopies": [],
+        "trackingIssue": null
+      },
       "custodyRecord": "docs/decisions/0111-interim-pat-for-renovate-compatibility-control-plane/README.md",
       "storage": {
         "kind": "organization-secret",
@@ -200,6 +242,12 @@
     "dependency-supersession": {
       "portableName": "canonical-dependency-supersession",
       "custodyDecision": "organization-secret-pending-decision",
+      "migrationStatus": {
+        "achievedCustody": "organization-secret-pending-decision",
+        "broadCopiesPending": false,
+        "survivingBroadCopies": [],
+        "trackingIssue": null
+      },
       "custodyRecord": "docs/decisions/0136-separate-dependency-supersession-observation-from-mutation/README.md",
       "storage": {
         "kind": "organization-secret",
@@ -245,6 +293,12 @@
     "ruleset-audit": {
       "portableName": "ruleset-audit",
       "custodyDecision": "read-only-authority",
+      "migrationStatus": {
+        "achievedCustody": "read-only-authority",
+        "broadCopiesPending": false,
+        "survivingBroadCopies": [],
+        "trackingIssue": null
+      },
       "custodyRecord": "docs/decisions/0094-arm-required-by-its-own-property-scoped-ruleset/README.md",
       "storage": {
         "kind": "organization-secret",
@@ -282,6 +336,12 @@
     "runner-registration": {
       "portableName": "org-gh-runner-registration",
       "custodyDecision": "isolated-runner-control",
+      "migrationStatus": {
+        "achievedCustody": "isolated-runner-control",
+        "broadCopiesPending": false,
+        "survivingBroadCopies": [],
+        "trackingIssue": null
+      },
       "custodyRecord": "docs/decisions/0144-exact-head-runner-deployment-review/README.md",
       "storage": {
         "kind": "isolated-runner-control-plane",

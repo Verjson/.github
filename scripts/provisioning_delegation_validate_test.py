@@ -10,6 +10,7 @@ ROOT = Path(__file__).resolve().parent.parent
 VALIDATOR = ROOT / "scripts/provisioning-delegation-validate.py"
 CONTRACT = ROOT / "config/provisioning-delegation-contract.json"
 INVENTORY = ROOT / "config/app-role-custody-inventory.json"
+POLICY = ROOT / "config/org-actions-secret-policy.json"
 EXAMPLE = ROOT / "docs/examples/provisioning-delegation-grant.json"
 PIN = "0" * 39 + "a"
 DIGEST = "sha256:" + "b" * 64
@@ -57,12 +58,17 @@ def grant(**overrides):
 
 
 class ProvisioningDelegationValidateTest(unittest.TestCase):
-    def run_validator(self, document, *, contract=None, now="2026-09-15T00:00:00Z", raw=None):
+    def run_validator(self, document, *, contract=None, inventory=None, now="2026-09-15T00:00:00Z", raw=None):
         with tempfile.TemporaryDirectory() as directory:
             temp = Path(directory)
             grant_path = temp / "grant.json"
             grant_path.write_text(raw if raw is not None else json.dumps(document), encoding="utf-8")
-            arguments = ["--grant", str(grant_path), "--inventory", str(INVENTORY), "--now", now]
+            if inventory is None:
+                inventory_path = INVENTORY
+            else:
+                inventory_path = temp / "inventory.json"
+                inventory_path.write_text(json.dumps(inventory), encoding="utf-8")
+            arguments = ["--grant", str(grant_path), "--inventory", str(inventory_path), "--now", now]
             if contract is None:
                 contract_path = temp / "contract.json"
                 active = json.loads(CONTRACT.read_text(encoding="utf-8"))
@@ -337,6 +343,56 @@ class ProvisioningDelegationValidateTest(unittest.TestCase):
         for role_id in sorted(environment_bound):
             with self.subTest(role_id=role_id):
                 self.assertEqual(roles[role_id]["storage"]["environment"], f"{role_id}-app")
+
+    def test_a_role_cannot_claim_achieved_custody_while_broad_copies_are_pending(self):
+        inventory = json.loads(INVENTORY.read_text(encoding="utf-8"))
+        role = inventory["roles"]["merge"]
+        self.assertTrue(role["migrationStatus"]["broadCopiesPending"])
+        role["migrationStatus"]["achievedCustody"] = role["custodyDecision"]
+        result = self.run_validator(grant(), inventory=inventory)
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        self.assertIn("merge", result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
+
+    def test_migration_status_is_required_of_every_role(self):
+        inventory = json.loads(INVENTORY.read_text(encoding="utf-8"))
+        del inventory["roles"]["release"]["migrationStatus"]
+        result = self.run_validator(grant(), inventory=inventory)
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        self.assertIn("release", result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
+
+    def test_surviving_broad_copies_match_the_declared_org_secret_policy(self):
+        roles = json.loads(INVENTORY.read_text(encoding="utf-8"))["roles"]
+        declared = json.loads(POLICY.read_text(encoding="utf-8"))["secrets"]
+
+        pending = {
+            role_id for role_id, role in roles.items()
+            if role["migrationStatus"]["broadCopiesPending"]
+        }
+        self.assertEqual(pending, {"merge", "ai-review"})
+        self.assertEqual(roles["release"]["migrationStatus"]["achievedCustody"], "environment-only")
+
+        for role_id in sorted(pending):
+            with self.subTest(role_id=role_id):
+                status = roles[role_id]["migrationStatus"]
+                self.assertIn("1285", status["trackingIssue"])
+                copies = status["survivingBroadCopies"]
+                self.assertTrue(copies)
+                for copy in copies:
+                    self.assertEqual(copy["kind"], "organization-secret")
+                    secret = declared[copy["secret"]]
+                    self.assertEqual(copy["visibility"], secret["target_visibility"])
+                    self.assertEqual(
+                        copy["selectedRepositories"], secret.get("selected_repositories", [])
+                    )
+
+        for role_id, role in roles.items():
+            with self.subTest(role_id=role_id):
+                if role_id in pending:
+                    continue
+                self.assertEqual(role["migrationStatus"]["achievedCustody"], role["custodyDecision"])
+                self.assertEqual(role["migrationStatus"]["survivingBroadCopies"], [])
 
     def test_consent_may_not_exceed_the_reviewed_plan(self):
         document = grant()

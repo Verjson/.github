@@ -55,6 +55,20 @@ The custody inventory is extended from three role environments to all seven owne
 roles, each with storage, trust, rotation and role-specific positive, negative and
 explicitly *insufficient* proof.
 
+The inventory separates the custody an owner decided from the custody actually in
+place. `custodyDecision` is the decision; `migrationStatus.achievedCustody` is the
+state reached, and `migrationStatus.survivingBroadCopies` names each organization
+secret copy of a role key that still exists, with the visibility
+`config/org-actions-secret-policy.json` declares for it. `merge` and `ai-review` are
+decided environment-only and have not achieved it: broad copies remain for unprepared
+consumers, as ADR 0166 records, and their withdrawal is tracked by
+[#1285](https://github.com/Verjson/.github/issues/1285). Recording only the decision
+would have read as a completed withdrawal, which is the more dangerous direction for a
+credential-custody record to be wrong in — a reader would conclude the broad exposure
+was gone. The validator therefore refuses an inventory in which a role claims its
+decided custody as achieved while its own record says copies are pending, so the
+optimistic reading cannot be written down at all.
+
 Merging this record activates nothing. The contract ships as
 `activation.status: defined-not-activated` and the validator withholds authorization
 with reason `contract-not-activated` until an owner changes that status in a reviewed

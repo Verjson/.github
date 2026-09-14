@@ -21,6 +21,7 @@ ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_CONTRACT = ROOT / "config/provisioning-delegation-contract.json"
 DEFAULT_INVENTORY = ROOT / "config/app-role-custody-inventory.json"
 GRANT_SCHEMA = "verjson-provisioning-delegation-grant/v1"
+INVENTORY_SCHEMA = "verjson-app-role-custody-inventory/v1"
 SHA = re.compile(r"[0-9a-f]{40}")
 DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
 IDENTIFIER = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/-]*")
@@ -62,6 +63,54 @@ def instant(value: Any) -> dt.datetime | None:
 def hosted_reference(value: Any, hosts: list[str]) -> bool:
     raw = text(value)
     return raw is not None and any(raw.startswith(f"https://{host}/") for host in hosts)
+
+
+MIGRATION_FIELDS = {"achievedCustody", "broadCopiesPending", "survivingBroadCopies", "trackingIssue"}
+
+
+def check_inventory(inventory: dict[str, Any]) -> dict[str, Any]:
+    """Read the inventory as a role inventory, refusing a decided-as-achieved custody claim.
+
+    `custodyDecision` is what the organization decided; `migrationStatus.achievedCustody`
+    is what is actually in place. While a broad copy of a role's key survives the two are
+    not the same fact, and an inventory that states them as one is a misreport rather than
+    a policy the validator may act on.
+    """
+    roles = inventory.get("roles")
+    if inventory.get("schema") != INVENTORY_SCHEMA or not isinstance(roles, dict):
+        raise InputError("custody inventory is not a recognized role inventory")
+    for role_id, role in roles.items():
+        if not isinstance(role, dict):
+            raise InputError(f"custody inventory role {role_id} is not an object")
+        status = role.get("migrationStatus")
+        if not isinstance(status, dict) or set(status) != MIGRATION_FIELDS:
+            raise InputError(
+                f"custody inventory role {role_id} must record migrationStatus with "
+                f"{sorted(MIGRATION_FIELDS)}"
+            )
+        pending = status["broadCopiesPending"]
+        copies = status["survivingBroadCopies"]
+        if not isinstance(pending, bool) or not isinstance(copies, list):
+            raise InputError(
+                f"custody inventory role {role_id} migrationStatus is malformed"
+            )
+        if pending:
+            if status["achievedCustody"] == role.get("custodyDecision"):
+                raise InputError(
+                    f"custody inventory role {role_id} claims achieved custody "
+                    f"{status['achievedCustody']!r} while broad copies are still pending"
+                )
+            if not copies or text(status["trackingIssue"]) is None:
+                raise InputError(
+                    f"custody inventory role {role_id} reports pending broad copies "
+                    "without naming them and the issue tracking their withdrawal"
+                )
+        elif copies or status["achievedCustody"] != role.get("custodyDecision"):
+            raise InputError(
+                f"custody inventory role {role_id} reports no pending broad copies but "
+                "does not record the decided custody as achieved"
+            )
+    return inventory
 
 
 def check_shape(grant: dict[str, Any]) -> list[str]:
@@ -250,8 +299,7 @@ def validate(grant: dict[str, Any], contract: dict[str, Any], inventory: dict[st
         raise InputError("delegation contract activation must be a JSON object")
     if activation.get("status") != "active":
         reasons.append("contract-not-activated")
-    if inventory.get("schema") != "verjson-app-role-custody-inventory/v1" or not isinstance(inventory.get("roles"), dict):
-        raise InputError("custody inventory is not a recognized role inventory")
+    check_inventory(inventory)
     reasons += check_parties(grant, contract)
     reasons += check_pin(grant, contract)
     reasons += check_evidence(grant, contract)
