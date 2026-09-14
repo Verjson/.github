@@ -154,7 +154,11 @@ set -Eeuo pipefail
 # any assertion added later still fails closed, named by line.
 
 contract_fail() {
-  printf 'container-deployment contract FAILED: %s\\n' "\$*" >&2
+  local reason="\$*"
+  # A reason is the whole point of the report; an assertion that supplies none
+  # would print a bare "FAILED:" and send the adopter back to bisecting.
+  [ -n "\${reason//[[:space:]]/}" ] || reason="an assertion failed without naming a reason; this generated contract test is defective"
+  printf 'container-deployment contract FAILED: %s\\n' "\$reason" >&2
   exit 1
 }
 trap 'contract_status=\$?; printf "container-deployment contract FAILED: assertion at %s line %s exited %s\\n" "\$0" "\$LINENO" "\$contract_status" >&2; exit "\$contract_status"' ERR
@@ -186,31 +190,25 @@ assert_digest .github/workflows/container-deployment-review-producer.yml $review
 assert_digest scripts/container_deployment_review_producer.py $review_producer_digest
 
 [ -f "$config" ] || contract_fail "deployment config $config is missing"
-jq -e '
-  .schemaVersion == 1 and
-  (.reviewAuthority | keys | sort == ["ai", "code", "security"]) and
-  ([.reviewAuthority[].installationId] | all(type == "number" and . > 0)) and
-  (.reviewAuthority.ai.sourceAppId | type == "number" and . > 0) and
-  (.reviewAuthority.ai.sourceCheckName | type == "string" and length > 0) and
-  .cliCommand == ["verjson-cloud"] and
-  (.evidenceCommand | length == 2) and
-  (.probeCommand | length == 2) and
-  (.fleets | type == "object" and length > 0)
-' "$config" >/dev/null || contract_fail "\$(
-  jq -r '
-    [
-      (if .schemaVersion == 1 then empty else "schemaVersion: expected 1, observed \\(.schemaVersion | tojson)" end),
-      (if (.reviewAuthority | keys | sort == ["ai", "code", "security"]) then empty else "reviewAuthority: expected keys [ai, code, security], observed \\(.reviewAuthority | keys? // null | tojson)" end),
-      (if ([.reviewAuthority[]?.installationId] | all(type == "number" and . > 0)) then empty else "reviewAuthority[].installationId: expected positive numbers, observed \\([.reviewAuthority[]?.installationId] | tojson)" end),
-      (if (.reviewAuthority.ai.sourceAppId | type == "number" and . > 0) then empty else "reviewAuthority.ai.sourceAppId: expected a positive number, observed \\(.reviewAuthority.ai.sourceAppId | tojson)" end),
-      (if (.reviewAuthority.ai.sourceCheckName | type == "string" and length > 0) then empty else "reviewAuthority.ai.sourceCheckName: expected a non-empty string, observed \\(.reviewAuthority.ai.sourceCheckName | tojson)" end),
-      (if .cliCommand == ["verjson-cloud"] then empty else "cliCommand: expected [\\"verjson-cloud\\"], observed \\(.cliCommand | tojson)" end),
-      (if (.evidenceCommand | length == 2) then empty else "evidenceCommand: expected 2 elements, observed \\(.evidenceCommand | tojson)" end),
-      (if (.probeCommand | length == 2) then empty else "probeCommand: expected 2 elements, observed \\(.probeCommand | tojson)" end),
-      (if (.fleets | type == "object" and length > 0) then empty else "fleets: expected a non-empty object, observed \\(.fleets | tojson)" end)
-    ] | join("; ")
-  ' "$config" 2>/dev/null || echo "$config is not readable JSON"
-)"
+# The nine deployment-config preconditions are stated once. This program is both
+# the verdict and the report: the contract passes iff it names no violation, so a
+# condition added later cannot be enforced without also being diagnosed. \`-e\`
+# keeps an empty or input-less config a rejection: jq yields no result at all for
+# one, which is otherwise indistinguishable from "no violations found".
+config_violations="\$(jq -re '
+  [
+    (if .schemaVersion == 1 then empty else "schemaVersion: expected 1, observed \\(.schemaVersion | tojson)" end),
+    (if (.reviewAuthority | keys | sort == ["ai", "code", "security"]) then empty else "reviewAuthority: expected keys [ai, code, security], observed \\(.reviewAuthority | keys? // null | tojson)" end),
+    (if ([.reviewAuthority[].installationId] | all(type == "number" and . > 0)) then empty else "reviewAuthority[].installationId: expected positive numbers, observed \\([.reviewAuthority[]?.installationId] | tojson)" end),
+    (if (.reviewAuthority.ai.sourceAppId | type == "number" and . > 0) then empty else "reviewAuthority.ai.sourceAppId: expected a positive number, observed \\(.reviewAuthority.ai.sourceAppId | tojson)" end),
+    (if (.reviewAuthority.ai.sourceCheckName | type == "string" and length > 0) then empty else "reviewAuthority.ai.sourceCheckName: expected a non-empty string, observed \\(.reviewAuthority.ai.sourceCheckName | tojson)" end),
+    (if .cliCommand == ["verjson-cloud"] then empty else "cliCommand: expected [\\"verjson-cloud\\"], observed \\(.cliCommand | tojson)" end),
+    (if (.evidenceCommand | length == 2) then empty else "evidenceCommand: expected 2 elements, observed \\(.evidenceCommand | tojson)" end),
+    (if (.probeCommand | length == 2) then empty else "probeCommand: expected 2 elements, observed \\(.probeCommand | tojson)" end),
+    (if (.fleets | type == "object" and length > 0) then empty else "fleets: expected a non-empty object, observed \\(.fleets | tojson)" end)
+  ] | join("; ")
+  ' "$config" 2>/dev/null)" || contract_fail "$config is not readable JSON"
+[ -z "\$config_violations" ] || contract_fail "\$config_violations"
 while IFS= read -r adapter; do
   [ -f "\$adapter" ] || contract_fail \\
     "$config names adapter \$adapter, which is not a regular file in this repository"

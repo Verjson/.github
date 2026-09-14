@@ -150,6 +150,156 @@ done
 mv "$tmp/config.clean" "$consumer/container-deployment.json"
 (cd "$consumer" && bash scripts/container-deployment-contract.test.sh >/dev/null)
 
+# A contract failure must never print an empty reason. The nine deployment-config
+# preconditions are the verdict *and* the diagnostic: a single jq program derives
+# both, so a condition added later cannot be enforced without also being reported.
+# A second hand-maintained predicate would let the two drift back apart and yield
+# `container-deployment contract FAILED: ` with nothing after it.
+generated_contract_test="$consumer/scripts/container-deployment-contract.test.sh"
+for single_sourced_condition in \
+  '.schemaVersion == 1' \
+  '(.reviewAuthority | keys | sort == ["ai", "code", "security"])' \
+  '[.reviewAuthority[].installationId] | all(type == "number" and . > 0)' \
+  '(.reviewAuthority.ai.sourceAppId | type == "number" and . > 0)' \
+  '(.reviewAuthority.ai.sourceCheckName | type == "string" and length > 0)' \
+  '.cliCommand == ["verjson-cloud"]' \
+  '(.evidenceCommand | length == 2)' \
+  '(.probeCommand | length == 2)' \
+  '(.fleets | type == "object" and length > 0)'; do
+  occurrences="$(grep -oF -- "$single_sourced_condition" "$generated_contract_test" | wc -l)"
+  test "$occurrences" = 1 || {
+    echo "deployment-config condition is stated $occurrences times, expected once: $single_sourced_condition" >&2
+    exit 1
+  }
+done
+
+blank_reason="$(bash -c '
+  eval "$(sed -n "/^contract_fail() {/,/^}/p" "$1")"
+  contract_fail ""
+' _ "$generated_contract_test" 2>&1 || true)"
+case "$blank_reason" in
+  *'FAILED: '[![:space:]]*) ;;
+  *)
+    echo "generated contract test reported a failure with an empty reason: $blank_reason" >&2
+    exit 1
+    ;;
+esac
+
+# Every deployment-config precondition must reject on its own and name itself, so
+# the accept/reject partition stays pinned field by field rather than only in
+# aggregate.
+cp "$consumer/container-deployment.json" "$tmp/config.clean"
+while IFS='|' read -r mutation expected_field; do
+  jq "$mutation" "$tmp/config.clean" >"$consumer/container-deployment.json"
+  condition_report="$tmp/config-condition.log"
+  if (cd "$consumer" && bash scripts/container-deployment-contract.test.sh >"$condition_report" 2>&1); then
+    echo "generated deployment contract accepted a config violating $expected_field" >&2
+    exit 1
+  fi
+  grep -qF -- "$expected_field" "$condition_report" || {
+    echo "generated contract test rejected $mutation without naming $expected_field" >&2
+    cat "$condition_report" >&2
+    exit 1
+  }
+  grep -Eq 'contract FAILED: [^[:space:]]' "$condition_report" || {
+    echo "generated contract test rejected $mutation with an empty reason" >&2
+    cat "$condition_report" >&2
+    exit 1
+  }
+done <<'MUTATIONS'
+.schemaVersion = 2|schemaVersion: expected 1
+del(.reviewAuthority.ai)|reviewAuthority: expected keys [ai, code, security]
+.reviewAuthority.code.installationId = 0|reviewAuthority[].installationId: expected positive numbers
+.reviewAuthority.ai.sourceAppId = "403"|reviewAuthority.ai.sourceAppId: expected a positive number
+.reviewAuthority.ai.sourceCheckName = ""|reviewAuthority.ai.sourceCheckName: expected a non-empty string
+.cliCommand = ["wrong-cli"]|cliCommand: expected
+.evidenceCommand = ["python3"]|evidenceCommand: expected 2 elements
+.probeCommand = ["python3"]|probeCommand: expected 2 elements
+.fleets = {}|fleets: expected a non-empty object
+MUTATIONS
+
+# An empty config yields no jq result at all, rather than an empty violation
+# list. That must stay a rejection, and a named one.
+: >"$consumer/container-deployment.json"
+empty_config_report="$tmp/empty-config.log"
+if (cd "$consumer" && bash scripts/container-deployment-contract.test.sh >"$empty_config_report" 2>&1); then
+  echo 'generated deployment contract accepted an empty deployment config' >&2
+  exit 1
+fi
+grep -Eq 'contract FAILED: [^[:space:]]' "$empty_config_report" || {
+  echo 'generated contract test rejected an empty config with an empty reason' >&2
+  cat "$empty_config_report" >&2
+  exit 1
+}
+
+# The adapter assertions sit behind the config check rather than behind a digest
+# pin, so a config naming a bad adapter reaches them.
+while IFS='|' read -r adapter_kind expected_adapter_report; do
+  jq '.evidenceCommand[1] = "scripts/runner-deployment-absent.py"' "$tmp/config.clean" \
+    >"$consumer/container-deployment.json"
+  case "$adapter_kind" in
+    missing) ;;
+    symlink)
+      ln -s runner-deployment-evidence.py "$consumer/scripts/runner-deployment-absent.py" ;;
+  esac
+  adapter_report="$tmp/adapter-$adapter_kind.log"
+  if (cd "$consumer" && bash scripts/container-deployment-contract.test.sh >"$adapter_report" 2>&1); then
+    echo "generated deployment contract accepted a $adapter_kind adapter" >&2
+    exit 1
+  fi
+  grep -qF -- "$expected_adapter_report" "$adapter_report" || {
+    echo "generated contract test rejected a $adapter_kind adapter without naming it" >&2
+    cat "$adapter_report" >&2
+    exit 1
+  }
+  rm -f "$consumer/scripts/runner-deployment-absent.py"
+done <<'ADAPTERS'
+missing|scripts/runner-deployment-absent.py, which is not a regular file
+symlink|scripts/runner-deployment-absent.py, which is a symlink
+ADAPTERS
+
+mv "$tmp/config.clean" "$consumer/container-deployment.json"
+(cd "$consumer" && bash scripts/container-deployment-contract.test.sh >/dev/null)
+
+# The caller-workflow assertions sit behind that file's own digest pin, so no
+# mutation of the caller alone can reach them. Re-pin the digest to the mutated
+# caller -- exactly what regenerating at a contract whose emitter produced that
+# caller would do -- and the later assertions become reachable.
+assert_generated_contract_rejects_caller() {
+  local label="$1" mutation="$2" expected="$3" caller_digest report
+  cp "$consumer/.github/workflows/container-deployment.yml" "$tmp/caller.clean"
+  cp "$consumer/scripts/container-deployment-contract.test.sh" "$tmp/contract-test.clean"
+  sed -i "$mutation" "$consumer/.github/workflows/container-deployment.yml"
+  caller_digest="$(sha256sum "$consumer/.github/workflows/container-deployment.yml" | cut -d' ' -f1)"
+  sed -i -E "s|^(assert_digest \.github/workflows/container-deployment\.yml ).*|\1$caller_digest|" \
+    "$consumer/scripts/container-deployment-contract.test.sh"
+  report="$tmp/caller-$label.log"
+  if (cd "$consumer" && bash scripts/container-deployment-contract.test.sh >"$report" 2>&1); then
+    echo "generated deployment contract accepted a caller with $label" >&2
+    exit 1
+  fi
+  grep -qF -- "$expected" "$report" || {
+    echo "generated contract test rejected $label without reporting it" >&2
+    cat "$report" >&2
+    exit 1
+  }
+  mv "$tmp/caller.clean" "$consumer/.github/workflows/container-deployment.yml"
+  mv "$tmp/contract-test.clean" "$consumer/scripts/container-deployment-contract.test.sh"
+}
+assert_generated_contract_rejects_caller \
+  'an unpinned reusable-workflow ref' \
+  "s|container-deployment.yml@$ref|container-deployment.yml@main|" \
+  'does not contain the required pinned text'
+assert_generated_contract_rejects_caller \
+  'a mutable image tag' \
+  '$a# runner image: ghcr.io/verjson/runner:latest' \
+  'must not name secrets, environments, or mutable tags'
+assert_generated_contract_rejects_caller \
+  'a dropped permission' \
+  's|^  checks: read$||' \
+  'expected permissions'
+(cd "$consumer" && bash scripts/container-deployment-contract.test.sh >/dev/null)
+
 workflow="$root/.github/workflows/container-deployment.yml"
 grep -q '^    environment: production$' "$workflow"
 grep -q 'if: inputs.dry-run' "$workflow"
