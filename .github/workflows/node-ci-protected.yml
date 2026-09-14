@@ -430,6 +430,13 @@ jobs:
           # Defer only when the release-age gate is ACTIVELY pending. Any
           # uncertainty (API error, missing status) fails OPEN → run CI, so a real
           # PR is never silently skipped. Same signal the gate uses to `defer`.
+          #
+          # COUPLED to the `deferred-ci` job's error text below, which names
+          # `renovate/stability-days is pending` as THE cause. That is accurate
+          # only while this is the sole condition that sets should-run=false. A
+          # second defer reason added here turns that message into a lie, so
+          # generalize it in the same change — the deferral report is the only
+          # explanation a held pull request ever gets.
           pending=$(gh api "repos/${GITHUB_REPOSITORY}/commits/${HEAD_SHA}/status" \
             --jq '[.statuses[]? | select(.context == "renovate/stability-days" and .state == "pending")] | length' 2>/dev/null || echo 0)
           if [ "${pending:-0}" -gt 0 ]; then
@@ -455,7 +462,14 @@ jobs:
   deferred-ci:
     needs: eligibility
     if: needs.eligibility.outputs.should-run == 'false'
-    runs-on: ${{ inputs.runner != '' && fromJSON(inputs.runner) || github.repository_owner != 'Verjson' && 'ubuntu-24.04' || github.event.repository.private == true && fromJSON(vars.CI_LANE_TRUSTED || vars.CI_LANE_FALLBACK || '["ubuntu-24.04"]') || fromJSON(vars.CI_LANE_UNTRUSTED || vars.CI_LANE_FALLBACK || '["ubuntu-24.04"]') }}
+    # Pinned to GitHub-hosted capacity, unlike every other job here. ADR 0033's
+    # runner routing exists to keep real CI work on org capacity; this job checks
+    # out nothing, holds no permissions, and runs one `echo && exit 1`, so it
+    # consumes none of what that policy protects. Routing it to the self-hosted
+    # lane would make a saturated or offline pool leave the check PENDING — the
+    # ambiguous state ADR 0178 added this job to eliminate. A deferral must
+    # always conclude, and conclude non-SUCCESS.
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions: {}
     steps:

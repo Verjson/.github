@@ -92,6 +92,17 @@ class DeferredCiVisibilityTest(unittest.TestCase):
                 )
                 self.assertIn("deferred", (completed.stdout + completed.stderr).lower())
 
+    def test_the_deferral_concludes_even_when_the_self_hosted_pool_is_down(self):
+        for path in WORKFLOWS:
+            with self.subTest(workflow=path.name):
+                deferred = load(path)["jobs"]["deferred-ci"]
+                self.assertEqual(
+                    "ubuntu-24.04", deferred["runs-on"],
+                    "a saturated or offline self-hosted lane would leave this "
+                    "check PENDING, which a rollup assertion cannot distinguish "
+                    "from a queued run; the deferral must always conclude",
+                )
+
     def test_the_deferral_is_named_in_the_rollup_not_only_in_an_annotation(self):
         for path in WORKFLOWS:
             with self.subTest(workflow=path.name):

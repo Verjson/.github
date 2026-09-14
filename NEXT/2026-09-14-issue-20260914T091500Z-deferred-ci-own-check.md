@@ -21,6 +21,12 @@ already made the deferral legible through a titled check-run annotation plus an 
 `scripts/assert-no-deferred-checks.sh`; #251 showed that an opt-in surface nobody reads
 does not hold. `statusCheckRollup` is the surface everybody reads.
 
+`deferred-ci` pins `ubuntu-24.04` unconditionally rather than resolving the shared
+self-hosted routing expression every other job uses. It checks nothing out, holds no
+permissions, and runs one `echo` plus `exit 1`, so it consumes nothing ADR 0033's runner
+policy protects — while a saturated or offline self-hosted pool would leave the check
+`PENDING`, the ambiguous state this change exists to remove.
+
 This is a deliberate fleet-wide behavior change, recorded in
 [ADR 0178](../docs/decisions/0178-publish-deferred-ci-as-its-own-check/README.md). In
 every adopter, a Renovate pull request held on its release-age window now shows a red

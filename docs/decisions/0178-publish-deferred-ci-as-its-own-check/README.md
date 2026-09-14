@@ -73,6 +73,24 @@ organization's conformance rule forbids.
 and `SKIPPED`, so a neutral conclusion changes nothing for the gate that matters.
 ADR 0156 reached the same conclusion.
 
+### Why `deferred-ci` pins `ubuntu-24.04`
+
+Every other job in `node-ci.yml` resolves `runs-on` through the shared routing
+expression that [ADR 0033](../0033-self-hosted-runner-policy-by-visibility/README.md) defines,
+sending org work to self-hosted capacity and external callers to GitHub-hosted
+runners. `deferred-ci` is pinned to `ubuntu-24.04` unconditionally instead.
+
+The routing policy exists to keep *real CI work* on org capacity. This job checks
+nothing out, declares `permissions: {}`, and runs a single `echo` followed by
+`exit 1`, so it consumes none of the compute, credentials, or network reach that
+policy protects. Against that, routing it to the untrusted self-hosted lane
+carries a specific failure: if the pool is saturated or offline, the check sits
+`PENDING` rather than concluding. A pending check is precisely the ambiguous
+state this decision exists to eliminate — a rollup assertion cannot distinguish
+"deferred" from "still queued", and the `verjson-cli#251` class of silent pass
+returns by a different route. The deferral must always conclude, and conclude
+non-`SUCCESS`; a hosted runner is the only lane that guarantees it.
+
 A separate job has neither problem. Branch protection only evaluates the contexts
 a ruleset names, and `config/required-check-bindings` names `ci / build-test` and
 `ci / eligibility` explicitly — `deferred-ci` is not among them and must not be
