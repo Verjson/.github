@@ -10,7 +10,36 @@ import subprocess
 
 ROOT = Path(__file__).resolve().parent.parent
 MANIFEST = ROOT / "config/app-key-roles.json"
-APP_KEY = re.compile(r"secrets\.([A-Z0-9_]*APP_PRIVATE_KEY)")
+SECRET_REFERENCE = re.compile(
+    r"secrets\.([A-Za-z0-9_-]+)"
+    r"|secrets\[\s*(?:'([^']*)'|\"([^\"]*)\")\s*\]"
+)
+SECRET_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+
+
+def is_app_key(name):
+    """Whether a secret name carries a GitHub App private key.
+
+    Keyed on the words rather than one canonical suffix: RELEASE_APP_KEY_PEM and a
+    lowercase x_app_private_key hold the same credential as RELEASE_APP_PRIVATE_KEY,
+    and a scan that cannot see them proves nothing about them (#1285).
+    """
+    upper = name.upper()
+    return "APP" in upper and "KEY" in upper
+
+
+def app_keys(text):
+    """Every App private key name a GitHub Actions expression in text reads.
+
+    Both `secrets.NAME` and the equivalent `secrets['NAME']` index syntax count; a
+    binding spelled the second way is not a weaker binding.
+    """
+    found = set()
+    for match in SECRET_REFERENCE.finditer(text):
+        name = next(group for group in match.groups() if group is not None)
+        if is_app_key(name):
+            found.add(name)
+    return found
 CONFINEMENTS = ("canonical", "caller-owned", "unconfined")
 
 
@@ -22,7 +51,7 @@ def load_roles(path=MANIFEST):
     for entry in roles:
         if (entry.get("confinement") not in CONFINEMENTS
                 or not isinstance(entry.get("secret"), str)
-                or not APP_KEY.fullmatch("secrets." + entry["secret"])
+                or not SECRET_NAME.fullmatch(entry["secret"]) or not is_app_key(entry["secret"])
                 or not isinstance(entry.get("role"), str) or not entry["role"]
                 or not isinstance(entry.get("environment"), str) or not entry["environment"]
                 or entry.get("organization_copy") not in ("withdraw", "absent")):

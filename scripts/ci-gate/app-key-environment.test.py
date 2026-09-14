@@ -20,15 +20,18 @@ SPEC.loader.exec_module(audit)
 def workflow_bindings(directory):
     """Every workflow job that reads an App private key, with its confinement evidence."""
     bindings = []
-    for path in sorted(Path(directory).glob("*.yml")):
+    for path in sorted(p for p in Path(directory).glob("*") if p.suffix in (".yml", ".yaml")):
         text = path.read_text(encoding="utf-8")
-        if not audit.APP_KEY.search(text):
+        mentioned = audit.app_keys(text)
+        if not mentioned:
             continue
         document = yaml.safe_load(text)
+        captured = set()
         for name, job in (document.get("jobs") or {}).items():
             rendered = yaml.safe_dump(job)
             needs = job.get("needs") or []
-            for secret in sorted(set(audit.APP_KEY.findall(rendered))):
+            for secret in sorted(audit.app_keys(rendered)):
+                captured.add(secret)
                 bindings.append({
                     "workflow": path.stem,
                     "job": name,
@@ -36,6 +39,12 @@ def workflow_bindings(directory):
                     "environment": job.get("environment"),
                     "needs": [needs] if isinstance(needs, str) else list(needs),
                 })
+        # A workflow-level `env:` block reads the key outside every job, where no
+        # `environment:` can confine it and where a job-by-job scan sees nothing.
+        if mentioned - captured:
+            raise ValueError(
+                f"{path.name} reads {sorted(mentioned - captured)} outside any job, "
+                "where no environment confines it")
     if not bindings:
         raise ValueError("no App key binding was found; the workflow scan is unreliable")
     return bindings
@@ -275,6 +284,69 @@ class WorkflowBoundaryTests(unittest.TestCase):
             with self.subTest(kwargs=kwargs):
                 self.assertNotEqual(self.run_policy(**kwargs), 0)
 
+
+
+WORKFLOW = """\
+on: workflow_dispatch
+jobs:
+  mint:
+    runs-on: ubuntu-latest
+    environment: release-app
+    steps:
+      - run: echo "${{ %s }}"
+"""
+
+
+class WorkflowScanTests(unittest.TestCase):
+    """The directory scan sees every shape in which a workflow can read an App key.
+
+    Each case below is a real GitHub Actions spelling that the first scan missed, so
+    a binding written that way contributed nothing and read as full coverage (#1285).
+    """
+
+    def scan(self, files):
+        with tempfile.TemporaryDirectory() as directory:
+            for name, body in files.items():
+                (Path(directory) / name).write_text(body, encoding="utf-8")
+            return workflow_bindings(directory)
+
+    def test_a_yaml_extension_workflow_is_scanned_like_a_yml_one(self):
+        bindings = self.scan({"mint.yaml": WORKFLOW % "secrets.RELEASE_APP_PRIVATE_KEY"})
+        self.assertEqual([binding["secret"] for binding in bindings], ["RELEASE_APP_PRIVATE_KEY"])
+
+    def test_index_expression_syntax_is_the_same_binding_as_dotted_syntax(self):
+        for expression in ("secrets['RELEASE_APP_PRIVATE_KEY']", 'secrets["RELEASE_APP_PRIVATE_KEY"]'):
+            with self.subTest(expression=expression):
+                bindings = self.scan({"mint.yml": WORKFLOW % expression})
+                self.assertEqual([binding["secret"] for binding in bindings], ["RELEASE_APP_PRIVATE_KEY"])
+
+    def test_an_app_key_named_outside_the_canonical_suffix_is_still_an_app_key(self):
+        for name in ("RELEASE_APP_KEY_PEM", "RUNNER_DEPLOY_APP_KEY", "x_app_private_key"):
+            with self.subTest(name=name):
+                bindings = self.scan({"mint.yml": WORKFLOW % f"secrets.{name}"})
+                self.assertEqual([binding["secret"] for binding in bindings], [name])
+
+    def test_a_secret_that_is_not_an_app_key_contributes_no_binding(self):
+        for name in ("NODE_AUTH_TOKEN", "RELEASE_KEY", "MERGE_APP_ID"):
+            with self.subTest(name=name), self.assertRaises(ValueError):
+                self.scan({"mint.yml": WORKFLOW % f"secrets.{name}"})
+
+    def test_a_key_read_outside_every_job_is_an_error_not_a_silent_zero(self):
+        preamble = ("on: workflow_dispatch\n"
+                    "env:\n"
+                    "  APP_KEY: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}\n")
+        job = ("jobs:\n"
+               "  mint:\n"
+               "    runs-on: ubuntu-latest\n"
+               "    environment: release-app\n"
+               "    steps:\n"
+               "      - run: echo \"$APP_KEY\"\n")
+        other = WORKFLOW % "secrets.MERGE_APP_PRIVATE_KEY"
+        for body in (preamble, preamble + job):
+            # The companion file binds a key inside a job, so the directory-wide
+            # "no binding at all" guard cannot be what rejects these.
+            with self.subTest(jobs=body is not preamble), self.assertRaises(ValueError):
+                self.scan({"leak.yml": body, "mint.yml": other})
 
 
 class AppKeyRoleManifestTests(unittest.TestCase):
