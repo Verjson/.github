@@ -203,6 +203,7 @@ def check_cohort(grant: dict[str, Any], contract: dict[str, Any], inventory: dic
     cohort = grant.get("cohort") if isinstance(grant.get("cohort"), dict) else {}
     targets = cohort.get("targets")
     roles = inventory["roles"]
+    vocabulary = effect_vocabulary(contract)
     reasons: list[str] = []
     named: list[str] = []
     effects: set[str] = set()
@@ -239,24 +240,40 @@ def check_cohort(grant: dict[str, Any], contract: dict[str, Any], inventory: dic
             continue
         for effect in requested:
             effects.add(effect)
-            if effect not in contract["effects"]["vocabulary"]:
+            if effect not in vocabulary:
                 reasons.append(f"effect-outside-vocabulary:{effect}")
             elif effect not in role["permittedEffects"]:
                 reasons.append(f"effect-not-permitted-for-role:{role_id}:{effect}")
     return reasons, named, sorted(effects)
 
 
+def effect_names(value: Any, field: str) -> list[str]:
+    """Read a declared effect list, refusing any value a membership test would misread.
+
+    `in` and `set()` both accept a bare string and silently degrade to substring and
+    character tests: `"write" in "secret-write"` admits an effect that was never
+    declared, and `set("all")` gates three letters instead of thirteen effects. Neither
+    raises, so the failure is a permissive answer rather than an error.
+    """
+    if not isinstance(value, list) or not all(isinstance(effect, str) for effect in value):
+        raise InputError(f"{field} must be a list of effect names")
+    return value
+
+
+def effect_vocabulary(contract: dict[str, Any]) -> list[str]:
+    return effect_names(contract["effects"]["vocabulary"], "effects.vocabulary")
+
+
 def gated_effects(contract: dict[str, Any]) -> set[str]:
     """Resolve which effects need owner consent, deriving the common whole-vocabulary case.
 
-    A verbatim copy of the vocabulary drifts silently; `"all"` cannot. A bare string is
-    never treated as a collection, because iterating one gates single characters instead.
+    A verbatim copy of the vocabulary drifts silently; `"all"` cannot.
     """
     required = contract["effects"]["ownerConsentRequired"]
     if required == "all":
-        return set(contract["effects"]["vocabulary"])
-    if isinstance(required, list) and all(isinstance(effect, str) for effect in required):
-        return set(required)
+        return set(effect_vocabulary(contract))
+    if isinstance(required, list):
+        return set(effect_names(required, "effects.ownerConsentRequired"))
     raise InputError('effects.ownerConsentRequired must be "all" or a list of effect names')
 
 

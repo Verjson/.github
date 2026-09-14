@@ -318,6 +318,35 @@ class ProvisioningDelegationValidateTest(unittest.TestCase):
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
         self.assertIn("owner-consent-required:secret-write", self.receipt(result)["reasons"])
 
+    def test_a_non_list_effect_vocabulary_is_an_input_error(self):
+        for vocabulary in ("secret-write", ["secret-write", 3], {"secret-write": True}):
+            with self.subTest(vocabulary=vocabulary):
+                contract = json.loads(CONTRACT.read_text(encoding="utf-8"))
+                contract["activation"]["status"] = "active"
+                contract["effects"]["vocabulary"] = vocabulary
+                with tempfile.TemporaryDirectory() as directory:
+                    path = Path(directory) / "contract.json"
+                    path.write_text(json.dumps(contract), encoding="utf-8")
+                    result = self.run_validator(grant(), contract=path)
+                self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+                self.assertIn("vocabulary", result.stderr)
+                self.assertNotIn("Traceback", result.stderr)
+
+    def test_a_string_vocabulary_never_admits_an_effect_by_substring(self):
+        contract = json.loads(CONTRACT.read_text(encoding="utf-8"))
+        contract["activation"]["status"] = "active"
+        contract["effects"]["vocabulary"] = "secret-write"
+        document = grant()
+        document["cohort"]["targets"][0]["effects"] = ["write"]
+        document["effects"] = ["write"]
+        document["owner_consent"] = []
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "contract.json"
+            path.write_text(json.dumps(contract), encoding="utf-8")
+            result = self.run_validator(document, contract=path)
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        self.assertNotIn("granted", result.stdout)
+
     def test_unrecognized_owner_consent_scope_is_an_input_error(self):
         contract = json.loads(CONTRACT.read_text(encoding="utf-8"))
         contract["activation"]["status"] = "active"
