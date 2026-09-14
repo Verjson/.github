@@ -15,7 +15,7 @@ after the file it names is gone. The reader has no way to tell a current claim f
 a fossil, and the ADR is precisely where someone goes to find out whether a property
 is still guarded.
 
-[#1329](https://github.com/Verjson/.github/issues/1320) deleted eight `scripts/ci-gate/*.test.sh`
+[#1329](https://github.com/Verjson/.github/pull/1329) deleted eight `scripts/ci-gate/*.test.sh`
 harnesses whose subjects ADR 0079/0081 had removed. It correctly appended dated
 amendments to ADRs 0039, 0044, and 0079. Five further ADRs kept making concrete
 present-tense claims about the same deleted files, and two of the three amended ones
