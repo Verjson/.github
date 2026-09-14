@@ -1207,6 +1207,29 @@ def is_fragment_path(path: str) -> bool:
     return path.startswith(f"{UNRELEASED_DIR}/") and path != f"{UNRELEASED_DIR}/README.md"
 
 
+def report_warning(title: str, message: str) -> None:
+    """Surface a non-fatal finding where a human will actually see it.
+
+    A bare stderr line from a step that exits 0 is folded away in the Actions
+    log and never reaches the run summary, so the class this report exists to
+    keep visible was effectively invisible. Under Actions it becomes a warning
+    annotation and a run-summary entry; everywhere else stderr is still right.
+    """
+    if os.environ.get("GITHUB_ACTIONS") != "true":
+        print(f"warning: {message}", file=sys.stderr)
+        return
+    # Workflow commands are newline-delimited, so the payload must be escaped
+    # rather than trusted to be single-line.
+    encoded = (
+        message.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+    )
+    print(f"::warning title={title}::{encoded}")
+    summary = os.environ.get("GITHUB_STEP_SUMMARY")
+    if summary:
+        with open(summary, "a", encoding="utf-8") as handle:
+            handle.write(f"> [!WARNING]\n> **{title}** — {message}\n\n")
+
+
 def valid_added_fragments(repo_root: Path, added_fragments: set[str]) -> set[str]:
     canonical = {
         str(entry.path.relative_to(repo_root))
@@ -1319,10 +1342,10 @@ def check_pr(repo_root: Path, base: str, head: str) -> None:
         # auto-merges action-pin bumps lives in Verjson/renovate-config and
         # cannot be changed from here, so failing this now would stall every
         # bot upgrade instead of documenting it.
-        print(
-            "warning: workflow definitions changed with no new valid NEXT fragment: "
+        report_warning(
+            "undocumented workflow definitions",
+            "workflow definitions changed with no new valid NEXT fragment: "
             + ", ".join(undocumented_workflows),
-            file=sys.stderr,
         )
 
 

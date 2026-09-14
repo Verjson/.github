@@ -39,4 +39,8 @@ would stall every bot upgrade rather than document it. An audit of the last 250
 first-parent commits on `Verjson/.github` `main` found 246 already satisfy the
 new rule and all 4 exceptions are exactly those bot action-pin bumps.
 
+Under Actions the report is a `::warning` annotation and a run-summary
+entry rather than a bare stderr line, which a step that exits 0 folds away
+unseen; outside Actions it stays on stderr.
+
 Adopters pinned to an older contract SHA are unaffected until they re-pin.

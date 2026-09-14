@@ -2138,7 +2138,9 @@ class ChangelogContractTests(unittest.TestCase):
         self.commit_all("renovate action pin bump")
 
         captured = io.StringIO()
-        with contextlib.redirect_stderr(captured):
+        with mock.patch.dict(
+            os.environ, {"GITHUB_ACTIONS": "false"}
+        ), contextlib.redirect_stderr(captured):
             changelog.check_pr(self.root, base, "HEAD")
         self.assertIn(
             ".github/workflows/container-candidate.yml", captured.getvalue()
@@ -2162,7 +2164,9 @@ class ChangelogContractTests(unittest.TestCase):
                     self.commit_all("change the published action entrypoint")
 
                     captured = io.StringIO()
-                    with contextlib.redirect_stderr(captured):
+                    with mock.patch.dict(
+                        os.environ, {"GITHUB_ACTIONS": "false"}
+                    ), contextlib.redirect_stderr(captured):
                         changelog.check_pr(self.root, base, "HEAD")
                     self.assertIn(filename, captured.getvalue())
                 finally:
@@ -2186,12 +2190,64 @@ class ChangelogContractTests(unittest.TestCase):
         self.commit_all("workflow change with an invalid fragment")
 
         captured = io.StringIO()
-        with contextlib.redirect_stderr(captured):
+        with mock.patch.dict(
+            os.environ, {"GITHUB_ACTIONS": "false"}
+        ), contextlib.redirect_stderr(captured):
             changelog.check_pr(self.root, base, "HEAD")
         self.assertIn(
             ".github/workflows/container-candidate.yml", captured.getvalue()
         )
         self.assertIn("no new valid NEXT fragment", captured.getvalue())
+
+    def test_workflow_report_annotates_under_actions(self) -> None:
+        """#1324 review: a bare stderr line from a step that exits 0 is invisible."""
+        self.root.joinpath("README.md").write_text("base\n", encoding="utf-8")
+        self.init_git()
+        self.commit_all("base")
+        base = run(self.root, "git", "rev-parse", "HEAD")
+        workflow = self.root / ".github" / "workflows" / "container-candidate.yml"
+        workflow.parent.mkdir(parents=True, exist_ok=True)
+        workflow.write_text("name: candidate\n", encoding="utf-8")
+        self.commit_all("renovate action pin bump")
+        step_summary = self.root / "step-summary.md"
+        step_summary.write_text("", encoding="utf-8")
+
+        out = io.StringIO()
+        err = io.StringIO()
+        with mock.patch.dict(
+            os.environ,
+            {
+                "GITHUB_ACTIONS": "true",
+                "GITHUB_STEP_SUMMARY": str(step_summary),
+            },
+        ), contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            changelog.check_pr(self.root, base, "HEAD")
+
+        self.assertIn("::warning title=undocumented workflow definitions::", out.getvalue())
+        self.assertIn(".github/workflows/container-candidate.yml", out.getvalue())
+        self.assertEqual("", err.getvalue())
+        summary_text = step_summary.read_text(encoding="utf-8")
+        self.assertIn("[!WARNING]", summary_text)
+        self.assertIn(".github/workflows/container-candidate.yml", summary_text)
+
+    def test_workflow_report_escapes_workflow_command_delimiters(self) -> None:
+        out = io.StringIO()
+        with mock.patch.dict(
+            os.environ, {"GITHUB_ACTIONS": "true"}, clear=True
+        ), contextlib.redirect_stdout(out):
+            changelog.report_warning("title", "first 100% done\nsecond")
+        self.assertIn("first 100%25 done%0Asecond", out.getvalue())
+        self.assertEqual(1, out.getvalue().count("\n"))
+
+    def test_workflow_report_falls_back_to_stderr_outside_actions(self) -> None:
+        err = io.StringIO()
+        out = io.StringIO()
+        with mock.patch.dict(
+            os.environ, {"GITHUB_ACTIONS": "false"}
+        ), contextlib.redirect_stderr(err), contextlib.redirect_stdout(out):
+            changelog.report_warning("title", "a plain finding")
+        self.assertEqual("warning: a plain finding\n", err.getvalue())
+        self.assertEqual("", out.getvalue())
 
     def test_workflow_definition_change_with_a_fragment_reports_nothing(self) -> None:
         self.root.joinpath("README.md").write_text("base\n", encoding="utf-8")
@@ -2205,7 +2261,9 @@ class ChangelogContractTests(unittest.TestCase):
         self.commit_all("documented workflow change")
 
         captured = io.StringIO()
-        with contextlib.redirect_stderr(captured):
+        with mock.patch.dict(
+            os.environ, {"GITHUB_ACTIONS": "false"}
+        ), contextlib.redirect_stderr(captured):
             changelog.check_pr(self.root, base, "HEAD")
         self.assertEqual("", captured.getvalue())
 
