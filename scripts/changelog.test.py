@@ -1955,6 +1955,131 @@ class ChangelogContractTests(unittest.TestCase):
                     finally:
                         self.root = original_root
 
+    def test_production_source_change_requires_a_new_fragment(self) -> None:
+        """#1324: a tools-only source change landed undocumented in the running log."""
+        self.root.joinpath("README.md").write_text("base\n", encoding="utf-8")
+        self.init_git()
+        self.commit_all("base")
+        base = run(self.root, "git", "rev-parse", "HEAD")
+        source = self.root / "tools" / "subscriber-gateway" / "gateway.mjs"
+        source.parent.mkdir(parents=True, exist_ok=True)
+        source.write_text("export const control = true;\n", encoding="utf-8")
+        self.commit_all("change production source")
+
+        with self.assertRaisesRegex(
+            changelog.ChangelogError,
+            "production source changes require a new NEXT fragment",
+        ):
+            changelog.check_pr(self.root, base, "HEAD")
+
+    def test_production_source_change_with_a_new_valid_fragment_is_accepted(self) -> None:
+        self.root.joinpath("README.md").write_text("base\n", encoding="utf-8")
+        self.init_git()
+        self.commit_all("base")
+        base = run(self.root, "git", "rev-parse", "HEAD")
+        source = self.root / "tools" / "subscriber-gateway" / "gateway.mjs"
+        source.parent.mkdir(parents=True, exist_ok=True)
+        source.write_text("export const control = true;\n", encoding="utf-8")
+        fragment(self.root, "2026-07-30-issue-249-contract.md")
+        self.commit_all("change production source with a fragment")
+
+        changelog.check_pr(self.root, base, "HEAD")
+
+    def test_production_source_change_rejects_an_invalid_added_fragment(self) -> None:
+        self.root.joinpath("README.md").write_text("base\n", encoding="utf-8")
+        self.init_git()
+        self.commit_all("base")
+        base = run(self.root, "git", "rev-parse", "HEAD")
+        source = self.root / "tools" / "gateway.mjs"
+        source.parent.mkdir(parents=True, exist_ok=True)
+        source.write_text("export const control = true;\n", encoding="utf-8")
+        # The only added path that is a fragment by policy yet never a valid
+        # one: the archive is deliberately skipped by the enumerator.
+        invalid = self.root / "NEXT" / "0000-archive.md"
+        invalid.parent.mkdir(parents=True, exist_ok=True)
+        invalid.write_text("no front matter\n", encoding="utf-8")
+        self.commit_all("change production source with an invalid fragment")
+
+        with self.assertRaisesRegex(
+            changelog.ChangelogError,
+            "production source changes require a new valid NEXT fragment",
+        ):
+            changelog.check_pr(self.root, base, "HEAD")
+
+    def test_production_source_classification_covers_every_supported_stack(self) -> None:
+        for path in (
+            "tools/subscriber-gateway/gateway.mjs",
+            "src/index.ts",
+            "src/component.tsx",
+            "lib/adapter.js",
+            "lib/legacy.cjs",
+            "scripts/deploy.sh",
+            "scripts/deploy.bash",
+            "scripts/deploy.ps1",
+            "scripts/changelog.py",
+            "cmd/server/main.go",
+            "crates/core/src/lib.rs",
+            "app/models/user.rb",
+            "src/main/java/App.java",
+        ):
+            with self.subTest(path=path):
+                self.assertTrue(changelog.is_production_source(path))
+
+    def test_production_source_exemptions_are_explicit(self) -> None:
+        for path in (
+            "README.md",
+            "docs/decisions/0038-canonical-changelog-contract/README.md",
+            "docs/examples/bootstrap.sh",
+            "NEXT/2026-07-30-issue-249-contract.md",
+            "CHANGELOG/v1.0.0.md",
+            "scripts/changelog.test.py",
+            "scripts/ci-gate/native-automerge.test.sh",
+            "scripts/render_changelog_adoption_issue_test.py",
+            "tests/test_guidance_size.py",
+            "src/__tests__/adapter.js",
+            "src/adapter.spec.ts",
+            "package.json",
+            "Dockerfile",
+            ".github/workflows/ai-review-merge.yml",
+        ):
+            with self.subTest(path=path):
+                self.assertFalse(changelog.is_production_source(path))
+
+    def test_workflow_definition_change_is_reported_not_rejected(self) -> None:
+        """Renovate auto-merges action-pin bumps under a preset this repo cannot change."""
+        self.root.joinpath("README.md").write_text("base\n", encoding="utf-8")
+        self.init_git()
+        self.commit_all("base")
+        base = run(self.root, "git", "rev-parse", "HEAD")
+        workflow = self.root / ".github" / "workflows" / "container-candidate.yml"
+        workflow.parent.mkdir(parents=True, exist_ok=True)
+        workflow.write_text("name: candidate\n", encoding="utf-8")
+        self.commit_all("renovate action pin bump")
+
+        captured = io.StringIO()
+        with contextlib.redirect_stderr(captured):
+            changelog.check_pr(self.root, base, "HEAD")
+        self.assertIn(
+            ".github/workflows/container-candidate.yml", captured.getvalue()
+        )
+        self.assertIn("no new NEXT fragment", captured.getvalue())
+
+    def test_workflow_definition_change_with_a_fragment_reports_nothing(self) -> None:
+        self.root.joinpath("README.md").write_text("base\n", encoding="utf-8")
+        self.init_git()
+        self.commit_all("base")
+        base = run(self.root, "git", "rev-parse", "HEAD")
+        workflow = self.root / ".github" / "workflows" / "container-candidate.yml"
+        workflow.parent.mkdir(parents=True, exist_ok=True)
+        workflow.write_text("name: candidate\n", encoding="utf-8")
+        fragment(self.root, "2026-07-30-issue-249-contract.md")
+        self.commit_all("documented workflow change")
+
+        captured = io.StringIO()
+        with contextlib.redirect_stderr(captured):
+            changelog.check_pr(self.root, base, "HEAD")
+        self.assertEqual("", captured.getvalue())
+
     def test_dependency_change_with_a_new_valid_fragment_is_accepted(self) -> None:
         self.root.joinpath("package.json").write_text('{"version":"1.0.0"}\n', encoding="utf-8")
         self.init_git()

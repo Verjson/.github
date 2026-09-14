@@ -1123,8 +1123,73 @@ def is_dependency_file(path: str) -> bool:
     )
 
 
+# Everything the running log is meant to describe, minus an explicit exemption
+# list. An allow-list of "production" directories cannot be kept current across
+# every adopter shape, so the rule is keyed on the file being source code and
+# each exemption is named here rather than inferred.
+PRODUCTION_SOURCE_SUFFIXES = frozenset(
+    {
+        ".bash",
+        ".cjs",
+        ".go",
+        ".java",
+        ".js",
+        ".jsx",
+        ".mjs",
+        ".ps1",
+        ".py",
+        ".rb",
+        ".rs",
+        ".sh",
+        ".ts",
+        ".tsx",
+    }
+)
+
+# Exempt because the fragment describes a behavior change and these do not ship
+# one: the unreleased store and released snapshots themselves, documentation
+# trees, and tests, whose own change is described by the source change it covers.
+EXEMPT_SOURCE_PREFIXES = ("CHANGELOG/", "docs/", f"{UNRELEASED_DIR}/")
+TEST_SOURCE = re.compile(
+    r"(?:^|/)(?:tests?|__tests__|spec|__mocks__)/"
+    r"|(?:^|/)test_[^/]+$"
+    r"|(?:^|/)[^/]*[._-]test\.[A-Za-z0-9]+$"
+    r"|(?:^|/)[^/]*[._-]spec\.[A-Za-z0-9]+$"
+)
+
+# Renovate edits these and nothing else in a bot-automerged upgrade, so they are
+# reported rather than rejected until the organization's Renovate preset stops
+# auto-merging (Verjson/renovate-config). See the #1324 pull request.
+WORKFLOW_DEFINITION = re.compile(r"^\.github/(?:workflows|actions)/.+\.ya?ml$")
+
+
+def is_test_source(path: str) -> bool:
+    return bool(TEST_SOURCE.search(path))
+
+
+def is_production_source(path: str) -> bool:
+    if path.startswith(EXEMPT_SOURCE_PREFIXES) or is_test_source(path):
+        return False
+    return Path(path).suffix.lower() in PRODUCTION_SOURCE_SUFFIXES
+
+
 def is_fragment_path(path: str) -> bool:
     return path.startswith(f"{UNRELEASED_DIR}/") and path != f"{UNRELEASED_DIR}/README.md"
+
+
+def require_valid_added_fragments(
+    repo_root: Path, added_fragments: set[str], message: str
+) -> None:
+    valid_fragments = {
+        str(entry.path.relative_to(repo_root))
+        for entry in fragments(repo_root)
+        if entry.canonical
+    }
+    invalid_added = added_fragments - valid_fragments
+    if invalid_added:
+        raise ChangelogError(
+            f"{message}; invalid additions: " + ", ".join(sorted(invalid_added))
+        )
 
 
 def check_pr(repo_root: Path, base: str, head: str) -> None:
@@ -1192,18 +1257,36 @@ def check_pr(repo_root: Path, base: str, head: str) -> None:
             + ", ".join(dependencies)
         )
     if dependencies:
-        valid_fragments = {
-            str(entry.path.relative_to(repo_root))
-            for entry in fragments(repo_root)
-            if entry.canonical
-        }
-        invalid_added = added_fragments - valid_fragments
-        if invalid_added:
-            raise ChangelogError(
-                "dependency manifests or lockfiles require a new valid NEXT fragment; "
-                "invalid additions: "
-                + ", ".join(sorted(invalid_added))
-            )
+        require_valid_added_fragments(
+            repo_root,
+            added_fragments,
+            "dependency manifests or lockfiles require a new valid NEXT fragment",
+        )
+    production = sorted(path for path in changed if is_production_source(path))
+    if production and not added_fragments:
+        raise ChangelogError(
+            "production source changes require a new NEXT fragment: "
+            + ", ".join(production)
+        )
+    if production:
+        require_valid_added_fragments(
+            repo_root,
+            added_fragments,
+            "production source changes require a new valid NEXT fragment",
+        )
+    undocumented_workflows = sorted(
+        path for path in changed if WORKFLOW_DEFINITION.match(path)
+    )
+    if undocumented_workflows and not added_fragments:
+        # Reported, not rejected: the organization Renovate preset that
+        # auto-merges action-pin bumps lives in Verjson/renovate-config and
+        # cannot be changed from here, so failing this now would stall every
+        # bot upgrade instead of documenting it.
+        print(
+            "warning: workflow definitions changed with no new NEXT fragment: "
+            + ", ".join(undocumented_workflows),
+            file=sys.stderr,
+        )
 
 
 def parser() -> argparse.ArgumentParser:
