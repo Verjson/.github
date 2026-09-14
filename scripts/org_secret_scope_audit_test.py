@@ -1,3 +1,4 @@
+import importlib.util
 import json
 import os
 import subprocess
@@ -8,6 +9,14 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 AUDIT = ROOT / "scripts/org-secret-scope-audit.py"
+POLICY = ROOT / "config/org-actions-secret-policy.json"
+
+
+def audit_module():
+    spec = importlib.util.spec_from_file_location("org_secret_scope_audit", AUDIT)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 class OrgSecretScopeAuditTest(unittest.TestCase):
@@ -146,6 +155,111 @@ class OrgSecretScopeAuditTest(unittest.TestCase):
         self.assertEqual(result.returncode, 1)
         self.assertIn("duplicate repositories", result.stderr)
         self.assertNotIn("Traceback", result.stderr)
+
+    def test_environment_only_app_key_cannot_claim_organization_custody(self):
+        policy = {"organization": "Verjson", "secrets": {"MERGE_APP_PRIVATE_KEY": {
+            "target_visibility": "all", "selected_repositories": [],
+            "consumers": ["generated privileged-merge callers"],
+            "reason": "fleet callers resolve the key in each caller context",
+            "custody": "organization",
+        }}}
+        listing = {"secrets": [{"name": "MERGE_APP_PRIVATE_KEY", "visibility": "all"}]}
+        result = self.run_audit(policy, listing)
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn(
+            "MERGE_APP_PRIVATE_KEY: environment-only App private key cannot declare organization custody",
+            result.stderr,
+        )
+        self.assertNotIn("conformant", result.stdout)
+
+
+    def test_environment_only_residue_requires_a_withdrawal_record(self):
+        policy = {"organization": "Verjson", "secrets": {"RELEASE_APP_PRIVATE_KEY": {
+            "target_visibility": "all", "selected_repositories": [],
+            "consumers": ["generated release callers"], "reason": "migration state",
+            "custody": "environment-only-migration-residue",
+        }}}
+        listing = {"secrets": [{"name": "RELEASE_APP_PRIVATE_KEY", "visibility": "all"}]}
+        result = self.run_audit(policy, listing)
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("migration residue must record withdrawal contract, tracking, recorded_on", result.stderr)
+
+    def test_unrecognized_app_private_key_name_fails_closed(self):
+        policy = {"organization": "Verjson", "secrets": {"SHADOW_APP_PRIVATE_KEY": {
+            "target_visibility": "all", "selected_repositories": [],
+            "consumers": ["unknown"], "reason": "unknown",
+            "custody": "organization",
+        }}}
+        listing = {"secrets": [{"name": "SHADOW_APP_PRIVATE_KEY", "visibility": "all"}]}
+        result = self.run_audit(policy, listing)
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("unrecognized App private-key name has no custody contract", result.stderr)
+
+    def test_organization_custody_app_key_must_be_declared_explicitly(self):
+        entry = {
+            "target_visibility": "all", "selected_repositories": [],
+            "consumers": ["renovate compatibility reconciliation"],
+            "reason": "role has no environment custody decision yet",
+        }
+        listing = {"secrets": [{"name": "RENOVATE_COMPATIBILITY_APP_PRIVATE_KEY", "visibility": "all"}]}
+        policy = {"organization": "Verjson", "secrets": {"RENOVATE_COMPATIBILITY_APP_PRIVATE_KEY": entry}}
+        result = self.run_audit(policy, listing)
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("App private key must declare explicit 'organization' custody", result.stderr)
+
+        declared = {"organization": "Verjson", "secrets": {
+            "RENOVATE_COMPATIBILITY_APP_PRIVATE_KEY": entry | {"custody": "organization"},
+        }}
+        result = self.run_audit(declared, listing)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("secret-scope-policy=conformant", result.stdout)
+
+    def test_non_app_secret_cannot_claim_residue_custody_or_withdrawal(self):
+        base = {
+            "target_visibility": "all", "selected_repositories": [],
+            "consumers": ["fleet"], "reason": "required",
+        }
+        listing = {"secrets": [{"name": "NODE_AUTH_TOKEN", "visibility": "all"}]}
+        cases = [
+            (base | {"custody": "environment-only-migration-residue"},
+             "only an environment-only App private key may declare"),
+            (base | {"withdrawal": {"contract": "x", "tracking": "y", "recorded_on": "z"}},
+             "withdrawal is reserved for environment-only migration residue"),
+        ]
+        for entry, diagnostic in cases:
+            with self.subTest(diagnostic=diagnostic):
+                result = self.run_audit({"organization": "Verjson", "secrets": {"NODE_AUTH_TOKEN": entry}}, listing)
+                self.assertEqual(result.returncode, 1, result.stdout)
+                self.assertIn(diagnostic, result.stderr)
+
+    def test_residue_reports_withdrawal_pending_rather_than_conformance(self):
+        policy = {"organization": "Verjson", "secrets": {"MERGE_APP_PRIVATE_KEY": {
+            "target_visibility": "all", "selected_repositories": [],
+            "consumers": ["generated privileged-merge callers"], "reason": "migration state",
+            "custody": "environment-only-migration-residue",
+            "withdrawal": {
+                "contract": "docs/app-key-environment-rollout.md",
+                "tracking": "https://github.com/Verjson/.github/issues/1285",
+                "recorded_on": "2026-09-14",
+            },
+        }}}
+        listing = {"secrets": [{"name": "MERGE_APP_PRIVATE_KEY", "visibility": "all"}]}
+        result = self.run_audit(policy, listing)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("secret-scope-policy=withdrawal-pending", result.stdout)
+        self.assertIn("residue=MERGE_APP_PRIVATE_KEY", result.stdout)
+        self.assertNotIn("conformant", result.stdout)
+
+    def test_shipped_policy_declares_custody_for_every_app_private_key(self):
+        module = audit_module()
+        policy = json.loads(POLICY.read_text(encoding="utf-8"))
+        secrets = policy["secrets"]
+        failures = [failure for name in sorted(secrets) for failure in module.custody_failures(name, secrets[name])]
+        self.assertEqual(failures, [])
+        residue = {name for name, rule in secrets.items() if rule.get("custody") == module.RESIDUE_CUSTODY}
+        self.assertEqual(residue, module.ENVIRONMENT_ONLY_APP_KEYS & set(secrets))
+        self.assertTrue(residue, "the shipped policy must still name its migration residue")
+
 
 if __name__ == "__main__":
     unittest.main()

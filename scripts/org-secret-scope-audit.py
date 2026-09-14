@@ -9,6 +9,20 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 POLICY = Path(os.environ.get("ORG_SECRET_POLICY", ROOT / "config/org-actions-secret-policy.json"))
 
+APP_KEY_SUFFIX = "_APP_PRIVATE_KEY"
+ENVIRONMENT_ONLY_APP_KEYS = frozenset({
+    "AI_REVIEW_APP_PRIVATE_KEY",
+    "MERGE_APP_PRIVATE_KEY",
+    "RELEASE_APP_PRIVATE_KEY",
+})
+ORGANIZATION_CUSTODY_APP_KEYS = frozenset({
+    "DEPENDENCY_SUPERSESSION_APP_PRIVATE_KEY",
+    "RENOVATE_COMPATIBILITY_APP_PRIVATE_KEY",
+})
+RESIDUE_CUSTODY = "environment-only-migration-residue"
+ORGANIZATION_CUSTODY = "organization"
+WITHDRAWAL_FIELDS = ("contract", "tracking", "recorded_on")
+
 
 class AuditDataError(Exception):
     pass
@@ -81,6 +95,39 @@ def selected_repositories(org: str, name: str) -> list[str]:
     return sorted(names)
 
 
+def custody_failures(name: str, rule) -> list[str]:
+    """Classify one policy entry's custody without reading any secret value."""
+    if not isinstance(rule, dict):
+        return [f"{name}: incomplete policy justification"]
+    declared = rule.get("custody")
+    withdrawal = rule.get("withdrawal")
+    is_app_key = name.endswith(APP_KEY_SUFFIX)
+    if is_app_key and name not in ENVIRONMENT_ONLY_APP_KEYS | ORGANIZATION_CUSTODY_APP_KEYS:
+        return [f"{name}: unrecognized App private-key name has no custody contract"]
+    if name in ENVIRONMENT_ONLY_APP_KEYS:
+        if declared != RESIDUE_CUSTODY:
+            return [
+                f"{name}: environment-only App private key cannot declare "
+                f"organization custody; declare custody {RESIDUE_CUSTODY!r}"
+            ]
+        if not isinstance(withdrawal, dict) or any(
+            not isinstance(withdrawal.get(field), str) or not withdrawal.get(field, "").strip()
+            for field in WITHDRAWAL_FIELDS
+        ):
+            return [
+                f"{name}: migration residue must record withdrawal "
+                f"{', '.join(WITHDRAWAL_FIELDS)}"
+            ]
+        return []
+    if declared is not None and declared != ORGANIZATION_CUSTODY:
+        return [f"{name}: only an environment-only App private key may declare {declared!r} custody"]
+    if is_app_key and declared != ORGANIZATION_CUSTODY:
+        return [f"{name}: App private key must declare explicit {ORGANIZATION_CUSTODY!r} custody"]
+    if withdrawal is not None:
+        return [f"{name}: withdrawal is reserved for environment-only migration residue"]
+    return []
+
+
 def main() -> int:
     try:
         policy = require_mapping(load_json(POLICY.read_text(encoding="utf-8"), "secret policy"), "secret policy")
@@ -107,6 +154,12 @@ def main() -> int:
         return 2
 
     failures = []
+    for name in sorted(expected):
+        failures.extend(custody_failures(name, expected[name]))
+    residue = sorted(
+        name for name in expected
+        if isinstance(expected[name], dict) and expected[name].get("custody") == RESIDUE_CUSTODY
+    )
     if set(actual) != set(expected):
         failures.append(
             f"manifest mismatch: unmanifested={sorted(set(actual) - set(expected))} "
@@ -160,7 +213,9 @@ def main() -> int:
         for failure in failures:
             print(f"ERROR: {failure}", file=sys.stderr)
         return 1
-    print(f"secret-scope-policy=conformant organization={org} secrets={len(expected)}")
+    status = "withdrawal-pending" if residue else "conformant"
+    suffix = f" residue={','.join(residue)}" if residue else ""
+    print(f"secret-scope-policy={status} organization={org} secrets={len(expected)}{suffix}")
     return 0
 
 

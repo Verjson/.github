@@ -16,6 +16,19 @@ Keep public App client IDs in their existing variables. Model API credentials an
 `node-release.yml` does not consume the release App key. Snapshot publication and
 container release do, as does Renovate attribution.
 
+## Record every remaining broad copy as migration residue
+
+`config/org-actions-secret-policy.json` is the only place a broad organization copy of
+an App private key is recorded, and for the review, merge and release roles it may be
+recorded only as `custody: environment-only-migration-residue` with a `withdrawal`
+contract path, tracking issue and record date. There is no approved organization
+visibility target for those roles: `scripts/org-secret-scope-audit.py` rejects one,
+rejects an unrecognized `_APP_PRIVATE_KEY` name outright, and reports
+`secret-scope-policy=withdrawal-pending` for as long as any residue entry exists.
+Readable secret metadata proves a name and a visibility only; it never proves that a
+key is confined to its main-only environment. See
+[ADR 0180](decisions/0180-no-approved-organization-custody-for-environment-only-app-keys/README.md).
+
 ## Stage the entire shared-pin cohort
 
 Inventory every App-key reader and every repository selected by the relevant
