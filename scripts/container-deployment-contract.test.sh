@@ -232,9 +232,73 @@ grep -Eq 'contract FAILED: [^[:space:]]' "$empty_config_report" || {
   exit 1
 }
 
+# The adapter assertions sit behind the config check rather than behind a digest
+# pin, so a config naming a bad adapter reaches them.
+while IFS='|' read -r adapter_kind expected_adapter_report; do
+  jq '.evidenceCommand[1] = "scripts/runner-deployment-absent.py"' "$tmp/config.clean" \
+    >"$consumer/container-deployment.json"
+  case "$adapter_kind" in
+    missing) ;;
+    symlink)
+      ln -s runner-deployment-evidence.py "$consumer/scripts/runner-deployment-absent.py" ;;
+  esac
+  adapter_report="$tmp/adapter-$adapter_kind.log"
+  if (cd "$consumer" && bash scripts/container-deployment-contract.test.sh >"$adapter_report" 2>&1); then
+    echo "generated deployment contract accepted a $adapter_kind adapter" >&2
+    exit 1
+  fi
+  grep -qF -- "$expected_adapter_report" "$adapter_report" || {
+    echo "generated contract test rejected a $adapter_kind adapter without naming it" >&2
+    cat "$adapter_report" >&2
+    exit 1
+  }
+  rm -f "$consumer/scripts/runner-deployment-absent.py"
+done <<'ADAPTERS'
+missing|scripts/runner-deployment-absent.py, which is not a regular file
+symlink|scripts/runner-deployment-absent.py, which is a symlink
+ADAPTERS
+
 mv "$tmp/config.clean" "$consumer/container-deployment.json"
 (cd "$consumer" && bash scripts/container-deployment-contract.test.sh >/dev/null)
 
+# The caller-workflow assertions sit behind that file's own digest pin, so no
+# mutation of the caller alone can reach them. Re-pin the digest to the mutated
+# caller -- exactly what regenerating at a contract whose emitter produced that
+# caller would do -- and the later assertions become reachable.
+assert_generated_contract_rejects_caller() {
+  local label="$1" mutation="$2" expected="$3" caller_digest report
+  cp "$consumer/.github/workflows/container-deployment.yml" "$tmp/caller.clean"
+  cp "$consumer/scripts/container-deployment-contract.test.sh" "$tmp/contract-test.clean"
+  sed -i "$mutation" "$consumer/.github/workflows/container-deployment.yml"
+  caller_digest="$(sha256sum "$consumer/.github/workflows/container-deployment.yml" | cut -d' ' -f1)"
+  sed -i -E "s|^(assert_digest \.github/workflows/container-deployment\.yml ).*|\1$caller_digest|" \
+    "$consumer/scripts/container-deployment-contract.test.sh"
+  report="$tmp/caller-$label.log"
+  if (cd "$consumer" && bash scripts/container-deployment-contract.test.sh >"$report" 2>&1); then
+    echo "generated deployment contract accepted a caller with $label" >&2
+    exit 1
+  fi
+  grep -qF -- "$expected" "$report" || {
+    echo "generated contract test rejected $label without reporting it" >&2
+    cat "$report" >&2
+    exit 1
+  }
+  mv "$tmp/caller.clean" "$consumer/.github/workflows/container-deployment.yml"
+  mv "$tmp/contract-test.clean" "$consumer/scripts/container-deployment-contract.test.sh"
+}
+assert_generated_contract_rejects_caller \
+  'an unpinned reusable-workflow ref' \
+  "s|container-deployment.yml@$ref|container-deployment.yml@main|" \
+  'does not contain the required pinned text'
+assert_generated_contract_rejects_caller \
+  'a mutable image tag' \
+  '$a# runner image: ghcr.io/verjson/runner:latest' \
+  'must not name secrets, environments, or mutable tags'
+assert_generated_contract_rejects_caller \
+  'a dropped permission' \
+  's|^  checks: read$||' \
+  'expected permissions'
+(cd "$consumer" && bash scripts/container-deployment-contract.test.sh >/dev/null)
 
 workflow="$root/.github/workflows/container-deployment.yml"
 grep -q '^    environment: production$' "$workflow"
