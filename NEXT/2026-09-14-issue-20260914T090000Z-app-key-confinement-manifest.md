@@ -1,9 +1,11 @@
 ---
 date: 2026-09-14
-issue: 1285
+id: 20260914T090000Z
 title: Enumerate every App private key binding so an unconfined one fails CI
 impact: patch
 ---
+
+Part of [#1285](https://github.com/Verjson/.github/issues/1285).
 
 The App-key environment contract confines the release, merge and AI review keys, but
 its CI gate proved that contract against a hand-written list of six workflows. Four

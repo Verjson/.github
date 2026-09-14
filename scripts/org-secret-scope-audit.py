@@ -113,7 +113,7 @@ def main() -> int:
         name for name, rule in expected.items()
         if isinstance(rule, dict) and rule.get("target_visibility") == "withdrawn"
     }
-    if set(actual) != set(expected) - withdrawn | (set(actual) & withdrawn):
+    if set(actual) != ((set(expected) - withdrawn) | (set(actual) & withdrawn)):
         failures.append(
             f"manifest mismatch: unmanifested={sorted(set(actual) - set(expected))} "
             f"absent_live={sorted(set(expected) - withdrawn - set(actual))}"

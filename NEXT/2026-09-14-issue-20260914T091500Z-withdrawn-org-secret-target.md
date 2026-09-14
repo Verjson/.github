@@ -1,9 +1,11 @@
 ---
 date: 2026-09-14
-issue: 1285
+id: 20260914T091500Z
 title: Declare broad App key copies withdrawn so the nightly scope audit tracks the real exposure
 impact: patch
 ---
+
+Part of [#1285](https://github.com/Verjson/.github/issues/1285).
 
 `config/org-actions-secret-policy.json` listed nine of the organization's thirteen
 live Actions secrets, so `org-secret-scope-audit` had failed nightly since at least
