@@ -107,3 +107,18 @@ shell interpolation; this is destination binding, not a shell-injection fix or
 evidence of secret disclosure. Tests supply a conflicting ambient host and
 assert the explicit host, GET-only paths, timeout and unchanged environment/PATH
 handling. Preparation remains read-only and emits disabled candidates.
+
+## 2026-09-14 — Baseline refreshed and the lane declared
+
+Both adoption blockers closed. [ADR 0176](../0176-declare-conditional-node-floor-lane/README.md)
+refreshes the reviewed baseline above to ADR 0173's verified postimage, derives the
+floor contexts' producer App from that baseline instead of a hard-coded constant, and
+declares `core-checks-node-floor` and the `verjson-node-floor` property in
+`.github/required-check-contract.json`. The live acceptance and retirement gates in
+this ADR are unchanged and still unsatisfied; preparation remains read-only and
+emits a disabled candidate.
+
+ADR 0176 also supersedes this ADR's description of `baselineDigest` above: the field
+now binds the validated reviewed baseline rather than the full supplied or read
+observation, so it identifies the policy under review and agrees across `render` and
+`dry-run`. `baselineSource` remains the record of which path produced a payload.
