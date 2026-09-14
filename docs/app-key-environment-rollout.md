@@ -17,7 +17,7 @@ every App private key a canonical workflow binds, and
 it in both directions, so a new binding must state its confinement. Two keys are
 declared `unconfined` and are still readable from any non-fork ref:
 `RENOVATE_COMPATIBILITY_APP_PRIVATE_KEY` and `DEPENDENCY_SUPERSESSION_APP_PRIVATE_KEY`.
-[ADR 0176](decisions/0176-exhaustive-app-key-confinement/README.md) records their
+[ADR 0179](decisions/0179-exhaustive-app-key-confinement/README.md) records their
 provisioning prerequisite and why the environment binding waits for it.
 
 `scripts/org-secret-scope-audit.py` declares an App key marked for withdrawal with

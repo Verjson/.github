@@ -1,5 +1,5 @@
 {
-  "comment": "Every GitHub App private key a canonical workflow binds, and how that binding is confined. An organization or repository secret is readable by any workflow on any non-fork ref, so only an environment secret whose deployment-branch policy admits main alone confines the key (issue 1285, ADR 0166, ADR 0171, ADR 0176). scripts/ci-gate/app-key-environment.test.py enumerates .github/workflows and fails when this declaration and the workflow directory disagree in either direction.",
+  "comment": "Every GitHub App private key a canonical workflow binds, and how that binding is confined. An organization or repository secret is readable by any workflow on any non-fork ref, so only an environment secret whose deployment-branch policy admits main alone confines the key (issue 1285, ADR 0166, ADR 0171, ADR 0179). scripts/ci-gate/app-key-environment.test.py enumerates .github/workflows and fails when this declaration and the workflow directory disagree in either direction.",
   "roles": [
     {
       "role": "release",

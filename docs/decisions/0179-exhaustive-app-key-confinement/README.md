@@ -1,4 +1,4 @@
-# 0176 — Confine every App private key, not only the three canonical roles
+# 0179 — Confine every App private key, not only the three canonical roles
 
 - **Date:** 2026-09-14
 - **Status:** Accepted
