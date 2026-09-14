@@ -19,7 +19,7 @@
     "completeness": "exact",
     "targets": [
       {
-        "role_id": "review",
+        "role_id": "ai-review",
         "repository_selection": "selected",
         "repositories": [
           "Verjson/.github"

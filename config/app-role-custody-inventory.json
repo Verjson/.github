@@ -8,7 +8,7 @@
     "issue": "https://github.com/Verjson/verjson-ci/issues/144"
   },
   "roles": {
-    "review": {
+    "ai-review": {
       "portableName": "ai-review-authorization",
       "custodyDecision": "environment-only",
       "custodyRecord": "docs/decisions/0166-environment-only-app-private-keys/README.md",

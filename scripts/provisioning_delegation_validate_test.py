@@ -1,4 +1,5 @@
 import json
+import re
 import subprocess
 import tempfile
 import unittest
@@ -159,9 +160,9 @@ class ProvisioningDelegationValidateTest(unittest.TestCase):
             ("runner-registration",
              {"metadata": "read", "organization_self_hosted_runners": "write"}, ["secret-write"],
              "effect-not-permitted-for-role:runner-registration:secret-write"),
-            ("review", {"checks": "write", "contents": "write", "metadata": "read",
-                        "pull_requests": "write"}, ["secret-write"],
-             "permission-ceiling-exceeded:review"),
+            ("ai-review", {"checks": "write", "contents": "write", "metadata": "read",
+                           "pull_requests": "write"}, ["secret-write"],
+             "permission-ceiling-exceeded:ai-review"),
             ("dependency-supersession", {"contents": "read", "metadata": "read",
                                          "pull_requests": "write"}, ["resource-destruction"],
              "effect-not-permitted-for-role:dependency-supersession:resource-destruction"),
@@ -283,7 +284,7 @@ class ProvisioningDelegationValidateTest(unittest.TestCase):
         inventory = json.loads(INVENTORY.read_text(encoding="utf-8"))
         roles = inventory["roles"]
         self.assertEqual(set(roles), {
-            "review", "merge", "release", "renovate-observation",
+            "ai-review", "merge", "release", "renovate-observation",
             "dependency-supersession", "ruleset-audit", "runner-registration",
         })
         for role_id, role in roles.items():
@@ -295,7 +296,7 @@ class ProvisioningDelegationValidateTest(unittest.TestCase):
                 self.assertTrue(role["proof"]["insufficient"])
                 self.assertLessEqual(set(role["ownerGatedEffects"]), set(role["permittedEffects"]))
         self.assertEqual(roles["ruleset-audit"]["permittedEffects"], [])
-        for role_id in ("review", "merge", "release"):
+        for role_id in ("ai-review", "merge", "release"):
             self.assertEqual(roles[role_id]["storage"]["kind"], "repository-environment")
             self.assertIn("organization secret metadata presence",
                           roles[role_id]["proof"]["insufficient"])
@@ -322,6 +323,20 @@ class ProvisioningDelegationValidateTest(unittest.TestCase):
         self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
         self.assertIn("ownerConsentRequired", result.stderr)
         self.assertNotIn("Traceback", result.stderr)
+
+    def test_environment_role_keys_match_the_workflow_token_set(self):
+        workflow = (ROOT / ".github/workflows/app-key-environment.yml").read_text(encoding="utf-8")
+        accepted = re.search(r'case "\$ROLE" in ([a-z|-]+)\)', workflow)
+        self.assertIsNotNone(accepted, "app-key-environment.yml no longer enforces a role token set")
+        roles = json.loads(INVENTORY.read_text(encoding="utf-8"))["roles"]
+        environment_bound = {
+            role_id for role_id, role in roles.items()
+            if role["storage"]["kind"] == "repository-environment"
+        }
+        self.assertEqual(environment_bound, set(accepted.group(1).split("|")))
+        for role_id in sorted(environment_bound):
+            with self.subTest(role_id=role_id):
+                self.assertEqual(roles[role_id]["storage"]["environment"], f"{role_id}-app")
 
     def test_consent_may_not_exceed_the_reviewed_plan(self):
         document = grant()

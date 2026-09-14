@@ -80,12 +80,15 @@ beyond the documents it is given.
 
 ## Role custody inventory
 
-`config/app-role-custody-inventory.json` covers all seven owned roles: `review`,
+`config/app-role-custody-inventory.json` covers all seven owned roles: `ai-review`,
 `merge`, `release`, `renovate-observation`, `dependency-supersession`,
 `ruleset-audit`, and `runner-registration`. Each entry records where the credential
 lives, the execution trust boundary and prohibited consumers, who may rotate it, and
 role-specific positive and negative proof requirements — including which observations
-are explicitly *insufficient*. Organization secret metadata presence is insufficient
+are explicitly *insufficient*. The three environment-bound roles are keyed by the same
+tokens `.github/workflows/app-key-environment.yml` accepts, so `ai-review` resolves to
+the `ai-review-app` environment without a translation table; a test pins that agreement
+rather than leaving two hand-maintained namespaces for one role. Organization secret metadata presence is insufficient
 proof for every environment-only role, and a successful run is insufficient proof for
 the audit and runner roles. Rotation is owner-mediated for every role; no role permits
 automated key regeneration.
