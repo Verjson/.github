@@ -1207,15 +1207,19 @@ def is_fragment_path(path: str) -> bool:
     return path.startswith(f"{UNRELEASED_DIR}/") and path != f"{UNRELEASED_DIR}/README.md"
 
 
-def require_valid_added_fragments(
-    repo_root: Path, added_fragments: set[str], message: str
-) -> None:
-    valid_fragments = {
+def valid_added_fragments(repo_root: Path, added_fragments: set[str]) -> set[str]:
+    canonical = {
         str(entry.path.relative_to(repo_root))
         for entry in fragments(repo_root)
         if entry.canonical
     }
-    invalid_added = added_fragments - valid_fragments
+    return added_fragments & canonical
+
+
+def require_valid_added_fragments(
+    repo_root: Path, added_fragments: set[str], message: str
+) -> None:
+    invalid_added = added_fragments - valid_added_fragments(repo_root, added_fragments)
     if invalid_added:
         raise ChangelogError(
             f"{message}; invalid additions: " + ", ".join(sorted(invalid_added))
@@ -1307,13 +1311,16 @@ def check_pr(repo_root: Path, base: str, head: str) -> None:
     undocumented_workflows = sorted(
         path for path in changed if WORKFLOW_DEFINITION.match(path)
     )
-    if undocumented_workflows and not added_fragments:
+    # Gated on the *valid* fragments, not merely added ones. A workflow-only
+    # pull request validates nothing, so an unparseable addition would otherwise
+    # silence the report while documenting nothing.
+    if undocumented_workflows and not valid_added_fragments(repo_root, added_fragments):
         # Reported, not rejected: the organization Renovate preset that
         # auto-merges action-pin bumps lives in Verjson/renovate-config and
         # cannot be changed from here, so failing this now would stall every
         # bot upgrade instead of documenting it.
         print(
-            "warning: workflow definitions changed with no new NEXT fragment: "
+            "warning: workflow definitions changed with no new valid NEXT fragment: "
             + ", ".join(undocumented_workflows),
             file=sys.stderr,
         )

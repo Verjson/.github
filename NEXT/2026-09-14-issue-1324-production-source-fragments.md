@@ -29,7 +29,10 @@ a visible change.
 Workflow definitions under `.github/workflows/` and `.github/actions/`, and
 a repo-root `action.yml` — the published entrypoint of a composite or JS
 action, which previously escaped the class entirely — are
-**reported on stderr, not rejected**, when they change with no fragment. The
+**reported, not rejected**, when they change with no *valid* fragment. The
+report is gated on the valid fragment set rather than merely added paths:
+a workflow-only pull request validates nothing, so an unparseable addition
+used to buy silence while documenting nothing. The
 organization Renovate preset that auto-merges action-pin bumps lives in
 `Verjson/renovate-config` and cannot be changed from here; rejecting them now
 would stall every bot upgrade rather than document it. An audit of the last 250

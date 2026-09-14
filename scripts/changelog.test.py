@@ -2143,7 +2143,7 @@ class ChangelogContractTests(unittest.TestCase):
         self.assertIn(
             ".github/workflows/container-candidate.yml", captured.getvalue()
         )
-        self.assertIn("no new NEXT fragment", captured.getvalue())
+        self.assertIn("no new valid NEXT fragment", captured.getvalue())
 
     def test_root_action_definition_is_reported_not_ignored(self) -> None:
         """#1324 review: a published action's entrypoint lives outside `.github/`."""
@@ -2170,6 +2170,28 @@ class ChangelogContractTests(unittest.TestCase):
 
     def test_nested_action_definition_outside_github_is_not_a_workflow(self) -> None:
         self.assertIsNone(changelog.WORKFLOW_DEFINITION.match("vendor/action.yml"))
+
+    def test_invalid_fragment_does_not_silence_the_workflow_report(self) -> None:
+        """#1324 review: gating on added fragments let an unparseable one buy silence."""
+        self.root.joinpath("README.md").write_text("base\n", encoding="utf-8")
+        self.init_git()
+        self.commit_all("base")
+        base = run(self.root, "git", "rev-parse", "HEAD")
+        workflow = self.root / ".github" / "workflows" / "container-candidate.yml"
+        workflow.parent.mkdir(parents=True, exist_ok=True)
+        workflow.write_text("name: candidate\n", encoding="utf-8")
+        invalid = self.root / "NEXT" / "0000-archive.md"
+        invalid.parent.mkdir(parents=True, exist_ok=True)
+        invalid.write_text("no front matter\n", encoding="utf-8")
+        self.commit_all("workflow change with an invalid fragment")
+
+        captured = io.StringIO()
+        with contextlib.redirect_stderr(captured):
+            changelog.check_pr(self.root, base, "HEAD")
+        self.assertIn(
+            ".github/workflows/container-candidate.yml", captured.getvalue()
+        )
+        self.assertIn("no new valid NEXT fragment", captured.getvalue())
 
     def test_workflow_definition_change_with_a_fragment_reports_nothing(self) -> None:
         self.root.joinpath("README.md").write_text("base\n", encoding="utf-8")
