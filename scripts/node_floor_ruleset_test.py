@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from unittest import mock
@@ -68,6 +69,70 @@ class NodeFloorPreparationTests(unittest.TestCase):
         self.assertEqual([check['context'] for check in checks],
                          ['ci / build-test', 'ci / eligibility', 'changelog-contract'])
         self.assertEqual([check.get('integration_id') for check in checks], [15368, 15368, 15368])
+
+    def reviewed_as(self, baseline):
+        path = Path(self.enterContext(tempfile.TemporaryDirectory())) / 'baseline.json'
+        path.write_bytes(json.dumps(baseline).encode())
+        self.enterContext(mock.patch.object(policy, 'BASELINE', path))
+        return baseline
+
+    def test_floor_contexts_bind_the_producer_recorded_in_the_reviewed_baseline(self):
+        baseline = copy.deepcopy(self.baseline)
+        for check in baseline['rules'][0]['parameters']['required_status_checks']:
+            check['integration_id'] = 4583107
+        self.reviewed_as(baseline)
+        rule = policy.render(copy.deepcopy(baseline), 'saved-snapshot')['ruleset']
+        self.assertEqual(rule['rules'][0]['parameters']['required_status_checks'],
+                         [{'context': 'ci-node22 / build-test', 'integration_id': 4583107},
+                          {'context': 'ci-node22 / eligibility', 'integration_id': 4583107}])
+
+    def test_unbound_or_inconsistent_producer_bindings_fail_closed(self):
+        def unbind(checks):
+            checks[2].pop('integration_id')
+
+        def mix(checks):
+            checks[1]['integration_id'] = 4583107
+
+        def boolean(checks):
+            for check in checks:
+                check['integration_id'] = True
+
+        def zero(checks):
+            for check in checks:
+                check['integration_id'] = 0
+
+        def floating(checks):
+            for check in checks:
+                check['integration_id'] = 15368.0
+
+        def rename(checks):
+            checks[2]['context'] = 'changelog / validate'
+
+        def empty(checks):
+            del checks[:]
+
+        for change in (unbind, mix, boolean, zero, floating, rename, empty):
+            baseline = copy.deepcopy(self.baseline)
+            change(baseline['rules'][0]['parameters']['required_status_checks'])
+            self.reviewed_as(baseline)
+            with self.assertRaises(policy.PreparationError):
+                policy.render(copy.deepcopy(baseline), 'saved-snapshot')
+
+    def test_canonical_contract_declares_the_conditional_floor_lane_it_prepares(self):
+        contract = json.loads((ROOT / '.github/required-check-contract.json').read_text())
+        self.assertEqual(contract['property_schemas']['verjson-node-floor'],
+                         policy.PROPERTY['allowed_values'])
+        self.assertNotIn('ci-node22 / build-test', contract['stacks']['node']['contexts'])
+        declared = [entry for entry in contract['ruleset_plan']['rulesets']
+                    if entry['name'] == 'core-checks-node-floor']
+        self.assertEqual(len(declared), 1)
+        candidate = policy.render(self.baseline, 'reviewed-policy')['ruleset']
+        self.assertEqual(declared[0]['contexts'],
+                         [check['context'] for check in
+                          candidate['rules'][0]['parameters']['required_status_checks']])
+        self.assertEqual([{'name': item['name'], 'values': item['property_values']}
+                          for item in candidate['conditions']['repository_property']['include']],
+                         declared[0]['repository_properties'])
 
     def test_baseline_drift_fails_closed_including_boolean_integer_equivalence(self):
         changes = [lambda b: b.update(id=20515817.0), lambda b: b.update(name='other'),
