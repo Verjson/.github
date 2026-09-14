@@ -63,6 +63,12 @@ class NodeFloorPreparationTests(unittest.TestCase):
             'required_status_checks': [{'context': name, 'integration_id': 15368}
                                        for name in ['ci-node22 / build-test', 'ci-node22 / eligibility']]}}])
 
+    def test_reviewed_baseline_records_the_bound_core_check_producer(self):
+        checks = self.baseline['rules'][0]['parameters']['required_status_checks']
+        self.assertEqual([check['context'] for check in checks],
+                         ['ci / build-test', 'ci / eligibility', 'changelog-contract'])
+        self.assertEqual([check.get('integration_id') for check in checks], [15368, 15368, 15368])
+
     def test_baseline_drift_fails_closed_including_boolean_integer_equivalence(self):
         changes = [lambda b: b.update(id=20515817.0), lambda b: b.update(name='other'),
                    lambda b: b.update(source='other'), lambda b: b.update(enforcement='disabled'),
