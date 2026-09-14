@@ -1,6 +1,6 @@
 ---
 date: 2026-09-14
-issue: 1264
+id: 2c8d8f1
 title: Package-backed portable CI adapter
 impact: major
 ---
