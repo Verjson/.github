@@ -439,6 +439,31 @@ jobs:
             echo "should-run=true" >> "$GITHUB_OUTPUT"
           fi
 
+  # A deferred lane runs nothing, yet `build-test` must keep reporting or a held
+  # Renovate PR wedges on a permanently unsatisfied required context (#191). The
+  # cost is a required check that concludes `success` having executed no step —
+  # `Verjson/verjson-cli#251` lost a repository-local lockfile guard that way,
+  # and a deliberate version hold was violated behind a green required check.
+  #
+  # ADR 0178: keep `build-test` satisfying, and publish the deferral as its own
+  # check instead. This job exists ONLY on a defer and terminates unsuccessfully,
+  # so `<caller>/deferred-ci` is a first-class non-SUCCESS entry in the head's
+  # `statusCheckRollup` — visible to one projection everybody already makes,
+  # rather than only to an opt-in annotations read (ADR 0156). It is deliberately
+  # NOT a required context: requiring it would reintroduce #191's wedge, because
+  # nothing re-fires this run until Renovate rebases onto a new head.
+  deferred-ci:
+    needs: eligibility
+    if: needs.eligibility.outputs.should-run == 'false'
+    runs-on: ${{ inputs.runner != '' && fromJSON(inputs.runner) || github.repository_owner != 'Verjson' && 'ubuntu-24.04' || github.event.repository.private == true && fromJSON(vars.CI_LANE_TRUSTED || vars.CI_LANE_FALLBACK || '["ubuntu-24.04"]') || fromJSON(vars.CI_LANE_UNTRUSTED || vars.CI_LANE_FALLBACK || '["ubuntu-24.04"]') }}
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Report that the required CI lane executed nothing
+        run: |
+          echo "::error title=CI deferred::org CI is deferred on this head: renovate/stability-days is pending, so build-test reported success without executing a single verification step. Nothing on this head has been verified — no test, lint, type check, or repository-local contract guard has run (Verjson/verjson-cli#251). CI executes for real once the release-age gate clears and Renovate rebases." >&2
+          exit 1
+
   acquire-secretless-dependencies:
     needs: eligibility
     if: needs.eligibility.outputs.should-run != 'false'
