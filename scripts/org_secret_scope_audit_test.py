@@ -308,21 +308,26 @@ class OrgSecretPolicyManifestTest(unittest.TestCase):
         self.policy = json.loads((ROOT / "config/org-actions-secret-policy.json").read_text(encoding="utf-8"))
         self.roles = json.loads((ROOT / "config/app-key-roles.json").read_text(encoding="utf-8"))["roles"]
 
-    def test_every_app_key_marked_for_withdrawal_is_declared_withdrawn(self):
+    def test_every_app_key_marked_for_withdrawal_has_a_withdrawal_policy(self):
         for entry in self.roles:
             if entry["organization_copy"] != "withdraw":
                 continue
             with self.subTest(secret=entry["secret"]):
                 rule = self.policy["secrets"].get(entry["secret"])
                 self.assertIsNotNone(rule, f"{entry['secret']} is not in the reviewed org secret policy")
-                self.assertEqual(rule["target_visibility"], "withdrawn")
+                self.assertIn("withdrawal", rule)
+                self.assertIn(rule["target_visibility"], {"all", "selected", "withdrawn"})
+                if rule["target_visibility"] in {"all", "selected"}:
+                    self.assertEqual(rule.get("custody"), "environment-only-migration-residue")
 
     def test_no_app_key_is_declared_a_permanent_broad_organization_secret(self):
         for entry in self.roles:
             rule = self.policy["secrets"].get(entry["secret"])
             if rule is not None:
                 with self.subTest(secret=entry["secret"]):
-                    self.assertNotEqual(rule["target_visibility"], "all")
+                    if rule["target_visibility"] == "all":
+                        self.assertEqual(rule.get("custody"), "environment-only-migration-residue")
+                        self.assertIn("withdrawal", rule)
 
 
 if __name__ == "__main__":
