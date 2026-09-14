@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
+import contextlib
 import importlib.util
+import io
 import json
 import os
 import re
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest import mock
@@ -15,6 +18,50 @@ ROOT = Path(__file__).resolve().parents[2]
 SPEC = importlib.util.spec_from_file_location("app_key_audit", ROOT / "scripts/app-key-environment-audit.py")
 audit = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(audit)
+
+
+def workflow_bindings(directory):
+    """Every workflow job that reads an App private key, with its confinement evidence."""
+    bindings = []
+    for path in sorted(p for p in Path(directory).glob("*") if p.suffix in (".yml", ".yaml")):
+        text = path.read_text(encoding="utf-8")
+        mentioned = audit.app_keys(text)
+        if not mentioned:
+            continue
+        document = yaml.safe_load(text)
+        captured = set()
+        for name, job in (document.get("jobs") or {}).items():
+            rendered = yaml.safe_dump(job)
+            needs = job.get("needs") or []
+            for secret in sorted(audit.app_keys(rendered)):
+                captured.add(secret)
+                bindings.append({
+                    "workflow": path.stem,
+                    "job": name,
+                    "secret": secret,
+                    "environment": job.get("environment"),
+                    "needs": [needs] if isinstance(needs, str) else list(needs),
+                })
+        # A workflow-level `env:` block reads the key outside every job, where no
+        # `environment:` can confine it and where a job-by-job scan sees nothing.
+        if mentioned - captured:
+            raise ValueError(
+                f"{path.name} reads {sorted(mentioned - captured)} outside any job, "
+                "where no environment confines it")
+    if not bindings:
+        raise ValueError("no App key binding was found; the workflow scan is unreliable")
+    return bindings
+
+
+def confinement_pattern(entry):
+    """The only expressions that bind a canonical entry's own role environment.
+
+    A substring test admits `${{ inputs.release_environment || 'unprotected' }}`,
+    which resolves to an unprotected environment whenever the caller omits the
+    input -- the exact absence of confinement the contract exists to reject.
+    """
+    return (r"\$\{\{ inputs\." + re.escape(entry["input"])
+            + r"( \|\| '" + re.escape(entry["environment"]) + r"')? \}\}")
 
 
 def workflow(name):
@@ -250,6 +297,214 @@ class WorkflowBoundaryTests(unittest.TestCase):
                        {"policy": {"total_count": 1, "branch_policies": [{"name": "main", "type": "tag"}]}}):
             with self.subTest(kwargs=kwargs):
                 self.assertNotEqual(self.run_policy(**kwargs), 0)
+
+
+
+WORKFLOW = """\
+on: workflow_dispatch
+jobs:
+  mint:
+    runs-on: ubuntu-latest
+    environment: release-app
+    steps:
+      - run: echo "${{ %s }}"
+"""
+
+
+class WorkflowScanTests(unittest.TestCase):
+    """The directory scan sees every shape in which a workflow can read an App key.
+
+    Each case below is a real GitHub Actions spelling that the first scan missed, so
+    a binding written that way contributed nothing and read as full coverage (#1285).
+    """
+
+    def scan(self, files):
+        with tempfile.TemporaryDirectory() as directory:
+            for name, body in files.items():
+                (Path(directory) / name).write_text(body, encoding="utf-8")
+            return workflow_bindings(directory)
+
+    def test_a_yaml_extension_workflow_is_scanned_like_a_yml_one(self):
+        bindings = self.scan({"mint.yaml": WORKFLOW % "secrets.RELEASE_APP_PRIVATE_KEY"})
+        self.assertEqual([binding["secret"] for binding in bindings], ["RELEASE_APP_PRIVATE_KEY"])
+
+    def test_index_expression_syntax_is_the_same_binding_as_dotted_syntax(self):
+        for expression in ("secrets['RELEASE_APP_PRIVATE_KEY']", 'secrets["RELEASE_APP_PRIVATE_KEY"]'):
+            with self.subTest(expression=expression):
+                bindings = self.scan({"mint.yml": WORKFLOW % expression})
+                self.assertEqual([binding["secret"] for binding in bindings], ["RELEASE_APP_PRIVATE_KEY"])
+
+    def test_an_app_key_named_outside_the_canonical_suffix_is_still_an_app_key(self):
+        for name in ("RELEASE_APP_KEY_PEM", "RUNNER_DEPLOY_APP_KEY", "x_app_private_key"):
+            with self.subTest(name=name):
+                bindings = self.scan({"mint.yml": WORKFLOW % f"secrets.{name}"})
+                self.assertEqual([binding["secret"] for binding in bindings], [name])
+
+    def test_a_secret_that_is_not_an_app_key_contributes_no_binding(self):
+        for name in ("NODE_AUTH_TOKEN", "RELEASE_KEY", "MERGE_APP_ID"):
+            with self.subTest(name=name), self.assertRaises(ValueError):
+                self.scan({"mint.yml": WORKFLOW % f"secrets.{name}"})
+
+    def test_a_key_read_outside_every_job_is_an_error_not_a_silent_zero(self):
+        preamble = ("on: workflow_dispatch\n"
+                    "env:\n"
+                    "  APP_KEY: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}\n")
+        job = ("jobs:\n"
+               "  mint:\n"
+               "    runs-on: ubuntu-latest\n"
+               "    environment: release-app\n"
+               "    steps:\n"
+               "      - run: echo \"$APP_KEY\"\n")
+        other = WORKFLOW % "secrets.MERGE_APP_PRIVATE_KEY"
+        for body in (preamble, preamble + job):
+            # The companion file binds a key inside a job, so the directory-wide
+            # "no binding at all" guard cannot be what rejects these.
+            with self.subTest(jobs=body is not preamble), self.assertRaises(ValueError):
+                self.scan({"leak.yml": body, "mint.yml": other})
+
+
+class AppKeyRoleManifestTests(unittest.TestCase):
+    """Every App private key a canonical workflow binds is accounted for.
+
+    The consumer list in WorkflowBoundaryTests is hand-written, so it proved the
+    three ADR 0171 roles and silently ignored every other App key in the same
+    workflow directory. This enumerates the directory instead, so a new binding
+    cannot be added without declaring its confinement (#1285).
+    """
+
+    def setUp(self):
+        self.manifest = audit.load_roles()
+        self.bindings = workflow_bindings(ROOT / ".github/workflows")
+
+    def test_manifest_and_workflows_declare_exactly_the_same_app_keys(self):
+        self.assertEqual({entry["secret"] for entry in self.manifest},
+                         {binding["secret"] for binding in self.bindings})
+
+    def test_every_confined_binding_declares_its_declared_environment(self):
+        declared = {entry["secret"]: entry for entry in self.manifest}
+        for binding in self.bindings:
+            entry = declared[binding["secret"]]
+            with self.subTest(workflow=binding["workflow"], job=binding["job"]):
+                if entry["confinement"] == "unconfined":
+                    self.assertIsNone(binding["environment"])
+                elif entry["confinement"] == "caller-owned":
+                    self.assertEqual(binding["environment"], entry["environment"])
+                else:
+                    self.assertIsNotNone(
+                        re.fullmatch(confinement_pattern(entry), binding["environment"] or ""),
+                        f"{binding['environment']!r} does not bind {entry['environment']}")
+
+    def test_a_canonical_expression_defaulting_elsewhere_is_not_confinement(self):
+        pattern = confinement_pattern({"input": "release_environment", "environment": "release-app"})
+        for accepted in ("${{ inputs.release_environment }}",
+                         "${{ inputs.release_environment || 'release-app' }}"):
+            with self.subTest(accepted=accepted):
+                self.assertIsNotNone(re.fullmatch(pattern, accepted))
+        for rejected in ("${{ inputs.release_environment || 'unprotected' }}",
+                         "${{ inputs.release_environment || '' }}",
+                         "${{ inputs.release_environment_override }}",
+                         "prefix-${{ inputs.release_environment }}",
+                         "${{ inputs.merge_environment }}",
+                         "release-app"):
+            with self.subTest(rejected=rejected):
+                self.assertIsNone(re.fullmatch(pattern, rejected))
+
+    def test_canonical_bindings_depend_on_the_keyless_policy_preflight(self):
+        canonical = {e["secret"] for e in self.manifest if e["confinement"] == "canonical"}
+        for binding in self.bindings:
+            if binding["secret"] not in canonical:
+                continue
+            with self.subTest(workflow=binding["workflow"], job=binding["job"]):
+                self.assertIn("app-key-policy", binding["needs"])
+
+    def test_policy_workflow_accepts_exactly_the_canonical_roles(self):
+        roles = {e["role"] for e in self.manifest if e["confinement"] == "canonical"}
+        step = workflow("app-key-environment")["jobs"]["validate"]["steps"][0]
+        accepted = re.search(r'case "\$ROLE" in ([a-z|-]+)\)', step["run"]).group(1)
+        self.assertEqual(set(accepted.split("|")), roles)
+
+    def test_unconfined_keys_name_their_exposure_and_tracking_issue(self):
+        pending = [entry for entry in self.manifest if entry["confinement"] == "unconfined"]
+        self.assertTrue(pending, "remove this test once every App key is confined")
+        for entry in pending:
+            with self.subTest(secret=entry["secret"]):
+                self.assertEqual(entry["tracking"], 1285)
+                self.assertTrue(entry["reason"].strip())
+
+    def test_audit_reports_every_declared_app_key_as_a_broad_copy(self):
+        data = metadata()
+        data["orgs/Verjson/actions/secrets?per_page=100"] = [{
+            "total_count": len(self.manifest),
+            "secrets": [{"name": entry["secret"]} for entry in self.manifest]}]
+        result = audit.audit("Verjson/example", data.__getitem__)
+        self.assertFalse(result["compliant"])
+        self.assertEqual(result["broadOrganizationKeys"],
+                         sorted(entry["secret"] for entry in self.manifest))
+
+
+
+class AppKeyRoleManifestValidationTests(unittest.TestCase):
+    def manifest(self, **overrides):
+        entry = {"role": "release", "secret": "RELEASE_APP_PRIVATE_KEY", "environment": "release-app",
+                 "confinement": "canonical", "organization_copy": "withdraw"} | overrides
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "roles.json"
+            path.write_text(json.dumps({"roles": [entry]}), encoding="utf-8")
+            return audit.load_roles(path)
+
+    def test_a_well_formed_entry_loads(self):
+        self.assertEqual(self.manifest()[0]["role"], "release")
+
+    def test_malformed_entries_are_rejected_rather_than_silently_skipped(self):
+        for overrides in ({"confinement": "none"}, {"confinement": None}, {"secret": "RELEASE_KEY"},
+                          {"secret": ""}, {"secret": None}, {"role": ""}, {"role": None},
+                          {"environment": ""}, {"environment": None},
+                          {"environment": "release-cache"},
+                          {"organization_copy": "keep"}, {"organization_copy": None}):
+            with self.subTest(overrides=overrides), self.assertRaises(ValueError):
+                self.manifest(**overrides)
+
+    def test_a_caller_owned_entry_may_name_an_environment_outside_the_role_convention(self):
+        entry = self.manifest(confinement="caller-owned", environment="production")[0]
+        self.assertEqual(entry["environment"], "production")
+
+    def test_the_audit_reads_the_declared_environment_rather_than_deriving_a_second_one(self):
+        requested = []
+
+        def api(path):
+            requested.append(path)
+            return metadata()[path]
+
+        audit.audit("Verjson/example", api)
+        for entry in audit.load_roles():
+            if entry["confinement"] == "canonical":
+                self.assertIn(f"repos/Verjson/example/environments/{entry['environment']}", requested)
+
+    def test_an_unverifiable_audit_names_the_cause_beside_the_guidance(self):
+        cause = "release-app permits a ref other than the main branch"
+        stdout = io.StringIO()
+        with mock.patch.object(audit, "audit", side_effect=ValueError(cause)), \
+                mock.patch.object(sys, "argv", ["audit", "--repo", "Verjson/example"]), \
+                contextlib.redirect_stdout(stdout):
+            self.assertEqual(audit.main(), 1)
+        self.assertIn(cause, stdout.getvalue())
+        self.assertIn("check metadata access", stdout.getvalue())
+
+    def test_an_empty_or_duplicated_manifest_never_reads_as_full_coverage(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "roles.json"
+            entry = {"role": "release", "secret": "RELEASE_APP_PRIVATE_KEY", "environment": "release-app",
+                     "confinement": "canonical", "organization_copy": "withdraw"}
+            for roles in ([], {}, [entry, dict(entry, role="other")]):
+                with self.subTest(roles=roles):
+                    path.write_text(json.dumps({"roles": roles}), encoding="utf-8")
+                    with self.assertRaises(ValueError):
+                        audit.load_roles(path)
+
+    def test_a_directory_with_no_binding_is_an_error_not_an_empty_result(self):
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaises(ValueError):
+                workflow_bindings(directory)
 
 
 if __name__ == "__main__":

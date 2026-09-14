@@ -163,18 +163,22 @@ def main() -> int:
     if set(actual) != set(expected):
         failures.append(
             f"manifest mismatch: unmanifested={sorted(set(actual) - set(expected))} "
-            f"absent_live={sorted(set(expected) - set(actual))}"
+            f"absent_live={sorted(set(expected) - withdrawn - set(actual))}"
         )
 
-    for name in sorted(set(actual) & set(expected)):
+    for name in sorted(expected):
         rule = expected[name]
-        visibility = actual[name].get("visibility")
+        # Validate the reviewed shape for every manifested secret. A withdrawn entry is
+        # normally absent from the live listing, and an unvalidated entry is how a
+        # malformed withdrawal rule would silently never be checked.
+        live = actual.get(name)
+        visibility = live.get("visibility") if isinstance(live, dict) else None
         target = rule.get("target_visibility")
         consumers = rule.get("consumers")
         reason = rule.get("reason")
         repositories = rule.get("selected_repositories")
         if (
-            target not in {"all", "private", "selected"}
+            target not in {"all", "private", "selected", "withdrawn"}
             or not isinstance(consumers, list)
             or not consumers
             or not all(isinstance(consumer, str) and consumer.strip() for consumer in consumers)
@@ -195,6 +199,14 @@ def main() -> int:
             failures.append(f"{name}: non-selected policy must not name repositories")
         if target == "selected" and not repositories:
             failures.append(f"{name}: selected policy has no repositories")
+        if live is None:
+            continue
+        if target == "withdrawn":
+            failures.append(
+                f"{name}: organization copy must be withdrawn; it is still present "
+                f"with visibility {visibility!r}"
+            )
+            continue
         if visibility != target:
             failures.append(f"{name}: visibility is {visibility!r}, policy requires {target!r}")
             continue
