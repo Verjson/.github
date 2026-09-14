@@ -400,6 +400,13 @@ This ADR's decision stands: absent checks still fail closed. Under the event-dri
 that property is asserted by the registered `event-driven-authorization` and `arm-receipt`
 suites, and by `scripts/ci-gate/native-automerge.test.sh`'s required-check policy cases.
 
-Note for future readers: [ADR 0181](../0181-adr-coverage-claims-follow-their-tests/README.md)'s automated check matches full `scripts/ci-gate/` paths, so
-it caught the first of these three and not the two bare basenames. They are recorded here
-by hand for that reason.
+Two further harnesses this ADR names without a directory, `hold.test.sh` and
+`gate-queue.test.sh`, are deleted for the same reason (#1329): both extracted the same
+`run:`-block of the `ci_wait` step, and the empty-rollup and `EXPECTED_HEAD_SHA` cases
+recorded above are the historical record of that step, not of a suite that still runs.
+The `no-checks` and absent-check properties they asserted are carried by the registered
+`native-automerge` and `event-driven-authorization` suites named above.
+
+[ADR 0181](../0181-adr-coverage-claims-follow-their-tests/README.md)'s automated check
+resolves bare basenames as well as full paths, so this amendment is what the check reads;
+nothing here is recorded by hand.

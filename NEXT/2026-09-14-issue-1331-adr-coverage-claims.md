@@ -11,13 +11,26 @@ ones kept a live claim in their own body. Nothing caught it, because the sweep w
 manual and a manual sweep over 175 ADRs misses.
 
 `scripts/ci-gate/adr-live-coverage-claims.test.py` now fails CI when an ADR names a
-`scripts/ci-gate/*.test.*` path that no longer resolves, unless that ADR states the
-file's retirement. The rule is keyed on what the document says, not on the enclosing
+test file that no longer resolves, unless that ADR states why it is absent. Both
+spellings count: a full `scripts/ci-gate/` path and a bare basename, because an ADR uses
+them interchangeably and both make the same present-tense promise to a reader. Exemption
+is keyed on the file rather than the spelling, so retiring a full path also settles the
+same document's shorthand for it. The rule is keyed on what the document says, not on the enclosing
 heading: ADR 0012's stale claim sits *inside* a dated amendment written a month before
 the deletion that invalidated it, so a heading-based exemption would have passed the
 worst case. Scope is the whole document, because a stale claim normally sits in
 `## Consequences` — decided text an amendment may never edit — so a section-scoped rule
 would be satisfiable only by rewriting the record that must not be rewritten.
+
+The bare-basename arm surfaced eleven more dangling live claims, each now settled by an
+appended dated amendment rather than left as accepted residue: ADR 0079's historical
+disposition table names eight deleted harnesses under a column header that describes
+them but never retires them, ADR 0024 names two more without a directory, and ADR 0052
+names the adopter-side `changelog-contract.test.sh`. That last one is not a retirement
+at all — the file is generated into adopter repositories and was never a file here — so
+the check accepts that as a second stated reason a name is absent, and keeps full paths
+outside `scripts/ci-gate/` out of scope, where resolving against this tree would be the
+wrong question.
 
 ADRs 0009, 0012, 0024, 0042, and 0058 carry dated amendments; 0039's was extended,
 since its 2026-09-12 amendment recorded the retirement without stating it in the

@@ -33,8 +33,12 @@ read fails open when it cannot read the status. Neither had any other coverage.
 
 **1. Coverage claims about `scripts/ci-gate` tests are machine-checked.**
 `scripts/ci-gate/adr-live-coverage-claims.test.py` (registered in `changelog-release`)
-fails CI when any `docs/decisions/**/README.md` names a `scripts/ci-gate/*.test.*`
-path that no longer resolves, unless the same ADR states that file's retirement.
+fails CI when any `docs/decisions/**/README.md` names a test file that no longer
+resolves, unless the same ADR states why it is absent. Both spellings count: a full
+`scripts/ci-gate/` path, and a bare basename such as `native-automerge.test.sh`, which is how
+these ADRs routinely refer to a harness and which makes exactly the same present-tense
+promise. Exemption is keyed on the file, so retiring a full path also settles the
+document's shorthand for it.
 
 The rule is deliberately *not* keyed on the enclosing heading. A dated amendment
 written **before** a deletion is exactly as stale as the body — ADR 0012's stale claim
@@ -77,13 +81,21 @@ the diagnostic is what changed.
 - Six ADRs carry a 2026-09-14 amendment pointing here. None of their decisions is
   reversed; only their claims about which files currently assert those decisions are
   corrected.
-- The check is scoped to full `scripts/ci-gate/` paths. Bare basenames (ADR 0024 and
-  ADR 0079 name harnesses without a directory) and dangling references to tests
-  outside `scripts/ci-gate` are **not** covered. Widening the matcher sweeps in every
-  historical disposition table and roughly a dozen pre-existing dangling references in
-  ADRs #1329 never touched; that is a larger, separate cleanup, and half-enforcing it
-  here would blur what this check asserts. The residue is recorded here rather than
-  silently omitted.
+- Bare basenames are in scope. Widening the matcher to them surfaced eleven further
+  dangling live claims — two in ADR 0024, eight in ADR 0079's historical disposition
+  table, one in ADR 0052 — and each is now settled by an appended dated amendment
+  rather than recorded as accepted residue. A historical disposition table is not
+  exempt for being historical: "Why the assertion is no longer meaningful" as a column
+  header is not a sentence that retires a file, and a reader scanning the table sees
+  eight present-tense file names.
+- A **full path outside `scripts/ci-gate/` stays out of scope**, and that boundary is
+  now a substantive rule rather than a convenience. `scripts/changelog-contract.test.sh`
+  is generated into adopter repositories by `gen-changelog-caller.sh`; an ADR naming it
+  is describing a contract this repository exports, not coverage it has lost, so
+  resolving it against this tree would be the wrong question. A bare basename carries no
+  such ambiguity. Where an ADR does name such a file without a directory — ADR 0052
+  does — the exemption is the same shape as a retirement: the document has to say, in
+  prose, that the file is generated into adopter repositories.
 - The trade-off accepted in decision 1 is stated plainly: a retirement note anywhere
   in a long ADR will launder a live claim elsewhere in the same ADR for the same file.
   The failure this closes is "nothing in this ADR says the file is gone", which is the

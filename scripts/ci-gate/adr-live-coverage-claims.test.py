@@ -14,9 +14,11 @@ it. Nor is it keyed on a heading: a *dated amendment written before the deletion
 exactly as stale as the body, so exempting a section for being an amendment would
 have passed the worst case here (ADR 0012's 2026-08-07 amendment).
 
-So the rule is keyed on what the document actually says. A `scripts/ci-gate/*.test.*`
-path that no longer resolves must be named, somewhere in the same ADR, in a sentence
-that states its retirement.
+So the rule is keyed on what the document actually says. A test file an ADR names --
+as a full `scripts/ci-gate/` path or as a bare basename, because both spellings make
+the same present-tense promise -- and which no longer resolves must be named, somewhere
+in the same ADR, in a sentence that says why it is absent: it was retired, or it is
+generated into adopter repositories and was never a file here.
 
 Scope is the whole document rather than the enclosing section, deliberately. A stale
 claim usually sits in `## Consequences`, which is decided text an amendment may never
@@ -28,20 +30,24 @@ in it for the same file. That is acceptable because the reader's failure mode is
 "nothing in this ADR says the file is gone", and this closes exactly that.
 """
 import re
+import tempfile
 import unittest
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 ROOT = Path(__file__).resolve().parents[2]
 DECISIONS = ROOT / "docs" / "decisions"
-# Scoped to full `scripts/ci-gate/` paths on purpose, and the boundary is a judgment
-# call worth stating. Widening to bare basenames does find more -- ADR 0024 names two
-# of the deleted harnesses without a directory -- but it also sweeps in every
-# historical disposition table (ADR 0079 lists all eight by basename, correctly) and
-# a dozen pre-existing dangling references in ADRs #1329 never touched. That is a
-# different, larger cleanup than this one, and folding it in here would blur what
-# this check asserts. Full paths are the unambiguous, bounded rule; the bare-name
-# residue is tracked in this PR's receipt rather than half-enforced.
+# Two arms, because an ADR spells a harness both ways and both spellings make the same
+# present-tense promise to a reader. The full-path arm is scoped to `scripts/ci-gate/`:
+# a full path elsewhere routinely names a file that is *generated into adopter
+# repositories* and correctly does not exist here, so it is not this repository's
+# coverage claim to check. A bare basename carries no such ambiguity -- in these ADRs it
+# is always shorthand for a harness in this tree -- so it is resolved against every test
+# file in the repository and flagged when it resolves nowhere.
 TEST_PATH = re.compile(r"scripts/ci-gate/[A-Za-z0-9._-]+\.test\.(?:sh|py)")
+# A basename only: the lookbehind rejects anything with a directory in front of it, so a
+# full path is never double-counted, and the leading class rejects the `.test.sh` tail of
+# a `*.test.sh` glob written in prose.
+BARE_NAME = re.compile(r"(?<![A-Za-z0-9._/-])[A-Za-z0-9_-][A-Za-z0-9._-]*\.test\.(?:sh|py)")
 # The vocabulary an ADR uses to record that a harness is gone. Deliberately phrasal
 # rather than stemmed: ADR 0042 is *about* branch deletion, so a bare `delet` stem
 # matched "merge and delete outcomes" in its live claim and exempted it. A retirement
@@ -55,6 +61,24 @@ RETIRED = re.compile(
     """,
     re.IGNORECASE | re.VERBOSE,
 )
+# The second stated reason a named harness is absent from this tree: it was never meant
+# to be here. `scripts/changelog-contract.test.sh` is emitted into adopter repositories
+# by `gen-changelog-caller.sh`, so an ADR naming it is describing a contract it exports,
+# not coverage it has lost. That has to be said in the document, exactly as a retirement
+# does -- an unexplained missing name stays a failure.
+GENERATED_ELSEWHERE = re.compile(
+    r"""
+      \b(?:is|are|was|were)\s+generated\s+into\b
+    | \bemitted\s+into\b
+    | \bnot\ a\ file\ in\ this\ repository\b
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
+
+
+def exempts(paragraph):
+    """A paragraph excuses the names it contains only by saying why they are absent."""
+    return bool(RETIRED.search(paragraph) or GENERATED_ELSEWHERE.search(paragraph))
 
 
 def adrs():
@@ -89,7 +113,7 @@ def resolves(reference):
 
 
 def claims(text):
-    """Yield (paragraph, path) for every ci-gate test path named in an ADR.
+    """Yield (paragraph, reference) for every test file an ADR names, path or basename.
 
     The paragraph is the unit, not the sentence. A retirement is normally written
     across two sentences -- name the claim, then correct it -- so splitting finer
@@ -99,19 +123,36 @@ def claims(text):
     """
     for paragraph in re.split(r"\n\s*\n", text):
         flat = " ".join(paragraph.split())
-        for path in dict.fromkeys(m.group(0) for m in TEST_PATH.finditer(flat)):
+        matches = [m.group(0) for m in TEST_PATH.finditer(flat)]
+        matches += [m.group(0) for m in BARE_NAME.finditer(flat)]
+        for path in dict.fromkeys(matches):
             yield flat, path
 
 
-def dangling_live_claims():
+def _label(readme):
+    try:
+        return readme.relative_to(ROOT).as_posix()
+    except ValueError:
+        return readme.as_posix()
+
+
+def dangling_live_claims(readmes=None):
+    """Yield (adr, reference, paragraph) for every unexplained absent test an ADR names.
+
+    Exemption is keyed on the **basename**, not the reference string. An amendment that
+    retires `scripts/ci-gate/x.test.sh` has retired the file, so the same document's
+    shorthand `x.test.sh` is the same statement and must not be reported again.
+    """
     reported = set()
-    for readme in adrs():
+    for readme in adrs() if readmes is None else readmes:
         found = list(claims(readme.read_text(encoding="utf-8")))
-        retired = {path for paragraph, path in found if RETIRED.search(paragraph)}
+        excused = {
+            PurePosixPath(path).name for paragraph, path in found if exempts(paragraph)
+        }
         for paragraph, path in found:
-            if resolves(path) or path in retired:
+            if resolves(path) or PurePosixPath(path).name in excused:
                 continue
-            seen = readme.relative_to(ROOT).as_posix(), path
+            seen = _label(readme), path
             if seen not in reported:
                 reported.add(seen)
                 yield seen[0], path, paragraph
@@ -169,6 +210,58 @@ class AdrLiveCoverageClaimsTest(unittest.TestCase):
         """Markdown wrapping must not turn a correct amendment into a false failure."""
         wrapped = "The harness\nscripts/ci-gate/gone.test.sh was retired with the step\nit extracted."
         self.assertEqual([], [p for para, p in claims(wrapped) if not RETIRED.search(para)])
+
+    def test_a_bare_basename_claim_on_a_missing_harness_is_flagged(self):
+        """The negative control for the bare-basename arm: it must actually bite."""
+        sentence = "Covered by `absent-harness.test.sh`, wired into `actions-ci.yml`."
+        self.assertEqual(
+            ["absent-harness.test.sh"],
+            [ref for para, ref in claims(sentence) if not RETIRED.search(para)],
+        )
+
+    def test_the_bare_basename_arm_bites_on_a_full_scan(self):
+        """End-to-end negative control: an injected ADR making the claim must fail."""
+        with tempfile.TemporaryDirectory() as tmp:
+            readme = Path(tmp) / "0999-injected" / "README.md"
+            readme.parent.mkdir()
+            readme.write_text(
+                "Covered by `absent-harness.test.sh`, wired into `actions-ci.yml`.\n",
+                encoding="utf-8",
+            )
+            found = list(dangling_live_claims([readme]))
+        self.assertEqual(1, len(found), found)
+        self.assertEqual("absent-harness.test.sh", found[0][1])
+
+    def test_a_bare_basename_that_resolves_is_not_flagged(self):
+        """The arm must not flag the shorthand every disposition table legitimately uses."""
+        with tempfile.TemporaryDirectory() as tmp:
+            readme = Path(tmp) / "0999-injected" / "README.md"
+            readme.parent.mkdir()
+            readme.write_text("Covered by `native-automerge.test.sh`.\n", encoding="utf-8")
+            self.assertEqual([], list(dangling_live_claims([readme])))
+
+    def test_a_full_path_retirement_exempts_the_same_file_named_bare(self):
+        """Exemption is keyed on the file, not on how the sentence spelled it."""
+        text = (
+            "Covered by `gone.test.sh`, wired into actions-ci.yml.\n\n"
+            "## Amendment\n\nscripts/ci-gate/gone.test.sh is deleted."
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            readme = Path(tmp) / "0999-injected" / "README.md"
+            readme.parent.mkdir()
+            readme.write_text(text, encoding="utf-8")
+            self.assertEqual([], list(dangling_live_claims([readme])))
+
+    def test_a_generated_adopter_artifact_is_excused_only_when_stated(self):
+        """An absent name is excused by saying why, never by being absent quietly."""
+        unstated = "Covered by `changelog-contract.test.sh`."
+        self.assertFalse(exempts(unstated))
+        stated = "`changelog-contract.test.sh` is generated into adopter repositories."
+        self.assertTrue(exempts(stated))
+
+    def test_a_glob_written_in_prose_is_not_read_as_a_claim(self):
+        """`scripts/ci-gate/*.test.sh` names a pattern, not a file."""
+        self.assertEqual([], [ref for _, ref in claims("Every scripts/ci-gate/*.test.sh is registered.")])
 
     def test_a_retirement_note_does_not_exempt_a_different_file(self):
         """Document scope is per path: one retirement must not launder every claim."""
