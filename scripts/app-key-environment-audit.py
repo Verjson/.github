@@ -54,7 +54,9 @@ def load_roles(path=MANIFEST):
                 or not SECRET_NAME.fullmatch(entry["secret"]) or not is_app_key(entry["secret"])
                 or not isinstance(entry.get("role"), str) or not entry["role"]
                 or not isinstance(entry.get("environment"), str) or not entry["environment"]
-                or entry.get("organization_copy") not in ("withdraw", "absent")):
+                or entry.get("organization_copy") not in ("withdraw", "absent")
+                or (entry["confinement"] == "canonical"
+                    and entry["environment"] != f"{entry['role']}-app")):
             raise ValueError(f"App key role entry is malformed: {entry.get('secret')!r}")
     if len({entry["secret"] for entry in roles}) != len(roles):
         raise ValueError("App key role manifest declares a secret twice")
@@ -101,15 +103,18 @@ def audit(repository, api=github):
     owner_type = metadata.get("owner", {}).get("type")
     if owner_type not in ("User", "Organization"):
         raise ValueError("repository owner identity is unavailable")
-    keys = {entry["secret"] for entry in load_roles()}
+    roles = load_roles()
+    keys = {entry["secret"] for entry in roles}
     broad_repo = names(api(f"repos/{repository}/actions/secrets?per_page=100"), "secrets") & keys
     broad_org = set()
     if owner_type == "Organization":
         owner = repository.split("/", 1)[0]
         broad_org = names(api(f"orgs/{owner}/actions/secrets?per_page=100"), "secrets") & keys
     missing = []
-    for role, key in ROLES.items():
-        name = f"{role}-app"
+    for entry in roles:
+        if entry["confinement"] != "canonical":
+            continue
+        name, key = entry["environment"], entry["secret"]
         path = f"repos/{repository}/environments/{name}"
         environment = api(path)[0]
         policy = environment.get("deployment_branch_policy")
@@ -141,8 +146,9 @@ def main():
     args = parser.parse_args()
     try:
         result = audit(args.repo)
-    except (ValueError, KeyError, TypeError, subprocess.SubprocessError):
-        print("App key isolation could not be verified; check metadata access and environment policy")
+    except (ValueError, KeyError, TypeError, subprocess.SubprocessError) as error:
+        print("App key isolation could not be verified; check metadata access and "
+              f"environment policy: {type(error).__name__}: {error}")
         return 1
     print(json.dumps(result, sort_keys=True))
     return 0 if result["compliant"] else 1

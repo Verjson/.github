@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
+import contextlib
 import importlib.util
+import io
 import json
 import os
 import re
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest import mock
@@ -428,9 +431,36 @@ class AppKeyRoleManifestValidationTests(unittest.TestCase):
         for overrides in ({"confinement": "none"}, {"confinement": None}, {"secret": "RELEASE_KEY"},
                           {"secret": ""}, {"secret": None}, {"role": ""}, {"role": None},
                           {"environment": ""}, {"environment": None},
+                          {"environment": "release-cache"},
                           {"organization_copy": "keep"}, {"organization_copy": None}):
             with self.subTest(overrides=overrides), self.assertRaises(ValueError):
                 self.manifest(**overrides)
+
+    def test_a_caller_owned_entry_may_name_an_environment_outside_the_role_convention(self):
+        entry = self.manifest(confinement="caller-owned", environment="production")[0]
+        self.assertEqual(entry["environment"], "production")
+
+    def test_the_audit_reads_the_declared_environment_rather_than_deriving_a_second_one(self):
+        requested = []
+
+        def api(path):
+            requested.append(path)
+            return metadata()[path]
+
+        audit.audit("Verjson/example", api)
+        for entry in audit.load_roles():
+            if entry["confinement"] == "canonical":
+                self.assertIn(f"repos/Verjson/example/environments/{entry['environment']}", requested)
+
+    def test_an_unverifiable_audit_names_the_cause_beside_the_guidance(self):
+        cause = "release-app permits a ref other than the main branch"
+        stdout = io.StringIO()
+        with mock.patch.object(audit, "audit", side_effect=ValueError(cause)), \
+                mock.patch.object(sys, "argv", ["audit", "--repo", "Verjson/example"]), \
+                contextlib.redirect_stdout(stdout):
+            self.assertEqual(audit.main(), 1)
+        self.assertIn(cause, stdout.getvalue())
+        self.assertIn("check metadata access", stdout.getvalue())
 
     def test_an_empty_or_duplicated_manifest_never_reads_as_full_coverage(self):
         with tempfile.TemporaryDirectory() as directory:
