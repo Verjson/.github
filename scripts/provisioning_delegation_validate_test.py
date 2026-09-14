@@ -296,11 +296,10 @@ class ProvisioningDelegationValidateTest(unittest.TestCase):
         for role_id, role in roles.items():
             with self.subTest(role_id=role_id):
                 for field in ("storage", "trust", "rotation", "proof", "permissionCeiling",
-                              "permittedEffects", "ownerGatedEffects", "custodyRecord"):
+                              "permittedEffects", "custodyRecord"):
                     self.assertIn(field, role)
                 self.assertFalse(role["rotation"]["automationAllowed"])
                 self.assertTrue(role["proof"]["insufficient"])
-                self.assertLessEqual(set(role["ownerGatedEffects"]), set(role["permittedEffects"]))
         self.assertEqual(roles["ruleset-audit"]["permittedEffects"], [])
         for role_id in ("ai-review", "merge", "release"):
             self.assertEqual(roles[role_id]["storage"]["kind"], "repository-environment")
@@ -460,6 +459,15 @@ class ProvisioningDelegationValidateTest(unittest.TestCase):
                     continue
                 self.assertEqual(role["migrationStatus"]["achievedCustody"], role["custodyDecision"])
                 self.assertEqual(role["migrationStatus"]["survivingBroadCopies"], [])
+
+    def test_no_role_restates_the_contracts_gated_effect_set(self):
+        contract = json.loads(CONTRACT.read_text(encoding="utf-8"))
+        gated = set(contract["effects"]["vocabulary"])
+        self.assertEqual(contract["effects"]["ownerConsentRequired"], "all")
+        for role_id, role in json.loads(INVENTORY.read_text(encoding="utf-8"))["roles"].items():
+            with self.subTest(role_id=role_id):
+                self.assertNotIn("ownerGatedEffects", role)
+                self.assertLessEqual(set(role["permittedEffects"]), gated)
 
     def test_consent_may_not_exceed_the_reviewed_plan(self):
         document = grant()
