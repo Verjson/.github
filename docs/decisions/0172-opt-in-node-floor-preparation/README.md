@@ -117,3 +117,8 @@ declares `core-checks-node-floor` and the `verjson-node-floor` property in
 `.github/required-check-contract.json`. The live acceptance and retirement gates in
 this ADR are unchanged and still unsatisfied; preparation remains read-only and
 emits a disabled candidate.
+
+ADR 0176 also supersedes this ADR's description of `baselineDigest` above: the field
+now binds the validated reviewed baseline rather than the full supplied or read
+observation, so it identifies the policy under review and agrees across `render` and
+`dry-run`. `baselineSource` remains the record of which path produced a payload.

@@ -94,7 +94,7 @@ def render(baseline, source):
         'baselineSource': source,
         'baselineId': expected['id'],
         'baselineProducerAppId': producer,
-        'baselineDigest': 'sha256:' + hashlib.sha256(canonical(baseline).encode()).hexdigest(),
+        'baselineDigest': 'sha256:' + hashlib.sha256(canonical(expected).encode()).hexdigest(),
         'property': {'name': PROPERTY_NAME, 'definition': copy.deepcopy(PROPERTY)},
         'ruleset': candidate,
     }

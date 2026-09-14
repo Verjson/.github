@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import copy
+import hashlib
 import importlib.util
 import io
 import json
@@ -155,12 +156,23 @@ class NodeFloorPreparationTests(unittest.TestCase):
             with self.assertRaises(policy.PreparationError):
                 policy.render(value, 'saved-snapshot')
 
-    def test_full_observation_digest_changes_with_metadata_but_policy_does_not(self):
-        observed = dict(self.baseline, updated_at='2026-09-10T00:00:00Z')
+    def test_digest_identifies_reviewed_policy_and_ignores_observation_metadata(self):
+        observed = dict(self.baseline, updated_at='2026-09-10T00:00:00Z', _links={'self': 'x'})
         a = policy.render(self.baseline, 'saved-snapshot')
         b = policy.render(observed, 'saved-snapshot')
-        self.assertNotEqual(a['baselineDigest'], b['baselineDigest'])
+        self.assertEqual(a['baselineDigest'], b['baselineDigest'])
         self.assertEqual(a['ruleset'], b['ruleset'])
+        self.assertEqual(a['baselineDigest'], 'sha256:' + hashlib.sha256(
+            policy.canonical(policy.decode(policy.BASELINE.read_bytes())).encode()).hexdigest())
+
+    def test_render_and_dry_run_agree_on_the_digest_of_one_underlying_ruleset(self):
+        observed = dict(self.baseline, updated_at='2026-09-10T00:00:00Z', _links={'self': 'x'})
+        with mock.patch.object(policy, 'read_github', side_effect=[observed, []]):
+            live = policy.dry_run()
+        offline = policy.render(copy.deepcopy(self.baseline), 'reviewed-policy')
+        self.assertEqual(live['baselineDigest'], offline['baselineDigest'])
+        self.assertEqual(live['baselineProducerAppId'], offline['baselineProducerAppId'])
+        self.assertEqual(live['ruleset'], offline['ruleset'])
 
     def test_invalid_json_is_rejected(self):
         for raw in (b'{"id":1,"id":2}', b'{"id":NaN}', b'{"id":1e999}', b'\xff', b'{}' * policy.MAX_BYTES):

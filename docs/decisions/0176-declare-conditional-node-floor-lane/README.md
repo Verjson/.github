@@ -50,6 +50,15 @@ plausible `15368`. The derived value is published as `baselineProducerAppId`. If
 future organization repair moves core checks to a different producer, preparation
 follows the reviewed baseline or stops; it cannot quietly propose a stale App.
 
+**Make `baselineDigest` the identity of the reviewed baseline, not of the read.**
+It now hashes the validated reviewed policy rather than the caller's observation, so
+`render` and `dry-run` publish the same digest for the same underlying ruleset instead
+of differing by whatever top-level metadata the live API happened to return. ADR 0172
+described the field as binding the full observation; that reading made the digest a
+property of the transport rather than of the policy under review, and two proposals
+identical in `ruleset` and `baselineProducerAppId` were not comparable by it. Which
+path produced a payload is already carried by `baselineSource`.
+
 **Declare the conditional lane in the canonical contract.** `core-checks-node-floor`
 joins `ruleset_plan.rulesets` with all three selectors — `verjson-stack=node`,
 `verjson-core-checks=enforced`, `verjson-node-floor=node22` — and exactly the two
