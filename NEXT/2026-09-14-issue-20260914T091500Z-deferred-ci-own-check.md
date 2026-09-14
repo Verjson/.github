@@ -25,7 +25,11 @@ does not hold. `statusCheckRollup` is the surface everybody reads.
 self-hosted routing expression every other job uses. It checks nothing out, holds no
 permissions, and runs one `echo` plus `exit 1`, so it consumes nothing ADR 0033's runner
 policy protects — while a saturated or offline self-hosted pool would leave the check
-`PENDING`, the ambiguous state this change exists to remove.
+`PENDING`, the ambiguous state this change exists to remove. The route is registered
+as a reviewed exception in the runner-routing policy inventory, and the eligibility
+script — shared byte-for-byte with the `ci-eligibility` composite action — now records
+that `deferred-ci`'s error text names the pending release-age gate as the sole defer
+cause, so a second defer reason cannot be added without generalizing that message.
 
 This is a deliberate fleet-wide behavior change, recorded in
 [ADR 0178](../docs/decisions/0178-publish-deferred-ci-as-its-own-check/README.md). In

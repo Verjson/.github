@@ -431,12 +431,12 @@ jobs:
           # uncertainty (API error, missing status) fails OPEN → run CI, so a real
           # PR is never silently skipped. Same signal the gate uses to `defer`.
           #
-          # COUPLED to the `deferred-ci` job's error text below, which names
-          # `renovate/stability-days is pending` as THE cause. That is accurate
-          # only while this is the sole condition that sets should-run=false. A
-          # second defer reason added here turns that message into a lie, so
-          # generalize it in the same change — the deferral report is the only
-          # explanation a held pull request ever gets.
+          # COUPLED to the deferral report a held pull request actually sees:
+          # node-ci's `deferred-ci` job names `renovate/stability-days is
+          # pending` as THE cause. That is accurate only while this is the sole
+          # condition that sets should-run=false. Adding a second defer reason
+          # here turns that message into a lie, so generalize it in the same
+          # change — it is the only explanation a deferred head ever gets.
           pending=$(gh api "repos/${GITHUB_REPOSITORY}/commits/${HEAD_SHA}/status" \
             --jq '[.statuses[]? | select(.context == "renovate/stability-days" and .state == "pending")] | length' 2>/dev/null || echo 0)
           if [ "${pending:-0}" -gt 0 ]; then

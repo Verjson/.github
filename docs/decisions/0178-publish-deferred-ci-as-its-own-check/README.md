@@ -89,7 +89,10 @@ carries a specific failure: if the pool is saturated or offline, the check sits
 state this decision exists to eliminate — a rollup assertion cannot distinguish
 "deferred" from "still queued", and the `verjson-cli#251` class of silent pass
 returns by a different route. The deferral must always conclude, and conclude
-non-`SUCCESS`; a hosted runner is the only lane that guarantees it.
+non-`SUCCESS`; a hosted runner is the only lane that guarantees it. The route
+is registered in `scripts/ci-gate/runner-routing-policy.test.sh`'s exact
+file-and-job inventory, so it is a reviewed exception rather than an accidental
+literal, and moving the literal selector to another job fails that inventory.
 
 A separate job has neither problem. Branch protection only evaluates the contexts
 a ruleset names, and `config/required-check-bindings` names `ci / build-test` and
