@@ -11,6 +11,7 @@ Reverse-chronological index of org-level decisions.
 <!-- BEGIN ADR INDEX -->
 | # | Date | Decision |
 |---|------|----------|
+| [0182](0182-package-backed-portable-ci-adapter/README.md) | 2026-09-14 | Package-backed portable CI adapter |
 | [0181](0181-adr-coverage-claims-follow-their-tests/README.md) | 2026-09-14 | An ADR's coverage claims are checked against the tests that exist |
 | [0180](0180-no-approved-organization-custody-for-environment-only-app-keys/README.md) | 2026-09-14 | No approved organization custody for environment-only App keys |
 | [0179](0179-exhaustive-app-key-confinement/README.md) | 2026-09-14 | Confine every App private key, not only the three canonical roles |

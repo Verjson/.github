@@ -41,6 +41,8 @@ jobs = document["jobs"]
 
 expected = {
     # Reusable app-key policy callee; reads its own workflow metadata only.
+    # Nested reusable App-key policy calls receive this explicit read-only
+    # boundary from the caller.
     "app-key-policy": {"actions": "read", "contents": "read"},
     # Classifies and, when behind, updates the branch: the only PR write here.
     "preflight": {

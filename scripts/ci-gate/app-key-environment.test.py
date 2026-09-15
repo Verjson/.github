@@ -184,6 +184,13 @@ class WorkflowBoundaryTests(unittest.TestCase):
                     )
                 else:
                     self.assertEqual(policy["uses"], "./.github/workflows/app-key-environment.yml")
+                # Keep the caller's read-only token boundary explicit while
+                # passing the reduced permissions into the nested policy.
+                self.assertEqual(
+                    policy.get("permissions"),
+                    {"actions": "read", "contents": "read"},
+                    f"{name}: app-key policy must retain explicit read-only permissions",
+                )
                 self.assertNotIn("secrets", policy)
                 for job in jobs:
                     value = doc["jobs"][job]
