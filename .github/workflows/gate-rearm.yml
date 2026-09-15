@@ -32,9 +32,6 @@ jobs:
     # immutable revision whose app-key-environment.yml is byte-identical to this
     # branch's copy; update the pin only together with a reviewed revision bump.
     uses: Verjson/.github/.github/workflows/app-key-environment.yml@b050d74532b85705f86d5a9f5e2ec113a7beb72b
-    permissions:
-      actions: read
-      contents: read
     with:
       role: ai-review
       environment: ${{ inputs.ai_review_environment || 'ai-review-app' }}

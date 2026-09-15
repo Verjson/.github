@@ -41,7 +41,10 @@ jobs = document["jobs"]
 
 expected = {
     # Reusable app-key policy callee; reads its own workflow metadata only.
-    "app-key-policy": {"actions": "read", "contents": "read"},
+    # Nested reusable App-key policy calls inherit the workflow-level
+    # read-only boundary; job-level permissions are rejected by GitHub's
+    # reusable-workflow planner.
+    "app-key-policy": None,
     # Classifies and, when behind, updates the branch: the only PR write here.
     "preflight": {
         "actions": "read",
@@ -82,6 +85,8 @@ if actual != expected:
 # minted inside complete-authorization carries it, the shared workflow token
 # never may. contents/write would let a gate job push to the PR head it reviews.
 for name, granted in expected.items():
+    if granted is None:
+        continue
     for scope in ("checks", "contents", "security-events", "id-token"):
         if granted.get(scope) == "write":
             raise SystemExit(f"{name} holds {scope}: write on the shared workflow token")

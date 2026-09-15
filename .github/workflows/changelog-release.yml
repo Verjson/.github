@@ -45,9 +45,6 @@ concurrency:
 jobs:
   app-key-policy:
     uses: ./.github/workflows/app-key-environment.yml
-    permissions:
-      actions: read
-      contents: read
     with:
       role: release
       environment: ${{ inputs.release_environment }}
