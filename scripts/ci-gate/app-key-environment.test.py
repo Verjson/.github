@@ -184,6 +184,12 @@ class WorkflowBoundaryTests(unittest.TestCase):
                     )
                 else:
                     self.assertEqual(policy["uses"], "./.github/workflows/app-key-environment.yml")
+                # A reusable-workflow call job cannot declare job-level
+                # permissions. The caller's workflow-level read-only default
+                # is inherited by this nested policy workflow; keeping a
+                # permissions mapping here makes GitHub reject the whole
+                # workflow before it creates a job.
+                self.assertNotIn("permissions", policy)
                 self.assertNotIn("secrets", policy)
                 for job in jobs:
                     value = doc["jobs"][job]

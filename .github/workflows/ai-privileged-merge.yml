@@ -89,9 +89,6 @@ concurrency:
 jobs:
   app-key-policy:
     uses: ./.github/workflows/app-key-environment.yml
-    permissions:
-      actions: read
-      contents: read
     with:
       role: merge
       environment: ${{ inputs.merge_environment }}
