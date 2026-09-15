@@ -560,6 +560,85 @@ release_download_artifact='actions/download-artifact@3e5f45b2cfb9172054b4087a40e
 release_cache_save='actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0'
 release_cache_restore='actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0'
 
+release_plan_step=$(cat <<'EOF'
+      - name: Resolve the release selection and version
+        id: release-version
+        env:
+          COMPONENT: ${{ inputs.component }}
+          EXPECTED_SELECTOR_DIGEST: ${{ inputs.selector_digest }}
+          FRAGMENTS: ${{ inputs.fragments }}
+          INPUT_VERSION: ${{ inputs.version }}
+          PREFIX: ${{ inputs.prefix }}
+        run: |
+          set -euo pipefail
+          args=(release-plan --repo-root "$GITHUB_WORKSPACE" --prefix "$PREFIX" --version "$INPUT_VERSION")
+          [ -z "$COMPONENT" ] || args+=(--component "$COMPONENT")
+          while IFS= read -r fragment; do
+            [ -z "$fragment" ] || args+=(--fragment "$fragment")
+          done <<<"$FRAGMENTS"
+          plan_file="$RUNNER_TEMP/verjson-release-plan.json"
+          python3 .changelog-contract/scripts/changelog.py "${args[@]}" >"$plan_file"
+          actual_selector_digest="$(python3 - "$plan_file" <<'PY'
+          import json
+          import sys
+
+          with open(sys.argv[1], encoding="utf-8") as plan_file:
+              print(json.load(plan_file).get("selection_digest") or "")
+          PY
+          )"
+          if [ -n "$EXPECTED_SELECTOR_DIGEST" ] &&
+            [ "$actual_selector_digest" != "$EXPECTED_SELECTOR_DIGEST" ]; then
+            echo "::error::Selected fragments resolve to $actual_selector_digest, not proposer receipt $EXPECTED_SELECTOR_DIGEST."
+            exit 1
+          fi
+          python3 - "$plan_file" "$GITHUB_OUTPUT" "$GITHUB_STEP_SUMMARY" "$GITHUB_SHA" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+
+          plan_path, output_path, summary_path, source_sha = sys.argv[1:]
+          plan = json.loads(Path(plan_path).read_text(encoding="utf-8"))
+          selected = bool(plan["selected"])
+          version = str(plan["version"] or "") if selected else ""
+          prefix = str(plan["prefix"])
+          package_version = version[len(prefix):] if version else ""
+
+          with open(output_path, "a", encoding="utf-8") as output:
+              for name, value in {
+                  "selected": "true" if selected else "false",
+                  "version": version,
+                  "package-version": package_version,
+                  "selection-digest": plan.get("selection_digest") or "",
+              }.items():
+                  output.write(f"{name}={value}\n")
+
+          summary = [
+              "## Release resolution",
+              "",
+              f"- Component stream: `{plan['component'] or 'unscoped'}`",
+              f"- Source commit: `{source_sha}`",
+          ]
+          if not selected:
+              summary.append("No unreleased fragments are selected; no release, tag, snapshot, or publication will occur.")
+          else:
+              previous = plan.get("previous_release") or "none (bootstrap)"
+              summary.extend(
+                  [
+                      f"- Resolved version: `{version}`",
+                      f"- Previous release: `{previous}`",
+                      f"- Bump rationale: {plan['bump_rationale']}",
+                      f"- Selection digest: `{plan['selection_digest']}`",
+                      "- Selected fragments:",
+                  ]
+              )
+              summary.extend(f"  - `{name}`" for name in plan["fragments"])
+              summary.extend(["", "### Assembled release notes", "", plan["preview"].rstrip(), ""])
+          with open(summary_path, "a", encoding="utf-8") as summary_file:
+              summary_file.write("\n".join(summary) + "\n")
+          PY
+EOF
+)
+
 emit_release_node() {
   local generation_command="release-node ${ref}"
   local package_dirs_json="$selected_package_dirs_json"
@@ -580,7 +659,7 @@ emit_release_node() {
   package_dirs_shell="${package_dirs_shell% }"
   cat <<EOF
 name: Release
-run-name: Release \${{ inputs.version }} \${{ inputs.selector_digest || 'manual' }}
+run-name: Release \${{ inputs.version || 'auto' }} \${{ inputs.selector_digest || 'manual' }}
 
 concurrency:
   group: release-\${{ github.repository }}
@@ -635,16 +714,19 @@ concurrency:
 # package.json; never assert a hardcoded version literal. This order is
 # intentional: the suite verifies the exact package metadata that will ship.
 #
-# Dispatched, never derived. A release states the version it cuts; no push
-# trigger may infer one from commit subjects (ADR 0038, ADR 0060).
+# The operator still explicitly dispatches publication, but may leave the version
+# blank. In that case the canonical release plan derives it from the selected
+# fragments on this exact source commit; no push trigger infers a version from
+# commit subjects (ADR 0038, ADR 0060).
 
 on:
   workflow_dispatch:
     inputs:
       version:
-        description: Exact next SemVer tag, including its v or stream-v prefix
-        required: true
+        description: Optional exact SemVer tag; blank derives the next version from selected fragments
+        required: false
         type: string
+        default: ''
       prefix:
         description: Exact version namespace prefix; independent from component
         required: false
@@ -682,6 +764,9 @@ jobs:
     permissions:
       contents: read
     outputs:
+      selected: \${{ steps.release-version.outputs.selected }}
+      version: \${{ steps.release-version.outputs.version }}
+      selection-digest: \${{ steps.release-version.outputs.selection-digest }}
       snapshot-exists: \${{ steps.release-state.outputs.snapshot-exists }}
     steps:
       - name: Prepare job-scoped changelog tool cache
@@ -718,24 +803,6 @@ jobs:
           else
             echo "Dispatch is bound to derived head \$EXPECTED_HEAD and selector \$SELECTOR_DIGEST."
           fi
-      - name: Require the exact release namespace and SemVer version
-        id: release-version
-        env:
-          PREFIX: \${{ inputs.prefix }}
-          VERSION: \${{ inputs.version }}
-        run: |
-          if [[ ! "\$PREFIX" =~ ^([a-z0-9][a-z0-9._-]*-)?v\$ ]]; then
-            echo "::error::'\$PREFIX' is not a canonical v or stream-v release namespace."
-            exit 1
-          fi
-          package_version="\${VERSION#"\$PREFIX"}"
-          if [ "\$package_version" = "\$VERSION" ] ||
-            [[ ! "\$package_version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?\$ ]]; then
-            echo "::error::'\$VERSION' is not exact SemVer in namespace '\$PREFIX'."
-            exit 1
-          fi
-          printf 'package-version=%s\n' "\$package_version" >>"\$GITHUB_OUTPUT"
-          echo "Cutting \$VERSION."
       - name: Check out the tree that will be released
         uses: ${release_checkout}
         with:
@@ -754,31 +821,12 @@ jobs:
           ref: ${ref}
           path: .changelog-contract
           persist-credentials: false
-      - name: Verify the proposer selection receipt
-        env:
-          COMPONENT: \${{ inputs.component }}
-          EXPECTED_SELECTOR_DIGEST: \${{ inputs.selector_digest }}
-          FRAGMENTS: \${{ inputs.fragments }}
-          PREFIX: \${{ inputs.prefix }}
-        run: |
-          if [ -z "\$EXPECTED_SELECTOR_DIGEST" ]; then
-            echo "Manual dispatch carries no proposer selection receipt."
-            exit 0
-          fi
-          args=(selection-digest --repo-root "\$GITHUB_WORKSPACE" --prefix "\$PREFIX")
-          [ -z "\$COMPONENT" ] || args+=(--component "\$COMPONENT")
-          while IFS= read -r fragment; do
-            [ -z "\$fragment" ] || args+=(--fragment "\$fragment")
-          done <<<"\$FRAGMENTS"
-          actual="\$(python3 .changelog-contract/scripts/changelog.py "\${args[@]}")"
-          if [ "\$actual" != "\$EXPECTED_SELECTOR_DIGEST" ]; then
-            echo "::error::Selected fragments resolve to \$actual, not proposer receipt \$EXPECTED_SELECTOR_DIGEST."
-            exit 1
-          fi
+${release_plan_step}
       - name: Resolve restart-safe release state
         id: release-state
+        if: steps.release-version.outputs.selected == 'true'
         env:
-          VERSION: \${{ inputs.version }}
+          VERSION: \${{ steps.release-version.outputs.version }}
         run: |
           if git ls-remote --exit-code --tags origin "refs/tags/\$VERSION" >/dev/null 2>&1; then
             git fetch --force origin "refs/tags/\$VERSION:refs/tags/\$VERSION"
@@ -799,13 +847,14 @@ jobs:
             echo "\$VERSION is unused."
           fi
       - name: Check out the existing snapshot for resumed verification
-        if: steps.release-state.outputs.snapshot-exists == 'true'
+        if: steps.release-version.outputs.selected == 'true' && steps.release-state.outputs.snapshot-exists == 'true'
         uses: ${release_checkout}
         with:
-          ref: \${{ inputs.version }}
+          ref: \${{ steps.release-version.outputs.version }}
           fetch-depth: 0
           persist-credentials: false
       - uses: ${release_setup_node}
+        if: steps.release-version.outputs.selected == 'true'
         with:
           # Keep the literal inside an expression so Renovate's uses-with
           # extractor leaves it alone while setup-node receives the same value.
@@ -820,6 +869,7 @@ jobs:
       # cannot be re-cut, so the refusal is asserted here, while it is still a
       # no-op (#1206).
       - name: Refuse a package this release can never publish
+        if: steps.release-version.outputs.selected == 'true'
         run: |
           package_dirs=(${package_dirs_shell})
           for package_dir in "\${package_dirs[@]}"; do
@@ -833,6 +883,7 @@ jobs:
             fi
           done
       - name: Install dependencies
+        if: steps.release-version.outputs.selected == 'true'
         run: npm ci
         env:
           # NOT GITHUB_TOKEN (#465). A repository-scoped GITHUB_TOKEN cannot read
@@ -841,6 +892,7 @@ jobs:
           # node-ci.yml states the same requirement for the same reason.
           NODE_AUTH_TOKEN: \${{ secrets.NODE_AUTH_TOKEN }}
       - name: Prepare release package metadata
+        if: steps.release-version.outputs.selected == 'true'
         env:
           PACKAGE_VERSION: \${{ steps.release-version.outputs.package-version }}
         run: |
@@ -852,6 +904,7 @@ jobs:
             scripts/release-prepare-packages.sh "\$PACKAGE_VERSION"
           fi
       - name: Stamp the dispatched package versions
+        if: steps.release-version.outputs.selected == 'true'
         env:
           PACKAGE_VERSION: \${{ steps.release-version.outputs.package-version }}
         run: |
@@ -860,6 +913,7 @@ jobs:
             npm version --prefix "\$package_dir" "\$PACKAGE_VERSION" --no-git-tag-version --ignore-scripts --allow-same-version
           done
       - name: Run the release verification suite
+        if: steps.release-version.outputs.selected == 'true'
         env:
           NODE_AUTH_TOKEN: \${{ secrets.NODE_AUTH_TOKEN }}
           PACKAGE_VERSION: \${{ steps.release-version.outputs.package-version }}
@@ -892,7 +946,7 @@ jobs:
   snapshot:
     # The irreversible act, and the only job that may not run first.
     needs: verify
-    if: needs.verify.outputs.snapshot-exists != 'true'
+    if: needs.verify.outputs.selected == 'true' && needs.verify.outputs.snapshot-exists != 'true'
     uses: Verjson/.github/.github/workflows/changelog-release.yml@${ref}
     secrets: inherit
     permissions:
@@ -902,9 +956,11 @@ jobs:
       contents: read
     with:
       contract_ref: ${ref}
-      version: \${{ inputs.version }}
+      version: \${{ needs.verify.outputs.version }}
       fragments: \${{ inputs.fragments }}
       component: \${{ inputs.component }}
+      prefix: \${{ inputs.prefix }}
+      selection_digest: \${{ needs.verify.outputs.selection-digest }}
       # v3 recommends the App client ID and deprecates its legacy numeric ID.
       release_app_client_id: \${{ vars.RELEASE_APP_CLIENT_ID }}
       release_environment: release-app
@@ -914,13 +970,13 @@ jobs:
   publish:
     name: Publish the released snapshot
     needs: [verify, snapshot]
-    if: always() && needs.verify.result == 'success' && (needs.snapshot.result == 'success' || needs.snapshot.result == 'skipped')
+    if: always() && needs.verify.result == 'success' && needs.verify.outputs.selected == 'true' && (needs.snapshot.result == 'success' || needs.snapshot.result == 'skipped')
     uses: Verjson/.github/.github/workflows/node-release.yml@${ref}
     permissions:
       contents: write
       packages: write
     with:
-      version: \${{ inputs.version }}
+      version: \${{ needs.verify.outputs.version }}
       prefix: \${{ inputs.prefix }}
       contract-ref: ${ref}
       runner: \${{ ${release_runner_expr} }}
@@ -940,7 +996,7 @@ emit_release_artifact() {
   local package_dirs_shell=''
   local build_runners_yaml='' approved_packages_csv='' private_acquisition_job='' restore_dependency_step=''
   local required_lane_names='' required_lane_env='' required_lane_validation_step='' runner_index=0
-  local build_needs='[verify, snapshot]' build_condition="always() && needs.verify.result == 'success' && (needs.snapshot.result == 'success' || needs.snapshot.result == 'skipped')"
+  local build_needs='[verify, snapshot]' build_condition="always() && needs.verify.result == 'success' && needs.verify.outputs.selected == 'true' && (needs.snapshot.result == 'success' || needs.snapshot.result == 'skipped')"
   [ "$release_scope" = "@verjson" ] \
     || generation_command="$generation_command --scope $release_scope"
   [ "$release_node_version" = "24" ] \
@@ -975,6 +1031,7 @@ emit_release_artifact() {
   if [ -n "$required_lane_names" ]; then
     required_lane_validation_step="$(cat <<EOF
       - name: Validate required OS-scoped build lanes
+        if: steps.release-version.outputs.selected == 'true'
         shell: bash
         env:
           REQUIRED_BUILD_LANES: '${required_lane_names}'
@@ -1001,7 +1058,7 @@ EOF
   acquire-private-dependencies:
     name: Acquire approved private dependencies (\${{ matrix.build-runner }})
     needs: [verify, snapshot]
-    if: always() && needs.verify.result == 'success' && (needs.snapshot.result == 'success' || needs.snapshot.result == 'skipped')
+    if: always() && needs.verify.result == 'success' && needs.verify.outputs.selected == 'true' && (needs.snapshot.result == 'success' || needs.snapshot.result == 'skipped')
     strategy:
       fail-fast: false
       matrix:
@@ -1016,7 +1073,7 @@ ${build_runners_yaml%$'\n'}
       - name: Check out the tagged release tree without credentials
         uses: ${release_checkout}
         with:
-          ref: \${{ inputs.version }}
+          ref: \${{ needs.verify.outputs.version }}
           persist-credentials: false
       - uses: ${release_setup_node}
         with:
@@ -1091,7 +1148,7 @@ EOF
   fi
   cat <<EOF
 name: Release
-run-name: Release \${{ inputs.version }} \${{ inputs.selector_digest || 'manual' }}
+run-name: Release \${{ inputs.version || 'auto' }} \${{ inputs.selector_digest || 'manual' }}
 
 concurrency:
   group: release-\${{ github.repository }}
@@ -1141,16 +1198,19 @@ concurrency:
 # package.json; never assert a hardcoded version literal. This order is
 # intentional: the suite verifies the exact package metadata that will ship.
 #
-# Dispatched, never derived. A release states the version it cuts; no push
-# trigger may infer one from commit subjects (ADR 0038, ADR 0060).
+# The operator still explicitly dispatches publication, but may leave the version
+# blank. In that case the canonical release plan derives it from the selected
+# fragments on this exact source commit; no push trigger infers a version from
+# commit subjects (ADR 0038, ADR 0060).
 
 on:
   workflow_dispatch:
     inputs:
       version:
-        description: Exact next SemVer tag, including its v or stream-v prefix
-        required: true
+        description: Optional exact SemVer tag; blank derives the next version from selected fragments
+        required: false
         type: string
+        default: ''
       prefix:
         description: Exact version namespace prefix; independent from component
         required: false
@@ -1188,6 +1248,9 @@ jobs:
     permissions:
       contents: read
     outputs:
+      selected: \${{ steps.release-version.outputs.selected }}
+      version: \${{ steps.release-version.outputs.version }}
+      selection-digest: \${{ steps.release-version.outputs.selection-digest }}
       snapshot-exists: \${{ steps.release-state.outputs.snapshot-exists }}
     steps:
       - name: Prepare job-scoped changelog tool cache
@@ -1224,24 +1287,6 @@ jobs:
           else
             echo "Dispatch is bound to derived head \$EXPECTED_HEAD and selector \$SELECTOR_DIGEST."
           fi
-      - name: Require the exact release namespace and SemVer version
-        id: release-version
-        env:
-          PREFIX: \${{ inputs.prefix }}
-          VERSION: \${{ inputs.version }}
-        run: |
-          if [[ ! "\$PREFIX" =~ ^([a-z0-9][a-z0-9._-]*-)?v\$ ]]; then
-            echo "::error::'\$PREFIX' is not a canonical v or stream-v release namespace."
-            exit 1
-          fi
-          package_version="\${VERSION#"\$PREFIX"}"
-          if [ "\$package_version" = "\$VERSION" ] ||
-            [[ ! "\$package_version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?\$ ]]; then
-            echo "::error::'\$VERSION' is not exact SemVer in namespace '\$PREFIX'."
-            exit 1
-          fi
-          printf 'package-version=%s\n' "\$package_version" >>"\$GITHUB_OUTPUT"
-          echo "Cutting \$VERSION."
       - name: Check out the tree that will be released
         uses: ${release_checkout}
         with:
@@ -1260,32 +1305,12 @@ jobs:
           ref: ${ref}
           path: .changelog-contract
           persist-credentials: false
-      - name: Verify the proposer selection receipt
-        env:
-          COMPONENT: \${{ inputs.component }}
-          EXPECTED_SELECTOR_DIGEST: \${{ inputs.selector_digest }}
-          FRAGMENTS: \${{ inputs.fragments }}
-          PREFIX: \${{ inputs.prefix }}
-        run: |
-          if [ -z "\$EXPECTED_SELECTOR_DIGEST" ]; then
-            echo "Manual dispatch carries no proposer selection receipt."
-            exit 0
-          fi
-          args=(selection-digest --repo-root "\$GITHUB_WORKSPACE" --prefix "\$PREFIX")
-          [ -z "\$COMPONENT" ] || args+=(--component "\$COMPONENT")
-          while IFS= read -r fragment; do
-            [ -z "\$fragment" ] || args+=(--fragment "\$fragment")
-          done <<<"\$FRAGMENTS"
-          actual="\$(python3 .changelog-contract/scripts/changelog.py "\${args[@]}")"
-          if [ "\$actual" != "\$EXPECTED_SELECTOR_DIGEST" ]; then
-            echo "::error::Selected fragments resolve to \$actual, not proposer receipt \$EXPECTED_SELECTOR_DIGEST."
-            exit 1
-          fi
+${release_plan_step}
 ${required_lane_validation_step}
       - name: Resolve restart-safe release state
         id: release-state
         env:
-          VERSION: \${{ inputs.version }}
+          VERSION: \${{ steps.release-version.outputs.version }}
         run: |
           if git ls-remote --exit-code --tags origin "refs/tags/\$VERSION" >/dev/null 2>&1; then
             git fetch --force origin "refs/tags/\$VERSION:refs/tags/\$VERSION"
@@ -1306,13 +1331,14 @@ ${required_lane_validation_step}
             echo "\$VERSION is unused."
           fi
       - name: Check out the existing snapshot for resumed verification
-        if: steps.release-state.outputs.snapshot-exists == 'true'
+        if: steps.release-version.outputs.selected == 'true' && steps.release-state.outputs.snapshot-exists == 'true'
         uses: ${release_checkout}
         with:
-          ref: \${{ inputs.version }}
+          ref: \${{ steps.release-version.outputs.version }}
           fetch-depth: 0
           persist-credentials: false
       - uses: ${release_setup_node}
+        if: steps.release-version.outputs.selected == 'true'
         with:
           # Keep the literal inside an expression so Renovate's uses-with
           # extractor leaves it alone while setup-node receives the same value.
@@ -1321,6 +1347,7 @@ ${required_lane_validation_step}
           scope: '${release_scope}'
           package-manager-cache: false
       - name: Install dependencies
+        if: steps.release-version.outputs.selected == 'true'
         run: npm ci
         env:
           # NOT GITHUB_TOKEN (#465). A repository-scoped GITHUB_TOKEN cannot read
@@ -1329,6 +1356,7 @@ ${required_lane_validation_step}
           # node-ci.yml states the same requirement for the same reason.
           NODE_AUTH_TOKEN: \${{ secrets.NODE_AUTH_TOKEN }}
       - name: Prepare release package metadata
+        if: steps.release-version.outputs.selected == 'true'
         env:
           PACKAGE_VERSION: \${{ steps.release-version.outputs.package-version }}
         run: |
@@ -1340,6 +1368,7 @@ ${required_lane_validation_step}
             scripts/release-prepare-packages.sh "\$PACKAGE_VERSION"
           fi
       - name: Stamp the dispatched package versions
+        if: steps.release-version.outputs.selected == 'true'
         env:
           PACKAGE_VERSION: \${{ steps.release-version.outputs.package-version }}
         run: |
@@ -1348,6 +1377,7 @@ ${required_lane_validation_step}
             npm version --prefix "\$package_dir" "\$PACKAGE_VERSION" --no-git-tag-version --ignore-scripts --allow-same-version
           done
       - name: Run the release verification suite
+        if: steps.release-version.outputs.selected == 'true'
         env:
           NODE_AUTH_TOKEN: \${{ secrets.NODE_AUTH_TOKEN }}
           PACKAGE_VERSION: \${{ steps.release-version.outputs.package-version }}
@@ -1380,7 +1410,7 @@ ${required_lane_validation_step}
   snapshot:
     # The irreversible act, and the only job that may not run first.
     needs: verify
-    if: needs.verify.outputs.snapshot-exists != 'true'
+    if: needs.verify.outputs.selected == 'true' && needs.verify.outputs.snapshot-exists != 'true'
     uses: Verjson/.github/.github/workflows/changelog-release.yml@${ref}
     secrets: inherit
     permissions:
@@ -1390,9 +1420,11 @@ ${required_lane_validation_step}
       contents: read
     with:
       contract_ref: ${ref}
-      version: \${{ inputs.version }}
+      version: \${{ needs.verify.outputs.version }}
       fragments: \${{ inputs.fragments }}
       component: \${{ inputs.component }}
+      prefix: \${{ inputs.prefix }}
+      selection_digest: \${{ needs.verify.outputs.selection-digest }}
       # v3 recommends the App client ID and deprecates its legacy numeric ID.
       release_app_client_id: \${{ vars.RELEASE_APP_CLIENT_ID }}
       release_environment: release-app
@@ -1417,7 +1449,7 @@ ${build_runners_yaml%$'\n'}
       - name: Check out the tagged release tree
         uses: ${release_checkout}
         with:
-          ref: \${{ inputs.version }}
+          ref: \${{ needs.verify.outputs.version }}
           fetch-depth: 0
           persist-credentials: false
 ${restore_dependency_step}
@@ -1446,7 +1478,7 @@ ${restore_dependency_step}
           GOOGLE_APPLICATION_CREDENTIALS: ''
           NODE_AUTH_TOKEN: ''
           NPM_TOKEN: ''
-          RELEASE_VERSION: \${{ inputs.version }}
+          RELEASE_VERSION: \${{ needs.verify.outputs.version }}
         run: |
           mkdir -p release-artifacts
           scripts/release-build.sh "\$RELEASE_VERSION" release-artifacts
@@ -1469,7 +1501,7 @@ ${restore_dependency_step}
   publish:
     name: Publish the released snapshot
     needs: [verify, snapshot, build]
-    if: always() && needs.verify.result == 'success' && (needs.snapshot.result == 'success' || needs.snapshot.result == 'skipped') && needs.build.result == 'success'
+    if: always() && needs.verify.result == 'success' && needs.verify.outputs.selected == 'true' && (needs.snapshot.result == 'success' || needs.snapshot.result == 'skipped') && needs.build.result == 'success'
     runs-on: \${{ fromJSON(${release_runner_expr}) }}
     timeout-minutes: 15
     permissions:
@@ -1477,12 +1509,12 @@ ${restore_dependency_step}
     steps:
       - uses: ${release_checkout}
         with:
-          ref: \${{ inputs.version }}
+          ref: \${{ needs.verify.outputs.version }}
           fetch-depth: 0
           persist-credentials: false
       - name: Verify the checked-out tag and immutable release note
         env:
-          VERSION: \${{ inputs.version }}
+          VERSION: \${{ needs.verify.outputs.version }}
         run: |
           test "\$(git describe --tags --exact-match HEAD)" = "\$VERSION"
           test -f "CHANGELOG/\$VERSION.md"
@@ -1499,7 +1531,7 @@ ${restore_dependency_step}
       - name: Publish the snapshot release and artifacts
         env:
           GH_TOKEN: \${{ secrets.GITHUB_TOKEN }}
-          VERSION: \${{ inputs.version }}
+          VERSION: \${{ needs.verify.outputs.version }}
         run: |
           # RESTART_SAFE_GH_RELEASE_BEGIN
           snapshot="CHANGELOG/\$VERSION.md"
@@ -1547,7 +1579,7 @@ emit_release_snapshot() {
   package_dirs_shell="${package_dirs_shell% }"
   cat <<EOF
 name: Release
-run-name: Release \${{ inputs.version }} \${{ inputs.selector_digest || 'manual' }}
+run-name: Release \${{ inputs.version || 'auto' }} \${{ inputs.selector_digest || 'manual' }}
 
 concurrency:
   group: release-\${{ github.repository }}
@@ -1595,16 +1627,19 @@ concurrency:
 # package.json; never assert a hardcoded version literal. This order is
 # intentional: the suite verifies the exact package metadata that will ship.
 #
-# Dispatched, never derived. A release states the version it cuts; no push
-# trigger may infer one from commit subjects (ADR 0038, ADR 0060).
+# The operator still explicitly dispatches publication, but may leave the version
+# blank. In that case the canonical release plan derives it from the selected
+# fragments on this exact source commit; no push trigger infers a version from
+# commit subjects (ADR 0038, ADR 0060).
 
 on:
   workflow_dispatch:
     inputs:
       version:
-        description: Exact next SemVer tag, including its v or stream-v prefix
-        required: true
+        description: Optional exact SemVer tag; blank derives the next version from selected fragments
+        required: false
         type: string
+        default: ''
       prefix:
         description: Exact version namespace prefix; independent from component
         required: false
@@ -1642,6 +1677,9 @@ jobs:
     permissions:
       contents: read
     outputs:
+      selected: \${{ steps.release-version.outputs.selected }}
+      version: \${{ steps.release-version.outputs.version }}
+      selection-digest: \${{ steps.release-version.outputs.selection-digest }}
       snapshot-exists: \${{ steps.release-state.outputs.snapshot-exists }}
     steps:
       - name: Prepare job-scoped changelog tool cache
@@ -1678,24 +1716,6 @@ jobs:
           else
             echo "Dispatch is bound to derived head \$EXPECTED_HEAD and selector \$SELECTOR_DIGEST."
           fi
-      - name: Require the exact release namespace and SemVer version
-        id: release-version
-        env:
-          PREFIX: \${{ inputs.prefix }}
-          VERSION: \${{ inputs.version }}
-        run: |
-          if [[ ! "\$PREFIX" =~ ^([a-z0-9][a-z0-9._-]*-)?v\$ ]]; then
-            echo "::error::'\$PREFIX' is not a canonical v or stream-v release namespace."
-            exit 1
-          fi
-          package_version="\${VERSION#"\$PREFIX"}"
-          if [ "\$package_version" = "\$VERSION" ] ||
-            [[ ! "\$package_version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?\$ ]]; then
-            echo "::error::'\$VERSION' is not exact SemVer in namespace '\$PREFIX'."
-            exit 1
-          fi
-          printf 'package-version=%s\n' "\$package_version" >>"\$GITHUB_OUTPUT"
-          echo "Cutting \$VERSION."
       - name: Check out the tree that will be released
         uses: ${release_checkout}
         with:
@@ -1714,31 +1734,11 @@ jobs:
           ref: ${ref}
           path: .changelog-contract
           persist-credentials: false
-      - name: Verify the proposer selection receipt
-        env:
-          COMPONENT: \${{ inputs.component }}
-          EXPECTED_SELECTOR_DIGEST: \${{ inputs.selector_digest }}
-          FRAGMENTS: \${{ inputs.fragments }}
-          PREFIX: \${{ inputs.prefix }}
-        run: |
-          if [ -z "\$EXPECTED_SELECTOR_DIGEST" ]; then
-            echo "Manual dispatch carries no proposer selection receipt."
-            exit 0
-          fi
-          args=(selection-digest --repo-root "\$GITHUB_WORKSPACE" --prefix "\$PREFIX")
-          [ -z "\$COMPONENT" ] || args+=(--component "\$COMPONENT")
-          while IFS= read -r fragment; do
-            [ -z "\$fragment" ] || args+=(--fragment "\$fragment")
-          done <<<"\$FRAGMENTS"
-          actual="\$(python3 .changelog-contract/scripts/changelog.py "\${args[@]}")"
-          if [ "\$actual" != "\$EXPECTED_SELECTOR_DIGEST" ]; then
-            echo "::error::Selected fragments resolve to \$actual, not proposer receipt \$EXPECTED_SELECTOR_DIGEST."
-            exit 1
-          fi
+${release_plan_step}
       - name: Resolve restart-safe release state
         id: release-state
         env:
-          VERSION: \${{ inputs.version }}
+          VERSION: \${{ steps.release-version.outputs.version }}
         run: |
           if git ls-remote --exit-code --tags origin "refs/tags/\$VERSION" >/dev/null 2>&1; then
             git fetch --force origin "refs/tags/\$VERSION:refs/tags/\$VERSION"
@@ -1759,10 +1759,10 @@ jobs:
             echo "\$VERSION is unused."
           fi
       - name: Check out the existing snapshot for resumed verification
-        if: steps.release-state.outputs.snapshot-exists == 'true'
+        if: steps.release-version.outputs.selected == 'true' && steps.release-state.outputs.snapshot-exists == 'true'
         uses: ${release_checkout}
         with:
-          ref: \${{ inputs.version }}
+          ref: \${{ steps.release-version.outputs.version }}
           fetch-depth: 0
           persist-credentials: false
       - uses: ${release_setup_node}
@@ -1774,6 +1774,7 @@ jobs:
           scope: '${release_scope}'
           package-manager-cache: false
       - name: Install dependencies
+        if: steps.release-version.outputs.selected == 'true'
         run: npm ci
         env:
           # NOT GITHUB_TOKEN (#465). A repository-scoped GITHUB_TOKEN cannot read
@@ -1782,6 +1783,7 @@ jobs:
           # node-ci.yml states the same requirement for the same reason.
           NODE_AUTH_TOKEN: \${{ secrets.NODE_AUTH_TOKEN }}
       - name: Prepare release package metadata
+        if: steps.release-version.outputs.selected == 'true'
         env:
           PACKAGE_VERSION: \${{ steps.release-version.outputs.package-version }}
         run: |
@@ -1793,6 +1795,7 @@ jobs:
             scripts/release-prepare-packages.sh "\$PACKAGE_VERSION"
           fi
       - name: Stamp the dispatched package versions
+        if: steps.release-version.outputs.selected == 'true'
         env:
           PACKAGE_VERSION: \${{ steps.release-version.outputs.package-version }}
         run: |
@@ -1801,6 +1804,7 @@ jobs:
             npm version --prefix "\$package_dir" "\$PACKAGE_VERSION" --no-git-tag-version --ignore-scripts --allow-same-version
           done
       - name: Run the release verification suite
+        if: steps.release-version.outputs.selected == 'true'
         env:
           NODE_AUTH_TOKEN: \${{ secrets.NODE_AUTH_TOKEN }}
           PACKAGE_VERSION: \${{ steps.release-version.outputs.package-version }}
@@ -1833,7 +1837,7 @@ jobs:
   snapshot:
     # The irreversible act, and the only job that may not run first.
     needs: verify
-    if: needs.verify.outputs.snapshot-exists != 'true'
+    if: needs.verify.outputs.selected == 'true' && needs.verify.outputs.snapshot-exists != 'true'
     uses: Verjson/.github/.github/workflows/changelog-release.yml@${ref}
     secrets: inherit
     permissions:
@@ -1843,9 +1847,11 @@ jobs:
       contents: read
     with:
       contract_ref: ${ref}
-      version: \${{ inputs.version }}
+      version: \${{ needs.verify.outputs.version }}
       fragments: \${{ inputs.fragments }}
       component: \${{ inputs.component }}
+      prefix: \${{ inputs.prefix }}
+      selection_digest: \${{ needs.verify.outputs.selection-digest }}
       # v3 recommends the App client ID and deprecates its legacy numeric ID.
       release_app_client_id: \${{ vars.RELEASE_APP_CLIENT_ID }}
       release_environment: release-app
@@ -1855,7 +1861,7 @@ jobs:
   publish:
     name: Publish the released snapshot
     needs: [verify, snapshot]
-    if: always() && needs.verify.result == 'success' && (needs.snapshot.result == 'success' || needs.snapshot.result == 'skipped')
+    if: always() && needs.verify.result == 'success' && needs.verify.outputs.selected == 'true' && (needs.snapshot.result == 'success' || needs.snapshot.result == 'skipped')
     runs-on: \${{ fromJSON(${release_runner_expr}) }}
     timeout-minutes: 15
     permissions:
@@ -1863,19 +1869,19 @@ jobs:
     steps:
       - uses: ${release_checkout}
         with:
-          ref: \${{ inputs.version }}
+          ref: \${{ needs.verify.outputs.version }}
           fetch-depth: 0
           persist-credentials: false
       - name: Verify the checked-out tag and immutable release note
         env:
-          VERSION: \${{ inputs.version }}
+          VERSION: \${{ steps.release-version.outputs.version }}
         run: |
           test "\$(git describe --tags --exact-match HEAD)" = "\$VERSION"
           test -f "CHANGELOG/\$VERSION.md"
       - name: Publish the snapshot release notes
         env:
           GH_TOKEN: \${{ secrets.GITHUB_TOKEN }}
-          VERSION: \${{ inputs.version }}
+          VERSION: \${{ needs.verify.outputs.version }}
         run: |
           # RESTART_SAFE_GH_RELEASE_BEGIN
           snapshot="CHANGELOG/\$VERSION.md"
@@ -2057,6 +2063,7 @@ emit_contract_test() {
   if [ -n "$release_lane_names" ]; then
     release_lane_preflight="$(cat <<EOF
       - name: Validate required OS-scoped build lanes
+        if: steps.release-version.outputs.selected == 'true'
         shell: bash
         env:
           REQUIRED_BUILD_LANES: '${release_lane_names}'
@@ -2375,9 +2382,10 @@ EXPECTED_TRIGGER_BLOCK = (
     (2, "workflow_dispatch:"),
     (4, "inputs:"),
     (6, "version:"),
-    (8, "description: Exact next SemVer tag, including its v or stream-v prefix"),
-    (8, "required: true"),
+    (8, "description: Optional exact SemVer tag; blank derives the next version from selected fragments"),
+    (8, "required: false"),
     (8, "type: string"),
+    (8, "default: ''"),
     (6, "prefix:"),
     (8, "description: Exact version namespace prefix; independent from component"),
     (8, "required: false"),
@@ -2640,8 +2648,8 @@ PY
     [ -n "$workflow_package_dirs_shell" ] \
       || fail "$release_workflow does not declare package_dirs for version stamping"
   fi
-  grep -qF "run-name: Release \${{ inputs.version }} \${{ inputs.selector_digest || 'manual' }}" "$release_workflow" \
-    || fail "$release_workflow lacks the exact-version run title required for idempotent dispatch"
+  grep -qF "run-name: Release \${{ inputs.version || 'auto' }} \${{ inputs.selector_digest || 'manual' }}" "$release_workflow" \
+    || fail "$release_workflow lacks the resolved-version run title required for idempotent dispatch"
 
   # Comments stripped before structural matching so a migration note naming a
   # retired token does not read as live credential wiring.
@@ -2713,6 +2721,10 @@ PY
   grep -qE "^[[:space:]]+contract_ref:[[:space:]]*${CONTRACT_REF}[[:space:]]*$" \
     <<<"$snapshot_job" \
     || fail "$release_workflow passes a contract_ref that differs from its changelog-release.yml pin"
+  grep -qF 'prefix: ${{ inputs.prefix }}' <<<"$snapshot_job" \
+    || fail "$release_workflow does not pass the selected release namespace to changelog-release.yml"
+  grep -qF 'selection_digest: ${{ needs.verify.outputs.selection-digest }}' <<<"$snapshot_job" \
+    || fail "$release_workflow does not pass the resolved selection digest to changelog-release.yml"
 
   # #463/#464. changelog-release.yml consumes NEXT/, writes an immutable
   # CHANGELOG/<version>.md, commits, tags and pushes to the default branch in one
@@ -2779,7 +2791,7 @@ PY
       || fail "$release_workflow does not delegate publication to node-release.yml at the immutable contract pin (#455)"
     grep -qF 'needs: [verify, snapshot]' <<<"$publish_job" \
       || fail "$release_workflow does not gate publication on both verification and snapshot state"
-    grep -qF "if: always() && needs.verify.result == 'success' && (needs.snapshot.result == 'success' || needs.snapshot.result == 'skipped')" \
+    grep -qF "if: always() && needs.verify.result == 'success' && needs.verify.outputs.selected == 'true' && (needs.snapshot.result == 'success' || needs.snapshot.result == 'skipped')" \
       <<<"$publish_job" \
       || fail "$release_workflow cannot safely resume publication after reusing an immutable snapshot"
     # node-release.yml cannot refuse an unpublishable package in time: it only
@@ -2809,10 +2821,10 @@ PY
       || fail "$release_workflow delegates publication to node-release.yml; regenerate it as release-node instead of hand-editing a snapshot-only caller (#1206)"
     grep -qF 'needs: [verify, snapshot]' <<<"$publish_job" \
       || fail "$release_workflow does not gate publication on both verification and snapshot state"
-    grep -qF "if: always() && needs.verify.result == 'success' && (needs.snapshot.result == 'success' || needs.snapshot.result == 'skipped')" \
+    grep -qF "if: always() && needs.verify.result == 'success' && needs.verify.outputs.selected == 'true' && (needs.snapshot.result == 'success' || needs.snapshot.result == 'skipped')" \
       <<<"$publish_job" \
       || fail "$release_workflow cannot safely resume publication after reusing an immutable snapshot"
-    grep -qF 'ref: ${{ inputs.version }}' <<<"$publish_job" \
+    grep -qF 'ref: ${{ needs.verify.outputs.version }}' <<<"$publish_job" \
       || fail "$release_workflow publishes from a ref other than the tagged snapshot"
     grep -qF 'test -f "CHANGELOG/$VERSION.md"' <<<"$publish_job" \
       || fail "$release_workflow publish job does not verify the immutable release note before publishing"
@@ -2938,7 +2950,7 @@ PY
         || fail "$release_workflow acquisition matrix exceeds ADR 0103's 45-minute bound"
       grep -qF 'needs: [verify, snapshot, acquire-private-dependencies]' <<<"$build_job" \
         || fail "$release_workflow private build matrix is not gated on credentialed acquisition"
-      grep -qF "if: always() && needs.verify.result == 'success' && (needs.snapshot.result == 'success' || needs.snapshot.result == 'skipped') && needs.acquire-private-dependencies.result == 'success'" \
+    grep -qF "if: always() && needs.verify.result == 'success' && needs.verify.outputs.selected == 'true' && (needs.snapshot.result == 'success' || needs.snapshot.result == 'skipped') && needs.acquire-private-dependencies.result == 'success'" \
         <<<"$build_job" \
         || fail "$release_workflow private build matrix can run without successful acquisition"
       acquisition_permissions="$(awk '/^    permissions:/{seen=1;next} seen && /^    [^ ]/{exit} seen{print}' <<<"$acquisition_job" | sed 's/#.*//' | sed '/^[[:space:]]*$/d')"
@@ -2946,7 +2958,7 @@ PY
         && grep -qE '^[[:space:]]+contents:[[:space:]]+read[[:space:]]*$' <<<"$acquisition_permissions" \
         && grep -qE '^[[:space:]]+packages:[[:space:]]+read[[:space:]]*$' <<<"$acquisition_permissions" \
         || fail "$release_workflow private acquisition must have exactly contents-read and packages-read"
-      grep -qF 'ref: ${{ inputs.version }}' <<<"$acquisition_job" \
+      grep -qF 'ref: ${{ needs.verify.outputs.version }}' <<<"$acquisition_job" \
         && grep -qF 'persist-credentials: false' <<<"$acquisition_job" \
         && grep -qF 'npm ci --ignore-scripts --audit=false --fund=false' <<<"$acquisition_job" \
         && grep -qF 'NODE_AUTH_TOKEN: ${{ secrets.NODE_AUTH_TOKEN }}' <<<"$acquisition_job" \
@@ -2992,11 +3004,11 @@ PY
     else
       grep -qF 'needs: [verify, snapshot]' <<<"$build_job" \
         || fail "$release_workflow does not gate the build matrix on both verification and snapshot state"
-      grep -qF "if: always() && needs.verify.result == 'success' && (needs.snapshot.result == 'success' || needs.snapshot.result == 'skipped')" \
+    grep -qF "if: always() && needs.verify.result == 'success' && needs.verify.outputs.selected == 'true' && (needs.snapshot.result == 'success' || needs.snapshot.result == 'skipped')" \
         <<<"$build_job" \
         || fail "$release_workflow cannot safely resume the build matrix after reusing an immutable snapshot"
     fi
-    grep -qF 'ref: ${{ inputs.version }}' <<<"$build_job" \
+    grep -qF 'ref: ${{ needs.verify.outputs.version }}' <<<"$build_job" \
       || fail "$release_workflow builds artifacts from a ref other than the tagged snapshot"
     grep -qF 'timeout-minutes: 45' <<<"$build_job" \
       || fail "$release_workflow build matrix exceeds ADR 0103's 45-minute bound"
@@ -3031,7 +3043,7 @@ PY
       || fail "$release_workflow build job references a secrets context; the build matrix runs adopter-owned scripts/release-build.sh on caller-chosen runners and must never receive any secret, especially not the release App credential that mints main-protection-bypass tokens (#975)"
     grep -qF 'needs: [verify, snapshot, build]' <<<"$publish_job" \
       || fail "$release_workflow does not gate publication on verification, snapshot, and build state"
-    grep -qF "if: always() && needs.verify.result == 'success' && (needs.snapshot.result == 'success' || needs.snapshot.result == 'skipped') && needs.build.result == 'success'" \
+    grep -qF "if: always() && needs.verify.result == 'success' && needs.verify.outputs.selected == 'true' && (needs.snapshot.result == 'success' || needs.snapshot.result == 'skipped') && needs.build.result == 'success'" \
       <<<"$publish_job" \
       || fail "$release_workflow cannot safely resume publication after reusing an immutable snapshot and build matrix"
     grep -qF "uses: $EXPECTED_RELEASE_DOWNLOAD_ARTIFACT" <<<"$publish_job" \
@@ -3058,24 +3070,38 @@ PY
   grep -qF 'group: release-${{ github.repository }}' "$release_workflow" \
     && grep -qF 'cancel-in-progress: false' "$release_workflow" \
     || fail "$release_workflow does not serialize destructive package cleanup across release versions (#889)"
-  grep -qF "if: needs.verify.outputs.snapshot-exists != 'true'" <<<"$snapshot_job" \
-    || fail "$release_workflow recreates an existing immutable snapshot instead of resuming publication"
+  grep -qF "if: needs.verify.outputs.selected == 'true' && needs.verify.outputs.snapshot-exists != 'true'" <<<"$snapshot_job" \
+    || fail "$release_workflow does not skip empty selections or resume an existing immutable snapshot"
   grep -qF 'snapshot-exists: ${{ steps.release-state.outputs.snapshot-exists }}' \
     <<<"$verify_job" \
     || fail "$release_workflow does not propagate verified snapshot state"
+  grep -qF 'selected: ${{ steps.release-version.outputs.selected }}' \
+    <<<"$verify_job" \
+    || fail "$release_workflow does not propagate the resolved selection state"
+  grep -qF 'version: ${{ steps.release-version.outputs.version }}' \
+    <<<"$verify_job" \
+    || fail "$release_workflow does not propagate the resolved release version"
+  grep -qF 'selection-digest: ${{ steps.release-version.outputs.selection-digest }}' \
+    <<<"$verify_job" \
+    || fail "$release_workflow does not propagate the resolved selection digest"
+  grep -qF 'release-plan --repo-root "$GITHUB_WORKSPACE"' \
+    <<<"$verify_job" \
+    || fail "$release_workflow does not resolve the version with the pinned release-plan engine"
+  grep -qF 'GITHUB_STEP_SUMMARY' <<<"$verify_job" \
+    || fail "$release_workflow does not expose the release resolution summary"
   grep -qF 'echo "VERJSON_CHANGELOG_TOOL_CACHE=$RUNNER_TEMP/verjson-changelog-tools" >> "$GITHUB_ENV"' \
     <<<"$verify_job" \
     || fail "$release_workflow does not give repository verification hooks a job-writable changelog cache beneath runner.temp (#630)"
   first_verify_step="$(awk '/^[[:space:]]+- name:/ { print; exit }' <<<"$verify_job")"
   grep -qF -- '- name: Prepare job-scoped changelog tool cache' <<<"$first_verify_step" \
     || fail "$release_workflow does not prepare the writable changelog cache before repository verification steps (#630)"
-  grep -qF "if: steps.release-state.outputs.snapshot-exists == 'true'" <<<"$verify_job" \
+  grep -qF "if: steps.release-version.outputs.selected == 'true' && steps.release-state.outputs.snapshot-exists == 'true'" <<<"$verify_job" \
     || fail "$release_workflow does not condition resumed verification on an existing snapshot"
-  grep -qF 'ref: ${{ inputs.version }}' <<<"$verify_job" \
+  grep -qF 'ref: ${{ steps.release-version.outputs.version }}' <<<"$verify_job" \
     || fail "$release_workflow verifies the later dispatch tree instead of the existing tagged snapshot"
   if [ "$release_mode" = release-node ]; then
     for publish_input in \
-      'version: ${{ inputs.version }}' \
+      'version: ${{ needs.verify.outputs.version }}' \
       'prefix: ${{ inputs.prefix }}' \
       "contract-ref: $CONTRACT_REF" \
       "$expected_node_version" \

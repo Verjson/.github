@@ -1212,7 +1212,7 @@ reject_same_version_stamp() {
   sed -i 's/ --allow-same-version//g' "$1/.github/workflows/release.yml"
 }
 drop_verification_suite_token() {
-  sed -i '/^      - name: Run the release verification suite$/,+2{/NODE_AUTH_TOKEN:/d;}' \
+  sed -i '/^      - name: Run the release verification suite$/,/^      - name:/ {/NODE_AUTH_TOKEN:/d;}' \
     "$1/.github/workflows/release.yml"
 }
 shadow_stamped_version_header() {
@@ -1338,7 +1338,7 @@ tag_dispatch_schema() {
     "$1/.github/workflows/release.yml"
 }
 duplicate_nested_input_key() {
-  sed -i '0,/^        required: true$/s//        required: true\n        required: false/' \
+  sed -i '0,/^        required: false$/s//        required: false\n        required: true/' \
     "$1/.github/workflows/release.yml"
 }
 add_unknown_dispatch_input() {
@@ -1346,7 +1346,7 @@ add_unknown_dispatch_input() {
     "$1/.github/workflows/release.yml"
 }
 change_dispatch_input_shape() {
-  sed -i '0,/^        required: true$/s//        required: false/' \
+  sed -i "0,/^        default: ''$/s//        default: v/" \
     "$1/.github/workflows/release.yml"
 }
 add_yaml_directive() {
@@ -1359,7 +1359,7 @@ malform_nested_trigger_indent() {
   sed -i 's|^    inputs:$|     inputs:|' "$1/.github/workflows/release.yml"
 }
 add_trigger_scalar_comment() {
-  sed -i '0,/^        required: true$/s//        required: true # false/' \
+  sed -i "0,/^        default: ''$/s//        default: '' # false/" \
     "$1/.github/workflows/release.yml"
 }
 malform_trigger_mapping() {
@@ -2077,7 +2077,7 @@ fi
 leaked_secret_adopter="$tmproot/adopter-artifact-leaked-secret"
 cp -a "$artifact_adopter" "$leaked_secret_adopter"
 sed -i \
-  's/RELEASE_VERSION: \${{ inputs.version }}/RELEASE_VERSION: ${{ inputs.version }}\n          RELEASE_APP_PRIVATE_KEY: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}/' \
+  's/RELEASE_VERSION: \${{ needs.verify.outputs.version }}/RELEASE_VERSION: ${{ needs.verify.outputs.version }}\n          RELEASE_APP_PRIVATE_KEY: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}/' \
   "$leaked_secret_adopter/.github/workflows/release.yml"
 grep -qF 'RELEASE_APP_PRIVATE_KEY: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}' \
   "$leaked_secret_adopter/.github/workflows/release.yml" \
@@ -2100,7 +2100,7 @@ fi
 bracket_secret_adopter="$tmproot/adopter-artifact-bracket-secret"
 cp -a "$artifact_adopter" "$bracket_secret_adopter"
 sed -i \
-  "s/RELEASE_VERSION: \${{ inputs.version }}/RELEASE_VERSION: \${{ inputs.version }}\n          RELEASE_APP_PRIVATE_KEY: \${{ secrets['RELEASE_APP_PRIVATE_KEY'] }}/" \
+  "s/RELEASE_VERSION: \${{ needs.verify.outputs.version }}/RELEASE_VERSION: \${{ needs.verify.outputs.version }}\n          RELEASE_APP_PRIVATE_KEY: \${{ secrets['RELEASE_APP_PRIVATE_KEY'] }}/" \
   "$bracket_secret_adopter/.github/workflows/release.yml"
 grep -qF "RELEASE_APP_PRIVATE_KEY: \${{ secrets['RELEASE_APP_PRIVATE_KEY'] }}" \
   "$bracket_secret_adopter/.github/workflows/release.yml" \
@@ -2117,7 +2117,7 @@ fi
 tojson_secret_adopter="$tmproot/adopter-artifact-tojson-secret"
 cp -a "$artifact_adopter" "$tojson_secret_adopter"
 sed -i \
-  's/RELEASE_VERSION: \${{ inputs.version }}/RELEASE_VERSION: ${{ inputs.version }}\n          ALL_SECRETS: ${{ toJSON(secrets) }}/' \
+  's/RELEASE_VERSION: \${{ needs.verify.outputs.version }}/RELEASE_VERSION: ${{ needs.verify.outputs.version }}\n          ALL_SECRETS: ${{ toJSON(secrets) }}/' \
   "$tojson_secret_adopter/.github/workflows/release.yml"
 grep -qF 'ALL_SECRETS: ${{ toJSON(secrets) }}' \
   "$tojson_secret_adopter/.github/workflows/release.yml" \
@@ -2146,7 +2146,7 @@ awk '
 mv "$toplevel_env_secret_adopter/.github/workflows/release.yml.new" \
   "$toplevel_env_secret_adopter/.github/workflows/release.yml"
 sed -i \
-  's/RELEASE_VERSION: \${{ inputs.version }}/RELEASE_VERSION: ${{ inputs.version }}\n          RELEASE_APP_PRIVATE_KEY: ${{ env.RELEASE_APP_PRIVATE_KEY }}/' \
+  's/RELEASE_VERSION: \${{ needs.verify.outputs.version }}/RELEASE_VERSION: ${{ needs.verify.outputs.version }}\n          RELEASE_APP_PRIVATE_KEY: ${{ env.RELEASE_APP_PRIVATE_KEY }}/' \
   "$toplevel_env_secret_adopter/.github/workflows/release.yml"
 grep -qE '^env:[[:space:]]*$' "$toplevel_env_secret_adopter/.github/workflows/release.yml" \
   || fail "test setup did not actually add a workflow-level env: block"

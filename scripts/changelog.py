@@ -816,6 +816,14 @@ def selection_digest(
     )
     if not selected:
         return None
+    return selection_digest_for_entries(component, prefix, selected)
+
+
+def selection_digest_for_entries(
+    component: str | None,
+    prefix: str,
+    selected: list[Fragment],
+) -> str:
     canonical = json.dumps(
         {
             "component": component or "",
@@ -829,6 +837,19 @@ def selection_digest(
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
+def next_version_for_entries(
+    repo_root: Path,
+    prefix: str,
+    selected: list[Fragment],
+) -> str:
+    version = derived_release_version(repo_root, prefix, selected)
+    if version is None:
+        raise ChangelogError(
+            f"cannot derive the next version for {prefix} without a previous release"
+        )
+    return version
+
+
 def next_version(
     repo_root: Path,
     selected_names: list[str],
@@ -840,12 +861,77 @@ def next_version(
         raise ChangelogError(
             "version prefix must be v or a lowercase stream name followed by -v"
         )
-    version = derived_release_version(repo_root, prefix, selected)
-    if version is None:
+    return next_version_for_entries(repo_root, prefix, selected)
+
+
+def release_plan(
+    repo_root: Path,
+    version: str,
+    selected_names: list[str],
+    component: str | None = None,
+    prefix: str = "v",
+) -> dict[str, object]:
+    if SEMVER_PREFIX.fullmatch(prefix) is None:
         raise ChangelogError(
-            f"cannot derive the next version for {prefix} without a previous release"
+            "version prefix must be v or a lowercase stream name followed by -v"
         )
-    return version
+    selected = select_release_fragments(
+        repo_root,
+        selected_names,
+        component,
+        allow_empty=True,
+    )
+    requested = SEMVER_RELEASE.fullmatch(version) if version else None
+    if version and requested is None:
+        raise ChangelogError(
+            "version must be v-prefixed SemVer, optionally with a stream prefix"
+        )
+    if requested is not None and requested["prefix"] != prefix:
+        raise ChangelogError(
+            f"version namespace {requested['prefix']!r} does not match prefix {prefix!r}"
+        )
+    if not selected:
+        return {
+            "bump": None,
+            "bump_rationale": "No unreleased fragments are selected; no release will be created.",
+            "component": component or "",
+            "fragments": [],
+            "previous_release": None,
+            "preview": "",
+            "prefix": prefix,
+            "selected": False,
+            "selection_digest": None,
+            "version": version or None,
+        }
+    resolved = version or next_version_for_entries(repo_root, prefix, selected)
+    validate_release_bump(repo_root, resolved, selected)
+    bump = derived_release_bump(repo_root, prefix, selected)
+    previous_release = None
+    impact = "bootstrap"
+    rationale = (
+        "Bootstrap release: the explicit version is accepted because no prior "
+        "release exists for this namespace."
+    )
+    if bump is not None:
+        previous_core, impact, expected_core = bump
+        previous_release = prefix + ".".join(map(str, previous_core))
+        expected_release = prefix + ".".join(map(str, expected_core))
+        rationale = (
+            f"The highest selected fragment impact is {impact}; the canonical "
+            f"release rule advances {previous_release} to {expected_release}."
+        )
+    return {
+        "bump": impact,
+        "bump_rationale": rationale,
+        "component": component or "",
+        "fragments": [entry.path.name for entry in selected],
+        "previous_release": previous_release,
+        "preview": render(selected, released=True),
+        "prefix": prefix,
+        "selected": True,
+        "selection_digest": selection_digest_for_entries(component, prefix, selected),
+        "version": resolved,
+    }
 
 
 def release(
@@ -1441,6 +1527,23 @@ def parser() -> argparse.ArgumentParser:
         default="v",
         help="select the version history prefix; defaults to v",
     )
+    plan_parser = subparsers.add_parser(
+        "release-plan",
+        help="resolve and validate one release without changing the repository",
+        description=(
+            "Resolve the selected fragments, version, bump rationale, and release "
+            "preview without changing the repository."
+        ),
+    )
+    plan_parser.add_argument("--repo-root", type=Path, default=Path.cwd())
+    plan_parser.add_argument(
+        "--version",
+        default="",
+        help="explicit release tag; omit to derive it from the selected fragments",
+    )
+    plan_parser.add_argument("--fragment", action="append", default=[])
+    plan_parser.add_argument("--component")
+    plan_parser.add_argument("--prefix", default="v")
     digest_parser = subparsers.add_parser(
         "selection-digest",
         help="print a canonical digest for one release selection",
@@ -1500,6 +1603,19 @@ def main() -> int:
                     args.fragment,
                     component=args.component,
                     prefix=args.prefix,
+                )
+            )
+        elif args.command == "release-plan":
+            print(
+                json.dumps(
+                    release_plan(
+                        repo_root,
+                        args.version,
+                        args.fragment,
+                        component=args.component,
+                        prefix=args.prefix,
+                    ),
+                    sort_keys=True,
                 )
             )
         elif args.command == "selection-digest":
