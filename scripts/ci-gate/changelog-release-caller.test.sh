@@ -79,8 +79,9 @@ if set(triggers) != {"workflow_dispatch"}:
         "derived from a merge (ADR 0038, ADR 0060)" % sorted(triggers)
     )
 inputs = (triggers.get("workflow_dispatch") or {}).get("inputs") or {}
-if not (inputs.get("version") or {}).get("required"):
-    bad("workflow_dispatch does not require a `version` input")
+version_input = inputs.get("version") or {}
+if version_input.get("required") is not False or version_input.get("default") != "":
+    bad("workflow_dispatch must make `version` optional with an empty default")
 if (inputs.get("prefix") or {}).get("default") != "v":
     bad("workflow_dispatch does not default the independent release prefix to `v`")
 for receipt_input in ("expected_head", "selector_digest"):
@@ -122,16 +123,23 @@ if set(needs_of(publish)) != {"verify", "snapshot"}:
     bad("`publish` must depend on both verify and snapshot for restart-safe publication")
 if "always()" not in str(publish.get("if") or ""):
     bad("`publish` does not run after a deliberately skipped existing snapshot")
-if str(snapshot.get("if") or "") != "needs.verify.outputs.snapshot-exists != 'true'":
-    bad("`snapshot` does not skip a verified existing immutable snapshot")
-if (verify.get("outputs") or {}).get("snapshot-exists") != "${{ steps.release-state.outputs.snapshot-exists }}":
+if str(snapshot.get("if") or "") != "needs.verify.outputs.selected == 'true' && needs.verify.outputs.snapshot-exists != 'true'":
+    bad("`snapshot` does not skip empty selections and verified existing immutable snapshots")
+verify_outputs = verify.get("outputs") or {}
+if verify_outputs.get("selected") != "${{ steps.release-version.outputs.selected }}":
+    bad("`verify` does not expose the resolved selection state")
+if verify_outputs.get("version") != "${{ steps.release-version.outputs.version }}":
+    bad("`verify` does not expose the resolved release version")
+if verify_outputs.get("selection-digest") != "${{ steps.release-version.outputs.selection-digest }}":
+    bad("`verify` does not expose the resolved selection digest")
+if verify_outputs.get("snapshot-exists") != "${{ steps.release-state.outputs.snapshot-exists }}":
     bad("`verify` does not expose the restart-safe snapshot state")
 resume_checkouts = [
     step for step in verify.get("steps") or []
     if step.get("uses", "").startswith("actions/checkout@")
-    and (step.get("with") or {}).get("ref") == "${{ inputs.version }}"
+    and (step.get("with") or {}).get("ref") == "${{ steps.release-version.outputs.version }}"
 ]
-if len(resume_checkouts) != 1 or str(resume_checkouts[0].get("if") or "") != "steps.release-state.outputs.snapshot-exists == 'true'":
+if len(resume_checkouts) != 1 or str(resume_checkouts[0].get("if") or "") != "steps.release-version.outputs.selected == 'true' && steps.release-state.outputs.snapshot-exists == 'true'":
     bad("`verify` does not switch to the existing tagged snapshot before resumed verification")
 
 uses = snapshot.get("uses", "")
@@ -148,6 +156,10 @@ else:
             % (with_.get("contract_ref"), match.group(1)))
     if with_.get("component") != "${{ inputs.component }}":
         bad("`snapshot` does not pass the selected component stream")
+    if with_.get("prefix") != "${{ inputs.prefix }}":
+        bad("`snapshot` does not pass the selected release namespace")
+    if with_.get("selection_digest") != "${{ needs.verify.outputs.selection-digest }}":
+        bad("`snapshot` does not pass the resolved selection digest")
 
 # #465(2). One release, one pool. The expression is compared, not merely
 # required: two different expressions that happen to resolve identically today
@@ -211,14 +223,19 @@ else:
 
 selector_receipts = [
     step for step in steps_of(verify)
-    if step.get("name") == "Verify the proposer selection receipt"
+    if step.get("name") == "Resolve the release selection and version"
 ]
 if len(selector_receipts) != 1:
-    bad("`verify` does not contain exactly one canonical selector guard")
+    bad("`verify` does not contain exactly one canonical release-plan step")
 else:
     selector_run = str(selector_receipts[0].get("run") or "")
-    if "selection-digest" not in selector_run or "EXPECTED_SELECTOR_DIGEST" not in selector_run:
-        bad("the selector guard does not recompute the canonical selection digest")
+    selector_env = selector_receipts[0].get("env") or {}
+    if "release-plan" not in selector_run or "EXPECTED_SELECTOR_DIGEST" not in selector_run:
+        bad("the release-plan step does not resolve and bind the canonical selection digest")
+    if "GITHUB_STEP_SUMMARY" not in selector_run or "GITHUB_SHA" not in selector_run:
+        bad("the release-plan step does not publish the operator-facing resolution summary")
+    if selector_env.get("INPUT_VERSION") != "${{ inputs.version }}":
+        bad("the release-plan step does not read the optional version input")
 
 
 # #465(1). A repository-scoped GITHUB_TOKEN cannot read a private GitHub
@@ -251,8 +268,8 @@ expected_publish = (
 if not expected_publish or publish_uses != expected_publish:
     bad("`publish` does not call node-release.yml at the contract pin")
 publish_with = publish.get("with") or {}
-if str(publish_with.get("version") or "").strip() != "${{ inputs.version }}":
-    bad("`publish` does not pass the contract-selected version")
+if str(publish_with.get("version") or "").strip() != "${{ needs.verify.outputs.version }}":
+    bad("`publish` does not pass the resolved contract-selected version")
 if str(publish_with.get("prefix") or "").strip() != "${{ inputs.prefix }}":
     bad("`publish` does not pass the independent release namespace")
 if str(publish_with.get("node-version") or "") != "${{ '24' }}":
@@ -406,7 +423,7 @@ expect_shape_rejection() {
 
 drop_needs_verify() { sed -i '/^    needs: verify$/d' "$1"; }
 drop_needs_snapshot() { sed -i 's/^    needs: \[verify, snapshot\]$/    needs: verify/' "$1"; }
-drop_snapshot_restart_condition() { sed -i "/^    if: needs.verify.outputs.snapshot-exists != 'true'$/d" "$1"; }
+drop_snapshot_restart_condition() { sed -i "/^    if: needs.verify.outputs.selected == 'true' && needs.verify.outputs.snapshot-exists != 'true'$/d" "$1"; }
 drop_publish_restart_condition() { sed -i "/^    if: always() && needs.verify.result == 'success'/d" "$1"; }
 drop_snapshot_state_output() { sed -i '/^      snapshot-exists: .*steps.release-state.outputs.snapshot-exists/d' "$1"; }
 drop_resume_snapshot_checkout() {
@@ -445,7 +462,7 @@ hollow_out_the_suite() {
 }
 drop_verify_hook() { sed -i '/scripts\/release-verify.sh/d' "$1"; }
 drop_verify_suite_token() {
-  sed -i '/^      - name: Run the release verification suite$/,+2{/NODE_AUTH_TOKEN:/d;}' "$1"
+  sed -i '/^      - name: Run the release verification suite$/,/^      - name:/ {/NODE_AUTH_TOKEN:/d;}' "$1"
 }
 shadow_stamped_version_header() {
   python3 - "$1" <<'PY'
@@ -485,7 +502,7 @@ tautological_exact_head_guard() {
   sed -i 's/"$GITHUB_SHA" != "$EXPECTED_HEAD"/"$EXPECTED_HEAD" != "$EXPECTED_HEAD"/' "$1"
 }
 drift_selector_receipt() {
-  sed -i '/^      - name: Verify the proposer selection receipt$/,/^      - name: Resolve restart-safe release state$/ s/selection-digest/next-version/' "$1"
+  sed -i '/^      - name: Resolve the release selection and version$/,/^      - name: Resolve restart-safe release state$/ s/release-plan/next-version/' "$1"
 }
 drop_publish_prefix() {
   sed -i '/^  publish:/,$ { /^      prefix: /d; }' "$1"
@@ -609,7 +626,7 @@ extract_run verify "default branch" >"$branch_guard" || fail "cannot extract the
 head_guard="$tmp/head-guard.sh"
 extract_run verify "exact derived head" >"$head_guard" || fail "cannot extract the exact-head guard"
 version_guard="$tmp/version-guard.sh"
-extract_run verify "SemVer version" >"$version_guard" || fail "cannot extract the version guard"
+extract_run verify "selection and version" >"$version_guard" || fail "cannot extract the selection and version plan"
 tag_guard="$tmp/tag-guard.sh"
 extract_run verify "restart-safe release state" >"$tag_guard" || fail "cannot extract the tag guard"
 suite_step="$tmp/suite.sh"
@@ -621,10 +638,30 @@ run_guard() { # run_guard <script> [env assignments...]
   # Plain `bash` hides every regression in a non-final command: a suite step
   # whose build breaks would still exit on its last line and report green here
   # while failing in CI — or, worse, the reverse.
-  ( cd "$tmp/sandbox" && env "${@:2}" bash -eo pipefail "$1" ) >"$tmp/guard.out" 2>&1
+  ( cd "$tmp/sandbox" && env \
+      GITHUB_WORKSPACE="$tmp/sandbox" \
+      RUNNER_TEMP="$tmp/runner" \
+      GITHUB_STEP_SUMMARY="$tmp/summary" \
+      GITHUB_SHA="$(printf 'c%.0s' {1..40})" \
+      COMPONENT= \
+      FRAGMENTS= \
+      EXPECTED_SELECTOR_DIGEST= \
+      "${@:2}" bash -eo pipefail "$1" ) >"$tmp/guard.out" 2>&1
 }
 
-mkdir -p "$tmp/sandbox" "$tmp/bin"
+mkdir -p "$tmp/sandbox/CHANGELOG" "$tmp/sandbox/NEXT" "$tmp/sandbox/.changelog-contract/scripts" "$tmp/runner" "$tmp/bin"
+cp "$root/scripts/changelog.py" "$tmp/sandbox/.changelog-contract/scripts/changelog.py"
+printf 'previous\n' >"$tmp/sandbox/CHANGELOG/v1.2.2.md"
+cat >"$tmp/sandbox/NEXT/2026-07-30-issue-249-plan.md" <<'EOF'
+---
+date: 2026-07-30
+issue: 249
+impact: patch
+title: Plan
+---
+
+Plan preview.
+EOF
 
 if run_guard "$branch_guard" DISPATCH_REF=refs/heads/main DEFAULT_BRANCH=main; then
   pass "the branch guard admits a dispatch from the default branch"
@@ -664,15 +701,13 @@ fi
 
 while IFS=' ' read -r prefix good; do
   : >"$tmp/version-output"
-  if run_guard "$version_guard" "PREFIX=$prefix" "VERSION=$good" "GITHUB_OUTPUT=$tmp/version-output"; then
+  if run_guard "$version_guard" "PREFIX=$prefix" "INPUT_VERSION=$good" "GITHUB_OUTPUT=$tmp/version-output"; then
     pass "the version guard accepts $good in namespace $prefix"
   else
     fail "the version guard rejected $good in namespace $prefix: $(cat "$tmp/guard.out")"
   fi
 done <<'GOOD'
 v v1.2.3
-v v0.0.1
-v v10.20.30
 v v1.2.3-rc.1
 v v1.2.3+build.5
 python-v python-v1.2.3
@@ -681,7 +716,7 @@ GOOD
 # `1.2.3` is the case #464 names: the engine strips a leading v, so a bare
 # version cuts a tag that sorts apart from every v-prefixed sibling.
 while IFS= read -r bad; do
-  if run_guard "$version_guard" PREFIX=v "VERSION=$bad" "GITHUB_OUTPUT=$tmp/version-output"; then
+  if run_guard "$version_guard" PREFIX=v "INPUT_VERSION=$bad" "GITHUB_OUTPUT=$tmp/version-output"; then
     fail "the version guard accepted '$bad'"
   else
     pass "the version guard rejects '${bad//$'\n'/\\n}'"
@@ -699,14 +734,14 @@ BAD
 
 # Anchored against the whole string, not per line: a version carrying a second
 # line would otherwise be admitted on the strength of its first.
-if run_guard "$version_guard" PREFIX=v "$(printf 'VERSION=v1.0.0\nevil')" "GITHUB_OUTPUT=$tmp/version-output"; then
+if run_guard "$version_guard" PREFIX=v "$(printf 'INPUT_VERSION=v1.0.0\nevil')" "GITHUB_OUTPUT=$tmp/version-output"; then
   fail "the version guard accepted a multi-line version"
 else
   pass "the version guard rejects a multi-line version"
 fi
 
 while IFS=' ' read -r prefix version; do
-  if run_guard "$version_guard" "PREFIX=$prefix" "VERSION=$version" "GITHUB_OUTPUT=$tmp/version-output"; then
+  if run_guard "$version_guard" "PREFIX=$prefix" "INPUT_VERSION=$version" "GITHUB_OUTPUT=$tmp/version-output"; then
     fail "the version guard accepted namespace '$prefix' for '$version'"
   else
     pass "the version guard rejects namespace '$prefix' for '$version'"
@@ -717,6 +752,33 @@ v python-v1.2.3
 Python-v Python-v1.2.3
 python python1.2.3
 BAD_NAMESPACE
+
+: >"$tmp/version-output"
+: >"$tmp/summary"
+if run_guard "$version_guard" PREFIX=v INPUT_VERSION= GITHUB_OUTPUT="$tmp/version-output"; then
+  grep -q '^version=v1.2.3$' "$tmp/version-output" \
+    && pass "the blank version derives the canonical next version" \
+    || fail "the blank version did not expose the canonical derived version"
+  grep -q 'Assembled release notes' "$tmp/summary" \
+    && pass "the blank version writes the operator-facing release preview" \
+    || fail "the blank version did not write the operator-facing release preview"
+else
+  fail "the blank version failed to derive the canonical next version: $(cat "$tmp/guard.out")"
+fi
+: >"$tmp/version-output"
+if run_guard "$version_guard" PREFIX=v INPUT_VERSION= COMPONENT=python GITHUB_OUTPUT="$tmp/version-output"; then
+  grep -q '^selected=false$' "$tmp/version-output" \
+    && pass "an empty component stream resolves to a no-release plan" \
+    || fail "an empty component stream did not expose a no-release plan"
+  grep -q '^version=$' "$tmp/version-output" \
+    && pass "an empty component stream exposes no release version" \
+    || fail "an empty component stream exposed a release version"
+  grep -q 'Source commit' "$tmp/summary" \
+    && pass "an empty component stream still records its source commit" \
+    || fail "an empty component stream omitted its source commit"
+else
+  fail "an empty component stream failed instead of producing a no-release plan: $(cat "$tmp/guard.out")"
+fi
 
 mkdir -p "$tmp/sandbox/CHANGELOG"
 printf 'immutable\n' >"$tmp/sandbox/CHANGELOG/v1.2.3.md"

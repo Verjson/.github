@@ -3,6 +3,7 @@
 import contextlib
 import importlib.util
 import io
+import json
 import os
 import subprocess
 import sys
@@ -1133,6 +1134,97 @@ class ChangelogContractTests(unittest.TestCase):
         changelog.validate_release_bump(self.root, version, selected)
         with self.assertRaisesRegex(changelog.ChangelogError, "require a minor bump"):
             changelog.validate_release_bump(self.root, "v1.2.4", selected)
+
+    def test_release_plan_derives_one_version_and_preview_from_one_selection(self) -> None:
+        self.init_git()
+        snapshots = self.root / "CHANGELOG"
+        snapshots.mkdir()
+        (snapshots / "v1.2.3.md").write_text("previous\n", encoding="utf-8")
+        selected = fragment(
+            self.root,
+            "2026-07-30-issue-249-feature.md",
+            impact="minor",
+            body="Selected release note.\n\nImplementation detail.\n",
+        )
+        fragment(
+            self.root,
+            "2026-07-30-issue-250-deferred.md",
+            issue="250",
+            impact="major",
+            body="Deferred note.\n",
+        )
+        self.commit_all("release candidate")
+
+        plan = changelog.release_plan(self.root, "", [selected.name])
+
+        self.assertTrue(plan["selected"])
+        self.assertEqual("v1.3.0", plan["version"])
+        self.assertEqual("v1.2.3", plan["previous_release"])
+        self.assertEqual("minor", plan["bump"])
+        self.assertIn("Selected release note.", plan["preview"])
+        self.assertNotIn("Deferred note.", plan["preview"])
+        self.assertIn(selected.name, plan["fragments"])
+        self.assertIsNotNone(plan["selection_digest"])
+
+    def test_release_plan_validates_explicit_version_using_the_release_rule(self) -> None:
+        snapshots = self.root / "CHANGELOG"
+        snapshots.mkdir()
+        (snapshots / "v3.4.5.md").write_text("previous\n", encoding="utf-8")
+        fragment(self.root, "2026-07-30-issue-249-feature.md", impact="minor")
+
+        with self.assertRaisesRegex(changelog.ChangelogError, "require a minor bump"):
+            changelog.release_plan(self.root, "v3.4.6", [])
+
+        plan = changelog.release_plan(self.root, "v3.5.0", [])
+        self.assertEqual("v3.5.0", plan["version"])
+
+    def test_release_plan_accepts_an_explicit_bootstrap_version(self) -> None:
+        fragment(self.root, "2026-07-30-issue-249-first-release.md", impact="major")
+
+        plan = changelog.release_plan(self.root, "v0.1.0", [])
+
+        self.assertEqual("v0.1.0", plan["version"])
+        self.assertIsNone(plan["previous_release"])
+        self.assertEqual("bootstrap", plan["bump"])
+
+    def test_release_plan_reports_an_empty_stream_without_mutating_it(self) -> None:
+        scoped = fragment(
+            self.root,
+            "2026-07-30-issue-249-python.md",
+            component="python",
+            impact="minor",
+        )
+
+        plan = changelog.release_plan(self.root, "", [])
+
+        self.assertFalse(plan["selected"])
+        self.assertIsNone(plan["version"])
+        self.assertTrue(scoped.exists())
+
+    def test_release_plan_cli_emits_the_read_only_json_plan(self) -> None:
+        self.init_git()
+        snapshots = self.root / "CHANGELOG"
+        snapshots.mkdir()
+        (snapshots / "v2.0.0.md").write_text("previous\n", encoding="utf-8")
+        fragment(self.root, "2026-07-30-issue-249-fix.md", impact="patch")
+        self.commit_all("release candidate")
+        before_head = run(self.root, "git", "rev-parse", "HEAD")
+
+        output = run(
+            self.root,
+            sys.executable,
+            str(MODULE_PATH),
+            "release-plan",
+            "--repo-root",
+            str(self.root),
+        )
+        plan = json.loads(output)
+
+        self.assertEqual("v2.0.1", plan["version"])
+        self.assertEqual("patch", plan["bump"])
+        self.assertEqual(before_head, run(self.root, "git", "rev-parse", "HEAD"))
+        self.assertTrue((self.root / "NEXT/2026-07-30-issue-249-fix.md").exists())
+        self.assertFalse((snapshots / "v2.0.1.md").exists())
 
     def test_next_version_cli_is_read_only_even_with_a_dirty_tree(self) -> None:
         self.init_git()
@@ -2417,6 +2509,10 @@ class ChangelogContractTests(unittest.TestCase):
         self.assertIn("contract_ref:", workflow)
         self.assertIn("ref: ${{ inputs.contract_ref }}", workflow)
         self.assertIn("COMPONENT: ${{ inputs.component }}", workflow)
+        self.assertIn("selection_digest:", workflow)
+        self.assertIn("PREFIX: ${{ inputs.prefix }}", workflow)
+        self.assertIn("selection-digest --repo-root", workflow)
+        self.assertIn("EXPECTED_SELECTOR_DIGEST", workflow)
         self.assertIn('args+=(--component "$COMPONENT")', workflow)
         self.assertNotIn("runs-on: ubuntu-latest", workflow)
         self.assertIn("inputs.runner != ''", workflow)

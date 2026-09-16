@@ -24,6 +24,16 @@ on:
         required: false
         type: string
         default: ''
+      prefix:
+        description: Version namespace prefix bound to the release selection
+        required: false
+        type: string
+        default: v
+      selection_digest:
+        description: Optional canonical digest of the release selection
+        required: false
+        type: string
+        default: ''
       runner:
         description: Optional JSON runner labels; Verjson defaults by visibility, external callers use ubuntu-24.04.
         required: false
@@ -124,6 +134,25 @@ jobs:
           repository: Verjson/.github
           ref: ${{ inputs.contract_ref }}
           path: .changelog-contract
+      - name: Verify the canonical release selection receipt
+        if: inputs.selection_digest != ''
+        env:
+          COMPONENT: ${{ inputs.component }}
+          EXPECTED_SELECTOR_DIGEST: ${{ inputs.selection_digest }}
+          FRAGMENTS: ${{ inputs.fragments }}
+          PREFIX: ${{ inputs.prefix }}
+        run: |
+          set -euo pipefail
+          args=(selection-digest --repo-root "$GITHUB_WORKSPACE" --prefix "$PREFIX")
+          [ -z "$COMPONENT" ] || args+=(--component "$COMPONENT")
+          while IFS= read -r fragment; do
+            [ -z "$fragment" ] || args+=(--fragment "$fragment")
+          done <<<"$FRAGMENTS"
+          actual="$(python3 .changelog-contract/scripts/changelog.py "${args[@]}")"
+          if [ "$actual" != "$EXPECTED_SELECTOR_DIGEST" ]; then
+            echo "::error::Selected fragments resolve to $actual, not canonical receipt $EXPECTED_SELECTOR_DIGEST."
+            exit 1
+          fi
       - name: Create immutable snapshot and exact release tag
         env:
           VERSION: ${{ inputs.version }}

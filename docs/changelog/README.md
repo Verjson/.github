@@ -316,6 +316,22 @@ scripts/gen-changelog-caller.sh pr-gate "$PIN" > .github/workflows/changelog-con
 The generated contract test then rejects drift in either release job. Do not
 generate only one side or edit the workflow after generation.
 
+### Leave the release version blank when it is derived
+
+The generated `Release` action keeps the publication decision manual but makes
+the `version` input optional. Leave it blank to have the pinned canonical
+`release-plan` select the requested component/fragments and derive the next
+valid version. Enter a version only when bootstrapping a namespace or when an
+explicit version is required; it is checked by the same impact and namespace
+rules before any snapshot or publication occurs.
+
+The verify job's summary is the review surface: it records the previous
+release, resolved version, highest selected impact and rationale, component,
+selection digest, exact source commit, selected fragment names, and assembled
+release notes. An empty stream is a successful no-op and does not consume
+fragments or create a tag. Retries stay bound to the original dispatch commit
+and resolved version.
+
 By default, the root package is the first artifact. Repeat `--package-dir` for
 explicit repository-relative secondary packages, passing the same ordered list
 to both outputs:
