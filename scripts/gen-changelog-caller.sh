@@ -559,6 +559,18 @@ resolve_adr_index_test() {
 # maintaining a second adopter-shaped body here is the drift this fixes. If the
 # canonical suite ever computes its root differently, refuse to emit rather than
 # ship a test that silently looks for the generator outside the repository.
+# Both ADR-index modes normalize the canonical bytes to exactly one trailing
+# newline on the way out, so the pin has to be taken from that same emitted form.
+# Digesting the resolver's raw bytes instead would agree only as long as the
+# canonical file happens to end in exactly one newline — and the day it did not,
+# every adopter's contract test would fail at once against a file it had just
+# regenerated correctly.
+emit_adr_index_generator() {
+  local canonical
+  canonical="$(resolve_adr_index_generator)" || return 1
+  printf '%s\n' "$canonical"
+}
+
 adr_index_test_hub_root='repo_root="$(cd "$here/../.." && pwd)"'
 adr_index_test_adopter_root='repo_root="$(cd "$here/.." && pwd)"'
 
@@ -2090,19 +2102,29 @@ EOF
 # rather than a pipeline, because command substitution strips trailing newlines
 # and the pin has to match the bytes the adopter writes to disk.
 digest_of_resolved() { # "$@" = the resolver command
-  local tmp digest=''
-  tmp="$(mktemp)" || return 1
-  if "$@" >"$tmp" 2>/dev/null && [ -s "$tmp" ]; then
+  local tmp err digest=''
+  tmp="$(mktemp)" || {
+    echo "$(basename "$0"): cannot create a temporary file to digest $1" >&2
+    return 1
+  }
+  err="$(mktemp)" || { rm -f "$tmp"; return 1; }
+  if "$@" >"$tmp" 2>"$err" && [ -s "$tmp" ]; then
     digest="$(digest_of <"$tmp")" || digest=''
   fi
-  rm -f "$tmp"
+  if [ -z "$digest" ]; then
+    # The resolver's own explanation, not a silent empty pin: without it the
+    # adopter-side message blames the pin for a hub-side resolution failure.
+    echo "$(basename "$0"): $1 produced no digestible output at $ref; the emitted contract test will report the missing canonical source" >&2
+    [ -s "$err" ] && sed 's/^/  /' "$err" >&2
+  fi
+  rm -f "$tmp" "$err"
   [ -n "$digest" ] || return 1
   printf '%s' "$digest"
 }
 
 emit_contract_test() {
   local adr_index_sha256="" adr_index_test_sha256=""
-  adr_index_sha256="$(digest_of_resolved resolve_adr_index_generator)" || adr_index_sha256=""
+  adr_index_sha256="$(digest_of_resolved emit_adr_index_generator)" || adr_index_sha256=""
   # The adopter's copy of the suite is the rewritten form, not the canonical
   # bytes, so its digest has to be taken from what `adr-index-test` emits.
   adr_index_test_sha256="$(digest_of_resolved emit_adr_index_test)" || adr_index_test_sha256=""
