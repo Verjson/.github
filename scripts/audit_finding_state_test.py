@@ -1,6 +1,7 @@
 import hashlib
 import importlib.util
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -161,6 +162,43 @@ class AuditFindingStateTest(unittest.TestCase):
         )
         self.assertEqual(completed.returncode, 2, completed.stdout)
         self.assertIn("could not be started", completed.stderr)
+
+    def summary_of(self, *, entries, command, audit="arm"):
+        summary = self.root / "summary.md"
+        environment = dict(os.environ, GITHUB_STEP_SUMMARY=str(summary))
+        completed = self.run_state(entries=entries, command=command, audit=audit, env=environment)
+        return completed, summary.read_text(encoding="utf-8") if summary.exists() else ""
+
+    def test_the_step_summary_names_a_new_finding_and_its_digest(self):
+        appeared = "armed default branches without canonical deterministic required CI: missing=2"
+        completed, summary = self.summary_of(entries=[], command=emitter(findings=[appeared]))
+        self.assertEqual(completed.returncode, 1, completed.stdout)
+        self.assertIn("drift", summary)
+        self.assertIn(fingerprint(appeared), summary)
+        self.assertIn(appeared, summary)
+
+    def test_the_step_summary_records_a_quiet_match_too(self):
+        finding = "armed default branches without canonical deterministic required CI: missing=1"
+        completed, summary = self.summary_of(
+            entries=[expectation(finding)], command=emitter(findings=[finding])
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertIn("match", summary)
+        self.assertIn(fingerprint(finding), summary)
+
+    def test_a_finding_cannot_inject_an_actions_workflow_command(self):
+        hostile = "::error::spoofed" + chr(13) + "::set-output name=x::y"
+        completed, summary = self.summary_of(entries=[], command=emitter(findings=[hostile]))
+        self.assertEqual(completed.returncode, 1, completed.stdout)
+        for line in summary.splitlines():
+            self.assertFalse(line.startswith("::"), line)
+        self.assertNotIn(chr(13), summary)
+
+    def test_an_undetermined_run_says_so_in_the_step_summary(self):
+        completed, summary = self.summary_of(entries=[], command=emitter(findings=[], status=3))
+        self.assertEqual(completed.returncode, 2, completed.stdout)
+        self.assertIn("undetermined", summary)
+        self.assertIn("reported no finding", summary)
 
 
 if __name__ == "__main__":

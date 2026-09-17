@@ -4,6 +4,7 @@
 import argparse
 import hashlib
 import json
+import os
 import re
 import subprocess
 import sys
@@ -11,9 +12,12 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 
 
-ROOT = Path(__file__).resolve().parent.parent
 FINDING_LINE = re.compile(r"^ERROR: (.+)$")
 ENTRY_FIELDS = ("fingerprint", "finding", "issue", "reason", "expires")
+# A finding carries adopter-controlled repository names. It is only ever hashed,
+# compared, and rendered as literal text -- never executed, and never emitted at
+# the start of a line, so it cannot become an Actions workflow command.
+CONTROL_CHARACTERS = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]")
 
 MATCH = 0
 DRIFT = 1
@@ -90,7 +94,7 @@ def observe(command: list[str]) -> list[str]:
     for line in completed.stderr.splitlines():
         match = FINDING_LINE.match(line)
         if match:
-            findings.append(match.group(1))
+            findings.append(CONTROL_CHARACTERS.sub("\ufffd", match.group(1)))
     sys.stderr.write(completed.stderr)
     # Neither shape can be compared, and treating either as "no finding" is the
     # fail-open ADR 0024 rules out: a crashed audit would read as conformance.
@@ -124,6 +128,44 @@ def adjudicate(observed: list[str], entries: list[dict], today: date) -> dict:
     }
 
 
+def render_summary(state: dict) -> str:
+    lines = [
+        f"## Scheduled audit finding state - `{state['audit']}`",
+        "",
+        f"Verdict: **{state['verdict']}**",
+        "",
+    ]
+    if state["verdict"] == "undetermined":
+        return "\n".join(lines + [f"- {state['reason']}", ""]) + "\n"
+    classes = (
+        ("new", "Newly appeared - not recorded in the reviewed expectation"),
+        ("stale", "Recorded but no longer reproducing - remove the expectation"),
+        ("expired", "Recorded acknowledgement has expired"),
+    )
+    findings = {item["fingerprint"]: item["finding"] for item in state["observed"]}
+    for key, heading in classes:
+        if not state[key]:
+            continue
+        lines.append(f"### {heading}")
+        for digest in state[key]:
+            lines.append(f"- `{digest}` {findings.get(digest, '(not observed this run)')}")
+        lines.append("")
+    if state["verdict"] == "match":
+        lines.append("### Recorded findings still reproducing")
+        for digest in state["expected"]:
+            lines.append(f"- `{digest}` {findings.get(digest, '(not observed this run)')}")
+        lines.append("")
+    return "\n".join(lines) + "\n"
+
+
+def publish_summary(state: dict) -> None:
+    destination = os.environ.get("GITHUB_STEP_SUMMARY")
+    if not destination:
+        return
+    with open(destination, "a", encoding="utf-8") as handle:
+        handle.write(render_summary(state))
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--audit", required=True)
@@ -140,9 +182,11 @@ def main() -> int:
         today = datetime.now(timezone.utc).date()
         state = adjudicate(observe(command), entries, today)
     except Undetermined as error:
+        publish_summary({"audit": args.audit, "verdict": "undetermined", "reason": str(error)})
         print(f"ERROR: audit-state-undetermined: {error}", file=sys.stderr)
         return UNDETERMINED
     state["audit"] = args.audit
+    publish_summary(state)
     print(json.dumps(state, sort_keys=True, separators=(",", ":")))
     return DRIFT if state["verdict"] == "drift" else MATCH
 
