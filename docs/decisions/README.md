@@ -13,6 +13,7 @@ Reverse-chronological index of org-level decisions.
 | # | Date | Decision |
 |---|------|----------|
 | [0188](0188-contract-audits-assert-fields-against-a-growing-vendor-schema/README.md) | 2026-09-17 | Contract audits assert fields, and a growing vendor schema is not drift |
+| [0187](0187-provision-the-review-environment-before-the-caller/README.md) | 2026-09-17 | Provision the review environment before the review caller |
 | [0186](0186-required-checks-bind-through-repository-properties/README.md) | 2026-09-17 | Required status checks bind through repository properties, not per-repository rulesets |
 | [0185](0185-org-contract-distribution/README.md) | 2026-09-17 | Distribute the organization contract as a version, not a commit |
 | [0184](0184-merge-gates-assert-execution-not-absence-of-red/README.md) | 2026-09-17 | A merge gate asserts that verification executed, not that nothing is red |

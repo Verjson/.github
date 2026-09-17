@@ -45,6 +45,12 @@ class JobOutcome:
     ran: bool
     executed_steps: list[str] = field(default_factory=list)
     skipped_steps: list[str] = field(default_factory=list)
+    # The definitions of the executed steps, in execution order and parallel to
+    # `executed_steps`. A property about what a step is *given* — a credential
+    # in `env:`, a token in `with:` — cannot be stated over labels, and
+    # re-deriving it by matching a label back to the contract is ambiguous the
+    # moment two steps share a label.
+    executed_step_definitions: list[dict] = field(default_factory=list)
     terminates_unsuccessfully: bool = False
 
     @property
@@ -172,6 +178,7 @@ def model_workflow(path: Path, scenario: Scenario) -> dict[str, JobOutcome]:
                     or bool(guard and _RUNS_AFTER_FAILURE.search(str(guard))))
                 if runs:
                     outcome.executed_steps.append(_step_label(step))
+                    outcome.executed_step_definitions.append(step)
                     if _terminates_unsuccessfully(step):
                         outcome.terminates_unsuccessfully = True
                 else:
