@@ -19,6 +19,8 @@ WATCHDOG_SOURCE = f".fleet-watchdog-source-{UNIQUE_SUFFIX}"
 ADMISSION_SOURCE = f".runner-admission-reconcile-source-{UNIQUE_SUFFIX}"
 SECRET_SCOPE_SOURCE = f".org-secret-scope-audit-source-{UNIQUE_SUFFIX}"
 RULESET_CONFORMANCE_SOURCE = f".org-ruleset-conformance-source-{UNIQUE_SUFFIX}"
+ARM_AUDIT_SOURCE = f".org-ruleset-conformance-source-{UNIQUE_SUFFIX}"
+SETUP_PYTHON = re.compile(r"^actions/setup-python@[0-9a-f]{40}$")
 
 
 class ContractError(Exception):
@@ -281,8 +283,61 @@ def validate_secret_scope(document: object) -> None:
     validate_cleanup(steps[2], "secret-scope cleanup", SECRET_SCOPE_SOURCE)
 
 
+def validate_arm_audit(document: object) -> None:
+    """The arm audit has to be scheduled, or it is not a control.
+
+    It sat unrunnable and uninvoked while the fleet gap it exists to catch went
+    undetected (#1404). It shares this workflow's schedule but keeps its own job
+    so that its exit status is attributable and cannot mask the release
+    authorization conformance result, and it is deliberately not wired into any
+    pull-request gate: it reports drift, it does not block merges.
+    """
+    job = require_keys(
+        document["jobs"]["arm-audit"],
+        {"runs-on", "defaults", "timeout-minutes", "steps"},
+        "jobs.arm-audit",
+    )
+    validate_isolation(job, ARM_AUDIT_SOURCE, "jobs.arm-audit")
+    require(
+        job["runs-on"]
+        == "${{ fromJSON(vars.CI_LANE_PRIVILEGED || vars.CI_LANE_FALLBACK || '[\"ubuntu-24.04\"]') }}",
+        "arm-audit runner route changed",
+    )
+    steps = job["steps"]
+    require(isinstance(steps, list) and len(steps) == 5, "arm audit must have exactly five steps")
+    require(
+        steps[0].get("name") == "Check out the authorization arm audit",
+        "arm-audit checkout name changed",
+    )
+    validate_checkout(steps[0], "arm-audit checkout", ARM_AUDIT_SOURCE)
+    provision = require_keys(steps[1], {"name", "uses", "with"}, "arm-audit python")
+    require(
+        SETUP_PYTHON.fullmatch(provision["uses"]) is not None,
+        "arm-audit Python provisioning must be a full-SHA pin",
+    )
+    install = require_keys(steps[2], {"name", "run"}, "arm-audit dependencies")
+    require(
+        "--require-hashes" in install["run"]
+        and "scripts/actions-ci-python.requirements.txt" in install["run"],
+        "arm-audit dependencies must come from the hash-pinned requirements",
+    )
+    audit = require_keys(steps[3], {"name", "env", "run"}, "arm audit")
+    require(
+        audit["name"] == "Audit the AI authorization arm against its reviewed contract",
+        "arm-audit step name changed",
+    )
+    env = require_keys(audit["env"], {"GH_TOKEN"}, "arm audit env")
+    require(env["GH_TOKEN"] == "${{ secrets.ORG_ADMIN_TOKEN }}", "arm-audit token binding changed")
+    require(
+        audit["run"] == "python3 scripts/ai-review-required-workflow-audit.py",
+        "arm-audit command must remain the read-only audit",
+    )
+    validate_cleanup(steps[4], "arm-audit cleanup", ARM_AUDIT_SOURCE)
+
+
 def validate_ruleset_conformance(document: object) -> None:
-    job, steps = validate_common(document, "audit")
+    job, steps = validate_common(document, "audit", {"audit", "arm-audit"})
+    validate_arm_audit(document)
     permissions = require_keys(document["permissions"], {"contents"}, "permissions")
     require(permissions["contents"] == "read", "ruleset-conformance contents permission changed")
     require(
