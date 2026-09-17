@@ -618,7 +618,7 @@ prepare_archive_case() {
     "$fixture/cold-cache/_cacache/content-v2/sha512"
   rm -rf "$tmp/archive-cases/runner-temps/$mutation"
   mkdir -p "$tmp/archive-cases/runner-temps/$mutation"
-  if [ "$mutation" = public-cache ]; then
+  if [ "$mutation" = public-cache ] || [ "$mutation" = public-cache-masked ]; then
     local content_root="$tmp/archive-cases/runner-temps/$mutation/$runtime_cache_name/_cacache/content-v2"
     mkdir -p "$content_root/${public_cache_sentinel%/*}"
     printf '%s\n' verified-public-blob > "$content_root/$public_cache_sentinel"
@@ -846,6 +846,10 @@ run_public_cache_case() {
   if [ -n "$requested" ]; then
     archive_case_env+=("SECRETLESS_RUNTIME_PUBLIC_CACHE=$requested")
   fi
+  shift 3 2>/dev/null || shift "$#"
+  if [ "$#" -gt 0 ]; then
+    archive_case_env+=("$@")
+  fi
   if [ "$mutation" = public-cache ]; then
     archive_case_env+=("PUBLIC_CACHE_SENTINEL=$public_cache_sentinel")
   fi
@@ -934,6 +938,21 @@ else
   fail "a requested public cache the population step never wrote failed without naming its reason"
 fi
 
+# An ambient mask equal to the sandbox bind target would append its --tmpfs
+# after the bind and shadow it, failing open to Verjson/.github#1372.
+if run_public_cache_case public-cache-masked \
+  "$tmp/archive-cases/runner-temps/public-cache-masked/$runtime_cache_name" true \
+  NPM_CONFIG_CACHE=/dev/shm/npm-cache; then
+  fail "an ambient mask shadowing the public cache bind reached consumer execution"
+elif [ -e "$tmp/archive-cases/public-cache-masked/compat-results/consumer-ran" ]; then
+  fail "an ambient mask shadowing the public cache bind ran consumer code"
+elif grep -qF 'ambient npm path overlaps compatibility public cache bind' \
+  "$tmp/archive-cases/public-cache-masked/run.stderr"; then
+  pass "an ambient mask shadowing the public cache bind is refused, not layered over it"
+else
+  fail "an ambient mask shadowing the public cache bind failed without naming its reason"
+fi
+
 if run_public_cache_case public-cache-foreign "$tmp/archive-cases/foreign-cache"; then
   fail "a runtime public cache outside the run's own path reached the sandbox"
 elif [ -e "$tmp/archive-cases/public-cache-foreign/compat-results/consumer-ran" ]; then
@@ -1008,9 +1027,10 @@ PY
   else
     mutation_status=$?
   fi
-  if [ "$mutation_status" -eq 7 ] \
+  if [ "$mutation_status" -eq 8 ] \
     && grep -qFx 'not ok - verified public cache content did not reach the sandbox, or exposed the job cache' "$mutation_root/run.log" \
     && grep -qFx 'not ok - a caller without a runtime public cache could not start the compatibility sandbox' "$mutation_root/run.log" \
+    && grep -qFx 'not ok - an ambient mask shadowing the public cache bind failed without naming its reason' "$mutation_root/run.log" \
     && grep -qFx 'diagnostic - resolved compatibility consumer return-code=1 stderr-category=bubblewrap-unavailable' "$mutation_root/run.log" \
     && grep -qFx 'diagnostic - cold-cache compatibility consumer return-code=1 stderr-category=bubblewrap-unavailable' "$mutation_root/run.log" \
     && grep -qFx 'diagnostic - verified public cache compatibility consumer return-code=1 stderr-category=bubblewrap-unavailable' "$mutation_root/run.log" \
@@ -1087,10 +1107,11 @@ PY
   else
     mask_mutation_status=$?
   fi
-  if [ "$mask_mutation_status" -eq 3 ] \
+  if [ "$mask_mutation_status" -eq 4 ] \
     && grep -qFx 'not ok - cold-cache caret consumer did not preserve its installed dependency graph' "$mask_mutation_root/run.log" \
     && grep -qFx 'not ok - verified public cache content did not reach the sandbox, or exposed the job cache' "$mask_mutation_root/run.log" \
     && grep -qFx 'not ok - a caller without a runtime public cache could not start the compatibility sandbox' "$mask_mutation_root/run.log" \
+    && grep -qFx 'not ok - an ambient mask shadowing the public cache bind failed without naming its reason' "$mask_mutation_root/run.log" \
     && grep -qFx 'diagnostic - cold-cache compatibility consumer return-code=1 stderr-category=stderr-suppressed' "$mask_mutation_root/run.log" \
     && grep -qFx 'diagnostic - verified public cache compatibility consumer return-code=1 stderr-category=stderr-suppressed' "$mask_mutation_root/run.log" \
     && grep -qFx 'diagnostic - absent public cache compatibility consumer return-code=1 stderr-category=stderr-suppressed' "$mask_mutation_root/run.log"; then

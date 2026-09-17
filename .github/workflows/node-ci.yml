@@ -5582,6 +5582,13 @@ jobs:
                       str(ambient_home / ".npmrc"),
                   ))
               ambient_masks.update(("/etc/npmrc", "/usr/local/etc/npmrc"))
+              # Masks are applied after the public cache bind, so a mask that
+              # covers the bind target would shadow it and fail open to
+              # Verjson/.github#1372. Derive the guarded paths from the bind
+              # arguments themselves so the two cannot drift apart.
+              public_cache_binds = [
+                  Path(target) for target in public_cache_arguments[2::3]
+              ]
               masked_targets = set()
               masked_directories = []
               for candidate in sorted(
@@ -5602,6 +5609,11 @@ jobs:
                       pass
                   else:
                       raise SystemExit("ambient npm path overlaps compatibility workspace")
+                  for bind_target in public_cache_binds:
+                      if (bind_target.is_relative_to(candidate_path)
+                              or candidate_path.is_relative_to(bind_target)):
+                          raise SystemExit(
+                              "ambient npm path overlaps compatibility public cache bind")
                   try:
                       candidate_metadata = candidate_path.lstat()
                   except FileNotFoundError:
