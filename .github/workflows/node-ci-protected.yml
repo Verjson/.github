@@ -6240,8 +6240,17 @@ jobs:
               # RUNTIME_CACHE_DIR rather than the ambient cache variables this
               # sandbox exists to mask, and only ever from content-v2: no
               # ambient npm config, index, or credential state is eligible.
+              requested = script_environment.get(
+                  "SECRETLESS_RUNTIME_PUBLIC_CACHE", "") == "true"
               runtime_cache_value = script_environment.get("RUNTIME_CACHE_DIR", "")
               if not runtime_cache_value:
+                  # The step sets RUNTIME_CACHE_DIR from an unconditional
+                  # expression, so an empty value means the env key itself was
+                  # dropped. Starting the sandbox with no cache bind here would
+                  # silently reproduce Verjson/.github#1372.
+                  if requested:
+                      raise SystemExit(
+                          "compatibility public cache is requested without a runtime cache path")
                   return None
               runner_temp = Path(script_environment.get("RUNNER_TEMP", ""))
               runtime_cache = Path(runtime_cache_value)
@@ -6259,6 +6268,13 @@ jobs:
                   try:
                       candidate_metadata = candidate.lstat()
                   except (FileNotFoundError, NotADirectoryError):
+                      # A caller that asked for the cache must get it: a missing
+                      # component means the population step renamed or relocated
+                      # the runtime cache and is otherwise indistinguishable from
+                      # the feature being off.
+                      if requested:
+                          raise SystemExit(
+                              "compatibility public cache is requested but was never populated")
                       # secretless-runtime-public-cache is off, so the runtime
                       # cache was never created. Start the sandbox without it.
                       return None

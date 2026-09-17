@@ -834,13 +834,18 @@ run_archive_case() {
 }
 
 run_public_cache_case() {
-  local mutation="$1" runtime_cache="$2"
+  local mutation="$1" runtime_cache="$2" requested="${3-}"
   archive_case_env=(
     "RUNNER_TEMP=$tmp/archive-cases/runner-temps/$mutation"
     "RUN_ATTEMPT=$runtime_cache_run_attempt"
     "RUN_ID=$runtime_cache_run_id"
-    "RUNTIME_CACHE_DIR=$runtime_cache"
   )
+  if [ -n "$runtime_cache" ]; then
+    archive_case_env+=("RUNTIME_CACHE_DIR=$runtime_cache")
+  fi
+  if [ -n "$requested" ]; then
+    archive_case_env+=("SECRETLESS_RUNTIME_PUBLIC_CACHE=$requested")
+  fi
   if [ "$mutation" = public-cache ]; then
     archive_case_env+=("PUBLIC_CACHE_SENTINEL=$public_cache_sentinel")
   fi
@@ -890,7 +895,7 @@ else
 fi
 
 if run_public_cache_case public-cache-absent \
-  "$tmp/archive-cases/runner-temps/public-cache-absent/$runtime_cache_name"; then
+  "$tmp/archive-cases/runner-temps/public-cache-absent/$runtime_cache_name" false; then
   absent_cache_status=0
 else
   absent_cache_status=$?
@@ -904,6 +909,29 @@ else
     "absent public cache compatibility consumer" \
     "$absent_cache_status" \
     "$tmp/archive-cases/public-cache-absent/run.stderr"
+fi
+
+if run_public_cache_case public-cache-requested-unset '' true; then
+  fail "a requested public cache without its workflow env key started the sandbox"
+elif [ -e "$tmp/archive-cases/public-cache-requested-unset/compat-results/consumer-ran" ]; then
+  fail "a requested public cache without its workflow env key ran consumer code"
+elif grep -qF 'compatibility public cache is requested without a runtime cache path' \
+  "$tmp/archive-cases/public-cache-requested-unset/run.stderr"; then
+  pass "a requested public cache without its workflow env key fails closed, not open"
+else
+  fail "a requested public cache without its workflow env key failed without naming its reason"
+fi
+
+if run_public_cache_case public-cache-requested-missing \
+  "$tmp/archive-cases/runner-temps/public-cache-requested-missing/$runtime_cache_name" true; then
+  fail "a requested public cache the population step never wrote started the sandbox"
+elif [ -e "$tmp/archive-cases/public-cache-requested-missing/compat-results/consumer-ran" ]; then
+  fail "a requested public cache the population step never wrote ran consumer code"
+elif grep -qF 'compatibility public cache is requested but was never populated' \
+  "$tmp/archive-cases/public-cache-requested-missing/run.stderr"; then
+  pass "a requested public cache the population step never wrote fails closed, not open"
+else
+  fail "a requested public cache the population step never wrote failed without naming its reason"
 fi
 
 if run_public_cache_case public-cache-foreign "$tmp/archive-cases/foreign-cache"; then
