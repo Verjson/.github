@@ -64,11 +64,29 @@ def bind_inputs(contract_path: Path, caller_path: Path,
             raise AdopterContractMismatch(
                 f'{caller_path.name} omits required input {name!r} of {contract_path.name}')
         else:
-            # An optional input with no declared default is an empty string at
-            # runtime for every type the contract uses.
-            bindings[f'inputs.{name}'] = False if spec.get('type') == 'boolean' else ''
+            bindings[f'inputs.{name}'] = _implicit_default(contract_path, name, spec)
 
     return bindings
+
+
+# GitHub's implicit value for an optional `workflow_call` input the caller
+# omits and the contract gives no default. A `number` is 0, not the empty
+# string an earlier version of this returned — that would have made an
+# unsupplied numeric input compare unequal to every number a guard could test
+# it against, and the guard would then be modelled as false for a reason the
+# contract never expressed.
+_IMPLICIT_DEFAULTS = {'boolean': False, 'number': 0, 'string': ''}
+
+
+def _implicit_default(contract_path: Path, name: str, spec: dict) -> object:
+    declared = spec.get('type')
+    if declared not in _IMPLICIT_DEFAULTS:
+        raise AdopterContractMismatch(
+            f'{contract_path.name} declares optional input {name!r} with type '
+            f'{declared!r} and no default; this harness does not know what '
+            'value the runtime would supply, and guessing is how a model stops '
+            'asserting anything')
+    return _IMPLICIT_DEFAULTS[declared]
 
 
 def callers_for(contract_path: Path) -> list[Path]:
