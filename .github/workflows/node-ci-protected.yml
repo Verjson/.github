@@ -5581,6 +5581,9 @@ jobs:
           GOOGLE_APPLICATION_CREDENTIALS: ''
           NODE_AUTH_TOKEN: ''
           NPM_TOKEN: ''
+          RUNTIME_CACHE_DIR: ${{ runner.temp }}/secretless-runtime-cache-${{ github.run_id }}-${{ github.run_attempt }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          RUN_ID: ${{ github.run_id }}
         run: |
           unset -v GH_TOKEN GITHUB_TOKEN NODE_AUTH_TOKEN NPM_TOKEN AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN GOOGLE_APPLICATION_CREDENTIALS AZURE_CREDENTIALS ACTIONS_ID_TOKEN_REQUEST_TOKEN ACTIONS_ID_TOKEN_REQUEST_URL
           python3 - <<'PY'
@@ -6229,9 +6232,95 @@ jobs:
                   os.close(descriptor)
                   raise
 
+          def verified_public_cache_source(script_environment):
+              # The sandbox masks every ambient npm cache path, so the verified
+              # public blobs the install step wrote have to be handed in
+              # deliberately. Resolve the source from the workflow-controlled
+              # RUNTIME_CACHE_DIR rather than the ambient cache variables this
+              # sandbox exists to mask, and only ever from content-v2: no
+              # ambient npm config, index, or credential state is eligible.
+              runtime_cache_value = script_environment.get("RUNTIME_CACHE_DIR", "")
+              if not runtime_cache_value:
+                  return None
+              runner_temp = Path(script_environment.get("RUNNER_TEMP", ""))
+              runtime_cache = Path(runtime_cache_value)
+              expected_runtime = runner_temp / (
+                  "secretless-runtime-cache-"
+                  f"{script_environment.get('RUN_ID', '')}"
+                  f"-{script_environment.get('RUN_ATTEMPT', '')}")
+              if (not runner_temp.is_absolute() or runner_temp.is_symlink()
+                      or not runner_temp.is_dir()
+                      or runtime_cache != expected_runtime):
+                  raise SystemExit(
+                      "compatibility public cache is not the workflow runtime cache")
+              content = runtime_cache / "_cacache" / "content-v2"
+              for candidate in (runtime_cache, content.parent, content):
+                  try:
+                      candidate_metadata = candidate.lstat()
+                  except (FileNotFoundError, NotADirectoryError):
+                      # secretless-runtime-public-cache is off, so the runtime
+                      # cache was never created. Start the sandbox without it.
+                      return None
+                  if not stat.S_ISDIR(candidate_metadata.st_mode):
+                      raise SystemExit(
+                          "compatibility public cache content is not a directory")
+              return runner_temp, content
+
+
+          def stage_verified_public_cache(content, staging):
+              # npm writes into its own cache while the consumer runs, so the
+              # sandbox gets a disposable copy rather than the job's verified
+              # cache: a read-only bind fails npm outright, and a writable bind
+              # of the real cache would let consumer code rewrite content the
+              # rest of the job trusts. Copy regular files only, so nothing but
+              # integrity-verified blob content crosses the boundary.
+              for directory, subdirectories, names in os.walk(content):
+                  relative = Path(directory).relative_to(content)
+                  (staging / relative).mkdir(parents=True, exist_ok=True)
+                  for name in subdirectories:
+                      if Path(directory, name).is_symlink():
+                          raise SystemExit(
+                              "compatibility public cache content is not a directory")
+                  for name in names:
+                      blob = Path(directory, name)
+                      if not stat.S_ISREG(blob.lstat().st_mode):
+                          raise SystemExit(
+                              "compatibility public cache blob is not a regular file")
+                      shutil.copyfile(blob, staging / relative / name)
+
+
           def run_bound_consumer(
                   sandbox_entries, artifact_content, provenance_content,
                   script_environment):
+              public_cache = verified_public_cache_source(script_environment)
+              if public_cache is None:
+                  run_sandboxed_consumer(
+                      sandbox_entries, artifact_content, provenance_content,
+                      script_environment, [],
+                  )
+                  return
+              runner_temp, content = public_cache
+              staging = Path(tempfile.mkdtemp(
+                  prefix="verjson-compatibility-public-cache-",
+                  dir=str(runner_temp),
+              ))
+              try:
+                  stage_verified_public_cache(content, staging / "content-v2")
+                  run_sandboxed_consumer(
+                      sandbox_entries, artifact_content, provenance_content,
+                      script_environment,
+                      [
+                          "--bind", str(staging / "content-v2"),
+                          "/dev/shm/npm-cache/_cacache/content-v2",
+                      ],
+                  )
+              finally:
+                  shutil.rmtree(staging, ignore_errors=True)
+
+
+          def run_sandboxed_consumer(
+                  sandbox_entries, artifact_content, provenance_content,
+                  script_environment, public_cache_arguments):
               bubblewrap = Path("/usr/bin/bwrap")
               try:
                   bubblewrap_metadata = bubblewrap.stat()
@@ -6269,6 +6358,7 @@ jobs:
                   "--dir", f"{sandbox_workspace}/node_modules",
                   "--dir", "/dev/shm/home",
               ]
+              arguments.extend(public_cache_arguments)
               ambient_masks = {
                   script_environment.get("NPM_CONFIG_CACHE", ""),
                   script_environment.get("NPM_CONFIG_GLOBALCONFIG", ""),

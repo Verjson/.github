@@ -559,6 +559,10 @@ if (cd "$tmp/e2e/consumer" && COMPATIBILITY_ARTIFACT_DIR="$tmp/e2e/consumer/arti
 
 real_npm="$(command -v npm)"
 mkdir -p "$tmp/archive-cases/bin"
+runtime_cache_run_id=4102
+runtime_cache_run_attempt=1
+runtime_cache_name="secretless-runtime-cache-$runtime_cache_run_id-$runtime_cache_run_attempt"
+public_cache_sentinel=sha512/aa/bb/sentinel
 ambient_root="$tmp/archive-cases/ambient"
 mkdir -p "$ambient_root/uppercase-cache" "$ambient_root/lowercase-cache" \
   "$ambient_root/unlisted-cache" \
@@ -592,6 +596,13 @@ prepare_archive_case() {
     "$fixture/node_modules/@verjson/identity-contracts" \
     "$fixture/node_modules/cold-cache-public" \
     "$fixture/cold-cache/_cacache/content-v2/sha512"
+  rm -rf "$tmp/archive-cases/runner-temps/$mutation"
+  mkdir -p "$tmp/archive-cases/runner-temps/$mutation"
+  if [ "$mutation" = public-cache ]; then
+    local content_root="$tmp/archive-cases/runner-temps/$mutation/$runtime_cache_name/_cacache/content-v2"
+    mkdir -p "$content_root/${public_cache_sentinel%/*}"
+    printf '%s\n' verified-public-blob > "$content_root/$public_cache_sentinel"
+  fi
   printf '%s\n' '{"name":"@verjson/identity-contracts","version":"0.1.0"}' \
     > "$fixture/node_modules/@verjson/identity-contracts/package.json"
   printf '%s\n' old > "$fixture/node_modules/@verjson/identity-contracts/old-sentinel"
@@ -631,6 +642,15 @@ for (const path of process.env.AMBIENT_FILE_PROBES.split(':')) {
 }
 if (fs.existsSync('ambient-cache-link')) {
   assert.throws(() => fs.readFileSync('ambient-cache-link/secret', 'utf8'));
+}
+if (process.env.PUBLIC_CACHE_SENTINEL) {
+  const contentRoot = `${process.env.npm_config_cache}/_cacache/content-v2`;
+  assert.equal(
+    fs.readFileSync(`${contentRoot}/${process.env.PUBLIC_CACHE_SENTINEL}`, 'utf8'),
+    'verified-public-blob\n',
+  );
+  fs.writeFileSync(`${contentRoot}/${process.env.PUBLIC_CACHE_SENTINEL}`, 'rewritten\n');
+  fs.writeFileSync(`${contentRoot}/intruder`, 'consumer-write');
 }
 const mountRemoval = childProcess.spawnSync('rmdir', ['.cjs-build'], {encoding: 'utf8'});
 assert.notEqual(mountRemoval.status, 0);
@@ -765,6 +785,7 @@ PY
   esac
 }
 
+archive_case_env=()
 run_archive_case() {
   local mutation="$1"
   local fixture="$tmp/archive-cases/$mutation"
@@ -788,8 +809,25 @@ run_archive_case() {
     COMPATIBILITY_ARTIFACT_DIR="$fixture/artifacts" \
     COMPATIBILITY_RANGES="$request" \
     EXPECTED_COMPATIBILITY_PROVENANCE_SHA256="$(<"$fixture/provenance.sha256")" \
-    bash "$runner"
+    env "${archive_case_env[@]}" bash "$runner"
   ) >"$fixture/run.stdout" 2>"$fixture/run.stderr"
+}
+
+run_public_cache_case() {
+  local mutation="$1" runtime_cache="$2"
+  archive_case_env=(
+    "RUNNER_TEMP=$tmp/archive-cases/runner-temps/$mutation"
+    "RUN_ATTEMPT=$runtime_cache_run_attempt"
+    "RUN_ID=$runtime_cache_run_id"
+    "RUNTIME_CACHE_DIR=$runtime_cache"
+  )
+  if [ "$mutation" = public-cache ]; then
+    archive_case_env+=("PUBLIC_CACHE_SENTINEL=$public_cache_sentinel")
+  fi
+  run_archive_case "$mutation"
+  local status=$?
+  archive_case_env=()
+  return "$status"
 }
 
 if run_archive_case good; then
@@ -809,6 +847,54 @@ else
     "cold-cache compatibility consumer" \
     "$archive_status" \
     "$tmp/archive-cases/good/run.stderr"
+fi
+
+if run_public_cache_case public-cache \
+  "$tmp/archive-cases/runner-temps/public-cache/$runtime_cache_name"; then
+  public_cache_status=0
+else
+  public_cache_status=$?
+fi
+public_cache_content="$tmp/archive-cases/runner-temps/public-cache/$runtime_cache_name/_cacache/content-v2"
+if [ "$public_cache_status" -eq 0 ] \
+  && [ -f "$tmp/archive-cases/public-cache/compat-results/consumer-ran" ] \
+  && [ "$(<"$public_cache_content/$public_cache_sentinel")" = verified-public-blob ] \
+  && [ ! -e "$public_cache_content/intruder" ]; then
+  pass "verified public cache content reaches the sandbox without exposing the job cache"
+else
+  fail "verified public cache content did not reach the sandbox, or exposed the job cache"
+  emit_failure_diagnostic \
+    "cold-cache compatibility consumer" \
+    "$public_cache_status" \
+    "$tmp/archive-cases/public-cache/run.stderr"
+fi
+
+if run_public_cache_case public-cache-absent \
+  "$tmp/archive-cases/runner-temps/public-cache-absent/$runtime_cache_name"; then
+  absent_cache_status=0
+else
+  absent_cache_status=$?
+fi
+if [ "$absent_cache_status" -eq 0 ] \
+  && [ -f "$tmp/archive-cases/public-cache-absent/compat-results/consumer-ran" ]; then
+  pass "a caller without a runtime public cache still starts the compatibility sandbox"
+else
+  fail "a caller without a runtime public cache could not start the compatibility sandbox"
+  emit_failure_diagnostic \
+    "cold-cache compatibility consumer" \
+    "$absent_cache_status" \
+    "$tmp/archive-cases/public-cache-absent/run.stderr"
+fi
+
+if run_public_cache_case public-cache-foreign "$tmp/archive-cases/foreign-cache"; then
+  fail "a runtime public cache outside the run's own path reached the sandbox"
+elif [ -e "$tmp/archive-cases/public-cache-foreign/compat-results/consumer-ran" ]; then
+  fail "a runtime public cache outside the run's own path ran consumer code"
+elif grep -qF 'compatibility public cache is not the workflow runtime cache' \
+  "$tmp/archive-cases/public-cache-foreign/run.stderr"; then
+  pass "a runtime public cache outside the run's own path is refused, not guessed at"
+else
+  fail "a foreign runtime public cache was refused without naming its reason"
 fi
 
 if run_archive_case protected-good "$tmp/protected-run-lanes.sh" \
@@ -874,7 +960,9 @@ PY
   else
     mutation_status=$?
   fi
-  if [ "$mutation_status" -eq 5 ] \
+  if [ "$mutation_status" -eq 7 ] \
+    && grep -qFx 'not ok - verified public cache content did not reach the sandbox, or exposed the job cache' "$mutation_root/run.log" \
+    && grep -qFx 'not ok - a caller without a runtime public cache could not start the compatibility sandbox' "$mutation_root/run.log" \
     && grep -qFx 'diagnostic - resolved compatibility consumer return-code=1 stderr-category=bubblewrap-unavailable' "$mutation_root/run.log" \
     && grep -qFx 'diagnostic - cold-cache compatibility consumer return-code=1 stderr-category=bubblewrap-unavailable' "$mutation_root/run.log" \
     && ! grep -qF 'trusted bubblewrap compatibility sandbox is unavailable' "$mutation_root/run.log" \
@@ -911,8 +999,10 @@ PY
   else
     cache_mutation_status=$?
   fi
-  if [ "$cache_mutation_status" -eq 1 ] \
+  if [ "$cache_mutation_status" -eq 3 ] \
     && grep -qFx 'not ok - cold-cache caret consumer did not preserve its installed dependency graph' "$cache_mutation_root/run.log" \
+    && grep -qFx 'not ok - verified public cache content did not reach the sandbox, or exposed the job cache' "$cache_mutation_root/run.log" \
+    && grep -qFx 'not ok - a caller without a runtime public cache could not start the compatibility sandbox' "$cache_mutation_root/run.log" \
     && grep -qFx 'diagnostic - cold-cache compatibility consumer return-code=1 stderr-category=stderr-suppressed' "$cache_mutation_root/run.log"; then
     pass "ambient read-only npm cache mutation reproduces the silent npm failure"
   else
@@ -945,8 +1035,10 @@ PY
   else
     mask_mutation_status=$?
   fi
-  if [ "$mask_mutation_status" -eq 1 ] \
+  if [ "$mask_mutation_status" -eq 3 ] \
     && grep -qFx 'not ok - cold-cache caret consumer did not preserve its installed dependency graph' "$mask_mutation_root/run.log" \
+    && grep -qFx 'not ok - verified public cache content did not reach the sandbox, or exposed the job cache' "$mask_mutation_root/run.log" \
+    && grep -qFx 'not ok - a caller without a runtime public cache could not start the compatibility sandbox' "$mask_mutation_root/run.log" \
     && grep -qFx 'diagnostic - cold-cache compatibility consumer return-code=1 stderr-category=stderr-suppressed' "$mask_mutation_root/run.log"; then
     pass "removing ambient npm masks exposes the real absolute-path escape probe"
   else
@@ -982,6 +1074,41 @@ PY
     pass "removing workspace symlink confinement admits a link and exposes the absolute escape probe"
   else
     fail "workspace symlink confinement mutation did not expose its link escape probes"
+  fi
+
+  absent_cache_mutation_root="$tmp/absent-public-cache-mutation"
+  mkdir -p "$absent_cache_mutation_root/.github/workflows" \
+    "$absent_cache_mutation_root/scripts/ci-gate" "$absent_cache_mutation_root/docs"
+  cp "$0" "$absent_cache_mutation_root/scripts/ci-gate/node-ci-secretless-compatibility.test.sh"
+  cp "$protected_workflow" "$absent_cache_mutation_root/.github/workflows/node-ci-protected.yml"
+  cp "$documentation" "$absent_cache_mutation_root/docs/node-workflows.md"
+  python3 - "$workflow" "$absent_cache_mutation_root/.github/workflows/node-ci.yml" <<'PY'
+import sys
+from pathlib import Path
+
+source = Path(sys.argv[1]).read_text(encoding="utf-8")
+needle = (
+    "                      # secretless-runtime-public-cache is off, so the runtime\n"
+    "                      # cache was never created. Start the sandbox without it.\n"
+    "                      return None\n"
+)
+assert source.count(needle) == 1
+Path(sys.argv[2]).write_text(
+    source.replace(needle, "                      pass\n"), encoding="utf-8"
+)
+PY
+  if VERJSON_DIAGNOSTIC_MUTATION_CHILD=true \
+    bash "$absent_cache_mutation_root/scripts/ci-gate/node-ci-secretless-compatibility.test.sh" \
+    >"$absent_cache_mutation_root/run.log" 2>&1; then
+    absent_cache_mutation_status=0
+  else
+    absent_cache_mutation_status=$?
+  fi
+  if [ "$absent_cache_mutation_status" -eq 1 ] \
+    && grep -qFx 'not ok - a caller without a runtime public cache could not start the compatibility sandbox' "$absent_cache_mutation_root/run.log"; then
+    pass "binding an absent runtime public cache would break every caller that has none"
+  else
+    fail "the absent runtime public cache guard is not load-bearing"
   fi
 fi
 
