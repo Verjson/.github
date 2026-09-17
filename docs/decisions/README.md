@@ -11,6 +11,7 @@ Reverse-chronological index of org-level decisions.
 <!-- BEGIN ADR INDEX -->
 | # | Date | Decision |
 |---|------|----------|
+| [0185](0185-org-contract-distribution/README.md) | 2026-09-17 | Distribute the organization contract as a version, not a commit |
 | [0184](0184-merge-gates-assert-execution-not-absence-of-red/README.md) | 2026-09-17 | A merge gate asserts that verification executed, not that nothing is red |
 | [0183](0183-release-plan-resolves-optional-version/README.md) | 2026-09-15 | Resolve an optional release version in the verified release plan |
 | [0182](0182-package-backed-portable-ci-adapter/README.md) | 2026-09-14 | Package-backed portable CI adapter |
