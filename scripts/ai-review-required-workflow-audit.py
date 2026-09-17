@@ -294,6 +294,35 @@ def image_mismatches(live, asserted, path: str = "") -> list[str]:
     return []
 
 
+def unpinned_keys(live, asserted, path: str = "") -> list[str]:
+    """Name every live key the reviewed image does not assert.
+
+    ADR 0188 tolerates keys GitHub adds, so the audit survives a schema that
+    grows, and accepts as residual that such a key is invisible by construction
+    — including one that weakens protection. Its stated mitigation is a periodic
+    review that pins newly security-relevant fields, which is a review task, not
+    a property the code can assert about itself. What the code can do is hand
+    that review its candidate set instead of asking a human to re-read a vendor
+    schema by eye. So an unpinned key is reported and never fails the audit:
+    deciding whether it matters stays the reviewer's judgment (#1410).
+    """
+    if isinstance(asserted, dict) and isinstance(live, dict):
+        keys = []
+        for key, value in live.items():
+            field = f"{path}.{key}" if path else key
+            if key in asserted:
+                keys.extend(unpinned_keys(value, asserted[key], field))
+            else:
+                keys.append(field)
+        return keys
+    if isinstance(asserted, list) and isinstance(live, list):
+        keys = []
+        for index, (value, pinned) in enumerate(zip(live, asserted)):
+            keys.extend(unpinned_keys(value, pinned, f"{path}[{index}]"))
+        return keys
+    return []
+
+
 def matches_image(live, image) -> bool:
     return not image_mismatches(live, image)
 
@@ -558,6 +587,12 @@ def verify_replacement_workflow(contract: dict, read) -> None:
     require(arm.get("runs-on") == expected_runner, "required arm is not routed through the trusted lane")
 
 
+def unpinned_live_fields(contract: dict, live: dict, state: str) -> list[str]:
+    """Report, per contracted ruleset, the live fields no reviewed image pins."""
+    matched = contract["preimage" if state == "ready" else "postimage"]
+    return sorted(f"main-protection.{field}" for field in unpinned_keys(live, matched))
+
+
 def audit(contract: dict, read=gh_pages, allow_unschedulable_selection: bool = False) -> dict:
     state, live = verify_ruleset_state(contract, read)
     candidates = verify_ruleset_exclusivity(contract, read, state)
@@ -598,6 +633,7 @@ def audit(contract: dict, read=gh_pages, allow_unschedulable_selection: bool = F
     verify_authorization(contract, read, {name: governed[name] for name in covered})
     verify_replacement_workflow(contract, read)
     return {
+        "unpinned_live_fields": unpinned_live_fields(contract, live, state),
         "organization": contract["organization"],
         "ruleset_id": contract["ruleset_id"],
         "current_path": current_path,

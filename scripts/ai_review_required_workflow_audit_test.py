@@ -348,6 +348,22 @@ jobs:
         self.live_pull_request_parameters()["require_extra_approval_for_unattributed_changes"] = True
         self.assertEqual(AUDIT.audit(self.contract, self.read)["state"], "ready")
 
+    def test_the_report_names_the_live_protection_fields_no_reviewed_image_pins(self):
+        # ADR 0188 accepts that a key GitHub adds is invisible to the comparison
+        # by construction — including one that weakens protection — and mitigates
+        # it with a periodic review that pins newly security-relevant fields. A
+        # review that starts by re-reading a whole vendor schema by eye does not
+        # happen, so the audit reports the exact candidate set instead (#1410).
+        # It still never judges them: an unpinned key is reported, never drift.
+        self.assertEqual(AUDIT.audit(self.contract, self.read)["unpinned_live_fields"], [])
+        self.live_pull_request_parameters()["require_extra_approval_for_unattributed_changes"] = True
+        report = AUDIT.audit(self.contract, self.read)
+        self.assertEqual(report["state"], "ready")
+        self.assertIn(
+            "main-protection.rules[3].parameters.require_extra_approval_for_unattributed_changes",
+            report["unpinned_live_fields"],
+        )
+
     def test_the_arm_image_tolerates_a_vendor_key_but_not_a_changed_value(self):
         # The live arm ruleset carries a `sha` GitHub resolves for the selected
         # workflow, which no reviewed image can contain. The same comparison that
