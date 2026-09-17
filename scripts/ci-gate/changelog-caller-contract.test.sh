@@ -562,17 +562,28 @@ done
 # repository for a test that only needs them for the length of this block.
 mutated_objects="$tmproot/mutated-objects"
 mkdir -p "$mutated_objects"
+staged_fixture=true
 # Absolute: a relative alternate resolves against each child process's cwd, and
-# the generator runs git from its own directory.
-export GIT_ALTERNATE_OBJECT_DIRECTORIES="$(git -C "$repo_root" rev-parse --path-format=absolute --git-common-dir)/objects"
+# the generator runs git from its own directory. Assigning through `export` would
+# report export's own status rather than rev-parse's, leaving the bare path
+# "/objects" behind and degrading this block into a silent skip.
+common_git_dir=""
+git_dir_status=0
+common_git_dir="$(git -C "$repo_root" rev-parse --path-format=absolute --git-common-dir)" || git_dir_status=$?
+if [ "$git_dir_status" -ne 0 ] || [ -z "$common_git_dir" ]; then
+  fail "could not resolve the object store for the ADR-index refusal fixture"
+  staged_fixture=false
+fi
+export GIT_ALTERNATE_OBJECT_DIRECTORIES="$common_git_dir/objects"
 export GIT_OBJECT_DIRECTORY="$mutated_objects"
 # A zero-length mktemp file is a deliberately empty index for read-tree to fill;
 # were read-tree to fail, the tree below would carry one path and quietly make
 # this whole block vacuous, so its status is checked.
 mutated_index="$(mktemp)"
-staged_fixture=true
-GIT_INDEX_FILE="$mutated_index" git -C "$repo_root" read-tree "$sha" \
-  || { fail "could not stage the pinned tree for the ADR-index refusal fixture"; staged_fixture=false; }
+if [ "$staged_fixture" = true ]; then
+  GIT_INDEX_FILE="$mutated_index" git -C "$repo_root" read-tree "$sha" \
+    || { fail "could not stage the pinned tree for the ADR-index refusal fixture"; staged_fixture=false; }
+fi
 # Every assertion below consumes this fixture. When staging fails they receive an
 # empty ref and report their own unrelated failures, which is exactly how a wrong
 # alternates path surfaced as "adr-index-test did not refuse as documented"

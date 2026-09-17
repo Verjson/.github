@@ -58,3 +58,8 @@ about what an adopter must have on disk. The emitter now refuses empty content
 and the mode goes through it. The pin-agreement assertions capture each mode's
 status and require it to have written bytes, because a mode that emits nothing
 otherwise makes the pin agree with itself.
+
+Resolving that fixture's object store assigned through `export`, which reports
+export's own status and never the command's, so a failed `rev-parse` would have
+left the bare path `/objects` behind and turned this coverage into a silent skip
+rather than a diagnosed failure. The status is now taken from the command.
