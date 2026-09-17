@@ -424,6 +424,12 @@ def require_revision(option: str, value: str) -> None:
             f"{option} is empty; a revision is required so the comparison "
             "cannot silently resolve to HEAD and pass over an empty diff"
         )
+    if value.startswith("-"):
+        raise ChangelogError(
+            f"{option} looks like an option, not a revision: {value!r}. "
+            "Git would consume it as one and diff nothing, so the gate would "
+            "pass over an empty diff."
+        )
 
 
 def added_fragment_paths(repo_root: Path, base: str, head: str) -> set[str]:
@@ -433,6 +439,7 @@ def added_fragment_paths(repo_root: Path, base: str, head: str) -> set[str]:
         "diff",
         "--find-renames",
         "--name-status",
+        "--end-of-options",
         f"{base}...{head}",
     ).splitlines():
         fields = line.split("\t")
@@ -993,7 +1000,14 @@ def release(
 
 
 def changed_paths(repo_root: Path, base: str, head: str) -> set[str]:
-    output = git(repo_root, "diff", "--find-renames", "--name-only", f"{base}...{head}")
+    output = git(
+        repo_root,
+        "diff",
+        "--find-renames",
+        "--name-only",
+        "--end-of-options",
+        f"{base}...{head}",
+    )
     return {line for line in output.splitlines() if line}
 
 
@@ -1383,7 +1397,12 @@ def check_pr(repo_root: Path, base: str, head: str) -> None:
     require_revision("--head", head)
     status_by_path = {}
     for line in git(
-        repo_root, "diff", "--no-renames", "--name-status", f"{base}...{head}"
+        repo_root,
+        "diff",
+        "--no-renames",
+        "--name-status",
+        "--end-of-options",
+        f"{base}...{head}",
     ).splitlines():
         status, path = line.split("\t", 1)
         status_by_path[path] = status
@@ -1411,6 +1430,7 @@ def check_pr(repo_root: Path, base: str, head: str) -> None:
         "diff",
         "--find-renames",
         "--name-status",
+        "--end-of-options",
         f"{base}...{head}",
     ).splitlines():
         fields = line.split("\t")
@@ -1588,9 +1608,14 @@ def main() -> int:
             grace_active = impact_migration_window_active(
                 args.allow_missing_impact_through
             )
+            # `--head` is checked whether or not `--base` was given: it is
+            # unused while `--base` is None, but a caller who passed a lost
+            # variable should hear that now rather than the next time the
+            # surrounding condition changes.
+            if args.head is not None:
+                require_revision("--head", args.head)
             if args.base is not None:
                 require_revision("--base", args.base)
-                require_revision("--head", args.head)
             if args.allow_missing_impact_through and args.base is None:
                 raise ChangelogError(
                     "--allow-missing-impact-through requires --base"

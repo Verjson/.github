@@ -2483,7 +2483,10 @@ class ChangelogContractTests(unittest.TestCase):
         `--base` compares HEAD against itself: every requirement this gate
         exists to enforce evaluates over an empty diff and the gate exits 0.
         A caller that passed an unset variable must learn that, not be told
-        the pull request is clean.
+        the pull request is clean. The whitespace-only cases were already red
+        before the guard, with a raw `fatal: ambiguous argument` from Git; the
+        guard replaces that with a diagnosis. Only the two truly empty cases
+        were silent passes.
         """
         self.init_git()
         self.root.joinpath("README.md").write_text("base\n", encoding="utf-8")
@@ -2558,6 +2561,45 @@ class ChangelogContractTests(unittest.TestCase):
                 self.assertEqual(completed.returncode, 0, completed.stderr)
                 self.assertEqual(completed.stdout, "")
                 self.assertEqual(completed.stderr, "")
+
+    def test_an_option_shaped_revision_is_refused_before_git_sees_it(self) -> None:
+        """A revision that begins with a dash is an option to Git, not a revision.
+
+        `argparse` rejects `--base --output=x` but passes `--base=--output=x`
+        straight through, and `git diff` then consumes it as an option: it
+        writes the named file, reports no changes, and the gate exits 0 over an
+        empty diff — the same fail-open as a blank revision, reached through a
+        value that is not blank. The refusal must come from this boundary, so
+        Git is never handed the value at all.
+        """
+        self.init_git()
+        self.root.joinpath("README.md").write_text("base\n", encoding="utf-8")
+        self.commit_all("base")
+        self.root.joinpath("CHANGELOG.md").write_text("authored\n", encoding="utf-8")
+        self.commit_all("a change this gate exists to refuse")
+        marker = self.root / "written-by-git.txt"
+
+        for option in ("--base", "--head"):
+            with self.subTest(option=option):
+                completed = subprocess.run(
+                    [
+                        sys.executable,
+                        str(MODULE_PATH),
+                        "check-pr",
+                        "--repo-root",
+                        str(self.root),
+                        f"{option}=--output={marker}",
+                        "--head" if option == "--base" else "--base",
+                        "HEAD~1",
+                    ],
+                    check=False,
+                    text=True,
+                    capture_output=True,
+                )
+
+                self.assertNotEqual(completed.returncode, 0, completed.stdout)
+                self.assertIn("looks like an option", completed.stderr)
+                self.assertFalse(marker.exists(), "git was handed the option anyway")
 
     def test_check_pr_fails_closed_on_malformed_revision_input(self) -> None:
         self.init_git()

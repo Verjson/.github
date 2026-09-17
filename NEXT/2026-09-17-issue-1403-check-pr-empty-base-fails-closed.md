@@ -35,3 +35,13 @@ blank revision today.
 Control-tested both ways: the blank inputs must fail, and a pull request that
 genuinely needs no fragment must still exit 0 with nothing on stdout or stderr —
 including `validate` with `--base` omitted.
+
+A non-blank revision reached the same fail-open by a different route. `argparse`
+rejects `--base --output=x` but passes `--base=--output=x` through untouched, and
+`git diff` then read it as an option: it wrote the named file, reported no
+changes, and the gate exited 0 over an empty diff — on a pull request adding a
+path this gate exists to refuse. `require_revision` now refuses any revision
+beginning with a dash, and every `git diff` this module runs passes
+`--end-of-options` before the revision, so a value that slips past the boundary
+is still never parsed as an option. `--head` is also checked whether or not
+`--base` was given, rather than inheriting that condition.
