@@ -139,6 +139,26 @@ jobs:
         with self.assertRaisesRegex(AUDIT.AuditError, text):
             AUDIT.audit(self.contract, self.read)
 
+    def audit_error_message(self):
+        with self.assertRaises(AUDIT.AuditError) as caught:
+            AUDIT.audit(self.contract, self.read)
+        return str(caught.exception)
+
+    def drift_main_protection(self):
+        self.live_pull_request_parameters()["required_approving_review_count"] = 0
+
+    def drift_arm_ruleset(self):
+        self.enter_split_state()
+        self.fixture[f"orgs/Verjson/rulesets/{self.arm_id}"][0]["enforcement"] = "evaluate"
+
+    def drift_deterministic_ruleset(self):
+        node = next(
+            declaration for declaration in self.contract["deterministic_rulesets"]
+            if declaration["stack"] == "node"
+        )
+        live_node = self.fixture[f"orgs/Verjson/rulesets/{node['id']}"][0]
+        live_node["rules"][0]["parameters"]["required_status_checks"][0]["context"] = "ci / elsewhere"
+
     def workflow_source(self, text):
         path = "repositories/1269388380/contents/.github/workflows/gate-rearm.yml?ref=refs/heads/main"
         self.fixture[path][0]["content"] = base64.b64encode(text.encode()).decode()
@@ -297,7 +317,7 @@ jobs:
         self.fixture = self.make_fixture()
         self.enter_split_state()
         self.fixture[f"orgs/Verjson/rulesets/{self.arm_id}"][0]["enforcement"] = "evaluate"
-        self.assert_audit_error("arm ruleset drifted from its full reviewed image")
+        self.assert_audit_error("arm ruleset drifted from the fields its reviewed image asserts")
 
     def test_the_arm_ruleset_must_not_exist_before_the_split(self):
         self.fixture["orgs/Verjson/rulesets"][0].append({"id": 4242})
@@ -335,8 +355,8 @@ jobs:
 
     def test_any_collateral_ruleset_drift_rejects_both_rollout_and_rollback(self):
         self.fixture[self.ruleset_path][0]["bypass_actors"][1]["bypass_mode"] = "pull_request"
-        self.assert_audit_error("differs from both full reviewed preimage and postimage")
-        with self.assertRaisesRegex(AUDIT.AuditError, "differs from both"):
+        self.assert_audit_error("matches neither reviewed image on the fields the contract asserts")
+        with self.assertRaisesRegex(AUDIT.AuditError, "matches neither reviewed image"):
             AUDIT.render_payload(self.contract, "retarget", self.read)
 
     def test_a_field_github_adds_to_its_own_schema_is_not_drift(self):
@@ -373,7 +393,7 @@ jobs:
         live_arm["rules"][0]["parameters"]["workflows"][0]["sha"] = "c597d69"
         self.assertEqual(AUDIT.audit(self.contract, self.read)["state"], "split")
         live_arm["enforcement"] = "evaluate"
-        self.assert_audit_error("arm ruleset drifted from its full reviewed image")
+        self.assert_audit_error("arm ruleset drifted from the fields its reviewed image asserts")
 
     def test_the_report_names_the_unpinned_fields_of_every_contracted_ruleset(self):
         # The review this feeds has to cover the whole contracted set, not just
@@ -433,7 +453,7 @@ jobs:
             check["integration_id"] = 15368
         self.assertEqual(AUDIT.audit(self.contract, self.read)["state"], "ready")
         checks[0]["context"] = "ci / something-else"
-        self.assert_audit_error(f"deterministic ruleset {node['id']} drifted from its full reviewed image")
+        self.assert_audit_error(f"deterministic ruleset {node['id']} drifted from the fields its reviewed image asserts")
 
     def test_the_contract_records_the_reviewed_automation_bypass_grants(self):
         # `release-authorization` (4583107) and `merge-authorization` (4693283)
@@ -481,7 +501,7 @@ jobs:
         for value in (0, 2, "1", None):
             with self.subTest(required_approving_review_count=value):
                 parameters["required_approving_review_count"] = value
-                self.assert_audit_error("differs from both full reviewed preimage and postimage")
+                self.assert_audit_error("matches neither reviewed image on the fields the contract asserts")
         parameters["required_approving_review_count"] = 1
         self.assertEqual(AUDIT.audit(self.contract, self.read)["state"], "ready")
 
@@ -489,13 +509,13 @@ jobs:
         # JSON `true` and `1` are distinct policy answers, and Python's `1 == True`
         # would otherwise let a ruleset flip type without reporting drift.
         self.live_pull_request_parameters()["require_code_owner_review"] = 1
-        self.assert_audit_error("differs from both full reviewed preimage and postimage")
+        self.assert_audit_error("matches neither reviewed image on the fields the contract asserts")
 
     def test_an_asserted_key_the_api_stops_returning_is_drift(self):
         # The failure mode a subset comparison invites: silence when the field
         # the contract depends on simply is not there any more.
         del self.live_pull_request_parameters()["require_last_push_approval"]
-        self.assert_audit_error("differs from both full reviewed preimage and postimage")
+        self.assert_audit_error("matches neither reviewed image on the fields the contract asserts")
 
     def test_an_unrecorded_bypass_actor_is_still_drift(self):
         # Unknown-key tolerance must not leak into list membership: a bypass
@@ -503,7 +523,7 @@ jobs:
         self.fixture[self.ruleset_path][0]["bypass_actors"].append(
             {"actor_id": 4528902, "actor_type": "Integration", "bypass_mode": "always"},
         )
-        self.assert_audit_error("differs from both full reviewed preimage and postimage")
+        self.assert_audit_error("matches neither reviewed image on the fields the contract asserts")
 
     def test_a_drift_report_names_the_field_that_disagrees(self):
         # "differs from both images" sent the reader to diff two 40-line objects
@@ -511,6 +531,35 @@ jobs:
         # regression for as long as it did.
         self.live_pull_request_parameters()["required_approving_review_count"] = 0
         self.assert_audit_error(r"required_approving_review_count: 0 is not 1")
+
+    def test_every_drift_report_describes_the_field_scoped_comparison_it_runs(self):
+        # The comparison stopped being whole-object in #1404, but every report
+        # still said "full reviewed image". That tells a maintainer the audit
+        # compared everything, and sends them hunting for drift in keys the
+        # contract never pinned — the opposite of what actually happened (#1411).
+        for label, drift, expected in (
+            (
+                "main-protection",
+                self.drift_main_protection,
+                "main-protection matches neither reviewed image on the fields the contract asserts",
+            ),
+            (
+                "arm",
+                self.drift_arm_ruleset,
+                "arm ruleset drifted from the fields its reviewed image asserts",
+            ),
+            (
+                "deterministic",
+                self.drift_deterministic_ruleset,
+                "drifted from the fields its reviewed image asserts",
+            ),
+        ):
+            with self.subTest(surface=label):
+                self.fixture = self.make_fixture()
+                drift()
+                message = self.audit_error_message()
+                self.assertIn(expected, message)
+                self.assertNotIn("full reviewed", message)
 
     def test_rendered_payloads_are_verified_and_the_tool_has_no_mutation_path(self):
         self.assertEqual(
