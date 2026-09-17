@@ -21,6 +21,12 @@ import base64, json, re, subprocess, sys, collections
 
 HUB = "Verjson/.github"
 REPO_LIST_LIMIT = 500
+# The contents endpoint returns a whole directory in one unpaginated response
+# and stops at this many entries. There is no `Link` header to follow, so the
+# cap is invisible unless it is counted: a capped listing looks exactly like a
+# complete one, which is the same fail-open shape as an empty listing standing
+# in for a failed one.
+CONTENTS_DIR_LIMIT = 1000
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 # GitHub resolves owner/repo case-insensitively, so a lowercase adopter
 # reference is a real reference; a completeness sweep must not drop it.
@@ -111,6 +117,10 @@ def workflows(repo: str) -> dict[str, str] | None:
         return None
     if not isinstance(entries, list):
         return {}
+    if len(entries) >= CONTENTS_DIR_LIMIT:
+        unreadable.append(f"{repo}:.github/workflows "
+                          f"(listing hit the {CONTENTS_DIR_LIMIT}-entry contents cap; "
+                          "read it through the git trees API)")
     files = {}
     for entry in entries:
         name = entry.get("name", "")
