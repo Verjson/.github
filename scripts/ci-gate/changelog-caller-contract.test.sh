@@ -524,12 +524,6 @@ grep -qF 'scripts/gen-adr-index.test.sh' <<<"$adr_test_gate" \
   && pass "the ADR-index suite requirement is gated on adr-index: true" \
   || fail "the ADR-index suite requirement is not confined to the adr-index gate"
 
-# A resolver that produces nothing must pin nothing. `sha256sum` digests an empty
-# stream without complaint, and that empty-string digest is a real-looking pin no
-# adopter file can ever match — it would turn a refusal to emit into a contract
-# test that simply cannot be satisfied, and make the emitted `[ -n ... ]` guards
-# vacuously true. Build a ref whose canonical suite has lost the line the rewrite
-# anchors on, and require an empty pin rather than a digest.
 # Both ADR pins must digest what their mode writes, not the resolver's raw
 # bytes: the two agree only while the canonical file ends in exactly one
 # newline, and the day one did not, every adopter would fail a contract test
@@ -547,9 +541,10 @@ for pinned in "ADR_INDEX_SHA256:adr-index-generator" "ADR_INDEX_TEST_SHA256:adr-
   bash "$gen" "$pin_mode" "$sha" >"$pin_bytes" 2>/dev/null || pin_mode_status=$?
   pin_emitted="$(sha256sum <"$pin_bytes" | cut -d' ' -f1)"
   if [ "$pin_mode_status" != 0 ] || [ ! -s "$pin_bytes" ]; then
-    fail "$pin_mode emitted nothing, so $pin_name cannot be checked against it"
-  elif [ "$pin_emitted" = "$empty_digest" ]; then
-    fail "$pin_mode emitted the empty digest, which no adopter file can match"
+    # Bytes on disk are what makes the rest of this comparison mean anything: an
+    # empty file digests to the empty-string hash on both sides and agrees with
+    # itself, so `-s` is the assertion, not a redundant guard in front of one.
+    fail "$pin_mode emitted nothing, so $pin_name would match it only vacuously"
   elif [ -n "$pin_recorded" ] && [ "$pin_recorded" = "$pin_emitted" ]; then
     pass "$pin_name digests the bytes $pin_mode writes to disk"
   else
@@ -557,6 +552,12 @@ for pinned in "ADR_INDEX_SHA256:adr-index-generator" "ADR_INDEX_TEST_SHA256:adr-
   fi
   rm -f "$pin_bytes"
 done
+# A resolver that produces nothing must pin nothing. `sha256sum` digests an empty
+# stream without complaint, and that empty-string digest is a real-looking pin no
+# adopter file can ever match — it would turn a refusal to emit into a contract
+# test that simply cannot be satisfied, and make the emitted `[ -n ... ]` guards
+# vacuously true. Build a ref whose canonical suite has lost the line the rewrite
+# anchors on, and require an empty pin rather than a digest.
 # The fixture commit is written into a scratch object store: `hash-object -w`
 # and `commit-tree` would otherwise leave dangling objects in the real
 # repository for a test that only needs them for the length of this block.
@@ -657,35 +658,52 @@ fi
 # pinning a real-looking digest over a one-byte generator.
 newline_digest="$(printf '\n' | sha256sum | cut -d' ' -f1)"
 empty_sha=""
+empty_tree=""
 empty_index="$(mktemp)"
-empty_staged=true
-GIT_INDEX_FILE="$empty_index" git -C "$repo_root" read-tree "$sha" \
-  || { fail "could not stage the pinned tree for the empty-generator fixture"; empty_staged=false; }
-if [ "$empty_staged" = true ]; then
-  empty_blob="$(git -C "$repo_root" hash-object -w -t blob /dev/null)"
-  if [ -z "$empty_blob" ]; then
-    fail "could not write the empty generator blob"
-  elif ! GIT_INDEX_FILE="$empty_index" git -C "$repo_root" update-index \
-    --cacheinfo 100644,"$empty_blob",scripts/gen-adr-index.sh; then
-    fail "could not replace gen-adr-index.sh in the empty-generator fixture"
-  else
-    empty_tree="$(GIT_INDEX_FILE="$empty_index" git -C "$repo_root" write-tree)"
-    empty_sha="$(
-      GIT_AUTHOR_NAME='changelog-caller-contract' \
-      GIT_AUTHOR_EMAIL='changelog-caller-contract@invalid' \
-      GIT_COMMITTER_NAME='changelog-caller-contract' \
-      GIT_COMMITTER_EMAIL='changelog-caller-contract@invalid' \
-      git -C "$repo_root" commit-tree "$empty_tree" -p "$sha" -m 'generator emptied'
-    )"
-    [ -n "$empty_sha" ] || fail "could not build the empty-generator fixture commit"
-  fi
+# Every step here is checked: a fixture built by several plumbing commands that
+# reports only the first one's status turns a later failure into an apparent
+# misbehavior of the branch under test.
+if ! GIT_INDEX_FILE="$empty_index" git -C "$repo_root" read-tree "$sha"; then
+  fail "could not stage the pinned tree for the empty-generator fixture"
+elif ! empty_blob="$(git -C "$repo_root" hash-object -w -t blob /dev/null)" \
+  || [ -z "$empty_blob" ]; then
+  fail "could not write the empty generator blob"
+elif ! GIT_INDEX_FILE="$empty_index" git -C "$repo_root" update-index \
+  --cacheinfo 100644,"$empty_blob",scripts/gen-adr-index.sh; then
+  fail "could not replace gen-adr-index.sh in the empty-generator fixture"
+elif ! empty_tree="$(GIT_INDEX_FILE="$empty_index" git -C "$repo_root" write-tree)" \
+  || [ -z "$empty_tree" ]; then
+  fail "could not write the empty-generator fixture tree"
+else
+  empty_sha="$(
+    GIT_AUTHOR_NAME='changelog-caller-contract' \
+    GIT_AUTHOR_EMAIL='changelog-caller-contract@invalid' \
+    GIT_COMMITTER_NAME='changelog-caller-contract' \
+    GIT_COMMITTER_EMAIL='changelog-caller-contract@invalid' \
+    git -C "$repo_root" commit-tree "$empty_tree" -p "$sha" -m 'generator emptied'
+  )"
+  [ -n "$empty_sha" ] || fail "could not build the empty-generator fixture commit"
 fi
 rm -f "$empty_index"
 
 if [ -n "$empty_sha" ]; then
-  bash "$gen" adr-index-generator "$empty_sha" >/dev/null 2>&1 \
-    && fail "adr-index-generator emitted a lone newline for an empty canonical generator" \
-    || pass "adr-index-generator refuses an empty canonical generator rather than emitting a newline"
+  # Any nonzero status would otherwise read as the refusal under test, and an
+  # unresolvable ref exits 1 from a much earlier guard — the very regression the
+  # object-store fix above repaired. Anchor on a sibling mode that resolves the
+  # same ref through the same plumbing, then require the refusal's own reason.
+  if ! bash "$gen" adr-index-test "$empty_sha" 2>/dev/null | grep -q .; then
+    fail "the empty-generator fixture is not resolvable, so its refusal proves nothing"
+  else
+    empty_refusal="$tmproot/empty-generator.err"
+    if bash "$gen" adr-index-generator "$empty_sha" >/dev/null 2>"$empty_refusal"; then
+      fail "adr-index-generator emitted a lone newline for an empty canonical generator"
+    elif grep -q 'cannot resolve gen-adr-index.sh at' "$empty_refusal"; then
+      pass "adr-index-generator refuses an empty canonical generator rather than emitting a newline"
+    else
+      fail "adr-index-generator refused the empty canonical generator for another reason: $(cat "$empty_refusal")"
+    fi
+    rm -f "$empty_refusal"
+  fi
 
   empty_contract="$(bash "$gen" contract-test "$empty_sha" 2>/dev/null)"
   empty_pin="$(grep -m1 '^ADR_INDEX_SHA256=' <<<"$empty_contract" | cut -d'"' -f2)"

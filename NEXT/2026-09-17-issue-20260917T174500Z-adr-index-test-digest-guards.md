@@ -63,3 +63,10 @@ Resolving that fixture's object store assigned through `export`, which reports
 export's own status and never the command's, so a failed `rev-parse` would have
 left the bare path `/objects` behind and turned this coverage into a silent skip
 rather than a diagnosed failure. The status is now taken from the command.
+
+The assertions that cover this are anchored rather than status-sniffing: an
+unresolvable ref exits nonzero from a much earlier guard, so the refusal case
+first proves the fixture resolves through a sibling mode and then requires the
+refusal's own stated reason. `digest_of_resolved` also now names the temporary
+file it could not create for a resolver's diagnostics, so that failure is no
+longer silent.
