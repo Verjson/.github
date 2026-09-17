@@ -68,3 +68,11 @@ that guards every mountpoint they create, and an unrecognized or truncated
 argument fails closed. Both behaviors are exercised directly: a differently
 shaped argument list must not move the guard, and a `cache: true` npm caller
 whose runtime cache is absent must fail closed rather than start bare.
+
+The generated set moved together: `node-ci-protected.yml`, the
+`LEGACY_SHA256` pin, and the pre-ADR-0178 conformance counter-example. That
+last fixture had no generator, so bringing it current meant bisecting the YAML
+fold width it had been dumped at; `scripts/gen-conformance-regression-fixture.py`
+now owns those round-trip parameters. It reproduces the previously committed
+fixture byte for byte from the pre-change contract, and the existing
+conformance assertion remains the check — no new validation was enabled.
