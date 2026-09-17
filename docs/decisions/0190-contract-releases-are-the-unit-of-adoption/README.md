@@ -1,4 +1,4 @@
-# 0189 — A contract version is a release, declared once and read back from disk
+# 0190 — A contract version is a release, declared once and read back from disk
 
 - **Date:** 2026-09-17
 - **Status:** Accepted
